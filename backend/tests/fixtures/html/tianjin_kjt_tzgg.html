@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title>通知公告_天津市科学技术局</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<meta name="SiteName" content="天津市科学技术局"/>
+<meta name="SiteDomain" content="https://kxjs.tj.gov.cn/"/>
+<meta name="SiteIDCode" content="1200000005"/>
+<meta name="ColumnName" content="通知公告" />
+<meta name="ColumnDescription" content="通知公告" />
+<meta name="ColumnKeywords" content="政务公开，通知公告" />
+<meta name="ColumnType" content="政务公开" />
+<meta name="PubTime" content="2026-09-24 17:50:42" random="" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="stylesheet" href="../../images/common.css" />
+    <link rel="stylesheet" href="../../images/xl-style.css" />
+   
+<script type="text/javascript" src="../../images/jquery-3.6.0.min.js"></script>
+<script type="text/javascript" src="../../images/jquery-migrate-3.4.0.min.js"></script>
+    <script charset="utf-8" src="../../images/jquery.SuperSlide2.js"></script>
+    <script charset="utf-8" src="../../images/carousel.js"></script>
+    <script charset="utf-8" src="../../images/common.js"></script>
+    <!--[if IE]>
+    <script src="../../images/html5shiv.min.js"></script>
+    <![endif]-->
+    <script language="javascript">
+	$(function () {
+		var cur_nav = '政务公开';
+		var cur_pp = '';
+		var cur_cat = '通知公告';
+		//nav
+		$(".nav_list li").each(function () {
+			if ($(this).children("a").html()==cur_nav) {
+				$(this).addClass('on');
+			}
+		});
+		//attr
+		$(".crumbs a:last").addClass('current_span');
+	//ie8
+        var theUA = window.navigator.userAgent.toLowerCase();
+        if ((theUA.match(/msie\s\d+/) && theUA.match(/msie\s\d+/)[0]) || (theUA.match(/trident\s?\d+/) && theUA
+                .match(/trident\s?\d+/)[0])) {
+            var ieVersion = theUA.match(/msie\s\d+/)[0].match(/\d+/)[0] || theUA.match(/trident\s?\d+/)[0];
+            if (ieVersion < 9) {
+                $(".top_logo").before(
+                    '<div  class="ie-tips" style="width: 100%; background: #4681af; color: #ffffff; text-align: center; line-height: 40px; z-index: 99;"> ' +
+                    '为了获得更好的访问效果，建议您将IE升级至IE9及以上版本' +
+                    '</div>');
+            };
+        }
+
+	});
+    </script>
+
+</head>
+<body>
+<!--移动端导航-->
+<style>
+	.tips #zzmsbtn{
+	background: rgb(244, 186, 47);
+		padding: 0 10px;
+		height: auto;
+		border-radius: 9px;
+	   margin: 0 10px;
+	   font-size: 14px;
+		color: #fff;
+	}
+	.tips #zzmsbtn span{
+	padding: 0 5px;
+	}
+	.wza-img{
+	vertical-align: middle;
+	}
+	.top_logo .logo .logo_name {
+    width: 894px;
+    height: 38px;
+    position: relative;
+    top: 8px;
+}
+.top_nav .nav_list li .sec-nav3{
+padding-left: 310px;
+    width: 890px !important;
+}
+@media screen and (max-width: 900px){
+.top_logo .logo .logo_name {
+    width: 85%;
+    height: auto;
+    top: 12px;
+}
+}
+	</style>
+	<!--移动端导航-->
+	<div class="cbp-spmenu-left visible-xs" id="cbp-spmenu-s1">
+		<div class="menu_box">
+			<span class="menu_close"></span>
+			<ul class="meum_list">
+				<li><a href='https://kxjs.tj.gov.cn'>首页</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/ZWGK4143/'>政务公开</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/XWDT4045/'>新闻动态</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/BSFW9672/'>办事服务</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/ZMHD5064/'>政民互动</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/ZTZL6839/'>专题专栏</a></li>
+			</ul>
+		</div>
+	</div>
+	<!--顶部logo-->
+	<div class="top_logo">
+		<div class="header_top hidden-xs">
+			<div class="wrap clearfix">
+				<div class="curr_time fl">
+					<div id="time"></div>
+					<script type="text/javascript">
+						function time(){
+							var vWeek,vWeek_s,vDay;
+							vWeek = ["星期天","星期一","星期二","星期三","星期四","星期五","星期六"];
+							var date =  new Date();
+							year = date.getFullYear();
+							month = date.getMonth() + 1;
+							day = date.getDate();
+							hours = date.getHours();
+							minutes = date.getMinutes();
+							seconds = date.getSeconds();
+							vWeek_s = date.getDay();
+							if (hours >= 0 && hours <= 9) {
+								hours = "0" + hours;
+							}
+							if (minutes >= 0 && minutes <= 9) {
+								minutes = "0" + minutes;
+							}
+							if (seconds >= 0 && seconds <= 9) {
+								seconds = "0" + seconds;
+							}
+							document.getElementById("time").innerHTML = '<span><i id="year">'+year + '</i>年<i id="mouth">' + month + '</i>月<i id="day">' + day + '</i>日</span><span>' + vWeek[vWeek_s] + '</span> <span><i id="hour">' + hours + '</i>:<i id="min">' + minutes +'</i>:<i id="sec">' + seconds + '</i></span>'  ;
+	
+						};
+						setInterval("time()",1000);
+					</script>
+				</div>
+				<div class="tips fr">
+					<a id="simplifiedLink" href="javascript:translatePage(1);" class="yy1">简体</a><i>|</i><a id="translateLink" href="javascript:translatePage(2);" class="yy2">繁体</a>
+					<a href="javascript:void(0);" id="toolbarSwitch" onclick="EsdToolbarInit.openClickFunc();"onkeydown="EsdToolbarInit.openKeydownFunc(event);">无障碍</a>
+					<a href="javascript:void(0);" id="zzmsbtn"><img class="wza-img" src="https://kxjs.tj.gov.cn/images/zzmslogo.png" /><span>长者模式</span></a>
+					<a target="_blank" href='http://mail.tj.gov.cn/'  target="_blank" class="email_a">|公务邮箱|</a>
+				</div>
+			</div>
+		</div>
+		<div class="wrap">
+			<div class="header_bot clearfix">
+				<div class="logo clearfix fl">
+					<a class="fl" target="_blank" href="https://www.tj.gov.cn/"><img src="https://kxjs.tj.gov.cn/managecol/qdfy/tytb/202008/W020200826340847864955.png" alt="" class="fl zheng_logo" /></a>
+					<a href="javascript:void(0);" class="logo_name fl" style="cursor:default">
+						<img src="https://kxjs.tj.gov.cn/managecol/qdfy/tytb/202008/W020240206634657289443.png" alt="" />
+					</a>
+				</div>
+				<div class="search_box fr">
+					<div>
+						<input id="key_wrd" class="search" type="text" placeholder="请输入您要搜索的内容" onfocus="this.placeholder=''" onblur="this.placeholder='请输入您要搜索的内容'" />
+						<input class="search_btn" type="button" onclick="jumpToSearch()" style="cursor: pointer;" />
+					</div>
+					<a href="javascript:void(0);" class="menu visible-xs" id="menu"></a>
+	
+				</div>
+			</div>
+		</div>
+	</div>
+	<!--导航条-->
+	<div class="top_nav hidden-xs">
+		<div class="wrap">
+			<ul class="nav_list clearfix">
+				<li><a href='https://kxjs.tj.gov.cn'>首页</a></li>
+				<li><a href='https://kxjs.tj.gov.cn/ZWGK4143/'>政务公开</a>
+					<ul class="sec-nav1">
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/JGXX_20201216/LDXX_20201216/" target="_blank">领导信息</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/JGXX_20201216/CSSZ_20201216/" target="_blank">处室设置</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/JGXX_20201216/JGZN_20201216/" target="_blank">机构职能</a></li>
+						<li><a href='http://qzqd.tj.gov.cn/right?unit=000200760028' target="_blank">权责清单</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/ZCFG148_1/" target="_blank">政策法规</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/TZGG2079/" target="_blank">通知公告</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/ZXGZ7816/" target="_blank">专项工作</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/JZBGHYT7229/" target="_blank">局长办公会议题</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/ZFXXGK2908_1/FZDGKNR8185/CZYJS6471/" target="_blank">财政预决算</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/JYTABL8993/" target="_blank">建议提案办理</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZWGK4143/XZZF201019/" target="_blank">法治政府建设</a></li>
+				 
+					</ul>
+				</li>
+				<li><a href='https://kxjs.tj.gov.cn/XWDT4045/'>新闻动态</a>
+					<ul class="sec-nav2">
+						<li><a href="https://kxjs.tj.gov.cn/XWDT4045/ZYXW6601/" target="_blank">重要新闻</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/XWDT4045/SZYW1184/" target="_blank">时政要闻</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/XWDT4045/BMXW1075/" target="_blank">部门新闻</a></li>
+	
+						<li><a href="https://kxjs.tj.gov.cn/XWDT4045/KJDT555/" target="_blank">科技动态</a></li>
+					</ul>
+				</li>
+				<li><a href='https://kxjs.tj.gov.cn/BSFW9672/'>办事服务</a>
+					<ul class="sec-nav3">
+						<li><a href="https://kxjs.tj.gov.cn/BSFW9672/XMGL4742/" target="_blank">项目管理</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/BSFW9672/BSFWSJTJ1378/" target="_blank">办事服务数据统计</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/BSFW9672/FWSX3350/" target="_blank">服务事项</a></li>
+						<li><a href="https://zwfw.tj.gov.cn/#/DepartmentalMatters/120000/11120000MB19568805/3" target="_blank">天津网上办事大厅</a></li>
+	<li><a href="https://kxjs.tj.gov.cn/BSFW9672/gxbcyjs/kjcgzh/" target="_blank">科技成果转化“一件事”</a></li>
+<li><a href="https://kxjs.tj.gov.cn/BSFW9672/gxbcyjs/wgrlhgz/" target="_blank">外国人来华工作“一件事”</a></li>
+
+					</ul>
+				</li>
+				<li><a href='https://kxjs.tj.gov.cn/ZMHD5064/'>政民互动</a>
+					<ul class="sec-nav4">
+						<li><a href="https://tysfrzcs.tj.gov.cn/sso/login?utype=0&redirect=istrue&client_id=CRMRSVUIV&goto=https%3A%2F%2Fjyhpt.tj.gov.cn%2FpersonalCenter%2Fdist%2F%23%2Fzmljl%2Fqz%2Ftianjin%2F1001007000000000" target="_blank">我要求助</a></li>
+						<li><a href="https://tysfrzcs.tj.gov.cn/sso/login?utype=0&redirect=istrue&client_id=CRMRSVUIV&goto=https%3A%2F%2Fjyhpt.tj.gov.cn%2FpersonalCenter%2Fdist%2F%23%2Fzmljl%2Fjy%2Ftianjin%2F1001007000000000" target="_blank">公众留言</a></li>
+						<li><a href="https://tysfrzcs.tj.gov.cn/sso/login?utype=0&redirect=istrue&client_id=CRMRSVUIV&goto=https%3A%2F%2Fjyhpt.tj.gov.cn%2FpersonalCenter%2Fdist%2F%23%2Fzmljl%2Fts%2Ftianjin%2F1001007000000000" target="_blank">监督投诉</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZMHD5064/ZMLJL5954/" target="_blank">政民零距离</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZMHD5064/ZWFT6230/" target="_blank">政务访谈</a></li>
+						<li><a href="https://kxjs.tj.gov.cn/ZMHD5064/ZXDC4857/" target="_blank">在线调查</a></li>
+	 <li><a href="https://kxjs.tj.gov.cn/ZMHD5064/jcyjzj/" target="_blank">决策意见征集</a></li>
+						<li><a href='https://kxjs.tj.gov.cn/ZMHD5064/ZJJJZJB9746/202008/t20200819_3491579.html' target="_blank">驻局纪检组举报</a></li>
+					
+<li><a href='https://kxjs.tj.gov.cn/ZMHD5064/JGJWJB2471/202008/t20200819_3491580.html' target="_blank">机关纪委举报</a></li>
+	<li><a href='https://kxjs.tj.gov.cn/ZMHD5064/wdk/' target="_blank">问答库</a></li>
+					</ul>
+				</li>
+				<li><a href='https://kxjs.tj.gov.cn/ZTZL6839/'>专题专栏</a>
+					<ul class="sec-nav5">                    
+					   <li><a href="https://kxjs.tj.gov.cn/ZTZL6839/ztzl/tkgjkcy/" target="_blank">天开高教科创园</a></li>
+				
+					</ul>
+				</li>
+			</ul>
+		</div>
+	</div>
+	<script>
+	// 判断是否是手机端
+	function ismobile () {
+	  var mobileArry = ["iPhone", "iPad", "Android", "Windows Phone", "BB10; Touch", "BB10; Touch", "PlayBook", "Nokia"];
+	  var ua = navigator.userAgent;
+	  var res = [];
+	  for (var i = 0; i < mobileArry.length; i++) {
+		if (mobileArry[i] && ua.indexOf(mobileArry[i]) > 0) {
+		  res.push(mobileArry[i]);
+		}
+	  }
+	  return res.length > 0;
+	}
+
+		$("#key_wrd").keyup(function (event) {
+			if (event.keyCode === 13) {
+				jumpToSearch();
+			}
+		});
+	
+		//搜索功能
+		function jumpToSearch() {
+			var searchText = $('#key_wrd').val();
+			if ($.trim(searchText) !== '') {
+			   if (ismobile ()){
+				var search_page_url = '/searchsite/tjskxjsj_218/search.html?siteId=62&searchWord=' + (encodeURIComponent(searchText))+ '&timeOrder=desc&orderBy=time';
+				window.open(search_page_url, '_blank');
+	}else{
+	  var search_page_url = '/searchsite/tjskxjsj_218/search.html?siteId=62&searchWord=' + (encodeURIComponent(searchText));
+				window.open(search_page_url, '_blank');
+	}
+			} else {
+				alert('请输入搜索关键词');
+			}
+		}
+	</script>
+<script type="text/javascript" src="../../images/tw_cn.js"></script>
+<!--专题专栏-->
+<div class="viewport">
+    <div class="wrap">
+        <!--面包屑-->
+        <div class="crumbs"><i class="hidden-xs">当前位置：</i><a href='https://kxjs.tj.gov.cn'>首页</a>&nbsp;&gt;&nbsp;<a href="../" title="政务公开" class="CurrChnlCls">政务公开</a>&nbsp;&gt;&nbsp;<a href="./" title="通知公告" class="CurrChnlCls">通知公告</a></div>
+        <!--通用列表-1-->
+        <div class="containner clearfix">
+            <div class="left_menu fl hidden-xs">
+    <script>
+        var top_title = '政务公开';
+        var top_title_url = '../';
+        var cur_title = '通知公告';
+        var cur_title_url = './';
+        $(function () {
+            $(".left_menu_ul li").each(function () {
+                if($(this).children('a').html()==cur_title){
+                    $(this).addClass("selected");
+                }
+                if($(this).children('a').html()=='众筹科技规划--天津市中长期可“十四五”科技规划问计求策' || $(this).children('a').html()=='众筹科技规划--天津市高新技术领域“十四五”科技规划和2020年度科技计划问计求策'||$(this).children('a').html()=='图片新闻'||$(this).children('a').html()=='历届会议回顾'||$(this).children('a').html()=='历次会议回顾'){
+                    $(this).css("display","none");
+                }
+            });
+        });
+    </script>
+<style>
+.left_menu_ul li.list_item>a{
+    font-size: 16px;
+    padding: 13px 17px;
+}
+</style>
+    <div class="channel_title">政务公开</div>
+    <ul class="left_menu_ul">
+        
+              
+               <li class="list_item"><a href='../JGXX_20201216/CSSZ_20201216/'
+                                         title='机构信息'
+                                         target='_self'>机构信息</a></li>
+
+              
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../ZFXXGK2908_1/'
+                                         title='政府信息公开'
+                                         target='_self'>政府信息公开</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href='http://qzqd.tj.gov.cn/right?unit=000200760028 '
+                                         title='权责清单'
+                                         target='_blank'>权责清单</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../ZCFG148_1/'
+                                         title='政策法规'
+                                         target='_self'>政策法规</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ./'
+                                         title='通知公告'
+                                         target='_self'>通知公告</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../ZXGZ7816/'
+                                         title='专项工作'
+                                         target='_self'>专项工作</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../JZBGHYT7229/'
+                                         title='局长办公会议题'
+                                         target='_self'>局长办公会议题</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../JYTABL8993/'
+                                         title='建议提案办理'
+                                         target='_self'>建议提案办理</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../KJGH20201119/'
+                                         title='科技规划'
+                                         target='_self'>科技规划</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../KJJL8430/'
+                                         title='科技奖励'
+                                         target='_self'>科技奖励</a></li>
+            
+        
+              
+            
+                <li class="list_item"><a href=' ../XZZF201019/'
+                                         title='法治政府建设'
+                                         target='_self'>法治政府建设</a></li>
+            
+        
+              
+            
+        
+    </ul>
+</div>
+            <div class="right_content fr">
+                <div class="content_news_title"><a href='./' class="title">通知公告</a> <!--<a href='./' class="fr more_icon hidden-xs">more +</a>--></div>
+                <ul class="news_list news_list2">
+                    
+                        <li>
+                            <a href='./202609/t20260924_7382787.html' target="_blank" title='市科技局关于征集2026年天津市公共卫生项目的通知' class="point">市科技局关于征集2026年天津市公共卫生项目的通知<span class="time">2026-09-24</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260924_7382430.html' target="_blank" title='市科技局关于天津市科技专家库2026年第四批拟入库专家的公示' class="point">市科技局关于天津市科技专家库2026年第四批拟入库专家的公示<span class="time">2026-09-24</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260920_7378027.html' target="_blank" title='天津市2026年第五批拟入库科技型中小企业名单公示' class="point">天津市2026年第五批拟入库科技型中小企业名单公示<span class="time">2026-09-20</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260920_7378020.html' target="_blank" title='天津市2026年第四批入库科技型中小企业名单公告' class="point">天津市2026年第四批入库科技型中小企业名单公告<span class="time">2026-09-20</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260918_7377531.html' target="_blank" title='市科技局关于征集2026年天津市“先投后股”项目的通知' class="point">市科技局关于征集2026年天津市“先投后股”项目的通知<span class="time">2026-09-18</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260916_7375211.html' target="_blank" title='天津市科学技术信息研究所2026年公开招聘岗位重新报名通知' class="point">天津市科学技术信息研究所2026年公开招聘岗位重新报名通知<span class="time">2026-09-16</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260909_7369710.html' target="_blank" title='市科技局关于对《关于企业研究开发费用税前加计扣除项目鉴定有关问题的通知（征求意见稿）》公开征求意见的通知' class="point">市科技局关于对《关于企业研究开发费用税前加计扣除项目鉴定有关问题的通知（征求...<span class="time">2026-09-09</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202609/t20260902_7365149.html' target="_blank" title='天津市2026年第三批入库科技型中小企业名单公告' class="point">天津市2026年第三批入库科技型中小企业名单公告<span class="time">2026-09-02</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260831_7362409.html' target="_blank" title='市科技局关于组织申报国家重点研发计划“战略性科技创新合作”重点专项2026年度联合研发与示范项目的通知' class="point">市科技局关于组织申报国家重点研发计划“战略性科技创新合作”重点专项2026年度联...<span class="time">2026-08-31</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260828_7361088.html' target="_blank" title='市高企认定办关于开展2026年度高新技术企业认定评审专家培训的通知' class="point">市高企认定办关于开展2026年度高新技术企业认定评审专家培训的通知<span class="time">2026-08-28</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260828_7360387.html' target="_blank" title='市科技局关于征集2026年天津市自然科学基金联合基金项目的通知' class="point">市科技局关于征集2026年天津市自然科学基金联合基金项目的通知<span class="time">2026-08-28</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260826_7358744.html' target="_blank" title='市科技局关于开展2026年度天津市自然科学研究系列职称评审工作的通知' class="point">市科技局关于开展2026年度天津市自然科学研究系列职称评审工作的通知<span class="time">2026-08-26</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260825_7358080.html' target="_blank" title='关于组织召开“2026年天津市脑机接口相关科技计划项目政策宣讲会”的通知' class="point">关于组织召开“2026年天津市脑机接口相关科技计划项目政策宣讲会”的通知<span class="time">2026-08-25</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260824_7357396.html' target="_blank" title='市科技局关于组织开展天津市人工智能领域科技人才高级研修班活动的通知' class="point">市科技局关于组织开展天津市人工智能领域科技人才高级研修班活动的通知<span class="time">2026-08-24</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260824_7357168.html' target="_blank" title='市高企认定办关于开展2026年度高新技术企业认定评审专家培训的预通知' class="point">市高企认定办关于开展2026年度高新技术企业认定评审专家培训的预通知<span class="time">2026-08-24</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260819_7354595.html' target="_blank" title='市科技局关于开展科技创新与产业创新深度融合典型案例征集工作的通知' class="point">市科技局关于开展科技创新与产业创新深度融合典型案例征集工作的通知<span class="time">2026-08-18</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260818_7353950.html' target="_blank" title='关于对《天津市推动生物制造创新发展行动计划（2026-2030年）（征求意见稿）》公开征求意见的通知' class="point">关于对《天津市推动生物制造创新发展行动计划（2026-2030年）（征求意见稿）》公开...<span class="time">2026-08-17</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260817_7353401.html' target="_blank" title='天津市2026年第二批入库科技型中小企业名单公告' class="point">天津市2026年第二批入库科技型中小企业名单公告<span class="time">2026-08-17</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260817_7353261.html' target="_blank" title='关于组织申报国家重点研发计划“城镇可持续发展关键技术与装备”重点专项2026年度项目的通知' class="point">关于组织申报国家重点研发计划“城镇可持续发展关键技术与装备”重点专项2026年度...<span class="time">2026-08-17</span></a>
+                        </li>
+                    
+                        <li>
+                            <a href='./202608/t20260812_7351299.html' target="_blank" title='市科技局关于组织申报智能电网国家科技重大专项基础支撑自主化关键技术公开项目的通知' class="point">市科技局关于组织申报智能电网国家科技重大专项基础支撑自主化关键技术公开项目的通知<span class="time">2026-08-12</span></a>
+                        </li>
+                    
+                </ul>
+
+                <!--分页代码-->
+                <div class="pageing">
+<link href="../../images/page.css" rel="stylesheet" type="text/css" />
+<div class="digg">
+        <script>
+        var currentPage = 0
+        var prevPage = currentPage-1;
+        var nextPage = currentPage+1;
+        var countPage = 103
+        var prev5Page=currentPage-5;
+        var next5Page=currentPage+5;
+            function toPage(){
+                var _num = document.getElementById("searchPage").value;
+                if(isNaN(_num) || _num<=0){
+                    alert("请输入数字");
+                    return false;
+                }
+                var str = "index"+"_"+(_num-1)+"."+"html";
+                var url = location.href.substring(0,location.href.lastIndexOf("/")+1);
+                if(_num<=1||_num==null)
+                    location.href = url+"index"+"."+"html";
+                else if(_num>countPage)
+                    alert("超过最大页数"+countPage);
+                else
+                    location.href = url+str;
+            }
+                            if(countPage>1){
+                                if(currentPage!=0&&currentPage!=1){
+                                    document.write("<a href=\"index"+"."+"html\" class='hidden-xs'>首页</a>");
+                                    document.write("<a href=\"index"+"_" + prevPage + "."+"html\"><font class='hidden-xs'>上一页</font><del class='visible-xs'>&lt;</del></a>");
+                                }else if(currentPage!=0&&currentPage==1){
+                                    document.write("<a href=\"index"+"."+"html\" class='hidden-xs'>首页</a>");
+                                    document.write("<a href=\"index.html\"><font class='hidden-xs'>上一页</font><del class='visible-xs'>&lt;</del></a>");
+                                }else{
+                                    document.write("<span class=\"disabled hidden-xs\">首页</span>");
+                                    document.write("<span class=\"disabled\"><font class='hidden-xs'>上一页</font><del class='visible-xs'>&lt;</del></span>");
+                                }
+
+                                var num = 3;
+                                for(var i=0+(currentPage-1-(currentPage-1)%num) ; i<=(num+(currentPage-1-(currentPage-1)%num))&&(i<countPage) ; i++){
+                                    if(currentPage==i)
+                                        document.write("<span class='current'>"+(i+1)+"</span>");
+                                    else if(i==0)
+                                        document.write("<a href=\"index.html\">"+(i+1)+"</a>");
+                                    else
+                                        document.write("<a href=\"index"+"_" + i + "."+"html\">"+(i+1)+"</a>");
+                                }
+
+                                if(currentPage!=(countPage-1)){
+                                    document.write("<a href=\"index"+"_" + nextPage + "."+"html\" class=\"next-page\"><font class='hidden-xs'>下一页</font><del class='visible-xs'>&gt;</del></a>");
+                                    document.write("<a href=\"index"+"_" + (countPage-1) + "."+"html\" class=\"next-page hidden-xs\"'>尾页</a>");
+                                }else if(currentPage==(countPage-1)){
+                                    document.write("<span class=\"disabled\"><font class='hidden-xs'>下一页</font><del class='visible-xs'>&gt;</del></span>");
+                                    document.write("<span class=\"disabled hidden-xs\">尾页</span>");
+                                }
+                                document.write(" <span class='page-search hidden-xs'>直接到第<input id='searchPage' value='' /></input>页 </span><button class='page-search-btn hide-o hidden-xs' onclick='javacript:toPage()'>确定</button>")
+                                document.write("<span class='hidden-xs' style=\"color:#4681af; display: none;\">&nbsp;&nbsp;共"+countList +"条，共"+ countPage +"页</span>");
+                            }
+        </script>
+    </div>
+</div>
+
+
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<ul class="toolbar_ul hidden-xs">
+    <li>
+        <a href="javascript:void(0);" class="toolbar-item toolbar-item-wb"></a>
+        <img src="../../images/right_wb.jpg" alt="" class="right_wb" />
+    </li>
+    <li>
+        <a href="javascript:void(0);" class="toolbar-item toolbar-item-wx"></a>
+        <img src="../../images/right_wx.jpg" alt="" class="right_wx" />
+    </li>
+    <li>
+        <a href="javascript:void(0);" class="go_top1 toolbar-item toolbar-item-top"></a>
+    </li>
+</ul>
+<!--公共底部-->
+<a href="javascript:void(0);" class="go_top visible-xs"></a>
+<footer>
+    <div class="wrap">
+        <div class="foot_top">
+            <a href='https://kxjs.tj.gov.cn/managecol/about/202008/t20200819_3491581.html' target="_blank">关于我们</a> | 
+            <a href='https://kxjs.tj.gov.cn/sitemap/' target="_blank">站点地图</a> | 
+            <a href='https://kxjs.tj.gov.cn/managecol/about/202008/t20200819_3491582.html' target="_blank">隐私说明</a> | 
+            <a href='https://kxjs.tj.gov.cn/managecol/about/202008/t20200819_3491583.html' target="_blank">版权声明</a> | 
+            <a href='https://kxjs.tj.gov.cn/managecol/about/202008/t20200819_3491584.html' target="_blank">使用帮助</a>
+        </div>
+        <div class="foot_cen hidden-xs">
+            <p>
+                <span>服务热线：86-22-58832999（白天）；86-22-58832998（夜晚）</span>
+            </p>
+            <p>
+                <span>主办：天津市科学技术局、天津市天开高教科创园管理委员会</span>
+                <span>地址:天津市和平区成都道116号</span>
+                <span>邮编:300051</span>
+            </p>
+            <p>
+                <span>网站标识码：1200000005</span>
+                      <span><a href="https://beian.miit.gov.cn/#/Integrated/index" target="_blank">津ICP备19005898号</a></span>
+                <span><a target="_blank" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=12010102000245"><img src="https://kxjs.tj.gov.cn/managecol/qdfy/tydb/202008/W020200826346557596539.png" class="gongbei_icon" />津公网安备12010102000245</a></span>
+            </p>
+            <p>
+                <span>技术支持：天津市科学技术信息研究所</span>
+            </p>
+        </div>
+        <div class="foot_cen visible-xs">
+            <p>
+                <span>服务热线：86-22-58832999（白天）；86-22-58832998（夜晚）</span>
+            </p>
+            <p>
+                <span>主办：天津市科学技术局、天津市天开高教科创园管理委员会</span>
+                <span>地址:天津市和平区成都道116号</span>
+            </p>
+            <p>
+                <span>邮编:300051</span>
+                <span>网站标识码：1200000005</span>
+            </p>
+            <p>
+                <span><a href="https://beian.miit.gov.cn/#/Integrated/index" >津ICP备19005898号</a></span>
+            </p>
+            <p>
+                <span><a target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=12010102000245"><img src="https://kxjs.tj.gov.cn/managecol/qdfy/tydb/202008/W020200826346557596539.png" class="gongbei_icon" />津公网安备12010102000245</a></span>
+            </p>
+            <p>
+                <span>技术支持：天津市科学技术信息研究所</span>
+            </p>
+        </div>
+        <div class="foot_img">
+            <a href="http://bszs.conac.cn/sitename?method=show&id=07CCA3589C437534E053012819AC9B1F" target="_blank"  class="a1_img">
+                <img src="https://kxjs.tj.gov.cn/managecol/qdfy/tydb/202008/W020200826346557689673.png" alt="" title="" />
+            </a>
+            <a class="a2_img"><script id="_jiucuo_" sitecode='1200000005' src='https://zfwzgl.www.gov.cn/exposure/jiucuo.js'></script></a>
+            <!--<a href="https://zfwzgl.www.gov.cn/exposure/jiucuo.html?site_code=1200000005&url=https%3A%2F%2Fwww.w3school.com.cn%2Ftiy%2Ft.asp%3Ff%3Dhtml_basic" class="a2_img" target="_blank" >
+                <img src="https://kxjs.tj.gov.cn/managecol/qdfy/tydb/202008/W020201209387919511334.png" alt="" title="" />
+            </a>-->
+        </div>
+    </div>
+</footer>
+<script type="text/javascript" src="https://kxjs.tj.gov.cn/images/jquery.qrcode.min.js"></script>
+
+<style>
+#zzmsMobileBtn{
+display:none;
+/*background-color: #4a82b0c7;*/
+    height: 90px;
+   
+    position: fixed;
+    bottom: 100px;
+    right: 0;
+    z-index: 1000;
+    width: 140px;
+    color: #fff;
+    font-size: 20px;
+    text-align: center;
+    border-radius: 20px;
+background-image:url(https://kxjs.tj.gov.cn/images/mobile_zzms.png);
+background-repeat: no-repeat;
+background-size: 100% 100%;
+}
+.ghbClose{
+height: 20px;
+    width: 20px;
+    float: right;
+    margin: 5px 5px 0 0;
+    display: none;
+    cursor: pointer;
+}
+.ghbBtn{
+height: 40px;
+    width: 140px;
+    float: right;
+    margin: 0px 5px 0 0;
+    display: none;
+    cursor: pointer;
+}
+@media screen and (max-width: 1200px){
+#zzmsbtn{
+display:none;
+}
+#zzmsMobileBtn{
+display:block;
+}
+.ghbClose, .ghbBtn{
+  display: block;
+}
+}
+</style>
+<script>
+ var tpldClass=[".page_info >.TRS_UEDITOR",".article_content >.view.TRS_UEDITOR",".xw-txt >.view.TRS_UEDITOR",".zw >.view.TRS_UEDITOR",".yjzjdetail >.view.TRS_UEDITOR"];
+        $.each(tpldClass,function(n,value){
+            if($(value).length != 0){
+                window.esdArOption = {contentDom: value};
+                return true 
+            }
+        })
+// 判断是否是手机端
+function ismobile () {
+  var mobileArry = ["iPhone", "iPad", "Android", "Windows Phone", "BB10; Touch", "BB10; Touch", "PlayBook", "Nokia"];
+  var ua = navigator.userAgent;
+  var res = [];
+  for (var i = 0; i < mobileArry.length; i++) {
+    if (mobileArry[i] && ua.indexOf(mobileArry[i]) > 0) {
+      res.push(mobileArry[i]);
+    }
+  }
+  return res.length > 0;
+}
+//关闭移动端按钮
+$('.ghbClose').click(function () {
+$("#zzmsMobileBtn").hide();
+})
+// 把纠错标签从pc端的dom移到移动端
+$(function(){
+var TjElderModelFlag = getCookie('TjElderModelFlag');
+    if (ismobile ()|| TjElderModelFlag === "2"){
+       let str = $('.find-error-box').html()
+       $('.find-error-mbox').html(str)
+    } 
+})
+
+/*长者模式s*/
+$(function(){
+  var zzmsword = getCookie('TjElderModelFlag');
+    //切换长者模式按钮
+ if (zzmsword !== "2") {
+ $('#zzmsbtn span').text("长者模式");
+
+}else{
+ $('.header_top').css("display","block");
+ $('#zzmsbtn span').text("退出长者模式");
+
+}
+$('#zzmsbtn').click(function () {
+        var zzmsword1 = getCookie('TjElderModelFlag');
+        if (zzmsword1 !== "2") {//如果当前不是长者模式，打开工具条，进入长者模式 
+          addCookie('wzalsOn', 'true', 0);
+          $('body').addClass("useOldFixed");
+    if(typeof(EsdToolbarInit.openClickFunc)=='function'){
+				 EsdToolbarInit.openClickFunc();
+			 }
+          // 开着工具条打开长者模式
+          if(typeof(EsdToolbar)=="object"&&EsdToolbar.isOpen){
+	jq_t("#toolbar_Div").css("overflow","hidden");
+	jq_t("body").css("padding-top", "98px");
+	if(EsdToolbar.defalt.browser.mozilla){
+		jq_t("body")[0].style.setProperty("transform","unset","important");
+		jq_t("body")[0].style.setProperty("transform-origin","unset","important");
+		jq_t("#toolbar_Div").css({"-moz-transform":"scale(1.5)","-moz-transform-origin":"center -64px 0px"});
+		jq_t("#toolbarHtml").css({"-moz-transform":"scale(1)","-moz-transform-origin":"top"});
+	}
+	
+	jq_t("#toolbarHtml").show("fast",function(){
+		if(!EsdToolbar.defalt.browser.msie){
+			jq_t("#toolbarHtml").css("zoom","0.67");
+			jq_t("body").css({"max-width":"100%","min-width":"100%","padding-top":"65px"});
+		}else{
+			jq_t("#toolbarHtml").css("left","0");
+			jq_t("body").css({"max-width":"100%","padding-top":"65px"});
+		}
+		if(EsdToolbar.pageZoom.zoom>=1.3){
+			jq_t("body").css({"max-width": "170%", "min-width": "170%"});
+		}
+		jq_t("#toolbarPage2").hide();
+		jq_t("#toolbar").show();
+		//jq_t("body").css({"max-width":"100%","min-width":"100%","padding-top":"65px"});
+		jq_t("#toolbar_Div").css({"width":"750px","margin":"0 auto"});
+		setTimeout(function(){jq_t("#toolbar").show();},500);
+	});
+}
+	
+          $('#zzmsbtn span').text("退出长者模式");
+          let str = $('.find-error-box').html()
+          $('.find-error-mbox').html(str)
+          if (IEVersion()) {
+              $("body").css({
+                  transform: "scale(1.5)",
+                  "-moz-transform": "scale(1.5)",
+                  "-ms-filter": "scale(1.5)",
+                  "transform-origin": "center top",
+                  "-ms-transform-origin": "center top",
+              });
+              $("body").css("zoom", "1");
+              }
+        } else {//如果当前是长者模式，关闭工具条，退出长者模式
+          addCookie('wzalsOn', 'false', 0);
+          $('body').removeClass("useOldFixed");
+          $('#zzmsbtn span').text("长者模式");
+          try {
+            EsdToolbar.close();
+          } catch (error) {
+            // console.log("捕获异常");
+          }
+        }
+        ElderModeTool.changeElderMode();
+      });
+    //关闭工具条按钮
+    $('#toolbar_exit').bind("click",function(){
+        //关闭工具条，判断当前是否处于长者模式，如果是则退出长者模式
+        var zzmsword = getCookie("TjElderModelFlag");
+        if (zzmsword === "2") {
+            addCookie("TjElderModelFlag", "1", 0);
+        }
+if(getCookie('TjElderMobileFlag') === "2"){
+        addCookie('TjElderMobileFlag',"1",0);
+           addCookie('wzalsOn', 'false', 0);
+          try{
+            EsdToolbar.close();
+           }catch(error){
+                // console.log("捕获异常");
+           }
+
+
+    } 
+    });
+// 进入关怀版
+var MzjGhbFlag = getCookie('TjElderMobileFlag');
+if(ismobile()&&zzmsword != 2){
+if(MzjGhbFlag === "2"){
+    var cssFileUrl = "https://kxjs.tj.gov.cn/images/SetMobileElder.css";
+    if (cssFileUrl) {
+        $("<link>").attr({
+            rel: "stylesheet",
+            type: "text/css",
+            href: cssFileUrl,
+        }).appendTo("head");
+    }
+$("#zzmsMobileBtn").css("display","none");
+
+
+}else{
+removejscssfile("SetMobileElder", "css");
+
+$("#zzmsMobileBtn").css("display","block");
+}
+}
+//移动端关怀版切换
+$("#zzmsMobileBtn .ghbBtn").bind("click",function(){
+    if(getCookie('TjElderMobileFlag') === "2"){
+        addCookie('TjElderMobileFlag',"1",0);
+           addCookie('wzalsOn', 'false', 0);
+          try{
+            EsdToolbar.close();
+           }catch(error){
+                // console.log("捕获异常");
+           }
+   $("#zzmsMobileBtn").css("display","block");
+    } else{
+        addCookie('TjElderMobileFlag',"2",0);
+         addCookie('wzalsOn', 'true', 0);
+       if(typeof(EsdToolbarInit.openClickFunc)=='function'){
+         EsdToolbarInit.openClickFunc();
+}
+$("#zzmsMobileBtn").css("display","none");
+    }
+    location.reload();
+})
+});
+</script>
+<div id="zzmsMobileBtn"><div class="ghbClose"></div><div class="ghbBtn"></div></div>
+<script type="text/javascript" src="https://jyhpt.tj.gov.cn/images/articleReader.js"></script>
+<script src="https://jyhpt.tj.gov.cn/images/ta_Info.js" async="async" defer="defer"></script>
+<script type="text/javascript" src="https://kxjs.tj.gov.cn/images/RoleSetInit.js"></script>
+<script src="https://kxjs.tj.gov.cn/images/esdToolsInit.js"></script>
+<script type="text/javascript" src="https://kxjs.tj.gov.cn/images/ElderModelTool.js"></script>
+ <link rel="stylesheet" href="https://kxjs.tj.gov.cn/images/ZZMS_change.css">
+<!--非党政机关链接跳转提示脚本-->	 
+<script type="text/javascript" src="https://jyhpt.tj.gov.cn/images/offSiteLinkRedirectionPrompt.js" charset="UTF-8" defer="defer"></script>
+<script>
+  $(function () {
+var weixinHtml = '<div id="share-qrcode"><h3 id="share_container">微信分享“扫一扫”</h3><dd id="share_div"></dd></div>';
+if($('.gwds_weixin').lenght != 0){
+$('.gwds_weixin').append(weixinHtml);
+jQuery('#share_div').qrcode(window.location.href);
+}
+})
+</script>
+<style>
+#share-qrcode {
+  border: 1px solid #ddd;
+  width: 170px;
+  padding: 14px;
+  position: absolute;
+ display:none;
+  z-index: 99;
+  top: -220px;
+  left: -56px;
+  background: #fff;
+  border-radius: 3px;
+    text-align: center;
+}
+#share-qrcode h3 {
+  font-size: 14px;
+  line-height: 40px;
+}
+#share-qrcode dd {
+  height: 140px;
+}
+</style>
+
+</body>
+</html>
