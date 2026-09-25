@@ -9,6 +9,7 @@
 
 一个页面上常有多组带日期的链接（正文列表、侧栏热点、页脚），按以下顺序挑正文列表：
 条目数不少于 3 → 不在侧栏、页头页脚等外围区域 → 过半条目位于本栏目目录下 → 条目多 → 日期新。
+脚本里的 JSON 列表按同样的顺序和页面上的列表比较。
 
 通用规则识别不准的栏目，在 sources.parser_config 里用 CSS 选择器覆盖：
 {"item_selector": "ul.list li", "link_selector": "a", "date_selector": "span", "require_date": true}
@@ -233,18 +234,40 @@ def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None, bool
     return _clean(title[: m.start()] + title[m.end() :]), found, full
 
 
+# 只表示显示状态的样式名（页签选中、显隐等），比较结构时忽略
+_STATE_CLASSES = {
+    "active",
+    "on",
+    "cur",
+    "current",
+    "curr",
+    "selected",
+    "show",
+    "hide",
+    "hidden",
+    "first",
+    "last",
+}
+_NO_SCORE = (False, False, False, 0, date.min)
+
+
+def _class_key(el: etree._Element) -> tuple[str, ...]:
+    tokens = (el.get("class") or "").lower().split()
+    return tuple(sorted(t for t in tokens if t not in _STATE_CLASSES))
+
+
 def _group_key(container: etree._Element) -> tuple:
-    # 同一父元素下标签相同的几个列表块算作同一个列表，
-    # 例如手机版只显示前 5 条，其余条目放在另一个带不同样式的 ul 里
-    return (container.getparent(), container.tag)
+    # 同一父元素下标签相同的几个列表块算作同一个列表，例如手机版只显示前 5 条、
+    # 其余条目放在另一个带不同样式的 ul 里。侧栏、推荐这类外围块单独成组，不并入正文
+    return (container.getparent(), container.tag, _is_peripheral(container))
 
 
 def _parallel(a: etree._Element, b: etree._Element) -> bool:
     """两个列表块是否是同一结构的重复：同一列表分块显示，或同一栏目的几个页签。
 
     从两边同时往上找共同祖先（不超过 _MAX_BLOCK_LEVELS 层）。共同祖先下面的那一层
-    （重复单元）标签和样式都相同、再往下到列表块的标签路径也相同，才算重复。
-    侧栏、页脚与正文列表的外层结构不同，不会被并进来。
+    （重复单元）标签和样式都相同（忽略 active 这类状态样式）、再往下到列表块的标签路径
+    也相同，才算重复。侧栏、页脚与正文列表的外层结构不同，不会被并进来。
     """
     if a.tag != b.tag:
         return False
@@ -253,16 +276,39 @@ def _parallel(a: etree._Element, b: etree._Element) -> bool:
     for level in range(1, min(len(up_a), len(up_b))):
         if up_a[level] is up_b[level]:
             unit_a, unit_b = up_a[level - 1], up_b[level - 1]
-            same_unit = (unit_a.tag, unit_a.get("class") or "") == (
-                unit_b.tag,
-                unit_b.get("class") or "",
-            )
+            same_unit = (unit_a.tag, _class_key(unit_a)) == (unit_b.tag, _class_key(unit_b))
             return same_unit and [n.tag for n in up_a[:level]] == [n.tag for n in up_b[:level]]
     return False
 
 
-def _clusters(containers: list[etree._Element], peripheral: list[bool]) -> list[list[int]]:
-    """把互为重复结构的列表块并成一组（外围区域的块不参与合并）。返回每组的块编号。"""
+def _in_dir(items: list[ListItem], page: _Page) -> float:
+    """条目中位于本栏目目录下的比例。"""
+    urls = {i.url for i in items}
+    return sum(1 for u in urls if urlsplit(u).path.startswith(page.dir)) / len(urls)
+
+
+def _score(items: list[ListItem], page: _Page, peripheral: bool) -> tuple:
+    """挑正文列表的排序依据：条目数够 → 不在外围区域 → 过半位于本栏目目录下 → 条目多 → 日期新。"""
+    if not items:
+        return _NO_SCORE
+    urls = {i.url for i in items}
+    latest = max((i.publish_date for i in items if i.publish_date), default=date.min)
+    return (
+        len(urls) >= _MIN_LIST_ITEMS,
+        not peripheral,
+        _in_dir(items, page) >= 0.5,
+        len(urls),
+        latest,
+    )
+
+
+def _clusters(
+    containers: list[etree._Element], peripheral: list[bool], in_dir: list[bool]
+) -> list[list[int]]:
+    """把互为重复结构的列表块并成一组，返回每组的块编号。
+
+    外围区域的块不参与合并；一块过半位于本栏目目录下、另一块不是的，也不合并（多半是正文和侧栏）。
+    """
     root = list(range(len(containers)))
 
     def find(i: int) -> int:
@@ -273,7 +319,7 @@ def _clusters(containers: list[etree._Element], peripheral: list[bool]) -> list[
 
     for i in range(len(containers)):
         for j in range(i + 1, len(containers)):
-            if peripheral[i] or peripheral[j] or find(i) == find(j):
+            if peripheral[i] or peripheral[j] or in_dir[i] != in_dir[j] or find(i) == find(j):
                 continue
             if _parallel(containers[i], containers[j]):
                 root[find(j)] = find(i)
@@ -283,7 +329,8 @@ def _clusters(containers: list[etree._Element], peripheral: list[bool]) -> list[
     return list(merged.values())
 
 
-def _extract_heuristic(page: _Page, require_date: bool) -> list[ListItem]:
+def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[ListItem]]:
+    """从页面链接里找正文列表，返回（评分，条目）。"""
     # 每个列表块里的条目，连同它在页面中的先后位置
     blocks: dict[tuple, list[tuple[int, ListItem]]] = {}
     containers: dict[tuple, etree._Element] = {}
@@ -314,26 +361,17 @@ def _extract_heuristic(page: _Page, require_date: bool) -> list[ListItem]:
         containers.setdefault(key, container)
 
     if not blocks:
-        return []
+        return _NO_SCORE, []
 
     keys = list(blocks)
-    peripheral = [_is_peripheral(containers[k]) for k in keys]
+    peripheral = [k[2] for k in keys]
+    in_dir = [_in_dir([item for _, item in blocks[k]], page) >= 0.5 for k in keys]
     candidates = []
-    for members in _clusters([containers[k] for k in keys], peripheral):
+    for members in _clusters([containers[k] for k in keys], peripheral, in_dir):
         entries = sorted(entry for i in members for entry in blocks[keys[i]])
         items = [item for _, item in entries]
-        urls = {i.url for i in items}
-        in_dir = sum(1 for u in urls if urlsplit(u).path.startswith(page.dir)) / len(urls)
-        latest = max((i.publish_date for i in items if i.publish_date), default=date.min)
-        score = (
-            len(urls) >= _MIN_LIST_ITEMS,
-            not peripheral[members[0]],
-            in_dir >= 0.5,
-            len(urls),
-            latest,
-        )
-        candidates.append((score, items))
-    return max(candidates, key=lambda c: c[0])[1]
+        candidates.append((_score(items, page, peripheral[members[0]]), items))
+    return max(candidates, key=lambda c: c[0])
 
 
 def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
@@ -438,13 +476,13 @@ def _items_from_json_array(data: object, page: _Page) -> list[ListItem]:
     return items
 
 
-def _extract_embedded_json(html: str, page: _Page) -> list[ListItem]:
+def _extract_embedded_json(html: str, page: _Page) -> tuple[tuple, list[ListItem]]:
     """列表数据写在脚本变量里（如 var listData = {articleList: [...]}），由前端渲染。
 
     数据已经在页面里，不需要浏览器渲染。页面上可能有多个 JSON 数组（导航、推荐等），
-    只取条目最多的那一个。
+    按与页面列表相同的评分取最像正文列表的一个。返回（评分，条目）。
     """
-    best: list[ListItem] = []
+    best: tuple[tuple, list[ListItem]] = (_NO_SCORE, [])
     for count, m in enumerate(re.finditer(r"\[\s*\{", html)):
         if count >= _MAX_JSON_CANDIDATES:
             break
@@ -455,9 +493,10 @@ def _extract_embedded_json(html: str, page: _Page) -> list[ListItem]:
             data = json.loads(html[m.start() : end + 1])
         except ValueError:
             continue
-        items = _items_from_json_array(data, page)
-        if len(items) > len(best):
-            best = items
+        items = _dedupe(_items_from_json_array(data, page))
+        scored = (_score(items, page, peripheral=False), items)
+        if scored[0] > best[0]:
+            best = scored
     return best
 
 
@@ -486,10 +525,9 @@ def extract_items(
     page = _Page(doc, page_url, today or date.today())
     if config.get("item_selector"):
         return _dedupe(_extract_with_config(page, config))
-    items = _dedupe(_extract_heuristic(page, require_date=config.get("require_date", True)))
-    if len(items) < _MIN_LIST_ITEMS:
-        # 页面上的链接不像列表时，再看脚本里有没有列表数据，取条目多的一种
-        from_json = _dedupe(_extract_embedded_json(html, page))
-        if len(from_json) > len(items):
-            items = from_json
-    return items
+    score, items = _extract_heuristic(page, require_date=config.get("require_date", True))
+    # 页面上的链接和脚本里的列表数据都看，取更像正文列表的一种
+    json_score, json_items = _extract_embedded_json(html, page)
+    if json_score > score:
+        items = json_items
+    return _dedupe(items)

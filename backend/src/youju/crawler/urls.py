@@ -5,8 +5,11 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 _SKIP_PREFIXES = ("javascript:", "mailto:", "tel:", "#")
 _WHITESPACE = re.compile(r"[\r\n\t]+")
 # 会话标识：同一份文件每次访问可能带不同的值，不能参与"是不是同一份文件"的判断
-_SESSION_PARAMS = {"jsessionid", "phpsessid", "sid", "sessionid", "aspsessionid"}
-_PATH_SESSION = re.compile(r";(?:jsessionid|sessionid|sid)=[^/?#]*", re.IGNORECASE)
+# sid 不在其中：不少网站用它区分栏目或站点（如 show.asp?sid=2&id=100）
+_SESSION_PARAMS = {"jsessionid", "phpsessid", "sessionid", "aspsessionid"}
+_PATH_SESSION = re.compile(r";(?:jsessionid|sessionid)=[^/?#]*", re.IGNORECASE)
+# 目录的默认页：/tzgg/index.html 与 /tzgg/ 是同一页
+_INDEX_PAGE = re.compile(r"/(?:index|default)\.(?:html?|shtml|jsp|php|aspx?)$", re.IGNORECASE)
 
 
 def normalize_url(base: str, href: str | None) -> str | None:
@@ -29,7 +32,7 @@ def url_key(url: str) -> str:
 
     - 不区分 http 和 https，去掉 80、443 端口；
     - 去掉路径里的会话标识（;jsessionid=…）和查询里的会话参数；
-    - 折叠 /./ 与 /../，查询参数按名称排序。
+    - 折叠 /./ 与 /../，目录默认页（index.html 等）收成目录，查询参数按名称排序。
     展示和访问仍使用原始网址。
     """
     parts = urlsplit(url)
@@ -41,6 +44,7 @@ def url_key(url: str) -> str:
     path = posixpath.normpath(path) if path not in ("", "/") else "/"
     if trailing and not path.endswith("/"):
         path += "/"
+    path = _INDEX_PAGE.sub("/", path)
     query = urlencode(
         sorted(
             (k, v)
@@ -61,6 +65,12 @@ def origin_of(url: str) -> str:
 
 
 def page_dir(url: str) -> str:
-    """列表页所在目录，如 /zwgk/tzgg/index.html → /zwgk/tzgg/。"""
+    """列表页所在目录，如 /zwgk/tzgg/index.html → /zwgk/tzgg/。
+
+    末段没有扩展名时当作目录：/zwgk/tzgg 与 /zwgk/tzgg/ 是同一个栏目。
+    """
     path = urlsplit(url).path or "/"
-    return path if path.endswith("/") else path.rsplit("/", 1)[0] + "/"
+    if path.endswith("/"):
+        return path
+    head, _, last = path.rpartition("/")
+    return path + "/" if "." not in last else head + "/"

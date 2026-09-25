@@ -360,3 +360,99 @@ def test_sibling_lists_under_one_parent_are_one_list() -> None:
     </div></body></html>"""
     items = extract_items(html, "https://www.example.gov.cn/tzgg/", today=TODAY)
     assert len(items) == 14
+
+
+# 以下用例来自 PR #10 第二轮红队审阅（grok）
+
+
+def test_sibling_recommend_list_is_not_merged_into_main_list() -> None:
+    html = f"""<html><body><div class="content">
+      <ul>{_rows("m", range(25, 22, -1))}</ul>
+      <ul class="recommend">{_rows("r", range(19, 15, -1))}</ul>
+    </div></body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.publish_date.day for i in items] == [25, 24, 23]
+
+
+def test_same_wrapper_in_other_directory_is_not_merged() -> None:
+    # 正文和侧栏都放在 div.box 里：侧栏条目不在本栏目目录下，不合并
+    side = "".join(
+        f'<li><a href="/zwgk/xwzx/{n}.html">其他栏目的热点新闻第{n}则</a><span>2026-09-1{n}</span></li>'
+        for n in range(1, 7)
+    )
+    html = f"""<html><body><div class="wrap">
+      <div class="box"><ul>{_rows("m", range(25, 22, -1))}</ul></div>
+      <div class="box"><ul>{side}</ul></div>
+    </div></body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.publish_date.day for i in items] == [25, 24, 23]
+
+
+def test_active_tab_class_does_not_split_tabs() -> None:
+    html = f"""<html><body><div class="tabs">
+      <div class="tab-pane active"><ul>{_rows("a", range(25, 22, -1))}</ul></div>
+      <div class="tab-pane"><ul>{_rows("b", range(20, 16, -1))}</ul></div>
+    </div></body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert len(items) == 7
+
+
+def test_page_url_without_trailing_slash() -> None:
+    hot = "".join(
+        f'<li><a href="/zwgk/xwzx/{n}.html">其他栏目的热点新闻第{n}则</a><span>2026-09-1{n}</span></li>'
+        for n in range(1, 7)
+    )
+    main = "".join(
+        f'<li><a href="/zwgk/tzgg/{d}.html">关于开展第{d}项专项申报工作的通知</a><span>2026-09-{d}</span></li>'
+        for d in (25, 24, 23)
+    )
+    html = f"""<html><body>
+      <div class="left"><ul>{main}</ul></div>
+      <div class="right"><ul>{hot}</ul></div>
+    </body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/zwgk/tzgg", today=TODAY)
+    assert [i.publish_date.day for i in items] == [25, 24, 23]
+
+
+def test_script_list_beats_small_sidebar_from_other_directory() -> None:
+    hot = "".join(
+        f'<li><a href="/xwzx/{n}.html">其他栏目的热点新闻第{n}则</a><span>2026-09-0{n}</span></li>'
+        for n in range(1, 4)
+    )
+    rows = ",".join(
+        f'{{"title": "关于开展第{d}项专项申报工作的通知", "pubDate": "2026-09-{d}", "url": "/tzgg/{d}.html"}}'
+        for d in (25, 24, 23, 22)
+    )
+    html = f"""<html><body><div class="right"><ul>{hot}</ul></div><div id="app"></div>
+      <script>var listData = {{articleList: [{rows}]}};</script></body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.url.rsplit("/", 1)[-1] for i in items] == ["25.html", "24.html", "23.html", "22.html"]
+
+
+def test_script_list_in_column_beats_bigger_recommend_array() -> None:
+    rec = ",".join(
+        f'{{"title": "推荐阅读的其他栏目文章第{n}篇", "pubDate": "2026-09-1{n}", "url": "/xwzx/{n}.html"}}'
+        for n in range(1, 5)
+    )
+    rows = ",".join(
+        f'{{"title": "关于开展第{d}项专项申报工作的通知", "pubDate": "2026-09-{d}", "url": "/tzgg/{d}.html"}}'
+        for d in (25, 24, 23)
+    )
+    html = f"""<html><body><div id="app"></div>
+      <script>var recommend = [{rec}]; var listData = {{articleList: [{rows}]}};</script></body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.url.rsplit("/", 1)[-1] for i in items] == ["25.html", "24.html", "23.html"]
+
+
+def test_amount_after_date_does_not_replace_it() -> None:
+    html = """<ul>
+      <li><a href="/a/1.html">关于下达第一批专项补助资金的通知</a><span>09-20</span><span>10.25万元</span></li>
+      <li><a href="/a/2.html">关于下达第二批专项补助资金的通知</a><span>09-18</span><span>8.50万元</span></li>
+      <li><a href="/a/3.html">关于下达第三批专项补助资金的通知</a><span>09-15</span><span>12.05万元</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [i.publish_date for i in items] == [
+        date(2026, 9, 20),
+        date(2026, 9, 18),
+        date(2026, 9, 15),
+    ]

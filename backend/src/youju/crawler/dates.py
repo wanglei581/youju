@@ -6,8 +6,12 @@ from datetime import date, timedelta
 # 2026-09-24、2026/9/24、2026.09.24、2026年9月24日
 _FULL = re.compile(r"(20\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
 # 只有月日：09-24、[09-24]；09/24、09.24 只认两位数，避免把"3.5 亿"当日期。
-# 前后不能紧挨数字或分隔符，后面不能是"号""%"：避开电话号码和"〔2026〕1-2号"这类文号
-_SHORT = re.compile(r"(?<![\d./\-])(?:(\d{1,2})-(\d{1,2})|(\d{2})[./](\d{2}))(?![\d:./\-号%])")
+# 前后不能紧挨数字或分隔符，前面不能是"第"，后面（可隔空格）不能是号、期、条、万、元等：
+# 避开电话号码、"〔2026〕1-2 号"这类文号、"第1-2期"和"10.25万元"
+_SHORT = re.compile(
+    r"(?<![\d./\-第])(?:(\d{1,2})-(\d{1,2})|(\d{2})[./](\d{2}))"
+    r"(?![\d:./\-%])(?!\s*[号期条项批万元亿])"
+)
 # 政府网站常见的正文网址：/202609/t20260924_4878106.html
 _URL_DAY = re.compile(r"[/_]t?(20\d{2})(\d{2})(\d{2})[_./]")
 # 允许略晚于今天（时区差、提前发布），更晚的视为误识别
@@ -25,13 +29,13 @@ def _safe_date(year: int, month: int, day: int, today: date) -> date | None:
 
 
 def _infer_year(month: int, day: int, today: date) -> date | None:
-    # 年末前后：1 月 1 日的条目在 12 月 31 日出现，只可能是明年的（时区差）
-    upcoming = _safe_date(today.year + 1, month, day, today)
-    if upcoming:
-        return upcoming
-    return _safe_date(today.year, month, day, today) or _safe_date(
-        today.year - 1, month, day, today
-    )
+    # 只写月-日时取不晚于今天的最近一个：政府网站和本程序都用北京时间，
+    # 列表上不会有"明天"发布的条目。12 月 31 日看到的"01-01"是今年 1 月 1 日
+    for year in (today.year, today.year - 1):
+        d = _safe_date(year, month, day, today)
+        if d and d <= today:
+            return d
+    return None
 
 
 def parse_date_detail(text: str, today: date | None = None) -> tuple[date | None, bool]:

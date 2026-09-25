@@ -24,6 +24,10 @@ TODAY = date(2026, 9, 26)
         # 文号里的"1-2号"不是日期；同一行有多个月-日时取最靠后的
         ("成科规〔2026〕1-2号 09-20", date(2026, 9, 20)),
         ("第1-2期 09-20", date(2026, 9, 20)),
+        # 日期后面跟着期号、金额，不能被它们盖过
+        ("09-20 第1-2期", date(2026, 9, 20)),
+        ("09-20 补助10.25万元", date(2026, 9, 20)),
+        ("成科规〔2026〕1-2 号 09-20", date(2026, 9, 20)),
     ],
 )
 def test_parse_date_formats(text: str, expected: date) -> None:
@@ -40,6 +44,9 @@ def test_parse_date_formats(text: str, expected: date) -> None:
         "电话：0532-85911234",  # 电话号码不是日期
         "10:30",
         "成科规〔2026〕1-2号",
+        "成科规〔2026〕1-2 号",
+        "第1-2期",
+        "10.25万元",
         "增长 3.5 亿元",
         "占比 12.50%",
     ],
@@ -51,13 +58,13 @@ def test_parse_date_rejects_non_dates(text: str) -> None:
 @pytest.mark.parametrize(
     ("today", "text", "expected"),
     [
-        # 12 月 31 日看到"01-01"：只可能是明天（时区差、提前发布）
-        (date(2025, 12, 31), "01-01", date(2026, 1, 1)),
+        # 只写月-日时取不晚于今天的最近一个：网站和程序都用北京时间，列表上没有"明天"的条目。
+        # 12 月 31 日看到的"01-01"是当年 1 月 1 日，不会排到 12 月的条目前面
+        (date(2026, 12, 31), "01-01", date(2026, 1, 1)),
         (date(2026, 1, 1), "12-31", date(2025, 12, 31)),
         (date(2026, 9, 26), "01-15", date(2026, 1, 15)),
-        # 允许晚于今天 2 天；再晚就是去年的
-        (date(2026, 9, 26), "09-28", date(2026, 9, 28)),
-        (date(2026, 9, 26), "09-29", date(2025, 9, 29)),
+        (date(2026, 9, 26), "09-26", date(2026, 9, 26)),
+        (date(2026, 9, 26), "09-28", date(2025, 9, 28)),
     ],
 )
 def test_short_date_year_inference(today: date, text: str, expected: date) -> None:
@@ -124,6 +131,16 @@ def test_url_key_keeps_what_distinguishes_documents() -> None:
     assert url_key("https://a.gov.cn:8443/art/1.html") == "a.gov.cn:8443/art/1.html"
     assert url_key("https://a.gov.cn/zwgk/tzgg/") == "a.gov.cn/zwgk/tzgg/"
     assert url_key("https://a.gov.cn") == "a.gov.cn/"
+    # sid 常用来区分栏目或站点，不当作会话参数
+    assert url_key("https://a.gov.cn/show.asp?sid=1&id=100") != url_key(
+        "https://a.gov.cn/show.asp?sid=2&id=100"
+    )
+
+
+def test_url_key_folds_directory_index_page() -> None:
+    assert url_key("https://a.gov.cn/tzgg/index.html") == url_key("https://a.gov.cn/tzgg/")
+    assert url_key("https://a.gov.cn/tzgg/index.shtml") == "a.gov.cn/tzgg/"
+    assert url_key("https://a.gov.cn/tzgg/list.html") == "a.gov.cn/tzgg/list.html"
 
 
 @pytest.mark.parametrize(
@@ -133,6 +150,8 @@ def test_url_key_keeps_what_distinguishes_documents() -> None:
         ("https://a.gov.cn/zwgk/tzgg/index.html", "/zwgk/tzgg/"),
         ("https://a.gov.cn/col/col1/index.html?uid=2", "/col/col1/"),
         ("https://a.gov.cn", "/"),
+        # 末段没有扩展名：当作目录
+        ("https://a.gov.cn/zwgk/tzgg", "/zwgk/tzgg/"),
     ],
 )
 def test_page_dir(url: str, expected: str) -> None:
