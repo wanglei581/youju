@@ -20,6 +20,10 @@ REAL_PAGES = [
     ("henan_kjt_tzgg", "https://kjt.henan.gov.cn/tzgg/", 10),
     ("tianjin_kjt_tzgg", "https://kxjs.tj.gov.cn/ZWGK4143/TZGG2079/", 15),
     ("hubei_kjt_tzgg", "https://kjt.hubei.gov.cn/kjdt/tzgg/", 10),
+    # 以下三个在 PR #10 审阅后加入：列表分块显示、旧规则只识别到 1 条、旧规则误取机构职能列表
+    ("fujian_kjt_tzgg", "https://kjt.fujian.gov.cn/xxgk/tzgg/", 100),
+    ("sichuan_jxt_tz", "https://jxt.sc.gov.cn/scjxt/wjfb/common_list.shtml", 10),
+    ("hunan_kjt_tzgg", "https://kjt.hunan.gov.cn/kjt/xxgk/tzgg/index.html", 8),
 ]
 
 
@@ -164,3 +168,195 @@ def test_base_href_is_used_for_relative_links() -> None:
     </ul></body></html>"""
     items = extract_items(html, "https://example.gov.cn/other/index.html", today=TODAY)
     assert items[0].url == "https://example.gov.cn/sub/col/1/a.html"
+
+
+# 以下用例来自 PR #10 的红队审阅（grok）：每一条都曾让"新增"判断出错
+
+
+def test_sidebar_with_more_items_and_same_class_is_not_main_list() -> None:
+    hot = "".join(
+        f'<li><a href="/hot/{n}.html">侧栏热点新闻标题第{n}则</a><span>2026-09-2{n}</span></li>'
+        for n in range(1, 9)
+    )
+    html = f"""<html><body>
+      <div class="main"><ul class="list">
+        <li><a href="/tzgg/202609/t20260920_1.html">关于开展专项申报工作的通知</a><span>2026-09-20</span></li>
+        <li><a href="/tzgg/202609/t20260918_2.html">关于公布第三批认定名单的公示</a><span>2026-09-18</span></li>
+        <li><a href="/tzgg/202609/t20260915_3.html">关于征集2026年项目需求的通知</a><span>2026-09-15</span></li>
+      </ul></div>
+      <div class="side-box"><ul class="list">{hot}</ul></div>
+    </body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.url.rsplit("/", 1)[-1] for i in items] == [
+        "t20260920_1.html",
+        "t20260918_2.html",
+        "t20260915_3.html",
+    ]
+
+
+def test_unmarked_sidebar_loses_to_list_under_column_directory() -> None:
+    # 侧栏没有 side、hot 之类的标记时，看条目是否位于本栏目目录下
+    hot = "".join(
+        f'<li><a href="/xwzx/{n}.html">其他栏目的热点新闻第{n}则</a><span>2026-09-2{n}</span></li>'
+        for n in range(1, 7)
+    )
+    html = f"""<html><body>
+      <div class="left"><ul>
+        <li><a href="/tzgg/1.html">关于开展专项申报工作的通知</a><span>2026-09-20</span></li>
+        <li><a href="/tzgg/2.html">关于公布第三批认定名单的公示</a><span>2026-09-18</span></li>
+        <li><a href="/tzgg/3.html">关于征集2026年项目需求的通知</a><span>2026-09-15</span></li>
+      </ul></div>
+      <div class="right"><ul>{hot}</ul></div>
+    </body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/index.html", today=TODAY)
+    assert {i.url.rsplit("/", 2)[-2] for i in items} == {"tzgg"}
+
+
+def test_attachment_links_stay_in_their_row() -> None:
+    html = """<ul>
+      <li><a href="/a/1.html">关于开展专项申报工作的通知</a>
+          <a href="/files/1.doc">附件：申报书模板下载</a><span>2026-09-20</span></li>
+      <li><a href="/a/2.html">关于公布第三批认定名单的公示</a>
+          <a href="/files/2.pdf">第三批认定名单（正式版）</a><span>2026-09-18</span></li>
+      <li><a href="/a/3.html">关于征集2026年项目需求的通知</a><span>2026-09-15</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [(i.url.rsplit("/", 1)[-1], i.publish_date) for i in items] == [
+        ("1.html", date(2026, 9, 20)),
+        ("2.html", date(2026, 9, 18)),
+        ("3.html", date(2026, 9, 15)),
+    ]
+
+
+def test_row_with_long_summary_keeps_its_date() -> None:
+    summary = "为贯彻落实创新驱动发展战略，进一步做好专项申报工作，现将有关事项通知如下。" * 6
+    html = f"""<ul>
+      <li><a href="/a/1.html">关于开展2026年度专项申报工作的通知</a><p>{summary}</p><span>2026-09-20</span></li>
+      <li><a href="/a/2.html">关于公布第三批认定名单的公示</a><span>2026-09-18</span></li>
+      <li><a href="/a/3.html">关于征集2026年项目需求的通知</a><span>2026-09-15</span></li>
+    </ul>"""
+    assert len(summary) > 180
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [i.publish_date for i in items] == [
+        date(2026, 9, 20),
+        date(2026, 9, 18),
+        date(2026, 9, 15),
+    ]
+
+
+def test_short_date_at_end_of_anchor_text() -> None:
+    html = """<ul>
+      <li><a href="/a/1.html">关于开展专项申报工作的通知[09-20]</a></li>
+      <li><a href="/a/2.html">关于公布第三批认定名单的公示[09-18]</a></li>
+      <li><a href="/a/3.html">关于征集2026年项目需求的通知 09-15</a></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于开展专项申报工作的通知", date(2026, 9, 20)),
+        ("关于公布第三批认定名单的公示", date(2026, 9, 18)),
+        ("关于征集2026年项目需求的通知", date(2026, 9, 15)),
+    ]
+
+
+def test_full_date_in_url_beats_short_date_in_row() -> None:
+    # 行里只写"01-15"，今年推断会得到 2026-01-15；网址里写明了 2025 年
+    html = """<ul>
+      <li><a href="/tzgg/202501/t20250115_1.html">关于开展专项申报工作的通知</a><span>01-15</span></li>
+      <li><a href="/tzgg/202509/t20250910_2.html">关于公布第三批认定名单的公示</a><span>09-10</span></li>
+      <li><a href="/tzgg/3.html">关于征集2026年项目需求的通知</a><span>09-15</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/tzgg/", today=TODAY)
+    assert [i.publish_date for i in items] == [
+        date(2025, 1, 15),
+        date(2025, 9, 10),
+        date(2026, 9, 15),
+    ]
+
+
+def test_document_number_is_not_a_date_and_slash_dates_work() -> None:
+    html = """<table>
+      <tr><td><a href="/a/1.html">关于印发产业扶持办法的通知</a></td><td>成科规〔2026〕1-2号</td><td>09-20</td></tr>
+      <tr><td><a href="/a/2.html">关于公布第三批认定名单的公示</a></td><td>川科函〔2026〕12号</td><td>09/18</td></tr>
+      <tr><td><a href="/a/3.html">关于征集2026年项目需求的通知</a></td><td>无</td><td>09.15</td></tr>
+    </table>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [i.publish_date for i in items] == [
+        date(2026, 9, 20),
+        date(2026, 9, 18),
+        date(2026, 9, 15),
+    ]
+
+
+def test_script_list_wins_when_page_links_do_not_look_like_a_list() -> None:
+    html = """<html><body>
+      <div class="hot"><ul><li><a href="/hot/1.html">侧栏里唯一一条热点新闻</a><span>2026-09-01</span></li></ul></div>
+      <div id="app"></div>
+      <script>var listData = {articleList: [
+        {"title": "关于开展专项申报工作的通知", "pubDate": "2026-09-20", "url": "/a/1.html"},
+        {"title": "关于公布第三批认定名单的公示", "pubDate": "2026-09-18", "url": "/a/2.html"},
+        {"title": "关于征集2026年项目需求的通知", "pubDate": "2026-09-15", "url": "/a/3.html"}
+      ]};</script>
+    </body></html>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [i.url.rsplit("/", 1)[-1] for i in items] == ["1.html", "2.html", "3.html"]
+
+
+def test_script_arrays_with_generic_keys_are_ignored() -> None:
+    # name、time 这类字段常见于导航数据，不能当成文件
+    html = """<html><body><div id="app"></div><script>
+      var nav = [
+        {"name": "政府信息公开指南", "url": "/zwgk/zn.html", "time": "2020-01-01"},
+        {"name": "政府信息公开制度", "url": "/zwgk/zd.html", "time": "2020-01-01"},
+        {"name": "政府信息公开年报", "url": "/zwgk/nb.html", "time": "2020-01-01"}
+      ];
+    </script></body></html>"""
+    assert extract_items(html, "https://example.gov.cn/", today=TODAY) == []
+
+
+def _rows(prefix: str, days: range) -> str:
+    return "".join(
+        f'<li><a href="/tzgg/202609/t202609{d:02d}_{prefix}{d}.html">关于开展第{d}项专项申报工作的通知</a>'
+        f"<span>2026-09-{d:02d}</span></li>"
+        for d in days
+    )
+
+
+def test_list_split_into_repeated_blocks_is_merged() -> None:
+    # 福建科技厅、工信厅：一个列表每 5 条放进一个相同结构的块里
+    blocks = "".join(
+        f'<div class="list_base gl1"><ul>{_rows("b", range(start, start - 5, -1))}</ul></div>'
+        for start in (25, 20, 15)
+    )
+    hot = "".join(
+        f'<li><a href="/xwzx/{n}.html">其他栏目的热点新闻第{n}则</a><span>2026-09-2{n}</span></li>'
+        for n in range(1, 8)
+    )
+    html = f"""<html><body>
+      <div class="gl">{blocks}</div>
+      <div class="right"><ul>{hot}</ul></div>
+    </body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert len(items) == 15
+    assert all("/tzgg/" in i.url for i in items)
+    # 按页面顺序返回
+    assert [i.publish_date.day for i in items] == list(range(25, 10, -1))
+
+
+def test_blocks_with_different_wrappers_are_not_merged() -> None:
+    # 结构不同的两块（正文与侧栏）即使都在本栏目目录下，也不合并
+    html = f"""<html><body>
+      <div class="list"><ul>{_rows("m", range(25, 19, -1))}</ul></div>
+      <div class="recent"><ul>{_rows("r", range(9, 4, -1))}</ul></div>
+    </body></html>"""
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.publish_date.day for i in items] == list(range(25, 19, -1))
+
+
+def test_sibling_lists_under_one_parent_are_one_list() -> None:
+    # 生态环境部：手机版只显示前 5 条，其余条目放在另一个带不同样式的 ul 里
+    html = f"""<html><body><div class="tab">
+      <ul>{_rows("a", range(25, 20, -1))}</ul>
+      <ul class="mobile_none pc_line">{_rows("b", range(20, 11, -1))}</ul>
+    </div></body></html>"""
+    items = extract_items(html, "https://www.example.gov.cn/tzgg/", today=TODAY)
+    assert len(items) == 14

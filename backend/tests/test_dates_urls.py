@@ -2,8 +2,8 @@ from datetime import date
 
 import pytest
 
-from youju.crawler.dates import date_from_url, parse_date
-from youju.crawler.urls import normalize_url
+from youju.crawler.dates import date_from_url, parse_date, parse_date_detail
+from youju.crawler.urls import normalize_url, page_dir, url_key
 
 TODAY = date(2026, 9, 26)
 
@@ -17,8 +17,13 @@ TODAY = date(2026, 9, 26)
         ("2026.09.24", date(2026, 9, 24)),
         ("发布时间：2026年9月24日", date(2026, 9, 24)),
         ("[09-24]", date(2026, 9, 24)),
+        ("09/20", date(2026, 9, 20)),
+        ("09.24", date(2026, 9, 24)),
         # 今年的 12 月还没到，应推断为去年
         ("12-30", date(2025, 12, 30)),
+        # 文号里的"1-2号"不是日期；同一行有多个月-日时取最靠后的
+        ("成科规〔2026〕1-2号 09-20", date(2026, 9, 20)),
+        ("第1-2期 09-20", date(2026, 9, 20)),
     ],
 )
 def test_parse_date_formats(text: str, expected: date) -> None:
@@ -34,10 +39,35 @@ def test_parse_date_formats(text: str, expected: date) -> None:
         "2027-01-01",  # 晚于今天太多，视为误识别
         "电话：0532-85911234",  # 电话号码不是日期
         "10:30",
+        "成科规〔2026〕1-2号",
+        "增长 3.5 亿元",
+        "占比 12.50%",
     ],
 )
 def test_parse_date_rejects_non_dates(text: str) -> None:
     assert parse_date(text, TODAY) is None
+
+
+@pytest.mark.parametrize(
+    ("today", "text", "expected"),
+    [
+        # 12 月 31 日看到"01-01"：只可能是明天（时区差、提前发布）
+        (date(2025, 12, 31), "01-01", date(2026, 1, 1)),
+        (date(2026, 1, 1), "12-31", date(2025, 12, 31)),
+        (date(2026, 9, 26), "01-15", date(2026, 1, 15)),
+        # 允许晚于今天 2 天；再晚就是去年的
+        (date(2026, 9, 26), "09-28", date(2026, 9, 28)),
+        (date(2026, 9, 26), "09-29", date(2025, 9, 29)),
+    ],
+)
+def test_short_date_year_inference(today: date, text: str, expected: date) -> None:
+    assert parse_date(text, today) == expected
+
+
+def test_parse_date_detail_reports_whether_year_was_written() -> None:
+    assert parse_date_detail("2026-09-24", TODAY) == (date(2026, 9, 24), True)
+    assert parse_date_detail("09-24", TODAY) == (date(2026, 9, 24), False)
+    assert parse_date_detail("没有日期", TODAY) == (None, False)
 
 
 def test_date_from_url() -> None:
@@ -63,3 +93,47 @@ def test_date_from_url() -> None:
 )
 def test_normalize_url(href: str, expected: str | None) -> None:
     assert normalize_url("https://kw.beijing.gov.cn/zwgk/tzgg/", href) == expected
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "http://kjt.example.gov.cn/art/1.html",
+        "https://kjt.example.gov.cn/art/1.html",
+        "https://KJT.example.gov.cn:443/art/1.html",
+        "http://kjt.example.gov.cn:80/art/1.html",
+        "https://kjt.example.gov.cn/art/1.html;jsessionid=AAA",
+        "https://kjt.example.gov.cn/art/./x/../1.html",
+        "https://kjt.example.gov.cn/art/1.html?jsessionid=BBB",
+    ],
+)
+def test_url_key_treats_variants_as_same_document(variant: str) -> None:
+    assert url_key(variant) == "kjt.example.gov.cn/art/1.html"
+
+
+def test_url_key_sorts_query_and_drops_session_params() -> None:
+    a = url_key("https://a.gov.cn/c.jsp?id=9&type=1")
+    assert a == url_key("https://a.gov.cn/c.jsp?type=1&id=9")
+    assert a == url_key("https://a.gov.cn/c.jsp?PHPSESSID=x&type=1&id=9")
+    assert a == "a.gov.cn/c.jsp?id=9&type=1"
+
+
+def test_url_key_keeps_what_distinguishes_documents() -> None:
+    assert url_key("https://a.gov.cn/art/1.html") != url_key("https://a.gov.cn/art/2.html")
+    assert url_key("https://a.gov.cn/c.jsp?id=9") != url_key("https://a.gov.cn/c.jsp?id=10")
+    assert url_key("https://a.gov.cn:8443/art/1.html") == "a.gov.cn:8443/art/1.html"
+    assert url_key("https://a.gov.cn/zwgk/tzgg/") == "a.gov.cn/zwgk/tzgg/"
+    assert url_key("https://a.gov.cn") == "a.gov.cn/"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://a.gov.cn/zwgk/tzgg/", "/zwgk/tzgg/"),
+        ("https://a.gov.cn/zwgk/tzgg/index.html", "/zwgk/tzgg/"),
+        ("https://a.gov.cn/col/col1/index.html?uid=2", "/col/col1/"),
+        ("https://a.gov.cn", "/"),
+    ],
+)
+def test_page_dir(url: str, expected: str) -> None:
+    assert page_dir(url) == expected

@@ -192,3 +192,79 @@ def test_certificate_error_is_never_bypassed() -> None:
     assert result.status == "ssl_error"
     assert "证书" in result.error
     assert compat_calls == []
+
+
+def test_redirect_is_followed_hop_by_hop_with_robots_check() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            if request.url.host == "b.gov.cn":
+                return httpx.Response(200, text="User-agent: *\nDisallow: /private/\n")
+            return httpx.Response(404)
+        if request.url.path == "/old":
+            return httpx.Response(301, headers={"location": "https://a.gov.cn/new"})
+        if request.url.path == "/new":
+            return httpx.Response(200, text=LIST_HTML)
+        if request.url.path == "/to-b":
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/private/x.html"})
+        raise AssertionError(f"不应请求 {request.url}")
+
+    with make_fetcher(handler) as f:
+        ok = f.fetch("https://a.gov.cn/old")
+        blocked = f.fetch("https://a.gov.cn/to-b")
+    assert ok.status == "ok"
+    assert ok.url == "https://a.gov.cn/old"
+    assert ok.final_url == "https://a.gov.cn/new"
+    # 跳到另一个网站时，按该网站的 robots.txt 判断；被禁止的页面不发请求
+    assert blocked.status == "robots_disallowed"
+    assert "b.gov.cn/private/x.html" not in requested
+
+
+def test_redirect_loop_is_cut_off() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "/loop"})
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/loop")
+    assert result.status == "network_error"
+    assert "重定向" in result.error
+
+
+def test_robots_txt_redirect_is_followed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme == "http" and request.url.path == "/robots.txt":
+            return httpx.Response(301, headers={"location": "https://a.gov.cn/robots.txt"})
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        raise AssertionError("robots 全站禁止时不应抓取页面")
+
+    with make_fetcher(handler) as f:
+        assert f.fetch("http://a.gov.cn/list.html").status == "robots_disallowed"
+
+
+def test_redirect_target_host_is_rate_limited() -> None:
+    now = {"t": 0.0}
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        return now["t"]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["t"] += seconds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.gov.cn":
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/list.html"})
+        return httpx.Response(200, text=LIST_HTML)
+
+    with make_fetcher(handler, interval=3.0, clock=clock, sleep=sleep) as f:
+        assert f.fetch("https://a.gov.cn/go").status == "ok"
+    # a：robots → 等 3 秒 → 页面（302）；b：robots → 等 3 秒 → 页面
+    assert sleeps == [3.0, 3.0]

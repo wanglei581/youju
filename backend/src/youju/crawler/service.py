@@ -8,13 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
-from youju.crawler.urls import host_of
+from youju.crawler.urls import host_of, url_key
 from youju.models import Document, Source, SourceCheck
 
 log = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 PARSE_EMPTY_MESSAGE = (
     "页面可以访问，但没有识别到列表条目：可能网站改版，或列表由脚本加载需要浏览器渲染"
 )
+SKIPPED_MESSAGE = "另一个检查正在处理这个来源，本次跳过"
 
 
 class Fetcher:
@@ -49,13 +50,22 @@ def _now() -> datetime:
 def save_items(
     session: Session, source: Source, items: Sequence[ListItem], baseline: bool, seen_at: datetime
 ) -> int:
-    """新网址插入，已存在的网址只更新"最后一次看到"的时间。返回新插入的条数。"""
-    if not items:
+    """新文件插入，已存在的文件只更新"最后一次看到"的时间。返回新插入的条数。
+
+    以规范网址键判断是不是同一份文件（http 与 https、会话参数等不同的网址算同一份）。
+    用一条 INSERT … ON CONFLICT DO UPDATE 完成，并按规范网址键排序：
+    多个线程同时写入有重叠的文件时，加锁顺序一致，不会死锁。
+    """
+    unique: dict[str, ListItem] = {}
+    for item in items:
+        unique.setdefault(url_key(item.url), item)
+    if not unique:
         return 0
     rows = [
         {
             "source_id": source.id,
             "url": item.url,
+            "url_key": key,
             "title": item.title,
             "publish_date": item.publish_date,
             "first_seen_at": seen_at,
@@ -63,21 +73,14 @@ def save_items(
             "is_baseline": baseline,
             "status": "discovered",
         }
-        for item in items
+        for key, item in sorted(unique.items())
     ]
-    stmt = (
-        pg_insert(Document)
-        .values(rows)
-        .on_conflict_do_nothing(index_elements=[Document.url])
-        .returning(Document.id)
-    )
-    inserted = session.execute(stmt).scalars().all()
-    session.execute(
-        update(Document)
-        .where(Document.url.in_([item.url for item in items]))
-        .values(last_seen_at=seen_at)
-    )
-    return len(inserted)
+    stmt = pg_insert(Document).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Document.url_key],
+        set_={"last_seen_at": stmt.excluded.last_seen_at},
+    ).returning(literal_column("xmax = 0"))  # 新插入的行 xmax 为 0，更新的行不为 0
+    return sum(1 for inserted in session.execute(stmt).scalars() if inserted)
 
 
 def _update_health(
@@ -112,19 +115,39 @@ def _update_health(
         source.health = "degraded"
 
 
+def _lock_source(session: Session, source: Source) -> bool:
+    """锁住来源这一行，直到本次检查提交。已有检查在进行（行已被锁）时返回 False。
+
+    "是不是第一次成功检查"要在锁内重新读取：两次抓取重叠时，
+    不能都把自己当成第一次，把期间新发布的文件也记成基线。
+    """
+    stmt = (
+        select(Source)
+        .where(Source.id == source.id)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    return session.scalars(stmt).first() is not None
+
+
 def check_source(
     session: Session,
     source: Source,
     fetcher: Fetcher,
     failure_threshold: int = 3,
     today: date | None = None,
-) -> SourceCheck:
+) -> SourceCheck | None:
+    """检查一个来源。另一个检查正在处理同一来源时跳过，返回 None。"""
+    if not _lock_source(session, source):
+        session.rollback()
+        return None
     started = _now()
     t0 = time.monotonic()
     result = fetcher.fetch(source.url)
     status, error = result.status, result.error
     items: list[ListItem] = []
     new_count = 0
+    baseline = False
     if result.status == "ok":
         items = extract_items(
             result.text, result.final_url or source.url, source.parser_config, today=today
@@ -146,6 +169,7 @@ def check_source(
         items_new=new_count,
         duration_ms=int((time.monotonic() - t0) * 1000),
         error=error,
+        is_baseline=baseline,
     )
     session.add(check)
     _update_health(source, status, error, failure_threshold, finished)
@@ -174,13 +198,15 @@ def crawl_sources(
                 source = session.get(Source, source_id)
                 if source is None:
                     continue
-                first_success = source.last_success_at is None
                 try:
                     check = check_source(session, source, fetcher, failure_threshold)
                 except Exception:  # 单个来源出错不影响其他来源
                     session.rollback()
                     log.exception("检查来源 #%s 时出错", source_id)
                     summaries.append(CheckSummary(source_id, "internal_error", 0, 0, "内部错误"))
+                    continue
+                if check is None:
+                    summaries.append(CheckSummary(source_id, "skipped", 0, 0, SKIPPED_MESSAGE))
                     continue
                 summaries.append(
                     CheckSummary(
@@ -189,7 +215,7 @@ def crawl_sources(
                         check.items_found,
                         check.items_new,
                         check.error,
-                        baseline=first_success and check.status == "ok",
+                        baseline=check.is_baseline,
                     )
                 )
         return summaries

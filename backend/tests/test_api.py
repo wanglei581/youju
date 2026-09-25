@@ -53,6 +53,7 @@ def seeded(session):
             Document(
                 source_id=bj.id,
                 url="https://kw.beijing.gov.cn/a/1.html",
+                url_key="kw.beijing.gov.cn/a/1.html",
                 title="关于开展2026年度高新技术企业认定工作的通知",
                 publish_date=date(2026, 9, 20),
                 first_seen_at=now,
@@ -62,6 +63,7 @@ def seeded(session):
             Document(
                 source_id=bj.id,
                 url="https://kw.beijing.gov.cn/a/2.html",
+                url_key="kw.beijing.gov.cn/a/2.html",
                 title="100%_特殊字符标题测试文件",
                 publish_date=date(2026, 9, 10),
                 first_seen_at=now,
@@ -71,6 +73,7 @@ def seeded(session):
             Document(
                 source_id=sd.id,
                 url="http://gxt.shandong.gov.cn/a/3.html",
+                url_key="gxt.shandong.gov.cn/a/3.html",
                 title="山东省专精特新中小企业认定名单公示",
                 publish_date=date(2026, 9, 25),
                 first_seen_at=now,
@@ -103,7 +106,9 @@ def test_documents_search_and_filters(client, seeded) -> None:
     assert client.get("/api/documents", params={"new_only": True}).json()["total"] == 1
     # % 和 _ 按普通字符匹配，不当作通配符
     assert client.get("/api/documents", params={"q": "100%_"}).json()["total"] == 1
-    assert client.get("/api/documents", params={"q": "%"}).json()["total"] == 1
+    assert client.get("/api/documents", params={"q": "%_"}).json()["total"] == 1
+    # 关键词至少 2 个字
+    assert client.get("/api/documents", params={"q": "税"}).status_code == 422
 
 
 def test_document_detail_and_404(client, seeded) -> None:

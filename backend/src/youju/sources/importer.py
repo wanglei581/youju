@@ -20,9 +20,6 @@ _MODES: list[tuple[str, str, bool]] = [
     ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
     ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
     ("本机无法访问", "manual", False),
-    # 网站明确拒绝（拦截爬虫标识或 robots 禁止）：尊重，不抓取、不伪装
-    ("网站拒绝爬虫", "blocked", False),
-    ("robots 禁止", "blocked", False),
 ]
 
 
@@ -34,7 +31,13 @@ class ImportSummary:
     disabled: int = 0
 
 
+# 状态里出现这些词，说明网站明确不欢迎脚本访问：一律停用，不用浏览器渲染等方式绕过
+_REFUSAL_WORDS = ("拒绝", "防护", "拦截", "robots 禁止")
+
+
 def mode_for(verification_status: str) -> tuple[str, bool]:
+    if any(word in verification_status for word in _REFUSAL_WORDS):
+        return "blocked", False
     for prefix, mode, enabled in _MODES:
         if verification_status.startswith(prefix):
             return mode, enabled

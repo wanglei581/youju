@@ -1,10 +1,12 @@
 import logging
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
 
 from tests.conftest import read_fixture_html
 from youju.crawler.fetcher import FetchResult
-from youju.crawler.service import check_source, crawl_sources
+from youju.crawler.listing import ListItem
+from youju.crawler.service import SKIPPED_MESSAGE, check_source, crawl_sources, save_items
 from youju.models import Document, Source, SourceCheck
 
 
@@ -55,10 +57,12 @@ def test_first_check_is_baseline_then_new_items(session) -> None:
 
     first = check_source(session, source, fetcher)
     assert (first.status, first.items_found, first.items_new) == ("ok", 2, 2)
+    assert first.is_baseline
     assert all(d.is_baseline for d in session.scalars(select(Document)))
 
     second = check_source(session, source, fetcher)
     assert (second.status, second.items_found, second.items_new) == ("ok", 3, 1)
+    assert not second.is_baseline
     new_doc = session.scalar(select(Document).where(Document.is_baseline.is_(False)))
     assert new_doc.title == "关于征集第三项需求的通知公告"
     assert source.health == "ok"
@@ -139,3 +143,63 @@ def test_crawl_summary_marks_baseline_runs(session_factory) -> None:
     second = crawl_sources(session_factory, [source_id], fetcher)[0]
     assert (first.baseline, first.items_new) == (True, 2)
     assert (second.baseline, second.items_new) == (False, 1)
+
+
+def test_save_items_handles_duplicate_urls_in_one_batch(session) -> None:
+    source = make_source(session)
+    item = ListItem(
+        "同一条目出现两次的完整标题", "https://kw.beijing.gov.cn/art/9.html", date(2026, 9, 1)
+    )
+    now = datetime.now(UTC)
+    assert save_items(session, source, [item, item], baseline=False, seen_at=now) == 1
+    assert save_items(session, source, [item], baseline=False, seen_at=now) == 0
+
+
+def test_url_variants_are_the_same_document(session) -> None:
+    source = make_source(session)
+    title = "关于开展第一项申报工作的通知"
+    variants = [
+        ListItem(title, "http://kw.beijing.gov.cn/a/1.html", None),
+        ListItem(title, "https://kw.beijing.gov.cn/a/1.html;jsessionid=AAA", None),
+        ListItem(title, "https://kw.beijing.gov.cn:443/a/1.html", None),
+    ]
+    now = datetime.now(UTC)
+    assert save_items(session, source, variants, baseline=False, seen_at=now) == 1
+    # 下次访问会话号变了，仍是同一份文件，不算新增
+    later = [ListItem(title, "https://kw.beijing.gov.cn/a/1.html;jsessionid=BBB", None)]
+    assert save_items(session, source, later, baseline=False, seen_at=now) == 0
+    doc = session.scalar(select(Document))
+    assert (doc.url_key, doc.url) == ("kw.beijing.gov.cn/a/1.html", variants[0].url)
+
+
+def test_overlapping_check_of_same_source_is_skipped(session_factory) -> None:
+    with session_factory() as s:
+        source_id = make_source(s).id
+    fetcher = FakeFetcher({})  # 被跳过的检查不应发起任何请求
+    with session_factory() as running:
+        # 模拟另一个正在进行的检查：它锁住了来源这一行
+        running.execute(select(Source).where(Source.id == source_id).with_for_update())
+        with session_factory() as s:
+            assert check_source(s, s.get(Source, source_id), fetcher) is None
+        results = crawl_sources(session_factory, [source_id], fetcher)
+        assert [(r.status, r.error) for r in results] == [("skipped", SKIPPED_MESSAGE)]
+        running.rollback()
+    with session_factory() as s:
+        assert s.scalar(select(func.count(SourceCheck.id))) == 0
+
+
+def test_baseline_is_decided_after_taking_the_lock(session_factory) -> None:
+    """两次抓取重叠：后一次在前一次成功之前读到了来源，但不能再把自己当成第一次。"""
+    with session_factory() as s:
+        source_id = make_source(s).id
+        url = s.get(Source, source_id).url
+    with session_factory() as late, session_factory() as early:
+        stale = late.get(Source, source_id)
+        assert stale.last_success_at is None
+        late.commit()
+        check_source(early, early.get(Source, source_id), FakeFetcher({url: [page(url, LIST_V1)]}))
+        check = check_source(late, stale, FakeFetcher({url: [page(url, LIST_V2)]}))
+    assert (check.is_baseline, check.items_new) == (False, 1)
+    with session_factory() as s:
+        new_doc = s.scalar(select(Document).where(Document.is_baseline.is_(False)))
+        assert new_doc.title == "关于征集第三项需求的通知公告"

@@ -77,12 +77,14 @@ class SourceCheck(Base):
     items_new: Mapped[int] = mapped_column(Integer, default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    # 该来源第一次成功检查：本次新入库的条目都是基线，不计入"新增"
+    is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
 
     source: Mapped[Source] = relationship(back_populates="checks")
 
 
 class Document(Base):
-    """一份被发现的文件（题录层）。同一网址全库只存一条。"""
+    """一份被发现的文件（题录层）。同一份文件（规范网址键相同）全库只存一条。"""
 
     __tablename__ = "documents"
     __table_args__ = (
@@ -99,8 +101,13 @@ class Document(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
-    url: Mapped[str] = mapped_column(Text, unique=True)
+    # 删除来源不能连带删掉已发现的文件：来源应停用而不是删除
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="RESTRICT"))
+    # 第一次发现时的原始网址，用于展示和访问
+    url: Mapped[str] = mapped_column(Text)
+    # 规范网址键（见 crawler/urls.py 的 url_key）：http 与 https、端口、会话参数、
+    # 查询参数顺序不同的网址算同一份文件，以它去重
+    url_key: Mapped[str] = mapped_column(Text, unique=True)
     title: Mapped[str] = mapped_column(Text)
     publish_date: Mapped[date | None] = mapped_column(Date)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

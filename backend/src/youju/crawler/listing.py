@@ -5,6 +5,10 @@
 - <table><tr><td><a>标题</a></td><td>日期</td></tr></table>
 - <div class="item"><a>标题</a><span>日期</span></div>
 - 大汉 JCMS：条目藏在 <script type="text/xml"><datastore><record><![CDATA[…]]></record> 里
+- 列表写在脚本变量里的 JSON（如 var listData = {articleList: [...]}）
+
+一个页面上常有多组带日期的链接（正文列表、侧栏热点、页脚），按以下顺序挑正文列表：
+条目数不少于 3 → 不在侧栏、页头页脚等外围区域 → 过半条目位于本栏目目录下 → 条目多 → 日期新。
 
 通用规则识别不准的栏目，在 sources.parser_config 里用 CSS 选择器覆盖：
 {"item_selector": "ul.list li", "link_selector": "a", "date_selector": "span", "require_date": true}
@@ -14,12 +18,13 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date
+from urllib.parse import urlsplit
 
 import lxml.html
 from lxml import etree
 
-from youju.crawler.dates import date_from_url, parse_date
-from youju.crawler.urls import normalize_url
+from youju.crawler.dates import date_from_url, parse_date_detail
+from youju.crawler.urls import normalize_url, page_dir
 
 
 @dataclass(frozen=True)
@@ -30,22 +35,54 @@ class ListItem:
 
 
 _MIN_TITLE_LEN = 6
-# 行文本比标题最多多出的字数；超过说明已经走到了列表容器
+# 行文本比标题最多多出的字数；只在没有单独的日期节点时用于兜底
 _MAX_ROW_EXTRA = 160
 _MAX_ROW_DEPTH = 4
-# 同一模板的其他列表块（如分页签），条目数达到这个值才合并
-_MIN_SIBLING_GROUP = 5
+# 单独写日期的节点（如 <span>2026-09-20</span>）文字不会很长
+_MAX_DATE_NODE_LEN = 30
+# 条目数不少于这个值，才算像样的列表
+_MIN_LIST_ITEMS = 3
+# 同一列表分成几块显示时，这几块的共同祖先离列表块不超过这么多层
+_MAX_BLOCK_LEVELS = 3
 
 _NAV_PATTERN = re.compile(
     r"^(第?\d+页?|更多.*|more.*|下一页|上一页|首页|尾页|末页|返回.*|打印.*|关闭.*|>>|»|…+|\.+)$",
     re.IGNORECASE,
 )
 _BOILERPLATE = ("版权所有", "ICP备", "网站地图", "联系我们", "网站标识码", "公网安备", "主办单位")
+# 行内的附件链接（"附件：…""下载"，或指向 pdf、Word 等文件）属于同一条文件，不算另一条
+_ATTACHMENT_TEXT = re.compile(r"^(附件|下载|点击下载|查看附件|附件下载)")
+_ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.IGNORECASE)
+# 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
+_PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
+_PERIPHERAL_WORDS = {
+    "side",
+    "sidebar",
+    "aside",
+    "hot",
+    "rank",
+    "ranking",
+    "recommend",
+    "friend",
+    "links",
+    "yqlj",
+    "footer",
+    "foot",
+    "header",
+    "nav",
+    "menu",
+    "banner",
+}
+_TOKEN_SPLIT = re.compile(r"[-_]+")
 _DATASTORE_RECORD = re.compile(r"<record>\s*<!\[CDATA\[(.*?)\]\]>\s*</record>", re.S)
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>", re.I)
+_BODY_END = re.compile(r"</body\s*>", re.I)
+# 写在链接文字开头或结尾的日期
 _EDGE_DATE = re.compile(
-    r"^\s*[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?|"
-    r"[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?\s*$"
+    r"^\s*[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?"
+    r"|[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?\s*$"
+    r"|[\[(（【]\s*(\d{1,2}-\d{1,2})\s*[\])）】]\s*$"
+    r"|\s(\d{2}-\d{2})\s*$"
 )
 
 
@@ -65,10 +102,13 @@ def _title_of(a: etree._Element) -> str:
 def _looks_like_title(title: str) -> bool:
     if len(title) < _MIN_TITLE_LEN or _NAV_PATTERN.match(title):
         return False
+    if _ATTACHMENT_TEXT.match(title):
+        return False
     return not any(word in title for word in _BOILERPLATE)
 
 
-_BODY_END = re.compile(r"</body\s*>", re.I)
+def _is_attachment(url: str) -> bool:
+    return bool(_ATTACHMENT_EXT.search(urlsplit(url).path))
 
 
 def _expand_datastore(html: str) -> str:
@@ -87,15 +127,30 @@ def _expand_datastore(html: str) -> str:
     return html[:cut] + block + html[cut:]
 
 
+def _is_peripheral(el: etree._Element) -> bool:
+    """元素本身或其祖先是否属于侧栏、页头页脚等外围区域。"""
+    for node in (el, *el.iterancestors()):
+        if not isinstance(node.tag, str):
+            continue
+        if node.tag in _PERIPHERAL_TAGS:
+            return True
+        attrs = f"{node.get('class') or ''} {node.get('id') or ''}".lower()
+        for token in attrs.split():
+            if set(_TOKEN_SPLIT.split(token)) & _PERIPHERAL_WORDS:
+                return True
+    return False
+
+
 class _Page:
     """一次识别过程的上下文：缓存每个元素里包含的标题链接，避免重复计算。"""
 
     def __init__(self, doc: etree._Element, page_url: str, today: date) -> None:
         self.doc = doc
         self.self_url = normalize_url(page_url, page_url)
+        self.dir = page_dir(page_url)
         # 页面声明了 <base href> 时，相对链接要按它解析
         base = doc.xpath("//base[@href]/@href")
-        self.page_url = normalize_url(page_url, base[0]) or page_url if base else page_url
+        self.page_url = (normalize_url(page_url, base[0]) or page_url) if base else page_url
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
 
@@ -119,54 +174,134 @@ class _Page:
             self._hrefs[el] = cached
         return cached
 
-    def find_row(self, a: etree._Element, title: str) -> tuple[etree._Element | None, date | None]:
-        """向上找"一行"：只含这一条链接、文本不太长、并且写着日期的祖先元素。"""
+    def date_node(
+        self, el: etree._Element, a: etree._Element, skip: set
+    ) -> tuple[date | None, bool]:
+        """行内单独写日期的节点（如 <span>2026-09-20</span>），取最靠后的一个。
+
+        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。
+        """
+        found: tuple[date | None, bool] = (None, False)
+        inside_anchor = set(a.iter())
+        for node in el.iter():
+            if node in skip or node in inside_anchor or not isinstance(node.tag, str):
+                continue
+            text = _clean(node.text_content())
+            if not text or len(text) > _MAX_DATE_NODE_LEN:
+                continue
+            d, full = parse_date_detail(text, self.today)
+            if d:
+                found = (d, full)
+        return found
+
+    def find_row(
+        self, a: etree._Element, title: str, url: str
+    ) -> tuple[etree._Element | None, date | None, bool]:
+        """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         anchor_text = _clean(a.text_content())
-        for depth, el in enumerate(a.iterancestors()):
+        ancestors = list(a.iterancestors())
+        skip = set(ancestors)
+        for depth, el in enumerate(ancestors):
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
-            if len(self.title_hrefs(el)) > 1:
-                break  # 已经包含多条链接，说明走到了列表容器
-            text = _clean(el.text_content())
-            if len(text) > len(title) + _MAX_ROW_EXTRA:
-                break
-            found = parse_date(text.replace(anchor_text, " "), self.today) if anchor_text else None
+            others = self.title_hrefs(el) - {url}
+            if not _is_attachment(url):
+                # 正文链接旁边的附件（pdf、Word 等）属于同一行
+                others = {u for u in others if not _is_attachment(u)}
+            if others:
+                break  # 已经包含其他文件链接，说明走到了列表容器
+            found, full = self.date_node(el, a, skip)
             if found:
-                return el, found
-        return None, None
+                return el, found, full
+            text = _clean(el.text_content())
+            if anchor_text and len(text) <= len(title) + _MAX_ROW_EXTRA:
+                found, full = parse_date_detail(text.replace(anchor_text, " "), self.today)
+                if found:
+                    return el, found, full
+        return None, None, False
 
 
-def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None]:
+def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None, bool]:
     """日期写在链接文字的开头或结尾时，把它拆出来。"""
     m = _EDGE_DATE.search(title)
     if not m:
-        return title, None
-    found = parse_date(m.group(1) or m.group(2), today)
+        return title, None, False
+    text = next(g for g in m.groups() if g)
+    found, full = parse_date_detail(text, today)
     if not found:
-        return title, None
-    return _clean(title[: m.start()] + title[m.end() :]), found
+        return title, None, False
+    return _clean(title[: m.start()] + title[m.end() :]), found, full
 
 
 def _group_key(container: etree._Element) -> tuple:
-    # 同一父元素下、标签和样式相同的多个列表块（如分成几段的 ul）算作同一个列表
-    return (container.getparent(), container.tag, container.get("class"))
+    # 同一父元素下标签相同的几个列表块算作同一个列表，
+    # 例如手机版只显示前 5 条，其余条目放在另一个带不同样式的 ul 里
+    return (container.getparent(), container.tag)
+
+
+def _parallel(a: etree._Element, b: etree._Element) -> bool:
+    """两个列表块是否是同一结构的重复：同一列表分块显示，或同一栏目的几个页签。
+
+    从两边同时往上找共同祖先（不超过 _MAX_BLOCK_LEVELS 层）。共同祖先下面的那一层
+    （重复单元）标签和样式都相同、再往下到列表块的标签路径也相同，才算重复。
+    侧栏、页脚与正文列表的外层结构不同，不会被并进来。
+    """
+    if a.tag != b.tag:
+        return False
+    up_a = [a, *a.iterancestors()][: _MAX_BLOCK_LEVELS + 1]
+    up_b = [b, *b.iterancestors()][: _MAX_BLOCK_LEVELS + 1]
+    for level in range(1, min(len(up_a), len(up_b))):
+        if up_a[level] is up_b[level]:
+            unit_a, unit_b = up_a[level - 1], up_b[level - 1]
+            same_unit = (unit_a.tag, unit_a.get("class") or "") == (
+                unit_b.tag,
+                unit_b.get("class") or "",
+            )
+            return same_unit and [n.tag for n in up_a[:level]] == [n.tag for n in up_b[:level]]
+    return False
+
+
+def _clusters(containers: list[etree._Element], peripheral: list[bool]) -> list[list[int]]:
+    """把互为重复结构的列表块并成一组（外围区域的块不参与合并）。返回每组的块编号。"""
+    root = list(range(len(containers)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    for i in range(len(containers)):
+        for j in range(i + 1, len(containers)):
+            if peripheral[i] or peripheral[j] or find(i) == find(j):
+                continue
+            if _parallel(containers[i], containers[j]):
+                root[find(j)] = find(i)
+    merged: dict[int, list[int]] = {}
+    for i in range(len(containers)):
+        merged.setdefault(find(i), []).append(i)
+    return list(merged.values())
 
 
 def _extract_heuristic(page: _Page, require_date: bool) -> list[ListItem]:
-    groups: dict[tuple, list[ListItem]] = {}
+    # 每个列表块里的条目，连同它在页面中的先后位置
+    blocks: dict[tuple, list[tuple[int, ListItem]]] = {}
+    containers: dict[tuple, etree._Element] = {}
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
-    for a in page.doc.xpath("//a"):
+    for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
         if not link:
             continue
         title, url = link
-        row, found = page.find_row(a, title)
+        row, found, full = page.find_row(a, title, url)
         if found is None:
-            title, found = _date_inside_anchor(title, page.today)
+            title, found, full = _date_inside_anchor(title, page.today)
             if found is not None:
                 row = a
-        if found is None:
-            found = date_from_url(url, page.today)
+        url_date = date_from_url(url, page.today)
+        if found is None or (not full and url_date):
+            # 行里只写了"月-日"而网址里有完整日期时，以网址为准（年份不会推错）
+            found = url_date or found
         if found is None and require_date:
             continue
         if not _looks_like_title(title):
@@ -174,25 +309,31 @@ def _extract_heuristic(page: _Page, require_date: bool) -> list[ListItem]:
         container = (row if row is not None else a).getparent()
         if container is None:
             continue
-        groups.setdefault(_group_key(container), []).append(ListItem(title, url, found))
+        key = _group_key(container)
+        blocks.setdefault(key, []).append((position, ListItem(title, url, found)))
+        containers.setdefault(key, container)
 
-    if not groups:
+    if not blocks:
         return []
 
-    def score(key: tuple) -> tuple[int, date]:
-        items = groups[key]
+    keys = list(blocks)
+    peripheral = [_is_peripheral(containers[k]) for k in keys]
+    candidates = []
+    for members in _clusters([containers[k] for k in keys], peripheral):
+        entries = sorted(entry for i in members for entry in blocks[keys[i]])
+        items = [item for _, item in entries]
+        urls = {i.url for i in items}
+        in_dir = sum(1 for u in urls if urlsplit(u).path.startswith(page.dir)) / len(urls)
         latest = max((i.publish_date for i in items if i.publish_date), default=date.min)
-        return len({i.url for i in items}), latest
-
-    best_key = max(groups, key=score)
-    result = list(groups[best_key])
-    # 同一模板的其他大列表（例如"通知""公告"两个页签同时渲染）一并收下
-    for key, items in groups.items():
-        if key is best_key or key[1:] != best_key[1:]:
-            continue
-        if len({i.url for i in items}) >= _MIN_SIBLING_GROUP:
-            result.extend(items)
-    return result
+        score = (
+            len(urls) >= _MIN_LIST_ITEMS,
+            not peripheral[members[0]],
+            in_dir >= 0.5,
+            len(urls),
+            latest,
+        )
+        candidates.append((score, items))
+    return max(candidates, key=lambda c: c[0])[1]
 
 
 def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
@@ -209,29 +350,32 @@ def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
         title = _title_of(a)
         if not url or not title:
             continue
-        date_text = ""
         if date_selector:
             date_els = el.cssselect(date_selector)
             date_text = _clean(date_els[0].text_content()) if date_els else ""
         else:
             date_text = _clean(el.text_content()).replace(_clean(a.text_content()), " ")
-        found = parse_date(date_text, page.today) or date_from_url(url, page.today)
+        found, full = parse_date_detail(date_text, page.today)
+        url_date = date_from_url(url, page.today)
+        if found is None or (not full and url_date):
+            found = url_date or found
         if found is None and require_date:
             continue
         items.append(ListItem(title, url, found))
     return items
 
 
-_JSON_TITLE_KEYS = ("title", "showTitle", "docTitle", "name")
+# 只认明确表示"标题""发布时间"的字段；name、time 这类泛化字段常见于导航数据，不用
+_JSON_TITLE_KEYS = ("title", "showTitle", "docTitle")
 _JSON_DATE_KEYS = (
     "pubDate",
     "publishDate",
     "publishTime",
+    "pubTime",
     "releaseDate",
     "docDate",
     "createTime",
-    "date",
-    "time",
+    "createDate",
 )
 _JSON_URL_KEYS = ("url", "urls", "linkUrl", "link", "href", "docUrl", "pageUrl")
 _MAX_JSON_CANDIDATES = 30
@@ -274,12 +418,33 @@ def _json_url(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _items_from_json_array(data: object, page: _Page) -> list[ListItem]:
+    items: list[ListItem] = []
+    for obj in data if isinstance(data, list) else []:
+        if not isinstance(obj, dict):
+            continue
+        title = next((_clean(str(obj[k])) for k in _JSON_TITLE_KEYS if obj.get(k)), "")
+        href = next((_json_url(obj[k]) for k in _JSON_URL_KEYS if obj.get(k)), None)
+        url = normalize_url(page.page_url, href)
+        if not url or not _looks_like_title(title):
+            continue
+        date_text = next((str(obj[k]) for k in _JSON_DATE_KEYS if obj.get(k)), "")
+        found, full = parse_date_detail(date_text, page.today)
+        url_date = date_from_url(url, page.today)
+        if found is None or (not full and url_date):
+            found = url_date or found
+        if found is not None:
+            items.append(ListItem(title, url, found))
+    return items
+
+
 def _extract_embedded_json(html: str, page: _Page) -> list[ListItem]:
     """列表数据写在脚本变量里（如 var listData = {articleList: [...]}），由前端渲染。
 
-    数据已经在页面里，不需要浏览器渲染，直接读取 JSON 数组。
+    数据已经在页面里，不需要浏览器渲染。页面上可能有多个 JSON 数组（导航、推荐等），
+    只取条目最多的那一个。
     """
-    items: list[ListItem] = []
+    best: list[ListItem] = []
     for count, m in enumerate(re.finditer(r"\[\s*\{", html)):
         if count >= _MAX_JSON_CANDIDATES:
             break
@@ -290,19 +455,10 @@ def _extract_embedded_json(html: str, page: _Page) -> list[ListItem]:
             data = json.loads(html[m.start() : end + 1])
         except ValueError:
             continue
-        for obj in data if isinstance(data, list) else []:
-            if not isinstance(obj, dict):
-                continue
-            title = next((_clean(str(obj[k])) for k in _JSON_TITLE_KEYS if obj.get(k)), "")
-            href = next((_json_url(obj[k]) for k in _JSON_URL_KEYS if obj.get(k)), None)
-            url = normalize_url(page.page_url, href)
-            if not url or not _looks_like_title(title):
-                continue
-            date_text = next((str(obj[k]) for k in _JSON_DATE_KEYS if obj.get(k)), "")
-            found = parse_date(date_text, page.today) or date_from_url(url, page.today)
-            if found is not None:
-                items.append(ListItem(title, url, found))
-    return items
+        items = _items_from_json_array(data, page)
+        if len(items) > len(best):
+            best = items
+    return best
 
 
 def _dedupe(items: list[ListItem]) -> list[ListItem]:
@@ -329,9 +485,11 @@ def extract_items(
         return []
     page = _Page(doc, page_url, today or date.today())
     if config.get("item_selector"):
-        items = _extract_with_config(page, config)
-    else:
-        items = _extract_heuristic(page, require_date=config.get("require_date", True))
-        if not items:
-            items = _extract_embedded_json(html, page)
-    return _dedupe(items)
+        return _dedupe(_extract_with_config(page, config))
+    items = _dedupe(_extract_heuristic(page, require_date=config.get("require_date", True)))
+    if len(items) < _MIN_LIST_ITEMS:
+        # 页面上的链接不像列表时，再看脚本里有没有列表数据，取条目多的一种
+        from_json = _dedupe(_extract_embedded_json(html, page))
+        if len(from_json) > len(items):
+            items = from_json
+    return items

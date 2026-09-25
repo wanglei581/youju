@@ -107,7 +107,9 @@ def list_sources(
 @app.get("/api/documents", response_model=DocumentPage)
 def list_documents(
     session: SessionDep,
-    q: Annotated[str | None, Query(max_length=100, description="标题关键词")] = None,
+    q: Annotated[
+        str | None, Query(min_length=2, max_length=100, description="标题关键词，至少 2 个字")
+    ] = None,
     province: str | None = None,
     dept: str | None = None,
     since: Annotated[date | None, Query(description="发布日期不早于")] = None,

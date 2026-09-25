@@ -11,9 +11,10 @@ from urllib.robotparser import RobotFileParser
 import certifi
 import httpx
 
-from youju.crawler.urls import host_of, origin_of
+from youju.crawler.urls import host_of, normalize_url, origin_of
 
 ROBOTS_TOKEN = "YoujuBot"
+_MAX_REDIRECTS = 5
 _ROBOTS_TTL_SECONDS = 24 * 3600
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
 # GBK、GB2312 都用超集 GB18030 解码，避免个别生僻字出错
@@ -23,7 +24,9 @@ _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
 @dataclass
 class FetchResult:
     url: str
-    status: str  # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error
+    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error；
+    # redirect 只在内部使用，fetch() 不会返回它
+    status: str
     final_url: str = ""
     http_status: int | None = None
     text: str = ""
@@ -84,13 +87,13 @@ class PoliteFetcher:
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
         self._client = httpx.Client(
-            headers=headers, timeout=timeout, follow_redirects=True, transport=transport
+            headers=headers, timeout=timeout, follow_redirects=False, transport=transport
         )
         # 兼容模式：只在默认握手失败时对该网站使用，证书照常校验
         self._compat_client = httpx.Client(
             headers=headers,
             timeout=timeout,
-            follow_redirects=True,
+            follow_redirects=False,
             verify=compat_ssl_context(),
             transport=compat_transport or transport,
         )
@@ -102,6 +105,7 @@ class PoliteFetcher:
         self._host_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
         self._robots: dict[str, _RobotsEntry] = {}
+        self._robots_locks: dict[str, threading.Lock] = {}
 
     def close(self) -> None:
         self._client.close()
@@ -114,20 +118,39 @@ class PoliteFetcher:
         self.close()
 
     def fetch(self, url: str) -> FetchResult:
-        state, allowed = self.robots_allows(url)
-        if state == "unreachable":
-            # RFC 9309：robots.txt 因服务器错误或网络问题无法获取时，应视为全部禁止
-            return FetchResult(url, "robots_error", error="robots.txt 暂时无法获取，本次跳过")
-        if not allowed:
-            return FetchResult(url, "robots_disallowed", error="robots.txt 不允许抓取该页面")
-        return self._get(url)
+        """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。"""
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            state, allowed = self.robots_allows(current)
+            if state == "unreachable":
+                # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
+                return FetchResult(
+                    url,
+                    "robots_error",
+                    final_url=current,
+                    error="robots.txt 暂时无法获取，本次跳过",
+                )
+            if not allowed:
+                return FetchResult(
+                    url, "robots_disallowed", final_url=current, error="robots.txt 不允许抓取该页面"
+                )
+            result = self._get(current)
+            if result.status != "redirect":
+                result.url = url
+                return result
+            current = result.final_url
+        return FetchResult(
+            url, "network_error", final_url=current, error=f"重定向超过 {_MAX_REDIRECTS} 次"
+        )
 
     def robots_allows(self, url: str) -> tuple[str, bool]:
         origin = origin_of(url)
-        entry = self._robots.get(origin)
-        if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
-            entry = self._load_robots(origin)
-            self._robots[origin] = entry
+        # 同一网站并发时只读取一次 robots.txt
+        with self._lock_for(self._robots_locks, origin):
+            entry = self._robots.get(origin)
+            if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
+                entry = self._load_robots(origin)
+                self._robots[origin] = entry
         if entry.state == "unreachable":
             return entry.state, False
         if entry.state == "allow_all" or entry.parser is None:
@@ -135,7 +158,15 @@ class PoliteFetcher:
         return entry.state, entry.parser.can_fetch(ROBOTS_TOKEN, url)
 
     def _load_robots(self, origin: str) -> _RobotsEntry:
-        result = self._get(origin + "/robots.txt")
+        current = origin + "/robots.txt"
+        # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
+        for _ in range(_MAX_REDIRECTS + 1):
+            result = self._get(current)
+            if result.status != "redirect":
+                break
+            current = result.final_url
+        else:
+            return _RobotsEntry("allow_all", None, self._clock())
         now = self._clock()
         status = result.http_status
         if result.status in ("network_error", "ssl_error") or (
@@ -143,7 +174,7 @@ class PoliteFetcher:
         ):
             return _RobotsEntry("unreachable", None, now)
         if status is not None and 400 <= status < 500:
-            # RFC 9309：4xx 视为没有 robots.txt，可以抓取
+            # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
             return _RobotsEntry("allow_all", None, now)
         body = result.text.lstrip()
         if not body or body.startswith("<"):
@@ -153,13 +184,13 @@ class PoliteFetcher:
         parser.parse(body.splitlines())
         return _RobotsEntry("rules", parser, now)
 
-    def _host_lock(self, host: str) -> threading.Lock:
+    def _lock_for(self, locks: dict[str, threading.Lock], key: str) -> threading.Lock:
         with self._guard:
-            return self._host_locks.setdefault(host, threading.Lock())
+            return locks.setdefault(key, threading.Lock())
 
     def _get(self, url: str) -> FetchResult:
         host = host_of(url)
-        with self._host_lock(host):
+        with self._lock_for(self._host_locks, host):
             last = self._last_request.get(host)
             if last is not None:
                 wait = self._interval - (self._clock() - last)
@@ -192,7 +223,8 @@ class PoliteFetcher:
                     if host in self._compat_hosts:
                         return FetchResult(url, "ssl_error", error=f"加密连接错误：{message[:200]}")
                     # 老旧服务器与 OpenSSL 3 默认设置不兼容：改用兼容模式立即重试，不占用重试次数
-                    self._compat_hosts.add(host)
+                    with self._guard:
+                        self._compat_hosts.add(host)
                     continue
                 last_error = f"连接失败：{message[:200]}"
             except httpx.HTTPError as exc:
@@ -200,6 +232,19 @@ class PoliteFetcher:
                     url, "network_error", error=f"{exc.__class__.__name__}: {exc}"[:300]
                 )
             else:
+                if 300 <= resp.status_code < 400:
+                    target = normalize_url(url, resp.headers.get("location"))
+                    if target is None:
+                        return FetchResult(
+                            url,
+                            "http_error",
+                            http_status=resp.status_code,
+                            error=f"HTTP {resp.status_code}，重定向地址无效",
+                        )
+                    # 不自动跟随：交给 fetch() 逐跳检查 robots 和限速
+                    return FetchResult(
+                        url, "redirect", final_url=target, http_status=resp.status_code
+                    )
                 if resp.status_code >= 400:
                     return FetchResult(
                         url,

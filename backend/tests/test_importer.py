@@ -18,7 +18,9 @@ def write_csv(tmp_path: Path, rows: list[str]) -> Path:
 def test_mode_for_statuses() -> None:
     assert mode_for("已验证（列表页，含近期日期）") == ("static", True)
     assert mode_for("需浏览器渲染或接口（页面由脚本加载）") == ("browser", False)
-    assert mode_for("需浏览器渲染（网站防护拦截脚本访问）") == ("browser", False)
+    # 网站防护（如 412 挑战页）视为拒绝：停用，不用浏览器渲染绕过
+    assert mode_for("需浏览器渲染（网站防护拦截脚本访问）") == ("blocked", False)
+    assert mode_for("网站防护拦截脚本访问（尊重，不绕过）") == ("blocked", False)
     assert mode_for("已访问（日期较少，需人工确认是否列表页）") == ("manual", False)
     assert mode_for("本机无法访问，需排查") == ("manual", False)
     assert mode_for("网站拒绝爬虫标识访问（尊重，不伪装）") == ("blocked", False)
@@ -40,7 +42,7 @@ def test_import_is_idempotent(session, tmp_path: Path) -> None:
     assert (second.created, second.updated) == (0, 2)
     assert session.scalar(select(func.count(Source.id))) == 2
     gansu = session.scalar(select(Source).where(Source.province == "甘肃"))
-    assert gansu.fetch_mode == "browser"
+    assert gansu.fetch_mode == "blocked"
     assert gansu.enabled is False
     assert gansu.note == "地址由 agy 提供"
 

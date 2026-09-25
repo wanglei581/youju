@@ -62,15 +62,16 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("source_id", sa.Integer(), nullable=False),
         sa.Column("url", sa.Text(), nullable=False),
+        sa.Column("url_key", sa.Text(), nullable=False),
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("publish_date", sa.Date(), nullable=True),
         sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("is_baseline", sa.Boolean(), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
-        sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("url"),
+        sa.UniqueConstraint("url_key"),
     )
     op.create_index("ix_documents_first_seen_at", "documents", ["first_seen_at"], unique=False)
     op.create_index("ix_documents_publish_date", "documents", ["publish_date"], unique=False)
@@ -95,6 +96,7 @@ def upgrade() -> None:
         sa.Column("items_new", sa.Integer(), nullable=False),
         sa.Column("duration_ms", sa.Integer(), nullable=False),
         sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("is_baseline", sa.Boolean(), nullable=False),
         sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
