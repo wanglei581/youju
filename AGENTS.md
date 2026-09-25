@@ -44,15 +44,23 @@ AI 成员不能代替创始人实名认证、签字、付款、提交政府申�
 | 路径 | 内容 |
 |---|---|
 | `apps/miniapp/` | 微信原生小程序 |
-| `services/api/` | 本地样机 API（将按总方案 §6 重写为 FastAPI + PostgreSQL） |
-| `docs/` | 总方案、执行手册、决策记录、调研记录 |
+| `backend/` | 数据底座与 API（Python 3.12、FastAPI、PostgreSQL），见 `backend/README.md` |
+| `services/api/` | 旧的本地样机，仅作参考；功能迁移到 `backend/` 后删除 |
+| `docs/` | 总方案、执行手册、开发流程、决策记录、调研记录 |
+| `docs/adr/` | 架构决策记录 |
+| `docs/迭代/` | 每个迭代的计划、结果和回顾 |
 | `docs/数据来源/` | 全国来源清单（已验证的栏目 URL） |
 | `designs/` | 交互原型 |
 
 ## 常用命令
 
-- 现有 API 测试：`python3 -m unittest discover -s services/api/tests -v`
-- 本地启动样机：见 `services/api/README.md`
+在 `backend/` 目录下：
+
+- 启动项目内数据库：`./scripts/dev_db.sh start`
+- 检查：`uv run ruff format . && uv run ruff check . && uv run pytest`
+- 抓取：`uv run youju crawl`；健康报告：`uv run youju report`
+
+开发流程（分支、PR、审阅、CI、合并）见 [docs/开发流程.md](docs/开发流程.md)。
 
 ## 汇报格式
 
