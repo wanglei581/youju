@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（代码检查 + 测试）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: youju
+          POSTGRES_PASSWORD: youju
+          POSTGRES_DB: youju_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U youju"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      YOUJU_TEST_DATABASE_URL: postgresql+psycopg://youju:youju@localhost:5432/youju_test
+      # CI 里数据库必须可用：连不上直接失败，不允许跳过数据库测试
+      YOUJU_REQUIRE_DB: "1"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: 安装依赖（按锁文件）
+        run: uv sync --locked
+      - name: 代码风格
+        run: uv run ruff format --check .
+      - name: 代码检查
+        run: uv run ruff check .
+      - name: 测试
+        run: uv run pytest
+
+  legacy-prototype:
+    name: 旧样机测试（services/api）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r services/api/requirements.txt
+      - run: python -m unittest discover -s services/api/tests -v
