@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>有据 · 申报日历</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F6F3EC}
+a{color:#1F3F75;text-decoration:none}a:hover{color:#16305A}
+</style>
+</helmet>
+<div style="width: 390px; height: 1240px; position: relative; overflow: hidden; background: #F6F3EC; color: #1C1D1F; font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif; font-size: 14px; line-height: 1.6">
+
+<header style="height: 48px; display: flex; align-items: center; justify-content: center; position: relative">
+<a href="Main.dc.html" aria-label="返回" style="position: absolute; left: 8px; top: 4px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>
+</a>
+<span style="font-size: 16px; font-weight: 500">申报日历</span>
+<div aria-hidden="true" style="position: absolute; right: 10px; top: 8px; width: 87px; height: 32px; box-sizing: border-box; border: 1px solid #DCD5C8; border-radius: 16px; background: #FBF9F4; display: flex; align-items: center">
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1D1F"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="2.3"></circle><circle cx="19" cy="12" r="1.7"></circle></svg></div>
+<div style="width: 1px; height: 18px; background: #DCD5C8"></div>
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"></circle><circle cx="12" cy="12" r="2.6" fill="#1C1D1F" stroke="none"></circle></svg></div>
+</div>
+</header>
+
+<div role="tablist" aria-label="截止范围" style="margin: 8px 20px 0; padding: 3px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; border: 1px solid #D8D0C2; border-radius: 7px; background: #FFFFFF">
+<sc-for list="{{ranges}}" as="r" hint-placeholder-count="4">
+<button type="button" role="tab" onClick="{{r.pick}}" style="{{r.style}}"><span>{{r.label}}</span><span style="font-variant-numeric: tabular-nums; opacity: 0.75">{{r.count}}</span></button>
+</sc-for>
+</div>
+
+<div style="margin: 12px 20px 0; display: flex; align-items: center; gap: 16px; font-size: 13px">
+<button type="button" style="display: flex; align-items: center; gap: 2px; background: none; border: 0; padding: 0; font-family: inherit; font-size: 13px; color: #1C1D1F; cursor: pointer">全部地区<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+<button type="button" style="display: flex; align-items: center; gap: 2px; background: none; border: 0; padding: 0; font-family: inherit; font-size: 13px; color: #1C1D1F; cursor: pointer">全部行业<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+<span style="margin-left: auto; color: #6D7076; font-size: 12px; font-variant-numeric: tabular-nums">今天 9月26日</span>
+</div>
+
+<section aria-label="2026年10月" style="margin: 16px 20px 0; padding: 14px 12px 8px; background: #FFFFFF; border: 1px solid #E3DDD1; border-radius: 6px">
+<div style="padding: 0 4px 8px; display: flex; align-items: baseline; justify-content: space-between">
+<span style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 17px">2026年10月</span>
+<span style="font-size: 12px; color: #6D7076">红点：所选范围内截止</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; font-size: 11px; color: #6D7076; padding-bottom: 4px">
+<span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr))">
+<sc-for list="{{cells}}" as="c" hint-placeholder-count="35">
+<div style="height: 38px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px">
+<span style="{{c.numStyle}}">{{c.label}}</span>
+<span style="{{c.dotStyle}}"></span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<sc-if value="{{isEmpty}}" hint-placeholder-val="{{ false }}">
+<div style="margin: 28px 20px 0; padding: 26px 20px; text-align: center; border: 1px dashed #D8D0C2; border-radius: 6px">
+<div style="font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 16px">{{emptyTitle}}</div>
+<div style="margin-top: 6px; font-size: 13px; color: #56595F">最近的截止在 10月16日，还有 20 天</div>
+<button type="button" onClick="{{show30}}" style="margin-top: 14px; height: 38px; padding: 0 16px; background: #1C1D1F; color: #F6F3EC; border: 0; border-radius: 6px; font-family: inherit; font-size: 14px; cursor: pointer">看 30 天内的 4 项</button>
+</div>
+</sc-if>
+
+<div style="margin-top: 14px">
+<sc-for list="{{items}}" as="it" hint-placeholder-count="4">
+<div style="padding: 0 20px">
+<div style="padding: 16px 0 6px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid #1C1D1F">
+<span style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 17px; font-variant-numeric: tabular-nums">{{it.date}}</span>
+<span style="font-size: 13px; color: #56595F; font-variant-numeric: tabular-nums">{{it.week}} {{it.time}}</span>
+<span style="margin-left: auto; font-size: 12px; font-weight: 500; color: #A8352A; font-variant-numeric: tabular-nums">剩 {{it.days}} 天</span>
+</div>
+<div style="padding: 12px 0 14px; display: flex; gap: 12px; border-bottom: 1px solid #E3DDD1">
+<div style="flex-grow: 1; min-width: 0">
+<div style="font-size: 12px; color: #6D7076">{{it.region}}</div>
+<sc-if value="{{it.linked}}" hint-placeholder-val="{{ false }}">
+<a href="Detail.dc.html" style="display: block; margin-top: 3px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55; color: #1C1D1F">{{it.title}}</a>
+</sc-if>
+<sc-if value="{{it.plain}}" hint-placeholder-val="{{ true }}">
+<div style="margin-top: 3px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">{{it.title}}</div>
+</sc-if>
+<div style="margin-top: 5px; font-size: 12px; line-height: 1.6; color: #56595F">{{it.what}}</div>
+</div>
+<button type="button" aria-label="{{it.remindLabel}}" aria-pressed="{{it.reminded}}" onClick="{{it.toggle}}" style="{{it.bellStyle}}">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"></path><path d="M10 20.5a2.2 2.2 0 0 0 4 0"></path></svg>
+</button>
+</div>
+</div>
+</sc-for>
+</div>
+
+<p style="margin: 18px 20px 0; font-size: 12px; line-height: 1.75; color: #6D7076">截止时间逐条取自原文。一个通知有多个截止时间（如企业申报、市级推荐）时，按申报单位的截止时间排列，其余写在下方。申报请在主管部门的系统办理，有据不提供填报入口。</p>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const range = st.range || '30';
+    const reminded = st.reminded || {};
+    const limit = { '7': 7, '14': 14, '30': 30, all: 9999 }[range];
+    const DUE = [
+      { id: 'nx', day: 16, date: '10月16日', week: '周五', time: '', days: 20, region: '宁夏 · 科技厅', title: '自治区科技厅关于组织申报2027年度自治区科技金融补助的通知', what: '第一批推荐截止' },
+      { id: 'ln', day: 18, date: '10月18日', week: '周日', time: '', days: 22, region: '辽宁 · 工信厅', title: '辽宁省工业和信息化厅关于组织开展2026年三季度辽宁省制造业固定资产贷款贴息及担保补贴项目申报工作的通知', what: '企业申报截止（原文：逾期申报平台自动关闭）· 市级推荐 10月20日', link: true },
+      { id: 'jx', day: 23, date: '10月23日', week: '周五', time: '17:00', days: 27, region: '江西 · 科技厅', title: '关于组织申报2026年度江西省技术创新中心的通知', what: '依托单位网上提交截止 · 推荐部门审核 10月29日 17:00' },
+      { id: 'hb', day: 26, date: '10月26日', week: '周一', time: '17:00', days: 30, region: '湖北 · 科技厅', title: '省科技厅关于组织申报2026年部分省级技术创新计划项目的通知', what: '申报单位网上申报截止 · 推荐单位审核 10月28日 17:00' },
+      { id: 'gz', day: 29, date: '10月29日', week: '周四', time: '18:00', days: 33, region: '贵州 · 科技厅', title: '省科技厅关于发布2026年决策科学项目申报指南的通知', what: '主管部门系统网上填报截止 · 9月29日 9:00 起开放' },
+    ];
+    const count = (n) => DUE.filter((d) => d.days <= n).length;
+    const segBase = 'height: 34px; display: flex; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 5px; font-family: inherit; font-size: 13px; cursor: pointer; ';
+    const ranges = [
+      { key: '7', label: '7 天内', count: count(7) },
+      { key: '14', label: '14 天内', count: count(14) },
+      { key: '30', label: '30 天内', count: count(30) },
+      { key: 'all', label: '全部', count: DUE.length },
+    ].map((r) => ({
+      ...r,
+      style: segBase + (r.key === range ? 'background: #1C1D1F; color: #F6F3EC; font-weight: 500' : 'background: transparent; color: #56595F'),
+      pick: () => this.setState({ range: r.key }),
+    }));
+    const dueByDay = {};
+    DUE.forEach((d) => { dueByDay[d.day] = d; });
+    const cells = [];
+    for (let i = 0; i < 3; i++) cells.push({ label: '', numStyle: 'font-size: 14px', dotStyle: 'width: 5px; height: 5px' });
+    for (let d = 1; d <= 31; d++) {
+      const weekend = (3 + d - 1) % 7 >= 5;
+      const due = dueByDay[d];
+      const inRange = due && due.days <= limit;
+      const numStyle = 'font-size: 14px; line-height: 1.2; font-variant-numeric: tabular-nums; ' + (due ? 'font-weight: 700; color: #1C1D1F' : (weekend ? 'color: #8A8D92' : 'color: #3A3C40'));
+      const dotStyle = 'width: 5px; height: 5px; border-radius: 50%; ' + (due ? (inRange ? 'background: #A8352A' : 'background: #C9C2B5') : 'background: transparent');
+      cells.push({ label: String(d), numStyle, dotStyle });
+    }
+    cells.push({ label: '', numStyle: 'font-size: 14px', dotStyle: 'width: 5px; height: 5px' });
+    const bellBase = 'width: 40px; height: 40px; flex-shrink: 0; align-self: center; display: flex; align-items: center; justify-content: center; border-radius: 50%; cursor: pointer; ';
+    const items = DUE.filter((d) => d.days <= limit).map((d) => {
+      const on = !!reminded[d.id];
+      return {
+        ...d,
+        linked: !!d.link,
+        plain: !d.link,
+        reminded: on ? 'true' : 'false',
+        remindLabel: on ? '已设截止提醒' : '设截止提醒',
+        bellStyle: bellBase + (on ? 'background: #A8352A; color: #FFFFFF; border: 1px solid #A8352A' : 'background: #FFFFFF; color: #56595F; border: 1px solid #D8D0C2'),
+        toggle: () => this.setState({ reminded: { ...reminded, [d.id]: !on } }),
+      };
+    });
+    const rangeName = { '7': '7 天', '14': '14 天', '30': '30 天', all: '' }[range];
+    return {
+      ranges,
+      cells,
+      items,
+      isEmpty: items.length === 0,
+      emptyTitle: '未来 ' + rangeName + '没有截止的申报事项',
+      show30: () => this.setState({ range: '30' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>有据 · 我的</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F6F3EC}
+a{color:#1F3F75;text-decoration:none}a:hover{color:#16305A}
+</style>
+</helmet>
+<div style="width: 390px; height: 1120px; position: relative; overflow: hidden; background: #F6F3EC; color: #1C1D1F; font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif; font-size: 14px; line-height: 1.6">
+
+<header style="height: 48px; display: flex; align-items: center; justify-content: center; position: relative">
+<span style="font-size: 16px; font-weight: 500">我的</span>
+<div aria-hidden="true" style="position: absolute; right: 10px; top: 8px; width: 87px; height: 32px; box-sizing: border-box; border: 1px solid #DCD5C8; border-radius: 16px; background: #FBF9F4; display: flex; align-items: center">
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1D1F"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="2.3"></circle><circle cx="19" cy="12" r="1.7"></circle></svg></div>
+<div style="width: 1px; height: 18px; background: #DCD5C8"></div>
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"></circle><circle cx="12" cy="12" r="2.6" fill="#1C1D1F" stroke="none"></circle></svg></div>
+</div>
+</header>
+
+<div style="margin: 16px 20px 0; display: flex; align-items: center; gap: 14px">
+<span aria-hidden="true" style="width: 52px; height: 52px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #E9E3D7">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="8.5" r="3.5"></circle><path d="M5 20c1.2-3.6 4-5.5 7-5.5s5.8 1.9 7 5.5"></path></svg>
+</span>
+<div style="flex-grow: 1">
+<div style="font-size: 17px; font-weight: 500">未登录</div>
+<div style="font-size: 12px; color: #6D7076">登录后同步关注、收藏和导出记录</div>
+<div style="font-size: 12px; color: #6D7076">登录即表示同意<a href="Me.dc.html">《用户协议》</a>和<a href="Me.dc.html">《隐私保护指引》</a></div>
+</div>
+<button type="button" style="height: 36px; padding: 0 14px; background: #1C1D1F; border: 0; border-radius: 6px; font-family: inherit; font-size: 14px; color: #F6F3EC; cursor: pointer">微信登录</button>
+</div>
+
+<div style="margin-top: 22px; border-top: 1px solid #1C1D1F">
+<a href="Search.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.6" stroke-linejoin="round"><path d="M12 4l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.4l-4.8 2.5.9-5.4-3.9-3.8 5.4-.8z"></path></svg>
+<span style="flex-grow: 1; font-size: 15px">收藏</span>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+<a href="Files.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"></path><path d="M7.5 10.5L12 15l4.5-4.5"></path><path d="M5 19.5h14"></path></svg>
+<span style="flex-grow: 1; font-size: 15px">导出记录</span>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+<a href="Me.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20.5V4"></path><path d="M6 4.5h11l-2.2 3.8L17 12H6"></path></svg>
+<div style="flex-grow: 1">
+<div style="font-size: 15px">纠错</div>
+<div style="font-size: 12px; color: #6D7076">字段和原文不一致、名单状态有变化，告诉我们</div>
+</div>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+<a href="Me.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+<div style="flex-grow: 1">
+<div style="font-size: 15px">申请覆盖</div>
+<div style="font-size: 12px; color: #6D7076">你关心的地区、部门或栏目还没有？</div>
+</div>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+</div>
+
+<section aria-labelledby="cover-title" style="margin: 26px 20px 0">
+<h2 id="cover-title" style="margin: 0; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 18px">数据从哪里来</h2>
+<div style="margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid #1C1D1F; border-bottom: 1px solid #E3DDD1">
+<div style="padding: 10px 0 12px">
+<div style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 24px; line-height: 1.2; font-variant-numeric: tabular-nums">72</div>
+<div style="font-size: 12px; color: #56595F">政府网站栏目</div>
+</div>
+<div style="padding: 10px 0 12px 14px; border-left: 1px solid #E3DDD1">
+<div style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 24px; line-height: 1.2; font-variant-numeric: tabular-nums">28</div>
+<div style="font-size: 12px; color: #56595F">个省 + 国家部委</div>
+</div>
+<div style="padding: 10px 0 12px 14px; border-left: 1px solid #E3DDD1">
+<div style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 24px; line-height: 1.2; font-variant-numeric: tabular-nums">1–4</div>
+<div style="font-size: 12px; color: #56595F">次 / 天检查</div>
+</div>
+</div>
+<p style="margin: 12px 0 0; font-size: 13px; line-height: 1.75; color: #3A3C40">只收录政府网站公开发布的文件，每条都能点回原文。有据是企业服务信息整理工具，不是政府平台，也不代办申报。网站拒绝程序访问的，我们尊重，不绕过：广西、甘肃暂未覆盖；浙江正在接入。</p>
+</section>
+
+<div style="margin-top: 22px; border-top: 1px solid #E3DDD1">
+<a href="Me.dc.html" style="display: flex; align-items: center; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F"><span style="flex-grow: 1; font-size: 15px">用户协议与隐私保护指引</span><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></a>
+<a href="Me.dc.html" style="display: flex; align-items: center; padding: 14px 20px; border-bottom: 1px solid #E3DDD1; color: #1C1D1F"><span style="flex-grow: 1; font-size: 15px">设置</span><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></a>
+</div>
+
+<div style="margin-top: 28px; display: flex; flex-direction: column; align-items: center; gap: 6px">
+<span aria-hidden="true" style="width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; background: #A8352A; color: #F6F3EC; border-radius: 3px; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 16px; line-height: 1; box-shadow: inset 0 0 0 2px #A8352A, inset 0 0 0 3px #F6F3EC">据</span>
+<span style="font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 13px; letter-spacing: 3px; color: #3A3C40">每条都有出处</span>
+</div>
+
+<nav aria-label="主导航" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding-bottom: 30px; background: #FBF9F4; border-top: 1px solid #E3DDD1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr))">
+<a href="Main.dc.html" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; color: #6D7076; font-size: 11px">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4.2-4.2"></path></svg>
+<span>找答案</span>
+</a>
+<a href="Follow.dc.html" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; color: #6D7076; font-size: 11px">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"></path><path d="M10 20.5a2.2 2.2 0 0 0 4 0"></path></svg>
+<span>关注</span>
+</a>
+<a href="Files.dc.html" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; color: #6D7076; font-size: 11px">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5h7l4 4v13H6v-16.5z"></path><path d="M14 3.5V8h4"></path><path d="M9 12.5h6M9 16h6"></path></svg>
+<span>文件</span>
+</a>
+<a href="Me.dc.html" aria-current="page" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; color: #1C1D1F; font-size: 11px; font-weight: 500">
+<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8.5" r="3.5"></circle><path d="M5 20c1.2-3.6 4-5.5 7-5.5s5.8 1.9 7 5.5"></path></svg>
+<span>我的</span>
+</a>
+</nav>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1120}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

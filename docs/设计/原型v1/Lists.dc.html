@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>有据 · 查名单</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F6F3EC}
+a{color:#1F3F75;text-decoration:none}a:hover{color:#16305A}
+</style>
+</helmet>
+<div style="width: 390px; height: 1180px; position: relative; overflow: hidden; background: #F6F3EC; color: #1C1D1F; font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif; font-size: 14px; line-height: 1.6">
+
+<header style="height: 48px; display: flex; align-items: center; justify-content: center; position: relative">
+<a href="Main.dc.html" aria-label="返回" style="position: absolute; left: 8px; top: 4px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>
+</a>
+<span style="font-size: 16px; font-weight: 500">查名单</span>
+<div aria-hidden="true" style="position: absolute; right: 10px; top: 8px; width: 87px; height: 32px; box-sizing: border-box; border: 1px solid #DCD5C8; border-radius: 16px; background: #FBF9F4; display: flex; align-items: center">
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1D1F"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="2.3"></circle><circle cx="19" cy="12" r="1.7"></circle></svg></div>
+<div style="width: 1px; height: 18px; background: #DCD5C8"></div>
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"></circle><circle cx="12" cy="12" r="2.6" fill="#1C1D1F" stroke="none"></circle></svg></div>
+</div>
+</header>
+
+<div style="padding: 14px 20px 0">
+<h1 style="margin: 0; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 22px; line-height: 1.4">这家企业上过哪些名单？</h1>
+<p style="margin: 6px 0 0; font-size: 13px; color: #56595F">高新技术企业、专精特新、科技型中小企业、企业技术中心等。公示和正式公布分开标注。</p>
+</div>
+
+<form role="search" style="margin: 16px 20px 0; display: flex; gap: 8px">
+<div style="flex-grow: 1; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 8px">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4.2-4.2"></path></svg>
+<input type="search" aria-label="企业全称" placeholder="输入企业或机构全称" style="flex-grow: 1; min-width: 0; height: 42px; border: 0; outline: none; background: transparent; font-family: inherit; font-size: 15px; color: #1C1D1F">
+</div>
+<button type="submit" style="width: 72px; height: 48px; background: #1C1D1F; border: 0; border-radius: 8px; color: #F6F3EC; font-family: inherit; font-size: 15px; font-weight: 500; cursor: pointer">查询</button>
+</form>
+<p style="margin: 8px 20px 0; font-size: 12px; color: #6D7076">按企业全称逐行比对名单原文；名称相近的企业会分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。</p>
+
+<section aria-labelledby="recent-title" style="margin-top: 30px">
+<div style="padding: 0 20px; display: flex; align-items: baseline; justify-content: space-between">
+<h2 id="recent-title" style="margin: 0; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 19px">最近发布的名单</h2>
+<span style="font-size: 12px; color: #6D7076">本周 70 份</span>
+</div>
+
+<div style="margin-top: 12px; padding: 0 20px; display: flex; gap: 8px; flex-wrap: wrap">
+<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; background: #1C1D1F; color: #F6F3EC; border-radius: 4px; font-size: 13px">全部</span>
+<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 4px; font-size: 13px">科技型中小企业</span>
+<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 4px; font-size: 13px">专精特新</span>
+<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 4px; font-size: 13px">高新技术企业</span>
+<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 4px; font-size: 13px">绿色制造</span>
+</div>
+
+<div style="margin-top: 14px; border-top: 1px solid #1C1D1F">
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid #56595F; border-radius: 2px; background: #FFFFFF">正式公布</span><span style="font-size: 12px; color: #6D7076">北京 · 企业技术中心</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">北京市经济和信息化局关于公布2026年新创建北京市企业技术中心名单的通知</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">北京市经济和信息化局 · 09-24</div>
+</div>
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px dashed #56595F; border-radius: 2px; color: #56595F">公示</span><span style="font-size: 12px; color: #6D7076">上海 · 科技型中小企业</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">关于上海市2026年第六批拟入库科技型中小企业名单的公示</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">上海市科学技术委员会 · 09-24</div>
+</div>
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid #56595F; border-radius: 2px; background: #FFFFFF">正式公布</span><span style="font-size: 12px; color: #6D7076">西藏 · 绿色制造</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">关于公布西藏自治区2026年度绿色制造名单的通知</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">西藏自治区经济和信息化厅 · 09-24</div>
+</div>
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px dashed #56595F; border-radius: 2px; color: #56595F">公示</span><span style="font-size: 12px; color: #6D7076">新疆 · 绿色工厂</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">2026年度自治区级绿色工厂拟定名单公示</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">新疆维吾尔自治区工业和信息化厅 · 09-23</div>
+</div>
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid #56595F; border-radius: 2px; background: #FFFFFF">正式公布</span><span style="font-size: 12px; color: #6D7076">山西 · 专精特新</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">山西省工业和信息化厅关于公布2026年专精特新中小企业名单的通知</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">山西省工业和信息化厅 · 09-22</div>
+</div>
+<div style="padding: 14px 20px 13px; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; gap: 8px"><span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px dashed #56595F; border-radius: 2px; color: #56595F">公示</span><span style="font-size: 12px; color: #6D7076">河南 · 高新技术企业</span></div>
+<div style="margin-top: 6px; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.55">关于河南省2026年度第三批拟更名和重大变化高新技术企业的公示</div>
+<div style="margin-top: 5px; font-size: 12px; color: #6D7076; font-variant-numeric: tabular-nums">河南省科学技术厅 · 09-22</div>
+</div>
+</div>
+</section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

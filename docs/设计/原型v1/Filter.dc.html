@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>有据 · 筛选</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F6F3EC}
+a{color:#1F3F75;text-decoration:none}a:hover{color:#16305A}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: #F6F3EC; color: #1C1D1F; font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif; font-size: 14px; line-height: 1.6">
+
+<div aria-hidden="true">
+<div style="height: 48px; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 500">搜索</div>
+<div style="margin: 6px 20px 0; height: 46px; display: flex; align-items: center; padding: 0 14px; background: #FFFFFF; border: 1px solid #1C1D1F; border-radius: 8px; font-size: 15px">科技型中小企业</div>
+<div style="margin: 18px 20px 0; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 16px; line-height: 1.55">关于2026年第4批入库科技型中小企业名单的公告</div>
+<div style="margin: 18px 20px 0; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 16px; line-height: 1.55">山东省2026年第4批拟入库科技型中小企业名单公示</div>
+</div>
+
+<div aria-hidden="true" style="position: absolute; inset: 0; background: rgba(28, 29, 31, 0.46)"></div>
+
+<section role="dialog" aria-modal="true" aria-labelledby="filter-title" style="position: absolute; left: 0; right: 0; bottom: 0; height: 676px; box-sizing: border-box; background: #FBF9F4; border-radius: 14px 14px 0 0; display: flex; flex-direction: column">
+<div style="height: 54px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; position: relative; border-bottom: 1px solid #E3DDD1">
+<h2 id="filter-title" style="margin: 0; font-size: 16px; font-weight: 500">筛选</h2>
+<a href="Search.dc.html" aria-label="关闭" style="position: absolute; right: 8px; top: 7px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center">
+<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+</a>
+</div>
+
+<div style="flex-grow: 1; overflow: hidden; padding: 4px 20px 0">
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="5">
+<div style="padding: 14px 0 4px">
+<div style="display: flex; align-items: baseline; gap: 8px">
+<span style="font-size: 14px; font-weight: 500">{{g.title}}</span>
+<span style="font-size: 12px; color: #6D7076">{{g.hint}}</span>
+</div>
+<div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px">
+<sc-for list="{{g.chips}}" as="c" hint-placeholder-count="4">
+<button type="button" aria-pressed="{{c.pressed}}" onClick="{{c.pick}}" style="{{c.style}}">{{c.label}}</button>
+</sc-for>
+</div>
+<sc-if value="{{g.hasNote}}" hint-placeholder-val="{{ false }}">
+<div style="margin-top: 8px; font-size: 12px; color: #6D7076">{{g.note}}</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+
+<div style="flex-shrink: 0; padding: 10px 16px 32px; display: grid; grid-template-columns: 1fr 2fr; gap: 10px; border-top: 1px solid #E3DDD1">
+<button type="button" onClick="{{reset}}" style="height: 46px; background: #FFFFFF; border: 1px solid #D8D0C2; border-radius: 8px; font-family: inherit; font-size: 15px; color: #1C1D1F; cursor: pointer">重置</button>
+<a href="Search.dc.html" style="height: 46px; display: flex; align-items: center; justify-content: center; background: #1C1D1F; border-radius: 8px; font-size: 15px; font-weight: 500; color: #F6F3EC">查看结果</a>
+</div>
+</section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const initial = { region: ['全国'], type: ['名单与公示'], status: [], time: ['近 30 天'], dept: [] };
+    const sel = st.sel || initial;
+    const GROUPS = [
+      { key: 'region', title: '地区', hint: '可多选', note: '广西、甘肃暂未覆盖，浙江正在接入', options: ['全国', '国家部委', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'] },
+      { key: 'type', title: '类型', hint: '可多选', options: ['申报通知', '名单与公示', '政策文件', '其他'] },
+      { key: 'status', title: '名单状态', hint: '可多选', options: ['公示', '正式公布'] },
+      { key: 'time', title: '发布时间', hint: '单选', options: ['近 7 天', '近 30 天', '今年', '不限'] },
+      { key: 'dept', title: '发文部门', hint: '可多选', options: ['科技部门', '工信部门', '其他部门'] },
+    ];
+    const chipBase = 'height: 34px; padding: 0 12px; border-radius: 4px; font-family: inherit; font-size: 13px; cursor: pointer; ';
+    const next = (key, option, on) => {
+      const cur = sel[key];
+      if (key === 'time') return [option];
+      if (key === 'region') {
+        if (option === '全国') return ['全国'];
+        const rest = on ? cur.filter((x) => x !== option) : cur.filter((x) => x !== '全国').concat(option);
+        return rest.length ? rest : ['全国'];
+      }
+      return on ? cur.filter((x) => x !== option) : cur.concat(option);
+    };
+    const groups = GROUPS.map((g) => ({
+      title: g.title,
+      hint: g.hint,
+      hasNote: !!g.note,
+      note: g.note || '',
+      chips: g.options.map((o) => {
+        const on = sel[g.key].indexOf(o) >= 0;
+        return {
+          label: o,
+          pressed: on ? 'true' : 'false',
+          style: chipBase + (on ? 'background: #1C1D1F; color: #F6F3EC; border: 1px solid #1C1D1F' : 'background: #FFFFFF; color: #1C1D1F; border: 1px solid #D8D0C2'),
+          pick: () => this.setState({ sel: { ...sel, [g.key]: next(g.key, o, on) } }),
+        };
+      }),
+    }));
+    return {
+      groups,
+      reset: () => this.setState({ sel: { region: ['全国'], type: [], status: [], time: ['不限'], dept: [] } }),
+    };
+  }
+}
+</script>
+</body>
+</html>
