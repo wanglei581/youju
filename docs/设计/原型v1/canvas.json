@@ -1,0 +1,24 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-09-25T18:52:00Z"},
+  "title": "有据小程序原型 v1",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 390, "h": 1360, "title": "找答案（首页）", "is_interactive": true},
+    "Search.dc.html": {"x": 470, "y": 0, "w": 390, "h": 1160, "title": "搜索结果", "is_interactive": true},
+    "Filter.dc.html": {"x": 940, "y": 0, "w": 390, "h": 844, "title": "筛选", "is_interactive": true},
+    "Detail.dc.html": {"x": 1410, "y": 0, "w": 390, "h": 1400, "title": "文件详情", "is_interactive": true},
+    "Calendar.dc.html": {"x": 1880, "y": 0, "w": 390, "h": 1240, "title": "申报日历", "is_interactive": true},
+    "Lists.dc.html": {"x": 0, "y": 1780, "w": 390, "h": 1180, "title": "查名单", "is_interactive": true},
+    "Follow.dc.html": {"x": 470, "y": 1780, "w": 390, "h": 1240, "title": "关注", "is_interactive": true},
+    "Files.dc.html": {"x": 940, "y": 1780, "w": 390, "h": 844, "title": "文件", "is_interactive": true},
+    "Me.dc.html": {"x": 1410, "y": 1780, "w": 390, "h": 1120, "title": "我的", "is_interactive": true}
+  },
+  "order": ["Main.dc.html", "Search.dc.html", "Filter.dc.html", "Detail.dc.html", "Calendar.dc.html", "Lists.dc.html", "Follow.dc.html", "Files.dc.html", "Me.dc.html"],
+  "notes": {
+    "row1": {"x": 0, "y": -250, "text": "主流程：找答案 → 搜索 → 筛选 → 文件详情 → 申报日历", "kind": "title1", "maxW": 2270},
+    "row2": {"x": 0, "y": 1530, "text": "查名单 · 关注 · 文件 · 我的", "kind": "title1", "maxW": 1800}
+  },
+  "designSystems": []
+}

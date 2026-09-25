@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>有据 · 文件详情</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F6F3EC}
+a{color:#1F3F75;text-decoration:none}a:hover{color:#16305A}
+</style>
+</helmet>
+<div style="width: 390px; height: 1400px; position: relative; overflow: hidden; background: #F6F3EC; color: #1C1D1F; font-family: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif; font-size: 14px; line-height: 1.6">
+
+<header style="height: 48px; display: flex; align-items: center; justify-content: center; position: relative">
+<a href="Main.dc.html" aria-label="返回" style="position: absolute; left: 8px; top: 4px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>
+</a>
+<span style="font-size: 16px; font-weight: 500">文件详情</span>
+<div aria-hidden="true" style="position: absolute; right: 10px; top: 8px; width: 87px; height: 32px; box-sizing: border-box; border: 1px solid #DCD5C8; border-radius: 16px; background: #FBF9F4; display: flex; align-items: center">
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="#1C1D1F"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="2.3"></circle><circle cx="19" cy="12" r="1.7"></circle></svg></div>
+<div style="width: 1px; height: 18px; background: #DCD5C8"></div>
+<div style="flex-grow: 1; display: flex; justify-content: center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1C1D1F" stroke-width="1.8"><circle cx="12" cy="12" r="7.5"></circle><circle cx="12" cy="12" r="2.6" fill="#1C1D1F" stroke="none"></circle></svg></div>
+</div>
+</header>
+
+<article style="padding: 10px 20px 0">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+<span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid #1C1D1F; border-radius: 2px">申报</span>
+<span style="font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid #D8D0C2; border-radius: 2px; color: #56595F">资金支持</span>
+<span style="font-size: 12px; color: #6D7076">辽宁 · 省级 · 工信</span>
+</div>
+
+<h1 style="margin: 12px 0 0; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 21px; line-height: 1.55; letter-spacing: 0.2px">辽宁省工业和信息化厅关于组织开展2026年三季度辽宁省制造业固定资产贷款贴息及担保补贴项目申报工作的通知</h1>
+
+<div style="margin-top: 10px; font-size: 13px; color: #56595F; font-variant-numeric: tabular-nums">辽宁省工业和信息化厅 · 2026年9月24日发布</div>
+
+<section aria-label="截止时间" style="margin-top: 20px; background: #FFFFFF; border: 1px solid #E3DDD1; border-radius: 6px">
+<div style="padding: 16px 16px 14px; display: flex; align-items: flex-end; justify-content: space-between">
+<div>
+<div style="font-size: 12px; color: #56595F">企业申报截止</div>
+<div style="margin-top: 2px; display: flex; align-items: baseline; gap: 8px">
+<span style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 30px; line-height: 1.15; color: #A8352A; font-variant-numeric: tabular-nums">10月18日</span>
+<span style="font-size: 13px; color: #56595F">周日</span>
+</div>
+</div>
+<div style="text-align: right">
+<div style="font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 22px; line-height: 1.2; font-variant-numeric: tabular-nums">22</div>
+<div style="font-size: 12px; color: #56595F">天后截止</div>
+</div>
+</div>
+<div style="padding: 10px 16px; border-top: 1px solid #EFEAE0; display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #56595F; font-variant-numeric: tabular-nums">
+<span>市级推荐截止 10月20日 周二</span>
+<span style="font-size: 12px">逾期平台自动关闭</span>
+</div>
+<button type="button" onClick="{{toggleRemind}}" style="{{remindStyle}}">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"></path><path d="M10 20.5a2.2 2.2 0 0 0 4 0"></path></svg>
+<span>{{remindLabel}}</span>
+</button>
+</section>
+
+<section aria-labelledby="facts-title" style="margin-top: 26px">
+<h2 id="facts-title" style="margin: 0 0 4px; font-size: 13px; font-weight: 500; color: #56595F; letter-spacing: 1px">要点</h2>
+<dl style="margin: 0; border-top: 1px solid #1C1D1F">
+<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid #E3DDD1">
+<dt style="width: 64px; flex-shrink: 0; font-size: 13px; color: #6D7076">发文机关</dt>
+<dd style="margin: 0; font-size: 14px">辽宁省工业和信息化厅</dd>
+</div>
+<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid #E3DDD1">
+<dt style="width: 64px; flex-shrink: 0; font-size: 13px; color: #6D7076">文号</dt>
+<dd style="margin: 0; font-size: 14px; font-variant-numeric: tabular-nums">辽工信投资〔2026〕130号</dd>
+</div>
+<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid #E3DDD1">
+<dt style="width: 64px; flex-shrink: 0; font-size: 13px; color: #6D7076">申报方向</dt>
+<dd style="margin: 0; font-size: 14px">产业结构优化升级项目；智改数转和绿色低碳发展项目等</dd>
+</div>
+<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid #E3DDD1">
+<dt style="width: 64px; flex-shrink: 0; font-size: 13px; color: #6D7076">申报对象</dt>
+<dd style="margin: 0; font-size: 14px">制造业企业（以 GB/T 4754-2017 为准，含软件和信息技术服务业）</dd>
+</div>
+<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid #E3DDD1">
+<dt style="width: 64px; flex-shrink: 0; font-size: 13px; color: #6D7076">适用地区</dt>
+<dd style="margin: 0; font-size: 14px">辽宁省</dd>
+</div>
+</dl>
+</section>
+
+<figure style="margin: 26px 0 0">
+<figcaption style="font-size: 13px; font-weight: 500; color: #56595F; letter-spacing: 1px">原文摘录 · 二、申报条件</figcaption>
+<blockquote style="margin: 10px 0 0; padding: 0; font-family: 'Noto Serif SC', serif; font-weight: 600; font-size: 15px; line-height: 1.85; color: #3A3C40">“（一）申报单位原则上应为制造业企业（以GB/T 4754-2017《国民经济行业分类》为准，含软件和信息技术服务业）。（二）财务管理机构和制度健全，纳税记录良好。（三）诚信守法，近三年未发生重大（含）以上安全、环保、质量事故（事件），未被纳入严重失信主体名单。”</blockquote>
+</figure>
+
+<section aria-labelledby="att-title" style="margin-top: 26px">
+<h2 id="att-title" style="margin: 0 0 4px; font-size: 13px; font-weight: 500; color: #56595F; letter-spacing: 1px">附件 2</h2>
+<div style="border-top: 1px solid #1C1D1F">
+<a href="https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<span aria-hidden="true" style="width: 34px; height: 40px; flex-shrink: 0; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; box-sizing: border-box; border: 1px solid #D8D0C2; border-radius: 2px; background: #FFFFFF; font-size: 9px; font-weight: 700; color: #56595F; letter-spacing: 0.5px">PDF</span>
+<span style="flex-grow: 1; font-size: 14px; line-height: 1.5">附件1 辽宁省制造业固定资产贷款贴息及担保补贴实施细则（2026年）</span>
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+<a href="https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #E3DDD1; color: #1C1D1F">
+<span aria-hidden="true" style="width: 34px; height: 40px; flex-shrink: 0; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; box-sizing: border-box; border: 1px solid #D8D0C2; border-radius: 2px; background: #FFFFFF; font-size: 9px; font-weight: 700; color: #56595F; letter-spacing: 0.5px">XLSX</span>
+<span style="flex-grow: 1; font-size: 14px; line-height: 1.5">附件2 银行贷款贴息项目审核情况汇总表</span>
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6D7076" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+</a>
+</div>
+</section>
+
+<section aria-label="出处" style="margin-top: 26px; padding: 14px 0; border-top: 1px solid #E3DDD1; border-bottom: 1px solid #E3DDD1">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+<div>
+<div style="font-size: 12px; color: #6D7076">原文出处</div>
+<div style="font-size: 14px; margin-top: 2px">辽宁省工业和信息化厅网站 · 通知通告</div>
+</div>
+<a href="https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml" style="flex-shrink: 0; display: flex; align-items: center; gap: 4px; font-size: 14px">
+<span>gxt.ln.gov.cn</span>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1F3F75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
+</a>
+</div>
+<p style="margin: 10px 0 0; font-size: 12px; line-height: 1.7; color: #6D7076">以上要点由有据按原文逐条整理，不含改写，以原文为准。2026年9月26日核对。发现不一致？<a href="Me.dc.html">纠错</a></p>
+</section>
+</article>
+
+<div style="position: absolute; left: 0; right: 0; bottom: 0; height: 90px; box-sizing: border-box; padding: 8px 16px 30px; background: #FBF9F4; border-top: 1px solid #E3DDD1; display: flex; align-items: center; gap: 4px">
+<button type="button" style="width: 52px; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; background: none; border: 0; padding: 0; font-family: inherit; font-size: 11px; color: #56595F; cursor: pointer">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="1.6" stroke-linejoin="round"><path d="M12 4l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.4l-4.8 2.5.9-5.4-3.9-3.8 5.4-.8z"></path></svg>
+<span>收藏</span>
+</button>
+<a href="Files.dc.html" style="width: 52px; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 11px; color: #56595F">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"></path><path d="M7.5 10.5L12 15l4.5-4.5"></path><path d="M5 19.5h14"></path></svg>
+<span>导出</span>
+</a>
+<a href="Me.dc.html" style="width: 52px; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 11px; color: #56595F">
+<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#56595F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20.5V4"></path><path d="M6 4.5h11l-2.2 3.8L17 12H6"></path></svg>
+<span>纠错</span>
+</a>
+<a href="https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml" style="margin-left: auto; height: 44px; padding: 0 22px; display: flex; align-items: center; gap: 6px; background: #1C1D1F; color: #F6F3EC; border-radius: 8px; font-size: 15px; font-weight: 500">
+<span>查看原文</span>
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F6F3EC" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
+</a>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const on = !!(this.state && this.state.remind);
+    const base = 'width: 100%; height: 46px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-top: 1px solid #EFEAE0; border-radius: 0 0 6px 6px; font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; ';
+    return {
+      remindLabel: on ? '已设提醒：截止前 3 天和前 1 天通知你' : '设截止提醒',
+      remindStyle: base + (on ? 'background: #F6F3EC; color: #56595F' : 'background: #FFFFFF; color: #A8352A'),
+      toggleRemind: () => this.setState({ remind: !on }),
+    };
+  }
+}
+</script>
+</body>
+</html>
