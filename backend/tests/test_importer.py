@@ -25,6 +25,7 @@ def test_mode_for_statuses() -> None:
     assert mode_for("本机无法访问，需排查") == ("manual", False)
     assert mode_for("网站拒绝爬虫标识访问（尊重，不伪装）") == ("blocked", False)
     assert mode_for("robots 禁止抓取（尊重）") == ("blocked", False)
+    assert mode_for("重复入口（与通知公告栏目内容相同，停用）") == ("manual", False)
     assert mode_for("未知状态") == ("manual", False)
 
 
@@ -67,5 +68,8 @@ def test_real_source_list_imports(session) -> None:
     summary = import_sources(session, DEFAULT_SOURCES_CSV)
     assert summary.created >= 90
     assert summary.enabled >= 70
+    # 同一个列表页只启用一个入口
+    enabled = session.scalars(select(Source.url).where(Source.enabled.is_(True))).all()
+    assert "http://kjt.shandong.gov.cn/col/col359318/index.html" not in enabled
     provinces = set(session.scalars(select(Source.province).where(Source.level == "省级")))
     assert len(provinces) == 31

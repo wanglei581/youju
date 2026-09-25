@@ -20,6 +20,7 @@ _MODES: list[tuple[str, str, bool]] = [
     ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
     ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
     ("本机无法访问", "manual", False),
+    ("重复入口", "manual", False),  # 与另一个栏目内容相同，不重复抓取
 ]
 
 
