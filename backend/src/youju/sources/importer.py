@@ -1,0 +1,86 @@
+"""把 docs/数据来源/全国来源清单 CSV 导入 sources 表。
+
+现阶段 CSV 是来源信息的唯一依据：重复导入会按网址更新来源的描述、抓取方式和启用状态，
+但不会改动健康状态和检查记录。运营后台上线后，改为以后台为准。
+"""
+
+import csv
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from youju.models import Source
+
+# 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
+_MODES: list[tuple[str, str, bool]] = [
+    ("已验证", "static", True),
+    ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
+    ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
+    ("本机无法访问", "manual", False),
+    # 网站明确拒绝（拦截爬虫标识或 robots 禁止）：尊重，不抓取、不伪装
+    ("网站拒绝爬虫", "blocked", False),
+    ("robots 禁止", "blocked", False),
+]
+
+
+@dataclass
+class ImportSummary:
+    created: int = 0
+    updated: int = 0
+    enabled: int = 0
+    disabled: int = 0
+
+
+def mode_for(verification_status: str) -> tuple[str, bool]:
+    for prefix, mode, enabled in _MODES:
+        if verification_status.startswith(prefix):
+            return mode, enabled
+    return "manual", False
+
+
+def _parse_day(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def import_sources(session: Session, csv_path: Path) -> ImportSummary:
+    summary = ImportSummary()
+    with csv_path.open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    for row in rows:
+        url = row["栏目URL"].strip()
+        if not url:
+            continue
+        status = row.get("验证状态", "").strip()
+        fetch_mode, enabled = mode_for(status)
+        fields = {
+            "level": row["层级"].strip(),
+            "province": row["省份"].strip(),
+            "dept": row["部门"].strip(),
+            "dept_full_name": row["部门全称"].strip(),
+            "column_name": row["栏目名称"].strip(),
+            "fetch_mode": fetch_mode,
+            "enabled": enabled,
+            "verification_status": status or None,
+            "verified_on": _parse_day(row.get("验证日期", "")),
+            "note": (row.get("备注") or "").strip() or None,
+        }
+        source = session.scalar(select(Source).where(Source.url == url))
+        if source is None:
+            session.add(Source(url=url, parser_config={}, **fields))
+            summary.created += 1
+        else:
+            for key, value in fields.items():
+                setattr(source, key, value)
+            summary.updated += 1
+        if enabled:
+            summary.enabled += 1
+        else:
+            summary.disabled += 1
+    session.commit()
+    return summary

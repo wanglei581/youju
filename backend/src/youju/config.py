@@ -1,0 +1,35 @@
+"""运行配置：全部从环境变量（前缀 YOUJU_）或 backend/.env 读取。"""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_P0_v1.csv"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
+
+    database_url: str = "postgresql+psycopg://localhost:55432/youju"
+
+    # 透明标识：保留常见浏览器标识以兼容政府网站，同时在末尾写明爬虫身份。
+    user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36 YoujuBot/0.1"
+    )
+    request_timeout: float = 20.0
+    # 同一网站两次请求之间至少间隔的秒数。
+    per_host_interval: float = 3.0
+    # 同时抓取的网站数；同一网站内始终串行。
+    max_workers: int = 8
+    # 连续失败多少次后把来源标记为 failing 并告警。
+    failure_alert_threshold: int = 3
+
+    sources_csv: Path = DEFAULT_SOURCES_CSV
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

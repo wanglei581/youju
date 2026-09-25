@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="apple-touch-fullscreen" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <title>通知公告 | 广东省工业和信息化厅</title>
+    <meta name="SiteName" content="广东省工业和信息化厅网站">
+    <meta name="SiteDomain" content="gdii.gd.gov.cn">
+    <meta name="SiteIDCode" content="4400000029">
+    <meta name="ColumnName" content="政务公开-通知公告">
+    <meta name="ColumnDescription" content="广东省工业和信息化厅网站政务公开栏目，提供我厅通知公告政务公开">
+    <meta name="ColumnKeywords" content="广东省工业和信息化厅,广东,经济,贸易,信息化,信息产业,工业,经济运行,软件业,信息服务业,技术改造,技术创新,装备制造,能源节约,循环经济,产业转移,数字经济,大数据产业,民用爆炸物,中小企业,民营企业,互联网,网络,无线电" />	
+    <meta name="ColumnType" content="通知公告">
+    <link rel="stylesheet" type="text/css" href="//gdii.gd.gov.cn/images/global20240708.css"/>
+    <script src="//gdii.gd.gov.cn/images/jquery.js"></script>
+    <script>
+        $(function () {
+            $(".yqlj_cont span").on('click',function () {
+                if($(this).hasClass("show")){
+                    $(this).removeClass("show");
+                    $(this).siblings("ul").hide();
+                }else{
+                    $(this).addClass("show");
+                    $(this).siblings("ul").show();
+                }
+            })
+			$(".yqlj_cont").on('mouseleave',function(){
+			    $(this).children("span").removeClass("show");
+			    $(this).children("ul").hide();
+			 })
+        })
+    </script>
+</head>
+<body>
+<script src="images/jzf.js" type="text/javascript"></script>
+<div class="head">
+    <div class="top">
+        <div class="info pc">
+            <!-- <span class="text">今天是：2023年8月28日 星期一</span> -->
+			<span class="text" id="timetable"></span>
+            <div class="right_cont">
+                <ul>
+                    <li><a href="http://www.gdzwfw.gov.cn/znkf/index.html?region=440000" target="_blank">智能互动</a></li>
+                    <li><a href="https://mail.gdei.gov.cn" target="_blank">邮箱</a></li>
+					<li><a href="javascript:ClickObject1()">简体</a></li>
+                    <li><a href="javascript:ClickObject2()">繁体</a></li>
+                    <li id="dkwza"><a>无障碍</a></li>
+					<script src="//service.gd.gov.cn/wza/wza.js?app=gdii"></script>
+                    <li class="zzzs"><a id="slh"><img src="images/index20240708_17.png" alt=""/>长者助手</a></li>
+					<script src="https://slhsrv.southcn.com/wza/slh.js?app=gdii.gd.gov.cn"></script>
+                    <li class="ipv6">网站支持IPV6</li>
+                </ul>
+            </div>
+        </div>
+        <div class="title">
+            <div class="conter">
+                <div class="logo"><img src="images/index20240708_9.png" alt=""></div>
+                <div class="search pc">
+					<form class="form-wrapper cf" target="_blank" action="https://search.gd.gov.cn/search/all/171">
+					<input type="hidden" name="c" value="index">
+					<input type="hidden" name="a" value="local">
+                    <input name="keywords" type="text" autocomplete="off" placeholder="请输入关键词" class="" />
+                    <button type="submit" class="btn"><img src="images/index20240708_4.png" alt=""></button>
+					</form>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="menu">
+        <div class="conter">
+            <ul>
+                <li class="hover"><a href="http://gdii.gd.gov.cn">首页</a></li>
+                <li><a href="https://gdii.gd.gov.cn/tpxw987/index.html">新闻动态</a></li>                <li><a href="https://gdii.gd.gov.cn/zwgk1880/index.html">政务公开</a></li>                <li><a href="http://www.gdzwfw.gov.cn/portal/branch-hall?orgCode=696453330" target="_blank">政务服务</a></li>
+                <li><a href="https://gdii.gd.gov.cn/gzhd2166/index.html">互动交流</a></li>                <li><a href="https://gdii.gd.gov.cn/jmzt/index.html">政务专题</a></li>            </ul>
+        </div>
+    </div>
+    <div class="app_search app">
+        <div class="conter" id="search">
+			<form class="form-wrapper cf" target="_blank" action="https://search.gd.gov.cn/search/all/171" style="float:right">
+			<input type="hidden" name="c" value="index">
+			<input type="hidden" name="a" value="local">
+            <input name="keywords" type="text"  autocomplete="off" placeholder="请输入关键词" class="" onfocus="this.value=''" />
+            <button type="submit" class="btn_app"><img src="images/index20240708_36.png" alt=""></button>
+			</form>
+        </div>
+    </div>
+</div>
+<script language="javascript">
+		function get_time() {
+			var date = new Date();
+			var year = "",
+				month = "",
+				day = "",
+				week = "",
+				hour = "",
+				minute = "",
+				second = "";
+			year = date.getFullYear();
+			month = add_zero(date.getMonth() + 1);
+			day = add_zero(date.getDate());
+			week = date.getDay();
+			switch(date.getDay()) {
+				case 0:
+					val = "星期天";
+					break
+				case 1:
+					val = "星期一";
+					break
+				case 2:
+					val = "星期二";
+					break
+				case 3:
+					val = "星期三";
+					break
+				case 4:
+					val = "星期四";
+					break
+				case 5:
+					val = "星期五";
+					break
+				case 6:
+					val = "星期六";
+					break
+			}
+			hour = add_zero(date.getHours());
+			minute = add_zero(date.getMinutes());
+			second = add_zero(date.getSeconds());
+			document.getElementById("timetable").innerHTML = "今天是: " + year + "年" + month + "月" + day + "日 " + val;
+			//document.getElementById("timetable").innerHTML = " " + year + "年" + month + "月" + day + "日 " + hour + ":" + minute + ":" + second + val;
+		}
+	
+		function add_zero(temp) {
+			if(temp < 10) return "0" + temp;
+			else return temp;
+		}
+		setInterval("get_time()", 1000);
+	</script>
+	<script>
+	// IE8 兼容配置
+	window.onload = function() {
+	cnillWzaInstance.startInit("http://gdii.gd.gov.cn/gxtwd/cnill_polyfill.swf");
+	}
+	document.getElementById("dkwza").onclick = function() {
+	// 执行实例的init方法
+	cnillWzaInstance.init(); // cnillWzaInstance为全局变量
+	}
+	// 适老化
+	    document.getElementById("slh").onclick = function() {
+	        // 执行实例的init方法
+	        slhInstance.init();  // cnillWzaInstance为全局变量
+	   }
+	</script>
+<div class="main gl">
+    <div class="crumb"><div class="conter"><a href="https://gdii.gd.gov.cn/">首页</a>&nbsp;&gt;&nbsp;<a href="https://gdii.gd.gov.cn/zwgk1880/">政务公开</a>&nbsp;&gt;&nbsp;<a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/">通知公告</a></div></div>
+    <div class="conter">
+        <div class="gl_cont">
+            <div class="list">
+                <ul>
+					                    <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4845648.html" title="2025年度政府网站工作年度报表" target="_blank">2025年度政府网站工作年度报表</a><span class="date">2026-01-20</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4960472.html" title="广东省工业和信息化厅关于公布佛北战新产业园大塘化工园区通过认定的通知" target="_blank">广东省工业和信息化厅关于公布佛北战新产业园大塘化工园区通过认定的通知</a><span class="date">2026-09-24</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4960467.html" title="广东省工业和信息化厅关于信义超薄玻璃（东莞）有限公司两条日产500吨玻璃生产线关停拆除情况的通告" target="_blank">广东省工业和信息化厅关于信义超薄玻璃（东莞）有限公司两条日产500吨玻璃生产线关停拆除情况的通告</a><span class="date">2026-09-23</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4960459.html" title="广东省工业和信息化厅关于广东粤北联合钢铁有限公司短流程炼钢项目产能置换方案的公示" target="_blank">广东省工业和信息化厅关于广东粤北联合钢铁有限公司短流程炼钢项目产能置换方案的公示</a><span class="date">2026-09-24</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4960451.html" title="广东省工业和信息化厅关于公开遴选组团参加第四届中国海洋装备博览会服务机构的通告" target="_blank">广东省工业和信息化厅关于公开遴选组团参加第四届中国海洋装备博览会服务机构的通告</a><span class="date">2026-09-23</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4959716.html" title="广东省工业和信息化厅关于转发协助推荐《2026中国制造盛典》内容素材的通知" target="_blank">广东省工业和信息化厅关于转发协助推荐《2026中国制造盛典》内容素材的通知</a><span class="date">2026-09-20</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4959713.html" title="广东省工业和信息化厅关于办公楼低压配电房电柜更换项目服务机构的公示" target="_blank">广东省工业和信息化厅关于办公楼低压配电房电柜更换项目服务机构的公示</a><span class="date">2026-09-21</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4959711.html" title="广东省工业和信息化厅 中国建设银行广东省分行印发产业培育“善建智造”综合金融服务方案的通知" target="_blank">广东省工业和信息化厅 中国建设银行广东省分行印发产业培育“善建智造”综合金融服务方案的通知</a><span class="date">2026-09-22</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4959704.html" title="广东省工业和信息化厅关于开展2026年数字化转型典型案例（“数字三品”方向）征集工作的通知" target="_blank">广东省工业和信息化厅关于开展2026年数字化转型典型案例（“数字三品”方向）征集工作的通知</a><span class="date">2026-09-22</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4958592.html" title="广东省工业和信息化厅关于2026年省级制造业中试平台名单的公示" target="_blank">广东省工业和信息化厅关于2026年省级制造业中试平台名单的公示</a><span class="date">2026-09-20</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4958582.html" title="广东省工业和信息化厅关于组织申报2026年全国工业领域电力需求侧管理典型案例的通知" target="_blank">广东省工业和信息化厅关于组织申报2026年全国工业领域电力需求侧管理典型案例的通知</a><span class="date">2026-09-20</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4958569.html" title="广东省工业和信息化厅 广东省科学技术厅 广东省财政厅 国家税务总局广东省税务局关于开展2026年度享受增值税加计抵减政策的先进制造业企业名单制定工作的通知" target="_blank">广东省工业和信息化厅 广东省科学技术厅 广东省财政厅 国家税务总局广东省税务局关于开展2026年度享受增值税加计抵减政策的先进制造业企业名单制定工作的通知</a><span class="date">2026-09-20</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4958145.html" title="广东省工业和信息化厅关于2026年度省绿色工厂绿色工业园区名单的公示" target="_blank">广东省工业和信息化厅关于2026年度省绿色工厂绿色工业园区名单的公示</a><span class="date">2026-09-18</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4958137.html" title="广东省工业和信息化厅转发工业和信息化部中小企业局关于开展2026年中小企业“高校对接深度行—西安站”活动的通知" target="_blank">广东省工业和信息化厅转发工业和信息化部中小企业局关于开展2026年中小企业“高校对接深度行—西安站”活动的通知</a><span class="date">2026-09-19</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4957656.html" title="广东省工业和信息化厅关于开展服务型制造创新发展高地储备入库工作的通知" target="_blank">广东省工业和信息化厅关于开展服务型制造创新发展高地储备入库工作的通知</a><span class="date">2026-09-18</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4957640.html" title="广东省工业和信息化厅关于粤港清洁生产伙伴标志企业（第十八批）名单的公示" target="_blank">广东省工业和信息化厅关于粤港清洁生产伙伴标志企业（第十八批）名单的公示</a><span class="date">2026-09-18</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4957630.html" title="广东省工业和信息化厅关于组织申报2026年工业和信息化领域绿色能源应用典型场景与案例的通知" target="_blank">广东省工业和信息化厅关于组织申报2026年工业和信息化领域绿色能源应用典型场景与案例的通知</a><span class="date">2026-09-18</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4957622.html" title="创客广东大赛组委会关于第十一届“创客中国”广东省中小企业创新创业大赛暨第十届“创客广东”大赛获奖名单的公示" target="_blank">创客广东大赛组委会关于第十一届“创客中国”广东省中小企业创新创业大赛暨第十届“创客广东”大赛获奖名单的公示</a><span class="date">2026-09-18</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4956873.html" title="广东省工业和信息化厅关于广东省无线电频率台站管理系统升级改造项目采购结果的公示" target="_blank">广东省工业和信息化厅关于广东省无线电频率台站管理系统升级改造项目采购结果的公示</a><span class="date">2026-09-17</span></li>
+                                        <li><a href="https://gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4956865.html" title="广东省工业和信息化厅中国建设银行广东省分行关于金融赋能中小企业特色产业集群高质量发展的通知（联合发文）" target="_blank">广东省工业和信息化厅中国建设银行广东省分行关于金融赋能中小企业特色产业集群高质量发展的通知（联合发文）</a><span class="date">2026-09-17</span></li>
+                                    </ul>
+            </div>
+            <div class="page">
+				                <a class="first" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index.html">第一页</a>
+                                <a class="current" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index.html">1</a>
+                                <a class="normal" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_2.html">2</a>
+                                <a class="normal" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_3.html">3</a>
+                                <a class="normal" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_4.html">4</a>
+                                <a class="normal" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_5.html">5</a>
+                                <a class="next" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_2.html">下一页</a>
+                                <a class="last" href="https://gdii.gd.gov.cn/zwgk/tzgg1011/index_40.html">最后一页</a>
+                            </div>
+        </div>
+    </div>
+</div>
+<div class="footer">
+    <div class="yqlj">
+        <div class="conter">
+            <div class="yqlj_cont">
+                <span>上级政府部门</span>
+                <ul style="display: none;">
+					                    <li><a href="http://www.gov.cn">中国政府网</a></li>
+                                        <li><a href="https://www.gd.gov.cn/">广东省人民政府</a></li>
+                                        <li><a href="http://www.miit.gov.cn/">中华人民共和国工业和信息化部</a></li>
+                                    </ul>
+            </div>
+            <div class="yqlj_cont">
+                <span>省市工信部门</span>
+                <ul style="display: none;">
+                                        <li><a href="http://jxj.beijing.gov.cn/">北京市经信局</a></li>
+                                        <li><a href="http://gyxxh.tj.gov.cn/">天津市工信局</a></li>
+                                        <li><a href="http://gxt.hebei.gov.cn">河北省工信厅</a></li>
+                                        <li><a href="http://gxt.shanxi.gov.cn/">山西省工信厅</a></li>
+                                        <li><a href="http://gxt.nmg.gov.cn/">内蒙古工信厅</a></li>
+                                        <li><a href="http://gxt.ln.gov.cn/">辽宁省工信厅</a></li>
+                                        <li><a href="http://gxt.jl.gov.cn/">吉林省工信厅</a></li>
+                                        <li><a href="http://gxt.hlj.gov.cn/">黑龙江工信厅</a></li>
+                                        <li><a href="http://sheitc.sh.gov.cn/">上海市经信委</a></li>
+                                        <li><a href="http://gxt.jiangsu.gov.cn/">江苏省工信厅</a></li>
+                                        <li><a href="http://jxt.zj.gov.cn/">浙江省经信厅</a></li>
+                                        <li><a href="http://jx.ah.gov.cn/">安徽省经信厅</a></li>
+                                        <li><a href="http://gxt.fujian.gov.cn/">福建省工信厅</a></li>
+                                        <li><a href="https://gxt.jiangxi.gov.cn/">江西省工信厅</a></li>
+                                        <li><a href="http://gxt.shandong.gov.cn/">山东省工信厅</a></li>
+                                        <li><a href="http://gxt.henan.gov.cn/">河南省工信厅</a></li>
+                                        <li><a href="http://jxt.hubei.gov.cn/">湖北省经信厅</a></li>
+                                        <li><a href="http://gxt.hunan.gov.cn/">湖南省工信厅</a></li>
+                                        <li><a href="http://gxt.gxzf.gov.cn/">广西工信厅</a></li>
+                                        <li><a href="http://iitb.hainan.gov.cn/">海南工信厅</a></li>
+                                        <li><a href="http://jxt.sc.gov.cn/">四川省经信厅</a></li>
+                                        <li><a href="http://gxt.yn.gov.cn/">云南省工信厅</a></li>
+                                        <li><a href="http://gxt.gansu.gov.cn/">甘肃省工信厅</a></li>
+                                        <li><a href="https://gxt.nx.gov.cn/">宁夏工信厅</a></li>
+                                        <li><a href="http://www.gdeto.gov.hk">香港特区驻粤办事处</a></li>
+                                    </ul>
+            </div>
+            <div class="yqlj_cont">
+                <span>地市工信部门</span>
+                <ul style="display: none;">
+                                        <li><a href="http://gxj.gz.gov.cn/">广州</a></li>
+                                        <li><a href="http://gxj.sz.gov.cn/">深圳</a></li>
+                                        <li><a href="http://www.zhuhai.gov.cn/gxj/gkmlpt/index">珠海</a></li>
+                                        <li><a href="https://www.shantou.gov.cn/jxj/">汕头</a></li>
+                                        <li><a href="http://fsiit.foshan.gov.cn/">佛山</a></li>
+                                        <li><a href="http://gxj.sg.gov.cn/">韶关</a></li>
+                                        <li><a href="http://www.heyuan.gov.cn/hysgxj/gkmlpt/index">河源</a></li>
+                                        <li><a href="https://www.meizhou.gov.cn/zwgk/zfjg/sgyhxxhj/">梅州</a></li>
+                                        <li><a href="http://gxj.huizhou.gov.cn/">惠州</a></li>
+                                        <li><a href="http://www.shanwei.gov.cn/swjx/">汕尾</a></li>
+                                        <li><a href="http://im.dg.gov.cn/">东莞</a></li>
+                                        <li><a href="http://www.zs.gov.cn/gxj/index.html">中山</a></li>
+                                        <li><a href="http://www.jiangmen.gov.cn/bmpd/jmsgyhxxhj/">江门</a></li>
+                                        <li><a href="http://www.yangjiang.gov.cn/yjgxj/gkmlpt/index">阳江</a></li>
+                                        <li><a href="https://www.zhanjiang.gov.cn/zjgxj/">湛江</a></li>
+                                        <li><a href="http://jxj.maoming.gov.cn/">茂名</a></li>
+                                        <li><a href="http://www.zhaoqing.gov.cn/zqgxj/gkmlpt/index">肇庆</a></li>
+                                        <li><a href="http://www.gdqy.gov.cn/channel/qysgyhxxhj/">清远</a></li>
+                                        <li><a href="http://www.chaozhou.gov.cn/zwgk/szfgz/sgyhxxhj/">潮州</a></li>
+                                        <li><a href="http://www.jieyang.gov.cn/jyjxj/">揭阳</a></li>
+                                        <li><a href="http://www.yunfu.gov.cn/gxj/">云浮</a></li>
+                                    </ul>
+            </div>
+            <div class="yqlj_cont">
+                <span>直属单位</span>
+                <ul style="display: none;">
+                                        <li><a href="http://www.cismef.com.cn/">中博会事务局</a></li>
+                                        <li><a href="https://www.968115.cn/">省中小企业服务中心</a></li>
+                                    </ul>
+            </div>
+            <!-- <div class="yqlj_cont">
+                <span>工信专业网站</span>
+                <ul style="display: none;">
+                                        <li><a href="http://gdii.gd.gov.cn/szgx/ywtb-gzc/cms/index">数字工信平台（试运行）</a></li>
+                                        <li><a href="http://qyzh.gddsj.gov.cn">企业情况综合数据采集系统</a></li>
+                                        <li><a href="http://210.76.81.107/home">广东省技术改造监测系统</a></li>
+                                        <li><a href="http://www.cismef.com.cn/">中国中小企业博览会</a></li>
+                                        <li><a href="http://www.pprd.org.cn/">泛珠三角合作与发展论坛</a></li>
+                                    </ul>
+            </div> -->
+        </div>
+    </div>
+    <div class="conter">
+        <div class="info">
+            <div class="left">
+                <!-- <a href=""><img src="images/index20240708_2.png" alt=""></a> -->
+				<script id="_jiucuo_" sitecode='4400000029' src='https://zfwzgl.www.gov.cn/exposure/jiucuo.js'></script>
+				<!-- <script type="text/javascript">document.write(unescape("%3Cspan id='_ideConac' %3E%3C/span%3E%3Cscript src='http://dcs.conac.cn/js/20/000/0000/45004352/CA200000000450043520002.js' type='text/javascript'%3E%3C/script%3E"));</script> -->
+                <a href="https://bszs.conac.cn/sitename?method=show&id=05E9CE39652D7884E053012819AC17A5" class="app"><img src="//gdii.gd.gov.cn/images/index20240708_1.png" alt=""></a>
+                <!-- <a href="" class="app"><img src="images/index20240708_3.png" alt=""></a> -->
+            </div>
+            <div class="center">
+                <div class="xglj"><a href="https://gdii.gd.gov.cn/wzsm2320/index.html">网站声明</a>|<a href="https://gdii.gd.gov.cn/map2030/index.html">网站地图</a>|<a href="https://gdii.gd.gov.cn/gdxw1010/index.html">隐私声明</a>|<a href="https://gdii.gd.gov.cn/jbtsdh/index.html">业务投诉</a>|<a href="https://gdii.gd.gov.cn/lxff/index.html">联系我们</a></div>
+                <div><span>主办单位：广东省工业和信息化厅</span><span>值班室电话：020-83133200</span></div>
+                <div><span>地址：广州市吉祥路100号 广州市东风中路305号5号楼</span><span class="nowarp">邮编：510030</span><span class="nowarp">办公时间：8：30-17：30</span></div>
+                <div><span><a target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=44010402001345"><img src="//gdii.gd.gov.cn/images/gn.png" style="width:20px; height:20px; display:inline-block;vertical-align: -6px;" alt="粤公网安备 44010402001345号" title="粤公网安备 44010402001345号"/>粤公网安备 44010402001345号</a></span><span class="nowarp"><a href="https://beian.miit.gov.cn">粤ICP备10019568号</a></span><span class="nowarp">网站标识码4400000029</span></div>
+            </div>
+            <div class="right">
+                <!-- <a href=""><img src="images/index20240708_1.png" alt=""></a> -->
+				<script type="text/javascript">document.write(unescape("%3Cspan id='_ideConac' %3E%3C/span%3E%3Cscript src='https://dcs.conac.cn/js/20/000/0000/45004352/CA200000000450043520002.js' type='text/javascript'%3E%3C/script%3E"));</script>
+                <!-- <a href=""><img src="images/index20240708_3.png" alt=""></a> -->
+            </div>
+        </div>
+    </div>
+</div>
+<script type="text/javascript" src="//gdii.gd.gov.cn/images/layer.js"></script>
+<link rel="stylesheet" href="//gdii.gd.gov.cn/images/layer.css">
+        <script type="text/javascript">
+
+            //点击外链询问离开
+            var cklink = 1;
+
+            function extLink(act) {
+                if (act == false) {
+                    cklink = 0;
+                } else {
+                    cklink = 1;
+                }
+            }
+
+            $(document).on('click', 'a', function () {
+                if (cklink == 0) return;
+                if ($(this).hasClass('ncolink')) return;
+                var o = $(this);
+                var href = o.attr('href');
+                var host = getHost(href);
+                var ckhost = host.indexOf('gov.cn');
+
+                if (ckhost >= 0) ckhost = 1;
+
+                if (host != 'null' && ckhost <= 0 && typeof (href) != 'undefined' && o.data('ask') != '1') {
+                    o.removeAttr('href');
+                    var jx = true;
+                    var w = '480px';
+                    var h = '170px';
+                    if (window.screen.width < 768) {
+                        w = '90%';
+                        h = '170px';
+                    }
+                    var cf = layer.confirm('<div style="margin-top:30px; font-size:16px;">您即将离开本站，访问非党政机关网站，请您知悉。</div>', {
+                        btn: ['继续访问', '放弃'],
+                        title: false,
+                        shade: 0.7,
+                        area: [w, h],
+                        cancel: function (index) {
+                            o.attr('href', href);
+                        }
+                    }, function () {
+                        o.attr('href', href);
+                        o.attr('target', '_blank');
+                        o.data('ask', '1');
+                        layer.close(cf);
+                        o[0].click();
+                    }, function () {
+                        o.attr('href', href);
+                    });
+                }
+            });
+            //截取URL域名部份
+            var getHost = function (url) {
+                var host = "null";
+                if (typeof url == "undefined" || null == url) url = window.location.href;
+                var regex = /.*\:\/\/([^\/]*).*/;
+                var match = url.match(regex);
+                if (typeof match != "undefined" && null != match) host = match[1];
+                return host;
+            };
+
+
+            //来源
+            $(function () {
+                var nr = $('#js_ly').text();
+                if (nr == 0) {
+                    $('#js_ly').text('广东省工业和信息化厅');
+                }
+
+            });
+        
+        </script>
+</body>
+</html>
