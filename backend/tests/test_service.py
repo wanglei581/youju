@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from tests.conftest import read_fixture_html
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem
-from youju.crawler.service import SKIPPED_MESSAGE, check_source, crawl_sources, save_items
+from youju.crawler.service import check_source, crawl_sources, save_items
 from youju.models import Document, Source, SourceCheck
 
 
@@ -172,20 +172,24 @@ def test_url_variants_are_the_same_document(session) -> None:
     assert (doc.url_key, doc.url) == ("kw.beijing.gov.cn/a/1.html", variants[0].url)
 
 
-def test_overlapping_check_of_same_source_is_skipped(session_factory) -> None:
+def test_no_transaction_or_lock_is_held_while_fetching(session_factory) -> None:
     with session_factory() as s:
         source_id = make_source(s).id
-    fetcher = FakeFetcher({})  # 被跳过的检查不应发起任何请求
-    with session_factory() as running:
-        # 模拟另一个正在进行的检查：它锁住了来源这一行
-        running.execute(select(Source).where(Source.id == source_id).with_for_update())
-        with session_factory() as s:
-            assert check_source(s, s.get(Source, source_id), fetcher) is None
-        results = crawl_sources(session_factory, [source_id], fetcher)
-        assert [(r.status, r.error) for r in results] == [("skipped", SKIPPED_MESSAGE)]
-        running.rollback()
+
     with session_factory() as s:
-        assert s.scalar(select(func.count(SourceCheck.id))) == 0
+
+        class CheckingFetcher:
+            def fetch(self, fetch_url: str) -> FetchResult:
+                # 网络请求期间：本会话没有打开的事务，别的会话能立即锁住来源行
+                assert not s.in_transaction()
+                with session_factory() as other:
+                    stmt = select(Source).where(Source.id == source_id).with_for_update(nowait=True)
+                    assert other.scalars(stmt).first() is not None
+                    other.rollback()
+                return page(fetch_url, LIST_V1)
+
+        check = check_source(s, s.get(Source, source_id), CheckingFetcher())
+    assert (check.status, check.items_new, check.is_baseline) == ("ok", 2, True)
 
 
 def test_baseline_is_decided_after_taking_the_lock(session_factory) -> None:

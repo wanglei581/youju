@@ -22,7 +22,6 @@ log = logging.getLogger(__name__)
 PARSE_EMPTY_MESSAGE = (
     "页面可以访问，但没有识别到列表条目：可能网站改版，或列表由脚本加载需要浏览器渲染"
 )
-SKIPPED_MESSAGE = "另一个检查正在处理这个来源，本次跳过"
 
 
 class Fetcher:
@@ -115,19 +114,19 @@ def _update_health(
         source.health = "degraded"
 
 
-def _lock_source(session: Session, source: Source) -> bool:
-    """锁住来源这一行，直到本次检查提交。已有检查在进行（行已被锁）时返回 False。
+def _lock_source(session: Session, source: Source) -> None:
+    """锁住来源这一行直到提交，并重新读取它的状态。
 
-    "是不是第一次成功检查"要在锁内重新读取：两次抓取重叠时，
-    不能都把自己当成第一次，把期间新发布的文件也记成基线。
+    "是不是第一次成功检查"要在锁内重新读取：两次检查同时处理同一来源时，
+    后提交的一方能看到前一方的结果，不会把期间新发布的文件也记成基线。
     """
     stmt = (
         select(Source)
         .where(Source.id == source.id)
-        .with_for_update(skip_locked=True)
+        .with_for_update()
         .execution_options(populate_existing=True)
     )
-    return session.scalars(stmt).first() is not None
+    session.scalars(stmt).one()
 
 
 def check_source(
@@ -136,28 +135,27 @@ def check_source(
     fetcher: Fetcher,
     failure_threshold: int = 3,
     today: date | None = None,
-) -> SourceCheck | None:
-    """检查一个来源。另一个检查正在处理同一来源时跳过，返回 None。"""
-    if not _lock_source(session, source):
-        session.rollback()
-        return None
+) -> SourceCheck:
+    """检查一个来源：先抓取和识别，再在一个短事务里入库、记录结果。
+
+    网络请求可能持续几十秒，期间不开数据库事务、不持有锁（开始前先结束会话里已有的事务）。
+    """
+    url, parser_config = source.url, source.parser_config
+    session.commit()
     started = _now()
     t0 = time.monotonic()
-    result = fetcher.fetch(source.url)
+    result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
-    new_count = 0
-    baseline = False
     if result.status == "ok":
-        items = extract_items(
-            result.text, result.final_url or source.url, source.parser_config, today=today
-        )
-        if items:
-            # 来源第一次成功检查时看到的条目算基线，不计入"新增"
-            baseline = source.last_success_at is None
-            new_count = save_items(session, source, items, baseline=baseline, seen_at=started)
-        else:
+        items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+        if not items:
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
+
+    _lock_source(session, source)
+    # 来源第一次成功检查时看到的条目算基线，不计入"新增"
+    baseline = bool(items) and source.last_success_at is None
+    new_count = save_items(session, source, items, baseline=baseline, seen_at=started)
     finished = _now()
     check = SourceCheck(
         source_id=source.id,
@@ -204,9 +202,6 @@ def crawl_sources(
                     session.rollback()
                     log.exception("检查来源 #%s 时出错", source_id)
                     summaries.append(CheckSummary(source_id, "internal_error", 0, 0, "内部错误"))
-                    continue
-                if check is None:
-                    summaries.append(CheckSummary(source_id, "skipped", 0, 0, SKIPPED_MESSAGE))
                     continue
                 summaries.append(
                     CheckSummary(
