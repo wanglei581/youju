@@ -1,0 +1,1 @@
+.setting-title{font-size:48rpx;font-weight:800;color:#0b3633;margin:10rpx 0 22rpx}.setting-actions{display:flex;gap:14rpx;margin-top:22rpx}.setting-result{margin-top:20rpx}.reset{margin-top:22rpx}

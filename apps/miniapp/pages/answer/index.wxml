@@ -1,0 +1,35 @@
+<view class="page page-bar-space">
+  <view class="hero">
+    <view class="hero-top"><text class="eyebrow">INDUSTRY · EVIDENCE</text><text class="hero-mark">研</text></view>
+    <view class="hero-title serif">找到结果，<br/>看清依据。</view>
+    <view class="hero-desc">政策、名单、数据与行业报告，先看经过审核的结果，再追溯发布机构与原站。</view>
+    <view class="hero-bottom"><view class="row"><view class="dot dot-{{healthTone || 'busy'}}"></view><text>{{baseLabel}}</text></view><view bindtap="onOpenSettings">服务设置 ›</view></view>
+  </view>
+
+  <view class="section-head"><text class="section-title">我要查什么</text><text class="section-extra" bindtap="onBrowseSources">浏览来源 ›</text></view>
+  <view class="card search-card">
+    <view class="search-row"><text class="search-glyph">⌕</text><input class="search-input" value="{{query}}" placeholder="政策名称、企业、指标或关键词" placeholder-class="input-placeholder" confirm-type="search" bindinput="onQueryInput" bindconfirm="onSearch" maxlength="100"/><text wx:if="{{query}}" class="search-clear" bindtap="onClearQuery">×</text></view>
+    <view class="filter-grid">
+      <picker range="{{kindOptions}}" range-key="label" value="{{kindIndex}}" bindchange="onKindChange"><view class="picker-value"><text>{{kindOptions[kindIndex].label}}</text><view class="caret"></view></view></picker>
+      <input class="input" value="{{region}}" placeholder="地区" placeholder-class="input-placeholder" bindinput="onRegionInput" maxlength="100"/>
+      <input class="input" value="{{industry}}" placeholder="行业" placeholder-class="input-placeholder" bindinput="onIndustryInput" maxlength="100"/>
+    </view>
+    <view class="btn btn-primary btn-block search-submit" hover-class="btn-hover" bindtap="onSearch">查询已发布资料</view>
+  </view>
+
+  <view class="section-head"><text class="section-title">按任务找</text><text class="section-extra">选择后立即筛选</text></view>
+  <scroll-view scroll-x class="template-scroll"><view class="template-row"><view wx:for="{{templates}}" wx:key="kind" class="template {{kind === item.kind ? 'template-on' : ''}}" data-kind="{{item.kind}}" bindtap="onTemplate"><text class="template-glyph">{{item.glyph}}</text><text class="template-name">{{item.title}}</text><text class="template-hint">{{item.hint}}</text></view></view></scroll-view>
+
+  <view class="section-head"><text class="section-title">查询结果</text><text class="section-extra" wx:if="{{status === 'ready'}}">{{total}} 条{{capped ? '（最多展示 50 条）' : ''}}</text></view>
+  <view class="notice" wx:if="{{status === 'ready' || status === 'empty'}}">本库仅覆盖已导入并审核发布的资料。未查到不等于政策或名单不存在。</view>
+  <view wx:if="{{status === 'loading'}}"><view class="skeleton"><view class="sk-line sk-w-90 sk-tall"></view><view class="sk-line sk-w-70"></view><view class="sk-line sk-w-50"></view></view><view class="skeleton"><view class="sk-line sk-w-70 sk-tall"></view><view class="sk-line sk-w-90"></view></view></view>
+  <state-view wx:elif="{{status === 'error'}}" type="error" title="连接或查询失败" desc="{{errorMessage}}" action-text="重试查询" secondary-text="检查服务设置" bindaction="onSearch" bindsecondary="onOpenSettings"/>
+  <state-view wx:elif="{{status === 'empty'}}" type="empty" title="当前范围没有结果" desc="可以减少筛选条件，或到来源目录查看覆盖范围。" action-text="清空筛选" secondary-text="浏览来源" bindaction="onClearFilters" bindsecondary="onBrowseSources"/>
+  <view wx:elif="{{status === 'ready'}}">
+    <view class="results-toolbar"><text>{{filterSummary || '全部已发布资料'}}</text><text bindtap="onTogglePage">{{pageAllSelected ? '取消本页' : '选择本页'}}</text></view>
+    <resource-card wx:for="{{items}}" wx:key="id" item="{{item}}" selected="{{selectedMap[item.id] || false}}" bindtoggle="onToggle" bindopen="onOpen" bindcopy="onCopy"/>
+    <view class="footnote" wx:if="{{capped}}">这里只展示前 50 条。请补充关键词、地区或行业缩小范围；关注的手动对比也仅覆盖返回的结果。</view>
+  </view>
+  <view class="footnote">本地受控试用版。没有接入公开 AI 问答，也不代表全行业实时覆盖。</view>
+</view>
+<view wx:if="{{selectedCount > 0}}" class="selection-dock"><view class="selection-info"><text class="strong">已选 {{selectedCount}} 条</text><text class="small muted" wx:if="{{selectedOffPage > 0}}">含其他查询 {{selectedOffPage}} 条</text><text class="selection-clear" bindtap="onClearSelection">清空</text></view><view class="selection-actions"><view class="btn btn-secondary btn-sm {{exporting ? 'is-disabled' : ''}}" data-format="xlsx" bindtap="onExport">Excel</view><view class="btn btn-primary btn-sm {{exporting ? 'is-disabled' : ''}}" data-format="docx" bindtap="onExport">Word</view></view></view>

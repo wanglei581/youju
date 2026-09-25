@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "行业政策_小程序交互原型": {
+      "versions": [
+        {
+          "path": "行业政策_小程序交互原型.html",
+          "createdAt": "2026-09-25T05:00:19.339Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-09-25T05:00:19.339Z",
+  "updatedAt": "2026-09-25T05:00:19.339Z"
+}

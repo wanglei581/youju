@@ -1,0 +1,15 @@
+<view class="page detail-page">
+  <state-view wx:if="{{state === 'loading'}}" type="loading" title="正在读取已发布资料"/>
+  <state-view wx:elif="{{state === 'error'}}" type="error" title="资料暂不可用" desc="{{error}}" action-text="重试" bindaction="load"/>
+  <view wx:elif="{{item}}">
+    <view class="eyebrow">SOURCE RECORD · #{{item.id}}</view><view class="detail-title serif">{{item.title}}</view>
+    <view class="detail-tags"><text class="tag tag-{{item.coverageTone}}">{{item.coverageLabel}}</text><text class="tag">{{item.kindLabel}}</text><text wx:if="{{item.region}}" class="tag tag-line">{{item.region}}</text><text wx:if="{{item.industry}}" class="tag tag-line">{{item.industry}}</text></view>
+    <view class="card"><view class="section-title">{{item.verified ? '核验结果' : '当前覆盖'}}</view><view class="detail-answer">{{item.verified ? item.answer : item.coverageDesc}}</view><view wx:if="{{item.evidenceLocator}}" class="notice">证据位置：{{item.evidenceLocator}}</view></view>
+    <view wx:if="{{item.summary}}" class="card"><view class="section-title">资料摘要</view><view class="detail-body" user-select>{{item.summary}}</view></view>
+    <view class="section-head"><text class="section-title">来源与版本</text></view>
+    <view class="card detail-meta"><view><text>发布机构</text><text>{{item.publisher}}</text></view><view><text>来源栏目</text><text>{{item.sourceName}}</text></view><view><text>发布日期</text><text>{{item.publishedAt || '待核'}}</text></view><view><text>使用范围</text><text>{{item.rightsLong}}</text></view><view><text>资料版本</text><text>v{{item.versionNo}} · {{item.statusLabel}}</text></view><view><text>审核日期</text><text>{{item.reviewedDay || '未标注'}}</text></view></view>
+    <view class="notice notice-copper"><text class="notice-title">原站优先</text>{{item.rightsDesc}} 若来源更正或撤回，请以发布机构最新信息为准。</view>
+    <view class="card source-link" bindtap="onCopy"><text class="strong">复制原站地址</text><text class="mono break">{{item.originalUrl}}</text></view>
+    <view class="detail-actions"><view class="btn btn-secondary" bindtap="onSelect">{{selected ? '取消选择' : '加入所选'}}</view><view class="btn btn-primary" data-format="xlsx" bindtap="onExport">导出 Excel</view><view class="btn btn-primary" data-format="docx" bindtap="onExport">导出 Word</view></view>
+  </view>
+</view>

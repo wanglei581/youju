@@ -1,0 +1,13 @@
+<view class="state state-{{type}} {{compact ? 'state-compact' : ''}}" aria-role="status">
+  <view class="state-icon">
+    <view wx:if="{{type === 'loading'}}" class="spinner"></view>
+    <text wx:elif="{{type === 'error'}}" class="state-glyph">!</text>
+    <text wx:else class="state-glyph">{{glyph || '无'}}</text>
+  </view>
+  <view wx:if="{{title}}" class="state-title">{{title}}</view>
+  <view wx:if="{{desc}}" class="state-desc">{{desc}}</view>
+  <view wx:if="{{actionText || secondaryText}}" class="state-actions">
+    <view wx:if="{{actionText}}" class="btn btn-primary btn-sm state-btn" hover-class="btn-hover" aria-role="button" bindtap="onAction">{{actionText}}</view>
+    <view wx:if="{{secondaryText}}" class="btn btn-secondary btn-sm state-btn" hover-class="btn-hover" aria-role="button" bindtap="onSecondary">{{secondaryText}}</view>
+  </view>
+</view>
