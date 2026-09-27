@@ -87,7 +87,8 @@ Page({
     wx.switchTab({ url: '/pages/follow/index' });
   },
 
+  // 覆盖说明：已收录的地区、栏目、最近更新时间和还没收录的省份都在"关于有据"
   goCoverage() {
-    wx.switchTab({ url: '/pages/me/index' });
+    wx.navigateTo({ url: '/pages/about/index' });
   },
 });

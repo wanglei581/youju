@@ -53,3 +53,4 @@
 .pick-all { font-size: 26rpx; }
 .pick-go { margin-left: auto; padding: 0 48rpx; height: 80rpx; }
 .pick-go--off { opacity: 0.4; }
+.empty-note { margin-top: 12rpx; font-size: 24rpx; color: var(--t3); }

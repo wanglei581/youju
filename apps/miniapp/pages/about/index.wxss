@@ -15,3 +15,12 @@
 .row { display: flex; align-items: center; gap: 24rpx; padding: 28rpx 0; border-bottom: 2rpx solid var(--line); }
 .row--last { border-bottom: 0; }
 .row-text { flex: 1; font-size: 30rpx; }
+.region { border-top: 2rpx solid var(--line); }
+.region-row { display: flex; align-items: center; gap: 16rpx; padding: 22rpx 0; }
+.region-name { font-size: 28rpx; color: var(--t1); }
+.region-meta { flex: 1; text-align: right; font-size: 24rpx; }
+.columns { padding: 0 0 16rpx 24rpx; }
+.column { display: flex; justify-content: space-between; gap: 16rpx; padding: 8rpx 0; font-size: 24rpx; }
+.column-name { color: var(--t2); }
+.column-time { flex-shrink: 0; }
+.uncovered { padding-top: 20rpx; border-top: 2rpx solid var(--line); }

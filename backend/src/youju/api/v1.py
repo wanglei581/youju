@@ -42,6 +42,12 @@ PROVINCES = {
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
+# 31 个省级地区（不含港澳台），按国家行政区划顺序；用于"已收录 / 还没收录"（验收 A8）
+_PROVINCE_ORDER = (
+    "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏", "浙江",
+    "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
+    "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆",
+)  # fmt: skip
 _TECH = ("科技",)
 _INDUSTRY = ("工信", "经信", "工业和信息化")
 
@@ -194,12 +200,13 @@ def home(session: SessionDep) -> dict:
         Document.publish_date >= start, Document.publish_date < end
     )
     kinds = [doc_kind(t) for (t,) in session.execute(week).all()]
-    enabled = Source.enabled.is_(True)
-    sources = session.scalar(select(func.count()).select_from(Source).where(enabled)) or 0
+    # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
+    live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
+    sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
     provinces = (
         session.scalar(
             select(func.count(func.distinct(Source.province))).where(
-                enabled, Source.province != "国家"
+                live, Source.province != "国家"
             )
         )
         or 0
@@ -220,6 +227,62 @@ def home(session: SessionDep) -> dict:
             "followed_new": None,
         },
         "items": _items(session, [tuple(r) for r in latest]),
+    }
+
+
+@router.get("/coverage")
+def coverage(session: SessionDep) -> dict:
+    """收录范围（验收 A8）。
+
+    已收录：有启用、且至少成功检查过一次的栏目。栏目数只算成功检查过的；每个地区列出启用的
+    栏目和各自最近一次成功检查的时间（还没成功的时间为空，页面写"正在接入"）。
+    还没收录的地区（国家部委和 31 个省级地区）附原因：网站不允许程序访问（抓取模式 blocked）、
+    正在接入（需浏览器渲染，或已启用但还没成功）、暂未接入。
+    """
+    sources = session.scalars(
+        select(Source).order_by(
+            Source.province, Source.dept_full_name, Source.column_name, Source.id
+        )
+    ).all()
+
+    def iso(value: datetime | None) -> str | None:
+        return value.astimezone(_TZ).isoformat() if value else None
+
+    regions, not_covered = [], []
+    for province in ("国家", *_PROVINCE_ORDER):
+        name = "国家部委" if province == "国家" else province
+        mine = [s for s in sources if s.province == province]
+        enabled = [s for s in mine if s.enabled]
+        lasts = [s.last_success_at for s in enabled if s.last_success_at]
+        if lasts:
+            regions.append(
+                {
+                    "name": name,
+                    "sources": len(lasts),
+                    "lastUpdatedAt": iso(max(lasts)),
+                    "columns": [
+                        {
+                            "name": f"{s.dept_full_name} · {s.column_name}",
+                            "lastUpdatedAt": iso(s.last_success_at),
+                        }
+                        for s in enabled
+                    ],
+                }
+            )
+        elif enabled or any(s.fetch_mode == "browser" for s in mine):
+            not_covered.append({"name": name, "reason": "正在接入"})
+        elif any(s.fetch_mode == "blocked" for s in mine):
+            not_covered.append({"name": name, "reason": "网站不允许程序访问"})
+        else:
+            not_covered.append({"name": name, "reason": "暂未接入"})
+    lasts = [r["lastUpdatedAt"] for r in regions]
+    return {
+        "sources": sum(r["sources"] for r in regions),
+        "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
+        "national": any(r["name"] == "国家部委" for r in regions),
+        "regions": regions,
+        "notCovered": not_covered,
+        "updatedAt": max(lasts) if lasts else None,
     }
 
 

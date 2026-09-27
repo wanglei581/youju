@@ -42,7 +42,8 @@
     <view class="pick-main"><doc-row doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" selecting="{{selecting}}" /></view>
   </view>
   <view wx:if="{{error}}" class="empty">{{error}}</view>
-  <view wx:elif="{{!items.length && !loading}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
+  <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。想要这个地区，可以在"我的 → 申请覆盖"告诉我们</view>
+  <view wx:elif="{{!items.length && !loading}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试<view wx:if="{{notCoveredNote}}" class="empty-note">暂未收录的地区：{{notCoveredNote}}</view></view>
   <view wx:elif="{{items.length < total}}" class="load-more" bindtap="loadMore">已显示 {{items.length}}/{{total}} 份 · <text class="link">{{loading ? '加载中…' : '加载更多'}}</text></view>
   <view wx:elif="{{items.length}}" class="load-more">共 {{items.length}} 份，已全部显示</view>
 </view>

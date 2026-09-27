@@ -86,6 +86,18 @@ function highlight(text, q) {
 // 发文机关超过 11 个字时单独一行，不截断
 const ISSUER_WRAP = 11;
 
+// "今天 10:42"、"9月27日 10:42"，不是今年的带年份"2025年9月27日 10:42"（按手机本地时间）
+function shortTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (day === todayISO()) return `今天 ${hm}`;
+  const year = d.getFullYear() === new Date().getFullYear() ? '' : `${d.getFullYear()}年`;
+  return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
 module.exports = {
+  shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
 };

@@ -1,21 +1,9 @@
 const api = require('../../utils/api.js');
 const exportsLog = require('../../utils/exports.js');
 const { exportDocs, open, exists, removeFiles } = require('../../utils/exporter.js');
-const { todayISO } = require('../../utils/format.js');
+const { shortTime } = require('../../utils/format.js');
 
 const FORMAT_NAME = { xlsx: 'Excel', docx: 'Word' };
-
-function pad(n) {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
-// "今天 10:42" 或 "9月27日 10:42"
-function when(iso) {
-  const d = new Date(iso);
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  return day === todayISO() ? `今天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
-}
 
 // 转发时的文件名：去掉文件名里不能用的字符
 function fileName(record) {
@@ -44,7 +32,7 @@ Page({
         id: r.id,
         badge: r.format.toUpperCase(),
         name: r.label,
-        meta: `${r.count} 份 · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${when(r.at)}`,
+        meta: `${r.count} 份 · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
         expired: !exists(r.path),
       })),
     });

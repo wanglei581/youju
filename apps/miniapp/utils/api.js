@@ -76,6 +76,12 @@ function request(path, params, options) {
   });
 }
 
+// 收录范围：已收录的地区（栏目数、最近更新时间）和还没收录的省份（验收 A8）
+function coverage() {
+  if (isLive()) return request('/api/v1/coverage');
+  return copy(mock.coverage);
+}
+
 function home() {
   if (isLive()) return request('/api/v1/home');
   return copy({ stats: mock.stats, items: mock.home });
@@ -265,7 +271,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
+  isLive, request, coverage, home, search, detail, calendar, lists, lookup, exportFile, feedback,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
