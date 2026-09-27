@@ -340,3 +340,28 @@ def test_extraction_idempotent_after_review(session, seeded) -> None:
     assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
     session.refresh(row)
     assert row.approved_date == date(2026, 10, 5)
+
+
+def test_review_console_page_and_pending_count(client, seeded, session, monkeypatch) -> None:
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="console",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间为10月18日",
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    # 核对台页面本身不含口令，任何人都能打开；数据接口要口令
+    page = client.get("/admin/review")
+    assert page.status_code == 200 and "截止日期核对台" in page.text
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    assert client.get("/api/admin/deadlines/count").status_code == 401
+    headers = {"X-Admin-Token": "secret"}
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
+    item = client.get("/api/admin/deadlines", headers=headers).json()[0]
+    assert item["source"] == "北京市科学技术委员会" and item["publish_date"] == "2026-09-20"
