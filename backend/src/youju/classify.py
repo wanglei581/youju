@@ -1,7 +1,8 @@
 """按标题给文件分类：申报通知 / 名单 / 政策 / 其他，以及名单的状态（公示 / 公布，只照录标题用词）。
 
 同一套关键词既用于 Python（测试、单条判断），也生成 SQL 条件（列表筛选、分页在数据库里完成）。
-规则按顺序匹配：先名单，再申报通知，再政策；都不命中算"其他"。拿不准的归"其他"，不硬判。
+规则按顺序匹配：先排除与企业申报无关的公示（招聘、采购等），再名单，再申报通知，再政策；
+都不命中算"其他"。拿不准的归"其他"，不硬判。
 """
 
 from sqlalchemy import ColumnElement, and_, case, not_, or_
@@ -19,6 +20,26 @@ LIST_WORDS = (
     "拟资助",
     "资助决定",
     "企业更名",
+)
+# 与企业申报无关的公示和名单（招聘、职称评审、采购比选、产能置换、执法检查、督察整改、征求意见等），
+# 标题有名单字样也不算名单，归"其他"。职称、招聘名单列的是个人，也不该放进查名单
+LIST_OFF_TOPIC = (
+    "招聘",
+    "拟聘",
+    "职称",
+    "采购结果",
+    "比选",
+    "中标",
+    "询价",
+    "产能置换",
+    "产能退出",
+    "产能转移",
+    "扩区",
+    "双随机",
+    "执法检查",
+    "督察",
+    "销号",
+    "征求意见",
 )
 # 带名单字样、但其实是在组织一项工作（如"组织开展……名单制定工作的通知"），
 # 且不是公示或公布结果的，算申报通知
@@ -54,7 +75,13 @@ def _is_list(title: str) -> bool:
     return not (_has(title, LIST_APPLY_HINTS) and not _has(title, LIST_RESULT_HINTS))
 
 
+def _off_topic(title: str) -> bool:
+    return _has(title, LIST_WORDS) and _has(title, LIST_OFF_TOPIC)
+
+
 def doc_kind(title: str) -> str:
+    if _off_topic(title):
+        return "其他"
     if _is_list(title):
         return "名单"
     if _has(title, APPLY_WORDS) or _has(title, LIST_WORDS):
@@ -90,12 +117,15 @@ def _any_in(column: ColumnElement[str], words: tuple[str, ...]) -> ColumnElement
 def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     """与 doc_kind 完全相同的判断，写成 SQL 条件。"""
     has_list = _any_in(title, LIST_WORDS)
+    off_topic = and_(has_list, _any_in(title, LIST_OFF_TOPIC))
     is_list = and_(
+        not_(off_topic),
         has_list,
         not_(and_(_any_in(title, LIST_APPLY_HINTS), not_(_any_in(title, LIST_RESULT_HINTS)))),
     )
-    is_apply = and_(not_(is_list), or_(_any_in(title, APPLY_WORDS), has_list))
+    is_apply = and_(not_(off_topic), not_(is_list), or_(_any_in(title, APPLY_WORDS), has_list))
     is_policy = and_(
+        not_(off_topic),
         not_(is_list),
         not_(is_apply),
         _any_in(title, POLICY_WORDS),
