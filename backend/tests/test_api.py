@@ -500,3 +500,51 @@ def test_review_can_clear_time_explicitly(client, seeded, session, monkeypatch) 
     # 已核对的再提交：409
     again = client.post(f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers)
     assert again.status_code == 409
+
+
+def test_pending_duplicates_in_merge_group_are_shown_and_reviewed_once(
+    client, seeded, session, monkeypatch
+) -> None:
+    """同一通知的两个网址归并后，各自抽出的相同候选只列一条、计一条，核对一次两条都处理。"""
+    from youju.models import DocumentMerge
+
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    twin = Document(
+        source_id=doc.source_id,
+        url=doc.url + "?type=2",
+        url_key=doc.url_key + "?type=2",
+        title=doc.title,
+        publish_date=doc.publish_date,
+        first_seen_at=doc.first_seen_at,
+        last_seen_at=doc.last_seen_at,
+    )
+    session.add(twin)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=doc.id, active=True, match_key="k")
+    )
+    rows = [
+        DocumentDeadline(
+            document_id=d.id,
+            fingerprint=f"twin-{d.id}",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间为10月18日",
+            confidence="高",
+            status="pending",
+        )
+        for d in (doc, twin)
+    ]
+    session.add_all(rows)
+    session.commit()
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
+    items = client.get("/api/admin/deadlines", headers=headers).json()
+    assert len(items) == 1 and items[0]["document_id"] == doc.id  # 标题和链接用主文件
+    approve = f"/api/admin/deadlines/{items[0]['id']}/approve"
+    assert client.post(approve, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 0}
+    for row in rows:
+        session.refresh(row)
+        assert row.status == "approved" and row.approved_date == date(2026, 10, 18)

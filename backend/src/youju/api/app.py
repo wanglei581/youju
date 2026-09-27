@@ -492,12 +492,30 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         parsed_time = None
     else:
         parsed_time = row.candidate_time
-    row.status = status
-    row.reviewed_by = body.reviewed_by
-    row.reviewed_at = datetime.now(UTC)
-    if status == "approved":
-        row.approved_date = body.new_date or row.candidate_date
-        row.approved_time = parsed_time
+    # 归并组里同一候选（类型、日期、时间相同）的其他待核对副本一并按同样结果处理，免得重复核对
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    twins = session.scalars(
+        select(DocumentDeadline)
+        .where(
+            DocumentDeadline.document_id.in_(members),
+            DocumentDeadline.status == "pending",
+            DocumentDeadline.kind == row.kind,
+            DocumentDeadline.candidate_date == row.candidate_date,
+            DocumentDeadline.candidate_time.is_(None)
+            if row.candidate_time is None
+            else DocumentDeadline.candidate_time == row.candidate_time,
+        )
+        .with_for_update()
+    ).all()
+    now = datetime.now(UTC)
+    for item in {row, *twins}:
+        item.status = status
+        item.reviewed_by = body.reviewed_by
+        item.reviewed_at = now
+        if status == "approved":
+            item.approved_date = body.new_date or row.candidate_date
+            item.approved_time = parsed_time
     session.commit()
     return {"status": status}
 
