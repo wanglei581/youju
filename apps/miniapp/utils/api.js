@@ -21,23 +21,43 @@ function query(params) {
 
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
-  return new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
+  const err = new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
+  err.status = res ? res.statusCode : 0;
+  return err;
 }
 
-function request(path, params) {
+// 本机记下的已同意协议版本（服务端才是准的；服务端返回 403 时清掉，下次操作重新请求同意）
+const AGREED_KEY = 'youjuAgreedVersion';
+
+function forgetAgreed() {
+  try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 忽略 */ }
+}
+
+// options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
+function request(path, params, options) {
   const url = path + query(params);
+  const method = (options && options.method) || 'GET';
+  const data = options && options.data;
+  const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
     const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
-    const done = (res) => (res.statusCode === 200 ? finish(resolve, res.data) : finish(reject, errorOf(res)));
+    const ok = (code) => code === 200 || code === 201 || code === 204;
+    const done = (res) => {
+      if (ok(res.statusCode)) { finish(resolve, res.data); return; }
+      // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
+      if (res.statusCode === 403) forgetAgreed();
+      finish(reject, errorOf(res));
+    };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path: url,
-        method: 'GET',
-        header: { 'X-WX-SERVICE': config.cloudService },
+        method,
+        header: Object.assign({ 'X-WX-SERVICE': config.cloudService }, header),
+        data,
         timeout: 15000,
         success: done,
         fail: () => finish(reject, new Error('网络不太好，请稍后再试')),
@@ -45,7 +65,9 @@ function request(path, params) {
     } else {
       wx.request({
         url: config.devBaseUrl + url,
-        method: 'GET',
+        method,
+        header,
+        data,
         timeout: 15000,
         success: done,
         fail: () => finish(reject, new Error('连不上开发用的后端，请确认 youju serve 已启动')),
@@ -159,7 +181,53 @@ function exportFile(ids, format) {
   });
 }
 
-// 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据
+// 纠错：只提交文字（最多 500 字）和文件编号，不收联系方式；服务端先做内容安全校验
+function feedback(docId, content) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能提交，连上接口后可用'));
+  return request('/api/v1/feedback', null, { method: 'POST', data: { docId: docId || null, content } });
+}
+
+// ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
+
+function me() {
+  return request('/api/v1/me');
+}
+
+function agree(version) {
+  return request('/api/v1/me/agreement', null, { method: 'POST', data: { version } });
+}
+
+// 注销：删除服务端的用户和关注、订阅、纠错、埋点
+function deleteMe() {
+  return request('/api/v1/me', null, { method: 'DELETE' }).then(forgetAgreed);
+}
+
+function myFollows() {
+  return request('/api/v1/me/follows');
+}
+
+function createFollow(name, conditions) {
+  return request('/api/v1/me/follows', null, { method: 'POST', data: { name, conditions } });
+}
+
+function deleteFollow(id) {
+  return request(`/api/v1/me/follows/${id}`, null, { method: 'DELETE' });
+}
+
+function seenFollow(id) {
+  return request(`/api/v1/me/follows/${id}/seen`, null, { method: 'POST', data: {} });
+}
+
+// 未用的订阅授权（还没发出的提醒）
+function mySubscriptions() {
+  return request('/api/v1/me/subscriptions');
+}
+
+function followNew(id, params) {
+  return request(`/api/v1/me/follows/${id}/new`, params);
+}
+
+// 关注页的演示数据（没连接口时）
 function follow() {
   return copy(mock.follow);
 }
@@ -168,9 +236,17 @@ function files() {
   return copy(mock.files);
 }
 
-// 保存一次性订阅（#30 服务端实现前一律失败，界面不会误报"已订阅"）
-function saveSubscription() {
-  return Promise.reject(new Error('订阅服务尚未上线'));
+// 保存一次性订阅授权：newDocs 对应某个关注，deadline 对应某份文件的截止
+function saveSubscription(kind, target) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能订阅'));
+  const data = { kind, templateId: config.templates[kind] };
+  if (kind === 'newDocs') data.followId = target.followId;
+  else data.docId = Number(target.docId);
+  return request('/api/v1/me/subscriptions', null, { method: 'POST', data });
 }
 
-module.exports = { isLive, home, search, detail, calendar, lists, lookup, exportFile, follow, files, saveSubscription };
+module.exports = {
+  isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
+  AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
+  follow, files, saveSubscription,
+};

@@ -1,35 +1,49 @@
 <notice-bar />
-<view class="local">订阅和导出记录暂存在本机，<text class="link" bindtap="login">登录</text>后可同步到其他设备</view>
-<view class="hero">
-  <view class="hero-sub">本周（{{weekStart}}起）你关注的条件有</view>
-  <view class="hero-row">
-    <view><text class="hero-num">{{newTotal}}</text><text class="hero-unit"> 份新文件</text></view>
-    <view class="hero-btn" bindtap="openSub">全部查看</view>
-  </view>
+<view wx:if="{{mode === 'demo'}}" class="local">演示数据：连上接口并登录后，这里显示你自己的关注</view>
+
+<view wx:if="{{mode === 'gated'}}" class="card gate">
+  <view class="gate-title">关注条件，有新文件时提醒你</view>
+  <view class="muted gate-text">在搜索结果页点"关注这个搜索"，把地区、主题、类型等条件存下来；有新文件时在这里标出，也可以订阅微信提醒。</view>
+  <view class="btn-primary gate-btn" bindtap="enable">{{legalFinal ? '登录后使用' : '协议定稿后开放'}}</view>
 </view>
 
-<view class="card">
-  <view class="section-title">我的订阅 {{subs.length}}<text class="link manage">管理</text></view>
-  <view wx:for="{{subs}}" wx:key="name" class="sub" bindtap="openSub">
-    <view class="sub-icon sub-icon--{{item.tone}}"><t-icon name="{{item.icon}}" size="40rpx" color="#FFFFFF" /></view>
-    <view class="sub-main"><view class="sub-name">{{item.name}}</view><view class="sub-desc">{{item.desc}}</view></view>
-    <text class="sub-n">本周 {{item.n}}</text>
-    <t-icon name="chevron-right" size="32rpx" color="#86909C" />
+<block wx:else>
+  <view class="hero">
+    <view wx:if="{{mode === 'demo'}}" class="hero-sub">本周（{{weekStart}}起）你关注的条件有</view>
+    <view wx:else class="hero-sub">上次查看之后，你关注的条件有</view>
+    <view class="hero-row">
+      <view><text class="hero-num">{{newTotal}}</text><text class="hero-unit"> 份新文件</text></view>
+    </view>
   </view>
-  <view class="add" bindtap="addSub"><t-icon name="add" size="32rpx" color="#2A5CE0" />按 地区 × 主题 × 类型 添加</view>
-</view>
 
-<view class="card">
-  <view class="section-title">本周变化</view>
-  <doc-row wx:for="{{changes}}" wx:key="id" doc="{{item}}" label="{{item.label}}" last="{{index === changes.length - 1}}" today="{{today}}" />
-  <view class="load-more">已显示 {{changes.length}}/{{newTotal}} 份 · <text class="link">查看全部 {{newTotal}} 份</text></view>
-</view>
+  <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 
-<view class="card remind">
-  <view class="remind-main">
-    <view class="remind-title">微信提醒</view>
-    <view class="muted remind-text">按次订阅：每订阅一次，有新文件时用微信提醒你一次</view>
+  <view class="card">
+    <view class="section-title">我的关注 {{follows.length}}<text wx:if="{{follows.length}}" class="link manage" bindtap="toggleManage">{{managing ? '完成' : '管理'}}</text></view>
+    <view wx:for="{{follows}}" wx:key="id" class="sub" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="openFollow">
+      <view class="sub-icon sub-icon--{{item.tone}}"><t-icon name="{{item.icon}}" size="40rpx" color="#FFFFFF" /></view>
+      <view class="sub-main"><view class="sub-name">{{item.name}}</view><view class="sub-desc">{{item.desc}}</view></view>
+      <text wx:if="{{managing}}" class="sub-del" data-id="{{item.id}}" data-name="{{item.name}}" catchtap="remove" aria-role="button">删除</text>
+      <block wx:else>
+        <text wx:if="{{item.newCount}}" class="sub-n">新 {{item.newCount}}</text>
+        <text class="sub-remind" data-id="{{item.id}}" catchtap="remind" aria-role="button">提醒</text>
+      </block>
+    </view>
+    <view wx:if="{{mode === 'live' && !follows.length && !loading && !error}}" class="empty muted">还没有关注。在搜索结果页点"关注这个搜索"就能加上。</view>
+    <view class="add" bindtap="addSub"><t-icon name="add" size="32rpx" color="#2A5CE0" />去搜索，按 地区 × 主题 × 类型 关注</view>
   </view>
-  <view class="remind-btn {{subscribed ? 'remind-btn--on' : ''}}" bindtap="subscribeOnce">{{subscribed ? '已订阅 1 次' : '订阅一次'}}</view>
-</view>
+
+  <view wx:if="{{changesError}}" class="card load-error"><text>{{changesError}}</text><text class="link retry" bindtap="load">重试</text></view>
+  <view wx:if="{{changes.length}}" class="card">
+    <view class="section-title">新文件</view>
+    <doc-row wx:for="{{changes}}" wx:key="id" doc="{{item}}" label="{{item.label}}" last="{{index === changes.length - 1}}" today="{{today}}" />
+  </view>
+
+  <view class="card remind">
+    <view class="remind-main">
+      <view class="remind-title">微信提醒</view>
+      <view class="muted remind-text">按次订阅：在关注旁点"提醒"，这个关注有新文件时用微信提醒你一次；想继续收到，提醒后再点一次。</view>
+    </view>
+  </view>
+</block>
 <view class="tab-page-bottom"></view>

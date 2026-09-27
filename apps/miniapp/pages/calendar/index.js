@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO, daysUntil, monthDay, weekday, dueTone } = require('../../utils/format.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { remindedDocs } = require('../../utils/reminders.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const RANGES = [
@@ -84,6 +85,7 @@ Page({
       this.buildMonth();
       this.refresh();
     }).catch((err) => this.setData({ error: `加载失败：${err.message}` }));
+    remindedDocs().then((reminded) => this.setData({ reminded }));
   },
 
   buildMonth() {
@@ -140,22 +142,24 @@ Page({
   },
 
   // 截止提醒：一次性订阅消息，允许后才算订阅成功
+  // 每条的 id 是截止记录编号，订阅按文件编号（docId）
   toggleRemind(e) {
     const { id } = e.currentTarget.dataset;
     // 点击时按今天重算剩余天数，不用缓存值
     const item = this.data.items.find((x) => x.id === id);
-    const days = item ? daysUntil(item.due) : -1;
+    if (!item) return;
+    const days = daysUntil(item.due);
     if (days < 3) {
       wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
       return;
     }
-    if (this.data.reminded[id]) {
+    if (this.data.reminded[item.docId]) {
       wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
       return;
     }
-    requestOnce('deadline', { type: 'deadline', docId: id }).then((ok) => {
+    requestOnce('deadline', { type: 'deadline', docId: item.docId }).then((ok) => {
       if (!ok) return;
-      this.setData({ reminded: Object.assign({}, this.data.reminded, { [id]: true }) });
+      this.setData({ reminded: Object.assign({}, this.data.reminded, { [item.docId]: true }) });
       wx.showToast({ title: '已订阅截止提醒', icon: 'none' });
     });
   },
