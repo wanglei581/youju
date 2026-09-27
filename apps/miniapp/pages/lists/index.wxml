@@ -17,8 +17,29 @@
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
-  <view class="section-title">"{{queried}}" 的查询结果</view>
-  <view class="muted result-text">名单明细正在整理，接口就绪后这里会列出该企业入选的名单、批次、标题写明的公示或公布状态和原文链接。</view>
+  <view class="section-title">"{{queried}}" 的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
+  <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…</view>
+  <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}</view>
+  <block wx:elif="{{result}}">
+    <block wx:if="{{result.items.length}}">
+      <view class="weak result-sum">在已收录的 {{result.coverage.lists}} 份名单中找到 {{result.items.length}} 份<text wx:if="{{result.truncated}}">（只列出最近的 {{result.items.length}} 份）</text></view>
+      <view wx:if="{{result.ambiguous}}" class="warn">名单里有同名但统一社会信用代码不同的企业，下面不一定都是同一家，请逐条核对信用代码</view>
+      <view wx:for="{{result.items}}" wx:key="id" class="hit">
+        <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
+        <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
+      </view>
+    </block>
+    <view wx:else class="empty-lookup">
+      <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
+      <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充。请核对企业全称，或换统一社会信用代码再查；最终以发文机关原文为准。</view>
+    </view>
+    <view wx:if="{{result.similar.length}}" class="similar">
+      <view class="similar-title">名称相近的企业（不一定是同一家，请核对统一社会信用代码）</view>
+      <view wx:for="{{result.similar}}" wx:key="name" class="similar-item" data-name="{{item.name}}" bindtap="pickSimilar" aria-role="button">
+        <text class="similar-name">{{item.name}}</text><text class="weak">{{item.lists}} 份名单 ›</text>
+      </view>
+    </view>
+  </block>
 </view>
 
 <view class="card">

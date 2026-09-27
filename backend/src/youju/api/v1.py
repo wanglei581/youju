@@ -1,4 +1,4 @@
-"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单。
+"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单、查名单。
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
 公开接口不返回正文全文，只给核对过的字段和原文链接。
@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from youju.classify import doc_kind, kind_filter, list_status, region_label, status_filter
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
-from youju.models import Document, DocumentDeadline, DocumentDetail, Source
+from youju.lists.rules import candidate_key, is_person_query, normalize_name
+from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -30,6 +31,8 @@ _DEADLINE_ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或�
 
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
+_LOOKUP_LIMIT = 100  # 查名单最多列出的名单份数
+_LOOKUP_SCAN = 2000  # 查名单最多扫描的名单文件数（按发布日期从新到旧），防止极端情况下查询过慢
 TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
@@ -430,4 +433,137 @@ def recent_lists(
         "week_total": week_total,
         "total": total,
         "items": _items(session, [tuple(r) for r in rows]),
+    }
+
+
+@router.get("/lists/lookup")
+def lookup_lists(
+    session: SessionDep,
+    q: Annotated[
+        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+    ],
+) -> dict:
+    """查名单：这家企业上过哪些名单。
+
+    按企业全称或统一社会信用代码与名单原文逐条精确比对。按名称查到的条目带信用代码时，
+    再用信用代码找回同一企业用别的名称（如更名前）上过的名单。同名但信用代码不同的，
+    标 ambiguous，由小程序提示逐条核对。名称相近的另列（similar），不当作同一家。
+    同一份名单只列一次；同一通知的不同网址按内容归并（youju.dedup）后也只列一次。只查企业和机构，
+    输入像个人姓名的返回 422。coverage 是已收录的名单范围，查不到时据此说明。
+    """
+    query = normalize_name(q)
+    if not query or is_person_query(query):
+        raise HTTPException(
+            status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
+        )
+    code = query.upper()
+
+    def public(stmt: Select) -> Select:
+        return (
+            stmt.join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .where(Source.rights_level == 1)
+        )
+
+    direct = or_(ListEntry.normalized_name == query, ListEntry.credit_code == code)
+    name_codes = set(
+        session.scalars(
+            public(select(ListEntry.credit_code).distinct()).where(
+                ListEntry.normalized_name == query, ListEntry.credit_code.is_not(None)
+            )
+        )
+    )
+    codes = set(
+        session.scalars(
+            public(select(ListEntry.credit_code).distinct())
+            .where(direct, ListEntry.credit_code.is_not(None))
+            .limit(20)
+        )
+    )
+    matched = or_(direct, ListEntry.credit_code.in_(codes)) if codes else direct
+    # 名单条目所在文件先映射到归并后的主文件（同一通知的不同网址算一份），按主文件去重后再截取
+    found = session.execute(
+        public(select(ListEntry.document_id, Document.publish_date).distinct())
+        .where(matched)
+        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
+        .limit(_LOOKUP_SCAN + 1)
+    ).all()
+    scanned_all = len(found) <= _LOOKUP_SCAN
+    found = found[:_LOOKUP_SCAN]
+    mapping = canonical_ids(session, [doc_id for doc_id, _ in found])
+    newest: dict[int, date | None] = {}
+    for doc_id, published in found:
+        master = mapping.get(doc_id, doc_id)
+        if master not in newest or (published and (newest[master] or date.min) < published):
+            newest[master] = published
+    masters = sorted(newest, key=lambda m: (newest[m] or date.min, m), reverse=True)
+    truncated = len(masters) > _LOOKUP_LIMIT or not scanned_all
+    masters = masters[:_LOOKUP_LIMIT]
+    keep = set(masters)
+    # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的
+    best: dict[int, ListEntry] = {}
+    members = [doc_id for doc_id, _ in found if mapping.get(doc_id, doc_id) in keep]
+    for entry in session.scalars(
+        select(ListEntry).where(ListEntry.document_id.in_(members), matched).order_by(ListEntry.id)
+    ):
+        master = mapping.get(entry.document_id, entry.document_id)
+        current = best.get(master)
+        if current is None or (entry.normalized_name == query and current.normalized_name != query):
+            best[master] = entry
+    rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
+    items: list[dict] = []
+    for item in _items(session, [tuple(r) for r in rows]):
+        entry = best[int(item["id"])]
+        item["matched"] = {
+            "name": entry.name,
+            "category": entry.category,
+            "batch": entry.batch,
+            "sequence": entry.sequence,
+            "creditCode": entry.credit_code,
+            "region": entry.region,
+            "via": "name" if entry.normalized_name == query else "creditCode",
+        }
+        items.append(item)
+    shown_names = {entry.normalized_name for entry in best.values()}
+    similar: list[dict] = []
+    key = candidate_key(query)
+    if len(query) >= 4 and not query.isascii() and len(key) >= 2:
+        names = session.execute(
+            select(
+                ListEntry.normalized_name,
+                func.min(ListEntry.name),
+                func.count(func.distinct(ListEntry.document_id)),
+            )
+            .join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Source.rights_level == 1,
+                ListEntry.normalized_name.like(f"%{_escape_like(key[:4])}%", escape="\\"),
+                ListEntry.normalized_name != query,
+            )
+            .group_by(ListEntry.normalized_name)
+            .limit(500)
+        ).all()
+        similar = sorted(
+            (
+                {"name": name, "lists": n}
+                for normalized, name, n in names
+                # 信用代码相同、已列在结果里的别名（如更名前的名称）不再算"相近"
+                if candidate_key(normalized) == key and normalized not in shown_names
+            ),
+            key=lambda x: -x["lists"],
+        )[:10]
+    lists_total, since = session.execute(
+        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1)
+    ).one()
+    return {
+        "query": q.strip(),
+        "items": items,
+        "similar": similar,
+        "ambiguous": len(name_codes) > 1,
+        "truncated": truncated,
+        "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
     }

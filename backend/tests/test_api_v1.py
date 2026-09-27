@@ -8,7 +8,14 @@ from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
 from youju.dedup import reconcile_documents
-from youju.models import Document, DocumentAttachment, DocumentDeadline, DocumentDetail, Source
+from youju.models import (
+    Document,
+    DocumentAttachment,
+    DocumentDeadline,
+    DocumentDetail,
+    ListEntry,
+    Source,
+)
 
 # 北京时间 2026-09-27（周日）上午 10 点；本周是 9/21（周一）到 9/28（下周一，不含）
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -294,3 +301,160 @@ def test_calendar_skips_deadlines_already_passed_today(client, seeded):
 )
 def test_search_rejects_invalid_filters(client, seeded, params):
     assert client.get("/api/v1/search", params=params).status_code == 422
+
+
+def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
+    list_doc = session.query(Document).filter(Document.title.contains("拟入库科技型")).one()
+    common = {"category": "科技型中小企业", "batch": "第4批"}
+    session.add_all(
+        [
+            ListEntry(
+                document_id=list_doc.id,
+                source_url=list_doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                credit_code="91310117588657256C",
+                sequence="12",
+                **common,
+            ),
+            # 同一份名单的附件里又出现一次：只列一次
+            ListEntry(
+                document_id=list_doc.id,
+                source_url="https://kjt.shandong.gov.cn/a.xlsx",
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                sequence="12",
+                **common,
+            ),
+            ListEntry(
+                document_id=list_doc.id,
+                source_url=list_doc.url,
+                name="山东星河科技（青岛）有限公司",
+                normalized_name="山东星河科技(青岛)有限公司",
+                sequence="13",
+                **common,
+            ),
+        ]
+    )
+    session.commit()
+    url = "/api/v1/lists/lookup"
+    body = client.get(url, params={"q": "山东星河科技有限公司"}).json()
+    assert [i["id"] for i in body["items"]] == [str(list_doc.id)]
+    item = body["items"][0]
+    assert item["kind"] == "名单" and item["status"] == "公示"
+    assert item["matched"] == {
+        "name": "山东星河科技有限公司",
+        "category": "科技型中小企业",
+        "batch": "第4批",
+        "sequence": "12",
+        "creditCode": "91310117588657256C",
+        "region": None,
+        "via": "name",
+    }
+    # 名称相近的另列，不当作同一家
+    assert body["similar"] == [{"name": "山东星河科技（青岛）有限公司", "lists": 1}]
+    assert body["coverage"] == {"lists": 1, "since": "2026-09-24"}
+    # 全角括号、空格不同也能查到；信用代码不分大小写
+    assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
+    assert len(client.get(url, params={"q": "91310117588657256c"}).json()["items"]) == 1
+    # 查不到：结果为空，收录范围照给，由小程序说明"已收录的名单中未找到"
+    missing = client.get(url, params={"q": "不存在的科技有限公司"}).json()
+    assert missing["items"] == [] and missing["coverage"]["lists"] == 1
+    # 只查企业和机构
+    refused = client.get(url, params={"q": "张三"})
+    assert refused.status_code == 422 and "只查企业和机构" in refused.json()["detail"]
+    assert body["ambiguous"] is False and body["truncated"] is False
+    assert (
+        item["matched"]["via"] == "name" and item["matched"]["creditCode"] == "91310117588657256C"
+    )
+
+
+def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, session):
+    """更名：信用代码相同、名称不同的也列出；同名不同代码：提示可能不是同一家；重复通知只列一次。"""
+    list_doc = session.get(Document, seeded["list"])
+    src = list_doc.source
+    old_doc = _doc(src, 11, "山东省2025年第9批入库科技型中小企业名单公告", date(2025, 11, 3))
+    dup_doc = _doc(src, 12, list_doc.title, list_doc.publish_date)  # 同一通知，网址不同
+    other = _doc(src, 13, "2026年度高新技术企业认定名单公告", date(2026, 9, 1))
+    # 别的机关同一天发了同名通知：不是同一份，不能合并
+    ln_src = session.query(Source).filter_by(province="辽宁").one()
+    same_title_other_agency = _doc(ln_src, 14, list_doc.title, list_doc.publish_date)
+    session.add_all([old_doc, dup_doc, other, same_title_other_agency])
+    session.flush()
+    code = "91310117588657256C"
+    rows = [
+        (list_doc, "山东星河科技有限公司", code),
+        (dup_doc, "山东星河科技有限公司", code),
+        (old_doc, "济南星河科技有限公司", code),  # 更名前
+        (other, "山东星河科技有限公司", "91370100MA3C5LTN6Q"),  # 同名、代码不同
+        (same_title_other_agency, "山东星河科技有限公司", code),
+    ]
+    for i, (doc, name, credit) in enumerate(rows):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name=name,
+                normalized_name=name,
+                credit_code=credit,
+                sequence=str(i + 1),
+                category="科技型中小企业",
+            )
+        )
+    session.commit()
+    reconcile_documents(session)  # 按内容归并：同一机关同名同日的两个网址归为一份
+    session.commit()
+    body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    titles = [i["title"] for i in body["items"]]
+    # 同一机关的重复通知只列一次；别的机关的同名通知单独列出
+    assert titles.count(list_doc.title) == 2
+    regions = sorted(i["region"] for i in body["items"] if i["title"] == list_doc.title)
+    assert regions == ["山东 · 省级", "辽宁 · 省级"]
+    assert old_doc.title in titles and other.title in titles
+    renamed = next(i for i in body["items"] if i["title"] == old_doc.title)
+    assert renamed["matched"]["name"] == "济南星河科技有限公司"
+    assert renamed["matched"]["via"] == "creditCode"
+    assert body["ambiguous"] is True
+    # 更名前的名称已在结果里，不再算"名称相近"
+    assert body["similar"] == []
+
+
+def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seeded, session):
+    """名单只从可解析的来源（rights_level=1）抽取；条目所在副本归并到别的来源的主文件时，仍列出主文件。"""
+    from youju.models import DocumentMerge
+
+    list_doc = session.get(Document, seeded["list"])
+    other_src = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅（转载）",
+        column_name="转载",
+        url="https://www.shandong.gov.cn/kj/",
+        enabled=True,
+        parser_config={},
+        rights_level=0,
+    )
+    session.add(other_src)
+    session.flush()
+    master = _doc(other_src, 51, list_doc.title, list_doc.publish_date)
+    session.add(master)
+    session.flush()
+    # 主文件编号更小时才会成为主文件；这里直接写归并关系：list_doc 是副本，master 是主文件
+    session.add(
+        DocumentMerge(duplicate_id=list_doc.id, canonical_id=master.id, active=True, match_key="k")
+    )
+    session.add(
+        ListEntry(
+            document_id=list_doc.id,
+            source_url=list_doc.url,
+            name="山东星河科技有限公司",
+            normalized_name="山东星河科技有限公司",
+            sequence="1",
+            category="科技型中小企业",
+        )
+    )
+    session.commit()
+    body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    assert [i["id"] for i in body["items"]] == [str(master.id)]
+    assert body["items"][0]["matched"]["name"] == "山东星河科技有限公司"

@@ -103,6 +103,20 @@ function lists() {
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
+// 查名单：按企业全称或统一社会信用代码与名单原文比对；名称相近的另列（similar），不当作同一家。
+// 演示数据只对虚构的"演示科技有限公司"给出结果，页面会标明"演示数据"
+const DEMO_COMPANY = '演示科技有限公司';
+function lookup(q) {
+  if (isLive()) return request('/api/v1/lists/lookup', { q });
+  const hit = q.replace(/\s+/g, '') === DEMO_COMPANY;
+  const items = hit
+    ? mock.lists.items.slice(0, 2).map((d, i) => Object.assign({}, d, {
+      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name' },
+    }))
+    : [];
+  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
+}
+
 // 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据
 function follow() {
   return copy(mock.follow);
@@ -117,4 +131,4 @@ function saveSubscription() {
   return Promise.reject(new Error('订阅服务尚未上线'));
 }
 
-module.exports = { isLive, home, search, detail, calendar, lists, follow, files, saveSubscription };
+module.exports = { isLive, home, search, detail, calendar, lists, lookup, follow, files, saveSubscription };
