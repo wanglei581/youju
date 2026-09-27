@@ -27,11 +27,24 @@ from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
 
-app = FastAPI(title="有据 API", version="0.1.0")
+_DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
+app = FastAPI(
+    title="有据 API",
+    version="0.1.0",
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
+)
 app.include_router(v1_router)
 app.include_router(exports_router)
 
 audit_log = logging.getLogger("youju.audit")
+if not audit_log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    audit_log.addHandler(_handler)
+    audit_log.setLevel(logging.INFO)
+    audit_log.propagate = False
 
 
 @app.middleware("http")
@@ -39,8 +52,11 @@ async def _role_guard(request: Request, call_next):
     """按部署角色开放路径：api 服务不开放核对台和管理接口，admin 服务不开放小程序接口（见 #32）。"""
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
-    admin_path = path.startswith(("/admin", "/api/admin"))
-    if (role == "api" and admin_path) or (role == "admin" and path.startswith("/api/v1")):
+    admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
+    blocked = (role == "api" and admin_path) or (
+        role == "admin" and not (admin_path or path == "/health")
+    )
+    if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return await call_next(request)
 
@@ -318,9 +334,22 @@ def search_lists(
     )
 
 
+CRON_HEARTBEAT = Path("/tmp/youju-cron-heartbeat")
+_HEARTBEAT_MAX_AGE = 900
+
+
 @app.get("/health")
 def health(session: SessionDep) -> dict[str, str]:
+    """健康检查：数据库连得上；admin 服务还要求定时任务心跳 15 分钟内更新过
+    （cron 每 5 分钟写一次）。cron 停了就报不健康，由云托管重启容器，不会悄悄停掉每天的检查。"""
     session.execute(text("select 1"))
+    if getattr(get_settings(), "role", "all") == "admin":
+        try:
+            age = clock.time() - CRON_HEARTBEAT.stat().st_mtime
+        except OSError:
+            age = None
+        if age is None or age > _HEARTBEAT_MAX_AGE:
+            raise HTTPException(status_code=503, detail="定时任务没有在运行")
     return {"status": "ok"}
 
 
@@ -429,11 +458,13 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
     )
 
 
-# 管理口令输错限流（admin 服务固定 1 个实例，计数放在内存里）：同一来源 10 分钟内错 5 次锁定；
-# 来源 IP 可能被伪造，另设全局上限：10 分钟内共错 30 次，全部锁定 10 分钟
+# 管理口令输错限流（admin 服务固定 1 个实例，计数放在内存里）：同一来源 10 分钟内错 5 次锁定。
+# 不设全局锁定——否则别人故意输错就能把管理员也锁在外面；
+# 口令至少 32 位随机字符，换来源地址猜也猜不中。
+# 计数表最多记 10000 个来源，超出时先清掉过期的，仍超出就整表清空，防止伪造地址把内存撑大
 _FAIL_WINDOW = 600
 _FAILS_PER_SOURCE = 5
-_FAILS_TOTAL = 30
+_MAX_SOURCES = 10000
 _admin_fails: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -452,14 +483,17 @@ def _recent(entries: deque[float], now: float) -> deque[float]:
 def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
     now = clock.monotonic()
     ip = client_ip(request)
+    if len(_admin_fails) > _MAX_SOURCES:
+        for key in [k for k, v in _admin_fails.items() if not _recent(v, now)]:
+            del _admin_fails[key]
+        if len(_admin_fails) > _MAX_SOURCES:
+            _admin_fails.clear()
     mine = _recent(_admin_fails[ip], now)
-    everyone = _recent(_admin_fails["*"], now)
-    if len(mine) >= _FAILS_PER_SOURCE or len(everyone) >= _FAILS_TOTAL:
+    if len(mine) >= _FAILS_PER_SOURCE:
         raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
     expected = get_settings().admin_token
     if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
         mine.append(now)
-        everyone.append(now)
         audit_log.warning(json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False))
         raise HTTPException(status_code=401, detail="管理接口未授权")
 

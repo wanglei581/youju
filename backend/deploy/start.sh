@@ -6,17 +6,23 @@
 # 发布顺序：先发 admin（完成迁移），再发 api。
 set -e
 cd /app/backend
-if [ "${YOUJU_ROLE:-api}" = "admin" ]; then
+case "${YOUJU_ROLE:-}" in
+  api|admin) ;;
+  *) echo "YOUJU_ROLE 只能是 api 或 admin" >&2; exit 1 ;;
+esac
+if [ "$YOUJU_ROLE" = "admin" ]; then
   # 核对台开公网，口令至少 32 位随机字符，否则不启动
   if [ "${#YOUJU_ADMIN_TOKEN}" -lt 32 ]; then
     echo "YOUJU_ADMIN_TOKEN 至少 32 位，请在云托管控制台设置后重新发布" >&2
     exit 1
   fi
-  uv run --no-sync youju db-upgrade
+  youju db-upgrade
   # cron 看不到容器的环境变量，先写进文件（只有容器内 root 可读），任务脚本里再读
   umask 077
-  env | grep -E '^(YOUJU_|TZ=|PATH=|UV_)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /" > /app/backend/deploy/env.sh
+  env | grep -E '^(YOUJU_|TZ=|PATH=)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /" > /app/backend/deploy/env.sh
   crontab /app/backend/deploy/crontab
+  # 先写一次心跳：健康检查要求心跳 15 分钟内更新过，cron 之后每 5 分钟写一次
+  date +%s > /tmp/youju-cron-heartbeat
   cron
 fi
-exec uv run --no-sync uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}"
+exec uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}"

@@ -6,9 +6,10 @@ cd /app/backend
 name="$1"
 log() { echo "[$(date '+%F %T')] $*" >> /proc/1/fd/1; }
 log "开始：youju $*"
-if flock -n "/tmp/youju-${name}.lock" timeout 3h uv run --no-sync youju "$@" >> /proc/1/fd/1 2>&1; then
+if flock -n "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1; then
   log "完成：youju $*"
 else
   code=$?
   log "失败：youju $*（退出码 ${code}；1 表示上一次还没跑完，124 表示超时）"
+  exit "$code"
 fi
