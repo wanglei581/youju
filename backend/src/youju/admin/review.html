@@ -86,22 +86,36 @@
   // 证据句里的日期写法："2026年10月09日""10月9日""2026-10-09""2026年10-9""10-9"等（年份可省）
   const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(?:(\d{4})\s*(?:年|[-/.])\s*)?(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/g;
 
+  // 句中写到年份的地方（含"2026年度""2026-10-9"里的年份），给省略年份的日期定年份用
+  const YEAR_RE = /((?:19|20)\d{2})\s*(?:年|[-/.]\s*\d)/g;
+
   // 证据句里标出候选日期出现的位置，便于对照（只用 textContent 拼接，不插入 HTML）。
-  // 先找出句中所有日期，再逐个比对：月、日相同，年份（没写的沿用句中前面写过的年份，
-  // 如"2025年10月8日至10月9日"）也相同才标；前面紧挨数字的不算。
-  // 只标位置，不表示它就是截止日期：是不是截止要看上下文
+  // 先找出句中所有日期，再逐个比对：月、日相同，年份也相同才标；前面紧挨数字的不算。
+  // 省略年份的日期按前面最近写到的年份算；中间写了"次年""翌年"，或月份比前一个日期小
+  // （如"2025年12月31日至1月9日"），算下一年。只标位置，不表示它就是截止日期
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
+    const notAfterDigit = (found) => !(found.index > 0 && /\d/.test(text[found.index - 1]));
+    const years = [...text.matchAll(YEAR_RE)].filter(notAfterDigit).map((f) => ({ at: f.index, year: Number(f[1]) }));
     let hit = null;
-    let lastYear = null;
+    let prev = null;
     for (const found of text.matchAll(DATE_RE)) {
-      if (found.index > 0 && /\d/.test(text[found.index - 1])) continue;
-      const written = found[1] || found[4];
-      if (written) lastYear = Number(written);
+      if (!notAfterDigit(found)) continue;
       const month = Number(found[2] || found[5]);
       const day = Number(found[3] || found[6]);
-      if (month === m && day === d && (lastYear === null || lastYear === y)) { hit = found; break; }
+      const written = found[1] || found[4];
+      let year = written ? Number(written) : null;
+      if (year === null) {
+        const base = years.filter((v) => v.at < found.index).pop();
+        if (base) {
+          year = base.year;
+          const between = text.slice(base.at, found.index);
+          if (/次年|翌年/.test(between) || (prev && prev.at >= base.at && prev.month > month)) year += 1;
+        }
+      }
+      prev = { at: found.index, month };
+      if (month === m && day === d && (year === null || year === y)) { hit = found; break; }
     }
     if (!hit) { box.textContent = text; return box; }
     box.append(text.slice(0, hit.index), el('mark', '', hit[0]), text.slice(hit.index + hit[0].length));
