@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 
 # 颜色
 BLUE = "#2A5CE0"          # 品牌蓝：搜索、选中、链接、主按钮
@@ -64,7 +65,26 @@ ICON = {
 }
 
 
-def icon(name, size=22, color=T1, width=1.8, fill="none"):
+# 图标用 TDesign（腾讯，MIT 许可，文件和许可在 icons/tdesign/），决策记录 D-015。
+# 我们的名字 → TDesign 图标名；上面手画的 ICON 只在对照表里没有时使用。
+LIB_ICONS = {"search": "search", "back": "chevron-left", "chev": "chevron-right", "down": "chevron-down", "close": "close",
+             "apply": "task-checked", "list": "bulletpoint", "policy": "book", "calendar": "calendar", "grid": "app",
+             "bell": "notification", "doc": "file", "user": "user", "home": "home", "star": "star", "download": "download",
+             "flag": "flag", "plus": "add", "check": "check", "filter": "filter", "ext": "jump", "clip": "attach",
+             "shield": "secured", "info": "info-circle", "gear": "setting-1", "copy": "copy"}
+# 底栏选中时用面性图标
+LIB_FILLED = {"home": "home-filled", "bell": "notification-filled", "doc": "file-filled", "user": "user-filled"}
+ICON_DIR = Path(__file__).resolve().parent / "icons" / "tdesign"
+
+
+def icon(name, size=22, color=T1, width=1.8, fill="none", filled=False):
+    """TDesign 图标沿用原始线宽（2px / 24px），width 只对手画图标有效。"""
+    if name in LIB_ICONS:
+        file = LIB_FILLED[name] if filled else LIB_ICONS[name]
+        svg = (ICON_DIR / f"{file}.svg").read_text(encoding="utf-8")
+        inner = re.sub(r"^.*?<svg[^>]*>|</svg>\s*$", "", svg, flags=re.S)
+        return (f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+                f'style="flex-shrink: 0; color: {color}">{inner}</svg>')
     return (f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" style="flex-shrink: 0" fill="{fill}" stroke="{color}" '
             f'stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round">{ICON[name]}</svg>')
 
@@ -102,11 +122,7 @@ def tabbar(active):
     for label, href, key in items:
         on = label == active
         color = BLUE if on else T3
-        if key == "home":
-            svg = (f'<svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="{BLUE}">{ICON["home_fill"]}</svg>' if on
-                   else icon("home_fill", 24, T3, 1.8))
-        else:
-            svg = icon(key, 24, color, 2.1 if on else 1.8)
+        svg = icon(key, 24, color, filled=on)
         cur = ' aria-current="page"' if on else ""
         weight = "font-weight: 600;" if on else ""
         out.append(f'<a href="{href}"{cur} style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; '
