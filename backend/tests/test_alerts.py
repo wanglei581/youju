@@ -232,17 +232,26 @@ def test_job_alerts_without_changing_failure_code(
 
 
 @pytest.mark.parametrize(
-    ("crawl_code", "expected"),
+    ("round_locked", "crawl_code", "expected"),
     [
-        (0, ["crawl", "check-sources", "fetch-details", "extract-deadlines", "parse-lists"]),
-        # 抓取失败（或上一轮还没跑完）时不核对栏目，避免把还没检查到的栏目误报成漏检
-        (1, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
-        (75, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        (False, 0, ["crawl", "check-sources", "fetch-details", "extract-deadlines", "parse-lists"]),
+        # 抓取失败（或抓取本身重叠）时不核对栏目，避免把还没检查到的栏目误报成漏检
+        (False, 1, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        (False, 75, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        # 上一轮还没跑完：整轮跳过，只发一条提醒
+        (True, 0, ["alert"]),
     ],
 )
-def test_round_runs_in_order_and_checks_only_after_crawl(tmp_path, crawl_code, expected) -> None:
+def test_round_runs_in_order_and_checks_only_after_crawl(
+    tmp_path, round_locked, crawl_code, expected
+) -> None:
     original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
-    (tmp_path / "round.sh").write_text(original.replace("D=/app/backend/deploy", f"D={tmp_path}"))
+    script = (
+        original.replace("D=/app/backend/deploy", f"D={tmp_path}")
+        .replace("/proc/1/fd/1", str(tmp_path / "round.log"))
+        .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+    )
+    (tmp_path / "round.sh").write_text(script)
     job = tmp_path / "job.sh"
     job.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CALLS"\n'
@@ -251,7 +260,16 @@ def test_round_runs_in_order_and_checks_only_after_crawl(tmp_path, crawl_code, e
         "exit 0\n"
     )
     job.chmod(0o755)
-    env = {**os.environ, "CALLS": str(tmp_path / "calls"), "CRAWL_CODE": str(crawl_code)}
+    flock = tmp_path / "flock"
+    flock.write_text('#!/bin/sh\nexit "$ROUND_LOCKED"\n')
+    flock.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+        "CRAWL_CODE": str(crawl_code),
+        "ROUND_LOCKED": "1" if round_locked else "0",
+    }
     result = subprocess.run(["sh", str(tmp_path / "round.sh")], env=env, check=False)
     assert result.returncode == 0
     assert (tmp_path / "calls").read_text().split() == expected
