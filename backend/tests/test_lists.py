@@ -6,7 +6,13 @@ import pytest
 from docx import Document as DocxDocument
 
 from youju.crawler.fetcher import FetchResult
-from youju.lists.parser import parse_attachment, parse_html_tables, parse_table_rows
+from youju.lists.parser import (
+    MAX_PDF_PAGES,
+    parse_attachment,
+    parse_attachment_result,
+    parse_html_tables,
+    parse_table_rows,
+)
 from youju.lists.rules import (
     candidate_key,
     classify_title,
@@ -16,7 +22,7 @@ from youju.lists.rules import (
     valid_org_name,
 )
 from youju.lists.service import parse_lists
-from youju.models import Document, DocumentAttachment, DocumentDetail, ListEntry, Source
+from youju.models import Document, DocumentAttachment, DocumentDetail, ListEntry, ListParse, Source
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lists"
 
@@ -93,11 +99,82 @@ def test_names_codes_and_title_rules() -> None:
     assert classify_title("关于拟对高新技术企业给予奖励的公示").is_list is False
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("关于2026年工业和信息化部科技型企业孵化器拟推荐申报名单的公示", True),
+        ("广东省科学技术厅关于2026年工业和信息化部科技型企业孵化器推荐申报名单的公示", True),
+        ("四川省科学技术厅关于拟推荐申报2026年度工业和信息化部科技型企业孵化器名单的公示", True),
+        ("重庆市科学技术局关于公示2026年工业和信息化部科技型企业孵化器拟推荐申报名单的公告", True),
+        ("江西省2026年第二批拟申请备案高新技术企业名单公示", True),
+        ("吉林省工业和信息化厅关于组织开展国家级零碳工厂建设名单申报工作的通知", False),
+        ("关于受理山东省自然科学基金依托单位注册申请的通知", False),
+        ("关于组织征集2026年度四川省消费名品培育名单的通知", False),
+        ("关于征集推荐第五批陕西省“工信贷”白名单企业的通知", False),
+        ("关于2026年黑龙江省科技成果转移转化服务体系奖励拟支持单位名单的公示", False),
+        ("省企业技术中心拟认定、撤销名单公示", False),
+    ],
+)
+def test_real_titles_affected_by_negative_words(title: str, expected: bool) -> None:
+    assert classify_title(title).is_list is expected
+
+
 def test_unsupported_and_scanned_file() -> None:
     with pytest.raises(ValueError, match="暂不支持"):
         parse_attachment(b"old doc", "doc")
     with pytest.raises(ValueError, match="不是 PDF"):
         parse_attachment(b"not a pdf", "pdf")
+
+
+def _fake_pdf(page_count: int, visited: list[int]):
+    class Page:
+        def __init__(self, number: int):
+            self.number = number
+
+        def extract_text(self):
+            visited.append(self.number)
+            return "企业名称" if self.number == MAX_PDF_PAGES else ""
+
+        def extract_tables(self, table_settings=None):
+            if self.number == MAX_PDF_PAGES:
+                return [[["企业名称"], ["北京星河科技有限公司"]]]
+            return []
+
+    class Pdf:
+        def __init__(self):
+            self.pages = [Page(i) for i in range(1, page_count + 1)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    return Pdf()
+
+
+@pytest.mark.parametrize("page_count", [300, 301])
+def test_pdf_page_limit_keeps_first_300_pages(monkeypatch, page_count: int) -> None:
+    visited: list[int] = []
+    monkeypatch.setattr(
+        "youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(page_count, visited)
+    )
+    result = parse_attachment_result(b"%PDF-fake", "pdf")
+    assert [entry.name for entry in result.entries] == ["北京星河科技有限公司"]
+    assert visited == list(range(1, MAX_PDF_PAGES + 1))
+    assert result.failure_reason == (
+        f"PDF 共{page_count}页，仅解析前{MAX_PDF_PAGES}页" if page_count > MAX_PDF_PAGES else None
+    )
+
+
+def test_pdf_page_limit_is_recorded_for_scanned_file(monkeypatch) -> None:
+    pdf = _fake_pdf(301, [])
+    for page in pdf.pages:
+        page.extract_text = lambda: ""
+        page.extract_tables = lambda table_settings=None: []
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: pdf)
+    with pytest.raises(ValueError, match="暂不支持扫描件；PDF 共301页，仅解析前300页"):
+        parse_attachment_result(b"%PDF-fake", "pdf")
 
 
 class FakeFetcher:
@@ -108,6 +185,61 @@ class FakeFetcher:
     def fetch(self, url):
         self.calls.append(url)
         return self.responses[url]
+
+
+def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None:
+    visited: list[int] = []
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(301, visited))
+    source = Source(
+        level="省级",
+        province="北京",
+        dept="科技",
+        dept_full_name="北京市科学技术委员会",
+        column_name="通知公告",
+        url="https://kw.beijing.gov.cn/list/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    now = datetime.now(UTC)
+    url = "https://kw.beijing.gov.cn/partial-list.pdf"
+    document = Document(
+        source_id=source.id,
+        url=url,
+        url_key="kw.beijing.gov.cn/partial-list.pdf",
+        title="2026年高新技术企业名单公告",
+        publish_date=date(2026, 8, 1),
+        first_seen_at=now,
+        last_seen_at=now,
+        is_baseline=False,
+    )
+    session.add(document)
+    session.commit()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=b"%PDF-fake")})
+
+    report = parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    assert record.status == "ok"
+    assert record.entry_count == 1
+    assert record.failure_reason == "PDF 共301页，仅解析前300页"
+    assert report.names == 1
+    assert report.failures == {record.failure_reason: 1}
+    assert session.query(ListEntry).filter_by(
+        document_id=document.id, source_url=url
+    ).one().name == ("北京星河科技有限公司")
+    assert visited == list(range(1, MAX_PDF_PAGES + 1))
+    assert parse_lists(session, fetcher=fake).names == 1
+    assert fake.calls == [url]
+
+    entry = session.query(ListEntry).filter_by(document_id=document.id, source_url=url).one()
+    entry.name = "李四"
+    session.commit()
+    assert parse_lists(session, fetcher=fake).names == 0
+    assert record.status == "empty"
+    assert record.failure_reason == "PDF 共301页，仅解析前300页"
 
 
 def test_parse_lists_backfills_detail_and_is_idempotent(session) -> None:
