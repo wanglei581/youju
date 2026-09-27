@@ -21,7 +21,7 @@ LIST_WORDS = (
     "资助决定",
     "企业更名",
 )
-# 与企业申报无关的公示和名单（招聘、职称评审、采购比选、产能置换、执法检查、督察整改、征求意见等），
+# 与企业申报无关的公示和名单（招聘、职称评审、采购比选、产能置换、执法检查、督察整改等），
 # 标题有名单字样也不算名单，归"其他"。职称、招聘名单列的是个人，也不该放进查名单
 LIST_OFF_TOPIC = (
     "招聘",
@@ -39,8 +39,10 @@ LIST_OFF_TOPIC = (
     "执法检查",
     "督察",
     "销号",
-    "征求意见",
 )
+# 征求意见（如"关于《XX管理办法》公开征求社会意见的公示"）：不算名单，按其他规则判断，
+# 与其他征求意见稿一样，有政策字样的归政策
+CONSULT_WORDS = ("征求",)
 # 带名单字样、但其实是在组织一项工作（如"组织开展……名单制定工作的通知"），
 # 且不是公示或公布结果的，算申报通知
 LIST_APPLY_HINTS = ("组织开展", "有关事项的通知", "工作的通知", "申报")
@@ -82,9 +84,10 @@ def _off_topic(title: str) -> bool:
 def doc_kind(title: str) -> str:
     if _off_topic(title):
         return "其他"
-    if _is_list(title):
+    consult = _has(title, CONSULT_WORDS)
+    if not consult and _is_list(title):
         return "名单"
-    if _has(title, APPLY_WORDS) or _has(title, LIST_WORDS):
+    if _has(title, APPLY_WORDS) or (not consult and _has(title, LIST_WORDS)):
         return "申报通知"
     if _has(title, POLICY_WORDS) and not _has(title, POLICY_EXCLUDE):
         return "政策"
@@ -118,12 +121,18 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     """与 doc_kind 完全相同的判断，写成 SQL 条件。"""
     has_list = _any_in(title, LIST_WORDS)
     off_topic = and_(has_list, _any_in(title, LIST_OFF_TOPIC))
+    consult = _any_in(title, CONSULT_WORDS)
     is_list = and_(
         not_(off_topic),
+        not_(consult),
         has_list,
         not_(and_(_any_in(title, LIST_APPLY_HINTS), not_(_any_in(title, LIST_RESULT_HINTS)))),
     )
-    is_apply = and_(not_(off_topic), not_(is_list), or_(_any_in(title, APPLY_WORDS), has_list))
+    is_apply = and_(
+        not_(off_topic),
+        not_(is_list),
+        or_(_any_in(title, APPLY_WORDS), and_(has_list, not_(consult))),
+    )
     is_policy = and_(
         not_(off_topic),
         not_(is_list),
