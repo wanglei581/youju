@@ -98,28 +98,30 @@
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
+    // 全角数字和符号换成半角再匹配（逐字一一对应，位置不变），显示仍用原文
+    const plain = text.replace(/[０-９－／．～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
     const hits = [];
-    for (const found of text.matchAll(DATE_RE)) {
-      if (found.index > 0 && /\d/.test(text[found.index - 1])) continue;
+    for (const found of plain.matchAll(DATE_RE)) {
+      if (found.index > 0 && /\d/.test(plain[found.index - 1])) continue;
       const written = found[1] || found[4] || found[7];
       if (written && Number(written) !== y) continue;
       const unsure = !written;
       const end = found.index + found[0].length;
       if (found[8]) {
-        // 同月区间"10月8-9日"：起始日标"10月8"，末日标"9日"
+        // 同月区间"10月8-9日"：起始日标"10月8"，末日标"9日"；末日不大于起始日的是跨月，末日不标
         if (Number(found[8]) !== m) continue;
         const startEnd = found.index + found[0].indexOf(found[10], found[0].indexOf('月')); // 起始日数字之后
         const dayAt = startEnd + found[10].length;
         if (Number(found[9]) === d) hits.push({ start: found.index, end: startEnd, unsure });
-        if (Number(found[11]) === d) hits.push({ start: dayAt, end, unsure });
+        if (Number(found[11]) === d && Number(found[11]) > Number(found[9])) hits.push({ start: dayAt, end, unsure });
         continue;
       }
       const month = Number(found[2] || found[5]);
       const day = Number(found[3] || found[6]);
       if (month === m && day === d) hits.push({ start: found.index, end, unsure });
-      // 区间末日与起始日同年同月
-      const tail = found[2] ? RANGE_END_RE.exec(text.slice(end)) : null;
-      if (tail && month === m && Number(tail[3]) === d) {
+      // 区间末日与起始日同年同月；末日不大于起始日的是跨月（如"10月31日至1日"），不标
+      const tail = found[2] ? RANGE_END_RE.exec(plain.slice(end)) : null;
+      if (tail && month === m && Number(tail[3]) === d && d > day) {
         const dayAt = end + tail[1].length;
         hits.push({ start: dayAt, end: dayAt + tail[2].length, unsure });
       }
