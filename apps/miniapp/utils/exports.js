@@ -7,17 +7,14 @@ function list() {
   try { return wx.getStorageSync(KEY) || []; } catch (e) { return []; }
 }
 
-// 以下都返回是否成功
-function add(record) {
-  try { wx.setStorageSync(KEY, [record].concat(list()).slice(0, LIMIT)); return true; } catch (e) { return false; }
-}
-
-function remove(id) {
-  try { wx.setStorageSync(KEY, list().filter((r) => r.id !== id)); return true; } catch (e) { return false; }
+// 以下都返回是否成功。add 的 replaces：重新导出时被替代的旧记录编号，和新增在同一次写入里完成
+function add(record, replaces) {
+  const rest = list().filter((r) => r.id !== replaces);
+  try { wx.setStorageSync(KEY, [record].concat(rest).slice(0, LIMIT)); return true; } catch (e) { return false; }
 }
 
 function clear() {
   try { wx.removeStorageSync(KEY); return true; } catch (e) { return false; }
 }
 
-module.exports = { list, add, remove, clear };
+module.exports = { list, add, clear };

@@ -31,7 +31,7 @@
 
 <view class="card">
   <view class="section-title">数据从哪里来</view>
-  <view class="nums">
+  <view wx:if="{{stats}}" class="nums">
     <view class="num"><view class="num-v">{{stats.sources}}</view><view class="muted num-k">政府网站栏目</view></view>
     <view class="num num--line"><view class="num-v">{{stats.provinces}}</view><view class="muted num-k">个省 + 国家部委</view></view>
     <view class="num num--line"><view class="num-v">1–4</view><view class="muted num-k">次 / 天检查</view></view>

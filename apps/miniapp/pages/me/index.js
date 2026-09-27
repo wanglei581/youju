@@ -18,8 +18,8 @@ Page({
     outdated: false,
     followCount: 0,
     reminderCount: 0,
-    // 数据从哪里来：连着接口时用首页接口的统计，演示数据时用固定值
-    stats: { sources: 72, provinces: 28 },
+    // 数据从哪里来：连着接口时用首页接口的统计（取到之前不显示数字），演示数据时用固定的演示值
+    stats: api.isLive() ? null : { sources: 72, provinces: 28 },
   },
 
   onLoad() {

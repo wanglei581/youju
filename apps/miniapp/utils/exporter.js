@@ -102,12 +102,9 @@ function exportDocs(ids, options) {
           at: new Date().toISOString(),
           path: filePath,
           ids,
-        });
-        // 记录存好了才删旧文件、替换旧记录；没存上就保留旧文件，旧记录仍能打开
-        if (recorded) {
-          clearOld(wx.getFileSystemManager(), filePath);
-          if (opts.replaces) exportsLog.remove(opts.replaces);
-        }
+        }, opts.replaces);
+        // 记录存好了（旧记录也在同一次写入里替换掉了）才删旧文件；没存上就保留旧文件，旧记录仍能打开
+        if (recorded) clearOld(wx.getFileSystemManager(), filePath);
         wx.hideLoading();
         return open(filePath, format);
       })
