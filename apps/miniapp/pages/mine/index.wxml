@@ -1,9 +1,0 @@
-<view class="page">
-  <view class="profile"><view class="profile-mark serif">行</view><view class="serif profile-name">行业政策</view><view class="profile-desc">资料有出处 · 结果可追溯</view><view class="profile-badge">本地受控试用版 v{{version}}</view></view>
-  <view class="metric-row"><view class="metric"><text class="metric-value">{{watchCount}}</text><text class="metric-label">关注</text></view><view class="metric"><text class="metric-value">{{fileCount}}</text><text class="metric-label">文件</text></view><view class="metric"><text class="metric-value">{{selectedCount}}</text><text class="metric-label">已选</text></view></view>
-  <view class="section-head"><text class="section-title">服务状态</text></view>
-  <view class="card"><view class="row"><view class="dot dot-{{healthTone}}"></view><text class="strong">{{healthLabel}}</text></view><view class="card-sub mono">{{baseLabel}}</view><view class="btn btn-secondary btn-sm health-button" bindtap="onCheck">{{checking ? '检测中…' : '检测连接'}}</view></view>
-  <view class="section-head"><text class="section-title">使用设置</text></view>
-  <view class="menu"><view class="menu-item" hover-class="menu-hover" bindtap="onSettings"><view class="menu-glyph">服</view><view class="menu-text">服务地址<text class="menu-desc">本地 API 地址与连接测试</text></view><view class="chevron"></view></view><view class="menu-item" hover-class="menu-hover" bindtap="onSources"><view class="menu-glyph">源</view><view class="menu-text">来源目录<text class="menu-desc">已登记的发布机构与使用范围</text></view><view class="chevron"></view></view><view class="menu-item" hover-class="menu-hover" bindtap="onAbout"><view class="menu-glyph">关</view><view class="menu-text">关于本产品<text class="menu-desc">当前能力、证据边界和后续阶段</text></view><view class="chevron"></view></view></view>
-  <view class="footnote">当前不提供账号、付费、公开 AI 问答或全行业实时监测。请勿将本地试用结果作为官方证明。</view>
-</view>

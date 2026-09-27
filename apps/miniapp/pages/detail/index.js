@@ -1,39 +1,79 @@
-const api = require('../../utils/api');
-const labels = require('../../utils/labels');
-const selection = require('../../utils/selection');
-const exportsUtil = require('../../utils/exports');
-const ui = require('../../utils/ui');
+const api = require('../../utils/api.js');
+const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
+const { copyLink } = require('../../utils/copy.js');
+const { requestOnce } = require('../../utils/subscribe.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 Page({
-  data: { id: 0, state: 'loading', item: null, error: '', selected: false, exporting: '' },
-  onLoad(options) { this.setData({ id: Number(options.id) || 0 }); this.load(); },
-  onShow() { if (this.data.id) this.setData({ selected: selection.has(this.data.id) }); },
-  load() {
-    if (!this.data.id) { this.setData({ state: 'error', error: '资料编号无效' }); return; }
-    this.setData({ state: 'loading', error: '' });
-    api.getResource(this.data.id).then((raw) => {
-      this.setData({ state: 'ready', item: labels.decorateResource(raw), selected: selection.has(this.data.id) });
-    }, (error) => this.setData({ state: 'error', error: error.message || '资料不可用' }));
+  data: { doc: null, due: null, dueDate: '', dueWeek: '', tagClasses: [], reminded: false, error: '' },
+
+  onLoad(query) {
+    api.detail(query.id)
+      .then((doc) => {
+        // 只有人工核对过的截止日期才显示（合规红线）
+        const due = dueInfo(doc.deadline);
+        this.setData({
+          doc,
+          due,
+          dueDate: due ? cnDate(doc.deadline.date) : '',
+          dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
+          tagClasses: (doc.tags || []).map((t) => kindClass(t)),
+        });
+      })
+      .catch((err) => this.setData({ error: err.message }));
   },
-  onCopy() { if (this.data.item) ui.copyLink(this.data.item.originalUrl, '原站链接'); },
-  onSelect() {
-    const item = this.data.item;
-    if (!item) return;
-    const result = selection.toggle(item.id, item.title);
-    if (!result.ok) { ui.toast('选择数量已达上限'); return; }
-    this.setData({ selected: result.selected });
+
+  // 跨日返回页面时重算剩余天数
+  onShow() {
+    this.recompute();
+    watchDay(this, () => this.recompute());
   },
-  onExport(e) {
-    if (!this.data.item || this.data.exporting) return;
-    const fmt = e.currentTarget.dataset.format;
-    this.setData({ exporting: fmt });
-    wx.showLoading({ title: '正在生成', mask: true });
-    exportsUtil.run([{ id: this.data.item.id, title: this.data.item.title }], fmt).then((entry) => {
-      wx.hideLoading(); this.setData({ exporting: '' });
-      return ui.confirm({ title: '文件已生成', content: entry.displayName + ' 已保存到本机。', confirmText: '打开', cancelText: '稍后' }).then((ok) => {
-        if (ok) return exportsUtil.openFile(entry).catch((error) => ui.alert('打开失败', error.message));
-        return null;
-      });
-    }, (error) => { wx.hideLoading(); this.setData({ exporting: '' }); ui.alert('导出失败', error.message); });
+
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
+  recompute() {
+    if (this.data.doc) this.setData({ due: dueInfo(this.data.doc.deadline) });
+  },
+
+  // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
+  toggleRemind() {
+    if (this.data.reminded) {
+      wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
+      return;
+    }
+    const { doc } = this.data;
+    const due = dueInfo(doc && doc.deadline);
+    this.setData({ due });
+    if (!due || due.days < 3) {
+      wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
+      return;
+    }
+    requestOnce('deadline', { type: 'deadline', docId: doc.id }).then((ok) => {
+      if (!ok) return;
+      this.setData({ reminded: true });
+      wx.showToast({ title: '已订阅截止提醒', icon: 'none' });
+    });
+  },
+
+  copy() {
+    copyLink(this.data.doc && this.data.doc.url);
+  },
+
+  favorite() {
+    wx.showToast({ title: '收藏功能即将开放', icon: 'none' });
+  },
+
+  exportDoc() {
+    wx.switchTab({ url: '/pages/files/index' });
+  },
+
+  feedback() {
+    wx.showToast({ title: '纠错入口即将开放', icon: 'none' });
   },
 });

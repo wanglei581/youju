@@ -1,45 +1,38 @@
 {
   "pages": [
-    "pages/answer/index",
-    "pages/watch/index",
+    "pages/home/index",
+    "pages/follow/index",
     "pages/files/index",
-    "pages/mine/index",
+    "pages/me/index",
+    "pages/search/index",
     "pages/detail/index",
-    "pages/sources/index",
-    "pages/settings/index",
-    "pages/about/index"
+    "pages/calendar/index",
+    "pages/lists/index",
+    "pages/agreement/index"
   ],
   "window": {
-    "navigationBarBackgroundColor": "#0B3633",
-    "navigationBarTextStyle": "white",
-    "navigationBarTitleText": "行业研究台",
-    "backgroundColor": "#F5F3EE",
-    "backgroundColorTop": "#0B3633",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "有据",
+    "backgroundColor": "#F2F4F8",
     "backgroundTextStyle": "dark"
   },
   "tabBar": {
-    "color": "#7D8E87",
-    "selectedColor": "#0B3633",
+    "custom": true,
+    "color": "#86909C",
+    "selectedColor": "#2A5CE0",
     "backgroundColor": "#FFFFFF",
-    "borderStyle": "white",
     "list": [
-      {
-        "pagePath": "pages/answer/index",
-        "text": "找答案"
-      },
-      {
-        "pagePath": "pages/watch/index",
-        "text": "关注"
-      },
-      {
-        "pagePath": "pages/files/index",
-        "text": "文件"
-      },
-      {
-        "pagePath": "pages/mine/index",
-        "text": "我的"
-      }
+      { "pagePath": "pages/home/index", "text": "首页" },
+      { "pagePath": "pages/follow/index", "text": "关注" },
+      { "pagePath": "pages/files/index", "text": "文件" },
+      { "pagePath": "pages/me/index", "text": "我的" }
     ]
+  },
+  "usingComponents": {
+    "t-icon": "tdesign-miniprogram/icon/icon",
+    "notice-bar": "/components/notice-bar/index",
+    "doc-row": "/components/doc-row/index"
   },
   "style": "v2",
   "sitemapLocation": "sitemap.json",

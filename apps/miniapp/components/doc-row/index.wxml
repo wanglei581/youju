@@ -1,0 +1,18 @@
+<view class="row {{last ? '' : 'row--line'}}">
+  <view class="head" bindtap="open">
+    <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
+    <text wx:if="{{doc.status}}" class="status status--{{statusCls}}">{{doc.status}}</text>
+    <text class="region">{{label || doc.region}}</text>
+    <text wx:if="{{due}}" class="due {{due.tone ? 'due--' + due.tone : ''}}">{{due.text}}</text>
+    <text wx:elif="{{doc.kind === '申报通知'}}" class="due">截止时间见原文</text>
+  </view>
+  <view class="title" bindtap="open"><text wx:for="{{segs}}" wx:key="index" class="{{item.hl ? 'hl' : ''}}">{{item.t}}</text></view>
+  <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>
+  <view class="meta">
+    <text>{{issuerLong ? doc.date : doc.issuer + ' · ' + doc.date}}</text>
+    <view class="copy" catchtap="copy" aria-role="button" aria-label="复制原文链接">
+      <t-icon name="copy" size="28rpx" />
+      <text>复制原文链接</text>
+    </view>
+  </view>
+</view>

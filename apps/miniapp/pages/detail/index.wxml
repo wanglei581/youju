@@ -1,15 +1,74 @@
-<view class="page detail-page">
-  <state-view wx:if="{{state === 'loading'}}" type="loading" title="正在读取已发布资料"/>
-  <state-view wx:elif="{{state === 'error'}}" type="error" title="资料暂不可用" desc="{{error}}" action-text="重试" bindaction="load"/>
-  <view wx:elif="{{item}}">
-    <view class="eyebrow">SOURCE RECORD · #{{item.id}}</view><view class="detail-title serif">{{item.title}}</view>
-    <view class="detail-tags"><text class="tag tag-{{item.coverageTone}}">{{item.coverageLabel}}</text><text class="tag">{{item.kindLabel}}</text><text wx:if="{{item.region}}" class="tag tag-line">{{item.region}}</text><text wx:if="{{item.industry}}" class="tag tag-line">{{item.industry}}</text></view>
-    <view class="card"><view class="section-title">{{item.verified ? '核验结果' : '当前覆盖'}}</view><view class="detail-answer">{{item.verified ? item.answer : item.coverageDesc}}</view><view wx:if="{{item.evidenceLocator}}" class="notice">证据位置：{{item.evidenceLocator}}</view></view>
-    <view wx:if="{{item.summary}}" class="card"><view class="section-title">资料摘要</view><view class="detail-body" user-select>{{item.summary}}</view></view>
-    <view class="section-head"><text class="section-title">来源与版本</text></view>
-    <view class="card detail-meta"><view><text>发布机构</text><text>{{item.publisher}}</text></view><view><text>来源栏目</text><text>{{item.sourceName}}</text></view><view><text>发布日期</text><text>{{item.publishedAt || '待核'}}</text></view><view><text>使用范围</text><text>{{item.rightsLong}}</text></view><view><text>资料版本</text><text>v{{item.versionNo}} · {{item.statusLabel}}</text></view><view><text>审核日期</text><text>{{item.reviewedDay || '未标注'}}</text></view></view>
-    <view class="notice notice-copper"><text class="notice-title">原站优先</text>{{item.rightsDesc}} 若来源更正或撤回，请以发布机构最新信息为准。</view>
-    <view class="card source-link" bindtap="onCopy"><text class="strong">复制原站地址</text><text class="mono break">{{item.originalUrl}}</text></view>
-    <view class="detail-actions"><view class="btn btn-secondary" bindtap="onSelect">{{selected ? '取消选择' : '加入所选'}}</view><view class="btn btn-primary" data-format="xlsx" bindtap="onExport">导出 Excel</view><view class="btn btn-primary" data-format="docx" bindtap="onExport">导出 Word</view></view>
+<notice-bar />
+<view wx:if="{{error}}" class="card empty">{{error}}</view>
+<block wx:if="{{doc}}">
+  <view class="card head">
+    <view class="tags">
+      <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>
+      <text class="region">{{doc.region}}</text>
+    </view>
+    <view class="title">{{doc.title}}</view>
+    <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
   </view>
-</view>
+
+  <view wx:if="{{due}}" class="card due-card">
+    <view class="due-top">
+      <view>
+        <view class="due-label">{{doc.deadline.label}}</view>
+        <view class="due-date-row"><text class="due-date">{{dueDate}}</text><text class="due-week">{{dueWeek}}</text></view>
+      </view>
+      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
+    </view>
+    <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
+    <view wx:if="{{due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
+      <t-icon name="notification" size="34rpx" />
+      <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒'}}</text>
+    </view>
+  </view>
+  <view wx:elif="{{doc.kind === '申报通知'}}" class="card due-card">
+    <view class="due-label">申报截止</view>
+    <view class="due-unverified">截止时间见原文</view>
+  </view>
+
+  <view class="card">
+    <view class="section-title">要点</view>
+    <view wx:for="{{doc.points}}" wx:key="index" class="kv {{index === doc.points.length - 1 ? 'kv--last' : ''}}">
+      <text class="k">{{item[0]}}</text><text class="v">{{item[1]}}</text>
+    </view>
+  </view>
+
+  <view wx:if="{{doc.excerpt}}" class="card">
+    <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>
+    <view class="excerpt">“{{doc.excerpt.text}}”</view>
+  </view>
+
+  <view wx:if="{{doc.attachments.length}}" class="card">
+    <view class="section-title">附件 {{doc.attachments.length}}</view>
+    <view wx:for="{{doc.attachments}}" wx:key="name" class="att">
+      <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
+      <text class="att-name">{{item.name}}</text>
+    </view>
+    <view class="att-foot">
+      <text>附件在原文页面下载</text>
+      <view class="copy" bindtap="copy"><t-icon name="copy" size="28rpx" />复制原文链接</view>
+    </view>
+  </view>
+
+  <view class="card source">
+    <view class="source-top">
+      <view>
+        <view class="weak source-label">原文出处</view>
+        <view class="source-site">{{doc.site || doc.issuer}}</view>
+      </view>
+      <view class="copy copy--big" bindtap="copy"><t-icon name="copy" size="30rpx" />复制原文链接</view>
+    </view>
+    <view class="source-note">原文网址 {{doc.host || ''}}。小程序内不能直接打开政府网站，复制链接后在浏览器打开。<text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理；有据是第三方整理的信息工具，不是政府平台，不提供填报入口。</view>
+  </view>
+  <view style="height: 220rpx"></view>
+
+  <view class="bar">
+    <view class="bar-item" bindtap="favorite"><t-icon name="star" size="44rpx" /><text>收藏</text></view>
+    <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
+    <view class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
+    <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
+  </view>
+</block>

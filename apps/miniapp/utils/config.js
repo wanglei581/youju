@@ -1,26 +1,7 @@
-/* Client constants. Limits mirror services/api (store.public_search LIMIT 50,
- * store.public_selected 1–100 ids, 100-char filters). The API address is
- * user-editable in 我的 → 服务地址与连接. */
-
+// 运行配置。云托管环境（#32）和订阅消息模板（#22）开通后填写；为空时走演示数据、不发起订阅。
 module.exports = {
-  APP_VERSION: '0.1.0',
-  DEFAULT_BASE_URL: 'http://127.0.0.1:8766',
-  EXPECTED_PRODUCT: 'industry-policy-local',
-
-  RESULT_LIMIT: 50,
-  MAX_SELECTED: 100,
-  FILTER_MAX_LENGTH: 100,
-  MAX_WATCHES: 20,
-  MAX_EXPORT_HISTORY: 50,
-
-  REQUEST_TIMEOUT: 15000,
-  EXPORT_TIMEOUT: 60000,
-
-  STORAGE_KEYS: {
-    settings: 'ip_settings_v1',
-    health: 'ip_health_v1',
-    selection: 'ip_selection_v1',
-    watches: 'ip_watches_v1',
-    exports: 'ip_exports_v1',
-  },
+  cloudEnv: '',
+  cloudService: '',
+  // 一次性订阅消息模板 ID：newDocs 关注条件有新文件；deadline 申报截止前提醒
+  templates: { newDocs: '', deadline: '' },
 };

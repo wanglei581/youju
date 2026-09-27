@@ -1,23 +1,22 @@
-/* 行业研究台 · 微信原生小程序（本地受控试用版）
- * All data comes from the configured API (default http://127.0.0.1:8766).
- * No sample data, no AI, no login; watches and export history are device-local. */
-const config = require('./utils/config');
-const storage = require('./utils/storage');
-
 App({
   globalData: {
-    // Filters handed from 关注 → 找答案 (switchTab cannot carry a query string).
-    pendingFilters: null,
-    // Last /api/health result; also persisted so 我的 can show it immediately.
-    health: null,
+    // 自定义导航栏（首页、我的、查名单的蓝色顶部）用：状态栏高度、导航内容区高度、右上角胶囊占的宽度
+    statusBarHeight: 20,
+    navHeight: 44,
+    menuWidth: 96,
   },
 
   onLaunch() {
-    this.globalData.health = storage.read(config.STORAGE_KEYS.health, null);
-  },
-
-  setHealth(result) {
-    this.globalData.health = result;
-    storage.write(config.STORAGE_KEYS.health, result);
+    try {
+      const win = wx.getWindowInfo();
+      const menu = wx.getMenuButtonBoundingClientRect();
+      const statusBar = win.statusBarHeight || 20;
+      this.globalData.statusBarHeight = statusBar;
+      // 导航内容区高度：让胶囊在内容区里上下居中
+      this.globalData.navHeight = (menu.top - statusBar) * 2 + menu.height;
+      this.globalData.menuWidth = win.windowWidth - menu.left;
+    } catch (e) {
+      // 取不到时用默认值，页面照常显示
+    }
   },
 });

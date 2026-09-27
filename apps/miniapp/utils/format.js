@@ -1,65 +1,91 @@
-/* Date, size and text helpers for display. */
+// 列表和详情共用的显示规则（与原型 v2 的 ds.py 一致）
 
-function pad(value) {
-  return value < 10 ? '0' + value : String(value);
+const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function pad(n) {
+  return n < 10 ? `0${n}` : `${n}`;
 }
 
-function toDate(value) {
-  if (value instanceof Date) return value;
-  if (typeof value === 'number') return new Date(value);
-  const date = new Date(String(value || ''));
-  return isNaN(date.getTime()) ? null : date;
+// 本地时区的"今天"，形如 2026-09-27
+function todayISO(now) {
+  const d = now || new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** "2026-09-25 14:05" in the device's local time. */
-function dateTime(value) {
-  const date = toDate(value);
-  if (!date) return '';
-  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
-    ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+function parseISO(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
 }
 
-/** "20260925-140512" for file names. */
-function stamp(value) {
-  const date = toDate(value) || new Date();
-  return date.getFullYear() + pad(date.getMonth() + 1) + pad(date.getDate()) + '-' +
-    pad(date.getHours()) + pad(date.getMinutes()) + pad(date.getSeconds());
+// 从今天到截止日还有几天（当天截止为 0，已过为负数）
+function daysUntil(iso, now) {
+  const today = parseISO(todayISO(now));
+  return Math.round((parseISO(iso) - today) / 86400000);
 }
 
-/** "刚刚" / "5 分钟前" / "3 小时前" / full date. */
-function relative(value) {
-  const date = toDate(value);
-  if (!date) return '';
-  const diff = Date.now() - date.getTime();
-  if (diff < 0) return dateTime(date);
-  if (diff < 60 * 1000) return '刚刚';
-  if (diff < 60 * 60 * 1000) return Math.floor(diff / 60000) + ' 分钟前';
-  if (diff < 24 * 60 * 60 * 1000) return Math.floor(diff / 3600000) + ' 小时前';
-  return dateTime(date);
+function monthDay(iso) {
+  const d = parseISO(iso);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-/** Date part of an ISO timestamp from the server ("2026-09-25T06:00:00+00:00" -> "2026-09-25"). */
-function isoDay(value) {
-  const text = String(value || '');
-  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : '';
+function cnDate(iso) {
+  const d = parseISO(iso);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-function bytes(size) {
-  const value = Number(size) || 0;
-  if (value < 1024) return value + ' B';
-  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
-  return (value / 1024 / 1024).toFixed(2) + ' MB';
+function weekday(iso) {
+  return WEEK[parseISO(iso).getDay()];
 }
 
-function truncate(text, max) {
-  const value = String(text || '');
-  return value.length > max ? value.slice(0, max - 1) + '…' : value;
+// 截止提示：14 天内红字，7 天内再加红底；已过期单独标出
+function dueTone(days) {
+  if (days === undefined || days === null) return '';
+  if (days < 0) return 'past';
+  if (days <= 7) return 'urgent';
+  if (days <= 14) return 'soon';
+  return '';
 }
 
-/** Host part of an https URL for compact display; '' if it cannot be parsed. */
-function urlHost(url) {
-  const match = /^https?:\/\/([^/?#]+)/i.exec(String(url || ''));
-  return match ? match[1] : '';
+// 截止信息：只有人工核对过的才显示（合规红线），否则返回 null
+function dueInfo(deadline, now) {
+  if (!deadline || !deadline.verified || !deadline.date) return null;
+  const days = daysUntil(deadline.date, now);
+  const at = `${monthDay(deadline.date)}${deadline.time ? ` ${deadline.time}` : ''}`;
+  return {
+    days,
+    tone: dueTone(days),
+    text: days < 0 ? `${at}已截止` : `${at}截止 · 剩${days}天`,
+  };
 }
 
-module.exports = { dateTime, stamp, relative, isoDay, bytes, truncate, urlHost };
+// 类型标签颜色：申报=蓝，名单=橙，政策=绿
+function kindClass(kind) {
+  return { 申报通知: 'apply', 名单: 'list', 政策: 'policy' }[kind] || 'plain';
+}
+
+function statusClass(status) {
+  return status === '公示' ? 'public' : 'final';
+}
+
+// 把标题按关键词切成段，用于高亮
+function highlight(text, q) {
+  if (!q || !text) return [{ t: text || '', hl: false }];
+  const out = [];
+  let from = 0;
+  let at = text.indexOf(q);
+  while (at !== -1) {
+    if (at > from) out.push({ t: text.slice(from, at), hl: false });
+    out.push({ t: q, hl: true });
+    from = at + q.length;
+    at = text.indexOf(q, from);
+  }
+  if (from < text.length) out.push({ t: text.slice(from), hl: false });
+  return out;
+}
+
+// 发文机关超过 11 个字时单独一行，不截断
+const ISSUER_WRAP = 11;
+
+module.exports = {
+  todayISO, daysUntil, monthDay, cnDate, weekday, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+};

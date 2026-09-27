@@ -1,0 +1,8 @@
+{
+  "name": "youju-miniapp",
+  "private": true,
+  "description": "有据 · 微信小程序（原生 + TDesign 组件）",
+  "dependencies": {
+    "tdesign-miniprogram": "1.17.0"
+  }
+}

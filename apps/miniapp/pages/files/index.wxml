@@ -1,12 +1,25 @@
-<view class="page">
-  <view class="files-head"><text class="eyebrow">YOUR DELIVERABLES</text><view class="serif head-title">我的文件</view><text class="head-desc">只保存你选中结果生成的 Excel 与 Word。文件存在当前设备的小程序空间。</text></view>
-  <view class="notice">资料可能在导出后被更正或撤回。历史文件不会自动改写，使用前请回到原站核对最新状态。</view>
-  <view class="section-head"><text class="section-title">导出记录 {{items.length}}</text><text wx:if="{{items.length}}" class="section-extra" bindtap="onClear">清空文件</text></view>
-  <state-view wx:if="{{!items.length}}" type="empty" glyph="文" title="还没有导出文件" desc="在找答案页勾选资料，再导出 Excel 或 Word。" action-text="去找答案" bindaction="onFind"/>
-  <view wx:for="{{items}}" wx:key="id" class="card file-card">
-    <view class="row"><view class="file-glyph">{{item.format === 'xlsx' ? 'X' : 'W'}}</view><view class="flex-1"><view class="card-title">{{item.displayName}}</view><view class="card-sub">{{item.when}} · {{item.count}} 条 · {{item.sizeLabel}}</view></view></view>
-    <view wx:if="{{!item.exists}}" class="notice notice-warn file-warning">本机文件已不存在，请重新导出。</view>
-    <view class="file-actions"><view class="btn btn-primary btn-sm {{!item.exists ? 'is-disabled' : ''}}" data-id="{{item.id}}" bindtap="onOpen">打开</view><view class="btn btn-secondary btn-sm {{!item.exists ? 'is-disabled' : ''}}" data-id="{{item.id}}" bindtap="onShare">发送</view><text class="small muted" data-id="{{item.id}}" bindtap="onDelete">删除</text></view>
+<notice-bar />
+<view class="local">导出记录暂存在本机，<text class="link" bindtap="login">登录</text>后可同步到其他设备</view>
+<view class="intro">导出的表格和文档都在这里。每份都带原文链接和数据说明（来源网站、核对日期、以原文为准），可以直接转给同事或客户。</view>
+<view class="card">
+  <view class="section-title">导出记录 {{files.length}}</view>
+  <view wx:for="{{files}}" wx:key="name" class="file {{index === files.length - 1 ? 'file--last' : ''}}">
+    <text class="badge badge--{{item.badge}} {{item.expired ? 'badge--expired' : ''}}">{{item.badge}}</text>
+    <view class="file-main">
+      <view class="file-name {{item.expired ? 'file-name--expired' : ''}}">{{item.name}}</view>
+      <view class="muted file-meta">{{item.meta}}</view>
+      <view class="actions">
+        <block wx:if="{{!item.expired}}">
+          <view class="act" bindtap="sendToPc">发到电脑</view>
+          <view class="act" bindtap="forward">转发给好友</view>
+        </block>
+        <block wx:else>
+          <text class="expired">已失效</text>
+          <view class="act act--primary" bindtap="reexport">重新导出</view>
+        </block>
+      </view>
+    </view>
   </view>
-  <view class="footnote">文件历史只保存在本机；卸载小程序或清理存储后可能消失。服务端没有保留个人文件柜。</view>
 </view>
+<view class="tip">在搜索结果里点"选择"，或在文件详情里点"导出"，勾选需要的文件即可生成。</view>
+<view class="tab-page-bottom"></view>

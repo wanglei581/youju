@@ -1,0 +1,44 @@
+.top { background: var(--card); padding: 16rpx 32rpx 0; }
+.search-row { display: flex; align-items: center; gap: 24rpx; }
+.search-box { flex: 1; height: 76rpx; display: flex; align-items: center; gap: 16rpx; padding: 0 12rpx 0 24rpx; background: var(--fill); border-radius: 38rpx; }
+.search-input { flex: 1; min-width: 0; height: 72rpx; font-size: 30rpx; color: var(--t1); }
+.clear { width: 32rpx; height: 32rpx; border-radius: 16rpx; background: #C9CDD4; display: flex; align-items: center; justify-content: center; margin-right: 12rpx; }
+.cancel { font-size: 30rpx; color: var(--t1); }
+.kind-tabs { height: 88rpx; display: flex; gap: 44rpx; margin-top: 8rpx; font-size: 30rpx; }
+.kind-tab { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 16rpx; color: var(--t2); }
+.kind-tab:not(.kind-tab--on) { padding-bottom: 22rpx; }
+.kind-tab--on { color: var(--t1); font-weight: 600; }
+.kind-bar { width: 32rpx; height: 6rpx; border-radius: 4rpx; background: var(--brand); }
+
+.chips { padding: 20rpx 24rpx 0; display: flex; gap: 16rpx; align-items: center; }
+.chip { height: 60rpx; padding: 0 24rpx; display: flex; align-items: center; gap: 4rpx; border-radius: 30rpx; font-size: 26rpx; background: var(--fill); color: var(--t1); border: 2rpx solid var(--fill); }
+.chip--on { background: var(--brand-tint); color: var(--brand); border-color: var(--brand); }
+.filter-link { margin-left: auto; display: flex; align-items: center; gap: 8rpx; font-size: 26rpx; color: var(--t1); }
+.summary { padding: 20rpx 32rpx 0; display: flex; align-items: baseline; justify-content: space-between; font-size: 25rpx; color: var(--t2); }
+.summary-right { display: flex; gap: 28rpx; }
+.b { color: var(--t1); font-weight: 700; }
+
+.follow-bar { margin: 16rpx 24rpx 0; padding: 20rpx 24rpx; display: flex; align-items: center; gap: 20rpx; background: var(--brand-tint); border-radius: 20rpx; }
+.follow-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4rpx; }
+.follow-title { font-size: 26rpx; font-weight: 500; color: var(--t1); }
+.follow-sub { font-size: 24rpx; color: var(--t2); }
+.follow-btn { flex-shrink: 0; height: 56rpx; padding: 0 28rpx; display: flex; align-items: center; background: var(--brand); color: #FFFFFF; border-radius: 28rpx; font-size: 26rpx; font-weight: 500; white-space: nowrap; }
+
+.load-more { height: 96rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; color: var(--t3); }
+.feedback { margin-top: 28rpx; text-align: center; font-size: 26rpx; color: var(--t2); }
+
+.sheet { height: 80vh; display: flex; flex-direction: column; background: var(--card); border-radius: 32rpx 32rpx 0 0; }
+.sheet-head { height: 108rpx; flex-shrink: 0; display: flex; align-items: center; justify-content: center; position: relative; border-bottom: 2rpx solid var(--line); }
+.sheet-title { font-size: 34rpx; font-weight: 600; }
+.sheet-close { position: absolute; right: 16rpx; top: 14rpx; width: 80rpx; height: 80rpx; display: flex; align-items: center; justify-content: center; }
+.sheet-body { flex: 1; min-height: 0; padding: 0 32rpx; box-sizing: border-box; }
+.group { padding-top: 28rpx; }
+.group-title { font-size: 30rpx; font-weight: 600; color: var(--t1); }
+.group-hint { margin-left: 16rpx; font-size: 24rpx; font-weight: 400; color: var(--t3); }
+.options { margin-top: 20rpx; display: flex; flex-wrap: wrap; gap: 16rpx; }
+.option { height: 64rpx; padding: 0 28rpx; display: flex; align-items: center; border-radius: 32rpx; background: var(--fill); border: 2rpx solid var(--fill); font-size: 26rpx; color: var(--t1); }
+.option--on { background: var(--brand-tint); border-color: var(--brand); color: var(--brand); }
+.group-note { margin-top: 16rpx; font-size: 24rpx; color: var(--t3); }
+.sheet-foot { flex-shrink: 0; padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 2fr; gap: 20rpx; border-top: 2rpx solid var(--line); }
+.btn-reset { height: 88rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--line2); border-radius: 44rpx; font-size: 30rpx; color: var(--t1); }
+.empty { padding: 56rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }

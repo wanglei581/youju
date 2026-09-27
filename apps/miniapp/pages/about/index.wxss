@@ -1,1 +1,0 @@
-.about-title{font-size:49rpx;font-weight:800;color:#0b3633;line-height:1.35;margin:12rpx 0 28rpx}.about-line{font-size:27rpx;padding:16rpx 0;border-bottom:1rpx solid #eef1ec}.about-line:before{content:'•';color:#b96f4b;margin-right:12rpx}.about-title+.card{margin-bottom:18rpx}.about-line:last-child{border:0}.about-line+.about-line{margin-top:0}.notice{margin-top:20rpx}
