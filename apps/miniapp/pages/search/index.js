@@ -4,6 +4,7 @@ const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { loadCoverage, uncoveredIn } = require('../../utils/coverage.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -16,7 +17,7 @@ const KIND_TABS = [
 const GROUPS = [
   { key: 'region', title: '地区', hint: '可多选', multi: true,
     options: ['不限地区', '国家部委', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'],
-    note: '广西、甘肃暂未覆盖；浙江正在接入' },
+    note: '' }, // 还没收录的省份取自收录范围接口
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', '其他'] },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
@@ -48,6 +49,8 @@ Page({
     selecting: false,
     chosen: {},
     chosenCount: 0,
+    // 没有结果时，查询条件里涉及的还没收录的省份（如"浙江"）
+    uncovered: '',
   },
 
   onLoad(query) {
@@ -62,6 +65,12 @@ Page({
     });
     this.refreshChips();
     this.apply(true);
+    // 地区筛选下的说明：还没收录的省份
+    loadCoverage().then((c) => {
+      if (!c || !c.notCovered.length) return;
+      const note = `${c.notCovered.join('、')}暂未收录`;
+      this.setData({ groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { note }) : g)) });
+    });
   },
 
   onHide() {
@@ -103,7 +112,7 @@ Page({
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
-    this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0 } : { loading: true, error: '' });
+    this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0, uncovered: '' } : { loading: true, error: '' });
     api.search(params)
       .then((res) => {
         if (seq !== this.seq) return; // 只用最后一次查询的结果
@@ -114,6 +123,15 @@ Page({
           totalAll: res.total_all,
           loading: false,
         });
+        // 没有结果时区分"该地区还没收录"和"没有匹配的文件"（验收 A8）
+        if (!res.total) {
+          const regions = params.regions.split(',');
+          loadCoverage().then((c) => {
+            if (seq === this.seq) this.setData({ uncovered: uncoveredIn(c, regions, params.q).join('、') });
+          });
+        } else if (this.data.uncovered) {
+          this.setData({ uncovered: '' });
+        }
       })
       .catch((err) => {
         if (seq !== this.seq) return;

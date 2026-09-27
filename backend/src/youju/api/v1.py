@@ -42,6 +42,12 @@ PROVINCES = {
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
+# 31 个省级地区（不含港澳台），按国家行政区划顺序；用于"已收录 / 还没收录"（验收 A8）
+_PROVINCE_ORDER = (
+    "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏", "浙江",
+    "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
+    "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆",
+)  # fmt: skip
 _TECH = ("科技",)
 _INDUSTRY = ("工信", "经信", "工业和信息化")
 
@@ -220,6 +226,38 @@ def home(session: SessionDep) -> dict:
             "followed_new": None,
         },
         "items": _items(session, [tuple(r) for r in latest]),
+    }
+
+
+@router.get("/coverage")
+def coverage(session: SessionDep) -> dict:
+    """收录范围（验收 A8）：已收录的地区（启用的栏目数、最近一次成功检查时间）和还没收录的省份。"""
+    rows = session.execute(
+        select(Source.province, func.count(), func.max(Source.last_success_at))
+        .where(Source.enabled.is_(True))
+        .group_by(Source.province)
+    ).all()
+    stats = {province: (count, last) for province, count, last in rows}
+
+    def iso(value: datetime | None) -> str | None:
+        return value.astimezone(_TZ).isoformat() if value else None
+
+    regions = [
+        {
+            "name": "国家部委" if name == "国家" else name,
+            "sources": stats[name][0],
+            "lastUpdatedAt": iso(stats[name][1]),
+        }
+        for name in ("国家", *_PROVINCE_ORDER)
+        if name in stats
+    ]
+    lasts = [last for _, last in stats.values() if last]
+    return {
+        "sources": sum(count for count, _ in stats.values()),
+        "provinces": sum(1 for name in stats if name in _PROVINCE_ORDER),
+        "regions": regions,
+        "notCovered": [name for name in _PROVINCE_ORDER if name not in stats],
+        "updatedAt": iso(max(lasts)) if lasts else None,
     }
 
 

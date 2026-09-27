@@ -1,6 +1,18 @@
 // 演示数据：来自 2026-09-26 的真实抓取和原文核对（与原型 v2 相同）。接口（#27）就绪后只在开发时使用。
 // 截止日期写成 ISO 日期，剩余天数按当天实时计算；verified 表示已人工核对原文（未核对的不显示截止日期）。
 module.exports = {
+  "coverage": {
+    "sources": 72,
+    "provinces": 28,
+    "regions": [
+      { "name": "国家部委", "sources": 8, "lastUpdatedAt": "2026-09-28T09:30:00+08:00" },
+      { "name": "北京", "sources": 4, "lastUpdatedAt": "2026-09-28T09:30:00+08:00" },
+      { "name": "山东", "sources": 4, "lastUpdatedAt": "2026-09-28T09:30:00+08:00" },
+      { "name": "辽宁", "sources": 2, "lastUpdatedAt": "2026-09-28T09:30:00+08:00" }
+    ],
+    "notCovered": ["浙江", "广西", "甘肃"],
+    "updatedAt": "2026-09-28T09:30:00+08:00"
+  },
   "stats": {
     "week_total": 158,
     "apply": 25,

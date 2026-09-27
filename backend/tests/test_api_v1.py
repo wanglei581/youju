@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from youju.api import v1
 from youju.api.app import app
@@ -790,3 +791,31 @@ def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
     session.commit()
     session.refresh(copy_of_rejected)
     assert copy_of_rejected.status == "rejected"
+
+
+def test_coverage_lists_covered_regions_and_uncovered_provinces(client, session, seeded):
+    # 已收录：国家、辽宁、山东（seeded）；浙江的栏目未启用，算还没收录
+    zj = Source(
+        level="省级",
+        province="浙江",
+        dept="科技",
+        dept_full_name="浙江省科学技术厅",
+        column_name="通知",
+        url="https://kjt.zj.gov.cn/tz/",
+        enabled=False,
+        parser_config={},
+    )
+    session.add(zj)
+    sd = session.scalar(select(Source).where(Source.province == "山东"))
+    sd.last_success_at = datetime(2026, 9, 28, 1, 30, tzinfo=UTC)
+    session.commit()
+
+    body = client.get("/api/v1/coverage").json()
+    assert [r["name"] for r in body["regions"]] == ["国家部委", "辽宁", "山东"]
+    assert body["sources"] == 3
+    assert body["provinces"] == 2
+    shandong = body["regions"][2]
+    assert shandong == {"name": "山东", "sources": 1, "lastUpdatedAt": "2026-09-28T09:30:00+08:00"}
+    assert body["updatedAt"] == "2026-09-28T09:30:00+08:00"
+    assert "浙江" in body["notCovered"] and "辽宁" not in body["notCovered"]
+    assert len(body["notCovered"]) == 29

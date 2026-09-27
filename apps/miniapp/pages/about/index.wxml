@@ -15,6 +15,15 @@
   <view class="muted plain">只收录政府网站公开发布的文件，每条都附原文链接。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。截止日期等关键信息经人工核对才显示，没核对的写"截止时间见原文"。</view>
 </view>
 
+<view wx:if="{{cov}}" class="card">
+  <view class="section-title">收录范围</view>
+  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖国家部委和 {{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。</view>
+  <view class="chips">
+    <text wx:for="{{cov.regions}}" wx:key="name" class="chip">{{item.name}} {{item.sources}}</text>
+  </view>
+  <view wx:if="{{cov.notCovered}}" class="muted plain">暂未收录：{{cov.notCovered}}。网站不允许程序访问的，我们不绕过；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们。</view>
+</view>
+
 <view class="card">
   <view class="section-title">运营者</view>
   <view class="kv"><text class="kv-k">名称</text><text class="kv-v">{{op.name}}</text></view>
