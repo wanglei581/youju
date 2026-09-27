@@ -18,6 +18,8 @@ Page({
     outdated: false,
     followCount: 0,
     reminderCount: 0,
+    // 数据从哪里来：连着接口时用首页接口的统计，演示数据时用固定值
+    stats: { sources: 72, provinces: 28 },
   },
 
   onLoad() {
@@ -28,6 +30,14 @@ Page({
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 3 });
     this.refresh();
+    this.loadStats();
+  },
+
+  loadStats() {
+    if (!api.isLive()) return;
+    api.home()
+      .then(({ stats }) => { if (stats) this.setData({ stats: { sources: stats.sources, provinces: stats.provinces } }); })
+      .catch(() => { /* 取不到就显示上次的数 */ });
   },
 
   // 以服务端记录为准：换了设备也能恢复登录状态；服务端没有记录（如在别处注销过）或协议更新了，清掉本机记录。

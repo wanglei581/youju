@@ -7,17 +7,17 @@ function list() {
   try { return wx.getStorageSync(KEY) || []; } catch (e) { return []; }
 }
 
+// 以下都返回是否成功
 function add(record) {
-  const items = [record].concat(list()).slice(0, LIMIT);
-  try { wx.setStorageSync(KEY, items); } catch (e) { /* 存不下不影响导出 */ }
+  try { wx.setStorageSync(KEY, [record].concat(list()).slice(0, LIMIT)); return true; } catch (e) { return false; }
 }
 
 function remove(id) {
-  try { wx.setStorageSync(KEY, list().filter((r) => r.id !== id)); } catch (e) { /* 忽略 */ }
+  try { wx.setStorageSync(KEY, list().filter((r) => r.id !== id)); return true; } catch (e) { return false; }
 }
 
 function clear() {
-  try { wx.removeStorageSync(KEY); } catch (e) { /* 忽略 */ }
+  try { wx.removeStorageSync(KEY); return true; } catch (e) { return false; }
 }
 
 module.exports = { list, add, remove, clear };

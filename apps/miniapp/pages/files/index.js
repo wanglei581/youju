@@ -82,11 +82,8 @@ Page({
   reexport(e) {
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据不能导出', icon: 'none' }); return; }
-    // 重新导出成功后，新记录替代这一条
-    exportDocs(r.ids, { label: r.label, format: r.format }).then((ok) => {
-      if (ok) exportsLog.remove(r.id);
-      this.load();
-    });
+    // 新文件和记录存好后，新记录替代这一条（打开失败也替代）
+    exportDocs(r.ids, { label: r.label, format: r.format, replaces: r.id }).then(() => this.load());
   },
 
   clearAll() {
@@ -97,9 +94,11 @@ Page({
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;
-        exportsLog.clear();
-        removeFiles();
+        // 记录和文件都要删，删完再看结果
+        const cleared = exportsLog.clear();
+        const filesLeft = removeFiles();
         this.load();
+        wx.showToast({ title: cleared && filesLeft === 0 ? '已清空' : '有的记录或文件没删掉，请稍后再试', icon: 'none' });
       },
     });
   },
