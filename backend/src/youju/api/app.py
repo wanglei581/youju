@@ -601,8 +601,20 @@ def approved_deadlines(
     titles = dict(
         session.execute(select(Document.id, Document.title).where(Document.id.in_(new_ids))).all()
     )
-    return [
-        ReviewedDeadlineOut(
+    # 同一通知的不同网址（归并组）里相同的截止只列一条，标题和链接用主文件
+    mapping = canonical_ids(session, [doc.id for _, doc, _ in rows])
+    out: dict[tuple, ReviewedDeadlineOut] = {}
+    for d, doc, src in rows:
+        if d.approved_date is None:
+            continue
+        master_id = mapping.get(doc.id, doc.id)
+        key = (master_id, d.kind, d.approved_date, d.approved_time)
+        if key in out:
+            continue
+        if master_id != doc.id:
+            doc = session.get(Document, master_id)
+            src = doc.source
+        out[key] = ReviewedDeadlineOut(
             id=d.id,
             document_id=doc.id,
             title=doc.title,
@@ -616,9 +628,7 @@ def approved_deadlines(
             change_reason=d.change_reason,
             changed_to_title=titles.get(d.changed_to_document_id),
         )
-        for d, doc, src in rows
-        if d.approved_date is not None
-    ]
+    return list(out.values())
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/change")
@@ -635,7 +645,10 @@ def change_deadline(
         raise HTTPException(status_code=404, detail="没有找到截止记录")
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止才能标为已变更")
-    if body.new_document_id == row.document_id:
+    same = canonical_ids(session, [body.new_document_id, row.document_id])
+    if same.get(body.new_document_id, body.new_document_id) == same.get(
+        row.document_id, row.document_id
+    ):
         raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
     new_doc = session.get(Document, body.new_document_id)
     if new_doc is None:
@@ -648,13 +661,36 @@ def change_deadline(
         raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")
     if new_doc.publish_date < old_doc.publish_date:
         raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
-    row.status = "changed"
-    row.change_reason = body.reason
-    row.changed_to_document_id = body.new_document_id
-    row.changed_by = body.reviewed_by
-    row.changed_at = datetime.now(UTC)
+    # 归并组里相同的已通过副本（同一通知的其他网址）一并标记，否则副本仍会被当作有效截止显示
+    now = datetime.now(UTC)
+    for item in _group_twins(session, row, "approved"):
+        item.status = "changed"
+        item.change_reason = body.reason
+        item.changed_to_document_id = body.new_document_id
+        item.changed_by = body.reviewed_by
+        item.changed_at = now
     session.commit()
     return {"status": "changed"}
+
+
+def _group_twins(session: Session, row: DocumentDeadline, status: str) -> list[DocumentDeadline]:
+    """这条截止和归并组里类型、核定日期时间都相同、状态为 status 的副本（含自己）。"""
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    twins = session.scalars(
+        select(DocumentDeadline)
+        .where(
+            DocumentDeadline.document_id.in_(members),
+            DocumentDeadline.status == status,
+            DocumentDeadline.kind == row.kind,
+            DocumentDeadline.approved_date == row.approved_date,
+            DocumentDeadline.approved_time.is_(None)
+            if row.approved_time is None
+            else DocumentDeadline.approved_time == row.approved_time,
+        )
+        .with_for_update()
+    ).all()
+    return list({row, *twins})
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/unchange")
@@ -669,11 +705,12 @@ def unchange_deadline(
         raise HTTPException(status_code=404, detail="没有找到截止记录")
     if row.status != "changed":
         raise HTTPException(status_code=409, detail="这条截止没有标为已变更")
-    row.status = "approved"
-    row.change_reason = None
-    row.changed_to_document_id = None
-    row.changed_by = None
-    row.changed_at = None
+    for item in _group_twins(session, row, "changed"):
+        item.status = "approved"
+        item.change_reason = None
+        item.changed_to_document_id = None
+        item.changed_by = None
+        item.changed_at = None
     session.commit()
     return {"status": "approved"}
 

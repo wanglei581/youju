@@ -317,24 +317,39 @@ def document(doc_id: int, session: SessionDep) -> dict:
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
     # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
-    changed = session.execute(
-        select(DocumentDeadline, Document.title)
-        .outerjoin(Document, Document.id == DocumentDeadline.changed_to_document_id)
-        .where(DocumentDeadline.document_id == doc.id, DocumentDeadline.status == "changed")
-        .order_by(DocumentDeadline.approved_date)
-    ).all()
-    deadline_changes = [
-        {
-            "label": d.kind,
-            "date": d.approved_date.isoformat(),
-            "time": _hhmm(d.approved_time),
-            "reason": d.change_reason,
-            "newDocId": str(d.changed_to_document_id) if d.changed_to_document_id else None,
-            "newTitle": new_title,
-        }
-        for d, new_title in changed
-        if d.approved_date is not None
-    ]
+    # 看整个归并组（同一通知的不同网址）；相同的变更只列一条，新通知也换成它的主文件
+    changed = (
+        session.execute(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(group_ids(session, doc.id)),
+                DocumentDeadline.status == "changed",
+            )
+            .order_by(DocumentDeadline.approved_date, DocumentDeadline.id)
+        )
+        .scalars()
+        .all()
+    )
+    new_masters = canonical_ids(session, [d.changed_to_document_id for d in changed])
+    deadline_changes: list[dict] = []
+    seen_changes: set[tuple] = set()
+    for d in changed:
+        key = (d.kind, d.approved_date, d.approved_time)
+        if d.approved_date is None or key in seen_changes:
+            continue
+        seen_changes.add(key)
+        new_id = new_masters.get(d.changed_to_document_id, d.changed_to_document_id)
+        new_doc = session.get(Document, new_id) if new_id else None
+        deadline_changes.append(
+            {
+                "label": d.kind,
+                "date": d.approved_date.isoformat(),
+                "time": _hhmm(d.approved_time),
+                "reason": d.change_reason,
+                "newDocId": str(new_id) if new_id else None,
+                "newTitle": new_doc.title if new_doc else None,
+            }
+        )
 
     kind = doc_kind(doc.title)
     return {

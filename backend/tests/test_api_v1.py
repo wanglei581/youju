@@ -538,3 +538,61 @@ def test_deadline_change_hides_old_deadline_and_links_new_notice(
     assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] == str(new.id)
     docs = client.get("/api/admin/documents", params={"q": "延长 贷款贴息"}, headers=headers)
     assert [d["id"] for d in docs.json()][0] == new.id  # 按发布日期从新到旧，日期不详的排后
+
+
+def test_deadline_change_covers_merged_twins(client, seeded, session, monkeypatch):
+    """同一通知的两个网址归并后，各有一条相同的已通过截止：标记变更时两条一并处理，公开端不再显示。"""
+    from types import SimpleNamespace
+
+    from youju.models import DocumentMerge
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    twin = _doc(old.source, 21, old.title, old.publish_date)
+    new = _doc(old.source, 22, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add_all([twin, new])
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    copy = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="twin",
+        kind=main.kind,
+        candidate_date=main.candidate_date,
+        evidence=main.evidence,
+        confidence=main.confidence,
+        status="approved",
+        reviewed_by="创始人",
+        reviewed_at=main.reviewed_at,
+        approved_date=main.approved_date,
+        approved_time=main.approved_time,
+    )
+    session.add(copy)
+    session.commit()
+    # 核对台搜索只列一条
+    found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
+    assert len([f for f in found.json() if f["kind"] == "企业申报截止"]) == 1
+    # 新通知不能是原通知的另一个网址
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": twin.id}
+    url = f"/api/admin/deadlines/{copy.id}/change"
+    assert client.post(url, json=body, headers=headers).status_code == 422
+    body["new_document_id"] = new.id
+    assert client.post(url, json=body, headers=headers).status_code == 200
+    session.refresh(main)
+    session.refresh(copy)
+    assert main.status == copy.status == "changed"
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert [c["reason"] for c in detail["deadline_changes"]] == ["延期"]
+    # 撤回也一并恢复
+    back = f"/api/admin/deadlines/{main.id}/unchange"
+    assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    session.refresh(copy)
+    assert copy.status == "approved"

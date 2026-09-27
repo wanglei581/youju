@@ -1,7 +1,7 @@
 """截止日期变更：延期、调整、撤销后，原截止标为 changed 并关联新通知。
 
 Revision ID: 0006
-Revises: 0004（#38 的 0005 合并后改为 0005）
+Revises: 0005
 """
 
 from collections.abc import Sequence
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0006"
-down_revision: str | None = "0004"
+down_revision: str | None = "0005"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
