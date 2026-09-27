@@ -666,8 +666,11 @@ def test_rename_follow_and_delete_feedback(client, session, monkeypatch):
     agree(client)
     assert client.put(path, json={"name": "别人的"}).status_code == 404
     assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 404
+    # 协议更新后还没重新同意：更正（改名）和删除一样照常可以
     settings(monkeypatch, version="updated")
-    assert client.put(path, json={"name": "未同意"}).status_code == 403
+    renamed_old = client.put(path, json={"name": "旧版也能改"})
+    assert renamed_old.status_code == 200
+    assert renamed_old.json()["name"] == "旧版也能改"
     assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 204
     assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 404
     assert session.get(Feedback, feedback_id) is None

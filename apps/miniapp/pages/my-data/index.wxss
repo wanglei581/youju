@@ -1,0 +1,23 @@
+.intro { padding-top: 32rpx; padding-bottom: 32rpx; }
+.intro-title { font-size: 32rpx; font-weight: 600; }
+.intro-text { margin-top: 10rpx; font-size: 26rpx; line-height: 1.7; }
+.copy { margin-top: 28rpx; }
+
+.kv { display: flex; align-items: center; justify-content: space-between; gap: 24rpx; padding: 22rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; }
+.kv--last { border-bottom: 0; padding-bottom: 28rpx; }
+.kv-k { flex-shrink: 0; color: var(--t2); }
+.kv-v { color: var(--t1); text-align: right; word-break: break-all; }
+
+.item { padding: 24rpx 0; border-bottom: 2rpx solid var(--line); }
+.item:last-of-type { border-bottom: 0; }
+.item-main { font-size: 28rpx; line-height: 1.65; color: var(--t1); word-break: break-all; }
+.item-sub { margin-top: 4rpx; font-size: 24rpx; line-height: 1.6; color: var(--t3); }
+.item-ops { margin-top: 12rpx; display: flex; gap: 40rpx; font-size: 26rpx; }
+.op { color: var(--brand); }
+.op--danger { color: var(--red); }
+
+.empty { padding: 16rpx 0 28rpx; font-size: 26rpx; }
+.more { padding: 0 0 28rpx; font-size: 24rpx; }
+.plain { padding: 4rpx 0 28rpx; font-size: 26rpx; line-height: 1.8; }
+
+.danger-btn { margin: 40rpx 24rpx 0; height: 88rpx; display: flex; align-items: center; justify-content: center; border-radius: 44rpx; border: 2rpx solid var(--red); color: var(--red); font-size: 30rpx; background: var(--card); }

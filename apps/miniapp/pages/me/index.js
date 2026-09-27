@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { remember, forget } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
 
 Page({
   data: {
@@ -14,6 +14,8 @@ Page({
     signedIn: false,
     // 服务端有这个用户的记录（包括同意的是旧版本）：可以注销
     hasRecord: false,
+    // 同意的是旧版本：协议更新了，要重新阅读并同意
+    outdated: false,
     followCount: 0,
     reminderCount: 0,
   },
@@ -32,18 +34,21 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive()) {
-      this.setData({ signedIn: false, hasRecord: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false });
       return;
     }
+    const started = consentEpoch();
     api.me()
       .then((res) => {
-        const current = legal.final && !!res.agreed && res.agreed.version === legal.version;
-        if (current) remember();
-        else forget();
+        // 查询发出后本机又同意或注销过：结果已过时，等下一次刷新
+        if (started !== consentEpoch()) return;
+        // 与关注页等共用同一份状态：旧版本同意会标记"协议已更新"，弹窗只能先读全文
+        const current = applyServer(res.agreed, started) && legal.final;
         const subs = res.subscriptions || {};
         this.setData({
           signedIn: current,
           hasRecord: !!res.agreed,
+          outdated: !!res.agreed && !current,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
         });
@@ -62,6 +67,11 @@ Page({
 
   // 勾选同意后"微信登录"：服务端记录同意（小程序经云托管调用时平台自动带上用户标识，不需要另外授权）
   login() {
+    // 协议更新后：先读更新后的全文，在全文最后同意
+    if (this.data.outdated) {
+      wx.navigateTo({ url: CONSENT_PAGE });
+      return;
+    }
     if (!this.data.agreed) {
       this.setData({ nudge: true });
       return;
@@ -72,7 +82,7 @@ Page({
     }
     api.agree(legal.version)
       .then(() => {
-        remember();
+        markAgreed();
         wx.showToast({ title: '已登录，关注和微信提醒可以用了', icon: 'none' });
         this.refresh();
       })
@@ -81,21 +91,13 @@ Page({
 
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
   deleteAccount() {
-    wx.showModal({
-      title: '注销并删除数据',
-      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，删除后不能恢复。',
-      confirmText: '注销',
-      confirmColor: '#E5484D',
-      success: (res) => {
-        if (!res.confirm) return;
-        api.deleteMe()
-          .then(() => {
-            this.setData({ signedIn: false, hasRecord: false, agreed: false, followCount: 0, reminderCount: 0 });
-            wx.showToast({ title: '已注销，数据已删除', icon: 'none' });
-          })
-          .catch((err) => wx.showToast({ title: err.message || '注销失败，请稍后再试', icon: 'none' }));
-      },
+    withdraw().then((ok) => {
+      if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, followCount: 0, reminderCount: 0 });
     });
+  },
+
+  myData() {
+    wx.navigateTo({ url: '/pages/my-data/index' });
   },
 
   openAgreement(e) {

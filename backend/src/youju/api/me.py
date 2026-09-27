@@ -428,9 +428,14 @@ def create_follow(body: FollowIn, session: SessionDep, user: UserDep) -> dict:
     return _follow_out(session, row)
 
 
-# 小程序的 wx.request、callContainer 不支持 PATCH，改名用 PUT
+# 小程序的 wx.request、callContainer 不支持 PATCH，改名用 PUT。
+# 更正和删除一样不要求同意当前版本：协议更新后没重新同意的用户也能更正自己的数据
 @router.put("/me/follows/{follow_id}")
-def rename_follow(follow_id: int, body: FollowNameIn, session: SessionDep, user: UserDep) -> dict:
+def rename_follow(
+    follow_id: int, body: FollowNameIn, session: SessionDep, user: KnownUserDep
+) -> dict:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到关注")
     name = body.name.strip()
     if not 1 <= len(name) <= 40:
         raise HTTPException(status_code=422, detail="关注名称须为 1–40 字")

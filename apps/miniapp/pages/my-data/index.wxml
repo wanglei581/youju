@@ -1,0 +1,84 @@
+<notice-bar />
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+
+<block wx:if="{{!loading && !error}}">
+  <view wx:if="{{!user}}" class="card intro">
+    <view class="intro-title">你的账号下没有保存个人信息</view>
+    <view class="muted intro-text">检索、查看、导出、查名单不需要登录。同意用户协议和隐私保护指引后使用关注、微信提醒、纠错，才会保存相关信息。访问日志按法律要求保存，不在这里显示。</view>
+  </view>
+
+  <block wx:else>
+    <view class="card intro">
+      <view class="intro-title">你账号下保存的个人信息</view>
+      <view class="muted intro-text">同意记录、关注、微信提醒授权、纠错都在这里，可以复制保存，也可以改关注名称、删除记录。访问日志不在这里显示。更新于 {{exportedAt}}</view>
+      <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制全部数据</view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">账号</view>
+      <view class="kv"><text class="kv-k">微信用户标识</text><text class="kv-v">{{user.id}}</text></view>
+      <view class="kv"><text class="kv-k">同意的协议版本</text><text class="kv-v">{{user.agreedVersion || '未同意'}}</text></view>
+      <view wx:if="{{user.agreedAt}}" class="kv"><text class="kv-k">同意时间</text><text class="kv-v">{{user.agreedAt}}</text></view>
+      <view class="kv kv--last"><text class="kv-k">最近使用</text><text class="kv-v">{{user.visited || user.created}}</text></view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">关注 {{follows.length}}</view>
+      <view wx:for="{{follows}}" wx:key="id" class="item">
+        <view class="item-main">{{item.name}}</view>
+        <view class="item-sub">{{item.desc}} · 建立于 {{item.created}}</view>
+        <view class="item-ops">
+          <text class="op" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="rename" aria-role="button">改名</text>
+          <text class="op op--danger" data-kind="follow" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
+        </view>
+      </view>
+      <view wx:if="{{!follows.length}}" class="empty weak">没有</view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">微信提醒授权 {{totals.subs}}</view>
+      <view wx:for="{{subs}}" wx:key="id" class="item">
+        <view class="item-main">{{item.kind}}：{{item.target}}</view>
+        <view class="item-sub">{{item.status}} · 授权于 {{item.created}}</view>
+        <view wx:if="{{item.unused}}" class="item-ops">
+          <text class="op op--danger" data-kind="sub" data-id="{{item.id}}" bindtap="remove" aria-role="button">取消这次提醒</text>
+        </view>
+      </view>
+      <view wx:if="{{!subs.length}}" class="empty weak">没有</view>
+      <view wx:if="{{totals.subs > subs.length}}" class="more weak">只显示最近 {{subs.length}} 条，复制全部数据里也是这些</view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">纠错 {{totals.feedback}}</view>
+      <view wx:for="{{feedback}}" wx:key="id" class="item">
+        <view class="item-sub">{{item.title}}</view>
+        <view class="item-main">{{item.content}}</view>
+        <view class="item-sub">{{item.created}} · {{item.check}}</view>
+        <view class="item-ops">
+          <text class="op op--danger" data-kind="feedback" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
+        </view>
+      </view>
+      <view wx:if="{{!feedback.length}}" class="empty weak">没有</view>
+      <view wx:if="{{totals.feedback > feedback.length}}" class="more weak">只显示最近 {{feedback.length}} 条，复制全部数据里也是这些</view>
+    </view>
+
+    <view wx:if="{{totals.events}}" class="card">
+      <view class="section-title">使用记录 {{totals.events}}</view>
+      <view class="muted plain">搜索、导出等操作的次数和类型，不含搜索的文字；在复制全部数据里可以看到每一条。</view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">保存多久</view>
+      <view class="muted plain">
+        <view>· 账号、同意记录、关注：保存到你注销</view>
+        <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
+        <view>· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
+        <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
+        <view>· 访问日志：按法律要求保存不少于 6 个月，不在这里显示</view>
+      </view>
+    </view>
+
+    <view class="danger-btn" bindtap="deleteAll" aria-role="button">注销并删除全部数据</view>
+  </block>
+</block>
+<view style="height: 80rpx"></view>
