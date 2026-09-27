@@ -96,7 +96,8 @@ Page({
     };
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
-    this.setData({ loading: true, error: '' });
+    // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
+    this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0 } : { loading: true, error: '' });
     api.search(params)
       .then((res) => {
         if (seq !== this.seq) return; // 只用最后一次查询的结果

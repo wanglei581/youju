@@ -14,10 +14,23 @@ function chooseFormat() {
   });
 }
 
+// 本机只保留最近一次导出的文件，旧的删掉，免得占用手机空间
+function clearOld(fs) {
+  try {
+    fs.readdirSync(wx.env.USER_DATA_PATH)
+      .filter((name) => name.indexOf('有据导出_') === 0)
+      .forEach((name) => { try { fs.unlinkSync(`${wx.env.USER_DATA_PATH}/${name}`); } catch (e) { /* 删不掉不影响导出 */ } });
+  } catch (e) {
+    // 读目录失败不影响导出
+  }
+}
+
 function save(buffer, format) {
+  const fs = wx.getFileSystemManager();
+  clearOld(fs);
   const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now() % 100000}.${format}`;
   return new Promise((resolve, reject) => {
-    wx.getFileSystemManager().writeFile({
+    fs.writeFile({
       filePath,
       data: buffer,
       success: () => resolve(filePath),
