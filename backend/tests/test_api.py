@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from youju.api.app import app
 from youju.db import get_session
-from youju.models import Document, DocumentAttachment, DocumentDetail, Source
+from youju.extract.service import extract_existing
+from youju.models import Document, DocumentAttachment, DocumentDeadline, DocumentDetail, Source
 
 
 @pytest.fixture
@@ -156,3 +158,95 @@ def test_stats(client, seeded) -> None:
     assert stats["documents_total"] == 3
     assert stats["documents_new_7d"] == 1
     assert stats["documents_by_province"] == {"北京": 2, "山东": 1}
+
+
+def test_deadline_admin_permission_and_review_gate(client, seeded, session, monkeypatch) -> None:
+    doc = session.query(Document).filter(Document.title.like("关于开展%")).one()
+    session.add_all(
+        [
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint="one",
+                kind="企业申报截止",
+                candidate_date=date(2026, 10, 1),
+                evidence="企业申报截止10月1日",
+                confidence="高",
+                status="pending",
+            ),
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint="two",
+                kind="材料报送截止",
+                candidate_date=date(2026, 10, 2),
+                evidence="材料报送截止10月2日",
+                confidence="高",
+                status="pending",
+            ),
+        ]
+    )
+    session.commit()
+    rows = session.query(DocumentDeadline).order_by(DocumentDeadline.id).all()
+    url = f"/api/documents/{doc.id}"
+    assert client.get(url).json()["deadline_text"] == "截止时间见原文"
+    admin_url = "/api/admin/deadlines"
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token=None))
+    assert client.get(admin_url, headers={"X-Admin-Token": "anything"}).status_code == 401
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    assert client.get(admin_url).status_code == 401
+    assert client.get(admin_url, headers={"X-Admin-Token": "wrong"}).status_code == 401
+    headers = {"X-Admin-Token": "secret"}
+    pending = client.get(admin_url, headers=headers).json()
+    assert len(pending) == 2
+    assert len(client.get(admin_url, headers=headers, params={"limit": 1, "offset": 1}).json()) == 1
+    assert pending[0]["evidence"] == "企业申报截止10月1日"
+    assert pending[0]["url"] == doc.url
+    approve = f"{admin_url}/{rows[0].id}/approve"
+    assert client.post(approve, json={"reviewed_by": "审阅人"}).status_code == 401
+    assert (
+        client.post(
+            approve,
+            headers=headers,
+            json={
+                "reviewed_by": "审阅人",
+                "date": "2026-10-05",
+                "time": "17:00",
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(approve, headers=headers, json={"reviewed_by": "另一个人"}).status_code == 409
+    )
+    public = client.get(url).json()
+    assert public["deadlines"] == [{"kind": "企业申报截止", "date": "2026-10-05", "time": "17:00"}]
+    assert "材料报送" not in public["deadline_text"]
+    reject = f"{admin_url}/{rows[1].id}/reject"
+    assert client.post(reject, headers=headers, json={"reviewed_by": "审阅人"}).status_code == 200
+    assert client.get(admin_url, headers=headers).json() == []
+    session.refresh(rows[0])
+    session.refresh(rows[1])
+    assert rows[0].reviewed_at is not None and rows[0].reviewed_by == "审阅人"
+    assert rows[1].status == "rejected"
+
+
+def test_extraction_idempotent_after_review(session, seeded) -> None:
+    doc = session.query(Document).filter(Document.title.like("关于开展%")).one()
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="企业申报截止2026年10月1日。",
+            fetched_at=datetime.now(UTC),
+            status="ok",
+        )
+    )
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 1)
+    row = session.query(DocumentDeadline).one()
+    row.status = "approved"
+    row.reviewed_by = "审阅人"
+    row.reviewed_at = datetime.now(UTC)
+    row.approved_date = date(2026, 10, 5)
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
+    session.refresh(row)
+    assert row.approved_date == date(2026, 10, 5)

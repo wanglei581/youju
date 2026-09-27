@@ -1,6 +1,6 @@
 """数据模型 v1：来源、检查记录、文件题录。设计说明见 docs/adr/0003-数据模型v1.md。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
@@ -11,6 +11,8 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -119,6 +121,7 @@ class Document(Base):
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
+    deadlines: Mapped[list["DocumentDeadline"]] = relationship(back_populates="document")
 
 
 class DocumentDetail(Base):
@@ -165,3 +168,30 @@ class DocumentAttachment(Base):
     extension: Mapped[str] = mapped_column(String(16))
 
     detail: Mapped[DocumentDetail] = relationship(back_populates="attachments")
+
+
+class DocumentDeadline(Base):
+    """规则候选和人工核对结果；公开端只读取 approved。"""
+
+    __tablename__ = "document_deadlines"
+    __table_args__ = (
+        UniqueConstraint("document_id", "fingerprint", name="uq_document_deadline_fingerprint"),
+        Index("ix_document_deadlines_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32))
+    candidate_date: Mapped[date] = mapped_column(Date)
+    candidate_time: Mapped["time | None"] = mapped_column(Time)
+    evidence: Mapped[str] = mapped_column(String(120))
+    confidence: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_date: Mapped[date | None] = mapped_column(Date)
+    approved_time: Mapped["time | None"] = mapped_column(Time)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    document: Mapped[Document] = relationship(back_populates="deadlines")

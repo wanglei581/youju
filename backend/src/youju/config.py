@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://localhost:55432/youju"
+    admin_token: str | None = None
 
     # 透明标识：保留常见浏览器标识以兼容政府网站，同时在末尾写明爬虫身份。
     user_agent: str = (

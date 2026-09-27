@@ -25,6 +25,8 @@ uv run youju crawl --source-id 12    # 只检查指定来源
 uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间的公开政府文件
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
+uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
+uv run youju extract-deadlines --since 2026-07-01  # 生成待人工核对候选，重复运行不会覆盖核对结果
 uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
@@ -36,7 +38,10 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 | `GET /health` | 健康检查 |
 | `GET /api/sources?health=&province=&enabled=` | 来源列表及健康状态 |
 | `GET /api/documents?q=&province=&dept=&since=&new_only=&limit=&offset=` | 文件题录，按发布日期倒序 |
-| `GET /api/documents/{id}` | 单个文件及详情（正文、发文机关、文号、附件题录和抓取状态） |
+| `GET /api/documents/{id}` | 单个文件及详情；截止字段只含人工通过项，未通过时 `deadline_text` 为“截止时间见原文” |
+| `GET /api/admin/deadlines` | 待核对候选、证据句和原文链接 |
+| `POST /api/admin/deadlines/{id}/approve` | 通过候选；请求体含 `reviewed_by`，可选 `date`（YYYY-MM-DD）和 `time`（HH:MM）修改后通过 |
+| `POST /api/admin/deadlines/{id}/reject` | 驳回候选；请求体含 `reviewed_by` |
 | `GET /api/stats` | 来源健康分布、文件总数、近 7 天新增 |
 
 ## 配置
@@ -49,6 +54,7 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 | `YOUJU_PER_HOST_INTERVAL` | `3.0` | 同一网站两次请求的最小间隔（秒） |
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
+| `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
 
 ## 测试与检查
 

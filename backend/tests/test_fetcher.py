@@ -1,6 +1,6 @@
 import httpx
 
-from youju.crawler.fetcher import PoliteFetcher, decode_html
+from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher, decode_html
 
 LIST_HTML = "<ul><li><a href='/a.html'>关于开展申报工作的通知</a><span>2026-09-24</span></li></ul>"
 
@@ -127,6 +127,22 @@ def test_http_error_status() -> None:
         result = f.fetch("https://a.gov.cn/list.html")
     assert result.status == "http_error"
     assert result.http_status == 412
+
+
+def test_pdf_size_limit_applies_while_streaming() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            content=b"%PDF-" + b"x" * MAX_RESPONSE_BYTES,
+            headers={"content-type": "application/pdf"},
+        )
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/large.pdf")
+    assert result.status == "too_large"
+    assert result.content == b""
 
 
 def test_network_error_retries_once() -> None:
