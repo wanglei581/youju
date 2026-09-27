@@ -60,6 +60,12 @@ def settings(monkeypatch, *, trust=False, openid="dev-user", deadline=None, newd
     )
 
 
+def agree(client, headers=None):
+    """同意用户协议和隐私保护指引（之后才能关注、订阅、纠错、埋点）。"""
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-09"}, headers=headers)
+    assert response.status_code == 200
+
+
 def source_and_doc(session, *, title="关于开展科技项目申报的通知", first_seen=None, due=None):
     source = Source(
         level="省级",
@@ -115,6 +121,12 @@ def test_identity_modes_and_agreement(client, session, monkeypatch):
     assert client.post("/api/v1/events", json={"name": "search"}).status_code == 401
     settings(monkeypatch)
     assert client.get("/api/v1/me").json()["agreed"] is None
+    # 同意之前：只查看不建用户记录；关注、纠错、埋点都不收
+    assert session.scalar(select(func.count(User.id))) == 0
+    assert client.post("/api/v1/feedback", json={"content": "纠错"}).status_code == 403
+    assert client.post("/api/v1/events", json={"name": "search"}).status_code == 403
+    assert client.get("/api/v1/me/follows").status_code == 403
+    assert session.scalar(select(func.count(User.id))) == 0
     assert client.post("/api/v1/me/agreement", json={"version": "v" * 21}).status_code == 422
     agreed = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
     assert agreed.status_code == 200
@@ -127,11 +139,13 @@ def test_identity_modes_and_agreement(client, session, monkeypatch):
     assert (
         client.get("/api/v1/me", headers={**headers, "X-WX-OPENID": "wx-direct"}).status_code == 200
     )
-    assert session.scalar(select(func.count(User.id))) == 3
+    # 只有同意过的 dev-user 有记录
+    assert session.scalar(select(func.count(User.id))) == 1
 
 
 def test_follows_filters_new_seen_ownership_and_limit(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     bad = follow(client, {"regions": "火星"})
     assert bad.status_code == 422
     assert follow(client, {"time": "昨天"}).status_code == 422
@@ -169,10 +183,12 @@ def test_follows_filters_new_seen_ownership_and_limit(client, session, monkeypat
     assert client.post(f"/api/v1/me/follows/{follow_id}/seen").json() == {"newCount": 0}
     assert client.get(f"/api/v1/me/follows/{follow_id}/new").json()["total"] == 0
     settings(monkeypatch, openid="other")
+    agree(client)
     assert client.get(f"/api/v1/me/follows/{follow_id}/new").status_code == 404
     assert client.post(f"/api/v1/me/follows/{follow_id}/seen").status_code == 404
     assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 404
     settings(monkeypatch)
+    agree(client)
     for i in range(19):
         assert follow(client, {"q": f"k{i}"}).status_code == 201
     assert follow(client).status_code == 422
@@ -181,6 +197,7 @@ def test_follows_filters_new_seen_ownership_and_limit(client, session, monkeypat
 
 def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     doc = source_and_doc(session, due=NOW.date() + timedelta(days=2))
     follow_id = follow(client).json()["id"]
     assert (
@@ -243,6 +260,7 @@ def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
         == 422
     )
     settings(monkeypatch, openid="other")
+    agree(client)
     assert (
         client.post(
             "/api/v1/me/subscriptions",
@@ -254,6 +272,7 @@ def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
 
 def test_feedback_security_and_events(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     assert client.post("/api/v1/feedback", json={"content": ""}).status_code == 422
     assert client.post("/api/v1/feedback", json={"content": "a" * 501}).status_code == 422
     assert (
@@ -278,6 +297,7 @@ def test_feedback_security_and_events(client, session, monkeypatch):
     assert session.scalar(select(func.count(Event.id))) == 60
     settings(monkeypatch, trust=True)
     headers = {"X-WX-SOURCE": "mini", "X-WX-OPENID": "wx"}
+    agree(client, headers)
 
     class Response:
         def __init__(self, suggest="pass", errcode=0):
@@ -321,6 +341,7 @@ def test_feedback_security_and_events(client, session, monkeypatch):
 
 def test_account_deletion_cascades(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     follow_id = follow(client).json()["id"]
     assert (
         client.post(
@@ -338,6 +359,7 @@ def test_account_deletion_cascades(client, session, monkeypatch):
 
 def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     doc = source_and_doc(session, title="申报" * 15, due=NOW.date() + timedelta(days=2))
     follow_id = follow(client).json()["id"]
     session.get(Follow, follow_id).name = "科技项目" * 10
@@ -351,7 +373,7 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
         "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
     ).json()["id"]
     config = SimpleNamespace(
-        trust_wx_headers=False,
+        send_wx_messages=False,
         template_newdocs={"id": "n", "fields": {"thing1": "summary", "number2": "count"}},
         template_deadline={"id": "d", "fields": {"thing1": "title", "date2": "date"}},
     )
@@ -362,7 +384,7 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
     dry = run_notify(session, settings=config, sender=forbidden, stamp=NOW)
     assert dry["dry_run"] == 2
     assert [session.get(Subscription, i).status for i in (n, d)] == ["unused", "unused"]
-    config.trust_wx_headers = True
+    config.send_wx_messages = True
     payloads = []
 
     def sender(payload):
@@ -382,11 +404,12 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
 
 def test_notify_expired_failed_and_missing_template(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     doc = source_and_doc(session, due=NOW.date() + timedelta(days=1))
     sub_id = client.post(
         "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
     ).json()["id"]
-    config = SimpleNamespace(trust_wx_headers=True, template_deadline=None, template_newdocs=None)
+    config = SimpleNamespace(send_wx_messages=True, template_deadline=None, template_newdocs=None)
     assert (
         run_notify(session, settings=config, sender=lambda _: {"errcode": 0}, stamp=NOW)["skipped"]
         == 1
@@ -422,6 +445,7 @@ def test_notify_expired_failed_and_missing_template(client, session, monkeypatch
 
 def test_deadline_today_with_past_time_expires(client, session, monkeypatch):
     settings(monkeypatch)
+    agree(client)
     doc = source_and_doc(session, due=NOW.date())
     sub_id = client.post(
         "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
@@ -431,9 +455,53 @@ def test_deadline_today_with_past_time_expires(client, session, monkeypatch):
     )
     deadline.approved_time = datetime(2026, 9, 28, 9).time()
     session.commit()
-    config = SimpleNamespace(trust_wx_headers=True, template_deadline=None, template_newdocs=None)
+    config = SimpleNamespace(send_wx_messages=True, template_deadline=None, template_newdocs=None)
     assert (
         run_notify(session, settings=config, sender=lambda _: {"errcode": 0}, stamp=NOW)["expired"]
         == 1
     )
     assert session.get(Subscription, sub_id).status == "expired"
+
+
+def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
+    """按保存期限删除：埋点 90 天、纠错 180 天、已用完的订阅授权 30 天；未用的授权和关注不动。"""
+    from youju.notify import run_cleanup
+
+    settings(monkeypatch)
+    agree(client)
+    user = session.scalar(select(User))
+    old = NOW - timedelta(days=200)
+    session.add_all(
+        [
+            Event(user_id=user.id, name="search", props={}, created_at=old),
+            Event(user_id=user.id, name="search", props={}, created_at=NOW),
+            Feedback(user_id=user.id, content="旧的", check_result="pass", created_at=old),
+            Feedback(user_id=user.id, content="新的", check_result="pass", created_at=NOW),
+        ]
+    )
+    follow_id = follow(client).json()["id"]
+    used = Subscription(
+        user_id=user.id,
+        kind="newDocs",
+        template_id="n",
+        follow_id=follow_id,
+        status="sent",
+        attempted_at=old,
+    )
+    unused = Subscription(
+        user_id=user.id, kind="newDocs", template_id="n", follow_id=follow_id, status="unused"
+    )
+    session.add_all([used, unused])
+    session.commit()
+    config = SimpleNamespace(
+        retain_events_days=90, retain_feedback_days=180, retain_used_subscriptions_days=30
+    )
+    assert run_cleanup(session, settings=config, stamp=NOW) == {
+        "events": 1,
+        "feedback": 1,
+        "subscriptions": 1,
+    }
+    assert session.scalar(select(func.count(Event.id))) == 1
+    assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]
+    assert [s.status for s in session.scalars(select(Subscription))] == ["unused"]
+    assert session.scalar(select(func.count(Follow.id))) == 1

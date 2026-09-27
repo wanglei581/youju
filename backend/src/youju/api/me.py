@@ -22,7 +22,8 @@ router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def current_user(request: Request, session: SessionDep) -> User:
+def request_openid(request: Request) -> str:
+    """当前请求的微信用户：云托管时取平台注入的请求头（且须有 X-WX-SOURCE），本机开发取配置。"""
     settings = get_settings()
     if settings.trust_wx_headers:
         openid = (
@@ -34,17 +35,26 @@ def current_user(request: Request, session: SessionDep) -> User:
         openid = settings.dev_openid
     if not openid or not openid.strip() or len(openid) > 128:
         raise HTTPException(status_code=401, detail="请在微信小程序里使用")
-    stamp = v1.now()
-    row_id = session.scalar(
-        insert(User)
-        .values(openid=openid, last_visited_at=stamp)
-        .on_conflict_do_update(index_elements=[User.openid], set_={"last_visited_at": stamp})
-        .returning(User.id)
-    )
-    session.commit()
-    return session.get(User, row_id)
+    return openid
 
 
+def known_user(request: Request, session: SessionDep) -> User | None:
+    """已有的用户记录；没有就返回 None，不新建——同意用户协议和隐私保护指引之前不保存 openid。"""
+    user = session.scalar(select(User).where(User.openid == request_openid(request)))
+    if user is not None and v1.now() - user.last_visited_at > timedelta(hours=1):
+        user.last_visited_at = v1.now()  # 最近访问时间一小时记一次，不必每次请求都写库
+        session.commit()
+    return user
+
+
+def current_user(user: Annotated[User | None, Depends(known_user)]) -> User:
+    """关注、订阅、纠错、埋点：必须先同意用户协议和隐私保护指引。"""
+    if user is None or user.agreement_at is None:
+        raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
+    return user
+
+
+KnownUserDep = Annotated[User | None, Depends(known_user)]
 UserDep = Annotated[User, Depends(current_user)]
 
 
@@ -131,7 +141,9 @@ def _owned_follow(session: Session, user: User, follow_id: int) -> Follow:
 
 
 @router.get("/me")
-def profile(session: SessionDep, user: UserDep) -> dict:
+def profile(session: SessionDep, user: KnownUserDep) -> dict:
+    if user is None:
+        return {"agreed": None, "follows": 0, "subscriptions": {"newDocs": 0, "deadline": 0}}
     counts = dict(
         session.execute(
             select(Subscription.kind, func.count(Subscription.id))
@@ -153,17 +165,38 @@ def profile(session: SessionDep, user: UserDep) -> dict:
 
 
 @router.post("/me/agreement")
-def agreement(body: AgreementIn, session: SessionDep, user: UserDep) -> dict:
-    user.agreement_version = body.version
-    user.agreement_at = v1.now()
+def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
+    """同意用户协议和隐私保护指引：从这时起才建立用户记录。"""
+    stamp = v1.now()
+    row_id = session.scalar(
+        insert(User)
+        .values(
+            openid=request_openid(request),
+            last_visited_at=stamp,
+            agreement_version=body.version,
+            agreement_at=stamp,
+        )
+        .on_conflict_do_update(
+            index_elements=[User.openid],
+            set_={
+                "last_visited_at": stamp,
+                "agreement_version": body.version,
+                "agreement_at": stamp,
+            },
+        )
+        .returning(User.id)
+    )
     session.commit()
+    user = session.get(User, row_id)
     return {"version": user.agreement_version, "at": user.agreement_at.isoformat()}
 
 
 @router.delete("/me", status_code=204)
-def delete_account(session: SessionDep, user: UserDep) -> None:
-    session.delete(user)
-    session.commit()
+def delete_account(session: SessionDep, user: KnownUserDep) -> None:
+    """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
+    if user is not None:
+        session.delete(user)
+        session.commit()
 
 
 @router.get("/me/follows")

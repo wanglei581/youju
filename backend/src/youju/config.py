@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     dev_openid: str | None = None
     template_deadline: dict | None = None
     template_newdocs: dict | None = None
+    # 定时任务真正发送订阅消息（云托管开放接口服务）；不开时只演练。与是否信任请求头分开设置
+    send_wx_messages: bool = False
+    # 个人信息保存期限（天），以隐私保护指引为准，由创始人确认
+    retain_events_days: int = 90
+    retain_feedback_days: int = 180
+    retain_used_subscriptions_days: int = 30
 
     # 透明标识：保留常见浏览器标识以兼容政府网站，同时在末尾写明爬虫身份。
     user_agent: str = (

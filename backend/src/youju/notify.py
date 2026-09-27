@@ -111,7 +111,7 @@ def run_notify(
         stmt = select(Subscription).where(
             Subscription.id == row_id, Subscription.status == "unused"
         )
-        if settings.trust_wx_headers:
+        if settings.send_wx_messages:
             stmt = stmt.with_for_update(skip_locked=True)
         row = session.scalar(stmt)
         if row is None:
@@ -120,7 +120,7 @@ def run_notify(
             _deadline(session, row, stamp) if row.kind == "deadline" else _new_docs(session, row)
         )
         if target == "expired":
-            if settings.trust_wx_headers:
+            if settings.send_wx_messages:
                 row.status, row.attempted_at = "expired", stamp
                 session.commit()
             result["expired"] += 1
@@ -141,7 +141,7 @@ def run_notify(
             log.exception("订阅模板配置无效，跳过授权 #%s", row.id)
             result["skipped"] += 1
             continue
-        if not settings.trust_wx_headers:
+        if not settings.send_wx_messages:
             log.info("演练：授权 #%s，类型 %s，页面 %s", row.id, row.kind, page)
             result["dry_run"] += 1
             continue
@@ -166,4 +166,37 @@ def run_notify(
                 follow.last_notified_at = stamp
         session.commit()
         result[row.status] += 1
+    return result
+
+
+def run_cleanup(
+    session: Session, *, settings: Settings | None = None, stamp: datetime | None = None
+) -> dict[str, int]:
+    """按保存期限删除个人信息：埋点、纠错、已用完的订阅授权（期限见配置和隐私保护指引）。"""
+    from sqlalchemy import delete
+
+    from youju.models import Event, Feedback
+
+    settings = settings or get_settings()
+    stamp = stamp or v1.now()
+    result = {
+        "events": session.execute(
+            delete(Event).where(
+                Event.created_at < stamp - timedelta(days=settings.retain_events_days)
+            )
+        ).rowcount,
+        "feedback": session.execute(
+            delete(Feedback).where(
+                Feedback.created_at < stamp - timedelta(days=settings.retain_feedback_days)
+            )
+        ).rowcount,
+        "subscriptions": session.execute(
+            delete(Subscription).where(
+                Subscription.status != "unused",
+                Subscription.attempted_at
+                < stamp - timedelta(days=settings.retain_used_subscriptions_days),
+            )
+        ).rowcount,
+    }
+    session.commit()
     return result

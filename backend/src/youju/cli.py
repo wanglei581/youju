@@ -183,6 +183,15 @@ def _cmd_notify(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cleanup(_: argparse.Namespace) -> int:
+    from youju.notify import run_cleanup
+
+    with session_factory()() as session:
+        counts = run_cleanup(session)
+    print("按保存期限清理：" + "，".join(f"{name} {count} 条" for name, count in counts.items()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -225,8 +234,11 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_parse_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
-    sub.add_parser("notify", help="发送一次性订阅提醒；未启用可信微信请求头时只演练").set_defaults(
-        func=_cmd_notify
+    sub.add_parser(
+        "notify", help="发送一次性订阅提醒；未设置 YOUJU_SEND_WX_MESSAGES=true 时只演练"
+    ).set_defaults(func=_cmd_notify)
+    sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
+        func=_cmd_cleanup
     )
 
     p = sub.add_parser("serve", help="启动 API 服务")
