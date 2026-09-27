@@ -5,3 +5,5 @@
 30 7 * * *  /app/backend/deploy/job.sh fetch-details --limit 300 --workers 4
 30 8 * * *  /app/backend/deploy/job.sh extract-deadlines
 0 9 * * *   /app/backend/deploy/job.sh parse-lists
+30 9 * * *  /app/backend/deploy/job.sh notify
+30 3 * * *  /app/backend/deploy/job.sh cleanup

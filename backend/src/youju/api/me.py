@@ -41,16 +41,24 @@ def request_openid(request: Request) -> str:
 def known_user(request: Request, session: SessionDep) -> User | None:
     """已有的用户记录；没有就返回 None，不新建——同意用户协议和隐私保护指引之前不保存 openid。"""
     user = session.scalar(select(User).where(User.openid == request_openid(request)))
-    if user is not None and v1.now() - user.last_visited_at > timedelta(hours=1):
+    if (
+        user is not None
+        and user.agreement_at is not None
+        and v1.now() - user.last_visited_at > timedelta(hours=1)
+    ):
         user.last_visited_at = v1.now()  # 最近访问时间一小时记一次，不必每次请求都写库
         session.commit()
     return user
 
 
 def current_user(user: Annotated[User | None, Depends(known_user)]) -> User:
-    """关注、订阅、纠错、埋点：必须先同意用户协议和隐私保护指引。"""
+    """关注、订阅、纠错、埋点：必须已同意当前版本的用户协议和隐私保护指引。"""
     if user is None or user.agreement_at is None:
         raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
+    if user.agreement_version != get_settings().agreement_version:
+        raise HTTPException(
+            status_code=403, detail="用户协议或隐私保护指引已更新，请重新阅读并同意"
+        )
     return user
 
 
@@ -166,7 +174,9 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
 
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
-    """同意用户协议和隐私保护指引：从这时起才建立用户记录。"""
+    """同意用户协议和隐私保护指引：从这时起才建立用户记录。只接受当前版本。"""
+    if body.version != get_settings().agreement_version:
+        raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
     stamp = v1.now()
     row_id = session.scalar(
         insert(User)

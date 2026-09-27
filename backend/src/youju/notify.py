@@ -172,7 +172,7 @@ def run_notify(
 def run_cleanup(
     session: Session, *, settings: Settings | None = None, stamp: datetime | None = None
 ) -> dict[str, int]:
-    """按保存期限删除个人信息：埋点、纠错、已用完的订阅授权（期限见配置和隐私保护指引）。"""
+    """按保存期限删除个人信息：埋点、纠错、订阅授权（已用完的、长期没用上的），期限见配置和隐私保护指引。"""
     from sqlalchemy import delete
 
     from youju.models import Event, Feedback
@@ -195,6 +195,14 @@ def run_cleanup(
                 Subscription.status != "unused",
                 Subscription.attempted_at
                 < stamp - timedelta(days=settings.retain_used_subscriptions_days),
+            )
+        ).rowcount,
+        # 一直没用上的授权（如关注长期没有新文件）也不无限期保存
+        "unused_subscriptions": session.execute(
+            delete(Subscription).where(
+                Subscription.status == "unused",
+                Subscription.created_at
+                < stamp - timedelta(days=settings.retain_unused_subscriptions_days),
             )
         ).rowcount,
     }

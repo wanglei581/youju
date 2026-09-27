@@ -40,14 +40,20 @@ def client(session_factory, monkeypatch):
         me,
         "get_settings",
         lambda: SimpleNamespace(
-            trust_wx_headers=False, dev_openid=None, template_newdocs=None, template_deadline=None
+            trust_wx_headers=False,
+            dev_openid=None,
+            template_newdocs=None,
+            template_deadline=None,
+            agreement_version="2026-09",
         ),
     )
     yield TestClient(app)
     app.dependency_overrides.clear()
 
 
-def settings(monkeypatch, *, trust=False, openid="dev-user", deadline=None, newdocs=None):
+def settings(
+    monkeypatch, *, trust=False, openid="dev-user", deadline=None, newdocs=None, version="2026-09"
+):
     monkeypatch.setattr(
         me,
         "get_settings",
@@ -56,6 +62,7 @@ def settings(monkeypatch, *, trust=False, openid="dev-user", deadline=None, newd
             dev_openid=openid,
             template_deadline=deadline,
             template_newdocs=newdocs,
+            agreement_version=version,
         ),
     )
 
@@ -494,14 +501,32 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
     session.add_all([used, unused])
     session.commit()
     config = SimpleNamespace(
-        retain_events_days=90, retain_feedback_days=180, retain_used_subscriptions_days=30
+        retain_events_days=90,
+        retain_feedback_days=180,
+        retain_used_subscriptions_days=30,
+        retain_unused_subscriptions_days=365,
     )
     assert run_cleanup(session, settings=config, stamp=NOW) == {
         "events": 1,
         "feedback": 1,
         "subscriptions": 1,
+        "unused_subscriptions": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1
     assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]
     assert [s.status for s in session.scalars(select(Subscription))] == ["unused"]
     assert session.scalar(select(func.count(Follow.id))) == 1
+
+
+def test_agreement_version_must_be_current(client, session, monkeypatch):
+    """只接受同意当前版本；协议更新后旧版的同意失效，要重新同意。"""
+    settings(monkeypatch)
+    assert client.post("/api/v1/me/agreement", json={"version": "2025-01"}).status_code == 422
+    agree(client)
+    assert client.get("/api/v1/me/follows").status_code == 200
+    settings(monkeypatch, version="2026-12")  # 协议更新
+    response = client.get("/api/v1/me/follows")
+    assert response.status_code == 403 and "已更新" in response.json()["detail"]
+    ok = client.post("/api/v1/me/agreement", json={"version": "2026-12"})
+    assert ok.status_code == 200
+    assert client.get("/api/v1/me/follows").status_code == 200
