@@ -75,11 +75,21 @@ Page({
         return this.loadChanges(follows);
       })
       .catch((err) => {
-        // 服务端没有同意记录或协议已更新（本机记录已清掉）：回到"登录后使用"。
-        // 每次显示只重试一次，避免服务端和小程序的协议版本不一致时反复请求
-        if (err.status === 403 && !this.retried) { this.retried = true; this.setData({ loading: false }); this.load(); return; }
+        if (err.status === 403) { this.onDenied(); return; }
         this.setData({ loading: false, error: `加载失败：${err.message}` });
       });
+  },
+
+  // 服务端返回 403：没有同意记录或协议已更新（本机记录已由请求层清掉）。先向服务端重新核对一次；
+  // 仍然 403 就回到"登录后使用"，不再重试（避免服务端和小程序的协议版本不一致时反复请求）
+  onDenied() {
+    if (!this.retried) {
+      this.retried = true;
+      this.setData({ loading: false });
+      this.load();
+      return;
+    }
+    this.setData({ mode: 'gated', loading: false, follows: [], changes: [], changesError: '', newTotal: 0 });
   },
 
   // 新文件：取有新文件的前 3 个关注，每个最多 5 份，合并去重后按发布日期排
@@ -91,8 +101,8 @@ Page({
       .then((r) => r.items.map((d) => Object.assign({ label: f.name }, d)))
       .catch((err) => { if (err.status === 403) denied = true; else failed = err; return []; })))
       .then((lists) => {
-        // 有一个 403 就说明同意已失效（本机记录已清掉），回到"登录后使用"
-        if (denied && !this.retried) { this.retried = true; this.load(); return; }
+        // 有一个 403 就说明同意已失效
+        if (denied) { this.onDenied(); return; }
         const seen = {};
         const changes = [];
         [].concat(...lists)
