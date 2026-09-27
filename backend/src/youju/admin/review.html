@@ -66,7 +66,8 @@
   const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
   const $ = (id) => document.getElementById(id);
   let pending = 0;
-  const shown = new Set(); // 已显示的候选编号，翻页时去重
+  let cursor = null; // 已载入的最小候选编号（翻页游标）
+  const shown = new Set(); // 已显示的候选编号，去重
 
   // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
   try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; } catch (e) { $('reviewer').value = '创始人'; }
@@ -87,7 +88,8 @@
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
     // 支持"2026年10月09日""10月9日""2026-10-09""10-9"等写法；前后不能紧挨其他数字
-    const pattern = new RegExp(`(^|[^0-9])((?:${y}\\s*年\\s*)?0?${m}\\s*月\\s*0?${d}\\s*日|(?:${y}[-/.])?0?${m}[-/.]0?${d}(?![0-9]))`);
+    // 前面紧挨的是别的年份（如"2025年10月9日""2025-10-9"）就不标，免得年份不一致时误导
+    const pattern = new RegExp(`(^|[^0-9年/.-])((?:${y}\\s*年\\s*)?0?${m}\\s*月\\s*0?${d}\\s*日|(?:${y}[-/.])?0?${m}[-/.]0?${d}(?![0-9]))`);
     const found = pattern.exec(text);
     if (!found) { box.textContent = text; return box; }
     const start = found.index + found[1].length;
@@ -168,24 +170,25 @@
   }
 
   async function load(reset) {
-    if (reset) { shown.clear(); $('list').textContent = ''; }
-    // 已显示但还没核对的条目仍在待核对列表的最前面，从它们之后接着取
-    const offset = document.querySelectorAll('.card:not(.done)').length;
+    if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
+    // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
+    const after = cursor ? `&before_id=${cursor}` : '';
     try {
       const [countRes, res] = await Promise.all([
         fetch('/api/admin/deadlines/count', { headers: headers() }),
-        fetch(`/api/admin/deadlines?limit=50&offset=${offset}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines?limit=50${after}`, { headers: headers() }),
       ]);
       if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
       if (!res.ok) throw new Error(`载入失败（${res.status}）`);
       pending = (await countRes.json()).pending;
       setCount();
       const items = await res.json();
-      if (!items.length && offset === 0) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
+      if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
         $('list').append(render(item));
       });
+      if (items.length) cursor = Math.min(...items.map((item) => item.id));
       $('more').hidden = items.length < 50;
     } catch (err) {
       $('list').textContent = '';

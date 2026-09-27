@@ -383,17 +383,18 @@ def pending_deadlines(
     session: SessionDep,
     _admin: AdminDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
 ) -> list[PendingDeadlineOut]:
-    rows = session.execute(
+    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。"""
+    stmt = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
         .join(Source, Document.source_id == Source.id)
         .where(DocumentDeadline.status == "pending")
-        .order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id)
-        .limit(limit)
-        .offset(offset)
-    ).all()
+    )
+    if before_id is not None:
+        stmt = stmt.where(DocumentDeadline.id < before_id)
+    rows = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
     return [
         PendingDeadlineOut(
             id=d.id,

@@ -286,10 +286,19 @@ def test_deadline_admin_permission_and_review_gate(client, seeded, session, monk
     assert client.get(admin_url, headers={"X-Admin-Token": "wrong"}).status_code == 401
     headers = {"X-Admin-Token": "secret"}
     pending = client.get(admin_url, headers=headers).json()
-    assert len(pending) == 2
-    assert len(client.get(admin_url, headers=headers, params={"limit": 1, "offset": 1}).json()) == 1
-    assert pending[0]["evidence"] == "企业申报截止10月1日"
-    assert pending[0]["url"] == doc.url
+    # 按候选编号从新到旧
+    assert [p["id"] for p in pending] == [rows[1].id, rows[0].id]
+    assert pending[1]["evidence"] == "企业申报截止10月1日"
+    assert pending[1]["url"] == doc.url
+    # 翻页用上一页最小的编号作 before_id；别人先核对了第一页的条目，第二页也不漏
+    first = client.get(admin_url, headers=headers, params={"limit": 1}).json()
+    assert [p["id"] for p in first] == [rows[1].id]
+    rows[1].status = "rejected"
+    session.commit()
+    second = client.get(admin_url, headers=headers, params={"limit": 1, "before_id": rows[1].id})
+    assert [p["id"] for p in second.json()] == [rows[0].id]
+    rows[1].status = "pending"
+    session.commit()
     approve = f"{admin_url}/{rows[0].id}/approve"
     assert client.post(approve, json={"reviewed_by": "审阅人"}).status_code == 401
     assert (
