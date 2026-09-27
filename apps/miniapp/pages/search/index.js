@@ -77,6 +77,8 @@ Page({
 
   onShow() {
     this.setData({ today: todayISO() });
+    // 页面在后台跨过零点后再显示，时间筛选要按今天重算
+    if (this.data.items.length) this.apply();
     watchDay(this, (day) => {
       this.setData({ today: day });
       this.apply();
