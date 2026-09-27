@@ -36,6 +36,7 @@
   .title:hover { color: var(--brand); }
   .evidence { margin: 10px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
   mark { background: #FFF1B8; color: inherit; padding: 0 2px; }
+  mark.unsure { background: transparent; outline: 1.5px dashed #D9640F; outline-offset: 1px; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .when { font-size: 20px; font-weight: 700; margin-right: 8px; }
   .msg { font-size: 13px; color: var(--red); }
@@ -57,7 +58,7 @@
   </div>
 </header>
 <main>
-  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色只标出候选日期在原文句子里的位置，是不是截止日期要看上下文。</p>
+  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的日期与候选一致；虚线框：原文这里没写年份，请看上下文确认年份。标出的只是位置，是不是截止日期要看上下文。</p>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
@@ -86,39 +87,35 @@
   // 证据句里的日期写法："2026年10月09日""10月9日""2026-10-09""2026年10-9""10-9"等（年份可省）
   const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(?:(\d{4})\s*(?:年|[-/.])\s*)?(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/g;
 
-  // 句中写到年份的地方（含"2026年度""2026-10-9"里的年份），给省略年份的日期定年份用
-  const YEAR_RE = /((?:19|20)\d{2})\s*(?:年|[-/.]\s*\d)/g;
+  // 句中写到的年份（含"2026年度""2026-10-9"里的年份）
+  const YEAR_RE = /(?:19|20)\d{2}(?=\s*(?:年|[-/.]\s*\d))/g;
 
   // 证据句里标出候选日期出现的位置，便于对照（只用 textContent 拼接，不插入 HTML）。
-  // 先找出句中所有日期，再逐个比对：月、日相同，年份也相同才标；前面紧挨数字的不算。
-  // 省略年份的日期按前面最近写到的年份算；中间写了"次年""翌年"，或月份比前一个日期小
-  // （如"2025年12月31日至1月9日"），算下一年。只标位置，不表示它就是截止日期
+  // 写了年份的日期，年月日都相同才标黄；没写年份的：句中别处也没写年份就标黄，
+  // 否则用虚线框标出并提示"这里没写年份"，年份由审核人看上下文判断，页面不替人推断。
+  // 只标位置，不表示它就是截止日期
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
-    const notAfterDigit = (found) => !(found.index > 0 && /\d/.test(text[found.index - 1]));
-    const years = [...text.matchAll(YEAR_RE)].filter(notAfterDigit).map((f) => ({ at: f.index, year: Number(f[1]) }));
+    const notAfterDigit = (index) => !(index > 0 && /\d/.test(text[index - 1]));
+    const hasYear = [...text.matchAll(YEAR_RE)].some((f) => notAfterDigit(f.index));
     let hit = null;
-    let prev = null;
+    let unsure = false;
     for (const found of text.matchAll(DATE_RE)) {
-      if (!notAfterDigit(found)) continue;
-      const month = Number(found[2] || found[5]);
-      const day = Number(found[3] || found[6]);
+      if (!notAfterDigit(found.index)) continue;
+      if (Number(found[2] || found[5]) !== m || Number(found[3] || found[6]) !== d) continue;
       const written = found[1] || found[4];
-      let year = written ? Number(written) : null;
-      if (year === null) {
-        const base = years.filter((v) => v.at < found.index).pop();
-        if (base) {
-          year = base.year;
-          const between = text.slice(base.at, found.index);
-          if (/次年|翌年/.test(between) || (prev && prev.at >= base.at && prev.month > month)) year += 1;
-        }
+      if (written) {
+        if (Number(written) === y) { hit = found; unsure = false; break; }
+      } else if (!hit) {
+        hit = found;
+        unsure = hasYear;
       }
-      prev = { at: found.index, month };
-      if (month === m && day === d && (year === null || year === y)) { hit = found; break; }
     }
     if (!hit) { box.textContent = text; return box; }
-    box.append(text.slice(0, hit.index), el('mark', '', hit[0]), text.slice(hit.index + hit[0].length));
+    const mark = el('mark', unsure ? 'unsure' : '', hit[0]);
+    if (unsure) mark.title = '原文这里没写年份，请看上下文确认年份';
+    box.append(text.slice(0, hit.index), mark, text.slice(hit.index + hit[0].length));
     return box;
   }
 
