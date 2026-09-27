@@ -34,11 +34,9 @@ function write(fs, filePath, buffer) {
 function save(buffer, format) {
   const fs = wx.getFileSystemManager();
   const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now() % 100000}.${format}`;
+  // 写入失败就提示，不动旧文件；写好之后再删旧的导出文件
   return write(fs, filePath, buffer)
-    // 写不进去（可能是空间不够）：先清掉旧的导出文件再试一次
-    .catch(() => { clearOld(fs, null); return write(fs, filePath, buffer); })
-    .then(() => { clearOld(fs, filePath); return filePath; })
-    .catch(() => { throw new Error('保存文件失败，请稍后再试'); });
+    .then(() => { clearOld(fs, filePath); return filePath; }, () => { throw new Error('保存文件失败，请稍后再试'); });
 }
 
 function open(filePath, format) {
