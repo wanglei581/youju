@@ -8,7 +8,14 @@ from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
 from youju.dedup import reconcile_documents
-from youju.models import Document, DocumentAttachment, DocumentDeadline, DocumentDetail, Source
+from youju.models import (
+    Document,
+    DocumentAttachment,
+    DocumentDeadline,
+    DocumentDetail,
+    ListEntry,
+    Source,
+)
 
 # 北京时间 2026-09-27（周日）上午 10 点；本周是 9/21（周一）到 9/28（下周一，不含）
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -294,3 +301,62 @@ def test_calendar_skips_deadlines_already_passed_today(client, seeded):
 )
 def test_search_rejects_invalid_filters(client, seeded, params):
     assert client.get("/api/v1/search", params=params).status_code == 422
+
+
+def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
+    list_doc = session.query(Document).filter(Document.title.contains("拟入库科技型")).one()
+    common = {"category": "科技型中小企业", "batch": "第4批"}
+    session.add_all(
+        [
+            ListEntry(
+                document_id=list_doc.id,
+                source_url=list_doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                credit_code="91310117588657256C",
+                sequence="12",
+                **common,
+            ),
+            # 同一份名单的附件里又出现一次：只列一次
+            ListEntry(
+                document_id=list_doc.id,
+                source_url="https://kjt.shandong.gov.cn/a.xlsx",
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                sequence="12",
+                **common,
+            ),
+            ListEntry(
+                document_id=list_doc.id,
+                source_url=list_doc.url,
+                name="山东星河科技（青岛）有限公司",
+                normalized_name="山东星河科技(青岛)有限公司",
+                sequence="13",
+                **common,
+            ),
+        ]
+    )
+    session.commit()
+    url = "/api/v1/lists/lookup"
+    body = client.get(url, params={"q": "山东星河科技有限公司"}).json()
+    assert [i["id"] for i in body["items"]] == [str(list_doc.id)]
+    item = body["items"][0]
+    assert item["kind"] == "名单" and item["status"] == "公示"
+    assert item["matched"] == {
+        "name": "山东星河科技有限公司",
+        "category": "科技型中小企业",
+        "batch": "第4批",
+        "sequence": "12",
+    }
+    # 名称相近的另列，不当作同一家
+    assert body["similar"] == [{"name": "山东星河科技（青岛）有限公司", "lists": 1}]
+    assert body["coverage"] == {"lists": 1, "since": "2026-09-24"}
+    # 全角括号、空格不同也能查到；信用代码不分大小写
+    assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
+    assert len(client.get(url, params={"q": "91310117588657256c"}).json()["items"]) == 1
+    # 查不到：结果为空，收录范围照给，由小程序说明"已收录的名单中未找到"
+    missing = client.get(url, params={"q": "不存在的科技有限公司"}).json()
+    assert missing["items"] == [] and missing["coverage"]["lists"] == 1
+    # 只查企业和机构
+    refused = client.get(url, params={"q": "张三"})
+    assert refused.status_code == 422 and "只查企业和机构" in refused.json()["detail"]

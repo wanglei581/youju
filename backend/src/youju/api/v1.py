@@ -1,4 +1,4 @@
-"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单。
+"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单、查名单。
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
 公开接口不返回正文全文，只给核对过的字段和原文链接。
@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from youju.classify import doc_kind, kind_filter, list_status, region_label, status_filter
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
-from youju.models import Document, DocumentDeadline, DocumentDetail, Source
+from youju.lists.rules import candidate_key, is_person_query, normalize_name
+from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -430,4 +431,90 @@ def recent_lists(
         "week_total": week_total,
         "total": total,
         "items": _items(session, [tuple(r) for r in rows]),
+    }
+
+
+@router.get("/lists/lookup")
+def lookup_lists(
+    session: SessionDep,
+    q: Annotated[
+        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+    ],
+) -> dict:
+    """查名单：这家企业上过哪些名单。
+
+    按企业全称或统一社会信用代码与名单原文逐条精确比对；名称相近的另列（similar），
+    不当作同一家企业。只查企业和机构，输入像个人姓名的返回 422。
+    coverage 是已收录的名单范围，查不到时小程序据此说明"已收录的名单中未找到"。
+    """
+    query = normalize_name(q)
+    if not query or is_person_query(query):
+        raise HTTPException(
+            status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
+        )
+    public = (
+        select(ListEntry)
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1)
+    )
+    entries = session.scalars(
+        public.where(
+            or_(ListEntry.normalized_name == query, ListEntry.credit_code == query.upper())
+        )
+        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+        .limit(200)
+    ).all()
+    # 同一份名单里出现多次（详情页表格和附件各一份）只列一次
+    first: dict[int, ListEntry] = {}
+    for entry in entries:
+        first.setdefault(entry.document_id, entry)
+    rows = session.execute(_ordered(_base().where(Document.id.in_(list(first))))).all()
+    items = _items(session, [tuple(r) for r in rows])
+    for item in items:
+        entry = first[int(item["id"])]
+        item["matched"] = {
+            "name": entry.name,
+            "category": entry.category,
+            "batch": entry.batch,
+            "sequence": entry.sequence,
+        }
+    similar: list[dict] = []
+    key = candidate_key(query)
+    if len(query) >= 4 and not query.isascii() and len(key) >= 2:
+        names = session.execute(
+            select(
+                ListEntry.normalized_name,
+                func.min(ListEntry.name),
+                func.count(func.distinct(ListEntry.document_id)),
+            )
+            .join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Source.rights_level == 1,
+                ListEntry.normalized_name.like(f"%{_escape_like(key[:4])}%", escape="\\"),
+                ListEntry.normalized_name != query,
+            )
+            .group_by(ListEntry.normalized_name)
+            .limit(500)
+        ).all()
+        similar = sorted(
+            (
+                {"name": name, "lists": n}
+                for normalized, name, n in names
+                if candidate_key(normalized) == key
+            ),
+            key=lambda x: -x["lists"],
+        )[:10]
+    lists_total, since = session.execute(
+        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1)
+    ).one()
+    return {
+        "query": q.strip(),
+        "items": items,
+        "similar": similar,
+        "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
     }

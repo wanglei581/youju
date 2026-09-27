@@ -11,6 +11,16 @@
 .note { margin: 20rpx 32rpx 0; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
 .result { padding-bottom: 28rpx; }
 .result-text { font-size: 26rpx; line-height: 1.7; }
+.result-sum { font-size: 24rpx; padding-bottom: 8rpx; }
+.hit { border-bottom: 2rpx solid var(--line); padding-bottom: 20rpx; }
+.hit-line { margin-top: -8rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
+.empty-lookup { padding: 12rpx 0 8rpx; }
+.empty-title { font-size: 28rpx; font-weight: 600; color: var(--t1); }
+.empty-text { margin-top: 8rpx; font-size: 24rpx; line-height: 1.7; }
+.similar { margin-top: 20rpx; padding-top: 20rpx; border-top: 2rpx solid var(--line); }
+.similar-title { font-size: 24rpx; color: var(--t2); }
+.similar-item { min-height: 80rpx; display: flex; align-items: center; justify-content: space-between; gap: 16rpx; font-size: 26rpx; }
+.similar-name { color: var(--brand); }
 .count { font-size: 24rpx; font-weight: 400; }
 .chips { margin-top: 12rpx; display: flex; gap: 16rpx; padding-bottom: 20rpx; border-bottom: 2rpx solid var(--line); }
 .chip { height: 60rpx; padding: 0 24rpx; display: flex; align-items: center; border-radius: 30rpx; background: var(--fill); font-size: 26rpx; color: var(--t1); }
