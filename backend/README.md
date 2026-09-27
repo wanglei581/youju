@@ -22,6 +22,9 @@ uv run youju import-sources          # 从 docs/数据来源/全国来源清单_
 uv run youju crawl                   # 检查全部已启用来源
 uv run youju crawl --province 山东    # 只检查某个省（国家级来源填"国家"）
 uv run youju crawl --source-id 12    # 只检查指定来源
+uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间的公开政府文件
+uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
+uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
 uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
@@ -33,7 +36,7 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 | `GET /health` | 健康检查 |
 | `GET /api/sources?health=&province=&enabled=` | 来源列表及健康状态 |
 | `GET /api/documents?q=&province=&dept=&since=&new_only=&limit=&offset=` | 文件题录，按发布日期倒序 |
-| `GET /api/documents/{id}` | 单个文件 |
+| `GET /api/documents/{id}` | 单个文件及详情（正文、发文机关、文号、附件题录和抓取状态） |
 | `GET /api/stats` | 来源健康分布、文件总数、近 7 天新增 |
 
 ## 配置
@@ -70,6 +73,8 @@ src/youju/
     fetcher.py         礼貌抓取：robots、限速、编码、兼容老旧加密设置
     listing.py         列表页识别：通用规则 + JCMS datastore + 脚本内 JSON
     dates.py / urls.py 日期解析、网址规范化
+    detail.py           HTML 详情解析与敏感信息脱敏
+    detail_service.py   详情抓取、失败记录与入库
     service.py         检查来源、入库、健康状态
   sources/importer.py  来源清单导入
 tests/                 测试；fixtures/html/ 是真实政府网站列表页快照

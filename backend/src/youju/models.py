@@ -114,7 +114,54 @@ class Document(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # 来源第一次成功检查时就已存在的条目算"基线"，不计入"新增"。
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
-    # discovered：只有题录；后续迭代加入 fetched（已抓正文）、extracted（已抽取字段）等
+    # discovered：只有题录；fetched：详情抓取成功；后续可加入 extracted 等状态
     status: Mapped[str] = mapped_column(String(16), default="discovered")
 
     source: Mapped[Source] = relationship()
+    detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
+
+
+class DocumentDetail(Base):
+    """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
+
+    __tablename__ = "document_details"
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    issuer: Mapped[str | None] = mapped_column(Text)
+    doc_number: Mapped[str | None] = mapped_column(String(128))
+    publish_date: Mapped[date | None] = mapped_column(Date)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    final_url: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    document: Mapped[Document] = relationship(back_populates="detail")
+    attachments: Mapped[list["DocumentAttachment"]] = relationship(
+        back_populates="detail",
+        cascade="all, delete-orphan",
+        order_by="DocumentAttachment.position",
+    )
+
+
+class DocumentAttachment(Base):
+    """只存附件题录和原站链接，不下载附件内容。"""
+
+    __tablename__ = "document_attachments"
+    __table_args__ = (Index("ix_document_attachments_document_id", "document_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("document_details.document_id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text)
+    extension: Mapped[str] = mapped_column(String(16))
+
+    detail: Mapped[DocumentDetail] = relationship(back_populates="attachments")

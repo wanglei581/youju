@@ -1,4 +1,4 @@
-"""命令行：youju db-upgrade | import-sources | crawl | report | serve"""
+"""命令行：数据库、来源抓取、详情抓取、报告和 API。"""
 
 import argparse
 import logging
@@ -120,6 +120,21 @@ def _cmd_report(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fetch_details(args: argparse.Namespace) -> int:
+    from youju.crawler.detail_service import fetch_details
+
+    with session_factory()() as session:
+        results = fetch_details(
+            session, limit=args.limit, source_id=args.source_id, max_workers=args.workers
+        )
+    by_status = Counter(r.status for r in results)
+    print(f"处理 {len(results)} 份文件：" + "，".join(f"{k} {v}" for k, v in by_status.items()))
+    for result in results:
+        if result.status != "ok":
+            print(f"  #{result.document_id} {result.status}：{result.failure_reason or ''}")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -144,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.add_argument("--include-disabled", action="store_true", help="也检查未启用的来源")
     p.set_defaults(func=_cmd_crawl)
+
+    p = sub.add_parser("fetch-details", help="抓取尚无详情或到期重试的政府文件")
+    p.add_argument("--limit", type=int, default=50, help="最多处理多少份文件，默认 50")
+    p.add_argument("--source-id", type=int, help="只处理指定来源")
+    p.add_argument("--workers", type=int, help="同时抓取的网站数")
+    p.set_defaults(func=_cmd_fetch_details)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
 
