@@ -275,3 +275,80 @@ class ListEntry(Base):
     region: Mapped[str | None] = mapped_column(String(64))
 
     document: Mapped[Document] = relationship(back_populates="list_entries")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    openid: Mapped[str] = mapped_column(String(128), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_visited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    agreement_version: Mapped[str | None] = mapped_column(String(20))
+    agreement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Follow(Base):
+    __tablename__ = "follows"
+    __table_args__ = (Index("ix_follows_user", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(40))
+    conditions: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        Index("ix_subscriptions_status_kind", "status", "kind"),
+        CheckConstraint("kind IN ('newDocs', 'deadline')", name="ck_subscription_kind"),
+        CheckConstraint(
+            "status IN ('unused', 'sent', 'failed', 'refused', 'expired')",
+            name="ck_subscription_status",
+        ),
+        CheckConstraint(
+            "(kind = 'newDocs' AND follow_id IS NOT NULL AND document_id IS NULL)"
+            " OR (kind = 'deadline' AND document_id IS NOT NULL AND follow_id IS NULL)",
+            name="ck_subscription_target",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    template_id: Mapped[str] = mapped_column(String(128))
+    follow_id: Mapped[int | None] = mapped_column(ForeignKey("follows.id", ondelete="CASCADE"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(16), default="unused")
+    errcode: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    __table_args__ = (Index("ix_feedback_user", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"))
+    content: Mapped[str] = mapped_column(String(500))
+    check_result: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (Index("ix_events_user_created", "user_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(32))
+    props: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

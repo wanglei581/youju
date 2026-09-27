@@ -1,0 +1,169 @@
+"""一次性订阅提醒；定时任务可重复运行，不重试已尝试发送的授权。"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from typing import Any
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from youju.api import v1
+from youju.api.me import new_count
+from youju.config import Settings, get_settings
+from youju.models import Document, Follow, Subscription, User
+
+log = logging.getLogger("youju.notify")
+
+
+def send_message(payload: dict) -> dict:
+    response = httpx.post(
+        "http://api.weixin.qq.com/cgi-bin/message/subscribe/send", json=payload, timeout=10
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _payload(row: Subscription, user: User, template: dict, values: dict, page: str) -> dict:
+    fields = template.get("fields", {})
+    if not isinstance(fields, dict):
+        raise ValueError("模板字段配置无效")
+    data = {}
+    for field, source in fields.items():
+        if source not in values:
+            raise ValueError(f"未知模板字段来源：{source}")
+        value = str(values[source])
+        if field.startswith("thing"):
+            value = value[:20]
+        data[field] = {"value": value}
+    return {"touser": user.openid, "template_id": row.template_id, "page": page, "data": data}
+
+
+def _deadline(
+    session: Session, row: Subscription, stamp: datetime
+) -> tuple[dict, str] | str | None:
+    document = session.get(Document, row.document_id)
+    if document is None:
+        return "expired"
+    approved = v1._approved(session, [document.id]).get(document.id, [])
+    today = stamp.date()
+    local_time = stamp.time().replace(tzinfo=None)
+    future = [
+        d
+        for d in approved
+        if d.approved_date is not None
+        and (
+            d.approved_date > today
+            or (
+                d.approved_date == today
+                and (d.approved_time is None or d.approved_time >= local_time)
+            )
+        )
+    ]
+    if not future:
+        return "expired"
+    due = min(future, key=lambda d: (d.approved_date, d.approved_time or datetime.min.time()))
+    if due.approved_date > today + timedelta(days=3):
+        return None
+    return (
+        {"title": document.title, "date": due.approved_date.isoformat(), "kind": due.kind},
+        f"pages/detail/index?id={document.id}",
+    )
+
+
+def _new_docs(session: Session, row: Subscription) -> tuple[dict, str] | str | None:
+    follow = session.get(Follow, row.follow_id)
+    if follow is None:
+        return "expired"
+    count = new_count(session, follow, follow.last_notified_at or follow.created_at)
+    if not count:
+        return None
+    prefix, suffix = "你关注的'", f"'有 {count} 份新文件"
+    summary = prefix + follow.name[: max(0, 20 - len(prefix) - len(suffix))] + suffix
+    return (
+        {
+            "name": follow.name,
+            "count": count,
+            "summary": summary,
+        },
+        "pages/follow/index",
+    )
+
+
+def run_notify(
+    session: Session,
+    *,
+    settings: Settings | None = None,
+    sender: Callable[[dict], dict] = send_message,
+    stamp: datetime | None = None,
+) -> dict[str, int]:
+    """正式模式锁住未用授权并消费；演练模式只记录候选，不修改数据库。"""
+    settings = settings or get_settings()
+    stamp = (stamp or v1.now()).astimezone(v1._TZ)
+    result = {"sent": 0, "failed": 0, "refused": 0, "expired": 0, "skipped": 0, "dry_run": 0}
+    ids = session.scalars(
+        select(Subscription.id).where(Subscription.status == "unused").order_by(Subscription.id)
+    ).all()
+    for row_id in ids:
+        stmt = select(Subscription).where(
+            Subscription.id == row_id, Subscription.status == "unused"
+        )
+        if settings.trust_wx_headers:
+            stmt = stmt.with_for_update(skip_locked=True)
+        row = session.scalar(stmt)
+        if row is None:
+            continue
+        target = (
+            _deadline(session, row, stamp) if row.kind == "deadline" else _new_docs(session, row)
+        )
+        if target == "expired":
+            if settings.trust_wx_headers:
+                row.status, row.attempted_at = "expired", stamp
+                session.commit()
+            result["expired"] += 1
+            continue
+        template = (
+            settings.template_deadline if row.kind == "deadline" else settings.template_newdocs
+        )
+        if target is None or not template or not template.get("id") or not template.get("fields"):
+            result["skipped"] += 1
+            continue
+        if row.template_id != template["id"]:
+            result["skipped"] += 1
+            continue
+        values, page = target
+        try:
+            payload = _payload(row, session.get(User, row.user_id), template, values, page)
+        except ValueError:
+            log.exception("订阅模板配置无效，跳过授权 #%s", row.id)
+            result["skipped"] += 1
+            continue
+        if not settings.trust_wx_headers:
+            log.info("演练：授权 #%s，类型 %s，页面 %s", row.id, row.kind, page)
+            result["dry_run"] += 1
+            continue
+        # 先消费授权再发 HTTP；进程在请求途中退出也不会重复发送。
+        row.status, row.errcode, row.attempted_at = "failed", -1, stamp
+        session.commit()
+        try:
+            response: dict[str, Any] = sender(payload)
+            errcode = int(response["errcode"])
+        except Exception:  # noqa: BLE001 - 任何发送器异常都要消费授权并记录失败
+            log.exception("订阅消息发送失败：授权 #%s", row.id)
+            errcode = -1
+        # 用户可在请求飞行期间注销；已被级联删除的记录不能再写回。
+        if session.scalar(select(Subscription.id).where(Subscription.id == row_id)) is None:
+            session.rollback()
+            continue
+        row.errcode = errcode
+        row.status = "sent" if errcode == 0 else "refused" if errcode == 43101 else "failed"
+        if row.kind == "newDocs" and row.status == "sent":
+            follow = session.get(Follow, row.follow_id)
+            if follow is not None:
+                follow.last_notified_at = stamp
+        session.commit()
+        result[row.status] += 1
+    return result

@@ -174,6 +174,15 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_notify(_: argparse.Namespace) -> int:
+    from youju.notify import run_notify
+
+    with session_factory()() as session:
+        counts = run_notify(session)
+    print("提醒任务：" + "，".join(f"{name} {count}" for name, count in counts.items()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -216,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_parse_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
+    sub.add_parser("notify", help="发送一次性订阅提醒；未启用可信微信请求头时只演练").set_defaults(
+        func=_cmd_notify
+    )
 
     p = sub.add_parser("serve", help="启动 API 服务")
     p.add_argument("--host", default="127.0.0.1")

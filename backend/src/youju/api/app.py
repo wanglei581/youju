@@ -18,6 +18,7 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.api.exports import router as exports_router
+from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import list_status
@@ -37,6 +38,7 @@ app = FastAPI(
 )
 app.include_router(v1_router)
 app.include_router(exports_router)
+app.include_router(me_router)
 
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
