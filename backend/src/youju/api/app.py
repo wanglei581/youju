@@ -11,11 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from youju.api.v1 import router as v1_router
 from youju.config import get_settings
 from youju.db import get_session
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
 app = FastAPI(title="有据 API", version="0.1.0")
+app.include_router(v1_router)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
