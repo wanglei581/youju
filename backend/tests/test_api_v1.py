@@ -347,6 +347,9 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
         "category": "科技型中小企业",
         "batch": "第4批",
         "sequence": "12",
+        "creditCode": "91310117588657256C",
+        "region": None,
+        "via": "name",
     }
     # 名称相近的另列，不当作同一家
     assert body["similar"] == [{"name": "山东星河科技（青岛）有限公司", "lists": 1}]
@@ -360,3 +363,48 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     # 只查企业和机构
     refused = client.get(url, params={"q": "张三"})
     assert refused.status_code == 422 and "只查企业和机构" in refused.json()["detail"]
+    assert body["ambiguous"] is False and body["truncated"] is False
+    assert (
+        item["matched"]["via"] == "name" and item["matched"]["creditCode"] == "91310117588657256C"
+    )
+
+
+def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, session):
+    """更名：信用代码相同、名称不同的也列出；同名不同代码：提示可能不是同一家；重复通知只列一次。"""
+    list_doc = session.get(Document, seeded["list"])
+    src = list_doc.source
+    old_doc = _doc(src, 11, "山东省2025年第9批入库科技型中小企业名单公告", date(2025, 11, 3))
+    dup_doc = _doc(src, 12, list_doc.title, list_doc.publish_date)  # 同一通知，网址不同
+    other = _doc(src, 13, "2026年度高新技术企业认定名单公告", date(2026, 9, 1))
+    session.add_all([old_doc, dup_doc, other])
+    session.flush()
+    code = "91310117588657256C"
+    rows = [
+        (list_doc, "山东星河科技有限公司", code),
+        (dup_doc, "山东星河科技有限公司", code),
+        (old_doc, "济南星河科技有限公司", code),  # 更名前
+        (other, "山东星河科技有限公司", "91370100MA3C5LTN6Q"),  # 同名、代码不同
+    ]
+    for i, (doc, name, credit) in enumerate(rows):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name=name,
+                normalized_name=name,
+                credit_code=credit,
+                sequence=str(i + 1),
+                category="科技型中小企业",
+            )
+        )
+    session.commit()
+    body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    titles = [i["title"] for i in body["items"]]
+    assert titles.count(list_doc.title) == 1  # 重复通知只列一次
+    assert old_doc.title in titles and other.title in titles
+    renamed = next(i for i in body["items"] if i["title"] == old_doc.title)
+    assert renamed["matched"]["name"] == "济南星河科技有限公司"
+    assert renamed["matched"]["via"] == "creditCode"
+    assert body["ambiguous"] is True
+    # 更名前的名称已在结果里，不再算"名称相近"
+    assert body["similar"] == []

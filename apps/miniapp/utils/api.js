@@ -111,10 +111,10 @@ function lookup(q) {
   const hit = q.replace(/\s+/g, '') === DEMO_COMPANY;
   const items = hit
     ? mock.lists.items.slice(0, 2).map((d, i) => Object.assign({}, d, {
-      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i) },
+      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name' },
     }))
     : [];
-  return copy({ query: q, items, similar: [], coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
+  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
 }
 
 // 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据

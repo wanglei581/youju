@@ -31,6 +31,7 @@ _DEADLINE_ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或�
 
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
+_LOOKUP_LIMIT = 100  # 查名单最多列出的名单份数
 TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
@@ -443,42 +444,81 @@ def lookup_lists(
 ) -> dict:
     """查名单：这家企业上过哪些名单。
 
-    按企业全称或统一社会信用代码与名单原文逐条精确比对；名称相近的另列（similar），
-    不当作同一家企业。只查企业和机构，输入像个人姓名的返回 422。
-    coverage 是已收录的名单范围，查不到时小程序据此说明"已收录的名单中未找到"。
+    按企业全称或统一社会信用代码与名单原文逐条精确比对。按名称查到的条目带信用代码时，
+    再用信用代码找回同一企业用别的名称（如更名前）上过的名单。同名但信用代码不同的，
+    标 ambiguous，由小程序提示逐条核对。名称相近的另列（similar），不当作同一家。
+    同一份名单只列一次；标题和发布日期都相同的重复通知也只列一次。只查企业和机构，
+    输入像个人姓名的返回 422。coverage 是已收录的名单范围，查不到时据此说明。
     """
     query = normalize_name(q)
     if not query or is_person_query(query):
         raise HTTPException(
             status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
         )
-    public = (
-        select(ListEntry)
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1)
-    )
-    entries = session.scalars(
-        public.where(
-            or_(ListEntry.normalized_name == query, ListEntry.credit_code == query.upper())
+    code = query.upper()
+
+    def public(stmt: Select) -> Select:
+        return (
+            stmt.join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .where(Source.rights_level == 1)
         )
-        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
-        .limit(200)
+
+    direct = or_(ListEntry.normalized_name == query, ListEntry.credit_code == code)
+    name_codes = set(
+        session.scalars(
+            public(select(ListEntry.credit_code).distinct()).where(
+                ListEntry.normalized_name == query, ListEntry.credit_code.is_not(None)
+            )
+        )
+    )
+    codes = set(
+        session.scalars(
+            public(select(ListEntry.credit_code).distinct())
+            .where(direct, ListEntry.credit_code.is_not(None))
+            .limit(20)
+        )
+    )
+    matched = or_(direct, ListEntry.credit_code.in_(codes)) if codes else direct
+    # 先按名单去重再截取，重复条目不会挤掉别的名单
+    doc_ids = session.scalars(
+        public(select(ListEntry.document_id))
+        .where(matched)
+        .group_by(ListEntry.document_id, Document.publish_date)
+        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
+        .limit(_LOOKUP_LIMIT + 1)
     ).all()
-    # 同一份名单里出现多次（详情页表格和附件各一份）只列一次
-    first: dict[int, ListEntry] = {}
-    for entry in entries:
-        first.setdefault(entry.document_id, entry)
-    rows = session.execute(_ordered(_base().where(Document.id.in_(list(first))))).all()
-    items = _items(session, [tuple(r) for r in rows])
-    for item in items:
-        entry = first[int(item["id"])]
+    truncated = len(doc_ids) > _LOOKUP_LIMIT
+    doc_ids = doc_ids[:_LOOKUP_LIMIT]
+    # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的
+    best: dict[int, ListEntry] = {}
+    for entry in session.scalars(
+        select(ListEntry).where(ListEntry.document_id.in_(doc_ids), matched).order_by(ListEntry.id)
+    ):
+        current = best.get(entry.document_id)
+        if current is None or (entry.normalized_name == query and current.normalized_name != query):
+            best[entry.document_id] = entry
+    rows = session.execute(_ordered(_base().where(Document.id.in_(doc_ids)))).all()
+    items: list[dict] = []
+    seen: set[tuple[str, str | None]] = set()
+    for item in _items(session, [tuple(r) for r in rows]):
+        # 同一通知在不同栏目、网址不同（如多了 ?type=2）时只列一次
+        same_notice = (item["title"], item["date"])
+        if same_notice in seen:
+            continue
+        seen.add(same_notice)
+        entry = best[int(item["id"])]
         item["matched"] = {
             "name": entry.name,
             "category": entry.category,
             "batch": entry.batch,
             "sequence": entry.sequence,
+            "creditCode": entry.credit_code,
+            "region": entry.region,
+            "via": "name" if entry.normalized_name == query else "creditCode",
         }
+        items.append(item)
+    shown_names = {entry.normalized_name for entry in best.values()}
     similar: list[dict] = []
     key = candidate_key(query)
     if len(query) >= 4 and not query.isascii() and len(key) >= 2:
@@ -502,7 +542,8 @@ def lookup_lists(
             (
                 {"name": name, "lists": n}
                 for normalized, name, n in names
-                if candidate_key(normalized) == key
+                # 信用代码相同、已列在结果里的别名（如更名前的名称）不再算"相近"
+                if candidate_key(normalized) == key and normalized not in shown_names
             ),
             key=lambda x: -x["lists"],
         )[:10]
@@ -516,5 +557,7 @@ def lookup_lists(
         "query": q.strip(),
         "items": items,
         "similar": similar,
+        "ambiguous": len(name_codes) > 1,
+        "truncated": truncated,
         "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
     }
