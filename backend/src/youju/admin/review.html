@@ -37,6 +37,7 @@
   .evidence { margin: 10px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
   mark { background: #FFF1B8; color: inherit; padding: 0 2px; }
   mark.unsure { background: transparent; outline: 1.5px dashed #D9640F; outline-offset: 1px; }
+  .evidence .miss { margin-top: 6px; font-size: 12px; color: #D9640F; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .when { font-size: 20px; font-weight: 700; margin-right: 8px; }
   .msg { font-size: 13px; color: var(--red); }
@@ -58,7 +59,7 @@
   </div>
 </header>
 <main>
-  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文。</p>
+  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
@@ -85,35 +86,48 @@
   }
 
   // 证据句里的日期写法："2026年10月09日""10月9日"（年份可省），"2026-10-09""2026/10/9""2026.10.9"（必须带年份：
-  // 不带年份的"8-9""3.5"分不清是日期、数字区间还是小数，如"10月8-9日""3.5亿元"）
-  const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/g;
-
-  // "10月8日至9日"这类区间的末日（同月）
-  const RANGE_END_RE = /^(\s*(?:至|到|—|–|~|～|-)\s*)((\d{1,2})\s*日)/;
+  // 不带年份的"8-9""3.5"分不清是日期、数字区间还是小数），以及同月区间"10月8-9日""2026年10月8—9日"
+  const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)|(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})(\s*[-—–~～]\s*)(\d{1,2})\s*日/g;
+  // "10月8日至9日""10月8日、9日""10月8日（星期四）至9日""10月8日起至9日"这类同月区间的末日
+  const RANGE_END_RE = /^(\s*(?:[（(](?:星期|周)[一二三四五六日天][）)])?\s*起?\s*(?:至|到|—|–|~|～|-|、)\s*)((\d{1,2})\s*日)/;
 
   // 证据句里标出候选日期出现的每一处，便于对照（只用 textContent 拼接，不插入 HTML）：
   // 原文写了年份且年月日都与候选相同，标黄；原文这里没写年份（年份是抽取时推定的），用虚线框，
-  // 提示审核人确认年份；写了别的年份不标。页面不推断年份，也不判断哪一处是截止日期
+  // 提示审核人确认年份；写了别的年份不标。一处都没找到时明确提示，免得误以为原文没有这个日期。
+  // 页面不推断年份，也不判断哪一处是截止日期
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
     const hits = [];
     for (const found of text.matchAll(DATE_RE)) {
       if (found.index > 0 && /\d/.test(text[found.index - 1])) continue;
-      const written = found[1] || found[4];
+      const written = found[1] || found[4] || found[7];
       if (written && Number(written) !== y) continue;
+      const unsure = !written;
+      const end = found.index + found[0].length;
+      if (found[8]) {
+        // 同月区间"10月8-9日"：起始日标"10月8"，末日标"9日"
+        if (Number(found[8]) !== m) continue;
+        const startEnd = found.index + found[0].indexOf(found[10], found[0].indexOf('月')); // 起始日数字之后
+        const dayAt = startEnd + found[10].length;
+        if (Number(found[9]) === d) hits.push({ start: found.index, end: startEnd, unsure });
+        if (Number(found[11]) === d) hits.push({ start: dayAt, end, unsure });
+        continue;
+      }
       const month = Number(found[2] || found[5]);
       const day = Number(found[3] || found[6]);
-      const end = found.index + found[0].length;
-      if (month === m && day === d) hits.push({ start: found.index, end, unsure: !written });
-      // 区间末日："2026年10月8日至9日"的 9日与起始日同年同月
+      if (month === m && day === d) hits.push({ start: found.index, end, unsure });
+      // 区间末日与起始日同年同月
       const tail = found[2] ? RANGE_END_RE.exec(text.slice(end)) : null;
       if (tail && month === m && Number(tail[3]) === d) {
         const dayAt = end + tail[1].length;
-        hits.push({ start: dayAt, end: dayAt + tail[2].length, unsure: !written });
+        hits.push({ start: dayAt, end: dayAt + tail[2].length, unsure });
       }
     }
-    if (!hits.length) { box.textContent = text; return box; }
+    if (!hits.length) {
+      box.append(text, el('div', 'miss', '句子里没找到与候选完全一致的写法（可能是别的写法或别的年份），请逐字核对'));
+      return box;
+    }
     let at = 0;
     for (const hit of hits) {
       const mark = el('mark', hit.unsure ? 'unsure' : '', text.slice(hit.start, hit.end));

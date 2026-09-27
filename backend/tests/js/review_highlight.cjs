@@ -15,10 +15,12 @@ const evidenceNode = new Function('DATE_RE', 'RANGE_END_RE', 'el', `${src}; retu
 // 所有标出的位置，按出现顺序用"|"连接；同时检查拼回去的文字与原文一致
 function show(text, date) {
   const box = evidenceNode(text, date);
-  const joined = box.parts.length ? box.parts.map((p) => (typeof p === 'string' ? p : p.textContent)).join('') : box.textContent;
+  const body = box.parts.filter((p) => !(p && p.className === 'miss'));
+  const joined = body.length ? body.map((p) => (typeof p === 'string' ? p : p.textContent)).join('') : box.textContent;
   if (joined !== text) return `拼接出错：${joined}`;
-  const marks = box.parts.filter((p) => p && p.tag === 'mark');
-  if (!marks.length) return '不高亮';
+  const marks = body.filter((p) => p && p.tag === 'mark');
+  const miss = box.parts.some((p) => p && p.className === 'miss');
+  if (!marks.length) return miss ? '不高亮' : '不高亮但没有提示';
   return marks.map((mark) => `${mark.className === 'unsure' ? '虚' : '实'}:${mark.textContent}`).join('|');
 }
 
@@ -54,6 +56,14 @@ const cases = [
   ['2026-10-09', '2026年10月8日至9日', '实:9日'],
   ['2026-10-08', '2026年10月8日至9日', '实:2026年10月8日'],
   ['2026-10-09', '10月8日-9日召开', '虚:9日'],
+  ['2026-10-09', '10月8-9日召开', '虚:9日'],
+  ['2026-10-08', '10月8-9日召开', '虚:10月8'],
+  ['2026-10-09', '10月8—9日', '虚:9日'],
+  ['2026-10-09', '2026年10月8-9日', '实:9日'],
+  ['2025-10-09', '2026年10月8-9日', '不高亮'],
+  ['2026-10-09', '10月8日、9日两天', '虚:9日'],
+  ['2026-10-09', '10月8日（星期四）至9日', '虚:9日'],
+  ['2026-10-09', '10月8日起至9日', '虚:9日'],
   ['2026-10-09', '2025年10月8日至9日', '不高亮'],
   // 不算日期：前面紧挨数字、日不同、不带年份的短横线和点号写法（日期区间、月份区间、小数）
   ['2026-10-09', '第110月9日', '不高亮'],
@@ -62,7 +72,6 @@ const cases = [
   ['2026-10-09', '2025年10-9', '不高亮'],
   ['2026-10-09', '2026年10-9', '不高亮'],
   ['2026-08-09', '10月8-9日召开', '不高亮'],
-  ['2026-10-09', '10月8-9日召开', '不高亮'],
   ['2026-08-09', '2026年8-9月组织评审', '不高亮'],
   ['2026-03-05', '融资3.5亿元', '不高亮'],
 ];
