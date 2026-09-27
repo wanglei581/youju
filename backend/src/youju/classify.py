@@ -64,11 +64,21 @@ def doc_kind(title: str) -> str:
     return "其他"
 
 
+# 名单状态是关键字段（团队章程合规红线：未经核验不得发布），只照录标题原文写明的：
+# 标题写了"公示"才标公示；写了"公布"或"公告"（且没写"公示"）才标正式公布；其余不标（决策记录 D-018）
+STATUS_PUBLIC = ("公示",)
+STATUS_FINAL = ("公布", "公告")
+
+
 def list_status(title: str) -> str | None:
-    """名单状态：标题含"公示"或"拟"为公示，否则为正式公布；不是名单返回 None。"""
+    """名单状态，只照录标题原文：公示 / 正式公布；标题没写明或不是名单时返回 None。"""
     if doc_kind(title) != "名单":
         return None
-    return "公示" if ("公示" in title or "拟" in title) else "正式公布"
+    if _has(title, STATUS_PUBLIC):
+        return "公示"
+    if _has(title, STATUS_FINAL):
+        return "正式公布"
+    return None
 
 
 def _any_in(column: ColumnElement[str], words: tuple[str, ...]) -> ColumnElement[bool]:
@@ -111,8 +121,9 @@ def kind_filter(title: ColumnElement[str], kinds: list[str]) -> ColumnElement[bo
 def status_filter(title: ColumnElement[str], statuses: list[str]) -> ColumnElement[bool]:
     """名单状态筛选：只作用于名单类文件。"""
     is_list = _sql_parts(title)["名单"]
-    public_words = or_(title.contains("公示"), title.contains("拟"))
-    parts = {"公示": and_(is_list, public_words), "正式公布": and_(is_list, not_(public_words))}
+    public = _any_in(title, STATUS_PUBLIC)
+    final = and_(not_(public), _any_in(title, STATUS_FINAL))
+    parts = {"公示": and_(is_list, public), "正式公布": and_(is_list, final)}
     return or_(*(parts[s] for s in statuses if s in parts))
 
 
