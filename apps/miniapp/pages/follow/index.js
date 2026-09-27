@@ -66,7 +66,11 @@ Page({
         this.setData({ follows, newTotal: follows.reduce((n, f) => n + f.newCount, 0), loading: false });
         return this.loadChanges(follows);
       })
-      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+      .catch((err) => {
+        // 服务端没有同意记录或协议已更新（本机记录已清掉）：回到"登录后使用"
+        if (err.status === 403) { this.setData({ loading: false }); this.load(); return; }
+        this.setData({ loading: false, error: `加载失败：${err.message}` });
+      });
   },
 
   // 新文件：取有新文件的前 3 个关注，每个最多 5 份，合并去重后按发布日期排

@@ -21,7 +21,16 @@ function query(params) {
 
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
-  return new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
+  const err = new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
+  err.status = res ? res.statusCode : 0;
+  return err;
+}
+
+// 本机记下的已同意协议版本（服务端才是准的；服务端返回 403 时清掉，下次操作重新请求同意）
+const AGREED_KEY = 'youjuAgreedVersion';
+
+function forgetAgreed() {
+  try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 忽略 */ }
 }
 
 // options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
@@ -36,7 +45,12 @@ function request(path, params, options) {
     // 15 秒没有返回就算超时
     const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
     const ok = (code) => code === 200 || code === 201 || code === 204;
-    const done = (res) => (ok(res.statusCode) ? finish(resolve, res.data) : finish(reject, errorOf(res)));
+    const done = (res) => {
+      if (ok(res.statusCode)) { finish(resolve, res.data); return; }
+      // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
+      if (res.statusCode === 403) forgetAgreed();
+      finish(reject, errorOf(res));
+    };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
@@ -174,7 +188,6 @@ function feedback(docId, content) {
 }
 
 // ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
-const AGREED_KEY = 'youjuAgreedVersion';
 
 function me() {
   return request('/api/v1/me');
@@ -186,9 +199,7 @@ function agree(version) {
 
 // 注销：删除服务端的用户和关注、订阅、纠错、埋点
 function deleteMe() {
-  return request('/api/v1/me', null, { method: 'DELETE' }).then(() => {
-    try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 本机记录删不掉不影响 */ }
-  });
+  return request('/api/v1/me', null, { method: 'DELETE' }).then(forgetAgreed);
 }
 
 function myFollows() {
@@ -231,6 +242,6 @@ function saveSubscription(kind, target) {
 
 module.exports = {
   isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
-  AGREED_KEY, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew,
+  AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew,
   follow, files, saveSubscription,
 };

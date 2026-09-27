@@ -17,7 +17,7 @@ function remember() {
 }
 
 function forget() {
-  try { wx.removeStorageSync(api.AGREED_KEY); } catch (e) { /* 忽略 */ }
+  api.forgetAgreed();
 }
 
 // 返回 true 表示已同意，可以继续
