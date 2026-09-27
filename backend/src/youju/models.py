@@ -122,6 +122,7 @@ class Document(Base):
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
     deadlines: Mapped[list["DocumentDeadline"]] = relationship(back_populates="document")
+    list_entries: Mapped[list["ListEntry"]] = relationship(back_populates="document")
 
 
 class DocumentDetail(Base):
@@ -195,3 +196,52 @@ class DocumentDeadline(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     document: Mapped[Document] = relationship(back_populates="deadlines")
+
+
+class ListParse(Base):
+    """一份详情页或附件的解析记录，失败原因用于回填报告和安全重试。"""
+
+    __tablename__ = "list_parses"
+    __table_args__ = (UniqueConstraint("document_id", "source_url", name="uq_list_parse_source"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    source_url: Mapped[str] = mapped_column(Text)
+    source_kind: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(24))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ListEntry(Base):
+    """只存已从政府原文的企业或机构名称列抽取的字段。"""
+
+    __tablename__ = "list_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "source_url", "normalized_name", "sequence", name="uq_list_entry_row"
+        ),
+        Index("ix_list_entries_normalized_name", "normalized_name"),
+        Index(
+            "ix_list_entries_name_trgm",
+            "normalized_name",
+            postgresql_using="gin",
+            postgresql_ops={"normalized_name": "gin_trgm_ops"},
+        ),
+        Index("ix_list_entries_credit_code", "credit_code"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    source_url: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(String(256))
+    normalized_name: Mapped[str] = mapped_column(String(256))
+    credit_code: Mapped[str | None] = mapped_column(String(18))
+    sequence: Mapped[str | None] = mapped_column(String(32))
+    category: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16))
+    batch: Mapped[str | None] = mapped_column(String(32))
+    region: Mapped[str | None] = mapped_column(String(64))
+
+    document: Mapped[Document] = relationship(back_populates="list_entries")

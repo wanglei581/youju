@@ -7,7 +7,14 @@ from fastapi.testclient import TestClient
 from youju.api.app import app
 from youju.db import get_session
 from youju.extract.service import extract_existing
-from youju.models import Document, DocumentAttachment, DocumentDeadline, DocumentDetail, Source
+from youju.models import (
+    Document,
+    DocumentAttachment,
+    DocumentDeadline,
+    DocumentDetail,
+    ListEntry,
+    Source,
+)
 
 
 @pytest.fixture
@@ -89,6 +96,93 @@ def seeded(session):
 
 def test_health(client) -> None:
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_list_search_separates_exact_and_similar(client, seeded, session) -> None:
+    doc = session.query(Document).filter(Document.title.like("山东省专精特新%")).one()
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="名单",
+            issuer="山东省工业和信息化厅",
+            fetched_at=datetime.now(UTC),
+            status="ok",
+        )
+    )
+    session.add_all(
+        [
+            ListEntry(
+                document_id=doc.id,
+                source_url="https://gxt.shandong.gov.cn/a/list.xlsx",
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                credit_code="91310117588657256C",
+                sequence="1",
+                category="专精特新中小企业",
+                status="公示",
+                batch="第4批",
+                region="济南市",
+            ),
+            ListEntry(
+                document_id=doc.id,
+                source_url="https://gxt.shandong.gov.cn/a/list2.xlsx",
+                name="山东星河科技（青岛）有限公司",
+                normalized_name="山东星河科技(青岛)有限公司",
+                sequence="2",
+                category="专精特新中小企业",
+                status="公示",
+                batch="第4批",
+            ),
+        ]
+    )
+    session.commit()
+    result = client.get("/api/lists/search", params={"q": "山东星河科技有限公司"})
+    assert result.status_code == 200
+    body = result.json()
+    assert len(body["exact_matches"]) == 1
+    assert body["exact_matches"][0]["issuer"] == "山东省工业和信息化厅"
+    assert body["exact_matches"][0]["original_url"] == doc.url
+    assert body["exact_matches"][0]["status"] == "公示"
+    assert len(body["similar_candidates"]) == 1
+    assert body["similar_candidates"][0]["name"] == "山东星河科技（青岛）有限公司"
+    by_code = client.get("/api/lists/search", params={"q": "91310117588657256C"}).json()
+    assert len(by_code["exact_matches"]) == 1
+    assert by_code["similar_candidates"] == []
+    refused = client.get("/api/lists/search", params={"q": "张三"})
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "只查企业和机构"
+    session.add_all(
+        [
+            ListEntry(
+                document_id=doc.id,
+                source_url="https://gxt.shandong.gov.cn/a/short.xlsx",
+                name="星河有限公司",
+                normalized_name="星河有限公司",
+                category="其他",
+                status="正式公布",
+            ),
+            ListEntry(
+                document_id=doc.id,
+                source_url="https://gxt.shandong.gov.cn/a/short2.xlsx",
+                name="星河（青岛）有限公司",
+                normalized_name="星河(青岛)有限公司",
+                category="其他",
+                status="正式公布",
+            ),
+        ]
+    )
+    session.commit()
+    short = client.get("/api/lists/search", params={"q": "星河有限公司"}).json()
+    assert [item["name"] for item in short["exact_matches"]] == ["星河有限公司"]
+    assert [item["name"] for item in short["similar_candidates"]] == ["星河（青岛）有限公司"]
+    doc.source.rights_level = 2
+    session.commit()
+    assert (
+        client.get("/api/lists/search", params={"q": "山东星河科技有限公司"}).json()[
+            "exact_matches"
+        ]
+        == []
+    )
 
 
 def test_sources_filter(client, seeded) -> None:

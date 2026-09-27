@@ -149,6 +149,24 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_parse_lists(args: argparse.Namespace) -> int:
+    from youju.lists.service import parse_lists
+
+    with session_factory()() as session:
+        report = parse_lists(session, since=args.since)
+    print(
+        f"名单文件 {report.documents}，成功解析 {report.parsed_documents}，"
+        f"企业/机构条目 {report.names}，本次下载附件 {report.attachments_fetched}/200，"
+        f"待下次处理附件 {report.attachments_deferred}"
+    )
+    print("各类别条目数：" + ("，".join(f"{k} {v}" for k, v in report.categories.items()) or "无"))
+    print("失败原因分布：" + ("，".join(f"{k} {v}" for k, v in report.failures.items()) or "无"))
+    print("抽样（最多10条）：")
+    for sample in report.samples:
+        print(f"  {sample.title}｜{sample.name}｜{sample.status}｜{sample.url}")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -187,6 +205,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
+
+    p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
+    p.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=date(2026, 7, 1),
+        help="发布日期起点，默认2026-07-01",
+    )
+    p.set_defaults(func=_cmd_parse_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
 
