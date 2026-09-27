@@ -76,11 +76,14 @@ def test_names_codes_and_title_rules() -> None:
     assert valid_org_name("洞口县华宇机械制造厂（普通合伙）")
     assert normalize_credit_code("９１３１０１１７５８８６５７２５６ｃ") == "91310117588657256C"
     assert normalize_credit_code("123456789012345679") is None
-    assert classify_title("关于2026年第4批拟入库科技型中小企业名单的公示").status == "公示"
+    assert classify_title("关于2026年第4批拟入库科技型中小企业名单的公示").is_list
     info = classify_title("关于公布2026年第4批专精特新中小企业名单的公告")
-    assert (info.category, info.status, info.batch) == ("专精特新中小企业", "正式公布", "第4批")
+    assert (info.category, info.batch) == ("专精特新中小企业", "第4批")
     assert classify_title("第六批专精特新“小巨人”企业名单公示").category == '专精特新"小巨人"'
-    assert classify_title("高新技术企业名单").status == "未确定"
+    assert classify_title("高新技术企业名单").is_list
+    # 与全站分类一致：招聘、职称等无关公示不解析
+    assert classify_title("关于2025年度工程系列科技管理专业高级职称评审结果的公示").is_list is False
+    assert classify_title("国家统计局所属单位2026年度公开招聘第三批拟聘用人员公示").is_list is False
     assert classify_title("关于2026年高新技术企业认定结果的通知").is_list
     assert classify_title("关于开展高新技术企业认定申报工作的通知").is_list is False
     assert classify_title("关于高企认定评审专家培训的预通知").is_list is False
@@ -171,7 +174,6 @@ def test_parse_lists_backfills_detail_and_is_idempotent(session) -> None:
             name="老茶厂、铸铁锅等设备和档案资料。",
             normalized_name="老茶厂、铸铁锅等设备和档案资料。",
             category="其他",
-            status="未确定",
         )
     )
     session.commit()

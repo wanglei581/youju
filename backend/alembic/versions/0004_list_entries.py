@@ -48,7 +48,6 @@ def upgrade() -> None:
         sa.Column("credit_code", sa.String(18)),
         sa.Column("sequence", sa.String(32)),
         sa.Column("category", sa.String(32), nullable=False),
-        sa.Column("status", sa.String(16), nullable=False),
         sa.Column("batch", sa.String(32)),
         sa.Column("region", sa.String(64)),
         sa.UniqueConstraint(

@@ -12,6 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from youju.api.v1 import router as v1_router
+from youju.classify import list_status
 from youju.config import get_settings
 from youju.db import get_session
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
@@ -121,7 +122,9 @@ class ListMatchOut(BaseModel):
     credit_code: str | None
     category: str
     batch: str | None
-    status: str
+    status: str | None = Field(
+        description="名单状态，按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+    )
     publish_date: date | None
     issuer: str | None
     original_url: str
@@ -160,7 +163,7 @@ def _list_match(entry: ListEntry, doc: Document, detail: DocumentDetail | None) 
         credit_code=entry.credit_code,
         category=entry.category,
         batch=entry.batch,
-        status=entry.status,
+        status=list_status(doc.title),
         publish_date=(detail.publish_date if detail else None) or doc.publish_date,
         issuer=detail.issuer if detail else None,
         original_url=doc.url,

@@ -119,7 +119,6 @@ def test_list_search_separates_exact_and_similar(client, seeded, session) -> Non
                 credit_code="91310117588657256C",
                 sequence="1",
                 category="专精特新中小企业",
-                status="公示",
                 batch="第4批",
                 region="济南市",
             ),
@@ -130,7 +129,6 @@ def test_list_search_separates_exact_and_similar(client, seeded, session) -> Non
                 normalized_name="山东星河科技(青岛)有限公司",
                 sequence="2",
                 category="专精特新中小企业",
-                status="公示",
                 batch="第4批",
             ),
         ]
@@ -159,7 +157,6 @@ def test_list_search_separates_exact_and_similar(client, seeded, session) -> Non
                 name="星河有限公司",
                 normalized_name="星河有限公司",
                 category="其他",
-                status="正式公布",
             ),
             ListEntry(
                 document_id=doc.id,
@@ -167,7 +164,6 @@ def test_list_search_separates_exact_and_similar(client, seeded, session) -> Non
                 name="星河（青岛）有限公司",
                 normalized_name="星河(青岛)有限公司",
                 category="其他",
-                status="正式公布",
             ),
         ]
     )

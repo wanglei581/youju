@@ -215,7 +215,7 @@ class ListParse(Base):
 
 
 class ListEntry(Base):
-    """只存已从政府原文的企业或机构名称列抽取的字段。"""
+    """只存已从政府原文的企业或机构名称列抽取的字段。名单状态按文件标题实时算（D-018），不存。"""
 
     __tablename__ = "list_entries"
     __table_args__ = (
@@ -240,7 +240,6 @@ class ListEntry(Base):
     credit_code: Mapped[str | None] = mapped_column(String(18))
     sequence: Mapped[str | None] = mapped_column(String(32))
     category: Mapped[str] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(16))
     batch: Mapped[str | None] = mapped_column(String(32))
     region: Mapped[str | None] = mapped_column(String(64))
 

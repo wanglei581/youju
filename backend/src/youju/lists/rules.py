@@ -4,6 +4,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from youju.classify import doc_kind
 from youju.crawler.detail import redact_sensitive
 
 _ORG_TERMS = (
@@ -65,9 +66,11 @@ _LEGAL_END = re.compile(r"\((?:有限责任公司|股份有限公司|有限公�
 
 @dataclass(frozen=True)
 class ListClassification:
+    """要不要解析这份名单、类别和批次。名单状态不在这里判断：统一按 D-018 用
+    youju.classify.list_status 照录标题用词，查询时实时算，不随条目存储。"""
+
     is_list: bool
     category: str = "未确定"
-    status: str = "未确定"
     batch: str | None = None
 
 
@@ -117,6 +120,9 @@ def normalize_credit_code(value: str) -> str | None:
 
 
 def classify_title(title: str) -> ListClassification:
+    # 先与全站分类一致：不是"名单"的（含招聘、职称、采购等无关公示）不解析
+    if doc_kind(title) != "名单":
+        return ListClassification(False)
     value = normalize_name(title)
     if any(term in value for term in _NEGATIVE_TITLE):
         return ListClassification(False)
@@ -148,16 +154,9 @@ def classify_title(title: str) -> ListClassification:
         category = "科技型中小企业"
     elif "创新型中小企业" in value:
         category = "创新型中小企业"
-    status = (
-        "公示"
-        if "公示" in value or "拟" in value
-        else "正式公布"
-        if any(term in value for term in ("公告", "公布", "认定", "入库", "备案", "通过"))
-        else "未确定"
-    )
     match = _BATCH.search(value)
     batch = f"第{match.group(1) or match.group(2)}批" if match else None
-    return ListClassification(True, category, status, batch)
+    return ListClassification(True, category, batch)
 
 
 def candidate_key(value: str) -> str:

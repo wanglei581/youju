@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from youju.classify import list_status
 from youju.config import get_settings
 from youju.crawler.detail_service import _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
@@ -26,7 +27,7 @@ _PROTECTED = re.compile(r"验证码|人机验证|安全验证|访问过于频繁
 class ListSample:
     title: str
     name: str
-    status: str
+    status: str | None
     url: str
 
 
@@ -88,7 +89,6 @@ def _save(
                 credit_code=entry.credit_code,
                 sequence=entry.sequence,
                 category=classification.category,
-                status=classification.status,
                 batch=classification.batch,
                 region=entry.region,
             )
@@ -244,7 +244,9 @@ def _report(
     for entry, doc in samples:
         if doc.title not in sampled_titles:
             sampled_titles.add(doc.title)
-            distinct_samples.append(ListSample(doc.title, entry.name, entry.status, doc.url))
+            distinct_samples.append(
+                ListSample(doc.title, entry.name, list_status(doc.title), doc.url)
+            )
         if len(distinct_samples) == 10:
             break
     return ListReport(
