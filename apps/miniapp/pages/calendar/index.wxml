@@ -1,1 +1,52 @@
-<view class="card" style="padding: 40rpx 32rpx">开发中</view>
+<notice-bar />
+<view class="seg" role="tablist">
+  <view wx:for="{{ranges}}" wx:key="key" class="seg-item {{range === item.key && !sel ? 'seg-item--on' : ''}}" data-key="{{item.key}}" bindtap="pickRange">{{item.label}} {{counts[item.key]}}</view>
+</view>
+<view class="filters">
+  <text>全部地区 ▾</text><text>全部行业 ▾</text>
+  <text class="today">今天 {{today}}</text>
+</view>
+
+<view class="card month">
+  <view class="month-head"><text class="month-title">2026年10月</text><text class="weak month-hint">蓝点：有申报截止，点日期只看当天</text></view>
+  <view class="week"><text wx:for="{{['一','二','三','四','五','六','日']}}" wx:key="*this">{{item}}</text></view>
+  <view class="grid">
+    <view wx:for="{{cells}}" wx:key="index" class="cell {{item.due ? 'cell--due' : ''}} {{item.day === sel ? 'cell--sel' : ''}}"
+          data-day="{{item.day}}" data-due="{{item.due}}" bindtap="pickDay">
+      <block wx:if="{{!item.blank}}">
+        <text class="num {{item.weekend && !item.due ? 'num--weekend' : ''}}">{{item.day}}</text>
+        <view class="dot {{item.due ? 'dot--on' : ''}}"></view>
+      </block>
+    </view>
+  </view>
+</view>
+
+<view wx:if="{{sel}}" class="sel-row">
+  <text>只看 <text class="b">{{selLabel}}</text> 截止的事项</text>
+  <text class="link" bindtap="clearSel">取消选择</text>
+</view>
+
+<view wx:if="{{!shown.length}}" class="card empty">
+  <view class="empty-title">这个时间段没有截止的申报事项</view>
+  <view class="muted empty-sub">最近的截止在 10月16日，还有 19 天</view>
+</view>
+
+<view wx:for="{{shown}}" wx:key="id" class="card item">
+  <view class="item-top">
+    <text class="item-date">{{item.date}}</text>
+    <text class="muted item-week">{{item.week}} {{item.time}}</text>
+    <text class="pill pill--{{item.tone || 'normal'}}">剩 {{item.days}} 天</text>
+  </view>
+  <view class="item-body">
+    <view class="item-main" data-id="{{item.id}}" bindtap="open">
+      <view class="item-tags"><text class="tag tag--apply">{{item.kind}}</text><text class="muted small">{{item.region}}</text></view>
+      <view class="item-title">{{item.title}}</view>
+      <view class="muted item-what">{{item.what}}</view>
+    </view>
+    <view class="bell {{reminded[item.id] ? 'bell--on' : ''}}" data-id="{{item.id}}" bindtap="toggleRemind" aria-role="button" aria-label="设截止提醒">
+      <t-icon name="notification" size="34rpx" />
+    </view>
+  </view>
+</view>
+<view class="foot">截止时间逐条取自原文。一个通知有多个截止时间时，按申报单位的截止时间排列，其余写在下方。申报请在主管部门的系统办理，有据不提供填报入口。</view>
+<view style="height: 60rpx"></view>

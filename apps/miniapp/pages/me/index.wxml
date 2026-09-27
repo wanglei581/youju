@@ -1,1 +1,46 @@
-<view class="card" style="padding: 40rpx 32rpx">开发中</view>
+<view class="top" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav" style="height: {{navHeight}}px"><text class="nav-title">我的</text></view>
+  <notice-bar onBlue="{{true}}" />
+  <view class="profile">
+    <view class="avatar"><t-icon name="user" size="56rpx" color="#FFFFFF" /></view>
+    <view class="profile-main">
+      <view class="profile-name">未登录</view>
+      <view class="profile-sub">记录暂存在本机，登录后可同步到其他设备</view>
+    </view>
+    <view class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
+  </view>
+  <view class="agree">
+    <view class="check-wrap" bindtap="toggleAgree" aria-role="checkbox" aria-checked="{{agreed}}">
+      <view class="box {{agreed ? 'box--on' : ''}}"><t-icon wx:if="{{agreed}}" name="check" size="22rpx" color="#2A5CE0" /></view>
+      <text>我已阅读并同意</text>
+    </view>
+    <text class="agree-link" data-type="user" bindtap="openAgreement">《用户协议》</text><text>和</text><text class="agree-link" data-type="privacy" bindtap="openAgreement">《隐私保护指引》</text>
+    <view wx:if="{{nudge}}" class="nudge">请先勾选同意《用户协议》和《隐私保护指引》</view>
+  </view>
+</view>
+
+<view class="grid">
+  <view class="grid-item" bindtap="todo"><view class="gi gi--orange"><t-icon name="star" size="40rpx" color="#F57B21" /></view><text>收藏</text></view>
+  <view class="grid-item" data-url="/pages/files/index" data-tab="1" bindtap="go"><view class="gi gi--green"><t-icon name="download" size="40rpx" color="#13A677" /></view><text>导出记录</text></view>
+  <view class="grid-item" data-url="/pages/calendar/index" bindtap="go"><view class="gi gi--blue"><t-icon name="notification" size="40rpx" color="#2A5CE0" /></view><text>我的提醒</text></view>
+  <view class="grid-item" bindtap="todo"><view class="gi gi--red"><t-icon name="flag" size="40rpx" color="#E5484D" /></view><text>纠错</text></view>
+</view>
+
+<view class="card">
+  <view class="section-title">数据从哪里来</view>
+  <view class="nums">
+    <view class="num"><view class="num-v">72</view><view class="muted num-k">政府网站栏目</view></view>
+    <view class="num num--line"><view class="num-v">28</view><view class="muted num-k">个省 + 国家部委</view></view>
+    <view class="num num--line"><view class="num-v">1–4</view><view class="muted num-k">次 / 天检查</view></view>
+  </view>
+  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过：广西、甘肃暂未覆盖；浙江正在接入。</view>
+</view>
+
+<view class="card">
+  <view class="row" bindtap="todo"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view class="row" bindtap="todo"><t-icon name="setting-1" size="40rpx" color="#4E5969" /><text class="row-text">设置</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view class="row row--last" bindtap="todo"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+</view>
+<view class="foot">有据 · 第三方整理 · 每条都有出处</view>
+<view class="tab-page-bottom"></view>

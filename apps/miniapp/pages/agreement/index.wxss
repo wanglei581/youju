@@ -1,1 +1,3 @@
-
+.doc { padding: 32rpx; }
+.doc-title { font-size: 34rpx; font-weight: 600; }
+.doc-text { margin-top: 16rpx; font-size: 28rpx; line-height: 1.7; }

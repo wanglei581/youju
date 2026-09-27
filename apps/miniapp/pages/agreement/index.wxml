@@ -1,1 +1,4 @@
-<view class="card" style="padding: 40rpx 32rpx">开发中</view>
+<view class="card doc">
+  <view class="doc-title">{{type === 'privacy' ? '《隐私保护指引》' : '《用户协议》'}}</view>
+  <view class="muted doc-text">正式文本正在定稿（Sprint 3 #22），上线前会在这里完整展示。</view>
+</view>
