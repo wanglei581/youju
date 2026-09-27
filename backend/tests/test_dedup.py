@@ -120,3 +120,17 @@ def test_auto_split_can_merge_again_but_manual_undo_sticks(session) -> None:
     reconcile_documents(session)
     session.commit()
     assert session.query(DocumentMerge).one().active is False
+
+
+def test_short_bodies_are_compared_too() -> None:
+    from youju.dedup import _signature
+
+    a = SimpleNamespace(
+        doc_number=None, body_text="请于10月9日前报送材料，逾期不予受理。联系电话见附件。"
+    )
+    b = SimpleNamespace(
+        doc_number=None, body_text="请于11月1日前报送材料，逾期不予受理。联系电话见附件。"
+    )
+    empty = SimpleNamespace(doc_number=None, body_text="")
+    assert _signature(a)[1] != _signature(b)[1]
+    assert _signature(empty)[1] is None

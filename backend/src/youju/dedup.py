@@ -29,7 +29,8 @@ def _signature(detail: DocumentDetail | None) -> tuple[str | None, str | None]:
         return None, None
     number = re.sub(r"\s+", "", detail.doc_number) if detail.doc_number else None
     body = re.sub(r"\s+", "", detail.body_text or "")
-    digest = hashlib.sha256(body.encode()).hexdigest() if len(body) >= 100 else None
+    # 有正文就比较（解析时不足 30 字的正文已清空）；没有正文的不参与比较
+    digest = hashlib.sha256(body.encode()).hexdigest() if body else None
     return number or None, digest
 
 
