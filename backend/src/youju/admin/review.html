@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>截止日期核对台 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --orange: #D9640F; --o-tint: #FFF3E8; --green: #0E8A63; --g-tint: #E8F7F1; --red: #E5484D; --r-tint: #FFECEC;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 880px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  .count { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .danger { color: var(--red); border-color: #F5C2C4; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .hint { color: var(--t2); font-size: 14px; margin: 0 0 12px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: opacity .3s; }
+  .card.done { opacity: .35; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--t2); }
+  .tag { padding: 0 6px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+  .k-apply { background: var(--brand-tint); color: var(--brand); }
+  .k-recommend { background: var(--o-tint); color: var(--orange); }
+  .k-material { background: var(--g-tint); color: var(--green); }
+  .conf { font-size: 12px; color: var(--t3); }
+  .title { display: block; margin: 8px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
+  .title:hover { color: var(--brand); }
+  .evidence { margin: 10px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
+  mark { background: #FFF1B8; color: inherit; padding: 0 2px; }
+  mark.unsure { background: transparent; outline: 1.5px dashed #D9640F; outline-offset: 1px; }
+  .evidence .miss { margin-top: 6px; font-size: 12px; color: #D9640F; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .when { font-size: 20px; font-weight: 700; margin-right: 8px; }
+  .msg { font-size: 13px; color: var(--red); }
+  .ok { color: var(--green); }
+  .empty { text-align: center; color: var(--t2); padding: 48px 0; }
+  .more { display: block; margin: 8px auto 32px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>截止日期核对台</h1>
+    <span class="count" id="count"></span>
+    <div class="auth">
+      <input id="reviewer" placeholder="核对人" size="8" aria-label="核对人">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button class="primary" id="load">载入</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
+  <div id="list"></div>
+  <button class="more" id="more" hidden>再载入 50 条</button>
+</main>
+<script>
+(function () {
+  const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
+  const $ = (id) => document.getElementById(id);
+  let pending = 0;
+  let cursor = null; // 已载入的最小候选编号（翻页游标）
+  const shown = new Set(); // 已显示的候选编号，去重
+
+  // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
+  try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; } catch (e) { $('reviewer').value = '创始人'; }
+
+  function headers() {
+    return { 'Content-Type': 'application/json', 'X-Admin-Token': $('token').value.trim() };
+  }
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  // 证据句里的日期写法："2026年10月09日""10月9日"（年份可省），"2026-10-09""2026/10/9""2026.10.9"（必须带年份：
+  // 不带年份的"8-9""3.5"分不清是日期、数字区间还是小数），以及同月区间"10月8-9日""2026年10月8—9日"
+  const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)|(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})(\s*[-—–~～]\s*)(\d{1,2})\s*日/g;
+  // "10月8日至9日""10月8日、9日""10月8日（星期四）至9日""10月8日起至9日"这类同月区间的末日
+  const RANGE_END_RE = /^(\s*(?:[（(](?:星期|周)[一二三四五六日天][）)])?\s*起?\s*(?:至|到|—|–|~|～|-|、)\s*)((\d{1,2})\s*日)/;
+
+  // 证据句里标出候选日期出现的每一处，便于对照（只用 textContent 拼接，不插入 HTML）：
+  // 原文写了年份且年月日都与候选相同，标黄；原文这里没写年份（年份是抽取时推定的），用虚线框，
+  // 提示审核人确认年份；写了别的年份不标。一处都没找到时明确提示，免得误以为原文没有这个日期。
+  // 页面不推断年份，也不判断哪一处是截止日期
+  function evidenceNode(text, date) {
+    const box = el('div', 'evidence');
+    const [y, m, d] = date.split('-').map(Number);
+    // 全角数字和符号换成半角再匹配（逐字一一对应，位置不变），显示仍用原文
+    const plain = text.replace(/[０-９－／．～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    const hits = [];
+    for (const found of plain.matchAll(DATE_RE)) {
+      if (found.index > 0 && /\d/.test(plain[found.index - 1])) continue;
+      const written = found[1] || found[4] || found[7];
+      if (written && Number(written) !== y) continue;
+      const unsure = !written;
+      const end = found.index + found[0].length;
+      if (found[8]) {
+        // 同月区间"10月8-9日"：起始日标"10月8"，末日标"9日"；末日不大于起始日的是跨月，末日不标
+        if (Number(found[8]) !== m) continue;
+        const startEnd = found.index + found[0].indexOf(found[10], found[0].indexOf('月')); // 起始日数字之后
+        const dayAt = startEnd + found[10].length;
+        if (Number(found[9]) === d) hits.push({ start: found.index, end: startEnd, unsure });
+        if (Number(found[11]) === d && Number(found[11]) > Number(found[9])) hits.push({ start: dayAt, end, unsure });
+        continue;
+      }
+      const month = Number(found[2] || found[5]);
+      const day = Number(found[3] || found[6]);
+      if (month === m && day === d) hits.push({ start: found.index, end, unsure });
+      // 区间末日与起始日同年同月；末日不大于起始日的是跨月（如"10月31日至1日"），不标
+      const tail = found[2] ? RANGE_END_RE.exec(plain.slice(end)) : null;
+      if (tail && month === m && Number(tail[3]) === d && d > day) {
+        const dayAt = end + tail[1].length;
+        hits.push({ start: dayAt, end: dayAt + tail[2].length, unsure });
+      }
+    }
+    if (!hits.length) {
+      box.append(text, el('div', 'miss', '句子里没找到与候选完全一致的写法（可能是别的写法或别的年份），请逐字核对'));
+      return box;
+    }
+    let at = 0;
+    for (const hit of hits) {
+      const mark = el('mark', hit.unsure ? 'unsure' : '', text.slice(hit.start, hit.end));
+      if (hit.unsure) mark.title = '原文这里没写年份，请确认年份';
+      box.append(text.slice(at, hit.start), mark);
+      at = hit.end;
+    }
+    box.append(text.slice(at));
+    return box;
+  }
+
+  function setCount() {
+    $('count').textContent = `待核对 ${pending} 条`;
+  }
+
+  async function refreshCount() {
+    try {
+      const res = await fetch('/api/admin/deadlines/count', { headers: headers() });
+      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+    } catch (e) { /* 计数刷新失败不影响核对 */ }
+  }
+
+  async function review(item, card, action, msg) {
+    const reviewer = $('reviewer').value.trim();
+    if (!reviewer) { msg.textContent = '请先填写核对人'; return; }
+    const body = { reviewed_by: reviewer };
+    if (action === 'edit') {
+      const d = card.querySelector('.d').value;
+      if (!d) { msg.textContent = '请先填写日期'; return; }
+      body.date = d;
+      // 时间清空表示原文只写到日期：明确传 null，后台就不会沿用候选时间
+      body.time = card.querySelector('.t').value || null;
+    }
+    const url = `/api/admin/deadlines/${item.id}/${action === 'reject' ? 'reject' : 'approve'}`;
+    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+      if (res.status === 409) {
+        card.classList.add('done');
+        msg.className = 'msg';
+        msg.textContent = '这条已被其他人核对过，已跳过';
+        refreshCount();
+        return;
+      }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
+      card.classList.add('done');
+      msg.className = 'msg ok';
+      msg.textContent = action === 'reject' ? '已驳回' : '已通过';
+      pending = Math.max(0, pending - 1);
+      setCount();
+      try { localStorage.setItem('youjuReviewer', reviewer); } catch (e) {}
+    } catch (err) {
+      msg.className = 'msg';
+      msg.textContent = err.message;
+      card.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  function render(item) {
+    const card = el('section', 'card');
+    const meta = el('div', 'meta');
+    meta.append(el('span', `tag ${KIND_CLASS[item.kind] || ''}`, item.kind), el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), el('span', 'conf', `置信度：${item.confidence}`));
+    const title = el('a', 'title', item.title);
+    title.href = item.url;
+    title.target = '_blank';
+    title.rel = 'noopener noreferrer';
+    const row = el('div', 'row');
+    const when = el('span', 'when', `${item.candidate_date}${item.candidate_time ? ` ${item.candidate_time}` : ''}`);
+    const approve = el('button', 'primary', '通过');
+    const reject = el('button', 'danger', '驳回');
+    const d = el('input', 'd'); d.type = 'date'; d.value = item.candidate_date; d.setAttribute('aria-label', '改为日期');
+    const t = el('input', 't'); t.type = 'time'; t.value = item.candidate_time || ''; t.setAttribute('aria-label', '改为时间');
+    const edit = el('button', '', '改日期后通过');
+    const msg = el('span', 'msg');
+    row.append(when, approve, reject, d, t, edit, msg);
+    approve.onclick = () => review(item, card, 'approve', msg);
+    reject.onclick = () => review(item, card, 'reject', msg);
+    edit.onclick = () => review(item, card, 'edit', msg);
+    card.append(meta, title, evidenceNode(item.evidence, item.candidate_date), row);
+    return card;
+  }
+
+  async function load(reset) {
+    if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
+    // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
+    const after = cursor ? `&before_id=${cursor}` : '';
+    try {
+      const [countRes, res] = await Promise.all([
+        fetch('/api/admin/deadlines/count', { headers: headers() }),
+        fetch(`/api/admin/deadlines?limit=50${after}`, { headers: headers() }),
+      ]);
+      if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
+      if (!res.ok) throw new Error(`载入失败（${res.status}）`);
+      pending = (await countRes.json()).pending;
+      setCount();
+      const items = await res.json();
+      if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
+      items.filter((item) => !shown.has(item.id)).forEach((item) => {
+        shown.add(item.id);
+        $('list').append(render(item));
+      });
+      if (items.length) cursor = Math.min(...items.map((item) => item.id));
+      $('more').hidden = items.length < 50;
+    } catch (err) {
+      $('list').textContent = '';
+      $('list').append(el('div', 'empty', err.message));
+    }
+  }
+
+  $('load').onclick = () => load(true);
+  $('more').onclick = () => load(false);
+})();
+</script>
+</body>
+</html>

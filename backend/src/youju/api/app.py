@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from hmac import compare_digest
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -90,6 +92,8 @@ class PendingDeadlineOut(BaseModel):
     document_id: int
     title: str
     url: str
+    publish_date: date | None
+    source: str
     kind: str
     candidate_date: date
     candidate_time: str | None
@@ -356,34 +360,56 @@ def _require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> Non
 AdminDep = Annotated[None, Depends(_require_admin)]
 
 
+@app.get("/api/admin/deadlines/count")
+def pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    total = session.scalar(
+        select(func.count())
+        .select_from(DocumentDeadline)
+        .where(DocumentDeadline.status == "pending")
+    )
+    return {"pending": total or 0}
+
+
+@app.get("/admin/review", response_class=HTMLResponse, include_in_schema=False)
+def review_console() -> str:
+    """截止日期核对台：静态页面，调用上面的管理接口（口令由使用者在页面里输入）。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "review.html").read_text(
+        encoding="utf-8"
+    )
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
     _admin: AdminDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
 ) -> list[PendingDeadlineOut]:
-    rows = session.execute(
-        select(DocumentDeadline, Document)
-        .join(Document)
+    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。"""
+    stmt = (
+        select(DocumentDeadline, Document, Source)
+        .join(Document, DocumentDeadline.document_id == Document.id)
+        .join(Source, Document.source_id == Source.id)
         .where(DocumentDeadline.status == "pending")
-        .order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id)
-        .limit(limit)
-        .offset(offset)
-    ).all()
+    )
+    if before_id is not None:
+        stmt = stmt.where(DocumentDeadline.id < before_id)
+    rows = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
     return [
         PendingDeadlineOut(
             id=d.id,
             document_id=doc.id,
             title=doc.title,
             url=doc.url,
+            publish_date=doc.publish_date,
+            source=src.dept_full_name,
             kind=d.kind,
             candidate_date=d.candidate_date,
             candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
             evidence=d.evidence,
             confidence=d.confidence,
         )
-        for d, doc in rows
+        for d, doc, src in rows
     ]
 
 
@@ -397,6 +423,7 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         raise HTTPException(status_code=409, detail="候选已核对")
     if status == "rejected" and (body.new_date is not None or body.new_time is not None):
         raise HTTPException(status_code=422, detail="驳回时不能修改日期")
+    # 区分"没传时间"（沿用候选时间）和"明确清空时间"（time 传 null：原文只写到日期）
     if body.new_time is not None:
         from datetime import time
 
@@ -404,6 +431,8 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
             parsed_time = time.fromisoformat(body.new_time)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="时间格式应为 HH:MM") from exc
+    elif "new_time" in body.model_fields_set:
+        parsed_time = None
     else:
         parsed_time = row.candidate_time
     row.status = status

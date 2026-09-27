@@ -286,10 +286,19 @@ def test_deadline_admin_permission_and_review_gate(client, seeded, session, monk
     assert client.get(admin_url, headers={"X-Admin-Token": "wrong"}).status_code == 401
     headers = {"X-Admin-Token": "secret"}
     pending = client.get(admin_url, headers=headers).json()
-    assert len(pending) == 2
-    assert len(client.get(admin_url, headers=headers, params={"limit": 1, "offset": 1}).json()) == 1
-    assert pending[0]["evidence"] == "企业申报截止10月1日"
-    assert pending[0]["url"] == doc.url
+    # 按候选编号从新到旧
+    assert [p["id"] for p in pending] == [rows[1].id, rows[0].id]
+    assert pending[1]["evidence"] == "企业申报截止10月1日"
+    assert pending[1]["url"] == doc.url
+    # 翻页用上一页最小的编号作 before_id；别人先核对了第一页的条目，第二页也不漏
+    first = client.get(admin_url, headers=headers, params={"limit": 1}).json()
+    assert [p["id"] for p in first] == [rows[1].id]
+    rows[1].status = "rejected"
+    session.commit()
+    second = client.get(admin_url, headers=headers, params={"limit": 1, "before_id": rows[1].id})
+    assert [p["id"] for p in second.json()] == [rows[0].id]
+    rows[1].status = "pending"
+    session.commit()
     approve = f"{admin_url}/{rows[0].id}/approve"
     assert client.post(approve, json={"reviewed_by": "审阅人"}).status_code == 401
     assert (
@@ -340,3 +349,61 @@ def test_extraction_idempotent_after_review(session, seeded) -> None:
     assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
     session.refresh(row)
     assert row.approved_date == date(2026, 10, 5)
+
+
+def test_review_console_page_and_pending_count(client, seeded, session, monkeypatch) -> None:
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="console",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间为10月18日",
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    # 核对台页面本身不含口令，任何人都能打开；数据接口要口令
+    page = client.get("/admin/review")
+    assert page.status_code == 200 and "截止日期核对台" in page.text
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    assert client.get("/api/admin/deadlines/count").status_code == 401
+    headers = {"X-Admin-Token": "secret"}
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
+    item = client.get("/api/admin/deadlines", headers=headers).json()[0]
+    assert item["source"] == "北京市科学技术委员会" and item["publish_date"] == "2026-09-20"
+
+
+def test_review_can_clear_time_explicitly(client, seeded, session, monkeypatch) -> None:
+    """改日期时把时间清空（time 传 null）：核定结果不能沿用候选时间。"""
+    from datetime import time
+
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    row = DocumentDeadline(
+        document_id=doc.id,
+        fingerprint="clear-time",
+        kind="企业申报截止",
+        candidate_date=date(2026, 10, 18),
+        candidate_time=time(17, 0),
+        evidence="10月18日17:00前",
+        confidence="高",
+        status="pending",
+    )
+    session.add(row)
+    session.commit()
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    body = {"reviewed_by": "测试", "date": "2026-10-18", "time": None}
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers
+        ).status_code
+        == 200
+    )
+    session.refresh(row)
+    assert row.approved_time is None
+    # 已核对的再提交：409
+    again = client.post(f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers)
+    assert again.status_code == 409
