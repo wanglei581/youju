@@ -7,6 +7,11 @@
 set -e
 cd /app/backend
 if [ "${YOUJU_ROLE:-api}" = "admin" ]; then
+  # 核对台开公网，口令至少 32 位随机字符，否则不启动
+  if [ "${#YOUJU_ADMIN_TOKEN}" -lt 32 ]; then
+    echo "YOUJU_ADMIN_TOKEN 至少 32 位，请在云托管控制台设置后重新发布" >&2
+    exit 1
+  fi
   uv run --no-sync youju db-upgrade
   # cron 看不到容器的环境变量，先写进文件（只有容器内 root 可读），任务脚本里再读
   umask 077

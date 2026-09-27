@@ -548,3 +548,32 @@ def test_pending_duplicates_in_merge_group_are_shown_and_reviewed_once(
     for row in rows:
         session.refresh(row)
         assert row.status == "approved" and row.approved_date == date(2026, 10, 18)
+
+
+def test_role_guard_and_admin_throttle(client, seeded, monkeypatch, caplog) -> None:
+    """部署角色：api 服务不开放核对台，admin 服务不开放小程序接口；管理口令连续输错限流并留痕。"""
+    import logging
+
+    from youju.api import app as app_module
+
+    settings = {"role": "api", "admin_token": "t" * 32}
+    monkeypatch.setattr(app_module, "get_settings", lambda: SimpleNamespace(**settings))
+    assert client.get("/admin/review").status_code == 404
+    assert client.get("/api/admin/deadlines/count").status_code == 404
+    assert client.get("/api/v1/home").status_code == 200
+    settings["role"] = "admin"
+    assert client.get("/api/v1/home").status_code == 404
+    assert client.get("/admin/review").status_code == 200
+    settings["role"] = "all"
+    app_module._admin_fails.clear()
+    wrong = {"X-Admin-Token": "wrong", "X-Original-Forwarded-For": "203.0.113.9"}
+    with caplog.at_level(logging.WARNING, logger="youju.audit"):
+        for _ in range(5):
+            assert client.get("/api/admin/deadlines/count", headers=wrong).status_code == 401
+    assert "admin_auth_failed" in caplog.text
+    # 同一来源第 6 次：口令对也先锁住
+    right = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "203.0.113.9"}
+    assert client.get("/api/admin/deadlines/count", headers=right).status_code == 429
+    other = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "198.51.100.7"}
+    assert client.get("/api/admin/deadlines/count", headers=other).status_code == 200
+    app_module._admin_fails.clear()

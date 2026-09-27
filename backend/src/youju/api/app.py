@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import time as clock
+from collections import defaultdict, deque
 from datetime import UTC, date, datetime, timedelta
 from hmac import compare_digest
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
@@ -26,6 +30,20 @@ from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, 
 app = FastAPI(title="有据 API", version="0.1.0")
 app.include_router(v1_router)
 app.include_router(exports_router)
+
+audit_log = logging.getLogger("youju.audit")
+
+
+@app.middleware("http")
+async def _role_guard(request: Request, call_next):
+    """按部署角色开放路径：api 服务不开放核对台和管理接口，admin 服务不开放小程序接口（见 #32）。"""
+    role = getattr(get_settings(), "role", "all")
+    path = request.url.path
+    admin_path = path.startswith(("/admin", "/api/admin"))
+    if (role == "api" and admin_path) or (role == "admin" and path.startswith("/api/v1")):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return await call_next(request)
+
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -411,10 +429,45 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
     )
 
 
-def _require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> None:
+# 管理口令输错限流（admin 服务固定 1 个实例，计数放在内存里）：同一来源 10 分钟内错 5 次锁定；
+# 来源 IP 可能被伪造，另设全局上限：10 分钟内共错 30 次，全部锁定 10 分钟
+_FAIL_WINDOW = 600
+_FAILS_PER_SOURCE = 5
+_FAILS_TOTAL = 30
+_admin_fails: dict[str, deque[float]] = defaultdict(deque)
+
+
+def client_ip(request: Request) -> str:
+    """客户端地址：云托管把它放在 X-Original-Forwarded-For。"""
+    forwarded = request.headers.get("x-original-forwarded-for") or ""
+    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+
+
+def _recent(entries: deque[float], now: float) -> deque[float]:
+    while entries and now - entries[0] > _FAIL_WINDOW:
+        entries.popleft()
+    return entries
+
+
+def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
+    now = clock.monotonic()
+    ip = client_ip(request)
+    mine = _recent(_admin_fails[ip], now)
+    everyone = _recent(_admin_fails["*"], now)
+    if len(mine) >= _FAILS_PER_SOURCE or len(everyone) >= _FAILS_TOTAL:
+        raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
     expected = get_settings().admin_token
     if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
+        mine.append(now)
+        everyone.append(now)
+        audit_log.warning(json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False))
         raise HTTPException(status_code=401, detail="管理接口未授权")
+
+
+def _audit(request: Request, action: str, **fields: object) -> None:
+    """核对台操作留痕（操作人、来源、时间），打到日志，按网络日志留存要求保存（见部署说明）。"""
+    record = {"event": "admin", "action": action, "ip": client_ip(request), **fields}
+    audit_log.info(json.dumps(record, ensure_ascii=False, default=str))
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]
@@ -565,16 +618,27 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
 
 @app.post("/api/admin/deadlines/{deadline_id}/approve")
 def approve_deadline(
-    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep
+    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep, request: Request
 ) -> dict[str, str]:
-    return _review(deadline_id, body, session, "approved")
+    result = _review(deadline_id, body, session, "approved")
+    _audit(
+        request,
+        "approve",
+        deadline_id=deadline_id,
+        reviewer=body.reviewed_by,
+        date=body.new_date,
+        time=body.new_time,
+    )
+    return result
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/reject")
 def reject_deadline(
-    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep
+    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep, request: Request
 ) -> dict[str, str]:
-    return _review(deadline_id, body, session, "rejected")
+    result = _review(deadline_id, body, session, "rejected")
+    _audit(request, "reject", deadline_id=deadline_id, reviewer=body.reviewed_by)
+    return result
 
 
 @app.get("/api/admin/deadlines/approved", response_model=list[ReviewedDeadlineOut])
@@ -651,7 +715,7 @@ def approved_deadlines(
 
 @app.post("/api/admin/deadlines/{deadline_id}/change")
 def change_deadline(
-    deadline_id: int, body: ChangeIn, session: SessionDep, _admin: AdminDep
+    deadline_id: int, body: ChangeIn, session: SessionDep, _admin: AdminDep, request: Request
 ) -> dict[str, str]:
     """原通知已通过的截止标为已变更（延期、调整、撤销），可关联发布变更的新通知。"""
     if body.reason not in CHANGE_REASONS:
@@ -687,6 +751,14 @@ def change_deadline(
         item.changed_by = body.reviewed_by
         item.changed_at = now
     session.commit()
+    _audit(
+        request,
+        "change",
+        deadline_id=deadline_id,
+        reviewer=body.reviewed_by,
+        reason=body.reason,
+        new_document_id=body.new_document_id,
+    )
     return {"status": "changed"}
 
 
@@ -723,7 +795,7 @@ def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadlin
 
 @app.post("/api/admin/deadlines/{deadline_id}/unchange")
 def unchange_deadline(
-    deadline_id: int, body: UnchangeIn, session: SessionDep, _admin: AdminDep
+    deadline_id: int, body: UnchangeIn, session: SessionDep, _admin: AdminDep, request: Request
 ) -> dict[str, str]:
     """标错了可撤回：恢复为已通过。"""
     row = session.get(DocumentDeadline, deadline_id)
@@ -739,6 +811,7 @@ def unchange_deadline(
         item.changed_by = None
         item.changed_at = None
     session.commit()
+    _audit(request, "unchange", deadline_id=deadline_id, reviewer=body.reviewed_by)
     return {"status": "approved"}
 
 

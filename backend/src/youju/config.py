@@ -14,6 +14,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://localhost:55432/youju"
     admin_token: str | None = None
+    # 部署角色（云托管两个服务用同一镜像）：api 只开放小程序接口，admin 只开放核对台和管理接口，
+    # all（本机开发默认）全部开放
+    role: str = "all"
 
     # 透明标识：保留常见浏览器标识以兼容政府网站，同时在末尾写明爬虫身份。
     user_agent: str = (
