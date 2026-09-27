@@ -83,18 +83,24 @@
     return node;
   }
 
-  // 证据句里把日期标出来，便于对照（只用 textContent 拼接，不插入 HTML）
+  // 证据句里的日期写法："2026年10月09日""10月9日""2026-10-09""10-9"等（年份可省）
+  const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(?:(\d{4})\s*[-/.]\s*)?(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/g;
+
+  // 证据句里把与候选相同的日期标出来，便于对照（只用 textContent 拼接，不插入 HTML）。
+  // 先找出句中所有日期，再逐个比对：月、日相同，且写了年份时年份也相同，才标；前面紧挨数字的不算
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
-    // 支持"2026年10月09日""10月9日""2026-10-09""10-9"等写法；前后不能紧挨其他数字
-    // 前面紧挨的是别的年份（如"2025年10月9日""2025-10-9"）就不标，免得年份不一致时误导
-    const pattern = new RegExp(`(^|[^0-9年/.-])((?:${y}\\s*年\\s*)?0?${m}\\s*月\\s*0?${d}\\s*日|(?:${y}[-/.])?0?${m}[-/.]0?${d}(?![0-9]))`);
-    const found = pattern.exec(text);
-    if (!found) { box.textContent = text; return box; }
-    const start = found.index + found[1].length;
-    const match = found[2];
-    box.append(text.slice(0, start), el('mark', '', match), text.slice(start + match.length));
+    let hit = null;
+    for (const found of text.matchAll(DATE_RE)) {
+      if (found.index > 0 && /\d/.test(text[found.index - 1])) continue;
+      const year = found[1] || found[4];
+      const month = Number(found[2] || found[5]);
+      const day = Number(found[3] || found[6]);
+      if (month === m && day === d && (!year || Number(year) === y)) { hit = found; break; }
+    }
+    if (!hit) { box.textContent = text; return box; }
+    box.append(text.slice(0, hit.index), el('mark', '', hit[0]), text.slice(hit.index + hit[0].length));
     return box;
   }
 
