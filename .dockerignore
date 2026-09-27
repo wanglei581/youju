@@ -1,0 +1,12 @@
+# 白名单：镜像里只放后端代码和来源清单。开发库数据（backend/.pgdata）、虚拟环境、测试和报告一律不进镜像
+*
+!Dockerfile
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/README.md
+!backend/alembic.ini
+!backend/alembic/**
+!backend/src/**
+!backend/deploy/**
+!docs/数据来源/**
+**/__pycache__
