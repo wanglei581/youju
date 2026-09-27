@@ -25,12 +25,14 @@ _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
 class FetchResult:
     url: str
     # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error；
+    # unsupported_host 仅在配置了网址限制时返回。
     # redirect 只在内部使用，fetch() 不会返回它
     status: str
     final_url: str = ""
     http_status: int | None = None
     text: str = ""
     error: str | None = None
+    content_type: str | None = None
 
 
 @dataclass
@@ -80,6 +82,7 @@ class PoliteFetcher:
         compat_transport: httpx.BaseTransport | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        url_allowed: Callable[[str], bool] | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -101,6 +104,7 @@ class PoliteFetcher:
         self._interval = per_host_interval
         self._clock = clock
         self._sleep = sleep
+        self._url_allowed = url_allowed
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -121,6 +125,8 @@ class PoliteFetcher:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。"""
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
+            if self._url_allowed is not None and not self._url_allowed(current):
+                return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
             state, allowed = self.robots_allows(current)
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
@@ -130,6 +136,8 @@ class PoliteFetcher:
                     final_url=current,
                     error="robots.txt 暂时无法获取，本次跳过",
                 )
+            if state == "unsupported_host":
+                return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
             if not allowed:
                 return FetchResult(
                     url, "robots_disallowed", final_url=current, error="robots.txt 不允许抓取该页面"
@@ -151,7 +159,7 @@ class PoliteFetcher:
             if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
                 entry = self._load_robots(origin)
                 self._robots[origin] = entry
-        if entry.state == "unreachable":
+        if entry.state in {"unreachable", "unsupported_host"}:
             return entry.state, False
         if entry.state == "allow_all" or entry.parser is None:
             return entry.state, True
@@ -161,6 +169,8 @@ class PoliteFetcher:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
+            if self._url_allowed is not None and not self._url_allowed(current):
+                return _RobotsEntry("unsupported_host", None, self._clock())
             result = self._get(current)
             if result.status != "redirect":
                 break
@@ -259,6 +269,7 @@ class PoliteFetcher:
                     final_url=str(resp.url),
                     http_status=resp.status_code,
                     text=decode_html(resp.content, resp.headers.get("content-type")),
+                    content_type=resp.headers.get("content-type"),
                 )
             if network_retries == 0:
                 return FetchResult(url, "network_error", error=last_error)

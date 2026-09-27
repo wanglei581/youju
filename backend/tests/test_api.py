@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from youju.api.app import app
 from youju.db import get_session
-from youju.models import Document, Source
+from youju.models import Document, DocumentAttachment, DocumentDetail, Source
 
 
 @pytest.fixture
@@ -115,7 +115,38 @@ def test_document_detail_and_404(client, seeded) -> None:
     first = client.get("/api/documents").json()["items"][0]
     detail = client.get(f"/api/documents/{first['id']}").json()
     assert detail["url"] == first["url"]
+    assert detail["detail"] is None
     assert client.get("/api/documents/999999").status_code == 404
+
+
+def test_document_detail_includes_parsed_content(client, seeded, session) -> None:
+    doc = session.query(Document).filter(Document.title.like("关于开展%")).one()
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="公开通知正文。",
+            issuer="北京市科学技术委员会",
+            doc_number="京科〔2026〕1号",
+            publish_date=date(2026, 9, 20),
+            fetched_at=datetime.now(UTC),
+            http_status=200,
+            status="ok",
+            attachments=[
+                DocumentAttachment(
+                    position=0,
+                    name="附件.pdf",
+                    url="https://kw.beijing.gov.cn/a/1.pdf",
+                    extension="pdf",
+                )
+            ],
+        )
+    )
+    session.commit()
+    result = client.get(f"/api/documents/{doc.id}").json()["detail"]
+    assert result["body_text"] == "公开通知正文。"
+    assert result["issuer"] == "北京市科学技术委员会"
+    assert result["doc_number"] == "京科〔2026〕1号"
+    assert result["attachments"][0]["extension"] == "pdf"
 
 
 def test_stats(client, seeded) -> None:

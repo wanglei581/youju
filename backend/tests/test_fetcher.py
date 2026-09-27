@@ -55,6 +55,45 @@ def test_robots_disallow_is_respected() -> None:
     assert requested.count("/robots.txt") == 1, "robots.txt 应缓存"
 
 
+def test_redirect_to_disallowed_host_is_not_requested() -> None:
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "https://example.com/page.html"})
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+    ) as fetcher:
+        result = fetcher.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert all("example.com" not in url for url in requested)
+
+
+def test_robots_redirect_to_disallowed_host_skips_page() -> None:
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        assert request.url.path == "/robots.txt"
+        return httpx.Response(302, headers={"location": "https://example.com/robots.txt"})
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+    ) as fetcher:
+        result = fetcher.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert requested == ["https://a.gov.cn/robots.txt"]
+
+
 def test_robots_server_error_means_skip() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":

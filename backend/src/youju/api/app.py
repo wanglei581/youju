@@ -9,7 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from youju.db import get_session
-from youju.models import Document, Source
+from youju.models import Document, DocumentDetail, Source
 
 app = FastAPI(title="有据 API", version="0.1.0")
 
@@ -46,6 +46,28 @@ class DocumentOut(BaseModel):
     province: str
     dept: str
     column_name: str
+
+
+class AttachmentOut(BaseModel):
+    name: str
+    url: str
+    extension: str
+
+
+class DetailOut(BaseModel):
+    body_text: str
+    issuer: str | None
+    doc_number: str | None
+    publish_date: date | None
+    fetched_at: datetime
+    http_status: int | None
+    status: str
+    failure_reason: str | None
+    attachments: list[AttachmentOut]
+
+
+class DocumentWithDetailOut(DocumentOut):
+    detail: DetailOut | None
 
 
 class DocumentPage(BaseModel):
@@ -137,8 +159,8 @@ def list_documents(
     return DocumentPage(total=total, items=[_document_out(doc, src) for doc, src in rows])
 
 
-@app.get("/api/documents/{doc_id}", response_model=DocumentOut)
-def get_document(doc_id: int, session: SessionDep) -> DocumentOut:
+@app.get("/api/documents/{doc_id}", response_model=DocumentWithDetailOut)
+def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
     row = session.execute(
         select(Document, Source)
         .join(Source, Document.source_id == Source.id)
@@ -146,7 +168,27 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentOut:
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
-    return _document_out(*row)
+    doc, source = row
+    detail = session.get(DocumentDetail, doc.id)
+    return DocumentWithDetailOut(
+        **_document_out(doc, source).model_dump(),
+        detail=DetailOut(
+            body_text=detail.body_text,
+            issuer=detail.issuer,
+            doc_number=detail.doc_number,
+            publish_date=detail.publish_date,
+            fetched_at=detail.fetched_at,
+            http_status=detail.http_status,
+            status=detail.status,
+            failure_reason=detail.failure_reason,
+            attachments=[
+                AttachmentOut(name=a.name, url=a.url, extension=a.extension)
+                for a in detail.attachments
+            ],
+        )
+        if detail
+        else None,
+    )
 
 
 @app.get("/api/stats", response_model=Stats)
