@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from datetime import UTC, date, datetime, timedelta
 from hmac import compare_digest
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,7 +26,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
-from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
+from youju.models import Document, DocumentDeadline, DocumentDetail, Feedback, ListEntry, Source
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -174,6 +174,18 @@ class AdminDocumentOut(BaseModel):
     url: str
     publish_date: date | None
     source: str
+
+
+class FeedbackOut(BaseModel):
+    id: int
+    createdAt: datetime
+    kind: Literal["申请覆盖", "纠错"]
+    content: str
+    checkResult: str
+    docId: int | None
+    docTitle: str | None
+    docUrl: str | None
+    handledAt: datetime | None
 
 
 class UnchangeIn(BaseModel):
@@ -546,6 +558,92 @@ def review_console() -> str:
     return (Path(__file__).resolve().parent.parent / "admin" / "review.html").read_text(
         encoding="utf-8"
     )
+
+
+@app.get("/admin/feedback", response_class=HTMLResponse, include_in_schema=False)
+def feedback_console() -> str:
+    """纠错和申请覆盖核对台；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "feedback.html").read_text(
+        encoding="utf-8"
+    )
+
+
+@app.get("/api/admin/feedback/count")
+def feedback_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    return {
+        "pending": session.scalar(
+            select(func.count(Feedback.id)).where(Feedback.handled_at.is_(None))
+        )
+        or 0
+    }
+
+
+@app.get("/api/admin/feedback", response_model=list[FeedbackOut])
+def admin_feedback(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "all"] = "pending",
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[FeedbackOut]:
+    stmt = select(Feedback)
+    if status == "pending":
+        stmt = stmt.where(Feedback.handled_at.is_(None))
+    if before_id is not None:
+        stmt = stmt.where(Feedback.id < before_id)
+    rows = session.scalars(stmt.order_by(Feedback.id.desc()).limit(limit)).all()
+    mapping = canonical_ids(session, [row.document_id for row in rows if row.document_id])
+    doc_ids = {mapping.get(row.document_id, row.document_id) for row in rows if row.document_id}
+    documents = {
+        doc.id: doc
+        for doc in session.scalars(select(Document).where(Document.id.in_(doc_ids))).all()
+    }
+    result = []
+    for row in rows:
+        doc = documents.get(mapping.get(row.document_id, row.document_id))
+        result.append(
+            FeedbackOut(
+                id=row.id,
+                createdAt=row.created_at,
+                kind="申请覆盖" if row.content.startswith("申请覆盖：") else "纠错",
+                content=row.content,
+                checkResult=row.check_result,
+                docId=doc.id if doc else None,
+                docTitle=doc.title if doc else None,
+                docUrl=doc.url if doc else None,
+                handledAt=row.handled_at,
+            )
+        )
+    return result
+
+
+def _set_feedback_handled(feedback_id: int, session: Session, handled: bool) -> dict[str, bool]:
+    row = session.scalar(select(Feedback).where(Feedback.id == feedback_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到反馈")
+    changed = (row.handled_at is None) == handled
+    if changed:
+        row.handled_at = datetime.now(UTC) if handled else None
+        session.commit()
+    return {"handled": handled, "changed": changed}
+
+
+@app.post("/api/admin/feedback/{feedback_id}/handle")
+def handle_feedback(
+    feedback_id: int, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, bool]:
+    result = _set_feedback_handled(feedback_id, session, True)
+    _audit(request, "feedback_handle", feedback_id=feedback_id, changed=result["changed"])
+    return result
+
+
+@app.post("/api/admin/feedback/{feedback_id}/unhandle")
+def unhandle_feedback(
+    feedback_id: int, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, bool]:
+    result = _set_feedback_handled(feedback_id, session, False)
+    _audit(request, "feedback_unhandle", feedback_id=feedback_id, changed=result["changed"])
+    return result
 
 
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 
 from youju.api.app import app
 from youju.db import get_session
@@ -14,8 +15,10 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentMerge,
+    Feedback,
     ListEntry,
     Source,
+    User,
 )
 
 
@@ -467,6 +470,143 @@ def test_review_console_page_and_pending_count(client, seeded, session, monkeypa
     assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
     item = client.get("/api/admin/deadlines", headers=headers).json()[0]
     assert item["source"] == "北京市科学技术委员会" and item["publish_date"] == "2026-09-20"
+
+
+def test_feedback_migration(db_engine) -> None:
+    column = next(
+        c for c in inspect(db_engine).get_columns("feedback") if c["name"] == "handled_at"
+    )
+    assert column["nullable"] is True
+    assert column["type"].timezone is True
+
+
+def test_feedback_admin_listing_and_actions(client, seeded, session, monkeypatch, caplog) -> None:
+    import logging
+
+    from youju.api.app import audit_log
+
+    master = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    duplicate = Document(
+        source_id=master.source_id,
+        url=master.url + "?duplicate=1",
+        url_key=master.url_key + "?duplicate=1",
+        title="副本标题",
+        first_seen_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+    )
+    deleted = Document(
+        source_id=master.source_id,
+        url=master.url + "?deleted=1",
+        url_key=master.url_key + "?deleted=1",
+        title="待删除文件",
+        first_seen_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+    )
+    user = User(openid="secret-openid")
+    session.add_all([duplicate, deleted, user])
+    session.flush()
+    session.add(
+        DocumentMerge(
+            duplicate_id=duplicate.id, canonical_id=master.id, active=True, match_key="data"
+        )
+    )
+    rows = [
+        Feedback(
+            user_id=user.id, document_id=duplicate.id, content="标题有误", check_result="pass"
+        ),
+        Feedback(
+            user_id=user.id, document_id=deleted.id, content="原文已下线", check_result="unchecked"
+        ),
+        Feedback(user_id=user.id, content="申请覆盖：增加广东", check_result="pass"),
+    ]
+    session.add_all(rows)
+    session.commit()
+    session.delete(deleted)
+    session.commit()
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    base = "/api/admin/feedback"
+    assert client.get(base).status_code == 401
+    assert client.get(base + "/count").status_code == 401
+    assert client.post(f"{base}/{rows[0].id}/handle").status_code == 401
+    assert client.post(f"{base}/{rows[0].id}/unhandle").status_code == 401
+    headers = {"X-Admin-Token": "secret"}
+    assert client.get(base + "/count", headers=headers).json() == {"pending": 3}
+    first = client.get(base, headers=headers, params={"limit": 1}).json()
+    assert [item["id"] for item in first] == [rows[2].id]
+    assert first[0]["kind"] == "申请覆盖"
+    assert first[0]["docId"] is None and first[0]["docTitle"] is None
+    assert first[0]["docUrl"] is None and first[0]["handledAt"] is None
+    assert first[0]["createdAt"]
+    assert "openid" not in str(first) and "user_id" not in str(first)
+    second = client.get(base, headers=headers, params={"limit": 1, "before_id": rows[2].id}).json()
+    assert [item["id"] for item in second] == [rows[1].id]
+    assert second[0]["docId"] is None and second[0]["docTitle"] is None
+    assert second[0]["checkResult"] == "unchecked"
+    third = client.get(base, headers=headers, params={"before_id": rows[1].id}).json()
+    assert [item["id"] for item in third] == [rows[0].id]
+    assert third[0]["kind"] == "纠错"
+    assert (third[0]["docId"], third[0]["docTitle"], third[0]["docUrl"]) == (
+        master.id,
+        master.title,
+        master.url,
+    )
+    assert client.get(base, headers=headers, params={"status": "bad"}).status_code == 422
+    assert client.get(base, headers=headers, params={"limit": 101}).status_code == 422
+
+    url = f"{base}/{rows[0].id}"
+    audit_log.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="youju.audit"):
+            assert client.post(url + "/handle", headers=headers).json() == {
+                "handled": True,
+                "changed": True,
+            }
+            assert client.post(url + "/handle", headers=headers).json() == {
+                "handled": True,
+                "changed": False,
+            }
+    finally:
+        audit_log.removeHandler(caplog.handler)
+    assert "feedback_handle" in caplog.text
+    session.refresh(rows[0])
+    assert rows[0].handled_at is not None
+    assert client.get(base + "/count", headers=headers).json() == {"pending": 2}
+    assert [item["id"] for item in client.get(base, headers=headers).json()] == [
+        rows[2].id,
+        rows[1].id,
+    ]
+    all_items = client.get(base, headers=headers, params={"status": "all"}).json()
+    assert [item["id"] for item in all_items] == [rows[2].id, rows[1].id, rows[0].id]
+    assert all("openid" not in item and "user_id" not in item for item in all_items)
+    assert all_items[-1]["handledAt"] is not None
+    assert client.post(url + "/unhandle", headers=headers).json() == {
+        "handled": False,
+        "changed": True,
+    }
+    assert client.post(url + "/unhandle", headers=headers).json() == {
+        "handled": False,
+        "changed": False,
+    }
+    assert client.get(base + "/count", headers=headers).json() == {"pending": 3}
+    assert client.post(f"{base}/99999/handle", headers=headers).status_code == 404
+    assert client.post(f"{base}/99999/unhandle", headers=headers).status_code == 404
+
+
+def test_feedback_console_page(monkeypatch) -> None:
+    settings = {"role": "all", "admin_token": "secret"}
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(**settings))
+    client = TestClient(app)
+    page = client.get("/admin/feedback")
+    assert page.status_code == 200 and "申请覆盖" in page.text
+    assert "secret" not in page.text
+    assert "/admin/review" in page.text
+    assert "/admin/feedback" in client.get("/admin/review").text
+    settings["role"] = "api"
+    assert client.get("/admin/feedback").status_code == 404
+    assert client.get("/api/admin/feedback/count").status_code == 404
+    settings["role"] = "admin"
+    assert client.get("/admin/feedback").status_code == 200
 
 
 def test_review_can_clear_time_explicitly(client, seeded, session, monkeypatch) -> None:
