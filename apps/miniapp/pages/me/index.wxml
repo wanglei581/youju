@@ -43,6 +43,7 @@
   <view class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row" bindtap="todo"><t-icon name="setting-1" size="40rpx" color="#4E5969" /><text class="row-text">设置</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row {{hasRecord ? '' : 'row--last'}}" bindtap="todo"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{hasRecord}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
 <view class="foot">有据 · 第三方整理 · 每条都有出处</view>

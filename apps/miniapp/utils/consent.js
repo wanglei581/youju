@@ -83,4 +83,29 @@ function askConsent() {
   });
 }
 
-module.exports = { ensureConsent, syncConsent, consentOpen, agreedHere, remember, forget };
+// 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
+function withdraw() {
+  return new Promise((resolve) => {
+    wx.showModal({
+      title: '注销并删除数据',
+      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，删除后不能恢复。',
+      confirmText: '注销',
+      confirmColor: '#E5484D',
+      success: (res) => {
+        if (!res.confirm) { resolve(false); return; }
+        api.deleteMe()
+          .then(() => {
+            wx.showToast({ title: '已注销，数据已删除', icon: 'none' });
+            resolve(true);
+          })
+          .catch((err) => {
+            wx.showToast({ title: err.message || '注销失败，请稍后再试', icon: 'none' });
+            resolve(false);
+          });
+      },
+      fail: () => resolve(false),
+    });
+  });
+}
+
+module.exports = { ensureConsent, syncConsent, consentOpen, agreedHere, remember, forget, withdraw };

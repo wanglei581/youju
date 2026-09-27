@@ -218,6 +218,25 @@ function seenFollow(id) {
   return request(`/api/v1/me/follows/${id}/seen`, null, { method: 'POST', data: {} });
 }
 
+// 我的数据：我们保存的本人全部个人信息（查阅、复制）
+function myData() {
+  return request('/api/v1/me/data');
+}
+
+// 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
+function renameFollow(id, name) {
+  return request(`/api/v1/me/follows/${id}`, null, { method: 'PUT', data: { name } });
+}
+
+function deleteFeedback(id) {
+  return request(`/api/v1/me/feedback/${id}`, null, { method: 'DELETE' });
+}
+
+// 取消还没发出的提醒授权
+function deleteSubscription(id) {
+  return request(`/api/v1/me/subscriptions/${id}`, null, { method: 'DELETE' });
+}
+
 // 未用的订阅授权（还没发出的提醒）
 function mySubscriptions() {
   return request('/api/v1/me/subscriptions');
@@ -248,5 +267,6 @@ function saveSubscription(kind, target) {
 module.exports = {
   isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
+  myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
 };

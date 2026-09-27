@@ -10,7 +10,8 @@
     "pages/lists/index",
     "pages/agreement/index",
     "pages/feedback/index",
-    "pages/follow-new/index"
+    "pages/follow-new/index",
+    "pages/my-data/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

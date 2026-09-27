@@ -32,8 +32,10 @@ Page({
   send(content) {
     this.setData({ sending: true });
     api.feedback(this.data.docId, content)
-      .then(() => {
-        wx.showToast({ title: '已收到，谢谢你', icon: 'success' });
+      .then((res) => {
+        // 服务端去掉了手机号、身份证号、邮箱时告诉用户
+        if (res && res.masked) wx.showToast({ title: '已收到，手机号等个人信息已隐去', icon: 'none' });
+        else wx.showToast({ title: '已收到，谢谢你', icon: 'success' });
         setTimeout(() => wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/me/index' }) }), 1200);
       })
       .catch((err) => {
