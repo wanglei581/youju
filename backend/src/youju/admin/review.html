@@ -44,6 +44,16 @@
   .ok { color: var(--green); }
   .empty { text-align: center; color: var(--t2); padding: 48px 0; }
   .more { display: block; margin: 8px auto 32px; }
+  select { font: inherit; padding: 5px 8px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  .linkish { border: 0; padding: 4px 0; background: none; color: var(--brand); font-size: 13px; }
+  .tools summary { cursor: pointer; font-weight: 600; }
+  .tools .row, .change-panel .row { margin-top: 10px; }
+  .change-panel { margin-top: 8px; padding: 10px 12px; border: 1px dashed var(--line2); border-radius: 8px; }
+  .change-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .change-row:first-child { border-top: 0; }
+  .change-info { min-width: 240px; flex: 1; }
+  .change-title { color: var(--t1); font-size: 14px; font-weight: 600; text-decoration: none; }
+  .change-meta { font-size: 13px; color: var(--t2); }
 </style>
 </head>
 <body>
@@ -60,6 +70,12 @@
 </header>
 <main>
   <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
+  <details class="card tools">
+    <summary>处理延期、调整、撤销的通知</summary>
+    <p class="hint">新通知没有待核对的截止（如撤销通知，或已核对过）时在这里处理：先找原通知已通过的截止，再找出发布变更的新通知并选定，标为已变更。新通知有待核对卡片的，也可以直接在卡片上点"原通知截止已变更？"。</p>
+    <div class="row"><input id="changeQ" placeholder="原通知标题里的词，空格分开" size="28" aria-label="原通知标题里的词"><button id="changeSearch">搜索</button></div>
+    <div id="changeList"></div>
+  </details>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
@@ -164,7 +180,7 @@
       body.time = card.querySelector('.t').value || null;
     }
     const url = `/api/admin/deadlines/${item.id}/${action === 'reject' ? 'reject' : 'approve'}`;
-    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    card.querySelectorAll('.main button').forEach((b) => { b.disabled = true; });
     try {
       const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
       if (res.status === 409) {
@@ -184,8 +200,147 @@
     } catch (err) {
       msg.className = 'msg';
       msg.textContent = err.message;
-      card.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      card.querySelectorAll('.main button').forEach((b) => { b.disabled = false; });
     }
+  }
+
+  // ---- 截止变更（验收清单 A7）：延期、调整、撤销后，把原通知已通过的截止标为已变更 ----
+  // 从延期等通知的标题里猜原通知的关键词：去掉"延长……截止时间"这类字，取最长的一段（如"2026年度高新技术企业"）
+  const CHANGE_WORDS = /关于|的通知|的公告|有关事项|延期|延长|推迟|调整|撤销|撤回|暂停|废止|申报受理|受理|申报|报名|评价系统|开放|系统|截止|期限|时间|的/g;
+  function guessKeyword(title) {
+    const parts = title.replace(CHANGE_WORDS, ' ').replace(/[“”"《》（）()、，,。：:]/g, ' ').split(/\s+/).filter((w) => w.length >= 2);
+    return parts.sort((a, b) => b.length - a.length)[0] || '';
+  }
+
+  async function postJSON(url, body) {
+    const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
+    return res.json();
+  }
+
+  // 找发布变更的新通知（延期、调整、撤销通知）
+  async function searchDocuments(q) {
+    const res = await fetch(`/api/admin/documents?q=${encodeURIComponent(q.trim())}`, { headers: headers() });
+    if (res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
+    if (!res.ok) throw new Error(res.status === 422 ? '请输入新通知标题里的词（至少两个字）' : `搜索失败（${res.status}）`);
+    return res.json();
+  }
+
+  // 一条已通过（或已标变更）的截止。newDoc 是发布变更的通知 {id, title}；
+  // 在待核对卡片里就是这张卡片的通知，在页首入口里由核对人搜出来选定
+  function changeRow(item, newDoc) {
+    const row = el('div', 'change-row');
+    const info = el('div', 'change-info');
+    const title = el('a', 'change-title', item.title);
+    title.href = item.url;
+    title.target = '_blank';
+    title.rel = 'noopener noreferrer';
+    info.append(title, el('div', 'change-meta', `${item.source} · ${item.kind} ${item.approved_date}${item.approved_time ? ` ${item.approved_time}` : ''}`));
+    const actions = el('div', 'row');
+    const msg = el('span', 'msg');
+    const reviewer = () => $('reviewer').value.trim();
+    if (item.status === 'changed') {
+      actions.append(el('span', 'ok', `已标为${item.change_reason}${item.changed_to_title ? `，新通知：${item.changed_to_title}` : ''}`));
+      const undo = el('button', '', '撤回');
+      undo.onclick = async () => {
+        if (!reviewer()) { msg.textContent = '请先填写核对人'; return; }
+        try {
+          await postJSON(`/api/admin/deadlines/${item.id}/unchange`, { reviewed_by: reviewer() });
+          row.replaceWith(changeRow(Object.assign(item, { status: 'approved', change_reason: null, changed_to_title: null }), newDoc));
+        } catch (err) { msg.textContent = err.message; }
+      };
+      actions.append(undo, msg);
+      row.append(info, actions);
+      return row;
+    }
+    let chosen = newDoc;
+    const reason = el('select');
+    reason.setAttribute('aria-label', '变更原因');
+    ['延期', '调整', '撤销'].forEach((r) => { const o = el('option', '', r); o.value = r; reason.append(o); });
+    const go = el('button', 'danger', newDoc ? '标为已变更（关联本通知）' : '标为已变更');
+    go.disabled = !chosen;
+    if (!newDoc) {
+      // 页首入口：先搜出并选定发布变更的新通知
+      const picker = el('div', 'row');
+      const q = el('input');
+      q.size = 24;
+      q.placeholder = '新通知标题里的词';
+      q.setAttribute('aria-label', '新通知标题里的词');
+      const find = el('button', '', '找新通知');
+      const pick = el('select');
+      pick.setAttribute('aria-label', '选择新通知');
+      pick.hidden = true;
+      find.onclick = async () => {
+        msg.textContent = '';
+        try {
+          const docs = (await searchDocuments(q.value)).filter((d) => d.id !== item.document_id);
+          pick.textContent = '';
+          const none = el('option', '', docs.length ? '请选择新通知' : '没有找到，换个词试试');
+          none.value = '';
+          pick.append(none);
+          docs.forEach((d) => { const o = el('option', '', `${d.publish_date || ''} ${d.source} · ${d.title}`); o.value = String(d.id); o.dataset.title = d.title; pick.append(o); });
+          pick.hidden = false;
+          chosen = null;
+          go.disabled = true;
+        } catch (err) { msg.textContent = err.message; }
+      };
+      pick.onchange = () => {
+        const o = pick.selectedOptions[0];
+        chosen = o && o.value ? { id: Number(o.value), title: o.dataset.title } : null;
+        go.disabled = !chosen;
+      };
+      picker.append(q, find, pick);
+      info.append(picker);
+    }
+    go.onclick = async () => {
+      if (!reviewer()) { msg.textContent = '请先填写核对人'; return; }
+      if (!chosen) { msg.textContent = '请先选定发布变更的新通知'; return; }
+      // 关联错了会对外显示错误的变更关系，提交前再确认一次
+      if (!window.confirm(`把《${item.title}》的${item.kind}（${item.approved_date}）标为已${reason.value}，并关联新通知《${chosen.title}》？`)) return;
+      go.disabled = true;
+      try {
+        await postJSON(`/api/admin/deadlines/${item.id}/change`, { reviewed_by: reviewer(), reason: reason.value, new_document_id: chosen.id });
+        row.replaceWith(changeRow(Object.assign(item, { status: 'changed', change_reason: reason.value, changed_to_title: chosen.title }), newDoc));
+      } catch (err) { msg.textContent = err.message; go.disabled = false; }
+    };
+    actions.append(reason, go, msg);
+    row.append(info, actions);
+    return row;
+  }
+
+  async function searchChanges(q, box, newDoc) {
+    box.textContent = '';
+    if (q.trim().length < 2) { box.append(el('div', 'msg', '请输入原通知标题里的词（至少两个字）')); return; }
+    try {
+      const res = await fetch(`/api/admin/deadlines/approved?q=${encodeURIComponent(q.trim())}`, { headers: headers() });
+      if (res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
+      if (!res.ok) throw new Error(`搜索失败（${res.status}）`);
+      const items = (await res.json()).filter((item) => !newDoc || item.document_id !== newDoc.id);
+      if (!items.length) { box.append(el('div', 'change-meta', '没有找到已通过的截止。换个词试试，或原通知的截止还没核对。')); return; }
+      items.forEach((item) => box.append(changeRow(item, newDoc)));
+    } catch (err) { box.append(el('div', 'msg', err.message)); }
+  }
+
+  // 待核对卡片上的"原通知截止已变更？"：在这张卡片的通知是延期、调整或撤销通知时用
+  function changePanel(item) {
+    const wrap = el('div');
+    const toggle = el('button', 'linkish', '原通知截止已变更？');
+    const panel = el('div', 'change-panel');
+    panel.hidden = true;
+    const q = el('input');
+    q.size = 28;
+    q.value = guessKeyword(item.title);
+    q.setAttribute('aria-label', '原通知标题里的词');
+    const search = el('button', '', '找原通知');
+    const results = el('div');
+    const bar = el('div', 'row');
+    bar.append(q, search);
+    panel.append(el('div', 'change-meta', '这张卡片是延期、调整或撤销通知时：找到原通知已通过的截止，标为已变更并关联本通知。'), bar, results);
+    const self = { id: item.document_id, title: item.title };
+    toggle.onclick = () => { panel.hidden = !panel.hidden; if (!panel.hidden && !results.childNodes.length) searchChanges(q.value, results, self); };
+    search.onclick = () => searchChanges(q.value, results, self);
+    wrap.append(toggle, panel);
+    return wrap;
   }
 
   function render(item) {
@@ -196,7 +351,7 @@
     title.href = item.url;
     title.target = '_blank';
     title.rel = 'noopener noreferrer';
-    const row = el('div', 'row');
+    const row = el('div', 'row main');
     const when = el('span', 'when', `${item.candidate_date}${item.candidate_time ? ` ${item.candidate_time}` : ''}`);
     const approve = el('button', 'primary', '通过');
     const reject = el('button', 'danger', '驳回');
@@ -208,7 +363,7 @@
     approve.onclick = () => review(item, card, 'approve', msg);
     reject.onclick = () => review(item, card, 'reject', msg);
     edit.onclick = () => review(item, card, 'edit', msg);
-    card.append(meta, title, evidenceNode(item.evidence, item.candidate_date), row);
+    card.append(meta, title, evidenceNode(item.evidence, item.candidate_date), row, changePanel(item));
     return card;
   }
 
@@ -239,6 +394,7 @@
     }
   }
 
+  $('changeSearch').onclick = () => searchChanges($('changeQ').value, $('changeList'), null);
   $('load').onclick = () => load(true);
   $('more').onclick = () => load(false);
 })();

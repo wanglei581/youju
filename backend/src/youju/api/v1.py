@@ -80,7 +80,7 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     rows = session.scalars(
         select(DocumentDeadline).where(
             DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
-            DocumentDeadline.status == "approved",
+            DocumentDeadline.status.in_(("approved", "changed")),
         )
     ).all()
     by_document: dict[int, list[DocumentDeadline]] = {}
@@ -88,11 +88,17 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
         by_document.setdefault(d.document_id, []).append(d)
     out: dict[int, list[DocumentDeadline]] = {}
     for doc_id, ids in members.items():
-        seen = set()
+        # 同组里同一截止已标"已变更"的，其他仍为"已通过"的副本也不再当作有效截止（与导出一致）
+        seen = {
+            (d.kind, d.approved_date, d.approved_time)
+            for member in ids
+            for d in by_document.get(member, [])
+            if d.status == "changed"
+        }
         for member in ids:
             for d in by_document.get(member, []):
                 key = (d.kind, d.approved_date, d.approved_time)
-                if key not in seen:
+                if d.status == "approved" and key not in seen:
                     out.setdefault(doc_id, []).append(d)
                     seen.add(key)
     for items in out.values():
@@ -316,6 +322,41 @@ def document(doc_id: int, session: SessionDep) -> dict:
         excerpt = {"section": "截止时间原文", "text": main.evidence}
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
+    # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
+    # 看整个归并组（同一通知的不同网址）；相同的变更只列一条，新通知也换成它的主文件
+    changed = (
+        session.execute(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(group_ids(session, doc.id)),
+                DocumentDeadline.status == "changed",
+            )
+            .order_by(DocumentDeadline.approved_date, DocumentDeadline.id)
+        )
+        .scalars()
+        .all()
+    )
+    new_masters = canonical_ids(session, [d.changed_to_document_id for d in changed])
+    deadline_changes: list[dict] = []
+    seen_changes: set[tuple] = set()
+    for d in changed:
+        key = (d.kind, d.approved_date, d.approved_time)
+        if d.approved_date is None or key in seen_changes:
+            continue
+        seen_changes.add(key)
+        new_id = new_masters.get(d.changed_to_document_id, d.changed_to_document_id)
+        new_doc = session.get(Document, new_id) if new_id else None
+        deadline_changes.append(
+            {
+                "label": d.kind,
+                "date": d.approved_date.isoformat(),
+                "time": _hhmm(d.approved_time),
+                "reason": d.change_reason,
+                "newDocId": str(new_id) if new_id else None,
+                "newTitle": new_doc.title if new_doc else None,
+            }
+        )
+
     kind = doc_kind(doc.title)
     return {
         "id": str(doc.id),
@@ -337,6 +378,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "site": f"{src.dept_full_name}网站",
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
+        "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
         "attachments": [

@@ -104,7 +104,67 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
         if row.active and duplicate not in desired:
             session.delete(row)
             changed += 1
+    session.flush()
+    sync_reviewed_twins(session, {canonical for canonical, _ in desired.values()})
     return changed
+
+
+# 核对结果随组同步时要复制的字段
+_REVIEW_FIELDS = (
+    "status",
+    "reviewed_by",
+    "reviewed_at",
+    "approved_date",
+    "approved_time",
+    "change_reason",
+    "changed_to_document_id",
+    "changed_by",
+    "changed_at",
+)
+
+
+def reviewed_key(row, status: str) -> tuple:
+    """判断"同一截止已核对过"用的键：通过、已变更的看（类型, 日期, 时间）——日期已确认是这类截止；
+    驳回的还要证据句相同——免得把真正的截止错当成已驳回的那句（如"有效期至10月18日"）。"""
+    base = (row.kind, row.candidate_date, row.candidate_time)
+    return base if status in ("approved", "changed") else (*base, row.evidence)
+
+
+def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
+    """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
+    （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。"""
+    from youju.models import DocumentDeadline
+
+    synced = 0
+    for members in groups_for(session, sorted(masters)).values():
+        if len(members) < 2:
+            continue
+        rows = session.scalars(
+            select(DocumentDeadline)
+            .where(DocumentDeadline.document_id.in_(members))
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)  # 读最新状态，别用会话里的旧值
+        ).all()
+        # 先找证据句也相同的已核对记录（任何结果），找不到再按（类型, 日期, 时间）找已通过、已变更的
+        exact: dict[tuple, object] = {}
+        confirmed: dict[tuple, object] = {}
+        for d in rows:
+            if d.status != "pending":
+                exact.setdefault(reviewed_key(d, "rejected"), d)
+                if d.status in ("approved", "changed"):
+                    confirmed.setdefault(reviewed_key(d, "approved"), d)
+        for d in rows:
+            if d.status != "pending":
+                continue
+            source = exact.get(reviewed_key(d, "rejected")) or confirmed.get(
+                reviewed_key(d, "approved")
+            )
+            if source is not None:
+                for field in _REVIEW_FIELDS:
+                    setattr(d, field, getattr(source, field))
+                synced += 1
+    return synced
 
 
 def visible_documents(stmt: Select) -> Select:

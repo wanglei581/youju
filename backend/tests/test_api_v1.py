@@ -458,3 +458,335 @@ def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seed
     body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
     assert [i["id"] for i in body["items"]] == [str(master.id)]
     assert body["items"][0]["matched"]["name"] == "山东星河科技有限公司"
+
+
+def test_deadline_change_hides_old_deadline_and_links_new_notice(
+    client, seeded, session, monkeypatch
+):
+    """验收清单 A7：发了延期通知后，原通知的截止标为已变更，公开端不再当作有效截止。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 9, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add(new)
+    session.commit()
+
+    found = client.get(
+        "/api/admin/deadlines/approved", params={"q": "贷款贴息 三季度"}, headers=headers
+    ).json()
+    assert main.id in [f["id"] for f in found]
+    url = f"/api/admin/deadlines/{main.id}/change"
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": new.id}
+    assert client.post(url, json=body).status_code == 401
+    # 必须关联发布变更的新通知；原因只能是三种之一；新通知不能是自己
+    no_link = {"reviewed_by": "审阅人", "reason": "撤销"}
+    assert client.post(url, json=no_link, headers=headers).status_code == 422
+    bad_reason = {**body, "reason": "推迟"}
+    assert client.post(url, json=bad_reason, headers=headers).status_code == 422
+    self_link = {**body, "new_document_id": old.id}
+    assert client.post(url, json=self_link, headers=headers).status_code == 422
+    # 防止关联到无关文件：别的地区、或发布早于原通知的，不行
+    other_region = session.get(Document, seeded["list"])  # 山东的文件，原通知在辽宁
+    wrong = {**body, "new_document_id": other_region.id}
+    assert client.post(url, json=wrong, headers=headers).status_code == 422
+    earlier = _doc(old.source, 10, "关于调整贷款贴息项目有关事项的通知", date(2026, 9, 1))
+    session.add(earlier)
+    session.commit()
+    too_early = {**body, "new_document_id": earlier.id}
+    assert client.post(url, json=too_early, headers=headers).status_code == 422
+    undated = _doc(old.source, 11, "关于延长贷款贴息项目申报时间的补充通知", None)
+    session.add(undated)
+    session.commit()
+    no_date = {**body, "new_document_id": undated.id}
+    assert client.post(url, json=no_date, headers=headers).status_code == 422
+    assert client.post(url, json=body, headers=headers).status_code == 200
+    assert client.post(url, json=body, headers=headers).status_code == 409
+
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    # 原来的企业申报截止不再作为主截止，剩下的推荐截止照常显示
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert detail["deadline_changes"] == [
+        {
+            "label": "企业申报截止",
+            "date": "2026-10-18",
+            "time": "",
+            "reason": "延期",
+            "newDocId": str(new.id),
+            "newTitle": new.title,
+        }
+    ]
+    calendar = client.get("/api/v1/calendar").json()["items"]
+    assert not [i for i in calendar if i["docId"] == str(old.id) and i["due"] == "2026-10-18"]
+
+    # 标错了可以撤回：恢复为已通过，变更记录清空
+    back = f"/api/admin/deadlines/{main.id}/unchange"
+    assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    assert client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"] == []
+    session.refresh(main)
+    assert main.status == "approved" and main.changed_by is None and main.changed_at is None
+    # 撤销也要关联撤销通知
+    revoke = {"reviewed_by": "审阅人", "reason": "撤销", "new_document_id": new.id}
+    assert client.post(url, json=revoke, headers=headers).status_code == 200
+    changes = client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"]
+    assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] == str(new.id)
+    docs = client.get("/api/admin/documents", params={"q": "延长 贷款贴息"}, headers=headers)
+    assert [d["id"] for d in docs.json()][0] == new.id  # 按发布日期从新到旧，日期不详的排后
+
+
+def test_deadline_change_covers_merged_twins(client, seeded, session, monkeypatch):
+    """同一通知的两个网址归并后，各有一条相同的已通过截止：标记变更时两条一并处理，公开端不再显示。"""
+    from types import SimpleNamespace
+
+    from youju.models import DocumentMerge
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    twin = _doc(old.source, 21, old.title, old.publish_date)
+    new = _doc(old.source, 22, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add_all([twin, new])
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    copy = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="twin",
+        kind=main.kind,
+        candidate_date=main.candidate_date,
+        evidence=main.evidence,
+        confidence=main.confidence,
+        status="approved",
+        reviewed_by="创始人",
+        reviewed_at=main.reviewed_at,
+        approved_date=main.approved_date,
+        approved_time=main.approved_time,
+    )
+    session.add(copy)
+    session.commit()
+    # 核对台搜索只列一条
+    found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
+    assert len([f for f in found.json() if f["kind"] == "企业申报截止"]) == 1
+    # 新通知不能是原通知的另一个网址
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": twin.id}
+    url = f"/api/admin/deadlines/{copy.id}/change"
+    assert client.post(url, json=body, headers=headers).status_code == 422
+    body["new_document_id"] = new.id
+    assert client.post(url, json=body, headers=headers).status_code == 200
+    session.refresh(main)
+    session.refresh(copy)
+    assert main.status == copy.status == "changed"
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert [c["reason"] for c in detail["deadline_changes"]] == ["延期"]
+    # 撤回也一并恢复
+    back = f"/api/admin/deadlines/{main.id}/unchange"
+    assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    session.refresh(copy)
+    assert copy.status == "approved"
+
+
+def test_changed_deadline_does_not_come_back_via_new_duplicate_url(
+    client, seeded, session, monkeypatch
+):
+    """截止已标\"已延期\"后，又抓到同一通知的另一个网址：它的候选不能再作为有效截止出现。"""
+    from types import SimpleNamespace
+
+    from youju.dedup import reconcile_documents
+    from youju.extract.service import extract_existing
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 31, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add(new)
+    session.commit()
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": new.id}
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{main.id}/change", json=body, headers=headers
+        ).status_code
+        == 200
+    )
+    # 情形一：新网址先抽出候选（还没归并），之后归并——待核对副本沿用\"已变更\"
+    twin = _doc(old.source, 32, old.title, old.publish_date)
+    session.add(twin)
+    session.flush()
+    pending = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="dup-url",
+        kind=main.kind,
+        candidate_date=main.candidate_date,
+        candidate_time=main.candidate_time,
+        evidence=main.evidence,
+        confidence="高",
+        status="pending",
+    )
+    session.add(pending)
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    session.refresh(pending)
+    assert pending.status == "changed" and pending.changed_to_document_id == new.id
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"  # 企业申报截止不再作为有效截止
+    # 情形二：已归并后再抽取这个网址的正文：同组已核对过的截止不再送审
+    session.add(
+        DocumentDetail(
+            document_id=twin.id,
+            body_text="企业申报截止时间为10月18日。",
+            fetched_at=datetime.now(UTC),
+            status="ok",
+        )
+    )
+    session.commit()
+    before = session.query(DocumentDeadline).filter_by(status="pending").count()
+    extract_existing(session, document_ids=[twin.id])
+    assert session.query(DocumentDeadline).filter_by(status="pending").count() == before
+
+
+def test_reviewed_search_prefers_still_valid_deadline(client, seeded, session, monkeypatch):
+    """核对台搜索：同组同时有已通过和已变更的，列出已通过那条（仍有效，需要处理）。"""
+    from types import SimpleNamespace
+
+    from youju.models import DocumentMerge
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 41, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    twin = _doc(old.source, 42, old.title, old.publish_date)
+    session.add_all([new, twin])
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    main.status, main.change_reason, main.changed_to_document_id = "changed", "延期", new.id
+    session.add(
+        DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="still-valid",
+            kind=main.kind,
+            candidate_date=main.candidate_date,
+            evidence=main.evidence,
+            confidence="高",
+            status="approved",
+            reviewed_by="创始人",
+            reviewed_at=main.reviewed_at,
+            approved_date=main.approved_date,
+        )
+    )
+    session.commit()
+    found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
+    rows = [f for f in found.json() if f["kind"] == "企业申报截止"]
+    assert len(rows) == 1 and rows[0]["status"] == "approved"
+    # 公开端：同组同一截止已标"已变更"，仍为"已通过"的副本也不当作有效截止
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert [c["reason"] for c in detail["deadline_changes"]] == ["延期"]
+
+
+def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
+    """已通过、已变更的：同组同类型同日期时间的待核对副本沿用结果（证据句写法不同也算）；
+    已驳回的：证据句也相同才沿用，免得把真正的截止当成已驳回的那句。"""
+    from youju.dedup import sync_reviewed_twins
+    from youju.models import DocumentMerge
+
+    old = session.get(Document, seeded["apply"])
+    twin = _doc(old.source, 61, old.title, old.publish_date)
+    session.add(twin)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    rejected = DocumentDeadline(
+        document_id=old.id,
+        fingerprint="rej",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="证书有效期至11月30日",
+        confidence="低",
+        status="rejected",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+    )
+    session.add(rejected)
+    twins = {
+        "confirmed": DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="t1",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间：10月18日",  # 与已通过那条写法不同
+            confidence="高",
+            status="pending",
+        ),
+        "real": DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="t2",
+            kind="材料报送截止",
+            candidate_date=date(2026, 11, 30),
+            evidence="纸质材料11月30日前报送",  # 同日期同类型，但不是被驳回的那句
+            confidence="高",
+            status="pending",
+        ),
+    }
+    session.add_all(twins.values())
+    session.commit()
+    sync_reviewed_twins(session, {old.id})
+    session.commit()
+    session.refresh(twins["confirmed"])
+    session.refresh(twins["real"])
+    assert twins["confirmed"].status == "approved"
+    assert twins["confirmed"].approved_date == date(2026, 10, 18)
+    assert twins["real"].status == "pending"
+    # 同一日期既有通过又有驳回时，证据句与驳回那条完全相同的副本沿用驳回
+    approved_same_day = DocumentDeadline(
+        document_id=old.id,
+        fingerprint="ok-1130",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="纸质材料于11月30日前寄送",
+        confidence="高",
+        status="approved",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+        approved_date=date(2026, 11, 30),
+    )
+    copy_of_rejected = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="t3",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="证书有效期至11月30日",
+        confidence="低",
+        status="pending",
+    )
+    session.add_all([approved_same_day, copy_of_rejected])
+    session.commit()
+    sync_reviewed_twins(session, {old.id})
+    session.commit()
+    session.refresh(copy_of_rejected)
+    assert copy_of_rejected.status == "rejected"

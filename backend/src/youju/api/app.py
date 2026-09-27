@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.api.v1 import _approved, _details
@@ -102,6 +102,44 @@ class PendingDeadlineOut(BaseModel):
     candidate_time: str | None
     evidence: str
     confidence: str
+
+
+class ReviewedDeadlineOut(BaseModel):
+    """核对台里已通过或已标变更的截止。"""
+
+    id: int
+    document_id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+    kind: str
+    approved_date: date
+    approved_time: str | None
+    status: str
+    change_reason: str | None
+    changed_to_title: str | None
+
+
+CHANGE_REASONS = ("延期", "调整", "撤销")
+
+
+class ChangeIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
+    reason: str = Field(description="延期 / 调整 / 撤销")
+    new_document_id: int = Field(description="发布这项变更的通知（延期、调整、撤销通知）")
+
+
+class AdminDocumentOut(BaseModel):
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+
+
+class UnchangeIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
 
 
 class ReviewIn(BaseModel):
@@ -535,6 +573,197 @@ def reject_deadline(
     deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep
 ) -> dict[str, str]:
     return _review(deadline_id, body, session, "rejected")
+
+
+@app.get("/api/admin/deadlines/approved", response_model=list[ReviewedDeadlineOut])
+def approved_deadlines(
+    session: SessionDep,
+    _admin: AdminDep,
+    q: Annotated[str, Query(min_length=2, max_length=100, description="原通知标题里的词")],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[ReviewedDeadlineOut]:
+    """找已通过（或已标变更）的截止，用于把原通知的截止标为已变更。标题里各词都要出现。"""
+    words = [w for w in q.split() if w][:5]
+    stmt = (
+        select(DocumentDeadline, Document, Source)
+        .join(Document, DocumentDeadline.document_id == Document.id)
+        .join(Source, Document.source_id == Source.id)
+        .where(DocumentDeadline.status.in_(("approved", "changed")))
+    )
+    for word in words:
+        stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
+    # 分批取，按归并组去重，直到凑够 limit 个不同的截止（同一通知的副本不会占满名额）
+    ordered = stmt.order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id.desc())
+    rows: list = []
+    keys: set[tuple] = set()
+    offset = 0
+    while True:
+        batch = session.execute(ordered.limit(limit * 5).offset(offset)).all()
+        offset += len(batch)
+        batch_map = canonical_ids(session, [doc.id for _, doc, _ in batch])
+        for d, doc, src in batch:
+            keys.add((batch_map.get(doc.id, doc.id), d.kind, d.approved_date, d.approved_time))
+            rows.append((d, doc, src))
+        if len(batch) < limit * 5 or len(keys) >= limit or offset >= 2000:
+            break
+    # 同组同时有"已通过"和"已变更"时先列"已通过"的：它仍作为有效截止显示，需要处理
+    rows = sorted(rows, key=lambda r: r[0].status != "approved")
+    new_ids = {d.changed_to_document_id for d, _, _ in rows if d.changed_to_document_id}
+    titles = dict(
+        session.execute(select(Document.id, Document.title).where(Document.id.in_(new_ids))).all()
+    )
+    # 同一通知的不同网址（归并组）里相同的截止只列一条，标题和链接用主文件
+    mapping = canonical_ids(session, [doc.id for _, doc, _ in rows])
+    out: dict[tuple, ReviewedDeadlineOut] = {}
+    for d, doc, src in rows:
+        if d.approved_date is None:
+            continue
+        master_id = mapping.get(doc.id, doc.id)
+        key = (master_id, d.kind, d.approved_date, d.approved_time)
+        if key in out:
+            continue
+        if master_id != doc.id:
+            doc = session.get(Document, master_id)
+            src = doc.source
+        out[key] = ReviewedDeadlineOut(
+            id=d.id,
+            document_id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            publish_date=doc.publish_date,
+            source=src.dept_full_name,
+            kind=d.kind,
+            approved_date=d.approved_date,
+            approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
+            status=d.status,
+            change_reason=d.change_reason,
+            changed_to_title=titles.get(d.changed_to_document_id),
+        )
+    items = sorted(
+        out.values(),
+        key=lambda o: (o.publish_date or date.min, o.id),
+        reverse=True,
+    )
+    return items[:limit]
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/change")
+def change_deadline(
+    deadline_id: int, body: ChangeIn, session: SessionDep, _admin: AdminDep
+) -> dict[str, str]:
+    """原通知已通过的截止标为已变更（延期、调整、撤销），可关联发布变更的新通知。"""
+    if body.reason not in CHANGE_REASONS:
+        raise HTTPException(status_code=422, detail="变更原因只能是延期、调整或撤销")
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到截止记录")
+    group = _lock_group(session, row)
+    if row.status != "approved":
+        raise HTTPException(status_code=409, detail="只有已通过的截止才能标为已变更")
+    same = canonical_ids(session, [body.new_document_id, row.document_id])
+    if same.get(body.new_document_id, body.new_document_id) == same.get(
+        row.document_id, row.document_id
+    ):
+        raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
+    new_doc = session.get(Document, body.new_document_id)
+    if new_doc is None:
+        raise HTTPException(status_code=404, detail="没有找到新通知")
+    old_doc = session.get(Document, row.document_id)
+    # 防止关联到无关文件：变更通知应与原通知同一地区，且发布不早于原通知
+    if new_doc.source.province != old_doc.source.province:
+        raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
+    if new_doc.publish_date is None or old_doc.publish_date is None:
+        raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")
+    if new_doc.publish_date < old_doc.publish_date:
+        raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
+    # 归并组里相同的已通过副本（同一通知的其他网址）一并标记，否则副本仍会被当作有效截止显示
+    now = datetime.now(UTC)
+    for item in [d for d in group if d.status == "approved"]:
+        item.status = "changed"
+        item.change_reason = body.reason
+        item.changed_to_document_id = body.new_document_id
+        item.changed_by = body.reviewed_by
+        item.changed_at = now
+    session.commit()
+    return {"status": "changed"}
+
+
+def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
+    """按编号顺序一次锁住这条截止和归并组里类型、核定日期时间都相同的副本（含自己），
+    并刷新成最新状态；并发操作时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    same_time = (
+        DocumentDeadline.approved_time.is_(None)
+        if row.approved_time is None
+        else DocumentDeadline.approved_time == row.approved_time
+    )
+    group = (
+        and_(
+            DocumentDeadline.document_id.in_(members),
+            DocumentDeadline.kind == row.kind,
+            DocumentDeadline.approved_date == row.approved_date,
+            same_time,
+        )
+        if row.approved_date is not None
+        else DocumentDeadline.id == row.id
+    )
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(or_(DocumentDeadline.id == row.id, group))
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/unchange")
+def unchange_deadline(
+    deadline_id: int, body: UnchangeIn, session: SessionDep, _admin: AdminDep
+) -> dict[str, str]:
+    """标错了可撤回：恢复为已通过。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到截止记录")
+    group = _lock_group(session, row)
+    if row.status != "changed":
+        raise HTTPException(status_code=409, detail="这条截止没有标为已变更")
+    for item in [d for d in group if d.status == "changed"]:
+        item.status = "approved"
+        item.change_reason = None
+        item.changed_to_document_id = None
+        item.changed_by = None
+        item.changed_at = None
+    session.commit()
+    return {"status": "approved"}
+
+
+@app.get("/api/admin/documents", response_model=list[AdminDocumentOut])
+def admin_documents(
+    session: SessionDep,
+    _admin: AdminDep,
+    q: Annotated[str, Query(min_length=2, max_length=100, description="新通知标题里的词")],
+    limit: Annotated[int, Query(ge=1, le=30)] = 15,
+) -> list[AdminDocumentOut]:
+    """找发布变更的新通知（延期、调整、撤销通知），标题里各词都要出现。"""
+    stmt = select(Document, Source).join(Source, Document.source_id == Source.id)
+    for word in [w for w in q.split() if w][:5]:
+        stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
+    rows = session.execute(
+        stmt.order_by(Document.publish_date.desc().nulls_last(), Document.id.desc()).limit(limit)
+    ).all()
+    return [
+        AdminDocumentOut(
+            id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            publish_date=doc.publish_date,
+            source=src.dept_full_name,
+        )
+        for doc, src in rows
+    ]
 
 
 @app.get("/api/stats", response_model=Stats)
