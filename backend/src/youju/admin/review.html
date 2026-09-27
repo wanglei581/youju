@@ -57,7 +57,7 @@
   </div>
 </header>
 <main>
-  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。</p>
+  <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色只标出候选日期在原文句子里的位置，是不是截止日期要看上下文。</p>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
@@ -86,18 +86,22 @@
   // 证据句里的日期写法："2026年10月09日""10月9日""2026-10-09""2026年10-9""10-9"等（年份可省）
   const DATE_RE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日|(?:(\d{4})\s*(?:年|[-/.])\s*)?(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/g;
 
-  // 证据句里把与候选相同的日期标出来，便于对照（只用 textContent 拼接，不插入 HTML）。
-  // 先找出句中所有日期，再逐个比对：月、日相同，且写了年份时年份也相同，才标；前面紧挨数字的不算
+  // 证据句里标出候选日期出现的位置，便于对照（只用 textContent 拼接，不插入 HTML）。
+  // 先找出句中所有日期，再逐个比对：月、日相同，年份（没写的沿用句中前面写过的年份，
+  // 如"2025年10月8日至10月9日"）也相同才标；前面紧挨数字的不算。
+  // 只标位置，不表示它就是截止日期：是不是截止要看上下文
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
     const [y, m, d] = date.split('-').map(Number);
     let hit = null;
+    let lastYear = null;
     for (const found of text.matchAll(DATE_RE)) {
       if (found.index > 0 && /\d/.test(text[found.index - 1])) continue;
-      const year = found[1] || found[4];
+      const written = found[1] || found[4];
+      if (written) lastYear = Number(written);
       const month = Number(found[2] || found[5]);
       const day = Number(found[3] || found[6]);
-      if (month === m && day === d && (!year || Number(year) === y)) { hit = found; break; }
+      if (month === m && day === d && (lastYear === null || lastYear === y)) { hit = found; break; }
     }
     if (!hit) { box.textContent = text; return box; }
     box.append(text.slice(0, hit.index), el('mark', '', hit[0]), text.slice(hit.index + hit[0].length));
