@@ -15,9 +15,10 @@
   <view class="muted plain">只收录政府网站公开发布的文件，每条都附原文链接。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。截止日期等关键信息经人工核对才显示，没核对的写"截止时间见原文"。</view>
 </view>
 
+<view wx:if="{{!cov && covFailed}}" class="card load-error"><text>收录范围没有加载出来</text><text class="link retry" bindtap="loadRange">重试</text></view>
 <view wx:if="{{cov}}" class="card">
   <view class="section-title">收录范围</view>
-  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖国家部委和 {{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
+  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖{{cov.national ? '国家部委和 ' : ' '}}{{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
   <view wx:for="{{cov.regions}}" wx:key="name" class="region">
     <view class="region-row" data-name="{{item.name}}" bindtap="toggleRegion" aria-role="button">
       <text class="region-name">{{item.name}}</text>

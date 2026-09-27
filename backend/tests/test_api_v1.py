@@ -190,7 +190,11 @@ def seeded(session):
     }
 
 
-def test_home_counts_week_and_skips_other_kinds_in_latest(client, seeded):
+def test_home_counts_week_and_skips_other_kinds_in_latest(client, session, seeded):
+    # 栏目数、省份数与收录范围同一口径：只算成功检查过的栏目
+    for src in session.scalars(select(Source)).all():
+        src.last_success_at = datetime(2026, 9, 28, 1, 30, tzinfo=UTC)
+    session.commit()
     body = client.get("/api/v1/home").json()
     assert body["stats"]["week_total"] == 3  # 9/24、9/24、9/26；8/1 的政策不算本周
     assert (
@@ -830,6 +834,7 @@ def test_coverage_lists_covered_regions_and_uncovered_provinces(client, session,
     assert [r["name"] for r in body["regions"]] == ["国家部委", "山东"]
     assert body["sources"] == 2
     assert body["provinces"] == 1
+    assert body["national"] is True
     assert body["regions"][1] == {
         "name": "山东",
         "sources": 1,
@@ -851,4 +856,30 @@ def test_coverage_lists_covered_regions_and_uncovered_provinces(client, session,
 def test_coverage_reports_national_when_no_national_source_succeeded(client, session, seeded):
     body = client.get("/api/v1/coverage").json()
     assert body["regions"] == []
+    assert body["national"] is False
     assert {"name": "国家部委", "reason": "正在接入"} in body["notCovered"]
+
+
+def test_coverage_counts_only_successfully_checked_columns(client, session, seeded):
+    # 山东两个启用的栏目，只有一个成功检查过：栏目数算 1，另一个列出但时间为空（正在接入）
+    sd = session.scalar(select(Source).where(Source.province == "山东"))
+    sd.last_success_at = datetime(2026, 9, 28, 1, 30, tzinfo=UTC)
+    session.add(
+        Source(
+            level="省级",
+            province="山东",
+            dept="工信",
+            dept_full_name="山东省工业和信息化厅",
+            column_name="公示",
+            url="https://gxt.shandong.gov.cn/gs/",
+            enabled=True,
+            parser_config={},
+        )
+    )
+    session.commit()
+    shandong = client.get("/api/v1/coverage").json()["regions"][0]
+    assert shandong["sources"] == 1
+    assert [c["lastUpdatedAt"] for c in shandong["columns"]] == [
+        None,
+        "2026-09-28T09:30:00+08:00",
+    ]

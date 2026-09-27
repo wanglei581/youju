@@ -7,7 +7,7 @@ const ENV_NAME = { develop: '开发版', trial: '体验版' };
 // 关于有据：运营者、备案号、联系和投诉渠道
 // （微信小程序运营规范 3.10 侵权投诉机制、3.13 披露机构信息和咨询投诉渠道）
 Page({
-  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, open: {} },
+  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, covFailed: false, open: {} },
 
   onLoad() {
     let version = '';
@@ -16,13 +16,19 @@ Page({
       version = mp.version || ENV_NAME[mp.envVersion] || '';
     } catch (e) { /* 取不到版本号不影响页面 */ }
     this.setData({ version });
-    // 收录范围（验收 A8）：已收录的地区、栏目数、最近更新时间，还没收录的省份
+    this.loadRange();
+  },
+
+  // 收录范围（验收 A8）：已收录的地区、栏目数、最近更新时间，还没收录的地区；取不到时可重试
+  loadRange() {
+    this.setData({ covFailed: false });
     loadCoverage().then((c) => {
-      if (!c) return;
+      if (!c) { this.setData({ covFailed: true }); return; }
       this.setData({
         cov: {
           sources: c.sources,
           provinces: c.provinces,
+          national: c.national,
           updated: shortTime(c.updatedAt),
           regions: c.regions.map((r) => ({
             name: r.name,

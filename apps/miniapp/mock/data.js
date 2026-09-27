@@ -2,8 +2,9 @@
 // 截止日期写成 ISO 日期，剩余天数按当天实时计算；verified 表示已人工核对原文（未核对的不显示截止日期）。
 module.exports = {
   "coverage": {
-    "sources": 72,
+    "sources": 71,
     "provinces": 28,
+    "national": true,
     "regions": [
       {
         "name": "国家部委",
@@ -310,7 +311,7 @@ module.exports = {
       },
       {
         "name": "湖南",
-        "sources": 3,
+        "sources": 2,
         "lastUpdatedAt": "2026-09-28T09:30:00+08:00",
         "columns": [
           {

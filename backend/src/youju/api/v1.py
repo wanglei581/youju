@@ -200,12 +200,13 @@ def home(session: SessionDep) -> dict:
         Document.publish_date >= start, Document.publish_date < end
     )
     kinds = [doc_kind(t) for (t,) in session.execute(week).all()]
-    enabled = Source.enabled.is_(True)
-    sources = session.scalar(select(func.count()).select_from(Source).where(enabled)) or 0
+    # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
+    live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
+    sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
     provinces = (
         session.scalar(
             select(func.count(func.distinct(Source.province))).where(
-                enabled, Source.province != "国家"
+                live, Source.province != "国家"
             )
         )
         or 0
@@ -233,9 +234,10 @@ def home(session: SessionDep) -> dict:
 def coverage(session: SessionDep) -> dict:
     """收录范围（验收 A8）。
 
-    已收录：有启用、且至少成功检查过一次的栏目（没成功过的算"正在接入"）。每个地区列出启用的
-    栏目和各自最近一次成功检查的时间。还没收录的地区（国家部委和 31 个省级地区）附原因：
-    网站不允许程序访问（抓取模式 blocked）、正在接入（需浏览器渲染或已启用但还没成功）、暂未接入。
+    已收录：有启用、且至少成功检查过一次的栏目。栏目数只算成功检查过的；每个地区列出启用的
+    栏目和各自最近一次成功检查的时间（还没成功的时间为空，页面写"正在接入"）。
+    还没收录的地区（国家部委和 31 个省级地区）附原因：网站不允许程序访问（抓取模式 blocked）、
+    正在接入（需浏览器渲染，或已启用但还没成功）、暂未接入。
     """
     sources = session.scalars(
         select(Source).order_by(
@@ -256,7 +258,7 @@ def coverage(session: SessionDep) -> dict:
             regions.append(
                 {
                     "name": name,
-                    "sources": len(enabled),
+                    "sources": len(lasts),
                     "lastUpdatedAt": iso(max(lasts)),
                     "columns": [
                         {
@@ -277,6 +279,7 @@ def coverage(session: SessionDep) -> dict:
     return {
         "sources": sum(r["sources"] for r in regions),
         "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
+        "national": any(r["name"] == "国家部委" for r in regions),
         "regions": regions,
         "notCovered": not_covered,
         "updatedAt": max(lasts) if lasts else None,
