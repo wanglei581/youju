@@ -40,9 +40,12 @@ LIST_OFF_TOPIC = (
     "督察",
     "销号",
 )
-# 征求意见（如"关于《XX管理办法》公开征求社会意见的公示"）：不算名单，按其他规则判断，
-# 与其他征求意见稿一样，有政策字样的归政策
+# 征求意见：政策草案（写了"征求意见稿"），或只凭"公示"二字才像名单的（如"关于《XX管理办法》
+# 公开征求社会意见的公示"），不算名单，按其他规则判断，与其他征求意见稿一样有政策字样的归政策。
+# 写明名单、拟资助等的（如"拟资助项目名单征求意见的公示"）仍是名单
 CONSULT_WORDS = ("征求",)
+DRAFT_WORDS = ("征求意见稿",)
+STRONG_LIST_WORDS = tuple(w for w in LIST_WORDS if w != "公示")
 # 带名单字样、但其实是在组织一项工作（如"组织开展……名单制定工作的通知"），
 # 且不是公示或公布结果的，算申报通知
 LIST_APPLY_HINTS = ("组织开展", "有关事项的通知", "工作的通知", "申报")
@@ -81,10 +84,16 @@ def _off_topic(title: str) -> bool:
     return _has(title, LIST_WORDS) and _has(title, LIST_OFF_TOPIC)
 
 
+def _consult(title: str) -> bool:
+    if _has(title, DRAFT_WORDS):
+        return True
+    return _has(title, CONSULT_WORDS) and not _has(title, STRONG_LIST_WORDS)
+
+
 def doc_kind(title: str) -> str:
     if _off_topic(title):
         return "其他"
-    consult = _has(title, CONSULT_WORDS)
+    consult = _consult(title)
     if not consult and _is_list(title):
         return "名单"
     if _has(title, APPLY_WORDS) or (not consult and _has(title, LIST_WORDS)):
@@ -121,7 +130,10 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     """与 doc_kind 完全相同的判断，写成 SQL 条件。"""
     has_list = _any_in(title, LIST_WORDS)
     off_topic = and_(has_list, _any_in(title, LIST_OFF_TOPIC))
-    consult = _any_in(title, CONSULT_WORDS)
+    consult = or_(
+        _any_in(title, DRAFT_WORDS),
+        and_(_any_in(title, CONSULT_WORDS), not_(_any_in(title, STRONG_LIST_WORDS))),
+    )
     is_list = and_(
         not_(off_topic),
         not_(consult),
