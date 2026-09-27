@@ -1,8 +1,0 @@
-{
-  "navigationBarTitleText": "找答案",
-  "enablePullDownRefresh": true,
-  "usingComponents": {
-    "resource-card": "/components/resource-card/index",
-    "state-view": "/components/state-view/index"
-  }
-}
