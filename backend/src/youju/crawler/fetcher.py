@@ -16,6 +16,7 @@ from youju.crawler.urls import host_of, normalize_url, origin_of
 ROBOTS_TOKEN = "YoujuBot"
 _MAX_REDIRECTS = 5
 _ROBOTS_TTL_SECONDS = 24 * 3600
+MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
 # GBK、GB2312 都用超集 GB18030 解码，避免个别生僻字出错
 _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
@@ -33,6 +34,7 @@ class FetchResult:
     text: str = ""
     error: str | None = None
     content_type: str | None = None
+    content: bytes = b""
 
 
 @dataclass
@@ -218,7 +220,22 @@ class PoliteFetcher:
         while True:
             client = self._compat_client if host in self._compat_hosts else self._client
             try:
-                resp = client.get(url)
+                with client.stream("GET", url) as resp:
+                    if resp.status_code < 300:
+                        size = 0
+                        chunks = []
+                        for chunk in resp.iter_bytes():
+                            size += len(chunk)
+                            if size > MAX_RESPONSE_BYTES:
+                                return FetchResult(
+                                    url,
+                                    "too_large",
+                                    final_url=str(resp.url),
+                                    http_status=resp.status_code,
+                                    error="文件超过 20MB",
+                                )
+                            chunks.append(chunk)
+                        content = b"".join(chunks)
             except httpx.TimeoutException as exc:
                 last_error = f"超时：{exc.__class__.__name__}"
             except httpx.ConnectError as exc:
@@ -268,8 +285,13 @@ class PoliteFetcher:
                     "ok",
                     final_url=str(resp.url),
                     http_status=resp.status_code,
-                    text=decode_html(resp.content, resp.headers.get("content-type")),
+                    text=(
+                        ""
+                        if content.startswith(b"%PDF-")
+                        else decode_html(content, resp.headers.get("content-type"))
+                    ),
                     content_type=resp.headers.get("content-type"),
+                    content=content,
                 )
             if network_retries == 0:
                 return FetchResult(url, "network_error", error=last_error)

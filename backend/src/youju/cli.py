@@ -3,7 +3,7 @@
 import argparse
 import logging
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -125,13 +125,27 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
 
     with session_factory()() as session:
         results = fetch_details(
-            session, limit=args.limit, source_id=args.source_id, max_workers=args.workers
+            session,
+            limit=args.limit,
+            source_id=args.source_id,
+            max_workers=args.workers,
+            since=args.since,
+            notices_only=args.notices_only,
         )
     by_status = Counter(r.status for r in results)
     print(f"处理 {len(results)} 份文件：" + "，".join(f"{k} {v}" for k, v in by_status.items()))
     for result in results:
         if result.status != "ok":
             print(f"  #{result.document_id} {result.status}：{result.failure_reason or ''}")
+    return 0
+
+
+def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
+    from youju.extract.service import extract_existing
+
+    with session_factory()() as session:
+        documents, added = extract_existing(session, since=args.since)
+    print(f"检查 {documents} 份已抓取正文，新增 {added} 条待核对截止候选")
     return 0
 
 
@@ -164,7 +178,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=50, help="最多处理多少份文件，默认 50")
     p.add_argument("--source-id", type=int, help="只处理指定来源")
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
+    p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
+    p.add_argument(
+        "--notices-only", action="store_true", help="只处理标题含申报/征集/推荐/遴选/认定的文件"
+    )
     p.set_defaults(func=_cmd_fetch_details)
+
+    p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
+    p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
+    p.set_defaults(func=_cmd_extract_deadlines)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
 

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Barrier
 
 import pytest
@@ -231,3 +232,53 @@ def test_different_hosts_run_in_parallel_but_same_host_stays_serial(session) -> 
     fake = ConcurrentFetcher()
     assert len(fetch_details(session, limit=3, fetcher=fake, max_workers=2)) == 3
     assert fake.calls.index(first.url) < fake.calls.index(second.url)
+
+
+def test_pdf_detail_and_pdf_only_html_use_real_redacted_sample(session) -> None:
+    pdf = (Path(__file__).parent / "fixtures" / "jiangsu_510.pdf").read_bytes()
+    assert len(pdf) < 1_000_000
+    direct = add_document(session, 100)
+    direct.url = "https://kxjst.jiangsu.gov.cn/notice.pdf"
+    direct.url_key = "kxjst.jiangsu.gov.cn/notice.pdf"
+    html_doc = add_document(session, 101, source_id=direct.source_id)
+    html_doc.url = "https://kxjst.jiangsu.gov.cn/notice.html"
+    html_doc.url_key = "kxjst.jiangsu.gov.cn/notice.html"
+    session.commit()
+    attachment = "https://kxjst.jiangsu.gov.cn/attachment.pdf"
+    fake = FakeFetcher(
+        {
+            direct.url: FetchResult(
+                direct.url,
+                "ok",
+                final_url=direct.url,
+                content_type="application/pdf",
+                content=pdf,
+                http_status=200,
+            ),
+            html_doc.url: FetchResult(
+                html_doc.url,
+                "ok",
+                final_url=html_doc.url,
+                content_type="text/html",
+                http_status=200,
+                text=f"<html><body><div id='zoom'><a href='{attachment}'>点击正文.pdf</a></div></body></html>",
+            ),
+            attachment: FetchResult(
+                attachment,
+                "ok",
+                final_url=attachment,
+                content_type="application/pdf",
+                content=pdf,
+                http_status=200,
+            ),
+        }
+    )
+    results = fetch_details(session, limit=2, fetcher=fake)
+    assert [r.status for r in results] == ["ok", "ok"]
+    assert len(session.get(DocumentDetail, direct.id).body_text) > 1000
+    assert (
+        session.get(DocumentDetail, html_doc.id).body_text
+        == session.get(DocumentDetail, direct.id).body_text
+    )
+    assert len(session.get(DocumentDetail, html_doc.id).attachments) == 1
+    assert fake.calls == [direct.url, html_doc.url, attachment]

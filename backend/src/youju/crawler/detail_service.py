@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
 
 from sqlalchemy import and_, or_, select
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from youju.config import get_settings
 from youju.crawler.detail import DetailResult, parse_detail
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
+from youju.crawler.pdf import extract_pdf_body
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
 
 
@@ -95,7 +96,9 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     now = datetime.now(UTC)
     if not _government_url(url):
         return _FetchOutcome(document_id, now, None, None, "unsupported_host", "非政府网站")
-    if urlsplit(url).path.lower().endswith(_FILE_SUFFIXES):
+    if urlsplit(url).path.lower().endswith(_FILE_SUFFIXES) and not urlsplit(
+        url
+    ).path.lower().endswith(".pdf"):
         return _FetchOutcome(
             document_id, now, None, None, "unsupported_format", "链接不是 HTML 详情页"
         )
@@ -108,13 +111,47 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     if not _government_url(fetched.final_url or url):
         return _FetchOutcome(document_id, now, fetched, None, "unsupported_host", "非政府网站")
     content_type = (fetched.content_type or "").split(";", 1)[0].strip().lower()
-    if (
-        content_type and content_type not in {"text/html", "application/xhtml+xml"}
-    ) or fetched.text.lstrip().startswith("%PDF-"):
+    is_pdf = (
+        content_type == "application/pdf"
+        or fetched.content.startswith(b"%PDF-")
+        or fetched.text.lstrip().startswith("%PDF-")
+    )
+    if is_pdf:
+        body, error = extract_pdf_body(fetched.content)
+        parsed = DetailResult(body_text=body, failure_reason=error)
+        return _FetchOutcome(
+            document_id, now, fetched, parsed, "ok" if body else "pdf_error", error
+        )
+    if content_type and content_type not in {"text/html", "application/xhtml+xml"}:
         return _FetchOutcome(
             document_id, now, fetched, None, "unsupported_format", "响应不是 HTML 详情页"
         )
     parsed = parse_detail(fetched.text, fetched.final_url or url)
+    pdf_attachments = [a for a in parsed.attachments if a.extension == "pdf"]
+    if not parsed.body_text and len(parsed.attachments) == 1 and len(pdf_attachments) == 1:
+        pdf_url = pdf_attachments[0].url
+        if not _government_url(pdf_url):
+            return _FetchOutcome(
+                document_id, now, fetched, parsed, "unsupported_host", "PDF 非政府网站"
+            )
+        pdf_fetch = fetcher.fetch(pdf_url)
+        if pdf_fetch.status != "ok":
+            return _FetchOutcome(
+                document_id,
+                now,
+                pdf_fetch,
+                parsed,
+                pdf_fetch.status,
+                pdf_fetch.error or pdf_fetch.status,
+            )
+        if not _government_url(pdf_fetch.final_url or pdf_url):
+            return _FetchOutcome(
+                document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
+            )
+        body, error = extract_pdf_body(pdf_fetch.content)
+        if error:
+            return _FetchOutcome(document_id, now, pdf_fetch, parsed, "pdf_error", error)
+        parsed.body_text = body
     status = (
         "protected"
         if parsed.failure_reason == "防护页或验证码"
@@ -154,6 +191,8 @@ def fetch_details(
     source_id: int | None = None,
     fetcher: DetailFetcher | None = None,
     max_workers: int | None = None,
+    since: date | None = None,
+    notices_only: bool = False,
 ) -> list[DetailFetchSummary]:
     """抓尚无详情或已到重试时间的公开政府文件；临时失败最多尝试三次。"""
     if limit < 1:
@@ -179,6 +218,17 @@ def fetch_details(
     )
     if source_id is not None:
         stmt = stmt.where(Document.source_id == source_id)
+    if since is not None:
+        stmt = stmt.where(Document.publish_date >= since)
+    if notices_only:
+        stmt = stmt.where(
+            or_(
+                *(
+                    Document.title.contains(term)
+                    for term in ("申报", "征集", "推荐", "遴选", "认定")
+                )
+            )
+        )
     selected = [(int(i), url) for i, url in session.execute(stmt).all()]
     # 查询事务先结束；网络请求期间不占用数据库连接和行锁。
     session.commit()

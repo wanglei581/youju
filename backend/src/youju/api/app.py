@@ -1,15 +1,19 @@
-"""只读 API：来源、文件题录、统计。现阶段供内部使用和小程序开发联调。"""
+"""公开只读 API 与内部截止日期核对接口。"""
+
+from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from hmac import compare_digest
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from youju.config import get_settings
 from youju.db import get_session
-from youju.models import Document, DocumentDetail, Source
+from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
 app = FastAPI(title="有据 API", version="0.1.0")
 
@@ -68,6 +72,32 @@ class DetailOut(BaseModel):
 
 class DocumentWithDetailOut(DocumentOut):
     detail: DetailOut | None
+    deadlines: list[ApprovedDeadlineOut]
+    deadline_text: str
+
+
+class ApprovedDeadlineOut(BaseModel):
+    kind: str
+    date: date
+    time: str | None
+
+
+class PendingDeadlineOut(BaseModel):
+    id: int
+    document_id: int
+    title: str
+    url: str
+    kind: str
+    candidate_date: date
+    candidate_time: str | None
+    evidence: str
+    confidence: str
+
+
+class ReviewIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
+    new_date: date | None = Field(default=None, alias="date")
+    new_time: str | None = Field(default=None, alias="time")
 
 
 class DocumentPage(BaseModel):
@@ -170,8 +200,27 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, source = row
     detail = session.get(DocumentDetail, doc.id)
+    approved = session.scalars(
+        select(DocumentDeadline)
+        .where(DocumentDeadline.document_id == doc.id, DocumentDeadline.status == "approved")
+        .order_by(DocumentDeadline.approved_date, DocumentDeadline.id)
+    ).all()
+    deadlines = [
+        ApprovedDeadlineOut(
+            kind=d.kind,
+            date=d.approved_date,
+            time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
+        )
+        for d in approved
+    ]
     return DocumentWithDetailOut(
         **_document_out(doc, source).model_dump(),
+        deadlines=deadlines,
+        deadline_text="；".join(
+            f"{d.kind}：{d.date.isoformat()}" + (f" {d.time}" if d.time else "") for d in deadlines
+        )
+        if deadlines
+        else "截止时间见原文",
         detail=DetailOut(
             body_text=detail.body_text,
             issuer=detail.issuer,
@@ -189,6 +238,89 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
         if detail
         else None,
     )
+
+
+def _require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> None:
+    expected = get_settings().admin_token
+    if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
+        raise HTTPException(status_code=401, detail="管理接口未授权")
+
+
+AdminDep = Annotated[None, Depends(_require_admin)]
+
+
+@app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
+def pending_deadlines(
+    session: SessionDep,
+    _admin: AdminDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[PendingDeadlineOut]:
+    rows = session.execute(
+        select(DocumentDeadline, Document)
+        .join(Document)
+        .where(DocumentDeadline.status == "pending")
+        .order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return [
+        PendingDeadlineOut(
+            id=d.id,
+            document_id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            kind=d.kind,
+            candidate_date=d.candidate_date,
+            candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
+            evidence=d.evidence,
+            confidence=d.confidence,
+        )
+        for d, doc in rows
+    ]
+
+
+def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> dict[str, str]:
+    row = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.id == deadline_id).with_for_update()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="候选已核对")
+    if status == "rejected" and (body.new_date is not None or body.new_time is not None):
+        raise HTTPException(status_code=422, detail="驳回时不能修改日期")
+    if body.new_time is not None:
+        from datetime import time
+
+        try:
+            parsed_time = time.fromisoformat(body.new_time)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="时间格式应为 HH:MM") from exc
+    else:
+        parsed_time = row.candidate_time
+    row.status = status
+    row.reviewed_by = body.reviewed_by
+    row.reviewed_at = datetime.now(UTC)
+    if status == "approved":
+        row.approved_date = body.new_date or row.candidate_date
+        row.approved_time = parsed_time
+    session.commit()
+    return {"status": status}
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/approve")
+def approve_deadline(
+    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep
+) -> dict[str, str]:
+    return _review(deadline_id, body, session, "approved")
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/reject")
+def reject_deadline(
+    deadline_id: int, body: ReviewIn, session: SessionDep, _admin: AdminDep
+) -> dict[str, str]:
+    return _review(deadline_id, body, session, "rejected")
 
 
 @app.get("/api/stats", response_model=Stats)
