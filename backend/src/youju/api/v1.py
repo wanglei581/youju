@@ -244,6 +244,30 @@ def search(
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。"""
+    stmt = search_statement(session, q, kind, regions, types, status, time, depts)
+    total = _count(session, stmt)
+    rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
+    return {
+        "q": (q or "").strip(),
+        "total": total,
+        "total_all": _count(
+            session, search_statement(session, q, kind, regions, types, status, "不限", depts)
+        ),
+        "items": _items(session, [tuple(r) for r in rows]),
+    }
+
+
+def search_statement(
+    session: Session,
+    q: str | None,
+    kind: str,
+    regions: str | None,
+    types: str | None,
+    status: str | None,
+    time: str,
+    depts: str | None,
+) -> Select:
+    """公开搜索、关注和提醒共用筛选校验及 SQL。"""
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
     if time not in TIMES:
@@ -270,20 +294,12 @@ def search(
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
 
-    total_all = _count(session, stmt)
     d = now().date()
     if TIMES[time]:
         stmt = stmt.where(Document.publish_date >= d - timedelta(days=TIMES[time]))
     elif time == "今年":
         stmt = stmt.where(Document.publish_date >= date(d.year, 1, 1))
-    total = _count(session, stmt)
-    rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
-    return {
-        "q": kw,
-        "total": total,
-        "total_all": total_all,
-        "items": _items(session, [tuple(r) for r in rows]),
-    }
+    return stmt
 
 
 def _fmt_deadline_note(d: DocumentDeadline) -> str:

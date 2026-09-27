@@ -41,7 +41,9 @@ def db_engine() -> Iterator[Engine]:
 @pytest.fixture
 def session_factory(db_engine: Engine) -> sessionmaker[Session]:
     with db_engine.begin() as conn:
-        conn.execute(text("TRUNCATE documents, source_checks, sources RESTART IDENTITY CASCADE"))
+        conn.execute(
+            text("TRUNCATE users, documents, source_checks, sources RESTART IDENTITY CASCADE")
+        )
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 
