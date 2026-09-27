@@ -1,5 +1,8 @@
+const legal = require('../../content/legal.js');
+
 Page({
   data: {
+    legalFinal: legal.final,
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,
@@ -18,6 +21,10 @@ Page({
 
   // 登录前必须主动勾选同意协议（agy 合规意见；微信隐私协议开发指南要求用户明确同意）
   toggleAgree() {
+    if (!this.data.legalFinal) {
+      wx.showToast({ title: '协议正在定稿，定稿后开放登录', icon: 'none' });
+      return;
+    }
     this.setData({ agreed: !this.data.agreed, nudge: false });
   },
 

@@ -4,8 +4,8 @@
     <text class="brand">有据</text>
     <text class="badge">第三方整理 · 非政府平台</text>
   </view>
-  <view class="scopes" role="tablist" aria-label="搜索范围">
-    <view wx:for="{{scopes}}" wx:key="key" class="scope {{scope === index ? 'scope--on' : ''}}" data-index="{{index}}" bindtap="pickScope">
+  <view class="scopes" aria-role="tablist" aria-label="搜索范围">
+    <view wx:for="{{scopes}}" wx:key="key" class="scope {{scope === index ? 'scope--on' : ''}}" data-index="{{index}}" bindtap="pickScope" aria-role="tab" aria-selected="{{scope === index}}">
       <text>{{item.label}}</text>
       <view class="scope-bar" wx:if="{{scope === index}}"></view>
     </view>
@@ -60,8 +60,8 @@
 </view>
 
 <view class="card">
-  <view class="tabs" role="tablist" aria-label="按类型看">
-    <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab">
+  <view class="tabs" aria-role="tablist" aria-label="按类型看">
+    <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
       <text>{{item.label}}</text>
       <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
     </view>

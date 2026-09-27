@@ -1,6 +1,6 @@
-<view class="bar" role="tablist">
+<view class="bar" aria-role="tablist">
   <view wx:for="{{list}}" wx:key="pagePath" class="item {{selected === index ? 'item--on' : ''}}"
-        data-index="{{index}}" bindtap="switchTab" role="tab" aria-selected="{{selected === index}}">
+        data-index="{{index}}" bindtap="switchTab" aria-role="tab" aria-selected="{{selected === index}}">
     <t-icon name="{{selected === index ? item.iconOn : item.icon}}" size="48rpx" />
     <text class="label">{{item.text}}</text>
   </view>

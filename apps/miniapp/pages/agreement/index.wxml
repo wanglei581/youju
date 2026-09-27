@@ -1,4 +1,10 @@
-<view class="card doc">
-  <view class="doc-title">{{type === 'privacy' ? '《隐私保护指引》' : '《用户协议》'}}</view>
-  <view class="muted doc-text">正式文本正在定稿（Sprint 3 #22），上线前会在这里完整展示。</view>
+<view wx:if="{{!final}}" class="draft">{{status}}</view>
+<view class="card doc" wx:if="{{doc}}">
+  <view class="doc-title">《{{doc.title}}》</view>
+  <view wx:for="{{doc.sections}}" wx:for-item="s" wx:key="h" class="sec">
+    <view class="sec-h">{{s.h}}</view>
+    <view wx:for="{{s.p}}" wx:key="index" class="sec-p">{{item}}</view>
+  </view>
 </view>
+<view class="card note">{{disclaimer}}</view>
+<view style="height: 60rpx"></view>

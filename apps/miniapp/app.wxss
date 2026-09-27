@@ -84,6 +84,7 @@ page {
 /* 截止提示：14 天内红字，7 天内再加红底 */
 .due { margin-left: auto; font-size: 24rpx; color: var(--t2); white-space: nowrap; }
 .due--soon { color: var(--red); }
+.due--past { color: var(--t3); }
 .due--urgent { padding: 0 12rpx; line-height: 40rpx; border-radius: 8rpx; background: var(--r-tint); color: var(--red); font-weight: 600; }
 
 .muted { color: var(--t2); }

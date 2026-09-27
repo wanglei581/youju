@@ -11,11 +11,12 @@
   </view>
   <view class="agree">
     <view class="check-wrap" bindtap="toggleAgree" aria-role="checkbox" aria-checked="{{agreed}}">
-      <view class="box {{agreed ? 'box--on' : ''}}"><t-icon wx:if="{{agreed}}" name="check" size="22rpx" color="#2A5CE0" /></view>
+      <view class="box {{agreed ? 'box--on' : ''}} {{legalFinal ? '' : 'box--disabled'}}"><t-icon wx:if="{{agreed}}" name="check" size="22rpx" color="#2A5CE0" /></view>
       <text>我已阅读并同意</text>
     </view>
     <text class="agree-link" data-type="user" bindtap="openAgreement">《用户协议》</text><text>和</text><text class="agree-link" data-type="privacy" bindtap="openAgreement">《隐私保护指引》</text>
     <view wx:if="{{nudge}}" class="nudge">请先勾选同意《用户协议》和《隐私保护指引》</view>
+    <view wx:if="{{!legalFinal}}" class="draft-note">协议正在定稿，定稿后开放勾选和登录</view>
   </view>
 </view>
 

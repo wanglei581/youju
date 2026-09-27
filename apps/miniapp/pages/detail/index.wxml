@@ -10,16 +10,16 @@
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
   </view>
 
-  <view wx:if="{{doc.deadline}}" class="card due-card">
+  <view wx:if="{{due}}" class="card due-card">
     <view class="due-top">
       <view>
         <view class="due-label">{{doc.deadline.label}}</view>
-        <view class="due-date-row"><text class="due-date">{{doc.deadline.date}}</text><text class="due-week">{{doc.deadline.week}}</text></view>
+        <view class="due-date-row"><text class="due-date">{{dueDate}}</text><text class="due-week">{{dueWeek}}</text></view>
       </view>
-      <text class="left-pill left-pill--{{tone || 'normal'}}">剩 {{doc.deadline.days}} 天</text>
+      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
-    <view class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
+    <view wx:if="{{due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒'}}</text>
     </view>

@@ -8,22 +8,22 @@
     </view>
     <text class="cancel" bindtap="cancel">取消</text>
   </view>
-  <view class="kind-tabs" role="tablist">
+  <view class="kind-tabs" aria-role="tablist">
     <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab">
-      <text>{{item.label}}{{item.key === 'all' ? ' ' + total30 : ''}}</text>
+      <text>{{item.label}}{{item.key === 'all' ? ' ' + total : ''}}</text>
       <view wx:if="{{tab === item.key}}" class="kind-bar"></view>
     </view>
   </view>
 </view>
 
 <view class="chips">
-  <view class="chip" bindtap="openFilter">地区<t-icon name="chevron-down" size="26rpx" color="#4E5969" /></view>
-  <view class="chip chip--on" bindtap="openFilter">近 30 天<t-icon name="chevron-down" size="26rpx" color="#2A5CE0" /></view>
-  <view class="chip" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="#4E5969" /></view>
+  <view class="chip {{regionOn ? 'chip--on' : ''}}" bindtap="openFilter">{{chipRegion}}<t-icon name="chevron-down" size="26rpx" color="{{regionOn ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="chip {{chipTime !== '不限' ? 'chip--on' : ''}}" bindtap="openFilter">{{chipTime}}<t-icon name="chevron-down" size="26rpx" color="{{chipTime !== '不限' ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="chip {{statusOn ? 'chip--on' : ''}}" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="{{statusOn ? '#2A5CE0' : '#4E5969'}}" /></view>
   <view class="filter-link" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="#1D2129" />筛选</view>
 </view>
 <view class="summary">
-  <text>近 30 天 <text class="b">{{total30}}</text> 份 · 不限时间共 {{totalAll}} 份</text>
+  <text wx:if="{{chipTime !== '不限'}}">{{chipTime}} <text class="b">{{total}}</text> 份 · 不限时间共 {{totalAll}} 份</text><text wx:else>共 <text class="b">{{total}}</text> 份</text>
   <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select">选择</text></view>
 </view>
 
@@ -38,7 +38,9 @@
 
 <view class="card">
   <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === shown.length - 1}}" />
-  <view class="load-more">已显示 {{shown.length}}/{{total30}} 份 · <text class="link">查看全部 {{total30}} 份</text></view>
+  <view wx:if="{{!shown.length}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
+  <view wx:elif="{{shown.length < total}}" class="load-more">已显示 {{shown.length}}/{{total}} 份 · <text class="link">查看全部 {{total}} 份</text></view>
+  <view wx:else class="load-more">共 {{shown.length}} 份，已全部显示</view>
 </view>
 <view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
 <view style="height: 80rpx"></view>
@@ -61,7 +63,7 @@
     </scroll-view>
     <view class="sheet-foot">
       <view class="btn-reset" bindtap="resetFilter">重置</view>
-      <view class="btn-primary btn-apply" bindtap="closeFilter">查看 {{total30}} 份结果</view>
+      <view class="btn-primary btn-apply" bindtap="closeFilter">查看 {{total}} 份结果</view>
     </view>
   </view>
 </t-popup>

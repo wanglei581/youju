@@ -14,6 +14,7 @@
 .left-pill--normal { background: var(--brand-tint); color: var(--brand); }
 .left-pill--soon { background: var(--brand-tint); color: var(--red); }
 .left-pill--urgent { background: var(--r-tint); color: var(--red); }
+.left-pill--past { background: var(--fill); color: var(--t3); }
 .due-notes { margin-top: 20rpx; padding-top: 20rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; line-height: 1.7; color: var(--t2); }
 .due-unverified { margin-top: 8rpx; font-size: 30rpx; color: var(--t1); }
 .remind { margin-top: 24rpx; height: 84rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-radius: 42rpx; border: 2rpx solid var(--brand); color: var(--brand); font-size: 28rpx; font-weight: 500; }

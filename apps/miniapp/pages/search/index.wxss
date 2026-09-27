@@ -41,3 +41,4 @@
 .group-note { margin-top: 16rpx; font-size: 24rpx; color: var(--t3); }
 .sheet-foot { flex-shrink: 0; padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 2fr; gap: 20rpx; border-top: 2rpx solid var(--line); }
 .btn-reset { height: 88rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--line2); border-radius: 44rpx; font-size: 30rpx; color: var(--t1); }
+.empty { padding: 56rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }

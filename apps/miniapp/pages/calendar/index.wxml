@@ -1,5 +1,5 @@
 <notice-bar />
-<view class="seg" role="tablist">
+<view class="seg" aria-role="tablist">
   <view wx:for="{{ranges}}" wx:key="key" class="seg-item {{range === item.key && !sel ? 'seg-item--on' : ''}}" data-key="{{item.key}}" bindtap="pickRange">{{item.label}} {{counts[item.key]}}</view>
 </view>
 <view class="filters">
@@ -8,10 +8,13 @@
 </view>
 
 <view class="card month">
-  <view class="month-head"><text class="month-title">2026年10月</text><text class="weak month-hint">蓝点：有申报截止，点日期只看当天</text></view>
+  <view class="month-head">
+    <view class="month-nav"><text class="arrow" data-step="-1" bindtap="shiftMonth" aria-role="button" aria-label="上个月">‹</text><text class="month-title">{{year}}年{{month}}月</text><text class="arrow" data-step="1" bindtap="shiftMonth" aria-role="button" aria-label="下个月">›</text></view>
+    <text class="weak month-hint">蓝点：有申报截止，点日期只看当天</text>
+  </view>
   <view class="week"><text wx:for="{{['一','二','三','四','五','六','日']}}" wx:key="*this">{{item}}</text></view>
   <view class="grid">
-    <view wx:for="{{cells}}" wx:key="index" class="cell {{item.due ? 'cell--due' : ''}} {{item.day === sel ? 'cell--sel' : ''}}"
+    <view wx:for="{{cells}}" wx:key="key" class="cell {{item.due ? 'cell--due' : ''}} {{sel && item.day === selDay ? 'cell--sel' : ''}}"
           data-day="{{item.day}}" data-due="{{item.due}}" bindtap="pickDay">
       <block wx:if="{{!item.blank}}">
         <text class="num {{item.weekend && !item.due ? 'num--weekend' : ''}}">{{item.day}}</text>
@@ -28,7 +31,7 @@
 
 <view wx:if="{{!shown.length}}" class="card empty">
   <view class="empty-title">这个时间段没有截止的申报事项</view>
-  <view class="muted empty-sub">最近的截止在 10月16日，还有 19 天</view>
+  <view wx:if="{{nearest}}" class="muted empty-sub">最近的截止在 {{nearest.date}}，还有 {{nearest.days}} 天</view>
 </view>
 
 <view wx:for="{{shown}}" wx:key="id" class="card item">
@@ -38,7 +41,7 @@
     <text class="pill pill--{{item.tone || 'normal'}}">剩 {{item.days}} 天</text>
   </view>
   <view class="item-body">
-    <view class="item-main" data-id="{{item.id}}" bindtap="open">
+    <view class="item-main" data-id="{{item.id}}" data-has="{{item.hasDetail}}" bindtap="open">
       <view class="item-tags"><text class="tag tag--apply">{{item.kind}}</text><text class="muted small">{{item.region}}</text></view>
       <view class="item-title">{{item.title}}</view>
       <view class="muted item-what">{{item.what}}</view>

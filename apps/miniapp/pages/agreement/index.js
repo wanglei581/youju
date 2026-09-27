@@ -1,7 +1,10 @@
+const legal = require('../../content/legal.js');
+
 Page({
-  data: { type: 'user' },
+  data: { doc: null, final: false, status: '', disclaimer: '' },
   onLoad(query) {
-    this.setData({ type: query.type === 'privacy' ? 'privacy' : 'user' });
-    wx.setNavigationBarTitle({ title: query.type === 'privacy' ? '隐私保护指引' : '用户协议' });
+    const doc = query.type === 'privacy' ? legal.privacy : legal.user;
+    this.setData({ doc, final: legal.final, status: legal.status, disclaimer: legal.disclaimer });
+    wx.setNavigationBarTitle({ title: doc.title });
   },
 });

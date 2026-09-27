@@ -1,6 +1,6 @@
-// 演示数据：来自 2026-09-26 的真实抓取和原文核对（与原型 v2 相同）。接口就绪后只在开发时使用。
+// 演示数据：来自 2026-09-26 的真实抓取和原文核对（与原型 v2 相同）。接口（#27）就绪后只在开发时使用。
+// 截止日期写成 ISO 日期，剩余天数按当天实时计算；verified 表示已人工核对原文（未核对的不显示截止日期）。
 module.exports = {
-  "today": "2026-09-27",
   "stats": {
     "week_total": 158,
     "apply": 25,
@@ -21,8 +21,9 @@ module.exports = {
       "date": "2026-09-24",
       "url": "https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml",
       "deadline": {
-        "text": "10月18日截止",
-        "days": 21
+        "date": "2026-10-18",
+        "time": "",
+        "verified": true
       }
     },
     {
@@ -45,8 +46,9 @@ module.exports = {
       "date": "2026-09-24",
       "url": "https://kjt.jiangxi.gov.cn/jxskxjst/col/col27029/content/content_2103050611282489344.html",
       "deadline": {
-        "text": "10月23日 17:00 截止",
-        "days": 26
+        "date": "2026-10-23",
+        "time": "17:00",
+        "verified": true
       }
     },
     {
@@ -79,8 +81,9 @@ module.exports = {
       "date": "2026-09-23",
       "url": "https://kjt.hubei.gov.cn/kjdt/tzgg/202609/t20260922_6020453.shtml",
       "deadline": {
-        "text": "10月26日 17:00 截止",
-        "days": 29
+        "date": "2026-10-26",
+        "time": "17:00",
+        "verified": true
       }
     },
     {
@@ -249,68 +252,58 @@ module.exports = {
   "calendar": [
     {
       "id": "nx",
-      "day": 16,
-      "date": "10月16日",
-      "week": "周五",
+      "due": "2026-10-16",
       "time": "",
-      "days": 19,
       "region": "宁夏 · 科技厅",
       "kind": "申报通知",
       "title": "自治区科技厅关于组织申报2027年度自治区科技金融补助的通知",
       "what": "第一批推荐截止",
-      "link": false
+      "hasDetail": false,
+      "verified": true
     },
     {
       "id": "ln",
-      "day": 18,
-      "date": "10月18日",
-      "week": "周日",
+      "due": "2026-10-18",
       "time": "",
-      "days": 21,
       "region": "辽宁 · 工信厅",
       "kind": "申报通知",
       "title": "辽宁省工业和信息化厅关于组织开展2026年三季度辽宁省制造业固定资产贷款贴息及担保补贴项目申报工作的通知",
       "what": "企业申报截止（原文：逾期申报平台自动关闭）· 市级推荐 10月20日",
-      "link": true
+      "hasDetail": true,
+      "verified": true
     },
     {
       "id": "jx",
-      "day": 23,
-      "date": "10月23日",
-      "week": "周五",
+      "due": "2026-10-23",
       "time": "17:00",
-      "days": 26,
       "region": "江西 · 科技厅",
       "kind": "申报通知",
       "title": "关于组织申报2026年度江西省技术创新中心的通知",
       "what": "依托单位网上提交截止 · 推荐部门审核 10月29日 17:00",
-      "link": false
+      "hasDetail": false,
+      "verified": true
     },
     {
       "id": "hb",
-      "day": 26,
-      "date": "10月26日",
-      "week": "周一",
+      "due": "2026-10-26",
       "time": "17:00",
-      "days": 29,
       "region": "湖北 · 科技厅",
       "kind": "申报通知",
       "title": "省科技厅关于组织申报2026年部分省级技术创新计划项目的通知",
       "what": "申报单位网上申报截止 · 推荐单位审核 10月28日 17:00",
-      "link": false
+      "hasDetail": false,
+      "verified": true
     },
     {
       "id": "gz",
-      "day": 29,
-      "date": "10月29日",
-      "week": "周四",
+      "due": "2026-10-29",
       "time": "18:00",
-      "days": 32,
       "region": "贵州 · 科技厅",
       "kind": "申报通知",
       "title": "省科技厅关于发布2026年决策科学项目申报指南的通知",
       "what": "主管部门系统网上填报截止 · 9月29日 9:00 起开放",
-      "link": false
+      "hasDetail": false,
+      "verified": true
     }
   ],
   "follow": {
@@ -357,8 +350,9 @@ module.exports = {
         "date": "2026-09-24",
         "url": "https://gxt.ln.gov.cn/gxt/tztg/2026092416504833875/index.shtml",
         "deadline": {
-          "text": "10月18日截止",
-          "days": 21
+          "date": "2026-10-18",
+          "time": "",
+          "verified": true
         },
         "label": "辽宁 · 工信部门"
       },
@@ -434,13 +428,13 @@ module.exports = {
       "host": "gxt.ln.gov.cn",
       "deadline": {
         "label": "企业申报截止",
-        "date": "2026年10月18日",
-        "week": "周日",
-        "days": 21,
+        "date": "2026-10-18",
+        "time": "",
         "notes": [
           "市级推荐截止 10月20日 周二",
           "原文：逾期申报平台自动关闭"
-        ]
+        ],
+        "verified": true
       },
       "points": [
         [

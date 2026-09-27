@@ -1,27 +1,38 @@
 const api = require('../../utils/api.js');
-const { dueTone, kindClass } = require('../../utils/format.js');
+const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
+const { requestOnce } = require('../../utils/subscribe.js');
 
 Page({
-  data: { doc: null, tone: '', tagClasses: [], reminded: false, error: '' },
+  data: { doc: null, due: null, dueDate: '', dueWeek: '', tagClasses: [], reminded: false, error: '' },
 
   onLoad(query) {
     api.detail(query.id)
       .then((doc) => {
+        // 只有人工核对过的截止日期才显示（合规红线）
+        const due = dueInfo(doc.deadline);
         this.setData({
           doc,
-          tone: doc.deadline ? dueTone(doc.deadline.days) : '',
+          due,
+          dueDate: due ? cnDate(doc.deadline.date) : '',
+          dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
         });
       })
       .catch((err) => this.setData({ error: err.message }));
   },
 
-  // 截止提醒：正式版用一次性订阅消息，截止前 3 天提醒一次
+  // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
   toggleRemind() {
-    const reminded = !this.data.reminded;
-    this.setData({ reminded });
-    wx.showToast({ title: reminded ? '已订阅截止提醒' : '已取消', icon: 'none' });
+    if (this.data.reminded) {
+      wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
+      return;
+    }
+    requestOnce('deadline').then((ok) => {
+      if (!ok) return;
+      this.setData({ reminded: true });
+      wx.showToast({ title: '已订阅截止提醒', icon: 'none' });
+    });
   },
 
   copy() {
@@ -29,7 +40,7 @@ Page({
   },
 
   favorite() {
-    wx.showToast({ title: '已收藏', icon: 'success' });
+    wx.showToast({ title: '收藏功能即将开放', icon: 'none' });
   },
 
   exportDoc() {

@@ -3,7 +3,8 @@
     <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
     <text wx:if="{{doc.status}}" class="status status--{{statusCls}}">{{doc.status}}</text>
     <text class="region">{{label || doc.region}}</text>
-    <text wx:if="{{doc.deadline}}" class="due {{tone ? 'due--' + tone : ''}}">{{doc.deadline.text}} · 剩{{doc.deadline.days}}天</text>
+    <text wx:if="{{due}}" class="due {{due.tone ? 'due--' + due.tone : ''}}">{{due.text}}</text>
+    <text wx:elif="{{doc.kind === '申报通知'}}" class="due">截止时间见原文</text>
   </view>
   <view class="title" bindtap="open"><text wx:for="{{segs}}" wx:key="index" class="{{item.hl ? 'hl' : ''}}">{{item.t}}</text></view>
   <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>

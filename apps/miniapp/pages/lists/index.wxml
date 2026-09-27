@@ -1,5 +1,5 @@
 <view class="top" style="padding-top: {{statusBarHeight}}px">
-  <view class="nav" style="height: {{navHeight}}px; padding-right: {{menuWidth}}px">
+  <view class="nav" style="height: {{navHeight}}px">
     <view class="nav-back" bindtap="back" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" color="#FFFFFF" /></view>
     <text class="nav-title">查名单</text>
   </view>
