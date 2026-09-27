@@ -192,6 +192,28 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_alert(args: argparse.Namespace) -> int:
+    from youju.alerts import send_alert
+
+    return 1 if send_alert(args.text) is False else 0
+
+
+def _cmd_check_sources(args: argparse.Namespace) -> int:
+    from youju.alerts import send_alert
+    from youju.source_health import check_sources
+
+    with session_factory()() as session:
+        health = check_sources(session)
+    if health.passed:
+        log.info("今天栏目检查达标：%s/%s（%.1f%%）", health.successful, health.total, health.rate)
+        return 0
+    message = health.alert_text()
+    log.warning("%s", message)
+    sent = send_alert(message)
+    # cron 包装器用专用码识别“详细提醒已发”，避免再发一条泛化的任务失败提醒。
+    return 20 if args.job and sent is True else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -240,6 +262,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
         func=_cmd_cleanup
     )
+
+    p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
+    p.add_argument("text", help="提醒正文")
+    p.set_defaults(func=_cmd_alert)
+
+    p = sub.add_parser("check-sources", help="检查今天（北京时间零点起）全部启用栏目的成功率")
+    p.add_argument("--job", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(func=_cmd_check_sources)
 
     p = sub.add_parser("serve", help="启动 API 服务")
     p.add_argument("--host", default="127.0.0.1")

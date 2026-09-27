@@ -34,7 +34,7 @@
   <view wx:if="{{stats}}" class="nums">
     <view class="num"><view class="num-v">{{stats.sources}}</view><view class="muted num-k">政府网站栏目</view></view>
     <view class="num num--line"><view class="num-v">{{stats.provinces}}</view><view class="muted num-k">个省 + 国家部委</view></view>
-    <view class="num num--line"><view class="num-v">1–4</view><view class="muted num-k">次 / 天检查</view></view>
+    <view class="num num--line"><view class="num-v">4</view><view class="muted num-k">次 / 天检查</view></view>
   </view>
   <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>

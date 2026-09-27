@@ -5,11 +5,25 @@
 cd /app/backend
 name="$1"
 log() { echo "[$(date '+%F %T')] $*" >> /proc/1/fd/1; }
+if [ "$name" = "check-sources" ]; then
+  # 仅 cron 包装器使用：详细提醒已发送时返回 20，避免重复提醒。
+  set -- "$@" --job
+fi
 log "开始：youju $*"
-if flock -n "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1; then
+if flock -n -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1; then
   log "完成：youju $*"
 else
   code=$?
-  log "失败：youju $*（退出码 ${code}；1 表示上一次还没跑完，124 表示超时）"
+  if [ "$name" = "check-sources" ] && [ "$code" -eq 20 ]; then
+    log "未达标：youju check-sources（详细提醒已发送；任务按失败退出）"
+    exit 1
+  fi
+  case "$code" in
+    75) reason="上一次还没跑完，本次重叠跳过" ;;
+    124) reason="运行超过 3 小时，已超时" ;;
+    *) reason="任务执行失败" ;;
+  esac
+  log "失败：youju ${name}（退出码 ${code}；${reason}）"
+  youju alert "任务 youju ${name} 失败：退出码 ${code}（${reason}）" >> /proc/1/fd/1 2>&1 || :
   exit "$code"
 fi

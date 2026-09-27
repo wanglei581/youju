@@ -29,7 +29,7 @@ COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./
 COPY backend/deploy ./deploy
 COPY ["docs/数据来源", "/app/docs/数据来源"]
-RUN pip install --no-cache-dir --no-deps . && chmod +x deploy/start.sh deploy/job.sh
+RUN pip install --no-cache-dir --no-deps . && chmod +x deploy/start.sh deploy/job.sh deploy/round.sh
 
 EXPOSE 80
 CMD ["deploy/start.sh"]
