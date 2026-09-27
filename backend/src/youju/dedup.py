@@ -21,6 +21,34 @@ def match_key(doc: Document, detail: DocumentDetail | None, source: Source) -> s
     return f"{title}|{re.sub(r'\s+', '', agency)}|{published.isoformat()}"
 
 
+def _signature(detail: DocumentDetail | None) -> tuple[str | None, str | None]:
+    """文号和正文开头；取不到的为 None（不参与比较）。"""
+    if detail is None:
+        return None, None
+    number = re.sub(r"\s+", "", detail.doc_number) if detail.doc_number else None
+    body = re.sub(r"\s+", "", detail.body_text or "")
+    return number or None, body[:200] if len(body) >= 100 else None
+
+
+def _split_by_content(
+    members: list[tuple[int, tuple[str | None, str | None]]],
+) -> list[list[int]]:
+    """标题、机关、日期都相同，但文号或正文开头不同的，分成不同的组，不归并。"""
+    buckets: list[tuple[list[str | None], list[int]]] = []
+    for doc_id, (number, head) in members:
+        for sig, ids in buckets:
+            if (number is None or sig[0] is None or number == sig[0]) and (
+                head is None or sig[1] is None or head == sig[1]
+            ):
+                sig[0] = sig[0] or number
+                sig[1] = sig[1] or head
+                ids.append(doc_id)
+                break
+        else:
+            buckets.append(([number, head], [doc_id]))
+    return [ids for _, ids in buckets]
+
+
 def reconcile_documents(session: Session, titles: set[str] | None = None) -> int:
     """更新自动归并；active=False 是人工撤销标记，后续重跑不会覆盖。"""
     stmt = (
@@ -34,13 +62,17 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
         stmt = stmt.where(
             func.regexp_replace(Document.title, r"\s+", "", "g").in_(normalized_titles)
         )
-    groups: dict[str, list[int]] = defaultdict(list)
+    by_key: dict[str, list[tuple[int, tuple[str | None, str | None]]]] = defaultdict(list)
     ids: set[int] = set()
     for doc, detail, source in session.execute(stmt):
         ids.add(doc.id)
         key = match_key(doc, detail, source)
         if key:
-            groups[key].append(doc.id)
+            by_key[key].append((doc.id, _signature(detail)))
+    groups: dict[str, list[int]] = {}
+    for key, members in by_key.items():
+        for n, group in enumerate(_split_by_content(members)):
+            groups[key if n == 0 else f"{key}|{n}"] = group
     if not ids:
         return 0
     mappings = {

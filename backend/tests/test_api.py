@@ -428,6 +428,13 @@ def test_extraction_idempotent_after_review(session, seeded) -> None:
     session.commit()
     assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
     assert session.query(DocumentDeadline).count() == 1
+    # 同一天的另一类截止（材料报送）照常送审
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text = "企业申报截止2026年10月1日。材料报送截止2026年10月1日。"
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 1)
+    kinds = sorted(d.kind for d in session.query(DocumentDeadline))
+    assert kinds == ["企业申报截止", "材料报送截止"]
 
 
 def test_review_console_page_and_pending_count(client, seeded, session, monkeypatch) -> None:
