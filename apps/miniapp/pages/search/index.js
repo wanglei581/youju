@@ -15,7 +15,7 @@ const GROUPS = [
     options: ['不限地区', '国家部委', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'],
     note: '广西、甘肃暂未覆盖；浙江正在接入' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', '其他'] },
-  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '正式公布'] },
+  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
@@ -45,6 +45,10 @@ Page({
 
   onLoad(query) {
     const kind = decodeURIComponent(query.kind || '');
+    const time = decodeURIComponent(query.time || '');
+    if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) {
+      this.setData({ picked: Object.assign({}, DEFAULT_PICKED, { time: [time] }) });
+    }
     this.setData({
       q: decodeURIComponent(query.q || ''),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
@@ -101,7 +105,8 @@ Page({
       })
       .catch((err) => {
         if (seq !== this.seq) return;
-        this.setData({ loading: false, error: err.message });
+        // 重新查询失败时不保留旧结果，避免把旧条件的结果当成新结果
+        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0 } : { loading: false, error: err.message });
       });
   },
 
@@ -120,7 +125,8 @@ Page({
   },
 
   onInput(e) {
-    this.setData({ q: e.detail.value });
+    this.setData({ q: e.detail.value, loading: true });
+    this.seq = (this.seq || 0) + 1; // 作废进行中的查询，防止旧结果回写
     clearTimeout(this.inputTimer);
     this.inputTimer = setTimeout(() => this.apply(true), 300);
   },

@@ -70,7 +70,7 @@ page {
 .tag--policy { background: var(--g-tint); color: var(--g-txt); }
 .tag--plain { background: var(--fill); color: var(--t2); }
 
-/* 名单状态：公示=橙色虚线框，正式公布=灰色实线框 */
+/* 名单状态（只照录标题用词，D-018）：公示=橙色虚线框，公布=灰色实线框 */
 .status {
   padding: 0 12rpx;
   line-height: 36rpx;
@@ -107,3 +107,7 @@ page {
 
 /* 给自定义底栏留位置 */
 .tab-page-bottom { height: calc(200rpx + env(safe-area-inset-bottom)); }
+
+/* 加载失败提示 */
+.load-error { padding: 28rpx 32rpx; display: flex; align-items: center; justify-content: space-between; gap: 24rpx; font-size: 26rpx; color: var(--t2); }
+.retry { flex-shrink: 0; }

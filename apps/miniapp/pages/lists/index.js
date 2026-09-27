@@ -34,7 +34,14 @@ Page({
   onLoad() {
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight, menuWidth });
-    api.lists().then((res) => this.setData({ weekTotal: res.week_total, total: res.total, items: res.items }));
+    this.reload();
+  },
+
+  reload() {
+    this.setData({ error: '' });
+    api.lists()
+      .then((res) => this.setData({ weekTotal: res.week_total, total: res.total, items: res.items }))
+      .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
   },
 
   back() {
@@ -56,7 +63,7 @@ Page({
   },
 
   moreLists() {
-    wx.navigateTo({ url: '/pages/search/index?kind=名单' });
+    wx.navigateTo({ url: '/pages/search/index?kind=名单&time=不限' });
   },
 
   pickChip(e) {

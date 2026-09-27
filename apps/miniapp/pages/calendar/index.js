@@ -56,7 +56,12 @@ Page({
     stopDay(this);
   },
 
+  reload() {
+    this.load();
+  },
+
   load() {
+    this.setData({ error: '' });
     api.calendar().then(({ items }) => {
       // 只显示人工核对过、还没截止的事项；剩余天数按今天实时计算
       const upcoming = items
@@ -78,7 +83,7 @@ Page({
       if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();
-    });
+    }).catch((err) => this.setData({ error: `加载失败：${err.message}` }));
   },
 
   buildMonth() {

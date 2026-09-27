@@ -8,6 +8,7 @@
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
+    <view wx:if="{{doc.kind === '名单'}}" class="weak status-note">名单状态按标题用词标注，公示期和当前效力以原文为准</view>
   </view>
 
   <view wx:if="{{due}}" class="card due-card">

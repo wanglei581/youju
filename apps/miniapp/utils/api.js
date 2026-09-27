@@ -27,15 +27,20 @@ function errorOf(res) {
 function request(path, params) {
   const url = path + query(params);
   return new Promise((resolve, reject) => {
-    const done = (res) => (res.statusCode === 200 ? resolve(res.data) : reject(errorOf(res)));
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    // 15 秒没有返回就算超时
+    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
+    const done = (res) => (res.statusCode === 200 ? finish(resolve, res.data) : finish(reject, errorOf(res)));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path: url,
         method: 'GET',
         header: { 'X-WX-SERVICE': config.cloudService },
+        timeout: 15000,
         success: done,
-        fail: () => reject(new Error('网络不太好，请稍后再试')),
+        fail: () => finish(reject, new Error('网络不太好，请稍后再试')),
       });
     } else {
       wx.request({
@@ -43,7 +48,7 @@ function request(path, params) {
         method: 'GET',
         timeout: 15000,
         success: done,
-        fail: () => reject(new Error('连不上开发用的后端，请确认 youju serve 已启动')),
+        fail: () => finish(reject, new Error('连不上开发用的后端，请确认 youju serve 已启动')),
       });
     }
   });
@@ -81,8 +86,15 @@ function detail(id) {
 }
 
 // 日历每条的 id 是截止记录编号，打开详情用 docId（演示数据里两者相同）
+// 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar() {
-  if (isLive()) return request('/api/v1/calendar');
+  if (isLive()) {
+    const page = (offset, acc) => request('/api/v1/calendar', { limit: 200, offset }).then((r) => {
+      const items = acc.concat(r.items);
+      return items.length < r.total && r.items.length && items.length < 1000 ? page(items.length, items) : { items, total: r.total };
+    });
+    return page(0, []);
+  }
   return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)) });
 }
 

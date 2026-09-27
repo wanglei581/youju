@@ -4,7 +4,7 @@
     <text class="nav-title">查名单</text>
   </view>
   <view class="h1">这家企业上过哪些名单？</view>
-  <view class="sub">高新技术企业、专精特新、科技型中小企业等，公示和正式公布分开标注</view>
+  <view class="sub">高新技术企业、专精特新、科技型中小企业等，标题写明公示或公布的分开标注</view>
   <notice-bar onBlue="{{true}}" align="left" />
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
@@ -13,11 +13,12 @@
   </view>
   <view class="batch">批量比对：粘贴多个企业全称，一次查完 · 即将上线</view>
 </view>
-<view class="note">按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。</view>
+<view class="note">按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。名单状态按标题用词标注，公示期和当前效力以原文为准。</view>
 
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
   <view class="section-title">"{{queried}}" 的查询结果</view>
-  <view class="muted result-text">名单明细正在整理，接口就绪后这里会列出该企业入选的名单、批次、公示或正式公布状态和原文链接。</view>
+  <view class="muted result-text">名单明细正在整理，接口就绪后这里会列出该企业入选的名单、批次、标题写明的公示或公布状态和原文链接。</view>
 </view>
 
 <view class="card">

@@ -64,7 +64,7 @@ module.exports = {
     {
       "id": "bj",
       "kind": "名单",
-      "status": "正式公布",
+      "status": "公布",
       "region": "北京 · 省级",
       "title": "北京市经济和信息化局关于公布2026年新创建北京市企业技术中心名单的通知",
       "issuer": "北京市经济和信息化局",
@@ -99,7 +99,7 @@ module.exports = {
     {
       "id": "sx",
       "kind": "名单",
-      "status": "正式公布",
+      "status": "公布",
       "region": "山西 · 省级",
       "title": "山西省工业和信息化厅关于公布2026年专精特新中小企业名单的通知",
       "issuer": "山西省工业和信息化厅",
@@ -115,7 +115,7 @@ module.exports = {
       {
         "id": "s0",
         "kind": "名单",
-        "status": "正式公布",
+        "status": null,
         "region": "新疆 · 第4批",
         "title": "关于2026年第4批入库科技型中小企业名单的公告",
         "issuer": "新疆维吾尔自治区科学技术厅",
@@ -145,7 +145,7 @@ module.exports = {
       {
         "id": "s3",
         "kind": "名单",
-        "status": "正式公布",
+        "status": null,
         "region": "贵州 · 第三批",
         "title": "贵州省2026年第三批入库科技型中小企业名单公告",
         "issuer": "贵州省科学技术厅",
@@ -190,7 +190,7 @@ module.exports = {
       {
         "id": "l0",
         "kind": "名单",
-        "status": "正式公布",
+        "status": "公布",
         "region": "北京 · 省级",
         "title": "北京市经济和信息化局关于公布2026年新创建北京市企业技术中心名单的通知",
         "issuer": "北京市经济和信息化局",
@@ -210,7 +210,7 @@ module.exports = {
       {
         "id": "l2",
         "kind": "名单",
-        "status": "正式公布",
+        "status": "公布",
         "region": "西藏 · 省级",
         "title": "关于公布西藏自治区2026年度绿色制造名单的通知",
         "issuer": "西藏自治区经济和信息化厅",
@@ -230,7 +230,7 @@ module.exports = {
       {
         "id": "l4",
         "kind": "名单",
-        "status": "正式公布",
+        "status": "公布",
         "region": "山西 · 省级",
         "title": "山西省工业和信息化厅关于公布2026年专精特新中小企业名单的通知",
         "issuer": "山西省工业和信息化厅",
@@ -359,7 +359,7 @@ module.exports = {
       {
         "id": "sx",
         "kind": "名单",
-        "status": "正式公布",
+        "status": "公布",
         "region": "山西 · 省级",
         "title": "山西省工业和信息化厅关于公布2026年专精特新中小企业名单的通知",
         "issuer": "山西省工业和信息化厅",

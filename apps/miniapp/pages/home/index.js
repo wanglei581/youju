@@ -33,7 +33,14 @@ Page({
   onLoad() {
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight, menuWidth });
-    api.home().then(({ stats, items }) => this.setData({ stats, items, shown: items }));
+    this.reload();
+  },
+
+  reload() {
+    this.setData({ error: '' });
+    api.home()
+      .then(({ stats, items }) => this.setData({ stats, items, shown: items }))
+      .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
   },
 
   onHide() {

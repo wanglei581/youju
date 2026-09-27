@@ -39,6 +39,7 @@
   </view>
 </view>
 
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view class="summary" wx:if="{{stats}}" bindtap="goSearch">
   <view class="summary-num">
     <text class="summary-label">本周新增</text>
