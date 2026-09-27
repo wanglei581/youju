@@ -376,7 +376,10 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
     old_doc = _doc(src, 11, "山东省2025年第9批入库科技型中小企业名单公告", date(2025, 11, 3))
     dup_doc = _doc(src, 12, list_doc.title, list_doc.publish_date)  # 同一通知，网址不同
     other = _doc(src, 13, "2026年度高新技术企业认定名单公告", date(2026, 9, 1))
-    session.add_all([old_doc, dup_doc, other])
+    # 别的机关同一天发了同名通知：不是同一份，不能合并
+    ln_src = session.query(Source).filter_by(province="辽宁").one()
+    same_title_other_agency = _doc(ln_src, 14, list_doc.title, list_doc.publish_date)
+    session.add_all([old_doc, dup_doc, other, same_title_other_agency])
     session.flush()
     code = "91310117588657256C"
     rows = [
@@ -384,6 +387,7 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
         (dup_doc, "山东星河科技有限公司", code),
         (old_doc, "济南星河科技有限公司", code),  # 更名前
         (other, "山东星河科技有限公司", "91370100MA3C5LTN6Q"),  # 同名、代码不同
+        (same_title_other_agency, "山东星河科技有限公司", code),
     ]
     for i, (doc, name, credit) in enumerate(rows):
         session.add(
@@ -398,9 +402,14 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
             )
         )
     session.commit()
+    reconcile_documents(session)  # 按内容归并：同一机关同名同日的两个网址归为一份
+    session.commit()
     body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
     titles = [i["title"] for i in body["items"]]
-    assert titles.count(list_doc.title) == 1  # 重复通知只列一次
+    # 同一机关的重复通知只列一次；别的机关的同名通知单独列出
+    assert titles.count(list_doc.title) == 2
+    regions = sorted(i["region"] for i in body["items"] if i["title"] == list_doc.title)
+    assert regions == ["山东 · 省级", "辽宁 · 省级"]
     assert old_doc.title in titles and other.title in titles
     renamed = next(i for i in body["items"] if i["title"] == old_doc.title)
     assert renamed["matched"]["name"] == "济南星河科技有限公司"

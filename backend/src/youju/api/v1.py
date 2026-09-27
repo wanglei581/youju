@@ -447,7 +447,7 @@ def lookup_lists(
     按企业全称或统一社会信用代码与名单原文逐条精确比对。按名称查到的条目带信用代码时，
     再用信用代码找回同一企业用别的名称（如更名前）上过的名单。同名但信用代码不同的，
     标 ambiguous，由小程序提示逐条核对。名称相近的另列（similar），不当作同一家。
-    同一份名单只列一次；标题和发布日期都相同的重复通知也只列一次。只查企业和机构，
+    同一份名单只列一次；同一通知的不同网址按内容归并（youju.dedup）后也只列一次。只查企业和机构，
     输入像个人姓名的返回 422。coverage 是已收录的名单范围，查不到时据此说明。
     """
     query = normalize_name(q)
@@ -480,33 +480,33 @@ def lookup_lists(
         )
     )
     matched = or_(direct, ListEntry.credit_code.in_(codes)) if codes else direct
-    # 先按名单去重再截取，重复条目不会挤掉别的名单
-    doc_ids = session.scalars(
-        public(select(ListEntry.document_id))
-        .where(matched)
-        .group_by(ListEntry.document_id, Document.publish_date)
-        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
-        .limit(_LOOKUP_LIMIT + 1)
+    # 名单条目所在文件先映射到归并后的主文件（同一通知的不同网址算一份），按主文件去重后再截取
+    found = session.execute(
+        public(select(ListEntry.document_id, Document.publish_date).distinct()).where(matched)
     ).all()
-    truncated = len(doc_ids) > _LOOKUP_LIMIT
-    doc_ids = doc_ids[:_LOOKUP_LIMIT]
+    mapping = canonical_ids(session, [doc_id for doc_id, _ in found])
+    newest: dict[int, date | None] = {}
+    for doc_id, published in found:
+        master = mapping.get(doc_id, doc_id)
+        if master not in newest or (published and (newest[master] or date.min) < published):
+            newest[master] = published
+    masters = sorted(newest, key=lambda m: (newest[m] or date.min, m), reverse=True)
+    truncated = len(masters) > _LOOKUP_LIMIT
+    masters = masters[:_LOOKUP_LIMIT]
+    keep = set(masters)
     # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的
     best: dict[int, ListEntry] = {}
+    members = [doc_id for doc_id, _ in found if mapping.get(doc_id, doc_id) in keep]
     for entry in session.scalars(
-        select(ListEntry).where(ListEntry.document_id.in_(doc_ids), matched).order_by(ListEntry.id)
+        select(ListEntry).where(ListEntry.document_id.in_(members), matched).order_by(ListEntry.id)
     ):
-        current = best.get(entry.document_id)
+        master = mapping.get(entry.document_id, entry.document_id)
+        current = best.get(master)
         if current is None or (entry.normalized_name == query and current.normalized_name != query):
-            best[entry.document_id] = entry
-    rows = session.execute(_ordered(_base().where(Document.id.in_(doc_ids)))).all()
+            best[master] = entry
+    rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
     items: list[dict] = []
-    seen: set[tuple[str, str | None]] = set()
     for item in _items(session, [tuple(r) for r in rows]):
-        # 同一通知在不同栏目、网址不同（如多了 ?type=2）时只列一次
-        same_notice = (item["title"], item["date"])
-        if same_notice in seen:
-            continue
-        seen.add(same_notice)
         entry = best[int(item["id"])]
         item["matched"] = {
             "name": entry.name,
