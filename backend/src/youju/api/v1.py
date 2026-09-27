@@ -197,12 +197,12 @@ def search(
     kind: Annotated[str, Query(description="页签：all / 申报通知 / 名单 / 政策")] = "all",
     regions: Annotated[str | None, Query(max_length=400, description="省份，逗号分隔")] = None,
     types: Annotated[
-        str | None, Query(max_length=100, description="申报通知,名单与公示,政策文件,其他")
+        str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
     status: Annotated[str | None, Query(max_length=400, description="公示,正式公布")] = None,
     time: Annotated[str, Query(description="近 7 天 / 近 30 天 / 今年 / 不限")] = "近 30 天",
     depts: Annotated[
-        str | None, Query(max_length=50, description="科技部门,工信部门,其他部门")
+        str | None, Query(max_length=400, description="科技部门,工信部门,其他部门")
     ] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
