@@ -422,6 +422,7 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         raise HTTPException(status_code=409, detail="候选已核对")
     if status == "rejected" and (body.new_date is not None or body.new_time is not None):
         raise HTTPException(status_code=422, detail="驳回时不能修改日期")
+    # 区分"没传时间"（沿用候选时间）和"明确清空时间"（time 传 null：原文只写到日期）
     if body.new_time is not None:
         from datetime import time
 
@@ -429,6 +430,8 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
             parsed_time = time.fromisoformat(body.new_time)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="时间格式应为 HH:MM") from exc
+    elif "new_time" in body.model_fields_set:
+        parsed_time = None
     else:
         parsed_time = row.candidate_time
     row.status = status

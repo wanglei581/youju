@@ -65,11 +65,10 @@
 (function () {
   const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
   const $ = (id) => document.getElementById(id);
-  let offset = 0;
   let pending = 0;
+  const shown = new Set(); // 已显示的候选编号，翻页时去重
 
-  // 口令只存在本标签页（关闭即清除）；核对人名字记在本机
-  try { $('token').value = sessionStorage.getItem('youjuAdminToken') || ''; } catch (e) {}
+  // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
   try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; } catch (e) { $('reviewer').value = '创始人'; }
 
   function headers() {
@@ -86,11 +85,14 @@
   // 证据句里把日期标出来，便于对照（只用 textContent 拼接，不插入 HTML）
   function evidenceNode(text, date) {
     const box = el('div', 'evidence');
-    const [, m, d] = date.split('-').map(Number);
-    const hit = text.search(new RegExp(`${m}\\s*月\\s*${d}\\s*日|${m}[-/.]${d}`));
-    if (hit < 0) { box.textContent = text; return box; }
-    const match = text.slice(hit).match(new RegExp(`^(${m}\\s*月\\s*${d}\\s*日|${m}[-/.]${d})`))[0];
-    box.append(text.slice(0, hit), el('mark', '', match), text.slice(hit + match.length));
+    const [y, m, d] = date.split('-').map(Number);
+    // 支持"2026年10月09日""10月9日""2026-10-09""10-9"等写法；前后不能紧挨其他数字
+    const pattern = new RegExp(`(^|[^0-9])((?:${y}\\s*年\\s*)?0?${m}\\s*月\\s*0?${d}\\s*日|(?:${y}[-/.])?0?${m}[-/.]0?${d}(?![0-9]))`);
+    const found = pattern.exec(text);
+    if (!found) { box.textContent = text; return box; }
+    const start = found.index + found[1].length;
+    const match = found[2];
+    box.append(text.slice(0, start), el('mark', '', match), text.slice(start + match.length));
     return box;
   }
 
@@ -98,19 +100,35 @@
     $('count').textContent = `待核对 ${pending} 条`;
   }
 
+  async function refreshCount() {
+    try {
+      const res = await fetch('/api/admin/deadlines/count', { headers: headers() });
+      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+    } catch (e) { /* 计数刷新失败不影响核对 */ }
+  }
+
   async function review(item, card, action, msg) {
     const reviewer = $('reviewer').value.trim();
     if (!reviewer) { msg.textContent = '请先填写核对人'; return; }
     const body = { reviewed_by: reviewer };
     if (action === 'edit') {
-      body.date = card.querySelector('.d').value;
-      const t = card.querySelector('.t').value;
-      if (t) body.time = t;
+      const d = card.querySelector('.d').value;
+      if (!d) { msg.textContent = '请先填写日期'; return; }
+      body.date = d;
+      // 时间清空表示原文只写到日期：明确传 null，后台就不会沿用候选时间
+      body.time = card.querySelector('.t').value || null;
     }
     const url = `/api/admin/deadlines/${item.id}/${action === 'reject' ? 'reject' : 'approve'}`;
     card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
     try {
       const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+      if (res.status === 409) {
+        card.classList.add('done');
+        msg.className = 'msg';
+        msg.textContent = '这条已被其他人核对过，已跳过';
+        refreshCount();
+        return;
+      }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
       card.classList.add('done');
       msg.className = 'msg ok';
@@ -150,8 +168,9 @@
   }
 
   async function load(reset) {
-    if (reset) { offset = 0; $('list').textContent = ''; }
-    try { sessionStorage.setItem('youjuAdminToken', $('token').value.trim()); } catch (e) {}
+    if (reset) { shown.clear(); $('list').textContent = ''; }
+    // 已显示但还没核对的条目仍在待核对列表的最前面，从它们之后接着取
+    const offset = document.querySelectorAll('.card:not(.done)').length;
     try {
       const [countRes, res] = await Promise.all([
         fetch('/api/admin/deadlines/count', { headers: headers() }),
@@ -163,8 +182,10 @@
       setCount();
       const items = await res.json();
       if (!items.length && offset === 0) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
-      items.forEach((item) => $('list').append(render(item)));
-      offset += items.length;
+      items.filter((item) => !shown.has(item.id)).forEach((item) => {
+        shown.add(item.id);
+        $('list').append(render(item));
+      });
       $('more').hidden = items.length < 50;
     } catch (err) {
       $('list').textContent = '';
@@ -174,7 +195,6 @@
 
   $('load').onclick = () => load(true);
   $('more').onclick = () => load(false);
-  if ($('token').value) load(true);
 })();
 </script>
 </body>

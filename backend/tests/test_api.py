@@ -365,3 +365,36 @@ def test_review_console_page_and_pending_count(client, seeded, session, monkeypa
     assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
     item = client.get("/api/admin/deadlines", headers=headers).json()[0]
     assert item["source"] == "北京市科学技术委员会" and item["publish_date"] == "2026-09-20"
+
+
+def test_review_can_clear_time_explicitly(client, seeded, session, monkeypatch) -> None:
+    """改日期时把时间清空（time 传 null）：核定结果不能沿用候选时间。"""
+    from datetime import time
+
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    row = DocumentDeadline(
+        document_id=doc.id,
+        fingerprint="clear-time",
+        kind="企业申报截止",
+        candidate_date=date(2026, 10, 18),
+        candidate_time=time(17, 0),
+        evidence="10月18日17:00前",
+        confidence="高",
+        status="pending",
+    )
+    session.add(row)
+    session.commit()
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    body = {"reviewed_by": "测试", "date": "2026-10-18", "time": None}
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers
+        ).status_code
+        == 200
+    )
+    session.refresh(row)
+    assert row.approved_time is None
+    # 已核对的再提交：409
+    again = client.post(f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers)
+    assert again.status_code == 409
