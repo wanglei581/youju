@@ -22,7 +22,11 @@
     <view class="section-title">我的关注 {{follows.length}}<text wx:if="{{follows.length}}" class="link manage" bindtap="toggleManage">{{managing ? '完成' : '管理'}}</text></view>
     <view wx:for="{{follows}}" wx:key="id" class="sub" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="openFollow">
       <view class="sub-icon sub-icon--{{item.tone}}"><t-icon name="{{item.icon}}" size="40rpx" color="#FFFFFF" /></view>
-      <view class="sub-main"><view class="sub-name">{{item.name}}</view><view class="sub-desc">{{item.desc}}</view></view>
+      <view class="sub-main">
+        <view class="sub-name">{{item.name}}</view>
+        <view class="sub-desc">{{item.desc}}</view>
+        <view wx:if="{{mode === 'live' && remindLeft}}" class="sub-left {{remindLeft[item.id] ? 'sub-left--on' : ''}}">{{remindLeft[item.id] ? '微信提醒还剩 ' + remindLeft[item.id] + ' 次' : '未订阅微信提醒，点"提醒"订阅'}}</view>
+      </view>
       <text wx:if="{{managing}}" class="sub-del" data-id="{{item.id}}" data-name="{{item.name}}" catchtap="remove" aria-role="button">删除</text>
       <block wx:else>
         <text wx:if="{{item.newCount}}" class="sub-n">新 {{item.newCount}}</text>
