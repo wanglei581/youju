@@ -257,8 +257,9 @@ def test_job_alerts_without_changing_failure_code(
         # 抓取失败（或抓取本身重叠）时不核对栏目，避免把还没检查到的栏目误报成漏检
         (False, 1, [], ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
         (False, 75, [], ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
-        # 上一轮还没跑完：整轮跳过，只发一条提醒（也不发微信提醒）
-        (True, 0, ["--notify"], ["alert"]),
+        # 上一轮还没跑完：整轮跳过并发提醒；早上那一轮照样发微信提醒，当天不漏发
+        (True, 0, [], ["alert"]),
+        (True, 0, ["--notify"], ["alert", "notify"]),
     ],
 )
 def test_round_runs_in_order_and_checks_only_after_crawl(
