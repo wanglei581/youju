@@ -61,7 +61,6 @@ class AttachmentOut(BaseModel):
 
 
 class DetailOut(BaseModel):
-    body_text: str
     issuer: str | None
     doc_number: str | None
     publish_date: date | None
@@ -224,7 +223,6 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
         if deadlines
         else "截止时间见原文",
         detail=DetailOut(
-            body_text=detail.body_text,
             issuer=detail.issuer,
             doc_number=detail.doc_number,
             publish_date=detail.publish_date,
