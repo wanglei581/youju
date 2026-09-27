@@ -3,6 +3,11 @@
 const legal = require('../content/legal.js');
 const api = require('./api.js');
 
+// 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
+function consentOpen() {
+  return legal.final && api.isLive();
+}
+
 function agreedHere() {
   try { return wx.getStorageSync(api.AGREED_KEY) === legal.version; } catch (e) { return false; }
 }
@@ -51,4 +56,4 @@ function ensureConsent() {
   });
 }
 
-module.exports = { ensureConsent, agreedHere, forget };
+module.exports = { ensureConsent, consentOpen, agreedHere, forget };
