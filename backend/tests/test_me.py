@@ -383,6 +383,7 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
         send_wx_messages=False,
         template_newdocs={"id": "n", "fields": {"thing1": "summary", "number2": "count"}},
         template_deadline={"id": "d", "fields": {"thing1": "title", "date2": "date"}},
+        agreement_version="2026-09",
     )
 
     def forbidden(_):
@@ -416,7 +417,12 @@ def test_notify_expired_failed_and_missing_template(client, session, monkeypatch
     sub_id = client.post(
         "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
     ).json()["id"]
-    config = SimpleNamespace(send_wx_messages=True, template_deadline=None, template_newdocs=None)
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_deadline=None,
+        template_newdocs=None,
+        agreement_version="2026-09",
+    )
     assert (
         run_notify(session, settings=config, sender=lambda _: {"errcode": 0}, stamp=NOW)["skipped"]
         == 1
@@ -462,7 +468,12 @@ def test_deadline_today_with_past_time_expires(client, session, monkeypatch):
     )
     deadline.approved_time = datetime(2026, 9, 28, 9).time()
     session.commit()
-    config = SimpleNamespace(send_wx_messages=True, template_deadline=None, template_newdocs=None)
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_deadline=None,
+        template_newdocs=None,
+        agreement_version="2026-09",
+    )
     assert (
         run_notify(session, settings=config, sender=lambda _: {"errcode": 0}, stamp=NOW)["expired"]
         == 1
@@ -530,3 +541,29 @@ def test_agreement_version_must_be_current(client, session, monkeypatch):
     ok = client.post("/api/v1/me/agreement", json={"version": "2026-12"})
     assert ok.status_code == 200
     assert client.get("/api/v1/me/follows").status_code == 200
+
+
+def test_notify_skips_users_on_old_agreement(client, session, monkeypatch):
+    """协议更新后还没重新同意的用户先不发提醒，授权保留。"""
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=1))
+    created = client.post(
+        "/api/v1/me/subscriptions",
+        json={"kind": "deadline", "templateId": "d", "docId": doc.id},
+    )
+    assert created.status_code == 201
+    template = {"id": "d", "fields": {"thing1": "title", "date2": "date"}}
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_deadline=template,
+        template_newdocs=None,
+        agreement_version="2026-12",  # 协议已更新，用户同意的是 2026-09
+    )
+
+    def forbidden(_payload):
+        raise AssertionError("不应发送")
+
+    result = run_notify(session, settings=config, sender=forbidden, stamp=NOW)
+    assert result["skipped"] == 1 and result["sent"] == 0
+    assert session.scalar(select(Subscription.status)) == "unused"

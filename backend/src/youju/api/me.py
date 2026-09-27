@@ -44,6 +44,7 @@ def known_user(request: Request, session: SessionDep) -> User | None:
     if (
         user is not None
         and user.agreement_at is not None
+        and user.agreement_version == get_settings().agreement_version
         and v1.now() - user.last_visited_at > timedelta(hours=1)
     ):
         user.last_visited_at = v1.now()  # 最近访问时间一小时记一次，不必每次请求都写库

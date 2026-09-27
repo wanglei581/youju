@@ -135,8 +135,13 @@ def run_notify(
             result["skipped"] += 1
             continue
         values, page = target
+        user = session.get(User, row.user_id)
+        # 协议更新后还没重新同意的用户先不发（授权保留，重新同意后照常发）
+        if user.agreement_version != settings.agreement_version:
+            result["skipped"] += 1
+            continue
         try:
-            payload = _payload(row, session.get(User, row.user_id), template, values, page)
+            payload = _payload(row, user, template, values, page)
         except ValueError:
             log.exception("订阅模板配置无效，跳过授权 #%s", row.id)
             result["skipped"] += 1
