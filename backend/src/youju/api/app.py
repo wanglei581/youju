@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.api.v1 import _approved, _details
@@ -638,11 +638,10 @@ def change_deadline(
     """原通知已通过的截止标为已变更（延期、调整、撤销），可关联发布变更的新通知。"""
     if body.reason not in CHANGE_REASONS:
         raise HTTPException(status_code=422, detail="变更原因只能是延期、调整或撤销")
-    row = session.scalar(
-        select(DocumentDeadline).where(DocumentDeadline.id == deadline_id).with_for_update()
-    )
+    row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到截止记录")
+    group = _lock_group(session, row)
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止才能标为已变更")
     same = canonical_ids(session, [body.new_document_id, row.document_id])
@@ -663,7 +662,7 @@ def change_deadline(
         raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
     # 归并组里相同的已通过副本（同一通知的其他网址）一并标记，否则副本仍会被当作有效截止显示
     now = datetime.now(UTC)
-    for item in _group_twins(session, row, "approved"):
+    for item in [d for d in group if d.status == "approved"]:
         item.status = "changed"
         item.change_reason = body.reason
         item.changed_to_document_id = body.new_document_id
@@ -673,24 +672,35 @@ def change_deadline(
     return {"status": "changed"}
 
 
-def _group_twins(session: Session, row: DocumentDeadline, status: str) -> list[DocumentDeadline]:
-    """这条截止和归并组里类型、核定日期时间都相同、状态为 status 的副本（含自己）。"""
+def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
+    """按编号顺序一次锁住这条截止和归并组里类型、核定日期时间都相同的副本（含自己），
+    并刷新成最新状态；并发操作时不会互相等待成死锁，调用方锁住后再判断状态。"""
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
-    twins = session.scalars(
-        select(DocumentDeadline)
-        .where(
+    same_time = (
+        DocumentDeadline.approved_time.is_(None)
+        if row.approved_time is None
+        else DocumentDeadline.approved_time == row.approved_time
+    )
+    group = (
+        and_(
             DocumentDeadline.document_id.in_(members),
-            DocumentDeadline.status == status,
             DocumentDeadline.kind == row.kind,
             DocumentDeadline.approved_date == row.approved_date,
-            DocumentDeadline.approved_time.is_(None)
-            if row.approved_time is None
-            else DocumentDeadline.approved_time == row.approved_time,
+            same_time,
         )
-        .with_for_update()
-    ).all()
-    return list({row, *twins})
+        if row.approved_date is not None
+        else DocumentDeadline.id == row.id
+    )
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(or_(DocumentDeadline.id == row.id, group))
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/unchange")
@@ -698,14 +708,13 @@ def unchange_deadline(
     deadline_id: int, body: UnchangeIn, session: SessionDep, _admin: AdminDep
 ) -> dict[str, str]:
     """标错了可撤回：恢复为已通过。"""
-    row = session.scalar(
-        select(DocumentDeadline).where(DocumentDeadline.id == deadline_id).with_for_update()
-    )
+    row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到截止记录")
+    group = _lock_group(session, row)
     if row.status != "changed":
         raise HTTPException(status_code=409, detail="这条截止没有标为已变更")
-    for item in _group_twins(session, row, "changed"):
+    for item in [d for d in group if d.status == "changed"]:
         item.status = "approved"
         item.change_reason = None
         item.changed_to_document_id = None
