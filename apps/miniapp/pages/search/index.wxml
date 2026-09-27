@@ -37,10 +37,11 @@
 </view>
 
 <view class="card">
-  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === shown.length - 1}}" today="{{today}}" />
-  <view wx:if="{{!shown.length}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
-  <view wx:elif="{{shown.length < total}}" class="load-more">已显示 {{shown.length}}/{{total}} 份 · <text class="link">查看全部 {{total}} 份</text></view>
-  <view wx:else class="load-more">共 {{shown.length}} 份，已全部显示</view>
+  <doc-row wx:for="{{items}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" />
+  <view wx:if="{{error}}" class="empty">{{error}}</view>
+  <view wx:elif="{{!items.length && !loading}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
+  <view wx:elif="{{items.length < total}}" class="load-more" bindtap="loadMore">已显示 {{items.length}}/{{total}} 份 · <text class="link">{{loading ? '加载中…' : '加载更多'}}</text></view>
+  <view wx:elif="{{items.length}}" class="load-more">共 {{items.length}} 份，已全部显示</view>
 </view>
 <view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
 <view style="height: 80rpx"></view>

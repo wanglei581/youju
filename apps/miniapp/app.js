@@ -7,6 +7,8 @@ App({
   },
 
   onLaunch() {
+    const config = require('./utils/config.js');
+    if (config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });
     try {
       const win = wx.getWindowInfo();
       const menu = wx.getMenuButtonBoundingClientRect();
