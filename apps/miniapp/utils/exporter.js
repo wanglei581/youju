@@ -1,6 +1,7 @@
 // 导出 Excel / Word：请求导出接口，把文件存到本机后用微信打开；打开后右上角菜单可转发给朋友或电脑版微信
 const api = require('./api.js');
 const { todayISO } = require('./format.js');
+const exportsLog = require('./exports.js');
 
 const MAX = 200;
 
@@ -14,15 +15,18 @@ function chooseFormat() {
   });
 }
 
-// 本机只保留最近一次导出的文件：新文件写好后再删旧的，免得占用手机空间
+// 本机只保留最近一次导出的文件：新文件写好、记录存好之后再删旧的，免得占用手机空间（keep 为空时全部删除）。
+// 返回没删掉的文件数
 function clearOld(fs, keep) {
+  let failed = 0;
   try {
     fs.readdirSync(wx.env.USER_DATA_PATH)
       .filter((name) => name.indexOf('有据导出_') === 0 && `${wx.env.USER_DATA_PATH}/${name}` !== keep)
-      .forEach((name) => { try { fs.unlinkSync(`${wx.env.USER_DATA_PATH}/${name}`); } catch (e) { /* 删不掉不影响导出 */ } });
+      .forEach((name) => { try { fs.unlinkSync(`${wx.env.USER_DATA_PATH}/${name}`); } catch (e) { failed += 1; } });
   } catch (e) {
-    // 读目录失败不影响导出
+    failed += 1;
   }
+  return failed;
 }
 
 function write(fs, filePath, buffer) {
@@ -31,12 +35,26 @@ function write(fs, filePath, buffer) {
   });
 }
 
+// 文件名用完整的毫秒时间，不会和旧文件重名（重名会让旧记录打开新文件）
 function save(buffer, format) {
   const fs = wx.getFileSystemManager();
-  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now() % 100000}.${format}`;
-  // 写入失败就提示，不动旧文件；写好之后再删旧的导出文件
-  return write(fs, filePath, buffer)
-    .then(() => { clearOld(fs, filePath); return filePath; }, () => { throw new Error('保存文件失败，请稍后再试'); });
+  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now()}.${format}`;
+  // 写入失败就提示，不动旧文件
+  return write(fs, filePath, buffer).catch(() => { throw new Error('保存文件失败，请稍后再试'); });
+}
+
+// 清空导出记录时，把本机的导出文件也删掉；返回没删掉的文件数
+function removeFiles() {
+  return clearOld(wx.getFileSystemManager(), null);
+}
+
+function exists(filePath) {
+  try {
+    wx.getFileSystemManager().accessSync(filePath);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function open(filePath, format) {
@@ -51,8 +69,10 @@ function open(filePath, format) {
   });
 }
 
-// 返回 true 表示已打开导出文件
-function exportDocs(ids) {
+// 返回 true 表示已打开导出文件。options.label：导出记录里显示的名称；options.format：重新导出时沿用原格式；
+// options.replaces：重新导出时被替代的旧记录编号（新文件和记录存好就删掉旧记录，不管打开是否成功）
+function exportDocs(ids, options) {
+  const opts = options || {};
   if (!ids.length) {
     wx.showToast({ title: '请先选择文件', icon: 'none' });
     return Promise.resolve(false);
@@ -65,12 +85,29 @@ function exportDocs(ids) {
     wx.showToast({ title: '演示数据不能导出，连上接口后可用', icon: 'none' });
     return Promise.resolve(false);
   }
-  return chooseFormat().then((format) => {
+  const pick = opts.format ? Promise.resolve(opts.format) : chooseFormat();
+  return pick.then((format) => {
     if (!format) return false;
     wx.showLoading({ title: '正在生成…', mask: true });
+    let size = 0;
     return api.exportFile(ids, format)
-      .then((buffer) => save(buffer, format))
-      .then((filePath) => { wx.hideLoading(); return open(filePath, format); })
+      .then((buffer) => { size = buffer.byteLength || 0; return save(buffer, format); })
+      .then((filePath) => {
+        const recorded = exportsLog.add({
+          id: Date.now(),
+          label: opts.label || `${ids.length} 份文件`,
+          count: ids.length,
+          format,
+          size,
+          at: new Date().toISOString(),
+          path: filePath,
+          ids,
+        }, opts.replaces);
+        // 记录存好了（旧记录也在同一次写入里替换掉了）才删旧文件；没存上就保留旧文件，旧记录仍能打开
+        if (recorded) clearOld(wx.getFileSystemManager(), filePath);
+        wx.hideLoading();
+        return open(filePath, format);
+      })
       .catch((err) => {
         wx.hideLoading();
         wx.showToast({ title: err.message || '导出失败', icon: 'none' });
@@ -79,4 +116,4 @@ function exportDocs(ids) {
   });
 }
 
-module.exports = { exportDocs, MAX };
+module.exports = { exportDocs, MAX, open, exists, removeFiles };

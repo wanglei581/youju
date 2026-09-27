@@ -74,7 +74,6 @@
   <view style="height: 220rpx"></view>
 
   <view class="bar">
-    <view class="bar-item" bindtap="favorite"><t-icon name="star" size="44rpx" /><text>收藏</text></view>
     <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
     <view class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
     <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>

@@ -1,0 +1,37 @@
+<notice-bar />
+<view class="card brand">
+  <view class="brand-name">有据</view>
+  <view class="muted brand-sub">政务公开文件检索 · 第三方整理</view>
+  <view wx:if="{{version}}" class="weak brand-ver">版本 {{version}}</view>
+</view>
+
+<view class="card">
+  <view class="section-title">说明</view>
+  <view class="muted plain">{{disclaimer}}</view>
+</view>
+
+<view class="card">
+  <view class="section-title">数据从哪里来</view>
+  <view class="muted plain">只收录政府网站公开发布的文件，每条都附原文链接。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。截止日期等关键信息经人工核对才显示，没核对的写"截止时间见原文"。</view>
+</view>
+
+<view class="card">
+  <view class="section-title">运营者</view>
+  <view class="kv"><text class="kv-k">名称</text><text class="kv-v">{{op.name}}</text></view>
+  <view class="kv"><text class="kv-k">地址</text><text class="kv-v">{{op.address}}</text></view>
+  <view class="kv"><text class="kv-k">备案号</text><text class="kv-v">{{op.icp || '备案完成后显示'}}</text></view>
+  <view class="kv kv--last" bindtap="copyEmail"><text class="kv-k">联系邮箱</text><text class="kv-v link">{{op.email}}</text></view>
+</view>
+
+<view class="card">
+  <view class="section-title">纠错与投诉</view>
+  <view class="muted plain">内容和原文不一致：在文件详情或"我的"里点"纠错"，我们对照原文核实后修正。</view>
+  <view class="muted plain">侵权投诉：发邮件至联系邮箱，写明涉及的内容、权利证明和联系方式，我们核实后及时处理。</view>
+  <view class="go" bindtap="feedback" aria-role="button">去纠错</view>
+</view>
+
+<view class="card">
+  <view class="row" data-type="user" bindtap="openAgreement"><text class="row-text">用户协议</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view class="row row--last" data-type="privacy" bindtap="openAgreement"><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+</view>
+<view style="height: 80rpx"></view>

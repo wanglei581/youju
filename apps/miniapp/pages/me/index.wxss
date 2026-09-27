@@ -15,7 +15,7 @@
 .agree-link { color: #FFFFFF; }
 .nudge { position: absolute; left: -8rpx; bottom: calc(100% + 16rpx); padding: 12rpx 20rpx; border-radius: 12rpx; background: rgba(29, 33, 41, 0.92); color: #FFFFFF; font-size: 24rpx; white-space: nowrap; z-index: 5; }
 
-.grid { position: relative; margin: -32rpx 24rpx 0; padding: 32rpx 8rpx 28rpx; background: var(--card); border-radius: 24rpx; box-shadow: 0 4rpx 20rpx rgba(29, 33, 41, 0.05); display: grid; grid-template-columns: repeat(4, 1fr); }
+.grid { position: relative; margin: -32rpx 24rpx 0; padding: 32rpx 8rpx 28rpx; background: var(--card); border-radius: 24rpx; box-shadow: 0 4rpx 20rpx rgba(29, 33, 41, 0.05); display: grid; grid-template-columns: repeat(3, 1fr); }
 .grid-item { display: flex; flex-direction: column; align-items: center; gap: 12rpx; font-size: 25rpx; }
 .gi { width: 80rpx; height: 80rpx; border-radius: 24rpx; display: flex; align-items: center; justify-content: center; }
 .gi--orange { background: var(--o-tint); }

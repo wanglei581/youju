@@ -11,7 +11,6 @@
     <input class="search-input" value="{{name}}" placeholder="输入企业全称或统一社会信用代码" confirm-type="search" bindinput="onInput" bindconfirm="query" aria-label="企业全称或统一社会信用代码" />
     <view class="search-btn" bindtap="query">查询</view>
   </view>
-  <view class="batch">批量比对：粘贴多个企业全称，一次查完 · 即将上线</view>
 </view>
 <view class="note">按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。名单状态按标题用词标注，公示期和当前效力以原文为准。</view>
 
