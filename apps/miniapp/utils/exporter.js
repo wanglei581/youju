@@ -14,29 +14,31 @@ function chooseFormat() {
   });
 }
 
-// 本机只保留最近一次导出的文件，旧的删掉，免得占用手机空间
-function clearOld(fs) {
+// 本机只保留最近一次导出的文件：新文件写好后再删旧的，免得占用手机空间
+function clearOld(fs, keep) {
   try {
     fs.readdirSync(wx.env.USER_DATA_PATH)
-      .filter((name) => name.indexOf('有据导出_') === 0)
+      .filter((name) => name.indexOf('有据导出_') === 0 && `${wx.env.USER_DATA_PATH}/${name}` !== keep)
       .forEach((name) => { try { fs.unlinkSync(`${wx.env.USER_DATA_PATH}/${name}`); } catch (e) { /* 删不掉不影响导出 */ } });
   } catch (e) {
     // 读目录失败不影响导出
   }
 }
 
+function write(fs, filePath, buffer) {
+  return new Promise((resolve, reject) => {
+    fs.writeFile({ filePath, data: buffer, success: () => resolve(filePath), fail: reject });
+  });
+}
+
 function save(buffer, format) {
   const fs = wx.getFileSystemManager();
-  clearOld(fs);
   const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now() % 100000}.${format}`;
-  return new Promise((resolve, reject) => {
-    fs.writeFile({
-      filePath,
-      data: buffer,
-      success: () => resolve(filePath),
-      fail: () => reject(new Error('保存文件失败，请稍后再试')),
-    });
-  });
+  return write(fs, filePath, buffer)
+    // 写不进去（可能是空间不够）：先清掉旧的导出文件再试一次
+    .catch(() => { clearOld(fs, null); return write(fs, filePath, buffer); })
+    .then(() => { clearOld(fs, filePath); return filePath; })
+    .catch(() => { throw new Error('保存文件失败，请稍后再试'); });
 }
 
 function open(filePath, format) {
