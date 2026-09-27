@@ -1,4 +1,4 @@
-"""按标题给文件分类：申报通知 / 名单 / 政策 / 其他，以及名单的状态（公示 / 正式公布）。
+"""按标题给文件分类：申报通知 / 名单 / 政策 / 其他，以及名单的状态（公示 / 公布，只照录标题用词）。
 
 同一套关键词既用于 Python（测试、单条判断），也生成 SQL 条件（列表筛选、分页在数据库里完成）。
 规则按顺序匹配：先名单，再申报通知，再政策；都不命中算"其他"。拿不准的归"其他"，不硬判。
@@ -64,20 +64,22 @@ def doc_kind(title: str) -> str:
     return "其他"
 
 
-# 名单状态是关键字段（团队章程合规红线：未经核验不得发布），只照录标题原文写明的：
-# 标题写了"公示"才标公示；写了"公布"或"公告"（且没写"公示"）才标正式公布；其余不标（决策记录 D-018）
+# 名单状态是关键字段（团队章程合规红线：未经核验不得发布），只照录标题原文用词（决策记录 D-018）：
+# 标题写了"公示"标"公示"；写了"公布"且没有"拟"字标"公布"；只写"公告"的不标
+# （"公告"也用于拟资助、拟认定等尚在公示阶段的名单，如"……拟资助项目公告"）
 STATUS_PUBLIC = ("公示",)
-STATUS_FINAL = ("公布", "公告")
+STATUS_FINAL = ("公布",)
+STATUS_NOT_FINAL = ("拟",)
 
 
 def list_status(title: str) -> str | None:
-    """名单状态，只照录标题原文：公示 / 正式公布；标题没写明或不是名单时返回 None。"""
+    """名单状态，只照录标题原文：公示 / 公布；标题没写明或不是名单时返回 None。"""
     if doc_kind(title) != "名单":
         return None
     if _has(title, STATUS_PUBLIC):
         return "公示"
-    if _has(title, STATUS_FINAL):
-        return "正式公布"
+    if _has(title, STATUS_FINAL) and not _has(title, STATUS_NOT_FINAL):
+        return "公布"
     return None
 
 
@@ -122,8 +124,8 @@ def status_filter(title: ColumnElement[str], statuses: list[str]) -> ColumnEleme
     """名单状态筛选：只作用于名单类文件。"""
     is_list = _sql_parts(title)["名单"]
     public = _any_in(title, STATUS_PUBLIC)
-    final = and_(not_(public), _any_in(title, STATUS_FINAL))
-    parts = {"公示": and_(is_list, public), "正式公布": and_(is_list, final)}
+    final = and_(not_(public), _any_in(title, STATUS_FINAL), not_(_any_in(title, STATUS_NOT_FINAL)))
+    parts = {"公示": and_(is_list, public), "公布": and_(is_list, final)}
     return or_(*(parts[s] for s in statuses if s in parts))
 
 
