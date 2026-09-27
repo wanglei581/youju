@@ -35,8 +35,10 @@ Page({
     today: '',
     items: [],
     shown: [],
-    // 近 30 天已截止的事项（和还没截止的分开显示，默认收起）
+    // 近 30 天已截止的事项（和还没截止的分开显示，默认收起）；pastShown 跟着"只看某月 / 某天"筛选
     past: [],
+    pastShown: [],
+    pastTitle: '',
     pastOpen: false,
     year: 0,
     month: 0,
@@ -119,7 +121,13 @@ Page({
     else if (monthOnly) shown = items.filter((d) => d.due.startsWith(prefix));
     else shown = items.filter((d) => !range || d.days <= range);
     const hit = items.find((d) => d.due === sel);
-    this.setData({ shown, selLabel: hit ? hit.date : '', selDay: sel ? Number(sel.slice(8)) : 0 });
+    // 已截止的跟着筛选：只看某天时不显示（只能选有截止的日子），只看某月时只显示这个月的
+    const { past } = this.data;
+    let pastShown = past;
+    let pastTitle = '近 30 天已截止';
+    if (sel) pastShown = [];
+    else if (monthOnly) { pastShown = past.filter((d) => d.due.startsWith(prefix)); pastTitle = `${month}月已截止`; }
+    this.setData({ shown, pastShown, pastTitle, selLabel: hit ? hit.date : '', selDay: sel ? Number(sel.slice(8)) : 0 });
   },
 
   togglePast() {

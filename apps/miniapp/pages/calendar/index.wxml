@@ -56,13 +56,13 @@
     </view>
   </view>
 </view>
-<view wx:if="{{past.length}}" class="card past">
+<view wx:if="{{pastShown.length}}" class="card past">
   <view class="past-head" bindtap="togglePast" aria-role="button">
-    <text>近 30 天已截止 {{past.length}} 项</text>
+    <text>{{pastTitle}} {{pastShown.length}} 项</text>
     <t-icon name="{{pastOpen ? 'chevron-up' : 'chevron-down'}}" size="32rpx" color="#86909C" />
   </view>
   <block wx:if="{{pastOpen}}">
-    <view wx:for="{{past}}" wx:key="id" class="past-item" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
+    <view wx:for="{{pastShown}}" wx:key="id" class="past-item" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
       <view class="past-top"><text class="muted past-date">{{item.date}} {{item.week}}</text><text class="pill pill--past">已截止</text></view>
       <view class="past-title">{{item.title}}</view>
     </view>
