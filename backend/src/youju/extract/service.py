@@ -2,11 +2,12 @@
 
 import hashlib
 from datetime import date
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from youju.dedup import canonical_ids, groups_for
+from youju.dedup import canonical_ids, groups_for, reviewed_key, sync_reviewed_twins
 from youju.extract.deadlines import extract_deadlines
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
@@ -46,7 +47,7 @@ def extract_existing(
         master = canonical_ids(session, [doc.id]).get(doc.id, doc.id)
         members = groups_for(session, [master])[master]
         reviewed = {
-            (row.kind, row.candidate_date, row.candidate_time)
+            reviewed_key(row, row.status)
             for row in session.scalars(
                 select(DocumentDeadline).where(
                     DocumentDeadline.document_id.in_(members),
@@ -68,7 +69,15 @@ def extract_existing(
                     row.kind = candidate.kind
                     row.confidence = candidate.confidence
                 continue
-            if (candidate.kind, candidate.due_date, candidate.due_time) in reviewed:
+            probe = SimpleNamespace(
+                kind=candidate.kind,
+                candidate_date=candidate.due_date,
+                candidate_time=candidate.due_time,
+                evidence=candidate.evidence,
+            )
+            if reviewed_key(probe, "approved") in reviewed or (
+                reviewed_key(probe, "rejected") in reviewed
+            ):
                 continue
             row = DocumentDeadline(
                 document_id=doc.id,
@@ -86,5 +95,8 @@ def extract_existing(
         for fingerprint, row in existing.items():
             if row.status == "pending" and fingerprint not in generated:
                 session.delete(row)
+        # 之前已抽出的待核对副本，若同组已有同一截止核对过，沿用核对结果
+        session.flush()
+        sync_reviewed_twins(session, {master})
     session.commit()
     return docs, added

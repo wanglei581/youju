@@ -592,12 +592,20 @@ def approved_deadlines(
     )
     for word in words:
         stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
-    # 多取一些再按归并组去重、截取，免得同一通知的副本占满名额
-    rows = session.execute(
-        stmt.order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id.desc()).limit(
-            limit * 10
-        )
-    ).all()
+    # 分批取，按归并组去重，直到凑够 limit 个不同的截止（同一通知的副本不会占满名额）
+    ordered = stmt.order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id.desc())
+    rows: list = []
+    keys: set[tuple] = set()
+    offset = 0
+    while True:
+        batch = session.execute(ordered.limit(limit * 5).offset(offset)).all()
+        offset += len(batch)
+        batch_map = canonical_ids(session, [doc.id for _, doc, _ in batch])
+        for d, doc, src in batch:
+            keys.add((batch_map.get(doc.id, doc.id), d.kind, d.approved_date, d.approved_time))
+            rows.append((d, doc, src))
+        if len(batch) < limit * 5 or len(keys) >= limit or offset >= 2000:
+            break
     # 同组同时有"已通过"和"已变更"时先列"已通过"的：它仍作为有效截止显示，需要处理
     rows = sorted(rows, key=lambda r: r[0].status != "approved")
     new_ids = {d.changed_to_document_id for d, _, _ in rows if d.changed_to_document_id}

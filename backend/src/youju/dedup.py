@@ -123,9 +123,16 @@ _REVIEW_FIELDS = (
 )
 
 
+def reviewed_key(row, status: str) -> tuple:
+    """判断"同一截止已核对过"用的键：通过、已变更的看（类型, 日期, 时间）——日期已确认是这类截止；
+    驳回的还要证据句相同——免得把真正的截止错当成已驳回的那句（如"有效期至10月18日"）。"""
+    base = (row.kind, row.candidate_date, row.candidate_time)
+    return base if status in ("approved", "changed") else (*base, row.evidence)
+
+
 def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
-    """归并组里还在待核对、但同组已有相同候选（类型、日期、时间、证据句都相同）核对过的，
-    沿用那条的核对结果（通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。"""
+    """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
+    （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。"""
     from youju.models import DocumentDeadline
 
     synced = 0
@@ -142,10 +149,14 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
         reviewed: dict[tuple, object] = {}
         for d in rows:
             if d.status != "pending":
-                reviewed.setdefault((d.kind, d.candidate_date, d.candidate_time, d.evidence), d)
+                reviewed.setdefault(reviewed_key(d, d.status), d)
         for d in rows:
-            source = reviewed.get((d.kind, d.candidate_date, d.candidate_time, d.evidence))
-            if d.status == "pending" and source is not None:
+            if d.status != "pending":
+                continue
+            source = reviewed.get(reviewed_key(d, "approved")) or reviewed.get(
+                reviewed_key(d, "rejected")
+            )
+            if source is not None:
                 for field in _REVIEW_FIELDS:
                     setattr(d, field, getattr(source, field))
                 synced += 1

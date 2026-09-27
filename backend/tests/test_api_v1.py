@@ -702,3 +702,59 @@ def test_reviewed_search_prefers_still_valid_deadline(client, seeded, session, m
     found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
     rows = [f for f in found.json() if f["kind"] == "企业申报截止"]
     assert len(rows) == 1 and rows[0]["status"] == "approved"
+
+
+def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
+    """已通过、已变更的：同组同类型同日期时间的待核对副本沿用结果（证据句写法不同也算）；
+    已驳回的：证据句也相同才沿用，免得把真正的截止当成已驳回的那句。"""
+    from youju.dedup import sync_reviewed_twins
+    from youju.models import DocumentMerge
+
+    old = session.get(Document, seeded["apply"])
+    twin = _doc(old.source, 61, old.title, old.publish_date)
+    session.add(twin)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    rejected = DocumentDeadline(
+        document_id=old.id,
+        fingerprint="rej",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="证书有效期至11月30日",
+        confidence="低",
+        status="rejected",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+    )
+    session.add(rejected)
+    twins = {
+        "confirmed": DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="t1",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间：10月18日",  # 与已通过那条写法不同
+            confidence="高",
+            status="pending",
+        ),
+        "real": DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="t2",
+            kind="材料报送截止",
+            candidate_date=date(2026, 11, 30),
+            evidence="纸质材料11月30日前报送",  # 同日期同类型，但不是被驳回的那句
+            confidence="高",
+            status="pending",
+        ),
+    }
+    session.add_all(twins.values())
+    session.commit()
+    sync_reviewed_twins(session, {old.id})
+    session.commit()
+    session.refresh(twins["confirmed"])
+    session.refresh(twins["real"])
+    assert twins["confirmed"].status == "approved"
+    assert twins["confirmed"].approved_date == date(2026, 10, 18)
+    assert twins["real"].status == "pending"
