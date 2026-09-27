@@ -39,6 +39,7 @@
   </view>
 </view>
 
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view class="summary" wx:if="{{stats}}" bindtap="goSearch">
   <view class="summary-num">
     <text class="summary-label">本周新增</text>
@@ -52,7 +53,7 @@
   <t-icon name="chevron-right" size="32rpx" color="#86909C" />
 </view>
 
-<view class="mine" wx:if="{{stats}}" bindtap="goFollow">
+<view class="mine" wx:if="{{stats && stats.followed_new}}" bindtap="goFollow">
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
   <text class="mine-text">你关注的条件本周有 <text class="mine-n">{{stats.followed_new}}</text> 份新文件</text>
   <text class="link">去看看</text>

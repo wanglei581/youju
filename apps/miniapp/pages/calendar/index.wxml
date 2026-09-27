@@ -7,6 +7,7 @@
   <text class="today">今天 {{today}}</text>
 </view>
 
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view class="card month">
   <view class="month-head">
     <view class="month-nav"><text class="arrow" data-step="-1" bindtap="shiftMonth" aria-role="button" aria-label="上个月">‹</text><text class="month-title">{{year}}年{{month}}月</text><text class="arrow" data-step="1" bindtap="shiftMonth" aria-role="button" aria-label="下个月">›</text></view>
@@ -45,7 +46,7 @@
     <text class="pill pill--{{item.tone || 'normal'}}">剩 {{item.days}} 天</text>
   </view>
   <view class="item-body">
-    <view class="item-main" data-id="{{item.id}}" data-has="{{item.hasDetail}}" bindtap="open">
+    <view class="item-main" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
       <view class="item-tags"><text class="tag tag--apply">{{item.kind}}</text><text class="muted small">{{item.region}}</text></view>
       <view class="item-title">{{item.title}}</view>
       <view class="muted item-what">{{item.what}}</view>

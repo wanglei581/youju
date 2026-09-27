@@ -48,3 +48,4 @@
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }
 .bar-main { margin-left: auto; padding: 0 44rpx; }
 .empty { padding: 48rpx 32rpx; text-align: center; color: var(--t2); }
+.status-note { margin-top: 12rpx; font-size: 24rpx; }
