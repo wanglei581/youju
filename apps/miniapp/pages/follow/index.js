@@ -72,8 +72,13 @@ Page({
   // 每个关注还能提醒几次（还没发出的一次性订阅授权）；提醒用掉后提示再订阅（验收 B2、B5）。
   // 加载失败时不显示次数，不影响关注列表
   loadReminders() {
+    // 先清掉旧的次数（加载失败时不显示过时的次数）；只采用最后一次查询的结果
+    const seq = (this.remindSeq || 0) + 1;
+    this.remindSeq = seq;
+    this.setData({ remindLeft: null });
     api.mySubscriptions()
       .then((res) => {
+        if (seq !== this.remindSeq) return;
         const left = {};
         res.items.forEach((s) => { if (s.kind === 'newDocs' && s.followId) left[s.followId] = (left[s.followId] || 0) + 1; });
         this.setData({ remindLeft: left });
