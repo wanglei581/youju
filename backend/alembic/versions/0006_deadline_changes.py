@@ -42,7 +42,7 @@ def upgrade() -> None:
         "ck_document_deadline_changed",
         "document_deadlines",
         "status != 'changed' OR (approved_date IS NOT NULL"
-        " AND change_reason IN ('延期', '调整', '撤销')"
+        " AND change_reason IS NOT NULL AND change_reason IN ('延期', '调整', '撤销')"
         " AND changed_to_document_id IS NOT NULL)",
     )
 

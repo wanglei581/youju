@@ -501,6 +501,11 @@ def test_deadline_change_hides_old_deadline_and_links_new_notice(
     session.commit()
     too_early = {**body, "new_document_id": earlier.id}
     assert client.post(url, json=too_early, headers=headers).status_code == 422
+    undated = _doc(old.source, 11, "关于延长贷款贴息项目申报时间的补充通知", None)
+    session.add(undated)
+    session.commit()
+    no_date = {**body, "new_document_id": undated.id}
+    assert client.post(url, json=no_date, headers=headers).status_code == 422
     assert client.post(url, json=body, headers=headers).status_code == 200
     assert client.post(url, json=body, headers=headers).status_code == 409
 
@@ -532,4 +537,4 @@ def test_deadline_change_hides_old_deadline_and_links_new_notice(
     changes = client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"]
     assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] == str(new.id)
     docs = client.get("/api/admin/documents", params={"q": "延长 贷款贴息"}, headers=headers)
-    assert [d["id"] for d in docs.json()] == [new.id]
+    assert [d["id"] for d in docs.json()][0] == new.id  # 按发布日期从新到旧，日期不详的排后

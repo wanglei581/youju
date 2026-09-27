@@ -644,11 +644,9 @@ def change_deadline(
     # 防止关联到无关文件：变更通知应与原通知同一地区，且发布不早于原通知
     if new_doc.source.province != old_doc.source.province:
         raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
-    if (
-        new_doc.publish_date
-        and old_doc.publish_date
-        and new_doc.publish_date < old_doc.publish_date
-    ):
+    if new_doc.publish_date is None or old_doc.publish_date is None:
+        raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")
+    if new_doc.publish_date < old_doc.publish_date:
         raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
     row.status = "changed"
     row.change_reason = body.reason
