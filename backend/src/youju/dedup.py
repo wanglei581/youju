@@ -15,6 +15,9 @@ def match_key(doc: Document, detail: DocumentDetail | None, source: Source) -> s
     title = re.sub(r"\s+", "", doc.title)
     if not title or not agency or published is None:
         return None
+    # 列表页截断的标题（以"..."或"…"结尾）不同文件可能截成一样，不参与归并
+    if title.endswith(("...", "…", "..")):
+        return None
     return f"{title}|{re.sub(r'\s+', '', agency)}|{published.isoformat()}"
 
 

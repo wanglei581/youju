@@ -39,6 +39,12 @@ def extract_existing(
             )
         }
         generated: set[str] = set()
+        # 已核对过的截止（通过、驳回、已变更）：抽取规则或证据句截法变了，同一日期也不再重复送审
+        reviewed = {
+            (row.candidate_date, row.candidate_time)
+            for row in existing.values()
+            if row.status != "pending"
+        }
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date
         ):
@@ -51,6 +57,8 @@ def extract_existing(
                 if row.status == "pending":
                     row.kind = candidate.kind
                     row.confidence = candidate.confidence
+                continue
+            if (candidate.due_date, candidate.due_time) in reviewed:
                 continue
             row = DocumentDeadline(
                 document_id=doc.id,

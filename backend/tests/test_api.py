@@ -423,6 +423,11 @@ def test_extraction_idempotent_after_review(session, seeded) -> None:
     assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
     session.refresh(row)
     assert row.approved_date == date(2026, 10, 5)
+    # 证据句截法变了（指纹不同），同一日期已核对过，不再重复送审
+    row.fingerprint = "按旧规则截取的证据句"
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
+    assert session.query(DocumentDeadline).count() == 1
 
 
 def test_review_console_page_and_pending_count(client, seeded, session, monkeypatch) -> None:
