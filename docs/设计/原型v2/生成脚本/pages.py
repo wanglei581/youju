@@ -234,12 +234,12 @@ add("Filter", "有据 · 筛选", 844, filter_body, filter_js, fdefaults)
 ln = D["ln"]
 kv = lambda k, v: (f'<div style="display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid {LINE}"><div style="width: 64px; flex-shrink: 0; font-size: 13px; color: {T3}">{k}</div>'
                    f'<div style="font-size: 14px; line-height: 1.6">{v}</div></div>')
-attach = lambda badge, bg, fg, name: (f'<a href="{ln["url"]}" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid {LINE}; color: {T1}">'
+attach = lambda badge, bg, fg, name: (f'<div style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid {LINE}; color: {T1}">'
                                       f'<span style="width: 36px; height: 36px; flex-shrink: 0; border-radius: 8px; background: {bg}; color: {fg}; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center">{badge}</span>'
-                                      f'<span style="flex-grow: 1; font-size: 14px; line-height: 1.5">{name}</span>{icon("chev", 16, T3, 2)}</a>')
+                                      f'<span style="flex-grow: 1; font-size: 14px; line-height: 1.5">{name}</span></div>')
 REM_ON = f"margin-top: 12px; width: 100%; height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 21px; font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; background: {FILL}; color: {T2}; border: 1px solid {FILL}"
 REM_OFF = f"margin-top: 12px; width: 100%; height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 21px; font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; background: {CARD}; color: {BLUE}; border: 1px solid {BLUE}"
-SRC_CID, BAR_CID = copy_id(ln["url"]), copy_id(ln["url"])
+SRC_CID, BAR_CID, ATT_CID = copy_id(ln["url"]), copy_id(ln["url"]), copy_id(ln["url"])
 detail_body = (navbar("文件详情") + notice_bar()
     + card(f'<div style="padding: 16px 0">'
            f'<div style="display: flex; gap: 6px">{tag_type("申报通知")}{tag_type("资金支持")}<span style="font-size: 12px; color: {T2}; line-height: 20px">辽宁 · 省级</span></div>'
@@ -258,10 +258,12 @@ detail_body = (navbar("文件详情") + notice_bar()
            + f'<blockquote style="margin: 6px 0 0; padding: 12px 14px; background: #F7F8FA; border-radius: 8px; font-size: 14px; line-height: 1.8; color: {T1}">“（一）申报单位原则上应为制造业企业（以GB/T 4754-2017《国民经济行业分类》为准，含软件和信息技术服务业）。（二）财务管理机构和制度健全，纳税记录良好。（三）诚信守法，近三年未发生重大（含）以上安全、环保、质量事故（事件），未被纳入严重失信主体名单。”</blockquote></div>')
     + card('<div style="padding: 6px 0 2px">' + section_title("附件 2")
            + attach("PDF", R_TINT, RED, "附件1 辽宁省制造业固定资产贷款贴息及担保补贴实施细则（2026年）")
-           + attach("XLSX", G_TINT, G_TXT, "附件2 银行贷款贴息项目审核情况汇总表").replace(f"border-bottom: 1px solid {LINE}; color", "color", 1) + "</div>")
+           + attach("XLSX", G_TINT, G_TXT, "附件2 银行贷款贴息项目审核情况汇总表")
+           + f'<div style="position: relative; display: flex; align-items: center; padding: 11px 0 12px; font-size: 12.5px; color: {T2}"><span>附件在原文页面下载</span>'
+           + f'<button type="button" onClick="{{{{copy_{ATT_CID}}}}}" style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; padding: 0; background: none; border: 0; font-family: inherit; font-size: 12.5px; color: {BLUE}; white-space: nowrap; cursor: pointer">{icon("copy", 14, BLUE, 1.9)}复制原文链接</button>{copy_bubble(ATT_CID)}</div></div>')
     + card(f'<div style="padding: 14px 0">'
            f'<div style="display: flex; align-items: center; justify-content: space-between"><div><div style="font-size: 12px; color: {T3}">原文出处</div><div style="margin-top: 2px; font-size: 14px">辽宁省工业和信息化厅网站</div></div>'
-           f'<span style="position: relative"><button type="button" onClick="{{{{copy_{SRC_CID}}}}}" style="display: inline-flex; align-items: center; gap: 4px; padding: 0; background: none; border: 0; font-family: inherit; font-size: 14px; color: {BLUE}; cursor: pointer">{icon("copy", 15, BLUE, 2)}复制链接</button>{copy_bubble(SRC_CID)}</span></div>'
+           f'<span style="position: relative"><button type="button" onClick="{{{{copy_{SRC_CID}}}}}" style="display: inline-flex; align-items: center; gap: 4px; padding: 0; background: none; border: 0; font-family: inherit; font-size: 14px; color: {BLUE}; cursor: pointer">{icon("copy", 15, BLUE, 2)}复制原文链接</button>{copy_bubble(SRC_CID)}</span></div>'
            f'<p style="margin: 10px 0 0; font-size: 12px; line-height: 1.7; color: {T2}">原文网址 gxt.ln.gov.cn。小程序内不能直接打开政府网站，复制链接后在浏览器打开。以上要点由有据按原文逐条整理，以原文为准，2026-09-26 核对。申报请在主管部门的申报系统办理；有据是第三方整理的信息工具，不是政府平台，不提供填报入口。发现不一致？<a href="Me.dc.html" style="white-space: nowrap">纠错</a></p></div>')
     + '<div style="height: 110px"></div>'
     + f'<div style="position: absolute; left: 0; right: 0; bottom: 0; height: 90px; box-sizing: border-box; padding: 8px 16px 30px; background: {CARD}; border-top: 1px solid {LINE}; display: flex; align-items: center; gap: 4px">'
