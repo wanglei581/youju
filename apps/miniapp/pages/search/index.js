@@ -1,5 +1,6 @@
 const api = require('../../utils/api.js');
 const { todayISO, daysUntil } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -66,8 +67,17 @@ Page({
     statusOn: false,
   },
 
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
   onShow() {
     this.setData({ today: todayISO() });
+    watchDay(this, (day) => this.setData({ today: day }));
   },
 
   onLoad(query) {

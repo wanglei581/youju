@@ -1,5 +1,6 @@
 const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 
 Page({
@@ -9,8 +10,17 @@ Page({
     api.follow().then((res) => this.setData({ weekStart: res.week_start, newTotal: res.new_total, subs: res.subs, changes: res.changes }));
   },
 
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
   onShow() {
     this.setData({ today: todayISO() });
+    watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });
   },
 

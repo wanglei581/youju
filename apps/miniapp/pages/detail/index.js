@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 Page({
   data: { doc: null, due: null, dueDate: '', dueWeek: '', tagClasses: [], reminded: false, error: '' },
@@ -24,6 +25,19 @@ Page({
 
   // 跨日返回页面时重算剩余天数
   onShow() {
+    this.recompute();
+    watchDay(this, () => this.recompute());
+  },
+
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
+  recompute() {
     if (this.data.doc) this.setData({ due: dueInfo(this.data.doc.deadline) });
   },
 
@@ -33,7 +47,9 @@ Page({
       wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
       return;
     }
-    const { due, doc } = this.data;
+    const { doc } = this.data;
+    const due = dueInfo(doc && doc.deadline);
+    this.setData({ due });
     if (!due || due.days < 3) {
       wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
       return;

@@ -1,5 +1,6 @@
 const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
@@ -16,8 +17,17 @@ Page({
     items: [],
   },
 
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
   onShow() {
     this.setData({ today: todayISO() });
+    watchDay(this, (day) => this.setData({ today: day }));
   },
 
   onLoad() {

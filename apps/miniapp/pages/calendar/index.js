@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO, daysUntil, monthDay, weekday, dueTone } = require('../../utils/format.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const RANGES = [
   { key: 7, label: '7 天内' },
@@ -44,6 +45,15 @@ Page({
 
   onShow() {
     this.load();
+    watchDay(this, () => this.load());
+  },
+
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
   },
 
   load() {

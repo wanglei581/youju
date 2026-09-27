@@ -1,5 +1,6 @@
 const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -35,8 +36,17 @@ Page({
     api.home().then(({ stats, items }) => this.setData({ stats, items, shown: items }));
   },
 
+  onHide() {
+    stopDay(this);
+  },
+
+  onUnload() {
+    stopDay(this);
+  },
+
   onShow() {
     this.setData({ today: todayISO() });
+    watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
