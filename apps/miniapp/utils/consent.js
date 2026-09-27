@@ -20,6 +20,29 @@ function forget() {
   api.forgetAgreed();
 }
 
+// 本机没有同意记录时（如换了设备、还没进过"我的"），每次启动向服务端核对一次：
+// 同意的是当前版本就补上本机记录。查询 /me 不会建用户记录。返回 true 表示已同意当前版本。
+let pending = null;
+let notAgreed = false; // 本次启动已核对过：服务端没有当前版本的同意，不再重复查
+
+function syncConsent() {
+  if (!consentOpen()) return Promise.resolve(false);
+  if (agreedHere()) return Promise.resolve(true);
+  if (notAgreed) return Promise.resolve(false);
+  if (!pending) {
+    pending = api.me()
+      .then((res) => {
+        const ok = !!res.agreed && res.agreed.version === legal.version;
+        if (ok) remember();
+        else notAgreed = true;
+        return ok;
+      })
+      .catch(() => false)
+      .then((ok) => { pending = null; return ok; });
+  }
+  return pending;
+}
+
 // 返回 true 表示已同意，可以继续
 function ensureConsent() {
   if (!legal.final) {
@@ -35,6 +58,10 @@ function ensureConsent() {
     return Promise.resolve(false);
   }
   if (agreedHere()) return Promise.resolve(true);
+  return syncConsent().then((synced) => (synced ? true : askConsent()));
+}
+
+function askConsent() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '请先阅读并同意',
@@ -56,4 +83,4 @@ function ensureConsent() {
   });
 }
 
-module.exports = { ensureConsent, consentOpen, agreedHere, remember, forget };
+module.exports = { ensureConsent, syncConsent, consentOpen, agreedHere, remember, forget };

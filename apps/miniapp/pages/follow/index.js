@@ -3,7 +3,7 @@ const legal = require('../../content/legal.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { requestOnce } = require('../../utils/subscribe.js');
-const { ensureConsent, agreedHere } = require('../../utils/consent.js');
+const { ensureConsent, syncConsent } = require('../../utils/consent.js');
 
 const KIND_LABEL = { all: '全部类型', 申报通知: '申报通知', 名单: '名单与公示', 政策: '政策' };
 
@@ -31,6 +31,7 @@ Page({
   },
 
   onShow() {
+    this.retried = false;
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });
@@ -48,10 +49,17 @@ Page({
       }));
       return;
     }
-    if (!legal.final || !agreedHere()) {
-      this.setData({ mode: 'gated', follows: [], changes: [], newTotal: 0 });
-      return;
-    }
+    // 换了设备、本机没有同意记录时，先向服务端核对一次
+    syncConsent().then((ok) => {
+      if (!ok) {
+        this.setData({ mode: 'gated', follows: [], changes: [], changesError: '', newTotal: 0 });
+        return;
+      }
+      this.loadLive();
+    });
+  },
+
+  loadLive() {
     this.setData({ mode: 'live', loading: true, error: '' });
     api.myFollows()
       .then((res) => {
@@ -67,8 +75,9 @@ Page({
         return this.loadChanges(follows);
       })
       .catch((err) => {
-        // 服务端没有同意记录或协议已更新（本机记录已清掉）：回到"登录后使用"
-        if (err.status === 403) { this.setData({ loading: false }); this.load(); return; }
+        // 服务端没有同意记录或协议已更新（本机记录已清掉）：回到"登录后使用"。
+        // 每次显示只重试一次，避免服务端和小程序的协议版本不一致时反复请求
+        if (err.status === 403 && !this.retried) { this.retried = true; this.setData({ loading: false }); this.load(); return; }
         this.setData({ loading: false, error: `加载失败：${err.message}` });
       });
   },
@@ -77,11 +86,13 @@ Page({
   loadChanges(follows) {
     const withNew = follows.filter((f) => f.newCount > 0).slice(0, 3);
     let failed = null;
+    let denied = false;
     return Promise.all(withNew.map((f) => api.followNew(f.id, { limit: 5 })
       .then((r) => r.items.map((d) => Object.assign({ label: f.name }, d)))
-      .catch((err) => { failed = err; return []; })))
+      .catch((err) => { if (err.status === 403) denied = true; else failed = err; return []; })))
       .then((lists) => {
-        if (failed && failed.status === 403) { this.load(); return; }
+        // 有一个 403 就说明同意已失效（本机记录已清掉），回到"登录后使用"
+        if (denied && !this.retried) { this.retried = true; this.load(); return; }
         const seen = {};
         const changes = [];
         [].concat(...lists)
