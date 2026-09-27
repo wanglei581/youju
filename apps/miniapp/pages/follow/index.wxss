@@ -22,3 +22,10 @@
 .remind-text { margin-top: 6rpx; font-size: 24rpx; line-height: 1.5; }
 .remind-btn { flex-shrink: 0; height: 72rpx; padding: 0 32rpx; display: flex; align-items: center; border-radius: 36rpx; background: var(--brand); color: #FFFFFF; font-size: 28rpx; font-weight: 500; white-space: nowrap; }
 .remind-btn--on { background: var(--fill); color: var(--t2); }
+.gate { padding-top: 36rpx; padding-bottom: 36rpx; }
+.gate-title { font-size: 32rpx; font-weight: 600; }
+.gate-text { margin-top: 12rpx; font-size: 26rpx; line-height: 1.7; }
+.gate-btn { margin-top: 28rpx; }
+.sub-remind { flex-shrink: 0; height: 52rpx; padding: 0 20rpx; display: flex; align-items: center; border-radius: 26rpx; border: 2rpx solid var(--brand); color: var(--brand); font-size: 24rpx; }
+.sub-del { flex-shrink: 0; color: var(--red); font-size: 26rpx; padding: 8rpx 0 8rpx 16rpx; }
+.empty { padding: 32rpx 0 8rpx; font-size: 26rpx; }

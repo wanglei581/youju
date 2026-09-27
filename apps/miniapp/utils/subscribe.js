@@ -1,9 +1,14 @@
 const config = require('./config.js');
 const api = require('./api.js');
+const { ensureConsent } = require('./consent.js');
 
 // 一次性订阅消息：用户在微信弹窗里允许，并且服务端保存成功，才算订阅成功；每次订阅提醒一次。
 // target 说明订阅的是什么（如某份文件的截止、某个关注条件），由服务端保存后按时发送（#30）。
 function requestOnce(kind, target) {
+  return ensureConsent().then((ok) => (ok ? ask(kind, target) : false));
+}
+
+function ask(kind, target) {
   const id = config.templates[kind];
   if (!id) {
     wx.showModal({ title: '订阅消息还没开通', content: '在小程序后台申请订阅消息模板后即可订阅（当前是开发版）。', showCancel: false });

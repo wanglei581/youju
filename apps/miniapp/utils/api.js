@@ -173,7 +173,45 @@ function feedback(docId, content) {
   return request('/api/v1/feedback', null, { method: 'POST', data: { docId: docId || null, content } });
 }
 
-// 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据
+// ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
+const AGREED_KEY = 'youjuAgreedVersion';
+
+function me() {
+  return request('/api/v1/me');
+}
+
+function agree(version) {
+  return request('/api/v1/me/agreement', null, { method: 'POST', data: { version } });
+}
+
+// 注销：删除服务端的用户和关注、订阅、纠错、埋点
+function deleteMe() {
+  return request('/api/v1/me', null, { method: 'DELETE' }).then(() => {
+    try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 本机记录删不掉不影响 */ }
+  });
+}
+
+function myFollows() {
+  return request('/api/v1/me/follows');
+}
+
+function createFollow(name, conditions) {
+  return request('/api/v1/me/follows', null, { method: 'POST', data: { name, conditions } });
+}
+
+function deleteFollow(id) {
+  return request(`/api/v1/me/follows/${id}`, null, { method: 'DELETE' });
+}
+
+function seenFollow(id) {
+  return request(`/api/v1/me/follows/${id}/seen`, null, { method: 'POST', data: {} });
+}
+
+function followNew(id, params) {
+  return request(`/api/v1/me/follows/${id}/new`, params);
+}
+
+// 关注页的演示数据（没连接口时）
 function follow() {
   return copy(mock.follow);
 }
@@ -182,9 +220,17 @@ function files() {
   return copy(mock.files);
 }
 
-// 保存一次性订阅（#30 服务端实现前一律失败，界面不会误报"已订阅"）
-function saveSubscription() {
-  return Promise.reject(new Error('订阅服务尚未上线'));
+// 保存一次性订阅授权：newDocs 对应某个关注，deadline 对应某份文件的截止
+function saveSubscription(kind, target) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能订阅'));
+  const data = { kind, templateId: config.templates[kind] };
+  if (kind === 'newDocs') data.followId = target.followId;
+  else data.docId = Number(target.docId);
+  return request('/api/v1/me/subscriptions', null, { method: 'POST', data });
 }
 
-module.exports = { isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback, follow, files, saveSubscription };
+module.exports = {
+  isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
+  AGREED_KEY, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew,
+  follow, files, saveSubscription,
+};

@@ -4,12 +4,13 @@
   <view class="profile">
     <view class="avatar"><t-icon name="user" size="56rpx" color="#FFFFFF" /></view>
     <view class="profile-main">
-      <view class="profile-name">未登录</view>
-      <view class="profile-sub">记录暂存在本机，登录后可同步到其他设备</view>
+      <view class="profile-name">{{signedIn ? '微信用户' : '未登录'}}</view>
+      <view wx:if="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件 · 还能提醒 {{reminderCount}} 次</view>
+      <view wx:else class="profile-sub">登录后可以关注条件、订阅微信提醒、提交纠错</view>
     </view>
-    <view class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
+    <view wx:if="{{!signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
   </view>
-  <view class="agree">
+  <view wx:if="{{!signedIn}}" class="agree">
     <view class="check-wrap" bindtap="toggleAgree" aria-role="checkbox" aria-checked="{{agreed}}">
       <view class="box {{agreed ? 'box--on' : ''}} {{legalFinal ? '' : 'box--disabled'}}"><t-icon wx:if="{{agreed}}" name="check" size="22rpx" color="#2A5CE0" /></view>
       <text>我已阅读并同意</text>
@@ -41,7 +42,8 @@
   <view class="row" bindtap="todo"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row" bindtap="todo"><t-icon name="setting-1" size="40rpx" color="#4E5969" /><text class="row-text">设置</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <view class="row row--last" bindtap="todo"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view class="row {{signedIn ? '' : 'row--last'}}" bindtap="todo"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{signedIn}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
 <view class="foot">有据 · 第三方整理 · 每条都有出处</view>
 <view class="tab-page-bottom"></view>

@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { ensureConsent } = require('../../utils/consent.js');
 
 const MAX = 500;
 
@@ -25,6 +26,10 @@ Page({
       return;
     }
     if (this.data.sending) return;
+    ensureConsent().then((ok) => { if (ok) this.send(content); });
+  },
+
+  send(content) {
     this.setData({ sending: true });
     api.feedback(this.data.docId, content)
       .then(() => {

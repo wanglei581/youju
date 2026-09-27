@@ -34,3 +34,5 @@
 .foot { margin-top: 28rpx; text-align: center; font-size: 24rpx; color: var(--t3); }
 .box--disabled { opacity: 0.5; }
 .draft-note { width: 100%; margin-top: 8rpx; font-size: 22rpx; color: rgba(255, 255, 255, 0.7); }
+
+.danger { color: var(--red); }

@@ -9,7 +9,8 @@
     "pages/calendar/index",
     "pages/lists/index",
     "pages/agreement/index",
-    "pages/feedback/index"
+    "pages/feedback/index",
+    "pages/follow-new/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

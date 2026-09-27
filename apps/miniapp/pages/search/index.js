@@ -2,6 +2,8 @@ const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { exportDocs, MAX } = require('../../utils/exporter.js');
+const { ensureConsent } = require('../../utils/consent.js');
+const { requestOnce } = require('../../utils/subscribe.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -81,9 +83,10 @@ Page({
   },
 
   // 按关键词、页签、筛选条件查询；reset 为 false 时是"加载更多"
-  apply(reset) {
-    const { q, tab, picked, items } = this.data;
-    const params = {
+  // 当前的搜索条件（与服务端 /api/v1/search 的参数、关注条件一致）
+  conditions() {
+    const { q, tab, picked } = this.data;
+    return {
       q: q.trim(),
       kind: tab,
       regions: picked.region.join(','),
@@ -91,9 +94,12 @@ Page({
       status: picked.status.join(','),
       time: picked.time[0],
       depts: picked.dept.join(','),
-      limit: PAGE,
-      offset: reset ? 0 : items.length,
     };
+  },
+
+  apply(reset) {
+    const { items } = this.data;
+    const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
@@ -202,8 +208,50 @@ Page({
     this.apply(true);
   },
 
+  // 默认的关注名称，如"\u201c高新技术企业\u201d · 山东 · 申报通知"
+  followName() {
+    const c = this.conditions();
+    const tab = KIND_TABS.find((t) => t.key === c.kind);
+    const regions = c.regions.split(',').filter((r) => r && r !== '不限地区');
+    const parts = [];
+    if (c.q) parts.push(`\u201c${c.q}\u201d`);
+    parts.push(regions.length ? regions.slice(0, 3).join('、') : '全国');
+    parts.push(tab ? tab.label : '全部');
+    return parts.join(' · ').slice(0, 40);
+  },
+
+  // 关注这个搜索：保存当前条件，有新文件时在"关注"里标出；关注后可以订阅一次微信提醒
   follow() {
-    wx.showToast({ title: '关注功能随登录一起开放', icon: 'none' });
+    ensureConsent().then((ok) => {
+      if (!ok) return;
+      const conditions = this.conditions();
+      if (!conditions.q) delete conditions.q;
+      wx.showModal({
+        title: '关注这个搜索',
+        editable: true,
+        placeholderText: '给这个关注起个名字',
+        content: this.followName(),
+        confirmText: '关注',
+        success: (res) => {
+          if (!res.confirm) return;
+          const name = (res.content || '').trim().slice(0, 40) || this.followName();
+          api.createFollow(name, conditions)
+            .then((created) => wx.showModal({
+              title: '已关注',
+              content: '有新文件时会在"关注"里标出。要不要再订阅一次微信提醒？',
+              confirmText: '订阅提醒',
+              cancelText: '不用了',
+              success: (r) => {
+                if (!r.confirm) return;
+                requestOnce('newDocs', { followId: created.id }).then((subscribed) => {
+                  if (subscribed) wx.showToast({ title: '已订阅 1 次微信提醒', icon: 'none' });
+                });
+              },
+            }))
+            .catch((err) => wx.showToast({ title: err.message || '关注失败，请稍后再试', icon: 'none' }));
+        },
+      });
+    });
   },
 
   // 进入或退出选择模式；退出时清空勾选
