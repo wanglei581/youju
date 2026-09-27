@@ -17,11 +17,21 @@
 
 <view wx:if="{{cov}}" class="card">
   <view class="section-title">收录范围</view>
-  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖国家部委和 {{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。</view>
-  <view class="chips">
-    <text wx:for="{{cov.regions}}" wx:key="name" class="chip">{{item.name}} {{item.sources}}</text>
+  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖国家部委和 {{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
+  <view wx:for="{{cov.regions}}" wx:key="name" class="region">
+    <view class="region-row" data-name="{{item.name}}" bindtap="toggleRegion" aria-role="button">
+      <text class="region-name">{{item.name}}</text>
+      <text class="weak region-meta">{{item.sources}} 个栏目 · {{item.updated}}</text>
+      <t-icon name="{{open[item.name] ? 'chevron-up' : 'chevron-down'}}" size="32rpx" color="#86909C" />
+    </view>
+    <view wx:if="{{open[item.name]}}" class="columns">
+      <view wx:for="{{item.columns}}" wx:for-item="col" wx:key="name" class="column">
+        <text class="column-name">{{col.name}}</text>
+        <text class="weak column-time">{{col.updated || '正在接入'}}</text>
+      </view>
+    </view>
   </view>
-  <view wx:if="{{cov.notCovered}}" class="muted plain">暂未收录：{{cov.notCovered}}。网站不允许程序访问的，我们不绕过；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们。</view>
+  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们。</view>
 </view>
 
 <view class="card">

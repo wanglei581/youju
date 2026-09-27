@@ -794,28 +794,61 @@ def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
 
 
 def test_coverage_lists_covered_regions_and_uncovered_provinces(client, session, seeded):
-    # 已收录：国家、辽宁、山东（seeded）；浙江的栏目未启用，算还没收录
-    zj = Source(
-        level="省级",
-        province="浙江",
-        dept="科技",
-        dept_full_name="浙江省科学技术厅",
-        column_name="通知",
-        url="https://kjt.zj.gov.cn/tz/",
-        enabled=False,
-        parser_config={},
+    # seeded：国家、辽宁、山东各一个启用的栏目。已收录要求至少成功检查过一次
+    ok = datetime(2026, 9, 28, 1, 30, tzinfo=UTC)
+    for province in ("国家", "山东"):
+        session.scalar(select(Source).where(Source.province == province)).last_success_at = ok
+    session.add_all(
+        [
+            Source(
+                level="省级",
+                province="浙江",
+                dept="科技",
+                dept_full_name="浙江省科学技术厅",
+                column_name="通知",
+                url="https://kjt.zj.gov.cn/tz/",
+                enabled=False,
+                fetch_mode="browser",
+                parser_config={},
+            ),
+            Source(
+                level="省级",
+                province="广西",
+                dept="科技",
+                dept_full_name="广西壮族自治区科学技术厅",
+                column_name="通知",
+                url="https://kjt.gxzf.gov.cn/tz/",
+                enabled=False,
+                fetch_mode="blocked",
+                parser_config={},
+            ),
+        ]
     )
-    session.add(zj)
-    sd = session.scalar(select(Source).where(Source.province == "山东"))
-    sd.last_success_at = datetime(2026, 9, 28, 1, 30, tzinfo=UTC)
     session.commit()
 
     body = client.get("/api/v1/coverage").json()
-    assert [r["name"] for r in body["regions"]] == ["国家部委", "辽宁", "山东"]
-    assert body["sources"] == 3
-    assert body["provinces"] == 2
-    shandong = body["regions"][2]
-    assert shandong == {"name": "山东", "sources": 1, "lastUpdatedAt": "2026-09-28T09:30:00+08:00"}
+    assert [r["name"] for r in body["regions"]] == ["国家部委", "山东"]
+    assert body["sources"] == 2
+    assert body["provinces"] == 1
+    assert body["regions"][1] == {
+        "name": "山东",
+        "sources": 1,
+        "lastUpdatedAt": "2026-09-28T09:30:00+08:00",
+        "columns": [
+            {"name": "山东省科学技术厅 · 通知", "lastUpdatedAt": "2026-09-28T09:30:00+08:00"}
+        ],
+    }
     assert body["updatedAt"] == "2026-09-28T09:30:00+08:00"
-    assert "浙江" in body["notCovered"] and "辽宁" not in body["notCovered"]
-    assert len(body["notCovered"]) == 29
+    reasons = {item["name"]: item["reason"] for item in body["notCovered"]}
+    assert reasons["辽宁"] == "正在接入"  # 已启用但还没成功检查过
+    assert reasons["浙江"] == "正在接入"  # 需要浏览器渲染
+    assert reasons["广西"] == "网站不允许程序访问"
+    assert reasons["北京"] == "暂未接入"
+    assert "山东" not in reasons and "国家部委" not in reasons
+    assert len(body["notCovered"]) == 30
+
+
+def test_coverage_reports_national_when_no_national_source_succeeded(client, session, seeded):
+    body = client.get("/api/v1/coverage").json()
+    assert body["regions"] == []
+    assert {"name": "国家部委", "reason": "正在接入"} in body["notCovered"]

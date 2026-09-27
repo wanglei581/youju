@@ -7,7 +7,7 @@ const ENV_NAME = { develop: '开发版', trial: '体验版' };
 // 关于有据：运营者、备案号、联系和投诉渠道
 // （微信小程序运营规范 3.10 侵权投诉机制、3.13 披露机构信息和咨询投诉渠道）
 Page({
-  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null },
+  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, open: {} },
 
   onLoad() {
     let version = '';
@@ -23,12 +23,23 @@ Page({
         cov: {
           sources: c.sources,
           provinces: c.provinces,
-          regions: c.regions,
-          notCovered: c.notCovered.join('、'),
           updated: shortTime(c.updatedAt),
+          regions: c.regions.map((r) => ({
+            name: r.name,
+            sources: r.sources,
+            updated: shortTime(r.lastUpdatedAt),
+            columns: r.columns.map((col) => ({ name: col.name, updated: shortTime(col.lastUpdatedAt) })),
+          })),
+          notCovered: c.notCovered,
         },
       });
     });
+  },
+
+  // 点地区展开或收起它的栏目
+  toggleRegion(e) {
+    const { name } = e.currentTarget.dataset;
+    this.setData({ [`open.${name}`]: !this.data.open[name] });
   },
 
   copyEmail() {

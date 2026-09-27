@@ -231,33 +231,55 @@ def home(session: SessionDep) -> dict:
 
 @router.get("/coverage")
 def coverage(session: SessionDep) -> dict:
-    """收录范围（验收 A8）：已收录的地区（启用的栏目数、最近一次成功检查时间）和还没收录的省份。"""
-    rows = session.execute(
-        select(Source.province, func.count(), func.max(Source.last_success_at))
-        .where(Source.enabled.is_(True))
-        .group_by(Source.province)
+    """收录范围（验收 A8）。
+
+    已收录：有启用、且至少成功检查过一次的栏目（没成功过的算"正在接入"）。每个地区列出启用的
+    栏目和各自最近一次成功检查的时间。还没收录的地区（国家部委和 31 个省级地区）附原因：
+    网站不允许程序访问（抓取模式 blocked）、正在接入（需浏览器渲染或已启用但还没成功）、暂未接入。
+    """
+    sources = session.scalars(
+        select(Source).order_by(
+            Source.province, Source.dept_full_name, Source.column_name, Source.id
+        )
     ).all()
-    stats = {province: (count, last) for province, count, last in rows}
 
     def iso(value: datetime | None) -> str | None:
         return value.astimezone(_TZ).isoformat() if value else None
 
-    regions = [
-        {
-            "name": "国家部委" if name == "国家" else name,
-            "sources": stats[name][0],
-            "lastUpdatedAt": iso(stats[name][1]),
-        }
-        for name in ("国家", *_PROVINCE_ORDER)
-        if name in stats
-    ]
-    lasts = [last for _, last in stats.values() if last]
+    regions, not_covered = [], []
+    for province in ("国家", *_PROVINCE_ORDER):
+        name = "国家部委" if province == "国家" else province
+        mine = [s for s in sources if s.province == province]
+        enabled = [s for s in mine if s.enabled]
+        lasts = [s.last_success_at for s in enabled if s.last_success_at]
+        if lasts:
+            regions.append(
+                {
+                    "name": name,
+                    "sources": len(enabled),
+                    "lastUpdatedAt": iso(max(lasts)),
+                    "columns": [
+                        {
+                            "name": f"{s.dept_full_name} · {s.column_name}",
+                            "lastUpdatedAt": iso(s.last_success_at),
+                        }
+                        for s in enabled
+                    ],
+                }
+            )
+        elif enabled or any(s.fetch_mode == "browser" for s in mine):
+            not_covered.append({"name": name, "reason": "正在接入"})
+        elif any(s.fetch_mode == "blocked" for s in mine):
+            not_covered.append({"name": name, "reason": "网站不允许程序访问"})
+        else:
+            not_covered.append({"name": name, "reason": "暂未接入"})
+    lasts = [r["lastUpdatedAt"] for r in regions]
     return {
-        "sources": sum(count for count, _ in stats.values()),
-        "provinces": sum(1 for name in stats if name in _PROVINCE_ORDER),
+        "sources": sum(r["sources"] for r in regions),
+        "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
         "regions": regions,
-        "notCovered": [name for name in _PROVINCE_ORDER if name not in stats],
-        "updatedAt": iso(max(lasts)) if lasts else None,
+        "notCovered": not_covered,
+        "updatedAt": max(lasts) if lasts else None,
     }
 
 

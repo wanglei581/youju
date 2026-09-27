@@ -1,7 +1,7 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
 const { applyServer, consentEpoch, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
-const { loadCoverage } = require('../../utils/coverage.js');
+const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
 Page({
   data: {
@@ -37,7 +37,7 @@ Page({
 
   loadStats() {
     loadCoverage().then((c) => {
-      if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces }, notCovered: c.notCovered.join('、') });
+      if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces }, notCovered: notCoveredNames(c) });
     });
   },
 
