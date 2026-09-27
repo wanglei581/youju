@@ -63,28 +63,47 @@ function ensureConsent() {
   return syncConsent().then((synced) => (synced ? true : askConsent()));
 }
 
+// 读全文并同意的页面：依次显示两份文件全文，同意按钮在最后
+const CONSENT_PAGE = '/pages/agreement/index?consent=1';
+
 function askConsent() {
+  // 协议更新后：只能先读更新后的全文，在全文最后同意
+  if (outdated) {
+    wx.showModal({
+      title: '协议已更新',
+      content: '《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用关注、微信提醒和纠错。',
+      confirmText: '阅读全文',
+      cancelText: '暂不',
+      success: (res) => { if (res.confirm) wx.navigateTo({ url: CONSENT_PAGE }); },
+    });
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
     wx.showModal({
-      title: outdated ? '协议已更新' : '请先阅读并同意',
-      content: outdated
-        ? '《用户协议》和《隐私保护指引》已更新。继续使用关注、微信提醒和纠错前，请先阅读更新后的全文，再决定是否同意。'
-        : '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
+      title: '请先阅读并同意',
+      content: '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
       confirmText: '同意',
       cancelText: '先看协议',
       success: (res) => {
         if (!res.confirm) {
-          wx.navigateTo({ url: '/pages/agreement/index' });
+          wx.navigateTo({ url: CONSENT_PAGE });
           resolve(false);
           return;
         }
         api.agree(legal.version)
-          .then(() => { remember(); resolve(true); })
+          .then(() => { markAgreed(); resolve(true); })
           .catch((err) => { wx.showToast({ title: err.message || '网络不太好，请稍后再试', icon: 'none' }); resolve(false); });
       },
       fail: () => resolve(false),
     });
   });
+}
+
+// 服务端记录同意之后调用：记下本机记录，清掉"协议已更新"
+function markAgreed() {
+  remember();
+  outdated = false;
+  notAgreed = false;
 }
 
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
@@ -99,6 +118,8 @@ function withdraw() {
         if (!res.confirm) { resolve(false); return; }
         api.deleteMe()
           .then(() => {
+            outdated = false;
+            notAgreed = true;
             wx.showToast({ title: '已注销，数据已删除', icon: 'none' });
             resolve(true);
           })
@@ -117,4 +138,6 @@ function consentOutdated() {
   return outdated;
 }
 
-module.exports = { ensureConsent, syncConsent, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw };
+module.exports = {
+  ensureConsent, syncConsent, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+};

@@ -1,5 +1,6 @@
 <view wx:if="{{!final}}" class="draft">{{status}}</view>
-<view class="card doc" wx:if="{{doc}}">
+<view wx:if="{{consent}}" class="card intro">请阅读下面的《用户协议》和《隐私保护指引》全文，同意按钮在最后。不同意不影响检索、查看和导出。</view>
+<view wx:for="{{docs}}" wx:for-item="doc" wx:key="title" class="card doc">
   <view class="doc-title">《{{doc.title}}》</view>
   <view wx:for="{{doc.sections}}" wx:for-item="s" wx:key="h" class="sec">
     <view class="sec-h">{{s.h}}</view>
@@ -7,4 +8,5 @@
   </view>
 </view>
 <view class="card note">{{disclaimer}}</view>
+<view wx:if="{{consent}}" class="btn-primary agree {{sending ? 'agree--off' : ''}}" bindtap="agree" aria-role="button">{{sending ? '正在提交…' : '我已阅读，同意以上两份文件'}}</view>
 <view style="height: 60rpx"></view>

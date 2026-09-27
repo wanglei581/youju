@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { remember, forget, withdraw } = require('../../utils/consent.js');
+const { remember, forget, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
 
 Page({
   data: {
@@ -65,6 +65,11 @@ Page({
 
   // 勾选同意后"微信登录"：服务端记录同意（小程序经云托管调用时平台自动带上用户标识，不需要另外授权）
   login() {
+    // 协议更新后：先读更新后的全文，在全文最后同意
+    if (this.data.outdated) {
+      wx.navigateTo({ url: CONSENT_PAGE });
+      return;
+    }
     if (!this.data.agreed) {
       this.setData({ nudge: true });
       return;
@@ -75,7 +80,7 @@ Page({
     }
     api.agree(legal.version)
       .then(() => {
-        remember();
+        markAgreed();
         wx.showToast({ title: '已登录，关注和微信提醒可以用了', icon: 'none' });
         this.refresh();
       })
@@ -85,7 +90,7 @@ Page({
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
   deleteAccount() {
     withdraw().then((ok) => {
-      if (ok) this.setData({ signedIn: false, hasRecord: false, agreed: false, followCount: 0, reminderCount: 0 });
+      if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, followCount: 0, reminderCount: 0 });
     });
   },
 

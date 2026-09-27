@@ -5,3 +5,6 @@
 .sec-h { font-size: 30rpx; font-weight: 600; }
 .sec-p { margin-top: 12rpx; font-size: 27rpx; line-height: 1.75; color: var(--t1); }
 .note { padding: 24rpx 32rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
+.intro { padding: 24rpx 32rpx; font-size: 26rpx; line-height: 1.7; color: var(--t2); }
+.agree { margin: 40rpx 32rpx 0; }
+.agree--off { opacity: 0.5; }

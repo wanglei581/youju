@@ -9,9 +9,10 @@
       <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
       <view wx:else class="profile-sub">登录后可以关注条件、订阅微信提醒、提交纠错</view>
     </view>
-    <view wx:if="{{!signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
+    <view wx:if="{{!signedIn && outdated}}" class="login login--on" bindtap="login">阅读更新</view>
+    <view wx:elif="{{!signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
   </view>
-  <view wx:if="{{!signedIn}}" class="agree">
+  <view wx:if="{{!signedIn && !outdated}}" class="agree">
     <view class="check-wrap" bindtap="toggleAgree" aria-role="checkbox" aria-checked="{{agreed}}">
       <view class="box {{agreed ? 'box--on' : ''}} {{legalFinal ? '' : 'box--disabled'}}"><t-icon wx:if="{{agreed}}" name="check" size="22rpx" color="#2A5CE0" /></view>
       <text>我已阅读并同意</text>
