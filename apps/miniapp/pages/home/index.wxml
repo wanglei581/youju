@@ -1,0 +1,80 @@
+<!-- 首页：品牌蓝顶部（字标、第三方整理角标、搜索范围、搜索框、热词）→ 5 个入口 → 本周新增 → 关注提醒 → 文件列表 -->
+<view class="top" style="padding-top: {{statusBarHeight}}px">
+  <view class="brand-row" style="height: {{navHeight}}px; padding-right: {{menuWidth}}px">
+    <text class="brand">有据</text>
+    <text class="badge">第三方整理 · 非政府平台</text>
+  </view>
+  <view class="scopes" role="tablist" aria-label="搜索范围">
+    <view wx:for="{{scopes}}" wx:key="key" class="scope {{scope === index ? 'scope--on' : ''}}" data-index="{{index}}" bindtap="pickScope">
+      <text>{{item.label}}</text>
+      <view class="scope-bar" wx:if="{{scope === index}}"></view>
+    </view>
+  </view>
+  <view class="search" bindtap="goSearch" aria-role="button" aria-label="搜索">
+    <t-icon name="search" size="36rpx" color="#86909C" />
+    <text class="search-ph">{{scopes[scope].placeholder}}</text>
+    <view class="search-btn">搜索</view>
+  </view>
+  <view class="hot">
+    <text class="hot-label">大家在查</text>
+    <text wx:for="{{hot}}" wx:key="*this" class="hot-word" data-q="{{item}}" bindtap="goSearch">{{item}}</text>
+  </view>
+</view>
+
+<view class="entries">
+  <view class="entry" data-url="/pages/search/index?kind=申报通知" bindtap="goEntry">
+    <view class="tile tile--blue"><t-icon name="task-checked" size="44rpx" color="#FFFFFF" /></view><text>查申报</text>
+  </view>
+  <view class="entry" data-url="/pages/lists/index" bindtap="goEntry">
+    <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view><text>查名单</text>
+  </view>
+  <view class="entry" data-url="/pages/search/index?kind=政策" bindtap="goEntry">
+    <view class="tile tile--green"><t-icon name="book" size="44rpx" color="#FFFFFF" /></view><text>查政策</text>
+  </view>
+  <view class="entry" data-url="/pages/calendar/index" bindtap="goEntry">
+    <view class="tile tile--blue"><t-icon name="calendar" size="44rpx" color="#FFFFFF" /></view><text>申报日历</text>
+  </view>
+  <view class="entry" data-url="/pages/search/index" bindtap="goEntry">
+    <view class="tile tile--plain"><t-icon name="app" size="44rpx" color="#4E5969" /></view><text>全部</text>
+  </view>
+</view>
+
+<view class="summary" wx:if="{{stats}}" bindtap="goSearch">
+  <view class="summary-num">
+    <text class="summary-label">本周新增</text>
+    <view><text class="big">{{stats.week_total}}</text><text class="unit"> 份</text></view>
+  </view>
+  <view class="vline"></view>
+  <view class="summary-text">
+    <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
+    <view>来自 {{stats.provinces}} 个省和国家部委 · 每条都有出处</view>
+  </view>
+  <t-icon name="chevron-right" size="32rpx" color="#86909C" />
+</view>
+
+<view class="mine" wx:if="{{stats}}" bindtap="goFollow">
+  <t-icon name="notification" size="36rpx" color="#2A5CE0" />
+  <text class="mine-text">你关注的条件本周有 <text class="mine-n">{{stats.followed_new}}</text> 份新文件</text>
+  <text class="link">去看看</text>
+  <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
+</view>
+
+<view class="card">
+  <view class="tabs" role="tablist" aria-label="按类型看">
+    <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab">
+      <text>{{item.label}}</text>
+      <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
+    </view>
+  </view>
+  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" />
+  <view class="more" bindtap="goSearch">查看本周全部 {{stats.week_total}} 份 <t-icon name="chevron-right" size="28rpx" /></view>
+</view>
+
+<view class="footer">
+  <t-icon name="secured" size="36rpx" color="#4E5969" />
+  <view class="footer-text">
+    <text>数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。</text>
+    <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
+  </view>
+</view>
+<view class="tab-page-bottom"></view>

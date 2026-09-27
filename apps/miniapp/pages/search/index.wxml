@@ -1,0 +1,67 @@
+<notice-bar />
+<view class="top">
+  <view class="search-row">
+    <view class="search-box">
+      <t-icon name="search" size="34rpx" color="#4E5969" />
+      <input class="search-input" value="{{q}}" placeholder="搜申报通知、名单、政策或文号" confirm-type="search" bindinput="onInput" aria-label="搜索关键词" />
+      <view wx:if="{{q}}" class="clear" bindtap="clearQ" aria-role="button" aria-label="清空"><t-icon name="close" size="20rpx" color="#FFFFFF" /></view>
+    </view>
+    <text class="cancel" bindtap="cancel">取消</text>
+  </view>
+  <view class="kind-tabs" role="tablist">
+    <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab">
+      <text>{{item.label}}{{item.key === 'all' ? ' ' + total30 : ''}}</text>
+      <view wx:if="{{tab === item.key}}" class="kind-bar"></view>
+    </view>
+  </view>
+</view>
+
+<view class="chips">
+  <view class="chip" bindtap="openFilter">地区<t-icon name="chevron-down" size="26rpx" color="#4E5969" /></view>
+  <view class="chip chip--on" bindtap="openFilter">近 30 天<t-icon name="chevron-down" size="26rpx" color="#2A5CE0" /></view>
+  <view class="chip" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="#4E5969" /></view>
+  <view class="filter-link" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="#1D2129" />筛选</view>
+</view>
+<view class="summary">
+  <text>近 30 天 <text class="b">{{total30}}</text> 份 · 不限时间共 {{totalAll}} 份</text>
+  <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select">选择</text></view>
+</view>
+
+<view class="follow-bar">
+  <t-icon name="notification" size="36rpx" color="#2A5CE0" />
+  <view class="follow-text">
+    <text class="follow-title">关注这个搜索</text>
+    <text class="follow-sub">含已选条件，有新文件时提醒我</text>
+  </view>
+  <view class="follow-btn" bindtap="follow">关注</view>
+</view>
+
+<view class="card">
+  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === shown.length - 1}}" />
+  <view class="load-more">已显示 {{shown.length}}/{{total30}} 份 · <text class="link">查看全部 {{total30}} 份</text></view>
+</view>
+<view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
+<view style="height: 80rpx"></view>
+
+<t-popup visible="{{filterOpen}}" placement="bottom" bind:visible-change="onFilterVisible">
+  <view class="sheet">
+    <view class="sheet-head">
+      <text class="sheet-title">筛选</text>
+      <view class="sheet-close" bindtap="closeFilter" aria-role="button" aria-label="关闭"><t-icon name="close" size="40rpx" color="#1D2129" /></view>
+    </view>
+    <scroll-view class="sheet-body" scroll-y enhanced show-scrollbar="{{false}}">
+      <view wx:for="{{groups}}" wx:for-item="g" wx:key="key" class="group">
+        <view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}</text></view>
+        <view class="options">
+          <view wx:for="{{g.options}}" wx:for-item="o" wx:key="*this" class="option {{pickedMap[g.key + ':' + o] ? 'option--on' : ''}}"
+                data-group="{{g.key}}" data-option="{{o}}" bindtap="pickOption">{{o}}</view>
+        </view>
+        <view wx:if="{{g.note}}" class="group-note">{{g.note}}</view>
+      </view>
+    </scroll-view>
+    <view class="sheet-foot">
+      <view class="btn-reset" bindtap="resetFilter">重置</view>
+      <view class="btn-primary btn-apply" bindtap="closeFilter">查看 {{total30}} 份结果</view>
+    </view>
+  </view>
+</t-popup>

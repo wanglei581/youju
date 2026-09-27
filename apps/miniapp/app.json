@@ -1,0 +1,40 @@
+{
+  "pages": [
+    "pages/home/index",
+    "pages/follow/index",
+    "pages/files/index",
+    "pages/me/index",
+    "pages/search/index",
+    "pages/detail/index",
+    "pages/calendar/index",
+    "pages/lists/index",
+    "pages/agreement/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "有据",
+    "backgroundColor": "#F2F4F8",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#86909C",
+    "selectedColor": "#2A5CE0",
+    "backgroundColor": "#FFFFFF",
+    "list": [
+      { "pagePath": "pages/home/index", "text": "首页" },
+      { "pagePath": "pages/follow/index", "text": "关注" },
+      { "pagePath": "pages/files/index", "text": "文件" },
+      { "pagePath": "pages/me/index", "text": "我的" }
+    ]
+  },
+  "usingComponents": {
+    "t-icon": "tdesign-miniprogram/icon/icon",
+    "notice-bar": "/components/notice-bar/index",
+    "doc-row": "/components/doc-row/index"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

@@ -1,0 +1,108 @@
+/* 「有据」设计规范（风格 C 精修版，决策记录 D-014、D-015）。
+ * 数值与原型 v2 一致：原型按 390px 宽设计，这里 1px 记作 2rpx。 */
+page {
+  --brand: #2A5CE0;
+  --brand-g1: #2F66F0;
+  --brand-g2: #2553D6;
+  --brand-tint: #EAF0FF;
+  --bg: #F2F4F8;
+  --card: #FFFFFF;
+  --t1: #1D2129;
+  --t2: #4E5969;
+  --t3: #86909C;
+  --line: #EEF0F3;
+  --line2: #E5E6EB;
+  --fill: #F2F3F5;
+  --orange: #F57B21;
+  --o-txt: #D9640F;
+  --o-tint: #FFF3E8;
+  --green: #13A677;
+  --g-txt: #0E8A63;
+  --g-tint: #E8F7F1;
+  --red: #E5484D;
+  --r-tint: #FFECEC;
+
+  /* TDesign 组件主题 */
+  --td-brand-color: #2A5CE0;
+  --td-brand-color-active: #1F47B8;
+  --td-brand-color-light: #EAF0FF;
+  --td-text-color-primary: #1D2129;
+  --td-text-color-secondary: #4E5969;
+  --td-text-color-placeholder: #86909C;
+  --td-component-border: #E5E6EB;
+  --td-radius-default: 24rpx;
+
+  background: var(--bg);
+  color: var(--t1);
+  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  font-size: 28rpx;
+  line-height: 1.5;
+}
+
+/* 卡片：左右留白 12px，圆角 12px */
+.card {
+  margin: 20rpx 24rpx 0;
+  padding: 0 32rpx;
+  background: var(--card);
+  border-radius: 24rpx;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 28rpx 0 8rpx;
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+/* 类型标签：申报=蓝，名单=橙，政策=绿 */
+.tag {
+  padding: 0 12rpx;
+  line-height: 40rpx;
+  border-radius: 8rpx;
+  font-size: 24rpx;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.tag--apply { background: var(--brand-tint); color: var(--brand); }
+.tag--list { background: var(--o-tint); color: var(--o-txt); }
+.tag--policy { background: var(--g-tint); color: var(--g-txt); }
+.tag--plain { background: var(--fill); color: var(--t2); }
+
+/* 名单状态：公示=橙色虚线框，正式公布=灰色实线框 */
+.status {
+  padding: 0 12rpx;
+  line-height: 36rpx;
+  border-radius: 8rpx;
+  font-size: 24rpx;
+  white-space: nowrap;
+}
+.status--public { border: 2rpx dashed var(--o-txt); color: var(--o-txt); }
+.status--final { border: 2rpx solid var(--t2); color: var(--t1); }
+
+/* 截止提示：14 天内红字，7 天内再加红底 */
+.due { margin-left: auto; font-size: 24rpx; color: var(--t2); white-space: nowrap; }
+.due--soon { color: var(--red); }
+.due--urgent { padding: 0 12rpx; line-height: 40rpx; border-radius: 8rpx; background: var(--r-tint); color: var(--red); font-weight: 600; }
+
+.muted { color: var(--t2); }
+.weak { color: var(--t3); }
+.link { color: var(--brand); }
+
+/* 主按钮：蓝色胶囊，高 44px */
+.btn-primary {
+  height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  border-radius: 44rpx;
+  background: var(--brand);
+  color: #FFFFFF;
+  font-size: 30rpx;
+  font-weight: 500;
+}
+
+/* 给自定义底栏留位置 */
+.tab-page-bottom { height: calc(200rpx + env(safe-area-inset-bottom)); }

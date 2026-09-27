@@ -1,14 +1,22 @@
 {
-  "description": "行业政策 · 微信原生小程序（本地受控试用版）",
-  "projectname": "industry-policy-miniapp",
-  "appid": "",
+  "description": "有据 · 微信小程序（原生 + TDesign 组件）",
+  "projectname": "youju-miniapp",
+  "appid": "wx3251e7a7b42bc59d",
   "compileType": "miniprogram",
   "libVersion": "2.32.3",
   "packOptions": {
     "ignore": [
       {
-        "type": "file",
-        "value": "README.md"
+        "value": "README.md",
+        "type": "file"
+      },
+      {
+        "value": "node_modules",
+        "type": "folder"
+      },
+      {
+        "value": "package-lock.json",
+        "type": "file"
       }
     ],
     "include": []
@@ -30,11 +38,19 @@
       "ignore": [],
       "disablePlugins": [],
       "outputPath": ""
-    }
+    },
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false
   },
   "condition": {},
   "editorSetting": {
     "tabIndent": "insertSpaces",
     "tabSize": 2
-  }
+  },
+  "simulatorPluginLibVersion": {}
 }
