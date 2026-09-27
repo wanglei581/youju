@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from youju.api.exports import router as exports_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import list_status
@@ -24,6 +25,7 @@ from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, 
 
 app = FastAPI(title="有据 API", version="0.1.0")
 app.include_router(v1_router)
+app.include_router(exports_router)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
