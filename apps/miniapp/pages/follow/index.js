@@ -8,7 +8,7 @@ const { describe } = require('../../utils/conditions.js');
 
 // 三种状态：demo 没连接口时的演示数据；gated 未登录（或协议未定稿）；live 真实的关注
 Page({
-  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', managing: false, loading: false, error: '', legalFinal: legal.final },
+  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: false, error: '', legalFinal: legal.final },
 
   onHide() {
     stopDay(this);
@@ -60,12 +60,30 @@ Page({
           icon: f.conditions.kind === '名单' ? 'bulletpoint' : 'task-checked',
         }));
         this.setData({ follows, newTotal: follows.reduce((n, f) => n + f.newCount, 0), loading: false });
+        this.loadReminders();
         return this.loadChanges(follows);
       })
       .catch((err) => {
         if (err.status === 403) { this.onDenied(); return; }
         this.setData({ loading: false, error: `加载失败：${err.message}` });
       });
+  },
+
+  // 每个关注还能提醒几次（还没发出的一次性订阅授权）；提醒用掉后提示再订阅（验收 B2、B5）。
+  // 加载失败时不显示次数，不影响关注列表
+  loadReminders() {
+    // 先清掉旧的次数（加载失败时不显示过时的次数）；只采用最后一次查询的结果
+    const seq = (this.remindSeq || 0) + 1;
+    this.remindSeq = seq;
+    this.setData({ remindLeft: null });
+    api.mySubscriptions()
+      .then((res) => {
+        if (seq !== this.remindSeq) return;
+        const left = {};
+        res.items.forEach((s) => { if (s.kind === 'newDocs' && s.followId) left[s.followId] = (left[s.followId] || 0) + 1; });
+        this.setData({ remindLeft: left });
+      })
+      .catch(() => {});
   },
 
   // 服务端返回 403：没有同意记录或协议已更新（本机记录已由请求层清掉）。先向服务端重新核对一次；
@@ -121,7 +139,9 @@ Page({
       return;
     }
     requestOnce('newDocs', { followId: e.currentTarget.dataset.id }).then((ok) => {
-      if (ok) wx.showToast({ title: '已订阅 1 次，有新文件时微信提醒你', icon: 'none' });
+      if (!ok) return;
+      wx.showToast({ title: '已订阅 1 次，有新文件时微信提醒你', icon: 'none' });
+      this.loadReminders();
     });
   },
 
