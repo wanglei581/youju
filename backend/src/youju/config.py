@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://localhost:55432/youju"
     admin_token: str | None = None
+    # 企业微信群机器人地址只从环境读取，不写入日志或异常信息。
+    alert_webhook: SecretStr | None = None
     # 部署角色（云托管两个服务用同一镜像）：api 只开放小程序接口，admin 只开放核对台和管理接口，
     # all（本机开发默认）全部开放
     role: Literal["all", "api", "admin"] = "all"

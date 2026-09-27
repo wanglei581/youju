@@ -1,7 +1,9 @@
 # 定时任务（北京时间，容器时区 Asia/Shanghai）。只在 YOUJU_ROLE=admin 的服务里生效，该服务实例数固定为 1。
 # 分 时 日 月 周  命令
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
-30 6 * * *  /app/backend/deploy/job.sh crawl
+# 抓取每天 4 次（每个栏目每天只访问 4 次列表页；每站间隔 3 秒）
+30 6,11,15,20 * * *  /app/backend/deploy/job.sh crawl
+15 7 * * *  /app/backend/deploy/job.sh check-sources
 30 7 * * *  /app/backend/deploy/job.sh fetch-details --limit 300 --workers 4
 30 8 * * *  /app/backend/deploy/job.sh extract-deadlines
 0 9 * * *   /app/backend/deploy/job.sh parse-lists
