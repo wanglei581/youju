@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from hmac import compare_digest
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -90,6 +92,8 @@ class PendingDeadlineOut(BaseModel):
     document_id: int
     title: str
     url: str
+    publish_date: date | None
+    source: str
     kind: str
     candidate_date: date
     candidate_time: str | None
@@ -356,6 +360,24 @@ def _require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> Non
 AdminDep = Annotated[None, Depends(_require_admin)]
 
 
+@app.get("/api/admin/deadlines/count")
+def pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    total = session.scalar(
+        select(func.count())
+        .select_from(DocumentDeadline)
+        .where(DocumentDeadline.status == "pending")
+    )
+    return {"pending": total or 0}
+
+
+@app.get("/admin/review", response_class=HTMLResponse, include_in_schema=False)
+def review_console() -> str:
+    """截止日期核对台：静态页面，调用上面的管理接口（口令由使用者在页面里输入）。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "review.html").read_text(
+        encoding="utf-8"
+    )
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
@@ -364,8 +386,9 @@ def pending_deadlines(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[PendingDeadlineOut]:
     rows = session.execute(
-        select(DocumentDeadline, Document)
-        .join(Document)
+        select(DocumentDeadline, Document, Source)
+        .join(Document, DocumentDeadline.document_id == Document.id)
+        .join(Source, Document.source_id == Source.id)
         .where(DocumentDeadline.status == "pending")
         .order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id)
         .limit(limit)
@@ -377,13 +400,15 @@ def pending_deadlines(
             document_id=doc.id,
             title=doc.title,
             url=doc.url,
+            publish_date=doc.publish_date,
+            source=src.dept_full_name,
             kind=d.kind,
             candidate_date=d.candidate_date,
             candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
             evidence=d.evidence,
             confidence=d.confidence,
         )
-        for d, doc in rows
+        for d, doc, src in rows
     ]
 
 
