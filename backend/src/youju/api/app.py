@@ -390,8 +390,8 @@ def pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
 
 
 def _pending_shown_ids(session: Session, deadlines: list[DocumentDeadline]) -> dict[int, int]:
-    """这些候选里要显示的：{候选编号: 主文件编号}。同一归并组里类型、日期、时间相同的
-    待核对候选只显示编号最大的一条（看的是整组，不只这一批），翻页和计数都按这个规则。"""
+    """这些候选里要显示的：{候选编号: 主文件编号}。同一归并组里类型、日期、时间、证据句都相同的
+    待核对候选只显示编号最小的一条（看的是整组，不只这一批），翻页和计数都按这个规则。"""
     if not deadlines:
         return {}
     mapping = canonical_ids(session, [d.document_id for d in deadlines])
@@ -405,8 +405,8 @@ def _pending_shown_ids(session: Session, deadlines: list[DocumentDeadline]) -> d
             DocumentDeadline.status == "pending",
         )
     ):
-        key = (master_of[d.document_id], d.kind, d.candidate_date, d.candidate_time)
-        best[key] = max(best.get(key, 0), d.id)
+        key = (master_of[d.document_id], d.kind, d.candidate_date, d.candidate_time, d.evidence)
+        best[key] = min(best.get(key, d.id), d.id)
     shown = set(best.values())
     return {d.id: master_of[d.document_id] for d in deadlines if d.id in shown}
 
@@ -428,8 +428,9 @@ def pending_deadlines(
 ) -> list[PendingDeadlineOut]:
     """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。
 
-    归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间都相同）：只列编号最大的那条，
-    标题和链接用主文件；本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
+    归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间、证据句都相同）：只列编号最小的
+    那条（之后新抽出的副本编号更大，不会把已在翻页范围里的这条挤掉），标题和链接用主文件；
+    本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
     """
     base = (
         select(DocumentDeadline, Document, Source)
@@ -471,11 +472,28 @@ def pending_deadlines(
 
 
 def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> dict[str, str]:
-    row = session.scalar(
-        select(DocumentDeadline).where(DocumentDeadline.id == deadline_id).with_for_update()
-    )
+    row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到候选")
+    # 归并组里同一候选（类型、日期、时间、证据句都相同）的其他副本一并按同样结果处理，免得重复核对。
+    # 按编号顺序一次锁住本条和这些副本（并发核对时不会互相等待成死锁），锁住后再看状态
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    locked = session.scalars(
+        select(DocumentDeadline)
+        .where(
+            DocumentDeadline.document_id.in_(members),
+            DocumentDeadline.kind == row.kind,
+            DocumentDeadline.candidate_date == row.candidate_date,
+            DocumentDeadline.candidate_time.is_(None)
+            if row.candidate_time is None
+            else DocumentDeadline.candidate_time == row.candidate_time,
+            DocumentDeadline.evidence == row.evidence,
+        )
+        .order_by(DocumentDeadline.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="候选已核对")
     if status == "rejected" and (body.new_date is not None or body.new_time is not None):
@@ -492,22 +510,7 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         parsed_time = None
     else:
         parsed_time = row.candidate_time
-    # 归并组里同一候选（类型、日期、时间相同）的其他待核对副本一并按同样结果处理，免得重复核对
-    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
-    members = groups_for(session, [master])[master]
-    twins = session.scalars(
-        select(DocumentDeadline)
-        .where(
-            DocumentDeadline.document_id.in_(members),
-            DocumentDeadline.status == "pending",
-            DocumentDeadline.kind == row.kind,
-            DocumentDeadline.candidate_date == row.candidate_date,
-            DocumentDeadline.candidate_time.is_(None)
-            if row.candidate_time is None
-            else DocumentDeadline.candidate_time == row.candidate_time,
-        )
-        .with_for_update()
-    ).all()
+    twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     now = datetime.now(UTC)
     for item in {row, *twins}:
         item.status = status
