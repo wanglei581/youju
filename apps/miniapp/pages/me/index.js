@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { applyServer, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
 
 Page({
   data: {
@@ -37,10 +37,13 @@ Page({
       this.setData({ signedIn: false, hasRecord: false, outdated: false });
       return;
     }
+    const started = consentEpoch();
     api.me()
       .then((res) => {
+        // 查询发出后本机又同意或注销过：结果已过时，等下一次刷新
+        if (started !== consentEpoch()) return;
         // 与关注页等共用同一份状态：旧版本同意会标记"协议已更新"，弹窗只能先读全文
-        const current = applyServer(res.agreed) && legal.final;
+        const current = applyServer(res.agreed, started) && legal.final;
         const subs = res.subscriptions || {};
         this.setData({
           signedIn: current,
