@@ -85,6 +85,8 @@ Page({
   },
 
   feedback() {
-    wx.showToast({ title: '纠错入口即将开放', icon: 'none' });
+    const doc = this.data.doc;
+    if (!doc) return;
+    wx.navigateTo({ url: `/pages/feedback/index?id=${doc.id}&title=${encodeURIComponent(doc.title)}` });
   },
 });

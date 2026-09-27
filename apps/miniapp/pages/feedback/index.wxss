@@ -1,0 +1,10 @@
+.about { padding-top: 24rpx; padding-bottom: 24rpx; }
+.about-label { font-size: 24rpx; }
+.about-title { margin-top: 8rpx; font-size: 28rpx; line-height: 1.6; color: var(--t1); }
+.box { padding-top: 24rpx; padding-bottom: 16rpx; }
+.input { width: 100%; min-height: 280rpx; font-size: 28rpx; line-height: 1.7; color: var(--t1); }
+.ph { color: var(--t3); }
+.count { text-align: right; font-size: 24rpx; }
+.note { margin: 20rpx 32rpx 0; font-size: 24rpx; line-height: 1.7; }
+.submit { margin: 40rpx 32rpx 0; }
+.submit--off { opacity: 0.5; }

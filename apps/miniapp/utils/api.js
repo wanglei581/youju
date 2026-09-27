@@ -24,20 +24,26 @@ function errorOf(res) {
   return new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
 }
 
-function request(path, params) {
+// options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
+function request(path, params, options) {
   const url = path + query(params);
+  const method = (options && options.method) || 'GET';
+  const data = options && options.data;
+  const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
     const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
-    const done = (res) => (res.statusCode === 200 ? finish(resolve, res.data) : finish(reject, errorOf(res)));
+    const ok = (code) => code === 200 || code === 201 || code === 204;
+    const done = (res) => (ok(res.statusCode) ? finish(resolve, res.data) : finish(reject, errorOf(res)));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path: url,
-        method: 'GET',
-        header: { 'X-WX-SERVICE': config.cloudService },
+        method,
+        header: Object.assign({ 'X-WX-SERVICE': config.cloudService }, header),
+        data,
         timeout: 15000,
         success: done,
         fail: () => finish(reject, new Error('网络不太好，请稍后再试')),
@@ -45,7 +51,9 @@ function request(path, params) {
     } else {
       wx.request({
         url: config.devBaseUrl + url,
-        method: 'GET',
+        method,
+        header,
+        data,
         timeout: 15000,
         success: done,
         fail: () => finish(reject, new Error('连不上开发用的后端，请确认 youju serve 已启动')),
@@ -159,6 +167,12 @@ function exportFile(ids, format) {
   });
 }
 
+// 纠错：只提交文字（最多 500 字）和文件编号，不收联系方式；服务端先做内容安全校验
+function feedback(docId, content) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能提交，连上接口后可用'));
+  return request('/api/v1/feedback', null, { method: 'POST', data: { docId: docId || null, content } });
+}
+
 // 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据
 function follow() {
   return copy(mock.follow);
@@ -173,4 +187,4 @@ function saveSubscription() {
   return Promise.reject(new Error('订阅服务尚未上线'));
 }
 
-module.exports = { isLive, home, search, detail, calendar, lists, lookup, exportFile, follow, files, saveSubscription };
+module.exports = { isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback, follow, files, saveSubscription };

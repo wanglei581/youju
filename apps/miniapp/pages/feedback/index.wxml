@@ -1,0 +1,11 @@
+<notice-bar />
+<view wx:if="{{title}}" class="card about">
+  <view class="weak about-label">针对这份文件</view>
+  <view class="about-title">{{title}}</view>
+</view>
+<view class="card box">
+  <textarea class="input" value="{{content}}" maxlength="{{max}}" placeholder="哪里不对？比如截止日期、发文机关、名单状态和原文不一致，或者希望增加的地区和栏目" placeholder-class="ph" bindinput="onInput" auto-height aria-label="纠错与建议内容" />
+  <view class="count weak">{{count}}/{{max}}</view>
+</view>
+<view class="note weak">我们会对照原文核对后修正。请不要填写姓名、电话等个人信息；提交的内容会经过微信内容安全检查。</view>
+<view class="btn-primary submit {{sending ? 'submit--off' : ''}}" bindtap="submit" aria-role="button">{{sending ? '正在提交…' : '提交'}}</view>

@@ -24,7 +24,7 @@
   <view class="grid-item" bindtap="todo"><view class="gi gi--orange"><t-icon name="star" size="40rpx" color="#F57B21" /></view><text>收藏</text></view>
   <view class="grid-item" data-url="/pages/files/index" data-tab="1" bindtap="go"><view class="gi gi--green"><t-icon name="download" size="40rpx" color="#13A677" /></view><text>导出记录</text></view>
   <view class="grid-item" data-url="/pages/calendar/index" bindtap="go"><view class="gi gi--blue"><t-icon name="notification" size="40rpx" color="#2A5CE0" /></view><text>我的提醒</text></view>
-  <view class="grid-item" bindtap="todo"><view class="gi gi--red"><t-icon name="flag" size="40rpx" color="#E5484D" /></view><text>纠错</text></view>
+  <view class="grid-item" bindtap="feedback" aria-role="button"><view class="gi gi--red"><t-icon name="flag" size="40rpx" color="#E5484D" /></view><text>纠错</text></view>
 </view>
 
 <view class="card">

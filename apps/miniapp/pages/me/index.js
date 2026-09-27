@@ -49,4 +49,8 @@ Page({
   todo() {
     wx.showToast({ title: '即将开放', icon: 'none' });
   },
+
+  feedback() {
+    wx.navigateTo({ url: '/pages/feedback/index' });
+  },
 });
