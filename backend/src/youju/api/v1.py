@@ -486,8 +486,10 @@ def lookup_lists(
         public(select(ListEntry.document_id, Document.publish_date).distinct())
         .where(matched)
         .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
-        .limit(_LOOKUP_SCAN)
+        .limit(_LOOKUP_SCAN + 1)
     ).all()
+    scanned_all = len(found) <= _LOOKUP_SCAN
+    found = found[:_LOOKUP_SCAN]
     mapping = canonical_ids(session, [doc_id for doc_id, _ in found])
     newest: dict[int, date | None] = {}
     for doc_id, published in found:
@@ -495,7 +497,7 @@ def lookup_lists(
         if master not in newest or (published and (newest[master] or date.min) < published):
             newest[master] = published
     masters = sorted(newest, key=lambda m: (newest[m] or date.min, m), reverse=True)
-    truncated = len(masters) > _LOOKUP_LIMIT or len(found) >= _LOOKUP_SCAN
+    truncated = len(masters) > _LOOKUP_LIMIT or not scanned_all
     masters = masters[:_LOOKUP_LIMIT]
     keep = set(masters)
     # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的
