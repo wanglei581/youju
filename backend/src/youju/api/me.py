@@ -25,7 +25,10 @@ router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
 _TZ = ZoneInfo("Asia/Shanghai")
 _DATA_BYTES_LIMIT = 1000 * 1024
-_MOBILE = re.compile(r"(?<![0-9])1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}(?![0-9])")
+# 手机号，可带 +86 / 0086 / 86 前缀，中间可有空格或短横线
+_MOBILE = re.compile(
+    r"(?<![0-9])(?:(?:\+|00)?86[ -]?)?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}(?![0-9])"
+)
 _ID_CARD = re.compile(r"(?<![A-Za-z0-9])[1-9][0-9]{16}[0-9Xx](?![A-Za-z0-9])")
 # 邮箱只认英文字符：\w 会匹配中文，会把邮箱前面的中文一起隐去
 _EMAIL = re.compile(
@@ -437,8 +440,11 @@ def rename_follow(follow_id: int, body: FollowNameIn, session: SessionDep, user:
     return _follow_out(session, row)
 
 
+# 删除不要求同意当前版本：协议更新后没重新同意的用户也能删除自己的数据
 @router.delete("/me/follows/{follow_id}", status_code=204)
-def delete_follow(follow_id: int, session: SessionDep, user: UserDep) -> None:
+def delete_follow(follow_id: int, session: SessionDep, user: KnownUserDep) -> None:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到关注")
     session.delete(_owned_follow(session, user, follow_id))
     session.commit()
 
@@ -500,11 +506,14 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
         if body.docId is None or body.followId is not None:
             raise HTTPException(status_code=422, detail="截止提醒需要 docId")
         document_id = canonical_ids(session, [body.docId]).get(body.docId, body.docId)
+        stamp = v1.now()
         if session.get(Document, document_id) is None or not any(
-            d.approved_date >= v1.now().date()
+            v1.deadline_open(d, stamp)
             for d in v1._approved(session, [document_id]).get(document_id, [])
         ):
             raise HTTPException(status_code=422, detail="没有有效的人工核对截止")
+        # 锁住这个用户，同时点两次也只建一条（下面按"已有未用授权"去重）
+        session.execute(select(User.id).where(User.id == user.id).with_for_update())
         # 同一文件已有还没发出的截止提醒：返回已有的，不再新建（否则会提醒两次）
         existing = session.scalar(
             select(Subscription).where(
@@ -530,9 +539,9 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
 
 
 @router.delete("/me/subscriptions/{subscription_id}", status_code=204)
-def delete_subscription(subscription_id: int, session: SessionDep, user: UserDep) -> None:
+def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUserDep) -> None:
     row = session.get(Subscription, subscription_id)
-    if row is None or row.user_id != user.id or row.status != "unused":
+    if row is None or user is None or row.user_id != user.id or row.status != "unused":
         raise HTTPException(status_code=404, detail="没有找到可退订的授权")
     session.delete(row)
     session.commit()

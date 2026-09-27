@@ -1,6 +1,6 @@
 """用户身份、个人接口、内容安全和提醒任务。"""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -145,6 +145,10 @@ def test_mask_feedback_boundaries_without_database():
     )
     # 邮箱前后是中文时只隐去邮箱本身
     assert me._mask_feedback("请发到abc@qq.com谢谢") == "请发到［已隐去］谢谢"
+    # 带国家码的手机号
+    assert me._mask_feedback("电话+8613812345678、+86 138 1234 5678、008613812345678") == (
+        "电话［已隐去］、［已隐去］、［已隐去］"
+    )
 
 
 def test_identity_modes_and_agreement(client, session, monkeypatch):
@@ -309,6 +313,44 @@ def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
         ).status_code
         == 404
     )
+
+
+def test_outdated_agreement_can_still_delete_own_data(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=5))
+    follow_id = follow(client).json()["id"]
+    sub_id = client.post(
+        "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
+    ).json()["id"]
+    # 协议升级，用户还没重新同意：不能新建，但能删除自己的关注和提醒授权
+    settings(monkeypatch, version="2026-12")
+    assert client.get("/api/v1/me/follows").status_code == 403
+    assert client.delete(f"/api/v1/me/subscriptions/{sub_id}").status_code == 204
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 204
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 404
+    # 从没同意过的人：404，不建记录
+    settings(monkeypatch, openid="stranger")
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 404
+    assert session.scalar(select(func.count(User.id)).where(User.openid == "stranger")) == 0
+
+
+def test_deadline_subscription_rejects_passed_time_today(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date())
+    deadline = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == doc.id)
+    )
+    body = {"kind": "deadline", "templateId": "d", "docId": doc.id}
+    # 今天 9:00 截止，现在 10:00：已过，不接受
+    deadline.approved_time = time(9, 0)
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 422
+    # 今天 17:00 截止：还没过，接受
+    deadline.approved_time = time(17, 0)
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
 
 
 def test_feedback_security_and_events(client, session, monkeypatch):
