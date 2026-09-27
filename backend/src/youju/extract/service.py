@@ -49,8 +49,9 @@ def extract_existing(
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date
         ):
+            # 指纹含类型：同一句原文、同一日期里的不同事项（如企业申报和材料报送同日截止）各算一条
             fingerprint = hashlib.sha256(
-                f"{candidate.due_date}|{candidate.due_time}|{candidate.evidence}".encode()
+                f"{candidate.kind}|{candidate.due_date}|{candidate.due_time}|{candidate.evidence}".encode()
             ).hexdigest()
             generated.add(fingerprint)
             if fingerprint in existing:

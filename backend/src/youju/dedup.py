@@ -1,5 +1,6 @@
 """按标题、发文机关和发布日期归并展示；原始题录与衍生记录仍各自保留。"""
 
+import hashlib
 import re
 from collections import defaultdict
 
@@ -22,12 +23,13 @@ def match_key(doc: Document, detail: DocumentDetail | None, source: Source) -> s
 
 
 def _signature(detail: DocumentDetail | None) -> tuple[str | None, str | None]:
-    """文号和正文摘要（去空白后的开头 200 字加结尾 200 字）；取不到的为 None（不参与比较）。"""
+    """文号和正文摘要（去空白后整段正文的哈希）；取不到的为 None（不参与比较）。
+    正文有任何不同就不归并：宁可少合并、多显示一条，也不把不同的文件藏起来。"""
     if detail is None:
         return None, None
     number = re.sub(r"\s+", "", detail.doc_number) if detail.doc_number else None
     body = re.sub(r"\s+", "", detail.body_text or "")
-    digest = f"{body[:200]}|{body[-200:]}" if len(body) >= 100 else None
+    digest = hashlib.sha256(body.encode()).hexdigest() if len(body) >= 100 else None
     return number or None, digest
 
 

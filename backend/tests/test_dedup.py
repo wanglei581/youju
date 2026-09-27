@@ -26,13 +26,13 @@ def test_truncated_titles_are_not_merged() -> None:
 
 
 def test_same_title_but_different_number_or_body_is_not_merged() -> None:
-    body_a = "各有关单位：" + "现将2026年度项目申报有关事项通知如下。" * 10
-    body_b = "各有关单位：" + "现将2026年度项目验收有关事项通知如下。" * 10
+    body_a = "摘要A"
+    body_b = "摘要B"
     groups = _split_by_content(
         [
-            (1, ("青科发〔2026〕12号", body_a[:200])),
+            (1, ("青科发〔2026〕12号", body_a)),
             (2, ("青科发〔2026〕13号", None)),  # 文号不同：另成一组
-            (3, (None, body_b[:200])),  # 正文与第一组不同；与第 2 条没有冲突的信息，并入第 2 组
+            (3, (None, body_b)),  # 正文与第一组不同；与第 2 条没有冲突的信息，并入第 2 组
             (4, (None, None)),  # 取不到文号和正文：跟第一组
             (5, ("青科发〔2026〕12号", None)),  # 同一文号
         ]
@@ -40,13 +40,18 @@ def test_same_title_but_different_number_or_body_is_not_merged() -> None:
     assert groups == [[1, 4, 5], [2, 3]]
 
 
-def test_signature_compares_head_and_tail() -> None:
+def test_signature_compares_whole_body() -> None:
     from youju.dedup import _signature
 
     head = "各有关单位：现将有关事项通知如下。" * 15
-    a = SimpleNamespace(doc_number=None, body_text=head + "申报截止时间为10月9日。")
-    b = SimpleNamespace(doc_number=None, body_text=head + "验收材料于11月1日前报送。")
-    assert _signature(a)[1] != _signature(b)[1]
+    tail = "联系人及电话见附件。" * 5
+    a = SimpleNamespace(doc_number=None, body_text=head + "申报截止时间为10月9日。" + tail)
+    b = SimpleNamespace(doc_number=None, body_text=head + "验收材料于11月1日前报送。" + tail)
+    same = SimpleNamespace(
+        doc_number=None, body_text=(head + "申报截止时间为10月9日。" + tail).replace("。", "。\n")
+    )
+    assert _signature(a)[1] != _signature(b)[1]  # 中段不同
+    assert _signature(a)[1] == _signature(same)[1]  # 只差空白换行
 
 
 def test_auto_split_can_merge_again_but_manual_undo_sticks(session) -> None:
