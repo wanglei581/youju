@@ -548,3 +548,44 @@ def test_pending_duplicates_in_merge_group_are_shown_and_reviewed_once(
     for row in rows:
         session.refresh(row)
         assert row.status == "approved" and row.approved_date == date(2026, 10, 18)
+
+
+def test_role_guard_and_admin_throttle(client, seeded, monkeypatch, caplog, tmp_path) -> None:
+    """部署角色：api 不开放核对台；admin 只开放核对台、管理接口和健康检查；口令连续输错限流并留痕。"""
+    import logging
+    import os
+
+    from youju.api import app as app_module
+
+    settings = {"role": "api", "admin_token": "t" * 32}
+    monkeypatch.setattr(app_module, "get_settings", lambda: SimpleNamespace(**settings))
+    assert client.get("/admin/review").status_code == 404
+    assert client.get("/api/admin/deadlines/count").status_code == 404
+    assert client.get("/api/v1/home").status_code == 200
+    settings["role"] = "admin"
+    assert client.get("/api/v1/home").status_code == 404
+    assert client.get("/api/documents").status_code == 404
+    assert client.get("/admin/review").status_code == 200
+    # admin 的健康检查要求定时任务心跳：没有心跳报 503，15 分钟内更新过才算健康
+    heartbeat = tmp_path / "heartbeat"
+    monkeypatch.setattr(app_module, "CRON_HEARTBEAT", heartbeat)
+    assert client.get("/health").status_code == 503
+    heartbeat.write_text("1")
+    assert client.get("/health").status_code == 200
+    old = app_module.clock.time() - 3600
+    os.utime(heartbeat, (old, old))
+    assert client.get("/health").status_code == 503
+    settings["role"] = "all"
+    wrong = {"X-Admin-Token": "wrong", "X-Original-Forwarded-For": "203.0.113.9"}
+    with caplog.at_level(logging.WARNING, logger="youju.audit"):
+        for _ in range(5):
+            assert client.get("/api/admin/deadlines/count", headers=wrong).status_code == 401
+    assert "admin_auth_failed" in caplog.text
+    # 同一来源第 6 次：口令对也先锁住；别的来源不受影响（不设全局锁定）
+    right = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "203.0.113.9"}
+    assert client.get("/api/admin/deadlines/count", headers=right).status_code == 429
+    for i in range(40):
+        spoof = {"X-Admin-Token": "wrong", "X-Original-Forwarded-For": f"198.51.100.{i}"}
+        client.get("/api/admin/deadlines/count", headers=spoof)
+    other = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "192.0.2.1"}
+    assert client.get("/api/admin/deadlines/count", headers=other).status_code == 200

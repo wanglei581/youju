@@ -2,6 +2,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import create_engine, text
 
 from youju.config import get_settings
 
@@ -17,5 +18,21 @@ def alembic_config(database_url: str | None = None) -> Config:
     return cfg
 
 
+# 迁移时持有的 PostgreSQL 咨询锁编号（任意固定值）：部署时即使同时启动两个实例，也只有一个在迁移
+_MIGRATION_LOCK = 2026_0928
+
+
 def upgrade(database_url: str | None = None) -> None:
-    command.upgrade(alembic_config(database_url), "head")
+    url = database_url or get_settings().database_url
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            # 等前一个实例迁移完再往下走；已是最新结构时 alembic 什么也不做
+            conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK})
+            try:
+                command.upgrade(alembic_config(url), "head")
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK})
+                conn.commit()
+    finally:
+        engine.dispose()
