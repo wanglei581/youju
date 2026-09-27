@@ -80,7 +80,7 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     rows = session.scalars(
         select(DocumentDeadline).where(
             DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
-            DocumentDeadline.status == "approved",
+            DocumentDeadline.status.in_(("approved", "changed")),
         )
     ).all()
     by_document: dict[int, list[DocumentDeadline]] = {}
@@ -88,11 +88,17 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
         by_document.setdefault(d.document_id, []).append(d)
     out: dict[int, list[DocumentDeadline]] = {}
     for doc_id, ids in members.items():
-        seen = set()
+        # 同组里同一截止已标"已变更"的，其他仍为"已通过"的副本也不再当作有效截止（与导出一致）
+        seen = {
+            (d.kind, d.approved_date, d.approved_time)
+            for member in ids
+            for d in by_document.get(member, [])
+            if d.status == "changed"
+        }
         for member in ids:
             for d in by_document.get(member, []):
                 key = (d.kind, d.approved_date, d.approved_time)
-                if key not in seen:
+                if d.status == "approved" and key not in seen:
                     out.setdefault(doc_id, []).append(d)
                     seen.add(key)
     for items in out.values():

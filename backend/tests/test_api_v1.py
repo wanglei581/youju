@@ -702,6 +702,10 @@ def test_reviewed_search_prefers_still_valid_deadline(client, seeded, session, m
     found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
     rows = [f for f in found.json() if f["kind"] == "企业申报截止"]
     assert len(rows) == 1 and rows[0]["status"] == "approved"
+    # 公开端：同组同一截止已标"已变更"，仍为"已通过"的副本也不当作有效截止
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert [c["reason"] for c in detail["deadline_changes"]] == ["延期"]
 
 
 def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
