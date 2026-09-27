@@ -32,6 +32,7 @@ _DEADLINE_ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或�
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
 _LOOKUP_LIMIT = 100  # 查名单最多列出的名单份数
+_LOOKUP_SCAN = 2000  # 查名单最多扫描的名单文件数（按发布日期从新到旧），防止极端情况下查询过慢
 TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
@@ -482,7 +483,10 @@ def lookup_lists(
     matched = or_(direct, ListEntry.credit_code.in_(codes)) if codes else direct
     # 名单条目所在文件先映射到归并后的主文件（同一通知的不同网址算一份），按主文件去重后再截取
     found = session.execute(
-        public(select(ListEntry.document_id, Document.publish_date).distinct()).where(matched)
+        public(select(ListEntry.document_id, Document.publish_date).distinct())
+        .where(matched)
+        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
+        .limit(_LOOKUP_SCAN)
     ).all()
     mapping = canonical_ids(session, [doc_id for doc_id, _ in found])
     newest: dict[int, date | None] = {}
@@ -491,7 +495,7 @@ def lookup_lists(
         if master not in newest or (published and (newest[master] or date.min) < published):
             newest[master] = published
     masters = sorted(newest, key=lambda m: (newest[m] or date.min, m), reverse=True)
-    truncated = len(masters) > _LOOKUP_LIMIT
+    truncated = len(masters) > _LOOKUP_LIMIT or len(found) >= _LOOKUP_SCAN
     masters = masters[:_LOOKUP_LIMIT]
     keep = set(masters)
     # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的

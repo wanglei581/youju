@@ -417,3 +417,44 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
     assert body["ambiguous"] is True
     # 更名前的名称已在结果里，不再算"名称相近"
     assert body["similar"] == []
+
+
+def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seeded, session):
+    """名单只从可解析的来源（rights_level=1）抽取；条目所在副本归并到别的来源的主文件时，仍列出主文件。"""
+    from youju.models import DocumentMerge
+
+    list_doc = session.get(Document, seeded["list"])
+    other_src = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅（转载）",
+        column_name="转载",
+        url="https://www.shandong.gov.cn/kj/",
+        enabled=True,
+        parser_config={},
+        rights_level=0,
+    )
+    session.add(other_src)
+    session.flush()
+    master = _doc(other_src, 51, list_doc.title, list_doc.publish_date)
+    session.add(master)
+    session.flush()
+    # 主文件编号更小时才会成为主文件；这里直接写归并关系：list_doc 是副本，master 是主文件
+    session.add(
+        DocumentMerge(duplicate_id=list_doc.id, canonical_id=master.id, active=True, match_key="k")
+    )
+    session.add(
+        ListEntry(
+            document_id=list_doc.id,
+            source_url=list_doc.url,
+            name="山东星河科技有限公司",
+            normalized_name="山东星河科技有限公司",
+            sequence="1",
+            category="科技型中小企业",
+        )
+    )
+    session.commit()
+    body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    assert [i["id"] for i in body["items"]] == [str(master.id)]
+    assert body["items"][0]["matched"]["name"] == "山东星河科技有限公司"
