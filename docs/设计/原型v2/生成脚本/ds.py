@@ -31,42 +31,10 @@ FONTS_LINK = ('<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC
               '&amp;display=swap" rel="stylesheet">')
 
 # 图标（24×24 线性，描边由调用处决定）
-ICON = {
-    "search": '<circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4.2-4.2"></path>',
-    "back": '<path d="M15 5l-7 7 7 7"></path>',
-    "chev": '<path d="M9 6l6 6-6 6"></path>',
-    "down": '<path d="M6 9l6 6 6-6"></path>',
-    "close": '<path d="M6 6l12 12M18 6L6 18"></path>',
-    "apply": '<path d="M6 3.5h9l3 3v14H6z"></path><path d="M9 11l2 2 4-4"></path><path d="M9 16.5h6"></path>',
-    "list": ('<path d="M9.5 6.5h10M9.5 12h10M9.5 17.5h10"></path>'
-             '<path d="M4.5 6.5l1 1 1.7-2M4.5 12l1 1 1.7-2M4.5 17.5l1 1 1.7-2"></path>'),
-    "policy": ('<path d="M5 5.5a2 2 0 0 1 2-2h11v17H7a2 2 0 0 1-2-2z"></path>'
-               '<path d="M5 18.5a2 2 0 0 1 2-2h11"></path><path d="M9 8h5"></path>'),
-    "calendar": ('<rect x="4" y="5.5" width="16" height="14.5" rx="2"></rect>'
-                 '<path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"></path><path d="M12 13v3l2 1"></path>'),
-    "grid": ('<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"></rect><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"></rect>'
-             '<rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"></rect><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"></rect>'),
-    "bell": '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"></path><path d="M10 20.5a2.2 2.2 0 0 0 4 0"></path>',
-    "doc": '<path d="M7 3.5h7l4 4v13H6v-16.5z"></path><path d="M14 3.5V8h4"></path><path d="M9 12.5h6M9 16h6"></path>',
-    "user": '<circle cx="12" cy="8.5" r="3.5"></circle><path d="M5 20c1.2-3.6 4-5.5 7-5.5s5.8 1.9 7 5.5"></path>',
-    "star": '<path d="M12 4l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.4l-4.8 2.5.9-5.4-3.9-3.8 5.4-.8z"></path>',
-    "download": '<path d="M12 4v11"></path><path d="M7.5 10.5L12 15l4.5-4.5"></path><path d="M5 19.5h14"></path>',
-    "flag": '<path d="M6 20.5V4"></path><path d="M6 4.5h11l-2.2 3.8L17 12H6"></path>',
-    "plus": '<path d="M12 5v14M5 12h14"></path>',
-    "check": '<path d="M5 12.5l4.5 4.5L19 7.5"></path>',
-    "filter": '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"></path><circle cx="15" cy="7" r="2"></circle><circle cx="9" cy="17" r="2"></circle>',
-    "ext": '<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path>',
-    "clip": '<path d="M20 11.5l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l8.1-8.1a3 3 0 0 1 4.2 4.2l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3"></path>',
-    "shield": '<path d="M12 3.5l7 3v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9v-5z"></path><path d="M9 12l2 2 4-4"></path>',
-    "info": '<circle cx="12" cy="12" r="8"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path>',
-    "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5M6 6l1.8 1.8M16.2 16.2L18 18M6 18l1.8-1.8M16.2 7.8L18 6"></path>',
-    "copy": '<rect x="8.5" y="8.5" width="11" height="11" rx="2"></rect><path d="M5.5 15.5V6a1 1 0 0 1 1-1h9.5"></path>',
-    "home_fill": '<path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5.5h-5V21H5a1 1 0 0 1-1-1z"></path>',
-}
 
 
 # 图标用 TDesign（腾讯，MIT 许可，文件和许可在 icons/tdesign/），决策记录 D-015。
-# 我们的名字 → TDesign 图标名；上面手画的 ICON 只在对照表里没有时使用。
+# 我们的名字 → TDesign 图标名。业务图标只用这里的对照表；微信右上角的系统胶囊是占位示意，另画。
 LIB_ICONS = {"search": "search", "back": "chevron-left", "chev": "chevron-right", "down": "chevron-down", "close": "close",
              "apply": "task-checked", "list": "bulletpoint", "policy": "book", "calendar": "calendar", "grid": "app",
              "bell": "notification", "doc": "file", "user": "user", "home": "home", "star": "star", "download": "download",
@@ -77,16 +45,16 @@ LIB_FILLED = {"home": "home-filled", "bell": "notification-filled", "doc": "file
 ICON_DIR = Path(__file__).resolve().parent / "icons" / "tdesign"
 
 
-def icon(name, size=22, color=T1, width=1.8, fill="none", filled=False):
-    """TDesign 图标沿用原始线宽（2px / 24px），width 只对手画图标有效。"""
-    if name in LIB_ICONS:
-        file = LIB_FILLED[name] if filled else LIB_ICONS[name]
-        svg = (ICON_DIR / f"{file}.svg").read_text(encoding="utf-8")
-        inner = re.sub(r"^.*?<svg[^>]*>|</svg>\s*$", "", svg, flags=re.S)
-        return (f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
-                f'style="flex-shrink: 0; color: {color}">{inner}</svg>')
-    return (f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" style="flex-shrink: 0" fill="{fill}" stroke="{color}" '
-            f'stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round">{ICON[name]}</svg>')
+def icon(name, size=22, color=T1, width=None, filled=False):
+    """TDesign 图标，沿用原始线宽（24px 下 2px），width 参数不再起作用（只为兼容旧调用）；
+    filled=True 用面性（底栏选中）。对照表里没有的名字直接报错。"""
+    if name not in LIB_ICONS:
+        raise KeyError(f"图标 {name!r} 不在 LIB_ICONS 对照表里")
+    file = LIB_FILLED[name] if filled else LIB_ICONS[name]
+    svg = (ICON_DIR / f"{file}.svg").read_text(encoding="utf-8")
+    inner = re.sub(r"^.*?<svg[^>]*>|</svg>\s*$", "", svg, flags=re.S)
+    return (f'<svg aria-hidden="true" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+            f'style="flex-shrink: 0; color: {color}">{inner}</svg>')
 
 
 def capsule(on_blue=False):
