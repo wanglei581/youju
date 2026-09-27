@@ -30,7 +30,7 @@ _DEADLINE_ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或�
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
 TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
-STATUSES = {"公示", "正式公布"}
+STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
 DEPTS = {"科技部门", "工信部门", "其他部门"}
 PROVINCES = {
@@ -199,7 +199,7 @@ def search(
     types: Annotated[
         str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
-    status: Annotated[str | None, Query(max_length=400, description="公示,正式公布")] = None,
+    status: Annotated[str | None, Query(max_length=400, description="公示,公布")] = None,
     time: Annotated[str, Query(description="近 7 天 / 近 30 天 / 今年 / 不限")] = "近 30 天",
     depts: Annotated[
         str | None, Query(max_length=400, description="科技部门,工信部门,其他部门")

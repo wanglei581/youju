@@ -207,7 +207,7 @@ def test_search_filters_and_totals(client, seeded):
     assert [i["id"] for i in r["items"]] == [str(seeded["apply"])]
     r = client.get("/api/v1/search", params={"q": "辽工信投资", "time": "不限"}).json()
     assert r["total"] == 1  # 文号也能搜到
-    r = client.get("/api/v1/search", params={"status": "正式公布", "time": "不限"}).json()
+    r = client.get("/api/v1/search", params={"status": "公布", "time": "不限"}).json()
     assert r["total"] == 0
 
 
