@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from youju.classify import doc_kind, kind_filter, list_status, region_label, status_filter
 from youju.db import get_session
+from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
@@ -72,14 +73,25 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     """每份文件核对通过的截止日期，按显示优先级排好。"""
     if not doc_ids:
         return {}
+    members = groups_for(session, doc_ids)
     rows = session.scalars(
         select(DocumentDeadline).where(
-            DocumentDeadline.document_id.in_(doc_ids), DocumentDeadline.status == "approved"
+            DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
+            DocumentDeadline.status == "approved",
         )
     ).all()
-    out: dict[int, list[DocumentDeadline]] = {}
+    by_document: dict[int, list[DocumentDeadline]] = {}
     for d in rows:
-        out.setdefault(d.document_id, []).append(d)
+        by_document.setdefault(d.document_id, []).append(d)
+    out: dict[int, list[DocumentDeadline]] = {}
+    for doc_id, ids in members.items():
+        seen = set()
+        for member in ids:
+            for d in by_document.get(member, []):
+                key = (d.kind, d.approved_date, d.approved_time)
+                if key not in seen:
+                    out.setdefault(doc_id, []).append(d)
+                    seen.add(key)
     for items in out.values():
         items.sort(key=lambda d: (_DEADLINE_ORDER.get(d.kind, 9), d.approved_date or date.max))
     return out
@@ -88,8 +100,21 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
 def _details(session: Session, doc_ids: list[int]) -> dict[int, DocumentDetail]:
     if not doc_ids:
         return {}
-    rows = session.scalars(select(DocumentDetail).where(DocumentDetail.document_id.in_(doc_ids)))
-    return {d.document_id: d for d in rows}
+    members = groups_for(session, doc_ids)
+    rows = session.scalars(
+        select(DocumentDetail).where(
+            DocumentDetail.document_id.in_([i for ids in members.values() for i in ids])
+        )
+    ).all()
+    by_id = {d.document_id: d for d in rows}
+    return {
+        doc_id: max(
+            (by_id[i] for i in ids if i in by_id),
+            key=lambda d: (bool(d.body_text), len(d.body_text), d.document_id == doc_id),
+        )
+        for doc_id, ids in members.items()
+        if any(i in by_id for i in ids)
+    }
 
 
 def _hhmm(value: Any) -> str:
@@ -127,7 +152,7 @@ def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
 
 
 def _base() -> Select:
-    return select(Document, Source).join(Source, Document.source_id == Source.id)
+    return visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
 
 
 def _ordered(stmt: Select) -> Select:
@@ -142,7 +167,9 @@ def _count(session: Session, stmt: Select) -> int:
 def home(session: SessionDep) -> dict:
     """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
     start, end = _week(now().date())
-    week = select(Document.title).where(Document.publish_date >= start, Document.publish_date < end)
+    week = visible_documents(select(Document.title)).where(
+        Document.publish_date >= start, Document.publish_date < end
+    )
     kinds = [doc_kind(t) for (t,) in session.execute(week).all()]
     enabled = Source.enabled.is_(True)
     sources = session.scalar(select(func.count()).select_from(Source).where(enabled)) or 0
@@ -259,6 +286,7 @@ def _fmt_deadline_note(d: DocumentDeadline) -> str:
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处；截止日期只给核对通过的；不返回正文全文。"""
+    doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(_base().where(Document.id == doc_id)).first()
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
@@ -295,6 +323,14 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "issuer": issuer,
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
         "url": doc.url,
+        "original_urls": [
+            d.url
+            for d in session.scalars(
+                select(Document)
+                .where(Document.id.in_(group_ids(session, doc.id)))
+                .order_by(Document.id)
+            )
+        ],
         "site": f"{src.dept_full_name}网站",
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
@@ -338,16 +374,23 @@ def calendar(
             DocumentDeadline.approved_date <= d + timedelta(days=days),
         )
     )
-    total = _count(session, stmt)
     rows = session.execute(
         stmt.order_by(
             DocumentDeadline.approved_date,
             DocumentDeadline.approved_time.nulls_last(),
             DocumentDeadline.id,
         )
-        .limit(limit)
-        .offset(offset)
     ).all()
+    mapping = canonical_ids(session, [doc.id for _, doc, _ in rows])
+    unique = {}
+    for dl, doc, src in rows:
+        master_id = mapping.get(doc.id, doc.id)
+        key = (master_id, dl.kind, dl.approved_date, dl.approved_time)
+        if key not in unique:
+            master = session.get(Document, master_id) if master_id != doc.id else doc
+            unique[key] = (dl, master, master.source if master_id != doc.id else src)
+    total = len(unique)
+    rows = list(unique.values())[offset : offset + limit]
     return {
         "today": d.isoformat(),
         "total": total,

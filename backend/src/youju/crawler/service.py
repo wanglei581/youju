@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, url_key
+from youju.dedup import reconcile_documents
 from youju.models import Document, Source, SourceCheck
 
 log = logging.getLogger(__name__)
@@ -79,7 +80,9 @@ def save_items(
         index_elements=[Document.url_key],
         set_={"last_seen_at": stmt.excluded.last_seen_at},
     ).returning(literal_column("xmax = 0"))  # 新插入的行 xmax 为 0，更新的行不为 0
-    return sum(1 for inserted in session.execute(stmt).scalars() if inserted)
+    inserted_count = sum(1 for inserted in session.execute(stmt).scalars() if inserted)
+    reconcile_documents(session, {item.title for item in unique.values()})
+    return inserted_count
 
 
 def _update_health(

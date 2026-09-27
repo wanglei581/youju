@@ -39,11 +39,19 @@ def extract_existing(
             )
         }
         generated: set[str] = set()
+        # 已核对过的截止（通过、驳回、已变更）：抽取规则或证据句截法变了，
+        # 同一类型、同一日期时间的不再重复送审；不同类型的照常送审
+        reviewed = {
+            (row.kind, row.candidate_date, row.candidate_time)
+            for row in existing.values()
+            if row.status != "pending"
+        }
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date
         ):
+            # 指纹含类型：同一句原文、同一日期里的不同事项（如企业申报和材料报送同日截止）各算一条
             fingerprint = hashlib.sha256(
-                f"{candidate.due_date}|{candidate.due_time}|{candidate.evidence}".encode()
+                f"{candidate.kind}|{candidate.due_date}|{candidate.due_time}|{candidate.evidence}".encode()
             ).hexdigest()
             generated.add(fingerprint)
             if fingerprint in existing:
@@ -51,6 +59,8 @@ def extract_existing(
                 if row.status == "pending":
                     row.kind = candidate.kind
                     row.confidence = candidate.confidence
+                continue
+            if (candidate.kind, candidate.due_date, candidate.due_time) in reviewed:
                 continue
             row = DocumentDeadline(
                 document_id=doc.id,

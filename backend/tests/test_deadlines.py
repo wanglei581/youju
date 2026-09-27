@@ -106,3 +106,14 @@ def test_long_sentence_evidence_keeps_the_date():
     assert len(result) == 1
     assert "10月31日" in result[0].evidence
     assert len(result[0].evidence) <= 120
+
+
+def test_evidence_starts_at_clause_boundary() -> None:
+    sentence = (
+        "材料说明，" + "补充证明文件齐全，" * 25 + "项目纸质申报材料受理截止时间为2026年10月16日。"
+    )
+    result = extract_deadlines(sentence, PUBLISHED)
+    assert len(result) == 1
+    assert result[0].evidence.startswith(("补充证明", "项目纸质"))
+    assert "10月16日" in result[0].evidence
+    assert len(result[0].evidence) <= 120

@@ -6,12 +6,14 @@ from fastapi.testclient import TestClient
 
 from youju.api.app import app
 from youju.db import get_session
+from youju.dedup import reconcile_documents
 from youju.extract.service import extract_existing
 from youju.models import (
     Document,
     DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
+    DocumentMerge,
     ListEntry,
     Source,
 )
@@ -96,6 +98,78 @@ def seeded(session):
 
 def test_health(client) -> None:
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_content_merge_keeps_raw_urls_and_is_reversible(client, seeded, session) -> None:
+    original = session.query(Document).filter(Document.title.like("关于开展2026年度%")).one()
+    duplicate = Document(
+        source_id=original.source_id,
+        url=original.url + "?type=2",
+        url_key=original.url_key + "?type=2",
+        title=original.title,
+        publish_date=original.publish_date,
+        first_seen_at=original.first_seen_at,
+        last_seen_at=original.last_seen_at,
+    )
+    session.add(duplicate)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=duplicate.id,
+            fingerprint="duplicate-deadline",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 30),
+            approved_date=date(2026, 10, 30),
+            evidence="企业申报截止2026年10月30日",
+            confidence="高",
+            status="approved",
+        )
+    )
+    assert reconcile_documents(session) == 1
+    session.commit()
+    assert client.get("/api/documents").json()["total"] == 3
+    assert client.get("/api/v1/search", params={"time": "不限"}).json()["total"] == 3
+    detail = client.get(f"/api/documents/{duplicate.id}").json()
+    assert detail["id"] == original.id
+    assert detail["original_urls"] == [original.url, duplicate.url]
+    assert len(detail["deadlines"]) == 1
+    assert session.get(Document, duplicate.id) is not None
+    mapping = session.get(DocumentMerge, duplicate.id)
+    mapping.active = False
+    session.commit()
+    assert reconcile_documents(session) == 0
+    session.commit()
+    assert client.get("/api/documents").json()["total"] == 4
+
+
+def test_merged_list_entries_only_appear_once(client, seeded, session) -> None:
+    original = session.query(Document).filter(Document.title.like("山东省专精特新%")).one()
+    duplicate = Document(
+        source_id=original.source_id,
+        url=original.url + "?type=2",
+        url_key=original.url_key + "?type=2",
+        title=original.title,
+        publish_date=original.publish_date,
+        first_seen_at=original.first_seen_at,
+        last_seen_at=original.last_seen_at,
+    )
+    session.add(duplicate)
+    session.flush()
+    for doc in (original, duplicate):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                category="专精特新中小企业",
+            )
+        )
+    reconcile_documents(session)
+    session.commit()
+    result = client.get("/api/lists/search", params={"q": "山东星河科技有限公司"}).json()
+    assert len(result["exact_matches"]) == 1
+    assert result["exact_matches"][0]["original_url"] == original.url
 
 
 def test_list_search_separates_exact_and_similar(client, seeded, session) -> None:
@@ -349,6 +423,25 @@ def test_extraction_idempotent_after_review(session, seeded) -> None:
     assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
     session.refresh(row)
     assert row.approved_date == date(2026, 10, 5)
+    # 证据句截法变了（指纹不同），同一日期已核对过，不再重复送审
+    row.fingerprint = "按旧规则截取的证据句"
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 0)
+    assert session.query(DocumentDeadline).count() == 1
+    # 同一天的另一类截止（材料报送）照常送审
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text = "企业申报截止2026年10月1日。材料报送截止2026年10月1日。"
+    session.commit()
+    assert extract_existing(session, since=date(2026, 7, 1)) == (1, 1)
+    kinds = sorted(d.kind for d in session.query(DocumentDeadline))
+    assert kinds == ["企业申报截止", "材料报送截止"]
+    # 类型判断变了（旧规则当时判成别的类型）：按新类型重新送审，核对人可以纠正
+    row.kind = "推荐或审核截止"
+    session.commit()
+    before = session.query(DocumentDeadline).count()
+    extract_existing(session, since=date(2026, 7, 1))
+    pending = session.query(DocumentDeadline).filter_by(status="pending", kind="企业申报截止")
+    assert session.query(DocumentDeadline).count() == before + 1 and pending.count() == 1
 
 
 def test_review_console_page_and_pending_count(client, seeded, session, monkeypatch) -> None:
@@ -407,3 +500,51 @@ def test_review_can_clear_time_explicitly(client, seeded, session, monkeypatch) 
     # 已核对的再提交：409
     again = client.post(f"/api/admin/deadlines/{row.id}/approve", json=body, headers=headers)
     assert again.status_code == 409
+
+
+def test_pending_duplicates_in_merge_group_are_shown_and_reviewed_once(
+    client, seeded, session, monkeypatch
+) -> None:
+    """同一通知的两个网址归并后，各自抽出的相同候选只列一条、计一条，核对一次两条都处理。"""
+    from youju.models import DocumentMerge
+
+    doc = session.query(Document).filter(Document.title.contains("高新技术企业认定")).one()
+    twin = Document(
+        source_id=doc.source_id,
+        url=doc.url + "?type=2",
+        url_key=doc.url_key + "?type=2",
+        title=doc.title,
+        publish_date=doc.publish_date,
+        first_seen_at=doc.first_seen_at,
+        last_seen_at=doc.last_seen_at,
+    )
+    session.add(twin)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=doc.id, active=True, match_key="k")
+    )
+    rows = [
+        DocumentDeadline(
+            document_id=d.id,
+            fingerprint=f"twin-{d.id}",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            evidence="申报截止时间为10月18日",
+            confidence="高",
+            status="pending",
+        )
+        for d in (doc, twin)
+    ]
+    session.add_all(rows)
+    session.commit()
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 1}
+    items = client.get("/api/admin/deadlines", headers=headers).json()
+    assert len(items) == 1 and items[0]["document_id"] == doc.id  # 标题和链接用主文件
+    approve = f"/api/admin/deadlines/{items[0]['id']}/approve"
+    assert client.post(approve, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    assert client.get("/api/admin/deadlines/count", headers=headers).json() == {"pending": 0}
+    for row in rows:
+        session.refresh(row)
+        assert row.status == "approved" and row.approved_date == date(2026, 10, 18)
