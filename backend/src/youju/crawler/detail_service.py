@@ -193,6 +193,7 @@ def fetch_details(
     max_workers: int | None = None,
     since: date | None = None,
     notices_only: bool = False,
+    document_ids: list[int] | None = None,
 ) -> list[DetailFetchSummary]:
     """抓尚无详情或已到重试时间的公开政府文件；临时失败最多尝试三次。"""
     if limit < 1:
@@ -229,6 +230,10 @@ def fetch_details(
                 )
             )
         )
+    if document_ids is not None:
+        if not document_ids:
+            return []
+        stmt = stmt.where(Document.id.in_(document_ids))
     selected = [(int(i), url) for i, url in session.execute(stmt).all()]
     # 查询事务先结束；网络请求期间不占用数据库连接和行锁。
     session.commit()

@@ -12,9 +12,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from youju.api.v1 import router as v1_router
+from youju.classify import list_status
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import Document, DocumentDeadline, DocumentDetail, Source
+from youju.lists.rules import candidate_key, is_person_query, normalize_name
+from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
 
 app = FastAPI(title="有据 API", version="0.1.0")
 app.include_router(v1_router)
@@ -115,6 +117,27 @@ class Stats(BaseModel):
     documents_by_province: dict[str, int]
 
 
+class ListMatchOut(BaseModel):
+    name: str
+    credit_code: str | None
+    category: str
+    batch: str | None
+    status: str | None = Field(
+        description="名单状态，按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+    )
+    publish_date: date | None
+    issuer: str | None
+    original_url: str
+    attachment_url: str | None
+    sequence: str | None
+    region: str | None
+
+
+class ListSearchOut(BaseModel):
+    exact_matches: list[ListMatchOut]
+    similar_candidates: list[ListMatchOut]
+
+
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -131,6 +154,90 @@ def _document_out(doc: Document, source: Source) -> DocumentOut:
         province=source.province,
         dept=source.dept,
         column_name=source.column_name,
+    )
+
+
+def _list_match(entry: ListEntry, doc: Document, detail: DocumentDetail | None) -> ListMatchOut:
+    return ListMatchOut(
+        name=entry.name,
+        credit_code=entry.credit_code,
+        category=entry.category,
+        batch=entry.batch,
+        status=list_status(doc.title),
+        publish_date=(detail.publish_date if detail else None) or doc.publish_date,
+        issuer=detail.issuer if detail else None,
+        original_url=doc.url,
+        attachment_url=(
+            entry.source_url
+            if entry.source_url not in {doc.url, detail.final_url if detail else None}
+            else None
+        ),
+        sequence=entry.sequence,
+        region=entry.region,
+    )
+
+
+def _unique_list_rows(
+    rows: list[tuple[ListEntry, Document, DocumentDetail | None]],
+) -> list[ListMatchOut]:
+    found: dict[tuple[int, str], ListMatchOut] = {}
+    for entry, doc, detail in rows:
+        key = (doc.id, entry.normalized_name)
+        match = _list_match(entry, doc, detail)
+        if key not in found or (match.attachment_url and not found[key].attachment_url):
+            found[key] = match
+    return list(found.values())
+
+
+@app.get("/api/lists/search", response_model=ListSearchOut)
+def search_lists(
+    session: SessionDep,
+    q: Annotated[
+        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+    ],
+) -> ListSearchOut:
+    query = normalize_name(q)
+    if is_person_query(query):
+        raise HTTPException(status_code=422, detail="只查企业和机构")
+    if not query:
+        raise HTTPException(status_code=422, detail="请输入企业或机构全称")
+    exact_rows = session.execute(
+        select(ListEntry, Document, DocumentDetail)
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+        .where(
+            Source.rights_level == 1,
+            (ListEntry.normalized_name == query) | (ListEntry.credit_code == query.upper()),
+        )
+        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+        .limit(200)
+    ).all()
+    similar_rows = []
+    if len(query) >= 4 and not query.isascii():
+        prefix = candidate_key(query)[:4]
+        if len(prefix) >= 2:
+            rows = session.execute(
+                select(ListEntry, Document, DocumentDetail)
+                .join(Document, Document.id == ListEntry.document_id)
+                .join(Source, Source.id == Document.source_id)
+                .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+                .where(
+                    Source.rights_level == 1,
+                    ListEntry.normalized_name.like(f"%{_escape_like(prefix)}%", escape="\\"),
+                )
+                .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+                .limit(500)
+            ).all()
+            similar_rows = [
+                (entry, doc, detail)
+                for entry, doc, detail in rows
+                if entry.normalized_name != query
+                and candidate_key(entry.normalized_name) == candidate_key(query)
+            ][:50]
+    return ListSearchOut(
+        exact_matches=_unique_list_rows(exact_rows),
+        similar_candidates=_unique_list_rows(similar_rows),
     )
 
 
