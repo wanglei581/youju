@@ -49,24 +49,11 @@ def _deadline(
     if document is None:
         return "expired"
     approved = v1._approved(session, [document.id]).get(document.id, [])
-    today = stamp.date()
-    local_time = stamp.time().replace(tzinfo=None)
-    future = [
-        d
-        for d in approved
-        if d.approved_date is not None
-        and (
-            d.approved_date > today
-            or (
-                d.approved_date == today
-                and (d.approved_time is None or d.approved_time >= local_time)
-            )
-        )
-    ]
+    future = [d for d in approved if v1.deadline_open(d, stamp)]
     if not future:
         return "expired"
     due = min(future, key=lambda d: (d.approved_date, d.approved_time or datetime.min.time()))
-    if due.approved_date > today + timedelta(days=3):
+    if due.approved_date > stamp.date() + timedelta(days=3):
         return None
     return (
         {"title": document.title, "date": due.approved_date.isoformat(), "kind": due.kind},

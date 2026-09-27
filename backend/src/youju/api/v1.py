@@ -72,6 +72,20 @@ def _week(d: date) -> tuple[date, date]:
     return start, start + timedelta(days=7)
 
 
+def deadline_open(deadline, stamp: datetime) -> bool:
+    """截止还没过（北京时间）：日期在今天之后，或就是今天且时刻未过（没写时刻算到当天结束）。"""
+    stamp = stamp.astimezone(_TZ)
+    today = stamp.date()
+    local_time = stamp.time().replace(tzinfo=None)
+    return deadline.approved_date is not None and (
+        deadline.approved_date > today
+        or (
+            deadline.approved_date == today
+            and (deadline.approved_time is None or deadline.approved_time >= local_time)
+        )
+    )
+
+
 def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDeadline]]:
     """每份文件核对通过的截止日期，按显示优先级排好。"""
     if not doc_ids:

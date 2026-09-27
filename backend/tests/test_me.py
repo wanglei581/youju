@@ -1,6 +1,6 @@
 """用户身份、个人接口、内容安全和提醒任务。"""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -45,6 +45,10 @@ def client(session_factory, monkeypatch):
             template_newdocs=None,
             template_deadline=None,
             agreement_version="2026-09",
+            retain_events_days=90,
+            retain_feedback_days=180,
+            retain_used_subscriptions_days=30,
+            retain_unused_subscriptions_days=365,
         ),
     )
     yield TestClient(app)
@@ -63,6 +67,10 @@ def settings(
             template_deadline=deadline,
             template_newdocs=newdocs,
             agreement_version=version,
+            retain_events_days=90,
+            retain_feedback_days=180,
+            retain_used_subscriptions_days=30,
+            retain_unused_subscriptions_days=365,
         ),
     )
 
@@ -119,6 +127,27 @@ def follow(client, conditions=None):
     return client.post(
         "/api/v1/me/follows",
         json={"name": "科技项目", "conditions": conditions or {"time": "不限"}},
+    )
+
+
+def test_mask_feedback_boundaries_without_database():
+    assert me._mask_feedback("手机号 13812345678、138 1234 5678、138-1234-5678") == (
+        "手机号 ［已隐去］、［已隐去］、［已隐去］"
+    )
+    assert me._mask_feedback("证件 11010519491231002X，邮箱 test.user+tag@example.com") == (
+        "证件 ［已隐去］，邮箱 ［已隐去］"
+    )
+    assert me._mask_feedback("110105194912310021 11010519490230002X 913502001234567890") == (
+        "110105194912310021 11010519490230002X 913502001234567890"
+    )
+    assert me._mask_feedback("0138123456780 A11010519491231002XB") == (
+        "0138123456780 A11010519491231002XB"
+    )
+    # 邮箱前后是中文时只隐去邮箱本身
+    assert me._mask_feedback("请发到abc@qq.com谢谢") == "请发到［已隐去］谢谢"
+    # 带国家码的手机号
+    assert me._mask_feedback("电话+8613812345678、+86 138 1234 5678、008613812345678") == (
+        "电话［已隐去］、［已隐去］、［已隐去］"
     )
 
 
@@ -218,14 +247,23 @@ def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
         json={"kind": "newDocs", "templateId": "n", "followId": follow_id},
     )
     assert created.status_code == 201
-    assert (
-        client.post(
-            "/api/v1/me/subscriptions",
-            json={"kind": "deadline", "templateId": "d", "docId": doc.id},
-        ).status_code
-        == 201
+    first = client.post(
+        "/api/v1/me/subscriptions",
+        json={"kind": "deadline", "templateId": "d", "docId": doc.id},
     )
+    assert first.status_code == 201
+    # 同一文件已有还没发出的截止提醒：返回已有的，不再新建
+    again = client.post(
+        "/api/v1/me/subscriptions",
+        json={"kind": "deadline", "templateId": "d", "docId": doc.id},
+    )
+    assert again.status_code == 201
+    assert again.json()["id"] == first.json()["id"]
     assert client.get("/api/v1/me").json()["subscriptions"] == {"newDocs": 1, "deadline": 1}
+    titles = {
+        s["kind"]: s["docTitle"] for s in client.get("/api/v1/me/data").json()["subscriptions"]
+    }
+    assert titles == {"newDocs": None, "deadline": doc.title}
     assert len(client.get("/api/v1/me/subscriptions").json()["items"]) == 2
     assert client.delete(f"/api/v1/me/subscriptions/{created.json()['id']}").status_code == 204
     assert client.delete(f"/api/v1/me/subscriptions/{created.json()['id']}").status_code == 404
@@ -275,6 +313,44 @@ def test_subscriptions_deadline_change_and_delete(client, session, monkeypatch):
         ).status_code
         == 404
     )
+
+
+def test_outdated_agreement_can_still_delete_own_data(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=5))
+    follow_id = follow(client).json()["id"]
+    sub_id = client.post(
+        "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
+    ).json()["id"]
+    # 协议升级，用户还没重新同意：不能新建，但能删除自己的关注和提醒授权
+    settings(monkeypatch, version="2026-12")
+    assert client.get("/api/v1/me/follows").status_code == 403
+    assert client.delete(f"/api/v1/me/subscriptions/{sub_id}").status_code == 204
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 204
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 404
+    # 从没同意过的人：404，不建记录
+    settings(monkeypatch, openid="stranger")
+    assert client.delete(f"/api/v1/me/follows/{follow_id}").status_code == 404
+    assert session.scalar(select(func.count(User.id)).where(User.openid == "stranger")) == 0
+
+
+def test_deadline_subscription_rejects_passed_time_today(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date())
+    deadline = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == doc.id)
+    )
+    body = {"kind": "deadline", "templateId": "d", "docId": doc.id}
+    # 今天 9:00 截止，现在 10:00：已过，不接受
+    deadline.approved_time = time(9, 0)
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 422
+    # 今天 17:00 截止：还没过，接受
+    deadline.approved_time = time(17, 0)
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
 
 
 def test_feedback_security_and_events(client, session, monkeypatch):
@@ -362,6 +438,279 @@ def test_account_deletion_cascades(client, session, monkeypatch):
     assert client.delete("/api/v1/me").status_code == 204
     for model in (User, Follow, Subscription, Feedback, Event):
         assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
+    settings(monkeypatch)
+    empty = client.get("/api/v1/me/data")
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "user": None,
+        "follows": [],
+        "subscriptions": [],
+        "subscriptionsTotal": 0,
+        "feedback": [],
+        "feedbackTotal": 0,
+        "events": [],
+        "eventsTotal": 0,
+        "retention": {
+            "events": 90,
+            "feedback": 180,
+            "usedSubscriptions": 30,
+            "unusedSubscriptions": 365,
+        },
+        "exportedAt": NOW.isoformat(),
+    }
+    assert session.scalar(select(func.count(User.id))) == 0
+
+    agree(client)
+    owner = session.scalar(select(User).where(User.openid == "dev-user"))
+    follow_id = follow(client).json()["id"]
+    owned_follow = session.get(Follow, follow_id)
+    owned_follow.last_seen_at = NOW
+    owned_follow.last_notified_at = NOW
+    doc = source_and_doc(session, title="主文件")
+    twin = Document(
+        source_id=doc.source_id,
+        url=f"{doc.source.url}copy.html",
+        url_key="data-copy",
+        title="副本标题",
+        publish_date=doc.publish_date,
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(twin)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=doc.id, active=True, match_key="data")
+    )
+    own_feedback = Feedback(
+        user_id=owner.id,
+        document_id=twin.id,
+        content="主文件有误",
+        check_result="pass",
+        created_at=NOW,
+    )
+    own_subscription = Subscription(
+        user_id=owner.id,
+        kind="newDocs",
+        template_id="n",
+        follow_id=follow_id,
+        status="sent",
+        created_at=NOW,
+        attempted_at=NOW,
+    )
+    session.add_all(
+        [
+            own_feedback,
+            own_subscription,
+            Event(user_id=owner.id, name="search", props={}, created_at=NOW),
+        ]
+    )
+    session.commit()
+    settings(monkeypatch, openid="other")
+    agree(client)
+    other = session.scalar(select(User).where(User.openid == "other"))
+    session.add_all(
+        [
+            Feedback(user_id=other.id, content="别人的纠错", check_result="unchecked"),
+            Event(user_id=other.id, name="search", props={"count": 1}),
+        ]
+    )
+    session.commit()
+
+    settings(monkeypatch, version="updated")
+    response = client.get("/api/v1/me/data")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user"] == {
+        "openid": "dev-user",
+        "createdAt": owner.created_at.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "lastVisitedAt": owner.last_visited_at.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "agreed": {"version": "2026-09", "at": NOW.isoformat()},
+    }
+    assert data["follows"] == [
+        {
+            "id": follow_id,
+            "name": "科技项目",
+            "conditions": {"kind": "all", "time": "不限"},
+            "createdAt": owned_follow.created_at.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "lastSeenAt": NOW.isoformat(),
+            "lastNotifiedAt": NOW.isoformat(),
+        }
+    ]
+    assert data["subscriptionsTotal"] == data["feedbackTotal"] == data["eventsTotal"] == 1
+    assert data["subscriptions"] == [
+        {
+            "id": own_subscription.id,
+            "kind": "newDocs",
+            "followId": follow_id,
+            "docId": None,
+            "docTitle": None,
+            "status": "sent",
+            "createdAt": NOW.isoformat(),
+            "attemptedAt": NOW.isoformat(),
+        }
+    ]
+    assert data["feedback"] == [
+        {
+            "id": own_feedback.id,
+            "docId": twin.id,
+            "docTitle": "主文件",
+            "content": "主文件有误",
+            "checkResult": "pass",
+            "createdAt": NOW.isoformat(),
+        }
+    ]
+    assert data["events"] == [{"name": "search", "props": {}, "createdAt": NOW.isoformat()}]
+    assert data["exportedAt"] == NOW.isoformat()
+
+
+def test_personal_data_caps_and_size(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    owner = session.scalar(select(User).where(User.openid == "dev-user"))
+    follow_id = follow(client).json()["id"]
+    session.add_all(
+        Subscription(
+            user_id=owner.id,
+            kind="newDocs",
+            template_id="n",
+            follow_id=follow_id,
+            status="unused",
+            created_at=NOW + timedelta(seconds=i),
+        )
+        for i in range(501)
+    )
+    session.add_all(
+        Feedback(
+            user_id=owner.id,
+            content=f"纠错 {i}",
+            check_result="unchecked",
+            created_at=NOW + timedelta(seconds=i),
+        )
+        for i in range(201)
+    )
+    session.add_all(
+        Event(user_id=owner.id, name="search", props={}, created_at=NOW + timedelta(seconds=i))
+        for i in range(501)
+    )
+    session.commit()
+    response = client.get("/api/v1/me/data")
+    assert response.status_code == 200
+    data = response.json()
+    assert (data["subscriptionsTotal"], data["feedbackTotal"], data["eventsTotal"]) == (
+        501,
+        201,
+        501,
+    )
+    assert (len(data["subscriptions"]), len(data["feedback"]), len(data["events"])) == (
+        500,
+        200,
+        500,
+    )
+    assert data["feedback"][0]["content"] == "纠错 200"
+    assert data["feedback"][-1]["content"] == "纠错 1"
+    assert data["subscriptions"][0]["id"] > data["subscriptions"][-1]["id"]
+    assert len(response.content) <= 1000 * 1024
+
+
+def test_personal_data_large_legacy_event_is_bounded(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    owner = session.scalar(select(User).where(User.openid == "dev-user"))
+    session.add(Event(user_id=owner.id, name="search", props={"old": "x" * 1_100_000}))
+    session.commit()
+    response = client.get("/api/v1/me/data")
+    assert response.status_code == 200
+    assert len(response.content) <= 1000 * 1024
+    assert response.json()["eventsTotal"] == 1
+    assert response.json()["events"] == []
+
+
+def test_personal_data_deleted_document_has_no_title(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session)
+    feedback_id = client.post(
+        "/api/v1/feedback", json={"docId": doc.id, "content": "标题有误"}
+    ).json()["id"]
+    session.delete(doc)
+    session.commit()
+    item = client.get("/api/v1/me/data").json()["feedback"][0]
+    assert item["id"] == feedback_id
+    assert item["docId"] is None
+    assert item["docTitle"] is None
+
+
+def test_rename_follow_and_delete_feedback(client, session, monkeypatch):
+    settings(monkeypatch)
+    agree(client)
+    follow_id = follow(client).json()["id"]
+    feedback_id = client.post("/api/v1/feedback", json={"content": "有误"}).json()["id"]
+    path = f"/api/v1/me/follows/{follow_id}"
+    renamed = client.put(path, json={"name": "  新名称  "})
+    assert renamed.status_code == 200
+    assert renamed.json() == {
+        "id": follow_id,
+        "name": "新名称",
+        "conditions": {"kind": "all", "time": "不限"},
+        "newCount": 0,
+    }
+    assert client.put(path, json={"name": "  "}).status_code == 422
+    assert client.put(path, json={"name": "字" * 41}).status_code == 422
+    assert client.put(path, json={"name": "  " + "字" * 40 + "  "}).status_code == 200
+    assert client.put("/api/v1/me/follows/99999", json={"name": "x"}).status_code == 404
+    assert client.delete("/api/v1/me/feedback/99999").status_code == 404
+    settings(monkeypatch, openid="other")
+    agree(client)
+    assert client.put(path, json={"name": "别人的"}).status_code == 404
+    assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 404
+    settings(monkeypatch, version="updated")
+    assert client.put(path, json={"name": "未同意"}).status_code == 403
+    assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 204
+    assert client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 404
+    assert session.get(Feedback, feedback_id) is None
+
+
+def test_feedback_masks_personal_information_before_check_and_save(client, session, monkeypatch):
+    settings(monkeypatch, trust=True)
+    headers = {"X-WX-SOURCE": "mini", "X-WX-OPENID": "wx"}
+    agree(client, headers)
+    sent = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"errcode": 0, "result": {"suggest": "pass"}}
+
+    def checked(url, *, json, timeout):
+        assert url == "http://api.weixin.qq.com/wxa/msg_sec_check"
+        assert json["openid"] == "wx"
+        assert timeout == 5
+        sent.append(json["content"])
+        return Response()
+
+    monkeypatch.setattr(me.httpx, "post", checked)
+    cases = [
+        ("13812345678", "［已隐去］", True),
+        ("138 1234 5678", "［已隐去］", True),
+        ("138-1234-5678", "［已隐去］", True),
+        ("11010519491231002X", "［已隐去］", True),
+        ("110105194912310021", "110105194912310021", False),
+        ("913502001234567890", "913502001234567890", False),
+        ("test.user+tag@example.com", "［已隐去］", True),
+        ("a13812345678b 与 913502001234567890", "a［已隐去］b 与 913502001234567890", True),
+        ("  ", "  ", False),
+    ]
+    for raw, expected, masked in cases:
+        response = client.post("/api/v1/feedback", json={"content": raw}, headers=headers)
+        assert response.status_code == 201
+        assert response.json()["masked"] is masked
+        assert sent[-1] == expected
+        assert session.get(Feedback, response.json()["id"]).content == expected
 
 
 def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):

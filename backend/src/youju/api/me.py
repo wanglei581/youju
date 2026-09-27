@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -20,6 +23,19 @@ from youju.models import Document, Event, Feedback, Follow, Subscription, User
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
+_TZ = ZoneInfo("Asia/Shanghai")
+_DATA_BYTES_LIMIT = 1000 * 1024
+# 手机号，可带 +86 / 0086 / 86 前缀，中间可有空格或短横线
+_MOBILE = re.compile(
+    r"(?<![0-9])(?:(?:\+|00)?86[ -]?)?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}(?![0-9])"
+)
+_ID_CARD = re.compile(r"(?<![A-Za-z0-9])[1-9][0-9]{16}[0-9Xx](?![A-Za-z0-9])")
+# 邮箱只认英文字符：\w 会匹配中文，会把邮箱前面的中文一起隐去
+_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?![A-Za-z0-9-])"
+)
+_ID_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
+_ID_CHECKS = "10X98765432"
 
 
 def request_openid(request: Request) -> str:
@@ -89,6 +105,11 @@ class FollowIn(BaseModel):
     conditions: Conditions
 
 
+class FollowNameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+
 class SubscriptionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["newDocs", "deadline"]
@@ -147,6 +168,29 @@ def _owned_follow(session: Session, user: User, follow_id: int) -> Follow:
     if row is None or row.user_id != user.id:
         raise HTTPException(status_code=404, detail="没有找到关注")
     return row
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.astimezone(_TZ).isoformat() if value is not None else None
+
+
+def _valid_id_card(match: re.Match[str]) -> str:
+    number = match.group()
+    try:
+        date(int(number[6:10]), int(number[10:12]), int(number[12:14]))
+    except ValueError:
+        return number
+    check = _ID_CHECKS[
+        sum(int(digit) * weight for digit, weight in zip(number[:17], _ID_WEIGHTS, strict=True))
+        % 11
+    ]
+    return "［已隐去］" if number[-1].upper() == check else number
+
+
+def _mask_feedback(content: str) -> str:
+    content = _ID_CARD.sub(_valid_id_card, content)
+    content = _MOBILE.sub("［已隐去］", content)
+    return _EMAIL.sub("［已隐去］", content)
 
 
 @router.get("/me")
@@ -210,6 +254,154 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
         session.commit()
 
 
+def _titles(session: Session, doc_ids: list[int | None]) -> dict[int, str]:
+    """文件编号 → 主文件标题（合并过的用主文件；文件已删除的不在结果里）。"""
+    ids = [doc_id for doc_id in doc_ids if doc_id is not None]
+    masters = canonical_ids(session, ids)
+    titles = dict(
+        session.execute(
+            select(Document.id, Document.title).where(
+                Document.id.in_({masters.get(doc_id, doc_id) for doc_id in ids})
+            )
+        ).all()
+    )
+    return {
+        doc_id: titles[masters.get(doc_id, doc_id)]
+        for doc_id in ids
+        if masters.get(doc_id, doc_id) in titles
+    }
+
+
+@router.get("/me/data")
+def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
+    settings = get_settings()
+    result = {
+        "user": {
+            "openid": user.openid,
+            "createdAt": _iso(user.created_at),
+            "lastVisitedAt": _iso(user.last_visited_at),
+            "agreed": {"version": user.agreement_version, "at": _iso(user.agreement_at)}
+            if user.agreement_at is not None
+            else None,
+        }
+        if user is not None
+        else None,
+        "follows": [],
+        "subscriptions": [],
+        "subscriptionsTotal": 0,
+        "feedback": [],
+        "feedbackTotal": 0,
+        "events": [],
+        "eventsTotal": 0,
+        "retention": {
+            "events": settings.retain_events_days,
+            "feedback": settings.retain_feedback_days,
+            "usedSubscriptions": settings.retain_used_subscriptions_days,
+            "unusedSubscriptions": settings.retain_unused_subscriptions_days,
+        },
+        "exportedAt": _iso(v1.now()),
+    }
+    if user is None:
+        return JSONResponse(result)
+
+    follows = session.scalars(
+        select(Follow)
+        .where(Follow.user_id == user.id)
+        .order_by(Follow.created_at.desc(), Follow.id.desc())
+    ).all()
+    result["follows"] = [
+        {
+            "id": row.id,
+            "name": row.name,
+            "conditions": row.conditions,
+            "createdAt": _iso(row.created_at),
+            "lastSeenAt": _iso(row.last_seen_at),
+            "lastNotifiedAt": _iso(row.last_notified_at),
+        }
+        for row in follows
+    ]
+
+    result["subscriptionsTotal"] = (
+        session.scalar(select(func.count(Subscription.id)).where(Subscription.user_id == user.id))
+        or 0
+    )
+    subscriptions = session.scalars(
+        select(Subscription)
+        .where(Subscription.user_id == user.id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .limit(500)
+    ).all()
+    sub_titles = _titles(session, [row.document_id for row in subscriptions])
+    result["subscriptions"] = [
+        {
+            "id": row.id,
+            "kind": row.kind,
+            "followId": row.follow_id,
+            "docId": row.document_id,
+            "docTitle": sub_titles.get(row.document_id),
+            "status": row.status,
+            "createdAt": _iso(row.created_at),
+            "attemptedAt": _iso(row.attempted_at),
+        }
+        for row in subscriptions
+    ]
+
+    result["feedbackTotal"] = (
+        session.scalar(select(func.count(Feedback.id)).where(Feedback.user_id == user.id)) or 0
+    )
+    feedback = session.scalars(
+        select(Feedback)
+        .where(Feedback.user_id == user.id)
+        .order_by(Feedback.created_at.desc(), Feedback.id.desc())
+        .limit(200)
+    ).all()
+    titles = _titles(session, [row.document_id for row in feedback])
+    result["feedback"] = [
+        {
+            "id": row.id,
+            "docId": row.document_id,
+            "docTitle": titles.get(row.document_id),
+            "content": row.content,
+            "checkResult": row.check_result,
+            "createdAt": _iso(row.created_at),
+        }
+        for row in feedback
+    ]
+
+    result["eventsTotal"] = (
+        session.scalar(select(func.count(Event.id)).where(Event.user_id == user.id)) or 0
+    )
+    events = session.scalars(
+        select(Event)
+        .where(Event.user_id == user.id)
+        .order_by(Event.created_at.desc(), Event.id.desc())
+        .limit(500)
+    ).all()
+    result["events"] = [
+        {"name": row.name, "props": row.props, "createdAt": _iso(row.created_at)} for row in events
+    ]
+
+    response = JSONResponse(result)
+    # 历史数据中的标题或埋点属性可能很长；按时间保留较新的条目。
+    for key in ("events", "subscriptions", "feedback"):
+        if len(response.body) <= _DATA_BYTES_LIMIT:
+            break
+        items = result[key]
+        low, high = 0, len(items)
+        while low < high:
+            count = (low + high + 1) // 2
+            result[key] = items[:count]
+            if len(JSONResponse(result).body) <= _DATA_BYTES_LIMIT:
+                low = count
+            else:
+                high = count - 1
+        result[key] = items[:low]
+        response = JSONResponse(result)
+    if len(response.body) > _DATA_BYTES_LIMIT:
+        raise HTTPException(status_code=413, detail="个人数据过大，请联系客服处理")
+    return response
+
+
 @router.get("/me/follows")
 def list_follows(session: SessionDep, user: UserDep) -> dict:
     follows = session.scalars(
@@ -236,8 +428,23 @@ def create_follow(body: FollowIn, session: SessionDep, user: UserDep) -> dict:
     return _follow_out(session, row)
 
 
+# 小程序的 wx.request、callContainer 不支持 PATCH，改名用 PUT
+@router.put("/me/follows/{follow_id}")
+def rename_follow(follow_id: int, body: FollowNameIn, session: SessionDep, user: UserDep) -> dict:
+    name = body.name.strip()
+    if not 1 <= len(name) <= 40:
+        raise HTTPException(status_code=422, detail="关注名称须为 1–40 字")
+    row = _owned_follow(session, user, follow_id)
+    row.name = name
+    session.commit()
+    return _follow_out(session, row)
+
+
+# 删除不要求同意当前版本：协议更新后没重新同意的用户也能删除自己的数据
 @router.delete("/me/follows/{follow_id}", status_code=204)
-def delete_follow(follow_id: int, session: SessionDep, user: UserDep) -> None:
+def delete_follow(follow_id: int, session: SessionDep, user: KnownUserDep) -> None:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到关注")
     session.delete(_owned_follow(session, user, follow_id))
     session.commit()
 
@@ -299,11 +506,25 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
         if body.docId is None or body.followId is not None:
             raise HTTPException(status_code=422, detail="截止提醒需要 docId")
         document_id = canonical_ids(session, [body.docId]).get(body.docId, body.docId)
+        stamp = v1.now()
         if session.get(Document, document_id) is None or not any(
-            d.approved_date >= v1.now().date()
+            v1.deadline_open(d, stamp)
             for d in v1._approved(session, [document_id]).get(document_id, [])
         ):
             raise HTTPException(status_code=422, detail="没有有效的人工核对截止")
+        # 锁住这个用户，同时点两次也只建一条（下面按"已有未用授权"去重）
+        session.execute(select(User.id).where(User.id == user.id).with_for_update())
+        # 同一文件已有还没发出的截止提醒：返回已有的，不再新建（否则会提醒两次）
+        existing = session.scalar(
+            select(Subscription).where(
+                Subscription.user_id == user.id,
+                Subscription.kind == "deadline",
+                Subscription.document_id == document_id,
+                Subscription.status == "unused",
+            )
+        )
+        if existing is not None:
+            return _subscription_out(existing)
     row = Subscription(
         user_id=user.id,
         kind=body.kind,
@@ -318,9 +539,9 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
 
 
 @router.delete("/me/subscriptions/{subscription_id}", status_code=204)
-def delete_subscription(subscription_id: int, session: SessionDep, user: UserDep) -> None:
+def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUserDep) -> None:
     row = session.get(Subscription, subscription_id)
-    if row is None or row.user_id != user.id or row.status != "unused":
+    if row is None or user is None or row.user_id != user.id or row.status != "unused":
         raise HTTPException(status_code=404, detail="没有找到可退订的授权")
     session.delete(row)
     session.commit()
@@ -346,21 +567,29 @@ def create_feedback(body: FeedbackIn, session: SessionDep, user: UserDep) -> dic
         doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
         if session.get(Document, doc_id) is None:
             raise HTTPException(status_code=422, detail="文件不存在")
+    content = _mask_feedback(body.content)
     check_result = "unchecked"
     if get_settings().trust_wx_headers:
         try:
-            passed = check_feedback(user.openid, body.content)
+            passed = check_feedback(user.openid, content)
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise HTTPException(status_code=503, detail="内容安全校验暂不可用") from exc
         if not passed:
             raise HTTPException(status_code=422, detail="内容可能不合规，请修改后再提交")
         check_result = "pass"
-    row = Feedback(
-        user_id=user.id, document_id=doc_id, content=body.content, check_result=check_result
-    )
+    row = Feedback(user_id=user.id, document_id=doc_id, content=content, check_result=check_result)
     session.add(row)
     session.commit()
-    return {"id": row.id}
+    return {"id": row.id, "masked": content != body.content}
+
+
+@router.delete("/me/feedback/{feedback_id}", status_code=204)
+def delete_feedback(feedback_id: int, session: SessionDep, user: KnownUserDep) -> None:
+    row = session.get(Feedback, feedback_id)
+    if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到纠错")
+    session.delete(row)
+    session.commit()
 
 
 _KINDS = {"all", "申报通知", "名单", "政策", "其他", "newDocs", "deadline"}
