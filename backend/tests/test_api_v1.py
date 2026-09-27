@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
+from youju.dedup import reconcile_documents
 from youju.models import Document, DocumentAttachment, DocumentDeadline, DocumentDetail, Source
 
 # 北京时间 2026-09-27（周日）上午 10 点；本周是 9/21（周一）到 9/28（下周一，不含）
@@ -230,6 +231,31 @@ def test_calendar_lists_only_approved_upcoming(client, seeded):
     assert [i["due"] for i in items] == ["2026-09-27", "2026-10-18", "2026-10-20"]
     assert all(i["verified"] for i in items)
     assert items[2]["time"] == "17:00" and items[1]["region"] == "辽宁 · 工信"
+
+
+def test_calendar_and_home_merge_duplicate_notice(client, seeded, session):
+    original = session.get(Document, seeded["apply"])
+    duplicate = _doc(original.source, 88, original.title, original.publish_date)
+    session.add(duplicate)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=duplicate.id,
+            fingerprint="duplicate",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 18),
+            approved_date=date(2026, 10, 18),
+            evidence="申报截止10月18日",
+            confidence="高",
+            status="approved",
+        )
+    )
+    reconcile_documents(session)
+    session.commit()
+    body = client.get("/api/v1/calendar").json()
+    assert body["total"] == 3
+    assert len([i for i in body["items"] if i["docId"] == str(original.id)]) == 2
+    assert client.get("/api/v1/home").json()["stats"]["week_total"] == 3
 
 
 def test_recent_lists(client, seeded):

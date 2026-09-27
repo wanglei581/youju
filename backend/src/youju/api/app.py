@@ -13,10 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import list_status
 from youju.config import get_settings
 from youju.db import get_session
+from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
 
@@ -79,6 +81,7 @@ class DocumentWithDetailOut(DocumentOut):
     detail: DetailOut | None
     deadlines: list[ApprovedDeadlineOut]
     deadline_text: str
+    original_urls: list[str]
 
 
 class ApprovedDeadlineOut(BaseModel):
@@ -161,7 +164,9 @@ def _document_out(doc: Document, source: Source) -> DocumentOut:
     )
 
 
-def _list_match(entry: ListEntry, doc: Document, detail: DocumentDetail | None) -> ListMatchOut:
+def _list_match(
+    entry: ListEntry, doc: Document, detail: DocumentDetail | None, source_doc_url: str
+) -> ListMatchOut:
     return ListMatchOut(
         name=entry.name,
         credit_code=entry.credit_code,
@@ -173,7 +178,8 @@ def _list_match(entry: ListEntry, doc: Document, detail: DocumentDetail | None) 
         original_url=doc.url,
         attachment_url=(
             entry.source_url
-            if entry.source_url not in {doc.url, detail.final_url if detail else None}
+            if entry.source_url
+            not in {source_doc_url, doc.url, detail.final_url if detail else None}
             else None
         ),
         sequence=entry.sequence,
@@ -182,12 +188,21 @@ def _list_match(entry: ListEntry, doc: Document, detail: DocumentDetail | None) 
 
 
 def _unique_list_rows(
+    session: Session,
     rows: list[tuple[ListEntry, Document, DocumentDetail | None]],
 ) -> list[ListMatchOut]:
     found: dict[tuple[int, str], ListMatchOut] = {}
+    mapping = canonical_ids(session, [doc.id for _, doc, _ in rows])
+    masters = {master_id: session.get(Document, master_id) for master_id in set(mapping.values())}
+    details = _details(session, list(masters))
     for entry, doc, detail in rows:
-        key = (doc.id, entry.normalized_name)
-        match = _list_match(entry, doc, detail)
+        source_doc_url = doc.url
+        master_id = mapping.get(doc.id, doc.id)
+        key = (master_id, entry.normalized_name)
+        if master_id != doc.id:
+            doc = masters[master_id]
+            detail = details.get(master_id)
+        match = _list_match(entry, doc, detail, source_doc_url)
         if key not in found or (match.attachment_url and not found[key].attachment_url):
             found[key] = match
     return list(found.values())
@@ -240,8 +255,8 @@ def search_lists(
                 and candidate_key(entry.normalized_name) == candidate_key(query)
             ][:50]
     return ListSearchOut(
-        exact_matches=_unique_list_rows(exact_rows),
-        similar_candidates=_unique_list_rows(similar_rows),
+        exact_matches=_unique_list_rows(session, exact_rows),
+        similar_candidates=_unique_list_rows(session, similar_rows),
     )
 
 
@@ -281,7 +296,7 @@ def list_documents(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DocumentPage:
-    stmt = select(Document, Source).join(Source, Document.source_id == Source.id)
+    stmt = visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
     if q:
         stmt = stmt.where(Document.title.ilike(f"%{_escape_like(q)}%", escape="\\"))
     if province:
@@ -303,6 +318,7 @@ def list_documents(
 
 @app.get("/api/documents/{doc_id}", response_model=DocumentWithDetailOut)
 def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
+    doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(
         select(Document, Source)
         .join(Source, Document.source_id == Source.id)
@@ -311,12 +327,8 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, source = row
-    detail = session.get(DocumentDetail, doc.id)
-    approved = session.scalars(
-        select(DocumentDeadline)
-        .where(DocumentDeadline.document_id == doc.id, DocumentDeadline.status == "approved")
-        .order_by(DocumentDeadline.approved_date, DocumentDeadline.id)
-    ).all()
+    detail = _details(session, [doc.id]).get(doc.id)
+    approved = _approved(session, [doc.id]).get(doc.id, [])
     deadlines = [
         ApprovedDeadlineOut(
             kind=d.kind,
@@ -327,6 +339,14 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
     ]
     return DocumentWithDetailOut(
         **_document_out(doc, source).model_dump(),
+        original_urls=[
+            d.url
+            for d in session.scalars(
+                select(Document)
+                .where(Document.id.in_(group_ids(session, doc.id)))
+                .order_by(Document.id)
+            )
+        ],
         deadlines=deadlines,
         deadline_text="；".join(
             f"{d.kind}：{d.date.isoformat()}" + (f" {d.time}" if d.time else "") for d in deadlines
@@ -362,12 +382,33 @@ AdminDep = Annotated[None, Depends(_require_admin)]
 
 @app.get("/api/admin/deadlines/count")
 def pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
-    total = session.scalar(
-        select(func.count())
-        .select_from(DocumentDeadline)
-        .where(DocumentDeadline.status == "pending")
-    )
-    return {"pending": total or 0}
+    """待核对条数，与列表同一规则：归并组里相同的候选只算一条。"""
+    pending = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status == "pending")
+    ).all()
+    return {"pending": len(_pending_shown_ids(session, pending))}
+
+
+def _pending_shown_ids(session: Session, deadlines: list[DocumentDeadline]) -> dict[int, int]:
+    """这些候选里要显示的：{候选编号: 主文件编号}。同一归并组里类型、日期、时间相同的
+    待核对候选只显示编号最大的一条（看的是整组，不只这一批），翻页和计数都按这个规则。"""
+    if not deadlines:
+        return {}
+    mapping = canonical_ids(session, [d.document_id for d in deadlines])
+    masters = {mapping.get(d.document_id, d.document_id) for d in deadlines}
+    members = groups_for(session, list(masters))
+    master_of = {i: master for master, ids in members.items() for i in ids}
+    best: dict[tuple, int] = {}
+    for d in session.scalars(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id.in_(list(master_of)),
+            DocumentDeadline.status == "pending",
+        )
+    ):
+        key = (master_of[d.document_id], d.kind, d.candidate_date, d.candidate_time)
+        best[key] = max(best.get(key, 0), d.id)
+    shown = set(best.values())
+    return {d.id: master_of[d.document_id] for d in deadlines if d.id in shown}
 
 
 @app.get("/admin/review", response_class=HTMLResponse, include_in_schema=False)
@@ -385,16 +426,32 @@ def pending_deadlines(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
 ) -> list[PendingDeadlineOut]:
-    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。"""
-    stmt = (
+    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。
+
+    归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间都相同）：只列编号最大的那条，
+    标题和链接用主文件；本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
+    """
+    base = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
         .join(Source, Document.source_id == Source.id)
         .where(DocumentDeadline.status == "pending")
     )
-    if before_id is not None:
-        stmt = stmt.where(DocumentDeadline.id < before_id)
-    rows = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+    rows: list[tuple[DocumentDeadline, Document, Source]] = []
+    cursor = before_id
+    while len(rows) < limit:
+        stmt = base if cursor is None else base.where(DocumentDeadline.id < cursor)
+        batch = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+        if not batch:
+            break
+        cursor = batch[-1][0].id
+        shown = _pending_shown_ids(session, [d for d, _, _ in batch])
+        for deadline, doc, src in batch:
+            if deadline.id in shown:
+                master_id = shown[deadline.id]
+                master = doc if master_id == doc.id else session.get(Document, master_id)
+                rows.append((deadline, master, src if master_id == doc.id else master.source))
+    rows = rows[:limit]
     return [
         PendingDeadlineOut(
             id=d.id,
@@ -467,18 +524,20 @@ def stats(session: SessionDep) -> Stats:
     )
     by_province = dict(
         session.execute(
-            select(Source.province, func.count(Document.id))
-            .join(Document, Document.source_id == Source.id)
-            .group_by(Source.province)
+            visible_documents(
+                select(Source.province, func.count(Document.id)).join(
+                    Document, Document.source_id == Source.id
+                )
+            ).group_by(Source.province)
         ).all()
     )
     return Stats(
         sources_total=session.scalar(select(func.count(Source.id))) or 0,
         sources_enabled=session.scalar(select(func.count(Source.id)).where(Source.enabled)) or 0,
         sources_by_health=by_health,
-        documents_total=session.scalar(select(func.count(Document.id))) or 0,
+        documents_total=session.scalar(visible_documents(select(func.count(Document.id)))) or 0,
         documents_new_7d=session.scalar(
-            select(func.count(Document.id)).where(
+            visible_documents(select(func.count(Document.id))).where(
                 Document.is_baseline.is_(False), Document.first_seen_at >= week_ago
             )
         )

@@ -117,6 +117,21 @@ def test_protection_page_is_rejected() -> None:
     assert not result.body_text
 
 
+def test_density_fallback_ignores_navigation_and_redacts() -> None:
+    sample = (
+        "<html><body><div class='top-links'><a href='/a'>网站首页栏目导航公告通知</a>"
+        "<a href='/b'>政策服务信息公开相关链接</a></div>"
+        "<div class='story'><p>各单位应按规定报送申报材料，主管部门将逐项核对材料。</p>"
+        "<p>申报截止2026年10月30日，联系人电话13812345678。</p></div>"
+        "<div class='related'>相关新闻推荐报道</div></body></html>"
+    )
+    result = parse_detail(sample, "https://example.gov.cn/a.html")
+    assert result.failure_reason is None
+    assert result.body_text.startswith("各单位应按规定")
+    assert "网站首页" not in result.body_text
+    assert "13812345678" not in result.body_text
+
+
 @pytest.mark.parametrize(
     ("line", "expected"),
     [

@@ -6,12 +6,14 @@ from fastapi.testclient import TestClient
 
 from youju.api.app import app
 from youju.db import get_session
+from youju.dedup import reconcile_documents
 from youju.extract.service import extract_existing
 from youju.models import (
     Document,
     DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
+    DocumentMerge,
     ListEntry,
     Source,
 )
@@ -96,6 +98,78 @@ def seeded(session):
 
 def test_health(client) -> None:
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_content_merge_keeps_raw_urls_and_is_reversible(client, seeded, session) -> None:
+    original = session.query(Document).filter(Document.title.like("关于开展2026年度%")).one()
+    duplicate = Document(
+        source_id=original.source_id,
+        url=original.url + "?type=2",
+        url_key=original.url_key + "?type=2",
+        title=original.title,
+        publish_date=original.publish_date,
+        first_seen_at=original.first_seen_at,
+        last_seen_at=original.last_seen_at,
+    )
+    session.add(duplicate)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=duplicate.id,
+            fingerprint="duplicate-deadline",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 30),
+            approved_date=date(2026, 10, 30),
+            evidence="企业申报截止2026年10月30日",
+            confidence="高",
+            status="approved",
+        )
+    )
+    assert reconcile_documents(session) == 1
+    session.commit()
+    assert client.get("/api/documents").json()["total"] == 3
+    assert client.get("/api/v1/search", params={"time": "不限"}).json()["total"] == 3
+    detail = client.get(f"/api/documents/{duplicate.id}").json()
+    assert detail["id"] == original.id
+    assert detail["original_urls"] == [original.url, duplicate.url]
+    assert len(detail["deadlines"]) == 1
+    assert session.get(Document, duplicate.id) is not None
+    mapping = session.get(DocumentMerge, duplicate.id)
+    mapping.active = False
+    session.commit()
+    assert reconcile_documents(session) == 0
+    session.commit()
+    assert client.get("/api/documents").json()["total"] == 4
+
+
+def test_merged_list_entries_only_appear_once(client, seeded, session) -> None:
+    original = session.query(Document).filter(Document.title.like("山东省专精特新%")).one()
+    duplicate = Document(
+        source_id=original.source_id,
+        url=original.url + "?type=2",
+        url_key=original.url_key + "?type=2",
+        title=original.title,
+        publish_date=original.publish_date,
+        first_seen_at=original.first_seen_at,
+        last_seen_at=original.last_seen_at,
+    )
+    session.add(duplicate)
+    session.flush()
+    for doc in (original, duplicate):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                category="专精特新中小企业",
+            )
+        )
+    reconcile_documents(session)
+    session.commit()
+    result = client.get("/api/lists/search", params={"q": "山东星河科技有限公司"}).json()
+    assert len(result["exact_matches"]) == 1
+    assert result["exact_matches"][0]["original_url"] == original.url
 
 
 def test_list_search_separates_exact_and_similar(client, seeded, session) -> None:

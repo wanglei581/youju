@@ -12,6 +12,7 @@ from youju.config import get_settings
 from youju.crawler.detail import DetailResult, parse_detail
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_body
+from youju.dedup import reconcile_documents
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
 
 
@@ -88,6 +89,7 @@ def _save_result(
             for i, a in enumerate(outcome.parsed.attachments)
         ]
         doc.status = "fetched"
+    reconcile_documents(session, {doc.title})
     session.commit()
     return DetailFetchSummary(document_id, outcome.status, outcome.failure_reason)
 

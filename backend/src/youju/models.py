@@ -4,6 +4,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -86,7 +87,7 @@ class SourceCheck(Base):
 
 
 class Document(Base):
-    """一份被发现的文件（题录层）。同一份文件（规范网址键相同）全库只存一条。"""
+    """按规范网址键保存的原始题录；内容相同的不同网址由 DocumentMerge 归并展示。"""
 
     __tablename__ = "documents"
     __table_args__ = (
@@ -123,6 +124,24 @@ class Document(Base):
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
     deadlines: Mapped[list["DocumentDeadline"]] = relationship(back_populates="document")
     list_entries: Mapped[list["ListEntry"]] = relationship(back_populates="document")
+
+
+class DocumentMerge(Base):
+    """同一文件的别名关系；停用映射即可撤销，原始文件及衍生记录均保留。"""
+
+    __tablename__ = "document_merges"
+    __table_args__ = (
+        Index("ix_document_merges_canonical_active", "canonical_id", "active"),
+        CheckConstraint("duplicate_id <> canonical_id", name="ck_document_merge_not_self"),
+    )
+
+    duplicate_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    canonical_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    match_key: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class DocumentDetail(Base):

@@ -125,7 +125,32 @@ def _body_node(root: etree._Element) -> etree._Element | None:
         candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
         if candidates:
             return max(candidates, key=lambda n: len(" ".join(_plain_lines(n))))
-    return None
+    return _density_body_node(root)
+
+
+def _density_body_node(root: etree._Element) -> etree._Element | None:
+    """站点没有常见正文容器时，按非链接文字量和段落密度选择内容块。"""
+    candidates: list[tuple[float, int, etree._Element]] = []
+    for node in root.xpath("//main|//article|//section|//div"):
+        if _JUNK_CLASS.search(f"{node.get('class', '')} {node.get('id', '')}"):
+            continue
+        lines = _plain_lines(node)
+        text = " ".join(lines)
+        if len(text) < 40:
+            continue
+        link_chars = sum(len(" ".join(a.itertext())) for a in node.xpath(".//a"))
+        if link_chars / max(len(text), 1) > 0.35:
+            continue
+        paragraphs = sum(1 for line in lines if len(line) >= 20)
+        if paragraphs < 2 and len(text) < 100:
+            continue
+        depth = len(node.xpath("ancestor::*"))
+        score = len(text) - 2 * link_chars + min(paragraphs, 20) * 12
+        candidates.append((score, depth, node))
+    if not candidates:
+        return None
+    best = max(score for score, _, _ in candidates)
+    return max((c for c in candidates if c[0] >= best * 0.85), key=lambda c: c[1])[2]
 
 
 def _metadata(root: etree._Element, name: str) -> str | None:
@@ -266,7 +291,7 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     )
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
-    if len(raw_body) < 30 or (len(lines) <= 2 and "点击正文" in raw_body):
+    if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
         raw_body = ""
     return DetailResult(
         body_text=redact_sensitive(raw_body),

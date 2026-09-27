@@ -10,7 +10,7 @@ _DATE = re.compile(
     r"(?P<day>3[01]|[12]\d|0?[1-9])\s*日?"
 )
 _TIME = re.compile(r"(?P<hour>[01]?\d|2[0-3])\s*(?:[:：时])\s*(?P<minute>[0-5]\d)?\s*分?")
-_SPLIT = re.compile(r"[。；;\n]+")
+_SPLIT = re.compile(r"[。；;！？!?\n]+")
 _ACTION = re.compile(r"申报|申请|推荐|审核|报送|提交|递交|受理|征集|遴选|认定|报名")
 _CUE = re.compile(r"截止|截至|之前|前|止|期限|时间")
 _EXCLUDE = re.compile(
@@ -43,6 +43,23 @@ def _kind(context: str) -> str:
     if _ENTERPRISE.search(context):
         return "企业申报截止"
     return "其他"
+
+
+def _evidence(sentence: str, date_start: int, date_end: int) -> str:
+    if len(sentence) <= 120:
+        return sentence
+    desired = max(0, min(date_start - 40, len(sentence) - 120))
+    if desired == 0:
+        return sentence[:120]
+    # 长句只能截取一段时，优先从分句开头或完整提示词开始。
+    boundaries = [m.end() for m in re.finditer(r"[，,、。；;！？!?\n]", sentence[:date_start])]
+    starts = [pos for pos in boundaries if desired <= pos <= date_start]
+    start = starts[0] if starts else None
+    if start is None:
+        cues = [m.start() for m in _ACTION.finditer(sentence, desired, date_start)]
+        start = cues[0] if cues else date_start
+    start = min(start, date_end)
+    return sentence[start : start + 120].strip("，,、 ")
 
 
 def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCandidate]:
@@ -123,8 +140,7 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
                 if kind != "其他"
                 else "低"
             )
-            start = max(0, min(match.start() - 40, len(sentence) - 120))
-            evidence = sentence[start : start + 120]
+            evidence = _evidence(sentence, match.start(), match.end())
             key = (kind, due, due_time, evidence)
             if key not in seen:
                 seen.add(key)
