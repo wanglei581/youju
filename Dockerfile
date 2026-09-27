@@ -18,11 +18,12 @@ RUN sed -i 's#deb.debian.org#mirrors.cloud.tencent.com#g' /etc/apt/sources.list.
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
-# 依赖：按锁文件导出固定版本清单，再用腾讯云 PyPI 源安装（uv sync --frozen 会按锁文件里的原始地址下载，不走镜像）
+# 依赖：按锁文件导出固定版本和哈希，再用腾讯云 PyPI 源安装并校验哈希（镜像上的文件与官方一致，哈希对得上；
+# uv sync --frozen 会按锁文件里的原始地址下载，不走镜像）
 COPY backend/pyproject.toml backend/uv.lock backend/README.md ./
 RUN pip install --no-cache-dir uv \
-    && uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/requirements.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.txt
+    && uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+    && pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
 COPY backend/src ./src
 COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./
