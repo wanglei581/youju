@@ -485,13 +485,22 @@ def test_deadline_change_hides_old_deadline_and_links_new_notice(
     url = f"/api/admin/deadlines/{main.id}/change"
     body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": new.id}
     assert client.post(url, json=body).status_code == 401
-    # 延期、调整必须关联新通知；原因只能是三种之一；新通知不能是自己
-    no_link = {"reviewed_by": "审阅人", "reason": "延期"}
+    # 必须关联发布变更的新通知；原因只能是三种之一；新通知不能是自己
+    no_link = {"reviewed_by": "审阅人", "reason": "撤销"}
     assert client.post(url, json=no_link, headers=headers).status_code == 422
     bad_reason = {**body, "reason": "推迟"}
     assert client.post(url, json=bad_reason, headers=headers).status_code == 422
     self_link = {**body, "new_document_id": old.id}
     assert client.post(url, json=self_link, headers=headers).status_code == 422
+    # 防止关联到无关文件：别的地区、或发布早于原通知的，不行
+    other_region = session.get(Document, seeded["list"])  # 山东的文件，原通知在辽宁
+    wrong = {**body, "new_document_id": other_region.id}
+    assert client.post(url, json=wrong, headers=headers).status_code == 422
+    earlier = _doc(old.source, 10, "关于调整贷款贴息项目有关事项的通知", date(2026, 9, 1))
+    session.add(earlier)
+    session.commit()
+    too_early = {**body, "new_document_id": earlier.id}
+    assert client.post(url, json=too_early, headers=headers).status_code == 422
     assert client.post(url, json=body, headers=headers).status_code == 200
     assert client.post(url, json=body, headers=headers).status_code == 409
 
@@ -511,11 +520,16 @@ def test_deadline_change_hides_old_deadline_and_links_new_notice(
     calendar = client.get("/api/v1/calendar").json()["items"]
     assert not [i for i in calendar if i["docId"] == str(old.id) and i["due"] == "2026-10-18"]
 
-    # 撤销可以不关联新通知；标错了可以撤回
+    # 标错了可以撤回：恢复为已通过，变更记录清空
     back = f"/api/admin/deadlines/{main.id}/unchange"
     assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
     assert client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"] == []
-    revoke = {"reviewed_by": "审阅人", "reason": "撤销"}
+    session.refresh(main)
+    assert main.status == "approved" and main.changed_by is None and main.changed_at is None
+    # 撤销也要关联撤销通知
+    revoke = {"reviewed_by": "审阅人", "reason": "撤销", "new_document_id": new.id}
     assert client.post(url, json=revoke, headers=headers).status_code == 200
     changes = client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"]
-    assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] is None
+    assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] == str(new.id)
+    docs = client.get("/api/admin/documents", params={"q": "延长 贷款贴息"}, headers=headers)
+    assert [d["id"] for d in docs.json()] == [new.id]

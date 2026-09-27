@@ -21,7 +21,7 @@ def upgrade() -> None:
         sa.Column(
             "changed_to_document_id",
             sa.Integer(),
-            sa.ForeignKey("documents.id", ondelete="SET NULL"),
+            sa.ForeignKey("documents.id", ondelete="RESTRICT"),
             nullable=True,
         ),
     )
@@ -30,17 +30,20 @@ def upgrade() -> None:
     op.add_column(
         "document_deadlines", sa.Column("changed_at", sa.DateTime(timezone=True), nullable=True)
     )
-    # 状态多一个 changed；已变更的必须保留原来核定的日期，并写明原因
+    # 状态多一个 changed
     op.drop_constraint("ck_document_deadline_status", "document_deadlines", type_="check")
     op.create_check_constraint(
         "ck_document_deadline_status",
         "document_deadlines",
         "status IN ('pending', 'approved', 'rejected', 'changed')",
     )
+    # 已变更的必须保留原核定日期，写明原因（延期 / 调整 / 撤销），并关联发布变更的通知
     op.create_check_constraint(
         "ck_document_deadline_changed",
         "document_deadlines",
-        "status != 'changed' OR (approved_date IS NOT NULL AND change_reason IS NOT NULL)",
+        "status != 'changed' OR (approved_date IS NOT NULL"
+        " AND change_reason IN ('延期', '调整', '撤销')"
+        " AND changed_to_document_id IS NOT NULL)",
     )
 
 

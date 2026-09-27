@@ -127,7 +127,15 @@ CHANGE_REASONS = ("延期", "调整", "撤销")
 class ChangeIn(BaseModel):
     reviewed_by: str = Field(min_length=1, max_length=80)
     reason: str = Field(description="延期 / 调整 / 撤销")
-    new_document_id: int | None = Field(default=None, description="发布变更的新通知；撤销可不填")
+    new_document_id: int = Field(description="发布这项变更的通知（延期、调整、撤销通知）")
+
+
+class AdminDocumentOut(BaseModel):
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
 
 
 class UnchangeIn(BaseModel):
@@ -627,13 +635,21 @@ def change_deadline(
         raise HTTPException(status_code=404, detail="没有找到截止记录")
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止才能标为已变更")
-    if body.new_document_id is not None:
-        if body.new_document_id == row.document_id:
-            raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
-        if session.get(Document, body.new_document_id) is None:
-            raise HTTPException(status_code=404, detail="没有找到新通知")
-    elif body.reason != "撤销":
-        raise HTTPException(status_code=422, detail="延期或调整要关联发布变更的新通知")
+    if body.new_document_id == row.document_id:
+        raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
+    new_doc = session.get(Document, body.new_document_id)
+    if new_doc is None:
+        raise HTTPException(status_code=404, detail="没有找到新通知")
+    old_doc = session.get(Document, row.document_id)
+    # 防止关联到无关文件：变更通知应与原通知同一地区，且发布不早于原通知
+    if new_doc.source.province != old_doc.source.province:
+        raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
+    if (
+        new_doc.publish_date
+        and old_doc.publish_date
+        and new_doc.publish_date < old_doc.publish_date
+    ):
+        raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
     row.status = "changed"
     row.change_reason = body.reason
     row.changed_to_document_id = body.new_document_id
@@ -658,10 +674,36 @@ def unchange_deadline(
     row.status = "approved"
     row.change_reason = None
     row.changed_to_document_id = None
-    row.changed_by = body.reviewed_by
-    row.changed_at = datetime.now(UTC)
+    row.changed_by = None
+    row.changed_at = None
     session.commit()
     return {"status": "approved"}
+
+
+@app.get("/api/admin/documents", response_model=list[AdminDocumentOut])
+def admin_documents(
+    session: SessionDep,
+    _admin: AdminDep,
+    q: Annotated[str, Query(min_length=2, max_length=100, description="新通知标题里的词")],
+    limit: Annotated[int, Query(ge=1, le=30)] = 15,
+) -> list[AdminDocumentOut]:
+    """找发布变更的新通知（延期、调整、撤销通知），标题里各词都要出现。"""
+    stmt = select(Document, Source).join(Source, Document.source_id == Source.id)
+    for word in [w for w in q.split() if w][:5]:
+        stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
+    rows = session.execute(
+        stmt.order_by(Document.publish_date.desc().nulls_last(), Document.id.desc()).limit(limit)
+    ).all()
+    return [
+        AdminDocumentOut(
+            id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            publish_date=doc.publish_date,
+            source=src.dept_full_name,
+        )
+        for doc, src in rows
+    ]
 
 
 @app.get("/api/stats", response_model=Stats)
