@@ -20,6 +20,8 @@ _CODE_HEADERS = ("统一社会信用代码", "统一信用代码", "社会信用
 _REGION_HEADERS = ("所在地", "注册地", "所属地区", "所属区市", "地区", "地市", "区县", "所属区县")
 _PERSON_HEADERS = ("联系人", "法定代表人", "负责人", "姓名", "电话", "身份证", "手机号", "银行账号")
 _MAX_ROWS = 100_000
+# 单个超长 PDF 的逐页表格识别很耗时；最多处理前 300 页，避免阻塞整批回填。
+MAX_PDF_PAGES = 300
 _MAX_ZIP_UNCOMPRESSED = 100 * 1024 * 1024
 _REGION = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-/ ]{2,64}")
 _REGION_SUFFIX = ("省", "市", "区", "县", "州", "盟", "旗", "地区", "新区", "开发区", "园区")
@@ -33,6 +35,12 @@ class ParsedEntry:
     credit_code: str | None
     sequence: str | None
     region: str | None
+
+
+@dataclass(frozen=True)
+class AttachmentParse:
+    entries: list[ParsedEntry]
+    failure_reason: str | None = None
 
 
 def _cell(value: object) -> str:
@@ -138,15 +146,24 @@ def _check_zip(data: bytes) -> None:
 
 def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
     """支持可读取表格的 PDF/XLSX/XLS/DOCX；旧 DOC 和扫描件留失败原因。"""
+    return parse_attachment_result(data, extension).entries
+
+
+def parse_attachment_result(data: bytes, extension: str) -> AttachmentParse:
+    """返回条目及 PDF 截断原因，供每份附件的解析记录保存。"""
     extension = extension.lower().lstrip(".")
     entries: list[ParsedEntry] = []
+    failure_reason = None
     if extension == "pdf":
         if not data.startswith(b"%PDF-"):
             raise ValueError("不是 PDF 文件")
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             rows: list[list[object]] = []
             has_text = False
-            for page in pdf.pages:
+            page_count = len(pdf.pages)
+            if page_count > MAX_PDF_PAGES:
+                failure_reason = f"PDF 共{page_count}页，仅解析前{MAX_PDF_PAGES}页"
+            for page in islice(pdf.pages, MAX_PDF_PAGES):
                 has_text = has_text or bool((page.extract_text() or "").strip())
                 tables = page.extract_tables()
                 for table in tables:
@@ -157,7 +174,8 @@ def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
                     ):
                         rows.extend(table)
             if not has_text:
-                raise ValueError("暂不支持扫描件")
+                reason = f"；{failure_reason}" if failure_reason else ""
+                raise ValueError(f"暂不支持扫描件{reason}")
             entries.extend(parse_table_rows(rows))
     elif extension == "xlsx":
         _check_zip(data)
@@ -185,4 +203,4 @@ def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
         raise ValueError("暂不支持旧版或专有格式")
     else:
         raise ValueError("暂不支持此附件格式")
-    return _unique(entries)
+    return AttachmentParse(_unique(entries), failure_reason)

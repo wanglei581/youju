@@ -13,7 +13,7 @@ from youju.classify import list_status
 from youju.config import get_settings
 from youju.crawler.detail_service import _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
-from youju.lists.parser import ParsedEntry, parse_attachment, parse_html_tables
+from youju.lists.parser import ParsedEntry, parse_attachment_result, parse_html_tables
 from youju.lists.rules import ListClassification, classify_title, valid_org_name
 from youju.models import Document, DocumentDetail, ListEntry, ListParse, Source
 
@@ -58,6 +58,7 @@ def _save(
     classification: ListClassification,
     entries: list[ParsedEntry] | None,
     failure: str | None = None,
+    partial_reason: str | None = None,
 ) -> None:
     record = session.scalar(
         select(ListParse).where(ListParse.document_id == doc.id, ListParse.source_url == url)
@@ -76,7 +77,9 @@ def _save(
         if entries
         else "empty"
     )
-    record.failure_reason = failure or ("未识别到企业或机构名称表格" if not entries else None)
+    record.failure_reason = (
+        failure or partial_reason or ("未识别到企业或机构名称表格" if not entries else None)
+    )
     record.entry_count = len(entries or [])
     record.attempted_at = datetime.now(UTC)
     for entry in entries or []:
@@ -129,16 +132,17 @@ def _parse_source(
         _save(session, doc, url, kind, classification, None, "文件超过20MB")
         return
     try:
+        partial_reason = None
         if _PROTECTED.search(response.text[:1000]):
             raise ValueError("暂不支持防护页或验证码")
         actual_extension = (
             "pdf" if extension == "html" and response.content.startswith(b"%PDF-") else extension
         )
-        entries = (
-            parse_html_tables(response.text)
-            if actual_extension == "html"
-            else parse_attachment(response.content, actual_extension)
-        )
+        if actual_extension == "html":
+            entries = parse_html_tables(response.text)
+        else:
+            result = parse_attachment_result(response.content, actual_extension)
+            entries, partial_reason = result.entries, result.failure_reason
     except Exception as exc:  # noqa: BLE001 - 损坏的外部附件不能中断整批回填
         reason = (
             str(exc)
@@ -147,7 +151,7 @@ def _parse_source(
         )
         _save(session, doc, url, kind, classification, None, reason)
     else:
-        _save(session, doc, url, kind, classification, entries)
+        _save(session, doc, url, kind, classification, entries, partial_reason=partial_reason)
 
 
 def _prune_invalid_entries(session: Session, selected_ids: list[int]) -> None:
@@ -191,7 +195,8 @@ def _prune_invalid_entries(session: Session, selected_ids: list[int]) -> None:
             record.entry_count = count or 0
             if not count and record.status == "ok":
                 record.status = "empty"
-                record.failure_reason = "未识别到企业或机构名称表格"
+                if record.failure_reason is None:
+                    record.failure_reason = "未识别到企业或机构名称表格"
     session.commit()
 
 
