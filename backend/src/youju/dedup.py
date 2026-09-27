@@ -22,12 +22,13 @@ def match_key(doc: Document, detail: DocumentDetail | None, source: Source) -> s
 
 
 def _signature(detail: DocumentDetail | None) -> tuple[str | None, str | None]:
-    """文号和正文开头；取不到的为 None（不参与比较）。"""
+    """文号和正文摘要（去空白后的开头 200 字加结尾 200 字）；取不到的为 None（不参与比较）。"""
     if detail is None:
         return None, None
     number = re.sub(r"\s+", "", detail.doc_number) if detail.doc_number else None
     body = re.sub(r"\s+", "", detail.body_text or "")
-    return number or None, body[:200] if len(body) >= 100 else None
+    digest = f"{body[:200]}|{body[-200:]}" if len(body) >= 100 else None
+    return number or None, digest
 
 
 def _split_by_content(
@@ -50,7 +51,8 @@ def _split_by_content(
 
 
 def reconcile_documents(session: Session, titles: set[str] | None = None) -> int:
-    """更新自动归并；active=False 是人工撤销标记，后续重跑不会覆盖。"""
+    """更新自动归并。active=False 只用作人工撤销标记，后续重跑不会覆盖；
+    自动判断不再归并的直接删掉映射，以后内容一致了还能重新归并。"""
     stmt = (
         select(Document, DocumentDetail, Source)
         .join(Source, Source.id == Document.source_id)
@@ -97,7 +99,7 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
             changed += 1
     for duplicate, row in mappings.items():
         if row.active and duplicate not in desired:
-            row.active = False
+            session.delete(row)
             changed += 1
     return changed
 

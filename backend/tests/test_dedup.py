@@ -38,3 +38,80 @@ def test_same_title_but_different_number_or_body_is_not_merged() -> None:
         ]
     )
     assert groups == [[1, 4, 5], [2, 3]]
+
+
+def test_signature_compares_head_and_tail() -> None:
+    from youju.dedup import _signature
+
+    head = "各有关单位：现将有关事项通知如下。" * 15
+    a = SimpleNamespace(doc_number=None, body_text=head + "申报截止时间为10月9日。")
+    b = SimpleNamespace(doc_number=None, body_text=head + "验收材料于11月1日前报送。")
+    assert _signature(a)[1] != _signature(b)[1]
+
+
+def test_auto_split_can_merge_again_but_manual_undo_sticks(session) -> None:
+    from datetime import UTC, datetime
+
+    from youju.dedup import reconcile_documents
+    from youju.models import Document, DocumentDetail, DocumentMerge, Source
+
+    src = Source(
+        level="省级",
+        province="青海",
+        dept="科技",
+        dept_full_name="青海省科学技术厅",
+        column_name="通知",
+        url="https://kjt.qinghai.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(src)
+    session.flush()
+    now = datetime.now(UTC)
+    docs = [
+        Document(
+            source_id=src.id,
+            url=f"https://kjt.qinghai.gov.cn/{i}.html",
+            url_key=f"kjt.qinghai.gov.cn/{i}.html",
+            title="关于组织申报2026年度省重点研发项目的通知",
+            publish_date=date(2026, 9, 1),
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        for i in (1, 2)
+    ]
+    session.add_all(docs)
+    session.flush()
+    details = [
+        DocumentDetail(
+            document_id=d.id,
+            body_text="",
+            doc_number="青科发〔2026〕1号",
+            fetched_at=now,
+            status="ok",
+        )
+        for d in docs
+    ]
+    session.add_all(details)
+    session.commit()
+    assert reconcile_documents(session) == 1
+    session.commit()
+    # 文号变得不同：自动拆开（删掉映射）
+    details[1].doc_number = "青科发〔2026〕2号"
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    assert session.query(DocumentMerge).count() == 0
+    # 文号恢复一致：还能重新归并
+    details[1].doc_number = "青科发〔2026〕1号"
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    row = session.query(DocumentMerge).one()
+    assert row.active
+    # 人工撤销（active=False）后，重跑不会覆盖
+    row.active = False
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    assert session.query(DocumentMerge).one().active is False
