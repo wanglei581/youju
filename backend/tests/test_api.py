@@ -145,7 +145,7 @@ def test_document_detail_includes_parsed_content(client, seeded, session) -> Non
     )
     session.commit()
     result = client.get(f"/api/documents/{doc.id}").json()["detail"]
-    assert result["body_text"] == "公开通知正文。"
+    assert "body_text" not in result  # 公开接口不返回正文全文，只给核对过的字段和原文链接
     assert result["issuer"] == "北京市科学技术委员会"
     assert result["doc_number"] == "京科〔2026〕1号"
     assert result["attachments"][0]["extension"] == "pdf"

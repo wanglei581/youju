@@ -11,11 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from youju.api.v1 import router as v1_router
 from youju.config import get_settings
 from youju.db import get_session
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
 app = FastAPI(title="有据 API", version="0.1.0")
+app.include_router(v1_router)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
@@ -59,7 +61,6 @@ class AttachmentOut(BaseModel):
 
 
 class DetailOut(BaseModel):
-    body_text: str
     issuer: str | None
     doc_number: str | None
     publish_date: date | None
@@ -222,7 +223,6 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
         if deadlines
         else "截止时间见原文",
         detail=DetailOut(
-            body_text=detail.body_text,
             issuer=detail.issuer,
             doc_number=detail.doc_number,
             publish_date=detail.publish_date,
