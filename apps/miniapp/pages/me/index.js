@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { remember, forget, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
+const { applyServer, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
 
 Page({
   data: {
@@ -39,9 +39,8 @@ Page({
     }
     api.me()
       .then((res) => {
-        const current = legal.final && !!res.agreed && res.agreed.version === legal.version;
-        if (current) remember();
-        else forget();
+        // 与关注页等共用同一份状态：旧版本同意会标记"协议已更新"，弹窗只能先读全文
+        const current = applyServer(res.agreed) && legal.final;
         const subs = res.subscriptions || {};
         this.setData({
           signedIn: current,

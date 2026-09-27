@@ -26,19 +26,24 @@ let pending = null;
 let notAgreed = false; // 本次启动已核对过：服务端没有当前版本的同意，不再重复查
 let outdated = false; // 服务端记录的是旧版本的同意：协议更新了，要重新阅读并同意
 
+// 按服务端 /me 返回的同意记录更新本机状态（"我的"和 syncConsent 共用，保证两处一致）：
+// 同意的是当前版本就记下；旧版本标记"协议已更新"；没有记录或旧版本都清掉本机记录。返回是否已同意当前版本
+function applyServer(agreed) {
+  const ok = !!agreed && agreed.version === legal.version;
+  if (ok) remember();
+  else forget();
+  outdated = !!agreed && !ok;
+  notAgreed = !ok;
+  return ok;
+}
+
 function syncConsent() {
   if (!consentOpen()) return Promise.resolve(false);
   if (agreedHere()) return Promise.resolve(true);
   if (notAgreed) return Promise.resolve(false);
   if (!pending) {
     pending = api.me()
-      .then((res) => {
-        const ok = !!res.agreed && res.agreed.version === legal.version;
-        if (ok) remember();
-        else notAgreed = true;
-        outdated = !!res.agreed && !ok;
-        return ok;
-      })
+      .then((res) => applyServer(res.agreed))
       .catch(() => false)
       .then((ok) => { pending = null; return ok; });
   }
@@ -139,5 +144,5 @@ function consentOutdated() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
 };
