@@ -146,15 +146,19 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
             .with_for_update()
             .execution_options(populate_existing=True)  # 读最新状态，别用会话里的旧值
         ).all()
-        reviewed: dict[tuple, object] = {}
+        # 先找证据句也相同的已核对记录（任何结果），找不到再按（类型, 日期, 时间）找已通过、已变更的
+        exact: dict[tuple, object] = {}
+        confirmed: dict[tuple, object] = {}
         for d in rows:
             if d.status != "pending":
-                reviewed.setdefault(reviewed_key(d, d.status), d)
+                exact.setdefault(reviewed_key(d, "rejected"), d)
+                if d.status in ("approved", "changed"):
+                    confirmed.setdefault(reviewed_key(d, "approved"), d)
         for d in rows:
             if d.status != "pending":
                 continue
-            source = reviewed.get(reviewed_key(d, "approved")) or reviewed.get(
-                reviewed_key(d, "rejected")
+            source = exact.get(reviewed_key(d, "rejected")) or confirmed.get(
+                reviewed_key(d, "approved")
             )
             if source is not None:
                 for field in _REVIEW_FIELDS:

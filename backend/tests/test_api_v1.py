@@ -758,3 +758,31 @@ def test_twin_sync_rules_for_confirmed_and_rejected(client, seeded, session):
     assert twins["confirmed"].status == "approved"
     assert twins["confirmed"].approved_date == date(2026, 10, 18)
     assert twins["real"].status == "pending"
+    # 同一日期既有通过又有驳回时，证据句与驳回那条完全相同的副本沿用驳回
+    approved_same_day = DocumentDeadline(
+        document_id=old.id,
+        fingerprint="ok-1130",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="纸质材料于11月30日前寄送",
+        confidence="高",
+        status="approved",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+        approved_date=date(2026, 11, 30),
+    )
+    copy_of_rejected = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="t3",
+        kind="材料报送截止",
+        candidate_date=date(2026, 11, 30),
+        evidence="证书有效期至11月30日",
+        confidence="低",
+        status="pending",
+    )
+    session.add_all([approved_same_day, copy_of_rejected])
+    session.commit()
+    sync_reviewed_twins(session, {old.id})
+    session.commit()
+    session.refresh(copy_of_rejected)
+    assert copy_of_rejected.status == "rejected"
