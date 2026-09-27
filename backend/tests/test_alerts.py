@@ -229,3 +229,29 @@ def test_job_alerts_without_changing_failure_code(
         assert f"退出码 {task_code}" in calls
     else:
         assert not calls
+
+
+@pytest.mark.parametrize(
+    ("crawl_code", "expected"),
+    [
+        (0, ["crawl", "check-sources", "fetch-details", "extract-deadlines", "parse-lists"]),
+        # 抓取失败（或上一轮还没跑完）时不核对栏目，避免把还没检查到的栏目误报成漏检
+        (1, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        (75, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+    ],
+)
+def test_round_runs_in_order_and_checks_only_after_crawl(tmp_path, crawl_code, expected) -> None:
+    original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
+    (tmp_path / "round.sh").write_text(original.replace("D=/app/backend/deploy", f"D={tmp_path}"))
+    job = tmp_path / "job.sh"
+    job.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CALLS"\n'
+        '[ "$1" = crawl ] && exit "$CRAWL_CODE"\n'
+        '[ "$1" = fetch-details ] && exit 1\n'
+        "exit 0\n"
+    )
+    job.chmod(0o755)
+    env = {**os.environ, "CALLS": str(tmp_path / "calls"), "CRAWL_CODE": str(crawl_code)}
+    result = subprocess.run(["sh", str(tmp_path / "round.sh")], env=env, check=False)
+    assert result.returncode == 0
+    assert (tmp_path / "calls").read_text().split() == expected
