@@ -24,6 +24,7 @@ function forget() {
 // 同意的是当前版本就补上本机记录。查询 /me 不会建用户记录。返回 true 表示已同意当前版本。
 let pending = null;
 let notAgreed = false; // 本次启动已核对过：服务端没有当前版本的同意，不再重复查
+let outdated = false; // 服务端记录的是旧版本的同意：协议更新了，要重新阅读并同意
 
 function syncConsent() {
   if (!consentOpen()) return Promise.resolve(false);
@@ -35,6 +36,7 @@ function syncConsent() {
         const ok = !!res.agreed && res.agreed.version === legal.version;
         if (ok) remember();
         else notAgreed = true;
+        outdated = !!res.agreed && !ok;
         return ok;
       })
       .catch(() => false)
@@ -64,8 +66,10 @@ function ensureConsent() {
 function askConsent() {
   return new Promise((resolve) => {
     wx.showModal({
-      title: '请先阅读并同意',
-      content: '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
+      title: outdated ? '协议已更新' : '请先阅读并同意',
+      content: outdated
+        ? '《用户协议》和《隐私保护指引》已更新。继续使用关注、微信提醒和纠错前，请先阅读更新后的全文，再决定是否同意。'
+        : '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
       confirmText: '同意',
       cancelText: '先看协议',
       success: (res) => {
@@ -108,4 +112,9 @@ function withdraw() {
   });
 }
 
-module.exports = { ensureConsent, syncConsent, consentOpen, agreedHere, remember, forget, withdraw };
+// 服务端记录的是旧版本的同意（协议已更新）
+function consentOutdated() {
+  return outdated;
+}
+
+module.exports = { ensureConsent, syncConsent, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw };

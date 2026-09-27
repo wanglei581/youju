@@ -14,6 +14,8 @@ Page({
     signedIn: false,
     // 服务端有这个用户的记录（包括同意的是旧版本）：可以注销
     hasRecord: false,
+    // 同意的是旧版本：协议更新了，要重新阅读并同意
+    outdated: false,
     followCount: 0,
     reminderCount: 0,
   },
@@ -32,7 +34,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive()) {
-      this.setData({ signedIn: false, hasRecord: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false });
       return;
     }
     api.me()
@@ -44,6 +46,7 @@ Page({
         this.setData({
           signedIn: current,
           hasRecord: !!res.agreed,
+          outdated: !!res.agreed && !current,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
         });

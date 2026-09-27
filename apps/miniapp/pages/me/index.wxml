@@ -6,6 +6,7 @@
     <view class="profile-main">
       <view class="profile-name">{{signedIn ? '微信用户' : '未登录'}}</view>
       <view wx:if="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件 · 还能提醒 {{reminderCount}} 次</view>
+      <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
       <view wx:else class="profile-sub">登录后可以关注条件、订阅微信提醒、提交纠错</view>
     </view>
     <view wx:if="{{!signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
