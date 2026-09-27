@@ -1,25 +1,26 @@
 <notice-bar />
-<view class="local">导出记录暂存在本机，<text class="link" bindtap="login">登录</text>后可同步到其他设备</view>
+<view wx:if="{{demo}}" class="local">演示数据：连上接口后，这里显示你在这台手机上导出的文件</view>
 <view class="intro">导出的表格和文档都在这里。每份都带原文链接和数据说明（来源网站、核对日期、以原文为准），可以直接转给同事或客户。</view>
 <view class="card">
-  <view class="section-title">导出记录 {{files.length}}</view>
-  <view wx:for="{{files}}" wx:key="name" class="file {{index === files.length - 1 ? 'file--last' : ''}}">
+  <view class="section-title">导出记录 {{files.length}}<text wx:if="{{!demo && files.length}}" class="link clear" bindtap="clearAll" aria-role="button">清空</text></view>
+  <view wx:for="{{files}}" wx:key="id" class="file {{index === files.length - 1 ? 'file--last' : ''}}">
     <text class="badge badge--{{item.badge}} {{item.expired ? 'badge--expired' : ''}}">{{item.badge}}</text>
     <view class="file-main">
       <view class="file-name {{item.expired ? 'file-name--expired' : ''}}">{{item.name}}</view>
       <view class="muted file-meta">{{item.meta}}</view>
       <view class="actions">
         <block wx:if="{{!item.expired}}">
-          <view class="act" bindtap="sendToPc">发到电脑</view>
-          <view class="act" bindtap="forward">转发给好友</view>
+          <view class="act act--primary" data-index="{{index}}" bindtap="open" aria-role="button">打开</view>
+          <view class="act" data-index="{{index}}" bindtap="forward" aria-role="button">转发</view>
         </block>
         <block wx:else>
-          <text class="expired">已失效</text>
-          <view class="act act--primary" bindtap="reexport">重新导出</view>
+          <text class="expired">文件已清理</text>
+          <view class="act act--primary" data-index="{{index}}" bindtap="reexport" aria-role="button">重新导出</view>
         </block>
       </view>
     </view>
   </view>
+  <view wx:if="{{!files.length}}" class="empty muted">还没有导出过</view>
 </view>
-<view class="tip">在搜索结果里点"选择"，或在文件详情里点"导出"，勾选需要的文件即可生成。</view>
+<view class="tip">在搜索结果里点"选择"，或在文件详情里点"导出"，就能生成 Excel 或 Word。要在电脑上保存：点"转发"发给"文件传输助手"，再在电脑版微信里打开。导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可以重新导出。</view>
 <view class="tab-page-bottom"></view>

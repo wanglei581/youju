@@ -85,13 +85,10 @@ Page({
     copyLink(this.data.doc && this.data.doc.url);
   },
 
-  favorite() {
-    wx.showToast({ title: '收藏功能即将开放', icon: 'none' });
-  },
-
   // 导出本份：Excel 或 Word，含原文链接和数据说明
   exportDoc() {
-    if (this.data.doc) exportDocs([this.data.doc.id]);
+    const { doc } = this.data;
+    if (doc) exportDocs([doc.id], { label: doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title });
   },
 
   feedback() {

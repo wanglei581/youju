@@ -286,7 +286,7 @@ Page({
   exportChosen() {
     // 按列表里的顺序导出
     const ids = this.data.items.filter((item) => this.data.chosen[item.id]).map((item) => item.id);
-    exportDocs(ids);
+    exportDocs(ids, { label: this.followName() });
   },
 
   feedback() {

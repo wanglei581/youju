@@ -1,0 +1,17 @@
+.brand { padding-top: 40rpx; padding-bottom: 36rpx; text-align: center; }
+.brand-name { font-size: 44rpx; font-weight: 700; color: var(--brand); }
+.brand-sub { margin-top: 8rpx; font-size: 26rpx; }
+.brand-ver { margin-top: 8rpx; font-size: 24rpx; }
+
+.plain { padding: 4rpx 0 24rpx; font-size: 26rpx; line-height: 1.8; }
+
+.kv { display: flex; align-items: flex-start; justify-content: space-between; gap: 24rpx; padding: 22rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; }
+.kv--last { border-bottom: 0; padding-bottom: 28rpx; }
+.kv-k { flex-shrink: 0; color: var(--t2); }
+.kv-v { color: var(--t1); text-align: right; word-break: break-all; }
+
+.go { margin: 0 0 28rpx; height: 72rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--brand); border-radius: 36rpx; color: var(--brand); font-size: 28rpx; }
+
+.row { display: flex; align-items: center; gap: 24rpx; padding: 28rpx 0; border-bottom: 2rpx solid var(--line); }
+.row--last { border-bottom: 0; }
+.row-text { flex: 1; font-size: 30rpx; }

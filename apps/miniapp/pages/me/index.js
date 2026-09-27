@@ -110,11 +110,12 @@ Page({
     else wx.navigateTo({ url });
   },
 
-  todo() {
-    wx.showToast({ title: '即将开放', icon: 'none' });
-  },
-
   feedback() {
     wx.navigateTo({ url: '/pages/feedback/index' });
+  },
+
+  // 申请覆盖：用纠错页提交想增加的地区和栏目
+  coverage() {
+    wx.navigateTo({ url: '/pages/feedback/index?type=coverage' });
   },
 });

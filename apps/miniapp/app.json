@@ -11,7 +11,8 @@
     "pages/agreement/index",
     "pages/feedback/index",
     "pages/follow-new/index",
-    "pages/my-data/index"
+    "pages/my-data/index",
+    "pages/about/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

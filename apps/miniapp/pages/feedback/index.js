@@ -5,13 +5,17 @@ const MAX = 500;
 
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式
 Page({
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false },
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false },
 
   onLoad(query) {
+    // type=coverage：申请覆盖（想增加的地区和栏目），提交时内容前加"申请覆盖："方便核对台区分
+    const coverage = query.type === 'coverage';
     this.setData({
-      docId: query.id || '',
-      title: query.title ? decodeURIComponent(query.title) : '',
+      docId: coverage ? '' : query.id || '',
+      title: !coverage && query.title ? decodeURIComponent(query.title) : '',
+      coverage,
     });
+    if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
   },
 
   onInput(e) {
@@ -26,7 +30,7 @@ Page({
       return;
     }
     if (this.data.sending) return;
-    ensureConsent().then((ok) => { if (ok) this.send(content); });
+    ensureConsent().then((ok) => { if (ok) this.send(this.data.coverage ? `申请覆盖：${content}` : content); });
   },
 
   send(content) {
