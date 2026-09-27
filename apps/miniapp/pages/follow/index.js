@@ -16,7 +16,7 @@ Page({
 
   // 一次性订阅：用户在微信弹窗里允许后才算订阅成功，每次订阅提醒一次
   subscribeOnce() {
-    requestOnce('newDocs').then((ok) => {
+    requestOnce('newDocs', { type: 'follow' }).then((ok) => {
       if (!ok) return;
       this.setData({ subscribed: true });
       wx.showToast({ title: '已订阅 1 次，有新文件时提醒你', icon: 'none' });

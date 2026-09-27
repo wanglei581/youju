@@ -56,4 +56,9 @@ function files() {
   return resolve(mock.files);
 }
 
-module.exports = { home, search, detail, calendar, lists, follow, files };
+// 保存一次性订阅（#30 服务端实现前一律失败，界面不会误报"已订阅"）
+function saveSubscription() {
+  return Promise.reject(new Error('订阅服务尚未上线'));
+}
+
+module.exports = { home, search, detail, calendar, lists, follow, files, saveSubscription };

@@ -26,7 +26,7 @@
 
 <view wx:if="{{monthOnly && !sel}}" class="sel-row">
   <text>只看 <text class="b">{{year}}年{{month}}月</text> 截止的事项</text>
-  <text class="link" bindtap="clearSel">显示全部</text>
+  <text class="link" bindtap="showAll">显示全部</text>
 </view>
 <view wx:if="{{sel}}" class="sel-row">
   <text>只看 <text class="b">{{selLabel}}</text> 截止的事项</text>

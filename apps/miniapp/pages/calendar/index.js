@@ -42,7 +42,11 @@ Page({
     reminded: {},
   },
 
-  onLoad() {
+  onShow() {
+    this.load();
+  },
+
+  load() {
     api.calendar().then(({ items }) => {
       // 只显示人工核对过、还没截止的事项；剩余天数按今天实时计算
       const upcoming = items
@@ -59,7 +63,9 @@ Page({
       RANGES.forEach((r) => { counts[r.key] = upcoming.filter((d) => !r.key || d.days <= r.key).length; });
       const base = upcoming.length ? upcoming[0].due : todayISO();
       const [y, m] = base.split('-').map(Number);
-      this.setData({ items: upcoming, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, year: y, month: m });
+      const keepMonth = this.data.monthOnly && this.data.year;
+      this.setData({ items: upcoming, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null });
+      if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();
     });
@@ -112,6 +118,12 @@ Page({
     this.refresh();
   },
 
+  // 翻月后点"显示全部"：显示全部未截止的事项
+  showAll() {
+    this.setData({ sel: '', monthOnly: false, range: 0 });
+    this.refresh();
+  },
+
   // 截止提醒：一次性订阅消息，允许后才算订阅成功
   toggleRemind(e) {
     const { id, days } = e.currentTarget.dataset;
@@ -123,7 +135,7 @@ Page({
       wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
       return;
     }
-    requestOnce('deadline').then((ok) => {
+    requestOnce('deadline', { type: 'deadline', docId: id }).then((ok) => {
       if (!ok) return;
       this.setData({ reminded: Object.assign({}, this.data.reminded, { [id]: true }) });
       wx.showToast({ title: '已订阅截止提醒', icon: 'none' });

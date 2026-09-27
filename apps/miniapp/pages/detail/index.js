@@ -22,13 +22,23 @@ Page({
       .catch((err) => this.setData({ error: err.message }));
   },
 
+  // 跨日返回页面时重算剩余天数
+  onShow() {
+    if (this.data.doc) this.setData({ due: dueInfo(this.data.doc.deadline) });
+  },
+
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
   toggleRemind() {
     if (this.data.reminded) {
       wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
       return;
     }
-    requestOnce('deadline').then((ok) => {
+    const { due, doc } = this.data;
+    if (!due || due.days < 3) {
+      wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
+      return;
+    }
+    requestOnce('deadline', { type: 'deadline', docId: doc.id }).then((ok) => {
       if (!ok) return;
       this.setData({ reminded: true });
       wx.showToast({ title: '已订阅截止提醒', icon: 'none' });
