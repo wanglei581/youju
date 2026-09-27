@@ -6,6 +6,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from youju.dedup import canonical_ids, groups_for
 from youju.extract.deadlines import extract_deadlines
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
 
@@ -40,11 +41,18 @@ def extract_existing(
         }
         generated: set[str] = set()
         # 已核对过的截止（通过、驳回、已变更）：抽取规则或证据句截法变了，
-        # 同一类型、同一日期时间的不再重复送审；不同类型的照常送审
+        # 同一类型、同一日期时间的不再重复送审；不同类型的照常送审。
+        # 看整个归并组（同一通知的其他网址），免得已标"已变更"的截止换个网址又被当作新候选送审
+        master = canonical_ids(session, [doc.id]).get(doc.id, doc.id)
+        members = groups_for(session, [master])[master]
         reviewed = {
             (row.kind, row.candidate_date, row.candidate_time)
-            for row in existing.values()
-            if row.status != "pending"
+            for row in session.scalars(
+                select(DocumentDeadline).where(
+                    DocumentDeadline.document_id.in_(members),
+                    DocumentDeadline.status != "pending",
+                )
+            )
         }
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date

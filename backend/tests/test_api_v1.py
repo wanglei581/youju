@@ -596,3 +596,109 @@ def test_deadline_change_covers_merged_twins(client, seeded, session, monkeypatc
     assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
     session.refresh(copy)
     assert copy.status == "approved"
+
+
+def test_changed_deadline_does_not_come_back_via_new_duplicate_url(
+    client, seeded, session, monkeypatch
+):
+    """截止已标\"已延期\"后，又抓到同一通知的另一个网址：它的候选不能再作为有效截止出现。"""
+    from types import SimpleNamespace
+
+    from youju.dedup import reconcile_documents
+    from youju.extract.service import extract_existing
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 31, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add(new)
+    session.commit()
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": new.id}
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{main.id}/change", json=body, headers=headers
+        ).status_code
+        == 200
+    )
+    # 情形一：新网址先抽出候选（还没归并），之后归并——待核对副本沿用\"已变更\"
+    twin = _doc(old.source, 32, old.title, old.publish_date)
+    session.add(twin)
+    session.flush()
+    pending = DocumentDeadline(
+        document_id=twin.id,
+        fingerprint="dup-url",
+        kind=main.kind,
+        candidate_date=main.candidate_date,
+        candidate_time=main.candidate_time,
+        evidence=main.evidence,
+        confidence="高",
+        status="pending",
+    )
+    session.add(pending)
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    session.refresh(pending)
+    assert pending.status == "changed" and pending.changed_to_document_id == new.id
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    assert detail["deadline"]["label"] == "推荐或审核截止"  # 企业申报截止不再作为有效截止
+    # 情形二：已归并后再抽取这个网址的正文：同组已核对过的截止不再送审
+    session.add(
+        DocumentDetail(
+            document_id=twin.id,
+            body_text="企业申报截止时间为10月18日。",
+            fetched_at=datetime.now(UTC),
+            status="ok",
+        )
+    )
+    session.commit()
+    before = session.query(DocumentDeadline).filter_by(status="pending").count()
+    extract_existing(session, document_ids=[twin.id])
+    assert session.query(DocumentDeadline).filter_by(status="pending").count() == before
+
+
+def test_reviewed_search_prefers_still_valid_deadline(client, seeded, session, monkeypatch):
+    """核对台搜索：同组同时有已通过和已变更的，列出已通过那条（仍有效，需要处理）。"""
+    from types import SimpleNamespace
+
+    from youju.models import DocumentMerge
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 41, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    twin = _doc(old.source, 42, old.title, old.publish_date)
+    session.add_all([new, twin])
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=old.id, active=True, match_key="k")
+    )
+    main.status, main.change_reason, main.changed_to_document_id = "changed", "延期", new.id
+    session.add(
+        DocumentDeadline(
+            document_id=twin.id,
+            fingerprint="still-valid",
+            kind=main.kind,
+            candidate_date=main.candidate_date,
+            evidence=main.evidence,
+            confidence="高",
+            status="approved",
+            reviewed_by="创始人",
+            reviewed_at=main.reviewed_at,
+            approved_date=main.approved_date,
+        )
+    )
+    session.commit()
+    found = client.get("/api/admin/deadlines/approved", params={"q": "贷款贴息"}, headers=headers)
+    rows = [f for f in found.json() if f["kind"] == "企业申报截止"]
+    assert len(rows) == 1 and rows[0]["status"] == "approved"

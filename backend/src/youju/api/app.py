@@ -592,11 +592,14 @@ def approved_deadlines(
     )
     for word in words:
         stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
+    # 多取一些再按归并组去重、截取，免得同一通知的副本占满名额
     rows = session.execute(
         stmt.order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id.desc()).limit(
-            limit
+            limit * 10
         )
     ).all()
+    # 同组同时有"已通过"和"已变更"时先列"已通过"的：它仍作为有效截止显示，需要处理
+    rows = sorted(rows, key=lambda r: r[0].status != "approved")
     new_ids = {d.changed_to_document_id for d, _, _ in rows if d.changed_to_document_id}
     titles = dict(
         session.execute(select(Document.id, Document.title).where(Document.id.in_(new_ids))).all()
@@ -628,7 +631,12 @@ def approved_deadlines(
             change_reason=d.change_reason,
             changed_to_title=titles.get(d.changed_to_document_id),
         )
-    return list(out.values())
+    items = sorted(
+        out.values(),
+        key=lambda o: (o.publish_date or date.min, o.id),
+        reverse=True,
+    )
+    return items[:limit]
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/change")

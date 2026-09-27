@@ -104,7 +104,52 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
         if row.active and duplicate not in desired:
             session.delete(row)
             changed += 1
+    session.flush()
+    sync_reviewed_twins(session, {canonical for canonical, _ in desired.values()})
     return changed
+
+
+# 核对结果随组同步时要复制的字段
+_REVIEW_FIELDS = (
+    "status",
+    "reviewed_by",
+    "reviewed_at",
+    "approved_date",
+    "approved_time",
+    "change_reason",
+    "changed_to_document_id",
+    "changed_by",
+    "changed_at",
+)
+
+
+def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
+    """归并组里还在待核对、但同组已有相同候选（类型、日期、时间、证据句都相同）核对过的，
+    沿用那条的核对结果（通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。"""
+    from youju.models import DocumentDeadline
+
+    synced = 0
+    for members in groups_for(session, sorted(masters)).values():
+        if len(members) < 2:
+            continue
+        rows = session.scalars(
+            select(DocumentDeadline)
+            .where(DocumentDeadline.document_id.in_(members))
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)  # 读最新状态，别用会话里的旧值
+        ).all()
+        reviewed: dict[tuple, object] = {}
+        for d in rows:
+            if d.status != "pending":
+                reviewed.setdefault((d.kind, d.candidate_date, d.candidate_time, d.evidence), d)
+        for d in rows:
+            source = reviewed.get((d.kind, d.candidate_date, d.candidate_time, d.evidence))
+            if d.status == "pending" and source is not None:
+                for field in _REVIEW_FIELDS:
+                    setattr(d, field, getattr(source, field))
+                synced += 1
+    return synced
 
 
 def visible_documents(stmt: Select) -> Select:
