@@ -117,6 +117,48 @@ function lookup(q) {
   return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
 }
 
+// 导出 Excel / Word：返回文件内容（ArrayBuffer）。文件由服务端生成，小于 1000 KiB（云托管返回上限）
+const EXPORT_ERRORS = {
+  413: '文件太大，请少选几份再导出',
+  422: '有的文件已不存在或超过 200 份，请刷新后再试',
+};
+function exportFile(ids, format) {
+  const body = { ids: ids.map(String), format };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 30000);
+    const done = (res) => (res.statusCode === 200
+      ? finish(resolve, res.data)
+      : finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`)));
+    const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
+    if (config.cloudEnv) {
+      wx.cloud.callContainer({
+        config: { env: config.cloudEnv },
+        path: '/api/v1/exports',
+        method: 'POST',
+        header: { 'X-WX-SERVICE': config.cloudService, 'content-type': 'application/json' },
+        data: body,
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        success: done,
+        fail,
+      });
+    } else {
+      wx.request({
+        url: `${config.devBaseUrl}/api/v1/exports`,
+        method: 'POST',
+        header: { 'content-type': 'application/json' },
+        data: body,
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        success: done,
+        fail,
+      });
+    }
+  });
+}
+
 // 关注和导出记录需要登录（#30）后由服务端保存，目前用演示数据
 function follow() {
   return copy(mock.follow);
@@ -131,4 +173,4 @@ function saveSubscription() {
   return Promise.reject(new Error('订阅服务尚未上线'));
 }
 
-module.exports = { isLive, home, search, detail, calendar, lists, lookup, follow, files, saveSubscription };
+module.exports = { isLive, home, search, detail, calendar, lists, lookup, exportFile, follow, files, saveSubscription };

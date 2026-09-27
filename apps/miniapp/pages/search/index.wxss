@@ -42,3 +42,14 @@
 .sheet-foot { flex-shrink: 0; padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 2fr; gap: 20rpx; border-top: 2rpx solid var(--line); }
 .btn-reset { height: 88rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--line2); border-radius: 44rpx; font-size: 30rpx; color: var(--t1); }
 .empty { padding: 56rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }
+
+/* 选择模式：勾选文件后导出 */
+.pick-row { display: flex; align-items: flex-start; gap: 16rpx; }
+.pick-main { flex: 1; min-width: 0; }
+.pick-box { flex-shrink: 0; margin-top: 30rpx; width: 40rpx; height: 40rpx; border-radius: 50%; border: 3rpx solid var(--line2); display: flex; align-items: center; justify-content: center; }
+.pick-box--on { background: var(--brand); border-color: var(--brand); }
+.pick-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 24rpx; background: var(--card); box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.06); }
+.pick-count { font-size: 28rpx; color: var(--t1); }
+.pick-all { font-size: 26rpx; }
+.pick-go { margin-left: auto; padding: 0 48rpx; height: 80rpx; }
+.pick-go--off { opacity: 0.4; }

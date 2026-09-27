@@ -24,7 +24,7 @@
 </view>
 <view class="summary">
   <text wx:if="{{chipTime !== '不限'}}">{{chipTime}} <text class="b">{{total}}</text> 份 · 不限时间共 {{totalAll}} 份</text><text wx:else>共 <text class="b">{{total}}</text> 份</text>
-  <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select">选择</text></view>
+  <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text></view>
 </view>
 
 <view class="follow-bar">
@@ -37,14 +37,23 @@
 </view>
 
 <view class="card">
-  <doc-row wx:for="{{items}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" />
+  <view wx:for="{{items}}" wx:key="id" class="pick-row" data-id="{{item.id}}" bindtap="togglePick">
+    <view wx:if="{{selecting}}" class="pick-box {{chosen[item.id] ? 'pick-box--on' : ''}}" aria-role="checkbox" aria-checked="{{chosen[item.id] ? 'true' : 'false'}}" aria-label="选择这份文件"><t-icon wx:if="{{chosen[item.id]}}" name="check" size="28rpx" color="#FFFFFF" /></view>
+    <view class="pick-main"><doc-row doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" selecting="{{selecting}}" /></view>
+  </view>
   <view wx:if="{{error}}" class="empty">{{error}}</view>
   <view wx:elif="{{!items.length && !loading}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
   <view wx:elif="{{items.length < total}}" class="load-more" bindtap="loadMore">已显示 {{items.length}}/{{total}} 份 · <text class="link">{{loading ? '加载中…' : '加载更多'}}</text></view>
   <view wx:elif="{{items.length}}" class="load-more">共 {{items.length}} 份，已全部显示</view>
 </view>
 <view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
-<view style="height: 80rpx"></view>
+<view style="height: {{selecting ? '200rpx' : '80rpx'}}"></view>
+
+<view wx:if="{{selecting}}" class="pick-bar">
+  <text class="pick-count">已选 {{chosenCount}} 份</text>
+  <text class="link pick-all" bindtap="pickAll">全选已加载</text>
+  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />导出</view>
+</view>
 
 <t-popup visible="{{filterOpen}}" placement="bottom" bind:visible-change="onFilterVisible">
   <view class="sheet">

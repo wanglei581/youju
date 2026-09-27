@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 Page({
@@ -78,8 +79,9 @@ Page({
     wx.showToast({ title: '收藏功能即将开放', icon: 'none' });
   },
 
+  // 导出本份：Excel 或 Word，含原文链接和数据说明
   exportDoc() {
-    wx.switchTab({ url: '/pages/files/index' });
+    if (this.data.doc) exportDocs([this.data.doc.id]);
   },
 
   feedback() {
