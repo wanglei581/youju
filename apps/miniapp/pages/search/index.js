@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { exportDocs, MAX } = require('../../utils/exporter.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -41,6 +42,10 @@ Page({
     chipTime: '近 30 天',
     regionOn: false,
     statusOn: false,
+    // 选择模式：勾选文件后导出 Excel / Word
+    selecting: false,
+    chosen: {},
+    chosenCount: 0,
   },
 
   onLoad(query) {
@@ -200,8 +205,39 @@ Page({
     wx.showToast({ title: '关注功能随登录一起开放', icon: 'none' });
   },
 
+  // 进入或退出选择模式；退出时清空勾选
   select() {
-    wx.showToast({ title: '勾选文件后可导出 Excel/Word', icon: 'none' });
+    const selecting = !this.data.selecting;
+    this.setData({ selecting, chosen: {}, chosenCount: 0 });
+  },
+
+  togglePick(e) {
+    if (!this.data.selecting) return;
+    const id = e.currentTarget.dataset.id;
+    const chosen = Object.assign({}, this.data.chosen);
+    if (chosen[id]) {
+      delete chosen[id];
+    } else {
+      if (Object.keys(chosen).length >= MAX) {
+        wx.showToast({ title: `一次最多导出 ${MAX} 份`, icon: 'none' });
+        return;
+      }
+      chosen[id] = true;
+    }
+    this.setData({ chosen, chosenCount: Object.keys(chosen).length });
+  },
+
+  // 全选已加载的（最多 200 份）
+  pickAll() {
+    const chosen = {};
+    this.data.items.slice(0, MAX).forEach((item) => { chosen[item.id] = true; });
+    this.setData({ chosen, chosenCount: Object.keys(chosen).length });
+  },
+
+  exportChosen() {
+    // 按列表里的顺序导出
+    const ids = this.data.items.filter((item) => this.data.chosen[item.id]).map((item) => item.id);
+    exportDocs(ids);
   },
 
   feedback() {

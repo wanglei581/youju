@@ -11,6 +11,8 @@ Component({
     label: { type: String, value: '' },
     // 页面在 onShow 时传入当天日期，跨日返回页面会重新计算剩余天数
     today: { type: String, value: '' },
+    // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
+    selecting: { type: Boolean, value: false },
   },
   data: { segs: [], due: null, kindCls: '', statusCls: '', issuerLong: false },
   observers: {
@@ -27,6 +29,7 @@ Component({
   },
   methods: {
     open() {
+      if (this.data.selecting) return;
       wx.navigateTo({ url: `/pages/detail/index?id=${this.data.doc.id}` });
     },
     copy() {
