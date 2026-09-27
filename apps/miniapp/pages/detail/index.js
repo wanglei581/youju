@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce } = require('../../utils/subscribe.js');
+const { remindedDocs } = require('../../utils/reminders.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
@@ -24,13 +25,22 @@ Page({
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
           })),
         });
+        this.syncReminded();
       })
       .catch((err) => this.setData({ error: err.message }));
+  },
+
+  // 这份文件有没有还没发出的截止提醒（以服务端为准）
+  syncReminded() {
+    const { doc } = this.data;
+    if (!doc) return;
+    remindedDocs().then((map) => this.setData({ reminded: !!map[doc.id] }));
   },
 
   // 跨日返回页面时重算剩余天数
   onShow() {
     this.recompute();
+    this.syncReminded();
     watchDay(this, () => this.recompute());
   },
 

@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { agreedHere, forget } = require('../../utils/consent.js');
+const { remember, forget } = require('../../utils/consent.js');
 
 Page({
   data: {
@@ -10,8 +10,10 @@ Page({
     menuWidth: 96,
     agreed: false,
     nudge: false,
-    // 已在服务端同意协议（相当于"登录"：之后关注、提醒、纠错可用）
+    // 已在服务端同意当前版本的协议（相当于"登录"：之后关注、提醒、纠错可用）
     signedIn: false,
+    // 服务端有这个用户的记录（包括同意的是旧版本）：可以注销
+    hasRecord: false,
     followCount: 0,
     reminderCount: 0,
   },
@@ -26,22 +28,22 @@ Page({
     this.refresh();
   },
 
-  // 以服务端记录为准：本机记着已同意、但服务端没有记录（如在别处注销过）时，清掉本机记录
+  // 以服务端记录为准：换了设备也能恢复登录状态；服务端没有记录（如在别处注销过）或协议更新了，清掉本机记录。
+  // 查询 /me 不会建用户记录。
   refresh() {
-    if (!api.isLive() || !agreedHere()) {
-      this.setData({ signedIn: false });
+    if (!api.isLive()) {
+      this.setData({ signedIn: false, hasRecord: false });
       return;
     }
     api.me()
       .then((res) => {
-        if (!res.agreed || res.agreed.version !== legal.version) {
-          forget();
-          this.setData({ signedIn: false });
-          return;
-        }
+        const current = legal.final && !!res.agreed && res.agreed.version === legal.version;
+        if (current) remember();
+        else forget();
         const subs = res.subscriptions || {};
         this.setData({
-          signedIn: true,
+          signedIn: current,
+          hasRecord: !!res.agreed,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
         });
@@ -70,7 +72,7 @@ Page({
     }
     api.agree(legal.version)
       .then(() => {
-        try { wx.setStorageSync(api.AGREED_KEY, legal.version); } catch (e) { /* 下次再同步 */ }
+        remember();
         wx.showToast({ title: '已登录，关注和微信提醒可以用了', icon: 'none' });
         this.refresh();
       })
@@ -88,7 +90,7 @@ Page({
         if (!res.confirm) return;
         api.deleteMe()
           .then(() => {
-            this.setData({ signedIn: false, agreed: false, followCount: 0, reminderCount: 0 });
+            this.setData({ signedIn: false, hasRecord: false, agreed: false, followCount: 0, reminderCount: 0 });
             wx.showToast({ title: '已注销，数据已删除', icon: 'none' });
           })
           .catch((err) => wx.showToast({ title: err.message || '注销失败，请稍后再试', icon: 'none' }));

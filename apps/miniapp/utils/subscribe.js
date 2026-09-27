@@ -37,8 +37,18 @@ function ask(kind, target) {
   return new Promise((resolve) => {
     wx.requestSubscribeMessage({
       tmplIds: [id],
-      success: (res) => resolve(res[id] === 'accept'),
-      fail: () => resolve(false),
+      // 结果：accept 允许；reject 拒绝；ban 被后台封禁；filter 模板标题同名被过滤
+      success: (res) => {
+        if (res[id] === 'accept') { resolve(true); return; }
+        wx.showToast({ title: res[id] === 'reject' ? '你没有允许，不会提醒' : '这个提醒暂时不能订阅', icon: 'none' });
+        resolve(false);
+      },
+      // 20004：用户关闭了订阅消息主开关
+      fail: (err) => {
+        const title = err && err.errCode === 20004 ? '你关闭了订阅消息，可在右上角"···"→设置里打开' : '没能打开订阅，请稍后再试';
+        wx.showToast({ title, icon: 'none', duration: 2500 });
+        resolve(false);
+      },
     });
   }).then((accepted) => {
     if (!accepted) return false;

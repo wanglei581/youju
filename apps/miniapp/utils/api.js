@@ -218,6 +218,11 @@ function seenFollow(id) {
   return request(`/api/v1/me/follows/${id}/seen`, null, { method: 'POST', data: {} });
 }
 
+// 未用的订阅授权（还没发出的提醒）
+function mySubscriptions() {
+  return request('/api/v1/me/subscriptions');
+}
+
 function followNew(id, params) {
   return request(`/api/v1/me/follows/${id}/new`, params);
 }
@@ -242,6 +247,6 @@ function saveSubscription(kind, target) {
 
 module.exports = {
   isLive, request, home, search, detail, calendar, lists, lookup, exportFile, feedback,
-  AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew,
+  AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   follow, files, saveSubscription,
 };

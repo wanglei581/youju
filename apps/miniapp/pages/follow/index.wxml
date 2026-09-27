@@ -33,6 +33,7 @@
     <view class="add" bindtap="addSub"><t-icon name="add" size="32rpx" color="#2A5CE0" />去搜索，按 地区 × 主题 × 类型 关注</view>
   </view>
 
+  <view wx:if="{{changesError}}" class="card load-error"><text>{{changesError}}</text><text class="link retry" bindtap="load">重试</text></view>
   <view wx:if="{{changes.length}}" class="card">
     <view class="section-title">新文件</view>
     <doc-row wx:for="{{changes}}" wx:key="id" doc="{{item}}" label="{{item.label}}" last="{{index === changes.length - 1}}" today="{{today}}" />

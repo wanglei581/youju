@@ -56,4 +56,4 @@ function ensureConsent() {
   });
 }
 
-module.exports = { ensureConsent, consentOpen, agreedHere, forget };
+module.exports = { ensureConsent, consentOpen, agreedHere, remember, forget };

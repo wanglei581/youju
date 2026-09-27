@@ -20,7 +20,7 @@ function describe(c) {
 
 // 三种状态：demo 没连接口时的演示数据；gated 未登录（或协议未定稿）；live 真实的关注
 Page({
-  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], managing: false, loading: false, error: '', legalFinal: legal.final },
+  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', managing: false, loading: false, error: '', legalFinal: legal.final },
 
   onHide() {
     stopDay(this);
@@ -76,16 +76,18 @@ Page({
   // 新文件：取有新文件的前 3 个关注，每个最多 5 份，合并去重后按发布日期排
   loadChanges(follows) {
     const withNew = follows.filter((f) => f.newCount > 0).slice(0, 3);
+    let failed = null;
     return Promise.all(withNew.map((f) => api.followNew(f.id, { limit: 5 })
       .then((r) => r.items.map((d) => Object.assign({ label: f.name }, d)))
-      .catch(() => [])))
+      .catch((err) => { failed = err; return []; })))
       .then((lists) => {
+        if (failed && failed.status === 403) { this.load(); return; }
         const seen = {};
         const changes = [];
         [].concat(...lists)
           .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
           .forEach((d) => { if (!seen[d.id]) { seen[d.id] = true; changes.push(d); } });
-        this.setData({ changes: changes.slice(0, 10) });
+        this.setData({ changes: changes.slice(0, 10), changesError: failed ? `新文件没有加载出来：${failed.message}` : '' });
       });
   },
 
