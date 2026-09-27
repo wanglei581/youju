@@ -41,3 +41,12 @@
 .month-nav { display: flex; align-items: center; gap: 16rpx; }
 .arrow { padding: 0 12rpx; font-size: 40rpx; color: var(--t2); line-height: 1; }
 .bell--off { opacity: 0.4; }
+.dot--past { background: var(--line2); }
+.pill--past { background: var(--fill); color: var(--t3); }
+.past { padding-bottom: 8rpx; }
+.past-head { display: flex; align-items: center; justify-content: space-between; padding: 28rpx 0 20rpx; font-size: 28rpx; color: var(--t2); }
+.past-item { padding: 20rpx 0; border-top: 2rpx solid var(--line); }
+.past-top { display: flex; align-items: center; justify-content: space-between; }
+.past-date { font-size: 24rpx; }
+.past-title { margin-top: 8rpx; font-size: 28rpx; line-height: 1.5; color: var(--t2); }
+.month-legend { padding: 8rpx 0 24rpx; font-size: 22rpx; text-align: center; }

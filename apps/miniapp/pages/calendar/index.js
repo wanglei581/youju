@@ -12,7 +12,8 @@ const RANGES = [
 ];
 
 // 某年某月的日历格子，周一开头
-function monthCells(year, month, dueDays) {
+// dueDays：还没截止的日子（蓝点）；pastDays：近 30 天已截止的日子（灰点）
+function monthCells(year, month, dueDays, pastDays) {
   const first = new Date(year, month - 1, 1).getDay(); // 0=周日
   const lead = (first + 6) % 7;
   const total = new Date(year, month, 0).getDate();
@@ -20,7 +21,8 @@ function monthCells(year, month, dueDays) {
   for (let i = 0; i < lead; i += 1) cells.push({ blank: true, key: `b${i}` });
   for (let day = 1; day <= total; day += 1) {
     const dow = new Date(year, month - 1, day).getDay();
-    cells.push({ key: `d${day}`, day, due: dueDays.includes(day), weekend: dow === 0 || dow === 6 });
+    const due = dueDays.includes(day);
+    cells.push({ key: `d${day}`, day, due, past: !due && pastDays.includes(day), weekend: dow === 0 || dow === 6 });
   }
   return cells;
 }
@@ -33,6 +35,11 @@ Page({
     today: '',
     items: [],
     shown: [],
+    // 近 30 天已截止的事项（和还没截止的分开显示，默认收起）；pastShown 跟着"只看某月 / 某天"筛选
+    past: [],
+    pastShown: [],
+    pastTitle: '',
+    pastOpen: false,
     year: 0,
     month: 0,
     cells: [],
@@ -64,23 +71,23 @@ Page({
   load() {
     this.setData({ error: '' });
     api.calendar().then(({ items }) => {
-      // 只显示人工核对过、还没截止的事项；剩余天数按今天实时计算
-      const upcoming = items
+      // 只显示人工核对过的事项；剩余天数按今天实时计算。还没截止的（含今天截止）和近 30 天已截止的分开显示
+      const verified = items
         .filter((d) => d.verified)
         .map((d) => {
           const days = daysUntil(d.due);
           return Object.assign({}, d, {
             days, tone: dueTone(days), date: monthDay(d.due), week: weekday(d.due),
           });
-        })
-        .filter((d) => d.days >= 0)
-        .sort((a, b) => a.days - b.days);
+        });
+      const upcoming = verified.filter((d) => d.days >= 0).sort((a, b) => a.days - b.days);
+      const past = verified.filter((d) => d.days < 0 && d.days >= -30).sort((a, b) => b.days - a.days);
       const counts = {};
       RANGES.forEach((r) => { counts[r.key] = upcoming.filter((d) => !r.key || d.days <= r.key).length; });
       const base = upcoming.length ? upcoming[0].due : todayISO();
       const [y, m] = base.split('-').map(Number);
       const keepMonth = this.data.monthOnly && this.data.year;
-      this.setData({ items: upcoming, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null });
+      this.setData({ items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null });
       if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();
@@ -92,7 +99,8 @@ Page({
     const { year, month, items } = this.data;
     const prefix = `${year}-${month < 10 ? `0${month}` : month}-`;
     const dueDays = items.filter((d) => d.due.startsWith(prefix)).map((d) => Number(d.due.slice(8)));
-    this.setData({ cells: monthCells(year, month, dueDays) });
+    const pastDays = this.data.past.filter((d) => d.due.startsWith(prefix)).map((d) => Number(d.due.slice(8)));
+    this.setData({ cells: monthCells(year, month, dueDays, pastDays) });
   },
 
   shiftMonth(e) {
@@ -113,7 +121,17 @@ Page({
     else if (monthOnly) shown = items.filter((d) => d.due.startsWith(prefix));
     else shown = items.filter((d) => !range || d.days <= range);
     const hit = items.find((d) => d.due === sel);
-    this.setData({ shown, selLabel: hit ? hit.date : '', selDay: sel ? Number(sel.slice(8)) : 0 });
+    // 已截止的跟着筛选：只看某天时不显示（只能选有截止的日子），只看某月时只显示这个月的
+    const { past } = this.data;
+    let pastShown = past;
+    let pastTitle = '近 30 天已截止';
+    if (sel) pastShown = [];
+    else if (monthOnly) { pastShown = past.filter((d) => d.due.startsWith(prefix)); pastTitle = `${month}月已截止`; }
+    this.setData({ shown, pastShown, pastTitle, selLabel: hit ? hit.date : '', selDay: sel ? Number(sel.slice(8)) : 0 });
+  },
+
+  togglePast() {
+    this.setData({ pastOpen: !this.data.pastOpen });
   },
 
   pickRange(e) {
