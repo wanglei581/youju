@@ -2,6 +2,7 @@
 # 一轮抓取和处理（cron 每天 4 次调用）：按顺序执行，下游任务等抓取完成后再跑，
 # 中午、晚上新抓到的文件当轮就补详情、抽截止、解析名单，不用等到第二天。
 # 每个任务仍由 job.sh 加锁、限时、失败时发提醒；某一步失败不影响后面的步骤。
+# 带 --notify（只有早上那一轮）：这一轮全部做完后再发微信提醒，保证当天的提醒包含这一轮的新文件。
 D=/app/backend/deploy
 log() { echo "[$(date '+%F %T')] $*" >> /proc/1/fd/1; }
 # 整轮加锁：上一轮还没跑完就跳过这一轮并提醒，避免两轮的步骤交错（如本轮补详情被上一轮的锁挡住）
@@ -16,4 +17,5 @@ fi
 "$D/job.sh" fetch-details --limit 300 --workers 4
 "$D/job.sh" extract-deadlines
 "$D/job.sh" parse-lists
+[ "$1" = "--notify" ] && "$D/job.sh" notify
 exit 0

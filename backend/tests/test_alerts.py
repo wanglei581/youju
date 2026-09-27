@@ -232,18 +232,37 @@ def test_job_alerts_without_changing_failure_code(
 
 
 @pytest.mark.parametrize(
-    ("round_locked", "crawl_code", "expected"),
+    ("round_locked", "crawl_code", "args", "expected"),
     [
-        (False, 0, ["crawl", "check-sources", "fetch-details", "extract-deadlines", "parse-lists"]),
+        (
+            False,
+            0,
+            [],
+            ["crawl", "check-sources", "fetch-details", "extract-deadlines", "parse-lists"],
+        ),
+        # 早上那一轮：全部做完后再发微信提醒
+        (
+            False,
+            0,
+            ["--notify"],
+            [
+                "crawl",
+                "check-sources",
+                "fetch-details",
+                "extract-deadlines",
+                "parse-lists",
+                "notify",
+            ],
+        ),
         # 抓取失败（或抓取本身重叠）时不核对栏目，避免把还没检查到的栏目误报成漏检
-        (False, 1, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
-        (False, 75, ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
-        # 上一轮还没跑完：整轮跳过，只发一条提醒
-        (True, 0, ["alert"]),
+        (False, 1, [], ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        (False, 75, [], ["crawl", "fetch-details", "extract-deadlines", "parse-lists"]),
+        # 上一轮还没跑完：整轮跳过，只发一条提醒（也不发微信提醒）
+        (True, 0, ["--notify"], ["alert"]),
     ],
 )
 def test_round_runs_in_order_and_checks_only_after_crawl(
-    tmp_path, round_locked, crawl_code, expected
+    tmp_path, round_locked, crawl_code, args, expected
 ) -> None:
     original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
     script = (
@@ -270,6 +289,6 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
         "CRAWL_CODE": str(crawl_code),
         "ROUND_LOCKED": "1" if round_locked else "0",
     }
-    result = subprocess.run(["sh", str(tmp_path / "round.sh")], env=env, check=False)
+    result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
     assert (tmp_path / "calls").read_text().split() == expected

@@ -3,6 +3,7 @@
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
 # 每天 4 轮：抓取 → 核对栏目 → 补详情 → 抽截止 → 解析名单（按顺序，见 round.sh）。
 # 每个栏目每天只访问 4 次列表页，每站间隔 3 秒
-30 6,11,15,20 * * *  /app/backend/deploy/round.sh
-30 9 * * *  /app/backend/deploy/job.sh notify
+# 早上那一轮做完后发微信提醒（每天一次）
+30 6 * * *  /app/backend/deploy/round.sh --notify
+30 11,15,20 * * *  /app/backend/deploy/round.sh
 30 3 * * *  /app/backend/deploy/job.sh cleanup
