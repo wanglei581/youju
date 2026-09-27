@@ -136,7 +136,10 @@ Page({
 
   // 截止提醒：一次性订阅消息，允许后才算订阅成功
   toggleRemind(e) {
-    const { id, days } = e.currentTarget.dataset;
+    const { id } = e.currentTarget.dataset;
+    // 点击时按今天重算剩余天数，不用缓存值
+    const item = this.data.items.find((x) => x.id === id);
+    const days = item ? daysUntil(item.due) : -1;
     if (days < 3) {
       wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
       return;

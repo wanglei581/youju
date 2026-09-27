@@ -77,7 +77,10 @@ Page({
 
   onShow() {
     this.setData({ today: todayISO() });
-    watchDay(this, (day) => this.setData({ today: day }));
+    watchDay(this, (day) => {
+      this.setData({ today: day });
+      this.apply();
+    });
   },
 
   onLoad(query) {
