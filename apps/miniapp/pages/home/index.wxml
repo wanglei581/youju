@@ -66,7 +66,7 @@
       <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
     </view>
   </view>
-  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" />
+  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
   <view class="more" bindtap="goSearch">查看本周全部 {{stats.week_total}} 份 <t-icon name="chevron-right" size="28rpx" /></view>
 </view>
 

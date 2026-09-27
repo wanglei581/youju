@@ -9,8 +9,8 @@
     <text class="cancel" bindtap="cancel">取消</text>
   </view>
   <view class="kind-tabs" aria-role="tablist">
-    <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab">
-      <text>{{item.label}}{{item.key === 'all' ? ' ' + total : ''}}</text>
+    <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
+      <text>{{item.label}}{{tab === item.key ? ' ' + total : ''}}</text>
       <view wx:if="{{tab === item.key}}" class="kind-bar"></view>
     </view>
   </view>
@@ -37,7 +37,7 @@
 </view>
 
 <view class="card">
-  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === shown.length - 1}}" />
+  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" q="{{q}}" last="{{index === shown.length - 1}}" today="{{today}}" />
   <view wx:if="{{!shown.length}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试</view>
   <view wx:elif="{{shown.length < total}}" class="load-more">已显示 {{shown.length}}/{{total}} 份 · <text class="link">查看全部 {{total}} 份</text></view>
   <view wx:else class="load-more">共 {{shown.length}} 份，已全部显示</view>

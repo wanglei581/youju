@@ -27,7 +27,7 @@
     <view class="chip">更多 ▾</view>
   </view>
   <view class="rows">
-    <doc-row wx:for="{{items}}" wx:key="id" doc="{{item}}" last="{{index === items.length - 1}}" />
+    <doc-row wx:for="{{items}}" wx:key="id" doc="{{item}}" last="{{index === items.length - 1}}" today="{{today}}" />
   </view>
   <view class="load-more">已显示 {{items.length}}/{{weekTotal}} 份 · <text class="link">查看全部 {{weekTotal}} 份</text></view>
 </view>

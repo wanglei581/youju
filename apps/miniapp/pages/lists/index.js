@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { todayISO } = require('../../utils/format.js');
 
 const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
@@ -13,6 +14,10 @@ Page({
     chip: '全部',
     weekTotal: 0,
     items: [],
+  },
+
+  onShow() {
+    this.setData({ today: todayISO() });
   },
 
   onLoad() {

@@ -21,7 +21,7 @@
 
 <view class="card">
   <view class="section-title">本周变化</view>
-  <doc-row wx:for="{{changes}}" wx:key="id" doc="{{item}}" label="{{item.label}}" last="{{index === changes.length - 1}}" />
+  <doc-row wx:for="{{changes}}" wx:key="id" doc="{{item}}" label="{{item.label}}" last="{{index === changes.length - 1}}" today="{{today}}" />
   <view class="load-more">已显示 {{changes.length}}/{{newTotal}} 份 · <text class="link">查看全部 {{newTotal}} 份</text></view>
 </view>
 

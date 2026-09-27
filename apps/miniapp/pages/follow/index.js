@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { todayISO } = require('../../utils/format.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 
 Page({
@@ -9,6 +10,7 @@ Page({
   },
 
   onShow() {
+    this.setData({ today: todayISO() });
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });
   },
 

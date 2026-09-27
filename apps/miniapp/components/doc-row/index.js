@@ -9,10 +9,12 @@ Component({
     last: { type: Boolean, value: false },
     q: { type: String, value: '' },
     label: { type: String, value: '' },
+    // 页面在 onShow 时传入当天日期，跨日返回页面会重新计算剩余天数
+    today: { type: String, value: '' },
   },
   data: { segs: [], due: null, kindCls: '', statusCls: '', issuerLong: false },
   observers: {
-    'doc, q': function (doc, q) {
+    'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
       this.setData({
         segs: highlight(doc.title, q),

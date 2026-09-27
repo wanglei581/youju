@@ -18,6 +18,7 @@ const GROUPS = [
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
+const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
 const DEFAULT_PICKED = { region: ['不限地区'], type: [], status: [], time: ['近 30 天'], dept: [] };
 const TYPE_KIND = { 申报通知: '申报通知', 名单与公示: '名单', 政策文件: '政策' };
 const TIME_DAYS = { '近 7 天': 7, '近 30 天': 30, 今年: 'year', 不限: 0 };
@@ -65,6 +66,10 @@ Page({
     statusOn: false,
   },
 
+  onShow() {
+    this.setData({ today: todayISO() });
+  },
+
   onLoad(query) {
     const q = decodeURIComponent(query.q || '');
     const kind = decodeURIComponent(query.kind || '');
@@ -84,13 +89,14 @@ Page({
       && (!picked.dept.length || picked.dept.includes(deptOf(d))));
     const timed = base.filter((d) => matchTime(d, picked.time[0]));
     const shown = tab === 'all' ? timed : timed.filter((d) => d.kind === tab);
+    const baseTab = tab === 'all' ? base : base.filter((d) => d.kind === tab);
     const pickedMap = {};
     Object.keys(picked).forEach((g) => picked[g].forEach((o) => { pickedMap[`${g}:${o}`] = true; }));
     const regions = picked.region.filter((r) => r !== '不限地区');
     this.setData({
       shown,
-      total: timed.length,
-      totalAll: base.length,
+      total: shown.length,
+      totalAll: baseTab.length,
       pickedMap,
       chipRegion: regions.length ? regions.join('、') : '地区',
       regionOn: regions.length > 0,
@@ -132,6 +138,13 @@ Page({
 
   pickOption(e) {
     const { group, option } = e.currentTarget.dataset;
+    // "更多省份"只是展开全部省份，不是筛选条件
+    if (group === 'region' && option === '更多省份') {
+      const groups = this.data.groups.map((g) => (g.key === 'region'
+        ? Object.assign({}, g, { options: ['不限地区', '国家部委'].concat(ALL_PROVINCES) }) : g));
+      this.setData({ groups });
+      return;
+    }
     const def = GROUPS.find((g) => g.key === group);
     const cur = this.data.picked[group] || [];
     let next;

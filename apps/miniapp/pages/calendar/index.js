@@ -35,6 +35,7 @@ Page({
     month: 0,
     cells: [],
     sel: '',
+    monthOnly: false,
     selDay: 0,
     selLabel: '',
     nearest: null,
@@ -76,20 +77,24 @@ Page({
     month += Number(e.currentTarget.dataset.step);
     if (month === 0) { month = 12; year -= 1; }
     if (month === 13) { month = 1; year += 1; }
-    this.setData({ year, month, sel: '' });
+    this.setData({ year, month, sel: '', monthOnly: true });
     this.buildMonth();
     this.refresh();
   },
 
   refresh() {
-    const { items, range, sel } = this.data;
-    const shown = sel ? items.filter((d) => d.due === sel) : items.filter((d) => !range || d.days <= range);
+    const { items, range, sel, monthOnly, year, month } = this.data;
+    const prefix = `${year}-${month < 10 ? `0${month}` : month}-`;
+    let shown;
+    if (sel) shown = items.filter((d) => d.due === sel);
+    else if (monthOnly) shown = items.filter((d) => d.due.startsWith(prefix));
+    else shown = items.filter((d) => !range || d.days <= range);
     const hit = items.find((d) => d.due === sel);
     this.setData({ shown, selLabel: hit ? hit.date : '', selDay: sel ? Number(sel.slice(8)) : 0 });
   },
 
   pickRange(e) {
-    this.setData({ range: e.currentTarget.dataset.key, sel: '' });
+    this.setData({ range: e.currentTarget.dataset.key, sel: '', monthOnly: false });
     this.refresh();
   },
 
@@ -103,13 +108,17 @@ Page({
   },
 
   clearSel() {
-    this.setData({ sel: '' });
+    this.setData({ sel: '', monthOnly: false });
     this.refresh();
   },
 
   // 截止提醒：一次性订阅消息，允许后才算订阅成功
   toggleRemind(e) {
-    const { id } = e.currentTarget.dataset;
+    const { id, days } = e.currentTarget.dataset;
+    if (days < 3) {
+      wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
+      return;
+    }
     if (this.data.reminded[id]) {
       wx.showToast({ title: '已订阅：截止前 3 天提醒你一次', icon: 'none' });
       return;

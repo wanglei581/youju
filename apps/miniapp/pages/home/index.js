@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { todayISO } = require('../../utils/format.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -35,6 +36,7 @@ Page({
   },
 
   onShow() {
+    this.setData({ today: todayISO() });
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }

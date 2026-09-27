@@ -40,3 +40,4 @@
 .foot { margin: 28rpx 32rpx 0; font-size: 24rpx; line-height: 1.7; color: var(--t3); }
 .month-nav { display: flex; align-items: center; gap: 16rpx; }
 .arrow { padding: 0 12rpx; font-size: 40rpx; color: var(--t2); line-height: 1; }
+.bell--off { opacity: 0.4; }
