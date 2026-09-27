@@ -458,3 +458,64 @@ def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seed
     body = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
     assert [i["id"] for i in body["items"]] == [str(master.id)]
     assert body["items"][0]["matched"]["name"] == "山东星河科技有限公司"
+
+
+def test_deadline_change_hides_old_deadline_and_links_new_notice(
+    client, seeded, session, monkeypatch
+):
+    """验收清单 A7：发了延期通知后，原通知的截止标为已变更，公开端不再当作有效截止。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    headers = {"X-Admin-Token": "secret"}
+    old = session.get(Document, seeded["apply"])
+    main = (
+        session.query(DocumentDeadline)
+        .filter_by(document_id=old.id, kind="企业申报截止", status="approved")
+        .one()
+    )
+    new = _doc(old.source, 9, "关于延长2026年三季度贷款贴息项目申报时间的通知", date(2026, 9, 26))
+    session.add(new)
+    session.commit()
+
+    found = client.get(
+        "/api/admin/deadlines/approved", params={"q": "贷款贴息 三季度"}, headers=headers
+    ).json()
+    assert main.id in [f["id"] for f in found]
+    url = f"/api/admin/deadlines/{main.id}/change"
+    body = {"reviewed_by": "审阅人", "reason": "延期", "new_document_id": new.id}
+    assert client.post(url, json=body).status_code == 401
+    # 延期、调整必须关联新通知；原因只能是三种之一；新通知不能是自己
+    no_link = {"reviewed_by": "审阅人", "reason": "延期"}
+    assert client.post(url, json=no_link, headers=headers).status_code == 422
+    bad_reason = {**body, "reason": "推迟"}
+    assert client.post(url, json=bad_reason, headers=headers).status_code == 422
+    self_link = {**body, "new_document_id": old.id}
+    assert client.post(url, json=self_link, headers=headers).status_code == 422
+    assert client.post(url, json=body, headers=headers).status_code == 200
+    assert client.post(url, json=body, headers=headers).status_code == 409
+
+    detail = client.get(f"/api/v1/documents/{old.id}").json()
+    # 原来的企业申报截止不再作为主截止，剩下的推荐截止照常显示
+    assert detail["deadline"]["label"] == "推荐或审核截止"
+    assert detail["deadline_changes"] == [
+        {
+            "label": "企业申报截止",
+            "date": "2026-10-18",
+            "time": "",
+            "reason": "延期",
+            "newDocId": str(new.id),
+            "newTitle": new.title,
+        }
+    ]
+    calendar = client.get("/api/v1/calendar").json()["items"]
+    assert not [i for i in calendar if i["docId"] == str(old.id) and i["due"] == "2026-10-18"]
+
+    # 撤销可以不关联新通知；标错了可以撤回
+    back = f"/api/admin/deadlines/{main.id}/unchange"
+    assert client.post(back, json={"reviewed_by": "审阅人"}, headers=headers).status_code == 200
+    assert client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"] == []
+    revoke = {"reviewed_by": "审阅人", "reason": "撤销"}
+    assert client.post(url, json=revoke, headers=headers).status_code == 200
+    changes = client.get(f"/api/v1/documents/{old.id}").json()["deadline_changes"]
+    assert changes[0]["reason"] == "撤销" and changes[0]["newDocId"] is None

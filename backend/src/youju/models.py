@@ -122,7 +122,9 @@ class Document(Base):
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
-    deadlines: Mapped[list["DocumentDeadline"]] = relationship(back_populates="document")
+    deadlines: Mapped[list["DocumentDeadline"]] = relationship(
+        back_populates="document", foreign_keys="DocumentDeadline.document_id"
+    )
     list_entries: Mapped[list["ListEntry"]] = relationship(back_populates="document")
 
 
@@ -212,9 +214,19 @@ class DocumentDeadline(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_date: Mapped[date | None] = mapped_column(Date)
     approved_time: Mapped["time | None"] = mapped_column(Time)
+    # 截止变更（验收清单 A7）：发了延期、调整或撤销的通知后，原来通过的截止标为 changed，
+    # 公开端不再当作有效截止，详情里写明"已延期，见新通知"
+    changed_to_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL")
+    )
+    change_reason: Mapped[str | None] = mapped_column(String(8))
+    changed_by: Mapped[str | None] = mapped_column(String(80))
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    document: Mapped[Document] = relationship(back_populates="deadlines")
+    document: Mapped[Document] = relationship(
+        back_populates="deadlines", foreign_keys=[document_id]
+    )
 
 
 class ListParse(Base):

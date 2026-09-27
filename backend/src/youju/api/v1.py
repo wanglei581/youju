@@ -316,6 +316,26 @@ def document(doc_id: int, session: SessionDep) -> dict:
         excerpt = {"section": "截止时间原文", "text": main.evidence}
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
+    # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
+    changed = session.execute(
+        select(DocumentDeadline, Document.title)
+        .outerjoin(Document, Document.id == DocumentDeadline.changed_to_document_id)
+        .where(DocumentDeadline.document_id == doc.id, DocumentDeadline.status == "changed")
+        .order_by(DocumentDeadline.approved_date)
+    ).all()
+    deadline_changes = [
+        {
+            "label": d.kind,
+            "date": d.approved_date.isoformat(),
+            "time": _hhmm(d.approved_time),
+            "reason": d.change_reason,
+            "newDocId": str(d.changed_to_document_id) if d.changed_to_document_id else None,
+            "newTitle": new_title,
+        }
+        for d, new_title in changed
+        if d.approved_date is not None
+    ]
+
     kind = doc_kind(doc.title)
     return {
         "id": str(doc.id),
@@ -337,6 +357,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "site": f"{src.dept_full_name}网站",
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
+        "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
         "attachments": [

@@ -5,7 +5,7 @@ const { requestOnce } = require('../../utils/subscribe.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 Page({
-  data: { doc: null, due: null, dueDate: '', dueWeek: '', tagClasses: [], reminded: false, error: '' },
+  data: { doc: null, due: null, dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '' },
 
   onLoad(query) {
     api.detail(query.id)
@@ -18,6 +18,10 @@ Page({
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
+          // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
+          changes: (doc.deadline_changes || []).map((c) => Object.assign({}, c, {
+            dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
+          })),
         });
       })
       .catch((err) => this.setData({ error: err.message }));
@@ -35,6 +39,11 @@ Page({
 
   onUnload() {
     stopDay(this);
+  },
+
+  openNew(e) {
+    const id = e.currentTarget.dataset.id;
+    if (id) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
   },
 
   recompute() {

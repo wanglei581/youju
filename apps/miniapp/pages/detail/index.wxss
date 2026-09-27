@@ -17,6 +17,10 @@
 .left-pill--past { background: var(--fill); color: var(--t3); }
 .due-notes { margin-top: 20rpx; padding-top: 20rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; line-height: 1.7; color: var(--t2); }
 .due-unverified { margin-top: 8rpx; font-size: 30rpx; color: var(--t1); }
+.change-card { padding-top: 24rpx; padding-bottom: 24rpx; background: var(--o-tint); }
+.change-item + .change-item { margin-top: 20rpx; padding-top: 20rpx; border-top: 2rpx solid rgba(217, 100, 15, 0.15); }
+.change-text { font-size: 28rpx; font-weight: 600; color: var(--o-txt); }
+.change-new { margin-top: 8rpx; font-size: 26rpx; line-height: 1.6; color: var(--brand); }
 .remind { margin-top: 24rpx; height: 84rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-radius: 42rpx; border: 2rpx solid var(--brand); color: var(--brand); font-size: 28rpx; font-weight: 500; }
 .remind--on { background: var(--fill); border-color: var(--fill); color: var(--t2); }
 

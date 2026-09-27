@@ -25,9 +25,16 @@
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒'}}</text>
     </view>
   </view>
-  <view wx:elif="{{doc.kind === '申报通知'}}" class="card due-card">
+  <view wx:elif="{{doc.kind === '申报通知' && !changes.length}}" class="card due-card">
     <view class="due-label">申报截止</view>
     <view class="due-unverified">截止时间见原文</view>
+  </view>
+
+  <view wx:if="{{changes.length}}" class="card change-card">
+    <view wx:for="{{changes}}" wx:key="index" class="change-item" data-id="{{item.newDocId}}" bindtap="openNew" aria-role="{{item.newDocId ? 'link' : 'text'}}">
+      <view class="change-text">原定{{item.label}} {{item.dateText}} 已{{item.reason}}<text wx:if="{{item.newDocId}}">，以新通知为准</text></view>
+      <view wx:if="{{item.newTitle}}" class="change-new">{{item.newTitle}} ›</view>
+    </view>
   </view>
 
   <view class="card">
