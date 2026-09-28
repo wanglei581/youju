@@ -1,11 +1,26 @@
-import httpx
+import socket
 
-from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher, decode_html
+import httpx
+import pytest
+
+from youju.crawler.fetcher import (
+    MAX_RESPONSE_BYTES,
+    PoliteFetcher,
+    decode_html,
+    non_public_address,
+)
 
 LIST_HTML = "<ul><li><a href='/a.html'>关于开展申报工作的通知</a><span>2026-09-24</span></li></ul>"
 
 
-def make_fetcher(handler, interval: float = 0.0, clock=None, sleep=None) -> PoliteFetcher:
+def public_dns(host: str) -> list[str]:
+    """测试不做真实 DNS 查询：所有域名都当作解析到公网地址。"""
+    return ["1.2.3.4"]
+
+
+def make_fetcher(
+    handler, interval: float = 0.0, clock=None, sleep=None, resolver=public_dns
+) -> PoliteFetcher:
     kwargs = {}
     if clock:
         kwargs["clock"] = clock
@@ -15,6 +30,7 @@ def make_fetcher(handler, interval: float = 0.0, clock=None, sleep=None) -> Poli
         "TestAgent YoujuBot/0.1",
         per_host_interval=interval,
         transport=httpx.MockTransport(handler),
+        resolver=resolver,
         **kwargs,
     )
 
@@ -69,6 +85,7 @@ def test_redirect_to_disallowed_host_is_not_requested() -> None:
         per_host_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+        resolver=public_dns,
     ) as fetcher:
         result = fetcher.fetch("https://a.gov.cn/page.html")
     assert result.status == "unsupported_host"
@@ -88,6 +105,7 @@ def test_robots_redirect_to_disallowed_host_skips_page() -> None:
         per_host_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+        resolver=public_dns,
     ) as fetcher:
         result = fetcher.fetch("https://a.gov.cn/page.html")
     assert result.status == "unsupported_host"
@@ -214,6 +232,7 @@ def test_ssl_handshake_error_retries_in_compat_mode_and_remembers_host() -> None
         per_host_interval=0.0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
+        resolver=public_dns,
     )
     with fetcher as f:
         assert f.fetch("https://old.gov.cn/1.html").status == "ok"
@@ -241,6 +260,7 @@ def test_certificate_error_is_never_bypassed() -> None:
         per_host_interval=0.0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
+        resolver=public_dns,
     )
     with fetcher as f:
         result = f._get("https://bad-cert.gov.cn/list.html")
@@ -323,3 +343,102 @@ def test_redirect_target_host_is_rate_limited() -> None:
         assert f.fetch("https://a.gov.cn/go").status == "ok"
     # a：robots → 等 3 秒 → 页面（302）；b：robots → 等 3 秒 → 页面
     assert sleeps == [3.0, 3.0]
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "10.0.0.1",
+        "172.16.5.4",
+        "192.168.1.1",
+        "127.0.0.1",
+        "169.254.169.254",  # 云服务器元数据地址
+        "100.64.0.1",  # 运营商级 NAT
+        "0.0.0.0",
+        "224.0.0.1",
+        "::1",
+        "fe80::1%eth0",
+        "fc00::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",  # NAT64 里嵌的 10.0.0.1
+    ],
+)
+def test_non_public_addresses(address: str) -> None:
+    assert non_public_address(address)
+
+
+@pytest.mark.parametrize(
+    "address", ["1.2.3.4", "2400:3200::1", "::ffff:8.8.8.8", "64:ff9b::808:808"]
+)
+def test_public_addresses(address: str) -> None:
+    assert not non_public_address(address)
+
+
+def test_host_resolving_to_internal_address_is_never_requested() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(404)
+
+    def dns(host: str) -> list[str]:
+        # 同时有公网和内网地址时也不连：实际连接可能落到任何一个
+        return ["1.2.3.4", "10.8.0.3"] if host == "oa.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://oa.a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "oa.a.gov.cn 解析到内网地址" in result.error
+    assert requested == []
+
+
+def test_redirect_to_internal_host_is_blocked() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "http://meta.a.gov.cn/latest/"})
+
+    def dns(host: str) -> list[str]:
+        return ["169.254.169.254"] if host == "meta.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert requested == ["a.gov.cn/robots.txt", "a.gov.cn/page.html"]
+
+
+def test_robots_redirect_to_internal_host_skips_site() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        return httpx.Response(302, headers={"location": "https://in.a.gov.cn/robots.txt"})
+
+    def dns(host: str) -> list[str]:
+        return ["192.168.3.4"] if host == "in.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert "in.a.gov.cn 解析到内网地址" in result.error
+    assert requested == ["a.gov.cn/robots.txt"]
+
+
+def test_dns_failure_counts_as_connection_failure() -> None:
+    lookups: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("解析失败时不应发请求")
+
+    def dns(host: str) -> list[str]:
+        lookups.append(host)
+        raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://gone.gov.cn/list.html")
+    # 和连接失败一样重试一次；robots.txt 取不到，按规范整站跳过
+    assert result.status == "robots_error"
+    assert lookups == ["gone.gov.cn", "gone.gov.cn"]

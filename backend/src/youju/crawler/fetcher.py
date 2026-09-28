@@ -1,11 +1,14 @@
 """礼貌抓取：遵守 robots.txt（RFC 9309）、同一网站限速、透明标识，不绕过任何防护。"""
 
+import ipaddress
 import re
+import socket
 import ssl
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 import certifi
@@ -20,13 +23,15 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
 # GBK、GB2312 都用超集 GB18030 解码，避免个别生僻字出错
 _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
+# NAT64 地址里嵌着 IPv4 地址，按嵌入的地址判断
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
 @dataclass
 class FetchResult:
     url: str
-    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error；
-    # unsupported_host 仅在配置了网址限制时返回。
+    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / too_large；
+    # unsupported_host：配置了网址限制时不在范围内，或域名解析到内网、本机等非公网地址。
     # redirect 只在内部使用，fetch() 不会返回它
     status: str
     final_url: str = ""
@@ -39,9 +44,10 @@ class FetchResult:
 
 @dataclass
 class _RobotsEntry:
-    state: str  # rules / allow_all / unreachable
+    state: str  # rules / allow_all / unreachable / unsupported_host
     parser: RobotFileParser | None
     fetched_at: float
+    error: str | None = None  # unsupported_host 的原因
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -54,6 +60,22 @@ def compat_ssl_context() -> ssl.SSLContext:
     ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
     ctx.set_ecdh_curve("prime256v1")
     return ctx
+
+
+def resolve_host(host: str) -> list[str]:
+    """系统 DNS 解析出的全部地址。"""
+    return [info[4][0] for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+
+
+def non_public_address(address: str) -> bool:
+    """内网、本机、链路本地（含云服务器元数据地址）、保留、组播等地址，都不是公网地址。"""
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return not ip.is_global or ip.is_multicast
 
 
 def decode_html(content: bytes, content_type: str | None) -> str:
@@ -85,6 +107,7 @@ class PoliteFetcher:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         url_allowed: Callable[[str], bool] | None = None,
+        resolver: Callable[[str], list[str]] | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -107,6 +130,8 @@ class PoliteFetcher:
         self._clock = clock
         self._sleep = sleep
         self._url_allowed = url_allowed
+        # 测试里换成假的解析，不做真实 DNS 查询
+        self._resolver = resolver or resolve_host
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -129,7 +154,8 @@ class PoliteFetcher:
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
-            state, allowed = self.robots_allows(current)
+            entry, allowed = self._check_robots(current)
+            state = entry.state
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
@@ -139,7 +165,7 @@ class PoliteFetcher:
                     error="robots.txt 暂时无法获取，本次跳过",
                 )
             if state == "unsupported_host":
-                return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
+                return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
             if not allowed:
                 return FetchResult(
                     url, "robots_disallowed", final_url=current, error="robots.txt 不允许抓取该页面"
@@ -153,7 +179,7 @@ class PoliteFetcher:
             url, "network_error", final_url=current, error=f"重定向超过 {_MAX_REDIRECTS} 次"
         )
 
-    def robots_allows(self, url: str) -> tuple[str, bool]:
+    def _check_robots(self, url: str) -> tuple[_RobotsEntry, bool]:
         origin = origin_of(url)
         # 同一网站并发时只读取一次 robots.txt
         with self._lock_for(self._robots_locks, origin):
@@ -162,18 +188,22 @@ class PoliteFetcher:
                 entry = self._load_robots(origin)
                 self._robots[origin] = entry
         if entry.state in {"unreachable", "unsupported_host"}:
-            return entry.state, False
+            return entry, False
         if entry.state == "allow_all" or entry.parser is None:
-            return entry.state, True
-        return entry.state, entry.parser.can_fetch(ROBOTS_TOKEN, url)
+            return entry, True
+        return entry, entry.parser.can_fetch(ROBOTS_TOKEN, url)
 
     def _load_robots(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
-                return _RobotsEntry("unsupported_host", None, self._clock())
+                return _RobotsEntry(
+                    "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"
+                )
             result = self._get(current)
+            if result.status == "unsupported_host":
+                return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
                 break
             current = result.final_url
@@ -220,6 +250,13 @@ class PoliteFetcher:
         while True:
             client = self._compat_client if host in self._compat_hosts else self._client
             try:
+                if self._resolves_internal(url):
+                    return FetchResult(
+                        url,
+                        "unsupported_host",
+                        final_url=url,
+                        error=f"{host} 解析到内网地址，不抓取",
+                    )
                 with client.stream("GET", url) as resp:
                     if resp.status_code < 300:
                         size = 0
@@ -297,3 +334,19 @@ class PoliteFetcher:
                 return FetchResult(url, "network_error", error=last_error)
             network_retries -= 1
             self._sleep(self._interval)
+
+    def _resolves_internal(self, url: str) -> bool:
+        """每次连接前检查：域名解析出的地址只要有一个不是公网地址就不连，防止经跳转或内网域名访问
+        云托管内部服务。解析失败按连接失败处理（会重试一次）。
+
+        检查和实际连接各解析一次，两次之间 DNS 结果若被恶意改动仍可能绕过（DNS rebinding）；
+        这需要控制政府网站的域名解析，风险可接受。
+        """
+        host = urlsplit(url).hostname
+        if not host:
+            return False
+        try:
+            addresses = self._resolver(host)
+        except OSError as exc:
+            raise httpx.ConnectError(f"域名解析失败：{exc}") from exc
+        return any(non_public_address(a) for a in addresses)

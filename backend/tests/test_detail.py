@@ -3,7 +3,12 @@ from datetime import date
 import pytest
 
 from tests.conftest import read_fixture_html
-from youju.crawler.detail import _split_issuer_line, parse_detail, redact_sensitive
+from youju.crawler.detail import (
+    MAX_ATTACHMENTS,
+    _split_issuer_line,
+    parse_detail,
+    redact_sensitive,
+)
 
 
 @pytest.mark.parametrize(
@@ -86,6 +91,17 @@ def test_attachment_names_and_urls_are_absolute() -> None:
     assert [a.extension for a in result.attachments] == ["doc", "doc"]
     assert result.attachments[0].name.startswith("1.视听系统典型案例申报书")
     assert result.attachments[0].url.startswith("https://gxt.fujian.gov.cn/")
+
+
+def test_attachments_are_capped() -> None:
+    links = "".join(f"<p><a href='/files/{i}.xlsx'>附件{i}</a></p>" for i in range(80))
+    sample = (
+        "<html><body><div id='zoom'><p>关于公布有关名单的通知，全文见附件。</p>"
+        f"{links}</div></body></html>"
+    )
+    result = parse_detail(sample, "https://example.gov.cn/a.html")
+    assert len(result.attachments) == MAX_ATTACHMENTS
+    assert result.attachments[0].url == "https://example.gov.cn/files/0.xlsx"
 
 
 def test_doc_number_variants_and_sensitive_data() -> None:

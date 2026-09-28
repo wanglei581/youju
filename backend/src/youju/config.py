@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -49,6 +49,20 @@ class Settings(BaseSettings):
     failure_alert_threshold: int = 3
 
     sources_csv: Path = DEFAULT_SOURCES_CSV
+
+    @model_validator(mode="after")
+    def _production_identity(self) -> "Settings":
+        """云托管的两个服务只认平台注入的用户身份，配错就不启动（部署时立刻发现，而不是上线后出事）。"""
+        if self.role != "all" and self.dev_openid:
+            # 开发用的固定身份会让所有请求都成为同一个用户
+            raise ValueError(
+                f"YOUJU_ROLE={self.role} 时不能设置 YOUJU_DEV_OPENID，它只用于本机开发"
+            )
+        if self.role == "api" and not self.trust_wx_headers:
+            raise ValueError(
+                "YOUJU_ROLE=api 时要设置 YOUJU_TRUST_WX_HEADERS=true，用户身份取云托管注入的请求头"
+            )
+        return self
 
 
 @lru_cache
