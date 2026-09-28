@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from youju.classify import doc_kind, list_status, region_label
+from youju.classify import effective_kind, list_status, region_label
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
@@ -211,8 +211,8 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 number=index,
                 doc_id=master,
                 title=doc.title,
-                kind=doc_kind(doc.title),
-                status=list_status(doc.title) or "",
+                kind=effective_kind(doc.title, doc.kind_override),
+                status=list_status(doc.title, effective_kind(doc.title, doc.kind_override)) or "",
                 issuer=(best[1] if best and best[1] else source.dept_full_name),
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",

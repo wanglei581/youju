@@ -26,12 +26,20 @@ from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
-from youju.classify import list_status
+from youju.classify import doc_kind, effective_kind, list_status
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
-from youju.models import Document, DocumentDeadline, DocumentDetail, Feedback, ListEntry, Source
+from youju.models import (
+    AICheck,
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    Feedback,
+    ListEntry,
+    Source,
+)
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -327,7 +335,7 @@ def _list_match(
         credit_code=entry.credit_code,
         category=entry.category,
         batch=entry.batch,
-        status=list_status(doc.title),
+        status=list_status(doc.title, effective_kind(doc.title, doc.kind_override)),
         publish_date=(detail.publish_date if detail else None) or doc.publish_date,
         issuer=detail.issuer if detail else None,
         original_url=doc.url,
@@ -652,6 +660,137 @@ def review_console() -> str:
 def feedback_console() -> str:
     """纠错和申请覆盖核对台；口令仅由页面请求管理接口时发送。"""
     return (Path(__file__).resolve().parent.parent / "admin" / "feedback.html").read_text(
+        encoding="utf-8"
+    )
+
+
+KINDS = ("申报通知", "名单", "政策", "其他")
+
+
+class KindPendingOut(BaseModel):
+    """AI 和标题规则判断不一致、等人定类型的文件。"""
+
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+    rule_kind: str
+    ai_kind: str
+    ai_reason: str
+    ai_confidence: float
+    # 人工已定的类型（只在"全部"里出现）
+    decided: str | None
+    decided_by: str | None
+
+
+class KindDecisionIn(BaseModel):
+    kind: Literal["申报通知", "名单", "政策", "其他"]
+    decided_by: str = Field(min_length=1, max_length=80)
+
+
+def _kind_disagreements(session: Session, include_decided: bool) -> list[KindPendingOut]:
+    """AI 判断成功、且和标题规则不一致的文件（同一通知的其他网址不重复列），新的在前。"""
+    rows = session.execute(
+        visible_documents(
+            select(Document, Source, AICheck)
+            .join(Source, Source.id == Document.source_id)
+            .join(
+                AICheck,
+                and_(
+                    AICheck.document_id == Document.id,
+                    AICheck.task == "kind",
+                    AICheck.error.is_(None),
+                ),
+            )
+        ).order_by(Document.id.desc())
+    ).all()
+    out: list[KindPendingOut] = []
+    for doc, src, check in rows:
+        result = check.result if isinstance(check.result, dict) else {}
+        ai_kind = result.get("kind")
+        rule_kind = doc_kind(doc.title)
+        if ai_kind not in KINDS or ai_kind == rule_kind:
+            continue
+        if doc.kind_override is not None and not include_decided:
+            continue
+        out.append(
+            KindPendingOut(
+                id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                rule_kind=rule_kind,
+                ai_kind=ai_kind,
+                ai_reason=str(result.get("reason", "")),
+                ai_confidence=float(result.get("confidence") or 0),
+                decided=doc.kind_override,
+                decided_by=doc.kind_decided_by,
+            )
+        )
+    return out
+
+
+@app.get("/api/admin/kinds/count")
+def kinds_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    return {"pending": len(_kind_disagreements(session, include_decided=False))}
+
+
+@app.get("/api/admin/kinds", response_model=list[KindPendingOut])
+def admin_kinds(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "all"] = "pending",
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[KindPendingOut]:
+    items = _kind_disagreements(session, include_decided=status == "all")
+    if before_id is not None:
+        items = [item for item in items if item.id < before_id]
+    return items[:limit]
+
+
+@app.post("/api/admin/documents/{document_id}/kind")
+def decide_kind(
+    document_id: int,
+    body: KindDecisionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """人工定类型：给用户看的类型、筛选和名单解析都按这个。"""
+    doc = session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    doc.kind_override = body.kind
+    doc.kind_decided_by = body.decided_by
+    doc.kind_decided_at = datetime.now(UTC)
+    session.commit()
+    _audit(request, "kind_decide", document_id=document_id, kind=body.kind, by=body.decided_by)
+    return {"kind": body.kind}
+
+
+@app.post("/api/admin/documents/{document_id}/kind/undo")
+def undo_kind(
+    document_id: int, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    """撤回人工定的类型，回到按标题规则判断。"""
+    doc = session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    doc.kind_override = None
+    doc.kind_decided_by = None
+    doc.kind_decided_at = None
+    session.commit()
+    _audit(request, "kind_undo", document_id=document_id)
+    return {"kind": doc_kind(doc.title)}
+
+
+@app.get("/admin/kinds", response_class=HTMLResponse, include_in_schema=False)
+def kinds_console() -> str:
+    """类型待定：AI 和标题规则判断不一致的文件由人定类型；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "kinds.html").read_text(
         encoding="utf-8"
     )
 

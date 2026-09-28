@@ -118,10 +118,35 @@ def normalize_credit_code(value: str) -> str | None:
     return code if _CREDIT_ALPHABET[checksum] == code[-1] else None
 
 
-def classify_title(title: str) -> ListClassification:
-    # 先与全站分类一致：不是"名单"的（含招聘、职称、采购等无关公示）不解析
-    if doc_kind(title) != "名单":
+def _category_batch(value: str) -> tuple[str, str | None]:
+    """从（归一化后的）标题看名单类别和批次。"""
+    category = "其他"
+    if "专精特新" in value and ("小巨人" in value or '"小巨人"' in value):
+        category = '专精特新"小巨人"'
+    elif "专精特新" in value and "中小企业" in value:
+        category = "专精特新中小企业"
+    elif "专精特新" in value:
+        category = "未确定"
+    elif "高新技术企业" in value:
+        category = "高新技术企业"
+    elif "科技型中小企业" in value:
+        category = "科技型中小企业"
+    elif "创新型中小企业" in value:
+        category = "创新型中小企业"
+    match = _BATCH.search(value)
+    batch = f"第{match.group(1) or match.group(2)}批" if match else None
+    return category, batch
+
+
+def classify_title(title: str, kind_override: str | None = None) -> ListClassification:
+    # 先与全站分类一致：不是"名单"的（含招聘、职称、采购等无关公示）不解析。
+    # 人工在核对台定过类型的按人工定的（D-023）
+    kind = kind_override or doc_kind(title)
+    if kind != "名单":
         return ListClassification(False)
+    if kind_override == "名单":
+        # 人工确认是名单：不再用标题关键词二次筛，直接解析
+        return ListClassification(True, *_category_batch(normalize_name(title)))
     value = normalize_name(title)
     if any(term in value for term in _NEGATIVE_TITLE):
         return ListClassification(False)
@@ -140,22 +165,7 @@ def classify_title(title: str) -> ListClassification:
         or "办法" in value
     ):
         return ListClassification(False)
-    category = "其他"
-    if "专精特新" in value and ("小巨人" in value or '"小巨人"' in value):
-        category = '专精特新"小巨人"'
-    elif "专精特新" in value and "中小企业" in value:
-        category = "专精特新中小企业"
-    elif "专精特新" in value:
-        category = "未确定"
-    elif "高新技术企业" in value:
-        category = "高新技术企业"
-    elif "科技型中小企业" in value:
-        category = "科技型中小企业"
-    elif "创新型中小企业" in value:
-        category = "创新型中小企业"
-    match = _BATCH.search(value)
-    batch = f"第{match.group(1) or match.group(2)}批" if match else None
-    return ListClassification(True, category, batch)
+    return ListClassification(True, *_category_batch(value))
 
 
 def candidate_key(value: str) -> str:

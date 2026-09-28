@@ -15,7 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session
 
-from youju.classify import doc_kind, kind_filter, list_status, region_label, status_filter
+from youju.classify import (
+    effective_kind,
+    kind_filter,
+    list_status,
+    region_label,
+    status_filter,
+)
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
@@ -160,10 +166,11 @@ def _item(
     doc: Document, src: Source, detail: DocumentDetail | None, deadlines: list[DocumentDeadline]
 ) -> dict:
     """列表行（与小程序 doc-row 的数据格式一致）。"""
+    kind = effective_kind(doc.title, doc.kind_override)
     return {
         "id": str(doc.id),
-        "kind": doc_kind(doc.title),
-        "status": list_status(doc.title),
+        "kind": kind,
+        "status": list_status(doc.title, kind),
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
@@ -178,6 +185,14 @@ def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
     ids = [doc.id for doc, _ in rows]
     details, approved = _details(session, ids), _approved(session, ids)
     return [_item(doc, src, details.get(doc.id), approved.get(doc.id, [])) for doc, src in rows]
+
+
+def _kind_is(kinds: list[str]):
+    """类型筛选：人工定过类型的按人工定的，没定过的按标题规则。"""
+    return or_(
+        Document.kind_override.in_(kinds),
+        and_(Document.kind_override.is_(None), kind_filter(Document.title, kinds)),
+    )
 
 
 def _base() -> Select:
@@ -197,10 +212,10 @@ def _count(session: Session, stmt: Select) -> int:
 def home(session: SessionDep) -> dict:
     """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
     start, end = _week(now().date())
-    week = visible_documents(select(Document.title)).where(
+    week = visible_documents(select(Document.title, Document.kind_override)).where(
         Document.publish_date >= start, Document.publish_date < end
     )
-    kinds = [doc_kind(t) for (t,) in session.execute(week).all()]
+    kinds = [effective_kind(t, override) for t, override in session.execute(week).all()]
     # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
     live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
     sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
@@ -214,7 +229,7 @@ def home(session: SessionDep) -> dict:
     )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
     latest = session.execute(
-        _ordered(_base().where(kind_filter(Document.title, ["申报通知", "名单", "政策"]))).limit(8)
+        _ordered(_base().where(_kind_is(["申报通知", "名单", "政策"]))).limit(8)
     ).all()
     return {
         "stats": {
@@ -360,15 +375,15 @@ def search_statement(
     if kw:
         stmt = stmt.where(Document.id.in_(_keyword_ids(session, kw)))
     if kind != "all":
-        stmt = stmt.where(kind_filter(Document.title, [kind]))
+        stmt = stmt.where(_kind_is([kind]))
     if picked_types:
-        stmt = stmt.where(kind_filter(Document.title, picked_types))
+        stmt = stmt.where(_kind_is(picked_types))
     if picked_regions:
         stmt = stmt.where(
             Source.province.in_(["国家" if r == "国家部委" else r for r in picked_regions])
         )
     if picked_status:
-        stmt = stmt.where(status_filter(Document.title, picked_status))
+        stmt = stmt.where(status_filter(Document.title, picked_status, _kind_is(["名单"])))
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
 
@@ -451,7 +466,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    kind = doc_kind(doc.title)
+    kind = effective_kind(doc.title, doc.kind_override)
     return {
         "id": str(doc.id),
         "kind": kind,
@@ -542,7 +557,7 @@ def calendar(
                 "due": dl.approved_date.isoformat(),
                 "time": _hhmm(dl.approved_time),
                 "region": f"{'国家' if src.province == '国家' else src.province} · {src.dept}",
-                "kind": doc_kind(doc.title),
+                "kind": effective_kind(doc.title, doc.kind_override),
                 "title": doc.title,
                 "what": dl.kind,
                 "hasDetail": True,
@@ -560,7 +575,7 @@ def recent_lists(
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
 ) -> dict:
     """最近发布的名单与公示，以及本周份数。"""
-    stmt = _base().where(kind_filter(Document.title, ["名单"]))
+    stmt = _base().where(_kind_is(["名单"]))
     start, end = _week(now().date())
     week_total = _count(
         session, stmt.where(Document.publish_date >= start, Document.publish_date < end)

@@ -260,9 +260,15 @@ STATUS_FINAL = ("公布",)
 STATUS_NOT_FINAL = ("拟",)
 
 
-def list_status(title: str) -> str | None:
-    """名单状态，只照录标题原文：公示 / 公布；标题没写明或不是名单时返回 None。"""
-    if doc_kind(title) != "名单":
+def effective_kind(title: str, override: str | None) -> str:
+    """给用户看的类型：人工在核对台定过的按人工定的，没定过的按标题规则判断。"""
+    return override or doc_kind(title)
+
+
+def list_status(title: str, kind: str | None = None) -> str | None:
+    """名单状态，只照录标题原文：公示 / 公布；标题没写明或不是名单时返回 None。
+    kind 是这份文件给用户看的类型（人工定过类型时传进来），不传就按标题规则判断。"""
+    if (kind or doc_kind(title)) != "名单":
         return None
     if _has(title, STATUS_PUBLIC):
         return "公示"
@@ -364,9 +370,14 @@ def kind_filter(title: ColumnElement[str], kinds: list[str]) -> ColumnElement[bo
     return or_(*(parts[k] for k in kinds if k in parts))
 
 
-def status_filter(title: ColumnElement[str], statuses: list[str]) -> ColumnElement[bool]:
-    """名单状态筛选：只作用于名单类文件。"""
-    is_list = _sql_parts(title)["名单"]
+def status_filter(
+    title: ColumnElement[str],
+    statuses: list[str],
+    is_list: ColumnElement[bool] | None = None,
+) -> ColumnElement[bool]:
+    """名单状态筛选：只作用于名单类文件（is_list 不传就按标题规则判断是不是名单）。"""
+    if is_list is None:
+        is_list = _sql_parts(title)["名单"]
     public = _any_in(title, STATUS_PUBLIC)
     final = and_(not_(public), _any_in(title, STATUS_FINAL), not_(_any_in(title, STATUS_NOT_FINAL)))
     parts = {"公示": and_(is_list, public), "公布": and_(is_list, final)}

@@ -100,6 +100,10 @@ class Document(Base):
         Index("ix_documents_first_seen_at", "first_seen_at"),
         Index("ix_documents_source_id", "source_id"),
         # 标题模糊搜索是 LIKE '%词%' 全表扫描：几万份文件以内足够快，不再建索引
+        CheckConstraint(
+            "kind_override IS NULL OR kind_override IN ('申报通知', '名单', '政策', '其他')",
+            name="ck_document_kind_override",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -118,6 +122,10 @@ class Document(Base):
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
     # discovered：只有题录；fetched：详情抓取成功；后续可加入 extracted 等状态
     status: Mapped[str] = mapped_column(String(16), default="discovered")
+    # 人工定的类型：AI 和标题规则判断不一致时，在核对台选定（D-023）。有值时给用户看这个
+    kind_override: Mapped[str | None] = mapped_column(String(8))
+    kind_decided_by: Mapped[str | None] = mapped_column(String(80))
+    kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)

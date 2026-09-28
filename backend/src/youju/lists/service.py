@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from youju.classify import list_status
+from youju.classify import effective_kind, list_status
 from youju.config import get_settings
 from youju.crawler.detail_service import _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
@@ -272,7 +272,12 @@ def _report(
         if doc.title not in sampled_titles:
             sampled_titles.add(doc.title)
             distinct_samples.append(
-                ListSample(doc.title, entry.name, list_status(doc.title), doc.url)
+                ListSample(
+                    doc.title,
+                    entry.name,
+                    list_status(doc.title, effective_kind(doc.title, doc.kind_override)),
+                    doc.url,
+                )
             )
         if len(distinct_samples) == 10:
             break
@@ -303,7 +308,11 @@ def parse_lists(
         .where(Source.rights_level == 1, Document.publish_date >= since)
         .order_by(Document.id)
     ).all()
-    selected = [(doc, info) for doc in documents if (info := classify_title(doc.title)).is_list]
+    selected = [
+        (doc, info)
+        for doc in documents
+        if (info := classify_title(doc.title, doc.kind_override)).is_list
+    ]
     selected_ids = [doc.id for doc, _ in selected]
     previously_parsed = set(
         session.scalars(
