@@ -120,6 +120,8 @@ def world(session, monkeypatch):
         )
     session.commit()
     add_deadline(session, apply_doc, date(2026, 10, 10), created=NOW - hour)
+    # 同一通知另一个网址上的相同候选：核对台只列一条，日报也只算一条
+    add_deadline(session, twin, date(2026, 10, 10), created=NOW - hour)
     add_deadline(session, list_doc, date(2026, 12, 20), created=NOW - hour)
     long_ago = NOW - timedelta(days=3)
     approved = add_deadline(
@@ -265,9 +267,11 @@ def test_ai_picks_only_from_the_offered_list(session, world) -> None:
     # 只发政府通知的编号、单位、标题和候选日期，候选日期已过的不发，也没有任何用户数据
     assert f"编号 {apply_doc.id}" in sent and "候选截止 2026-10-10" in sent
     assert f"编号 {old.id}" not in sent and "o-fresh" not in sent and "日期不对" not in sent
+    assert picks[0].dept == "山东省科学技术厅1"
 
     text = digest_text(build_digest(session, now=NOW), picks)
-    assert "AI 建议先核对（仅供参考）：" in text and f"①《{LIST[:22]}》候选 12月20日截止：" in text
+    assert "AI 建议先核对（仅供参考）：" in text
+    assert f"①《{LIST[:22]}》（山东省科学技术厅1）候选 12月20日截止：" in text
 
 
 def test_ai_errors_leave_the_digest_without_picks(session, world) -> None:
@@ -280,17 +284,23 @@ def test_digest_drops_ai_picks_first_when_the_message_is_too_long(
 ) -> None:
     d = build_digest(session, now=NOW)
     picks = [
-        digest_module.Pick(world["apply"].id, APPLY * 2, date(2026, 10, 10), "截止最近" * 5)
+        digest_module.Pick(
+            world["apply"].id, APPLY * 2, "山东省科学技术厅1", date(2026, 10, 10), "截止最近" * 5
+        )
         for _ in range(3)
     ]
     base = digest_text(d, [])
     prefix = len("【有据】".encode())
-    monkeypatch.setattr(digest_module, "MAX_ALERT_BYTES", len(base.encode()) + prefix + 200)
+    monkeypatch.setattr(digest_module, "MAX_ALERT_BYTES", len(base.encode()) + prefix + 260)
     text = digest_text(d, picks)
     assert text.startswith(base) and text.count("《") == 1
-    assert len(text.encode()) <= len(base.encode()) + 200
+    assert len(text.encode()) <= len(base.encode()) + 260
     monkeypatch.setattr(digest_module, "MAX_ALERT_BYTES", len(base.encode()) + prefix + 10)
     assert digest_text(d, picks) == base  # 一条都放不下时连标题也不加
+    # 数字部分本身超长时截断，保证不超过群消息上限
+    monkeypatch.setattr(digest_module, "MAX_ALERT_BYTES", len(base.encode()) // 2)
+    cut = digest_text(d, picks)
+    assert cut.endswith("…") and len(cut.encode()) <= len(base.encode()) // 2 - prefix
 
 
 def test_daily_report_cli_sends_once_and_records_ai_usage(
@@ -315,3 +325,26 @@ def test_daily_report_cli_sends_once_and_records_ai_usage(
     monkeypatch.setattr(ai_module, "get_chat_client", lambda: None)  # 没配 AI 时日报照发
     monkeypatch.setattr(alerts, "send_alert", lambda message: False)
     assert cli.main(["daily-report"]) == 1  # 发送失败按任务失败退出，由 job.sh 再提醒
+
+
+def test_usage_that_cannot_be_recorded_fails_the_command(
+    session_factory, world, monkeypatch, capsys
+) -> None:
+    import youju.ai as ai_module
+    import youju.ai.usage as usage_module
+    from youju import cli
+
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(
+        ai_module, "get_chat_client", lambda: fake_ai(lambda _: [{"id": world["apply"].id}])[0]
+    )
+    tries = []
+
+    def broken(*args, **kwargs):
+        tries.append(1)
+        raise RuntimeError("数据库断开")
+
+    monkeypatch.setattr(usage_module, "record_usage", broken)
+    assert cli.main(["daily-report", "--dry-run"]) == 1 and len(tries) == 2  # 重试一次
+    out = capsys.readouterr().out
+    assert "AI 用量没记进台账（report）：调用 1 次" in out and "输入 50" in out

@@ -15,18 +15,29 @@ from youju.models import Document, Source
 log = logging.getLogger("youju")
 
 
-def _finish_ai(client, task: str) -> None:
-    """命令结束时把这次的 AI 用量记到台账（记账失败只打日志，不影响命令结果），再关掉客户端。"""
+def _finish_ai(client, task: str) -> bool:
+    """命令结束时把这次的 AI 用量记到台账，再关掉客户端。记账失败重试一次，还失败就把没记上的
+    用量打到日志里并返回 False：命令按失败退出、由 job.sh 提醒，免得 AI 花费悄悄漏记。"""
     if client is None:
-        return
+        return True
     try:
-        if client.totals["calls"]:
-            from youju.ai.usage import record_usage
+        if not client.totals["calls"]:
+            return True
+        from youju.ai.usage import record_usage
 
-            with session_factory()() as session:
-                record_usage(session, client, task)
-    except Exception:
-        log.exception("AI 用量记账失败（%s）", task)
+        for attempt in (1, 2):
+            try:
+                with session_factory()() as session:
+                    record_usage(session, client, task)
+                return True
+            except Exception:
+                log.exception("AI 用量记账失败（%s，第 %d 次）", task, attempt)
+        totals = client.totals
+        print(
+            f"AI 用量没记进台账（{task}）：调用 {totals['calls']} 次、出错 {totals['errors']} 次、"
+            f"输入 {totals['prompt_tokens']}、输出 {totals['completion_tokens']} tokens"
+        )
+        return False
     finally:
         client.close()
 
@@ -173,11 +184,12 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     if client is None:
         print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过 AI 检查，照常用规则")
         return 0
+    usage_ok = False
     try:
         with session_factory()() as session:
             report = run_ai_checks(session, client, limit=args.limit)
     finally:
-        _finish_ai(client, "check")
+        usage_ok = _finish_ai(client, "check")
     print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
@@ -193,7 +205,7 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     if report.stopped_early:
         print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
         return 1
-    return 0
+    return 0 if usage_ok else 1
 
 
 def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
@@ -202,11 +214,12 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
 
     client = get_chat_client()
+    usage_ok = False
     try:
         with session_factory()() as session:
             report = run_audit(session, client, sample=args.sample)
     finally:
-        _finish_ai(client, "audit")
+        usage_ok = _finish_ai(client, "audit")
     ai_part = (
         f"AI 抽查 {report.checked_by_ai} 份文件"
         if client is not None
@@ -222,11 +235,11 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
         print(f"  #{deadline_id} {title[:40]}：{note}")
     if report.stopped_early:
         print("连续多份文件调用 AI 出错，AI 抽查提前停止（规则回查已做完）")
-    # 存疑和 AI 出错合成一条提醒；规则回查照常做完，所以不按任务失败退出
+    # 存疑和 AI 出错合成一条提醒；规则回查照常做完，所以不按任务失败退出（用量没记上除外）
     text = alert_text(report)
     if text:
         send_alert(text)
-    return 0
+    return 0 if usage_ok else 1
 
 
 def _cmd_daily_report(args: argparse.Namespace) -> int:
@@ -235,18 +248,18 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.digest import build_digest, digest_text, pick_for_review
 
     client = get_chat_client()
+    usage_ok = False
     try:
         with session_factory()() as session:
             digest = build_digest(session)
             # 配了 AI 时请它从待核对的通知里挑几份建议先核对；没配或出错时日报照发
             picks = pick_for_review(session, client) if client is not None else []
     finally:
-        _finish_ai(client, "report")
+        usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
     print(text)
-    if args.dry_run:
-        return 0
-    return 1 if send_alert(text) is False else 0
+    sent = None if args.dry_run else send_alert(text)
+    return 1 if sent is False or not usage_ok else 0
 
 
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
@@ -255,11 +268,12 @@ def _cmd_parse_lists(args: argparse.Namespace) -> int:
 
     # 配了 AI 时，规则找不到名称列的表格请 AI 认列；没配就只用规则
     client = get_chat_client()
+    usage_ok = False
     try:
         with session_factory()() as session:
             report = parse_lists(session, since=args.since, ai_client=client)
     finally:
-        _finish_ai(client, "lists")
+        usage_ok = _finish_ai(client, "lists")
     print(
         f"名单文件 {report.documents}，成功解析 {report.parsed_documents}，"
         f"企业/机构条目 {report.names}，本次下载附件 {report.attachments_fetched}/200，"
@@ -275,7 +289,7 @@ def _cmd_parse_lists(args: argparse.Namespace) -> int:
     print("抽样（最多10条）：")
     for sample in report.samples:
         print(f"  {sample.title}｜{sample.name}｜{sample.status}｜{sample.url}")
-    return 0
+    return 0 if usage_ok else 1
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:

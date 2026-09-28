@@ -19,7 +19,7 @@ from youju.ai.client import AIError, ChatClient
 from youju.ai.usage import BEIJING, FREE_QUOTA, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
-from youju.dedup import visible_documents
+from youju.dedup import canonical_ids, visible_documents
 from youju.models import (
     Document,
     DocumentDeadline,
@@ -73,12 +73,29 @@ class Digest:
 class Pick:
     document_id: int
     title: str
+    dept: str
     due: date
     reason: str
 
 
 def _count(session: Session, stmt) -> int:
     return session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+
+
+def _distinct(session: Session, rows: list[DocumentDeadline]) -> list[DocumentDeadline]:
+    """按核对台的归并规则去重：同一通知（归并组）里类型、日期、时间、证据句都相同的候选只算一条。"""
+    masters = canonical_ids(session, [d.document_id for d in rows])
+    seen: dict[tuple, DocumentDeadline] = {}
+    for d in sorted(rows, key=lambda row: row.id):
+        key = (
+            masters.get(d.document_id, d.document_id),
+            d.kind,
+            d.candidate_date,
+            d.candidate_time,
+            d.evidence,
+        )
+        seen.setdefault(key, d)
+    return list(seen.values())
 
 
 def build_digest(session: Session, now: datetime | None = None) -> Digest:
@@ -115,25 +132,27 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
             digest.details_ok = count
         else:
             digest.details_failed = count
-    digest.new_candidates = _count(
-        session, select(DocumentDeadline.id).where(DocumentDeadline.created_at >= since)
-    )
-    reviewed = visible_documents(
-        select(DocumentDeadline.status)
-        .join(Document, Document.id == DocumentDeadline.document_id)
-        .where(DocumentDeadline.reviewed_at >= since)
-    )
-    by_status = Counter(session.scalars(reviewed))
+    # 候选和核对都按核对台的归并规则去重：同一通知其他网址上的相同候选不重复算
+    fresh = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.created_at >= since)
+    ).all()
+    digest.new_candidates = len(_distinct(session, list(fresh)))
+    reviewed = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.reviewed_at >= since)
+    ).all()
+    by_status = Counter(d.status for d in _distinct(session, list(reviewed)))
     digest.approved, digest.rejected = by_status["approved"], by_status["rejected"]
 
-    # 待办：和核对台同一口径
-    digest.pending = admin.pending_count(session, None, "all")["pending"]
-    digest.pending_30 = admin.pending_count(session, None, "30")["pending"]
-    digest.nearest_due = session.scalar(
-        select(func.min(DocumentDeadline.candidate_date)).where(
-            DocumentDeadline.status == "pending", DocumentDeadline.candidate_date >= today
-        )
-    )
+    # 待办：待核对用核对台列表的同一规则（_pending_shown_ids），日期都按这份日报的"今天"算
+    pending = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status == "pending")
+    ).all()
+    shown_ids = admin._pending_shown_ids(session, list(pending))
+    shown = [d for d in pending if d.id in shown_ids]
+    upcoming = [d.candidate_date for d in shown if d.candidate_date >= today]
+    digest.pending = len(shown)
+    digest.pending_30 = sum(due <= today + timedelta(days=30) for due in upcoming)
+    digest.nearest_due = min(upcoming, default=None)
     digest.kinds_pending = admin.kinds_pending_count(session, None)["pending"]
     digest.audit_flagged = admin.audit_flagged_count(session, None)["flagged"]
     digest.feedback_pending = admin.feedback_pending_count(session, None)["pending"]
@@ -174,7 +193,7 @@ def pick_for_review(
     ).all()
     if not rows:
         return []
-    offered = {doc_id: (title, due) for doc_id, title, _, due in rows}
+    offered = {doc_id: (title, dept, due) for doc_id, title, dept, due in rows}
     listing = "\n".join(
         f"编号 {doc_id}｜{dept}｜{title[:60]}｜候选截止 {due}" for doc_id, title, dept, due in rows
     )
@@ -193,9 +212,9 @@ def pick_for_review(
             continue
         if doc_id not in offered or any(p.document_id == doc_id for p in picks):
             continue
-        title, due = offered[doc_id]
+        title, dept, due = offered[doc_id]
         reason = str(item.get("reason") or "").strip()[:20]
-        picks.append(Pick(doc_id, title, due, reason))
+        picks.append(Pick(doc_id, title, dept, due, reason))
         if len(picks) >= _PICKS:
             break
     return picks
@@ -244,7 +263,7 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         )
         quota = "；".join(
             f"{model} 累计 {_tokens(tokens)} tokens（免费额度 {_tokens(FREE_QUOTA)}）"
-            for model, tokens in usage.cumulative.items()
+            for model, tokens in list(usage.cumulative.items())[:3]
         )
         lines.append(
             f"AI（{_md(usage.day)}）：调用 {usage.calls} 次、出错 {usage.errors} 次，"
@@ -253,14 +272,18 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         )
     marks = "①②③④⑤"
     pick_lines = [
-        f"{marks[i]}《{p.title[:22]}》候选 {_md(p.due)}截止" + (f"：{p.reason}" if p.reason else "")
+        f"{marks[i]}《{p.title[:22]}》（{p.dept[:12]}）候选 {_md(p.due)}截止"
+        + (f"：{p.reason}" if p.reason else "")
         for i, p in enumerate(picks)
     ]
-    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉
+    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉，数字部分本身超长时截断
     budget = MAX_ALERT_BYTES - len("【有据】".encode())
     while True:
         body = lines + (["AI 建议先核对（仅供参考）："] + pick_lines if pick_lines else [])
         text = "\n".join(body)
-        if len(text.encode()) <= budget or not pick_lines:
+        if len(text.encode()) <= budget:
             return text
+        if not pick_lines:
+            cut = budget - len("…".encode())
+            return text.encode()[:cut].decode("utf-8", "ignore") + "…"
         pick_lines.pop()

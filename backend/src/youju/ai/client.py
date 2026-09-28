@@ -62,6 +62,8 @@ class ChatClient:
     def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
         """请求 JSON 对象，针对暂时性错误和非法 JSON 自动重试；成功、失败都计入累计用量。"""
         self.totals["calls"] += 1
+        # 先清零：这次调用在拿到任何响应前就失败时，不会把上一次的用量再记一遍
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
         try:
             return self._complete_json(system, user, max_tokens)
         except AIError:
