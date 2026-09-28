@@ -100,6 +100,24 @@ def test_markup_in_title_attribute_is_not_used_as_title() -> None:
     ]
 
 
+def test_archived_topic_links_are_not_documents() -> None:
+    # 湖南工信厅的列表里夹着专题专栏的归档入口，不是文件
+    html = """
+    <ul>
+      <li><a href="/gxt/xxgk/tzgg/202609/t20260924_1.html">关于开展2026年度专项申报工作的通知</a>
+          <span>2026-09-24</span></li>
+      <li><a href="/gxt/ztzl/2026hnlh/index.html">2026湖南两会（已归档</a><span>2026-09-20</span></li>
+      <li><a href="/gxt/xxgk/tzgg/202609/t20260920_2.html">关于公布第二批专精特新中小企业名单的通知</a>
+          <span>2026-09-20</span></li>
+    </ul>
+    """
+    items = extract_items(html, "https://gxt.hunan.gov.cn/gxt/xxgk/tzgg/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于开展2026年度专项申报工作的通知",
+        "关于公布第二批专精特新中小企业名单的通知",
+    ]
+
+
 def test_title_containing_date_is_not_publish_date() -> None:
     html = """
     <ul>

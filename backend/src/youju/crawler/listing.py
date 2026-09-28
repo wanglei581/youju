@@ -50,7 +50,17 @@ _NAV_PATTERN = re.compile(
     r"^(第?\d+页?|更多.*|more.*|下一页|上一页|首页|尾页|末页|返回.*|打印.*|关闭.*|>>|»|…+|\.+)$",
     re.IGNORECASE,
 )
-_BOILERPLATE = ("版权所有", "ICP备", "网站地图", "联系我们", "网站标识码", "公网安备", "主办单位")
+# "（已归档"：专题专栏的归档入口（如湖南工信厅"2025湖南两会（已归档"），不是文件
+_BOILERPLATE = (
+    "版权所有",
+    "ICP备",
+    "网站地图",
+    "联系我们",
+    "网站标识码",
+    "公网安备",
+    "主办单位",
+    "已归档",
+)
 # 行内的附件链接（"附件：…""下载"，或指向 pdf、Word 等文件）属于同一条文件，不算另一条
 _ATTACHMENT_TEXT = re.compile(r"^(附件|下载|点击下载|查看附件|附件下载)")
 _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.IGNORECASE)
