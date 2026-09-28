@@ -263,6 +263,38 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     return 1 if sent is False or not usage_ok else 0
 
 
+def _cmd_try_source(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.sources.onboard import trial, trial_fetcher
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with trial_fetcher() as fetcher:
+            result = trial(args.url, fetcher, client, want_ai_rule=args.ai_rule)
+    finally:
+        usage_ok = _finish_ai(client, "onboard")
+    print(f"抓取：{result.status}（{result.final_url}）{result.error or ''}")
+    if result.status != "ok":
+        return 1
+    print(f"通用规则识别出 {len(result.generic)} 条：")
+    for item in result.generic[:5]:
+        print(f"  {item.publish_date} {item.title[:60]}")
+    if result.ai_config:
+        print(f"AI 写的规则 {result.ai_config} 识别出 {len(result.ai_items)} 条：")
+        for item in result.ai_items[:5]:
+            print(f"  {item.publish_date} {item.title[:60]}")
+    elif result.ai_note:
+        print(f"AI 写的规则没采用：{result.ai_note}")
+    p = result.proposal
+    print(
+        f"登记建议：层级 {p.level or '？'}，省份 {p.province or '？'}，部门 {p.dept or '？'}，"
+        f"部门全称 {p.dept_full_name or '？'}，栏目 {p.column_name or '？'}"
+    )
+    print('只是试跑，没有写数据库；到后台"来源接入"页确认后才接入')
+    return 0 if usage_ok else 1
+
+
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.lists.service import parse_lists
@@ -382,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
     p.set_defaults(func=_cmd_audit_deadlines)
+
+    p = sub.add_parser(
+        "try-source", help="试跑一个栏目网址：抓一次列表页、识别条目、给出登记建议（不写数据库）"
+    )
+    p.add_argument("url", help="政府网站栏目列表页网址（域名以 .gov.cn 结尾）")
+    p.add_argument("--ai-rule", action="store_true", help="通用规则识别出来了也让 AI 写抓取规则")
+    p.set_defaults(func=_cmd_try_source)
 
     p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
     p.add_argument(

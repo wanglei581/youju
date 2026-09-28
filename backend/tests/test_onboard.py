@@ -1,0 +1,276 @@
+"""来源接入 Agent（D-023）：试跑栏目网址 → 通用规则识别条目、AI 补登记信息和抓取规则 → 人确认后接入。"""
+
+import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from youju.ai.client import ChatClient
+from youju.api import app as app_module
+from youju.api import v1
+from youju.api.app import app
+from youju.crawler.fetcher import FetchResult
+from youju.db import get_session
+from youju.models import AIUsage, Source
+from youju.sources import onboard
+from youju.sources.onboard import page_facts, trial, valid_config
+
+from .conftest import read_fixture_html
+
+URL = "https://kw.beijing.gov.cn/col/col736/index.html"
+SITE = "北京市科学技术委员会、中关村科技园区管理委员会"
+RULE = {"item_selector": "div.title-list-box ul.list li", "link_selector": "a.fl"}
+HEADERS = {"X-Admin-Token": "secret"}
+
+
+class FakeFetcher:
+    def __init__(self, html="", status="ok", error=None):
+        self.html, self.status, self.error = html, status, error
+        self.fetched: list[str] = []
+
+    def fetch(self, url):
+        self.fetched.append(url)
+        return FetchResult(
+            url, self.status, final_url=url, http_status=200, text=self.html, error=self.error
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+
+def fake_ai(replies):
+    """replies：按调用顺序返回的 JSON 对象；用完后重复最后一个。"""
+    calls = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        reply = replies[min(len(calls), len(replies)) - 1]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps(reply, ensure_ascii=False)}}],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 8},
+            },
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen-flash",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    return client, calls
+
+
+def beijing():
+    return read_fixture_html("beijing_kw_tzgg")
+
+
+def test_page_facts_read_site_and_column_names() -> None:
+    facts = page_facts(beijing())
+    assert (facts.site_name, facts.column_name) == (SITE, "通知公告")
+    assert "通知公告" in facts.title and "<script" not in facts.text
+
+
+def test_generic_rules_and_page_names_without_ai() -> None:
+    result = trial(URL, FakeFetcher(beijing()), None)
+    assert result.status == "ok" and len(result.generic) >= 3
+    assert result.ai_config is None and result.ai_note is None
+    p = result.proposal
+    assert (p.dept_full_name, p.column_name, p.level, p.province) == (SITE, "通知公告", "", "")
+
+
+def test_ai_proposal_is_checked_against_the_page() -> None:
+    good = {
+        "level": "省级",
+        "province": "北京",
+        "dept": "科技",
+        "dept_full_name": "北京市科学技术委员会",
+        "column_name": "通知公告",
+    }
+    client, calls = fake_ai([good])
+    p = trial(URL, FakeFetcher(beijing()), client).proposal
+    assert (p.level, p.province, p.dept, p.dept_full_name, p.column_name) == (
+        "省级",
+        "北京",
+        "科技",
+        "北京市科学技术委员会",
+        "通知公告",
+    )
+    # 只发网页本身：标题、网站名、栏目名、列表标题
+    assert SITE in calls[0]["messages"][1]["content"] and len(calls) == 1
+
+    made_up = {
+        "level": "国家级",  # 和省份对不上
+        "province": "北京",
+        "dept": "科技",
+        "dept_full_name": "北京市科技局",  # 网页里没写
+        "column_name": "最新动态",  # 网页里没写
+    }
+    client, _ = fake_ai([made_up])
+    p = trial(URL, FakeFetcher(beijing()), client).proposal
+    assert (p.level, p.province) == ("", "")
+    assert (p.dept_full_name, p.column_name) == (SITE, "通知公告")  # 退回网页自己写的
+
+
+def test_ai_rule_is_used_only_when_it_finds_dated_items(monkeypatch) -> None:
+    # 通用规则认不出时自动请 AI 写规则，试跑识别出至少 3 条带日期的才采用
+    real = onboard.extract_items
+    monkeypatch.setattr(
+        onboard,
+        "extract_items",
+        lambda html, url, config, **kw: real(html, url, config, **kw) if config else [],
+    )
+    meta = {"level": "省级", "province": "北京"}
+    client, calls = fake_ai([meta, {**RULE, "reason": "正文列表"}])
+    result = trial(URL, FakeFetcher(beijing()), client)
+    assert result.generic == [] and result.ai_config == RULE and len(result.ai_items) >= 3
+    assert all(item.publish_date for item in result.ai_items)
+    outline = calls[1]["messages"][1]["content"]
+    assert "title-list-box" in outline and "<script" not in outline and len(outline) < 8200
+
+    for bad, note in (
+        ({"item_selector": "ul[", "link_selector": "a"}, "不是合法的 CSS 选择器"),
+        ({"item_selector": "div.footer li"}, "只识别出 0 条"),
+    ):
+        client, _ = fake_ai([meta, bad])
+        result = trial(URL, FakeFetcher(beijing()), client)
+        assert result.ai_config is None and note in result.ai_note
+
+
+def test_ai_rule_on_request_even_when_generic_rules_work() -> None:
+    client, calls = fake_ai([{}, RULE])
+    result = trial(URL, FakeFetcher(beijing()), client, want_ai_rule=True)
+    assert len(result.generic) >= 3 and result.ai_config == RULE and len(calls) == 2
+    client, calls = fake_ai([{}])
+    assert trial(URL, FakeFetcher(beijing()), client).ai_config is None and len(calls) == 1
+
+
+def test_fetch_refusals_stop_the_trial() -> None:
+    client, calls = fake_ai([{}])
+    refused = FakeFetcher(status="robots_disallowed", error="robots.txt 不允许抓取该页面")
+    result = trial(URL, refused, client)
+    assert result.status == "robots_disallowed" and result.generic == [] and calls == []
+
+
+def test_valid_config_accepts_only_css_selectors() -> None:
+    assert valid_config(RULE) == RULE
+    assert valid_config({"item_selector": " ul li ", "date_selector": ""}) == {
+        "item_selector": "ul li"
+    }
+    for bad in (
+        {"link_selector": "a"},  # 缺 item_selector
+        {"item_selector": "ul li", "script": "x"},  # 多余的键
+        {"item_selector": "ul li" * 50},  # 太长
+        {"item_selector": "ul["},  # 不合法
+        {"item_selector": 3},
+        "ul li",
+    ):
+        assert valid_config(bad) is None, bad
+
+
+@pytest.fixture
+def api(session_factory, monkeypatch):
+    def override():
+        with session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = override
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    monkeypatch.setattr(v1, "now", lambda: datetime(2026, 9, 28, 10, 0, tzinfo=UTC))
+    monkeypatch.setattr(app_module, "_trial_hosts", {})
+    fetcher = FakeFetcher(beijing())
+    monkeypatch.setattr(app_module, "_trial_fetcher", lambda: fetcher)
+    monkeypatch.setattr("youju.ai.get_chat_client", lambda: None)
+    yield TestClient(app), fetcher
+    app.dependency_overrides.clear()
+
+
+def test_trial_endpoint_checks_the_url_and_is_polite(api, session) -> None:
+    client, fetcher = api
+    post = lambda url: client.post(  # noqa: E731
+        "/api/admin/sources/trial", headers=HEADERS, json={"url": url}
+    )
+    assert post("https://example.com/news/").status_code == 422  # 只接政府网站
+    assert post("ftp://kw.beijing.gov.cn/x").status_code == 422
+    res = post(URL)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ok" and body["generic_count"] >= 3 and len(body["generic"]) <= 10
+    assert body["proposal"]["dept_full_name"] == SITE and body["ai_enabled"] is False
+    assert post(URL).status_code == 429  # 同一网站 10 秒内只试跑一次
+    assert fetcher.fetched == [URL]
+    assert client.post("/api/admin/sources/trial", json={"url": URL}).status_code == 401
+
+    session.add(
+        Source(
+            level="省级",
+            province="北京",
+            dept="科技",
+            dept_full_name=SITE,
+            column_name="通知公告",
+            url="https://kw.beijing.gov.cn/col/col737/index.html",
+            parser_config={},
+        )
+    )
+    session.commit()
+    assert post("https://kw.beijing.gov.cn/col/col737/index.html").status_code == 409
+
+
+def test_trial_endpoint_records_ai_usage(api, session, monkeypatch) -> None:
+    client, _ = api
+    ai, _ = fake_ai([{"level": "省级", "province": "北京"}])
+    monkeypatch.setattr("youju.ai.get_chat_client", lambda: ai)
+    body = client.post("/api/admin/sources/trial", headers=HEADERS, json={"url": URL}).json()
+    assert body["ai_enabled"] is True and body["proposal"]["province"] == "北京"
+    usage = session.scalar(select(AIUsage).where(AIUsage.task == "onboard"))
+    assert (usage.calls, usage.prompt_tokens) == (1, 40)
+
+
+def test_create_source_after_a_person_confirms(api, session) -> None:
+    client, _ = api
+    base = {
+        "url": URL,
+        "level": "省级",
+        "province": "北京",
+        "dept": "科技",
+        "dept_full_name": SITE,
+        "column_name": "通知公告",
+        "parser_config": RULE,
+        "reviewed_by": "创始人",
+    }
+
+    def create(**changes):
+        return client.post("/api/admin/sources", headers=HEADERS, json={**base, **changes})
+
+    assert create(province="北京市").status_code == 422  # 要从列表里选
+    assert create(level="国家级").status_code == 422  # 国家级只对应"国家"
+    assert create(parser_config={"item_selector": "ul["}).status_code == 422
+    assert create(url="https://example.com/list/").status_code == 422
+    assert create(reviewed_by="").status_code == 422
+    res = create()
+    assert res.status_code == 201
+    source = session.get(Source, res.json()["id"])
+    assert (source.url, source.dept_full_name, source.enabled, source.fetch_mode) == (
+        URL,
+        SITE,
+        True,
+        "static",
+    )
+    assert source.parser_config == RULE and source.rights_level == 1
+    assert (
+        source.verification_status.startswith("已验证") and "创始人" in source.verification_status
+    )
+    assert create().status_code == 409  # 已经接入过
+    generic = create(url="https://kw.beijing.gov.cn/col/col738/index.html", parser_config={})
+    assert session.get(Source, generic.json()["id"]).parser_config == {}

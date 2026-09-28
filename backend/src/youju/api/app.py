@@ -13,11 +13,13 @@ from datetime import UTC, date, datetime, time, timedelta
 from hmac import compare_digest
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju.alerts import send_alert
@@ -32,6 +34,7 @@ from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
+    URL_KEY_MAX,
     AICheck,
     Document,
     DocumentDeadline,
@@ -927,6 +930,207 @@ def reopen_deadline(
 def audit_console() -> str:
     """质检存疑：已发布的截止被规则或 AI 标为可能有误，人复核；口令仅由页面请求管理接口时发送。"""
     return (Path(__file__).resolve().parent.parent / "admin" / "audit.html").read_text(
+        encoding="utf-8"
+    )
+
+
+# ---------- 来源接入（D-023 来源接入 Agent）：试跑 → 人确认 → 接入 ----------
+
+# 同一网站两次试跑至少间隔这么久（秒）：试跑由人点按钮触发，也不能连续打扰对方网站
+_TRIAL_INTERVAL = 10.0
+_trial_hosts: dict[str, float] = {}
+_trial_guard = threading.Lock()
+
+
+class SourceTrialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=8, max_length=URL_KEY_MAX)
+    # 通用规则识别出来了，人仍想看看 AI 写的抓取规则
+    ai_rule: bool = False
+
+
+class TrialItemOut(BaseModel):
+    title: str
+    url: str
+    publish_date: date | None
+
+
+class SourceTrialOut(BaseModel):
+    url: str
+    final_url: str
+    status: str
+    error: str | None
+    ai_enabled: bool
+    generic_count: int
+    generic: list[TrialItemOut]
+    ai_config: dict[str, str] | None
+    ai_count: int
+    ai_items: list[TrialItemOut]
+    ai_note: str | None
+    proposal: dict[str, str]
+
+
+class SourceCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=8, max_length=URL_KEY_MAX)
+    level: Literal["国家级", "省级", "市级"]
+    province: str
+    dept: str = Field(min_length=1, max_length=32)
+    dept_full_name: str = Field(min_length=2, max_length=128)
+    column_name: str = Field(min_length=2, max_length=64)
+    # 空：用通用规则；否则是试跑时 AI 写、人确认过的 CSS 选择器
+    parser_config: dict[str, str] = Field(default_factory=dict)
+    reviewed_by: str = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SourceCreateIn:
+        from youju.sources.onboard import PROVINCES, valid_config
+
+        if self.province not in PROVINCES:
+            raise ValueError('省份要从列表里选（国家部委选"国家"）')
+        if (self.level == "国家级") != (self.province == "国家"):
+            raise ValueError('国家级来源的省份填"国家"，其他层级要选具体省份')
+        if self.parser_config and valid_config(self.parser_config) is None:
+            raise ValueError("抓取规则只能是合法的 CSS 选择器（item_selector 必填）")
+        return self
+
+
+def _source_url(url: str) -> str:
+    from youju.crawler.detail_service import _government_url
+
+    url = url.strip()
+    if urlsplit(url).scheme not in ("http", "https") or not _government_url(url):
+        raise HTTPException(status_code=422, detail="只接政府网站（域名以 .gov.cn 结尾）的栏目网址")
+    return url
+
+
+def _trial_fetcher():
+    from youju.sources.onboard import trial_fetcher
+
+    return trial_fetcher()
+
+
+def _items_out(items) -> list[TrialItemOut]:
+    return [TrialItemOut(title=i.title, url=i.url, publish_date=i.publish_date) for i in items]
+
+
+@app.post("/api/admin/sources/trial", response_model=SourceTrialOut)
+def source_trial(
+    body: SourceTrialIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> SourceTrialOut:
+    """来源接入第一步：试跑一个栏目（抓一次列表页、识别条目、给出登记建议），不写数据库。"""
+    from youju.ai import get_chat_client
+    from youju.sources.onboard import trial
+
+    url = _source_url(body.url)
+    existing = session.scalar(select(Source.id).where(Source.url == url))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"这个栏目已经在来源里（编号 {existing}）")
+    host = urlsplit(url).hostname or ""
+    now = clock.monotonic()
+    with _trial_guard:
+        if len(_trial_hosts) > 1000:
+            _trial_hosts.clear()
+        last = _trial_hosts.get(host)
+        if last is not None and now - last < _TRIAL_INTERVAL:
+            raise HTTPException(status_code=429, detail="同一网站 10 秒内只试跑一次，请稍后再试")
+        _trial_hosts[host] = now
+    session.commit()  # 抓取可能要几十秒，期间不占着数据库事务
+    client = get_chat_client()
+    try:
+        with _trial_fetcher() as fetcher:
+            result = trial(url, fetcher, client, want_ai_rule=body.ai_rule)
+    finally:
+        if client is not None:
+            try:
+                if client.totals["calls"]:
+                    from youju.ai.usage import record_usage
+
+                    record_usage(session, client, "onboard")
+            except Exception:
+                session.rollback()
+                audit_log.exception("AI 用量记账失败（onboard）")
+            finally:
+                client.close()
+    _audit(
+        request,
+        "source_trial",
+        url=url,
+        status=result.status,
+        generic=len(result.generic),
+        ai=len(result.ai_items),
+    )
+    proposal = result.proposal
+    return SourceTrialOut(
+        url=url,
+        final_url=result.final_url,
+        status=result.status,
+        error=result.error,
+        ai_enabled=client is not None,
+        generic_count=len(result.generic),
+        generic=_items_out(result.generic[:10]),
+        ai_config=result.ai_config,
+        ai_count=len(result.ai_items),
+        ai_items=_items_out(result.ai_items[:10]),
+        ai_note=result.ai_note,
+        proposal={
+            "level": proposal.level,
+            "province": proposal.province,
+            "dept": proposal.dept,
+            "dept_full_name": proposal.dept_full_name,
+            "column_name": proposal.column_name,
+        },
+    )
+
+
+@app.post("/api/admin/sources", status_code=201)
+def create_source(
+    body: SourceCreateIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, int]:
+    """来源接入第二步：人看过试跑结果、核对过登记信息后接入。下一轮定时抓取开始检查，
+    第一次抓到的条目算基线，不当作新文件提醒用户。"""
+    from youju.sources.onboard import valid_config
+
+    url = _source_url(body.url)
+    if session.scalar(select(Source.id).where(Source.url == url)) is not None:
+        raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
+    config = valid_config(body.parser_config) if body.parser_config else {}
+    source = Source(
+        url=url,
+        level=body.level,
+        province=body.province,
+        dept=body.dept.strip(),
+        dept_full_name=body.dept_full_name.strip(),
+        column_name=body.column_name.strip(),
+        fetch_mode="static",
+        enabled=True,
+        parser_config=config,
+        rights_level=1,
+        verification_status=f"已验证（后台接入，{body.reviewed_by}）"[:64],
+        verified_on=v1_api.now().date(),
+        note="来源接入：试跑后由人确认接入" + ("，用 AI 写的抓取规则" if config else ""),
+    )
+    session.add(source)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="这个栏目已经在来源里") from exc
+    _audit(
+        request,
+        "source_create",
+        source_id=source.id,
+        url=url,
+        reviewer=body.reviewed_by,
+        parser_config=config,
+    )
+    return {"id": source.id}
+
+
+@app.get("/admin/sources", response_class=HTMLResponse, include_in_schema=False)
+def sources_console() -> str:
+    """来源接入：输入栏目网址试跑，看识别结果、核对登记信息后接入；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "sources.html").read_text(
         encoding="utf-8"
     )
 

@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>来源接入 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --green: #0E8A63; --g-tint: #E8F7F1; --orange: #D9640F; --o-tint: #FFF3E8; --red: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 880px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  h2 { margin: 0 0 8px; font-size: 16px; }
+  a { color: var(--brand); }
+  .hint, .meta { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .hint { margin: 0 0 12px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .grow { flex: 1 1 320px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .items { margin: 8px 0 0; padding-left: 20px; font-size: 14px; }
+  .items li { margin: 2px 0; }
+  .items .d { color: var(--t3); margin-left: 6px; }
+  .rule { font: 13px/1.5 ui-monospace, Menlo, monospace; background: #F7F8FA; border-radius: 8px; padding: 8px 12px; margin: 8px 0; white-space: pre-wrap; word-break: break-all; }
+  .bad { margin: 8px 0; padding: 8px 12px; background: #FFECEC; color: var(--red); border-radius: 8px; font-size: 14px; }
+  .note { margin: 8px 0; padding: 8px 12px; background: var(--o-tint); color: var(--orange); border-radius: 8px; font-size: 14px; }
+  .form { display: grid; grid-template-columns: 7em 1fr; gap: 8px 12px; align-items: center; margin: 8px 0 12px; }
+  .form input, .form select { width: 100%; }
+  .choice { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+  .msg { font-size: 13px; color: var(--red); }
+  .ok { color: var(--green); }
+  [hidden] { display: none !important; } /* 带 display 的样式会盖过 hidden 属性 */
+  @media (max-width: 520px) { .form { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>来源接入</h1>
+    <a href="/admin/review">截止日期核对台</a>
+    <a href="/admin/kinds">类型待定</a>
+    <a href="/admin/audit">质检存疑</a>
+    <a href="/admin/feedback">纠错与申请覆盖</a>
+    <div class="auth">
+      <input id="reviewer" placeholder="核对人" size="8" aria-label="核对人">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">输入政府网站栏目列表页的网址（域名以 .gov.cn 结尾），点"试跑"：系统按 robots 规则礼貌地抓一次这个页面，用通用规则识别文件条目；配了 AI 时，AI 给出登记信息建议，通用规则认不出条目时再由 AI 写抓取规则并试跑。点开几条核对标题和日期，登记信息核对或改好后点"确认接入"。接入后下一轮定时抓取（每天 6:30、11:30、15:30、20:30）开始检查，第一次抓到的条目算基线，不会当作新文件提醒用户。网站拒绝抓取的不接入，也不绕过。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <section class="card">
+    <div class="row">
+      <input id="url" class="grow" placeholder="栏目网址，如 https://kjt.example.gov.cn/tzgg/" aria-label="栏目网址">
+      <label class="meta"><input id="airule" type="checkbox"> 也让 AI 写抓取规则</label>
+      <button class="primary" id="try">试跑</button>
+    </div>
+    <div class="msg" id="trymsg"></div>
+  </section>
+  <div id="result"></div>
+</main>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const PROVINCES = ['国家', '北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
+  const LEVELS = ['国家级', '省级', '市级'];
+
+  function headers() {
+    return { 'X-Admin-Token': $('token').value.trim(), 'Content-Type': 'application/json' };
+  }
+  function el(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function safeLink(url) {
+    try {
+      const parsed = new URL(url);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+    } catch (e) { return null; }
+  }
+  async function errorFor(res) {
+    if (res.status === 401) return '口令不对或未配置';
+    let detail = '';
+    try { detail = (await res.json()).detail; } catch (e) { /* 不是 JSON */ }
+    if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join('；');
+    return detail || `请求失败（${res.status}）`;
+  }
+  function itemList(items) {
+    const list = el('ol', 'items');
+    items.forEach((item) => {
+      const li = el('li');
+      const href = safeLink(item.url);
+      const a = el(href ? 'a' : 'span', '', item.title);
+      if (href) { a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      li.append(a, el('span', 'd', item.publish_date || '无日期'));
+      list.append(li);
+    });
+    return list;
+  }
+  function field(form, label, input) {
+    form.append(el('label', 'meta', label), input);
+    return input;
+  }
+  function select(options, value) {
+    const node = el('select');
+    node.append(new Option('请选择', ''));
+    options.forEach((o) => node.append(new Option(o, o)));
+    node.value = options.includes(value) ? value : '';
+    return node;
+  }
+  function textInput(value, max) {
+    const node = el('input');
+    node.value = value || '';
+    node.maxLength = max;
+    return node;
+  }
+
+  function render(data) {
+    const box = $('result');
+    box.textContent = '';
+    const fetchCard = el('section', 'card');
+    fetchCard.append(el('h2', '', '试跑结果'));
+    const final = safeLink(data.final_url);
+    const where = el('div', 'meta');
+    where.append('抓取的页面：');
+    const link = el(final ? 'a' : 'span', '', data.final_url);
+    if (final) { link.href = final; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+    where.append(link);
+    fetchCard.append(where);
+    box.append(fetchCard);
+    if (data.status !== 'ok') {
+      fetchCard.append(el('div', 'bad', `没抓到：${data.error || data.status}。${data.status === 'robots_disallowed' ? '网站不允许抓取，不接入。' : '稍后再试，或换一个栏目网址。'}`));
+      return;
+    }
+
+    const rules = el('section', 'card');
+    rules.append(el('h2', '', '抓取规则'));
+    const choice = el('div', 'choice');
+    const genericOk = data.generic_count >= 3;
+    const aiOk = data.ai_count >= 3 && data.ai_config;
+    const pickGeneric = el('input'); pickGeneric.type = 'radio'; pickGeneric.name = 'rule'; pickGeneric.disabled = !genericOk;
+    const pickAi = el('input'); pickAi.type = 'radio'; pickAi.name = 'rule'; pickAi.disabled = !aiOk;
+    const g = el('label'); g.append(pickGeneric, ` 通用规则：识别出 ${data.generic_count} 条`);
+    choice.append(g);
+    rules.append(choice);
+    if (data.generic.length) rules.append(itemList(data.generic));
+    if (aiOk) {
+      const a = el('label'); a.append(pickAi, ` AI 写的规则：识别出 ${data.ai_count} 条（只是 CSS 选择器，已在这个页面试跑过）`);
+      rules.append(a, el('div', 'rule', JSON.stringify(data.ai_config, null, 2)), itemList(data.ai_items));
+    } else if (data.ai_note) {
+      rules.append(el('div', 'note', `AI 写的规则没采用：${data.ai_note}`));
+    } else if (!data.ai_enabled && !genericOk) {
+      rules.append(el('div', 'note', '没配 AI 密钥，没法请 AI 写抓取规则。'));
+    }
+    if (genericOk) pickGeneric.checked = true; else if (aiOk) pickAi.checked = true;
+    box.append(rules);
+    if (!genericOk && !aiOk) {
+      rules.append(el('div', 'bad', '通用规则和 AI 都没识别出至少 3 条带日期的条目，这个栏目暂时接不了（可能是脚本加载的列表，需要浏览器渲染）。'));
+      return;
+    }
+
+    const reg = el('section', 'card');
+    reg.append(el('h2', '', '登记信息'), el('p', 'hint', data.ai_enabled ? 'AI 和网页里写的网站名、栏目名给出的建议，逐项核对；部门全称、栏目名只有网页里写着的才会自动填。' : '按网页里写的网站名、栏目名填了一部分，其余请补全。'));
+    const form = el('div', 'form');
+    const p = data.proposal || {};
+    const level = field(form, '层级', select(LEVELS, p.level));
+    const province = field(form, '省份', select(PROVINCES, p.province));
+    const dept = field(form, '部门简称', textInput(p.dept, 32));
+    const full = field(form, '部门全称', textInput(p.dept_full_name, 128));
+    const column = field(form, '栏目名', textInput(p.column_name, 64));
+    dept.placeholder = '如 科技、工信、发改委';
+    reg.append(form);
+    const save = el('button', 'primary', '确认接入');
+    const msg = el('span', 'msg');
+    const row = el('div', 'row');
+    row.append(save, msg);
+    reg.append(row);
+    box.append(reg);
+    save.onclick = async () => {
+      msg.className = 'msg'; msg.textContent = '';
+      const reviewer = $('reviewer').value.trim();
+      if (!reviewer) { msg.textContent = '先在右上角填核对人'; return; }
+      save.disabled = true;
+      try {
+        const res = await fetch('/api/admin/sources', {
+          method: 'POST', headers: headers(),
+          body: JSON.stringify({
+            url: data.url, level: level.value, province: province.value, dept: dept.value.trim(),
+            dept_full_name: full.value.trim(), column_name: column.value.trim(),
+            parser_config: pickAi.checked ? data.ai_config : {}, reviewed_by: reviewer,
+          }),
+        });
+        if (!res.ok) throw new Error(await errorFor(res));
+        const created = await res.json();
+        msg.className = 'msg ok';
+        msg.textContent = `已接入（来源编号 ${created.id}），下一轮定时抓取开始检查。`;
+      } catch (err) {
+        msg.textContent = err.message;
+        save.disabled = false;
+      }
+    };
+  }
+
+  $('try').onclick = async () => {
+    const url = $('url').value.trim();
+    $('trymsg').textContent = '';
+    if (!url) { $('trymsg').textContent = '先填栏目网址'; return; }
+    $('try').disabled = true;
+    $('try').textContent = '试跑中……';
+    $('result').textContent = '';
+    try {
+      const res = await fetch('/api/admin/sources/trial', {
+        method: 'POST', headers: headers(), body: JSON.stringify({ url, ai_rule: $('airule').checked }),
+      });
+      if (!res.ok) throw new Error(await errorFor(res));
+      render(await res.json());
+    } catch (err) {
+      $('trymsg').textContent = err.message;
+    } finally {
+      $('try').disabled = false;
+      $('try').textContent = '试跑';
+    }
+  };
+})();
+</script>
+</body>
+</html>
