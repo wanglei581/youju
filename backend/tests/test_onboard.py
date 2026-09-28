@@ -306,3 +306,17 @@ def test_create_source_after_a_person_confirms(api, session, monkeypatch) -> Non
     monkeypatch.setattr(app_module.clock, "time", lambda: real() + 1801)
     body = {**BASE, "url": later, "parser_config": {}, "trial_token": token}
     assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 422
+
+
+def test_create_waits_for_another_onboarding(api, session, db_engine, monkeypatch) -> None:
+    """查重和写入串行做：别人正在接入时（持有命名锁）等不到就返回 503，不会并发写进重复来源。"""
+    from sqlalchemy import text
+
+    client, _ = api
+    monkeypatch.setattr(app_module, "_CREATE_LOCK_WAIT", 0)
+    body = {**BASE, "trial_token": app_module._trial_token(URL, RULE)}
+    with db_engine.connect() as other:
+        assert other.execute(text("SELECT GET_LOCK('youju_source_create', 0)")).scalar() == 1
+        assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 503
+        other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+    assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 201

@@ -153,6 +153,8 @@ def _on_page(value: str, facts: PageFacts) -> bool:
 
 def _checked(raw: dict, facts: PageFacts) -> Proposal:
     """只留下合规的建议：层级、省份在固定范围内且互相对得上；部门全称、栏目名网页里写着。"""
+    if not isinstance(raw, dict):  # 客户端只返回 JSON 对象，这里再防一道
+        return Proposal()
     level = raw.get("level") if raw.get("level") in LEVELS else ""
     province = raw.get("province") if raw.get("province") in PROVINCES else ""
     if (level == "国家级") != (province == "国家") and level and province:

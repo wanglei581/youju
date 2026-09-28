@@ -946,6 +946,8 @@ _trial_hosts: dict[str, float] = {}
 _trial_guard = threading.Lock()
 # 试跑凭证有效期（秒）：接入时必须带上试跑给出的凭证，证明这个网址和规则确实试跑通过
 _TRIAL_TTL = 1800
+# 接入来源时等别人接入完成最多等多久（秒）
+_CREATE_LOCK_WAIT = 10
 
 
 class SourceTrialIn(BaseModel):
@@ -1039,6 +1041,22 @@ def _existing_source(session: Session, url: str) -> int | None:
         except ValueError:
             continue
     return None
+
+
+@contextlib.contextmanager
+def _source_create_lock(session: Session):
+    """接入来源时查重和写入串行做（MySQL 命名锁，另开一个连接持有）：同一栏目的两种写法
+    （index.html 和目录）同时接入时，后一个等前一个提交后再查重。"""
+    with session.get_bind().connect() as conn:
+        got = conn.execute(
+            text("SELECT GET_LOCK('youju_source_create', :wait)"), {"wait": _CREATE_LOCK_WAIT}
+        ).scalar()
+        if got != 1:
+            raise HTTPException(status_code=503, detail="有人正在接入来源，请稍后再试")
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
 
 
 def _trial_mac(url: str, config: dict[str, str], issued: int) -> str:
@@ -1168,8 +1186,23 @@ def create_source(
             status_code=422,
             detail="请先试跑这个网址，用试跑通过的规则接入（试跑结果 30 分钟内有效）",
         )
-    if _existing_source(session, url) is not None:
-        raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
+    with _source_create_lock(session):
+        session.rollback()  # 拿到锁后重新开事务，读到别人刚提交的来源
+        if _existing_source(session, url) is not None:
+            raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
+        source_id = _insert_source(session, body, url, config)
+    _audit(
+        request,
+        "source_create",
+        source_id=source_id,
+        url=url,
+        reviewer=body.reviewed_by,
+        parser_config=config,
+    )
+    return {"id": source_id}
+
+
+def _insert_source(session: Session, body: SourceCreateIn, url: str, config: dict) -> int:
     source = Source(
         url=url,
         level=body.level,
@@ -1191,15 +1224,7 @@ def create_source(
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="这个栏目已经在来源里") from exc
-    _audit(
-        request,
-        "source_create",
-        source_id=source.id,
-        url=url,
-        reviewer=body.reviewed_by,
-        parser_config=config,
-    )
-    return {"id": source.id}
+    return source.id
 
 
 @app.get("/admin/sources", response_class=HTMLResponse, include_in_schema=False)
