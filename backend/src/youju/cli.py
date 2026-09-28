@@ -550,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # 本项目的日志一律按 INFO 输出到容器日志：basicConfig 在已有日志处理器时什么都不做，这里单独设
+    logging.getLogger("youju").setLevel(logging.INFO)
     return args.func(args)
 
 
