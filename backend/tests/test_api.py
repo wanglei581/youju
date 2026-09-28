@@ -724,6 +724,9 @@ def test_role_guard_and_admin_throttle(client, seeded, monkeypatch, caplog, tmp_
     # 同一来源第 6 次：口令对也先锁住；别的来源不受影响（不设全局锁定）
     right = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "203.0.113.9"}
     assert client.get("/api/admin/deadlines/count", headers=right).status_code == 429
+    # 平台若在请求方自带的值后面追加：按最后一项认来源，在前面伪造一项绕不过锁定
+    spoofed = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "192.0.2.77, 203.0.113.9"}
+    assert client.get("/api/admin/deadlines/count", headers=spoofed).status_code == 429
     for i in range(40):
         spoof = {"X-Admin-Token": "wrong", "X-Original-Forwarded-For": f"198.51.100.{i}"}
         client.get("/api/admin/deadlines/count", headers=spoof)

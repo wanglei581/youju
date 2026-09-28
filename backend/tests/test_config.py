@@ -20,5 +20,7 @@ def test_api_role_requires_platform_identity_headers() -> None:
     with pytest.raises(ValidationError, match="YOUJU_TRUST_WX_HEADERS"):
         settings(role="api", trust_wx_headers=False, dev_openid=None)
     assert settings(role="api", trust_wx_headers=True, dev_openid=None).trust_wx_headers
-    # 核对台服务不开放小程序接口，不要求信任请求头
+    # 核对台服务不开放小程序接口，不要求信任请求头；它开公网，也不许信任请求头
     assert settings(role="admin", trust_wx_headers=False, dev_openid=None).role == "admin"
+    with pytest.raises(ValidationError, match="YOUJU_TRUST_WX_HEADERS"):
+        settings(role="admin", trust_wx_headers=True, dev_openid=None)

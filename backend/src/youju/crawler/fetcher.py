@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
@@ -25,6 +26,9 @@ _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+
 _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
 # NAT64 地址里嵌着 IPv4 地址，按嵌入的地址判断
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+# 系统 DNS 解析没有超时参数，放到线程里等，最多等这么久
+_DNS_TIMEOUT = 10.0
+_DNS_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="youju-dns")
 
 
 @dataclass
@@ -62,9 +66,10 @@ def compat_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-def resolve_host(host: str) -> list[str]:
-    """系统 DNS 解析出的全部地址。"""
-    return [info[4][0] for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+def resolve_host(host: str, timeout: float = _DNS_TIMEOUT) -> list[str]:
+    """系统 DNS 解析出的全部地址。超时抛 TimeoutError（属于 OSError），按解析失败处理。"""
+    future = _DNS_POOL.submit(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in future.result(timeout=timeout)]
 
 
 def non_public_address(address: str) -> bool:
@@ -114,8 +119,13 @@ class PoliteFetcher:
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
+        # 直连政府网站，不走环境变量里的代理：连接前后的地址检查都以直连为前提
         self._client = httpx.Client(
-            headers=headers, timeout=timeout, follow_redirects=False, transport=transport
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=False,
+            transport=transport,
+            trust_env=False,
         )
         # 兼容模式：只在默认握手失败时对该网站使用，证书照常校验
         self._compat_client = httpx.Client(
@@ -124,6 +134,7 @@ class PoliteFetcher:
             follow_redirects=False,
             verify=compat_ssl_context(),
             transport=compat_transport or transport,
+            trust_env=False,
         )
         self._compat_hosts: set[str] = set()
         self._interval = per_host_interval
@@ -258,6 +269,13 @@ class PoliteFetcher:
                         error=f"{host} 解析到内网地址，不抓取",
                     )
                 with client.stream("GET", url) as resp:
+                    if _connected_to_internal(resp):
+                        return FetchResult(
+                            url,
+                            "unsupported_host",
+                            final_url=url,
+                            error=f"{host} 实际连接到内网地址，不抓取",
+                        )
                     if resp.status_code < 300:
                         size = 0
                         chunks = []
@@ -339,8 +357,8 @@ class PoliteFetcher:
         """每次连接前检查：域名解析出的地址只要有一个不是公网地址就不连，防止经跳转或内网域名访问
         云托管内部服务。解析失败按连接失败处理（会重试一次）。
 
-        检查和实际连接各解析一次，两次之间 DNS 结果若被恶意改动仍可能绕过（DNS rebinding）；
-        这需要控制政府网站的域名解析，风险可接受。
+        检查和实际连接各解析一次，两次之间 DNS 结果若被恶意改动（DNS rebinding），请求仍可能发到
+        内网地址；收到响应后再核对实际连上的地址（_connected_to_internal），是内网就丢弃响应、不读正文。
         """
         host = urlsplit(url).hostname
         if not host:
@@ -350,3 +368,10 @@ class PoliteFetcher:
         except OSError as exc:
             raise httpx.ConnectError(f"域名解析失败：{exc}") from exc
         return any(non_public_address(a) for a in addresses)
+
+
+def _connected_to_internal(resp: httpx.Response) -> bool:
+    """实际连上的对端是不是非公网地址。测试用的模拟传输没有连接信息，不检查。"""
+    stream = resp.extensions.get("network_stream")
+    address = stream.get_extra_info("server_addr") if stream is not None else None
+    return bool(address) and non_public_address(str(address[0]))

@@ -58,6 +58,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"YOUJU_ROLE={self.role} 时不能设置 YOUJU_DEV_OPENID，它只用于本机开发"
             )
+        if self.role == "admin" and self.trust_wx_headers:
+            # 核对台服务开公网，公网请求可以自带身份头
+            raise ValueError(
+                "YOUJU_ROLE=admin 时不能设置 YOUJU_TRUST_WX_HEADERS，它只用于小程序接口服务"
+            )
         if self.role == "api" and not self.trust_wx_headers:
             raise ValueError(
                 "YOUJU_ROLE=api 时要设置 YOUJU_TRUST_WX_HEADERS=true，用户身份取云托管注入的请求头"

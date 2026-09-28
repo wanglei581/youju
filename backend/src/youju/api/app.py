@@ -483,9 +483,13 @@ _admin_fails: dict[str, deque[float]] = defaultdict(deque)
 
 
 def client_ip(request: Request) -> str:
-    """客户端地址：云托管把它放在 X-Original-Forwarded-For。"""
+    """客户端地址：云托管把它放在 X-Original-Forwarded-For（官方文档：客户端 IPv4 或 IPv6 地址）。
+
+    取最后一项：平台覆盖这个头时只有一项；若平台是在请求方自带的值后面追加，最后一项才是平台写的，
+    取第一项就能被伪造。平台实际是哪种，首次部署时实测（部署文档"待验证"）。
+    """
     forwarded = request.headers.get("x-original-forwarded-for") or ""
-    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+    return forwarded.split(",")[-1].strip() or (request.client.host if request.client else "")
 
 
 def _recent(entries: deque[float], now: float) -> deque[float]:

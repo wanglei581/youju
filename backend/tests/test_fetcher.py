@@ -1,13 +1,16 @@
 import socket
+import threading
 
 import httpx
 import pytest
 
+from youju.crawler import fetcher as fetcher_module
 from youju.crawler.fetcher import (
     MAX_RESPONSE_BYTES,
     PoliteFetcher,
     decode_html,
     non_public_address,
+    resolve_host,
 )
 
 LIST_HTML = "<ul><li><a href='/a.html'>关于开展申报工作的通知</a><span>2026-09-24</span></li></ul>"
@@ -442,3 +445,47 @@ def test_dns_failure_counts_as_connection_failure() -> None:
     # 和连接失败一样重试一次；robots.txt 取不到，按规范整站跳过
     assert result.status == "robots_error"
     assert lookups == ["gone.gov.cn", "gone.gov.cn"]
+
+
+def test_dns_lookup_has_a_time_limit(monkeypatch) -> None:
+    release = threading.Event()
+
+    def stuck(*args, **kwargs):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", stuck)
+    try:
+        # 超时是 OSError，和解析失败一样按连接失败处理
+        with pytest.raises(OSError):
+            resolve_host("slow.gov.cn", timeout=0.05)
+    finally:
+        release.set()
+
+
+class _FakeNetworkStream:
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.address = address
+
+    def get_extra_info(self, name: str):
+        return self.address if name == "server_addr" else None
+
+
+def test_response_from_internal_peer_is_discarded() -> None:
+    # 检查时解析到公网地址，实际连接却落到内网（DNS 在两次解析之间被改动）：丢弃响应，不读正文
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                404, extensions={"network_stream": _FakeNetworkStream(("1.2.3.4", 443))}
+            )
+        return httpx.Response(
+            200,
+            text=LIST_HTML,
+            extensions={"network_stream": _FakeNetworkStream(("10.0.0.7", 443))},
+        )
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "实际连接到内网地址" in result.error
+    assert result.text == ""
