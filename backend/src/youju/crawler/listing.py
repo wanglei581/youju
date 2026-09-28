@@ -50,17 +50,10 @@ _NAV_PATTERN = re.compile(
     r"^(第?\d+页?|更多.*|more.*|下一页|上一页|首页|尾页|末页|返回.*|打印.*|关闭.*|>>|»|…+|\.+)$",
     re.IGNORECASE,
 )
-# "（已归档"：专题专栏的归档入口（如湖南工信厅"2025湖南两会（已归档"），不是文件
-_BOILERPLATE = (
-    "版权所有",
-    "ICP备",
-    "网站地图",
-    "联系我们",
-    "网站标识码",
-    "公网安备",
-    "主办单位",
-    "已归档",
-)
+_BOILERPLATE = ("版权所有", "ICP备", "网站地图", "联系我们", "网站标识码", "公网安备", "主办单位")
+# 专题专栏的归档入口（如湖南工信厅"2025湖南两会（已归档"），不是文件。
+# 只认结尾，标题中间提到"已归档"的照收
+_ARCHIVE_SUFFIXES = ("（已归档", "(已归档", "（已归档）", "(已归档)")
 # 行内的附件链接（"附件：…""下载"，或指向 pdf、Word 等文件）属于同一条文件，不算另一条
 _ATTACHMENT_TEXT = re.compile(r"^(附件|下载|点击下载|查看附件|附件下载)")
 _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.IGNORECASE)
@@ -107,9 +100,11 @@ def _clean(text: str | None) -> str:
 def _title_of(a: etree._Element) -> str:
     text = _clean(a.text_content())
     attr = _clean(a.get("title"))
-    # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅），不能当标题
+    # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅）：
+    # 链接文字像标题就用链接文字；不像标题（如"详情"）才用去掉标签后的 title 属性
     if _MARKUP.search(attr):
-        attr = ""
+        stripped = _clean(_MARKUP.sub(" ", attr))
+        return text if _looks_like_title(text) or not stripped else stripped
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or text.endswith(("...", "…"))):
         return attr
@@ -119,7 +114,7 @@ def _title_of(a: etree._Element) -> str:
 def _looks_like_title(title: str) -> bool:
     if len(title) < _MIN_TITLE_LEN or _NAV_PATTERN.match(title):
         return False
-    if _ATTACHMENT_TEXT.match(title):
+    if _ATTACHMENT_TEXT.match(title) or title.endswith(_ARCHIVE_SUFFIXES):
         return False
     return not any(word in title for word in _BOILERPLATE)
 

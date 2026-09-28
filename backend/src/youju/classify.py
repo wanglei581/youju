@@ -5,6 +5,8 @@
 都不命中算"其他"。拿不准的归"其他"，不硬判。
 """
 
+import re
+
 from sqlalchemy import ColumnElement, and_, case, not_, or_
 
 # 名单：标题里出现这些词。"公示"单独出现时也多是名单公示
@@ -73,12 +75,13 @@ LIST_OFF_TOPIC = (
     "收费",
     "监督检查",
     "人选",
+    "项目信息",
 )
 # 招聘是个人事项：不管标题怎么写，都不是企业申报，也不列进名单。
 # 职称申报通知仍算申报通知（科技服务机构常代办，#43 定的规则），职称名单则按上面的规则归"其他"
 PERSONAL_WORDS = ("招聘",)
-# 网站专题栏目的归档入口，不是文件（列表解析已不收，这里兜底）
-JUNK_WORDS = ("已归档",)
+# 网站专题栏目的归档入口（标题以"（已归档"结尾），不是文件（列表解析已不收，这里兜底）
+JUNK_SUFFIXES = ("（已归档", "(已归档", "（已归档）", "(已归档)")
 # 征求意见：政策草案（写了"征求意见稿"），或只凭"公示"二字才像名单的，不算名单，
 # 按其他规则判断，与其他征求意见稿一样有政策字样的归政策。例如"关于《XX管理办法》
 # 公开征求社会意见的公示""关于企业证照办理优化措施公开及办理意见建议的公示"。
@@ -161,7 +164,7 @@ POLICY_WORDS = (
     "政策的通知",
 )
 # 印发、征求意见的具名文件（书名号）：多是办法、方案、指南、清单等，标题被截断时也认得出
-POLICY_MARKS = ("印发《", "征求《", "关于《", "发布《")
+POLICY_MARKS = ("印发《", "征求《", "关于《", "发布《", "公布《")
 # 撤销某个项目的方案、单个项目的方案不是政策
 POLICY_EXCLUDE = (
     "讲座",
@@ -204,6 +207,22 @@ def _off_topic(title: str) -> bool:
     return (_has(title, LIST_WORDS) or _publish_list(title)) and _has(title, LIST_OFF_TOPIC)
 
 
+def _named_policy(title: str) -> bool:
+    """具名文件（书名号）里有办法、规定、意见、方案等字样：是政策，即使标题里有"申报""创新券"等字，
+    如"关于印发《创新券管理办法》的通知"。书名号里没有这些字的（如"印发《……项目申报指南》"）不算。
+    与 SQL 的 LIKE '%《%办法%》%' 同义：前面有《、后面有》即可。"""
+    return _has(title, POLICY_MARKS) and any(
+        re.search("《.*" + re.escape(w) + ".*》", title, re.S) for w in POLICY_WORDS
+    )
+
+
+def _early_policy(title: str) -> bool:
+    """先于申报通知判断的政策：征求意见稿、"征集《……》……意见"、具名政策文件。"""
+    return not _has(title, POLICY_EXCLUDE) and (
+        _has(title, DRAFT_WORDS) or ("征集《" in title and "意见" in title) or _named_policy(title)
+    )
+
+
 def _is_apply(title: str, consult: bool) -> bool:
     return (
         _has(title, APPLY_WORDS)
@@ -219,12 +238,12 @@ def _consult(title: str) -> bool:
 
 
 def doc_kind(title: str) -> str:
-    if _off_topic(title) or _has(title, PERSONAL_WORDS + JUNK_WORDS):
+    if _off_topic(title) or _has(title, PERSONAL_WORDS) or title.endswith(JUNK_SUFFIXES):
         return "其他"
     consult = _consult(title)
     if not consult and _is_list(title):
         return "名单"
-    if _has(title, DRAFT_WORDS) and not _has(title, POLICY_EXCLUDE):
+    if _early_policy(title):
         return "政策"
     if _is_apply(title, consult):
         return "申报通知"
@@ -267,7 +286,8 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     )
     off_topic = or_(
         and_(or_(has_list, publish_list), _any_in(title, LIST_OFF_TOPIC)),
-        _any_in(title, PERSONAL_WORDS + JUNK_WORDS),
+        _any_in(title, PERSONAL_WORDS),
+        or_(*(title.like("%" + suffix) for suffix in JUNK_SUFFIXES)),
     )
     consult = or_(
         _any_in(title, DRAFT_WORDS),
@@ -286,11 +306,21 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             ),
         ),
     )
+    named_policy = and_(
+        _any_in(title, POLICY_MARKS),
+        or_(*(title.like(f"%《%{w}%》%") for w in POLICY_WORDS)),
+    )
     is_draft_policy = and_(
         not_(off_topic),
         not_(is_list),
-        _any_in(title, DRAFT_WORDS),
         not_(_any_in(title, POLICY_EXCLUDE)),
+        or_(
+            _any_in(title, DRAFT_WORDS),
+            and_(
+                title.contains("征集《", autoescape=True), title.contains("意见", autoescape=True)
+            ),
+            named_policy,
+        ),
     )
     is_apply = and_(
         not_(off_topic),
