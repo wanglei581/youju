@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time as clock
 from collections import defaultdict, deque
 from datetime import UTC, date, datetime, timedelta
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from youju.alerts import send_alert
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
@@ -47,6 +49,40 @@ if not audit_log.handlers:
     audit_log.addHandler(_handler)
     audit_log.setLevel(logging.INFO)
     audit_log.propagate = False
+
+
+error_log = logging.getLogger("youju.api")
+_ERROR_ALERT_INTERVAL = 600  # 同一实例两次接口出错提醒至少间隔的秒数
+_error_lock = threading.Lock()
+_error_state: dict = {"last_alert": None, "count": 0}
+
+
+def _send_in_background(message: str) -> None:
+    # 发提醒要等网络，放到线程里，不挡住请求
+    threading.Thread(target=send_alert, args=(message,), daemon=True).start()
+
+
+def _note_server_error(sample: str) -> None:
+    """记一次接口出错；距上次提醒超过 10 分钟就发一条，带上这期间的次数。"""
+    now = clock.monotonic()
+    with _error_lock:
+        _error_state["count"] += 1
+        last = _error_state["last_alert"]
+        if last is not None and now - last < _ERROR_ALERT_INTERVAL:
+            return
+        count = _error_state["count"]
+        _error_state.update(last_alert=now, count=0)
+    role = getattr(get_settings(), "role", "all")
+    _send_in_background(f"接口出错（{role} 服务，上次提醒以来 {count} 次）：{sample}")
+
+
+@app.exception_handler(Exception)
+async def _server_error(request: Request, exc: Exception) -> JSONResponse:
+    """没被处理的异常：返回 500，并提醒到群里（完整堆栈由 uvicorn 记录，这里只记一行）。
+    提醒只写请求方法、路径和异常类型，不带查询参数、请求内容和异常详情（可能含用户输入）。"""
+    error_log.error("接口出错：%s %s（%s）", request.method, request.url.path, type(exc).__name__)
+    _note_server_error(f"{request.method} {request.url.path}：{type(exc).__name__}")
+    return JSONResponse(status_code=500, content={"detail": "服务出错了，请稍后再试"})
 
 
 @app.middleware("http")
