@@ -177,6 +177,35 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.audit import flagged_summary, run_audit
+    from youju.alerts import send_alert
+
+    client = get_chat_client()
+    try:
+        with session_factory()() as session:
+            report = run_audit(session, client, sample=args.sample)
+    finally:
+        if client is not None:
+            client.close()
+    ai_part = (
+        f"AI 抽查 {report.checked_by_ai} 份文件"
+        if client is not None
+        else "没配 AI 密钥，只做规则回查"
+    )
+    print(f"质检：规则回查 {report.checked_by_rules} 条已发布的截止，{ai_part}")
+    print(
+        f"  新发现存疑 {len(report.flagged)} 条；AI 出错 {report.errors} 份；"
+        f"用量：输入 {report.prompt_tokens}、输出 {report.completion_tokens} tokens"
+    )
+    for deadline_id, title, note in report.flagged[:20]:
+        print(f"  #{deadline_id} {title[:40]}：{note}")
+    if report.flagged:
+        send_alert(flagged_summary(report))
+    return 0
+
+
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.lists.service import parse_lists
@@ -289,6 +318,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
     p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")
     p.set_defaults(func=_cmd_ai_check)
+
+    p = sub.add_parser(
+        "audit-deadlines",
+        help="质检已发布的截止日期：规则回查全部，配了 AI 时再抽查一部分；存疑的提醒到群里",
+    )
+    p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
+    p.set_defaults(func=_cmd_audit_deadlines)
 
     p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
     p.add_argument(

@@ -222,6 +222,10 @@ class DocumentDeadline(Base):
             name="ck_document_deadline_changed",
         ),
         CheckConstraint("origin IN ('rule', 'ai')", name="ck_document_deadline_origin"),
+        CheckConstraint(
+            "audit_state IS NULL OR audit_state IN ('flagged', 'cleared')",
+            name="ck_document_deadline_audit_state",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -250,6 +254,11 @@ class DocumentDeadline(Base):
     origin: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
     # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
     ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
+    # 质检（已通过的截止）：flagged 存疑、等人复核 / cleared 人确认无误；空表示没发现问题
+    audit_state: Mapped[str | None] = mapped_column(String(8))
+    audit_note: Mapped[str | None] = mapped_column(String(200))
+    audit_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    audit_by: Mapped[str | None] = mapped_column(String(80))
 
     document: Mapped[Document] = relationship(
         back_populates="deadlines", foreign_keys=[document_id]

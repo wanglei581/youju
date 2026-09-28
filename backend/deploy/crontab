@@ -7,3 +7,5 @@
 30 6 * * *  /app/backend/deploy/round.sh --notify
 30 11,15,20 * * *  /app/backend/deploy/round.sh
 30 3 * * *  /app/backend/deploy/job.sh cleanup
+# 早上那一轮之后质检已发布的截止日期（规则回查全部，配了 AI 时抽查 20 份），存疑的提醒到群里
+0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20

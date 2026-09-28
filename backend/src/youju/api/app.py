@@ -795,6 +795,137 @@ def kinds_console() -> str:
     )
 
 
+class AuditFlagOut(BaseModel):
+    """质检存疑：已发布给用户的截止，被规则或 AI 标为可能有误，等人复核。"""
+
+    id: int
+    document_id: int
+    title: str
+    url: str
+    source: str
+    publish_date: date | None
+    kind: str
+    approved_date: date
+    approved_time: str | None
+    evidence: str
+    note: str
+    flagged_at: datetime | None
+
+
+class AuditActionIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
+
+
+def _audit_flagged(session: Session):
+    return (
+        select(DocumentDeadline, Document, Source)
+        .join(Document, Document.id == DocumentDeadline.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(DocumentDeadline.status == "approved", DocumentDeadline.audit_state == "flagged")
+    )
+
+
+@app.get("/api/admin/audit/count")
+def audit_flagged_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    stmt = select(func.count()).select_from(_audit_flagged(session).subquery())
+    return {"flagged": session.scalar(stmt) or 0}
+
+
+@app.get("/api/admin/audit", response_model=list[AuditFlagOut])
+def audit_flagged(
+    session: SessionDep,
+    _admin: AdminDep,
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[AuditFlagOut]:
+    stmt = _audit_flagged(session)
+    if before_id is not None:
+        stmt = stmt.where(DocumentDeadline.id < before_id)
+    rows = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+    return [
+        AuditFlagOut(
+            id=d.id,
+            document_id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            source=src.dept_full_name,
+            publish_date=doc.publish_date,
+            kind=d.kind,
+            approved_date=d.approved_date,
+            approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
+            evidence=d.evidence,
+            note=d.audit_note or "",
+            flagged_at=d.audit_at,
+        )
+        for d, doc, src in rows
+    ]
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/audit-ok")
+def audit_ok(
+    deadline_id: int,
+    body: AuditActionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """人复核后确认无误：不再标存疑（存疑原因保留备查）。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    if row.audit_state != "flagged":
+        raise HTTPException(status_code=409, detail="这条不在质检存疑里")
+    row.audit_state = "cleared"
+    row.audit_by = body.reviewed_by
+    row.audit_at = datetime.now(UTC)
+    session.commit()
+    _audit(request, "audit_ok", deadline_id=deadline_id, reviewer=body.reviewed_by)
+    return {"audit": "cleared"}
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/reopen")
+def reopen_deadline(
+    deadline_id: int,
+    body: AuditActionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """退回待核对：用户端立即不再显示这个截止，候选回到核对台。同一通知其他网址的同一截止一起退回，
+    免得它们按"同组已通过"又被自动通过。已标变更的不能退回。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    locked = _lock_candidates(session, row)
+    if row.status != "approved":
+        raise HTTPException(status_code=409, detail="只有已通过的截止能退回待核对")
+    reopened = 0
+    for item in locked:
+        if item.status != "approved":
+            continue
+        item.status = "pending"
+        item.reviewed_by = None
+        item.reviewed_at = None
+        item.approved_date = None
+        item.approved_time = None
+        item.audit_state = None
+        item.audit_note = None
+        item.audit_at = None
+        item.audit_by = None
+        reopened += 1
+    session.commit()
+    _audit(request, "reopen", deadline_id=deadline_id, reviewer=body.reviewed_by, count=reopened)
+    return {"status": "pending"}
+
+
+@app.get("/admin/audit", response_class=HTMLResponse, include_in_schema=False)
+def audit_console() -> str:
+    """质检存疑：已发布的截止被规则或 AI 标为可能有误，人复核；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "audit.html").read_text(
+        encoding="utf-8"
+    )
+
+
 @app.get("/api/admin/feedback/count")
 def feedback_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
     return {
