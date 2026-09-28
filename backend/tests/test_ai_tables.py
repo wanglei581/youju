@@ -94,3 +94,23 @@ def test_unlabeled_person_name_column_is_not_sent() -> None:
     assert result == 1  # 人名列被去掉后，保留列 0 映射回原表第 1 列
     sent = json.loads(seen["body"])["messages"][1]["content"]
     assert "王小明" not in sent and "李红" not in sent and "赵强" not in sent
+
+
+def test_person_header_synonyms_and_spaced_headers_are_not_sent() -> None:
+    import json
+
+    seen: dict[str, str] = {}
+    client = _client('{"column": 0, "reason": "企业名称"}', seen)
+    result = pick_name_column(
+        client,
+        "企业名单",
+        ["单位", "联 系 人", "邮箱", "法人代表"],
+        [
+            ["烟台示例科技有限公司", "甲某", "a@example.com", "乙某"],
+            ["威海示例电子股份有限公司", "丙某", "b@example.com", "丁某"],
+        ],
+    )
+    assert result == 0
+    sent = json.loads(seen["body"])["messages"][1]["content"]
+    for text in ("联 系 人", "邮箱", "法人代表", "甲某", "乙某", "a@example.com"):
+        assert text not in sent

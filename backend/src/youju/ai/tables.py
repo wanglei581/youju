@@ -9,8 +9,26 @@ from youju.lists.rules import is_person_query, valid_org_name
 
 from .client import ChatClient
 
-# 和 youju.lists.parser 里的一致；这里单独列出，免得和解析器互相引用
-PERSON_HEADERS = ("联系人", "法定代表人", "负责人", "姓名", "电话", "身份证", "手机号", "银行账号")
+# 表头里有这些词的列当作个人信息，不发给 AI。比解析器的清单多了同义词
+# （法人代表、手机、邮箱、证件、住址等）；
+# 不收"法人"单独一词，免得把"法人单位名称"这类机构名称列也去掉
+PERSON_HEADERS = (
+    "联系人",
+    "法定代表人",
+    "法人代表",
+    "负责人",
+    "姓名",
+    "电话",
+    "手机",
+    "身份证",
+    "证件",
+    "银行账号",
+    "银行卡",
+    "邮箱",
+    "电子邮件",
+    "联系方式",
+    "住址",
+)
 
 _SYSTEM = """你是政府名单表格分析助手。必须只返回 JSON 对象。
 从保留列中选择“企业或机构名称”列，个人姓名列、项目名称列、地区列都不算。
@@ -45,7 +63,9 @@ def pick_name_column(
     removed = {
         i
         for i, header in enumerate(normalized_headers)
-        if any(term in header for term in PERSON_HEADERS) or _mostly_person_names(rows, i)
+        # 表头去掉空白再比（"联 系 人"这类排版常见）
+        if any(term in "".join(header.split()) for term in PERSON_HEADERS)
+        or _mostly_person_names(rows, i)
     }
     kept = [i for i in range(width) if i not in removed]
     if not kept:

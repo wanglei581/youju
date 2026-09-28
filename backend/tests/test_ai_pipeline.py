@@ -387,7 +387,7 @@ def test_rule_candidate_uses_ai_results_of_twin_urls(session) -> None:
 
 
 def test_ai_check_of_twin_updates_existing_rule_candidates(session) -> None:
-    """规则先在主网址抽出候选，AI 后来只检查了同一通知的另一个网址：主网址的候选也要标 AI 一致。"""
+    """规则在同一通知的另一个网址上抽出候选，AI 检查主文件后，那个网址的候选也要标 AI 一致。"""
     from youju.models import DocumentMerge
 
     master = add_doc(session, 1)
@@ -396,35 +396,32 @@ def test_ai_check_of_twin_updates_existing_rule_candidates(session) -> None:
         DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
     )
     session.commit()
-    extract_existing(session, document_ids=[master.id])
-    # 主网址已经做过 AI 检查（成功、没抽到），只剩另一个网址
-    session.add(
-        AICheck(
-            document_id=master.id,
-            task="deadlines",
-            model="qwen-flash",
-            result=[],
-            checked_at=datetime.now(UTC),
-        )
-    )
-    session.add(
-        AICheck(
-            document_id=master.id,
-            task="kind",
-            model="qwen-flash",
-            result={"kind": "申报通知", "confidence": 0.9, "reason": "申报"},
-            checked_at=datetime.now(UTC),
-        )
-    )
-    session.commit()
+    extract_existing(session, document_ids=[twin.id])
     client, _ = fake_ai(
         deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
     )
     run_ai_checks(session, client)
     row = session.scalar(
         select(DocumentDeadline).where(
-            DocumentDeadline.document_id == master.id,
+            DocumentDeadline.document_id == twin.id,
             DocumentDeadline.candidate_date == date(2026, 10, 15),
         )
     )
     assert row.ai_agrees is True
+
+
+def test_merged_twin_urls_are_not_checked_again(session) -> None:
+    """同一通知的其他网址（已归并）不单独检查，只查主文件。"""
+    from youju.models import DocumentMerge
+
+    master = add_doc(session, 1)
+    twin = add_doc(session, 2)
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    session.commit()
+    client, _ = fake_ai(deadlines=[])
+    report = run_ai_checks(session, client)
+    assert report.documents == 1
+    checked = {c.document_id for c in session.scalars(select(AICheck))}
+    assert checked == {master.id}

@@ -612,10 +612,14 @@ def lookup_lists(
     code = query.upper()
 
     def public(stmt: Select) -> Select:
+        # 人工在核对台把文件定为"不是名单"的，它原来解析出的条目不再给用户查（D-023）
         return (
             stmt.join(Document, Document.id == ListEntry.document_id)
             .join(Source, Source.id == Document.source_id)
-            .where(Source.rights_level == 1)
+            .where(
+                Source.rights_level == 1,
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            )
         )
 
     direct = or_(ListEntry.normalized_name == query, ListEntry.credit_code == code)

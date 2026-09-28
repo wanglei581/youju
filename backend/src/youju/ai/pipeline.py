@@ -18,7 +18,13 @@ from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import extract_deadlines_with_ai
 from youju.classify import doc_kind
-from youju.dedup import canonical_ids, groups_for, reviewed_key, sync_reviewed_twins
+from youju.dedup import (
+    canonical_ids,
+    groups_for,
+    reviewed_key,
+    sync_reviewed_twins,
+    visible_documents,
+)
 from youju.extract.deadlines import DeadlineCandidate, same_moment
 from youju.extract.service import ai_found_in_group
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
@@ -62,15 +68,18 @@ def _done(task: str, now: datetime):
 
 def _documents_to_check(session: Session, limit: int, now: datetime):
     """两项检查里还有没做完的文件，新发现的优先。"""
+    # 只查主文件：同一通知的其他网址（已归并）内容相同，不重复花用量；类型待定页也只列主文件
     stmt = (
-        select(Document, DocumentDetail)
-        .join(DocumentDetail, DocumentDetail.document_id == Document.id)
-        .join(Source, Source.id == Document.source_id)
-        .where(
-            DocumentDetail.status == "ok",
-            DocumentDetail.body_text != "",
-            Source.rights_level == 1,
-            or_(*(~_done(task, now) for task in TASKS)),
+        visible_documents(
+            select(Document, DocumentDetail)
+            .join(DocumentDetail, DocumentDetail.document_id == Document.id)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                DocumentDetail.status == "ok",
+                DocumentDetail.body_text != "",
+                Source.rights_level == 1,
+                or_(*(~_done(task, now) for task in TASKS)),
+            )
         )
         .order_by(Document.id.desc())
         .limit(limit)

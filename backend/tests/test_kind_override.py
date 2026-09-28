@@ -135,3 +135,32 @@ def test_decision_requires_reviewer_and_a_valid_kind(client, session) -> None:
         client.post(missing, headers=HEADERS, json={"kind": "名单", "decided_by": "x"}).status_code
         == 404
     )
+
+
+def test_list_lookup_hides_entries_of_documents_set_to_non_list(client, session) -> None:
+    """人工把文件定为"不是名单"后，它原来解析出的名单条目立刻查不到（不用等下一轮重新解析）。"""
+    from youju.models import ListEntry
+
+    doc = add(session, 1, "关于公布2026年第一批高新技术企业名单的通知", ai_kind="政策")
+    session.add(
+        ListEntry(
+            document_id=doc.id,
+            source_url=doc.url,
+            name="烟台示例科技有限公司",
+            normalized_name="烟台示例科技有限公司",
+            category="高新技术企业",
+        )
+    )
+    session.commit()
+
+    def titles():
+        body = client.get("/api/v1/lists/lookup", params={"q": "烟台示例科技有限公司"}).json()
+        return [item["title"] for item in body["items"]]
+
+    assert titles() == [doc.title]
+    client.post(
+        f"/api/admin/documents/{doc.id}/kind",
+        headers=HEADERS,
+        json={"kind": "政策", "decided_by": "创始人"},
+    )
+    assert titles() == []
