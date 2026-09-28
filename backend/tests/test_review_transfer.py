@@ -172,7 +172,8 @@ def test_import_reports_conflicts_and_missing_without_overwriting(client, sessio
             # 这边还没抓到发布延期的新通知：整条不导入（只导入"通过"会让已延期的截止重新显示）
             item["change"]["toUrlKey"] = "kw.beijing.gov.cn/not-yet.html"
         if item["status"] == "rejected":
-            item["fingerprint"] = "e" * 64  # 这边还没有这条候选
+            item["fingerprint"] = "e" * 64  # 这边还没有这条候选（日期也不同，兜底匹配不上）
+            item["candidateDate"] = "2026-12-31"
     result = client.post("/api/admin/reviews/import?dry_run=false", headers=HEADERS, json=edited)
     got = result.json()
     assert (got["applied"], got["conflict"], got["missingTarget"], got["missingCandidate"]) == (
@@ -199,3 +200,58 @@ def test_import_rejects_malformed_items_and_requires_token(client, session, revi
     missing["items"][0]["urlKey"] = "kw.beijing.gov.cn/unknown.html"
     got = client.post("/api/admin/reviews/import", headers=HEADERS, json=missing).json()
     assert got["missingDocument"] == 1
+
+
+def test_import_falls_back_to_same_kind_and_date_when_evidence_changed(client, session, reviewed):
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    _reset_to_pending(session)
+    edited = copy.deepcopy(body)
+    for item in edited["items"]:
+        if item["status"] == "approved":
+            # 重抓后证据句的空白或断句变了，指纹对不上；同一文件里类型、日期、时间相同的只有一条
+            item["fingerprint"] = "f" * 64
+    got = client.post("/api/admin/reviews/import?dry_run=false", headers=HEADERS, json=edited)
+    assert got.json()["applied"] == 3
+    assert _statuses(session)["a"][:2] == ("approved", date(2026, 10, 20))
+
+
+def test_import_does_not_guess_when_fallback_is_ambiguous(client, session, reviewed):
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    _reset_to_pending(session)
+    # 同一文件里再有一条类型、日期都相同的候选（证据句不同）：分不清就不导入
+    _candidate(session, reviewed.notice, "g" * 64, "企业申报截止", date(2026, 10, 18), "另一处")
+    session.commit()
+    edited = copy.deepcopy(body)
+    item = next(i for i in edited["items"] if i["status"] == "approved")
+    item["fingerprint"] = "f" * 64
+    got = client.post(
+        "/api/admin/reviews/import?dry_run=false", headers=HEADERS, json={**edited, "items": [item]}
+    ).json()
+    assert got["applied"] == 0 and got["missingCandidate"] == 1
+    assert "分不清" in got["problems"][0]["reason"]
+    assert _statuses(session)["a"][0] == "pending"
+
+
+def test_import_rejects_impossible_time_with_422(client, session, reviewed):
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    bad = copy.deepcopy(body)
+    next(i for i in bad["items"] if i["status"] == "approved")["approvedTime"] = "99:99"
+    assert client.post("/api/admin/reviews/import", headers=HEADERS, json=bad).status_code == 422
+
+
+def test_import_warns_when_here_approved_but_export_says_changed(client, session, reviewed):
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    _reset_to_pending(session)
+    # 这边已经把"材料报送截止"单独核对为通过，但导出记录说它已延期、变更通知这边还没有
+    row = session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one()
+    row.status, row.reviewed_by, row.reviewed_at = "approved", "另一核对人", datetime(2026, 9, 29)
+    row.approved_date = date(2026, 10, 25)
+    session.commit()
+    edited = copy.deepcopy(body)
+    item = next(i for i in edited["items"] if i["status"] == "changed")
+    item["change"]["toUrlKey"] = "kw.beijing.gov.cn/not-yet.html"
+    got = client.post(
+        "/api/admin/reviews/import?dry_run=false", headers=HEADERS, json={**edited, "items": [item]}
+    ).json()
+    assert got["missingTarget"] == 1
+    assert "这边已通过" in got["problems"][0]["reason"]

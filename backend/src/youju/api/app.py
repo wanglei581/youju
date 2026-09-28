@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -982,10 +982,21 @@ class ReviewTransferItem(BaseModel):
     evidence: str = Field(max_length=500)
     status: Literal["approved", "rejected", "changed"]
     approvedDate: date | None = None
-    approvedTime: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    approvedTime: str | None = None
     reviewedBy: str = Field(min_length=1, max_length=80)
     reviewedAt: datetime
     change: ReviewChangeItem | None = None
+
+    @field_validator("candidateTime", "approvedTime")
+    @classmethod
+    def _hhmm_time(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            time.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("时间格式应为 HH:MM") from exc
+        return value
 
     @model_validator(mode="after")
     def _consistent(self) -> ReviewTransferItem:
@@ -1112,15 +1123,43 @@ def import_reviews(
             )
         )
         if row is None:
-            problem("missingCandidate", item, "这边还没有这条截止候选（可能还没补详情或抽截止）")
-            continue
+            # 指纹由证据句算出，重抓时空白、断句稍有不同就会变：同一文件里类型、日期、时间都相同
+            # 且只有一条时按它匹配；有多条分不清时不猜
+            candidate_time = time.fromisoformat(item.candidateTime) if item.candidateTime else None
+            same = session.scalars(
+                select(DocumentDeadline).where(
+                    DocumentDeadline.document_id == doc_id,
+                    DocumentDeadline.kind == item.kind,
+                    DocumentDeadline.candidate_date == item.candidateDate,
+                    DocumentDeadline.candidate_time.is_(None)
+                    if candidate_time is None
+                    else DocumentDeadline.candidate_time == candidate_time,
+                )
+            ).all()
+            if len(same) != 1:
+                problem(
+                    "missingCandidate",
+                    item,
+                    "这边还没有这条截止候选（可能还没补详情或抽截止）"
+                    if not same
+                    else "这边有几条相同类型和日期的候选，分不清，请在核对台核对",
+                )
+                continue
+            row = same[0]
         target_id = None
         if item.status == "changed":
             target_id = session.scalar(
                 select(Document.id).where(Document.url_key == item.change.toUrlKey)
             )
             if target_id is None:
-                problem("missingTarget", item, "这边还没有发布变更的新通知，先不导入")
+                session.refresh(row)
+                problem(
+                    "missingTarget",
+                    item,
+                    "这边已通过，但导出记录显示已变更、这边还没有变更通知——请在核对台核对是否仍然有效"
+                    if row.status == "approved"
+                    else "这边还没有发布变更的新通知，先不导入",
+                )
                 continue
         locked = _lock_candidates(session, row)
         at = time.fromisoformat(item.approvedTime) if item.approvedTime else None

@@ -440,6 +440,11 @@
     if (!res.ok) throw new Error(`导入失败（${res.status}）`);
     return res.json();
   }
+  $('importFile').onchange = () => {
+    importBody = null;
+    $('importApply').hidden = true;
+    $('importResult').textContent = '';
+  };
   $('importPreview').onclick = async () => {
     $('importApply').hidden = true;
     const file = $('importFile').files[0];
@@ -454,6 +459,7 @@
     }
   };
   $('importApply').onclick = async () => {
+    if (!importBody) return;
     $('importApply').disabled = true;
     try {
       showImport(await sendImport(false));
