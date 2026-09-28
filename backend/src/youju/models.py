@@ -6,7 +6,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -16,8 +15,14 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from youju.dbtypes import NOW, JSONType, LongText, UTCDateTime
+
+# 网址类字段参与唯一索引，MySQL 要求定长：utf8mb4 每字 4 字节，一个索引总长不超过 3072 字节。
+# 名单记录的唯一索引含网址、名称（256）和序号（32），所以网址最长 400；开发库里最长的是 307。
+URL_KEY_MAX = 512
+SOURCE_URL_MAX = 400
 
 
 class Base(DeclarativeBase):
@@ -35,13 +40,13 @@ class Source(Base):
     dept: Mapped[str] = mapped_column(String(32))  # 部门简称：科技、工信、发改委……
     dept_full_name: Mapped[str] = mapped_column(String(128))
     column_name: Mapped[str] = mapped_column(String(64))
-    url: Mapped[str] = mapped_column(Text, unique=True)
+    url: Mapped[str] = mapped_column(String(URL_KEY_MAX), unique=True)
 
     # static：直接抓取；browser：需浏览器渲染；manual：需人工确认或暂不可访问
     fetch_mode: Mapped[str] = mapped_column(String(16), default="static")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # 按栏目覆盖通用识别规则，如 {"item_selector": "ul.list li", "require_date": false}
-    parser_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    parser_config: Mapped[dict] = mapped_column(JSONType, default=dict)
     # 1：法定公文、公示名单等，可存全文和导出；2：只存题录；3：按授权（见总方案 §4.5）
     rights_level: Mapped[int] = mapped_column(Integer, default=1)
     verification_status: Mapped[str | None] = mapped_column(String(64))
@@ -51,13 +56,13 @@ class Source(Base):
     # 健康：unknown / ok / degraded / failing / blocked
     health: Mapped[str] = mapped_column(String(16), default="unknown")
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_error: Mapped[str | None] = mapped_column(Text)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        UTCDateTime(), server_default=NOW, onupdate=func.now(6)
     )
 
     checks: Mapped[list["SourceCheck"]] = relationship(back_populates="source")
@@ -71,8 +76,8 @@ class SourceCheck(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime())
     # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty
     status: Mapped[str] = mapped_column(String(32))
     http_status: Mapped[int | None] = mapped_column(Integer)
@@ -94,13 +99,7 @@ class Document(Base):
         Index("ix_documents_publish_date", "publish_date"),
         Index("ix_documents_first_seen_at", "first_seen_at"),
         Index("ix_documents_source_id", "source_id"),
-        # 标题模糊搜索用 pg_trgm 三元组索引（中文可用；3 个字及以上的关键词能走索引）
-        Index(
-            "ix_documents_title_trgm",
-            "title",
-            postgresql_using="gin",
-            postgresql_ops={"title": "gin_trgm_ops"},
-        ),
+        # 标题模糊搜索是 LIKE '%词%' 全表扫描：几万份文件以内足够快，不再建索引
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -110,11 +109,11 @@ class Document(Base):
     url: Mapped[str] = mapped_column(Text)
     # 规范网址键（见 crawler/urls.py 的 url_key）：http 与 https、端口、会话参数、
     # 查询参数顺序不同的网址算同一份文件，以它去重
-    url_key: Mapped[str] = mapped_column(Text, unique=True)
+    url_key: Mapped[str] = mapped_column(String(URL_KEY_MAX), unique=True)
     title: Mapped[str] = mapped_column(Text)
     publish_date: Mapped[date | None] = mapped_column(Date)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime())
     # 来源第一次成功检查时就已存在的条目算"基线"，不计入"新增"。
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
     # discovered：只有题录；fetched：详情抓取成功；后续可加入 extracted 等状态
@@ -143,7 +142,7 @@ class DocumentMerge(Base):
     canonical_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     match_key: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
 class DocumentDetail(Base):
@@ -154,17 +153,17 @@ class DocumentDetail(Base):
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
-    body_text: Mapped[str] = mapped_column(Text, default="")
+    body_text: Mapped[str] = mapped_column(LongText, default="")
     issuer: Mapped[str | None] = mapped_column(Text)
     doc_number: Mapped[str | None] = mapped_column(String(128))
     publish_date: Mapped[date | None] = mapped_column(Date)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime())
     http_status: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32))
     failure_reason: Mapped[str | None] = mapped_column(Text)
     final_url: Mapped[str | None] = mapped_column(Text)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     document: Mapped[Document] = relationship(back_populates="detail")
     attachments: Mapped[list["DocumentAttachment"]] = relationship(
@@ -211,7 +210,7 @@ class DocumentDeadline(Base):
     confidence: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(16), default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     approved_date: Mapped[date | None] = mapped_column(Date)
     approved_time: Mapped["time | None"] = mapped_column(Time)
     # 截止变更（验收清单 A7）：发了延期、调整或撤销的通知后，原来通过的截止标为 changed，
@@ -221,8 +220,8 @@ class DocumentDeadline(Base):
     )
     change_reason: Mapped[str | None] = mapped_column(String(8))
     changed_by: Mapped[str | None] = mapped_column(String(80))
-    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
     document: Mapped[Document] = relationship(
         back_populates="deadlines", foreign_keys=[document_id]
@@ -237,12 +236,12 @@ class ListParse(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
-    source_url: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[str] = mapped_column(String(SOURCE_URL_MAX))
     source_kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(24))
     failure_reason: Mapped[str | None] = mapped_column(Text)
     entry_count: Mapped[int] = mapped_column(Integer, default=0)
-    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempted_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class ListEntry(Base):
@@ -254,18 +253,12 @@ class ListEntry(Base):
             "document_id", "source_url", "normalized_name", "sequence", name="uq_list_entry_row"
         ),
         Index("ix_list_entries_normalized_name", "normalized_name"),
-        Index(
-            "ix_list_entries_name_trgm",
-            "normalized_name",
-            postgresql_using="gin",
-            postgresql_ops={"normalized_name": "gin_trgm_ops"},
-        ),
         Index("ix_list_entries_credit_code", "credit_code"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
-    source_url: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[str] = mapped_column(String(SOURCE_URL_MAX))
     name: Mapped[str] = mapped_column(String(256))
     normalized_name: Mapped[str] = mapped_column(String(256))
     credit_code: Mapped[str | None] = mapped_column(String(18))
@@ -282,12 +275,10 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     openid: Mapped[str] = mapped_column(String(128), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_visited_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    last_visited_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     agreement_version: Mapped[str | None] = mapped_column(String(20))
-    agreement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Follow(Base):
@@ -297,10 +288,10 @@ class Follow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(40))
-    conditions: Mapped[dict] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    conditions: Mapped[dict] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Subscription(Base):
@@ -327,8 +318,8 @@ class Subscription(Base):
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(16), default="unused")
     errcode: Mapped[int | None] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Feedback(Base):
@@ -340,8 +331,8 @@ class Feedback(Base):
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"))
     content: Mapped[str] = mapped_column(String(500))
     check_result: Mapped[str] = mapped_column(String(16))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Event(Base):
@@ -351,5 +342,5 @@ class Event(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(32))
-    props: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    props: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

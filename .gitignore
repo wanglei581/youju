@@ -13,5 +13,6 @@ coverage/
 # 后端本地开发
 backend/.pgdata/
 backend/.pgdata.log
+backend/.mysql/
 .ruff_cache/
 .pytest_cache/

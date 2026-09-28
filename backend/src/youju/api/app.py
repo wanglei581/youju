@@ -381,7 +381,7 @@ def search_lists(
             Source.rights_level == 1,
             (ListEntry.normalized_name == query) | (ListEntry.credit_code == query.upper()),
         )
-        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+        .order_by(Document.publish_date.desc(), ListEntry.id)
         .limit(200)
     ).all()
     similar_rows = []
@@ -397,7 +397,7 @@ def search_lists(
                     Source.rights_level == 1,
                     ListEntry.normalized_name.like(f"%{_escape_like(prefix)}%", escape="\\"),
                 )
-                .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+                .order_by(Document.publish_date.desc(), ListEntry.id)
                 .limit(500)
             ).all()
             similar_rows = [
@@ -474,7 +474,7 @@ def list_documents(
         stmt = stmt.where(Document.is_baseline.is_(False))
     total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = session.execute(
-        stmt.order_by(Document.publish_date.desc().nulls_last(), Document.id.desc())
+        stmt.order_by(Document.publish_date.desc(), Document.id.desc())
         .limit(limit)
         .offset(offset)
     ).all()
@@ -908,7 +908,7 @@ def approved_deadlines(
     for word in words:
         stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
     # 分批取，按归并组去重，直到凑够 limit 个不同的截止（同一通知的副本不会占满名额）
-    ordered = stmt.order_by(Document.publish_date.desc().nulls_last(), DocumentDeadline.id.desc())
+    ordered = stmt.order_by(Document.publish_date.desc(), DocumentDeadline.id.desc())
     rows: list = []
     keys: set[tuple] = set()
     offset = 0
@@ -1317,7 +1317,7 @@ def admin_documents(
     for word in [w for w in q.split() if w][:5]:
         stmt = stmt.where(Document.title.like(f"%{_escape_like(word)}%", escape="\\"))
     rows = session.execute(
-        stmt.order_by(Document.publish_date.desc().nulls_last(), Document.id.desc()).limit(limit)
+        stmt.order_by(Document.publish_date.desc(), Document.id.desc()).limit(limit)
     ).all()
     return [
         AdminDocumentOut(

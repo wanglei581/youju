@@ -1,9 +1,10 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import pool
 
 from youju.config import get_settings
+from youju.db import create_mysql_engine
 from youju.models import Base
 
 config = context.config
@@ -29,10 +30,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+    # 与应用用同一套连接设置（会话时区 UTC、暂停恢复时重试）
+    connectable = create_mysql_engine(
+        config.get_main_option("sqlalchemy.url"), poolclass=pool.NullPool
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

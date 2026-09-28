@@ -125,7 +125,8 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
             DocumentDetail.document_id,
             DocumentDetail.issuer,
             DocumentDetail.doc_number,
-            func.length(DocumentDetail.body_text),
+            # 按字数算（MySQL 的 LENGTH 是字节数），和详情页用 Python len() 的口径一致
+            func.char_length(DocumentDetail.body_text),
         ).where(DocumentDetail.document_id.in_(member_master))
     ):
         details.setdefault(member_master[doc_id], []).append(

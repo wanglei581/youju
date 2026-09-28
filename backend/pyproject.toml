@@ -19,6 +19,8 @@ dependencies = [
     "openpyxl>=3.1",
     "xlrd>=2.0.1",
     "python-docx>=1.2",
+    "pymysql>=1.1",
+    "cryptography>=43",
 ]
 
 [project.scripts]

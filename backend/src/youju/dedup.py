@@ -65,7 +65,8 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
     if titles is not None:
         normalized_titles = {re.sub(r"\s+", "", title) for title in titles}
         stmt = stmt.where(
-            func.regexp_replace(Document.title, r"\s+", "", "g").in_(normalized_titles)
+            # MySQL 的 REGEXP_REPLACE 默认替换全部匹配
+            func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles)
         )
     by_key: dict[str, list[tuple[int, tuple[str | None, str | None]]]] = defaultdict(list)
     ids: set[int] = set()

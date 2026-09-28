@@ -8,15 +8,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from sqlalchemy import literal_column, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, url_key
 from youju.dedup import reconcile_documents
-from youju.models import Document, Source, SourceCheck
+from youju.models import URL_KEY_MAX, Document, Source, SourceCheck
 
 log = logging.getLogger(__name__)
 
@@ -53,12 +53,17 @@ def save_items(
     """新文件插入，已存在的文件只更新"最后一次看到"的时间。返回新插入的条数。
 
     以规范网址键判断是不是同一份文件（http 与 https、会话参数等不同的网址算同一份）。
-    用一条 INSERT … ON CONFLICT DO UPDATE 完成，并按规范网址键排序：
+    用一条 INSERT … ON DUPLICATE KEY UPDATE 完成，并按规范网址键排序：
     多个线程同时写入有重叠的文件时，加锁顺序一致，不会死锁。
     """
     unique: dict[str, ListItem] = {}
     for item in items:
-        unique.setdefault(url_key(item.url), item)
+        key = url_key(item.url)
+        if len(key) > URL_KEY_MAX:
+            # 数据库唯一索引有长度上限；政府网站的网址一般一两百字，超长的多半是异常链接
+            log.warning("网址过长，跳过：来源 #%s %s…", source.id, key[:120])
+            continue
+        unique.setdefault(key, item)
     if not unique:
         return 0
     rows = [
@@ -75,12 +80,15 @@ def save_items(
         }
         for key, item in sorted(unique.items())
     ]
-    stmt = pg_insert(Document).values(rows)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=[Document.url_key],
-        set_={"last_seen_at": stmt.excluded.last_seen_at},
-    ).returning(literal_column("xmax = 0"))  # 新插入的行 xmax 为 0，更新的行不为 0
-    inserted_count = sum(1 for inserted in session.execute(stmt).scalars() if inserted)
+    # 先查哪些已经在库里，再写入。只影响"新增"计数：极少数情况下另一个线程恰好在两步之间
+    # 写入了同一份文件，会多算一份，入库结果本身不受影响
+    existing = set(
+        session.scalars(select(Document.url_key).where(Document.url_key.in_(list(unique))))
+    )
+    stmt = mysql_insert(Document).values(rows)
+    stmt = stmt.on_duplicate_key_update(last_seen_at=stmt.inserted.last_seen_at)
+    session.execute(stmt)
+    inserted_count = len(rows) - len(existing)
     reconcile_documents(session, {item.title for item in unique.values()})
     return inserted_count
 
