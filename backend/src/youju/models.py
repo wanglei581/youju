@@ -198,6 +198,21 @@ class DocumentDeadline(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "fingerprint", name="uq_document_deadline_fingerprint"),
         Index("ix_document_deadlines_status", "status"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'changed')",
+            name="ck_document_deadline_status",
+        ),
+        CheckConstraint(
+            "status != 'approved' OR approved_date IS NOT NULL",
+            name="ck_document_deadline_approved_date",
+        ),
+        # 已变更的必须保留原核定日期，写明原因（延期 / 调整 / 撤销），并关联发布变更的通知
+        CheckConstraint(
+            "status != 'changed' OR (approved_date IS NOT NULL"
+            " AND change_reason IS NOT NULL AND change_reason IN ('延期', '调整', '撤销')"
+            " AND changed_to_document_id IS NOT NULL)",
+            name="ck_document_deadline_changed",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -316,7 +331,7 @@ class Subscription(Base):
     template_id: Mapped[str] = mapped_column(String(128))
     follow_id: Mapped[int | None] = mapped_column(ForeignKey("follows.id", ondelete="CASCADE"))
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
-    status: Mapped[str] = mapped_column(String(16), default="unused")
+    status: Mapped[str] = mapped_column(String(16), default="unused", server_default="unused")
     errcode: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

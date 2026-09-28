@@ -191,6 +191,20 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("document_id", "fingerprint", name="uq_document_deadline_fingerprint"),
+        sa.CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'changed')",
+            name="ck_document_deadline_status",
+        ),
+        sa.CheckConstraint(
+            "status != 'approved' OR approved_date IS NOT NULL",
+            name="ck_document_deadline_approved_date",
+        ),
+        sa.CheckConstraint(
+            "status != 'changed' OR (approved_date IS NOT NULL"
+            " AND change_reason IS NOT NULL AND change_reason IN ('延期', '调整', '撤销')"
+            " AND changed_to_document_id IS NOT NULL)",
+            name="ck_document_deadline_changed",
+        ),
         **TABLE_OPTIONS,
     )
     op.create_index("ix_document_deadlines_status", "document_deadlines", ["status"], unique=False)
@@ -302,7 +316,7 @@ def upgrade() -> None:
         sa.Column("template_id", sa.String(length=128), nullable=False),
         sa.Column("follow_id", sa.Integer(), nullable=True),
         sa.Column("document_id", sa.Integer(), nullable=True),
-        sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("status", sa.String(length=16), server_default="unused", nullable=False),
         sa.Column("errcode", sa.Integer(), nullable=True),
         sa.Column(
             "created_at",
