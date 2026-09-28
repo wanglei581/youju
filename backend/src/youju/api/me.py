@@ -19,7 +19,7 @@ from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
-from youju.models import Document, Event, Feedback, Follow, Subscription, User
+from youju.models import Document, Event, Feedback, Follow, Source, Subscription, User
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -510,7 +510,12 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
             raise HTTPException(status_code=422, detail="截止提醒需要 docId")
         document_id = canonical_ids(session, [body.docId]).get(body.docId, body.docId)
         stamp = v1.now()
-        if session.get(Document, document_id) is None or not any(
+        public = session.scalar(
+            select(Document.id)
+            .join(Source, Document.source_id == Source.id)
+            .where(Document.id == document_id, v1.public_condition())
+        )
+        if public is None or not any(
             v1.deadline_open(d, stamp)
             for d in v1._approved(session, [document_id]).get(document_id, [])
         ):

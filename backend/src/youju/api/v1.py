@@ -251,9 +251,11 @@ def _count(session: Session, stmt: Select) -> int:
 def home(session: SessionDep) -> dict:
     """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
     start, end = _week(now().date())
-    week = visible_documents(select(Document.title, Document.kind_override)).where(
-        Document.publish_date >= start, Document.publish_date < end
-    )
+    week = visible_documents(
+        select(Document.title, Document.kind_override)
+        .join(Source, Document.source_id == Source.id)
+        .where(public_condition())
+    ).where(Document.publish_date >= start, Document.publish_date < end)
     kinds = [effective_kind(t, override) for t, override in session.execute(week).all()]
     # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
     live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
@@ -563,7 +565,7 @@ def calendar(
         .join(Source, Document.source_id == Source.id)
         .where(
             DocumentDeadline.status == "approved",
-            Source.rights_level == 1,
+            public_condition(),
             not_passed,
             DocumentDeadline.approved_date <= d + timedelta(days=days),
         )
@@ -657,7 +659,7 @@ def lookup_lists(
             stmt.join(Document, Document.id == ListEntry.document_id)
             .join(Source, Source.id == Document.source_id)
             .where(
-                Source.rights_level == 1,
+                public_condition(),
                 or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
             )
         )

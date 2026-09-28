@@ -1,5 +1,7 @@
 """公开导出只包含归并后的题录、原文网址和人工核对字段。"""
 
+import json
+from collections import deque
 from datetime import UTC, date, datetime
 from io import BytesIO
 from types import SimpleNamespace
@@ -256,3 +258,66 @@ def test_exports_are_rate_limited_per_user(client, docs, monkeypatch):
 
     assert [post("o-a"), post("o-a"), post("o-a")] == [200, 200, 429]
     assert post("o-b") == 200  # 别的用户不受影响
+
+
+def test_export_log_never_grows_without_bound(monkeypatch):
+    from youju.api import exports
+
+    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=5))
+    now = 1000.0
+    for n in range(10001):  # 一万多个同时活跃的来源（异常流量）
+        exports._export_times[f"u:{n}"] = deque([now])
+    assert exports._allow_export("u:new", now + 1)
+    assert len(exports._export_times) == 1  # 超上限后整个清空，只剩这次的
+
+
+def test_home_and_calendar_skip_restricted_sources(client, session, monkeypatch):
+    """首页的本周计数、最新文件和日历都不算只有 2 级来源的文件。"""
+    from youju.api import v1
+
+    monkeypatch.setattr(v1, "now", lambda: datetime(2026, 9, 29, 10, 0, tzinfo=UTC))
+    restricted = Source(
+        level="省级",
+        province="辽宁",
+        dept="工信",
+        dept_full_name="某授权平台",
+        column_name="资讯",
+        url="https://example.gov.cn/zx/",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add(restricted)
+    session.flush()
+    now = datetime.now(UTC)
+    doc = Document(
+        source_id=restricted.id,
+        url="https://example.gov.cn/zx/9.html",
+        url_key="example.gov.cn/zx/9.html",
+        title="辽宁省关于组织申报智能制造项目的通知",
+        publish_date=date(2026, 9, 29),
+        first_seen_at=now,
+        last_seen_at=now,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="r" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 10),
+            approved_date=date(2026, 10, 10),
+            evidence="请于10月10日前申报",
+            confidence="高",
+            status="approved",
+            reviewed_by="审阅人",
+            reviewed_at=now,
+        )
+    )
+    session.commit()
+    home = client.get("/api/v1/home").json()
+    assert home["stats"]["week_total"] == 0
+    assert all(item["id"] != str(doc.id) for item in home["items"])
+    calendar = json.dumps(client.get("/api/v1/calendar").json(), ensure_ascii=False)
+    assert "智能制造" not in calendar

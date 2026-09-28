@@ -388,6 +388,8 @@ def _allow_export(caller: str, now: float) -> bool:
                 k for k, v in _export_times.items() if not v or now - v[-1] > _EXPORT_WINDOW
             ]:
                 del _export_times[key]
+            if len(_export_times) > 10000:  # 仍然太多（异常流量）：整个清空，宁可暂时少限一点
+                _export_times.clear()
         times = _export_times.setdefault(caller, deque())
         while times and now - times[0] > _EXPORT_WINDOW:
             times.popleft()

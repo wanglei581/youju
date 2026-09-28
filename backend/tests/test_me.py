@@ -919,3 +919,18 @@ def test_notify_skips_users_on_old_agreement(client, session, monkeypatch):
     result = run_notify(session, settings=config, sender=forbidden, stamp=NOW)
     assert result["skipped"] == 1 and result["sent"] == 0
     assert session.scalar(select(Subscription.status)) == "unused"
+
+
+def test_deadline_subscription_only_for_public_documents(client, session, monkeypatch):
+    """只有 2 级来源（只存题录）、没有 1 级副本的文件，不能订阅它的截止提醒。"""
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=5))
+    body = {"kind": "deadline", "templateId": "d", "docId": doc.id}
+    source = session.get(Source, doc.source_id)
+    source.rights_level = 2
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 422
+    source.rights_level = 1
+    session.commit()
+    assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
