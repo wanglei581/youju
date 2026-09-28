@@ -72,10 +72,13 @@ LIST_OFF_TOPIC = (
     "重大事项变更",
     "收费",
     "监督检查",
+    "人选",
 )
 # 招聘是个人事项：不管标题怎么写，都不是企业申报，也不列进名单。
 # 职称申报通知仍算申报通知（科技服务机构常代办，#43 定的规则），职称名单则按上面的规则归"其他"
 PERSONAL_WORDS = ("招聘",)
+# 网站专题栏目的归档入口，不是文件（列表解析已不收，这里兜底）
+JUNK_WORDS = ("已归档",)
 # 征求意见：政策草案（写了"征求意见稿"），或只凭"公示"二字才像名单的，不算名单，
 # 按其他规则判断，与其他征求意见稿一样有政策字样的归政策。例如"关于《XX管理办法》
 # 公开征求社会意见的公示""关于企业证照办理优化措施公开及办理意见建议的公示"。
@@ -134,8 +137,12 @@ WEAK_APPLY_WORDS = (
     "认定工作",
     "复核工作",
     "评审工作",
+    "报送",
+    "结题验收",
+    "验收工作",
 )
-APPLY_EXCLUDE = ("统计", "调查", "检查", "培训", "会议", "讲座", "成交", "采购", "收官")
+# "报送……情况"是报送进展、统计情况，不是申报
+APPLY_EXCLUDE = ("统计", "调查", "检查", "培训", "会议", "讲座", "成交", "采购", "收官", "情况")
 # 政策文件；讲座、培训、会议等活动通知里即使提到"办法"也不算政策
 POLICY_WORDS = (
     "办法",
@@ -150,9 +157,11 @@ POLICY_WORDS = (
     "实施意见",
     "规范性文件",
     "废止",
+    "政策的公告",
+    "政策的通知",
 )
 # 印发、征求意见的具名文件（书名号）：多是办法、方案、指南、清单等，标题被截断时也认得出
-POLICY_MARKS = ("印发《", "征求《", "关于《")
+POLICY_MARKS = ("印发《", "征求《", "关于《", "发布《")
 # 撤销某个项目的方案、单个项目的方案不是政策
 POLICY_EXCLUDE = (
     "讲座",
@@ -210,7 +219,7 @@ def _consult(title: str) -> bool:
 
 
 def doc_kind(title: str) -> str:
-    if _off_topic(title) or _has(title, PERSONAL_WORDS):
+    if _off_topic(title) or _has(title, PERSONAL_WORDS + JUNK_WORDS):
         return "其他"
     consult = _consult(title)
     if not consult and _is_list(title):
@@ -258,7 +267,7 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     )
     off_topic = or_(
         and_(or_(has_list, publish_list), _any_in(title, LIST_OFF_TOPIC)),
-        _any_in(title, PERSONAL_WORDS),
+        _any_in(title, PERSONAL_WORDS + JUNK_WORDS),
     )
     consult = or_(
         _any_in(title, DRAFT_WORDS),
