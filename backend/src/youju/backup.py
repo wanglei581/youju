@@ -17,6 +17,7 @@
 import gzip
 import hashlib
 import json
+import logging
 import tempfile
 import time as clock
 from collections.abc import Callable, Iterator
@@ -43,6 +44,7 @@ _BATCH = 1000
 # 上传遇到网络中断、服务繁忙时重试的等待秒数
 _RETRY_WAITS = (5, 15)
 BEIJING = ZoneInfo("Asia/Shanghai")
+log = logging.getLogger("youju.backup")
 # 云托管开放接口服务：容器内用 http 调用，免 access_token（需在"云调用-微信令牌权限配置"里登记接口）
 OPEN_API = "http://api.weixin.qq.com"
 # 开放接口返回这些错误码时是平台暂时的问题，可以重试
@@ -157,6 +159,8 @@ def _load(conn: Connection, gz: IO[bytes], header: dict, tables: dict[str, Table
             f"目标库的迁移版本是 {_revision(conn)}，备份是 {header.get('revision')}："
             "先用同一版本的代码把目标库迁移好"
         )
+    if set(header["tables"]) != set(tables):
+        raise BackupError("备份文件的说明行格式不对：表名和这个版本的表对不上")
     busy = [n for n, t in tables.items() if conn.scalar(select(func.count()).select_from(t))]
     if busy:
         raise BackupError(f"目标库不是空的：{', '.join(busy)}")
@@ -233,8 +237,11 @@ def restore(engine: Engine, src: IO[bytes]) -> dict[str, int]:
                 or header.get("version") != VERSION
             ):
                 raise BackupError("不是有据的备份文件，或格式版本不认识")
+            # 各表条数：表名是字符串，条数是非负整数（布尔值不算）；表名和这个版本对不对应，
+            # 核对过迁移版本后再查，版本不同时先说版本
             counts_ok = isinstance(header.get("tables"), dict) and all(
-                isinstance(k, str) and isinstance(v, int) for k, v in header["tables"].items()
+                isinstance(k, str) and type(v) is int and v >= 0
+                for k, v in header["tables"].items()
             )
             if not counts_ok or not isinstance(header.get("revision"), (str, type(None))):
                 raise BackupError("备份文件的说明行格式不对")
@@ -319,7 +326,12 @@ def prune(client: httpx.Client, env: str, file_id: str, path: str, today: date) 
         raise BackupError("文件 ID 的格式和预期不同，没有删除旧备份")
     old = [prefix + object_path(today - timedelta(days=d)) for d in _PRUNE_DAYS]
     data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": old})
-    return sum(1 for item in data.get("delete_list", []) if item.get("status") == 0)
+    items = data.get("delete_list", [])
+    # 没删掉的写进日志备查（多数是本来就没有这个文件），不当作失败
+    for item in items:
+        if item.get("status") != 0:
+            log.info("旧备份没删掉：%s（%s）", item.get("fileid"), item.get("errmsg"))
+    return sum(1 for item in items if item.get("status") == 0)
 
 
 def _retrying(action: Callable[[], Any], sleep: Callable[[float], None]) -> Any:

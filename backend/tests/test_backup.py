@@ -363,14 +363,27 @@ def test_upload_retries_busy_errors_but_not_setup_errors(session, db_engine) -> 
 
 
 def test_bad_header_is_reported_as_a_broken_file(restore_engine) -> None:
+    with restore_engine.connect() as conn:
+        revision = conn.scalar(text("SELECT version_num FROM alembic_version"))
+    full = {t.name: 0 for t in Base.metadata.sorted_tables}
+    base = {"format": "youju-backup", "version": 1, "revision": revision}
     for header in (
-        {"format": "youju-backup", "version": 1, "revision": "0007", "tables": 5},
-        {"format": "youju-backup", "version": 1, "revision": 7, "tables": {}},
-        {"format": "youju-backup", "version": 1, "revision": "0007", "tables": {"users": "1"}},
+        {**base, "tables": 5},
+        {**base, "revision": 7, "tables": full},
+        {**base, "tables": {**full, "users": -1}},
+        {**base, "tables": {**full, "users": True}},
+        {**base, "tables": {"users": 1}},  # 少了表
+        {**base, "tables": {**full, "x": 1}},  # 多了不认识的表
     ):
         data = gzip.compress((json.dumps(header) + "\n").encode())
         with pytest.raises(BackupError, match="说明行格式不对"):
             restore(restore_engine, io.BytesIO(data))
+    # 版本不同时先说版本（表名自然对不上）
+    other = gzip.compress(
+        (json.dumps({**base, "revision": "0099", "tables": {"x": 1}}) + "\n").encode()
+    )
+    with pytest.raises(BackupError, match="迁移版本"):
+        restore(restore_engine, io.BytesIO(other))
 
 
 def test_pruning_retries_busy_errors_and_says_the_backup_is_safe(session, db_engine) -> None:
