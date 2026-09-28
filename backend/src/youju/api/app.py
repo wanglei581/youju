@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time as clock
 from collections import defaultdict, deque
 from datetime import UTC, date, datetime, time, timedelta
@@ -190,6 +191,16 @@ class FeedbackOut(BaseModel):
 
 class UnchangeIn(BaseModel):
     reviewed_by: str = Field(min_length=1, max_length=80)
+
+
+_HHMM = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+
+def parse_hhmm(value: str) -> time:
+    """只收 HH:MM（00:00–23:59），带秒、时区等写法一律不收：存的、导出的和导入比对的保持一致。"""
+    if not _HHMM.fullmatch(value):
+        raise ValueError("时间格式应为 HH:MM")
+    return time.fromisoformat(value)
 
 
 class ReviewIn(BaseModel):
@@ -754,7 +765,7 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
     # 区分"没传时间"（沿用候选时间）和"明确清空时间"（time 传 null：原文只写到日期）
     if body.new_time is not None:
         try:
-            parsed_time = time.fromisoformat(body.new_time)
+            parsed_time = parse_hhmm(body.new_time)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="时间格式应为 HH:MM") from exc
     elif "new_time" in body.model_fields_set:
@@ -990,12 +1001,8 @@ class ReviewTransferItem(BaseModel):
     @field_validator("candidateTime", "approvedTime")
     @classmethod
     def _hhmm_time(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        try:
-            time.fromisoformat(value)
-        except ValueError as exc:
-            raise ValueError("时间格式应为 HH:MM") from exc
+        if value is not None:
+            parse_hhmm(value)
         return value
 
     @model_validator(mode="after")

@@ -234,9 +234,12 @@ def test_import_does_not_guess_when_fallback_is_ambiguous(client, session, revie
 
 def test_import_rejects_impossible_time_with_422(client, session, reviewed):
     body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
-    bad = copy.deepcopy(body)
-    next(i for i in bad["items"] if i["status"] == "approved")["approvedTime"] = "99:99"
-    assert client.post("/api/admin/reviews/import", headers=HEADERS, json=bad).status_code == 422
+    # 只收 HH:MM：不存在的时间、带秒、带时区、不补零都不收（带秒的存进去再导出会变，比对不上）
+    for value in ("99:99", "10:30:15", "10:30+08:00", "9:30", "1030"):
+        bad = copy.deepcopy(body)
+        next(i for i in bad["items"] if i["status"] == "approved")["approvedTime"] = value
+        response = client.post("/api/admin/reviews/import", headers=HEADERS, json=bad)
+        assert response.status_code == 422, value
 
 
 def test_import_warns_when_here_approved_but_export_says_changed(client, session, reviewed):

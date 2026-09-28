@@ -378,6 +378,9 @@ def test_deadline_admin_permission_and_review_gate(client, seeded, session, monk
     session.commit()
     approve = f"{admin_url}/{rows[0].id}/approve"
     assert client.post(approve, json={"reviewed_by": "审阅人"}).status_code == 401
+    for value in ("17:00:30", "25:00", "5:00"):
+        bad = {"reviewed_by": "审阅人", "date": "2026-10-05", "time": value}
+        assert client.post(approve, headers=headers, json=bad).status_code == 422, value
     assert (
         client.post(
             approve,
