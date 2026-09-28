@@ -505,7 +505,7 @@ def test_missing_peer_address_is_refused_when_required() -> None:
         per_host_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=public_dns,
-        require_peer_address=True,
+        real_network=True,
     ) as f:
         result = f.fetch("https://a.gov.cn/list.html")
     assert result.status == "unsupported_host"
@@ -514,9 +514,13 @@ def test_missing_peer_address_is_refused_when_required() -> None:
 
 def test_real_network_requires_peer_address_by_default() -> None:
     with PoliteFetcher("TestAgent YoujuBot/0.1") as real:
-        assert real._require_peer is True
+        assert real._real == {"main": True, "compat": True}
     with make_fetcher(lambda request: httpx.Response(404)) as mocked:
-        assert mocked._require_peer is False
+        assert mocked._real == {"main": False, "compat": False}
+    # 只注入兼容模式的传输时，默认那一路仍是真实网络，照样检查
+    compat_only = httpx.MockTransport(lambda request: httpx.Response(404))
+    with PoliteFetcher("TestAgent YoujuBot/0.1", compat_transport=compat_only) as f:
+        assert f._real == {"main": True, "compat": False}
 
 
 def test_stuck_dns_lookups_do_not_block_later_lookups(monkeypatch) -> None:
@@ -535,5 +539,57 @@ def test_stuck_dns_lookups_do_not_block_later_lookups(monkeypatch) -> None:
             with pytest.raises(OSError):
                 resolve_host("stuck.gov.cn", timeout=0.01)
         assert resolve_host("ok.gov.cn", timeout=1) == ["1.2.3.4"]
+    finally:
+        release.set()
+
+
+def test_real_network_connects_to_the_checked_address() -> None:
+    # 走真实网络时：连接固定到检查过的 IP，Host 头和 SNI 仍是原域名；结果里的网址仍是原网址
+    seen: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.url.host, request.headers["host"], request.extensions.get("sni_hostname"))
+        )
+        peer = {"network_stream": _FakeNetworkStream(("93.184.216.34", 443))}
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, extensions=peer)
+        return httpx.Response(200, text=LIST_HTML, extensions=peer)
+
+    def dns(host: str) -> list[str]:
+        return ["93.184.216.34"] if host == "a.gov.cn" else ["1.2.3.4"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=dns,
+        real_network=True,
+    ) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "ok"
+    assert result.final_url == "https://a.gov.cn/list.html"
+    assert seen == [
+        ("93.184.216.34", "a.gov.cn", "a.gov.cn"),
+        ("93.184.216.34", "a.gov.cn", "a.gov.cn"),
+    ]
+
+
+def test_pending_dns_lookups_are_capped(monkeypatch) -> None:
+    # 解析卡住时，同时在等的解析有上限，守护线程不会无限增加
+    release = threading.Event()
+
+    def stuck(*args, **kwargs):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", stuck)
+    monkeypatch.setattr(fetcher_module, "_DNS_SLOTS", threading.BoundedSemaphore(2))
+    try:
+        for _ in range(2):
+            with pytest.raises(OSError):
+                resolve_host("slow.gov.cn", timeout=0.01)
+        with pytest.raises(OSError, match="过多"):
+            resolve_host("slow.gov.cn", timeout=5)
     finally:
         release.set()
