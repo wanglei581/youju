@@ -12,22 +12,26 @@ from youju.extract.deadlines import extract_deadlines, same_moment
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
 
 
-def _ai_found(session: Session, document_id: int) -> list[tuple[date, time | None]] | None:
-    """AI 这份文件抽到的截止（日期、时刻）；AI 还没成功检查过返回 None。"""
-    check = session.scalar(
-        select(AICheck).where(
-            AICheck.document_id == document_id,
-            AICheck.task == "deadlines",
-            AICheck.error.is_(None),
+def _ai_found(session: Session, document_ids: list[int]) -> list[tuple[date, time | None]] | None:
+    """AI 在同一通知（归并组）各网址里抽到的截止（日期、时刻）；一份都还没成功检查过返回 None。"""
+    checks = list(
+        session.scalars(
+            select(AICheck).where(
+                AICheck.document_id.in_(document_ids),
+                AICheck.task == "deadlines",
+                AICheck.error.is_(None),
+            )
         )
     )
-    if check is None or not isinstance(check.result, list):
+    if not checks:
         return None
     return [
         (
             date.fromisoformat(item["date"]),
             time.fromisoformat(item["time"]) if item["time"] else None,
         )
+        for check in checks
+        if isinstance(check.result, list)
         for item in check.result
     ]
 
@@ -86,7 +90,7 @@ def extract_existing(
                 )
             )
         )
-        ai_found = _ai_found(session, doc.id)
+        ai_found = _ai_found(session, members)
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date
         ):

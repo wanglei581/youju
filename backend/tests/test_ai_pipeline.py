@@ -347,3 +347,40 @@ def test_usage_of_failed_calls_is_counted(session) -> None:
     # 两项检查各请求 2 次（1 次 + 重试 1 次），都算用量
     assert report.prompt_tokens == 200 and report.completion_tokens == 20
     assert sum(c.prompt_tokens for c in session.scalars(select(AICheck))) == 200
+
+
+def test_rule_candidate_uses_ai_results_of_twin_urls(session) -> None:
+    """AI 只检查过同一通知的另一个网址：规则在主网址找到同一天，也算 AI 一致。"""
+    from youju.models import DocumentMerge
+
+    master = add_doc(session, 1)
+    twin = add_doc(session, 2)
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    session.add(
+        AICheck(
+            document_id=twin.id,
+            task="deadlines",
+            model="qwen-flash",
+            result=[
+                {
+                    "kind": "企业申报截止",
+                    "date": "2026-10-15",
+                    "time": None,
+                    "evidence": "请各单位于2026年10月15日前完成网上申报。",
+                    "confidence": "高",
+                }
+            ],
+            checked_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+    extract_existing(session, document_ids=[master.id])
+    row = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == master.id,
+            DocumentDeadline.candidate_date == date(2026, 10, 15),
+        )
+    )
+    assert row.ai_agrees is True

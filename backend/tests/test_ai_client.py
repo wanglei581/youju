@@ -108,3 +108,21 @@ def test_usage_counts_every_response_and_survives_failure():
     with pytest.raises(AIError):
         failing.complete_json("JSON", "x")
     assert failing.last_usage["prompt_tokens"] == 2
+
+
+def test_usage_in_error_responses_is_counted():
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen",
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                503, json={"usage": {"prompt_tokens": 7, "completion_tokens": 0}}
+            )
+        ),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(AIError):
+        client.complete_json("JSON", "x")
+    assert client.last_usage["prompt_tokens"] == 7

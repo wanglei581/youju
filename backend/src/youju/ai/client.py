@@ -81,6 +81,14 @@ class ChatClient:
                     self.sleep(2**attempt)
                     continue
                 raise AIError(last_error) from exc
+            if response.status_code >= 400:
+                # 出错的响应如果也带了用量，同样计入
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict):
+                    _add_usage(usage_total, body.get("usage"))
             if response.status_code == 429 or response.status_code >= 500:
                 last_error = f"AI 服务暂时不可用（HTTP {response.status_code}）"
                 if attempt < self.max_retries:
