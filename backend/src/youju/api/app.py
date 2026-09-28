@@ -6,14 +6,14 @@ import json
 import logging
 import time as clock
 from collections import defaultdict, deque
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from hmac import compare_digest
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -698,37 +698,61 @@ def pending_deadlines(
     ]
 
 
+def _lock_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
+    """按编号顺序一次锁住这条候选和归并组里同一候选的副本（类型、日期、时间、证据句都相同），
+    并刷新成最新状态；并发核对时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(members),
+                DocumentDeadline.kind == row.kind,
+                DocumentDeadline.candidate_date == row.candidate_date,
+                DocumentDeadline.candidate_time.is_(None)
+                if row.candidate_time is None
+                else DocumentDeadline.candidate_time == row.candidate_time,
+                DocumentDeadline.evidence == row.evidence,
+            )
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+def _apply_review(
+    row: DocumentDeadline,
+    locked: list[DocumentDeadline],
+    status: str,
+    reviewed_by: str,
+    reviewed_at: datetime,
+    approved_date: date | None = None,
+    approved_time: time | None = None,
+) -> None:
+    """把核对结果写到这条候选和归并组里还没核对的同一候选副本上（免得重复核对）；不提交。"""
+    twins = [d for d in locked if d.id != row.id and d.status == "pending"]
+    for item in {row, *twins}:
+        item.status = status
+        item.reviewed_by = reviewed_by
+        item.reviewed_at = reviewed_at
+        if status == "approved":
+            item.approved_date = approved_date
+            item.approved_time = approved_time
+
+
 def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> dict[str, str]:
     row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到候选")
-    # 归并组里同一候选（类型、日期、时间、证据句都相同）的其他副本一并按同样结果处理，免得重复核对。
-    # 按编号顺序一次锁住本条和这些副本（并发核对时不会互相等待成死锁），锁住后再看状态
-    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
-    members = groups_for(session, [master])[master]
-    locked = session.scalars(
-        select(DocumentDeadline)
-        .where(
-            DocumentDeadline.document_id.in_(members),
-            DocumentDeadline.kind == row.kind,
-            DocumentDeadline.candidate_date == row.candidate_date,
-            DocumentDeadline.candidate_time.is_(None)
-            if row.candidate_time is None
-            else DocumentDeadline.candidate_time == row.candidate_time,
-            DocumentDeadline.evidence == row.evidence,
-        )
-        .order_by(DocumentDeadline.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).all()
+    locked = _lock_candidates(session, row)
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="候选已核对")
     if status == "rejected" and (body.new_date is not None or body.new_time is not None):
         raise HTTPException(status_code=422, detail="驳回时不能修改日期")
     # 区分"没传时间"（沿用候选时间）和"明确清空时间"（time 传 null：原文只写到日期）
     if body.new_time is not None:
-        from datetime import time
-
         try:
             parsed_time = time.fromisoformat(body.new_time)
         except ValueError as exc:
@@ -737,15 +761,15 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         parsed_time = None
     else:
         parsed_time = row.candidate_time
-    twins = [d for d in locked if d.id != row.id and d.status == "pending"]
-    now = datetime.now(UTC)
-    for item in {row, *twins}:
-        item.status = status
-        item.reviewed_by = body.reviewed_by
-        item.reviewed_at = now
-        if status == "approved":
-            item.approved_date = body.new_date or row.candidate_date
-            item.approved_time = parsed_time
+    _apply_review(
+        row,
+        locked,
+        status,
+        body.reviewed_by,
+        datetime.now(UTC),
+        body.new_date or row.candidate_date,
+        parsed_time,
+    )
     session.commit()
     return {"status": status}
 
@@ -860,30 +884,8 @@ def change_deadline(
     group = _lock_group(session, row)
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止才能标为已变更")
-    same = canonical_ids(session, [body.new_document_id, row.document_id])
-    if same.get(body.new_document_id, body.new_document_id) == same.get(
-        row.document_id, row.document_id
-    ):
-        raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
-    new_doc = session.get(Document, body.new_document_id)
-    if new_doc is None:
-        raise HTTPException(status_code=404, detail="没有找到新通知")
-    old_doc = session.get(Document, row.document_id)
-    # 防止关联到无关文件：变更通知应与原通知同一地区，且发布不早于原通知
-    if new_doc.source.province != old_doc.source.province:
-        raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
-    if new_doc.publish_date is None or old_doc.publish_date is None:
-        raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")
-    if new_doc.publish_date < old_doc.publish_date:
-        raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
-    # 归并组里相同的已通过副本（同一通知的其他网址）一并标记，否则副本仍会被当作有效截止显示
-    now = datetime.now(UTC)
-    for item in [d for d in group if d.status == "approved"]:
-        item.status = "changed"
-        item.change_reason = body.reason
-        item.changed_to_document_id = body.new_document_id
-        item.changed_by = body.reviewed_by
-        item.changed_at = now
+    _check_change_target(session, row, body.new_document_id)
+    _apply_change(group, body.reason, body.new_document_id, body.reviewed_by, datetime.now(UTC))
     session.commit()
     _audit(
         request,
@@ -894,6 +896,40 @@ def change_deadline(
         new_document_id=body.new_document_id,
     )
     return {"status": "changed"}
+
+
+def _check_change_target(session: Session, row: DocumentDeadline, new_document_id: int) -> None:
+    """变更通知要是另一份文件、与原通知同一地区、发布不早于原通知（防止关联到无关文件）。"""
+    same = canonical_ids(session, [new_document_id, row.document_id])
+    if same.get(new_document_id, new_document_id) == same.get(row.document_id, row.document_id):
+        raise HTTPException(status_code=422, detail="新通知不能是原通知本身")
+    new_doc = session.get(Document, new_document_id)
+    if new_doc is None:
+        raise HTTPException(status_code=404, detail="没有找到新通知")
+    old_doc = session.get(Document, row.document_id)
+    if new_doc.source.province != old_doc.source.province:
+        raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
+    if new_doc.publish_date is None or old_doc.publish_date is None:
+        raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")
+    if new_doc.publish_date < old_doc.publish_date:
+        raise HTTPException(status_code=422, detail="新通知的发布日期早于原通知，请核对")
+
+
+def _apply_change(
+    group: list[DocumentDeadline],
+    reason: str,
+    new_document_id: int,
+    changed_by: str,
+    changed_at: datetime,
+) -> None:
+    """归并组里相同的已通过副本（同一通知的其他网址）一并标为已变更，否则副本仍会被当作有效截止显示；
+    不提交。"""
+    for item in [d for d in group if d.status == "approved"]:
+        item.status = "changed"
+        item.change_reason = reason
+        item.changed_to_document_id = new_document_id
+        item.changed_by = changed_by
+        item.changed_at = changed_at
 
 
 def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
@@ -925,6 +961,200 @@ def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadlin
             .execution_options(populate_existing=True)
         ).all()
     )
+
+
+class ReviewChangeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: Literal["延期", "调整", "撤销"]
+    toUrlKey: str = Field(min_length=1, max_length=2000)
+    changedBy: str = Field(min_length=1, max_length=80)
+    changedAt: datetime
+
+
+class ReviewTransferItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    urlKey: str = Field(min_length=1, max_length=2000)
+    fingerprint: str = Field(min_length=64, max_length=64)
+    title: str | None = Field(default=None, max_length=500)  # 只给人看，导入时不用
+    kind: str = Field(max_length=32)
+    candidateDate: date
+    candidateTime: str | None = None
+    evidence: str = Field(max_length=500)
+    status: Literal["approved", "rejected", "changed"]
+    approvedDate: date | None = None
+    approvedTime: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    reviewedBy: str = Field(min_length=1, max_length=80)
+    reviewedAt: datetime
+    change: ReviewChangeItem | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ReviewTransferItem:
+        if self.status == "rejected" and (self.approvedDate or self.change):
+            raise ValueError("驳回的记录不能带核定日期或变更")
+        if self.status != "rejected" and self.approvedDate is None:
+            raise ValueError("通过或已变更的记录要有核定日期")
+        if (self.status == "changed") != (self.change is not None):
+            raise ValueError("只有已变更的记录带变更信息")
+        return self
+
+
+class ReviewTransferIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal[1]
+    exportedAt: datetime | None = None
+    items: list[ReviewTransferItem] = Field(max_length=5000)
+
+
+def _hhmm(value: time | None) -> str | None:
+    return value.strftime("%H:%M") if value else None
+
+
+@app.get("/api/admin/reviews/export")
+def export_reviews(session: SessionDep, _admin: AdminDep, request: Request) -> JSONResponse:
+    """导出已核对的截止（通过、驳回、已变更），用"文件网址键 + 候选指纹"标识，
+    可以导入到另一个库（如国庆期间在开发库核对，上线后导入正式库）。"""
+    rows = session.execute(
+        select(DocumentDeadline, Document.url_key, Document.title)
+        .join(Document, DocumentDeadline.document_id == Document.id)
+        .where(DocumentDeadline.status.in_(("approved", "rejected", "changed")))
+        .order_by(DocumentDeadline.id)
+    ).all()
+    target_ids = {d.changed_to_document_id for d, _, _ in rows if d.changed_to_document_id}
+    targets = dict(
+        session.execute(
+            select(Document.id, Document.url_key).where(Document.id.in_(target_ids))
+        ).all()
+    )
+    items = [
+        {
+            "urlKey": url_key,
+            "fingerprint": d.fingerprint,
+            "title": title,
+            "kind": d.kind,
+            "candidateDate": d.candidate_date.isoformat(),
+            "candidateTime": _hhmm(d.candidate_time),
+            "evidence": d.evidence,
+            "status": d.status,
+            "approvedDate": d.approved_date.isoformat() if d.approved_date else None,
+            "approvedTime": _hhmm(d.approved_time),
+            "reviewedBy": d.reviewed_by or "未记录",
+            "reviewedAt": (d.reviewed_at or d.created_at).isoformat(),
+            "change": {
+                "reason": d.change_reason,
+                "toUrlKey": targets[d.changed_to_document_id],
+                "changedBy": d.changed_by or "未记录",
+                "changedAt": (d.changed_at or d.reviewed_at or d.created_at).isoformat(),
+            }
+            if d.status == "changed"
+            else None,
+        }
+        for d, url_key, title in rows
+    ]
+    _audit(request, "reviews_export", count=len(items))
+    return JSONResponse(
+        {"version": 1, "exportedAt": datetime.now(UTC).isoformat(), "items": items},
+        headers={"Content-Disposition": 'attachment; filename="youju-reviews.json"'},
+    )
+
+
+def _same_result(
+    row: DocumentDeadline, item: ReviewTransferItem, target_id: int | None, at: time | None
+) -> bool:
+    if row.status != item.status:
+        return False
+    if item.status == "rejected":
+        return True
+    same_date = row.approved_date == item.approvedDate and row.approved_time == at
+    if item.status == "approved":
+        return same_date
+    return (
+        same_date
+        and row.changed_to_document_id == target_id
+        and row.change_reason == item.change.reason
+    )
+
+
+@app.post("/api/admin/reviews/import")
+def import_reviews(
+    body: ReviewTransferIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+    dry_run: bool = True,
+) -> dict:
+    """导入核对结果（默认只预览，dry_run=false 才写入）。
+
+    按文件网址键和候选指纹找到这边的候选；还没核对的按导出的结果核对，沿用核对台的规则
+    （归并组里同一候选的副本一并处理、变更通知的校验）。已核对且结果相同的跳过，结果不同的
+    记为冲突、不覆盖。已变更的截止，这边还没有变更通知时整条先不导入：只导入"通过"会让
+    已经变更的截止重新显示出来；等抓到变更通知后再导入一次即可。
+    """
+    counts = dict.fromkeys(
+        ("applied", "already", "conflict", "missingDocument", "missingCandidate", "missingTarget"),
+        0,
+    )
+    problems: list[dict] = []
+
+    def problem(kind: str, item: ReviewTransferItem, reason: str) -> None:
+        counts[kind] += 1
+        if len(problems) < 50:
+            problems.append({"title": item.title or item.urlKey, "reason": reason})
+
+    for item in body.items:
+        doc_id = session.scalar(select(Document.id).where(Document.url_key == item.urlKey))
+        if doc_id is None:
+            problem("missingDocument", item, "这边还没有这份文件")
+            continue
+        row = session.scalar(
+            select(DocumentDeadline).where(
+                DocumentDeadline.document_id == doc_id,
+                DocumentDeadline.fingerprint == item.fingerprint,
+            )
+        )
+        if row is None:
+            problem("missingCandidate", item, "这边还没有这条截止候选（可能还没补详情或抽截止）")
+            continue
+        target_id = None
+        if item.status == "changed":
+            target_id = session.scalar(
+                select(Document.id).where(Document.url_key == item.change.toUrlKey)
+            )
+            if target_id is None:
+                problem("missingTarget", item, "这边还没有发布变更的新通知，先不导入")
+                continue
+        locked = _lock_candidates(session, row)
+        at = time.fromisoformat(item.approvedTime) if item.approvedTime else None
+        if row.status != "pending":
+            if _same_result(row, item, target_id, at):
+                counts["already"] += 1
+            else:
+                problem("conflict", item, "这边已核对，结果不同，未覆盖")
+            continue
+        if item.status == "changed":
+            try:
+                _check_change_target(session, row, target_id)
+            except HTTPException as exc:
+                problem("conflict", item, str(exc.detail))
+                continue
+        final = "rejected" if item.status == "rejected" else "approved"
+        _apply_review(row, locked, final, item.reviewedBy, item.reviewedAt, item.approvedDate, at)
+        if item.status == "changed":
+            # 先写进事务：锁组查询会从数据库刷新记录，没写进去的核定日期会被刷掉
+            session.flush()
+            _apply_change(
+                _lock_group(session, row),
+                item.change.reason,
+                target_id,
+                item.change.changedBy,
+                item.change.changedAt,
+            )
+        counts["applied"] += 1
+    if dry_run:
+        session.rollback()
+    else:
+        session.commit()
+    _audit(request, "reviews_import", dry_run=dry_run, **counts)
+    return {"dryRun": dry_run, **counts, "problems": problems}
 
 
 @app.post("/api/admin/deadlines/{deadline_id}/unchange")

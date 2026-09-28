@@ -44,6 +44,7 @@
   .ok { color: var(--green); }
   .empty { text-align: center; color: var(--t2); padding: 48px 0; }
   .more { display: block; margin: 8px auto 32px; }
+  [hidden] { display: none !important; } /* 带 display 的样式会盖过 hidden 属性 */
   select { font: inherit; padding: 5px 8px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
   .linkish { border: 0; padding: 4px 0; background: none; color: var(--brand); font-size: 13px; }
   .tools summary { cursor: pointer; font-weight: 600; }
@@ -76,6 +77,13 @@
     <p class="hint">新通知没有待核对的截止（如撤销通知，或已核对过）时在这里处理：先找原通知已通过的截止，再找出发布变更的新通知并选定，标为已变更。新通知有待核对卡片的，也可以直接在卡片上点"原通知截止已变更？"。</p>
     <div class="row"><input id="changeQ" placeholder="原通知标题里的词，空格分开" size="28" aria-label="原通知标题里的词"><button id="changeSearch">搜索</button></div>
     <div id="changeList"></div>
+  </details>
+  <details class="card tools">
+    <summary>核对结果导出、导入</summary>
+    <p class="hint">在一个环境里核对的结果，可以导入另一个环境（例如在本机开发环境里先核对，上线后导入正式环境）。导入按"文件网址 + 截止候选"匹配：这边还没核对的按导出的结果核对；已经核对且结果相同的跳过；结果不同的不覆盖，列为冲突。已变更（延期、调整、撤销）的截止，这边还没抓到变更通知时先不导入，抓到后再导入一次即可。导入前会先预览。</p>
+    <div class="row"><button id="exportReviews">导出核对结果</button></div>
+    <div class="row"><input id="importFile" type="file" accept=".json,application/json" aria-label="选择导出的核对结果文件"><button id="importPreview">预览导入</button><button class="primary" id="importApply" hidden>确认导入</button></div>
+    <div id="importResult" class="hint"></div>
   </details>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
@@ -394,6 +402,69 @@
       $('list').append(el('div', 'empty', err.message));
     }
   }
+
+  // 核对结果导出（下载文件）、导入（先预览，确认后写入）
+  $('exportReviews').onclick = async () => {
+    $('importResult').textContent = '';
+    try {
+      const res = await fetch('/api/admin/reviews/export', { headers: headers() });
+      if (res.status === 401 || res.status === 429) throw new Error('口令不对、未配置，或输错次数过多');
+      if (!res.ok) throw new Error(`导出失败（${res.status}）`);
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `youju-reviews-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      $('importResult').textContent = `已导出 ${data.items.length} 条核对结果`;
+    } catch (err) {
+      $('importResult').textContent = err.message;
+    }
+  };
+
+  let importBody = null;
+  function showImport(result) {
+    const box = $('importResult');
+    box.textContent = '';
+    const verb = result.dryRun ? '可导入' : '已导入';
+    box.append(el('div', '', `${verb} ${result.applied} 条；已相同跳过 ${result.already} 条；冲突 ${result.conflict} 条；这边还没有文件 ${result.missingDocument} 条、还没有截止候选 ${result.missingCandidate} 条、还没有变更通知 ${result.missingTarget} 条`));
+    result.problems.forEach((p) => box.append(el('div', '', `· ${p.title}：${p.reason}`)));
+  }
+  async function sendImport(dryRun) {
+    const res = await fetch(`/api/admin/reviews/import?dry_run=${dryRun}`, {
+      method: 'POST', headers: headers(), body: JSON.stringify(importBody),
+    });
+    if (res.status === 401 || res.status === 429) throw new Error('口令不对、未配置，或输错次数过多');
+    if (res.status === 422) throw new Error('文件格式不对，请选择从核对台导出的文件');
+    if (!res.ok) throw new Error(`导入失败（${res.status}）`);
+    return res.json();
+  }
+  $('importPreview').onclick = async () => {
+    $('importApply').hidden = true;
+    const file = $('importFile').files[0];
+    if (!file) { $('importResult').textContent = '请先选择导出的核对结果文件'; return; }
+    try {
+      importBody = JSON.parse(await file.text());
+      const result = await sendImport(true);
+      showImport(result);
+      $('importApply').hidden = result.applied === 0;
+    } catch (err) {
+      $('importResult').textContent = err instanceof SyntaxError ? '文件不是有效的 JSON' : err.message;
+    }
+  };
+  $('importApply').onclick = async () => {
+    $('importApply').disabled = true;
+    try {
+      showImport(await sendImport(false));
+      $('importApply').hidden = true;
+      load(true);
+    } catch (err) {
+      $('importResult').textContent = err.message;
+    } finally {
+      $('importApply').disabled = false;
+    }
+  };
 
   $('changeSearch').onclick = () => searchChanges($('changeQ').value, $('changeList'), null);
   $('load').onclick = () => load(true);
