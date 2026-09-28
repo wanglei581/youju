@@ -19,6 +19,10 @@ LIST_WORDS = (
     "认定结果",
     "复核结果",
     "拟立项",
+    "立项公告",
+    "立项公示",
+    "立项的公示",
+    "立项的公告",
     "拟支持",
     "拟资助",
     "资助决定",
@@ -46,6 +50,7 @@ LIST_OFF_TOPIC = (
     "拟聘",
     "职称",
     "专业技术资格",
+    "任职资格",
     "考试合格",
     "考试资格",
     "考试成绩",
@@ -121,7 +126,15 @@ APPLY_WORDS = (
 )
 # 这些词单独出现时也可能是统计、检查、培训、采购、新闻等，不是让企业去申报；
 # 印发具名文件（如"印发《……评价工作细则》"）的是政策
-WEAK_APPLY_WORDS = ("组织开展", "评价工作", "大赛")
+WEAK_APPLY_WORDS = (
+    "组织开展",
+    "评价工作",
+    "大赛",
+    "认定和复核",
+    "认定工作",
+    "复核工作",
+    "评审工作",
+)
 APPLY_EXCLUDE = ("统计", "调查", "检查", "培训", "会议", "讲座", "成交", "采购", "收官")
 # 政策文件；讲座、培训、会议等活动通知里即使提到"办法"也不算政策
 POLICY_WORDS = (
@@ -135,11 +148,24 @@ POLICY_WORDS = (
     "措施",
     "若干政策",
     "实施意见",
+    "规范性文件",
+    "废止",
 )
 # 印发、征求意见的具名文件（书名号）：多是办法、方案、指南、清单等，标题被截断时也认得出
 POLICY_MARKS = ("印发《", "征求《", "关于《")
 # 撤销某个项目的方案、单个项目的方案不是政策
-POLICY_EXCLUDE = ("讲座", "培训", "会议", "活动", "招聘", "招标", "研修班", "撤销", "项目方案")
+POLICY_EXCLUDE = (
+    "讲座",
+    "培训",
+    "会议",
+    "活动",
+    "招聘",
+    "招标",
+    "研修班",
+    "撤销",
+    "项目方案",
+    "产能置换",
+)
 
 KINDS = ("申报通知", "名单", "政策", "其他")
 
@@ -189,6 +215,8 @@ def doc_kind(title: str) -> str:
     consult = _consult(title)
     if not consult and _is_list(title):
         return "名单"
+    if _has(title, DRAFT_WORDS) and not _has(title, POLICY_EXCLUDE):
+        return "政策"
     if _is_apply(title, consult):
         return "申报通知"
     if _has(title, POLICY_WORDS + POLICY_MARKS) and not _has(title, POLICY_EXCLUDE):
@@ -249,9 +277,16 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             ),
         ),
     )
+    is_draft_policy = and_(
+        not_(off_topic),
+        not_(is_list),
+        _any_in(title, DRAFT_WORDS),
+        not_(_any_in(title, POLICY_EXCLUDE)),
+    )
     is_apply = and_(
         not_(off_topic),
         not_(is_list),
+        not_(is_draft_policy),
         or_(
             _any_in(title, APPLY_WORDS),
             and_(
@@ -261,12 +296,15 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             and_(has_list, not_(consult)),
         ),
     )
-    is_policy = and_(
-        not_(off_topic),
-        not_(is_list),
-        not_(is_apply),
-        _any_in(title, POLICY_WORDS + POLICY_MARKS),
-        not_(_any_in(title, POLICY_EXCLUDE)),
+    is_policy = or_(
+        is_draft_policy,
+        and_(
+            not_(off_topic),
+            not_(is_list),
+            not_(is_apply),
+            _any_in(title, POLICY_WORDS + POLICY_MARKS),
+            not_(_any_in(title, POLICY_EXCLUDE)),
+        ),
     )
     is_other = and_(not_(is_list), not_(is_apply), not_(is_policy))
     return {"名单": is_list, "申报通知": is_apply, "政策": is_policy, "其他": is_other}
