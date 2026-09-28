@@ -593,3 +593,20 @@ def test_pending_dns_lookups_are_capped(monkeypatch) -> None:
             resolve_host("slow.gov.cn", timeout=5)
     finally:
         release.set()
+
+
+def test_empty_dns_answer_never_falls_back_to_hostname() -> None:
+    # 解析没有得到地址：按解析失败处理（重试一次），不能退回按域名连接
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("没有检查过的地址时不应发请求")
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: [],
+        real_network=True,
+    ) as f:
+        result = f._get("https://a.gov.cn/list.html")
+    assert result.status == "network_error"
+    assert "没有得到地址" in result.error

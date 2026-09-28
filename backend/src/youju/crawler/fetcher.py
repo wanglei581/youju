@@ -312,7 +312,10 @@ class PoliteFetcher:
                         error=f"{host} 解析到内网地址，不抓取",
                     )
                 request_url, headers, extensions = url, None, None
-                if real and addresses:
+                if real:
+                    # 走真实网络只连检查过的地址；网址里没有主机名就不连
+                    if not addresses:
+                        return FetchResult(url, "network_error", error="网址里没有主机名，不抓取")
                     request_url, headers, extensions = _pinned_request(url, addresses[0])
                 with client.stream(
                     "GET", request_url, headers=headers, extensions=extensions
@@ -413,6 +416,9 @@ class PoliteFetcher:
             addresses = self._resolver(host)
         except OSError as exc:
             raise httpx.ConnectError(f"域名解析失败：{exc}") from exc
+        if not addresses:
+            # 没有地址可固定：按解析失败处理，不能退回按域名连接（那样会再解析一次）
+            raise httpx.ConnectError("域名解析失败：没有得到地址")
         return None if any(non_public_address(a) for a in addresses) else list(addresses)
 
 
