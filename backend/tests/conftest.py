@@ -77,6 +77,8 @@ def _reset_admin_throttle():
 
     app_module._admin_fails.clear()
     exports._export_times.clear()
+    exports._instance_times.clear()
     yield
     app_module._admin_fails.clear()
     exports._export_times.clear()
+    exports._instance_times.clear()

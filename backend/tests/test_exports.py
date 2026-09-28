@@ -260,15 +260,21 @@ def test_exports_are_rate_limited_per_user(client, docs, monkeypatch):
     assert post("o-b") == 200  # 别的用户不受影响
 
 
-def test_export_log_never_grows_without_bound(monkeypatch):
+def test_export_limits_evict_idle_callers_and_cap_each_instance(monkeypatch):
     from youju.api import exports
 
-    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=5))
+    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=2))
+    monkeypatch.setattr(exports, "_EXPORT_KEYS_MAX", 3)
+    monkeypatch.setattr(exports, "_EXPORTS_PER_INSTANCE", 5)
+    monkeypatch.setattr(exports, "_instance_times", deque())
     now = 1000.0
-    for n in range(10001):  # 一万多个同时活跃的来源（异常流量）
-        exports._export_times[f"u:{n}"] = deque([now])
-    assert exports._allow_export("u:new", now + 1)
-    assert len(exports._export_times) == 1  # 超上限后整个清空，只剩这次的
+    assert [exports._allow_export("u:a", now), exports._allow_export("u:a", now)] == [None, None]
+    assert exports._allow_export("u:a", now) == "user"
+    for caller in ("u:b", "u:c", "u:d"):  # 记录超过上限：淘汰最久没导出的，不整个清空
+        assert exports._allow_export(caller, now + 1) is None
+    assert list(exports._export_times) == ["u:b", "u:c", "u:d"]
+    assert exports._allow_export("u:e", now + 2) == "busy"  # 这个实例 10 分钟已导出 5 次
+    assert exports._allow_export("u:e", now + 602) is None  # 过了 10 分钟又能导出
 
 
 def test_home_and_calendar_skip_restricted_sources(client, session, monkeypatch):

@@ -934,3 +934,30 @@ def test_deadline_subscription_only_for_public_documents(client, session, monkey
     source.rights_level = 1
     session.commit()
     assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
+
+
+def test_deadline_reminder_rechecks_publicity_when_sending(client, session, monkeypatch):
+    """订阅之后来源改成 2 级（只存题录）：到时不发，订阅记为失效。"""
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=1))
+    sub_id = client.post(
+        "/api/v1/me/subscriptions", json={"kind": "deadline", "templateId": "d", "docId": doc.id}
+    ).json()["id"]
+    session.get(Source, doc.source_id).rights_level = 2
+    session.commit()
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_deadline={
+            "id": "d",
+            "fields": {"title": "thing1", "date": "date2", "kind": "thing3"},
+        },
+        template_newdocs=None,
+        agreement_version="2026-09",
+    )
+
+    def forbidden(_):
+        raise AssertionError("不能公开的文件不发提醒")
+
+    assert run_notify(session, settings=config, sender=forbidden, stamp=NOW)["expired"] == 1
+    assert session.get(Subscription, sub_id).status == "expired"

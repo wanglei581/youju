@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import time as clock
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -362,10 +362,14 @@ def _docx(items: list[ExportItem], stamp: str) -> bytes:
     return output.getvalue()
 
 
-# 导出在内存里生成文件：每个用户 10 分钟最多导出这么多次，每个实例同时最多生成这么多份
+# 导出在内存里生成文件：每个用户 10 分钟最多导出这么多次（YOUJU_EXPORTS_PER_10MIN），
+# 每个实例 10 分钟最多导出这么多次、同时最多生成 4 份——资源用量有硬上限（api 服务最多 3 个实例）
 _EXPORT_WINDOW = 600.0
+_EXPORTS_PER_INSTANCE = 300
+_EXPORT_KEYS_MAX = 10000
 _EXPORT_SLOTS_WAIT = 10.0
-_export_times: dict[str, deque[float]] = {}
+_export_times: OrderedDict[str, deque[float]] = OrderedDict()
+_instance_times: deque[float] = deque()
 _export_guard = threading.Lock()
 _export_slots = threading.BoundedSemaphore(4)
 
@@ -380,29 +384,38 @@ def _caller(request: Request) -> str:
         return "ip:" + (request.client.host if request.client else "?")
 
 
-def _allow_export(caller: str, now: float) -> bool:
+def _drop_old(times: deque[float], now: float) -> None:
+    while times and now - times[0] > _EXPORT_WINDOW:
+        times.popleft()
+
+
+def _allow_export(caller: str, now: float) -> str | None:
+    """能导出返回 None，不能就返回原因：user（这个用户导出太频繁）/ busy（这个实例导出太多）。"""
     limit = get_settings().exports_per_10min
     with _export_guard:
-        if len(_export_times) > 10000:  # 防止记录无限增长：清掉 10 分钟内没导出过的
-            for key in [
-                k for k, v in _export_times.items() if not v or now - v[-1] > _EXPORT_WINDOW
-            ]:
-                del _export_times[key]
-            if len(_export_times) > 10000:  # 仍然太多（异常流量）：整个清空，宁可暂时少限一点
-                _export_times.clear()
-        times = _export_times.setdefault(caller, deque())
-        while times and now - times[0] > _EXPORT_WINDOW:
-            times.popleft()
+        _drop_old(_instance_times, now)
+        if len(_instance_times) >= _EXPORTS_PER_INSTANCE:
+            return "busy"
+        times = _export_times.pop(caller, None) or deque()
+        _drop_old(times, now)
+        _export_times[caller] = times  # 放到最后：按最近导出的先后排
         if len(times) >= limit:
-            return False
+            return "user"
         times.append(now)
-        return True
+        _instance_times.append(now)
+        # 记录太多时淘汰最久没导出的（不整个清空，别人没法借此重置某个用户的次数）
+        while len(_export_times) > _EXPORT_KEYS_MAX:
+            _export_times.popitem(last=False)
+        return None
 
 
 @router.post("/exports")
 def export_documents(payload: ExportIn, session: SessionDep, request: Request) -> Response:
-    if not _allow_export(_caller(request), clock.monotonic()):
+    refused = _allow_export(_caller(request), clock.monotonic())
+    if refused == "user":
         raise HTTPException(status_code=429, detail="导出太频繁，请 10 分钟后再试")
+    if refused == "busy":
+        raise HTTPException(status_code=503, detail="现在导出的人多，请稍后再试")
     if not _export_slots.acquire(timeout=_EXPORT_SLOTS_WAIT):
         raise HTTPException(status_code=503, detail="现在导出的人多，请稍后再试")
     try:
