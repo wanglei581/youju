@@ -75,7 +75,8 @@ class ChatClient:
                 response = self._client.post(
                     f"{self.base_url}/chat/completions", headers=headers, json=payload
                 )
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+            # 超时、连不上、对方中途断开（RemoteProtocolError）、代理出错等传输层错误都算网络失败
+            except httpx.TransportError as exc:
                 last_error = "AI 网络请求失败"
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)

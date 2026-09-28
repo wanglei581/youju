@@ -205,6 +205,8 @@ class PendingDeadlineOut(BaseModel):
     # rule：规则抽出；ai：规则没找到、AI 找到的。ai_agrees：规则候选里 AI 是否也找到了同一天
     origin: str = "rule"
     ai_agrees: bool | None = None
+    # 质检退回的：当时的存疑原因（重新核对时要看）
+    reopen_note: str | None = None
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -891,16 +893,19 @@ def reopen_deadline(
     _admin: AdminDep,
     request: Request,
 ) -> dict[str, str]:
-    """退回待核对：用户端立即不再显示这个截止，候选回到核对台。同一通知其他网址的同一截止一起退回，
-    免得它们按"同组已通过"又被自动通过。已标变更的不能退回。"""
+    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，必须由人重新核对。
+    归并组里同一截止（类型、核定日期和时间相同）已通过的副本一起退回：用户端显示的是同一个截止，
+    只退一条的话其他副本照样显示。已标变更的不能退回。"""
     row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到候选")
-    locked = _lock_candidates(session, row)
+    group = _lock_group(session, row)
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止能退回待核对")
+    note = row.audit_note if row.audit_state == "flagged" and row.audit_note else "人工退回"
+    now = datetime.now(UTC)
     reopened = 0
-    for item in locked:
+    for item in group:
         if item.status != "approved":
             continue
         item.status = "pending"
@@ -908,10 +913,10 @@ def reopen_deadline(
         item.reviewed_at = None
         item.approved_date = None
         item.approved_time = None
-        item.audit_state = None
-        item.audit_note = None
-        item.audit_at = None
-        item.audit_by = None
+        item.audit_state = "reopened"
+        item.audit_note = note
+        item.audit_at = now
+        item.audit_by = body.reviewed_by
         reopened += 1
     session.commit()
     _audit(request, "reopen", deadline_id=deadline_id, reviewer=body.reviewed_by, count=reopened)
@@ -1057,6 +1062,7 @@ def pending_deadlines(
             confidence=d.confidence,
             origin=d.origin,
             ai_agrees=d.ai_agrees,
+            reopen_note=d.audit_note if d.audit_state == "reopened" else None,
         )
         for d, doc, src in rows
     ]
@@ -1095,12 +1101,17 @@ def _apply_review(
     approved_date: date | None = None,
     approved_time: time | None = None,
 ) -> None:
-    """把核对结果写到这条候选和归并组里还没核对的同一候选副本上（免得重复核对）；不提交。"""
+    """把核对结果写到这条候选和归并组里还没核对的同一候选副本上（免得重复核对）；不提交。
+    重新核对过了，质检退回的标记一并清掉：通过的以后照常质检。"""
     twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     for item in {row, *twins}:
         item.status = status
         item.reviewed_by = reviewed_by
         item.reviewed_at = reviewed_at
+        item.audit_state = None
+        item.audit_note = None
+        item.audit_at = None
+        item.audit_by = None
         if status == "approved":
             item.approved_date = approved_date
             item.approved_time = approved_time
@@ -1528,6 +1539,11 @@ def import_reviews(
                 counts["already"] += 1
             else:
                 problem("conflict", item, "这边已核对，结果不同，未覆盖")
+            continue
+        if any(d.status == "pending" and d.audit_state == "reopened" for d in locked):
+            problem(
+                "conflict", item, "这边质检退回了这条截止，要在核对台重新核对，不按导入结果通过"
+            )
             continue
         if item.status == "changed":
             try:

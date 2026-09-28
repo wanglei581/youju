@@ -223,7 +223,7 @@ class DocumentDeadline(Base):
         ),
         CheckConstraint("origin IN ('rule', 'ai')", name="ck_document_deadline_origin"),
         CheckConstraint(
-            "audit_state IS NULL OR audit_state IN ('flagged', 'cleared')",
+            "audit_state IS NULL OR audit_state IN ('flagged', 'cleared', 'reopened')",
             name="ck_document_deadline_audit_state",
         ),
     )
@@ -254,7 +254,9 @@ class DocumentDeadline(Base):
     origin: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
     # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
     ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
-    # 质检（已通过的截止）：flagged 存疑、等人复核 / cleared 人确认无误；空表示没发现问题
+    # 质检：flagged 已通过但存疑、等人复核 / cleared 人确认无误 / reopened 质检退回、回到待核对，
+    # 必须由人重新核对（不按同组已通过自动沿用，也不按导入结果通过）；空表示没发现问题。
+    # audit_note 存疑原因；audit_at 最近一次质检的时间（AI 抽查过、标存疑、复核或退回）
     audit_state: Mapped[str | None] = mapped_column(String(8))
     audit_note: Mapped[str | None] = mapped_column(String(200))
     audit_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

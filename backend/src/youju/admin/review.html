@@ -36,6 +36,8 @@
   .ai-yes { background: var(--g-tint); color: var(--green); }
   .ai-only { background: var(--o-tint); color: var(--orange); }
   .ai-no { background: #F2F3F5; color: var(--t2); }
+  .ai-back { background: var(--r-tint); color: var(--red); }
+  .reopen { margin: 8px 0; padding: 8px 12px; background: var(--r-tint); color: var(--red); border-radius: 8px; font-size: 14px; }
   .title { display: block; margin: 8px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
   .title:hover { color: var(--brand); }
   .evidence { margin: 10px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
@@ -377,6 +379,8 @@
     if (item.origin === 'ai') meta.append(el('span', 'ai ai-only', '仅 AI 找到'));
     else if (item.ai_agrees === true) meta.append(el('span', 'ai ai-yes', 'AI 一致'));
     else if (item.ai_agrees === false) meta.append(el('span', 'ai ai-no', '仅规则找到'));
+    // 已发布过、被质检退回的：重新核对时先看当时为什么存疑
+    if (item.reopen_note) meta.append(el('span', 'ai ai-back', '质检退回'));
     const title = el('a', 'title', item.title);
     title.href = item.url;
     title.target = '_blank';
@@ -393,7 +397,9 @@
     approve.onclick = () => review(item, card, 'approve', msg);
     reject.onclick = () => review(item, card, 'reject', msg);
     edit.onclick = () => review(item, card, 'edit', msg);
-    card.append(meta, title, evidenceNode(item.evidence, item.candidate_date), row, changePanel(item));
+    card.append(meta, title);
+    if (item.reopen_note) card.append(el('div', 'reopen', `退回原因：${item.reopen_note}`));
+    card.append(evidenceNode(item.evidence, item.candidate_date), row, changePanel(item));
     return card;
   }
 

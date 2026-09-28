@@ -84,6 +84,41 @@ def test_timeout_exhausted_does_not_leak_key():
     assert "secret-key" not in str(error.value)
 
 
+def test_server_disconnect_is_retried_as_a_network_error():
+    """对方中途断开（RemoteProtocolError 不属于 NetworkError）也要重试，最后按网络失败报错。"""
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response")
+        return response('{"ok": true}')
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen",
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    assert client.complete_json("JSON", "JSON") == {"ok": True}
+
+    def always(request):
+        raise httpx.RemoteProtocolError("Server disconnected")
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen",
+        max_retries=1,
+        transport=httpx.MockTransport(always),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(AIError, match="网络"):
+        client.complete_json("JSON", "JSON")
+
+
 def test_usage_counts_every_response_and_survives_failure():
     """格式不对要重试的那几次也花了用量：都要算上，最终失败时也不丢。"""
     replies = iter(["不是 JSON", '{"ok": true}'])

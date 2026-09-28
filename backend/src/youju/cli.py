@@ -179,7 +179,7 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
 
 def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
-    from youju.ai.audit import flagged_summary, run_audit
+    from youju.ai.audit import alert_text, run_audit
     from youju.alerts import send_alert
 
     client = get_chat_client()
@@ -196,13 +196,18 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
     )
     print(f"质检：规则回查 {report.checked_by_rules} 条已发布的截止，{ai_part}")
     print(
-        f"  新发现存疑 {len(report.flagged)} 条；AI 出错 {report.errors} 份；"
+        f"  新发现存疑 {len(report.flagged)} 条；"
+        f"AI 说有误但对不上原文、没采信 {report.unverified} 条；AI 出错 {report.errors} 份；"
         f"用量：输入 {report.prompt_tokens}、输出 {report.completion_tokens} tokens"
     )
     for deadline_id, title, note in report.flagged[:20]:
         print(f"  #{deadline_id} {title[:40]}：{note}")
-    if report.flagged:
-        send_alert(flagged_summary(report))
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，AI 抽查提前停止（规则回查已做完）")
+    # 存疑和 AI 出错合成一条提醒；规则回查照常做完，所以不按任务失败退出
+    text = alert_text(report)
+    if text:
+        send_alert(text)
     return 0
 
 

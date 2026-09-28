@@ -25,7 +25,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_document_deadline_audit_state",
         "document_deadlines",
-        "audit_state IS NULL OR audit_state IN ('flagged', 'cleared')",
+        "audit_state IS NULL OR audit_state IN ('flagged', 'cleared', 'reopened')",
     )
 
 
