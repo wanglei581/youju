@@ -102,6 +102,7 @@
   // 只看哪些：先核快到期的；已过期的核了也进不了日历
   const DUE_LABEL = { '30': '30 天内截止', future: '未过期', all: '全部' };
   const due = () => $('due').value;
+  let loadSeq = 0;
   const shown = new Set(); // 已显示的候选编号，去重
 
   // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
@@ -179,9 +180,11 @@
   }
 
   async function refreshCount() {
+    const wanted = due();
     try {
-      const res = await fetch(`/api/admin/deadlines/count?due=${due()}`, { headers: headers() });
-      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+      const res = await fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() });
+      // 等待期间切换了筛选：这个计数已经过时，不用
+      if (res.ok && wanted === due()) { pending = (await res.json()).pending; setCount(); }
     } catch (e) { /* 计数刷新失败不影响核对 */ }
   }
 
@@ -385,19 +388,25 @@
   }
 
   async function load(reset) {
+    // 每次载入编个号：切换筛选或重新载入后，之前还没返回的请求结果一律丢弃，不覆盖新列表
+    const seq = ++loadSeq;
     if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
     // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
     const after = cursor ? `&before_id=${cursor}` : '';
+    const wanted = due();
     try {
       const [countRes, res] = await Promise.all([
-        fetch(`/api/admin/deadlines/count?due=${due()}`, { headers: headers() }),
-        fetch(`/api/admin/deadlines?limit=50&due=${due()}${after}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines?limit=50&due=${wanted}${after}`, { headers: headers() }),
       ]);
+      if (seq !== loadSeq) return;
       if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
       if (!res.ok) throw new Error(`载入失败（${res.status}）`);
-      pending = (await countRes.json()).pending;
-      setCount();
+      const count = (await countRes.json()).pending;
       const items = await res.json();
+      if (seq !== loadSeq) return;
+      pending = count;
+      setCount();
       if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
@@ -406,6 +415,7 @@
       if (items.length) cursor = Math.min(...items.map((item) => item.id));
       $('more').hidden = items.length < 50;
     } catch (err) {
+      if (seq !== loadSeq) return;
       $('list').textContent = '';
       $('list').append(el('div', 'empty', err.message));
     }

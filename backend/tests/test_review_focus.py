@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
-from youju.models import Document, DocumentDeadline, Source
+from youju.models import Document, DocumentDeadline, DocumentMerge, Source
 
 HEADERS = {"X-Admin-Token": "secret"}
 NOW = datetime(2026, 9, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -103,3 +103,52 @@ def test_pending_can_be_filtered_by_due_date(client, candidates) -> None:
     assert _listed(client, "all") == set(ids.values())
     bad = client.get("/api/admin/deadlines", headers=HEADERS, params={"due": "7"})
     assert bad.status_code == 422
+
+
+def test_twin_candidates_are_listed_and_counted_once_under_filter(client, session, candidates):
+    # 同一通知归并出的两个网址各有一条相同候选（类型、日期、时间、证据句都相同）：日期一样，
+    # 筛选时要么都在要么都不在，只列编号小的那条、只算一条
+    soon = session.get(DocumentDeadline, candidates["soon"])
+    master = session.get(Document, soon.document_id)
+    twin_doc = Document(
+        source_id=master.source_id,
+        url="https://kw.beijing.gov.cn/soon-copy.html",
+        url_key="kw.beijing.gov.cn/soon-copy.html",
+        title=master.title,
+        publish_date=master.publish_date,
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(twin_doc)
+    session.flush()
+    session.add(
+        DocumentMerge(duplicate_id=twin_doc.id, canonical_id=master.id, active=True, match_key="k")
+    )
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="twin".ljust(64, "x"),
+        kind=soon.kind,
+        candidate_date=soon.candidate_date,
+        candidate_time=soon.candidate_time,
+        evidence=soon.evidence,
+        confidence="高",
+        status="pending",
+    )
+    session.add(twin)
+    session.commit()
+    assert twin.id not in _listed(client, "30") and soon.id in _listed(client, "30")
+    assert _count(client, "30") == 2  # 今天 + 第 30 天（两个副本只算一条）
+    assert _count(client) == 4
+
+
+def test_paging_under_filter_misses_nothing(client, candidates):
+    # 每页一条，按编号游标翻完：30 天内的两条都出现且只出现一次
+    seen, before = [], None
+    while True:
+        params = {"limit": 1, "due": "30"} | ({"before_id": before} if before else {})
+        page = client.get("/api/admin/deadlines", headers=HEADERS, params=params).json()
+        if not page:
+            break
+        seen += [item["id"] for item in page]
+        before = min(item["id"] for item in page)
+    assert sorted(seen) == sorted([candidates["today"], candidates["soon"]])
