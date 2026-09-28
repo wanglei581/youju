@@ -409,3 +409,18 @@ def test_pruning_retries_busy_errors_and_says_the_backup_is_safe(session, db_eng
     with pytest.raises(BackupError, match="今天的备份已上传，但删除 30 天前的备份失败"):
         run_backup(db_engine, "prod-1", client=retrying, now=NOW, sleep=waits.append)
     assert waits == [5, 15]
+
+
+def test_undeleted_old_backups_are_logged(caplog) -> None:
+    """命令行把日志级别设为 INFO（cli.main）；没删掉的旧备份按 INFO 写进日志。"""
+    import logging
+
+    from youju.backup import prune
+
+    client, _, prefix = fake_cloud()
+    path = object_path(date(2026, 9, 29))
+    with caplog.at_level(logging.INFO, logger="youju.backup"):
+        assert prune(client, "prod-1", prefix + path, path, date(2026, 9, 29)) == 2
+    logged = [r for r in caplog.records if r.name == "youju.backup"]
+    assert len(logged) == 8 and all(r.levelno == logging.INFO for r in logged)
+    assert "旧备份没删掉" in logged[0].getMessage()
