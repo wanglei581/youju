@@ -7,6 +7,8 @@
 30 6 * * *  /app/backend/deploy/round.sh --notify
 30 11,15,20 * * *  /app/backend/deploy/round.sh
 30 3 * * *  /app/backend/deploy/job.sh cleanup
+# 每天备份数据库到云托管对象存储，保留 30 天（验收 A6）；失败由 job.sh 发提醒
+0 4 * * *  /app/backend/deploy/job.sh backup
 # 早上那一轮之后质检已发布的截止日期（规则回查全部，配了 AI 时抽查 20 份），存疑的提醒到群里；
 # 质检做完再发运维日报（运行情况、待办、AI 用量，配了 AI 时附上建议先核对的通知），日报里的存疑数是最新的
 0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20; /app/backend/deploy/job.sh daily-report

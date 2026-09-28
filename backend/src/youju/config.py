@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     ai_model: str = "qwen-flash"
 
     sources_csv: Path = DEFAULT_SOURCES_CSV
+    # 云托管环境 ID（如 prod-xxxx）：每天的数据库备份存到这个环境的对象存储（验收 A6）
+    cloud_env: str | None = None
 
     @model_validator(mode="after")
     def _production_identity(self) -> "Settings":

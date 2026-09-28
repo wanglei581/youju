@@ -263,6 +263,54 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     return 1 if sent is False or not usage_ok else 0
 
 
+def _cmd_backup(args: argparse.Namespace) -> int:
+    from youju.backup import BackupError, dump, run_backup
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        if args.output:
+            with args.output.open("wb") as out:
+                counts = dump(engine, out)
+            size = args.output.stat().st_size
+            print(f"已导出到 {args.output}（{size} 字节）：共 {sum(counts.values())} 条记录")
+            return 0
+        env = get_settings().cloud_env
+        if not env:
+            print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传备份")
+            return 1
+        report = run_backup(engine, env)
+    except BackupError as exc:
+        print(f"备份失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(
+        f"已备份 {sum(report.counts.values())} 条记录（{report.bytes} 字节）到 {report.path}；"
+        f"删掉 {report.pruned} 份 30 天前的备份"
+    )
+    return 0
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    from youju.backup import BackupError, restore
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        with args.file.open("rb") as src:
+            counts = restore(engine, src)
+    except BackupError as exc:
+        print(f"恢复失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"已恢复 {sum(counts.values())} 条记录，各表条数和备份一致：")
+    for name, count in counts.items():
+        print(f"  {name}: {count}")
+    return 0
+
+
 def _cmd_triage_feedback(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.triage import triage_feedback
@@ -436,6 +484,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
     p.set_defaults(func=_cmd_audit_deadlines)
+
+    p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
+    p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
+    p.set_defaults(func=_cmd_backup)
+
+    p = sub.add_parser(
+        "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
+    )
+    p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
+    p.set_defaults(func=_cmd_restore)
 
     p = sub.add_parser(
         "triage-feedback",

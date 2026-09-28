@@ -1,0 +1,265 @@
+"""数据库备份（验收 A6）：整库导出、上传到云托管对象存储、保留 30 天；恢复到迁移好的空库并核对条数。"""
+
+import gzip
+import io
+import json
+from datetime import UTC, date, datetime, time
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from sqlalchemy import make_url, select, text
+
+from youju.backup import BackupError, dump, object_path, restore, run_backup
+from youju.db import create_mysql_engine
+from youju.migrations import upgrade
+from youju.models import (
+    AICheck,
+    AIUsage,
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    Feedback,
+    Follow,
+    Source,
+    User,
+)
+
+from .conftest import TEST_DB_URL
+
+NOW = datetime(2026, 9, 28, 20, 0, tzinfo=UTC)  # 北京时间 9 月 29 日凌晨 4 点
+
+
+def populate(session):
+    source = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅",
+        column_name="通知公告",
+        url="https://kjt.shandong.gov.cn/tzgg/",
+        enabled=True,
+        parser_config={"item_selector": "ul.list li"},
+    )
+    session.add(source)
+    session.flush()
+    doc = Document(
+        source_id=source.id,
+        url="https://kjt.shandong.gov.cn/tzgg/1.html",
+        url_key="kjt.shandong.gov.cn/tzgg/1.html",
+        title="关于组织申报2026年度科技计划项目的通知",
+        publish_date=date(2026, 9, 20),
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="请各单位于2026年10月15日17:00前完成网上申报。" * 50,
+            fetched_at=NOW,
+            status="ok",
+            publish_date=date(2026, 9, 20),
+        )
+    )
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="f" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 15),
+            candidate_time=time(17, 0),
+            evidence="请各单位于2026年10月15日17:00前完成网上申报",
+            confidence="高",
+            status="approved",
+            reviewed_by="创始人",
+            reviewed_at=datetime(2026, 9, 27, 14, 34, 25, 305061, tzinfo=UTC),
+            approved_date=date(2026, 10, 15),
+            approved_time=time(17, 0),
+            ai_agrees=True,
+        )
+    )
+    user = User(openid="o-backup")
+    session.add(user)
+    session.flush()
+    session.add(Follow(user_id=user.id, name="山东科技", conditions={"region": ["山东"], "k": 1}))
+    session.add(
+        Feedback(user_id=user.id, document_id=doc.id, content="日期不对", check_result="pass")
+    )
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="kind",
+            model="qwen-flash",
+            result={"kind": "申报通知", "confidence": 0.9},
+            checked_at=NOW,
+        )
+    )
+    session.add(
+        AIUsage(
+            day=date(2026, 9, 28),
+            task="check",
+            model="qwen-flash",
+            calls=3,
+            errors=0,
+            prompt_tokens=100,
+            completion_tokens=10,
+        )
+    )
+    session.commit()
+    return doc
+
+
+@pytest.fixture
+def restore_engine(db_engine):
+    """另一个迁移好的空库，当恢复目标。"""
+    url = make_url(TEST_DB_URL).set(database="youju_test_restore")
+    server = create_mysql_engine(make_url(TEST_DB_URL).set(database=""))
+    with server.begin() as conn:
+        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
+        conn.execute(
+            text(
+                "CREATE DATABASE `youju_test_restore` CHARACTER SET utf8mb4 "
+                "COLLATE utf8mb4_0900_bin"
+            )
+        )
+    upgrade(url.render_as_string(hide_password=False))
+    engine = create_mysql_engine(url)
+    yield engine
+    engine.dispose()
+    with server.begin() as conn:
+        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
+    server.dispose()
+
+
+def test_dump_and_restore_round_trip(session, db_engine, restore_engine) -> None:
+    populate(session)
+    out = io.BytesIO()
+    counts = dump(db_engine, out, now=NOW)
+    assert counts["documents"] == 1 and counts["ai_usage"] == 1 and counts["follows"] == 1
+
+    header = json.loads(gzip.decompress(out.getvalue()).splitlines()[0])
+    assert header["format"] == "youju-backup" and header["revision"] and header["tables"] == counts
+
+    restored = restore(restore_engine, io.BytesIO(out.getvalue()))
+    assert restored == counts
+    with restore_engine.connect() as conn:
+        row = conn.execute(select(DocumentDeadline.__table__)).mappings().one()
+        assert row["candidate_time"] == time(17, 0) and row["ai_agrees"] is True
+        assert row["reviewed_at"] == datetime(2026, 9, 27, 14, 34, 25, 305061, tzinfo=UTC)
+        follow = conn.execute(select(Follow.__table__)).mappings().one()
+        assert follow["conditions"] == {"region": ["山东"], "k": 1}
+        body = conn.scalar(select(DocumentDetail.body_text))
+        assert body == "请各单位于2026年10月15日17:00前完成网上申报。" * 50
+
+    # 目标库不是空的就不恢复
+    with pytest.raises(BackupError, match="不是空的"):
+        restore(restore_engine, io.BytesIO(out.getvalue()))
+
+
+def test_restore_refuses_a_different_schema_version(session, db_engine, restore_engine) -> None:
+    populate(session)
+    out = io.BytesIO()
+    dump(db_engine, out, now=NOW)
+    lines = gzip.decompress(out.getvalue()).splitlines(keepends=True)
+    header = json.loads(lines[0])
+    header["revision"] = "0001"
+    changed = gzip.compress((json.dumps(header) + "\n").encode() + b"".join(lines[1:]))
+    with pytest.raises(BackupError, match="迁移版本"):
+        restore(restore_engine, io.BytesIO(changed))
+    with pytest.raises(BackupError, match="不是有据的备份文件"):
+        restore(restore_engine, io.BytesIO(gzip.compress(b'{"format": "x"}\n')))
+
+
+def fake_cloud(*, upload_code=0, cos_status=204):
+    """模拟云托管开放接口服务和对象存储。"""
+    seen: dict = {"deleted": [], "cos": None}
+    prefix = "cloud://prod-1.7465-prod-1-1258/"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "http://api.weixin.qq.com/tcb/uploadfile":
+            body = json.loads(request.content)
+            seen["upload"] = body
+            if upload_code:
+                return httpx.Response(200, json={"errcode": upload_code, "errmsg": "no"})
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "url": "https://cos.example.test/upload",
+                    "token": "tok",
+                    "authorization": "sig",
+                    "file_id": prefix + body["path"],
+                    "cos_file_id": "cosid",
+                },
+            )
+        if url == "https://cos.example.test/upload":
+            seen["cos"] = request.content
+            return httpx.Response(cos_status)
+        if url == "http://api.weixin.qq.com/tcb/batchdeletefile":
+            ids = json.loads(request.content)["fileid_list"]
+            seen["deleted"] = ids
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "delete_list": [
+                        {"fileid": i, "status": 0 if n < 2 else -1} for n, i in enumerate(ids)
+                    ],
+                },
+            )
+        return httpx.Response(404)
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen, prefix
+
+
+def test_run_backup_uploads_and_prunes_old_copies(session, db_engine) -> None:
+    populate(session)
+    client, seen, prefix = fake_cloud()
+    report = run_backup(db_engine, "prod-1", client=client, now=NOW)
+    assert report.path == "backups/youju-20260929.jsonl.gz"  # 北京时间的日期
+    assert seen["upload"] == {"env": "prod-1", "path": report.path}
+    assert report.file_id == prefix + report.path and report.bytes > 0
+    cos = seen["cos"]
+    for field_name, value in (
+        (b"key", report.path.encode()),
+        (b"Signature", b"sig"),
+        (b"x-cos-security-token", b"tok"),
+        (b"x-cos-meta-fileid", b"cosid"),
+    ):
+        assert b'name="' + field_name + b'"' in cos and value in cos
+    assert b'name="file"' in cos
+    # 删掉 31–40 天前的（本来就没有的不算错）
+    assert seen["deleted"][0] == prefix + object_path(date(2026, 8, 29))
+    assert seen["deleted"][-1] == prefix + object_path(date(2026, 8, 20))
+    assert len(seen["deleted"]) == 10 and report.pruned == 2
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [({"upload_code": 85088}, "errcode 85088"), ({"cos_status": 403}, "HTTP 403")],
+)
+def test_backup_failures_are_reported(session, db_engine, kwargs, message) -> None:
+    populate(session)
+    client, _, _ = fake_cloud(**kwargs)
+    with pytest.raises(BackupError, match=message):
+        run_backup(db_engine, "prod-1", client=client, now=NOW)
+
+
+def test_cli_backup_to_file_and_restore_checks(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli
+
+    populate(session)
+    settings = SimpleNamespace(database_url=TEST_DB_URL, cloud_env=None)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    target = tmp_path / "backup.jsonl.gz"
+    assert cli.main(["backup", "--output", str(target)]) == 0
+    header = json.loads(gzip.decompress(target.read_bytes()).splitlines()[0])
+    assert header["tables"]["documents"] == 1
+    assert cli.main(["backup"]) == 1  # 没设云托管环境 ID
+    assert "YOUJU_CLOUD_ENV" in capsys.readouterr().out
+    assert cli.main(["restore", str(target)]) == 1  # 当前库不是空的，不恢复
+    assert "不是空的" in capsys.readouterr().out
+    assert session.scalar(select(Document.id)) is not None
