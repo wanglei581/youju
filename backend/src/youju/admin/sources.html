@@ -148,8 +148,9 @@
     const rules = el('section', 'card');
     rules.append(el('h2', '', '抓取规则'));
     const choice = el('div', 'choice');
-    const genericOk = data.generic_count >= 3;
-    const aiOk = data.ai_count >= 3 && data.ai_config;
+    // 服务端只给试跑通过（识别出至少 3 条带日期的条目）的规则发凭证，接入时要带上
+    const genericOk = Boolean(data.generic_token);
+    const aiOk = Boolean(data.ai_token && data.ai_config);
     const pickGeneric = el('input'); pickGeneric.type = 'radio'; pickGeneric.name = 'rule'; pickGeneric.disabled = !genericOk;
     const pickAi = el('input'); pickAi.type = 'radio'; pickAi.name = 'rule'; pickAi.disabled = !aiOk;
     const g = el('label'); g.append(pickGeneric, ` 通用规则：识别出 ${data.generic_count} 条`);
@@ -200,6 +201,7 @@
             url: data.url, level: level.value, province: province.value, dept: dept.value.trim(),
             dept_full_name: full.value.trim(), column_name: column.value.trim(),
             parser_config: pickAi.checked ? data.ai_config : {}, reviewed_by: reviewer,
+            trial_token: pickAi.checked ? data.ai_token : data.generic_token,
           }),
         });
         if (!res.ok) throw new Error(await errorFor(res));

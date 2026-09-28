@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -43,6 +45,7 @@ from youju.models import (
     ListEntry,
     Source,
 )
+from youju.sources.onboard import MIN_ITEMS
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -936,14 +939,17 @@ def audit_console() -> str:
 
 # ---------- 来源接入（D-023 来源接入 Agent）：试跑 → 人确认 → 接入 ----------
 
-# 同一网站两次试跑至少间隔这么久（秒）：试跑由人点按钮触发，也不能连续打扰对方网站
+# 同一网站两次试跑至少间隔这么久（秒）：试跑由人点按钮触发，也不能连续打扰对方网站。
+# admin 服务固定 1 个实例，进程内记录即可；试跑中的重定向每一跳由抓取器按 3 秒限速
 _TRIAL_INTERVAL = 10.0
 _trial_hosts: dict[str, float] = {}
 _trial_guard = threading.Lock()
+# 试跑凭证有效期（秒）：接入时必须带上试跑给出的凭证，证明这个网址和规则确实试跑通过
+_TRIAL_TTL = 1800
 
 
 class SourceTrialIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     url: str = Field(min_length=8, max_length=URL_KEY_MAX)
     # 通用规则识别出来了，人仍想看看 AI 写的抓取规则
     ai_rule: bool = False
@@ -968,10 +974,13 @@ class SourceTrialOut(BaseModel):
     ai_items: list[TrialItemOut]
     ai_note: str | None
     proposal: dict[str, str]
+    # 试跑通过的规则各给一张凭证（识别出至少 3 条带日期的条目才给），接入时带上
+    generic_token: str | None = None
+    ai_token: str | None = None
 
 
 class SourceCreateIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     url: str = Field(min_length=8, max_length=URL_KEY_MAX)
     level: Literal["国家级", "省级", "市级"]
     province: str
@@ -980,6 +989,7 @@ class SourceCreateIn(BaseModel):
     column_name: str = Field(min_length=2, max_length=64)
     # 空：用通用规则；否则是试跑时 AI 写、人确认过的 CSS 选择器
     parser_config: dict[str, str] = Field(default_factory=dict)
+    trial_token: str = Field(min_length=10, max_length=200)
     reviewed_by: str = Field(min_length=1, max_length=80)
 
     @model_validator(mode="after")
@@ -996,12 +1006,69 @@ class SourceCreateIn(BaseModel):
 
 
 def _source_url(url: str) -> str:
+    """校验并规范化栏目网址（去掉 #片段、协议和域名小写）；格式不对或不是政府网站返回 422。"""
     from youju.crawler.detail_service import _government_url
+    from youju.crawler.urls import normalize_url
 
-    url = url.strip()
-    if urlsplit(url).scheme not in ("http", "https") or not _government_url(url):
+    raw = url.strip()
+    try:
+        parts = urlsplit(raw)
+        parts.port  # noqa: B018  端口不合法时这里报错
+        normalized = normalize_url(raw, raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="网址格式不对") from exc
+    if (
+        not normalized
+        or parts.scheme.lower() not in ("http", "https")
+        or not _government_url(normalized)
+    ):
         raise HTTPException(status_code=422, detail="只接政府网站（域名以 .gov.cn 结尾）的栏目网址")
-    return url
+    return normalized
+
+
+def _existing_source(session: Session, url: str) -> int | None:
+    """已有来源里同一栏目的编号：按抓取去重用的规范键比，
+    index.html 和目录、http 和 https 算同一个。"""
+    from youju.crawler.urls import url_key
+
+    key = url_key(url)
+    for source_id, source_url in session.execute(select(Source.id, Source.url)):
+        try:
+            if url_key(source_url) == key:
+                return source_id
+        except ValueError:
+            continue
+    return None
+
+
+def _trial_mac(url: str, config: dict[str, str], issued: int) -> str:
+    secret = hmac.new(
+        (get_settings().admin_token or "").encode(), b"youju-source-trial", hashlib.sha256
+    ).digest()
+    payload = json.dumps(
+        {"url": url, "config": config, "issued": issued},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _trial_token(url: str, config: dict[str, str]) -> str:
+    issued = int(clock.time())
+    return f"{issued}.{_trial_mac(url, config, issued)}"
+
+
+def _trial_passed(token: str, url: str, config: dict[str, str]) -> bool:
+    """凭证是试跑给这个网址、这套规则的，且没过期。"""
+    issued_text, _, mac = token.partition(".")
+    try:
+        issued = int(issued_text)
+    except ValueError:
+        return False
+    if not 0 <= clock.time() - issued <= _TRIAL_TTL:
+        return False
+    return compare_digest(mac, _trial_mac(url, config, issued))
 
 
 def _trial_fetcher():
@@ -1023,7 +1090,7 @@ def source_trial(
     from youju.sources.onboard import trial
 
     url = _source_url(body.url)
-    existing = session.scalar(select(Source.id).where(Source.url == url))
+    existing = _existing_source(session, url)
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"这个栏目已经在来源里（编号 {existing}）")
     host = urlsplit(url).hostname or ""
@@ -1061,6 +1128,7 @@ def source_trial(
         ai=len(result.ai_items),
     )
     proposal = result.proposal
+    ok = result.status == "ok"
     return SourceTrialOut(
         url=url,
         final_url=result.final_url,
@@ -1080,6 +1148,8 @@ def source_trial(
             "dept_full_name": proposal.dept_full_name,
             "column_name": proposal.column_name,
         },
+        generic_token=_trial_token(url, {}) if ok and len(result.generic) >= MIN_ITEMS else None,
+        ai_token=_trial_token(url, result.ai_config) if ok and result.ai_config else None,
     )
 
 
@@ -1092,9 +1162,14 @@ def create_source(
     from youju.sources.onboard import valid_config
 
     url = _source_url(body.url)
-    if session.scalar(select(Source.id).where(Source.url == url)) is not None:
-        raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
     config = valid_config(body.parser_config) if body.parser_config else {}
+    if not _trial_passed(body.trial_token, url, config):
+        raise HTTPException(
+            status_code=422,
+            detail="请先试跑这个网址，用试跑通过的规则接入（试跑结果 30 分钟内有效）",
+        )
+    if _existing_source(session, url) is not None:
+        raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
     source = Source(
         url=url,
         level=body.level,

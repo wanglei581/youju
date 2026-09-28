@@ -190,8 +190,15 @@ def propose(client: ChatClient | None, facts: PageFacts, items: list[ListItem]) 
     return proposal
 
 
+# 检查选择器能不能真的运行用的空白页面（编译通过的选择器运行时仍可能出错，如带命名空间的）
+_PROBE = lxml.html.document_fromstring(
+    "<html><body><ul><li><a href='/'>x</a></li></ul></body></html>"
+)
+
+
 def valid_config(raw: object) -> dict | None:
-    """抓取规则：只收三个键，都是合法的 CSS 选择器，必须有 item_selector；不合规返回 None。"""
+    """抓取规则：只收三个键，都是能运行的标准 CSS 选择器（不带命名空间），必须有 item_selector；
+    不合规返回 None。"""
     if not isinstance(raw, dict) or set(raw) - set(CONFIG_KEYS):
         return None
     config: dict[str, str] = {}
@@ -199,10 +206,10 @@ def valid_config(raw: object) -> dict | None:
         value = raw.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             continue
-        if not isinstance(value, str) or len(value) > _SELECTOR_MAX:
+        if not isinstance(value, str) or len(value) > _SELECTOR_MAX or "|" in value:
             return None
         try:
-            CSSSelector(value.strip())
+            CSSSelector(value.strip())(_PROBE)
         except (SelectorError, etree.XPathError):
             return None
         config[key] = value.strip()
@@ -256,7 +263,10 @@ def ai_rule(
     )
     if config is None:
         return None, [], "AI 写的规则不是合法的 CSS 选择器"
-    items = extract_items(html, page_url, config)
+    try:
+        items = extract_items(html, page_url, config)
+    except (SelectorError, etree.XPathError, ValueError):
+        return None, [], "AI 写的规则运行出错"
     if len(items) < MIN_ITEMS:
         return None, [], f"AI 写的规则只识别出 {len(items)} 条带日期的条目"
     return config, items, None

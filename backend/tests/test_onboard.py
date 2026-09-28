@@ -203,11 +203,15 @@ def test_trial_endpoint_checks_the_url_and_is_polite(api, session) -> None:
     )
     assert post("https://example.com/news/").status_code == 422  # 只接政府网站
     assert post("ftp://kw.beijing.gov.cn/x").status_code == 422
-    res = post(URL)
+    assert post("https://[kw.beijing.gov.cn/x").status_code == 422  # 格式不对不报 500
+    assert post("https://kw.beijing.gov.cn:99999/x").status_code == 422
+    res = post("  https://KW.beijing.gov.cn/col/col736/index.html#top  ")
     assert res.status_code == 200
     body = res.json()
+    assert body["url"] == URL  # 去掉空白和 #片段、域名小写
     assert body["status"] == "ok" and body["generic_count"] >= 3 and len(body["generic"]) <= 10
     assert body["proposal"]["dept_full_name"] == SITE and body["ai_enabled"] is False
+    assert body["generic_token"] and body["ai_token"] is None
     assert post(URL).status_code == 429  # 同一网站 10 秒内只试跑一次
     assert fetcher.fetched == [URL]
     assert client.post("/api/admin/sources/trial", json={"url": URL}).status_code == 401
@@ -219,46 +223,69 @@ def test_trial_endpoint_checks_the_url_and_is_polite(api, session) -> None:
             dept="科技",
             dept_full_name=SITE,
             column_name="通知公告",
-            url="https://kw.beijing.gov.cn/col/col737/index.html",
+            url="https://kw.beijing.gov.cn/col/col737/",
             parser_config={},
         )
     )
     session.commit()
-    assert post("https://kw.beijing.gov.cn/col/col737/index.html").status_code == 409
+    # 目录和 index.html、http 和 https 算同一个栏目
+    assert post("http://kw.beijing.gov.cn/col/col737/index.html").status_code == 409
 
 
 def test_trial_endpoint_records_ai_usage(api, session, monkeypatch) -> None:
     client, _ = api
-    ai, _ = fake_ai([{"level": "省级", "province": "北京"}])
+    ai, _ = fake_ai([{"level": "省级", "province": "北京"}, RULE])
     monkeypatch.setattr("youju.ai.get_chat_client", lambda: ai)
-    body = client.post("/api/admin/sources/trial", headers=HEADERS, json={"url": URL}).json()
+    body = client.post(
+        "/api/admin/sources/trial", headers=HEADERS, json={"url": URL, "ai_rule": True}
+    ).json()
     assert body["ai_enabled"] is True and body["proposal"]["province"] == "北京"
+    assert body["ai_config"] == RULE and body["ai_token"] and body["generic_token"]
     usage = session.scalar(select(AIUsage).where(AIUsage.task == "onboard"))
-    assert (usage.calls, usage.prompt_tokens) == (1, 40)
+    assert (usage.calls, usage.prompt_tokens) == (2, 80)
 
 
-def test_create_source_after_a_person_confirms(api, session) -> None:
+BASE = {
+    "url": URL,
+    "level": "省级",
+    "province": "北京",
+    "dept": "科技",
+    "dept_full_name": SITE,
+    "column_name": "通知公告",
+    "parser_config": RULE,
+    "reviewed_by": "创始人",
+}
+
+
+def test_create_source_needs_a_passed_trial_of_the_same_url_and_rule(api, session) -> None:
     client, _ = api
-    base = {
-        "url": URL,
-        "level": "省级",
-        "province": "北京",
-        "dept": "科技",
-        "dept_full_name": SITE,
-        "column_name": "通知公告",
-        "parser_config": RULE,
-        "reviewed_by": "创始人",
-    }
+    token = app_module._trial_token(URL, RULE)
 
     def create(**changes):
-        return client.post("/api/admin/sources", headers=HEADERS, json={**base, **changes})
+        body = {**BASE, "trial_token": token, **changes}
+        return client.post("/api/admin/sources", headers=HEADERS, json=body)
 
     assert create(province="北京市").status_code == 422  # 要从列表里选
     assert create(level="国家级").status_code == 422  # 国家级只对应"国家"
     assert create(parser_config={"item_selector": "ul["}).status_code == 422
+    assert create(parser_config={"item_selector": "ns|li"}).status_code == 422
     assert create(url="https://example.com/list/").status_code == 422
-    assert create(reviewed_by="").status_code == 422
-    res = create()
+    assert create(reviewed_by="   ").status_code == 422  # 去掉空白后再校验
+    assert create(dept_full_name="  ").status_code == 422
+    # 没试跑、凭证是别的网址或别的规则的、凭证过期，都不能接入
+    assert create(trial_token="1.abc" * 3).status_code == 422
+    assert create(parser_config={}).status_code == 422  # 凭证是给 AI 规则的，不能换成通用规则
+    other = app_module._trial_token("https://kw.beijing.gov.cn/col/col999/", RULE)
+    assert create(trial_token=other).status_code == 422
+    assert create(url=URL + "#x").status_code == 201  # 同一网址（去掉 #片段后）
+    assert create().status_code == 409  # 已经接入过
+
+
+def test_create_source_after_a_person_confirms(api, session, monkeypatch) -> None:
+    client, _ = api
+    trial_body = client.post("/api/admin/sources/trial", headers=HEADERS, json={"url": URL}).json()
+    body = {**BASE, "parser_config": {}, "trial_token": trial_body["generic_token"]}
+    res = client.post("/api/admin/sources", headers=HEADERS, json=body)
     assert res.status_code == 201
     source = session.get(Source, res.json()["id"])
     assert (source.url, source.dept_full_name, source.enabled, source.fetch_mode) == (
@@ -267,10 +294,15 @@ def test_create_source_after_a_person_confirms(api, session) -> None:
         True,
         "static",
     )
-    assert source.parser_config == RULE and source.rights_level == 1
+    assert source.parser_config == {} and source.rights_level == 1
     assert (
         source.verification_status.startswith("已验证") and "创始人" in source.verification_status
     )
-    assert create().status_code == 409  # 已经接入过
-    generic = create(url="https://kw.beijing.gov.cn/col/col738/index.html", parser_config={})
-    assert session.get(Source, generic.json()["id"]).parser_config == {}
+
+    # 试跑结果 30 分钟内有效
+    later = "https://kw.beijing.gov.cn/col/col740/"
+    token = app_module._trial_token(later, {})
+    real = app_module.clock.time
+    monkeypatch.setattr(app_module.clock, "time", lambda: real() + 1801)
+    body = {**BASE, "url": later, "parser_config": {}, "trial_token": token}
+    assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 422
