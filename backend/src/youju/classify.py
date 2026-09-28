@@ -65,7 +65,12 @@ LIST_OFF_TOPIC = (
     "督察",
     "销号",
     "重大事项变更",
+    "收费",
+    "监督检查",
 )
+# 招聘是个人事项：不管标题怎么写，都不是企业申报，也不列进名单。
+# 职称申报通知仍算申报通知（科技服务机构常代办，#43 定的规则），职称名单则按上面的规则归"其他"
+PERSONAL_WORDS = ("招聘",)
 # 征求意见：政策草案（写了"征求意见稿"），或只凭"公示"二字才像名单的，不算名单，
 # 按其他规则判断，与其他征求意见稿一样有政策字样的归政策。例如"关于《XX管理办法》
 # 公开征求社会意见的公示""关于企业证照办理优化措施公开及办理意见建议的公示"。
@@ -80,7 +85,20 @@ LIST_RESULT_HINTS = ("公示", "公布", "拟", "结果", "决定")
 # 标题写"公布"、列的是项目或单位、又不是具名文件（没有书名号）或申报通知的，也是名单，
 # 如"关于公布……先行先试联合体及项目的通知"
 PUBLISH_WORDS = ("公布",)
-PUBLISH_OBJECTS = ("项目", "企业", "单位", "机构", "联合体", "基地", "平台")
+PUBLISH_OBJECTS = (
+    "项目",
+    "企业",
+    "单位",
+    "机构",
+    "联合体",
+    "基地",
+    "平台",
+    "中心",
+    "示范",
+    "车间",
+    "工厂",
+    "园区",
+)
 # 公布的是标准、目录、清单、指南等文件时不算名单
 PUBLISH_EXCLUDE = ("标准", "目录", "清单", "指南")
 # 申报通知：组织申报、征集、推荐、遴选、申领、揭榜、参赛，以及发放各类服务券
@@ -92,6 +110,7 @@ APPLY_WORDS = (
     "评选",
     "报名",
     "申请工作",
+    "申请的通知",
     "申领",
     "揭榜",
     "服务券",
@@ -118,7 +137,7 @@ POLICY_WORDS = (
     "实施意见",
 )
 # 印发、征求意见的具名文件（书名号）：多是办法、方案、指南、清单等，标题被截断时也认得出
-POLICY_MARKS = ("印发《", "征求《")
+POLICY_MARKS = ("印发《", "征求《", "关于《")
 # 撤销某个项目的方案、单个项目的方案不是政策
 POLICY_EXCLUDE = ("讲座", "培训", "会议", "活动", "招聘", "招标", "研修班", "撤销", "项目方案")
 
@@ -165,7 +184,7 @@ def _consult(title: str) -> bool:
 
 
 def doc_kind(title: str) -> str:
-    if _off_topic(title):
+    if _off_topic(title) or _has(title, PERSONAL_WORDS):
         return "其他"
     consult = _consult(title)
     if not consult and _is_list(title):
@@ -209,7 +228,10 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
         not_(title.contains("《", autoescape=True)),
         not_(_any_in(title, APPLY_WORDS + PUBLISH_EXCLUDE + POLICY_WORDS)),
     )
-    off_topic = and_(or_(has_list, publish_list), _any_in(title, LIST_OFF_TOPIC))
+    off_topic = or_(
+        and_(or_(has_list, publish_list), _any_in(title, LIST_OFF_TOPIC)),
+        _any_in(title, PERSONAL_WORDS),
+    )
     consult = or_(
         _any_in(title, DRAFT_WORDS),
         and_(_any_in(title, CONSULT_WORDS), not_(_any_in(title, STRONG_LIST_WORDS))),
