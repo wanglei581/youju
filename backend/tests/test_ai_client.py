@@ -131,6 +131,7 @@ def test_usage_counts_every_response_and_survives_failure():
     )
     assert client.complete_json("JSON", "x") == {"ok": True}
     assert client.last_usage["prompt_tokens"] == 2
+    assert client.totals["prompt_tokens"] == 2  # 重试的那次也记进累计用量
 
     failing = ChatClient(
         "https://example.test",
@@ -143,6 +144,7 @@ def test_usage_counts_every_response_and_survives_failure():
     with pytest.raises(AIError):
         failing.complete_json("JSON", "x")
     assert failing.last_usage["prompt_tokens"] == 2
+    assert failing.totals == {"calls": 1, "errors": 1, "prompt_tokens": 2, "completion_tokens": 0}
 
 
 def test_usage_in_error_responses_is_counted():

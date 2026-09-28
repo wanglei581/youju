@@ -249,11 +249,12 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
     client = get_chat_client()
     usage_ok = False
+    now = datetime.now(UTC)  # 日报和 AI 建议用同一个时间，跨午夜也按同一天算
     try:
         with session_factory()() as session:
-            digest = build_digest(session)
+            digest = build_digest(session, now=now)
             # 配了 AI 时请它从待核对的通知里挑几份建议先核对；没配或出错时日报照发
-            picks = pick_for_review(session, client) if client is not None else []
+            picks = pick_for_review(session, client, now=now) if client is not None else []
     finally:
         usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
