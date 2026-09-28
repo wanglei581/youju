@@ -360,3 +360,39 @@ def test_upload_retries_busy_errors_but_not_setup_errors(session, db_engine) -> 
     with pytest.raises(BackupError, match="85088"):
         run_backup(db_engine, "prod-1", client=client, now=NOW, sleep=waits.append)
     assert waits == []  # 没开通、没登记接口这类错误不重试
+
+
+def test_bad_header_is_reported_as_a_broken_file(restore_engine) -> None:
+    for header in (
+        {"format": "youju-backup", "version": 1, "revision": "0007", "tables": 5},
+        {"format": "youju-backup", "version": 1, "revision": 7, "tables": {}},
+        {"format": "youju-backup", "version": 1, "revision": "0007", "tables": {"users": "1"}},
+    ):
+        data = gzip.compress((json.dumps(header) + "\n").encode())
+        with pytest.raises(BackupError, match="说明行格式不对"):
+            restore(restore_engine, io.BytesIO(data))
+
+
+def test_pruning_retries_busy_errors_and_says_the_backup_is_safe(session, db_engine) -> None:
+    populate(session)
+    client, _, _ = fake_cloud()
+    transport = client._transport
+    answers = iter([503, None])
+
+    def flaky(request):
+        if str(request.url).endswith("/tcb/batchdeletefile"):
+            status = next(answers, 503)
+            if status:
+                return httpx.Response(status)
+        return transport.handle_request(request)
+
+    waits = []
+    retrying = httpx.Client(transport=httpx.MockTransport(flaky))
+    report = run_backup(db_engine, "prod-1", client=retrying, now=NOW, sleep=waits.append)
+    assert report.pruned == 2 and waits == [5]
+
+    answers = iter([])  # 一直 503
+    waits.clear()
+    with pytest.raises(BackupError, match="今天的备份已上传，但删除 30 天前的备份失败"):
+        run_backup(db_engine, "prod-1", client=retrying, now=NOW, sleep=waits.append)
+    assert waits == [5, 15]

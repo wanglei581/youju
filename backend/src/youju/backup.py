@@ -233,6 +233,11 @@ def restore(engine: Engine, src: IO[bytes]) -> dict[str, int]:
                 or header.get("version") != VERSION
             ):
                 raise BackupError("不是有据的备份文件，或格式版本不认识")
+            counts_ok = isinstance(header.get("tables"), dict) and all(
+                isinstance(k, str) and isinstance(v, int) for k, v in header["tables"].items()
+            )
+            if not counts_ok or not isinstance(header.get("revision"), (str, type(None))):
+                raise BackupError("备份文件的说明行格式不对")
             with engine.connect() as conn:
                 # 锁住全部表：检查空库到写完提交之间，别的程序（如定时任务）写不进来
                 conn.execute(text(f"LOCK TABLES {locks}"))
@@ -251,7 +256,7 @@ def restore(engine: Engine, src: IO[bytes]) -> dict[str, int]:
                     conn.commit()
     except BackupError:
         raise
-    except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise BackupError("备份文件损坏或不完整") from exc
     except SQLAlchemyError as exc:
         raise BackupError(f"写入目标库失败：{exc.__class__.__name__}") from exc
@@ -317,6 +322,18 @@ def prune(client: httpx.Client, env: str, file_id: str, path: str, today: date) 
     return sum(1 for item in data.get("delete_list", []) if item.get("status") == 0)
 
 
+def _retrying(action: Callable[[], Any], sleep: Callable[[float], None]) -> Any:
+    """网络中断、服务繁忙时等 5 秒、15 秒各重试一次；其他错误直接抛出。"""
+    for wait in (*_RETRY_WAITS, None):
+        try:
+            return action()
+        except BackupError as exc:
+            if not exc.retryable or wait is None:
+                raise
+            sleep(wait)
+    raise AssertionError("不会走到这里")
+
+
 def run_backup(
     engine: Engine,
     env: str,
@@ -325,7 +342,7 @@ def run_backup(
     now: datetime | None = None,
     sleep: Callable[[float], None] = clock.sleep,
 ) -> BackupReport:
-    """导出整库、上传到对象存储（网络中断、服务繁忙时重试两次）、删掉 30 天前的。
+    """导出整库、上传到对象存储、删掉 30 天前的（上传和删除遇到网络中断、服务繁忙都重试两次）。
     失败抛 BackupError（由 job.sh 发提醒）。"""
     now = now or datetime.now(UTC)
     today = now.astimezone(BEIJING).date()
@@ -338,15 +355,14 @@ def run_backup(
             with local.open("wb") as out:
                 report.counts = dump(engine, out, now=now)
             report.bytes = local.stat().st_size
-            for wait in (*_RETRY_WAITS, None):
-                try:
-                    report.file_id = upload(client, env, report.path, local)
-                    break
-                except BackupError as exc:
-                    if not exc.retryable or wait is None:
-                        raise
-                    sleep(wait)
-        report.pruned = prune(client, env, report.file_id, report.path, today)
+            report.file_id = _retrying(lambda: upload(client, env, report.path, local), sleep)
+        try:
+            report.pruned = _retrying(
+                lambda: prune(client, env, report.file_id, report.path, today), sleep
+            )
+        except BackupError as exc:
+            # 今天的备份已经上传好了；旧的没删掉也要提醒（后面 9 天还会再删）
+            raise BackupError(f"今天的备份已上传，但删除 30 天前的备份失败：{exc}") from exc
     finally:
         if own:
             client.close()
