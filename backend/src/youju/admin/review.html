@@ -32,6 +32,10 @@
   .k-recommend { background: var(--o-tint); color: var(--orange); }
   .k-material { background: var(--g-tint); color: var(--green); }
   .conf { font-size: 12px; color: var(--t3); }
+  .ai { padding: 0 6px; border-radius: 4px; font-size: 12px; }
+  .ai-yes { background: var(--g-tint); color: var(--green); }
+  .ai-only { background: var(--o-tint); color: var(--orange); }
+  .ai-no { background: #F2F3F5; color: var(--t2); }
   .title { display: block; margin: 8px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
   .title:hover { color: var(--brand); }
   .evidence { margin: 10px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
@@ -367,6 +371,10 @@
     const card = el('section', 'card');
     const meta = el('div', 'meta');
     meta.append(el('span', `tag ${KIND_CLASS[item.kind] || ''}`, item.kind), el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), el('span', 'conf', `置信度：${item.confidence}`));
+    // AI 和规则互相印证：只是参考，通过前仍要对照原文
+    if (item.origin === 'ai') meta.append(el('span', 'ai ai-only', '仅 AI 找到'));
+    else if (item.ai_agrees === true) meta.append(el('span', 'ai ai-yes', 'AI 一致'));
+    else if (item.ai_agrees === false) meta.append(el('span', 'ai ai-no', '仅规则找到'));
     const title = el('a', 'title', item.title);
     title.href = item.url;
     title.target = '_blank';

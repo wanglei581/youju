@@ -149,6 +149,34 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ai_check(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.pipeline import run_ai_checks
+
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过 AI 检查，照常用规则")
+        return 0
+    with client, session_factory()() as session:
+        report = run_ai_checks(session, client, limit=args.limit)
+    print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(f"  类型：和规则一致 {report.kind_agree} 份，不一致 {len(report.kind_disagree)} 份")
+    print(
+        f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    for doc_id, title, rule, ai_kind in report.kind_disagree[:20]:
+        print(f"  类型不一致 #{doc_id} 规则={rule} AI={ai_kind}：{title[:60]}")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0
+
+
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
     from youju.lists.service import parse_lists
 
@@ -245,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
+
+    p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
+    p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")
+    p.set_defaults(func=_cmd_ai_check)
 
     p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
     p.add_argument(

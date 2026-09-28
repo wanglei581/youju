@@ -18,6 +18,8 @@ fi
 "$D/job.sh" crawl && "$D/job.sh" check-sources
 "$D/job.sh" fetch-details --limit 300 --workers 4
 "$D/job.sh" extract-deadlines
+# 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
+"$D/job.sh" ai-check --limit 300
 "$D/job.sh" parse-lists
 [ "$1" = "--notify" ] && "$D/job.sh" notify
 exit 0

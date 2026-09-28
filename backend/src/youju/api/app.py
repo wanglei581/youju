@@ -194,6 +194,9 @@ class PendingDeadlineOut(BaseModel):
     candidate_time: str | None
     evidence: str
     confidence: str
+    # rule：规则抽出；ai：规则没找到、AI 找到的。ai_agrees：规则候选里 AI 是否也找到了同一天
+    origin: str = "rule"
+    ai_agrees: bool | None = None
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -782,6 +785,8 @@ def pending_deadlines(
             candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
             evidence=d.evidence,
             confidence=d.confidence,
+            origin=d.origin,
+            ai_agrees=d.ai_agrees,
         )
         for d, doc, src in rows
     ]

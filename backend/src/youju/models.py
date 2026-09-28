@@ -213,6 +213,7 @@ class DocumentDeadline(Base):
             " AND changed_to_document_id IS NOT NULL)",
             name="ck_document_deadline_changed",
         ),
+        CheckConstraint("origin IN ('rule', 'ai')", name="ck_document_deadline_origin"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -237,10 +238,34 @@ class DocumentDeadline(Base):
     changed_by: Mapped[str | None] = mapped_column(String(80))
     changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    # 候选从哪来：rule（规则抽取）/ ai（规则没找到、AI 找到的）。AI 找到的也要人工核对
+    origin: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
+    ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
 
     document: Mapped[Document] = relationship(
         back_populates="deadlines", foreign_keys=[document_id]
     )
+
+
+class AICheck(Base):
+    """AI 对一份文件做过的一项检查（kind 类型判断 / deadlines 截止抽取）：结果、用量和出错原因。
+
+    每份文件每项只留最新一次；出错的隔一段时间重试。只发政府公开文件给 AI，不含用户数据。
+    """
+
+    __tablename__ = "ai_checks"
+    __table_args__ = (UniqueConstraint("document_id", "task", name="uq_ai_check_task"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    task: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict | list | None] = mapped_column(JSONType)
+    error: Mapped[str | None] = mapped_column(String(200))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class ListParse(Base):
