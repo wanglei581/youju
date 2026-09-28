@@ -37,7 +37,9 @@ def scale(url: str, times: int) -> int:
             picked = ", ".join(replace.get(c, f"`{c}`") for c in cols)
             names = ", ".join(f"`{c}`" for c in cols)
             conn.execute(
-                text(f"INSERT INTO `{table}` ({names}) SELECT {picked} FROM `{table}` WHERE {where}")
+                text(
+                    f"INSERT INTO `{table}` ({names}) SELECT {picked} FROM `{table}` WHERE {where}"
+                )
             )
 
         for k in range(1, times):
@@ -93,12 +95,24 @@ def main() -> int:
         "首页": "/api/v1/home",
         "搜索：不限条件": "/api/v1/search?time=" + quote("不限"),
         "搜索：关键词 申报": "/api/v1/search?time=" + quote("不限") + "&q=" + quote("申报"),
-        "搜索：高新技术企业 + 名单": "/api/v1/search?time=" + quote("不限")
-        + "&kind=" + quote("名单") + "&q=" + quote("高新技术企业"),
-        "搜索：两省 + 申报通知 + 近 30 天": "/api/v1/search?time=" + quote("近 30 天")
-        + "&regions=" + quote("山东,广东") + "&types=" + quote("申报通知"),
-        "搜索：科技部门 + 公示 + 今年": "/api/v1/search?time=" + quote("今年")
-        + "&depts=" + quote("科技部门") + "&status=" + quote("公示"),
+        "搜索：高新技术企业 + 名单": "/api/v1/search?time="
+        + quote("不限")
+        + "&kind="
+        + quote("名单")
+        + "&q="
+        + quote("高新技术企业"),
+        "搜索：两省 + 申报通知 + 近 30 天": "/api/v1/search?time="
+        + quote("近 30 天")
+        + "&regions="
+        + quote("山东,广东")
+        + "&types="
+        + quote("申报通知"),
+        "搜索：科技部门 + 公示 + 今年": "/api/v1/search?time="
+        + quote("今年")
+        + "&depts="
+        + quote("科技部门")
+        + "&status="
+        + quote("公示"),
         "详情": f"/api/v1/documents/{doc_id}",
         "日历": "/api/v1/calendar",
         "查名单：在名单上": "/api/v1/lists/lookup?q=" + quote(name),
