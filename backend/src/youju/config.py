@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # 连续失败多少次后把来源标记为 failing 并告警。
     failure_alert_threshold: int = 3
 
+    # 后台 AI（阿里云百炼通义千问，OpenAI 兼容接口）。不配密钥就不调用 AI，照常用规则。
+    # 密钥只从环境读取（云托管环境变量由创始人填写），不写入日志或异常信息
+    ai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ai_api_key: SecretStr | None = None
+    ai_model: str = "qwen-flash"
+
     sources_csv: Path = DEFAULT_SOURCES_CSV
 
     @model_validator(mode="after")

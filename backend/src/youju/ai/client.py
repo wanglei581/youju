@@ -1,0 +1,95 @@
+"""OpenAI 兼容聊天接口客户端。"""
+
+import json
+import time
+from collections.abc import Callable
+from typing import Any
+
+import httpx
+
+
+class AIError(RuntimeError):
+    """AI 服务调用失败；错误信息不包含密钥或响应原文。"""
+
+
+class ChatClient:
+    """调用兼容 OpenAI 格式的 JSON 输出接口。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+        transport: httpx.BaseTransport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max(0, max_retries)
+        self.sleep = sleep
+        self.last_usage: dict[str, Any] | None = None
+        self._client = httpx.Client(transport=transport, timeout=timeout, trust_env=False)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "ChatClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
+        """请求 JSON 对象，针对暂时性错误和非法 JSON 自动重试。"""
+        if "json" not in f"{system} {user}".lower():
+            system = f"{system}\n请严格返回 JSON 对象。"
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+            # 百炼的 JSON 输出只支持非思考模式；千问混合模型显式关掉思考，免得默认值变了出错
+            "enable_thinking": False,
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        last_error = "AI 请求失败"
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._client.post(
+                    f"{self.base_url}/chat/completions", headers=headers, json=payload
+                )
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+                last_error = "AI 网络请求失败"
+                if attempt < self.max_retries:
+                    self.sleep(2**attempt)
+                    continue
+                raise AIError(last_error) from exc
+            if response.status_code == 429 or response.status_code >= 500:
+                last_error = f"AI 服务暂时不可用（HTTP {response.status_code}）"
+                if attempt < self.max_retries:
+                    self.sleep(2**attempt)
+                    continue
+                raise AIError(last_error)
+            if response.status_code >= 400:
+                raise AIError(f"AI 请求被拒绝（HTTP {response.status_code}）")
+            try:
+                envelope = response.json()
+                content = envelope["choices"][0]["message"]["content"]
+                parsed = json.loads(content) if isinstance(content, str) else content
+                if not isinstance(parsed, dict):
+                    raise ValueError("不是 JSON 对象")
+            except (ValueError, TypeError, KeyError, IndexError) as exc:
+                last_error = "AI 返回内容不是合法 JSON 对象"
+                if attempt < self.max_retries:
+                    self.sleep(2**attempt)
+                    continue
+                raise AIError(last_error) from exc
+            usage = envelope.get("usage")
+            self.last_usage = usage if isinstance(usage, dict) else None
+            return parsed
+        raise AIError(last_error)
