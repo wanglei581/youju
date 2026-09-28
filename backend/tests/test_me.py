@@ -948,10 +948,7 @@ def test_deadline_reminder_rechecks_publicity_when_sending(client, session, monk
     session.commit()
     config = SimpleNamespace(
         send_wx_messages=True,
-        template_deadline={
-            "id": "d",
-            "fields": {"title": "thing1", "date": "date2", "kind": "thing3"},
-        },
+        template_deadline={"id": "d", "fields": {"thing1": "title", "date2": "date"}},
         template_newdocs=None,
         agreement_version="2026-09",
     )
