@@ -47,10 +47,16 @@ class AttachmentParse:
     failure_reason: str | None = None
 
 
+# 两个汉字之间的空白：表格格子里名称折行（"……有限\n公司"）读出来的，中文名称里本来没有
+_HAN_GAP = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+
+
 def _cell(value: object) -> str:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return " ".join(str(value).replace("\xa0", " ").split()) if value is not None else ""
+    if value is None:
+        return ""
+    return _HAN_GAP.sub("", " ".join(str(value).replace("\xa0", " ").split()))
 
 
 def _header_index(headers: list[str], terms: tuple[str, ...]) -> int | None:
