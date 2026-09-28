@@ -83,6 +83,23 @@ def test_table_rows_and_date_in_other_cell() -> None:
     ]
 
 
+def test_markup_in_title_attribute_is_not_used_as_title() -> None:
+    # 山西省科技厅把索引号、发布时间写成 HTML 放在 title 属性里，真正的标题是链接文字
+    html = """
+    <table><tbody>
+      <tr><td><a href="/t/1.html" title="<p><b>索引号：000014349/2026-04994</b> </p><p><b>发布时间：</b>2026.09.15</p>">
+        关于征集省级科技成果转化引导基金储备项目的通知</a></td><td>2026.09.15</td></tr>
+      <tr><td><a href="/t/2.html" title="<p><b>索引号：000014349/2026-04995</b></p>">
+        关于开展2026年度科技型中小企业评价工作的通知</a></td><td>2026.09.14</td></tr>
+    </tbody></table>
+    """
+    items = extract_items(html, "https://kjt.shanxi.gov.cn/list/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于征集省级科技成果转化引导基金储备项目的通知",
+        "关于开展2026年度科技型中小企业评价工作的通知",
+    ]
+
+
 def test_title_containing_date_is_not_publish_date() -> None:
     html = """
     <ul>

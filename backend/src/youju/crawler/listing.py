@@ -87,6 +87,9 @@ _EDGE_DATE = re.compile(
 )
 
 
+_MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
+
+
 def _clean(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
@@ -94,6 +97,9 @@ def _clean(text: str | None) -> str:
 def _title_of(a: etree._Element) -> str:
     text = _clean(a.text_content())
     attr = _clean(a.get("title"))
+    # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅），不能当标题
+    if _MARKUP.search(attr):
+        attr = ""
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or text.endswith(("...", "…"))):
         return attr
