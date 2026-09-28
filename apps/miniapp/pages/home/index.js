@@ -81,8 +81,9 @@ Page({
 
   // 卡片底部：按当前页签到搜索页看近 7 天的文件（搜索没有"本周"这个时间段，所以不写本周的份数）
   goMore() {
-    const kind = this.data.tab === 'all' ? '' : this.data.tab;
-    wx.navigateTo({ url: `/pages/search/index?kind=${encodeURIComponent(kind)}&time=${encodeURIComponent('近 7 天')}` });
+    const params = [`time=${encodeURIComponent('近 7 天')}`];
+    if (this.data.tab !== 'all') params.push(`kind=${encodeURIComponent(this.data.tab)}`);
+    wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
   },
 
   goEntry(e) {
