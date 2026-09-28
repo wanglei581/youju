@@ -320,3 +320,16 @@ def test_create_waits_for_another_onboarding(api, session, db_engine, monkeypatc
         assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 503
         other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
     assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 201
+
+
+def test_lock_is_released_when_create_fails(api, session, db_engine) -> None:
+    """接入失败（已经接入过返回 409）后命名锁也会释放，别人能接着接入。"""
+    from sqlalchemy import text
+
+    client, _ = api
+    body = {**BASE, "trial_token": app_module._trial_token(URL, RULE)}
+    assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 201
+    assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 409
+    with db_engine.connect() as other:
+        assert other.execute(text("SELECT GET_LOCK('youju_source_create', 0)")).scalar() == 1
+        other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
