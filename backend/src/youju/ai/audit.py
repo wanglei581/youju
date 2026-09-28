@@ -1,8 +1,9 @@
 """AI 质检员（D-023）：每天复查已经发布给用户的截止日期，存疑的标出来、提醒到群里，由人复核。
 
 - 规则回查（不用 AI，每次全量）：截止早于发布日期；正文缺失、没法回查；正文里根本没写这个日期。
-- AI 抽查（配了 AI 时）：每次抽一部分文件，让 AI 对照原文判断。AI 说有误时要照抄原文里的那句话：
-  这句话确实在原文里、也写着 AI 说的日期，才算存疑；对不上的只记下、不标，免得 AI 编出来的理由误报。
+- AI 抽查（配了 AI 时）：每次抽一部分文件，让 AI 对照原文判断。AI 说有误时要照抄原文里的那句话、
+  给出那句话里的日期：句子确实在原文里、也写着这个日期，才算存疑；对不上的只记下、不标，
+  免得 AI 编出来的理由误报。
   同一条截止 30 天内不重复抽；AI 出错的文件隔一天再试，连续出错就停。
 - 只标记、不自动撤下：撤下（退回待核对）由人在核对台决定。人确认无误的不再标。
 """
@@ -28,6 +29,7 @@ MAX_CONSECUTIVE_ERRORS = 3
 _CONTEXT = 300
 _MAX_EXCERPT = 3000
 _MAX_ROWS = 8
+_GAP = "\n……\n"  # 片段之间的分隔，也算在总字数里
 # AI 照抄的原文句子至少这么长（去掉空白后），太短的对得上也说明不了什么
 _MIN_QUOTE = 8
 
@@ -37,7 +39,7 @@ _SYSTEM = """你是截止日期质检员。必须只返回 JSON 对象，字段 
 或原文写明这一天截止的是别的事项时，ok 才写 false；拿不准就写 true。
 每项字段：id（给出的编号）、ok（true 或 false）、
 quote（ok 为 false 时必填：从原文照抄说明这项截止的那句话，不超过 80 字，不要改写）、
-found_date（quote 里写的日期，YYYY-MM-DD，没有就空）、reason（不超过 40 字）。"""
+found_date（ok 为 false 时必填：quote 里写的日期，YYYY-MM-DD）、reason（不超过 40 字）。"""
 
 
 @dataclass
@@ -118,32 +120,32 @@ def _plan(body: str, rows: list[DocumentDeadline]) -> tuple[list[DocumentDeadlin
             continue
         window = (max(0, anchor[0] - _CONTEXT), min(len(body), anchor[1] + _CONTEXT))
         merged = _merge([*windows, window])
-        if sum(end - start for start, end in merged) > _MAX_EXCERPT:
+        size = sum(end - start for start, end in merged) + len(_GAP) * (len(merged) - 1)
+        if size > _MAX_EXCERPT:
             continue
         chosen.append(row)
         windows = merged
         if len(chosen) >= _MAX_ROWS:
             break
-    return chosen, "\n……\n".join(body[start:end] for start, end in windows)
+    return chosen, _GAP.join(body[start:end] for start, end in windows)
 
 
 def _verified_note(item: dict, excerpt: str) -> str | None:
-    """AI 说有误时，照抄的句子要在发给它的原文里、并写着它说的日期，才采信；返回存疑原因。"""
+    """AI 说有误时，照抄的句子要在发给它的原文里，并写着它说的日期（必须给出），才采信；
+    返回存疑原因。"""
     quote = str(item.get("quote") or "").strip()
     compact = _compact(quote)
     if len(compact) < _MIN_QUOTE or compact not in _compact(excerpt):
         return None
     found_text = str(item.get("found_date") or "").strip()
-    if found_text:
-        try:
-            found = date.fromisoformat(found_text)
-        except ValueError:
-            return None
-        if _date_span(quote, found) is None:
-            return None
+    try:
+        found = date.fromisoformat(found_text)
+    except ValueError:
+        return None
+    if _date_span(quote, found) is None:
+        return None
     reason = str(item.get("reason") or "").strip()[:40] or "和原文不一致"
-    note = "AI：" + reason + (f"（原文写的是 {found_text}）" if found_text else "")
-    return f"{note}；原文：「{quote[:80]}」"
+    return f"AI：{reason}（原文写的是 {found_text}）；原文：「{quote[:80]}」"
 
 
 def _ai_check(

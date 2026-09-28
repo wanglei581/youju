@@ -211,12 +211,13 @@ def test_ai_flags_claims_backed_by_the_text_and_rechecks_after_30_days(session) 
 
 def test_ai_claims_that_do_not_match_the_text_are_not_flagged(session) -> None:
     doc = add_doc(session)
-    rows = [approve(session, doc, date(2026, 10, 15), n=i) for i in range(5)]
+    rows = [approve(session, doc, date(2026, 10, 15), n=i) for i in range(6)]
     claims = [
         {"quote": "请各单位于2026年10月25日前完成网上申报", "found_date": "2026-10-25"},  # 编的
         {"quote": "10月15日前", "found_date": "2026-10-15"},  # 太短，说明不了什么
         {"quote": APPLY, "found_date": "2026-10-20"},  # 句子里没有它说的日期
         {"quote": APPLY, "found_date": "10月15日"},  # 日期格式不对
+        {"quote": APPLY},  # 没说原文写的是哪天
         {},  # 没照抄原文
     ]
     client, _ = fake_ai(
@@ -226,7 +227,7 @@ def test_ai_claims_that_do_not_match_the_text_are_not_flagged(session) -> None:
         ]
     )
     report = run_audit(session, client)
-    assert report.flagged == [] and report.unverified == 5
+    assert report.flagged == [] and report.unverified == 6
     session.expire_all()
     assert all(session.get(DocumentDeadline, r.id).audit_state is None for r in rows)
     check = session.scalar(select(AICheck).where(AICheck.task == "audit"))
@@ -274,7 +275,7 @@ def test_long_documents_send_a_bounded_excerpt_and_keep_the_rest_for_later(sessi
     first = sent_ids(calls[0])
     content = calls[0]["messages"][1]["content"]
     excerpt = content.split("相关原文：\n")[1].split("\n\n截止：")[0]
-    assert len(excerpt.replace("\n……\n", "")) <= 3000 and 1 <= len(first) < 10
+    assert len(excerpt) <= 3000 and "\n……\n" in excerpt and 1 <= len(first) < 10
     session.expire_all()
     assert {r.id for r in rows if session.get(DocumentDeadline, r.id).audit_at} == first
 
