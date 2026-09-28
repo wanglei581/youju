@@ -474,9 +474,7 @@ def list_documents(
         stmt = stmt.where(Document.is_baseline.is_(False))
     total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = session.execute(
-        stmt.order_by(Document.publish_date.desc(), Document.id.desc())
-        .limit(limit)
-        .offset(offset)
+        stmt.order_by(Document.publish_date.desc(), Document.id.desc()).limit(limit).offset(offset)
     ).all()
     return DocumentPage(total=total, items=[_document_out(doc, src) for doc, src in rows])
 

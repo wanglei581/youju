@@ -19,6 +19,9 @@ down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# 不依赖建库时的默认值：每张表都用 utf8mb4 和区分大小写、不忽略尾部空格的排序规则
+TABLE_OPTIONS = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_bin"}
+
 
 def upgrade() -> None:
     op.create_table(
@@ -56,6 +59,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("url"),
+        **TABLE_OPTIONS,
     )
     op.create_table(
         "users",
@@ -77,6 +81,7 @@ def upgrade() -> None:
         sa.Column("agreement_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("openid"),
+        **TABLE_OPTIONS,
     )
     op.create_table(
         "documents",
@@ -93,6 +98,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("url_key"),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_documents_first_seen_at", "documents", ["first_seen_at"], unique=False)
     op.create_index("ix_documents_publish_date", "documents", ["publish_date"], unique=False)
@@ -111,6 +117,7 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_events_user_created", "events", ["user_id", "created_at"], unique=False)
     op.create_table(
@@ -129,6 +136,7 @@ def upgrade() -> None:
         sa.Column("last_notified_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_follows_user", "follows", ["user_id"], unique=False)
     op.create_table(
@@ -146,6 +154,7 @@ def upgrade() -> None:
         sa.Column("is_baseline", sa.Boolean(), nullable=False),
         sa.ForeignKeyConstraint(["source_id"], ["sources.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index(
         "ix_source_checks_source_started",
@@ -182,6 +191,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("document_id", "fingerprint", name="uq_document_deadline_fingerprint"),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_document_deadlines_status", "document_deadlines", ["status"], unique=False)
     op.create_table(
@@ -200,6 +210,7 @@ def upgrade() -> None:
         sa.Column("next_retry_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("document_id"),
+        **TABLE_OPTIONS,
     )
     op.create_table(
         "document_merges",
@@ -217,6 +228,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["canonical_id"], ["documents.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["duplicate_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("duplicate_id"),
+        **TABLE_OPTIONS,
     )
     op.create_index(
         "ix_document_merges_canonical_active",
@@ -241,6 +253,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_feedback_user", "feedback", ["user_id"], unique=False)
     op.create_table(
@@ -260,6 +273,7 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "document_id", "source_url", "normalized_name", "sequence", name="uq_list_entry_row"
         ),
+        **TABLE_OPTIONS,
     )
     op.create_index("ix_list_entries_credit_code", "list_entries", ["credit_code"], unique=False)
     op.create_index(
@@ -278,6 +292,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("document_id", "source_url", name="uq_list_parse_source"),
+        **TABLE_OPTIONS,
     )
     op.create_table(
         "subscriptions",
@@ -309,6 +324,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["follow_id"], ["follows.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index(
         "ix_subscriptions_status_kind", "subscriptions", ["status", "kind"], unique=False
@@ -325,6 +341,7 @@ def upgrade() -> None:
             ["document_id"], ["document_details.document_id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id"),
+        **TABLE_OPTIONS,
     )
     op.create_index(
         "ix_document_attachments_document_id", "document_attachments", ["document_id"], unique=False
