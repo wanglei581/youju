@@ -393,3 +393,12 @@ def test_long_notes_keep_the_warnings(session) -> None:
     assert len(note) <= triage_module._NOTE_MAX
     assert note.startswith("已发布的截止 8 条，规则复查 8 条存疑：") and "…" in note
     assert note.endswith("；没配 AI，只做了规则回查；还有 1 条截止候选待核对")
+
+
+def test_join_keeps_reminders_whole() -> None:
+    from youju.ai.triage import _NOTE_MAX, _join
+
+    note = _join("开头" * 20, "：详情" * 100, ["提醒" * 140])
+    assert len(note) == _NOTE_MAX and note.endswith("；" + "提醒" * 140)
+    short = _join("已发布的截止 1 条，", "：" + "原因" * 200, ["请人工核对"])
+    assert short.endswith("…；请人工核对") and len(short) == _NOTE_MAX

@@ -176,7 +176,8 @@ def _ai_check(
     wanted = {row.id for row in rows}
     verdict = AIVerdict()
     for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict) or item.get("ok") not in (True, False):
+        # 只认 JSON 的 true、false：1、0 这类值和 True、False 相等，要按身份比
+        if not isinstance(item, dict) or not (item.get("ok") is True or item.get("ok") is False):
             continue
         try:
             deadline_id = int(item.get("id"))

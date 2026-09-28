@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.audit import MAX_CONSECUTIVE_ERRORS, _ai_check, _flag, _plan, rule_note
 from youju.ai.client import AIError, ChatClient
-from youju.classify import effective_kind
+from youju.classify import KINDS, effective_kind
 from youju.dedup import canonical_ids
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Feedback
 
@@ -45,7 +45,7 @@ def _kind_note(session: Session, doc: Document) -> str | None:
     )
     ai_kind = check.result.get("kind") if check and isinstance(check.result, dict) else None
     shown = effective_kind(doc.title, None)
-    if ai_kind and ai_kind != shown:
+    if ai_kind in KINDS and ai_kind != shown:
         return f'类型：页面显示为{shown}，AI 认为是{ai_kind}（到"类型待定"处理）'
     return None
 
@@ -169,6 +169,8 @@ def _join(head: str, detail: str, extras: list[str]) -> str:
     room = _NOTE_MAX - len(head) - len(tail)
     if detail and room > 0:
         head += detail if len(detail) <= room else detail[: room - 1] + "…"
+    if len(head) + len(tail) > _NOTE_MAX:  # 提醒本身很长时先截开头，提醒保持完整
+        head = head[: max(0, _NOTE_MAX - len(tail))]
     return (head + tail)[:_NOTE_MAX]
 
 

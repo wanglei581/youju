@@ -480,3 +480,18 @@ def test_rows_the_ai_did_not_answer_stay_due(session) -> None:
     calls.clear()
     run_audit(session, client, now=now + timedelta(hours=1))
     assert [sent_ids(c) for c in calls] == [{skipped.id}]
+
+
+def test_only_real_booleans_count_as_answers(session) -> None:
+    """ok 写成 1、"false" 之类的不算回答：不标存疑，也不算抽查过。"""
+    doc = add_doc(session)
+    one = approve(session, doc, date(2026, 10, 15))
+    text = approve(session, doc, date(2026, 10, 20), evidence=PAPER, n=1)
+    quote = {"quote": APPLY, "found_date": "2026-10-15", "reason": "测试"}
+    client, _ = fake_ai(
+        lambda payload: [{"id": one.id, "ok": 1, **quote}, {"id": text.id, "ok": "false", **quote}]
+    )
+    report = run_audit(session, client)
+    assert report.flagged == [] and report.unverified == 0
+    session.expire_all()
+    assert all(session.get(DocumentDeadline, r.id).audit_at is None for r in (one, text))
