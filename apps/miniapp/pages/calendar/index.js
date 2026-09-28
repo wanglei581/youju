@@ -168,7 +168,7 @@ Page({
     if (!item) return;
     const days = daysUntil(item.due);
     if (days < 3) {
-      wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
+      wx.showToast({ title: '离截止不到 3 天，来不及提前提醒了', icon: 'none' });
       return;
     }
     if (this.data.reminded[item.docId]) {
