@@ -228,3 +228,122 @@ def test_review_console_shows_ai_agreement(session, session_factory, monkeypatch
         app.dependency_overrides.clear()
     badges = {(i["origin"], i["ai_agrees"]) for i in items}
     assert badges and badges <= {("rule", True), ("ai", None)}
+
+
+def test_kind_failure_is_retried_alone_later(session) -> None:
+    """类型判断失败、截止抽取成功：之后只重试类型判断，不重复抽截止。"""
+    add_doc(session)
+    state = {"fail_kind": True}
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        system = body["messages"][0]["content"]
+        calls.append("kind" if "分类" in system else "deadlines")
+        if "分类" in system and state["fail_kind"]:
+            return httpx.Response(503)
+        content = (
+            {"kind": "申报通知", "confidence": 0.9, "reason": "申报"}
+            if "分类" in system
+            else {"deadlines": []}
+        )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(content)}}]}
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen-flash",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    first = datetime.now(UTC)
+    run_ai_checks(session, client, now=first)
+    assert calls == ["kind", "deadlines"]
+    state["fail_kind"] = False
+    calls.clear()
+    run_ai_checks(session, client, now=first + timedelta(hours=25))
+    assert calls == ["kind"]
+    assert all(c.error is None for c in session.scalars(select(AICheck)))
+
+
+def test_invalid_kind_is_an_error_and_retried(session) -> None:
+    add_doc(session)
+    client, _ = fake_ai(kind="随便", deadlines=[])
+    report = run_ai_checks(session, client)
+    check = session.scalar(select(AICheck).where(AICheck.task == "kind"))
+    assert check.error == "AI 返回的类型无效" and report.errors == 1
+    ok, calls = fake_ai(kind="申报通知", deadlines=[])
+    run_ai_checks(session, ok, now=datetime.now(UTC) + timedelta(hours=25))
+    assert session.scalar(select(AICheck).where(AICheck.task == "kind")).error is None
+
+
+def test_rule_candidate_supersedes_pending_ai_candidate(session) -> None:
+    """AI 先找到的一天，后来规则也找到了：以规则候选为准，标 AI 一致，不重复送审。"""
+    doc = add_doc(session)
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="a" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 15),
+            evidence="请各单位于2026年10月15日前完成网上申报。",
+            confidence="高",
+            status="pending",
+            origin="ai",
+        )
+    )
+    session.commit()
+    extract_existing(session)
+    rows = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.candidate_date == date(2026, 10, 15))
+    ).all()
+    assert [(r.origin, r.ai_agrees) for r in rows] == [("rule", True)]
+
+
+def test_twin_urls_do_not_get_duplicate_ai_candidates(session) -> None:
+    """同一通知的另一个网址（归并组）里规则已找到这一天：AI 不再为这个网址另送一条。"""
+    from youju.models import DocumentMerge
+
+    master = add_doc(session, 1)
+    twin = add_doc(session, 2, body="请于2026年10月15日前完成网上申报。")
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    session.commit()
+    extract_existing(session, document_ids=[master.id])
+    client, _ = fake_ai(deadlines=[ai_item("2026-10-15", "请于2026年10月15日前完成网上申报。")])
+    run_ai_checks(session, client)
+    assert not session.scalars(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == twin.id, DocumentDeadline.origin == "ai"
+        )
+    ).all()
+
+
+def test_usage_of_failed_calls_is_counted(session) -> None:
+    add_doc(session)
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "不是 JSON"}}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 5},
+            },
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen-flash",
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    report = run_ai_checks(session, client)
+    # 两项检查各请求 2 次（1 次 + 重试 1 次），都算用量
+    assert report.prompt_tokens == 200 and report.completion_tokens == 20
+    assert sum(c.prompt_tokens for c in session.scalars(select(AICheck))) == 200

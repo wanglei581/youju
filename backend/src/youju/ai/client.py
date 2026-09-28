@@ -12,6 +12,14 @@ class AIError(RuntimeError):
     """AI 服务调用失败；错误信息不包含密钥或响应原文。"""
 
 
+def _add_usage(total: dict[str, int], usage: object) -> None:
+    if isinstance(usage, dict):
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int):
+                total[key] += value
+
+
 class ChatClient:
     """调用兼容 OpenAI 格式的 JSON 输出接口。"""
 
@@ -31,7 +39,8 @@ class ChatClient:
         self.timeout = timeout
         self.max_retries = max(0, max_retries)
         self.sleep = sleep
-        self.last_usage: dict[str, Any] | None = None
+        # 最近一次 complete_json 花掉的用量（失败时也有），调用方据此记账
+        self.last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
         self._client = httpx.Client(transport=transport, timeout=timeout, trust_env=False)
 
     def close(self) -> None:
@@ -57,6 +66,9 @@ class ChatClient:
             "enable_thinking": False,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        # 这次调用花掉的用量：每次拿到响应都累计（含格式不对要重试的那几次），失败时也保留
+        usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+        self.last_usage = usage_total
         last_error = "AI 请求失败"
         for attempt in range(self.max_retries + 1):
             try:
@@ -79,6 +91,8 @@ class ChatClient:
                 raise AIError(f"AI 请求被拒绝（HTTP {response.status_code}）")
             try:
                 envelope = response.json()
+                if isinstance(envelope, dict):
+                    _add_usage(usage_total, envelope.get("usage"))
                 content = envelope["choices"][0]["message"]["content"]
                 parsed = json.loads(content) if isinstance(content, str) else content
                 if not isinstance(parsed, dict):
@@ -89,7 +103,5 @@ class ChatClient:
                     self.sleep(2**attempt)
                     continue
                 raise AIError(last_error) from exc
-            usage = envelope.get("usage")
-            self.last_usage = usage if isinstance(usage, dict) else None
             return parsed
         raise AIError(last_error)
