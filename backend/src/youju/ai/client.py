@@ -41,6 +41,13 @@ class ChatClient:
         self.sleep = sleep
         # 最近一次 complete_json 花掉的用量（失败时也有），调用方据此记账
         self.last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
+        # 这个客户端从创建起的累计：调用次数、出错次数、用量（命令结束时记到 AI 用量台账）
+        self.totals: dict[str, int] = {
+            "calls": 0,
+            "errors": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
         self._client = httpx.Client(transport=transport, timeout=timeout, trust_env=False)
 
     def close(self) -> None:
@@ -53,7 +60,18 @@ class ChatClient:
         self.close()
 
     def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
-        """请求 JSON 对象，针对暂时性错误和非法 JSON 自动重试。"""
+        """请求 JSON 对象，针对暂时性错误和非法 JSON 自动重试；成功、失败都计入累计用量。"""
+        self.totals["calls"] += 1
+        try:
+            return self._complete_json(system, user, max_tokens)
+        except AIError:
+            self.totals["errors"] += 1
+            raise
+        finally:
+            for key in ("prompt_tokens", "completion_tokens"):
+                self.totals[key] += self.last_usage.get(key, 0)
+
+    def _complete_json(self, system: str, user: str, max_tokens: int) -> dict[str, Any]:
         if "json" not in f"{system} {user}".lower():
             system = f"{system}\n请严格返回 JSON 对象。"
         payload = {

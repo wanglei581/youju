@@ -287,6 +287,26 @@ class AICheck(Base):
     checked_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
+class AIUsage(Base):
+    """AI 用量台账：每天（北京时间）、每项任务、每个模型的调用次数、出错次数和 tokens。
+
+    AICheck 每份文件每项只留最新一次，名单认列也不留检查记录，所以另记台账；
+    运维日报据此报用量和费用。
+    """
+
+    __tablename__ = "ai_usage"
+    __table_args__ = (UniqueConstraint("day", "task", "model", name="uq_ai_usage_day_task_model"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date)
+    task: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ListParse(Base):
     """一份详情页或附件的解析记录，失败原因用于回填报告和安全重试。"""
 

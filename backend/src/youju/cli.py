@@ -15,6 +15,22 @@ from youju.models import Document, Source
 log = logging.getLogger("youju")
 
 
+def _finish_ai(client, task: str) -> None:
+    """命令结束时把这次的 AI 用量记到台账（记账失败只打日志，不影响命令结果），再关掉客户端。"""
+    if client is None:
+        return
+    try:
+        if client.totals["calls"]:
+            from youju.ai.usage import record_usage
+
+            with session_factory()() as session:
+                record_usage(session, client, task)
+    except Exception:
+        log.exception("AI 用量记账失败（%s）", task)
+    finally:
+        client.close()
+
+
 def _cmd_db_upgrade(_: argparse.Namespace) -> int:
     from youju.migrations import upgrade
 
@@ -157,8 +173,11 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     if client is None:
         print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过 AI 检查，照常用规则")
         return 0
-    with client, session_factory()() as session:
-        report = run_ai_checks(session, client, limit=args.limit)
+    try:
+        with session_factory()() as session:
+            report = run_ai_checks(session, client, limit=args.limit)
+    finally:
+        _finish_ai(client, "check")
     print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
@@ -187,8 +206,7 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
         with session_factory()() as session:
             report = run_audit(session, client, sample=args.sample)
     finally:
-        if client is not None:
-            client.close()
+        _finish_ai(client, "audit")
     ai_part = (
         f"AI 抽查 {report.checked_by_ai} 份文件"
         if client is not None
@@ -211,6 +229,26 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_daily_report(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.alerts import send_alert
+    from youju.digest import build_digest, digest_text, pick_for_review
+
+    client = get_chat_client()
+    try:
+        with session_factory()() as session:
+            digest = build_digest(session)
+            # 配了 AI 时请它从待核对的通知里挑几份建议先核对；没配或出错时日报照发
+            picks = pick_for_review(session, client) if client is not None else []
+    finally:
+        _finish_ai(client, "report")
+    text = digest_text(digest, picks)
+    print(text)
+    if args.dry_run:
+        return 0
+    return 1 if send_alert(text) is False else 0
+
+
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.lists.service import parse_lists
@@ -221,8 +259,7 @@ def _cmd_parse_lists(args: argparse.Namespace) -> int:
         with session_factory()() as session:
             report = parse_lists(session, since=args.since, ai_client=client)
     finally:
-        if client is not None:
-            client.close()
+        _finish_ai(client, "lists")
     print(
         f"名单文件 {report.documents}，成功解析 {report.parsed_documents}，"
         f"企业/机构条目 {report.names}，本次下载附件 {report.attachments_fetched}/200，"
@@ -341,6 +378,12 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_parse_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
+    p = sub.add_parser(
+        "daily-report",
+        help="运维日报：运行情况、待办和 AI 用量发到群里，配了 AI 时附上建议先核对的通知",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只打印，不发到群里")
+    p.set_defaults(func=_cmd_daily_report)
     sub.add_parser(
         "notify", help="发送一次性订阅提醒；未设置 YOUJU_SEND_WX_MESSAGES=true 时只演练"
     ).set_defaults(func=_cmd_notify)
