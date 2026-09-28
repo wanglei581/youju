@@ -35,6 +35,9 @@ def create_mysql_engine(url: str, **kwargs) -> Engine:
         **kwargs,
     )
 
+    # 只在"建连接"时重试：连接池取连接前会先检查（pool_pre_ping），坏连接会重建，重建也走这里。
+    # 查询执行到一半断开不自动重试——写入可能已经生效，重做会重复写；这种情况由接口出错提醒发现。
+    # 连接池一直留着连接，数据库不会在查询中途暂停（它要 10 分钟没有任何连接才暂停）。
     @event.listens_for(engine, "do_connect")
     def _retry_connect(dialect, conn_rec, cargs, cparams):
         for delay in (*_CONNECT_RETRY_DELAYS, None):
