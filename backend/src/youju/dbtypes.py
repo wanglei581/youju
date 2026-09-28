@@ -8,6 +8,8 @@ from sqlalchemy.types import TypeDecorator
 
 # 正文可能超过 TEXT 的 64KB 上限（开发库最长约 40 万字节）；MEDIUMTEXT 上限 16MB
 LongText = MEDIUMTEXT
+# 按每字最多 4 字节算，400 万字以内一定放得下；抓取本身限 20MB，超过这个字数的几乎不会有
+BODY_TEXT_MAX_CHARS = 4_000_000
 JSONType = JSON
 
 # 与 UTCDateTime 精度一致的建表默认值（MySQL 要求默认值和列的小数位数相同）

@@ -12,7 +12,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from youju.models import Source
+from youju.models import URL_KEY_MAX, Source
 
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
@@ -56,10 +56,13 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
     summary = ImportSummary()
     with csv_path.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    for row in rows:
+    for line, row in enumerate(rows, start=2):  # 第 1 行是表头
         url = row["栏目URL"].strip()
         if not url:
             continue
+        if len(url) > URL_KEY_MAX:
+            # 数据库里来源网址有唯一索引，长度有上限；清单是人工整理的，直接报错让人改
+            raise ValueError(f"来源清单第 {line} 行的栏目网址超过 {URL_KEY_MAX} 字")
         status = row.get("验证状态", "").strip()
         fetch_mode, enabled = mode_for(status)
         fields = {

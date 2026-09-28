@@ -8,8 +8,18 @@ from sqlalchemy.orm import Session, sessionmaker
 from youju.config import get_settings
 
 # 云托管自带的 MySQL 是 Serverless 的：10 分钟没有连接会自动暂停，下次连接要等它恢复，
-# 期间可能返回"instance is resuming, please try connecting again"。连接时按这个间隔重试几次。
+# 期间可能返回"CynosDB serverless instance is resuming, please try connecting again"，
+# 也可能暂时连不上。连接时按这个间隔重试几次（共约 15 秒）。
 _CONNECT_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
+# 2003：连不上服务器；2013：连接中途断开
+_RETRY_ERROR_CODES = {2003, 2013}
+
+
+def _worth_retrying(exc: Exception) -> bool:
+    if "resuming" in str(exc).lower():
+        return True
+    code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+    return code in _RETRY_ERROR_CODES
 
 
 def create_mysql_engine(url: str, **kwargs) -> Engine:
@@ -30,8 +40,8 @@ def create_mysql_engine(url: str, **kwargs) -> Engine:
         for delay in (*_CONNECT_RETRY_DELAYS, None):
             try:
                 return dialect.connect(*cargs, **cparams)
-            except Exception as exc:  # 只对"暂停后恢复中"重试，其他错误照常抛出
-                if delay is None or "resuming" not in str(exc):
+            except Exception as exc:  # 只对"恢复中"和暂时连不上重试，其他错误（如密码错）照常抛出
+                if delay is None or not _worth_retrying(exc):
                     raise
                 time.sleep(delay)
 
