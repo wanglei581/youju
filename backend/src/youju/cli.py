@@ -305,7 +305,7 @@ def _cmd_restore(args: argparse.Namespace) -> int:
         return 1
     finally:
         engine.dispose()
-    print(f"已恢复 {sum(counts.values())} 条记录，各表条数和备份一致：")
+    print(f"已恢复 {sum(counts.values())} 条记录，各表条数、外键和内容都和备份一致：")
     for name, count in counts.items():
         print(f"  {name}: {count}")
     return 0

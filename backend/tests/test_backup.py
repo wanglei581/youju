@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from sqlalchemy import make_url, select, text
+from sqlalchemy import func, make_url, select, text
 
 from youju.backup import BackupError, dump, object_path, restore, run_backup
 from youju.db import create_mysql_engine
@@ -16,6 +16,7 @@ from youju.migrations import upgrade
 from youju.models import (
     AICheck,
     AIUsage,
+    Base,
     Document,
     DocumentDeadline,
     DocumentDetail,
@@ -263,3 +264,99 @@ def test_cli_backup_to_file_and_restore_checks(session, db_engine, tmp_path, mon
     assert cli.main(["restore", str(target)]) == 1  # 当前库不是空的，不恢复
     assert "不是空的" in capsys.readouterr().out
     assert session.scalar(select(Document.id)) is not None
+
+
+def _dump(db_engine) -> bytes:
+    out = io.BytesIO()
+    dump(db_engine, out, now=NOW)
+    return out.getvalue()
+
+
+def _rewrite(raw: bytes, change) -> bytes:
+    lines = gzip.decompress(raw).splitlines(keepends=True)
+    return gzip.compress(b"".join(change(lines)))
+
+
+def _empty(engine) -> bool:
+    with engine.connect() as conn:
+        return not any(
+            conn.scalar(select(func.count()).select_from(t)) for t in Base.metadata.sorted_tables
+        )
+
+
+def test_broken_or_tampered_files_leave_the_target_untouched(
+    session, db_engine, restore_engine
+) -> None:
+    populate(session)
+    raw = _dump(db_engine)
+    tampered = _rewrite(
+        raw, lambda lines: [ln.replace("日期不对".encode(), "日期很对".encode()) for ln in lines]
+    )
+    extra_field = _rewrite(
+        raw,
+        lambda lines: [
+            ln.replace(b'"name": "', b'"surprise": 1, "name": "', 1)
+            if b'"t": "follows"' in ln
+            else ln
+            for ln in lines
+        ],
+    )
+    cases = [
+        (raw[: len(raw) // 2], "损坏或不完整"),  # 截断
+        (_rewrite(raw, lambda lines: lines[:-1]), "没有结尾"),
+        (tampered, "内容和备份不一致：feedback"),
+        (extra_field, "表结构不一致"),
+        (b"", "不是有据的备份文件"),  # 空文件
+    ]
+    for data, message in cases:
+        with pytest.raises(BackupError, match=message):
+            restore(restore_engine, io.BytesIO(data))
+        assert _empty(restore_engine), message  # 回滚，目标库还是空的
+    assert restore(restore_engine, io.BytesIO(raw))["follows"] == 1
+
+
+def test_failed_restore_resets_the_session(session, db_engine) -> None:
+    """失败后外键检查改回来、表锁释放，连接回到连接池也照常。"""
+    populate(session)
+    raw = _dump(db_engine)
+    url = make_url(TEST_DB_URL).set(database="youju_test_restore")
+    server = create_mysql_engine(make_url(TEST_DB_URL).set(database=""))
+    with server.begin() as conn:
+        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
+        conn.execute(text("CREATE DATABASE `youju_test_restore` COLLATE utf8mb4_0900_bin"))
+    upgrade(url.render_as_string(hide_password=False))
+    engine = create_mysql_engine(url, pool_size=1, max_overflow=0)  # 只有一个连接，失败后复用它
+    try:
+        with pytest.raises(BackupError):
+            restore(engine, io.BytesIO(_rewrite(raw, lambda lines: lines[:-1])))
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT @@SESSION.foreign_key_checks")) == 1
+            conn.execute(text("INSERT INTO users (openid) VALUES ('o-after')"))  # 没有残留的表锁
+            conn.rollback()
+    finally:
+        engine.dispose()
+        with server.begin() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
+        server.dispose()
+
+
+def test_upload_retries_busy_errors_but_not_setup_errors(session, db_engine) -> None:
+    populate(session)
+    waits = []
+    statuses = iter([503, 204])
+    client, seen, _ = fake_cloud()
+    transport = client._transport
+
+    def flaky(request):
+        if str(request.url) == "https://cos.example.test/upload":
+            return httpx.Response(next(statuses))
+        return transport.handle_request(request)
+
+    retrying = httpx.Client(transport=httpx.MockTransport(flaky))
+    report = run_backup(db_engine, "prod-1", client=retrying, now=NOW, sleep=waits.append)
+    assert report.file_id and waits == [5]
+    client, _, _ = fake_cloud(upload_code=85088)
+    waits.clear()
+    with pytest.raises(BackupError, match="85088"):
+        run_backup(db_engine, "prod-1", client=client, now=NOW, sleep=waits.append)
+    assert waits == []  # 没开通、没登记接口这类错误不重试

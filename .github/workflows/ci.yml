@@ -91,6 +91,8 @@ jobs:
             echo
           done
           docker exec admin crontab -l
+          # 定时任务按北京时间跑：容器的系统时区是 +0800
+          test "$(docker exec admin date +%z)" = "+0800"
           docker exec admin test -s /app/backend/deploy/env.sh
           docker exec admin test -x /app/backend/deploy/first-round.sh
       - name: 启动失败时打印容器日志
