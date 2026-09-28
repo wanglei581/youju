@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -52,7 +53,7 @@ if not audit_log.handlers:
 
 
 error_log = logging.getLogger("youju.api")
-# 同一实例两次接口出错提醒至少间隔的秒数。计数在进程内：start.sh 启动的 uvicorn 是单进程，
+# 同一实例两次接口出错提醒至少间隔的秒数。计数在进程内：start.sh 用 --workers 1 固定单进程，
 # 一个进程就是一个实例；实例多时每个实例各自最多 10 分钟一条
 _ERROR_ALERT_INTERVAL = 600
 _error_lock = threading.Lock()
@@ -94,7 +95,9 @@ async def _server_error(request: Request, exc: Exception) -> JSONResponse:
         error_log.error("接口出错：%s（%s）", where, type(exc).__name__)
         _note_server_error(f"{type(exc).__name__}，{where}")
     except Exception:  # noqa: BLE001 - 提醒失败不能让用户拿不到 500
-        error_log.error("接口出错提醒失败")
+        # 连日志都写不了时也照样返回 500
+        with contextlib.suppress(Exception):
+            error_log.error("接口出错提醒失败")
     return JSONResponse(status_code=500, content={"detail": "服务出错了，请稍后再试"})
 
 

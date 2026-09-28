@@ -94,3 +94,12 @@ def test_printable_replaces_control_characters() -> None:
     # 路径里的回车、换行、终端控制符都不能原样进日志和提醒
     assert app_module._printable("/a\r\nb\x1b[31m", 50) == "/a??b?[31m"
     assert app_module._printable("/" + "x" * 10, 5) == "/xxxx…"
+
+
+def test_uvicorn_runs_single_process() -> None:
+    # 接口出错提醒和口令限流都按进程计数：启动脚本必须固定单进程（不受 WEB_CONCURRENCY 影响）
+    from pathlib import Path
+
+    start = (Path(__file__).parents[1] / "deploy" / "start.sh").read_text()
+    exec_line = next(line for line in start.splitlines() if line.startswith("exec uvicorn"))
+    assert "--workers 1" in exec_line

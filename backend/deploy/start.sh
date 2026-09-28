@@ -25,4 +25,6 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
   date +%s > /tmp/youju-cron-heartbeat
   cron
 fi
-exec uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}"
+# 固定单进程：一个实例一个进程（接口出错提醒按进程计数、核对台口令限流也在进程内）。
+# 不写 --workers 时 uvicorn 会读环境变量 WEB_CONCURRENCY，可能起多个进程
+exec uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}" --workers 1
