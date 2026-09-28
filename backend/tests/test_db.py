@@ -18,3 +18,14 @@ def test_other_errors_are_not_retried() -> None:
     assert not _worth_retrying(pymysql.err.OperationalError(1045, "Access denied for user"))
     assert not _worth_retrying(pymysql.err.OperationalError(1049, "Unknown database"))
     assert not _worth_retrying(ValueError("bad"))
+
+
+def test_new_connections_use_utc_and_read_committed(db_engine) -> None:
+    """时区和隔离级别在驱动建连接时就设好（和建连接一起重试），每个新连接都一样。"""
+    from sqlalchemy import text
+
+    with db_engine.connect() as conn:
+        zone, isolation = conn.execute(
+            text("SELECT @@session.time_zone, @@session.transaction_isolation")
+        ).one()
+    assert (zone, isolation) == ("+00:00", "READ-COMMITTED")
