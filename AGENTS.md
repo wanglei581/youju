@@ -75,7 +75,7 @@ AI 成员不能代替创始人实名认证、签字、付款、提交政府申�
 
 在 `backend/` 目录下：
 
-- 启动项目内数据库：`./scripts/dev_db.sh start`
+- 启动项目内数据库（MySQL 8.0）：`./scripts/dev_mysql.sh start`
 - 检查：`uv run ruff format . && uv run ruff check . && uv run pytest`
 - 抓取：`uv run youju crawl`；健康报告：`uv run youju report`
 
