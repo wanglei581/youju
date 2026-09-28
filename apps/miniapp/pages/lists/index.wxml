@@ -3,8 +3,8 @@
     <view class="nav-back" bindtap="back" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" color="#FFFFFF" /></view>
     <text class="nav-title">查名单</text>
   </view>
-  <view class="h1">这家企业上过哪些名单？</view>
-  <view class="sub">在已收录的高新技术企业、专精特新、科技型中小企业等名单里查，标题写明公示或公布的分开标注</view>
+  <view class="h1">查企业在已收录名单里的记录</view>
+  <view class="sub">高新技术企业、专精特新、科技型中小企业等，标题写明公示或公布的分开标注</view>
   <notice-bar onBlue="{{true}}" align="left" />
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
