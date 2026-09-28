@@ -293,3 +293,52 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
     assert (tmp_path / "calls").read_text().split() == expected
+
+
+@pytest.mark.parametrize(
+    ("round_locked", "failing", "expected", "code"),
+    [
+        (
+            False,
+            "",
+            ["import-sources", "crawl", "fetch-details", "extract-deadlines", "parse-lists"],
+            0,
+        ),
+        # 某一步失败就停下（失败提醒由 job.sh 发）
+        (False, "crawl", ["import-sources", "crawl"], 1),
+        # 定时任务的一轮正在进行：什么都不做，提示后退出
+        (True, "", [], 1),
+    ],
+)
+def test_first_round_runs_every_step_through_job_sh(
+    tmp_path, round_locked, failing, expected, code
+) -> None:
+    original = (Path(__file__).resolve().parents[1] / "deploy" / "first-round.sh").read_text()
+    script = original.replace("D=/app/backend/deploy", f"D={tmp_path}").replace(
+        "/tmp/youju-round.lock", str(tmp_path / "round.lock")
+    )
+    (tmp_path / "first-round.sh").write_text(script)
+    job = tmp_path / "job.sh"
+    job.write_text(
+        '#!/bin/sh\nprintf "%s %s\\n" "$1" "$*" >> "$CALLS"\n'
+        '[ "$1" = "$FAILING" ] && exit 1\n'
+        "exit 0\n"
+    )
+    job.chmod(0o755)
+    flock = tmp_path / "flock"
+    flock.write_text('#!/bin/sh\nexit "$ROUND_LOCKED"\n')
+    flock.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+        "FAILING": failing,
+        "ROUND_LOCKED": "1" if round_locked else "0",
+    }
+    result = subprocess.run(["sh", str(tmp_path / "first-round.sh")], env=env, check=False)
+    assert result.returncode == code
+    calls = (tmp_path / "calls").read_text().splitlines() if (tmp_path / "calls").exists() else []
+    assert [line.split()[0] for line in calls] == expected
+    if expected[2:3] == ["fetch-details"]:
+        # 补详情一次补完：--limit 2000（定时任务每轮只补 300）
+        assert "--limit 2000" in calls[2]
