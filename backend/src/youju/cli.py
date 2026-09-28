@@ -178,15 +178,27 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
     from youju.lists.service import parse_lists
 
-    with session_factory()() as session:
-        report = parse_lists(session, since=args.since)
+    # 配了 AI 时，规则找不到名称列的表格请 AI 认列；没配就只用规则
+    client = get_chat_client()
+    try:
+        with session_factory()() as session:
+            report = parse_lists(session, since=args.since, ai_client=client)
+    finally:
+        if client is not None:
+            client.close()
     print(
         f"名单文件 {report.documents}，成功解析 {report.parsed_documents}，"
         f"企业/机构条目 {report.names}，本次下载附件 {report.attachments_fetched}/200，"
         f"待下次处理附件 {report.attachments_deferred}"
     )
+    if report.ai_tables_tried:
+        print(
+            f"规则找不到名称列、请 AI 认列的表格 {report.ai_tables_tried} 张，"
+            f"AI 认出并抽到机构名称的 {report.ai_tables_found} 张"
+        )
     print("各类别条目数：" + ("，".join(f"{k} {v}" for k, v in report.categories.items()) or "无"))
     print("失败原因分布：" + ("，".join(f"{k} {v}" for k, v in report.failures.items()) or "无"))
     print("抽样（最多10条）：")

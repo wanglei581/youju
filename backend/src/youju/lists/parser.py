@@ -3,7 +3,7 @@
 import io
 import re
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from itertools import islice
 
@@ -37,6 +37,10 @@ class ParsedEntry:
     region: str | None
 
 
+# 规则按表头找不到名称列时，请 AI 认列：传入（表头, 数据行），返回名称列的列号或 None
+NameColumnPicker = Callable[[list[str], list[list[str]]], int | None]
+
+
 @dataclass(frozen=True)
 class AttachmentParse:
     entries: list[ParsedEntry]
@@ -58,12 +62,60 @@ def _header_index(headers: list[str], terms: tuple[str, ...]) -> int | None:
     return None
 
 
-def parse_table_rows(rows: Iterable[list[object] | tuple[object, ...]]) -> list[ParsedEntry]:
-    """仅在明确的企业/机构名称表头之下抽取，避免把人员名单误收。"""
+def parse_table_rows(
+    rows: Iterable[list[object] | tuple[object, ...]],
+    pick_name_column: NameColumnPicker | None = None,
+) -> list[ParsedEntry]:
+    """仅在明确的企业/机构名称表头之下抽取，避免把人员名单误收。
+
+    规则一条也没抽到、又传了 pick_name_column 时，请 AI 认出名称列再抽（见 youju.ai.tables）；
+    抽出的名称同样要通过机构名称规则。
+    """
+    materialized = [list(row) for row in islice(rows, _MAX_ROWS)]
+    output = _rule_entries(materialized)
+    if output or pick_name_column is None:
+        return output
+    return _picked_entries(materialized, pick_name_column)
+
+
+def _picked_entries(rows: list[list[object]], pick: NameColumnPicker) -> list[ParsedEntry]:
+    cells = [[_cell(value) for value in row] for row in rows]
+    non_empty = [row for row in cells if any(row)]
+    if len(non_empty) < 3:  # 至少一行表头（可能缺）和两行数据
+        return []
+    headers = non_empty[0]
+    index = pick(headers, non_empty[1:51])
+    if index is None:
+        return []
+    names = [normalize_name(value) for value in headers]
+    code_i = _header_index(names, _CODE_HEADERS)
+    output: list[ParsedEntry] = []
+    # 第一行可能不是表头而是数据（表头缺失时），照样检查；真表头过不了机构名称规则
+    for row in non_empty:
+        if index >= len(row):
+            continue
+        raw_name = row[index].strip()
+        code = (
+            normalize_credit_code(row[code_i]) if code_i is not None and code_i < len(row) else None
+        )
+        if valid_org_name(raw_name, code):
+            output.append(
+                ParsedEntry(
+                    name=raw_name,
+                    normalized_name=normalize_name(raw_name),
+                    credit_code=code,
+                    sequence=None,
+                    region=None,
+                )
+            )
+    return output
+
+
+def _rule_entries(rows: list[list[object]]) -> list[ParsedEntry]:
     output: list[ParsedEntry] = []
     headers: list[str] | None = None
     indices: tuple[int, int | None, int | None, int | None] | None = None
-    for row in islice(rows, _MAX_ROWS):
+    for row in rows:
         cells = [_cell(value) for value in row]
         current = [normalize_name(value) for value in cells]
         name_index = _header_index(current, _NAME_HEADERS)
@@ -123,14 +175,16 @@ def _unique(entries: list[ParsedEntry]) -> list[ParsedEntry]:
     return result
 
 
-def parse_html_tables(text: str) -> list[ParsedEntry]:
+def parse_html_tables(
+    text: str, pick_name_column: NameColumnPicker | None = None
+) -> list[ParsedEntry]:
     root = html.fromstring(text)
     entries: list[ParsedEntry] = []
     for table in root.xpath("//table[not(ancestor::table)]"):
         rows = [
             [cell.text_content() for cell in tr.xpath("./th|./td")] for tr in table.xpath(".//tr")
         ]
-        entries.extend(parse_table_rows(rows))
+        entries.extend(parse_table_rows(rows, pick_name_column))
     return _unique(entries)
 
 
@@ -149,7 +203,9 @@ def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
     return parse_attachment_result(data, extension).entries
 
 
-def parse_attachment_result(data: bytes, extension: str) -> AttachmentParse:
+def parse_attachment_result(
+    data: bytes, extension: str, pick_name_column: NameColumnPicker | None = None
+) -> AttachmentParse:
     """返回条目及 PDF 截断原因，供每份附件的解析记录保存。"""
     extension = extension.lower().lstrip(".")
     entries: list[ParsedEntry] = []
@@ -176,20 +232,25 @@ def parse_attachment_result(data: bytes, extension: str) -> AttachmentParse:
             if not has_text:
                 reason = f"；{failure_reason}" if failure_reason else ""
                 raise ValueError(f"暂不支持扫描件{reason}")
-            entries.extend(parse_table_rows(rows))
+            entries.extend(parse_table_rows(rows, pick_name_column))
     elif extension == "xlsx":
         _check_zip(data)
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
             for sheet in workbook.worksheets:
-                entries.extend(parse_table_rows(sheet.iter_rows(values_only=True)))
+                entries.extend(
+                    parse_table_rows(sheet.iter_rows(values_only=True), pick_name_column)
+                )
         finally:
             workbook.close()
     elif extension == "xls":
         workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
         for sheet in workbook.sheets():
             entries.extend(
-                parse_table_rows([sheet.row_values(i) for i in range(min(sheet.nrows, _MAX_ROWS))])
+                parse_table_rows(
+                    [sheet.row_values(i) for i in range(min(sheet.nrows, _MAX_ROWS))],
+                    pick_name_column,
+                )
             )
         workbook.release_resources()
     elif extension == "docx":
@@ -197,7 +258,9 @@ def parse_attachment_result(data: bytes, extension: str) -> AttachmentParse:
         document = DocxDocument(io.BytesIO(data))
         for table in document.tables:
             entries.extend(
-                parse_table_rows([[cell.text for cell in row.cells] for row in table.rows])
+                parse_table_rows(
+                    [[cell.text for cell in row.cells] for row in table.rows], pick_name_column
+                )
             )
     elif extension in {"doc", "wps", "et", "ofd"}:
         raise ValueError("暂不支持旧版或专有格式")

@@ -14,7 +14,12 @@ from youju.classify import effective_kind, list_status
 from youju.config import get_settings
 from youju.crawler.detail_service import _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
-from youju.lists.parser import ParsedEntry, parse_attachment_result, parse_html_tables
+from youju.lists.parser import (
+    NameColumnPicker,
+    ParsedEntry,
+    parse_attachment_result,
+    parse_html_tables,
+)
 from youju.lists.rules import ListClassification, classify_title, valid_org_name
 from youju.models import (
     SOURCE_URL_MAX,
@@ -51,6 +56,46 @@ class ListReport:
     samples: list[ListSample]
     attachments_fetched: int
     attachments_deferred: int
+    # 规则找不到名称列、请 AI 认列的表格数，和其中 AI 认出列、抽到机构名称的表格数
+    ai_tables_tried: int = 0
+    ai_tables_found: int = 0
+
+
+# 每个来源文件（详情页或一个附件）最多请 AI 认几次列：多表格的附件不至于调用太多次
+_AI_TABLES_PER_SOURCE = 5
+
+
+@dataclass
+class _AIStats:
+    tried: int = 0
+    found: int = 0
+
+
+def _ai_picker(client, title: str, stats: _AIStats) -> NameColumnPicker | None:
+    """规则找不到名称列时请 AI 认列；没配 AI 就返回 None（照旧只用规则）。AI 出错就跳过这张表。"""
+    if client is None:
+        return None
+    from youju.ai.client import AIError
+    from youju.ai.tables import pick_name_column
+
+    calls = 0
+
+    def pick(headers: list[str], rows: list[list[str]]) -> int | None:
+        nonlocal calls
+        if calls >= _AI_TABLES_PER_SOURCE:
+            return None
+        calls += 1
+        stats.tried += 1
+        try:
+            index = pick_name_column(client, title, headers, rows)
+        except AIError as exc:
+            log.warning("AI 认名称列失败，跳过这张表：%s", exc)
+            return None
+        if index is not None:
+            stats.found += 1
+        return index
+
+    return pick
 
 
 def _url_too_long(url: str) -> bool:
@@ -127,6 +172,7 @@ def _parse_source(
     kind: str,
     classification: ListClassification,
     fetcher: PoliteFetcher,
+    pick: NameColumnPicker | None = None,
 ) -> None:
     if _url_too_long(url):
         return
@@ -161,9 +207,9 @@ def _parse_source(
             "pdf" if extension == "html" and response.content.startswith(b"%PDF-") else extension
         )
         if actual_extension == "html":
-            entries = parse_html_tables(response.text)
+            entries = parse_html_tables(response.text, pick)
         else:
-            result = parse_attachment_result(response.content, actual_extension)
+            result = parse_attachment_result(response.content, actual_extension, pick)
             entries, partial_reason = result.entries, result.failure_reason
     except Exception as exc:  # noqa: BLE001 - 损坏的外部附件不能中断整批回填
         reason = (
@@ -223,10 +269,17 @@ def _prune_invalid_entries(session: Session, selected_ids: list[int]) -> None:
 
 
 def _report(
-    session: Session, selected_ids: list[int], attachments_fetched: int, attachments_deferred: int
+    session: Session,
+    selected_ids: list[int],
+    attachments_fetched: int,
+    attachments_deferred: int,
+    ai: _AIStats | None = None,
 ) -> ListReport:
+    ai = ai or _AIStats()
     if not selected_ids:
-        return ListReport(0, 0, 0, {}, {}, [], attachments_fetched, attachments_deferred)
+        return ListReport(
+            0, 0, 0, {}, {}, [], attachments_fetched, attachments_deferred, ai.tried, ai.found
+        )
     names = (
         session.scalar(
             select(func.count(ListEntry.id)).where(ListEntry.document_id.in_(selected_ids))
@@ -290,6 +343,8 @@ def _report(
         samples=distinct_samples,
         attachments_fetched=attachments_fetched,
         attachments_deferred=attachments_deferred,
+        ai_tables_tried=ai.tried,
+        ai_tables_found=ai.found,
     )
 
 
@@ -299,7 +354,11 @@ def parse_lists(
     since: date = date(2026, 7, 1),
     attachment_limit: int = 200,
     fetcher: PoliteFetcher | None = None,
+    ai_client=None,
 ) -> ListReport:
+    """ai_client：配了 AI 时传入（youju.ai.get_chat_client()），
+    规则找不到名称列的表格请 AI 认列。"""
+    ai_stats = _AIStats()
     if attachment_limit < 1 or attachment_limit > 200:
         raise ValueError("单次附件上限必须在1到200之间")
     documents = session.scalars(
@@ -405,6 +464,7 @@ def parse_lists(
                     "detail",
                     info,
                     fetcher,
+                    _ai_picker(ai_client, doc.title, ai_stats),
                 )
             for attachment in detail.attachments:
                 record = session.scalar(
@@ -430,8 +490,9 @@ def parse_lists(
                     "attachment",
                     info,
                     fetcher,
+                    _ai_picker(ai_client, doc.title, ai_stats),
                 )
     finally:
         if owned:
             fetcher.close()
-    return _report(session, selected_ids, attachments_fetched, attachments_deferred)
+    return _report(session, selected_ids, attachments_fetched, attachments_deferred, ai_stats)
