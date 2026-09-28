@@ -119,11 +119,14 @@ async def _server_error(request: Request, exc: Exception) -> JSONResponse:
 
 @app.middleware("http")
 async def _role_guard(request: Request, call_next):
-    """按部署角色开放路径：api 服务不开放核对台和管理接口，admin 服务不开放小程序接口（见 #32）。"""
+    """按部署角色开放路径（白名单）：api 服务只开放小程序接口（/api/v1/）和健康检查，
+    admin 服务只开放核对台、管理接口和健康检查；其余一律 404
+    （早期样机的 /api/documents 等不对外）。"""
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
-    blocked = (role == "api" and admin_path) or (
+    mini_path = path.startswith("/api/v1/")
+    blocked = (role == "api" and not (mini_path or path == "/health")) or (
         role == "admin" and not (admin_path or path == "/health")
     )
     if blocked:

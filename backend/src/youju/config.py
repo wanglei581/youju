@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     ai_model: str = "qwen-flash"
 
     sources_csv: Path = DEFAULT_SOURCES_CSV
+    # 每个用户 10 分钟内最多导出几次（防止刷接口耗尽资源）；验收 C2"连续导出 100 次"时临时调高
+    exports_per_10min: int = 30
     # 云托管环境 ID（如 prod-xxxx）：每天的数据库备份存到这个环境的对象存储（验收 A6）
     cloud_env: str | None = None
 

@@ -73,7 +73,10 @@ def read_fixture_html(name: str) -> str:
 def _reset_admin_throttle():
     """管理口令输错计数放在进程内存里，每个测试前清零，免得前面测试的错误次数触发限流。"""
     from youju.api import app as app_module
+    from youju.api import exports
 
     app_module._admin_fails.clear()
+    exports._export_times.clear()
     yield
     app_module._admin_fails.clear()
+    exports._export_times.clear()

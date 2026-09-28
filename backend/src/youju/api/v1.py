@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, and_, func, not_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from youju.classify import (
     effective_kind,
@@ -25,7 +25,14 @@ from youju.classify import (
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
-from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
+from youju.models import (
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    DocumentMerge,
+    ListEntry,
+    Source,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -201,8 +208,34 @@ def _kind_is(kinds: list[str]):
     )
 
 
+def public_condition():
+    """可以公开给小程序的文件：来源是 1 级（法定公文、公示名单等，可存全文和导出），或者同一通知
+    有 1 级来源的副本——转载的网址归并时，主文件可能来自转载来源，内容是同一份公文。
+    2 级（只存题录）、3 级（按授权）来源的文件怎么展示另行决定，接入前先不公开。
+    要求查询里已经连上这份文件的 Source。"""
+    twin = aliased(Document)
+    twin_source = aliased(Source)
+    level1_twin = (
+        select(DocumentMerge.duplicate_id)
+        .join(twin, twin.id == DocumentMerge.duplicate_id)
+        .join(twin_source, twin_source.id == twin.source_id)
+        .where(
+            DocumentMerge.canonical_id == Document.id,
+            DocumentMerge.active.is_(True),
+            twin_source.rights_level == 1,
+        )
+        .exists()
+    )
+    return or_(Source.rights_level == 1, level1_twin)
+
+
 def _base() -> Select:
-    return visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
+    """公开给小程序的文件：同一通知只列主文件，只列可以公开的（见 public_condition）。"""
+    return visible_documents(
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .where(public_condition())
+    )
 
 
 def _ordered(stmt: Select) -> Select:
@@ -530,6 +563,7 @@ def calendar(
         .join(Source, Document.source_id == Source.id)
         .where(
             DocumentDeadline.status == "approved",
+            Source.rights_level == 1,
             not_passed,
             DocumentDeadline.approved_date <= d + timedelta(days=days),
         )
