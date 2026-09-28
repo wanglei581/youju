@@ -188,10 +188,16 @@ def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
 
 
 def _kind_is(kinds: list[str]):
-    """类型筛选：人工定过类型的按人工定的，没定过的按标题规则。"""
+    """类型筛选：人工定过类型的按人工定的，没定过的按标题规则——规则结果入库时已算好
+    存在 rule_kind，只比较这一列；还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，
+    结果一样。"""
+    by_rule = or_(
+        Document.rule_kind.in_(kinds),
+        and_(Document.rule_kind.is_(None), kind_filter(Document.title, kinds)),
+    )
     return or_(
         Document.kind_override.in_(kinds),
-        and_(Document.kind_override.is_(None), kind_filter(Document.title, kinds)),
+        and_(Document.kind_override.is_(None), by_rule),
     )
 
 
@@ -310,7 +316,7 @@ def _dept_filter(groups: list[str]):
 
 
 def _keyword_ids(session: Session, kw: str) -> Select:
-    """关键词命中的文件：标题（走 pg_trgm 索引）或文号，分两次查询再合并，互不拖累。"""
+    """关键词命中的文件：标题或文号，分两次查询再合并，互不拖累。"""
     like = f"%{_escape_like(kw)}%"
     by_title = select(Document.id).where(Document.title.ilike(like, escape="\\"))
     by_number = select(DocumentDetail.document_id).where(

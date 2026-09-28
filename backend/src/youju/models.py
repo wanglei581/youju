@@ -17,12 +17,18 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from youju.classify import doc_kind
 from youju.dbtypes import NOW, JSONType, LongText, UTCDateTime
 
 # 网址类字段参与唯一索引，MySQL 要求定长：utf8mb4 每字 4 字节，一个索引总长不超过 3072 字节。
 # 名单记录的唯一索引含网址、名称（256）和序号（32），所以网址最长 400；开发库里最长的是 307。
 URL_KEY_MAX = 512
 SOURCE_URL_MAX = 400
+
+
+def _rule_kind(context) -> str:
+    """入库时按标题规则算好类型（ORM 和批量插入都会调用），筛选时只比较这一列。"""
+    return doc_kind(context.get_current_parameters().get("title") or "")
 
 
 class Base(DeclarativeBase):
@@ -124,6 +130,9 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(16), default="discovered")
     # 人工定的类型：AI 和标题规则判断不一致时，在核对台选定（D-023）。有值时给用户看这个
     kind_override: Mapped[str | None] = mapped_column(String(8))
+    # 按标题规则算出的类型（申报通知 / 名单 / 政策 / 其他）：入库时算好；规则改了由 youju reclassify
+    # 重算（admin 服务每次启动时跑）。用户看到的类型 = 人工定的，没定过的按这一列
+    rule_kind: Mapped[str | None] = mapped_column(String(8), default=_rule_kind)
     kind_decided_by: Mapped[str | None] = mapped_column(String(80))
     kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

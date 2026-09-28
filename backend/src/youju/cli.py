@@ -263,6 +263,34 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     return 1 if sent is False or not usage_ok else 0
 
 
+def _cmd_reclassify(_: argparse.Namespace) -> int:
+    """按当前的标题规则重算每份文件的类型（rule_kind），只写有变化的。规则改了之后要跑一次；
+    admin 服务每次启动时在迁移之后自动跑。"""
+    from collections import defaultdict
+
+    from sqlalchemy import update
+
+    from youju.classify import doc_kind
+
+    with session_factory()() as session:
+        rows = session.execute(select(Document.id, Document.title, Document.rule_kind)).all()
+        changed: dict[str, list[int]] = defaultdict(list)
+        for doc_id, title, kind in rows:
+            new = doc_kind(title)
+            if new != kind:
+                changed[new].append(doc_id)
+        for kind, ids in changed.items():
+            for start in range(0, len(ids), 1000):
+                session.execute(
+                    update(Document)
+                    .where(Document.id.in_(ids[start : start + 1000]))
+                    .values(rule_kind=kind)
+                )
+        session.commit()
+    print(f"按当前规则重算文件类型：共 {len(rows)} 份，更新 {sum(map(len, changed.values()))} 份")
+    return 0
+
+
 def _cmd_backup(args: argparse.Namespace) -> int:
     from youju.backup import BackupError, dump, run_backup
     from youju.db import create_mysql_engine
@@ -484,6 +512,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
     p.set_defaults(func=_cmd_audit_deadlines)
+
+    sub.add_parser(
+        "reclassify",
+        help="按当前的标题规则重算每份文件的类型（规则改了之后跑；admin 启动时自动跑）",
+    ).set_defaults(func=_cmd_reclassify)
 
     p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
     p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")

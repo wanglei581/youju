@@ -17,6 +17,8 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
     exit 1
   fi
   youju db-upgrade
+  # 按当前代码里的标题规则重算文件类型（规则随版本更新；搜索按类型筛选时只比较算好的这一列）
+  youju reclassify
   # cron 看不到容器的环境变量，先写进文件（只有容器内 root 可读），任务脚本里再读
   umask 077
   env | grep -E '^(YOUJU_|TZ=|PATH=)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /" > /app/backend/deploy/env.sh
