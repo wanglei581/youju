@@ -83,6 +83,74 @@ def test_table_rows_and_date_in_other_cell() -> None:
     ]
 
 
+def test_markup_in_title_attribute_is_not_used_as_title() -> None:
+    # 山西省科技厅把索引号、发布时间写成 HTML 放在 title 属性里，真正的标题是链接文字
+    html = """
+    <table><tbody>
+      <tr><td><a href="/t/1.html" title="<p><b>索引号：000014349/2026-04994</b> </p><p><b>发布时间：</b>2026.09.15</p>">
+        关于征集省级科技成果转化引导基金储备项目的通知</a></td><td>2026.09.15</td></tr>
+      <tr><td><a href="/t/2.html" title="<p><b>索引号：000014349/2026-04995</b></p>">
+        关于开展2026年度科技型中小企业评价工作的通知</a></td><td>2026.09.14</td></tr>
+    </tbody></table>
+    """
+    items = extract_items(html, "https://kjt.shanxi.gov.cn/list/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于征集省级科技成果转化引导基金储备项目的通知",
+        "关于开展2026年度科技型中小企业评价工作的通知",
+    ]
+
+
+def test_archived_topic_links_are_not_documents() -> None:
+    # 湖南工信厅的列表里夹着专题专栏的归档入口，不是文件
+    html = """
+    <ul>
+      <li><a href="/gxt/xxgk/tzgg/202609/t20260924_1.html">关于开展2026年度专项申报工作的通知</a>
+          <span>2026-09-24</span></li>
+      <li><a href="/gxt/ztzl/2026hnlh/index.html">2026湖南两会（已归档</a><span>2026-09-20</span></li>
+      <li><a href="/gxt/xxgk/tzgg/202609/t20260920_2.html">关于公布第二批专精特新中小企业名单的通知</a>
+          <span>2026-09-20</span></li>
+    </ul>
+    """
+    items = extract_items(html, "https://gxt.hunan.gov.cn/gxt/xxgk/tzgg/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于开展2026年度专项申报工作的通知",
+        "关于公布第二批专精特新中小企业名单的通知",
+    ]
+
+
+def test_title_mentioning_archive_in_the_middle_is_kept() -> None:
+    html = """
+    <ul>
+      <li><a href="/a/1.html">关于科技计划项目材料已归档情况的通知</a><span>2026-09-24</span></li>
+      <li><a href="/a/2.html">关于开展2026年度专项申报工作的通知</a><span>2026-09-23</span></li>
+    </ul>
+    """
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于科技计划项目材料已归档情况的通知",
+        "关于开展2026年度专项申报工作的通知",
+    ]
+
+
+def test_markup_title_attribute_is_used_when_link_text_is_generic() -> None:
+    # 链接文字只是"详情"时，用去掉标签后的 title 属性
+    html = """
+    <ul>
+      <li><span>关于开展2026年度专项申报工作的通知</span>
+          <a href="/b/1.html" title="<b>关于开展2026年度高新技术企业认定工作的通知</b>">详情</a>
+          <span>2026-09-24</span></li>
+      <li><span>第二条</span>
+          <a href="/b/2.html" title="<b>关于公布第二批专精特新中小企业名单的通知</b>">详情</a>
+          <span>2026-09-23</span></li>
+    </ul>
+    """
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=TODAY)
+    assert [i.title for i in items] == [
+        "关于开展2026年度高新技术企业认定工作的通知",
+        "关于公布第二批专精特新中小企业名单的通知",
+    ]
+
+
 def test_title_containing_date_is_not_publish_date() -> None:
     html = """
     <ul>
