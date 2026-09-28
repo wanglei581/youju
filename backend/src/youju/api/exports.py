@@ -396,12 +396,13 @@ def _allow_export(caller: str, now: float) -> str | None:
         _drop_old(_instance_times, now)
         if len(_instance_times) >= _EXPORTS_PER_INSTANCE:
             return "busy"
-        times = _export_times.pop(caller, None) or deque()
+        times = _export_times.get(caller) or deque()
         _drop_old(times, now)
-        _export_times[caller] = times  # 放到最后：按最近导出的先后排
         if len(times) >= limit:
-            return "user"
+            return "user"  # 被拒的不更新先后顺序，免得借此把别人的记录挤出去
         times.append(now)
+        _export_times[caller] = times
+        _export_times.move_to_end(caller)  # 放到最后：按最近成功导出的先后排
         _instance_times.append(now)
         # 记录太多时淘汰最久没导出的（不整个清空，别人没法借此重置某个用户的次数）
         while len(_export_times) > _EXPORT_KEYS_MAX:
