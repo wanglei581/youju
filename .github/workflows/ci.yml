@@ -66,14 +66,38 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v7
+      # 境外机器上用官方源构建（云托管默认用腾讯云源）；依赖按锁文件校验哈希，装出来的包一样
       - name: 构建镜像
-        run: docker build -t youju:ci .
+        run: >-
+          docker build -t youju:ci
+          --build-arg DEBIAN_MIRROR=deb.debian.org
+          --build-arg PIP_INDEX_URL=https://pypi.org/simple .
       # 在容器里按部署顺序跑一遍：建表迁移、导入来源清单。能发现镜像里的路径、文件和依赖问题
       - name: 容器里迁移数据库、导入来源
         run: >-
           docker run --rm --network host
           -e YOUJU_DATABASE_URL=postgresql+psycopg://youju:youju@localhost:5432/youju_image
           youju:ci sh -c "youju db-upgrade && youju import-sources && youju report"
+      # 按部署方式启动两个服务（start.sh）：admin 迁移、装 cron、写心跳后起接口；api 只起接口。
+      # 口令只是 CI 用的假值
+      - name: 按部署方式启动 admin、api，健康检查通过
+        run: |
+          DB=postgresql+psycopg://youju:youju@localhost:5432/youju_image
+          docker run -d --name admin --network host -e PORT=8081 -e YOUJU_ROLE=admin \
+            -e YOUJU_ADMIN_TOKEN=ci-dummy-admin-token-0000000000000000 \
+            -e YOUJU_DATABASE_URL=$DB youju:ci
+          docker run -d --name api --network host -e PORT=8082 -e YOUJU_ROLE=api \
+            -e YOUJU_TRUST_WX_HEADERS=true -e YOUJU_DATABASE_URL=$DB youju:ci
+          for port in 8081 8082; do
+            curl -fsS --retry 20 --retry-delay 2 --retry-all-errors "http://localhost:$port/health"
+            echo
+          done
+          docker exec admin crontab -l
+          docker exec admin test -s /app/backend/deploy/env.sh
+          docker exec admin test -x /app/backend/deploy/first-round.sh
+      - name: 启动失败时打印容器日志
+        if: failure()
+        run: docker logs admin || true; docker logs api || true
 
   legacy-prototype:
     name: 旧样机测试（services/api）
