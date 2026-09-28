@@ -20,6 +20,7 @@ from youju.ai.deadlines import extract_deadlines_with_ai
 from youju.classify import doc_kind
 from youju.dedup import canonical_ids, groups_for, reviewed_key, sync_reviewed_twins
 from youju.extract.deadlines import DeadlineCandidate, same_moment
+from youju.extract.service import ai_found_in_group
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
 
 # 调用出错的文件隔多久再试
@@ -138,16 +139,17 @@ def _apply_deadlines(
     group_rows = list(
         session.scalars(select(DocumentDeadline).where(DocumentDeadline.document_id.in_(members)))
     )
-    rows = [row for row in group_rows if row.document_id == doc.id]
-    # 规则候选：AI 是否也找到了同一天
-    for row in rows:
+    # 规则候选：同一通知各网址的 AI 结果里有没有同一天（刚记下的这份也在里面）。
+    # AI 后到、或只检查了同组别的网址，已有的规则候选也一起更新
+    session.flush()
+    found = ai_found_in_group(session, members) or []
+    for row in group_rows:
         if row.origin != "rule":
             continue
         row.ai_agrees = any(
-            same_moment(c.due_date, c.due_time, row.candidate_date, row.candidate_time)
-            for c in items
+            same_moment(d, t, row.candidate_date, row.candidate_time) for d, t in found
         )
-        if row.status == "pending":
+        if row.document_id == doc.id and row.status == "pending":
             if row.ai_agrees:
                 report.deadlines_agree += 1
             else:

@@ -12,7 +12,9 @@ from youju.extract.deadlines import extract_deadlines, same_moment
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
 
 
-def _ai_found(session: Session, document_ids: list[int]) -> list[tuple[date, time | None]] | None:
+def ai_found_in_group(
+    session: Session, document_ids: list[int]
+) -> list[tuple[date, time | None]] | None:
     """AI 在同一通知（归并组）各网址里抽到的截止（日期、时刻）；一份都还没成功检查过返回 None。"""
     checks = list(
         session.scalars(
@@ -90,7 +92,7 @@ def extract_existing(
                 )
             )
         )
-        ai_found = _ai_found(session, members)
+        ai_found = ai_found_in_group(session, members)
         for candidate in extract_deadlines(
             detail.body_text, detail.publish_date or doc.publish_date
         ):
