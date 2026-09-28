@@ -20,6 +20,8 @@ fi
 "$D/job.sh" extract-deadlines
 # 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
 "$D/job.sh" ai-check --limit 300
+# 用户纠错过的文件，用规则和 AI 复查已发布的截止日期，结果写在纠错旁边（纠错内容不发给 AI）
+"$D/job.sh" triage-feedback
 "$D/job.sh" parse-lists
 [ "$1" = "--notify" ] && "$D/job.sh" notify
 exit 0

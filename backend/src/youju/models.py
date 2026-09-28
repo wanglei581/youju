@@ -412,6 +412,10 @@ class Feedback(Base):
     check_result: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 纠错分诊（D-023）：规则和 AI 复查对应文件已发布的截止日期的结果，给处理的人看；
+    # 用户写的内容不发给 AI
+    triage_note: Mapped[str | None] = mapped_column(String(300))
+    triaged_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Event(Base):

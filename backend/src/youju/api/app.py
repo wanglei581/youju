@@ -259,6 +259,9 @@ class FeedbackOut(BaseModel):
     docTitle: str | None
     docUrl: str | None
     handledAt: datetime | None
+    # 纠错分诊：规则和 AI 复查对应文件已发布截止日期的结果（还没分诊时为空）
+    triageNote: str | None = None
+    triagedAt: datetime | None = None
 
 
 class UnchangeIn(BaseModel):
@@ -1279,6 +1282,8 @@ def admin_feedback(
                 docTitle=doc.title if doc else None,
                 docUrl=doc.url if doc else None,
                 handledAt=row.handled_at,
+                triageNote=row.triage_note,
+                triagedAt=row.triaged_at,
             )
         )
     return result

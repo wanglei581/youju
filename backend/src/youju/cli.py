@@ -263,6 +263,28 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     return 1 if sent is False or not usage_ok else 0
 
 
+def _cmd_triage_feedback(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.triage import triage_feedback
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = triage_feedback(session, client, limit=args.limit)
+    finally:
+        usage_ok = _finish_ai(client, "triage")
+    print(
+        f"纠错分诊 {report.triaged} 条，新标存疑 {report.flagged} 条"
+        + ("" if client is not None else "（没配 AI 密钥，只做规则回查）")
+        + f"；AI 出错 {report.errors} 次"
+    )
+    if report.stopped_early:
+        print("连续多条调用 AI 出错，本轮提前停止，下一轮再试")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_try_source(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.sources.onboard import trial, trial_fetcher
@@ -414,6 +436,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
     p.set_defaults(func=_cmd_audit_deadlines)
+
+    p = sub.add_parser(
+        "triage-feedback",
+        help="纠错分诊：用规则和 AI 复查纠错对应文件已发布的截止日期（纠错内容不发给 AI）",
+    )
+    p.add_argument("--limit", type=int, default=50, help="本轮最多分诊多少条纠错")
+    p.set_defaults(func=_cmd_triage_feedback)
 
     p = sub.add_parser(
         "try-source", help="试跑一个栏目网址：抓一次列表页、识别条目、给出登记建议（不写数据库）"

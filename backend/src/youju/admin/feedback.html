@@ -30,6 +30,7 @@
   .meta { font-size: 13px; }
   .tag { padding: 0 6px; border-radius: 4px; background: var(--brand-tint); color: var(--brand); font-size: 12px; font-weight: 500; }
   .handled { background: var(--g-tint); color: var(--green); }
+  .triage { margin: 8px 0; padding: 8px 12px; background: var(--brand-tint, #EAF0FF); color: var(--t1); border-radius: 8px; font-size: 14px; }
   .content { margin: 12px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .document { margin: 8px 0; }
   .document a { font-weight: 600; }
@@ -109,6 +110,11 @@
     } else {
       docLine.textContent = item.docId ? '对应文件原文链接不可用' : '无对应文件或文件已删除';
     }
+    // 纠错分诊：每轮定时任务用规则和 AI 复查对应文件已发布的截止日期（纠错内容不发给 AI）
+    const triage = el('div', 'triage');
+    if (item.triageNote) triage.textContent = `自动复查：${item.triageNote}`;
+    else if (item.docId && !item.handledAt) triage.textContent = '自动复查：还没做，下一轮定时任务会复查对应文件';
+    else triage.hidden = true;
     const CHECK = { pass: '通过', unchecked: '未检查（开发环境不调用微信接口）' };
     const check = el('div', 'meta', `内容安全检查：${CHECK[item.checkResult] || item.checkResult}`);
     const row = el('div', 'row');
@@ -135,7 +141,7 @@
       } finally { action.disabled = false; }
     };
     row.append(action, msg);
-    card.append(meta, content, docLine, check, row);
+    card.append(meta, content, docLine, triage, check, row);
     return card;
   }
   async function load(reset) {
