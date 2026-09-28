@@ -148,10 +148,23 @@ def _verified_note(item: dict, excerpt: str) -> str | None:
     return f"AI：{reason}（原文写的是 {found_text}）；原文：「{quote[:80]}」"
 
 
+@dataclass
+class AIVerdict:
+    # AI 判为有误、且照抄的原文对得上的截止：编号 → 存疑原因
+    notes: dict[int, str] = field(default_factory=dict)
+    # AI 说有误、但照抄的原文对不上，没采信的编号
+    unverified: list[int] = field(default_factory=list)
+    # AI 明确回答"没问题"（ok 为 true）的编号；没出现在回答里的，算这次没查到
+    confirmed: list[int] = field(default_factory=list)
+
+    def answered(self) -> set[int]:
+        return set(self.notes) | set(self.unverified) | set(self.confirmed)
+
+
 def _ai_check(
     client: ChatClient, doc: Document, excerpt: str, rows: list[DocumentDeadline]
-) -> tuple[dict[int, str], list[int]]:
-    """AI 判为存疑且对得上原文的截止（编号 → 原因），和对不上原文、没采信的编号。"""
+) -> AIVerdict:
+    """请 AI 对照原文复查这些截止，按回答分成：存疑且对得上原文、没采信、明确没问题。"""
     listing = "\n".join(
         f"编号 {row.id}：{row.kind}，{row.approved_date}"
         + (f" {row.approved_time.strftime('%H:%M')}" if row.approved_time else "")
@@ -161,23 +174,25 @@ def _ai_check(
     result = client.complete_json(_SYSTEM, user, max_tokens=200 + 150 * len(rows))
     items = result.get("items")
     wanted = {row.id for row in rows}
-    notes: dict[int, str] = {}
-    unverified: list[int] = []
+    verdict = AIVerdict()
     for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict) or item.get("ok") is not False:
+        if not isinstance(item, dict) or item.get("ok") not in (True, False):
             continue
         try:
             deadline_id = int(item.get("id"))
         except (TypeError, ValueError):
             continue
-        if deadline_id not in wanted or deadline_id in notes or deadline_id in unverified:
+        if deadline_id not in wanted or deadline_id in verdict.answered():
+            continue
+        if item.get("ok") is True:
+            verdict.confirmed.append(deadline_id)
             continue
         note = _verified_note(item, excerpt)
         if note is None:
-            unverified.append(deadline_id)
+            verdict.unverified.append(deadline_id)
         else:
-            notes[deadline_id] = note
-    return notes, unverified
+            verdict.notes[deadline_id] = note
+    return verdict
 
 
 def run_audit(
@@ -267,28 +282,30 @@ def run_audit(
         check.model = client.model
         check.checked_at = now
         try:
-            notes, unverified = _ai_check(client, doc, excerpt, targets)
+            verdict = _ai_check(client, doc, excerpt, targets)
         except AIError as exc:
-            notes, unverified = None, []
             check.result = None
             check.error = str(exc)[:200]
             report.errors += 1
             consecutive_errors += 1
         else:
             consecutive_errors = 0
+            answered = verdict.answered()
             check.result = {
-                "checked": [row.id for row in targets],
-                "flagged": {str(k): v for k, v in notes.items()},
-                "unverified": unverified,
+                "checked": [row.id for row in targets if row.id in answered],
+                "flagged": {str(k): v for k, v in verdict.notes.items()},
+                "unverified": verdict.unverified,
+                # AI 没回答的：不算抽查过，下次照样抽
+                "unanswered": [row.id for row in targets if row.id not in answered],
             }
             check.error = None
             report.checked_by_ai += 1
-            report.unverified += len(unverified)
+            report.unverified += len(verdict.unverified)
             for row in targets:
-                if row.id in notes:
-                    _flag(row, notes[row.id], now)
-                    report.flagged.append((row.id, doc.title, notes[row.id]))
-                else:
+                if row.id in verdict.notes:
+                    _flag(row, verdict.notes[row.id], now)
+                    report.flagged.append((row.id, doc.title, verdict.notes[row.id]))
+                elif row.id in answered:
                     row.audit_at = now  # 这次抽查过了，30 天后再抽
         usage = client.last_usage
         check.prompt_tokens = usage.get("prompt_tokens", 0)

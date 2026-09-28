@@ -1,6 +1,7 @@
 """纠错分诊（D-023）：用户纠错后复查对应文件已发布的截止日期，结果写在纠错旁边；纠错内容不发给 AI。"""
 
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -115,7 +116,13 @@ def fake_ai(reply):
     def handler(request):
         payload = json.loads(request.content)
         calls.append(payload)
-        result = reply(payload) if callable(reply) else reply
+        if callable(reply):
+            result = reply(payload)
+        else:
+            # 固定回答：问到但没写的编号当作 AI 明确回答"没问题"（模拟漏答时传函数）
+            mentioned = {item.get("id") for item in reply}
+            asked = re.findall(r"编号 (\d+)", payload["messages"][1]["content"])
+            result = reply + [{"id": int(i), "ok": True} for i in asked if int(i) not in mentioned]
         if isinstance(result, httpx.Response):
             return result
         content = json.dumps({"items": result}, ensure_ascii=False)
@@ -331,8 +338,8 @@ def test_note_says_which_deadlines_ai_could_not_cover(session, monkeypatch) -> N
     client, _ = fake_ai([])
     triage_feedback(session, client, now=NOW)
     note = session.get(Feedback, item.id).triage_note
-    assert note.startswith("已发布的截止 10 条，复查过的都对得上原文")
-    assert "另有 5 条 AI 没复查到" in note  # 不说"都对得上"
+    assert note.startswith("已发布的截止 10 条，规则回查没发现问题，AI 确认对得上原文 5 条")
+    assert "有 5 条 AI 没能确认" in note  # 不说"都对得上"
 
 
 def test_deleted_documents_do_not_break_the_round(session, monkeypatch) -> None:
@@ -343,3 +350,46 @@ def test_deleted_documents_do_not_break_the_round(session, monkeypatch) -> None:
     monkeypatch.setattr(triage_module, "canonical_ids", lambda s, ids: dict.fromkeys(ids, 999999))
     assert triage_feedback(session, None, now=NOW).triaged == 1
     assert session.get(Feedback, item.id).triage_note == "对应文件已删除，没法复查"
+
+
+def test_unanswered_and_unverified_rows_are_not_called_fine(session) -> None:
+    """AI 漏答、或说有误却对不上原文的，都算没能确认，请人工核对；不说"都对得上"。"""
+    doc = add_doc(session)
+    skipped = deadline(session, doc, date(2026, 10, 15))
+    doubted = deadline(session, doc, date(2026, 10, 20), evidence=PAPER, n=1)
+    item = feedback(session, doc)
+    claim = {
+        "id": doubted.id,
+        "ok": False,
+        "quote": "编的句子并不在原文里",
+        "found_date": "2026-10-21",
+    }
+    client, _ = fake_ai(lambda payload: [claim])
+    report = triage_feedback(session, client, now=NOW)
+    assert report.flagged == 0
+    session.expire_all()
+    note = session.get(Feedback, item.id).triage_note
+    assert note.startswith("已发布的截止 2 条，规则回查没发现问题；有 2 条 AI 没能确认")
+    assert session.get(DocumentDeadline, skipped.id).audit_at is None  # 漏答的不算查过
+    assert session.get(DocumentDeadline, doubted.id).audit_at is not None  # 回答过
+
+
+def test_long_notes_keep_the_warnings(session) -> None:
+    """结果超长时只截存疑的举例，"请人工核对"和待核对条数不截。"""
+    import youju.ai.triage as triage_module
+
+    doc = add_doc(session)
+    rows = [
+        deadline(session, doc, date(2026, 11, day), n=day, audit_state="flagged")
+        for day in range(1, 9)
+    ]
+    for row in rows:
+        row.audit_note = "AI：" + "很长的存疑原因" * 20
+    session.commit()
+    deadline(session, doc, date(2026, 12, 1), n=99, status="pending")
+    item = feedback(session, doc)
+    triage_feedback(session, None, now=NOW)
+    note = session.get(Feedback, item.id).triage_note
+    assert len(note) <= triage_module._NOTE_MAX
+    assert note.startswith("已发布的截止 8 条，规则复查 8 条存疑：") and "…" in note
+    assert note.endswith("；没配 AI，只做了规则回查；还有 1 条截止候选待核对")

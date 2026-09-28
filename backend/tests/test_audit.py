@@ -105,7 +105,13 @@ def fake_ai(reply):
     def handler(request):
         payload = json.loads(request.content)
         calls.append(payload)
-        result = reply(payload) if callable(reply) else reply
+        if callable(reply):
+            result = reply(payload)
+        else:
+            # 固定回答：问到但没写的编号当作 AI 明确回答"没问题"（模拟漏答时传函数）
+            mentioned = {item.get("id") for item in reply}
+            asked = re.findall(r"编号 (\d+)", payload["messages"][1]["content"])
+            result = reply + [{"id": int(i), "ok": True} for i in asked if int(i) not in mentioned]
         if isinstance(result, httpx.Response):
             return result
         content = json.dumps({"items": result}, ensure_ascii=False)
@@ -241,7 +247,7 @@ def test_ai_errors_retry_next_day_and_stop_after_three_in_a_row(session) -> None
     def reply(payload):
         if state["down"]:
             return httpx.Response(500, json={"usage": {"prompt_tokens": 7, "completion_tokens": 0}})
-        return []
+        return [{"id": i, "ok": True} for i in sent_ids(payload)]
 
     client, calls = fake_ai(reply)
     now = datetime.now(UTC)
@@ -456,3 +462,21 @@ def test_cli_alerts_only_when_something_needs_a_person(
     assert cli.main(["audit-deadlines"]) == 0
     assert len(sent) == 1 and "质检发现 1 条" in sent[0]
     assert "只做规则回查" in capsys.readouterr().out
+
+
+def test_rows_the_ai_did_not_answer_stay_due(session) -> None:
+    """AI 漏答的截止不算抽查过：下次照样抽，检查记录里写明没回答。"""
+    doc = add_doc(session)
+    asked = approve(session, doc, date(2026, 10, 15))
+    skipped = approve(session, doc, date(2026, 10, 20), evidence=PAPER, n=1)
+    client, calls = fake_ai(lambda payload: [{"id": asked.id, "ok": True}])
+    now = datetime.now(UTC)
+    run_audit(session, client, now=now)
+    session.expire_all()
+    assert session.get(DocumentDeadline, asked.id).audit_at is not None
+    assert session.get(DocumentDeadline, skipped.id).audit_at is None
+    check = session.scalar(select(AICheck).where(AICheck.task == "audit"))
+    assert check.result["checked"] == [asked.id] and check.result["unanswered"] == [skipped.id]
+    calls.clear()
+    run_audit(session, client, now=now + timedelta(hours=1))
+    assert [sent_ids(c) for c in calls] == [{skipped.id}]

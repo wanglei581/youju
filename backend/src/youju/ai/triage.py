@@ -86,10 +86,11 @@ def triage_one(
         )
         or 0
     )
-    parts: list[str] = []
+    head, detail = "", ""
+    extras: list[str] = []
     flagged = 0
     if not rows:
-        parts.append("这份文件没有已发布的截止日期")
+        head = "这份文件没有已发布的截止日期"
     else:
         # 已在"质检存疑"里的照实写出来；其余的规则回查，规则没发现问题的再请 AI 复查
         problems: dict[int, tuple[DocumentDeadline, str]] = {
@@ -101,50 +102,74 @@ def triage_one(
             note = None if row.id in problems else rule_note(row, publish, body)
             if note:
                 problems[row.id] = (row, note)
+        # 规则没发现问题的分批请 AI 复查；只有 AI 明确回答"没问题"的才算对得上原文，
+        # 没回答的、说有误但对不上原文的、原文里定位不到或篇幅太长没发出去的，都算没能确认
         remaining = [r for r in rows if r.id not in problems]
+        unsure: list[DocumentDeadline] = []
+        confirmed = 0
         batches = 0
         while client is not None and body and remaining and batches < _MAX_BATCHES:
             targets, excerpt = _plan(body, remaining)
             if not targets:
-                break  # 原文里定位不到的，留给人看
-            notes, _ = _ai_check(client, doc, excerpt, targets)
+                break
+            verdict = _ai_check(client, doc, excerpt, targets)
             batches += 1
+            answered = verdict.answered()
             for row in targets:
-                if row.id in notes:
-                    problems[row.id] = (row, notes[row.id])
-                elif row.audit_state is None:
-                    row.audit_at = now  # 这次复查过、没问题，30 天内抽查不再抽
+                if row.id in verdict.notes:
+                    problems[row.id] = (row, verdict.notes[row.id])
+                    continue
+                if row.id in answered and row.audit_state is None:
+                    row.audit_at = now  # AI 回答过，30 天内抽查不再抽
+                if row.id in verdict.confirmed:
+                    confirmed += 1
+                else:
+                    unsure.append(row)
             done = {row.id for row in targets}
             remaining = [r for r in remaining if r.id not in done]
+        if client is not None:
+            unsure += remaining
         for row, note in problems.values():
             if row.audit_state is None:
                 _flag(row, note, now)
                 flagged += 1
-        checked_by = "规则和 AI " if client is not None else "规则"
+        # 按实际做了什么写：真的请 AI 复查过才说"规则和 AI"
+        checked_by = "规则和 AI " if batches else "规则"
+        head = f"已发布的截止 {len(rows)} 条，"
         if problems:
-            shown = "；".join(
-                f"{row.approved_date} {note}{_state_hint(row)}"
-                for row, note in list(problems.values())[:2]
+            head += f"{checked_by}复查 {len(problems)} 条存疑"
+            detail = "：" + "；".join(
+                f"{row.approved_date} {note}{_state_hint(row)}" for row, note in problems.values()
             )
-            parts.append(
-                f"已发布的截止 {len(rows)} 条，{checked_by}复查 {len(problems)} 条存疑：{shown}"
+        elif unsure:
+            # 有 AI 没能确认的，不说"都对得上"：只说规则回查没发现问题、AI 确认了几条
+            head += "规则回查没发现问题" + (
+                f"，AI 确认对得上原文 {confirmed} 条" if confirmed else ""
             )
-        elif client is not None and remaining:
-            parts.append(f"已发布的截止 {len(rows)} 条，复查过的都对得上原文")
         else:
-            parts.append(f"已发布的截止 {len(rows)} 条，{checked_by}复查都对得上原文")
+            head += f"{checked_by}复查都对得上原文"
         if client is None:
-            parts.append("没配 AI，只做了规则回查")
-        elif remaining:
-            parts.append(
-                f"另有 {len(remaining)} 条 AI 没复查到（原文里定位不到或篇幅太长），请人工核对"
+            extras.append("没配 AI，只做了规则回查")
+        elif unsure:
+            extras.append(
+                f"有 {len(unsure)} 条 AI 没能确认（没回答、说有误但对不上原文，"
+                "或原文里定位不到、篇幅太长），请人工核对"
             )
     if pending:
-        parts.append(f"还有 {pending} 条截止候选待核对")
+        extras.append(f"还有 {pending} 条截止候选待核对")
     kind = _kind_note(session, doc)
     if kind:
-        parts.append(kind)
-    return "；".join(parts)[:_NOTE_MAX], flagged
+        extras.append(kind)
+    return _join(head, detail, extras), flagged
+
+
+def _join(head: str, detail: str, extras: list[str]) -> str:
+    """拼成分诊结果：超长时只截存疑的举例，提醒人工核对、待核对、类型这些不截。"""
+    tail = "".join(f"；{item}" for item in extras)
+    room = _NOTE_MAX - len(head) - len(tail)
+    if detail and room > 0:
+        head += detail if len(detail) <= room else detail[: room - 1] + "…"
+    return (head + tail)[:_NOTE_MAX]
 
 
 def triage_feedback(
