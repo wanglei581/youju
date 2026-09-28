@@ -1,11 +1,14 @@
 """礼貌抓取：遵守 robots.txt（RFC 9309）、同一网站限速、透明标识，不绕过任何防护。"""
 
+import ipaddress
 import re
+import socket
 import ssl
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import certifi
@@ -20,13 +23,22 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
 # GBK、GB2312 都用超集 GB18030 解码，避免个别生僻字出错
 _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
+# NAT64 地址里嵌着 IPv4 地址，按嵌入的地址判断
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+# 系统 DNS 解析没有超时参数，放到线程里等，最多等这么久
+_DNS_TIMEOUT = 10.0
+# 同时在等的域名解析最多这么多个：解析卡住时守护线程不会无限增加
+_DNS_SLOTS = threading.BoundedSemaphore(32)
+# 走真实网络时每次请求新建连接：连接固定到检查过的 IP 后，不同域名可能共用同一个 IP（CDN），
+# 复用连接会把 B 网站的请求发到按 A 网站校验过证书的连接上
+_NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0)
 
 
 @dataclass
 class FetchResult:
     url: str
-    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error；
-    # unsupported_host 仅在配置了网址限制时返回。
+    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / too_large；
+    # unsupported_host：配置了网址限制时不在范围内，或域名解析到内网、本机等非公网地址。
     # redirect 只在内部使用，fetch() 不会返回它
     status: str
     final_url: str = ""
@@ -39,9 +51,10 @@ class FetchResult:
 
 @dataclass
 class _RobotsEntry:
-    state: str  # rules / allow_all / unreachable
+    state: str  # rules / allow_all / unreachable / unsupported_host
     parser: RobotFileParser | None
     fetched_at: float
+    error: str | None = None  # unsupported_host 的原因
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -54,6 +67,48 @@ def compat_ssl_context() -> ssl.SSLContext:
     ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
     ctx.set_ecdh_curve("prime256v1")
     return ctx
+
+
+def resolve_host(host: str, timeout: float = _DNS_TIMEOUT) -> list[str]:
+    """系统 DNS 解析出的全部地址。超时抛 TimeoutError（属于 OSError），按解析失败处理。
+
+    每次解析单独起一个守护线程：卡住的解析等系统超时后自行结束，不占共享的线程池，不拖住后面的解析。
+    """
+    if not _DNS_SLOTS.acquire(blocking=False):
+        raise TimeoutError("同时在等的域名解析过多")
+    result: dict = {}
+    done = threading.Event()
+
+    def lookup() -> None:
+        try:
+            result["infos"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            result["error"] = exc
+        finally:
+            done.set()
+            _DNS_SLOTS.release()
+
+    try:
+        threading.Thread(target=lookup, name="youju-dns", daemon=True).start()
+    except BaseException:
+        _DNS_SLOTS.release()
+        raise
+    if not done.wait(timeout):
+        raise TimeoutError(f"解析超过 {timeout:g} 秒")
+    if "error" in result:
+        raise result["error"]
+    return [info[4][0] for info in result["infos"]]
+
+
+def non_public_address(address: str) -> bool:
+    """内网、本机、链路本地（含云服务器元数据地址）、保留、组播等地址，都不是公网地址。"""
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return not ip.is_global or ip.is_multicast
 
 
 def decode_html(content: bytes, content_type: str | None) -> str:
@@ -85,14 +140,22 @@ class PoliteFetcher:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         url_allowed: Callable[[str], bool] | None = None,
+        resolver: Callable[[str], list[str]] | None = None,
+        real_network: bool | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
+        # 直连政府网站，不走环境变量里的代理：连接前后的地址检查都以直连为前提
         self._client = httpx.Client(
-            headers=headers, timeout=timeout, follow_redirects=False, transport=transport
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=False,
+            transport=transport,
+            trust_env=False,
+            limits=_NO_KEEPALIVE,
         )
         # 兼容模式：只在默认握手失败时对该网站使用，证书照常校验
         self._compat_client = httpx.Client(
@@ -101,12 +164,25 @@ class PoliteFetcher:
             follow_redirects=False,
             verify=compat_ssl_context(),
             transport=compat_transport or transport,
+            trust_env=False,
+            limits=_NO_KEEPALIVE,
         )
         self._compat_hosts: set[str] = set()
         self._interval = per_host_interval
         self._clock = clock
         self._sleep = sleep
         self._url_allowed = url_allowed
+        # 测试里换成假的解析，不做真实 DNS 查询
+        self._resolver = resolver or resolve_host
+        # 哪一路连接走真实网络（默认看有没有注入传输，两路分开判断）：走真实网络的连接固定到检查过的
+        # IP，并要求拿到实际连接的地址；测试用的模拟传输不连网，不做这两步（可用 real_network 打开）
+        if real_network is None:
+            self._real = {
+                "main": transport is None,
+                "compat": (compat_transport or transport) is None,
+            }
+        else:
+            self._real = {"main": real_network, "compat": real_network}
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -129,7 +205,8 @@ class PoliteFetcher:
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
-            state, allowed = self.robots_allows(current)
+            entry, allowed = self._check_robots(current)
+            state = entry.state
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
@@ -139,7 +216,7 @@ class PoliteFetcher:
                     error="robots.txt 暂时无法获取，本次跳过",
                 )
             if state == "unsupported_host":
-                return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
+                return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
             if not allowed:
                 return FetchResult(
                     url, "robots_disallowed", final_url=current, error="robots.txt 不允许抓取该页面"
@@ -153,7 +230,7 @@ class PoliteFetcher:
             url, "network_error", final_url=current, error=f"重定向超过 {_MAX_REDIRECTS} 次"
         )
 
-    def robots_allows(self, url: str) -> tuple[str, bool]:
+    def _check_robots(self, url: str) -> tuple[_RobotsEntry, bool]:
         origin = origin_of(url)
         # 同一网站并发时只读取一次 robots.txt
         with self._lock_for(self._robots_locks, origin):
@@ -162,18 +239,22 @@ class PoliteFetcher:
                 entry = self._load_robots(origin)
                 self._robots[origin] = entry
         if entry.state in {"unreachable", "unsupported_host"}:
-            return entry.state, False
+            return entry, False
         if entry.state == "allow_all" or entry.parser is None:
-            return entry.state, True
-        return entry.state, entry.parser.can_fetch(ROBOTS_TOKEN, url)
+            return entry, True
+        return entry, entry.parser.can_fetch(ROBOTS_TOKEN, url)
 
     def _load_robots(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
-                return _RobotsEntry("unsupported_host", None, self._clock())
+                return _RobotsEntry(
+                    "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"
+                )
             result = self._get(current)
+            if result.status == "unsupported_host":
+                return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
                 break
             current = result.final_url
@@ -218,9 +299,32 @@ class PoliteFetcher:
         last_error = ""
         network_retries = 1  # 超时或连接失败时重试一次
         while True:
-            client = self._compat_client if host in self._compat_hosts else self._client
+            compat = host in self._compat_hosts
+            client = self._compat_client if compat else self._client
+            real = self._real["compat" if compat else "main"]
             try:
-                with client.stream("GET", url) as resp:
+                addresses = self._checked_addresses(url)
+                if addresses is None:
+                    return FetchResult(
+                        url,
+                        "unsupported_host",
+                        final_url=url,
+                        error=f"{host} 解析到内网地址，不抓取",
+                    )
+                request_url, headers, extensions = url, None, None
+                if real:
+                    # 走真实网络只连检查过的地址；网址里没有主机名就不连
+                    if not addresses:
+                        return FetchResult(url, "network_error", error="网址里没有主机名，不抓取")
+                    request_url, headers, extensions = _pinned_request(url, addresses[0])
+                with client.stream(
+                    "GET", request_url, headers=headers, extensions=extensions
+                ) as resp:
+                    refusal = _peer_refusal(resp, real)
+                    if refusal:
+                        return FetchResult(
+                            url, "unsupported_host", final_url=url, error=f"{host} {refusal}"
+                        )
                     if resp.status_code < 300:
                         size = 0
                         chunks = []
@@ -230,7 +334,7 @@ class PoliteFetcher:
                                 return FetchResult(
                                     url,
                                     "too_large",
-                                    final_url=str(resp.url),
+                                    final_url=url,
                                     http_status=resp.status_code,
                                     error="文件超过 20MB",
                                 )
@@ -276,14 +380,14 @@ class PoliteFetcher:
                     return FetchResult(
                         url,
                         "http_error",
-                        final_url=str(resp.url),
+                        final_url=url,
                         http_status=resp.status_code,
                         error=f"HTTP {resp.status_code}",
                     )
                 return FetchResult(
                     url,
                     "ok",
-                    final_url=str(resp.url),
+                    final_url=url,
                     http_status=resp.status_code,
                     text=(
                         ""
@@ -297,3 +401,45 @@ class PoliteFetcher:
                 return FetchResult(url, "network_error", error=last_error)
             network_retries -= 1
             self._sleep(self._interval)
+
+    def _checked_addresses(self, url: str) -> list[str] | None:
+        """每次连接前解析域名：有一个地址不是公网地址就返回 None（不连），防止经跳转或内网域名访问
+        云托管内部服务。解析失败按连接失败处理（会重试一次）。
+
+        走真实网络时，连接直接固定到这里检查过的地址（_pinned_request），不再另做一次解析，
+        DNS 结果在检查之后被改动（DNS rebinding）也连不到内网。
+        """
+        host = urlsplit(url).hostname
+        if not host:
+            return []
+        try:
+            addresses = self._resolver(host)
+        except OSError as exc:
+            raise httpx.ConnectError(f"域名解析失败：{exc}") from exc
+        if not addresses:
+            # 没有地址可固定：按解析失败处理，不能退回按域名连接（那样会再解析一次）
+            raise httpx.ConnectError("域名解析失败：没有得到地址")
+        return None if any(non_public_address(a) for a in addresses) else list(addresses)
+
+
+def _pinned_request(url: str, address: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """把网址里的域名换成检查过的 IP 直接连；Host 头和 TLS 的 SNI 仍用原域名，证书照常按域名校验
+    （httpcore 的 sni_hostname 扩展）。"""
+    parts = urlsplit(url)
+    ip = address.split("%", 1)[0]
+    host = f"[{ip}]" if ":" in ip else ip
+    netloc = host if parts.port is None else f"{host}:{parts.port}"
+    target = urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, ""))
+    headers = {"Host": parts.netloc.rsplit("@", 1)[-1]}
+    extensions = {"sni_hostname": parts.hostname or ""} if parts.scheme == "https" else {}
+    return target, headers, extensions
+
+
+def _peer_refusal(resp: httpx.Response, require: bool) -> str | None:
+    """核对实际连上的对端地址（httpcore 的 network_stream 扩展）。
+    是内网，或者要求有地址却拿不到，就不抓。"""
+    stream = resp.extensions.get("network_stream")
+    address = stream.get_extra_info("server_addr") if stream is not None else None
+    if not address:
+        return "拿不到实际连接的地址，不抓取" if require else None
+    return "实际连接到内网地址，不抓取" if non_public_address(str(address[0])) else None

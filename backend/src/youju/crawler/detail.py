@@ -11,6 +11,8 @@ from youju.crawler.dates import parse_date_detail
 from youju.crawler.urls import normalize_url
 
 _FILE_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "wps", "et", "zip", "rar", "ofd"}
+# 一篇通知收录的附件个数上限：正常通知不过几个到几十个，异常页面（整站文件目录等）不全收
+MAX_ATTACHMENTS = 50
 _FILE_PATTERN = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|zip|rar|ofd)(?:$|[?#])", re.I)
 _DOC_NUMBER = re.compile(
     r"[\u4e00-\u9fff]{1,16}(?:〔\s*20\d{2}\s*〕|\[\s*20\d{2}\s*\]"
@@ -254,6 +256,8 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
         name = label or filename
         seen.add(target)
         result.append(Attachment(redact_sensitive(name), target, match.group(1).lower()))
+        if len(result) >= MAX_ATTACHMENTS:
+            break
     return result
 
 

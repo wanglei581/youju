@@ -1,11 +1,29 @@
-import httpx
+import socket
+import threading
 
-from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher, decode_html
+import httpx
+import pytest
+
+from youju.crawler import fetcher as fetcher_module
+from youju.crawler.fetcher import (
+    MAX_RESPONSE_BYTES,
+    PoliteFetcher,
+    decode_html,
+    non_public_address,
+    resolve_host,
+)
 
 LIST_HTML = "<ul><li><a href='/a.html'>关于开展申报工作的通知</a><span>2026-09-24</span></li></ul>"
 
 
-def make_fetcher(handler, interval: float = 0.0, clock=None, sleep=None) -> PoliteFetcher:
+def public_dns(host: str) -> list[str]:
+    """测试不做真实 DNS 查询：所有域名都当作解析到公网地址。"""
+    return ["1.2.3.4"]
+
+
+def make_fetcher(
+    handler, interval: float = 0.0, clock=None, sleep=None, resolver=public_dns
+) -> PoliteFetcher:
     kwargs = {}
     if clock:
         kwargs["clock"] = clock
@@ -15,6 +33,7 @@ def make_fetcher(handler, interval: float = 0.0, clock=None, sleep=None) -> Poli
         "TestAgent YoujuBot/0.1",
         per_host_interval=interval,
         transport=httpx.MockTransport(handler),
+        resolver=resolver,
         **kwargs,
     )
 
@@ -69,6 +88,7 @@ def test_redirect_to_disallowed_host_is_not_requested() -> None:
         per_host_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+        resolver=public_dns,
     ) as fetcher:
         result = fetcher.fetch("https://a.gov.cn/page.html")
     assert result.status == "unsupported_host"
@@ -88,6 +108,7 @@ def test_robots_redirect_to_disallowed_host_skips_page() -> None:
         per_host_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
+        resolver=public_dns,
     ) as fetcher:
         result = fetcher.fetch("https://a.gov.cn/page.html")
     assert result.status == "unsupported_host"
@@ -214,6 +235,7 @@ def test_ssl_handshake_error_retries_in_compat_mode_and_remembers_host() -> None
         per_host_interval=0.0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
+        resolver=public_dns,
     )
     with fetcher as f:
         assert f.fetch("https://old.gov.cn/1.html").status == "ok"
@@ -241,6 +263,7 @@ def test_certificate_error_is_never_bypassed() -> None:
         per_host_interval=0.0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
+        resolver=public_dns,
     )
     with fetcher as f:
         result = f._get("https://bad-cert.gov.cn/list.html")
@@ -323,3 +346,267 @@ def test_redirect_target_host_is_rate_limited() -> None:
         assert f.fetch("https://a.gov.cn/go").status == "ok"
     # a：robots → 等 3 秒 → 页面（302）；b：robots → 等 3 秒 → 页面
     assert sleeps == [3.0, 3.0]
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "10.0.0.1",
+        "172.16.5.4",
+        "192.168.1.1",
+        "127.0.0.1",
+        "169.254.169.254",  # 云服务器元数据地址
+        "100.64.0.1",  # 运营商级 NAT
+        "0.0.0.0",
+        "224.0.0.1",
+        "::1",
+        "fe80::1%eth0",
+        "fc00::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",  # NAT64 里嵌的 10.0.0.1
+    ],
+)
+def test_non_public_addresses(address: str) -> None:
+    assert non_public_address(address)
+
+
+@pytest.mark.parametrize(
+    "address", ["1.2.3.4", "2400:3200::1", "::ffff:8.8.8.8", "64:ff9b::808:808"]
+)
+def test_public_addresses(address: str) -> None:
+    assert not non_public_address(address)
+
+
+def test_host_resolving_to_internal_address_is_never_requested() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(404)
+
+    def dns(host: str) -> list[str]:
+        # 同时有公网和内网地址时也不连：实际连接可能落到任何一个
+        return ["1.2.3.4", "10.8.0.3"] if host == "oa.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://oa.a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "oa.a.gov.cn 解析到内网地址" in result.error
+    assert requested == []
+
+
+def test_redirect_to_internal_host_is_blocked() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "http://meta.a.gov.cn/latest/"})
+
+    def dns(host: str) -> list[str]:
+        return ["169.254.169.254"] if host == "meta.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert requested == ["a.gov.cn/robots.txt", "a.gov.cn/page.html"]
+
+
+def test_robots_redirect_to_internal_host_skips_site() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        return httpx.Response(302, headers={"location": "https://in.a.gov.cn/robots.txt"})
+
+    def dns(host: str) -> list[str]:
+        return ["192.168.3.4"] if host == "in.a.gov.cn" else ["1.2.3.4"]
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://a.gov.cn/page.html")
+    assert result.status == "unsupported_host"
+    assert "in.a.gov.cn 解析到内网地址" in result.error
+    assert requested == ["a.gov.cn/robots.txt"]
+
+
+def test_dns_failure_counts_as_connection_failure() -> None:
+    lookups: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("解析失败时不应发请求")
+
+    def dns(host: str) -> list[str]:
+        lookups.append(host)
+        raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    with make_fetcher(handler, resolver=dns) as f:
+        result = f.fetch("https://gone.gov.cn/list.html")
+    # 和连接失败一样重试一次；robots.txt 取不到，按规范整站跳过
+    assert result.status == "robots_error"
+    assert lookups == ["gone.gov.cn", "gone.gov.cn"]
+
+
+def test_dns_lookup_has_a_time_limit(monkeypatch) -> None:
+    release = threading.Event()
+
+    def stuck(*args, **kwargs):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", stuck)
+    try:
+        # 超时是 OSError，和解析失败一样按连接失败处理
+        with pytest.raises(OSError):
+            resolve_host("slow.gov.cn", timeout=0.05)
+    finally:
+        release.set()
+
+
+class _FakeNetworkStream:
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.address = address
+
+    def get_extra_info(self, name: str):
+        return self.address if name == "server_addr" else None
+
+
+def test_response_from_internal_peer_is_discarded() -> None:
+    # 检查时解析到公网地址，实际连接却落到内网（DNS 在两次解析之间被改动）：丢弃响应，不读正文
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                404, extensions={"network_stream": _FakeNetworkStream(("1.2.3.4", 443))}
+            )
+        return httpx.Response(
+            200,
+            text=LIST_HTML,
+            extensions={"network_stream": _FakeNetworkStream(("10.0.0.7", 443))},
+        )
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "实际连接到内网地址" in result.error
+    assert result.text == ""
+
+
+def test_missing_peer_address_is_refused_when_required() -> None:
+    # 走真实网络时拿不到实际连接的地址（例如以后换了传输方式）就不抓，而不是放行
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                404, extensions={"network_stream": _FakeNetworkStream(("1.2.3.4", 443))}
+            )
+        return httpx.Response(200, text=LIST_HTML)
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        real_network=True,
+    ) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "拿不到实际连接的地址" in result.error
+
+
+def test_real_network_requires_peer_address_by_default() -> None:
+    with PoliteFetcher("TestAgent YoujuBot/0.1") as real:
+        assert real._real == {"main": True, "compat": True}
+    with make_fetcher(lambda request: httpx.Response(404)) as mocked:
+        assert mocked._real == {"main": False, "compat": False}
+    # 只注入兼容模式的传输时，默认那一路仍是真实网络，照样检查
+    compat_only = httpx.MockTransport(lambda request: httpx.Response(404))
+    with PoliteFetcher("TestAgent YoujuBot/0.1", compat_transport=compat_only) as f:
+        assert f._real == {"main": True, "compat": False}
+
+
+def test_stuck_dns_lookups_do_not_block_later_lookups(monkeypatch) -> None:
+    release = threading.Event()
+
+    def lookup(host, *args, **kwargs):
+        if host == "stuck.gov.cn":
+            release.wait(5)
+            return []
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 0))]
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", lookup)
+    try:
+        # 十个卡住的解析都超时，之后的解析照样马上返回
+        for _ in range(10):
+            with pytest.raises(OSError):
+                resolve_host("stuck.gov.cn", timeout=0.01)
+        assert resolve_host("ok.gov.cn", timeout=1) == ["1.2.3.4"]
+    finally:
+        release.set()
+
+
+def test_real_network_connects_to_the_checked_address() -> None:
+    # 走真实网络时：连接固定到检查过的 IP，Host 头和 SNI 仍是原域名；结果里的网址仍是原网址
+    seen: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.url.host, request.headers["host"], request.extensions.get("sni_hostname"))
+        )
+        peer = {"network_stream": _FakeNetworkStream(("93.184.216.34", 443))}
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, extensions=peer)
+        return httpx.Response(200, text=LIST_HTML, extensions=peer)
+
+    def dns(host: str) -> list[str]:
+        return ["93.184.216.34"] if host == "a.gov.cn" else ["1.2.3.4"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=dns,
+        real_network=True,
+    ) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "ok"
+    assert result.final_url == "https://a.gov.cn/list.html"
+    assert seen == [
+        ("93.184.216.34", "a.gov.cn", "a.gov.cn"),
+        ("93.184.216.34", "a.gov.cn", "a.gov.cn"),
+    ]
+
+
+def test_pending_dns_lookups_are_capped(monkeypatch) -> None:
+    # 解析卡住时，同时在等的解析有上限，守护线程不会无限增加
+    release = threading.Event()
+
+    def stuck(*args, **kwargs):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", stuck)
+    monkeypatch.setattr(fetcher_module, "_DNS_SLOTS", threading.BoundedSemaphore(2))
+    try:
+        for _ in range(2):
+            with pytest.raises(OSError):
+                resolve_host("slow.gov.cn", timeout=0.01)
+        with pytest.raises(OSError, match="过多"):
+            resolve_host("slow.gov.cn", timeout=5)
+    finally:
+        release.set()
+
+
+def test_empty_dns_answer_never_falls_back_to_hostname() -> None:
+    # 解析没有得到地址：按解析失败处理（重试一次），不能退回按域名连接
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("没有检查过的地址时不应发请求")
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: [],
+        real_network=True,
+    ) as f:
+        result = f._get("https://a.gov.cn/list.html")
+    assert result.status == "network_error"
+    assert "没有得到地址" in result.error
