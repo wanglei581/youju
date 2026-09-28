@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from youju.api import v1 as v1_api
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
@@ -532,12 +533,31 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 AdminDep = Annotated[None, Depends(_require_admin)]
 
 
+DueFilter = Literal["all", "30", "future"]
+DueQuery = Annotated[
+    DueFilter,
+    Query(description="只看哪些：all 全部；30 未过期且 30 天内截止；future 未过期"),
+]
+
+
+def _due_condition(due: DueFilter):
+    """按候选截止日期筛选（北京时间的今天算未过期）。同一通知的相同候选日期一样，不影响只列一条的规则。"""
+    if due == "all":
+        return None
+    today = v1_api.now().date()
+    if due == "30":
+        return DocumentDeadline.candidate_date.between(today, today + timedelta(days=30))
+    return DocumentDeadline.candidate_date >= today
+
+
 @app.get("/api/admin/deadlines/count")
-def pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+def pending_count(session: SessionDep, _admin: AdminDep, due: DueQuery = "all") -> dict[str, int]:
     """待核对条数，与列表同一规则：归并组里相同的候选只算一条。"""
-    pending = session.scalars(
-        select(DocumentDeadline).where(DocumentDeadline.status == "pending")
-    ).all()
+    stmt = select(DocumentDeadline).where(DocumentDeadline.status == "pending")
+    condition = _due_condition(due)
+    if condition is not None:
+        stmt = stmt.where(condition)
+    pending = session.scalars(stmt).all()
     return {"pending": len(_pending_shown_ids(session, pending))}
 
 
@@ -663,6 +683,7 @@ def pending_deadlines(
     _admin: AdminDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    due: DueQuery = "all",
 ) -> list[PendingDeadlineOut]:
     """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。
 
@@ -676,6 +697,9 @@ def pending_deadlines(
         .join(Source, Document.source_id == Source.id)
         .where(DocumentDeadline.status == "pending")
     )
+    condition = _due_condition(due)
+    if condition is not None:
+        base = base.where(condition)
     rows: list[tuple[DocumentDeadline, Document, Source]] = []
     cursor = before_id
     while len(rows) < limit:
