@@ -21,6 +21,8 @@ from youju.dedup import canonical_ids
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Feedback
 
 _NOTE_MAX = 300
+# 一份文件的截止多、原文长，一次放不下时分批请 AI 复查，最多这么多批
+_MAX_BATCHES = 3
 
 
 @dataclass
@@ -64,6 +66,8 @@ def triage_one(
         feedback.document_id, feedback.document_id
     )
     doc = session.get(Document, master)
+    if doc is None:
+        return "对应文件已删除，没法复查", 0
     detail = session.get(DocumentDetail, master)
     body = detail.body_text if detail else ""
     publish = (detail.publish_date if detail else None) or doc.publish_date
@@ -97,16 +101,21 @@ def triage_one(
             note = None if row.id in problems else rule_note(row, publish, body)
             if note:
                 problems[row.id] = (row, note)
-        checkable = [r for r in rows if r.id not in problems and r.audit_state != "flagged"]
-        if client is not None and body and checkable:
-            targets, excerpt = _plan(body, checkable)
-            if targets:
-                notes, _ = _ai_check(client, doc, excerpt, targets)
-                for row in targets:
-                    if row.id in notes:
-                        problems[row.id] = (row, notes[row.id])
-                    elif row.audit_state is None:
-                        row.audit_at = now  # 这次复查过、没问题，30 天内抽查不再抽
+        remaining = [r for r in rows if r.id not in problems]
+        batches = 0
+        while client is not None and body and remaining and batches < _MAX_BATCHES:
+            targets, excerpt = _plan(body, remaining)
+            if not targets:
+                break  # 原文里定位不到的，留给人看
+            notes, _ = _ai_check(client, doc, excerpt, targets)
+            batches += 1
+            for row in targets:
+                if row.id in notes:
+                    problems[row.id] = (row, notes[row.id])
+                elif row.audit_state is None:
+                    row.audit_at = now  # 这次复查过、没问题，30 天内抽查不再抽
+            done = {row.id for row in targets}
+            remaining = [r for r in remaining if r.id not in done]
         for row, note in problems.values():
             if row.audit_state is None:
                 _flag(row, note, now)
@@ -120,10 +129,16 @@ def triage_one(
             parts.append(
                 f"已发布的截止 {len(rows)} 条，{checked_by}复查 {len(problems)} 条存疑：{shown}"
             )
+        elif client is not None and remaining:
+            parts.append(f"已发布的截止 {len(rows)} 条，复查过的都对得上原文")
         else:
             parts.append(f"已发布的截止 {len(rows)} 条，{checked_by}复查都对得上原文")
         if client is None:
             parts.append("没配 AI，只做了规则回查")
+        elif remaining:
+            parts.append(
+                f"另有 {len(remaining)} 条 AI 没复查到（原文里定位不到或篇幅太长），请人工核对"
+            )
     if pending:
         parts.append(f"还有 {pending} 条截止候选待核对")
     kind = _kind_note(session, doc)

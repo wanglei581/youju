@@ -296,3 +296,50 @@ def test_cli_runs_rules_only_without_ai(session, session_factory, monkeypatch, c
     feedback(session, doc)
     assert cli.main(["triage-feedback"]) == 0
     assert "纠错分诊 1 条" in capsys.readouterr().out
+
+
+def long_document(session):
+    filler = "。" + "相关工作要求按照有关规定执行" * 60
+    sentences = [f"第{i}项材料于2026年10月{i}日前报送" for i in range(1, 11)]
+    doc = add_doc(session, body=filler.join(sentences) + filler)
+    rows = [
+        deadline(session, doc, date(2026, 10, i), evidence=sentences[i - 1], n=i)
+        for i in range(1, 11)
+    ]
+    return doc, rows
+
+
+def test_long_documents_are_rechecked_in_batches(session) -> None:
+    doc, rows = long_document(session)
+    item = feedback(session, doc)
+    client, calls = fake_ai([])
+    triage_feedback(session, client, now=NOW)
+    assert len(calls) == 3  # 每批的原文不超过 3000 字，10 条分三批（5、4、1）
+    session.expire_all()
+    assert all(session.get(DocumentDeadline, r.id).audit_at is not None for r in rows)
+    assert session.get(Feedback, item.id).triage_note.startswith(
+        "已发布的截止 10 条，规则和 AI 复查都对得上原文"
+    )
+
+
+def test_note_says_which_deadlines_ai_could_not_cover(session, monkeypatch) -> None:
+    import youju.ai.triage as triage_module
+
+    monkeypatch.setattr(triage_module, "_MAX_BATCHES", 1)
+    doc, _ = long_document(session)
+    item = feedback(session, doc)
+    client, _ = fake_ai([])
+    triage_feedback(session, client, now=NOW)
+    note = session.get(Feedback, item.id).triage_note
+    assert note.startswith("已发布的截止 10 条，复查过的都对得上原文")
+    assert "另有 5 条 AI 没复查到" in note  # 不说"都对得上"
+
+
+def test_deleted_documents_do_not_break_the_round(session, monkeypatch) -> None:
+    import youju.ai.triage as triage_module
+
+    doc = add_doc(session)
+    item = feedback(session, doc)
+    monkeypatch.setattr(triage_module, "canonical_ids", lambda s, ids: dict.fromkeys(ids, 999999))
+    assert triage_feedback(session, None, now=NOW).triaged == 1
+    assert session.get(Feedback, item.id).triage_note == "对应文件已删除，没法复查"
