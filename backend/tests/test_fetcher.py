@@ -489,3 +489,51 @@ def test_response_from_internal_peer_is_discarded() -> None:
     assert result.status == "unsupported_host"
     assert "实际连接到内网地址" in result.error
     assert result.text == ""
+
+
+def test_missing_peer_address_is_refused_when_required() -> None:
+    # 走真实网络时拿不到实际连接的地址（例如以后换了传输方式）就不抓，而不是放行
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                404, extensions={"network_stream": _FakeNetworkStream(("1.2.3.4", 443))}
+            )
+        return httpx.Response(200, text=LIST_HTML)
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        require_peer_address=True,
+    ) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "unsupported_host"
+    assert "拿不到实际连接的地址" in result.error
+
+
+def test_real_network_requires_peer_address_by_default() -> None:
+    with PoliteFetcher("TestAgent YoujuBot/0.1") as real:
+        assert real._require_peer is True
+    with make_fetcher(lambda request: httpx.Response(404)) as mocked:
+        assert mocked._require_peer is False
+
+
+def test_stuck_dns_lookups_do_not_block_later_lookups(monkeypatch) -> None:
+    release = threading.Event()
+
+    def lookup(host, *args, **kwargs):
+        if host == "stuck.gov.cn":
+            release.wait(5)
+            return []
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 0))]
+
+    monkeypatch.setattr(fetcher_module.socket, "getaddrinfo", lookup)
+    try:
+        # 十个卡住的解析都超时，之后的解析照样马上返回
+        for _ in range(10):
+            with pytest.raises(OSError):
+                resolve_host("stuck.gov.cn", timeout=0.01)
+        assert resolve_host("ok.gov.cn", timeout=1) == ["1.2.3.4"]
+    finally:
+        release.set()

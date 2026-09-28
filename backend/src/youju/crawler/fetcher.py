@@ -7,7 +7,6 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
@@ -28,7 +27,6 @@ _CHARSET_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030"}
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 # 系统 DNS 解析没有超时参数，放到线程里等，最多等这么久
 _DNS_TIMEOUT = 10.0
-_DNS_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="youju-dns")
 
 
 @dataclass
@@ -67,9 +65,27 @@ def compat_ssl_context() -> ssl.SSLContext:
 
 
 def resolve_host(host: str, timeout: float = _DNS_TIMEOUT) -> list[str]:
-    """系统 DNS 解析出的全部地址。超时抛 TimeoutError（属于 OSError），按解析失败处理。"""
-    future = _DNS_POOL.submit(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM)
-    return [info[4][0] for info in future.result(timeout=timeout)]
+    """系统 DNS 解析出的全部地址。超时抛 TimeoutError（属于 OSError），按解析失败处理。
+
+    每次解析单独起一个守护线程：卡住的解析等系统超时后自行结束，不占共享的线程池，不拖住后面的解析。
+    """
+    result: dict = {}
+    done = threading.Event()
+
+    def lookup() -> None:
+        try:
+            result["infos"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            result["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=lookup, name="youju-dns", daemon=True).start()
+    if not done.wait(timeout):
+        raise TimeoutError(f"解析超过 {timeout:g} 秒")
+    if "error" in result:
+        raise result["error"]
+    return [info[4][0] for info in result["infos"]]
 
 
 def non_public_address(address: str) -> bool:
@@ -113,6 +129,7 @@ class PoliteFetcher:
         sleep: Callable[[float], None] = time.sleep,
         url_allowed: Callable[[str], bool] | None = None,
         resolver: Callable[[str], list[str]] | None = None,
+        require_peer_address: bool | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -143,6 +160,12 @@ class PoliteFetcher:
         self._url_allowed = url_allowed
         # 测试里换成假的解析，不做真实 DNS 查询
         self._resolver = resolver or resolve_host
+        # 走真实网络时拿不到实际连接的地址就不抓（默认）；测试用的模拟传输没有连接信息，不要求
+        self._require_peer = (
+            transport is None and compat_transport is None
+            if require_peer_address is None
+            else require_peer_address
+        )
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -269,12 +292,10 @@ class PoliteFetcher:
                         error=f"{host} 解析到内网地址，不抓取",
                     )
                 with client.stream("GET", url) as resp:
-                    if _connected_to_internal(resp):
+                    refusal = _peer_refusal(resp, self._require_peer)
+                    if refusal:
                         return FetchResult(
-                            url,
-                            "unsupported_host",
-                            final_url=url,
-                            error=f"{host} 实际连接到内网地址，不抓取",
+                            url, "unsupported_host", final_url=url, error=f"{host} {refusal}"
                         )
                     if resp.status_code < 300:
                         size = 0
@@ -358,7 +379,7 @@ class PoliteFetcher:
         云托管内部服务。解析失败按连接失败处理（会重试一次）。
 
         检查和实际连接各解析一次，两次之间 DNS 结果若被恶意改动（DNS rebinding），请求仍可能发到
-        内网地址；收到响应后再核对实际连上的地址（_connected_to_internal），是内网就丢弃响应、不读正文。
+        内网地址；收到响应后再核对实际连上的地址（_peer_refusal），是内网就丢弃响应、不读正文。
         """
         host = urlsplit(url).hostname
         if not host:
@@ -370,8 +391,11 @@ class PoliteFetcher:
         return any(non_public_address(a) for a in addresses)
 
 
-def _connected_to_internal(resp: httpx.Response) -> bool:
-    """实际连上的对端是不是非公网地址。测试用的模拟传输没有连接信息，不检查。"""
+def _peer_refusal(resp: httpx.Response, require: bool) -> str | None:
+    """核对实际连上的对端地址（httpcore 的 network_stream 扩展）。
+    是内网，或者要求有地址却拿不到，就不抓。"""
     stream = resp.extensions.get("network_stream")
     address = stream.get_extra_info("server_addr") if stream is not None else None
-    return bool(address) and non_public_address(str(address[0]))
+    if not address:
+        return "拿不到实际连接的地址，不抓取" if require else None
+    return "实际连接到内网地址，不抓取" if non_public_address(str(address[0])) else None
