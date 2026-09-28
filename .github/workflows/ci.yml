@@ -47,6 +47,34 @@ jobs:
       - name: 测试
         run: uv run pytest
 
+  image:
+    name: 镜像构建（云托管用的 Dockerfile）
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: youju
+          POSTGRES_PASSWORD: youju
+          POSTGRES_DB: youju_image
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U youju"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: 构建镜像
+        run: docker build -t youju:ci .
+      # 在容器里按部署顺序跑一遍：建表迁移、导入来源清单。能发现镜像里的路径、文件和依赖问题
+      - name: 容器里迁移数据库、导入来源
+        run: >-
+          docker run --rm --network host
+          -e YOUJU_DATABASE_URL=postgresql+psycopg://youju:youju@localhost:5432/youju_image
+          youju:ci sh -c "youju db-upgrade && youju import-sources && youju report"
+
   legacy-prototype:
     name: 旧样机测试（services/api）
     runs-on: ubuntu-latest

@@ -29,7 +29,9 @@ COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./
 COPY backend/deploy ./deploy
 COPY ["docs/数据来源", "/app/docs/数据来源"]
-RUN pip install --no-cache-dir --no-deps . && chmod +x deploy/start.sh deploy/job.sh deploy/round.sh
+# 用可编辑方式安装：代码留在 /app/backend/src，程序按源码位置找 alembic.ini、迁移目录（/app/backend）和
+# 来源清单（/app/docs）。普通安装会把代码复制到 site-packages，这些相对路径就找不到了，admin 启动时迁移会失败
+RUN pip install --no-cache-dir --no-deps -e . && chmod +x deploy/start.sh deploy/job.sh deploy/round.sh
 
 EXPOSE 80
 CMD ["deploy/start.sh"]
