@@ -227,6 +227,7 @@ def test_search_filters_and_totals(client, seeded):
 
 def test_document_detail_only_approved_deadlines(client, seeded):
     d = client.get(f"/api/v1/documents/{seeded['apply']}").json()
+    assert d["status"] is None and d["app_status"]["code"] == "open"
     assert d["deadline"]["label"] == "企业申报截止" and d["deadline"]["date"] == "2026-10-18"
     assert d["deadline"]["notes"] == ["推荐或审核截止 10月20日 周二 17:00"]
     assert ["文号", "辽工信投资〔2026〕130号"] in d["points"]

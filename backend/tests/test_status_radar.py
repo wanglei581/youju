@@ -102,7 +102,9 @@ def test_open_filter_and_report_only_verified(radar_client):
         "/api/v1/search", params={"kind": "申报通知", "time": "不限", "open": 1}
     ).json()
     assert result["total"] == 2 and {int(item["id"]) for item in result["items"]} == set(docs[:2])
-    assert all(isinstance(item["status"], dict) for item in result["items"])
+    assert all(
+        item["status"] is None and isinstance(item["app_status"], dict) for item in result["items"]
+    )
     report = client.get("/api/v1/reports/deadlines", params={"days": 7, "size": 1}).json()
     assert report["total"] == 1 and report["summary"] == {"7": 1, "14": 1, "30": 2}
     assert report["items"][0]["deadline_type"] == "企业申报截止"
@@ -125,3 +127,17 @@ def test_report_cache_can_be_cleared(radar_client, monkeypatch):
     v1._REPORT_CACHE.clear()
     client.get("/api/v1/reports/deadlines", params={"days": 7})
     assert calls == 2
+
+
+def test_report_filters_are_bounded_and_cache_has_maximum(radar_client, monkeypatch):
+    client, _ = radar_client
+    assert client.get("/api/v1/reports/deadlines", params={"province": "火星"}).status_code == 422
+    assert client.get("/api/v1/reports/deadlines", params={"dept": "自定义部门"}).status_code == 422
+    monkeypatch.setattr(v1, "REPORT_CACHE_MAX", 2)
+    for province in ("辽宁", "北京", "上海"):
+        assert (
+            client.get("/api/v1/reports/deadlines", params={"province": province}).status_code
+            == 200
+        )
+    assert len(v1._REPORT_CACHE) == 2
+    assert not any(key[1] == "辽宁" for key in v1._REPORT_CACHE)

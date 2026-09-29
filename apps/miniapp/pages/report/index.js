@@ -15,7 +15,7 @@ Page({
     province: '',
     dept: '',
     provinces: ['不限省份'],
-    depts: ['不限部门'],
+    depts: ['不限部门', '科技部门', '工信部门', '其他部门'],
   },
 
   onLoad() { this.load(true); },
@@ -28,7 +28,7 @@ Page({
     api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, page, size: PAGE_SIZE })
       .then((res) => {
         const provinces = Object.keys(res.by_province || {}).sort();
-        const depts = Object.keys(res.by_dept || {}).sort();
+        const depts = ['科技部门', '工信部门', '其他部门'];
         this.setData({
           summary: res.summary || { 7: 0, 14: 0, 30: 0 },
           items: reset ? res.items : this.data.items.concat(res.items),

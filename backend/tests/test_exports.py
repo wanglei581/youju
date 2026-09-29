@@ -153,6 +153,7 @@ def test_xlsx_export(client, docs):
     ]
     assert sheet["J1"].value == "原文链接" and sheet["K1"].value == "原文链接 2"
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
+    assert sheet["D2"].value is None  # 申报通知没有名单状态，status 契约保持不变
     assert sheet["D3"].value == "公示"
     assert "2026-10-20" in sheet["I2"].value
     assert "原定 企业申报截止 2026-10-18 已延期" in sheet["I2"].value

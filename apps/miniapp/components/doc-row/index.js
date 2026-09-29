@@ -19,9 +19,10 @@ Component({
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
       const status = doc.status;
-      const statusText = status && typeof status === 'object'
-        ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[status.code] || '') : status;
-      const statusCls = status && typeof status === 'object' ? status.code : statusClass(status);
+      const appStatus = doc.app_status;
+      const statusText = appStatus && typeof appStatus === 'object'
+        ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status;
+      const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
       this.setData({
         segs: highlight(doc.title, q),
         due: dueInfo(doc.deadline),

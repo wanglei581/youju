@@ -51,6 +51,7 @@ _REPORT_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
 # 兼容测试和运维脚本使用更直观的名称。
 _deadline_report_cache = _REPORT_CACHE
 REPORT_CACHE_TTL = 300
+REPORT_CACHE_MAX = 200
 
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
@@ -223,8 +224,9 @@ def _item(
     return {
         "id": str(doc.id),
         "kind": kind,
-        # 历史接口的名单状态继续返回“公示/公布”；申报通知的 status 是一期状态对象。
-        "status": app_status if app_status is not None else list_status(doc.title, kind),
+        # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
+        "status": list_status(doc.title, kind),
+        "app_status": app_status,
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
@@ -397,6 +399,29 @@ def _dept_filter(groups: list[str]):
     return or_(*(parts[g] for g in groups))
 
 
+def _dept_bucket(value: str) -> str:
+    """把来源部门归到报告筛选允许的三个稳定分组。"""
+    if "科技" in value:
+        return "科技部门"
+    if any(word in value for word in _INDUSTRY):
+        return "工信部门"
+    return "其他部门"
+
+
+def _future_approved_canonical_ids(session: Session, today: date) -> list[int]:
+    """取今天起有已核对截止的归并主文件编号。"""
+    ids = list(
+        session.scalars(
+            select(DocumentDeadline.document_id).where(
+                DocumentDeadline.status == "approved",
+                DocumentDeadline.approved_date >= today,
+            )
+        )
+    )
+    mapping = canonical_ids(session, ids)
+    return sorted({mapping.get(doc_id, doc_id) for doc_id in ids})
+
+
 def _keyword_ids(session: Session, kw: str) -> Select:
     """关键词命中的文件：标题或文号，分两次查询再合并，互不拖累。"""
     like = f"%{_escape_like(kw)}%"
@@ -480,9 +505,10 @@ def search_statement(
     if open is not None:
         if open != 1:
             raise HTTPException(status_code=422, detail="open 只支持 1")
-        # 主截止的选择同时依赖核对状态、归并关系和当前时刻，先按当前筛选后的公开文件
-        # 批量取 ID，再把 open/closing 的 ID 限定回 SQL，保证 total 与分页一致。
-        candidate_ids = list(session.scalars(stmt.with_only_columns(Document.id).distinct()))
+        # 先从今天起、人工核对通过的截止取文件编号，再与公开的申报通知相交。
+        # 这样不会为 open=1 把全部公开文件加载到进程内；_approved 仍负责归并组和 changed 口径。
+        candidate_ids = _future_approved_canonical_ids(session, now().date())
+        stmt = stmt.where(_kind_is(["申报通知"]))
         approved = _approved(session, candidate_ids)
         open_ids = []
         current = now()
@@ -506,8 +532,13 @@ def _report_payload(
     """截止雷达数据；同一份文件只取方案规定的主截止。"""
     current = now().astimezone(_TZ)
     today = current.date()
-    rows = session.execute(_base()).all()
-    approved = _approved(session, [doc.id for doc, _ in rows])
+    # 先从未来且已核对通过的截止取主文件编号，再限定公开的申报通知；
+    # 已变更的副本由 _approved 按归并组抑制，和列表/导出的口径一致。
+    candidate_ids = _future_approved_canonical_ids(session, today)
+    rows = session.execute(
+        _base().where(Document.id.in_(candidate_ids), _kind_is(["申报通知"]))
+    ).all()
+    approved = _approved(session, candidate_ids)
     details = _details(session, [doc.id for doc, _ in rows])
     entries: list[dict[str, Any]] = []
     for doc, src in rows:
@@ -518,14 +549,7 @@ def _report_payload(
             "国家部委" if src.province == "国家" else src.province,
         ):
             continue
-        dept_match = dept in (src.dept, src.dept_full_name)
-        if dept == "科技部门":
-            dept_match = "科技" in src.dept
-        elif dept == "工信部门":
-            dept_match = any(word in src.dept for word in _INDUSTRY)
-        elif dept == "其他部门":
-            dept_match = not ("科技" in src.dept or any(word in src.dept for word in _INDUSTRY))
-        if dept and not dept_match:
+        if dept and _dept_bucket(src.dept) != dept:
             continue
         selected = _selected_deadline(approved.get(doc.id, []))
         if selected is None or selected.approved_date is None:
@@ -567,7 +591,7 @@ def _report_payload(
     by_dept: dict[str, int] = {}
     for item in entries:
         by_province[item["province"]] = by_province.get(item["province"], 0) + 1
-        by_dept[item["dept"]] = by_dept.get(item["dept"], 0) + 1
+        by_dept[_dept_bucket(item["dept"])] = by_dept.get(_dept_bucket(item["dept"]), 0) + 1
     start = (page - 1) * size
     return {
         "days": days,
@@ -594,12 +618,20 @@ def deadline_report(
 ) -> dict[str, Any]:
     if days not in (7, 14, 30):
         raise HTTPException(status_code=422, detail="days 只支持 7、14、30")
-    key = (days, province.strip(), dept.strip(), page, size, now().astimezone(_TZ).date())
+    province = province.strip()
+    dept = dept.strip()
+    if province and province not in (set(PROVINCES) - {"不限地区"}):
+        raise HTTPException(status_code=422, detail="省份不支持")
+    if dept and dept not in DEPTS:
+        raise HTTPException(status_code=422, detail="部门不支持")
+    key = (days, province, dept, page, size, now().astimezone(_TZ).date())
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_payload(session, days, province.strip(), dept.strip(), page, size)
+    payload = _report_payload(session, days, province, dept, page, size)
+    if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
+        _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
     return payload
 
@@ -754,7 +786,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "title": doc.title,
         "issuer": issuer,
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
-        "status": status_value,
+        "status": list_status(doc.title, kind),
+        "app_status": status_value,
         "url": doc.url,
         "original_urls": [
             d.url
