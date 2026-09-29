@@ -108,6 +108,47 @@ function deadlineReport(params) {
   return copy({ days, summary, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
 }
 
+function listBoard(params) {
+  if (isLive()) return request('/api/v1/reports/lists', params);
+  const demo = mock.listBoard || {
+    recent: { total: 0, items: [] },
+    stats: { by_year: [], by_province: [], by_type: [] },
+  };
+  const page = Number((params && params.page) || 1);
+  const size = Number((params && params.size) || 20);
+  const allRecords = demo.recent.items || [];
+  const year = params && params.year ? String(params.year) : '';
+  const province = (params && params.province) || '';
+  const type = (params && params.type) || '';
+  const records = allRecords.filter((item) => (!year || String(item.year) === year)
+    && (!province || item.province === province)
+    && (!type || item.type === type));
+  const statRows = (field) => {
+    const grouped = {};
+    records.forEach((item) => {
+      const key = item[field];
+      if (key === null || key === undefined) return;
+      if (!grouped[key]) grouped[key] = { [field]: key, lists: 0, entries: 0 };
+      grouped[key].lists += 1;
+      if (item.count !== null && item.count !== undefined) grouped[key].entries += item.count;
+    });
+    return Object.values(grouped);
+  };
+  const stats = {
+    by_year: statRows('year').sort((a, b) => b.year - a.year),
+    by_province: statRows('province').sort((a, b) => a.province.localeCompare(b.province)),
+    by_type: statRows('type').sort((a, b) => TYPES.indexOf(a.type) - TYPES.indexOf(b.type)),
+  };
+  return copy({
+    days: Number((params && params.days) || 30),
+    year: year ? Number(year) : null,
+    province,
+    type,
+    recent: { total: records.length, page, size, items: records.slice((page - 1) * size, page * size) },
+    stats,
+  });
+}
+
 // 演示数据只有辽宁这一份完整详情；其他文件用列表里的信息拼出基本详情
 function mockDetail(id) {
   if (mock.detail[id]) return copy(mock.detail[id]);
@@ -288,7 +329,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  isLive, request, coverage, home, search, deadlineReport, detail, calendar, lists, lookup, exportFile, feedback,
+  isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

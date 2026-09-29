@@ -1,0 +1,29 @@
+.top { padding-left: 32rpx; padding-right: 32rpx; padding-bottom: 28rpx; background: #2A5CE0; color: #FFFFFF; }
+.nav { position: relative; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
+.nav-back { position: absolute; left: -20rpx; top: 50%; transform: translateY(-50%); width: 80rpx; min-height: 80rpx; display: flex; align-items: center; justify-content: center; }
+.nav-title { font-size: 34rpx; font-weight: 600; }
+.sub { margin-top: 12rpx; text-align: center; font-size: 25rpx; line-height: 1.5; color: rgba(255, 255, 255, .88); }
+.filters { margin: 20rpx 24rpx 0; display: flex; gap: 12rpx; }
+.filter { min-height: 72rpx; box-sizing: border-box; padding: 16rpx 14rpx; display: flex; align-items: center; justify-content: space-between; gap: 6rpx; background: var(--card); border-radius: 14rpx; color: var(--t1); font-size: 24rpx; }
+.filters picker { flex: 1; min-width: 0; }
+.card { margin-top: 18rpx; padding: 0 28rpx; background: var(--card); border-radius: 16rpx; }
+.list { padding-bottom: 4rpx; }
+.section-title { padding: 24rpx 0 14rpx; font-size: 30rpx; font-weight: 600; color: var(--t1); }
+.item { padding: 24rpx 0; border-top: 2rpx solid var(--line); }
+.item-title { font-size: 29rpx; font-weight: 600; line-height: 1.55; }
+.meta { margin-top: 10rpx; color: var(--t2); font-size: 24rpx; line-height: 1.5; }
+.item-foot { margin-top: 10rpx; display: flex; align-items: center; justify-content: space-between; color: var(--t2); font-size: 24rpx; }
+.wording { color: var(--brand); }
+.count-unparsed { color: var(--t3); font-size: 22rpx; }
+.empty { padding: 48rpx 20rpx; text-align: center; color: var(--t2); font-size: 26rpx; line-height: 1.6; }
+.retry { margin-left: 16rpx; color: var(--brand); }
+.more { min-height: 88rpx; display: flex; align-items: center; justify-content: center; color: var(--brand); font-size: 26rpx; }
+.stats { padding-bottom: 24rpx; }
+.stat-group { border-top: 2rpx solid var(--line); }
+.stat-title { padding: 20rpx 0 12rpx; font-size: 27rpx; font-weight: 600; color: var(--t1); }
+.table-head, .table-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 12rpx; align-items: start; }
+.table-head { padding-bottom: 10rpx; color: var(--t3); font-size: 22rpx; }
+.table-row { min-height: 54rpx; padding: 12rpx 0; border-top: 2rpx solid var(--line); color: var(--t2); font-size: 25rpx; line-height: 1.45; }
+.table-row text:nth-child(2), .table-row text:nth-child(3), .table-head text:nth-child(2), .table-head text:nth-child(3) { text-align: right; }
+.stat-empty { padding: 12rpx 0 20rpx; font-size: 24rpx; }
+.note { margin: 24rpx 32rpx 0; color: var(--t3); font-size: 24rpx; line-height: 1.7; }
