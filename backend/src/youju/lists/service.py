@@ -1,5 +1,6 @@
 """名单回填：先补详情，再用同一个礼貌抓取器读取政府附件。"""
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -15,12 +16,21 @@ from youju.crawler.detail_service import _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
 from youju.lists.parser import ParsedEntry, parse_attachment_result, parse_html_tables
 from youju.lists.rules import ListClassification, classify_title, valid_org_name
-from youju.models import Document, DocumentDetail, ListEntry, ListParse, Source
+from youju.models import (
+    SOURCE_URL_MAX,
+    Document,
+    DocumentDetail,
+    ListEntry,
+    ListParse,
+    Source,
+)
 
 SUPPORTED = {"pdf", "xlsx", "xls", "docx"}
 UNSUPPORTED = {"doc", "wps", "et", "ofd", "zip", "rar"}
 PERMANENT = {"ok", "empty", "unsupported"}
 _PROTECTED = re.compile(r"验证码|人机验证|安全验证|访问过于频繁|异常访问")
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,14 @@ class ListReport:
     attachments_deferred: int
 
 
+def _url_too_long(url: str) -> bool:
+    """解析记录按网址唯一，数据库里网址有长度上限；超长的多半是异常链接，跳过并记日志。"""
+    if len(url) <= SOURCE_URL_MAX:
+        return False
+    log.warning("名单来源网址过长，跳过：%s…", url[:120])
+    return True
+
+
 def _should_attempt(record: ListParse | None) -> bool:
     return record is None or (
         record.status not in PERMANENT
@@ -60,6 +78,8 @@ def _save(
     failure: str | None = None,
     partial_reason: str | None = None,
 ) -> None:
+    if _url_too_long(url):
+        return
     record = session.scalar(
         select(ListParse).where(ListParse.document_id == doc.id, ListParse.source_url == url)
     )
@@ -108,6 +128,8 @@ def _parse_source(
     classification: ListClassification,
     fetcher: PoliteFetcher,
 ) -> None:
+    if _url_too_long(url):
+        return
     if extension not in SUPPORTED and extension != "html":
         _save(session, doc, url, kind, classification, None, "暂不支持旧版或专有格式")
         return
@@ -233,7 +255,7 @@ def _report(
                 .group_by(ListEntry.document_id)
             )
         )
-        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.id)
+        .order_by(Document.publish_date.desc(), ListEntry.id)
     ).all()
     failures = Counter(
         reason

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from youju.config import DEFAULT_SOURCES_CSV
@@ -73,3 +74,16 @@ def test_real_source_list_imports(session) -> None:
     assert "http://kjt.shandong.gov.cn/col/col359318/index.html" not in enabled
     provinces = set(session.scalars(select(Source.province).where(Source.level == "省级")))
     assert len(provinces) == 31
+
+
+def test_overlong_source_url_is_rejected_with_line_number(session, tmp_path: Path) -> None:
+    """来源网址在数据库里有唯一索引和长度上限：超长的直接报错并指出行号，不静默跳过。"""
+    long_url = "https://kw.beijing.gov.cn/" + "a" * 600
+    path = write_csv(
+        tmp_path,
+        [
+            f"省级,北京,科技,北京市科学技术委员会,通知公告,{long_url},200,20,,已验证（列表页，含近期日期）,,"
+        ],
+    )
+    with pytest.raises(ValueError, match="第 2 行"):
+        import_sources(session, path)

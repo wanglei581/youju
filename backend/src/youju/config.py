@@ -14,7 +14,8 @@ DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg://localhost:55432/youju"
+    # 本机开发用 scripts/dev_mysql.sh 启动的 MySQL；线上填云托管 MySQL 的内网地址
+    database_url: str = "mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4"
     admin_token: str | None = None
     # 企业微信群机器人地址只从环境读取，不写入日志或异常信息。
     alert_webhook: SecretStr | None = None

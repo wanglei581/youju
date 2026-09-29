@@ -282,3 +282,19 @@ def test_pdf_detail_and_pdf_only_html_use_real_redacted_sample(session) -> None:
     )
     assert len(session.get(DocumentDetail, html_doc.id).attachments) == 1
     assert fake.calls == [direct.url, html_doc.url, attachment]
+
+
+def test_overlong_body_is_truncated_not_failed(session, monkeypatch) -> None:
+    """正文列有长度上限（MEDIUMTEXT）：超长的截断保存，不让整份详情写入失败。"""
+    monkeypatch.setattr("youju.crawler.detail_service.BODY_TEXT_MAX_CHARS", 20)
+    doc = add_document(session, 7)
+    sample = (
+        "<html><body><div id='zoom'><p>这是一段很长的公开通知正文，用来检查截断是否生效。</p>"
+        "<p>后面还有更多内容，都会被截掉。</p></div></body></html>"
+    )
+    fake = FakeFetcher(
+        {doc.url: FetchResult(doc.url, "ok", final_url=doc.url, http_status=200, text=sample)}
+    )
+    assert [r.status for r in fetch_details(session, limit=1, fetcher=fake)] == ["ok"]
+    detail = session.get(DocumentDetail, doc.id)
+    assert len(detail.body_text) == 20
