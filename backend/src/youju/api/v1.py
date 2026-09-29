@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import time as _time
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -43,6 +44,14 @@ _TZ = ZoneInfo("Asia/Shanghai")
 _WEEK = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 # 同一份文件有多个截止时，列表和日历优先显示企业申报截止
 _DEADLINE_ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或审核截止": 2}
+
+# 截止雷达按进程缓存，避免首页/报告页短时间内重复扫描全部公开文件。
+# 测试可直接 clear()；值为 (写入时刻, 响应对象)。
+_REPORT_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
+# 兼容测试和运维脚本使用更直观的名称。
+_deadline_report_cache = _REPORT_CACHE
+REPORT_CACHE_TTL = 300
+REPORT_CACHE_MAX = 200
 
 # 筛选项的合法取值（与小程序筛选弹层一致）；其他值一律返回 422，不静默忽略
 TABS = {"all", "申报通知", "名单", "政策"}
@@ -141,6 +150,41 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     return out
 
 
+def _selected_deadline(deadlines: list[DocumentDeadline]) -> DocumentDeadline | None:
+    """按方案选择一份文件用于申报状态/截止雷达的主截止。"""
+    if not deadlines:
+        return None
+    enterprise = [d for d in deadlines if d.kind == "企业申报截止"]
+    pool = enterprise or deadlines
+    return min(
+        pool,
+        key=lambda d: (d.approved_date or date.max, d.approved_time or datetime.max.time(), d.id),
+    )
+
+
+def application_status(
+    deadlines: list[DocumentDeadline], stamp: datetime | None = None
+) -> dict[str, Any] | None:
+    """计算申报状态；只接收 _approved 返回的 approved 截止。"""
+    selected = _selected_deadline(deadlines)
+    if selected is None or selected.approved_date is None:
+        return None
+    stamp = (stamp or now()).astimezone(_TZ)
+    today = stamp.date()
+    due = selected.approved_date
+    due_time = selected.approved_time
+    closed = due < today or (
+        due == today and due_time is not None and stamp.time().replace(tzinfo=None) > due_time
+    )
+    code = "closed" if closed else "closing" if (due - today).days <= 7 else "open"
+    return {
+        "code": code,
+        "label": selected.kind,
+        "date": due.isoformat(),
+        "time": due_time.strftime("%H:%M") if due_time else None,
+    }
+
+
 def _details(session: Session, doc_ids: list[int]) -> dict[int, DocumentDetail]:
     if not doc_ids:
         return {}
@@ -176,10 +220,13 @@ def _item(
 ) -> dict:
     """列表行（与小程序 doc-row 的数据格式一致）。"""
     kind = effective_kind(doc.title, doc.kind_override)
+    app_status = application_status(deadlines) if kind == "申报通知" else None
     return {
         "id": str(doc.id),
         "kind": kind,
+        # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
         "status": list_status(doc.title, kind),
+        "app_status": app_status,
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
@@ -352,6 +399,29 @@ def _dept_filter(groups: list[str]):
     return or_(*(parts[g] for g in groups))
 
 
+def _dept_bucket(value: str) -> str:
+    """把来源部门归到报告筛选允许的三个稳定分组。"""
+    if "科技" in value:
+        return "科技部门"
+    if any(word in value for word in _INDUSTRY):
+        return "工信部门"
+    return "其他部门"
+
+
+def _future_approved_canonical_ids(session: Session, today: date) -> list[int]:
+    """取今天起有已核对截止的归并主文件编号。"""
+    ids = list(
+        session.scalars(
+            select(DocumentDeadline.document_id).where(
+                DocumentDeadline.status == "approved",
+                DocumentDeadline.approved_date >= today,
+            )
+        )
+    )
+    mapping = canonical_ids(session, ids)
+    return sorted({mapping.get(doc_id, doc_id) for doc_id in ids})
+
+
 def _keyword_ids(session: Session, kw: str) -> Select:
     """关键词命中的文件：标题或文号，分两次查询再合并，互不拖累。"""
     like = f"%{_escape_like(kw)}%"
@@ -378,16 +448,17 @@ def search(
     ] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。"""
-    stmt = search_statement(session, q, kind, regions, types, status, time, depts)
+    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open)
     total = _count(session, stmt)
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
     return {
         "q": (q or "").strip(),
         "total": total,
         "total_all": _count(
-            session, search_statement(session, q, kind, regions, types, status, "不限", depts)
+            session, search_statement(session, q, kind, regions, types, status, "不限", depts, open)
         ),
         "items": _items(session, [tuple(r) for r in rows]),
     }
@@ -402,6 +473,7 @@ def search_statement(
     status: str | None,
     time: str,
     depts: str | None,
+    open: int | None = None,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。"""
     if kind not in TABS:
@@ -430,12 +502,138 @@ def search_statement(
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
 
+    if open is not None:
+        if open != 1:
+            raise HTTPException(status_code=422, detail="open 只支持 1")
+        # 先从今天起、人工核对通过的截止取文件编号，再与公开的申报通知相交。
+        # 这样不会为 open=1 把全部公开文件加载到进程内；_approved 仍负责归并组和 changed 口径。
+        candidate_ids = _future_approved_canonical_ids(session, now().date())
+        stmt = stmt.where(_kind_is(["申报通知"]))
+        approved = _approved(session, candidate_ids)
+        open_ids = []
+        current = now()
+        for document_id in candidate_ids:
+            status_value = application_status(approved.get(document_id, []), current)
+            if status_value and status_value["code"] in ("open", "closing"):
+                open_ids.append(document_id)
+        stmt = stmt.where(Document.id.in_(open_ids or [-1]))
+
     d = now().date()
     if TIMES[time]:
         stmt = stmt.where(Document.publish_date >= d - timedelta(days=TIMES[time]))
     elif time == "今年":
         stmt = stmt.where(Document.publish_date >= date(d.year, 1, 1))
     return stmt
+
+
+def _report_payload(
+    session: Session, days: int, province: str, dept: str, page: int, size: int
+) -> dict[str, Any]:
+    """截止雷达数据；同一份文件只取方案规定的主截止。"""
+    current = now().astimezone(_TZ)
+    today = current.date()
+    # 先从未来且已核对通过的截止取主文件编号，再限定公开的申报通知；
+    # 已变更的副本由 _approved 按归并组抑制，和列表/导出的口径一致。
+    candidate_ids = _future_approved_canonical_ids(session, today)
+    rows = session.execute(
+        _base().where(Document.id.in_(candidate_ids), _kind_is(["申报通知"]))
+    ).all()
+    approved = _approved(session, candidate_ids)
+    details = _details(session, [doc.id for doc, _ in rows])
+    entries: list[dict[str, Any]] = []
+    for doc, src in rows:
+        if effective_kind(doc.title, doc.kind_override) != "申报通知":
+            continue
+        if province and province not in (
+            src.province,
+            "国家部委" if src.province == "国家" else src.province,
+        ):
+            continue
+        if dept and _dept_bucket(src.dept) != dept:
+            continue
+        selected = _selected_deadline(approved.get(doc.id, []))
+        if selected is None or selected.approved_date is None:
+            continue
+        status_value = application_status([selected], current)
+        if not status_value or status_value["code"] == "closed":
+            continue
+        remaining = (selected.approved_date - today).days
+        if remaining < 0 or remaining > 30:
+            continue
+        detail = details.get(doc.id)
+        entries.append(
+            {
+                "id": str(doc.id),
+                "title": doc.title,
+                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "province": "国家部委" if src.province == "国家" else src.province,
+                "dept": src.dept_full_name,
+                "label": selected.kind,
+                "deadline_type": selected.kind,
+                "date": selected.approved_date.isoformat(),
+                "time": selected.approved_time.strftime("%H:%M")
+                if selected.approved_time
+                else None,
+                "remaining_days": remaining,
+                "file_number": detail.doc_number if detail else None,
+                "doc_number": detail.doc_number if detail else None,
+            }
+        )
+    entries.sort(
+        key=lambda item: (item["date"], item["time"] is None, item["time"] or "", item["id"])
+    )
+    summary = {
+        str(limit): sum(1 for item in entries if item["remaining_days"] <= limit)
+        for limit in (7, 14, 30)
+    }
+    entries = [item for item in entries if item["remaining_days"] <= days]
+    by_province: dict[str, int] = {}
+    by_dept: dict[str, int] = {}
+    for item in entries:
+        by_province[item["province"]] = by_province.get(item["province"], 0) + 1
+        by_dept[_dept_bucket(item["dept"])] = by_dept.get(_dept_bucket(item["dept"]), 0) + 1
+    start = (page - 1) * size
+    return {
+        "days": days,
+        "summary": summary,
+        "by_province": by_province,
+        "by_dept": by_dept,
+        "province_counts": by_province,
+        "dept_counts": by_dept,
+        "total": len(entries),
+        "page": page,
+        "size": size,
+        "items": entries[start : start + size],
+    }
+
+
+@router.get("/reports/deadlines")
+def deadline_report(
+    session: SessionDep,
+    days: Annotated[int, Query(description="未来 7、14 或 30 天")] = 7,
+    province: Annotated[str, Query(max_length=32)] = "",
+    dept: Annotated[str, Query(max_length=128)] = "",
+    page: Annotated[int, Query(ge=1, le=10000)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, Any]:
+    if days not in (7, 14, 30):
+        raise HTTPException(status_code=422, detail="days 只支持 7、14、30")
+    province = province.strip()
+    dept = dept.strip()
+    if province and province not in (set(PROVINCES) - {"不限地区"}):
+        raise HTTPException(status_code=422, detail="省份不支持")
+    if dept and dept not in DEPTS:
+        raise HTTPException(status_code=422, detail="部门不支持")
+    key = (days, province, dept, page, size, now().astimezone(_TZ).date())
+    cached = _REPORT_CACHE.get(key)
+    current = _time.monotonic()
+    if cached and current - cached[0] < REPORT_CACHE_TTL:
+        return cached[1]
+    payload = _report_payload(session, days, province, dept, page, size)
+    if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
+        _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
+    _REPORT_CACHE[key] = (current, payload)
+    return payload
 
 
 def _fmt_deadline_note(d: DocumentDeadline) -> str:
@@ -515,11 +713,21 @@ def document(doc_id: int, session: SessionDep) -> dict:
     doc, src = row
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
+    kind = effective_kind(doc.title, doc.kind_override)
+    status_value = application_status(approved) if kind == "申报通知" else None
     issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
     points = [["发文机关", issuer]]
     if detail and detail.doc_number:
         points.append(["文号", detail.doc_number])
     points.append(["适用地区", "全国" if src.province == "国家" else src.province])
+    if status_value:
+        status_label = {"open": "征集中", "closing": "即将截止", "closed": "已截止"}[
+            status_value["code"]
+        ]
+        when = (
+            f"{status_value['date'][5:7].lstrip('0')}月{status_value['date'][8:10].lstrip('0')}日"
+        )
+        points.append(["申报状态", f"{status_label} · 按{status_value['label']} {when}"])
 
     deadline = excerpt = checked = None
     if approved:
@@ -570,7 +778,6 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    kind = effective_kind(doc.title, doc.kind_override)
     return {
         "id": str(doc.id),
         "kind": kind,
@@ -579,6 +786,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "title": doc.title,
         "issuer": issuer,
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
+        "status": list_status(doc.title, kind),
+        "app_status": status_value,
         "url": doc.url,
         "original_urls": [
             d.url

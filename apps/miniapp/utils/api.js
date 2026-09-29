@@ -92,6 +92,20 @@ function search(params) {
   return copy(mockSearch(mock.search.items, params));
 }
 
+function deadlineReport(params) {
+  if (isLive()) return request('/api/v1/reports/deadlines', params);
+  const days = Number((params && params.days) || 7);
+  const all = (mock.reports && mock.reports.deadlines) || [];
+  const deptOf = (value) => (/科技/.test(value) ? '科技部门' : (/工业和信息化|经济和信息化|工信|经信/.test(value) ? '工信部门' : '其他部门'));
+  const filtered = all.filter((item) => item.remaining_days <= days)
+    .filter((item) => !params.province || item.province === params.province)
+    .filter((item) => !params.dept || deptOf(item.dept) === params.dept);
+  const summary = { 7: all.filter((x) => x.remaining_days <= 7).length, 14: all.filter((x) => x.remaining_days <= 14).length, 30: all.filter((x) => x.remaining_days <= 30).length };
+  const by = (key) => filtered.reduce((out, item) => { out[item[key]] = (out[item[key]] || 0) + 1; return out; }, {});
+  const page = Number(params.page || 1); const size = Number(params.size || 20);
+  return copy({ days, summary, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
+}
+
 // 演示数据只有辽宁这一份完整详情；其他文件用列表里的信息拼出基本详情
 function mockDetail(id) {
   if (mock.detail[id]) return copy(mock.detail[id]);
@@ -101,7 +115,8 @@ function mockDetail(id) {
     if (doc) {
       return copy({
         id: doc.id, kind: doc.kind, tags: [doc.kind], region: doc.region, title: doc.title, issuer: doc.issuer,
-        date: doc.date, url: doc.url, deadline: null, points: [['发文机关', doc.issuer]], excerpt: null, attachments: [], checked: null,
+        date: doc.date, url: doc.url, status: doc.status || null, app_status: doc.app_status || null,
+        deadline: null, points: [['发文机关', doc.issuer]], excerpt: null, attachments: [], checked: null,
       });
     }
   }
@@ -271,7 +286,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  isLive, request, coverage, home, search, detail, calendar, lists, lookup, exportFile, feedback,
+  isLive, request, coverage, home, search, deadlineReport, detail, calendar, lists, lookup, exportFile, feedback,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

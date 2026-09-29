@@ -1,7 +1,7 @@
 <view class="row {{last ? '' : 'row--line'}}">
   <view class="head" bindtap="open">
     <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
-    <text wx:if="{{doc.status}}" class="status status--{{statusCls}}">{{doc.status}}</text>
+    <text wx:if="{{statusText}}" class="status status--{{statusCls}}">{{statusText}}</text>
     <text class="region">{{label || doc.region}}</text>
     <text wx:if="{{due}}" class="due {{due.tone ? 'due--' + due.tone : ''}}">{{due.text}}</text>
     <text wx:elif="{{doc.kind === '申报通知'}}" class="due">截止时间见原文</text>

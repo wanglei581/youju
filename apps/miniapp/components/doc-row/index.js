@@ -14,15 +14,21 @@ Component({
     // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
     selecting: { type: Boolean, value: false },
   },
-  data: { segs: [], due: null, kindCls: '', statusCls: '', issuerLong: false },
+  data: { segs: [], due: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
+      const status = doc.status;
+      const appStatus = doc.app_status;
+      const statusText = appStatus && typeof appStatus === 'object'
+        ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status;
+      const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
       this.setData({
         segs: highlight(doc.title, q),
         due: dueInfo(doc.deadline),
         kindCls: kindClass(doc.kind),
-        statusCls: statusClass(doc.status),
+        statusCls,
+        statusText,
         issuerLong: (doc.issuer || '').length > ISSUER_WRAP,
       });
     },
