@@ -31,7 +31,7 @@
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
   <view class="follow-text">
     <text class="follow-title">关注这个搜索</text>
-    <text class="follow-sub">含已选条件，有新文件时提醒我</text>
+    <text class="follow-sub">含已选条件，有新文件时在关注页标出</text>
   </view>
   <view class="follow-btn" bindtap="follow">关注</view>
 </view>

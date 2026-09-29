@@ -119,7 +119,7 @@ def _parse_source(
         reason = (
             "文件超过20MB"
             if response.status == "too_large"
-            else "非政府网站"
+            else response.error or "非政府网站"
             if response.status == "unsupported_host"
             else f"抓取失败：{response.status}"
         )

@@ -239,7 +239,7 @@ Page({
     const regions = c.regions.split(',').filter((r) => r && r !== '不限地区');
     const parts = [];
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
-    parts.push(regions.length ? regions.slice(0, 3).join('、') : '全国');
+    parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
     parts.push(tab ? tab.label : '全部');
     return parts.join(' · ').slice(0, 40);
   },

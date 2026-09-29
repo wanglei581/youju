@@ -4,7 +4,7 @@ const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
-  { key: 'list', label: '查名单', placeholder: '输入企业全称，查上过哪些名单' },
+  { key: 'list', label: '查名单', placeholder: '输入企业全称或信用代码查名单' },
   { key: 'policy', label: '查政策', placeholder: '搜政策文件，如"数字经济"' },
   { key: 'number', label: '查文号', placeholder: '输入文号，如"辽工信投资〔2026〕130号"' },
 ];
@@ -77,6 +77,13 @@ Page({
   goSearch(e) {
     const q = (e && e.currentTarget.dataset.q) || '';
     wx.navigateTo({ url: `/pages/search/index?q=${encodeURIComponent(q)}` });
+  },
+
+  // 卡片底部：按当前页签到搜索页看近 7 天的文件（搜索没有"本周"这个时间段，所以不写本周的份数）
+  goMore() {
+    const params = [`time=${encodeURIComponent('近 7 天')}`];
+    if (this.data.tab !== 'all') params.push(`kind=${encodeURIComponent(this.data.tab)}`);
+    wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
   },
 
   goEntry(e) {

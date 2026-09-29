@@ -44,6 +44,7 @@
   .ok { color: var(--green); }
   .empty { text-align: center; color: var(--t2); padding: 48px 0; }
   .more { display: block; margin: 8px auto 32px; }
+  [hidden] { display: none !important; } /* 带 display 的样式会盖过 hidden 属性 */
   select { font: inherit; padding: 5px 8px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
   .linkish { border: 0; padding: 4px 0; background: none; color: var(--brand); font-size: 13px; }
   .tools summary { cursor: pointer; font-weight: 600; }
@@ -65,6 +66,11 @@
     <div class="auth">
       <input id="reviewer" placeholder="核对人" size="8" aria-label="核对人">
       <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <select id="due" aria-label="只看哪些候选">
+        <option value="30" selected>30 天内截止</option>
+        <option value="future">未过期</option>
+        <option value="all">全部（含已过期）</option>
+      </select>
       <button class="primary" id="load">载入</button>
     </div>
   </div>
@@ -77,6 +83,13 @@
     <div class="row"><input id="changeQ" placeholder="原通知标题里的词，空格分开" size="28" aria-label="原通知标题里的词"><button id="changeSearch">搜索</button></div>
     <div id="changeList"></div>
   </details>
+  <details class="card tools">
+    <summary>核对结果导出、导入</summary>
+    <p class="hint">在一个环境里核对的结果，可以导入另一个环境（例如在本机开发环境里先核对，上线后导入正式环境）。导入按"文件网址 + 截止候选"匹配：这边还没核对的按导出的结果核对；已经核对且结果相同的跳过；结果不同的不覆盖，列为冲突。已变更（延期、调整、撤销）的截止，这边还没抓到变更通知时先不导入，抓到后再导入一次即可。导入前会先预览。</p>
+    <div class="row"><button id="exportReviews">导出核对结果</button></div>
+    <div class="row"><input id="importFile" type="file" accept=".json,application/json" aria-label="选择导出的核对结果文件"><button id="importPreview">预览导入</button><button class="primary" id="importApply" hidden>确认导入</button></div>
+    <div id="importResult" class="hint"></div>
+  </details>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
@@ -86,6 +99,10 @@
   const $ = (id) => document.getElementById(id);
   let pending = 0;
   let cursor = null; // 已载入的最小候选编号（翻页游标）
+  // 只看哪些：先核快到期的；已过期的核了也进不了日历
+  const DUE_LABEL = { '30': '30 天内截止', future: '未过期', all: '全部' };
+  const due = () => $('due').value;
+  let loadSeq = 0;
   const shown = new Set(); // 已显示的候选编号，去重
 
   // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
@@ -159,13 +176,15 @@
   }
 
   function setCount() {
-    $('count').textContent = `待核对 ${pending} 条`;
+    $('count').textContent = `待核对 ${pending} 条（${DUE_LABEL[due()]}）`;
   }
 
   async function refreshCount() {
+    const wanted = due();
     try {
-      const res = await fetch('/api/admin/deadlines/count', { headers: headers() });
-      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+      const res = await fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() });
+      // 等待期间切换了筛选：这个计数已经过时，不用
+      if (res.ok && wanted === due()) { pending = (await res.json()).pending; setCount(); }
     } catch (e) { /* 计数刷新失败不影响核对 */ }
   }
 
@@ -369,19 +388,25 @@
   }
 
   async function load(reset) {
+    // 每次载入编个号：切换筛选或重新载入后，之前还没返回的请求结果一律丢弃，不覆盖新列表
+    const seq = ++loadSeq;
     if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
     // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
     const after = cursor ? `&before_id=${cursor}` : '';
+    const wanted = due();
     try {
       const [countRes, res] = await Promise.all([
-        fetch('/api/admin/deadlines/count', { headers: headers() }),
-        fetch(`/api/admin/deadlines?limit=50${after}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines?limit=50&due=${wanted}${after}`, { headers: headers() }),
       ]);
+      if (seq !== loadSeq) return;
       if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
       if (!res.ok) throw new Error(`载入失败（${res.status}）`);
-      pending = (await countRes.json()).pending;
-      setCount();
+      const count = (await countRes.json()).pending;
       const items = await res.json();
+      if (seq !== loadSeq) return;
+      pending = count;
+      setCount();
       if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
@@ -390,13 +415,84 @@
       if (items.length) cursor = Math.min(...items.map((item) => item.id));
       $('more').hidden = items.length < 50;
     } catch (err) {
+      if (seq !== loadSeq) return;
       $('list').textContent = '';
       $('list').append(el('div', 'empty', err.message));
     }
   }
 
+  // 核对结果导出（下载文件）、导入（先预览，确认后写入）
+  $('exportReviews').onclick = async () => {
+    $('importResult').textContent = '';
+    try {
+      const res = await fetch('/api/admin/reviews/export', { headers: headers() });
+      if (res.status === 401 || res.status === 429) throw new Error('口令不对、未配置，或输错次数过多');
+      if (!res.ok) throw new Error(`导出失败（${res.status}）`);
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `youju-reviews-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      $('importResult').textContent = `已导出 ${data.items.length} 条核对结果`;
+    } catch (err) {
+      $('importResult').textContent = err.message;
+    }
+  };
+
+  let importBody = null;
+  function showImport(result) {
+    const box = $('importResult');
+    box.textContent = '';
+    const verb = result.dryRun ? '可导入' : '已导入';
+    box.append(el('div', '', `${verb} ${result.applied} 条；已相同跳过 ${result.already} 条；冲突 ${result.conflict} 条；这边还没有文件 ${result.missingDocument} 条、还没有截止候选 ${result.missingCandidate} 条、还没有变更通知 ${result.missingTarget} 条`));
+    result.problems.forEach((p) => box.append(el('div', '', `· ${p.title}：${p.reason}`)));
+  }
+  async function sendImport(dryRun) {
+    const res = await fetch(`/api/admin/reviews/import?dry_run=${dryRun}`, {
+      method: 'POST', headers: headers(), body: JSON.stringify(importBody),
+    });
+    if (res.status === 401 || res.status === 429) throw new Error('口令不对、未配置，或输错次数过多');
+    if (res.status === 422) throw new Error('文件格式不对，请选择从核对台导出的文件');
+    if (!res.ok) throw new Error(`导入失败（${res.status}）`);
+    return res.json();
+  }
+  $('importFile').onchange = () => {
+    importBody = null;
+    $('importApply').hidden = true;
+    $('importResult').textContent = '';
+  };
+  $('importPreview').onclick = async () => {
+    $('importApply').hidden = true;
+    const file = $('importFile').files[0];
+    if (!file) { $('importResult').textContent = '请先选择导出的核对结果文件'; return; }
+    try {
+      importBody = JSON.parse(await file.text());
+      const result = await sendImport(true);
+      showImport(result);
+      $('importApply').hidden = result.applied === 0;
+    } catch (err) {
+      $('importResult').textContent = err instanceof SyntaxError ? '文件不是有效的 JSON' : err.message;
+    }
+  };
+  $('importApply').onclick = async () => {
+    if (!importBody) return;
+    $('importApply').disabled = true;
+    try {
+      showImport(await sendImport(false));
+      $('importApply').hidden = true;
+      load(true);
+    } catch (err) {
+      $('importResult').textContent = err.message;
+    } finally {
+      $('importApply').disabled = false;
+    }
+  };
+
   $('changeSearch').onclick = () => searchChanges($('changeQ').value, $('changeList'), null);
   $('load').onclick = () => load(true);
+  $('due').onchange = () => load(true);
   $('more').onclick = () => load(false);
 })();
 </script>
