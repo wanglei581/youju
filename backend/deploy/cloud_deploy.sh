@@ -76,7 +76,7 @@ if grep -rIlE \
   -e 'sk-[A-Za-z0-9]{20,}' \
   -e 'BEGIN [A-Z ]*PRIVATE KEY' \
   -e 'qyapi\.weixin\.qq\.com/cgi-bin/webhook/send\?key=[A-Za-z0-9-]{8,}' \
-  -e '[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:[^@<[:space:]]+@' \
+  -e '[A-Za-z][A-Za-z0-9+.-]*://[^:/@[:space:]]+:[^@<[:space:]]+@' \
   "$STAGE"; then
   echo "上面这些文件里有像密钥或口令的内容，没有发布。先确认并从提交里去掉" >&2
   exit 1
