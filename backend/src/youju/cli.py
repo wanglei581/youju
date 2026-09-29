@@ -176,6 +176,24 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_extract_fields(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.fields import extract_existing
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = extract_existing(session, since=args.since, ai_client=client)
+    finally:
+        usage_ok = _finish_ai(client, "fields")
+    print(
+        f"检查 {report.documents} 份申报通知正文，新增或更新 {report.fields} 条字段候选，"
+        f"正文变化 {report.changed} 份"
+    )
+    return 0 if usage_ok else 1
+
+
 def _cmd_ai_check(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.pipeline import run_ai_checks
@@ -533,6 +551,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
+
+    p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")
+    p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
+    p.set_defaults(func=_cmd_extract_fields)
 
     p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
     p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")

@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>字段核对 · 有据</title>
+<style>
+body{margin:0;background:#f7f8fa;color:#20242b;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+header{padding:14px 20px;background:#fff;border-bottom:1px solid #e6e8eb;position:sticky;top:0}main{max-width:900px;margin:auto;padding:16px}.card{background:#fff;border-radius:12px;padding:16px;margin:0 0 12px;box-shadow:0 1px 3px #0000000b}.meta{color:#69707d;font-size:13px}.field{border-top:1px solid #edf0f2;padding:12px 0}.tag{display:inline-block;background:#e8f1ff;color:#1769aa;border-radius:5px;padding:1px 7px;margin-right:8px}.evidence{background:#fff5c7;border-radius:5px;padding:8px;margin-top:5px}button,input{font:inherit;padding:6px 10px;border:1px solid #ccd2d9;border-radius:7px;background:#fff}button{cursor:pointer;margin:8px 6px 0 0}.primary{background:#1769aa;color:#fff;border-color:#1769aa}.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bar input{width:180px}
+</style>
+<header><strong>字段核对</strong>　<a href="/admin/review">截止日期核对</a>　<span id="count"></span></header>
+<main><div class="bar"><input id="token" type="password" placeholder="管理口令"><input id="by" placeholder="核对人"><button class="primary" onclick="load()">加载</button></div><div id="list"></div></main>
+<script>
+const $=s=>document.querySelector(s), headers=()=>({'X-Admin-Token':$('#token').value}), reviewer=()=>$('#by').value.trim()||'创始人';
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function act(id,kind){const value=kind==='approve'?prompt('留空沿用候选；如需修改请输入核对后的值：'):null;if(value===null&&kind==='approve')return;const r=await fetch(`/api/admin/fields/${id}/${kind}`,{method:'POST',headers:{...headers(),'Content-Type':'application/json'},body:JSON.stringify({reviewed_by:reviewer(),value:value||null})});if(!r.ok){alert((await r.json().catch(()=>({}))).detail||'操作失败');return}load()}
+async function load(){const r=await fetch('/api/admin/fields?limit=100',{headers:headers()});if(!r.ok){alert('加载失败：'+r.status);return}const data=await r.json();$('#count').textContent=`待核 ${data.reduce((n,x)=>n+x.fields.length,0)} 项`;$('#list').innerHTML=data.map(card).join('')||'<p>暂无待核字段</p>'}
+function card(x){return `<article class="card"><div><strong>${esc(x.title)}</strong></div><div class="meta">截止：${x.deadline||'未核截止'}　<a href="${esc(x.url)}" target="_blank">原文</a></div>${x.fields.map(f=>`<div class="field"><span class="tag">${esc(f.field==='support'?'支持方式':'申报对象')}</span>${f.status==='stale'?'<span class="meta">原文已变化，请复核</span> ':''}<b>${esc(f.value)}</b><div class="evidence">${esc(f.evidence)}</div><button class="primary" onclick="act(${f.id},'approve')">通过 / 改后通过</button><button onclick="act(${f.id},'reject')">驳回</button></div>`).join('')}</article>`}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(e.key==='Enter'||e.key==='r')load();if(e.key==='a')document.querySelector('.field .primary')?.click();if(e.key==='x')document.querySelector('.field button:not(.primary)')?.click()});
+</script>

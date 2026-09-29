@@ -18,6 +18,7 @@ fi
 "$D/job.sh" crawl && "$D/job.sh" check-sources
 "$D/job.sh" fetch-details --limit 300 --workers 4
 "$D/job.sh" extract-deadlines
+"$D/job.sh" extract-fields
 # 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
 "$D/job.sh" ai-check --limit 300
 # 用户纠错过的文件，用规则和 AI 复查已发布的截止日期，结果写在纠错旁边（纠错内容不发给 AI）
