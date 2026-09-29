@@ -108,6 +108,11 @@ Page({
     };
   },
 
+  // 网络不好出错时，点"重试"按当前条件重新搜索
+  retry() {
+    this.apply(true);
+  },
+
   apply(reset) {
     const { items } = this.data;
     const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length });

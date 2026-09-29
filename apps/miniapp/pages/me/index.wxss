@@ -6,7 +6,7 @@
 .profile-main { flex: 1; min-width: 0; }
 .profile-name { font-size: 36rpx; font-weight: 600; }
 .profile-sub { margin-top: 4rpx; font-size: 24rpx; color: rgba(255, 255, 255, 0.85); }
-.login { flex-shrink: 0; height: 64rpx; padding: 0 28rpx; display: flex; align-items: center; border-radius: 32rpx; background: rgba(255, 255, 255, 0.28); color: rgba(255, 255, 255, 0.75); font-size: 28rpx; font-weight: 600; white-space: nowrap; }
+.login { flex-shrink: 0; min-height: 64rpx; padding: 8rpx 28rpx; box-sizing: border-box; display: flex; align-items: center; border-radius: 32rpx; background: rgba(255, 255, 255, 0.28); color: rgba(255, 255, 255, 0.75); font-size: 28rpx; font-weight: 600; white-space: nowrap; }
 .login--on { background: #FFFFFF; color: var(--brand); }
 .agree { position: relative; margin-top: 24rpx; display: flex; align-items: center; flex-wrap: wrap; font-size: 23rpx; color: rgba(255, 255, 255, 0.85); }
 .check-wrap { display: flex; align-items: center; gap: 12rpx; }

@@ -14,6 +14,7 @@ from youju.models import (
     DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
+    DocumentMerge,
     ListEntry,
     Source,
 )
@@ -236,6 +237,80 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
     assert client.get("/api/v1/documents/999999").status_code == 404
+    # 正文太短（多半没抓全）不给；名单类不给正文（名单里可能有个人姓名）
+    assert d["body"] == {"status": "none"}
+    assert listed["body"] == {"status": "list"}
+
+
+def test_body_for_reading_cleans_only_known_strings():
+    from youju.api.v1 import BODY_MAX_CHARS, body_for_reading
+
+    text = (
+        "各有关单位：\n\n\n\n请于10月18日前报送。联系人：[姓名已脱敏]，电话：[电话已脱敏]，"
+        "[手机号已脱敏]，邮箱 [邮箱已脱敏]。【关闭窗口】【字体：大 中 小】扫一扫在手机打开当前页"
+        + "正文"
+        * 100
+    )
+    body = body_for_reading(text, "申报通知")
+    assert body["status"] == "ok" and body["truncated"] is False
+    assert "各有关单位：\n\n请于10月18日前报送" in body["text"]
+    assert (
+        "联系人：（联系人见原文），电话：（电话见原文），（电话见原文），邮箱 （邮箱见原文）"
+        in body["text"]
+    )
+    for gone in ("【关闭窗口】", "【字体", "扫一扫", "已脱敏"):
+        assert gone not in body["text"]
+    assert body["total"] == len(body["text"])
+    long = body_for_reading("字" * (BODY_MAX_CHARS + 5), "政策")
+    assert long["truncated"] is True and long["total"] == BODY_MAX_CHARS + 5
+    assert len(long["text"]) == BODY_MAX_CHARS
+    assert body_for_reading("短" * 199, "申报通知") == {"status": "none"}
+    assert body_for_reading(None, "申报通知") == {"status": "none"}
+    assert body_for_reading("字" * 500, "名单") == {"status": "list"}
+    # 其他类（招聘、职称评审等公示）可能有个人姓名，不给正文
+    assert body_for_reading("字" * 500, "其他") == {"status": "original"}
+    # 给出前按现行规则再隐去一遍；Windows 换行也按换行处理
+    again = body_for_reading("咨询电话：13812345678\r\n\r\n\r\n" + "内容" * 120, "政策")
+    assert "13812345678" not in again["text"] and "（电话见原文）" in again["text"]
+    assert "\r" not in again["text"] and "\n\n\n" not in again["text"]
+
+
+def test_detail_body_prefers_own_level1_text(client, session, seeded):
+    """同一通知几个网址：自己有正文就用自己的；没有才用别的网址里最长的；只取一级来源的正文。"""
+    own = session.get(Document, seeded["policy"])
+    src = session.get(Source, own.source_id)
+    level2 = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅",
+        column_name="转载",
+        url="https://example.gov.cn/zz/",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add(level2)
+    session.flush()
+    twin1 = _doc(src, 31, own.title, own.publish_date)
+    twin2 = _doc(level2, 32, own.title, own.publish_date)
+    session.add_all([twin1, twin2])
+    session.flush()
+    now = datetime.now(UTC)
+    for doc, text in ((twin1, "一级副本" * 100), (twin2, "二级来源" * 300)):
+        session.add(DocumentDetail(document_id=doc.id, body_text=text, fetched_at=now, status="ok"))
+        session.add(
+            DocumentMerge(duplicate_id=doc.id, canonical_id=own.id, active=True, match_key="t")
+        )
+    session.commit()
+    body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
+    assert body["status"] == "ok" and body["text"].startswith("一级副本")  # 二级的更长也不用
+    session.add(
+        DocumentDetail(document_id=own.id, body_text="本文" * 150, fetched_at=now, status="ok")
+    )
+    session.commit()
+    body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
+    assert body["text"].startswith("本文")  # 自己有就用自己的
 
 
 def test_calendar_lists_only_approved_upcoming(client, seeded):

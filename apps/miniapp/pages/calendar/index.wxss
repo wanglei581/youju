@@ -1,5 +1,5 @@
 .seg { margin: 24rpx 24rpx 0; padding: 6rpx; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6rpx; background: var(--card); border-radius: 38rpx; }
-.seg-item { height: 64rpx; display: flex; align-items: center; justify-content: center; border-radius: 32rpx; font-size: 26rpx; color: var(--t2); }
+.seg-item { min-height: 64rpx; display: flex; align-items: center; justify-content: center; border-radius: 32rpx; font-size: 26rpx; color: var(--t2); }
 .seg-item--on { background: var(--brand); color: #FFFFFF; font-weight: 500; }
 .filters { margin: 20rpx 32rpx 0; display: flex; align-items: center; gap: 28rpx; font-size: 26rpx; }
 .today { margin-left: auto; font-size: 24rpx; color: var(--t3); }
@@ -25,7 +25,7 @@
 .item-top { display: flex; align-items: center; gap: 16rpx; }
 .item-date { font-size: 32rpx; font-weight: 700; }
 .item-week { font-size: 26rpx; }
-.pill { margin-left: auto; height: 44rpx; padding: 0 16rpx; display: flex; align-items: center; border-radius: 22rpx; font-size: 24rpx; font-weight: 600; }
+.pill { margin-left: auto; min-height: 44rpx; padding: 4rpx 16rpx; box-sizing: border-box; display: flex; align-items: center; border-radius: 22rpx; font-size: 24rpx; font-weight: 600; }
 .pill--normal { background: var(--brand-tint); color: var(--brand); }
 .pill--soon { background: var(--brand-tint); color: var(--red); }
 .pill--urgent { background: var(--r-tint); color: var(--red); }

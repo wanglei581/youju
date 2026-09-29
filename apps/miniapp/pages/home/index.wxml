@@ -68,6 +68,7 @@
     </view>
   </view>
   <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
+  <view wx:if="{{!shown.length && !error}}" class="list-tip">{{loaded ? '最新的文件里暂时没有这一类' : '正在加载…'}}</view>
   <view class="more" bindtap="goMore">查看近 7 天的文件 <t-icon name="chevron-right" size="28rpx" /></view>
 </view>
 

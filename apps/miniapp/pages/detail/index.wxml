@@ -1,5 +1,6 @@
 <notice-bar />
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+<view wx:elif="{{!doc}}" class="card empty">正在加载…</view>
 <block wx:if="{{doc}}">
   <view class="card head">
     <view class="tags">
@@ -47,6 +48,19 @@
   <view wx:if="{{doc.excerpt}}" class="card">
     <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>
     <view class="excerpt">“{{doc.excerpt.text}}”</view>
+  </view>
+
+  <view wx:if="{{doc.body}}" class="card">
+    <view class="section-title">正文</view>
+    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期以上面核对过的为准。</view>
+    <block wx:if="{{doc.body.status === 'ok'}}">
+      <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
+      <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
+      <view wx:if="{{doc.body.truncated && (bodyOpen || !bodyFolded)}}" class="weak body-rest">后面还有约 {{bodyRest}} 字，请复制原文链接在浏览器查看。</view>
+    </block>
+    <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用"查名单"。</view>
+    <view wx:elif="{{doc.body.status === 'original'}}" class="muted body-none">这类文件的正文请复制原文链接在浏览器查看。</view>
+    <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
   </view>
 
   <view wx:if="{{doc.attachments.length}}" class="card">

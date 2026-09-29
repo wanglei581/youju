@@ -93,7 +93,7 @@ page {
 
 /* 主按钮：蓝色胶囊，高 44px */
 .btn-primary {
-  height: 88rpx;
+  min-height: 88rpx;
   display: flex;
   align-items: center;
   justify-content: center;

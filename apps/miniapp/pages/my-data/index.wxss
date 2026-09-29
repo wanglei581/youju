@@ -21,3 +21,4 @@
 .plain { padding: 4rpx 0 28rpx; font-size: 26rpx; line-height: 1.8; }
 
 .danger-btn { margin: 40rpx 24rpx 0; height: 88rpx; display: flex; align-items: center; justify-content: center; border-radius: 44rpx; border: 2rpx solid var(--red); color: var(--red); font-size: 30rpx; background: var(--card); }
+.loading-tip { padding: 40rpx 32rpx; text-align: center; font-size: 26rpx; }

@@ -3,7 +3,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(108rpx + env(safe-area-inset-bottom));
+  min-height: calc(108rpx + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   box-sizing: border-box;
   display: grid;
