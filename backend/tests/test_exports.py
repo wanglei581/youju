@@ -1,7 +1,10 @@
 """公开导出只包含归并后的题录、原文网址和人工核对字段。"""
 
+import json
+from collections import deque
 from datetime import UTC, date, datetime
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from docx import Document as WordDocument
@@ -201,3 +204,126 @@ def test_export_rejects_file_at_size_limit(client, docs, monkeypatch):
     monkeypatch.setattr(exports, "_xlsx", lambda items, stamp: b"x" * MAX_BYTES)
     response = client.post("/api/v1/exports", json={"ids": [str(docs[0])], "format": "xlsx"})
     assert response.status_code == 413
+
+
+def test_restricted_sources_are_not_exported_or_listed(client, docs, session):
+    """只有 2 级来源（只存题录）、没有 1 级副本的文件：搜索、详情、导出都当作没有。"""
+    restricted = Source(
+        level="省级",
+        province="辽宁",
+        dept="工信",
+        dept_full_name="某授权平台",
+        column_name="资讯",
+        url="https://example.gov.cn/zx/",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add(restricted)
+    session.flush()
+    now = datetime.now(UTC)
+    doc = Document(
+        source_id=restricted.id,
+        url="https://example.gov.cn/zx/1.html",
+        url_key="example.gov.cn/zx/1.html",
+        title="辽宁省关于组织申报智能制造项目的通知",
+        publish_date=date(2026, 9, 24),
+        first_seen_at=now,
+        last_seen_at=now,
+    )
+    session.add(doc)
+    session.commit()
+    exported = client.post("/api/v1/exports", json={"ids": [str(doc.id)], "format": "xlsx"})
+    assert exported.status_code == 422
+    assert exported.json()["detail"]["不存在的文件编号"] == [str(doc.id)]
+    assert client.get(f"/api/v1/documents/{doc.id}").status_code == 404
+    found = client.get("/api/v1/search", params={"q": "智能制造", "time": "不限"}).json()
+    assert found["total"] == 0
+
+
+def test_exports_are_rate_limited_per_user(client, docs, monkeypatch):
+    from youju.api import exports
+
+    original, _, _ = docs
+    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=2))
+    monkeypatch.setattr(
+        "youju.api.me.get_settings",
+        lambda: SimpleNamespace(trust_wx_headers=True, dev_openid=None),
+    )
+    body = {"ids": [str(original)], "format": "xlsx"}
+
+    def post(openid):
+        headers = {"X-WX-OPENID": openid, "X-WX-SOURCE": "wx"}
+        return client.post("/api/v1/exports", json=body, headers=headers).status_code
+
+    assert [post("o-a"), post("o-a"), post("o-a")] == [200, 200, 429]
+    assert post("o-b") == 200  # 别的用户不受影响
+
+
+def test_export_limits_evict_idle_callers_and_cap_each_instance(monkeypatch):
+    from youju.api import exports
+
+    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=2))
+    monkeypatch.setattr(exports, "_EXPORT_KEYS_MAX", 3)
+    monkeypatch.setattr(exports, "_EXPORTS_PER_INSTANCE", 5)
+    monkeypatch.setattr(exports, "_instance_times", deque())
+    now = 1000.0
+    assert [exports._allow_export("u:a", now), exports._allow_export("u:a", now)] == [None, None]
+    assert exports._allow_export("u:a", now) == "user"
+    for caller in ("u:b", "u:c", "u:d"):  # 记录超过上限：淘汰最久没导出的，不整个清空
+        assert exports._allow_export(caller, now + 1) is None
+    assert list(exports._export_times) == ["u:b", "u:c", "u:d"]
+    assert exports._allow_export("u:e", now + 2) == "busy"  # 这个实例 10 分钟已导出 5 次
+    assert exports._allow_export("u:e", now + 602) is None  # 过了 10 分钟又能导出
+
+
+def test_home_and_calendar_skip_restricted_sources(client, session, monkeypatch):
+    """首页的本周计数、最新文件和日历都不算只有 2 级来源的文件。"""
+    from youju.api import v1
+
+    monkeypatch.setattr(v1, "now", lambda: datetime(2026, 9, 29, 10, 0, tzinfo=UTC))
+    restricted = Source(
+        level="省级",
+        province="辽宁",
+        dept="工信",
+        dept_full_name="某授权平台",
+        column_name="资讯",
+        url="https://example.gov.cn/zx/",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add(restricted)
+    session.flush()
+    now = datetime.now(UTC)
+    doc = Document(
+        source_id=restricted.id,
+        url="https://example.gov.cn/zx/9.html",
+        url_key="example.gov.cn/zx/9.html",
+        title="辽宁省关于组织申报智能制造项目的通知",
+        publish_date=date(2026, 9, 29),
+        first_seen_at=now,
+        last_seen_at=now,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="r" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 10),
+            approved_date=date(2026, 10, 10),
+            evidence="请于10月10日前申报",
+            confidence="高",
+            status="approved",
+            reviewed_by="审阅人",
+            reviewed_at=now,
+        )
+    )
+    session.commit()
+    home = client.get("/api/v1/home").json()
+    assert home["stats"]["week_total"] == 0
+    assert all(item["id"] != str(doc.id) for item in home["items"])
+    calendar = json.dumps(client.get("/api/v1/calendar").json(), ensure_ascii=False)
+    assert "智能制造" not in calendar

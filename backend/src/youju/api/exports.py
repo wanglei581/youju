@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import threading
+import time as clock
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -11,7 +14,7 @@ from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from docx import Document as WordDocument
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -19,7 +22,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from youju.classify import doc_kind, list_status, region_label
+from youju.classify import effective_kind, list_status, region_label
+from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
@@ -83,8 +87,17 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
         else:
             valid.append((raw, int(raw)))
     parsed = [doc_id for _, doc_id in valid]
+    # 只导出可以公开的文件（和小程序列出的一致）；其他的当作不存在
+    from youju.api.v1 import public_condition
+
     found = (
-        set(session.scalars(select(Document.id).where(Document.id.in_(parsed))))
+        set(
+            session.scalars(
+                select(Document.id)
+                .join(Source, Document.source_id == Source.id)
+                .where(Document.id.in_(parsed), public_condition())
+            )
+        )
         if parsed
         else set()
     )
@@ -211,8 +224,8 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 number=index,
                 doc_id=master,
                 title=doc.title,
-                kind=doc_kind(doc.title),
-                status=list_status(doc.title) or "",
+                kind=effective_kind(doc.title, doc.kind_override),
+                status=list_status(doc.title, effective_kind(doc.title, doc.kind_override)) or "",
                 issuer=(best[1] if best and best[1] else source.dept_full_name),
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",
@@ -349,8 +362,70 @@ def _docx(items: list[ExportItem], stamp: str) -> bytes:
     return output.getvalue()
 
 
+# 导出在内存里生成文件：每个用户 10 分钟最多导出这么多次（YOUJU_EXPORTS_PER_10MIN），
+# 每个实例 10 分钟最多导出这么多次、同时最多生成 4 份——资源用量有硬上限（api 服务最多 3 个实例）
+_EXPORT_WINDOW = 600.0
+_EXPORTS_PER_INSTANCE = 300
+_EXPORT_KEYS_MAX = 10000
+_EXPORT_SLOTS_WAIT = 10.0
+_export_times: OrderedDict[str, deque[float]] = OrderedDict()
+_instance_times: deque[float] = deque()
+_export_guard = threading.Lock()
+_export_slots = threading.BoundedSemaphore(4)
+
+
+def _caller(request: Request) -> str:
+    """限流按谁算：小程序用户按 openid；取不到（本机开发）按来源地址。"""
+    from youju.api.me import request_openid
+
+    try:
+        return "u:" + request_openid(request)
+    except HTTPException:
+        return "ip:" + (request.client.host if request.client else "?")
+
+
+def _drop_old(times: deque[float], now: float) -> None:
+    while times and now - times[0] > _EXPORT_WINDOW:
+        times.popleft()
+
+
+def _allow_export(caller: str, now: float) -> str | None:
+    """能导出返回 None，不能就返回原因：user（这个用户导出太频繁）/ busy（这个实例导出太多）。"""
+    limit = get_settings().exports_per_10min
+    with _export_guard:
+        _drop_old(_instance_times, now)
+        if len(_instance_times) >= _EXPORTS_PER_INSTANCE:
+            return "busy"
+        times = _export_times.get(caller) or deque()
+        _drop_old(times, now)
+        if len(times) >= limit:
+            return "user"  # 被拒的不更新先后顺序，免得借此把别人的记录挤出去
+        times.append(now)
+        _export_times[caller] = times
+        _export_times.move_to_end(caller)  # 放到最后：按最近成功导出的先后排
+        _instance_times.append(now)
+        # 记录太多时淘汰最久没导出的（不整个清空，别人没法借此重置某个用户的次数）
+        while len(_export_times) > _EXPORT_KEYS_MAX:
+            _export_times.popitem(last=False)
+        return None
+
+
 @router.post("/exports")
-def export_documents(payload: ExportIn, session: SessionDep) -> Response:
+def export_documents(payload: ExportIn, session: SessionDep, request: Request) -> Response:
+    refused = _allow_export(_caller(request), clock.monotonic())
+    if refused == "user":
+        raise HTTPException(status_code=429, detail="导出太频繁，请 10 分钟后再试")
+    if refused == "busy":
+        raise HTTPException(status_code=503, detail="现在导出的人多，请稍后再试")
+    if not _export_slots.acquire(timeout=_EXPORT_SLOTS_WAIT):
+        raise HTTPException(status_code=503, detail="现在导出的人多，请稍后再试")
+    try:
+        return _export(payload, session)
+    finally:
+        _export_slots.release()
+
+
+def _export(payload: ExportIn, session: Session) -> Response:
     items = _items(session, payload.ids)
     stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
     data = _xlsx(items, stamp) if payload.format == "xlsx" else _docx(items, stamp)

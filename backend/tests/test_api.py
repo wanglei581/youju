@@ -708,6 +708,10 @@ def test_role_guard_and_admin_throttle(client, seeded, monkeypatch, caplog, tmp_
     assert client.get("/admin/review").status_code == 404
     assert client.get("/api/admin/deadlines/count").status_code == 404
     assert client.get("/api/v1/home").status_code == 200
+    # api 服务只开放 /api/v1/ 和健康检查：早期样机的接口不对外
+    for old in ("/api/documents", "/api/documents/1", "/api/sources", "/api/stats"):
+        assert client.get(old).status_code == 404, old
+    assert client.get("/api/lists/search", params={"q": "科技有限公司"}).status_code == 404
     settings["role"] = "admin"
     assert client.get("/api/v1/home").status_code == 404
     assert client.get("/api/documents").status_code == 404

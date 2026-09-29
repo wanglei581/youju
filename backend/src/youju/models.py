@@ -3,6 +3,7 @@
 from datetime import date, datetime, time
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -17,12 +18,18 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from youju.classify import doc_kind
 from youju.dbtypes import NOW, JSONType, LongText, UTCDateTime
 
 # 网址类字段参与唯一索引，MySQL 要求定长：utf8mb4 每字 4 字节，一个索引总长不超过 3072 字节。
 # 名单记录的唯一索引含网址、名称（256）和序号（32），所以网址最长 400；开发库里最长的是 307。
 URL_KEY_MAX = 512
 SOURCE_URL_MAX = 400
+
+
+def _rule_kind(context) -> str:
+    """入库时按标题规则算好类型（ORM 和批量插入都会调用），筛选时只比较这一列。"""
+    return doc_kind(context.get_current_parameters().get("title") or "")
 
 
 class Base(DeclarativeBase):
@@ -100,6 +107,10 @@ class Document(Base):
         Index("ix_documents_first_seen_at", "first_seen_at"),
         Index("ix_documents_source_id", "source_id"),
         # 标题模糊搜索是 LIKE '%词%' 全表扫描：几万份文件以内足够快，不再建索引
+        CheckConstraint(
+            "kind_override IS NULL OR kind_override IN ('申报通知', '名单', '政策', '其他')",
+            name="ck_document_kind_override",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -118,6 +129,13 @@ class Document(Base):
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
     # discovered：只有题录；fetched：详情抓取成功；后续可加入 extracted 等状态
     status: Mapped[str] = mapped_column(String(16), default="discovered")
+    # 人工定的类型：AI 和标题规则判断不一致时，在核对台选定（D-023）。有值时给用户看这个
+    kind_override: Mapped[str | None] = mapped_column(String(8))
+    # 按标题规则算出的类型（申报通知 / 名单 / 政策 / 其他）：入库时算好；规则改了由 youju reclassify
+    # 重算（admin 服务每次启动时跑）。用户看到的类型 = 人工定的，没定过的按这一列
+    rule_kind: Mapped[str | None] = mapped_column(String(8), default=_rule_kind)
+    kind_decided_by: Mapped[str | None] = mapped_column(String(80))
+    kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
@@ -213,6 +231,11 @@ class DocumentDeadline(Base):
             " AND changed_to_document_id IS NOT NULL)",
             name="ck_document_deadline_changed",
         ),
+        CheckConstraint("origin IN ('rule', 'ai')", name="ck_document_deadline_origin"),
+        CheckConstraint(
+            "audit_state IS NULL OR audit_state IN ('flagged', 'cleared', 'reopened')",
+            name="ck_document_deadline_audit_state",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -237,10 +260,61 @@ class DocumentDeadline(Base):
     changed_by: Mapped[str | None] = mapped_column(String(80))
     changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    # 候选从哪来：rule（规则抽取）/ ai（规则没找到、AI 找到的）。AI 找到的也要人工核对
+    origin: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
+    ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
+    # 质检：flagged 已通过但存疑、等人复核 / cleared 人确认无误 / reopened 质检退回、回到待核对，
+    # 必须由人重新核对（不按同组已通过自动沿用，也不按导入结果通过）；空表示没发现问题。
+    # audit_note 存疑原因；audit_at 最近一次质检的时间（AI 抽查过、标存疑、复核或退回）
+    audit_state: Mapped[str | None] = mapped_column(String(8))
+    audit_note: Mapped[str | None] = mapped_column(String(200))
+    audit_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    audit_by: Mapped[str | None] = mapped_column(String(80))
 
     document: Mapped[Document] = relationship(
         back_populates="deadlines", foreign_keys=[document_id]
     )
+
+
+class AICheck(Base):
+    """AI 对一份文件做过的一项检查（kind 类型判断 / deadlines 截止抽取）：结果、用量和出错原因。
+
+    每份文件每项只留最新一次；出错的隔一段时间重试。只发政府公开文件给 AI，不含用户数据。
+    """
+
+    __tablename__ = "ai_checks"
+    __table_args__ = (UniqueConstraint("document_id", "task", name="uq_ai_check_task"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    task: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict | list | None] = mapped_column(JSONType)
+    error: Mapped[str | None] = mapped_column(String(200))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIUsage(Base):
+    """AI 用量台账：每天（北京时间）、每项任务、每个模型的调用次数、出错次数和 tokens。
+
+    AICheck 每份文件每项只留最新一次，名单认列也不留检查记录，所以另记台账；
+    运维日报据此报用量和费用。
+    """
+
+    __tablename__ = "ai_usage"
+    __table_args__ = (UniqueConstraint("day", "task", "model", name="uq_ai_usage_day_task_model"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date)
+    task: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(64))
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ListParse(Base):
@@ -348,6 +422,10 @@ class Feedback(Base):
     check_result: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 纠错分诊（D-023）：规则和 AI 复查对应文件已发布的截止日期的结果，给处理的人看；
+    # 用户写的内容不发给 AI
+    triage_note: Mapped[str | None] = mapped_column(String(300))
+    triaged_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Event(Base):
@@ -358,4 +436,50 @@ class Event(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(32))
     props: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class AccessLog(Base):
+    """网络日志（《网络安全法》要求留存不少于六个月）：每次请求一条，健康检查除外。
+
+    这张表只是暂存：每天把前一天的归档到云托管对象存储后删掉，归档保留 190 天
+    （youju/access_log.py）；不进数据库备份。只记最少的字段：不记查询参数和请求内容
+    （检索词、企业名称都不记），用户只记去标识化的编号。
+    """
+
+    __tablename__ = "access_logs"
+    __table_args__ = (
+        Index("ix_access_logs_logged_at", "logged_at"),
+        UniqueConstraint("rid", name="uq_access_logs_rid"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # 这条记录的随机编号（128 位）：写库失败后补写时，同一条不会写进两次
+    rid: Mapped[str] = mapped_column(String(32))
+    # 请求处理完、写日志的时间
+    at: Mapped[datetime] = mapped_column(UTCDateTime())
+    # 写进数据库的时间（数据库的时钟）：每天按它归档，写库失败后补写的记录归进补写那天
+    logged_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    service: Mapped[str] = mapped_column(String(8))
+    method: Mapped[str] = mapped_column(String(8))
+    # 只有路径，不含问号后面的查询参数
+    path: Mapped[str] = mapped_column(String(200))
+    status: Mapped[int] = mapped_column(Integer)
+    # 开始处理到返回响应头的毫秒数
+    ms: Mapped[int] = mapped_column(Integer)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    # 小程序用户：openid 用程序自己的密钥做 HMAC 后的前 16 位（见 AppKey），不是 openid 本身
+    uid: Mapped[str | None] = mapped_column(String(16))
+    # 核对台操作：做了什么、对哪条记录（操作人、编号、条数），见 api/app.py 的 _audit
+    detail: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class AppKey(Base):
+    """程序自己生成、自己用的密钥（如访问日志里用户编号的去标识化密钥）：第一次用到时随机生成，
+    随数据库备份。不用人配置，也不出现在日志里。"""
+
+    __tablename__ = "app_keys"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

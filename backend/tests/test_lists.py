@@ -423,3 +423,14 @@ def test_direct_old_doc_is_unsupported_without_fetch(session) -> None:
     report = parse_lists(session, fetcher=fake)
     assert report.failures == {"暂不支持旧版或专有格式": 1}
     assert fake.calls == []
+
+
+def test_cells_drop_line_breaks_inside_chinese_names() -> None:
+    """表格格子里名称折行（PDF 表格常见），读出来不要留空格；英文名称里的空格保留。"""
+    from youju.lists.parser import _cell
+
+    assert _cell("广睿创业服务有限\n公司") == "广睿创业服务有限公司"
+    assert _cell("襄阳捌捌零网络科技有限 公司") == "襄阳捌捌零网络科技有限公司"
+    assert _cell("ABC Technology Co., Ltd.") == "ABC Technology Co., Ltd."
+    assert _cell(" 北京\xa0某某 科技 （中国） 有限公司 ") == "北京某某科技 （中国） 有限公司"
+    assert _cell(12.0) == "12" and _cell(None) == ""

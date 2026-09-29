@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -13,25 +15,40 @@ from datetime import UTC, date, datetime, time, timedelta
 from hmac import compare_digest
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
+from youju import access_log
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
-from youju.classify import list_status
+from youju.classify import doc_kind, effective_kind, list_status
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
-from youju.models import Document, DocumentDeadline, DocumentDetail, Feedback, ListEntry, Source
+from youju.models import (
+    URL_KEY_MAX,
+    AICheck,
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    Feedback,
+    ListEntry,
+    Source,
+)
+from youju.sources.onboard import MIN_ITEMS
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -105,16 +122,58 @@ async def _server_error(request: Request, exc: Exception) -> JSONResponse:
 
 @app.middleware("http")
 async def _role_guard(request: Request, call_next):
-    """按部署角色开放路径：api 服务不开放核对台和管理接口，admin 服务不开放小程序接口（见 #32）。"""
+    """按部署角色开放路径（白名单）：api 服务只开放小程序接口（/api/v1/）和健康检查，
+    admin 服务只开放核对台、管理接口和健康检查；其余一律 404
+    （早期样机的 /api/documents 等不对外）。"""
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
-    blocked = (role == "api" and admin_path) or (
+    mini_path = path.startswith("/api/v1/")
+    blocked = (role == "api" and not (mini_path or path == "/health")) or (
         role == "admin" and not (admin_path or path == "/health")
     )
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return await call_next(request)
+
+
+def _openid_or_none(request: Request) -> str | None:
+    from youju.api.me import request_openid
+
+    try:
+        return request_openid(request)
+    except HTTPException:
+        return None
+
+
+@app.middleware("http")
+async def _access_log(request: Request, call_next):
+    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外；放在最外层，
+    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
+    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。"""
+    path = request.url.path
+    if path == "/health":
+        return await call_next(request)
+    started = clock.monotonic()
+    entry = {
+        "service": getattr(get_settings(), "role", "all"),
+        "method": request.method[:8],
+        "path": _printable(path, 190),
+        "ip": client_ip(request)[:64] or None,
+        "openid": _openid_or_none(request),
+    }
+    try:
+        response = await call_next(request)
+    except Exception:
+        entry.update(status=500, ms=int((clock.monotonic() - started) * 1000))
+        entry["detail"] = getattr(request.state, "audit", None)
+        await run_in_threadpool(access_log.write, entry)
+        raise
+    entry.update(status=response.status_code, ms=int((clock.monotonic() - started) * 1000))
+    entry["detail"] = getattr(request.state, "audit", None)
+    # call_next 返回的响应本身不带后台任务（接口自己的后台任务在里层已经跑过）
+    response.background = BackgroundTask(access_log.write, entry)
+    return response
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -194,6 +253,11 @@ class PendingDeadlineOut(BaseModel):
     candidate_time: str | None
     evidence: str
     confidence: str
+    # rule：规则抽出；ai：规则没找到、AI 找到的。ai_agrees：规则候选里 AI 是否也找到了同一天
+    origin: str = "rule"
+    ai_agrees: bool | None = None
+    # 质检退回的：当时的存疑原因（重新核对时要看）
+    reopen_note: str | None = None
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -240,6 +304,9 @@ class FeedbackOut(BaseModel):
     docTitle: str | None
     docUrl: str | None
     handledAt: datetime | None
+    # 纠错分诊：规则和 AI 复查对应文件已发布截止日期的结果（还没分诊时为空）
+    triageNote: str | None = None
+    triagedAt: datetime | None = None
 
 
 class UnchangeIn(BaseModel):
@@ -324,7 +391,7 @@ def _list_match(
         credit_code=entry.credit_code,
         category=entry.category,
         batch=entry.batch,
-        status=list_status(doc.title),
+        status=list_status(doc.title, effective_kind(doc.title, doc.kind_override)),
         publish_date=(detail.publish_date if detail else None) or doc.publish_date,
         issuer=detail.issuer if detail else None,
         original_url=doc.url,
@@ -579,9 +646,13 @@ def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header
 
 
 def _audit(request: Request, action: str, **fields: object) -> None:
-    """核对台操作留痕（操作人、来源、时间），打到日志，按网络日志留存要求保存（见部署说明）。"""
+    """核对台操作留痕（操作人、来源、时间）：打到日志，同时记进访问日志，按网络日志留存要求保存。"""
     record = {"event": "admin", "action": action, "ip": client_ip(request), **fields}
     audit_log.info(json.dumps(record, ensure_ascii=False, default=str))
+    # 同时记进这次请求的访问日志（保存 190 天）；来源 IP 访问日志里已有
+    request.state.audit = json.loads(
+        json.dumps({"action": action, **fields}, ensure_ascii=False, default=str)
+    )
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]
@@ -653,6 +724,569 @@ def feedback_console() -> str:
     )
 
 
+KINDS = ("申报通知", "名单", "政策", "其他")
+
+
+class KindPendingOut(BaseModel):
+    """AI 和标题规则判断不一致、等人定类型的文件。"""
+
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+    rule_kind: str
+    ai_kind: str
+    ai_reason: str
+    ai_confidence: float
+    # 人工已定的类型（只在"全部"里出现）
+    decided: str | None
+    decided_by: str | None
+
+
+class KindDecisionIn(BaseModel):
+    kind: Literal["申报通知", "名单", "政策", "其他"]
+    decided_by: str = Field(min_length=1, max_length=80)
+
+
+def _kind_disagreements(session: Session, include_decided: bool) -> list[KindPendingOut]:
+    """AI 判断成功、且和标题规则不一致的文件（同一通知的其他网址不重复列），新的在前。"""
+    rows = session.execute(
+        visible_documents(
+            select(Document, Source, AICheck)
+            .join(Source, Source.id == Document.source_id)
+            .join(
+                AICheck,
+                and_(
+                    AICheck.document_id == Document.id,
+                    AICheck.task == "kind",
+                    AICheck.error.is_(None),
+                ),
+            )
+        ).order_by(Document.id.desc())
+    ).all()
+    out: list[KindPendingOut] = []
+    for doc, src, check in rows:
+        result = check.result if isinstance(check.result, dict) else {}
+        ai_kind = result.get("kind")
+        rule_kind = doc_kind(doc.title)
+        if ai_kind not in KINDS or ai_kind == rule_kind:
+            continue
+        if doc.kind_override is not None and not include_decided:
+            continue
+        out.append(
+            KindPendingOut(
+                id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                rule_kind=rule_kind,
+                ai_kind=ai_kind,
+                ai_reason=str(result.get("reason", "")),
+                ai_confidence=float(result.get("confidence") or 0),
+                decided=doc.kind_override,
+                decided_by=doc.kind_decided_by,
+            )
+        )
+    return out
+
+
+@app.get("/api/admin/kinds/count")
+def kinds_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    return {"pending": len(_kind_disagreements(session, include_decided=False))}
+
+
+@app.get("/api/admin/kinds", response_model=list[KindPendingOut])
+def admin_kinds(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "all"] = "pending",
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[KindPendingOut]:
+    items = _kind_disagreements(session, include_decided=status == "all")
+    if before_id is not None:
+        items = [item for item in items if item.id < before_id]
+    return items[:limit]
+
+
+@app.post("/api/admin/documents/{document_id}/kind")
+def decide_kind(
+    document_id: int,
+    body: KindDecisionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """人工定类型：给用户看的类型、筛选和名单解析都按这个。"""
+    doc = session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    doc.kind_override = body.kind
+    doc.kind_decided_by = body.decided_by
+    doc.kind_decided_at = datetime.now(UTC)
+    session.commit()
+    _audit(request, "kind_decide", document_id=document_id, kind=body.kind, by=body.decided_by)
+    return {"kind": body.kind}
+
+
+@app.post("/api/admin/documents/{document_id}/kind/undo")
+def undo_kind(
+    document_id: int, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    """撤回人工定的类型，回到按标题规则判断。"""
+    doc = session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    doc.kind_override = None
+    doc.kind_decided_by = None
+    doc.kind_decided_at = None
+    session.commit()
+    _audit(request, "kind_undo", document_id=document_id)
+    return {"kind": doc_kind(doc.title)}
+
+
+@app.get("/admin/kinds", response_class=HTMLResponse, include_in_schema=False)
+def kinds_console() -> str:
+    """类型待定：AI 和标题规则判断不一致的文件由人定类型；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "kinds.html").read_text(
+        encoding="utf-8"
+    )
+
+
+class AuditFlagOut(BaseModel):
+    """质检存疑：已发布给用户的截止，被规则或 AI 标为可能有误，等人复核。"""
+
+    id: int
+    document_id: int
+    title: str
+    url: str
+    source: str
+    publish_date: date | None
+    kind: str
+    approved_date: date
+    approved_time: str | None
+    evidence: str
+    note: str
+    flagged_at: datetime | None
+
+
+class AuditActionIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
+
+
+def _audit_flagged(session: Session):
+    return (
+        select(DocumentDeadline, Document, Source)
+        .join(Document, Document.id == DocumentDeadline.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(DocumentDeadline.status == "approved", DocumentDeadline.audit_state == "flagged")
+    )
+
+
+@app.get("/api/admin/audit/count")
+def audit_flagged_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    stmt = select(func.count()).select_from(_audit_flagged(session).subquery())
+    return {"flagged": session.scalar(stmt) or 0}
+
+
+@app.get("/api/admin/audit", response_model=list[AuditFlagOut])
+def audit_flagged(
+    session: SessionDep,
+    _admin: AdminDep,
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[AuditFlagOut]:
+    stmt = _audit_flagged(session)
+    if before_id is not None:
+        stmt = stmt.where(DocumentDeadline.id < before_id)
+    rows = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+    return [
+        AuditFlagOut(
+            id=d.id,
+            document_id=doc.id,
+            title=doc.title,
+            url=doc.url,
+            source=src.dept_full_name,
+            publish_date=doc.publish_date,
+            kind=d.kind,
+            approved_date=d.approved_date,
+            approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
+            evidence=d.evidence,
+            note=d.audit_note or "",
+            flagged_at=d.audit_at,
+        )
+        for d, doc, src in rows
+    ]
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/audit-ok")
+def audit_ok(
+    deadline_id: int,
+    body: AuditActionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """人复核后确认无误：不再标存疑（存疑原因保留备查）。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    if row.audit_state != "flagged":
+        raise HTTPException(status_code=409, detail="这条不在质检存疑里")
+    row.audit_state = "cleared"
+    row.audit_by = body.reviewed_by
+    row.audit_at = datetime.now(UTC)
+    session.commit()
+    _audit(request, "audit_ok", deadline_id=deadline_id, reviewer=body.reviewed_by)
+    return {"audit": "cleared"}
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/reopen")
+def reopen_deadline(
+    deadline_id: int,
+    body: AuditActionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，必须由人重新核对。
+    归并组里同一截止（类型、核定日期和时间相同）已通过的副本一起退回：用户端显示的是同一个截止，
+    只退一条的话其他副本照样显示。已标变更的不能退回。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    group = _lock_group(session, row)
+    if row.status != "approved":
+        raise HTTPException(status_code=409, detail="只有已通过的截止能退回待核对")
+    note = row.audit_note if row.audit_state == "flagged" and row.audit_note else "人工退回"
+    now = datetime.now(UTC)
+    reopened = 0
+    for item in group:
+        if item.status != "approved":
+            continue
+        item.status = "pending"
+        item.reviewed_by = None
+        item.reviewed_at = None
+        item.approved_date = None
+        item.approved_time = None
+        item.audit_state = "reopened"
+        item.audit_note = note
+        item.audit_at = now
+        item.audit_by = body.reviewed_by
+        reopened += 1
+    session.commit()
+    _audit(request, "reopen", deadline_id=deadline_id, reviewer=body.reviewed_by, count=reopened)
+    return {"status": "pending"}
+
+
+@app.get("/admin/audit", response_class=HTMLResponse, include_in_schema=False)
+def audit_console() -> str:
+    """质检存疑：已发布的截止被规则或 AI 标为可能有误，人复核；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "audit.html").read_text(
+        encoding="utf-8"
+    )
+
+
+# ---------- 来源接入（D-023 来源接入 Agent）：试跑 → 人确认 → 接入 ----------
+
+# 同一网站两次试跑至少间隔这么久（秒）：试跑由人点按钮触发，也不能连续打扰对方网站。
+# admin 服务固定 1 个实例，进程内记录即可；试跑中的重定向每一跳由抓取器按 3 秒限速
+_TRIAL_INTERVAL = 10.0
+_trial_hosts: dict[str, float] = {}
+_trial_guard = threading.Lock()
+# 试跑凭证有效期（秒）：接入时必须带上试跑给出的凭证，证明这个网址和规则确实试跑通过
+_TRIAL_TTL = 1800
+# 接入来源时等别人接入完成最多等多久（秒）
+_CREATE_LOCK_WAIT = 10
+
+
+class SourceTrialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    url: str = Field(min_length=8, max_length=URL_KEY_MAX)
+    # 通用规则识别出来了，人仍想看看 AI 写的抓取规则
+    ai_rule: bool = False
+
+
+class TrialItemOut(BaseModel):
+    title: str
+    url: str
+    publish_date: date | None
+
+
+class SourceTrialOut(BaseModel):
+    url: str
+    final_url: str
+    status: str
+    error: str | None
+    ai_enabled: bool
+    generic_count: int
+    generic: list[TrialItemOut]
+    ai_config: dict[str, str] | None
+    ai_count: int
+    ai_items: list[TrialItemOut]
+    ai_note: str | None
+    proposal: dict[str, str]
+    # 试跑通过的规则各给一张凭证（识别出至少 3 条带日期的条目才给），接入时带上
+    generic_token: str | None = None
+    ai_token: str | None = None
+
+
+class SourceCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    url: str = Field(min_length=8, max_length=URL_KEY_MAX)
+    level: Literal["国家级", "省级", "市级"]
+    province: str
+    dept: str = Field(min_length=1, max_length=32)
+    dept_full_name: str = Field(min_length=2, max_length=128)
+    column_name: str = Field(min_length=2, max_length=64)
+    # 空：用通用规则；否则是试跑时 AI 写、人确认过的 CSS 选择器
+    parser_config: dict[str, str] = Field(default_factory=dict)
+    trial_token: str = Field(min_length=10, max_length=200)
+    reviewed_by: str = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SourceCreateIn:
+        from youju.sources.onboard import PROVINCES, valid_config
+
+        if self.province not in PROVINCES:
+            raise ValueError('省份要从列表里选（国家部委选"国家"）')
+        if (self.level == "国家级") != (self.province == "国家"):
+            raise ValueError('国家级来源的省份填"国家"，其他层级要选具体省份')
+        if self.parser_config and valid_config(self.parser_config) is None:
+            raise ValueError("抓取规则只能是合法的 CSS 选择器（item_selector 必填）")
+        return self
+
+
+def _source_url(url: str) -> str:
+    """校验并规范化栏目网址（去掉 #片段、协议和域名小写）；格式不对或不是政府网站返回 422。"""
+    from youju.crawler.detail_service import _government_url
+    from youju.crawler.urls import normalize_url
+
+    raw = url.strip()
+    try:
+        parts = urlsplit(raw)
+        parts.port  # noqa: B018  端口不合法时这里报错
+        normalized = normalize_url(raw, raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="网址格式不对") from exc
+    if (
+        not normalized
+        or parts.scheme.lower() not in ("http", "https")
+        or not _government_url(normalized)
+    ):
+        raise HTTPException(status_code=422, detail="只接政府网站（域名以 .gov.cn 结尾）的栏目网址")
+    return normalized
+
+
+def _existing_source(session: Session, url: str) -> int | None:
+    """已有来源里同一栏目的编号：按抓取去重用的规范键比，
+    index.html 和目录、http 和 https 算同一个。"""
+    from youju.crawler.urls import url_key
+
+    key = url_key(url)
+    for source_id, source_url in session.execute(select(Source.id, Source.url)):
+        try:
+            if url_key(source_url) == key:
+                return source_id
+        except ValueError:
+            continue
+    return None
+
+
+@contextlib.contextmanager
+def _source_create_lock(session: Session):
+    """接入来源时查重和写入串行做（MySQL 命名锁，另开一个连接持有）：同一栏目的两种写法
+    （index.html 和目录）同时接入时，后一个等前一个提交后再查重。"""
+    with session.get_bind().connect() as conn:
+        got = conn.execute(
+            text("SELECT GET_LOCK('youju_source_create', :wait)"), {"wait": _CREATE_LOCK_WAIT}
+        ).scalar()
+        if got != 1:
+            raise HTTPException(status_code=503, detail="有人正在接入来源，请稍后再试")
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+
+
+def _trial_mac(url: str, config: dict[str, str], issued: int) -> str:
+    secret = hmac.new(
+        (get_settings().admin_token or "").encode(), b"youju-source-trial", hashlib.sha256
+    ).digest()
+    payload = json.dumps(
+        {"url": url, "config": config, "issued": issued},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _trial_token(url: str, config: dict[str, str]) -> str:
+    issued = int(clock.time())
+    return f"{issued}.{_trial_mac(url, config, issued)}"
+
+
+def _trial_passed(token: str, url: str, config: dict[str, str]) -> bool:
+    """凭证是试跑给这个网址、这套规则的，且没过期。"""
+    issued_text, _, mac = token.partition(".")
+    try:
+        issued = int(issued_text)
+    except ValueError:
+        return False
+    if not 0 <= clock.time() - issued <= _TRIAL_TTL:
+        return False
+    return compare_digest(mac, _trial_mac(url, config, issued))
+
+
+def _trial_fetcher():
+    from youju.sources.onboard import trial_fetcher
+
+    return trial_fetcher()
+
+
+def _items_out(items) -> list[TrialItemOut]:
+    return [TrialItemOut(title=i.title, url=i.url, publish_date=i.publish_date) for i in items]
+
+
+@app.post("/api/admin/sources/trial", response_model=SourceTrialOut)
+def source_trial(
+    body: SourceTrialIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> SourceTrialOut:
+    """来源接入第一步：试跑一个栏目（抓一次列表页、识别条目、给出登记建议），不写数据库。"""
+    from youju.ai import get_chat_client
+    from youju.sources.onboard import trial
+
+    url = _source_url(body.url)
+    existing = _existing_source(session, url)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"这个栏目已经在来源里（编号 {existing}）")
+    host = urlsplit(url).hostname or ""
+    now = clock.monotonic()
+    with _trial_guard:
+        if len(_trial_hosts) > 1000:
+            _trial_hosts.clear()
+        last = _trial_hosts.get(host)
+        if last is not None and now - last < _TRIAL_INTERVAL:
+            raise HTTPException(status_code=429, detail="同一网站 10 秒内只试跑一次，请稍后再试")
+        _trial_hosts[host] = now
+    session.commit()  # 抓取可能要几十秒，期间不占着数据库事务
+    client = get_chat_client()
+    try:
+        with _trial_fetcher() as fetcher:
+            result = trial(url, fetcher, client, want_ai_rule=body.ai_rule)
+    finally:
+        if client is not None:
+            try:
+                if client.totals["calls"]:
+                    from youju.ai.usage import record_usage
+
+                    record_usage(session, client, "onboard")
+            except Exception:
+                session.rollback()
+                audit_log.exception("AI 用量记账失败（onboard）")
+            finally:
+                client.close()
+    _audit(
+        request,
+        "source_trial",
+        url=url,
+        status=result.status,
+        generic=len(result.generic),
+        ai=len(result.ai_items),
+    )
+    proposal = result.proposal
+    ok = result.status == "ok"
+    return SourceTrialOut(
+        url=url,
+        final_url=result.final_url,
+        status=result.status,
+        error=result.error,
+        ai_enabled=client is not None,
+        generic_count=len(result.generic),
+        generic=_items_out(result.generic[:10]),
+        ai_config=result.ai_config,
+        ai_count=len(result.ai_items),
+        ai_items=_items_out(result.ai_items[:10]),
+        ai_note=result.ai_note,
+        proposal={
+            "level": proposal.level,
+            "province": proposal.province,
+            "dept": proposal.dept,
+            "dept_full_name": proposal.dept_full_name,
+            "column_name": proposal.column_name,
+        },
+        generic_token=_trial_token(url, {}) if ok and len(result.generic) >= MIN_ITEMS else None,
+        ai_token=_trial_token(url, result.ai_config) if ok and result.ai_config else None,
+    )
+
+
+@app.post("/api/admin/sources", status_code=201)
+def create_source(
+    body: SourceCreateIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, int]:
+    """来源接入第二步：人看过试跑结果、核对过登记信息后接入。下一轮定时抓取开始检查，
+    第一次抓到的条目算基线，不当作新文件提醒用户。"""
+    from youju.sources.onboard import valid_config
+
+    url = _source_url(body.url)
+    config = valid_config(body.parser_config) if body.parser_config else {}
+    if not _trial_passed(body.trial_token, url, config):
+        raise HTTPException(
+            status_code=422,
+            detail="请先试跑这个网址，用试跑通过的规则接入（试跑结果 30 分钟内有效）",
+        )
+    with _source_create_lock(session):
+        session.rollback()  # 拿到锁后重新开事务，读到别人刚提交的来源
+        if _existing_source(session, url) is not None:
+            raise HTTPException(status_code=409, detail="这个栏目已经在来源里")
+        source_id = _insert_source(session, body, url, config)
+    _audit(
+        request,
+        "source_create",
+        source_id=source_id,
+        url=url,
+        reviewer=body.reviewed_by,
+        parser_config=config,
+    )
+    return {"id": source_id}
+
+
+def _insert_source(session: Session, body: SourceCreateIn, url: str, config: dict) -> int:
+    source = Source(
+        url=url,
+        level=body.level,
+        province=body.province,
+        dept=body.dept.strip(),
+        dept_full_name=body.dept_full_name.strip(),
+        column_name=body.column_name.strip(),
+        fetch_mode="static",
+        enabled=True,
+        parser_config=config,
+        rights_level=1,
+        verification_status=f"已验证（后台接入，{body.reviewed_by}）"[:64],
+        verified_on=v1_api.now().date(),
+        note="来源接入：试跑后由人确认接入" + ("，用 AI 写的抓取规则" if config else ""),
+    )
+    session.add(source)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="这个栏目已经在来源里") from exc
+    return source.id
+
+
+@app.get("/admin/sources", response_class=HTMLResponse, include_in_schema=False)
+def sources_console() -> str:
+    """来源接入：输入栏目网址试跑，看识别结果、核对登记信息后接入；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "sources.html").read_text(
+        encoding="utf-8"
+    )
+
+
 @app.get("/api/admin/feedback/count")
 def feedback_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
     return {
@@ -697,6 +1331,8 @@ def admin_feedback(
                 docTitle=doc.title if doc else None,
                 docUrl=doc.url if doc else None,
                 handledAt=row.handled_at,
+                triageNote=row.triage_note,
+                triagedAt=row.triaged_at,
             )
         )
     return result
@@ -782,6 +1418,9 @@ def pending_deadlines(
             candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
             evidence=d.evidence,
             confidence=d.confidence,
+            origin=d.origin,
+            ai_agrees=d.ai_agrees,
+            reopen_note=d.audit_note if d.audit_state == "reopened" else None,
         )
         for d, doc, src in rows
     ]
@@ -820,12 +1459,17 @@ def _apply_review(
     approved_date: date | None = None,
     approved_time: time | None = None,
 ) -> None:
-    """把核对结果写到这条候选和归并组里还没核对的同一候选副本上（免得重复核对）；不提交。"""
+    """把核对结果写到这条候选和归并组里还没核对的同一候选副本上（免得重复核对）；不提交。
+    重新核对过了，质检退回的标记一并清掉：通过的以后照常质检。"""
     twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     for item in {row, *twins}:
         item.status = status
         item.reviewed_by = reviewed_by
         item.reviewed_at = reviewed_at
+        item.audit_state = None
+        item.audit_note = None
+        item.audit_at = None
+        item.audit_by = None
         if status == "approved":
             item.approved_date = approved_date
             item.approved_time = approved_time
@@ -1253,6 +1897,11 @@ def import_reviews(
                 counts["already"] += 1
             else:
                 problem("conflict", item, "这边已核对，结果不同，未覆盖")
+            continue
+        if any(d.status == "pending" and d.audit_state == "reopened" for d in locked):
+            problem(
+                "conflict", item, "这边质检退回了这条截止，要在核对台重新核对，不按导入结果通过"
+            )
             continue
         if item.status == "changed":
             try:

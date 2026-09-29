@@ -22,3 +22,7 @@ GRANT INSERT, UPDATE, DELETE ON youju.follows TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.subscriptions TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.feedback TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.events TO 'youju_api'@'%';
+-- 访问日志（网络日志留存）：只能新增，不能改、删（归档和删除由 admin 服务做）
+GRANT INSERT ON youju.access_logs TO 'youju_api'@'%';
+-- 访问日志用户编号的密钥：库里还没有时第一次用到的服务生成；只能新增，改不了已有的
+GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';

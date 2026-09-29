@@ -17,10 +17,13 @@ ENV TZ=Asia/Shanghai \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# 系统时区也设成北京时间：cron 按系统时区排定时任务（每天 4 轮抓取、4 点备份），不依赖环境变量传到 cron 进程
 RUN sed -i "s#deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends cron tzdata \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo Asia/Shanghai > /etc/timezone
 
 WORKDIR /app/backend
 # 依赖：按锁文件导出固定版本和哈希，再用腾讯云 PyPI 源安装并校验哈希（镜像上的文件与官方一致，哈希对得上；

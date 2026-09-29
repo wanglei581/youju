@@ -1,5 +1,5 @@
 <notice-bar />
-<view wx:if="{{error}}" class="card empty">{{error}}</view>
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 <block wx:if="{{doc}}">
   <view class="card head">
     <view class="tags">

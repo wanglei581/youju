@@ -30,6 +30,11 @@ class DeadlineCandidate:
     confidence: str
 
 
+def same_moment(a_date: date, a_time: time | None, b_date: date, b_time: time | None) -> bool:
+    """同一天，且两边都写了时刻时时刻也相同，算同一个截止（规则和 AI 的候选互相比对用）。"""
+    return a_date == b_date and (a_time is None or b_time is None or a_time == b_time)
+
+
 def _kind(context: str) -> str:
     if re.search(
         r"(?:申报|申请|报名)(?:时间|日期)?\s*截止|(?:网上|在线)(?:填报|提交)(?:时间|日期)?\s*(?:截止|截至)",
