@@ -71,7 +71,7 @@ Page({
     const due = dueInfo(doc && doc.deadline);
     this.setData({ due });
     if (!due || due.days < 3) {
-      wx.showToast({ title: '不到 3 天就截止了，请尽快办理', icon: 'none' });
+      wx.showToast({ title: '离截止不到 3 天，来不及提前提醒了', icon: 'none' });
       return;
     }
     requestOnce('deadline', { type: 'deadline', docId: doc.id }).then((ok) => {

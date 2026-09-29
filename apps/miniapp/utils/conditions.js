@@ -5,7 +5,7 @@ function describe(c) {
   const parts = [];
   if (c.q) parts.push(`"${c.q}"`);
   const regions = (c.regions || '').split(',').filter((r) => r && r !== '不限地区');
-  parts.push(regions.length ? regions.join('、') : '全国');
+  parts.push(regions.length ? regions.join('、') : '不限地区');
   parts.push(KIND_LABEL[c.kind] || '全部类型');
   if (c.time) parts.push(c.time);
   return parts.join(' · ');
