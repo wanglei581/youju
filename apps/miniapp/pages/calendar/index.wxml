@@ -4,6 +4,7 @@
 </view>
 <view class="filters">
   <text class="today">今天 {{today}}</text>
+  <text class="report-link" bindtap="openReport">截止雷达 ›</text>
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>

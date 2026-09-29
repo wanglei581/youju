@@ -1,0 +1,4 @@
+{
+  "navigationBarTitleText": "截止雷达",
+  "usingComponents": { "t-icon": "tdesign-miniprogram/icon/icon" }
+}

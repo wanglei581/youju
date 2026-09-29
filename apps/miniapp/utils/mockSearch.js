@@ -33,6 +33,10 @@ function matchTime(doc, time) {
   return -daysUntil(doc.date) <= v;
 }
 
+function matchOpen(doc) {
+  return !!(doc.deadline && doc.deadline.verified && daysUntil(doc.deadline.date) >= 0);
+}
+
 // params 与接口相同：q, kind, regions, types, status, time, depts, limit, offset
 function mockSearch(all, params) {
   const kw = (params.q || '').trim();
@@ -45,6 +49,7 @@ function mockSearch(all, params) {
     && (kind === 'all' || d.kind === kind)
     && matchRegion(d, regions) && matchType(d, types)
     && (!status.length || status.includes(d.status))
+    && (!params.open || matchOpen(d))
     && (!depts.length || depts.includes(deptOf(d))));
   const timed = base.filter((d) => matchTime(d, params.time || '近 30 天'));
   const offset = params.offset || 0;

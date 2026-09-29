@@ -80,6 +80,9 @@ page {
 }
 .status--public { border: 2rpx dashed var(--o-txt); color: var(--o-txt); }
 .status--final { border: 2rpx solid var(--t2); color: var(--t1); }
+.status--open { border: 2rpx solid var(--brand); color: var(--brand); }
+.status--closing { background: var(--r-tint); color: var(--red); }
+.status--closed { border: 2rpx solid var(--t3); color: var(--t3); }
 
 /* 截止提示：14 天内红字，7 天内再加红底 */
 .due { margin-left: auto; font-size: 24rpx; color: var(--t2); white-space: nowrap; }

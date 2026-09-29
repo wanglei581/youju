@@ -3,6 +3,7 @@
 .seg-item--on { background: var(--brand); color: #FFFFFF; font-weight: 500; }
 .filters { margin: 20rpx 32rpx 0; display: flex; align-items: center; gap: 28rpx; font-size: 26rpx; }
 .today { margin-left: auto; font-size: 24rpx; color: var(--t3); }
+.report-link { color: var(--brand); font-size: 26rpx; }
 .month { padding: 28rpx 32rpx 20rpx; }
 .month-head { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 16rpx; }
 .month-title { font-size: 32rpx; font-weight: 600; }

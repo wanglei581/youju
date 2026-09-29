@@ -924,6 +924,22 @@ module.exports = {
       "expired": true
     }
   ],
+  "reports": {
+    "deadlines": [
+      {
+        "id": "ln",
+        "title": "辽宁省制造业项目申报工作的通知",
+        "issuer": "辽宁省工业和信息化厅",
+        "province": "辽宁",
+        "dept": "工业和信息化厅",
+        "label": "企业申报截止",
+        "date": "2026-10-18",
+        "time": null,
+        "remaining_days": 19,
+        "file_number": "辽工信投资〔2026〕130号"
+      }
+    ]
+  },
   "detail": {
     "ln": {
       "id": "ln",

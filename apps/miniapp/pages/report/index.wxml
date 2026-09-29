@@ -1,0 +1,23 @@
+<view class="top">
+  <view class="nav"><view class="nav-back" bindtap="goBack"><t-icon name="chevron-left" size="42rpx" /></view><text class="nav-title">截止雷达</text></view>
+  <view class="sub">只看核对过的申报截止日期</view>
+</view>
+<view class="tabs" aria-role="tablist">
+  <view wx:for="{{[7,14,30]}}" wx:key="*this" class="tab {{days === item ? 'tab--on' : ''}}" data-days="{{item}}" bindtap="pickDays"><text class="num">{{summary[item]}}</text><text>{{item}} 天内</text></view>
+</view>
+<view class="filters">
+  <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+</view>
+<view wx:if="{{error}}" class="card empty">{{error}} <text class="link" bindtap="retry">重试</text></view>
+<view class="card list">
+  <view wx:for="{{items}}" wx:key="id" class="item" data-id="{{item.id}}" bindtap="open">
+    <view class="item-title">{{item.title}}</view>
+    <view class="meta">{{item.issuer}} · {{item.province}}</view>
+    <view class="deadline"><text>{{item.label}} {{item.date}}{{item.time ? ' ' + item.time : ''}}</text><text class="left">剩 {{item.remaining_days}} 天</text></view>
+    <view class="footline"><text wx:if="{{item.file_number}}">{{item.file_number}}</text><text class="export" data-id="{{item.id}}" catchtap="exportOne">导出</text></view>
+  </view>
+  <view wx:if="{{!items.length && !loading}}" class="empty">暂无符合条件的项目</view>
+  <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
+</view>
+<view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期；名单条数是名单原文里的企业条数，公示期内的名单也计入，最终结果以原文为准。</view>

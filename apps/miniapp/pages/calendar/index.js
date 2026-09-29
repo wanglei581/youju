@@ -68,6 +68,10 @@ Page({
     this.load();
   },
 
+  openReport() {
+    wx.navigateTo({ url: '/pages/report/index' });
+  },
+
   load() {
     this.setData({ error: '' });
     api.calendar().then(({ items }) => {
