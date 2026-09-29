@@ -22,11 +22,11 @@ _AUDIENCE_START = re.compile(
     r"^\s*(?:[（(]?[一二三四五六七八九十百\d]+[）)、.．、]\s*)?"
     r"(?:申报对象|申报主体|申报单位|支持对象|申报条件)\s*[:：]?"
 )
-_NEGATIVE = re.compile(
-    r"不予支持|不支持|不得支持|不属于|不得重复申报|不得申报|不再支持|不予认定|不得认定|"
-    r"不能认定|不应认定|不得立项|不予立项|尚未立项|未立项|不纳入|不享受|禁止|"
-    r"备案材料不齐全|不予备案"
+_NEGATION = re.compile(
+    r"不予|不得|不能|不再|尚未|未(?!来)|暂不|不属于|不纳入|取消|不应|禁止|"
+    r"不支持|不认定|不立项|不备案|不入库|不享受"
 )
+_CLAUSE_BREAK = re.compile(r"[，,、；;。！？!?：:\n]")
 
 
 @dataclass(frozen=True)
@@ -54,28 +54,40 @@ def _sentences(body: str) -> list[tuple[str, int]]:
     return result
 
 
+def _is_negated(sentence: str, match: re.Match[str]) -> bool:
+    """命中词前同一分句四字内有否定词时，排除该次命中。"""
+    prefix = sentence[max(0, match.start() - 4) : match.start()]
+    if _CLAUSE_BREAK.search(prefix):
+        prefix = _CLAUSE_BREAK.split(prefix)[-1]
+    if _NEGATION.search(prefix):
+        return True
+    # “不纳入××库”中的“入”同时属于否定词和命中词，允许这一字重叠判断。
+    if "不纳入" in sentence[max(0, match.start() - 4) : match.end()]:
+        return True
+    # 这是原有规则明确排除的材料不齐全表述，关键词本身在短语开头。
+    return sentence.startswith("备案材料不齐全", match.start())
+
+
+def _has_usable_keyword(sentence: str, pattern: str) -> bool:
+    return any(not _is_negated(sentence, match) for match in re.finditer(pattern, sentence))
+
+
 def _usable_support(label: str, sentence: str) -> bool:
-    if _NEGATIVE.search(sentence):
-        return False
     if label == "资金支持":
-        return bool(
-            re.search(
-                r"资金支持|财政资金|财政补助|补助资金|资金补助|项目资金|资助|奖补|补贴", sentence
-            )
+        return _has_usable_keyword(
+            sentence, r"资金支持|财政资金|财政补助|补助资金|资金补助|项目资金|资助|奖补|补贴"
         )
     if label == "贷款贴息":
-        return bool(re.search(r"贷款贴息|贴息|贷款利息", sentence))
+        return _has_usable_keyword(sentence, r"贷款贴息|贴息|贷款利息")
     if label == "资格认定":
-        context = re.sub(r"(?:资格)?认定(?:条件|标准)", "", sentence)
-        return bool(re.search(r"认定为|申报认定|认定工作|组织认定", context))
+        return _has_usable_keyword(sentence, r"认定为|申报认定(?!条件|标准)|认定工作|组织认定")
     if label == "入库备案":
-        return bool(re.search(r"入库|备案登记|纳入[^。！？!?；;\n]{0,30}库", sentence))
+        return _has_usable_keyword(sentence, r"入库|备案登记|纳入[^。！？!?；;\n]{0,30}库")
     if label == "项目立项":
-        return bool(
-            re.search(r"项目立项|立项", sentence)
-            or ("项目申报" in sentence and re.search(r"立项|项目资金", sentence))
+        return _has_usable_keyword(sentence, r"项目立项|立项") or (
+            "项目申报" in sentence and _has_usable_keyword(sentence, r"项目资金")
         )
-    return bool(re.search(r"其他支持|其他方式|服务支持|支持方式|支持措施", sentence))
+    return _has_usable_keyword(sentence, r"其他支持|其他方式|服务支持|支持方式|支持措施")
 
 
 def extract_support(body: str) -> list[FieldCandidate]:
