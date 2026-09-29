@@ -339,6 +339,38 @@ def _cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_archive_logs(args: argparse.Namespace) -> int:
+    from youju.access_log import run_archive
+    from youju.backup import BackupError
+    from youju.db import create_mysql_engine
+
+    env = get_settings().cloud_env
+    if not args.output and not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传访问日志归档")
+        return 1
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        report = run_archive(engine, env, output=args.output)
+    except BackupError as exc:
+        print(f"访问日志归档失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    days = "，".join(f"{day:%m-%d} {rows} 条" for day, rows in report.days.items())
+    print(
+        f"访问日志归档：{days or '没有要归档的'}（共 {report.bytes} 字节）；"
+        f"删掉超过 190 天的暂存 {report.expired} 条、过期归档 {report.pruned} 份"
+    )
+    return 0
+
+
+def _cmd_log_uid(args: argparse.Namespace) -> int:
+    from youju.access_log import log_uid
+
+    print(log_uid(args.openid))
+    return 0
+
+
 def _cmd_triage_feedback(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.triage import triage_feedback
@@ -527,6 +559,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
     p.set_defaults(func=_cmd_restore)
+
+    p = sub.add_parser(
+        "archive-logs", help="把之前每天的访问日志归档到云托管对象存储，保留 190 天，删掉过期的"
+    )
+    p.add_argument("--output", type=Path, help="只写到本机这个目录，不上传")
+    p.set_defaults(func=_cmd_archive_logs)
+
+    p = sub.add_parser(
+        "log-uid", help="算出某个 openid 在访问日志里的用户编号（查某个用户的日志用）"
+    )
+    p.add_argument("openid")
+    p.set_defaults(func=_cmd_log_uid)
 
     p = sub.add_parser(
         "triage-feedback",

@@ -23,7 +23,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
+from youju import access_log
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
 from youju.api.exports import router as exports_router
@@ -132,6 +135,45 @@ async def _role_guard(request: Request, call_next):
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return await call_next(request)
+
+
+def _openid_or_none(request: Request) -> str | None:
+    from youju.api.me import request_openid
+
+    try:
+        return request_openid(request)
+    except HTTPException:
+        return None
+
+
+@app.middleware("http")
+async def _access_log(request: Request, call_next):
+    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外；放在最外层，
+    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
+    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。"""
+    path = request.url.path
+    if path == "/health":
+        return await call_next(request)
+    started = clock.monotonic()
+    entry = {
+        "service": getattr(get_settings(), "role", "all"),
+        "method": request.method[:8],
+        "path": _printable(path, 190),
+        "ip": client_ip(request)[:64] or None,
+        "openid": _openid_or_none(request),
+    }
+    try:
+        response = await call_next(request)
+    except Exception:
+        entry.update(status=500, ms=int((clock.monotonic() - started) * 1000))
+        entry["detail"] = getattr(request.state, "audit", None)
+        await run_in_threadpool(access_log.write, entry)
+        raise
+    entry.update(status=response.status_code, ms=int((clock.monotonic() - started) * 1000))
+    entry["detail"] = getattr(request.state, "audit", None)
+    # call_next 返回的响应本身不带后台任务（接口自己的后台任务在里层已经跑过）
+    response.background = BackgroundTask(access_log.write, entry)
+    return response
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -604,9 +646,13 @@ def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header
 
 
 def _audit(request: Request, action: str, **fields: object) -> None:
-    """核对台操作留痕（操作人、来源、时间），打到日志，按网络日志留存要求保存（见部署说明）。"""
+    """核对台操作留痕（操作人、来源、时间）：打到日志，同时记进访问日志，按网络日志留存要求保存。"""
     record = {"event": "admin", "action": action, "ip": client_ip(request), **fields}
     audit_log.info(json.dumps(record, ensure_ascii=False, default=str))
+    # 同时记进这次请求的访问日志（保存 190 天）；来源 IP 访问日志里已有
+    request.state.audit = json.loads(
+        json.dumps({"action": action, **fields}, ensure_ascii=False, default=str)
+    )
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]

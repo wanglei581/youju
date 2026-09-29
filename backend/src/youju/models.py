@@ -3,6 +3,7 @@
 from datetime import date, datetime, time
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -435,4 +436,43 @@ class Event(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(32))
     props: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class AccessLog(Base):
+    """网络日志（《网络安全法》要求留存不少于六个月）：每次请求一条，健康检查除外。
+
+    这张表只是暂存：每天把前一天的归档到云托管对象存储后删掉，归档保留 190 天
+    （youju/access_log.py）；不进数据库备份。只记最少的字段：不记查询参数和请求内容
+    （检索词、企业名称都不记），用户只记去标识化的编号。
+    """
+
+    __tablename__ = "access_logs"
+    __table_args__ = (Index("ix_access_logs_at", "at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # 请求处理完、写日志的时间
+    at: Mapped[datetime] = mapped_column(UTCDateTime())
+    service: Mapped[str] = mapped_column(String(8))
+    method: Mapped[str] = mapped_column(String(8))
+    # 只有路径，不含问号后面的查询参数
+    path: Mapped[str] = mapped_column(String(200))
+    status: Mapped[int] = mapped_column(Integer)
+    # 开始处理到返回响应头的毫秒数
+    ms: Mapped[int] = mapped_column(Integer)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    # 小程序用户：openid 用程序自己的密钥做 HMAC 后的前 16 位（见 AppKey），不是 openid 本身
+    uid: Mapped[str | None] = mapped_column(String(16))
+    # 核对台操作：做了什么、对哪条记录（操作人、编号、条数），见 api/app.py 的 _audit
+    detail: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class AppKey(Base):
+    """程序自己生成、自己用的密钥（如访问日志里用户编号的去标识化密钥）：第一次用到时随机生成，
+    随数据库备份。不用人配置，也不出现在日志里。"""
+
+    __tablename__ = "app_keys"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

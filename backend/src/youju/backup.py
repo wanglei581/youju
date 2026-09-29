@@ -12,6 +12,8 @@
   文件本身按返回的 https 地址上传）；每次上传后删掉 31–40 天前的，某天没删掉的后面 9 天还会再删。
 - 备份里有用户数据（openid、关注、纠错），和数据库同等对待：存储桶权限设为
   "所有用户不可读（只有管理员可读写）"，只由管理员在云托管控制台下载。
+- 不备份访问日志暂存表（access_logs）：它每天归档到对象存储，归档另存 190 天
+  （youju/access_log.py）；恢复也不动它。
 """
 
 import gzip
@@ -49,6 +51,14 @@ log = logging.getLogger("youju.backup")
 OPEN_API = "http://api.weixin.qq.com"
 # 开放接口返回这些错误码时是平台暂时的问题，可以重试
 _BUSY_CODES = {-1, -1000, -501002}
+
+
+# 不备份、不恢复的表：访问日志暂存表每天归档到对象存储，归档自己保存（见 youju/access_log.py）
+NOT_BACKED_UP = frozenset({"access_logs"})
+
+
+def backed_up_tables() -> list[Table]:
+    return [t for t in Base.metadata.sorted_tables if t.name not in NOT_BACKED_UP]
 
 
 class BackupError(RuntimeError):
@@ -97,8 +107,8 @@ def _revision(conn: Connection) -> str | None:
 
 
 def dump(engine: Engine, out: IO[bytes], *, now: datetime | None = None) -> dict[str, int]:
-    """把全部表按主键顺序导出到 out（gzip JSON Lines），返回各表条数。"""
-    tables = Base.metadata.sorted_tables
+    """把全部表（访问日志暂存表除外）按主键顺序导出到 out（gzip JSON Lines），返回各表条数。"""
+    tables = backed_up_tables()
     with (
         engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn,
         conn.begin(),
@@ -226,7 +236,7 @@ def _verify(conn: Connection, header: dict, trailer: dict, tables: dict[str, Tab
 def restore(engine: Engine, src: IO[bytes]) -> dict[str, int]:
     """把备份恢复到 engine 指向的库：这个库要已迁移到和备份相同的版本、而且是空的。
     锁住全部表后检查、写入、核对，全部对上才提交；否则回滚并报错。返回各表条数。"""
-    tables = {t.name: t for t in Base.metadata.sorted_tables}
+    tables = {t.name: t for t in backed_up_tables()}
     locks = ", ".join([f"`{name}` WRITE" for name in tables] + ["`alembic_version` READ"])
     try:
         with gzip.GzipFile(fileobj=src, mode="rb") as gz:
@@ -288,8 +298,8 @@ def _open_api(client: httpx.Client, api: str, payload: dict) -> dict:
     return data
 
 
-def upload(client: httpx.Client, env: str, path: str, local: Path) -> str:
-    """上传到云托管对象存储，返回文件 ID（cloud://…）。"""
+def upload(client: httpx.Client, env: str, path: str, local: Path, *, what: str = "备份") -> str:
+    """上传到云托管对象存储，返回文件 ID（cloud://…）。what 是出错信息里怎么称呼这个文件。"""
     link = _open_api(client, "/tcb/uploadfile", {"env": env, "path": path})
     needed = ("url", "authorization", "token", "cos_file_id", "file_id")
     missing = [k for k in needed if not link.get(k)]
@@ -310,10 +320,10 @@ def upload(client: httpx.Client, env: str, path: str, local: Path) -> str:
                 timeout=600,
             )
     except httpx.TransportError as exc:
-        raise BackupError("上传备份网络失败", retryable=True) from exc
+        raise BackupError(f"上传{what}网络失败", retryable=True) from exc
     if not 200 <= res.status_code < 300:
         raise BackupError(
-            f"上传备份失败（HTTP {res.status_code}）", retryable=res.status_code >= 500
+            f"上传{what}失败（HTTP {res.status_code}）", retryable=res.status_code >= 500
         )
     return link["file_id"]
 
@@ -325,12 +335,17 @@ def prune(client: httpx.Client, env: str, file_id: str, path: str, today: date) 
     if not prefix:
         raise BackupError("文件 ID 的格式和预期不同，没有删除旧备份")
     old = [prefix + object_path(today - timedelta(days=d)) for d in _PRUNE_DAYS]
-    data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": old})
+    return delete_files(client, env, old, what="旧备份")
+
+
+def delete_files(client: httpx.Client, env: str, file_ids: list[str], *, what: str) -> int:
+    """从对象存储删掉这些文件，返回删掉的个数。没删掉的写进日志备查（多数是本来就没有这个文件），
+    不当作失败。"""
+    data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": file_ids})
     items = data.get("delete_list", [])
-    # 没删掉的写进日志备查（多数是本来就没有这个文件），不当作失败
     for item in items:
         if item.get("status") != 0:
-            log.info("旧备份没删掉：%s（%s）", item.get("fileid"), item.get("errmsg"))
+            log.info("%s没删掉：%s（%s）", what, item.get("fileid"), item.get("errmsg"))
     return sum(1 for item in items if item.get("status") == 0)
 
 
