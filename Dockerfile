@@ -7,13 +7,17 @@
 # 版本和摘要都锁定，每次构建用同一个基础镜像；升级时两处一起改（摘要查 Docker Hub 该标签的 digest）。
 FROM python:3.12.14-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
+# 系统包和 Python 包的下载源：默认腾讯云（云托管在国内构建）；CI 在境外机器上构建时改用官方源。
+# Python 依赖按锁文件校验哈希，换源装出来的包也完全一样
+ARG DEBIAN_MIRROR=mirrors.cloud.tencent.com
+ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+
 ENV TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
-    PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 系统包走腾讯云 Debian 源
-RUN sed -i 's#deb.debian.org#mirrors.cloud.tencent.com#g' /etc/apt/sources.list.d/debian.sources \
+RUN sed -i "s#deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends cron tzdata \
     && rm -rf /var/lib/apt/lists/*
@@ -30,7 +34,9 @@ COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./
 COPY backend/deploy ./deploy
 COPY ["docs/数据来源", "/app/docs/数据来源"]
-RUN pip install --no-cache-dir --no-deps . && chmod +x deploy/start.sh deploy/job.sh deploy/round.sh
+# 用可编辑方式安装：代码留在 /app/backend/src，程序按源码位置找 alembic.ini、迁移目录（/app/backend）和
+# 来源清单（/app/docs）。普通安装会把代码复制到 site-packages，这些相对路径就找不到了，admin 启动时迁移会失败
+RUN pip install --no-cache-dir --no-deps -e . && chmod +x deploy/start.sh deploy/job.sh deploy/round.sh deploy/first-round.sh
 
 EXPOSE 80
 CMD ["deploy/start.sh"]
