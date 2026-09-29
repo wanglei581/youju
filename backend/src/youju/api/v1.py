@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from youju import fields as field_rules
 from youju.classify import (
     effective_kind,
     kind_filter,
@@ -169,6 +170,7 @@ def _public_fields() -> Select:
             DocumentDetail.status == "ok",
             DocumentField.body_hash == func.sha2(DocumentDetail.body_text, 256),
             field_source.rights_level == 1,
+            or_(DocumentField.field != "audience", field_rules.AUDIENCE_ENABLED),
         )
     )
 

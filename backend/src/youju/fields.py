@@ -16,6 +16,8 @@ from youju.models import Document, DocumentDetail, DocumentField
 
 SUPPORT_LABELS = ("资金支持", "贷款贴息", "资格认定", "入库备案", "项目立项", "其他")
 FIELD_NAMES = ("support", "audience")
+# V5 初测（50 份样本）申报对象命中率仅约 20–30%，按 D-034 退路先不上线；改为 True 可恢复。
+AUDIENCE_ENABLED = False
 
 _SENTENCE_RE = re.compile(r"[^。！？!?；;\n]*(?:[。！？!?；;\n]|$)")
 _AUDIENCE_START = re.compile(
@@ -27,6 +29,17 @@ _NEGATION = re.compile(
     r"不支持|不认定|不立项|不备案|不入库|不享受"
 )
 _CLAUSE_BREAK = re.compile(r"[，,、；;。！？!?：:\n]")
+_QUALIFICATION_NEGATIVE = re.compile(
+    r"被[^。！？!?；;]{0,24}认定为|认定为(?:虚假|重大失实|不良|不符合|不合格|违法)"
+)
+_FILING_REFERENCE = re.compile(
+    r"纳入[^。！？!?；;]{0,30}(?:培育体系|体系)|"
+    r"上一年度已入库[^。！？!?；;]{0,40}(?:下一年度|指南|遴选范围)"
+)
+_PROJECT_MATERIAL = re.compile(
+    r"(?:提交|上传|报送)[^。！？!?；;]{0,20}立项(?:批复|文件)|"
+    r"立项(?:批复|文件)[^。！？!?；;]{0,12}(?:复印件|材料)"
+)
 
 
 @dataclass(frozen=True)
@@ -72,19 +85,52 @@ def _has_usable_keyword(sentence: str, pattern: str) -> bool:
 def _usable_support(label: str, sentence: str) -> bool:
     if label == "资金支持":
         return _has_usable_keyword(
-            sentence, r"资金支持|财政资金|财政补助|补助资金|资金补助|项目资金|资助|奖补|补贴"
+            sentence,
+            r"资金支持|财政资金|财政补助|补助资金|资金补助|项目资金|资助|奖补|补贴|"
+            r"财政科技经费|配套经费|科技创新券|科技计划项目支持",
         )
     if label == "贷款贴息":
         return _has_usable_keyword(sentence, r"贷款贴息|贴息|贷款利息")
     if label == "资格认定":
-        return _has_usable_keyword(sentence, r"认定为|申报认定(?!条件|标准)|认定工作|组织认定")
+        if _QUALIFICATION_NEGATIVE.search(sentence):
+            return False
+        if _has_usable_keyword(
+            sentence,
+            r"认定为|申报认定(?!条件|标准)|认定工作|组织认定|公告为|正式成为|授牌|"
+            r"认定与评价|公告的步骤|(?:创新型中小企业|企业技术中心|孵化器).{0,10}评价",
+        ):
+            return True
+        # 单独出现“认定条件”通常是申报门槛；“对照/依据认定条件”是本通知组织认定。
+        return bool(re.search(r"(?:对照|依据|按照)[^。！？!?；;]{0,20}认定条件", sentence))
     if label == "入库备案":
-        return _has_usable_keyword(sentence, r"入库|备案登记|纳入[^。！？!?；;\n]{0,30}库")
+        if _FILING_REFERENCE.search(sentence):
+            return False
+        return _has_usable_keyword(
+            sentence,
+            r"入库|备案登记|纳入[^。！？!?；;\n]{0,30}库|进入[^。！？!?；;\n]{0,20}资源池|资源池|"
+            r"申报[^。！？!?；;\n]{0,25}储备[^。！？!?；;\n]{0,20}平台",
+        )
     if label == "项目立项":
+        if _PROJECT_MATERIAL.search(sentence) or re.search(
+            r"(?:已经|已)[^。！？!?；;]{0,15}立项支持过|不得作为[^。！？!?；;]{0,30}再次提报",
+            sentence,
+        ):
+            return False
         return _has_usable_keyword(sentence, r"项目立项|立项") or (
             "项目申报" in sentence and _has_usable_keyword(sentence, r"项目资金")
         )
-    return _has_usable_keyword(sentence, r"其他支持|其他方式|服务支持|支持方式|支持措施")
+    if re.search(r"字以内|填写说明", sentence):
+        return False
+    if re.search(
+        r"(?:确定|明确|选择|另行|根据[^。！？!?；;]{0,20}确定)[^。！？!?；;]{0,12}支持方式",
+        sentence,
+    ):
+        return False
+    return _has_usable_keyword(
+        sentence,
+        r"其他支持|其他方式|服务支持|支持方式|支持措施|政策支持|税收优惠|增值税税额|"
+        r"加计[^。！？!?；;]{0,10}抵减",
+    )
 
 
 def extract_support(body: str) -> list[FieldCandidate]:
@@ -139,12 +185,28 @@ def extract_audience(body: str) -> list[FieldCandidate]:
 
 
 def extract_rules(body: str) -> list[FieldCandidate]:
-    return extract_support(body) + extract_audience(body)
+    result = extract_support(body)
+    if AUDIENCE_ENABLED:
+        result.extend(extract_audience(body))
+    return result
 
 
 def extract_fields(body: str) -> list[FieldCandidate]:
     """规则抽取的公开入口（别名保留给评测脚本和离线标注工具）。"""
     return extract_rules(body)
+
+
+def _usable_candidate(candidate: FieldCandidate, body: str) -> bool:
+    if candidate.field != "audience":
+        return True
+    if not AUDIENCE_ENABLED:
+        return False
+    return (
+        len(candidate.value) <= 200
+        and candidate.value in body
+        and len(candidate.evidence) <= 300
+        and candidate.evidence in body
+    )
 
 
 def body_fingerprint(body: str) -> str:
@@ -210,11 +272,17 @@ def extract_existing(
         existing = list(
             session.scalars(select(DocumentField).where(DocumentField.document_id == doc.id))
         )
-        if existing and all(row.body_hash == body_hash for row in existing):
+        # 关闭 audience 后，历史行只保留作留痕；它们不应阻止 support 重抽，也不因重抽被删除。
+        active_existing = [row for row in existing if AUDIENCE_ENABLED or row.field != "audience"]
+        if active_existing and all(row.body_hash == body_hash for row in active_existing):
             continue
         if existing:
             changed += 1
             for row in existing:
+                if not AUDIENCE_ENABLED and row.field == "audience":
+                    if row.status == "approved":
+                        row.status = "stale"
+                    continue
                 if row.status in ("approved", "stale"):
                     row.status = "stale"
                 else:
@@ -233,13 +301,7 @@ def extract_existing(
         merged = [
             (candidate, source)
             for candidate, source in merged
-            if candidate.field != "audience"
-            or (
-                len(candidate.value) <= 200
-                and candidate.value in detail.body_text
-                and len(candidate.evidence) <= 300
-                and candidate.evidence in detail.body_text
-            )
+            if _usable_candidate(candidate, detail.body_text)
         ]
         if merged:
             values = [
