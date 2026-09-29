@@ -59,6 +59,7 @@
       <view wx:if="{{doc.body.truncated && (bodyOpen || !bodyFolded)}}" class="weak body-rest">后面还有约 {{bodyRest}} 字，请复制原文链接在浏览器查看。</view>
     </block>
     <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用"查名单"。</view>
+    <view wx:elif="{{doc.body.status === 'original'}}" class="muted body-none">这类文件的正文请复制原文链接在浏览器查看。</view>
     <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
   </view>
 
