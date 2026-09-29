@@ -17,7 +17,7 @@ function previewOf(text) {
 
 Page({
   data: { doc: null, due: null, dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0 },
+    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '' },
 
   onLoad(query) {
     this.docId = query.id;
@@ -39,6 +39,8 @@ Page({
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,
           bodyPreview: body ? previewOf(body.text) : '',
           bodyRest: body ? body.total - body.text.length : 0,
+          supportExpanded: '',
+          supportEvidence: '',
           due,
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
@@ -55,6 +57,16 @@ Page({
 
   toggleBody() {
     this.setData({ bodyOpen: !this.data.bodyOpen });
+  },
+
+  toggleSupport(e) {
+    const label = e.currentTarget.dataset.label;
+    const fields = this.data.doc && this.data.doc.fields;
+    const evidence = fields && fields.support_evidence && fields.support_evidence[label];
+    this.setData({
+      supportExpanded: this.data.supportExpanded === label ? '' : label,
+      supportEvidence: this.data.supportExpanded === label ? '' : (evidence || ''),
+    });
   },
 
   // 这份文件有没有还没发出的截止提醒（以服务端为准）

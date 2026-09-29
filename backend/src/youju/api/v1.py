@@ -213,6 +213,8 @@ def _approved_fields(session: Session, doc_ids: list[int]) -> dict[int, dict[str
             supports = item.setdefault("support", [])
             if value not in supports:
                 supports.append(value)
+            if row.evidence and value not in item.setdefault("support_evidence", {}):
+                item["support_evidence"][value] = row.evidence
         elif row.field == "audience" and "audience" not in item:
             item["audience"] = {"text": value, "evidence": row.evidence}
     for item in result.values():

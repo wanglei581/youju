@@ -8,7 +8,7 @@
 .tab--on { background: var(--brand-tint); color: var(--brand); font-weight: 600; }
 .num { font-size: 40rpx; line-height: 1; }
 .filters { margin: 18rpx 24rpx 0; display: flex; gap: 16rpx; }
-.filter { flex: 1; padding: 20rpx 24rpx; display: flex; align-items: center; justify-content: space-between; background: var(--card); border-radius: 16rpx; color: var(--t1); font-size: 26rpx; }
+.filter { flex: 1; min-width: 0; padding: 20rpx 18rpx; display: flex; align-items: center; justify-content: space-between; background: var(--card); border-radius: 16rpx; color: var(--t1); font-size: 24rpx; line-height: 1.5; }
 .list { margin-top: 18rpx; padding: 0 28rpx; }
 .item { padding: 28rpx 0; border-bottom: 2rpx solid var(--line); }
 .item:last-child { border-bottom: 0; }

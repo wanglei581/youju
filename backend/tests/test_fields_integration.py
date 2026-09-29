@@ -109,7 +109,11 @@ def test_body_change_hidden_immediately_without_reextraction_or_cache_clear(sess
     add_field(session, doc.id, field="audience", value="本省企业。")
     detail_url = f"/api/v1/documents/{doc.id}"
     radar_url = "/api/v1/reports/deadlines?days=7&support=贷款贴息"
-    assert client.get(detail_url).json()["fields"]["support"] == ["贷款贴息"]
+    assert client.get(detail_url).json()["fields"] == {
+        "support": ["贷款贴息"],
+        "support_evidence": {"贷款贴息": "企业可申请贷款贴息。"},
+        "audience": {"text": "本省企业。", "evidence": "企业可申请贷款贴息。"},
+    }
     assert client.get(radar_url).json()["total"] == 1
     session.get(DocumentDetail, doc.id).body_text += "\n补充条件。"
     session.commit()
@@ -145,7 +149,10 @@ def test_merged_fields_must_come_from_public_member(session, client, rights, pub
     assert "fields" not in response.json()
     assert client.get("/api/v1/reports/deadlines?support=贷款贴息").json()["total"] == 0
     add_field(session, public.id)
-    assert client.get(url).json()["fields"] == {"support": ["贷款贴息"]}
+    assert client.get(url).json()["fields"] == {
+        "support": ["贷款贴息"],
+        "support_evidence": {"贷款贴息": "企业可申请贷款贴息。"},
+    }
     radar = client.get("/api/v1/reports/deadlines?support=贷款贴息").json()
     assert radar["total"] == 1
     assert radar["items"][0]["id"] == str(master.id)
@@ -214,6 +221,15 @@ def test_manual_audience_edit_can_differ_from_original(session, client):
     )
     assert response.status_code == 200
     assert client.get(f"/api/v1/documents/{doc.id}").json()["fields"]["audience"]["text"] == edited
+
+
+def test_support_evidence_only_contains_approved_support_rows(session, client):
+    doc = add_document(session)
+    add_field(session, doc.id, value="贷款贴息")
+    add_field(session, doc.id, value="资金支持", status="pending")
+    payload = client.get(f"/api/v1/documents/{doc.id}").json()["fields"]
+    assert payload["support"] == ["贷款贴息"]
+    assert payload["support_evidence"] == {"贷款贴息": "企业可申请贷款贴息。"}
 
 
 def test_queue_query_count_does_not_grow_with_documents(session, monkeypatch):

@@ -50,6 +50,20 @@
     <view class="excerpt">“{{doc.excerpt.text}}”</view>
   </view>
 
+  <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
+    <view class="section-title">支持方式</view>
+    <view class="support-tags">
+      <view wx:for="{{doc.fields.support}}" wx:key="*this" class="support-tag {{supportExpanded === item ? 'support-tag--on' : ''}}" data-label="{{item}}" bindtap="toggleSupport">{{item}}</view>
+    </view>
+    <view wx:if="{{supportExpanded && supportEvidence}}" class="support-evidence"><text class="support-evidence-label">原文：</text>{{supportEvidence}}</view>
+  </view>
+
+  <view wx:if="{{doc.fields && doc.fields.audience && doc.fields.audience.text}}" class="card audience-card">
+    <view class="section-title">申报对象（原文摘录）</view>
+    <view class="audience-text">{{doc.fields.audience.text}}</view>
+    <view class="weak audience-note">条件可能未列全，以原文为准</view>
+  </view>
+
   <view wx:if="{{doc.body}}" class="card">
     <view class="section-title">正文</view>
     <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期以上面核对过的为准。</view>
