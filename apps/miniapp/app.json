@@ -8,6 +8,7 @@
     "pages/detail/index",
     "pages/calendar/index",
     "pages/report/index",
+    "pages/list-board/index",
     "pages/lists/index",
     "pages/agreement/index",
     "pages/feedback/index",

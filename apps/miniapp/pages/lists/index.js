@@ -89,6 +89,10 @@ Page({
     wx.navigateTo({ url: '/pages/search/index?kind=名单&time=不限' });
   },
 
+  openBoard() {
+    wx.navigateTo({ url: '/pages/list-board/index' });
+  },
+
   pickChip(e) {
     this.setData({ chip: e.currentTarget.dataset.chip });
   },
