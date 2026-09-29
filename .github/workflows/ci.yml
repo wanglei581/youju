@@ -14,20 +14,19 @@ jobs:
     name: 后端（代码检查 + 测试）
     runs-on: ubuntu-latest
     services:
-      postgres:
-        image: postgres:16
+      # 线上用微信云托管自带的 MySQL 8.0
+      mysql:
+        image: mysql:8.0
         env:
-          POSTGRES_USER: youju
-          POSTGRES_PASSWORD: youju
-          POSTGRES_DB: youju_test
-        ports: ["5432:5432"]
+          MYSQL_ROOT_PASSWORD: youju
+        ports: ["3306:3306"]
         options: >-
-          --health-cmd "pg_isready -U youju"
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pyouju"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
     env:
-      YOUJU_TEST_DATABASE_URL: postgresql+psycopg://youju:youju@localhost:5432/youju_test
+      YOUJU_TEST_DATABASE_URL: mysql+pymysql://root:youju@127.0.0.1:3306/youju_test?charset=utf8mb4
       # CI 里数据库必须可用：连不上直接失败，不允许跳过数据库测试
       YOUJU_REQUIRE_DB: "1"
     defaults:
@@ -52,18 +51,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
-      postgres:
-        image: postgres:16
+      mysql:
+        image: mysql:8.0
         env:
-          POSTGRES_USER: youju
-          POSTGRES_PASSWORD: youju
-          POSTGRES_DB: youju_image
-        ports: ["5432:5432"]
+          MYSQL_ROOT_PASSWORD: youju
+          MYSQL_DATABASE: youju_image
+        ports: ["3306:3306"]
         options: >-
-          --health-cmd "pg_isready -U youju"
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pyouju"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
     steps:
       - uses: actions/checkout@v7
       # 境外机器上用官方源构建（云托管默认用腾讯云源）；依赖按锁文件校验哈希，装出来的包一样
@@ -76,18 +74,18 @@ jobs:
       - name: 容器里迁移数据库、导入来源
         run: >-
           docker run --rm --network host
-          -e YOUJU_DATABASE_URL=postgresql+psycopg://youju:youju@localhost:5432/youju_image
+          -e "YOUJU_DATABASE_URL=mysql+pymysql://root:youju@127.0.0.1:3306/youju_image?charset=utf8mb4"
           youju:ci sh -c "youju db-upgrade && youju import-sources && youju report"
       # 按部署方式启动两个服务（start.sh）：admin 迁移、装 cron、写心跳后起接口；api 只起接口。
       # 口令只是 CI 用的假值
       - name: 按部署方式启动 admin、api，健康检查通过
         run: |
-          DB=postgresql+psycopg://youju:youju@localhost:5432/youju_image
+          DB="mysql+pymysql://root:youju@127.0.0.1:3306/youju_image?charset=utf8mb4"
           docker run -d --name admin --network host -e PORT=8081 -e YOUJU_ROLE=admin \
             -e YOUJU_ADMIN_TOKEN=ci-dummy-admin-token-0000000000000000 \
-            -e YOUJU_DATABASE_URL=$DB youju:ci
+            -e "YOUJU_DATABASE_URL=$DB" youju:ci
           docker run -d --name api --network host -e PORT=8082 -e YOUJU_ROLE=api \
-            -e YOUJU_TRUST_WX_HEADERS=true -e YOUJU_DATABASE_URL=$DB youju:ci
+            -e YOUJU_TRUST_WX_HEADERS=true -e "YOUJU_DATABASE_URL=$DB" youju:ci
           for port in 8081 8082; do
             curl -fsS --retry 20 --retry-delay 2 --retry-all-errors "http://localhost:$port/health"
             echo

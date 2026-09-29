@@ -9,41 +9,53 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, make_url, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from youju.db import create_mysql_engine
 from youju.migrations import upgrade
+from youju.models import Base
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TEST_DB_URL = os.environ.get(
-    "YOUJU_TEST_DATABASE_URL", "postgresql+psycopg://localhost:55432/youju_test"
+    "YOUJU_TEST_DATABASE_URL", "mysql+pymysql://root@127.0.0.1:33306/youju_test?charset=utf8mb4"
 )
 
 
 @pytest.fixture(scope="session")
 def db_engine() -> Iterator[Engine]:
-    engine = create_engine(TEST_DB_URL)
+    url = make_url(TEST_DB_URL)
+    server = create_mysql_engine(url.set(database=""))
     try:
-        with engine.connect() as conn:
+        with server.connect() as conn:
             conn.execute(text("select 1"))
     except Exception as exc:  # noqa: BLE001 - 任何连接错误都按"数据库不可用"处理
+        server.dispose()
         if os.environ.get("YOUJU_REQUIRE_DB") == "1":
             raise
         pytest.skip(f"测试数据库不可用（{TEST_DB_URL}）：{exc.__class__.__name__}")
-    with engine.begin() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+    # 每次测试会话从空库开始；排序规则和线上一致（区分大小写、不忽略尾部空格）
+    with server.begin() as conn:
+        conn.execute(text(f"DROP DATABASE IF EXISTS `{url.database}`"))
+        conn.execute(
+            text(f"CREATE DATABASE `{url.database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin")
+        )
+    server.dispose()
     # 用迁移建表，顺便验证迁移脚本本身可用
     upgrade(TEST_DB_URL)
+    engine = create_mysql_engine(TEST_DB_URL)
     yield engine
     engine.dispose()
 
 
 @pytest.fixture
 def session_factory(db_engine: Engine) -> sessionmaker[Session]:
+    # 清空全部表并让自增编号从 1 开始（MySQL 的 TRUNCATE 会重置自增，但要先关外键检查）
     with db_engine.begin() as conn:
-        conn.execute(
-            text("TRUNCATE users, documents, source_checks, sources RESTART IDENTITY CASCADE")
-        )
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        for table in Base.metadata.sorted_tables:
+            conn.execute(text(f"TRUNCATE TABLE `{table.name}`"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 
