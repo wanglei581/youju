@@ -27,6 +27,12 @@ def upgrade() -> None:
         "access_logs",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column(
+            "logged_at",
+            mysql.DATETIME(fsp=6),
+            server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+            nullable=False,
+        ),
         sa.Column("service", sa.String(length=8), nullable=False),
         sa.Column("method", sa.String(length=8), nullable=False),
         sa.Column("path", sa.String(length=200), nullable=False),
@@ -38,7 +44,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("ix_access_logs_at", "access_logs", ["at"])
+    op.create_index("ix_access_logs_logged_at", "access_logs", ["logged_at"])
     op.create_table(
         "app_keys",
         sa.Column("name", sa.String(length=32), nullable=False),
@@ -56,5 +62,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("app_keys")
-    op.drop_index("ix_access_logs_at", table_name="access_logs")
+    op.drop_index("ix_access_logs_logged_at", table_name="access_logs")
     op.drop_table("access_logs")

@@ -4,10 +4,14 @@
   耗时、来源 IP、小程序用户的去标识化编号；核对台操作另记做了什么、对哪条记录。
   不记查询参数和请求、响应内容：检索词、企业名称、纠错内容都不进日志。
 - 怎么存：请求处理完写进数据库暂存表 access_logs，同时打一行到标准输出（云托管日志里能实时查）。
-  每天 0:30 把前一天（北京时间）的归档成一个压缩文件，存到云托管对象存储
+  写库失败的记录先留在内存里（每个实例最多 5000 条），下次写库时一起补上；实例在这期间重启会丢，
+  但标准输出里每条都有。
+  每天 0:30 把前一天（北京时间）写进库的归档成一个压缩文件，存到云托管对象存储
   logs/access-日期.jsonl.gz，上传成功才删暂存的记录；归档保留 190 天（多于六个月），到期删除。
-  暂存表不进数据库备份，恢复备份也不动它（见 youju/backup.py）。
-- 归档格式：gzip 压缩的 JSON Lines，第一行说明（格式、日期），之后每行一条记录，最后一行结尾
+  按写进库的时间（数据库的时钟）分日，不按请求时间：补写的记录归进补写那天，不会在某天归档之后
+  又冒出这一天的记录（再归档一次会覆盖前一个文件）。所以某天的文件里可能有前一天的请求，
+  查的时候按记录里的 at 字段看。暂存表不进数据库备份，恢复备份也不动它（见 youju/backup.py）。
+- 归档格式：gzip 压缩的 JSON Lines，第一行说明（格式、写入日期），之后每行一条记录，最后一行结尾
   （条数和全部记录行的 SHA-256）；没有结尾说明文件不完整。
 - 用户编号：openid 用程序自己的密钥（app_keys 表，第一次用到时随机生成）做 HMAC-SHA256，取前 16 位。
   只看日志得不到 openid；要查某个用户的日志时（如用户申请查阅），用 `youju log-uid` 算出编号再查。
@@ -25,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time as clock
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from functools import partial
@@ -46,9 +51,12 @@ VERSION = 1
 KEEP_DAYS = 190
 # 每次删掉这些天之前的归档（多删几天，漏跑或某天没删掉的也能清掉）
 _PRUNE_DAYS = range(KEEP_DAYS + 1, KEEP_DAYS + 11)
-# 一天结束后至少过这么久才归档这一天：日志在请求处理完时记时间、随即写库，
-# 留出余量，免得归档之后还有这一天的记录写进来（再归档一次会覆盖前一个文件）
+# 一天结束后至少过这么久才归档这一天：写入时间取数据库执行插入时的时钟，提交在其后几毫秒内；
+# 留出余量（也容下数据库和程序的时钟误差），免得归档之后还有这一天的记录写进来
 _SETTLE = timedelta(minutes=10)
+# 写库失败时每个实例在内存里最多留这么多条，等下次写库时补上；满了丢最早的
+_PENDING_MAX = 5000
+_FIELDS = ("service", "method", "path", "status", "ms", "ip", "detail")
 KEY_NAME = "access_log"
 _ALERT_INTERVAL = 600
 _BATCH = 1000
@@ -67,6 +75,9 @@ _key_lock = threading.Lock()
 _key: bytes | None = None
 _fail_lock = threading.Lock()
 _fail_state: dict = {"last_alert": None, "count": 0}
+# 还没写进库的记录：（记录，openid）。openid 只在内存里，用来补算用户编号
+_pending_lock = threading.Lock()
+_pending: deque[tuple[dict[str, Any], str | None]] = deque()
 
 
 def object_path(day: date) -> str:
@@ -104,9 +115,25 @@ def _send_in_background(message: str) -> None:
     threading.Thread(target=send_alert, args=(message,), daemon=True).start()
 
 
-def _note_failure(exc: Exception) -> None:
+def _keep(batch: list[tuple[dict[str, Any], str | None]]) -> tuple[int, int]:
+    """没写进库的放回内存（排在这期间别的请求放回的前面），超出上限丢最早的。
+    返回（现在内存里的条数，这次丢掉的条数）。"""
+    with _pending_lock:
+        merged = batch + list(_pending)
+        dropped = max(0, len(merged) - _PENDING_MAX)
+        _pending.clear()
+        _pending.extend(merged[dropped:])
+        return len(_pending), dropped
+
+
+def _note_failure(exc: Exception, waiting: int, dropped: int) -> None:
     """写库失败：记一行；距上次提醒超过 10 分钟就发一条提醒，带上这期间的次数。"""
-    log.warning("访问日志写入数据库失败：%s", type(exc).__name__)
+    log.warning(
+        "访问日志写入数据库失败：%s（内存里待补写 %d 条，丢掉 %d 条）",
+        type(exc).__name__,
+        waiting,
+        dropped,
+    )
     now = clock.monotonic()
     with _fail_lock:
         _fail_state["count"] += 1
@@ -118,29 +145,35 @@ def _note_failure(exc: Exception) -> None:
     role = get_settings().role
     message = (
         f"访问日志写入数据库失败（{role} 服务，上次提醒以来 {count} 次）：{type(exc).__name__}。"
-        "这期间的访问日志只在云托管日志里"
+        f"没写进去的先留在内存里（现有 {waiting} 条，最多 {_PENDING_MAX} 条），数据库恢复后补写；"
+        "实例重启会丢，云托管日志里仍有"
     )
     _send_in_background(message)
 
 
 def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
-    """写一条访问日志：算出用户编号，写进暂存表，再打一行到标准输出。出错只提醒，不抛出。
+    """写一条访问日志：算出用户编号，连同内存里之前没写进去的一起写进暂存表，再打一行到标准输出。
+    出错只提醒，不抛出。
 
     entry：service、method、path、status、ms、ip，可选 openid（只用来算编号，不保存）和
     detail（核对台操作）。
     """
-    row = {k: v for k, v in entry.items() if k != "openid"}
+    openid = entry.get("openid")
+    row = {name: entry.get(name) for name in _FIELDS}
     row.update(at=datetime.now(UTC), uid=None)
+    with _pending_lock:
+        batch = [*_pending, (row, openid)]
+        _pending.clear()
     saved = False
     try:
-        openid = entry.get("openid")
-        if openid:
-            row["uid"] = log_uid(openid, engine)
+        for item, item_openid in batch:
+            if item_openid and item["uid"] is None:
+                item["uid"] = log_uid(item_openid, engine)
         with (engine or get_engine()).begin() as conn:
-            conn.execute(insert(AccessLog), row)
+            conn.execute(insert(AccessLog), [item for item, _ in batch])
         saved = True
     except Exception as exc:  # noqa: BLE001 - 写日志出错不能影响请求本身
-        _note_failure(exc)
+        _note_failure(exc, *_keep(batch))
     try:
         line = {k: v for k, v in row.items() if k != "detail"}
         out_log.info(
@@ -167,7 +200,8 @@ def _encode(value: Any) -> Any:
 
 
 def export_day(engine: Engine, day: date, out: IO[bytes]) -> tuple[int, int | None]:
-    """把这一天（北京时间）的暂存记录按编号顺序写成 gzip JSON Lines，返回（条数，最大编号）。"""
+    """把这一天（北京时间）写进库的暂存记录按编号顺序写成 gzip JSON Lines，
+    返回（条数，最大编号）。"""
     start, end = _day_bounds(day)
     header = {"format": FORMAT, "version": VERSION, "day": day.isoformat(), "tz": "Asia/Shanghai"}
     digest = hashlib.sha256()
@@ -179,7 +213,9 @@ def export_day(engine: Engine, day: date, out: IO[bytes]) -> tuple[int, int | No
     ):
         gz.write((json.dumps(header, ensure_ascii=False) + "\n").encode())
         result = conn.execution_options(stream_results=True, yield_per=_BATCH).execute(
-            select(table).where(table.c.at >= start, table.c.at < end).order_by(table.c.id)
+            select(table)
+            .where(table.c.logged_at >= start, table.c.logged_at < end)
+            .order_by(table.c.id)
         )
         for row in result.mappings():
             line = (json.dumps(dict(row), ensure_ascii=False, default=_encode) + "\n").encode()
@@ -194,13 +230,13 @@ def export_day(engine: Engine, day: date, out: IO[bytes]) -> tuple[int, int | No
 
 
 def _pending_days(engine: Engine, now: datetime) -> list[date]:
-    """要归档的日子：暂存表里最早的一天到昨天（刚过零点不到 10 分钟时到前天）。"""
+    """要归档的日子（按写入时间）：暂存表里最早的一天到昨天（刚过零点不到 10 分钟时到前天）。"""
     last = now.astimezone(BEIJING).date() - timedelta(days=1)
     if now < _day_bounds(last)[1] + _SETTLE:
         last -= timedelta(days=1)
     with engine.connect() as conn:
         first_at = conn.scalar(
-            select(func.min(AccessLog.at)).where(AccessLog.at < _day_bounds(last)[1])
+            select(func.min(AccessLog.logged_at)).where(AccessLog.logged_at < _day_bounds(last)[1])
         )
     if first_at is None:
         return []
@@ -240,7 +276,7 @@ def run_archive(
     report = ArchiveReport()
     with engine.begin() as conn:
         report.expired = conn.execute(
-            delete(AccessLog).where(AccessLog.at < now - timedelta(days=KEEP_DAYS))
+            delete(AccessLog).where(AccessLog.logged_at < now - timedelta(days=KEEP_DAYS))
         ).rowcount
     own = client is None and output is None
     if own:
@@ -263,7 +299,9 @@ def run_archive(
             with engine.begin() as conn:
                 conn.execute(
                     delete(AccessLog).where(
-                        AccessLog.at >= start, AccessLog.at < end, AccessLog.id <= last_id
+                        AccessLog.logged_at >= start,
+                        AccessLog.logged_at < end,
+                        AccessLog.id <= last_id,
                     )
                 )
             report.days[day] = rows

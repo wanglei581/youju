@@ -448,11 +448,13 @@ class AccessLog(Base):
     """
 
     __tablename__ = "access_logs"
-    __table_args__ = (Index("ix_access_logs_at", "at"),)
+    __table_args__ = (Index("ix_access_logs_logged_at", "logged_at"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # 请求处理完、写日志的时间
     at: Mapped[datetime] = mapped_column(UTCDateTime())
+    # 写进数据库的时间（数据库的时钟）：每天按它归档，写库失败后补写的记录归进补写那天
+    logged_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     service: Mapped[str] = mapped_column(String(8))
     method: Mapped[str] = mapped_column(String(8))
     # 只有路径，不含问号后面的查询参数

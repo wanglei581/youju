@@ -115,7 +115,7 @@ def test_openid_errors_do_not_break_logging(client, session, monkeypatch):
     assert rows(session)[0].uid is None
 
 
-def test_write_failures_alert_at_most_every_10_minutes(session, monkeypatch, caplog):
+def test_write_failures_alert_and_rows_are_written_later(session, db_engine, monkeypatch, caplog):
     sent: list[str] = []
     now = {"t": 1000.0}
     monkeypatch.setattr(access_log, "_send_in_background", sent.append)
@@ -130,16 +130,35 @@ def test_write_failures_alert_at_most_every_10_minutes(session, monkeypatch, cap
         "ip": None,
     }
     try:
-        access_log.write(entry, engine=broken)
+        access_log.write({**entry, "openid": "dev-user"}, engine=broken)
         now["t"] += 60
         access_log.write(entry, engine=broken)
         now["t"] += 600
         access_log.write(entry, engine=broken)
     finally:
         broken.dispose()
-    assert len(sent) == 2 and "上次提醒以来 2 次" in sent[1]
+    assert len(sent) == 2 and "上次提醒以来 2 次" in sent[1] and "现有 3 条" in sent[1]
     # 写库失败时标准输出里照样有，标明没存进库
     assert [x["saved"] for x in access_lines(caplog)] == [False, False, False]
+    # 数据库恢复后，下一次写库把之前没写进去的一起补上（用户编号补算），顺序不变
+    access_log.write({**entry, "path": "/api/v1/calendar"}, engine=db_engine)
+    got = rows(session)
+    assert [r.path for r in got] == ["/api/v1/home"] * 3 + ["/api/v1/calendar"]
+    assert got[0].uid == log_uid("dev-user") and got[1].uid is None
+    assert got[0].at < got[3].at and not access_log._pending
+
+
+def test_pending_rows_are_capped(session, monkeypatch):
+    monkeypatch.setattr(access_log, "_send_in_background", lambda message: None)
+    monkeypatch.setattr(access_log, "_PENDING_MAX", 2)
+    broken = create_mysql_engine(TEST_DB_URL.replace("/youju_test", "/youju_no_such_db"))
+    try:
+        for n in range(3):
+            access_log.write({"service": "api", "method": "GET", "path": f"/{n}"}, engine=broken)
+    finally:
+        broken.dispose()
+    # 满了丢最早的
+    assert [row["path"] for row, _ in access_log._pending] == ["/1", "/2"]
 
 
 def test_log_key_is_generated_once_and_kept(session, db_engine):
@@ -156,10 +175,11 @@ def test_log_key_is_generated_once_and_kept(session, db_engine):
     assert log_key(db_engine) == bytes.fromhex("ab" * 32)
 
 
-def add(session, at: datetime, path: str = "/api/v1/home") -> None:
+def add(session, at: datetime, path: str = "/api/v1/home", logged_at: datetime | None = None):
     session.add(
         AccessLog(
             at=at,
+            logged_at=logged_at or at,
             service="api",
             method="GET",
             path=path,
@@ -197,6 +217,7 @@ def test_archive_to_local_dir_keeps_today_and_drops_expired(session, db_engine, 
     assert set(items[0]) == {
         "id",
         "at",
+        "logged_at",
         "service",
         "method",
         "path",
@@ -303,3 +324,17 @@ def test_cli_archive_and_log_uid(session, db_engine, tmp_path, monkeypatch, caps
     assert len(list(tmp_path.glob("access-*.jsonl.gz"))) == 1
     assert cli.main(["log-uid", "dev-user"]) == 0
     assert capsys.readouterr().out.strip() == log_uid("dev-user")
+
+
+def test_late_rows_go_to_the_day_they_are_written(session, db_engine, tmp_path):
+    """写库失败后补写的记录按写进库的时间归档：昨天已经归档过，不会再覆盖昨天的文件。"""
+    add(session, NOW - timedelta(hours=1), "/early")  # 28 日 23:30 请求、当时写进库
+    assert run_archive(db_engine, None, output=tmp_path, now=NOW).days == {date(2026, 9, 28): 1}
+    # 28 日 23:50 的请求，29 日 0:20 才补写进库
+    add(session, NOW - timedelta(minutes=40), "/late", logged_at=NOW - timedelta(minutes=10))
+    later = NOW + timedelta(days=1)
+    assert run_archive(db_engine, None, output=tmp_path, now=later).days == {date(2026, 9, 29): 1}
+    _, items, _ = read_archive((tmp_path / "access-20260928.jsonl.gz").read_bytes())
+    assert [x["path"] for x in items] == ["/early"]
+    _, items, _ = read_archive((tmp_path / "access-20260929.jsonl.gz").read_bytes())
+    assert [x["path"] for x in items] == ["/late"]

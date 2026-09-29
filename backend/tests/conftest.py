@@ -88,6 +88,7 @@ def _reset_admin_throttle():
     # 每个测试清空了表，访问日志的密钥也要重新从库里取
     access_log._key = None
     access_log._fail_state.update(last_alert=None, count=0)
+    access_log._pending.clear()
     yield
     app_module._admin_fails.clear()
     exports._export_times.clear()
