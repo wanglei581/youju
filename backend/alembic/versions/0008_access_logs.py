@@ -26,6 +26,7 @@ def upgrade() -> None:
     op.create_table(
         "access_logs",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("rid", sa.String(length=16), nullable=False),
         sa.Column("at", mysql.DATETIME(fsp=6), nullable=False),
         sa.Column(
             "logged_at",
@@ -42,6 +43,7 @@ def upgrade() -> None:
         sa.Column("uid", sa.String(length=16), nullable=True),
         sa.Column("detail", sa.JSON(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("rid", name="uq_access_logs_rid"),
         **TABLE_OPTIONS,
     )
     op.create_index("ix_access_logs_logged_at", "access_logs", ["logged_at"])

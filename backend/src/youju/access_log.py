@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import IO, Any
 
 import httpx
-from sqlalchemy import Engine, delete, func, insert, select
+from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from youju.alerts import send_alert
@@ -116,10 +116,10 @@ def _send_in_background(message: str) -> None:
 
 
 def _keep(batch: list[tuple[dict[str, Any], str | None]]) -> tuple[int, int]:
-    """没写进库的放回内存（排在这期间别的请求放回的前面），超出上限丢最早的。
+    """没写进库的放回内存，和这期间别的请求放回的合在一起按请求时间排，超出上限丢最早的。
     返回（现在内存里的条数，这次丢掉的条数）。"""
     with _pending_lock:
-        merged = batch + list(_pending)
+        merged = sorted([*batch, *_pending], key=lambda item: item[0]["at"])
         dropped = max(0, len(merged) - _PENDING_MAX)
         _pending.clear()
         _pending.extend(merged[dropped:])
@@ -160,7 +160,8 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
     """
     openid = entry.get("openid")
     row = {name: entry.get(name) for name in _FIELDS}
-    row.update(at=datetime.now(UTC), uid=None)
+    # rid：这条记录的随机编号。提交其实成功了却报错时会补写第二次，编号相同就只留一条
+    row.update(rid=secrets.token_hex(8), at=datetime.now(UTC), uid=None)
     with _pending_lock:
         batch = [*_pending, (row, openid)]
         _pending.clear()
@@ -169,8 +170,10 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         for item, item_openid in batch:
             if item_openid and item["uid"] is None:
                 item["uid"] = log_uid(item_openid, engine)
+        stmt = mysql_insert(AccessLog)
+        stmt = stmt.on_duplicate_key_update(rid=stmt.inserted.rid)
         with (engine or get_engine()).begin() as conn:
-            conn.execute(insert(AccessLog), [item for item, _ in batch])
+            conn.execute(stmt, [item for item, _ in batch])
         saved = True
     except Exception as exc:  # noqa: BLE001 - 写日志出错不能影响请求本身
         _note_failure(exc, *_keep(batch))

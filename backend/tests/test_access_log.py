@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import json
+import secrets
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -180,6 +181,7 @@ def add(session, at: datetime, path: str = "/api/v1/home", logged_at: datetime |
         AccessLog(
             at=at,
             logged_at=logged_at or at,
+            rid=secrets.token_hex(8),
             service="api",
             method="GET",
             path=path,
@@ -216,6 +218,7 @@ def test_archive_to_local_dir_keeps_today_and_drops_expired(session, db_engine, 
     assert [x["path"] for x in items] == ["/b", "/c"]
     assert set(items[0]) == {
         "id",
+        "rid",
         "at",
         "logged_at",
         "service",
@@ -293,6 +296,7 @@ def test_backup_skips_access_logs_and_restore_leaves_them(session, db_engine, tm
             conn.execute(
                 AccessLog.__table__.insert(),
                 {
+                    "rid": "r" * 16,
                     "at": NOW,
                     "service": "admin",
                     "method": "GET",
@@ -338,3 +342,24 @@ def test_late_rows_go_to_the_day_they_are_written(session, db_engine, tmp_path):
     assert [x["path"] for x in items] == ["/early"]
     _, items, _ = read_archive((tmp_path / "access-20260929.jsonl.gz").read_bytes())
     assert [x["path"] for x in items] == ["/late"]
+
+
+def test_rewriting_the_same_record_keeps_one_row(session, db_engine, monkeypatch):
+    """提交其实成功了却报错时，内存里那条会再写一次：编号相同，库里只留一条。"""
+    entry = {"service": "api", "method": "GET", "path": "/api/v1/home", "status": 200, "ms": 1}
+    access_log.write(entry, engine=db_engine)
+    [row] = rows(session)
+    again = {name: getattr(row, name) for name in ("rid", "at", "service", "method", "path")}
+    access_log._pending.append(
+        ({**again, "status": 200, "ms": 1, "ip": None, "uid": None, "detail": None}, None)
+    )
+    access_log.write({**entry, "path": "/api/v1/calendar"}, engine=db_engine)
+    assert [r.path for r in rows(session)] == ["/api/v1/home", "/api/v1/calendar"]
+
+
+def test_rows_put_back_are_ordered_by_request_time():
+    old = {"at": datetime(2026, 9, 29, 1, tzinfo=UTC), "path": "/old"}
+    new = {"at": datetime(2026, 9, 29, 2, tzinfo=UTC), "path": "/new"}
+    access_log._pending.append((new, None))
+    access_log._keep([(old, None)])
+    assert [row["path"] for row, _ in access_log._pending] == ["/old", "/new"]
