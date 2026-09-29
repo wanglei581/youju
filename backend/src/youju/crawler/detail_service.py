@@ -12,6 +12,7 @@ from youju.config import get_settings
 from youju.crawler.detail import DetailResult, parse_detail
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_body
+from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.dedup import reconcile_documents
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
 
@@ -74,7 +75,9 @@ def _save_result(
         and _retryable(outcome.status, outcome.fetch.http_status if outcome.fetch else None)
         else None
     )
-    detail.body_text = outcome.parsed.body_text if outcome.parsed else ""
+    body = outcome.parsed.body_text if outcome.parsed else ""
+    # 数据库正文列有上限（MEDIUMTEXT 16MB），超长的截断，不让整份详情写入失败
+    detail.body_text = body[:BODY_TEXT_MAX_CHARS]
     detail.issuer = outcome.parsed.issuer if outcome.parsed else None
     detail.doc_number = outcome.parsed.doc_number if outcome.parsed else None
     detail.publish_date = outcome.parsed.publish_date if outcome.parsed else None

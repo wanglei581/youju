@@ -185,7 +185,8 @@ def _base() -> Select:
 
 
 def _ordered(stmt: Select) -> Select:
-    return stmt.order_by(Document.publish_date.desc().nulls_last(), Document.id.desc())
+    # MySQL 降序时空值自然排在最后（没有发布日期的文件排在后面）
+    return stmt.order_by(Document.publish_date.desc(), Document.id.desc())
 
 
 def _count(session: Session, stmt: Select) -> int:
@@ -515,7 +516,9 @@ def calendar(
     rows = session.execute(
         stmt.order_by(
             DocumentDeadline.approved_date,
-            DocumentDeadline.approved_time.nulls_last(),
+            # 没写具体时刻的排在当天最后（MySQL 升序默认把空值排在最前）
+            DocumentDeadline.approved_time.is_(None),
+            DocumentDeadline.approved_time,
             DocumentDeadline.id,
         )
     ).all()
@@ -620,7 +623,7 @@ def lookup_lists(
     found = session.execute(
         public(select(ListEntry.document_id, Document.publish_date).distinct())
         .where(matched)
-        .order_by(Document.publish_date.desc().nulls_last(), ListEntry.document_id.desc())
+        .order_by(Document.publish_date.desc(), ListEntry.document_id.desc())
         .limit(_LOOKUP_SCAN + 1)
     ).all()
     scanned_all = len(found) <= _LOOKUP_SCAN

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju.api import v1
@@ -223,7 +223,8 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     if body.version != get_settings().agreement_version:
         raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
     stamp = v1.now()
-    row_id = session.scalar(
+    # 已有用户时 LAST_INSERT_ID(id) 让 lastrowid 返回已有那一行的编号
+    row_id = session.execute(
         insert(User)
         .values(
             openid=request_openid(request),
@@ -231,16 +232,13 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
             agreement_version=body.version,
             agreement_at=stamp,
         )
-        .on_conflict_do_update(
-            index_elements=[User.openid],
-            set_={
-                "last_visited_at": stamp,
-                "agreement_version": body.version,
-                "agreement_at": stamp,
-            },
+        .on_duplicate_key_update(
+            id=func.last_insert_id(User.id),
+            last_visited_at=stamp,
+            agreement_version=body.version,
+            agreement_at=stamp,
         )
-        .returning(User.id)
-    )
+    ).lastrowid
     session.commit()
     user = session.get(User, row_id)
     return {"version": user.agreement_version, "at": user.agreement_at.isoformat()}

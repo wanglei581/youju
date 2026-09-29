@@ -8,7 +8,6 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "sqlalchemy>=2.0.30",
-    "psycopg[binary]>=3.2",
     "alembic>=1.13",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
@@ -19,6 +18,8 @@ dependencies = [
     "openpyxl>=3.1",
     "xlrd>=2.0.1",
     "python-docx>=1.2",
+    "pymysql>=1.1",
+    "cryptography>=43",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ youju = "youju.cli:main"
 
 [dependency-groups]
 dev = [
+    "psycopg[binary]>=3.2",
     "pytest>=8.2",
     "ruff>=0.6",
 ]

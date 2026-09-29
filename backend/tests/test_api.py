@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
+from sqlalchemy.dialects import mysql
 
 from youju.api.app import app
 from youju.db import get_session
@@ -480,7 +481,9 @@ def test_feedback_migration(db_engine) -> None:
         c for c in inspect(db_engine).get_columns("feedback") if c["name"] == "handled_at"
     )
     assert column["nullable"] is True
-    assert column["type"].timezone is True
+    # MySQL 的 DATETIME 不带时区：统一按 UTC 存、保留微秒（见 youju/dbtypes.py）
+    assert isinstance(column["type"], mysql.DATETIME)
+    assert column["type"].fsp == 6
 
 
 def test_feedback_admin_listing_and_actions(client, seeded, session, monkeypatch, caplog) -> None:

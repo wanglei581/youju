@@ -4,16 +4,16 @@
 
 ## 环境准备
 
-需要 [uv](https://docs.astral.sh/uv/) 和 PostgreSQL 16（macOS：`brew install postgresql@16`）。
+需要 [uv](https://docs.astral.sh/uv/) 和 MySQL 8.0（macOS：`brew install mysql@8.0`；线上用微信云托管自带的 MySQL 8.0）。
 
 ```sh
 cd backend
 uv sync                      # 安装依赖（按 uv.lock）
-./scripts/dev_db.sh start    # 在 backend/.pgdata 启动项目内数据库（端口 55432），不改系统设置
+./scripts/dev_mysql.sh start # 在 backend/.mysql 启动项目内数据库（端口 33306），不改系统设置
 uv run youju db-upgrade      # 建表 / 迁移到最新结构
 ```
 
-`./scripts/dev_db.sh stop` 停止数据库；`reset` 清空重建。
+`./scripts/dev_mysql.sh stop` 停止数据库；`reset` 清空重建。旧的 `dev_db.sh`（PostgreSQL）只用于把以前的本机数据搬到 MySQL。
 
 ## 常用命令
 
@@ -52,7 +52,7 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `YOUJU_DATABASE_URL` | `postgresql+psycopg://localhost:55432/youju` | 数据库 |
+| `YOUJU_DATABASE_URL` | `mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4` | 数据库 |
 | `YOUJU_PER_HOST_INTERVAL` | `3.0` | 同一网站两次请求的最小间隔（秒） |
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
