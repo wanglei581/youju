@@ -62,10 +62,7 @@ def _is_negated(sentence: str, match: re.Match[str]) -> bool:
     if _NEGATION.search(prefix):
         return True
     # “不纳入××库”中的“入”同时属于否定词和命中词，允许这一字重叠判断。
-    if "不纳入" in sentence[max(0, match.start() - 4) : match.end()]:
-        return True
-    # 这是原有规则明确排除的材料不齐全表述，关键词本身在短语开头。
-    return sentence.startswith("备案材料不齐全", match.start())
+    return "不纳入" in sentence[max(0, match.start() - 4) : match.end()]
 
 
 def _has_usable_keyword(sentence: str, pattern: str) -> bool:
