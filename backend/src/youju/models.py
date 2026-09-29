@@ -139,6 +139,9 @@ class Document(Base):
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
+    fields: Mapped[list["DocumentField"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
     deadlines: Mapped[list["DocumentDeadline"]] = relationship(
         back_populates="document", foreign_keys="DocumentDeadline.document_id"
     )
@@ -207,6 +210,39 @@ class DocumentAttachment(Base):
     extension: Mapped[str] = mapped_column(String(16))
 
     detail: Mapped[DocumentDetail] = relationship(back_populates="attachments")
+
+
+class DocumentField(Base):
+    """申报通知的结构化字段候选；公开端只读取人工通过的记录。"""
+
+    __tablename__ = "document_fields"
+    __table_args__ = (
+        UniqueConstraint("document_id", "field", "value", name="uq_document_fields_value"),
+        Index("ix_document_fields_status", "status"),
+        Index("ix_document_fields_document_field", "document_id", "field"),
+        CheckConstraint("field IN ('support', 'audience')", name="ck_document_fields_field"),
+        CheckConstraint("source IN ('rule', 'ai', 'both')", name="ck_document_fields_source"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'stale')",
+            name="ck_document_fields_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    field: Mapped[str] = mapped_column(String(16))
+    value: Mapped[str] = mapped_column(String(300))
+    evidence: Mapped[str] = mapped_column(String(300))
+    evidence_offset: Mapped[int] = mapped_column(Integer)
+    body_hash: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    approved_value: Mapped[str | None] = mapped_column(String(300))
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+    document: Mapped[Document] = relationship(back_populates="fields")
 
 
 class DocumentDeadline(Base):

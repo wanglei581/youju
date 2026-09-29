@@ -27,11 +27,13 @@ from youju.classify import (
 from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
+from youju.fields import SUPPORT_LABELS
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
     DocumentDeadline,
     DocumentDetail,
+    DocumentField,
     DocumentMerge,
     ListEntry,
     Source,
@@ -150,6 +152,34 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     return out
 
 
+def _approved_fields(session: Session, doc_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """只取通过字段；正文变化后的 stale 记录不会进入公开接口。"""
+    if not doc_ids:
+        return {}
+    members = groups_for(session, doc_ids)
+    all_ids = [item for ids in members.values() for item in ids]
+    rows = session.scalars(
+        select(DocumentField)
+        .where(DocumentField.document_id.in_(all_ids), DocumentField.status == "approved")
+        .order_by(DocumentField.id)
+    ).all()
+    owner: dict[int, int] = {member: master for master, ids in members.items() for member in ids}
+    result: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item = result.setdefault(owner.get(row.document_id, row.document_id), {})
+        value = row.approved_value or row.value
+        if row.field == "support":
+            supports = item.setdefault("support", [])
+            if value not in supports:
+                supports.append(value)
+        elif row.field == "audience" and "audience" not in item:
+            item["audience"] = {"text": value, "evidence": row.evidence}
+    for item in result.values():
+        if "support" in item:
+            item["support"].sort(key=lambda value: SUPPORT_LABELS.index(value))
+    return {doc_id: result.get(doc_id, {}) for doc_id in doc_ids if result.get(doc_id)}
+
+
 def _selected_deadline(deadlines: list[DocumentDeadline]) -> DocumentDeadline | None:
     """按方案选择一份文件用于申报状态/截止雷达的主截止。"""
     if not deadlines:
@@ -221,7 +251,7 @@ def _item(
     """列表行（与小程序 doc-row 的数据格式一致）。"""
     kind = effective_kind(doc.title, doc.kind_override)
     app_status = application_status(deadlines) if kind == "申报通知" else None
-    return {
+    payload = {
         "id": str(doc.id),
         "kind": kind,
         # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
@@ -234,6 +264,7 @@ def _item(
         "url": doc.url,
         "deadline": _deadline_brief(deadlines[0] if deadlines else None),
     }
+    return payload
 
 
 def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
@@ -527,7 +558,7 @@ def search_statement(
 
 
 def _report_payload(
-    session: Session, days: int, province: str, dept: str, page: int, size: int
+    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
 ) -> dict[str, Any]:
     """截止雷达数据；同一份文件只取方案规定的主截止。"""
     current = now().astimezone(_TZ)
@@ -539,6 +570,7 @@ def _report_payload(
         _base().where(Document.id.in_(candidate_ids), _kind_is(["申报通知"]))
     ).all()
     approved = _approved(session, candidate_ids)
+    fields = _approved_fields(session, candidate_ids)
     details = _details(session, [doc.id for doc, _ in rows])
     entries: list[dict[str, Any]] = []
     for doc, src in rows:
@@ -550,6 +582,8 @@ def _report_payload(
         ):
             continue
         if dept and _dept_bucket(src.dept) != dept:
+            continue
+        if support and support not in fields.get(doc.id, {}).get("support", []):
             continue
         selected = _selected_deadline(approved.get(doc.id, []))
         if selected is None or selected.approved_date is None:
@@ -613,6 +647,7 @@ def deadline_report(
     days: Annotated[int, Query(description="未来 7、14 或 30 天")] = 7,
     province: Annotated[str, Query(max_length=32)] = "",
     dept: Annotated[str, Query(max_length=128)] = "",
+    support: Annotated[str, Query(max_length=16)] = "",
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, Any]:
@@ -624,12 +659,14 @@ def deadline_report(
         raise HTTPException(status_code=422, detail="省份不支持")
     if dept and dept not in DEPTS:
         raise HTTPException(status_code=422, detail="部门不支持")
-    key = (days, province, dept, page, size, now().astimezone(_TZ).date())
+    if support and support not in SUPPORT_LABELS:
+        raise HTTPException(status_code=422, detail="支持方式不支持")
+    key = (days, province, dept, support, page, size, now().astimezone(_TZ).date())
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_payload(session, days, province, dept, page, size)
+    payload = _report_payload(session, days, province, dept, support, page, size)
     if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
@@ -714,6 +751,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
     kind = effective_kind(doc.title, doc.kind_override)
+    fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
     status_value = application_status(approved) if kind == "申报通知" else None
     issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
     points = [["发文机关", issuer]]
@@ -778,7 +816,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    return {
+    payload = {
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],
@@ -788,6 +826,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
         "status": list_status(doc.title, kind),
         "app_status": status_value,
+        "fields": fields,
         "url": doc.url,
         "original_urls": [
             d.url
@@ -810,6 +849,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "checked": checked,
         "body": body_for_reading(_reading_body(session, doc.id), kind),
     }
+    if fields:
+        payload["fields"] = fields
+    else:
+        payload.pop("fields", None)
+    return payload
 
 
 @router.get("/calendar")

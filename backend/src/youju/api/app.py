@@ -37,6 +37,7 @@ from youju.classify import doc_kind, effective_kind, list_status
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
+from youju.fields import SUPPORT_LABELS
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     URL_KEY_MAX,
@@ -44,6 +45,7 @@ from youju.models import (
     Document,
     DocumentDeadline,
     DocumentDetail,
+    DocumentField,
     Feedback,
     ListEntry,
     Source,
@@ -714,6 +716,181 @@ def review_console() -> str:
     return (Path(__file__).resolve().parent.parent / "admin" / "review.html").read_text(
         encoding="utf-8"
     )
+
+
+@app.get("/admin/fields", response_class=HTMLResponse, include_in_schema=False)
+def fields_console() -> str:
+    return (Path(__file__).resolve().parent.parent / "admin" / "fields.html").read_text(
+        encoding="utf-8"
+    )
+
+
+class FieldReviewIn(BaseModel):
+    reviewed_by: str = Field(min_length=1, max_length=80)
+    value: str | None = Field(default=None, max_length=300)
+    approved_value: str | None = Field(default=None, max_length=300)
+
+
+class FieldCandidateOut(BaseModel):
+    id: int
+    field: Literal["support", "audience"]
+    value: str
+    evidence: str
+    evidence_offset: int
+    source: Literal["rule", "ai", "both"]
+    status: Literal["pending", "approved", "rejected", "stale"]
+    approved_value: str | None
+
+
+class FieldReviewOut(BaseModel):
+    document_id: int
+    title: str
+    url: str
+    publish_date: date | None
+    deadline: date | None
+    fields: list[FieldCandidateOut]
+
+
+def _field_queue(session: Session) -> list[FieldReviewOut]:
+    """待核队列：已核截止且未来 30 天优先，其次未来 30 天但截止未核；过期不列。"""
+    today = v1_api.now().date()
+    rows = session.execute(
+        select(DocumentField, Document, Source)
+        .join(Document, Document.id == DocumentField.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(DocumentField.status.in_(("pending", "stale")), v1_api._kind_is(["申报通知"]))
+    ).all()
+    if not rows:
+        return []
+    doc_ids = list({doc.id for _, doc, _ in rows})
+    approved = v1_api._approved(session, doc_ids)
+    masters = canonical_ids(session, doc_ids)
+    grouped: dict[int, list[DocumentField]] = {}
+    docs: dict[int, tuple[Document, Source]] = {}
+    for field, doc, src in rows:
+        grouped.setdefault(doc.id, []).append(field)
+        docs[doc.id] = (doc, src)
+    cards: list[tuple[int, date, FieldReviewOut]] = []
+    for document_id, fields in grouped.items():
+        deadlines = approved.get(masters.get(document_id, document_id), [])
+        selected = v1_api._selected_deadline(deadlines)
+        due = selected.approved_date if selected else None
+        pending_unverified = session.scalar(
+            select(func.min(DocumentDeadline.candidate_date)).where(
+                DocumentDeadline.document_id == document_id,
+                DocumentDeadline.status == "pending",
+                DocumentDeadline.candidate_date >= today,
+                DocumentDeadline.candidate_date <= today + timedelta(days=30),
+            )
+        )
+        verified_due = due if due and today <= due <= today + timedelta(days=30) else None
+        queue_due = verified_due or pending_unverified
+        if queue_due is None:
+            continue
+        doc, _ = docs[document_id]
+        cards.append(
+            (
+                0 if verified_due else 1,
+                queue_due,
+                FieldReviewOut(
+                    document_id=document_id,
+                    title=doc.title,
+                    url=doc.url,
+                    publish_date=doc.publish_date,
+                    deadline=queue_due,
+                    fields=[
+                        FieldCandidateOut(
+                            id=item.id,
+                            field=item.field,
+                            value=item.value,
+                            evidence=item.evidence,
+                            evidence_offset=item.evidence_offset,
+                            source=item.source,
+                            status=item.status,
+                            approved_value=item.approved_value,
+                        )
+                        for item in sorted(fields, key=lambda item: item.id)
+                    ],
+                ),
+            )
+        )
+    cards.sort(key=lambda item: (item[0], item[1], item[2].document_id))
+    return [item[2] for item in cards]
+
+
+@app.get("/api/admin/fields/count")
+def field_pending_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    return {"pending": sum(len(item.fields) for item in _field_queue(session))}
+
+
+@app.get("/api/admin/fields", response_model=list[FieldReviewOut])
+def pending_fields(
+    session: SessionDep,
+    _admin: AdminDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    before_id: Annotated[int | None, Query(ge=1)] = None,
+) -> list[FieldReviewOut]:
+    items = _field_queue(session)
+    if before_id is not None:
+        items = [item for item in items if item.document_id < before_id]
+    return items[:limit]
+
+
+def _review_field(
+    field_id: int, body: FieldReviewIn, session: Session, status: str
+) -> DocumentField:
+    item = session.get(DocumentField, field_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="没有找到字段候选")
+    if item.status not in ("pending", "stale"):
+        raise HTTPException(status_code=409, detail="字段候选已核对")
+    if status == "approved":
+        proposed = body.value if body.value is not None else body.approved_value
+        value = item.value if proposed is None else proposed.strip()
+        if not value or len(value) > 300:
+            raise HTTPException(status_code=422, detail="通过后的值不能为空且不超过 300 字")
+        if item.field == "support" and value not in SUPPORT_LABELS:
+            raise HTTPException(status_code=422, detail="支持方式必须是固定标签")
+        item.approved_value = value
+    item.status = status
+    item.reviewed_by = body.reviewed_by
+    item.reviewed_at = datetime.now(UTC)
+    session.commit()
+    return item
+
+
+@app.post("/api/admin/fields/{field_id}/approve")
+def approve_field(
+    field_id: int, body: FieldReviewIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    item = session.get(DocumentField, field_id)
+    before = item.value if item else None
+    result = _review_field(field_id, body, session, "approved")
+    _audit(
+        request,
+        "field_approve",
+        field_id=field_id,
+        document_id=result.document_id,
+        reviewer=body.reviewed_by,
+        before=before,
+        after=result.approved_value,
+    )
+    return {"status": result.status}
+
+
+@app.post("/api/admin/fields/{field_id}/reject")
+def reject_field(
+    field_id: int, body: FieldReviewIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    result = _review_field(field_id, body, session, "rejected")
+    _audit(
+        request,
+        "field_reject",
+        field_id=field_id,
+        document_id=result.document_id,
+        reviewer=body.reviewed_by,
+    )
+    return {"status": result.status}
 
 
 @app.get("/admin/feedback", response_class=HTMLResponse, include_in_schema=False)
