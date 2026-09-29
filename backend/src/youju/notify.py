@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from youju.api import v1
 from youju.api.me import new_count
 from youju.config import Settings, get_settings
-from youju.models import Document, Follow, Subscription, User
+from youju.models import Document, Follow, Source, Subscription, User
 
 log = logging.getLogger("youju.notify")
 
@@ -47,6 +47,14 @@ def _deadline(
 ) -> tuple[dict, str] | str | None:
     document = session.get(Document, row.document_id)
     if document is None:
+        return "expired"
+    # 发送时再查一遍能不能公开（来源级别可能在订阅之后才改）：不能公开的当作失效，不发
+    public = session.scalar(
+        select(Document.id)
+        .join(Source, Document.source_id == Source.id)
+        .where(Document.id == document.id, v1.public_condition())
+    )
+    if public is None:
         return "expired"
     approved = v1._approved(session, [document.id]).get(document.id, [])
     future = [d for d in approved if v1.deadline_open(d, stamp)]

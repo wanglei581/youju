@@ -74,7 +74,7 @@
         <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
         <view>· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
         <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
-        <view>· 访问日志：按法律要求保存不少于 6 个月，不在这里显示</view>
+        <view>· 访问日志：保存 190 天（法律要求不少于 6 个月），不在这里显示</view>
       </view>
     </view>
 

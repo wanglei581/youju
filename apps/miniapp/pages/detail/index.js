@@ -10,7 +10,14 @@ Page({
   data: { doc: null, due: null, dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '' },
 
   onLoad(query) {
-    api.detail(query.id)
+    this.docId = query.id;
+    this.load();
+  },
+
+  // 网络不好加载失败时，页面上点"重试"再加载一次
+  load() {
+    this.setData({ error: '' });
+    api.detail(this.docId)
       .then((doc) => {
         // 只有人工核对过的截止日期才显示（合规红线）
         const due = dueInfo(doc.deadline);

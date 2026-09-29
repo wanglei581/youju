@@ -1,4 +1,5 @@
 # 白名单：镜像里只放后端代码和来源清单。开发库数据（backend/.pgdata）、虚拟环境、测试和报告一律不进镜像
+# 本机发布脚本 backend/deploy/cloud_deploy.sh 也直接读这份白名单（以 ! 开头的行），只上传这些已提交的文件
 *
 !Dockerfile
 !backend/pyproject.toml

@@ -133,7 +133,8 @@ def reviewed_key(row, status: str) -> tuple:
 
 def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
-    （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。"""
+    （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。
+    质检退回的（audit_state 为 reopened）不沿用：必须由人重新核对。"""
     from youju.models import DocumentDeadline
 
     synced = 0
@@ -156,7 +157,7 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
                 if d.status in ("approved", "changed"):
                     confirmed.setdefault(reviewed_key(d, "approved"), d)
         for d in rows:
-            if d.status != "pending":
+            if d.status != "pending" or d.audit_state == "reopened":
                 continue
             source = exact.get(reviewed_key(d, "rejected")) or confirmed.get(
                 reviewed_key(d, "approved")

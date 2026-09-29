@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>质检存疑 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --green: #0E8A63; --g-tint: #E8F7F1; --orange: #D9640F; --o-tint: #FFF3E8; --red: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 880px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  a { color: var(--brand); }
+  .count, .meta, .hint { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .danger { color: var(--red); border-color: #F5C2C4; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .hint { margin: 0 0 12px; }
+  .row, .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: opacity .3s; }
+  .card.done { opacity: .35; }
+  .meta { font-size: 13px; }
+  .title { display: block; margin: 8px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
+  .title:hover { color: var(--brand); }
+  .when { font-weight: 600; }
+  .note { margin: 8px 0; padding: 8px 12px; background: var(--o-tint); color: var(--orange); border-radius: 8px; font-size: 14px; }
+  .evidence { margin: 8px 0; padding: 10px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
+  .msg { font-size: 13px; color: var(--red); }
+  .ok { color: var(--green); }
+  .empty { text-align: center; color: var(--t2); padding: 48px 0; }
+  .more { display: block; margin: 8px auto 32px; }
+  [hidden] { display: none !important; } /* 带 display 的样式会盖过 hidden 属性 */
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>质检存疑</h1>
+    <span class="count" id="count"></span>
+    <a href="/admin/review">截止日期核对台</a>
+    <a href="/admin/kinds">类型待定</a>
+    <a href="/admin/feedback">纠错与申请覆盖</a>
+    <a href="/admin/sources">来源接入</a>
+    <div class="auth">
+      <input id="reviewer" placeholder="核对人" size="8" aria-label="核对人">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button class="primary" id="load">载入</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">这些截止日期已经发布给用户，每天的质检（规则回查和 AI 抽查）认为可能有误。点开原文核对：没问题点"确认无误"，以后不再标；确实有误点"退回待核对"，用户端立刻不再显示（同一通知其他网址上的同一截止一起退回），这条回到截止日期核对台、标着"质检退回"，必须有人重新核对，可以改日期。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <div id="list"></div>
+  <button class="more" id="more" hidden>再载入 20 条</button>
+</main>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const shown = new Set();
+  let cursor = null;
+
+  function headers(json) {
+    const h = { 'X-Admin-Token': $('token').value.trim() };
+    if (json) h['Content-Type'] = 'application/json';
+    return h;
+  }
+  function el(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function errorFor(res) {
+    if (res.status === 401 || res.status === 429) return '口令不对、未配置，或输错次数过多';
+    if (res.status === 422) return '先在右上角填核对人';
+    if (res.status === 409) return '这条已经处理过了，刷新看看';
+    return `请求失败（${res.status}）`;
+  }
+  function originalLink(url) {
+    try {
+      const parsed = new URL(url);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+    } catch (e) { return null; }
+  }
+  async function refreshCount() {
+    const res = await fetch('/api/admin/audit/count', { headers: headers() });
+    if (!res.ok) throw new Error(errorFor(res));
+    $('count').textContent = `存疑 ${(await res.json()).flagged} 条`;
+  }
+  function render(item) {
+    const card = el('section', 'card');
+    const meta = el('div', 'meta');
+    meta.append(el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`));
+    const href = originalLink(item.url);
+    const title = el(href ? 'a' : 'span', 'title', item.title);
+    if (href) { title.href = href; title.target = '_blank'; title.rel = 'noopener noreferrer'; }
+    const when = el('div', '');
+    when.append('已发布的截止：', el('span', 'when', `${item.kind} ${item.approved_date}${item.approved_time ? ` ${item.approved_time}` : ''}`));
+    const note = el('div', 'note', `存疑原因：${item.note}`);
+    const evidence = el('div', 'evidence', `核对时的原文：${item.evidence}`);
+    const row = el('div', 'row');
+    const ok = el('button', 'primary', '确认无误');
+    const reopen = el('button', 'danger', '退回待核对');
+    const msg = el('span', 'msg');
+    async function act(path, done) {
+      ok.disabled = true; reopen.disabled = true; msg.textContent = '';
+      try {
+        const res = await fetch(`/api/admin/deadlines/${item.id}/${path}`, {
+          method: 'POST', headers: headers(true),
+          body: JSON.stringify({ reviewed_by: $('reviewer').value.trim() }),
+        });
+        if (!res.ok) throw new Error(errorFor(res));
+        card.classList.add('done');
+        msg.className = 'msg ok';
+        msg.textContent = done;
+        try { await refreshCount(); } catch (e) { /* 已保存，计数稍后重新载入 */ }
+      } catch (err) {
+        msg.className = 'msg';
+        msg.textContent = err.message;
+        ok.disabled = false; reopen.disabled = false;
+      }
+    }
+    ok.onclick = () => act('audit-ok', '已确认无误');
+    reopen.onclick = () => {
+      if (!window.confirm('退回后用户端立刻不再显示这个截止，候选回到截止日期核对台重新核对。确定退回？')) return;
+      act('reopen', '已退回待核对');
+    };
+    row.append(ok, reopen, msg);
+    card.append(meta, title, when, note, evidence, row);
+    return card;
+  }
+  async function load(reset) {
+    if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
+    const after = cursor ? `&before_id=${cursor}` : '';
+    try {
+      const res = await fetch(`/api/admin/audit?limit=20${after}`, { headers: headers() });
+      if (!res.ok) throw new Error(errorFor(res));
+      const items = await res.json();
+      await refreshCount();
+      if (!items.length && !after) $('list').append(el('div', 'empty', '没有质检存疑的截止'));
+      items.filter((item) => !shown.has(item.id)).forEach((item) => {
+        shown.add(item.id);
+        $('list').append(render(item));
+      });
+      if (items.length) cursor = Math.min(...items.map((item) => item.id));
+      $('more').hidden = items.length < 20;
+    } catch (err) {
+      $('list').append(el('div', 'empty', err.message));
+      $('more').hidden = true;
+    }
+  }
+  $('load').onclick = () => load(true);
+  $('more').onclick = () => load(false);
+})();
+</script>
+</body>
+</html>

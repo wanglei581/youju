@@ -13,13 +13,26 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, and_, func, not_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from youju.classify import doc_kind, kind_filter, list_status, region_label, status_filter
+from youju.classify import (
+    effective_kind,
+    kind_filter,
+    list_status,
+    region_label,
+    status_filter,
+)
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
-from youju.models import Document, DocumentDeadline, DocumentDetail, ListEntry, Source
+from youju.models import (
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    DocumentMerge,
+    ListEntry,
+    Source,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -160,10 +173,11 @@ def _item(
     doc: Document, src: Source, detail: DocumentDetail | None, deadlines: list[DocumentDeadline]
 ) -> dict:
     """列表行（与小程序 doc-row 的数据格式一致）。"""
+    kind = effective_kind(doc.title, doc.kind_override)
     return {
         "id": str(doc.id),
-        "kind": doc_kind(doc.title),
-        "status": list_status(doc.title),
+        "kind": kind,
+        "status": list_status(doc.title, kind),
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
@@ -180,8 +194,48 @@ def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
     return [_item(doc, src, details.get(doc.id), approved.get(doc.id, [])) for doc, src in rows]
 
 
+def _kind_is(kinds: list[str]):
+    """类型筛选：人工定过类型的按人工定的，没定过的按标题规则——规则结果入库时已算好
+    存在 rule_kind，只比较这一列；还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，
+    结果一样。"""
+    by_rule = or_(
+        Document.rule_kind.in_(kinds),
+        and_(Document.rule_kind.is_(None), kind_filter(Document.title, kinds)),
+    )
+    return or_(
+        Document.kind_override.in_(kinds),
+        and_(Document.kind_override.is_(None), by_rule),
+    )
+
+
+def public_condition():
+    """可以公开给小程序的文件：来源是 1 级（法定公文、公示名单等，可存全文和导出），或者同一通知
+    有 1 级来源的副本——转载的网址归并时，主文件可能来自转载来源，内容是同一份公文。
+    2 级（只存题录）、3 级（按授权）来源的文件怎么展示另行决定，接入前先不公开。
+    要求查询里已经连上这份文件的 Source。"""
+    twin = aliased(Document)
+    twin_source = aliased(Source)
+    level1_twin = (
+        select(DocumentMerge.duplicate_id)
+        .join(twin, twin.id == DocumentMerge.duplicate_id)
+        .join(twin_source, twin_source.id == twin.source_id)
+        .where(
+            DocumentMerge.canonical_id == Document.id,
+            DocumentMerge.active.is_(True),
+            twin_source.rights_level == 1,
+        )
+        .exists()
+    )
+    return or_(Source.rights_level == 1, level1_twin)
+
+
 def _base() -> Select:
-    return visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
+    """公开给小程序的文件：同一通知只列主文件，只列可以公开的（见 public_condition）。"""
+    return visible_documents(
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .where(public_condition())
+    )
 
 
 def _ordered(stmt: Select) -> Select:
@@ -197,10 +251,12 @@ def _count(session: Session, stmt: Select) -> int:
 def home(session: SessionDep) -> dict:
     """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
     start, end = _week(now().date())
-    week = visible_documents(select(Document.title)).where(
-        Document.publish_date >= start, Document.publish_date < end
-    )
-    kinds = [doc_kind(t) for (t,) in session.execute(week).all()]
+    week = visible_documents(
+        select(Document.title, Document.kind_override)
+        .join(Source, Document.source_id == Source.id)
+        .where(public_condition())
+    ).where(Document.publish_date >= start, Document.publish_date < end)
+    kinds = [effective_kind(t, override) for t, override in session.execute(week).all()]
     # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
     live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
     sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
@@ -214,7 +270,7 @@ def home(session: SessionDep) -> dict:
     )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
     latest = session.execute(
-        _ordered(_base().where(kind_filter(Document.title, ["申报通知", "名单", "政策"]))).limit(8)
+        _ordered(_base().where(_kind_is(["申报通知", "名单", "政策"]))).limit(8)
     ).all()
     return {
         "stats": {
@@ -295,7 +351,7 @@ def _dept_filter(groups: list[str]):
 
 
 def _keyword_ids(session: Session, kw: str) -> Select:
-    """关键词命中的文件：标题（走 pg_trgm 索引）或文号，分两次查询再合并，互不拖累。"""
+    """关键词命中的文件：标题或文号，分两次查询再合并，互不拖累。"""
     like = f"%{_escape_like(kw)}%"
     by_title = select(Document.id).where(Document.title.ilike(like, escape="\\"))
     by_number = select(DocumentDetail.document_id).where(
@@ -360,15 +416,15 @@ def search_statement(
     if kw:
         stmt = stmt.where(Document.id.in_(_keyword_ids(session, kw)))
     if kind != "all":
-        stmt = stmt.where(kind_filter(Document.title, [kind]))
+        stmt = stmt.where(_kind_is([kind]))
     if picked_types:
-        stmt = stmt.where(kind_filter(Document.title, picked_types))
+        stmt = stmt.where(_kind_is(picked_types))
     if picked_regions:
         stmt = stmt.where(
             Source.province.in_(["国家" if r == "国家部委" else r for r in picked_regions])
         )
     if picked_status:
-        stmt = stmt.where(status_filter(Document.title, picked_status))
+        stmt = stmt.where(status_filter(Document.title, picked_status, _kind_is(["名单"])))
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
 
@@ -451,7 +507,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    kind = doc_kind(doc.title)
+    kind = effective_kind(doc.title, doc.kind_override)
     return {
         "id": str(doc.id),
         "kind": kind,
@@ -509,6 +565,7 @@ def calendar(
         .join(Source, Document.source_id == Source.id)
         .where(
             DocumentDeadline.status == "approved",
+            public_condition(),
             not_passed,
             DocumentDeadline.approved_date <= d + timedelta(days=days),
         )
@@ -542,7 +599,7 @@ def calendar(
                 "due": dl.approved_date.isoformat(),
                 "time": _hhmm(dl.approved_time),
                 "region": f"{'国家' if src.province == '国家' else src.province} · {src.dept}",
-                "kind": doc_kind(doc.title),
+                "kind": effective_kind(doc.title, doc.kind_override),
                 "title": doc.title,
                 "what": dl.kind,
                 "hasDetail": True,
@@ -560,7 +617,7 @@ def recent_lists(
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
 ) -> dict:
     """最近发布的名单与公示，以及本周份数。"""
-    stmt = _base().where(kind_filter(Document.title, ["名单"]))
+    stmt = _base().where(_kind_is(["名单"]))
     start, end = _week(now().date())
     week_total = _count(
         session, stmt.where(Document.publish_date >= start, Document.publish_date < end)
@@ -597,10 +654,14 @@ def lookup_lists(
     code = query.upper()
 
     def public(stmt: Select) -> Select:
+        # 人工在核对台把文件定为"不是名单"的，它原来解析出的条目不再给用户查（D-023）
         return (
             stmt.join(Document, Document.id == ListEntry.document_id)
             .join(Source, Source.id == Document.source_id)
-            .where(Source.rights_level == 1)
+            .where(
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            )
         )
 
     direct = or_(ListEntry.normalized_name == query, ListEntry.credit_code == code)

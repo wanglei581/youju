@@ -65,14 +65,14 @@ def test_error_alert_path_is_sanitized_and_handler_never_fails(monkeypatch) -> N
         raise RuntimeError("down")
 
     # 临时挂一个会出错的路由，用带换行、超长的路径请求它
-    app.add_api_route("/__test_boom/{rest:path}", boom)
+    app.add_api_route("/api/v1/__test_boom/{rest:path}", boom)
     try:
         client = TestClient(app, raise_server_exceptions=False)
-        assert client.get("/__test_boom/" + "9" * 500).status_code == 500
+        assert client.get("/api/v1/__test_boom/" + "9" * 500).status_code == 500
         assert len(sent) == 1
         # 超长路径截断，异常类型在前面不会被挤掉
         message = sent[0]
-        assert message.split("：", 1)[1].startswith("RuntimeError，GET /__test_boom/")
+        assert message.split("：", 1)[1].startswith("RuntimeError，GET /api/v1/__test_boom/")
         assert message.endswith("…") and len(message) < 300
 
         # 提醒这一步自己出错（例如读配置失败）：照样返回固定的 500
@@ -81,12 +81,14 @@ def test_error_alert_path_is_sanitized_and_handler_never_fails(monkeypatch) -> N
 
         monkeypatch.setattr(app_module, "get_settings", settings_broken)
         monkeypatch.setattr(app_module, "_error_state", {"last_alert": None, "count": 0})
-        response = client.get("/__test_boom/x")
+        response = client.get("/api/v1/__test_boom/x")
         assert response.status_code == 500
         assert response.json() == {"detail": "服务出错了，请稍后再试"}
     finally:
         app.router.routes[:] = [
-            r for r in app.router.routes if getattr(r, "path", "") != "/__test_boom/{rest:path}"
+            r
+            for r in app.router.routes
+            if getattr(r, "path", "") != "/api/v1/__test_boom/{rest:path}"
         ]
 
 

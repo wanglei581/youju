@@ -2,7 +2,7 @@
 # 容器启动脚本（微信云托管）。
 #   YOUJU_ROLE=admin  核对台和定时任务服务（实例数固定为 1）：先迁移数据库，再启动 cron 和接口
 #   YOUJU_ROLE=api    小程序接口服务（按量伸缩）：只启动接口；不做迁移
-# 迁移用 PostgreSQL 咨询锁，滚动发布时即使新旧两个 admin 实例同时启动，也只有一个在迁移。
+# 迁移用 MySQL 命名锁（GET_LOCK），滚动发布时即使新旧两个 admin 实例同时启动，也只有一个在迁移。
 # 发布顺序：先发 admin（完成迁移），再发 api。
 set -e
 cd /app/backend
@@ -17,6 +17,8 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
     exit 1
   fi
   youju db-upgrade
+  # 按当前代码里的标题规则重算文件类型（规则随版本更新；搜索按类型筛选时只比较算好的这一列）
+  youju reclassify
   # cron 看不到容器的环境变量，先写进文件（只有容器内 root 可读），任务脚本里再读
   umask 077
   env | grep -E '^(YOUJU_|TZ=|PATH=)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /" > /app/backend/deploy/env.sh
@@ -26,5 +28,6 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
   cron
 fi
 # 固定单进程：一个实例一个进程（接口出错提醒按进程计数、核对台口令限流也在进程内）。
-# 不写 --workers 时 uvicorn 会读环境变量 WEB_CONCURRENCY，可能起多个进程
-exec uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}" --workers 1
+# 不写 --workers 时 uvicorn 会读环境变量 WEB_CONCURRENCY，可能起多个进程。
+# 关掉 uvicorn 自带的访问日志（它带查询参数，如检索词、企业名称）；访问日志由程序自己记，只记路径
+exec uvicorn youju.api.app:app --host 0.0.0.0 --port "${PORT:-80}" --workers 1 --no-access-log

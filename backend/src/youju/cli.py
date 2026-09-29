@@ -15,6 +15,33 @@ from youju.models import Document, Source
 log = logging.getLogger("youju")
 
 
+def _finish_ai(client, task: str) -> bool:
+    """命令结束时把这次的 AI 用量记到台账，再关掉客户端。记账失败重试一次，还失败就把没记上的
+    用量打到日志里并返回 False：命令按失败退出、由 job.sh 提醒，免得 AI 花费悄悄漏记。"""
+    if client is None:
+        return True
+    try:
+        if not client.totals["calls"]:
+            return True
+        from youju.ai.usage import record_usage
+
+        for attempt in (1, 2):
+            try:
+                with session_factory()() as session:
+                    record_usage(session, client, task)
+                return True
+            except Exception:
+                log.exception("AI 用量记账失败（%s，第 %d 次）", task, attempt)
+        totals = client.totals
+        print(
+            f"AI 用量没记进台账（{task}）：调用 {totals['calls']} 次、出错 {totals['errors']} 次、"
+            f"输入 {totals['prompt_tokens']}、输出 {totals['completion_tokens']} tokens"
+        )
+        return False
+    finally:
+        client.close()
+
+
 def _cmd_db_upgrade(_: argparse.Namespace) -> int:
     from youju.migrations import upgrade
 
@@ -149,22 +176,283 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_parse_lists(args: argparse.Namespace) -> int:
-    from youju.lists.service import parse_lists
+def _cmd_ai_check(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.pipeline import run_ai_checks
+
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过 AI 检查，照常用规则")
+        return 0
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = run_ai_checks(session, client, limit=args.limit)
+    finally:
+        usage_ok = _finish_ai(client, "check")
+    print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(f"  类型：和规则一致 {report.kind_agree} 份，不一致 {len(report.kind_disagree)} 份")
+    print(
+        f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    for doc_id, title, rule, ai_kind in report.kind_disagree[:20]:
+        print(f"  类型不一致 #{doc_id} 规则={rule} AI={ai_kind}：{title[:60]}")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
+def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.audit import alert_text, run_audit
+    from youju.alerts import send_alert
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = run_audit(session, client, sample=args.sample)
+    finally:
+        usage_ok = _finish_ai(client, "audit")
+    ai_part = (
+        f"AI 抽查 {report.checked_by_ai} 份文件"
+        if client is not None
+        else "没配 AI 密钥，只做规则回查"
+    )
+    print(f"质检：规则回查 {report.checked_by_rules} 条已发布的截止，{ai_part}")
+    print(
+        f"  新发现存疑 {len(report.flagged)} 条；"
+        f"AI 说有误但对不上原文、没采信 {report.unverified} 条；AI 出错 {report.errors} 份；"
+        f"用量：输入 {report.prompt_tokens}、输出 {report.completion_tokens} tokens"
+    )
+    for deadline_id, title, note in report.flagged[:20]:
+        print(f"  #{deadline_id} {title[:40]}：{note}")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，AI 抽查提前停止（规则回查已做完）")
+    # 存疑和 AI 出错合成一条提醒；规则回查照常做完，所以不按任务失败退出（用量没记上除外）
+    text = alert_text(report)
+    if text:
+        send_alert(text)
+    return 0 if usage_ok else 1
+
+
+def _cmd_daily_report(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.alerts import send_alert
+    from youju.digest import build_digest, digest_text, pick_for_review
+
+    client = get_chat_client()
+    usage_ok = False
+    now = datetime.now(UTC)  # 日报和 AI 建议用同一个时间，跨午夜也按同一天算
+    try:
+        with session_factory()() as session:
+            digest = build_digest(session, now=now)
+            # 配了 AI 时请它从待核对的通知里挑几份建议先核对；没配或出错时日报照发
+            picks = pick_for_review(session, client, now=now) if client is not None else []
+    finally:
+        usage_ok = _finish_ai(client, "report")
+    text = digest_text(digest, picks)
+    print(text)
+    sent = None if args.dry_run else send_alert(text)
+    return 1 if sent is False or not usage_ok else 0
+
+
+def _cmd_reclassify(_: argparse.Namespace) -> int:
+    """按当前的标题规则重算每份文件的类型（rule_kind），只写有变化的。规则改了之后要跑一次；
+    admin 服务每次启动时在迁移之后自动跑。"""
+    from collections import defaultdict
+
+    from sqlalchemy import update
+
+    from youju.classify import doc_kind
 
     with session_factory()() as session:
-        report = parse_lists(session, since=args.since)
+        rows = session.execute(select(Document.id, Document.title, Document.rule_kind)).all()
+        changed: dict[str, list[int]] = defaultdict(list)
+        for doc_id, title, kind in rows:
+            new = doc_kind(title)
+            if new != kind:
+                changed[new].append(doc_id)
+        for kind, ids in changed.items():
+            for start in range(0, len(ids), 1000):
+                session.execute(
+                    update(Document)
+                    .where(Document.id.in_(ids[start : start + 1000]))
+                    .values(rule_kind=kind)
+                )
+        session.commit()
+    print(f"按当前规则重算文件类型：共 {len(rows)} 份，更新 {sum(map(len, changed.values()))} 份")
+    return 0
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    from youju.backup import BackupError, dump, run_backup
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        if args.output:
+            with args.output.open("wb") as out:
+                counts = dump(engine, out)
+            size = args.output.stat().st_size
+            print(f"已导出到 {args.output}（{size} 字节）：共 {sum(counts.values())} 条记录")
+            return 0
+        env = get_settings().cloud_env
+        if not env:
+            print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传备份")
+            return 1
+        report = run_backup(engine, env)
+    except BackupError as exc:
+        print(f"备份失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(
+        f"已备份 {sum(report.counts.values())} 条记录（{report.bytes} 字节）到 {report.path}；"
+        f"删掉 {report.pruned} 份 30 天前的备份"
+    )
+    return 0
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    from youju.backup import BackupError, restore
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        with args.file.open("rb") as src:
+            counts = restore(engine, src)
+    except BackupError as exc:
+        print(f"恢复失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"已恢复 {sum(counts.values())} 条记录，各表条数、外键和内容都和备份一致：")
+    for name, count in counts.items():
+        print(f"  {name}: {count}")
+    return 0
+
+
+def _cmd_archive_logs(args: argparse.Namespace) -> int:
+    from youju.access_log import run_archive
+    from youju.backup import BackupError
+    from youju.db import create_mysql_engine
+
+    env = get_settings().cloud_env
+    if not args.output and not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传访问日志归档")
+        return 1
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        report = run_archive(engine, env, output=args.output)
+    except BackupError as exc:
+        print(f"访问日志归档失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    days = "，".join(f"{day:%m-%d} {rows} 条" for day, rows in report.days.items())
+    print(
+        f"访问日志归档：{days or '没有要归档的'}（共 {report.bytes} 字节）；"
+        f"删掉超过 190 天的暂存 {report.expired} 条、过期归档 {report.pruned} 份"
+    )
+    return 0
+
+
+def _cmd_log_uid(args: argparse.Namespace) -> int:
+    from youju.access_log import log_uid
+
+    print(log_uid(args.openid))
+    return 0
+
+
+def _cmd_triage_feedback(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.ai.triage import triage_feedback
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = triage_feedback(session, client, limit=args.limit)
+    finally:
+        usage_ok = _finish_ai(client, "triage")
+    print(
+        f"纠错分诊 {report.triaged} 条，新标存疑 {report.flagged} 条"
+        + ("" if client is not None else "（没配 AI 密钥，只做规则回查）")
+        + f"；AI 出错 {report.errors} 次"
+    )
+    if report.stopped_early:
+        print("连续多条调用 AI 出错，本轮提前停止，下一轮再试")
+        return 1
+    return 0 if usage_ok else 1
+
+
+def _cmd_try_source(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.sources.onboard import trial, trial_fetcher
+
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with trial_fetcher() as fetcher:
+            result = trial(args.url, fetcher, client, want_ai_rule=args.ai_rule)
+    finally:
+        usage_ok = _finish_ai(client, "onboard")
+    print(f"抓取：{result.status}（{result.final_url}）{result.error or ''}")
+    if result.status != "ok":
+        return 1
+    print(f"通用规则识别出 {len(result.generic)} 条：")
+    for item in result.generic[:5]:
+        print(f"  {item.publish_date} {item.title[:60]}")
+    if result.ai_config:
+        print(f"AI 写的规则 {result.ai_config} 识别出 {len(result.ai_items)} 条：")
+        for item in result.ai_items[:5]:
+            print(f"  {item.publish_date} {item.title[:60]}")
+    elif result.ai_note:
+        print(f"AI 写的规则没采用：{result.ai_note}")
+    p = result.proposal
+    print(
+        f"登记建议：层级 {p.level or '？'}，省份 {p.province or '？'}，部门 {p.dept or '？'}，"
+        f"部门全称 {p.dept_full_name or '？'}，栏目 {p.column_name or '？'}"
+    )
+    print('只是试跑，没有写数据库；到后台"来源接入"页确认后才接入')
+    return 0 if usage_ok else 1
+
+
+def _cmd_parse_lists(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.lists.service import parse_lists
+
+    # 配了 AI 时，规则找不到名称列的表格请 AI 认列；没配就只用规则
+    client = get_chat_client()
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = parse_lists(session, since=args.since, ai_client=client)
+    finally:
+        usage_ok = _finish_ai(client, "lists")
     print(
         f"名单文件 {report.documents}，成功解析 {report.parsed_documents}，"
         f"企业/机构条目 {report.names}，本次下载附件 {report.attachments_fetched}/200，"
         f"待下次处理附件 {report.attachments_deferred}"
     )
+    if report.ai_tables_tried:
+        print(
+            f"规则找不到名称列、请 AI 认列的表格 {report.ai_tables_tried} 张，"
+            f"AI 认出并抽到机构名称的 {report.ai_tables_found} 张"
+        )
     print("各类别条目数：" + ("，".join(f"{k} {v}" for k, v in report.categories.items()) or "无"))
     print("失败原因分布：" + ("，".join(f"{k} {v}" for k, v in report.failures.items()) or "无"))
     print("抽样（最多10条）：")
     for sample in report.samples:
         print(f"  {sample.title}｜{sample.name}｜{sample.status}｜{sample.url}")
-    return 0
+    return 0 if usage_ok else 1
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -246,6 +534,58 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
 
+    p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
+    p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")
+    p.set_defaults(func=_cmd_ai_check)
+
+    p = sub.add_parser(
+        "audit-deadlines",
+        help="质检已发布的截止日期：规则回查全部，配了 AI 时再抽查一部分；存疑的提醒到群里",
+    )
+    p.add_argument("--sample", type=int, default=20, help="AI 本次最多抽查多少份文件")
+    p.set_defaults(func=_cmd_audit_deadlines)
+
+    sub.add_parser(
+        "reclassify",
+        help="按当前的标题规则重算每份文件的类型（规则改了之后跑；admin 启动时自动跑）",
+    ).set_defaults(func=_cmd_reclassify)
+
+    p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
+    p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
+    p.set_defaults(func=_cmd_backup)
+
+    p = sub.add_parser(
+        "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
+    )
+    p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
+    p.set_defaults(func=_cmd_restore)
+
+    p = sub.add_parser(
+        "archive-logs", help="把之前每天的访问日志归档到云托管对象存储，保留 190 天，删掉过期的"
+    )
+    p.add_argument("--output", type=Path, help="只写到本机这个目录，不上传")
+    p.set_defaults(func=_cmd_archive_logs)
+
+    p = sub.add_parser(
+        "log-uid", help="算出某个 openid 在访问日志里的用户编号（查某个用户的日志用）"
+    )
+    p.add_argument("openid")
+    p.set_defaults(func=_cmd_log_uid)
+
+    p = sub.add_parser(
+        "triage-feedback",
+        help="纠错分诊：用规则和 AI 复查纠错对应文件已发布的截止日期（纠错内容不发给 AI）",
+    )
+    p.add_argument("--limit", type=int, default=50, help="本轮最多分诊多少条纠错")
+    p.set_defaults(func=_cmd_triage_feedback)
+
+    p = sub.add_parser(
+        "try-source", help="试跑一个栏目网址：抓一次列表页、识别条目、给出登记建议（不写数据库）"
+    )
+    p.add_argument("url", help="政府网站栏目列表页网址（域名以 .gov.cn 结尾）")
+    p.add_argument("--ai-rule", action="store_true", help="通用规则识别出来了也让 AI 写抓取规则")
+    p.set_defaults(func=_cmd_try_source)
+
     p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
     p.add_argument(
         "--since",
@@ -256,6 +596,12 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_parse_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
+    p = sub.add_parser(
+        "daily-report",
+        help="运维日报：运行情况、待办和 AI 用量发到群里，配了 AI 时附上建议先核对的通知",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只打印，不发到群里")
+    p.set_defaults(func=_cmd_daily_report)
     sub.add_parser(
         "notify", help="发送一次性订阅提醒；未设置 YOUJU_SEND_WX_MESSAGES=true 时只演练"
     ).set_defaults(func=_cmd_notify)
@@ -281,6 +627,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # 本项目的日志一律按 INFO 输出到容器日志：basicConfig 在已有日志处理器时什么都不做，这里单独设
+    logging.getLogger("youju").setLevel(logging.INFO)
     return args.func(args)
 
 
