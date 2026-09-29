@@ -765,6 +765,96 @@ module.exports = {
       }
     ]
   },
+  "listBoard": {
+    "recent": {
+      "total": 6,
+      "items": [
+        {
+          "id": "l0",
+          "title": "北京市经济和信息化局关于公布2026年新创建北京市企业技术中心名单的通知",
+          "date": "2026-09-24",
+          "wording": "公布",
+          "issuer": "北京市经济和信息化局",
+          "province": "北京",
+          "year": 2026,
+          "type": "其他",
+          "count": 42
+        },
+        {
+          "id": "l1",
+          "title": "关于上海市2026年第六批拟入库科技型中小企业名单的公示",
+          "date": "2026-09-24",
+          "wording": "公示",
+          "issuer": "上海市科学技术委员会",
+          "province": "上海",
+          "year": 2026,
+          "type": "科技型中小企业",
+          "count": null
+        },
+        {
+          "id": "l2",
+          "title": "关于公布西藏自治区2026年度绿色制造名单的通知",
+          "date": "2026-09-24",
+          "wording": "公布",
+          "issuer": "西藏自治区经济和信息化厅",
+          "province": "西藏",
+          "year": 2026,
+          "type": "其他",
+          "count": 18
+        },
+        {
+          "id": "l3",
+          "title": "2026年度自治区级绿色工厂拟定名单公示",
+          "date": "2026-09-23",
+          "wording": "公示",
+          "issuer": "新疆维吾尔自治区工业和信息化厅",
+          "province": "新疆",
+          "year": 2026,
+          "type": "其他",
+          "count": 12
+        },
+        {
+          "id": "l4",
+          "title": "山西省工业和信息化厅关于公布2026年专精特新中小企业名单的通知",
+          "date": "2026-09-22",
+          "wording": "公布",
+          "issuer": "山西省工业和信息化厅",
+          "province": "山西",
+          "year": 2026,
+          "type": "专精特新",
+          "count": 31
+        },
+        {
+          "id": "l5",
+          "title": "关于河南省2026年度第三批拟更名和重大变化高新技术企业的公示",
+          "date": "2026-09-22",
+          "wording": "公示",
+          "issuer": "河南省科学技术厅",
+          "province": "河南",
+          "year": 2026,
+          "type": "高新技术企业",
+          "count": 7
+        }
+      ]
+    },
+    "stats": {
+      "by_year": [{ "year": 2026, "lists": 6, "entries": 110 }],
+      "by_province": [
+        { "province": "北京", "lists": 1, "entries": 42 },
+        { "province": "上海", "lists": 1, "entries": 0 },
+        { "province": "山西", "lists": 1, "entries": 31 },
+        { "province": "河南", "lists": 1, "entries": 7 },
+        { "province": "新疆", "lists": 1, "entries": 12 },
+        { "province": "西藏", "lists": 1, "entries": 18 }
+      ],
+      "by_type": [
+        { "type": "高新技术企业", "lists": 1, "entries": 7 },
+        { "type": "专精特新", "lists": 1, "entries": 31 },
+        { "type": "科技型中小企业", "lists": 1, "entries": 0 },
+        { "type": "其他", "lists": 3, "entries": 72 }
+      ]
+    }
+  },
   "calendar": [
     {
       "id": "nx",

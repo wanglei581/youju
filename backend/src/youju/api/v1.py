@@ -1,4 +1,4 @@
-"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单、查名单。
+"""小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、报告、最近名单、查名单。
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
 截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
@@ -63,6 +63,8 @@ TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
 DEPTS = {"科技部门", "工信部门", "其他部门"}
+LIST_BOARD_TYPES = ("高新技术企业", "专精特新", "科技型中小企业", "其他")
+LIST_BOARD_TYPE_SET = set(LIST_BOARD_TYPES)
 PROVINCES = {
     "国家部委", "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏",
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
@@ -482,6 +484,26 @@ def _dept_bucket(value: str) -> str:
     return "其他部门"
 
 
+def _list_board_type(title: str) -> str:
+    """按标题把名单归到看板的四类；顺序固定，避免标题同时出现多个类别时漂移。"""
+    if "高新技术企业" in title:
+        return "高新技术企业"
+    if "专精特新" in title:
+        return "专精特新"
+    if "科技型中小企业" in title:
+        return "科技型中小企业"
+    return "其他"
+
+
+def _list_board_wording(title: str) -> str | None:
+    """只照录标题里的用词；不根据“拟”等词推断是否最终入选。"""
+    if "公示" in title:
+        return "公示"
+    if "公布" in title:
+        return "公布"
+    return None
+
+
 def _future_approved_canonical_ids(session: Session, today: date) -> list[int]:
     """取今天起有已核对截止的归并主文件编号。"""
     ids = list(
@@ -716,6 +738,175 @@ def deadline_report(
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
     return payload
+
+
+def _list_board_stats_item(field: str, key: Any, lists: int, entries: int) -> dict[str, Any]:
+    """统计项保留分组字段、名单份数和已解析的企业条数。"""
+    return {
+        field: key,
+        "lists": lists,
+        "entries": entries,
+    }
+
+
+def _list_board_payload(
+    session: Session,
+    days: int,
+    year: int | None,
+    province: str,
+    list_type: str,
+) -> dict[str, Any]:
+    """生成筛选后的完整名单和统计，调用方负责分页。"""
+    rows = session.execute(_base().where(_kind_is(["名单"]))).all()
+    if not rows:
+        return {"records": [], "stats": {"by_year": [], "by_province": [], "by_type": []}}
+
+    masters = [doc.id for doc, _ in rows]
+    members_by_master = groups_for(session, masters)
+    owner = {member: master for master, members in members_by_master.items() for member in members}
+    member_ids = list(owner)
+    details = _details(session, masters)
+    # 和查名单完全同一公开来源条件：只取一级来源，或与一级来源归并的同一通知。
+    entry_rows = session.execute(
+        select(ListEntry.document_id, ListEntry.normalized_name)
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            ListEntry.document_id.in_(member_ids),
+            public_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+        )
+    ).all()
+    names_by_master: dict[int, set[str]] = {master: set() for master in masters}
+    parsed_masters: set[int] = set()
+    for document_id, normalized_name in entry_rows:
+        master = owner.get(document_id)
+        if master is not None:
+            parsed_masters.add(master)
+            if normalized_name:
+                names_by_master[master].add(normalized_name)
+
+    records: list[dict[str, Any]] = []
+    for doc, src in rows:
+        detail = details.get(doc.id)
+        item_type = _list_board_type(doc.title)
+        item_province = "国家部委" if src.province == "国家" else src.province
+        item_year = doc.publish_date.year if doc.publish_date else None
+        if year is not None and item_year != year:
+            continue
+        if province and item_province != province:
+            continue
+        if list_type and item_type != list_type:
+            continue
+        wording = _list_board_wording(doc.title)
+        count = len(names_by_master[doc.id]) if doc.id in parsed_masters else None
+        records.append(
+            {
+                "id": str(doc.id),
+                "title": doc.title,
+                "date": doc.publish_date.isoformat() if doc.publish_date else None,
+                "wording": wording,
+                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "province": item_province,
+                "year": item_year,
+                "type": item_type,
+                "count": count,
+            }
+        )
+    records.sort(
+        key=lambda item: (item["date"] is None, item["date"] or "", item["id"]), reverse=True
+    )
+
+    def stat_rows(field: str) -> list[dict[str, Any]]:
+        grouped: dict[str, list[int]] = {}
+        for record in records:
+            value = record[field]
+            if value is None:
+                continue
+            key = str(value)
+            current = grouped.setdefault(key, [0, 0])
+            current[0] += 1
+            if record["count"] is not None:
+                current[1] += record["count"]
+        result = [
+            _list_board_stats_item(
+                field, int(key) if field == "year" else key, values[0], values[1]
+            )
+            for key, values in grouped.items()
+        ]
+        if field == "type":
+            result.sort(key=lambda item: LIST_BOARD_TYPES.index(item["type"]))
+        elif field == "year":
+            result.sort(key=lambda item: int(item["year"]), reverse=True)
+        else:
+            result.sort(key=lambda item: item["province"])
+        return result
+
+    today = now().astimezone(_TZ).date()
+    start_date = today - timedelta(days=days - 1)
+    recent = [
+        item
+        for item in records
+        if item["date"] is not None and start_date.isoformat() <= item["date"] <= today.isoformat()
+    ]
+    stats = {
+        "by_year": stat_rows("year"),
+        "by_province": stat_rows("province"),
+        "by_type": stat_rows("type"),
+    }
+    return {"records": recent, "stats": stats}
+
+
+@router.get("/reports/lists")
+def list_board_report(
+    session: SessionDep,
+    days: Annotated[int, Query(description="最近 30 或 90 天")] = 30,
+    year: Annotated[str, Query(max_length=4)] = "",
+    province: Annotated[str, Query(max_length=32)] = "",
+    type: Annotated[str, Query(max_length=32)] = "",
+    page: Annotated[int, Query(ge=1, le=10000)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, Any]:
+    """名单看板：公示和公布都照录标题，不推断名单是否最终入选。"""
+    if days not in (30, 90):
+        raise HTTPException(status_code=422, detail="days 只支持 30、90")
+    year_value: int | None = None
+    year_text = year.strip()
+    if year_text:
+        if not year_text.isdigit() or not 1900 <= int(year_text) <= 2100:
+            raise HTTPException(status_code=422, detail="年度不支持")
+        year_value = int(year_text)
+    province = province.strip()
+    list_type = type.strip()
+    if province and province not in (set(PROVINCES) - {"不限地区"}):
+        raise HTTPException(status_code=422, detail="省份不支持")
+    if list_type and list_type not in LIST_BOARD_TYPE_SET:
+        raise HTTPException(status_code=422, detail="名单类型不支持")
+    key = (days, year_value, province, list_type, now().astimezone(_TZ).date())
+    cached = _REPORT_CACHE.get(key)
+    current = _time.monotonic()
+    if cached and current - cached[0] < REPORT_CACHE_TTL:
+        result = cached[1]
+    else:
+        result = _list_board_payload(session, days, year_value, province, list_type)
+        if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
+            _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
+        _REPORT_CACHE[key] = (current, result)
+    records = result["records"]
+    start = (page - 1) * size
+    return {
+        "days": days,
+        "year": year_value,
+        "province": province,
+        "type": list_type,
+        "recent": {
+            "total": len(records),
+            "page": page,
+            "size": size,
+            "items": records[start : start + size],
+        },
+        "stats": result["stats"],
+    }
 
 
 def _fmt_deadline_note(d: DocumentDeadline) -> str:
