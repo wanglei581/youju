@@ -9,6 +9,8 @@
 # 只上传镜像需要的文件：清单直接取 .dockerignore 的白名单（以 ! 开头的行，和云端构建用的是同一份），
 # 用 git archive 取出这个版本里已提交的这些文件（本机的 .env、虚拟环境、数据库目录不会带上），
 # 放到临时目录里；发布前再查一遍有没有像密钥的内容，有就停下。
+# 上传目录里不放 .dockerignore：目录里本来就只有白名单文件；而 wxcloud CLI（2.3.3）会读它、
+# 却把 "!backend/src/**" 这类例外规则转换错（变成 "**/!backend/src/**"），代码目录会被当成要忽略的。
 # 环境变量（数据库密码、核对台口令、密钥）不经过这个脚本，只由创始人在云托管控制台填写，
 # 所以不用 --envParams（它会把变量写进服务设置）。
 # 发布顺序：先 admin（启动时迁移数据库），再 api。
@@ -64,7 +66,7 @@ OLD_IFS=$IFS
 IFS='
 '
 # shellcheck disable=SC2086 # 按行拆开白名单，路径里有中文、没有换行
-git -C "$ROOT" archive -o "$STAGE/src.tar" "$SHA" .dockerignore $PATHS
+git -C "$ROOT" archive -o "$STAGE/src.tar" "$SHA" $PATHS
 IFS=$OLD_IFS
 tar -x -f "$STAGE/src.tar" -C "$STAGE"
 rm "$STAGE/src.tar"
@@ -91,4 +93,7 @@ fi
 cd "$STAGE"
 wxcloud run:deploy . --envId="$ENV_ID" --serviceName="$SERVICE" \
   --targetDir=. --dockerfile=Dockerfile --containerPort=80 \
-  --releaseType=FULL --remark="$SERVICE $SHA" --noConfirm
+  --releaseType=FULL --remark="$SERVICE $SHA" --noConfirm --detach
+# --detach：提交后直接返回。9/29 首次发布时 CLI 拉部署日志一直报 "topic not exist" 卡住不退出；
+# 构建和上线进度用下面这条命令看（build_failed 构建失败、normal 已上线）
+echo "已提交。查看进度：wxcloud version:list -e $ENV_ID -s $SERVICE"
