@@ -93,4 +93,7 @@ fi
 cd "$STAGE"
 wxcloud run:deploy . --envId="$ENV_ID" --serviceName="$SERVICE" \
   --targetDir=. --dockerfile=Dockerfile --containerPort=80 \
-  --releaseType=FULL --remark="$SERVICE $SHA" --noConfirm
+  --releaseType=FULL --remark="$SERVICE $SHA" --noConfirm --detach
+# --detach：提交后直接返回。9/29 首次发布时 CLI 拉部署日志一直报 "topic not exist" 卡住不退出；
+# 构建和上线进度用下面这条命令看（build_failed 构建失败、normal 已上线）
+echo "已提交。查看进度：wxcloud version:list -e $ENV_ID -s $SERVICE"
