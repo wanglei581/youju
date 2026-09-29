@@ -454,8 +454,8 @@ class AccessLog(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    # 这条记录的随机编号：写库失败后补写时，同一条不会写进两次
-    rid: Mapped[str] = mapped_column(String(16))
+    # 这条记录的随机编号（128 位）：写库失败后补写时，同一条不会写进两次
+    rid: Mapped[str] = mapped_column(String(32))
     # 请求处理完、写日志的时间
     at: Mapped[datetime] = mapped_column(UTCDateTime())
     # 写进数据库的时间（数据库的时钟）：每天按它归档，写库失败后补写的记录归进补写那天

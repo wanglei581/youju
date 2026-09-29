@@ -161,7 +161,7 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
     openid = entry.get("openid")
     row = {name: entry.get(name) for name in _FIELDS}
     # rid：这条记录的随机编号。提交其实成功了却报错时会补写第二次，编号相同就只留一条
-    row.update(rid=secrets.token_hex(8), at=datetime.now(UTC), uid=None)
+    row.update(rid=secrets.token_hex(16), at=datetime.now(UTC), uid=None)
     with _pending_lock:
         batch = [*_pending, (row, openid)]
         _pending.clear()

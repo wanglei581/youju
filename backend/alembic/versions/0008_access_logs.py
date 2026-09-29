@@ -26,7 +26,7 @@ def upgrade() -> None:
     op.create_table(
         "access_logs",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column("rid", sa.String(length=16), nullable=False),
+        sa.Column("rid", sa.String(length=32), nullable=False),
         sa.Column("at", mysql.DATETIME(fsp=6), nullable=False),
         sa.Column(
             "logged_at",

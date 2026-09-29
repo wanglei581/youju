@@ -181,7 +181,7 @@ def add(session, at: datetime, path: str = "/api/v1/home", logged_at: datetime |
         AccessLog(
             at=at,
             logged_at=logged_at or at,
-            rid=secrets.token_hex(8),
+            rid=secrets.token_hex(16),
             service="api",
             method="GET",
             path=path,
@@ -296,7 +296,7 @@ def test_backup_skips_access_logs_and_restore_leaves_them(session, db_engine, tm
             conn.execute(
                 AccessLog.__table__.insert(),
                 {
-                    "rid": "r" * 16,
+                    "rid": "r" * 32,
                     "at": NOW,
                     "service": "admin",
                     "method": "GET",
