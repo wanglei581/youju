@@ -70,13 +70,13 @@ tar -x -f "$STAGE/src.tar" -C "$STAGE"
 rm "$STAGE/src.tar"
 find "$STAGE" -name __pycache__ -prune -exec rm -rf {} +
 
-# 发布前查一遍：像密钥、口令、机器人地址的内容一律不上传
+# 发布前查一遍：像密钥、口令、机器人地址、带口令的连接地址（任何数据库或服务）的内容一律不上传
 if grep -rIlE \
   -e '(YOUJU_[A-Z_]*(TOKEN|KEY|PASSWORD|SECRET|WEBHOOK))[[:space:]]*=[[:space:]]*[^[:space:]$]' \
   -e 'sk-[A-Za-z0-9]{20,}' \
   -e 'BEGIN [A-Z ]*PRIVATE KEY' \
   -e 'qyapi\.weixin\.qq\.com/cgi-bin/webhook/send\?key=[A-Za-z0-9-]{8,}' \
-  -e 'mysql\+pymysql://[^:/@[:space:]]+:[^@<[:space:]]+@' \
+  -e '[a-z][a-z0-9+.-]*://[^:/@[:space:]]+:[^@<[:space:]]+@' \
   "$STAGE"; then
   echo "上面这些文件里有像密钥或口令的内容，没有发布。先确认并从提交里去掉" >&2
   exit 1
