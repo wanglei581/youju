@@ -236,6 +236,36 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
     assert client.get("/api/v1/documents/999999").status_code == 404
+    # 正文太短（多半没抓全）不给；名单类不给正文（名单里可能有个人姓名）
+    assert d["body"] == {"status": "none"}
+    assert listed["body"] == {"status": "list"}
+
+
+def test_body_for_reading_cleans_only_known_strings():
+    from youju.api.v1 import BODY_MAX_CHARS, body_for_reading
+
+    text = (
+        "各有关单位：\n\n\n\n请于10月18日前报送。联系人：[姓名已脱敏]，电话：[电话已脱敏]，"
+        "[手机号已脱敏]，邮箱 [邮箱已脱敏]。【关闭窗口】【字体：大 中 小】扫一扫在手机打开当前页"
+        + "正文"
+        * 100
+    )
+    body = body_for_reading(text, "申报通知")
+    assert body["status"] == "ok" and body["truncated"] is False
+    assert "各有关单位：\n\n请于10月18日前报送" in body["text"]
+    assert (
+        "联系人：（联系人见原文），电话：（电话见原文），（电话见原文），邮箱 （邮箱见原文）"
+        in body["text"]
+    )
+    for gone in ("【关闭窗口】", "【字体", "扫一扫", "已脱敏"):
+        assert gone not in body["text"]
+    assert body["total"] == len(body["text"])
+    long = body_for_reading("字" * (BODY_MAX_CHARS + 5), "政策")
+    assert long["truncated"] is True and long["total"] == BODY_MAX_CHARS + 5
+    assert len(long["text"]) == BODY_MAX_CHARS
+    assert body_for_reading("短" * 199, "申报通知") == {"status": "none"}
+    assert body_for_reading(None, "申报通知") == {"status": "none"}
+    assert body_for_reading("字" * 500, "名单") == {"status": "list"}
 
 
 def test_calendar_lists_only_approved_upcoming(client, seeded):

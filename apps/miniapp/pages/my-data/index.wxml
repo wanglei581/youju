@@ -1,5 +1,6 @@
 <notice-bar />
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+<view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…</view>
 
 <block wx:if="{{!loading && !error}}">
   <view wx:if="{{!user}}" class="card intro">

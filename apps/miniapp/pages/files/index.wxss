@@ -11,7 +11,7 @@
 .file-name--expired { color: var(--t2); }
 .file-meta { margin-top: 6rpx; font-size: 25rpx; }
 .actions { margin-top: 16rpx; display: flex; align-items: center; gap: 16rpx; }
-.act { height: 56rpx; padding: 0 24rpx; display: flex; align-items: center; border: 2rpx solid var(--line2); border-radius: 28rpx; font-size: 26rpx; color: var(--t1); }
+.act { min-height: 56rpx; padding: 4rpx 24rpx; box-sizing: border-box; display: flex; align-items: center; border: 2rpx solid var(--line2); border-radius: 28rpx; font-size: 26rpx; color: var(--t1); }
 .act--primary { border-color: var(--brand); color: var(--brand); }
 .expired { height: 48rpx; padding: 0 16rpx; display: flex; align-items: center; background: var(--fill); border-radius: 8rpx; font-size: 24rpx; color: var(--t3); }
 .tip { margin: 24rpx 32rpx 0; font-size: 24rpx; line-height: 1.7; color: var(--t3); }

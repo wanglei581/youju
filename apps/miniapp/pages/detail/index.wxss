@@ -21,12 +21,12 @@
 .change-item + .change-item { margin-top: 20rpx; padding-top: 20rpx; border-top: 2rpx solid rgba(217, 100, 15, 0.15); }
 .change-text { font-size: 28rpx; font-weight: 600; color: var(--o-txt); }
 .change-new { margin-top: 8rpx; font-size: 26rpx; line-height: 1.6; color: var(--brand); }
-.remind { margin-top: 24rpx; height: 84rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-radius: 42rpx; border: 2rpx solid var(--brand); color: var(--brand); font-size: 28rpx; font-weight: 500; }
+.remind { margin-top: 24rpx; min-height: 84rpx; padding: 12rpx 24rpx; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-radius: 42rpx; border: 2rpx solid var(--brand); color: var(--brand); font-size: 28rpx; font-weight: 500; }
 .remind--on { background: var(--fill); border-color: var(--fill); color: var(--t2); }
 
 .kv { display: flex; gap: 24rpx; padding: 24rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
 .kv--last { border-bottom: 0; padding-bottom: 32rpx; }
-.k { flex-shrink: 0; width: 144rpx; color: var(--t3); }
+.k { flex-shrink: 0; min-width: 144rpx; max-width: 45%; color: var(--t3); }
 .v { flex: 1; color: var(--t1); }
 
 .excerpt-sec { font-size: 24rpx; font-weight: 400; }
@@ -53,3 +53,9 @@
 .bar-main { margin-left: auto; padding: 0 44rpx; }
 .empty { padding: 48rpx 32rpx; text-align: center; color: var(--t2); }
 .status-note { margin-top: 12rpx; font-size: 24rpx; }
+/* 正文（D-030）：默认显示开头一段，点"展开全文"看全部 */
+.body-note { margin: -4rpx 0 16rpx; font-size: 22rpx; line-height: 1.6; }
+.body-text { display: block; font-size: 28rpx; line-height: 1.8; color: var(--t1); white-space: pre-wrap; word-break: break-all; }
+.body-more { margin-top: 16rpx; font-size: 26rpx; }
+.body-rest { margin-top: 12rpx; font-size: 24rpx; }
+.body-none { font-size: 26rpx; line-height: 1.6; }

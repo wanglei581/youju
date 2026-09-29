@@ -1,11 +1,12 @@
 """小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、最近名单、查名单。
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
-公开接口不返回正文全文，只给核对过的字段和原文链接。
+截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -442,9 +443,49 @@ def _fmt_deadline_note(d: DocumentDeadline) -> str:
     return f"{d.kind} {day.month}月{day.day}日 {_WEEK[day.weekday()]}{time}"
 
 
+# 详情页的正文（D-030）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；截止日期等
+# 关键字段仍只看"要点"里核对过的。入库时已隐去个人信息，这里换成"见原文"的说法，再去掉网页上
+# 几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。最多给前 2 万字（离 callContainer
+# 单次返回 1000 KiB 的上限很远）；不到 200 字的多半没抓全，不给。
+BODY_MIN_CHARS = 200
+BODY_MAX_CHARS = 20_000
+_BODY_REPLACE = (
+    ("[电话已脱敏]", "（电话见原文）"),
+    ("[手机号已脱敏]", "（电话见原文）"),
+    ("[姓名已脱敏]", "（联系人见原文）"),
+    ("[邮箱已脱敏]", "（邮箱见原文）"),
+    ("[身份证号已脱敏]", "（已隐去）"),
+    ("[银行账号已脱敏]", "（已隐去）"),
+    ("【关闭窗口】", ""),
+    ("【打印本页】", ""),
+    ("【字体：大 中 小】", ""),
+    ("扫一扫在手机打开当前页", ""),
+)
+_BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
+
+
+def body_for_reading(text: str | None, kind: str) -> dict:
+    """详情页正文：ok 给文字；名单类（名单里可能有个人姓名）和没抓到完整正文的只给状态，
+    页面上提示复制原文链接查看。"""
+    if kind == "名单":
+        return {"status": "list"}
+    cleaned = text or ""
+    for old, new in _BODY_REPLACE:
+        cleaned = cleaned.replace(old, new)
+    cleaned = _BLANK_LINES.sub("\n\n", cleaned).strip()
+    if len(cleaned) < BODY_MIN_CHARS:
+        return {"status": "none"}
+    return {
+        "status": "ok",
+        "text": cleaned[:BODY_MAX_CHARS],
+        "total": len(cleaned),
+        "truncated": len(cleaned) > BODY_MAX_CHARS,
+    }
+
+
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
-    """文件详情：要点、附件、原文出处；截止日期只给核对通过的；不返回正文全文。"""
+    """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(_base().where(Document.id == doc_id)).first()
     if row is None:
@@ -536,6 +577,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             for a in (detail.attachments if detail else [])
         ],
         "checked": checked,
+        "body": body_for_reading(detail.body_text if detail else None, kind),
     }
 
 

@@ -1,5 +1,5 @@
 .nb {
-  height: 48rpx;
+  min-height: 48rpx;
   display: flex;
   align-items: center;
   gap: 8rpx;

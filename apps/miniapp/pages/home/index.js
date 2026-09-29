@@ -28,6 +28,8 @@ Page({
     stats: null,
     items: [],
     shown: [],
+    loaded: false,
+    error: '',
   },
 
   onLoad() {
@@ -39,7 +41,7 @@ Page({
   reload() {
     this.setData({ error: '' });
     api.home()
-      .then(({ stats, items }) => this.setData({ stats, items, shown: items }))
+      .then(({ stats, items }) => this.setData({ stats, items, shown: items, loaded: true }))
       .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
   },
 
