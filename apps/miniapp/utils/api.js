@@ -97,10 +97,12 @@ function deadlineReport(params) {
   const days = Number((params && params.days) || 7);
   const all = (mock.reports && mock.reports.deadlines) || [];
   const deptOf = (value) => (/科技/.test(value) ? '科技部门' : (/工业和信息化|经济和信息化|工信|经信/.test(value) ? '工信部门' : '其他部门'));
-  const filtered = all.filter((item) => item.remaining_days <= days)
+  const scoped = all
     .filter((item) => !params.province || item.province === params.province)
-    .filter((item) => !params.dept || deptOf(item.dept) === params.dept);
-  const summary = { 7: all.filter((x) => x.remaining_days <= 7).length, 14: all.filter((x) => x.remaining_days <= 14).length, 30: all.filter((x) => x.remaining_days <= 30).length };
+    .filter((item) => !params.dept || deptOf(item.dept) === params.dept)
+    .filter((item) => !params.support || (item.support || []).includes(params.support));
+  const filtered = scoped.filter((item) => item.remaining_days <= days);
+  const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
   const by = (key) => filtered.reduce((out, item) => { out[item[key]] = (out[item[key]] || 0) + 1; return out; }, {});
   const page = Number(params.page || 1); const size = Number(params.size || 20);
   return copy({ days, summary, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });

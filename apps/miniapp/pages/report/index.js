@@ -14,8 +14,10 @@ Page({
     error: '',
     province: '',
     dept: '',
+    support: '',
     provinces: ['不限省份'],
     depts: ['不限部门', '科技部门', '工信部门', '其他部门'],
+    supports: ['不限支持方式', '资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '其他'],
   },
 
   onLoad() { this.load(true); },
@@ -25,7 +27,7 @@ Page({
     if (this.data.loading) return;
     const page = reset ? 1 : this.data.page + 1;
     this.setData({ loading: true, error: '' });
-    api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, page, size: PAGE_SIZE })
+    api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, support: this.data.support, page, size: PAGE_SIZE })
       .then((res) => {
         const provinces = Object.keys(res.by_province || {}).sort();
         const depts = ['科技部门', '工信部门', '其他部门'];
@@ -48,6 +50,10 @@ Page({
   pickDept(e) {
     const value = e.detail.value === 0 ? '' : this.data.depts[e.detail.value];
     this.setData({ dept: value, items: [] }); this.load(true);
+  },
+  pickSupport(e) {
+    const value = e.detail.value === 0 ? '' : this.data.supports[e.detail.value];
+    this.setData({ support: value, items: [] }); this.load(true);
   },
   more() { if (this.data.items.length < this.data.total) this.load(false); },
   open(e) { wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` }); },

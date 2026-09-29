@@ -8,6 +8,7 @@
 <view class="filters">
   <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
   <picker mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker mode="selector" range="{{supports}}" bindchange="pickSupport"><view class="filter">{{support || '不限支持方式'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
 <view wx:if="{{error}}" class="card empty">{{error}} <text class="link" bindtap="retry">重试</text></view>
 <view class="card list">

@@ -941,7 +941,8 @@ module.exports = {
         "date": "2026-10-18",
         "time": null,
         "remaining_days": 19,
-        "file_number": "辽工信投资〔2026〕130号"
+        "file_number": "辽工信投资〔2026〕130号",
+        "support": ["贷款贴息"]
       }
     ]
   },
