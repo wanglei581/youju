@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from youju.ai.fields import extract_fields_with_ai
-from youju.fields import extract_audience, extract_support
+from youju.fields import extract_audience, extract_rules, extract_support
 
 
 def values(body: str):
@@ -91,6 +91,55 @@ def test_support_rejects_conditions_negated_actions_and_filing_materials(body, l
 )
 def test_support_accepts_positive_actions(body, label):
     assert label in values(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "2025年12月31日前纳入本市创新创业载体培育体系（“上海市科技创新创业载体库”入库）的载体。",
+        "收等方面的支持措施，1000 字以内）",
+        "因提供的审计报告被有关部门认定为虚假、重大失实报告……责任由申报主体自负。",
+        "原则上上一年度已入库指南将作为下一年度指南建议遴选范围。",
+        "省级科技计划或其他省直有关部门（单位）已经立项支持过的相同或相似的研发内容，不得作为指南建议再次提报。",
+        "并按照《商业银行金融资产风险分类办法》认定为不良的贷款。",
+        "（四）提交活动立项批复复印件。",
+        "的企业，需上传立项文件。",
+        "第一阶段完成后将对2个项目执行情况进行评估，根据评估结果确定后续支持方式。",
+    ],
+)
+def test_v5_reviewed_false_positive_sentences_are_excluded(body):
+    assert extract_support(body) == []
+
+
+@pytest.mark.parametrize(
+    "body,label",
+    [
+        ("按照省工信厅公告的步骤进行。", "资格认定"),
+        ("由省工业和信息化厅公告为创新型中小企业。", "资格认定"),
+        ("通过验收的，正式成为国家级零碳工厂。", "资格认定"),
+        ("批复组建市级制造业创新中心并授牌。", "资格认定"),
+        ("选择‘企业技术中心的认定与评价’在线办理。", "资格认定"),
+        ("对照标准级、卓越级孵化器认定条件。", "资格认定"),
+        ("企业配套经费与财政科技经费比例不低于2:1。", "资金支持"),
+        ("本批首都科技创新券随时申请随时使用。", "资金支持"),
+        ("通过省科技计划项目支持重点培育雏鹰企业开展关键核心技术攻关。", "资金支持"),
+        (
+            "允许先进制造业企业按照当期可抵扣进项税额加计5%抵减应纳增值税税额。",
+            "其他",
+        ),
+        ("积极帮助项目单位争取国家和我市相关政策支持。", "其他"),
+        ("进入资源池的监理机构供各级工信系统参考。", "入库备案"),
+        ("申报省级储备制造业中试平台。", "入库备案"),
+    ],
+)
+def test_v5_reviewed_false_negative_sentences_are_included(body, label):
+    assert label in values(body)
+
+
+def test_audience_is_disabled_from_public_rule_extract():
+    assert [item.field for item in extract_rules("申报对象：本省企业。企业可申请贷款贴息。")] == [
+        "support"
+    ]
 
 
 @pytest.mark.parametrize("separator", ["", "\n\n  ", "\r\n\t", "   "])

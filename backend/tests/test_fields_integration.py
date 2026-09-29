@@ -112,7 +112,6 @@ def test_body_change_hidden_immediately_without_reextraction_or_cache_clear(sess
     assert client.get(detail_url).json()["fields"] == {
         "support": ["贷款贴息"],
         "support_evidence": {"贷款贴息": "企业可申请贷款贴息。"},
-        "audience": {"text": "本省企业。", "evidence": "企业可申请贷款贴息。"},
     }
     assert client.get(radar_url).json()["total"] == 1
     session.get(DocumentDetail, doc.id).body_text += "\n补充条件。"
@@ -121,6 +120,19 @@ def test_body_change_hidden_immediately_without_reextraction_or_cache_clear(sess
     assert client.get(radar_url).json()["total"] == 0
     # GET 不写库；逻辑上 stale 的已核字段要等重抽后重新送审。
     assert set(session.scalars(select(DocumentField.status))) == {"approved"}
+
+
+def test_disabled_audience_is_not_generated_or_deleted(session):
+    doc = add_document(session)
+    old = add_field(session, doc.id, field="audience", value="本省企业。", status="pending")
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text += "正文发生变化。"
+    session.commit()
+    report = fields.extract_existing(session, document_ids=[doc.id])
+    assert report.fields == 1
+    session.refresh(old)
+    assert old.status == "pending"
+    assert session.get(DocumentField, old.id) is not None
 
 
 @pytest.mark.parametrize("status", ["pending", "rejected", "stale"])
@@ -204,9 +216,9 @@ def test_concurrent_extraction_uses_upsert_without_duplicate_key(
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: run(), range(2)))
-    assert [r.fields for r in results] == [2, 2]
+    assert [r.fields for r in results] == [1, 1]
     rows = session.scalars(select(DocumentField)).all()
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert all(r.status == "pending" and r.body_hash == fields.body_fingerprint(BODY) for r in rows)
 
 
@@ -220,7 +232,7 @@ def test_manual_audience_edit_can_differ_from_original(session, client):
         json={"reviewed_by": "创始人", "value": edited},
     )
     assert response.status_code == 200
-    assert client.get(f"/api/v1/documents/{doc.id}").json()["fields"]["audience"]["text"] == edited
+    assert "fields" not in client.get(f"/api/v1/documents/{doc.id}").json()
 
 
 def test_support_evidence_only_contains_approved_support_rows(session, client):
@@ -236,6 +248,7 @@ def test_queue_query_count_does_not_grow_with_documents(session, monkeypatch):
     monkeypatch.setattr(v1, "now", lambda: STAMP)
     doc = add_document(session, deadline_status="pending")
     add_field(session, doc.id, status="pending")
+    add_field(session, doc.id, field="audience", value="本省企业。", status="pending")
 
     def measured_queue():
         statements = []
@@ -252,6 +265,7 @@ def test_queue_query_count_does_not_grow_with_documents(session, monkeypatch):
 
     cards, small_count = measured_queue()
     assert len(cards) == 1 and cards[0].deadline == date(2026, 10, 3)
+    assert all(item.field == "support" for item in cards[0].fields)
     for number in range(2, 7):
         doc = add_document(session, number, deadline_status="pending")
         add_field(session, doc.id, status="pending")

@@ -27,6 +27,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from youju import access_log
+from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
 from youju.api.exports import router as exports_router
@@ -759,6 +760,7 @@ def _field_queue(session: Session) -> list[FieldReviewOut]:
         .join(Document, Document.id == DocumentField.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(DocumentField.status.in_(("pending", "stale")), v1_api._kind_is(["申报通知"]))
+        .where(or_(DocumentField.field != "audience", field_rules.AUDIENCE_ENABLED))
     ).all()
     if not rows:
         return []
