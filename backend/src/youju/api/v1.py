@@ -152,16 +152,57 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     return out
 
 
+def _public_fields() -> Select:
+    """读取时核对当前正文指纹；不等重抽批处理，旧字段就视作 stale。
+
+    归并组可以展示主文件，但字段本身必须来自一级来源的那份正文。
+    """
+    field_doc = aliased(Document)
+    field_source = aliased(Source)
+    return (
+        select(DocumentField)
+        .join(DocumentDetail, DocumentDetail.document_id == DocumentField.document_id)
+        .join(field_doc, field_doc.id == DocumentField.document_id)
+        .join(field_source, field_source.id == field_doc.source_id)
+        .where(
+            DocumentField.status == "approved",
+            DocumentDetail.status == "ok",
+            DocumentField.body_hash == func.sha2(DocumentDetail.body_text, 256),
+            field_source.rights_level == 1,
+        )
+    )
+
+
+def _support_condition(support: str):
+    """在 SQL 中匹配主文件或已归并副本的有效支持方式。"""
+    return (
+        _public_fields()
+        .outerjoin(
+            DocumentMerge,
+            and_(
+                DocumentMerge.duplicate_id == DocumentField.document_id,
+                DocumentMerge.active.is_(True),
+            ),
+        )
+        .where(
+            func.coalesce(DocumentMerge.canonical_id, DocumentField.document_id) == Document.id,
+            DocumentField.field == "support",
+            func.coalesce(func.nullif(DocumentField.approved_value, ""), DocumentField.value)
+            == support,
+        )
+        .correlate(Document)
+        .exists()
+    )
+
+
 def _approved_fields(session: Session, doc_ids: list[int]) -> dict[int, dict[str, Any]]:
-    """只取通过字段；正文变化后的 stale 记录不会进入公开接口。"""
+    """批量取当前正文的已通过、公开来源字段。"""
     if not doc_ids:
         return {}
     members = groups_for(session, doc_ids)
     all_ids = [item for ids in members.values() for item in ids]
     rows = session.scalars(
-        select(DocumentField)
-        .where(DocumentField.document_id.in_(all_ids), DocumentField.status == "approved")
-        .order_by(DocumentField.id)
+        _public_fields().where(DocumentField.document_id.in_(all_ids)).order_by(DocumentField.id)
     ).all()
     owner: dict[int, int] = {member: master for master, ids in members.items() for member in ids}
     result: dict[int, dict[str, Any]] = {}
@@ -566,12 +607,13 @@ def _report_payload(
     # 先从未来且已核对通过的截止取主文件编号，再限定公开的申报通知；
     # 已变更的副本由 _approved 按归并组抑制，和列表/导出的口径一致。
     candidate_ids = _future_approved_canonical_ids(session, today)
-    rows = session.execute(
-        _base().where(Document.id.in_(candidate_ids), _kind_is(["申报通知"]))
-    ).all()
-    approved = _approved(session, candidate_ids)
-    fields = _approved_fields(session, candidate_ids)
-    details = _details(session, [doc.id for doc, _ in rows])
+    stmt = _base().where(Document.id.in_(candidate_ids), _kind_is(["申报通知"]))
+    if support:
+        stmt = stmt.where(_support_condition(support))
+    rows = session.execute(stmt).all()
+    selected_ids = [doc.id for doc, _ in rows]
+    approved = _approved(session, selected_ids)
+    details = _details(session, selected_ids)
     entries: list[dict[str, Any]] = []
     for doc, src in rows:
         if effective_kind(doc.title, doc.kind_override) != "申报通知":
@@ -582,8 +624,6 @@ def _report_payload(
         ):
             continue
         if dept and _dept_bucket(src.dept) != dept:
-            continue
-        if support and support not in fields.get(doc.id, {}).get("support", []):
             continue
         selected = _selected_deadline(approved.get(doc.id, []))
         if selected is None or selected.approved_date is None:
@@ -661,6 +701,9 @@ def deadline_report(
         raise HTTPException(status_code=422, detail="部门不支持")
     if support and support not in SUPPORT_LABELS:
         raise HTTPException(status_code=422, detail="支持方式不支持")
+    if support:
+        # 支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
+        return _report_payload(session, days, province, dept, support, page, size)
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date())
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()

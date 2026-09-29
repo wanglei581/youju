@@ -7,7 +7,8 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import case, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -23,7 +24,8 @@ _AUDIENCE_START = re.compile(
 )
 _NEGATIVE = re.compile(
     r"不予支持|不支持|不得支持|不属于|不得重复申报|不得申报|不再支持|不予认定|不得认定|"
-    r"不能认定|不应认定|不得立项|不予立项|不纳入|不享受|禁止"
+    r"不能认定|不应认定|不得立项|不予立项|尚未立项|未立项|不纳入|不享受|禁止|"
+    r"备案材料不齐全|不予备案"
 )
 
 
@@ -64,11 +66,10 @@ def _usable_support(label: str, sentence: str) -> bool:
     if label == "贷款贴息":
         return bool(re.search(r"贷款贴息|贴息|贷款利息", sentence))
     if label == "资格认定":
-        return bool(re.search(r"资格认定|认定为|申报认定|认定工作", sentence))
+        context = re.sub(r"(?:资格)?认定(?:条件|标准)", "", sentence)
+        return bool(re.search(r"认定为|申报认定|认定工作|组织认定", context))
     if label == "入库备案":
-        return bool(
-            re.search(r"入库备案|入库|备案", sentence) and not re.search(r"备案号", sentence)
-        )
+        return bool(re.search(r"入库|备案登记|纳入[^。！？!?；;\n]{0,30}库", sentence))
     if label == "项目立项":
         return bool(
             re.search(r"项目立项|立项", sentence)
@@ -118,10 +119,12 @@ def extract_audience(body: str) -> list[FieldCandidate]:
         if not _AUDIENCE_START.search(sentence):
             continue
         evidence = sentence[:300]
-        value = sentence
+        end = offset + len(sentence)
         if index + 1 < len(sentences):
-            value = f"{sentence} {sentences[index + 1][0]}"
-        value = value[:200]
+            next_sentence, next_offset = sentences[index + 1]
+            end = next_offset + len(next_sentence)
+        # 按正文位置切片，保留两句之间的换行和空白，不能拼接出正文里没有的内容。
+        value = body[offset : min(end, offset + 200)]
         return [FieldCandidate("audience", value, evidence, offset)]
     return []
 
@@ -203,7 +206,7 @@ def extract_existing(
         if existing:
             changed += 1
             for row in existing:
-                if row.status == "approved":
+                if row.status in ("approved", "stale"):
                     row.status = "stale"
                 else:
                     session.delete(row)
@@ -217,36 +220,62 @@ def extract_existing(
                 ai_candidates = extract_fields_with_ai(ai_client, doc.title, detail.body_text)
             except Exception:  # noqa: BLE001 - 单份模型失败不影响规则抽取
                 ai_candidates = []
-        for candidate, source in _merge_candidates(rules, ai_candidates):
-            old = session.scalar(
-                select(DocumentField).where(
-                    DocumentField.document_id == doc.id,
-                    DocumentField.field == candidate.field,
-                    DocumentField.value == candidate.value,
-                )
+        merged = _merge_candidates(rules, ai_candidates)
+        merged = [
+            (candidate, source)
+            for candidate, source in merged
+            if candidate.field != "audience"
+            or (
+                len(candidate.value) <= 200
+                and candidate.value in detail.body_text
+                and len(candidate.evidence) <= 300
+                and candidate.evidence in detail.body_text
             )
-            if old is None:
-                old = DocumentField(
-                    document_id=doc.id,
-                    field=candidate.field,
-                    value=candidate.value,
-                    evidence=candidate.evidence,
-                    evidence_offset=candidate.evidence_offset,
-                    body_hash=body_hash,
-                    source=source,
-                    status="pending",
-                )
-                session.add(old)
-            else:
-                old.evidence = candidate.evidence
-                old.evidence_offset = candidate.evidence_offset
-                old.body_hash = body_hash
-                old.source = source
-                if old.status != "stale":
-                    old.status = "pending"
-                    old.approved_value = None
-                    old.reviewed_by = None
-                    old.reviewed_at = None
-            fields += 1
+        ]
+        if merged:
+            values = [
+                {
+                    "document_id": doc.id,
+                    "field": candidate.field,
+                    "value": candidate.value,
+                    "evidence": candidate.evidence,
+                    "evidence_offset": candidate.evidence_offset,
+                    "body_hash": body_hash,
+                    "source": source,
+                    "status": "pending",
+                }
+                for candidate, source in merged
+            ]
+            upsert = mysql_insert(DocumentField).values(values)
+            same_body = DocumentField.body_hash == upsert.inserted.body_hash
+            reviewed = DocumentField.status.in_(("approved", "stale"))
+            # 冲突可能来自另一抽取进程：同正文保留核对结果，变更正文不能沿用 approved。
+            # MySQL 按赋值顺序计算，状态和指纹必须最后更新。
+            upsert = upsert.on_duplicate_key_update(
+                [
+                    ("evidence", upsert.inserted.evidence),
+                    ("evidence_offset", upsert.inserted.evidence_offset),
+                    ("source", upsert.inserted.source),
+                    *[
+                        (
+                            name,
+                            case((same_body | reviewed, getattr(DocumentField, name)), else_=None),
+                        )
+                        for name in ("approved_value", "reviewed_by", "reviewed_at")
+                    ],
+                    (
+                        "status",
+                        case(
+                            (same_body, DocumentField.status), (reviewed, "stale"), else_="pending"
+                        ),
+                    ),
+                    ("body_hash", upsert.inserted.body_hash),
+                ]
+            )
+            session.execute(upsert)
+            for row in existing:
+                if row in session:
+                    session.expire(row)
+            fields += len(merged)
     session.commit()
     return ExtractReport(documents, fields, changed)

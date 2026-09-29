@@ -765,6 +765,18 @@ def _field_queue(session: Session) -> list[FieldReviewOut]:
     doc_ids = list({doc.id for _, doc, _ in rows})
     approved = v1_api._approved(session, doc_ids)
     masters = canonical_ids(session, doc_ids)
+    pending_dates = dict(
+        session.execute(
+            select(DocumentDeadline.document_id, func.min(DocumentDeadline.candidate_date))
+            .where(
+                DocumentDeadline.document_id.in_(doc_ids),
+                DocumentDeadline.status == "pending",
+                DocumentDeadline.candidate_date >= today,
+                DocumentDeadline.candidate_date <= today + timedelta(days=30),
+            )
+            .group_by(DocumentDeadline.document_id)
+        ).all()
+    )
     grouped: dict[int, list[DocumentField]] = {}
     docs: dict[int, tuple[Document, Source]] = {}
     for field, doc, src in rows:
@@ -775,14 +787,7 @@ def _field_queue(session: Session) -> list[FieldReviewOut]:
         deadlines = approved.get(masters.get(document_id, document_id), [])
         selected = v1_api._selected_deadline(deadlines)
         due = selected.approved_date if selected else None
-        pending_unverified = session.scalar(
-            select(func.min(DocumentDeadline.candidate_date)).where(
-                DocumentDeadline.document_id == document_id,
-                DocumentDeadline.status == "pending",
-                DocumentDeadline.candidate_date >= today,
-                DocumentDeadline.candidate_date <= today + timedelta(days=30),
-            )
-        )
+        pending_unverified = pending_dates.get(document_id)
         verified_due = due if due and today <= due <= today + timedelta(days=30) else None
         queue_due = verified_due or pending_unverified
         if queue_due is None:

@@ -10,7 +10,8 @@ from .client import ChatClient
 
 _SYSTEM = """你是政府申报通知字段核对助手。只返回 JSON 对象，字段 fields 为数组。
 每项字段 field 为 support 或 audience，value 为固定支持方式标签或申报对象原文摘录，
-evidence 必须是正文逐字连续原句。不要改写，不确定就不输出。support 只能使用：资金支持、
+audience 的 value 必须是正文逐字连续子串，最多 200 字。evidence 必须是正文逐字连续原句。
+不要拼接或改写，不确定就不输出。support 只能使用：资金支持、
 贷款贴息、资格认定、入库备案、项目立项、其他。"""
 
 
@@ -42,11 +43,9 @@ def extract_fields_with_ai(client: ChatClient, title: str, text: str) -> list[Fi
             continue
         if field == "support" and value not in SUPPORT_LABELS:
             continue
-        if field == "audience" and len(value) > 200:
-            value = value[:200]
         if len(evidence) > 300 or evidence not in text:
             continue
-        if field == "audience" and len(value) > 200:
+        if field == "audience" and (len(value) > 200 or value not in text):
             continue
         offset = text.find(evidence)
         if offset < 0:
