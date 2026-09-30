@@ -480,6 +480,23 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compare_lists(args: argparse.Namespace) -> int:
+    from youju.compare import compare_lists, export_compare_excel, read_customer_file
+
+    try:
+        values = read_customer_file(args.file)
+        with session_factory()() as session:
+            report = compare_lists(session, values)
+        rows = export_compare_excel(report, args.output)
+    except ValueError as exc:
+        print(f"名单比对失败：{exc}")
+        return 1
+    print(f"名单比对完成：客户 {len(report.rows)} 行，明细 {rows} 行，已写入 {args.output}")
+    if report.removed:
+        print("已去掉：" + "、".join(f"{r.reason} {r.value}" for r in report.removed[:10]))
+    return 0
+
+
 def _cmd_notify(_: argparse.Namespace) -> int:
     from youju.notify import run_notify
 
@@ -616,6 +633,11 @@ def main(argv: list[str] | None = None) -> int:
         help="发布日期起点，默认2026-07-01",
     )
     p.set_defaults(func=_cmd_parse_lists)
+
+    p = sub.add_parser("compare-lists", help="把客户名单与公开名单数据逐家比对并导出 Excel")
+    p.add_argument("file", type=Path, help="客户名单文件（.xlsx 或 .csv）")
+    p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
+    p.set_defaults(func=_cmd_compare_lists)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
     p = sub.add_parser(
