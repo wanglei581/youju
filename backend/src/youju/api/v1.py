@@ -29,6 +29,7 @@ from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
+from youju.lists.lookup import lookup_list_matches, public_condition
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
@@ -333,27 +334,6 @@ def _kind_is(kinds: list[str]):
         Document.kind_override.in_(kinds),
         and_(Document.kind_override.is_(None), by_rule),
     )
-
-
-def public_condition():
-    """可以公开给小程序的文件：来源是 1 级（法定公文、公示名单等，可存全文和导出），或者同一通知
-    有 1 级来源的副本——转载的网址归并时，主文件可能来自转载来源，内容是同一份公文。
-    2 级（只存题录）、3 级（按授权）来源的文件怎么展示另行决定，接入前先不公开。
-    要求查询里已经连上这份文件的 Source。"""
-    twin = aliased(Document)
-    twin_source = aliased(Source)
-    level1_twin = (
-        select(DocumentMerge.duplicate_id)
-        .join(twin, twin.id == DocumentMerge.duplicate_id)
-        .join(twin_source, twin_source.id == twin.source_id)
-        .where(
-            DocumentMerge.canonical_id == Document.id,
-            DocumentMerge.active.is_(True),
-            twin_source.rights_level == 1,
-        )
-        .exists()
-    )
-    return or_(Source.rights_level == 1, level1_twin)
 
 
 def _base() -> Select:
@@ -1206,64 +1186,11 @@ def lookup_lists(
         raise HTTPException(
             status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
         )
-    code = query.upper()
-
-    def public(stmt: Select) -> Select:
-        # 人工在核对台把文件定为"不是名单"的，它原来解析出的条目不再给用户查（D-023）
-        return (
-            stmt.join(Document, Document.id == ListEntry.document_id)
-            .join(Source, Source.id == Document.source_id)
-            .where(
-                public_condition(),
-                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
-            )
-        )
-
-    direct = or_(ListEntry.normalized_name == query, ListEntry.credit_code == code)
-    name_codes = set(
-        session.scalars(
-            public(select(ListEntry.credit_code).distinct()).where(
-                ListEntry.normalized_name == query, ListEntry.credit_code.is_not(None)
-            )
-        )
+    lookup = lookup_list_matches(
+        session, query, scan_limit=_LOOKUP_SCAN, result_limit=_LOOKUP_LIMIT
     )
-    codes = set(
-        session.scalars(
-            public(select(ListEntry.credit_code).distinct())
-            .where(direct, ListEntry.credit_code.is_not(None))
-            .limit(20)
-        )
-    )
-    matched = or_(direct, ListEntry.credit_code.in_(codes)) if codes else direct
-    # 名单条目所在文件先映射到归并后的主文件（同一通知的不同网址算一份），按主文件去重后再截取
-    found = session.execute(
-        public(select(ListEntry.document_id, Document.publish_date).distinct())
-        .where(matched)
-        .order_by(Document.publish_date.desc(), ListEntry.document_id.desc())
-        .limit(_LOOKUP_SCAN + 1)
-    ).all()
-    scanned_all = len(found) <= _LOOKUP_SCAN
-    found = found[:_LOOKUP_SCAN]
-    mapping = canonical_ids(session, [doc_id for doc_id, _ in found])
-    newest: dict[int, date | None] = {}
-    for doc_id, published in found:
-        master = mapping.get(doc_id, doc_id)
-        if master not in newest or (published and (newest[master] or date.min) < published):
-            newest[master] = published
-    masters = sorted(newest, key=lambda m: (newest[m] or date.min, m), reverse=True)
-    truncated = len(masters) > _LOOKUP_LIMIT or not scanned_all
-    masters = masters[:_LOOKUP_LIMIT]
-    keep = set(masters)
-    # 每份名单选一条展示：名称完全相同的优先，其次信用代码相同的
-    best: dict[int, ListEntry] = {}
-    members = [doc_id for doc_id, _ in found if mapping.get(doc_id, doc_id) in keep]
-    for entry in session.scalars(
-        select(ListEntry).where(ListEntry.document_id.in_(members), matched).order_by(ListEntry.id)
-    ):
-        master = mapping.get(entry.document_id, entry.document_id)
-        current = best.get(master)
-        if current is None or (entry.normalized_name == query and current.normalized_name != query):
-            best[master] = entry
+    masters = lookup.master_ids
+    best = {match.master_id: match for match in lookup.matches}
     rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
     items: list[dict] = []
     for item in _items(session, [tuple(r) for r in rows]):
@@ -1317,7 +1244,7 @@ def lookup_lists(
         "query": q.strip(),
         "items": items,
         "similar": similar,
-        "ambiguous": len(name_codes) > 1,
-        "truncated": truncated,
+        "ambiguous": lookup.ambiguous,
+        "truncated": lookup.truncated,
         "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
     }
