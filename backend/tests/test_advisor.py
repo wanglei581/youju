@@ -13,7 +13,7 @@ from youju.api import advisor as advisor_api
 from youju.api import me, v1
 from youju.api.app import app
 from youju.db import get_session
-from youju.models import AdvisorTask, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, User
 
 BJ = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 9, 30, 23, 59, tzinfo=BJ)
@@ -318,3 +318,122 @@ def test_delete_account_removes_advisor_tasks_and_files(
     assert deleted == ["cloud://logout"]
     session.expire_all()
     assert session.get(AdvisorTask, created["id"]) is None
+
+
+def test_delete_terminal_task_keeps_usage_and_queued_delete_refunds(
+    client, advisor_settings, session
+):
+    agree(client)
+    created = create(client, key="ledger").json()
+    usage = session.scalar(select(AdvisorUsage))
+    assert usage is not None and usage.used_count == 1
+    queued_delete = client.delete(f"/api/v1/advisor/tasks/{created['id']}")
+    # 排队中的任务一步取消并删除，额度退回
+    assert queued_delete.status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, created["id"]) is None
+    assert session.scalar(select(AdvisorUsage.used_count)) == 0
+
+    created = create(client, key="ledger-done").json()
+    row = session.get(AdvisorTask, created["id"])
+    row.status = "done"
+    session.commit()
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
+    assert session.scalar(select(AdvisorUsage.used_count)) == 1
+    assert create(client, key="ledger-blocked").status_code == 429
+
+
+def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkeypatch):
+    user = User(openid="trash-user", agreement_version="2026-09", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    row = task(
+        session,
+        user.id,
+        idempotency_key="trash",
+        expires_at=NOW.astimezone(UTC),
+        result_file_id="cloud://trash",
+    )
+    attempts = iter([RuntimeError("暂时失败"), ["cloud://trash"]])
+    monkeypatch.setattr(service, "delete_result_files", lambda *args: next(attempts))
+    first = service.cleanup_advisor(
+        session, settings=advisor_settings, stamp=NOW.astimezone(UTC), client=SimpleNamespace()
+    )
+    assert first["advisor_files"] == 0
+    session.refresh(row)
+    assert row.result_file_id == "cloud://trash"
+    assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://trash"
+
+    second = service.cleanup_advisor(
+        session,
+        settings=advisor_settings,
+        stamp=(NOW + timedelta(days=1)).astimezone(UTC),
+        client=SimpleNamespace(),
+    )
+    assert second["advisor_files"] == 1
+    session.refresh(row)
+    assert row.result_file_id is None
+    assert session.scalar(select(AdvisorFileTrash.file_id)) is None
+
+
+def test_delete_and_logout_succeed_when_storage_delete_fails(
+    client, advisor_settings, session, monkeypatch
+):
+    agree(client)
+    created = create(client, key="api-trash").json()
+    row = session.get(AdvisorTask, created["id"])
+    row.status, row.result_file_id = "done", "cloud://api-trash"
+    session.commit()
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda *args: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
+    assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://api-trash"
+
+    created = client.post(
+        "/api/v1/advisor/tasks",
+        headers={"Idempotency-Key": "logout-trash"},
+        json={"kind": "track", "rows": [{"name": "客户"}]},
+    ).json()
+    row = session.get(AdvisorTask, created["id"])
+    row.status, row.result_file_id = "done", "cloud://logout-trash"
+    session.commit()
+    assert client.delete("/api/v1/me").status_code == 204
+    assert (
+        session.scalar(
+            select(AdvisorFileTrash.file_id).where(
+                AdvisorFileTrash.file_id == "cloud://logout-trash"
+            )
+        )
+        == "cloud://logout-trash"
+    )
+
+
+def test_uploaded_file_is_deleted_or_queued_when_task_times_out(
+    session, advisor_settings, monkeypatch
+):
+    user = User(openid="timeout-user", agreement_version="2026-09", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    row = task(session, user.id, idempotency_key="timeout", status="running")
+    monkeypatch.setattr(
+        service, "_run_engine", lambda session, task, output: output.write_bytes(b"x") or 1
+    )
+    monkeypatch.setattr(service, "upload", lambda *args, **kwargs: "cloud://timeout")
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda *args: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(service.monotonic_clock, "monotonic", lambda: next(clock))
+    assert (
+        service.process_task(
+            session,
+            row,
+            settings=advisor_settings,
+            client=SimpleNamespace(),
+            stamp=NOW.astimezone(UTC),
+            timeout=timedelta(seconds=1),
+        )
+        is False
+    )
+    assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://timeout"

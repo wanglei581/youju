@@ -53,9 +53,39 @@ def upgrade() -> None:
     )
     op.create_index("ix_advisor_tasks_user_created", "advisor_tasks", ["user_id", "created_at"])
     op.create_index("ix_advisor_tasks_status_created", "advisor_tasks", ["status", "created_at"])
+    op.create_table(
+        "advisor_usage",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("kind", sa.String(length=16), nullable=False),
+        sa.Column("day", sa.Date(), nullable=False),
+        sa.Column("used_count", sa.Integer(), server_default="0", nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("user_id", "kind", "day", name="uq_advisor_usage_user_kind_day"),
+        sa.CheckConstraint("used_count >= 0", name="ck_advisor_usage_count"),
+        **TABLE_OPTIONS,
+    )
+    op.create_table(
+        "advisor_file_trash",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("file_id", sa.String(length=512), nullable=False),
+        sa.Column("user_hash", sa.String(length=64), nullable=True),
+        sa.Column(
+            "created_at",
+            mysql.DATETIME(fsp=6),
+            server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("file_id", name="uq_advisor_file_trash_file"),
+        **TABLE_OPTIONS,
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("advisor_file_trash")
+    op.drop_table("advisor_usage")
     op.drop_index("ix_advisor_tasks_status_created", table_name="advisor_tasks")
     op.drop_index("ix_advisor_tasks_user_created", table_name="advisor_tasks")
     op.drop_table("advisor_tasks")

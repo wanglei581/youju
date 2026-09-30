@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import time as monotonic_clock
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,10 +15,10 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from youju import access_log
-from youju.backup import BackupError, _open_api, delete_files, upload
+from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorTask, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, User
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -83,6 +83,123 @@ def task_dict(task: AdvisorTask, *, include_result: bool = True) -> dict[str, An
     return result
 
 
+def usage_day(value: datetime) -> date:
+    """把任务时间转换为额度账本使用的北京时间日期。"""
+    return _utc(value).astimezone(BEIJING).date()
+
+
+def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
+    """在调用方已锁定用户行后占用一次额度。"""
+    row = session.scalar(
+        select(AdvisorUsage)
+        .where(AdvisorUsage.user_id == user_id, AdvisorUsage.kind == kind, AdvisorUsage.day == day)
+        .with_for_update()
+    )
+    if row is None:
+        row = AdvisorUsage(user_id=user_id, kind=kind, day=day, used_count=0)
+        session.add(row)
+        session.flush()
+    if row.used_count >= 1:
+        # 兼容 0010 上线前已被后台标成 failed 的旧任务：旧代码没有台账，
+        # 首次遇到时补回一次；正常失败路径会在这里之前显式释放。
+        old_failed = session.scalar(
+            select(AdvisorTask.id)
+            .where(
+                AdvisorTask.user_id == user_id,
+                AdvisorTask.kind == kind,
+                AdvisorTask.status == "failed",
+                AdvisorTask.created_at
+                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
+                AdvisorTask.created_at
+                < datetime.combine(
+                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
+                ).astimezone(UTC),
+            )
+            .limit(1)
+        )
+        active = session.scalar(
+            select(AdvisorTask.id)
+            .where(
+                AdvisorTask.user_id == user_id,
+                AdvisorTask.kind == kind,
+                AdvisorTask.status.in_(("queued", "running", "done")),
+                AdvisorTask.created_at
+                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
+                AdvisorTask.created_at
+                < datetime.combine(
+                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
+                ).astimezone(UTC),
+            )
+            .limit(1)
+        )
+        if old_failed is None or active is not None:
+            return False
+        row.used_count -= 1
+    row.used_count += 1
+    return True
+
+
+def release_usage(session: Session, task: AdvisorTask) -> None:
+    """释放一次已占用额度；重复释放安全。"""
+    row = session.scalar(
+        select(AdvisorUsage)
+        .where(
+            AdvisorUsage.user_id == task.user_id,
+            AdvisorUsage.kind == task.kind,
+            AdvisorUsage.day == usage_day(task.created_at),
+        )
+        .with_for_update()
+    )
+    if row is not None and row.used_count > 0:
+        row.used_count -= 1
+
+
+def _successful_ids(result: object, file_ids: list[str]) -> set[str]:
+    """兼容旧测试替身返回数量；正式实现返回成功的文件 ID。"""
+    if isinstance(result, (list, tuple, set, frozenset)):
+        return {str(value) for value in result if value in file_ids}
+    if isinstance(result, int):
+        return set(file_ids[: max(0, min(result, len(file_ids)))])
+    return set()
+
+
+def _record_trash(session: Session, file_ids: list[str], user_hash: str | None = None) -> None:
+    if not file_ids:
+        return
+    existing = set(
+        session.scalars(
+            select(AdvisorFileTrash.file_id).where(AdvisorFileTrash.file_id.in_(file_ids))
+        )
+    )
+    for file_id in dict.fromkeys(file_ids):
+        if file_id not in existing:
+            session.add(AdvisorFileTrash(file_id=file_id, user_hash=user_hash))
+
+
+def _delete_and_record(
+    session: Session,
+    file_ids: list[str],
+    *,
+    settings: Settings,
+    client: httpx.Client | None,
+    user_hash: str | None = None,
+) -> set[str]:
+    """删除对象存储文件；失败的 ID 留在待删表，调用方只清成功引用。"""
+    if not file_ids:
+        return set()
+    cloud_env = getattr(settings, "cloud_env", None)
+    successful: set[str] = set()
+    if cloud_env:
+        try:
+            result = delete_result_files(client, cloud_env, file_ids)
+            successful = _successful_ids(result, file_ids)
+        except Exception:  # noqa: BLE001 - 存储删除失败必须留下待删记录
+            successful = set()
+    failed = [file_id for file_id in file_ids if file_id not in successful]
+    _record_trash(session, failed, user_hash)
+    return successful
+
+
 def recover_stale(session: Session, stamp: datetime | None = None) -> int:
     """实例重启后把运行超过十分钟的任务放回队列，不增加 attempts。"""
     stamp = _utc(stamp or datetime.now(UTC))
@@ -126,6 +243,7 @@ def process_task(
     own_client = client is None
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
+    uploaded_file_id: str | None = None
     try:
         cloud_env = getattr(settings, "cloud_env", None)
         if not cloud_env:
@@ -145,6 +263,7 @@ def process_task(
                 local,
                 what="顾问结果",
             )
+            uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
         task.status = "done"
@@ -156,8 +275,16 @@ def process_task(
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
         session.rollback()
+        if uploaded_file_id:
+            _delete_and_record(
+                session,
+                [uploaded_file_id],
+                settings=settings,
+                client=client,
+            )
         task = session.get(AdvisorTask, task.id)
         if task is None:
+            session.commit()
             return False
         task.error = _friendly_error(exc)
         if task.attempts <= 2:
@@ -168,6 +295,7 @@ def process_task(
             task.status = "failed"
             task.started_at = None
             task.finished_at = stamp
+            release_usage(session, task)
         session.commit()
         log.warning("顾问任务 #%s 失败（第 %s 次）：%s", task.id, task.attempts, task.error)
         return False
@@ -230,8 +358,16 @@ def download_url(client: httpx.Client, env: str, file_id: str) -> str | None:
     return item.get("download_url") or item.get("url")
 
 
-def delete_result_files(client: httpx.Client, env: str, file_ids: list[str]) -> int:
-    return delete_files(client, env, file_ids, what="顾问结果") if file_ids else 0
+def delete_result_files(client: httpx.Client, env: str, file_ids: list[str]) -> list[str]:
+    """返回对象存储确认删除成功的文件 ID。"""
+    if not file_ids:
+        return []
+    data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": file_ids})
+    return [
+        item["fileid"]
+        for item in data.get("delete_list", [])
+        if item.get("status") == 0 and item.get("fileid") in file_ids
+    ]
 
 
 def cleanup_advisor(
@@ -266,20 +402,32 @@ def cleanup_advisor(
     )
     deleted_count = 0
     own_client = client is None
-    cloud_env = getattr(settings, "cloud_env", None)
-    if old and cloud_env:
+    trash = list(session.scalars(select(AdvisorFileTrash)))
+    file_ids = list(
+        dict.fromkeys(
+            [task.result_file_id for task in old if task.result_file_id]
+            + [row.file_id for row in trash]
+        )
+    )
+    if file_ids:
         client = client or httpx.Client(trust_env=False)
         try:
-            deleted_count = delete_result_files(
-                client,
-                cloud_env,
-                [task.result_file_id for task in old if task.result_file_id],
+            successful = _delete_and_record(
+                session,
+                file_ids,
+                settings=settings,
+                client=client,
             )
-            for task in old:
-                task.result_file_id = None
         finally:
             if own_client:
                 client.close()
+        for task in old:
+            if task.result_file_id in successful:
+                task.result_file_id = None
+                deleted_count += 1
+        for row in trash:
+            if row.file_id in successful:
+                session.delete(row)
     session.commit()
     return {"advisor_input_rows": input_count, "advisor_files": deleted_count}
 
@@ -296,11 +444,10 @@ def delete_user_tasks(
     tasks = list(session.scalars(select(AdvisorTask).where(AdvisorTask.user_id == user_id)))
     file_ids = [task.result_file_id for task in tasks if task.result_file_id]
     own_client = client is None
-    cloud_env = getattr(settings, "cloud_env", None)
-    if file_ids and cloud_env:
+    if file_ids:
         client = client or httpx.Client(trust_env=False)
         try:
-            delete_result_files(client, cloud_env, file_ids)
+            _delete_and_record(session, file_ids, settings=settings, client=client)
         finally:
             if own_client:
                 client.close()

@@ -438,6 +438,34 @@ class AdvisorTask(Base):
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+class AdvisorUsage(Base):
+    """顾问技能包按北京时间、用户和类型记账的已用次数。"""
+
+    __tablename__ = "advisor_usage"
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "day", name="uq_advisor_usage_user_kind_day"),
+        CheckConstraint("used_count >= 0", name="ck_advisor_usage_count"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    day: Mapped[date] = mapped_column(Date)
+    used_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class AdvisorFileTrash(Base):
+    """对象存储删除失败的文件，定时任务会重试。"""
+
+    __tablename__ = "advisor_file_trash"
+    __table_args__ = (UniqueConstraint("file_id", name="uq_advisor_file_trash_file"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(512))
+    user_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
 class Follow(Base):
     __tablename__ = "follows"
     __table_args__ = (Index("ix_follows_user", "user_id"),)

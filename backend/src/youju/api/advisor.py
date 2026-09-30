@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -101,26 +101,10 @@ def create_task(
     if len(body.rows) > service.MAX_ROWS:
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
-    local = service.business_now(_stamp())
-    day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
-    day_end = day_start + timedelta(days=1)
-    used = (
-        session.scalar(
-            select(func.count(AdvisorTask.id)).where(
-                AdvisorTask.user_id == user.id,
-                AdvisorTask.kind == body.kind,
-                # 取消的和我们这边处理失败的都不算用掉额度
-                AdvisorTask.status.not_in(("cancelled", "failed")),
-                AdvisorTask.created_at >= day_start,
-                AdvisorTask.created_at < day_end,
-            )
-        )
-        or 0
-    )
-    if used >= 1:
+    stamp = _stamp()
+    if not service.reserve_usage(session, user.id, body.kind, service.usage_day(stamp)):
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
-    stamp = _stamp()
     task = AdvisorTask(
         user_id=user.id,
         kind=body.kind,
@@ -190,11 +174,18 @@ def get_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
 def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> dict:
-    task = _owned(session, user, task_id)
+    task = session.scalar(
+        select(AdvisorTask)
+        .where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+        .with_for_update()
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail="没有找到顾问任务")
     if task.status == "queued":
         task.status = "cancelled"
         task.finished_at = _stamp()
         task.error = "用户已取消"
+        service.release_usage(session, task)
         session.commit()
     elif task.status != "cancelled":
         raise HTTPException(status_code=409, detail="任务已开始处理，不能取消")
@@ -204,17 +195,23 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
 def delete_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> None:
-    task = _owned(session, user, task_id)
+    task = session.scalar(
+        select(AdvisorTask)
+        .where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+        .with_for_update()
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+    if task.status == "running":
+        raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")
+    if task.status == "queued":
+        # 排队中的任务先取消（退回额度）再删除；行已锁住，后台取不到它，也不会有结果文件
+        service.release_usage(session, task)
+    file_ids = [task.result_file_id] if task.result_file_id else []
     settings = get_settings()
-    cloud_env = getattr(settings, "cloud_env", None)
-    if task.result_file_id and cloud_env:
-        try:
-            with httpx.Client(trust_env=False) as client:
-                service.delete_result_files(client, cloud_env, [task.result_file_id])
-        except (BackupError, httpx.HTTPError):
-            raise HTTPException(
-                status_code=503, detail="结果文件暂时无法删除，请稍后重试"
-            ) from None
+    if file_ids:
+        with httpx.Client(trust_env=False) as client:
+            service._delete_and_record(session, file_ids, settings=settings, client=client)
     session.delete(task)
     session.commit()
     request.state.audit = {"action": "advisor_task_delete", "task_id": task_id}
