@@ -533,6 +533,15 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_advisor_run(_: argparse.Namespace) -> int:
+    from youju.advisor_tasks import run_advisor_tasks
+
+    with session_factory()() as session:
+        report = run_advisor_tasks(session)
+    print("顾问任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
+    return 0
+
+
 def _cmd_alert(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
 
@@ -674,6 +683,9 @@ def main(argv: list[str] | None = None) -> int:
     ).set_defaults(func=_cmd_notify)
     sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
         func=_cmd_cleanup
+    )
+    sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
+        func=_cmd_advisor_run
     )
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
