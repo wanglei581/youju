@@ -4,6 +4,8 @@ const config = require('./config.js');
 const mock = require('../mock/data.js');
 const { mockSearch } = require('./mockSearch.js');
 
+const TYPES = ['高新技术企业', '专精特新', '科技型中小企业', '其他'];
+
 function copy(value) {
   return Promise.resolve(JSON.parse(JSON.stringify(value)));
 }

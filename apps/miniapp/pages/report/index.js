@@ -24,11 +24,14 @@ Page({
   goBack() { wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) }); },
 
   load(reset) {
-    if (this.data.loading) return;
+    if (!reset && this.data.loading) return;
     const page = reset ? 1 : this.data.page + 1;
+    const requestSeq = (this.requestSeq || 0) + 1;
+    this.requestSeq = requestSeq;
     this.setData({ loading: true, error: '' });
     api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, support: this.data.support, page, size: PAGE_SIZE })
       .then((res) => {
+        if (requestSeq !== this.requestSeq) return;
         const provinces = Object.keys(res.by_province || {}).sort();
         const depts = ['科技部门', '工信部门', '其他部门'];
         this.setData({
@@ -38,21 +41,27 @@ Page({
           provinces: ['不限省份'].concat(provinces), depts: ['不限部门'].concat(depts),
         });
       })
-      .catch((err) => this.setData({ loading: false, error: err.message }));
+      .catch((err) => {
+        if (requestSeq !== this.requestSeq) return;
+        this.setData({ loading: false, error: err.message });
+      });
   },
 
   retry() { this.load(true); },
   pickDays(e) { this.setData({ days: Number(e.currentTarget.dataset.days), items: [] }); this.load(true); },
   pickProvince(e) {
-    const value = e.detail.value === 0 ? '' : this.data.provinces[e.detail.value];
+    const index = Number(e.detail.value);
+    const value = index === 0 ? '' : this.data.provinces[index];
     this.setData({ province: value, items: [] }); this.load(true);
   },
   pickDept(e) {
-    const value = e.detail.value === 0 ? '' : this.data.depts[e.detail.value];
+    const index = Number(e.detail.value);
+    const value = index === 0 ? '' : this.data.depts[index];
     this.setData({ dept: value, items: [] }); this.load(true);
   },
   pickSupport(e) {
-    const value = e.detail.value === 0 ? '' : this.data.supports[e.detail.value];
+    const index = Number(e.detail.value);
+    const value = index === 0 ? '' : this.data.supports[index];
     this.setData({ support: value, items: [] }); this.load(true);
   },
   more() { if (this.data.items.length < this.data.total) this.load(false); },

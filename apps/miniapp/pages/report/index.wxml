@@ -21,4 +21,4 @@
   <view wx:if="{{!items.length && !loading}}" class="empty">暂无符合条件的项目</view>
   <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>
-<view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期；名单条数是名单原文里的企业条数，公示期内的名单也计入，最终结果以原文为准。</view>
+<view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期，最终以原文为准。</view>
