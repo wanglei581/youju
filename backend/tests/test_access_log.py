@@ -7,6 +7,7 @@ import json
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -19,11 +20,11 @@ from youju.api import app as app_module
 from youju.api import me
 from youju.api.app import app
 from youju.backup import BackupError, dump, restore
-from youju.db import create_mysql_engine, get_session
+from youju.db import get_session
 from youju.models import AccessLog, AppKey
 
 from .conftest import TEST_DB_URL
-from .test_backup import fake_cloud
+from .test_backup import clear_restore_target, fake_cloud
 
 # 北京时间 9 月 29 日 0:30
 NOW = datetime(2026, 9, 28, 16, 30, tzinfo=UTC)
@@ -121,7 +122,8 @@ def test_write_failures_alert_and_rows_are_written_later(session, db_engine, mon
     now = {"t": 1000.0}
     monkeypatch.setattr(access_log, "_send_in_background", sent.append)
     monkeypatch.setattr(access_log, "clock", SimpleNamespace(monotonic=lambda: now["t"]))
-    broken = create_mysql_engine(TEST_DB_URL.replace("/youju_test", "/youju_no_such_db"))
+    broken = Mock()
+    broken.begin.side_effect = RuntimeError("测试模拟数据库不可用")
     entry = {
         "service": "api",
         "method": "GET",
@@ -152,7 +154,8 @@ def test_write_failures_alert_and_rows_are_written_later(session, db_engine, mon
 def test_pending_rows_are_capped(session, monkeypatch):
     monkeypatch.setattr(access_log, "_send_in_background", lambda message: None)
     monkeypatch.setattr(access_log, "_PENDING_MAX", 2)
-    broken = create_mysql_engine(TEST_DB_URL.replace("/youju_test", "/youju_no_such_db"))
+    broken = Mock()
+    broken.begin.side_effect = RuntimeError("测试模拟数据库不可用")
     try:
         for n in range(3):
             access_log.write({"service": "api", "method": "GET", "path": f"/{n}"}, engine=broken)
@@ -278,41 +281,11 @@ def test_backup_skips_access_logs_and_restore_leaves_them(session, db_engine, tm
     out = io.BytesIO()
     counts = dump(db_engine, out)
     assert "access_logs" not in counts and "app_keys" in counts
-    # 恢复到别的库：那个库的访问日志暂存表有记录也不算"不是空库"
-    from sqlalchemy import make_url, text
-
-    from youju.migrations import upgrade
-
-    url = make_url(TEST_DB_URL).set(database="youju_test_restore_logs")
-    server = create_mysql_engine(url.set(database=""))
-    with server.begin() as conn:
-        conn.execute(text("DROP DATABASE IF EXISTS youju_test_restore_logs"))
-        conn.execute(text("CREATE DATABASE youju_test_restore_logs COLLATE utf8mb4_0900_bin"))
-    target_url = url.render_as_string(hide_password=False)
-    upgrade(target_url)
-    target = create_mysql_engine(target_url)
-    try:
-        with target.begin() as conn:
-            conn.execute(
-                AccessLog.__table__.insert(),
-                {
-                    "rid": "r" * 32,
-                    "at": NOW,
-                    "service": "admin",
-                    "method": "GET",
-                    "path": "/admin",
-                    "status": 200,
-                    "ms": 1,
-                },
-            )
-        restore(target, io.BytesIO(out.getvalue()))
-        with target.connect() as conn:
-            assert conn.scalar(select(func.count()).select_from(AccessLog.__table__)) == 1
-    finally:
-        target.dispose()
-        with server.begin() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS youju_test_restore_logs"))
-        server.dispose()
+    # 同一个测试库清空业务表，已有访问日志不算“不是空库”，恢复后仍保留。
+    clear_restore_target(session, db_engine, keep_access_logs=True)
+    restore(db_engine, io.BytesIO(out.getvalue()))
+    with db_engine.connect() as conn:
+        assert conn.scalar(select(func.count()).select_from(AccessLog.__table__)) == 1
 
 
 def test_cli_archive_and_log_uid(session, db_engine, tmp_path, monkeypatch, capsys):

@@ -211,7 +211,10 @@ def test_job_alerts_without_changing_failure_code(
     flock.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$FLOCK_ARGS"\nexit "$TASK_CODE"\n')
     flock.chmod(0o755)
     youju = tmp_path / "youju"
-    youju.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$ALERT_CALLS"\nexit 1\n')
+    youju.write_text(
+        '#!/bin/sh\ncase "$1" in job-start|job-finish) exit 1 ;; esac\n'
+        'printf "%s\\n" "$*" >> "$ALERT_CALLS"\nexit 1\n'
+    )
     youju.chmod(0o755)
     env = {
         **os.environ,
@@ -306,10 +309,16 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
     script = (
         original.replace("D=/app/backend/deploy", f"D={tmp_path}")
+        .replace("cd /app/backend", f"cd {tmp_path}")
         .replace("/proc/1/fd/1", str(tmp_path / "round.log"))
         .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
     )
     (tmp_path / "round.sh").write_text(script)
+    (tmp_path / "env.sh").write_text("")
+    # 这组只核对任务顺序；记账失败不影响任务，不调用真实 CLI 或数据库。
+    youju = tmp_path / "youju"
+    youju.write_text("#!/bin/sh\nexit 1\n")
+    youju.chmod(0o755)
     job = tmp_path / "job.sh"
     job.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CALLS"\n'

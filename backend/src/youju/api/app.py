@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -49,8 +49,12 @@ from youju.models import (
     DocumentDetail,
     DocumentField,
     Feedback,
+    Follow,
+    JobRun,
     ListEntry,
     Source,
+    Subscription,
+    User,
 )
 from youju.sources.onboard import MIN_ITEMS
 
@@ -661,6 +665,124 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]
+
+
+@app.get("/admin/embed.js", include_in_schema=False)
+def admin_embed() -> Response:
+    script = (Path(__file__).resolve().parent.parent / "admin" / "embed.js").read_text(
+        encoding="utf-8"
+    )
+    return Response(script, media_type="text/javascript")
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+def admin_portal() -> HTMLResponse:
+    """有据管理台：静态页面，和 /admin/review 一样不带数据；数据接口都要口令。"""
+    page = (Path(__file__).resolve().parent.parent / "admin" / "portal.html").read_text(
+        encoding="utf-8"
+    )
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/overview")
+def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    from youju.digest import _distinct
+    from youju.jobs import OVERVIEW_JOBS, run_out
+    from youju.source_health import check_sources
+
+    def count(stmt):
+        return session.scalar(stmt) or 0
+
+    docs = visible_documents(select(func.count(Document.id)))
+    approved = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status == "approved")
+    ).all()
+    latest_ids = (
+        select(
+            JobRun.id,
+            func.row_number()
+            .over(partition_by=JobRun.job, order_by=(JobRun.started_at.desc(), JobRun.id.desc()))
+            .label("rank"),
+        )
+        .where(JobRun.job.in_(OVERVIEW_JOBS))
+        .subquery()
+    )
+    latest = {
+        row.job: run_out(row)
+        for row in session.scalars(
+            select(JobRun)
+            .join(latest_ids, latest_ids.c.id == JobRun.id)
+            .where(latest_ids.c.rank == 1)
+        )
+    }
+    try:
+        heartbeat_age = max(0, int(clock.time() - CRON_HEARTBEAT.stat().st_mtime))
+    except OSError:
+        heartbeat_age = None
+    result = {
+        "todos": {
+            "deadlines": pending_count(session, None, "all")["pending"],
+            "deadlines_30": pending_count(session, None, "30")["pending"],
+            "fields": field_pending_count(session, None)["pending"],
+            "kinds": kinds_pending_count(session, None)["pending"],
+            "audit": audit_flagged_count(session, None)["flagged"],
+            "feedback": feedback_pending_count(session, None)["pending"],
+            "sources": len(check_sources(session).failures),
+        },
+        "data": {
+            "documents": count(docs),
+            "applications": count(docs.where(v1_api._kind_is(["申报通知"]))),
+            "lists": count(docs.where(v1_api._kind_is(["名单"]))),
+            "list_entries": count(select(func.count(ListEntry.id))),
+            "approved_deadlines": len(_distinct(session, list(approved))),
+            "users": count(select(func.count(User.id))),
+            "follows": count(select(func.count(Follow.id))),
+            "pending_reminders": count(
+                select(func.count(Subscription.id)).where(Subscription.status == "unused")
+            ),
+        },
+        "jobs": [{"job": name, "latest": latest.get(name)} for name in OVERVIEW_JOBS],
+        "heartbeat_age_seconds": heartbeat_age,
+        "advisor_enabled": get_settings().advisor_enabled,
+    }
+    _audit(request, "overview_read")
+    return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/job-runs")
+def admin_job_runs(
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+    job: Annotated[str | None, Query(max_length=64)] = None,
+    before_id: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    from youju.jobs import JOB_NAMES, run_out
+
+    if job is not None and job not in JOB_NAMES:
+        raise HTTPException(status_code=422, detail="未知任务")
+    stmt = select(JobRun).where(JobRun.started_at >= datetime.now(UTC) - timedelta(days=7))
+    if job:
+        stmt = stmt.where(JobRun.job == job)
+    if before_id is not None:
+        stmt = stmt.where(JobRun.id < before_id)
+    rows = session.scalars(stmt.order_by(JobRun.id.desc()).limit(limit)).all()
+    _audit(request, "job_runs_read", job=job, count=len(rows))
+    return JSONResponse(
+        jsonable_encoder(
+            {
+                "items": [run_out(row) for row in rows],
+                "jobs": JOB_NAMES,
+                "next_before_id": rows[-1].id if len(rows) == limit else None,
+            }
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 DueFilter = Literal["all", "30", "future"]

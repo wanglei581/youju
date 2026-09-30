@@ -65,13 +65,14 @@
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 20 条</button>
 </main>
+<script src="/admin/embed.js"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
   const shown = new Set();
   let cursor = null;
 
-  function headers() { return { 'X-Admin-Token': $('token').value.trim() }; }
+  function headers() { return { 'X-Admin-Token': youjuAdminToken() }; }
   function el(tag, cls, value) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
