@@ -564,6 +564,22 @@ def _cmd_check_sources(args: argparse.Namespace) -> int:
     return 20 if args.job and sent is True else 1
 
 
+def _cmd_job_start(args: argparse.Namespace) -> int:
+    from youju.jobs import start_run
+
+    run_id = start_run(args.job)
+    if run_id is not None:
+        print(run_id)
+    return 0
+
+
+def _cmd_job_finish(args: argparse.Namespace) -> int:
+    from youju.jobs import finish_run
+
+    finish_run(args.id, args.code)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -700,6 +716,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=_cmd_serve)
+
+    from youju.jobs import JOB_NAMES
+
+    p = sub.add_parser("job-start", help="记录定时任务开始（记账失败不阻断任务）")
+    p.add_argument("job", choices=JOB_NAMES)
+    p.set_defaults(func=_cmd_job_start)
+    p = sub.add_parser("job-finish", help="记录定时任务结束")
+    p.add_argument("id", type=int)
+    p.add_argument("code", type=int)
+    p.set_defaults(func=_cmd_job_finish)
 
     args = parser.parse_args(argv)
     logging.basicConfig(

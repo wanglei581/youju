@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>有据管理台</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#222b35; --muted:#687482; --line:#e4e7e9; --blue:#1769aa; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  button,input,select { font:inherit; border:1px solid #ccd2d9; border-radius:6px; padding:7px 10px; background:#fff; color:var(--ink); }
+  button { cursor:pointer; }
+  button:disabled { cursor:wait; opacity:.65; }
+  button:focus-visible,a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+  header { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:14px 20px; background:#fff; border-bottom:1px solid var(--line); }
+  h1 { font-size:20px; margin:0 auto 0 0; }
+  form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .muted { color:var(--muted); }
+  #message { color:#a32a26; margin:0; padding:8px 20px; }
+  #message:empty { display:none; }
+  .layout { display:grid; grid-template-columns:180px minmax(0,1fr); min-height:calc(100vh - 78px); }
+  nav { padding:16px 12px; background:#fff; border-right:1px solid var(--line); }
+  nav p { color:var(--muted); margin:18px 10px 6px; font-size:12px; }
+  nav button { display:block; width:100%; text-align:left; margin:3px 0; border-color:transparent; }
+  nav button[aria-current="page"] { background:#e8f1ff; color:var(--blue); font-weight:600; }
+  main { min-width:0; padding:20px; }
+  h2 { font-size:20px; margin:0; }
+  h3 { font-size:16px; margin:0 0 12px; }
+  .pagebar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+  .panel { background:#fff; padding:20px; border:1px solid var(--line); border-radius:8px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .metric { text-align:left; padding:12px; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+  .metric strong { display:block; font-size:26px; color:var(--ink); }
+  .tablewrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; min-width:700px; }
+  th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  td:last-child { max-width:360px; overflow-wrap:anywhere; }
+  .ok { color:#287349; } .failed { color:#a32a26; }
+  iframe { display:block; width:100%; height:calc(100vh - 172px); min-height:500px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  a { color:var(--blue); }
+  [hidden] { display:none !important; }
+  @media(max-width:700px) {
+    header { padding:12px; } h1 { width:100%; } #token { width:170px; }
+    .layout { grid-template-columns:minmax(0,1fr); }
+    nav { display:flex; gap:4px; flex-wrap:wrap; padding:8px; border-right:0; border-bottom:1px solid var(--line); }
+    nav p { display:none; } nav button { width:auto; margin:0; padding:6px 8px; }
+    main { padding:12px; } .panel { padding:14px; } iframe { height:75vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>有据管理台</h1>
+  <form id="auth" autocomplete="off">
+    <label for="token">管理口令</label>
+    <input id="token" type="password" autocomplete="off" aria-describedby="tokenHint" required>
+    <button class="primary" id="enter">进入管理台</button>
+    <button type="button" id="logout" hidden>退出</button>
+  </form>
+  <span class="muted" id="tokenHint">口令仅在页面内存中保留，刷新后重新输入</span>
+</header>
+<p id="message" role="status" aria-live="polite"></p>
+<div class="layout">
+  <nav aria-label="管理菜单">
+    <button type="button" data-menu="overview" aria-current="page">总览</button>
+    <p>数据核对</p>
+    <button type="button" data-menu="review">截止日期</button>
+    <button type="button" data-menu="fields">支持方式</button>
+    <button type="button" data-menu="kinds">类型复核</button>
+    <button type="button" data-menu="audit">质检</button>
+    <p>用户反馈</p>
+    <button type="button" data-menu="feedback">纠错</button>
+    <p>来源管理</p>
+    <button type="button" data-menu="sources">来源管理</button>
+    <p>运维</p>
+    <button type="button" data-menu="jobs">定时任务</button>
+    <p>平台入口</p>
+    <button type="button" data-menu="platforms">外部平台</button>
+  </nav>
+  <main>
+    <div class="pagebar"><h2 id="title">总览</h2><button id="refresh" type="button" hidden>刷新</button></div>
+    <div id="locked" class="panel">请输入管理口令，查看统计并处理待办。</div>
+    <div id="overview" hidden></div>
+    <section id="jobs" class="panel" hidden>
+      <h3>最近 7 天的任务记录</h3>
+      <label for="jobFilter">任务</label> <select id="jobFilter"><option value="">全部任务</option></select>
+      <p class="muted">运行中表示尚未收到结束记录；容器突然退出或记账失败时可能保留此状态。</p>
+      <div class="tablewrap"><table><thead><tr><th>任务</th><th>开始（北京时间）</th><th>结束（北京时间）</th><th>结果</th><th>摘要</th></tr></thead><tbody id="jobRows"></tbody></table></div>
+      <p id="jobEmpty" hidden>最近 7 天没有记录。</p>
+      <button type="button" id="moreJobs" hidden>加载更多</button>
+    </section>
+    <iframe id="work" title="管理工作页" hidden></iframe>
+    <section id="platforms" hidden>
+      <p class="muted">这些平台要单独登录，不能嵌进管理台。</p>
+      <article class="panel">
+        <h3><a href="https://mp.weixin.qq.com" target="_blank" rel="noopener noreferrer">微信小程序后台</a></h3>
+        <p>版本管理、成员管理、服务类目、小程序备案、用户隐私保护指引、订阅消息、基础库最低版本。</p>
+      </article>
+      <article class="panel">
+        <h3><a href="https://cloud.weixin.qq.com/cloudrun" target="_blank" rel="noopener noreferrer">微信云托管控制台</a></h3>
+        <p>服务、日志、环境变量、MySQL、对象存储里的 backups/ 和 logs/。</p>
+      </article>
+    </section>
+  </main>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const titles = { overview:'总览',review:'截止日期',fields:'支持方式',kinds:'类型复核',audit:'质检',feedback:'纠错',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
+  const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','advisor-run':'工具任务'};
+  const states = {running:'运行中',ok:'成功',failed:'失败'};
+  let token = '', active = 'overview', next = null, sequence = 0, due = '30';
+  window.getYoujuAdminToken = () => token;
+  function node(tag, text, className) { const e=document.createElement(tag); if(text !== undefined) e.textContent=text; if(className) e.className=className; return e; }
+  function stamp(value) { return value ? new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—'; }
+  function clearSession() {
+    token=''; sequence++; $('token').value=''; $('logout').hidden=true; $('token').disabled=false; $('enter').hidden=false;
+    $('overview').replaceChildren(); $('jobRows').replaceChildren(); $('work').removeAttribute('src');
+  }
+  async function api(path) {
+    const response = await fetch(path,{headers:{'X-Admin-Token':token},cache:'no-store'});
+    if (!response.ok) {
+      if(response.status===401 || response.status===429) { clearSession(); show(active); }
+      throw new Error(response.status===401 ? '管理口令不正确或尚未配置，请重新输入' : response.status===429 ? '口令输错次数太多，请 10 分钟后再试' : `载入失败（${response.status}），请刷新重试`);
+    }
+    return response.json();
+  }
+  function show(menu, wanted, overviewData) {
+    active=menu; if(wanted) due=wanted; sequence++; $('message').textContent=''; $('title').textContent=titles[menu];
+    document.querySelectorAll('[data-menu]').forEach(b=>{ if(b.dataset.menu===menu) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });
+    ['overview','jobs','platforms','work','locked'].forEach(id=>$(id).hidden=true);
+    $('refresh').hidden=!token || menu==='platforms';
+    if(menu==='platforms') { $('platforms').hidden=false; return; }
+    if(!token) { $('locked').hidden=false; return; }
+    if(menu==='overview') { $('overview').hidden=false; loadOverview(overviewData); }
+    else if(menu==='jobs') { $('jobs').hidden=false; loadJobs(true); }
+    else { $('work').hidden=false; $('work').title=titles[menu]; $('work').src=`/admin/${menu}?embed=1${menu==='review' ? `&due=${due}` : ''}`; }
+  }
+  function metric(label, value, menu, wanted) {
+    const e=node(menu?'button':'div',undefined,'metric'); if(menu) {e.type='button'; e.onclick=()=>show(menu,wanted);}
+    e.append(node('span',label),node('strong',String(value))); return e;
+  }
+  function jobRow(item) {
+    const tr=node('tr'); [names[item.job] ? `${names[item.job]}（${item.job}）` : item.job,stamp(item.started_at),stamp(item.finished_at),states[item.status] || item.status,item.summary].forEach((v,i)=>tr.append(node('td',v,i===3?item.status:''))); return tr;
+  }
+  async function loadOverview(overviewData) {
+    const seq=++sequence;
+    try {
+      const d=overviewData || await api('/api/admin/overview'); if(seq!==sequence) return;
+      const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'),grid);
+      [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['类型待复核','kinds','kinds'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
+      const data=node('section',undefined,'panel'), metrics=node('div',undefined,'grid'); data.append(node('h3','数据'),metrics);
+      [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已核对截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
+      data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已核对截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));
+      const jobs=node('section',undefined,'panel'); jobs.append(node('h3','定时任务'));
+      jobs.append(node('p',`定时任务心跳：${d.heartbeat_age_seconds===null?'暂无心跳':`${Math.floor(d.heartbeat_age_seconds/60)} 分 ${d.heartbeat_age_seconds%60} 秒前`} · 工具总开关：${d.advisor_enabled?'开':'关'}`));
+      const wrap=node('div',undefined,'tablewrap'), table=node('table'), head=node('thead'), hr=node('tr'), body=node('tbody');
+      ['任务','开始（北京时间）','结束（北京时间）','结果','摘要'].forEach(t=>hr.append(node('th',t))); head.append(hr);
+      d.jobs.forEach(item=>body.append(item.latest ? jobRow(item.latest) : jobRow({job:item.job,status:'暂无记录',summary:'尚未记录运行'})));
+      table.append(head,body); wrap.append(table); jobs.append(wrap);
+      const link=node('button','查看最近 7 天记录'); link.type='button'; link.onclick=()=>show('jobs'); jobs.append(link);
+      $('overview').replaceChildren(todo,data,jobs);
+    } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
+  }
+  async function loadJobs(reset) {
+    const seq=++sequence; $('moreJobs').disabled=true;
+    if(reset) { next=null; $('jobRows').replaceChildren(); $('jobEmpty').hidden=true; $('moreJobs').hidden=true; }
+    const filter=$('jobFilter').value;
+    try {
+      const query=new URLSearchParams(); if(filter) query.set('job',filter); if(next) query.set('before_id',next);
+      const d=await api(`/api/admin/job-runs?${query}`); if(seq!==sequence) return;
+      if($('jobFilter').options.length===1) d.jobs.forEach(job=>{const o=node('option',names[job]?`${names[job]}（${job}）`:job);o.value=job;$('jobFilter').append(o);});
+      d.items.forEach(item=>$('jobRows').append(jobRow(item))); next=d.next_before_id;
+      $('moreJobs').hidden=next===null; $('jobEmpty').hidden=$('jobRows').childElementCount>0;
+    } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
+    finally { if(seq===sequence) $('moreJobs').disabled=false; }
+  }
+  $('auth').onsubmit=async e=>{
+    e.preventDefault(); token=$('token').value.trim(); $('token').value=''; $('enter').disabled=true; $('message').textContent='';
+    try {
+      const overviewData=await api('/api/admin/overview'); $('token').disabled=true; $('enter').hidden=true; $('logout').hidden=false; show(active,undefined,overviewData);
+    } catch(err) { clearSession(); show(active); $('message').textContent=err.message; }
+    finally { $('enter').disabled=false; }
+  };
+  $('logout').onclick=()=>{clearSession();show(active);};
+  document.querySelectorAll('[data-menu]').forEach(b=>b.onclick=()=>show(b.dataset.menu));
+  $('refresh').onclick=()=>show(active); $('jobFilter').onchange=()=>loadJobs(true); $('moreJobs').onclick=()=>loadJobs(false);
+})();
+</script>
+</body>
+</html>

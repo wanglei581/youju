@@ -8,11 +8,10 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from sqlalchemy import func, make_url, select, text
+from sqlalchemy import func, select, text
 
 from youju.backup import BackupError, dump, object_path, restore, run_backup
 from youju.db import create_mysql_engine
-from youju.migrations import upgrade
 from youju.models import (
     AICheck,
     AIUsage,
@@ -112,26 +111,24 @@ def populate(session):
     return doc
 
 
+def clear_restore_target(session, engine, *, keep_access_logs=False):
+    """恢复测试只使用指定测试库；先留住备份字节，再清空恢复目标。"""
+    session.rollback()
+    session.expire_all()
+    with engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        try:
+            for table in Base.metadata.sorted_tables:
+                if keep_access_logs and table.name == "access_logs":
+                    continue
+                conn.execute(text(f"TRUNCATE TABLE `{table.name}`"))
+        finally:
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+
+
 @pytest.fixture
 def restore_engine(db_engine):
-    """另一个迁移好的空库，当恢复目标。"""
-    url = make_url(TEST_DB_URL).set(database="youju_test_restore")
-    server = create_mysql_engine(make_url(TEST_DB_URL).set(database=""))
-    with server.begin() as conn:
-        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
-        conn.execute(
-            text(
-                "CREATE DATABASE `youju_test_restore` CHARACTER SET utf8mb4 "
-                "COLLATE utf8mb4_0900_bin"
-            )
-        )
-    upgrade(url.render_as_string(hide_password=False))
-    engine = create_mysql_engine(url)
-    yield engine
-    engine.dispose()
-    with server.begin() as conn:
-        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
-    server.dispose()
+    return db_engine
 
 
 def test_dump_and_restore_round_trip(session, db_engine, restore_engine) -> None:
@@ -143,6 +140,7 @@ def test_dump_and_restore_round_trip(session, db_engine, restore_engine) -> None
     header = json.loads(gzip.decompress(out.getvalue()).splitlines()[0])
     assert header["format"] == "youju-backup" and header["revision"] and header["tables"] == counts
 
+    clear_restore_target(session, restore_engine)
     restored = restore(restore_engine, io.BytesIO(out.getvalue()))
     assert restored == counts
     with restore_engine.connect() as conn:
@@ -308,6 +306,7 @@ def test_broken_or_tampered_files_leave_the_target_untouched(
         (extra_field, "表结构不一致"),
         (b"", "不是有据的备份文件"),  # 空文件
     ]
+    clear_restore_target(session, restore_engine)
     for data, message in cases:
         with pytest.raises(BackupError, match=message):
             restore(restore_engine, io.BytesIO(data))
@@ -319,13 +318,8 @@ def test_failed_restore_resets_the_session(session, db_engine) -> None:
     """失败后外键检查改回来、表锁释放，连接回到连接池也照常。"""
     populate(session)
     raw = _dump(db_engine)
-    url = make_url(TEST_DB_URL).set(database="youju_test_restore")
-    server = create_mysql_engine(make_url(TEST_DB_URL).set(database=""))
-    with server.begin() as conn:
-        conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
-        conn.execute(text("CREATE DATABASE `youju_test_restore` COLLATE utf8mb4_0900_bin"))
-    upgrade(url.render_as_string(hide_password=False))
-    engine = create_mysql_engine(url, pool_size=1, max_overflow=0)  # 只有一个连接，失败后复用它
+    clear_restore_target(session, db_engine)
+    engine = create_mysql_engine(TEST_DB_URL, pool_size=1, max_overflow=0)
     try:
         with pytest.raises(BackupError):
             restore(engine, io.BytesIO(_rewrite(raw, lambda lines: lines[:-1])))
@@ -335,9 +329,6 @@ def test_failed_restore_resets_the_session(session, db_engine) -> None:
             conn.rollback()
     finally:
         engine.dispose()
-        with server.begin() as conn:
-            conn.execute(text("DROP DATABASE IF EXISTS `youju_test_restore`"))
-        server.dispose()
 
 
 def test_upload_retries_busy_errors_but_not_setup_errors(session, db_engine) -> None:

@@ -103,6 +103,7 @@
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 50 条</button>
 </main>
+<script src="/admin/embed.js"></script>
 <script>
 (function () {
   const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
@@ -119,7 +120,7 @@
   try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; } catch (e) { $('reviewer').value = '创始人'; }
 
   function headers() {
-    return { 'Content-Type': 'application/json', 'X-Admin-Token': $('token').value.trim() };
+    return { 'Content-Type': 'application/json', 'X-Admin-Token': youjuAdminToken() };
   }
 
   function el(tag, cls, text) {

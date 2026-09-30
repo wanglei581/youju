@@ -175,11 +175,14 @@ def run_cleanup(
     """按保存期限删除个人信息：埋点、纠错、订阅授权（已用完的、长期没用上的），期限见配置和隐私保护指引。"""
     from sqlalchemy import delete
 
-    from youju.models import Event, Feedback
+    from youju.models import Event, Feedback, JobRun
 
     settings = settings or get_settings()
     stamp = stamp or v1.now()
     result = {
+        "job_runs": session.execute(
+            delete(JobRun).where(JobRun.started_at < stamp - timedelta(days=90))
+        ).rowcount,
         "events": session.execute(
             delete(Event).where(
                 Event.created_at < stamp - timedelta(days=settings.retain_events_days)
