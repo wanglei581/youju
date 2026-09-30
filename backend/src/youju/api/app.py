@@ -25,6 +25,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from youju import access_log
 from youju import fields as field_rules
@@ -155,22 +157,26 @@ def _openid_or_none(request: Request) -> str | None:
         return None
 
 
-@app.middleware("http")
-async def _access_log(request: Request, call_next):
-    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外；放在最外层，
-    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
-    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。"""
-    path = request.url.path
-    if path == "/health":
-        return await call_next(request)
-    started = clock.monotonic()
-    entry = {
+def _access_entry(request: Request) -> dict:
+    return {
         "service": getattr(get_settings(), "role", "all"),
         "method": request.method[:8],
-        "path": _printable(path, 190),
+        "path": _printable(request.url.path, 190),
         "ip": client_ip(request)[:64] or None,
         "openid": _openid_or_none(request),
     }
+
+
+@app.middleware("http")
+async def _access_log(request: Request, call_next):
+    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外。
+    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
+    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。
+    最外层请求体保护提前拒绝的请求由它使用相同格式记日志。"""
+    if request.url.path == "/health":
+        return await call_next(request)
+    started = clock.monotonic()
+    entry = _access_entry(request)
     try:
         response = await call_next(request)
     except Exception:
@@ -183,6 +189,102 @@ async def _access_log(request: Request, call_next):
     # call_next 返回的响应本身不带后台任务（接口自己的后台任务在里层已经跑过）
     response.background = BackgroundTask(access_log.write, entry)
     return response
+
+
+_ADMIN_BODY_LIMIT = 256 * 1024
+_ADMIN_IMPORT_LIMIT = 5 * 1024 * 1024
+
+
+class AdminSecurityMiddleware:
+    """在 FastAPI 解析请求体之前限大小；使用 ASGI 避免解析器吞掉超限异常。"""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+        if path == "/admin" or path.startswith("/admin/"):
+            original_send = send
+
+            async def send_with_headers(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers["X-Frame-Options"] = "SAMEORIGIN"
+                    headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+                    headers["X-Content-Type-Options"] = "nosniff"
+                    headers["Referrer-Policy"] = "no-referrer"
+                await original_send(message)
+
+            send = send_with_headers
+        if (
+            not path.startswith("/api/admin/")
+            or scope["method"] not in {"POST", "PUT", "DELETE"}
+            # api 角色仍由内层白名单返回 404，不读请求体。
+            or getattr(get_settings(), "role", "all") == "api"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        started = clock.monotonic()
+
+        async def reject(status: int, detail: str) -> None:
+            entry = _access_entry(request)
+            entry.update(status=status, ms=int((clock.monotonic() - started) * 1000))
+            response = JSONResponse(
+                status_code=status,
+                content={"detail": detail},
+                background=BackgroundTask(access_log.write, entry),
+            )
+            await response(scope, receive, send)
+
+        if not request.headers.get("x-admin-token"):
+            await reject(401, "管理接口未授权")
+            return
+        limit = _ADMIN_IMPORT_LIMIT if path == "/api/admin/reviews/import" else _ADMIN_BODY_LIMIT
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                length = int(raw_length)
+            except ValueError:
+                length = -1
+            if length < 0:
+                await reject(400, "请求内容大小无效")
+                return
+            if length > limit:
+                await reject(413, "请求内容过大")
+                return
+
+        # 即使声明了较小的 Content-Length，也按实际字节计数；缓冲最多 limit 字节。
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > limit:
+                await reject(413, "请求内容过大")
+                return
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        async def replay() -> Message:
+            nonlocal body
+            if body is not None:
+                message = {"type": "http.request", "body": bytes(body), "more_body": False}
+                body = None
+                return message
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+
+# 最后注册的用户中间件位于最外层，缺口令或超限时不进入请求解析和数据库依赖。
+app.add_middleware(AdminSecurityMiddleware)
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -613,11 +715,12 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
 # 管理口令输错限流（admin 服务固定 1 个实例，计数放在内存里）：同一来源 10 分钟内错 5 次锁定。
 # 不设全局锁定——否则别人故意输错就能把管理员也锁在外面；
 # 口令至少 32 位随机字符，换来源地址猜也猜不中。
-# 计数表最多记 10000 个来源，超出时先清掉过期的，仍超出就整表清空，防止伪造地址把内存撑大
+# 计数表最多记 10000 个来源；先清过期记录，再优先淘汰未锁定且最早失败的来源。
 _FAIL_WINDOW = 600
 _FAILS_PER_SOURCE = 5
 _MAX_SOURCES = 10000
 _admin_fails: dict[str, deque[float]] = defaultdict(deque)
+_admin_fails_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
@@ -636,22 +739,40 @@ def _recent(entries: deque[float], now: float) -> deque[float]:
     return entries
 
 
-def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
-    now = clock.monotonic()
-    ip = client_ip(request)
+def _trim_admin_fails(now: float) -> None:
+    """调用方持锁；只有锁定来源本身超出容量时，才淘汰其中最老的。"""
     if len(_admin_fails) > _MAX_SOURCES:
         for key in [k for k, v in _admin_fails.items() if not _recent(v, now)]:
             del _admin_fails[key]
         if len(_admin_fails) > _MAX_SOURCES:
-            _admin_fails.clear()
-    mine = _recent(_admin_fails[ip], now)
-    if len(mine) >= _FAILS_PER_SOURCE:
-        raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
-    expected = get_settings().admin_token
-    if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
-        mine.append(now)
-        audit_log.warning(json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False))
-        raise HTTPException(status_code=401, detail="管理接口未授权")
+            oldest = sorted(
+                _admin_fails,
+                key=lambda key: (
+                    len(_admin_fails[key]) >= _FAILS_PER_SOURCE,
+                    _admin_fails[key][0],
+                ),
+            )
+            for key in oldest[: len(_admin_fails) - _MAX_SOURCES]:
+                del _admin_fails[key]
+
+
+def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
+    now = clock.monotonic()
+    ip = client_ip(request)
+    with _admin_fails_lock:
+        mine = _recent(_admin_fails.get(ip, deque()), now)
+        _trim_admin_fails(now)
+        if len(mine) >= _FAILS_PER_SOURCE:
+            raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
+        expected = get_settings().admin_token
+        if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
+            mine.append(now)
+            _admin_fails[ip] = mine
+            _trim_admin_fails(now)
+            audit_log.warning(
+                json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False)
+            )
+            raise HTTPException(status_code=401, detail="管理接口未授权")
 
 
 def _audit(request: Request, action: str, **fields: object) -> None:
