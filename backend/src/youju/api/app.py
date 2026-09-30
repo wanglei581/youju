@@ -1130,6 +1130,67 @@ def approve_field(
     return {"status": result.status}
 
 
+class UndoFieldReviewIn(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=80)
+
+
+@app.post("/api/admin/fields/{field_id}/undo")
+def undo_field(
+    field_id: int,
+    body: UndoFieldReviewIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """撤回本人半小时内的字段核对；原文变化后的历史结果保留作留痕。"""
+    row = session.scalar(
+        select(DocumentField)
+        .where(DocumentField.id == field_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到字段候选")
+    if row.status == "stale":
+        raise HTTPException(status_code=409, detail="原文已变化，不能撤回核对，请重新核对")
+    if row.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=409, detail="只有已通过或已驳回的核对能撤回")
+    if row.reviewed_by != body.reviewer:
+        raise HTTPException(status_code=409, detail="只能撤回同一核对人自己的核对")
+    now = datetime.now(UTC)
+    if row.reviewed_at is None or not timedelta(0) <= now - row.reviewed_at <= timedelta(
+        minutes=30
+    ):
+        raise HTTPException(status_code=409, detail="核对已超过 30 分钟或核对时间无效，不能撤回")
+    # 正文更新和字段重抽是分开的步骤；尚未重抽也不能把旧结果退回为普通待核。
+    detail = session.scalar(
+        select(DocumentDetail)
+        .where(DocumentDetail.document_id == row.document_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if detail is not None and row.body_hash != field_rules.body_fingerprint(detail.body_text):
+        raise HTTPException(status_code=409, detail="原文已变化，不能撤回核对，请重新核对")
+    before, approved_value, reviewed_at = row.status, row.approved_value, row.reviewed_at
+    row.status = "pending"
+    row.reviewed_by = None
+    row.reviewed_at = None
+    row.approved_value = None
+    session.commit()
+    _audit(
+        request,
+        "field_undo",
+        field_id=field_id,
+        document_id=row.document_id,
+        reviewer=body.reviewer,
+        before=before,
+        value=row.value,
+        approved_value=approved_value,
+        reviewed_at=reviewed_at,
+    )
+    return {"status": "pending"}
+
+
 @app.post("/api/admin/fields/{field_id}/reject")
 def reject_field(
     field_id: int, body: FieldReviewIn, session: SessionDep, _admin: AdminDep, request: Request
