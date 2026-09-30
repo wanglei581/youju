@@ -7,8 +7,9 @@ header{padding:14px 20px;background:#fff;border-bottom:1px solid #e6e8eb;positio
 </style>
 <header><strong>字段核对</strong>　<a href="/admin/review">截止日期核对</a>　<span id="count"></span></header>
 <main><div class="bar"><input id="token" type="password" placeholder="管理口令"><input id="by" placeholder="核对人"><button class="primary" onclick="load()">加载</button></div><div id="list"></div></main>
+<script src="/admin/embed.js"></script>
 <script>
-const $=s=>document.querySelector(s), headers=()=>({'X-Admin-Token':$('#token').value}), reviewer=()=>$('#by').value.trim()||'创始人';
+const $=s=>document.querySelector(s), headers=()=>({'X-Admin-Token':youjuAdminToken()}), reviewer=()=>$('#by').value.trim()||'创始人';
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function act(id,kind){const value=kind==='approve'?prompt('留空沿用候选；如需修改请输入核对后的值：'):null;if(value===null&&kind==='approve')return;const r=await fetch(`/api/admin/fields/${id}/${kind}`,{method:'POST',headers:{...headers(),'Content-Type':'application/json'},body:JSON.stringify({reviewed_by:reviewer(),value:value||null})});if(!r.ok){alert((await r.json().catch(()=>({}))).detail||'操作失败');return}load()}
 async function load(){const r=await fetch('/api/admin/fields?limit=100',{headers:headers()});if(!r.ok){alert('加载失败：'+r.status);return}const data=await r.json();$('#count').textContent=`待核 ${data.reduce((n,x)=>n+x.fields.length,0)} 项`;$('#list').innerHTML=data.map(card).join('')||'<p>暂无待核字段</p>'}

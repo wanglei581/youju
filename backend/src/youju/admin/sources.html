@@ -69,6 +69,7 @@
   </section>
   <div id="result"></div>
 </main>
+<script src="/admin/embed.js"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -76,7 +77,7 @@
   const LEVELS = ['国家级', '省级', '市级'];
 
   function headers() {
-    return { 'X-Admin-Token': $('token').value.trim(), 'Content-Type': 'application/json' };
+    return { 'X-Admin-Token': youjuAdminToken(), 'Content-Type': 'application/json' };
   }
   function el(tag, cls, value) {
     const node = document.createElement(tag);

@@ -67,6 +67,7 @@
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 20 条</button>
 </main>
+<script src="/admin/embed.js"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -75,7 +76,7 @@
   let cursor = null;
 
   function headers(json) {
-    const h = { 'X-Admin-Token': $('token').value.trim() };
+    const h = { 'X-Admin-Token': youjuAdminToken() };
     if (json) h['Content-Type'] = 'application/json';
     return h;
   }

@@ -36,6 +36,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class JobRun(Base):
+    """定时任务运行台账；摘要只记任务结果，不复制命令输出或异常正文。"""
+
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        Index("ix_job_runs_started", "started_at"),
+        Index("ix_job_runs_job_started", "job", "started_at"),
+        CheckConstraint("status IN ('running', 'ok', 'failed')", name="ck_job_runs_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    status: Mapped[str] = mapped_column(String(16), default="running", server_default="running")
+    summary: Mapped[str] = mapped_column(String(500), default="", server_default="")
+
+
 class Source(Base):
     """一个被监测的网站栏目（通常是某部门的"通知公告"列表页）。"""
 

@@ -870,6 +870,7 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         retain_unused_subscriptions_days=365,
     )
     assert run_cleanup(session, settings=config, stamp=NOW) == {
+        "job_runs": 0,
         "events": 1,
         "feedback": 1,
         "subscriptions": 1,
