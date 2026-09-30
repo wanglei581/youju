@@ -29,7 +29,7 @@
   <view class="card advisor-card">
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
-    <view class="advisor-text muted">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中随时删除</view>
+    <view class="advisor-text muted">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
   </view>
 </block>

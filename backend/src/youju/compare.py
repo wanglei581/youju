@@ -196,12 +196,19 @@ def validate_xlsx(content: bytes) -> bool:
                     tag = element.tag.rsplit("}", 1)[-1]
                     if tag == "row":
                         rows += 1
-                        if rows > MAX_XLSX_ROWS or int(element.get("r", "0")) > MAX_XLSX_ROWS:
+                        row_ref = element.get("r", "0")
+                        # 行号先限位数再转整数，超长数字串不进 int()
+                        if (
+                            rows > MAX_XLSX_ROWS
+                            or not re.fullmatch(r"\d{1,7}", row_ref)
+                            or int(row_ref) > MAX_XLSX_ROWS
+                        ):
                             raise CompareInputError("表格行号过大，请移除多余空行后重试")
                     if tag == "c":
                         cells += 1
                         reference = element.get("r", "")
-                        match = re.fullmatch(r"([A-Z]+)([1-9]\d*)", reference)
+                        # Excel 最多到 XFD 列（3 个字母）、行号不超过 7 位，先限长度再计算
+                        match = re.fullmatch(r"([A-Z]{1,3})([1-9]\d{0,6})", reference)
                         column = 0
                         if match:
                             for ch in match[1]:

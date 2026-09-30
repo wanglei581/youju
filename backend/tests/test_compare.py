@@ -328,3 +328,28 @@ def test_csv_preserves_quoted_newlines():
 def test_csv_malformed_quotes_return_chinese_reason(text):
     with pytest.raises(CompareInputError, match="CSV 格式有误"):
         read_customer_file("clients.csv", content=text.encode())
+
+
+def test_xlsx_rejects_overlong_cell_reference(tmp_path):
+    """超长列坐标直接报错，不做大整数计算。"""
+    import zipfile
+
+    import pytest
+    from openpyxl import Workbook
+
+    from youju.compare import CompareInputError, read_customer_file
+
+    good = tmp_path / "good.xlsx"
+    book = Workbook()
+    book.active["A1"] = "企业名称"
+    book.active["A2"] = "演示科技有限公司"
+    book.save(good)
+    bad = tmp_path / "bad.xlsx"
+    with zipfile.ZipFile(good) as src, zipfile.ZipFile(bad, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet"):
+                data = data.replace(b'r="A2"', b'r="' + b"A" * 5000 + b'2"')
+            dst.writestr(item, data)
+    with pytest.raises(CompareInputError, match="坐标无效"):
+        read_customer_file(bad)
