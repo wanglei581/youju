@@ -182,7 +182,7 @@ def test_upload_track_profiles(client, session, xlsx):
         (upload_body(b"test", name="clients.txt"), "只支持"),
         ({"kind": "compare", "file": {"name": "a.csv", "content_base64": "!"}}, "编码无效"),
         (upload_body(b"x" * (service.MAX_UPLOAD_BYTES + 1)), "60 KB"),
-        (upload_body(b"PKbroken"), "无法读取"),
+        (upload_body(b"PK\x03\x04broken"), "不是 CSV"),
         (upload_body(b"\x00\x01binary"), "不是 CSV"),
         (upload_body(b""), "没有可提交"),
         (upload_body(b"no header", kind="track"), "表头"),
@@ -650,3 +650,122 @@ def test_uploaded_file_is_deleted_or_queued_when_task_times_out(
         is False
     )
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://timeout"
+
+
+def relocate_sheet(source, transform=lambda data: data):
+    """保留有效工作簿关系，将工作表移到无 .xml 后缀的非标准路径。"""
+    output = BytesIO()
+    old_path = "xl/worksheets/sheet1.xml"
+    new_path = "custom/customers.data"
+    with ZipFile(BytesIO(source)) as old, ZipFile(output, "w", compression=8) as new:
+        for name in old.namelist():
+            data = old.read(name)
+            if name == old_path:
+                name, data = new_path, transform(data)
+            elif name in ("xl/_rels/workbook.xml.rels", "[Content_Types].xml"):
+                data = data.replace(("/" + old_path).encode(), ("/" + new_path).encode())
+            new.writestr(name, data)
+    return output.getvalue()
+
+
+def test_upload_nonstandard_worksheet_path_and_first_sheet(client):
+    agree_advisor(client)
+    book = Workbook()
+    book.active.append(["企业名称"])
+    book.active.append(["首表公司"])
+    book.create_sheet("当前表").append(["其他公司"])
+    book.active = 1
+    output = BytesIO()
+    book.save(output)
+    body = upload_body(relocate_sheet(output.getvalue()))
+    assert client.post("/api/v1/advisor/preview", json=body).json() == {"rowCount": 1}
+    response = client.post("/api/v1/advisor/tasks", headers={"Idempotency-Key": "first"}, json=body)
+    assert response.status_code == 202
+    assert client.get(f"/api/v1/advisor/tasks/{response.json()['id']}").json()["rowCount"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload,reason",
+    [
+        (b'<row r="1000000"><c r="A1000000"/></row>', "行号过大"),
+        (b'<row r="1"><c r="A1000000"/></row>', "行号过大"),
+        (b'<row r="1"><c r="BM1"/></row>', "列数过多"),
+        (b'<row r="1"><c r="A1"/></row>' * 203, "行号过大"),
+        (b'<row r="1">' + b'<c r="A1"/>' * 12929 + b"</row>", "单元格过多"),
+        (b"<x/>" * 100001, "内容过多"),
+    ],
+)
+@pytest.mark.parametrize("kind", ["compare", "track"])
+def test_nonstandard_worksheet_limits(client, payload, reason, kind):
+    agree_advisor(client)
+    sheet = (
+        b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        + payload
+        + b"</sheetData></worksheet>"
+    )
+    content = relocate_sheet(xlsx_content([["企业名称"], ["甲公司"]]), lambda _: sheet)
+    response = client.post("/api/v1/advisor/preview", json=upload_body(content, kind=kind))
+    assert response.status_code == 422 and reason in response.json()["detail"]
+    assert client.get("/api/v1/advisor/status").json()["quota"][kind]["used"] == 0
+
+
+def test_xlsx_cumulative_expansion_limit(client):
+    agree_advisor(client)
+    output = BytesIO()
+    with ZipFile(output, "w", compression=8) as archive:
+        archive.writestr("a", b"x" * (1024 * 1024 + 1))
+        archive.writestr("b", b"x" * (1024 * 1024 + 1))
+    response = client.post("/api/v1/advisor/preview", json=upload_body(output.getvalue()))
+    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("content", [b"PK company\nOther company", b"PKbroken"])
+def test_pk_prefix_csv_is_not_zip(client, content):
+    agree_advisor(client)
+    response = client.post("/api/v1/advisor/preview", json=upload_body(content))
+    assert response.status_code == 200
+    assert response.json()["rowCount"] == len(content.splitlines())
+
+
+@pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
+def test_delete_and_logout_ignore_switch_and_agreement(
+    client, advisor_settings, session, disabled, outdated
+):
+    agree_advisor(client)
+    created = create(client).json()
+    advisor_settings.advisor_enabled = not disabled
+    if outdated:
+        advisor_settings.agreement_version = "new-general-version"
+        user = session.scalar(select(User))
+        user.advisor_agreement_version = "old-advisor-version"
+        session.commit()
+    # 我的数据中的删除与我的任务使用同一个删除接口。
+    data = client.get("/api/v1/me/data")
+    assert data.status_code == 200
+    assert data.json()["advisorTasks"][0]["id"] == created["id"]
+    advisor_settings.dev_openid = "somebody-else"
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
+    advisor_settings.dev_openid = "advisor-user"
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
+    assert client.get("/api/v1/me/data").json()["advisorTasks"] == []
+    assert client.delete("/api/v1/me").status_code == 204
+    assert client.get("/api/v1/me").json()["agreed"] is None
+
+
+def test_xlsx_cell_limit_across_worksheets(client):
+    agree_advisor(client)
+    book = Workbook()
+    book.create_sheet("第二表")
+    output = BytesIO()
+    book.save(output)
+    sheet = (
+        b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">'
+        + b'<c r="A1"/>' * 6500
+        + b"</row></sheetData></worksheet>"
+    )
+    result = BytesIO()
+    with ZipFile(BytesIO(output.getvalue())) as old, ZipFile(result, "w", compression=8) as new:
+        for name in old.namelist():
+            new.writestr(name, sheet if name.startswith("xl/worksheets/") else old.read(name))
+    response = client.post("/api/v1/advisor/preview", json=upload_body(result.getvalue()))
+    assert response.status_code == 422 and "单元格过多" in response.json()["detail"]

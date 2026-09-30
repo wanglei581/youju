@@ -3,9 +3,12 @@
 <view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <view wx:if="{{!loading}}" class="card advisor-card">
   <view class="advisor-title">工具使用说明</view>
-  <view class="advisor-text">【工具使用说明：待律师定稿】</view>
-  <view wx:if="{{agreed}}" class="advisor-text muted">你已同意当前版本</view>
-  <block wx:else>
+  <view class="advisor-text muted">当前版本：{{version}}</view>
+  <view class="advisor-text">{{text}}</view>
+  <view wx:if="{{!enabled}}" class="advisor-text muted">工具暂未开放</view>
+  <view wx:elif="{{!final}}" class="advisor-text muted">说明定稿后开放</view>
+  <view wx:elif="{{agreed}}" class="advisor-text muted">你已同意当前版本</view>
+  <block wx:elif="{{!error}}">
     <checkbox-group bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" />我已阅读并同意《工具使用说明》</label></checkbox-group>
     <button class="advisor-button btn-primary" bindtap="agree" loading="{{sending}}" disabled="{{!checked || sending}}">单独同意并继续</button>
   </block>

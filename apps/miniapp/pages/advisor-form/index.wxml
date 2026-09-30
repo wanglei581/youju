@@ -3,7 +3,7 @@
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <block wx:else>
   <view class="card advisor-card">
-    <view class="advisor-title">填写客户</view>
+    <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">今天剩余 {{remaining}} 次 · 每次最多 {{maxRows}} 行</view>
     <view class="advisor-actions">
       <button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{submitting || previewing}}">粘贴文本</button>
@@ -20,6 +20,7 @@
       <view class="advisor-text muted">{{fileName || '还没有选择文件'}}</view>
       <view wx:if="{{previewing}}" class="advisor-text muted">正在读取行数…</view>
     </block>
+    <view class="advisor-text muted">提交前请确认你有权提交这些客户信息，不要填写个人姓名、身份证号、手机号</view>
     <view class="advisor-text">将提交 {{rowCount}} 行</view>
     <view wx:if="{{rowCount > maxRows}}" class="advisor-error">超过每次 {{maxRows}} 行，请减少客户后再提交</view>
     <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>
@@ -28,7 +29,7 @@
   <view class="card advisor-card">
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
-    <view class="advisor-text muted">原文件不保存，任务输入 7 天后清空，可在我的数据中删除任务。</view>
+    <view class="advisor-text muted">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中随时删除</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
   </view>
 </block>

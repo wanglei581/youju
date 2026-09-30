@@ -5,10 +5,17 @@ Page({
   data: { kind: 'compare', loading: true, error: '', inputError: '', agreed: false, mode: 'paste', text: '', fileName: '', rowCount: 0, previewing: false, submitting: false, remaining: 0, maxRows: 50 },
   onLoad(query) {
     const kind = query.kind === 'track' ? 'track' : 'compare';
-    this.setData({ kind });
+    this.setData({ kind, title: KINDS[kind] });
     wx.setNavigationBarTitle({ title: KINDS[kind] });
-    // 超时重试沿用同一编号，避免同一表单重复扣额度。
-    this.key = `advisor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.refreshKey();
+  },
+  refreshKey() {
+    const content = JSON.stringify({ kind: this.data.kind, input: this.data.mode === 'file' ? this.file || null : this.data.text });
+    if (content === this.keyContent) return;
+    this.keyContent = content;
+    this.keySerial = (this.keySerial || 0) + 1;
+    // 内容改变才换编号；同一内容超时重试仍沿用原编号。
+    this.key = `advisor-${Date.now()}-${Math.random().toString(36).slice(2)}-${this.keySerial}`;
   },
   onShow() { this.load(); },
   load() {
@@ -23,9 +30,12 @@ Page({
     if (this.data.submitting || this.data.previewing) return;
     this.file = null;
     this.setData({ mode: e.currentTarget.dataset.mode, text: '', fileName: '', rowCount: 0, inputError: '' });
+    this.refreshKey();
   },
   input(e) {
+    if (this.data.submitting) return;
     this.setData({ text: e.detail.value, inputError: '' });
+    this.refreshKey();
     try { this.setData({ rowCount: pasteRows(this.data.kind, e.detail.value).length }); }
     catch (err) { this.setData({ rowCount: 0, inputError: err.message }); }
   },
@@ -42,6 +52,7 @@ Page({
       this.setData({ previewing: true, fileName: selected.name });
       wx.getFileSystemManager().readFile({ filePath: selected.path, encoding: 'base64', success: (file) => {
         this.file = { name: selected.name, content_base64: file.data };
+        this.refreshKey();
         this.preview();
       }, fail: () => this.setData({ previewing: false, inputError: '文件没能读取，请重新选择' }) });
     }, fail: (err) => {
@@ -61,6 +72,7 @@ Page({
     let body;
     try { body = this.data.mode === 'file' ? { kind: this.data.kind, file: this.file } : { kind: this.data.kind, rows: pasteRows(this.data.kind, this.data.text) }; }
     catch (err) { this.setData({ inputError: err.message }); return; }
+    this.refreshKey();
     this.setData({ submitting: true, inputError: '' });
     api.createAdvisorTask(body, this.key).then(() => {
       wx.redirectTo({ url: '/pages/advisor-tasks/index', fail: () => { this.setData({ submitting: false }); wx.showToast({ title: '已提交，请到我的任务查看', icon: 'none' }); } });

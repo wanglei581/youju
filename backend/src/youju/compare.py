@@ -13,8 +13,11 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
+from posixpath import normpath
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook, load_workbook
@@ -28,6 +31,11 @@ from youju.models import Document, DocumentDetail, ListEntry, Source
 
 MAX_INPUT_ROWS = 200
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_XLSX_ROWS = 202
+MAX_XLSX_COLUMNS = 64
+MAX_XLSX_CELLS = MAX_XLSX_ROWS * MAX_XLSX_COLUMNS
+MAX_XML_ELEMENTS = 100_000
+MAX_ZIP_ENTRIES = 512
 _NAME_HEADERS = {"企业名称", "单位名称", "公司名称"}
 _CODE_HEADERS = {"统一社会信用代码", "信用代码"}
 _YEAR = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
@@ -124,6 +132,92 @@ def _header_key(value: object) -> str:
     return normalize_name(_text(value)).replace("：", "").replace(":", "")
 
 
+def xlsx_sheet_paths(archive: ZipFile) -> list[str]:
+    """按工作簿关系寻找工作表，路径不假定为 worksheets/sheet1.xml。"""
+    names = set(archive.namelist())
+    required = {"[Content_Types].xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels"}
+    if not required <= names:
+        return []
+    types = ElementTree.fromstring(archive.read("[Content_Types].xml"))
+    if not any(
+        item.get("PartName") == "/xl/workbook.xml"
+        and item.get("ContentType")
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        for item in types
+    ):
+        return []
+    workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    relations = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    targets = {
+        item.get("Id"): normpath(
+            item.get("Target", "").lstrip("/")
+            if item.get("Target", "").startswith("/")
+            else "xl/" + item.get("Target", "")
+        )
+        for item in relations
+        if item.get("Type", "").endswith("/worksheet") and item.get("TargetMode") != "External"
+    }
+    paths = [
+        targets.get(
+            sheet.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+        )
+        for sheet in workbook.findall(".//{*}sheet")
+    ]
+    return [path for path in paths if path in names]
+
+
+def validate_xlsx(content: bytes) -> bool:
+    """识别真实 XLSX；解压前检查总大小，按关系路径检查实际单元格。"""
+    if not content.startswith(b"PK\x03\x04"):
+        return False
+    try:
+        archive = ZipFile(BytesIO(content))
+    except BadZipFile:
+        return False
+    with archive:
+        if len(archive.infolist()) > MAX_ZIP_ENTRIES:
+            raise CompareInputError("表格包含过多文件，请减少内容后重试")
+        if sum(item.file_size for item in archive.infolist()) > MAX_FILE_BYTES:
+            raise CompareInputError("表格解压后过大，请减少内容后重试")
+        try:
+            paths = xlsx_sheet_paths(archive)
+        except ElementTree.ParseError:
+            return False
+        if not paths:
+            return False
+        cells = elements = 0
+        for path in paths:
+            rows = 0
+            with archive.open(path) as source:
+                for _, element in ElementTree.iterparse(source):
+                    elements += 1
+                    if elements > MAX_XML_ELEMENTS:
+                        raise CompareInputError("表格内容过多，请减少内容后重试")
+                    tag = element.tag.rsplit("}", 1)[-1]
+                    if tag == "row":
+                        rows += 1
+                        if rows > MAX_XLSX_ROWS or int(element.get("r", "0")) > MAX_XLSX_ROWS:
+                            raise CompareInputError("表格行号过大，请移除多余空行后重试")
+                    if tag == "c":
+                        cells += 1
+                        reference = element.get("r", "")
+                        match = re.fullmatch(r"([A-Z]+)([1-9]\d*)", reference)
+                        column = 0
+                        if match:
+                            for ch in match[1]:
+                                column = column * 26 + ord(ch) - 64
+                        if not match or column > MAX_XLSX_COLUMNS:
+                            raise CompareInputError(
+                                "表格列数过多或单元格坐标无效，请只保留客户字段"
+                            )
+                        if int(match[2]) > MAX_XLSX_ROWS:
+                            raise CompareInputError("表格行号过大，请移除多余空行后重试")
+                        if cells > MAX_XLSX_CELLS:
+                            raise CompareInputError("表格单元格过多，请减少内容后重试")
+                    element.clear()
+        return True
+
+
 def _file_rows(path: Path, *, content: bytes | None = None) -> list[list[str]]:
     if content is None and not path.is_file():
         raise CompareInputError(f"文件不存在：{path}")
@@ -139,21 +233,34 @@ def _file_rows(path: Path, *, content: bytes | None = None) -> list[list[str]]:
                 text = raw.decode("gbk")
             except UnicodeDecodeError as exc:
                 raise CompareInputError("CSV 不是 UTF-8 或 GBK 编码") from exc
-        return [[_text(cell) for cell in row] for row in csv.reader(text.splitlines())]
+        try:
+            return [
+                [_text(cell) for cell in row]
+                for row in csv.reader(StringIO(text, newline=""), strict=True)
+            ]
+        except csv.Error as exc:
+            raise CompareInputError("CSV 格式有误，请检查引号是否闭合及分隔符") from exc
     if suffix != ".xlsx":
         raise CompareInputError("只支持 .xlsx 和 .csv 文件")
     try:
-        book = load_workbook(
-            BytesIO(content) if content is not None else path, read_only=True, data_only=True
-        )
+        raw = content if content is not None else path.read_bytes()
+        if not validate_xlsx(raw):
+            raise CompareInputError("无法读取 XLSX 文件")
+        book = load_workbook(BytesIO(raw), read_only=True, data_only=True)
+    except CompareInputError:
+        raise
     except Exception as exc:  # openpyxl 的异常类型随版本变化
         raise CompareInputError("无法读取 XLSX 文件") from exc
     try:
-        sheet = book.active
-        if content is not None:
-            # 忽略上传表格中不可信的 dimension；实际单元格范围已由接口检查。
-            sheet.reset_dimensions()
-        return [[_text(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
+        sheet = book.worksheets[0]
+        # dimension 不可信；同时给解析器明确列上限和迭代上限。
+        sheet.reset_dimensions()
+        rows = []
+        for index, row in enumerate(sheet.iter_rows(values_only=True, max_col=MAX_XLSX_COLUMNS)):
+            if index >= MAX_XLSX_ROWS:
+                raise CompareInputError("表格行数过多，请减少内容后重试")
+            rows.append([_text(cell) for cell in row])
+        return rows
     finally:
         book.close()
 

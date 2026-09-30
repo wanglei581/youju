@@ -1,27 +1,31 @@
 const api = require('./api.js');
 
-const VERSION = 'advisor-2026-09-v1';
+const terms = require('../content/advisor-terms.js');
+const VERSION = terms.version;
+const TERMS_TEXT = terms.text;
+const TERMS_FINAL = terms.final && !!terms.text.trim() && !/待.*定稿|占位/.test(terms.text);
 const KINDS = { compare: '名单比对', track: '在报项目跟进表' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。
-function csvRows(text) {
-  const rows = []; let row = []; let cell = ''; let quoted = false;
-  const value = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+function csvRows(text, keepBlank = false) {
+  const rows = []; let row = []; let cell = ''; let quoted = false; let closed = false;
+  const value = text.replace(/^\uFEFF/, '');
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i];
+    if (closed && ch !== ',' && ch !== '\n' && ch !== '\r') throw new Error('闭合引号后只能是逗号或换行，请检查内容');
     if (ch === '"') {
       if (quoted && value[i + 1] === '"') { cell += '"'; i += 1; }
-      else if (!cell || quoted) quoted = !quoted;
+      else if (!cell || quoted) { closed = quoted; quoted = !quoted; }
       else cell += ch;
-    } else if (!quoted && (ch === ',' || ch === '\n')) {
-      row.push(cell.trim()); cell = '';
-      if (ch === '\n') { rows.push(row); row = []; }
+    } else if (!quoted && (ch === ',' || ch === '\n' || ch === '\r')) {
+      row.push(cell.trim()); cell = ''; closed = false;
+      if (ch !== ',') { rows.push(row); row = []; if (ch === '\r' && value[i + 1] === '\n') i += 1; }
     } else cell += ch;
   }
   if (quoted) throw new Error('引号没有闭合，请检查粘贴内容');
-  row.push(cell.trim()); rows.push(row);
-  return rows.filter((cells) => cells.some(Boolean));
+  if (row.length || cell || (value.length && !/[\r\n]$/.test(value))) { row.push(cell.trim()); rows.push(row); }
+  return keepBlank ? rows : rows.filter((cells) => cells.some(Boolean));
 }
 
 function pasteRows(kind, text) {
@@ -44,7 +48,15 @@ function taskView(task) {
 
 function consent() {
   // 每次向服务端核对；换设备、注销或版本更新后不会继续使用旧缓存。
-  return api.me().then((res) => !!res.advisorAgreed && res.advisorAgreed.version === VERSION);
+  const general = api.isLive() ? require('./consent.js') : null;
+  const epoch = general && general.consentEpoch();
+  return api.me().then((res) => {
+    const advisorOk = !!res.advisorAgreed && res.advisorAgreed.version === VERSION;
+    if (general && !general.applyServer(res.agreed, epoch)) {
+      return general.ensureConsent().then((ok) => !!ok && advisorOk);
+    }
+    return advisorOk;
+  });
 }
 
 function openResult(id) {
@@ -63,4 +75,4 @@ function openResult(id) {
   }));
 }
 
-module.exports = { VERSION, KINDS, STATES, csvRows, pasteRows, taskView, consent, openResult };
+module.exports = { VERSION, TERMS_TEXT, TERMS_FINAL, KINDS, STATES, csvRows, pasteRows, taskView, consent, openResult };

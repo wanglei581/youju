@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime
 from time import perf_counter
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import insert
 
@@ -316,3 +317,14 @@ def test_compare_50_customers_with_20000_entries_under_five_seconds(session):
     assert elapsed < 5, f"名单比对耗时 {elapsed:.2f}s"
     assert len(report.rows) == 50
     assert all(row.status == "命中" and len(row.matches) == 1 for row in report.rows)
+
+
+def test_csv_preserves_quoted_newlines():
+    content = '企业名称\r\n"第一行\r\n第二行公司"\r\n'.encode()
+    assert read_customer_file("clients.csv", content=content) == ["第一行\r\n第二行公司"]
+
+
+@pytest.mark.parametrize("text", ['企业名称\n"未闭合公司', '企业名称\n"甲公司"多余内容'])
+def test_csv_malformed_quotes_return_chinese_reason(text):
+    with pytest.raises(CompareInputError, match="CSV 格式有误"):
+        read_customer_file("clients.csv", content=text.encode())

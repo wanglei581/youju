@@ -33,54 +33,85 @@ function xmlText(value) {
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 }
 function texts(xml) { return [...xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((m) => xmlText(m[1])).join(''); }
+function attribute(xml, name) {
+  const match = new RegExp(`\\b${name}=["']([^"']*)["']`).exec(xml);
+  return match ? xmlText(match[1]) : '';
+}
 function sheetRows(xml, shared) {
-  return [...xml.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g)].map((match) => {
-    const row = [];
-    for (const cell of match[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
-      const ref = /\br="([A-Z]+)\d+"/.exec(cell[1]);
-      if (!ref) continue;
-      const index = [...ref[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
-      const value = /<v>([\s\S]*?)<\/v>/.exec(cell[2]);
-      row[index] = /\bt="s"/.test(cell[1]) ? shared[Number(value && value[1])] || '' : (value ? xmlText(value[1]) : texts(cell[2]));
+  const { MAX_ROWS, MAX_COLUMNS, MAX_CELLS, MAX_ELEMENTS, fail } = require('../utils/advisor-file.js');
+  if ((xml.match(/<[A-Za-z_][^>]*>/g) || []).length > MAX_ELEMENTS) fail('表格内容过多，请减少内容后重试');
+  const cells = [...xml.matchAll(/<c\b([^>]*?)(?:\/>|>)/g)];
+  if (cells.length > MAX_CELLS) fail('表格单元格过多，请减少内容后重试');
+  for (const cell of cells) {
+    const ref = /^([A-Z]+)([1-9]\d*)$/.exec(attribute(cell[1], 'r'));
+    const column = ref && [...ref[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+    if (!ref || column > MAX_COLUMNS) fail('表格列数过多或单元格坐标无效，请只保留客户字段');
+    if (Number(ref[2]) > MAX_ROWS) fail('表格行号过大，请移除多余空行后重试');
+  }
+  const matches = [...xml.matchAll(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)];
+  if (matches.length > MAX_ROWS) fail('表格行号过大，请移除多余空行后重试');
+  const rows = []; let previous = 0;
+  for (const match of matches) {
+    const index = Number(attribute(match[1], 'r')) || previous + 1;
+    if (index > MAX_ROWS) fail('表格行号过大，请移除多余空行后重试');
+    previous = index; const row = [];
+    for (const cell of (match[2] || '').matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const ref = /^([A-Z]+)\d+$/.exec(attribute(cell[1], 'r'));
+      const column = [...ref[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+      const value = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(cell[2] || '');
+      row[column] = attribute(cell[1], 't') === 's' ? shared[Number(value && value[1])] || '' : (value ? xmlText(value[1]) : texts(cell[2] || ''));
     }
-    return row;
-  });
+    rows[index - 1] = row;
+  }
+  return Array.from({ length: rows.length }, (_, index) => rows[index] || []);
 }
-
-function xlsxRows(buffer) {
-  const fs = wx.getFileSystemManager();
-  const base = `${wx.env.USER_DATA_PATH}/advisor-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      try { fs.unlinkSync(`${base}.zip`); } catch (e) { /* 未写入 */ }
-      try { fs.rmdirSync(base, true); } catch (e) { /* 未解压 */ }
-    };
-    try { fs.writeFileSync(`${base}.zip`, buffer); } catch (e) { cleanup(); reject(error('演示表格没能读取，请重试', 422)); return; }
-    fs.unzip({ zipFilePath: `${base}.zip`, targetPath: base, success: () => {
-      try {
-        let shared = [];
-        try { shared = [...fs.readFileSync(`${base}/xl/sharedStrings.xml`, 'utf8').matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((m) => texts(m[1])); } catch (e) { /* 内联文字无需共享字符串表 */ }
-        const rows = sheetRows(fs.readFileSync(`${base}/xl/worksheets/sheet1.xml`, 'utf8'), shared);
-        resolve(rows);
-      } catch (e) { reject(error('无法读取 XLSX 文件', 422)); }
-      finally { cleanup(); }
-    }, fail: () => { cleanup(); reject(error('无法读取 XLSX 文件', 422)); } });
+function xlsxRows(files) {
+  const { utf8, fail, MAX_CELLS, MAX_ELEMENTS } = require('../utils/advisor-file.js');
+  const read = (name) => { if (!files[name]) fail('无法读取 XLSX 文件'); return utf8(files[name]); };
+  const types = read('[Content_Types].xml');
+  if (![...types.matchAll(/<Override\b([^>]*)\/?\s*>/g)].some((m) => attribute(m[1], 'PartName') === '/xl/workbook.xml' && attribute(m[1], 'ContentType') === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml')) return null;
+  const relations = [...read('xl/_rels/workbook.xml.rels').matchAll(/<Relationship\b([^>]*)\/?\s*>/g)];
+  const sheets = [...read('xl/workbook.xml').matchAll(/<sheet\b([^>]*)\/?\s*>/g)];
+  const paths = sheets.map((sheet) => {
+    const rel = relations.find((m) => attribute(m[1], 'Id') === attribute(sheet[1], 'r:id') && attribute(m[1], 'Type').endsWith('/worksheet') && attribute(m[1], 'TargetMode') !== 'External');
+    if (!rel) return null;
+    const target = attribute(rel[1], 'Target'); const parts = [];
+    for (const part of (target.startsWith('/') ? target.slice(1) : `xl/${target}`).split('/')) {
+      if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part);
+    }
+    const name = parts.join('/'); return files[name] ? name : null;
+  }).filter(Boolean);
+  if (!paths.length) return null;
+  const shared = files['xl/sharedStrings.xml'] ? [...read('xl/sharedStrings.xml').matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((m) => texts(m[1])) : [];
+  // 每个工作表都检查上限，按工作簿顺序读取第一个工作表。
+  let first; let cells = 0; let elements = 0;
+  paths.forEach((name, index) => {
+    const xml = read(name);
+    cells += (xml.match(/<c\b[^>]*>/g) || []).length;
+    elements += (xml.match(/<[A-Za-z_][^>]*>/g) || []).length;
+    if (cells > MAX_CELLS) fail('表格单元格过多，请减少内容后重试');
+    if (elements > MAX_ELEMENTS) fail('表格内容过多，请减少内容后重试');
+    const rows = sheetRows(xml, shared); if (index === 0) first = rows;
   });
+  return first;
 }
-
 function fileRows(file) {
-  if (!/\.(xlsx|csv)$/i.test(file.name)) return Promise.reject(error('只支持 .xlsx 和 .csv 文件', 422));
-  let buffer;
-  try { buffer = wx.base64ToArrayBuffer(file.content_base64); } catch (e) { return Promise.reject(error('文件编码无效', 422)); }
-  if (buffer.byteLength > 60 * 1024) return Promise.reject(error('文件不能超过 60 KB', 422));
-  const bytes = new Uint8Array(buffer);
-  if (bytes[0] === 80 && bytes[1] === 75) return xlsxRows(buffer);
-  try {
-    const encoded = Array.from(bytes, (n) => `%${n.toString(16).padStart(2, '0')}`).join('');
-    const text = decodeURIComponent(encoded);
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text)) throw new Error();
-    return Promise.resolve(require('../utils/advisor.js').csvRows(text));
-  } catch (e) { return Promise.reject(error('演示模式请使用 UTF-8 CSV 或 XLSX 文件', 422)); }
+  return Promise.resolve().then(() => {
+    const { csvText, zipFiles, fail } = require('../utils/advisor-file.js');
+    if (!/\.(xlsx|csv)$/i.test(file.name)) fail('只支持 .xlsx 和 .csv 文件');
+    let buffer;
+    try { buffer = wx.base64ToArrayBuffer(file.content_base64); } catch (e) { fail('文件编码无效'); }
+    if (buffer.byteLength > 60 * 1024) fail('文件不能超过 60 KB');
+    const bytes = new Uint8Array(buffer);
+    if (bytes[0] === 80 && bytes[1] === 75 && bytes[2] === 3 && bytes[3] === 4) {
+      try { const files = zipFiles(bytes); const rows = files && xlsxRows(files); if (rows) return rows; }
+      catch (err) { if (err.status === 422) throw err; fail('无法读取 XLSX 文件'); }
+    }
+    const text = csvText(bytes);
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text)) fail('文件内容不是 CSV 或 XLSX 表格');
+    try { return require('../utils/advisor.js').csvRows(text, true); }
+    catch (err) { fail(`CSV 格式有误：${err.message}`); }
+  });
 }
 
 function inputRows(body) {
@@ -93,10 +124,13 @@ function inputRows(body) {
       let column = header.findIndex((cell) => ['企业名称', '单位名称', '公司名称'].includes(cell));
       if (column < 0) column = header.findIndex((cell) => ['统一社会信用代码', '信用代码'].includes(cell));
       const hasHeader = column >= 0;
-      return (hasHeader ? rows.slice(1) : rows).map((row) => row[hasHeader ? column : 0] || '');
+      const values = (hasHeader ? rows.slice(1) : rows).map((row) => row[hasHeader ? column : 0] || '');
+      if (values.length > 200) throw error('客户名单最多 200 行', 422);
+      return values;
     }
     const name = header.indexOf('客户名称'); const province = header.indexOf('省份');
     if (name < 0 || province < 0) throw error('客户画像必须包含“客户名称”和“省份”表头', 422);
+    if (rows.length - 1 > 200) throw error('客户画像最多 200 行', 422);
     return rows.slice(1).filter((row) => row[name] || row[province]).map((row) => ({ name: row[name] || '', province: row[province] || '', keywords: row[header.indexOf('关键词')] || '', supports: row[header.indexOf('支持方式')] || '' }));
   }).then((rows) => { if (!rows.length || (body.kind === 'compare' && !rows.some(Boolean))) throw error('文件里没有可提交的客户行', 422); return rows; });
 }

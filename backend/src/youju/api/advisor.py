@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import base64
 import binascii
-import re
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from xml.etree import ElementTree
-from zipfile import ZipFile
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -23,7 +19,7 @@ from youju import advisor_tasks as service
 from youju.api import v1
 from youju.api.me import KnownUserDep, UserDep
 from youju.backup import BackupError
-from youju.compare import CompareInputError, read_customer_file
+from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, AdvisorUsage, User
@@ -95,28 +91,11 @@ def _file_rows(body: TaskIn) -> list[Any]:
         raise HTTPException(status_code=422, detail="文件编码无效，请重新选择文件") from None
     if len(content) > service.MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=422, detail="文件不能超过 60 KB")
-    # 扩展名只控制允许上传的名称；解析器按实际内容选，不把伪装的 ZIP 当 CSV。
-    suffix = ".xlsx" if content.startswith(b"PK") else ".csv"
     try:
-        if suffix == ".xlsx":
-            with ZipFile(BytesIO(content)) as archive:
-                if sum(item.file_size for item in archive.infolist()) > 2 * 1024 * 1024:
-                    raise CompareInputError("表格解压后过大，请减少内容后重试")
-                # 小文件也可能伪造极大的行列号，令只读解析器补齐数亿个空单元格。
-                for name in archive.namelist():
-                    if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
-                        continue
-                    for _, element in ElementTree.iterparse(BytesIO(archive.read(name))):
-                        if element.tag.endswith("}row") and int(element.get("r", "0")) > 202:
-                            raise CompareInputError("表格行号过大，请移除多余空行后重试")
-                        if element.tag.endswith("}c"):
-                            reference = element.get("r", "")
-                            column = re.match(r"[A-Z]+", reference)
-                            if column and len(column.group()) > 2:
-                                raise CompareInputError("表格列数过多，请只保留客户字段")
-                        element.clear()
-        elif b"\x00" in content or any(
-            value < 32 and value not in (9, 10, 13) for value in content
+        # 完整 ZIP 签名和工作簿结构都成立才按 XLSX 读；PK 开头的文本仍是 CSV。
+        suffix = ".xlsx" if validate_xlsx(content) else ".csv"
+        if suffix == ".csv" and (
+            b"\x00" in content or any(value < 32 and value not in (9, 10, 13) for value in content)
         ):
             raise CompareInputError("文件内容不是 CSV 或 XLSX 表格")
         if body.kind == "compare":
@@ -317,8 +296,10 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
     return _out(task)
 
 
-@router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
-def delete_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> None:
+@router.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int, request: Request, session: SessionDep, user: KnownUserDep) -> None:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到工具任务")
     task = session.scalar(
         select(AdvisorTask)
         .where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
