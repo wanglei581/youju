@@ -34,7 +34,7 @@ for arg in "$@"; do
     -*) echo "不认识的参数：$arg" >&2; usage ;;
     *)
       if [ "$REV_GIVEN" = 1 ]; then
-        echo "只能给一个 git 版本（多出来的：$arg）" >&2
+        echo "只能给一个 git 版本（多出来的：${arg}）" >&2
         usage
       fi
       REV=$arg
@@ -84,7 +84,7 @@ if grep -rIlE \
   exit 1
 fi
 
-echo "版本 $SHA，要上传的文件 $(find "$STAGE" -type f | wc -l | tr -d ' ') 个，共 $(du -sh "$STAGE" | cut -f1)"
+echo "版本 ${SHA}，要上传的文件 $(find "$STAGE" -type f | wc -l | tr -d ' ') 个，共 $(du -sh "$STAGE" | cut -f1)"
 if [ "$DRY_RUN" = 1 ]; then
   (cd "$STAGE" && find . -type f | sort)
   exit 0
