@@ -497,6 +497,24 @@ def _cmd_compare_lists(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_track_clients(args: argparse.Namespace) -> int:
+    from youju.track import export_track_excel, read_customer_profiles, track_clients
+
+    try:
+        profiles = read_customer_profiles(args.file)
+        with session_factory()() as session:
+            report = track_clients(session, profiles)
+        rows = export_track_excel(report, args.output)
+    except ValueError as exc:
+        print(f"客户跟进表失败：{exc}")
+        return 1
+    invalid = sum(client.profile.invalid_province for client in report.clients)
+    print(f"客户跟进表完成：客户 {len(report.clients)} 行，明细 {rows} 行，已写入 {args.output}")
+    if invalid:
+        print(f"省份不支持、未查询：{invalid} 行")
+    return 0
+
+
 def _cmd_notify(_: argparse.Namespace) -> int:
     from youju.notify import run_notify
 
@@ -638,6 +656,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path, help="客户名单文件（.xlsx 或 .csv）")
     p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
     p.set_defaults(func=_cmd_compare_lists)
+
+    p = sub.add_parser("track-clients", help="按客户画像生成多客户在报项目跟进表")
+    p.add_argument("file", type=Path, help="客户画像文件（.xlsx 或 .csv）")
+    p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
+    p.set_defaults(func=_cmd_track_clients)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
     p = sub.add_parser(
