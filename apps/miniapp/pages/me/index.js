@@ -17,6 +17,8 @@ Page({
     hasRecord: false,
     // 同意的是旧版本：协议更新了，要重新阅读并同意
     outdated: false,
+    profileLoading: true,
+    profileError: '',
     followCount: 0,
     reminderCount: 0,
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
@@ -45,18 +47,22 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive()) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '' });
       return;
     }
     const started = consentEpoch();
+    const seq = (this.profileSeq || 0) + 1;
+    this.profileSeq = seq;
+    this.setData({ profileLoading: true, profileError: '' });
     api.me()
       .then((res) => {
         // 查询发出后本机又同意或注销过：结果已过时，等下一次刷新
-        if (started !== consentEpoch()) return;
+        if (started !== consentEpoch() || seq !== this.profileSeq) return;
         // 与关注页等共用同一份状态：旧版本同意会标记"协议已更新"，弹窗只能先读全文
         const current = applyServer(res.agreed, started) && legal.final;
         const subs = res.subscriptions || {};
         this.setData({
+          profileLoading: false,
           signedIn: current,
           hasRecord: !!res.agreed,
           outdated: !!res.agreed && !current,
@@ -64,7 +70,10 @@ Page({
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
         });
       })
-      .catch(() => { /* 网络不好时保持原样 */ });
+      .catch((err) => {
+        if (started !== consentEpoch() || seq !== this.profileSeq) return;
+        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}` });
+      });
   },
 
   // 登录前必须主动勾选同意协议（agy 合规意见；微信隐私协议开发指南要求用户明确同意）
@@ -103,7 +112,7 @@ Page({
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
   deleteAccount() {
     withdraw().then((ok) => {
-      if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, followCount: 0, reminderCount: 0 });
+      if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
     });
   },
 

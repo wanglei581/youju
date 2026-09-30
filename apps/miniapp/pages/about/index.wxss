@@ -4,6 +4,7 @@
 .brand-ver { margin-top: 8rpx; font-size: 24rpx; }
 
 .plain { padding: 4rpx 0 24rpx; font-size: 26rpx; line-height: 1.8; }
+.steps { white-space: pre-line; }
 
 .kv { display: flex; align-items: flex-start; justify-content: space-between; gap: 24rpx; padding: 22rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; }
 .kv--last { border-bottom: 0; padding-bottom: 28rpx; }

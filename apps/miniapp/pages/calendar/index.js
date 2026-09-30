@@ -49,6 +49,7 @@ Page({
     selLabel: '',
     nearest: null,
     reminded: {},
+    truncated: false,
   },
 
   onShow() {
@@ -74,12 +75,12 @@ Page({
 
   load() {
     this.setData({ error: '' });
-    api.calendar().then(({ items }) => {
+    api.calendar().then(({ items, truncated }) => {
       // 只显示人工核对过的事项；剩余天数按今天实时计算。还没截止的（含今天截止）和近 30 天已截止的分开显示
       const verified = items
         .filter((d) => d.verified)
         .map((d) => {
-          const days = daysUntil(d.due);
+          const days = daysUntil(d.due, undefined, d.time);
           return Object.assign({}, d, {
             days, tone: dueTone(days), date: monthDay(d.due), week: weekday(d.due),
           });
@@ -91,7 +92,7 @@ Page({
       const base = upcoming.length ? upcoming[0].due : todayISO();
       const [y, m] = base.split('-').map(Number);
       const keepMonth = this.data.monthOnly && this.data.year;
-      this.setData({ items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null });
+      this.setData({ items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, truncated: !!truncated });
       if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();
@@ -170,7 +171,7 @@ Page({
     // 点击时按今天重算剩余天数，不用缓存值
     const item = this.data.items.find((x) => x.id === id);
     if (!item) return;
-    const days = daysUntil(item.due);
+    const days = daysUntil(item.due, undefined, item.time);
     if (days < 3) {
       wx.showToast({ title: '离截止不到 3 天，来不及提前提醒了', icon: 'none' });
       return;
