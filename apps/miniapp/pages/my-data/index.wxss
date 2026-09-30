@@ -20,5 +20,8 @@
 .more { padding: 0 0 28rpx; font-size: 24rpx; }
 .plain { padding: 4rpx 0 28rpx; font-size: 26rpx; line-height: 1.8; }
 
-.danger-btn { margin: 40rpx 24rpx 0; height: 88rpx; display: flex; align-items: center; justify-content: center; border-radius: 44rpx; border: 2rpx solid var(--red); color: var(--red); font-size: 30rpx; background: var(--card); }
+.danger-btn { margin: 40rpx 24rpx 0; min-height: 88rpx; padding: 16rpx; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 44rpx; border: 2rpx solid var(--red); color: var(--red); font-size: 30rpx; background: var(--card); }
 .loading-tip { padding: 40rpx 32rpx; text-align: center; font-size: 26rpx; }
+.item-main, .item-sub { font-size: 30rpx; }
+.item-ops { font-size: 30rpx; min-height: 72rpx; align-items: center; flex-wrap: wrap; }
+.data-footer { padding: 40rpx 24rpx calc(40rpx + env(safe-area-inset-bottom)); text-align: center; font-size: 28rpx; color: var(--t2); }

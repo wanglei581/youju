@@ -1,0 +1,13 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+<view wx:if="{{!loading}}" class="card advisor-card">
+  <view class="advisor-title">工具使用说明</view>
+  <view class="advisor-text">【工具使用说明：待律师定稿】</view>
+  <view wx:if="{{agreed}}" class="advisor-text muted">你已同意当前版本</view>
+  <block wx:else>
+    <checkbox-group bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" />我已阅读并同意《工具使用说明》</label></checkbox-group>
+    <button class="advisor-button btn-primary" bindtap="agree" loading="{{sending}}" disabled="{{!checked || sending}}">单独同意并继续</button>
+  </block>
+</view>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>

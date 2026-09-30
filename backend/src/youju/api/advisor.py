@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from pathlib import Path
 from typing import Annotated, Any, Literal
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as service
 from youju.api import v1
-from youju.api.me import UserDep
+from youju.api.me import KnownUserDep, UserDep
 from youju.backup import BackupError
+from youju.compare import CompareInputError, read_customer_file
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, User
+from youju.models import AdvisorTask, AdvisorUsage, User
+from youju.track import read_customer_profiles
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -29,7 +38,7 @@ def _enabled() -> None:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _body_size(request: Request) -> None:
+async def _body_size(request: Request) -> None:
     raw = request.headers.get("content-length")
     if raw:
         try:
@@ -37,6 +46,14 @@ def _body_size(request: Request) -> None:
                 raise HTTPException(status_code=413, detail="请求内容不能超过 100 KiB")
         except ValueError:
             raise HTTPException(status_code=413, detail="请求内容大小无效") from None
+    if len(await request.body()) > service.MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="请求内容不能超过 100 KiB")
+
+
+class FileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    content_base64: str
 
 
 class TaskIn(BaseModel):
@@ -44,17 +61,121 @@ class TaskIn(BaseModel):
 
     kind: Literal["compare", "track"]
     # 额度超限按 429 返回，不能由 Pydantic 的 422 max_length 提前截断。
-    rows: list[Any] = Field(min_length=1)
+    rows: list[Any] | None = Field(default=None, min_length=1)
+    file: FileIn | None = None
+
+    @model_validator(mode="after")
+    def one_input(self):
+        if (self.rows is None) == (self.file is None):
+            raise ValueError("请只提供 rows 或 file 中的一项")
+        return self
 
     @field_validator("rows")
     @classmethod
     def validate_rows(cls, rows: list[Any], info) -> list[Any]:
+        if rows is None:
+            return rows
         kind = info.data.get("kind")
         if kind == "compare" and any(not isinstance(row, str) for row in rows):
             raise ValueError("名单比对的 rows 必须是企业名称或信用代码字符串")
         if kind == "track" and any(not isinstance(row, dict) for row in rows):
             raise ValueError("跟进表的 rows 必须是客户画像对象")
         return rows
+
+
+def _file_rows(body: TaskIn) -> list[Any]:
+    upload = body.file
+    if upload is None:
+        return body.rows
+    if Path(upload.name).suffix.lower() not in (".xlsx", ".csv"):
+        raise HTTPException(status_code=422, detail="只支持 .xlsx 和 .csv 文件")
+    try:
+        content = base64.b64decode(upload.content_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="文件编码无效，请重新选择文件") from None
+    if len(content) > service.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=422, detail="文件不能超过 60 KB")
+    # 扩展名只控制允许上传的名称；解析器按实际内容选，不把伪装的 ZIP 当 CSV。
+    suffix = ".xlsx" if content.startswith(b"PK") else ".csv"
+    try:
+        if suffix == ".xlsx":
+            with ZipFile(BytesIO(content)) as archive:
+                if sum(item.file_size for item in archive.infolist()) > 2 * 1024 * 1024:
+                    raise CompareInputError("表格解压后过大，请减少内容后重试")
+                # 小文件也可能伪造极大的行列号，令只读解析器补齐数亿个空单元格。
+                for name in archive.namelist():
+                    if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
+                        continue
+                    for _, element in ElementTree.iterparse(BytesIO(archive.read(name))):
+                        if element.tag.endswith("}row") and int(element.get("r", "0")) > 202:
+                            raise CompareInputError("表格行号过大，请移除多余空行后重试")
+                        if element.tag.endswith("}c"):
+                            reference = element.get("r", "")
+                            column = re.match(r"[A-Z]+", reference)
+                            if column and len(column.group()) > 2:
+                                raise CompareInputError("表格列数过多，请只保留客户字段")
+                        element.clear()
+        elif b"\x00" in content or any(
+            value < 32 and value not in (9, 10, 13) for value in content
+        ):
+            raise CompareInputError("文件内容不是 CSV 或 XLSX 表格")
+        if body.kind == "compare":
+            rows = read_customer_file("upload" + suffix, content=content)
+        else:
+            profiles = read_customer_profiles("upload" + suffix, content=content)
+            rows = [
+                {
+                    "name": row.name,
+                    "province": row.province,
+                    "keywords": list(row.keywords),
+                    "supports": list(row.supports),
+                }
+                for row in profiles
+            ]
+        if not rows or (body.kind == "compare" and not any(rows)):
+            raise CompareInputError("文件里没有可提交的客户行")
+        return rows
+    except Exception as exc:  # noqa: BLE001 - 文件解析库的异常统一返回中文
+        # CSV/XLSX 库的技术异常不暴露给用户；业务异常保留中文原因。
+        detail = str(exc) if isinstance(exc, CompareInputError) else "无法读取表格，请检查文件内容"
+        raise HTTPException(status_code=422, detail=detail) from None
+
+
+def _upload_consent(user: User) -> None:
+    if (
+        user.advisor_agreement_at is None
+        or user.advisor_agreement_version != service.ADVISOR_AGREEMENT_VERSION
+    ):
+        raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
+
+
+@router.get("/status", dependencies=[Depends(_enabled)])
+def status(session: SessionDep, user: KnownUserDep) -> dict:
+    day = service.usage_day(_stamp())
+    usage = (
+        dict(
+            session.execute(
+                select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
+                    AdvisorUsage.user_id == user.id, AdvisorUsage.day == day
+                )
+            ).all()
+        )
+        if user
+        else {}
+    )
+    return {
+        "enabled": True,
+        "quota": {
+            kind: {"used": usage.get(kind, 0), "limit": 1, "maxRows": service.MAX_ROWS}
+            for kind in ("compare", "track")
+        },
+    }
+
+
+@router.post("/preview", dependencies=[Depends(_enabled), Depends(_body_size)])
+def preview(body: TaskIn, user: UserDep) -> dict:
+    _upload_consent(user)
+    return {"rowCount": len(_file_rows(body))}
 
 
 def _stamp() -> datetime:
@@ -68,7 +189,7 @@ def _out(task: AdvisorTask) -> dict:
 def _owned(session: Session, user: User, task_id: int) -> AdvisorTask:
     task = session.get(AdvisorTask, task_id)
     if task is None or task.user_id != user.id:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到工具任务")
     return task
 
 
@@ -98,7 +219,10 @@ def create_task(
     )
     if existing is not None:
         return _out(existing)
-    if len(body.rows) > service.MAX_ROWS:
+    if body.file is not None:
+        _upload_consent(user)
+    rows = _file_rows(body)
+    if len(rows) > service.MAX_ROWS:
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
     stamp = _stamp()
@@ -109,8 +233,8 @@ def create_task(
         user_id=user.id,
         kind=body.kind,
         status="queued",
-        input_rows=body.rows,
-        row_count=len(body.rows),
+        input_rows=rows,
+        row_count=len(rows),
         idempotency_key=key,
         created_at=stamp,
         expires_at=stamp + service.FILE_RETENTION,
@@ -180,7 +304,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
         .with_for_update()
     )
     if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到工具任务")
     if task.status == "queued":
         task.status = "cancelled"
         task.finished_at = _stamp()
@@ -201,7 +325,7 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: UserD
         .with_for_update()
     )
     if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到工具任务")
     if task.status == "running":
         raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")
     if task.status == "queued":

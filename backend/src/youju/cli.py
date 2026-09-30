@@ -538,7 +538,7 @@ def _cmd_advisor_run(_: argparse.Namespace) -> int:
 
     with session_factory()() as session:
         report = run_advisor_tasks(session)
-    print("顾问任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
+    print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 
 

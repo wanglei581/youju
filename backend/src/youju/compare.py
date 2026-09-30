@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -123,14 +124,14 @@ def _header_key(value: object) -> str:
     return normalize_name(_text(value)).replace("：", "").replace(":", "")
 
 
-def _file_rows(path: Path) -> list[list[str]]:
-    if not path.is_file():
+def _file_rows(path: Path, *, content: bytes | None = None) -> list[list[str]]:
+    if content is None and not path.is_file():
         raise CompareInputError(f"文件不存在：{path}")
-    if path.stat().st_size > MAX_FILE_BYTES:
+    if (len(content) if content is not None else path.stat().st_size) > MAX_FILE_BYTES:
         raise CompareInputError("客户名单文件不能超过 2MB")
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        raw = path.read_bytes()
+        raw = content if content is not None else path.read_bytes()
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
@@ -142,19 +143,24 @@ def _file_rows(path: Path) -> list[list[str]]:
     if suffix != ".xlsx":
         raise CompareInputError("只支持 .xlsx 和 .csv 文件")
     try:
-        book = load_workbook(path, read_only=True, data_only=True)
+        book = load_workbook(
+            BytesIO(content) if content is not None else path, read_only=True, data_only=True
+        )
     except Exception as exc:  # openpyxl 的异常类型随版本变化
         raise CompareInputError("无法读取 XLSX 文件") from exc
     try:
         sheet = book.active
+        if content is not None:
+            # 忽略上传表格中不可信的 dimension；实际单元格范围已由接口检查。
+            sheet.reset_dimensions()
         return [[_text(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
     finally:
         book.close()
 
 
-def read_customer_file(path: str | Path) -> list[str]:
+def read_customer_file(path: str | Path, *, content: bytes | None = None) -> list[str]:
     """按表头读取客户名称或信用代码列；没有表头时取第一列。"""
-    rows = _file_rows(Path(path))
+    rows = _file_rows(Path(path), content=content)
     if not rows:
         return []
     header = rows[0]

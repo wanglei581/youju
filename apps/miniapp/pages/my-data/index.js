@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { taskView } = require('../../utils/advisor.js');
 const { describe } = require('../../utils/conditions.js');
 const { withdraw } = require('../../utils/consent.js');
 
@@ -19,7 +20,7 @@ function maskId(id) {
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '' },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], totals: {}, retention: null, exportedAt: '' },
 
   onShow() {
     this.load();
@@ -42,6 +43,8 @@ Page({
             visited: when(u.lastVisitedAt),
             agreedVersion: u.agreed ? u.agreed.version : '',
             agreedAt: u.agreed ? when(u.agreed.at) : '',
+            advisorVersion: u.advisorAgreed ? u.advisorAgreed.version : '',
+            advisorAt: u.advisorAgreed ? when(u.advisorAgreed.at) : '',
           },
           follows: d.follows.map((f) => ({ id: f.id, name: f.name, desc: describe(f.conditions), created: when(f.createdAt) })),
           subs: d.subscriptions.map((s) => ({
@@ -59,7 +62,8 @@ Page({
             check: CHECK[f.checkResult] || f.checkResult,
             created: when(f.createdAt),
           })),
-          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal },
+          advisorTasks: (d.advisorTasks || []).map(taskView),
+          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, advisor: d.advisorTasksTotal || 0 },
           retention: d.retention,
         });
       })
@@ -99,8 +103,8 @@ Page({
   // 删除一条记录：关注、还没发出的提醒授权、纠错
   remove(e) {
     const { kind, id } = e.currentTarget.dataset;
-    const what = { follow: '这个关注（它的微信提醒也会一起取消）', sub: '这次还没发出的提醒', feedback: '这条纠错' }[kind];
-    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback }[kind];
+    const what = { follow: '这个关注（它的微信提醒也会一起取消）', sub: '这次还没发出的提醒', feedback: '这条纠错', advisor: '这个工具任务和结果文件' }[kind];
+    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, advisor: api.deleteAdvisorTask }[kind];
     wx.showModal({
       title: '删除',
       content: `删除${what}？删除后不能恢复。`,

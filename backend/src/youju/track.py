@@ -168,10 +168,12 @@ def _profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
     )
 
 
-def read_customer_profiles(path: str | Path) -> list[CustomerProfile]:
+def read_customer_profiles(
+    path: str | Path, *, content: bytes | None = None
+) -> list[CustomerProfile]:
     """读取客户画像 xlsx/csv；省份不在固定清单时保留该行但标记为不查询。"""
 
-    rows = _file_rows(Path(path))
+    rows = _file_rows(Path(path), content=content)
     if not rows:
         return []
     header = rows[0]

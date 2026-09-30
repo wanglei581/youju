@@ -3,6 +3,7 @@
 const config = require('./config.js');
 const mock = require('../mock/data.js');
 const { mockSearch } = require('./mockSearch.js');
+const advisorMock = require('../mock/advisor.js');
 
 const TYPES = ['高新技术企业', '专精特新', '科技型中小企业', '其他'];
 
@@ -40,13 +41,13 @@ function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
-  const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
+  const header = Object.assign(method === 'GET' ? {} : { 'content-type': 'application/json' }, options && options.header);
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
     const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
-    const ok = (code) => code === 200 || code === 201 || code === 204;
+    const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
@@ -256,15 +257,18 @@ function feedback(docId, content) {
 // ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
 
 function me() {
+  if (!isLive()) return advisorMock.me();
   return request('/api/v1/me');
 }
 
-function agree(version) {
-  return request('/api/v1/me/agreement', null, { method: 'POST', data: { version } });
+function agree(version, scope) {
+  if (!isLive() && scope === 'advisor') return advisorMock.agree(version);
+  return request('/api/v1/me/agreement', null, { method: 'POST', data: scope ? { version, scope } : { version } });
 }
 
 // 注销：删除服务端的用户和关注、订阅、纠错、埋点
 function deleteMe() {
+  if (!isLive()) return advisorMock.clear().then(forgetAgreed);
   return request('/api/v1/me', null, { method: 'DELETE' }).then(forgetAgreed);
 }
 
@@ -286,7 +290,40 @@ function seenFollow(id) {
 
 // 我的数据：我们保存的本人全部个人信息（查阅、复制）
 function myData() {
+  if (!isLive()) return advisorMock.myData();
   return request('/api/v1/me/data');
+}
+
+function advisorStatus() {
+  return isLive() ? request('/api/v1/advisor/status') : advisorMock.status();
+}
+
+function advisorPreview(data) {
+  return isLive() ? request('/api/v1/advisor/preview', null, { method: 'POST', data }) : advisorMock.preview(data);
+}
+
+function createAdvisorTask(data, key) {
+  return isLive() ? request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }) : advisorMock.create(data, key);
+}
+
+function advisorTasks() {
+  return isLive() ? request('/api/v1/advisor/tasks') : advisorMock.list();
+}
+
+function advisorTask(id) {
+  return isLive() ? request(`/api/v1/advisor/tasks/${id}`) : advisorMock.get(id);
+}
+
+function cancelAdvisorTask(id) {
+  return isLive() ? request(`/api/v1/advisor/tasks/${id}/cancel`, null, { method: 'POST', data: {} }) : advisorMock.cancel(id);
+}
+
+function deleteAdvisorTask(id) {
+  return isLive() ? request(`/api/v1/advisor/tasks/${id}`, null, { method: 'DELETE' }) : advisorMock.remove(id);
+}
+
+function downloadAdvisorTask(id) {
+  return isLive() ? request(`/api/v1/advisor/tasks/${id}/download`) : advisorMock.download(id);
 }
 
 // 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
@@ -335,4 +372,5 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
+  advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
 };

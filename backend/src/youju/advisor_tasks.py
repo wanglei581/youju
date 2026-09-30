@@ -1,4 +1,4 @@
-"""R1.5 顾问任务队列、额度和结果文件处理。"""
+"""R1.5 工具任务队列、额度和结果文件处理。"""
 
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ log = logging.getLogger("youju.advisor")
 BEIJING = ZoneInfo("Asia/Shanghai")
 MAX_ROWS = 50
 MAX_BODY_BYTES = 100 * 1024
+MAX_UPLOAD_BYTES = 60 * 1024
+ADVISOR_AGREEMENT_VERSION = "advisor-2026-09-v1"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
 INPUT_RETENTION = timedelta(days=7)
@@ -225,7 +227,7 @@ def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
     if task.kind == "track":
         report = track_clients(session, task.input_rows)
         return export_track_excel(report, output)
-    raise CompareInputError("不支持的顾问任务类型")
+    raise CompareInputError("不支持的工具任务类型")
 
 
 def process_task(
@@ -261,7 +263,7 @@ def process_task(
                 cloud_env,
                 result_path(user, task.id, engine=session.get_bind()),
                 local,
-                what="顾问结果",
+                what="工具结果",
             )
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
@@ -297,7 +299,7 @@ def process_task(
             task.finished_at = stamp
             release_usage(session, task)
         session.commit()
-        log.warning("顾问任务 #%s 失败（第 %s 次）：%s", task.id, task.attempts, task.error)
+        log.warning("工具任务 #%s 失败（第 %s 次）：%s", task.id, task.attempts, task.error)
         return False
     finally:
         if own_client:

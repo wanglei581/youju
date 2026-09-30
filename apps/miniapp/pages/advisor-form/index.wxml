@@ -1,0 +1,35 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+<block wx:else>
+  <view class="card advisor-card">
+    <view class="advisor-title">填写客户</view>
+    <view class="advisor-text muted">今天剩余 {{remaining}} 次 · 每次最多 {{maxRows}} 行</view>
+    <view class="advisor-actions">
+      <button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{submitting || previewing}}">粘贴文本</button>
+      <button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{submitting || previewing}}">选择文件</button>
+    </view>
+    <block wx:if="{{mode === 'paste'}}">
+      <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或信用代码' : '一行一家：客户名称,省份,关键词,支持方式；后两项可留空，多项用分号分隔'}}</view>
+      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '演示科技有限公司' : '演示科技有限公司,辽宁,高新技术,资金支持'}}" bindinput="input" disabled="{{submitting}}" />
+      <view wx:if="{{!text}}" class="advisor-text muted">还没有填写客户</view>
+    </block>
+    <block wx:else>
+      <view class="advisor-text">只收 XLSX / CSV，文件不超过 60 KB。{{kind === 'track' ? '表头须包含：客户名称、省份；可选：关键词、支持方式。' : '可用企业名称或统一社会信用代码表头，无表头时读取第一列。'}}</view>
+      <button class="advisor-button" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>
+      <view class="advisor-text muted">{{fileName || '还没有选择文件'}}</view>
+      <view wx:if="{{previewing}}" class="advisor-text muted">正在读取行数…</view>
+    </block>
+    <view class="advisor-text">将提交 {{rowCount}} 行</view>
+    <view wx:if="{{rowCount > maxRows}}" class="advisor-error">超过每次 {{maxRows}} 行，请减少客户后再提交</view>
+    <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>
+    <button wx:if="{{mode === 'file' && inputError}}" class="advisor-button" bindtap="preview" disabled="{{previewing || submitting}}">重试读取</button>
+  </view>
+  <view class="card advisor-card">
+    <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</view>
+    <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
+    <view class="advisor-text muted">原文件不保存，任务输入 7 天后清空，可在我的数据中删除任务。</view>
+    <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+  </view>
+</block>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>

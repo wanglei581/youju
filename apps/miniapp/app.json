@@ -14,7 +14,11 @@
     "pages/feedback/index",
     "pages/follow-new/index",
     "pages/my-data/index",
-    "pages/about/index"
+    "pages/about/index",
+    "pages/advisor/index",
+    "pages/advisor-form/index",
+    "pages/advisor-tasks/index",
+    "pages/advisor-terms/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

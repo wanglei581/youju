@@ -404,6 +404,8 @@ class User(Base):
     last_visited_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     agreement_version: Mapped[str | None] = mapped_column(String(20))
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
+    advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
