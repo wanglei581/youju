@@ -2,6 +2,8 @@
 // 协议还是草案（legal.final 为 false）时不开放同意，这些功能显示"协议定稿后开放"。
 const legal = require('../content/legal.js');
 const api = require('./api.js');
+const exportsLog = require('./exports.js');
+const { removeFiles } = require('./exporter.js');
 
 // 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
 function consentOpen() {
@@ -125,13 +127,17 @@ function withdraw() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，删除后不能恢复。',
+      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，以及本机的导出记录和文件，删除后不能恢复。',
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) { resolve(false); return; }
         api.deleteMe()
           .then(() => {
+            exportsLog.clear();
+            // 文件缺失或无法删除不影响注销；清空本机缓存也涵盖后续新增的个人数据。
+            try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
+            try { wx.clearStorageSync(); } catch (e) { forget(); }
             outdated = false;
             notAgreed = true;
             epoch += 1;

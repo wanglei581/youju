@@ -3,6 +3,7 @@
 const config = require('./config.js');
 const mock = require('../mock/data.js');
 const { mockSearch } = require('./mockSearch.js');
+const { daysUntil } = require('./format.js');
 
 const TYPES = ['高新技术企业', '专精特新', '科技型中小企业', '其他'];
 
@@ -97,7 +98,9 @@ function search(params) {
 function deadlineReport(params) {
   if (isLive()) return request('/api/v1/reports/deadlines', params);
   const days = Number((params && params.days) || 7);
-  const all = (mock.reports && mock.reports.deadlines) || [];
+  const all = ((mock.reports && mock.reports.deadlines) || [])
+    .map((item) => Object.assign({}, item, { remaining_days: daysUntil(item.date, undefined, item.time) }))
+    .filter((item) => item.remaining_days >= 0);
   const deptOf = (value) => (/科技/.test(value) ? '科技部门' : (/工业和信息化|经济和信息化|工信|经信/.test(value) ? '工信部门' : '其他部门'));
   const scoped = all
     .filter((item) => !params.province || item.province === params.province)
@@ -178,8 +181,10 @@ function detail(id) {
 function calendar() {
   if (isLive()) {
     const page = (offset, acc) => request('/api/v1/calendar', { limit: 200, offset }).then((r) => {
-      const items = acc.concat(r.items);
-      return items.length < r.total && r.items.length && items.length < 1000 ? page(items.length, items) : { items, total: r.total };
+      const items = acc.concat(r.items).slice(0, 1000);
+      return items.length < r.total && r.items.length && items.length < 1000
+        ? page(items.length, items)
+        : { items, total: r.total, truncated: items.length === 1000 && r.total > items.length };
     });
     return page(0, []);
   }

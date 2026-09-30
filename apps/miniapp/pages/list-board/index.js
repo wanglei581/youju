@@ -38,6 +38,7 @@ Page({
     const page = reset ? 1 : this.data.page + 1;
     const requestSeq = (this.requestSeq || 0) + 1;
     this.requestSeq = requestSeq;
+    const unfiltered = !this.data.year && !this.data.province && !this.data.type;
     this.setData({ loading: true, error: '' });
     api.listBoard({
       days: this.data.days,
@@ -47,21 +48,25 @@ Page({
       page,
       size: PAGE_SIZE,
     }).then((res) => {
+      const stats = res.stats || { by_year: [], by_province: [], by_type: [] };
+      // 完整选项只取第一次无筛选查询，后续结果只更新统计和列表。
+      if (unfiltered && !this.filterOptionsLoaded) {
+        this.filterOptionsLoaded = true;
+        this.setData({
+          provinces: ['不限省份'].concat((stats.by_province || []).map((item) => item.province)),
+          years: ['不限年度'].concat((stats.by_year || []).map((item) => String(item.year))),
+        });
+      }
       if (requestSeq !== this.requestSeq) return;
       const recent = res.recent || { total: 0, items: [] };
       const items = (recent.items || []).map((item) => Object.assign({}, item, {
         dateText: item.date ? cnDate(item.date) : '日期未标明',
       }));
-      const stats = res.stats || { by_year: [], by_province: [], by_type: [] };
-      const provinceItems = stats.by_province || [];
-      const yearItems = stats.by_year || [];
       this.setData({
         items: reset ? items : this.data.items.concat(items),
         total: recent.total || 0,
         page,
         stats,
-        provinces: ['不限省份'].concat(provinceItems.map((item) => item.province)),
-        years: ['不限年度'].concat(yearItems.map((item) => String(item.year))),
         loading: false,
       });
     }).catch((err) => {

@@ -21,6 +21,7 @@ Page({
     weekTotal: 0,
     total: 0,
     items: [],
+    shown: [],
   },
 
   onHide() {
@@ -45,7 +46,10 @@ Page({
   reload() {
     this.setData({ error: '' });
     api.lists()
-      .then((res) => this.setData({ weekTotal: res.week_total, total: res.total, items: res.items }))
+      .then((res) => {
+        this.setData({ weekTotal: res.week_total, total: res.total, items: res.items });
+        this.filterItems();
+      })
       .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
   },
 
@@ -95,5 +99,11 @@ Page({
 
   pickChip(e) {
     this.setData({ chip: e.currentTarget.dataset.chip });
+    this.filterItems();
+  },
+
+  filterItems() {
+    const { chip, items } = this.data;
+    this.setData({ shown: chip === '全部' ? items : items.filter((item) => (item.title || '').includes(chip)) });
   },
 });

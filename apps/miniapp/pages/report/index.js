@@ -1,5 +1,7 @@
 const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
+const { todayISO } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const PAGE_SIZE = 20;
 
@@ -21,6 +23,12 @@ Page({
   },
 
   onLoad() { this.load(true); },
+  onShow() {
+    if (this.loadedDay !== todayISO()) this.load(true);
+    watchDay(this, () => this.load(true));
+  },
+  onHide() { stopDay(this); },
+  onUnload() { stopDay(this); },
   goBack() { wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) }); },
 
   load(reset) {
@@ -28,6 +36,7 @@ Page({
     const page = reset ? 1 : this.data.page + 1;
     const requestSeq = (this.requestSeq || 0) + 1;
     this.requestSeq = requestSeq;
+    this.loadedDay = todayISO();
     this.setData({ loading: true, error: '' });
     api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, support: this.data.support, page, size: PAGE_SIZE })
       .then((res) => {
