@@ -1961,6 +1961,103 @@ def reject_deadline(
     return result
 
 
+class UndoReviewIn(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=80)
+
+
+def _lock_undo_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
+    """一次按编号锁住同组同类型截止，覆盖核对时副本及后来沿用核对结果的副本。"""
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(members),
+                DocumentDeadline.kind == row.kind,
+            )
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/undo")
+def undo_deadline(
+    deadline_id: int, body: UndoReviewIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    """撤回本人半小时内的核对；同次核对的归并副本一起撤回，区别于质检退回。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    locked = _lock_undo_candidates(session, row)
+    if row.status == "changed":
+        raise HTTPException(status_code=409, detail="这条已标为已变更，不能撤回核对")
+    if row.audit_state in ("cleared", "reopened"):
+        raise HTTPException(status_code=409, detail="这条已被质检确认或退回，不能撤回核对")
+    if row.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=409, detail="只有已通过或已驳回的核对能撤回")
+    if row.reviewed_by != body.reviewer:
+        raise HTTPException(status_code=409, detail="只能撤回同一核对人自己的核对")
+    now = datetime.now(UTC)
+    if row.reviewed_at is None or not timedelta(0) <= now - row.reviewed_at <= timedelta(
+        minutes=30
+    ):
+        raise HTTPException(status_code=409, detail="核对已超过 30 分钟或核对时间无效，不能撤回")
+    # approve/reject 写入同一时间；独立核对的副本即便日期相同，也不能顺带撤回。
+    batch = [
+        item
+        for item in locked
+        if item.reviewed_by == row.reviewed_by
+        and item.reviewed_at == row.reviewed_at
+        and (
+            (
+                item.candidate_date == row.candidate_date
+                and item.candidate_time == row.candidate_time
+                and item.evidence == row.evidence
+            )
+            or (
+                row.approved_date is not None
+                and item.approved_date == row.approved_date
+                and item.approved_time == row.approved_time
+            )
+        )
+    ]
+    if any(item.status == "changed" for item in batch):
+        raise HTTPException(status_code=409, detail="同次核对的归并副本已标为已变更，不能撤回")
+    # reopen 会按核定日期/时间将同组副本一起退回；若本条仍已通过，其他退回记录
+    # 来自不同的核定结果，不能仅凭原候选日期相同就阻止本条撤回。
+    if any(item.audit_state in ("cleared", "reopened") for item in batch):
+        raise HTTPException(status_code=409, detail="归并副本已被质检确认或退回，不能撤回")
+    before = row.status
+    reviewed_at = row.reviewed_at
+    approved_date, approved_time = row.approved_date, row.approved_time
+    for item in batch:
+        item.status = "pending"
+        item.reviewed_by = None
+        item.reviewed_at = None
+        item.approved_date = None
+        item.approved_time = None
+        item.audit_state = None
+        item.audit_note = None
+        item.audit_at = None
+        item.audit_by = None
+    session.commit()
+    _audit(
+        request,
+        "undo",
+        deadline_id=deadline_id,
+        reviewer=body.reviewer,
+        before=before,
+        reviewed_at=reviewed_at,
+        date=approved_date,
+        time=approved_time,
+        count=len(batch),
+    )
+    return {"status": "pending"}
+
+
 @app.get("/api/admin/deadlines/approved", response_model=list[ReviewedDeadlineOut])
 def approved_deadlines(
     session: SessionDep,
