@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
+from youju import advisor_tasks as advisor_service
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -248,6 +249,8 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
 def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
+        # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
+        advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
 
@@ -301,6 +304,32 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     }
     if user is None:
         return JSONResponse(result)
+
+    from youju.models import AdvisorTask
+
+    result["advisorTasksTotal"] = (
+        session.scalar(select(func.count(AdvisorTask.id)).where(AdvisorTask.user_id == user.id))
+        or 0
+    )
+    advisor_rows = session.scalars(
+        select(AdvisorTask)
+        .where(AdvisorTask.user_id == user.id)
+        .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
+        .limit(500)
+    ).all()
+    # 仅列元数据，永远不导出客户名单 input_rows 或对象存储文件编号。
+    result["advisorTasks"] = [
+        {
+            "id": row.id,
+            "kind": row.kind,
+            "status": row.status,
+            "rowCount": row.row_count,
+            "createdAt": _iso(row.created_at),
+            "startedAt": _iso(row.started_at),
+            "finishedAt": _iso(row.finished_at),
+        }
+        for row in advisor_rows
+    ]
 
     follows = session.scalars(
         select(Follow)

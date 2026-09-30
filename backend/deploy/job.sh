@@ -9,6 +9,7 @@ if [ "$name" = "check-sources" ]; then
   # 仅 cron 包装器使用：详细提醒已发送时返回 20，避免重复提醒。
   set -- "$@" --job
 fi
+# advisor-run 由 admin 服务的 crontab 每分钟调用；开关关闭时 CLI 会直接跳过。
 log "开始：youju $*"
 if flock -n -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1; then
   log "完成：youju $*"

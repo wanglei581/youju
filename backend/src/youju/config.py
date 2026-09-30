@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     exports_per_10min: int = 30
     # 云托管环境 ID（如 prod-xxxx）：每天的数据库备份存到这个环境的对象存储（验收 A6）
     cloud_env: str | None = None
+    # R1.5 顾问技能包总开关；上线前保持关闭。
+    advisor_enabled: bool = False
 
     @model_validator(mode="after")
     def _production_identity(self) -> "Settings":

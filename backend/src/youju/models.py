@@ -406,6 +406,38 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+class AdvisorTask(Base):
+    """第一批顾问技能包的持久任务；客户名单只在 input_rows 中短期保存。"""
+
+    __tablename__ = "advisor_tasks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_advisor_tasks_user_key"),
+        Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
+        Index("ix_advisor_tasks_status_created", "status", "created_at"),
+        CheckConstraint("kind IN ('compare', 'track')", name="ck_advisor_tasks_kind"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed', 'cancelled')",
+            name="ck_advisor_tasks_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
+    input_rows: Mapped[list | None] = mapped_column(JSONType)
+    row_count: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    result_file_id: Mapped[str | None] = mapped_column(Text)
+    result_rows: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(String(500))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class Follow(Base):
     __tablename__ = "follows"
     __table_args__ = (Index("ix_follows_user", "user_id"),)

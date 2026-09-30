@@ -57,6 +57,7 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
+| `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 顾问技能包总开关；正式上线前保持关闭 |
 
 ## 测试与检查
 

@@ -206,5 +206,9 @@ def run_cleanup(
             )
         ).rowcount,
     }
+    # 顾问任务的名单和导出文件有单独的保存期限；保存期限不受功能开关影响。
+    from youju.advisor_tasks import cleanup_advisor
+
+    result.update(cleanup_advisor(session, settings=settings, stamp=stamp))
     session.commit()
     return result

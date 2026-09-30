@@ -30,6 +30,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
+from youju.api.advisor import router as advisor_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
@@ -62,6 +63,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if _DOCS else None,
 )
 app.include_router(v1_router)
+app.include_router(advisor_router)
 app.include_router(exports_router)
 app.include_router(me_router)
 
