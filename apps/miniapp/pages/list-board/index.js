@@ -34,8 +34,10 @@ Page({
   },
 
   load(reset) {
-    if (this.data.loading) return;
+    if (!reset && this.data.loading) return;
     const page = reset ? 1 : this.data.page + 1;
+    const requestSeq = (this.requestSeq || 0) + 1;
+    this.requestSeq = requestSeq;
     this.setData({ loading: true, error: '' });
     api.listBoard({
       days: this.data.days,
@@ -45,6 +47,7 @@ Page({
       page,
       size: PAGE_SIZE,
     }).then((res) => {
+      if (requestSeq !== this.requestSeq) return;
       const recent = res.recent || { total: 0, items: [] };
       const items = (recent.items || []).map((item) => Object.assign({}, item, {
         dateText: item.date ? cnDate(item.date) : '日期未标明',
@@ -61,25 +64,31 @@ Page({
         years: ['不限年度'].concat(yearItems.map((item) => String(item.year))),
         loading: false,
       });
-    }).catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+    }).catch((err) => {
+      if (requestSeq !== this.requestSeq) return;
+      this.setData({ loading: false, error: `加载失败：${err.message}` });
+    });
   },
 
   retry() { this.load(true); },
 
   pickProvince(e) {
-    const value = e.detail.value === 0 ? '' : this.data.provinces[e.detail.value];
+    const index = Number(e.detail.value);
+    const value = index === 0 ? '' : this.data.provinces[index];
     this.setData({ province: value, items: [] });
     this.load(true);
   },
 
   pickYear(e) {
-    const value = e.detail.value === 0 ? null : Number(this.data.years[e.detail.value]);
+    const index = Number(e.detail.value);
+    const value = index === 0 ? null : Number(this.data.years[index]);
     this.setData({ year: value, items: [] });
     this.load(true);
   },
 
   pickType(e) {
-    const value = e.detail.value === 0 ? '' : this.data.types[e.detail.value];
+    const index = Number(e.detail.value);
+    const value = index === 0 ? '' : this.data.types[index];
     this.setData({ type: value, items: [] });
     this.load(true);
   },
