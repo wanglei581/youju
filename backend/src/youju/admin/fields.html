@@ -1,18 +1,241 @@
 <!doctype html>
+<html lang="zh-CN">
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>字段核对 · 有据</title>
 <style>
 body{margin:0;background:#f7f8fa;color:#20242b;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
-header{padding:14px 20px;background:#fff;border-bottom:1px solid #e6e8eb;position:sticky;top:0}main{max-width:900px;margin:auto;padding:16px}.card{background:#fff;border-radius:12px;padding:16px;margin:0 0 12px;box-shadow:0 1px 3px #0000000b}.meta{color:#69707d;font-size:13px}.field{border-top:1px solid #edf0f2;padding:12px 0}.tag{display:inline-block;background:#e8f1ff;color:#1769aa;border-radius:5px;padding:1px 7px;margin-right:8px}.evidence{background:#fff5c7;border-radius:5px;padding:8px;margin-top:5px}button,input{font:inherit;padding:6px 10px;border:1px solid #ccd2d9;border-radius:7px;background:#fff}button{cursor:pointer;margin:8px 6px 0 0}.primary{background:#1769aa;color:#fff;border-color:#1769aa}.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bar input{width:180px}
+header{padding:14px 20px;background:#fff;border-bottom:1px solid #e6e8eb;position:sticky;top:0;z-index:2}main{max-width:900px;margin:auto;padding:16px}.card{background:#fff;border-radius:12px;padding:16px;margin:0 0 12px;box-shadow:0 1px 3px #0000000b}.meta,.hint{color:#69707d;font-size:13px}.field{border-top:1px solid #edf0f2;padding:12px 0;scroll-margin-top:100px}.field.current{outline:3px solid #1769aa;outline-offset:3px;border-radius:7px}.tag{display:inline-block;background:#e8f1ff;color:#1769aa;border-radius:5px;padding:1px 7px;margin-right:8px}.evidence{background:#fff5c7;border-radius:5px;padding:8px;margin-top:5px}button,input{font:inherit;padding:6px 10px;border:1px solid #ccd2d9;border-radius:7px;background:#fff}button{cursor:pointer;margin:8px 6px 0 0}button:disabled{opacity:.5;cursor:default}.primary{background:#1769aa;color:#fff;border-color:#1769aa}.bar,.auth{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bar input{width:180px}.review-notice{background:#e8f7f1;padding:10px 12px;border-radius:8px;margin:12px 0}.msg{color:#c33;font-size:13px}.edit-panel{margin-top:8px}[hidden]{display:none!important}
 </style>
 <header><strong>字段核对</strong>　<a href="/admin/review">截止日期核对</a>　<span id="count"></span></header>
-<main><div class="bar"><input id="token" type="password" placeholder="管理口令"><input id="by" placeholder="核对人"><button class="primary" onclick="load()">加载</button></div><div id="list"></div></main>
+<main>
+  <div class="bar auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><input id="reviewer" placeholder="核对人" aria-label="核对人"><button class="primary" id="load">加载</button></div>
+  <p class="hint">快捷键：j / k 下一项 / 上一项；a 通过；x 驳回；e 改后通过（Enter 提交）；u 撤回上一次；r 重新载入。输入框内不触发快捷键。</p>
+  <button id="undoLast" disabled>撤回上一次</button>
+  <div id="reviewNotice" class="review-notice" role="status" hidden><span id="reviewNoticeText"></span> <button id="undoNotice" disabled>撤回</button><span id="undoError" class="msg"></span></div>
+  <p id="loadError" class="msg" role="status"></p>
+  <div id="list"></div>
+</main>
 <script src="/admin/embed.js"></script>
 <script>
-const $=s=>document.querySelector(s), headers=()=>({'X-Admin-Token':youjuAdminToken()}), reviewer=()=>$('#by').value.trim()||'创始人';
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function act(id,kind){const value=kind==='approve'?prompt('留空沿用候选；如需修改请输入核对后的值：'):null;if(value===null&&kind==='approve')return;const r=await fetch(`/api/admin/fields/${id}/${kind}`,{method:'POST',headers:{...headers(),'Content-Type':'application/json'},body:JSON.stringify({reviewed_by:reviewer(),value:value||null})});if(!r.ok){alert((await r.json().catch(()=>({}))).detail||'操作失败');return}load()}
-async function load(){const r=await fetch('/api/admin/fields?limit=100',{headers:headers()});if(!r.ok){alert('加载失败：'+r.status);return}const data=await r.json();$('#count').textContent=`待核 ${data.reduce((n,x)=>n+x.fields.length,0)} 项`;$('#list').innerHTML=data.map(card).join('')||'<p>暂无待核字段</p>'}
-function card(x){return `<article class="card"><div><strong>${esc(x.title)}</strong></div><div class="meta">截止：${x.deadline||'未核截止'}　<a href="${esc(x.url)}" target="_blank">原文</a></div>${x.fields.map(f=>`<div class="field"><span class="tag">${esc(f.field==='support'?'支持方式':'申报对象')}</span>${f.status==='stale'?'<span class="meta">原文已变化，请复核</span> ':''}<b>${esc(f.value)}</b><div class="evidence">${esc(f.evidence)}</div><button class="primary" onclick="act(${f.id},'approve')">通过 / 改后通过</button><button onclick="act(${f.id},'reject')">驳回</button></div>`).join('')}</article>`}
-document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(e.key==='Enter'||e.key==='r')load();if(e.key==='a')document.querySelector('.field .primary')?.click();if(e.key==='x')document.querySelector('.field button:not(.primary)')?.click()});
+(function () {
+  const $ = id => document.getElementById(id);
+  const headers = () => ({ 'X-Admin-Token': youjuAdminToken(), 'Content-Type': 'application/json' });
+  let cards = [], entries = [], current = null, lastReview = null;
+  let busy = false, loading = false, undoTimer = null, pending = 0;
+  try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; }
+  catch (_) { $('reviewer').value = '创始人'; }
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function selectField(entry, scroll = true) {
+    if (current) current.node.classList.remove('current');
+    current = entry;
+    if (current) {
+      current.node.classList.add('current');
+      if (scroll) current.node.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function moveField(step) {
+    const available = entries.filter(entry => !entry.node.hidden);
+    const at = available.indexOf(current);
+    selectField(available[at < 0 ? 0 : Math.max(0, Math.min(available.length - 1, at + step))] || null);
+  }
+  function finishField(entry) {
+    const at = entries.indexOf(entry);
+    entry.node.hidden = true; // 保留字段及所在文档的位置，撤回时原位恢复。
+    entry.group.card.hidden = entry.group.entries.every(other => other.node.hidden);
+    if (entry.node.contains(document.activeElement)) document.activeElement.blur();
+    selectField(entries.slice(at + 1).find(other => !other.node.hidden) ||
+      entries.slice(0, at).reverse().find(other => !other.node.hidden) || null);
+  }
+  function updateUndo() {
+    $('load').disabled = busy || loading;
+    const disabled = busy || loading || !lastReview || lastReview.unavailable ||
+      Date.now() > lastReview.expires || $('reviewer').value.trim() !== lastReview.reviewer;
+    $('undoLast').disabled = disabled;
+    $('undoNotice').disabled = disabled;
+  }
+  function setCount() { $('count').textContent = `待核 ${pending} 项`; }
+  async function refreshCount() {
+    try {
+      const res = await fetch('/api/admin/fields/count', { headers: headers() });
+      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+    } catch (_) { /* 计数刷新失败不影响核对。 */ }
+  }
+  function rememberReview(entry, reviewer, action, value, started) {
+    clearTimeout(undoTimer);
+    lastReview = { entry, reviewer, value, order: cards.map(group => group.doc.document_id), expires: started + 30 * 60 * 1000 };
+    $('reviewNotice').hidden = false;
+    $('reviewNoticeText').textContent = `${action === 'reject' ? '已驳回' : '已通过'}：${entry.doc.title} · ${value}`;
+    $('undoError').textContent = '';
+    undoTimer = setTimeout(updateUndo, Math.max(0, lastReview.expires - Date.now() + 1));
+    updateUndo();
+  }
+  async function review(entry, action) {
+    if (busy || loading || entry.node.hidden) return;
+    const reviewer = $('reviewer').value.trim();
+    if (!reviewer) { entry.msg.textContent = '请先填写核对人'; return; }
+    const body = { reviewed_by: reviewer };
+    if (action === 'edit') {
+      body.value = entry.input.value.trim();
+      if (!body.value) { entry.msg.textContent = '请先填写核对后的值'; return; }
+    }
+    const value = action === 'edit' ? body.value : entry.item.value;
+    const started = Date.now();
+    busy = true;
+    updateUndo();
+    entry.node.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    entry.msg.textContent = '';
+    try {
+      const res = await fetch(`/api/admin/fields/${entry.item.id}/${action === 'reject' ? 'reject' : 'approve'}`, {
+        method: 'POST', headers: headers(), body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `操作失败（${res.status}）`);
+      finishField(entry);
+      rememberReview(entry, reviewer, action, value, started);
+      pending = Math.max(0, pending - 1); setCount();
+      try { localStorage.setItem('youjuReviewer', reviewer); } catch (_) {}
+    } catch (err) { entry.msg.textContent = err.message; }
+    finally {
+      busy = false;
+      entry.node.querySelectorAll('button').forEach(button => { button.disabled = false; });
+      updateUndo();
+    }
+  }
+  function renderField(doc, item, group) {
+    const node = el('div', 'field');
+    const entry = { doc, item, group, node };
+    node.append(el('span', 'tag', item.field === 'support' ? '支持方式' : '申报对象'));
+    if (item.status === 'stale') node.append(el('span', 'meta', '原文已变化，请复核 '));
+    node.append(el('b', '', item.value), el('div', 'evidence', item.evidence));
+    const approve = el('button', 'primary', '通过');
+    const edit = el('button', '', '改后通过');
+    const reject = el('button', '', '驳回');
+    const panel = el('div', 'edit-panel'); panel.hidden = true;
+    const input = entry.input = el('input');
+    input.value = item.value; input.maxLength = 300;
+    input.setAttribute('aria-label', '核对后的值');
+    const submit = el('button', 'primary', '提交修改');
+    const cancel = el('button', '', '取消');
+    panel.append(input, submit, cancel);
+    entry.msg = el('span', 'msg'); entry.msg.setAttribute('role', 'status');
+    entry.edit = () => {
+      if (busy || loading || node.hidden) return;
+      selectField(entry, false); panel.hidden = false; input.focus();
+    };
+    approve.onclick = () => review(entry, 'approve');
+    reject.onclick = () => review(entry, 'reject');
+    edit.onclick = entry.edit;
+    submit.onclick = () => review(entry, 'edit');
+    cancel.onclick = () => { panel.hidden = true; input.blur(); };
+    input.onkeydown = event => {
+      if (event.key === 'Enter' && !event.isComposing && !event.repeat) {
+        event.preventDefault(); review(entry, 'edit');
+      }
+    };
+    node.onclick = () => { if (!busy && !loading) selectField(entry, false); };
+    node.append(approve, edit, reject, panel, entry.msg);
+    return entry;
+  }
+  function renderCard(doc) {
+    const card = el('article', 'card');
+    const group = { doc, card, entries: [] };
+    card.append(el('strong', 'title', doc.title));
+    const meta = el('div', 'meta', `截止：${doc.deadline || '未核截止'}　`);
+    const link = el('a', '', '原文'); link.href = doc.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    meta.append(link); card.append(meta);
+    group.entries = doc.fields.map(item => renderField(doc, item, group));
+    group.entries.forEach(entry => card.append(entry.node));
+    return group;
+  }
+  async function undoReview() {
+    updateUndo();
+    if ($('undoLast').disabled) return;
+    const previous = lastReview;
+    busy = true; updateUndo(); $('undoError').textContent = '';
+    try {
+      const res = await fetch(`/api/admin/fields/${previous.entry.item.id}/undo`, {
+        method: 'POST', headers: headers(), body: JSON.stringify({ reviewer: $('reviewer').value.trim() }),
+      });
+      if (!res.ok) {
+        if (res.status === 409) previous.unavailable = true;
+        throw new Error((await res.json().catch(() => ({}))).detail || `撤回失败（${res.status}）`);
+      }
+      // 重载后仍按文档内字段编号和原队列中的文档顺序恢复。
+      let restored = entries.find(entry => entry.item.id === previous.entry.item.id);
+      if (restored) {
+        const replacement = renderField(restored.doc, { ...restored.item, status: 'pending', approved_value: null }, restored.group);
+        restored.node.replaceWith(replacement.node);
+        entries[entries.indexOf(restored)] = replacement;
+        restored.group.entries[restored.group.entries.indexOf(restored)] = replacement;
+        replacement.group.card.hidden = false;
+        restored = replacement;
+      }
+      if (!restored) {
+        const old = previous.entry;
+        let group = cards.find(group => group.doc.document_id === old.doc.document_id);
+        if (!group) {
+          group = renderCard({ ...old.doc, fields: [] });
+          const following = previous.order.slice(previous.order.indexOf(old.doc.document_id) + 1);
+          const at = cards.findIndex(other => following.includes(other.doc.document_id));
+          if (at < 0) { cards.push(group); $('list').append(group.card); }
+          else { cards[at].card.before(group.card); cards.splice(at, 0, group); }
+        }
+        restored = renderField(old.doc, { ...old.item, status: 'pending', approved_value: null }, group);
+        const at = group.entries.findIndex(other => other.item.id > old.item.id);
+        if (at < 0) { group.entries.push(restored); group.card.append(restored.node); }
+        else { group.entries[at].node.before(restored.node); group.entries.splice(at, 0, restored); }
+        group.card.hidden = false;
+        entries = cards.flatMap(group => group.entries);
+      }
+      $('list').querySelectorAll('.empty').forEach(node => node.remove());
+      lastReview = null; clearTimeout(undoTimer);
+      $('reviewNoticeText').textContent = `已撤回：${previous.entry.doc.title} · ${previous.value}`;
+      selectField(restored);
+      await refreshCount();
+    } catch (err) { $('undoError').textContent = err.message; }
+    finally { busy = false; updateUndo(); }
+  }
+  async function load() {
+    if (loading || busy) return;
+    loading = true; updateUndo(); $('loadError').textContent = '';
+    try {
+      const res = await fetch('/api/admin/fields?limit=100', { headers: headers() });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `加载失败（${res.status}）`);
+      const data = await res.json();
+      selectField(null);
+      cards = data.map(renderCard); entries = cards.flatMap(group => group.entries);
+      $('list').textContent = ''; cards.forEach(group => $('list').append(group.card));
+      if (!entries.length) $('list').append(el('p', 'empty', '暂无待核字段'));
+      pending = entries.length; setCount();
+      selectField(entries[0] || null, false);
+    } catch (err) { $('loadError').textContent = err.message; }
+    finally { loading = false; updateUndo(); }
+  }
+  $('load').onclick = () => load();
+  $('undoLast').onclick = undoReview;
+  $('undoNotice').onclick = undoReview;
+  $('reviewer').addEventListener('input', updateUndo);
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
+      event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    const key = event.key.toLowerCase();
+    if (!['j', 'k', 'a', 'x', 'e', 'u', 'r'].includes(key)) return;
+    event.preventDefault();
+    if (busy || loading) return;
+    if (key === 'j' || key === 'k') moveField(key === 'j' ? 1 : -1);
+    else if (key === 'u') undoReview();
+    else if (key === 'r') load();
+    else if (current) {
+      if (key === 'e') current.edit();
+      else review(current, key === 'x' ? 'reject' : 'approve');
+    }
+  });
+})();
 </script>
+</html>
