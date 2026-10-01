@@ -7,6 +7,7 @@
 - **统筹：** 创始人只需要在 Claude Code 里提需求。由 Claude 拆分任务，需要时调用 Codex 和 agy，并把结果复核后汇总给创始人。GLM 暂停（D-032）；Grok 暂停（D-037，额度用完），它的联网调研和内容草稿交给 Codex。
 - **自主推进（D-026）：** 不用等创始人说"继续"。Claude、Codex、agy 自己排工作、一项接一项往下做；只有必须本人做的事（实名、付款、密钥、在 GitHub 上点合并、账号设置）才集中列给创始人，做完的事按汇报格式报告。
 - **调用外部成员：** 都用无界面模式运行，工作目录放在临时目录；提示词第一行写明"只读：不要创建、修改或删除任何文件"。
+  - 团队脚本在仓库的 `tools/team/`（`run-codex.sh`、`run-agy.sh`、`legal-stub.js`）：超载换模型、网络中断重试都写在脚本里；材料目录仍放临时目录（临时目录重启会被清空，脚本不要只放在那里——10/1 丢过一次）。
   - Codex（ChatGPT Work 账号，**gpt-6.1-sol**，深度推理 high、可联网检索，D-020、D-026、D-038）：`codex --search exec --ignore-user-config -m gpt-6.1-sol -c model_reasoning_effort='"high"' -s read-only --skip-git-repo-check --ephemeral -C <临时目录> -o <输出文件> "<提示词>" < /dev/null`（`--search` 是顶层参数，放在 `exec` 前面）。`--ignore-user-config` 不加载本机 Codex 的浏览器和电脑操作插件，登录照常；要看图时加 `-i <图片>`。分配开发任务时改用 `-s workspace-write`，`-C` 指向它自己的 git worktree。
     - 模型超载时自动换模型再试（D-024、D-038）：gpt-6.1-sol → gpt-6-astra → gpt-6-luna，三个都超载就等 60 秒从头再试，最多 5 轮；不用 GPT-5 系列。审阅记录里写明是哪个模型答的。
   - GLM（**暂停**：额度用完，D-032；恢复时再用。CodeBuddy CLI，GLM-5.3，推理强度 xhigh，D-029）：`codebuddy -p --model glm-5.3 --effort xhigh --tools "" --no-session-persistence --output-format text "<提示词>" < /dev/null`，在空的临时目录里运行。`--tools ""` 不给任何工具，它读不到本机文件，材料全部放进提示词（和 agy 一样）；同样先查过没有公司信息、密钥和用户数据再发。用 CLI 调用，不另配 MCP（CodeBuddy 没有现成的 MCP 服务，效果一样）。
