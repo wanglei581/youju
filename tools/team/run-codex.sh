@@ -12,10 +12,15 @@ MODE=${2:-read-only}
 WORKDIR=${3:-$R}
 MODELS="gpt-6.1-sol gpt-6-astra gpt-6-luna"
 EFFORT=${CODEX_EFFORT:-high}
+# 用哪个 codex：默认用 PATH 里的；它坏了（如 npm 版缺平台组件）就用 ChatGPT 应用自带的那份
+CODEX_BIN=${CODEX_BIN:-codex}
+if ! "$CODEX_BIN" --version > /dev/null 2>&1; then
+  CODEX_BIN="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+fi
 for round in 1 2 3 4 5; do
   for m in $MODELS; do
     : > "$R/out.md"
-    codex --search exec --ignore-user-config -m "$m" -c model_reasoning_effort="\"$EFFORT\"" -s "$MODE" $CODEX_EXTRA \
+    "$CODEX_BIN" --search exec --ignore-user-config -m "$m" -c model_reasoning_effort="\"$EFFORT\"" -s "$MODE" $CODEX_EXTRA \
       --skip-git-repo-check --ephemeral -C "$WORKDIR" -o "$R/out.md" "$(cat "$R/prompt.txt")" \
       < /dev/null > "$R/log.txt" 2>&1
     if [ -s "$R/out.md" ]; then
