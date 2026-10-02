@@ -9,12 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids
 from youju.lists.rules import normalize_name
 from youju.models import Document, DocumentMerge, ListEntry, Source
+from youju.takedown import available_condition
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,7 @@ def public_condition():
         )
         .exists()
     )
-    return or_(Source.rights_level == 1, level1_twin)
+    return and_(available_condition(), or_(Source.rights_level == 1, level1_twin))
 
 
 def _public_entries(stmt: Select) -> Select:

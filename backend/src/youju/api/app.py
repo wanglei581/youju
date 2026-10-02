@@ -50,6 +50,7 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
+    DocumentTakedownEvent,
     Feedback,
     Follow,
     JobRun,
@@ -59,6 +60,7 @@ from youju.models import (
     User,
 )
 from youju.sources.onboard import MIN_ITEMS
+from youju.takedown import available_condition, change_state, is_taken_down
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -557,6 +559,7 @@ def search_lists(
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(
             Source.rights_level == 1,
+            available_condition(),
             (ListEntry.normalized_name == query) | (ListEntry.credit_code == query.upper()),
         )
         .order_by(Document.publish_date.desc(), ListEntry.id)
@@ -573,6 +576,7 @@ def search_lists(
                 .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
                 .where(
                     Source.rights_level == 1,
+                    available_condition(),
                     ListEntry.normalized_name.like(f"%{_escape_like(prefix)}%", escape="\\"),
                 )
                 .order_by(Document.publish_date.desc(), ListEntry.id)
@@ -639,7 +643,11 @@ def list_documents(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DocumentPage:
-    stmt = visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
+    stmt = visible_documents(
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .where(available_condition())
+    )
     if q:
         stmt = stmt.where(Document.title.ilike(f"%{_escape_like(q)}%", escape="\\"))
     if province:
@@ -659,6 +667,8 @@ def list_documents(
 
 @app.get("/api/documents/{doc_id}", response_model=DocumentWithDetailOut)
 def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
+    if is_taken_down(session, doc_id):
+        raise HTTPException(status_code=404, detail="该文件已下架")
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(
         select(Document, Source)
@@ -788,6 +798,166 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 AdminDep = Annotated[None, Depends(_require_admin)]
 
 
+class RestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = Field(min_length=1, max_length=300)
+    operated_by: str = Field(min_length=1, max_length=80)
+
+    @field_validator("note", "operated_by", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class TakedownIn(RestoreIn):
+    reason: Literal["侵权投诉", "主管部门要求", "内容有误", "其他"]
+
+
+def _takedown_out(session: Session, doc: Document, source: Source) -> dict:
+    master = canonical_ids(session, [doc.id]).get(doc.id, doc.id)
+    down = session.scalar(
+        select(Document)
+        .where(Document.id.in_(group_ids(session, master)), Document.taken_down_at.is_not(None))
+        .order_by(Document.taken_down_at.desc(), Document.id)
+    )
+    return {
+        "id": doc.id,
+        "canonical_id": master,
+        "title": doc.title,
+        "source": source.dept_full_name,
+        "publish_date": doc.publish_date,
+        "url": doc.url,
+        "taken_down": down is not None,
+        "taken_down_at": down.taken_down_at if down else None,
+        "reason": down.takedown_reason if down else None,
+        "note": down.takedown_note if down else None,
+        "operated_by": down.taken_down_by if down else None,
+    }
+
+
+@app.get("/api/admin/takedown")
+def takedown_search(
+    session: SessionDep,
+    _admin: AdminDep,
+    q: Annotated[str | None, Query(max_length=512)] = None,
+    removed: bool = False,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    stmt = select(Document, Source).join(Source, Source.id == Document.source_id)
+    if removed:
+        stmt = visible_documents(stmt).where(~available_condition())
+    if q and q.strip():
+        value = q.strip()
+        like = f"%{_escape_like(value)}%"
+        terms = [Document.title.like(like, escape="\\"), Document.url.like(like, escape="\\")]
+        if (
+            value.isascii()
+            and value.isdigit()
+            and len(value) <= 10
+            and session.get(Document, int(value)) is not None
+        ):
+            terms = [Document.id == int(value)]
+        stmt = stmt.where(or_(*terms))
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = session.execute(stmt.order_by(Document.id.desc()).limit(limit).offset(offset))
+    result = {"total": total, "items": [_takedown_out(session, doc, src) for doc, src in rows]}
+    return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/admin/takedown/{document_id}/remove")
+def remove_document(
+    document_id: int,
+    body: TakedownIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    ids = change_state(
+        session,
+        document_id,
+        action="takedown",
+        note=body.note,
+        operator=body.operated_by,
+        reason=body.reason,
+    )
+    if ids is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    _audit(
+        request,
+        "document_takedown",
+        document_id=document_id,
+        document_ids=ids,
+        reason=body.reason,
+        note=body.note,
+        by=body.operated_by,
+    )
+    return {"document_ids": ids, "taken_down": True}
+
+
+@app.post("/api/admin/takedown/{document_id}/restore")
+def restore_document(
+    document_id: int,
+    body: RestoreIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    ids = change_state(
+        session, document_id, action="restore", note=body.note, operator=body.operated_by
+    )
+    if ids is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    _audit(
+        request,
+        "document_restore",
+        document_id=document_id,
+        document_ids=ids,
+        note=body.note,
+        by=body.operated_by,
+    )
+    return {"document_ids": ids, "taken_down": False}
+
+
+@app.get("/api/admin/takedown/{document_id}/history")
+def takedown_history(document_id: int, session: SessionDep, _admin: AdminDep) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    if session.get(Document, document_id) is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    events = session.scalars(
+        select(DocumentTakedownEvent)
+        .where(DocumentTakedownEvent.document_id == document_id)
+        .order_by(DocumentTakedownEvent.id.desc())
+    ).all()
+    return JSONResponse(
+        jsonable_encoder(
+            [
+                {
+                    "id": event.id,
+                    "action": event.action,
+                    "reason": event.reason,
+                    "note": event.note,
+                    "operated_by": event.operated_by,
+                    "operated_at": event.operated_at,
+                }
+                for event in events
+            ]
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/admin/takedown", response_class=HTMLResponse, include_in_schema=False)
+def takedown_console() -> HTMLResponse:
+    page = (Path(__file__).resolve().parent.parent / "admin" / "takedown.html").read_text(
+        encoding="utf-8"
+    )
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/admin/embed.js", include_in_schema=False)
 def admin_embed() -> Response:
     script = (Path(__file__).resolve().parent.parent / "admin" / "embed.js").read_text(
@@ -851,6 +1021,9 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "audit": audit_flagged_count(session, None)["flagged"],
             "feedback": feedback_pending_count(session, None)["pending"],
             "sources": len(check_sources(session).failures),
+            "takedown": count(
+                visible_documents(select(func.count(Document.id))).where(~available_condition())
+            ),
         },
         "data": {
             "documents": count(docs),
@@ -2577,16 +2750,21 @@ def stats(session: SessionDep) -> Stats:
                 select(Source.province, func.count(Document.id)).join(
                     Document, Document.source_id == Source.id
                 )
-            ).group_by(Source.province)
+            )
+            .where(available_condition())
+            .group_by(Source.province)
         ).all()
     )
     return Stats(
         sources_total=session.scalar(select(func.count(Source.id))) or 0,
         sources_enabled=session.scalar(select(func.count(Source.id)).where(Source.enabled)) or 0,
         sources_by_health=by_health,
-        documents_total=session.scalar(visible_documents(select(func.count(Document.id)))) or 0,
+        documents_total=session.scalar(
+            visible_documents(select(func.count(Document.id)).where(available_condition()))
+        )
+        or 0,
         documents_new_7d=session.scalar(
-            visible_documents(select(func.count(Document.id))).where(
+            visible_documents(select(func.count(Document.id)).where(available_condition())).where(
                 Document.is_baseline.is_(False), Document.first_seen_at >= week_ago
             )
         )

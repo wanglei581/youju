@@ -6,11 +6,14 @@ import logging
 import tempfile
 import time as monotonic_clock
 from datetime import UTC, date, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 import httpx
+from openpyxl import load_workbook
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
@@ -18,7 +21,7 @@ from youju import access_log
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -221,11 +224,42 @@ def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
         raise CompareInputError("任务输入已过期，请重新提交")
     if task.kind == "compare":
         report = compare_lists(session, task.input_rows)
+        task.result_document_ids = sorted(
+            {m.document_id for row in report.rows for m in row.matches}
+        )
         return export_compare_excel(report, output)
     if task.kind == "track":
         report = track_clients(session, task.input_rows)
+        task.result_document_ids = sorted({item.document_id for item in report.items})
         return export_track_excel(report, output)
     raise CompareInputError("不支持的顾问任务类型")
+
+
+def legacy_result_document_ids(session: Session, client: httpx.Client, url: str) -> list[int]:
+    """旧结果没有依赖清单：只在存在下架文件时从既有 Excel 的原文链接补齐。
+
+    不用当前输入重算，避免漏掉历史结果中的文件；只取文件引用，不记录客户内容。
+    """
+    data = bytearray()
+    with client.stream("GET", url, timeout=30) as response:
+        response.raise_for_status()
+        for chunk in response.iter_bytes():
+            data.extend(chunk)
+            if len(data) > 4 * 1024 * 1024:
+                raise ValueError("结果文件过大")
+    with ZipFile(BytesIO(data)) as archive:
+        if sum(item.file_size for item in archive.infolist()) > 20 * 1024 * 1024:
+            raise ValueError("结果文件过大")
+    book = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    try:
+        sheet = book.worksheets[0]
+        rows = sheet.iter_rows(min_row=2, values_only=True)
+        headers = next(rows)
+        column = headers.index("原文链接")
+        urls = {str(row[column]) for row in rows if len(row) > column and row[column]}
+        return list(session.scalars(select(Document.id).where(Document.url.in_(urls))))
+    finally:
+        book.close()
 
 
 def process_task(

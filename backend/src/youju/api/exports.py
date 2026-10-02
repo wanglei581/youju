@@ -27,6 +27,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
+from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -165,7 +166,8 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
         doc_id: title
         for doc_id, title in session.execute(
             select(Document.id, Document.title).where(
-                Document.id.in_([target_masters.get(i, i) for i in target_ids])
+                Document.id.in_([target_masters.get(i, i) for i in target_ids]),
+                available_condition(),
             )
         )
     }
