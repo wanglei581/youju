@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids, group_ids
@@ -34,15 +34,22 @@ def available_condition(document=Document):
 
 def cache_revision(session: Session) -> tuple:
     """跨进程失效；下架后新增、撤销或重分归并也会改变公开范围。"""
-    latest = session.execute(
-        select(DocumentTakedownEvent.id, DocumentTakedownEvent.operated_at)
-        .order_by(DocumentTakedownEvent.id.desc())
-        .limit(1)
-    ).first()
-    if latest is None:
-        return ()
-    mappings = session.execute(
-        select(DocumentMerge.duplicate_id, DocumentMerge.canonical_id)
+    events = select(
+        func.max(DocumentTakedownEvent.id).label("latest"),
+        func.max(DocumentTakedownEvent.operated_at).label("stamp"),
+    ).subquery()
+    mappings = (
+        select(
+            func.count().label("count"),
+            func.coalesce(
+                func.sum(
+                    func.crc32(
+                        func.concat_ws("|", DocumentMerge.duplicate_id, DocumentMerge.canonical_id)
+                    )
+                ),
+                0,
+            ).label("checksum"),
+        )
         .where(
             DocumentMerge.active.is_(True),
             or_(
@@ -52,9 +59,21 @@ def cache_revision(session: Session) -> tuple:
                 ),
             ),
         )
-        .order_by(DocumentMerge.duplicate_id)
-    ).all()
-    return (*latest, tuple(tuple(row) for row in mappings))
+        .subquery()
+    )
+    # 两个子查询都只产出一行；用一条聚合 SQL 保留原有下架和归并失效语义，
+    # 避免历史下架后每次请求将整批映射加载到 Python。
+    revision = session.execute(
+        select(
+            func.max(events.c.latest),
+            func.max(events.c.stamp),
+            func.max(mappings.c.count),
+            func.max(mappings.c.checksum),
+        )
+        .select_from(events)
+        .join(mappings, true())
+    ).one()
+    return tuple(revision) if revision[0] is not None else ()
 
 
 def is_taken_down(session: Session, document_id: int) -> bool:

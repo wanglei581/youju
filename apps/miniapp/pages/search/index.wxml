@@ -10,7 +10,7 @@
   </view>
   <view class="kind-tabs" aria-role="tablist">
     <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
-      <text>{{item.label}}{{tab === item.key ? ' ' + total : ''}}</text>
+      <text>{{item.label}}{{tab === item.key && !loading && !error ? ' ' + total : ''}}</text>
       <view wx:if="{{tab === item.key}}" class="kind-bar"></view>
     </view>
   </view>
@@ -22,7 +22,7 @@
   <view class="chip {{statusOn ? 'chip--on' : ''}}" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="{{statusOn ? '#2A5CE0' : '#4E5969'}}" /></view>
   <view class="filter-link" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="#1D2129" />筛选</view>
 </view>
-<view class="summary">
+<view wx:if="{{!loading && !error}}" class="summary">
   <text wx:if="{{chipTime !== '不限'}}">{{chipTime}} <text class="b">{{total}}</text> 份 · 不限时间共 {{totalAll}} 份</text><text wx:else>共 <text class="b">{{total}}</text> 份</text>
   <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text></view>
 </view>
@@ -37,10 +37,13 @@
 </view>
 
 <view class="card">
+  <view wx:if="{{loading}}" class="empty muted">正在加载…</view>
+  <block wx:if="{{!error}}">
   <view wx:for="{{items}}" wx:key="id" class="pick-row" data-id="{{item.id}}" bindtap="togglePick">
     <view wx:if="{{selecting}}" class="pick-box {{chosen[item.id] ? 'pick-box--on' : ''}}" aria-role="checkbox" aria-checked="{{chosen[item.id] ? 'true' : 'false'}}" aria-label="选择这份文件"><t-icon wx:if="{{chosen[item.id]}}" name="check" size="28rpx" color="#FFFFFF" /></view>
     <view class="pick-main"><doc-row doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" selecting="{{selecting}}" /></view>
   </view>
+  </block>
   <view wx:if="{{error}}" class="empty">{{error}}<text class="link" bindtap="retry">　重试</text></view>
   <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。想要这个地区，可以在"我的 → 申请覆盖"告诉我们</view>
   <view wx:elif="{{!items.length && !loading}}" class="empty">没有符合条件的文件，换个关键词或放宽筛选试试<view wx:if="{{notCoveredNote}}" class="empty-note">暂未收录的地区：{{notCoveredNote}}</view></view>

@@ -4,11 +4,11 @@ const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { ensureConsent, syncConsent } = require('../../utils/consent.js');
-const { describe } = require('../../utils/conditions.js');
+const { describe, searchUrl } = require('../../utils/conditions.js');
 
 // 三种状态：demo 没连接口时的演示数据；gated 未登录（或协议未定稿）；live 真实的关注
 Page({
-  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: false, error: '', legalFinal: legal.final },
+  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', legalFinal: legal.final },
 
   onHide() {
     stopDay(this);
@@ -27,24 +27,25 @@ Page({
   },
 
   load() {
+    this.setData({ loading: true, error: '' });
     if (!api.isLive()) {
       api.follow().then((res) => this.setData({
-        mode: 'demo',
+        mode: 'demo', loading: false,
         weekStart: res.week_start,
         newTotal: res.new_total,
         follows: res.subs.map((s, i) => ({ id: `demo${i}`, name: s.name, desc: s.desc, newCount: s.n, tone: s.tone, icon: s.icon })),
         changes: res.changes,
-      }));
+      })).catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
       return;
     }
     // 换了设备、本机没有同意记录时，先向服务端核对一次
     syncConsent().then((ok) => {
       if (!ok) {
-        this.setData({ mode: 'gated', follows: [], changes: [], changesError: '', newTotal: 0 });
+        this.setData({ mode: 'gated', loading: false, follows: [], changes: [], changesError: '', newTotal: 0 });
         return;
       }
       this.loadLive();
-    });
+    }).catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
   },
 
   loadLive() {
@@ -55,6 +56,7 @@ Page({
           id: f.id,
           name: f.name,
           desc: describe(f.conditions),
+          searchUrl: searchUrl(f.conditions),
           newCount: f.newCount,
           tone: f.conditions.kind === '名单' ? 'orange' : 'blue',
           icon: f.conditions.kind === '名单' ? 'bulletpoint' : 'task-checked',
@@ -165,6 +167,11 @@ Page({
           .catch((err) => wx.showToast({ title: err.message || '操作失败，请稍后再试', icon: 'none' }));
       },
     });
+  },
+
+  searchFollow(e) {
+    const f = this.data.follows.find((item) => String(item.id) === String(e.currentTarget.dataset.id));
+    if (f && f.searchUrl) wx.navigateTo({ url: f.searchUrl });
   },
 
   addSub() {

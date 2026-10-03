@@ -1,7 +1,8 @@
 <notice-bar />
-<view class="summary muted">上次查看之后有 {{total}} 份新文件</view>
+<view wx:if="{{!loading && !error}}" class="summary muted">上次查看之后有 {{total}} 份新文件</view>
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load" data-reset="1">重试</text></view>
 <view class="card">
+  <view wx:if="{{loading}}" class="empty muted">正在加载…</view>
   <doc-row wx:for="{{items}}" wx:key="id" doc="{{item}}" last="{{index === items.length - 1}}" today="{{today}}" />
   <view wx:if="{{!items.length && !loading && !error}}" class="empty muted">没有新文件</view>
   <view wx:if="{{items.length < total}}" class="load-more">已显示 {{items.length}}/{{total}} 份 · 上拉加载更多</view>

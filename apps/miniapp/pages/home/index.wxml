@@ -43,7 +43,8 @@
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
-<view class="summary" wx:if="{{stats}}" bindtap="goSearch">
+<view wx:if="{{loading && loaded}}" class="card list-tip">正在加载…</view>
+<view class="summary" wx:if="{{stats && !loading}}" bindtap="goSearch">
   <view class="summary-num">
     <text class="summary-label">本周新增</text>
     <view><text class="big">{{stats.week_total}}</text><text class="unit"> 份</text></view>
@@ -70,8 +71,8 @@
       <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
     </view>
   </view>
-  <doc-row wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
-  <view wx:if="{{!shown.length && !error}}" class="list-tip">{{loaded ? '最新的文件里暂时没有这一类' : '正在加载…'}}</view>
+  <doc-row wx:if="{{!loading}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
+  <view wx:if="{{(!shown.length || loading) && !error}}" class="list-tip">{{loading || !loaded ? '正在加载…' : '最新的文件里暂时没有这一类'}}</view>
   <view class="more" bindtap="goMore">查看近 7 天的文件 <t-icon name="chevron-right" size="28rpx" /></view>
 </view>
 
