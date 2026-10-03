@@ -107,7 +107,11 @@ def issue_out(issue, profile_name, *, detail=False):
     }
     out["profile_name"] = profile_name
     if detail:
-        out.update(body_html=issue.body_html, body_text=issue.body_text)
+        out.update(
+            body_html=issue.body_html,
+            body_text=issue.body_text,
+            body_text_with_links=issue.body_text_with_links,
+        )
     return out
 
 
@@ -129,7 +133,7 @@ def router(require_admin, audit) -> APIRouter:
         audit(request, "weekly_profiles_list", count=len(rows))
         return {
             "items": [profile_out(row) for row in rows],
-            "provinces": sorted(set(PROVINCES) - {"国家"}),
+            "provinces": [province for province in PROVINCES if province != "国家"],
         }
 
     def save_profile(session, body, profile=None):

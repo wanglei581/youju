@@ -16,7 +16,7 @@ class Element {
 const elements = new Map();
 for (const match of page.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
 let writes=[],plain=[],calls=[],blocked=false,selectionCount=0;
-const issue = { id:1,profile_id:1,title:'政策申报周报',generated_at:'2026-10-05T00:00:00Z',status:'draft',counts:{lists:1},note:'',body_html:'<section><p>最新正文</p></section>',body_text:'最新正文' };
+const issue = { id:1,profile_id:1,title:'政策申报周报',generated_at:'2026-10-05T00:00:00Z',status:'draft',counts:{lists:1},note:'',body_html:'<section><p>最新正文</p></section>',body_text:'最新正文',body_text_with_links:'题录｜机关｜2026-09-28｜截止时间见原文｜https://example.gov.cn/1' };
 const context = {
   URLSearchParams,Blob,
   document: {
@@ -57,12 +57,16 @@ vm.runInNewContext(script,context);
   assert.equal(await item.data['text/html'].text(),issue.body_html);
   assert.equal(await item.data['text/plain'].text(),issue.body_text);
   await elements.get('copyText').onclick();
+  await elements.get('copyLinks').onclick();
   await elements.get('copyTitle').onclick();
-  assert.deepEqual(plain,[issue.body_text,issue.title]);
+  assert.deepEqual(plain,[issue.body_text,issue.body_text_with_links,issue.title]);
   // 每次复制都再次取详情，下架后不能沿用已载入正文写入剪贴板。
   blocked=true;
   await elements.get('copyHtml').onclick();
   assert.equal(writes.length,1);
+  assert.equal(elements.get('message').textContent,'内容已下架');
+  await elements.get('copyLinks').onclick();
+  assert.equal(plain.length,3);
   assert.equal(elements.get('message').textContent,'内容已下架');
   blocked=false;
   context.navigator.clipboard.write=async()=>{throw new Error('permission denied');};
@@ -74,6 +78,9 @@ vm.runInNewContext(script,context);
   assert.equal(selectionCount,2);
   await elements.get('copyText').onclick();
   assert.equal(elements.get('preview').children[0].value,issue.body_text);
+  assert(elements.get('preview').children[0].selected);
+  await elements.get('copyLinks').onclick();
+  assert.equal(elements.get('preview').children[0].value,issue.body_text_with_links);
   assert(elements.get('preview').children[0].selected);
   assert(calls.filter(c=>c.path.endsWith('/issues/1')).length>=7);
 })().catch(error=>{console.error(error);process.exitCode=1;});

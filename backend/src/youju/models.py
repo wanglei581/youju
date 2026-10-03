@@ -89,6 +89,7 @@ class DigestIssue(Base):
     title: Mapped[str] = mapped_column(String(200))
     body_html: Mapped[str] = mapped_column(LongText)
     body_text: Mapped[str] = mapped_column(LongText)
+    body_text_with_links: Mapped[str] = mapped_column(LongText)
     counts: Mapped[dict] = mapped_column(JSONType)
     document_ids: Mapped[list] = mapped_column(JSONType)
     generated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

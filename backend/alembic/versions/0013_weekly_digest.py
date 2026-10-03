@@ -39,6 +39,7 @@ def upgrade() -> None:
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("body_html", mysql.MEDIUMTEXT(), nullable=False),
         sa.Column("body_text", mysql.MEDIUMTEXT(), nullable=False),
+        sa.Column("body_text_with_links", mysql.MEDIUMTEXT(), nullable=False),
         sa.Column("counts", sa.JSON(), nullable=False),
         sa.Column("document_ids", sa.JSON(), nullable=False),
         sa.Column(

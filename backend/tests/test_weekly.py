@@ -223,22 +223,39 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     assert issue.title == "政策申报周报｜9 月 28 日—10 月 4 日（全国版）"
     text = issue.body_text
     assert text.splitlines().count("项目申报通知") == 2  # 新发布栏目及未来截止栏目各一条
-    assert "国家部委\n" in text and text.index("国家部委\n") < text.index("浙江\n")
-    assert "发布日期：2026-09-28" in text and "2026-10-10" in text
-    assert "2026-10-11" not in text  # 候选日期不能输出
-    assert "剩余 1 天" in text and "剩余 30 天" in text
+    assert "国家部委（1 条）" in text and text.index("国家部委（1 条）") < text.index(
+        "浙江（3 条）"
+    )
+    assert "9 月 28 日发布" in text and "截止：10 月 10 日（已核对）" in text
+    assert "10 月 11 日" not in text  # 候选日期不能输出
+    assert "截止：10 月 6 日 17:00（已核对）" in text and "截止：11 月 4 日（已核对）" in text
     assert "支持方式：资金支持" in text
     assert "贷款贴息" not in text and "资格认定" not in text
     assert "截止时间见原文" in text
-    assert "条数：2" in text and "条数：1" in text
-    assert "不可输出" not in text and "条数：4" not in text
+    assert "9 月 28 日 · 公示 · 2 条" in text and "9 月 28 日 · 1 条" in text
+    assert "不可输出" not in text and "· 4 条" not in text
     tree = html.fragment_fromstring(issue.body_html)
-    assert tree.xpath(".//strong/a[text()='企业名单公示']/@href") == [world["listing"].url]
-    assert "企业名单\n发文机关" in text  # 未额外添加公示或公布状态
+    assert tree.xpath(".//strong[text()='企业名单公示']")
+    assert not tree.xpath(".//a")
+    assert "http" not in text and "http" not in issue.body_html
+    assert world["listing"].url in issue.body_text_with_links
+    assert "企业名单\n浙江科技部门 · 9 月 28 日 · 1 条" in text  # 未额外添加公示或公布状态
     assert "科〔2026〕1号" in text
     for word in ("下架项目", "非公开", "已过期", "远期"):
         assert word not in text
-    assert text.endswith(weekly.DISCLAIMER)
+    assert text.splitlines()[-2:] == [weekly.CALL_TO_ACTION, weekly.DISCLAIMER]
+    # 每条恰好两个段落，标题加粗，下一段小字；纯文本与 HTML 的行一一对应。
+    assert "\n".join(tree.xpath("./*/text() | ./p/strong/text()")) == "\n".join(
+        line for line in text.splitlines() if line
+    )
+    titles = tree.xpath("./p[strong]")
+    assert len(titles) == sum(issue.counts.values())
+    assert all(
+        p.getnext().tag == "p" and "font-size:12px" in p.getnext().get("style") for p in titles
+    )
+    for line in issue.body_text_with_links.splitlines():
+        if "｜" in line:
+            assert len(line.split("｜")) == 5 and line.split("｜")[-1].startswith("https://")
 
 
 def test_changed_twin_suppresses_old_approved_deadline(session, profile, world):
@@ -253,7 +270,72 @@ def test_changed_twin_suppresses_old_approved_deadline(session, profile, world):
     session.commit()
     issue = generate(session, profile).issue
     assert issue.counts["deadlines"] == 2
-    assert "2026-10-10" not in issue.body_text
+    assert "10 月 10 日" not in issue.body_text
+    assert "2026-10-10" not in issue.body_text_with_links
+
+
+def test_fixed_province_order_all_columns_and_group_counts(session, profile):
+    # 倒序插入、发布日期和截止日期也故意倒序，避免碰巧按出现顺序通过。
+    for n, province in enumerate(("安徽", "浙江", "江苏", "内蒙古", "北京", "国家")):
+        src = source(session, province)
+        for kind in ("政策", "名单", "申报通知"):
+            doc = document(session, src, f"{province}{kind}", START + timedelta(days=n), kind)
+            if kind == "申报通知":
+                deadline(session, doc, NOW.date() + timedelta(days=n))
+    issue = generate(session, profile).issue
+    root = html.fragment_fromstring(issue.body_html)
+    expected = [
+        "国家部委（1 条）",
+        "北京（1 条）",
+        "内蒙古（1 条）",
+        "江苏（1 条）",
+        "浙江（1 条）",
+        "安徽（1 条）",
+    ]
+    assert root.xpath("./h3/text()") == expected * 4
+    for label in weekly.COLUMNS.values():
+        assert f"{label}（6 条）" in issue.body_text
+    linked_titles = [
+        line.split("｜")[0] for line in issue.body_text_with_links.splitlines() if "｜" in line
+    ]
+    assert linked_titles[:6] == [
+        f"{p}申报通知" for p in ("国家", "北京", "内蒙古", "江苏", "浙江", "安徽")
+    ]
+
+
+def test_compact_lists_omit_unknown_count_and_unstated_status(session, profile):
+    src = source(session)
+    for title in ("名单", "名单公示", "名单公布", "公示及公布名单"):
+        document(session, src, title, kind="名单")
+    issue = generate(session, profile).issue
+    lines = issue.body_text.splitlines()
+    assert lines[lines.index("名单") + 1] == "浙江科技部门 · 9 月 28 日"
+    assert lines[lines.index("名单公示") + 1].endswith(" · 公示")
+    assert lines[lines.index("名单公布") + 1].endswith(" · 公布")
+    assert lines[lines.index("公示及公布名单") + 1].endswith(" · 公示/公布")
+    assert "0 条" not in issue.body_text
+
+
+def test_compact_multiple_deadlines_and_no_embedded_urls(session, profile):
+    src = source(session)
+    src.dept_full_name = "科技厅 https://example.gov.cn/contact"
+    doc = document(session, src, "申报\n通知 https://example.gov.cn/note www.example.gov.cn")
+    deadline(session, doc, approved_time=time(17))
+    other = deadline(session, doc, date(2026, 10, 12))
+    other.kind = "材料报送截止"
+    issue = generate(session, profile).issue
+    assert (
+        "截止：企业申报截止 10 月 10 日 17:00（已核对）；材料报送截止 10 月 12 日（已核对）"
+        in issue.body_text
+    )
+    assert "https://" not in issue.body_text + issue.body_html
+    assert "www." not in issue.body_text + issue.body_html
+    assert "申报 通知" in issue.body_text.splitlines()
+    linked = [line for line in issue.body_text_with_links.splitlines() if "｜" in line]
+    assert len(linked) == 2
+    assert "2026-10-10 17:00（已核对）" in linked[0]
+    assert "材料报送截止 2026-10-12（已核对）" in linked[0]
+    assert linked[0].split("｜")[-1] == doc.url
 
 
 @pytest.mark.parametrize(
@@ -351,11 +433,11 @@ def test_draft_replace_published_protected_other_profile_separate(session, profi
     issue.status = "published"
     issue.note = "公众号已发布"
     session.commit()
-    frozen = issue.body_text, issue.generated_at
+    frozen = issue.body_text, issue.body_text_with_links, issue.generated_at
     world["apply"].title = "再次修改"
     session.commit()
     assert generate(session, profile).outcome == "published"
-    assert (issue.body_text, issue.generated_at) == frozen
+    assert (issue.body_text, issue.body_text_with_links, issue.generated_at) == frozen
     assert issue.note == "公众号已发布"
     other = DigestProfile(name="地区版")
     session.add(other)
@@ -379,11 +461,10 @@ def test_html_allowlist_injection_and_forbidden_terms(session, profile):
     # 政府原标题照录：含"智能""最"等字的通知不能被排除（否则智能制造类通知全漏）
     assert issue.counts["policies"] == 7
     for element in root.iter():
-        assert element.tag in {"section", "p", "h2", "h3", "strong", "ul", "li", "a"}
-        assert set(element.attrib) <= {"style", "href"}
-        if "href" in element.attrib:
-            assert element.attrib["href"].startswith("https://example.gov.cn/")
-    assert not root.xpath(".//script | .//img | .//*[@class]")
+        assert element.tag in {"section", "p", "h2", "h3", "strong"}
+        assert set(element.attrib) <= {"style"}
+    assert not root.xpath(".//script | .//img | .//a | .//*[@class]")
+    assert "https://" not in issue.body_html and "https://" not in issue.body_text
     assert "&lt;script&gt;" in issue.body_html and "&amp;" in issue.body_html
     assert "智能项目" in issue.body_text and "AI 项目" in issue.body_text
     # 我们自己的模板文字里不出现这些词：去掉题录标题后再检查
@@ -472,6 +553,15 @@ def test_api_profiles_generate_publish_retract_audit(client, session, profile, w
     iid = response.json()["issue_id"]
     summary = client.get(prefix + "/issues", headers=HEADERS).json()
     assert summary["total"] == 1 and "body_html" not in summary["items"][0]
+    assert "body_text_with_links" not in summary["items"][0]
+    detail_response = client.get(f"{prefix}/issues/{iid}", headers=HEADERS).json()
+    assert "https://example.gov.cn/" in detail_response["body_text_with_links"]
+    assert "https://" not in detail_response["body_text"]
+    from youju.sources.onboard import PROVINCES
+
+    assert client.get(prefix + "/profiles", headers=HEADERS).json()["provinces"] == list(
+        PROVINCES[1:]
+    )
     assert client.get(prefix + "/issues", headers=HEADERS).headers["cache-control"] == "no-store"
     assert (
         client.get(f"{prefix}/issues/{iid}", headers=HEADERS)
@@ -603,6 +693,8 @@ def test_migration_0013_upgrade_downgrade(db_engine, session):
     assert all(seed.columns.values())
     assert session.get(Document, doc.id).title == "项目申报通知"
     assert session.scalars(select(DigestIssue)).all() == []
+    columns = {c["name"]: c for c in inspect(db_engine).get_columns("digest_issues")}
+    assert not columns["body_text_with_links"]["nullable"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="需要 node")
@@ -627,8 +719,10 @@ def test_deadline_today_respects_reviewed_time(session, profile):
     session.commit()
     issue = generate(session, profile).issue
     assert issue.counts["deadlines"] == 2
-    assert "早已截止" not in issue.body_text and "剩余 0 天" in issue.body_text
-    assert "发布日期：见原文" in issue.body_text
+    assert (
+        "早已截止" not in issue.body_text and "截止：10 月 5 日 08:00（已核对）" in issue.body_text
+    )
+    assert "发布日期见原文" in issue.body_text
 
 
 def test_concurrent_generation_one_issue_and_publish_keeps_snapshot(

@@ -2,6 +2,7 @@
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from html import escape
@@ -25,6 +26,7 @@ from youju.models import (
     ListEntry,
     Source,
 )
+from youju.sources.onboard import PROVINCES
 from youju.takedown import available_condition
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -35,6 +37,10 @@ COLUMNS = {
     "policies": "本周新发布的政策文件",
 }
 DISCLAIMER = "第三方整理，非政府平台；信息来自政府网站公开发布的文件，以原文为准。"
+CALL_TO_ACTION = "查看原文和订阅截止提醒：在微信搜索小程序「有据」，搜标题即可。"
+PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
+# 公众号正文中的题录字段也可能夹带网址，展示时统一去掉；带链接版保留原题录。
+URL_IN_TEXT = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)[^\s<>\"'，。；、（）]+", re.IGNORECASE)
 LIMIT = 30
 log = logging.getLogger("youju.weekly")
 # 禁用文字只约束我们自己写的文字（模板、方案名称）。政府文件的原标题照录，不改写、也不因为
@@ -251,16 +257,32 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
             if upcoming:
                 selected = min(upcoming, key=lambda d: (d.approved_date, d.id))
                 columns["deadlines"].append((item, selected))
-    columns["applications"].sort(
-        key=lambda i: (
-            i.province != "国家",
-            i.province,
-            -(i.published or date.min).toordinal(),
-            i.id,
-        )
-    )
-    columns["deadlines"].sort(key=lambda pair: (pair[1].approved_date, pair[0].id))
     return columns
+
+
+def _one_line(value: str) -> str:
+    return " ".join(_text(value).split())
+
+
+def _public_text(value: str) -> str:
+    return _one_line(URL_IN_TEXT.sub("", value))
+
+
+def _month_day(value: date) -> str:
+    return f"{value.month} 月 {value.day} 日"
+
+
+def _deadline_text(item: Item, due=None, *, linked=False) -> str:
+    deadlines = (due,) if due else item.deadlines
+    if not deadlines:
+        return "截止时间见原文"
+    parts = []
+    for deadline in deadlines:
+        day = deadline.approved_date
+        at = f" {deadline.approved_time:%H:%M}" if deadline.approved_time else ""
+        kind = f"{deadline.kind} " if linked or len(deadlines) > 1 else ""
+        parts.append(f"{kind}{day.isoformat() if linked else _month_day(day)}{at}（已核对）")
+    return "截止：" + "；".join(parts)
 
 
 def render(profile: DigestProfile, start: date, end: date, today: date, columns: dict):
@@ -269,79 +291,107 @@ def render(profile: DigestProfile, start: date, end: date, today: date, columns:
         f"{end.month} 月 {end.day} 日（{profile.name}）"
     )
     html = ['<section style="font-size:15px;line-height:1.8;color:#222b35;">']
-    lines = []
+    lines, linked_lines = [], []
     counts = {}
     used = set()
 
     def paragraph(value):
-        html.append(f'<p style="margin:8px 0;">{escape(value)}</p>')
-        lines.append(value)
+        html.append(f'<p style="margin:8px 0;">{escape(_public_text(value))}</p>')
+        lines.append(_public_text(value))
+        linked_lines.append(_one_line(value))
 
     for key, label in COLUMNS.items():
         values = columns[key] if profile.columns.get(key, False) else []
         counts[key] = len(values)
         if not values:
             continue
-        html.append(f'<h2 style="font-size:20px;margin:24px 0 12px;">{escape(label)}</h2>')
-        lines.extend(["", label])
+
+        def order(value, column=key):
+            item, due = value if column == "deadlines" else (value, None)
+            return (
+                PROVINCE_ORDER.get(item.province, len(PROVINCES)),
+                item.province,
+                due.approved_date.toordinal() if due else -(item.published or date.min).toordinal(),
+                item.id,
+            )
+
+        values = sorted(values, key=order)
+        group_counts = Counter(
+            (value[0] if key == "deadlines" else value).province for value in values
+        )
+        heading = f"{label}（{len(values)} 条）"
+        html.append(f'<h2 style="font-size:20px;margin:24px 0 12px;">{escape(heading)}</h2>')
+        lines.extend(["", heading])
+        linked_lines.extend(["", heading])
         if key == "deadlines":
             paragraph(f"截止统计基准：{today.isoformat()}")
         province = None
         for value in values[:LIMIT]:
             item, due = value if key == "deadlines" else (value, None)
             used.add(item.id)
-            if key == "applications" and item.province != province:
+            if item.province != province:
                 province = item.province
-                group = "国家部委" if province == "国家" else province
+                group = "国家部委" if province == "国家" else _public_text(province)
+                group = f"{group}（{group_counts[province]} 条）"
                 html.append(f'<h3 style="font-size:17px;margin:16px 0 8px;">{escape(group)}</h3>')
                 lines.append(group)
-            heading = escape(item.title)
-            if key == "lists":
-                heading = (
-                    f'<a style="color:#1769aa;" href="{escape(item.url, quote=True)}">{heading}</a>'
-                )
-            html.append(f'<p style="margin:16px 0 8px;"><strong>{heading}</strong></p>')
-            lines.append(item.title)
-            paragraph(f"发文机关：{item.issuer}")
+                linked_lines.append(group)
+            html.append(
+                '<p style="margin:12px 0 0;"><strong>'
+                f"{escape(_public_text(item.title))}</strong></p>"
+            )
+            lines.append(_public_text(item.title))
+            metadata = [item.issuer]
+            day = _month_day(item.published) if item.published else "发布日期见原文"
+            metadata.append(f"{day}发布" if item.published and key != "lists" else day)
             if key in {"applications", "deadlines"}:
-                paragraph(f"发布日期：{item.published.isoformat() if item.published else '见原文'}")
-                if due:
-                    at = f" {due.approved_time:%H:%M}" if due.approved_time else ""
-                    paragraph(
-                        f"截止日期：{due.approved_date.isoformat()}{at}"
-                        f"（剩余 {(due.approved_date - today).days} 天）"
-                    )
-                elif item.deadlines:
-                    paragraph(
-                        "截止日期："
-                        + "；".join(
-                            f"{d.kind} {d.approved_date.isoformat()}"
-                            + (f" {d.approved_time:%H:%M}" if d.approved_time else "")
-                            for d in item.deadlines
-                        )
-                    )
-                else:
-                    paragraph("截止时间见原文")
+                metadata.append(_deadline_text(item, due))
                 if item.support:
-                    paragraph(f"支持方式：{'、'.join(item.support)}")
+                    metadata.append(f"支持方式：{'、'.join(item.support)}")
             elif key == "lists":
-                paragraph(f"条数：{item.entries}")
+                states = [state for state in ("公示", "公布") if state in item.title]
+                if states:
+                    metadata.append("/".join(states))
+                if item.entries:
+                    metadata.append(f"{item.entries} 条")
             elif key == "policies":
-                paragraph(f"文号：{item.number or '见原文'}")
-            if key != "lists":
-                html.append(
-                    '<p style="margin:8px 0;"><a style="color:#1769aa;" '
-                    f'href="{escape(item.url, quote=True)}">原文链接</a></p>'
+                metadata.append(f"文号：{item.number or '见原文'}")
+            metadata_text = _public_text(" · ".join(metadata))
+            html.append(
+                '<p style="font-size:12px;color:#687482;margin:0 0 8px;">'
+                f"{escape(metadata_text)}</p>"
+            )
+            lines.append(metadata_text)
+            # 五列固定，每条一行；保留完整年月日与核定时刻，供邮件、群聊查原文。
+            linked_lines.append(
+                "｜".join(
+                    _one_line(field).replace("｜", "|")
+                    for field in (
+                        item.title,
+                        item.issuer,
+                        item.published.isoformat() if item.published else "发布日期见原文",
+                        _deadline_text(item, due, linked=True),
+                        item.url,
+                    )
                 )
-                lines.append(f"原文链接：{item.url}")
+            )
         if len(values) > LIMIT:
             paragraph(f"共 {len(values)} 条，其余在「有据」小程序里查看")
     if not sum(counts.values()):
         return None
     lines.append("")
+    linked_lines.append("")
+    paragraph(CALL_TO_ACTION)
     paragraph(DISCLAIMER)
     html.append("</section>")
-    return title, "".join(html), "\n".join(lines).lstrip(), counts, sorted(used)
+    return (
+        title,
+        "".join(html),
+        "\n".join(lines).lstrip(),
+        "\n".join(linked_lines).lstrip(),
+        counts,
+        sorted(used),
+    )
 
 
 def generate(
@@ -379,11 +429,12 @@ def generate(
         reason = "启用栏目没有符合公开范围、地区、关键词和统计区间的内容"
         log.info("周报未生成：方案 #%s，%s 至 %s；%s", profile.id, start, end, reason)
         return Generation(None, "empty", reason)
-    title, body_html, body_text, counts, document_ids = rendered
+    title, body_html, body_text, body_text_with_links, counts, document_ids = rendered
     if issue is None:
         issue = DigestIssue(profile_id=profile.id, week_start=start, week_end=end)
         session.add(issue)
     issue.title, issue.body_html, issue.body_text = title, body_html, body_text
+    issue.body_text_with_links = body_text_with_links
     issue.counts, issue.document_ids, issue.generated_at = counts, document_ids, stamp
     session.commit()
     return Generation(issue, "generated", "草稿已生成")
