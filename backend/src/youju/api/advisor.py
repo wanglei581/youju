@@ -8,9 +8,9 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select
+from sqlalchemy import JSON, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from starlette.concurrency import run_in_threadpool
 
 from youju import advisor_tasks as service
@@ -112,11 +112,13 @@ def _authorize(kind: str, user: User) -> None:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _out(task: AdvisorTask, session: Session | None = None) -> dict:
-    result = service.task_dict(task)
+def _out(task: AdvisorTask, session: Session | None = None, *, include_result: bool = True) -> dict:
+    result = service.task_dict(task, include_result=include_result or task.kind != "interpret")
+    if task.kind == "interpret" and not include_result:
+        return {**result, "hasResult": bool(task.result_json)}
     if task.kind == "interpret" and task.result_json and session is not None:
         if task.expires_at is not None and task.expires_at <= _stamp():
-            result["result_json"] = None
+            result["result"] = None
             result["error"] = "结果已过期，请重新提交"
         elif not task.result_json.get("refusal"):
             try:
@@ -124,7 +126,7 @@ def _out(task: AdvisorTask, session: Session | None = None) -> dict:
                 if key != task.cache_key:
                     raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
             except interpret.InterpretRefusal as exc:
-                result["result_json"] = None
+                result["result"] = None
                 result["error"] = str(exc)
     return result
 
@@ -161,6 +163,7 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
         "ai_advisor": {
             "enabled": ai_enabled,
             "features": ["interpret"] if ai_enabled else [],
+            "disclosure": interpret.disclosure(settings),
             "remaining": {"interpret": max(0, 5 - counts.get("interpret", 0)) if ai_enabled else 0},
         },
     }
@@ -197,7 +200,7 @@ def create_task(
             existing.kind != body.kind or existing.input_json != {"doc_id": body.doc_id}
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
-        return _out(existing, session)
+        return _out(existing, include_result=False)
     if body.rows is not None and len(body.rows) > service.MAX_ROWS:
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
@@ -230,7 +233,7 @@ def create_task(
             raise
         task = existing
     request.state.audit = {"action": "advisor_task_create", "task_id": task.id, "kind": task.kind}
-    return _out(task)
+    return _out(task, include_result=False)
 
 
 @router.get("/tasks", dependencies=[Depends(_enabled)])
@@ -242,8 +245,12 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     if not kinds:
         raise HTTPException(status_code=404, detail="没有找到接口")
     since = _stamp() - timedelta(days=30)
-    rows = session.scalars(
-        select(AdvisorTask)
+    rows = session.execute(
+        select(
+            AdvisorTask,
+            (AdvisorTask.result_json.is_not(None) & (AdvisorTask.result_json != JSON.NULL)),
+        )
+        .options(defer(AdvisorTask.result_json), defer(AdvisorTask.snapshot))
         .where(
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
@@ -251,7 +258,14 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()
-    return {"items": [_out(task, session) for task in rows]}
+    return {
+        "items": [
+            {**service.task_dict(task, include_result=False), "hasResult": bool(has_result)}
+            if task.kind == "interpret"
+            else service.task_dict(task)
+            for task, has_result in rows
+        ]
+    }
 
 
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
@@ -324,7 +338,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
     elif task.status != "cancelled":
         raise HTTPException(status_code=409, detail="任务已开始处理，不能取消")
     request.state.audit = {"action": "advisor_task_cancel", "task_id": task.id}
-    return _out(task)
+    return _out(task, include_result=False)
 
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])

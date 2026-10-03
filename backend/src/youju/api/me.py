@@ -344,7 +344,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "finishedAt": _iso(row.finished_at),
             **(
                 {
-                    "result_json": advisor_api._out(row, session).get("result_json"),
+                    "result": advisor_api._out(row, session).get("result"),
                     "model": row.model,
                     "prompt_version": row.prompt_version,
                 }

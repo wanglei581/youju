@@ -76,21 +76,43 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 `GET /api/v1/advisor/capabilities` 分别返回 `data_tools`、`ai_advisor` 的功能和剩余额度。
 解读每天每人 5 次，按北京时间计；缓存命中仍计一次，失败和拒答退回额度。
 
-结果从任务查询的 `result_json` 获取，含 `items`、`missing`、`verified`、`dropped`、
+结果从 `GET /api/v1/advisor/tasks/{id}` 的 `result` 获取，含 `items`、`missing`、`verified`、`dropped`、
 `refusal`、`generated_at`、`model`、`prompt_version`、`notice` 和校验提示 `warning`。
 拒答使用 `status=done`、非空中文 `refusal` 和空条目；调用或解析终败使用 `status=failed`。
-模型只能摘完整原句，服务端按段号逐字校验，仅合并空白、全角 ASCII 转半角。
+服务端忽略模型的 `text`，只按引用定位；仅合并空白、全角 ASCII 转半角，不做模糊匹配。
+引用至少 6 字，优先在指定段内查找；段内找不到时只接受全文唯一命中并纠正段号。
+命中扩展为完整正文上的最小连续完整句（超长句可跨段），展示和引用都回填原文原样；
+含脱敏标记的句子丢弃，同类型同原文范围去重。
+`dropped_reasons` 只保存在数据库和评测结果中，不通过用户接口或“我的数据”导出返回。
+任务列表仅返回解读元数据和 `hasResult`，不逐行复核；数据工具接口保持原行为。
+解读另含 `attachments`（归并组内 `document_attachments` 的已知记录数）和
+`attachment_notice`；大于 0 时固定提醒申请表、材料清单可能在附件中，不推断附件内容。
+`disclosure` 保存生成时的 `modelLabel`、`filingNo`，capabilities 同名字段返回当前配置。
 快照段落 `start/end` 是完整脱敏原文的字符偏移（左闭右开）；快照不通过用户接口返回。
 人工核对值由后端单独写入 `verified`，标“已核对”，不交给模型改写。
 
-缓存按正文、核对版本、提示词版本和模型共享，原始生成时间超过 30 天不复用；
+缓存按正文、核对版本（含附件个数）、提示词版本和模型共享，原始生成时间超过 30 天不复用；
 查询和复用都复核正文与下架状态。输入 7 天清空，结果和快照 30 天清空；
 删除任务和注销删除整条记录。网络、429、5xx 最多重排两次，解析失败直接终败。
 管理台总览显示开关、白名单人数、近 7 天任务和失败数（拒答不计调用失败）。
 本轮只有后台，无小程序页面、导出或条款对照。
 
+## 解读评测
+
+在 `backend/` 下运行 `uv run python scripts/eval_interpret.py --limit 30 --out /tmp/interpret-eval`。
+可加 `--doc-ids 1,2,3` 限定候选，`--dry-run` 只选文、不调用模型。数据库沿用现有配置；
+没有 AI 密钥时仅允许 dry-run。脚本在数据库只读事务内读取，不创建任务、不扣额度，
+不写任何表（包括 AI 用量表），每篇最多一次请求、失败不中断。
+只选 `interpret.prepare` 通过的文件；按来源 ID 轮取，短（≤1500 字）、中（≤6000 字）、
+长文轮流补位，候选按文件 ID 排序；库内容相同则选文相同。
+输出 `results.jsonl`（文件 ID、保留条目、六类条数、missing、丢弃原因、耗时与用量）、
+`summary.json` 和中文表格 `summary.md`；汇总含选中文件 ID、成功篇数、总条数、保留率、
+各原因合计、各类覆盖篇数和平均耗时。成功表示模型调用与校验完成，零保留也算成功；
+平均耗时包含调用失败、不含 dry-run；错误仅记录类别，不输出原始响应、请求头或密钥。
+
 ## 配置
 
+后台 AI 的模型方可配置，使用 OpenAI 兼容接口；连接地址和模型默认值保持兼容。
 全部通过环境变量（前缀 `YOUJU_`）或 `backend/.env` 设置，见 `src/youju/config.py`：
 
 | 变量 | 默认值 | 说明 |
@@ -101,6 +123,11 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
 | `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
+| `YOUJU_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 模型方 OpenAI 兼容接口地址 |
+| `YOUJU_AI_MODEL` | `qwen-flash` | 调用的模型标识 |
+| `YOUJU_AI_API_KEY` | 未配置 | 模型调用密钥，不记录、不输出 |
+| `YOUJU_AI_MODEL_LABEL` | 空字符串 | 对外公示的模型名称 |
+| `YOUJU_AI_MODEL_FILING` | 空字符串 | 模型备案编号 |
 | `YOUJU_AI_ADVISOR_ENABLED` | `false` | AI 顾问独立开关；内部白名单测试 |
 | `YOUJU_AI_ADVISOR_OPENIDS` | 空 | AI 顾问认证 openid 白名单，逗号分隔 |
 

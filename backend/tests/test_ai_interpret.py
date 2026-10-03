@@ -191,7 +191,7 @@ def test_paragraphs_offsets_and_numbering():
         ("请提交ＡＢＣ申请书。", "请提交ABC申请书。", True),
         ("请提交  ABC\t 申请书。", "请提交 ABC 申请书。", True),
         ("请提交申请书。", "请提交申情书。", False),
-        ("请提交申请书。", "提交申请书。", False),
+        ("请提交申请书。", "提交申请书。", True),
         ("请提交①号申请书。", "请提交1号申请书。", False),
         ("符合条件可以申报。", "符合条件可以申报。", True),
         ("请提交[手机号已脱敏]。", "请提交[手机号已脱敏]。", False),
@@ -209,7 +209,7 @@ def test_exact_quotes(original, quote, keep):
         assert result["dropped"] == 1 and result["refusal"]
 
 
-def test_invalid_type_ref_or_display_deleted():
+def test_invalid_type_and_ignored_display_deduplicated():
     invalid = [item(kind="结论"), item(pid="P999"), item("可以申报。")]
     mismatched = item()
     mismatched["text"] = "保证可以申报"
@@ -217,6 +217,7 @@ def test_invalid_type_ref_or_display_deleted():
         {"items": [item(), *invalid, mismatched]}, interpret.split_paragraphs(BODY)
     )
     assert len(result["items"]) == 1 and result["dropped"] == 4
+    assert result["dropped_reasons"]["duplicate"] == 2
     assert "材料" not in result["missing"]
 
 
@@ -467,10 +468,10 @@ def test_get_result_invalidated_and_cleanup(client, session, settings, doc):
     task = session.get(AdvisorTask, created["id"])
     run(session, task, settings)
     result = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
-    assert result["result_json"]["items"]
+    assert result["result"]["items"]
     doc.detail.body_text += "\n正文变化。"
     session.commit()
-    assert client.get(f"/api/v1/advisor/tasks/{task.id}").json()["result_json"] is None
+    assert client.get(f"/api/v1/advisor/tasks/{task.id}").json()["result"] is None
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=8))
     session.refresh(task)
     assert task.input_json is None and task.result_json is not None
@@ -562,12 +563,12 @@ def test_api_takedown_hides_completed_result(client, session, settings, doc):
     created = create(client, doc.id).json()
     task = session.get(AdvisorTask, created["id"])
     run(session, task, settings)
-    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["result_json"]["items"]
+    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["result"]["items"]
     doc.taken_down_at = NOW
     session.commit()
     result = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
-    assert result["result_json"] is None and "下架" in result["error"]
-    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["result_json"] is None
+    assert result["result"] is None and "下架" in result["error"]
+    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["result"] is None
 
 
 @pytest.mark.parametrize("status,retry", [(429, True), (503, True), (403, False)])
@@ -632,12 +633,13 @@ def test_admin_overview_ai_counts(client, session, settings, doc):
     }
 
 
-def test_partial_sentence_from_other_paragraph_cannot_pass():
+def test_partial_sentence_aligns_in_requested_paragraph():
     body = "原文完整要求提交材料。\n要求提交材料。"
     result = interpret.validate(
         {"items": [item("要求提交材料。", "P001")]}, interpret.split_paragraphs(body)
     )
-    assert not result["items"] and result["dropped"] == 1
+    assert result["items"][0]["text"] == "原文完整要求提交材料。"
+    assert result["dropped"] == 0
 
 
 def test_original_changes_during_model_call_refuses_and_refunds(session, settings, doc):
@@ -703,3 +705,206 @@ def test_request_boundaries_keep_legacy_validation(client, settings, doc):
         json={"kind": "interpret", "doc_id": doc.id, "text": "自由输入"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body,quote,pid,expected,actual_pid",
+    [
+        (
+            "申报对象：本省注册的科技企业。",
+            "本省注册的科技企业",
+            "P001",
+            "申报对象：本省注册的科技企业。",
+            "P001",
+        ),
+        (
+            "先提交申请书。随后提交营业执照。",
+            "提交申请书。随后提交",
+            "P001",
+            "先提交申请书。随后提交营业执照。",
+            "P001",
+        ),
+        (
+            "其他说明内容。\n请提交ＡＢＣ申请书。",
+            "请提交ABC申请书",
+            "P001",
+            "请提交ＡＢＣ申请书。",
+            "P002",
+        ),
+        ("其他说明内容。\n请提交申请材料。", "请提交申请材料", "P999", "请提交申请材料。", "P002"),
+        (
+            "甲" * 999 + "需提交申请材料" + "乙" * 1100 + "。",
+            "需提交申请材料",
+            "P001",
+            "甲" * 999 + "需提交申请材料" + "乙" * 1100 + "。",
+            "P001",
+        ),
+        (
+            "甲" * 1000 + "需提交申请材料。",
+            "需提交申请材料",
+            "P002",
+            "甲" * 1000 + "需提交申请材料。",
+            "P002",
+        ),
+        (
+            "请提交申请材料。\n请提交申请材料。",
+            "请提交申请材料",
+            "P002",
+            "请提交申请材料。",
+            "P002",
+        ),
+    ],
+)
+def test_quote_alignment_and_contiguous_display(body, quote, pid, expected, actual_pid):
+    entry = item(quote, pid)
+    entry["text"] = {"untrusted": "不使用模型的 text"}
+    result = interpret.validate({"items": [entry]}, interpret.split_paragraphs(body))
+    assert result["items"] == [
+        {"type": "材料", "text": expected, "refs": [{"pid": actual_pid, "quote": expected}]}
+    ]
+    assert all(entry["text"] in body for entry in result["items"])
+    assert result["dropped"] == 0
+
+
+def test_all_dropped_reasons_and_range_deduplication():
+    body = "请提交申请材料。\n请提交申请材料。\n申报要求为[手机号已脱敏]并提交申请书。"
+    entries = [
+        item("请提交申请材料", "P001"),
+        item("提交申请材料", "P001"),  # 同句同类型重复
+        item("请提交申请材料", "P002"),  # 同句不同范围保留
+        item("请提交申请材料", "P001", "条件"),
+        item("请提交申请材料", "P999"),  # 全文多处命中
+        item("原文没有这句话", "P001"),
+        item("材料", "P001"),
+        item("并提交申请书", "P003"),  # 扩展后碰到脱敏标记
+        {"type": [], "refs": []},
+        {"type": "材料", "refs": [None]},
+    ]
+    result = interpret.validate({"items": entries}, interpret.split_paragraphs(body))
+    assert result["dropped_reasons"] == dict(
+        not_found=1, ambiguous=1, too_short=1, redacted=1, bad_shape=2, duplicate=1
+    )
+    assert len(result["items"]) == 3 and result["dropped"] == 7
+    assert all(entry["text"] in body for entry in result["items"])
+    assert all(ref["quote"] in body for entry in result["items"] for ref in entry["refs"])
+
+
+def test_attachment_revision_notice_and_group_count(client, session, settings, doc):
+    from youju.models import DocumentAttachment, DocumentMerge
+
+    first = direct_task(session, doc)
+    run(session, first, settings)
+    before = first.cache_key
+    assert first.result_json["attachments"] == 0
+    assert first.result_json["attachment_notice"] is None
+    other = Document(
+        source_id=doc.source_id,
+        title=doc.title,
+        kind_override="申报通知",
+        url="https://official.test/other",
+        url_key="official.test/other",
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(other)
+    session.flush()
+    session.add(DocumentDetail(document_id=other.id, body_text=BODY, fetched_at=NOW, status="ok"))
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="test")
+    )
+    session.flush()
+    session.add(
+        DocumentAttachment(
+            document_id=other.id,
+            position=0,
+            name="申请书",
+            url="https://official.test/form.doc",
+            extension="doc",
+        )
+    )
+    session.commit()
+    snapshot, _, after = interpret.prepare(session, doc.id, settings.ai_model)
+    assert snapshot["attachments"] == 1 and before != after
+    assert client.get(f"/api/v1/advisor/tasks/{first.id}").json()["result"] is None
+    second = direct_task(session, doc, key="attachment-changed")
+    assert len(run(session, second, settings).calls) == 1
+    assert second.result_json["attachments"] == 1
+    assert (
+        second.result_json["attachment_notice"]
+        == "本通知有 1 个附件，解读只覆盖网页正文；申请表、材料清单可能在附件里，请查看原文附件。"
+    )
+    # 只改变个数也必须使缓存失效。
+    session.add(
+        DocumentAttachment(
+            document_id=other.id,
+            position=1,
+            name="材料表",
+            url="https://official.test/list.doc",
+            extension="doc",
+        )
+    )
+    session.commit()
+    assert interpret.prepare(session, doc.id, settings.ai_model)[2] != after
+
+
+def test_result_disclosure_and_private_reasons(client, session, settings, doc):
+    settings.ai_model_label = "测试模型公示名称"
+    settings.ai_model_filing = "测试备案编号"
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    expected = {"modelLabel": "测试模型公示名称", "filingNo": "测试备案编号"}
+    assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["disclosure"] == expected
+    assert task.result_json["disclosure"] == expected
+    assert "dropped_reasons" in task.result_json
+    settings.ai_model_label = "变更后的名称"
+    detail = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    exported = client.get("/api/v1/me/data").json()["advisorTasks"][0]
+    for result in (detail, exported):
+        assert "result_json" not in result
+        assert result["result"]["disclosure"] == expected
+        assert "dropped_reasons" not in result["result"]
+
+
+def test_task_list_is_metadata_without_prepare(client, session, settings, doc, monkeypatch):
+    complete = direct_task(session, doc)
+    run(session, complete, settings)
+    queued = create(client, doc.id, "queued").json()["id"]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("列表不能逐行 prepare")
+
+    monkeypatch.setattr(interpret, "prepare", forbidden)
+    rows = client.get("/api/v1/advisor/tasks").json()["items"]
+    assert {r["id"]: r["hasResult"] for r in rows} == {complete.id: True, queued: False}
+    assert all("result" not in r and "result_json" not in r and "snapshot" not in r for r in rows)
+
+
+def test_disclosure_config_defaults(monkeypatch):
+    from youju.config import Settings
+
+    for name in ("YOUJU_AI_MODEL_LABEL", "YOUJU_AI_MODEL_FILING"):
+        monkeypatch.delenv(name, raising=False)
+    assert interpret.disclosure(Settings(_env_file=None)) == {"modelLabel": "", "filingNo": ""}
+    monkeypatch.setenv("YOUJU_AI_MODEL_LABEL", "公示名称")
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", "编号")
+    assert interpret.disclosure(Settings(_env_file=None)) == {
+        "modelLabel": "公示名称",
+        "filingNo": "编号",
+    }
+
+
+def test_post_only_returns_metadata_including_idempotent_replay(
+    client, session, settings, doc, monkeypatch
+):
+    response = create(client, doc.id).json()
+    assert "result" not in response and response["hasResult"] is False
+    task = session.get(AdvisorTask, response["id"])
+    run(session, task, settings)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("POST 重放不读取解读结果")
+
+    monkeypatch.setattr(interpret, "prepare", forbidden)
+    replay = create(client, doc.id).json()
+    assert replay["id"] == task.id and replay["hasResult"] is True
+    assert "result" not in replay

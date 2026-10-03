@@ -89,7 +89,11 @@ def task_dict(task: AdvisorTask, *, include_result: bool = True) -> dict[str, An
             }
         )
     if task.kind == "interpret" and include_result:
-        result["result_json"] = task.result_json
+        result["result"] = (
+            {k: v for k, v in task.result_json.items() if k != "dropped_reasons"}
+            if task.result_json is not None
+            else None
+        )
     return result
 
 
@@ -350,6 +354,8 @@ def process_interpret(
                 stamp=stamp,
                 model=model,
                 verified=verified,
+                attachments=snapshot["attachments"],
+                model_disclosure=interpret.disclosure(settings),
             )
             # 调用期间原文或核对状态可能变更；刷新后重新校验，不发布旧快照。
             session.flush()
@@ -370,6 +376,8 @@ def process_interpret(
             stamp=stamp,
             model=model,
             verified=[],
+            model_disclosure=interpret.disclosure(settings),
+            attachments=(task.snapshot or {}).get("attachments", 0),
         )
         task.cache_key = None
         task.status, task.finished_at, task.error = "done", stamp, None
