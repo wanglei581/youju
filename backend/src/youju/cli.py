@@ -580,6 +580,39 @@ def _cmd_job_finish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_weekly_digest(args: argparse.Namespace) -> int:
+    from youju import weekly
+    from youju.models import DigestProfile
+
+    stamp = weekly.now()
+    try:
+        weekly.week_interval(args.week, stamp)
+        with session_factory()() as session:
+            stmt = select(DigestProfile).where(DigestProfile.enabled.is_(True))
+            if args.profile:
+                stmt = select(DigestProfile).where(DigestProfile.name == args.profile)
+            if args.scheduled:
+                stmt = stmt.where(
+                    DigestProfile.weekday == stamp.astimezone(weekly.BEIJING).isoweekday()
+                )
+            profiles = session.scalars(stmt.order_by(DigestProfile.id)).all()
+            if args.profile and not profiles:
+                print("没有找到周报方案")
+                return 1
+            for profile in profiles:
+                result = weekly.generate(session, profile.id, args.week, stamp)
+                print(
+                    f"方案 #{profile.id}：{result.reason}"
+                    + (f"（周报 #{result.issue.id}）" if result.issue else "")
+                )
+            if not profiles:
+                print("没有需要生成的启用方案")
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -688,6 +721,11 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_track_clients)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
+    p = sub.add_parser("weekly-digest", help="生成固定模板政策周报草稿，供人工复制发布")
+    p.add_argument("--profile", help="方案名称；未指定时生成全部启用方案")
+    p.add_argument("--week", type=date.fromisoformat, help="统计周的周一，例如 2026-09-28")
+    p.add_argument("--scheduled", action="store_true", help="仅生成今天安排的方案（供定时任务用）")
+    p.set_defaults(func=_cmd_weekly_digest)
     p = sub.add_parser(
         "daily-report",
         help="运维日报：运行情况、待办和 AI 用量发到群里，配了 AI 时附上建议先核对的通知",

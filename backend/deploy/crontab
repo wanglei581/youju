@@ -8,6 +8,9 @@
 # 每个栏目每天只访问 2 次列表页，每站间隔 3 秒
 30 6 * * *  /app/backend/deploy/round.sh --notify
 30 20 * * *  /app/backend/deploy/round.sh
+# 周一生成全国版；其他星期仅为设为对应星期的方案生成，全部经 job.sh 记账。
+30 7 * * 1  /app/backend/deploy/job.sh weekly-digest --scheduled
+30 7 * * 2-7  /app/backend/deploy/job.sh weekly-digest --scheduled
 30 3 * * *  /app/backend/deploy/job.sh cleanup
 # 每天备份数据库到云托管对象存储，保留 30 天（验收 A6）；失败由 job.sh 发提醒
 0 4 * * *  /app/backend/deploy/job.sh backup
