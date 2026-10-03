@@ -6,6 +6,7 @@
   <view class="sub">按已收录名单整理，“公示”“公布”按原文标题标注</view>
 </view>
 
+<notice-bar />
 <view class="filters">
   <picker mode="selector" range="{{years}}" bindchange="pickYear"><view class="filter">{{year || '不限年度'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
   <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>

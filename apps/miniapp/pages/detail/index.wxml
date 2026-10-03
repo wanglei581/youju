@@ -1,7 +1,8 @@
 <notice-bar />
-<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text wx:if="{{takenDown}}" class="link retry" bindtap="goBack">返回</text><text wx:else class="link retry" bindtap="load">重试</text></view>
 <view wx:elif="{{!doc}}" class="card empty">正在加载…</view>
-<block wx:if="{{doc}}">
+<view wx:if="{{loading && doc}}" class="card empty">正在加载…</view>
+<block wx:if="{{doc && !loading}}">
   <view class="card head">
     <view class="tags">
       <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>

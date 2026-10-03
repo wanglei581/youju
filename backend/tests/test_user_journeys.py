@@ -1,10 +1,10 @@
 """按用户操作顺序验证跨接口闭环，仅使用 conftest 提供的测试库。
 
 微信消息、内容安全、对象存储及网页抓取使用离线替身，业务查询和文件生成用真实实现。
-known_gap 测试是问题取证，断言当前缺口并写入报告属性，绿色不代表该验收项通过；
-修复产品时应把对应断言改成报告中的期望，不能把缺口当作正式产品契约。
+原 9 条问题取证用例保留为回归断言，验证对应问题已修复。
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
@@ -16,7 +16,8 @@ import pytest
 from docx import Document as WordDocument
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
+from sqlalchemy.sql import Select, visitors
 
 from youju import advisor_tasks, track
 from youju.api import advisor, exports, me, v1
@@ -26,7 +27,9 @@ from youju.crawler import service as crawler
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.urls import url_key
 from youju.db import get_session
-from youju.lists.rules import normalize_name
+from youju.lists.parser import ParsedEntry
+from youju.lists.rules import classify_title, normalize_name
+from youju.lists.service import _save as save_list_parse
 from youju.models import (
     AdvisorTask,
     AdvisorUsage,
@@ -34,15 +37,19 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
+    DocumentMerge,
     Event,
     Feedback,
     Follow,
     ListEntry,
+    ListParse,
     Source,
     Subscription,
     User,
 )
 from youju.notify import run_notify
+from youju.report_revision import publication_revision
+from youju.takedown import change_state
 
 NOW = datetime(2026, 10, 3, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 IDENTITY = {"X-WX-SOURCE": "miniapp", "X-WX-OPENID": "journey-test-user"}
@@ -595,7 +602,7 @@ def test_d_review_to_live_detail_calendar_and_uncached_radar(journey, action):
     doc, deadline = _document(j.session, source, "日期闭环申报通知", "review", 7)
     j.session.commit()
     _support(j, doc)
-    # 带支持方式的雷达不缓存，缓存接口的问题另有 known_gap 取证。
+    # 带支持方式的雷达不缓存；预热缓存的即时更新另有回归用例。
     radar_params = {"days": 30, "support": "资金支持"}
     assert _json(j.client.get("/api/v1/calendar"))["items"] == []
     assert _json(j.client.get("/api/v1/reports/deadlines", params=radar_params))["items"] == []
@@ -986,7 +993,7 @@ def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, 
         assert remaining[key] == other_data[key]
 
 
-def test_known_gap_sent_subscription_cannot_be_deleted_individually(journey, record_property):
+def test_fixed_sent_subscription_can_be_deleted_individually(journey, record_property):
     j = journey
     source = _source(j.session)
     doc, _ = _document(j.session, source, "历史授权申报通知", "history", 3, "approved")
@@ -995,28 +1002,27 @@ def test_known_gap_sent_subscription_cannot_be_deleted_individually(journey, rec
     sub = _subscribe(j, "deadline", docId=doc.id)
     sent = []
     assert _notify(j, sent)["sent"] == 1
-    assert (
-        _json(j.client.delete(f"/api/v1/me/subscriptions/{sub['id']}"), 404)["detail"]
-        == "没有找到可退订的授权"
-    )
-    assert _json(j.client.get("/api/v1/me/data"))["subscriptions"][0]["id"] == sub["id"]
-    record_property("acceptance", "发现问题：J-08，已用授权只有注销才能主动删除")
+    assert j.client.delete(f"/api/v1/me/subscriptions/{sub['id']}").status_code == 204
+    assert _json(j.client.get("/api/v1/me/data"))["subscriptions"] == []
+    assert _notify(j, sent)["sent"] == 0
+    assert len(sent) == 1
+    record_property("acceptance", "已修：J-08，已用授权可单条删除且不会重复发送")
 
 
-def test_known_gap_coverage_prefix_breaks_maximum_input(journey, record_property):
+def test_fixed_coverage_prefix_and_input_share_maximum(journey, record_property):
     j = journey
     _agree(j)
-    # 小程序 textarea 允许 500 字，再由 send 加上五字前缀，超过后端上限。
-    content = "申请覆盖：" + "字" * 500
-    assert len(content) == 505
-    response = _json(j.client.post("/api/v1/feedback", json={"content": content}), 422)
-    assert any(row["type"] == "string_too_long" for row in response["detail"])
-    assert _json(j.client.get("/api/v1/me/data"))["feedbackTotal"] == 0
-    _json(j.client.post("/api/v1/feedback", json={"content": "申请覆盖：" + "字" * 495}), 201)
-    record_property("acceptance", "不通过：J-10，申请覆盖 496–500 字被拒绝")
+    # 小程序覆盖输入上限 495，与五字前缀共用服务端 500 字限额。
+    content = "申请覆盖：" + "字" * 495
+    assert len(content) == 500
+    saved = _json(j.client.post("/api/v1/feedback", json={"content": content}), 201)
+    row = _json(j.client.get("/api/v1/me/data"))["feedback"][0]
+    assert row["id"] == saved["id"] and row["content"] == content
+    _json(j.client.post("/api/v1/feedback", json={"content": content + "字"}), 422)
+    record_property("acceptance", "已修：J-10，495 字覆盖内容含前缀可完整保存")
 
 
-def test_known_gap_open_search_cannot_be_saved_as_follow(journey, record_property):
+def test_fixed_open_search_can_be_saved_as_follow(journey, record_property):
     j = journey
     _agree(j)
     conditions = {
@@ -1026,22 +1032,32 @@ def test_known_gap_open_search_cannot_be_saved_as_follow(journey, record_propert
         "time": "近 30 天",
         "open": 1,
     }
-    assert j.client.get("/api/v1/search", params=conditions).status_code == 200
-    rejected = _json(
-        j.client.post(
-            "/api/v1/me/follows", json={"name": "未截止的高企", "conditions": conditions}
-        ),
-        422,
+    saved = _follow(j, "未截止的高企", conditions)
+    assert saved["conditions"]["open"] == 1
+    source = _source(j.session)
+    first_seen = NOW + timedelta(seconds=1)
+    live, deadline = _document(
+        j.session, source, "高新技术企业申报通知", "open-new", 7, "approved", seen=first_seen
     )
-    assert any(
-        row["loc"] == ["body", "conditions", "open"] and row["type"] == "extra_forbidden"
-        for row in rejected["detail"]
+    _document(
+        j.session, source, "高新技术企业申报通知", "closed-new", -1, "approved", seen=first_seen
     )
-    assert _json(j.client.get("/api/v1/me/follows"))["items"] == []
-    record_property("acceptance", "不通过：J-02，搜索条件 open 不能保存到关注")
+    _document(j.session, source, "高新技术企业申报通知", "pending-new", 7, seen=first_seen)
+    j.session.commit()
+    search = _json(j.client.get("/api/v1/search", params=saved["conditions"]))
+    new = _json(j.client.get(f"/api/v1/me/follows/{saved['id']}/new"))
+    assert [row["id"] for row in search["items"]] == [str(live.id)]
+    assert new["items"] == search["items"] and new["total"] == 1
+    _review(j, deadline, "reopen")
+    assert _json(j.client.get(f"/api/v1/me/follows/{saved['id']}/new"))["total"] == 0
+    assert _json(j.client.get("/api/v1/me/follows"))["items"][0]["newCount"] == 0
+    sent = []
+    _subscribe(j, "newDocs", followId=saved["id"])
+    assert _notify(j, sent)["sent"] == 0
+    record_property("acceptance", "已修：J-02，open 条件保存、搜索、新文件及提醒口径一致")
 
 
-def test_known_gap_feedback_handling_not_visible_in_personal_data(journey, record_property):
+def test_fixed_feedback_handling_visible_in_personal_data(journey, record_property):
     j = journey
     _agree(j)
     saved = _json(j.client.post("/api/v1/feedback", json={"content": "请修正日期"}), 201)
@@ -1050,12 +1066,16 @@ def test_known_gap_feedback_handling_not_visible_in_personal_data(journey, recor
     after = _json(j.client.get("/api/v1/me/data"))["feedback"]
     j.session.expire_all()
     assert j.session.get(Feedback, saved["id"]).handled_at is not None
-    assert after == before and "handledAt" not in after[0] and "handled" not in after[0]
-    record_property("acceptance", "不通过：J-04，处理后用户反馈数据完全不变")
+    assert before[0]["handled"] is False and before[0]["handledAt"] is None
+    assert after[0]["handled"] is True and after[0]["handledAt"] is not None
+    assert after[0]["checkResult"] == before[0]["checkResult"]
+    _json(j.client.post(f"/api/admin/feedback/{saved['id']}/unhandle", headers=ADMIN))
+    assert _json(j.client.get("/api/v1/me/data"))["feedback"] == before
+    record_property("acceptance", "已修：J-04，处理状态和时间独立于内容安全结果")
 
 
 @pytest.mark.parametrize("action", ["approve", "correct", "undo", "reopen"])
-def test_known_gap_warmed_radar_keeps_old_deadline_after_review(journey, action, record_property):
+def test_fixed_warmed_radar_reflects_deadline_review(journey, action, record_property):
     j = journey
     source = _source(j.session)
     doc, deadline = _document(j.session, source, "缓存核对申报通知", "cached-review", 7)
@@ -1083,17 +1103,17 @@ def test_known_gap_warmed_radar_keeps_old_deadline_after_review(journey, action,
     assert (live is None) == (action in ("undo", "reopen"))
     if live:
         assert live["date"] == ("2026-10-09" if action == "correct" else "2026-10-10")
-    assert _json(j.client.get(endpoint)) == before
-    # 仅为取证模拟 TTL 到期，不能在正常旅程里清缓存掩盖问题。
-    for key, (_, payload) in list(v1._REPORT_CACHE.items()):
-        v1._REPORT_CACHE[key] = (float("-inf"), payload)
     current = _json(j.client.get(endpoint))
     assert current != before
     assert current["total"] == (0 if live is None else 1)
-    record_property("acceptance", f"不通过：J-01，{action} 后缓存雷达仍返回旧截止")
+    if live:
+        assert current["items"][0]["date"] == live["date"]
+    calendar = _json(j.client.get("/api/v1/calendar"))
+    assert calendar["total"] == current["total"]
+    record_property("acceptance", f"已修：J-01，{action} 后预热雷达立即更新")
 
 
-def test_known_gap_calendar_never_returns_recent_closed_items(journey, record_property):
+def test_fixed_calendar_returns_recent_closed_items(journey, record_property):
     j = journey
     source = _source(j.session)
     past, _ = _document(j.session, source, "昨日截止申报通知", "closed", -1, "approved")
@@ -1102,4 +1122,272 @@ def test_known_gap_calendar_never_returns_recent_closed_items(journey, record_pr
     assert _json(j.client.get(f"/api/v1/documents/{past.id}"))["app_status"]["code"] == "closed"
     calendar = _json(j.client.get("/api/v1/calendar"))
     assert [row["docId"] for row in calendar["items"]] == [str(today.id)]
-    record_property("acceptance", "不通过：J-03，日历 API 不返回已截止，页面 past 区永远无数据")
+    assert [row["docId"] for row in calendar["past"]] == [str(past.id)]
+    assert calendar["pastTotal"] == 1 and calendar["total"] == 1
+    record_property("acceptance", "已修：J-03，已核定昨日截止返回独立 past 分区")
+
+
+@pytest.mark.parametrize("action", ["reject", "change"])
+def test_warmed_radar_reject_and_change(journey, action):
+    j = journey
+    source = _source(j.session)
+    doc, deadline = _document(j.session, source, "缓存申报通知", "extra-review", 7)
+    newer, _ = _document(j.session, source, "延期申报通知", "extension")
+    j.session.commit()
+    if action == "change":
+        _review(j, deadline)
+    before = _json(j.client.get("/api/v1/reports/deadlines"))
+    _review(
+        j,
+        deadline,
+        action,
+        **({"reason": "延期", "new_document_id": newer.id} if action == "change" else {}),
+    )
+    after = _json(j.client.get("/api/v1/reports/deadlines"))
+    assert after["total"] == 0
+    assert _json(j.client.get("/api/v1/calendar"))["items"] == []
+    if action == "change":
+        assert before["total"] == 1 and before != after
+    else:
+        # pending -> rejected 的输出都是空，但数据库版本必须变化。
+        assert len(v1._REPORT_CACHE) == 2
+
+
+def test_warmed_list_board_reflects_reparse_and_kind_decisions(journey):
+    j = journey
+    source = _source(j.session)
+    doc, _ = _document(j.session, source, "高新技术企业认定名单公布", "list-revision")
+    j.session.commit()
+    classification = classify_title(doc.title)
+    save_list_parse(
+        j.session,
+        doc,
+        doc.url,
+        "html",
+        classification,
+        [
+            ParsedEntry(
+                name=COMPANY,
+                normalized_name=normalize_name(COMPANY),
+                credit_code=None,
+                sequence="1",
+                region=None,
+            )
+        ],
+    )
+    endpoint = "/api/v1/reports/lists"
+    before = _json(j.client.get(endpoint))
+    assert before["recent"]["items"][0]["count"] == 1
+    # 模拟解析工作进程重写名单；独立 session 提交，API 不执行进程内清缓存。
+    with j.session.get_bind().connect() as connection:
+        from sqlalchemy.orm import Session
+
+        with Session(connection) as worker:
+            save_list_parse(
+                worker,
+                doc,
+                doc.url,
+                "html",
+                classification,
+                [
+                    ParsedEntry(
+                        name=name,
+                        normalized_name=normalize_name(name),
+                        credit_code=None,
+                        sequence=str(i),
+                        region=None,
+                    )
+                    for i, name in enumerate(
+                        ("北京新增一号科技有限公司", "北京新增二号科技有限公司"), 1
+                    )
+                ],
+            )
+    after = _json(j.client.get(endpoint))
+    assert after["recent"]["items"][0]["count"] == 2
+    _json(
+        j.client.post(
+            f"/api/admin/documents/{doc.id}/kind",
+            headers=ADMIN,
+            json={"kind": "政策", "decided_by": REVIEWER},
+        )
+    )
+    assert _json(j.client.get(endpoint))["recent"]["total"] == 0
+    _json(j.client.post(f"/api/admin/documents/{doc.id}/kind/undo", headers=ADMIN))
+    assert _json(j.client.get(endpoint)) == after
+
+
+@pytest.mark.parametrize("status", ["failed", "expired", "refused"])
+def test_delete_historical_subscription_preserves_other_user(journey, status):
+    j = journey
+    _agree(j)
+    f = _follow(j, "历史授权", {"q": "历史", "time": "不限"})
+    sub = _subscribe(j, "newDocs", followId=f["id"])
+    row = j.session.get(Subscription, sub["id"])
+    row.status = status
+    j.session.commit()
+    other = {"X-WX-SOURCE": "miniapp", "X-WX-OPENID": "journey-other-user"}
+    _json(
+        j.client.post(
+            "/api/v1/me/agreement", headers=other, json={"version": j.settings.agreement_version}
+        )
+    )
+    assert j.client.delete(f"/api/v1/me/subscriptions/{row.id}", headers=other).status_code == 404
+    assert j.client.delete(f"/api/v1/me/subscriptions/{row.id}").status_code == 204
+    assert _json(j.client.get("/api/v1/me/data"))["subscriptionsTotal"] == 0
+
+
+def test_calendar_closed_boundaries_filters_and_pagination(journey):
+    j = journey
+    source = _source(j.session)
+    due30, _ = _document(j.session, source, "30天前申报通知", "past30", -30, "approved")
+    due1, _ = _document(j.session, source, "昨日申报通知", "past1", -1, "approved")
+    _document(j.session, source, "31天前申报通知", "past31", -31, "approved")
+    _document(j.session, source, "未核对申报通知", "unverified", -1)
+    hidden, _ = _document(j.session, source, "下架申报通知", "hidden-past", -1, "approved")
+    hidden.taken_down_at = NOW
+    j.session.commit()
+    first = _json(j.client.get("/api/v1/calendar", params={"limit": 1}))
+    second = _json(j.client.get("/api/v1/calendar", params={"limit": 1, "offset": 1}))
+    assert first["total"] == 0 and first["items"] == []
+    assert first["pastTotal"] == second["pastTotal"] == 2
+    assert [x["docId"] for x in first["past"] + second["past"]] == [str(due1.id), str(due30.id)]
+
+
+@pytest.mark.parametrize("report", ["deadlines", "lists"])
+def test_report_detail_selection_refreshes_after_ttl(journey, report, monkeypatch):
+    j = journey
+    source = _source(j.session)
+    title = "合成申报通知" if report == "deadlines" else "合成认定名单公布"
+    master, _ = _document(j.session, source, title, "detail-master", 7, "approved")
+    twin, _ = _document(j.session, source, title, "detail-twin")
+    master_detail = j.session.get(DocumentDetail, master.id)
+    twin_detail = j.session.get(DocumentDetail, twin.id)
+    master_detail.issuer, master_detail.doc_number = "合成主机关", "主〔2026〕1号"
+    twin_detail.issuer, twin_detail.doc_number = "合成副机关", "副〔2026〕2号"
+    master_detail.body_text = "主" * 100
+    twin_detail.body_text = "副" * 10
+    j.session.add(
+        DocumentMerge(
+            duplicate_id=twin.id,
+            canonical_id=master.id,
+            active=True,
+            match_key="synthetic-detail-selection",
+        )
+    )
+    j.session.commit()
+    endpoint = f"/api/v1/reports/{report}"
+    before = _json(j.client.get(endpoint))
+    items = before["items"] if report == "deadlines" else before["recent"]["items"]
+    assert items[0]["issuer"] == "合成主机关"
+    # 正文/机关变化不参与每次请求的版本聚合，按 300 秒 TTL 更新展示。
+    twin_detail.body_text = "副" * 200
+    j.session.commit()
+    assert _json(j.client.get(endpoint)) == before
+    elapsed = v1._time.monotonic() + v1.REPORT_CACHE_TTL + 1
+    monkeypatch.setattr(v1._time, "monotonic", lambda: elapsed)
+    after = _json(j.client.get(endpoint))
+    items = after["items"] if report == "deadlines" else after["recent"]["items"]
+    assert items[0]["issuer"] == "合成副机关"
+    if report == "deadlines":
+        assert items[0]["doc_number"] == "副〔2026〕2号"
+    assert before != after
+
+
+@pytest.mark.parametrize("report", ["deadlines", "lists"])
+@pytest.mark.parametrize("hidden", [False, True])
+def test_publication_revision_uses_three_aggregate_queries(journey, report, hidden):
+    j = journey
+    source = _source(j.session)
+    doc, _ = _document(j.session, source, "聚合申报通知", "aggregate", 7, "approved")
+    twin, _ = _document(j.session, source, "聚合申报通知", "aggregate-twin")
+    j.session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=doc.id, active=True, match_key="aggregate")
+    )
+    j.session.commit()
+    if hidden:
+        change_state(
+            j.session, doc.id, action="takedown", note="合成测试", operator=REVIEWER, reason="其他"
+        )
+
+    statements = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        statements.append((statement.lower(), context.compiled.statement))
+
+    engine = j.session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        first = publication_revision(j.session, report)
+        assert len(statements) == 3
+        assert publication_revision(j.session, report) == first
+        assert len(statements) == 6
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    for sql, query in statements:
+        assert "list_entries" not in sql and "document_details" not in sql
+        # 每条顶层 SELECT 的所有投影都必须是聚合（包括 COALESCE(SUM(...), 0)）。
+        for column in query.selected_columns:
+            assert re.search(r"\b(count|sum|max|min)\s*\(", str(column).lower()), sql
+        # 隐藏归并组子查询可带 WHERE，但不能藏一个无聚合、无限定的整表读取。
+        for node in visitors.iterate(query):
+            if isinstance(node, Select):
+                aggregate = any(
+                    re.search(r"\b(count|sum|max|min)\s*\(", str(c).lower())
+                    for c in node.selected_columns
+                )
+                assert (
+                    aggregate or node.whereclause is not None or node._limit_clause is not None
+                ), sql
+
+
+def test_revision_detects_withdrawal_of_older_review(journey):
+    j = journey
+    source = _source(j.session)
+    _, older = _document(j.session, source, "较早申报通知", "older", 7, "approved")
+    _, latest = _document(j.session, source, "较新申报通知", "latest", 9, "approved")
+    older.reviewed_at = NOW - timedelta(minutes=1)
+    j.session.commit()
+    before = publication_revision(j.session, "deadlines")
+    older.status, older.reviewed_at, older.approved_date = "pending", None, None
+    j.session.commit()
+    assert latest.reviewed_at == NOW
+    assert publication_revision(j.session, "deadlines") != before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("status", "failed"), ("entry_count", 2), ("attempted_at", NOW - timedelta(hours=1))],
+)
+def test_list_revision_tracks_older_parse_changes(journey, field, value):
+    j = journey
+    source = _source(j.session)
+    doc, _ = _document(j.session, source, "旧解析名单公布", "parse-old")
+    twin, _ = _document(j.session, source, "新解析名单公布", "parse-new")
+    older = ListParse(
+        document_id=doc.id,
+        source_url=doc.url,
+        source_kind="html",
+        status="ok",
+        entry_count=1,
+        attempted_at=NOW - timedelta(hours=2),
+    )
+    j.session.add_all(
+        [
+            older,
+            ListParse(
+                document_id=twin.id,
+                source_url=twin.url,
+                source_kind="html",
+                status="ok",
+                entry_count=1,
+                attempted_at=NOW,
+            ),
+        ]
+    )
+    j.session.commit()
+    before = publication_revision(j.session, "lists")
+    setattr(older, field, value)
+    j.session.commit()
+    assert j.session.scalar(select(func.max(ListParse.attempted_at))) == NOW
+    assert publication_revision(j.session, "lists") != before

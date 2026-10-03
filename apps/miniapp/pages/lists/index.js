@@ -21,6 +21,7 @@ Page({
     weekTotal: 0,
     total: 0,
     items: [],
+    loading: true,
     shown: [],
   },
 
@@ -44,13 +45,13 @@ Page({
   },
 
   reload() {
-    this.setData({ error: '' });
+    this.setData({ loading: true, error: '' });
     api.lists()
       .then((res) => {
-        this.setData({ weekTotal: res.week_total, total: res.total, items: res.items });
+        this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items });
         this.filterItems();
       })
-      .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
+      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
   },
 
   back() {

@@ -21,12 +21,15 @@ Page({
 
   onLoad(query) {
     this.docId = query.id;
+    this.lastShow = Date.now();
     this.load();
   },
 
   // 网络不好加载失败时，页面上点"重试"再加载一次
   load() {
-    this.setData({ error: '' });
+    if (this.refreshing) return;
+    this.refreshing = true;
+    this.setData({ loading: true, error: '', takenDown: false });
     api.detail(this.docId)
       .then((doc) => {
         // 只有人工核对过的截止日期才显示（合规红线）
@@ -52,7 +55,12 @@ Page({
         });
         this.syncReminded();
       })
-      .catch((err) => this.setData({ error: err.message }));
+      .catch((err) => this.setData({
+        doc: null, due: null, changes: [], reminded: false,
+        takenDown: err.status === 404 && err.message === '该文件已下架',
+        error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
+      }))
+      .finally(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
   toggleBody() {
@@ -78,6 +86,11 @@ Page({
 
   // 跨日返回页面时重算剩余天数
   onShow() {
+    const stamp = Date.now();
+    if (this.lastShow === undefined || stamp - this.lastShow >= 1000) {
+      this.load();
+      this.lastShow = stamp;
+    }
     this.recompute();
     this.syncReminded();
     watchDay(this, () => this.recompute());
@@ -89,6 +102,10 @@ Page({
 
   onUnload() {
     stopDay(this);
+  },
+
+  goBack() {
+    wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
   },
 
   openNew(e) {

@@ -40,7 +40,8 @@ from youju.models import (
     ListEntry,
     Source,
 )
-from youju.takedown import available_condition, cache_revision, is_taken_down
+from youju.report_revision import publication_revision
+from youju.takedown import available_condition, is_taken_down
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -709,11 +710,19 @@ def deadline_report(
         raise HTTPException(status_code=422, detail="部门不支持")
     if support and support not in SUPPORT_LABELS:
         raise HTTPException(status_code=422, detail="支持方式不支持")
-    if support:
-        # 支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
+    if support or session.scalar(
+        select(DocumentDeadline.id)
+        .where(
+            DocumentDeadline.status == "approved",
+            DocumentDeadline.approved_date == now().date(),
+            DocumentDeadline.approved_time.is_not(None),
+        )
+        .limit(1)
+    ):
+        # 当天带时刻的截止随时间变化；支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
         return _report_payload(session, days, province, dept, support, page, size)
     # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
-    revision = cache_revision(session)
+    revision = publication_revision(session, "deadlines")
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
@@ -868,7 +877,7 @@ def list_board_report(
         raise HTTPException(status_code=422, detail="省份不支持")
     if list_type and list_type not in LIST_BOARD_TYPE_SET:
         raise HTTPException(status_code=422, detail="名单类型不支持")
-    revision = cache_revision(session)
+    revision = publication_revision(session, "lists")
     key = (days, year_value, province, list_type, now().astimezone(_TZ).date(), revision)
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
@@ -1091,19 +1100,12 @@ def calendar(
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
 ) -> dict:
-    """申报日历：核对通过、还没截止的事项（当天已过具体时间的不算），按截止时间排序。
+    """申报日历：核对通过的未截止事项及近 30 天已截止事项，分别分页和统计。
 
     每条的 id 是截止记录编号（一份文件可以有多个截止）；打开详情用 docId。
     """
     current = now()
-    d, t = current.date(), current.time().replace(tzinfo=None)
-    not_passed = or_(
-        DocumentDeadline.approved_date > d,
-        and_(
-            DocumentDeadline.approved_date == d,
-            or_(DocumentDeadline.approved_time.is_(None), DocumentDeadline.approved_time >= t),
-        ),
-    )
+    d = current.date()
     stmt = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
@@ -1111,7 +1113,7 @@ def calendar(
         .where(
             DocumentDeadline.status == "approved",
             public_condition(),
-            not_passed,
+            DocumentDeadline.approved_date >= d - timedelta(days=30),
             DocumentDeadline.approved_date <= d + timedelta(days=days),
         )
     )
@@ -1132,12 +1134,22 @@ def calendar(
         if key not in unique:
             master = session.get(Document, master_id) if master_id != doc.id else doc
             unique[key] = (dl, master, master.source if master_id != doc.id else src)
-    total = len(unique)
-    rows = list(unique.values())[offset : offset + limit]
-    return {
-        "today": d.isoformat(),
-        "total": total,
-        "items": [
+    # 与详情一样抑制归并组中已变更的截止，不能让旧副本进入日历。
+    approved = _approved(session, [key[0] for key in unique])
+    valid = {
+        (master, dl.kind, dl.approved_date, dl.approved_time)
+        for master, deadlines in approved.items()
+        for dl in deadlines
+    }
+    upcoming, past = [], []
+    for key, row in unique.items():
+        if key not in valid:
+            continue
+        (upcoming if deadline_open(row[0], current) else past).append(row)
+    past.reverse()
+
+    def items(rows):
+        return [
             {
                 "id": f"dl{dl.id}",
                 "docId": str(doc.id),
@@ -1150,8 +1162,15 @@ def calendar(
                 "hasDetail": True,
                 "verified": True,
             }
-            for dl, doc, src in rows
-        ],
+            for dl, doc, src in rows[offset : offset + limit]
+        ]
+
+    return {
+        "today": d.isoformat(),
+        "total": len(upcoming),
+        "items": items(upcoming),
+        "pastTotal": len(past),
+        "past": items(past),
     }
 
 

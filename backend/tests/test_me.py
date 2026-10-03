@@ -559,6 +559,8 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
             "docTitle": "主文件",
             "content": "主文件有误",
             "checkResult": "pass",
+            "handled": False,
+            "handledAt": None,
             "createdAt": NOW.isoformat(),
         }
     ]

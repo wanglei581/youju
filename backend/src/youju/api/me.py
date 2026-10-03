@@ -99,6 +99,7 @@ class Conditions(BaseModel):
     status: str | None = Field(default=None, max_length=400)
     time: str = "近 30 天"
     depts: str | None = Field(default=None, max_length=400)
+    open: int | None = Field(default=None, ge=0, le=1)
 
 
 class FollowIn(BaseModel):
@@ -418,6 +419,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "docTitle": titles.get(row.document_id),
             "content": row.content,
             "checkResult": row.check_result,
+            "handled": row.handled_at is not None,
+            "handledAt": _iso(row.handled_at),
             "createdAt": _iso(row.created_at),
         }
         for row in feedback
@@ -610,8 +613,8 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
 @router.delete("/me/subscriptions/{subscription_id}", status_code=204)
 def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUserDep) -> None:
     row = session.get(Subscription, subscription_id)
-    if row is None or user is None or row.user_id != user.id or row.status != "unused":
-        raise HTTPException(status_code=404, detail="没有找到可退订的授权")
+    if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到提醒授权记录")
     session.delete(row)
     session.commit()
 

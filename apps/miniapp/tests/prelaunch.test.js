@@ -180,12 +180,12 @@ test('截止雷达返回跨日重载第一页；停留跨日刷新并清理定�
     '../../utils/daywatch.js': { watchDay: (_, callback) => { onChange = callback; }, stopDay: () => { stopped += 1; } },
   });
   page.onLoad(); page.onShow(); await flush();
-  assert.equal(calls.length, 1);
-  page.onHide(); day = '2026-10-01'; page.data.page = 3; page.onShow(); await flush();
   assert.equal(calls.length, 2);
+  page.onHide(); day = '2026-10-01'; page.data.page = 3; page.onShow(); await flush();
+  assert.equal(calls.length, 3);
   assert.equal(calls.at(-1).page, 1);
   day = '2026-10-02'; onChange(); await flush();
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   page.onUnload(); assert.equal(stopped, 2);
 });
 

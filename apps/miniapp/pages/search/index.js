@@ -58,9 +58,13 @@ Page({
   onLoad(query) {
     const kind = decodeURIComponent(query.kind || '');
     const time = decodeURIComponent(query.time || '');
-    if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) {
-      this.setData({ picked: Object.assign({}, DEFAULT_PICKED, { time: [time] }) });
-    }
+    const picked = Object.assign({}, DEFAULT_PICKED);
+    if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) picked.time = [time];
+    [['regions', 'region'], ['types', 'type'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
+      if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
+    });
+    if (String(query.open) === '1') picked.open = ['只看未截止'];
+    this.setData({ picked });
     this.setData({
       q: decodeURIComponent(query.q || ''),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
@@ -248,6 +252,7 @@ Page({
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
     parts.push(tab ? tab.label : '全部');
+    if (c.open) parts.push('只看未截止');
     return parts.join(' · ').slice(0, 40);
   },
 
@@ -279,7 +284,10 @@ Page({
                 });
               },
             }))
-            .catch((err) => wx.showToast({ title: err.message || '关注失败，请稍后再试', icon: 'none' }));
+            .catch((err) => {
+              const invalid = err.status === 422 && (!err.message || /422|输入内容或筛选条件/.test(err.message));
+              wx.showToast({ title: invalid ? '关注条件或名称不符合要求，请调整后重试' : (err.message || '关注失败，请稍后再试'), icon: 'none' });
+            });
         },
       });
     });

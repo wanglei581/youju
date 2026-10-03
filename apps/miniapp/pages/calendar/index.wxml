@@ -1,6 +1,6 @@
 <notice-bar />
-<view wx:if="{{truncated}}" class="card load-error">只显示前 1000 条，统计和筛选仅基于这些事项。</view>
-<view class="seg" aria-role="tablist">
+<view wx:if="{{truncated}}" class="card load-error">未截止和已截止各最多显示 1000 条，统计和筛选仅基于这些事项。</view>
+<view wx:if="{{loaded && !loading && !error}}" class="seg" aria-role="tablist">
   <view wx:for="{{ranges}}" wx:key="key" class="seg-item {{range === item.key && !sel && !monthOnly ? 'seg-item--on' : ''}}" data-key="{{item.key}}" bindtap="pickRange" aria-role="tab" aria-selected="{{range === item.key && !sel && !monthOnly}}">{{item.label}} {{counts[item.key]}}</view>
 </view>
 <view class="filters">
@@ -9,6 +9,8 @@
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
+<view wx:if="{{loading}}" class="card empty">正在加载…</view>
+<block wx:if="{{loaded && !loading && !error}}">
 <view class="card month">
   <view class="month-head">
     <view class="month-nav"><text class="arrow" data-step="-1" bindtap="shiftMonth" aria-role="button" aria-label="上个月">‹</text><text class="month-title">{{year}}年{{month}}月</text><text class="arrow" data-step="1" bindtap="shiftMonth" aria-role="button" aria-label="下个月">›</text></view>
@@ -69,5 +71,6 @@
     </view>
   </block>
 </view>
+</block>
 <view class="foot">只列人工核对过的截止时间，逐条取自原文。一个通知有多个截止时间时，按申报单位的截止时间排列，其余写在下方。申报请在主管部门的系统办理，有据不提供填报入口。</view>
 <view style="height: 60rpx"></view>
