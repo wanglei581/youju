@@ -501,7 +501,8 @@ class AdvisorTask(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_advisor_tasks_user_key"),
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
-        CheckConstraint("kind IN ('compare', 'track')", name="ck_advisor_tasks_kind"),
+        CheckConstraint("kind IN ('compare', 'track', 'interpret')", name="ck_advisor_tasks_kind"),
+        Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
             "status IN ('queued', 'running', 'done', 'failed', 'cancelled')",
             name="ck_advisor_tasks_status",
@@ -513,6 +514,12 @@ class AdvisorTask(Base):
     kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
     input_rows: Mapped[list | None] = mapped_column(JSONType)
+    input_json: Mapped[dict | None] = mapped_column(JSONType)
+    result_json: Mapped[dict | None] = mapped_column(JSONType)
+    snapshot: Mapped[dict | None] = mapped_column(JSONType)
+    cache_key: Mapped[str | None] = mapped_column(String(64))
+    prompt_version: Mapped[str | None] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(128))
     row_count: Mapped[int] = mapped_column(Integer)
     idempotency_key: Mapped[str] = mapped_column(String(128))
     result_file_id: Mapped[str | None] = mapped_column(Text)

@@ -166,6 +166,7 @@
       d.jobs.forEach(item=>body.append(item.latest ? jobRow(item.latest) : jobRow({job:item.job,status:'暂无记录',summary:'尚未记录运行'})));
       table.append(head,body); wrap.append(table); jobs.append(wrap);
       const link=node('button','查看最近 7 天记录'); link.type='button'; link.onclick=()=>show('jobs'); jobs.append(link);
+      jobs.append(node('p',`AI 顾问：${d.ai_advisor.enabled?'开':'关'} · 白名单 ${d.ai_advisor.whitelist_count} 人 · 近 7 天任务 ${d.ai_advisor.tasks_7d} 次 · 失败 ${d.ai_advisor.failed_7d} 次`));
       $('overview').replaceChildren(todo,data,jobs);
     } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
   }

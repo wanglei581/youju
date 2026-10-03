@@ -65,6 +65,30 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 `cleanup` 删除开始时间早于 90 天的记录；任务页按任务筛选最近 7 天记录并支持继续加载。
 容器突然退出或结束记账失败时可能留下“运行中”，不将其误报为成功。
 
+## AI 顾问后台（内部白名单）
+
+迁移 `0014` 扩展任务类型 `interpret`。`YOUJU_AI_ADVISOR_ENABLED=true` 且认证用户
+openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默认关闭、白名单为空。
+这两个配置与数据工具开关独立；后台 `advisor-run` 也只领取获准的任务。
+
+`POST /api/v1/advisor/tasks` 携 `Idempotency-Key`，输入
+`{"kind":"interpret","doc_id":123}`；同键异输入返回 409。
+`GET /api/v1/advisor/capabilities` 分别返回 `data_tools`、`ai_advisor` 的功能和剩余额度。
+解读每天每人 5 次，按北京时间计；缓存命中仍计一次，失败和拒答退回额度。
+
+结果从任务查询的 `result_json` 获取，含 `items`、`missing`、`verified`、`dropped`、
+`refusal`、`generated_at`、`model`、`prompt_version`、`notice` 和校验提示 `warning`。
+拒答使用 `status=done`、非空中文 `refusal` 和空条目；调用或解析终败使用 `status=failed`。
+模型只能摘完整原句，服务端按段号逐字校验，仅合并空白、全角 ASCII 转半角。
+快照段落 `start/end` 是完整脱敏原文的字符偏移（左闭右开）；快照不通过用户接口返回。
+人工核对值由后端单独写入 `verified`，标“已核对”，不交给模型改写。
+
+缓存按正文、核对版本、提示词版本和模型共享，原始生成时间超过 30 天不复用；
+查询和复用都复核正文与下架状态。输入 7 天清空，结果和快照 30 天清空；
+删除任务和注销删除整条记录。网络、429、5xx 最多重排两次，解析失败直接终败。
+管理台总览显示开关、白名单人数、近 7 天任务和失败数（拒答不计调用失败）。
+本轮只有后台，无小程序页面、导出或条款对照。
+
 ## 配置
 
 全部通过环境变量（前缀 `YOUJU_`）或 `backend/.env` 设置，见 `src/youju/config.py`：
@@ -76,7 +100,9 @@ uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
-| `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 顾问技能包总开关；正式上线前保持关闭 |
+| `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
+| `YOUJU_AI_ADVISOR_ENABLED` | `false` | AI 顾问独立开关；内部白名单测试 |
+| `YOUJU_AI_ADVISOR_OPENIDS` | 空 | AI 顾问认证 openid 白名单，逗号分隔 |
 
 ## 测试与检查
 
