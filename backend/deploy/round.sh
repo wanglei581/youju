@@ -1,5 +1,5 @@
 #!/bin/sh
-# 一轮抓取和处理（cron 每天 4 次调用）：按顺序执行，下游任务等抓取完成后再跑，
+# 一轮抓取和处理（cron 每天 2 次调用：早 6:30、晚 20:30，D-039）：按顺序执行，下游任务等抓取完成后再跑，
 # 中午、晚上新抓到的文件当轮就补详情、抽截止、解析名单，不用等到第二天。
 # 每个任务仍由 job.sh 加锁、限时、失败时发提醒；某一步失败不影响后面的步骤。
 # 带 --notify（只有早上那一轮）：这一轮全部做完后再发微信提醒，保证当天的提醒包含这一轮的新文件。
@@ -32,11 +32,12 @@ if ! flock -n 9; then
 fi
 # 抓取成功后才核对栏目：抓取没跑完或失败时核对，会把还没检查到的栏目误报成漏检
 run crawl && run check-sources
-run fetch-details --limit 300 --workers 4
+# 每天 2 轮，每轮 600 份，每天补详情总量和原来 4 轮 × 300 份一样
+run fetch-details --limit 600 --workers 4
 run extract-deadlines
 run extract-fields
 # 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
-run ai-check --limit 300
+run ai-check --limit 600
 # 用户纠错过的文件，用规则和 AI 复查已发布的截止日期，结果写在纠错旁边（纠错内容不发给 AI）
 run triage-feedback
 run parse-lists

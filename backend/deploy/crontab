@@ -3,11 +3,11 @@
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
 # 顾问持久队列（YOUJU_ADVISOR_ENABLED=false 时命令直接跳过）
 * * * * *  /app/backend/deploy/job.sh advisor-run
-# 每天 4 轮：抓取 → 核对栏目 → 补详情 → 抽截止 → 解析名单（按顺序，见 round.sh）。
-# 每个栏目每天只访问 4 次列表页，每站间隔 3 秒
-# 早上那一轮做完后发微信提醒（每天一次）
+# 每天 2 轮（D-039）：抓取 → 核对栏目 → 补详情 → 抽截止 → 抽字段 → 解析名单（按顺序，见 round.sh）。
+# 早上 6:30 抓前一天白天到夜里新发布的，做完发微信提醒（每天一次）；晚上 20:30 抓当天发布的。
+# 每个栏目每天只访问 2 次列表页，每站间隔 3 秒
 30 6 * * *  /app/backend/deploy/round.sh --notify
-30 11,15,20 * * *  /app/backend/deploy/round.sh
+30 20 * * *  /app/backend/deploy/round.sh
 30 3 * * *  /app/backend/deploy/job.sh cleanup
 # 每天备份数据库到云托管对象存储，保留 30 天（验收 A6）；失败由 job.sh 发提醒
 0 4 * * *  /app/backend/deploy/job.sh backup

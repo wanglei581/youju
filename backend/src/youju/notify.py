@@ -48,6 +48,10 @@ def _deadline(
     document = session.get(Document, row.document_id)
     if document is None:
         return "expired"
+    from youju.takedown import is_taken_down
+
+    if is_taken_down(session, document.id):
+        return None
     # 发送时再查一遍能不能公开（来源级别可能在订阅之后才改）：不能公开的当作失效，不发
     public = session.scalar(
         select(Document.id)

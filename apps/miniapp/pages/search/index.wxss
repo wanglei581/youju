@@ -4,8 +4,8 @@
 .search-input { flex: 1; min-width: 0; height: 72rpx; font-size: 30rpx; color: var(--t1); }
 .clear { width: 32rpx; height: 32rpx; border-radius: 16rpx; background: #C9CDD4; display: flex; align-items: center; justify-content: center; margin-right: 12rpx; }
 .cancel { font-size: 30rpx; color: var(--t1); }
-.kind-tabs { height: 88rpx; display: flex; gap: 44rpx; margin-top: 8rpx; font-size: 30rpx; }
-.kind-tab { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 16rpx; color: var(--t2); }
+.kind-tabs { min-height: 88rpx; display: flex; flex-wrap: wrap; gap: 16rpx 44rpx; margin-top: 8rpx; font-size: 30rpx; }
+.kind-tab { min-height: 88rpx; max-width: 100%; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 16rpx; color: var(--t2); word-break: break-all; }
 .kind-tab:not(.kind-tab--on) { padding-bottom: 22rpx; }
 .kind-tab--on { color: var(--t1); font-weight: 600; }
 .kind-bar { width: 32rpx; height: 6rpx; border-radius: 4rpx; background: var(--brand); }

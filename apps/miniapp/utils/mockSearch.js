@@ -34,7 +34,7 @@ function matchTime(doc, time) {
 }
 
 function matchOpen(doc) {
-  return !!(doc.deadline && doc.deadline.verified && daysUntil(doc.deadline.date) >= 0);
+  return !!(doc.deadline && doc.deadline.verified && daysUntil(doc.deadline.date, undefined, doc.deadline.time) >= 0);
 }
 
 // params 与接口相同：q, kind, regions, types, status, time, depts, limit, offset

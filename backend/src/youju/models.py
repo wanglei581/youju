@@ -155,6 +155,15 @@ class Document(Base):
     kind_decided_by: Mapped[str | None] = mapped_column(String(80))
     kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
+    # 下架独立于采集状态，恢复后采集、核对和分类结果原样保留。
+    taken_down_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    takedown_reason: Mapped[str | None] = mapped_column(String(16))
+    takedown_note: Mapped[str | None] = mapped_column(String(300))
+    taken_down_by: Mapped[str | None] = mapped_column(String(80))
+    restored_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    restore_note: Mapped[str | None] = mapped_column(String(300))
+    restored_by: Mapped[str | None] = mapped_column(String(80))
+
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
     fields: Mapped[list["DocumentField"]] = relationship(
@@ -164,6 +173,23 @@ class Document(Base):
         back_populates="document", foreign_keys="DocumentDeadline.document_id"
     )
     list_entries: Mapped[list["ListEntry"]] = relationship(back_populates="document")
+
+
+class DocumentTakedownEvent(Base):
+    """每次下架、恢复为归并组各副本保留一条历史，不覆盖旧操作。"""
+
+    __tablename__ = "document_takedown_events"
+    __table_args__ = (
+        Index("ix_takedown_events_document_id", "document_id", "id"),
+        CheckConstraint("action IN ('takedown', 'restore')", name="ck_takedown_event_action"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="RESTRICT"))
+    action: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(16))
+    note: Mapped[str] = mapped_column(String(300))
+    operated_by: Mapped[str] = mapped_column(String(80))
+    operated_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class DocumentMerge(Base):
@@ -450,6 +476,7 @@ class AdvisorTask(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128))
     result_file_id: Mapped[str | None] = mapped_column(Text)
     result_rows: Mapped[int | None] = mapped_column(Integer)
+    result_document_ids: Mapped[list[int] | None] = mapped_column(JSONType)
     error: Mapped[str | None] = mapped_column(String(500))
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

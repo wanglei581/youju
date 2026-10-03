@@ -25,6 +25,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from youju import access_log
 from youju import fields as field_rules
@@ -48,6 +50,7 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
+    DocumentTakedownEvent,
     Feedback,
     Follow,
     JobRun,
@@ -57,6 +60,7 @@ from youju.models import (
     User,
 )
 from youju.sources.onboard import MIN_ITEMS
+from youju.takedown import available_condition, change_state, is_taken_down
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
 app = FastAPI(
@@ -155,22 +159,26 @@ def _openid_or_none(request: Request) -> str | None:
         return None
 
 
-@app.middleware("http")
-async def _access_log(request: Request, call_next):
-    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外；放在最外层，
-    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
-    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。"""
-    path = request.url.path
-    if path == "/health":
-        return await call_next(request)
-    started = clock.monotonic()
-    entry = {
+def _access_entry(request: Request) -> dict:
+    return {
         "service": getattr(get_settings(), "role", "all"),
         "method": request.method[:8],
-        "path": _printable(path, 190),
+        "path": _printable(request.url.path, 190),
         "ip": client_ip(request)[:64] or None,
         "openid": _openid_or_none(request),
     }
+
+
+@app.middleware("http")
+async def _access_log(request: Request, call_next):
+    """网络日志（见 youju/access_log.py）：每次请求记一条，健康检查除外。
+    被拦下的请求（404、401、429）和出错的请求也记。只记路径，不记查询参数和请求内容。
+    响应发完后再写库，不拖慢响应；出错的请求（没有响应可挂）当场写完再交给出错处理。
+    最外层请求体保护提前拒绝的请求由它使用相同格式记日志。"""
+    if request.url.path == "/health":
+        return await call_next(request)
+    started = clock.monotonic()
+    entry = _access_entry(request)
     try:
         response = await call_next(request)
     except Exception:
@@ -183,6 +191,102 @@ async def _access_log(request: Request, call_next):
     # call_next 返回的响应本身不带后台任务（接口自己的后台任务在里层已经跑过）
     response.background = BackgroundTask(access_log.write, entry)
     return response
+
+
+_ADMIN_BODY_LIMIT = 256 * 1024
+_ADMIN_IMPORT_LIMIT = 5 * 1024 * 1024
+
+
+class AdminSecurityMiddleware:
+    """在 FastAPI 解析请求体之前限大小；使用 ASGI 避免解析器吞掉超限异常。"""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+        if path == "/admin" or path.startswith("/admin/"):
+            original_send = send
+
+            async def send_with_headers(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers["X-Frame-Options"] = "SAMEORIGIN"
+                    headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+                    headers["X-Content-Type-Options"] = "nosniff"
+                    headers["Referrer-Policy"] = "no-referrer"
+                await original_send(message)
+
+            send = send_with_headers
+        if (
+            not path.startswith("/api/admin/")
+            or scope["method"] not in {"POST", "PUT", "DELETE"}
+            # api 角色仍由内层白名单返回 404，不读请求体。
+            or getattr(get_settings(), "role", "all") == "api"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        started = clock.monotonic()
+
+        async def reject(status: int, detail: str) -> None:
+            entry = _access_entry(request)
+            entry.update(status=status, ms=int((clock.monotonic() - started) * 1000))
+            response = JSONResponse(
+                status_code=status,
+                content={"detail": detail},
+                background=BackgroundTask(access_log.write, entry),
+            )
+            await response(scope, receive, send)
+
+        if not request.headers.get("x-admin-token"):
+            await reject(401, "管理接口未授权")
+            return
+        limit = _ADMIN_IMPORT_LIMIT if path == "/api/admin/reviews/import" else _ADMIN_BODY_LIMIT
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                length = int(raw_length)
+            except ValueError:
+                length = -1
+            if length < 0:
+                await reject(400, "请求内容大小无效")
+                return
+            if length > limit:
+                await reject(413, "请求内容过大")
+                return
+
+        # 即使声明了较小的 Content-Length，也按实际字节计数；缓冲最多 limit 字节。
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > limit:
+                await reject(413, "请求内容过大")
+                return
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        async def replay() -> Message:
+            nonlocal body
+            if body is not None:
+                message = {"type": "http.request", "body": bytes(body), "more_body": False}
+                body = None
+                return message
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+
+# 最后注册的用户中间件位于最外层，缺口令或超限时不进入请求解析和数据库依赖。
+app.add_middleware(AdminSecurityMiddleware)
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -455,6 +559,7 @@ def search_lists(
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(
             Source.rights_level == 1,
+            available_condition(),
             (ListEntry.normalized_name == query) | (ListEntry.credit_code == query.upper()),
         )
         .order_by(Document.publish_date.desc(), ListEntry.id)
@@ -471,6 +576,7 @@ def search_lists(
                 .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
                 .where(
                     Source.rights_level == 1,
+                    available_condition(),
                     ListEntry.normalized_name.like(f"%{_escape_like(prefix)}%", escape="\\"),
                 )
                 .order_by(Document.publish_date.desc(), ListEntry.id)
@@ -537,7 +643,11 @@ def list_documents(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> DocumentPage:
-    stmt = visible_documents(select(Document, Source).join(Source, Document.source_id == Source.id))
+    stmt = visible_documents(
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .where(available_condition())
+    )
     if q:
         stmt = stmt.where(Document.title.ilike(f"%{_escape_like(q)}%", escape="\\"))
     if province:
@@ -557,6 +667,8 @@ def list_documents(
 
 @app.get("/api/documents/{doc_id}", response_model=DocumentWithDetailOut)
 def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
+    if is_taken_down(session, doc_id):
+        raise HTTPException(status_code=404, detail="该文件已下架")
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(
         select(Document, Source)
@@ -613,11 +725,12 @@ def get_document(doc_id: int, session: SessionDep) -> DocumentWithDetailOut:
 # 管理口令输错限流（admin 服务固定 1 个实例，计数放在内存里）：同一来源 10 分钟内错 5 次锁定。
 # 不设全局锁定——否则别人故意输错就能把管理员也锁在外面；
 # 口令至少 32 位随机字符，换来源地址猜也猜不中。
-# 计数表最多记 10000 个来源，超出时先清掉过期的，仍超出就整表清空，防止伪造地址把内存撑大
+# 计数表最多记 10000 个来源；先清过期记录，再优先淘汰未锁定且最早失败的来源。
 _FAIL_WINDOW = 600
 _FAILS_PER_SOURCE = 5
 _MAX_SOURCES = 10000
 _admin_fails: dict[str, deque[float]] = defaultdict(deque)
+_admin_fails_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
@@ -636,22 +749,40 @@ def _recent(entries: deque[float], now: float) -> deque[float]:
     return entries
 
 
-def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
-    now = clock.monotonic()
-    ip = client_ip(request)
+def _trim_admin_fails(now: float) -> None:
+    """调用方持锁；只有锁定来源本身超出容量时，才淘汰其中最老的。"""
     if len(_admin_fails) > _MAX_SOURCES:
         for key in [k for k, v in _admin_fails.items() if not _recent(v, now)]:
             del _admin_fails[key]
         if len(_admin_fails) > _MAX_SOURCES:
-            _admin_fails.clear()
-    mine = _recent(_admin_fails[ip], now)
-    if len(mine) >= _FAILS_PER_SOURCE:
-        raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
-    expected = get_settings().admin_token
-    if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
-        mine.append(now)
-        audit_log.warning(json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False))
-        raise HTTPException(status_code=401, detail="管理接口未授权")
+            oldest = sorted(
+                _admin_fails,
+                key=lambda key: (
+                    len(_admin_fails[key]) >= _FAILS_PER_SOURCE,
+                    _admin_fails[key][0],
+                ),
+            )
+            for key in oldest[: len(_admin_fails) - _MAX_SOURCES]:
+                del _admin_fails[key]
+
+
+def _require_admin(request: Request, x_admin_token: Annotated[str | None, Header()] = None) -> None:
+    now = clock.monotonic()
+    ip = client_ip(request)
+    with _admin_fails_lock:
+        mine = _recent(_admin_fails.get(ip, deque()), now)
+        _trim_admin_fails(now)
+        if len(mine) >= _FAILS_PER_SOURCE:
+            raise HTTPException(status_code=429, detail="口令输错次数太多，请 10 分钟后再试")
+        expected = get_settings().admin_token
+        if not expected or not x_admin_token or not compare_digest(x_admin_token, expected):
+            mine.append(now)
+            _admin_fails[ip] = mine
+            _trim_admin_fails(now)
+            audit_log.warning(
+                json.dumps({"event": "admin_auth_failed", "ip": ip}, ensure_ascii=False)
+            )
+            raise HTTPException(status_code=401, detail="管理接口未授权")
 
 
 def _audit(request: Request, action: str, **fields: object) -> None:
@@ -665,6 +796,166 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]
+
+
+class RestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = Field(min_length=1, max_length=300)
+    operated_by: str = Field(min_length=1, max_length=80)
+
+    @field_validator("note", "operated_by", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class TakedownIn(RestoreIn):
+    reason: Literal["侵权投诉", "主管部门要求", "内容有误", "其他"]
+
+
+def _takedown_out(session: Session, doc: Document, source: Source) -> dict:
+    master = canonical_ids(session, [doc.id]).get(doc.id, doc.id)
+    down = session.scalar(
+        select(Document)
+        .where(Document.id.in_(group_ids(session, master)), Document.taken_down_at.is_not(None))
+        .order_by(Document.taken_down_at.desc(), Document.id)
+    )
+    return {
+        "id": doc.id,
+        "canonical_id": master,
+        "title": doc.title,
+        "source": source.dept_full_name,
+        "publish_date": doc.publish_date,
+        "url": doc.url,
+        "taken_down": down is not None,
+        "taken_down_at": down.taken_down_at if down else None,
+        "reason": down.takedown_reason if down else None,
+        "note": down.takedown_note if down else None,
+        "operated_by": down.taken_down_by if down else None,
+    }
+
+
+@app.get("/api/admin/takedown")
+def takedown_search(
+    session: SessionDep,
+    _admin: AdminDep,
+    q: Annotated[str | None, Query(max_length=512)] = None,
+    removed: bool = False,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    stmt = select(Document, Source).join(Source, Source.id == Document.source_id)
+    if removed:
+        stmt = visible_documents(stmt).where(~available_condition())
+    if q and q.strip():
+        value = q.strip()
+        like = f"%{_escape_like(value)}%"
+        terms = [Document.title.like(like, escape="\\"), Document.url.like(like, escape="\\")]
+        if (
+            value.isascii()
+            and value.isdigit()
+            and len(value) <= 10
+            and session.get(Document, int(value)) is not None
+        ):
+            terms = [Document.id == int(value)]
+        stmt = stmt.where(or_(*terms))
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = session.execute(stmt.order_by(Document.id.desc()).limit(limit).offset(offset))
+    result = {"total": total, "items": [_takedown_out(session, doc, src) for doc, src in rows]}
+    return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/admin/takedown/{document_id}/remove")
+def remove_document(
+    document_id: int,
+    body: TakedownIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    ids = change_state(
+        session,
+        document_id,
+        action="takedown",
+        note=body.note,
+        operator=body.operated_by,
+        reason=body.reason,
+    )
+    if ids is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    _audit(
+        request,
+        "document_takedown",
+        document_id=document_id,
+        document_ids=ids,
+        reason=body.reason,
+        note=body.note,
+        by=body.operated_by,
+    )
+    return {"document_ids": ids, "taken_down": True}
+
+
+@app.post("/api/admin/takedown/{document_id}/restore")
+def restore_document(
+    document_id: int,
+    body: RestoreIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    ids = change_state(
+        session, document_id, action="restore", note=body.note, operator=body.operated_by
+    )
+    if ids is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    _audit(
+        request,
+        "document_restore",
+        document_id=document_id,
+        document_ids=ids,
+        note=body.note,
+        by=body.operated_by,
+    )
+    return {"document_ids": ids, "taken_down": False}
+
+
+@app.get("/api/admin/takedown/{document_id}/history")
+def takedown_history(document_id: int, session: SessionDep, _admin: AdminDep) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
+    if session.get(Document, document_id) is None:
+        raise HTTPException(status_code=404, detail="没有找到这份文件")
+    events = session.scalars(
+        select(DocumentTakedownEvent)
+        .where(DocumentTakedownEvent.document_id == document_id)
+        .order_by(DocumentTakedownEvent.id.desc())
+    ).all()
+    return JSONResponse(
+        jsonable_encoder(
+            [
+                {
+                    "id": event.id,
+                    "action": event.action,
+                    "reason": event.reason,
+                    "note": event.note,
+                    "operated_by": event.operated_by,
+                    "operated_at": event.operated_at,
+                }
+                for event in events
+            ]
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/admin/takedown", response_class=HTMLResponse, include_in_schema=False)
+def takedown_console() -> HTMLResponse:
+    page = (Path(__file__).resolve().parent.parent / "admin" / "takedown.html").read_text(
+        encoding="utf-8"
+    )
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/admin/embed.js", include_in_schema=False)
@@ -730,6 +1021,9 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "audit": audit_flagged_count(session, None)["flagged"],
             "feedback": feedback_pending_count(session, None)["pending"],
             "sources": len(check_sources(session).failures),
+            "takedown": count(
+                visible_documents(select(func.count(Document.id))).where(~available_condition())
+            ),
         },
         "data": {
             "documents": count(docs),
@@ -1007,6 +1301,67 @@ def approve_field(
         after=result.approved_value,
     )
     return {"status": result.status}
+
+
+class UndoFieldReviewIn(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=80)
+
+
+@app.post("/api/admin/fields/{field_id}/undo")
+def undo_field(
+    field_id: int,
+    body: UndoFieldReviewIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict[str, str]:
+    """撤回本人半小时内的字段核对；原文变化后的历史结果保留作留痕。"""
+    row = session.scalar(
+        select(DocumentField)
+        .where(DocumentField.id == field_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到字段候选")
+    if row.status == "stale":
+        raise HTTPException(status_code=409, detail="原文已变化，不能撤回核对，请重新核对")
+    if row.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=409, detail="只有已通过或已驳回的核对能撤回")
+    if row.reviewed_by != body.reviewer:
+        raise HTTPException(status_code=409, detail="只能撤回同一核对人自己的核对")
+    now = datetime.now(UTC)
+    if row.reviewed_at is None or not timedelta(0) <= now - row.reviewed_at <= timedelta(
+        minutes=30
+    ):
+        raise HTTPException(status_code=409, detail="核对已超过 30 分钟或核对时间无效，不能撤回")
+    # 正文更新和字段重抽是分开的步骤；尚未重抽也不能把旧结果退回为普通待核。
+    detail = session.scalar(
+        select(DocumentDetail)
+        .where(DocumentDetail.document_id == row.document_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if detail is not None and row.body_hash != field_rules.body_fingerprint(detail.body_text):
+        raise HTTPException(status_code=409, detail="原文已变化，不能撤回核对，请重新核对")
+    before, approved_value, reviewed_at = row.status, row.approved_value, row.reviewed_at
+    row.status = "pending"
+    row.reviewed_by = None
+    row.reviewed_at = None
+    row.approved_value = None
+    session.commit()
+    _audit(
+        request,
+        "field_undo",
+        field_id=field_id,
+        document_id=row.document_id,
+        reviewer=body.reviewer,
+        before=before,
+        value=row.value,
+        approved_value=approved_value,
+        reviewed_at=reviewed_at,
+    )
+    return {"status": "pending"}
 
 
 @app.post("/api/admin/fields/{field_id}/reject")
@@ -1840,6 +2195,103 @@ def reject_deadline(
     return result
 
 
+class UndoReviewIn(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=80)
+
+
+def _lock_undo_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
+    """一次按编号锁住同组同类型截止，覆盖核对时副本及后来沿用核对结果的副本。"""
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(members),
+                DocumentDeadline.kind == row.kind,
+            )
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+@app.post("/api/admin/deadlines/{deadline_id}/undo")
+def undo_deadline(
+    deadline_id: int, body: UndoReviewIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, str]:
+    """撤回本人半小时内的核对；同次核对的归并副本一起撤回，区别于质检退回。"""
+    row = session.get(DocumentDeadline, deadline_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到候选")
+    locked = _lock_undo_candidates(session, row)
+    if row.status == "changed":
+        raise HTTPException(status_code=409, detail="这条已标为已变更，不能撤回核对")
+    if row.audit_state in ("cleared", "reopened"):
+        raise HTTPException(status_code=409, detail="这条已被质检确认或退回，不能撤回核对")
+    if row.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=409, detail="只有已通过或已驳回的核对能撤回")
+    if row.reviewed_by != body.reviewer:
+        raise HTTPException(status_code=409, detail="只能撤回同一核对人自己的核对")
+    now = datetime.now(UTC)
+    if row.reviewed_at is None or not timedelta(0) <= now - row.reviewed_at <= timedelta(
+        minutes=30
+    ):
+        raise HTTPException(status_code=409, detail="核对已超过 30 分钟或核对时间无效，不能撤回")
+    # approve/reject 写入同一时间；独立核对的副本即便日期相同，也不能顺带撤回。
+    batch = [
+        item
+        for item in locked
+        if item.reviewed_by == row.reviewed_by
+        and item.reviewed_at == row.reviewed_at
+        and (
+            (
+                item.candidate_date == row.candidate_date
+                and item.candidate_time == row.candidate_time
+                and item.evidence == row.evidence
+            )
+            or (
+                row.approved_date is not None
+                and item.approved_date == row.approved_date
+                and item.approved_time == row.approved_time
+            )
+        )
+    ]
+    if any(item.status == "changed" for item in batch):
+        raise HTTPException(status_code=409, detail="同次核对的归并副本已标为已变更，不能撤回")
+    # reopen 会按核定日期/时间将同组副本一起退回；若本条仍已通过，其他退回记录
+    # 来自不同的核定结果，不能仅凭原候选日期相同就阻止本条撤回。
+    if any(item.audit_state in ("cleared", "reopened") for item in batch):
+        raise HTTPException(status_code=409, detail="归并副本已被质检确认或退回，不能撤回")
+    before = row.status
+    reviewed_at = row.reviewed_at
+    approved_date, approved_time = row.approved_date, row.approved_time
+    for item in batch:
+        item.status = "pending"
+        item.reviewed_by = None
+        item.reviewed_at = None
+        item.approved_date = None
+        item.approved_time = None
+        item.audit_state = None
+        item.audit_note = None
+        item.audit_at = None
+        item.audit_by = None
+    session.commit()
+    _audit(
+        request,
+        "undo",
+        deadline_id=deadline_id,
+        reviewer=body.reviewer,
+        before=before,
+        reviewed_at=reviewed_at,
+        date=approved_date,
+        time=approved_time,
+        count=len(batch),
+    )
+    return {"status": "pending"}
+
+
 @app.get("/api/admin/deadlines/approved", response_model=list[ReviewedDeadlineOut])
 def approved_deadlines(
     session: SessionDep,
@@ -2298,16 +2750,21 @@ def stats(session: SessionDep) -> Stats:
                 select(Source.province, func.count(Document.id)).join(
                     Document, Document.source_id == Source.id
                 )
-            ).group_by(Source.province)
+            )
+            .where(available_condition())
+            .group_by(Source.province)
         ).all()
     )
     return Stats(
         sources_total=session.scalar(select(func.count(Source.id))) or 0,
         sources_enabled=session.scalar(select(func.count(Source.id)).where(Source.enabled)) or 0,
         sources_by_health=by_health,
-        documents_total=session.scalar(visible_documents(select(func.count(Document.id)))) or 0,
+        documents_total=session.scalar(
+            visible_documents(select(func.count(Document.id)).where(available_condition()))
+        )
+        or 0,
         documents_new_7d=session.scalar(
-            visible_documents(select(func.count(Document.id))).where(
+            visible_documents(select(func.count(Document.id)).where(available_condition())).where(
                 Document.is_baseline.is_(False), Document.first_seen_at >= week_ago
             )
         )

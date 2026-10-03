@@ -17,6 +17,10 @@
       {
         "value": "package-lock.json",
         "type": "file"
+      },
+      {
+        "value": "tests",
+        "type": "folder"
       }
     ],
     "include": []

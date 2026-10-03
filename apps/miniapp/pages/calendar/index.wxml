@@ -1,4 +1,5 @@
 <notice-bar />
+<view wx:if="{{truncated}}" class="card load-error">只显示前 1000 条，统计和筛选仅基于这些事项。</view>
 <view class="seg" aria-role="tablist">
   <view wx:for="{{ranges}}" wx:key="key" class="seg-item {{range === item.key && !sel && !monthOnly ? 'seg-item--on' : ''}}" data-key="{{item.key}}" bindtap="pickRange" aria-role="tab" aria-selected="{{range === item.key && !sel && !monthOnly}}">{{item.label}} {{counts[item.key]}}</view>
 </view>

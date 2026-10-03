@@ -26,6 +26,9 @@
   .hint { color: var(--t2); font-size: 14px; margin: 0 0 12px; }
   .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; transition: opacity .3s; }
   .card.done { opacity: .35; }
+  .card.current { outline: 3px solid var(--brand); outline-offset: 1px; }
+  .card { scroll-margin-top: 120px; }
+  .review-notice { background: var(--g-tint); padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
   .meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--t2); }
   .tag { padding: 0 6px; border-radius: 4px; font-size: 12px; font-weight: 500; }
   .k-apply { background: var(--brand-tint); color: var(--brand); }
@@ -86,6 +89,9 @@
   </div>
 </header>
 <main>
+  <p class="hint">快捷键：j / k 下一张 / 上一张；a 通过；x 驳回；e 修改日期（Enter 改日期后通过）；u 撤回上一次；r 重新载入。输入框内不触发快捷键。</p>
+  <div class="row hint"><button id="undoLast" disabled>撤回上一次</button></div>
+  <div id="reviewNotice" class="review-notice" role="status" hidden><span id="reviewNoticeText"></span> <button id="undoNotice" disabled>撤回</button><span id="undoError" class="msg"></span></div>
   <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
   <details class="card tools">
     <summary>处理延期、调整、撤销的通知</summary>
@@ -115,6 +121,12 @@
   const due = () => $('due').value;
   let loadSeq = 0;
   const shown = new Set(); // 已显示的候选编号，去重
+  let cards = [];
+  let current = null;
+  let lastReview = null;
+  let busy = false;
+  let loading = false;
+  let undoTimer = null;
 
   // 口令只留在输入框里（页面内存），刷新后要重新输入；核对人名字记在本机
   try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; } catch (e) { $('reviewer').value = '创始人'; }
@@ -128,6 +140,96 @@
     if (cls) node.className = cls;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  function selectCard(entry, scroll = true) {
+    if (current) current.card.classList.remove('current');
+    current = entry;
+    if (current) {
+      current.card.classList.add('current');
+      if (scroll) current.card.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function moveCard(step) {
+    const available = cards.filter((entry) => !entry.card.hidden);
+    if (!available.length) { selectCard(null); return; }
+    const at = available.indexOf(current);
+    selectCard(available[at < 0 ? 0 : Math.max(0, Math.min(available.length - 1, at + step))]);
+  }
+
+  function finishCard(entry) {
+    const at = cards.indexOf(entry);
+    entry.card.hidden = true; // 保留位置，撤回时原位恢复
+    entry.card.classList.add('done');
+    if (entry.card.contains(document.activeElement)) document.activeElement.blur();
+    selectCard(cards.slice(at + 1).find((other) => !other.card.hidden) ||
+      cards.slice(0, at).reverse().find((other) => !other.card.hidden) || null);
+  }
+
+  function updateUndo() {
+    // 提交期间不能切筛选，否则标签会改变、对应的载入却被 busy 门禁丢弃。
+    $('due').disabled = busy;
+    $('load').disabled = busy;
+    $('more').disabled = busy || loading;
+    const disabled = busy || loading || !lastReview || lastReview.unavailable ||
+      Date.now() > lastReview.expires || $('reviewer').value.trim() !== lastReview.reviewer;
+    $('undoLast').disabled = disabled;
+    $('undoNotice').disabled = disabled;
+  }
+
+  function rememberReview(entry, reviewer, action, started) {
+    clearTimeout(undoTimer);
+    lastReview = { entry, reviewer, expires: started + 30 * 60 * 1000 };
+    $('reviewNotice').hidden = false;
+    $('reviewNoticeText').textContent = `${action === 'reject' ? '已驳回' : '已通过'}：${entry.item.title}`;
+    $('undoError').textContent = '';
+    undoTimer = setTimeout(updateUndo, Math.max(0, lastReview.expires - Date.now() + 1));
+    updateUndo();
+  }
+
+  async function undoReview() {
+    updateUndo();
+    if ($('undoLast').disabled) return;
+    const previous = lastReview;
+    busy = true;
+    updateUndo();
+    $('undoError').textContent = '';
+    try {
+      const res = await fetch(`/api/admin/deadlines/${previous.entry.item.id}/undo`, {
+        method: 'POST', headers: headers(), body: JSON.stringify({ reviewer: $('reviewer').value.trim() }),
+      });
+      if (!res.ok) {
+        if (res.status === 409) previous.unavailable = true;
+        throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
+      }
+      const item = { ...previous.entry.item, reopen_note: null };
+      const restored = { item, card: render(item) };
+      const at = cards.indexOf(previous.entry);
+      if (at >= 0) {
+        previous.entry.card.replaceWith(restored.card);
+        cards[at] = restored;
+      } else {
+        // 重新载入过的列表仍按编号降序，把撤回的卡片放回相应位置。
+        const next = cards.findIndex((entry) => entry.item.id <= item.id);
+        if (next < 0) { cards.push(restored); $('list').append(restored.card); }
+        else if (cards[next].item.id === item.id) {
+          cards[next].card.replaceWith(restored.card); cards[next] = restored;
+        } else { cards[next].card.before(restored.card); cards.splice(next, 0, restored); }
+      }
+      $('list').querySelectorAll('.empty').forEach((node) => node.remove());
+      shown.add(item.id);
+      selectCard(restored);
+      $('reviewNoticeText').textContent = `已撤回：${item.title}`;
+      lastReview = null;
+      clearTimeout(undoTimer);
+      await refreshCount();
+    } catch (err) {
+      $('undoError').textContent = err.message;
+    } finally {
+      busy = false;
+      updateUndo();
+    }
   }
 
   // 证据句里的日期写法："2026年10月09日""10月9日"（年份可省），"2026-10-09""2026/10/9""2026.10.9"（必须带年份：
@@ -200,6 +302,9 @@
   }
 
   async function review(item, card, action, msg) {
+    if (busy || loading || card.hidden || card.classList.contains('done')) return;
+    const entry = cards.find((entry) => entry.card === card);
+    if (!entry) return;
     const reviewer = $('reviewer').value.trim();
     if (!reviewer) { msg.textContent = '请先填写核对人'; return; }
     const body = { reviewed_by: reviewer };
@@ -211,18 +316,22 @@
       body.time = card.querySelector('.t').value || null;
     }
     const url = `/api/admin/deadlines/${item.id}/${action === 'reject' ? 'reject' : 'approve'}`;
+    const started = Date.now();
+    busy = true;
+    updateUndo();
     card.querySelectorAll('.main button').forEach((b) => { b.disabled = true; });
     try {
       const res = await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
       if (res.status === 409) {
-        card.classList.add('done');
+        finishCard(entry);
         msg.className = 'msg';
         msg.textContent = '这条已被其他人核对过，已跳过';
         refreshCount();
         return;
       }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
-      card.classList.add('done');
+      finishCard(entry);
+      rememberReview(entry, reviewer, action, started);
       msg.className = 'msg ok';
       msg.textContent = action === 'reject' ? '已驳回' : '已通过';
       pending = Math.max(0, pending - 1);
@@ -232,6 +341,9 @@
       msg.className = 'msg';
       msg.textContent = err.message;
       card.querySelectorAll('.main button').forEach((b) => { b.disabled = false; });
+    } finally {
+      busy = false;
+      updateUndo();
     }
   }
 
@@ -376,6 +488,10 @@
 
   function render(item) {
     const card = el('section', 'card');
+    card.onclick = () => {
+      const entry = cards.find((entry) => entry.card === card);
+      if (entry && !card.hidden) selectCard(entry, false);
+    };
     const meta = el('div', 'meta');
     meta.append(el('span', `tag ${KIND_CLASS[item.kind] || ''}`, item.kind), el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), el('span', 'conf', `置信度：${item.confidence}`));
     // AI 和规则互相印证：只是参考，通过前仍要对照原文
@@ -400,6 +516,15 @@
     approve.onclick = () => review(item, card, 'approve', msg);
     reject.onclick = () => review(item, card, 'reject', msg);
     edit.onclick = () => review(item, card, 'edit', msg);
+    [d, t].forEach((input) => {
+      input.onkeydown = (event) => {
+        if (event.key === 'Enter' && !event.isComposing && !event.repeat) {
+          event.preventDefault();
+          review(item, card, 'edit', msg);
+        }
+      };
+    });
+    card.reviewAction = (action) => review(item, card, action, msg);
     card.append(meta, title);
     if (item.reopen_note) card.append(el('div', 'reopen', `退回原因：${item.reopen_note}`));
     card.append(evidenceNode(item.evidence, item.candidate_date), row, changePanel(item));
@@ -407,9 +532,12 @@
   }
 
   async function load(reset) {
+    if (busy) return;
     // 每次载入编个号：切换筛选或重新载入后，之前还没返回的请求结果一律丢弃，不覆盖新列表
     const seq = ++loadSeq;
-    if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
+    loading = true;
+    updateUndo();
+    if (reset) { selectCard(null, false); cards = []; shown.clear(); cursor = null; $('list').textContent = ''; }
     // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
     const after = cursor ? `&before_id=${cursor}` : '';
     const wanted = due();
@@ -429,14 +557,22 @@
       if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
-        $('list').append(render(item));
+        const entry = { item, card: render(item) };
+        cards.push(entry);
+        $('list').append(entry.card);
       });
+      if (!current) selectCard(cards.find((entry) => !entry.card.hidden) || null, false);
       if (items.length) cursor = Math.min(...items.map((item) => item.id));
       $('more').hidden = items.length < 50;
     } catch (err) {
       if (seq !== loadSeq) return;
+      selectCard(null, false);
+      cards = [];
+      shown.clear();
       $('list').textContent = '';
       $('list').append(el('div', 'empty', err.message));
+    } finally {
+      if (seq === loadSeq) { loading = false; updateUndo(); }
     }
   }
 
@@ -513,6 +649,24 @@
   $('load').onclick = () => load(true);
   $('due').onchange = () => load(true);
   $('more').onclick = () => load(false);
+  $('undoLast').onclick = undoReview;
+  $('undoNotice').onclick = undoReview;
+  $('reviewer').addEventListener('input', updateUndo);
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
+      event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    const key = event.key.toLowerCase();
+    if (!['j', 'k', 'a', 'x', 'e', 'u', 'r'].includes(key)) return;
+    event.preventDefault();
+    if (busy || loading) return;
+    if (key === 'j' || key === 'k') moveCard(key === 'j' ? 1 : -1);
+    else if (key === 'u') undoReview();
+    else if (key === 'r') load(true);
+    else if (current) {
+      if (key === 'e') current.card.querySelector('.d').focus();
+      else current.card.reviewAction(key === 'x' ? 'reject' : 'approve');
+    }
+  });
 })();
 </script>
 </body>
