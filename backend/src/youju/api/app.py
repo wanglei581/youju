@@ -32,6 +32,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
+from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
@@ -796,6 +797,11 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 
 
 AdminDep = Annotated[None, Depends(_require_admin)]
+
+app.include_router(weekly_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/weekly", weekly_api.console, response_class=HTMLResponse, include_in_schema=False
+)
 
 
 class RestoreIn(BaseModel):

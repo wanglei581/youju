@@ -75,6 +75,8 @@
     <button type="button" data-menu="takedown">下架</button>
     <p>来源管理</p>
     <button type="button" data-menu="sources">来源管理</button>
+    <p>内容发布</p>
+    <button type="button" data-menu="weekly">周报</button>
     <p>运维</p>
     <button type="button" data-menu="jobs">定时任务</button>
     <p>平台入口</p>
@@ -92,7 +94,7 @@
       <p id="jobEmpty" hidden>最近 7 天没有记录。</p>
       <button type="button" id="moreJobs" hidden>加载更多</button>
     </section>
-    <iframe id="work" title="管理工作页" hidden></iframe>
+    <iframe allow="clipboard-write" id="work" title="管理工作页" hidden></iframe>
     <section id="platforms" hidden>
       <p class="muted">这些平台要单独登录，不能嵌进管理台。</p>
       <article class="panel">
@@ -109,8 +111,8 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const titles = { overview:'总览',review:'截止日期',fields:'支持方式',kinds:'类型复核',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
-  const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','advisor-run':'工具任务'};
+  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',kinds:'类型复核',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
+  const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
   let token = '', active = 'overview', next = null, sequence = 0, due = '30';
   window.getYoujuAdminToken = () => token;
