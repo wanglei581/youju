@@ -130,6 +130,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         "audit": 1,
         "feedback": 1,
         "sources": 1,
+        "takedown": 0,
     }
     assert data["data"] == {
         "documents": 4,

@@ -19,6 +19,7 @@ from youju.backup import BackupError
 from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, User
+from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -152,6 +153,17 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
         or (task.expires_at is not None and task.expires_at <= _stamp())
     ):
         raise HTTPException(status_code=410, detail="结果文件已过期或已删除")
+    from youju.models import Document
+
+    # 已生成的 Excel 也要在每次取下载地址时复核。
+    hidden = select(Document.id).where(~available_condition())
+    legacy_check = task.result_document_ids is None and session.scalar(hidden.limit(1)) is not None
+    if (
+        task.result_document_ids is not None
+        and session.scalar(hidden.where(Document.id.in_(task.result_document_ids)).limit(1))
+        is not None
+    ):
+        raise HTTPException(status_code=410, detail="结果包含已下架文件，请重新生成")
     settings = get_settings()
     cloud_env = getattr(settings, "cloud_env", None)
     if not cloud_env:
@@ -159,6 +171,17 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
     try:
         with httpx.Client(trust_env=False) as client:
             url = service.download_url(client, cloud_env, task.result_file_id)
+            if url and legacy_check:
+                try:
+                    ids = service.legacy_result_document_ids(session, client, url)
+                except Exception:  # noqa: BLE001 - 旧文件损坏不能绕过核验
+                    raise HTTPException(
+                        status_code=503, detail="结果文件暂时无法核验，请重新生成"
+                    ) from None
+                task.result_document_ids = ids
+                session.commit()
+                if session.scalar(hidden.where(Document.id.in_(ids)).limit(1)) is not None:
+                    raise HTTPException(status_code=410, detail="结果包含已下架文件，请重新生成")
     except (BackupError, httpx.HTTPError):
         raise HTTPException(status_code=503, detail="下载地址暂时无法生成，请稍后重试") from None
     if not url:

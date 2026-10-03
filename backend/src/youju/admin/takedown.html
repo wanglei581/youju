@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>下架 · 有据</title>
+<style>
+:root{--brand:#2A5CE0;--bg:#F2F4F8;--t1:#1D2129;--t2:#4E5969;--line:#E5E6EB;--red:#E5484D}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t1);font:15px/1.6 "PingFang SC","Noto Sans SC",sans-serif}
+header{background:#fff;border-bottom:1px solid var(--line)}.bar{max-width:880px;margin:auto;padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+h1{margin:0;font-size:18px}.auth{margin-left:auto;display:flex;gap:8px}main{max-width:880px;margin:auto;padding:16px}
+input,select,textarea,button{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--t1)}
+button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:var(--brand);color:#fff;border-color:var(--brand)}.danger{color:var(--red)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px}
+.meta,.hint{color:var(--t2);font-size:14px}.title{font-weight:600}a{color:var(--brand);overflow-wrap:anywhere}.note{white-space:pre-wrap;overflow-wrap:anywhere}.msg{color:var(--red)}
+dialog{border:1px solid var(--line);border-radius:12px;max-width:560px;width:calc(100% - 32px)}dialog::backdrop{background:#0005}dialog label{display:block;margin:12px 0}textarea{width:100%;min-height:100px}.actions{display:flex;gap:8px;justify-content:flex-end}[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header><div class="bar"><h1>下架</h1><span id="count" class="meta"></span><div class="auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><button id="load" class="primary">载入</button></div></div></header>
+<main>
+<p class="hint">下架和恢复同时作用于同一通知的所有已归并网址。操作历史保留，操作人请填写姓名或团队称呼。</p>
+<form id="search" class="filters"><input id="query" maxlength="512" placeholder="文件编号、标题关键词或原文网址" aria-label="搜索文件" size="34"><button class="primary">搜索</button><button id="removed" type="button">已下架列表</button></form>
+<p id="message" role="status" class="msg"></p><div id="list"></div><button id="more" hidden>再载入 20 份</button>
+</main>
+<dialog id="dialog"><form id="operation"><h2 id="operationTitle"></h2><p id="chosen" class="note"></p><label id="reasonLabel">原因类型 <select id="reason"><option>侵权投诉</option><option>主管部门要求</option><option>内容有误</option><option>其他</option></select></label><label>说明（必填，最多 300 字）<textarea id="note" required maxlength="300"></textarea></label><label>操作人 <input id="operator" required maxlength="80" autocomplete="off"></label><p id="formMessage" role="alert" class="msg"></p><div class="actions"><button id="cancel" type="button">取消</button><button id="submit" class="primary">确认操作</button></div></form></dialog>
+<script src="/admin/embed.js"></script>
+<script>
+(() => {
+  const $=id=>document.getElementById(id);let onlyRemoved=false,offset=0,selected=null,operation='',sequence=0;
+  function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
+  function stamp(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
+  async function api(path,options={}){const r=await fetch(path,{...options,cache:'no-store',headers:{'X-Admin-Token':youjuAdminToken(),'Content-Type':'application/json'}});const d=await r.json();if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:`操作失败（${r.status}），请检查填写内容和管理口令`);return d;}
+  function card(item){
+    const e=node('article','','card');e.append(node('p',`#${item.id} · ${item.title}`,'title'),node('p',`${item.source} · ${item.publish_date||'日期未提供'} · ${item.taken_down?'已下架':'正常'}`,'meta'));
+    const a=node('a','查看原文');try{const u=new URL(item.url);if(['https:','http:'].includes(u.protocol)){a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';e.append(a);}}catch(_){}
+    if(item.taken_down)e.append(node('p',`${item.reason} · ${stamp(item.taken_down_at)} · ${item.operated_by}`,'meta'),node('p',item.note,'note'));
+    const act=node('button',item.taken_down?'恢复':'下架',item.taken_down?'':'danger');act.onclick=()=>{selected=item;operation=item.taken_down?'restore':'remove';$('operationTitle').textContent=operation==='remove'?'下架文件':'恢复文件';$('chosen').textContent=`#${item.id} · ${item.title}`;$('reasonLabel').hidden=operation==='restore';$('note').value='';$('formMessage').textContent='';$('dialog').showModal();};e.append(act);
+    const history=node('button','操作历史');history.onclick=async()=>{history.disabled=true;try{const rows=await api(`/api/admin/takedown/${item.id}/history`);const box=node('div');rows.forEach(r=>box.append(node('p',`${r.action==='takedown'?'下架':'恢复'} · ${r.reason||''} · ${stamp(r.operated_at)} · ${r.operated_by}\n${r.note}`,'note')));if(!rows.length)box.append(node('p','暂无操作历史','meta'));e.append(box);}catch(err){$('message').textContent=err.message;}finally{history.disabled=false;}};e.append(history);return e;
+  }
+  async function load(reset=true){const seq=++sequence;if(reset){offset=0;$('list').replaceChildren();}$('message').textContent='';$('more').disabled=true;try{const p=new URLSearchParams({q:$('query').value.trim(),removed:String(onlyRemoved),offset:String(offset)});const d=await api(`/api/admin/takedown?${p}`);if(seq!==sequence)return;d.items.forEach(i=>$('list').append(card(i)));offset+=d.items.length;$('count').textContent=`${onlyRemoved?'已下架':'搜索结果'} ${d.total} 份`;$('more').hidden=offset>=d.total;if(!d.total)$('list').append(node('p','没有找到文件','hint'));}catch(err){if(seq===sequence)$('message').textContent=err.message;}finally{if(seq===sequence)$('more').disabled=false;}}
+  $('load').onclick=()=>load();$('search').onsubmit=e=>{e.preventDefault();onlyRemoved=false;load();};$('removed').onclick=()=>{onlyRemoved=true;$('query').value='';load();};$('more').onclick=()=>load(false);$('cancel').onclick=()=>$('dialog').close();
+  $('operation').onsubmit=async e=>{e.preventDefault();const note=$('note').value.trim(),by=$('operator').value.trim();if(!note||!by){$('formMessage').textContent='请填写说明和操作人';return;}if(!confirm(`确认${operation==='remove'?'下架':'恢复'}「${selected.title}」及同一通知的所有归并网址？`))return;$('submit').disabled=true;$('cancel').disabled=true;try{const body={note,operated_by:by};if(operation==='remove')body.reason=$('reason').value;await api(`/api/admin/takedown/${selected.id}/${operation}`,{method:'POST',body:JSON.stringify(body)});$('dialog').close();await load();}catch(err){$('formMessage').textContent=err.message;}finally{$('submit').disabled=false;$('cancel').disabled=false;}};
+})();
+</script>
+</body>
+</html>

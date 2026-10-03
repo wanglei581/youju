@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import Document, Event, Feedback, Follow, Source, Subscription, User
+from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -194,6 +195,12 @@ def _mask_feedback(content: str) -> str:
     return _EMAIL.sub("［已隐去］", content)
 
 
+def _available_subscription():
+    # 授权留在库内以便恢复后继续提醒，公开列表和计数暂时隐藏。
+    hidden = select(Document.id).where(~available_condition())
+    return or_(Subscription.document_id.is_(None), ~Subscription.document_id.in_(hidden))
+
+
 @router.get("/me")
 def profile(session: SessionDep, user: KnownUserDep) -> dict:
     if user is None:
@@ -201,7 +208,11 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
     counts = dict(
         session.execute(
             select(Subscription.kind, func.count(Subscription.id))
-            .where(Subscription.user_id == user.id, Subscription.status == "unused")
+            .where(
+                Subscription.user_id == user.id,
+                Subscription.status == "unused",
+                _available_subscription(),
+            )
             .group_by(Subscription.kind)
         ).all()
     )
@@ -256,13 +267,14 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
 
 
 def _titles(session: Session, doc_ids: list[int | None]) -> dict[int, str]:
-    """文件编号 → 主文件标题（合并过的用主文件；文件已删除的不在结果里）。"""
+    """文件编号 → 主文件标题；已删除、已下架的文件不补出标题。"""
     ids = [doc_id for doc_id in doc_ids if doc_id is not None]
     masters = canonical_ids(session, ids)
     titles = dict(
         session.execute(
             select(Document.id, Document.title).where(
-                Document.id.in_({masters.get(doc_id, doc_id) for doc_id in ids})
+                Document.id.in_({masters.get(doc_id, doc_id) for doc_id in ids}),
+                available_condition(),
             )
         ).all()
     )
@@ -359,12 +371,20 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         .limit(500)
     ).all()
     sub_titles = _titles(session, [row.document_id for row in subscriptions])
+    hidden_ids = set(
+        session.scalars(
+            select(Document.id).where(
+                Document.id.in_([row.document_id for row in subscriptions]),
+                ~available_condition(),
+            )
+        )
+    )
     result["subscriptions"] = [
         {
             "id": row.id,
             "kind": row.kind,
             "followId": row.follow_id,
-            "docId": row.document_id,
+            "docId": None if row.document_id in hidden_ids else row.document_id,
             "docTitle": sub_titles.get(row.document_id),
             "status": row.status,
             "createdAt": _iso(row.created_at),
@@ -383,10 +403,18 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         .limit(200)
     ).all()
     titles = _titles(session, [row.document_id for row in feedback])
+    hidden_ids = set(
+        session.scalars(
+            select(Document.id).where(
+                Document.id.in_([row.document_id for row in feedback]),
+                ~available_condition(),
+            )
+        )
+    )
     result["feedback"] = [
         {
             "id": row.id,
-            "docId": row.document_id,
+            "docId": None if row.document_id in hidden_ids else row.document_id,
             "docTitle": titles.get(row.document_id),
             "content": row.content,
             "checkResult": row.check_result,
@@ -517,7 +545,11 @@ def _subscription_out(row: Subscription) -> dict:
 def list_subscriptions(session: SessionDep, user: UserDep) -> dict:
     rows = session.scalars(
         select(Subscription)
-        .where(Subscription.user_id == user.id, Subscription.status == "unused")
+        .where(
+            Subscription.user_id == user.id,
+            Subscription.status == "unused",
+            _available_subscription(),
+        )
         .order_by(Subscription.id)
     ).all()
     return {"items": [_subscription_out(row) for row in rows]}

@@ -40,6 +40,7 @@ from youju.models import (
     ListEntry,
     Source,
 )
+from youju.takedown import available_condition, cache_revision, is_taken_down
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -173,6 +174,7 @@ def _public_fields() -> Select:
             DocumentDetail.status == "ok",
             DocumentField.body_hash == func.sha2(DocumentDetail.body_text, 256),
             field_source.rights_level == 1,
+            available_condition(field_doc),
             or_(DocumentField.field != "audience", field_rules.AUDIENCE_ENABLED),
         )
     )
@@ -710,7 +712,9 @@ def deadline_report(
     if support:
         # 支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
         return _report_payload(session, days, province, dept, support, page, size)
-    key = (days, province, dept, support, page, size, now().astimezone(_TZ).date())
+    # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
+    revision = cache_revision(session)
+    key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
@@ -864,7 +868,8 @@ def list_board_report(
         raise HTTPException(status_code=422, detail="省份不支持")
     if list_type and list_type not in LIST_BOARD_TYPE_SET:
         raise HTTPException(status_code=422, detail="名单类型不支持")
-    key = (days, year_value, province, list_type, now().astimezone(_TZ).date())
+    revision = cache_revision(session)
+    key = (days, year_value, province, list_type, now().astimezone(_TZ).date(), revision)
     cached = _REPORT_CACHE.get(key)
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
@@ -952,6 +957,7 @@ def _reading_body(session: Session, doc_id: int) -> str | None:
             DocumentDetail.document_id.in_(group_ids(session, doc_id)),
             DocumentDetail.status == "ok",
             Source.rights_level == 1,
+            available_condition(),
         )
     ).all()
     bodies = {row.document_id: row.body_text for row in rows if row.body_text}
@@ -961,6 +967,8 @@ def _reading_body(session: Session, doc_id: int) -> str | None:
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
+    if is_taken_down(session, doc_id):
+        raise HTTPException(status_code=404, detail="该文件已下架")
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(_base().where(Document.id == doc_id)).first()
     if row is None:
@@ -1022,6 +1030,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
             continue
         seen_changes.add(key)
         new_id = new_masters.get(d.changed_to_document_id, d.changed_to_document_id)
+        if new_id and is_taken_down(session, new_id):
+            new_id = None
         new_doc = session.get(Document, new_id) if new_id else None
         deadline_changes.append(
             {
@@ -1219,6 +1229,7 @@ def lookup_lists(
             .join(Source, Source.id == Document.source_id)
             .where(
                 Source.rights_level == 1,
+                available_condition(),
                 ListEntry.normalized_name.like(f"%{_escape_like(key[:4])}%", escape="\\"),
                 ListEntry.normalized_name != query,
             )
@@ -1238,7 +1249,7 @@ def lookup_lists(
         select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
         .join(Document, Document.id == ListEntry.document_id)
         .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1)
+        .where(Source.rights_level == 1, available_condition())
     ).one()
     return {
         "query": q.strip(),
