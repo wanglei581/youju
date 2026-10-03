@@ -299,8 +299,19 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
-function advisorStatus() {
-  return isLive() ? request('/api/v1/advisor/status') : advisorMock.status();
+function advisorStatus(options = {}) {
+  // 悬浮入口在本次启动内共用一个请求，失败也缓存；工具页主动刷新额度。
+  const cache = typeof getApp === 'function' ? getApp().globalData : null;
+  if (cache && cache.advisorStatusPending) return cache.advisorStatusPending;
+  if (cache && cache.advisorStatusPromise && !options.refresh) return cache.advisorStatusPromise;
+  const result = isLive() ? request('/api/v1/advisor/status') : advisorMock.status();
+  if (cache) {
+    cache.advisorStatusPromise = result;
+    cache.advisorStatusPending = result;
+    const settled = () => { if (cache.advisorStatusPending === result) cache.advisorStatusPending = null; };
+    result.then(settled, settled);
+  }
+  return result;
 }
 
 function advisorPreview(data) {

@@ -163,7 +163,7 @@ function remove(id) {
     .then(() => { state.tasks = state.tasks.filter((item) => item.id !== Number(id)); save(); });
 }
 function download(id) {
-  return Promise.resolve().then(() => { const task = find(id); if (task.status !== 'done') throw error('结果尚未生成', 410); return { url: 'mock://advisor-result', expiresIn: 600, contentBase64: require('./advisor-result.js') }; });
+  return Promise.resolve().then(() => { const task = find(id); if (task.status !== 'done') throw error('结果尚未生成', 410); return { url: 'mock://advisor-result', expiresIn: 600, contentBase64: task.kind === 'track' ? require('./advisor-track-result.js') : require('./advisor-result.js') }; });
 }
 function myData() {
   tick();

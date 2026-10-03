@@ -4,6 +4,7 @@ const { todayISO } = require('./format.js');
 const exportsLog = require('./exports.js');
 
 const MAX = 200;
+let fileSerial = 0;
 
 function chooseFormat() {
   return new Promise((resolve) => {
@@ -35,10 +36,10 @@ function write(fs, filePath, buffer) {
   });
 }
 
-// 文件名用完整的毫秒时间，不会和旧文件重名（重名会让旧记录打开新文件）
+// 文件名用毫秒时间和本次启动内递增编号，不会和旧文件重名（重名会让旧记录打开新文件）
 function save(buffer, format) {
   const fs = wx.getFileSystemManager();
-  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now()}.${format}`;
+  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now()}_${++fileSerial}.${format}`;
   // 写入失败就提示，不动旧文件
   return write(fs, filePath, buffer).catch(() => { throw new Error('保存文件失败，请稍后再试'); });
 }
@@ -116,4 +117,4 @@ function exportDocs(ids, options) {
   });
 }
 
-module.exports = { exportDocs, MAX, open, exists, removeFiles };
+module.exports = { exportDocs, MAX, open, exists, removeFiles, save, clearOld };

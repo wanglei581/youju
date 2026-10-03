@@ -19,6 +19,7 @@ Page({
     province: '',
     year: null,
     type: '',
+    toolPickerOpen: false,
     loading: false,
     error: '',
   },
@@ -75,9 +76,13 @@ Page({
     });
   },
 
+  openToolPicker() { this.setData({ toolPickerOpen: true }); },
+  closeToolPicker() { this.setData({ toolPickerOpen: false }); },
+
   retry() { this.load(true); },
 
   pickProvince(e) {
+    this.closeToolPicker();
     const index = Number(e.detail.value);
     const value = index === 0 ? '' : this.data.provinces[index];
     this.setData({ province: value, items: [] });
@@ -85,6 +90,7 @@ Page({
   },
 
   pickYear(e) {
+    this.closeToolPicker();
     const index = Number(e.detail.value);
     const value = index === 0 ? null : Number(this.data.years[index]);
     this.setData({ year: value, items: [] });
@@ -92,6 +98,7 @@ Page({
   },
 
   pickType(e) {
+    this.closeToolPicker();
     const index = Number(e.detail.value);
     const value = index === 0 ? '' : this.data.types[index];
     this.setData({ type: value, items: [] });

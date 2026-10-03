@@ -6,9 +6,9 @@
   <view wx:for="{{[7,14,30]}}" wx:key="*this" class="tab {{days === item ? 'tab--on' : ''}}" data-days="{{item}}" bindtap="pickDays"><text class="num">{{summary[item]}}</text><text>{{item}} 天内</text></view>
 </view>
 <view class="filters">
-  <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{supports}}" bindchange="pickSupport"><view class="filter">{{support || '不限支持方式'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{supports}}" bindchange="pickSupport"><view class="filter">{{support || '不限支持方式'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
 <view wx:if="{{error}}" class="card empty">{{error}} <text class="link" bindtap="retry">重试</text></view>
 <view class="card list">
@@ -22,3 +22,4 @@
   <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>
 <view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期，最终以原文为准。</view>
+<tool-fab blocked="{{toolPickerOpen}}" />

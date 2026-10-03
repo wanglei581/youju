@@ -59,19 +59,27 @@ function consent() {
   });
 }
 
-function openResult(id) {
-  return api.downloadAdvisorTask(id).then((result) => new Promise((resolve, reject) => {
-    const open = (filePath) => wx.openDocument({ filePath, fileType: 'xlsx', showMenu: true, success: resolve, fail: () => reject(new Error('文件没能打开，请重试')) });
-    if (!api.isLive()) {
-      // 演示结果也是有效 XLSX，在本机写入后走同一个文档查看器。
-      const filePath = `${wx.env.USER_DATA_PATH}/advisor-demo-${id}.xlsx`;
-      wx.getFileSystemManager().writeFile({ filePath, data: result.contentBase64, encoding: 'base64', success: () => open(filePath), fail: () => reject(new Error('演示文件没能保存，请重试')) });
-      return;
-    }
-    wx.downloadFile({ url: result.url, success: (res) => {
-      if (res.statusCode !== 200) { reject(new Error('文件下载失败，请重试')); return; }
-      open(res.tempFilePath);
-    }, fail: () => reject(new Error('文件下载失败，请重试')) });
+function openResult(id, options = {}) {
+  const exporter = require('./exporter.js');
+  const exportsLog = require('./exports.js');
+  return api.downloadAdvisorTask(id).then((result) => {
+    if (!api.isLive()) return wx.base64ToArrayBuffer(result.contentBase64);
+    return new Promise((resolve, reject) => {
+      wx.downloadFile({ url: result.url, success: (res) => {
+        if (res.statusCode !== 200) { reject(new Error('文件下载失败，请重试')); return; }
+        wx.getFileSystemManager().readFile({ filePath: res.tempFilePath, success: (file) => resolve(file.data), fail: () => reject(new Error('文件没能读取，请重试')) });
+      }, fail: () => reject(new Error('文件下载失败，请重试')) });
+    });
+  }).then((buffer) => exporter.save(buffer, 'xlsx').then((filePath) => {
+    const task = options.task || {};
+    const record = {
+      id: `advisor-${id}`, source: 'advisor', taskId: id, kind: task.kind,
+      label: KINDS[task.kind] || '工具任务结果', count: task.rowCount || 0,
+      format: 'xlsx', size: buffer.byteLength, at: new Date().toISOString(), path: filePath,
+    };
+    if (!exportsLog.add(record, record.id)) throw new Error('文件已保存，导出记录没能写入，请重试');
+    exporter.clearOld(wx.getFileSystemManager(), filePath);
+    return exporter.open(filePath, 'xlsx');
   }));
 }
 

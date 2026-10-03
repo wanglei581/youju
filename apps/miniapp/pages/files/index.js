@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const exportsLog = require('../../utils/exports.js');
 const { exportDocs, open, exists, removeFiles } = require('../../utils/exporter.js');
 const { shortTime } = require('../../utils/format.js');
+const { openResult } = require('../../utils/advisor.js');
 
 const FORMAT_NAME = { xlsx: 'Excel', docx: 'Word' };
 
@@ -21,25 +22,22 @@ Page({
   },
 
   load() {
-    if (!api.isLive()) {
-      api.files().then((files) => this.setData({ demo: true, files: files.map((f, i) => Object.assign({ id: `demo${i}` }, f)) }));
-      return;
-    }
     this.records = exportsLog.list();
-    this.setData({
-      demo: false,
-      files: this.records.map((r) => ({
-        id: r.id,
-        badge: r.format.toUpperCase(),
-        name: r.label,
-        meta: `${r.count} 份 · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
-        expired: !exists(r.path),
-      })),
-    });
+    const records = this.records.map((r) => ({
+      id: r.id,
+      badge: r.format.toUpperCase(),
+      name: r.label,
+      meta: `${r.count} ${r.source === 'advisor' ? '行' : '份'} · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
+      expired: !exists(r.path),
+      local: true,
+    }));
+    this.setData({ demo: !api.isLive(), files: records });
+    if (!api.isLive()) api.files().then((files) => this.setData({ files: records.concat(files.map((f, i) => Object.assign({ id: `demo${i}` }, f))) }));
   },
 
   record(e) {
-    return this.data.demo ? null : this.records[e.currentTarget.dataset.index];
+    const file = this.data.files[e.currentTarget.dataset.index];
+    return file && this.records.find((record) => record.id === file.id);
   },
 
   open(e) {
@@ -70,6 +68,11 @@ Page({
   reexport(e) {
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据不能导出', icon: 'none' }); return; }
+    if (r.source === 'advisor') {
+      openResult(r.taskId, { task: { kind: r.kind, rowCount: r.count } }).then(() => this.load())
+        .catch((err) => { this.load(); wx.showToast({ title: err.message, icon: 'none' }); });
+      return;
+    }
     // 新文件和记录存好后，新记录替代这一条（打开失败也替代）
     exportDocs(r.ids, { label: r.label, format: r.format, replaces: r.id }).then(() => this.load());
   },

@@ -22,7 +22,7 @@ function zipEntries(base64) {
 function page(name, api, helpers, timers, wxOptions = {}) {
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
-    require: (module) => module.endsWith('api.js') ? api : helpers,
+    require: (module) => module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,
     Page: (value) => { definition = value; },
     wx: Object.assign({ setNavigationBarTitle() {}, navigateTo() {}, redirectTo() {} }, wxOptions),
     setTimeout: timers ? timers.set : setTimeout,
@@ -77,7 +77,7 @@ test('演示流程：单独同意、CSV/XLSX 行数、幂等、进度、打开�
     now += 3000;
     assert.equal((await api.advisorTask(next.id)).status, 'done');
     await helpers.openResult(next.id);
-    assert.ok(opened); assert.equal(Buffer.from(saved, 'base64').readUInt32LE(0), 0x04034b50);
+    assert.ok(opened); assert.equal(Buffer.from(saved).readUInt32LE(0), 0x04034b50);
     assert.equal((await api.myData()).advisorTasks[0].rowCount, 1);
     await api.deleteAdvisorTask(next.id);
     assert.equal((await api.advisorTasks()).items.length, 0);
@@ -104,6 +104,7 @@ test('正式请求支持 202 和 Idempotency-Key，下载重新取地址', async
     code = 200; let downloaded = false; let opened = false;
     global.wx.downloadFile = (options) => { downloaded = true; assert.equal(options.url, 'https://test/result'); options.success({ statusCode: 200, tempFilePath: '/tmp/result' }); };
     global.wx.openDocument = (options) => { opened = true; assert.equal(options.fileType, 'xlsx'); options.success(); };
+    global.wx.getFileSystemManager = () => ({ readFile: (o) => o.success({ data: new ArrayBuffer(4) }), writeFile: (o) => o.success(), readdirSync: () => [] });
     await require('../utils/advisor.js').openResult(7);
     assert.ok(downloaded && opened); assert.match(request.url, /\/7\/download$/);
   } finally { Object.assign(config, original); }
@@ -111,7 +112,7 @@ test('正式请求支持 202 和 Idempotency-Key，下载重新取地址', async
 
 test('轮询从三秒增至十五秒，隐藏页后忽略在途结果并停止', async () => {
   const delays = []; const callbacks = []; let cleared = 0; let resolveTask;
-  const api = { advisorTasks: () => Promise.resolve({ items: [{ id: 1, status: 'queued' }] }), advisorTask: () => new Promise((resolve) => { resolveTask = resolve; }) };
+  const api = { isLive: () => true, advisorTasks: () => Promise.resolve({ items: [{ id: 1, status: 'queued' }] }), advisorTask: () => new Promise((resolve) => { resolveTask = resolve; }) };
   const helpers = { taskView: (task) => Object.assign({}, task, { terminal: task.status === 'done' }) };
   const view = page('advisor-tasks', api, helpers, { set: (fn, delay) => { delays.push(delay); callbacks.push(fn); return callbacks.length; }, clear: () => { cleared += 1; } });
   view.onShow(); await flush();
@@ -192,7 +193,7 @@ test('工具关闭、说明占位和加载失败时不允许同意，显示版�
     { enabled: false, final: true }, { enabled: true, final: false },
     { enabled: true, final: true, status: 404 }, { enabled: true, final: true, status: 503 },
   ]) {
-    const api = { advisorStatus: () => setting.status ? Promise.reject(Object.assign(new Error('不可用'), { status: setting.status })) : Promise.resolve({ enabled: setting.enabled }), agree: () => { posted += 1; return Promise.resolve(); } };
+    const api = { isLive: () => true, advisorStatus: () => setting.status ? Promise.reject(Object.assign(new Error('不可用'), { status: setting.status })) : Promise.resolve({ enabled: setting.enabled }), agree: () => { posted += 1; return Promise.resolve(); } };
     const helpers = { VERSION: 'advisor-current', TERMS_TEXT: '说明正文', TERMS_FINAL: setting.final, consent: () => Promise.resolve(false) };
     const view = page('advisor-terms', api, helpers);
     view.onShow(); await flush(); view.setData({ checked: true }); view.agree(); await flush();
@@ -205,12 +206,13 @@ test('工具关闭、说明占位和加载失败时不允许同意，显示版�
 
 test('工具卡片、提交告知、保存期限和两个填写页标题符合审阅口径', async () => {
   const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 0, limit: 1, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }) };
-  const view = page('advisor', api, {}); view.onShow(); await flush();
+  api.advisorTasks = () => Promise.resolve({ items: [] });
+  const view = page('advisor', api, require('../utils/advisor.js')); view.onShow(); await flush();
   assert.equal(view.data.skills[0].description, '在已收录的公示/公布名单里查找客户');
   assert.equal(view.data.skills[1].description, '按客户省份列出截止日期已核对、尚未截止的申报通知');
   const text = fs.readFileSync(path.join(__dirname, '../pages/advisor-form/index.wxml'), 'utf8');
   assert.ok(text.includes('提交前请确认你有权提交这些客户信息，不要填写个人姓名、身份证号、手机号'));
-  assert.ok(text.includes('原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中随时删除'));
+  assert.ok(text.includes('原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）'));
   assert.match(text, /advisor-title">\{\{title\}\}/); assert.match(text, /提交任务/);
   const helpers = require('../utils/advisor.js');
   for (const kind of ['compare', 'track']) {

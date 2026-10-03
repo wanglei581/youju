@@ -20,7 +20,8 @@ Page({
   onShow() { this.load(); },
   load() {
     this.setData({ loading: true, error: '' });
-    Promise.all([api.advisorStatus(), consent()]).then(([res, agreed]) => {
+    Promise.all([api.advisorStatus({ refresh: true }), consent()]).then(([res, agreed]) => {
+      if (!res.enabled) throw new Error('工具暂未开放');
       const quota = res.quota[this.data.kind];
       this.setData({ loading: false, agreed, remaining: Math.max(0, quota.limit - quota.used), maxRows: quota.maxRows });
     }).catch((err) => this.setData({ loading: false, error: err.message }));
@@ -74,8 +75,8 @@ Page({
     catch (err) { this.setData({ inputError: err.message }); return; }
     this.refreshKey();
     this.setData({ submitting: true, inputError: '' });
-    api.createAdvisorTask(body, this.key).then(() => {
-      wx.redirectTo({ url: '/pages/advisor-tasks/index', fail: () => { this.setData({ submitting: false }); wx.showToast({ title: '已提交，请到我的任务查看', icon: 'none' }); } });
+    api.createAdvisorTask(body, this.key).then((task) => {
+      wx.redirectTo({ url: `/pages/advisor-tasks/index?taskId=${encodeURIComponent(task.id)}`, fail: () => { this.setData({ submitting: false }); wx.showToast({ title: '已提交，请到我的任务查看', icon: 'none' }); } });
     }).catch((err) => this.setData({ submitting: false, agreed: err.status === 403 ? false : this.data.agreed, inputError: err.message }));
   },
 });

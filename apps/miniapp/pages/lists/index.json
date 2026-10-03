@@ -1,1 +1,6 @@
-{ "navigationStyle": "custom", "usingComponents": {} }
+{
+  "navigationStyle": "custom",
+  "usingComponents": {
+    "tool-fab": "/components/tool-fab/index"
+  }
+}

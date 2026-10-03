@@ -7,9 +7,9 @@
 </view>
 
 <view class="filters">
-  <picker mode="selector" range="{{years}}" bindchange="pickYear"><view class="filter">{{year || '不限年度'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{types}}" bindchange="pickType"><view class="filter">{{type || '不限类型'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{years}}" bindchange="pickYear"><view class="filter">{{year || '不限年度'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <picker bindtap="openToolPicker" bindcancel="closeToolPicker" mode="selector" range="{{types}}" bindchange="pickType"><view class="filter">{{type || '不限类型'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
 
 <view wx:if="{{error}}" class="card empty"><text>{{error}}</text><text class="link retry" bindtap="retry">重试</text></view>
@@ -32,4 +32,4 @@
   <view class="stat-group"><view class="stat-title">按名单类型</view><view class="table-head"><text>类型</text><text>名单份数</text><text>名单条数</text></view><view wx:for="{{stats.by_type}}" wx:key="type" class="table-row"><text>{{item.type}}</text><text>{{item.lists}}</text><text>{{item.entries}}</text></view><view wx:if="{{!stats.by_type.length}}" class="muted stat-empty">暂无数据</view></view>
 </view>
 <view class="note">只统计已收录网站的名单；名单条数只含从名单原文中解析出的企业；公示期内的名单也计入，最终结果以原文为准</view>
-<view style="height: 60rpx"></view>
+<tool-fab blocked="{{toolPickerOpen}}" />

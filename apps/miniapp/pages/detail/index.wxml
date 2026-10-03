@@ -99,7 +99,7 @@
     </view>
     <view class="source-note">原文网址 {{doc.host || ''}}。小程序内不能直接打开政府网站，复制链接后在浏览器打开。<text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理；有据是第三方整理的信息工具，不是政府平台，不提供填报入口。</view>
   </view>
-  <view style="height: 220rpx"></view>
+
 
   <view class="bar">
     <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
@@ -107,3 +107,4 @@
     <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
   </view>
 </block>
+<tool-fab bottom-rpx="{{130}}" bottom-selector=".bar" blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" />

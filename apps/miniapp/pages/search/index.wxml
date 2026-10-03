@@ -48,7 +48,7 @@
   <view wx:elif="{{items.length}}" class="load-more">共 {{items.length}} 份，已全部显示</view>
 </view>
 <view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
-<view style="height: {{selecting ? '200rpx' : '80rpx'}}"></view>
+<view wx:if="{{selecting}}" style="height: calc(200rpx + env(safe-area-inset-bottom))"></view>
 
 <view wx:if="{{selecting}}" class="pick-bar">
   <text class="pick-count">已选 {{chosenCount}} 份</text>
@@ -78,3 +78,4 @@
     </view>
   </view>
 </t-popup>
+<tool-fab blocked="{{filterOpen || selecting}}" source="search" keyword="{{q}}" kind="{{tab}}" filters="{{picked}}" />

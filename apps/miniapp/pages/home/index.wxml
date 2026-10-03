@@ -40,9 +40,6 @@
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
     <view class="tile tile--green"><t-icon name="calendar" size="44rpx" color="#FFFFFF" /></view><text>截止雷达</text>
   </view>
-  <view wx:if="{{advisorEnabled}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
-    <view class="tile tile--plain"><t-icon name="app" size="44rpx" color="#4E5969" /></view><text>工具</text>
-  </view>
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
@@ -86,4 +83,4 @@
   </view>
 </view>
 <view class="home-disclaimer">第三方整理 · 非政府平台</view>
-<view class="tab-page-bottom"></view>
+<tool-fab tab-page="{{true}}" bottom-rpx="{{108}}" />

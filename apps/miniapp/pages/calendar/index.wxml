@@ -70,4 +70,4 @@
   </block>
 </view>
 <view class="foot">只列人工核对过的截止时间，逐条取自原文。一个通知有多个截止时间时，按申报单位的截止时间排列，其余写在下方。申报请在主管部门的系统办理，有据不提供填报入口。</view>
-<view style="height: 60rpx"></view>
+<tool-fab />

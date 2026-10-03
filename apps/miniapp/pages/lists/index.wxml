@@ -53,4 +53,4 @@
   </view>
   <view wx:if="{{items.length < total}}" class="load-more">已显示 {{items.length}}/{{total}} 份 · <text class="link" bindtap="moreLists">查看全部 {{total}} 份</text></view>
 </view>
-<view style="height: 80rpx"></view>
+<tool-fab />

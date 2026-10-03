@@ -2,8 +2,13 @@ const api = require('../../utils/api.js');
 const { taskView, openResult } = require('../../utils/advisor.js');
 
 Page({
-  data: { loading: true, error: '', actionError: '', items: [], busyId: null },
-  onShow() { this.visible = true; this.delay = 3000; this.load(); },
+  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false },
+  onLoad(query = {}) {
+    this.taskId = query.taskId || null;
+    this.setData({ singleTask: !!this.taskId });
+    if (this.taskId) wx.setNavigationBarTitle({ title: '任务详情' });
+  },
+  onShow() { this.visible = true; this.delay = 3000; this.setData({ demo: !api.isLive() }); this.load(); },
   onHide() { this.stop(); },
   onUnload() { this.stop(); },
   stop() { this.visible = false; this.epoch = (this.epoch || 0) + 1; clearTimeout(this.timer); },
@@ -11,7 +16,8 @@ Page({
     clearTimeout(this.timer);
     const epoch = this.epoch = (this.epoch || 0) + 1;
     this.setData({ loading: true, error: '' });
-    api.advisorTasks().then((res) => {
+    const request = this.taskId ? api.advisorTask(this.taskId).then((task) => ({ items: [task] })) : api.advisorTasks();
+    request.then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
       this.setData({ loading: false, items: res.items.map(taskView) });
       this.schedule(epoch);
@@ -33,15 +39,26 @@ Page({
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ error: err.message }); });
   },
   form() { wx.navigateTo({ url: '/pages/advisor/index' }); },
+  lists() { wx.navigateTo({ url: '/pages/lists/index' }); },
+  radar() { wx.navigateTo({ url: '/pages/report/index' }); },
+  allTasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },
   cancel(e) { this.mutate(e, api.cancelAdvisorTask, '取消排队任务', '取消后将退回今天的次数。'); },
-  remove(e) { this.mutate(e, api.deleteAdvisorTask, '删除任务', '删除任务和结果文件后不能恢复。'); },
+  remove(e) { this.mutate(e, api.deleteAdvisorTask, '删除任务', '删除任务后不能恢复；已导出的本机文件可在“文件”页清空。'); },
   mutate(e, call, title, content) {
     if (this.data.busyId !== null) return;
     const id = e.currentTarget.dataset.id;
     wx.showModal({ title, content, success: (res) => {
       if (!res.confirm || this.data.busyId !== null) return;
       this.setData({ busyId: id, actionError: '' });
-      call(id).then(() => { this.setData({ busyId: null }); if (this.visible) this.load(); })
+      call(id).then(() => {
+        this.setData({ busyId: null });
+        if (call === api.deleteAdvisorTask && this.taskId) {
+          this.taskId = null;
+          this.setData({ singleTask: false });
+          wx.setNavigationBarTitle({ title: '我的任务' });
+        }
+        if (this.visible) this.load();
+      })
         .catch((err) => this.setData({ busyId: null, actionError: err.message }));
     } });
   },
@@ -49,7 +66,7 @@ Page({
     if (this.data.busyId !== null) return;
     const id = e.currentTarget.dataset.id;
     this.setData({ busyId: id, actionError: '' });
-    openResult(id).then(() => this.setData({ busyId: null }))
+    openResult(id, { task: this.data.items.find((item) => String(item.id) === String(id)) }).then(() => this.setData({ busyId: null }))
       .catch((err) => this.setData({ busyId: null, actionError: err.message }));
   },
 });

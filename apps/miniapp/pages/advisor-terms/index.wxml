@@ -1,4 +1,5 @@
 <notice-bar />
+<view wx:if="{{demo}}" class="card advisor-card muted">演示模式 · 仅用于体验流程</view>
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <view wx:if="{{!loading}}" class="card advisor-card">

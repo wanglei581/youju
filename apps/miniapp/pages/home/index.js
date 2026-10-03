@@ -30,7 +30,6 @@ Page({
     shown: [],
     loaded: false,
     error: '',
-    advisorEnabled: false,
   },
 
   onLoad() {
@@ -55,8 +54,6 @@ Page({
   },
 
   onShow() {
-    api.advisorStatus().then((res) => this.setData({ advisorEnabled: res.enabled === true }))
-      .catch(() => this.setData({ advisorEnabled: false }));
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {

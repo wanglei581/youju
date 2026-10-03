@@ -1,1 +1,8 @@
 @import "../../utils/advisor.wxss";
+.task-section-title { margin: 32rpx 32rpx 16rpx; font-size: 34rpx; font-weight: 600; }
+.context-row { display: flex; align-items: flex-start; gap: 16rpx; }
+.context-label { flex: 1; min-width: 0; }
+.context-clear { flex-shrink: 0; margin: 0; padding: 10rpx 16rpx; min-height: 64rpx; font-size: 28rpx; line-height: 1.5; color: var(--brand); background: var(--brand-tint); }
+.context-clear::after, .recent-task::after { border: 0; }
+.context-note { margin-top: 16rpx; font-size: 26rpx; line-height: 1.6; color: var(--t2); }
+.recent-task { margin: 20rpx 0 0; padding: 20rpx 0; min-height: 100rpx; text-align: left; white-space: normal; background: var(--card); border-top: 2rpx solid var(--line); border-radius: 0; font-size: 30rpx; line-height: 1.7; }

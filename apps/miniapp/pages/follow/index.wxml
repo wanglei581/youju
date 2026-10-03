@@ -50,4 +50,4 @@
     </view>
   </view>
 </block>
-<view class="tab-page-bottom"></view>
+<tool-fab tab-page="{{true}}" bottom-rpx="{{108}}" />

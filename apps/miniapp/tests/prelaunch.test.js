@@ -193,7 +193,7 @@ test('日历上限截断有标记；刚好 1000 条无误报', async () => {
   for (const total of [999, 1000, 1001, 1400]) {
     const requests = [];
     const api = load('utils/api.js', {
-      './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {},
+      './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, '../mock/advisor.js': {},
       './mockSearch.js': {}, './format.js': format,
     }, { wx: { request: ({ url, success }) => {
       const params = new URL(url).searchParams;
