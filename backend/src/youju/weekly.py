@@ -37,7 +37,8 @@ COLUMNS = {
 DISCLAIMER = "第三方整理，非政府平台；信息来自政府网站公开发布的文件，以原文为准。"
 LIMIT = 30
 log = logging.getLogger("youju.weekly")
-# 原始标题不能改写；与周报禁用文字冲突的题录直接不收录。
+# 禁用文字只约束我们自己写的文字（模板、方案名称）。政府文件的原标题照录，不改写、也不因为
+# 含"智能""最"等字被排除——"智能制造""人工智能"类通知很多，排除会大量漏项。
 FORBIDDEN = re.compile(r"AI|智能|最|重磅|必看", re.IGNORECASE)
 
 
@@ -137,7 +138,6 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
         row
         for row in rows
         if safe_url(row.url)
-        and not FORBIDDEN.search(" ".join((row.title, row.issuer, row.doc_number or "")))
         and (not profile.keywords or any(word in row.title for word in profile.keywords))
     ]
     ids = [row.id for row in rows]

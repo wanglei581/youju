@@ -376,7 +376,8 @@ def test_html_allowlist_injection_and_forbidden_terms(session, profile):
     session.commit()
     issue = generate(session, profile).issue
     root = html.fragment_fromstring(issue.body_html)
-    assert issue.counts["policies"] == 2
+    # 政府原标题照录：含"智能""最"等字的通知不能被排除（否则智能制造类通知全漏）
+    assert issue.counts["policies"] == 7
     for element in root.iter():
         assert element.tag in {"section", "p", "h2", "h3", "strong", "ul", "li", "a"}
         assert set(element.attrib) <= {"style", "href"}
@@ -384,7 +385,12 @@ def test_html_allowlist_injection_and_forbidden_terms(session, profile):
             assert element.attrib["href"].startswith("https://example.gov.cn/")
     assert not root.xpath(".//script | .//img | .//*[@class]")
     assert "&lt;script&gt;" in issue.body_html and "&amp;" in issue.body_html
-    assert "智能" not in issue.body_text and "AI" not in issue.body_text
+    assert "智能项目" in issue.body_text and "AI 项目" in issue.body_text
+    # 我们自己的模板文字里不出现这些词：去掉题录标题后再检查
+    template_only = issue.body_text
+    for title in ("智能项目", "AI 项目", "重磅政策", "必看名单", "最佳方案"):
+        template_only = template_only.replace(title, "")
+    assert not weekly.FORBIDDEN.search(template_only)
 
 
 @pytest.fixture
