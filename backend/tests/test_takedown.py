@@ -592,7 +592,7 @@ def test_migration_0012_downgrade_upgrade_preserves_documents(db_engine, session
             c["name"] for c in inspect(db_engine).get_columns("documents")
         }
     finally:
-        command.upgrade(cfg, "0012")
+        command.upgrade(cfg, "head")
     session.expire_all()
     assert session.get(Document, doc.id).title == "迁移前题录"
     assert session.get(Document, doc.id).taken_down_at is None

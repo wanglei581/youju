@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { ensureConsent } = require('../../utils/consent.js');
 
 const MAX = 500;
+const COVERAGE_PREFIX = '申请覆盖：';
 
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式
 Page({
@@ -14,12 +15,14 @@ Page({
       docId: coverage ? '' : query.id || '',
       title: !coverage && query.title ? decodeURIComponent(query.title) : '',
       coverage,
+      max: coverage ? MAX - COVERAGE_PREFIX.length : MAX,
     });
     if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
   },
 
   onInput(e) {
-    const content = e.detail.value.slice(0, MAX);
+    if (e.detail.value.length > this.data.max) wx.showToast({ title: `最多输入 ${this.data.max} 字，请缩短内容`, icon: 'none' });
+    const content = e.detail.value.slice(0, this.data.max);
     this.setData({ content, count: content.length });
   },
 
@@ -29,8 +32,12 @@ Page({
       wx.showToast({ title: '请写下要纠正或建议的内容', icon: 'none' });
       return;
     }
+    if (content.length > this.data.max) {
+      wx.showToast({ title: `最多输入 ${this.data.max} 字，请缩短内容`, icon: 'none' });
+      return;
+    }
     if (this.data.sending) return;
-    ensureConsent().then((ok) => { if (ok) this.send(this.data.coverage ? `申请覆盖：${content}` : content); });
+    ensureConsent().then((ok) => { if (ok) this.send(this.data.coverage ? `${COVERAGE_PREFIX}${content}` : content); });
   },
 
   send(content) {

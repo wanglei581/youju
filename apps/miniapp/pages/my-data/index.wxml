@@ -11,7 +11,7 @@
   <block wx:else>
     <view class="card intro">
       <view class="intro-title">你账号下保存的个人信息</view>
-      <view class="muted intro-text">同意记录、关注、微信提醒授权、纠错都在这里，可以复制保存，也可以改关注名称、删除记录。访问日志不在这里显示。更新于 {{exportedAt}}</view>
+      <view class="muted intro-text">同意记录、关注、微信提醒授权、纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
       <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制全部数据</view>
     </view>
 
@@ -32,6 +32,7 @@
         <view class="item-sub">{{item.desc}} · 建立于 {{item.created}}</view>
         <view class="item-ops">
           <text class="op" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="rename" aria-role="button">改名</text>
+          <text class="op" data-kind="follow" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
           <text class="op op--danger" data-kind="follow" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
         </view>
       </view>
@@ -43,8 +44,10 @@
       <view wx:for="{{subs}}" wx:key="id" class="item">
         <view class="item-main">{{item.kind}}：{{item.target}}</view>
         <view class="item-sub">{{item.status}} · 授权于 {{item.created}}</view>
-        <view wx:if="{{item.unused}}" class="item-ops">
-          <text class="op op--danger" data-kind="sub" data-id="{{item.id}}" bindtap="remove" aria-role="button">取消这次提醒</text>
+        <view wx:if="{{item.attempted}}" class="item-sub">尝试发送于 {{item.attempted}}</view>
+        <view class="item-ops">
+          <text class="op" data-kind="sub" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
+          <text class="op op--danger" data-kind="sub" data-id="{{item.id}}" bindtap="remove" aria-role="button">{{item.unused ? '取消提醒' : '删除记录'}}</text>
         </view>
       </view>
       <view wx:if="{{!subs.length}}" class="empty weak">没有</view>
@@ -56,8 +59,10 @@
       <view wx:for="{{feedback}}" wx:key="id" class="item">
         <view class="item-sub">{{item.title}}</view>
         <view class="item-main">{{item.content}}</view>
-        <view class="item-sub">{{item.created}} · {{item.check}}</view>
+        <view class="item-sub">提交于 {{item.created}} · 内容安全：{{item.check}}</view>
+        <view class="item-sub">处理状态：{{item.handling}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
         <view class="item-ops">
+          <text class="op" data-kind="feedback" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
           <text class="op op--danger" data-kind="feedback" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
         </view>
       </view>

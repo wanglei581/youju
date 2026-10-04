@@ -54,6 +54,49 @@ class JobRun(Base):
     summary: Mapped[str] = mapped_column(String(500), default="", server_default="")
 
 
+class DigestProfile(Base):
+    """固定模板周报方案；空省份列表表示全国，国家部委始终包含。"""
+
+    __tablename__ = "digest_profiles"
+    __table_args__ = (CheckConstraint("weekday BETWEEN 1 AND 7", name="ck_digest_profile_weekday"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    provinces: Mapped[list] = mapped_column(JSONType, default=list)
+    keywords: Mapped[list] = mapped_column(JSONType, default=list)
+    columns: Mapped[dict] = mapped_column(
+        JSONType,
+        default=lambda: dict.fromkeys(("applications", "deadlines", "lists", "policies"), True),
+    )
+    weekday: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+
+
+class DigestIssue(Base):
+    """人工发布的周报快照；依赖编号用于阻止复制后来已下架的内容。"""
+
+    __tablename__ = "digest_issues"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "week_start", name="uq_digest_issue_week"),
+        CheckConstraint("status IN ('draft', 'published')", name="ck_digest_issue_status"),
+        CheckConstraint("week_end >= week_start", name="ck_digest_issue_interval"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("digest_profiles.id", ondelete="RESTRICT"))
+    week_start: Mapped[date] = mapped_column(Date)
+    week_end: Mapped[date] = mapped_column(Date)
+    title: Mapped[str] = mapped_column(String(200))
+    body_html: Mapped[str] = mapped_column(LongText)
+    body_text: Mapped[str] = mapped_column(LongText)
+    body_text_with_links: Mapped[str] = mapped_column(LongText)
+    counts: Mapped[dict] = mapped_column(JSONType)
+    document_ids: Mapped[list] = mapped_column(JSONType)
+    generated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
+    note: Mapped[str] = mapped_column(String(500), default="", server_default="")
+
+
 class Source(Base):
     """一个被监测的网站栏目（通常是某部门的"通知公告"列表页）。"""
 
@@ -460,7 +503,8 @@ class AdvisorTask(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_advisor_tasks_user_key"),
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
-        CheckConstraint("kind IN ('compare', 'track')", name="ck_advisor_tasks_kind"),
+        CheckConstraint("kind IN ('compare', 'track', 'interpret')", name="ck_advisor_tasks_kind"),
+        Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
             "status IN ('queued', 'running', 'done', 'failed', 'cancelled')",
             name="ck_advisor_tasks_status",
@@ -472,6 +516,12 @@ class AdvisorTask(Base):
     kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
     input_rows: Mapped[list | None] = mapped_column(JSONType)
+    input_json: Mapped[dict | None] = mapped_column(JSONType)
+    result_json: Mapped[dict | None] = mapped_column(JSONType)
+    snapshot: Mapped[dict | None] = mapped_column(JSONType)
+    cache_key: Mapped[str | None] = mapped_column(String(64))
+    prompt_version: Mapped[str | None] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(128))
     row_count: Mapped[int] = mapped_column(Integer)
     idempotency_key: Mapped[str] = mapped_column(String(128))
     result_file_id: Mapped[str | None] = mapped_column(Text)

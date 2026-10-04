@@ -25,7 +25,8 @@ function query(params) {
 
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
-  const err = new Error(typeof detail === 'string' ? detail : `服务出错了（${res ? res.statusCode : '网络'}）`);
+  const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
+  const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
   return err;
 }
@@ -181,13 +182,15 @@ function detail(id) {
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar() {
   if (isLive()) {
-    const page = (offset, acc) => request('/api/v1/calendar', { limit: 200, offset }).then((r) => {
+    const page = (offset, acc, closed) => request('/api/v1/calendar', { limit: 200, offset }).then((r) => {
       const items = acc.concat(r.items).slice(0, 1000);
-      return items.length < r.total && r.items.length && items.length < 1000
-        ? page(items.length, items)
-        : { items, total: r.total, truncated: items.length === 1000 && r.total > items.length };
+      const past = closed.concat(r.past || []).slice(0, 1000);
+      const next = offset + 200;
+      return next < Math.max(r.total, r.pastTotal || 0) && next < 1000 && (r.items.length || (r.past || []).length)
+        ? page(next, items, past)
+        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
     });
-    return page(0, []);
+    return page(0, [], []);
   }
   return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)) });
 }

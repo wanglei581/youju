@@ -49,11 +49,13 @@ class Settings(BaseSettings):
     # 连续失败多少次后把来源标记为 failing 并告警。
     failure_alert_threshold: int = 3
 
-    # 后台 AI（阿里云百炼通义千问，OpenAI 兼容接口）。不配密钥就不调用 AI，照常用规则。
+    # 后台 AI（模型方可配置，OpenAI 兼容接口）。不配密钥就不调用 AI，照常用规则。
     # 密钥只从环境读取（云托管环境变量由创始人填写），不写入日志或异常信息
     ai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     ai_api_key: SecretStr | None = None
     ai_model: str = "qwen-flash"
+    ai_model_label: str = ""
+    ai_model_filing: str = ""
 
     sources_csv: Path = DEFAULT_SOURCES_CSV
     # 每个用户 10 分钟内最多导出几次（防止刷接口耗尽资源）；验收 C2"连续导出 100 次"时临时调高
@@ -62,6 +64,8 @@ class Settings(BaseSettings):
     cloud_env: str | None = None
     # R1.5 顾问技能包总开关；上线前保持关闭。
     advisor_enabled: bool = False
+    ai_advisor_enabled: bool = False
+    ai_advisor_openids: str = ""
 
     @model_validator(mode="after")
     def _production_identity(self) -> "Settings":

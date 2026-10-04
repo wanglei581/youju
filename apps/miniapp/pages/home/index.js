@@ -35,14 +35,21 @@ Page({
   onLoad() {
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight, menuWidth });
+    this.lastShow = Date.now();
     this.reload();
   },
 
   reload() {
-    this.setData({ error: '' });
+    if (this.refreshing) return;
+    this.refreshing = true;
+    this.setData({ loading: true, error: '' });
     api.home()
-      .then(({ stats, items }) => this.setData({ stats, items, shown: items, loaded: true }))
-      .catch((err) => this.setData({ error: `加载失败：${err.message}` }));
+      .then(({ stats, items }) => {
+        const shown = this.data.tab === 'all' ? items : items.filter((d) => d.kind === this.data.tab);
+        this.setData({ stats, items, shown, loaded: true });
+      })
+      .catch((err) => this.setData({ stats: null, items: [], shown: [], error: `数据未更新：${err.message}` }))
+      .finally(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
   onHide() {
@@ -54,6 +61,11 @@ Page({
   },
 
   onShow() {
+    const stamp = Date.now();
+    if (this.lastShow === undefined || stamp - this.lastShow >= 1000) {
+      this.reload();
+      this.lastShow = stamp;
+    }
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
@@ -78,7 +90,8 @@ Page({
 
   goSearch(e) {
     const q = (e && e.currentTarget.dataset.q) || '';
-    wx.navigateTo({ url: `/pages/search/index?q=${encodeURIComponent(q)}` });
+    const kind = { apply: '申报通知', policy: '政策' }[SCOPES[this.data.scope].key] || 'all';
+    wx.navigateTo({ url: `/pages/search/index?q=${encodeURIComponent(q)}&kind=${encodeURIComponent(kind)}` });
   },
 
   // 卡片底部：按当前页签到搜索页看近 7 天的文件（搜索没有"本周"这个时间段，所以不写本周的份数）

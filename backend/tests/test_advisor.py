@@ -728,7 +728,7 @@ def test_pk_prefix_csv_is_not_zip(client, content):
 
 
 @pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
-def test_delete_and_logout_ignore_switch_and_agreement(
+def test_delete_requires_authorization_but_logout_ignores_switch_and_agreement(
     client, advisor_settings, session, disabled, outdated
 ):
     agree_advisor(client)
@@ -744,11 +744,14 @@ def test_delete_and_logout_ignore_switch_and_agreement(
     assert data.status_code == 200
     assert data.json()["advisorTasks"][0]["id"] == created["id"]
     advisor_settings.dev_openid = "somebody-else"
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
+    expected = 404 if disabled else 403
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
     advisor_settings.dev_openid = "advisor-user"
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
-    assert client.get("/api/v1/me/data").json()["advisorTasks"] == []
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
+    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["id"] == created["id"]
     assert client.delete("/api/v1/me").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, created["id"]) is None
     assert client.get("/api/v1/me").json()["agreed"] is None
 
 

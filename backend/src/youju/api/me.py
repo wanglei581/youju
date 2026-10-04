@@ -100,6 +100,7 @@ class Conditions(BaseModel):
     status: str | None = Field(default=None, max_length=400)
     time: str = "近 30 天"
     depts: str | None = Field(default=None, max_length=400)
+    open: int | None = Field(default=None, ge=0, le=1)
 
 
 class FollowIn(BaseModel):
@@ -360,7 +361,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
         .limit(500)
     ).all()
-    # 仅列元数据，永远不导出客户名单 input_rows 或对象存储文件编号。
+    # 数据工具仅列元数据；AI 结果先复核原文公开状态，不导出名单输入或存储编号。
+    from youju.api import advisor as advisor_api
+
     result["advisorTasks"] = [
         {
             "id": row.id,
@@ -370,6 +373,15 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "createdAt": _iso(row.created_at),
             "startedAt": _iso(row.started_at),
             "finishedAt": _iso(row.finished_at),
+            **(
+                {
+                    "result": advisor_api._out(row, session).get("result"),
+                    "model": row.model,
+                    "prompt_version": row.prompt_version,
+                }
+                if row.kind == "interpret"
+                else {}
+            ),
         }
         for row in advisor_rows
     ]
@@ -449,6 +461,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "docTitle": titles.get(row.document_id),
             "content": row.content,
             "checkResult": row.check_result,
+            "handled": row.handled_at is not None,
+            "handledAt": _iso(row.handled_at),
             "createdAt": _iso(row.created_at),
         }
         for row in feedback
@@ -641,8 +655,8 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
 @router.delete("/me/subscriptions/{subscription_id}", status_code=204)
 def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUserDep) -> None:
     row = session.get(Subscription, subscription_id)
-    if row is None or user is None or row.user_id != user.id or row.status != "unused":
-        raise HTTPException(status_code=404, detail="没有找到可退订的授权")
+    if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到提醒授权记录")
     session.delete(row)
     session.commit()
 

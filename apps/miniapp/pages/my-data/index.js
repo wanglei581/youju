@@ -54,12 +54,15 @@ Page({
             status: SUB_STATUS[s.status] || s.status,
             unused: s.status === 'unused',
             created: when(s.createdAt),
+            attempted: when(s.attemptedAt),
           })),
           feedback: d.feedback.map((f) => ({
             id: f.id,
             title: f.docId ? (f.docTitle || '文件已下线') : '一般建议',
             content: f.content,
             check: CHECK[f.checkResult] || f.checkResult,
+            handling: f.handled ? '已处理' : '待处理',
+            handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
           advisorTasks: (d.advisorTasks || []).map(taskView),
@@ -77,6 +80,19 @@ Page({
       data: JSON.stringify(this.raw, null, 2),
       success: () => wx.showToast({ title: '已复制全部数据，可以粘贴保存', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制，请同意隐私保护指引后再试', icon: 'none' }),
+    });
+  },
+
+  // 单条复制完整原始记录，包含条件、状态和时间。
+  copyOne(e) {
+    const { kind, id } = e.currentTarget.dataset;
+    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback' }[kind];
+    const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
+    if (!row) return;
+    wx.setClipboardData({
+      data: JSON.stringify(row, null, 2),
+      success: () => wx.showToast({ title: '已复制这条完整记录', icon: 'none' }),
+      fail: () => wx.showToast({ title: '没能复制，请稍后再试', icon: 'none' }),
     });
   },
 
@@ -103,12 +119,14 @@ Page({
   // 删除一条记录：关注、还没发出的提醒授权、纠错
   remove(e) {
     const { kind, id } = e.currentTarget.dataset;
-    const what = { follow: '这个关注（它的微信提醒也会一起取消）', sub: '这次还没发出的提醒', feedback: '这条纠错', advisor: '这个工具任务和结果文件' }[kind];
+    const sub = kind === 'sub' && this.data.subs.find((item) => String(item.id) === String(id));
+    const cancelling = sub && sub.unused;
+    const what = { follow: '这个关注（它的微信提醒也会一起取消）', sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录', feedback: '这条纠错', advisor: '这个工具任务和结果文件' }[kind];
     const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, advisor: api.deleteAdvisorTask }[kind];
     wx.showModal({
-      title: '删除',
+      title: cancelling ? '取消提醒' : '删除记录',
       content: `删除${what}？删除后不能恢复。`,
-      confirmText: '删除',
+      confirmText: cancelling ? '取消提醒' : '删除',
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;

@@ -5,7 +5,7 @@ const PAGE = 20;
 
 // 某个关注上次查看之后的新文件；看完可以全部标为已读
 Page({
-  data: { id: '', name: '', items: [], total: 0, loading: false, error: '', today: '' },
+  data: { id: '', name: '', items: [], total: 0, loading: true, error: '', today: '' },
 
   onLoad(query) {
     const name = query.name ? decodeURIComponent(query.name) : '';
@@ -15,7 +15,8 @@ Page({
   },
 
   load(reset) {
-    if (this.data.loading) return;
+    if (this.fetching) return;
+    this.fetching = true;
     const offset = reset ? 0 : this.data.items.length;
     this.setData({ loading: true, error: '' });
     api.followNew(this.data.id, { limit: PAGE, offset })
@@ -24,7 +25,8 @@ Page({
         total: res.total,
         loading: false,
       }))
-      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }))
+      .finally(() => { this.fetching = false; });
   },
 
   onReachBottom() {

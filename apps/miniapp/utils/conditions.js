@@ -8,7 +8,14 @@ function describe(c) {
   parts.push(regions.length ? regions.join('、') : '不限地区');
   parts.push(KIND_LABEL[c.kind] || '全部类型');
   if (c.time) parts.push(c.time);
+  if (c.open === 1 || c.open === '1') parts.push('只看未截止');
   return parts.join(' · ');
 }
 
-module.exports = { describe };
+function searchUrl(c) {
+  const params = Object.keys(c || {}).filter((k) => c[k] !== undefined && c[k] !== null && c[k] !== '')
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(c[k])}`);
+  return `/pages/search/index?${params.join('&')}`;
+}
+
+module.exports = { describe, searchUrl };

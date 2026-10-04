@@ -32,6 +32,9 @@ Page({
     ranges: RANGES,
     range: 30,
     counts: {},
+    loading: true,
+    loaded: false,
+    error: '',
     today: '',
     items: [],
     shown: [],
@@ -74,10 +77,12 @@ Page({
   },
 
   load() {
-    this.setData({ error: '' });
-    api.calendar().then(({ items, truncated }) => {
+    if (this.fetching) return;
+    this.fetching = true;
+    this.setData({ loading: true, error: '' });
+    api.calendar().then(({ items, past: closed = [], truncated }) => {
       // 只显示人工核对过的事项；剩余天数按今天实时计算。还没截止的（含今天截止）和近 30 天已截止的分开显示
-      const verified = items
+      const verified = items.concat(closed)
         .filter((d) => d.verified)
         .map((d) => {
           const days = daysUntil(d.due, undefined, d.time);
@@ -92,11 +97,12 @@ Page({
       const base = upcoming.length ? upcoming[0].due : todayISO();
       const [y, m] = base.split('-').map(Number);
       const keepMonth = this.data.monthOnly && this.data.year;
-      this.setData({ items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, truncated: !!truncated });
+      this.setData({ loading: false, loaded: true, items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, truncated: !!truncated });
       if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();
-    }).catch((err) => this.setData({ error: `加载失败：${err.message}` }));
+    }).catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }))
+      .finally(() => { this.fetching = false; });
     remindedDocs().then((reminded) => this.setData({ reminded }));
   },
 

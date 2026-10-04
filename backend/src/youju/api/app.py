@@ -32,6 +32,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import v1 as v1_api
+from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
@@ -797,6 +798,11 @@ def _audit(request: Request, action: str, **fields: object) -> None:
 
 AdminDep = Annotated[None, Depends(_require_admin)]
 
+app.include_router(weekly_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/weekly", weekly_api.console, response_class=HTMLResponse, include_in_schema=False
+)
+
 
 class RestoreIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1012,6 +1018,13 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         heartbeat_age = max(0, int(clock.time() - CRON_HEARTBEAT.stat().st_mtime))
     except OSError:
         heartbeat_age = None
+    from youju.ai.interpret import openids
+    from youju.models import AdvisorTask
+
+    ai_tasks = select(func.count(AdvisorTask.id)).where(
+        AdvisorTask.kind == "interpret",
+        AdvisorTask.created_at >= datetime.now(UTC) - timedelta(days=7),
+    )
     result = {
         "todos": {
             "deadlines": pending_count(session, None, "all")["pending"],
@@ -1040,6 +1053,12 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         "jobs": [{"job": name, "latest": latest.get(name)} for name in OVERVIEW_JOBS],
         "heartbeat_age_seconds": heartbeat_age,
         "advisor_enabled": get_settings().advisor_enabled,
+        "ai_advisor": {
+            "enabled": getattr(get_settings(), "ai_advisor_enabled", False),
+            "whitelist_count": len(openids(get_settings())),
+            "tasks_7d": count(ai_tasks),
+            "failed_7d": count(ai_tasks.where(AdvisorTask.status == "failed")),
+        },
     }
     _audit(request, "overview_read")
     return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})

@@ -38,17 +38,20 @@ Page({
     const requestSeq = (this.requestSeq || 0) + 1;
     this.requestSeq = requestSeq;
     this.loadedDay = todayISO();
+    const unfiltered = this.data.days === 30 && !this.data.province && !this.data.dept && !this.data.support;
+    if (!this.optionsLoading && !this.filterOptionsLoaded && !unfiltered) this.loadOptions();
     this.setData({ loading: true, error: '' });
     api.deadlineReport({ days: this.data.days, province: this.data.province, dept: this.data.dept, support: this.data.support, page, size: PAGE_SIZE })
       .then((res) => {
         if (requestSeq !== this.requestSeq) return;
-        const provinces = Object.keys(res.by_province || {}).sort();
+        if (unfiltered && !this.filterOptionsLoaded) this.setOptions(res);
+        const provinces = this.data.provinces;
         const depts = ['科技部门', '工信部门', '其他部门'];
         this.setData({
           summary: res.summary || { 7: 0, 14: 0, 30: 0 },
           items: reset ? res.items : this.data.items.concat(res.items),
           total: res.total, page, loading: false,
-          provinces: ['不限省份'].concat(provinces), depts: ['不限部门'].concat(depts),
+          provinces, depts: ['不限部门'].concat(depts),
         });
       })
       .catch((err) => {
@@ -59,6 +62,18 @@ Page({
 
   openToolPicker() { this.setData({ toolPickerOpen: true }); },
   closeToolPicker() { this.setData({ toolPickerOpen: false }); },
+  setOptions(res) {
+    this.filterOptionsLoaded = true;
+    this.setData({ provinces: ['不限省份'].concat(Object.keys(res.by_province || {}).sort()) });
+  },
+
+  loadOptions() {
+    this.optionsLoading = true;
+    api.deadlineReport({ days: 30, province: '', dept: '', support: '', page: 1, size: 1 })
+      .then((res) => this.setOptions(res))
+      .catch(() => {})
+      .finally(() => { this.optionsLoading = false; });
+  },
 
   retry() { this.load(true); },
   pickDays(e) { this.setData({ days: Number(e.currentTarget.dataset.days), items: [] }); this.load(true); },
