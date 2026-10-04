@@ -661,7 +661,7 @@ def test_worker_enabled_independently(session, settings, doc, monkeypatch):
     monkeypatch.setattr(service, "ChatClient", factory)
     result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
     assert result["done"] == 1 and fake.closed
-    assert options == [{"timeout": 180, "max_retries": 0}]
+    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None}]
 
 
 def test_get_result_invalidated_and_cleanup(client, session, settings, doc):

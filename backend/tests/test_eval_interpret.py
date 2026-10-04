@@ -207,7 +207,7 @@ def test_main_read_only_and_no_queue(
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert len(summary["doc_ids"]) == 3
     assert fake.calls == (0 if dry_run else 3)
-    assert options == ([] if dry_run else [{"timeout": 180.0, "max_retries": 0}])
+    assert options == ([] if dry_run else [{"timeout": 180.0, "max_retries": 0, "extra_body": {}}])
     assert summary["attempted_count"] == (0 if dry_run else 3)
     if skill == "clause":
         assert summary["key_counts"] == {
