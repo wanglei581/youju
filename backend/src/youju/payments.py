@@ -197,14 +197,34 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
     if data.get("status") not in (5, 8):
         return False
     if data.get("left_fee") != 0:
-        order.status, order.error = "manual", "订单部分退款，需人工核对"
+        order.status, order.refund_status, order.error = (
+            "manual", "partial", "订单部分退款，需人工核对"
+        )
         return True
     order.status, order.refund_status, order.error = "refunded", "completed", None
     order.updated_at = stamp
-    task = session.get(AdvisorTask, order.task_id) if order.task_id else None
-    if task and task.status == "queued":
-        task.status, task.finished_at, task.error = "cancelled", stamp, "订单已退款"
+    # 也取消 iOS 重跑前的运行任务；完成结果由读取接口按订单状态撤销访问。
+    session.execute(
+        update(AdvisorTask)
+        .where(AdvisorTask.pay_order_id == order.id, AdvisorTask.status.in_(("queued", "running")))
+        .values(status="cancelled", finished_at=stamp, error="订单已退款，结果不可用")
+    )
     return True
+
+
+def result_error(order: PayOrder | None) -> str | None:
+    if order is None:
+        return "订单状态无法核验，结果不可用"
+    if order.status in ("refunding", "refunded") or order.refund_status is not None:
+        return "订单已退款，结果不可用"
+    return None
+
+
+def refund_exhausted(order: PayOrder, stamp: datetime) -> bool:
+    return order.refund_attempts >= 6 or (
+        order.refund_started_at is not None
+        and order.refund_started_at <= stamp - timedelta(hours=24)
+    )
 
 
 def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: datetime) -> None:
@@ -213,11 +233,16 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
         session.commit()
         return
     order.status, order.refund_status = "refunding", "retry"
+    order.refund_started_at = order.refund_started_at or stamp
     order.refund_order_id = order.refund_order_id or uuid4().hex
     # 请求前持久化同一个退款单号；超时、重启只会重试同一退款，不重复扣款。
     session.commit()
     if order.refund_retry_at and order.refund_retry_at > stamp:
         return
+    # 包括查单失败的尝试也记数，避免请求一直发不出去时永久停留在退款中。
+    order.refund_attempts += 1
+    order.refund_retry_at = stamp + timedelta(minutes=min(60, 2 ** min(order.refund_attempts, 6)))
+    session.commit()
     try:
         data = query(session, order, client)
         if mark_refunded(session, order, data, stamp):
@@ -238,11 +263,6 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
             session.commit()
             return
         user = session.get(User, order.user_id)
-        order.refund_attempts += 1
-        order.refund_retry_at = stamp + timedelta(
-            minutes=min(60, 2 ** min(order.refund_attempts, 6))
-        )
-        session.commit()
         client.refund(
             {
                 "openid": user.openid,
@@ -274,7 +294,11 @@ def sync_task(session: Session, order: PayOrder, stamp: datetime) -> None:
             task.finished_at,
             stamp,
         )
-    elif task is None or task.status in ("failed", "cancelled"):
+    elif task is None:
+        order.status, order.error, order.alerted_at = (
+            "manual", "关联任务缺失，需人工核对，未自动退款", None
+        )
+    elif task.status in ("failed", "cancelled"):
         if order.platform == "ios":
             if (
                 order.rerun_count == 0
@@ -288,6 +312,7 @@ def sync_task(session: Session, order: PayOrder, stamp: datetime) -> None:
                 order.status, order.error = "manual", "iOS 重跑失败或输入不可用，需人工处理"
         elif order.platform == "android":
             order.status, order.refund_status = "refunding", "retry"
+            order.refund_started_at = order.refund_started_at or stamp
         else:
             order.status, order.error = "manual", "支付平台未知，需人工处理"
     session.flush()
@@ -328,6 +353,15 @@ def reconcile(
         for key in local.keys() | bill.keys()
         if local.get(key) != bill.get(key)
     }
+    # 支付日可能尚未被本地记录；按业务单号找漏发订单，绝不依据账单直接发货。
+    for order in session.scalars(
+        select(PayOrder).where(PayOrder.out_trade_no.in_(bill)).with_for_update()
+    ):
+        if order.task_id is None and order.status not in ("refunding", "refunded"):
+            order.status, order.error, order.alerted_at, order.updated_at = (
+                "manual", "账单已支付但本地未发货，需人工核对", None, stamp
+            )
+            differences.setdefault(order.out_trade_no, {"local": local.get(order.out_trade_no), "bill": bill[order.out_trade_no]})
     row = session.scalar(
         select(PayReconciliation).where(PayReconciliation.day == day).with_for_update()
     )
@@ -452,7 +486,7 @@ def run_payments(
                 (
                     (PayOrder.status == "pending")
                     & (PayOrder.created_at <= stamp - timedelta(minutes=2))
-                    & (PayOrder.created_at >= stamp - timedelta(minutes=30))
+                    & ((PayOrder.query_retry_at.is_(None)) | (PayOrder.query_retry_at <= stamp))
                 )
                 | PayOrder.status.in_(("processing", "refunding"))
                 | ((PayOrder.status == "manual") & PayOrder.alerted_at.is_(None))
@@ -463,26 +497,59 @@ def run_payments(
         )
     )
     for order_id in ids:
-        order = session.scalar(select(PayOrder).where(PayOrder.id == order_id).with_for_update())
+        order = session.scalar(
+            select(PayOrder).where(PayOrder.id == order_id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if order is None:
             session.rollback()
             continue
         try:
+            # 先查平台退款，再同步失败任务，避免把丢失的退款推送当成任务失败重跑。
+            if (
+                order.status == "processing"
+                and (order.paid_time or order.created_at) <= stamp - timedelta(minutes=10)
+                and (order.query_retry_at is None or order.query_retry_at <= stamp)
+            ):
+                order.query_retry_at = stamp + timedelta(minutes=10)
+                data = query(session, order, client)
+                mark_refunded(session, order, data, stamp)
             sync_task(session, order, stamp)
             if order.status == "refunding":
+                order.refund_started_at = order.refund_started_at or stamp
                 if not order.user_id:
                     order.status, order.error = "manual", "用户已注销，退款需人工处理"
+                elif refund_exhausted(order, stamp):
+                    # 最后核验已成功的退款；查单也失败则人工接手，不能无限重试。
+                    confirmed = False
+                    try:
+                        confirmed = mark_refunded(session, order, query(session, order, client), stamp)
+                    except XPayError:
+                        pass
+                    if not confirmed:
+                        order.status, order.error, order.alerted_at = (
+                            "manual", "退款尝试达到上限或超过24小时，需人工核对", None
+                        )
                 elif order.refund_status == "pending":
-                    data = query(session, order, client)
-                    if not mark_refunded(session, order, data, stamp) and data.get("status") == 7:
-                        order.refund_status = "retry"
+                    if order.refund_retry_at is None or order.refund_retry_at <= stamp:
+                        order.refund_retry_at = stamp + timedelta(minutes=10)
+                        data = query(session, order, client)
+                        if not mark_refunded(session, order, data, stamp) and data.get("status") == 7:
+                            order.refund_status = "retry"
                 else:
                     start_refund(session, order, client, stamp)
             elif order.status == "pending":
+                overdue = order.created_at <= stamp - timedelta(hours=48)
+                order.query_retry_at = stamp + timedelta(
+                    minutes=1 if order.created_at > stamp - timedelta(minutes=30) else 10
+                )
                 data = query(session, order, client)
                 if not mark_refunded(session, order, data, stamp):
-                    if data.get("status") == 6:
+                    if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"
+                    elif overdue and data.get("status") in (2, 3, 4):
+                        # 记录核验过的支付证据，但超出自动履约窗口不能再建任务。
+                        accept_payment(session, order, data, settings, stamp, deliver=False)
                     else:
                         accept_payment(session, order, data, settings, stamp)
                 session.commit()  # 先持久化任务再发通知；通知失败由下一次补发。

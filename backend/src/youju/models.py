@@ -714,6 +714,8 @@ class PayOrder(Base):
     refund_status: Mapped[str | None] = mapped_column(String(16))
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    query_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     error: Mapped[str | None] = mapped_column(String(500))
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

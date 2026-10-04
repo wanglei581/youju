@@ -39,6 +39,8 @@ def upgrade() -> None:
         sa.Column("refund_status", sa.String(16), nullable=True),
         sa.Column("refund_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("refund_retry_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("refund_started_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("query_retry_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("goods_notified", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("error", sa.String(500), nullable=True),
         sa.Column("alerted_at", mysql.DATETIME(fsp=6), nullable=True),

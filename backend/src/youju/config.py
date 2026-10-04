@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # all（本机开发默认）全部开放
     role: Literal["all", "api", "admin"] = "all"
     trust_wx_headers: bool = False
+    # 开公网的推送入口必须带微信来源头；私网入口按云托管转发信任推送。
+    wx_push_public: bool = True
     dev_openid: str | None = None
     template_deadline: dict | None = None
     template_newdocs: dict | None = None
