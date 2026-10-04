@@ -266,6 +266,23 @@ def application_status(
     }
 
 
+def upcoming_deadline(
+    deadlines: list[DocumentDeadline], stamp: datetime, days: int
+) -> DocumentDeadline | None:
+    """截止雷达口径：主截止（见 _selected_deadline）没过、且在今天起 days 天内时返回它。
+
+    只接收 _approved 返回的已核对截止；截止雷达和周报的临期提醒共用这一口径。
+    """
+    selected = _selected_deadline(deadlines)
+    if selected is None or selected.approved_date is None:
+        return None
+    status_value = application_status([selected], stamp)
+    if not status_value or status_value["code"] == "closed":
+        return None
+    remaining = (selected.approved_date - stamp.astimezone(_TZ).date()).days
+    return selected if 0 <= remaining <= days else None
+
+
 def _details(session: Session, doc_ids: list[int]) -> dict[int, DocumentDetail]:
     if not doc_ids:
         return {}
@@ -634,15 +651,10 @@ def _report_payload(
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
-        selected = _selected_deadline(approved.get(doc.id, []))
-        if selected is None or selected.approved_date is None:
-            continue
-        status_value = application_status([selected], current)
-        if not status_value or status_value["code"] == "closed":
+        selected = upcoming_deadline(approved.get(doc.id, []), current, 30)
+        if selected is None:
             continue
         remaining = (selected.approved_date - today).days
-        if remaining < 0 or remaining > 30:
-            continue
         detail = details.get(doc.id)
         entries.append(
             {

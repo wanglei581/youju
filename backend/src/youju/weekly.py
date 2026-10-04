@@ -1,10 +1,10 @@
-"""政策周报：公开题录与人工核对字段套固定模板，不调用模型或发送消息。"""
+"""政策周报和临期提醒：公开题录与人工核对字段套固定模板，不调用模型或发送消息。"""
 
 import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from youju.api import v1
+from youju.classify import effective_kind
 from youju.crawler.detail import redact_sensitive
 from youju.dedup import canonical_ids, visible_documents
 from youju.fields import SUPPORT_LABELS
@@ -36,6 +38,12 @@ COLUMNS = {
     "lists": "本周公示/公布的名单",
     "policies": "本周新发布的政策文件",
 }
+# 稿件类型：周报按上一个完整自然周统计；临期提醒归入生成当天所在的周，每周四生成。
+KINDS = {"weekly": "周报", "reminder": "临期提醒"}
+REMINDER_DAYS = 7
+REMINDER_WEEKDAY = 4
+REMINDER_HEADING = f"未来 {REMINDER_DAYS} 天内截止的申报通知"
+REMINDER_EMPTY = f"本周未来 {REMINDER_DAYS} 天没有已核对截止的申报项目"
 DISCLAIMER = "第三方整理，非政府平台；信息来自政府网站公开发布的文件，以原文为准。"
 CALL_TO_ACTION = "查看原文和订阅截止提醒：在微信搜索小程序「有据」，搜标题即可。"
 PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
@@ -60,6 +68,23 @@ def week_interval(week: date | None = None, stamp: datetime | None = None) -> tu
     if week.weekday() != 0:
         raise ValueError("统计周请填写周一日期")
     return week, week + timedelta(days=6)
+
+
+def reminder_interval(week: date | None = None, stamp: datetime | None = None) -> tuple[date, date]:
+    """临期提醒归入生成当天（北京时间）所在的自然周；截止按生成当天计算，只能生成本周。"""
+    today = (stamp or now()).astimezone(BEIJING).date()
+    current = today - timedelta(days=today.weekday())
+    if week is not None and week != current:
+        if week.weekday() != 0:
+            raise ValueError("统计周请填写周一日期")
+        raise ValueError("临期提醒按生成当天计算截止，只能生成本周：请留空或填写本周周一")
+    return current, current + timedelta(days=6)
+
+
+def interval(kind: str, week: date | None = None, stamp: datetime | None = None):
+    if kind not in KINDS:
+        raise ValueError("稿件类型不支持")
+    return (reminder_interval if kind == "reminder" else week_interval)(week, stamp)
 
 
 def safe_url(value: str) -> bool:
@@ -272,7 +297,7 @@ def _month_day(value: date) -> str:
     return f"{value.month} 月 {value.day} 日"
 
 
-def _deadline_text(item: Item, due=None, *, linked=False) -> str:
+def _deadline_text(item: Item, due=None, *, linked=False, with_kind=False) -> str:
     deadlines = (due,) if due else item.deadlines
     if not deadlines:
         return "截止时间见原文"
@@ -280,7 +305,7 @@ def _deadline_text(item: Item, due=None, *, linked=False) -> str:
     for deadline in deadlines:
         day = deadline.approved_date
         at = f" {deadline.approved_time:%H:%M}" if deadline.approved_time else ""
-        kind = f"{deadline.kind} " if linked or len(deadlines) > 1 else ""
+        kind = f"{deadline.kind} " if with_kind or linked or len(deadlines) > 1 else ""
         parts.append(f"{kind}{day.isoformat() if linked else _month_day(day)}{at}（已核对）")
     return "截止：" + "；".join(parts)
 
@@ -394,11 +419,135 @@ def render(profile: DigestProfile, start: date, end: date, today: date, columns:
     )
 
 
+def _reminder_items(session: Session, profile: DigestProfile, stamp: datetime) -> list[Item]:
+    """临期提醒：候选、核对和截止口径与小程序截止雷达相同（youju.api.v1），再套方案筛选。"""
+    today = stamp.astimezone(BEIJING).date()
+    stmt = v1._base().where(
+        Document.id.in_(v1._future_approved_canonical_ids(session, today)),
+        v1._kind_is(["申报通知"]),
+        # 与周报和 issue_available 的公开范围一致：主文件本身来自一级来源。
+        Source.rights_level == 1,
+    )
+    if profile.provinces:
+        stmt = stmt.where(Source.province.in_(["国家", *profile.provinces]))
+    rows = [
+        (doc, src)
+        for doc, src in session.execute(stmt.order_by(Document.id)).all()
+        if effective_kind(doc.title, doc.kind_override) == "申报通知"
+        and safe_url(doc.url)
+        and (not profile.keywords or any(word in doc.title for word in profile.keywords))
+    ]
+    ids = [doc.id for doc, _ in rows]
+    approved = v1._approved(session, ids)
+    details = v1._details(session, ids)
+    items = []
+    for doc, src in rows:
+        due = v1.upcoming_deadline(approved.get(doc.id, []), stamp, REMINDER_DAYS)
+        if due is None:
+            continue
+        detail = details.get(doc.id)
+        issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
+        items.append(
+            Item(
+                doc.id,
+                _text(doc.title),
+                _text(issuer),
+                src.province,
+                doc.publish_date,
+                "",
+                doc.url,
+                (due,),
+            )
+        )
+    # 按截止日期升序；同一天写了时刻的在前，没写时刻的算到当天结束。
+    items.sort(
+        key=lambda item: (
+            item.deadlines[0].approved_date,
+            item.deadlines[0].approved_time is None,
+            item.deadlines[0].approved_time or time.min,
+            item.id,
+        )
+    )
+    return items
+
+
+def render_reminder(profile: DigestProfile, today: date, items: list[Item]):
+    """临期提醒正文；没有符合条件的项目时也生成一句话说明，不返回空。"""
+    end = today + timedelta(days=REMINDER_DAYS)
+    title = f"申报临期提醒｜{_month_day(today)}—{_month_day(end)}（{profile.name}）"
+    html = ['<section style="font-size:15px;line-height:1.8;color:#222b35;">']
+    lines, linked_lines = [], []
+
+    def paragraph(value):
+        html.append(f'<p style="margin:8px 0;">{escape(_public_text(value))}</p>')
+        lines.append(_public_text(value))
+        linked_lines.append(_one_line(value))
+
+    shown = items[:LIMIT]
+    if items:
+        heading = f"{REMINDER_HEADING}（{len(items)} 条）"
+        html.append(f'<h2 style="font-size:20px;margin:24px 0 12px;">{escape(heading)}</h2>')
+        lines.append(heading)
+        linked_lines.append(heading)
+        paragraph(f"截止统计基准：{today.isoformat()}")
+        for item in shown:
+            due = item.deadlines[0]
+            html.append(
+                '<p style="margin:12px 0 0;"><strong>'
+                f"{escape(_public_text(item.title))}</strong></p>"
+            )
+            lines.append(_public_text(item.title))
+            metadata_text = _public_text(
+                f"{item.issuer} · {_deadline_text(item, due, with_kind=True)}"
+            )
+            html.append(
+                '<p style="font-size:12px;color:#687482;margin:0 0 8px;">'
+                f"{escape(metadata_text)}</p>"
+            )
+            lines.append(metadata_text)
+            # 四列固定，每条一行：标题｜发文单位｜截止｜原文链接。
+            linked_lines.append(
+                "｜".join(
+                    _one_line(field).replace("｜", "|")
+                    for field in (
+                        item.title,
+                        item.issuer,
+                        _deadline_text(item, due, linked=True),
+                        item.url,
+                    )
+                )
+            )
+        if len(items) > LIMIT:
+            paragraph(f"共 {len(items)} 条，其余在「有据」小程序里查看")
+    else:
+        paragraph(REMINDER_EMPTY)
+    lines.append("")
+    linked_lines.append("")
+    paragraph(CALL_TO_ACTION)
+    paragraph(DISCLAIMER)
+    html.append("</section>")
+    return (
+        title,
+        "".join(html),
+        "\n".join(lines).lstrip(),
+        "\n".join(linked_lines).lstrip(),
+        {"reminder": len(items)},
+        sorted(item.id for item in shown),
+    )
+
+
 def generate(
-    session: Session, profile_id: int, week: date | None = None, stamp: datetime | None = None
+    session: Session,
+    profile_id: int,
+    week: date | None = None,
+    stamp: datetime | None = None,
+    kind: str = "weekly",
+    *,
+    only_missing: bool = False,
 ) -> Generation:
+    """生成或覆盖草稿；only_missing 时本周已有同类稿件就不再生成（定时补跑用）。"""
     stamp = stamp or now()
-    start, end = week_interval(week, stamp)
+    start, end = interval(kind, week, stamp)
     # 所有生成和发布先锁方案再锁期刊；也串行化同一区间首次插入，避免并发覆盖已发布快照。
     profile = session.scalar(
         select(DigestProfile)
@@ -412,15 +561,25 @@ def generate(
         raise ValueError("方案名称含周报禁用文字")
     issue = session.scalar(
         select(DigestIssue)
-        .where(DigestIssue.profile_id == profile.id, DigestIssue.week_start == start)
+        .where(
+            DigestIssue.profile_id == profile.id,
+            DigestIssue.kind == kind,
+            DigestIssue.week_start == start,
+        )
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if issue and only_missing:
+        session.commit()
+        return Generation(issue, "exists", f"本周{KINDS[kind]}已生成，未重复生成")
     if issue and issue.status == "published":
         session.commit()
         return Generation(issue, "published", "已标为已发布，未覆盖")
     today = stamp.astimezone(BEIJING).date()
-    rendered = render(profile, start, end, today, _items(session, profile, start, end, stamp))
+    if kind == "reminder":
+        rendered = render_reminder(profile, today, _reminder_items(session, profile, stamp))
+    else:
+        rendered = render(profile, start, end, today, _items(session, profile, start, end, stamp))
     if rendered is None:
         # 重新生成也不能留下旧草稿里的下架题录；无内容不创建空期刊。
         if issue:
@@ -431,7 +590,7 @@ def generate(
         return Generation(None, "empty", reason)
     title, body_html, body_text, body_text_with_links, counts, document_ids = rendered
     if issue is None:
-        issue = DigestIssue(profile_id=profile.id, week_start=start, week_end=end)
+        issue = DigestIssue(profile_id=profile.id, kind=kind, week_start=start, week_end=end)
         session.add(issue)
     issue.title, issue.body_html, issue.body_text = title, body_html, body_text
     issue.body_text_with_links = body_text_with_links
