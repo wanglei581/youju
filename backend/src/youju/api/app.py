@@ -1098,6 +1098,33 @@ def admin_job_runs(
     )
 
 
+@app.get("/api/admin/quality-sample")
+def admin_quality_sample(
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+    kind: Annotated[Literal["notices", "compare"], Query(description="通知 / 名单比对")],
+    n: Annotated[int, Query(ge=1, le=500, description="抽多少条")] = 200,
+    seed: Annotated[int, Query(ge=0, le=2**31 - 1, description="抽样种子")] = 1,
+) -> Response:
+    """数据质量抽检表（CSV 下载）：只读，抽样并先做程序核对，人工结论列留空。"""
+    from youju.quality import sample_csv
+
+    data, rows = sample_csv(session, kind, n=n, seed=seed)
+    _audit(request, "quality_sample", kind=kind, n=n, seed=seed, count=rows)
+    day = v1_api.now().strftime("%Y%m%d")
+    return Response(
+        data,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="youju-quality-{kind}-{day}-seed{seed}.csv"'
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 DueFilter = Literal["all", "30", "future"]
 DueQuery = Annotated[
     DueFilter,
