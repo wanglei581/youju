@@ -1022,7 +1022,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
     from youju.models import AdvisorTask
 
     ai_tasks = select(func.count(AdvisorTask.id)).where(
-        AdvisorTask.kind == "interpret",
+        AdvisorTask.kind.in_(("interpret", "clause")),
         AdvisorTask.created_at >= datetime.now(UTC) - timedelta(days=7),
     )
     result = {

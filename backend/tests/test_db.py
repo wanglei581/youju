@@ -1,8 +1,29 @@
 """数据库连接：云托管 MySQL 暂停后恢复期间要重试，其他错误照常报出。"""
 
 import pymysql
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from youju.db import _worth_retrying
+
+
+def test_sql_errors_and_logs_hide_customer_parameters(db_engine, caplog, monkeypatch):
+    import logging
+
+    markers = ("客户名称测试标记", "企业营业收入测试标记")
+    monkeypatch.setattr(db_engine, "echo", True)
+    with caplog.at_level(logging.INFO):
+        with db_engine.connect() as conn, pytest.raises(DBAPIError) as rejected:
+            conn.execute(
+                text("SELECT :customer, :company FROM deliberately_missing_privacy_test_table"),
+                {"customer": markers[0], "company": markers[1]},
+            )
+        logging.getLogger(__name__).error("SQL 执行失败：%s", rejected.value)
+    assert rejected.value.hide_parameters
+    assert all(
+        marker not in str(rejected.value) and marker not in caplog.text for marker in markers
+    )
 
 
 def test_resuming_and_transient_errors_are_retried() -> None:

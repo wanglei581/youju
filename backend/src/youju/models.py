@@ -503,7 +503,9 @@ class AdvisorTask(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_advisor_tasks_user_key"),
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
-        CheckConstraint("kind IN ('compare', 'track', 'interpret')", name="ck_advisor_tasks_kind"),
+        CheckConstraint(
+            "kind IN ('compare', 'track', 'interpret', 'clause')", name="ck_advisor_tasks_kind"
+        ),
         Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
             "status IN ('queued', 'running', 'done', 'failed', 'cancelled')",

@@ -69,7 +69,8 @@ def documents(session):
 
 
 class FakeChat:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, skill="interpret", **kwargs):
+        self.skill = skill
         self.calls = 0
         self.closed = False
         self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -77,12 +78,15 @@ class FakeChat:
     def complete_json(self, system, user, max_tokens):
         self.calls += 1
         self.last_usage = {"prompt_tokens": 10, "completion_tokens": 5}
-        assert system == eval_script.interpret.SYSTEM_PROMPT
+        assert system == eval_script.get_skill(self.skill).system_prompt
         assert json.loads(user)["paragraphs"]
-        entry = {"type": "材料", "refs": [{"pid": "P001", "quote": QUOTE}]}
+        kind = "材料" if self.skill == "interpret" else "条件"
+        entry = {"type": kind, "refs": [{"pid": "P001", "quote": QUOTE}]}
+        if self.skill == "clause":
+            entry["keys"] = ["rd", "rd", "region", "unknown"]
         if self.calls == 2:
             raise AIError("故意放入敏感的异常文本，不允许输出")
-        return {"items": [entry, entry, {"type": "材料", "refs": [{"quote": "太短"}]}]}
+        return {"items": [entry, entry, {"type": kind, "refs": [{"quote": "太短"}]}]}
 
     def close(self):
         self.closed = True
@@ -157,7 +161,10 @@ def test_no_key_exits_before_database_or_client(monkeypatch, capsys, tmp_path):
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_main_read_only_and_no_queue(db_engine, session, documents, tmp_path, monkeypatch, dry_run):
+@pytest.mark.parametrize("skill", ["interpret", "clause"])
+def test_main_read_only_and_no_queue(
+    db_engine, session, documents, tmp_path, monkeypatch, dry_run, skill
+):
     settings = Settings(
         _env_file=None,
         database_url=db_engine.url.render_as_string(hide_password=False),
@@ -166,7 +173,7 @@ def test_main_read_only_and_no_queue(db_engine, session, documents, tmp_path, mo
     )
     monkeypatch.setattr(eval_script, "get_settings", lambda: settings)
     monkeypatch.setattr(eval_script, "create_mysql_engine", lambda url: db_engine)
-    fake = FakeChat()
+    fake = FakeChat(skill=skill)
     options = []
 
     def factory(*args, **kwargs):
@@ -183,6 +190,8 @@ def test_main_read_only_and_no_queue(db_engine, session, documents, tmp_path, mo
     event.listen(db_engine, "before_cursor_execute", record)
     try:
         args = [
+            "--skill",
+            skill,
             "--limit",
             "3",
             "--out",
@@ -200,6 +209,12 @@ def test_main_read_only_and_no_queue(db_engine, session, documents, tmp_path, mo
     assert fake.calls == (0 if dry_run else 3)
     assert options == ([] if dry_run else [{"max_retries": 0}])
     assert summary["attempted_count"] == (0 if dry_run else 3)
+    if skill == "clause":
+        assert summary["key_counts"] == {
+            key: (2 if not dry_run and key in ("rd", "region") else 0)
+            for key in eval_script.clause.KEYS
+        }
+        assert summary["empty_keys_count"] == 0
     assert fake.closed is (not dry_run)
     assert all(
         session.scalar(select(func.count(cls.id))) == 0
@@ -219,6 +234,33 @@ def test_invalid_model_shape_and_empty_summary(session, documents):
     assert eval_script.summarize(records)["success_count"] == 0
     empty = eval_script.summarize([])
     assert empty["retention_rate"] == 0 and empty["average_elapsed_seconds"] == 0
+
+
+def test_clause_key_and_empty_counts_in_outputs(session, documents, tmp_path):
+    class ClauseChat(FakeChat):
+        def complete_json(self, system, user, max_tokens):
+            payload = super().complete_json(system, user, max_tokens)
+            payload["items"].append(
+                {"type": "对象", "refs": [{"pid": "P001", "quote": QUOTE}], "keys": []}
+            )
+            return payload
+
+    records = eval_script.evaluate(
+        eval_script.select_documents(session, "fake", 3, None, "clause"),
+        ClauseChat(skill="clause"),
+        "clause",
+    )
+    summary = eval_script.summarize(records, "clause")
+    assert summary["key_counts"] == {
+        key: 2 if key in ("rd", "region") else 0 for key in eval_script.clause.KEYS
+    }
+    assert summary["empty_keys_count"] == 2
+    assert summary["type_coverage"] == {"对象": 2, "条件": 2}
+    assert records[1]["status"] == "error" and records[1]["key_counts"]["rd"] == 0
+    eval_script.write_outputs(tmp_path, records, "clause")
+    assert json.loads((tmp_path / "summary.json").read_text()) == summary
+    assert "items" not in json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+    assert "| keys 为空 | 2 |" in (tmp_path / "summary.md").read_text()
 
 
 def test_body_length_includes_trailing_newlines(session, documents):

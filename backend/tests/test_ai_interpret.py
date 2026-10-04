@@ -301,7 +301,7 @@ def test_worker_finishes_revoked_tasks_and_refunds(
     "data_enabled,ai_enabled", [(False, False), (False, True), (True, False), (True, True)]
 )
 @pytest.mark.parametrize("whitelisted", [False, True])
-@pytest.mark.parametrize("kind", ["compare", "track", "interpret"])
+@pytest.mark.parametrize("kind", ["compare", "track", "interpret", "clause"])
 def test_task_routes_check_ownership_before_feature_authorization(
     client, session, settings, doc, data_enabled, ai_enabled, whitelisted, kind
 ):
@@ -314,7 +314,7 @@ def test_task_routes_check_ownership_before_feature_authorization(
     settings.advisor_enabled = data_enabled
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal,second" if whitelisted else "second"
-    allowed = ai_enabled and whitelisted if kind == "interpret" else data_enabled
+    allowed = ai_enabled and whitelisted if kind in ("interpret", "clause") else data_enabled
     routes = [
         ("GET", "", 200),
         ("GET", "/download", 410),
@@ -337,7 +337,7 @@ def test_task_routes_check_ownership_before_feature_authorization(
 @pytest.mark.parametrize(
     "ai_enabled,whitelisted", [(False, False), (False, True), (True, False), (True, True)]
 )
-@pytest.mark.parametrize("kind", ["invalid", "interpret", None, 7, [], {}, True])
+@pytest.mark.parametrize("kind", ["invalid", "interpret", "clause", None, 7, [], {}, True])
 def test_invalid_kind_does_not_disclose_unavailable_ai(
     client, settings, doc, ai_enabled, whitelisted, kind
 ):
@@ -345,19 +345,19 @@ def test_invalid_kind_does_not_disclose_unavailable_ai(
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     body = {"rows": ["甲公司"]} if kind is None else {"kind": kind, "rows": ["甲公司"]}
-    if kind == "interpret":
+    if kind in ("interpret", "clause"):
         body = {"kind": kind, "doc_id": doc.id}
     response = client.post(
         "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "invalid-kind"}
     )
     if ai_enabled and whitelisted:
-        assert response.status_code == (202 if kind == "interpret" else 422)
+        assert response.status_code == (202 if kind in ("interpret", "clause") else 422)
         if kind == "invalid":
             assert "interpret" in response.text  # 授权用户保留现有 Literal 校验。
     else:
         assert response.status_code == 422
         assert response.json() == {"detail": "kind 只能是 compare 或 track"}
-        assert "interpret" not in response.text
+        assert "interpret" not in response.text and "clause" not in response.text
 
 
 def test_personal_data_retains_own_interpret_history_after_revocation(
