@@ -22,6 +22,7 @@
 .empty { padding: 56rpx 32rpx; text-align: center; }
 .empty-title { font-size: 32rpx; font-weight: 600; }
 .empty-sub { margin-top: 12rpx; font-size: 26rpx; }
+.empty-link { display: inline-block; margin-top: 20rpx; padding: 8rpx 0; font-size: 26rpx; }
 .item { padding: 28rpx 32rpx; }
 .item-top { display: flex; align-items: center; gap: 16rpx; }
 .item-date { font-size: 32rpx; font-weight: 700; }

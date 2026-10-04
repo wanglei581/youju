@@ -1,4 +1,4 @@
-const { dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 
 // 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 复制原文链接
@@ -14,7 +14,7 @@ Component({
     // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
     selecting: { type: Boolean, value: false },
   },
-  data: { segs: [], due: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false },
+  data: { segs: [], due: null, dueNote: '', kindCls: '', statusCls: '', statusText: '', issuerLong: false },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
@@ -26,6 +26,7 @@ Component({
       this.setData({
         segs: highlight(doc.title, q),
         due: dueInfo(doc.deadline),
+        dueNote: deadlineNote(doc),
         kindCls: kindClass(doc.kind),
         statusCls,
         statusText,

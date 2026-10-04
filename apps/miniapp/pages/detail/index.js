@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, cnDate, weekday, kindClass } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
@@ -16,7 +16,7 @@ function previewOf(text) {
 }
 
 Page({
-  data: { doc: null, due: null, dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
+  data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '' },
 
   onLoad(query) {
@@ -45,6 +45,8 @@ Page({
           supportExpanded: '',
           supportEvidence: '',
           due,
+          // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
+          dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
@@ -56,7 +58,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, changes: [], reminded: false,
+        doc: null, due: null, dueNote: '', changes: [], reminded: false,
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))

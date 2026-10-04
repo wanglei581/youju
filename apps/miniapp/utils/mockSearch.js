@@ -14,6 +14,12 @@ function matchRegion(doc, regions) {
   return picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : doc.region.startsWith(r)));
 }
 
+// 层级：国家部委 = 地区为"国家"的文件；省级 = "某省 · 省级"（与服务端一致，不含市级）
+function matchLevel(doc, levels) {
+  if (!levels.length) return true;
+  return levels.some((l) => (l === '国家部委' ? doc.region.startsWith('国家') : / · 省级$/.test(doc.region)));
+}
+
 function matchType(doc, types) {
   if (!types.length) return true;
   return types.some((t) => (t === '其他' ? !['申报通知', '名单', '政策'].includes(doc.kind) : doc.kind === TYPE_KIND[t]));
@@ -37,17 +43,18 @@ function matchOpen(doc) {
   return !!(doc.deadline && doc.deadline.verified && daysUntil(doc.deadline.date, undefined, doc.deadline.time) >= 0);
 }
 
-// params 与接口相同：q, kind, regions, types, status, time, depts, limit, offset
+// params 与接口相同：q, kind, regions, levels, types, status, time, depts, limit, offset
 function mockSearch(all, params) {
   const kw = (params.q || '').trim();
   const kind = params.kind || 'all';
   const regions = split(params.regions);
+  const levels = split(params.levels);
   const types = split(params.types);
   const status = split(params.status);
   const depts = split(params.depts);
   const base = all.filter((d) => (!kw || d.title.includes(kw))
     && (kind === 'all' || d.kind === kind)
-    && matchRegion(d, regions) && matchType(d, types)
+    && matchRegion(d, regions) && matchLevel(d, levels) && matchType(d, types)
     && (!status.length || status.includes(d.status))
     && (!params.open || matchOpen(d))
     && (!depts.length || depts.includes(deptOf(d))));

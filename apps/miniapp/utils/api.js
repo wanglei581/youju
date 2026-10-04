@@ -111,7 +111,7 @@ function deadlineReport(params) {
   const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
   const by = (key) => filtered.reduce((out, item) => { out[item[key]] = (out[item[key]] || 0) + 1; return out; }, {});
   const page = Number(params.page || 1); const size = Number(params.size || 20);
-  return copy({ days, summary, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
+  return copy({ days, summary, verified_total: ((mock.reports && mock.reports.deadlines) || []).length, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
 }
 
 function listBoard(params) {
@@ -187,11 +187,11 @@ function calendar() {
       const next = offset + 200;
       return next < Math.max(r.total, r.pastTotal || 0) && next < 1000 && (r.items.length || (r.past || []).length)
         ? page(next, items, past)
-        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
+        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, verifiedTotal: r.verifiedTotal, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
     });
     return page(0, [], []);
   }
-  return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)) });
+  return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
 }
 
 function lists() {

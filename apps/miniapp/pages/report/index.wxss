@@ -19,4 +19,6 @@
 .export { color: var(--brand); }
 .more { padding: 28rpx 0; text-align: center; color: var(--brand); font-size: 26rpx; }
 .empty { padding: 48rpx 0; text-align: center; color: var(--t2); font-size: 26rpx; }
+.empty-note { margin-top: 12rpx; font-size: 24rpx; color: var(--t3); }
+.empty-link { display: inline-block; margin-top: 20rpx; padding: 8rpx 0; font-size: 26rpx; }
 .note { margin: 24rpx 32rpx 60rpx; color: var(--t3); font-size: 24rpx; line-height: 1.7; }

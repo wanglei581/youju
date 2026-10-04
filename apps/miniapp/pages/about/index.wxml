@@ -20,7 +20,7 @@
 
 <view class="card">
   <view class="section-title">数据从哪里来</view>
-  <view class="muted plain">只收录政府网站公开发布的文件，每条都附原文链接。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。截止日期等关键信息经人工核对才显示，没核对的写"截止时间见原文"。</view>
+  <view class="muted plain">只收录政府网站公开发布的文件，每条都附原文链接。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。截止日期等关键信息经人工核对才显示；没核对的不显示日期，写"截止未核对，请以原文为准"或"截止时间见原文"。</view>
 </view>
 
 <view wx:if="{{!cov && covFailed}}" class="card load-error"><text>收录范围没有加载出来</text><text class="link retry" bindtap="loadRange">重试</text></view>

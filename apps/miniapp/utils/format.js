@@ -76,6 +76,23 @@ function dueInfo(deadline, now) {
   };
 }
 
+// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）：
+// 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
+// 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
+const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
+const NOTE_SEE_ORIGINAL = '截止时间见原文';
+function deadlineNote(doc) {
+  if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
+  return doc.deadline_state === 'unverified' ? NOTE_UNVERIFIED : NOTE_SEE_ORIGINAL;
+}
+
+// 截止雷达、申报日历没有内容时的说明；total 是服务端给的已核对条数（不是数字时不写条数）
+function verifyingNote(total) {
+  return typeof total === 'number' && total >= 0
+    ? `截止日期正在人工核对中，目前已核对 ${total} 条`
+    : '截止日期正在人工核对中';
+}
+
 // 类型标签颜色：申报=蓝，名单=橙，政策=绿
 function kindClass(kind) {
   return { 申报通知: 'apply', 名单: 'list', 政策: 'policy' }[kind] || 'plain';
@@ -118,4 +135,5 @@ function shortTime(iso) {
 module.exports = {
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL,
 };

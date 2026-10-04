@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
-const { todayISO } = require('../../utils/format.js');
+const { todayISO, verifyingNote } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const PAGE_SIZE = 20;
@@ -12,6 +12,8 @@ Page({
     items: [],
     total: 0,
     page: 1,
+    // 没有内容时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
+    verifyingNote: '',
     loading: false,
     error: '',
     province: '',
@@ -50,6 +52,7 @@ Page({
           summary: res.summary || { 7: 0, 14: 0, 30: 0 },
           items: reset ? res.items : this.data.items.concat(res.items),
           total: res.total, page, loading: false,
+          verifyingNote: verifyingNote(res.verified_total),
           provinces, depts: ['不限部门'].concat(depts),
         });
       })
@@ -91,5 +94,12 @@ Page({
   },
   more() { if (this.data.items.length < this.data.total) this.load(false); },
   open(e) { wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` }); },
+  // 没有内容时去搜索申报通知；选了省份、部门的带过去（取值和搜索筛选一致）
+  goSearch() {
+    const params = [`kind=${encodeURIComponent('申报通知')}`];
+    if (this.data.province) params.push(`regions=${encodeURIComponent(this.data.province)}`);
+    if (this.data.dept) params.push(`depts=${encodeURIComponent(this.data.dept)}`);
+    wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
+  },
   exportOne(e) { exportDocs([e.currentTarget.dataset.id], { label: '截止雷达' }); },
 });
