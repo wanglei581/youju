@@ -28,6 +28,7 @@ function searchPage(api, wx = {}) {
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/exporter.js': {}, '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': {}, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
+    '../../utils/conditions.js': conditions,
   }, { wx });
 }
 

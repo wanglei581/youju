@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO, daysUntil, monthDay, weekday, dueTone } = require('../../utils/format.js');
+const { todayISO, daysUntil, monthDay, weekday, dueTone, verifyingNote } = require('../../utils/format.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -53,6 +53,8 @@ Page({
     nearest: null,
     reminded: {},
     truncated: false,
+    // 没有未截止事项时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
+    verifyingNote: '',
   },
 
   onShow() {
@@ -76,11 +78,16 @@ Page({
     wx.navigateTo({ url: '/pages/report/index' });
   },
 
+  // 没有未截止事项时去搜索申报通知
+  goSearch() {
+    wx.navigateTo({ url: `/pages/search/index?kind=${encodeURIComponent('申报通知')}` });
+  },
+
   load() {
     if (this.fetching) return;
     this.fetching = true;
     this.setData({ loading: true, error: '' });
-    api.calendar().then(({ items, past: closed = [], truncated }) => {
+    api.calendar().then(({ items, past: closed = [], truncated, verifiedTotal }) => {
       // 只显示人工核对过的事项；剩余天数按今天实时计算。还没截止的（含今天截止）和近 30 天已截止的分开显示
       const verified = items.concat(closed)
         .filter((d) => d.verified)
@@ -97,7 +104,7 @@ Page({
       const base = upcoming.length ? upcoming[0].due : todayISO();
       const [y, m] = base.split('-').map(Number);
       const keepMonth = this.data.monthOnly && this.data.year;
-      this.setData({ loading: false, loaded: true, items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, truncated: !!truncated });
+      this.setData({ loading: false, loaded: true, items: upcoming, past, counts, today: monthDay(todayISO()), nearest: upcoming[0] || null, truncated: !!truncated, verifyingNote: verifyingNote(verifiedTotal) });
       if (!keepMonth) this.setData({ year: y, month: m });
       this.buildMonth();
       this.refresh();

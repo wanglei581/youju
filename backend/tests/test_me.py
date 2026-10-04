@@ -963,3 +963,19 @@ def test_deadline_reminder_rechecks_publicity_when_sending(client, session, monk
 
     assert run_notify(session, settings=config, sender=forbidden, stamp=NOW)["expired"] == 1
     assert session.get(Subscription, sub_id).status == "expired"
+
+
+def test_follow_keeps_level_filter(client, session, monkeypatch):
+    """关注条件可以带层级；新文件计数按层级筛，层级取值不对时 422。"""
+    settings(monkeypatch)
+    agree(client)
+    assert follow(client, {"time": "不限", "levels": "市级"}).status_code == 422
+    national = follow(client, {"time": "不限", "levels": "国家部委"})
+    provincial = follow(client, {"time": "不限", "levels": "省级", "regions": "北京"})
+    assert national.status_code == 201 and provincial.status_code == 201
+    assert provincial.json()["conditions"]["levels"] == "省级"
+    source_and_doc(session)  # 北京省级来源的新文件
+    counts = {
+        row["id"]: row["newCount"] for row in client.get("/api/v1/me/follows").json()["items"]
+    }
+    assert counts == {national.json()["id"]: 0, provincial.json()["id"]: 1}

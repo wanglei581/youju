@@ -100,6 +100,7 @@ class Conditions(BaseModel):
     time: str = "近 30 天"
     depts: str | None = Field(default=None, max_length=400)
     open: int | None = Field(default=None, ge=0, le=1)
+    levels: str | None = Field(default=None, max_length=400)
 
 
 class FollowIn(BaseModel):

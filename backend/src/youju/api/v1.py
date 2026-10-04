@@ -1,6 +1,7 @@
 """小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、报告、最近名单、查名单。
 
-返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
+返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；待核对的候选
+只给"有没有"（deadline_state），不给日期；
 截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
 """
 
@@ -74,6 +75,11 @@ PROVINCES = {
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
+# 层级筛选；地市还没接入，先不提供"市级"
+LEVELS = {"国家部委", "省级"}
+# 列表和详情的截止状态：verified 有核对通过的截止（deadline 给出日期）；unverified 没有核对通过的、
+# 但有待核对的候选（页面写"截止未核对"，不给任何日期）；none 没有候选（页面写"截止时间见原文"）
+DEADLINE_STATES = ("verified", "unverified", "none")
 # 31 个省级地区（不含港澳台），按国家行政区划顺序；用于"已收录 / 还没收录"（验收 A8）
 _PROVINCE_ORDER = (
     "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏", "浙江",
@@ -156,6 +162,54 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     for items in out.values():
         items.sort(key=lambda d: (_DEADLINE_ORDER.get(d.kind, 9), d.approved_date or date.max))
     return out
+
+
+def _pending(session: Session, doc_ids: list[int]) -> set[int]:
+    """哪些文件（看整个归并组）有待核对的截止候选。只查有没有，不读候选日期。"""
+    if not doc_ids:
+        return set()
+    members = groups_for(session, doc_ids)
+    hit = set(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(
+                DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
+                DocumentDeadline.status == "pending",
+            )
+            .distinct()
+        )
+    )
+    return {doc_id for doc_id, ids in members.items() if hit.intersection(ids)}
+
+
+def deadline_state(approved: list[DocumentDeadline], pending: bool) -> str:
+    """三种截止状态（见 DEADLINE_STATES）。approved 只接收 _approved 的结果：
+    有核对通过的就是 verified，和 deadline 字段有日期一一对应。"""
+    if approved:
+        return "verified"
+    return "unverified" if pending else "none"
+
+
+def verified_total(session: Session) -> int:
+    """截止雷达、申报日历空状态里的"已核对 X 条"：有核对通过截止的公开文件份数。
+
+    与列表的 deadline_state == "verified" 同一口径：同一通知的不同网址算一份，已变更的不算，
+    已下架和不公开的不算。只给数字，不给日期。
+    """
+    ids = list(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(DocumentDeadline.status == "approved")
+            .distinct()
+        )
+    )
+    if not ids:
+        return 0
+    mapping = canonical_ids(session, ids)
+    masters = sorted({mapping.get(doc_id, doc_id) for doc_id in ids})
+    visible = [doc.id for doc, _ in session.execute(_base().where(Document.id.in_(masters)))]
+    approved = _approved(session, visible)
+    return sum(1 for doc_id in visible if approved.get(doc_id))
 
 
 def _public_fields() -> Select:
@@ -314,7 +368,11 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
 
 
 def _item(
-    doc: Document, src: Source, detail: DocumentDetail | None, deadlines: list[DocumentDeadline]
+    doc: Document,
+    src: Source,
+    detail: DocumentDetail | None,
+    deadlines: list[DocumentDeadline],
+    pending: bool = False,
 ) -> dict:
     """列表行（与小程序 doc-row 的数据格式一致）。"""
     kind = effective_kind(doc.title, doc.kind_override)
@@ -331,15 +389,21 @@ def _item(
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
         "url": doc.url,
         "deadline": _deadline_brief(deadlines[0] if deadlines else None),
+        "deadline_state": deadline_state(deadlines, pending),
     }
     return payload
 
 
 def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
-    """批量取详情和截止日期（两次查询），不逐条查库。"""
+    """批量取详情、截止日期和待核对标记（各一次查询），不逐条查库。"""
     ids = [doc.id for doc, _ in rows]
     details, approved = _details(session, ids), _approved(session, ids)
-    return [_item(doc, src, details.get(doc.id), approved.get(doc.id, [])) for doc, src in rows]
+    # 已有核对通过截止的不必再查候选
+    pending = _pending(session, [doc_id for doc_id in ids if not approved.get(doc_id)])
+    return [
+        _item(doc, src, details.get(doc.id), approved.get(doc.id, []), doc.id in pending)
+        for doc, src in rows
+    ]
 
 
 def _kind_is(kinds: list[str]):
@@ -547,19 +611,34 @@ def search(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
+    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级")] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。"""
-    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open)
+    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, levels)
     total = _count(session, stmt)
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
+    all_time = search_statement(
+        session, q, kind, regions, types, status, "不限", depts, open, levels
+    )
     return {
         "q": (q or "").strip(),
         "total": total,
-        "total_all": _count(
-            session, search_statement(session, q, kind, regions, types, status, "不限", depts, open)
-        ),
+        "total_all": _count(session, all_time),
         "items": _items(session, [tuple(r) for r in rows]),
     }
+
+
+# 地区筛选的"国家部委"和层级筛选的"国家部委"共用这一个条件（来源省份填"国家"），两处不会不一致
+_NATIONAL = "国家"
+
+
+def _level_filter(levels: list[str]):
+    """层级：国家部委 = 国家级来源；省级 = 省级来源（不含国家级，地市接入后也不含市级）。"""
+    parts = {
+        "国家部委": Source.province == _NATIONAL,
+        "省级": and_(Source.province != _NATIONAL, Source.level == "省级"),
+    }
+    return or_(*(parts[level] for level in levels))
 
 
 def search_statement(
@@ -572,8 +651,15 @@ def search_statement(
     time: str,
     depts: str | None,
     open: int | None = None,
+    levels: str | None = None,
 ) -> Select:
-    """公开搜索、关注和提醒共用筛选校验及 SQL。"""
+    """公开搜索、关注和提醒共用筛选校验及 SQL。
+
+    各组筛选之间取交集，同一组里多选取并集。地区和层级也是这样：地区选的省份（或国家部委）
+    和层级选的国家部委 / 省级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
+    所以只在地区里选、只在层级里选、两边都选，结果相同；地区只选省份而层级只选国家部委，
+    或地区只选国家部委而层级只选省级，两者没有交集，结果为空（小程序在空结果里提示调整）。
+    """
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
     if time not in TIMES:
@@ -582,6 +668,7 @@ def search_statement(
     picked_regions = [r for r in _pick(regions, PROVINCES, "地区") if r != "不限地区"]
     picked_status = _pick(status, STATUSES, "名单状态")
     picked_depts = _pick(depts, DEPTS, "发文部门")
+    picked_levels = _pick(levels, LEVELS, "层级")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -593,8 +680,10 @@ def search_statement(
         stmt = stmt.where(_kind_is(picked_types))
     if picked_regions:
         stmt = stmt.where(
-            Source.province.in_(["国家" if r == "国家部委" else r for r in picked_regions])
+            Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
         )
+    if picked_levels:
+        stmt = stmt.where(_level_filter(picked_levels))
     if picked_status:
         stmt = stmt.where(status_filter(Document.title, picked_status, _kind_is(["名单"])))
     if picked_depts:
@@ -702,6 +791,15 @@ def _report_payload(
     }
 
 
+def _report_response(
+    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+) -> dict[str, Any]:
+    """截止雷达接口的返回：雷达数据，加上空状态说明用的已核对条数（不随筛选变化，只给数字）。"""
+    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload["verified_total"] = verified_total(session)
+    return payload
+
+
 @router.get("/reports/deadlines")
 def deadline_report(
     session: SessionDep,
@@ -732,7 +830,7 @@ def deadline_report(
         .limit(1)
     ):
         # 当天带时刻的截止随时间变化；支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
-        return _report_payload(session, days, province, dept, support, page, size)
+        return _report_response(session, days, province, dept, support, page, size)
     # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
     revision = publication_revision(session, "deadlines")
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
@@ -740,7 +838,7 @@ def deadline_report(
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload = _report_response(session, days, province, dept, support, page, size)
     if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
@@ -997,6 +1095,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     doc, src = row
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
+    pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
     fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
     status_value = application_status(approved) if kind == "申报通知" else None
@@ -1088,6 +1187,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "site": f"{src.dept_full_name}网站",
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
+        "deadline_state": deadline_state(approved, pending),
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
@@ -1183,6 +1283,8 @@ def calendar(
         "items": items(upcoming),
         "pastTotal": len(past),
         "past": items(past),
+        # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
+        "verifiedTotal": verified_total(session),
     }
 
 

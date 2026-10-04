@@ -38,8 +38,12 @@
 </view>
 
 <view wx:if="{{!shown.length}}" class="card empty">
-  <view class="empty-title">这个时间段没有截止的申报事项</view>
+  <view class="empty-title">{{items.length ? '这个时间段没有截止的申报事项' : '暂时没有未截止的申报事项'}}</view>
   <view wx:if="{{nearest}}" class="muted empty-sub">最近的截止在 {{nearest.date}}，还有 {{nearest.days}} 天</view>
+  <block wx:if="{{!items.length}}">
+    <view class="muted empty-sub">{{verifyingNote}}</view>
+    <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
+  </block>
 </view>
 
 <view wx:for="{{shown}}" wx:key="id" class="card item">

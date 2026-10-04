@@ -5,6 +5,7 @@ const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+const { levelConflict } = require('../../utils/conditions.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -14,10 +15,13 @@ const KIND_TABS = [
 ];
 
 // 筛选项：地区"不限地区"与具体省份互斥；发布时间单选（取值与服务端 /api/v1/search 一致）
+// 层级和地区同时选时两项都要满足（与其他筛选一样）；地市还没接入，先不放"市级"
 const GROUPS = [
   { key: 'region', title: '地区', hint: '可多选', multi: true,
     options: ['不限地区', '国家部委', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'],
     note: '' }, // 还没收录的省份取自收录范围接口
+  { key: 'level', title: '层级', hint: '可多选', multi: true, options: ['国家部委', '省级'],
+    note: '和地区同时选时，列出两项都符合的文件；地市暂未收录' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', '其他'] },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
@@ -25,7 +29,9 @@ const GROUPS = [
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
-const DEFAULT_PICKED = { region: ['不限地区'], type: [], status: [], time: ['近 30 天'], dept: [], open: [] };
+const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], status: [], time: ['近 30 天'], dept: [], open: [] };
+const LEVEL_CONFLICT = '所选地区和层级没有重叠（国家部委和省级是两类来源），请调整地区或层级';
+const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
 const PAGE = 20;
 
 Page({
@@ -53,6 +59,8 @@ Page({
     // 没有结果时：选中的地区全部还没收录，如"浙江（正在接入）"；否则附一行"暂未收录"的说明
     uncovered: '',
     notCoveredNote: '',
+    // 没有结果时的补充说明：地区和层级没有重叠，或只看未截止
+    emptyHint: '',
   },
 
   onLoad(query) {
@@ -60,7 +68,7 @@ Page({
     const time = decodeURIComponent(query.time || '');
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) picked.time = [time];
-    [['regions', 'region'], ['types', 'type'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
+    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
@@ -106,6 +114,8 @@ Page({
       q: q.trim(),
       kind: tab,
       regions: picked.region.join(','),
+      // 没选层级时不带这一项，和加层级之前保存的关注条件一致
+      levels: picked.level.length ? picked.level.join(',') : undefined,
       types: picked.type.join(','),
       status: picked.status.join(','),
       time: picked.time[0],
@@ -125,7 +135,7 @@ Page({
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
-    this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0, uncovered: '', notCoveredNote: '' } : { loading: true, error: '' });
+    this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0, uncovered: '', notCoveredNote: '', emptyHint: '' } : { loading: true, error: '' });
     api.search(params)
       .then((res) => {
         if (seq !== this.seq) return; // 只用最后一次查询的结果
@@ -139,6 +149,10 @@ Page({
         // 没有结果时区分"该地区还没收录"和"没有匹配的文件"（验收 A8）：只有选中的地区全部
         // 还没收录才说"还没收录"，不从关键词里推断地名
         if (!res.total) {
+          let emptyHint = '';
+          if (levelConflict(params.regions, params.levels)) emptyHint = LEVEL_CONFLICT;
+          else if (params.open) emptyHint = OPEN_NOTE;
+          this.setData({ emptyHint });
           const regions = params.regions.split(',');
           loadCoverage().then((c) => {
             if (seq !== this.seq) return;
@@ -162,10 +176,11 @@ Page({
     const pickedMap = {};
     Object.keys(picked).forEach((g) => picked[g].forEach((o) => { pickedMap[`${g}:${o}`] = true; }));
     const regions = picked.region.filter((r) => r !== '不限地区');
+    const scope = [regions.join('、'), picked.level.join('、')].filter(Boolean).join(' · ');
     this.setData({
       pickedMap,
-      chipRegion: regions.length ? regions.join('、') : '地区',
-      regionOn: regions.length > 0,
+      chipRegion: scope || '地区',
+      regionOn: !!scope,
       chipTime: picked.time[0],
       statusOn: picked.status.length > 0,
     });
@@ -251,6 +266,7 @@ Page({
     const parts = [];
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
+    if (c.levels) parts.push(c.levels.split(',').join('、'));
     parts.push(tab ? tab.label : '全部');
     if (c.open) parts.push('只看未截止');
     return parts.join(' · ').slice(0, 40);
