@@ -73,7 +73,7 @@
     <view class="card">
       <view class="section-title">工具任务 {{totals.advisor}}</view>
       <view wx:for="{{advisorTasks}}" wx:key="id" class="item">
-        <view class="item-main">{{item.kindLabel}} · {{item.rowCount}} 行</view>
+        <view class="item-main">{{item.kindLabel}}<text wx:if="{{item.kind !== 'interpret'}}"> · {{item.rowCount}} 行</text></view>
         <view class="item-sub">{{item.time}} · {{item.stateLabel}}</view>
         <view wx:if="{{item.terminal || item.status === 'queued'}}" class="item-ops">
           <text class="op op--danger" data-kind="advisor" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>

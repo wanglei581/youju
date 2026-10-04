@@ -2,7 +2,7 @@ const api = require('../../utils/api.js');
 const { taskView, openResult } = require('../../utils/advisor.js');
 
 Page({
-  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false },
+  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false, aiEnabled: false },
   onLoad(query = {}) {
     this.taskId = query.taskId || null;
     this.setData({ singleTask: !!this.taskId });
@@ -16,10 +16,15 @@ Page({
     clearTimeout(this.timer);
     const epoch = this.epoch = (this.epoch || 0) + 1;
     this.setData({ loading: true, error: '' });
-    const request = this.taskId ? api.advisorTask(this.taskId).then((task) => ({ items: [task] })) : api.advisorTasks();
+    const request = api.advisorCapabilities().then((caps) => {
+      if (!this.visible || epoch !== this.epoch) return { items: [] };
+      const aiEnabled = caps.ai_advisor.enabled === true;
+      this.setData({ aiEnabled, items: this.data.items.filter((task) => task.kind !== 'interpret' || aiEnabled) });
+      return this.taskId ? api.advisorTask(this.taskId).then((task) => ({ items: [task] })) : api.advisorTasks();
+    });
     request.then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
-      this.setData({ loading: false, items: res.items.map(taskView) });
+      this.setData({ loading: false, items: res.items.filter((task) => task.kind !== 'interpret' || this.data.aiEnabled).map(taskView) });
       this.schedule(epoch);
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message }); });
   },
@@ -61,6 +66,11 @@ Page({
       })
         .catch((err) => this.setData({ busyId: null, actionError: err.message }));
     } });
+  },
+  interpret(e) {
+    const id = e.currentTarget.dataset.id;
+    if (!this.data.aiEnabled || !this.data.items.some((item) => String(item.id) === String(id) && item.kind === 'interpret')) return;
+    wx.navigateTo({ url: `/pages/advisor-interpret/index?taskId=${encodeURIComponent(id)}` });
   },
   open(e) {
     if (this.data.busyId !== null) return;

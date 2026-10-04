@@ -15,7 +15,7 @@
   color: #FFFFFF;
   font-size: 30rpx;
   line-height: 1.5;
-  white-space: nowrap;
+  white-space: normal;
   box-shadow: 0 4rpx 16rpx rgba(42, 92, 224, 0.18);
 }
 .tool-fab::after { border: 0; }

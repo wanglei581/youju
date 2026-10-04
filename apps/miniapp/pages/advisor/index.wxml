@@ -1,12 +1,22 @@
 <notice-bar />
 <view wx:if="{{context}}" class="card advisor-card advisor-context">
   <view class="context-row"><text class="context-label">{{context.label}}</text><button class="context-clear" bindtap="clearContext">清除</button></view>
-  <view class="context-note">以下工具按你提交的客户名单处理，与当前通知无关</view>
+  <view wx:if="{{dataEnabled}}" class="context-note">以下工具按你提交的客户名单处理，与当前通知无关</view>
 </view>
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <block wx:elif="{{enabled}}">
-  <view class="task-section-title">数据工具</view>
+  <block wx:if="{{aiEnabled}}">
+    <view class="task-section-title">AI 顾问</view>
+    <view class="card advisor-card">
+      <view class="advisor-title">政策解读与材料清单</view>
+      <view class="advisor-text">把通知正文按申报对象、支持方式、申报条件、时间、方式、材料摘录出原句，每条可回到原文</view>
+      <view class="advisor-text muted">今天剩余 {{remaining}} 次</view>
+      <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">解读这篇通知</button>
+      <view wx:else class="advisor-text muted">在通知详情页点右下角按钮进入，可解读当前通知</view>
+    </view>
+  </block>
+  <view wx:if="{{dataEnabled}}" class="task-section-title">数据工具</view>
   <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
     <view class="advisor-title">{{item.title}}</view>
     <view class="advisor-text">{{item.description}}</view>
@@ -19,10 +29,11 @@
     <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
     <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有任务，填写客户后可查看进度和结果。</view>
     <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.rowCount}} 行 · {{item.time}}</view>
+      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted"><text wx:if="{{item.kind !== 'interpret'}}">{{item.rowCount}} 行 · </text>{{item.time}}</view>
     </button>
     <button class="advisor-button" bindtap="tasks">全部任务</button>
   </view>
 </block>
 <view wx:else class="card advisor-card muted">暂时没有可用工具</view>
+<view wx:if="{{aiEnabled && disclosure}}" class="advisor-footer">{{disclosure}}</view>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -20,7 +20,7 @@ function maskId(id) {
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], totals: {}, retention: null, exportedAt: '' },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], aiEnabled: false, totals: {}, retention: null, exportedAt: '' },
 
   onShow() {
     this.load();
@@ -28,8 +28,11 @@ Page({
 
   load() {
     this.setData({ loading: true, error: '' });
-    api.myData()
-      .then((d) => {
+    Promise.all([api.myData(), api.advisorCapabilities()])
+      .then(([d, caps]) => {
+        const aiEnabled = caps.ai_advisor.enabled === true;
+        const tasks = (d.advisorTasks || []).filter((task) => task.kind !== 'interpret' || aiEnabled);
+        d = Object.assign({}, d, { advisorTasks: tasks });
         this.raw = d;
         const followName = {};
         d.follows.forEach((f) => { followName[f.id] = f.name; });
@@ -65,7 +68,7 @@ Page({
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
-          advisorTasks: (d.advisorTasks || []).map(taskView),
+          advisorTasks: tasks.map(taskView), aiEnabled,
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, advisor: d.advisorTasksTotal || 0 },
           retention: d.retention,
         });

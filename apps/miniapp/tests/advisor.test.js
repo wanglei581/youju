@@ -20,6 +20,7 @@ function zipEntries(base64) {
 }
 
 function page(name, api, helpers, timers, wxOptions = {}) {
+  api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false } }), ...api };
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
     require: (module) => module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,

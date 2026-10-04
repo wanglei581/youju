@@ -8,6 +8,7 @@ const format = require('../utils/format.js');
 
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
+const caps = (enabled, aiEnabled = false, remaining = {}) => ({ data_tools: { enabled, features: ['compare', 'track'], remaining }, ai_advisor: { enabled: aiEnabled, remaining: {} } });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
@@ -70,20 +71,20 @@ test('app 级状态缓存：多个页面共用在途请求和结果，工具刷�
   const harness = apiHarness();
   const one = fab(harness.api); const two = fab(harness.api);
   assert.equal(harness.calls(), 1); assert.equal(one.visible(), false);
-  harness.pending[0].success({ statusCode: 200, data: { enabled: true } }); await flush();
+  harness.pending[0].success({ statusCode: 200, data: caps(true) }); await flush();
   assert.equal(one.visible(), true); assert.equal(two.visible(), true);
   const three = fab(harness.api); await flush(); assert.equal(three.visible(), true); assert.equal(harness.calls(), 1);
-  const updated = harness.api.advisorStatus({ refresh: true });
-  assert.equal(harness.api.advisorStatus({ refresh: true }), updated);
+  const updated = harness.api.advisorCapabilities({ refresh: true });
+  assert.equal(harness.api.advisorCapabilities({ refresh: true }), updated);
   assert.equal(harness.calls(), 2);
-  harness.pending[1].success({ statusCode: 200, data: { enabled: false } }); await updated;
+  harness.pending[1].success({ statusCode: 200, data: caps(false) }); await updated;
   one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(one.visible(), false);
 });
 
 test('关闭、404、请求失败和非布尔 enabled 均静默隐藏；失败也缓存', async () => {
   for (const response of [
-    { statusCode: 200, data: { enabled: false } }, { statusCode: 404 }, { statusCode: 503 },
-    { statusCode: 200, data: { enabled: 'true' } },
+    { statusCode: 200, data: caps(false) }, { statusCode: 404 }, { statusCode: 503 },
+    { statusCode: 200, data: caps('true') },
   ]) {
     const harness = apiHarness(response); const button = fab(harness.api);
     await flush(); assert.equal(button.visible(), false);
@@ -96,7 +97,7 @@ test('关闭、404、请求失败和非布尔 enabled 均静默隐藏；失败�
 });
 
 test('键盘、页面弹层、批量勾选、原生弹窗和隐藏页不显示，销毁后移除监听', async () => {
-  const button = fab({ advisorStatus: () => Promise.resolve({ enabled: true }) }); await flush();
+  const button = fab({ advisorCapabilities: () => Promise.resolve(caps(true)) }); await flush();
   assert.equal(button.visible(), true);
   button.keyboard(260); assert.equal(button.visible(), false); button.view.open(); assert.equal(button.navigation(), undefined);
   button.keyboard(0); assert.equal(button.visible(), true);
@@ -108,16 +109,16 @@ test('键盘、页面弹层、批量勾选、原生弹窗和隐藏页不显示�
   button.view.pageLifetimes.show.call(button.view); await flush(); assert.equal(button.visible(), true);
   button.view.lifetimes.detached.call(button.view); assert.equal(button.removed.length, 3);
   let resolve;
-  const late = fab({ advisorStatus: () => new Promise((done) => { resolve = done; }) });
-  late.view.lifetimes.detached.call(late.view); resolve({ enabled: true }); await flush(); assert.equal(late.view.data.enabled, false);
+  const late = fab({ advisorCapabilities: () => new Promise((done) => { resolve = done; }) });
+  late.view.lifetimes.detached.call(late.view); resolve(caps(true)); await flush(); assert.equal(late.view.data.enabled, false);
 });
 
 test('tab 页和详情页实测底栏，扣除一次安全区；窗口变化后重新测量', async () => {
-  const tab = fab({ advisorStatus: () => Promise.resolve({ enabled: true }) }, { tabPage: true, bottomRpx: 108 }, { height: 74 });
+  const tab = fab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { tabPage: true, bottomRpx: 108 }, { height: 74 });
   await flush(); assert.equal(tab.query.selector, '.bar'); assert.equal(tab.view.data.barHeight, '54px');
   tab.resize(84); assert.equal(tab.view.data.barHeight, '64px');
   const owner = {};
-  const detail = fab({ advisorStatus: () => Promise.resolve({ enabled: true }) }, { bottomSelector: '.bar', bottomRpx: 130 }, { owner, height: 86 });
+  const detail = fab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { bottomSelector: '.bar', bottomRpx: 130 }, { owner, height: 86 });
   await flush(); assert.equal(detail.query.owner, owner); assert.equal(detail.view.data.barHeight, '66px');
   assert.match(read('components/tool-fab/index.wxml'), /env\(safe-area-inset-bottom\) \+ 24rpx/);
   assert.match(read('components/tool-fab/index.wxss'), /z-index: 110/);
@@ -125,7 +126,7 @@ test('tab 页和详情页实测底栏，扣除一次安全区；窗口变化后�
 });
 
 test('详情上下文与搜索全部筛选可往返，其他入口无上下文；重复点击只导航一次', async () => {
-  const doc = fab({ advisorStatus: () => Promise.resolve({ enabled: true }) }, { docId: 42, docTitle: '通知：科技 & 申报（50%）' });
+  const doc = fab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: 42, docTitle: '通知：科技 & 申报（50%）' });
   await flush(); doc.view.open(); const first = doc.navigation(); doc.view.open(); assert.equal(doc.navigation(), first);
   const query = Object.fromEntries(new URL(`https://test.invalid${first.url}`).searchParams);
   // 小程序页面延续现有约定：onLoad 中再解码一次，测试保留 URL 参数的编码。
@@ -187,7 +188,7 @@ test('只在指定八页放工具入口，参数绑定完整，移除首页旧�
     } else assert.doesNotMatch(template, /<tool-fab\b/);
   }
   assert.doesNotMatch(read('pages/home/index.wxml'), /data-url="\/pages\/advisor/);
-  assert.doesNotMatch(read('pages/home/index.js'), /advisorStatus/);
+  assert.doesNotMatch(read('pages/home/index.js'), /advisorCapabilities/);
   assert.match(read('pages/search/index.wxml'), /blocked="\{\{filterOpen \|\| selecting\}\}".*keyword="\{\{q\}\}".*filters="\{\{picked\}\}"/);
   assert.match(read('pages/detail/index.wxml'), /doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}"/);
   const changed = entryPages.concat(['advisor', 'advisor-form', 'advisor-tasks', 'advisor-terms', 'files']).map((name) => `pages/${name}/index.wxml`).concat('components/tool-fab/index.wxml');
@@ -199,7 +200,11 @@ test('只在指定八页放工具入口，参数绑定完整，移除首页旧�
     }
     assert.equal(stack.length, 0, file);
   }
-  for (const file of ['pages/advisor/index.wxml', 'pages/advisor-tasks/index.wxml', 'components/tool-fab/index.wxml']) assert.doesNotMatch(read(file), /AI|智能|即将推出/);
+  const { assertAiGuarded } = require('./helpers/wxml.js');
+  for (const file of ['pages/advisor/index.wxml', 'pages/advisor-tasks/index.wxml', 'components/tool-fab/index.wxml']) {
+    assertAiGuarded(read(file));
+    assert.doesNotMatch(read(file), /智能|即将推出/);
+  }
 });
 
 function demoHarness() {
@@ -250,11 +255,11 @@ test('整页任务板块保留并清除上下文，只列最近三条；刷新�
   const helpers = { taskView: (task) => ({ ...task, kindLabel: '名单比对', stateLabel: '已完成' }) };
   let taskError = true; let refreshed;
   const api = {
-    advisorStatus(options) { refreshed = options.refresh; return Promise.resolve({ enabled: true, quota: { compare: { used: 1, limit: 1, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }); },
+    advisorCapabilities(options) { refreshed = options.refresh; return Promise.resolve(caps(true, false, { compare: 0, track: 1 })); },
     advisorTasks: () => taskError ? Promise.reject(new Error('暂时连不上')) : Promise.resolve({ items: tasks }),
   };
   const urls = [];
-  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { navigateTo: ({ url }) => urls.push(url) } });
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { setNavigationBarTitle() {}, navigateTo: ({ url }) => urls.push(url) } });
   page.onLoad({ docId: '7', title: encodeURIComponent('通知标题') }); assert.equal(page.data.context.label, '当前通知：通知标题');
   page.onShow(); await flush(); assert.equal(refreshed, true); assert.deepEqual(Array.from(page.data.skills, (skill) => skill.remaining), [0, 1]);
   assert.match(page.data.recentError, /暂时连不上/); assert.equal(page.data.enabled, true);
@@ -266,7 +271,7 @@ test('整页任务板块保留并清除上下文，只列最近三条；刷新�
   assert.match(read('pages/advisor/index.wxml'), /以下工具按你提交的客户名单处理，与当前通知无关/);
   page.onLoad({ filters: context.url({ source: 'search', keyword: '关键词' }).split('?filters=')[1] }); assert.match(page.data.context.label, /当前筛选：.*关键词/);
   page.onLoad({}); assert.equal(page.data.context, null);
-  const gated = load('pages/advisor/index.js', { '../../utils/api.js': { advisorStatus: () => Promise.resolve({ enabled: false }) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context });
+  const gated = load('pages/advisor/index.js', { '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps(false)) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { setNavigationBarTitle() {} } });
   gated.onShow(); await flush(); assert.equal(gated.data.enabled, false); assert.equal(gated.data.error, '');
 });
 

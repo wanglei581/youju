@@ -15,7 +15,7 @@ Component({
     kind: { type: String, value: 'all' },
     filters: { type: Object, value: null },
   },
-  data: { enabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
+  data: { enabled: false, aiEnabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
   observers: {
     blocked() { if (this.data.visible) this.measure(); },
   },
@@ -45,9 +45,9 @@ Component({
     show() {
       this.setData({ visible: true, navigating: false });
       this.measure();
-      api.advisorStatus().then((res) => {
-        if (this.alive) this.setData({ enabled: res.enabled === true });
-      }).catch(() => { if (this.alive) this.setData({ enabled: false }); });
+      api.advisorCapabilities().then((res) => {
+        if (this.alive) this.setData({ enabled: res.data_tools.enabled === true || res.ai_advisor.enabled === true, aiEnabled: res.ai_advisor.enabled === true });
+      }).catch(() => { if (this.alive) this.setData({ enabled: false, aiEnabled: false }); });
     },
     measure() {
       const pages = getCurrentPages(); const page = pages[pages.length - 1];

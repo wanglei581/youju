@@ -104,7 +104,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
     feedback: [{ id: 3, content: '合成反馈', checkResult: 'pass', handled: true, handledAt: '2026-10-03T11:00:00+08:00' }], retention: {} };
   const copied = []; let deleted; let modal;
   const page = load('pages/my-data/index.js', {
-    '../../utils/api.js': { myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
+    '../../utils/api.js': { advisorCapabilities: () => Promise.resolve({ ai_advisor: { enabled: false } }), myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
     '../../utils/advisor.js': { taskView: (task) => task },
     '../../utils/conditions.js': conditions, '../../utils/consent.js': {},
   }, { wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {},

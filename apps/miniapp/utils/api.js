@@ -321,7 +321,34 @@ function advisorPreview(data) {
   return isLive() ? request('/api/v1/advisor/preview', null, { method: 'POST', data }) : advisorMock.preview(data);
 }
 
+let capabilitiesPromise;
+let capabilitiesPending;
+function advisorCapabilities(options = {}) {
+  if (capabilitiesPending) return capabilitiesPending;
+  if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
+  const unavailable = () => ({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} } });
+  // 演示仍保留数据工具；只有后端返回的白名单权限才能打开解读入口。
+  const requestResult = isLive() ? request('/api/v1/advisor/capabilities') : advisorMock.status().then((status) => ({
+    data_tools: { enabled: status.enabled === true, features: ['compare', 'track'], remaining: Object.entries(status.quota).reduce((remaining, [kind, quota]) => {
+      remaining[kind] = Math.max(0, quota.limit - quota.used); return remaining;
+    }, {}) },
+    ai_advisor: { enabled: false, features: [], remaining: {} },
+  }));
+  const result = requestResult.then((res) => ({
+    data_tools: Object.assign({}, res.data_tools, { enabled: !!res.data_tools && res.data_tools.enabled === true }),
+    ai_advisor: Object.assign({}, res.ai_advisor, { enabled: !!res.ai_advisor && res.ai_advisor.enabled === true }),
+  })).catch(unavailable);
+  capabilitiesPromise = result;
+  capabilitiesPending = result;
+  result.then(() => { if (capabilitiesPending === result) capabilitiesPending = null; });
+  return result;
+}
+
 function createAdvisorTask(data, key) {
+  if (data.kind === 'interpret') {
+    if (!isLive()) return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
+    data = { kind: 'interpret', doc_id: Number(data.doc_id) };
+  }
   return isLive() ? request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }) : advisorMock.create(data, key);
 }
 
@@ -391,5 +418,5 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
+  advisorStatus, advisorCapabilities, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
 };
