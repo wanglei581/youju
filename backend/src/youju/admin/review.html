@@ -40,6 +40,14 @@
   .ai-only { background: var(--o-tint); color: var(--orange); }
   .ai-no { background: #F2F3F5; color: var(--t2); }
   .ai-back { background: var(--r-tint); color: var(--red); }
+  .ai-diff { background: #FFF7E6; color: #B54708; box-shadow: inset 0 0 0 1px #F7C98B; }
+  .ai-yes.strong { font-weight: 600; box-shadow: inset 0 0 0 1px #9FD8C4; }
+  /* 截止类型紧挨着日期、用色条醒目显示（左侧粗色条，和按钮区分开），连按快捷键时也不会看错类型 */
+  .kind-big { font-size: 15px; font-weight: 700; line-height: 1.5; padding: 2px 10px 2px 8px; border-left: 5px solid currentColor; border-radius: 2px; margin-right: 8px; white-space: nowrap; }
+  .kind-big.k-apply { background: var(--brand-tint); color: var(--brand); }
+  .kind-big.k-recommend { background: var(--o-tint); color: var(--orange); }
+  .kind-big.k-material { background: var(--g-tint); color: var(--green); }
+  .kind-big.k-other { background: var(--r-tint); color: var(--red); }
   .reopen { margin: 8px 0; padding: 8px 12px; background: var(--r-tint); color: var(--red); border-radius: 8px; font-size: 14px; }
   .title { display: block; margin: 8px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
   .title:hover { color: var(--brand); }
@@ -92,6 +100,7 @@
   <p class="hint">快捷键：j / k 下一张 / 上一张；a 通过；x 驳回；e 修改日期（Enter 改日期后通过）；u 撤回上一次；r 重新载入。输入框内不触发快捷键。</p>
   <div class="row hint"><button id="undoLast" disabled>撤回上一次</button></div>
   <div id="reviewNotice" class="review-notice" role="status" hidden><span id="reviewNoticeText"></span> <button id="undoNotice" disabled>撤回</button><span id="undoError" class="msg"></span></div>
+  <p class="hint">列表按核对顺序排：30 天内截止的在前，其中标"建议通过"（规则和 AI 找到同一天、同一类型，证据句里写着这个日期）的最前；其余按截止日期从早到晚，已过期的最后。"建议通过"只是参考，不会自动通过。日期旁的色条是截止类型：蓝色企业申报截止，橙色推荐或审核截止，绿色材料报送截止，红色其他（不是申报截止，通过前尤其要看清）。</p>
   <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
   <details class="card tools">
     <summary>处理延期、调整、撤销的通知</summary>
@@ -113,9 +122,21 @@
 <script>
 (function () {
   const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
+  // AI 预审标签（后台只读已有的 AI 检查记录算出，见 youju/ai/hints.py）：只是参考，通过前仍要对照原文
+  const HINT_CLASS = { suggest: 'ai-yes strong', agree: 'ai-no', kind_mismatch: 'ai-diff', mismatch: 'ai-diff', ai_only: 'ai-only', unchecked: 'ai-no' };
+  const HINT_TIP = {
+    suggest: '规则和 AI 找到同一天、同一类型，证据句里写着这个日期。只是建议，仍要对照原文再点通过',
+    agree: 'AI 也找到了这一天，但不满足建议通过的条件，请仔细核对',
+    kind_mismatch: 'AI 找到了同一天，但认为是另一类截止，请核对类型',
+    mismatch: 'AI 检查过这份通知，但没找到这一天，请仔细核对',
+    ai_only: '规则没找到、AI 找到的候选，请逐字核对原文',
+    unchecked: 'AI 还没检查过这份通知',
+  };
+  // 核对顺序：有排序键的按排序键升序，没有的（旧接口）按编号从新到旧
+  const comesBefore = (a, b) => (a.order_key && b.order_key ? a.order_key < b.order_key : a.id > b.id);
   const $ = (id) => document.getElementById(id);
   let pending = 0;
-  let cursor = null; // 已载入的最小候选编号（翻页游标）
+  let cursor = null; // 已载入的最后一条的排序键（order_key，翻页游标）
   // 只看哪些：先核快到期的；已过期的核了也进不了日历
   const DUE_LABEL = { '30': '30 天内截止', future: '未过期', all: '全部' };
   const due = () => $('due').value;
@@ -210,8 +231,8 @@
         previous.entry.card.replaceWith(restored.card);
         cards[at] = restored;
       } else {
-        // 重新载入过的列表仍按编号降序，把撤回的卡片放回相应位置。
-        const next = cards.findIndex((entry) => entry.item.id <= item.id);
+        // 重新载入过的列表仍按核对顺序排，把撤回的卡片放回相应位置。
+        const next = cards.findIndex((entry) => entry.item.id === item.id || comesBefore(item, entry.item));
         if (next < 0) { cards.push(restored); $('list').append(restored.card); }
         else if (cards[next].item.id === item.id) {
           cards[next].card.replaceWith(restored.card); cards[next] = restored;
@@ -493,9 +514,13 @@
       if (entry && !card.hidden) selectCard(entry, false);
     };
     const meta = el('div', 'meta');
-    meta.append(el('span', `tag ${KIND_CLASS[item.kind] || ''}`, item.kind), el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), el('span', 'conf', `置信度：${item.confidence}`));
+    meta.append(el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), el('span', 'conf', `置信度：${item.confidence}`));
     // AI 和规则互相印证：只是参考，通过前仍要对照原文
-    if (item.origin === 'ai') meta.append(el('span', 'ai ai-only', '仅 AI 找到'));
+    if (item.hint_text) {
+      const hint = el('span', `ai ${HINT_CLASS[item.hint] || 'ai-no'}`, item.hint_text);
+      if (HINT_TIP[item.hint]) hint.title = HINT_TIP[item.hint];
+      meta.append(hint);
+    } else if (item.origin === 'ai') meta.append(el('span', 'ai ai-only', '仅 AI 找到'));
     else if (item.ai_agrees === true) meta.append(el('span', 'ai ai-yes', 'AI 一致'));
     else if (item.ai_agrees === false) meta.append(el('span', 'ai ai-no', '仅规则找到'));
     // 已发布过、被质检退回的：重新核对时先看当时为什么存疑
@@ -506,13 +531,15 @@
     title.rel = 'noopener noreferrer';
     const row = el('div', 'row main');
     const when = el('span', 'when', `${item.candidate_date}${item.candidate_time ? ` ${item.candidate_time}` : ''}`);
+    const kind = el('span', `kind-big ${KIND_CLASS[item.kind] || 'k-other'}`, item.kind);
     const approve = el('button', 'primary', '通过');
+    approve.title = `通过：${item.kind} ${item.candidate_date}`;
     const reject = el('button', 'danger', '驳回');
     const d = el('input', 'd'); d.type = 'date'; d.value = item.candidate_date; d.setAttribute('aria-label', '改为日期');
     const t = el('input', 't'); t.type = 'time'; t.value = item.candidate_time || ''; t.setAttribute('aria-label', '改为时间');
     const edit = el('button', '', '改日期后通过');
     const msg = el('span', 'msg');
-    row.append(when, approve, reject, d, t, edit, msg);
+    row.append(when, kind, approve, reject, d, t, edit, msg);
     approve.onclick = () => review(item, card, 'approve', msg);
     reject.onclick = () => review(item, card, 'reject', msg);
     edit.onclick = () => review(item, card, 'edit', msg);
@@ -538,13 +565,13 @@
     loading = true;
     updateUndo();
     if (reset) { selectCard(null, false); cards = []; shown.clear(); cursor = null; $('list').textContent = ''; }
-    // 按候选编号从新到旧翻页：接着上一页最小的编号往后取，别人同时核对也不会漏
-    const after = cursor ? `&before_id=${cursor}` : '';
+    // 按核对顺序翻页：接着上一页最后一条的排序键往后取，别人同时核对也不会漏
+    const after = cursor ? `&after=${encodeURIComponent(cursor)}` : '';
     const wanted = due();
     try {
       const [countRes, res] = await Promise.all([
         fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() }),
-        fetch(`/api/admin/deadlines?limit=50&due=${wanted}${after}`, { headers: headers() }),
+        fetch(`/api/admin/deadlines?limit=50&due=${wanted}&order=priority${after}`, { headers: headers() }),
       ]);
       if (seq !== loadSeq) return;
       if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
@@ -562,7 +589,7 @@
         $('list').append(entry.card);
       });
       if (!current) selectCard(cards.find((entry) => !entry.card.hidden) || null, false);
-      if (items.length) cursor = Math.min(...items.map((item) => item.id));
+      if (items.length) cursor = items[items.length - 1].order_key || null;
       $('more').hidden = items.length < 50;
     } catch (err) {
       if (seq !== loadSeq) return;

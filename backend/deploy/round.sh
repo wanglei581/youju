@@ -36,8 +36,9 @@ run crawl && run check-sources
 run fetch-details --limit 600 --workers 4
 run extract-deadlines
 run extract-fields
-# 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
-run ai-check --limit 600
+# 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做。
+# 先补跑 30 天内截止的待核对候选所在的文件（核对台先核这些，要先有 AI 的结果），再查新文件，合计 600 份
+run ai-check --limit 600 --due-first 30
 # 用户纠错过的文件，用规则和 AI 复查已发布的截止日期，结果写在纠错旁边（纠错内容不发给 AI）
 run triage-feedback
 run parse-lists

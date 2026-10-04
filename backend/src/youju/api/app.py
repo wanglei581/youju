@@ -372,6 +372,13 @@ class PendingDeadlineOut(BaseModel):
     ai_agrees: bool | None = None
     # 质检退回的：当时的存疑原因（重新核对时要看）
     reopen_note: str | None = None
+    # AI 预审提示（只读已有的 AI 检查记录，见 youju/ai/hints.py）：suggest 建议通过 / agree /
+    # kind_mismatch / mismatch / ai_only / unchecked；hint_text 是页面标签。只用来排序和提示，
+    # 通过与否仍由人在核对台点
+    hint: str = "unchecked"
+    hint_text: str = "AI 未核"
+    # 核对顺序的排序键（按字符串升序）；order=priority 时用作翻页游标 after
+    order_key: str = ""
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -1004,9 +1011,15 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         return session.scalar(stmt) or 0
 
     docs = visible_documents(select(func.count(Document.id)))
-    approved = session.scalars(
-        select(DocumentDeadline).where(DocumentDeadline.status == "approved")
-    ).all()
+    # 已核对的截止（通过、驳回、已变更），和待核对一样按归并组去重：同一通知相同的候选只算一条
+    reviewed = defaultdict(list)
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        reviewed[row.status].append(row)
+    reviewed_counts = {status: len(_distinct(session, rows)) for status, rows in reviewed.items()}
+    pending_all = pending_count(session, None, "all")["pending"]
+    pending_30 = pending_count(session, None, "30")["pending"]
     latest_ids = (
         select(
             JobRun.id,
@@ -1038,8 +1051,8 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
     )
     result = {
         "todos": {
-            "deadlines": pending_count(session, None, "all")["pending"],
-            "deadlines_30": pending_count(session, None, "30")["pending"],
+            "deadlines": pending_all,
+            "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
             "kinds": kinds_pending_count(session, None)["pending"],
             "audit": audit_flagged_count(session, None)["flagged"],
@@ -1054,12 +1067,22 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "applications": count(docs.where(v1_api._kind_is(["申报通知"]))),
             "lists": count(docs.where(v1_api._kind_is(["名单"]))),
             "list_entries": count(select(func.count(ListEntry.id))),
-            "approved_deadlines": len(_distinct(session, list(approved))),
+            "approved_deadlines": reviewed_counts.get("approved", 0),
             "users": count(select(func.count(User.id))),
             "follows": count(select(func.count(Follow.id))),
             "pending_reminders": count(
                 select(func.count(Subscription.id)).where(Subscription.status == "unused")
             ),
+        },
+        # 截止日期核对进度：已核对 reviewed（= 通过 + 驳回 + 已变更）/ 待审 pending
+        # （其中 30 天内截止的 pending_30）
+        "deadline_review": {
+            "reviewed": sum(reviewed_counts.values()),
+            "approved": reviewed_counts.get("approved", 0),
+            "rejected": reviewed_counts.get("rejected", 0),
+            "changed": reviewed_counts.get("changed", 0),
+            "pending": pending_all,
+            "pending_30": pending_30,
         },
         "jobs": [{"job": name, "latest": latest.get(name)} for name in OVERVIEW_JOBS],
         "heartbeat_age_seconds": heartbeat_age,
@@ -2087,6 +2110,11 @@ def unhandle_feedback(
     return result
 
 
+PendingOrder = Literal["id", "priority"]
+# 优先顺序的翻页游标：分档|截止日期|编号（见 youju/ai/hints.py 的 order_key）
+_ORDER_KEY = r"^\d\|\d{4}-\d{2}-\d{2}\|\d{12}$"
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
@@ -2094,13 +2122,37 @@ def pending_deadlines(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
     due: DueQuery = "all",
+    order: Annotated[
+        PendingOrder,
+        Query(
+            description="id：按编号从新到旧（默认）；priority：30 天内截止的先列，其中建议通过的"
+            "最前，其余按截止日期升序，已过期的最后"
+        ),
+    ] = "id",
+    after: Annotated[
+        str | None,
+        Query(
+            pattern=_ORDER_KEY, description="order=priority 的翻页游标：上一页最后一条的 order_key"
+        ),
+    ] = None,
 ) -> list[PendingDeadlineOut]:
-    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。
+    """待核对的候选。默认按编号从新到旧；翻页用上一页最小的编号作 before_id，
+    不受别人同时核对的影响。
+    order=priority 时按核对优先顺序，翻页用上一页最后一条的 order_key 作 after。
 
     归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间、证据句都相同）：只列编号最小的
     那条（之后新抽出的副本编号更大，不会把已在翻页范围里的这条挤掉），标题和链接用主文件；
     本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
+
+    每条带 AI 预审提示（hint）：只读已有的 AI 检查记录，不调模型；"建议通过"只影响排序和标签，
+    这个接口不改任何候选。
     """
+    from youju.ai.hints import deadline_hints, order_key
+
+    if order == "priority" and before_id is not None:
+        raise HTTPException(status_code=422, detail="按优先顺序翻页用 after，不用 before_id")
+    if order == "id" and after is not None:
+        raise HTTPException(status_code=422, detail="按编号翻页用 before_id，不用 after")
     base = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
@@ -2110,40 +2162,59 @@ def pending_deadlines(
     condition = _due_condition(due)
     if condition is not None:
         base = base.where(condition)
-    rows: list[tuple[DocumentDeadline, Document, Source]] = []
-    cursor = before_id
-    while len(rows) < limit:
-        stmt = base if cursor is None else base.where(DocumentDeadline.id < cursor)
-        batch = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
-        if not batch:
-            break
-        cursor = batch[-1][0].id
+    # (候选, 文件, 来源, 主文件编号)
+    picked: list[tuple[DocumentDeadline, Document, Source, int]] = []
+    if order == "priority":
+        # 待核对的总共几百条：整批取出，按 AI 预审提示和截止日期排好，再按游标切出这一页
+        batch = session.execute(base).all()
         shown = _pending_shown_ids(session, [d for d, _, _ in batch])
-        for deadline, doc, src in batch:
-            if deadline.id in shown:
-                master_id = shown[deadline.id]
-                master = doc if master_id == doc.id else session.get(Document, master_id)
-                rows.append((deadline, master, src if master_id == doc.id else master.source))
-    rows = rows[:limit]
-    return [
-        PendingDeadlineOut(
-            id=d.id,
-            document_id=doc.id,
-            title=doc.title,
-            url=doc.url,
-            publish_date=doc.publish_date,
-            source=src.dept_full_name,
-            kind=d.kind,
-            candidate_date=d.candidate_date,
-            candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
-            evidence=d.evidence,
-            confidence=d.confidence,
-            origin=d.origin,
-            ai_agrees=d.ai_agrees,
-            reopen_note=d.audit_note if d.audit_state == "reopened" else None,
+        picked = [(d, doc, src, shown[d.id]) for d, doc, src in batch if d.id in shown]
+    else:
+        cursor = before_id
+        while len(picked) < limit:
+            stmt = base if cursor is None else base.where(DocumentDeadline.id < cursor)
+            batch = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+            if not batch:
+                break
+            cursor = batch[-1][0].id
+            shown = _pending_shown_ids(session, [d for d, _, _ in batch])
+            picked += [(d, doc, src, shown[d.id]) for d, doc, src in batch if d.id in shown]
+        picked = picked[:limit]
+    hints = deadline_hints(session, [(d, master_id) for d, _, _, master_id in picked])
+    today = v1_api.now().date()
+    keyed = [(order_key(item[0], hints[item[0].id], today), item) for item in picked]
+    if order == "priority":
+        keyed = sorted(
+            (pair for pair in keyed if after is None or pair[0] > after), key=lambda p: p[0]
+        )[:limit]
+    output = []
+    for key, (d, doc, src, master_id) in keyed:
+        if master_id != doc.id:
+            doc = session.get(Document, master_id)
+            src = doc.source
+        hint = hints[d.id]
+        output.append(
+            PendingDeadlineOut(
+                id=d.id,
+                document_id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                kind=d.kind,
+                candidate_date=d.candidate_date,
+                candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
+                evidence=d.evidence,
+                confidence=d.confidence,
+                origin=d.origin,
+                ai_agrees=d.ai_agrees,
+                reopen_note=d.audit_note if d.audit_state == "reopened" else None,
+                hint=hint.code,
+                hint_text=hint.text,
+                order_key=key,
+            )
         )
-        for d, doc, src in rows
-    ]
+    return output
 
 
 def _lock_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
