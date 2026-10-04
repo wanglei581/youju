@@ -497,6 +497,25 @@ def _cmd_compare_lists(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_quality_sample(args: argparse.Namespace) -> int:
+    from youju.quality import sample_csv
+
+    with session_factory()() as session:
+        data, rows = sample_csv(session, args.kind, n=args.n, seed=args.seed)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_bytes(data)
+    label = "通知" if args.kind == "notices" else "名单比对"
+    print(f"抽检表（{label}）已写入 {args.out}：{rows} 行（n={args.n}，seed={args.seed}）")
+    return 0
+
+
+def _positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("至少 1")
+    return number
+
+
 def _cmd_track_clients(args: argparse.Namespace) -> int:
     from youju.track import export_track_excel, read_customer_profiles, track_clients
 
@@ -714,6 +733,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path, help="客户名单文件（.xlsx 或 .csv）")
     p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
     p.set_defaults(func=_cmd_compare_lists)
+
+    p = sub.add_parser(
+        "quality-sample", help="生成数据质量抽检表（CSV）：抽样并先做程序核对，其余由人工看"
+    )
+    p.add_argument("--kind", choices=("notices", "compare"), required=True, help="通知或名单比对")
+    p.add_argument("--n", type=_positive, default=200, help="抽多少条，默认 200")
+    p.add_argument("--seed", type=int, default=1, help="抽样种子，同一种子同一份结果，默认 1")
+    p.add_argument("--out", type=Path, required=True, help="输出 CSV 文件")
+    p.set_defaults(func=_cmd_quality_sample)
 
     p = sub.add_parser("track-clients", help="按客户画像生成多客户在报项目跟进表")
     p.add_argument("file", type=Path, help="客户画像文件（.xlsx 或 .csv）")
