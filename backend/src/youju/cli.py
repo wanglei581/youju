@@ -542,6 +542,29 @@ def _cmd_advisor_run(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pay(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    from youju import payments
+    from youju.config import get_settings
+    from youju.xpay import XPayClient
+
+    settings = get_settings()
+    if not payments.enabled(settings):
+        return 0
+    stamp = datetime.now(UTC)
+    with session_factory()() as session, httpx.Client(trust_env=False) as http:
+        client = XPayClient(settings, http)
+        if args.command == "pay-reconcile":
+            day = payments.advisor_tasks.usage_day(stamp) - timedelta(days=1)
+            payments.download_reconcile(session, day, client, stamp)
+        else:
+            payments.run_payments(session, settings=settings, client=client, stamp=stamp)
+    return 0
+
+
 def _cmd_alert(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
 
@@ -737,6 +760,10 @@ def main(argv: list[str] | None = None) -> int:
     ).set_defaults(func=_cmd_notify)
     sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
         func=_cmd_cleanup
+    )
+    sub.add_parser("pay-run", help="支付补单、退款和重跑（默认关闭）").set_defaults(func=_cmd_pay)
+    sub.add_parser("pay-reconcile", help="前一天支付日账单对账（默认关闭）").set_defaults(
+        func=_cmd_pay
     )
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run

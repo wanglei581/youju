@@ -878,6 +878,8 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "subscriptions": 1,
         "unused_subscriptions": 0,
         "advisor_input_rows": 0,
+        "pay_inputs": 0,
+        "pay_events": 0,
         "advisor_files": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1

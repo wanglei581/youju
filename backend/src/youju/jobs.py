@@ -17,6 +17,8 @@ OVERVIEW_JOBS = (
     "audit-deadlines",
     "daily-report",
     "weekly-digest",
+    "pay-run",
+    "pay-reconcile",
 )
 # advisor-run 每分钟一次，job.sh 不给它记运行记录（情况看工具任务表）
 JOB_NAMES = OVERVIEW_JOBS + (

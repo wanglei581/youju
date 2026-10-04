@@ -36,6 +36,8 @@ from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
+from youju.api.pay import push_router
+from youju.api.pay import router as pay_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import doc_kind, effective_kind, list_status
@@ -75,6 +77,9 @@ app.include_router(v1_router)
 app.include_router(advisor_router)
 app.include_router(exports_router)
 app.include_router(me_router)
+
+app.include_router(pay_router)
+app.include_router(push_router)
 
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
@@ -141,8 +146,17 @@ async def _role_guard(request: Request, call_next):
     （早期样机的 /api/documents 等不对外）。"""
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
+    if path.startswith("/api/v1/pay/") or path == getattr(
+        get_settings(), "wx_push_path", "/api/wx/push"
+    ):
+        from youju.payments import enabled as pay_enabled
+
+        if not pay_enabled(get_settings()):
+            return JSONResponse(status_code=404, content={"detail": "没有找到接口"})
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
-    mini_path = path.startswith("/api/v1/")
+    mini_path = path.startswith("/api/v1/") or path == getattr(
+        get_settings(), "wx_push_path", "/api/wx/push"
+    )
     blocked = (role == "api" and not (mini_path or path == "/health")) or (
         role == "admin" and not (admin_path or path == "/health")
     )
@@ -1025,8 +1039,13 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         AdvisorTask.kind.in_(("interpret", "clause")),
         AdvisorTask.created_at >= datetime.now(UTC) - timedelta(days=7),
     )
+    from youju.payments import overview as pay_overview
+
+    pay = pay_overview(session)
     result = {
+        "pay": pay,
         "todos": {
+            "pay": pay["manual"] + pay["differences"] + pay["reconciliation_pending"],
             "deadlines": pending_count(session, None, "all")["pending"],
             "deadlines_30": pending_count(session, None, "30")["pending"],
             "fields": field_pending_count(session, None)["pending"],

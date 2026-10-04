@@ -144,6 +144,7 @@ def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
             .where(
                 AdvisorTask.user_id == user_id,
                 AdvisorTask.kind == kind,
+                AdvisorTask.pay_order_id.is_(None),
                 AdvisorTask.status == "failed",
                 AdvisorTask.created_at
                 >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
@@ -159,6 +160,7 @@ def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
             .where(
                 AdvisorTask.user_id == user_id,
                 AdvisorTask.kind == kind,
+                AdvisorTask.pay_order_id.is_(None),
                 AdvisorTask.status.in_(("queued", "running", "done")),
                 AdvisorTask.created_at
                 >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
@@ -178,6 +180,8 @@ def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
 
 def release_usage(session: Session, task: AdvisorTask) -> None:
     """释放一次已占用额度；重复释放安全。"""
+    if task.pay_order_id is not None:
+        return
     row = session.scalar(
         select(AdvisorUsage)
         .where(
@@ -600,6 +604,8 @@ def run_advisor_tasks(
         getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings)
     ):
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
+    if not getattr(settings, "pay_enabled", False):
+        allowed = allowed & AdvisorTask.pay_order_id.is_(None)
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
     claimed: set[int] = set()

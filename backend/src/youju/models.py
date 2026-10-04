@@ -515,6 +515,9 @@ class AdvisorTask(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    pay_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pay_orders.id", ondelete="SET NULL"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
     input_rows: Mapped[list | None] = mapped_column(JSONType)
@@ -678,3 +681,67 @@ class AppKey(Base):
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
     value: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class PayOrder(Base):
+    """价格、商品和环境均为下单快照；输入七天删除，金额留作对账。"""
+
+    __tablename__ = "pay_orders"
+    __table_args__ = (
+        UniqueConstraint("out_trade_no", name="uq_pay_orders_trade"),
+        Index("ix_pay_orders_user_created", "user_id", "created_at"),
+        Index("ix_pay_orders_status_created", "status", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    pseudonym: Mapped[str | None] = mapped_column(String(64))
+    out_trade_no: Mapped[str] = mapped_column(String(32))
+    product_id: Mapped[str] = mapped_column(String(128))
+    price: Mapped[int] = mapped_column(Integer)
+    row_limit: Mapped[int] = mapped_column(Integer)
+    env: Mapped[int] = mapped_column(Integer)
+    input_rows: Mapped[list | None] = mapped_column(JSONType)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    wx_order_id: Mapped[str | None] = mapped_column(String(128))
+    paid_fee: Mapped[int | None] = mapped_column(Integer)
+    paid_time: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    platform: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    # 编号留作凭据，任务删除后也保留；不反向设外键，避免循环依赖。
+    task_id: Mapped[int | None] = mapped_column(Integer)
+    task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    rerun_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    refund_order_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    refund_status: Mapped[str | None] = mapped_column(String(16))
+    refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    error: Mapped[str | None] = mapped_column(String(500))
+    alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class PayEvent(Base):
+    """只保留允许的交易字段；原始 attach、姓名、手机号等不入库。"""
+
+    __tablename__ = "pay_events"
+    __table_args__ = (Index("ix_pay_events_created", "created_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("pay_orders.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[dict] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class PayReconciliation(Base):
+    __tablename__ = "pay_reconciliations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date, unique=True)
+    local_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    local_fee: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    bill_count: Mapped[int | None] = mapped_column(Integer)
+    bill_fee: Mapped[int | None] = mapped_column(Integer)
+    differences: Mapped[dict] = mapped_column(JSONType)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

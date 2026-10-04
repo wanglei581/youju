@@ -112,7 +112,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',kinds:'类型复核',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
-  const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务'};
+  const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务','pay-run':'支付补单和退款','pay-reconcile':'支付对账'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
   let token = '', active = 'overview', next = null, sequence = 0, due = '30';
   window.getYoujuAdminToken = () => token;
@@ -154,6 +154,7 @@
       const d=overviewData || await api('/api/admin/overview'); if(seq!==sequence) return;
       const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'),grid);
       [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['类型待复核','kinds','kinds'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      if(d.pay) todo.append(node('p',`支付待办 ${d.todos.pay} 项`));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
       todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
       const data=node('section',undefined,'panel'), metrics=node('div',undefined,'grid'); data.append(node('h3','数据'),metrics);
@@ -167,6 +168,7 @@
       table.append(head,body); wrap.append(table); jobs.append(wrap);
       const link=node('button','查看最近 7 天记录'); link.type='button'; link.onclick=()=>show('jobs'); jobs.append(link);
       jobs.append(node('p',`AI 顾问：${d.ai_advisor.enabled?'开':'关'} · 白名单 ${d.ai_advisor.whitelist_count} 人 · 近 7 天任务 ${d.ai_advisor.tasks_7d} 次 · 失败 ${d.ai_advisor.failed_7d} 次`));
+      if(d.pay) jobs.append(node('p',`支付 · 今日订单 ${d.pay.today_orders} 笔 · 实付金额 ${(d.pay.today_fee/100).toFixed(2)} 元 · 待人工处理 ${d.pay.manual} 笔 · 对账差异 ${d.pay.differences} 天 · 对账待完成 ${d.pay.reconciliation_pending} 天`));
       $('overview').replaceChildren(todo,data,jobs);
     } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
   }

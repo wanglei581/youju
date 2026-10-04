@@ -543,9 +543,12 @@ def test_migration_0015_only_constraint_and_cleanup(db_engine, session, settings
 
     original_columns = columns()
     cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
+    # 只比较 0015 本身的列变化；后续 0017 已合法增加 pay_order_id。
+    command.downgrade(cfg, "0015")
+    columns_0015 = columns()
     command.downgrade(cfg, "0014")
     try:
-        assert columns() == original_columns
+        assert columns() == columns_0015
         with db_engine.connect() as conn:
             assert conn.scalar(text("SELECT COUNT(*) FROM advisor_tasks WHERE kind='clause'")) == 0
             assert conn.scalar(text("SELECT COUNT(*) FROM advisor_usage WHERE kind='clause'")) == 0

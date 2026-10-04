@@ -123,6 +123,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     assert response.status_code == 200
     data = response.json()
     assert data["todos"] == {
+        "pay": 0,
         "deadlines": 3,
         "deadlines_30": 1,
         "fields": 1,
