@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import extract_deadlines_with_ai
-from youju.classify import doc_kind
+from youju.classify import comparable_kind, doc_kind
 from youju.dedup import (
     canonical_ids,
     groups_for,
@@ -295,7 +295,8 @@ def run_ai_checks(
                         usage=client.last_usage,
                     )
                     rule = doc_kind(doc.title)
-                    if rule == kind.kind:
+                    # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
+                    if comparable_kind(rule) == kind.kind:
                         report.kind_agree += 1
                     else:
                         report.kind_disagree.append((doc.id, doc.title, rule, kind.kind))

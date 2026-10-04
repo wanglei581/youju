@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.dbtypes import NOW, JSONType, LongText, UTCDateTime
 
@@ -30,6 +31,11 @@ SOURCE_URL_MAX = 400
 def _rule_kind(context) -> str:
     """入库时按标题规则算好类型（ORM 和批量插入都会调用），筛选时只比较这一列。"""
     return doc_kind(context.get_current_parameters().get("title") or "")
+
+
+def _rule_category(context) -> str:
+    """入库时按标题规则算好项目类别（同 _rule_kind），按类别筛选时只比较这一列。"""
+    return doc_category(context.get_current_parameters().get("title") or "")
 
 
 class Base(DeclarativeBase):
@@ -175,7 +181,8 @@ class Document(Base):
         Index("ix_documents_source_id", "source_id"),
         # 标题模糊搜索是 LIKE '%词%' 全表扫描：几万份文件以内足够快，不再建索引
         CheckConstraint(
-            "kind_override IS NULL OR kind_override IN ('申报通知', '名单', '政策', '其他')",
+            "kind_override IS NULL OR kind_override IN "
+            "('申报通知', '名单', '政策', '资讯与指南', '其他')",
             name="ck_document_kind_override",
         ),
     )
@@ -196,11 +203,15 @@ class Document(Base):
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
     # discovered：只有题录；fetched：详情抓取成功；后续可加入 extracted 等状态
     status: Mapped[str] = mapped_column(String(16), default="discovered")
-    # 人工定的类型：AI 和标题规则判断不一致时，在核对台选定（D-023）。有值时给用户看这个
+    # 人工定的类型：AI 和标题规则判断不一致时，在核对台选定（D-023）；或在管理台确认"改回申报通知"
+    # 的建议（D-051）。有值时给用户看这个
     kind_override: Mapped[str | None] = mapped_column(String(8))
-    # 按标题规则算出的类型（申报通知 / 名单 / 政策 / 其他）：入库时算好；规则改了由 youju reclassify
-    # 重算（admin 服务每次启动时跑）。用户看到的类型 = 人工定的，没定过的按这一列
+    # 按标题规则算出的类型（申报通知 / 名单 / 政策 / 资讯与指南 / 其他）：入库时算好；规则改了由
+    # youju reclassify 重算（admin 服务每次启动时跑）。用户看到的类型 = 人工定的，没定过的按这一列
     rule_kind: Mapped[str | None] = mapped_column(String(8), default=_rule_kind)
+    # 按标题规则算出的项目类别（见 youju.categories）：同 rule_kind，入库时算好，规则改了由
+    # youju reclassify 重算。只对申报通知和名单显示、筛选
+    rule_category: Mapped[str | None] = mapped_column(String(16), default=_rule_category)
     kind_decided_by: Mapped[str | None] = mapped_column(String(80))
     kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

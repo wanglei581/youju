@@ -979,3 +979,23 @@ def test_follow_keeps_level_filter(client, session, monkeypatch):
         row["id"]: row["newCount"] for row in client.get("/api/v1/me/follows").json()["items"]
     }
     assert counts == {national.json()["id"]: 0, provincial.json()["id"]: 1}
+
+
+def test_follow_new_folds_guides_when_asked(client, session, monkeypatch):
+    """关注的新文件和搜索一样默认折叠资讯与指南（D-051）：写明折叠了几篇，点开照常列出。"""
+    settings(monkeypatch)
+    agree(client)
+    follow_id = follow(client).json()["id"]
+    source_and_doc(session)
+    source_and_doc(session, title="2026年8月份居民消费价格同比上涨0.8%")
+    url = f"/api/v1/me/follows/{follow_id}/new"
+    assert client.get(url).json()["total"] == 2  # 旧版小程序不传 fold：和以前一样
+    folded = client.get(url, params={"fold": 1}).json()
+    assert (folded["total"], folded["folded"], folded["guides"]) == (1, 1, 1)
+    assert [item["kind"] for item in folded["items"]] == ["申报通知"]
+    shown = client.get(url, params={"fold": 0}).json()
+    assert (shown["total"], shown["folded"], shown["guides"]) == (2, 0, 1)
+    # 关注条件选了类型的不折叠
+    typed = follow(client, {"time": "不限", "types": "申报通知"}).json()["id"]
+    body = client.get(f"/api/v1/me/follows/{typed}/new", params={"fold": 1}).json()
+    assert (body["total"], body["folded"]) == (1, 0)

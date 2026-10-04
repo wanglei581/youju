@@ -1,4 +1,5 @@
 .summary { padding: 20rpx 32rpx 0; font-size: 25rpx; }
+.fold-note { padding: 8rpx 32rpx 0; font-size: 25rpx; line-height: 1.6; }
 .empty { padding: 48rpx 0; text-align: center; font-size: 26rpx; }
 .load-more { height: 96rpx; display: flex; align-items: center; justify-content: center; border-top: 2rpx solid var(--line); font-size: 26rpx; color: var(--t3); }
 .seen { margin: 32rpx 32rpx 0; }

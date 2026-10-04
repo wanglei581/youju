@@ -38,7 +38,15 @@ from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
-from youju.classify import doc_kind, effective_kind, list_status
+from youju.classify import (
+    AI_KINDS,
+    SUGGEST_APPLY_WORDS,
+    apply_suggestion,
+    comparable_kind,
+    doc_kind,
+    effective_kind,
+    list_status,
+)
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -1055,6 +1063,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
             "kinds": kinds_pending_count(session, None)["pending"],
+            "kind_suggestions": kind_suggestions_count(session, None)["pending"],
             "audit": audit_flagged_count(session, None)["flagged"],
             "feedback": feedback_pending_count(session, None)["pending"],
             "sources": len(check_sources(session).failures),
@@ -1467,9 +1476,6 @@ def feedback_console() -> str:
     )
 
 
-KINDS = ("申报通知", "名单", "政策", "其他")
-
-
 class KindPendingOut(BaseModel):
     """AI 和标题规则判断不一致、等人定类型的文件。"""
 
@@ -1487,8 +1493,11 @@ class KindPendingOut(BaseModel):
     decided_by: str | None
 
 
+KindName = Literal["申报通知", "名单", "政策", "资讯与指南", "其他"]
+
+
 class KindDecisionIn(BaseModel):
-    kind: Literal["申报通知", "名单", "政策", "其他"]
+    kind: KindName
     decided_by: str = Field(min_length=1, max_length=80)
 
 
@@ -1513,7 +1522,8 @@ def _kind_disagreements(session: Session, include_decided: bool) -> list[KindPen
         result = check.result if isinstance(check.result, dict) else {}
         ai_kind = result.get("kind")
         rule_kind = doc_kind(doc.title)
-        if ai_kind not in KINDS or ai_kind == rule_kind:
+        # AI 只分四类：规则判"资讯与指南"、AI 判"其他"的算一致
+        if ai_kind not in AI_KINDS or ai_kind == comparable_kind(rule_kind):
             continue
         if doc.kind_override is not None and not include_decided:
             continue
@@ -1588,6 +1598,121 @@ def undo_kind(
     session.commit()
     _audit(request, "kind_undo", document_id=document_id)
     return {"kind": doc_kind(doc.title)}
+
+
+# 规则建议改回的类型（D-051 第二阶段）：先只建议"申报通知"
+SUGGESTED_KIND = "申报通知"
+
+
+class KindSuggestionOut(BaseModel):
+    """标题规则判为"其他"、但像真申报的文件：建议改为申报通知，人在管理台确认后才改对外类型。"""
+
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+    # 现在给用户看的类型（没人定过时是"其他"）
+    shown_kind: str
+    suggested: str
+    # 标题里命中的词，例如"提名工作"
+    reason: str
+    decided: str | None
+    decided_by: str | None
+
+
+class KindBatchIn(BaseModel):
+    """批量定类型：抽查后一次确认一批（最多 200 份）。"""
+
+    ids: list[int] = Field(min_length=1, max_length=200)
+    kind: KindName
+    decided_by: str = Field(min_length=1, max_length=80)
+
+
+def _kind_suggestions(session: Session, decided: bool) -> list[KindSuggestionOut]:
+    """建议改为申报通知的文件（同一通知的其他网址不重复列，已下架的不列），按发布日期从新到旧。
+    decided 为 False 列还没人定过的；为 True 列已经有人定过的（可以撤回）。"""
+    rows = session.execute(
+        visible_documents(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                available_condition(),
+                Document.kind_override.is_not(None)
+                if decided
+                else Document.kind_override.is_(None),
+                or_(*(Document.title.contains(w, autoescape=True) for w in SUGGEST_APPLY_WORDS)),
+            )
+        ).order_by(Document.publish_date.desc(), Document.id.desc())
+    ).all()
+    out: list[KindSuggestionOut] = []
+    for doc, src in rows:
+        reason = apply_suggestion(doc.title)
+        if reason is None:
+            continue
+        out.append(
+            KindSuggestionOut(
+                id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                shown_kind=effective_kind(doc.title, doc.kind_override),
+                suggested=SUGGESTED_KIND,
+                reason=reason,
+                decided=doc.kind_override,
+                decided_by=doc.kind_decided_by,
+            )
+        )
+    return out
+
+
+@app.get("/api/admin/kind-suggestions/count")
+def kind_suggestions_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
+    return {"pending": len(_kind_suggestions(session, decided=False))}
+
+
+@app.get("/api/admin/kind-suggestions", response_model=list[KindSuggestionOut])
+def admin_kind_suggestions(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "decided"] = "pending",
+    offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[KindSuggestionOut]:
+    items = _kind_suggestions(session, decided=status == "decided")
+    return items[offset : offset + limit]
+
+
+@app.post("/api/admin/kinds/batch")
+def decide_kinds(
+    body: KindBatchIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, object]:
+    """批量人工定类型（规则建议抽查后一次确认）：和逐份定类型一样，给用户看的类型、筛选、
+    名单解析都按这个；可以逐份撤回。有一份不存在就整批不改。"""
+    ids = sorted(set(body.ids))
+    docs = session.scalars(select(Document).where(Document.id.in_(ids))).all()
+    missing = sorted(set(ids) - {doc.id for doc in docs})
+    if missing:
+        raise HTTPException(
+            status_code=404, detail=f"文件不存在：{'、'.join(f'#{i}' for i in missing[:5])}"
+        )
+    now = datetime.now(UTC)
+    for doc in docs:
+        doc.kind_override = body.kind
+        doc.kind_decided_by = body.decided_by
+        doc.kind_decided_at = now
+    session.commit()
+    _audit(request, "kind_batch", document_ids=ids, kind=body.kind, by=body.decided_by)
+    return {"updated": len(docs), "kind": body.kind}
+
+
+@app.get("/admin/kind-suggest", response_class=HTMLResponse, include_in_schema=False)
+def kind_suggest_console() -> str:
+    """改回申报通知：规则建议的、被判成"其他"的真申报，抽查后批量确认；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "kind_suggest.html").read_text(
+        encoding="utf-8"
+    )
 
 
 @app.get("/admin/kinds", response_class=HTMLResponse, include_in_schema=False)

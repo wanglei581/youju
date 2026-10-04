@@ -26,6 +26,7 @@
   <text wx:if="{{chipTime !== '不限'}}">{{chipTime}} <text class="b">{{total}}</text> 份 · 不限时间共 {{totalAll}} 份</text><text wx:else>共 <text class="b">{{total}}</text> 份</text>
   <view class="summary-right"><text>按发布时间 ↓</text><text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text></view>
 </view>
+<view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
 
 <view class="follow-bar">
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
