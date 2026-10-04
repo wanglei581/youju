@@ -205,10 +205,15 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     usage_ok = False
     try:
         with session_factory()() as session:
-            report = run_ai_checks(session, client, limit=args.limit)
+            report = run_ai_checks(session, client, limit=args.limit, due_first=args.due_first)
     finally:
         usage_ok = _finish_ai(client, "check")
     print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
+    if args.due_first is not None:
+        print(
+            f"  其中先补跑 {report.due_soon_documents} 份："
+            f"有 {args.due_first} 天内截止的待核对候选、AI 还没抽过截止"
+        )
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
         f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
@@ -516,6 +521,13 @@ def _positive(value: str) -> int:
     return number
 
 
+def _non_negative(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("不能小于 0")
+    return number
+
+
 def _cmd_track_clients(args: argparse.Namespace) -> int:
     from youju.track import export_track_excel, read_customer_profiles, track_clients
 
@@ -681,6 +693,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
     p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")
+    p.add_argument(
+        "--due-first",
+        type=_non_negative,
+        metavar="DAYS",
+        help="先补跑 DAYS 天内截止的待核对候选所在的文件（AI 还没抽过截止的），再查其他文件；"
+        "合计不超过 --limit。只写 AI 记录，不改候选的核对状态",
+    )
     p.set_defaults(func=_cmd_ai_check)
 
     p = sub.add_parser(

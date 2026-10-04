@@ -87,9 +87,14 @@ function harness(embedded) {
     node.hidden = match[0].includes(' hidden'); node.disabled = match[0].includes(' disabled');
   }
   ids.due.value = 'all'; ids.token.value = 'local-token';
+  // 后台按核对顺序（order_key 升序）返回：3 建议通过排最前，2、1 按截止日期从早到晚
+  const day = { 3: 15, 2: 15, 1: 16 };
+  const hints = { 3: ['suggest', '建议通过'], 2: ['mismatch', '规则与 AI 不一致'], 1: ['unchecked', 'AI 未核'] };
   const items = [3, 2, 1].map(id => ({ id, document_id: id, title: `标题 <img> ${id}`, url: '/official',
-    source: '测试来源', publish_date: '2026-09-30', kind: '企业申报截止', candidate_date: '2026-10-15',
-    candidate_time: '17:00', evidence: '请于2026年10月15日前申报', confidence: '高' }));
+    source: '测试来源', publish_date: '2026-09-30', kind: id === 1 ? '推荐或审核截止' : '企业申报截止',
+    candidate_date: `2026-10-${day[id]}`, candidate_time: '17:00', evidence: `请于2026年10月${day[id]}日前申报`,
+    confidence: '高', hint: hints[id][0], hint_text: hints[id][1],
+    order_key: `${id === 3 ? 0 : 1}|2026-10-${day[id]}|${String(id).padStart(12, '0')}` }));
   const status = new Map(items.map(i => [i.id, 'pending']));
   const calls = [];
   let token = 'parent-token', now = 1000, failure = null, release = null, hold = false;
@@ -137,6 +142,16 @@ const posts = h => h.calls.filter(c => c.method === 'POST');
     await settle();
     assert.equal(h.ids.undoLast.disabled, true);
     assert.equal(title(current(h)), '标题 <img> 3');
+    // 按核对顺序取；截止类型用色块显示在日期旁边，AI 预审标签只是提示，载入后不会自动通过任何一条
+    const listCalls = () => h.calls.filter(c => c.url.includes('?limit='));
+    assert.ok(listCalls()[0].url.includes('&order=priority') && !listCalls()[0].url.includes('after='));
+    const kinds = h.cards().map(c => [c.querySelector('.kind-big').textContent, c.querySelector('.kind-big').className]);
+    assert.deepEqual(kinds, [['企业申报截止', 'kind-big k-apply'], ['企业申报截止', 'kind-big k-apply'], ['推荐或审核截止', 'kind-big k-recommend']]);
+    assert.deepEqual(h.cards().map(c => c.querySelector('.ai').textContent), ['建议通过', '规则与 AI 不一致', 'AI 未核']);
+    assert.equal(posts(h).length, 0);
+    h.ids.more.click(); await settle();
+    assert.ok(listCalls().at(-1).url.endsWith(`&after=${encodeURIComponent('1|2026-10-16|000000000001')}`));
+    assert.equal(h.cards().length, 3);
     h.key('j'); assert.equal(title(current(h)), '标题 <img> 2'); assert.equal(current(h).scrolled, true);
     h.key('k'); h.key('k'); assert.equal(title(current(h)), '标题 <img> 3');
     for (const target of [h.ids.reviewer, h.ids.token, h.ids.due, h.document.createElement('textarea')]) h.key('a', target);

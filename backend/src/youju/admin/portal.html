@@ -32,6 +32,9 @@
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
   .metric { text-align:left; padding:12px; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
   .metric strong { display:block; font-size:26px; color:var(--ink); }
+  .progress { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; margin:0 0 14px; }
+  .progress strong { font-size:16px; }
+  .progress meter { width:160px; height:8px; }
   .tablewrap { overflow-x:auto; }
   table { border-collapse:collapse; width:100%; min-width:700px; }
   th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
@@ -167,13 +170,22 @@
     const seq=++sequence;
     try {
       const d=overviewData || await api('/api/admin/overview'); if(seq!==sequence) return;
-      const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'),grid);
+      const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'));
+      // 截止日期核对进度：已核对 = 通过 + 驳回 + 已变更，都按归并后去重计
+      const r=d.deadline_review;
+      if(r) {
+        const progress=node('p',undefined,'progress'), bar=node('meter');
+        bar.min=0; bar.max=Math.max(1,r.reviewed+r.pending); bar.value=r.reviewed; bar.setAttribute('aria-label','截止日期已核对比例');
+        progress.append(node('strong',`截止日期：已核对 ${r.reviewed} / 待审 ${r.pending}（30 天内待审 ${r.pending_30}）`),bar,node('span',`已核对里通过 ${r.approved}、驳回 ${r.rejected}、已变更 ${r.changed}`,'muted'));
+        todo.append(progress);
+      }
+      todo.append(grid);
       [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['类型待复核','kinds','kinds'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
       todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
       const data=node('section',undefined,'panel'), metrics=node('div',undefined,'grid'); data.append(node('h3','数据'),metrics);
-      [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已核对截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
-      data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已核对截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));
+      [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已通过截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
+      data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已通过截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));
       const quality=node('section',undefined,'panel'), sampleForm=node('form'), sampleStatus=node('p','','muted');
       quality.append(node('h3','数据质量抽检'));
       const seedLabel=node('label','抽样种子'); seedLabel.htmlFor='sampleSeed';
