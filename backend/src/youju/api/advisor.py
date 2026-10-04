@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import JSON, select
+from sqlalchemy import JSON, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
@@ -21,7 +21,7 @@ from youju.api.me import UserDep, request_openid
 from youju.backup import BackupError
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, User
+from youju.models import AdvisorTask, AdvisorUsage, Document, Source, User
 from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
@@ -49,12 +49,13 @@ async def _enabled(request: Request) -> None:
                     openid = request_openid(request)
                 except HTTPException:
                     openid = None
-                if (
-                    not getattr(settings, "ai_advisor_enabled", False)
-                    or openid not in interpret.openids(settings)
-                ) and (settings.advisor_enabled or kind not in AI_KINDS):
+                if not getattr(
+                    settings, "ai_advisor_enabled", False
+                ) or openid not in interpret.openids(settings):
                     # 先于 TaskIn 的 Literal 校验，固定提示不含未开放类型或用户输入。
-                    raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
+                    if settings.advisor_enabled:
+                        raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
+                    raise HTTPException(status_code=404, detail="没有找到接口")
     if kind in ("compare", "track") and not settings.advisor_enabled:
         raise HTTPException(status_code=404, detail="没有找到接口")
     if kind in AI_KINDS or (kind is None and not settings.advisor_enabled):
@@ -132,13 +133,36 @@ def _authorize(kind: str, user: User) -> None:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _out(task: AdvisorTask, session: Session | None = None, *, include_result: bool = True) -> dict:
+def _document_titles(session: Session, doc_ids: list[int]) -> dict[int, str]:
+    if not doc_ids:
+        return {}
+    return dict(
+        session.execute(
+            select(Document.id, Document.title)
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(doc_ids), v1.public_condition())
+        ).all()
+    )
+
+
+def _document_out(doc_id: int | None, titles: dict[int, str]) -> dict:
+    # 编号与标题同时隐藏，不能暴露已下架或非公开通知的元数据。
+    return {
+        "docId": doc_id if doc_id in titles else None,
+        "docTitle": titles.get(doc_id),
+    }
+
+
+def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) -> dict:
     result = service.task_dict(
         task, include_result=include_result or task.kind not in AI_KINDS, stamp=_stamp()
     )
+    if task.kind in AI_KINDS:
+        doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
+        result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
     if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
-    if task.kind in AI_KINDS and task.result_json and session is not None:
+    if task.kind in AI_KINDS and task.result_json:
         if task.expires_at is not None and task.expires_at <= _stamp():
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
@@ -188,11 +212,13 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             },
         },
         "ai_advisor": {
-            "enabled": ai_enabled,
-            "features": list(AI_KINDS) if ai_enabled else [],
+            "enabled": True,
+            "features": list(AI_KINDS),
             "disclosure": interpret.disclosure(settings),
-            "remaining": {k: max(0, 5 - counts.get(k, 0)) if ai_enabled else 0 for k in AI_KINDS},
-        },
+            "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
+        }
+        if ai_enabled
+        else {"enabled": False, "features": [], "remaining": {}},
     }
 
 
@@ -230,7 +256,7 @@ def create_task(
             existing.kind != body.kind or existing.input_json != input_json
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
-        return _out(existing, include_result=False)
+        return _out(existing, session, include_result=False)
     if body.rows is not None and len(body.rows) > service.MAX_ROWS:
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
@@ -268,7 +294,7 @@ def create_task(
             raise
         task = existing
     request.state.audit = {"action": "advisor_task_create", "task_id": task.id, "kind": task.kind}
-    return _out(task, include_result=False)
+    return _out(task, session, include_result=False)
 
 
 @router.get("/tasks", dependencies=[Depends(_enabled)])
@@ -284,6 +310,11 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         select(
             AdvisorTask,
             (AdvisorTask.result_json.is_not(None) & (AdvisorTask.result_json != JSON.NULL)),
+            # 只投影编号，避免加载整份正文快照及七天内的企业输入；快照在输入清理后仍保留。
+            func.coalesce(
+                AdvisorTask.snapshot["doc_id"].as_integer(),
+                AdvisorTask.input_json["doc_id"].as_integer(),
+            ),
         )
         .options(
             defer(AdvisorTask.result_json),
@@ -297,12 +328,19 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()
+    titles = _document_titles(
+        session, list({doc_id for task, _, doc_id in rows if task.kind in AI_KINDS and doc_id})
+    )
     return {
         "items": [
-            {**service.task_dict(task, include_result=False), "hasResult": bool(has_result)}
+            {
+                **service.task_dict(task, include_result=False),
+                "hasResult": bool(has_result),
+                **_document_out(doc_id, titles),
+            }
             if task.kind in AI_KINDS
             else service.task_dict(task)
-            for task, has_result in rows
+            for task, has_result, doc_id in rows
         ]
     }
 
@@ -316,8 +354,6 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
         or (task.expires_at is not None and task.expires_at <= _stamp())
     ):
         raise HTTPException(status_code=410, detail="结果文件已过期或已删除")
-    from youju.models import Document
-
     # 已生成的 Excel 也要在每次取下载地址时复核。
     hidden = select(Document.id).where(~available_condition())
     legacy_check = task.result_document_ids is None and session.scalar(hidden.limit(1)) is not None
@@ -370,7 +406,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
     elif task.status != "cancelled":
         raise HTTPException(status_code=409, detail="任务已开始处理，不能取消")
     request.state.audit = {"action": "advisor_task_cancel", "task_id": task.id}
-    return _out(task, include_result=False)
+    return _out(task, session, include_result=False)
 
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])

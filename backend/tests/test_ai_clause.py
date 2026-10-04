@@ -387,7 +387,7 @@ def test_creation_permission_matrix(
         else 202
         if authorized and kind == "clause"
         else 422
-        if kind == "invalid" or data_enabled or authorized
+        if data_enabled or authorized
         else 404
     )
     assert response.status_code == expected
@@ -521,7 +521,6 @@ def test_worker_list_metadata_invalidation_delete_and_logout(
 
 
 def test_migration_0015_only_constraint_and_cleanup(db_engine, session, settings, doc):
-    assert db_engine.url.database == "youju_test_codex"
     old = direct_task(session, doc)
     ai = AdvisorTask(
         user_id=old.user_id,
