@@ -73,17 +73,23 @@ class DigestProfile(Base):
 
 
 class DigestIssue(Base):
-    """人工发布的周报快照；依赖编号用于阻止复制后来已下架的内容。"""
+    """人工发布的周报快照；依赖编号用于阻止复制后来已下架的内容。
+
+    kind 区分周报（weekly，按统计周）和临期提醒（reminder，按生成当天所在的周）；
+    同一方案每周每种稿件各一份。
+    """
 
     __tablename__ = "digest_issues"
     __table_args__ = (
-        UniqueConstraint("profile_id", "week_start", name="uq_digest_issue_week"),
+        UniqueConstraint("profile_id", "kind", "week_start", name="uq_digest_issue_kind_week"),
         CheckConstraint("status IN ('draft', 'published')", name="ck_digest_issue_status"),
         CheckConstraint("week_end >= week_start", name="ck_digest_issue_interval"),
+        CheckConstraint("kind IN ('weekly', 'reminder')", name="ck_digest_issue_kind"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("digest_profiles.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(String(16), default="weekly", server_default="weekly")
     week_start: Mapped[date] = mapped_column(Date)
     week_end: Mapped[date] = mapped_column(Date)
     title: Mapped[str] = mapped_column(String(200))

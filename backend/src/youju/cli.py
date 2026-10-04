@@ -604,25 +604,36 @@ def _cmd_weekly_digest(args: argparse.Namespace) -> int:
     from youju.models import DigestProfile
 
     stamp = weekly.now()
+    reminder = args.kind == "reminder"
+    weekday = stamp.astimezone(weekly.BEIJING).isoweekday()
     try:
-        weekly.week_interval(args.week, stamp)
+        weekly.interval(args.kind, args.week, stamp)
+        if args.scheduled and reminder and weekday < weekly.REMINDER_WEEKDAY:
+            print("临期提醒每周四生成、周五到周日补跑，今天不安排")
+            return 0
         with session_factory()() as session:
             stmt = select(DigestProfile).where(DigestProfile.enabled.is_(True))
             if args.profile:
                 stmt = select(DigestProfile).where(DigestProfile.name == args.profile)
-            if args.scheduled:
-                stmt = stmt.where(
-                    DigestProfile.weekday == stamp.astimezone(weekly.BEIJING).isoweekday()
-                )
+            if args.scheduled and not reminder:
+                stmt = stmt.where(DigestProfile.weekday == weekday)
             profiles = session.scalars(stmt.order_by(DigestProfile.id)).all()
             if args.profile and not profiles:
                 print("没有找到周报方案")
                 return 1
             for profile in profiles:
-                result = weekly.generate(session, profile.id, args.week, stamp)
+                # 临期提醒的定时补跑只补本周还没有的，已生成（含已发布）的不覆盖。
+                result = weekly.generate(
+                    session,
+                    profile.id,
+                    args.week,
+                    stamp,
+                    args.kind,
+                    only_missing=args.scheduled and reminder,
+                )
                 print(
                     f"方案 #{profile.id}：{result.reason}"
-                    + (f"（周报 #{result.issue.id}）" if result.issue else "")
+                    + (f"（{weekly.KINDS[args.kind]} #{result.issue.id}）" if result.issue else "")
                 )
             if not profiles:
                 print("没有需要生成的启用方案")
@@ -749,10 +760,24 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_track_clients)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
-    p = sub.add_parser("weekly-digest", help="生成固定模板政策周报草稿，供人工复制发布")
+    p = sub.add_parser("weekly-digest", help="生成固定模板政策周报或临期提醒草稿，供人工复制发布")
     p.add_argument("--profile", help="方案名称；未指定时生成全部启用方案")
-    p.add_argument("--week", type=date.fromisoformat, help="统计周的周一，例如 2026-09-28")
-    p.add_argument("--scheduled", action="store_true", help="仅生成今天安排的方案（供定时任务用）")
+    p.add_argument(
+        "--kind",
+        choices=("weekly", "reminder"),
+        default="weekly",
+        help="weekly：周报（默认）；reminder：临期提醒，列出未来 7 天内截止且已核对的申报通知",
+    )
+    p.add_argument(
+        "--week",
+        type=date.fromisoformat,
+        help="统计周的周一，例如 2026-09-28；临期提醒只能是本周周一，留空即本周",
+    )
+    p.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="仅生成今天安排的方案（供定时任务用）；临期提醒周四至周日运行，本周已生成的跳过",
+    )
     p.set_defaults(func=_cmd_weekly_digest)
     p = sub.add_parser(
         "daily-report",

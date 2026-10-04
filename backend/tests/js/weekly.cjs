@@ -17,6 +17,7 @@ const elements = new Map();
 for (const match of page.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
 let writes=[],plain=[],calls=[],blocked=false,selectionCount=0;
 const issue = { id:1,profile_id:1,title:'政策申报周报',generated_at:'2026-10-05T00:00:00Z',status:'draft',counts:{lists:1},note:'',body_html:'<section><p>最新正文</p></section>',body_text:'最新正文',body_text_with_links:'题录｜机关｜2026-09-28｜截止时间见原文｜https://example.gov.cn/1' };
+const reminder = {...issue,id:2,kind:'reminder',title:'申报临期提醒',counts:{reminder:3}};
 const context = {
   URLSearchParams,Blob,
   document: {
@@ -36,7 +37,7 @@ const context = {
     assert(!path.includes('memory-only-test-token'));
     let data;
     if(path.endsWith('/profiles')) data={items:[{id:1,name:'全国版'}],provinces:['浙江']};
-    else if(path.includes('/issues?')) data={items:[issue],total:1};
+    else if(path.includes('/issues?')) data={items:[issue,reminder],total:2};
     else if(path.endsWith('/generate')) data={issue_id:1,outcome:'generated',reason:'草稿已生成'};
     else if(path.endsWith('/issues/1')) data=blocked?{detail:'内容已下架'}:issue;
     else throw new Error(path);
@@ -50,6 +51,20 @@ vm.runInNewContext(script,context);
   elements.get('profileFilter').value='1';
   await elements.get('generate').onclick();
   assert.equal(elements.get('preview').innerHTML,issue.body_html);
+  // 没有类型字段的旧数据按周报显示；生成时带上所选稿件类型。
+  assert(elements.get('issueMeta').textContent.startsWith('周报 · '));
+  const generated=()=>calls.filter(c=>c.path.endsWith('/generate')).map(c=>JSON.parse(c.options.body));
+  assert.equal(generated()[0].kind,'weekly');
+  elements.get('kind').value='reminder';
+  await elements.get('generate').onclick();
+  assert.deepEqual(generated()[1],{profile_id:1,week:null,kind:'reminder'});
+  elements.get('kind').value='weekly';
+  const cards=elements.get('issues').children.map(card=>card.children[1].textContent);
+  assert(cards[0].startsWith('周报 · 草稿 · ') && cards[0].endsWith('本周名单 1 条'));
+  assert(cards[1].startsWith('临期提醒 · 草稿 · ') && cards[1].endsWith('未来 7 天截止 3 条'));
+  // 方案的栏目开关仍是周报的四个栏目，不含临期提醒。
+  elements.get('new').onclick();
+  assert.equal(elements.get('columns').children.length,4);
   await elements.get('copyHtml').onclick();
   assert.equal(writes.length,1);
   const item=writes[0][0];

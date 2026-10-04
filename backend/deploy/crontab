@@ -10,7 +10,10 @@
 30 20 * * *  /app/backend/deploy/round.sh
 # 周一生成全国版；其他星期仅为设为对应星期的方案生成，全部经 job.sh 记账。
 30 7 * * 1  /app/backend/deploy/job.sh weekly-digest --scheduled
-30 7 * * 2-7  /app/backend/deploy/job.sh weekly-digest --scheduled
+30 7 * * 2-3  /app/backend/deploy/job.sh weekly-digest --scheduled
+# 临期提醒（未来 7 天内截止、已核对）：周四为全部启用方案生成，周五到周日补跑，本周已生成的跳过。
+# 和周报共用 job.sh 的任务锁，所以写在同一行依次执行，免得同时启动时后一个被当成重叠跳过、报失败。
+30 7 * * 4-7  /app/backend/deploy/job.sh weekly-digest --scheduled; /app/backend/deploy/job.sh weekly-digest --kind reminder --scheduled
 30 3 * * *  /app/backend/deploy/job.sh cleanup
 # 每天备份数据库到云托管对象存储，保留 30 天（验收 A6）；失败由 job.sh 发提醒
 0 4 * * *  /app/backend/deploy/job.sh backup
