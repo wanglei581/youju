@@ -36,8 +36,12 @@ class ChatClient:
         max_retries: int = 2,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        # 按模型方附加的请求参数，来自配置；
+        # 例如 DeepSeek 关闭思考：{"thinking": {"type": "disabled"}}
+        self.extra_body = dict(extra_body or {})
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
@@ -88,6 +92,7 @@ class ChatClient:
             "response_format": {"type": "json_object"},
             # 百炼的 JSON 输出只支持非思考模式；千问混合模型显式关掉思考，免得默认值变了出错
             "enable_thinking": False,
+            **self.extra_body,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         # 这次调用花掉的用量：每次拿到响应都累计（含格式不对要重试的那几次），失败时也保留

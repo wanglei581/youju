@@ -661,7 +661,7 @@ def test_worker_enabled_independently(session, settings, doc, monkeypatch):
     monkeypatch.setattr(service, "ChatClient", factory)
     result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
     assert result["done"] == 1 and fake.closed
-    assert options == [{"timeout": 30, "max_retries": 0}]
+    assert options == [{"timeout": 180, "max_retries": 0}]
 
 
 def test_get_result_invalidated_and_cleanup(client, session, settings, doc):
@@ -1111,3 +1111,45 @@ def test_post_only_returns_metadata_including_idempotent_replay(
     replay = create(client, doc.id).json()
     assert replay["id"] == task.id and replay["hasResult"] is True
     assert "result" not in replay
+
+
+def test_chat_client_merges_extra_body_into_request():
+    import json as _json
+
+    import httpx as _httpx
+
+    from youju.ai.client import ChatClient as RealChatClient
+
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+
+    client = RealChatClient(
+        "https://fake.invalid",
+        "fake-test-value",
+        "m",
+        transport=_httpx.MockTransport(handler),
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    assert client.complete_json("只输出 JSON", "x", max_tokens=10) == {"ok": True}
+    client.close()
+    assert seen[0]["thinking"] == {"type": "disabled"} and seen[0]["model"] == "m"
+
+
+def test_background_client_can_use_separate_model(monkeypatch):
+    from youju import ai as ai_module
+    from youju.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        ai_api_key="fake-test-value",
+        ai_model="strong",
+        ai_background_model="cheap",
+        ai_request_extra={"thinking": {"type": "disabled"}},
+    )
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    client = ai_module.get_chat_client()
+    assert client.model == "cheap" and client.extra_body == {"thinking": {"type": "disabled"}}
+    client.close()

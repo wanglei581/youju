@@ -390,8 +390,12 @@ def process_ai(
                     settings.ai_base_url,
                     settings.ai_api_key.get_secret_value(),
                     model,
-                    timeout=min(30, timeout.total_seconds()),
+                    timeout=min(
+                        getattr(settings, "ai_advisor_timeout_seconds", 180),
+                        timeout.total_seconds(),
+                    ),
                     max_retries=0,
+                    extra_body=getattr(settings, "ai_request_extra", None),
                 )
             payload = chat_client.complete_json(
                 skill.system_prompt,

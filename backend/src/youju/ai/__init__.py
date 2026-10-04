@@ -1,4 +1,4 @@
-"""后台 AI：阿里云百炼通义千问（OpenAI 兼容接口）。只处理政府公开文件，不发送任何用户数据。"""
+"""后台 AI（模型方可配置，OpenAI 兼容接口）。只处理政府公开文件，不发送任何用户数据。"""
 
 from .client import AIError, ChatClient
 
@@ -11,7 +11,11 @@ def get_chat_client() -> ChatClient | None:
     key = settings.ai_api_key.get_secret_value() if settings.ai_api_key else ""
     if not key:
         return None
-    return ChatClient(settings.ai_base_url, key, settings.ai_model)
+    # 后台核对可以单独用便宜的模型（YOUJU_AI_BACKGROUND_MODEL），不填就和 AI 顾问用同一个
+    model = getattr(settings, "ai_background_model", "") or settings.ai_model
+    return ChatClient(
+        settings.ai_base_url, key, model, extra_body=getattr(settings, "ai_request_extra", None)
+    )
 
 
 __all__ = ["AIError", "ChatClient", "get_chat_client"]
