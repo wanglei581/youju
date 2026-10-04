@@ -266,6 +266,44 @@ def test_consent_and_unconfigured_price(setup_pay, session):
     assert create(setup_pay).status_code == 404
 
 
+def test_products_lists_only_priced_items(setup_pay, session):
+    client, settings, fake = setup_pay
+    response = client.get("/api/v1/pay/products", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {"productId": "compare_100", "price": 100, "maxRows": 100},
+            {"productId": "compare_200", "price": 200, "maxRows": 200},
+        ]
+    }
+    # 只读：不建用户、不建订单、不访问微信。
+    assert session.scalar(select(func.count(PayOrder.id))) == 0
+    settings.xpay_product_200 = "wx_goods_200"
+    settings.xpay_price_100 = None
+    assert client.get("/api/v1/pay/products").json() == {
+        "items": [{"productId": "wx_goods_200", "price": 200, "maxRows": 200}]
+    }
+    settings.xpay_price_200 = None
+    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    settings.xpay_price_100 = 100
+    settings.xpay_offer_id = ""
+    # 没有 offerId 时下单必然 404，商品列表也为空，小程序不显示价格。
+    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert create(setup_pay).status_code == 404
+    assert not fake.calls
+
+
+def test_products_route_dependency_hides_when_closed(setup_pay):
+    settings = setup_pay[1]
+    settings.pay_enabled = False
+    with pytest.raises(pay.HTTPException) as caught:
+        pay.require_enabled()
+    assert caught.value.status_code == 404 and caught.value.detail == "没有找到接口"
+    route = next(r for r in pay.router.routes if r.path == "/api/v1/pay/products")
+    assert route.methods == {"GET"}
+    assert any(d.dependency is pay.require_enabled for d in route.dependencies)
+
+
 def test_login_identity_must_match(setup_pay, session):
     setup_pay[2].wrong_owner = True
     assert create(setup_pay).status_code == 503
@@ -454,6 +492,8 @@ def test_closed_all_endpoints_and_jobs(setup_pay, session, monkeypatch, toggle):
         create(setup_pay),
         client.get("/api/v1/pay/orders/1", headers=HEADERS),
         client.post("/api/v1/pay/orders", content=b"{"),
+        client.get("/api/v1/pay/products", headers=HEADERS),
+        client.get("/api/v1/pay/products"),
     ]:
         assert response.status_code == 404 and response.json()["detail"] == "没有找到接口"
     # 推送路径不受开关控制：应答成功但不查单、不发货（审阅 A）。
@@ -1056,3 +1096,25 @@ def test_review_b_unknown_order_is_acknowledged_with_safe_event(setup_pay, sessi
     assert saved and saved.order_id is None and saved.kind == kind
     assert "13800138000" not in str(saved.summary)
     assert not setup_pay[2].calls
+
+
+def test_paid_task_cannot_be_cancelled_and_is_marked_paid(setup_pay, session):
+    row = delivered(setup_pay, session)
+    task = session.get(AdvisorTask, row.task_id)
+    assert task.status == "queued"
+    client = setup_pay[0]
+    response = client.post(f"/api/v1/advisor/tasks/{task.id}/cancel", headers=HEADERS)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "付费任务不能取消，失败会自动退款"
+    session.expire_all()
+    assert session.get(AdvisorTask, task.id).status == "queued"
+    item = client.get("/api/v1/advisor/tasks", headers=HEADERS).json()["items"][0]
+    assert item["paid"] is True
+
+
+def test_refunding_order_label(setup_pay, session):
+    row = delivered(setup_pay, session)
+    row.status = "refunding"
+    session.commit()
+    response = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS)
+    assert response.json()["status"] == "退款中"

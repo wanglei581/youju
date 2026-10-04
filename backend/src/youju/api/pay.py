@@ -61,6 +61,20 @@ class OrderIn(BaseModel):
     code: str = Field(min_length=1, max_length=512, repr=False)
 
 
+@router.get("/products")
+def list_products() -> dict:
+    """只读：已配置价格、可以下单的商品；小程序据此显示付费档，空列表时不显示。"""
+    settings = get_settings()
+    # 和下单条件一致：没有 offerId 时下单必然失败，不展示价格。
+    if not settings.xpay_offer_id:
+        return {"items": []}
+    items = [
+        {"productId": product, "price": price, "maxRows": limit}
+        for product, (price, limit) in payments.products(settings).items()
+    ]
+    return {"items": sorted(items, key=lambda item: item["maxRows"])}
+
+
 @router.post("/orders", status_code=201, dependencies=[Depends(_body_size)])
 def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDep) -> dict:
     settings = get_settings()

@@ -22,7 +22,7 @@ function zipEntries(base64) {
 function page(name, api, helpers, timers, wxOptions = {}) {
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
-    require: (module) => module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,
+    require: (module) => module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : module.endsWith('/pay.js') ? require('../utils/pay.js') : helpers,
     Page: (value) => { definition = value; },
     wx: Object.assign({ setNavigationBarTitle() {}, navigateTo() {}, redirectTo() {} }, wxOptions),
     setTimeout: timers ? timers.set : setTimeout,

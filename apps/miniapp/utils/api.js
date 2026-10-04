@@ -345,6 +345,23 @@ function downloadAdvisorTask(id) {
   return isLive() ? request(`/api/v1/advisor/tasks/${id}/download`) : advisorMock.download(id);
 }
 
+// 名单比对按次包（默认关闭）：接口 404 或空列表时页面不显示付费内容；演示数据不出售。
+function payProducts() {
+  return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
+}
+
+// data：{ product_id, rows, code }，code 来自 wx.login，只用于服务端签名，不保存。
+function createPayOrder(data) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request('/api/v1/pay/orders', null, { method: 'POST', data });
+}
+
+// 订单状态以服务端为准（中文状态和任务编号）。
+function payOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}`);
+}
+
 // 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
 function renameFollow(id, name) {
   return request(`/api/v1/me/follows/${id}`, null, { method: 'PUT', data: { name } });
@@ -392,4 +409,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
+  payProducts, createPayOrder, payOrder,
 };

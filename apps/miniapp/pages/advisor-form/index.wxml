@@ -30,7 +30,14 @@
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
     <view class="advisor-text muted">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）</view>
-    <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+    <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || pay.busy || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+  </view>
+  <view wx:if="{{pay.visible}}" class="card advisor-card">
+    <view class="advisor-title">付费比对</view>
+    <view class="advisor-text muted">{{pay.hint}}</view>
+    <button wx:for="{{pay.items}}" wx:key="productId" class="advisor-button" data-id="{{item.productId}}" bindtap="buy" loading="{{item.loading}}" disabled="{{item.disabled}}">{{item.label}}</button>
+    <view class="advisor-text muted">{{pay.notes}}</view>
+    <view wx:if="{{pay.message}}" class="{{pay.error ? 'advisor-error' : 'advisor-text'}}">{{pay.message}}</view>
   </view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>

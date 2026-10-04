@@ -27,7 +27,7 @@ STATUS_LABELS = {
     "pending": "待支付",
     "processing": "处理中",
     "completed": "已完成",
-    "refunding": "处理中",
+    "refunding": "退款中",
     "refunded": "已退款",
     "manual": "需人工处理",
     "closed": "已关闭",

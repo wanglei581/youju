@@ -523,6 +523,9 @@ def _not_revoked(session: Session, task: AdvisorTask) -> None:
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
 def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> dict:
     task = _owned(session, user, task_id, lock=True)
+    if task.pay_order_id is not None and task.status != "cancelled":
+        # 付费任务付款即执行：取消会被当成失败（苹果手机订单还会自动重跑），所以不允许。
+        raise HTTPException(status_code=409, detail="付费任务不能取消，失败会自动退款")
     if task.status == "queued":
         task.status = "cancelled"
         task.finished_at = _stamp()

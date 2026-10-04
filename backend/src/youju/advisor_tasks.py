@@ -93,6 +93,8 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
+        # 付费任务（按次包）付款即执行，不能取消；前端据此隐藏取消按钮。
+        "paid": task.pay_order_id is not None,
     }
     if include_result:
         result.update(
