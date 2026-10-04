@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from youju import advisor_tasks, payments
-from youju.api import app as app_module
 from youju.api import advisor, me, pay, v1
+from youju.api import app as app_module
 from youju.cli import main
 from youju.config import Settings
 from youju.db import get_session
@@ -369,13 +369,15 @@ def test_refund_failure_retry_same_id_and_completion(setup_pay, session):
     assert row.refund_order_id == refund_id
     requests = [body for path, body, _ in fake.calls if path == "/xpay/refund_order"]
     assert len(requests) == 2 and requests[0] == requests[1]
+    # 退款中的订单按 refund_retry_at 退避查单（审阅第 6 条），时间推进到到期点。
     fake.status, fake.left_fee = 7, 100
-    run(session, setup_pay, NOW + timedelta(minutes=6))
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.refund_status == "retry"
     fake.status = 2
-    run(session, setup_pay, NOW + timedelta(minutes=7))
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.refund_order_id == refund_id
     fake.status, fake.left_fee = 5, 0
-    run(session, setup_pay, NOW + timedelta(minutes=8))
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.status == "refunded"
 
 
@@ -451,10 +453,12 @@ def test_closed_all_endpoints_and_jobs(setup_pay, session, monkeypatch, toggle):
     for response in [
         create(setup_pay),
         client.get("/api/v1/pay/orders/1", headers=HEADERS),
-        push(setup_pay, {}),
         client.post("/api/v1/pay/orders", content=b"{"),
     ]:
         assert response.status_code == 404 and response.json()["detail"] == "没有找到接口"
+    # 推送路径不受开关控制：应答成功但不查单、不发货（审阅 A）。
+    response = push(setup_pay, {})
+    assert response.status_code == 200 and response.json()["ErrCode"] == 0
     assert run(session, setup_pay) == {"processed": 0}
     monkeypatch.setattr("youju.config.get_settings", lambda: settings)
     assert main(["pay-run"]) == 0
@@ -566,10 +570,13 @@ def test_official_refund_and_complaint_fields(setup_pay, session, kind):
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
+    # 超过 30 分钟仍继续查单（审阅第 3 条），只是间隔变为 10 分钟；未支付保持待支付。
     row.created_at = NOW - timedelta(minutes=31)
     session.commit()
-    assert run(session, setup_pay)["processed"] == 0
-    row.created_at = NOW - timedelta(minutes=3)
+    assert run(session, setup_pay)["processed"] == 1
+    assert row.status == "pending"
+    assert run(session, setup_pay, NOW + timedelta(minutes=5))["processed"] == 0
+    row.created_at, row.query_retry_at = NOW - timedelta(minutes=3), None
     session.commit()
     setup_pay[2].status = 6
     run(session, setup_pay)
@@ -786,7 +793,9 @@ def test_review_1_refund_during_upload_discards_result(
         return "unusable-upload"
 
     monkeypatch.setattr(advisor_tasks, "upload", refund_during_upload)
-    monkeypatch.setattr(advisor_tasks, "delete_result_files", lambda c, e, ids: deleted.extend(ids) or ids)
+    monkeypatch.setattr(
+        advisor_tasks, "delete_result_files", lambda c, e, ids: deleted.extend(ids) or ids
+    )
     assert not advisor_tasks.process_task(session, task, settings=setup_pay[1], stamp=NOW)
     session.expire_all()
     assert task.status == "cancelled" and task.result_file_id is None
@@ -809,7 +818,12 @@ def test_review_2_success_completes_order_in_same_commit(setup_pay, session, mon
 
     event.listen(session, "before_commit", before_commit)
     try:
-        assert advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)["done"] == 1
+        assert (
+            advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)[
+                "done"
+            ]
+            == 1
+        )
     finally:
         event.remove(session, "before_commit", before_commit)
     assert checked and row.status == "completed"
@@ -820,7 +834,9 @@ def test_review_2_deleting_done_task_syncs_order_first(setup_pay, session):
     task = session.get(AdvisorTask, row.task_id)
     task.status, task.finished_at = "done", NOW
     session.commit()
-    assert setup_pay[0].delete(f"/api/v1/advisor/tasks/{task.id}", headers=HEADERS).status_code == 204
+    assert (
+        setup_pay[0].delete(f"/api/v1/advisor/tasks/{task.id}", headers=HEADERS).status_code == 204
+    )
     session.expire_all()
     assert row.status == "completed" and row.task_completed_at == NOW
     run(session, setup_pay)
@@ -876,7 +892,8 @@ def test_review_3_bill_paid_but_not_delivered_goes_manual(setup_pay, session):
 @pytest.mark.parametrize("key", ["pay:guessed:0", " pay:guessed:0 "])
 def test_review_4_user_cannot_reserve_payment_keys(setup_pay, session, key):
     response = setup_pay[0].post(
-        "/api/v1/advisor/tasks", headers={**HEADERS, "Idempotency-Key": key},
+        "/api/v1/advisor/tasks",
+        headers={**HEADERS, "Idempotency-Key": key},
         json={"kind": "compare", "rows": ["测试公司"]},
     )
     assert response.status_code == 422
@@ -899,10 +916,15 @@ def test_review_5_refund_push_handles_all_local_states(setup_pay, session, state
     row.status = state
     session.commit()
     setup_pay[2].status, setup_pay[2].left_fee = 8, 0
-    response = push(setup_pay, {
-        "Event": "xpay_refund_notify", "OpenId": "pay-user",
-        "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id,
-    })
+    response = push(
+        setup_pay,
+        {
+            "Event": "xpay_refund_notify",
+            "OpenId": "pay-user",
+            "MchOrderId": row.out_trade_no,
+            "WxOrderId": row.wx_order_id,
+        },
+    )
     assert response.json()["ErrCode"] == 0
     session.expire_all()
     assert row.status == "refunded"
@@ -922,13 +944,33 @@ def test_review_6_exhausted_refund_moves_to_manual(setup_pay, session, exhausted
     assert not any(path == "/xpay/refund_order" for path, _, _ in setup_pay[2].calls)
 
 
-@pytest.mark.parametrize("path,body", [
-    ("/api/v1/pay/orders", {"product_id": "compare_100", "rows": ["私密企业"], "code": "private-code", "unexpected": "私密企业"}),
-    ("/api/v1/advisor/tasks", {"kind": "compare", "rows": ["私密企业"], "file": {"name": "secret.csv", "content_base64": "secret-file"}}),
-    ("/api/v1/advisor/tasks", {"kind": "track", "rows": ["私密企业"]}),
-])
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        (
+            "/api/v1/pay/orders",
+            {
+                "product_id": "compare_100",
+                "rows": ["私密企业"],
+                "code": "private-code",
+                "unexpected": "私密企业",
+            },
+        ),
+        (
+            "/api/v1/advisor/tasks",
+            {
+                "kind": "compare",
+                "rows": ["私密企业"],
+                "file": {"name": "secret.csv", "content_base64": "secret-file"},
+            },
+        ),
+        ("/api/v1/advisor/tasks", {"kind": "track", "rows": ["私密企业"]}),
+    ],
+)
 def test_review_8_validation_never_echoes_lists(setup_pay, path, body):
-    response = setup_pay[0].post(path, headers={**HEADERS, "Idempotency-Key": "ordinary"}, json=body)
+    response = setup_pay[0].post(
+        path, headers={**HEADERS, "Idempotency-Key": "ordinary"}, json=body
+    )
     assert response.status_code == 422
     assert "私密企业" not in response.text and "private-code" not in response.text
     assert "secret-file" not in response.text
@@ -955,7 +997,15 @@ def test_review_a_push_available_when_payment_disabled(setup_pay, xml, data):
     assert not fake.calls
 
 
-@pytest.mark.parametrize("kind", ["xpay_goods_deliver_notify", "xpay_refund_notify", "xpay_complaint_notify", "xpay_subscribe_ios_refund_query_notify"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "xpay_goods_deliver_notify",
+        "xpay_refund_notify",
+        "xpay_complaint_notify",
+        "xpay_subscribe_ios_refund_query_notify",
+    ],
+)
 def test_review_a_disabled_payment_event_is_acknowledged_and_recorded(setup_pay, session, kind):
     setup_pay[1].pay_enabled = False
     response = push(setup_pay, {"Event": kind, "OutTradeNo": "unknown", "private": "不入库"})
@@ -968,13 +1018,19 @@ def test_review_a_disabled_payment_event_is_acknowledged_and_recorded(setup_pay,
 def test_review_a_missing_appid_header_is_accepted(setup_pay):
     setup_pay[1].wx_appid = "configured-app"
     assert push(setup_pay, {"action": "CheckContainerPath"}).status_code == 200
-    bad = setup_pay[0].post("/api/wx/push", headers={**HEADERS, "X-WX-APPID": "other"}, json={"action": "CheckContainerPath"})
+    bad = setup_pay[0].post(
+        "/api/wx/push",
+        headers={**HEADERS, "X-WX-APPID": "other"},
+        json={"action": "CheckContainerPath"},
+    )
     assert bad.status_code == 403
 
 
 def test_review_a_private_service_accepts_push_without_source(setup_pay):
     object.__setattr__(setup_pay[1], "wx_push_public", False)
-    assert setup_pay[0].post("/api/wx/push", json={"action": "CheckContainerPath"}).status_code == 200
+    assert (
+        setup_pay[0].post("/api/wx/push", json={"action": "CheckContainerPath"}).status_code == 200
+    )
 
 
 def test_review_a_untrusted_service_hides_push(setup_pay):
@@ -982,9 +1038,19 @@ def test_review_a_untrusted_service_hides_push(setup_pay):
     assert push(setup_pay, {"action": "CheckContainerPath"}).status_code == 404
 
 
-@pytest.mark.parametrize("kind", ["xpay_goods_deliver_notify", "xpay_refund_notify", "xpay_complaint_notify"])
+@pytest.mark.parametrize(
+    "kind", ["xpay_goods_deliver_notify", "xpay_refund_notify", "xpay_complaint_notify"]
+)
 def test_review_b_unknown_order_is_acknowledged_with_safe_event(setup_pay, session, kind):
-    response = push(setup_pay, {"Event": kind, "OutTradeNo": "unknown", "MchOrderId": "unknown", "ComplaintDetail": "个人电话 13800138000"})
+    response = push(
+        setup_pay,
+        {
+            "Event": kind,
+            "OutTradeNo": "unknown",
+            "MchOrderId": "unknown",
+            "ComplaintDetail": "个人电话 13800138000",
+        },
+    )
     assert response.json()["ErrCode"] == 0
     saved = session.scalar(select(PayEvent))
     assert saved and saved.order_id is None and saved.kind == kind

@@ -27,7 +27,7 @@ from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, PayOrder, User
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -499,6 +499,44 @@ def process_clause(session: Session, task: AdvisorTask, **kwargs) -> bool:
     return process_ai(session, task, **kwargs)
 
 
+REVOKED_ORDER_STATUS = ("refunding", "refunded")
+REVOKED_RESULT = "订单已退款，结果不可用"
+
+
+def _paid_order(session: Session, task: AdvisorTask, *, lock: bool = False) -> PayOrder | None:
+    if task.pay_order_id is None:
+        return None
+    stmt = select(PayOrder).where(PayOrder.id == task.pay_order_id)
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return session.scalar(stmt)
+
+
+def order_revoked(order: PayOrder | None) -> bool:
+    """付费任务的订单已退款、退款中或开始过退款：结果不能再执行、查看或下载。"""
+    return order is not None and (
+        order.status in REVOKED_ORDER_STATUS or order.refund_status is not None
+    )
+
+
+def _cancel_revoked(session: Session, task: AdvisorTask, stamp: datetime) -> bool:
+    task.status, task.finished_at, task.error = "cancelled", stamp, REVOKED_RESULT
+    task.result_file_id, task.result_rows = None, None
+    session.commit()
+    return False
+
+
+def complete_paid_order(session: Session, task: AdvisorTask, stamp: datetime) -> None:
+    """付费任务成功时，在同一事务里把订单置为已完成（审阅第 2 条）。"""
+    order = _paid_order(session, task, lock=True)
+    if order is not None and order.status == "processing" and order.task_id == task.id:
+        order.status, order.task_completed_at, order.updated_at = (
+            "completed",
+            task.finished_at or stamp,
+            stamp,
+        )
+
+
 def process_task(
     session: Session,
     task: AdvisorTask,
@@ -513,6 +551,9 @@ def process_task(
     stamp = _utc(stamp or datetime.now(UTC))
     if task.kind in AI_KINDS:
         return process_ai(session, task, settings=settings, stamp=stamp, timeout=timeout)
+    # 执行前不加锁检查：执行耗时长，持锁会挡住同时到达的退款推送；交付前再加锁复核。
+    if task.pay_order_id is not None and order_revoked(_paid_order(session, task)):
+        return _cancel_revoked(session, task, stamp)
     own_client = client is None
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
@@ -539,11 +580,17 @@ def process_task(
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
+        if task.pay_order_id is not None and order_revoked(_paid_order(session, task, lock=True)):
+            # 执行期间订单被退款：丢弃刚上传的结果，不交付。
+            _delete_and_record(session, [file_id], settings=settings, client=client)
+            uploaded_file_id = None
+            return _cancel_revoked(session, task, stamp)
         task.status = "done"
         task.result_file_id = file_id
         task.result_rows = rows
         task.finished_at = stamp
         task.error = None
+        complete_paid_order(session, task, stamp)
         session.commit()
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
@@ -606,6 +653,15 @@ def run_advisor_tasks(
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
     if not getattr(settings, "pay_enabled", False):
         allowed = allowed & AdvisorTask.pay_order_id.is_(None)
+    # 关联订单已退款或退款中的付费任务不再领取（审阅第 1 条）。
+    allowed = allowed & (
+        AdvisorTask.pay_order_id.is_(None)
+        | AdvisorTask.pay_order_id.not_in(
+            select(PayOrder.id).where(
+                PayOrder.status.in_(REVOKED_ORDER_STATUS) | PayOrder.refund_status.is_not(None)
+            )
+        )
+    )
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
     claimed: set[int] = set()

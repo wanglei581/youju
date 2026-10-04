@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -144,8 +145,11 @@ def accept_payment(
     settings: Settings,
     stamp: datetime,
     push: dict | None = None,
+    *,
+    deliver: bool = True,
 ) -> bool:
     # 调用方锁定订单行；唯一业务单号 + 用户任务幂等键作为数据库双重保护。
+    # deliver=False：只记录核验过的支付证据，转人工，不建任务（超过自动履约窗口时用）。
     if data.get("status") not in (2, 3, 4):
         return False
     if data.get("order_fee") != order.price or data.get("paid_fee") != order.price:
@@ -185,6 +189,10 @@ def accept_payment(
         order.error = "查单支付时间无效，未发货"
         return False
     order.platform = platform(data, settings)
+    if not deliver:
+        order.status, order.updated_at, order.alerted_at = "manual", stamp, None
+        order.error = "超过 48 小时才确认已支付，未自动执行，需人工退款或补发"
+        return True
     order.status, order.updated_at, order.error = "processing", stamp, None
     if not order.user_id or not order.input_rows or order.created_at <= stamp - timedelta(days=7):
         order.status, order.error = "manual", "输入已清理，需处理已付款订单"
@@ -198,17 +206,20 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
         return False
     if data.get("left_fee") != 0:
         order.status, order.refund_status, order.error = (
-            "manual", "partial", "订单部分退款，需人工核对"
+            "manual",
+            "partial",
+            "订单部分退款，需人工核对",
         )
         return True
     order.status, order.refund_status, order.error = "refunded", "completed", None
     order.updated_at = stamp
     # 也取消 iOS 重跑前的运行任务；完成结果由读取接口按订单状态撤销访问。
-    session.execute(
-        update(AdvisorTask)
+    for task in session.scalars(
+        select(AdvisorTask)
         .where(AdvisorTask.pay_order_id == order.id, AdvisorTask.status.in_(("queued", "running")))
-        .values(status="cancelled", finished_at=stamp, error="订单已退款，结果不可用")
-    )
+        .with_for_update()
+    ):
+        task.status, task.finished_at, task.error = "cancelled", stamp, "订单已退款，结果不可用"
     return True
 
 
@@ -296,7 +307,9 @@ def sync_task(session: Session, order: PayOrder, stamp: datetime) -> None:
         )
     elif task is None:
         order.status, order.error, order.alerted_at = (
-            "manual", "关联任务缺失，需人工核对，未自动退款", None
+            "manual",
+            "关联任务缺失，需人工核对，未自动退款",
+            None,
         )
     elif task.status in ("failed", "cancelled"):
         if order.platform == "ios":
@@ -359,9 +372,15 @@ def reconcile(
     ):
         if order.task_id is None and order.status not in ("refunding", "refunded"):
             order.status, order.error, order.alerted_at, order.updated_at = (
-                "manual", "账单已支付但本地未发货，需人工核对", None, stamp
+                "manual",
+                "账单已支付但本地未发货，需人工核对",
+                None,
+                stamp,
             )
-            differences.setdefault(order.out_trade_no, {"local": local.get(order.out_trade_no), "bill": bill[order.out_trade_no]})
+            differences.setdefault(
+                order.out_trade_no,
+                {"local": local.get(order.out_trade_no), "bill": bill[order.out_trade_no]},
+            )
     row = session.scalar(
         select(PayReconciliation).where(PayReconciliation.day == day).with_for_update()
     )
@@ -498,7 +517,9 @@ def run_payments(
     )
     for order_id in ids:
         order = session.scalar(
-            select(PayOrder).where(PayOrder.id == order_id).with_for_update()
+            select(PayOrder)
+            .where(PayOrder.id == order_id)
+            .with_for_update()
             .execution_options(populate_existing=True)
         )
         if order is None:
@@ -522,19 +543,24 @@ def run_payments(
                 elif refund_exhausted(order, stamp):
                     # 最后核验已成功的退款；查单也失败则人工接手，不能无限重试。
                     confirmed = False
-                    try:
-                        confirmed = mark_refunded(session, order, query(session, order, client), stamp)
-                    except XPayError:
-                        pass
+                    with contextlib.suppress(XPayError):
+                        confirmed = mark_refunded(
+                            session, order, query(session, order, client), stamp
+                        )
                     if not confirmed:
                         order.status, order.error, order.alerted_at = (
-                            "manual", "退款尝试达到上限或超过24小时，需人工核对", None
+                            "manual",
+                            "退款尝试达到上限或超过24小时，需人工核对",
+                            None,
                         )
                 elif order.refund_status == "pending":
                     if order.refund_retry_at is None or order.refund_retry_at <= stamp:
                         order.refund_retry_at = stamp + timedelta(minutes=10)
                         data = query(session, order, client)
-                        if not mark_refunded(session, order, data, stamp) and data.get("status") == 7:
+                        if (
+                            not mark_refunded(session, order, data, stamp)
+                            and data.get("status") == 7
+                        ):
                             order.refund_status = "retry"
                 else:
                     start_refund(session, order, client, stamp)

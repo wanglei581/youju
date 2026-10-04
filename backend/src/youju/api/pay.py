@@ -29,7 +29,21 @@ def require_enabled() -> None:
 
 
 router = APIRouter(prefix="/api/v1/pay", tags=["支付"], dependencies=[Depends(require_enabled)])
-push_router = APIRouter(dependencies=[Depends(require_enabled)])
+
+
+def require_push_service() -> None:
+    # 推送路径只在接收云托管推送的服务上存在；不受支付开关控制，配置检测和非支付消息要能应答。
+    if not get_settings().trust_wx_headers:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+push_router = APIRouter(dependencies=[Depends(require_push_service)])
+PAY_EVENTS = {
+    "xpay_goods_deliver_notify",
+    "xpay_refund_notify",
+    "xpay_complaint_notify",
+    "xpay_subscribe_ios_refund_query_notify",
+}
 
 
 def wx_client():
@@ -136,11 +150,10 @@ def get_order(order_id: int, session: SessionDep, user: KnownUserDep) -> dict:
 
 async def push_payload(request: Request) -> tuple[dict, bool]:
     settings = get_settings()
-    # 官方 WeixinCloud/message-push-nodejs 以此头检查微信来源；须关闭公网直连入口。
-    if (
-        not settings.trust_wx_headers
-        or not request.headers.get("X-WX-SOURCE")
-        or (settings.wx_appid and request.headers.get("X-WX-APPID") != settings.wx_appid)
+    # 云托管《消息推送》：服务未开公网时可信任所有推送；开了公网只认带 x-wx-source 的请求。
+    appid = request.headers.get("X-WX-APPID")
+    if (settings.wx_push_public and not request.headers.get("X-WX-SOURCE")) or (
+        settings.wx_appid and appid is not None and appid != settings.wx_appid
     ):
         raise HTTPException(status_code=403, detail="推送来源无效")
     await _body_size(request)
@@ -209,6 +222,13 @@ async def push(
 ) -> Response:
     data, xml = payload
     kind = data.get("Event", "")
+    # 配置检测（action=CheckContainerPath）和非支付消息一律应答成功，避免微信重推。
+    if kind not in PAY_EVENTS:
+        return reply(xml)
+    if not payments.enabled(get_settings()):
+        # 收费未开启：记录后应答成功，不查单、不发货。
+        await run_in_threadpool(_record_only, data, kind, session)
+        return reply(xml)
     if kind == "xpay_subscribe_ios_refund_query_notify":
         nested = data.get("WxaVirtualPayIosRefundQueryNotifyEvent", data)
         trade = nested.get("pay_order_id") if isinstance(nested, dict) else None
@@ -228,16 +248,26 @@ async def push(
     return await run_in_threadpool(_transaction_push, data, xml, session, client)
 
 
+def _record_only(data: dict, kind: str, session: Session) -> None:
+    payments.event(session, kind, data, None)
+    session.commit()
+
+
 def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClient) -> Response:
     kind = data.get("Event", "")
-    if kind not in {"xpay_goods_deliver_notify", "xpay_refund_notify", "xpay_complaint_notify"}:
-        return reply(xml)
     trade = (
         data.get("OutTradeNo") if kind == "xpay_goods_deliver_notify" else data.get("MchOrderId")
     )
-    order = session.scalar(select(PayOrder).where(PayOrder.out_trade_no == trade).with_for_update())
+    order = (
+        session.scalar(select(PayOrder).where(PayOrder.out_trade_no == trade).with_for_update())
+        if isinstance(trade, str) and trade
+        else None
+    )
     if order is None:
-        return reply(xml, 1)
+        # 本地没有的订单重推也没用：只记摘要（事件表按白名单字段保存），应答成功。
+        payments.event(session, kind, data, None)
+        session.commit()
+        return reply(xml)
     try:
         user = session.get(User, order.user_id) if order.user_id else None
         if (

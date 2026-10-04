@@ -25,7 +25,7 @@ from youju.backup import BackupError
 from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, Document, Source, User
+from youju.models import AdvisorTask, AdvisorUsage, Document, PayOrder, Source, User
 from youju.takedown import available_condition
 from youju.track import read_customer_profiles
 
@@ -250,6 +250,8 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     result = service.task_dict(
         task, include_result=include_result or task.kind not in AI_KINDS, stamp=_stamp()
     )
+    if task.pay_order_id is not None and service.order_revoked(service._paid_order(session, task)):
+        result.update(error=service.REVOKED_RESULT, hasFile=False, resultRows=None)
     if task.kind in AI_KINDS:
         doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
         result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
@@ -333,6 +335,9 @@ def create_task(
             status_code=422, detail="请提供 Idempotency-Key 请求头（不超过 128 字符）"
         )
     key = idempotency_key.strip()
+    if key.lower().startswith("pay:"):
+        # pay: 开头的键留给付费任务（按订单生成），用户提交的不能占用。
+        raise HTTPException(status_code=422, detail="Idempotency-Key 不能以 pay: 开头")
     # 锁住用户，串行化额度检查和任务创建；重复 key 优先返回原任务，不再检查新 body。
     session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
     input_json = {"doc_id": body.doc_id} if body.kind in AI_KINDS else None
@@ -427,6 +432,22 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     titles = _document_titles(
         session, list({doc_id for task, _, doc_id in rows if task.kind in AI_KINDS and doc_id})
     )
+    # 付费任务一次查出关联订单，已退款的不显示结果（审阅第 1 条）。
+    order_ids = {task.pay_order_id for task, _, _ in rows if task.pay_order_id is not None}
+    revoked = {
+        order.id
+        for order in (
+            session.scalars(select(PayOrder).where(PayOrder.id.in_(order_ids))) if order_ids else []
+        )
+        if service.order_revoked(order)
+    }
+
+    def paid_view(task: AdvisorTask) -> dict:
+        item = service.task_dict(task)
+        if task.pay_order_id in revoked:
+            item.update(error=service.REVOKED_RESULT, hasFile=False, resultRows=None)
+        return item
+
     return {
         "items": [
             {
@@ -435,7 +456,7 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
                 **_document_out(doc_id, titles),
             }
             if task.kind in AI_KINDS
-            else service.task_dict(task)
+            else paid_view(task)
             for task, has_result, doc_id in rows
         ]
     }
@@ -444,6 +465,7 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
 def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
     task = _owned(session, user, task_id)
+    _not_revoked(session, task)
     if (
         task.status != "done"
         or not task.result_file_id
@@ -487,7 +509,15 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
 
 @router.get("/tasks/{task_id}", dependencies=[Depends(_enabled)])
 def get_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
-    return _out(_owned(session, user, task_id), session)
+    task = _owned(session, user, task_id)
+    _not_revoked(session, task)
+    return _out(task, session)
+
+
+def _not_revoked(session: Session, task: AdvisorTask) -> None:
+    # 付费任务的订单已退款：结果不可查看、不可下载（审阅第 1 条）。
+    if task.pay_order_id is not None and service.order_revoked(service._paid_order(session, task)):
+        raise HTTPException(status_code=410, detail=service.REVOKED_RESULT)
 
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
@@ -513,6 +543,9 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: UserD
     if task.status == "queued":
         # 排队中的任务先取消（退回额度）再删除；行已锁住，后台取不到它，也不会有结果文件
         service.release_usage(session, task)
+    if task.status == "done" and task.pay_order_id is not None:
+        # 删除已完成的付费任务前先把订单置为已完成，避免被当成失败退款（审阅第 2 条）。
+        service.complete_paid_order(session, task, _stamp())
     file_ids = [task.result_file_id] if task.result_file_id else []
     settings = get_settings()
     if file_ids:
