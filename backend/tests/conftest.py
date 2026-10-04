@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import Engine, make_url, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from youju.config import get_settings
+from youju.config import Settings, get_settings
 from youju.db import create_mysql_engine, get_engine
 from youju.migrations import upgrade
 from youju.models import Base
@@ -23,6 +23,8 @@ TEST_DB_URL = os.environ.get(
 )
 # 程序里用默认连接的地方（如每次请求写访问日志）也连测试库，测试不会写到开发库
 os.environ["YOUJU_DATABASE_URL"] = TEST_DB_URL
+# 测试只使用显式环境配置，避免读取开发环境的密钥或连接信息。
+Settings.model_config["env_file"] = None
 get_settings.cache_clear()
 
 

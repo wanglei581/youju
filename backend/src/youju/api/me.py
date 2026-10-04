@@ -330,7 +330,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
         .limit(500)
     ).all()
-    # 仅列元数据，永远不导出客户名单 input_rows 或对象存储文件编号。
+    # 数据工具仅列元数据；AI 结果先复核原文公开状态，不导出名单输入或存储编号。
+    from youju.api import advisor as advisor_api
+
     result["advisorTasks"] = [
         {
             "id": row.id,
@@ -340,6 +342,15 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "createdAt": _iso(row.created_at),
             "startedAt": _iso(row.started_at),
             "finishedAt": _iso(row.finished_at),
+            **(
+                {
+                    "result": advisor_api._out(row, session).get("result"),
+                    "model": row.model,
+                    "prompt_version": row.prompt_version,
+                }
+                if row.kind == "interpret"
+                else {}
+            ),
         }
         for row in advisor_rows
     ]

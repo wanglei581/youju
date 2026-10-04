@@ -11,6 +11,10 @@ import httpx
 class AIError(RuntimeError):
     """AI 服务调用失败；错误信息不包含密钥或响应原文。"""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 def _add_usage(total: dict[str, int], usage: object) -> None:
     if isinstance(usage, dict):
@@ -101,7 +105,7 @@ class ChatClient:
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
-                raise AIError(last_error) from exc
+                raise AIError(last_error, retryable=True) from exc
             if response.status_code >= 400:
                 # 出错的响应如果也带了用量，同样计入
                 try:
@@ -115,7 +119,7 @@ class ChatClient:
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
-                raise AIError(last_error)
+                raise AIError(last_error, retryable=True)
             if response.status_code >= 400:
                 raise AIError(f"AI 请求被拒绝（HTTP {response.status_code}）")
             try:
