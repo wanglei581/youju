@@ -101,6 +101,7 @@ class Conditions(BaseModel):
     depts: str | None = Field(default=None, max_length=400)
     open: int | None = Field(default=None, ge=0, le=1)
     levels: str | None = Field(default=None, max_length=400)
+    categories: str | None = Field(default=None, max_length=400)
 
 
 class FollowIn(BaseModel):
@@ -146,15 +147,6 @@ def new_statement(session: Session, follow: Follow, since):
 
 def new_count(session: Session, follow: Follow, since) -> int:
     return v1._count(session, new_statement(session, follow, since))
-
-
-def new_documents(
-    session: Session, follow: Follow, since, limit: int, offset: int
-) -> list[tuple[Document, object]]:
-    stmt = new_statement(session, follow, since)
-    return [
-        tuple(row) for row in session.execute(v1._ordered(stmt).limit(limit).offset(offset)).all()
-    ]
 
 
 def _follow_out(session: Session, follow: Follow) -> dict:
@@ -545,11 +537,24 @@ def follow_new(
     user: UserDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    fold: Annotated[
+        int | None,
+        Query(ge=0, le=1, description="1 折叠资讯与指南类文件；0 不折叠但给出篇数；不传则不统计"),
+    ] = None,
 ) -> dict:
+    """关注条件上次查看之后的新文件。fold 与搜索相同：折叠的"资讯与指南"不列出、不计入 total，
+    只在 folded 里给出篇数。"""
     row = _owned_follow(session, user, follow_id)
     since = row.last_seen_at or row.created_at
-    rows = new_documents(session, row, since, limit, offset)
-    return {"total": new_count(session, row, since), "items": v1._items(session, rows)}
+    conditions = Conditions().model_dump() | row.conditions
+    stmt, guides, folded = v1.fold_guides(
+        session, new_statement(session, row, since), conditions["kind"], conditions["types"], fold
+    )
+    rows = [tuple(r) for r in session.execute(v1._ordered(stmt).limit(limit).offset(offset)).all()]
+    body = {"total": v1._count(session, stmt), "items": v1._items(session, rows)}
+    if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
+        body |= {"folded": folded, "guides": guides}
+    return body
 
 
 def _subscription_out(row: Subscription) -> dict:

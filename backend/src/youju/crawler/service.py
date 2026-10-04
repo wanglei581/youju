@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
+from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
@@ -75,6 +76,7 @@ def save_items(
             "title": item.title,
             # 一次插入多行时字段的自动默认值取不到本行的标题，这里直接按标题规则算好类型
             "rule_kind": doc_kind(item.title),
+            "rule_category": doc_category(item.title),
             "publish_date": item.publish_date,
             "first_seen_at": seen_at,
             "last_seen_at": seen_at,

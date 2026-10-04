@@ -1,5 +1,7 @@
 .head { padding-top: 32rpx; padding-bottom: 32rpx; }
-.tags { display: flex; align-items: center; gap: 12rpx; }
+.tags { display: flex; flex-wrap: wrap; align-items: center; gap: 12rpx; }
+/* 项目类别：按标题归类、仅供检索参考，用描边和类型标签区分开 */
+.tag--cat { border: 2rpx solid var(--line2); color: var(--t2); line-height: 36rpx; font-weight: 400; }
 .region { font-size: 24rpx; color: var(--t2); line-height: 40rpx; }
 .title { margin-top: 20rpx; font-size: 40rpx; line-height: 60rpx; font-weight: 700; }
 .pub { margin-top: 20rpx; font-size: 26rpx; color: var(--t2); }

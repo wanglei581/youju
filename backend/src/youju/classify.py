@@ -1,8 +1,10 @@
-"""按标题给文件分类：申报通知 / 名单 / 政策 / 其他，以及名单的状态（公示 / 公布，只照录标题用词）。
+"""按标题给文件分类：申报通知 / 名单 / 政策 / 资讯与指南 / 其他，
+以及名单的状态（公示 / 公布，只照录标题用词）。
 
 同一套关键词既用于 Python（测试、单条判断），也生成 SQL 条件（列表筛选、分页在数据库里完成）。
 规则按顺序匹配：先排除与企业申报无关的公示（招聘、采购等），再名单，再申报通知，再政策；
-都不命中算"其他"。拿不准的归"其他"，不硬判。
+都不命中的，与申报无关的（新闻、会议培训、招聘、许可等）算"资讯与指南"，其余算"其他"。
+拿不准的归"其他"，不硬判。
 """
 
 import re
@@ -179,7 +181,235 @@ POLICY_EXCLUDE = (
     "产能置换",
 )
 
-KINDS = ("申报通知", "名单", "政策", "其他")
+# "资讯与指南"（D-051 第二阶段）：从"其他"里分出来的、与申报无关的文件——新闻和工作动态、
+# 会议培训讲座、统计数据、招聘考试职称、采购招标、行政许可和执法检查、产能置换、办事指南和提醒等。
+# 只在原有规则判为"其他"之后再判断，不影响申报通知、名单、政策；小程序列表默认折叠，
+# 写明折叠了几篇。
+GUIDE = "资讯与指南"
+GUIDE_WORDS = (
+    # 人事：招聘、考试、职称、任免、专家库
+    "招聘",
+    "拟聘",
+    "聘用",
+    "面试",
+    "笔试",
+    "体检",
+    "考试",
+    "职称",
+    "任职资格",
+    "专业技术资格",
+    "任免",
+    "博士后",
+    "专家库",
+    "专家公示",
+    "专家的公示",
+    "评审专家",
+    "评标专家",
+    # 采购、招标
+    "采购",
+    "招标",
+    "中标",
+    "成交",
+    "询价",
+    "比选",
+    "预公告",
+    "代理机构",
+    "服务商的公告",
+    # 行政许可、证照、登记事项
+    "行政许可",
+    "许可证",
+    "许可事项",
+    "许可信息",
+    "收购许可",
+    "执照",
+    "批复",
+    "注销",
+    "遗失",
+    "资格证书",
+    "资质认可",
+    "换发",
+    "作废",
+    "变更业务范围",
+    "变更机构名称",
+    "变更专职",
+    "安全设施设计",
+    "取证考核",
+    "考核结果的通告",
+    "年检",
+    # 执法、检查、督察
+    "执法",
+    "行政处罚",
+    "监督检查",
+    "行政检查",
+    "督察",
+    "销号",
+    "整改",
+    "抽检",
+    # 产能置换、关停拆除
+    "产能置换",
+    "产能退出",
+    "产能转移",
+    "置换产能",
+    "拆除",
+    "关停",
+    "迁建",
+    "错峰生产",
+    "扩区",
+    "淘汰落后",
+    # 统计数据、年报、决算、信息公开
+    "统计调查",
+    "统计年报",
+    "价格变动",
+    "同比",
+    "环比",
+    "采购经理指数",
+    "基本情况",
+    "运行情况",
+    "生产情况",
+    "增长",
+    "工资总额",
+    "薪酬信息",
+    "决算",
+    "年度报表",
+    "年度报告",
+    "工作情况",
+    "信息公开工作",
+    "政务新媒体",
+    # 会议、培训、活动、展会
+    "讲座",
+    "宣讲",
+    "宣贯",
+    "培训",
+    "研修班",
+    "公开课",
+    "课堂",
+    # 不用"会议"：发文机关里常有"联席会议办公室"
+    "召开",
+    "会议的通知",
+    "会议通知",
+    "工作会",
+    "推进会",
+    "现场会",
+    "交流会",
+    "发布会",
+    "提案",
+    "座谈会",
+    "研讨",
+    "论坛",
+    "路演",
+    "对接会",
+    "对接活动",
+    "推介",
+    "博览会",
+    "交易会",
+    "活动",
+    "开放日",
+    "邀请函",
+    "精彩",
+    "看点",
+    "收官",
+    "竞答",
+    "听证会",
+    # 办事指南、系统通知、提醒、声明、案例
+    "办事指南",
+    "服务指南",
+    "操作指南",
+    "操作手册",
+    "常见问题",
+    "问答",
+    "解答",
+    "解读",
+    "系统升级",
+    "停止使用",
+    "试运行",
+    "启用",
+    "受理窗口",
+    "服务时间",
+    "放假",
+    "中秋",
+    "国庆",
+    "提醒",
+    "声明",
+    "预警",
+    "防范",
+    "反诈",
+    "网安",
+    "宣传素材",
+    "典型案例",
+    "优秀案例",
+    "经验做法",
+    "案例清单",
+    "投诉联络",
+    "权属公告",
+    "征稿",
+    "国民经济",
+    "检查工作",
+    "市场检查",
+    "评审会",
+    "参与调查",
+    "问卷",
+    "收费",
+    "熟料生产线",
+    "生产线退出",
+    "煤矿",
+    "安全生产",
+)
+
+# "其他"里像真申报的标题（D-051 第二阶段）：只出"建议改为申报通知"，在管理台由人抽查后批量确认，
+# 确认前对外仍是"其他"，也不折叠进"资讯与指南"。例如
+# "关于开展2025年度黑龙江省科学技术奖提名工作的通知"
+# "关于做好2026年市级制造业单项冠军培育工作的通知"
+# "……支持企业技术改造和设备更新政策兑现工作的通知"
+SUGGEST_APPLY_WORDS = (
+    "提名工作",
+    "提名的通知",
+    "政策兑现",
+    "兑现工作",
+    "选认工作",
+    "选树",
+    "选拔",
+    "储备入库",
+    "入库工作",
+    "清单制定",
+    "培育工作",
+    "培育行动",
+    "培育专项行动",
+    "培育建设",
+    "建设工作",
+    "试点工作",
+    "登记工作",
+    "创建工作",
+    "资金实施指南",
+)
+# 带这些字的多是统计、检查、培训、评审专家、考核验收、撤销取消、问答等，不建议
+SUGGEST_APPLY_EXCLUDE = (
+    "统计",
+    "调查",
+    "检查",
+    "培训",
+    "召开",
+    "讲座",
+    "宣讲",
+    "采购",
+    "专家",
+    "考核",
+    "年检",
+    "验收",
+    "评估",
+    "招聘",
+    "职称",
+    "常见问题",
+    "问答",
+    "解答",
+    "撤销",
+    "取消",
+    "情况",
+    "法治",
+)
+
+KINDS = ("申报通知", "名单", "政策", GUIDE, "其他")
+# AI 预审只分四类（不分"资讯与指南"）；和标题规则比较时把"资讯与指南"当作"其他"
+AI_KINDS = ("申报通知", "名单", "政策", "其他")
 
 
 def _has(title: str, words: tuple[str, ...]) -> bool:
@@ -237,7 +467,8 @@ def _consult(title: str) -> bool:
     return _has(title, CONSULT_WORDS) and not _has(title, STRONG_LIST_WORDS)
 
 
-def doc_kind(title: str) -> str:
+def _base_kind(title: str) -> str:
+    """原有的四类判断（申报通知 / 名单 / 政策 / 其他）。"""
     if _off_topic(title) or _has(title, PERSONAL_WORDS) or title.endswith(JUNK_SUFFIXES):
         return "其他"
     consult = _consult(title)
@@ -250,6 +481,36 @@ def doc_kind(title: str) -> str:
     if _has(title, POLICY_WORDS + POLICY_MARKS) and not _has(title, POLICY_EXCLUDE):
         return "政策"
     return "其他"
+
+
+def _suggests_apply(title: str) -> bool:
+    return _has(title, SUGGEST_APPLY_WORDS) and not _has(title, SUGGEST_APPLY_EXCLUDE)
+
+
+def doc_kind(title: str) -> str:
+    """按标题判断类型。原有规则判为"其他"的，再分出"资讯与指南"；像真申报的（见 apply_suggestion）
+    留在"其他"等人确认，不折叠。"""
+    kind = _base_kind(title)
+    if (
+        kind == "其他"
+        and (_has(title, GUIDE_WORDS) or title.endswith(JUNK_SUFFIXES))
+        and not _suggests_apply(title)
+    ):
+        return GUIDE
+    return kind
+
+
+def apply_suggestion(title: str) -> str | None:
+    """标题规则判为"其他"、但像真申报的：返回命中的词（管理台上写给核对的人看），否则 None。
+    只是建议：人在管理台确认之前，对外类型不变。"""
+    if _base_kind(title) != "其他" or not _suggests_apply(title):
+        return None
+    return next(w for w in SUGGEST_APPLY_WORDS if w in title)
+
+
+def comparable_kind(kind: str) -> str:
+    """和 AI 预审结果比较用的类型：AI 只分四类，"资讯与指南"算"其他"。"""
+    return "其他" if kind == GUIDE else kind
 
 
 # 名单状态是关键字段（团队章程合规红线：未经核验不得发布），只照录标题原文用词（决策记录 D-018）：
@@ -351,8 +612,25 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             not_(_any_in(title, POLICY_EXCLUDE)),
         ),
     )
-    is_other = and_(not_(is_list), not_(is_apply), not_(is_policy))
-    return {"名单": is_list, "申报通知": is_apply, "政策": is_policy, "其他": is_other}
+    base_other = and_(not_(is_list), not_(is_apply), not_(is_policy))
+    is_guide = and_(
+        base_other,
+        or_(
+            _any_in(title, GUIDE_WORDS),
+            or_(*(title.like("%" + suffix) for suffix in JUNK_SUFFIXES)),
+        ),
+        not_(
+            and_(_any_in(title, SUGGEST_APPLY_WORDS), not_(_any_in(title, SUGGEST_APPLY_EXCLUDE)))
+        ),
+    )
+    is_other = and_(base_other, not_(is_guide))
+    return {
+        "名单": is_list,
+        "申报通知": is_apply,
+        "政策": is_policy,
+        GUIDE: is_guide,
+        "其他": is_other,
+    }
 
 
 def kind_expr(title: ColumnElement[str]) -> ColumnElement[str]:
@@ -361,6 +639,7 @@ def kind_expr(title: ColumnElement[str]) -> ColumnElement[str]:
         (parts["名单"], "名单"),
         (parts["申报通知"], "申报通知"),
         (parts["政策"], "政策"),
+        (parts[GUIDE], GUIDE),
         else_="其他",
     )
 

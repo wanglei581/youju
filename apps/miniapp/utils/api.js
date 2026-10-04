@@ -163,7 +163,7 @@ function mockDetail(id) {
     const doc = pool.find((d) => d.id === id);
     if (doc) {
       return copy({
-        id: doc.id, kind: doc.kind, tags: [doc.kind], region: doc.region, title: doc.title, issuer: doc.issuer,
+        id: doc.id, kind: doc.kind, tags: [doc.kind], category: doc.category || null, region: doc.region, title: doc.title, issuer: doc.issuer,
         date: doc.date, url: doc.url, status: doc.status || null, app_status: doc.app_status || null,
         deadline: null, points: [['发文机关', doc.issuer]], excerpt: null, attachments: [], checked: null,
       });
