@@ -599,11 +599,22 @@ CRON_HEARTBEAT = Path("/tmp/youju-cron-heartbeat")
 _HEARTBEAT_MAX_AGE = 900
 
 
-@app.get("/health")
-def health(session: SessionDep) -> dict[str, str]:
+@app.get("/health", response_model=None)
+def health(session: SessionDep) -> dict[str, str] | JSONResponse:
     """健康检查：数据库连得上；admin 服务还要求定时任务心跳 15 分钟内更新过
-    （cron 每 5 分钟写一次）。cron 停了就报不健康，由云托管重启容器，不会悄悄停掉每天的检查。"""
-    session.execute(text("select 1"))
+    （cron 每 5 分钟写一次）。cron 停了就报不健康，由云托管重启容器，不会悄悄停掉每天的检查。
+    连不上数据库时返回 503 和错误类型、驱动错误号（只有数字，不含地址、账号、密码），便于排查。"""
+    try:
+        session.execute(text("select 1"))
+    except Exception as exc:  # noqa: BLE001 - 只报类型和错误号
+        orig = getattr(exc, "orig", None) or exc.__cause__ or exc
+        args = getattr(orig, "args", ()) or ()
+        code = args[0] if args and isinstance(args[0], int) else None
+        error_log.error("健康检查连不上数据库 DBERR %s %s", type(orig).__name__, code)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "db_error", "error": type(orig).__name__, "code": code},
+        )
     if getattr(get_settings(), "role", "all") == "admin":
         try:
             age = clock.time() - CRON_HEARTBEAT.stat().st_mtime
