@@ -206,7 +206,7 @@ def test_allowed_company_and_no_company_model_input(client, session, settings, n
     assert fake.calls == [
         (clause.SYSTEM_PROMPT, {"paragraphs": task.snapshot["paragraphs"]}, 12000)
     ]
-    assert task.prompt_version == "clause-v1" and task.result_rows == 3
+    assert task.prompt_version == clause.PROMPT_VERSION and task.result_rows == 3
     result = client.get(f"/api/v1/advisor/tasks/{task.id}").json()["result"]
     if not company or all(v is None for v in company.values()):
         assert all(c["value"] == "未提供" for row in result["rows"] for c in row["company"])
