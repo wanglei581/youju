@@ -28,6 +28,7 @@ function errorOf(res) {
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
   const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
+  err.detail = detail;
   return err;
 }
 
@@ -348,6 +349,17 @@ function createAdvisorTask(data, key) {
   if (data.kind === 'interpret') {
     if (!isLive()) return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
     data = { kind: 'interpret', doc_id: Number(data.doc_id) };
+  }
+  if (data.kind === 'clause') {
+    if (!isLive()) return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
+    data = { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} };
+    return request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }).catch((err) => {
+      if (err.status === 422 && err.detail != null) {
+        err.message = typeof err.detail === 'string' ? err.detail : Array.isArray(err.detail)
+          ? err.detail.map((item) => item.msg || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
+      }
+      throw err;
+    });
   }
   return isLive() ? request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }) : advisorMock.create(data, key);
 }

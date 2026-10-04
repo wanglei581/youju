@@ -3,7 +3,7 @@ const { taskView } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { loading: true, error: '', enabled: false, aiEnabled: false, dataEnabled: false, remaining: 0, disclosure: '', skills: [], context: null, recent: [], recentLoading: true, recentError: '' },
+  data: { loading: true, error: '', enabled: false, aiEnabled: false, clauseEnabled: false, clauseRemaining: 0, dataEnabled: false, remaining: 0, disclosure: '', skills: [], context: null, recent: [], recentLoading: true, recentError: '' },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
@@ -12,7 +12,7 @@ Page({
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具' });
-    this.setData({ loading: true, error: '', aiEnabled: false, disclosure: '' });
+    this.setData({ loading: true, error: '', aiEnabled: false, clauseEnabled: false, disclosure: '' });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
       const dataEnabled = res.data_tools.enabled === true;
@@ -20,6 +20,8 @@ Page({
       const disclosure = res.ai_advisor.disclosure || {};
       wx.setNavigationBarTitle({ title: aiEnabled ? 'AI 顾问' : '工具' });
       this.setData({ loading: false, enabled: dataEnabled || aiEnabled, dataEnabled, aiEnabled,
+        clauseEnabled: aiEnabled && (res.ai_advisor.features || []).includes('clause'),
+        clauseRemaining: (res.ai_advisor.remaining || {}).clause || 0,
         remaining: (res.ai_advisor.remaining || {}).interpret || 0,
         disclosure: aiEnabled && disclosure.modelLabel && disclosure.filingNo ? `模型：${disclosure.modelLabel}｜备案号：${disclosure.filingNo}` : '',
         skills: dataEnabled ? [
@@ -40,7 +42,7 @@ Page({
     this.setData({ recentLoading: true, recentError: '' });
     api.advisorTasks().then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
-      const recent = res.items.filter((task) => task.kind !== 'interpret' || this.data.aiEnabled).slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id).slice(0, 3).map(taskView);
+      const recent = res.items.filter((task) => (task.kind !== 'interpret' || this.data.aiEnabled) && (task.kind !== 'clause' || this.data.clauseEnabled)).slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id).slice(0, 3).map(taskView);
       this.setData({ recentLoading: false, recent });
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ recentLoading: false, recentError: err.message }); });
   },
@@ -50,10 +52,18 @@ Page({
     const { docId, title } = this.data.context;
     wx.navigateTo({ url: `/pages/advisor-interpret/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
   },
+  clause() {
+    if (!this.data.aiEnabled || !this.data.clauseEnabled || !this.data.context || !this.data.context.docId) return;
+    const { docId, title } = this.data.context;
+    wx.navigateTo({ url: `/pages/advisor-clause/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
+  },
   form(e) { wx.navigateTo({ url: `/pages/advisor-form/index?kind=${e.currentTarget.dataset.kind}` }); },
   tasks(e) {
     const id = e && e.currentTarget.dataset.id;
     const task = this.data.recent.find((item) => String(item.id) === String(id));
+    if (this.data.aiEnabled && this.data.clauseEnabled && task && task.kind === 'clause') {
+      wx.navigateTo({ url: `/pages/advisor-clause/index?taskId=${encodeURIComponent(id)}` }); return;
+    }
     if (this.data.aiEnabled && task && task.kind === 'interpret') {
       wx.navigateTo({ url: `/pages/advisor-interpret/index?taskId=${encodeURIComponent(id)}` }); return;
     }

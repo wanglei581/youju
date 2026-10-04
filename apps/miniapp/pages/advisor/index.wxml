@@ -15,6 +15,13 @@
       <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">解读这篇通知</button>
       <view wx:else class="advisor-text muted">在通知详情页点右下角按钮进入，可解读当前通知</view>
     </view>
+    <view wx:if="{{clauseEnabled}}" class="card advisor-card">
+      <view class="advisor-title">条款对照</view>
+      <view class="advisor-text">把通知里申报对象、申报条件的原句列出来，旁边对照你填的企业情况；不判断是否符合</view>
+      <view class="advisor-text muted">今天剩余 {{clauseRemaining}} 次</view>
+      <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="clause">填写企业情况</button>
+      <view wx:else class="advisor-text muted">在通知详情页点右下角按钮进入，可解读当前通知</view>
+    </view>
   </block>
   <view wx:if="{{dataEnabled}}" class="task-section-title">数据工具</view>
   <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
@@ -29,7 +36,7 @@
     <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
     <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有任务，填写客户后可查看进度和结果。</view>
     <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted"><text wx:if="{{item.kind !== 'interpret'}}">{{item.rowCount}} 行 · </text>{{item.time}}</view>
+      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted"><text wx:if="{{item.kind !== 'interpret' && item.kind !== 'clause'}}">{{item.rowCount}} 行 · </text>{{item.time}}</view>
     </button>
     <button class="advisor-button" bindtap="tasks">全部任务</button>
   </view>

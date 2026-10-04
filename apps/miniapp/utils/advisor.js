@@ -4,7 +4,7 @@ const terms = require('../content/advisor-terms.js');
 const VERSION = terms.version;
 const TERMS_TEXT = terms.text;
 const TERMS_FINAL = terms.final && !!terms.text.trim() && !/待.*定稿|占位/.test(terms.text);
-const KINDS = { compare: '名单比对', track: '在报项目跟进表', interpret: '政策解读' };
+const KINDS = { compare: '名单比对', track: '在报项目跟进表', interpret: '政策解读', clause: '条款对照' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。

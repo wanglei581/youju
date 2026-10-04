@@ -62,7 +62,8 @@ function idempotencyKey() {
 
 // 页面生命周期、在途请求和倒计时共用一代编号，隐藏后旧回调不能再写页面或开始轮询。
 function createSession({ api, storage, update, docId = '', title = '', taskId = '', now = Date.now,
-  setTimer = setTimeout, clearTimer = clearTimeout, makeKey = idempotencyKey }) {
+  setTimer = setTimeout, clearTimer = clearTimeout, makeKey = idempotencyKey,
+  kind = 'interpret', company = {}, viewResult = resultView, useTaskMetadata = false }) {
   let agreed = hasConsent(storage); let checked = false; let visible = false; let epoch = 0;
   let pollTimer; let deadlineTimer; let busy = false; let creation; let timedOut = false;
   let creationKey; let deadline = 0;
@@ -82,8 +83,13 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   function accept(task, version) {
     if (!active(version)) return;
     taskId = task.id;
-    if (task.docId) docId = task.docId;
-    if (task.docTitle) title = task.docTitle;
+    if (useTaskMetadata) {
+      // 服务端隐藏通知时同步清掉本机编号，避免旧缓存继续打开原文。
+      docId = task.docId || ''; title = task.docTitle || '';
+    } else {
+      if (task.docId) docId = task.docId;
+      if (task.docTitle) title = task.docTitle;
+    }
     if (docId) taskContext(storage, taskId, { docId, title });
     emit({ taskId, docId, title });
     if (task.status === 'done' && task.hasResult && !Object.prototype.hasOwnProperty.call(task, 'result')) {
@@ -91,7 +97,7 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     }
     if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
       clearTimer(deadlineTimer); busy = false;
-      if (task.status === 'done' && task.result) emit({ phase: 'done', result: resultView(task.result), error: '' });
+      if (task.status === 'done' && task.result) emit({ phase: 'done', result: viewResult(task.result), error: '' });
       else emit({ phase: 'failed', error: task.error || '结果已失效，请重新提交', canRetry: !!docId });
       return;
     }
@@ -119,7 +125,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     // 隐藏期间创建请求仍可能完成，保留任务编号；重新显示时复用同一在途请求。
     if (!creation) {
       creationKey = creationKey || makeKey();
-      creation = Promise.resolve().then(() => api.createAdvisorTask({ kind: 'interpret', doc_id: Number(docId) }, creationKey)).then((task) => {
+      const body = { kind, doc_id: Number(docId) };
+      if (kind === 'clause') body.company = company;
+      creation = Promise.resolve().then(() => api.createAdvisorTask(body, creationKey)).then((task) => {
         taskId = task.id; taskContext(storage, taskId, { docId, title }); return task;
       });
     }

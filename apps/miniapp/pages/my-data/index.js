@@ -20,7 +20,7 @@ function maskId(id) {
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], aiEnabled: false, totals: {}, retention: null, exportedAt: '' },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], aiEnabled: false, clauseEnabled: false, totals: {}, retention: null, exportedAt: '' },
 
   onShow() {
     this.load();
@@ -31,7 +31,9 @@ Page({
     Promise.all([api.myData(), api.advisorCapabilities()])
       .then(([d, caps]) => {
         const aiEnabled = caps.ai_advisor.enabled === true;
-        const tasks = (d.advisorTasks || []).filter((task) => task.kind !== 'interpret' || aiEnabled);
+        const clauseEnabled = aiEnabled && (caps.ai_advisor.features || []).includes('clause');
+        const tasks = (d.advisorTasks || []).filter((task) =>
+          (task.kind !== 'interpret' || aiEnabled) && (task.kind !== 'clause' || clauseEnabled));
         d = Object.assign({}, d, { advisorTasks: tasks });
         this.raw = d;
         const followName = {};
@@ -68,7 +70,7 @@ Page({
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
-          advisorTasks: tasks.map(taskView), aiEnabled,
+          advisorTasks: tasks.map(taskView), aiEnabled, clauseEnabled,
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, advisor: d.advisorTasksTotal || 0 },
           retention: d.retention,
         });
@@ -84,6 +86,14 @@ Page({
       success: () => wx.showToast({ title: '已复制全部数据，可以粘贴保存', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制，请同意隐私保护指引后再试', icon: 'none' }),
     });
+  },
+  advisorResult(e) {
+    const id = e.currentTarget.dataset.id;
+    const task = this.data.advisorTasks.find((item) => String(item.id) === String(id));
+    if (!this.data.aiEnabled || !task) return;
+    if (task.kind === 'clause' && this.data.clauseEnabled) {
+      wx.navigateTo({ url: `/pages/advisor-clause/index?taskId=${encodeURIComponent(id)}` });
+    }
   },
 
   // 单条复制完整原始记录，包含条件、状态和时间。

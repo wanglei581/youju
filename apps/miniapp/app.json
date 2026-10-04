@@ -19,7 +19,8 @@
     "pages/advisor-form/index",
     "pages/advisor-tasks/index",
     "pages/advisor-terms/index",
-    "pages/advisor-interpret/index"
+    "pages/advisor-interpret/index",
+    "pages/advisor-clause/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

@@ -1,0 +1,91 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:elif="{{!aiEnabled}}" class="card advisor-card muted">暂时没有可用工具</view>
+<block wx:elif="{{aiEnabled}}">
+  <view wx:if="{{phase === 'form'}}" class="card advisor-card">
+    <view class="advisor-title">企业情况</view>
+    <view class="advisor-text muted">只用于在结果里对照显示，不发给模型，7 天后自动清除</view>
+    <view class="advisor-text">全部可不填</view>
+    <view class="clause-label">成立日期</view>
+    <picker mode="date" end="{{today}}" value="{{form.established}}" data-field="established" bindchange="input"><view class="clause-control">{{form.established || '暂不填写'}}</view></picker>
+    <button wx:if="{{form.established}}" class="interpret-link" data-field="established" bindtap="clear">清空日期</button>
+    <view wx:if="{{errors.established}}" class="advisor-error">{{errors.established}}</view>
+    <view class="clause-label">注册地</view>
+    <picker mode="selector" range="{{provinces}}" value="{{provinceIndex}}" bindchange="region"><view class="clause-control">{{form.region || '暂不填写'}}</view></picker>
+    <view wx:if="{{errors.region}}" class="advisor-error">{{errors.region}}</view>
+    <view class="clause-label">营业收入（万元）</view>
+    <input class="clause-control" type="digit" value="{{form.revenueAmount}}" data-field="revenueAmount" bindinput="input" placeholder="金额，可不填" />
+    <view wx:if="{{errors.revenueAmount}}" class="advisor-error">{{errors.revenueAmount}}</view>
+    <view class="clause-label">营业收入年份</view>
+    <input class="clause-control" type="number" value="{{form.revenueYear}}" data-field="revenueYear" bindinput="input" placeholder="四位年份，可不填" />
+    <view wx:if="{{errors.revenueYear}}" class="advisor-error">{{errors.revenueYear}}</view>
+    <view class="clause-label">研发费用（万元）</view>
+    <input class="clause-control" type="digit" value="{{form.rdAmount}}" data-field="rdAmount" bindinput="input" placeholder="金额，可不填" />
+    <view wx:if="{{errors.rdAmount}}" class="advisor-error">{{errors.rdAmount}}</view>
+    <view class="clause-label">研发费用年份</view>
+    <input class="clause-control" type="number" value="{{form.rdYear}}" data-field="rdYear" bindinput="input" placeholder="四位年份，可不填" />
+    <view wx:if="{{errors.rdYear}}" class="advisor-error">{{errors.rdYear}}</view>
+    <view class="clause-label">职工人数</view>
+    <input class="clause-control" type="number" value="{{form.employees}}" data-field="employees" bindinput="input" placeholder="整数，可不填" />
+    <view wx:if="{{errors.employees}}" class="advisor-error">{{errors.employees}}</view>
+    <view class="clause-label">已有资质（可多选）</view>
+    <checkbox-group bindchange="qualifications">
+      <label wx:for="{{qualificationOptions}}" wx:key="name" class="advisor-check"><checkbox value="{{item.name}}" checked="{{item.checked}}" /><text>{{item.name}}</text></label>
+    </checkbox-group>
+    <view wx:if="{{errors.qualification}}" class="advisor-error">{{errors.qualification}}</view>
+    <view wx:for="{{form.qualification}}" wx:key="name">
+      <view class="clause-label">{{item.name}}有效期</view>
+      <picker mode="date" value="{{item.valid_until}}" data-index="{{index}}" bindchange="validity"><view class="clause-control">{{item.valid_until || '暂不填写'}}</view></picker>
+      <button wx:if="{{item.valid_until}}" class="interpret-link" data-index="{{index}}" bindtap="clearValidity">清空有效期</button>
+      <view wx:if="{{errors['qualification' + index]}}" class="advisor-error">{{errors['qualification' + index]}}</view>
+    </view>
+    <view wx:if="{{!docId}}" class="advisor-error">缺少通知编号，请从通知详情页进入</view>
+    <button class="advisor-button btn-primary" disabled="{{!docId}}" bindtap="submit">查看条款对照</button>
+  </view>
+  <view wx:elif="{{needsConsent}}" class="card advisor-card">
+    <view class="advisor-title">使用须知</view>
+    <view wx:for="{{terms}}" wx:key="*this" class="advisor-text">{{index + 1}}. {{item}}</view>
+    <checkbox-group bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" /><text>我已阅读并知晓上述说明</text></label></checkbox-group>
+    <button class="advisor-button btn-primary" disabled="{{!checked}}" bindtap="agree">开始使用</button>
+  </view>
+  <view wx:elif="{{phase === 'processing'}}" class="card advisor-card muted">正在对照原文摘录…</view>
+  <view wx:elif="{{phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
+    <view>{{error}}</view>
+    <button wx:if="{{canRetry}}" class="advisor-button" bindtap="retry">重新填写</button>
+    <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">查看任务</button>
+  </view>
+  <block wx:elif="{{phase === 'done'}}">
+    <view wx:if="{{result.notice}}" class="interpret-notice">{{result.notice}}</view>
+    <view class="card advisor-card"><view class="advisor-title">{{title || '通知'}}</view><view wx:if="{{!docId}}" class="interpret-meta">本机没有这条任务的通知编号，请在通知详情页查看原文。</view></view>
+    <view wx:if="{{result.verified.length}}" class="card advisor-card">
+      <view class="advisor-title">已核对</view>
+      <view class="interpret-meta">截止日期、支持方式由人工对照原文核对。</view>
+      <view wx:for="{{result.verified}}" wx:key="key" class="interpret-item">
+        <view>{{item.displayValue}}</view><view class="advisor-text">{{item.quote}}</view>
+      </view>
+    </view>
+    <view wx:if="{{result.refusal}}" class="card advisor-card">
+      <view>{{result.refusal}}</view><button class="advisor-button" bindtap="original" disabled="{{!docId}}">看原文</button>
+    </view>
+    <view wx:for="{{result.sections}}" wx:for-item="section" wx:key="type">
+      <view class="task-section-title">{{section.title}}</view>
+      <view wx:if="{{section.missing}}" class="card advisor-card muted">未摘录到相关原句，请查看原文</view>
+      <view wx:for="{{section.items}}" wx:key="key" class="card advisor-card clause-row">
+        <view class="advisor-title">通知要求</view>
+        <view class="advisor-text">{{item.text}}</view>
+        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key" class="interpret-meta">段落 {{ref.pid}}</view>
+        <view class="clause-label">企业自述</view>
+        <view wx:for="{{item.company}}" wx:for-item="entry" wx:key="key" class="advisor-text">{{entry.label}}：{{entry.value}}</view>
+        <view wx:if="{{item.companyHint}}" class="advisor-text muted">{{item.companyHint}}</view>
+        <view class="interpret-ops">
+          <button class="interpret-link" bindtap="original" disabled="{{!docId}}">看原文</button>
+          <button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">纠错</button>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
+    <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
+    <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
+  </block>
+  <view class="advisor-footer">第三方整理 · 非政府平台</view>
+</block>

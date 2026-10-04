@@ -2,7 +2,7 @@ const api = require('../../utils/api.js');
 const { taskView, openResult } = require('../../utils/advisor.js');
 
 Page({
-  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false, aiEnabled: false },
+  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false, aiEnabled: false, clauseEnabled: false },
   onLoad(query = {}) {
     this.taskId = query.taskId || null;
     this.setData({ singleTask: !!this.taskId });
@@ -19,12 +19,15 @@ Page({
     const request = api.advisorCapabilities().then((caps) => {
       if (!this.visible || epoch !== this.epoch) return { items: [] };
       const aiEnabled = caps.ai_advisor.enabled === true;
-      this.setData({ aiEnabled, items: this.data.items.filter((task) => task.kind !== 'interpret' || aiEnabled) });
+      const clauseEnabled = aiEnabled && (caps.ai_advisor.features || []).includes('clause');
+      this.setData({ aiEnabled, clauseEnabled, items: this.data.items.filter((task) =>
+        (task.kind !== 'interpret' || aiEnabled) && (task.kind !== 'clause' || clauseEnabled)) });
       return this.taskId ? api.advisorTask(this.taskId).then((task) => ({ items: [task] })) : api.advisorTasks();
     });
     request.then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
-      this.setData({ loading: false, items: res.items.filter((task) => task.kind !== 'interpret' || this.data.aiEnabled).map(taskView) });
+      this.setData({ loading: false, items: res.items.filter((task) =>
+        (task.kind !== 'interpret' || this.data.aiEnabled) && (task.kind !== 'clause' || this.data.clauseEnabled)).map(taskView) });
       this.schedule(epoch);
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message }); });
   },
@@ -69,8 +72,11 @@ Page({
   },
   interpret(e) {
     const id = e.currentTarget.dataset.id;
-    if (!this.data.aiEnabled || !this.data.items.some((item) => String(item.id) === String(id) && item.kind === 'interpret')) return;
-    wx.navigateTo({ url: `/pages/advisor-interpret/index?taskId=${encodeURIComponent(id)}` });
+    const task = this.data.items.find((item) => String(item.id) === String(id));
+    if (!this.data.aiEnabled || !task) return;
+    if (task.kind === 'clause' && this.data.clauseEnabled) {
+      wx.navigateTo({ url: `/pages/advisor-clause/index?taskId=${encodeURIComponent(id)}` });
+    } else if (task.kind === 'interpret') wx.navigateTo({ url: `/pages/advisor-interpret/index?taskId=${encodeURIComponent(id)}` });
   },
   open(e) {
     if (this.data.busyId !== null) return;
