@@ -8,6 +8,12 @@ const PAY_MODE = 'short_series_goods';
 // 服务端 GET /api/v1/pay/orders/{id} 返回的中文状态（payments.STATUS_LABELS）。
 const SUCCESS_STATES = ['处理中', '已完成'];
 const FAILED_STATES = ['退款中', '已退款', '需人工处理', '已关闭'];
+const FAILED_TEXT = {
+  退款中: '比对没有完成，正在原路退款',
+  已退款: '比对没有完成，已原路退款',
+  需人工处理: '订单需要人工处理，可在“反馈”里留言，我们会尽快处理',
+  已关闭: '订单已关闭',
+};
 
 const TEXT = {
   ordering: '正在创建订单…',
@@ -23,7 +29,9 @@ const TEXT = {
   fileMode: '付费比对请用“粘贴文本”提交名单',
   empty: '填写客户后可选择付费档',
   missing: '没有找到这个付费档，请返回后重试',
-  notes: '比对失败自动退款；结果保存 30 天',
+  notes: '比对失败：安卓等设备自动原路退款；苹果手机免费重跑一次，仍失败人工处理。结果保存 30 天，名单 7 天后删除。',
+  termsPending: '付费服务协议定稿后开放',
+  termsRequired: '请先阅读并同意《付费服务协议》',
 };
 
 function yuan(fen) {
@@ -65,13 +73,16 @@ function payView(input) {
     busy,
     hint: hint(products, input),
     notes: TEXT.notes,
+    termsFinal: !!input.termsFinal,
+    termsAgreed: !!input.termsAgreed,
+    termsNote: input.termsFinal ? (input.termsAgreed ? '' : TEXT.termsRequired) : TEXT.termsPending,
     message: input.message || '',
     error: !!input.error,
     items: products.map((item) => ({
       productId: item.productId,
       label: `${item.maxRows} 家以内 · ${yuan(item.price)}`,
       loading: busy && input.selected === item.productId,
-      disabled: busy || input.mode !== 'paste' || !input.rowCount || input.rowCount > item.maxRows,
+      disabled: busy || !input.termsFinal || !input.termsAgreed || input.mode !== 'paste' || !input.rowCount || input.rowCount > item.maxRows,
     })),
   };
 }
@@ -89,10 +100,11 @@ function confirmModal(product, rowCount) {
   return {
     title: '确认付费比对',
     content: [
-      `价格 ${yuan(product.price)}，覆盖 ${product.maxRows} 家以内（本次 ${rowCount} 家）`,
-      '比对失败自动退款',
-      '结果保存 30 天',
-      '整理的是公开信息，第三方工具，不承诺申报结果',
+      `单次 ${yuan(product.price)}，不自动续费；覆盖 ${product.maxRows} 家以内（本次 ${rowCount} 家）`,
+      '付款后立即开始比对',
+      '比对失败：安卓等设备自动原路退款；苹果手机免费重跑一次，仍失败人工处理',
+      '结果保存 30 天，名单 7 天后删除',
+      '第三方整理的公开信息，不是政府平台，不代办，不承诺申报结果',
     ].join('\n'),
     confirmText: '确认支付',
   };
@@ -120,7 +132,7 @@ function classify(order) {
 // 轮询结果 → 页面文案。context.cancelled：用户取消；context.paid：微信回调 success（仅作提示用，不算成功）。
 function resultView(result, context = {}) {
   if (result.state === 'success') return { message: TEXT.confirmed, error: false, taskId: result.order.taskId };
-  if (result.state === 'failed') return { message: `订单状态：${result.order.status}`, error: true, taskId: null };
+  if (result.state === 'failed') return { message: FAILED_TEXT[result.order.status] || `订单状态：${result.order.status}`, error: true, taskId: null };
   if (context.cancelled) return { message: TEXT.cancelled, error: false, taskId: null };
   return { message: context.paid ? TEXT.timeoutPaid : TEXT.timeoutFailed, error: false, taskId: null };
 }

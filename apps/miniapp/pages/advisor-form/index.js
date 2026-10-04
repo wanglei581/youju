@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const payTerms = require('../../content/pay-terms.js');
 const { KINDS, pasteRows, consent } = require('../../utils/advisor.js');
 const pay = require('../../utils/pay.js');
 
@@ -118,11 +119,19 @@ Page({
       products: this.products, kind: this.data.kind, mode: this.data.mode, rowCount: this.data.rowCount,
       maxRows: this.data.maxRows, remaining: this.data.remaining,
       busy: state.busy, selected: state.selected, message: state.message, error: state.error,
+      termsFinal: payTerms.final, termsAgreed: !!state.termsAgreed,
     }) });
   },
+  // 《付费服务协议》：定稿（final）且用户勾选后，付费按钮才可用；每次进入页面重新勾选。
+  togglePayTerms(e) { this.renderPay({ termsAgreed: (e.detail.value || []).includes('agree') }); },
+  payTermsDoc() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy(e) {
     if (this.payBusy() || this.data.submitting || this.data.previewing) return;
     if (!this.data.agreed) { this.terms(); return; }
+    if (!payTerms.final || !(this.payState || {}).termsAgreed) {
+      this.renderPay({ message: payTerms.final ? pay.TEXT.termsRequired : pay.TEXT.termsPending, error: true });
+      return;
+    }
     const product = pay.findProduct(this.products, e.currentTarget.dataset.id);
     let rows = [];
     try { rows = this.data.mode === 'paste' ? pasteRows('compare', this.data.text) : []; }

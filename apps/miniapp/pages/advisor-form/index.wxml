@@ -35,6 +35,9 @@
   <view wx:if="{{pay.visible}}" class="card advisor-card">
     <view class="advisor-title">付费比对</view>
     <view class="advisor-text muted">{{pay.hint}}</view>
+    <checkbox-group wx:if="{{pay.termsFinal}}" bindchange="togglePayTerms"><label class="advisor-check"><checkbox value="agree" checked="{{pay.termsAgreed}}" /><text>我已阅读并同意</text></label></checkbox-group>
+    <view class="advisor-text"><text class="advisor-link" bindtap="payTermsDoc">《付费服务协议》</text></view>
+    <view wx:if="{{pay.termsNote}}" class="advisor-text muted">{{pay.termsNote}}</view>
     <button wx:for="{{pay.items}}" wx:key="productId" class="advisor-button" data-id="{{item.productId}}" bindtap="buy" loading="{{item.loading}}" disabled="{{item.disabled}}">{{item.label}}</button>
     <view class="advisor-text muted">{{pay.notes}}</view>
     <view wx:if="{{pay.message}}" class="{{pay.error ? 'advisor-error' : 'advisor-text'}}">{{pay.message}}</view>

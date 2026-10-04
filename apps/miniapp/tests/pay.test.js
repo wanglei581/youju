@@ -23,8 +23,10 @@ function clock() {
   };
 }
 
-function formPage(api, wxOptions = {}, timers = clock()) {
+function formPage(api, wxOptions = {}, timers = clock(), termsOptions = {}) {
   let definition;
+  // 默认：付费服务协议已定稿、用户已勾选（专门的测试会覆盖这两项）。
+  const payTerms = { final: termsOptions.final !== false, title: '付费服务协议', text: '测试正文' };
   const helpers = {
     KINDS: { compare: '名单比对', track: '在报项目跟进表' },
     pasteRows: (kind, text) => text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
@@ -39,13 +41,14 @@ function formPage(api, wxOptions = {}, timers = clock()) {
     requestVirtualPayment: (options) => { calls.payment.push(options); options.success({}); },
   }, wxOptions);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', 'advisor-form', 'index.js'), 'utf8'), {
-    require: (name) => name.endsWith('api.js') ? api : name.endsWith('/pay.js') ? pay : helpers,
+    require: (name) => name.endsWith('api.js') ? api : name.endsWith('/pay.js') ? pay : name.endsWith('pay-terms.js') ? payTerms : helpers,
     Page: (value) => { definition = value; },
     wx,
     setTimeout: timers.set, clearTimeout: timers.clear,
     Date: { now: timers.now }, Math, Promise, JSON, encodeURIComponent,
   });
   definition.setData = (next) => Object.assign(definition.data, next);
+  definition.payState = { termsAgreed: termsOptions.agreed !== false };
   return { view: definition, calls, timers, wx };
 }
 
@@ -129,7 +132,7 @@ test('确认弹窗写清价格、家数、退款、保存期限和第三方说�
   await buy(page);
   const modal = page.calls.modal[0];
   assert.equal(modal.title, '确认付费比对');
-  for (const phrase of ['价格 9.90 元', '覆盖 100 家以内', '本次 2 家', '比对失败自动退款', '结果保存 30 天', '整理的是公开信息，第三方工具，不承诺申报结果']) assert.ok(modal.content.includes(phrase), phrase);
+  for (const phrase of ['单次 9.90 元，不自动续费', '覆盖 100 家以内', '本次 2 家', '付款后立即开始比对', '安卓等设备自动原路退款', '苹果手机免费重跑一次，仍失败人工处理', '结果保存 30 天，名单 7 天后删除', '不是政府平台，不代办，不承诺申报结果']) assert.ok(modal.content.includes(phrase), phrase);
   assert.doesNotMatch(modal.content + modal.title + modal.confirmText, BANNED);
   assert.deepEqual(JSON.parse(JSON.stringify(calls.orders)), [{ product_id: 'compare_100', rows: ['甲公司', '乙公司'], code: 'login-code' }]);
   const params = page.calls.payment[0];
@@ -218,7 +221,8 @@ test('支付失败（非取消）仍查订单，超时后提示如已扣款到�
 });
 
 test('退款、人工、关闭显示后端状态文字；查单失败继续重试', async () => {
-  for (const status of ['已退款', '需人工处理', '已关闭']) {
+  const expected = { 已退款: '比对没有完成，已原路退款', 需人工处理: '订单需要人工处理，可在“反馈”里留言，我们会尽快处理', 已关闭: '订单已关闭', 退款中: '比对没有完成，正在原路退款' };
+  for (const status of ['已退款', '需人工处理', '已关闭', '退款中']) {
     const answers = [() => Promise.reject(new Error('网络不太好，请稍后再试')), () => Promise.resolve({ orderId: 41, status, taskId: 8 })];
     let polls = 0;
     const { api } = apiWith({ payOrder: () => { polls += 1; return answers.shift()(); } });
@@ -226,7 +230,7 @@ test('退款、人工、关闭显示后端状态文字；查单失败继续重�
     await buy(page);
     await page.timers.runNext();
     assert.equal(polls, 2);
-    assert.equal(page.view.data.pay.message, `订单状态：${status}`);
+    assert.equal(page.view.data.pay.message, expected[status]);
     assert.equal(page.view.data.pay.error, true); assert.equal(page.view.data.pay.busy, false);
     assert.deepEqual(page.calls.redirect, []);
   }
@@ -310,4 +314,20 @@ test('轮询器：stop 后在途结果忽略；start(true) 只查一次', async 
   assert.deepEqual(results, []); assert.equal(poller.isActive(), false); assert.equal(timers.pending(), 0);
   poller.start(true); await flush(); resolve({ status: '待支付', taskId: null }); await flush();
   assert.equal(results[0].state, 'timeout'); assert.equal(results[0].order.status, '待支付'); assert.equal(timers.pending(), 0);
+});
+
+
+test('付费服务协议未定稿时付费按钮不可用、点了也不下单；定稿后要勾选才可用', async () => {
+  for (const [termsOptions, note] of [[{ final: false }, '付费服务协议定稿后开放'], [{ final: true, agreed: false }, '请先阅读并同意《付费服务协议》']]) {
+    const { api, calls } = apiWith();
+    const page = formPage(api, {}, clock(), termsOptions);
+    page.view.onLoad({ kind: 'compare' }); page.view.onShow(); await flush();
+    page.view.setData({ mode: 'paste', text: '甲公司\n乙公司', rowCount: 2 }); page.view.renderPay();
+    assert.equal(page.view.data.pay.termsNote, note);
+    assert.ok(page.view.data.pay.items.every((item) => item.disabled));
+    page.view.buy({ currentTarget: { dataset: { id: 'compare_100' } } }); await flush();
+    assert.equal(page.calls.modal.length, 0); assert.equal(calls.orders.length, 0);
+  }
+  const draft = require('../content/pay-terms.js');
+  assert.equal(draft.final, false);
 });
