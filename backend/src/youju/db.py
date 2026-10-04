@@ -36,6 +36,8 @@ def create_mysql_engine(url: str, **kwargs) -> Engine:
         pool_pre_ping=True,
         # 比 MySQL 默认的 wait_timeout（8 小时）短，避免拿到已被服务端关闭的连接
         pool_recycle=3600,
+        # SQL 参数可能包含客户名称和企业值，不进入异常文字或 SQL 日志。
+        hide_parameters=True,
         connect_args=connect_args,
         **kwargs,
     )
