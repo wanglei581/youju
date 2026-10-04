@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -35,6 +36,19 @@ SYSTEM_PROMPT = (
 )
 NOTICE = "AI 生成，仅供参考，以原文和主管部门解释为准"
 TYPES = ("对象", "支持", "条件", "时间", "方式", "材料")
+
+
+@dataclass(frozen=True)
+class Skill:
+    kind: str
+    prompt_version: str
+    system_prompt: str
+    types: tuple[str, ...]
+    result_field: str = "items"
+    keys: tuple[str, ...] = ()
+
+
+INTERPRET = Skill("interpret", PROMPT_VERSION, SYSTEM_PROMPT, TYPES)
 # 保留标点；不使用 NFKC，避免把不同原文字符当作同一个字。
 SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*")
 
@@ -92,7 +106,9 @@ def split_paragraphs(body: str) -> list[dict]:
     ]
 
 
-def prepare(session: Session, doc_id: int, model: str) -> tuple[dict, list, str]:
+def prepare(
+    session: Session, doc_id: int, model: str, *, skill: Skill = INTERPRET
+) -> tuple[dict, list, str]:
     # 延迟引入 v1，避免 API 路由装载时形成循环依赖。
     from youju.api import v1
 
@@ -210,10 +226,10 @@ def prepare(session: Session, doc_id: int, model: str) -> tuple[dict, list, str]
     }
     key = digest(
         [
-            "interpret",
+            skill.kind,
             snapshot["body_hash"],
             snapshot["verification_version"],
-            PROMPT_VERSION,
+            skill.prompt_version,
             model,
         ]
     )
@@ -230,7 +246,7 @@ def paragraph_body(paragraphs: list[dict]) -> str:
     return body
 
 
-def validate(payload: dict, paragraphs: list[dict]) -> dict:
+def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise ValueError("模型结果结构无效")
     by_pid = {p["pid"]: p for p in paragraphs}
@@ -253,7 +269,7 @@ def validate(payload: dict, paragraphs: list[dict]) -> dict:
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("type"), str)
-            or item["type"] not in TYPES
+            or item["type"] not in skill.types
             or not isinstance(refs, list)
             or not refs
         ):
@@ -310,10 +326,13 @@ def validate(payload: dict, paragraphs: list[dict]) -> dict:
             continue
         seen.add(identity)
         kept.append({"type": item["type"], "text": originals[0]["quote"], "refs": originals})
+        if skill.keys:
+            keys = item.get("keys")
+            kept[-1]["keys"] = [key for key in skill.keys if isinstance(keys, list) and key in keys]
     present = {item["type"] for item in kept}
     return {
-        "items": kept,
-        "missing": [t for t in TYPES if t not in present],
+        skill.result_field: kept,
+        **({"missing": [t for t in skill.types if t not in present]} if not skill.keys else {}),
         "dropped": sum(reasons.values()),
         "dropped_reasons": reasons,
         "refusal": None if kept else "没有通过原文逐字核对的有效条目，请查看官方原文",
@@ -335,12 +354,13 @@ def result_metadata(
     verified: list,
     attachments: int = 0,
     model_disclosure: dict | None = None,
+    skill: Skill = INTERPRET,
 ) -> dict:
     return {
         **result,
         "verified": verified,
         "generated_at": stamp.isoformat(),
-        "model": model,
+        **({"model": model, "prompt_version": skill.prompt_version} if not skill.keys else {}),
         "disclosure": model_disclosure or {"modelLabel": "", "filingNo": ""},
         "attachments": attachments,
         "attachment_notice": (
@@ -349,7 +369,6 @@ def result_metadata(
         )
         if attachments
         else None,
-        "prompt_version": PROMPT_VERSION,
         "notice": NOTICE,
         "warning": "部分内容未通过校验" if result["dropped"] else None,
     }

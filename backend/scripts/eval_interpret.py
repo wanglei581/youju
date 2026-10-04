@@ -15,8 +15,9 @@ from pathlib import Path
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from youju.ai import interpret
+from youju.ai import clause, interpret
 from youju.ai.client import ChatClient
+from youju.ai.skills import get_skill
 from youju.config import get_settings
 from youju.db import create_mysql_engine
 from youju.models import Document, Source
@@ -27,7 +28,9 @@ def length_band(length: int) -> int:
     return 0 if length <= 1500 else 1 if length <= 6000 else 2
 
 
-def select_documents(session: Session, model: str, limit: int, doc_ids: list[int] | None) -> list:
+def select_documents(
+    session: Session, model: str, limit: int, doc_ids: list[int] | None, skill: str = "interpret"
+) -> list:
     """先按来源及长度分桶，再确定性轮取；仅 prepare 通过的文件进入候选。"""
     stmt = (
         select(Document.id, Document.source_id)
@@ -40,7 +43,7 @@ def select_documents(session: Session, model: str, limit: int, doc_ids: list[int
     buckets = defaultdict(lambda: defaultdict(deque))
     for doc_id, source_id in session.execute(stmt):
         try:
-            snapshot, _, _ = interpret.prepare(session, doc_id, model)
+            snapshot, _, _ = interpret.prepare(session, doc_id, model, skill=get_skill(skill))
         except interpret.InterpretRefusal:
             continue
         body_length = snapshot["body_length"]
@@ -63,7 +66,8 @@ def select_documents(session: Session, model: str, limit: int, doc_ids: list[int
     return selected
 
 
-def evaluate(selected: list, client: ChatClient | None) -> list[dict]:
+def evaluate(selected: list, client: ChatClient | None, skill: str = "interpret") -> list[dict]:
+    spec = get_skill(skill)
     records = []
     for candidate in selected:
         snapshot = candidate["snapshot"]
@@ -78,8 +82,8 @@ def evaluate(selected: list, client: ChatClient | None) -> list[dict]:
             "returned_count": 0,
             "kept_count": 0,
             "dropped_reasons": dict.fromkeys(interpret.DROPPED_REASONS, 0),
-            "type_counts": dict.fromkeys(interpret.TYPES, 0),
-            "missing": list(interpret.TYPES),
+            "type_counts": dict.fromkeys(spec.types, 0),
+            "missing": list(spec.types),
             "items": [],
             "elapsed_seconds": 0.0,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
@@ -89,22 +93,29 @@ def evaluate(selected: list, client: ChatClient | None) -> list[dict]:
             started = time.monotonic()
             try:
                 payload = client.complete_json(
-                    interpret.SYSTEM_PROMPT,
+                    spec.system_prompt,
                     json.dumps({"paragraphs": paragraphs}, ensure_ascii=False),
                     max_tokens=12000,
                 )
                 if isinstance(payload, dict) and isinstance(payload.get("items"), list):
                     record["returned_count"] = len(payload["items"])
-                result = interpret.validate(payload, paragraphs)
+                result = interpret.validate(payload, paragraphs, skill=spec)
                 record.update(
                     status="success",
-                    kept_count=len(result["items"]),
-                    items=result["items"],
+                    kept_count=len(result[spec.result_field]),
+                    items=result[spec.result_field],
                     dropped_reasons=result["dropped_reasons"],
-                    missing=result["missing"],
+                    missing=result.get(
+                        "missing",
+                        [
+                            t
+                            for t in spec.types
+                            if not any(i["type"] == t for i in result[spec.result_field])
+                        ],
+                    ),
                     refusal=result["refusal"],
                 )
-                for item in result["items"]:
+                for item in result[spec.result_field]:
                     record["type_counts"][item["type"]] += 1
             except Exception as exc:  # noqa: BLE001 - 单篇失败继续；只记录类别，不泄露响应或配置
                 record["error_category"] = type(exc).__name__
@@ -114,15 +125,22 @@ def evaluate(selected: list, client: ChatClient | None) -> list[dict]:
                     key: client.last_usage.get(key, 0)
                     for key in ("prompt_tokens", "completion_tokens")
                 }
+        if skill == "clause":
+            record["rows"] = record.pop("items")
+            record["key_counts"] = {
+                key: sum(key in row["keys"] for row in record["rows"]) for key in clause.KEYS
+            }
+            record["empty_keys_count"] = sum(not row["keys"] for row in record["rows"])
         records.append(record)
     return records
 
 
-def summarize(records: list[dict]) -> dict:
+def summarize(records: list[dict], skill: str = "interpret") -> dict:
+    spec = get_skill(skill)
     attempted = [r for r in records if r["status"] != "dry_run"]
     returned = sum(r["returned_count"] for r in records)
     kept = sum(r["kept_count"] for r in records)
-    return {
+    summary = {
         "doc_ids": [r["doc_id"] for r in records],
         "document_count": len(records),
         "attempted_count": len(attempted),
@@ -136,7 +154,7 @@ def summarize(records: list[dict]) -> dict:
             for reason in interpret.DROPPED_REASONS
         },
         "type_coverage": {
-            kind: sum(r["type_counts"][kind] > 0 for r in records) for kind in interpret.TYPES
+            kind: sum(r["type_counts"][kind] > 0 for r in records) for kind in spec.types
         },
         "average_elapsed_seconds": (
             sum(r["elapsed_seconds"] for r in attempted) / len(attempted) if attempted else 0.0
@@ -147,10 +165,17 @@ def summarize(records: list[dict]) -> dict:
         },
     }
 
+    if skill == "clause":
+        summary["key_counts"] = {
+            key: sum(r["key_counts"][key] for r in records) for key in clause.KEYS
+        }
+        summary["empty_keys_count"] = sum(r["empty_keys_count"] for r in records)
+    return summary
 
-def write_outputs(out: Path, records: list[dict]) -> None:
+
+def write_outputs(out: Path, records: list[dict], skill: str = "interpret") -> None:
     out.mkdir(parents=True, exist_ok=True)
-    summary = summarize(records)
+    summary = summarize(records, skill)
     with (out / "results.jsonl").open("w", encoding="utf-8") as stream:
         for record in records:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -158,7 +183,7 @@ def write_outputs(out: Path, records: list[dict]) -> None:
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     lines = [
-        "# 政策解读评测",
+        "# 条款对照评测" if skill == "clause" else "# 政策解读评测",
         "",
         "选中文件 ID：" + ", ".join(map(str, summary["doc_ids"])),
         "",
@@ -198,6 +223,10 @@ def write_outputs(out: Path, records: list[dict]) -> None:
     lines.extend(f"| {labels[k]}（{k}） | {v} |" for k, v in summary["dropped_reasons"].items())
     lines.extend(["", "| 类别 | 覆盖篇数 |", "|---|---:|"])
     lines.extend(f"| {k} | {v} |" for k, v in summary["type_coverage"].items())
+    if skill == "clause":
+        lines.extend(["", "| 企业项 key | 条数 |", "|---|---:|"])
+        lines.extend(f"| {key} | {count} |" for key, count in summary["key_counts"].items())
+        lines.append(f"| keys 为空 | {summary['empty_keys_count']} |")
     (out / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -220,6 +249,7 @@ def parse_doc_ids(value: str) -> list[int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--skill", choices=("interpret", "clause"), default="interpret")
     parser.add_argument("--limit", type=positive_int, default=30)
     parser.add_argument("--out", type=Path, default=Path("interpret-eval"))
     parser.add_argument("--doc-ids", type=parse_doc_ids)
@@ -237,7 +267,9 @@ def main(argv: list[str] | None = None) -> int:
             # 数据库层强制只读，防止今后 prepare 的变动意外写表。
             connection.execute(text("START TRANSACTION READ ONLY"))
             with Session(bind=connection, autoflush=False) as session:
-                selected = select_documents(session, settings.ai_model, args.limit, args.doc_ids)
+                selected = select_documents(
+                    session, settings.ai_model, args.limit, args.doc_ids, args.skill
+                )
             connection.rollback()
         if not args.dry_run:
             client = ChatClient(
@@ -246,8 +278,8 @@ def main(argv: list[str] | None = None) -> int:
                 settings.ai_model,
                 max_retries=0,
             )
-        records = evaluate(selected, client)
-        write_outputs(args.out, records)
+        records = evaluate(selected, client, args.skill)
+        write_outputs(args.out, records, args.skill)
         print(f"已选 {len(records)} 篇，结果写入输出目录")
         return 0
     except Exception as exc:  # noqa: BLE001 - 不打印可能含连接配置的异常原文

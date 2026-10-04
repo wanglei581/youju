@@ -8,18 +8,20 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import JSON, select
+from sqlalchemy import JSON, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
 from youju.ai import interpret
+from youju.ai.clause import Company
+from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
 from youju.api.me import UserDep, request_openid
 from youju.backup import BackupError
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, User
+from youju.models import AdvisorTask, AdvisorUsage, Document, Source, User
 from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
@@ -42,19 +44,21 @@ async def _enabled(request: Request) -> None:
         except ValueError:
             pass  # 格式错误仍交给原有的请求校验。
         else:
-            if settings.advisor_enabled and kind not in ("compare", "track"):
+            if kind not in ("compare", "track"):
                 try:
                     openid = request_openid(request)
                 except HTTPException:
                     openid = None
-                if not getattr(settings, "ai_advisor_enabled", False) or openid not in (
-                    interpret.openids(settings)
-                ):
+                if not getattr(
+                    settings, "ai_advisor_enabled", False
+                ) or openid not in interpret.openids(settings):
                     # 先于 TaskIn 的 Literal 校验，固定提示不含未开放类型或用户输入。
-                    raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
+                    if settings.advisor_enabled:
+                        raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
+                    raise HTTPException(status_code=404, detail="没有找到接口")
     if kind in ("compare", "track") and not settings.advisor_enabled:
         raise HTTPException(status_code=404, detail="没有找到接口")
-    if kind == "interpret" or (kind is None and not settings.advisor_enabled):
+    if kind in AI_KINDS or (kind is None and not settings.advisor_enabled):
         # 在协议校验之前隐藏 AI 接口，未同意协议的非白名单用户也只会收到 404。
         try:
             openid = request_openid(request)
@@ -79,17 +83,29 @@ def _body_size(request: Request) -> None:
 class TaskIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["compare", "track", "interpret"]
+    kind: Literal["compare", "track", "interpret", "clause"]
     # 额度超限按 429 返回，不能由 Pydantic 的 422 max_length 提前截断。
     rows: list[Any] | None = Field(default=None, min_length=1)
     doc_id: int | None = Field(default=None, gt=0, strict=True)
 
+    company: Company | None = None
+
     @model_validator(mode="after")
     def validate_input(self) -> TaskIn:
-        if self.kind == "interpret":
+        if self.kind in AI_KINDS:
             if self.doc_id is None or "rows" in self.model_fields_set:
+                raise ValueError(
+                    "解读仅接受 doc_id"
+                    if self.kind == "interpret"
+                    else "条款对照必须提供 doc_id，不能提供 rows"
+                )
+            if self.kind == "interpret" and "company" in self.model_fields_set:
                 raise ValueError("解读仅接受 doc_id")
-        elif self.rows is None or "doc_id" in self.model_fields_set:
+        elif (
+            self.rows is None
+            or "doc_id" in self.model_fields_set
+            or "company" in self.model_fields_set
+        ):
             raise ValueError("数据工具必须提供 rows")
         return self
 
@@ -112,22 +128,49 @@ def _stamp() -> datetime:
 
 def _authorize(kind: str, user: User) -> None:
     settings = get_settings()
-    allowed = interpret.enabled(settings, user) if kind == "interpret" else settings.advisor_enabled
+    allowed = interpret.enabled(settings, user) if kind in AI_KINDS else settings.advisor_enabled
     if not allowed:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _out(task: AdvisorTask, session: Session | None = None, *, include_result: bool = True) -> dict:
-    result = service.task_dict(task, include_result=include_result or task.kind != "interpret")
-    if task.kind == "interpret" and not include_result:
+def _document_titles(session: Session, doc_ids: list[int]) -> dict[int, str]:
+    if not doc_ids:
+        return {}
+    return dict(
+        session.execute(
+            select(Document.id, Document.title)
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(doc_ids), v1.public_condition())
+        ).all()
+    )
+
+
+def _document_out(doc_id: int | None, titles: dict[int, str]) -> dict:
+    # 编号与标题同时隐藏，不能暴露已下架或非公开通知的元数据。
+    return {
+        "docId": doc_id if doc_id in titles else None,
+        "docTitle": titles.get(doc_id),
+    }
+
+
+def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) -> dict:
+    result = service.task_dict(
+        task, include_result=include_result or task.kind not in AI_KINDS, stamp=_stamp()
+    )
+    if task.kind in AI_KINDS:
+        doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
+        result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
+    if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
-    if task.kind == "interpret" and task.result_json and session is not None:
+    if task.kind in AI_KINDS and task.result_json:
         if task.expires_at is not None and task.expires_at <= _stamp():
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
         elif task.cache_key:
             try:
-                _, _, key = interpret.prepare(session, task.snapshot["doc_id"], task.model)
+                _, _, key = interpret.prepare(
+                    session, task.snapshot["doc_id"], task.model, skill=get_skill(task.kind)
+                )
                 if key != task.cache_key:
                     raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
             except interpret.InterpretRefusal as exc:
@@ -169,11 +212,13 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             },
         },
         "ai_advisor": {
-            "enabled": ai_enabled,
-            "features": ["interpret"] if ai_enabled else [],
+            "enabled": True,
+            "features": list(AI_KINDS),
             "disclosure": interpret.disclosure(settings),
-            "remaining": {"interpret": max(0, 5 - counts.get("interpret", 0)) if ai_enabled else 0},
-        },
+            "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
+        }
+        if ai_enabled
+        else {"enabled": False, "features": [], "remaining": {}},
     }
 
 
@@ -197,6 +242,9 @@ def create_task(
     key = idempotency_key.strip()
     # 锁住用户，串行化额度检查和任务创建；重复 key 优先返回原任务，不再检查新 body。
     session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
+    input_json = {"doc_id": body.doc_id} if body.kind in AI_KINDS else None
+    if body.kind == "clause":
+        input_json["company"] = body.company.model_dump(mode="json") if body.company else {}
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -204,24 +252,29 @@ def create_task(
     )
     if existing is not None:
         _authorize(existing.kind, user)
-        if (body.kind == "interpret" or existing.kind == "interpret") and (
-            existing.kind != body.kind or existing.input_json != {"doc_id": body.doc_id}
+        if (body.kind in AI_KINDS or existing.kind in AI_KINDS) and (
+            existing.kind != body.kind or existing.input_json != input_json
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
-        return _out(existing, include_result=False)
+        return _out(existing, session, include_result=False)
     if body.rows is not None and len(body.rows) > service.MAX_ROWS:
         label = "名单比对" if body.kind == "compare" else "跟进表"
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
     stamp = _stamp()
     if not service.reserve_usage(session, user.id, body.kind, service.usage_day(stamp)):
-        label = {"compare": "名单比对", "track": "跟进表", "interpret": "政策解读"}[body.kind]
+        label = {
+            "compare": "名单比对",
+            "track": "跟进表",
+            "interpret": "政策解读",
+            "clause": "条款对照",
+        }[body.kind]
         raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
     task = AdvisorTask(
         user_id=user.id,
         kind=body.kind,
         status="queued",
         input_rows=body.rows,
-        input_json={"doc_id": body.doc_id} if body.kind == "interpret" else None,
+        input_json=input_json,
         row_count=len(body.rows) if body.rows is not None else 0,
         idempotency_key=key,
         created_at=stamp,
@@ -241,7 +294,7 @@ def create_task(
             raise
         task = existing
     request.state.audit = {"action": "advisor_task_create", "task_id": task.id, "kind": task.kind}
-    return _out(task, include_result=False)
+    return _out(task, session, include_result=False)
 
 
 @router.get("/tasks", dependencies=[Depends(_enabled)])
@@ -249,7 +302,7 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     kinds = ["compare", "track"] if settings.advisor_enabled else []
     if interpret.enabled(settings, user):
-        kinds.append("interpret")
+        kinds.extend(AI_KINDS)
     if not kinds:
         raise HTTPException(status_code=404, detail="没有找到接口")
     since = _stamp() - timedelta(days=30)
@@ -257,8 +310,17 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         select(
             AdvisorTask,
             (AdvisorTask.result_json.is_not(None) & (AdvisorTask.result_json != JSON.NULL)),
+            # 只投影编号，避免加载整份正文快照及七天内的企业输入；快照在输入清理后仍保留。
+            func.coalesce(
+                AdvisorTask.snapshot["doc_id"].as_integer(),
+                AdvisorTask.input_json["doc_id"].as_integer(),
+            ),
         )
-        .options(defer(AdvisorTask.result_json), defer(AdvisorTask.snapshot))
+        .options(
+            defer(AdvisorTask.result_json),
+            defer(AdvisorTask.snapshot),
+            defer(AdvisorTask.input_json),
+        )
         .where(
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
@@ -266,12 +328,19 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()
+    titles = _document_titles(
+        session, list({doc_id for task, _, doc_id in rows if task.kind in AI_KINDS and doc_id})
+    )
     return {
         "items": [
-            {**service.task_dict(task, include_result=False), "hasResult": bool(has_result)}
-            if task.kind == "interpret"
+            {
+                **service.task_dict(task, include_result=False),
+                "hasResult": bool(has_result),
+                **_document_out(doc_id, titles),
+            }
+            if task.kind in AI_KINDS
             else service.task_dict(task)
-            for task, has_result in rows
+            for task, has_result, doc_id in rows
         ]
     }
 
@@ -285,8 +354,6 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
         or (task.expires_at is not None and task.expires_at <= _stamp())
     ):
         raise HTTPException(status_code=410, detail="结果文件已过期或已删除")
-    from youju.models import Document
-
     # 已生成的 Excel 也要在每次取下载地址时复核。
     hidden = select(Document.id).where(~available_condition())
     legacy_check = task.result_document_ids is None and session.scalar(hidden.limit(1)) is not None
@@ -339,7 +406,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
     elif task.status != "cancelled":
         raise HTTPException(status_code=409, detail="任务已开始处理，不能取消")
     request.state.audit = {"action": "advisor_task_cancel", "task_id": task.id}
-    return _out(task, include_result=False)
+    return _out(task, session, include_result=False)
 
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
