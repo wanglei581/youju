@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import JSON, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
-from starlette.concurrency import run_in_threadpool
 
 from youju import advisor_tasks as service
 from youju.ai import interpret
@@ -27,10 +26,13 @@ router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-async def _enabled(request: Request, session: SessionDep) -> None:
+async def _enabled(request: Request) -> None:
     settings = get_settings()
     if not settings.advisor_enabled and not getattr(settings, "ai_advisor_enabled", False):
         raise HTTPException(status_code=404, detail="没有找到接口")
+    # 任务接口先由各自的归属检查确认身份，再按任务类型授权，避免泄露他人任务。
+    if "task_id" in request.path_params:
+        return
     kind = None
     if request.method == "POST" and request.url.path.endswith("/tasks"):
         _body_size(request)
@@ -39,14 +41,17 @@ async def _enabled(request: Request, session: SessionDep) -> None:
             kind = raw.get("kind") if isinstance(raw, dict) else None
         except ValueError:
             pass  # 格式错误仍交给原有的请求校验。
-    elif "task_id" in request.path_params:
-        try:
-            task = await run_in_threadpool(
-                session.get, AdvisorTask, int(request.path_params["task_id"])
-            )
-            kind = task.kind if task else None
-        except ValueError:
-            pass
+        else:
+            if settings.advisor_enabled and kind not in ("compare", "track"):
+                try:
+                    openid = request_openid(request)
+                except HTTPException:
+                    openid = None
+                if not getattr(settings, "ai_advisor_enabled", False) or openid not in (
+                    interpret.openids(settings)
+                ):
+                    # 先于 TaskIn 的 Literal 校验，固定提示不含未开放类型或用户输入。
+                    raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
     if kind in ("compare", "track") and not settings.advisor_enabled:
         raise HTTPException(status_code=404, detail="没有找到接口")
     if kind == "interpret" or (kind is None and not settings.advisor_enabled):
@@ -120,7 +125,7 @@ def _out(task: AdvisorTask, session: Session | None = None, *, include_result: b
         if task.expires_at is not None and task.expires_at <= _stamp():
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
-        elif not task.result_json.get("refusal"):
+        elif task.cache_key:
             try:
                 _, _, key = interpret.prepare(session, task.snapshot["doc_id"], task.model)
                 if key != task.cache_key:
@@ -131,9 +136,12 @@ def _out(task: AdvisorTask, session: Session | None = None, *, include_result: b
     return result
 
 
-def _owned(session: Session, user: User, task_id: int) -> AdvisorTask:
-    task = session.get(AdvisorTask, task_id)
-    if task is None or task.user_id != user.id:
+def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) -> AdvisorTask:
+    stmt = select(AdvisorTask).where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+    if lock:
+        stmt = stmt.with_for_update()
+    task = session.scalar(stmt)
+    if task is None:
         raise HTTPException(status_code=404, detail="没有找到顾问任务")
     _authorize(task.kind, user)
     return task
@@ -321,14 +329,7 @@ def get_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
 def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> dict:
-    task = session.scalar(
-        select(AdvisorTask)
-        .where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
-        .with_for_update()
-    )
-    if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
-    _authorize(task.kind, user)
+    task = _owned(session, user, task_id, lock=True)
     if task.status == "queued":
         task.status = "cancelled"
         task.finished_at = _stamp()
@@ -343,14 +344,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
 def delete_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> None:
-    task = session.scalar(
-        select(AdvisorTask)
-        .where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
-        .with_for_update()
-    )
-    if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
-    _authorize(task.kind, user)
+    task = _owned(session, user, task_id, lock=True)
     if task.status == "running":
         raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")
     if task.status == "queued":

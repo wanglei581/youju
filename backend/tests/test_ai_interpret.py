@@ -175,6 +175,207 @@ def run(session, task, settings, fake=None, stamp=NOW):
     return fake
 
 
+@pytest.mark.parametrize("change", ["takedown", "field_revoked", "deadline_revoked", "body"])
+def test_refusal_with_verified_values_is_revalidated(client, session, settings, doc, change):
+    field = DocumentField(
+        document_id=doc.id,
+        field="support",
+        value="资金支持",
+        approved_value="贷款贴息",
+        evidence="支持方式为资金支持。",
+        evidence_offset=BODY.index("支持方式"),
+        body_hash=hashlib.sha256(BODY.encode()).hexdigest(),
+        status="approved",
+        reviewed_at=NOW,
+    )
+    deadline = DocumentDeadline(
+        document_id=doc.id,
+        fingerprint="refusal-checked",
+        kind="企业申报截止",
+        candidate_date=date(2026, 10, 4),
+        approved_date=date(2026, 10, 8),
+        evidence="请提交申请书及附件。",
+        confidence="high",
+        status="approved",
+        reviewed_at=NOW,
+    )
+    session.add_all([field, deadline])
+    session.commit()
+    task = direct_task(session, doc)
+    fake = run(session, task, settings, FakeChat(payload={"items": []}))
+    assert len(fake.calls) == 1
+    assert task.cache_key and task.result_json["refusal"]
+    assert {v["value"] for v in task.result_json["verified"]} == {"贷款贴息", "2026-10-08"}
+    path = f"/api/v1/advisor/tasks/{task.id}"
+    assert client.get(path).json()["result"]["verified"]
+
+    if change == "takedown":
+        doc.taken_down_at = NOW
+    elif change == "field_revoked":
+        field.status = "rejected"
+    elif change == "deadline_revoked":
+        deadline.status = "rejected"
+    else:
+        doc.detail.body_text += "\n正文变化。"
+    session.commit()
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.json()["result"] is None
+    assert response.json()["error"]
+    assert "贷款贴息" not in response.text and "2026-10-08" not in response.text
+
+
+@pytest.mark.parametrize("data_enabled", [False, True])
+@pytest.mark.parametrize("revocation", ["ai_off", "empty_whitelist", "removed"])
+def test_worker_finishes_revoked_tasks_and_refunds(
+    session, settings, doc, monkeypatch, data_enabled, revocation
+):
+    tasks = {}
+    for name in ("queued", "stale", "boundary", "recent", "no_start"):
+        task = direct_task(session, doc, key=name)
+        if name == "queued":
+            task.status, task.started_at = "queued", None
+        elif name == "stale":
+            task.started_at = NOW - service.STALE_RUNNING - timedelta(seconds=1)
+        elif name == "boundary":
+            task.started_at = NOW - service.STALE_RUNNING
+        elif name == "recent":
+            task.started_at = NOW - timedelta(minutes=1)
+        else:
+            task.started_at = None
+        tasks[name] = task
+    user_id = tasks["queued"].user_id
+    tools = [
+        AdvisorTask(
+            user_id=user_id,
+            kind=kind,
+            status="queued",
+            input_rows=["甲公司"] if kind == "compare" else [{"name": "甲公司"}],
+            row_count=1,
+            idempotency_key=kind,
+            created_at=NOW,
+        )
+        for kind in ("compare", "track")
+    ]
+    session.add_all(tools)
+    session.commit()
+    settings.advisor_enabled = data_enabled
+    if revocation == "ai_off":
+        settings.ai_advisor_enabled = False
+    else:
+        settings.ai_advisor_openids = "" if revocation == "empty_whitelist" else "second"
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("失去授权的任务不得调用模型")
+
+    monkeypatch.setattr(service, "ChatClient", forbidden)
+
+    # 清理不受本轮领取上限限制，且必须在两个开关全关的提前返回之前执行。
+    for _ in range(2):
+        service.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=0)
+        session.expire_all()
+        for name in ("queued", "stale"):
+            assert tasks[name].status == "failed"
+            assert tasks[name].error == "功能未开放"
+            assert tasks[name].finished_at == NOW
+            assert tasks[name].attempts == 1
+        for name in ("boundary", "recent", "no_start"):
+            assert tasks[name].status == "running" and tasks[name].finished_at is None
+        usage = session.scalar(
+            select(AdvisorUsage).where(
+                AdvisorUsage.user_id == user_id, AdvisorUsage.kind == "interpret"
+            )
+        )
+        assert usage.used_count == 3  # 重跑不能再次退额，仍在运行的任务继续占用额度。
+        assert all(tool.status == "queued" for tool in tools)
+
+    later = NOW + service.STALE_RUNNING
+    service.run_advisor_tasks(session, settings=settings, stamp=later, max_tasks=0)
+    session.expire_all()
+    assert all(tasks[name].status == "failed" for name in ("boundary", "recent"))
+    assert all(tasks[name].finished_at == later for name in ("boundary", "recent"))
+    assert usage.used_count == 1 and tasks["no_start"].status == "running"
+
+
+@pytest.mark.parametrize(
+    "data_enabled,ai_enabled", [(False, False), (False, True), (True, False), (True, True)]
+)
+@pytest.mark.parametrize("whitelisted", [False, True])
+@pytest.mark.parametrize("kind", ["compare", "track", "interpret"])
+def test_task_routes_check_ownership_before_feature_authorization(
+    client, session, settings, doc, data_enabled, ai_enabled, whitelisted, kind
+):
+    own = direct_task(session, doc, key="own")
+    foreign = direct_task(session, doc, openid="second", key="foreign")
+    for task in (own, foreign):
+        task.kind, task.status = kind, "queued"
+        task.started_at = None
+    session.commit()
+    settings.advisor_enabled = data_enabled
+    settings.ai_advisor_enabled = ai_enabled
+    settings.ai_advisor_openids = "internal,second" if whitelisted else "second"
+    allowed = ai_enabled and whitelisted if kind == "interpret" else data_enabled
+    routes = [
+        ("GET", "", 200),
+        ("GET", "/download", 410),
+        ("POST", "/cancel", 200),
+        ("DELETE", "", 204),
+    ]
+    # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
+    hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
+    for method, suffix, own_status in routes:
+        for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
+            response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
+            assert response.status_code == 404
+            assert response.json() == {"detail": hidden}
+        response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
+        assert response.status_code == (own_status if allowed else 404)
+        if not allowed:
+            assert response.json() == {"detail": "没有找到接口"}
+
+
+@pytest.mark.parametrize(
+    "ai_enabled,whitelisted", [(False, False), (False, True), (True, False), (True, True)]
+)
+@pytest.mark.parametrize("kind", ["invalid", "interpret", None, 7, [], {}, True])
+def test_invalid_kind_does_not_disclose_unavailable_ai(
+    client, settings, doc, ai_enabled, whitelisted, kind
+):
+    settings.advisor_enabled = True
+    settings.ai_advisor_enabled = ai_enabled
+    settings.ai_advisor_openids = "internal" if whitelisted else "second"
+    body = {"rows": ["甲公司"]} if kind is None else {"kind": kind, "rows": ["甲公司"]}
+    if kind == "interpret":
+        body = {"kind": kind, "doc_id": doc.id}
+    response = client.post(
+        "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "invalid-kind"}
+    )
+    if ai_enabled and whitelisted:
+        assert response.status_code == (202 if kind == "interpret" else 422)
+        if kind == "invalid":
+            assert "interpret" in response.text  # 授权用户保留现有 Literal 校验。
+    else:
+        assert response.status_code == 422
+        assert response.json() == {"detail": "kind 只能是 compare 或 track"}
+        assert "interpret" not in response.text
+
+
+def test_personal_data_retains_own_interpret_history_after_revocation(
+    client, session, settings, doc
+):
+    own = direct_task(session, doc, key="own-history")
+    run(session, own, settings)
+    foreign = direct_task(session, doc, openid="second", key="foreign-history")
+    run(session, foreign, settings)
+    settings.ai_advisor_openids = "second"
+    settings.ai_advisor_enabled = False
+    response = client.get("/api/v1/me/data")
+    assert response.status_code == 200
+    history = response.json()["advisorTasks"]
+    assert [task["id"] for task in history] == [own.id]
+    assert history[0]["result"]["items"]
+
+
 def test_paragraphs_offsets_and_numbering():
     body = "甲" * 995 + "。乙。" + "丙" * 1200 + "\n\n最后一段。"
     paragraphs = interpret.split_paragraphs(body)
@@ -250,7 +451,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["processed"] == 0
     session.expire_all()
-    assert session.get(AdvisorTask, task_id).status == "queued"
+    assert session.get(AdvisorTask, task_id).status == "failed"
     settings.advisor_enabled = True
     assert client.get("/api/v1/advisor/tasks").json()["items"] == []
     assert (
@@ -539,12 +740,14 @@ def test_migration_upgrade_downgrade(db_engine, session, doc, settings):
     }
 
 
-def test_unregistered_non_whitelisted_user_gets_404(client, settings, doc):
+def test_unregistered_non_whitelisted_user_cannot_access_ai(client, settings, doc):
     settings.dev_openid = "never-agreed"
     assert create(client, doc.id).status_code == 404
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     settings.advisor_enabled = True
-    assert create(client, doc.id).status_code == 404
+    response = create(client, doc.id)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "kind 只能是 compare 或 track"}
 
 
 def test_cache_copy_does_not_extend_generation_lifetime(session, settings, doc):

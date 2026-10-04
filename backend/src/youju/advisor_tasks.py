@@ -236,6 +236,32 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
     return count or 0
 
 
+def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> None:
+    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。"""
+    openids = (
+        interpret.openids(settings) if getattr(settings, "ai_advisor_enabled", False) else set()
+    )
+    tasks = session.scalars(
+        select(AdvisorTask)
+        .where(
+            AdvisorTask.kind == "interpret",
+            AdvisorTask.user_id.not_in(select(User.id).where(User.openid.in_(openids))),
+            (AdvisorTask.status == "queued")
+            | (
+                (AdvisorTask.status == "running")
+                & AdvisorTask.started_at.is_not(None)
+                & (AdvisorTask.started_at < stamp - STALE_RUNNING)
+            ),
+        )
+        .order_by(AdvisorTask.id)
+        .with_for_update(skip_locked=True)
+    ).all()
+    for task in tasks:
+        task.status, task.error, task.finished_at = "failed", "功能未开放", stamp
+        release_usage(session, task)
+    session.commit()
+
+
 def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
     if not isinstance(task.input_rows, list):
         raise CompareInputError("任务输入已过期，请重新提交")
@@ -503,8 +529,10 @@ def run_advisor_tasks(
     timeout: timedelta = TASK_TIMEOUT,
     max_tasks: int | None = None,
 ) -> dict[str, int]:
-    """定时任务入口；总开关关闭时完全跳过。"""
+    """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。"""
     settings = settings or get_settings()
+    stamp = _utc(stamp or datetime.now(UTC))
+    _fail_revoked_interpret(session, settings, stamp)
     allowed_kinds = []
     if getattr(settings, "advisor_enabled", False):
         allowed_kinds.extend(("compare", "track"))
@@ -520,7 +548,6 @@ def run_advisor_tasks(
         getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings)
     ):
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
-    stamp = _utc(stamp or datetime.now(UTC))
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
     claimed: set[int] = set()
