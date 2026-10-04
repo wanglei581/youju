@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     ai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     ai_api_key: SecretStr | None = None
     ai_model: str = "qwen-flash"
+    # AI 顾问（解读、条款对照）单次调用最多等多久。整篇摘录输出长，强模型常要 1–3 分钟；
+    # 不能超过任务总时限（advisor_tasks.TASK_TIMEOUT，5 分钟）。
+    ai_advisor_timeout_seconds: float = Field(default=180, gt=0, le=290)
+    # 附加到每次模型请求里的参数（JSON），按模型方填，例如 DeepSeek 关闭思考模式：
+    # YOUJU_AI_REQUEST_EXTRA={"thinking": {"type": "disabled"}}
+    ai_request_extra: dict = {}
+    # 后台核对（截止日期交叉抽取、质检）用的模型；空值表示和 ai_model 相同。调用量大，适合便宜的模型
+    ai_background_model: str = ""
     ai_model_label: str = ""
     ai_model_filing: str = ""
 
