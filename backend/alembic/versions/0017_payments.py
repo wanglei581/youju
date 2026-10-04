@@ -42,6 +42,7 @@ def upgrade() -> None:
         sa.Column("refund_started_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("query_retry_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("goods_notified", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("provide_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error", sa.String(500), nullable=True),
         sa.Column("alerted_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column(
@@ -88,6 +89,7 @@ def upgrade() -> None:
         sa.Column("bill_fee", sa.Integer(), nullable=True),
         sa.Column("differences", sa.JSON(), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column(
             "created_at",
             mysql.DATETIME(fsp=6),

@@ -20,6 +20,7 @@
 # 质检做完再发运维日报（运行情况、待办、AI 用量，配了 AI 时附上建议先核对的通知），日报里的存疑数是最新的
 0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20; /app/backend/deploy/job.sh daily-report
 
-# 默认关闭；支付开启后查单补发货、失败退款/iOS重跑及退款确认。
+# 查单补发货、失败退款/iOS重跑及退款确认。支付关闭后只处理库里未完结的订单，没有就直接跳过（不访问微信）。
+# pay-run 每分钟一次，不记运行记录；pay-reconcile 每天一次，照常记账。
 * * * * * /app/backend/deploy/job.sh pay-run
 30 9 * * * /app/backend/deploy/job.sh pay-reconcile

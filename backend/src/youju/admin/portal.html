@@ -168,7 +168,7 @@
       table.append(head,body); wrap.append(table); jobs.append(wrap);
       const link=node('button','查看最近 7 天记录'); link.type='button'; link.onclick=()=>show('jobs'); jobs.append(link);
       jobs.append(node('p',`AI 顾问：${d.ai_advisor.enabled?'开':'关'} · 白名单 ${d.ai_advisor.whitelist_count} 人 · 近 7 天任务 ${d.ai_advisor.tasks_7d} 次 · 失败 ${d.ai_advisor.failed_7d} 次`));
-      if(d.pay) jobs.append(node('p',`支付 · 今日订单 ${d.pay.today_orders} 笔 · 实付金额 ${(d.pay.today_fee/100).toFixed(2)} 元 · 待人工处理 ${d.pay.manual} 笔 · 对账差异 ${d.pay.differences} 天 · 对账待完成 ${d.pay.reconciliation_pending} 天`));
+      if(d.pay) jobs.append(node('p',`支付 · 今日订单 ${d.pay.today_orders} 笔 · 实付金额 ${(d.pay.today_fee/100).toFixed(2)} 元 · 待人工处理 ${d.pay.manual} 笔 · 对账差异 ${d.pay.differences} 天 · 对账待完成 ${d.pay.reconciliation_pending} 天 · 对账失败 ${d.pay.reconciliation_failed ?? 0} 天`));
       $('overview').replaceChildren(todo,data,jobs);
     } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
   }

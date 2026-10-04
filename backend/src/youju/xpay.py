@@ -54,8 +54,10 @@ class XPayClient:
         return secret.get_secret_value()
 
     def session_key(self, code: str, openid: str) -> str:
-        # 获取方式可通过替换此方法切换；默认开放接口服务，有 secret 时使用 B。
+        # 方式 A（默认）：云托管开放接口服务，不带 secret，走容器内 http 地址。
+        # 方式 B：配置了 AppSecret，直接调用公网 https 接口，secret 不能明文经过 http。
         params = {"js_code": code, "grant_type": "authorization_code"}
+        url = "http://api.weixin.qq.com/sns/jscode2session"
         if self.settings.wx_appid:
             params["appid"] = self.settings.wx_appid
         if self.settings.wx_appsecret:
@@ -64,10 +66,9 @@ class XPayClient:
             params.update(
                 appid=self.settings.wx_appid, secret=self.settings.wx_appsecret.get_secret_value()
             )
+            url = "https://api.weixin.qq.com/sns/jscode2session"
         try:
-            response = self.http.get(
-                "http://api.weixin.qq.com/sns/jscode2session", params=params, timeout=5
-            )
+            response = self.http.get(url, params=params, timeout=5)
             response.raise_for_status()
             result = response.json()
             if (

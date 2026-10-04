@@ -239,10 +239,8 @@ async def push(
     # 配置检测（action=CheckContainerPath）和非支付消息一律应答成功，避免微信重推。
     if kind not in PAY_EVENTS:
         return reply(xml)
-    if not payments.enabled(get_settings()):
-        # 收费未开启：记录后应答成功，不查单、不发货。
-        await run_in_threadpool(_record_only, data, kind, session)
-        return reply(xml)
+    # 支付开关只停新下单：关闭后已有订单的推送照常处理（投诉、退款、晚到的付款）；
+    # 本地没有的订单只记摘要并应答成功，不查单、不访问微信。
     if kind == "xpay_subscribe_ios_refund_query_notify":
         nested = data.get("WxaVirtualPayIosRefundQueryNotifyEvent", data)
         trade = nested.get("pay_order_id") if isinstance(nested, dict) else None
@@ -260,11 +258,6 @@ async def push(
             }
         return reply(xml, extra=decision)
     return await run_in_threadpool(_transaction_push, data, xml, session, client)
-
-
-def _record_only(data: dict, kind: str, session: Session) -> None:
-    payments.event(session, kind, data, None)
-    session.commit()
 
 
 def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClient) -> Response:

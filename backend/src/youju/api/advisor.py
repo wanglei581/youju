@@ -540,6 +540,14 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
 def delete_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> None:
+    # 付费任务按“先订单、后任务”的顺序加锁，和退款确认（mark_refunded）一致，避免互相等待死锁。
+    pay_order_id = session.scalar(
+        select(AdvisorTask.pay_order_id).where(
+            AdvisorTask.id == task_id, AdvisorTask.user_id == user.id
+        )
+    )
+    if pay_order_id is not None:
+        session.scalar(select(PayOrder.id).where(PayOrder.id == pay_order_id).with_for_update())
     task = _owned(session, user, task_id, lock=True)
     if task.status == "running":
         raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")

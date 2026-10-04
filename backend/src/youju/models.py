@@ -717,6 +717,8 @@ class PayOrder(Base):
     refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     query_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 通知发货失败次数；达到上限不再重试，转人工。
+    provide_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error: Mapped[str | None] = mapped_column(String(500))
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
@@ -744,6 +746,8 @@ class PayReconciliation(Base):
     bill_count: Mapped[int | None] = mapped_column(Integer)
     bill_fee: Mapped[int | None] = mapped_column(Integer)
     differences: Mapped[dict] = mapped_column(JSONType)
+    # pending / matched / different / failed；下载或解析失败次数，达到上限转 failed。
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

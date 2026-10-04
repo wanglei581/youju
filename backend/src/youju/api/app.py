@@ -1055,7 +1055,10 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
     result = {
         "pay": pay,
         "todos": {
-            "pay": pay["manual"] + pay["differences"] + pay["reconciliation_pending"],
+            "pay": pay["manual"]
+            + pay["differences"]
+            + pay["reconciliation_pending"]
+            + pay["reconciliation_failed"],
             "deadlines": pending_count(session, None, "all")["pending"],
             "deadlines_30": pending_count(session, None, "30")["pending"],
             "fields": field_pending_count(session, None)["pending"],

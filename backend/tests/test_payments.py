@@ -6,12 +6,17 @@
 
 import json
 import logging
+import os
+import subprocess
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from xml.etree import ElementTree
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
+from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
 
 from youju import advisor_tasks, payments
@@ -39,6 +44,9 @@ class FakeWechat:
         self.wrong_owner = False
         self.bill_pending = False
         self.bad_order = False
+        self.paid_time = int(NOW.timestamp())
+        self.fail_provide = False
+        self.bill_broken = None
         self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
         self.client = XPayClient(settings, self.http)
 
@@ -72,7 +80,7 @@ class FakeWechat:
                         "order_fee": self.fee,
                         "paid_fee": self.fee,
                         "left_fee": self.left_fee,
-                        "paid_time": int(NOW.timestamp()),
+                        "paid_time": self.paid_time,
                         "wx_order_id": "wx-" + body["order_id"],
                         "order_type": self.order_type,
                         "channel_order_id": "mch-test",
@@ -83,12 +91,16 @@ class FakeWechat:
         if path == "/xpay/refund_order":
             return httpx.Response(200, json={"errcode": -1 if self.fail_refund else 0})
         if path == "/xpay/notify_provide_goods":
-            return httpx.Response(200, json={"errcode": 0})
+            return httpx.Response(200, json={"errcode": -1 if self.fail_provide else 0})
         if path == "/xpay/download_bill":
             if self.bill_pending:
                 return httpx.Response(200, json={"errcode": 268490011})
             return httpx.Response(200, json={"errcode": 0, "url": "https://bill.example/file.csv"})
         if request.url.host == "bill.example":
+            if self.bill_broken == "download":
+                return httpx.Response(500)
+            if self.bill_broken == "parse":
+                return httpx.Response(200, content=b"unknown\nnot-a-bill\n")
             return httpx.Response(200, content=b"trade,fee\nextra,100\n")
         raise AssertionError("不得发起其他 HTTP 请求")
 
@@ -1118,3 +1130,322 @@ def test_refunding_order_label(setup_pay, session):
     session.commit()
     response = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS)
     assert response.json()["status"] == "退款中"
+
+
+# ---- 第二轮审阅：9 个已确认问题（2026-10-04） ----
+
+
+def _capture_sql(db_engine):
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()).upper())
+
+    sa_event.listen(db_engine, "before_cursor_execute", capture)
+    return statements, lambda: sa_event.remove(db_engine, "before_cursor_execute", capture)
+
+
+def _calls(fake, path):
+    return [body for called, body, _ in fake.calls if called == path]
+
+
+def test_fix_1_anonymize_without_orders_never_locks_pay_orders(setup_pay, session, db_engine):
+    statements, stop = _capture_sql(db_engine)
+    try:
+        assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    finally:
+        stop()
+    pay_sql = [sql for sql in statements if "FROM PAY_ORDERS" in sql]
+    # 仍然检查过有没有订单，但只用普通查询；youju_api 只有 SELECT 权限时注销不能 500。
+    assert pay_sql and not any("FOR UPDATE" in sql for sql in pay_sql)
+    assert session.scalar(select(func.count(User.id))) == 0
+
+
+def test_fix_1_anonymize_with_orders_still_locks(setup_pay, session, db_engine):
+    row = order(session, create(setup_pay))
+    statements, stop = _capture_sql(db_engine)
+    try:
+        assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    finally:
+        stop()
+    assert any("FROM PAY_ORDERS" in sql and "FOR UPDATE" in sql for sql in statements)
+    session.expire_all()
+    assert row.status == "closed" and row.user_id is None
+
+
+@pytest.mark.parametrize("overdue", [False, True])
+@pytest.mark.parametrize("problem", ["fee", "paid_time"])
+def test_fix_2_paid_but_unverifiable_goes_manual(setup_pay, session, problem, overdue):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - (timedelta(hours=49) if overdue else timedelta(minutes=3))
+    session.commit()
+    fake = setup_pay[2]
+    fake.status = 2
+    if problem == "fee":
+        fake.fee = 101
+    else:
+        fake.paid_time = 0
+    run(session, setup_pay)
+    assert row.status == "manual" and row.task_id is None and row.alerted_at
+    assert ("金额" if problem == "fee" else "支付时间") in row.error
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert not _calls(fake, "/xpay/notify_provide_goods")
+
+
+def test_fix_2_push_amount_mismatch_manual_and_alerted_once(setup_pay, session):
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status, fake.fee = 2, 101
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    assert row.status == "manual" and row.alerted_at is None and row.task_id is None
+    run(session, setup_pay)
+    alerted = row.alerted_at
+    assert alerted
+    # 微信重推同一笔：仍不发货，也不重复告警。
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    assert row.status == "manual" and row.alerted_at == alerted
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+
+
+def test_fix_3_unconfirmable_pending_closes_after_48_hours(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(hours=47)
+    session.commit()
+    setup_pay[2].bad_order = True
+    run(session, setup_pay)
+    assert row.status == "pending"
+    row.created_at, row.query_retry_at = NOW - timedelta(hours=49), None
+    session.commit()
+    run(session, setup_pay)
+    assert row.status == "closed" and row.error == "超过 48 小时无法确认支付，已关闭"
+    assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
+
+
+def test_fix_3_refund_and_alert_orders_come_before_pending(setup_pay, session):
+    failed = delivered(setup_pay, session)
+    session.get(AdvisorTask, failed.task_id).status = "failed"
+    user = session.scalar(select(User))
+    common = {
+        "user_id": user.id,
+        "product_id": "compare_100",
+        "price": 100,
+        "row_limit": 100,
+        "env": 1,
+        "input_rows": ["示例科技有限公司"],
+        "created_at": NOW - timedelta(hours=1),
+    }
+    refunding = PayOrder(
+        out_trade_no="refunding",
+        status="refunding",
+        refund_status="retry",
+        platform="android",
+        updated_at=NOW,
+        **common,
+    )
+    manual = PayOrder(
+        out_trade_no="manual", status="manual", error="测试", updated_at=NOW, **common
+    )
+    pending = [
+        PayOrder(out_trade_no=f"pending{i}", updated_at=NOW - timedelta(days=1), **common)
+        for i in range(100)
+    ]
+    session.add_all([refunding, manual, *pending])
+    failed.updated_at = NOW
+    session.commit()
+    assert run(session, setup_pay)["processed"] == 100
+    assert refunding.refund_attempts == 1 and failed.refund_attempts == 1
+    assert manual.alerted_at is not None
+
+
+def test_fix_4_unconfigured_bill_columns_fail_without_download(setup_pay, session):
+    settings, fake = setup_pay[1], setup_pay[2]
+    settings.xpay_bill_fee_column = ""
+    day = NOW.date() - timedelta(days=1)
+    payments.download_reconcile(session, day, fake.client, NOW, alert=lambda _: True)
+    report = session.scalar(select(PayReconciliation).where(PayReconciliation.day == day))
+    assert report.status == "failed" and report.differences == {"error": "未配置账单字段"}
+    assert not fake.calls
+    assert run(session, setup_pay)["processed"] == 0 and not fake.calls
+
+
+@pytest.mark.parametrize("broken", ["download", "parse"])
+def test_fix_4_bill_failures_are_counted_then_failed(setup_pay, session, broken):
+    settings, fake = setup_pay[1], setup_pay[2]
+    fake.bill_broken = broken
+    days = [NOW.date() - timedelta(days=offset) for offset in (4, 3, 2, 1)]
+    session.add_all(
+        PayReconciliation(day=day, differences={}, status="pending", created_at=NOW, updated_at=NOW)
+        for day in days
+    )
+    session.commit()
+    alerts = []
+
+    def run_once(minute):
+        payments.run_payments(
+            session,
+            settings=settings,
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=minute),
+            alert=alerts.append,
+        )
+        session.expire_all()
+        return {
+            row.day: (row.status, row.attempts)
+            for row in session.scalars(select(PayReconciliation))
+        }
+
+    for minute in range(4):
+        assert run_once(minute)[days[0]] == ("pending", minute + 1)
+    state = run_once(4)
+    assert [state[day] for day in days[:3]] == [("failed", 5)] * 3
+    assert state[days[3]] == ("pending", 0)
+    assert len(alerts) == 3 and all("对账" in text for text in alerts)
+    # 失败的日子不再占用每轮 3 天名额，排在后面的那天开始处理。
+    state = run_once(5)
+    assert state[days[3]] == ("pending", 1) and len(alerts) == 3
+    report = session.scalar(select(PayReconciliation).where(PayReconciliation.day == days[0]))
+    assert report.differences and "error" in report.differences
+
+
+@pytest.mark.parametrize("toggle", ["pay_enabled", "advisor_enabled"])
+def test_fix_5_closed_switch_still_finishes_open_orders(setup_pay, session, toggle):
+    row = delivered(setup_pay, session)
+    task = session.get(AdvisorTask, row.task_id)
+    task.status, task.attempts = "failed", 3
+    session.commit()
+    setattr(setup_pay[1], toggle, False)
+    assert create(setup_pay).status_code == 404
+    assert setup_pay[0].get("/api/v1/pay/products", headers=HEADERS).status_code == 404
+    assert run(session, setup_pay)["processed"] == 1
+    assert row.status == "refunding" and row.refund_status == "pending"
+    assert len(_calls(setup_pay[2], "/xpay/refund_order")) == 1
+
+
+def test_fix_5_closed_switch_paid_task_waits_then_manual(setup_pay, session):
+    row = delivered(setup_pay, session)
+    settings = setup_pay[1]
+    settings.pay_enabled = False
+    advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)
+    assert session.get(AdvisorTask, row.task_id).attempts == 0
+    run(session, setup_pay, NOW + timedelta(minutes=9))
+    assert row.status == "processing" and row.alerted_at is None
+    run(session, setup_pay, NOW + timedelta(minutes=11))
+    assert row.status == "manual" and row.alerted_at and "未执行" in row.error
+    assert not _calls(setup_pay[2], "/xpay/refund_order")
+    assert session.get(AdvisorTask, row.task_id).status == "queued"
+
+
+def test_fix_5_closed_switch_without_open_orders_never_calls_wechat(
+    setup_pay, session, monkeypatch
+):
+    client, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    # 支付时间远离“昨天”：pay-reconcile 按真实当前日期取前一天，不能因测试日期不同而下载账单。
+    row.status, row.paid_time = "completed", datetime(2020, 1, 1, tzinfo=UTC)
+    closed = order(session, create(setup_pay))
+    closed.status = "closed"
+    session.commit()
+    settings.pay_enabled = settings.advisor_enabled = False
+    fake.calls.clear()
+    assert run(session, setup_pay) == {"processed": 0}
+    assert payments.should_reconcile(session, settings, datetime(2020, 1, 1).date())
+    assert not payments.should_reconcile(session, settings, datetime(2020, 1, 2).date())
+
+    def no_http(*args, **kwargs):
+        raise AssertionError("支付关闭且没有待办时不得创建 HTTP 客户端")
+
+    # CLI 自己创建真实 HTTP 客户端；这里禁止创建，保证不会访问微信。
+    monkeypatch.setattr(httpx, "Client", no_http)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    assert main(["pay-run"]) == 0
+    assert main(["pay-reconcile"]) == 0
+    assert not fake.calls
+
+
+def test_fix_5_closed_switch_push_still_handles_local_order(setup_pay, session):
+    row = delivered(setup_pay, session)
+    setup_pay[1].pay_enabled = False
+    data = {
+        "Event": "xpay_complaint_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+    }
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert row.status == "manual"
+
+
+def test_fix_6_delete_paid_task_locks_order_before_task(setup_pay, session, db_engine):
+    row = delivered(setup_pay, session)
+    task = session.get(AdvisorTask, row.task_id)
+    task.status, task.finished_at = "done", NOW
+    session.commit()
+    statements, stop = _capture_sql(db_engine)
+    try:
+        response = setup_pay[0].delete(f"/api/v1/advisor/tasks/{task.id}", headers=HEADERS)
+    finally:
+        stop()
+    assert response.status_code == 204
+    locks = [sql for sql in statements if "FOR UPDATE" in sql]
+    order_lock = next(i for i, sql in enumerate(locks) if "FROM PAY_ORDERS" in sql)
+    task_lock = next(i for i, sql in enumerate(locks) if "FROM ADVISOR_TASKS" in sql)
+    assert order_lock < task_lock
+    session.expire_all()
+    assert row.status == "completed"
+
+
+@pytest.mark.parametrize("job", ["pay-run", "pay-reconcile", "advisor-run"])
+def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
+    from youju import jobs
+
+    assert "pay-run" not in jobs.OVERVIEW_JOBS and "pay-run" in jobs.JOB_NAMES
+    assert "pay-reconcile" in jobs.OVERVIEW_JOBS
+    for name, content in {
+        "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
+        "flock": '#!/bin/sh\nshift 4\nexec "$@"\n',
+        "youju": '#!/bin/sh\necho "$*" >> "$CALLS"\n[ "$1" = job-start ] && echo 42\nexit 0\n',
+    }.items():
+        (tmp_path / name).write_text(content)
+        (tmp_path / name).chmod(0o755)
+    script = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
+    script = script.replace(". /app/backend/deploy/env.sh", ":").replace("cd /app/backend", ":")
+    script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
+    (tmp_path / "job.sh").write_text(script)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(tmp_path / "c")}
+    result = subprocess.run(["sh", str(tmp_path / "job.sh"), job], env=env, timeout=30)
+    assert result.returncode == 0
+    calls = (tmp_path / "c").read_text()
+    assert job in calls
+    assert ("job-start" in calls) == (job == "pay-reconcile")
+
+
+@pytest.mark.parametrize("secret", [False, True])
+def test_fix_8_session_key_endpoint_per_mode(setup_pay, secret):
+    settings, fake = setup_pay[1], setup_pay[2]
+    if secret:
+        settings.wx_appid, settings.wx_appsecret = "test-app", SecretStr("test-secret")
+    assert fake.client.session_key("test-login", "pay-user") == "9hAb/NEYUlkaMBEsmFgzig=="
+    url = fake.calls[-1][2]
+    expected = "https" if secret else "http"
+    assert url.startswith(f"{expected}://api.weixin.qq.com/sns/jscode2session?")
+    assert ("secret=test-secret" in url) == secret
+
+
+def test_fix_9_provide_goods_retry_limit(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(minutes=3)
+    session.commit()
+    fake = setup_pay[2]
+    fake.status, fake.fail_provide = 2, True
+    for _ in range(19):
+        run(session, setup_pay)
+    assert row.status == "processing" and row.provide_attempts == 19
+    run(session, setup_pay)
+    assert len(_calls(fake, "/xpay/notify_provide_goods")) == 20
+    assert row.provide_attempts == 20 and not row.goods_notified
+    assert row.status == "manual" and row.alerted_at and "通知发货" in row.error
+    run(session, setup_pay)
+    assert len(_calls(fake, "/xpay/notify_provide_goods")) == 20

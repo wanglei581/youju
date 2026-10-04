@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -34,8 +34,46 @@ STATUS_LABELS = {
 }
 
 
+# 通知发货最多尝试次数、账单下载/解析最多失败次数；到达后转人工 / failed 并告警。
+PROVIDE_ATTEMPTS = 20
+BILL_ATTEMPTS = 5
+# 支付关闭期间，付费任务排队超过这个时间仍未执行，订单转人工（不自动退款）。
+PAUSED_TASK_GRACE = timedelta(minutes=10)
+# 未完结订单：支付关闭后仍要处理到底，不能冻结。
+OPEN_ORDER = (
+    PayOrder.status.in_(("pending", "processing", "refunding"))
+    | ((PayOrder.status == "manual") & PayOrder.alerted_at.is_(None))
+    | ((PayOrder.status == "completed") & (PayOrder.goods_notified == False))  # noqa: E712
+)
+
+
 def enabled(settings) -> bool:
+    """是否接受新订单（下单、商品接口）；不决定已有订单是否继续处理。"""
     return bool(getattr(settings, "pay_enabled", False) and settings.advisor_enabled)
+
+
+def has_work(session: Session, settings) -> bool:
+    """定时任务是否需要运行：支付开启，或库里还有未完结订单、当天有本地订单的待完成对账。
+
+    支付关闭且没有这些记录时只做这两次本地查询，不创建 HTTP 客户端、不访问微信。
+    """
+    if enabled(settings):
+        return True
+    if session.scalar(select(PayOrder.id).where(OPEN_ORDER).limit(1)) is not None:
+        return True
+    return (
+        session.scalar(
+            select(PayReconciliation.id)
+            .where(PayReconciliation.status == "pending", PayReconciliation.local_count > 0)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def should_reconcile(session: Session, settings, day: date) -> bool:
+    """支付关闭后，只有那天有本地已付款订单才下载账单。"""
+    return enabled(settings) or bool(_local_orders(session, day))
 
 
 def products(settings: Settings) -> dict[str, tuple[int, int]]:
@@ -130,12 +168,22 @@ def new_task(session: Session, order: PayOrder, stamp: datetime) -> AdvisorTask:
         idempotency_key=f"pay:{order.out_trade_no}:{order.rerun_count}",
         # 重跑不能延长原始名单的七天留存期限。
         created_at=order.created_at,
+        # 也用来推算任务入队时间（见 _queued_at），created_at 是订单时间不能用。
         expires_at=stamp + advisor_tasks.FILE_RETENTION,
     )
     session.add(task)
     session.flush()
     order.task_id = task.id
     return task
+
+
+def _paid_time(value) -> datetime | None:
+    if type(value) is not int or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def accept_payment(
@@ -150,10 +198,28 @@ def accept_payment(
 ) -> bool:
     # 调用方锁定订单行；唯一业务单号 + 用户任务幂等键作为数据库双重保护。
     # deliver=False：只记录核验过的支付证据，转人工，不建任务（超过自动履约窗口时用）。
+    # 返回 False 时推送应答失败（微信重推）；核验不过转人工的订单也返回 False，不算发货。
     if data.get("status") not in (2, 3, 4):
         return False
-    if data.get("order_fee") != order.price or data.get("paid_fee") != order.price:
-        order.error = "支付金额与订单不符，未发货"
+    accepted = order.task_id is not None or order.status in ("refunded", "refunding", "completed")
+    paid_time = _paid_time(data.get("paid_time"))
+    problem = (
+        "支付金额与订单不符"
+        if data.get("order_fee") != order.price or data.get("paid_fee") != order.price
+        else "查单缺少有效支付时间"
+        if paid_time is None
+        else None
+    )
+    if problem is not None:
+        if not accepted and order.status != "manual":
+            # 微信已确认付款但核验不过：不能留在待支付里一直查，也不能发货；转人工并告警。
+            order.wx_order_id = data.get("wx_order_id")
+            if type(data.get("paid_fee")) is int:
+                order.paid_fee = data["paid_fee"]
+            order.paid_time = paid_time
+            order.platform = platform(data, settings)
+            order.status, order.alerted_at, order.updated_at = "manual", None, stamp
+            order.error = f"微信已确认付款，但{problem}，未发货，需人工核对"
         return False
     if push is not None:
         goods = push.get("GoodsInfo", {})
@@ -175,19 +241,11 @@ def accept_payment(
         ):
             order.error = "推送与查单不一致，未发货"
             return False
-    if order.task_id is not None or order.status in ("refunded", "refunding", "completed"):
+    if accepted:
         return True
     order.wx_order_id = data.get("wx_order_id")
     order.paid_fee = data["paid_fee"]
-    paid_time = data.get("paid_time")
-    if not isinstance(paid_time, int) or paid_time <= 0:
-        order.error = "查单缺少有效支付时间，未发货"
-        return False
-    try:
-        order.paid_time = datetime.fromtimestamp(paid_time, UTC)
-    except (OverflowError, OSError, ValueError):
-        order.error = "查单支付时间无效，未发货"
-        return False
+    order.paid_time = paid_time
     order.platform = platform(data, settings)
     if not deliver:
         order.status, order.updated_at, order.alerted_at = "manual", stamp, None
@@ -427,7 +485,27 @@ def parse_bill(raw: bytes, settings: Settings) -> dict[str, int]:
         raise XPayError from None
 
 
-def download_reconcile(session: Session, day: date, client: XPayClient, stamp: datetime) -> None:
+def _bill_failed(
+    session: Session, row: PayReconciliation, stamp: datetime, alert, reason: str
+) -> None:
+    # 下载或解析失败计次；满 BILL_ATTEMPTS 次转 failed 并告警，不再占用每轮 3 天名额。
+    session.rollback()
+    row.attempts += 1
+    row.differences, row.updated_at = {"error": reason}, stamp
+    newly_failed = row.attempts >= BILL_ATTEMPTS and row.status != "failed"
+    row.status = "failed" if row.attempts >= BILL_ATTEMPTS else "pending"
+    session.commit()
+    if newly_failed:
+        from youju.alerts import send_alert
+
+        (alert or send_alert)(
+            f"支付对账 {row.day} 的账单下载或解析失败 {row.attempts} 次，已停止重试，需人工核对"
+        )
+
+
+def download_reconcile(
+    session: Session, day: date, client: XPayClient, stamp: datetime, *, alert=None
+) -> None:
     row = session.scalar(select(PayReconciliation).where(PayReconciliation.day == day))
     if row is None:
         row = PayReconciliation(
@@ -438,6 +516,12 @@ def download_reconcile(session: Session, day: date, client: XPayClient, stamp: d
     local = _local_orders(session, day)
     row.local_count, row.local_fee = len(local), sum(local.values())
     row.updated_at = stamp
+    settings = client.settings
+    if not settings.xpay_bill_order_column or not settings.xpay_bill_fee_column:
+        # 没配账单列名就无法解析，下载也没用：直接标为失败，不访问微信。
+        row.status, row.differences = "failed", {"error": "未配置账单字段"}
+        session.commit()
+        return
     session.commit()
     try:
         result = client.bill(day)
@@ -447,7 +531,7 @@ def download_reconcile(session: Session, day: date, client: XPayClient, stamp: d
         parsed = urlsplit(url)
         if (
             parsed.scheme != "https"
-            or parsed.hostname not in client.settings.xpay_bill_hosts
+            or parsed.hostname not in settings.xpay_bill_hosts
             or parsed.username
             or parsed.password
             or parsed.port not in (None, 443)
@@ -460,18 +544,35 @@ def download_reconcile(session: Session, day: date, client: XPayClient, stamp: d
                 raw.extend(chunk)
                 if len(raw) > 10 * 1024 * 1024:
                     raise XPayError
-        reconcile(session, day, parse_bill(bytes(raw), client.settings), stamp)
+        reconcile(session, day, parse_bill(bytes(raw), settings), stamp)
     except XPayError as exc:
+        # 268490011：账单生成中，不算失败，下一分钟继续轮询。
         if exc.code != 268490011:
-            row.status, row.differences, row.updated_at = (
-                "pending",
-                {"error": "账单未完成或无法核验"},
-                stamp,
-            )
-            session.commit()
+            _bill_failed(session, row, stamp, alert, "账单未完成或无法核验")
     except Exception:
-        row.status, row.differences = "pending", {"error": "账单下载暂不可用"}
-        session.commit()
+        _bill_failed(session, row, stamp, alert, "账单下载暂不可用")
+
+
+def _queued_at(task: AdvisorTask, order: PayOrder) -> datetime:
+    # 付费任务的 created_at 是订单时间；入队时间按 new_task 写入的 expires_at 推算。
+    if task.expires_at is not None:
+        return advisor_tasks._utc(task.expires_at) - advisor_tasks.FILE_RETENTION
+    return advisor_tasks._utc(order.paid_time or order.created_at)
+
+
+def _paused_task_stuck(session: Session, order: PayOrder, stamp: datetime) -> bool:
+    """支付关闭时付费任务不再领取：排队超过宽限期（或运行中断后无人回收）即视为卡住。"""
+    task = session.get(AdvisorTask, order.task_id) if order.task_id else None
+    if task is None:
+        return False
+    if task.status == "queued":
+        return _queued_at(task, order) <= stamp - PAUSED_TASK_GRACE
+    # 运行中断的任务只在开关打开时才会被放回队列，关闭期间同样会一直卡着。
+    return (
+        task.status == "running"
+        and task.started_at is not None
+        and advisor_tasks._utc(task.started_at) <= stamp - advisor_tasks.STALE_RUNNING
+    )
 
 
 def run_payments(
@@ -483,8 +584,10 @@ def run_payments(
     alert=None,
 ) -> dict:
     settings = settings or get_settings()
-    if not enabled(settings):
+    # 支付开关只停新下单；已有的未完结订单照常处理到底，没有任何待办时不访问微信。
+    if not has_work(session, settings):
         return {"processed": 0}
+    open_shop = enabled(settings)
     stamp = advisor_tasks._utc(stamp or datetime.now(UTC))
     if client is None:
         with httpx.Client(trust_env=False) as http:
@@ -498,6 +601,21 @@ def run_payments(
     from youju.alerts import send_alert
 
     alert = alert or send_alert
+    # 每轮最多 100 条：退款相关和待告警的排在最前，其次是已付款订单，待支付查单放最后。
+    live_task = (
+        select(AdvisorTask.id)
+        .where(
+            AdvisorTask.id == PayOrder.task_id,
+            AdvisorTask.status.in_(("queued", "running", "done")),
+        )
+        .exists()
+    )
+    priority = case(
+        (PayOrder.status.in_(("refunding", "manual")), 0),
+        ((PayOrder.status == "processing") & ~live_task, 0),
+        (PayOrder.status == "pending", 2),
+        else_=1,
+    )
     ids = list(
         session.scalars(
             select(PayOrder.id)
@@ -511,7 +629,7 @@ def run_payments(
                 | ((PayOrder.status == "manual") & PayOrder.alerted_at.is_(None))
                 | ((PayOrder.status == "completed") & (PayOrder.goods_notified == False))  # noqa: E712
             )
-            .order_by(PayOrder.updated_at, PayOrder.id)
+            .order_by(priority, PayOrder.updated_at, PayOrder.id)
             .limit(100)
         )
     )
@@ -569,8 +687,15 @@ def run_payments(
                 order.query_retry_at = stamp + timedelta(
                     minutes=1 if order.created_at > stamp - timedelta(minutes=30) else 10
                 )
-                data = query(session, order, client)
-                if not mark_refunded(session, order, data, stamp):
+                try:
+                    data = query(session, order, client)
+                except XPayError:
+                    if not overdue:
+                        raise
+                    # 查单一直失败也不能永远轮询；真付了款的由推送或账单对账转人工。
+                    data = None
+                    order.status, order.error = "closed", "超过 48 小时无法确认支付，已关闭"
+                if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"
                     elif overdue and data.get("status") in (2, 3, 4):
@@ -580,8 +705,26 @@ def run_payments(
                         accept_payment(session, order, data, settings, stamp)
                 session.commit()  # 先持久化任务再发通知；通知失败由下一次补发。
             if order.status in ("processing", "completed") and not order.goods_notified:
-                client.provide(order.out_trade_no, order.env)
-                order.goods_notified = True
+                try:
+                    client.provide(order.out_trade_no, order.env)
+                    order.goods_notified = True
+                except XPayError:
+                    order.provide_attempts += 1
+                    if order.provide_attempts >= PROVIDE_ATTEMPTS:
+                        order.status, order.alerted_at = "manual", None
+                        order.error = (
+                            f"通知发货失败 {order.provide_attempts} 次，已停止重试，需人工处理"
+                        )
+                    else:
+                        order.error = "通知发货暂不可用，将重试"
+            if (
+                not open_shop
+                and order.status == "processing"
+                and _paused_task_stuck(session, order, stamp)
+            ):
+                # 支付已关闭，付费任务不会再执行；交给人工，不自动退款。
+                order.status, order.alerted_at = "manual", None
+                order.error = "支付已关闭，付费任务未执行，需人工处理（未自动退款）"
             if (
                 order.status == "manual"
                 and not order.alerted_at
@@ -594,17 +737,13 @@ def run_payments(
             order.error = "微信查单或通知暂不可用，将重试"
             order.updated_at = stamp
             session.commit()
-    # 9:30 的任务创建记录后，每分钟继续未完成的账单生成/下载。
-    days = list(
-        session.scalars(
-            select(PayReconciliation.day)
-            .where(PayReconciliation.status == "pending")
-            .order_by(PayReconciliation.day)
-            .limit(3)
-        )
-    )
+    # 9:30 的任务创建记录后，每分钟继续未完成的账单生成/下载；失败满 5 次的不再占名额。
+    days_stmt = select(PayReconciliation.day).where(PayReconciliation.status == "pending")
+    if not open_shop:
+        days_stmt = days_stmt.where(PayReconciliation.local_count > 0)
+    days = list(session.scalars(days_stmt.order_by(PayReconciliation.day).limit(3)))
     for day in days:
-        download_reconcile(session, day, client, stamp)
+        download_reconcile(session, day, client, stamp, alert=alert)
     return {"processed": len(ids)}
 
 
@@ -628,6 +767,10 @@ def cleanup(session: Session, settings, stamp: datetime) -> dict:
 
 
 def anonymize(session: Session, user: User) -> None:
+    # 先用普通查询确认有没有订单：youju_api 在开通支付授权前只有 SELECT 权限，
+    # 没有订单时不能发出 SELECT ... FOR UPDATE（MySQL 按语句检查权限），否则注销会失败。
+    if session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1)) is None:
+        return
     orders = list(
         session.scalars(select(PayOrder).where(PayOrder.user_id == user.id).with_for_update())
     )
@@ -667,6 +810,10 @@ def overview(session: Session) -> dict:
         or 0,
         "reconciliation_pending": session.scalar(
             select(func.count(PayReconciliation.id)).where(PayReconciliation.status == "pending")
+        )
+        or 0,
+        "reconciliation_failed": session.scalar(
+            select(func.count(PayReconciliation.id)).where(PayReconciliation.status == "failed")
         )
         or 0,
         "differences": session.scalar(
