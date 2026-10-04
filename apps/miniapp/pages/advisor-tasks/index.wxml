@@ -1,0 +1,25 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+<view wx:if="{{actionError}}" class="card advisor-card advisor-error">{{actionError}}，请重试相应操作。</view>
+<block wx:if="{{!loading}}">
+  <block wx:if="{{aiEnabled}}">
+    <view class="ai-internal"><text class="ai-internal-tag">内部测试：</text>{{aiNotice}}</view>
+    <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="advisor-text muted">在通知详情页点右下角“AI 内测”，可以解读通知或做条款对照。</view></view>
+    <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
+      <view class="advisor-title">{{item.kindLabel}}</view>
+      <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
+      <view class="advisor-text">{{item.stateLabel}}</view>
+      <view class="advisor-text muted">{{item.time}}</view>
+      <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
+      <view class="advisor-actions">
+        <button wx:if="{{item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看解读</button>
+        <button wx:if="{{item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看条款对照</button>
+        <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" catchtap="cancel" disabled="{{busyId !== null}}">取消</button>
+        <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" catchtap="remove" disabled="{{busyId !== null}}">删除</button>
+      </view>
+    </view>
+  </block>
+  <view wx:elif="{{!error}}" class="card advisor-card muted">暂时没有可用工具</view>
+</block>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>
