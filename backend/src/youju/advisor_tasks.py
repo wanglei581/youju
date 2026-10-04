@@ -20,8 +20,9 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from youju import access_log
-from youju.ai import interpret
+from youju.ai import clause, interpret
 from youju.ai.client import AIError, ChatClient
+from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
@@ -67,7 +68,17 @@ def result_path(user: User, task_id: int, *, engine=None) -> str:
     return f"advisor/out/{access_log.log_uid(user.openid, engine)}/{task_id}.xlsx"
 
 
-def task_dict(task: AdvisorTask, *, include_result: bool = True) -> dict[str, Any]:
+def retained_input(task: AdvisorTask, stamp: datetime | None = None) -> dict | None:
+    """清理任务尚未执行时也不展示或导出超过七天的企业输入。"""
+    stamp = _utc(stamp or datetime.now(UTC))
+    if task.created_at is not None and _utc(task.created_at) <= stamp - INPUT_RETENTION:
+        return None
+    return task.input_json
+
+
+def task_dict(
+    task: AdvisorTask, *, include_result: bool = True, stamp: datetime | None = None
+) -> dict[str, Any]:
     """API 公共字段；不返回 input_rows，避免名单内容进入查询响应。"""
     result = {
         "id": task.id,
@@ -88,9 +99,14 @@ def task_dict(task: AdvisorTask, *, include_result: bool = True) -> dict[str, An
                 "hasFile": bool(task.result_file_id),
             }
         )
-    if task.kind == "interpret" and include_result:
+    if task.kind in AI_KINDS and include_result:
+        stored = (
+            clause.with_company(task.result_json, retained_input(task, stamp))
+            if task.kind == "clause" and task.result_json is not None
+            else task.result_json
+        )
         result["result"] = (
-            {k: v for k, v in task.result_json.items() if k != "dropped_reasons"}
+            {k: v for k, v in stored.items() if k != "dropped_reasons"}
             if task.result_json is not None
             else None
         )
@@ -113,7 +129,7 @@ def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
         row = AdvisorUsage(user_id=user_id, kind=kind, day=day, used_count=0)
         session.add(row)
         session.flush()
-    if kind == "interpret":
+    if kind in AI_KINDS:
         if row.used_count >= 5:
             return False
         row.used_count += 1
@@ -244,7 +260,7 @@ def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetim
     tasks = session.scalars(
         select(AdvisorTask)
         .where(
-            AdvisorTask.kind == "interpret",
+            AdvisorTask.kind.in_(AI_KINDS),
             AdvisorTask.user_id.not_in(select(User.id).where(User.openid.in_(openids))),
             (AdvisorTask.status == "queued")
             | (
@@ -305,7 +321,7 @@ def legacy_result_document_ids(session: Session, client: httpx.Client, url: str)
         book.close()
 
 
-def process_interpret(
+def process_ai(
     session: Session,
     task: AdvisorTask,
     *,
@@ -319,21 +335,26 @@ def process_interpret(
         settings, session.get(User, task.user_id)
     ):
         return False
+    skill = get_skill(task.kind)
     started = monotonic_clock.monotonic()
     own_client = chat_client is None
     model = settings.ai_model
-    task.model, task.prompt_version = model, interpret.PROMPT_VERSION
+    task.model, task.prompt_version = model, skill.prompt_version
     try:
         if not task.input_json:
             raise interpret.InterpretRefusal("任务输入已过期，请重新提交")
-        snapshot, verified, key = interpret.prepare(session, task.input_json["doc_id"], model)
+        snapshot, verified, key = interpret.prepare(
+            session, task.input_json["doc_id"], model, skill=skill
+        )
         task.snapshot, task.cache_key = snapshot, key
         task.result_document_ids = snapshot["document_ids"]
         cached = session.scalar(
             select(AdvisorTask)
             .where(
-                AdvisorTask.kind == "interpret",
+                AdvisorTask.kind == skill.kind,
                 AdvisorTask.id != task.id,
+                AdvisorTask.prompt_version == skill.prompt_version,
+                AdvisorTask.model == model,
                 AdvisorTask.cache_key == key,
                 AdvisorTask.status == "done",
                 AdvisorTask.result_json.is_not(None),
@@ -350,13 +371,17 @@ def process_interpret(
             if generated > stamp - FILE_RETENTION and cached.snapshot:
                 try:
                     _, _, cached_current_key = interpret.prepare(
-                        session, cached.snapshot["doc_id"], model
+                        session, cached.snapshot["doc_id"], model, skill=skill
                     )
                     reusable = cached_current_key == key
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
-            result = copy.deepcopy(cached.result_json)
+            result = (
+                clause.notification_result(cached.result_json)
+                if skill.kind == "clause"
+                else copy.deepcopy(cached.result_json)
+            )
         else:
             if chat_client is None:
                 if not settings.ai_api_key:
@@ -369,28 +394,31 @@ def process_interpret(
                     max_retries=0,
                 )
             payload = chat_client.complete_json(
-                interpret.SYSTEM_PROMPT,
+                skill.system_prompt,
                 json.dumps({"paragraphs": snapshot["paragraphs"]}, ensure_ascii=False),
                 max_tokens=12000,
             )
             if monotonic_clock.monotonic() - started > timeout.total_seconds():
                 raise TimeoutError
             result = interpret.result_metadata(
-                interpret.validate(payload, snapshot["paragraphs"]),
+                interpret.validate(payload, snapshot["paragraphs"], skill=skill),
                 stamp=stamp,
                 model=model,
                 verified=verified,
                 attachments=snapshot["attachments"],
                 model_disclosure=interpret.disclosure(settings),
+                skill=skill,
             )
             # 调用期间原文或核对状态可能变更；刷新后重新校验，不发布旧快照。
             session.flush()
             session.expire_all()
-            _, _, current_key = interpret.prepare(session, task.input_json["doc_id"], model)
+            _, _, current_key = interpret.prepare(
+                session, task.input_json["doc_id"], model, skill=skill
+            )
             if key != current_key:
                 raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
         task.result_json = result
-        task.result_rows = len(result["items"])
+        task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
         if result["refusal"]:
             release_usage(session, task)
@@ -398,11 +426,17 @@ def process_interpret(
         return True
     except interpret.InterpretRefusal as exc:
         task.result_json = interpret.result_metadata(
-            {"items": [], "missing": list(interpret.TYPES), "dropped": 0, "refusal": str(exc)},
+            {
+                skill.result_field: [],
+                **({"missing": list(skill.types)} if skill.kind == "interpret" else {}),
+                "dropped": 0,
+                "refusal": str(exc),
+            },
             stamp=stamp,
             model=model,
             verified=[],
             model_disclosure=interpret.disclosure(settings),
+            skill=skill,
             attachments=(task.snapshot or {}).get("attachments", 0),
         )
         task.cache_key = None
@@ -416,14 +450,20 @@ def process_interpret(
         task = session.get(AdvisorTask, task.id)
         if task is None:
             return False
-        task.model, task.prompt_version = model, interpret.PROMPT_VERSION
+        task.model, task.prompt_version = model, skill.prompt_version
         task.result_json = None
         task.cache_key = None
         retryable = (isinstance(exc, AIError) and exc.retryable) or isinstance(
             exc, (httpx.TransportError, TimeoutError)
         )
         task.error = (
-            "AI 返回内容格式无效" if isinstance(exc, ValueError) else "AI 解读失败，请稍后重试"
+            "AI 返回内容格式无效"
+            if isinstance(exc, ValueError)
+            else (
+                "AI 条款对照失败，请稍后重试"
+                if skill.kind == "clause"
+                else "AI 解读失败，请稍后重试"
+            )
         )
         if isinstance(exc, AIError) and not exc.retryable:
             task.error = "AI 返回内容无效或请求被拒绝，请稍后重试"
@@ -437,10 +477,20 @@ def process_interpret(
     finally:
         if chat_client is not None:
             try:
-                record_usage(session, chat_client, "interpret", now=stamp)
+                record_usage(session, chat_client, skill.kind, now=stamp)
             finally:
                 if own_client:
                     chat_client.close()
+
+
+def process_interpret(session: Session, task: AdvisorTask, **kwargs) -> bool:
+    """兼容原有政策解读调用入口。"""
+    return process_ai(session, task, **kwargs)
+
+
+def process_clause(session: Session, task: AdvisorTask, **kwargs) -> bool:
+    """条款对照共用同一处理流程。"""
+    return process_ai(session, task, **kwargs)
 
 
 def process_task(
@@ -455,8 +505,8 @@ def process_task(
     """处理一条已锁定为 running 的任务；失败按最多两次重试回队列。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
-    if task.kind == "interpret":
-        return process_interpret(session, task, settings=settings, stamp=stamp, timeout=timeout)
+    if task.kind in AI_KINDS:
+        return process_ai(session, task, settings=settings, stamp=stamp, timeout=timeout)
     own_client = client is None
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
@@ -539,7 +589,7 @@ def run_advisor_tasks(
     allowed = AdvisorTask.kind.in_(allowed_kinds)
     if getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings):
         allowed = allowed | (
-            (AdvisorTask.kind == "interpret")
+            (AdvisorTask.kind.in_(AI_KINDS))
             & AdvisorTask.user_id.in_(
                 select(User.id).where(User.openid.in_(interpret.openids(settings)))
             )
@@ -624,12 +674,12 @@ def cleanup_advisor(
     )
     session.execute(
         update(AdvisorTask)
-        .where(AdvisorTask.kind == "interpret", AdvisorTask.created_at <= stamp - INPUT_RETENTION)
+        .where(AdvisorTask.kind.in_(AI_KINDS), AdvisorTask.created_at <= stamp - INPUT_RETENTION)
         .values(input_json=None)
     )
     session.execute(
         update(AdvisorTask)
-        .where(AdvisorTask.kind == "interpret", AdvisorTask.expires_at <= stamp)
+        .where(AdvisorTask.kind.in_(AI_KINDS), AdvisorTask.expires_at <= stamp)
         .values(
             result_json=None,
             snapshot=None,

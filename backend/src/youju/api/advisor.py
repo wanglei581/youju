@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
 from youju.ai import interpret
+from youju.ai.clause import Company
+from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
 from youju.api.me import UserDep, request_openid
 from youju.backup import BackupError
@@ -42,19 +44,20 @@ async def _enabled(request: Request) -> None:
         except ValueError:
             pass  # 格式错误仍交给原有的请求校验。
         else:
-            if settings.advisor_enabled and kind not in ("compare", "track"):
+            if kind not in ("compare", "track"):
                 try:
                     openid = request_openid(request)
                 except HTTPException:
                     openid = None
-                if not getattr(settings, "ai_advisor_enabled", False) or openid not in (
-                    interpret.openids(settings)
-                ):
+                if (
+                    not getattr(settings, "ai_advisor_enabled", False)
+                    or openid not in interpret.openids(settings)
+                ) and (settings.advisor_enabled or kind not in AI_KINDS):
                     # 先于 TaskIn 的 Literal 校验，固定提示不含未开放类型或用户输入。
                     raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
     if kind in ("compare", "track") and not settings.advisor_enabled:
         raise HTTPException(status_code=404, detail="没有找到接口")
-    if kind == "interpret" or (kind is None and not settings.advisor_enabled):
+    if kind in AI_KINDS or (kind is None and not settings.advisor_enabled):
         # 在协议校验之前隐藏 AI 接口，未同意协议的非白名单用户也只会收到 404。
         try:
             openid = request_openid(request)
@@ -79,17 +82,29 @@ def _body_size(request: Request) -> None:
 class TaskIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["compare", "track", "interpret"]
+    kind: Literal["compare", "track", "interpret", "clause"]
     # 额度超限按 429 返回，不能由 Pydantic 的 422 max_length 提前截断。
     rows: list[Any] | None = Field(default=None, min_length=1)
     doc_id: int | None = Field(default=None, gt=0, strict=True)
 
+    company: Company | None = None
+
     @model_validator(mode="after")
     def validate_input(self) -> TaskIn:
-        if self.kind == "interpret":
+        if self.kind in AI_KINDS:
             if self.doc_id is None or "rows" in self.model_fields_set:
+                raise ValueError(
+                    "解读仅接受 doc_id"
+                    if self.kind == "interpret"
+                    else "条款对照必须提供 doc_id，不能提供 rows"
+                )
+            if self.kind == "interpret" and "company" in self.model_fields_set:
                 raise ValueError("解读仅接受 doc_id")
-        elif self.rows is None or "doc_id" in self.model_fields_set:
+        elif (
+            self.rows is None
+            or "doc_id" in self.model_fields_set
+            or "company" in self.model_fields_set
+        ):
             raise ValueError("数据工具必须提供 rows")
         return self
 
@@ -112,22 +127,26 @@ def _stamp() -> datetime:
 
 def _authorize(kind: str, user: User) -> None:
     settings = get_settings()
-    allowed = interpret.enabled(settings, user) if kind == "interpret" else settings.advisor_enabled
+    allowed = interpret.enabled(settings, user) if kind in AI_KINDS else settings.advisor_enabled
     if not allowed:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
 def _out(task: AdvisorTask, session: Session | None = None, *, include_result: bool = True) -> dict:
-    result = service.task_dict(task, include_result=include_result or task.kind != "interpret")
-    if task.kind == "interpret" and not include_result:
+    result = service.task_dict(
+        task, include_result=include_result or task.kind not in AI_KINDS, stamp=_stamp()
+    )
+    if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
-    if task.kind == "interpret" and task.result_json and session is not None:
+    if task.kind in AI_KINDS and task.result_json and session is not None:
         if task.expires_at is not None and task.expires_at <= _stamp():
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
         elif task.cache_key:
             try:
-                _, _, key = interpret.prepare(session, task.snapshot["doc_id"], task.model)
+                _, _, key = interpret.prepare(
+                    session, task.snapshot["doc_id"], task.model, skill=get_skill(task.kind)
+                )
                 if key != task.cache_key:
                     raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
             except interpret.InterpretRefusal as exc:
@@ -170,9 +189,9 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
         },
         "ai_advisor": {
             "enabled": ai_enabled,
-            "features": ["interpret"] if ai_enabled else [],
+            "features": list(AI_KINDS) if ai_enabled else [],
             "disclosure": interpret.disclosure(settings),
-            "remaining": {"interpret": max(0, 5 - counts.get("interpret", 0)) if ai_enabled else 0},
+            "remaining": {k: max(0, 5 - counts.get(k, 0)) if ai_enabled else 0 for k in AI_KINDS},
         },
     }
 
@@ -197,6 +216,9 @@ def create_task(
     key = idempotency_key.strip()
     # 锁住用户，串行化额度检查和任务创建；重复 key 优先返回原任务，不再检查新 body。
     session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
+    input_json = {"doc_id": body.doc_id} if body.kind in AI_KINDS else None
+    if body.kind == "clause":
+        input_json["company"] = body.company.model_dump(mode="json") if body.company else {}
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -204,8 +226,8 @@ def create_task(
     )
     if existing is not None:
         _authorize(existing.kind, user)
-        if (body.kind == "interpret" or existing.kind == "interpret") and (
-            existing.kind != body.kind or existing.input_json != {"doc_id": body.doc_id}
+        if (body.kind in AI_KINDS or existing.kind in AI_KINDS) and (
+            existing.kind != body.kind or existing.input_json != input_json
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, include_result=False)
@@ -214,14 +236,19 @@ def create_task(
         raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
     stamp = _stamp()
     if not service.reserve_usage(session, user.id, body.kind, service.usage_day(stamp)):
-        label = {"compare": "名单比对", "track": "跟进表", "interpret": "政策解读"}[body.kind]
+        label = {
+            "compare": "名单比对",
+            "track": "跟进表",
+            "interpret": "政策解读",
+            "clause": "条款对照",
+        }[body.kind]
         raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
     task = AdvisorTask(
         user_id=user.id,
         kind=body.kind,
         status="queued",
         input_rows=body.rows,
-        input_json={"doc_id": body.doc_id} if body.kind == "interpret" else None,
+        input_json=input_json,
         row_count=len(body.rows) if body.rows is not None else 0,
         idempotency_key=key,
         created_at=stamp,
@@ -249,7 +276,7 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     kinds = ["compare", "track"] if settings.advisor_enabled else []
     if interpret.enabled(settings, user):
-        kinds.append("interpret")
+        kinds.extend(AI_KINDS)
     if not kinds:
         raise HTTPException(status_code=404, detail="没有找到接口")
     since = _stamp() - timedelta(days=30)
@@ -258,7 +285,11 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
             AdvisorTask,
             (AdvisorTask.result_json.is_not(None) & (AdvisorTask.result_json != JSON.NULL)),
         )
-        .options(defer(AdvisorTask.result_json), defer(AdvisorTask.snapshot))
+        .options(
+            defer(AdvisorTask.result_json),
+            defer(AdvisorTask.snapshot),
+            defer(AdvisorTask.input_json),
+        )
         .where(
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
@@ -269,7 +300,7 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     return {
         "items": [
             {**service.task_dict(task, include_result=False), "hasResult": bool(has_result)}
-            if task.kind == "interpret"
+            if task.kind in AI_KINDS
             else service.task_dict(task)
             for task, has_result in rows
         ]

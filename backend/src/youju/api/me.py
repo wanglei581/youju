@@ -331,6 +331,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         .limit(500)
     ).all()
     # 数据工具仅列元数据；AI 结果先复核原文公开状态，不导出名单输入或存储编号。
+    from youju.advisor_tasks import retained_input
     from youju.api import advisor as advisor_api
 
     result["advisorTasks"] = [
@@ -347,8 +348,13 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
                     "result": advisor_api._out(row, session).get("result"),
                     "model": row.model,
                     "prompt_version": row.prompt_version,
+                    **(
+                        {"input_json": {"company": row.input_json.get("company", {})}}
+                        if row.kind == "clause" and retained_input(row, v1.now()) is not None
+                        else {}
+                    ),
                 }
-                if row.kind == "interpret"
+                if row.kind in ("interpret", "clause")
                 else {}
             ),
         }
