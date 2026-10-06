@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>改回申报通知 · 有据</title>
+<title>类型建议 · 有据</title>
 <style>
   :root {
     --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
@@ -49,7 +49,7 @@
 <body>
 <header>
   <div class="bar">
-    <h1>改回申报通知</h1>
+    <h1>类型建议</h1>
     <span class="count" id="count"></span>
     <a href="/admin/kinds">类型待定</a>
     <a href="/admin/review">截止日期核对台</a>
@@ -61,16 +61,18 @@
   </div>
 </header>
 <main>
-  <p class="hint">这些文件按标题规则判为“其他”，但标题里有“提名工作”“培育工作”“政策兑现”等字样，像是组织申报的通知。点开原文抽查几份，勾选后批量确认：确认后小程序里显示为申报通知，参与申报通知的筛选；没确认的，小程序里仍显示为“其他”。确认错了可以在“已确认”里逐份撤回。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <p class="hint">这些文件按标题规则判为“其他”，但标题像是组织申报的通知（如“提名工作”“培育工作”“政策兑现”），或像是公布结果的名单（如“认定……企业的通知”“项目立项的通知”“……结果公示”“下达……经费”）。点开原文抽查几份，勾选后按建议批量确认：确认后小程序里显示为建议的类型，参与该类型的筛选，确认为名单的还会去解析名单；没确认的，小程序里仍显示为“其他”。确认错了可以在“已确认”里逐份撤回。管理口令只保存在当前页面，刷新后需重新输入。</p>
   <div class="row" style="margin-bottom: 12px">
     <label for="status">显示</label>
     <select id="status"><option value="pending">待确认</option><option value="decided">已确认（可撤回）</option></select>
+    <label for="suggested">建议</label>
+    <select id="suggested"><option value="">全部</option><option value="申报通知">改为申报通知</option><option value="名单">改为名单</option></select>
   </div>
   <div class="row tools" id="tools">
     <button id="all">全选已载入</button>
     <button id="none">取消全选</button>
     <span class="picked" id="picked">已选 0 份</span>
-    <button class="primary" id="apply" disabled>确认改为申报通知</button>
+    <button class="primary" id="apply" disabled>按建议确认</button>
     <button id="keep" disabled>保持“其他”</button>
     <span class="msg" id="toolMsg"></span>
   </div>
@@ -111,6 +113,7 @@
   // 下一页从哪里取：确认或撤回后，服务端的列表会少掉这些，只数还留在当前列表里的
   function nextOffset() { return [...cards.values()].filter((c) => (pending() ? !c.item.decided : !!c.item.decided)).length; }
   function chosen() { return [...cards.values()].filter((c) => c.box.checked && !c.item.decided).map((c) => c.item.id); }
+  function filterQuery() { const v = $('suggested').value; return v ? `&suggested=${encodeURIComponent(v)}` : ''; }
   function refreshPicked() {
     const n = chosen().length;
     $('picked').textContent = `已选 ${n} 份`;
@@ -119,7 +122,7 @@
     cards.forEach((c) => c.card.classList.toggle('on', c.box.checked));
   }
   async function refreshCount() {
-    const res = await fetch('/api/admin/kind-suggestions/count', { headers: headers() });
+    const res = await fetch(`/api/admin/kind-suggestions/count?${filterQuery().slice(1)}`, { headers: headers() });
     if (!res.ok) throw new Error(errorFor(res));
     $('count').textContent = `待确认 ${(await res.json()).pending} 份`;
   }
@@ -149,7 +152,7 @@
     if (href) { title.href = href; title.target = '_blank'; title.rel = 'noopener noreferrer'; }
     const judge = el('div', 'judge');
     const shown = el('b', '', item.shown_kind);
-    judge.append('现在显示：', shown, '　建议：', el('b', '', item.suggested),
+    judge.append('现在显示：', shown, '　建议改为：', el('b', '', item.suggested),
       el('span', 'reason', `（标题含“${item.reason}”）`));
     const row = el('div', 'row');
     const undo = el('button', '', '撤回');
@@ -183,35 +186,47 @@
     cards.set(item.id, c);
     return card;
   }
+  // kind 不传时按每份的建议确认（建议改为申报通知的、改为名单的分两批提交）；传"其他"时都保持其他
   async function decide(kind) {
     const ids = chosen();
     if (!ids.length) return;
     const by = $('reviewer').value.trim();
+    const groups = new Map();
+    ids.forEach((id) => {
+      const target = kind || cards.get(id).item.suggested;
+      groups.set(target, (groups.get(target) || []).concat(id));
+    });
     $('apply').disabled = true;
     $('keep').disabled = true;
     $('toolMsg').className = 'msg';
     $('toolMsg').textContent = '';
+    const done = [];
     try {
-      const res = await fetch('/api/admin/kinds/batch', {
-        method: 'POST', headers: headers(true),
-        body: JSON.stringify({ ids, kind, decided_by: by }),
-      });
-      if (!res.ok) throw new Error(errorFor(res));
-      const done = await res.json();
-      ids.forEach((id) => markDecided(cards.get(id), kind, by));
+      for (const [target, batch] of groups) {
+        const res = await fetch('/api/admin/kinds/batch', {
+          method: 'POST', headers: headers(true),
+          body: JSON.stringify({ ids: batch, kind: target, decided_by: by }),
+        });
+        if (!res.ok) throw new Error(errorFor(res));
+        const result = await res.json();
+        batch.forEach((id) => markDecided(cards.get(id), target, by));
+        done.push(`${result.updated} 份定为${target}`);
+      }
       $('toolMsg').className = 'msg ok';
-      $('toolMsg').textContent = `已把 ${done.updated} 份定为${kind}，可逐份撤回`;
-      try { await refreshCount(); } catch (e) { /* 已保存，计数稍后重新载入 */ }
+      $('toolMsg').textContent = `已把 ${done.join('、')}，可逐份撤回`;
     } catch (err) {
-      $('toolMsg').textContent = err.message;
-    } finally { refreshPicked(); }
+      $('toolMsg').textContent = done.length ? `已把 ${done.join('、')}；其余没有保存：${err.message}` : err.message;
+    } finally {
+      try { await refreshCount(); } catch (e) { /* 已保存的稍后重新载入计数 */ }
+      refreshPicked();
+    }
   }
   async function load(reset) {
     if (reset) { cards.clear(); $('list').textContent = ''; $('toolMsg').textContent = ''; }
     $('tools').hidden = !pending();
     const offset = nextOffset();
     try {
-      const res = await fetch(`/api/admin/kind-suggestions?status=${$('status').value}&limit=${PAGE}&offset=${offset}`, { headers: headers() });
+      const res = await fetch(`/api/admin/kind-suggestions?status=${$('status').value}&limit=${PAGE}&offset=${offset}${filterQuery()}`, { headers: headers() });
       if (!res.ok) throw new Error(errorFor(res));
       const items = await res.json();
       await refreshCount();
@@ -227,10 +242,11 @@
   }
   $('all').onclick = () => { cards.forEach((c) => { if (!c.item.decided) c.box.checked = true; }); refreshPicked(); };
   $('none').onclick = () => { cards.forEach((c) => { c.box.checked = false; }); refreshPicked(); };
-  $('apply').onclick = () => decide('申报通知');
+  $('apply').onclick = () => decide();
   $('keep').onclick = () => decide('其他');
   $('load').onclick = () => load(true);
   $('status').onchange = () => load(true);
+  $('suggested').onchange = () => load(true);
   $('more').onclick = () => load(false);
 })();
 </script>

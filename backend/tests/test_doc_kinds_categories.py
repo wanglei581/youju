@@ -187,6 +187,70 @@ def test_batch_confirm_changes_kind_and_can_be_undone(client, docs, session):
     assert client.get("/api/admin/kind-suggestions", headers=HEADERS).json() == []
 
 
+LIST_LIKE = "关于2025年江苏省产学研合作项目立项的通知"
+
+
+def test_list_suggestion_listed_and_filtered_by_kind(client, docs, session):
+    listed = add(session, 30, LIST_LIKE).id
+    pending = client.get("/api/admin/kind-suggestions", headers=HEADERS).json()
+    # 同一天发布的按编号从新到旧
+    assert [(i["id"], i["suggested"], i["reason"]) for i in pending] == [
+        (listed, "名单", "立项"),
+        (docs["suggested"], "申报通知", "提名工作"),
+    ]
+    count = "/api/admin/kind-suggestions/count"
+    assert client.get(count, headers=HEADERS).json() == {"pending": 2}
+    assert client.get(count, headers=HEADERS, params={"suggested": "名单"}).json() == {"pending": 1}
+    only = client.get(
+        "/api/admin/kind-suggestions", headers=HEADERS, params={"suggested": "名单"}
+    ).json()
+    assert [(i["id"], i["shown_kind"], i["suggested"]) for i in only] == [(listed, "其他", "名单")]
+    apply_only = client.get(
+        "/api/admin/kind-suggestions", headers=HEADERS, params={"suggested": "申报通知"}
+    ).json()
+    assert [i["id"] for i in apply_only] == [docs["suggested"]]
+    bad = client.get("/api/admin/kind-suggestions", headers=HEADERS, params={"suggested": "政策"})
+    assert bad.status_code == 422
+
+
+def test_unconfirmed_list_suggestion_does_not_change_public_kind(client, docs, session):
+    listed = add(session, 30, LIST_LIKE).id
+    # 没确认：对外仍是"其他"——不在名单页签、最近名单、名单看板里，详情也是"其他"，也不折叠
+    assert listed not in ids(search(client, kind="名单"))
+    assert listed in ids(search(client, types="其他"))
+    item = next(i for i in search(client, fold=1)["items"] if int(i["id"]) == listed)
+    assert (item["kind"], item["status"], item["category"]) == ("其他", None, None)
+    recent = client.get("/api/v1/lists/recent").json()
+    assert listed not in {int(i["id"]) for i in recent["items"]}
+    board = client.get("/api/v1/reports/lists").json()
+    assert listed not in {int(i["id"]) for i in board["recent"]["items"]}
+    detail = client.get(f"/api/v1/documents/{listed}").json()
+    assert detail["kind"] == "其他" and detail["body"]["status"] == "original"
+
+
+def test_confirm_list_suggestion_then_undo(client, docs, session):
+    listed = add(session, 30, LIST_LIKE).id
+    body = {"ids": [listed], "kind": "名单", "decided_by": "创始人"}
+    assert client.post("/api/admin/kinds/batch", headers=HEADERS, json=body).status_code == 200
+    assert listed in ids(search(client, kind="名单"))
+    detail = client.get(f"/api/v1/documents/{listed}").json()
+    assert detail["kind"] == "名单" and detail["category"] == "科技计划与研发"
+    assert client.get(
+        "/api/admin/kind-suggestions/count", headers=HEADERS, params={"suggested": "名单"}
+    ).json() == {"pending": 0}
+    decided = client.get(
+        "/api/admin/kind-suggestions",
+        headers=HEADERS,
+        params={"status": "decided", "suggested": "名单"},
+    ).json()
+    assert [(i["id"], i["decided"], i["suggested"]) for i in decided] == [(listed, "名单", "名单")]
+    client.post(f"/api/admin/documents/{listed}/kind/undo", headers=HEADERS)
+    assert listed not in ids(search(client, kind="名单"))
+    assert client.get(
+        "/api/admin/kind-suggestions/count", headers=HEADERS, params={"suggested": "名单"}
+    ).json() == {"pending": 1}
+
+
 def test_batch_validation(client, docs, session):
     url = "/api/admin/kinds/batch"
     ok = {"ids": [docs["suggested"]], "kind": "申报通知", "decided_by": "创始人"}

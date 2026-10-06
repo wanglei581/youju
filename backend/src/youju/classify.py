@@ -407,6 +407,80 @@ SUGGEST_APPLY_EXCLUDE = (
     "法治",
 )
 
+# "其他"里像名单的标题（D-051 第二阶段补充）：认定、立项、授予、下达经费、结果公示等公布结果的文件。
+# 与"改回申报通知"同一套机制：只出"建议改为名单"，在管理台由人抽查后批量确认，确认前对外仍是"其他"。
+# 只看按标题规则判为"其他"的（资讯与指南不建议，也不因此改变折叠），像申报的先按申报建议。例如
+# "关于认定福建省2025年度高新技术企业的通知""关于2025年江苏省产学研合作项目立项的通知"
+# "关于2025年度福建省科学技术奖初评通过项目的公告""关于下达2026年度省重点实验室运行费的通知"
+# 每条规则是几组词，每组至少命中一个才算，如"下达"或"安排"、再加"经费""资金"等；按顺序，先命中的算
+SUGGEST_LIST_RULES: tuple[tuple[tuple[str, ...], ...], ...] = (
+    (("认定",),),
+    (("确认",),),
+    (("授予", "授奖", "命名", "授牌"),),
+    (("立项",),),
+    (("入库",),),
+    (("继续有效",),),
+    (("冠名", "筹建"),),
+    (("批准",),),
+    (("初评通过", "评审通过", "验收通过", "复核通过", "审核通过", "通过项目", "通过名单"),),
+    (
+        (
+            "结果的通知",
+            "结果的公告",
+            "结果公告",
+            "结果通知",
+            "结果的通报",
+            "结果通报",
+            "结果公示",
+            "结果的公示",
+        ),
+    ),
+    (("确定",), ("对象", "企业", "单位", "项目", "基地", "平台", "园区")),
+    (("下达", "安排"), ("经费", "资金", "运行费", "补助", "补贴", "奖补", "计划")),
+)
+# 标题以这些结尾的也像名单，如"关于2026年省级节水标杆企业、园区的公告"
+SUGGEST_LIST_SUFFIXES = ("企业的公告", "园区的公告", "企业的通知", "单位的通知", "单位的公告")
+# 撤销、取消、变更、延期的不是名单（"撤销……入库登记编号的公告"）；列个人和专家的不进名单
+# （查名单只查企业和机构）；统计、检查、组织申报工作的也不建议
+SUGGEST_LIST_EXCLUDE = (
+    "撤销",
+    "取消",
+    "注销",
+    "变更",
+    "延期",
+    "延长",
+    "人选",
+    "同志",
+    "个人",
+    "专家",
+    "职称",
+    "招聘",
+    "考试",
+    "考核",
+    "培训",
+    "统计",
+    "调查",
+    "检查",
+    "情况",
+    "项目信息",
+    "征求",
+    "开展",
+    "做好",
+    "组织",
+    "申报",
+    "推荐",
+    "任务书",
+    "中期",
+    "评估",
+    "审批",
+)
+# 管理台列建议时先用这些词在数据库里粗筛，再逐份按规则判断
+SUGGEST_WORDS = (
+    SUGGEST_APPLY_WORDS
+    + tuple(w for groups in SUGGEST_LIST_RULES for w in groups[0])
+    + SUGGEST_LIST_SUFFIXES
+)
+
 KINDS = ("申报通知", "名单", "政策", GUIDE, "其他")
 # AI 预审只分四类（不分"资讯与指南"）；和标题规则比较时把"资讯与指南"当作"其他"
 AI_KINDS = ("申报通知", "名单", "政策", "其他")
@@ -506,6 +580,31 @@ def apply_suggestion(title: str) -> str | None:
     if _base_kind(title) != "其他" or not _suggests_apply(title):
         return None
     return next(w for w in SUGGEST_APPLY_WORDS if w in title)
+
+
+def _list_rule_hit(title: str) -> str | None:
+    for groups in SUGGEST_LIST_RULES:
+        hits = [next((w for w in words if w in title), "") for words in groups]
+        if all(hits):
+            return "……".join(hits)
+    return next(("……" + s for s in SUGGEST_LIST_SUFFIXES if title.endswith(s)), None)
+
+
+def list_suggestion(title: str) -> str | None:
+    """标题规则判为"其他"（不含资讯与指南）、但像名单的：返回命中的词，如"立项""下达……经费"；
+    否则 None。像申报的先按申报建议（见 apply_suggestion）。只是建议：确认之前对外类型不变。"""
+    if doc_kind(title) != "其他" or _suggests_apply(title) or _has(title, SUGGEST_LIST_EXCLUDE):
+        return None
+    return _list_rule_hit(title)
+
+
+def kind_suggestion(title: str) -> tuple[str, str] | None:
+    """管理台"类型建议"用：（建议改成的类型, 标题里命中的词），没有建议时 None。"""
+    if (word := apply_suggestion(title)) is not None:
+        return "申报通知", word
+    if (word := list_suggestion(title)) is not None:
+        return "名单", word
+    return None
 
 
 def comparable_kind(kind: str) -> str:
