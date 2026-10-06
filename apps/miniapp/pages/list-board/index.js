@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { cnDate } = require('../../utils/format.js');
+const { cnDate, statusClass } = require('../../utils/format.js');
 
 const PAGE_SIZE = 20;
 const TYPES = ['全部', '高新技术企业', '专精特新', '科技型中小企业', '其他'];
@@ -61,6 +61,8 @@ Page({
       const recent = res.recent || { total: 0, items: [] };
       const items = (recent.items || []).map((item) => Object.assign({}, item, {
         dateText: item.date ? cnDate(item.date) : '日期未标明',
+        // 公示、公布和列表行用同一种标签：公示橙色虚线框，公布灰色实线框（全站一致）
+        wordingCls: item.wording ? statusClass(item.wording) : '',
       }));
       this.setData({
         items: reset ? items : this.data.items.concat(items),

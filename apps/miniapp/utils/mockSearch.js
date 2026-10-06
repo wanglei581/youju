@@ -50,7 +50,15 @@ function matchCategory(doc, categories) {
   return !categories.length || (['申报通知', '名单'].includes(doc.kind) && categories.includes(doc.category));
 }
 
-// params 与接口相同：q, kind, regions, levels, types, categories, status, time, depts, fold, limit, offset
+// 支持方式（只有申报通知和名单有）、产业方向：演示数据里写在 supports、industries 字段（接口不返回这两项，
+// 只用于筛选）；选了几项，有其中任一项就列出
+function matchTags(doc, picked, field, kinds) {
+  if (!picked.length) return true;
+  if (kinds && !kinds.includes(doc.kind)) return false;
+  return (doc[field] || []).some((t) => picked.includes(t));
+}
+
+// params 与接口相同：q, kind, regions, levels, types, categories, supports, industries, status, time, depts, fold, limit, offset
 function mockSearch(all, params) {
   const kw = (params.q || '').trim();
   const kind = params.kind || 'all';
@@ -60,9 +68,12 @@ function mockSearch(all, params) {
   const status = split(params.status);
   const depts = split(params.depts);
   const categories = split(params.categories);
+  const supports = split(params.supports);
+  const industries = split(params.industries);
   const matched = all.filter((d) => (!kw || d.title.includes(kw))
     && (kind === 'all' || d.kind === kind)
     && matchRegion(d, regions) && matchLevel(d, levels) && matchType(d, types) && matchCategory(d, categories)
+    && matchTags(d, supports, 'supports', ['申报通知', '名单']) && matchTags(d, industries, 'industries')
     && (!status.length || status.includes(d.status))
     && (!params.open || matchOpen(d))
     && (!depts.length || depts.includes(deptOf(d))));

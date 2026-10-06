@@ -82,7 +82,7 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
   const page = load('pages/report/index.js', {
     '../../utils/api.js': { deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: { 7: 0, 14: 0, 30: 0 }, by_province: {}, verified_total: 0 }) },
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-  }, { wx: { navigateTo: (r) => { url = r.url; } } });
+  }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: (r) => { url = r.url; } } });
   page.onLoad(); await flush();
   assert.equal(page.data.verifyingNote, '截止日期正在人工核对中，目前已核对 0 条');
   page.goSearch();

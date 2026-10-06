@@ -1,7 +1,18 @@
 <notice-bar />
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text wx:if="{{takenDown}}" class="link retry" bindtap="goBack">返回</text><text wx:else class="link retry" bindtap="load">重试</text></view>
-<view wx:elif="{{!doc}}" class="card empty">正在加载…</view>
-<view wx:if="{{loading && doc}}" class="card empty">正在加载…</view>
+<!-- 加载中：灰色占位块占住标题和要点的位置 -->
+<view wx:if="{{!error && (loading || !doc)}}" aria-label="正在加载">
+  <view class="card head">
+    <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+    <view class="sk sk-title"></view>
+    <view class="sk sk-title sk-line--short"></view>
+    <view class="sk sk-meta"></view>
+  </view>
+  <view class="card sk-card">
+    <view class="sk sk-section"></view>
+    <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk sk-line"></view>
+  </view>
+</view>
 <block wx:if="{{doc && !loading}}">
   <view class="card head">
     <view class="tags">
@@ -11,8 +22,7 @@
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
-    <view wx:if="{{doc.kind === '名单'}}" class="weak status-note">名单状态按标题用词标注，公示期和当前效力以原文为准</view>
-    <view wx:if="{{doc.category}}" class="weak status-note">项目类别按标题归类，仅供检索参考，非官方分类</view>
+    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
   </view>
 
   <view wx:if="{{due}}" class="card due-card">
@@ -54,7 +64,7 @@
   </view>
 
   <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
-    <view class="section-title">支持方式</view>
+    <view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文</text></view>
     <view class="support-tags">
       <view wx:for="{{doc.fields.support}}" wx:key="*this" class="support-tag {{supportExpanded === item ? 'support-tag--on' : ''}}" data-label="{{item}}" bindtap="toggleSupport">{{item}}</view>
     </view>

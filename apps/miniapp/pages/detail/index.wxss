@@ -66,7 +66,6 @@
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }
 .bar-main { margin-left: auto; padding: 0 44rpx; }
-.empty { padding: 48rpx 32rpx; text-align: center; color: var(--t2); }
 .status-note { margin-top: 12rpx; font-size: 24rpx; }
 /* 正文（D-030）：默认显示开头一段，点"展开全文"看全部 */
 .body-note { margin: -4rpx 0 16rpx; font-size: 22rpx; line-height: 1.6; }
@@ -74,3 +73,7 @@
 .body-more { margin-top: 16rpx; font-size: 26rpx; }
 .body-rest { margin-top: 12rpx; font-size: 24rpx; }
 .body-none { font-size: 26rpx; line-height: 1.6; }
+/* 加载中的占位块 */
+.sk-title { height: 40rpx; margin-top: 22rpx; }
+.sk-card { padding-top: 28rpx; padding-bottom: 28rpx; }
+.sk-section { width: 112rpx; height: 32rpx; }

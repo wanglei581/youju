@@ -108,8 +108,33 @@ page {
   font-weight: 500;
 }
 
+/* 暂不可用的按钮（如协议定稿前）：灰底灰字，和主按钮一样大，看得出现在不能用；旁边另写一行说明 */
+.btn-off {
+  min-height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 44rpx;
+  background: var(--fill);
+  color: var(--t3);
+  font-size: 30rpx;
+}
+
 /* 给自定义底栏留位置 */
 .tab-page-bottom { height: calc(200rpx + env(safe-area-inset-bottom)); }
+
+/* 加载中：灰色占位块（骨架屏），数据到之前先占住位置，不写"正在加载…"。
+ * 外层写 aria-label="正在加载"，读屏软件仍能读出状态。 */
+.sk { background: var(--fill); border-radius: 8rpx; animation: sk-pulse 1.4s ease-in-out infinite; }
+.sk-row { padding: 28rpx 0 26rpx; border-bottom: 2rpx solid var(--line); }
+.sk-row:last-child { border-bottom: 0; }
+.sk-head { display: flex; gap: 12rpx; }
+.sk-tag { width: 104rpx; height: 40rpx; }
+.sk-chip { width: 72rpx; height: 40rpx; }
+.sk-line { height: 32rpx; margin-top: 18rpx; }
+.sk-line--short { width: 64%; }
+.sk-meta { width: 44%; height: 26rpx; margin-top: 20rpx; }
+@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* 加载失败提示 */
 .load-error { padding: 28rpx 32rpx; display: flex; align-items: center; justify-content: space-between; gap: 24rpx; font-size: 26rpx; color: var(--t2); }

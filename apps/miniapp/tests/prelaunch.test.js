@@ -178,7 +178,7 @@ test('截止雷达返回跨日重载第一页；停留跨日刷新并清理定�
     '../../utils/api.js': { deadlineReport: (params) => { calls.push(params); return Promise.resolve({ items: [], total: 0 }); } },
     '../../utils/exporter.js': {}, '../../utils/format.js': { todayISO: () => day },
     '../../utils/daywatch.js': { watchDay: (_, callback) => { onChange = callback; }, stopDay: () => { stopped += 1; } },
-  });
+  }, { getApp: () => ({ globalData: {} }) });
   page.onLoad(); page.onShow(); await flush();
   assert.equal(calls.length, 2);
   page.onHide(); day = '2026-10-01'; page.data.page = 3; page.onShow(); await flush();

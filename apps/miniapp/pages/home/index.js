@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO } = require('../../utils/format.js');
+const { todayISO, clockText } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const SCOPES = [
@@ -26,6 +26,8 @@ Page({
     tab: 'all',
     hot: ['高新技术企业', '专精特新', '科技型中小企业'],
     stats: null,
+    // 最近一次成功检查的时间（北京时间，如"10月6日 06:30"）；本周 0 份时写在"本周暂无新文件"后面
+    checkedText: '',
     items: [],
     shown: [],
     loaded: false,
@@ -46,7 +48,7 @@ Page({
     api.home()
       .then(({ stats, items }) => {
         const shown = this.data.tab === 'all' ? items : items.filter((d) => d.kind === this.data.tab);
-        this.setData({ stats, items, shown, loaded: true });
+        this.setData({ stats, items, shown, loaded: true, checkedText: clockText(stats && stats.last_checked_at) });
       })
       .catch((err) => this.setData({ stats: null, items: [], shown: [], error: `数据未更新：${err.message}` }))
       .finally(() => { this.refreshing = false; this.setData({ loading: false }); });

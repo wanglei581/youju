@@ -102,6 +102,8 @@ class Conditions(BaseModel):
     open: int | None = Field(default=None, ge=0, le=1)
     levels: str | None = Field(default=None, max_length=400)
     categories: str | None = Field(default=None, max_length=400)
+    supports: str | None = Field(default=None, max_length=400)
+    industries: str | None = Field(default=None, max_length=400)
 
 
 class FollowIn(BaseModel):

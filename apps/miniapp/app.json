@@ -40,7 +40,7 @@
     ]
   },
   "usingComponents": {
-    "t-icon": "tdesign-miniprogram/icon/icon",
+    "t-icon": "/components/icon/index",
     "notice-bar": "/components/notice-bar/index",
     "doc-row": "/components/doc-row/index"
   },

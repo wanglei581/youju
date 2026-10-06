@@ -1,5 +1,5 @@
 {
   "navigationStyle": "custom",
   "navigationBarTitleText": "名单看板",
-  "usingComponents": { "t-icon": "tdesign-miniprogram/icon/icon" }
+  "usingComponents": { "t-icon": "/components/icon/index" }
 }
