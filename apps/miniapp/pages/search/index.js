@@ -5,7 +5,7 @@ const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
-const { levelConflict } = require('../../utils/conditions.js');
+const { levelConflict, categoryConflict, CATEGORIES, CATEGORY_NOTE, GUIDE, foldNote } = require('../../utils/conditions.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -22,15 +22,18 @@ const GROUPS = [
     note: '' }, // 还没收录的省份取自收录范围接口
   { key: 'level', title: '层级', hint: '可多选', multi: true, options: ['国家部委', '省级'],
     note: '和地区同时选时，列出两项都符合的文件；地市暂未收录' },
-  { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', '其他'] },
+  { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
+  // 项目类别按标题归类，只有申报通知和名单有；说明写在选项下面，不作资格判断
+  { key: 'category', title: '项目类别', hint: '可多选', multi: true, options: CATEGORIES, note: CATEGORY_NOTE },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
-const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], status: [], time: ['近 30 天'], dept: [], open: [] };
+const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], status: [], time: ['近 30 天'], dept: [], open: [] };
 const LEVEL_CONFLICT = '所选地区和层级没有重叠（国家部委和省级是两类来源），请调整地区或层级';
+const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
 const PAGE = 20;
 
@@ -61,6 +64,11 @@ Page({
     notCoveredNote: '',
     // 没有结果时的补充说明：地区和层级没有重叠，或只看未截止
     emptyHint: '',
+    // 资讯与指南（与申报无关的新闻、会议、招聘、许可等）默认折叠，写明折叠了几篇，点开就列出来
+    showGuides: false,
+    folded: 0,
+    guides: 0,
+    fold: { text: '', link: '' },
   },
 
   onLoad(query) {
@@ -68,7 +76,7 @@ Page({
     const time = decodeURIComponent(query.time || '');
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) picked.time = [time];
-    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
+    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
@@ -117,6 +125,8 @@ Page({
       // 没选层级时不带这一项，和加层级之前保存的关注条件一致
       levels: picked.level.length ? picked.level.join(',') : undefined,
       types: picked.type.join(','),
+      // 没选项目类别时不带这一项，和加项目类别之前保存的关注条件一致
+      categories: picked.category.length ? picked.category.join(',') : undefined,
       status: picked.status.join(','),
       time: picked.time[0],
       depts: picked.dept.join(','),
@@ -131,7 +141,8 @@ Page({
 
   apply(reset) {
     const { items } = this.data;
-    const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length });
+    // fold 不是筛选条件，不进关注：1 折叠资讯与指南（只给篇数），0 列出来
+    const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length, fold: this.data.showGuides ? 0 : 1 });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
@@ -140,10 +151,15 @@ Page({
       .then((res) => {
         if (seq !== this.seq) return; // 只用最后一次查询的结果
         this.loaded = true;
+        const folded = res.folded || 0;
+        const guides = res.guides || 0;
         this.setData({
           items: reset ? res.items : items.concat(res.items),
           total: res.total,
           totalAll: res.total_all,
+          folded,
+          guides,
+          fold: foldNote(folded, this.data.showGuides ? guides : 0),
           loading: false,
         });
         // 没有结果时区分"该地区还没收录"和"没有匹配的文件"（验收 A8）：只有选中的地区全部
@@ -151,6 +167,7 @@ Page({
         if (!res.total) {
           let emptyHint = '';
           if (levelConflict(params.regions, params.levels)) emptyHint = LEVEL_CONFLICT;
+          else if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
           else if (params.open) emptyHint = OPEN_NOTE;
           this.setData({ emptyHint });
           const regions = params.regions.split(',');
@@ -167,7 +184,7 @@ Page({
       .catch((err) => {
         if (seq !== this.seq) return;
         // 重新查询失败时不保留旧结果，避免把旧条件的结果当成新结果
-        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0 } : { loading: false, error: err.message });
+        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0, folded: 0, guides: 0, fold: foldNote(0, 0) } : { loading: false, error: err.message });
       });
   },
 
@@ -204,6 +221,12 @@ Page({
 
   pickTab(e) {
     this.setData({ tab: e.currentTarget.dataset.key });
+    this.apply(true);
+  },
+
+  // 点"点开查看"列出资讯与指南，再点"收起"折叠回去
+  toggleGuides() {
+    this.setData({ showGuides: !this.data.showGuides });
     this.apply(true);
   },
 
@@ -267,6 +290,7 @@ Page({
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
     if (c.levels) parts.push(c.levels.split(',').join('、'));
+    if (c.categories) parts.push(c.categories.split(',').slice(0, 2).join('、'));
     parts.push(tab ? tab.label : '全部');
     if (c.open) parts.push('只看未截止');
     return parts.join(' · ').slice(0, 40);
