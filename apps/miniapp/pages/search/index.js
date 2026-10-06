@@ -7,7 +7,7 @@ const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const legal = require('../../content/legal.js');
 const {
-  levelConflict, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
+  requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
 } = require('../../utils/conditions.js');
 
@@ -20,12 +20,12 @@ const KIND_TABS = [
 
 // 筛选弹层分左右两栏：左边按下面的顺序列组名（旁边是已选个数），右边是当前组的选项。
 // 地区"不限地区"与具体省份互斥；发布时间单选（取值与服务端 /api/v1/search 一致）。
-// 国家部委只在"层级"里选（旧条件地区里的国家部委见 conditions.migrateNational）；
-// 层级和地区同时选时两项都要满足（与其他筛选一样）；地市还没接入，先不放"市级"
+// 国家部委只在"层级"里选，不受地区限制，和所选地区的文件一起列出；省级只列所选地区的
+// （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；地市还没接入，先不放"市级"
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
-  { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选', extra: '' },
+  { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
@@ -36,13 +36,14 @@ const GROUPS = [
   { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级'],
-    note: '和地区同时选时，列出两项都符合的文件；地市暂未收录' },
+    note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的；地市暂未收录' },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-const LEVEL_CONFLICT = '所选地区和层级没有重叠（国家部委和省级是两类来源），请调整地区或层级';
+// 协议开放后关注确认框的标题，和协议定稿前弹出的原因末尾，都写关注之后会怎样
+const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
 const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
@@ -63,11 +64,9 @@ function chipLabel(group, option) {
   return option;
 }
 
-// 地区选项：选了不在常用列表里的省份时直接列出全部省份；旧条件留下的"国家部委"只在已选时显示
-function regionOptions(expanded, legacyNational) {
-  const list = expanded ? ['不限地区'].concat(ALL_PROVINCES) : REGION_SHORT;
-  return legacyNational ? [list[0], NATIONAL].concat(list.slice(1)) : list;
-}
+// 筛选入口那一排是固定文字；入口管的组里有已选时变品牌蓝，点开时右栏显示有已选的那一组
+const ENTRY_GROUPS = { region: ['region', 'level'], time: ['time'], status: ['open', 'status'] };
+const MORE_GROUPS = ['type', 'category', 'support', 'industry', 'dept'];
 
 Page({
   data: {
@@ -91,10 +90,10 @@ Page({
     followOff: !legal.final,
     picked: DEFAULT_PICKED,
     pickedMap: {},
-    chipRegion: '地区',
+    // 筛选入口：on 是否变蓝，group 点开时右栏显示哪一组；chipTime 是发布时间（"不限时间共 X 份"用）
+    entries: { region: { on: false, group: 'region' }, time: { on: false, group: 'time' }, status: { on: false, group: 'open' } },
+    moreOn: false,
     chipTime: '近 30 天',
-    regionOn: false,
-    statusOn: false,
     // 选择模式：勾选文件后导出 Excel / Word
     selecting: false,
     chosen: {},
@@ -162,12 +161,14 @@ Page({
   // 当前的搜索条件（与服务端 /api/v1/search 的参数、关注条件一致）
   conditions() {
     const { q, tab, picked } = this.data;
+    // 地区和层级按 requestScope 拼：选了地区且层级含国家部委时，地区里加上国家部委。
+    // 没选层级时不带 levels，和加层级之前保存的关注条件一致
+    const scope = requestScope(picked.region, picked.level);
     return {
       q: q.trim(),
       kind: tab,
-      regions: picked.region.join(','),
-      // 没选层级时不带这一项，和加层级之前保存的关注条件一致
-      levels: picked.level.length ? picked.level.join(',') : undefined,
+      regions: scope.regions,
+      levels: scope.levels,
       types: picked.type.join(','),
       // 没选项目类别时不带这一项，和加项目类别之前保存的关注条件一致
       categories: picked.category.length ? picked.category.join(',') : undefined,
@@ -213,8 +214,7 @@ Page({
         // 还没收录才说"还没收录"，不从关键词里推断地名
         if (!res.total) {
           let emptyHint = '';
-          if (levelConflict(params.regions, params.levels)) emptyHint = LEVEL_CONFLICT;
-          else if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
+          if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
           else if (supportConflict(params.kind, params.types, params.supports)) emptyHint = SUPPORT_CONFLICT;
           else if (params.open) emptyHint = OPEN_NOTE;
           this.setData({ emptyHint });
@@ -241,7 +241,6 @@ Page({
     const pickedMap = {};
     Object.keys(picked).forEach((g) => picked[g].forEach((o) => { pickedMap[`${g}:${o}`] = true; }));
     const regions = picked.region.filter((r) => r !== '不限地区');
-    const scope = [regions.join('、'), picked.level.join('、')].filter(Boolean).join(' · ');
     const counts = {};
     const activeChips = [];
     GROUPS.forEach((g) => {
@@ -249,17 +248,23 @@ Page({
       counts[g.key] = values.length;
       values.forEach((o) => activeChips.push({ key: `${g.key}:${o}`, group: g.key, option: o, label: chipLabel(g.key, o) }));
     });
-    const expanded = !!this.moreRegions || regions.some((r) => r !== NATIONAL && !REGION_SHORT.includes(r));
-    const options = regionOptions(expanded, regions.includes(NATIONAL));
+    // 选了不在常用列表里的省份（如从关注打开）时直接列出全部省份，看得到选中的那一项
+    const expanded = !!this.moreRegions || regions.some((r) => !REGION_SHORT.includes(r));
+    const options = expanded ? ['不限地区'].concat(ALL_PROVINCES) : REGION_SHORT;
+    const entries = {};
+    Object.keys(ENTRY_GROUPS).forEach((name) => {
+      const keys = ENTRY_GROUPS[name];
+      const hit = keys.find((k) => counts[k]);
+      entries[name] = { on: !!hit, group: hit || keys[0] };
+    });
     this.setData({
       groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { options }) : g)),
       counts,
       activeChips,
       pickedMap,
-      chipRegion: scope || '地区',
-      regionOn: !!scope,
+      entries,
+      moreOn: MORE_GROUPS.some((k) => counts[k]),
       chipTime: picked.time[0],
-      statusOn: picked.status.length > 0,
     });
   },
 
@@ -363,15 +368,17 @@ Page({
     this.apply(true);
   },
 
-  // 默认的关注名称，如"\u201c高新技术企业\u201d · 山东 · 申报通知"
+  // 默认的关注名称，如"\u201c高新技术企业\u201d · 山东 · 申报通知"。地区和层级按界面上选的写
+  // （请求里拼进地区的国家部委不重复写）
   followName() {
     const c = this.conditions();
+    const { picked } = this.data;
     const tab = KIND_TABS.find((t) => t.key === c.kind);
-    const regions = c.regions.split(',').filter((r) => r && r !== '不限地区');
+    const regions = picked.region.filter((r) => r && r !== '不限地区');
     const parts = [];
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
-    if (c.levels) parts.push(c.levels.split(',').join('、'));
+    if (picked.level.length) parts.push(picked.level.join('、'));
     if (c.categories) parts.push(c.categories.split(',').slice(0, 2).join('、'));
     if (c.supports) parts.push(c.supports.split(',').slice(0, 2).join('、'));
     if (c.industries) parts.push(c.industries.split(',').slice(0, 2).join('、'));
@@ -382,12 +389,13 @@ Page({
 
   // 关注这个搜索：保存当前条件，有新文件时在"关注"里标出；关注后可以订阅一次微信提醒
   follow() {
-    ensureConsent().then((ok) => {
+    ensureConsent(FOLLOW_NOTE).then((ok) => {
       if (!ok) return;
       const conditions = this.conditions();
       if (!conditions.q) delete conditions.q;
+      // 可编辑的确认框里内容是名称输入框，说明写在标题里
       wx.showModal({
-        title: '关注这个搜索',
+        title: FOLLOW_NOTE,
         editable: true,
         placeholderText: '给这个关注起个名字',
         content: this.followName(),

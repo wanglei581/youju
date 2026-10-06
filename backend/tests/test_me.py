@@ -983,7 +983,8 @@ def test_follow_keeps_level_filter(client, session, monkeypatch):
 
 def test_follow_saved_with_national_region_still_counts_like_level(client, session, monkeypatch):
     """UI 第二轮起小程序的地区里没有"国家部委"（只在层级里）。之前保存的关注条件地区里还有它：
-    服务端照旧接受、照旧计数，和小程序换成层级后的条件新文件数相同。"""
+    服务端照旧接受、照旧计数，和小程序换成层级后的条件新文件数相同；新界面"地区北京 + 层级
+    国家部委"保存的就是 regions=国家部委,北京，国家部委和北京的新文件都算。"""
     settings(monkeypatch)
     agree(client)
     made = {
@@ -993,7 +994,7 @@ def test_follow_saved_with_national_region_still_counts_like_level(client, sessi
             "new_national": {"levels": "国家部委"},
             "old_provincial": {"regions": "国家部委,北京", "levels": "省级"},
             "new_provincial": {"regions": "北京", "levels": "省级"},
-            "old_both": {"regions": "国家部委,北京"},  # 新界面表达不了，小程序原样保留
+            "national_and_beijing": {"regions": "国家部委,北京"},
         }.items()
     }
     source_and_doc(session)  # 北京省级来源的新文件
@@ -1029,7 +1030,7 @@ def test_follow_saved_with_national_region_still_counts_like_level(client, sessi
         "new_national": 1,
         "old_provincial": 1,
         "new_provincial": 1,
-        "old_both": 2,
+        "national_and_beijing": 2,
     }
 
 

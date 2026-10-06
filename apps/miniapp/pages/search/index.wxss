@@ -14,6 +14,7 @@
 .chip { height: 60rpx; padding: 0 24rpx; display: flex; align-items: center; gap: 4rpx; border-radius: 30rpx; font-size: 26rpx; background: var(--fill); color: var(--t1); border: 2rpx solid var(--fill); }
 .chip--on { background: var(--brand-tint); color: var(--brand); border-color: var(--brand); }
 .filter-link { margin-left: auto; display: flex; align-items: center; gap: 8rpx; font-size: 26rpx; color: var(--t1); }
+.filter-link--on { color: var(--brand); }
 /* 窄屏（320px 宽）放不下一行时，右边的排序、选择、关注整组换到下一行 */
 .summary { padding: 20rpx 32rpx 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12rpx 16rpx; font-size: 25rpx; color: var(--t2); }
 .summary-left { flex-shrink: 0; white-space: nowrap; }

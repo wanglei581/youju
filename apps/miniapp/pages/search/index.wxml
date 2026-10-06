@@ -16,11 +16,12 @@
   </view>
 </view>
 
+<!-- 筛选入口：固定文字，管的组里有已选时变品牌蓝（发布时间默认的近 30 天不算），具体值只在下面的已选条件条里 -->
 <view class="chips">
-  <view class="chip {{regionOn ? 'chip--on' : ''}}" data-group="region" bindtap="openFilter">{{chipRegion}}<t-icon name="chevron-down" size="26rpx" color="{{regionOn ? '#2A5CE0' : '#4E5969'}}" /></view>
-  <view class="chip {{chipTime !== '不限' ? 'chip--on' : ''}}" data-group="time" bindtap="openFilter">{{chipTime}}<t-icon name="chevron-down" size="26rpx" color="{{chipTime !== '不限' ? '#2A5CE0' : '#4E5969'}}" /></view>
-  <view class="chip {{statusOn ? 'chip--on' : ''}}" data-group="status" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="{{statusOn ? '#2A5CE0' : '#4E5969'}}" /></view>
-  <view class="filter-link" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="#1D2129" />筛选</view>
+  <view class="chip {{entries.region.on ? 'chip--on' : ''}}" data-group="{{entries.region.group}}" bindtap="openFilter">地区<t-icon name="chevron-down" size="26rpx" color="{{entries.region.on ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="chip {{entries.time.on ? 'chip--on' : ''}}" data-group="{{entries.time.group}}" bindtap="openFilter">时间<t-icon name="chevron-down" size="26rpx" color="{{entries.time.on ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="chip {{entries.status.on ? 'chip--on' : ''}}" data-group="{{entries.status.group}}" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="{{entries.status.on ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="filter-link {{moreOn ? 'filter-link--on' : ''}}" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="{{moreOn ? '#2A5CE0' : '#1D2129'}}" />筛选</view>
 </view>
 
 <!-- 已选条件：横向滚动，点一个就去掉这个条件并重新查；最后是"清空"。没有已选条件时不显示 -->
@@ -31,9 +32,9 @@
   </view>
 </scroll-view>
 
-<!-- 结果信息：第一行是份数（不限时间时不写"共"）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
+<!-- 结果信息：第一行是份数（发布时间选了不限时不写"不限时间共"）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
 <view wx:if="{{!loading && !error}}" class="summary">
-  <view class="summary-left"><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all">共 {{totalAll}} 份</text></view>
+  <view class="summary-left"><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all">不限时间共 {{totalAll}} 份</text></view>
   <view class="summary-right">
     <text>按发布时间 ↓</text>
     <text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text>

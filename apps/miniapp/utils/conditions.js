@@ -23,40 +23,46 @@ function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
 }
 
-// 地区和层级同时选时两项都要满足（与服务端 /api/v1/search 一致）。"国家部委"在两组里是同一类
-// 来源；地区只选了省份而层级只选国家部委，或地区只选国家部委而层级只选省级，必然查不到，
-// 搜索页在空结果里据此提示调整。
-function levelConflict(regions, levels) {
-  const picked = split(regions).filter((r) => r !== '不限地区');
-  const lv = split(levels);
-  if (!picked.length || !lv.length) return false;
-  const national = picked.includes('国家部委') && lv.includes('国家部委');
-  const provincial = picked.some((r) => r !== '国家部委') && lv.includes('省级');
-  return !national && !provincial;
-}
-
-// 国家部委现在只在"层级"里选（UI 第二轮）。旧条件（保存的关注、网址参数）的地区里可能还有它，
-// 打开搜索时按服务端的规则（地区、层级组间取交集，两处"国家部委"是同一个条件）换成层级，
-// 只做结果完全相同的换法：
-//   地区只有国家部委，层级没选或含国家部委 → 层级"国家部委"（地区不限）
-//   地区是国家部委 + 省份，层级只选国家部委     → 层级"国家部委"（地区不限）
-//   地区是国家部委 + 省份，层级只选省级         → 地区去掉国家部委（层级仍是省级）
-// 其余情况没有结果相同的新写法，原样保留，结果不变：
-//   国家部委 + 省份、层级没选或两级都选（"国家部委和山东的文件"，新界面的地区、层级取交集表达不了）；
-//   地区只有国家部委、层级只选省级（本来就查不到，空结果里照常提示调整）。
-// 搜索页把保留下来的"国家部委"在地区里显示为已选，用户去掉后就不再出现。
+// 地区和层级（UI 第二轮起）：国家部委只在"层级"里选。界面上的意思是"层级选哪几层，地区只管省份那部分"：
+//   层级含国家部委 → 国家部委的文件不受地区限制，和所选地区的文件一起列出；
+//   层级含省级     → 所选地区（没选就是全部省份）的省级文件；
+//   层级没选       → 只按地区（没选地区就是全部）。
+// 服务端 /api/v1/search 是地区、层级两组取交集，地区里的"国家部委"和层级的"国家部委"是同一个条件，
+// 所以请求这样拼（requestScope），后端不用改：
+//   选了地区且层级含国家部委：regions=国家部委,省份；层级同时含省级时 levels=国家部委,省级
+//     （(国家部委 ∪ 省份) ∩ (国家部委 ∪ 省级) = 国家部委 ∪ 省份的省级），否则不传 levels
+//     （= 国家部委 ∪ 省份的全部文件；地市暂未收录，目前就是省级）；
+//   其余照原样：regions=省份或不限地区，levels=所选层级。
 const NATIONAL = '国家部委';
 
+function requestScope(region, level) {
+  const provinces = (region || []).filter((r) => r !== '不限地区' && r !== NATIONAL);
+  const levels = level || [];
+  if (provinces.length && levels.includes(NATIONAL)) {
+    return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.includes('省级') ? levels.join(',') : undefined };
+  }
+  return { regions: (region || []).join(','), levels: levels.length ? levels.join(',') : undefined };
+}
+
+// 反过来：网址参数、保存的关注条件（服务端的写法）换成界面上的地区和层级，requestScope 拼回去的请求
+// 和原来结果相同。旧版本的条件也走这里（地区里可能有国家部委）。只有两种原来必然查不到的组合换不出
+// 相同结果，按字面意思换：地区只有国家部委、层级只选省级 → 层级国家部委 + 省级；地区是省份、
+// 层级只选国家部委 → 现在列出国家部委和这些省份的文件。
 function migrateNational(regions, levels) {
   const region = regions || [];
   const level = levels || [];
-  if (!region.includes(NATIONAL)) return { regions: region, levels: level };
   const provinces = region.filter((r) => r !== NATIONAL && r !== '不限地区');
-  const only = (value) => level.length === 1 && level[0] === value;
-  if (!provinces.length && (!level.length || level.includes(NATIONAL))) return { regions: ['不限地区'], levels: [NATIONAL] };
-  if (provinces.length && only(NATIONAL)) return { regions: ['不限地区'], levels: [NATIONAL] };
-  if (provinces.length && only('省级')) return { regions: provinces, levels: ['省级'] };
-  return { regions: region, levels: level };
+  const has = (value) => level.includes(value);
+  if (!region.includes(NATIONAL)) {
+    // 省份 + 层级两级都选：原来国家部委被地区排除，只剩省份的省级文件
+    if (provinces.length && has(NATIONAL) && has('省级')) return { regions: provinces, levels: ['省级'] };
+    return { regions: region, levels: level };
+  }
+  if (!provinces.length) return { regions: ['不限地区'], levels: has('省级') && !has(NATIONAL) ? [NATIONAL, '省级'] : [NATIONAL] };
+  if (!level.length) return { regions: provinces, levels: [NATIONAL] };
+  if (has(NATIONAL) && !has('省级')) return { regions: ['不限地区'], levels: [NATIONAL] };
+  if (!has(NATIONAL)) return { regions: provinces, levels: ['省级'] };
+  return { regions: provinces, levels: [NATIONAL, '省级'] };
 }
 
 // 选了项目类别（或支持方式），但页签或类型里没有申报通知和名单：必然查不到，搜索页在空结果里
@@ -106,6 +112,6 @@ function searchUrl(c) {
 }
 
 module.exports = {
-  describe, searchUrl, levelConflict, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
+  describe, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
   CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
 };

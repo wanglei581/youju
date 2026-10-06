@@ -1188,10 +1188,11 @@ def test_search_level_filter_and_region_merge_rule(client, session, seeded):
         assert client.get("/api/v1/search", params={"levels": bad}).status_code == 422
 
 
-def test_search_legacy_national_region_matches_miniapp_conversion(client, session, seeded):
-    """UI 第二轮：小程序的地区里不再有"国家部委"，旧条件打开搜索时按 conditions.migrateNational
-    换成层级。这里逐条核对换法前后服务端结果相同；换不了的（国家部委 + 省份，层级没选或两级都选）
-    在新写法里找不到结果相同的，小程序原样保留，服务端照旧接受地区里的国家部委。"""
+def test_search_national_level_with_regions_as_miniapp_sends_it(client, session, seeded):
+    """UI 第二轮：小程序的地区里不再有"国家部委"，层级里的国家部委不受地区限制、和所选地区的文件
+    一起列出。服务端不改：小程序把请求拼成 regions=国家部委,省份（层级同时含省级时再带
+    levels=国家部委,省级），见 apps/miniapp/utils/conditions.js 的 requestScope。这里核对这样拼出来的
+    结果，以及旧条件打开后换成的新请求（migrateNational）结果不变。"""
     city = Source(
         level="市级",
         province="山东",
@@ -1204,8 +1205,10 @@ def test_search_legacy_national_region_matches_miniapp_conversion(client, sessio
     )
     session.add(city)
     session.flush()
-    title = "济南市科学技术局关于组织申报2026年度科技计划项目的通知"
-    session.add(_doc(city, 82, title, date(2026, 9, 20)))
+    city_doc = _doc(
+        city, 82, "济南市科学技术局关于组织申报2026年度科技计划项目的通知", date(2026, 9, 20)
+    )
+    session.add(city_doc)
     session.commit()
 
     def ids(**params):
@@ -1213,33 +1216,44 @@ def test_search_legacy_national_region_matches_miniapp_conversion(client, sessio
         assert response.status_code == 200, response.text
         return {int(i["id"]) for i in response.json()["items"]}
 
-    # 旧条件 → 小程序换成的条件（与 apps/miniapp/tests/search-r2.test.js 的转换表一致）
-    national = {"regions": "不限地区", "levels": "国家部委"}
-    converted = [
-        ({"regions": "国家部委"}, national),
-        ({"regions": "国家部委", "levels": "国家部委"}, national),
-        ({"regions": "国家部委", "levels": "国家部委,省级"}, national),
-        ({"regions": "不限地区,国家部委"}, national),
-        ({"regions": "国家部委,山东", "levels": "国家部委"}, national),
+    national = ids(levels="国家部委")
+    provincial = ids(levels="省级")
+    shandong = {seeded["list"], seeded["policy"]}
+    assert len(national) == 2 and shandong <= provincial
+    # 界面：地区山东 + 层级国家部委 → 国家部委和山东的文件（地市暂未收录，线上就是省级）
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
+    # 地区山东 + 层级国家部委、省级 → 国家部委和山东的省级文件
+    assert ids(regions="国家部委,山东", levels="国家部委,省级") == national | shandong
+    # 地区山东 + 层级省级、不限地区 + 两级：和以前一样
+    assert ids(regions="山东", levels="省级") == shandong
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+
+    # 旧条件 → 打开后小程序发的请求（与 apps/miniapp/tests/search-r2.test.js 的转换表一致），结果相同
+    same = [
+        ({"regions": "国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        ({"regions": "不限地区,国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        (
+            {"regions": "国家部委", "levels": "国家部委,省级"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
+        (
+            {"regions": "国家部委,山东", "levels": "国家部委"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
         (
             {"regions": "国家部委,山东,北京", "levels": "省级"},
             {"regions": "山东,北京", "levels": "省级"},
         ),
+        ({"regions": "山东", "levels": "国家部委,省级"}, {"regions": "山东", "levels": "省级"}),
     ]
-    for old, new in converted:
+    for old, new in same:
         assert ids(**old), old
         assert ids(**old) == ids(**new), (old, new)
-    # 保留原样的：地区里不含"国家部委"的写法都得不到同样的结果
-    alternatives = [
-        {"regions": r, "levels": lv}
-        for r in ("不限地区", "山东")
-        for lv in ("", "国家部委", "省级", "国家部委,省级")
-    ]
-    for old in (
-        {"regions": "国家部委,山东"},
-        {"regions": "国家部委,山东", "levels": "国家部委,省级"},
-    ):
-        assert all(ids(**old) != ids(**alt) for alt in alternatives), old
+    # 原来必然查不到的两种，打开后按字面意思列出
+    assert ids(regions="国家部委", levels="省级") == set()
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+    assert ids(regions="山东", levels="国家部委") == set()
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
 
 
 def test_no_public_output_contains_unverified_dates(client, session, seeded):

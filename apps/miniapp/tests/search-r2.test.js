@@ -75,9 +75,9 @@ test('两栏筛选：从"地区""时间""状态"进来直接显示那一组，�
   page.openFilter(event({}));
   assert.equal(page.data.activeGroup, 'industry');
   const template = read('pages/search/index.wxml');
-  assert.match(template, /class="chip[^"]*" data-group="region" bindtap="openFilter"/);
-  assert.match(template, /data-group="time" bindtap="openFilter"/);
-  assert.match(template, /data-group="status" bindtap="openFilter"/);
+  assert.match(template, /data-group="{{entries.region.group}}" bindtap="openFilter">地区</);
+  assert.match(template, /data-group="{{entries.time.group}}" bindtap="openFilter">时间</);
+  assert.match(template, /data-group="{{entries.status.group}}" bindtap="openFilter">状态</);
   // 左栏：组名 + 已选个数（品牌色数字，不用角标）；右栏每组一个滚动区，只显示当前组
   assert.match(template, /<scroll-view class="side" scroll-y[\s\S]*?wx:for="{{groups}}"[\s\S]*?bindtap="pickGroup"[\s\S]*?<text>{{g.title}}<\/text><text wx:if="{{counts\[g.key\]}}" class="side-count">{{counts\[g.key\]}}<\/text>/);
   assert.match(template, /<scroll-view wx:if="{{activeGroup === g.key}}" class="pane" scroll-y/);
@@ -89,13 +89,42 @@ test('两栏筛选：从"地区""时间""状态"进来直接显示那一组，�
   assert.ok(vh.length >= 1 && vh.every((v) => v <= 85), sheet);
 });
 
-test('国家部委只在层级里：地区选项（含展开全部省份）没有国家部委', async () => {
+test('筛选入口固定写"地区""时间""状态""筛选"，管的组有已选时变蓝（近 30 天不算），具体值不写在入口上', async () => {
+  const { page } = searchPage();
+  page.onLoad({}); await flush();
+  const on = () => ({ region: page.data.entries.region.on, time: page.data.entries.time.on, status: page.data.entries.status.on, more: page.data.moreOn });
+  assert.deepEqual(on(), { region: false, time: false, status: false, more: false });
+  assert.equal(page.data.entries.status.group, 'open');
+  page.pickOption(event({ group: 'level', option: '国家部委' })); await flush();
+  assert.equal(page.data.entries.region.on, true); // 地区入口管地区和层级
+  assert.equal(page.data.entries.region.group, 'level'); // 点开时显示有已选的那一组
+  page.pickOption(event({ group: 'region', option: '山东' })); await flush();
+  assert.equal(page.data.entries.region.group, 'region');
+  page.pickOption(event({ group: 'time', option: '近 7 天' })); await flush();
+  page.pickOption(event({ group: 'status', option: '公布' })); await flush();
+  page.pickOption(event({ group: 'industry', option: '现代农业' })); await flush();
+  assert.deepEqual(on(), { region: true, time: true, status: true, more: true });
+  assert.equal(page.data.entries.status.group, 'status');
+  page.pickOption(event({ group: 'time', option: '近 30 天' })); await flush();
+  assert.equal(page.data.entries.time.on, false);
+  page.resetFilter(); await flush();
+  assert.deepEqual(on(), { region: false, time: false, status: false, more: false });
+  const chips = /<view class="chips">[\s\S]*?\n<\/view>/.exec(read('pages/search/index.wxml'))[0];
+  assert.match(chips, /entries.region.on \? 'chip--on'[^>]*>地区<t-icon/);
+  assert.match(chips, /entries.time.on \? 'chip--on'[^>]*>时间<t-icon/);
+  assert.match(chips, /entries.status.on \? 'chip--on'[^>]*>状态<t-icon/);
+  assert.match(chips, /filter-link {{moreOn \? 'filter-link--on' : ''}}"[^>]*><t-icon name="filter"[^>]*\/>筛选<\/view>/);
+  assert.doesNotMatch(chips, /chipRegion|{{chipTime}}/);
+});
+
+test('国家部委只在层级里：地区选项（含展开全部省份）没有国家部委；地区和层级栏写明一起选时怎样列', async () => {
   const { page } = searchPage();
   page.onLoad({}); await flush();
   const region = () => page.data.groups.find((g) => g.key === 'region');
   assert.ok(!region().options.includes('国家部委'));
   assert.ok(page.data.groups.find((g) => g.key === 'level').options.includes('国家部委'));
-  assert.match(region().note, /国家部委的文件在“层级”里选/);
+  assert.equal(region().note, '国家部委的文件在“层级”里选，和地区一起选时会同时列出');
+  assert.match(page.data.groups.find((g) => g.key === 'level').note, /国家部委的文件同时列出，省级只列所选地区的/);
   page.pickOption(event({ group: 'region', option: '更多省份' })); await flush();
   assert.equal(region().options.length, 32); // 不限地区 + 31 个省级地区
   assert.ok(!region().options.includes('国家部委'));
@@ -106,70 +135,95 @@ test('国家部委只在层级里：地区选项（含展开全部省份）没�
   assert.ok(other.page.data.groups.find((g) => g.key === 'region').options.includes('浙江'));
 });
 
-test('国家部委兼容转换：结果相同的才转成层级，其余原样保留；演示数据按服务端规则核对结果一致', () => {
-  const m = (regions, levels) => plain(conditions.migrateNational(regions, levels));
-  // 转换
-  assert.deepEqual(m(['国家部委'], []), { regions: ['不限地区'], levels: ['国家部委'] });
-  assert.deepEqual(m(['国家部委'], ['国家部委']), { regions: ['不限地区'], levels: ['国家部委'] });
-  assert.deepEqual(m(['国家部委'], ['国家部委', '省级']), { regions: ['不限地区'], levels: ['国家部委'] });
-  assert.deepEqual(m(['不限地区', '国家部委'], []), { regions: ['不限地区'], levels: ['国家部委'] });
-  assert.deepEqual(m(['国家部委', '山东'], ['国家部委']), { regions: ['不限地区'], levels: ['国家部委'] });
-  assert.deepEqual(m(['国家部委', '山东', '北京'], ['省级']), { regions: ['山东', '北京'], levels: ['省级'] });
-  // 新写法表达不了的：原样保留
-  assert.deepEqual(m(['国家部委', '山东'], []), { regions: ['国家部委', '山东'], levels: [] });
-  assert.deepEqual(m(['国家部委', '山东'], ['国家部委', '省级']), { regions: ['国家部委', '山东'], levels: ['国家部委', '省级'] });
-  assert.deepEqual(m(['国家部委'], ['省级']), { regions: ['国家部委'], levels: ['省级'] });
-  // 没有国家部委的不动
-  assert.deepEqual(m(['山东'], ['国家部委']), { regions: ['山东'], levels: ['国家部委'] });
-  assert.deepEqual(m(['不限地区'], []), { regions: ['不限地区'], levels: [] });
-
-  // 每种可能的旧条件，转换前后在演示数据（规则与服务端一致，含市级文件）上结果相同
+test('地区 + 层级的几种组合：请求怎么拼，服务端规则（演示数据）下列出哪些文件', async () => {
   const docs = [
     { title: '国家', kind: '申报通知', region: '国家', date: '2026-09-01' },
     { title: '山东省级', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01' },
     { title: '山东市级', kind: '申报通知', region: '山东 · 市级', date: '2026-09-01' },
     { title: '北京省级', kind: '申报通知', region: '北京 · 省级', date: '2026-09-01' },
   ];
-  const titles = (regions, levels) => mockSearch(docs, { time: '不限', regions: regions.join(','), levels: levels.join(',') })
-    .items.map((d) => d.title).sort();
-  const regionSets = [['国家部委'], ['国家部委', '山东'], ['国家部委', '山东', '北京'], ['不限地区', '国家部委']];
-  const levelSets = [[], ['国家部委'], ['省级'], ['国家部委', '省级']];
-  for (const regions of regionSets) {
-    for (const levels of levelSets) {
-      const after = conditions.migrateNational(regions, levels);
-      assert.deepEqual(titles(after.regions, after.levels), titles(regions, levels), `${regions} / ${levels}`);
-    }
+  const cases = [
+    // [地区, 层级, 请求, 列出]
+    [['山东'], ['国家部委'], { regions: '国家部委,山东' }, ['国家', '山东省级', '山东市级']],
+    [['山东'], ['国家部委', '省级'], { regions: '国家部委,山东', levels: '国家部委,省级' }, ['国家', '山东省级']],
+    [['山东'], ['省级'], { regions: '山东', levels: '省级' }, ['山东省级']],
+    [['山东'], [], { regions: '山东' }, ['山东省级', '山东市级']],
+    [['不限地区'], ['国家部委'], { regions: '不限地区', levels: '国家部委' }, ['国家']],
+    [['不限地区'], ['国家部委', '省级'], { regions: '不限地区', levels: '国家部委,省级' }, ['北京省级', '国家', '山东省级']],
+    [['山东', '北京'], ['国家部委'], { regions: '国家部委,山东,北京' }, ['北京省级', '国家', '山东省级', '山东市级']],
+  ];
+  for (const [region, level, request, listed] of cases) {
+    const { page, calls } = searchPage();
+    page.onLoad({}); await flush();
+    for (const r of region.filter((x) => x !== '不限地区')) page.pickOption(event({ group: 'region', option: r }));
+    for (const l of level) page.pickOption(event({ group: 'level', option: l }));
+    await flush();
+    const sent = { regions: calls.at(-1).regions, ...(calls.at(-1).levels ? { levels: calls.at(-1).levels } : {}) };
+    assert.deepEqual(sent, request, `${region} / ${level}`);
+    assert.deepEqual(mockSearch(docs, { time: '不限', ...sent }).items.map((d) => d.title).sort(), listed.slice().sort(), `${region} / ${level}`);
+    assert.equal(page.data.emptyHint, '');
+    // 关注名称按界面上选的写，国家部委不重复
+    assert.equal((page.followName().match(/国家部委/g) || []).length, level.includes('国家部委') ? 1 : 0);
   }
 });
 
-test('国家部委兼容转换：网址参数和关注条件打开搜索时转换，请求和关注都用层级；保留下来的显示为已选，去掉后不再出现', async () => {
-  // 截止雷达、旧版本的关注：regions=国家部委
+test('打开旧条件（网址参数、保存的关注）：换成界面上的地区和层级，拼回去的请求结果不变', async () => {
+  const m = (regions, levels) => plain(conditions.migrateNational(regions, levels));
+  assert.deepEqual(m(['国家部委'], []), { regions: ['不限地区'], levels: ['国家部委'] });
+  assert.deepEqual(m(['国家部委'], ['国家部委', '省级']), { regions: ['不限地区'], levels: ['国家部委'] });
+  assert.deepEqual(m(['国家部委', '山东'], []), { regions: ['山东'], levels: ['国家部委'] });
+  assert.deepEqual(m(['国家部委', '山东'], ['国家部委']), { regions: ['不限地区'], levels: ['国家部委'] });
+  assert.deepEqual(m(['国家部委', '山东'], ['省级']), { regions: ['山东'], levels: ['省级'] });
+  assert.deepEqual(m(['国家部委', '山东'], ['国家部委', '省级']), { regions: ['山东'], levels: ['国家部委', '省级'] });
+  assert.deepEqual(m(['山东'], ['国家部委', '省级']), { regions: ['山东'], levels: ['省级'] });
+  assert.deepEqual(m(['山东'], ['省级']), { regions: ['山东'], levels: ['省级'] });
+  assert.deepEqual(m(['不限地区'], []), { regions: ['不限地区'], levels: [] });
+  // 原来必然查不到的两种按字面意思换
+  assert.deepEqual(m(['国家部委'], ['省级']), { regions: ['不限地区'], levels: ['国家部委', '省级'] });
+  assert.deepEqual(m(['山东'], ['国家部委']), { regions: ['山东'], levels: ['国家部委'] });
+
+  // 所有组合：旧请求 → 界面 → 新请求，在演示数据（规则与服务端一致，含市级文件）上结果相同
+  const docs = [
+    { title: '国家', kind: '申报通知', region: '国家', date: '2026-09-01' },
+    { title: '山东省级', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01' },
+    { title: '山东市级', kind: '申报通知', region: '山东 · 市级', date: '2026-09-01' },
+    { title: '北京省级', kind: '申报通知', region: '北京 · 省级', date: '2026-09-01' },
+  ];
+  const titles = (params) => mockSearch(docs, { time: '不限', ...params }).items.map((d) => d.title).sort();
+  const regionSets = [['不限地区'], ['山东'], ['山东', '北京'], ['国家部委'], ['国家部委', '山东'], ['国家部委', '山东', '北京'], ['不限地区', '国家部委']];
+  const levelSets = [[], ['国家部委'], ['省级'], ['国家部委', '省级']];
+  const changed = [];
+  for (const regions of regionSets) {
+    for (const levels of levelSets) {
+      const before = titles({ regions: regions.join(','), levels: levels.join(',') });
+      const ui = conditions.migrateNational(regions, levels);
+      const after = titles(conditions.requestScope(ui.regions, ui.levels));
+      if (before.length === 0 && after.length > 0) { changed.push(`${regions}/${levels}`); continue; } // 原来必然查不到的
+      assert.deepEqual(after, before, `${regions} / ${levels}`);
+      // 用新请求再打开一次（如关注后从关注页回来），界面不再变
+      const sent = conditions.requestScope(ui.regions, ui.levels);
+      const again = conditions.migrateNational(sent.regions.split(','), sent.levels ? sent.levels.split(',') : []);
+      assert.deepEqual(plain(again), plain(ui), `${regions} / ${levels}`);
+    }
+  }
+  assert.deepEqual(changed, ['山东/国家部委', '山东,北京/国家部委', '国家部委/省级', '不限地区,国家部委/省级']);
+
+  // 搜索页：截止雷达、旧版本的关注 regions=国家部委 → 层级
   const { page, calls } = searchPage();
   const url = new URL(conditions.searchUrl({ kind: '申报通知', regions: '国家部委', time: '不限' }), 'https://test.invalid');
   page.onLoad(Object.fromEntries(url.searchParams)); await flush();
   assert.equal(calls.at(-1).regions, '不限地区');
   assert.equal(calls.at(-1).levels, '国家部委');
-  assert.equal(page.conditions().levels, '国家部委');
   assert.deepEqual(chipLabels(page), ['不限时间', '国家部委']);
   assert.equal(page.data.counts.level, 1);
   assert.equal(page.data.counts.region, 0);
+  // 旧关注"国家部委 + 山东"：界面上是地区山东、层级国家部委，请求照旧
+  page.onLoad({ regions: '国家部委,山东' }); await flush();
+  assert.deepEqual(plain(page.data.picked.region), ['山东']);
+  assert.deepEqual(plain(page.data.picked.level), ['国家部委']);
+  assert.equal(calls.at(-1).regions, '国家部委,山东');
+  assert.equal(calls.at(-1).levels, undefined);
   assert.ok(!page.data.groups.find((g) => g.key === 'region').options.includes('国家部委'));
-  // 国家部委 + 省份、层级只选省级：地区去掉国家部委
-  page.onLoad({ regions: '国家部委,山东', levels: '省级' }); await flush();
-  assert.equal(calls.at(-1).regions, '山东');
-  assert.equal(calls.at(-1).levels, '省级');
-  // 国家部委 + 省份、没选层级：没有结果相同的新写法，原样查，在地区里显示为已选
-  const legacy = searchPage();
-  legacy.page.onLoad({ regions: '国家部委,山东' }); await flush();
-  assert.equal(legacy.calls.at(-1).regions, '国家部委,山东');
-  assert.equal(legacy.calls.at(-1).levels, undefined);
-  const region = () => legacy.page.data.groups.find((g) => g.key === 'region');
-  assert.deepEqual(plain(region().options.slice(0, 2)), ['不限地区', '国家部委']);
-  assert.equal(legacy.page.data.pickedMap['region:国家部委'], true);
-  assert.equal(legacy.page.data.counts.region, 2);
-  legacy.page.removePicked(event({ group: 'region', option: '国家部委' })); await flush();
-  assert.equal(legacy.calls.at(-1).regions, '山东');
-  assert.ok(!region().options.includes('国家部委'));
 });
 
 test('已选条件条：按组的顺序列出，点一个去掉并立即重新查；最后是"清空"；没有已选条件时不显示', async () => {
@@ -211,13 +265,13 @@ test('已选条件条：按组的顺序列出，点一个去掉并立即重新�
   assert.ok(template.indexOf('picked-bar') < template.indexOf('class="summary"'));
 });
 
-test('结果信息栏：第一行份数和淡色"共 X 份"（不限时间时不写）、排序、选择、关注小按钮；折叠说明单独一行，文字不变', async () => {
+test('结果信息栏：第一行份数和淡色"不限时间共 X 份"（选了不限时间时不写）、排序、选择、关注小按钮；折叠说明单独一行，文字不变', async () => {
   const { page } = searchPage({ respond: () => ({ total: 544, total_all: 1268, folded: 141, guides: 141, items: [] }) });
   page.onLoad({}); await flush();
   assert.equal(`${page.data.fold.text}${page.data.fold.link}`, '已折叠 141 篇非申报类文件（资讯与指南），点开查看');
   const template = read('pages/search/index.wxml');
   const summary = /<view wx:if="{{!loading && !error}}" class="summary">[\s\S]*?\n<\/view>/.exec(template)[0];
-  assert.match(summary, /<text class="b">{{total}}<\/text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all">共 {{totalAll}} 份<\/text>/);
+  assert.match(summary, /<text class="b">{{total}}<\/text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all">不限时间共 {{totalAll}} 份<\/text>/);
   assert.match(summary, /按发布时间 ↓/);
   assert.match(summary, /bindtap="select"/);
   assert.match(summary, /class="follow-mini {{followOff \? 'follow-mini--off' : ''}}" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
@@ -226,22 +280,33 @@ test('结果信息栏：第一行份数和淡色"共 X 份"（不限时间时不
   assert.doesNotMatch(read('pages/search/index.wxss'), /\.follow-bar/);
 });
 
-test('关注小按钮：协议定稿前是灰色，点了弹出原因，不报错；定稿后是正常样式', async () => {
-  let consentCalls = 0;
-  const off = searchPage({ final: false, consent: { ensureConsent: () => { consentCalls += 1; return Promise.resolve(false); } },
+test('关注小按钮：协议定稿前是灰色，点了弹出原因（末尾写关注后会怎样），不报错；开放后确认框写"关注后，有新文件时在关注页标出"', async () => {
+  const NOTE = '关注后，有新文件时在关注页标出';
+  const notes = [];
+  const off = searchPage({ final: false, consent: { ensureConsent: (note) => { notes.push(note); return Promise.resolve(false); } },
     wx: { showToast: () => assert.fail('不应弹出错误提示'), showModal: () => assert.fail('同意前不应打开关注对话框') } });
   assert.equal(off.page.data.followOff, true);
   off.page.follow(); await flush();
-  assert.equal(consentCalls, 1);
-  assert.equal(searchPage({ final: true }).page.data.followOff, false);
-  // 原因由 ensureConsent 弹出：协议还是草案时写明定稿后开放
+  assert.deepEqual(notes, [NOTE]);
+  // 原因由 ensureConsent 弹出：协议还是草案时写明定稿后开放，末尾补上关注后会怎样；别处不传时和以前一样
   let modal;
   const consent = load('utils/consent.js', {
     '../content/legal.js': { final: false }, './api.js': {}, './exports.js': {}, './exporter.js': {},
   }, { wx: { showModal: (o) => { modal = o; } } });
-  assert.equal(await consent.ensureConsent(), false);
+  assert.equal(await consent.ensureConsent(NOTE), false);
   assert.equal(modal.title, '协议定稿后开放');
-  assert.match(modal.content, /协议正在定稿，定稿后开放/);
+  assert.equal(modal.content, '关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。关注后，有新文件时在关注页标出。');
+  await consent.ensureConsent();
+  assert.equal(modal.content, '关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。');
+  // 协议开放后：确认框（可编辑名称）的标题写这句
+  let confirm;
+  const on = searchPage({ final: true, consent: { ensureConsent: () => Promise.resolve(true) }, wx: { showModal: (o) => { confirm = o; } } });
+  assert.equal(on.page.data.followOff, false);
+  on.page.onLoad({}); await flush();
+  on.page.follow(); await flush();
+  assert.equal(confirm.title, NOTE);
+  assert.equal(confirm.editable, true);
+  assert.equal(confirm.confirmText, '关注');
   const style = read('pages/search/index.wxss');
   assert.match(style, /\.follow-mini--off \{[^}]*background: var\(--fill\);[^}]*color: var\(--t3\);/);
 });
