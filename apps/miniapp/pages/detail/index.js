@@ -5,6 +5,7 @@ const { requestOnce } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const attachments = require('../../utils/attachments.js');
 
 // 正文默认显示的字数：在这个长度附近的换行处截断，读起来不断在半句
 const BODY_PREVIEW = 600;
@@ -17,7 +18,8 @@ function previewOf(text) {
 
 Page({
   data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '' },
+    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '',
+    atts: [], attNote: '' },
 
   onLoad(query) {
     this.docId = query.id;
@@ -50,6 +52,9 @@ Page({
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
+          // 附件：存有副本的点了在小程序里打开，其他的复制原文链接并说明原因
+          atts: attachments.decorate(doc.attachments),
+          attNote: attachments.note(doc.attachments),
           // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
           changes: (doc.deadline_changes || []).map((c) => Object.assign({}, c, {
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
@@ -58,7 +63,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false,
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -141,6 +146,16 @@ Page({
 
   copy() {
     copyLink(this.data.doc && this.data.doc.url);
+  },
+
+  // 点附件：能打开的下载后用微信打开（右上角菜单可转发、保存）；不能打开的复制原文链接并说明原因
+  openAttachment(e) {
+    const att = this.data.atts[e.currentTarget.dataset.index];
+    const { doc } = this.data;
+    if (!att || !doc || this.openingAttachment) return;
+    this.openingAttachment = true;
+    const done = () => { this.openingAttachment = false; };
+    attachments.open(att, doc.url).then(done, done);
   },
 
   // 导出本份：Excel 或 Word，含原文链接和数据说明

@@ -76,7 +76,7 @@ PREFIX = "attachments/"
 # 附件副本的文件 ID：cloud://环境ID.存储桶ID/attachments/<SHA-256>.<格式>
 # （cloudID 的组成见云托管《对象存储》文档）
 _FILE_ID = re.compile(
-    r"^cloud://([^./]+)\.[^/]+/(attachments/[0-9a-f]{64}\.(?:docx?|xlsx?|pptx?|pdf))$"
+    r"cloud://([^./]+)\.[^/]+/(attachments/[0-9a-f]{64}\.(?:docx?|xlsx?|pptx?|pdf))"
 )
 _DELETE_BATCH = 50
 _DELETE_MAX = 500
@@ -98,7 +98,7 @@ def object_path(digest: str, file_type: str) -> str:
 
 def parse_file_id(file_id: str | None) -> tuple[str, str] | None:
     """附件副本的文件 ID → (环境 ID, 对象路径)。不是 attachments/ 下的副本（比如备份）返回 None。"""
-    match = _FILE_ID.match(file_id or "")
+    match = _FILE_ID.fullmatch(file_id or "")
     return (match.group(1), match.group(2)) if match else None
 
 
@@ -161,7 +161,9 @@ def _pdf_text(data: bytes) -> str | None:
         for page in pdf.pages:
             text = page.extract_text() or ""
             # 某一页几乎没有文字但有图片：多半是扫描页，查不了
-            if len(text.strip()) < 10 and page.images:
+            scanned = len(text.strip()) < 10 and bool(page.images)
+            page.close()  # 释放这一页解析出的对象，大文件不至于占满内存
+            if scanned:
                 return None
             texts.append(text)
     joined = "\n".join(texts)

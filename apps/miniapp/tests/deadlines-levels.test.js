@@ -62,6 +62,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
+    '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
   assert.equal(page.data.dueNote, '截止未核对，请以原文为准');

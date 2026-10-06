@@ -42,11 +42,17 @@
 .audience-note { margin-top: 12rpx; font-size: 24rpx; line-height: 1.6; }
 
 .att { display: flex; align-items: center; gap: 24rpx; padding: 24rpx 0; border-bottom: 2rpx solid var(--line); }
-.att-ext { width: 72rpx; height: 72rpx; flex-shrink: 0; border-radius: 16rpx; display: flex; align-items: center; justify-content: center; font-size: 20rpx; font-weight: 700; }
+.att--pressed { opacity: 0.6; }
+.att-ext { width: 72rpx; height: 72rpx; flex-shrink: 0; border-radius: 16rpx; display: flex; align-items: center; justify-content: center; font-size: 20rpx; font-weight: 700; background: var(--fill); color: var(--t2); }
 .att-ext--PDF { background: var(--r-tint); color: var(--red); }
 .att-ext--XLSX, .att-ext--XLS { background: var(--g-tint); color: var(--g-txt); }
 .att-ext--DOC, .att-ext--DOCX { background: var(--brand-tint); color: var(--brand); }
-.att-name { flex: 1; font-size: 28rpx; line-height: 1.5; }
+.att-ext--PPT, .att-ext--PPTX { background: var(--o-tint); color: var(--o-txt); }
+.att-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4rpx; }
+.att-name { font-size: 28rpx; line-height: 1.5; }
+.att-meta { font-size: 24rpx; line-height: 1.5; color: var(--t3); }
+.att-action { flex-shrink: 0; font-size: 26rpx; color: var(--t3); }
+.att-action--open { color: var(--brand); font-weight: 500; }
 .att-foot { display: flex; align-items: center; padding: 22rpx 0 24rpx; font-size: 25rpx; color: var(--t2); }
 .copy { margin-left: auto; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
 .copy--big { font-size: 28rpx; }
