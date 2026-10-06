@@ -44,12 +44,14 @@ HEADERS = (
     "地区",
     "截止日期",
     "日期角色",
+    "支持方式",
     "未核项",
 )
 NOTICE = (
     "本文件由第三方整理，非政府平台；截止日期只列人工核对通过的记录，"
     "请以发文机关原文为准；名单状态仅按标题用词标注。"
-    "“日期角色”是人工核对时确认的截止类型；“未核项”列出这一行还没有人工核对的字段，请对照原文。"
+    "“日期角色”是人工核对时确认的截止类型；“支持方式”只写申报通知里人工核对通过的；"
+    "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
 # 日期角色：没有人工核对过的截止时固定写这句，不写任何日期（未核对的候选日期不进导出文件）
 ROLE_SEE_ORIGINAL = "截止时间见原文"
@@ -73,6 +75,7 @@ class ExportItem:
     region: str
     deadline: str
     date_role: str
+    support: str
     unchecked: str
     urls: list[str]
     sites: str
@@ -286,11 +289,15 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 roles.append(f"{d.kind}（已{d.change_reason}）")
                 seen.add(key)
         kind = effective_kind(doc.title, doc.kind_override)
+        # 支持方式：和详情页"支持方式（已核对原文）"同一来源、同样叫法，只有申报通知有；
+        # 不用按标题归类的筛选标签（rule_supports）
+        supports = approved_fields.get(master, {}).get("support", [])
+        support = ("、".join(supports) or "见原文") if kind == "申报通知" else "—"
         unchecked = _unchecked(
             kind,
             has_deadline=bool(notes),
             deadline_pending=master in pending_deadline,
-            support_approved="support" in approved_fields.get(master, {}),
+            support_approved=bool(supports),
             support_pending=master in pending_support,
         )
         group = members[master]
@@ -317,6 +324,7 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 region=region_label(source.province, source.level),
                 deadline="；".join(notes) if notes else "见原文",
                 date_role="；".join(dict.fromkeys(roles)) if roles else ROLE_SEE_ORIGINAL,
+                support=support,
                 unchecked="、".join(unchecked) or "无",
                 urls=urls,
                 sites="；".join(sites),
@@ -356,6 +364,7 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
             item.region,
             item.deadline,
             item.date_role,
+            item.support,
             item.unchecked,
             *item.urls,
         )
@@ -367,7 +376,7 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
                 sheet.cell(row, column).font = Font(color="0563C1", underline="single")
     sheet.freeze_panes = "B2"
     sheet.auto_filter.ref = sheet.dimensions
-    widths = {"标题": 60, "截止日期": 60, "日期角色": 26, "未核项": 22}
+    widths = {"标题": 60, "截止日期": 60, "日期角色": 26, "支持方式": 22, "未核项": 22}
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[sheet.cell(1, column).column_letter].width = (
             60 if column > len(HEADERS) else widths.get(HEADERS[column - 1], 18)
@@ -436,6 +445,7 @@ def _docx(items: list[ExportItem], stamp: str) -> bytes:
             ("地区", item.region),
             ("截止日期", item.deadline),
             ("日期角色", item.date_role),
+            ("支持方式", item.support),
             ("未核项", item.unchecked),
             ("来源网站", item.sites),
             ("来源核对日期", item.source_checked),
