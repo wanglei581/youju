@@ -24,7 +24,7 @@ const event = (dataset) => ({ currentTarget: { dataset } });
 const daywatch = { watchDay() {}, stopDay() {} };
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const DISCLAIMER = '按标题归类，仅供检索参考，非官方分类';
-const SUPPORTS = ['资金奖补', '贷款贴息', '资质认定', '征集入选'];
+const SUPPORTS = ['资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '征集入选'];
 const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生物医药与健康', '新能源与绿色低碳', '电子信息与集成电路', '现代农业', '文旅与现代服务业'];
 
 function searchPage(respond) {
@@ -38,7 +38,7 @@ function searchPage(respond) {
   return { page, calls };
 }
 
-test('筛选弹层有支持方式（4 项）和产业方向（8 项），都可多选，写明按标题归类、仅供检索参考、非官方分类', () => {
+test('筛选弹层有支持方式（6 项，用详情核对字段的词）和产业方向（8 项），都可多选，写明按标题归类、仅供检索参考、非官方分类', () => {
   const { page } = searchPage(() => ({ total: 0, total_all: 0, items: [] }));
   const support = page.data.groups.find((g) => g.key === 'support');
   const industry = page.data.groups.find((g) => g.key === 'industry');
@@ -52,6 +52,7 @@ test('筛选弹层有支持方式（4 项）和产业方向（8 项），都可�
   assert.ok(industry.note.includes(DISCLAIMER));
   // 和详情页核对过的支持方式区分开
   assert.match(support.note, /文件详情里的“支持方式”是核对原文后标注的/);
+  assert.match(support.note, /“征集入选”只用于筛选/);
   // 筛选弹层把说明显示在选项下面（与项目类别同一个模板）
   assert.match(read('pages/search/index.wxml'), /wx:if="{{g.note}}" class="group-note">{{g.note}}/);
 });
@@ -62,35 +63,35 @@ test('多选的支持方式和产业方向带到接口、关注名称、关注�
   // 没选时不带，和以前保存的关注条件一致
   assert.equal(calls.at(-1).supports, undefined);
   assert.equal(calls.at(-1).industries, undefined);
-  page.pickOption(event({ group: 'support', option: '资金奖补' })); await flush();
+  page.pickOption(event({ group: 'support', option: '资金支持' })); await flush();
   page.pickOption(event({ group: 'support', option: '贷款贴息' })); await flush();
   page.pickOption(event({ group: 'industry', option: '先进制造' })); await flush();
   page.pickOption(event({ group: 'industry', option: '数字经济' })); await flush();
-  assert.equal(calls.at(-1).supports, '资金奖补,贷款贴息');
+  assert.equal(calls.at(-1).supports, '资金支持,贷款贴息');
   assert.equal(calls.at(-1).industries, '先进制造,数字经济');
-  assert.equal(page.conditions().supports, '资金奖补,贷款贴息');
-  assert.match(page.followName(), /资金奖补、贷款贴息/);
-  page.pickOption(event({ group: 'support', option: '资金奖补' })); await flush();
+  assert.equal(page.conditions().supports, '资金支持,贷款贴息');
+  assert.match(page.followName(), /资金支持、贷款贴息/);
+  page.pickOption(event({ group: 'support', option: '资金支持' })); await flush();
   assert.equal(calls.at(-1).supports, '贷款贴息');
   page.resetFilter(); await flush();
   assert.equal(calls.at(-1).supports, undefined);
   assert.equal(calls.at(-1).industries, undefined);
-  const c = { kind: 'all', supports: '资质认定,征集入选', industries: '现代农业', time: '不限' };
-  assert.equal(conditions.describe(c), '不限地区 · 全部类型 · 支持方式：资质认定、征集入选 · 产业方向：现代农业 · 不限');
+  const c = { kind: 'all', supports: '资格认定,征集入选', industries: '现代农业', time: '不限' };
+  assert.equal(conditions.describe(c), '不限地区 · 全部类型 · 支持方式：资格认定、征集入选 · 产业方向：现代农业 · 不限');
   const restored = searchPage(() => ({ total: 0, total_all: 0, items: [] }));
   const url = new URL(conditions.searchUrl(c), 'https://test.invalid');
   restored.page.onLoad(Object.fromEntries(url.searchParams)); await flush();
-  assert.equal(restored.calls.at(-1).supports, '资质认定,征集入选');
+  assert.equal(restored.calls.at(-1).supports, '资格认定,征集入选');
   assert.equal(restored.calls.at(-1).industries, '现代农业');
 });
 
 test('只选政策再选支持方式：空结果里提示支持方式只用于申报通知和名单；产业方向不受类型限制', async () => {
-  assert.equal(conditions.supportConflict('政策', '', '资金奖补'), true);
-  assert.equal(conditions.supportConflict('all', '政策文件', '资金奖补'), true);
-  assert.equal(conditions.supportConflict('all', '', '资金奖补'), false);
+  assert.equal(conditions.supportConflict('政策', '', '资金支持'), true);
+  assert.equal(conditions.supportConflict('all', '政策文件', '资金支持'), true);
+  assert.equal(conditions.supportConflict('all', '', '资金支持'), false);
   assert.equal(conditions.supportConflict('政策', '', ''), false);
   const { page } = searchPage(() => ({ total: 0, total_all: 0, items: [] }));
-  page.onLoad({ kind: '政策', supports: '资金奖补' }); await flush();
+  page.onLoad({ kind: '政策', supports: '资金支持' }); await flush();
   assert.match(page.data.emptyHint, /支持方式只用于申报通知和名单/);
   page.onLoad({ kind: '政策', industries: '数字经济' }); await flush();
   assert.equal(page.data.emptyHint, '');
@@ -98,16 +99,16 @@ test('只选政策再选支持方式：空结果里提示支持方式只用于�
 
 test('演示数据：支持方式只在申报通知和名单里找，同组多选取并集；产业方向所有类型', () => {
   const docs = [
-    { title: 'a', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01', supports: ['资金奖补'], industries: ['先进制造'] },
-    { title: 'b', kind: '名单', region: '山东 · 省级', date: '2026-09-01', supports: ['资质认定'], industries: [] },
-    { title: 'c', kind: '政策', region: '山东 · 省级', date: '2026-09-01', supports: ['资金奖补'], industries: ['数字经济'] },
+    { title: 'a', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01', supports: ['资金支持'], industries: ['先进制造'] },
+    { title: 'b', kind: '名单', region: '山东 · 省级', date: '2026-09-01', supports: ['资格认定'], industries: [] },
+    { title: 'c', kind: '政策', region: '山东 · 省级', date: '2026-09-01', supports: ['资金支持'], industries: ['数字经济'] },
     { title: 'd', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01' },
   ];
   const run = (params) => mockSearch(docs, { time: '不限', ...params }).items.map((d) => d.title);
-  assert.deepEqual(run({ supports: '资金奖补' }), ['a']);
-  assert.deepEqual(run({ supports: '资金奖补,资质认定' }), ['a', 'b']);
+  assert.deepEqual(run({ supports: '资金支持' }), ['a']);
+  assert.deepEqual(run({ supports: '资金支持,资格认定' }), ['a', 'b']);
   assert.deepEqual(run({ industries: '数字经济,先进制造' }), ['a', 'c']);
-  assert.deepEqual(run({ industries: '先进制造', supports: '资质认定' }), []);
+  assert.deepEqual(run({ industries: '先进制造', supports: '资格认定' }), []);
 });
 
 test('按标题算的标签不显示：列表行不读这两项；详情页支持方式只显示核对过的字段，并写明已核对原文', () => {
