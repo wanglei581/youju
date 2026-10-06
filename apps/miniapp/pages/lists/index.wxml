@@ -1,7 +1,7 @@
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="nav" style="height: {{navHeight}}px">
     <view class="nav-back" bindtap="back" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" color="#FFFFFF" /></view>
-    <text class="nav-title">查名单</text><text class="report-link" bindtap="openBoard">名单看板 ›</text>
+    <text class="nav-title">查名单</text>
   </view>
   <view class="h1">查企业上过哪些名单</view>
   <view class="sub">在已收录的高企、专精特新等公示和公布名单里查</view>
@@ -55,7 +55,7 @@
 </view>
 
 <view class="card">
-  <view class="section-title">最近发布的名单<text class="weak count">{{loading || error ? '' : '本周 ' + weekTotal + ' 份'}}</text></view>
+  <view class="section-title">最近发布的名单<view class="sec-right"><text class="weak count">{{loading || error ? '' : '本周 ' + weekTotal + ' 份'}}</text><text class="link board-link" bindtap="openBoard" aria-role="button">名单看板 ›</text></view></view>
   <view class="chips">
     <view wx:for="{{chips}}" wx:key="*this" class="chip {{chip === item ? 'chip--on' : ''}}" data-chip="{{item}}" bindtap="pickChip">{{item}}</view>
   </view>
