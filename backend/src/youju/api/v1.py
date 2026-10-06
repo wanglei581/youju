@@ -42,6 +42,7 @@ from youju.models import (
     DocumentDetail,
     DocumentField,
     DocumentMerge,
+    JobRun,
     ListEntry,
     Source,
 )
@@ -503,7 +504,8 @@ def _count(session: Session, stmt: Select) -> int:
 
 @router.get("/home")
 def home(session: SessionDep) -> dict:
-    """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
+    """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最近一次成功检查的时间、
+    最新 8 份。"""
     start, end = _week(now().date())
     week = visible_documents(
         select(Document.title, Document.kind_override)
@@ -522,6 +524,11 @@ def home(session: SessionDep) -> dict:
         )
         or 0
     )
+    # 最近一次成功检查：定时任务台账里最近一次成功结束的抓取（crawl）的结束时间；没有记录时为空。
+    # 本周 0 份时小程序写"本周暂无新文件 · 最近检查 …"，只陈述检查时间，不推测原因。
+    last_checked = session.scalar(
+        select(func.max(JobRun.finished_at)).where(JobRun.job == "crawl", JobRun.status == "ok")
+    )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
     latest = session.execute(
         _ordered(_base().where(_kind_is(["申报通知", "名单", "政策"]))).limit(8)
@@ -536,6 +543,9 @@ def home(session: SessionDep) -> dict:
             "sources": sources,
             # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
             "followed_new": None,
+            "last_checked_at": (
+                last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
+            ),
         },
         "items": _items(session, [tuple(r) for r in latest]),
     }

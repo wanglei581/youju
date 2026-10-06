@@ -1,1 +1,1 @@
-{ "component": true, "usingComponents": { "t-icon": "tdesign-miniprogram/icon/icon" } }
+{ "component": true, "usingComponents": { "t-icon": "/components/icon/index" } }

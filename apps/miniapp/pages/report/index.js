@@ -7,6 +7,8 @@ const PAGE_SIZE = 20;
 
 Page({
   data: {
+    statusBarHeight: 20,
+    navHeight: 44,
     days: 7,
     summary: { 7: 0, 14: 0, 30: 0 },
     items: [],
@@ -24,7 +26,11 @@ Page({
     supports: ['不限支持方式', '资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '其他'],
   },
 
-  onLoad() { this.load(true); },
+  onLoad() {
+    const { statusBarHeight, navHeight } = getApp().globalData;
+    this.setData({ statusBarHeight, navHeight });
+    this.load(true);
+  },
   onShow() {
     if (this.loadedDay !== todayISO()) this.load(true);
     watchDay(this, () => this.load(true));

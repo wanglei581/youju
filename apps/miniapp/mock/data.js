@@ -521,7 +521,8 @@ module.exports = {
     "other": 63,
     "provinces": 28,
     "sources": 72,
-    "followed_new": 10
+    "followed_new": 10,
+    "last_checked_at": "2026-09-28T09:30:00+08:00"
   },
   "home": [
     {
