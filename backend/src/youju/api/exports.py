@@ -26,18 +26,33 @@ from youju.classify import effective_kind, list_status, region_label
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
-from youju.models import Document, DocumentDeadline, DocumentDetail, Source
+from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentField, Source
 from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
 TZ = ZoneInfo("Asia/Shanghai")
 MAX_BYTES = 1000 * 1024
-HEADERS = ("序号", "标题", "类型", "名单状态", "发文机关", "文号", "发布日期", "地区", "截止日期")
+HEADERS = (
+    "序号",
+    "标题",
+    "类型",
+    "名单状态",
+    "发文机关",
+    "文号",
+    "发布日期",
+    "地区",
+    "截止日期",
+    "日期角色",
+    "未核项",
+)
 NOTICE = (
     "本文件由第三方整理，非政府平台；截止日期只列人工核对通过的记录，"
     "请以发文机关原文为准；名单状态仅按标题用词标注。"
+    "“日期角色”是人工核对时确认的截止类型；“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
+# 日期角色：没有人工核对过的截止时固定写这句，不写任何日期（未核对的候选日期不进导出文件）
+ROLE_SEE_ORIGINAL = "截止时间见原文"
 
 
 class ExportIn(BaseModel):
@@ -57,6 +72,8 @@ class ExportItem:
     published: str
     region: str
     deadline: str
+    date_role: str
+    unchecked: str
     urls: list[str]
     sites: str
     source_checked: str
@@ -74,6 +91,33 @@ def _deadline_text(d: DocumentDeadline) -> str:
     return f"{d.kind} {day}{clock}"
 
 
+def _unchecked(
+    kind: str,
+    *,
+    has_deadline: bool,
+    deadline_pending: bool,
+    support_approved: bool,
+    support_pending: bool,
+) -> list[str]:
+    """这一行还没有人工核对的关键字段（固定顺序）。只看核对状态，不按正文或标题推断。
+
+    - 截止日期：没有核对过的截止（截止日期那一格写"见原文"）；已有核对过的、但还有
+      待核对的候选时写"其他截止日期"（列出的已核对，可能还有别的截止没核对）
+    - 支持方式：只有申报通知有；没有核对通过的，或还有待核对（含正文变了要重核）的候选
+    - 名单状态：只有名单有；只照录标题用词（D-018），没有人工核对这一步
+    """
+    items: list[str] = []
+    if not has_deadline:
+        items.append("截止日期")
+    elif deadline_pending:
+        items.append("其他截止日期")
+    if kind == "申报通知" and (not support_approved or support_pending):
+        items.append("支持方式")
+    if kind == "名单":
+        items.append("名单状态")
+    return items
+
+
 def _is_web_url(url: str) -> bool:
     parts = urlsplit(url)
     return parts.scheme in ("http", "https") and bool(parts.netloc)
@@ -89,14 +133,14 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
             valid.append((raw, int(raw)))
     parsed = [doc_id for _, doc_id in valid]
     # 只导出可以公开的文件（和小程序列出的一致）；其他的当作不存在
-    from youju.api.v1 import public_condition
+    from youju.api import v1
 
     found = (
         set(
             session.scalars(
                 select(Document.id)
                 .join(Source, Document.source_id == Source.id)
-                .where(Document.id.in_(parsed), public_condition())
+                .where(Document.id.in_(parsed), v1.public_condition())
             )
         )
         if parsed
@@ -161,6 +205,32 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
         for d in group
         if d.changed_to_document_id
     ]
+    # 未核项只看有没有待核对的候选（截止、支持方式），不读候选的日期和取值
+    pending_deadline = {
+        member_master[doc_id]
+        for doc_id in session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(
+                DocumentDeadline.document_id.in_(member_master),
+                DocumentDeadline.status == "pending",
+            )
+            .distinct()
+        )
+    }
+    pending_support = {
+        member_master[doc_id]
+        for doc_id in session.scalars(
+            select(DocumentField.document_id)
+            .where(
+                DocumentField.document_id.in_(member_master),
+                DocumentField.field == "support",
+                DocumentField.status.in_(("pending", "stale")),
+            )
+            .distinct()
+        )
+    }
+    # 已核对的支持方式和详情页同一口径（当前正文、一级来源、人工通过）
+    approved_fields = v1._approved_fields(session, ordered)
     target_masters = canonical_ids(session, target_ids)
     titles = {
         doc_id: title
@@ -197,11 +267,15 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
             key=lambda d: (d.approved_date, d.id),
         )
         notes: list[str] = []
+        # 日期角色：截止日期那一格里每一条的截止类型（核对台通过时确认的类型，叫法和核对台、
+        # 小程序一致），按截止日期那一格的顺序，同类只写一次
+        roles: list[str] = []
         seen: set[tuple] = set()
         for d in approved:
             key = (d.kind, d.approved_date, d.approved_time)
             if key not in seen:
                 notes.append(_deadline_text(d))
+                roles.append(d.kind)
                 seen.add(key)
         for d in changed:
             key = (d.kind, d.approved_date, d.approved_time)
@@ -209,7 +283,16 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 target = target_masters.get(d.changed_to_document_id, d.changed_to_document_id)
                 title = titles.get(target, "变更通知")
                 notes.append(f"原定 {_deadline_text(d)} 已{d.change_reason}，见新通知《{title}》")
+                roles.append(f"{d.kind}（已{d.change_reason}）")
                 seen.add(key)
+        kind = effective_kind(doc.title, doc.kind_override)
+        unchecked = _unchecked(
+            kind,
+            has_deadline=bool(notes),
+            deadline_pending=master in pending_deadline,
+            support_approved="support" in approved_fields.get(master, {}),
+            support_pending=master in pending_support,
+        )
         group = members[master]
         urls = list(dict.fromkeys(item.url for item, _ in group))
         sites = list(
@@ -226,13 +309,15 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 number=index,
                 doc_id=master,
                 title=doc.title,
-                kind=effective_kind(doc.title, doc.kind_override),
-                status=list_status(doc.title, effective_kind(doc.title, doc.kind_override)) or "",
+                kind=kind,
+                status=list_status(doc.title, kind) or "",
                 issuer=(best[1] if best and best[1] else source.dept_full_name),
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",
                 region=region_label(source.province, source.level),
                 deadline="；".join(notes) if notes else "见原文",
+                date_role="；".join(dict.fromkeys(roles)) if roles else ROLE_SEE_ORIGINAL,
+                unchecked="、".join(unchecked) or "无",
                 urls=urls,
                 sites="；".join(sites),
                 source_checked="、".join(source_dates) or "未记录",
@@ -270,6 +355,8 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
             item.published,
             item.region,
             item.deadline,
+            item.date_role,
+            item.unchecked,
             *item.urls,
         )
         for column, value in enumerate(values, 1):
@@ -280,9 +367,10 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
                 sheet.cell(row, column).font = Font(color="0563C1", underline="single")
     sheet.freeze_panes = "B2"
     sheet.auto_filter.ref = sheet.dimensions
+    widths = {"标题": 60, "截止日期": 60, "日期角色": 26, "未核项": 22}
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[sheet.cell(1, column).column_letter].width = (
-            60 if column in (2, 9) or column > len(HEADERS) else 18
+            60 if column > len(HEADERS) else widths.get(HEADERS[column - 1], 18)
         )
 
     note = book.create_sheet("数据说明")
@@ -347,6 +435,8 @@ def _docx(items: list[ExportItem], stamp: str) -> bytes:
             ("发布日期", item.published),
             ("地区", item.region),
             ("截止日期", item.deadline),
+            ("日期角色", item.date_role),
+            ("未核项", item.unchecked),
             ("来源网站", item.sites),
             ("来源核对日期", item.source_checked),
             ("截止日期核对日期", item.deadline_checked),
