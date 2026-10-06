@@ -37,7 +37,7 @@ test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 
   const template = wxml('lists');
   const top = template.slice(0, template.indexOf('<notice-bar />'));
   assert.match(top, /<view class="h1">查企业上过哪些名单<\/view>/);
-  assert.match(top, /<view class="sub">高企、专精特新、科技型中小企业等公示和公布名单<\/view>/);
+  assert.match(top, /<view class="sub">在已收录的高企、专精特新、科技型中小企业等公示和公布名单里查<\/view>/);
   assert.match(top, /<view class="search">/);
   // 顶部的说明文字只有标题和副标题两行
   assert.deepEqual([...top.matchAll(/<view class="(h1|sub)">/g)].map((m) => m[1]), ['h1', 'sub']);
@@ -78,12 +78,12 @@ test('查询说明默认收起成一行（info 图标、向下箭头），点开
   assert.ok(!/class="note"/.test(template));
 });
 
-test('还没查询时，最近发布的名单上方有一行浅色提示；查询后换成查询结果', () => {
+test('搜索框下面不另加提示（和搜索框里的提示重复），查询说明之后直接是查询结果和最近发布的名单', () => {
   const template = wxml('lists');
-  assert.match(template, /<view wx:if="{{!queried}}" class="hint">输入企业全称或统一社会信用代码查询<\/view>\s*<view class="card">\s*<view class="section-title">最近发布的名单/);
-  assert.match(read('pages/lists/index.wxss'), /\.hint \{[^}]*color: var\(--t3\)/);
+  assert.ok(!/class="hint"|输入企业全称或统一社会信用代码查询/.test(template));
+  assert.ok(!/\.hint \{/.test(read('pages/lists/index.wxss')));
+  assert.match(template, /placeholder="输入企业全称或统一社会信用代码"/);
   const page = listsPage();
-  assert.equal(page.data.queried, '');
   page.setData({ name: '某某科技有限公司' });
   page.query();
   assert.equal(page.data.queried, '某某科技有限公司');

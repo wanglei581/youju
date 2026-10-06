@@ -14,8 +14,6 @@
 .rules-body { padding: 16rpx 28rpx 20rpx; background: var(--card); border-radius: 24rpx; }
 .rule { position: relative; padding: 6rpx 0 6rpx 24rpx; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
 .rule::before { content: ''; position: absolute; left: 4rpx; top: 22rpx; width: 8rpx; height: 8rpx; border-radius: 50%; background: var(--t3); }
-/* 还没查询时，最近发布的名单上方的一行浅色提示 */
-.hint { margin: 12rpx 32rpx 0; font-size: 24rpx; color: var(--t3); }
 .result { padding-bottom: 28rpx; }
 .result-text { font-size: 26rpx; line-height: 1.7; }
 .result-sum { font-size: 24rpx; padding-bottom: 8rpx; }
