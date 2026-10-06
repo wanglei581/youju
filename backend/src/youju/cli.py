@@ -287,34 +287,53 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
-    """按当前的标题规则重算每份文件的类型（rule_kind）和项目类别（rule_category），只写有变化的。
-    规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
+    """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
+    （rule_supports、rule_industries），只写有变化的。规则改了之后要跑一次；admin 服务每次启动时
+    在迁移之后自动跑。"""
     from collections import defaultdict
 
     from sqlalchemy import update
 
     from youju.categories import doc_category
     from youju.classify import doc_kind
+    from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
     with session_factory()() as session:
         rows = session.execute(
-            select(Document.id, Document.title, Document.rule_kind, Document.rule_category)
+            select(
+                Document.id,
+                Document.title,
+                Document.rule_kind,
+                Document.rule_category,
+                Document.rule_supports,
+                Document.rule_industries,
+            )
         ).all()
-        changed: dict[tuple[str, str], list[int]] = defaultdict(list)
-        for doc_id, title, kind, category in rows:
-            new = (doc_kind(title), doc_category(title))
-            if new != (kind, category):
+        changed: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
+        for doc_id, title, *stored in rows:
+            new = (
+                doc_kind(title),
+                doc_category(title),
+                SUPPORT_RULES.stored(title),
+                INDUSTRY_RULES.stored(title),
+            )
+            if new != tuple(stored):
                 changed[new].append(doc_id)
-        for (kind, category), ids in changed.items():
+        for (kind, category, supports, industries), ids in changed.items():
             for start in range(0, len(ids), 1000):
                 session.execute(
                     update(Document)
                     .where(Document.id.in_(ids[start : start + 1000]))
-                    .values(rule_kind=kind, rule_category=category)
+                    .values(
+                        rule_kind=kind,
+                        rule_category=category,
+                        rule_supports=supports,
+                        rule_industries=industries,
+                    )
                 )
         session.commit()
     print(
-        f"按当前规则重算文件类型和项目类别：共 {len(rows)} 份，"
+        f"按当前规则重算文件类型、项目类别和筛选标签：共 {len(rows)} 份，"
         f"更新 {sum(map(len, changed.values()))} 份"
     )
     return 0
@@ -741,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "reclassify",
-        help="按当前的标题规则重算每份文件的类型和项目类别（规则改了之后跑；admin 启动时自动跑）",
+        help="按当前标题规则重算类型、项目类别和筛选标签（规则改了之后跑；admin 启动时自动跑）",
     ).set_defaults(func=_cmd_reclassify)
 
     p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")

@@ -48,6 +48,7 @@ from youju.models import (
 )
 from youju.report_revision import publication_revision
 from youju.takedown import available_condition, is_taken_down
+from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -78,6 +79,10 @@ TYPES = {
 }
 # 项目类别（按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有）
 CATEGORY_SET = set(CATEGORIES)
+# 支持方式、产业方向（按标题归类，仅供检索参考，非官方分类；只用于筛选，不返回、不展示）。
+# 支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个或没有
+SUPPORT_SET = set(SUPPORT_MODES)
+INDUSTRY_SET = set(INDUSTRIES)
 # "资讯与指南"以外的类型：折叠资讯与指南时列这些（写成正面的类型列表，不用"不是资讯与指南"，
 # 免得规则列为空时 NOT 出空值把文件漏掉）
 _NOT_GUIDE = [k for k in KINDS if k != GUIDE]
@@ -448,6 +453,19 @@ def _category_is(categories: list[str]):
     return and_(_kind_is(list(CATEGORY_KINDS)), by_rule)
 
 
+def _supports_are(supports: list[str]):
+    """支持方式筛选（按标题）：只在申报通知和名单里找；选了几项，有其中任一项就列出。"""
+    return and_(
+        _kind_is(list(SUPPORT_KINDS)),
+        SUPPORT_RULES.filter(Document.rule_supports, Document.title, supports),
+    )
+
+
+def _industries_are(industries: list[str]):
+    """产业方向筛选（按标题）：所有类型；选了几项，有其中任一项就列出。"""
+    return INDUSTRY_RULES.filter(Document.rule_industries, Document.title, industries)
+
+
 def _folds_guides(kind: str, types: str | None) -> bool:
     """只在"全部"页签、没选类型时折叠资讯与指南；选了类型就按选的列（选了资讯与指南就照常列出）。"""
     return kind == "all" and not _pick(types, TYPES, "类型")
@@ -675,6 +693,13 @@ def search(
         int | None,
         Query(ge=0, le=1, description="1 折叠资讯与指南类文件；0 不折叠但给出篇数；不传则不统计"),
     ] = None,
+    supports: Annotated[
+        str | None,
+        Query(max_length=400, description="支持方式（按标题），逗号分隔（只在申报通知和名单里找）"),
+    ] = None,
+    industries: Annotated[
+        str | None, Query(max_length=400, description="产业方向（按标题），逗号分隔")
+    ] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
 
@@ -682,11 +707,11 @@ def search(
     （不悄悄藏：小程序写明"已折叠 X 篇"，点开就按 fold=0 列出来）；guides 是符合条件的
     资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
     不返回这两项。"""
-    stmt = search_statement(
-        session, q, kind, regions, types, status, time, depts, open, levels, categories
-    )
+    filters = {"levels": levels, "categories": categories}
+    filters |= {"supports": supports, "industries": industries}
+    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
     all_time = search_statement(
-        session, q, kind, regions, types, status, "不限", depts, open, levels, categories
+        session, q, kind, regions, types, status, "不限", depts, open, **filters
     )
     stmt, guides, folded = fold_guides(session, stmt, kind, types, fold)
     if fold == 1 and _folds_guides(kind, types):
@@ -729,6 +754,8 @@ def search_statement(
     open: int | None = None,
     levels: str | None = None,
     categories: str | None = None,
+    supports: str | None = None,
+    industries: str | None = None,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
 
@@ -736,7 +763,8 @@ def search_statement(
     和层级选的国家部委 / 省级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
     所以只在地区里选、只在层级里选、两边都选，结果相同；地区只选省份而层级只选国家部委，
     或地区只选国家部委而层级只选省级，两者没有交集，结果为空（小程序在空结果里提示调整）。
-    项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。
+    项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。支持方式（按标题）
+    也一样；产业方向（按标题）所有类型都有。这三组都是同一组里多选取并集。
     """
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
@@ -748,6 +776,8 @@ def search_statement(
     picked_depts = _pick(depts, DEPTS, "发文部门")
     picked_levels = _pick(levels, LEVELS, "层级")
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
+    picked_supports = _pick(supports, SUPPORT_SET, "支持方式")
+    picked_industries = _pick(industries, INDUSTRY_SET, "产业方向")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -769,6 +799,10 @@ def search_statement(
         stmt = stmt.where(_dept_filter(picked_depts))
     if picked_categories:
         stmt = stmt.where(_category_is(picked_categories))
+    if picked_supports:
+        stmt = stmt.where(_supports_are(picked_supports))
+    if picked_industries:
+        stmt = stmt.where(_industries_are(picked_industries))
 
     if open is not None:
         if open != 1:

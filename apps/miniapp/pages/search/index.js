@@ -5,7 +5,10 @@ const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
-const { levelConflict, categoryConflict, CATEGORIES, CATEGORY_NOTE, GUIDE, foldNote } = require('../../utils/conditions.js');
+const {
+  levelConflict, categoryConflict, supportConflict, CATEGORIES, CATEGORY_NOTE, GUIDE, foldNote,
+  SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+} = require('../../utils/conditions.js');
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -25,15 +28,19 @@ const GROUPS = [
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
   // 项目类别按标题归类，只有申报通知和名单有；说明写在选项下面，不作资格判断
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, options: CATEGORIES, note: CATEGORY_NOTE },
+  // 支持方式、产业方向也按标题归类，只用于筛选（列表和详情不显示）；说明写在选项下面
+  { key: 'support', title: '支持方式', hint: '可多选', multi: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
+  { key: 'industry', title: '产业方向', hint: '可多选', multi: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
-const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], status: [], time: ['近 30 天'], dept: [], open: [] };
+const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: ['近 30 天'], dept: [], open: [] };
 const LEVEL_CONFLICT = '所选地区和层级没有重叠（国家部委和省级是两类来源），请调整地区或层级';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
+const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
 const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
 const PAGE = 20;
 
@@ -76,7 +83,7 @@ Page({
     const time = decodeURIComponent(query.time || '');
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) picked.time = [time];
-    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
+    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
@@ -127,6 +134,9 @@ Page({
       types: picked.type.join(','),
       // 没选项目类别时不带这一项，和加项目类别之前保存的关注条件一致
       categories: picked.category.length ? picked.category.join(',') : undefined,
+      // 支持方式、产业方向同样：没选时不带
+      supports: picked.support.length ? picked.support.join(',') : undefined,
+      industries: picked.industry.length ? picked.industry.join(',') : undefined,
       status: picked.status.join(','),
       time: picked.time[0],
       depts: picked.dept.join(','),
@@ -168,6 +178,7 @@ Page({
           let emptyHint = '';
           if (levelConflict(params.regions, params.levels)) emptyHint = LEVEL_CONFLICT;
           else if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
+          else if (supportConflict(params.kind, params.types, params.supports)) emptyHint = SUPPORT_CONFLICT;
           else if (params.open) emptyHint = OPEN_NOTE;
           this.setData({ emptyHint });
           const regions = params.regions.split(',');
@@ -291,6 +302,8 @@ Page({
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');
     if (c.levels) parts.push(c.levels.split(',').join('、'));
     if (c.categories) parts.push(c.categories.split(',').slice(0, 2).join('、'));
+    if (c.supports) parts.push(c.supports.split(',').slice(0, 2).join('、'));
+    if (c.industries) parts.push(c.industries.split(',').slice(0, 2).join('、'));
     parts.push(tab ? tab.label : '全部');
     if (c.open) parts.push('只看未截止');
     return parts.join(' · ').slice(0, 40);

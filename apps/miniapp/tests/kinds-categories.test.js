@@ -22,7 +22,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const event = (dataset) => ({ currentTarget: { dataset } });
 const daywatch = { watchDay() {}, stopDay() {} };
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-const FORBIDDEN = ['AI', '智能', '大模型', '签约', '分享'];
+const FORBIDDEN = ['AI', '人工智能', '智能', '大模型', '签约', '分享'];
 const DISCLAIMER = '仅供检索参考，非官方分类';
 
 function searchPage(respond) {
@@ -169,9 +169,12 @@ test('关注的新文件：同样折叠资讯与指南，写明篇数，可以�
   assert.match(template, /bindtap="toggleGuides"[^>]*>{{fold.text}}<text class="link">{{fold.link}}<\/text>/);
 });
 
-test('新加的界面文字不出现禁用字样', () => {
+test('新加的界面文字不出现禁用字样（含支持方式、产业方向）', () => {
   const texts = [
     conditions.CATEGORY_NOTE, ...conditions.CATEGORIES, conditions.GUIDE,
+    conditions.SUPPORT_NOTE, ...conditions.SUPPORT_MODES, conditions.INDUSTRY_NOTE, ...conditions.INDUSTRIES,
+    conditions.describe({ kind: 'all', supports: conditions.SUPPORT_MODES.join(','), industries: conditions.INDUSTRIES.join(','), time: '不限' }),
+    read('pages/search/index.js'),
     foldLine({ fold: conditions.foldNote(3, 0) }), foldLine({ fold: conditions.foldNote(0, 3) }),
     read('pages/detail/index.wxml'), read('pages/follow-new/index.wxml'), read('pages/search/index.wxml'),
   ];

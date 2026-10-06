@@ -21,6 +21,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.dbtypes import NOW, JSONType, LongText, UTCDateTime
+from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
 # 网址类字段参与唯一索引，MySQL 要求定长：utf8mb4 每字 4 字节，一个索引总长不超过 3072 字节。
 # 名单记录的唯一索引含网址、名称（256）和序号（32），所以网址最长 400；开发库里最长的是 307。
@@ -36,6 +37,16 @@ def _rule_kind(context) -> str:
 def _rule_category(context) -> str:
     """入库时按标题规则算好项目类别（同 _rule_kind），按类别筛选时只比较这一列。"""
     return doc_category(context.get_current_parameters().get("title") or "")
+
+
+def _rule_supports(context) -> str:
+    """入库时按标题规则算好支持方式（逗号分隔，没有为空串），按支持方式筛选时只比较这一列。"""
+    return SUPPORT_RULES.stored(context.get_current_parameters().get("title") or "")
+
+
+def _rule_industries(context) -> str:
+    """入库时按标题规则算好产业方向（同 _rule_supports）。"""
+    return INDUSTRY_RULES.stored(context.get_current_parameters().get("title") or "")
 
 
 class Base(DeclarativeBase):
@@ -212,6 +223,10 @@ class Document(Base):
     # 按标题规则算出的项目类别（见 youju.categories）：同 rule_kind，入库时算好，规则改了由
     # youju reclassify 重算。只对申报通知和名单显示、筛选
     rule_category: Mapped[str | None] = mapped_column(String(16), default=_rule_category)
+    # 按标题规则算出的支持方式、产业方向（见 youju.title_tags，只用于筛选、不展示）：逗号分隔，
+    # 没有标签存空串，NULL 是还没算；同 rule_category，入库时算好，规则改了由 youju reclassify 重算
+    rule_supports: Mapped[str | None] = mapped_column(String(40), default=_rule_supports)
+    rule_industries: Mapped[str | None] = mapped_column(String(80), default=_rule_industries)
     kind_decided_by: Mapped[str | None] = mapped_column(String(80))
     kind_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

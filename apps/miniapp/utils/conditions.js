@@ -7,6 +7,14 @@ const CATEGORIES = ['资质与梯度培育', '科技计划与研发', '平台载
 const CATEGORY_NOTE = '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单';
 // 有项目类别的两类文件在类型筛选里的名字
 const CATEGORY_TYPES = ['申报通知', '名单与公示'];
+// 支持方式、产业方向（与服务端 youju.title_tags 一致）：按标题关键词归类，只用于筛选，列表和详情里
+// 不显示。支持方式用详情页核对字段的同一套词，详情页"支持方式"卡片只显示核对原文后标注的；
+// "征集入选"只在筛选里有。支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个
+// 或没有。不显示金额
+const SUPPORT_MODES = ['资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '征集入选'];
+const SUPPORT_NOTE = '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项';
+const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生物医药与健康', '新能源与绿色低碳', '电子信息与集成电路', '现代农业', '文旅与现代服务业'];
+const INDUSTRY_NOTE = '按标题归类，仅供检索参考，非官方分类；一份文件可能有多个方向，也可能没有';
 
 function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
@@ -24,12 +32,17 @@ function levelConflict(regions, levels) {
   return !national && !provincial;
 }
 
-// 选了项目类别，但页签或类型里没有申报通知和名单：必然查不到，搜索页在空结果里据此提示调整
+// 选了项目类别（或支持方式），但页签或类型里没有申报通知和名单：必然查不到，搜索页在空结果里
+// 据此提示调整
 function categoryConflict(kind, types, categories) {
   if (!split(categories).length) return false;
   if (kind === '政策') return true;
   const picked = split(types);
   return picked.length > 0 && !picked.some((t) => CATEGORY_TYPES.includes(t));
+}
+
+function supportConflict(kind, types, supports) {
+  return categoryConflict(kind, types, supports);
 }
 
 // 折叠说明：折叠了的写"已折叠 X 篇……点开查看"；已经点开、列表里有的写"……收起"；都没有时不写
@@ -50,6 +63,10 @@ function describe(c) {
   parts.push(KIND_LABEL[c.kind] || '全部类型');
   const categories = split(c.categories);
   if (categories.length) parts.push(`项目类别：${categories.join('、')}`);
+  const supports = split(c.supports);
+  if (supports.length) parts.push(`支持方式：${supports.join('、')}`);
+  const industries = split(c.industries);
+  if (industries.length) parts.push(`产业方向：${industries.join('、')}`);
   if (c.time) parts.push(c.time);
   if (c.open === 1 || c.open === '1') parts.push('只看未截止');
   return parts.join(' · ');
@@ -62,5 +79,6 @@ function searchUrl(c) {
 }
 
 module.exports = {
-  describe, searchUrl, levelConflict, categoryConflict, foldNote, GUIDE, CATEGORIES, CATEGORY_NOTE,
+  describe, searchUrl, levelConflict, categoryConflict, supportConflict, foldNote, GUIDE, CATEGORIES, CATEGORY_NOTE,
+  SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
 };

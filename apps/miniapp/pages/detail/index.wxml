@@ -64,7 +64,7 @@
   </view>
 
   <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
-    <view class="section-title">支持方式</view>
+    <view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文</text></view>
     <view class="support-tags">
       <view wx:for="{{doc.fields.support}}" wx:key="*this" class="support-tag {{supportExpanded === item ? 'support-tag--on' : ''}}" data-label="{{item}}" bindtap="toggleSupport">{{item}}</view>
     </view>
