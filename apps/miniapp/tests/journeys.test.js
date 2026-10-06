@@ -131,7 +131,7 @@ test('J-09 雷达省份来自无筛选30天范围，筛部门/支持方式后仍
   const page = load('pages/report/index.js', {
     '../../utils/api.js': { deadlineReport: (p) => { calls.push({ ...p }); return Promise.resolve({ items: [], total: 0, by_province: p.days === 30 && !p.province ? { 北京: 1, 辽宁: 2 } : { 北京: 1 } }); } },
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-  });
+  }, app);
   page.onLoad(); await flush();
   assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
   const depts = Array.from(page.data.depts); const supports = Array.from(page.data.supports);
@@ -183,16 +183,18 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
   }); calendar.load(); assert.equal(calendar.data.loading, true); assert.equal(calendar.data.loaded, false);
   const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
   recent.onLoad(); assert.equal(recent.data.loading, true);
-  for (const p of ['search', 'follow', 'follow-new', 'calendar', 'report', 'lists']) {
+  for (const p of ['search', 'follow', 'follow-new', 'calendar', 'report']) {
     assert.match(wxml(p), /wx:if="{{loading[^}]*}}"[^>]*>正在加载…/);
   }
+  // 查名单的列表改用灰色占位块（骨架屏），读屏软件读"正在加载"
+  assert.match(wxml('lists'), /wx:if="{{loading}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
   assert.match(wxml('calendar'), /wx:if="{{loaded && !loading && !error}}"/);
   assert.match(wxml('report'), /!items.length && !loading && !error/);
   assert.match(wxml('lists'), /!shown.length && !loading && !error/);
 });
 
 test('本轮修改页面的 WXML 标签闭合，事件都有页面处理函数', () => {
-  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'my-data', 'feedback']) {
+  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'my-data', 'feedback', 'me']) {
     const source = wxml(page).replace(/<!--[\s\S]*?-->/g, '');
     const stack = [];
     const tags = /<(\/?)([\w:-]+)\b(?:"[^"]*"|'[^']*'|[^'"<>])*?>/g;

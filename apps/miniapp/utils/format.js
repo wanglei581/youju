@@ -55,6 +55,19 @@ function weekday(iso) {
   return WEEK[parseISO(iso).getUTCDay()];
 }
 
+// 带时区的时间（如服务端的 2026-10-06T06:30:00+08:00）→ 北京时间"10月6日 06:30"，不是今年的加上年份。
+// 自己解析，不依赖各平台 Date.parse 对时区和小数秒的支持；格式不对返回空串（页面就不写时间）。
+function clockText(iso, now) {
+  const m = typeof iso === 'string'
+    && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/.exec(iso.trim());
+  if (!m) return '';
+  const offset = m[7] === 'Z' ? 0 : (m[8] === '-' ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10])) * 60000;
+  const stamp = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)) - offset;
+  const d = beijingDate(new Date(stamp));
+  const year = d.getUTCFullYear() === beijingDate(now).getUTCFullYear() ? '' : `${d.getUTCFullYear()}年`;
+  return `${year}${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
 // 截止提示：14 天内红字，7 天内再加红底；已过期单独标出
 function dueTone(days) {
   if (days === undefined || days === null) return '';
@@ -134,6 +147,6 @@ function shortTime(iso) {
 
 module.exports = {
   shortTime,
-  todayISO, daysUntil, monthDay, cnDate, weekday, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+  todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
   deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL,
 };

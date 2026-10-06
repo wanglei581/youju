@@ -16,6 +16,7 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentMerge,
+    JobRun,
     ListEntry,
     Source,
 )
@@ -364,6 +365,45 @@ def test_home_week_has_upper_bound_and_followed_new_is_null(client, seeded):
     stats = client.get("/api/v1/home").json()["stats"]
     assert stats["week_total"] == 3  # 9/28（下周一）的文件不算本周
     assert stats["followed_new"] is None
+
+
+def test_home_last_checked_at_is_latest_successful_crawl(client, session, seeded):
+    # 没有运行记录时为空
+    assert client.get("/api/v1/home").json()["stats"]["last_checked_at"] is None
+    session.add_all(
+        [
+            # 最近一次成功结束的抓取：9/26 22:30 UTC = 9/27 06:30 北京时间
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 26, 22, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 26, 22, 30, tzinfo=UTC),
+                status="ok",
+            ),
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 25, 22, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 25, 22, 40, tzinfo=UTC),
+                status="ok",
+            ),
+            # 更晚的失败、还在跑的抓取和其他任务都不算
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 27, 0, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 27, 0, 30, tzinfo=UTC),
+                status="failed",
+            ),
+            JobRun(job="crawl", started_at=datetime(2026, 9, 27, 1, 0, tzinfo=UTC)),
+            JobRun(
+                job="round",
+                started_at=datetime(2026, 9, 27, 1, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 27, 1, 50, tzinfo=UTC),
+                status="ok",
+            ),
+        ]
+    )
+    session.commit()
+    stats = client.get("/api/v1/home").json()["stats"]
+    assert stats["last_checked_at"] == "2026-09-27T06:30:00+08:00"
 
 
 def test_calendar_skips_deadlines_already_passed_today(client, seeded):

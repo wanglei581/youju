@@ -1,0 +1,82 @@
+/* 有据图标组件的样式和图标字体。由 tools/icons/build_icons.py 生成，不要手改；
+ * 加图标：在 tools/icons/icons.txt 里加一行后重跑（步骤见 docs/设计/素材来源与许可.md）。
+ *
+ * 字体：TDesign 图标字体 tdesign-icons 0.4.5 的 t.ttf（sha256 c121c5265a8ebb0a9e267d18a97754312a344869efcd5a1f0b2756995b2806cc），
+ * 只保留下面 30 个字形，压成 woff（3760 字节），以 base64 内嵌，不从网络加载。
+ * 来源、许可和生成方法见 docs/设计/素材来源与许可.md。
+ *
+ * TDesign 图标字体的许可：
+ *
+ * MIT License
+ *
+ * Copyright (c) 2021-present TDesign
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+@font-face {
+  font-family: 'youju-icon';
+  src: url('data:font/woff;base64,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') format('woff');
+  font-weight: normal;
+  font-style: normal;
+}
+
+/* 结构和 TDesign t-icon 一致：块级、行高 1，图标宽高都等于 size；不写 color 时继承外层文字颜色 */
+.yj-icon {
+  display: block;
+  font-family: 'youju-icon' !important;
+  font-style: normal;
+  font-weight: 400;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+  text-align: center;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.yj-icon-add:before { content: '\e00d'; }
+.yj-icon-app:before { content: '\e053'; }
+.yj-icon-book:before { content: '\e0cb'; }
+.yj-icon-bulletpoint:before { content: '\e103'; }
+.yj-icon-calendar:before { content: '\e11b'; }
+.yj-icon-check:before { content: '\e1bc'; }
+.yj-icon-chevron-down:before { content: '\e1c8'; }
+.yj-icon-chevron-left:before { content: '\e1d0'; }
+.yj-icon-chevron-right:before { content: '\e1d8'; }
+.yj-icon-chevron-up:before { content: '\e1e0'; }
+.yj-icon-close:before { content: '\e224'; }
+.yj-icon-copy:before { content: '\e273'; }
+.yj-icon-delete:before { content: '\e2bf'; }
+.yj-icon-download:before { content: '\e2e5'; }
+.yj-icon-file:before { content: '\e37e'; }
+.yj-icon-file-filled:before { content: '\e349'; }
+.yj-icon-filter:before { content: '\e394'; }
+.yj-icon-flag:before { content: '\e3a4'; }
+.yj-icon-home:before { content: '\e470'; }
+.yj-icon-home-filled:before { content: '\e46f'; }
+.yj-icon-hourglass:before { content: '\e47a'; }
+.yj-icon-info-circle:before { content: '\e49f'; }
+.yj-icon-notification:before { content: '\e626'; }
+.yj-icon-notification-filled:before { content: '\e625'; }
+.yj-icon-search:before { content: '\e71d'; }
+.yj-icon-secured:before { content: '\e71f'; }
+.yj-icon-task-checked:before { content: '\e7f3'; }
+.yj-icon-user:before { content: '\e8cd'; }
+.yj-icon-user-filled:before { content: '\e8aa'; }
+.yj-icon-user-safety:before { content: '\e8b6'; }

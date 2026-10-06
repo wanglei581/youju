@@ -47,7 +47,14 @@
     <view wx:for="{{chips}}" wx:key="*this" class="chip {{chip === item ? 'chip--on' : ''}}" data-chip="{{item}}" bindtap="pickChip">{{item}}</view>
   </view>
   <view class="rows">
-    <view wx:if="{{loading}}" class="empty-lookup">正在加载…</view>
+    <view wx:if="{{loading}}" aria-label="正在加载">
+      <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk-row">
+        <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+        <view class="sk sk-line"></view>
+        <view class="sk sk-line sk-line--short"></view>
+        <view class="sk sk-meta"></view>
+      </view>
+    </view>
     <view wx:if="{{chip !== '全部'}}" class="weak result-text">仅筛选最近加载的 {{items.length}} 份名单</view>
     <doc-row wx:if="{{!loading && !error}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" last="{{index === shown.length - 1}}" today="{{today}}" />
     <view wx:if="{{!shown.length && !loading && !error}}" class="empty-lookup">暂无符合类型的名单</view>

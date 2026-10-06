@@ -35,6 +35,11 @@
 .vline { width: 2rpx; height: 56rpx; background: var(--line); }
 .summary-text { flex: 1; min-width: 0; font-size: 24rpx; line-height: 1.6; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .b { color: var(--t1); font-weight: 700; }
+.summary-zero { color: var(--t1); font-size: 26rpx; }
+/* 本周新增的占位块：和数字、两行说明的位置大小一致 */
+.sk-label { width: 96rpx; height: 24rpx; }
+.sk-big { width: 88rpx; height: 40rpx; margin-top: 12rpx; }
+.sk-text { height: 24rpx; margin: 8rpx 0; }
 
 .mine { margin: 20rpx 24rpx 0; min-height: 96rpx; padding: 12rpx 28rpx; box-sizing: border-box; display: flex; align-items: center; gap: 20rpx; background: var(--brand-tint); border-radius: 24rpx; }
 .mine-text { flex: 1; font-size: 28rpx; }
