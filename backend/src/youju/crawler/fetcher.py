@@ -142,6 +142,7 @@ class PoliteFetcher:
         url_allowed: Callable[[str], bool] | None = None,
         resolver: Callable[[str], list[str]] | None = None,
         real_network: bool | None = None,
+        decode_text: bool = True,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -172,6 +173,8 @@ class PoliteFetcher:
         self._clock = clock
         self._sleep = sleep
         self._url_allowed = url_allowed
+        # 下载附件这类二进制文件时不解码成文字（20MB 的文件解码要多占几十 MB 内存）
+        self._decode_text = decode_text
         # 测试里换成假的解析，不做真实 DNS 查询
         self._resolver = resolver or resolve_host
         # 哪一路连接走真实网络（默认看有没有注入传输，两路分开判断）：走真实网络的连接固定到检查过的
@@ -391,7 +394,7 @@ class PoliteFetcher:
                     http_status=resp.status_code,
                     text=(
                         ""
-                        if content.startswith(b"%PDF-")
+                        if not self._decode_text or content.startswith(b"%PDF-")
                         else decode_html(content, resp.headers.get("content-type"))
                     ),
                     content_type=resp.headers.get("content-type"),

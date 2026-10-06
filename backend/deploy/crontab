@@ -17,6 +17,10 @@
 30 3 * * *  /app/backend/deploy/job.sh cleanup
 # 每天备份数据库到云托管对象存储，保留 30 天（验收 A6）；失败由 job.sh 发提醒
 0 4 * * *  /app/backend/deploy/job.sh backup
+# 附件副本：每天 2 次，在两轮抓取之后（补详情要先跑完才有新附件），每次最多下载 100 个；
+# 存到对象存储 attachments/（和 backups/ 分开），供小程序直接打开。对象存储出错时 job.sh 提醒
+15 10 * * *  /app/backend/deploy/job.sh cache-attachments
+30 23 * * *  /app/backend/deploy/job.sh cache-attachments
 # 把前一天的访问日志归档到对象存储，保留 190 天（网络日志留存不少于六个月）
 30 0 * * *  /app/backend/deploy/job.sh archive-logs
 # 早上那一轮之后质检已发布的截止日期（规则回查全部，配了 AI 时抽查 20 份），存疑的提醒到群里；

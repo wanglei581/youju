@@ -29,6 +29,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "ai-check",
     "triage-feedback",
     "parse-lists",
+    "cache-attachments",
     "notify",
     "alert",
 )

@@ -80,14 +80,18 @@
     <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
   </view>
 
-  <view wx:if="{{doc.attachments.length}}" class="card">
-    <view class="section-title">附件 {{doc.attachments.length}}</view>
-    <view wx:for="{{doc.attachments}}" wx:key="name" class="att">
+  <view wx:if="{{atts.length}}" class="card">
+    <view class="section-title">附件 {{atts.length}}</view>
+    <view wx:for="{{atts}}" wx:key="index" class="att" hover-class="att--pressed" data-index="{{index}}" bindtap="openAttachment" aria-role="button">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
-      <text class="att-name">{{item.name}}</text>
+      <view class="att-body">
+        <text class="att-name">{{item.name}}</text>
+        <text wx:if="{{item.meta}}" class="att-meta">{{item.meta}}</text>
+      </view>
+      <text class="att-action {{item.canOpen ? 'att-action--open' : ''}}">{{item.action}}</text>
     </view>
     <view class="att-foot">
-      <text>附件在原文页面下载</text>
+      <text>{{attNote}}</text>
       <view class="copy" bindtap="copy"><t-icon name="copy" size="28rpx" />复制原文链接</view>
     </view>
   </view>

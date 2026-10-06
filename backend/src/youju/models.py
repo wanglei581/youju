@@ -316,6 +316,47 @@ class DocumentAttachment(Base):
     detail: Mapped[DocumentDetail] = relationship(back_populates="attachments")
 
 
+class AttachmentCopy(Base):
+    """附件副本（见 youju/attachments.py）：admin 定时任务从原网站下载、校验后存到对象存储
+    attachments/，小程序经 api 分段读取后在微信里打开。按原站链接一条，多份文件引用同一链接时共用；
+    内容相同的链接共用同一个对象（对象名是内容的 SHA-256）。api 只读这张表。"""
+
+    __tablename__ = "attachment_copies"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_attachment_copies_url"),
+        Index("ix_attachment_copies_sha256", "sha256"),
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'failed')", name="ck_attachment_copies_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 原站链接的 SHA-256（链接可能很长，唯一索引建在它上面）
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # 附件题录里的扩展名；下载后按文件头判断的实际格式要和它是同一类（见 file_type）
+    declared_type: Mapped[str] = mapped_column(String(8))
+    # pending：还没下载；ready：有副本可以打开；failed：没有副本（原因见 failure）
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    # 有副本时：实际格式（打开时用）、对象存储文件 ID、大小、内容的 SHA-256、下载时间
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    file_id: Mapped[str | None] = mapped_column(String(512))
+    size: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 换下来、还没从对象存储删掉的旧副本（删除失败时下一轮再删）
+    stale_file_ids: Mapped[list[str] | None] = mapped_column(JSONType)
+    # 最近一次没成功的原因（代码 + 说明）；有副本时检查失败也记在这里，副本照常可用
+    failure: Mapped[str | None] = mapped_column(String(16))
+    failure_detail: Mapped[str | None] = mapped_column(String(300))
+    # 连续失败次数（成功后清零），决定多久后重试
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 下次检查时间：空值表示尽快
+    next_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
 class DocumentField(Base):
     """申报通知的结构化字段候选；公开端只读取人工通过的记录。"""
 

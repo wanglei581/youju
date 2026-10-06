@@ -232,9 +232,16 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     assert d["deadline"]["label"] == "企业申报截止" and d["deadline"]["date"] == "2026-10-18"
     assert d["deadline"]["notes"] == ["推荐或审核截止 10月20日 周二 17:00"]
     assert ["文号", "辽工信投资〔2026〕130号"] in d["points"]
-    assert d["attachments"] == [
-        {"ext": "PDF", "name": "附件1 实施细则", "url": "https://gxt.ln.gov.cn/a1.pdf"}
-    ]
+    # 还没有副本：不能在小程序里打开，给原因（副本见 test_attachments.py）
+    [attachment] = d["attachments"]
+    assert attachment["id"].isdigit()
+    assert {k: v for k, v in attachment.items() if k != "id"} == {
+        "ext": "PDF",
+        "name": "附件1 实施细则",
+        "url": "https://gxt.ln.gov.cn/a1.pdf",
+        "preview": False,
+        "reason": "pending",
+    }
     assert d["checked"] == "2026-09-26" and d["host"] == "gxt.ln.gov.cn"
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
