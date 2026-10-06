@@ -4,7 +4,7 @@
     <text class="nav-title">查名单</text><text class="report-link" bindtap="openBoard">名单看板 ›</text>
   </view>
   <view class="h1">查企业上过哪些名单</view>
-  <view class="sub">在已收录的高企、专精特新、科技型中小企业等公示和公布名单里查</view>
+  <view class="sub">在已收录的高企、专精特新等公示和公布名单里查</view>
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
     <input class="search-input" value="{{name}}" placeholder="输入企业全称或统一社会信用代码" confirm-type="search" bindinput="onInput" bindconfirm="query" aria-label="企业全称或统一社会信用代码" />

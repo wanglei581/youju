@@ -37,7 +37,7 @@ test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 
   const template = wxml('lists');
   const top = template.slice(0, template.indexOf('<notice-bar />'));
   assert.match(top, /<view class="h1">查企业上过哪些名单<\/view>/);
-  assert.match(top, /<view class="sub">在已收录的高企、专精特新、科技型中小企业等公示和公布名单里查<\/view>/);
+  assert.match(top, /<view class="sub">在已收录的高企、专精特新等公示和公布名单里查<\/view>/);
   assert.match(top, /<view class="search">/);
   // 顶部的说明文字只有标题和副标题两行
   assert.deepEqual([...top.matchAll(/<view class="(h1|sub)">/g)].map((m) => m[1]), ['h1', 'sub']);
