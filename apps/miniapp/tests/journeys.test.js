@@ -81,6 +81,7 @@ test('J-05 详情返回重新读取核定日期，下架清空正文与操作并
     '../../utils/api.js': { detail: () => { calls += 1; return error ? Promise.reject(error) : Promise.resolve(result); } },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
+    '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { Date: { now: () => stamp }, wx: { navigateBack: () => { back = true; } } });
   page.onLoad({ id: 1 }); page.onShow(); await flush(); assert.equal(calls, 1);
   result = { ...result, deadline: null };

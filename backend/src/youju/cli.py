@@ -570,6 +570,30 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cache_attachments(args: argparse.Namespace) -> int:
+    """附件副本（youju/attachments.py）：下载近 90 天文件的附件存到对象存储 attachments/，
+    清理过期的。原网站下载失败是常事，记在表里、按时重试，不算任务失败；
+    对象存储出错才按失败退出（job.sh 提醒）。"""
+    from youju.attachments import cache_attachments
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法存附件副本")
+        return 1
+    with session_factory()() as session:
+        report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
+    failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
+    print(
+        f"附件副本：新登记 {report.added}，本轮下载 {report.checked}（{report.bytes} 字节），"
+        f"新存或更新 {report.stored}，未变 {report.unchanged}，删掉 {report.removed}，"
+        f"到期待下轮 {report.deferred}；没存成的原因：{failed}"
+    )
+    if report.storage_error:
+        print(report.storage_error)
+        return 1
+    return 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
@@ -819,6 +843,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )
+    p = sub.add_parser(
+        "cache-attachments",
+        help="下载近 90 天文件的附件存到对象存储，供小程序直接打开；清理过期的副本",
+    )
+    p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
+    p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
+    p.set_defaults(func=_cmd_cache_attachments)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")

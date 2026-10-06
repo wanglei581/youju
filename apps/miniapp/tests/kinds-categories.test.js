@@ -138,6 +138,7 @@ test('详情页：申报通知和名单显示项目类别和免责声明，没�
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
+    '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
   assert.equal(page.data.doc.category, '资质与梯度培育');

@@ -1,0 +1,713 @@
+"""附件副本：定时任务只存允许的附件、校验格式和个人信息、更新和清理；api 分段读取、绝不碰备份。
+对象存储、开放接口和政府网站全部用模拟，不联网。"""
+
+import io
+import json
+import re
+import zipfile
+from datetime import UTC, date, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import openpyxl
+import pytest
+from alembic import command
+from docx import Document as WordDocument
+from fastapi.testclient import TestClient
+from sqlalchemy import inspect, select
+
+from youju import attachments as copies
+from youju.api import attachments as attachment_api
+from youju.api import v1
+from youju.api.app import app
+from youju.crawler.fetcher import FetchResult
+from youju.db import get_session
+from youju.migrations import alembic_config
+from youju.models import AttachmentCopy, Document, DocumentAttachment, DocumentDetail, Source
+
+FIXTURES = Path(__file__).parent / "fixtures"
+NOW = datetime(2026, 10, 6, 2, 0, tzinfo=UTC)
+ENV = "prod-1"
+PREFIX = "cloud://prod-1.7072-prod-1-1258/"
+BACKUP_ID = PREFIX + "backups/youju-20261005.jsonl.gz"
+
+
+# ---- 测试用的文件 ----
+
+
+def make_pdf(text: str | None = None) -> bytes:
+    """最小的 PDF：给 text 时第一页有这行文字，不给就是空白页（像扫描件，取不出文字）。"""
+    content = f"BT /F1 12 Tf 20 100 Td ({text}) Tj ET".encode() if text else b""
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R"
+        b" /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for number, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + obj + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return out
+
+
+def make_docx(*lines: str) -> bytes:
+    doc = WordDocument()
+    for line in lines:
+        doc.add_paragraph(line)
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def make_xlsx(*rows: tuple) -> bytes:
+    book = openpyxl.Workbook()
+    for row in rows:
+        book.active.append(row)
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+def make_pptx(text: str) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("ppt/presentation.xml", "<p:presentation/>")
+        zf.writestr("ppt/slides/slide1.xml", f"<p:sld><a:p><a:t>{text}</a:t></a:p></p:sld>")
+    return out.getvalue()
+
+
+XLS = (FIXTURES / "lists" / "heilongjiang_30.xls").read_bytes()
+
+
+def make_ole(stream: str) -> bytes:
+    """把真实 xls 的主数据流改名，得到旧版 Word（WordDocument）或 PowerPoint 的结构。"""
+    data = bytearray(XLS)
+    at = data.find("Workbook".encode("utf-16-le") + b"\x00\x00")
+    name = (stream + "\x00").encode("utf-16-le")
+    data[at : at + 64] = name.ljust(64, b"\x00")
+    data[at + 64 : at + 66] = len(name).to_bytes(2, "little")
+    return bytes(data)
+
+
+PDF = make_pdf("Application guide 2026")
+DOCX = make_docx("申报指南", "咨询电话：024-12345678")
+
+
+def test_detect_type_and_content_checks() -> None:
+    assert copies.detect_type(PDF) == "pdf"
+    assert copies.detect_type(DOCX) == "docx"
+    assert copies.detect_type(make_xlsx(("名称",))) == "xlsx"
+    assert copies.detect_type(make_pptx("说明")) == "pptx"
+    assert copies.detect_type(XLS) == "xls"
+    assert copies.detect_type(make_ole("WordDocument")) == "doc"
+    assert copies.detect_type(make_ole("PowerPoint Document")) == "ppt"
+    for junk in (b"<html>404</html>", b"PK\x03\x04broken", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1x"):
+        assert copies.detect_type(junk) is None
+    plain_zip = io.BytesIO()
+    with zipfile.ZipFile(plain_zip, "w") as zf:
+        zf.writestr("a.txt", "x")
+    assert copies.detect_type(plain_zip.getvalue()) is None
+
+    # 同一类格式可以（.doc 实际是 docx 照样能打开，用实际格式）；不同类、网页都不行
+    assert copies.check_content(DOCX, "doc") == "docx"
+    assert copies.check_content(XLS, "xlsx") == "xls"
+    assert copies.check_content(make_ole("WordDocument"), "doc") == "doc"
+    assert copies.check_content(PDF, "docx").code == "mismatch"
+    assert copies.check_content(b"<html>not found</html>", "pdf").code == "mismatch"
+    assert copies.check_content(b"", "pdf").code == "empty"
+    # 取不出文字的（空白页像扫描件）没法查个人信息，不存
+    assert copies.check_content(make_pdf(), "pdf").code == "unchecked"
+    # 身份证号、个人手机号、银行账号：附件没法脱敏，有就不存；办公电话不算
+    assert copies.check_content(make_pdf("Contact 13812345678"), "pdf").code == "personal"
+    assert copies.check_content(make_docx("联系人手机：13912345678"), "docx").code == "personal"
+    assert copies.check_content(make_docx("身份证号 110105199001011234"), "docx").code == (
+        "personal"
+    )
+    # 被拆成几段的手机号、存成数字的手机号也查得出
+    split = make_docx("x")
+    with zipfile.ZipFile(io.BytesIO(split)) as zf:
+        parts = {n: zf.read(n) for n in zf.namelist()}
+    parts["word/document.xml"] = parts["word/document.xml"].replace(
+        b"<w:t>x</w:t>", b"<w:t>138</w:t></w:r><w:r><w:t>12345678</w:t>"
+    )
+    rebuilt = io.BytesIO()
+    with zipfile.ZipFile(rebuilt, "w") as zf:
+        for name, body in parts.items():
+            zf.writestr(name, body)
+    assert copies.check_content(rebuilt.getvalue(), "docx").code == "personal"
+    assert copies.check_content(make_xlsx(("联系人", 13712345678)), "xlsx").code == "personal"
+    assert copies.check_content(make_pptx("账号：6222020200112233445"), "pptx").code == "personal"
+
+
+# ---- 数据和模拟 ----
+
+
+def add_doc(session, number, title, day, attachments, *, rights_level=1, taken_down=False):
+    source = Source(
+        level="省级",
+        province="辽宁",
+        dept="科技",
+        dept_full_name="辽宁省科学技术厅",
+        column_name="通知",
+        url=f"https://kjt.ln.gov.cn/list{number}/",
+        enabled=True,
+        parser_config={},
+        rights_level=rights_level,
+    )
+    session.add(source)
+    session.flush()
+    doc = Document(
+        source_id=source.id,
+        url=f"https://kjt.ln.gov.cn/{number}.html",
+        url_key=f"kjt.ln.gov.cn/{number}.html",
+        title=title,
+        publish_date=day,
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+        status="fetched",
+        taken_down_at=NOW if taken_down else None,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="正文",
+            fetched_at=NOW,
+            status="ok",
+            attachments=[
+                DocumentAttachment(position=i, name=name, url=url, extension=ext)
+                for i, (name, url, ext) in enumerate(attachments)
+            ],
+        )
+    )
+    session.commit()
+    return doc
+
+
+APPLY = "关于组织申报2026年度省级科技计划项目的通知"
+LIST = "关于公布2026年第一批高新技术企业名单的通知"
+RECENT = date(2026, 10, 1)
+
+
+class FakeFetcher:
+    def __init__(self, files):
+        self.files = files  # 网址 → 内容（bytes）或 FetchResult
+        self.calls = []
+
+    def fetch(self, url):
+        self.calls.append(url)
+        value = self.files[url]
+        if isinstance(value, FetchResult):
+            return value
+        return FetchResult(url, "ok", final_url=url, http_status=200, content=value)
+
+    def close(self):
+        pass
+
+
+class FakeCloud:
+    """模拟开放接口服务（上传、删除、取临时链接）和对象存储（上传、按段读取）。"""
+
+    def __init__(self, *, upload_code=0, link_code=0, honor_range=True):
+        self.upload_code, self.link_code, self.honor_range = upload_code, link_code, honor_range
+        self.uploads: list[str] = []
+        self.deleted: list[str] = []
+        self.delete_fails: set[str] = set()
+        self.links: list[dict] = []
+        self.ranges: list[str | None] = []
+        self.objects: dict[str, bytes] = {}
+        self.expired_once = False
+        self.client = self.new_client()
+
+    def new_client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self.handle))
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "http://api.weixin.qq.com/tcb/uploadfile":
+            body = json.loads(request.content)
+            assert body["env"] == ENV
+            self.uploads.append(body["path"])
+            if self.upload_code:
+                return httpx.Response(200, json={"errcode": self.upload_code, "errmsg": "no"})
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "url": "https://cos.example.test/upload",
+                    "token": "tok",
+                    "authorization": "sig",
+                    "file_id": PREFIX + body["path"],
+                    "cos_file_id": "cosid",
+                },
+            )
+        if url == "https://cos.example.test/upload":
+            return httpx.Response(204)
+        if url == "http://api.weixin.qq.com/tcb/batchdeletefile":
+            ids = json.loads(request.content)["fileid_list"]
+            self.deleted += ids
+            items = [{"fileid": i, "status": -1 if i in self.delete_fails else 0} for i in ids]
+            return httpx.Response(200, json={"errcode": 0, "delete_list": items})
+        if url == "http://api.weixin.qq.com/tcb/batchdownloadfile":
+            body = json.loads(request.content)
+            self.links.append(body)
+            if self.link_code:
+                return httpx.Response(200, json={"errcode": self.link_code, "errmsg": "no"})
+            fileid = body["file_list"][0]["fileid"]
+            path = fileid.removeprefix(PREFIX)
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "file_list": [
+                        {
+                            "fileid": fileid,
+                            "download_url": f"https://bucket.example.test/{path}?sign=s",
+                            "status": 0,
+                        }
+                    ],
+                },
+            )
+        if url.startswith("https://bucket.example.test/"):
+            if self.expired_once:
+                self.expired_once = False
+                return httpx.Response(403)
+            data = self.objects[request.url.path.lstrip("/")]
+            header = request.headers.get("range")
+            self.ranges.append(header)
+            if header and self.honor_range:
+                start, end = map(int, re.match(r"bytes=(\d+)-(\d+)", header).groups())
+                return httpx.Response(
+                    206,
+                    content=data[start : end + 1],
+                    headers={"Content-Range": f"bytes {start}-{end}/{len(data)}"},
+                )
+            return httpx.Response(200, content=data)
+        return httpx.Response(404)
+
+
+def run(session, fetcher, cloud, *, now=NOW, **kwargs):
+    return copies.cache_attachments(
+        session, ENV, client=cloud.client, fetcher=fetcher, now=now, sleep=lambda _: None, **kwargs
+    )
+
+
+def rows_by_url(session):
+    session.expire_all()
+    return {r.url: r for r in session.scalars(select(AttachmentCopy))}
+
+
+def obj(content: bytes, ext: str) -> str:
+    return f"attachments/{sha256(content).hexdigest()}.{ext}"
+
+
+# ---- 定时任务 ----
+
+
+def test_cache_run_stores_only_allowed_attachments(session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(
+        session,
+        1,
+        APPLY,
+        RECENT,
+        [
+            ("附件1 申报指南", base + "guide.pdf", "pdf"),
+            ("附件2 申报书", base + "form.doc", "doc"),  # 实际是 docx
+            ("附件3 同一份申报书", base + "form-copy.docx", "docx"),
+            ("附件4 汇总表", base + "sheet.wps", "wps"),
+            ("附件5 外站文件", "https://example.com/x.pdf", "pdf"),
+            ("附件6 大文件", base + "big.pdf", "pdf"),
+            ("附件7 其实是网页", base + "page.pdf", "pdf"),
+            ("附件8 联系人名单", base + "contacts.docx", "docx"),
+            ("附件9 已删除", base + "gone.pdf", "pdf"),
+            ("附件10 网络不好", base + "slow.xlsx", "xlsx"),
+            ("附件11 扫描件", base + "scan.pdf", "pdf"),
+        ],
+    )
+    add_doc(session, 2, LIST, RECENT, [("名单", base + "list.pdf", "pdf")])
+    add_doc(session, 3, APPLY, date(2026, 6, 1), [("旧附件", base + "old.pdf", "pdf")])
+    add_doc(session, 4, APPLY, RECENT, [("下架", base + "down.pdf", "pdf")], taken_down=True)
+    add_doc(session, 5, APPLY, RECENT, [("二级来源", base + "lvl2.pdf", "pdf")], rights_level=2)
+    files = {
+        base + "guide.pdf": PDF,
+        base + "form.doc": DOCX,
+        base + "form-copy.docx": DOCX,
+        base + "big.pdf": FetchResult(base + "big.pdf", "too_large", error="文件超过 20MB"),
+        base + "page.pdf": b"<html><body>page not found</body></html>",
+        base + "contacts.docx": make_docx("联系人：张三 13812345678"),
+        base + "gone.pdf": FetchResult(base + "gone.pdf", "http_error", http_status=404),
+        base + "slow.xlsx": FetchResult(base + "slow.xlsx", "network_error", error="超时"),
+        base + "scan.pdf": make_pdf(),
+    }
+    fetcher, cloud = FakeFetcher(files), FakeCloud()
+    report = run(session, fetcher, cloud)
+
+    # 只下载该下载的：wps、外站、名单类、超过 90 天、下架、二级来源的都不碰
+    assert sorted(fetcher.calls) == sorted(files)
+    assert report.added == len(files) and report.checked == len(files)
+    # 只往 attachments/ 存，内容相同的只存一次
+    assert cloud.uploads == [obj(PDF, "pdf"), obj(DOCX, "docx")]
+    assert report.stored == 3 and report.removed == 0 and report.storage_error is None
+    rows = rows_by_url(session)
+    guide = rows[base + "guide.pdf"]
+    assert (guide.status, guide.file_type, guide.size) == ("ready", "pdf", len(PDF))
+    assert guide.file_id == PREFIX + obj(PDF, "pdf") and guide.next_check_at == NOW + copies.RECHECK
+    assert rows[base + "form.doc"].file_type == "docx"
+    assert rows[base + "form.doc"].file_id == rows[base + "form-copy.docx"].file_id
+    failures = {url.removeprefix(base): (r.status, r.failure) for url, r in rows.items()}
+    assert failures["big.pdf"] == ("failed", "too_large")
+    assert failures["page.pdf"] == ("failed", "mismatch")
+    assert failures["contacts.docx"] == ("failed", "personal")
+    assert failures["gone.pdf"] == ("failed", "gone")
+    assert failures["slow.xlsx"] == ("failed", "network")
+    assert failures["scan.pdf"] == ("failed", "unchecked")
+    # 临时问题 6 小时后重试，其他的 7 天后再看
+    assert rows[base + "slow.xlsx"].next_check_at == NOW + timedelta(hours=6)
+    assert rows[base + "gone.pdf"].next_check_at == NOW + copies.RECHECK
+    assert report.failed["network"] == 1 and report.failed["personal"] == 1
+
+    # 再跑一次：都没到期，不下载
+    fetcher.calls.clear()
+    again = run(session, fetcher, cloud)
+    assert fetcher.calls == [] and again.added == 0 and again.checked == 0
+    # 立即重试没存成的
+    retried = run(session, fetcher, cloud, retry_failed=True)
+    assert retried.checked == 6 and len(fetcher.calls) == 6
+
+
+def test_limit_takes_new_files_first(session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, date(2026, 9, 1), [("早", base + "early.pdf", "pdf")])
+    add_doc(session, 2, APPLY, date(2026, 10, 2), [("新", base + "new.pdf", "pdf")])
+    fetcher = FakeFetcher({base + "early.pdf": PDF, base + "new.pdf": make_pdf("New")})
+    report = run(session, fetcher, FakeCloud(), limit=1)
+    assert fetcher.calls == [base + "new.pdf"]
+    assert report.checked == 1 and report.deferred == 1
+    with pytest.raises(ValueError):
+        run(session, fetcher, FakeCloud(), limit=0)
+
+
+def test_recheck_updates_changed_files_and_drops_removed_ones(session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    names = ("same.pdf", "changed.pdf", "removed.pdf", "flaky.pdf")
+    add_doc(session, 1, APPLY, RECENT, [(n, base + n, "pdf") for n in names])
+    first = {base + n: make_pdf(f"Version one {n}") for n in names}
+    fetcher, cloud = FakeFetcher(first), FakeCloud()
+    run(session, fetcher, cloud)
+    before = rows_by_url(session)
+    old_changed = before[base + "changed.pdf"].file_id
+    old_removed = before[base + "removed.pdf"].file_id
+    old_flaky = before[base + "flaky.pdf"].file_id
+
+    later = NOW + timedelta(days=8)
+    new_content = make_pdf("Version two")
+    fetcher.files.update(
+        {
+            base + "changed.pdf": new_content,
+            base + "removed.pdf": FetchResult(base + "removed.pdf", "http_error", http_status=410),
+            base + "flaky.pdf": FetchResult(base + "flaky.pdf", "http_error", http_status=503),
+        }
+    )
+    cloud.uploads.clear()
+    report = run(session, fetcher, cloud, now=later)
+    rows = rows_by_url(session)
+    assert report.unchanged == 1 and report.stored == 1
+    assert cloud.uploads == [obj(new_content, "pdf")]
+    assert rows[base + "changed.pdf"].file_id == PREFIX + obj(new_content, "pdf")
+    assert rows[base + "changed.pdf"].fetched_at == later
+    # 原网站删了：不再提供旧副本；服务器出错：旧副本照常可用
+    assert (
+        rows[base + "removed.pdf"].status == "failed" and rows[base + "removed.pdf"].file_id is None
+    )
+    assert (
+        rows[base + "flaky.pdf"].status == "ready" and rows[base + "flaky.pdf"].file_id == old_flaky
+    )
+    assert rows[base + "flaky.pdf"].failure == "http"
+    assert rows[base + "flaky.pdf"].next_check_at == later + timedelta(hours=6)
+    # 换下来的旧副本当轮删掉
+    assert sorted(cloud.deleted) == sorted([old_changed, old_removed])
+    assert report.removed == 2
+    assert all(r.stale_file_ids is None for r in rows.values())
+
+
+def test_expired_copies_are_deleted_but_backups_never(session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    doc = add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf")])
+    add_doc(session, 2, APPLY, RECENT, [("b", base + "b.pdf", "pdf")])
+    fetcher = FakeFetcher({base + "a.pdf": PDF, base + "b.pdf": make_pdf("Other")})
+    cloud = FakeCloud()
+    run(session, fetcher, cloud)
+    rows = rows_by_url(session)
+    kept = rows[base + "b.pdf"]
+    # 就算表里混进了备份的文件 ID（不该发生），删除时也绝不发出去
+    kept.stale_file_ids = [BACKUP_ID, "cloud://other-env.7072-x/attachments/" + "0" * 64 + ".pdf"]
+    session.commit()
+    a_file = rows[base + "a.pdf"].file_id
+
+    # 下架后：副本删掉、记录删掉；删除失败的下一轮再删
+    session.get(Document, doc.id).taken_down_at = NOW
+    session.commit()
+    cloud.delete_fails = {a_file}
+    report = run(session, fetcher, cloud)
+    assert a_file in cloud.deleted and BACKUP_ID not in cloud.deleted
+    assert all("/attachments/" in i and i.startswith(PREFIX) for i in cloud.deleted)
+    assert report.removed == 0 and base + "a.pdf" in rows_by_url(session)
+    cloud.delete_fails = set()
+    report = run(session, fetcher, cloud)
+    assert report.removed == 1 and base + "a.pdf" not in rows_by_url(session)
+    assert BACKUP_ID not in cloud.deleted
+    # 删不掉的不是附件副本，留在记录里，不当作删了
+    assert set(rows_by_url(session)[base + "b.pdf"].stale_file_ids) == set(kept.stale_file_ids)
+
+    # 超过 90 天的同样删掉
+    report = run(session, fetcher, cloud, now=NOW + timedelta(days=120))
+    assert report.removed == 1
+
+
+def test_storage_failure_stops_the_run(session, monkeypatch, capsys) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf"), ("b", base + "b.pdf", "pdf")])
+    fetcher = FakeFetcher({base + "a.pdf": PDF, base + "b.pdf": make_pdf("B")})
+    report = run(session, fetcher, FakeCloud(upload_code=85088))
+    assert report.storage_error and "85088" in report.storage_error
+    # 第一个上传失败就停下，不再去原网站下载；记录保持待下载
+    assert fetcher.calls == [base + "a.pdf"]
+    assert {r.status for r in rows_by_url(session).values()} == {"pending"}
+
+    from youju import cli
+
+    settings = SimpleNamespace(cloud_env=None)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    assert cli.main(["cache-attachments"]) == 1
+    settings.cloud_env = ENV
+    calls = []
+
+    def fake_cache(session, env, **kwargs):
+        calls.append((env, kwargs))
+        return copies.CacheReport(checked=2, stored=1)
+
+    monkeypatch.setattr(copies, "cache_attachments", fake_cache)
+    assert cli.main(["cache-attachments", "--limit", "5", "--retry-failed"]) == 0
+    assert calls == [(ENV, {"limit": 5, "retry_failed": True})]
+    assert "本轮下载 2" in capsys.readouterr().out
+    monkeypatch.setattr(
+        copies, "cache_attachments", lambda *a, **k: copies.CacheReport(storage_error="上传失败")
+    )
+    assert cli.main(["cache-attachments"]) == 1
+
+
+def test_job_and_cron_are_registered() -> None:
+    from youju.jobs import JOB_NAMES
+
+    assert "cache-attachments" in JOB_NAMES
+    crontab = (Path(__file__).resolve().parents[1] / "deploy" / "crontab").read_text()
+    assert crontab.count("/app/backend/deploy/job.sh cache-attachments") == 2
+
+
+# ---- 小程序接口 ----
+
+
+@pytest.fixture
+def client(session_factory, monkeypatch):
+    def override():
+        with session_factory() as s:
+            yield s
+
+    monkeypatch.setattr(v1, "now", lambda: NOW)
+    app.dependency_overrides[get_session] = override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    copies._links.clear()
+    attachment_api._times.clear()
+    yield
+    copies._links.clear()
+    attachment_api._times.clear()
+
+
+def add_copy(session, url, content, ext, *, status="ready", failure=None, file_id=None):
+    row = AttachmentCopy(
+        url_hash=copies.url_hash(url),
+        url=url,
+        declared_type=ext,
+        status=status,
+        failure=failure,
+    )
+    if status == "ready":
+        row.file_type, row.size = ext, len(content)
+        row.sha256 = sha256(content).hexdigest()
+        row.file_id = file_id or PREFIX + obj(content, ext)
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_detail_lists_preview_info_and_reasons(client, session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    doc = add_doc(
+        session,
+        1,
+        APPLY,
+        RECENT,
+        [
+            ("指南", base + "guide.pdf", "pdf"),
+            ("申报书", base + "form.docx", "docx"),
+            ("名单", base + "people.xlsx", "xlsx"),
+            ("扫描件", base + "scan.pdf", "pdf"),
+            ("大文件", base + "big.pdf", "pdf"),
+            ("打不开", base + "bad.doc", "doc"),
+            ("汇总表", base + "sheet.wps", "wps"),
+            ("外站", "https://example.com/a.pdf", "pdf"),
+        ],
+    )
+    add_copy(session, base + "guide.pdf", PDF, "pdf")
+    add_copy(session, base + "people.xlsx", b"", "xlsx", status="failed", failure="personal")
+    add_copy(session, base + "scan.pdf", b"", "pdf", status="failed", failure="unchecked")
+    add_copy(session, base + "big.pdf", b"", "pdf", status="failed", failure="too_large")
+    add_copy(session, base + "bad.doc", b"", "doc", status="failed", failure="mismatch")
+    items = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    first = items[0]
+    assert first["preview"] is True and first["fileType"] == "pdf" and first["size"] == len(PDF)
+    assert first["version"] == sha256(PDF).hexdigest()[:16] and first["parts"] == 1
+    assert first["partSize"] == copies.PART_SIZE and first["id"].isdigit()
+    assert first["ext"] == "PDF" and first["url"] == base + "guide.pdf"
+    # 不给对象存储的文件 ID 或链接
+    assert "cloud://" not in json.dumps(items)
+    reasons = [item.get("reason") for item in items]
+    assert reasons == [None, "pending", "personal", "scan", "too_large", "failed", "format", "host"]
+    assert all(item["preview"] is False for item in items[1:])
+
+    listed = add_doc(session, 2, LIST, RECENT, [("名单", base + "guide.pdf", "pdf")])
+    old = add_doc(session, 3, APPLY, date(2026, 5, 1), [("旧", base + "old.pdf", "pdf")])
+    [item] = client.get(f"/api/v1/documents/{listed.id}").json()["attachments"]
+    assert item["preview"] is False and item["reason"] == "kind"
+    [item] = client.get(f"/api/v1/documents/{old.id}").json()["attachments"]
+    assert item["reason"] == "old"
+
+
+def part_url(att_id, version, part=0):
+    return f"/api/v1/attachments/{att_id}/content?v={version}&part={part}"
+
+
+def test_content_is_served_in_parts_from_attachments_only(client, session, monkeypatch) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    content = bytes(range(256)) * (copies.PART_SIZE // 256 + 1000)  # 两段
+    doc = add_doc(session, 1, APPLY, RECENT, [("指南", base + "guide.pdf", "pdf")])
+    add_copy(session, base + "guide.pdf", content, "pdf")
+    cloud = FakeCloud()
+    cloud.objects[obj(content, "pdf")] = content
+    monkeypatch.setattr(attachment_api, "_client", cloud.new_client)
+    item = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"][0]
+    assert item["parts"] == 2
+    att, version = item["id"], item["version"]
+
+    first = client.get(part_url(att, version, 0))
+    assert first.status_code == 200 and first.content == content[: copies.PART_SIZE]
+    assert first.headers["content-type"] == "application/octet-stream"
+    second = client.get(part_url(att, version, 1))
+    assert second.content == content[copies.PART_SIZE :]
+    assert cloud.ranges == [
+        f"bytes=0-{copies.PART_SIZE - 1}",
+        f"bytes={copies.PART_SIZE}-{len(content) - 1}",
+    ]
+    # 临时链接按文档格式申请，同一进程里复用
+    assert cloud.links == [
+        {
+            "env": ENV,
+            "file_list": [{"fileid": PREFIX + obj(content, "pdf"), "max_age": 1800}],
+        }
+    ]
+    # 链接过期（403）时换一个再读
+    copies._links[PREFIX + obj(content, "pdf")] = ("https://bucket.example.test/x", 1e18)
+    cloud.expired_once = True
+    assert client.get(part_url(att, version, 1)).content == content[copies.PART_SIZE :]
+    # 不支持分段（返回整份）也能取对
+    cloud.honor_range = False
+    assert client.get(part_url(att, version, 1)).content == content[copies.PART_SIZE :]
+
+    assert client.get(part_url(att, "0" * 16, 0)).status_code == 409
+    assert client.get(part_url(att, version, 2)).status_code == 422
+    assert client.get(part_url(att, "xyz", 0)).status_code == 422
+    assert client.get(part_url(999, version, 0)).status_code == 404
+
+    # 对象存储出错：503，小程序改为复制原文链接
+    copies._links.clear()
+    cloud.link_code = -501002
+    assert client.get(part_url(att, version, 0)).status_code == 503
+
+    # 下架后不给
+    session.get(Document, doc.id).taken_down_at = NOW
+    session.commit()
+    assert client.get(part_url(att, version, 0)).status_code == 404
+
+
+def test_content_never_reads_backups_or_unready_copies(client, session, monkeypatch) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    doc = add_doc(
+        session,
+        1,
+        APPLY,
+        RECENT,
+        [("a", base + "a.pdf", "pdf"), ("b", base + "b.pdf", "pdf"), ("c", base + "c.wps", "wps")],
+    )
+    tampered = add_copy(session, base + "a.pdf", PDF, "pdf", file_id=BACKUP_ID)
+    add_copy(session, base + "b.pdf", b"", "pdf", status="pending")
+    cloud = FakeCloud()
+    monkeypatch.setattr(attachment_api, "_client", cloud.new_client)
+    ids = [str(a.id) for a in session.get(DocumentDetail, doc.id).attachments]
+    version = tampered.sha256[:16]
+    for att in ids:
+        assert client.get(part_url(att, version, 0)).status_code == 404
+    # 文件 ID 不是 attachments/ 下的（比如备份），详情里也不给打开
+    items = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert [i["preview"] for i in items] == [False, False, False]
+    assert cloud.links == [] and cloud.ranges == []
+    with pytest.raises(copies.BackupError):
+        copies.download_link(cloud.client, BACKUP_ID)
+    assert copies.parse_file_id(BACKUP_ID) is None
+    good = PREFIX + obj(PDF, "pdf")
+    assert copies.parse_file_id(good) == (ENV, obj(PDF, "pdf"))
+    for bad in (good + "\n", good.replace("attachments/", "attachments/../backups/"), "x" + good):
+        assert copies.parse_file_id(bad) is None
+    assert copies.delete_copies(cloud.client, ENV, [BACKUP_ID]) == set()
+    assert cloud.deleted == []
+
+
+def test_content_is_rate_limited(client, session, monkeypatch) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    doc = add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf")])
+    row = add_copy(session, base + "a.pdf", PDF, "pdf")
+    cloud = FakeCloud()
+    cloud.objects[obj(PDF, "pdf")] = PDF
+    monkeypatch.setattr(attachment_api, "_client", cloud.new_client)
+    monkeypatch.setattr(attachment_api, "PARTS_PER_10MIN", 2)
+    att = session.get(DocumentDetail, doc.id).attachments[0].id
+    codes = [client.get(part_url(att, row.sha256[:16])).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_migration_0018_downgrade_upgrade(db_engine) -> None:
+    assert db_engine.url.database.startswith("youju_test")
+    cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
+    try:
+        command.downgrade(cfg, "0017")
+        assert "attachment_copies" not in inspect(db_engine).get_table_names()
+    finally:
+        command.upgrade(cfg, "head")
+    assert "attachment_copies" in inspect(db_engine).get_table_names()

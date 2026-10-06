@@ -256,6 +256,38 @@ function exportFile(ids, format) {
   });
 }
 
+// 附件副本的一段（ArrayBuffer）：服务端存有副本的附件按段取（每段不超过云托管返回上限 1000 KiB），
+// version 是详情接口给的版本，对不上（副本已更新）时服务端返回 409
+function attachmentPart(id, version, part) {
+  const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
+    const done = (res) => {
+      if (res.statusCode === 200) { finish(resolve, res.data); return; }
+      const err = new Error(`附件下载失败（${res.statusCode}）`);
+      err.status = res.statusCode;
+      finish(reject, err);
+    };
+    const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
+    if (config.cloudEnv) {
+      wx.cloud.callContainer({
+        config: { env: config.cloudEnv },
+        path,
+        method: 'GET',
+        header: { 'X-WX-SERVICE': config.cloudService },
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        success: done,
+        fail,
+      });
+    } else {
+      wx.request({ url: config.devBaseUrl + path, method: 'GET', responseType: 'arraybuffer', timeout: 15000, success: done, fail });
+    }
+  });
+}
+
 // 纠错：只提交文字（最多 500 字）和文件编号，不收联系方式；服务端先做内容安全校验
 function feedback(docId, content) {
   if (!isLive()) return Promise.reject(new Error('演示数据不能提交，连上接口后可用'));
@@ -401,6 +433,7 @@ function saveSubscription(kind, target) {
 
 module.exports = {
   isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
+  attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

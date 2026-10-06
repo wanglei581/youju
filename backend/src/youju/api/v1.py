@@ -19,6 +19,7 @@ from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju import fields as field_rules
+from youju.attachments import attachment_items, is_recent
 from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
 from youju.classify import (
     GUIDE,
@@ -1263,10 +1264,13 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
-        "attachments": [
-            {"ext": a.extension.upper(), "name": a.name, "url": a.url}
-            for a in (detail.attachments if detail else [])
-        ],
+        # 附件：存有副本的可以在小程序里打开（preview），其他的给原因（youju/attachments.py）
+        "attachments": attachment_items(
+            session,
+            detail.attachments if detail else [],
+            kind=kind,
+            recent=is_recent(doc.publish_date, doc.first_seen_at, now()),
+        ),
         "checked": checked,
         "body": body_for_reading(_reading_body(session, doc.id), kind),
     }
