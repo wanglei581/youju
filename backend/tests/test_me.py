@@ -981,6 +981,59 @@ def test_follow_keeps_level_filter(client, session, monkeypatch):
     assert counts == {national.json()["id"]: 0, provincial.json()["id"]: 1}
 
 
+def test_follow_saved_with_national_region_still_counts_like_level(client, session, monkeypatch):
+    """UI 第二轮起小程序的地区里没有"国家部委"（只在层级里）。之前保存的关注条件地区里还有它：
+    服务端照旧接受、照旧计数，和小程序换成层级后的条件新文件数相同；新界面"地区北京 + 层级
+    国家部委"保存的就是 regions=国家部委,北京，国家部委和北京的新文件都算。"""
+    settings(monkeypatch)
+    agree(client)
+    made = {
+        key: follow(client, {"time": "不限", **conditions}).json()["id"]
+        for key, conditions in {
+            "old_national": {"regions": "国家部委"},
+            "new_national": {"levels": "国家部委"},
+            "old_provincial": {"regions": "国家部委,北京", "levels": "省级"},
+            "new_provincial": {"regions": "北京", "levels": "省级"},
+            "national_and_beijing": {"regions": "国家部委,北京"},
+        }.items()
+    }
+    source_and_doc(session)  # 北京省级来源的新文件
+    national = Source(
+        level="国家级",
+        province="国家",
+        dept="科技",
+        dept_full_name="科学技术部",
+        column_name="通知",
+        url="https://example.gov.cn/national/",
+        parser_config={},
+    )
+    session.add(national)
+    session.flush()
+    session.add(
+        Document(
+            source_id=national.id,
+            url=f"{national.url}a.html",
+            url_key=f"{national.id}/a.html",
+            title="关于组织申报2026年度重点研发计划项目的通知",
+            publish_date=NOW.date(),
+            first_seen_at=NOW + timedelta(minutes=1),
+            last_seen_at=NOW + timedelta(minutes=1),
+        )
+    )
+    session.commit()
+    counts = {
+        row["id"]: row["newCount"] for row in client.get("/api/v1/me/follows").json()["items"]
+    }
+    got = {key: counts[follow_id] for key, follow_id in made.items()}
+    assert got == {
+        "old_national": 1,
+        "new_national": 1,
+        "old_provincial": 1,
+        "new_provincial": 1,
+        "national_and_beijing": 2,
+    }
+
+
 def test_follow_new_folds_guides_when_asked(client, session, monkeypatch):
     """关注的新文件和搜索一样默认折叠资讯与指南（D-051）：写明折叠了几篇，点开照常列出。"""
     settings(monkeypatch)

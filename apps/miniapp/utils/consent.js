@@ -62,12 +62,13 @@ function syncConsent() {
   return pending;
 }
 
-// 返回 true 表示已同意，可以继续
-function ensureConsent() {
+// 返回 true 表示已同意，可以继续。note：协议定稿前弹出的原因末尾补一句这项功能是做什么的
+// （如搜索页"关注"写"关注后，有新文件时在关注页标出"），不传时和以前一样
+function ensureConsent(note) {
   if (!legal.final) {
     wx.showModal({
       title: '协议定稿后开放',
-      content: '关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。',
+      content: `关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。${note ? `${note}。` : ''}`,
       showCancel: false,
     });
     return Promise.resolve(false);

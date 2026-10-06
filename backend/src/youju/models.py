@@ -513,6 +513,89 @@ class AIUsage(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
 
+# 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
+CONDITION_CATEGORIES = ("主体资格", "财务指标", "知识产权", "人员", "其他")
+
+
+class ConditionList(Base):
+    """一份申报通知某一版正文的“申报条件清单”（D-052 第④项）：后台模型抽出条目，人逐条核对后
+    整份确认，确认后才对外。
+
+    按正文指纹（body_hash，同 DocumentField）一版一份：正文变了就按新正文另抽一份，旧的保留作留痕，
+    对外读取时核对当前正文指纹，旧版即使确认过也不再显示。
+    status：pending 待核对 / confirmed 已整份确认（对外只显示其中 approved 的条目）/
+    empty 抽过但没有通过原文核对的条目（不进核对台）/ superseded 正文变了、还没确认就被新版替代。
+    """
+
+    __tablename__ = "condition_lists"
+    __table_args__ = (
+        UniqueConstraint("document_id", "body_hash", name="uq_condition_lists_body"),
+        Index("ix_condition_lists_status", "status"),
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'empty', 'superseded')",
+            name="ck_condition_lists_status",
+        ),
+        CheckConstraint(
+            "status != 'confirmed' OR (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+            name="ck_condition_lists_confirmed",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    body_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    model: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    # 模型给了、但引用在正文里逐字找不到等原因丢掉的条数（核对台提示用）
+    dropped: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    extracted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    confirmed_by: Mapped[str | None] = mapped_column(String(80))
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+    items: Mapped[list["ConditionItem"]] = relationship(
+        back_populates="condition_list",
+        cascade="all, delete-orphan",
+        order_by="ConditionItem.position",
+    )
+
+
+class ConditionItem(Base):
+    """清单里的一条条件：一句话的条件（text，人可以改）+ 原文逐字引用（quote，人不能改）。
+
+    quote 是脱敏后正文里的一段原文（对外展示的正文也是脱敏后的），quote_offset 是它在脱敏后正文里的
+    位置。original_text 留着模型最初给的那句话，改过的能看出改了什么。
+    status：pending 待核 / approved 通过（含改后通过）/ deleted 删除（不对外，留作留痕）。
+    """
+
+    __tablename__ = "condition_items"
+    __table_args__ = (
+        Index("ix_condition_items_list", "list_id", "position"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'deleted')", name="ck_condition_items_status"
+        ),
+        CheckConstraint(
+            "category IN ('主体资格', '财务指标', '知识产权', '人员', '其他')",
+            name="ck_condition_items_category",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    list_id: Mapped[int] = mapped_column(ForeignKey("condition_lists.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(String(300))
+    original_text: Mapped[str] = mapped_column(String(300))
+    quote: Mapped[str] = mapped_column(String(500))
+    quote_offset: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+    condition_list: Mapped[ConditionList] = relationship(back_populates="items")
+
+
 class ListParse(Base):
     """一份详情页或附件的解析记录，失败原因用于回填报告和安全重试。"""
 

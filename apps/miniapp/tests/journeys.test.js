@@ -25,6 +25,7 @@ const wxml = (page) => fs.readFileSync(path.join(__dirname, '..', 'pages', page,
 
 function searchPage(api, wx = {}) {
   return load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/exporter.js': {}, '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': {}, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
@@ -194,7 +195,7 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
 });
 
 test('本轮修改页面的 WXML 标签闭合，事件都有页面处理函数', () => {
-  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'my-data', 'feedback', 'me']) {
+  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'files', 'my-data', 'feedback', 'me']) {
     const source = wxml(page).replace(/<!--[\s\S]*?-->/g, '');
     const stack = [];
     const tags = /<(\/?)([\w:-]+)\b(?:"[^"]*"|'[^']*'|[^'"<>])*?>/g;

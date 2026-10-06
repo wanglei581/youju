@@ -100,10 +100,13 @@ Page({
   },
   more() { if (this.data.items.length < this.data.total) this.load(false); },
   open(e) { wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` }); },
-  // 没有内容时去搜索申报通知；选了省份、部门的带过去（取值和搜索筛选一致）
+  // 没有内容时去搜索申报通知；选了省份、部门的带过去（取值和搜索筛选一致）。
+  // 国家部委在搜索里是"层级"（UI 第二轮起不在地区里），服务端两处是同一个条件，结果相同
   goSearch() {
     const params = [`kind=${encodeURIComponent('申报通知')}`];
-    if (this.data.province) params.push(`regions=${encodeURIComponent(this.data.province)}`);
+    const { province } = this.data;
+    if (province === '国家部委') params.push(`levels=${encodeURIComponent(province)}`);
+    else if (province) params.push(`regions=${encodeURIComponent(province)}`);
     if (this.data.dept) params.push(`depts=${encodeURIComponent(this.data.dept)}`);
     wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
   },

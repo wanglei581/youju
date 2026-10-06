@@ -1188,6 +1188,74 @@ def test_search_level_filter_and_region_merge_rule(client, session, seeded):
         assert client.get("/api/v1/search", params={"levels": bad}).status_code == 422
 
 
+def test_search_national_level_with_regions_as_miniapp_sends_it(client, session, seeded):
+    """UI 第二轮：小程序的地区里不再有"国家部委"，层级里的国家部委不受地区限制、和所选地区的文件
+    一起列出。服务端不改：小程序把请求拼成 regions=国家部委,省份（层级同时含省级时再带
+    levels=国家部委,省级），见 apps/miniapp/utils/conditions.js 的 requestScope。这里核对这样拼出来的
+    结果，以及旧条件打开后换成的新请求（migrateNational）结果不变。"""
+    city = Source(
+        level="市级",
+        province="山东",
+        dept="科技",
+        dept_full_name="济南市科学技术局",
+        column_name="通知",
+        url="https://jnsti.jinan.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(city)
+    session.flush()
+    city_doc = _doc(
+        city, 82, "济南市科学技术局关于组织申报2026年度科技计划项目的通知", date(2026, 9, 20)
+    )
+    session.add(city_doc)
+    session.commit()
+
+    def ids(**params):
+        response = client.get("/api/v1/search", params={"time": "不限", "limit": 50, **params})
+        assert response.status_code == 200, response.text
+        return {int(i["id"]) for i in response.json()["items"]}
+
+    national = ids(levels="国家部委")
+    provincial = ids(levels="省级")
+    shandong = {seeded["list"], seeded["policy"]}
+    assert len(national) == 2 and shandong <= provincial
+    # 界面：地区山东 + 层级国家部委 → 国家部委和山东的文件（地市暂未收录，线上就是省级）
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
+    # 地区山东 + 层级国家部委、省级 → 国家部委和山东的省级文件
+    assert ids(regions="国家部委,山东", levels="国家部委,省级") == national | shandong
+    # 地区山东 + 层级省级、不限地区 + 两级：和以前一样
+    assert ids(regions="山东", levels="省级") == shandong
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+
+    # 旧条件 → 打开后小程序发的请求（与 apps/miniapp/tests/search-r2.test.js 的转换表一致），结果相同
+    same = [
+        ({"regions": "国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        ({"regions": "不限地区,国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        (
+            {"regions": "国家部委", "levels": "国家部委,省级"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
+        (
+            {"regions": "国家部委,山东", "levels": "国家部委"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
+        (
+            {"regions": "国家部委,山东,北京", "levels": "省级"},
+            {"regions": "山东,北京", "levels": "省级"},
+        ),
+        ({"regions": "山东", "levels": "国家部委,省级"}, {"regions": "山东", "levels": "省级"}),
+    ]
+    for old, new in same:
+        assert ids(**old), old
+        assert ids(**old) == ids(**new), (old, new)
+    # 原来必然查不到的两种，打开后按字面意思列出
+    assert ids(regions="国家部委", levels="省级") == set()
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+    assert ids(regions="山东", levels="国家部委") == set()
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
+
+
 def test_no_public_output_contains_unverified_dates(client, session, seeded):
     """红线：没核对的截止日期不能从任何公开接口出来（含时刻和原文证据）。
 
