@@ -7,7 +7,9 @@ const { removeFiles } = require('./exporter.js');
 
 // 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
 function consentOpen() {
-  return legal.final && api.isLive();
+  // 内测包（只上传体验版、给白名单内测，不提审；创始人 10/6 同意“需要先用”）：协议还是草案也开放同意，
+  // 好让内测成员同意后试用 AI 页面。正式版本（main）仍以 legal.final 为准，等律师定稿。
+  return api.isLive();
 }
 
 function agreedHere() {
