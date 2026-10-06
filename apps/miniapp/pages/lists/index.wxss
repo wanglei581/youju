@@ -5,10 +5,17 @@
 .report-link { position: absolute; right: 0; top: 50%; transform: translateY(-50%); font-size: 26rpx; color: #FFFFFF; }
 .h1 { margin-top: 16rpx; font-size: 40rpx; font-weight: 700; }
 .sub { margin-top: 8rpx; font-size: 26rpx; line-height: 1.5; color: rgba(255, 255, 255, 0.88); }
-.search { margin-top: 16rpx; height: 88rpx; display: flex; align-items: center; gap: 16rpx; padding: 0 8rpx 0 28rpx; background: #FFFFFF; border-radius: 44rpx; }
+.search { margin-top: 24rpx; height: 88rpx; display: flex; align-items: center; gap: 16rpx; padding: 0 8rpx 0 28rpx; background: #FFFFFF; border-radius: 44rpx; }
 .search-input { flex: 1; min-width: 0; height: 80rpx; font-size: 28rpx; color: var(--t1); }
 .search-btn { flex-shrink: 0; height: 72rpx; padding: 0 36rpx; display: flex; align-items: center; background: var(--brand); color: #FFFFFF; border-radius: 36rpx; font-size: 28rpx; font-weight: 500; }
-.note { margin: 20rpx 32rpx 0; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
+/* 查询说明：默认一行（图标 + 文字 + 箭头），点开后在白底里逐条列出 */
+.rules { margin: 0 24rpx; }
+.rules-head { min-height: 72rpx; padding: 0 8rpx; display: flex; align-items: center; gap: 8rpx; font-size: 26rpx; color: var(--t2); }
+.rules-body { padding: 16rpx 28rpx 20rpx; background: var(--card); border-radius: 24rpx; }
+.rule { position: relative; padding: 6rpx 0 6rpx 24rpx; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
+.rule::before { content: ''; position: absolute; left: 4rpx; top: 22rpx; width: 8rpx; height: 8rpx; border-radius: 50%; background: var(--t3); }
+/* 还没查询时，最近发布的名单上方的一行浅色提示 */
+.hint { margin: 12rpx 32rpx 0; font-size: 24rpx; color: var(--t3); }
 .result { padding-bottom: 28rpx; }
 .result-text { font-size: 26rpx; line-height: 1.7; }
 .result-sum { font-size: 24rpx; padding-bottom: 8rpx; }

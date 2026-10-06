@@ -3,16 +3,29 @@
     <view class="nav-back" bindtap="back" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" color="#FFFFFF" /></view>
     <text class="nav-title">查名单</text><text class="report-link" bindtap="openBoard">名单看板 ›</text>
   </view>
-  <view class="h1">查企业在已收录名单里的记录</view>
-  <view class="sub">高新技术企业、专精特新、科技型中小企业等，标题写明公示或公布的分开标注</view>
-  <notice-bar onBlue="{{true}}" align="left" />
+  <view class="h1">查企业上过哪些名单</view>
+  <view class="sub">高企、专精特新、科技型中小企业等公示和公布名单</view>
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
     <input class="search-input" value="{{name}}" placeholder="输入企业全称或统一社会信用代码" confirm-type="search" bindinput="onInput" bindconfirm="query" aria-label="企业全称或统一社会信用代码" />
     <view class="search-btn" bindtap="query">查询</view>
   </view>
 </view>
-<view class="note">按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。名单状态按标题用词标注，公示期和当前效力以原文为准。</view>
+<notice-bar />
+<!-- 查询规则默认收起成一行，点开后逐条显示，原来的说明一字不少 -->
+<view class="rules">
+  <view class="rules-head" bindtap="toggleRules" aria-role="button" aria-expanded="{{rulesOpen}}">
+    <t-icon name="info-circle" size="30rpx" />
+    <text>查询说明</text>
+    <t-icon name="{{rulesOpen ? 'chevron-up' : 'chevron-down'}}" size="28rpx" />
+  </view>
+  <view wx:if="{{rulesOpen}}" class="rules-body">
+    <view class="rule">按企业全称逐行比对名单原文</view>
+    <view class="rule">名称相近的企业分开列出，请核对统一社会信用代码</view>
+    <view class="rule">只查企业和机构，不查个人</view>
+    <view class="rule">名单状态按标题用词标注，公示期和当前效力以原文为准</view>
+  </view>
+</view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
@@ -41,6 +54,7 @@
   </block>
 </view>
 
+<view wx:if="{{!queried}}" class="hint">输入企业全称或统一社会信用代码查询</view>
 <view class="card">
   <view class="section-title">最近发布的名单<text class="weak count">{{loading || error ? '' : '本周 ' + weekTotal + ' 份'}}</text></view>
   <view class="chips">
