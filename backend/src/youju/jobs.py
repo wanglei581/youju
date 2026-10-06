@@ -27,6 +27,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "extract-deadlines",
     "extract-fields",
     "ai-check",
+    "extract-conditions",
     "triage-feedback",
     "parse-lists",
     "cache-attachments",

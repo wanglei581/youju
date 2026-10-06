@@ -31,6 +31,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
+from youju.api import conditions as conditions_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
@@ -830,6 +831,13 @@ app.include_router(weekly_api.router(_require_admin, _audit))
 app.add_api_route(
     "/admin/weekly", weekly_api.console, response_class=HTMLResponse, include_in_schema=False
 )
+app.include_router(conditions_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/conditions",
+    conditions_api.console,
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
 
 
 class RestoreIn(BaseModel):
@@ -1053,6 +1061,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
     except OSError:
         heartbeat_age = None
     from youju.ai.interpret import openids
+    from youju.conditions import pending_count as pending_conditions
     from youju.models import AdvisorTask
 
     ai_tasks = select(func.count(AdvisorTask.id)).where(
@@ -1064,6 +1073,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "deadlines": pending_all,
             "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
+            "conditions": pending_conditions(session),
             "kinds": kinds_pending_count(session, None)["pending"],
             "kind_suggestions": kind_suggestions_count(session, None)["pending"],
             "audit": audit_flagged_count(session, None)["flagged"],

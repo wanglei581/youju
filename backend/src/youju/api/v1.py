@@ -30,6 +30,7 @@ from youju.classify import (
     region_label,
     status_filter,
 )
+from youju.conditions import public_conditions
 from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -1213,6 +1214,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
     pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
     fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
+    # 申报条件（D-052 第④项）：只给整份人工确认过、和现在这版正文对得上的清单
+    apply_conditions = public_conditions(session, doc.id) if kind == "申报通知" else None
     status_value = application_status(approved) if kind == "申报通知" else None
     issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
     points = [["发文机关", issuer]]
@@ -1322,6 +1325,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
         payload["fields"] = fields
     else:
         payload.pop("fields", None)
+    if apply_conditions:
+        payload["apply_conditions"] = apply_conditions
     return payload
 
 
