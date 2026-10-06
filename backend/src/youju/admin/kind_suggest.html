@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>改回申报通知 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --green: #0E8A63; --g-tint: #E8F7F1; --orange: #D9640F; --o-tint: #FFF3E8; --red: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 880px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  a { color: var(--brand); }
+  .count, .meta, .hint { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  input[type="checkbox"] { width: 18px; height: 18px; padding: 0; margin: 3px 0 0; accent-color: var(--brand); flex-shrink: 0; }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .hint { margin: 0 0 12px; }
+  .row, .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .tools { margin-bottom: 12px; padding: 10px 12px; background: var(--card); border-radius: 12px; border: 1px solid var(--line); }
+  .picked { font-size: 14px; color: var(--t2); }
+  .card { background: var(--card); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; display: flex; gap: 12px; align-items: flex-start; }
+  .card.on { outline: 2px solid var(--brand-tint); }
+  .body { flex: 1; min-width: 0; }
+  .meta { font-size: 13px; }
+  .title { display: block; margin: 6px 0 4px; font-size: 16px; font-weight: 600; color: var(--t1); text-decoration: none; }
+  .title:hover { color: var(--brand); }
+  .judge { margin: 8px 0 0; padding: 8px 12px; background: #F7F8FA; border-radius: 8px; font-size: 14px; }
+  .judge b { font-weight: 600; }
+  .reason { color: var(--t2); }
+  .tag { padding: 0 6px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+  .decided { background: var(--g-tint); color: var(--green); }
+  .msg { font-size: 13px; color: var(--red); }
+  .ok { color: var(--green); }
+  .empty { text-align: center; color: var(--t2); padding: 48px 0; }
+  .more { display: block; margin: 8px auto 32px; }
+  [hidden] { display: none !important; } /* 带 display 的样式会盖过 hidden 属性 */
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>改回申报通知</h1>
+    <span class="count" id="count"></span>
+    <a href="/admin/kinds">类型待定</a>
+    <a href="/admin/review">截止日期核对台</a>
+    <div class="auth">
+      <input id="reviewer" placeholder="核对人" size="8" aria-label="核对人">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button class="primary" id="load">载入</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">这些文件按标题规则判为“其他”，但标题里有“提名工作”“培育工作”“政策兑现”等字样，像是组织申报的通知。点开原文抽查几份，勾选后批量确认：确认后小程序里显示为申报通知，参与申报通知的筛选；没确认的，小程序里仍显示为“其他”。确认错了可以在“已确认”里逐份撤回。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <div class="row" style="margin-bottom: 12px">
+    <label for="status">显示</label>
+    <select id="status"><option value="pending">待确认</option><option value="decided">已确认（可撤回）</option></select>
+  </div>
+  <div class="row tools" id="tools">
+    <button id="all">全选已载入</button>
+    <button id="none">取消全选</button>
+    <span class="picked" id="picked">已选 0 份</span>
+    <button class="primary" id="apply" disabled>确认改为申报通知</button>
+    <button id="keep" disabled>保持“其他”</button>
+    <span class="msg" id="toolMsg"></span>
+  </div>
+  <div id="list"></div>
+  <button class="more" id="more" hidden>再载入 50 条</button>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const PAGE = 50;
+  const cards = new Map(); // 文件编号 -> { item, box, card, state, undo, msg }
+
+  function headers(json) {
+    const h = { 'X-Admin-Token': youjuAdminToken() };
+    if (json) h['Content-Type'] = 'application/json';
+    return h;
+  }
+  function el(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function errorFor(res) {
+    if (res.status === 401 || res.status === 429) return '口令不对、未配置，或输错次数过多';
+    if (res.status === 422) return '先在右上角填核对人';
+    if (res.status === 404) return '有文件已不存在，请重新载入';
+    return `请求失败（${res.status}）`;
+  }
+  function originalLink(url) {
+    try {
+      const parsed = new URL(url);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+    } catch (e) { return null; }
+  }
+  function pending() { return $('status').value === 'pending'; }
+  // 下一页从哪里取：确认或撤回后，服务端的列表会少掉这些，只数还留在当前列表里的
+  function nextOffset() { return [...cards.values()].filter((c) => (pending() ? !c.item.decided : !!c.item.decided)).length; }
+  function chosen() { return [...cards.values()].filter((c) => c.box.checked && !c.item.decided).map((c) => c.item.id); }
+  function refreshPicked() {
+    const n = chosen().length;
+    $('picked').textContent = `已选 ${n} 份`;
+    $('apply').disabled = n === 0;
+    $('keep').disabled = n === 0;
+    cards.forEach((c) => c.card.classList.toggle('on', c.box.checked));
+  }
+  async function refreshCount() {
+    const res = await fetch('/api/admin/kind-suggestions/count', { headers: headers() });
+    if (!res.ok) throw new Error(errorFor(res));
+    $('count').textContent = `待确认 ${(await res.json()).pending} 份`;
+  }
+  function markDecided(c, kind, by) {
+    c.item.decided = kind;
+    c.shown.textContent = kind;
+    c.item.decided_by = by;
+    c.state.textContent = `已定：${kind}${by ? ` · ${by}` : ''}`;
+    c.state.hidden = false;
+    c.undo.hidden = false;
+    c.box.checked = false;
+    c.box.disabled = true;
+  }
+  function render(item) {
+    const card = el('section', 'card');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.setAttribute('aria-label', '选择这份文件');
+    box.hidden = !pending();
+    box.onchange = refreshPicked;
+    const body = el('div', 'body');
+    const meta = el('div', 'meta');
+    const state = el('span', 'tag decided', '');
+    meta.append(el('span', '', `${item.source} · ${item.publish_date || '发布日期不详'} 发布`), state);
+    const href = originalLink(item.url);
+    const title = el(href ? 'a' : 'span', 'title', item.title);
+    if (href) { title.href = href; title.target = '_blank'; title.rel = 'noopener noreferrer'; }
+    const judge = el('div', 'judge');
+    const shown = el('b', '', item.shown_kind);
+    judge.append('现在显示：', shown, '　建议：', el('b', '', item.suggested),
+      el('span', 'reason', `（标题含“${item.reason}”）`));
+    const row = el('div', 'row');
+    const undo = el('button', '', '撤回');
+    const msg = el('span', 'msg');
+    row.style.marginTop = '8px';
+    row.append(undo, msg);
+    body.append(meta, title, judge, row);
+    card.append(box, body);
+    const c = { item, box, card, state, undo, msg, shown };
+    if (item.decided) markDecided(c, item.decided, item.decided_by);
+    else { state.hidden = true; undo.hidden = true; }
+    undo.onclick = async () => {
+      undo.disabled = true;
+      msg.textContent = '';
+      try {
+        const res = await fetch(`/api/admin/documents/${item.id}/kind/undo`, { method: 'POST', headers: headers() });
+        if (!res.ok) throw new Error(errorFor(res));
+        item.decided = null;
+        shown.textContent = '其他'; // 建议的都是按标题规则判为"其他"的
+        state.hidden = true;
+        undo.hidden = true;
+        box.disabled = false;
+        msg.className = 'msg ok';
+        msg.textContent = '已撤回，回到按标题规则判断（显示为“其他”）';
+        try { await refreshCount(); } catch (e) { /* 已撤回，计数稍后重新载入 */ }
+      } catch (err) {
+        msg.className = 'msg';
+        msg.textContent = err.message;
+      } finally { undo.disabled = false; }
+    };
+    cards.set(item.id, c);
+    return card;
+  }
+  async function decide(kind) {
+    const ids = chosen();
+    if (!ids.length) return;
+    const by = $('reviewer').value.trim();
+    $('apply').disabled = true;
+    $('keep').disabled = true;
+    $('toolMsg').className = 'msg';
+    $('toolMsg').textContent = '';
+    try {
+      const res = await fetch('/api/admin/kinds/batch', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({ ids, kind, decided_by: by }),
+      });
+      if (!res.ok) throw new Error(errorFor(res));
+      const done = await res.json();
+      ids.forEach((id) => markDecided(cards.get(id), kind, by));
+      $('toolMsg').className = 'msg ok';
+      $('toolMsg').textContent = `已把 ${done.updated} 份定为${kind}，可逐份撤回`;
+      try { await refreshCount(); } catch (e) { /* 已保存，计数稍后重新载入 */ }
+    } catch (err) {
+      $('toolMsg').textContent = err.message;
+    } finally { refreshPicked(); }
+  }
+  async function load(reset) {
+    if (reset) { cards.clear(); $('list').textContent = ''; $('toolMsg').textContent = ''; }
+    $('tools').hidden = !pending();
+    const offset = nextOffset();
+    try {
+      const res = await fetch(`/api/admin/kind-suggestions?status=${$('status').value}&limit=${PAGE}&offset=${offset}`, { headers: headers() });
+      if (!res.ok) throw new Error(errorFor(res));
+      const items = await res.json();
+      await refreshCount();
+      if (!items.length && !offset) {
+        $('list').append(el('div', 'empty', pending() ? '没有要确认的建议' : '还没有确认过的'));
+      }
+      items.filter((item) => !cards.has(item.id)).forEach((item) => $('list').append(render(item)));
+      $('more').hidden = items.length < PAGE;
+    } catch (err) {
+      $('list').append(el('div', 'empty', err.message));
+      $('more').hidden = true;
+    } finally { refreshPicked(); }
+  }
+  $('all').onclick = () => { cards.forEach((c) => { if (!c.item.decided) c.box.checked = true; }); refreshPicked(); };
+  $('none').onclick = () => { cards.forEach((c) => { c.box.checked = false; }); refreshPicked(); };
+  $('apply').onclick = () => decide('申报通知');
+  $('keep').onclick = () => decide('其他');
+  $('load').onclick = () => load(true);
+  $('status').onchange = () => load(true);
+  $('more').onclick = () => load(false);
+})();
+</script>
+</body>
+</html>

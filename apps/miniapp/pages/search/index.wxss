@@ -16,6 +16,7 @@
 .filter-link { margin-left: auto; display: flex; align-items: center; gap: 8rpx; font-size: 26rpx; color: var(--t1); }
 .summary { padding: 20rpx 32rpx 0; display: flex; align-items: baseline; justify-content: space-between; font-size: 25rpx; color: var(--t2); }
 .summary-right { display: flex; gap: 28rpx; }
+.fold-note { padding: 12rpx 32rpx 0; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
 .b { color: var(--t1); font-weight: 700; }
 
 .follow-bar { margin: 16rpx 24rpx 0; padding: 20rpx 24rpx; display: flex; align-items: center; gap: 20rpx; background: var(--brand-tint); border-radius: 20rpx; }

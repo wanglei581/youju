@@ -19,7 +19,10 @@ from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju import fields as field_rules
+from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
 from youju.classify import (
+    GUIDE,
+    KINDS,
     effective_kind,
     kind_filter,
     list_status,
@@ -64,7 +67,18 @@ REPORT_CACHE_MAX = 200
 TABS = {"all", "申报通知", "名单", "政策"}
 _LOOKUP_LIMIT = 100  # 查名单最多列出的名单份数
 _LOOKUP_SCAN = 2000  # 查名单最多扫描的名单文件数（按发布日期从新到旧），防止极端情况下查询过慢
-TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
+TYPES = {
+    "申报通知": "申报通知",
+    "名单与公示": "名单",
+    "政策文件": "政策",
+    GUIDE: GUIDE,
+    "其他": "其他",
+}
+# 项目类别（按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有）
+CATEGORY_SET = set(CATEGORIES)
+# "资讯与指南"以外的类型：折叠资讯与指南时列这些（写成正面的类型列表，不用"不是资讯与指南"，
+# 免得规则列为空时 NOT 出空值把文件漏掉）
+_NOT_GUIDE = [k for k in KINDS if k != GUIDE]
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
 DEPTS = {"科技部门", "工信部门", "其他部门"}
@@ -380,6 +394,8 @@ def _item(
     payload = {
         "id": str(doc.id),
         "kind": kind,
+        # 项目类别：按标题归类，仅供检索参考；只有申报通知和名单有，其他为 null
+        "category": shown_category(kind, doc.rule_category, doc.title),
         # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
         "status": list_status(doc.title, kind),
         "app_status": app_status,
@@ -418,6 +434,34 @@ def _kind_is(kinds: list[str]):
         Document.kind_override.in_(kinds),
         and_(Document.kind_override.is_(None), by_rule),
     )
+
+
+def _category_is(categories: list[str]):
+    """项目类别筛选：只在申报通知和名单里找；类别入库时已算好存在 rule_category，
+    还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，结果一样。"""
+    by_rule = or_(
+        Document.rule_category.in_(categories),
+        and_(Document.rule_category.is_(None), category_filter(Document.title, categories)),
+    )
+    return and_(_kind_is(list(CATEGORY_KINDS)), by_rule)
+
+
+def _folds_guides(kind: str, types: str | None) -> bool:
+    """只在"全部"页签、没选类型时折叠资讯与指南；选了类型就按选的列（选了资讯与指南就照常列出）。"""
+    return kind == "all" and not _pick(types, TYPES, "类型")
+
+
+def fold_guides(
+    session: Session, stmt: Select, kind: str, types: str | None, fold: int | None
+) -> tuple[Select, int, int]:
+    """按 fold 处理"资讯与指南"（搜索和关注的新文件共用）：返回（要列出的查询, 资讯与指南篇数,
+    折叠了几篇）。fold 不传时不统计（旧版小程序）；0 照常列出、给出篇数；1 不列出、只给篇数。"""
+    if fold is None or not _folds_guides(kind, types):
+        return stmt, 0, 0
+    guides = _count(session, stmt.where(_kind_is([GUIDE])))
+    if fold != 1:
+        return stmt, guides, 0
+    return stmt.where(_kind_is(_NOT_GUIDE)), guides, guides
 
 
 def _base() -> Select:
@@ -612,20 +656,41 @@ def search(
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
     levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级")] = None,
+    categories: Annotated[
+        str | None,
+        Query(max_length=400, description="项目类别，逗号分隔（只在申报通知和名单里找）"),
+    ] = None,
+    fold: Annotated[
+        int | None,
+        Query(ge=0, le=1, description="1 折叠资讯与指南类文件；0 不折叠但给出篇数；不传则不统计"),
+    ] = None,
 ) -> dict:
-    """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。"""
-    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, levels)
+    """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
+
+    fold=1 时"资讯与指南"类文件不列出、不计入 total 和 total_all，只在 folded 里给出折叠了几篇
+    （不悄悄藏：小程序写明"已折叠 X 篇"，点开就按 fold=0 列出来）；guides 是符合条件的
+    资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
+    不返回这两项。"""
+    stmt = search_statement(
+        session, q, kind, regions, types, status, time, depts, open, levels, categories
+    )
+    all_time = search_statement(
+        session, q, kind, regions, types, status, "不限", depts, open, levels, categories
+    )
+    stmt, guides, folded = fold_guides(session, stmt, kind, types, fold)
+    if fold == 1 and _folds_guides(kind, types):
+        all_time = all_time.where(_kind_is(_NOT_GUIDE))
     total = _count(session, stmt)
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
-    all_time = search_statement(
-        session, q, kind, regions, types, status, "不限", depts, open, levels
-    )
-    return {
+    body = {
         "q": (q or "").strip(),
         "total": total,
         "total_all": _count(session, all_time),
         "items": _items(session, [tuple(r) for r in rows]),
     }
+    if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
+        body |= {"folded": folded, "guides": guides}
+    return body
 
 
 # 地区筛选的"国家部委"和层级筛选的"国家部委"共用这一个条件（来源省份填"国家"），两处不会不一致
@@ -652,6 +717,7 @@ def search_statement(
     depts: str | None,
     open: int | None = None,
     levels: str | None = None,
+    categories: str | None = None,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
 
@@ -659,6 +725,7 @@ def search_statement(
     和层级选的国家部委 / 省级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
     所以只在地区里选、只在层级里选、两边都选，结果相同；地区只选省份而层级只选国家部委，
     或地区只选国家部委而层级只选省级，两者没有交集，结果为空（小程序在空结果里提示调整）。
+    项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。
     """
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
@@ -669,6 +736,7 @@ def search_statement(
     picked_status = _pick(status, STATUSES, "名单状态")
     picked_depts = _pick(depts, DEPTS, "发文部门")
     picked_levels = _pick(levels, LEVELS, "层级")
+    picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -688,6 +756,8 @@ def search_statement(
         stmt = stmt.where(status_filter(Document.title, picked_status, _kind_is(["名单"])))
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
+    if picked_categories:
+        stmt = stmt.where(_category_is(picked_categories))
 
     if open is not None:
         if open != 1:
@@ -1168,6 +1238,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],
+        # 项目类别：按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有
+        "category": shown_category(kind, doc.rule_category, doc.title),
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": issuer,

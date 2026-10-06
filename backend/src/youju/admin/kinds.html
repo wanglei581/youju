@@ -47,6 +47,7 @@
   <div class="bar">
     <h1>类型待定</h1>
     <span class="count" id="count"></span>
+    <a href="/admin/kind-suggest">改回申报通知</a>
     <a href="/admin/review">截止日期核对台</a>
     <a href="/admin/audit">质检存疑</a>
     <a href="/admin/feedback">纠错与申请覆盖</a>
@@ -59,7 +60,7 @@
   </div>
 </header>
 <main>
-  <p class="hint">这些文件 AI 和标题规则判断的类型不一样。点开原文看一眼，选定类型：选定后搜索页签、筛选和导出都按你选的；名单类文件还会去解析名单。点错了可以撤回。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <p class="hint">这些文件 AI 和标题规则判断的类型不一样（AI 只分四类，规则判“资讯与指南”、AI 判“其他”的算一致）。点开原文看一眼，选定类型：选定后搜索页签、筛选和导出都按你选的；名单类文件还会去解析名单。点错了可以撤回。管理口令只保存在当前页面，刷新后需重新输入。</p>
   <div class="row filters">
     <label for="status">显示</label>
     <select id="status"><option value="pending">待定</option><option value="all">全部（含已定）</option></select>
@@ -71,7 +72,7 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const KINDS = ['申报通知', '名单', '政策', '其他'];
+  const KINDS = ['申报通知', '名单', '政策', '资讯与指南', '其他'];
   const shown = new Set();
   let cursor = null;
 
