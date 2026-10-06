@@ -7,7 +7,9 @@ from youju.classify import (
     dept_group,
     doc_kind,
     kind_expr,
+    kind_suggestion,
     list_status,
+    list_suggestion,
     region_label,
     status_filter,
 )
@@ -255,6 +257,54 @@ def test_apply_suggestion_only_for_other(title, word):
     assert apply_suggestion(title) == word
     if word:
         assert doc_kind(title) == "其他"
+
+
+# "其他"里像名单的只出"建议改为名单"（D-051 第二阶段补充），标题取自 youju_perf 的真实文件
+LIST_SUGGESTIONS = [
+    ("关于认定福建省2025年度高新技术企业的通知", "认定"),
+    ("安徽省工业和信息化厅关于确认安徽省新产品（2026年第一批）的通知", "确认"),
+    ("省人民政府关于授予第五届贵州省省长质量奖的决定", "授予"),
+    ("国家知识产权局关于第二十六届中国专利奖授奖的决定", "授奖"),
+    ("关于2025年江苏省产学研合作项目立项的通知", "立项"),
+    ("省科技厅关于2026年入库湖北省科创“新物种”企业的通知", "入库"),
+    ("关于江西省2026年第四批完成异地整体搬迁高新技术企业资格继续有效的公告", "继续有效"),
+    ("关于2026年度冠名筹建省级科技创新平台（第一批）的通知", "冠名"),
+    ("关于2025年度福建省科学技术奖初评通过项目的公告", "初评通过"),
+    (
+        "福建省科技特派员工作联席会议办公室关于公布2026年福建省科技特派员技术创新团队选认结果的通知",
+        "结果的通知",
+    ),
+    ("国家知识产权局关于确定2025—2027年国家知识产权强国建设示范创建对象的通知", "确定……对象"),
+    ("福建省财政厅 福建省科学技术厅关于下达2026年度省重点实验室运行费的通知", "下达……运行费"),
+    ("关于2026年省级节水标杆企业、园区的公告", "……园区的公告"),
+    # 撤销、取消、变更、个人、组织申报工作的不建议
+    ("关于撤销江苏鑫品工业装备有限公司科技型中小企业入库登记编号的公告", None),
+    ("关于贵州省取消3户企业高新技术企业资格的公告", None),
+    ("关于省科技创新计划项目重大事项变更的公示", None),
+    ("关于批准确认黄功耕等5位同志", None),
+    ("关于2026年“英才兴蒙”工程个人项目拟推荐人选的公示", None),
+    ("广东省科学技术厅关于确定广东省2026—2027年“普惠科技贷”省级合作银行的通知", None),
+    # 资讯与指南不建议（不因此改变折叠）；已经是名单、申报通知的不建议
+    ("关于2026年度实验动物许可证年检结果（第一批）的公告", None),
+    ("关于公布2026年度省级绿色工厂、绿色工业园区名单的通知", None),
+    ("关于组织开展2026年度技术先进型服务企业认定工作的通知", None),
+]
+
+
+@pytest.mark.parametrize(("title", "word"), LIST_SUGGESTIONS)
+def test_list_suggestion_only_for_other(title, word):
+    """ "其他"里像名单的只出建议：类型仍是"其他"（不折叠），由人在管理台确认。"""
+    assert list_suggestion(title) == word
+    assert kind_suggestion(title) == (("名单", word) if word else None)
+    if word:
+        assert doc_kind(title) == "其他"
+
+
+def test_apply_suggestion_comes_before_list():
+    # 既像申报又像名单的（"……认定及……选树工作"）按申报建议
+    title = "关于开展2026年度陕西省技术经理人认定及优秀技术经理人选树工作的通知"
+    assert kind_suggestion(title) == ("申报通知", "选树")
+    assert list_suggestion(title) is None
 
 
 def test_ai_compares_guide_as_other():

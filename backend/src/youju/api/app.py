@@ -41,11 +41,11 @@ from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import (
     AI_KINDS,
-    SUGGEST_APPLY_WORDS,
-    apply_suggestion,
+    SUGGEST_WORDS,
     comparable_kind,
     doc_kind,
     effective_kind,
+    kind_suggestion,
     list_status,
 )
 from youju.config import get_settings
@@ -1602,12 +1602,13 @@ def undo_kind(
     return {"kind": doc_kind(doc.title)}
 
 
-# 规则建议改回的类型（D-051 第二阶段）：先只建议"申报通知"
-SUGGESTED_KIND = "申报通知"
+# 规则建议改成的类型（D-051 第二阶段）："其他"里像真申报的建议改为申报通知，像名单的建议改为名单
+SuggestedKind = Literal["申报通知", "名单"]
 
 
 class KindSuggestionOut(BaseModel):
-    """标题规则判为"其他"、但像真申报的文件：建议改为申报通知，人在管理台确认后才改对外类型。"""
+    """标题规则判为"其他"、但像真申报或名单的文件：建议改为申报通知或名单，
+    人在管理台确认后才改对外类型。"""
 
     id: int
     title: str
@@ -1617,7 +1618,7 @@ class KindSuggestionOut(BaseModel):
     # 现在给用户看的类型（没人定过时是"其他"）
     shown_kind: str
     suggested: str
-    # 标题里命中的词，例如"提名工作"
+    # 标题里命中的词，例如"提名工作""立项""下达……经费"
     reason: str
     decided: str | None
     decided_by: str | None
@@ -1631,9 +1632,12 @@ class KindBatchIn(BaseModel):
     decided_by: str = Field(min_length=1, max_length=80)
 
 
-def _kind_suggestions(session: Session, decided: bool) -> list[KindSuggestionOut]:
-    """建议改为申报通知的文件（同一通知的其他网址不重复列，已下架的不列），按发布日期从新到旧。
-    decided 为 False 列还没人定过的；为 True 列已经有人定过的（可以撤回）。"""
+def _kind_suggestions(
+    session: Session, decided: bool, suggested: str | None = None
+) -> list[KindSuggestionOut]:
+    """有类型建议的文件（同一通知的其他网址不重复列，已下架的不列），按发布日期从新到旧。
+    decided 为 False 列还没人定过的；为 True 列已经有人定过的（可以撤回）。suggested 只列
+    建议改成这一类的，不传列全部。先按标题规则类型（"其他"）和命中词在数据库里粗筛，再逐份判断。"""
     rows = session.execute(
         visible_documents(
             select(Document, Source)
@@ -1643,14 +1647,15 @@ def _kind_suggestions(session: Session, decided: bool) -> list[KindSuggestionOut
                 Document.kind_override.is_not(None)
                 if decided
                 else Document.kind_override.is_(None),
-                or_(*(Document.title.contains(w, autoescape=True) for w in SUGGEST_APPLY_WORDS)),
+                or_(Document.rule_kind == "其他", Document.rule_kind.is_(None)),
+                or_(*(Document.title.contains(w, autoescape=True) for w in SUGGEST_WORDS)),
             )
         ).order_by(Document.publish_date.desc(), Document.id.desc())
     ).all()
     out: list[KindSuggestionOut] = []
     for doc, src in rows:
-        reason = apply_suggestion(doc.title)
-        if reason is None:
+        hit = kind_suggestion(doc.title)
+        if hit is None or (suggested and hit[0] != suggested):
             continue
         out.append(
             KindSuggestionOut(
@@ -1660,8 +1665,8 @@ def _kind_suggestions(session: Session, decided: bool) -> list[KindSuggestionOut
                 publish_date=doc.publish_date,
                 source=src.dept_full_name,
                 shown_kind=effective_kind(doc.title, doc.kind_override),
-                suggested=SUGGESTED_KIND,
-                reason=reason,
+                suggested=hit[0],
+                reason=hit[1],
                 decided=doc.kind_override,
                 decided_by=doc.kind_decided_by,
             )
@@ -1670,8 +1675,12 @@ def _kind_suggestions(session: Session, decided: bool) -> list[KindSuggestionOut
 
 
 @app.get("/api/admin/kind-suggestions/count")
-def kind_suggestions_count(session: SessionDep, _admin: AdminDep) -> dict[str, int]:
-    return {"pending": len(_kind_suggestions(session, decided=False))}
+def kind_suggestions_count(
+    session: SessionDep,
+    _admin: AdminDep,
+    suggested: Annotated[SuggestedKind | None, Query(description="只数建议改成这一类的")] = None,
+) -> dict[str, int]:
+    return {"pending": len(_kind_suggestions(session, decided=False, suggested=suggested))}
 
 
 @app.get("/api/admin/kind-suggestions", response_model=list[KindSuggestionOut])
@@ -1679,10 +1688,11 @@ def admin_kind_suggestions(
     session: SessionDep,
     _admin: AdminDep,
     status: Literal["pending", "decided"] = "pending",
+    suggested: Annotated[SuggestedKind | None, Query(description="只列建议改成这一类的")] = None,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[KindSuggestionOut]:
-    items = _kind_suggestions(session, decided=status == "decided")
+    items = _kind_suggestions(session, decided=status == "decided", suggested=suggested)
     return items[offset : offset + limit]
 
 
@@ -1711,7 +1721,7 @@ def decide_kinds(
 
 @app.get("/admin/kind-suggest", response_class=HTMLResponse, include_in_schema=False)
 def kind_suggest_console() -> str:
-    """改回申报通知：规则建议的、被判成"其他"的真申报，抽查后批量确认；口令仅由页面请求管理接口时发送。"""
+    """类型建议：被判成"其他"、像真申报或名单的文件，抽查后批量确认；口令仅由页面请求管理接口时发送。"""
     return (Path(__file__).resolve().parent.parent / "admin" / "kind_suggest.html").read_text(
         encoding="utf-8"
     )
