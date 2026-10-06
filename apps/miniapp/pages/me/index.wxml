@@ -10,7 +10,9 @@
       <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
       <view wx:else class="profile-sub">登录后可以关注条件、订阅微信提醒、提交纠错</view>
     </view>
+    <!-- 协议定稿前的"微信登录"：描边、不可点，原因写在下面"协议正在定稿……"那一行 -->
     <view wx:if="{{!profileLoading && !profileError && !signedIn && outdated}}" class="login login--on" bindtap="login">阅读更新</view>
+    <view wx:elif="{{!profileLoading && !profileError && !signedIn && !legalFinal}}" class="login login--off" aria-disabled="true">微信登录</view>
     <view wx:elif="{{!profileLoading && !profileError && !signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>
   </view>
   <view wx:if="{{!profileLoading && !profileError && !signedIn && !outdated}}" class="agree">

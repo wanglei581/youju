@@ -7,7 +7,8 @@ const PAGE = 20;
 // 某个关注上次查看之后的新文件；看完可以全部标为已读
 Page({
   // 资讯与指南（与申报无关的新闻、会议、招聘、许可等）和搜索页一样默认折叠，写明折叠了几篇
-  data: { id: '', name: '', items: [], total: 0, folded: 0, loading: true, error: '', today: '', showGuides: false, fold: { text: '', link: '' } },
+  // gated：服务端返回 403（还没同意用户协议和隐私保护指引，或协议已更新），页面显示说明卡而不是加载失败
+  data: { id: '', name: '', items: [], total: 0, folded: 0, loading: true, error: '', gated: false, today: '', showGuides: false, fold: { text: '', link: '' } },
 
   onLoad(query) {
     const name = query.name ? decodeURIComponent(query.name) : '';
@@ -20,7 +21,7 @@ Page({
     if (this.fetching) return;
     this.fetching = true;
     const offset = reset ? 0 : this.data.items.length;
-    this.setData({ loading: true, error: '' });
+    this.setData({ loading: true, error: '', gated: false });
     api.followNew(this.data.id, { limit: PAGE, offset, fold: this.data.showGuides ? 0 : 1 })
       .then((res) => this.setData({
         items: reset ? res.items : this.data.items.concat(res.items),
@@ -29,8 +30,14 @@ Page({
         fold: foldNote(res.folded || 0, this.data.showGuides ? (res.guides || 0) : 0),
         loading: false,
       }))
-      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }))
+      .catch((err) => this.setData(err.status === 403
+        ? { loading: false, gated: true, items: [], total: 0, folded: 0 }
+        : { loading: false, error: `加载失败：${err.message}` }))
       .finally(() => { this.fetching = false; });
+  },
+
+  goMe() {
+    wx.switchTab({ url: '/pages/me/index' });
   },
 
   toggleGuides() {

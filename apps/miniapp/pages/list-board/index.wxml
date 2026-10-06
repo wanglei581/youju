@@ -20,7 +20,7 @@
   <view wx:for="{{items}}" wx:key="id" class="item" data-id="{{item.id}}" bindtap="open">
     <view class="item-title">{{item.title}}</view>
     <view class="meta">{{item.dateText}} · {{item.issuer}} · {{item.province}}</view>
-    <view class="item-foot"><text wx:if="{{item.wording}}" class="wording">{{item.wording}}</text><text wx:if="{{item.count !== null && item.count !== undefined}}">{{item.count}} 条</text><text wx:else class="count-unparsed">条数未解析</text></view>
+    <view class="item-foot"><text wx:if="{{item.wording}}" class="status status--{{item.wordingCls}}">{{item.wording}}</text><text wx:if="{{item.count !== null && item.count !== undefined}}">{{item.count}} 条</text><text wx:else class="count-unparsed">条数未解析</text></view>
   </view>
   <view wx:if="{{!loading && !error && !items.length}}" class="empty">最近 30 天没有已收录的名单</view>
   <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
