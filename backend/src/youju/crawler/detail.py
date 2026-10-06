@@ -95,6 +95,12 @@ def redact_sensitive(text: str) -> str:
     return _PHONE.sub("[电话已脱敏]", text)
 
 
+def has_personal_numbers(text: str) -> bool:
+    """有没有合规红线列出的个人信息：身份证号、个人手机号、银行账号。附件副本是原文件，没法脱敏，
+    有这些就不存副本（youju/attachments.py）。"""
+    return any(p.search(text) for p in (_ID_CARD, _MOBILE, _BANK))
+
+
 def _plain_lines(node: etree._Element) -> list[str]:
     parts: list[str] = []
 

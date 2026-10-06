@@ -34,6 +34,7 @@ from youju.alerts import send_alert
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
+from youju.api.attachments import router as attachments_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.v1 import _approved, _details
@@ -75,6 +76,7 @@ app.include_router(v1_router)
 app.include_router(advisor_router)
 app.include_router(exports_router)
 app.include_router(me_router)
+app.include_router(attachments_router)
 
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
