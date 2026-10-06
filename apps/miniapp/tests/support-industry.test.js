@@ -30,6 +30,7 @@ const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生�
 function searchPage(respond) {
   const calls = [];
   const page = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -48,8 +49,12 @@ test('筛选弹层有支持方式（6 项，用详情核对字段的词）和产
   assert.equal(industry.multi, true);
   assert.deepEqual(Array.from(support.options), SUPPORTS);
   assert.deepEqual(Array.from(industry.options), INDUSTRIES);
-  assert.ok(support.note.includes(DISCLAIMER));
-  assert.ok(industry.note.includes(DISCLAIMER));
+  // 统一说明在右栏顶部（tagged 的组都显示 tagNote），选项下面只写各组特有的补充
+  assert.equal(support.tagged, true);
+  assert.equal(industry.tagged, true);
+  assert.equal(page.data.tagNote, DISCLAIMER);
+  assert.match(support.note, /不代表一定提供这种支持/);
+  assert.equal(industry.note, '一份文件可能有多个方向，也可能没有');
   // 和详情页核对过的支持方式区分开
   assert.match(support.note, /文件详情里的“支持方式”是核对原文后标注的/);
   assert.match(support.note, /“征集入选”只用于筛选/);

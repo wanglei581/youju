@@ -88,7 +88,9 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
   page.goSearch();
   assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知' });
   page.data.province = '国家部委'; page.data.dept = '科技部门'; page.goSearch();
-  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', regions: '国家部委', depts: '科技部门' });
+  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', levels: '国家部委', depts: '科技部门' });
+  page.data.province = '山东'; page.goSearch();
+  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', regions: '山东', depts: '科技部门' });
   const template = read('pages/report/index.wxml');
   assert.match(template, /{{verifyingNote}}/);
   assert.match(template, /bindtap="goSearch"[^>]*>去搜索申报通知/);
@@ -119,6 +121,7 @@ test('申报日历空状态：写已核对条数，给去搜索申报通知的�
 test('层级筛选：只有国家部委、省级两项，条件带到接口、关注和返回搜索', async () => {
   const calls = [];
   const page = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -139,6 +142,7 @@ test('层级筛选：只有国家部委、省级两项，条件带到接口、�
   assert.match(page.followName(), /山东 · 省级、国家部委/);
   // 返回搜索时恢复层级
   const restored = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -173,6 +177,7 @@ test('地区和层级的合并规则：两组取交集，国家部委在两组�
   assert.deepEqual(titles({ regions: '山东', levels: '国家部委' }), []);
   // 搜索页：没有交集时提示调整；只看未截止没有结果时说明只含核对过的
   const page = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: () => Promise.resolve({ total: 0, total_all: 0, items: [] }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,

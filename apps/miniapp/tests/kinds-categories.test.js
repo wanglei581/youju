@@ -28,6 +28,7 @@ const DISCLAIMER = '仅供检索参考，非官方分类';
 function searchPage(respond) {
   const calls = [];
   const page = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -97,7 +98,10 @@ test('项目类别筛选：8 类可多选，写明仅供检索参考、非官方
   assert.equal(group.title, '项目类别');
   assert.equal(group.multi, true);
   assert.deepEqual(Array.from(group.options), ['资质与梯度培育', '科技计划与研发', '平台载体与园区', '人才', '表彰奖励', '首台套与新产品', '试点示范', '其他申报']);
-  assert.ok(group.note.includes(DISCLAIMER));
+  // 说明拆成两段：右栏顶部统一的一行（tagged）+ 选项下面这组特有的补充
+  assert.equal(group.tagged, true);
+  assert.ok(page.data.tagNote.includes(DISCLAIMER));
+  assert.equal(group.note, '只含申报通知和名单');
   assert.equal(calls.at(-1).categories, undefined); // 没选时不带，和以前保存的关注条件一致
   page.pickOption(event({ group: 'category', option: '人才' })); await flush();
   page.pickOption(event({ group: 'category', option: '表彰奖励' })); await flush();

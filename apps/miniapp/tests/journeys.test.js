@@ -25,6 +25,7 @@ const wxml = (page) => fs.readFileSync(path.join(__dirname, '..', 'pages', page,
 
 function searchPage(api, wx = {}) {
   return load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/exporter.js': {}, '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': {}, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },

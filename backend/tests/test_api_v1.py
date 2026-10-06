@@ -1188,6 +1188,60 @@ def test_search_level_filter_and_region_merge_rule(client, session, seeded):
         assert client.get("/api/v1/search", params={"levels": bad}).status_code == 422
 
 
+def test_search_legacy_national_region_matches_miniapp_conversion(client, session, seeded):
+    """UI 第二轮：小程序的地区里不再有"国家部委"，旧条件打开搜索时按 conditions.migrateNational
+    换成层级。这里逐条核对换法前后服务端结果相同；换不了的（国家部委 + 省份，层级没选或两级都选）
+    在新写法里找不到结果相同的，小程序原样保留，服务端照旧接受地区里的国家部委。"""
+    city = Source(
+        level="市级",
+        province="山东",
+        dept="科技",
+        dept_full_name="济南市科学技术局",
+        column_name="通知",
+        url="https://jnsti.jinan.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(city)
+    session.flush()
+    title = "济南市科学技术局关于组织申报2026年度科技计划项目的通知"
+    session.add(_doc(city, 82, title, date(2026, 9, 20)))
+    session.commit()
+
+    def ids(**params):
+        response = client.get("/api/v1/search", params={"time": "不限", "limit": 50, **params})
+        assert response.status_code == 200, response.text
+        return {int(i["id"]) for i in response.json()["items"]}
+
+    # 旧条件 → 小程序换成的条件（与 apps/miniapp/tests/search-r2.test.js 的转换表一致）
+    national = {"regions": "不限地区", "levels": "国家部委"}
+    converted = [
+        ({"regions": "国家部委"}, national),
+        ({"regions": "国家部委", "levels": "国家部委"}, national),
+        ({"regions": "国家部委", "levels": "国家部委,省级"}, national),
+        ({"regions": "不限地区,国家部委"}, national),
+        ({"regions": "国家部委,山东", "levels": "国家部委"}, national),
+        (
+            {"regions": "国家部委,山东,北京", "levels": "省级"},
+            {"regions": "山东,北京", "levels": "省级"},
+        ),
+    ]
+    for old, new in converted:
+        assert ids(**old), old
+        assert ids(**old) == ids(**new), (old, new)
+    # 保留原样的：地区里不含"国家部委"的写法都得不到同样的结果
+    alternatives = [
+        {"regions": r, "levels": lv}
+        for r in ("不限地区", "山东")
+        for lv in ("", "国家部委", "省级", "国家部委,省级")
+    ]
+    for old in (
+        {"regions": "国家部委,山东"},
+        {"regions": "国家部委,山东", "levels": "国家部委,省级"},
+    ):
+        assert all(ids(**old) != ids(**alt) for alt in alternatives), old
+
+
 def test_no_public_output_contains_unverified_dates(client, session, seeded):
     """红线：没核对的截止日期不能从任何公开接口出来（含时刻和原文证据）。
 

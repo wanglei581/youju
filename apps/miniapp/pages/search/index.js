@@ -5,9 +5,10 @@ const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+const legal = require('../../content/legal.js');
 const {
-  levelConflict, categoryConflict, supportConflict, CATEGORIES, CATEGORY_NOTE, GUIDE, foldNote,
-  SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  levelConflict, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
+  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
 } = require('../../utils/conditions.js');
 
 const KIND_TABS = [
@@ -17,32 +18,56 @@ const KIND_TABS = [
   { key: '政策', label: '政策' },
 ];
 
-// 筛选项：地区"不限地区"与具体省份互斥；发布时间单选（取值与服务端 /api/v1/search 一致）
+// 筛选弹层分左右两栏：左边按下面的顺序列组名（旁边是已选个数），右边是当前组的选项。
+// 地区"不限地区"与具体省份互斥；发布时间单选（取值与服务端 /api/v1/search 一致）。
+// 国家部委只在"层级"里选（旧条件地区里的国家部委见 conditions.migrateNational）；
 // 层级和地区同时选时两项都要满足（与其他筛选一样）；地市还没接入，先不放"市级"
+const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 const GROUPS = [
-  { key: 'region', title: '地区', hint: '可多选', multi: true,
-    options: ['不限地区', '国家部委', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'],
-    note: '' }, // 还没收录的省份取自收录范围接口
-  { key: 'level', title: '层级', hint: '可多选', multi: true, options: ['国家部委', '省级'],
-    note: '和地区同时选时，列出两项都符合的文件；地市暂未收录' },
+  // 还没收录的省份取自收录范围接口，写在 extra 里
+  { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选', extra: '' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
-  // 项目类别按标题归类，只有申报通知和名单有；说明写在选项下面，不作资格判断
-  { key: 'category', title: '项目类别', hint: '可多选', multi: true, options: CATEGORIES, note: CATEGORY_NOTE },
-  // 支持方式、产业方向也按标题归类，只用于筛选（列表和详情不显示）；说明写在选项下面
-  { key: 'support', title: '支持方式', hint: '可多选', multi: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
-  { key: 'industry', title: '产业方向', hint: '可多选', multi: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
-  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
-  { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
-  { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
+  { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
+  // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
+  // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
+  { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
+  { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
+  { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
+  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
+  { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级'],
+    note: '和地区同时选时，列出两项都符合的文件；地市暂未收录' },
+  { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
-const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: ['近 30 天'], dept: [], open: [] };
+const DEFAULT_TIME = '近 30 天';
+const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
 const LEVEL_CONFLICT = '所选地区和层级没有重叠（国家部委和省级是两类来源），请调整地区或层级';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
 const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
 const PAGE = 20;
+
+// 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算
+function activeValues(group, values) {
+  if (group === 'region') return values.filter((r) => r !== '不限地区');
+  if (group === 'time') return values.filter((t) => t !== DEFAULT_TIME);
+  return values;
+}
+
+// 已选条件条上的文字：脱离了组名也要看得懂
+function chipLabel(group, option) {
+  if (group === 'type' && option === '其他') return '其他类型';
+  if (group === 'time' && option === '不限') return '不限时间';
+  if (group === 'status') return `名单${option}`;
+  return option;
+}
+
+// 地区选项：选了不在常用列表里的省份时直接列出全部省份；旧条件留下的"国家部委"只在已选时显示
+function regionOptions(expanded, legacyNational) {
+  const list = expanded ? ['不限地区'].concat(ALL_PROVINCES) : REGION_SHORT;
+  return legacyNational ? [list[0], NATIONAL].concat(list.slice(1)) : list;
+}
 
 Page({
   data: {
@@ -56,6 +81,14 @@ Page({
     error: '',
     filterOpen: false,
     groups: GROUPS,
+    // 筛选弹层右栏当前显示的组；counts 是每组已选几项（左栏组名旁边显示）
+    activeGroup: 'region',
+    counts: {},
+    // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
+    activeChips: [],
+    tagNote: TAG_NOTE,
+    // 协议定稿前"关注"是灰色的，点了弹出原因（ensureConsent），不报错
+    followOff: !legal.final,
     picked: DEFAULT_PICKED,
     pickedMap: {},
     chipRegion: '地区',
@@ -87,6 +120,10 @@ Page({
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
+    // 旧条件地区里的"国家部委"：结果相同时换成层级
+    const migrated = migrateNational(picked.region, picked.level);
+    picked.region = migrated.regions;
+    picked.level = migrated.levels;
     this.setData({ picked });
     this.setData({
       q: decodeURIComponent(query.q || ''),
@@ -98,8 +135,8 @@ Page({
     loadCoverage().then((c) => {
       const names = notCoveredNames(c);
       if (!names) return;
-      const note = `${names}暂未收录`;
-      this.setData({ groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { note }) : g)) });
+      const extra = `${names}暂未收录`;
+      this.setData({ groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { extra }) : g)) });
     });
   },
 
@@ -205,7 +242,19 @@ Page({
     Object.keys(picked).forEach((g) => picked[g].forEach((o) => { pickedMap[`${g}:${o}`] = true; }));
     const regions = picked.region.filter((r) => r !== '不限地区');
     const scope = [regions.join('、'), picked.level.join('、')].filter(Boolean).join(' · ');
+    const counts = {};
+    const activeChips = [];
+    GROUPS.forEach((g) => {
+      const values = activeValues(g.key, picked[g.key] || []);
+      counts[g.key] = values.length;
+      values.forEach((o) => activeChips.push({ key: `${g.key}:${o}`, group: g.key, option: o, label: chipLabel(g.key, o) }));
+    });
+    const expanded = !!this.moreRegions || regions.some((r) => r !== NATIONAL && !REGION_SHORT.includes(r));
+    const options = regionOptions(expanded, regions.includes(NATIONAL));
     this.setData({
+      groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { options }) : g)),
+      counts,
+      activeChips,
       pickedMap,
       chipRegion: scope || '地区',
       regionOn: !!scope,
@@ -249,8 +298,14 @@ Page({
     this.loadMore();
   },
 
-  openFilter() {
-    this.setData({ filterOpen: true });
+  // 从"地区""近 30 天""状态"进来时右栏直接显示那一组；从"筛选"进来时显示上次看的组
+  openFilter(e) {
+    const group = e && e.currentTarget && e.currentTarget.dataset.group;
+    this.setData({ filterOpen: true, activeGroup: group || this.data.activeGroup });
+  },
+
+  pickGroup(e) {
+    this.setData({ activeGroup: e.currentTarget.dataset.key });
   },
 
   onFilterVisible(e) {
@@ -265,15 +320,16 @@ Page({
     const { group, option } = e.currentTarget.dataset;
     // "更多省份"只是展开全部省份，不是筛选条件
     if (group === 'region' && option === '更多省份') {
-      const groups = this.data.groups.map((g) => (g.key === 'region'
-        ? Object.assign({}, g, { options: ['不限地区', '国家部委'].concat(ALL_PROVINCES) }) : g));
-      this.setData({ groups });
+      this.moreRegions = true;
+      this.refreshChips();
       return;
     }
     const def = GROUPS.find((g) => g.key === group);
     const cur = this.data.picked[group] || [];
     let next;
-    if (!def.multi) {
+    if (group === 'open') {
+      next = cur.includes(option) ? [] : [option]; // 只有一项，再点一次取消
+    } else if (!def.multi) {
       next = [option];
     } else if (group === 'region' && option === '不限地区') {
       next = ['不限地区'];
@@ -281,12 +337,27 @@ Page({
       next = cur.includes(option) ? cur.filter((o) => o !== option) : cur.filter((o) => o !== '不限地区').concat(option);
       if (group === 'region' && next.length === 0) next = ['不限地区'];
     }
+    this.setPicked(group, next);
+  },
+
+  setPicked(group, next) {
     this.setData({ picked: Object.assign({}, this.data.picked, { [group]: next }) });
     this.refreshChips();
     this.apply(true);
   },
 
+  // 已选条件条和空结果里点"去掉"：去掉这一个条件，立即按新条件查
+  removePicked(e) {
+    const { group, option } = e.currentTarget.dataset;
+    let next = (this.data.picked[group] || []).filter((o) => o !== option);
+    if (group === 'region' && !next.length) next = ['不限地区'];
+    if (group === 'time') next = [DEFAULT_TIME];
+    this.setPicked(group, next);
+  },
+
+  // 筛选弹层的"重置"、已选条件条的"清空"、空结果的"清空条件"
   resetFilter() {
+    this.moreRegions = false;
     this.setData({ picked: DEFAULT_PICKED });
     this.refreshChips();
     this.apply(true);
