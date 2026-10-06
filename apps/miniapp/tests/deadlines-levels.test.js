@@ -88,7 +88,9 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
   page.goSearch();
   assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知' });
   page.data.province = '国家部委'; page.data.dept = '科技部门'; page.goSearch();
-  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', regions: '国家部委', depts: '科技部门' });
+  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', levels: '国家部委', depts: '科技部门' });
+  page.data.province = '山东'; page.goSearch();
+  assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', regions: '山东', depts: '科技部门' });
   const template = read('pages/report/index.wxml');
   assert.match(template, /{{verifyingNote}}/);
   assert.match(template, /bindtap="goSearch"[^>]*>去搜索申报通知/);
@@ -119,6 +121,7 @@ test('申报日历空状态：写已核对条数，给去搜索申报通知的�
 test('层级筛选：只有国家部委、省级两项，条件带到接口、关注和返回搜索', async () => {
   const calls = [];
   const page = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -131,14 +134,17 @@ test('层级筛选：只有国家部委、省级两项，条件带到接口、�
   assert.equal(calls.at(-1).levels, undefined); // 没选层级时不带，和以前的请求一样
   page.pickOption(event({ group: 'level', option: '省级' })); await flush();
   assert.equal(calls.at(-1).levels, '省级');
-  assert.equal(page.data.chipRegion, '省级');
+  assert.equal(page.data.entries.region.on, true); // 入口"地区"管地区和层级
   page.pickOption(event({ group: 'level', option: '国家部委' })); await flush();
   assert.equal(page.conditions().levels, '省级,国家部委');
   page.pickOption(event({ group: 'region', option: '山东' })); await flush();
-  assert.equal(page.data.chipRegion, '山东 · 省级、国家部委');
+  // 层级的国家部委不受地区限制：请求的地区里加上国家部委
+  assert.equal(page.conditions().regions, '国家部委,山东');
+  assert.equal(page.conditions().levels, '省级,国家部委');
   assert.match(page.followName(), /山东 · 省级、国家部委/);
   // 返回搜索时恢复层级
   const restored = load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
@@ -150,36 +156,41 @@ test('层级筛选：只有国家部委、省级两项，条件带到接口、�
   assert.equal(conditions.describe({ kind: '申报通知', regions: '山东', levels: '省级', time: '不限' }), '山东 · 省级 · 申报通知 · 不限');
 });
 
-test('地区和层级的合并规则：两组取交集，国家部委在两组里是同一类；没有交集时空结果给提示', async () => {
-  const c = conditions.levelConflict;
-  assert.equal(c('不限地区', '国家部委'), false);
-  assert.equal(c('国家部委', '国家部委'), false);
-  assert.equal(c('国家部委,山东', '省级'), false);
-  assert.equal(c('山东', '省级,国家部委'), false);
-  assert.equal(c('山东', ''), false);
-  assert.equal(c('山东,北京', '国家部委'), true);
-  assert.equal(c('国家部委', '省级'), true);
-  // 演示数据的筛选与服务端同一规则
+test('地区和层级：层级的国家部委不受地区限制，省级只列所选地区的；演示数据与服务端同一规则', async () => {
+  const scope = (region, level) => JSON.parse(JSON.stringify(conditions.requestScope(region, level)));
+  assert.deepEqual(scope(['不限地区'], []), { regions: '不限地区' });
+  assert.deepEqual(scope(['不限地区'], ['国家部委']), { regions: '不限地区', levels: '国家部委' });
+  assert.deepEqual(scope(['山东'], []), { regions: '山东' });
+  assert.deepEqual(scope(['山东'], ['省级']), { regions: '山东', levels: '省级' });
+  assert.deepEqual(scope(['山东', '北京'], ['国家部委']), { regions: '国家部委,山东,北京' });
+  assert.deepEqual(scope(['山东'], ['国家部委', '省级']), { regions: '国家部委,山东', levels: '国家部委,省级' });
+  // 演示数据的筛选与服务端同一规则（组间取交集）
   const docs = [
     { title: 'a', kind: '申报通知', region: '国家', date: '2026-09-01' },
     { title: 'b', kind: '申报通知', region: '山东 · 省级', date: '2026-09-01' },
     { title: 'c', kind: '申报通知', region: '山东 · 市级', date: '2026-09-01' },
+    { title: 'd', kind: '申报通知', region: '北京 · 省级', date: '2026-09-01' },
   ];
-  const titles = (params) => mockSearch(docs, { time: '不限', ...params }).items.map((d) => d.title);
-  assert.deepEqual(titles({ regions: '国家部委' }), titles({ levels: '国家部委' }));
-  assert.deepEqual(titles({ levels: '省级' }), ['b']);
-  assert.deepEqual(titles({ regions: '山东' }), ['b', 'c']);
-  assert.deepEqual(titles({ regions: '山东', levels: '省级' }), ['b']);
-  assert.deepEqual(titles({ regions: '山东', levels: '国家部委' }), []);
-  // 搜索页：没有交集时提示调整；只看未截止没有结果时说明只含核对过的
+  const titles = (region, level) => mockSearch(docs, { time: '不限', ...conditions.requestScope(region, level) }).items.map((d) => d.title);
+  assert.deepEqual(titles(['不限地区'], ['国家部委']), ['a']);
+  assert.deepEqual(titles(['不限地区'], ['省级']), ['b', 'd']);
+  assert.deepEqual(titles(['山东'], []), ['b', 'c']);
+  assert.deepEqual(titles(['山东'], ['省级']), ['b']);
+  assert.deepEqual(titles(['山东'], ['国家部委']), ['a', 'b', 'c']); // 国家部委 + 山东（地市暂未收录，线上就是省级）
+  assert.deepEqual(titles(['山东'], ['国家部委', '省级']), ['a', 'b']);
+  // 搜索页：地区 + 层级国家部委不再是空结果的冲突；只看未截止没有结果时说明只含核对过的
+  const calls = [];
   const page = load('pages/search/index.js', {
-    '../../utils/api.js': { search: () => Promise.resolve({ total: 0, total_all: 0, items: [] }) },
+    '../../content/legal.js': { final: false },
+    '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   page.onLoad({ regions: '山东', levels: '国家部委' }); await flush();
-  assert.match(page.data.emptyHint, /地区和层级没有重叠/);
+  assert.equal(calls.at(-1).regions, '国家部委,山东');
+  assert.equal(calls.at(-1).levels, undefined);
+  assert.equal(page.data.emptyHint, '');
   page.onLoad({ open: '1' }); await flush();
   assert.match(page.data.emptyHint, /只包含截止日期已经人工核对的申报通知/);
   assert.doesNotMatch(page.data.emptyHint, DIGITS);

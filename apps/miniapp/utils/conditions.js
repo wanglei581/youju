@@ -4,7 +4,10 @@ const KIND_LABEL = { all: '全部类型', 申报通知: '申报通知', 名单: 
 const GUIDE = '资讯与指南';
 // 项目类别（与服务端 youju.categories 一致）：按标题归类，只有申报通知和名单有
 const CATEGORIES = ['资质与梯度培育', '科技计划与研发', '平台载体与园区', '人才', '表彰奖励', '首台套与新产品', '试点示范', '其他申报'];
-const CATEGORY_NOTE = '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单';
+// 按标题归类的三组（项目类别、支持方式、产业方向）共用的说明：筛选弹层在这三组右栏顶部各显示一行。
+// 下面三个 *_NOTE 只写各组特有的补充，TAG_NOTE + '；' + 补充 就是原来每组的完整说明，意思一个字不少
+const TAG_NOTE = '按标题归类，仅供检索参考，非官方分类';
+const CATEGORY_NOTE = '只含申报通知和名单';
 // 有项目类别的两类文件在类型筛选里的名字
 const CATEGORY_TYPES = ['申报通知', '名单与公示'];
 // 支持方式、产业方向（与服务端 youju.title_tags 一致）：按标题关键词归类，只用于筛选，列表和详情里
@@ -12,24 +15,54 @@ const CATEGORY_TYPES = ['申报通知', '名单与公示'];
 // "征集入选"只在筛选里有。支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个
 // 或没有。不显示金额
 const SUPPORT_MODES = ['资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '征集入选'];
-const SUPPORT_NOTE = '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项';
+const SUPPORT_NOTE = '只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项';
 const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生物医药与健康', '新能源与绿色低碳', '电子信息与集成电路', '现代农业', '文旅与现代服务业'];
-const INDUSTRY_NOTE = '按标题归类，仅供检索参考，非官方分类；一份文件可能有多个方向，也可能没有';
+const INDUSTRY_NOTE = '一份文件可能有多个方向，也可能没有';
 
 function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
 }
 
-// 地区和层级同时选时两项都要满足（与服务端 /api/v1/search 一致）。"国家部委"在两组里是同一类
-// 来源；地区只选了省份而层级只选国家部委，或地区只选国家部委而层级只选省级，必然查不到，
-// 搜索页在空结果里据此提示调整。
-function levelConflict(regions, levels) {
-  const picked = split(regions).filter((r) => r !== '不限地区');
-  const lv = split(levels);
-  if (!picked.length || !lv.length) return false;
-  const national = picked.includes('国家部委') && lv.includes('国家部委');
-  const provincial = picked.some((r) => r !== '国家部委') && lv.includes('省级');
-  return !national && !provincial;
+// 地区和层级（UI 第二轮起）：国家部委只在"层级"里选。界面上的意思是"层级选哪几层，地区只管省份那部分"：
+//   层级含国家部委 → 国家部委的文件不受地区限制，和所选地区的文件一起列出；
+//   层级含省级     → 所选地区（没选就是全部省份）的省级文件；
+//   层级没选       → 只按地区（没选地区就是全部）。
+// 服务端 /api/v1/search 是地区、层级两组取交集，地区里的"国家部委"和层级的"国家部委"是同一个条件，
+// 所以请求这样拼（requestScope），后端不用改：
+//   选了地区且层级含国家部委：regions=国家部委,省份；层级同时含省级时 levels=国家部委,省级
+//     （(国家部委 ∪ 省份) ∩ (国家部委 ∪ 省级) = 国家部委 ∪ 省份的省级），否则不传 levels
+//     （= 国家部委 ∪ 省份的全部文件；地市暂未收录，目前就是省级）；
+//   其余照原样：regions=省份或不限地区，levels=所选层级。
+const NATIONAL = '国家部委';
+
+function requestScope(region, level) {
+  const provinces = (region || []).filter((r) => r !== '不限地区' && r !== NATIONAL);
+  const levels = level || [];
+  if (provinces.length && levels.includes(NATIONAL)) {
+    return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.includes('省级') ? levels.join(',') : undefined };
+  }
+  return { regions: (region || []).join(','), levels: levels.length ? levels.join(',') : undefined };
+}
+
+// 反过来：网址参数、保存的关注条件（服务端的写法）换成界面上的地区和层级，requestScope 拼回去的请求
+// 和原来结果相同。旧版本的条件也走这里（地区里可能有国家部委）。只有两种原来必然查不到的组合换不出
+// 相同结果，按字面意思换：地区只有国家部委、层级只选省级 → 层级国家部委 + 省级；地区是省份、
+// 层级只选国家部委 → 现在列出国家部委和这些省份的文件。
+function migrateNational(regions, levels) {
+  const region = regions || [];
+  const level = levels || [];
+  const provinces = region.filter((r) => r !== NATIONAL && r !== '不限地区');
+  const has = (value) => level.includes(value);
+  if (!region.includes(NATIONAL)) {
+    // 省份 + 层级两级都选：原来国家部委被地区排除，只剩省份的省级文件
+    if (provinces.length && has(NATIONAL) && has('省级')) return { regions: provinces, levels: ['省级'] };
+    return { regions: region, levels: level };
+  }
+  if (!provinces.length) return { regions: ['不限地区'], levels: has('省级') && !has(NATIONAL) ? [NATIONAL, '省级'] : [NATIONAL] };
+  if (!level.length) return { regions: provinces, levels: [NATIONAL] };
+  if (has(NATIONAL) && !has('省级')) return { regions: ['不限地区'], levels: [NATIONAL] };
+  if (!has(NATIONAL)) return { regions: provinces, levels: ['省级'] };
+  return { regions: provinces, levels: [NATIONAL, '省级'] };
 }
 
 // 选了项目类别（或支持方式），但页签或类型里没有申报通知和名单：必然查不到，搜索页在空结果里
@@ -79,6 +112,6 @@ function searchUrl(c) {
 }
 
 module.exports = {
-  describe, searchUrl, levelConflict, categoryConflict, supportConflict, foldNote, GUIDE, CATEGORIES, CATEGORY_NOTE,
-  SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  describe, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
+  CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
 };
