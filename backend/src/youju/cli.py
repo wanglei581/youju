@@ -231,6 +231,41 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_extract_conditions(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.conditions import run_extraction
+
+    # 一份清单输出较长（每条带原文原句），单次请求多等一会儿
+    client = get_chat_client(timeout=90.0)
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过申报条件抽取")
+        return 0
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = run_extraction(session, client, limit=args.limit, due_days=args.due_days)
+    finally:
+        usage_ok = _finish_ai(client, "conditions")
+    print(
+        f"申报条件：抽取 {report.documents} 份申报通知（模型 {client.model}），"
+        f"其中 {args.due_days} 天内截止的 {report.due_soon} 份排在前面"
+    )
+    print(
+        f"  送核对 {report.lists} 份、{report.items} 条（都要人工核对、整份确认后才对外）；"
+        f"没有条目的 {report.empty} 份"
+    )
+    reasons = "、".join(f"{k} {v}" for k, v in sorted(report.dropped_reasons.items()))
+    print(f"  没通过原文核对、已丢弃 {report.dropped} 条{f'（{reasons}）' if reasons else ''}")
+    print(
+        f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.audit import alert_text, run_audit
@@ -750,6 +785,20 @@ def main(argv: list[str] | None = None) -> int:
         "合计不超过 --limit。只写 AI 记录，不改候选的核对状态",
     )
     p.set_defaults(func=_cmd_ai_check)
+
+    p = sub.add_parser(
+        "extract-conditions",
+        help="后台模型从申报通知正文抽申报条件（每条带原文引用），送核对台；没配密钥时跳过",
+    )
+    p.add_argument("--limit", type=int, default=60, help="本轮最多抽取多少份通知")
+    p.add_argument(
+        "--due-days",
+        type=_non_negative,
+        default=30,
+        metavar="DAYS",
+        help="DAYS 天内截止的通知排在前面先抽（默认 30）",
+    )
+    p.set_defaults(func=_cmd_extract_conditions)
 
     p = sub.add_parser(
         "audit-deadlines",

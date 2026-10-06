@@ -16,9 +16,21 @@ function previewOf(text) {
   return `${text.slice(0, cut > BODY_PREVIEW - 200 ? cut : BODY_PREVIEW)}……`;
 }
 
+// 申报条件：接口只给人工核对、整份确认过的条目；同一类别连着的几条只在第一条写类别
+function conditionRows(doc) {
+  const items = (doc && doc.apply_conditions && doc.apply_conditions.items) || [];
+  return items.map((item, index) => ({
+    category: item.category,
+    text: item.text,
+    quote: item.quote,
+    open: false,
+    showCat: index === 0 || items[index - 1].category !== item.category,
+  }));
+}
+
 Page({
   data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '',
+    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], attNote: '' },
 
   onLoad(query) {
@@ -46,6 +58,7 @@ Page({
           bodyRest: body ? body.total - body.text.length : 0,
           supportExpanded: '',
           supportEvidence: '',
+          conds: conditionRows(doc),
           due,
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
@@ -63,7 +76,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -82,6 +95,16 @@ Page({
       supportExpanded: this.data.supportExpanded === label ? '' : label,
       supportEvidence: this.data.supportExpanded === label ? '' : (evidence || ''),
     });
+  },
+
+  // 点一条申报条件：展开或收起它的原文
+  toggleCond(e) {
+    const index = Number(e.currentTarget.dataset.index);
+    const row = this.data.conds[index];
+    if (!row) return;
+    const conds = this.data.conds.slice();
+    conds[index] = Object.assign({}, row, { open: !row.open });
+    this.setData({ conds });
   },
 
   // 这份文件有没有还没发出的截止提醒（以服务端为准）
