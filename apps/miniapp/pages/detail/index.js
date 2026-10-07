@@ -17,15 +17,20 @@ function previewOf(text) {
   return `${text.slice(0, cut > BODY_PREVIEW - 200 ? cut : BODY_PREVIEW)}……`;
 }
 
-// 申报条件：接口只给人工核对、整份确认过的条目；同一类别连着的几条只在第一条写类别
+// 申报条件：接口只给人工核对、整份确认过的条目，每条是类别和通知原文里的原句（逐字引用）。
+// 只显示原句，不显示概括的说法；同一句原文只列一次；同一类别连着的几条只在第一条写类别
 function conditionRows(doc) {
   const items = (doc && doc.apply_conditions && doc.apply_conditions.items) || [];
-  return items.map((item, index) => ({
+  const seen = {};
+  const rows = items.filter((item) => {
+    if (!item || !item.quote || seen[item.quote]) return false;
+    seen[item.quote] = true;
+    return true;
+  });
+  return rows.map((item, index) => ({
     category: item.category,
-    text: item.text,
     quote: item.quote,
-    open: false,
-    showCat: index === 0 || items[index - 1].category !== item.category,
+    showCat: index === 0 || rows[index - 1].category !== item.category,
   }));
 }
 
@@ -98,16 +103,6 @@ Page({
       supportExpanded: this.data.supportExpanded === label ? '' : label,
       supportEvidence: this.data.supportExpanded === label ? '' : (evidence || ''),
     });
-  },
-
-  // 点一条申报条件：展开或收起它的原文
-  toggleCond(e) {
-    const index = Number(e.currentTarget.dataset.index);
-    const row = this.data.conds[index];
-    if (!row) return;
-    const conds = this.data.conds.slice();
-    conds[index] = Object.assign({}, row, { open: !row.open });
-    this.setData({ conds });
   },
 
   // 这份文件有没有还没发出的截止提醒（以服务端为准）
