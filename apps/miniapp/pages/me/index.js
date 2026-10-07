@@ -1,11 +1,12 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { applyServer, consentEpoch, withdraw, markAgreed, CONSENT_PAGE } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE } = require('../../utils/consent.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
 Page({
   data: {
-    legalFinal: legal.final,
+    // 协议定稿前（D-056）不显示登录卡片、纠错和申请覆盖，也不查询登录状态；定稿后照旧
+    loginOpen: loginOpen(),
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,
@@ -46,7 +47,7 @@ Page({
   // 以服务端记录为准：换了设备也能恢复登录状态；服务端没有记录（如在别处注销过）或协议更新了，清掉本机记录。
   // 查询 /me 不会建用户记录。
   refresh() {
-    if (!api.isLive()) {
+    if (!api.isLive() || !this.data.loginOpen) {
       this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '' });
       return;
     }
@@ -78,10 +79,6 @@ Page({
 
   // 登录前必须主动勾选同意协议（agy 合规意见；微信隐私协议开发指南要求用户明确同意）
   toggleAgree() {
-    if (!this.data.legalFinal) {
-      wx.showToast({ title: '协议正在定稿，定稿后开放登录', icon: 'none' });
-      return;
-    }
     this.setData({ agreed: !this.data.agreed, nudge: false });
   },
 
@@ -122,6 +119,11 @@ Page({
 
   openAgreement(e) {
     wx.navigateTo({ url: `/pages/agreement/index?type=${e.currentTarget.dataset.type}` });
+  },
+
+  // 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案
+  openPrivacy() {
+    openPrivacy();
   },
 
   go(e) {

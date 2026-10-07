@@ -1,5 +1,5 @@
 // 关注、订阅提醒、纠错之前，先确认用户已同意用户协议和隐私保护指引（服务端记录，本机缓存版本号）。
-// 协议还是草案（legal.final 为 false）时不开放同意，这些功能显示"协议定稿后开放"。
+// 协议还是草案（legal.final 为 false）时不开放同意，这些功能的入口都不显示（D-056）。
 const legal = require('../content/legal.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
@@ -10,6 +10,12 @@ function consentOpen() {
   // 内测包（只上传体验版、给白名单内测，不提审；创始人 10/6 同意“需要先用”）：协议还是草案也开放同意，
   // 好让内测成员同意后试用 AI 页面。正式版本（main）仍以 legal.final 为准，等律师定稿。
   return api.isLive();
+}
+
+// 需要同意协议的功能（登录、关注、订阅提醒、纠错、申请覆盖）这个版本显不显示入口（D-056）：
+// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final，不是服务端开关
+function loginOpen() {
+  return legal.final === true;
 }
 
 function agreedHere() {
@@ -62,15 +68,18 @@ function syncConsent() {
   return pending;
 }
 
-// 返回 true 表示已同意，可以继续。note：协议定稿前弹出的原因末尾补一句这项功能是做什么的
-// （如搜索页"关注"写"关注后，有新文件时在关注页标出"），不传时和以前一样
-function ensureConsent(note) {
-  if (!legal.final) {
-    wx.showModal({
-      title: '协议定稿后开放',
-      content: `关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。${note ? `${note}。` : ''}`,
-      showCancel: false,
-    });
+// 打开小程序后台填写的《用户隐私保护指引》（微信官方页面，基础库 2.32.3 起）。
+// 协议定稿前（D-056）"我的"和"关于有据"用它代替草案页面；打不开或基础库太低时轻提示
+function openPrivacy() {
+  const fail = () => wx.showToast({ title: '暂时打不开，请稍后再试', icon: 'none' });
+  if (typeof wx.openPrivacyContract !== 'function') { fail(); return; }
+  wx.openPrivacyContract({ fail });
+}
+
+// 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底
+function ensureConsent() {
+  if (!loginOpen()) {
+    wx.showToast({ title: '这个功能暂未开放', icon: 'none' });
     return Promise.resolve(false);
   }
   if (!api.isLive()) {
@@ -163,5 +172,5 @@ function consentOutdated() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
 };

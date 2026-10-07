@@ -1,14 +1,16 @@
 const api = require('../../utils/api.js');
-const { ensureConsent } = require('../../utils/consent.js');
+const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 
 const MAX = 500;
 const COVERAGE_PREFIX = '申请覆盖：';
 
-// 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式
+// 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式。
+// 提交前要同意协议；协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"
 Page({
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false },
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, loginOpen: loginOpen() },
 
   onLoad(query) {
+    if (!this.data.loginOpen) return;
     // type=coverage：申请覆盖（想增加的地区和栏目），提交时内容前加"申请覆盖："方便核对台区分
     const coverage = query.type === 'coverage';
     this.setData({

@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { todayISO, daysUntil, monthDay, weekday, dueTone, verifyingNote } = require('../../utils/format.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
+const { loginOpen } = require('../../utils/consent.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const RANGES = [
@@ -52,6 +53,8 @@ Page({
     selLabel: '',
     nearest: null,
     reminded: {},
+    // 协议定稿前（D-056）每条不显示截止提醒的铃铛，定稿后照旧
+    loginOpen: loginOpen(),
     truncated: false,
     // 没有未截止事项时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
     verifyingNote: '',
