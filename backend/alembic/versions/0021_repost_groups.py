@@ -31,6 +31,7 @@ def upgrade() -> None:
         sa.Column("upstream_number", sa.String(length=64), nullable=True),
         sa.Column("created_by", sa.String(length=8), server_default="rule", nullable=False),
         sa.Column("no_auto", sa.Boolean(), server_default="0", nullable=False),
+        sa.Column("revision", sa.Integer(), server_default="0", nullable=False),
         sa.Column("created_at", mysql.DATETIME(fsp=6), server_default=NOW, nullable=False),
         sa.Column("updated_at", mysql.DATETIME(fsp=6), server_default=NOW, nullable=False),
         sa.PrimaryKeyConstraint("id"),

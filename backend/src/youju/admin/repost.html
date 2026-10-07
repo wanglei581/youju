@@ -27,7 +27,8 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
 <main>
 <p class="hint">同一份部里通知的各地版本，由程序按标题、正文里引用的部里文号归成一组。确认后，小程序列表里这一组只显示一条，写“另有 N 个转发版本”；没确认的组对外仍按单条显示。逐个版本看原文，确认是同一件事再点“确认合并”。</p>
 <p class="hint">各版本的截止日期仍在“截止日期”核对台逐条核对，确认合并不会通过任何截止；不同版本的日期不互相套用，对外按版本标（如“江西版：推荐截止”）。</p>
-<p class="hint">不是同一件事：移出那个版本（以后不会被自动加回），或勾选几个版本拆成新组，或整组不合并。撤回确认后各版本马上恢复成单条。</p>
+<p class="hint">不是同一件事：移出那个版本（以后不会被自动加回），或勾选几个版本拆成新组，或整组不合并。撤回确认后各版本马上恢复成单条。撤回、移出、拆组、整组不合并的决定会一直保留，程序不会再自动合并这些组。</p>
+<p class="hint">确认时只确认页面上看到的这些版本；如果在你看的时候程序加入了新版本、或别人改过这一组，会提示刷新，刷新后再确认。</p>
 <p id="message" role="status" class="msg"></p>
 <div id="list"></div>
 </main>
@@ -65,12 +66,13 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
 
   function member(group,m,picked,msg){
     const row=node('div',undefined,`member${m.active?'':' off'}`);
-    const box=node('input'); box.type='checkbox'; box.disabled=!m.active; box.setAttribute('aria-label',`选中${m.label}`);
+    const box=node('input'); box.type='checkbox'; box.disabled=!m.active||!!m.merged_into; box.setAttribute('aria-label',`选中${m.label}`);
     box.onchange=()=>{if(box.checked)picked.add(m.document_id);else picked.delete(m.document_id);};
     const info=node('div');
     const head=node('div','', 'top');
     head.append(node('span',m.label,'label'),node('span',`${m.issuer} · ${m.publish_date||'日期不详'} · ${m.kind}`,'meta'));
     if(m.taken_down)head.append(node('span','已下架','tag weak'));
+    if(m.merged_into)head.append(node('span',`已归并为 #${m.merged_into} 的同一文件${m.conflict?'，待处理':''}`,'tag weak'));
     info.append(head,link(`#${m.document_id} ${m.title}`,m.url));
     const state=m.active?(m.confirmed_at?node('div',`已确认（${m.confirmed_by}，${stamp(m.confirmed_at)}）`,'state ok'):node('div','待确认','state wait')):node('div',`已移出（${m.removed_by||''}，${stamp(m.removed_at)}）`,'state off');
     info.append(state);
@@ -82,7 +84,8 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
     } else dls.append(node('span','这一版没有截止候选'));
     info.append(dls);
     const side=node('div');
-    if(m.active){const b=node('button','移出此版本','danger');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/remove`,{},`把「${m.label}」移出这一组？移出后它对外单独显示，以后不会被自动加回。`);side.append(b);}
+    if(m.conflict){const b=node('button','去掉这条副本记录','danger');b.title='这份文件后来和另一份归并成同一文件，主文件也有组员记录；去掉副本这条，以主文件那条为准';b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/drop`,{},`去掉「${m.label}」这条副本记录？以主文件 #${m.merged_into} 的记录为准。`);side.append(b);}
+    else if(m.active){const b=node('button','移出此版本','danger');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/remove`,{},`把「${m.label}」移出这一组？移出后它对外单独显示，以后不会被自动加回。`);side.append(b);}
     else{const b=node('button','恢复到本组');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/restore`,{});side.append(b);}
     row.append(box,info,side);
     return row;
@@ -93,18 +96,21 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
     const top=node('div',undefined,'top');
     top.append(node('span',group.strength_label,`tag ${group.strength}`),node('span',group.topic,'topic'),node('span',`#${group.id} · ${group.versions} 个版本${group.pending?` · ${group.pending} 个待确认`:''}`,'meta'));
     if(group.public)top.append(node('span','已对外合并','tag public'));
+    if(group.conflicts)top.append(node('span',`${group.conflicts} 条同一文件记录待处理`,'tag weak'));
     e.append(top);
     if(group.upstream_number||group.upstream_title)e.append(node('div',`正文里引用的部里通知（照录）：${group.upstream_title?`《${group.upstream_title}》`:''}${group.upstream_number?`（${group.upstream_number}）`:''}`,'upstream'));
     else e.append(node('div','正文里没有引用部里通知的文号，请对照各版本原文判断','upstream'));
     group.members.forEach(m=>e.append(member(group,m,picked,msg)));
     const actions=node('div',undefined,'actions');
-    if(group.pending&&group.versions>=2){const b=node('button',group.public?'确认新加入的版本':'确认合并','primary');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/confirm`,{},`确认这 ${group.versions} 个版本是同一份部里通知的各地版本？确认后对外只显示一条主条目，各版本的截止日期仍各自核对。`);actions.append(b);}
-    if(group.members.some(m=>m.active&&m.confirmed_at)){const b=node('button','撤回确认');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/withdraw`,{},'撤回确认？各版本马上恢复成单条显示。');actions.append(b);}
+    // 确认时带上看到的版本和修订号：组在这期间有变化，后台不执行，提示刷新
+    const shown=group.members.filter(m=>m.active&&!m.merged_into).map(m=>m.document_id);
+    if(group.pending&&group.versions>=2){const b=node('button',group.public?'确认新加入的版本':'确认合并','primary');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/confirm`,{revision:group.revision,document_ids:shown},`确认这 ${group.versions} 个版本是同一份部里通知的各地版本？确认后对外只显示一条主条目，各版本的截止日期仍各自核对。`);actions.append(b);}
+    if(group.members.some(m=>m.active&&m.confirmed_at)){const b=node('button','撤回确认');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/withdraw`,{revision:group.revision},'撤回确认？各版本马上恢复成单条显示，以后不会再自动合并这一组。');actions.append(b);}
     if(group.versions>=2){
       const split=node('button','勾选的版本拆成新组');
-      split.onclick=()=>{if(!picked.size){msg.textContent='先勾选要拆出去的版本';return;}act(split,msg,`/api/admin/repost-groups/${group.id}/split`,{document_ids:[...picked]},`把勾选的 ${picked.size} 个版本拆成新的一组？两组都要重新确认。`);};
+      split.onclick=()=>{if(!picked.size){msg.textContent='先勾选要拆出去的版本';return;}act(split,msg,`/api/admin/repost-groups/${group.id}/split`,{document_ids:[...picked],revision:group.revision},`把勾选的 ${picked.size} 个版本拆成新的一组？两组都要重新确认。`);};
       const reject=node('button','整组不合并','danger');
-      reject.onclick=()=>act(reject,msg,`/api/admin/repost-groups/${group.id}/reject`,{},'这一组不是同一件事？全部版本移出、对外各自单独显示，以后不会被自动归回这一组。');
+      reject.onclick=()=>act(reject,msg,`/api/admin/repost-groups/${group.id}/reject`,{revision:group.revision},'这一组不是同一件事？全部版本移出、对外各自单独显示，以后不会被自动归回这一组。');
       actions.append(split,reject);
     }
     const add=node('input'); add.size=8; add.placeholder='文件编号'; add.inputMode='numeric'; add.setAttribute('aria-label','要加入的文件编号');

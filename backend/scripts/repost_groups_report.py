@@ -15,11 +15,13 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from datetime import date
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, make_url, text
 
 from youju.classify import effective_kind
 from youju.crawler.urls import url_key
+from youju.dedup import _compatible, _signature
 from youju.repost import BODY_HEAD_CHARS, Candidate, kind_bucket, propose_groups
 
 
@@ -46,8 +48,25 @@ def _load(conn):
     return docs, merges, deadlines
 
 
-def _canonical(docs, merges) -> tuple[dict[int, int], int]:
-    """{文件: 同一文件层的主文件}，以及网址相同、原来没合并的对数。"""
+def _signatures(conn, ids: list[int]) -> dict[int, tuple]:
+    """网址相同的那些文件的文号和正文指纹（和 dedup._signature 同一算法）。"""
+    if not ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT document_id, doc_number, body_text FROM document_details "
+            f"WHERE document_id IN ({','.join(str(int(i)) for i in ids)})"
+        )
+    ).all()
+    out = {}
+    for doc_id, number, body in rows:
+        out[doc_id] = _signature(SimpleNamespace(doc_number=number, body_text=body or ""))
+    return out
+
+
+def _canonical(docs, merges, signatures) -> tuple[dict[int, int], int, int]:
+    """{文件: 同一文件层的主文件}，网址相同、原来没合并、修复后归并的对数，以及网址相同但文号
+    或正文冲突、不归并的对数（和 dedup.reconcile_documents 一致）。"""
     parent = {row.id: row.id for row in docs}
 
     def find(x):
@@ -67,13 +86,19 @@ def _canonical(docs, merges) -> tuple[dict[int, int], int]:
     by_url: dict[str, list[int]] = defaultdict(list)
     for row in docs:
         by_url[url_key(row.url)].append(row.id)
-    fixed = 0
+    fixed = conflicts = 0
     for ids in by_url.values():
         for other in ids[1:]:
-            if find(other) != find(ids[0]):
-                fixed += 1
+            if find(other) == find(ids[0]):
+                continue
+            left = signatures.get(ids[0], (None, None))
+            right = signatures.get(other, (None, None))
+            if not _compatible(left, right):
+                conflicts += 1
+                continue
+            fixed += 1
             union(ids[0], other)
-    return {row.id: find(row.id) for row in docs}, fixed
+    return {row.id: find(row.id) for row in docs}, fixed, conflicts
 
 
 def main() -> int:
@@ -91,10 +116,13 @@ def main() -> int:
         conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
         conn.execute(text("START TRANSACTION READ ONLY"))
         docs, merges, deadlines = _load(conn)
+        counts = Counter(url_key(row.url) for row in docs)
+        shared = [row.id for row in docs if counts[url_key(row.url)] > 1]
+        signatures = _signatures(conn, shared)
         conn.rollback()
     engine.dispose()
 
-    master, fixed = _canonical(docs, merges)
+    master, fixed, conflicts = _canonical(docs, merges, signatures)
     rows = {row.id: row for row in docs}
     candidates = [
         Candidate(
@@ -117,7 +145,10 @@ def main() -> int:
         return args.since <= published <= args.until
 
     window = [c for c in candidates if args.since <= c.publish_date <= args.until]
-    print(f"同一文件层：网址相同、原来没合并的 {fixed} 对（修复后归为同一文件）")
+    print(
+        f"同一文件层：网址相同、原来没合并的 {fixed} 对（修复后归为同一文件）；"
+        f"网址相同但文号或正文冲突、不归并的 {conflicts} 对"
+    )
     print(
         f"窗口 {args.since}～{args.until}：条目 {len(window)} 份，"
         + "、".join(f"{k} {n}" for k, n in Counter(kind_bucket(c.kind) for c in window).items())

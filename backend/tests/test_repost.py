@@ -507,6 +507,27 @@ def _post(client, path, **body):
     )
 
 
+def _seen(client, gid):
+    """管理台页面上看到的这一组（修订号、在组版本）。"""
+    for state in ("pending", "confirmed", "removed"):
+        for group in client.get(
+            "/api/admin/repost-groups", params={"state": state}, headers=HEADERS
+        ).json():
+            if group["id"] == gid:
+                return group
+    raise AssertionError(f"转发组 #{gid} 不在管理台列表里")
+
+
+def _rev(client, gid) -> dict:
+    return {"revision": _seen(client, gid)["revision"]}
+
+
+def _shown(client, gid) -> dict:
+    group = _seen(client, gid)
+    ids = [m["document_id"] for m in group["members"] if m["active"] and not m["merged_into"]]
+    return {"revision": group["revision"], "document_ids": ids}
+
+
 def test_repost_admin_requires_token(client) -> None:
     assert client.get("/api/admin/repost-groups").status_code == 401
     assert client.post("/api/admin/repost-groups/1/confirm", json={}).status_code == 401
@@ -532,9 +553,10 @@ def test_repost_admin_flow(client, session, world) -> None:
     )
     gid = group["id"]
 
-    # 确认整组：对外合并；再确认一次是 409
-    assert _post(client, f"/{gid}/confirm").status_code == 200
-    assert _post(client, f"/{gid}/confirm").status_code == 409
+    # 确认整组：对外合并；再确认一次是 409（修订号已变）
+    seen = _shown(client, gid)
+    assert _post(client, f"/{gid}/confirm", **seen).status_code == 200
+    assert _post(client, f"/{gid}/confirm", **seen).status_code == 409
     assert client.get("/api/admin/repost-groups/count", headers=HEADERS).json() == {"pending": 0}
     confirmed = client.get("/api/admin/repost-groups?state=confirmed", headers=HEADERS).json()
     assert confirmed[0]["public"] is True
@@ -542,7 +564,8 @@ def test_repost_admin_flow(client, session, world) -> None:
     assert session.scalars(select(DocumentDeadline)).one().status == "pending"
 
     # 撤回：全部回到待确认，以后不再自动确认
-    assert _post(client, f"/{gid}/withdraw").status_code == 200
+    assert _post(client, f"/{gid}/withdraw", revision=0).status_code == 409  # 修订号对不上
+    assert _post(client, f"/{gid}/withdraw", **_rev(client, gid)).status_code == 200
     session.expire_all()
     assert all(row.confirmed_at is None for row in _members(session).values())
     assert session.get(RepostGroup, gid).no_auto is True
@@ -556,8 +579,10 @@ def test_repost_admin_flow(client, session, world) -> None:
     assert _post(client, f"/{gid}/members/{fujian}/restore").status_code == 200
 
     # 拆组：福建版拆成新组；原组至少留一个版本
-    assert _post(client, f"/{gid}/split", document_ids=[999]).status_code == 422
-    split = _post(client, f"/{gid}/split", document_ids=[fujian])
+    assert (
+        _post(client, f"/{gid}/split", document_ids=[999], **_rev(client, gid)).status_code == 422
+    )
+    split = _post(client, f"/{gid}/split", document_ids=[fujian], **_rev(client, gid))
     assert split.status_code == 200
     new_gid = split.json()["new_group_id"]
     session.expire_all()
@@ -567,22 +592,279 @@ def test_repost_admin_flow(client, session, world) -> None:
             client,
             f"/{gid}/split",
             document_ids=[world["shaanxi"].id, world["tianjin"].id],
+            **_rev(client, gid),
         ).status_code
         == 422
     )
 
     # 手动加入：福建版已在新组里，先移出才能加回原组
     assert _post(client, f"/{gid}/members", document_id=fujian).status_code == 409
-    assert _post(client, f"/{new_gid}/reject").status_code == 200
+    # 新拆出的组只有一个版本，不在列表里；修订号从 0 开始
+    assert _post(client, f"/{new_gid}/reject", revision=0).status_code == 200
     assert _post(client, f"/{gid}/members", document_id=fujian).status_code == 200
     session.expire_all()
     row = _members(session)[fujian]
     assert (row.group_id, row.active, row.joined_by) == (gid, True, "human")
-    assert _post(client, "/999/confirm").status_code == 404
+    assert _post(client, "/999/confirm", revision=0, document_ids=[1, 2]).status_code == 404
 
     # 整组不合并：全部移出，重跑也不会再自动归回
-    assert _post(client, f"/{gid}/reject").status_code == 200
+    assert _post(client, f"/{gid}/reject", **_rev(client, gid)).status_code == 200
     rebuild(session, now=NOW)
     session.commit()
     session.expire_all()
     assert not any(row.active for row in _members(session).values())
+
+
+# ---- Codex 审阅后补的（#183）------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("old_number", "old_body", "new_number", "new_body"),
+    [
+        ("辽工信函〔2026〕1号", "", "辽工信函〔2026〕2号", ""),  # 文号冲突
+        (None, "旧版正文：请于9月30日前报送。" * 3, None, "新版正文：请于10月30日前报送。" * 3),
+    ],
+)
+def test_same_url_with_conflicting_content_is_not_merged(
+    session, old_number, old_body, new_number, new_body
+) -> None:
+    """网址被复用、或改版前后内容不同：文号或正文指纹冲突时两条各自保留，不自动归并，
+    免得旧版核定的截止进了新版的详情、导出、日历和雷达。"""
+    src = _source(session, "辽宁")
+    url = "https://gxt.ln.gov.cn/tzgg/reused/index.html"
+    docs = []
+    for key, number, body in (
+        ("gxt.ln.gov.cn/tzgg/reused/index.html", old_number, old_body),
+        ("gxt.ln.gov.cn/tzgg/reused/", new_number, new_body),
+    ):
+        doc = Document(
+            source_id=src.id,
+            url=url,
+            url_key=key,
+            title="辽宁省工业和信息化厅关于组织申报的通知",
+            publish_date=date(2026, 9, 17),
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+        session.add(doc)
+        session.flush()
+        session.add(
+            DocumentDetail(
+                document_id=doc.id,
+                body_text=body,
+                doc_number=number,
+                fetched_at=NOW,
+                status="ok",
+            )
+        )
+        docs.append(doc)
+    session.commit()
+    reconcile_documents(session)
+    session.commit()
+    assert session.scalars(select(DocumentMerge)).all() == []
+
+
+def test_confirm_only_what_the_admin_saw(client, session, world) -> None:
+    """确认带着页面上看到的版本和修订号：期间归组任务加了新版本，就不确认（409），刷新后再确认。"""
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    seen = _shown(client, gid)
+    # 看页面的时候，归组任务加进来一个新版本
+    _doc(
+        session,
+        _source(session, "北京"),
+        "北京市经济和信息化局关于征集2026年度视听系统典型案例的通知",
+        day=11,
+    )
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    stale = _post(client, f"/{gid}/confirm", **seen)
+    assert stale.status_code == 409 and "刷新" in stale.json()["detail"]
+    # 修订号对上了、版本清单少了一个也不行
+    fresh = _shown(client, gid)
+    partial = {"revision": fresh["revision"], "document_ids": seen["document_ids"]}
+    assert _post(client, f"/{gid}/confirm", **partial).status_code == 409
+    session.expire_all()
+    assert all(row.confirmed_at is None for row in _members(session).values())
+    assert _post(client, f"/{gid}/confirm", **fresh).status_code == 200
+    session.expire_all()
+    assert all(row.confirmed_at is not None for row in _members(session).values())
+
+
+def test_duplicate_member_conflict_keeps_human_decision(client, session, world) -> None:
+    """组员文件后来成了同一文件的副本、主文件也有组员记录：带人工决定的副本记录不删、不挪，
+    在管理台标出来，处理完才能确认；不带决定的副本记录直接删掉。"""
+    rebuild(session, now=NOW)
+    session.commit()
+    members = _members(session)
+    gid = members[world["shaanxi"].id].group_id
+    # 福建版被人工移出；后来福建版被认定是陕西版的同一文件（另一个网址）
+    members[world["fujian"].id].active = False
+    members[world["fujian"].id].removed_by = "创始人"
+    session.add(
+        DocumentMerge(
+            duplicate_id=world["fujian"].id,
+            canonical_id=world["shaanxi"].id,
+            active=True,
+            match_key="t",
+        )
+    )
+    session.commit()
+    summary = rebuild(session, now=NOW)
+    session.commit()
+    members = _members(session)
+    assert summary.conflicts == 1
+    assert members[world["fujian"].id].active is False  # 移出的决定还在
+    assert members[world["shaanxi"].id].active is True
+    group = _seen(client, gid)
+    assert group["conflicts"] == 1
+    fujian = next(m for m in group["members"] if m["document_id"] == world["fujian"].id)
+    assert fujian["merged_into"] == world["shaanxi"].id and fujian["conflict"] is True
+    assert client.get("/api/admin/repost-groups/count", headers=HEADERS).json() == {"pending": 1}
+    # 先处理冲突才能确认
+    assert _post(client, f"/{gid}/confirm", **_shown(client, gid)).status_code == 409
+    # 主文件编号不是副本：不能用“去掉副本记录”
+    shaanxi = world["shaanxi"].id
+    assert _post(client, f"/{gid}/members/{shaanxi}/drop").status_code == 409
+    assert _post(client, f"/{gid}/members/{world['fujian'].id}/drop").status_code == 200
+    assert _post(client, f"/{gid}/confirm", **_shown(client, gid)).status_code == 200
+
+    # 不带决定的副本记录：直接删掉，以主文件那条为准
+    twin = _doc(session, _source(session, "河北"), TITLE_TWIN, day=9, body=UPSTREAM + "河北")
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    assert _members(session)[twin.id].confirmed_at is None
+    session.add(
+        DocumentMerge(
+            duplicate_id=twin.id, canonical_id=world["tianjin"].id, active=True, match_key="t"
+        )
+    )
+    session.commit()
+    summary = rebuild(session, now=NOW)
+    session.commit()
+    assert twin.id not in _members(session) and summary.conflicts == 0
+
+
+TITLE_TWIN = "关于组织开展2026年度视听系统典型案例征集工作的通知"
+
+
+def test_withdrawn_and_rejected_groups_are_never_cleaned_or_auto_confirmed(
+    client, session, world
+) -> None:
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    assert _post(client, f"/{gid}/confirm", **_shown(client, gid)).status_code == 200
+    assert _post(client, f"/{gid}/withdraw", **_rev(client, gid)).status_code == 200
+    # 规则不再支持（标题都改了）：撤回过的组和组员都不被清理
+    for key in ("shaanxi", "tianjin", "fujian"):
+        world[key].title = f"{world[key].title}（已废止）"
+        world[key].kind_override = "名单"
+    session.commit()
+    summary = rebuild(session, auto=True, now=NOW)
+    session.commit()
+    assert summary.dropped == 0 and summary.auto_confirmed == 0
+    group = session.get(RepostGroup, gid)
+    session.refresh(group)
+    assert group.no_auto is True
+    members = _members(session)
+    assert len(members) == 3 and all(r.active and r.confirmed_at is None for r in members.values())
+    # 整组不合并：同样永久保留，开了自动也不会再合并
+    assert _post(client, f"/{gid}/reject", **_rev(client, gid)).status_code == 200
+    for key in ("shaanxi", "tianjin", "fujian"):
+        world[key].title = world[key].title.replace("（已废止）", "")
+        world[key].kind_override = None
+    session.commit()
+    summary = rebuild(session, auto=True, now=NOW)
+    session.commit()
+    members = _members(session)
+    assert len(members) == 3 and not any(r.active for r in members.values())
+    assert summary.created == 0 and summary.auto_confirmed == 0
+    assert session.get(RepostGroup, gid) is not None
+
+
+def test_transitive_links_respect_agency_and_date_span() -> None:
+    """A、C 是同一机关的不同批次（不能归组），都和 B 匹配也不能连成一组；
+    日期跨度超过 90 天的也不能靠中间一份连起来。"""
+    title = "关于转发2026年高端医疗装备推广应用项目申报工作的通知"
+    a = _cand(1, title, "天津", day=1)
+    b = _cand(2, title, "河北", day=5)
+    c = _cand(3, title, "天津", day=9)
+    groups = propose_groups([a, b, c])
+    assert [g.ids for g in groups] == [[1, 2]]  # 天津只能有一份：日期近的先连
+    early = Candidate(**{**a.__dict__, "id": 4, "publish_date": date(2026, 6, 20)})
+    middle = Candidate(
+        **{**b.__dict__, "id": 5, "province": "北京", "publish_date": date(2026, 8, 15)}
+    )
+    late = Candidate(
+        **{**c.__dict__, "id": 6, "province": "山东", "publish_date": date(2026, 9, 28)}
+    )
+    groups = propose_groups([early, middle, late])
+    assert len(groups) == 1 and len(groups[0].ids) == 2
+    ids = groups[0].ids
+    span = {d.id: d.publish_date for d in (early, middle, late)}
+    assert (max(span[i] for i in ids) - min(span[i] for i in ids)).days <= 90
+
+
+def test_rebuild_does_not_add_same_agency_to_existing_group(session, world) -> None:
+    """已有的组里有人工加入的天津版另一批次时，规则不会再把同机关的新版本加进来。"""
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    second = _doc(
+        session,
+        session.get(Source, world["tianjin"].source_id),
+        "关于组织开展2026年度视听系统典型案例征集工作的补充通知",
+        day=20,
+        body=UPSTREAM + "天津补充",
+        key="tianjin.example.gov.cn/supplement.html",
+    )
+    session.commit()
+    summary = rebuild(session, now=NOW)
+    session.commit()
+    members = _members(session)
+    assert second.id not in members
+    assert summary.joined == 0 and summary.dropped == 0
+    # 新来的同机关文件不会把原有的组员“抢走”
+    assert {world[k].id for k in ("shaanxi", "tianjin", "fujian")} <= set(members)
+    assert all(members[world[k].id].group_id == gid for k in ("shaanxi", "tianjin", "fujian"))
+    assert session.get(RepostGroup, gid) is not None
+
+
+def test_cross_group_add_locks_both_groups_in_order(client, session, world) -> None:
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    fujian = world["fujian"].id
+    split = _post(client, f"/{gid}/split", document_ids=[fujian], **_rev(client, gid))
+    new_gid = split.json()["new_group_id"]
+    assert _post(client, f"/{new_gid}/reject", revision=0).status_code == 200
+    before = session.get(RepostGroup, new_gid).revision
+    assert _post(client, f"/{gid}/members", document_id=fujian).status_code == 200
+    session.expire_all()
+    assert _members(session)[fujian].group_id == gid
+    # 两个组的修订号都变了（原来的组少了一条记录）
+    assert session.get(RepostGroup, new_gid).revision == before + 1
+
+
+def test_lock_errors_become_409() -> None:
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+
+    from youju.api.repost import _busy
+
+    class Fake:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    session = Fake()
+    with pytest.raises(HTTPException) as caught, _busy(session):
+        raise OperationalError("SELECT", {}, Exception(1213, "Deadlock found"))
+    assert caught.value.status_code == 409 and session.rolled_back
+    with pytest.raises(OperationalError), _busy(Fake()):
+        raise OperationalError("SELECT", {}, Exception(2006, "MySQL server has gone away"))
