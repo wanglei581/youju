@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO, clockText } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { loginOpen } = require('../../utils/consent.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -32,6 +33,8 @@ Page({
     shown: [],
     loaded: false,
     error: '',
+    // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
+    loginOpen: loginOpen(),
   },
 
   onLoad() {

@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
 const { foldNote } = require('../../utils/conditions.js');
+const { loginOpen } = require('../../utils/consent.js');
 
 const PAGE = 20;
 
@@ -8,9 +9,11 @@ const PAGE = 20;
 Page({
   // 资讯与指南（与申报无关的新闻、会议、招聘、许可等）和搜索页一样默认折叠，写明折叠了几篇
   // gated：服务端返回 403（还没同意用户协议和隐私保护指引，或协议已更新），页面显示说明卡而不是加载失败
-  data: { id: '', name: '', items: [], total: 0, folded: 0, loading: true, error: '', gated: false, today: '', showGuides: false, fold: { text: '', link: '' } },
+  // loginOpen 为 false（协议定稿前，D-056）时只显示"暂未开放"，不请求接口
+  data: { id: '', name: '', items: [], total: 0, folded: 0, loading: true, error: '', gated: false, today: '', showGuides: false, fold: { text: '', link: '' }, loginOpen: loginOpen() },
 
   onLoad(query) {
+    if (!this.data.loginOpen) return;
     const name = query.name ? decodeURIComponent(query.name) : '';
     this.setData({ id: query.id, name, today: todayISO() });
     if (name) wx.setNavigationBarTitle({ title: name });

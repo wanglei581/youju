@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const format = require('../utils/format.js');
 const conditions = require('../utils/conditions.js');
 
-// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、协议定稿前的受限状态、名单状态标签。
+// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签。
 // 依赖都用替身，不读取 legal.js 或本机配置。
 function load(file, deps = {}, globals = {}) {
   let def;
@@ -27,6 +27,7 @@ const FORBIDDEN = ['AI', '智能', '大模型'];
 
 function homePage(stats) {
   return load('pages/home/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => Promise.resolve({ stats, items: [] }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { ...app, wx: {} });
@@ -74,6 +75,7 @@ test('详情页和查名单的列表加载时用占位块，不写"正在加载�
   assert.ok(!detail.includes('正在加载…'));
   assert.match(detail, /<view wx:if="{{!error && \(loading \|\| !doc\)}}" aria-label="正在加载">/);
   const page = load('pages/detail/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => new Promise(() => {}) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
@@ -100,6 +102,7 @@ test('关注的新文件：没同意协议（403）显示说明卡和去"我的"
   let fail = { status: 403, message: '请先阅读并同意用户协议和隐私保护指引' };
   let tab = '';
   const page = load('pages/follow-new/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { followNew: () => (fail ? Promise.reject(fail) : Promise.resolve({ total: 1, folded: 0, items: [{ id: '1' }] })) },
     '../../utils/format.js': format, '../../utils/conditions.js': conditions,
   }, { wx: { setNavigationBarTitle() {}, switchTab: ({ url }) => { tab = url; } } });
@@ -109,7 +112,7 @@ test('关注的新文件：没同意协议（403）显示说明卡和去"我的"
   page.goMe();
   assert.equal(tab, '/pages/me/index');
   const template = wxml('follow-new');
-  const card = /<view wx:if="{{gated}}" class="card gate">([\s\S]*?)<\/view>\s*<block wx:else>/.exec(template)[1];
+  const card = /<view wx:elif="{{gated}}" class="card gate">([\s\S]*?)<\/view>\s*<block wx:else>/.exec(template)[1];
   assert.match(card, /同意用户协议和隐私保护指引后，可以查看关注条件的新文件/);
   assert.match(card, /bindtap="goMe"[^>]*>去“我的” ›<\/view>/);
   assert.ok(!/加载失败|重试/.test(card));
@@ -124,19 +127,7 @@ test('关注的新文件：没同意协议（403）显示说明卡和去"我的"
   assert.equal(page.data.items.length, 1);
 });
 
-test('协议定稿前：关注页和"我的"的按钮是灰色或描边、不能点，旁边一行写原因；定稿后照旧', () => {
-  const follow = wxml('follow');
-  assert.match(follow, /<view wx:if="{{legalFinal}}" class="btn-primary gate-btn" bindtap="enable">登录后使用<\/view>/);
-  const off = /<view class="btn-off gate-btn"[^>]*>协议定稿后开放<\/view>/.exec(follow);
-  assert.ok(off && !/bindtap/.test(off[0]));
-  assert.match(follow, /<view class="weak gate-note">用户协议和隐私保护指引正在定稿，定稿后可以登录、关注条件<\/view>/);
-  assert.match(read('app.wxss'), /\.btn-off \{[^}]*background: var\(--fill\);[^}]*color: var\(--t3\);/);
-  const me = wxml('me');
-  const login = /<view wx:elif="{{[^}]*!legalFinal}}" class="login login--off"[^>]*>微信登录<\/view>/.exec(me);
-  assert.ok(login && !/bindtap/.test(login[0]));
-  assert.match(me, /class="draft-note">协议正在定稿，定稿后开放勾选和登录<\/view>/);
-  assert.match(me, /class="login {{agreed \? 'login--on' : ''}}" bindtap="login"/);
-});
+// 协议定稿前的入口（D-056）在 no-login.test.js：两种状态下各渲染一遍
 
 test('名单看板的公示、公布和列表行用同一种标签：公示橙色虚线框，公布灰色实线框', async () => {
   const page = load('pages/list-board/index.js', {

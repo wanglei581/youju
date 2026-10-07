@@ -1,5 +1,5 @@
 // 关注、订阅提醒、纠错之前，先确认用户已同意用户协议和隐私保护指引（服务端记录，本机缓存版本号）。
-// 协议还是草案（legal.final 为 false）时不开放同意，这些功能显示"协议定稿后开放"。
+// 协议还是草案（legal.final 为 false）时不开放同意，这些功能的入口都不显示（D-056）。
 const legal = require('../content/legal.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
@@ -8,6 +8,12 @@ const { removeFiles } = require('./exporter.js');
 // 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
 function consentOpen() {
   return legal.final && api.isLive();
+}
+
+// 需要同意协议的功能（登录、关注、订阅提醒、纠错、申请覆盖）这个版本显不显示入口（D-056）：
+// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final，不是服务端开关
+function loginOpen() {
+  return legal.final === true;
 }
 
 function agreedHere() {
@@ -60,15 +66,10 @@ function syncConsent() {
   return pending;
 }
 
-// 返回 true 表示已同意，可以继续。note：协议定稿前弹出的原因末尾补一句这项功能是做什么的
-// （如搜索页"关注"写"关注后，有新文件时在关注页标出"），不传时和以前一样
-function ensureConsent(note) {
-  if (!legal.final) {
-    wx.showModal({
-      title: '协议定稿后开放',
-      content: `关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。${note ? `${note}。` : ''}`,
-      showCancel: false,
-    });
+// 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底
+function ensureConsent() {
+  if (!loginOpen()) {
+    wx.showToast({ title: '这个功能暂未开放', icon: 'none' });
     return Promise.resolve(false);
   }
   if (!api.isLive()) {
@@ -161,5 +162,5 @@ function consentOutdated() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
 };

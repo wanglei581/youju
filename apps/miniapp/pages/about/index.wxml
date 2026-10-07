@@ -15,7 +15,7 @@
   <view class="muted plain steps">1. 首页搜索或点入口，按地区、类型、发文部门筛选通知；只看还没截止的，在"申报状态"里选"只看未截止"。
 2. 点开一条看发文机关、文号、正文和核对过的截止日期；"复制原文链接"后可在浏览器打开政府原文。
 3. "申报日历""截止雷达"按截止日期列出项目；"查名单"输入企业全称或统一社会信用代码，查它上过哪些公示、公布名单。
-4. 搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</view>
+4. <text wx:if="{{loginOpen}}">搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</text><text wx:else>在搜索结果点"选择"勾选文件，或在文件详情点"导出"，可导出 Excel 或 Word。</text></view>
 </view>
 
 <view class="card">
@@ -40,7 +40,7 @@
       </view>
     </view>
   </view>
-  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们。</view>
+  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们</text>。</view>
 </view>
 
 <view class="card">
@@ -53,9 +53,10 @@
 
 <view class="card">
   <view class="section-title">纠错与投诉</view>
-  <view class="muted plain">内容和原文不一致：在文件详情或"我的"里点"纠错"，我们对照原文核实后修正。</view>
+  <view wx:if="{{loginOpen}}" class="muted plain">内容和原文不一致：在文件详情或"我的"里点"纠错"，我们对照原文核实后修正。</view>
+  <view wx:else class="muted plain">内容和原文不一致：发邮件至联系邮箱，写明文件标题和哪里不一致，我们对照原文核实后修正。</view>
   <view class="muted plain">侵权投诉：发邮件至联系邮箱，写明涉及的内容、权利证明和联系方式，我们核实后及时处理。</view>
-  <view class="go" bindtap="feedback" aria-role="button">去纠错</view>
+  <view wx:if="{{loginOpen}}" class="go" bindtap="feedback" aria-role="button">去纠错</view>
 </view>
 
 <view class="card">
