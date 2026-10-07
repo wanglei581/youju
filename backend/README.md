@@ -26,6 +26,7 @@ uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
 uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
+uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
 uv run youju extract-deadlines --since 2026-07-01  # 生成待人工核对候选，重复运行不会覆盖核对结果
 uv run youju parse-lists --since 2026-07-01  # 补名单详情并解析政府表格附件，单次最多下载 200 个附件
 uv run youju report                  # 来源健康和条目统计
@@ -123,6 +124,7 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
 | `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
+| `YOUJU_DEDUPE_AUTO` | `false` | 转发组自动确认（D-055）：`false` 时每组都要人在管理台确认后才对外合并；`true` 时自动确认强证据组 |
 | `YOUJU_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 模型方 OpenAI 兼容接口地址 |
 | `YOUJU_AI_MODEL` | `qwen-flash` | 调用的模型标识 |
 | `YOUJU_AI_API_KEY` | 未配置 | 模型调用密钥，不记录、不输出 |

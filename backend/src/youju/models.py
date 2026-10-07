@@ -285,6 +285,64 @@ class DocumentMerge(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class RepostGroup(Base):
+    """转发组（D-055，见 youju/repost.py）：同一份部里通知的各地版本。
+
+    各版本的截止日期仍挂在各自的文件上、各自核对，不随组同步。
+    strength：strong 强证据 / weak 疑似（自动确认只对强证据组）。topic 是事项名（核心标题），
+    upstream_title、upstream_number 照录正文里引用的部里通知，没有为空。
+    no_auto：人工撤回、移出或拆过的组，YOUJU_DEDUPE_AUTO 打开后也不自动确认。
+    """
+
+    __tablename__ = "repost_groups"
+    __table_args__ = (
+        CheckConstraint("strength IN ('strong', 'weak')", name="ck_repost_groups_strength"),
+        CheckConstraint("created_by IN ('rule', 'human')", name="ck_repost_groups_created_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strength: Mapped[str] = mapped_column(String(8))
+    topic: Mapped[str] = mapped_column(String(200))
+    upstream_title: Mapped[str | None] = mapped_column(String(300))
+    upstream_number: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    no_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class RepostGroupMember(Base):
+    """转发组里的一个版本（同一文件层的主文件）；一份文件最多属于一个转发组。
+
+    confirmed_at 有值才对外按组折叠（D-055：前 4 周每组都要人确认）。active=False 是人工移出，
+    归组任务不会再把它加回来。joined_by：rule 归组规则加入 / human 人工加入或拆出。
+    """
+
+    __tablename__ = "repost_group_members"
+    __table_args__ = (
+        Index("ix_repost_group_members_group", "group_id", "active"),
+        CheckConstraint("joined_by IN ('rule', 'human')", name="ck_repost_members_joined_by"),
+        CheckConstraint(
+            "confirmed_at IS NULL OR confirmed_by IS NOT NULL",
+            name="ck_repost_members_confirmed",
+        ),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[int] = mapped_column(ForeignKey("repost_groups.id", ondelete="CASCADE"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    joined_by: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    # 归组证据（标题转发、正文转发、上游文号、标题含部委或国家计划），只给核对人看
+    evidence: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    joined_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    confirmed_by: Mapped[str | None] = mapped_column(String(80))
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    removed_by: Mapped[str | None] = mapped_column(String(80))
+    removed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 

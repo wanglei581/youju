@@ -245,6 +245,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
                 "ai-check",
@@ -262,6 +263,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
                 "ai-check",
@@ -279,6 +281,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
                 "ai-check",
@@ -294,6 +297,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
                 "ai-check",

@@ -32,6 +32,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import conditions as conditions_api
+from youju.api import repost as repost_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
@@ -366,6 +367,21 @@ class ApprovedDeadlineOut(BaseModel):
     time: str | None
 
 
+class RepostSiblingDeadlineOut(BaseModel):
+    kind: str
+    date: date
+    time: str | None
+    status: str
+
+
+class RepostSiblingOut(BaseModel):
+    document_id: int
+    label: str
+    title: str
+    url: str
+    deadlines: list[RepostSiblingDeadlineOut]
+
+
 class PendingDeadlineOut(BaseModel):
     id: int
     document_id: int
@@ -388,8 +404,17 @@ class PendingDeadlineOut(BaseModel):
     # 通过与否仍由人在核对台点
     hint: str = "unchecked"
     hint_text: str = "AI 未核"
-    # 核对顺序的排序键（按字符串升序）；order=priority 时用作翻页游标 after
+    # 核对顺序的排序键（按字符串升序）；order=priority、group 时用作翻页游标 after
     order_key: str = ""
+    # 转发组（D-055）：这份通知所在的组（不论是否已确认合并）、这一版的叫法（江西版）、事项名，
+    # 同组其他版本和它们各自的截止候选。只用来对照，截止仍逐条核对、不互相套用
+    repost_group_id: int | None = None
+    repost_label: str | None = None
+    repost_topic: str | None = None
+    repost_siblings: list[RepostSiblingOut] = []
+    # 同组别的版本已通过同类型、同日期、同时间的截止时的提示（如“同组福建版已核对过同一日期”）；
+    # 只是提示，这一条仍要看本版的证据句后自己点通过
+    repost_same: str | None = None
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -838,6 +863,10 @@ app.add_api_route(
     response_class=HTMLResponse,
     include_in_schema=False,
 )
+app.include_router(repost_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/repost", repost_api.console, response_class=HTMLResponse, include_in_schema=False
+)
 
 
 class RestoreIn(BaseModel):
@@ -1074,6 +1103,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
             "conditions": pending_conditions(session),
+            "repost": repost_api.pending_count(session),
             "kinds": kinds_pending_count(session, None)["pending"],
             "kind_suggestions": kind_suggestions_count(session, None)["pending"],
             "audit": audit_flagged_count(session, None)["flagged"],
@@ -2257,9 +2287,92 @@ def unhandle_feedback(
     return result
 
 
-PendingOrder = Literal["id", "priority"]
-# 优先顺序的翻页游标：分档|截止日期|编号（见 youju/ai/hints.py 的 order_key）
-_ORDER_KEY = r"^\d\|\d{4}-\d{2}-\d{2}\|\d{12}$"
+PendingOrder = Literal["id", "priority", "group"]
+
+_KEY = r"\d\|\d{4}-\d{2}-\d{2}\|\d{12}"
+# order=group 的排序键是“组里排最前那条的键~自己的键”
+_ORDER_KEY = rf"^{_KEY}(?:~{_KEY})?$"
+
+
+def _repost_context(session: Session, masters: list[int]) -> dict[int, dict]:
+    """核对台对照用：这些主文件所在的转发组（不论是否已确认）、各自的叫法和同组其他版本的截止候选。
+
+    只读，不改任何候选；转发组里的截止不同步、不合并显示（同步只认 document_merges）。"""
+    from youju.models import RepostGroup
+    from youju.repost import active_groups, labels_for
+
+    groups = active_groups(session, masters)
+    if not groups:
+        return {}
+    members = sorted({m for _, ids in groups.values() for m in ids})
+    docs = {
+        doc.id: (doc, src)
+        for doc, src in session.execute(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(members))
+        )
+    }
+    topics = dict(
+        session.execute(
+            select(RepostGroup.id, RepostGroup.topic).where(
+                RepostGroup.id.in_({gid for gid, _ in groups.values()})
+            )
+        ).all()
+    )
+    same_file = groups_for(session, members)
+    owner = {i: master for master, ids in same_file.items() for i in ids}
+    deadlines: dict[int, list[tuple]] = defaultdict(list)
+    for row in session.scalars(
+        select(DocumentDeadline)
+        .where(DocumentDeadline.document_id.in_(list(owner)))
+        .order_by(DocumentDeadline.candidate_date, DocumentDeadline.id)
+    ):
+        decided = row.status in ("approved", "changed")
+        day = row.approved_date if decided and row.approved_date else row.candidate_date
+        clock = row.approved_time if decided else row.candidate_time
+        item = (row.kind, day, clock, row.status)
+        if item not in deadlines[owner[row.document_id]]:
+            deadlines[owner[row.document_id]].append(item)
+    out: dict[int, dict] = {}
+    label_cache: dict[int, dict[int, str]] = {}
+    for master, (group_id, ids) in groups.items():
+        if group_id not in label_cache:
+            label_cache[group_id] = labels_for({i: docs[i][1] for i in ids})
+        labels = label_cache[group_id]
+        siblings = [
+            RepostSiblingOut(
+                document_id=i,
+                label=labels[i],
+                title=docs[i][0].title,
+                url=docs[i][0].url,
+                deadlines=[
+                    RepostSiblingDeadlineOut(kind=k, date=d, time=_hhmm(t), status=st)
+                    for k, d, t, st in deadlines.get(i, [])
+                ],
+            )
+            for i in ids
+            if i != master
+        ]
+        # 同组其他版本已通过（或已标变更）的（类型, 日期, 时间）→ 哪几版
+        checked: dict[tuple, list[str]] = defaultdict(list)
+        for i in ids:
+            if i == master:
+                continue
+            for kind, day, clock, status in deadlines.get(i, []):
+                if (
+                    status in ("approved", "changed")
+                    and labels[i] not in checked[(kind, day, clock)]
+                ):
+                    checked[(kind, day, clock)].append(labels[i])
+        out[master] = {
+            "group_id": group_id,
+            "label": labels[master],
+            "topic": topics.get(group_id),
+            "siblings": siblings,
+            "checked": checked,
+        }
+    return out
 
 
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
@@ -2273,33 +2386,39 @@ def pending_deadlines(
         PendingOrder,
         Query(
             description="id：按编号从新到旧（默认）；priority：30 天内截止的先列，其中建议通过的"
-            "最前，其余按截止日期升序，已过期的最后"
+            "最前，其余按截止日期升序，已过期的最后；group：同 priority，但同一转发组的候选"
+            "排在一起（组的位置按组里排最前的那条）"
         ),
     ] = "id",
     after: Annotated[
         str | None,
         Query(
-            pattern=_ORDER_KEY, description="order=priority 的翻页游标：上一页最后一条的 order_key"
+            pattern=_ORDER_KEY,
+            description="order=priority、group 的翻页游标：上一页最后一条的 order_key",
         ),
     ] = None,
 ) -> list[PendingDeadlineOut]:
     """待核对的候选。默认按编号从新到旧；翻页用上一页最小的编号作 before_id，
     不受别人同时核对的影响。
-    order=priority 时按核对优先顺序，翻页用上一页最后一条的 order_key 作 after。
+    order=priority 时按核对优先顺序，翻页用上一页最后一条的 order_key 作 after；
+    order=group 时同一转发组（D-055）的候选连在一起，仍逐条核对。
 
     归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间、证据句都相同）：只列编号最小的
     那条（之后新抽出的副本编号更大，不会把已在翻页范围里的这条挤掉），标题和链接用主文件；
-    本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
+    本页凑不满就继续往下取，返回不足 limit 条说明已经取完。转发组的各版本不算副本：
+    每个版本的候选都单独列出、单独核对。
 
     每条带 AI 预审提示（hint）：只读已有的 AI 检查记录，不调模型；"建议通过"只影响排序和标签，
     这个接口不改任何候选。
     """
     from youju.ai.hints import deadline_hints, order_key
 
-    if order == "priority" and before_id is not None:
+    if order != "id" and before_id is not None:
         raise HTTPException(status_code=422, detail="按优先顺序翻页用 after，不用 before_id")
     if order == "id" and after is not None:
         raise HTTPException(status_code=422, detail="按编号翻页用 before_id，不用 after")
+    if after is not None and (order == "group") != ("~" in after):
+        raise HTTPException(status_code=422, detail="翻页游标和排序方式对不上，请重新载入")
     base = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
@@ -2311,7 +2430,7 @@ def pending_deadlines(
         base = base.where(condition)
     # (候选, 文件, 来源, 主文件编号)
     picked: list[tuple[DocumentDeadline, Document, Source, int]] = []
-    if order == "priority":
+    if order != "id":
         # 待核对的总共几百条：整批取出，按 AI 预审提示和截止日期排好，再按游标切出这一页
         batch = session.execute(base).all()
         shown = _pending_shown_ids(session, [d for d, _, _ in batch])
@@ -2330,7 +2449,22 @@ def pending_deadlines(
     hints = deadline_hints(session, [(d, master_id) for d, _, _, master_id in picked])
     today = v1_api.now().date()
     keyed = [(order_key(item[0], hints[item[0].id], today), item) for item in picked]
-    if order == "priority":
+    context = _repost_context(session, sorted({item[3] for item in picked}))
+    if order == "group":
+        anchor: dict[int, str] = {}
+        for key, item in keyed:
+            group = context.get(item[3])
+            if group:
+                gid = group["group_id"]
+                anchor[gid] = min(anchor.get(gid, key), key)
+        keyed = [
+            (
+                f"{anchor[context[item[3]]['group_id']] if item[3] in context else key}~{key}",
+                item,
+            )
+            for key, item in keyed
+        ]
+    if order != "id":
         keyed = sorted(
             (pair for pair in keyed if after is None or pair[0] > after), key=lambda p: p[0]
         )[:limit]
@@ -2340,6 +2474,12 @@ def pending_deadlines(
             doc = session.get(Document, master_id)
             src = doc.source
         hint = hints[d.id]
+        group = context.get(master_id)
+        same = None
+        if group:
+            labels = group["checked"].get((d.kind, d.candidate_date, d.candidate_time)) or []
+            if labels:
+                same = f"同组{'、'.join(dict.fromkeys(labels))}已核对过同一日期"
         output.append(
             PendingDeadlineOut(
                 id=d.id,
@@ -2359,6 +2499,11 @@ def pending_deadlines(
                 hint=hint.code,
                 hint_text=hint.text,
                 order_key=key,
+                repost_group_id=group["group_id"] if group else None,
+                repost_label=group["label"] if group else None,
+                repost_topic=group["topic"] if group else None,
+                repost_siblings=group["siblings"] if group else [],
+                repost_same=same,
             )
         )
     return output

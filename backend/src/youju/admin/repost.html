@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>转发归组 · 有据</title>
+<style>
+:root{--brand:#2A5CE0;--brand-tint:#EAF0FF;--bg:#F2F4F8;--t1:#1D2129;--t2:#4E5969;--t3:#86909C;--line:#E5E6EB;--red:#E5484D;--green:#0E8A63;--g-tint:#E8F7F1;--orange:#D9640F;--o-tint:#FFF3E8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t1);font:15px/1.6 "PingFang SC","Noto Sans SC",sans-serif}
+header{background:#fff;border-bottom:1px solid var(--line)}.bar{max-width:960px;margin:auto;padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+h1{margin:0;font-size:18px}.auth{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}main{max-width:960px;margin:auto;padding:16px}
+input,select,button{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--t1)}
+button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:var(--brand);color:#fff;border-color:var(--brand)}.danger{color:var(--red)}
+.hint,.meta{color:var(--t2);font-size:14px}.hint{margin:0 0 12px}.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px}
+.top{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.topic{font-weight:600;font-size:16px}
+.tag{padding:0 6px;border-radius:4px;font-size:12px;font-weight:500}.strong{background:var(--brand-tint);color:var(--brand)}.weak{background:var(--o-tint);color:var(--orange)}.public{background:var(--g-tint);color:var(--green)}
+.upstream{margin:8px 0;padding:8px 12px;background:#F7F8FA;border-radius:8px;font-size:14px;overflow-wrap:anywhere}
+.member{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:4px 10px;padding:12px 0;border-top:1px solid var(--line)}
+.member.off{opacity:.55}.label{font-weight:600}.title{color:var(--t1);text-decoration:none;font-weight:500;overflow-wrap:anywhere}.title:hover{color:var(--brand)}
+.state{font-size:13px}.state.ok{color:var(--green)}.state.wait{color:var(--orange)}.state.off{color:var(--t3)}
+.dl{font-size:13px;color:var(--t2)}.dl b{font-weight:500;color:var(--t1)}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}.msg{color:var(--red);font-size:13px}.done{color:var(--green);font-size:13px}
+.empty{text-align:center;color:var(--t2);padding:48px 0}[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header><div class="bar"><h1>转发归组</h1><span id="count" class="meta"></span><div class="auth"><input id="reviewer" placeholder="确认人" size="8" aria-label="确认人"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><select id="state" aria-label="看哪些组"><option value="pending">待确认</option><option value="confirmed">已确认</option><option value="removed">有移出的版本</option></select><button id="load" class="primary">载入</button></div></div></header>
+<main>
+<p class="hint">同一份部里通知的各地版本，由程序按标题、正文里引用的部里文号归成一组。确认后，小程序列表里这一组只显示一条，写“另有 N 个转发版本”；没确认的组对外仍按单条显示。逐个版本看原文，确认是同一件事再点“确认合并”。</p>
+<p class="hint">各版本的截止日期仍在“截止日期”核对台逐条核对，确认合并不会通过任何截止；不同版本的日期不互相套用，对外按版本标（如“江西版：推荐截止”）。</p>
+<p class="hint">不是同一件事：移出那个版本（以后不会被自动加回），或勾选几个版本拆成新组，或整组不合并。撤回确认后各版本马上恢复成单条。</p>
+<p id="message" role="status" class="msg"></p>
+<div id="list"></div>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(() => {
+  const $=id=>document.getElementById(id);
+  const STATUS={pending:'待核对',approved:'已通过',rejected:'已驳回',changed:'已变更'};
+  let sequence=0, busy=false;
+  try { $('reviewer').value=localStorage.getItem('youjuReviewer')||'创始人'; } catch(_) { $('reviewer').value='创始人'; }
+  function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
+  function stamp(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'';}
+  function headers(){return {'Content-Type':'application/json','X-Admin-Token':youjuAdminToken()};}
+  async function api(path,options={}){
+    const r=await fetch(path,{...options,cache:'no-store',headers:headers()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      if(r.status===401||r.status===429)throw new Error('口令不对、未配置，或输错次数过多');
+      throw new Error(typeof d.detail==='string'?d.detail:`操作失败（${r.status}）`);
+    }
+    return d;
+  }
+  function reviewer(){const v=$('reviewer').value.trim();if(v){try{localStorage.setItem('youjuReviewer',v);}catch(_){}}return v;}
+  function link(text,url){const a=node('a',text,'title');try{const u=new URL(url);if(['https:','http:'].includes(u.protocol)){a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';}}catch(_){}return a;}
+
+  async function act(button,msg,path,body,question){
+    if(busy)return;
+    const by=reviewer(); if(!by){msg.textContent='请先填写确认人';return;}
+    if(question&&!confirm(question))return;
+    busy=true; button.disabled=true; msg.className='msg'; msg.textContent='';
+    try{await api(path,{method:'POST',body:JSON.stringify({...body,reviewed_by:by})});await load();}
+    catch(err){msg.textContent=err.message;button.disabled=false;}
+    finally{busy=false;}
+  }
+
+  function member(group,m,picked,msg){
+    const row=node('div',undefined,`member${m.active?'':' off'}`);
+    const box=node('input'); box.type='checkbox'; box.disabled=!m.active; box.setAttribute('aria-label',`选中${m.label}`);
+    box.onchange=()=>{if(box.checked)picked.add(m.document_id);else picked.delete(m.document_id);};
+    const info=node('div');
+    const head=node('div','', 'top');
+    head.append(node('span',m.label,'label'),node('span',`${m.issuer} · ${m.publish_date||'日期不详'} · ${m.kind}`,'meta'));
+    if(m.taken_down)head.append(node('span','已下架','tag weak'));
+    info.append(head,link(`#${m.document_id} ${m.title}`,m.url));
+    const state=m.active?(m.confirmed_at?node('div',`已确认（${m.confirmed_by}，${stamp(m.confirmed_at)}）`,'state ok'):node('div','待确认','state wait')):node('div',`已移出（${m.removed_by||''}，${stamp(m.removed_at)}）`,'state off');
+    info.append(state);
+    if(m.evidence)info.append(node('div',`归组依据：${m.evidence}${m.joined_by==='human'?'（人工）':''}`,'meta'));
+    const dls=node('div','', 'dl');
+    if(m.deadlines.length){
+      dls.append(node('span','这一版的截止候选：'));
+      m.deadlines.forEach((d,i)=>{if(i)dls.append('；');dls.append(node('b',`${d.kind} ${d.date}${d.time?` ${d.time}`:''}`),`（${STATUS[d.status]||d.status}）`);});
+    } else dls.append(node('span','这一版没有截止候选'));
+    info.append(dls);
+    const side=node('div');
+    if(m.active){const b=node('button','移出此版本','danger');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/remove`,{},`把「${m.label}」移出这一组？移出后它对外单独显示，以后不会被自动加回。`);side.append(b);}
+    else{const b=node('button','恢复到本组');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/members/${m.document_id}/restore`,{});side.append(b);}
+    row.append(box,info,side);
+    return row;
+  }
+
+  function card(group){
+    const e=node('article',undefined,'card'), picked=new Set(), msg=node('span','','msg');
+    const top=node('div',undefined,'top');
+    top.append(node('span',group.strength_label,`tag ${group.strength}`),node('span',group.topic,'topic'),node('span',`#${group.id} · ${group.versions} 个版本${group.pending?` · ${group.pending} 个待确认`:''}`,'meta'));
+    if(group.public)top.append(node('span','已对外合并','tag public'));
+    e.append(top);
+    if(group.upstream_number||group.upstream_title)e.append(node('div',`正文里引用的部里通知（照录）：${group.upstream_title?`《${group.upstream_title}》`:''}${group.upstream_number?`（${group.upstream_number}）`:''}`,'upstream'));
+    else e.append(node('div','正文里没有引用部里通知的文号，请对照各版本原文判断','upstream'));
+    group.members.forEach(m=>e.append(member(group,m,picked,msg)));
+    const actions=node('div',undefined,'actions');
+    if(group.pending&&group.versions>=2){const b=node('button',group.public?'确认新加入的版本':'确认合并','primary');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/confirm`,{},`确认这 ${group.versions} 个版本是同一份部里通知的各地版本？确认后对外只显示一条主条目，各版本的截止日期仍各自核对。`);actions.append(b);}
+    if(group.members.some(m=>m.active&&m.confirmed_at)){const b=node('button','撤回确认');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/withdraw`,{},'撤回确认？各版本马上恢复成单条显示。');actions.append(b);}
+    if(group.versions>=2){
+      const split=node('button','勾选的版本拆成新组');
+      split.onclick=()=>{if(!picked.size){msg.textContent='先勾选要拆出去的版本';return;}act(split,msg,`/api/admin/repost-groups/${group.id}/split`,{document_ids:[...picked]},`把勾选的 ${picked.size} 个版本拆成新的一组？两组都要重新确认。`);};
+      const reject=node('button','整组不合并','danger');
+      reject.onclick=()=>act(reject,msg,`/api/admin/repost-groups/${group.id}/reject`,{},'这一组不是同一件事？全部版本移出、对外各自单独显示，以后不会被自动归回这一组。');
+      actions.append(split,reject);
+    }
+    const add=node('input'); add.size=8; add.placeholder='文件编号'; add.inputMode='numeric'; add.setAttribute('aria-label','要加入的文件编号');
+    const addBtn=node('button','手动加入');
+    addBtn.onclick=()=>{const id=parseInt(add.value,10);if(!id){msg.textContent='请输入文件编号';return;}act(addBtn,msg,`/api/admin/repost-groups/${group.id}/members`,{document_id:id});};
+    actions.append(add,addBtn,msg);
+    e.append(actions);
+    return e;
+  }
+
+  async function load(){
+    const seq=++sequence; $('message').textContent='';
+    try{
+      const [count,groups]=await Promise.all([api('/api/admin/repost-groups/count'),api(`/api/admin/repost-groups?state=${$('state').value}`)]);
+      if(seq!==sequence)return;
+      $('count').textContent=`待确认 ${count.pending} 组`;
+      $('list').replaceChildren(...(groups.length?groups.map(card):[node('div',$('state').value==='pending'?'没有待确认的转发组':'没有符合条件的组','empty')]));
+    }catch(err){if(seq===sequence){$('list').replaceChildren();$('message').textContent=err.message;}}
+  }
+  window.load=load;
+  $('load').onclick=load; $('state').onchange=load;
+})();
+</script>
+</body>
+</html>

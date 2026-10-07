@@ -1,4 +1,8 @@
-"""按标题、发文机关和发布日期归并展示；原始题录与衍生记录仍各自保留。"""
+"""按标题、发文机关和发布日期归并展示；原始题录与衍生记录仍各自保留。
+
+这里只管“同一文件”（同一份文件的不同网址、不同栏目）。同一份部里通知的各地转发版本是另一层，
+见 youju/repost.py；截止日期的同步（sync_reviewed_twins）只认这里的 document_merges。
+"""
 
 import hashlib
 import re
@@ -7,6 +11,7 @@ from collections import defaultdict
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from youju.crawler.urls import url_key
 from youju.models import Document, DocumentDetail, DocumentMerge, Source
 
 
@@ -53,6 +58,48 @@ def _split_by_content(
     return [ids for _, ids in buckets]
 
 
+def _merge_same_url(groups: dict[str, list[int]], urls: dict[int, str]) -> dict[str, list[int]]:
+    """网址相同（按现行规则算出的规范网址键相同）就是同一份文件，不管标题、机关、日期能不能对上。
+    一份有详情、一份没有时，发文机关一个取自详情、一个取自来源，match_key 对不上
+    （转载去重方案 v1 第二节）。"""
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    key_of: dict[int, str] = {}
+    for key, members in groups.items():
+        for doc_id in members:
+            key_of[doc_id] = key
+            union(members[0], doc_id)
+    by_url: dict[str, list[int]] = defaultdict(list)
+    for doc_id, url in urls.items():
+        by_url[url].append(doc_id)
+    for members in by_url.values():
+        for doc_id in members[1:]:
+            union(members[0], doc_id)
+    merged: dict[int, list[int]] = defaultdict(list)
+    for doc_id in sorted(set(parent)):
+        merged[find(doc_id)].append(doc_id)
+    result: dict[str, list[int]] = {}
+    for root, members in merged.items():
+        keys = {key_of.get(doc_id) for doc_id in members}
+        if len(keys) == 1 and None not in keys:
+            result[keys.pop()] = members
+        else:
+            result[f"网址|{urls[root]}"] = members
+    return result
+
+
 def reconcile_documents(session: Session, titles: set[str] | None = None) -> int:
     """更新自动归并。active=False 只用作人工撤销标记，后续重跑不会覆盖；
     自动判断不再归并的直接删掉映射，以后内容一致了还能重新归并。"""
@@ -64,14 +111,22 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
     )
     if titles is not None:
         normalized_titles = {re.sub(r"\s+", "", title) for title in titles}
-        stmt = stmt.where(
-            # MySQL 的 REGEXP_REPLACE 默认替换全部匹配
-            func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles)
-        )
+        # MySQL 的 REGEXP_REPLACE 默认替换全部匹配
+        same_title = func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles)
+        # 和这些标题的文件网址相同的（标题后来改过）也一起算，免得只看到同一文件的一部分
+        renamed = session.scalars(
+            select(Document.title).where(
+                Document.url.in_(select(Document.url).where(same_title)), ~same_title
+            )
+        ).all()
+        normalized_titles |= {re.sub(r"\s+", "", title) for title in renamed}
+        stmt = stmt.where(func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles))
     by_key: dict[str, list[tuple[int, tuple[str | None, str | None]]]] = defaultdict(list)
     ids: set[int] = set()
+    urls: dict[int, str] = {}
     for doc, detail, source in session.execute(stmt):
         ids.add(doc.id)
+        urls[doc.id] = url_key(doc.url)
         key = match_key(doc, detail, source)
         if key:
             by_key[key].append((doc.id, _signature(detail)))
@@ -79,6 +134,7 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
     for key, members in by_key.items():
         for n, group in enumerate(_split_by_content(members)):
             groups[key if n == 0 else f"{key}|{n}"] = group
+    groups = _merge_same_url(groups, urls)
     if not ids:
         return 0
     mappings = {
