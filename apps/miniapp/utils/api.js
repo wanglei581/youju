@@ -40,16 +40,37 @@ function forgetAgreed() {
 
 // options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
 // 云托管服务缩到 0 台后，第一个请求会在冷启动期间收到网关的 502/503/504 或调用失败；
-// 查询类（GET）请求等一下再试，最多再试 2 次（10/7 早上实测：冷启动时连续 503，几秒后恢复）
+// 查询类（GET）请求等一下再试，最多再试 2 次（10/7 早上实测：冷启动时连续 503，几秒后恢复）。
+// 只重试很快出错的：重试要在第一次发出后 5 秒内开始，每次最多等 15 秒，一次查询从发出到报错
+// 最多约 20 秒。超时（15 秒没有返回）不重试，再等一轮就要半分钟以上。
 const RETRY_DELAYS = [1000, 2500];
+const RETRY_WINDOW = 5000;
+const TIMEOUT = 15000;
 const GATEWAY_CODES = [502, 503, 504];
 
 function withRetry(attempt, method) {
+  const started = Date.now();
   const run = (n) => attempt().catch((err) => {
-    if (method !== 'GET' || !err || !err.retryable || n >= RETRY_DELAYS.length) throw err;
+    if (method !== 'GET' || !err || !err.retryable || err.timeout || n >= RETRY_DELAYS.length) throw err;
+    if (Date.now() - started + RETRY_DELAYS[n] > RETRY_WINDOW) throw err;
     return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
   });
   return run(0);
+}
+
+// 15 秒没有返回：算超时，不再重试
+function timeoutError() {
+  const err = new Error('网络不太好，请稍后再试');
+  err.timeout = true;
+  return err;
+}
+
+// 调用失败（没有拿到响应）：很快失败的可以重试；云托管自己报超时的不重试
+function callFailure(res) {
+  const err = new Error('网络不太好，请稍后再试');
+  err.retryable = true;
+  if (/timeout|超时/i.test(String((res && res.errMsg) || ''))) err.timeout = true;
+  return err;
 }
 
 function request(path, params, options) {
@@ -65,7 +86,7 @@ function requestOnce(url, method, data, header) {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
-    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
+    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
@@ -82,9 +103,9 @@ function requestOnce(url, method, data, header) {
         method,
         header: Object.assign({ 'X-WX-SERVICE': config.cloudService }, header),
         data,
-        timeout: 15000,
+        timeout: TIMEOUT,
         success: done,
-        fail: () => { const err = new Error('网络不太好，请稍后再试'); err.retryable = true; finish(reject, err); },
+        fail: (res) => finish(reject, callFailure(res)),
       });
     } else {
       wx.request({
@@ -92,7 +113,7 @@ function requestOnce(url, method, data, header) {
         method,
         header,
         data,
-        timeout: 15000,
+        timeout: TIMEOUT,
         success: done,
         fail: () => finish(reject, new Error('连不上开发用的后端，请确认 youju serve 已启动')),
       });
@@ -106,13 +127,14 @@ function coverage() {
   return copy(mock.coverage);
 }
 
+// group=1（D-055）：同一份部里通知的各地转发版本按组折叠、按组计数（管理台确认过的组才折叠）
 function home() {
-  if (isLive()) return request('/api/v1/home');
+  if (isLive()) return request('/api/v1/home', { group: 1 });
   return copy({ stats: mock.stats, items: mock.home });
 }
 
 function search(params) {
-  if (isLive()) return request('/api/v1/search', params);
+  if (isLive()) return request('/api/v1/search', Object.assign({}, params, { group: 1 }));
   return copy(mockSearch(mock.search.items, params));
 }
 
@@ -215,7 +237,7 @@ function calendar() {
 }
 
 function lists() {
-  if (isLive()) return request('/api/v1/lists/recent', { limit: 20 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
+  if (isLive()) return request('/api/v1/lists/recent', { limit: 20, group: 1 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
@@ -286,7 +308,7 @@ function attachmentPartOnce(id, version, part) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
+    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const done = (res) => {
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
@@ -294,7 +316,7 @@ function attachmentPartOnce(id, version, part) {
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
     };
-    const fail = () => { const err = new Error('网络不太好，请稍后再试'); err.retryable = true; finish(reject, err); };
+    const fail = (res) => finish(reject, callFailure(res));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
@@ -304,12 +326,12 @@ function attachmentPartOnce(id, version, part) {
         // 二进制内容：dataType 要设成 other，否则 SDK 会把内容当文字解析而报错（10/7 开发者工具实测）
         dataType: 'other',
         responseType: 'arraybuffer',
-        timeout: 15000,
+        timeout: TIMEOUT,
         success: done,
         fail,
       });
     } else {
-      wx.request({ url: config.devBaseUrl + path, method: 'GET', dataType: 'other', responseType: 'arraybuffer', timeout: 15000, success: done, fail });
+      wx.request({ url: config.devBaseUrl + path, method: 'GET', dataType: 'other', responseType: 'arraybuffer', timeout: TIMEOUT, success: done, fail });
     }
   });
 }

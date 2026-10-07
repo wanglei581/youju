@@ -24,6 +24,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "crawl",
     "check-sources",
     "fetch-details",
+    "repost-groups",
     "extract-deadlines",
     "extract-fields",
     "ai-check",

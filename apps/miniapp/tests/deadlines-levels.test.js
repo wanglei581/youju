@@ -42,7 +42,7 @@ test('截止说明：未核对、无候选、已核对三种情况，未核对�
 });
 
 test('列表行：显示截止状态说明，模板不再写死文字', () => {
-  const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {} });
+  const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/repost.js': require('../utils/repost.js') });
   const observe = (doc) => { row.observers['doc, q, today'].call(row, doc, ''); return row.data; };
   assert.equal(observe(UNVERIFIED).dueNote, '截止未核对，请以原文为准');
   assert.equal(observe(UNVERIFIED).due, null);
@@ -62,6 +62,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });

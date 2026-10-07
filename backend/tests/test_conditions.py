@@ -399,18 +399,11 @@ def test_unconfirmed_list_is_never_public_and_confirm_needs_every_item(session, 
     assert act(client, f"items/{third}/approve").status_code == 200
     assert act(client, f"{row.id}/confirm").json() == {"status": "confirmed", "approved": 2}
     shown = detail(client, doc.id)["apply_conditions"]
+    # 对外只给类别和原文原句，条件那句话（模型的概括）不给
     assert shown == {
         "items": [
-            {
-                "category": "主体资格",
-                "text": "注册地在本市",
-                "quote": "（一）申报单位注册地在本市，具有独立法人资格。",
-            },
-            {
-                "category": "知识产权",
-                "text": "发明专利 2 件以上",
-                "quote": "（三）拥有与主营业务相关的发明专利 2 件以上。",
-            },
+            {"category": "主体资格", "quote": "（一）申报单位注册地在本市，具有独立法人资格。"},
+            {"category": "知识产权", "quote": "（三）拥有与主营业务相关的发明专利 2 件以上。"},
         ],
         "checked": datetime.now(UTC).astimezone(service.BEIJING).date().isoformat(),
     }
@@ -451,9 +444,10 @@ def test_edit_keeps_quote_and_is_audited(session, client, audit_records):
             act(client, f"items/{other.id}/delete")
     act(client, f"{row.id}/confirm")
     assert any(r["action"] == "conditions_confirm" for r in audit_records)
-    assert detail(client, doc.id)["apply_conditions"]["items"] == [
-        {"category": "其他", "text": "上年度研发投入占营业收入的比例 不低于 3%", "quote": quote}
-    ]
+    # 人工改写的那句话也不对外，对外永远是原文原句
+    shown = detail(client, doc.id)["apply_conditions"]
+    assert shown["items"] == [{"category": "其他", "quote": quote}]
+    assert "不低于 3%" not in json.dumps(shown, ensure_ascii=False)
 
 
 def test_edit_rejects_judgement_and_empty_text(session, client):
@@ -545,7 +539,7 @@ def test_merged_group_uses_confirmed_list_from_public_member(session, client, pu
         row.status, row.confirmed_by, row.confirmed_at = "confirmed", "创始人", NOW
         session.commit()
     items = detail(client, master.id)["apply_conditions"]["items"]
-    assert len(items) == 3 and all(item["text"] != "非公开来源的条件" for item in items)
+    assert len(items) == 3 and all(set(item) == {"category", "quote"} for item in items)
 
 
 def test_public_payload_shape_and_wording(session, client):
@@ -555,11 +549,81 @@ def test_public_payload_shape_and_wording(session, client):
     act(client, f"{row.id}/confirm")
     shown = detail(client, doc.id)["apply_conditions"]
     assert set(shown) == {"items", "checked"}
-    assert all(set(item) == {"category", "text", "quote"} for item in shown["items"])
+    assert all(set(item) == {"category", "quote"} for item in shown["items"])
     text = json.dumps(shown, ensure_ascii=False)
     for word in ("AI", "智能", "大模型", "模型", "fake-model", "能否申报"):
         assert word not in text
     assert date.fromisoformat(shown["checked"])
+
+
+def test_same_sentence_split_into_several_items_is_shown_once(session, client):
+    """一句原文拆成了几条（同一句里的几项要求）：对外只列一次原句，列在排在前面的类别下。"""
+    doc = add_notice(session, 1)
+    split = [
+        {"category": "财务指标", "text": "具有独立法人资格", "quote": "具有独立法人资格"},
+        {"category": "主体资格", "text": "注册地在本市", "quote": "申报单位注册地在本市"},
+    ]
+    service.run_extraction(session, FakeClient(lambda user: {"conditions": split}), now=NOW)
+    row = session.scalar(select(ConditionList).where(ConditionList.document_id == doc.id))
+    assert [item.quote for item in row.items] == [
+        "（一）申报单位注册地在本市，具有独立法人资格。"
+    ] * 2
+    for item in row.items:
+        act(client, f"items/{item.id}/approve")
+    act(client, f"{row.id}/confirm")
+    assert detail(client, doc.id)["apply_conditions"]["items"] == [
+        {"category": "主体资格", "quote": "（一）申报单位注册地在本市，具有独立法人资格。"}
+    ]
+
+
+def test_body_changed_and_back_revives_pending_list(session, client, caplog):
+    """正文 A → B → A：A 版那份被替代的清单恢复成待核对，不卡住；B 版的待核对清单改为被替代。"""
+    doc = add_notice(session, 1)
+    service.run_extraction(session, FakeClient(), now=NOW)
+    first = session.scalar(select(ConditionList).where(ConditionList.document_id == doc.id))
+    act(client, f"items/{first.items[0].id}/approve")  # 核了一半
+    session.get(DocumentDetail, doc.id).body_text = BODY + "\n（五）近三年无失信记录。"
+    session.commit()
+    service.run_extraction(session, FakeClient(), now=NOW)
+    session.get(DocumentDetail, doc.id).body_text = BODY
+    session.commit()
+    session.expire_all()
+    assert [
+        r.status for r in session.scalars(select(ConditionList).order_by(ConditionList.id))
+    ] == [
+        "superseded",
+        "pending",
+    ]
+    # 改回 A 版后：恢复前 A 版清单既不重抽也不进核对台（以前就卡在这里）
+    assert service.pending_count(session) == 0
+    client_calls = FakeClient()
+    with caplog.at_level(logging.INFO, logger="youju.conditions"):
+        report = service.run_extraction(session, client_calls, now=NOW)
+    assert report.revived == 1 and report.documents == 0 and client_calls.calls == []
+    session.expire_all()
+    rows = session.scalars(select(ConditionList).order_by(ConditionList.id)).all()
+    assert [r.status for r in rows] == ["pending", "superseded"]
+    assert service.pending_ids(session) == [(first.id, doc.id)]
+    # 已核过的那条保留，接着核对就行
+    assert [item.status for item in rows[0].items] == ["approved", "pending", "pending"]
+    assert any("恢复为 pending" in r.getMessage() for r in caplog.records)
+    # 再跑一轮不会重复恢复
+    assert service.run_extraction(session, FakeClient(), now=NOW).revived == 0
+
+
+def test_revived_list_that_was_confirmed_goes_back_to_confirmed(session, client):
+    doc, row = extracted(session)
+    for item in row.items:
+        act(client, f"items/{item.id}/approve")
+    act(client, f"{row.id}/confirm")
+    session.expire_all()
+    # 旧数据里可能有确认人、确认时间都在却被标成被替代的清单：恢复成已确认，原样对外
+    row = session.get(ConditionList, row.id)
+    row.status = "superseded"
+    session.commit()
+    assert "apply_conditions" not in detail(client, doc.id)
+    assert service.revive_lists(session) == [(row.id, doc.id, "confirmed")]
+    assert len(detail(client, doc.id)["apply_conditions"]["items"]) == 3
 
 
 def test_eval_script_simulated_model_never_calls_real_model():

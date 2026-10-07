@@ -142,6 +142,7 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });

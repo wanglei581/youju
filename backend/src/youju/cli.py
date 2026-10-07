@@ -176,6 +176,21 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_repost_groups(_: argparse.Namespace) -> int:
+    """按转发归组规则增量更新转发组（D-055）：新组和新加入的版本都待确认，确认后才对外合并。"""
+    from youju.repost import rebuild
+
+    with session_factory()() as session:
+        summary = rebuild(session)
+        session.commit()
+    print(
+        f"转发归组：规则提出 {summary.proposals} 组；新建 {summary.created} 组，新加入 "
+        f"{summary.joined} 个版本，去掉规则不再支持的 {summary.dropped} 个，转给主文件 "
+        f"{summary.moved} 个；需复核 {summary.needs_review} 组，所有组等人工确认"
+    )
+    return 0
+
+
 def _cmd_extract_fields(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.fields import extract_existing
@@ -256,6 +271,8 @@ def _cmd_extract_conditions(args: argparse.Namespace) -> int:
     )
     reasons = "、".join(f"{k} {v}" for k, v in sorted(report.dropped_reasons.items()))
     print(f"  没通过原文核对、已丢弃 {report.dropped} 条{f'（{reasons}）' if reasons else ''}")
+    if report.revived:
+        print(f"  正文改回以前那一版、恢复旧清单 {report.revived} 份（明细见日志）")
     print(
         f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
         f"输出 {report.completion_tokens} tokens"
@@ -636,16 +653,53 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
         return 1
     with session_factory()() as session:
         report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
+    if report.skipped:
+        print("附件副本：另一个附件任务（上一轮或手动重查）正在运行，本轮跳过")
+        return 0
     failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
     print(
         f"附件副本：新登记 {report.added}，本轮下载 {report.checked}（{report.bytes} 字节），"
         f"新存或更新 {report.stored}，未变 {report.unchanged}，删掉 {report.removed}，"
         f"到期待下轮 {report.deferred}；没存成的原因：{failed}"
     )
+    recheck = report.recheck
+    if recheck and (recheck.checked or recheck.unreadable):
+        dropped = "，".join(f"{code} {n}" for code, n in recheck.dropped.most_common()) or "无"
+        print(
+            f"旧规则版本的副本按新规则重查 {recheck.checked} 个：恢复提供 {recheck.kept}，"
+            f"不再提供 {sum(recheck.dropped.values())}（{dropped}）；"
+            f"读不到、下轮再查 {recheck.unreadable}"
+        )
     if report.storage_error:
         print(report.storage_error)
         return 1
     return 0
+
+
+def _cmd_recheck_attachments(args: argparse.Namespace) -> int:
+    """按现在的规则（个人信息、图片等）重新检查对象存储里已存的附件副本，不合格的改成不提供副本、
+    从对象存储删掉。规则收紧后跑一次；--dry-run 只报告不改。"""
+    from youju.attachments import recheck_copies
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法读取附件副本")
+        return 1
+    with session_factory()() as session:
+        report = recheck_copies(session, env, dry_run=args.dry_run)
+    if report.skipped:
+        print("附件副本的定时任务正在运行，这次没有重查，请稍后再跑")
+        return 1
+    dropped = "，".join(f"{code} {n}" for code, n in report.dropped.most_common()) or "无"
+    action = "（只检查，没有改动）" if args.dry_run else f"，从对象存储删掉 {report.removed} 个"
+    print(
+        f"附件副本重新检查：检查 {report.checked} 个，合格 {report.kept}；"
+        f"不合格 {sum(report.dropped.values())} 个（{dropped}），"
+        f"涉及 {report.rows} 条附件改为不提供副本{action}；读不到的 {report.unreadable} 个"
+    )
+    if report.storage_error:
+        print(report.storage_error)
+    return 1 if report.storage_error or report.unreadable else 0
 
 
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
@@ -770,6 +824,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
+
+    sub.add_parser(
+        "repost-groups",
+        help="把同一份部里通知的各地版本归成转发组（待人工确认；所有组必须人工确认）",
+    ).set_defaults(func=_cmd_repost_groups)
 
     p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
@@ -918,6 +977,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
     p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
     p.set_defaults(func=_cmd_cache_attachments)
+    p = sub.add_parser(
+        "recheck-attachments",
+        help="按现在的规则重新检查已存的附件副本，不合格的不再提供并从对象存储删掉（规则收紧后跑一次）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只检查、报告，不改表、不删文件")
+    p.set_defaults(func=_cmd_recheck_attachments)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")

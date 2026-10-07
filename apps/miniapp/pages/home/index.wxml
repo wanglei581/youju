@@ -60,6 +60,8 @@
     <view class="summary-text">
       <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
       <view>来自 {{stats.provinces}} 个省和国家部委 · 每条都有出处</view>
+      <!-- 同一份部里通知的各地转发版本按 1 份计（D-055） -->
+      <view wx:if="{{stats.week_reposts}}" class="summary-reposts">另有 {{stats.week_reposts}} 个转发版本，未重复计</view>
     </view>
   </block>
   <view wx:else class="summary-text">

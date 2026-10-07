@@ -34,6 +34,9 @@ fi
 run crawl && run check-sources
 # 每天 2 轮，每轮 600 份，每天补详情总量和原来 4 轮 × 300 份一样
 run fetch-details --limit 600 --workers 4
+# 转发归组（D-055）：补完详情（有正文才看得到引用的部里文号）后，把同一份部里通知的各地版本归组，
+# 送管理台“转发归组”页确认；确认前对外仍按单条显示
+run repost-groups
 run extract-deadlines
 run extract-fields
 # 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做。

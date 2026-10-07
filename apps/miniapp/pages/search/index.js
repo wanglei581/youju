@@ -75,6 +75,8 @@ Page({
     items: [],
     total: 0,
     totalAll: 0,
+    // 合并进转发组、没有另计的版本数（D-055）
+    reposts: 0,
     loading: false,
     error: '',
     filterOpen: false,
@@ -204,6 +206,7 @@ Page({
           items: reset ? res.items : items.concat(res.items),
           total: res.total,
           totalAll: res.total_all,
+          reposts: res.reposts || 0,
           folded,
           guides,
           fold: foldNote(folded, this.data.showGuides ? guides : 0),
@@ -231,7 +234,7 @@ Page({
       .catch((err) => {
         if (seq !== this.seq) return;
         // 重新查询失败时不保留旧结果，避免把旧条件的结果当成新结果
-        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0, folded: 0, guides: 0, fold: foldNote(0, 0) } : { loading: false, error: err.message });
+        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0, reposts: 0, folded: 0, guides: 0, fold: foldNote(0, 0) } : { loading: false, error: err.message });
       });
   },
 
