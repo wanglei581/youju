@@ -74,6 +74,32 @@ def test_robots_disallow_is_respected() -> None:
     assert requested.count("/robots.txt") == 1, "robots.txt 应缓存"
 
 
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+def test_robots_is_respected_when_content_is_not_decoded(prefix: str) -> None:
+    """下载附件的抓取器不解码内容（decode_text=False），robots.txt 照样要解码、解析。"""
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            body = f"{prefix}User-agent: *\nDisallow: /files/\n".encode()
+            return httpx.Response(200, content=body, headers={"content-type": "text/plain"})
+        return httpx.Response(200, content=b"%PDF-1.4 ...")
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        decode_text=False,
+    ) as f:
+        blocked = f.fetch("https://a.gov.cn/files/guide.pdf")
+        allowed = f.fetch("https://a.gov.cn/other/guide.pdf")
+    assert blocked.status == "robots_disallowed"
+    assert allowed.status == "ok" and allowed.text == "" and allowed.content.startswith(b"%PDF")
+    assert "/files/guide.pdf" not in requested, "被 robots 禁止的附件不能发出请求"
+
+
 def test_redirect_to_disallowed_host_is_not_requested() -> None:
     requested = []
 

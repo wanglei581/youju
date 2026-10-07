@@ -315,6 +315,8 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
             ExportItem(
                 number=index,
                 doc_id=master,
+                # 标题是发文机关的原标题，原样照录；标题里写着的截止信息（如"10 月 31 日前申报"）
+                # 是原文的一部分，不是我们抽出的截止日期，不按"未核对不发布"处理（截止日期一栏另算）
                 title=doc.title,
                 kind=kind,
                 status=list_status(doc.title, kind) or "",

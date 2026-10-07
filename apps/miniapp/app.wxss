@@ -108,18 +108,6 @@ page {
   font-weight: 500;
 }
 
-/* 暂不可用的按钮（如协议定稿前）：灰底灰字，和主按钮一样大，看得出现在不能用；旁边另写一行说明 */
-.btn-off {
-  min-height: 88rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 44rpx;
-  background: var(--fill);
-  color: var(--t3);
-  font-size: 30rpx;
-}
-
 /* 给自定义底栏留位置 */
 .tab-page-bottom { height: calc(200rpx + env(safe-area-inset-bottom)); }
 
