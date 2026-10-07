@@ -23,9 +23,9 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
 </style>
 </head>
 <body>
-<header><div class="bar"><h1>转发归组</h1><span id="count" class="meta"></span><div class="auth"><input id="reviewer" placeholder="确认人" size="8" aria-label="确认人"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><select id="state" aria-label="看哪些组"><option value="pending">待确认</option><option value="confirmed">已确认</option><option value="removed">有移出的版本</option></select><button id="load" class="primary">载入</button></div></div></header>
+<header><div class="bar"><h1>转发归组</h1><span id="count" class="meta"></span><div class="auth"><input id="reviewer" placeholder="确认人" size="8" aria-label="确认人"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><select id="state" aria-label="看哪些组"><option value="pending">待确认 / 需复核</option><option value="confirmed">已确认</option><option value="removed">有移出的版本</option></select><button id="load" class="primary">载入</button></div></div></header>
 <main>
-<p class="hint">同一份部里通知的各地版本，由程序按标题、正文里引用的部里文号归成一组。确认后，小程序列表里这一组只显示一条，写“另有 N 个转发版本”；没确认的组对外仍按单条显示。逐个版本看原文，确认是同一件事再点“确认合并”。</p>
+<p class="hint">同一份部里通知的各地版本，由程序按标题、正文里引用的部里文号归成一组。确认后，小程序列表里这一组只显示一条，写“另有 N 个转发版本”；没确认或需复核的组对外按单条显示。逐个版本看原文，确认是同一件事再点“确认合并”。</p>
 <p class="hint">各版本的截止日期仍在“截止日期”核对台逐条核对，确认合并不会通过任何截止；不同版本的日期不互相套用，对外按版本标（如“江西版：推荐截止”）。</p>
 <p class="hint">不是同一件事：移出那个版本（以后不会被自动加回），或勾选几个版本拆成新组，或整组不合并。撤回确认后各版本马上恢复成单条。撤回、移出、拆组、整组不合并的决定会一直保留，程序不会再自动合并这些组。</p>
 <p class="hint">确认时只确认页面上看到的这些版本；如果在你看的时候程序加入了新版本、或别人改过这一组，会提示刷新，刷新后再确认。</p>
@@ -95,6 +95,7 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
     const e=node('article',undefined,'card'), picked=new Set(), msg=node('span','','msg');
     const top=node('div',undefined,'top');
     top.append(node('span',group.strength_label,`tag ${group.strength}`),node('span',group.topic,'topic'),node('span',`#${group.id} · ${group.versions} 个版本${group.pending?` · ${group.pending} 个待确认`:''}`,'meta'));
+    if(group.needs_review)top.append(node('span','需复核：已恢复单条显示','tag weak'));
     if(group.public)top.append(node('span','已对外合并','tag public'));
     if(group.conflicts)top.append(node('span',`${group.conflicts} 条同一文件记录待处理`,'tag weak'));
     e.append(top);
@@ -104,7 +105,7 @@ button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{backgro
     const actions=node('div',undefined,'actions');
     // 确认时带上看到的版本和修订号：组在这期间有变化，后台不执行，提示刷新
     const shown=group.members.filter(m=>m.active&&!m.merged_into).map(m=>m.document_id);
-    if(group.pending&&group.versions>=2){const b=node('button',group.public?'确认新加入的版本':'确认合并','primary');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/confirm`,{revision:group.revision,document_ids:shown},`确认这 ${group.versions} 个版本是同一份部里通知的各地版本？确认后对外只显示一条主条目，各版本的截止日期仍各自核对。`);actions.append(b);}
+    if(group.pending&&group.versions>=2){const b=node('button',group.needs_review?'重新确认合并':group.public?'确认新加入的版本':'确认合并','primary');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/confirm`,{revision:group.revision,document_ids:shown},`确认这 ${group.versions} 个版本是同一份部里通知的各地版本？确认后对外只显示一条主条目，各版本的截止日期仍各自核对。`);actions.append(b);}
     if(group.members.some(m=>m.active&&m.confirmed_at)){const b=node('button','撤回确认');b.onclick=()=>act(b,msg,`/api/admin/repost-groups/${group.id}/withdraw`,{revision:group.revision},'撤回确认？各版本马上恢复成单条显示，以后不会再自动合并这一组。');actions.append(b);}
     if(group.versions>=2){
       const split=node('button','勾选的版本拆成新组');

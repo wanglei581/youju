@@ -5,15 +5,15 @@
 
 - 本模块只改 repost_* 两张表。截止日期不随转发组同步：各版本的截止各自核对、各自显示，
   dedup.sync_reviewed_twins、核对台的 _apply_review、_pending_shown_ids 只认 document_merges。
-- 对外合并要人确认（D-055）：组员确认过（confirmed_at 有值）才对外按组折叠。
-  YOUJU_DEDUPE_AUTO=true 时归组任务自动确认强证据组（确认人记“自动”）；疑似组一直要人确认；
-  人工撤回、移出、拆过的组不再自动确认。
+- 对外合并必须人工确认；确认后保存成员快照，内容或整组约束变化则需复核，停止对外折叠。
 - 人工移出的版本（active=False）不会被下次归组自动加回；人工加入、拆出的不会被自动挪走；
-  人工撤回、移出、拆过、整组不合并的组和组员不会被清理（见 rebuild、has_decision）。
+  人工处理过的组保留；没有人工决定的待确认成员仍从头重算（见 rebuild、has_decision）。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -32,8 +32,6 @@ from youju.models import (
     Source,
 )
 
-# 自动确认时记的确认人
-AUTO_CONFIRMER = "自动（强证据）"
 # 发布相隔多少天以内才可能是同一份通知的各地版本
 MAX_DAYS_APART = 90
 # 核心标题至少几个字才拿来比
@@ -443,15 +441,49 @@ class RebuildSummary:
     moved: int = 0
     conflicts: int = 0
     skipped: int = 0
-    auto_confirmed: int = 0
+    needs_review: int = 0
 
 
-def has_decision(row: RepostGroupMember, group: RepostGroup) -> bool:
-    """这条组员记录带着人的决定：移出、确认过、人工加入或拆出，或所在的组人工处理过
-    （撤回、移出、拆组、整组不合并，no_auto）。带决定的记录归组任务不删、不挪。"""
-    return (
-        not row.active or row.confirmed_at is not None or row.joined_by == "human" or group.no_auto
-    )
+def has_decision(row: RepostGroupMember) -> bool:
+    """移出、确认、人工加入和拆组的成员保留；组上有决定不等于每个自动成员都被冻结。"""
+    return not row.active or row.confirmed_at is not None or row.joined_by == "human"
+
+
+def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], dict[int, str]]:
+    """归组约束与确认快照使用同一份当前数据，正文比较全部内容而非归组用的前 1500 字。"""
+    info, fingerprints = {}, {}
+    for doc, src, detail in session.execute(
+        select(Document, Source, DocumentDetail)
+        .join(Source, Source.id == Document.source_id)
+        .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+        .where(Document.id.in_(ids))
+        .execution_options(populate_existing=True)
+    ):
+        info[doc.id] = ((src.province, src.dept), doc.publish_date)
+        values = [
+            doc.publish_date.isoformat() if doc.publish_date else None,
+            src.province,
+            src.dept,
+            src.dept_full_name,
+            detail.issuer if detail else None,
+            detail.publish_date.isoformat() if detail and detail.publish_date else None,
+            doc.title,
+            hashlib.sha256((detail.body_text or "").encode()).hexdigest() if detail else None,
+        ]
+        fingerprints[doc.id] = hashlib.sha256(
+            json.dumps(values, ensure_ascii=False).encode()
+        ).hexdigest()
+    return info, fingerprints
+
+
+def valid_group(info: dict[int, tuple], ids: list[int]) -> bool:
+    """整组必须有日期、同机关只有一份，日期跨度不超过 90 天。"""
+    if any(i not in info or info[i][1] is None for i in ids):
+        return False
+    if len({info[i][0] for i in ids}) != len(ids):
+        return False
+    dates = [info[i][1] for i in ids]
+    return not dates or (max(dates) - min(dates)).days <= MAX_DAYS_APART
 
 
 def bump(group: RepostGroup, stamp: datetime) -> None:
@@ -463,26 +495,14 @@ def bump(group: RepostGroup, stamp: datetime) -> None:
 
 def _fits(info: dict[int, tuple], ids: list[int], doc_id: int) -> bool:
     """把 doc_id 加进由 ids 组成的组后，仍满足同一机关只有一份、日期跨度不超过 90 天。"""
-    agency, published = info[doc_id]
-    known = [info[i] for i in ids if i in info]
-    if any(other == agency for other, _ in known):
-        return False
-    dates = [d for _, d in known if d is not None] + [published]
-    return (max(dates) - min(dates)).days <= MAX_DAYS_APART
+    return valid_group(info, [*ids, doc_id])
 
 
-def rebuild(session: Session, *, auto: bool = False, now: datetime | None = None) -> RebuildSummary:
-    """按规则增量更新转发组；不提交。
+def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
+    """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核。
 
-    - 规则提出的组和已有的组没有交集：新建一组（待确认）。
-    - 和已有的组有交集：新出现的版本加入交集最多的那一组（待确认），加入前检查同一机关只有一份、
-      日期跨度不超过 90 天，不满足的不加；已在组里的不挪动。
-    - 带人的决定的记录（见 has_decision）永久保留：移出的不加回，确认过、人工加入或拆出的不挪动、
-      不删；人工撤回、移出、拆过、整组不合并的组（no_auto）连同组员都不清理，也不自动确认。
-    - 规则不再支持、不带决定的自动成员删掉（以后规则又支持了还能加回）。
-    - 文件后来归并成了别的文件的副本：主文件还没有组员记录的，把记录（连同决定）转给主文件；
-      主文件已有记录的，不带决定的副本记录删掉，带决定的两条都留着、在管理台标出来等人处理。
-    - auto=True 时自动确认强证据组里还没确认的成员；no_auto 的组除外。
+    规则提出的整组先检查约束；保留人工成员时，加入新成员也检查整组。更新最终差异，
+    相同输入重跑不改变修订号。这里只写 repost_*，绝不改截止审批。
     """
     stamp = now or datetime.now(UTC)
     summary = RebuildSummary()
@@ -519,7 +539,7 @@ def rebuild(session: Session, *, auto: bool = False, now: datetime | None = None
         row = members[duplicate]
         group = groups[row.group_id]
         if canonical in members:
-            if has_decision(row, group):
+            if has_decision(row):
                 held.add(duplicate)
                 summary.conflicts += 1
                 continue
@@ -540,41 +560,70 @@ def rebuild(session: Session, *, auto: bool = False, now: datetime | None = None
             joined_at=row.joined_at,
             confirmed_by=row.confirmed_by,
             confirmed_at=row.confirmed_at,
+            confirmed_fingerprint=row.confirmed_fingerprint,
             removed_by=row.removed_by,
             removed_at=row.removed_at,
         )
         session.add(moved)
         members[canonical] = moved
+        if row.confirmed_at is not None and not group.needs_review:
+            group.needs_review = True
+            summary.needs_review += 1
         bump(group, stamp)
         summary.moved += 1
     session.flush()
 
     candidates = load_candidates(session)
-    proposals, neighbors = link(candidates)
-    summary.proposals = len(proposals)
-    # 机关和发布日期：候选里有的直接用，组员里不在候选的（下架等）另查
-    info: dict[int, tuple] = {c.id: ((c.province, c.dept), c.publish_date) for c in candidates}
-    missing = [doc_id for doc_id in members if doc_id not in info]
-    if missing:
-        for doc_id, province, dept, published in session.execute(
-            select(Document.id, Source.province, Source.dept, Document.publish_date)
-            .join(Source, Source.id == Document.source_id)
-            .where(Document.id.in_(missing))
-        ):
-            info[doc_id] = ((province, dept), published)
-    active_of: dict[int, list[int]] = defaultdict(list)
+    info = {c.id: ((c.province, c.dept), c.publish_date) for c in candidates}
+    # 只有已有成员需要完整正文快照，其余候选沿用上面的轻量数据。
+    member_info, fingerprints = member_facts(session, list(members))
+    info.update(member_info)
+    by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
     for row in members.values():
+        if row.active:
+            by_group[row.group_id].append(row)
+    for group_id, rows in by_group.items():
+        group = groups[group_id]
+        confirmed = [r for r in rows if r.confirmed_at is not None]
+        changed = any(r.confirmed_fingerprint != fingerprints.get(r.document_id) for r in confirmed)
+        if (
+            confirmed
+            and not group.needs_review
+            and (changed or not valid_group(info, [r.document_id for r in rows]))
+        ):
+            group.needs_review = True
+            bump(group, stamp)
+            summary.needs_review += 1
+
+    # 先在内存中释放所有未带人工决定的成员；旧归属仅用来尽量复用组编号，绝不约束重算结果。
+    free = {d: r for d, r in members.items() if d not in held and not has_decision(r)}
+    fixed = {d: r for d, r in members.items() if d not in free}
+    active_of: dict[int, list[int]] = defaultdict(list)
+    for row in fixed.values():
         if row.active and row.document_id not in held:
             active_of[row.group_id].append(row.document_id)
-
+    proposals = propose_groups(
+        [
+            c
+            for c in candidates
+            if c.id not in held and not (c.id in fixed and not fixed[c.id].active)
+        ]
+    )
+    summary.proposals = len(proposals)
+    used: set[int] = set()
+    desired: dict[int, tuple[int, str]] = {}
     for proposal in proposals:
-        usable = [d for d in proposal.ids if not (d in members and not members[d].active)]
-        existing = Counter(members[d].group_id for d in usable if d in members)
-        new_ids = [d for d in usable if d not in members]
-        if existing:
-            target_id = sorted(existing.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        existing = Counter(fixed[d].group_id for d in proposal.ids if d in fixed)
+        reusable = Counter(
+            free[d].group_id
+            for d in proposal.ids
+            if d in free and free[d].group_id not in used and not active_of[free[d].group_id]
+        )
+        choices = existing or reusable
+        if choices:
+            target_id = sorted(choices, key=lambda g: (-choices[g], g))[0]
             target = groups[target_id]
-        elif len(usable) >= 2:
+        else:
             target = RepostGroup(
                 strength=proposal.strength,
                 topic=proposal.topic,
@@ -589,89 +638,71 @@ def rebuild(session: Session, *, auto: bool = False, now: datetime | None = None
             session.flush()
             groups[target.id] = target
             summary.created += 1
-        else:
-            continue
-        if target.created_by == "rule":
-            changed = (
-                target.strength != proposal.strength
-                or target.topic != proposal.topic
-                or target.upstream_title != proposal.upstream_title
-                or target.upstream_number != proposal.upstream_number
+        used.add(target.id)
+        if target.created_by == "rule" and not active_of[target.id]:
+            values = (
+                proposal.strength,
+                proposal.topic,
+                proposal.upstream_title,
+                proposal.upstream_number,
             )
-            if changed:
-                target.strength = proposal.strength
-                target.topic = proposal.topic
-                target.upstream_title = proposal.upstream_title
-                target.upstream_number = proposal.upstream_number
+            if (
+                target.strength,
+                target.topic,
+                target.upstream_title,
+                target.upstream_number,
+            ) != values:
+                target.strength, target.topic, target.upstream_title, target.upstream_number = (
+                    values
+                )
                 bump(target, stamp)
-        for doc_id in new_ids:
+        for doc_id in proposal.ids:
+            if doc_id in fixed:
+                continue
             if not _fits(info, active_of[target.id], doc_id):
                 summary.skipped += 1
                 continue
+            desired[doc_id] = (target.id, proposal.evidence.get(doc_id, ""))
+            active_of[target.id].append(doc_id)
+
+    for doc_id, row in free.items():
+        if doc_id not in desired:
+            session.delete(row)
+            members.pop(doc_id)
+            bump(groups[row.group_id], stamp)
+            summary.dropped += 1
+    for doc_id, (group_id, evidence) in desired.items():
+        row = free.get(doc_id)
+        if row is None:
             row = RepostGroupMember(
                 document_id=doc_id,
-                group_id=target.id,
+                group_id=group_id,
                 active=True,
                 joined_by="rule",
-                evidence=proposal.evidence.get(doc_id, ""),
+                evidence=evidence,
                 joined_at=stamp,
             )
             session.add(row)
             members[doc_id] = row
-            active_of[target.id].append(doc_id)
-            bump(target, stamp)
+            bump(groups[group_id], stamp)
             summary.joined += 1
-        for doc_id in usable:
-            row = members.get(doc_id)
-            if row is not None and row.joined_by == "rule" and row.group_id == target.id:
-                evidence = proposal.evidence.get(doc_id, "")
-                if row.evidence != evidence:
-                    row.evidence = evidence
+        else:
+            old_group = row.group_id
+            if old_group != group_id:
+                row.group_id = group_id
+                bump(groups[old_group], stamp)
+                bump(groups[group_id], stamp)
+                summary.moved += 1
+            if row.evidence != evidence:
+                row.evidence = evidence
+                if old_group == group_id:
+                    bump(groups[group_id], stamp)
     session.flush()
-
-    # 规则不再支持（和组里其他在组版本两两之间都没有规则支持）、不带人的决定的自动成员：删掉
-    by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
-    for row in members.values():
-        by_group[row.group_id].append(row)
-    for group_id, rows in by_group.items():
-        group = groups[group_id]
-        active_ids = {row.document_id for row in rows if row.active}
-        for row in rows:
-            if row.document_id in held or has_decision(row, group):
-                continue
-            peers = neighbors.get(row.document_id, set()) & (active_ids - {row.document_id})
-            if not peers:
-                session.delete(row)
-                members.pop(row.document_id, None)
-                bump(group, stamp)
-                summary.dropped += 1
-    session.flush()
-
-    # 没有任何成员记录、也没被人处理过的组删掉（有移出记录的、人工处理过的都留着）
     alive = {row.group_id for row in members.values()}
-    for group_id, group in list(groups.items()):
+    for group_id, group in groups.items():
         if group_id not in alive and not group.no_auto:
             session.delete(group)
-            groups.pop(group_id)
     session.flush()
-
-    if auto:
-        active_by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
-        for row in members.values():
-            if row.active and row.document_id not in held:
-                active_by_group[row.group_id].append(row)
-        for group_id, rows in active_by_group.items():
-            group = groups[group_id]
-            if group.strength != "strong" or group.no_auto or len(rows) < 2:
-                continue
-            waiting = [row for row in rows if row.confirmed_at is None]
-            for row in waiting:
-                row.confirmed_by = AUTO_CONFIRMER
-                row.confirmed_at = stamp
-                summary.auto_confirmed += 1
-            if waiting:
-                bump(group, stamp)
-        session.flush()
     return summary
 
 
@@ -695,7 +726,12 @@ def confirmed_members() -> object:
     """对外按组折叠用的成员（子查询：document_id、group_id）：确认过、没有移出的。"""
     return (
         select(RepostGroupMember.document_id, RepostGroupMember.group_id)
-        .where(RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_at.is_not(None))
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+        .where(
+            RepostGroupMember.active.is_(True),
+            RepostGroupMember.confirmed_at.is_not(None),
+            RepostGroup.needs_review.is_(False),
+        )
         .subquery()
     )
 

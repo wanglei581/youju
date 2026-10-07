@@ -507,7 +507,10 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
         return {}
     group_of = dict(
         session.execute(
-            select(RepostGroupMember.document_id, RepostGroupMember.group_id).where(
+            select(RepostGroupMember.document_id, RepostGroupMember.group_id)
+            .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+            .where(
+                RepostGroup.needs_review.is_(False),
                 RepostGroupMember.document_id.in_(doc_ids),
                 RepostGroupMember.active.is_(True),
                 RepostGroupMember.confirmed_at.is_not(None),
@@ -520,7 +523,9 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
         _base()
         .add_columns(RepostGroupMember.group_id)
         .join(RepostGroupMember, RepostGroupMember.document_id == Document.id)
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
         .where(
+            RepostGroup.needs_review.is_(False),
             RepostGroupMember.group_id.in_(set(group_of.values())),
             RepostGroupMember.active.is_(True),
             RepostGroupMember.confirmed_at.is_not(None),

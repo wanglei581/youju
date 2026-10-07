@@ -1,8 +1,8 @@
 """转发归组规则（youju.repost）在一份只读数据快照上的统计和清单（D-055，转载去重方案 v1 附录二）。
 
 只读：会话设为只读事务，只执行 SELECT；不连正式库 youju。只用最早几版就有的列，旧快照
-（如本机 youju_perf，迁移停在 0013）也能跑。同一文件层按现有 document_merges，再加上“网址相同
-就是同一文件”的修复（和 dedup.reconcile_documents 一致）。
+（如本机 youju_perf，迁移停在 0013）也能跑。同一文件层只按现有 document_merges；
+同网址的小重复留作后续，不在统计里模拟归并。
 
 用法（在 backend/ 下）：
     uv run python scripts/repost_groups_report.py \
@@ -15,13 +15,11 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from datetime import date
-from types import SimpleNamespace
 
 from sqlalchemy import create_engine, make_url, text
 
 from youju.classify import effective_kind
 from youju.crawler.urls import url_key
-from youju.dedup import _compatible, _signature
 from youju.repost import BODY_HEAD_CHARS, Candidate, kind_bucket, propose_groups
 
 
@@ -48,57 +46,9 @@ def _load(conn):
     return docs, merges, deadlines
 
 
-def _signatures(conn, ids: list[int]) -> dict[int, tuple]:
-    """网址相同的那些文件的文号和正文指纹（和 dedup._signature 同一算法）。"""
-    if not ids:
-        return {}
-    rows = conn.execute(
-        text(
-            "SELECT document_id, doc_number, body_text FROM document_details "
-            f"WHERE document_id IN ({','.join(str(int(i)) for i in ids)})"
-        )
-    ).all()
-    out = {}
-    for doc_id, number, body in rows:
-        out[doc_id] = _signature(SimpleNamespace(doc_number=number, body_text=body or ""))
-    return out
-
-
-def _canonical(docs, merges, signatures) -> tuple[dict[int, int], int, int]:
-    """{文件: 同一文件层的主文件}，网址相同、原来没合并、修复后归并的对数，以及网址相同但文号
-    或正文冲突、不归并的对数（和 dedup.reconcile_documents 一致）。"""
-    parent = {row.id: row.id for row in docs}
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    for duplicate, canonical in merges.items():
-        if duplicate in parent and canonical in parent:
-            union(duplicate, canonical)
-    by_url: dict[str, list[int]] = defaultdict(list)
-    for row in docs:
-        by_url[url_key(row.url)].append(row.id)
-    fixed = conflicts = 0
-    for ids in by_url.values():
-        for other in ids[1:]:
-            if find(other) == find(ids[0]):
-                continue
-            left = signatures.get(ids[0], (None, None))
-            right = signatures.get(other, (None, None))
-            if not _compatible(left, right):
-                conflicts += 1
-                continue
-            fixed += 1
-            union(ids[0], other)
-    return {row.id: find(row.id) for row in docs}, fixed, conflicts
+def _canonical(docs, merges) -> dict[int, int]:
+    """同一文件层只认已有的 document_merges，不跨机关模拟同网址合并。"""
+    return {row.id: merges.get(row.id, row.id) for row in docs}
 
 
 def main() -> int:
@@ -116,13 +66,10 @@ def main() -> int:
         conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
         conn.execute(text("START TRANSACTION READ ONLY"))
         docs, merges, deadlines = _load(conn)
-        counts = Counter(url_key(row.url) for row in docs)
-        shared = [row.id for row in docs if counts[url_key(row.url)] > 1]
-        signatures = _signatures(conn, shared)
         conn.rollback()
     engine.dispose()
 
-    master, fixed, conflicts = _canonical(docs, merges, signatures)
+    master = _canonical(docs, merges)
     rows = {row.id: row for row in docs}
     candidates = [
         Candidate(
@@ -145,10 +92,11 @@ def main() -> int:
         return args.since <= published <= args.until
 
     window = [c for c in candidates if args.since <= c.publish_date <= args.until]
-    print(
-        f"同一文件层：网址相同、原来没合并的 {fixed} 对（修复后归为同一文件）；"
-        f"网址相同但文号或正文冲突、不归并的 {conflicts} 对"
-    )
+    same_urls: dict[str, set[int]] = defaultdict(set)
+    for row in docs:
+        same_urls[url_key(row.url)].add(master[row.id])
+    pending = sum(len(ids) - 1 for ids in same_urls.values())
+    print(f"同一文件层：按已有 document_merges 统计；同网址未合并的 {pending} 对留作后续")
     print(
         f"窗口 {args.since}～{args.until}：条目 {len(window)} 份，"
         + "、".join(f"{k} {n}" for k, n in Counter(kind_bucket(c.kind) for c in window).items())

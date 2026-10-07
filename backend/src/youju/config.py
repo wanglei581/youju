@@ -72,9 +72,6 @@ class Settings(BaseSettings):
     cloud_env: str | None = None
     # R1.5 顾问技能包总开关；上线前保持关闭。
     advisor_enabled: bool = False
-    # 转发组（D-055）是否自动生效：false（默认）时每组都要人在管理台“转发归组”页确认后才对外合并；
-    # true 时归组任务自动确认强证据组，疑似组仍要人确认。前 4 周保持 false，看确认结果的准确率再定
-    dedupe_auto: bool = False
     ai_advisor_enabled: bool = False
     ai_advisor_openids: str = ""
 

@@ -180,15 +180,13 @@ def _cmd_repost_groups(_: argparse.Namespace) -> int:
     """按转发归组规则增量更新转发组（D-055）：新组和新加入的版本都待确认，确认后才对外合并。"""
     from youju.repost import rebuild
 
-    auto = get_settings().dedupe_auto
     with session_factory()() as session:
-        summary = rebuild(session, auto=auto)
+        summary = rebuild(session)
         session.commit()
     print(
         f"转发归组：规则提出 {summary.proposals} 组；新建 {summary.created} 组，新加入 "
         f"{summary.joined} 个版本，去掉规则不再支持的 {summary.dropped} 个，转给主文件 "
-        f"{summary.moved} 个；"
-        + (f"自动确认 {summary.auto_confirmed} 个" if auto else "未开自动确认，等人工确认")
+        f"{summary.moved} 个；需复核 {summary.needs_review} 组，所有组等人工确认"
     )
     return 0
 
@@ -829,8 +827,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "repost-groups",
-        help="把同一份部里通知的各地版本归成转发组（待人工确认；"
-        "YOUJU_DEDUPE_AUTO=true 时自动确认强证据组）",
+        help="把同一份部里通知的各地版本归成转发组（待人工确认；所有组必须人工确认）",
     ).set_defaults(func=_cmd_repost_groups)
 
     p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")

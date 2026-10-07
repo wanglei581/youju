@@ -124,7 +124,6 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
 | `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
-| `YOUJU_DEDUPE_AUTO` | `false` | 转发组自动确认（D-055）：`false` 时每组都要人在管理台确认后才对外合并；`true` 时自动确认强证据组 |
 | `YOUJU_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 模型方 OpenAI 兼容接口地址 |
 | `YOUJU_AI_MODEL` | `qwen-flash` | 调用的模型标识 |
 | `YOUJU_AI_API_KEY` | 未配置 | 模型调用密钥，不记录、不输出 |
@@ -162,3 +161,5 @@ src/youju/
   sources/importer.py  来源清单导入
 tests/                 测试；fixtures/html/ 是真实政府网站列表页快照
 ```
+
+转发归组只在人工确认后对外折叠；内容变化由 `youju repost-groups` 重算检测，标为需复核后立即恢复单条显示。0022 在本分支直接修改，已执行旧版 0022 的环境不能靠再次 `upgrade head` 补齐字段，部署前须另行补齐 `needs_review` 和 `confirmed_fingerprint`，旧确认记录无快照时必须重新确认。

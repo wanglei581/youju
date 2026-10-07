@@ -1,11 +1,13 @@
 """转发组对外展示（D-055 第二步）：只有确认过的组才按组折叠、按组计数；截止按版本标，不互相套用。"""
 
 from datetime import UTC, date, datetime, time
+from io import BytesIO
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from youju.api import app as admin
@@ -16,10 +18,11 @@ from youju.models import (
     Document,
     DocumentDeadline,
     DocumentDetail,
+    RepostGroup,
     RepostGroupMember,
     Source,
 )
-from youju.repost import rebuild
+from youju.repost import member_facts, rebuild
 
 # 北京时间 2026-09-27（周日）；本周是 9/21–9/27
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -140,8 +143,11 @@ def world(session):
 
 
 def _confirm(session):
-    for row in session.scalars(select(RepostGroupMember)):
+    rows = session.scalars(select(RepostGroupMember)).all()
+    _, fingerprints = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
         row.confirmed_by, row.confirmed_at = "创始人", datetime.now(UTC)
+        row.confirmed_fingerprint = fingerprints[row.document_id]
     session.commit()
 
 
@@ -152,7 +158,7 @@ def _search(client, **params):
 
 
 def test_unconfirmed_group_is_not_folded(client, world) -> None:
-    """D-055：前 4 周每组都要确认后才对外合并；没确认的组仍按单条显示、按条计数。"""
+    """D-055：所有组都要人工确认后才对外合并；没确认的组仍按单条显示、按条计数。"""
     body = _search(client, group=1)
     assert body["total"] == 4 and body["reposts"] == 0
     assert not any("group" in item for item in body["items"])
@@ -338,8 +344,8 @@ def test_taken_down_version_is_not_listed(client, session, world) -> None:
     assert main["group"]["regions"] == ["福建"]
 
 
-def test_same_url_counts_once(client, session) -> None:
-    """网址相同的两条（机关一个取自详情、一个取自来源）归为同一文件，对外只算一份。"""
+def test_same_url_different_issuers_stay_separate(client, session) -> None:
+    """网址相同但机关不同仍按 main 各自保留，对外算两份。"""
     src = _source(session, "辽宁")
     stamp = datetime.now(UTC)
     url = "https://gxt.ln.gov.cn/tzgg/2026092511/index.html"
@@ -370,4 +376,180 @@ def test_same_url_counts_once(client, session) -> None:
     assert _search(client)["total"] == 2
     reconcile_documents(session)
     session.commit()
-    assert _search(client)["total"] == 1 and _search(client, group=1)["total"] == 1
+    assert _search(client)["total"] == 2 and _search(client, group=1)["total"] == 2
+
+
+@pytest.mark.parametrize(
+    "change", ["date", "missing_date", "agency", "issuer", "title", "body_tail", "span"]
+)
+def test_changed_confirmed_group_stops_folding_until_reconfirmed(
+    client, session, world, change
+) -> None:
+    """确认快照覆盖完整正文；任一版本变化，全部停止折叠、按单条计数并进入待办。"""
+    if change == "body_tail":
+        session.get(DocumentDetail, world["fujian"].id).body_text += "原正文内容" * 400
+        session.commit()
+    group = session.scalars(select(RepostGroup)).one()
+    ids = [r.document_id for r in session.scalars(select(RepostGroupMember))]
+    response = client.post(
+        f"/api/admin/repost-groups/{group.id}/confirm",
+        headers=HEADERS,
+        json={"reviewed_by": "创始人", "revision": group.revision, "document_ids": ids},
+    )
+    assert response.status_code == 200
+    session.expire_all()
+    assert all(r.confirmed_fingerprint for r in session.scalars(select(RepostGroupMember)))
+    assert _search(client, group=1)["total"] == 2
+    original_date = world["fujian"].publish_date
+    original_source = world["fujian"].source_id
+    if change == "date":
+        world["fujian"].publish_date = date(2026, 9, 25)
+    elif change == "missing_date":
+        world["fujian"].publish_date = None
+    elif change == "agency":
+        world["fujian"].source_id = world["tianjin"].source_id
+    elif change == "issuer":
+        session.get(DocumentDetail, world["fujian"].id).issuer = "福建省联合发文机关"
+    elif change == "title":
+        world["fujian"].title += "（更正）"
+    elif change == "body_tail":
+        detail = session.get(DocumentDetail, world["fujian"].id)
+        detail.body_text += "正文尾部的更正"
+    else:
+        world["fujian"].publish_date = date(2027, 1, 1)
+    session.commit()
+    rebuild(session)
+    session.commit()
+    session.refresh(group)
+    assert group.needs_review is True
+    body = _search(client, group=1)
+    assert body["total"] == 4 and body["reposts"] == 0
+    assert not any("group" in item for item in body["items"])
+    home = client.get("/api/v1/home?group=1").json()["stats"]
+    expected_week = 3 if change in ("span", "missing_date") else 4
+    assert home["week_total"] == expected_week and home["week_reposts"] == 0
+    assert "repost" not in client.get(f"/api/v1/documents/{world['shaanxi'].id}").json()
+    assert client.get("/api/admin/repost-groups/count", headers=HEADERS).json() == {"pending": 1}
+    assert client.get("/api/admin/overview", headers=HEADERS).json()["todos"]["repost"] == 1
+    pending = client.get("/api/admin/repost-groups", headers=HEADERS).json()[0]
+    assert pending["needs_review"] and not pending["public"] and pending["pending"] == 3
+    assert client.get("/api/admin/repost-groups?state=confirmed", headers=HEADERS).json() == []
+    # 数据恢复也不能自动恢复确认；人重新确认后才继续折叠。
+    world["fujian"].publish_date = original_date
+    world["fujian"].source_id = original_source
+    session.commit()
+    rebuild(session)
+    session.commit()
+    session.refresh(group)
+    assert group.needs_review
+    response = client.post(
+        f"/api/admin/repost-groups/{group.id}/confirm",
+        headers=HEADERS,
+        json={"reviewed_by": "创始人复核", "revision": group.revision, "document_ids": ids},
+    )
+    assert response.status_code == 200
+    assert _search(client, group=1)["total"] == 2
+    rebuild(session)
+    session.commit()
+    session.refresh(group)
+    assert not group.needs_review
+
+
+@pytest.mark.parametrize("state", ["pending", "confirmed", "needs_review", "withdrawn"])
+def test_group_actions_never_copy_deadline_approval_in_any_output(
+    client, session, world, state
+) -> None:
+    """同类型、日期、证据也不能跨版本复制审批；所有公开出口只读取本版本已核对日期。"""
+    group = session.scalars(select(RepostGroup)).one()
+    ids = [r.document_id for r in session.scalars(select(RepostGroupMember))]
+    a = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == world["shaanxi"].id)
+    ).one()
+    for doc in (world["tianjin"], world["fujian"]):
+        row = session.scalars(
+            select(DocumentDeadline).where(DocumentDeadline.document_id == doc.id)
+        ).one()
+        row.kind, row.candidate_date, row.candidate_time, row.evidence = (
+            a.kind,
+            a.candidate_date,
+            a.candidate_time,
+            a.evidence,
+        )
+        row.status, row.approved_date, row.approved_time, row.reviewed_by, row.reviewed_at = (
+            "pending",
+            None,
+            None,
+            None,
+            None,
+        )
+    session.commit()
+    if state != "pending":
+        response = client.post(
+            f"/api/admin/repost-groups/{group.id}/confirm",
+            headers=HEADERS,
+            json={"reviewed_by": "创始人", "revision": group.revision, "document_ids": ids},
+        )
+        assert response.status_code == 200
+        if state == "needs_review":
+            world["tianjin"].title += "（更正）"
+            session.commit()
+        elif state == "withdrawn":
+            session.refresh(group)
+            response = client.post(
+                f"/api/admin/repost-groups/{group.id}/withdraw",
+                headers=HEADERS,
+                json={"reviewed_by": "创始人", "revision": group.revision},
+            )
+            assert response.status_code == 200
+    rebuild(session)
+    reconcile_documents(session)
+    from youju.dedup import sync_reviewed_twins
+
+    sync_reviewed_twins(session, ids)
+    session.commit()
+    for doc in (world["tianjin"], world["fujian"]):
+        detail = client.get(f"/api/v1/documents/{doc.id}").json()
+        assert detail["deadline"] is None and detail["deadline_state"] == "unverified"
+        row = session.scalars(
+            select(DocumentDeadline)
+            .where(DocumentDeadline.document_id == doc.id)
+            .execution_options(populate_existing=True)
+        ).one()
+        assert row.status == "pending" and row.approved_date is None and row.reviewed_by is None
+    calendar = client.get("/api/v1/calendar").json()
+    assert [i["docId"] for i in calendar["items"]] == [str(world["shaanxi"].id)]
+    v1._REPORT_CACHE.clear()
+    radar = client.get("/api/v1/reports/deadlines?days=30").json()
+    assert [i["id"] for i in radar["items"]] == [str(world["shaanxi"].id)]
+    exported = client.post("/api/v1/exports", json={"ids": [str(i) for i in ids], "format": "xlsx"})
+    assert exported.status_code == 200
+    sheet = load_workbook(BytesIO(exported.content))["文件清单"]
+    assert sheet.max_row == 4
+    assert "2026-10-10" in sheet["I2"].value
+    assert [sheet.cell(i, 9).value for i in (3, 4)] == ["见原文", "见原文"]
+
+
+def test_confirm_new_version_cannot_overwrite_changed_confirmed_snapshot(
+    client, session, world
+) -> None:
+    """补详情先改了旧版本、归组尚未重跑时，确认新版本也必须先触发复核、刷新后再确认。"""
+    group_id = session.scalars(select(RepostGroup.id)).one()
+    assert _admin(client, f"/{group_id}/confirm", **_seen(client, group_id)).status_code == 200
+    newcomer = _doc(session, "北京", day=25)
+    session.commit()
+    rebuild(session)
+    session.commit()
+    seen = _seen(client, group_id)
+    old_fingerprint = session.get(RepostGroupMember, world["tianjin"].id).confirmed_fingerprint
+    world["tianjin"].title += "（更正）"
+    session.commit()
+    assert _admin(client, f"/{group_id}/confirm", **seen).status_code == 409
+    session.expire_all()
+    assert session.get(RepostGroup, group_id).needs_review
+    assert session.get(RepostGroupMember, newcomer.id).confirmed_at is None
+    assert (
+        session.get(RepostGroupMember, world["tianjin"].id).confirmed_fingerprint == old_fingerprint
+    )
+    assert _search(client, group=1)["total"] == 5
+    assert _admin(client, f"/{group_id}/confirm", **_seen(client, group_id)).status_code == 200
+    assert _search(client, group=1)["total"] == 2

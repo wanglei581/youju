@@ -20,10 +20,10 @@ from youju.models import (
     Source,
 )
 from youju.repost import (
-    AUTO_CONFIRMER,
     Candidate,
     cited_upstream,
     core_title,
+    member_facts,
     pair_strength,
     propose_groups,
     rebuild,
@@ -245,14 +245,14 @@ def _members(session):
 def test_rebuild_creates_pending_group_and_keeps_human_decisions(session, world) -> None:
     summary = rebuild(session, now=NOW)
     session.commit()
-    assert summary.created == 1 and summary.joined == 3 and summary.auto_confirmed == 0
+    assert summary.created == 1 and summary.joined == 3
     group = session.scalars(select(RepostGroup)).one()
     assert group.strength == "strong" and group.topic == "2026年视听系统典型案例"
     assert group.upstream_number == "工信厅联电子函〔2026〕376号"
     members = _members(session)
     ids = {world[k].id for k in ("shaanxi", "tianjin", "fujian")}
     assert set(members) == ids
-    # 前 4 周默认人工确认：规则建的组全部待确认
+    # 所有组必须人工确认：规则建的组全部待确认
     assert all(row.confirmed_at is None for row in members.values())
     # 人工移出的版本，重跑不会加回
     members[world["fujian"].id].active = False
@@ -270,9 +270,7 @@ def test_rebuild_joins_new_versions_and_drops_unsupported(session, world) -> Non
     rebuild(session, now=NOW)
     session.commit()
     group = session.scalars(select(RepostGroup)).one()
-    for row in _members(session).values():
-        row.confirmed_by, row.confirmed_at = "创始人", NOW
-    session.commit()
+    _confirm_all(session)
     # 新出现的版本：加入已有的组，待确认（已确认的版本不受影响）
     newcomer = _doc(
         session,
@@ -322,33 +320,11 @@ def test_rebuild_moves_membership_to_canonical_file(session, world) -> None:
     assert summary.moved == 1
 
 
-def test_auto_mode_confirms_only_strong_groups_not_withdrawn(session, world) -> None:
-    weak = [
-        _doc(session, _source(session, p), "关于开展人工智能应用服务商培育专项行动的通知")
-        for p in ("黑龙江", "四川")
-    ]
-    session.commit()
-    summary = rebuild(session, auto=True, now=NOW)
-    session.commit()
-    members = _members(session)
-    assert summary.auto_confirmed == 3
-    assert members[world["shaanxi"].id].confirmed_by == AUTO_CONFIRMER
-    # 疑似组一直要人确认
-    assert all(members[d.id].confirmed_at is None for d in weak)
-    # 人工撤回过的组不再自动确认
-    group = session.get(RepostGroup, members[world["shaanxi"].id].group_id)
-    group.no_auto = True
-    for row in members.values():
-        row.confirmed_by = row.confirmed_at = None
-    session.commit()
-    assert rebuild(session, auto=True, now=NOW).auto_confirmed == 0
+# ---- 同一文件：恢复 main 的规则 ---------------------------------------------------
 
 
-# ---- 同一文件：网址相同就归并 ---------------------------------------------------
-
-
-def test_same_url_is_merged_even_if_issuers_differ(session) -> None:
-    """一份有详情（机关取自详情）、一份没有（机关取自来源），match_key 对不上；网址相同仍归为同一文件。"""
+def test_same_url_does_not_merge_different_issuers(session) -> None:
+    """恢复 main：网址相同但发文机关不同，仍各自保留。"""
     src = _source(session, "辽宁")
     url = "https://gxt.ln.gov.cn/tzgg/2026091711/index.html"
     title = "辽宁省工业和信息化厅关于2026年度先进制造业企业名单制定工作有关事项的通知"
@@ -384,22 +360,18 @@ def test_same_url_is_merged_even_if_issuers_differ(session) -> None:
     session.commit()
     reconcile_documents(session, {title})
     session.commit()
-    row = session.scalars(select(DocumentMerge)).one()
-    assert (row.canonical_id, row.duplicate_id, row.active) == (old.id, new.id, True)
-    # 人工撤销后重跑不覆盖
-    row.active = False
-    session.commit()
-    reconcile_documents(session)
-    session.commit()
-    assert session.scalars(select(DocumentMerge)).one().active is False
+    assert session.scalars(select(DocumentMerge)).all() == []
 
 
 # ---- 截止日期不随转发组同步（守护测试） --------------------------------------------
 
 
 def _confirm_all(session):
-    for row in _members(session).values():
+    members = _members(session)
+    _, fingerprints = member_facts(session, list(members))
+    for row in members.values():
         row.confirmed_by, row.confirmed_at = "创始人", NOW
+        row.confirmed_fingerprint = fingerprints[row.document_id]
     session.commit()
 
 
@@ -563,7 +535,7 @@ def test_repost_admin_flow(client, session, world) -> None:
     # 确认合并不会通过任何截止
     assert session.scalars(select(DocumentDeadline)).one().status == "pending"
 
-    # 撤回：全部回到待确认，以后不再自动确认
+    # 撤回：全部回到待确认，保留人工决定
     assert _post(client, f"/{gid}/withdraw", revision=0).status_code == 409  # 修订号对不上
     assert _post(client, f"/{gid}/withdraw", **_rev(client, gid)).status_code == 200
     session.expire_all()
@@ -751,9 +723,7 @@ def test_duplicate_member_conflict_keeps_human_decision(client, session, world) 
 TITLE_TWIN = "关于组织开展2026年度视听系统典型案例征集工作的通知"
 
 
-def test_withdrawn_and_rejected_groups_are_never_cleaned_or_auto_confirmed(
-    client, session, world
-) -> None:
+def test_withdrawn_and_rejected_groups_keep_human_decisions(client, session, world) -> None:
     rebuild(session, now=NOW)
     session.commit()
     gid = session.scalars(select(RepostGroup.id)).one()
@@ -764,25 +734,25 @@ def test_withdrawn_and_rejected_groups_are_never_cleaned_or_auto_confirmed(
         world[key].title = f"{world[key].title}（已废止）"
         world[key].kind_override = "名单"
     session.commit()
-    summary = rebuild(session, auto=True, now=NOW)
+    summary = rebuild(session, now=NOW)
     session.commit()
-    assert summary.dropped == 0 and summary.auto_confirmed == 0
+    assert summary.dropped == 0
     group = session.get(RepostGroup, gid)
     session.refresh(group)
     assert group.no_auto is True
     members = _members(session)
     assert len(members) == 3 and all(r.active and r.confirmed_at is None for r in members.values())
-    # 整组不合并：同样永久保留，开了自动也不会再合并
+    # 整组不合并：同样永久保留，重跑也不会再归组
     assert _post(client, f"/{gid}/reject", **_rev(client, gid)).status_code == 200
     for key in ("shaanxi", "tianjin", "fujian"):
         world[key].title = world[key].title.replace("（已废止）", "")
         world[key].kind_override = None
     session.commit()
-    summary = rebuild(session, auto=True, now=NOW)
+    summary = rebuild(session, now=NOW)
     session.commit()
     members = _members(session)
     assert len(members) == 3 and not any(r.active for r in members.values())
-    assert summary.created == 0 and summary.auto_confirmed == 0
+    assert summary.created == 0
     assert session.get(RepostGroup, gid) is not None
 
 
@@ -812,6 +782,9 @@ def test_transitive_links_respect_agency_and_date_span() -> None:
 def test_rebuild_does_not_add_same_agency_to_existing_group(session, world) -> None:
     """已有的组里有人工加入的天津版另一批次时，规则不会再把同机关的新版本加进来。"""
     rebuild(session, now=NOW)
+    session.commit()
+    for row in _members(session).values():
+        row.joined_by = "human"
     session.commit()
     gid = session.scalars(select(RepostGroup.id)).one()
     second = _doc(
@@ -868,3 +841,80 @@ def test_lock_errors_become_409() -> None:
     assert caught.value.status_code == 409 and session.rolled_back
     with pytest.raises(OperationalError), _busy(Fake()):
         raise OperationalError("SELECT", {}, Exception(2006, "MySQL server has gone away"))
+
+
+@pytest.mark.parametrize("change", ["agency", "span", "missing_date", "unrelated"])
+def test_pending_group_is_recomputed_from_scratch(session, world, change) -> None:
+    """旧组员仍有匹配邻居时，也必须整组重算，不能沿用旧的传递连接。"""
+    rebuild(session, now=NOW)
+    session.commit()
+    doc = world["fujian"]
+    if change == "agency":
+        doc.source_id = world["tianjin"].source_id
+    elif change == "span":
+        doc.publish_date = date(2026, 12, 15)  # 与天津仍相隔不到 90 天，与陕西相隔超过 90 天
+    elif change == "missing_date":
+        doc.publish_date = None
+    else:
+        doc.title = "关于申报另外一个完全不同项目的通知"
+        session.get(DocumentDetail, doc.id).body_text = "没有原上游引用"
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    members = _members(session)
+    assert doc.id not in members
+    assert len(members) == 2
+    revision = session.scalars(select(RepostGroup.revision)).one()
+    summary = rebuild(session, now=NOW)
+    session.commit()
+    assert (summary.created, summary.joined, summary.dropped, summary.moved) == (0, 0, 0, 0)
+    assert session.scalars(select(RepostGroup.revision)).one() == revision
+
+
+def test_pending_groups_can_merge_after_evidence_changes(session, world) -> None:
+    rebuild(session, now=NOW)
+    other = [
+        _doc(
+            session,
+            _source(session, p),
+            "关于转发2026年人工智能应用服务商培育专项行动的通知",
+            body="其他上游",
+        )
+        for p in ("四川", "山东")
+    ]
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    assert len(session.scalars(select(RepostGroup)).all()) == 2
+    for doc in other:
+        doc.title = world["tianjin"].title
+        session.get(DocumentDetail, doc.id).body_text = UPSTREAM
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    assert len({r.group_id for r in _members(session).values()}) == 1
+    assert len(_members(session)) == 5
+
+
+@pytest.mark.parametrize("change", ["agency", "span", "missing_date"])
+def test_invalid_manually_preserved_group_cannot_be_confirmed(
+    client, session, world, change
+) -> None:
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    # 人工加入的决定保留，但不能绕过整组约束确认。
+    for row in _members(session).values():
+        row.joined_by = "human"
+    if change == "agency":
+        world["fujian"].source_id = world["tianjin"].source_id
+    elif change == "span":
+        world["fujian"].publish_date = date(2027, 1, 1)
+    else:
+        world["fujian"].publish_date = None
+    session.commit()
+    rebuild(session, now=NOW)
+    session.commit()
+    assert _members(session)[world["fujian"].id].group_id == gid
+    response = _post(client, f"/{gid}/confirm", **_shown(client, gid))
+    assert response.status_code == 409 and "90 天" in response.json()["detail"]

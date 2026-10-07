@@ -38,7 +38,7 @@ from youju.models import (
     RepostGroupMember,
     Source,
 )
-from youju.repost import bump, duplicate_members, labels_for
+from youju.repost import bump, duplicate_members, labels_for, member_facts, valid_group
 
 SessionDep = Annotated[Session, Depends(get_session)]
 State = Literal["pending", "confirmed", "removed"]
@@ -117,6 +117,7 @@ class GroupOut(BaseModel):
     upstream_number: str | None
     created_by: str
     no_auto: bool
+    needs_review: bool
     revision: int
     versions: int
     pending: int
@@ -272,11 +273,12 @@ def _group_rows(session: Session, groups: list[RepostGroup]) -> list[GroupOut]:
                 upstream_number=group.upstream_number,
                 created_by=group.created_by,
                 no_auto=group.no_auto,
+                needs_review=group.needs_review,
                 revision=group.revision,
                 versions=len(counts.active),
-                pending=counts.pending,
+                pending=len(counts.active) if group.needs_review else counts.pending,
                 conflicts=counts.conflicts,
-                public=confirmed >= 2,
+                public=confirmed >= 2 and not group.needs_review,
                 members=items,
             )
         )
@@ -293,13 +295,25 @@ def _group_ids(session: Session, state: State) -> list[int]:
     by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
     for row in rows:
         by_group[row.group_id].append(row)
+    needs_review = set(
+        session.scalars(select(RepostGroup.id).where(RepostGroup.needs_review.is_(True)))
+    )
     picked = []
     for group_id, members in by_group.items():
         counts = _counts(members, duplicates, member_ids)
         if state == "pending":
-            hit = (len(counts.active) >= 2 and counts.pending > 0) or counts.conflicts > 0
+            hit = (
+                group_id in needs_review
+                or (len(counts.active) >= 2 and counts.pending > 0)
+                or counts.conflicts > 0
+            )
         elif state == "confirmed":
-            hit = len(counts.active) >= 2 and counts.pending == 0 and counts.conflicts == 0
+            hit = (
+                group_id not in needs_review
+                and len(counts.active) >= 2
+                and counts.pending == 0
+                and counts.conflicts == 0
+            )
         else:
             hit = counts.removed > 0
         if hit:
@@ -361,6 +375,7 @@ def _member(rows: list[RepostGroupMember], document_id: int) -> RepostGroupMembe
 def _unconfirm(row: RepostGroupMember) -> None:
     row.confirmed_by = None
     row.confirmed_at = None
+    row.confirmed_fingerprint = None
 
 
 @contextlib.contextmanager
@@ -432,13 +447,43 @@ def router(require_admin, audit) -> APIRouter:
                 raise HTTPException(
                     status_code=409, detail="组里有后来归并成同一文件的版本，先处理再确认"
                 )
-            waiting = [row for row in active if row.confirmed_at is None]
+            info, fingerprints = member_facts(session, [r.document_id for r in active])
+            valid = valid_group(info, [r.document_id for r in active])
+            confirmed = [r for r in active if r.confirmed_at is not None]
+            if (
+                confirmed
+                and not group.needs_review
+                and (
+                    not valid
+                    or any(
+                        r.confirmed_fingerprint != fingerprints[r.document_id] for r in confirmed
+                    )
+                )
+            ):
+                # 抓取可能先于归组命令改变正文；确认新版本不能把旧版本的变化悄悄覆盖掉。
+                group.needs_review = True
+                bump(group, datetime.now(UTC))
+                session.commit()
+                raise HTTPException(status_code=409, detail=STALE)
+            if not valid:
+                raise HTTPException(
+                    status_code=409,
+                    detail="同一机关只能有一份，成员必须有发布日期且跨度不超过 90 天，"
+                    "请先移出或拆组",
+                )
+            waiting = (
+                active
+                if group.needs_review
+                else [row for row in active if row.confirmed_at is None]
+            )
             if not waiting:
                 raise HTTPException(status_code=409, detail="这一组已经确认过")
             stamp = datetime.now(UTC)
             for row in waiting:
                 row.confirmed_by = body.reviewed_by
                 row.confirmed_at = stamp
+                row.confirmed_fingerprint = fingerprints[row.document_id]
+            group.needs_review = False
             bump(group, stamp)
             session.commit()
         ids = [row.document_id for row in waiting]
@@ -456,7 +501,7 @@ def router(require_admin, audit) -> APIRouter:
     @routes.post("/{group_id}/withdraw")
     def withdraw(group_id: int, body: RevisionIn, session: SessionDep, request: Request) -> dict:
         """撤回确认：立即不再对外合并，各版本恢复成单条；这一组和组员以后不被归组任务清理，
-        也不再自动确认（no_auto）。"""
+        保留这次人工决定（no_auto）。"""
         with _busy(session):
             group, rows = _lock_group(session, group_id)
             _check_revision(group, body.revision)
@@ -464,8 +509,11 @@ def router(require_admin, audit) -> APIRouter:
             if not confirmed:
                 raise HTTPException(status_code=409, detail="这一组没有确认过，不用撤回")
             before = {row.document_id: row.confirmed_by for row in confirmed}
-            for row in confirmed:
-                _unconfirm(row)
+            for row in rows:
+                if row.active:
+                    _unconfirm(row)
+                    row.joined_by = "human"
+            group.needs_review = False
             group.no_auto = True
             bump(group, datetime.now(UTC))
             session.commit()
@@ -568,7 +616,7 @@ def router(require_admin, audit) -> APIRouter:
 
     @routes.post("/{group_id}/split")
     def split(group_id: int, body: SplitIn, session: SessionDep, request: Request) -> dict:
-        """拆组：选中的版本拆成新的一组（待确认），其余留在原组。两组以后都不自动确认。"""
+        """拆组：选中的版本拆成新的一组（待确认），其余留在原组。两组都需重新人工确认。"""
         with _busy(session):
             group, rows = _lock_group(session, group_id)
             _check_revision(group, body.revision)
@@ -597,6 +645,10 @@ def router(require_admin, audit) -> APIRouter:
                 row.group_id = new.id
                 row.joined_by = "human"
                 _unconfirm(row)
+            for row in active.values():
+                row.joined_by = "human"
+                _unconfirm(row)
+            group.needs_review = False
             group.no_auto = True
             bump(group, stamp)
             session.commit()
@@ -618,7 +670,7 @@ def router(require_admin, audit) -> APIRouter:
     @routes.post("/{group_id}/reject")
     def reject(group_id: int, body: RevisionIn, session: SessionDep, request: Request) -> dict:
         """整组不合并（不是同一件事）：全部版本移出、对外各自单条；这个决定永久保留，
-        以后不会被自动归回这一组，也不会被自动确认。"""
+        以后不会被自动归回这一组。"""
         with _busy(session):
             group, rows = _lock_group(session, group_id)
             _check_revision(group, body.revision)
@@ -631,6 +683,7 @@ def router(require_admin, audit) -> APIRouter:
                 row.removed_by = body.reviewed_by
                 row.removed_at = stamp
                 _unconfirm(row)
+            group.needs_review = False
             group.no_auto = True
             bump(group, stamp)
             session.commit()

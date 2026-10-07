@@ -1,8 +1,4 @@
-"""按标题、发文机关和发布日期归并展示；原始题录与衍生记录仍各自保留。
-
-这里只管“同一文件”（同一份文件的不同网址、不同栏目）。同一份部里通知的各地转发版本是另一层，
-见 youju/repost.py；截止日期的同步（sync_reviewed_twins）只认这里的 document_merges。
-"""
+"""按标题、发文机关和发布日期归并展示；原始题录与衍生记录仍各自保留。"""
 
 import hashlib
 import re
@@ -11,7 +7,6 @@ from collections import defaultdict
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from youju.crawler.urls import url_key
 from youju.models import Document, DocumentDetail, DocumentMerge, Source
 
 
@@ -58,68 +53,6 @@ def _split_by_content(
     return [ids for _, ids in buckets]
 
 
-Signature = tuple[str | None, str | None]
-
-
-def _compatible(left: Signature, right: Signature) -> bool:
-    """文号、正文指纹都不冲突（一方取不到的不算冲突）。"""
-    return all(a is None or b is None or a == b for a, b in zip(left, right, strict=True))
-
-
-def _merge_same_url(
-    groups: dict[str, list[int]], urls: dict[int, str], signatures: dict[int, Signature]
-) -> dict[str, list[int]]:
-    """网址相同（按现行规则算出的规范网址键相同）的归为同一份文件，不要求标题、机关、日期对上：
-    一份有详情、一份没有时，发文机关一个取自详情、一个取自来源，match_key 对不上
-    （转载去重方案 v1 第二节）。
-
-    但文号或正文指纹冲突的不并（网址被复用、或改版前后内容不同）：两条各自保留，
-    免得旧版核定的截止进了新版的详情、导出、日历和雷达。"""
-    parent: dict[int, int] = {}
-    sig: dict[int, Signature] = {}
-
-    def find(x: int) -> int:
-        if x not in parent:
-            parent[x] = x
-            sig[x] = signatures.get(x, (None, None))
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int, *, check: bool) -> None:
-        ra, rb = find(a), find(b)
-        if ra == rb or (check and not _compatible(sig[ra], sig[rb])):
-            return
-        root, child = min(ra, rb), max(ra, rb)
-        parent[child] = root
-        sig[root] = tuple(x or y for x, y in zip(sig[root], sig[child], strict=True))
-
-    key_of: dict[int, str] = {}
-    for key, members in groups.items():
-        for doc_id in members:
-            key_of[doc_id] = key
-            # 同一 match_key 的组已按文号和正文分过（_split_by_content），直接连
-            union(members[0], doc_id, check=False)
-    by_url: dict[str, list[int]] = defaultdict(list)
-    for doc_id, url in urls.items():
-        by_url[url].append(doc_id)
-    for members in by_url.values():
-        for doc_id in members[1:]:
-            union(members[0], doc_id, check=True)
-    merged: dict[int, list[int]] = defaultdict(list)
-    for doc_id in sorted(set(parent)):
-        merged[find(doc_id)].append(doc_id)
-    result: dict[str, list[int]] = {}
-    for root, members in merged.items():
-        keys = {key_of.get(doc_id) for doc_id in members}
-        if len(keys) == 1 and None not in keys:
-            result[keys.pop()] = members
-        else:
-            result[f"网址|{urls[root]}|{root}"] = members
-    return result
-
-
 def reconcile_documents(session: Session, titles: set[str] | None = None) -> int:
     """更新自动归并。active=False 只用作人工撤销标记，后续重跑不会覆盖；
     自动判断不再归并的直接删掉映射，以后内容一致了还能重新归并。"""
@@ -131,32 +64,21 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
     )
     if titles is not None:
         normalized_titles = {re.sub(r"\s+", "", title) for title in titles}
-        # MySQL 的 REGEXP_REPLACE 默认替换全部匹配
-        same_title = func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles)
-        # 和这些标题的文件网址相同的（标题后来改过）也一起算，免得只看到同一文件的一部分
-        renamed = session.scalars(
-            select(Document.title).where(
-                Document.url.in_(select(Document.url).where(same_title)), ~same_title
-            )
-        ).all()
-        normalized_titles |= {re.sub(r"\s+", "", title) for title in renamed}
-        stmt = stmt.where(func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles))
+        stmt = stmt.where(
+            # MySQL 的 REGEXP_REPLACE 默认替换全部匹配
+            func.regexp_replace(Document.title, r"\s+", "").in_(normalized_titles)
+        )
     by_key: dict[str, list[tuple[int, tuple[str | None, str | None]]]] = defaultdict(list)
     ids: set[int] = set()
-    urls: dict[int, str] = {}
-    signatures: dict[int, Signature] = {}
     for doc, detail, source in session.execute(stmt):
         ids.add(doc.id)
-        urls[doc.id] = url_key(doc.url)
-        signatures[doc.id] = _signature(detail)
         key = match_key(doc, detail, source)
         if key:
-            by_key[key].append((doc.id, signatures[doc.id]))
+            by_key[key].append((doc.id, _signature(detail)))
     groups: dict[str, list[int]] = {}
     for key, members in by_key.items():
         for n, group in enumerate(_split_by_content(members)):
             groups[key if n == 0 else f"{key}|{n}"] = group
-    groups = _merge_same_url(groups, urls, signatures)
     if not ids:
         return 0
     mappings = {
