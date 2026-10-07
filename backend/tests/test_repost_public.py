@@ -265,40 +265,67 @@ def test_national_original_is_main_and_called_ministry(client, session, world) -
     assert detail["repost"]["versions"][1]["label"] == "陕西版"
 
 
+def _admin(client, path, **body):
+    return client.post(
+        f"/api/admin/repost-groups{path}",
+        headers=HEADERS,
+        json={"reviewed_by": "创始人", **body},
+    )
+
+
+def _seen(client, group_id):
+    """管理台页面上看到的这一组：修订号和在组版本。"""
+    for state in ("pending", "confirmed", "removed"):
+        for group in client.get(
+            "/api/admin/repost-groups", params={"state": state}, headers=HEADERS
+        ).json():
+            if group["id"] == group_id:
+                ids = [m["document_id"] for m in group["members"] if m["active"]]
+                return {"revision": group["revision"], "document_ids": ids}
+    raise AssertionError(group_id)
+
+
 def test_withdraw_and_remove_restore_single_items(client, session, world) -> None:
     group_id = session.scalars(select(RepostGroupMember.group_id)).first()
-    confirm = client.post(
-        f"/api/admin/repost-groups/{group_id}/confirm",
-        headers=HEADERS,
-        json={"reviewed_by": "创始人"},
-    )
-    assert confirm.status_code == 200
+    assert _admin(client, f"/{group_id}/confirm", **_seen(client, group_id)).status_code == 200
     assert _search(client, group=1)["total"] == 2
     # 撤回确认后马上恢复成单条
-    withdraw = client.post(
-        f"/api/admin/repost-groups/{group_id}/withdraw",
-        headers=HEADERS,
-        json={"reviewed_by": "创始人"},
-    )
-    assert withdraw.status_code == 200
+    revision = _seen(client, group_id)["revision"]
+    assert _admin(client, f"/{group_id}/withdraw", revision=revision).status_code == 200
     body = _search(client, group=1)
     assert body["total"] == 4 and not any("group" in item for item in body["items"])
     # 再确认、移出福建版：福建版单独一条，另两版仍是一组
-    client.post(
-        f"/api/admin/repost-groups/{group_id}/confirm",
-        headers=HEADERS,
-        json={"reviewed_by": "创始人"},
-    )
-    client.post(
-        f"/api/admin/repost-groups/{group_id}/members/{world['fujian'].id}/remove",
-        headers=HEADERS,
-        json={"reviewed_by": "创始人"},
-    )
+    assert _admin(client, f"/{group_id}/confirm", **_seen(client, group_id)).status_code == 200
+    remove = _admin(client, f"/{group_id}/members/{world['fujian'].id}/remove")
+    assert remove.status_code == 200
     body = _search(client, group=1)
     assert body["total"] == 3
     fujian = next(item for item in body["items"] if item["id"] == str(world["fujian"].id))
     assert "group" not in fujian
     assert "repost" not in client.get(f"/api/v1/documents/{world['fujian'].id}").json()
+
+
+def test_grouped_fold_counts_groups_actually_hidden(client, session) -> None:
+    """一个转发组里同时有“资讯与指南”和“其他”的版本：折叠资讯与指南后这一组仍以“其他”那版列出，
+    folded 不把它算进去（按实际少掉的条数算）。"""
+    title = "关于开展人工智能应用服务商培育专项行动的通知"
+    docs = [_doc(session, p, title, day, "正文") for p, day in (("黑龙江", 22), ("四川", 23))]
+    guide = _doc(session, "陕西", "关于2026年度工业设计大赛培训班报名的通知", 24, "正文")
+    docs[1].kind_override = "资讯与指南"
+    guide.kind_override = "资讯与指南"
+    session.commit()
+    rebuild(session)
+    session.commit()
+    _confirm(session)
+    assert v1.effective_kind(docs[1].title, docs[1].kind_override) == "资讯与指南"
+    assert v1.effective_kind(guide.title, guide.kind_override) == "资讯与指南"
+    shown = _search(client, group=1, fold=0)
+    assert shown["total"] == 2 and shown["guides"] == 1 and shown["folded"] == 0
+    folded = _search(client, group=1, fold=1)
+    # 只有单独那份资讯与指南被折叠；转发组仍以“其他”那版（黑龙江）列出
+    assert folded["folded"] == 1 and folded["guides"] == 1 and folded["total"] == 1
+    assert folded["items"][0]["id"] == str(docs[0].id)
+    assert shown["total"] - folded["total"] == folded["folded"]
 
 
 def test_taken_down_version_is_not_listed(client, session, world) -> None:

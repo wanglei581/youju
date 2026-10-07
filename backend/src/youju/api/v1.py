@@ -630,11 +630,17 @@ def fold_guides(
 ) -> tuple[Select, int, int]:
     """按 fold 处理"资讯与指南"（搜索和关注的新文件共用）：返回（要列出的查询, 资讯与指南篇数,
     折叠了几篇）。fold 不传时不统计（旧版小程序）；0 照常列出、给出篇数；1 不列出、只给篇数。
-    group 为真时篇数也按转发组算（返回的查询仍未折叠，由调用方折叠）。"""
+    group 为真时按转发组算（返回的查询仍未折叠，由调用方折叠）：篇数是折叠资讯与指南后实际少掉的
+    条数（组数）。一个转发组里同时有“资讯与指南”和“其他”的版本时，折叠后这一组仍以“其他”那版
+    列出，不算折叠掉。"""
     if fold is None or not _folds_guides(kind, types):
         return stmt, 0, 0
-    guides_stmt = stmt.where(_kind_is([GUIDE]))
-    guides = _count(session, _grouped(guides_stmt) if group else guides_stmt)
+    if group:
+        guides = _count(session, _grouped(stmt)) - _count(
+            session, _grouped(stmt.where(_kind_is(_NOT_GUIDE)))
+        )
+    else:
+        guides = _count(session, stmt.where(_kind_is([GUIDE])))
     if fold != 1:
         return stmt, guides, 0
     return stmt.where(_kind_is(_NOT_GUIDE)), guides, guides
