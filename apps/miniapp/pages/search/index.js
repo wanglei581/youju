@@ -2,10 +2,9 @@ const api = require('../../utils/api.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { exportDocs, MAX } = require('../../utils/exporter.js');
-const { ensureConsent } = require('../../utils/consent.js');
+const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
-const legal = require('../../content/legal.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
@@ -42,7 +41,7 @@ const GROUPS = [
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-// 协议开放后关注确认框的标题，和协议定稿前弹出的原因末尾，都写关注之后会怎样
+// 关注确认框的标题：写关注之后会怎样
 const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
@@ -86,8 +85,8 @@ Page({
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
     tagNote: TAG_NOTE,
-    // 协议定稿前"关注"是灰色的，点了弹出原因（ensureConsent），不报错
-    followOff: !legal.final,
+    // 协议定稿前（D-056）不显示"关注"和"没找到想要的？告诉我们"（纠错要先同意协议），定稿后照旧
+    loginOpen: loginOpen(),
     picked: DEFAULT_PICKED,
     pickedMap: {},
     // 筛选入口：on 是否变蓝，group 点开时右栏显示哪一组；chipTime 是发布时间（"不限时间共 X 份"用）
@@ -389,7 +388,7 @@ Page({
 
   // 关注这个搜索：保存当前条件，有新文件时在"关注"里标出；关注后可以订阅一次微信提醒
   follow() {
-    ensureConsent(FOLLOW_NOTE).then((ok) => {
+    ensureConsent().then((ok) => {
       if (!ok) return;
       const conditions = this.conditions();
       if (!conditions.q) delete conditions.q;

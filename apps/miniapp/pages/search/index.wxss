@@ -29,9 +29,8 @@
 .picked { flex-shrink: 0; height: 56rpx; padding: 0 16rpx 0 20rpx; display: inline-flex; align-items: center; gap: 8rpx; border-radius: 28rpx; background: var(--brand-tint); color: var(--brand); font-size: 24rpx; }
 .picked-clear { flex-shrink: 0; height: 56rpx; padding: 0 12rpx; display: inline-flex; align-items: center; font-size: 24rpx; color: var(--t2); }
 
-/* 关注这个搜索：信息栏右边的小按钮；协议定稿前灰底灰字（与"协议定稿后开放"按钮同一套颜色） */
+/* 关注这个搜索：信息栏右边的小按钮；协议定稿前不显示（D-056） */
 .follow-mini { height: 48rpx; padding: 0 18rpx; display: flex; align-items: center; gap: 6rpx; border: 2rpx solid var(--brand); border-radius: 24rpx; color: var(--brand); font-size: 24rpx; }
-.follow-mini--off { background: var(--fill); border-color: var(--fill); color: var(--t3); }
 
 .load-more { height: 96rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; color: var(--t3); }
 .feedback { margin-top: 28rpx; text-align: center; font-size: 26rpx; color: var(--t2); }

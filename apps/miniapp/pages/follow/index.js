@@ -1,14 +1,14 @@
 const api = require('../../utils/api.js');
-const legal = require('../../content/legal.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { requestOnce } = require('../../utils/subscribe.js');
-const { ensureConsent, syncConsent } = require('../../utils/consent.js');
+const { ensureConsent, syncConsent, loginOpen } = require('../../utils/consent.js');
 const { describe, searchUrl } = require('../../utils/conditions.js');
 
-// 三种状态：demo 没连接口时的演示数据；gated 未登录（或协议未定稿）；live 真实的关注
+// 三种状态：demo 没连接口时的演示数据；gated 未登录；live 真实的关注。
+// 协议定稿前（loginOpen 为 false，D-056）底栏没有这一页，从分享或旧链接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', legalFinal: legal.final },
+  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', loginOpen: loginOpen() },
 
   onHide() {
     stopDay(this);
@@ -23,6 +23,7 @@ Page({
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });
+    if (!this.data.loginOpen) return;
     this.load();
   },
 

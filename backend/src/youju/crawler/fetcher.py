@@ -272,7 +272,9 @@ class PoliteFetcher:
         if status is not None and 400 <= status < 500:
             # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
             return _RobotsEntry("allow_all", None, now)
-        body = result.text.lstrip()
+        # 不论 decode_text 怎么设都自己解码：下载附件的抓取器不解码内容（text 是空的），以前读
+        # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
+        body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
         if not body or body.startswith("<"):
             # 返回的是 HTML（常见的"软 404"），视为没有 robots.txt
             return _RobotsEntry("allow_all", None, now)

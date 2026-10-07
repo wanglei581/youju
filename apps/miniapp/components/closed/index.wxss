@@ -1,0 +1,4 @@
+.closed { margin-top: 24rpx; padding-top: 48rpx; padding-bottom: 40rpx; text-align: center; }
+.closed-title { font-size: 32rpx; font-weight: 600; color: var(--t1); }
+.closed-text { margin-top: 12rpx; font-size: 26rpx; line-height: 1.6; }
+.closed-btn { margin-top: 32rpx; }

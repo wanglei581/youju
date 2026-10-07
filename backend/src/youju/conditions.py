@@ -4,11 +4,15 @@
   30 天内截止的先抽，每轮有份数上限；没配 AI 密钥时整个步骤跳过。
 - 核对：核对台逐条通过、改写（原文引用不能改）或删除，整份确认后才对外（youju.api.conditions）。
 - 对外：只读整份确认过、而且正文指纹和当前正文一致的清单里通过的条目；正文一变立即不再显示。
-  对外只给条件、原文引用和核对日期，不写怎么抽出来的，也不写能否申报。
+  对外只给类别、原文原句（逐字引用）和核对日期：条件那句话（模型的概括、核对时的改写）只在
+  核对台作参考，不对外。不写怎么抽出来的，也不写能否申报。
+- 正文改了又改回去（A → B → A）：A 版那份被替代的清单恢复成待核对（确认过的恢复成已确认），
+  不然它占着"这版正文已经抽过"，既不重抽也不进核对台。
 """
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -32,6 +36,8 @@ from youju.models import (
     Source,
 )
 from youju.takedown import available_condition
+
+log = logging.getLogger("youju.conditions")
 
 # AI 检查记录（AICheck）里这项任务的名字；出错的隔 24 小时再试
 TASK = "conditions"
@@ -59,6 +65,8 @@ class ConditionRunReport:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     stopped_early: bool = False
+    # 正文改回以前某一版、恢复的旧清单份数
+    revived: int = 0
 
 
 def public_body(raw: str) -> str:
@@ -212,6 +220,47 @@ def save_list(
     return row
 
 
+def revive_lists(session: Session) -> list[tuple[int, int, str]]:
+    """正文改了又改回去（A → B → A）时，恢复 A 版那份被替代的清单：改回待核对；确认人和确认时间
+    都在的（确认过的）改回已确认。同一份通知别的版本还在待核对的清单改成被替代（和抽新版时一样，
+    一份通知只有现在这版进核对台）。每次恢复都写日志，返回 (清单编号, 文件编号, 新状态)。"""
+    rows = session.scalars(
+        select(ConditionList)
+        .join(DocumentDetail, DocumentDetail.document_id == ConditionList.document_id)
+        .where(
+            ConditionList.status == "superseded",
+            DocumentDetail.status == "ok",
+            _current_body(),
+        )
+        .order_by(ConditionList.id)
+    ).all()
+    revived = []
+    for row in rows:
+        for other in session.scalars(
+            select(ConditionList).where(
+                ConditionList.document_id == row.document_id,
+                ConditionList.id != row.id,
+                ConditionList.status == "pending",
+            )
+        ):
+            other.status = "superseded"
+            log.info(
+                "申报条件清单 #%s（文件 #%s）：正文已不是这一版，改为被替代",
+                other.id,
+                other.document_id,
+            )
+        row.status = "confirmed" if row.confirmed_by and row.confirmed_at else "pending"
+        log.info(
+            "申报条件清单 #%s（文件 #%s）：正文改回了这一版，由被替代恢复为 %s",
+            row.id,
+            row.document_id,
+            row.status,
+        )
+        revived.append((row.id, row.document_id, row.status))
+    session.commit()
+    return revived
+
+
 def run_extraction(
     session: Session,
     client: ChatClient,
@@ -227,6 +276,8 @@ def run_extraction(
 
     now = now or datetime.now(UTC)
     report = ConditionRunReport()
+    # 先恢复正文改回去的旧清单：恢复后这版正文算抽过了，不再重抽
+    report.revived = len(revive_lists(session))
     ids = _candidates(session, now)
     order = due_order(session, ids, now.astimezone(BEIJING).date(), due_days)
     picked = sorted(ids, key=lambda doc_id: order[doc_id])[: max(0, limit)]
@@ -359,8 +410,9 @@ def quote_context(body: str, item: ConditionItem, width: int = 80) -> tuple[str,
 
 
 def public_conditions(session: Session, doc_id: int) -> dict | None:
-    """详情页的申报条件：整份确认过、是现在这版正文、来自一级公开来源的清单里通过的条目。
-    归并组里优先这份文件自己的清单。没有就返回 None（详情页不显示这张卡片）。"""
+    """详情页的申报条件：整份确认过、是现在这版正文、来自一级公开来源的清单里通过的条目，
+    每条只给类别和原文原句。归并组里优先这份文件自己的清单。
+    没有就返回 None（详情页不显示这张卡片）。"""
     members = group_ids(session, doc_id)
     row = session.scalar(
         _public_lists()
@@ -378,11 +430,17 @@ def public_conditions(session: Session, doc_id: int) -> dict | None:
         (item for item in row.items if item.status == "approved"),
         key=lambda item: (CONDITION_CATEGORIES.index(item.category), item.position),
     )
-    if not items:
+    # 对外只给类别和原文原句：条件那句话（模型的概括、核对时的改写）不对外。
+    # 同一句原文拆成了几条的，只列一次（列在排在前面的类别下）
+    shown: list[dict] = []
+    quotes: set[str] = set()
+    for item in items:
+        if item.quote not in quotes:
+            quotes.add(item.quote)
+            shown.append({"category": item.category, "quote": item.quote})
+    if not shown:
         return None
     return {
-        "items": [
-            {"category": item.category, "text": item.text, "quote": item.quote} for item in items
-        ],
+        "items": shown,
         "checked": row.confirmed_at.astimezone(BEIJING).date().isoformat(),
     }

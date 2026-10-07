@@ -31,7 +31,7 @@ function searchPage(respond) {
     '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   return { page, calls };
@@ -139,6 +139,7 @@ test('只选政策或别的类型再选项目类别：空结果里提示项目�
 test('详情页：申报通知和名单显示项目类别；类型、类别和名单状态合成一行说明，写明仅供检索参考、非官方分类', async () => {
   let doc = { id: '1', kind: '申报通知', tags: ['申报通知'], category: '资质与梯度培育', title: '关于组织开展高新技术企业认定工作的通知', deadline_state: 'none' };
   const page = load('pages/detail/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
@@ -159,6 +160,7 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
 test('关注的新文件：同样折叠资讯与指南，写明篇数，可以点开', async () => {
   const calls = [];
   const page = load('pages/follow-new/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { followNew: (id, p) => { calls.push(p); return Promise.resolve(p.fold === 1 ? { total: 1, folded: 2, guides: 2, items: [] } : { total: 3, folded: 0, guides: 2, items: [] }); } },
     '../../utils/format.js': format, '../../utils/conditions.js': conditions,
   }, { wx: { setNavigationBarTitle() {} } });

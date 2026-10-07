@@ -69,7 +69,7 @@
   <t-icon name="chevron-right" size="32rpx" color="#86909C" />
 </view>
 
-<view class="mine" wx:if="{{stats && stats.followed_new}}" bindtap="goFollow">
+<view class="mine" wx:if="{{loginOpen && stats && stats.followed_new}}" bindtap="goFollow">
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
   <text class="mine-text">你关注的条件本周有 <text class="mine-n">{{stats.followed_new}}</text> 份新文件</text>
   <text class="link">去看看</text>

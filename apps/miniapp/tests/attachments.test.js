@@ -163,6 +163,7 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   let release;
   const real = setup().mod;
   const page = load('pages/detail/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
@@ -255,4 +256,110 @@ test('查询类请求遇到冷启动 503 自动重试；提交类请求不重试
   codes = [503, 200];
   await assert.rejects(api.agree('2026-10'));
   assert.deepEqual(seen, ['POST']);
+});
+
+// 假时钟：setTimeout 记下来，由 drive() 按时间先后逐个触发，Date.now() 跟着走
+function fakeClock() {
+  const clock = { now: 0, timers: new Map(), seq: 0 };
+  clock.Date = { now: () => clock.now };
+  clock.setTimeout = (fn, ms) => { clock.seq += 1; clock.timers.set(clock.seq, { fn, at: clock.now + ms }); return clock.seq; };
+  clock.clearTimeout = (id) => { clock.timers.delete(id); };
+  return clock;
+}
+
+async function drive(clock) {
+  for (let i = 0; i < 100; i += 1) {
+    await flush();
+    if (!clock.timers.size) return;
+    const [id, timer] = [...clock.timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    clock.timers.delete(id);
+    clock.now = Math.max(clock.now, timer.at);
+    timer.fn();
+  }
+}
+
+// 每次调用怎么回：{ after: 毫秒, code } 返回状态码；{ after, fail: true } 调用失败；null 一直不回
+function retryApi(plan) {
+  const clock = fakeClock();
+  const sent = [];
+  const api = load('utils/api.js', {
+    './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
+    '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
+  }, {
+    Date: clock.Date, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    wx: {
+      cloud: {
+        callContainer: (o) => {
+          sent.push(clock.now);
+          const step = plan.shift();
+          if (!step) return;
+          clock.setTimeout(() => (step.fail
+            ? o.fail({ errMsg: step.errMsg || 'cloud.callContainer:fail' })
+            : o.success({ statusCode: step.code, data: step.code === 200 ? { ok: 1 } : {} })), step.after);
+        },
+      },
+      removeStorageSync() {}, getStorageSync() { return ''; }, setStorageSync() {},
+    },
+  });
+  return { api, clock, sent };
+}
+
+async function outcome({ api, clock }, call) {
+  let result;
+  call(api).then((value) => { result = { value }; }, (error) => { result = { error }; });
+  await drive(clock);
+  return { ...result, at: clock.now };
+}
+
+test('超时（15 秒没返回）不重试：一次查询最多等约 20 秒', async () => {
+  // 一直不回：15 秒超时就报错，不再重试
+  let s = retryApi([null, { after: 100, code: 200 }]);
+  let r = await outcome(s, (api) => api.coverage());
+  assert.ok(r.error && r.error.timeout);
+  assert.deepEqual(s.sent, [0]);
+  assert.equal(r.at, 15000);
+  // 云托管自己报超时的调用失败，同样不重试
+  s = retryApi([{ after: 14000, fail: true, errMsg: 'cloud.callContainer:fail timeout' }, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.ok(r.error && r.error.timeout);
+  assert.deepEqual(s.sent, [0]);
+  // 很快失败的重试，最后一次超时：从发出到报错不超过 20 秒
+  s = retryApi([{ after: 300, fail: true }, { after: 200, code: 503 }, null]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.ok(r.error && r.error.timeout);
+  assert.deepEqual(s.sent, [0, 1300, 4000]);
+  assert.ok(r.at <= 20000, `等了 ${r.at} 毫秒`);
+  // 附件分段同样处理
+  s = retryApi([null, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
+  assert.ok(r.error && r.error.timeout);
+  assert.deepEqual(s.sent, [0]);
+});
+
+test('只重试很快的失败和网关 502/503/504：重试要在第一次发出后 5 秒内开始', async () => {
+  // 很快失败（调用失败、网关 503）：重试，成功就返回
+  let s = retryApi([{ after: 200, fail: true }, { after: 300, code: 503 }, { after: 100, code: 200 }]);
+  let r = await outcome(s, (api) => api.coverage());
+  assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 1200, 4000]);
+  // 慢的失败（发出 6 秒后才失败）：不重试
+  s = retryApi([{ after: 6000, fail: true }, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.ok(r.error);
+  assert.deepEqual(s.sent, [0]);
+  // 网关 504 来得慢（4.5 秒）：再等 1 秒才能重试，超出 5 秒，不重试
+  s = retryApi([{ after: 4500, code: 504 }, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.equal(r.error.status, 504);
+  assert.deepEqual(s.sent, [0]);
+  // 第二次失败时已过了 2.5 秒：再等 2.5 秒就超出 5 秒，不再重试第三次
+  s = retryApi([{ after: 500, code: 503 }, { after: 1200, code: 503 }, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.equal(r.error.status, 503);
+  assert.deepEqual(s.sent, [0, 1500]);
+  // 别的错误（如 404、422）不重试
+  s = retryApi([{ after: 100, code: 404 }, { after: 100, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.equal(r.error.status, 404);
+  assert.deepEqual(s.sent, [0]);
 });
