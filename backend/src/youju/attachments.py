@@ -14,8 +14,11 @@
   可能有个人姓名，同 D-030 不给正文）；取得出文字、文字里没有身份证号、个人手机号、银行账号
   （合规红线要求入库前脱敏，副本是原文件、没法脱敏，查不了或查出来有就不存）；没有查不了的图片：
   Office 文件里单个超过 50KB 的图片或嵌入对象、PDF 某一页图片合计超过半页，都不存（图片里的
-  身份证、手机号查不出来；小图标、logo、公章不算）。规则收紧后用 youju recheck-attachments
-  重新检查已存的副本。
+  身份证、手机号查不出来；小图标、logo、公章不算）。
+- 规则版本：每份副本记下检查时用的规则版本（RULES_VERSION，附件规则改了就加 1）。api 只提供
+  当前版本的副本，旧版本的立即当作"还在准备"；每轮定时任务先从对象存储读出旧版本的副本按新规则
+  重查（每轮有上限），合格的升到新版本恢复提供，不合格的改成不提供、从对象存储删掉。
+  youju recheck-attachments 留作手动重查。
 - 每 7 天重新下载核对一次：内容变了（SHA-256 不同）换新副本、删旧的；原网站删了、变成网页或
   超过 20MB，不再提供旧副本（以原网站为准）；网络等临时问题保留已有副本，6 小时、24 小时后重试。
 """
@@ -76,6 +79,12 @@ MAX_BYTES = MAX_RESPONSE_BYTES  # 20MB，抓取器超过就停止下载
 PART_SIZE = 900 * 1024
 MAX_PARTS = math.ceil(MAX_BYTES / PART_SIZE)
 RECHECK = timedelta(days=7)
+# 附件检查规则的版本：规则改了（个人信息、图片、格式等）就加 1。副本记下检查时的版本，
+# 不是当前版本的不提供，等定时任务按新规则重查（0 = 加版本号之前的规则；1 = 10/7 起加了
+# 图片检查、带空格横线的号码、不写"账号"的卡号）
+RULES_VERSION = 1
+# 每轮定时任务最多重查多少个旧版本的副本（从对象存储读，不访问原网站）
+RECHECK_PER_RUN = 100
 _RETRY_DELAYS = (timedelta(hours=6), timedelta(hours=24))
 PREFIX = "attachments/"
 # 附件副本的文件 ID：cloud://环境ID.存储桶ID/attachments/<SHA-256>.<格式>
@@ -602,6 +611,8 @@ class CacheReport:
     bytes: int = 0
     deferred: int = 0
     storage_error: str | None = None
+    # 本轮先重查的旧规则版本副本
+    recheck: RecheckReport | None = None
 
 
 def _since(now: datetime) -> tuple[date, datetime]:
@@ -714,6 +725,7 @@ def _check_one(
     row.failure = row.failure_detail = None
     row.checked_at = now
     row.next_check_at = now + RECHECK
+    row.rules_version = RULES_VERSION  # 刚按现在的规则查过
     session.commit()
 
 
@@ -751,9 +763,11 @@ def cache_attachments(
     limit: int = 100,
     max_bytes: int = RUN_BYTES,
     retry_failed: bool = False,
+    recheck_limit: int = RECHECK_PER_RUN,
     sleep: Callable[[float], None] = clock.sleep,
 ) -> CacheReport:
-    """登记新附件、下载到期的（新的优先，再是失败重试、到期复查），最后清理不再需要的副本。
+    """先按新规则重查旧规则版本的副本（从对象存储读，最多 recheck_limit 个），再登记新附件、
+    下载到期的（新的优先，再是失败重试、到期复查），最后清理不再需要的副本（含重查不合格的）。
     对象存储出错时停下这一轮，原因写在 report.storage_error（命令按失败退出、由 job.sh 提醒）。"""
     if not 1 <= limit <= 500:
         raise ValueError("每轮下载个数要在 1 到 500 之间")
@@ -795,6 +809,9 @@ def cache_attachments(
             decode_text=False,
         )
     try:
+        report.recheck = recheck_copies(
+            session, env, client=client, now=now, outdated_only=True, limit=recheck_limit
+        )
         processed = 0
         for row in due[:limit]:
             if report.bytes >= max_bytes:
@@ -859,22 +876,31 @@ def recheck_copies(
     client: httpx.Client | None = None,
     dry_run: bool = False,
     now: datetime | None = None,
+    outdated_only: bool = False,
+    limit: int | None = None,
 ) -> RecheckReport:
-    """从对象存储读出每个可用的副本，按现在的规则（格式、个人信息、图片）重新检查；不合格的
-    改成"不提供副本"（原因写进表里，小程序说明原因、复制原文链接），再从对象存储删掉。
-    只读、只删本环境 attachments/ 下文件 ID 校验通过的副本。读不到的这次不动，计入 unreadable。
-    dry_run 只检查、报告，不改表、不删文件。"""
+    """从对象存储读出已存的副本，核对 SHA-256 后按现在的规则（格式、个人信息、图片）重新检查：
+    合格的记为当前规则版本（恢复提供）；不合格的改成"不提供副本"（原因写进表里，小程序说明原因、
+    复制原文链接），换下来的文件从对象存储删掉。只读、只删本环境 attachments/ 下文件 ID 校验通过的
+    副本。读不到的这次不动（仍是旧版本就仍不提供），计入 unreadable。
+
+    outdated_only：只查不是当前规则版本的（定时任务用，最多 limit 个文件；删除留给本轮的清理）。
+    手动命令查全部，并当场删除。dry_run 只检查、报告，不改表、不删文件。"""
     now = now or datetime.now(UTC)
     report = RecheckReport()
+    stmt = select(AttachmentCopy).where(AttachmentCopy.status == "ready")
+    if outdated_only:
+        stmt = stmt.where(AttachmentCopy.rules_version != RULES_VERSION)
     groups: dict[str, list[AttachmentCopy]] = defaultdict(list)
-    for row in session.scalars(select(AttachmentCopy).where(AttachmentCopy.status == "ready")):
+    for row in session.scalars(stmt.order_by(AttachmentCopy.id)):
         parsed = parse_file_id(row.file_id)
-        if servable(row) and parsed is not None and parsed[0] == env:
+        if _has_copy(row) and parsed is not None and parsed[0] == env:
             groups[row.file_id].append(row)
+    picked = list(groups.items())[:limit] if limit is not None else list(groups.items())
     owns_client = client is None
     client = client or httpx.Client(trust_env=False)
     try:
-        for file_id, rows in groups.items():
+        for file_id, rows in picked:
             first = rows[0]
             try:
                 data = read_copy(client, file_id, 0, first.size, first.size)
@@ -889,6 +915,10 @@ def recheck_copies(
                 outcome = check_content(data, first.file_type)
             if not isinstance(outcome, Failure):
                 report.kept += 1
+                if not dry_run:
+                    for row in rows:
+                        row.rules_version = RULES_VERSION
+                    session.commit()
                 continue
             report.dropped[outcome.code] += 1
             report.rows += len(rows)
@@ -898,7 +928,7 @@ def recheck_copies(
             for row in rows:
                 _record_failure(row, outcome, now)
             session.commit()
-        if not dry_run:
+        if not dry_run and not outdated_only:
             report.removed = _drop_stale(session, client, env)
     except BackupError as exc:
         session.rollback()
@@ -920,7 +950,8 @@ _FAILURE_REASONS = {
 }
 
 
-def servable(row: AttachmentCopy | None) -> bool:
+def _has_copy(row: AttachmentCopy | None) -> bool:
+    """表里登记着一份完整的副本（不管是按哪一版规则查的）。"""
     return (
         row is not None
         and row.status == "ready"
@@ -929,6 +960,11 @@ def servable(row: AttachmentCopy | None) -> bool:
         and row.file_type in PREVIEW_TYPES
         and parse_file_id(row.file_id) is not None
     )
+
+
+def servable(row: AttachmentCopy | None) -> bool:
+    """能提供给小程序：有完整的副本，而且是按现在的规则查过的（旧规则版本的当作还在准备）。"""
+    return _has_copy(row) and row.rules_version == RULES_VERSION
 
 
 def attachment_items(

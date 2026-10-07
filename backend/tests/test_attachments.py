@@ -872,13 +872,24 @@ def _clear_caches():
     attachment_api._times.clear()
 
 
-def add_copy(session, url, content, ext, *, status="ready", failure=None, file_id=None):
+def add_copy(
+    session,
+    url,
+    content,
+    ext,
+    *,
+    status="ready",
+    failure=None,
+    file_id=None,
+    rules_version=copies.RULES_VERSION,
+):
     row = AttachmentCopy(
         url_hash=copies.url_hash(url),
         url=url,
         declared_type=ext,
         status=status,
         failure=failure,
+        rules_version=rules_version,
     )
     if status == "ready":
         row.file_type, row.size = ext, len(content)
@@ -1018,6 +1029,103 @@ def test_content_never_reads_backups_or_unready_copies(client, session, monkeypa
         assert copies.parse_file_id(bad) is None
     assert copies.delete_copies(cloud.client, ENV, [BACKUP_ID]) == set()
     assert cloud.deleted == []
+
+
+def test_copies_checked_under_old_rules_are_not_served(client, session, monkeypatch) -> None:
+    """按旧规则版本查过的副本立即不提供：详情里当作还在准备（小程序复制原文链接、说明原因），
+    取内容返回 404，也不去读对象存储。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    doc = add_doc(session, 1, APPLY, RECENT, [("指南", base + "guide.pdf", "pdf")])
+    row = add_copy(session, base + "guide.pdf", PDF, "pdf", rules_version=copies.RULES_VERSION - 1)
+    cloud = FakeCloud()
+    cloud.objects[obj(PDF, "pdf")] = PDF
+    monkeypatch.setattr(attachment_api, "_client", cloud.new_client)
+    [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert item["preview"] is False and item["reason"] == "pending"
+    att = str(session.get(DocumentDetail, doc.id).attachments[0].id)
+    assert client.get(part_url(att, row.sha256[:16], 0)).status_code == 404
+    assert cloud.links == [] and cloud.ranges == []
+    # 按现在的规则查过以后照常提供
+    row.rules_version = copies.RULES_VERSION
+    session.commit()
+    [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert item["preview"] is True
+    assert client.get(part_url(att, row.sha256[:16], 0)).status_code == 200
+
+
+def test_cache_run_rechecks_old_rule_copies_first(session) -> None:
+    """定时任务先从对象存储读出旧规则版本的副本按新规则重查（每轮有上限）：合格的升到当前版本、
+    恢复提供；不合格的改成不提供、当轮从对象存储删掉；不访问原网站，不碰备份。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    names = ("guide.pdf", "form.docx", "form-copy.docx", "odd.pdf")
+    add_doc(session, 1, APPLY, RECENT, [(n, base + n, n.rsplit(".", 1)[1]) for n in names])
+    picture = docx_with_picture(make_png(150))
+    cloud = FakeCloud()
+    for content, ext in ((PDF, "pdf"), (picture, "docx")):
+        cloud.objects[obj(content, ext)] = content
+    old = copies.RULES_VERSION - 1
+    for name, content, ext in (
+        ("guide.pdf", PDF, "pdf"),
+        ("form.docx", picture, "docx"),
+        ("form-copy.docx", picture, "docx"),
+    ):
+        add_copy(session, base + name, content, ext, rules_version=old)
+    add_copy(session, base + "odd.pdf", PDF, "pdf", file_id=BACKUP_ID, rules_version=old)
+    for row in rows_by_url(session).values():
+        row.next_check_at = NOW + timedelta(days=3)  # 都还没到重新下载的时候
+    session.commit()
+    fetcher = FakeFetcher({})
+
+    # 每轮有上限：这一轮只查第一个文件
+    report = run(session, fetcher, cloud, recheck_limit=1)
+    rows = rows_by_url(session)
+    assert report.recheck.checked == 1 and report.recheck.kept == 1
+    assert rows[base + "guide.pdf"].rules_version == copies.RULES_VERSION
+    assert copies.servable(rows[base + "guide.pdf"])
+    assert not copies.servable(rows[base + "form.docx"])  # 还没轮到，仍不提供
+    assert fetcher.calls == [] and cloud.deleted == []
+
+    report = run(session, fetcher, cloud, now=NOW + timedelta(hours=12))
+    rows = rows_by_url(session)
+    assert report.recheck.dropped == {"image": 1} and report.recheck.rows == 2
+    for name in ("form.docx", "form-copy.docx"):
+        row = rows[base + name]
+        assert row.status == "failed" and row.failure == "image" and row.file_id is None
+        assert row.stale_file_ids is None
+    # 不合格的当轮删掉，只删 attachments/ 下的，备份不读不删
+    assert cloud.deleted == [PREFIX + obj(picture, "docx")] and report.removed == 1
+    assert all("backups/" not in link["file_list"][0]["fileid"] for link in cloud.links)
+    assert rows[base + "odd.pdf"].file_id == BACKUP_ID and not copies.servable(
+        rows[base + "odd.pdf"]
+    )
+    assert fetcher.calls == []
+    # 都查过了：下一轮不再读
+    links = len(cloud.links)
+    report = run(session, fetcher, cloud, now=NOW + timedelta(hours=13))
+    assert report.recheck.checked == 0 and len(cloud.links) == links
+
+
+def test_downloaded_copies_get_the_current_rules_version(session) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("指南", base + "guide.pdf", "pdf")])
+    run(session, FakeFetcher({base + "guide.pdf": PDF}), FakeCloud())
+    row = rows_by_url(session)[base + "guide.pdf"]
+    assert row.rules_version == copies.RULES_VERSION and copies.servable(row)
+
+
+def test_migration_0022_rules_version(db_engine) -> None:
+    assert db_engine.url.database.startswith("youju_test")
+    cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
+
+    def columns():
+        return {c["name"] for c in inspect(db_engine).get_columns("attachment_copies")}
+
+    try:
+        command.downgrade(cfg, "0020")
+        assert "rules_version" not in columns()
+    finally:
+        command.upgrade(cfg, "head")
+    assert "rules_version" in columns()
 
 
 def test_content_is_rate_limited(client, session, monkeypatch) -> None:

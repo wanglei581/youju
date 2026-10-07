@@ -366,6 +366,9 @@ class AttachmentCopy(Base):
     failure_detail: Mapped[str | None] = mapped_column(String(300))
     # 连续失败次数（成功后清零），决定多久后重试
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 检查这份副本时用的规则版本（youju.attachments.RULES_VERSION）：不是当前版本的不提供，
+    # 等定时任务按新规则重查
+    rules_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     # 下次检查时间：空值表示尽快
     next_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

@@ -644,6 +644,14 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
         f"新存或更新 {report.stored}，未变 {report.unchanged}，删掉 {report.removed}，"
         f"到期待下轮 {report.deferred}；没存成的原因：{failed}"
     )
+    recheck = report.recheck
+    if recheck and (recheck.checked or recheck.unreadable):
+        dropped = "，".join(f"{code} {n}" for code, n in recheck.dropped.most_common()) or "无"
+        print(
+            f"旧规则版本的副本按新规则重查 {recheck.checked} 个：恢复提供 {recheck.kept}，"
+            f"不再提供 {sum(recheck.dropped.values())}（{dropped}）；"
+            f"读不到、下轮再查 {recheck.unreadable}"
+        )
     if report.storage_error:
         print(report.storage_error)
         return 1
