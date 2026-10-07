@@ -38,11 +38,28 @@ function forgetAgreed() {
 }
 
 // options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
+// 云托管服务缩到 0 台后，第一个请求会在冷启动期间收到网关的 502/503/504 或调用失败；
+// 查询类（GET）请求等一下再试，最多再试 2 次（10/7 早上实测：冷启动时连续 503，几秒后恢复）
+const RETRY_DELAYS = [1000, 2500];
+const GATEWAY_CODES = [502, 503, 504];
+
+function withRetry(attempt, method) {
+  const run = (n) => attempt().catch((err) => {
+    if (method !== 'GET' || !err || !err.retryable || n >= RETRY_DELAYS.length) throw err;
+    return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
+  });
+  return run(0);
+}
+
 function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
+  return withRetry(() => requestOnce(url, method, data, header), method);
+}
+
+function requestOnce(url, method, data, header) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
@@ -53,7 +70,9 @@ function request(path, params, options) {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
       if (res.statusCode === 403) forgetAgreed();
-      finish(reject, errorOf(res));
+      const err = errorOf(res);
+      if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
+      finish(reject, err);
     };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -64,7 +83,7 @@ function request(path, params, options) {
         data,
         timeout: 15000,
         success: done,
-        fail: () => finish(reject, new Error('网络不太好，请稍后再试')),
+        fail: () => { const err = new Error('网络不太好，请稍后再试'); err.retryable = true; finish(reject, err); },
       });
     } else {
       wx.request({
@@ -258,6 +277,10 @@ function exportFile(ids, format) {
 // 附件副本的一段（ArrayBuffer）：服务端存有副本的附件按段取（每段不超过云托管返回上限 1000 KiB），
 // version 是详情接口给的版本，对不上（副本已更新）时服务端返回 409
 function attachmentPart(id, version, part) {
+  return withRetry(() => attachmentPartOnce(id, version, part), 'GET');
+}
+
+function attachmentPartOnce(id, version, part) {
   const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -267,22 +290,25 @@ function attachmentPart(id, version, part) {
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
       err.status = res.statusCode;
+      if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
     };
-    const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
+    const fail = () => { const err = new Error('网络不太好，请稍后再试'); err.retryable = true; finish(reject, err); };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path,
         method: 'GET',
         header: { 'X-WX-SERVICE': config.cloudService },
+        // 二进制内容：dataType 要设成 other，否则 SDK 会把内容当文字解析而报错（10/7 开发者工具实测）
+        dataType: 'other',
         responseType: 'arraybuffer',
         timeout: 15000,
         success: done,
         fail,
       });
     } else {
-      wx.request({ url: config.devBaseUrl + path, method: 'GET', responseType: 'arraybuffer', timeout: 15000, success: done, fail });
+      wx.request({ url: config.devBaseUrl + path, method: 'GET', dataType: 'other', responseType: 'arraybuffer', timeout: 15000, success: done, fail });
     }
   });
 }
