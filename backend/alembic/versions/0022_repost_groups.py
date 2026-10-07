@@ -4,16 +4,16 @@ repost_groups：一组一行（强证据 / 疑似、事项名、照录的部里�
 repost_group_members：组里的版本，一份文件最多属于一个组（document_id 为主键）。
 截止日期不在这两张表里，各版本的截止仍各自核对。
 
-Revision ID: 0021
-Revises: 0020
+Revision ID: 0022
+Revises: 0021
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import mysql
 
-revision = "0021"
-down_revision = "0020"
+revision = "0022"
+down_revision = "0021"
 branch_labels = None
 depends_on = None
 
