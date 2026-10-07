@@ -3,8 +3,12 @@
 
 import io
 import json
+import random
 import re
+import struct
 import zipfile
+import zlib
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -37,16 +41,22 @@ BACKUP_ID = PREFIX + "backups/youju-20261005.jsonl.gz"
 # ---- 测试用的文件 ----
 
 
-def make_pdf(text: str | None = None) -> bytes:
-    """最小的 PDF：给 text 时第一页有这行文字，不给就是空白页（像扫描件，取不出文字）。"""
+def make_pdf(text: str | None = None, images: tuple = ()) -> bytes:
+    """最小的 PDF（一页，300×200）：给 text 时有这行文字，不给就是空白页（像扫描件，取不出文字）；
+    images 里每个 (x, y, 宽, 高) 在页面上画一张位图。"""
     content = f"BT /F1 12 Tf 20 100 Td ({text}) Tj ET".encode() if text else b""
+    for x, y, w, h in images:
+        content += f" q {w} 0 0 {h} {x} {y} cm /Im1 Do Q".encode()
+    pixels = bytes([0, 128, 128, 255])
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R"
-        b" /Resources << /Font << /F1 5 0 R >> >> >>",
+        b" /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> >> >>",
         b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray"
+        b" /BitsPerComponent 8 /Length 4 >>\nstream\n" + pixels + b"\nendstream",
     ]
     out = b"%PDF-1.4\n"
     offsets = []
@@ -100,6 +110,107 @@ def make_ole(stream: str) -> bytes:
     return bytes(data)
 
 
+def make_png(side: int, seed: int = 1) -> bytes:
+    """随机像素的 PNG（几乎压缩不了）：side=150 约 67KB，side=16 不到 1KB（像小图标）。"""
+    from PIL import Image
+
+    pixels = random.Random(seed).randbytes(side * side * 3)
+    out = io.BytesIO()
+    Image.frombytes("RGB", (side, side), pixels).save(out, "PNG")
+    return out.getvalue()
+
+
+def docx_with_picture(png: bytes, text: str = "申报指南") -> bytes:
+    doc = WordDocument()
+    doc.add_paragraph(text)
+    doc.add_picture(io.BytesIO(png))
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def with_parts(data: bytes, extra: dict[str, bytes]) -> bytes:
+    """在 Office 文件（zip）里加几个部件。"""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w") as dst:
+        for info in src.infolist():
+            dst.writestr(info, src.read(info))
+        for name, body in extra.items():
+            dst.writestr(name, body)
+    return out.getvalue()
+
+
+def make_cfb(streams: dict[str, bytes], storages: dict[str, dict[str, bytes]] | None = None):
+    """最小的复合文档（旧版 Office 的容器，v3、512 字节扇区）：根目录下的数据流和一层子目录。
+    每个数据流补到至少 4096 字节，都放在普通扇区里。"""
+    end, free, fat_mark, none = 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFF
+    nodes = [{"name": "Root Entry", "type": 5, "data": b"", "kids": []}]
+
+    def add(name, kind, data, parent):
+        nodes.append({"name": name, "type": kind, "data": data.ljust(4096, b"\0"), "kids": []})
+        nodes[parent]["kids"].append(len(nodes) - 1)
+        return len(nodes) - 1
+
+    for name, data in streams.items():
+        add(name, 2, data, 0)
+    for name, inner in (storages or {}).items():
+        folder = add(name, 1, b"", 0)
+        nodes[folder]["data"] = b""
+        for child, data in inner.items():
+            add(child, 2, data, folder)
+    n_dir = -(-len(nodes) * 128 // 512)
+    data_sectors = sum(-(-len(n["data"]) // 512) for n in nodes if n["type"] == 2)
+    n_fat = 1
+    while n_fat * 128 < n_fat + n_dir + data_sectors:
+        n_fat += 1
+    fat = [fat_mark] * n_fat + [n_fat + i + 1 for i in range(n_dir - 1)] + [end]
+    body = b""
+    for node in nodes:
+        if node["type"] != 2:
+            node["start"] = end if node["type"] == 5 else 0
+            continue
+        node["start"] = len(fat)
+        count = -(-len(node["data"]) // 512)
+        fat += [len(fat) + i + 1 for i in range(count - 1)] + [end]
+        body += node["data"].ljust(count * 512, b"\0")
+    fat += [free] * (n_fat * 128 - len(fat))
+    entries = b""
+    for index, node in enumerate(nodes):
+        kids = node["kids"]
+        parent = next((n for n in nodes if index in n["kids"]), None)
+        siblings = parent["kids"] if parent else []
+        pos = siblings.index(index) if index in siblings else -1
+        right = siblings[pos + 1] if 0 <= pos < len(siblings) - 1 else none
+        name = (node["name"] + "\0").encode("utf-16-le")
+        entries += name.ljust(64, b"\0") + struct.pack("<HBB", len(name), node["type"], 1)
+        entries += struct.pack("<III", none, right, kids[0] if kids else none) + bytes(36)
+        entries += struct.pack("<IQ", node["start"], len(node["data"]) if node["type"] == 2 else 0)
+    entries = entries.ljust(n_dir * 512, b"\0")
+    header = bytearray(512)
+    header[:8] = bytes.fromhex("d0cf11e0a1b11ae1")
+    struct.pack_into("<HHHHH", header, 24, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<9I", header, 40, 0, n_fat, n_fat, 0, 4096, end, 0, end, 0)
+    struct.pack_into("<109I", header, 76, *(list(range(n_fat)) + [free] * (109 - n_fat)))
+    return bytes(header) + struct.pack(f"<{len(fat)}I", *fat) + entries + body
+
+
+# 旧版 Office 里图片的记录头（[MS-ODRAW]）：PNG、EMF
+PNG_BLIP = bytes.fromhex("006e1ef0")
+EMF_BLIP = bytes.fromhex("403d1af0")
+
+
+def blip(head: bytes, payload: bytes) -> bytes:
+    return head + len(payload).to_bytes(4, "little") + payload
+
+
+def emf_blip(text: str) -> bytes:
+    """一张压缩存放的小矢量图（EMF），里面的文字按 UTF-16LE 存。"""
+    raw = b"\x01\x00\x00\x00" + text.encode("utf-16-le")
+    packed = zlib.compress(raw)
+    header = struct.pack("<I16s8sIBB", len(raw), bytes(16), bytes(8), len(packed), 0, 0xFE)
+    return blip(EMF_BLIP, bytes(16) + header + packed)
+
+
 PDF = make_pdf("Application guide 2026")
 DOCX = make_docx("申报指南", "咨询电话：024-12345678")
 
@@ -148,6 +259,118 @@ def test_detect_type_and_content_checks() -> None:
     assert copies.check_content(rebuilt.getvalue(), "docx").code == "personal"
     assert copies.check_content(make_xlsx(("联系人", 13712345678)), "xlsx").code == "personal"
     assert copies.check_content(make_pptx("账号：6222020200112233445"), "pptx").code == "personal"
+
+
+def test_personal_numbers_written_with_spaces_or_dashes_are_found() -> None:
+    """手机号、身份证号中间带空格或横线，银行卡号前面没写"账号"，都查得出（附件没法脱敏，宁可多拦）。"""
+    for text in (
+        "联系人手机：138 1234 5678",
+        "联系人手机：138-1234-5678",
+        "手机 +86 138 1234 5678",
+        "电话：0571-87654321 138 1234 5678",
+        "身份证号 110105 19900101 1234",
+        "身份证号 1101 0519 9001 0112 3X",
+        "4111 1111 1111 1111",  # 没写"账号"、通过 Luhn 校验的 16 位
+        "6222-0212-3456-7890-128",
+        "收款 6212261202011584340",
+    ):
+        assert copies.check_content(make_docx("申报指南", text), "docx").code == "personal", text
+    # 办公电话、日期、金额、通不过 Luhn 校验的长数字不算
+    for text in (
+        "咨询电话：024-12345678、0571-8765 4321",
+        "申报时间 2026-10-07 至 2026-11-30，邮编 110001",
+        "合计 120 35 18 173 万元",
+        "项目编号 4111 1111 1111 1112",
+    ):
+        assert copies.check_content(make_docx("申报指南", text), "docx") == "docx", text
+
+
+def test_office_files_with_large_pictures_are_not_copied() -> None:
+    big, logo = make_png(150), make_png(16)
+    assert len(big) > copies.IMAGE_BYTES > len(logo)
+    image = copies.check_content(docx_with_picture(big), "docx")
+    assert image.code == "image" and "无法核验个人信息" in image.detail
+    # 小图标、logo 不算
+    assert copies.check_content(docx_with_picture(logo), "docx") == "docx"
+    assert (
+        copies.check_content(
+            with_parts(make_xlsx(("名称",)), {"xl/media/image1.png": big}), "xlsx"
+        ).code
+        == "image"
+    )
+    assert (
+        copies.check_content(
+            with_parts(make_pptx("说明"), {"ppt/media/image1.jpeg": big}), "pptx"
+        ).code
+        == "image"
+    )
+    # 嵌入的对象（嵌入的表格、文档等）：大的查不了，小的取出里面的文字一起查
+    embedded = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": big})
+    assert copies.check_content(embedded, "docx").code == "image"
+    people = make_xlsx(("联系人", "13712345678"))
+    assert len(people) < copies.IMAGE_BYTES
+    embedded = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": people})
+    assert copies.check_content(embedded, "docx").code == "personal"
+    # 嵌入的旧版表格按单元格取文字
+    assert "黑龙江" in copies._embedded_text(XLS, nested=False)
+    assert copies.check_content(with_parts(DOCX, {"word/embeddings/o1.bin": XLS}), "docx") == "docx"
+    # 小的矢量图（如粘贴成图片的表格）：取出里面的文字一起查
+    emf = b"\x01\x00\x00\x00" + "联系人 13812345678".encode("utf-16-le")
+    assert (
+        copies.check_content(with_parts(DOCX, {"word/media/image2.emf": emf}), "docx").code
+        == "personal"
+    )
+    # 首页缩略图是正文首页的样子，不算
+    thumbnail = with_parts(DOCX, {"docProps/thumbnail.jpeg": big})
+    assert copies.check_content(thumbnail, "docx") == "docx"
+
+
+def test_pdf_pages_mostly_covered_by_pictures_are_not_copied() -> None:
+    text = "Application guide 2026"
+    # 页面 300×200：图片超过半页（含几张拼起来的）就不存；公章、logo 这类小图不算
+    assert copies.check_content(make_pdf(text, ((0, 0, 300, 150),)), "pdf").code == "image"
+    tiles = ((0, 0, 150, 110), (150, 90, 150, 110))
+    assert copies.check_content(make_pdf(text, tiles), "pdf").code == "image"
+    assert copies.check_content(make_pdf(text, ((10, 10, 40, 40),)), "pdf") == "pdf"
+    # 超出页面的部分不算
+    assert copies.check_content(make_pdf(text, ((200, 0, 300, 200),)), "pdf") == "pdf"
+    # 几乎没有文字的页面有图片，仍按扫描件处理
+    assert copies.check_content(make_pdf(None, ((10, 10, 40, 40),)), "pdf").code == "unchecked"
+
+
+def test_old_office_files_with_large_pictures_are_not_copied() -> None:
+    def word(**extra):
+        return make_cfb({"WordDocument": b"Word 97", **extra.pop("streams", {})}, **extra)
+
+    assert copies.detect_type(word()) == "doc"
+    assert copies.check_content(word(), "doc") == "doc"
+    big = word(streams={"Data": blip(PNG_BLIP, bytes(60_000))})
+    assert copies.check_content(big, "doc").code == "image"
+    assert (
+        copies.check_content(word(streams={"Data": blip(PNG_BLIP, bytes(2_000))}), "doc") == "doc"
+    )
+    # 小的矢量图是压缩存的：解压后取出文字一起查
+    phone = word(streams={"Data": emf_blip("联系人 13812345678")})
+    assert copies.check_content(phone, "doc").code == "personal"
+    assert copies.check_content(word(streams={"Data": emf_blip("申报流程图")}), "doc") == "doc"
+    # 嵌入的对象：Word 放在 ObjectPool 下，大的查不了
+    assert (
+        copies.check_content(word(storages={"ObjectPool": {"_1": bytes(60_000)}}), "doc").code
+        == "image"
+    )
+    assert copies.check_content(word(storages={"ObjectPool": {"_1": bytes(3_000)}}), "doc") == "doc"
+    # PowerPoint 的图片在 Pictures 流里
+    slides = make_cfb({"PowerPoint Document": b"ppt", "Pictures": blip(PNG_BLIP, bytes(60_000))})
+    assert copies.check_content(slides, "ppt").code == "image"
+    # Excel 的图片在 MSODRAWINGGROUP 记录里，超过 8224 字节的部分接在 CONTINUE 记录里
+    data = blip(PNG_BLIP, bytes(60_000))
+    chunks = [data[i : i + 8224] for i in range(0, len(data), 8224)]
+    workbook = b"".join(
+        struct.pack("<HH", 0x00EB if i == 0 else 0x003C, len(c)) + c for i, c in enumerate(chunks)
+    )
+    sheet = make_cfb({"Workbook": struct.pack("<HH", 0x0809, 0) + workbook})
+    assert copies.detect_type(sheet) == "xls"
+    assert copies.check_content(sheet, "xls").code == "image"
 
 
 # ---- 数据和模拟 ----
@@ -284,7 +507,9 @@ class FakeCloud:
             if self.expired_once:
                 self.expired_once = False
                 return httpx.Response(403)
-            data = self.objects[request.url.path.lstrip("/")]
+            data = self.objects.get(request.url.path.lstrip("/"))
+            if data is None:
+                return httpx.Response(404)
             header = request.headers.get("range")
             self.ranges.append(header)
             if header and self.honor_range:
@@ -507,6 +732,112 @@ def test_storage_failure_stops_the_run(session, monkeypatch, capsys) -> None:
         copies, "cache_attachments", lambda *a, **k: copies.CacheReport(storage_error="上传失败")
     )
     assert cli.main(["cache-attachments"]) == 1
+
+
+def test_robots_disallowed_attachments_are_not_downloaded(session) -> None:
+    """下载附件的抓取器不解码内容，robots.txt 照样要遵守：网站禁止的附件不下载，记下原因。"""
+    from youju.crawler.fetcher import PoliteFetcher
+
+    base = "https://kjt.ln.gov.cn/"
+    add_doc(
+        session,
+        1,
+        APPLY,
+        RECENT,
+        [("指南", base + "private/guide.pdf", "pdf"), ("表", base + "files/form.pdf", "pdf")],
+    )
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, content=b"User-agent: *\nDisallow: /private/\n")
+        return httpx.Response(200, content=PDF)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+        decode_text=False,
+    )
+    cloud = FakeCloud()
+    report = run(session, fetcher, cloud)
+    rows = rows_by_url(session)
+    blocked = rows[base + "private/guide.pdf"]
+    assert blocked.status == "failed" and blocked.failure == "robots"
+    assert blocked.failure_detail == "robots.txt 不允许下载" and blocked.file_id is None
+    assert "/private/guide.pdf" not in requested
+    assert rows[base + "files/form.pdf"].status == "ready"
+    assert report.failed == {"robots": 1} and cloud.uploads == [obj(PDF, "pdf")]
+
+
+def test_recheck_drops_stored_copies_that_fail_the_new_rules(session, monkeypatch, capsys) -> None:
+    base = "https://kjt.ln.gov.cn/files/"
+    names = ("guide.pdf", "form.docx", "form-copy.docx", "lost.pdf", "odd.pdf")
+    doc = add_doc(session, 1, APPLY, RECENT, [(n, base + n, n.rsplit(".", 1)[1]) for n in names])
+    picture = docx_with_picture(make_png(150))  # 规则收紧前存下的：有大图
+    lost = make_pdf("Lost")
+    cloud = FakeCloud()
+    for content, ext in ((PDF, "pdf"), (picture, "docx")):
+        cloud.objects[obj(content, ext)] = content
+    add_copy(session, base + "guide.pdf", PDF, "pdf")
+    add_copy(session, base + "form.docx", picture, "docx")
+    add_copy(session, base + "form-copy.docx", picture, "docx")  # 内容相同，共用一个副本
+    add_copy(session, base + "lost.pdf", lost, "pdf")  # 对象存储里读不到
+    # 表里混进了备份的文件 ID（不该发生）：不是附件副本，不读也不删
+    add_copy(session, base + "odd.pdf", PDF, "pdf", file_id=BACKUP_ID)
+
+    def recheck(**kwargs):
+        return copies.recheck_copies(session, ENV, client=cloud.client, now=NOW, **kwargs)
+
+    # 只检查：报告不合格的，不改表、不删文件
+    report = recheck(dry_run=True)
+    assert (report.checked, report.kept, report.unreadable) == (2, 1, 1)
+    assert report.dropped == {"image": 1} and report.rows == 2 and report.removed == 0
+    assert cloud.deleted == [] and rows_by_url(session)[base + "form.docx"].status == "ready"
+
+    report = recheck()
+    rows = rows_by_url(session)
+    for name in ("form.docx", "form-copy.docx"):
+        row = rows[base + name]
+        assert row.status == "failed" and row.failure == "image" and row.file_id is None
+        assert "无法核验个人信息" in row.failure_detail and row.stale_file_ids is None
+    assert cloud.deleted == [PREFIX + obj(picture, "docx")] and report.removed == 1
+    assert rows[base + "guide.pdf"].status == "ready"
+    assert rows[base + "lost.pdf"].status == "ready"  # 读不到的这次不动
+    assert rows[base + "odd.pdf"].file_id == BACKUP_ID
+    assert all("backups/" not in link["file_list"][0]["fileid"] for link in cloud.links)
+    # 小程序：说明原因、复制原文链接
+    items = {
+        item["name"]: item
+        for item in copies.attachment_items(
+            session, doc.detail.attachments, kind="申报通知", recent=True
+        )
+    }
+    assert items["form.docx"]["preview"] is False and items["form.docx"]["reason"] == "image"
+    assert items["guide.pdf"]["preview"] is True
+
+    from youju import cli
+
+    settings = SimpleNamespace(cloud_env=None)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    assert cli.main(["recheck-attachments"]) == 1
+    settings.cloud_env = ENV
+    calls = []
+
+    def fake_recheck(session, env, **kwargs):
+        calls.append((env, kwargs))
+        return copies.RecheckReport(checked=3, kept=2, dropped=Counter(image=1), rows=2, removed=1)
+
+    monkeypatch.setattr(copies, "recheck_copies", fake_recheck)
+    assert cli.main(["recheck-attachments", "--dry-run"]) == 0
+    assert calls == [(ENV, {"dry_run": True})]
+    assert "不合格 1 个（image 1）" in capsys.readouterr().out
+    monkeypatch.setattr(
+        copies, "recheck_copies", lambda *a, **k: copies.RecheckReport(unreadable=1)
+    )
+    assert cli.main(["recheck-attachments"]) == 1
 
 
 def test_job_and_cron_are_registered() -> None:

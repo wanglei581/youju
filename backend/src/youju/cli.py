@@ -256,6 +256,8 @@ def _cmd_extract_conditions(args: argparse.Namespace) -> int:
     )
     reasons = "、".join(f"{k} {v}" for k, v in sorted(report.dropped_reasons.items()))
     print(f"  没通过原文核对、已丢弃 {report.dropped} 条{f'（{reasons}）' if reasons else ''}")
+    if report.revived:
+        print(f"  正文改回以前那一版、恢复旧清单 {report.revived} 份（明细见日志）")
     print(
         f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
         f"输出 {report.completion_tokens} tokens"
@@ -648,6 +650,29 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_recheck_attachments(args: argparse.Namespace) -> int:
+    """按现在的规则（个人信息、图片等）重新检查对象存储里已存的附件副本，不合格的改成不提供副本、
+    从对象存储删掉。规则收紧后跑一次；--dry-run 只报告不改。"""
+    from youju.attachments import recheck_copies
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法读取附件副本")
+        return 1
+    with session_factory()() as session:
+        report = recheck_copies(session, env, dry_run=args.dry_run)
+    dropped = "，".join(f"{code} {n}" for code, n in report.dropped.most_common()) or "无"
+    action = "（只检查，没有改动）" if args.dry_run else f"，从对象存储删掉 {report.removed} 个"
+    print(
+        f"附件副本重新检查：检查 {report.checked} 个，合格 {report.kept}；"
+        f"不合格 {sum(report.dropped.values())} 个（{dropped}），"
+        f"涉及 {report.rows} 条附件改为不提供副本{action}；读不到的 {report.unreadable} 个"
+    )
+    if report.storage_error:
+        print(report.storage_error)
+    return 1 if report.storage_error or report.unreadable else 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
@@ -918,6 +943,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
     p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
     p.set_defaults(func=_cmd_cache_attachments)
+    p = sub.add_parser(
+        "recheck-attachments",
+        help="按现在的规则重新检查已存的附件副本，不合格的不再提供并从对象存储删掉（规则收紧后跑一次）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只检查、报告，不改表、不删文件")
+    p.set_defaults(func=_cmd_recheck_attachments)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")

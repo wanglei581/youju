@@ -21,7 +21,7 @@ button,input,select{font:inherit;padding:6px 10px;border:1px solid #ccd2d9;borde
 <header><strong>申报条件核对</strong>　<a href="/admin/review">截止日期核对</a>　<a href="/admin/fields">字段核对</a>　<span id="count"></span></header>
 <main>
   <div class="bar auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><input id="reviewer" placeholder="核对人" aria-label="核对人"><select id="state" aria-label="查看"><option value="pending">待核对</option><option value="confirmed">已确认</option></select><button class="primary" id="load">加载</button></div>
-  <p class="hint">逐条看黄色高亮的原文：条件写得对就通过，措辞不准就改写（原文引用不能改），不是条件或对不上原文就删除。每条都核过后，确认整份才会在小程序详情页显示；确认后可以撤回。<br>快捷键：j / k 下一条 / 上一条；a 通过；e 改写（Enter 提交）；x 删除；z 撤回这一条的核对；c 确认当前这份；r 重新载入。输入框内不触发快捷键。</p>
+  <p class="hint">逐条看黄色高亮的原文：条件写得对就通过，措辞不准就改写（原文引用不能改），不是条件或对不上原文就删除。每条都核过后，确认整份才会在小程序详情页显示；确认后可以撤回。小程序只显示类别和原文原句（逐字引用），条件那句话（含改写）只在这里作核对参考，不对外。<br>快捷键：j / k 下一条 / 上一条；a 通过；e 改写（Enter 提交）；x 删除；z 撤回这一条的核对；c 确认当前这份；r 重新载入。输入框内不触发快捷键。</p>
   <div id="notice" class="review-notice" role="status" hidden><span id="noticeText"></span> <button id="reopenNotice">撤回确认</button><span id="noticeError" class="msg"></span></div>
   <p id="loadError" class="msg" role="status"></p>
   <div id="list"></div>

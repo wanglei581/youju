@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import chain
 from urllib.parse import unquote, urlsplit
 
 from lxml import etree, html
@@ -95,10 +96,51 @@ def redact_sensitive(text: str) -> str:
     return _PHONE.sub("[电话已脱敏]", text)
 
 
+# ---- 附件能不能存副本的检查（只用在这里，比正文脱敏宽：附件是原文件、没法脱敏，宁可多拦） ----
+# 正文脱敏（redact_sensitive）不用这套写法：正文里年份、金额、编号连写的情况多，放宽会误伤正文。
+
+# 全角数字、横线、空格、加号、X 换成半角再查
+_HALF_WIDTH = str.maketrans(
+    {chr(0xFF10 + i): str(i) for i in range(10)}
+    | {"\uff0d": "-", "\u3000": " ", "\uff0b": "+", "\uff38": "X", "\uff58": "x"}
+)
+# 数字之间的空格、横线（含各种破折号），最多 3 个：去掉后"138 1234 5678""138-1234-5678"连成一串。
+# 不跨换行（表格的单元格之间是换行）
+_DIGIT_GAP = re.compile(r"(?<=\d)[ \t\u00a0\-\u2010-\u2015\u2212]{1,3}(?=[\dXx])")
+# 连起来后的手机号，允许前面带 86（+86 138 1234 5678）
+_MOBILE_JOINED = re.compile(r"(?<!\d)(?:86)?1[3-9]\d{9}(?!\d)")
+# 3-4-4 分段写的手机号：和前后的数字只隔一个空格时，连起来会和别的数字连成一长串，单独再找一遍
+_MOBILE_GROUPED = re.compile(r"(?<!\d)1[3-9]\d[ \-]\d{4}[ \-]\d{4}(?!\d)")
+# 银行卡号：16–19 位数字，前面不用有"账号"等字样，通过 Luhn 校验才算
+_CARD_RUN = re.compile(r"(?<!\d)\d{16,19}(?!\d)")
+_CARD_GROUPED = re.compile(r"(?<!\d)\d{4}(?:[ \-]\d{4}){3}(?:[ \-]\d{1,3})?(?!\d)")
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch) * (2 if i % 2 else 1)
+        total += n - 9 if n > 9 else n
+    return total % 10 == 0
+
+
 def has_personal_numbers(text: str) -> bool:
     """有没有合规红线列出的个人信息：身份证号、个人手机号、银行账号。附件副本是原文件，没法脱敏，
-    有这些就不存副本（youju/attachments.py）。"""
-    return any(p.search(text) for p in (_ID_CARD, _MOBILE, _BANK))
+    有这些就不存副本（youju/attachments.py）。
+
+    比正文脱敏宽：数字中间带空格、横线的也算（先去掉再查，没去掉的也查一遍，免得和旁边的数字
+    连成一长串查不出），16–19 位、通过 Luhn 校验的数字串不论前面写没写"账号"都当作银行卡号。"""
+    plain = text.translate(_HALF_WIDTH)
+    joined = _DIGIT_GAP.sub("", plain)
+    for version in (plain, joined):
+        if any(p.search(version) for p in (_ID_CARD, _MOBILE_JOINED, _BANK)):
+            return True
+    if _MOBILE_GROUPED.search(plain):
+        return True
+    cards = chain(
+        _CARD_RUN.finditer(plain), _CARD_RUN.finditer(joined), _CARD_GROUPED.finditer(plain)
+    )
+    return any(_luhn(re.sub(r"\D", "", m.group())) for m in cards)
 
 
 def _plain_lines(node: etree._Element) -> list[str]:
