@@ -138,7 +138,7 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   const page = load('pages/detail/index.js', {
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': { copyLink: (url) => copied.push(url) }, '../../utils/subscribe.js': {},
-    '../../utils/repost.js': repost,
+    '../../utils/repost.js': repost, '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
