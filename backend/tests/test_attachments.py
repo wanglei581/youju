@@ -1113,7 +1113,7 @@ def test_downloaded_copies_get_the_current_rules_version(session) -> None:
     assert row.rules_version == copies.RULES_VERSION and copies.servable(row)
 
 
-def test_migration_0022_rules_version(db_engine) -> None:
+def test_migration_0021_rules_version(db_engine) -> None:
     assert db_engine.url.database.startswith("youju_test")
     cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
 

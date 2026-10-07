@@ -3,17 +3,14 @@
 
 已有的副本记为 0（加版本号之前的规则），上线后立即不再提供，等重查。
 
-编号说明：0021 留给同时在做的转发组迁移（feat/repost-dedupe）；两边谁后合并，谁把自己的
-down_revision 改成先合并的那个，保持只有一个 head。
-
-Revision ID: 0022
+Revision ID: 0021
 Revises: 0020
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0022"
+revision = "0021"
 down_revision = "0020"
 branch_labels = None
 depends_on = None
