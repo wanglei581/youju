@@ -1,6 +1,6 @@
 <notice-bar />
+<!-- 协议定稿前（D-056）只显示"暂未开放"；还没同意协议（服务端返回 403）时显示说明卡和去"我的"的入口，不当作加载失败 -->
 <feature-closed wx:if="{{!loginOpen}}" />
-<!-- 还没同意协议（服务端返回 403）：说明怎样才能看，带去"我的"的入口，不当作加载失败 -->
 <view wx:elif="{{gated}}" class="card gate">
   <view class="gate-text">同意用户协议和隐私保护指引后，可以查看关注条件的新文件</view>
   <view class="link gate-link" bindtap="goMe" aria-role="link">去“我的” ›</view>

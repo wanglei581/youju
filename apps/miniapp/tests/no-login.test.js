@@ -62,6 +62,8 @@ function apiSpy(extra = {}) {
 const shown = (file, data) => render(file, data, { components: COMPONENTS });
 const texts = (root, pred) => findAll(root, pred).map((n) => textOf(n).trim());
 const NO_GATE_WORDS = /协议定稿后开放|定稿后开放|即将开放|协议正在定稿/;
+// 服务端访问日志保存的天数（关于页"数据说明"写的天数要和它一致）
+const KEEP_DAYS = Number(/^KEEP_DAYS = (\d+)$/m.exec(fs.readFileSync(path.join(ROOT, '..', '..', 'backend', 'src', 'youju', 'access_log.py'), 'utf8'))[1]);
 
 test('开关只看代码包里的 legal.final：loginOpen 和它一致，不看是否连了接口', () => {
   assert.equal(consentFor(false).loginOpen(), false);
@@ -122,10 +124,11 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   assert.ok(hasClass('grid--2')(grid));
   assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '申报日历']);
   assert.match(read('pages/me/index.wxss'), /\.grid--2 \{ grid-template-columns: repeat\(2, 1fr\); \}/);
-  // 用户协议与隐私保护指引、关于有据照旧；最后一行没有下划线
+  // 不打开草案协议：那一行改为"隐私保护指引"，打开小程序后台填写的官方指引；关于有据照旧，最后一行没有下划线
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['用户协议与隐私保护指引', '关于有据']);
-  assert.equal(rows[0].attrs.bindtap, 'openAgreement');
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['隐私保护指引', '关于有据']);
+  assert.equal(rows[0].attrs.bindtap, 'openPrivacy');
+  assert.equal(findAll(root, tapsTo('openAgreement')).length, 0);
   assert.ok(hasClass('row--last')(rows[1]));
 });
 
@@ -143,6 +146,29 @@ test('"我的"：定稿后照旧——未登录、勾选同意、微信登录、
   assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '申报日历', '纠错']);
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
+  const rows = findAll(root, hasClass('row'));
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['申请覆盖：你关心的地区还没有？', '用户协议与隐私保护指引', '关于有据']);
+  assert.equal(rows[1].attrs.bindtap, 'openAgreement');
+  assert.equal(findAll(root, tapsTo('openPrivacy')).length, 0);
+});
+
+test('隐私保护指引：调用 wx.openPrivacyContract 打开后台填写的官方指引；打不开或基础库太低时提示"暂时打不开，请稍后再试"', () => {
+  const run = (wxStub) => {
+    const consent = load('utils/consent.js', {
+      '../content/legal.js': { final: false, version: 'v' }, './api.js': {}, './exports.js': {}, './exporter.js': {},
+    }, { wx: wxStub });
+    consent.openPrivacy();
+  };
+  let opened = 0;
+  let toast = null;
+  run({ openPrivacyContract: () => { opened += 1; }, showToast: (o) => { toast = o; } });
+  assert.equal(opened, 1);
+  assert.equal(toast, null);
+  run({ openPrivacyContract: (o) => o.fail({ errMsg: 'openPrivacyContract:fail' }), showToast: (o) => { toast = o; } });
+  assert.equal(toast.title, '暂时打不开，请稍后再试');
+  toast = null;
+  run({ showToast: (o) => { toast = o; } });
+  assert.equal(toast.title, '暂时打不开，请稍后再试');
 });
 
 async function searchPage(final, extra = {}) {
@@ -254,7 +280,18 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.ok(all.includes('侵权投诉：发邮件至联系邮箱'));
     assert.ok(all.includes('可导出 Excel 或 Word'));
     assert.ok(all.includes('网站不允许程序访问的，我们不绕过'));
-    assert.deepEqual(findAll(root, tapsTo('openAgreement')).map((n) => n.attrs['data-type']), ['user', 'privacy']);
+    // 定稿前不打开草案协议，只有"隐私保护指引"一行（官方指引）；定稿后照旧是用户协议、隐私保护指引两行
+    assert.deepEqual(findAll(root, tapsTo('openAgreement')).map((n) => n.attrs['data-type']), final ? ['user', 'privacy'] : []);
+    assert.deepEqual(texts(root, tapsTo('openPrivacy')), final ? [] : ['隐私保护指引']);
+    // 数据说明：只在定稿前显示，不提这个版本没有的功能，没有【】占位
+    const notes = findAll(root, (n) => hasClass('card')(n) && textOf(n).includes('数据说明'));
+    assert.equal(notes.length, final ? 0 : 1);
+    if (!final) {
+      const note = textOf(notes[0]);
+      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把链接或邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
+        `服务器按法律要求保存访问日志（如 IP 地址）${KEEP_DAYS} 天`]) assert.ok(note.includes(line), `数据说明缺少：${line}`);
+      assert.doesNotMatch(note, /【|】|关注|提醒|纠错|注销|我的数据/);
+    }
   }
 });
 
@@ -273,13 +310,19 @@ const CLOSED_PAGES = [
   { name: 'my-data', title: '你的账号下没有保存个人信息', open: (p) => p.onShow(), deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/conditions.js': conditions, '../../utils/consent.js': consent,
   }), api: { myData: () => Promise.resolve({ user: null, follows: [], subscriptions: [], feedback: [], retention: {} }) } },
+  // 草案协议页：定稿前不显示（入口改为官方隐私保护指引），定稿后照旧
+  { name: 'agreement', title: '《隐私保护指引》', open: (p) => p.onLoad({ type: 'privacy' }), deps: (api, consent, final) => ({
+    '../../content/legal.js': { final, version: 'v', status: '草案', disclaimer: '说明',
+      user: { title: '用户协议', sections: [] }, privacy: { title: '隐私保护指引', sections: [{ h: '一', p: ['甲'] }] } },
+    '../../utils/api.js': api, '../../utils/consent.js': consent,
+  }), api: {} },
 ];
 
 for (const spec of CLOSED_PAGES) {
   test(`直接打开 ${spec.name}：未定稿时显示"这个功能暂未开放"和回首页、不请求接口；定稿后照旧`, async () => {
     for (const final of STATES) {
       const api = apiSpy(spec.api);
-      const page = load(`pages/${spec.name}/index.js`, spec.deps(api, consentFor(final)), { ...app, wx: { setNavigationBarTitle() {}, getStorageSync: () => '' } });
+      const page = load(`pages/${spec.name}/index.js`, spec.deps(api, consentFor(final), final), { ...app, wx: { setNavigationBarTitle() {}, getStorageSync: () => '' } });
       spec.open(page); await flush();
       const root = shown(`pages/${spec.name}/index.wxml`, page.data);
       const all = textOf(root);

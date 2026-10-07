@@ -1,13 +1,14 @@
 const legal = require('../../content/legal.js');
 const { loadCoverage } = require('../../utils/coverage.js');
 const { shortTime } = require('../../utils/format.js');
-const { loginOpen } = require('../../utils/consent.js');
+const { loginOpen, openPrivacy } = require('../../utils/consent.js');
 
 const ENV_NAME = { develop: '开发版', trial: '体验版' };
 
 // 关于有据：运营者、备案号、联系和投诉渠道
 // （微信小程序运营规范 3.10 侵权投诉机制、3.13 披露机构信息和咨询投诉渠道）。
-// 协议定稿前（loginOpen 为 false，D-056）没有关注、提醒、纠错和申请覆盖：使用说明不提这些，纠错改为发邮件
+// 协议定稿前（loginOpen 为 false，D-056）没有关注、提醒、纠错和申请覆盖：使用说明不提这些，纠错改为发邮件；
+// 加一段"数据说明"；不打开草案协议，隐私保护指引打开小程序后台填写的官方页面
 Page({
   data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, covFailed: false, open: {}, loginOpen: loginOpen() },
 
@@ -66,5 +67,9 @@ Page({
 
   openAgreement(e) {
     wx.navigateTo({ url: `/pages/agreement/index?type=${e.currentTarget.dataset.type}` });
+  },
+
+  openPrivacy() {
+    openPrivacy();
   },
 });

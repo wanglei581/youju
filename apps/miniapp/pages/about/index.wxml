@@ -43,6 +43,15 @@
   <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们</text>。</view>
 </view>
 
+<!-- 协议定稿前（D-056）：这个版本处理哪些信息。访问日志天数和服务端 access_log.KEEP_DAYS 一致（测试核对） -->
+<view wx:if="{{!loginOpen}}" class="card">
+  <view class="section-title">数据说明</view>
+  <view class="muted plain steps">1. 本版本不需要登录，不收集姓名、手机号等个人信息。
+2. 点"复制原文链接"或联系邮箱时，只把链接或邮箱写入剪切板，不读取剪切板。
+3. 导出的文件只保存在你的手机上，不保存在我们的服务器上。
+4. 为保障网络安全，服务器按法律要求保存访问日志（如 IP 地址）190 天，到期删除；不记录你输入的检索词和企业名称。</view>
+</view>
+
 <view class="card">
   <view class="section-title">运营者</view>
   <view class="kv"><text class="kv-k">名称</text><text class="kv-v">{{op.name}}</text></view>
@@ -59,8 +68,12 @@
   <view wx:if="{{loginOpen}}" class="go" bindtap="feedback" aria-role="button">去纠错</view>
 </view>
 
-<view class="card">
+<!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->
+<view wx:if="{{loginOpen}}" class="card">
   <view class="row" data-type="user" bindtap="openAgreement"><text class="row-text">用户协议</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row row--last" data-type="privacy" bindtap="openAgreement"><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+</view>
+<view wx:else class="card">
+  <view class="row row--last" bindtap="openPrivacy" aria-role="button"><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
 <view style="height: 80rpx"></view>

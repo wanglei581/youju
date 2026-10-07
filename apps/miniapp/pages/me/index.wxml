@@ -50,7 +50,9 @@
 
 <view class="card">
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <view class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->
+  <view wx:if="{{loginOpen}}" class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:else class="row" bindtap="openPrivacy" aria-role="button"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row {{hasRecord && !profileLoading && !profileError ? '' : 'row--last'}}" data-url="/pages/about/index" bindtap="go" aria-role="button"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>

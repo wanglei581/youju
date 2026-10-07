@@ -66,6 +66,14 @@ function syncConsent() {
   return pending;
 }
 
+// 打开小程序后台填写的《用户隐私保护指引》（微信官方页面，基础库 2.32.3 起）。
+// 协议定稿前（D-056）"我的"和"关于有据"用它代替草案页面；打不开或基础库太低时轻提示
+function openPrivacy() {
+  const fail = () => wx.showToast({ title: '暂时打不开，请稍后再试', icon: 'none' });
+  if (typeof wx.openPrivacyContract !== 'function') { fail(); return; }
+  wx.openPrivacyContract({ fail });
+}
+
 // 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底
 function ensureConsent() {
   if (!loginOpen()) {
@@ -162,5 +170,5 @@ function consentOutdated() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
 };

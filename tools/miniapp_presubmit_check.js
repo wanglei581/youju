@@ -2,7 +2,8 @@
 // 小程序提审前自检（验收 E5；agy 预审提出"开发版、演示数据这类提示不能留到审核版"）。
 // 这些提示只在配置没填时出现，所以逐项查配置：全部通过才提审。
 // 协议没定稿（legal.final 为 false）时提审的是不含登录的版本（D-056）：登录、关注、提醒、纠错的入口都不显示，
-// 不查订阅模板；协议阅读页仍可打开，所以【】占位照样要补齐。
+// 不查订阅模板；草案协议页也不显示（隐私保护指引打开小程序后台填写的官方页面），
+// 所以【】占位只查关于页会显示的运营者信息和说明。
 // 只报哪一项没过，不打印协议正文和运营者信息。
 //
 // 用法（仓库根目录）：node tools/miniapp_presubmit_check.js
@@ -36,8 +37,10 @@ const withLogin = legal.final === true;
 console.log(withLogin
   ? '协议已定稿：本次提审含登录、关注、提醒、纠错\n'
   : '协议未定稿：本次提审不含登录、关注、提醒、纠错（D-056），这些入口都不显示\n');
-const marks = placeholders(legal, '', []);
-check('协议里没有未填的【】占位', marks.length === 0,
+const marks = withLogin
+  ? placeholders(legal, '', [])
+  : placeholders({ operator: legal.operator, disclaimer: legal.disclaimer }, '', []);
+check(withLogin ? '协议里没有未填的【】占位' : '关于页显示的运营者信息和说明里没有【】占位', marks.length === 0,
   `还有：${marks.slice(0, 8).join('、')}${marks.length > 8 ? ' 等' : ''}`);
 const op = legal.operator || {};
 check('关于页有备案号', op.icp && !String(op.icp).startsWith('【'), '备案号下来后填进 content/legal.js 的 operator.icp');

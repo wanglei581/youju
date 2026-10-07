@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, CONSENT_PAGE } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE } = require('../../utils/consent.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
 Page({
@@ -119,6 +119,11 @@ Page({
 
   openAgreement(e) {
     wx.navigateTo({ url: `/pages/agreement/index?type=${e.currentTarget.dataset.type}` });
+  },
+
+  // 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案
+  openPrivacy() {
+    openPrivacy();
   },
 
   go(e) {
