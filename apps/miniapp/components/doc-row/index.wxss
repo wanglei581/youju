@@ -8,3 +8,11 @@
 .meta { margin-top: 14rpx; display: flex; align-items: center; gap: 24rpx; font-size: 25rpx; color: var(--t2); }
 .issuer + .meta { margin-top: 4rpx; }
 .copy { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
+.group { margin-top: 16rpx; display: inline-flex; align-items: center; gap: 6rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: var(--fill); font-size: 25rpx; line-height: 1.6; color: var(--t2); }
+.versions { margin-top: 12rpx; padding: 4rpx 20rpx; border-left: 4rpx solid var(--line2); }
+.version { display: flex; align-items: center; gap: 16rpx; padding: 16rpx 0; border-bottom: 2rpx solid var(--line); }
+.version-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2rpx; }
+.version-label { font-size: 27rpx; font-weight: 600; color: var(--t1); }
+.version-meta { font-size: 24rpx; line-height: 1.5; color: var(--t2); }
+.version-copy { flex-shrink: 0; font-size: 24rpx; color: var(--brand); white-space: nowrap; }
+.versions-note { padding: 14rpx 0 6rpx; font-size: 23rpx; line-height: 1.6; color: var(--t3); }

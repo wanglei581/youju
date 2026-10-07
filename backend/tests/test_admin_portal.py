@@ -156,6 +156,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         "deadlines_30": 1,
         "fields": 1,
         "conditions": 1,
+        "repost": 0,
         "kinds": 1,
         "kind_suggestions": 0,
         "audit": 1,
@@ -178,6 +179,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         ("deadlines_30", "deadlines/count?due=30", "pending"),
         ("fields", "fields/count", "pending"),
         ("conditions", "conditions/count", "pending"),
+        ("repost", "repost-groups/count", "pending"),
         ("kinds", "kinds/count", "pending"),
         ("kind_suggestions", "kind-suggestions/count", "pending"),
         ("audit", "audit/count", "flagged"),
@@ -209,6 +211,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     [
         ("review", "deadlines"),
         ("fields", "fields"),
+        ("repost", "repost-groups"),
         ("kinds", "kinds"),
         ("audit", "audit"),
         ("feedback", "feedback"),

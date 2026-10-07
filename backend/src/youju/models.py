@@ -285,6 +285,71 @@ class DocumentMerge(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class RepostGroup(Base):
+    """转发组（D-055，见 youju/repost.py）：同一份部里通知的各地版本。
+
+    各版本的截止日期仍挂在各自的文件上、各自核对，不随组同步。
+    strength：strong 强证据 / weak 疑似。topic 是事项名（核心标题），
+    upstream_title、upstream_number 照录正文里引用的部里通知，没有为空。
+    no_auto：保留人工处理过的组；组员的人工决定另按 active、joined_by、confirmed_at 保留。
+    needs_review：确认后的内容或整组约束变化，立即停止对外折叠，等待人工重新确认。
+    """
+
+    __tablename__ = "repost_groups"
+    __table_args__ = (
+        CheckConstraint("strength IN ('strong', 'weak')", name="ck_repost_groups_strength"),
+        CheckConstraint("created_by IN ('rule', 'human')", name="ck_repost_groups_created_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strength: Mapped[str] = mapped_column(String(8))
+    topic: Mapped[str] = mapped_column(String(200))
+    upstream_title: Mapped[str | None] = mapped_column(String(300))
+    upstream_number: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    no_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 修订号：成员进出、确认状态、事项信息有变化就加一；管理台确认、撤回、拆组、整组不合并时
+    # 带上看到的修订号，对不上就不执行（返回 409，提示刷新）
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class RepostGroupMember(Base):
+    """转发组里的一个版本（同一文件层的主文件）；一份文件最多属于一个转发组。
+
+    confirmed_at 有值且整组无需复核才对外按组折叠（所有组都要人确认）。active=False 是人工移出，
+    归组任务不会再把它加回来。joined_by：rule 归组规则加入 / human 人工加入或拆出。
+    """
+
+    __tablename__ = "repost_group_members"
+    __table_args__ = (
+        Index("ix_repost_group_members_group", "group_id", "active"),
+        CheckConstraint("joined_by IN ('rule', 'human')", name="ck_repost_members_joined_by"),
+        CheckConstraint(
+            "confirmed_at IS NULL OR confirmed_by IS NOT NULL",
+            name="ck_repost_members_confirmed",
+        ),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[int] = mapped_column(ForeignKey("repost_groups.id", ondelete="CASCADE"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    joined_by: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
+    # 归组证据（标题转发、正文转发、上游文号、标题含部委或国家计划），只给核对人看
+    evidence: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    joined_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    confirmed_by: Mapped[str | None] = mapped_column(String(80))
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 确认时的发布日期、机关、标题和完整正文指纹；变化后整组需复核。
+    confirmed_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    removed_by: Mapped[str | None] = mapped_column(String(80))
+    removed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 

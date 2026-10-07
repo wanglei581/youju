@@ -82,3 +82,17 @@
 .sk-title { height: 40rpx; margin-top: 22rpx; }
 .sk-card { padding-top: 28rpx; padding-bottom: 28rpx; }
 .sk-section { width: 112rpx; height: 32rpx; }
+/* 转发版本（D-055）：各版本的截止按版本列出 */
+.ver-card { padding-bottom: 8rpx; }
+.ver-upstream { margin: 8rpx 0 4rpx; padding: 16rpx 20rpx; background: #F7F8FA; border-radius: 12rpx; font-size: 25rpx; line-height: 1.7; color: var(--t2); }
+.ver { padding: 22rpx 0; border-bottom: 2rpx solid var(--line); }
+.ver-top { display: flex; align-items: center; gap: 12rpx; }
+.ver-label { font-size: 28rpx; font-weight: 600; color: var(--t1); }
+.ver-here { padding: 0 10rpx; border-radius: 6rpx; background: var(--brand-tint); color: var(--brand); font-size: 22rpx; line-height: 36rpx; }
+.ver-go { margin-left: auto; display: flex; align-items: center; }
+.ver-due { margin-top: 6rpx; font-size: 28rpx; line-height: 1.6; color: var(--t1); }
+.ver-due--none { color: var(--t3); }
+.ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
+.ver-meta-text { flex: 1; min-width: 0; }
+.ver-copy { flex-shrink: 0; color: var(--brand); white-space: nowrap; }
+.ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }

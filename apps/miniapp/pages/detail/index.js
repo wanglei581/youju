@@ -7,6 +7,7 @@ const { loginOpen } = require('../../utils/consent.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
+const { versionRows, upstreamLine } = require('../../utils/repost.js');
 
 // 正文默认显示的字数：在这个长度附近的换行处截断，读起来不断在半句
 const BODY_PREVIEW = 600;
@@ -37,7 +38,7 @@ function conditionRows(doc) {
 Page({
   data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '' },
+    atts: [], attNote: '', versions: [], upstream: '' },
 
   onLoad(query) {
     // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
@@ -67,6 +68,9 @@ Page({
           supportExpanded: '',
           supportEvidence: '',
           conds: conditionRows(doc),
+          // 转发版本（D-055）：同一份部里通知的各地版本，各自的截止按版本列出
+          versions: versionRows(doc.repost),
+          upstream: upstreamLine(doc.repost),
           due,
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
@@ -84,7 +88,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [],
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -134,6 +138,16 @@ Page({
 
   goBack() {
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
+  },
+
+  // 打开同组另一个版本的详情（当前这一版不跳转）
+  openVersion(e) {
+    const { id, current } = e.currentTarget.dataset;
+    if (id && !current) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
+  },
+
+  copyVersion(e) {
+    copyLink(e.currentTarget.dataset.url);
   },
 
   openNew(e) {

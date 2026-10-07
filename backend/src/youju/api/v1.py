@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, func, not_, or_, select
+from sqlalchemy import Select, and_, case, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju import fields as field_rules
@@ -45,9 +45,12 @@ from youju.models import (
     DocumentMerge,
     JobRun,
     ListEntry,
+    RepostGroup,
+    RepostGroupMember,
     Source,
 )
 from youju.report_revision import publication_revision
+from youju.repost import confirmed_members, labels_for
 from youju.takedown import available_condition, is_taken_down
 from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
@@ -418,16 +421,166 @@ def _item(
     return payload
 
 
-def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
-    """批量取详情、截止日期和待核对标记（各一次查询），不逐条查库。"""
+def _items(
+    session: Session, rows: list[tuple[Document, Source]], grouped: bool = False
+) -> list[dict]:
+    """批量取详情、截止日期和待核对标记（各一次查询），不逐条查库。
+
+    grouped（group=1，D-055）：主条目带上所在转发组的其他版本（group），旧版小程序不传、不给。"""
     ids = [doc.id for doc, _ in rows]
     details, approved = _details(session, ids), _approved(session, ids)
     # 已有核对通过截止的不必再查候选
     pending = _pending(session, [doc_id for doc_id in ids if not approved.get(doc_id)])
-    return [
+    items = [
         _item(doc, src, details.get(doc.id), approved.get(doc.id, []), doc.id in pending)
         for doc, src in rows
     ]
+    if grouped:
+        versions = repost_versions(session, ids)
+        for item in items:
+            info = versions.get(int(item["id"]))
+            if info and info["others"]:
+                others = info["others"]
+                item["group"] = {
+                    "id": info["group_id"],
+                    "label": info["label"],
+                    "versions": len(others),
+                    # 其他版本的地区（同省两个部门的只写一次），小程序最多写 3 个，多了写“等”
+                    "regions": list(dict.fromkeys(o["region"] for o in others)),
+                    "items": [
+                        {k: o[k] for k in ("id", "label", "region", "issuer", "date", "url")}
+                        for o in others
+                    ],
+                }
+    return items
+
+
+# ---- 转发组（D-055）：同一份部里通知的各地版本 ---------------------------------------------
+# 只有在管理台确认过的组员（repost_group_members.confirmed_at 有值）才对外按组折叠；没确认的、
+# 人工移出的都按单条显示。截止日期不随组合并：每个版本只显示它自己核对通过的截止，按版本标明。
+
+
+def _grouped(stmt: Select) -> Select:
+    """先筛选、再按转发组折叠（group=1）：命中筛选的版本里，同一确认过的转发组只留一条主条目。
+
+    主条目：部里原件在库就用原件，否则用最早发布的版本（同一天按编号）；选了地区筛选时命中的
+    只有该地区的版本，主条目自然是本地版本。主条目的标题、机关、日期、申报状态都是这一版自己的。
+    排序、翻页和计数都按主条目（stmt 是 _base() 派生的 select(Document, Source)）。"""
+    members = confirmed_members()
+    key = func.coalesce(-members.c.group_id, Document.id)
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=key,
+            order_by=(
+                case((Source.province == _NATIONAL, 0), else_=1),
+                Document.publish_date.is_(None),
+                Document.publish_date,
+                Document.id,
+            ),
+        )
+        .label("repost_rank")
+    )
+    ranked = (
+        stmt.outerjoin(members, members.c.document_id == Document.id)
+        .with_only_columns(Document.id.label("doc_id"), rank)
+        .subquery()
+    )
+    return (
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .join(ranked, ranked.c.doc_id == Document.id)
+        .where(ranked.c.repost_rank == 1)
+    )
+
+
+def _province_name(province: str) -> str:
+    return "国家部委" if province == _NATIONAL else province
+
+
+def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """这些文件所在的已确认转发组：{文件: {group_id, label 这一版的叫法, upstream, others}}。
+
+    others 是同组其他对外可见、已确认的版本（不含自己），按部里原件、发布日期排；每个版本带自己的
+    原文网址。没有其他可见版本的不算组（others 为空）。"""
+    if not doc_ids:
+        return {}
+    group_of = dict(
+        session.execute(
+            select(RepostGroupMember.document_id, RepostGroupMember.group_id)
+            .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+            .where(
+                RepostGroup.needs_review.is_(False),
+                RepostGroupMember.document_id.in_(doc_ids),
+                RepostGroupMember.active.is_(True),
+                RepostGroupMember.confirmed_at.is_not(None),
+            )
+        ).all()
+    )
+    if not group_of:
+        return {}
+    rows = session.execute(
+        _base()
+        .add_columns(RepostGroupMember.group_id)
+        .join(RepostGroupMember, RepostGroupMember.document_id == Document.id)
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+        .where(
+            RepostGroup.needs_review.is_(False),
+            RepostGroupMember.group_id.in_(set(group_of.values())),
+            RepostGroupMember.active.is_(True),
+            RepostGroupMember.confirmed_at.is_not(None),
+        )
+    ).all()
+    by_group: dict[int, list[tuple[Document, Source]]] = {}
+    for doc, src, group_id in rows:
+        by_group.setdefault(group_id, []).append((doc, src))
+    groups = {
+        g.id: g
+        for g in session.scalars(select(RepostGroup).where(RepostGroup.id.in_(list(by_group))))
+    }
+    details = _details(session, [doc.id for doc, _, _ in rows])
+    out: dict[int, dict[str, Any]] = {}
+    for doc_id, group_id in group_of.items():
+        members = sorted(
+            by_group.get(group_id, []),
+            key=lambda pair: (
+                pair[1].province != _NATIONAL,
+                pair[0].publish_date or date.max,
+                pair[0].id,
+            ),
+        )
+        if not any(doc.id == doc_id for doc, _ in members):
+            continue  # 自己不对外可见（下架等）
+        labels = labels_for({doc.id: src for doc, src in members})
+        group = groups[group_id]
+        out[doc_id] = {
+            "group_id": group_id,
+            "label": labels[doc_id],
+            "upstream": (
+                {"title": group.upstream_title, "number": group.upstream_number}
+                if group.upstream_number
+                else None
+            ),
+            "members": members,
+            "labels": labels,
+            "others": [
+                {
+                    "id": str(doc.id),
+                    "label": labels[doc.id],
+                    "region": _province_name(src.province),
+                    "issuer": (
+                        details[doc.id].issuer
+                        if doc.id in details and details[doc.id].issuer
+                        else src.dept_full_name
+                    ),
+                    "date": doc.publish_date.isoformat() if doc.publish_date else None,
+                    "url": doc.url,
+                }
+                for doc, src in members
+                if doc.id != doc_id
+            ],
+        }
+    return out
 
 
 def _kind_is(kinds: list[str]):
@@ -473,13 +626,26 @@ def _folds_guides(kind: str, types: str | None) -> bool:
 
 
 def fold_guides(
-    session: Session, stmt: Select, kind: str, types: str | None, fold: int | None
+    session: Session,
+    stmt: Select,
+    kind: str,
+    types: str | None,
+    fold: int | None,
+    group: bool = False,
 ) -> tuple[Select, int, int]:
     """按 fold 处理"资讯与指南"（搜索和关注的新文件共用）：返回（要列出的查询, 资讯与指南篇数,
-    折叠了几篇）。fold 不传时不统计（旧版小程序）；0 照常列出、给出篇数；1 不列出、只给篇数。"""
+    折叠了几篇）。fold 不传时不统计（旧版小程序）；0 照常列出、给出篇数；1 不列出、只给篇数。
+    group 为真时按转发组算（返回的查询仍未折叠，由调用方折叠）：篇数是折叠资讯与指南后实际少掉的
+    条数（组数）。一个转发组里同时有“资讯与指南”和“其他”的版本时，折叠后这一组仍以“其他”那版
+    列出，不算折叠掉。"""
     if fold is None or not _folds_guides(kind, types):
         return stmt, 0, 0
-    guides = _count(session, stmt.where(_kind_is([GUIDE])))
+    if group:
+        guides = _count(session, _grouped(stmt)) - _count(
+            session, _grouped(stmt.where(_kind_is(_NOT_GUIDE)))
+        )
+    else:
+        guides = _count(session, stmt.where(_kind_is([GUIDE])))
     if fold != 1:
         return stmt, guides, 0
     return stmt.where(_kind_is(_NOT_GUIDE)), guides, guides
@@ -504,16 +670,52 @@ def _count(session: Session, stmt: Select) -> int:
 
 
 @router.get("/home")
-def home(session: SessionDep) -> dict:
+def home(
+    session: SessionDep,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
+) -> dict:
     """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最近一次成功检查的时间、
-    最新 8 份。"""
+    最新 8 份。
+
+    group=1（D-055）：本周新增按转发组算，本周有新版本的组计 1 份，week_reposts 是并进组里、
+    没有另计的版本数；最新 8 份也按组折叠。"""
     start, end = _week(now().date())
     week = visible_documents(
-        select(Document.title, Document.kind_override)
+        select(Document.id, Document.title, Document.kind_override)
         .join(Source, Document.source_id == Source.id)
         .where(public_condition())
     ).where(Document.publish_date >= start, Document.publish_date < end)
-    kinds = [effective_kind(t, override) for t, override in session.execute(week).all()]
+    week_rows = session.execute(week.order_by(Document.id)).all()
+    week_reposts = 0
+    if group == 1:
+        members = confirmed_members()
+        group_of = dict(
+            session.execute(
+                select(members.c.document_id, members.c.group_id).where(
+                    members.c.document_id.in_([row.id for row in week_rows] or [-1])
+                )
+            ).all()
+        )
+        seen: set[int] = set()
+        kept = []
+        for row in week_rows:
+            group_id = group_of.get(row.id)
+            if group_id is not None and group_id in seen:
+                week_reposts += 1
+                continue
+            if group_id is not None:
+                seen.add(group_id)
+            kept.append(row)
+        week_rows = kept
+    kinds = [effective_kind(row.title, row.kind_override) for row in week_rows]
     # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
     live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
     sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
@@ -531,25 +733,26 @@ def home(session: SessionDep) -> dict:
         select(func.max(JobRun.finished_at)).where(JobRun.job == "crawl", JobRun.status == "ok")
     )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
-    latest = session.execute(
-        _ordered(_base().where(_kind_is(["申报通知", "名单", "政策"]))).limit(8)
-    ).all()
-    return {
-        "stats": {
-            "week_total": len(kinds),
-            "apply": kinds.count("申报通知"),
-            "lists": kinds.count("名单"),
-            "other": len(kinds) - kinds.count("申报通知") - kinds.count("名单"),
-            "provinces": provinces,
-            "sources": sources,
-            # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
-            "followed_new": None,
-            "last_checked_at": (
-                last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
-            ),
-        },
-        "items": _items(session, [tuple(r) for r in latest]),
+    latest_stmt = _base().where(_kind_is(["申报通知", "名单", "政策"]))
+    if group == 1:
+        latest_stmt = _grouped(latest_stmt)
+    latest = session.execute(_ordered(latest_stmt).limit(8)).all()
+    stats = {
+        "week_total": len(kinds),
+        "apply": kinds.count("申报通知"),
+        "lists": kinds.count("名单"),
+        "other": len(kinds) - kinds.count("申报通知") - kinds.count("名单"),
+        "provinces": provinces,
+        "sources": sources,
+        # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
+        "followed_new": None,
+        "last_checked_at": (
+            last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
+        ),
     }
+    if group == 1:
+        stats["week_reposts"] = week_reposts
+    return {"stats": stats, "items": _items(session, [tuple(r) for r in latest], group == 1)}
 
 
 @router.get("/coverage")
@@ -701,8 +904,21 @@ def search(
     industries: Annotated[
         str | None, Query(max_length=400, description="产业方向（按标题），逗号分隔")
     ] = None,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
+
+    group=1（D-055）：先按条件筛出各个版本，再把同一确认过的转发组折叠成一条主条目（见 _grouped），
+    total、total_all、guides、folded 都按组算；reposts 是折叠掉、没有另计的版本数，主条目带 group
+    （其他版本和各自的原文网址）。
 
     fold=1 时"资讯与指南"类文件不列出、不计入 total 和 total_all，只在 folded 里给出折叠了几篇
     （不悄悄藏：小程序写明"已折叠 X 篇"，点开就按 fold=0 列出来）；guides 是符合条件的
@@ -714,19 +930,28 @@ def search(
     all_time = search_statement(
         session, q, kind, regions, types, status, "不限", depts, open, **filters
     )
-    stmt, guides, folded = fold_guides(session, stmt, kind, types, fold)
+    grouped = group == 1
+    stmt, guides, folded = fold_guides(session, stmt, kind, types, fold, grouped)
     if fold == 1 and _folds_guides(kind, types):
         all_time = all_time.where(_kind_is(_NOT_GUIDE))
+    reposts = 0
+    if grouped:
+        versions = _count(session, stmt)
+        stmt, all_time = _grouped(stmt), _grouped(all_time)
     total = _count(session, stmt)
+    if grouped:
+        reposts = versions - total
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
     body = {
         "q": (q or "").strip(),
         "total": total,
         "total_all": _count(session, all_time),
-        "items": _items(session, [tuple(r) for r in rows]),
+        "items": _items(session, [tuple(r) for r in rows], grouped),
     }
     if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
         body |= {"folded": folded, "guides": guides}
+    if grouped:  # 旧版小程序不传 group，返回格式和以前一样
+        body["reposts"] = reposts
     return body
 
 
@@ -1327,7 +1552,63 @@ def document(doc_id: int, session: SessionDep) -> dict:
         payload.pop("fields", None)
     if apply_conditions:
         payload["apply_conditions"] = apply_conditions
+    # 转发组（D-055）：同一份部里通知的其他版本，各版本的截止各自列出（不互相套用）
+    repost = repost_versions(session, [doc.id]).get(doc.id)
+    if repost and repost["others"]:
+        payload["repost"] = _repost_detail(session, doc.id, repost)
     return payload
+
+
+def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
+    """详情页的“各版本”：本组每个对外可见、已确认的版本，各带自己的原文网址和自己核对通过的截止。
+
+    截止按版本标（“部里”只给库里的部里原件，其余写“江西版”），不同版本的日期不互相套用；
+    没核对的写截止未核对。顺序：部里原件、本版、其他版本按发布日期。"""
+    members = info["members"]
+    ids = [doc.id for doc, _ in members]
+    approved = _approved(session, ids)
+    pending = _pending(session, [i for i in ids if not approved.get(i)])
+    details = _details(session, ids)
+    ordered = sorted(
+        members,
+        key=lambda pair: (
+            pair[1].province != _NATIONAL,
+            pair[0].id != doc_id,
+            pair[0].publish_date or date.max,
+            pair[0].id,
+        ),
+    )
+    versions = []
+    for version, src in ordered:
+        deadlines = approved.get(version.id, [])
+        detail = details.get(version.id)
+        versions.append(
+            {
+                "id": str(version.id),
+                "label": info["labels"][version.id],
+                "current": version.id == doc_id,
+                "region": _province_name(src.province),
+                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "date": version.publish_date.isoformat() if version.publish_date else None,
+                "url": version.url,
+                "deadlines": [
+                    {
+                        "label": d.kind,
+                        "date": d.approved_date.isoformat(),
+                        "time": _hhmm(d.approved_time),
+                    }
+                    for d in deadlines
+                ],
+                "deadline_state": deadline_state(deadlines, version.id in pending),
+            }
+        )
+    return {
+        "group_id": info["group_id"],
+        "label": info["label"],
+        # 照录正文里引用的部里通知标题和文号（没有就不给），不写推断的内容
+        "upstream": info["upstream"],
+        "versions": versions,
+    }
 
 
 @router.get("/calendar")
@@ -1418,19 +1699,31 @@ def recent_lists(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
-    """最近发布的名单与公示，以及本周份数。"""
+    """最近发布的名单与公示，以及本周份数。group=1 时按转发组折叠和计数（名单一般没有转发组）。"""
+    grouped = group == 1
+    wrap = _grouped if grouped else (lambda stmt: stmt)
     stmt = _base().where(_kind_is(["名单"]))
     start, end = _week(now().date())
     week_total = _count(
-        session, stmt.where(Document.publish_date >= start, Document.publish_date < end)
+        session, wrap(stmt.where(Document.publish_date >= start, Document.publish_date < end))
     )
+    stmt = wrap(stmt)
     total = _count(session, stmt)
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
     return {
         "week_total": week_total,
         "total": total,
-        "items": _items(session, [tuple(r) for r in rows]),
+        "items": _items(session, [tuple(r) for r in rows], grouped),
     }
 
 
