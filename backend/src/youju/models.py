@@ -291,7 +291,8 @@ class RepostGroup(Base):
     各版本的截止日期仍挂在各自的文件上、各自核对，不随组同步。
     strength：strong 强证据 / weak 疑似（自动确认只对强证据组）。topic 是事项名（核心标题），
     upstream_title、upstream_number 照录正文里引用的部里通知，没有为空。
-    no_auto：人工撤回、移出或拆过的组，YOUJU_DEDUPE_AUTO 打开后也不自动确认。
+    no_auto：人工撤回、移出、拆过或整组不合并的组：YOUJU_DEDUPE_AUTO 打开后也不自动确认，
+    归组任务也不清理它和它的组员。
     """
 
     __tablename__ = "repost_groups"
@@ -307,6 +308,9 @@ class RepostGroup(Base):
     upstream_number: Mapped[str | None] = mapped_column(String(64))
     created_by: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
     no_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 修订号：成员进出、确认状态、事项信息有变化就加一；管理台确认、撤回、拆组、整组不合并时
+    # 带上看到的修订号，对不上就不执行（返回 409，提示刷新）
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 

@@ -58,35 +58,55 @@ def _split_by_content(
     return [ids for _, ids in buckets]
 
 
-def _merge_same_url(groups: dict[str, list[int]], urls: dict[int, str]) -> dict[str, list[int]]:
-    """网址相同（按现行规则算出的规范网址键相同）就是同一份文件，不管标题、机关、日期能不能对上。
+Signature = tuple[str | None, str | None]
+
+
+def _compatible(left: Signature, right: Signature) -> bool:
+    """文号、正文指纹都不冲突（一方取不到的不算冲突）。"""
+    return all(a is None or b is None or a == b for a, b in zip(left, right, strict=True))
+
+
+def _merge_same_url(
+    groups: dict[str, list[int]], urls: dict[int, str], signatures: dict[int, Signature]
+) -> dict[str, list[int]]:
+    """网址相同（按现行规则算出的规范网址键相同）的归为同一份文件，不要求标题、机关、日期对上：
     一份有详情、一份没有时，发文机关一个取自详情、一个取自来源，match_key 对不上
-    （转载去重方案 v1 第二节）。"""
+    （转载去重方案 v1 第二节）。
+
+    但文号或正文指纹冲突的不并（网址被复用、或改版前后内容不同）：两条各自保留，
+    免得旧版核定的截止进了新版的详情、导出、日历和雷达。"""
     parent: dict[int, int] = {}
+    sig: dict[int, Signature] = {}
 
     def find(x: int) -> int:
-        parent.setdefault(x, x)
+        if x not in parent:
+            parent[x] = x
+            sig[x] = signatures.get(x, (None, None))
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def union(a: int, b: int) -> None:
+    def union(a: int, b: int, *, check: bool) -> None:
         ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
+        if ra == rb or (check and not _compatible(sig[ra], sig[rb])):
+            return
+        root, child = min(ra, rb), max(ra, rb)
+        parent[child] = root
+        sig[root] = tuple(x or y for x, y in zip(sig[root], sig[child], strict=True))
 
     key_of: dict[int, str] = {}
     for key, members in groups.items():
         for doc_id in members:
             key_of[doc_id] = key
-            union(members[0], doc_id)
+            # 同一 match_key 的组已按文号和正文分过（_split_by_content），直接连
+            union(members[0], doc_id, check=False)
     by_url: dict[str, list[int]] = defaultdict(list)
     for doc_id, url in urls.items():
         by_url[url].append(doc_id)
     for members in by_url.values():
         for doc_id in members[1:]:
-            union(members[0], doc_id)
+            union(members[0], doc_id, check=True)
     merged: dict[int, list[int]] = defaultdict(list)
     for doc_id in sorted(set(parent)):
         merged[find(doc_id)].append(doc_id)
@@ -96,7 +116,7 @@ def _merge_same_url(groups: dict[str, list[int]], urls: dict[int, str]) -> dict[
         if len(keys) == 1 and None not in keys:
             result[keys.pop()] = members
         else:
-            result[f"网址|{urls[root]}"] = members
+            result[f"网址|{urls[root]}|{root}"] = members
     return result
 
 
@@ -124,17 +144,19 @@ def reconcile_documents(session: Session, titles: set[str] | None = None) -> int
     by_key: dict[str, list[tuple[int, tuple[str | None, str | None]]]] = defaultdict(list)
     ids: set[int] = set()
     urls: dict[int, str] = {}
+    signatures: dict[int, Signature] = {}
     for doc, detail, source in session.execute(stmt):
         ids.add(doc.id)
         urls[doc.id] = url_key(doc.url)
+        signatures[doc.id] = _signature(detail)
         key = match_key(doc, detail, source)
         if key:
-            by_key[key].append((doc.id, _signature(detail)))
+            by_key[key].append((doc.id, signatures[doc.id]))
     groups: dict[str, list[int]] = {}
     for key, members in by_key.items():
         for n, group in enumerate(_split_by_content(members)):
             groups[key if n == 0 else f"{key}|{n}"] = group
-    groups = _merge_same_url(groups, urls)
+    groups = _merge_same_url(groups, urls, signatures)
     if not ids:
         return 0
     mappings = {
