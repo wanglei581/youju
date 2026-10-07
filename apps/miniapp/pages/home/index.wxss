@@ -57,3 +57,4 @@
 .footer-text { font-size: 24rpx; line-height: 1.5; color: var(--t2); }
 .footer-link { margin-top: 12rpx; }
 .list-tip { padding: 48rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }
+.summary-reposts { color: var(--t3); }

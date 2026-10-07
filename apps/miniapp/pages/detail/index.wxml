@@ -51,6 +51,26 @@
     </view>
   </view>
 
+  <!-- 转发版本（D-055）：同一份部里通知的各地版本，截止按版本列出、各自核对，不同版本的日期不互相套用；
+       点一行打开那一版自己的详情，原文链接也是那一版自己的 -->
+  <view wx:if="{{versions.length}}" class="card ver-card">
+    <view class="section-title">各版本的截止<text class="weak excerpt-sec">按各版本原文分别核对</text></view>
+    <view wx:if="{{upstream}}" class="ver-upstream">{{upstream}}</view>
+    <view wx:for="{{versions}}" wx:key="id" class="ver" data-id="{{item.id}}" data-current="{{item.current}}" bindtap="openVersion" aria-role="{{item.current ? 'text' : 'link'}}" aria-label="{{item.label}}：{{item.deadline}}">
+      <view class="ver-top">
+        <text class="ver-label">{{item.label}}</text>
+        <text wx:if="{{item.current}}" class="ver-here">本页</text>
+        <view wx:if="{{!item.current}}" class="ver-go"><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
+      </view>
+      <view class="ver-due {{item.verified ? '' : 'ver-due--none'}}">{{item.deadline}}</view>
+      <view class="ver-meta">
+        <text class="ver-meta-text">{{item.meta}}</text>
+        <text class="ver-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</text>
+      </view>
+    </view>
+    <view class="weak ver-note">各版本的推荐截止、报送要求可能不同，以各自原文为准</view>
+  </view>
+
   <view class="card">
     <view class="section-title">要点</view>
     <view wx:for="{{doc.points}}" wx:key="index" class="kv {{index === doc.points.length - 1 ? 'kv--last' : ''}}">

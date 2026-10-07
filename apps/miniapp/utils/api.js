@@ -105,13 +105,14 @@ function coverage() {
   return copy(mock.coverage);
 }
 
+// group=1（D-055）：同一份部里通知的各地转发版本按组折叠、按组计数（管理台确认过的组才折叠）
 function home() {
-  if (isLive()) return request('/api/v1/home');
+  if (isLive()) return request('/api/v1/home', { group: 1 });
   return copy({ stats: mock.stats, items: mock.home });
 }
 
 function search(params) {
-  if (isLive()) return request('/api/v1/search', params);
+  if (isLive()) return request('/api/v1/search', Object.assign({}, params, { group: 1 }));
   return copy(mockSearch(mock.search.items, params));
 }
 
@@ -214,7 +215,7 @@ function calendar() {
 }
 
 function lists() {
-  if (isLive()) return request('/api/v1/lists/recent', { limit: 20 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
+  if (isLive()) return request('/api/v1/lists/recent', { limit: 20, group: 1 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
