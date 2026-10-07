@@ -1,1 +1,1 @@
-{ "navigationBarTitleText": "关注", "usingComponents": {} }
+{ "navigationBarTitleText": "关注", "usingComponents": { "feature-closed": "/components/closed/index" } }

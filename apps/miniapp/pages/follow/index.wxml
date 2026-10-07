@@ -1,16 +1,13 @@
 <notice-bar />
+<feature-closed wx:if="{{!loginOpen}}" />
+<block wx:else>
 <view wx:if="{{loading}}" class="card empty muted">正在加载…</view>
 <view wx:if="{{mode === 'demo' && !loading}}" class="local">演示数据：连上接口并登录后，这里显示你自己的关注</view>
 
 <view wx:if="{{mode === 'gated'}}" class="card gate">
   <view class="gate-title">关注条件，有新文件时标出来</view>
   <view class="muted gate-text">在搜索结果页点"关注这个搜索"，把地区、主题、类型等条件存下来；有新文件时在这里标出，也可以订阅微信提醒。</view>
-  <!-- 协议定稿前：灰色不可点的按钮，下面一行写明原因 -->
-  <view wx:if="{{legalFinal}}" class="btn-primary gate-btn" bindtap="enable">登录后使用</view>
-  <block wx:else>
-    <view class="btn-off gate-btn" aria-disabled="true">协议定稿后开放</view>
-    <view class="weak gate-note">用户协议和隐私保护指引正在定稿，定稿后可以登录、关注条件</view>
-  </block>
+  <view class="btn-primary gate-btn" bindtap="enable">登录后使用</view>
 </view>
 
 <block wx:else>
@@ -56,5 +53,6 @@
       <view class="muted remind-text">按次订阅：在关注旁点"提醒"，这个关注有新文件时用微信提醒你一次；想继续收到，提醒后再点一次。</view>
     </view>
   </view>
+</block>
 </block>
 <view class="tab-page-bottom"></view>

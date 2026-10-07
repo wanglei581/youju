@@ -38,8 +38,8 @@
   <view class="summary-right">
     <text>按发布时间 ↓</text>
     <text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text>
-    <!-- 关注这个搜索（含已选条件，有新文件时在关注页标出）。协议定稿前是灰色的，点了弹出原因 -->
-    <view class="follow-mini {{followOff ? 'follow-mini--off' : ''}}" bindtap="follow" aria-role="button" aria-label="{{followOff ? '关注这个搜索，协议定稿后开放' : '关注这个搜索'}}"><t-icon name="notification" size="26rpx" />关注</view>
+    <!-- 关注这个搜索（含已选条件，有新文件时在关注页标出）。协议定稿前不显示（D-056） -->
+    <view wx:if="{{loginOpen}}" class="follow-mini" bindtap="follow" aria-role="button" aria-label="关注这个搜索"><t-icon name="notification" size="26rpx" />关注</view>
   </view>
 </view>
 <view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
@@ -53,7 +53,7 @@
   </view>
   </block>
   <view wx:if="{{error}}" class="empty">{{error}}<text class="link" bindtap="retry">　重试</text></view>
-  <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。想要这个地区，可以在"我的 → 申请覆盖"告诉我们</view>
+  <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。<text wx:if="{{loginOpen}}">想要这个地区，可以在"我的 → 申请覆盖"告诉我们</text></view>
   <view wx:elif="{{!items.length && !loading}}" class="empty">
     <view class="empty-title">没有符合条件的文件</view>
     <view wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}</view>
@@ -73,7 +73,7 @@
   <view wx:elif="{{items.length < total}}" class="load-more" bindtap="loadMore">已显示 {{items.length}}/{{total}} 份 · <text class="link">{{loading ? '加载中…' : '加载更多'}}</text></view>
   <view wx:elif="{{items.length}}" class="load-more">共 {{items.length}} 份，已全部显示</view>
 </view>
-<view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
+<view wx:if="{{loginOpen}}" class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们</text></view>
 <view style="height: {{selecting ? '200rpx' : '80rpx'}}"></view>
 
 <view wx:if="{{selecting}}" class="pick-bar">

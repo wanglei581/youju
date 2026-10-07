@@ -90,7 +90,7 @@ test('我的页请求失败显示错误，重试后恢复服务端登录状态',
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => fail ? Promise.reject(new Error('网络故障')) : Promise.resolve({ agreed: { version: 'test' }, follows: 2, subscriptions: { deadline: 1 } }) },
-    '../../utils/consent.js': { consentEpoch: () => 0, applyServer: () => true },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true },
     '../../utils/coverage.js': {},
   });
   page.refresh();
@@ -113,7 +113,7 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
-    '../../utils/consent.js': { consentEpoch: () => epoch, applyServer: () => true, withdraw: () => { epoch += 1; return Promise.resolve(true); } },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdraw: () => { epoch += 1; return Promise.resolve(true); } },
     '../../utils/coverage.js': {},
   });
   page.refresh(); page.refresh();
@@ -210,6 +210,7 @@ test('日历上限截断有标记；刚好 1000 条无误报', async () => {
 
 test('日历接收截断标记，并按截止时刻移入已截止列表', async () => {
   const page = load('pages/calendar/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { calendar: () => Promise.resolve({ truncated: true, items: [{ id: 1, due: '2026-09-30', time: '17:00', verified: true }] }) },
     '../../utils/format.js': { ...format, todayISO: () => '2026-09-30', daysUntil: (date, _, time) => format.daysUntil(date, new Date('2026-09-30T09:01:00Z'), time) },
     '../../utils/subscribe.js': {}, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },

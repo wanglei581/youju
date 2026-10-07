@@ -15,7 +15,7 @@
   <view class="muted plain steps">1. 首页搜索或点入口，按地区、类型、发文部门筛选通知；只看还没截止的，在"申报状态"里选"只看未截止"。
 2. 点开一条看发文机关、文号、正文和核对过的截止日期；"复制原文链接"后可在浏览器打开政府原文。
 3. "申报日历""截止雷达"按截止日期列出项目；"查名单"输入企业全称或统一社会信用代码，查它上过哪些公示、公布名单。
-4. 搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</view>
+4. <text wx:if="{{loginOpen}}">搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</text><text wx:else>在搜索结果点"选择"勾选文件，或在文件详情点"导出"，可导出 Excel 或 Word。</text></view>
 </view>
 
 <view class="card">
@@ -40,7 +40,16 @@
       </view>
     </view>
   </view>
-  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们。</view>
+  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们</text>。</view>
+</view>
+
+<!-- 协议定稿前（D-056）：这个版本处理哪些信息。访问日志天数和服务端 access_log.KEEP_DAYS 一致（测试核对） -->
+<view wx:if="{{!loginOpen}}" class="card">
+  <view class="section-title">数据说明</view>
+  <view class="muted plain steps">1. 本版本不需要登录，不收集姓名、手机号等个人信息。
+2. 点"复制原文链接"或联系邮箱时，只把链接或邮箱写入剪切板，不读取剪切板。
+3. 导出的文件只保存在你的手机上，不保存在我们的服务器上。
+4. 为保障网络安全，服务器按法律要求保存访问日志（如 IP 地址）190 天，到期删除；不记录你输入的检索词和企业名称。</view>
 </view>
 
 <view class="card">
@@ -53,13 +62,18 @@
 
 <view class="card">
   <view class="section-title">纠错与投诉</view>
-  <view class="muted plain">内容和原文不一致：在文件详情或"我的"里点"纠错"，我们对照原文核实后修正。</view>
+  <view wx:if="{{loginOpen}}" class="muted plain">内容和原文不一致：在文件详情或"我的"里点"纠错"，我们对照原文核实后修正。</view>
+  <view wx:else class="muted plain">内容和原文不一致：发邮件至联系邮箱，写明文件标题和哪里不一致，我们对照原文核实后修正。</view>
   <view class="muted plain">侵权投诉：发邮件至联系邮箱，写明涉及的内容、权利证明和联系方式，我们核实后及时处理。</view>
-  <view class="go" bindtap="feedback" aria-role="button">去纠错</view>
+  <view wx:if="{{loginOpen}}" class="go" bindtap="feedback" aria-role="button">去纠错</view>
 </view>
 
-<view class="card">
+<!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->
+<view wx:if="{{loginOpen}}" class="card">
   <view class="row" data-type="user" bindtap="openAgreement"><text class="row-text">用户协议</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row row--last" data-type="privacy" bindtap="openAgreement"><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+</view>
+<view wx:else class="card">
+  <view class="row row--last" bindtap="openPrivacy" aria-role="button"><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
 <view style="height: 80rpx"></view>

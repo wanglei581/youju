@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { describe } = require('../../utils/conditions.js');
-const { withdraw } = require('../../utils/consent.js');
+const { withdraw, loginOpen } = require('../../utils/consent.js');
 
 const SUB_KIND = { newDocs: '关注有新文件', deadline: '截止前提醒' };
 const SUB_STATUS = { unused: '还没发出', sent: '已发出', failed: '发送失败', refused: '被拒收', expired: '已失效' };
@@ -18,10 +18,12 @@ function maskId(id) {
 
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
+// 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '' },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen() },
 
   onShow() {
+    if (!this.data.loginOpen) return;
     this.load();
   },
 
