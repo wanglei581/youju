@@ -219,3 +219,40 @@ test('复制原文链接可以带上原因', () => {
   copyLink(DOC_URL);
   assert.deepEqual(toasts, ['该格式不能在小程序内打开，已复制原文链接', '已复制，请粘贴到浏览器打开']);
 });
+
+test('取附件分段：二进制要设 dataType other；冷启动 503 自动重试', async () => {
+  const seen = [];
+  const codes = [503, 200];
+  const api = load('utils/api.js', {
+    './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
+    '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
+  }, {
+    wx: { cloud: { callContainer: (o) => { seen.push(o); o.success({ statusCode: codes.shift(), data: new ArrayBuffer(4) }); } } },
+  });
+  const buffer = await api.attachmentPart('7', 'abcdef0123456789', 0);
+  assert.equal(buffer.byteLength, 4);
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].dataType, 'other');
+  assert.equal(seen[0].responseType, 'arraybuffer');
+});
+
+test('查询类请求遇到冷启动 503 自动重试；提交类请求不重试', async () => {
+  const seen = [];
+  let codes = [503, 503, 200];
+  const api = load('utils/api.js', {
+    './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
+    '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
+  }, {
+    wx: {
+      cloud: { callContainer: (o) => { seen.push(o.method); o.success({ statusCode: codes.shift(), data: { ok: 1 } }); } },
+      removeStorageSync() {}, getStorageSync() { return ''; }, setStorageSync() {},
+    },
+  });
+  const data = await api.coverage();
+  assert.deepEqual(data, { ok: 1 });
+  assert.deepEqual(seen, ['GET', 'GET', 'GET']);
+  seen.length = 0;
+  codes = [503, 200];
+  await assert.rejects(api.agree('2026-10'));
+  assert.deepEqual(seen, ['POST']);
+});
