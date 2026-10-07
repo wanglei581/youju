@@ -21,6 +21,7 @@ from alembic import command
 from docx import Document as WordDocument
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
+from sqlalchemy import text as sql
 
 from youju import attachments as copies
 from youju.api import attachments as attachment_api
@@ -120,6 +121,15 @@ def make_png(side: int, seed: int = 1) -> bytes:
     return out.getvalue()
 
 
+def make_flat_png(width: int, height: int) -> bytes:
+    """纯色 PNG：尺寸可以很大，文件却很小（像压缩得很小的扫描页）。"""
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("L", (width, height), 255).save(out, "PNG")
+    return out.getvalue()
+
+
 def docx_with_picture(png: bytes, text: str = "申报指南") -> bytes:
     doc = WordDocument()
     doc.add_paragraph(text)
@@ -194,9 +204,19 @@ def make_cfb(streams: dict[str, bytes], storages: dict[str, dict[str, bytes]] | 
     return bytes(header) + struct.pack(f"<{len(fat)}I", *fat) + entries + body
 
 
-# 旧版 Office 里图片的记录头（[MS-ODRAW]）：PNG、EMF
+# 旧版 Office 里图片的记录头（[MS-ODRAW]）：PNG、DIB、EMF
 PNG_BLIP = bytes.fromhex("006e1ef0")
+DIB_BLIP = bytes.fromhex("807a1ff0")
 EMF_BLIP = bytes.fromhex("403d1af0")
+
+
+def bitmap_blip(head: bytes, image: bytes) -> bytes:
+    """位图记录：16 字节编号 + 1 字节标记 + 图片文件本身。"""
+    return blip(head, bytes(16) + b"\xff" + image)
+
+
+def dib(width: int, height: int) -> bytes:
+    return struct.pack("<IiiHH", 40, width, height, 1, 8) + bytes(24) + bytes(64)
 
 
 def blip(head: bytes, payload: bytes) -> bytes:
@@ -266,12 +286,17 @@ def test_personal_numbers_written_with_spaces_or_dashes_are_found() -> None:
     for text in (
         "联系人手机：138 1234 5678",
         "联系人手机：138-1234-5678",
+        "联系人手机：138    1234    5678",
+        "联系人手机：138\t1234\n5678",
+        "联系人手机：138\u3000\u30001234 \uff0d  5678",
         "手机 +86 138 1234 5678",
         "电话：0571-87654321 138 1234 5678",
         "身份证号 110105 19900101 1234",
         "身份证号 1101 0519 9001 0112 3X",
+        "身份证号 110105    19900101\n1234",
         "4111 1111 1111 1111",  # 没写"账号"、通过 Luhn 校验的 16 位
         "6222-0212-3456-7890-128",
+        "4111   1111\n1111    1111",
         "收款 6212261202011584340",
     ):
         assert copies.check_content(make_docx("申报指南", text), "docx").code == "personal", text
@@ -287,11 +312,20 @@ def test_personal_numbers_written_with_spaces_or_dashes_are_found() -> None:
 
 def test_office_files_with_large_pictures_are_not_copied() -> None:
     big, logo = make_png(150), make_png(16)
-    assert len(big) > copies.IMAGE_BYTES > len(logo)
+    assert len(big) > copies.OBJECT_BYTES and len(logo) < copies.BITMAP_BYTES
     image = copies.check_content(docx_with_picture(big), "docx")
     assert image.code == "image" and "无法核验个人信息" in image.detail
-    # 小图标、logo 不算
+    # 小图标、logo 不算；位图超过 10KB、任一边超过 200 像素（文件再小也算）、认不出尺寸的都不存
     assert copies.check_content(docx_with_picture(logo), "docx") == "docx"
+    medium = make_png(64)
+    assert copies.BITMAP_BYTES < len(medium) < copies.OBJECT_BYTES
+    assert copies.check_content(docx_with_picture(medium), "docx").code == "image"
+    wide = make_flat_png(1200, 40)
+    assert len(wide) < copies.BITMAP_BYTES
+    assert "200 像素" in copies.check_content(docx_with_picture(wide), "docx").detail
+    assert copies.check_content(docx_with_picture(make_flat_png(200, 200)), "docx") == "docx"
+    unknown = with_parts(DOCX, {"word/media/image9.wdp": b"not a picture"})
+    assert copies.check_content(unknown, "docx").code == "image"
     assert (
         copies.check_content(
             with_parts(make_xlsx(("名称",)), {"xl/media/image1.png": big}), "xlsx"
@@ -308,7 +342,7 @@ def test_office_files_with_large_pictures_are_not_copied() -> None:
     embedded = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": big})
     assert copies.check_content(embedded, "docx").code == "image"
     people = make_xlsx(("联系人", "13712345678"))
-    assert len(people) < copies.IMAGE_BYTES
+    assert len(people) < copies.OBJECT_BYTES
     embedded = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": people})
     assert copies.check_content(embedded, "docx").code == "personal"
     # 嵌入的旧版表格按单元格取文字
@@ -327,13 +361,17 @@ def test_office_files_with_large_pictures_are_not_copied() -> None:
 
 def test_pdf_pages_mostly_covered_by_pictures_are_not_copied() -> None:
     text = "Application guide 2026"
-    # 页面 300×200：图片超过半页（含几张拼起来的）就不存；公章、logo 这类小图不算
+    # 页面 300×200：任一张图片超过 1/10 页面就不存；公章、logo 这类小图不算
     assert copies.check_content(make_pdf(text, ((0, 0, 300, 150),)), "pdf").code == "image"
-    tiles = ((0, 0, 150, 110), (150, 90, 150, 110))
-    assert copies.check_content(make_pdf(text, tiles), "pdf").code == "image"
+    single = copies.check_content(make_pdf(text, ((0, 0, 100, 70),)), "pdf")
+    assert single.code == "image" and "1/10" in single.detail
     assert copies.check_content(make_pdf(text, ((10, 10, 40, 40),)), "pdf") == "pdf"
+    assert copies.check_content(make_pdf(text, ((0, 0, 100, 55),)), "pdf") == "pdf"
+    # 每张都不到 1/10、合计超过半页（切成条的扫描页）也不存
+    tiles = tuple((x, y, 100, 55) for x in (0, 100, 200) for y in (0, 60))
+    assert "合计" in copies.check_content(make_pdf(text, tiles), "pdf").detail
     # 超出页面的部分不算
-    assert copies.check_content(make_pdf(text, ((200, 0, 300, 200),)), "pdf") == "pdf"
+    assert copies.check_content(make_pdf(text, ((290, 0, 300, 200),)), "pdf") == "pdf"
     # 几乎没有文字的页面有图片，仍按扫描件处理
     assert copies.check_content(make_pdf(None, ((10, 10, 40, 40),)), "pdf").code == "unchecked"
 
@@ -346,9 +384,23 @@ def test_old_office_files_with_large_pictures_are_not_copied() -> None:
     assert copies.check_content(word(), "doc") == "doc"
     big = word(streams={"Data": blip(PNG_BLIP, bytes(60_000))})
     assert copies.check_content(big, "doc").code == "image"
+    # 小位图：不超过 10KB、两边都不超过 200 像素才放行；认不出尺寸的不放行
+    small = word(streams={"Data": bitmap_blip(PNG_BLIP, make_png(16))})
+    assert copies.check_content(small, "doc") == "doc"
+    wide = word(streams={"Data": bitmap_blip(PNG_BLIP, make_flat_png(1200, 40))})
+    assert copies.check_content(wide, "doc").code == "image"
     assert (
-        copies.check_content(word(streams={"Data": blip(PNG_BLIP, bytes(2_000))}), "doc") == "doc"
+        copies.check_content(
+            word(streams={"Data": bitmap_blip(DIB_BLIP, dib(300, 10))}), "doc"
+        ).code
+        == "image"
     )
+    assert (
+        copies.check_content(word(streams={"Data": bitmap_blip(DIB_BLIP, dib(16, -16))}), "doc")
+        == "doc"
+    )
+    junk = word(streams={"Data": blip(PNG_BLIP, bytes(2_000))})
+    assert copies.check_content(junk, "doc").code == "image"
     # 小的矢量图是压缩存的：解压后取出文字一起查
     phone = word(streams={"Data": emf_blip("联系人 13812345678")})
     assert copies.check_content(phone, "doc").code == "personal"
@@ -1105,6 +1157,87 @@ def test_cache_run_rechecks_old_rule_copies_first(session) -> None:
     assert report.recheck.checked == 0 and len(cloud.links) == links
 
 
+def test_old_rule_recheck_failures_do_not_block_the_queue(session) -> None:
+    """重查按上次重查的时间排：读不到的记下时间排到后面，不会一直堵在队首。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf"), ("b", base + "b.pdf", "pdf")])
+    lost, good = make_pdf("Lost"), make_pdf("Good")
+    cloud = FakeCloud()
+    cloud.objects[obj(good, "pdf")] = good  # a 在对象存储里读不到
+    old = copies.RULES_VERSION - 1
+    add_copy(session, base + "a.pdf", lost, "pdf", rules_version=old)
+    add_copy(session, base + "b.pdf", good, "pdf", rules_version=old)
+    for row in rows_by_url(session).values():
+        row.next_check_at = NOW + timedelta(days=3)
+    session.commit()
+    fetcher = FakeFetcher({})
+    report = run(session, fetcher, cloud, recheck_limit=1)
+    assert report.recheck.unreadable == 1 and report.recheck.checked == 0
+    assert rows_by_url(session)[base + "a.pdf"].rechecked_at == NOW
+    report = run(session, fetcher, cloud, now=NOW + timedelta(hours=12), recheck_limit=1)
+    rows = rows_by_url(session)
+    assert report.recheck.kept == 1 and copies.servable(rows[base + "b.pdf"])
+    assert not copies.servable(rows[base + "a.pdf"])
+
+
+def test_cache_run_and_manual_recheck_share_one_lock(session, monkeypatch, capsys) -> None:
+    """附件定时任务和手动重查共用一把数据库锁：另一个在跑就跳过本轮，什么都不改。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf")])
+    add_copy(session, base + "a.pdf", PDF, "pdf", rules_version=copies.RULES_VERSION - 1)
+    cloud = FakeCloud()
+    cloud.objects[obj(PDF, "pdf")] = PDF
+    fetcher = FakeFetcher({base + "a.pdf": PDF})
+    with session.get_bind().connect() as other:
+        assert other.execute(sql("SELECT GET_LOCK('youju_attachment_copies', 0)")).scalar() == 1
+        report = run(session, fetcher, cloud)
+        assert report.skipped and report.recheck is None
+        manual = copies.recheck_copies(session, ENV, client=cloud.client, now=NOW)
+        assert manual.skipped and manual.checked == 0
+        assert fetcher.calls == [] and cloud.links == [] and cloud.deleted == []
+        assert not copies.servable(rows_by_url(session)[base + "a.pdf"])
+        other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+    report = run(session, fetcher, cloud)
+    assert not report.skipped and report.recheck.kept == 1
+    # 跑完会释放：手动重查接着能拿到锁
+    assert not copies.recheck_copies(session, ENV, client=cloud.client, now=NOW).skipped
+
+    from youju import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(cloud_env=ENV))
+    monkeypatch.setattr(
+        copies, "cache_attachments", lambda *a, **k: copies.CacheReport(skipped=True)
+    )
+    monkeypatch.setattr(
+        copies, "recheck_copies", lambda *a, **k: copies.RecheckReport(skipped=True)
+    )
+    assert cli.main(["cache-attachments"]) == 0
+    assert cli.main(["recheck-attachments"]) == 1
+    out = capsys.readouterr().out
+    assert "本轮跳过" in out and "这次没有重查" in out
+
+
+def test_objects_still_referenced_are_never_deleted(session) -> None:
+    """删除前在同一事务里再确认一次：还有要提供的附件引用着的对象不删。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf"), ("b", base + "b.pdf", "pdf")])
+    shared = PREFIX + obj(PDF, "pdf")
+    add_copy(session, base + "a.pdf", PDF, "pdf")
+    stale = add_copy(session, base + "b.pdf", make_pdf("B"), "pdf")
+    stale.stale_file_ids = [shared]  # 换下来的旧副本恰好是别的附件正在用的对象
+    session.commit()
+    live = {copies.url_hash(base + "a.pdf"), copies.url_hash(base + "b.pdf")}
+    assert copies._referenced(session, {shared}, live) == {shared}
+    assert copies._referenced(session, {shared}, {copies.url_hash(base + "b.pdf")}) == set()
+    session.rollback()
+    cloud = FakeCloud()
+    report = copies.CacheReport()
+    copies._cleanup(session, cloud.client, ENV, live, report)
+    assert cloud.deleted == [] and report.removed == 0
+    assert rows_by_url(session)[base + "b.pdf"].stale_file_ids is None
+    assert copies._drop_stale(session, cloud.client, ENV) == 0 and cloud.deleted == []
+
+
 def test_downloaded_copies_get_the_current_rules_version(session) -> None:
     base = "https://kjt.ln.gov.cn/files/"
     add_doc(session, 1, APPLY, RECENT, [("指南", base + "guide.pdf", "pdf")])
@@ -1122,10 +1255,10 @@ def test_migration_0021_rules_version(db_engine) -> None:
 
     try:
         command.downgrade(cfg, "0020")
-        assert "rules_version" not in columns()
+        assert {"rules_version", "rechecked_at"}.isdisjoint(columns())
     finally:
         command.upgrade(cfg, "head")
-    assert "rules_version" in columns()
+    assert {"rules_version", "rechecked_at"} <= columns()
 
 
 def test_content_is_rate_limited(client, session, monkeypatch) -> None:

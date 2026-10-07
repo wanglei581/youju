@@ -12,9 +12,10 @@
 - 只存：政府网站链接；小程序能打开的 7 种格式（wx.openDocument 的 fileType：doc、docx、xls、
   xlsx、ppt、pptx、pdf）；不超过 20MB；文件头和扩展名是同一类格式；申报通知和政策（名单等
   可能有个人姓名，同 D-030 不给正文）；取得出文字、文字里没有身份证号、个人手机号、银行账号
-  （合规红线要求入库前脱敏，副本是原文件、没法脱敏，查不了或查出来有就不存）；没有查不了的图片：
-  Office 文件里单个超过 50KB 的图片或嵌入对象、PDF 某一页图片合计超过半页，都不存（图片里的
-  身份证、手机号查不出来；小图标、logo、公章不算）。
+  （合规红线要求入库前脱敏，副本是原文件、没法脱敏，查不了或查出来有就不存）；没有查不了的图片
+  （图片里的身份证、手机号查不出来）：Office 文件里单张位图超过 10KB 或任一边超过 200 像素、
+  矢量图或嵌入对象超过 50KB，PDF 里任一张位图超过页面的 1/10 或一页合计超过半页，都不存
+  （小图标、小 logo 不算）。
 - 规则版本：每份副本记下检查时用的规则版本（RULES_VERSION，附件规则改了就加 1）。api 只提供
   当前版本的副本，旧版本的立即当作"还在准备"；每轮定时任务先从对象存储读出旧版本的副本按新规则
   重查（每轮有上限），合格的升到新版本恢复提供，不合格的改成不提供、从对象存储删掉。
@@ -37,14 +38,15 @@ import time as clock
 import zipfile
 import zlib
 from collections import Counter, OrderedDict, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from pathlib import Path
 
 import httpx
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.backup import BEIJING, BackupError, _open_api, _retrying, upload
@@ -81,7 +83,7 @@ MAX_PARTS = math.ceil(MAX_BYTES / PART_SIZE)
 RECHECK = timedelta(days=7)
 # 附件检查规则的版本：规则改了（个人信息、图片、格式等）就加 1。副本记下检查时的版本，
 # 不是当前版本的不提供，等定时任务按新规则重查（0 = 加版本号之前的规则；1 = 10/7 起加了
-# 图片检查、带空格横线的号码、不写"账号"的卡号）
+# 图片检查、数字间带空白或横线的号码、不写"账号"的卡号）
 RULES_VERSION = 1
 # 每轮定时任务最多重查多少个旧版本的副本（从对象存储读，不访问原网站）
 RECHECK_PER_RUN = 100
@@ -166,17 +168,21 @@ _TAGS = re.compile(r"<[^>]+>")
 
 # ---- 图片：图片里的身份证、手机号查不出来，有大图就不存副本 ----
 
-# Office 文件里单个图片（或嵌入的对象）超过这么大就不存；小图标、logo 不算
-IMAGE_BYTES = 50 * 1024
-# PDF 某一页上图片合计占的面积超过这个比例就不存（扫描页、整页截图；公章、logo 不算）
-PDF_IMAGE_SHARE = 0.5
+# Office 文件里的位图：单张超过 10KB 或任一边超过 200 像素就不存（小图标、logo 不算）
+BITMAP_BYTES = 10 * 1024
+BITMAP_SIDE = 200
+# 矢量图（文字存在文件里，取出来查）和嵌入的对象：超过 50KB 就不存
+OBJECT_BYTES = 50 * 1024
+# PDF：任一张位图超过页面的 1/10，或一页上位图合计超过半页，就不存（小 logo 不算；线条图不是位图）
+PDF_IMAGE_SHARE = 0.1
+PDF_PAGE_SHARE = 0.5
 _IMAGE_SUFFIXES = (
     ".png", ".jpg", ".jpeg", ".jpe", ".jfif", ".gif", ".bmp", ".dib", ".tif", ".tiff",
     ".webp", ".wdp", ".hdp", ".jxr", ".heic", ".ico", ".pct", ".pict",
     ".emf", ".wmf", ".emz", ".wmz", ".svg",
 )  # fmt: skip
-# 矢量图里的文字是存在文件里的：小的取出文字，和正文一起查
-_VECTOR_SUFFIXES = (".emf", ".wmf", ".svg")
+# 矢量图里的文字是存在文件里的：小的取出文字，和正文一起查（emz、wmz 是压缩过的）
+_VECTOR_SUFFIXES = (".emf", ".wmf", ".svg", ".emz", ".wmz")
 _INFLATE_MAX = 16 * 1024 * 1024
 
 
@@ -184,16 +190,47 @@ class HasImages(Exception):
     """附件里有查不了个人信息的图片或嵌入对象（异常说明写在哪里）。"""
 
 
-def _pdf_image_area(page, images: list[dict]) -> float:
-    """这一页上图片合计占的面积（超出页面的部分不算）。"""
+def _pdf_image_areas(page, images: list[dict]) -> list[float]:
+    """这一页上每张图片占的面积（超出页面的部分不算）。"""
     x0, top, x1, bottom = page.bbox
-    area = 0.0
+    areas = []
     for image in images:
         width = min(image["x1"], x1) - max(image["x0"], x0)
         height = min(image["bottom"], bottom) - max(image["top"], top)
-        if width > 0 and height > 0:
-            area += width * height
-    return area
+        areas.append(width * height if width > 0 and height > 0 else 0.0)
+    return areas
+
+
+def _bitmap_size(raw: bytes) -> tuple[int, int] | None:
+    """位图的宽、高（像素）；认不出返回 None。只读文件头，不解码像素。"""
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            return image.size
+    except Exception:  # noqa: BLE001 - 认不出的格式、损坏的文件、超大尺寸都按认不出处理
+        pass
+    # 旧版 Office 的 DIB 图片没有文件头，直接是 BITMAPINFOHEADER（或旧的 BITMAPCOREHEADER）
+    if len(raw) >= 12:
+        header = int.from_bytes(raw[:4], "little")
+        if header == 12:
+            return int.from_bytes(raw[4:6], "little"), int.from_bytes(raw[6:8], "little")
+        if header in (40, 52, 56, 64, 108, 124) and len(raw) >= 12:
+            width = int.from_bytes(raw[4:8], "little", signed=True)
+            height = int.from_bytes(raw[8:12], "little", signed=True)
+            return abs(width), abs(height)
+    return None
+
+
+def _check_bitmap(raw: bytes, size: int, where: str) -> None:
+    """Office 文件里的一张位图：超过 10KB、任一边超过 200 像素、认不出尺寸，都抛 HasImages。"""
+    if size > BITMAP_BYTES:
+        raise HasImages(f"图片超过 10KB：{where}")
+    dims = _bitmap_size(raw)
+    if dims is None:
+        raise HasImages(f"图片认不出尺寸：{where}")
+    if max(dims) > BITMAP_SIDE:
+        raise HasImages(f"图片超过 {BITMAP_SIDE} 像素：{where}")
 
 
 def _pdf_text(data: bytes) -> str | None:
@@ -208,13 +245,15 @@ def _pdf_text(data: bytes) -> str | None:
             images = page.images
             # 某一页几乎没有文字但有图片：多半是扫描页，查不了
             scanned = len(text.strip()) < 10 and bool(images)
-            covered = _pdf_image_area(page, images) if images else 0.0
-            half = (page.width * page.height) * PDF_IMAGE_SHARE
+            areas = _pdf_image_areas(page, images) if images else []
+            page_area = page.width * page.height
             page.close()  # 释放这一页解析出的对象，大文件不至于占满内存
             if scanned:
                 return None
-            if covered > half:
-                raise HasImages(f"PDF 第 {number} 页的图片超过半页")
+            if any(area > page_area * PDF_IMAGE_SHARE for area in areas):
+                raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
+            if sum(areas) > page_area * PDF_PAGE_SHARE:
+                raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
             texts.append(text)
     joined = "\n".join(texts)
     return joined if joined.strip() else None
@@ -225,8 +264,9 @@ def _xml_text(raw: bytes) -> str:
 
 
 def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
-    """新版 Office 文件里的文字。图片、嵌入的对象（嵌入的表格、文档等）超过 50KB 抛 HasImages；
-    小的矢量图取出文字，小的嵌入文档取出它的文字（只往下看一层），一起查。"""
+    """新版 Office 文件里的文字。位图超过 10KB 或 200 像素、矢量图和嵌入的对象（嵌入的表格、
+    文档等）超过 50KB，抛 HasImages；小的矢量图取出文字，小的嵌入文档取出它的文字（只往下看
+    一层），一起查。"""
     parts: list[str] = []
     total = 0
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -240,20 +280,25 @@ def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
                 and ("/media/" in f"/{name}" or name.endswith(_IMAGE_SUFFIXES))
             )
             if embedded or image:
-                what = "嵌入的对象" if embedded else "图片"
+                vector = image and name.endswith(_VECTOR_SUFFIXES)
+                limit = OBJECT_BYTES if embedded or vector else BITMAP_BYTES
+                where = info.filename[:80]
                 raw = b""
-                if info.file_size <= IMAGE_BYTES:
+                if info.file_size <= limit:
                     with zf.open(info) as fh:  # 压缩包里写的大小可能不实，按实际读到的算
-                        raw = fh.read(IMAGE_BYTES + 1)
-                if info.file_size > IMAGE_BYTES or len(raw) > IMAGE_BYTES:
-                    raise HasImages(f"{what}超过 50KB：{info.filename[:80]}")
-                if name.endswith(".svg"):
-                    parts.append(_xml_text(raw))
-                elif embedded:
+                        raw = fh.read(limit + 1)
+                size = max(info.file_size, len(raw))
+                if embedded:
+                    if size > limit:
+                        raise HasImages(f"嵌入的对象超过 50KB：{where}")
                     parts.append(_embedded_text(raw, nested))
-                elif name.endswith(_VECTOR_SUFFIXES):
-                    parts.append(_binary_text(raw))
-                continue  # 小图标、logo
+                elif vector:
+                    if size > limit:
+                        raise HasImages(f"矢量图超过 50KB：{where}")
+                    parts.append(_vector_text(name, raw))
+                else:
+                    _check_bitmap(raw, size, where)  # 小图标、logo 放行
+                continue
             if not name.endswith(".xml"):
                 continue
             with zf.open(info) as fh:
@@ -263,6 +308,14 @@ def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
                 return None
             parts.append(_xml_text(raw))
     return "\n".join(parts)
+
+
+def _vector_text(name: str, raw: bytes) -> str:
+    if name.endswith(".svg"):
+        return _xml_text(raw)
+    if name.endswith((".emz", ".wmz")):
+        return _binary_text(_inflate(raw, zlib.MAX_WBITS | 16))
+    return _binary_text(raw)
 
 
 def _embedded_text(raw: bytes, nested: bool) -> str:
@@ -340,8 +393,9 @@ def _excel_drawings(stream: bytes) -> bytes:
     return bytes(out)
 
 
-def _inflate(blob: bytes) -> bytes:
-    for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+def _inflate(blob: bytes, *formats: int) -> bytes:
+    """解压矢量图（默认先按 zlib、再按不带头的 DEFLATE 试）；解不开或太大抛 HasImages。"""
+    for wbits in formats or (zlib.MAX_WBITS, -zlib.MAX_WBITS):
         try:
             inflater = zlib.decompressobj(wbits)
             out = inflater.decompress(blob, _INFLATE_MAX)
@@ -376,15 +430,22 @@ def _blip_text(stream: bytes) -> str:
         size = int.from_bytes(stream[at + 4 : at + 8], "little")
         if size > len(stream) - at - 8:
             continue  # 记录长度超出数据流：不是真的记录头，只是碰巧一样的几个字节
-        if size > IMAGE_BYTES:
-            raise HasImages("图片超过 50KB")
+        end = at + 8 + size
         if stream[at + 2] in _VECTOR_BLIPS:
-            texts.append(_vector_blip_text(stream, at, at + 8 + size))
+            if size > OBJECT_BYTES:
+                raise HasImages("矢量图超过 50KB")
+            texts.append(_vector_blip_text(stream, at, end))
+            continue
+        # 位图：记录头、1 或 2 个 16 字节的编号、1 字节标记之后就是图片文件本身
+        instance = int.from_bytes(stream[at : at + 2], "little") >> 4
+        start = at + 8 + 16 * (2 if instance & 1 else 1) + 1
+        _check_bitmap(stream[start:end], size, "旧版 Office 里的图片")
     return "\n".join(texts)
 
 
 def _ole_pictures(data: bytes, file_type: str) -> str:
-    """旧版 Office 文件里的图片和嵌入的对象：超过 50KB 的抛 HasImages；小的矢量图解压后取出文字。"""
+    """旧版 Office 文件里的图片和嵌入的对象：位图超过 10KB 或 200 像素、矢量图和嵌入对象超过 50KB，
+    抛 HasImages；小的矢量图解压后取出文字。"""
     from xlrd.compdoc import CompDoc
 
     doc = CompDoc(data, logfile=io.StringIO())
@@ -406,7 +467,7 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
             objects = [top]
         else:
             continue
-        if any(size_of(obj) > IMAGE_BYTES for obj in objects):
+        if any(size_of(obj) > OBJECT_BYTES for obj in objects):
             raise HasImages("嵌入的对象超过 50KB")
     texts = []
     for name in _OLE_PICTURE_STREAMS.get(file_type, ()):
@@ -613,6 +674,8 @@ class CacheReport:
     storage_error: str | None = None
     # 本轮先重查的旧规则版本副本
     recheck: RecheckReport | None = None
+    # 另一个附件任务（上一轮还没跑完，或有人在手动重查）正在跑，本轮跳过
+    skipped: bool = False
 
 
 def _since(now: datetime) -> tuple[date, datetime]:
@@ -729,6 +792,41 @@ def _check_one(
     session.commit()
 
 
+# 附件定时任务（缓存 + 重查）和手动重查共用的 MySQL 命名锁：同一时间只有一个在改副本、删文件
+_LOCK_NAME = "youju_attachment_copies"
+
+
+@contextmanager
+def _exclusive(session: Session) -> Iterator[bool]:
+    """拿附件任务锁（不等待）：拿到给 True，另一个附件任务正在跑给 False。
+    锁挂在单独的一个连接上，任务结束时释放；连接断了 MySQL 也会自动释放。"""
+    bind = session.get_bind()
+    engine = getattr(bind, "engine", bind)
+    if engine.dialect.name != "mysql":
+        yield True
+        return
+    with engine.connect() as conn:
+        got = conn.execute(text("SELECT GET_LOCK(:k, 0)"), {"k": _LOCK_NAME}).scalar() == 1
+        try:
+            yield got
+        finally:
+            if got:
+                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": _LOCK_NAME})
+
+
+def _referenced(session: Session, file_ids: set[str], live: set[str] | None) -> set[str]:
+    """删除前在同一事务里再查一次（锁住这些行）：还有附件记录引用着的对象不删。
+    live 给定时只算还要提供的附件（超过 90 天、下架的正要一起删掉，不算）。"""
+    if not file_ids:
+        return set()
+    rows = session.execute(
+        select(AttachmentCopy.url_hash, AttachmentCopy.file_id)
+        .where(AttachmentCopy.file_id.in_(sorted(file_ids)))
+        .with_for_update()
+    ).all()
+    return {file_id for key, file_id in rows if live is None or key in live}
+
+
 def _cleanup(
     session: Session, client: httpx.Client, env: str, live: set[str], report: CacheReport
 ) -> None:
@@ -741,9 +839,11 @@ def _cleanup(
     for row in rows:
         wanted.update(row.stale_file_ids or [])
     wanted -= in_use
+    kept = _referenced(session, wanted, live)
+    wanted -= kept
     deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
     report.removed += len(deleted)
-    settled = deleted | in_use
+    settled = deleted | in_use | kept
     for row in rows:
         if row.stale_file_ids:
             row.stale_file_ids = [i for i in row.stale_file_ids if i not in settled] or None
@@ -768,9 +868,40 @@ def cache_attachments(
 ) -> CacheReport:
     """先按新规则重查旧规则版本的副本（从对象存储读，最多 recheck_limit 个），再登记新附件、
     下载到期的（新的优先，再是失败重试、到期复查），最后清理不再需要的副本（含重查不合格的）。
-    对象存储出错时停下这一轮，原因写在 report.storage_error（命令按失败退出、由 job.sh 提醒）。"""
+    对象存储出错时停下这一轮，原因写在 report.storage_error（命令按失败退出、由 job.sh 提醒）。
+    和手动重查共用一把锁：另一个附件任务正在跑就跳过本轮（report.skipped）。"""
     if not 1 <= limit <= 500:
         raise ValueError("每轮下载个数要在 1 到 500 之间")
+    with _exclusive(session) as got:
+        if not got:
+            return CacheReport(skipped=True)
+        return _cache_run(
+            session,
+            env,
+            client=client,
+            fetcher=fetcher,
+            now=now,
+            limit=limit,
+            max_bytes=max_bytes,
+            retry_failed=retry_failed,
+            recheck_limit=recheck_limit,
+            sleep=sleep,
+        )
+
+
+def _cache_run(
+    session: Session,
+    env: str,
+    *,
+    client: httpx.Client | None,
+    fetcher,
+    now: datetime | None,
+    limit: int,
+    max_bytes: int,
+    retry_failed: bool,
+    recheck_limit: int,
+    sleep: Callable[[float], None],
+) -> CacheReport:
     now = now or datetime.now(UTC)
     report = CacheReport()
     wanted = candidates(session, now)
@@ -809,7 +940,7 @@ def cache_attachments(
             decode_text=False,
         )
     try:
-        report.recheck = recheck_copies(
+        report.recheck = _recheck(
             session, env, client=client, now=now, outdated_only=True, limit=recheck_limit
         )
         processed = 0
@@ -852,6 +983,8 @@ class RecheckReport:
     # 读不到的副本：这次不动，下次再查
     unreadable: int = 0
     storage_error: str | None = None
+    # 另一个附件任务正在跑，这次没有查
+    skipped: bool = False
 
 
 def _drop_stale(session: Session, client: httpx.Client, env: str) -> int:
@@ -860,8 +993,10 @@ def _drop_stale(session: Session, client: httpx.Client, env: str) -> int:
     rows = session.scalars(select(AttachmentCopy)).all()
     in_use = {r.file_id for r in rows if r.file_id}
     wanted = {i for r in rows for i in (r.stale_file_ids or [])} - in_use
+    kept = _referenced(session, wanted, None)
+    wanted -= kept
     deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
-    settled = deleted | in_use
+    settled = deleted | in_use | kept
     for row in rows:
         if row.stale_file_ids:
             row.stale_file_ids = [i for i in row.stale_file_ids if i not in settled] or None
@@ -870,6 +1005,22 @@ def _drop_stale(session: Session, client: httpx.Client, env: str) -> int:
 
 
 def recheck_copies(
+    session: Session,
+    env: str,
+    *,
+    client: httpx.Client | None = None,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> RecheckReport:
+    """手动重查全部已存的副本（youju recheck-attachments），做法见 _recheck。和附件定时任务共用
+    一把锁：定时任务正在跑就不查（report.skipped）。"""
+    with _exclusive(session) as got:
+        if not got:
+            return RecheckReport(skipped=True)
+        return _recheck(session, env, client=client, dry_run=dry_run, now=now)
+
+
+def _recheck(
     session: Session,
     env: str,
     *,
@@ -885,14 +1036,20 @@ def recheck_copies(
     副本。读不到的这次不动（仍是旧版本就仍不提供），计入 unreadable。
 
     outdated_only：只查不是当前规则版本的（定时任务用，最多 limit 个文件；删除留给本轮的清理）。
-    手动命令查全部，并当场删除。dry_run 只检查、报告，不改表、不删文件。"""
+    手动命令查全部，并当场删除。dry_run 只检查、报告，不改表、不删文件。
+    按上次重查的时间排（没查过的先），每次查都记下时间：读不到的排到后面，不会一直堵在前面。"""
     now = now or datetime.now(UTC)
     report = RecheckReport()
     stmt = select(AttachmentCopy).where(AttachmentCopy.status == "ready")
     if outdated_only:
         stmt = stmt.where(AttachmentCopy.rules_version != RULES_VERSION)
     groups: dict[str, list[AttachmentCopy]] = defaultdict(list)
-    for row in session.scalars(stmt.order_by(AttachmentCopy.id)):
+    order = (
+        AttachmentCopy.rechecked_at.is_(None).desc(),
+        AttachmentCopy.rechecked_at,
+        AttachmentCopy.id,
+    )
+    for row in session.scalars(stmt.order_by(*order)):
         parsed = parse_file_id(row.file_id)
         if _has_copy(row) and parsed is not None and parsed[0] == env:
             groups[row.file_id].append(row)
@@ -902,6 +1059,10 @@ def recheck_copies(
     try:
         for file_id, rows in picked:
             first = rows[0]
+            if not dry_run:
+                for row in rows:
+                    row.rechecked_at = now
+                session.commit()
             try:
                 data = read_copy(client, file_id, 0, first.size, first.size)
             except (BackupError, httpx.HTTPError) as exc:

@@ -638,6 +638,9 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
         return 1
     with session_factory()() as session:
         report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
+    if report.skipped:
+        print("附件副本：另一个附件任务（上一轮或手动重查）正在运行，本轮跳过")
+        return 0
     failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
     print(
         f"附件副本：新登记 {report.added}，本轮下载 {report.checked}（{report.bytes} 字节），"
@@ -669,6 +672,9 @@ def _cmd_recheck_attachments(args: argparse.Namespace) -> int:
         return 1
     with session_factory()() as session:
         report = recheck_copies(session, env, dry_run=args.dry_run)
+    if report.skipped:
+        print("附件副本的定时任务正在运行，这次没有重查，请稍后再跑")
+        return 1
     dropped = "，".join(f"{code} {n}" for code, n in report.dropped.most_common()) or "无"
     action = "（只检查，没有改动）" if args.dry_run else f"，从对象存储删掉 {report.removed} 个"
     print(

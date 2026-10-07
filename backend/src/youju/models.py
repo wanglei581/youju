@@ -369,6 +369,8 @@ class AttachmentCopy(Base):
     # 检查这份副本时用的规则版本（youju.attachments.RULES_VERSION）：不是当前版本的不提供，
     # 等定时任务按新规则重查
     rules_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 上次按新规则重查的时间（不论结果）：重查按它排，读不到的排到后面
+    rechecked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     # 下次检查时间：空值表示尽快
     next_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
