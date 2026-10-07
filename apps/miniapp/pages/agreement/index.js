@@ -1,13 +1,15 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { consentOpen, markAgreed } = require('../../utils/consent.js');
+const { consentOpen, markAgreed, loginOpen } = require('../../utils/consent.js');
 
 // 阅读协议。consent=1 时是"同意模式"：依次显示《用户协议》和《隐私保护指引》全文，
-// 同意按钮放在最后，读完才能同意（首次同意"先看协议"、协议更新后重新同意都走这里）
+// 同意按钮放在最后，读完才能同意（首次同意"先看协议"、协议更新后重新同意都走这里）。
+// 协议定稿前（loginOpen 为 false，D-056）不显示草案：入口都改为打开官方隐私保护指引，直接打开这一页时只显示"暂未开放"
 Page({
-  data: { docs: [], final: false, status: '', disclaimer: '', consent: false, sending: false },
+  data: { docs: [], final: false, status: '', disclaimer: '', consent: false, sending: false, loginOpen: loginOpen() },
 
   onLoad(query) {
+    if (!this.data.loginOpen) return;
     const consent = query.consent === '1' && consentOpen();
     let docs;
     if (consent) docs = [legal.user, legal.privacy];

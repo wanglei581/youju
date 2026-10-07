@@ -7,7 +7,7 @@
   padding-bottom: env(safe-area-inset-bottom);
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 列数随项数（3 或 4 项）写在 index.wxml 的 style 里 */
   background: #FFFFFF;
   border-top: 2rpx solid #EEF0F3;
   z-index: 100;

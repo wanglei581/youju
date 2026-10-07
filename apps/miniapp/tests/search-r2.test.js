@@ -31,7 +31,7 @@ function searchPage({ respond = () => ({ total: 0, total_all: 0, items: [] }), f
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../content/legal.js': { final },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': consent, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => final, ...consent }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx });
   return { page, calls };
@@ -274,41 +274,34 @@ test('结果信息栏：第一行份数和淡色"不限时间共 X 份"（选了
   assert.match(summary, /<text class="b">{{total}}<\/text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all">不限时间共 {{totalAll}} 份<\/text>/);
   assert.match(summary, /按发布时间 ↓/);
   assert.match(summary, /bindtap="select"/);
-  assert.match(summary, /class="follow-mini {{followOff \? 'follow-mini--off' : ''}}" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
+  assert.match(summary, /<view wx:if="{{loginOpen}}" class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
   // 大横幅去掉了
   assert.doesNotMatch(template, /follow-bar|关注这个搜索<\/text>/);
   assert.doesNotMatch(read('pages/search/index.wxss'), /\.follow-bar/);
 });
 
-test('关注小按钮：协议定稿前是灰色，点了弹出原因（末尾写关注后会怎样），不报错；开放后确认框写"关注后，有新文件时在关注页标出"', async () => {
+test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureConsent 只提示暂未开放、不弹"协议定稿后开放"；定稿后确认框写"关注后，有新文件时在关注页标出"', async () => {
   const NOTE = '关注后，有新文件时在关注页标出';
-  const notes = [];
-  const off = searchPage({ final: false, consent: { ensureConsent: (note) => { notes.push(note); return Promise.resolve(false); } },
-    wx: { showToast: () => assert.fail('不应弹出错误提示'), showModal: () => assert.fail('同意前不应打开关注对话框') } });
-  assert.equal(off.page.data.followOff, true);
-  off.page.follow(); await flush();
-  assert.deepEqual(notes, [NOTE]);
-  // 原因由 ensureConsent 弹出：协议还是草案时写明定稿后开放，末尾补上关注后会怎样；别处不传时和以前一样
-  let modal;
+  const off = searchPage({ final: false });
+  assert.equal(off.page.data.loginOpen, false);
+  // 兜底：协议定稿前万一走到 ensureConsent，只轻提示，不弹对话框
+  let toast;
   const consent = load('utils/consent.js', {
     '../content/legal.js': { final: false }, './api.js': {}, './exports.js': {}, './exporter.js': {},
-  }, { wx: { showModal: (o) => { modal = o; } } });
-  assert.equal(await consent.ensureConsent(NOTE), false);
-  assert.equal(modal.title, '协议定稿后开放');
-  assert.equal(modal.content, '关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。关注后，有新文件时在关注页标出。');
-  await consent.ensureConsent();
-  assert.equal(modal.content, '关注、微信提醒和纠错需要先同意《用户协议》和《隐私保护指引》，协议正在定稿，定稿后开放。');
+  }, { wx: { showToast: (o) => { toast = o; }, showModal: () => assert.fail('协议定稿前不弹对话框') } });
+  assert.equal(consent.loginOpen(), false);
+  assert.equal(await consent.ensureConsent(), false);
+  assert.equal(toast.title, '这个功能暂未开放');
   // 协议开放后：确认框（可编辑名称）的标题写这句
   let confirm;
   const on = searchPage({ final: true, consent: { ensureConsent: () => Promise.resolve(true) }, wx: { showModal: (o) => { confirm = o; } } });
-  assert.equal(on.page.data.followOff, false);
+  assert.equal(on.page.data.loginOpen, true);
   on.page.onLoad({}); await flush();
   on.page.follow(); await flush();
   assert.equal(confirm.title, NOTE);
   assert.equal(confirm.editable, true);
   assert.equal(confirm.confirmText, '关注');
-  const style = read('pages/search/index.wxss');
-  assert.match(style, /\.follow-mini--off \{[^}]*background: var\(--fill\);[^}]*color: var\(--t3\);/);
+  assert.doesNotMatch(read('pages/search/index.wxss'), /follow-mini--off/);
 });
 
 test('空结果：写"没有符合条件的文件"，列出已选条件各带"去掉"和"清空条件"；保留"告诉我们"', async () => {
@@ -324,7 +317,7 @@ test('空结果：写"没有符合条件的文件"，列出已选条件各带"�
   assert.match(empty, /<block wx:if="{{activeChips.length}}">[\s\S]*wx:for="{{activeChips}}"[\s\S]*{{item.label}}[\s\S]*bindtap="removePicked"[^>]*>去掉<\/text>[\s\S]*<view class="empty-clear" bindtap="resetFilter"[^>]*>清空条件<\/view>/);
   assert.match(empty, /<view wx:else class="empty-note">换个关键词或放宽筛选试试<\/view>/);
   assert.match(empty, /暂未收录的地区：{{notCoveredNote}}/);
-  assert.match(template, /<view class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们<\/text><\/view>/);
+  assert.match(template, /<view wx:if="{{loginOpen}}" class="feedback" bindtap="feedback">没找到想要的？<text class="link">告诉我们<\/text><\/view>/);
 });
 
 test('按标题归类的三组：右栏顶部统一一行说明，下面只写各组特有的补充；两段合起来与原来的说明一字不差', () => {

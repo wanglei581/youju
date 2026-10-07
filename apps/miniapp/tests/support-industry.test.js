@@ -33,7 +33,7 @@ function searchPage(respond) {
     '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': {}, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   return { page, calls };

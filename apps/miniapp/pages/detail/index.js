@@ -3,6 +3,7 @@ const { dueInfo, deadlineNote, cnDate, weekday, kindClass } = require('../../uti
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
+const { loginOpen } = require('../../utils/consent.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
@@ -39,6 +40,8 @@ Page({
     atts: [], attNote: '' },
 
   onLoad(query) {
+    // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
+    this.setData({ loginOpen: loginOpen() });
     this.docId = query.id;
     this.lastShow = Date.now();
     this.load();

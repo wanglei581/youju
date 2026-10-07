@@ -163,6 +163,7 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   let release;
   const real = setup().mod;
   const page = load('pages/detail/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},

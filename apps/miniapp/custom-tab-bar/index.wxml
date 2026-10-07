@@ -1,7 +1,7 @@
-<view class="bar" aria-role="tablist">
-  <view wx:for="{{list}}" wx:key="pagePath" class="item {{selected === index ? 'item--on' : ''}}"
-        data-index="{{index}}" bindtap="switchTab" aria-role="tab" aria-selected="{{selected === index}}">
-    <t-icon name="{{selected === index ? item.iconOn : item.icon}}" size="48rpx" />
+<view class="bar" style="grid-template-columns: repeat({{list.length}}, 1fr)" aria-role="tablist">
+  <view wx:for="{{list}}" wx:key="pagePath" class="item {{selected === item.tab ? 'item--on' : ''}}"
+        data-path="{{item.pagePath}}" bindtap="switchTab" aria-role="tab" aria-selected="{{selected === item.tab}}">
+    <t-icon name="{{selected === item.tab ? item.iconOn : item.icon}}" size="48rpx" />
     <text class="label">{{item.text}}</text>
   </view>
 </view>
