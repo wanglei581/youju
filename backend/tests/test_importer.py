@@ -87,3 +87,31 @@ def test_overlong_source_url_is_rejected_with_line_number(session, tmp_path: Pat
     )
     with pytest.raises(ValueError, match="第 2 行"):
         import_sources(session, path)
+
+
+@pytest.mark.parametrize(
+    "level,city,valid",
+    [
+        ("市级", "青岛", True),
+        ("市级", "", False),
+        ("省级", "青岛", False),
+        ("省级", "", True),
+        ("国家级", "青岛", False),
+    ],
+)
+def test_import_optional_city_column(session, tmp_path, level, city, valid):
+    path = tmp_path / "city.csv"
+    path.write_text(
+        "层级,省份,城市,部门,部门全称,栏目名称,栏目URL\n"
+        f"{level},山东,{city},科技,测试机关,通知公告,https://test.gov.cn/list/\n",
+        encoding="utf-8",
+    )
+    if not valid:
+        with pytest.raises(ValueError, match="第 2 行"):
+            import_sources(session, path)
+        return
+    import_sources(session, path)
+    source = session.scalar(select(Source))
+    assert source.city == (city or None)
+    import_sources(session, path)
+    assert session.scalar(select(Source)).city == (city or None)

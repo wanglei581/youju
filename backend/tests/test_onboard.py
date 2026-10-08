@@ -333,3 +333,50 @@ def test_lock_is_released_when_create_fails(api, session, db_engine) -> None:
     with db_engine.connect() as other:
         assert other.execute(text("SELECT GET_LOCK('youju_source_create', 0)")).scalar() == 1
         other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+
+
+@pytest.mark.parametrize(
+    "level,city,province",
+    [
+        ("市级", None, "山东"),
+        ("市级", "   ", "山东"),
+        ("省级", "青岛", "山东"),
+        ("国家级", "青岛", "国家"),
+        ("市级", "青岛", "国家"),
+        ("市级", "城" * 33, "山东"),
+    ],
+)
+def test_city_onboard_rejects_inconsistent_location(api, level, city, province):
+    client, _ = api
+    body = {
+        **BASE,
+        "level": level,
+        "province": province,
+        "city": city,
+        "trial_token": app_module._trial_token(URL, RULE),
+    }
+    assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 422
+
+
+def test_city_onboard_persists_trimmed_city(api, session):
+    client, _ = api
+    body = {
+        **BASE,
+        "level": "市级",
+        "province": "山东",
+        "city": " 青岛 ",
+        "trial_token": app_module._trial_token(URL, RULE),
+    }
+    response = client.post("/api/admin/sources", headers=HEADERS, json=body)
+    assert response.status_code == 201
+    assert session.get(Source, response.json()["id"]).city == "青岛"
+    source = client.get("/api/sources").json()[0]
+    assert (source["level"], source["city"]) == ("市级", "青岛")
+
+
+def test_city_proposal_only_keeps_city_from_page():
+    facts = page_facts("<title>青岛市科学技术局 通知公告</title>")
+    raw = {"level": "市级", "province": "山东", "city": "青岛"}
+    assert onboard._checked(raw, facts).city == "青岛"
+    assert onboard._checked({**raw, "city": "济南"}, facts).city == ""
+    assert onboard._checked({**raw, "level": "省级"}, facts).city == ""

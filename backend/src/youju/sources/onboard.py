@@ -68,6 +68,7 @@ _TEXT_MAX = 30
 _META_SYSTEM = """你是政府网站栏目登记员。必须只返回 JSON 对象。
 根据网页标题、网站名、栏目名和列表前几条标题，给出这个栏目的登记信息：
 level（国家级、省级、市级之一）、province（省级行政区简称，如"山东""内蒙古"；国家部委填"国家"）、
+city（城市简称，市级必填，如"青岛"；其他层级写空字符串）、
 dept（部门简称，如 科技、工信、发改委、商务、财政、人社、市场监管）、
 dept_full_name（部门全称，照抄网页里写的，如"山东省科学技术厅"）、
 column_name（栏目名，照抄网页里写的，如"通知公告"）。拿不准的字段写空字符串。"""
@@ -92,6 +93,7 @@ class PageFacts:
 class Proposal:
     level: str = ""
     province: str = ""
+    city: str = ""
     dept: str = ""
     dept_full_name: str = ""
     column_name: str = ""
@@ -159,16 +161,30 @@ def _checked(raw: dict, facts: PageFacts) -> Proposal:
     province = raw.get("province") if raw.get("province") in PROVINCES else ""
     if (level == "国家级") != (province == "国家") and level and province:
         level = province = ""  # 国家级只对应"国家"，对不上就都不填
+    city = str(raw.get("city") or "").strip()[:32]
     dept = str(raw.get("dept") or "").strip()[:32]
     full = str(raw.get("dept_full_name") or "").strip()[:128]
     column = str(raw.get("column_name") or "").strip()[:64]
     return Proposal(
         level=level,
         province=province,
+        city=city if level == "市级" and _on_page(city, facts) else "",
         dept=dept,
         dept_full_name=full if _on_page(full, facts) else "",
         column_name=column if _on_page(column, facts) else "",
     )
+
+
+def checked_city(level: str, city: str | None) -> str | None:
+    """接入和 CSV 共用约束，防止城市信息缺失或挂在错误层级上。"""
+    city = (city or "").strip() or None
+    if level == "市级" and not city:
+        raise ValueError("市级来源必须填写城市")
+    if level != "市级" and city:
+        raise ValueError("其他层级的城市必须为空")
+    if city and len(city) > 32:
+        raise ValueError("城市最多 32 字")
+    return city
 
 
 def propose(client: ChatClient | None, facts: PageFacts, items: list[ListItem]) -> Proposal:

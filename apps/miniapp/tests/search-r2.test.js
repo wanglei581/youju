@@ -347,3 +347,36 @@ test('本轮新加的文字不出现禁用字样', async () => {
     for (const word of ['AI', '人工智能', '智能', '大模型']) assert.ok(!text.includes(word), `${word} 出现在：${text.slice(0, 40)}`);
   }
 });
+
+test('市级条件恢复、已选条、关注和国家部委组合均保留市级', async () => {
+  const { page, calls } = searchPage();
+  page.onLoad({ regions: '山东', levels: '市级', time: '不限' }); await flush();
+  assert.equal(calls.at(-1).levels, '市级');
+  assert.ok(chipLabels(page).includes('市级'));
+  assert.match(page.followName(), /山东 · 市级/);
+  const level = page.data.groups.find((g) => g.key === 'level');
+  assert.match(level.note, /地市目前只收录部分城市/);
+  assert.match(level.note, /我的 → 数据从哪里来/);
+  page.pickOption(event({ group: 'level', option: '国家部委' })); await flush();
+  assert.equal(calls.at(-1).regions, '国家部委,山东');
+  assert.equal(calls.at(-1).levels, '市级,国家部委');
+  const restored = searchPage();
+  restored.page.onLoad(Object.fromEntries(new URL(conditions.searchUrl(page.conditions()), 'https://test.invalid').searchParams));
+  await flush();
+  assert.equal(restored.calls.at(-1).levels, '国家部委,市级');
+  assert.deepEqual(plain(restored.page.data.picked.level), ['国家部委', '市级']);
+});
+
+test('市级演示数据用省份筛选，国家部委拼法包含所选市级且排除省级', () => {
+  const docs = [
+    { id: '1', title: '青岛市级', province: '山东', city: '青岛', level: '市级', kind: '申报通知', region: '青岛 · 市级' },
+    { id: '2', title: '山东省级', province: '山东', level: '省级', kind: '申报通知', region: '山东 · 省级' },
+    { id: '3', title: '国家', province: '国家', level: '国家级', kind: '申报通知', region: '国家' },
+  ];
+  const ids = (region, level) => mockSearch(docs, { ...conditions.requestScope(region, level), time: '不限' }).items.map((d) => d.id);
+  assert.deepEqual(ids(['山东'], []), ['1', '2']);
+  assert.deepEqual(ids(['山东'], ['市级']), ['1']);
+  assert.deepEqual(ids(['山东'], ['省级']), ['2']);
+  assert.deepEqual(ids(['山东'], ['国家部委', '市级']), ['1', '3']);
+  assert.deepEqual(ids(['山东'], ['国家部委', '省级', '市级']), ['1', '2', '3']);
+});

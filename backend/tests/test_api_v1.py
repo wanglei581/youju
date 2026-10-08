@@ -426,7 +426,7 @@ def test_calendar_skips_deadlines_already_passed_today(client, seeded):
         {"time": "近 90 天"},
         {"offset": 5001},
         {"regions": ",".join(["北京"] * 41)},
-        {"levels": "市级"},
+        {"levels": "县级"},
     ],
 )
 def test_search_rejects_invalid_filters(client, seeded, params):
@@ -1172,6 +1172,10 @@ def test_search_level_filter_and_region_merge_rule(client, session, seeded):
     assert ids(regions="不限地区", levels="国家部委") == national
     assert ids(regions="国家部委,山东", levels="国家部委") == national
     # 省级不含国家级，也不含市级
+    assert ids(levels="市级") == {city_doc.id}
+    assert ids(levels="国家部委,省级,市级") == everything
+    assert ids(regions="山东", levels="市级") == {city_doc.id}
+    assert ids(regions="国家部委,山东", levels="国家部委,市级") == national | {city_doc.id}
     assert ids(levels="省级") == provincial
     assert ids(levels="国家部委,省级") == everything - {city_doc.id}
     assert ids(regions="山东", levels="省级") == shandong_provincial
@@ -1184,7 +1188,7 @@ def test_search_level_filter_and_region_merge_rule(client, session, seeded):
     assert ids(levels="省级", kind="申报通知") == {seeded["apply"]}
     body = client.get("/api/v1/search", params={"levels": "省级"}).json()
     assert body["total"] == 2 and body["total_all"] == 3  # 8/1 的政策超出近 30 天
-    for bad in ("市级", "国家级", "省级,火星"):
+    for bad in ("县级", "国家级", "省级,火星"):
         assert client.get("/api/v1/search", params={"levels": bad}).status_code == 422
 
 
@@ -1220,7 +1224,7 @@ def test_search_national_level_with_regions_as_miniapp_sends_it(client, session,
     provincial = ids(levels="省级")
     shandong = {seeded["list"], seeded["policy"]}
     assert len(national) == 2 and shandong <= provincial
-    # 界面：地区山东 + 层级国家部委 → 国家部委和山东的文件（地市暂未收录，线上就是省级）
+    # 界面：地区山东 + 层级国家部委 → 国家部委和山东的文件（包括已收录的市级文件）
     assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
     # 地区山东 + 层级国家部委、省级 → 国家部委和山东的省级文件
     assert ids(regions="国家部委,山东", levels="国家部委,省级") == national | shandong
@@ -1309,3 +1313,151 @@ def test_no_public_output_contains_unverified_dates(client, session, seeded):
         text = json.dumps(response.json(), ensure_ascii=False)
         leaked = [value for value in forbidden if value in text]
         assert not leaked, f"{path} 出现了未核对的日期：{leaked}"
+
+
+@pytest.fixture
+def city_document(session, seeded):
+    source = Source(
+        level="市级",
+        province="山东",
+        city="青岛",
+        dept="科技",
+        dept_full_name="测试市科学技术局",
+        column_name="通知公告",
+        url="https://city.example.gov.cn/list/",
+        enabled=True,
+        parser_config={},
+        last_success_at=NOW,
+    )
+    session.add(source)
+    session.flush()
+    doc = _doc(source, 92, "关于组织申报科技计划项目的通知", NOW.date())
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+def test_city_display_coverage_and_home(client, session, city_document):
+    doc = city_document
+    payload = client.get("/api/v1/search", params={"regions": "山东", "levels": "市级"}).json()
+    assert payload["total"] == 1
+    item = payload["items"][0]
+    assert (item["region"], item["city"], item["level"], item["province"]) == (
+        "青岛 · 市级",
+        "青岛",
+        "市级",
+        "山东",
+    )
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert (detail["region"], detail["city"], detail["level"]) == ("青岛 · 市级", "青岛", "市级")
+    assert ["适用地区", "山东·青岛"] in detail["points"]
+    assert detail["deadline"] is None
+    body = client.get("/api/v1/coverage").json()
+    assert body["cities"] == [{"province": "山东", "city": "青岛", "sources": 1}]
+    assert body["provinces"] == 1
+    assert client.get("/api/v1/home").json()["stats"]["cities"] == 1
+    # 同城多栏目只算一个城市，停用和未成功检查的栏目不计数。
+    for index, enabled, success in [(1, True, NOW), (2, False, NOW), (3, True, None)]:
+        session.add(
+            Source(
+                level="市级",
+                province="山东",
+                city="青岛" if index == 1 else "济南",
+                dept="科技",
+                dept_full_name="测试机关",
+                column_name="通知",
+                url=f"https://city.example.gov.cn/list{index}/",
+                enabled=enabled,
+                last_success_at=success,
+            )
+        )
+    session.commit()
+    assert client.get("/api/v1/coverage").json()["cities"] == [
+        {"province": "山东", "city": "青岛", "sources": 2}
+    ]
+    assert client.get("/api/v1/home").json()["stats"]["cities"] == 1
+
+
+def test_no_city_counts_and_labels_unchanged(client, seeded):
+    assert client.get("/api/v1/coverage").json()["cities"] == []
+    assert client.get("/api/v1/home").json()["stats"]["cities"] == 0
+    doc = client.get(f"/api/v1/documents/{seeded['apply']}").json()
+    assert doc["region"] == "辽宁 · 省级"
+    assert doc["city"] is None and doc["level"] == "省级"
+    assert ["适用地区", "辽宁"] in doc["points"]
+
+
+def test_city_calendar_radar_and_exports_require_approved_deadlines(client, session, city_document):
+    from io import BytesIO
+
+    from docx import Document as WordDocument
+    from openpyxl import load_workbook
+
+    doc = city_document
+    dl = DocumentDeadline(
+        document_id=doc.id,
+        fingerprint="city-deadline",
+        kind="企业申报截止",
+        candidate_date=date(2026, 9, 30),
+        evidence="测试截止证据",
+        confidence="高",
+        status="pending",
+    )
+    session.add(dl)
+    session.commit()
+
+    def calendar_ids():
+        return {item["docId"] for item in client.get("/api/v1/calendar").json()["items"]}
+
+    def radar():
+        return client.get("/api/v1/reports/deadlines", params={"province": "山东"}).json()
+
+    assert str(doc.id) not in calendar_ids()
+    assert radar()["total"] == 0
+    assert all(item["id"] != str(doc.id) for item in radar()["items"])
+    dl.status, dl.approved_date, dl.reviewed_at = "approved", dl.candidate_date, NOW
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    assert str(doc.id) in calendar_ids()
+    assert any(item["id"] == str(doc.id) for item in radar()["items"])
+    for fmt in ("xlsx", "docx"):
+        response = client.post("/api/v1/exports", json={"ids": [str(doc.id)], "format": fmt})
+        assert response.status_code == 200
+        if fmt == "xlsx":
+            sheet = load_workbook(BytesIO(response.content))["文件清单"]
+            assert sheet.cell(2, 8).value == "山东·青岛"
+        else:
+            book = WordDocument(BytesIO(response.content))
+            text = " ".join(
+                cell.text for table in book.tables for row in table.rows for cell in row.cells
+            )
+            assert "山东·青岛" in text
+
+
+def test_city_deadline_change_requires_same_city(session, city_document):
+    from fastapi import HTTPException
+
+    from youju.api.app import _check_change_target
+
+    old = city_document
+    source = session.get(Source, old.source_id)
+    new = _doc(source, 94, "关于延长科技计划项目申报时间的通知", NOW.date())
+    other_source = Source(
+        level="市级",
+        province="山东",
+        city="济南",
+        dept="科技",
+        dept_full_name="测试另一市科技局",
+        column_name="通知",
+        url="https://another.example.gov.cn/list/",
+    )
+    session.add(other_source)
+    session.flush()
+    other = _doc(other_source, 95, new.title, NOW.date())
+    session.add_all([new, other])
+    session.flush()
+    deadline = DocumentDeadline(document_id=old.id)
+    _check_change_target(session, deadline, new.id)
+    with pytest.raises(HTTPException, match="不是同一地区") as error:
+        _check_change_target(session, deadline, other.id)
+    assert error.value.status_code == 422
