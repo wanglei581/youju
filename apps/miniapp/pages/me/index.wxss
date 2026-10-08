@@ -21,7 +21,6 @@
 .grid--2 { grid-template-columns: repeat(2, 1fr); }
 .grid-item { display: flex; flex-direction: column; align-items: center; gap: 12rpx; font-size: 25rpx; }
 .gi { width: 80rpx; height: 80rpx; border-radius: 24rpx; display: flex; align-items: center; justify-content: center; }
-.gi--orange { background: var(--o-tint); }
 .gi--green { background: var(--g-tint); }
 .gi--blue { background: var(--brand-tint); }
 .gi--red { background: var(--r-tint); }

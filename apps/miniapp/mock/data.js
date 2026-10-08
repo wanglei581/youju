@@ -625,9 +625,6 @@ module.exports = {
     }
   ],
   "search": {
-    "q": "科技型中小企业",
-    "total_30d": 35,
-    "total_all": 59,
     "items": [
       {
         "id": "s0",
