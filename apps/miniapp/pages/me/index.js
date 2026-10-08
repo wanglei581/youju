@@ -60,7 +60,7 @@ Page({
         // 查询发出后本机又同意或注销过：结果已过时，等下一次刷新
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
         // 与关注页等共用同一份状态：旧版本同意会标记"协议已更新"，弹窗只能先读全文
-        const current = applyServer(res.agreed, started) && legal.final;
+        const current = applyServer(res.agreed, started) && loginOpen();
         const subs = res.subscriptions || {};
         this.setData({
           profileLoading: false,
