@@ -385,7 +385,7 @@ const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: n
 let capabilitiesPromise;
 let capabilitiesPending;
 function advisorCapabilities(options = {}) {
-  // 本次启动内共用一个请求，失败也缓存（按关闭处理）；AI 页面进入时 refresh 重新取额度。
+  // 本次启动内共用一个请求；开启的结果一直缓存，关闭或失败的结果只缓存 15 秒；AI 页面进入时 refresh 重新取额度。
   if (capabilitiesPending) return capabilitiesPending;
   if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
   const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
@@ -401,7 +401,13 @@ function advisorCapabilities(options = {}) {
   }).catch(() => ({ ai_advisor: Object.assign({}, AI_DISABLED) }));
   capabilitiesPromise = result;
   capabilitiesPending = result;
-  result.then(() => { if (capabilitiesPending === result) capabilitiesPending = null; });
+  result.then((res) => {
+    if (capabilitiesPending === result) capabilitiesPending = null;
+    // “关闭”的结果只缓存 15 秒：登录前查到的关闭（403）不能一直记着，登录或加进白名单后回到页面要能重新查到
+    if (!(res && res.ai_advisor && res.ai_advisor.enabled === true)) {
+      setTimeout(() => { if (capabilitiesPromise === result) capabilitiesPromise = null; }, 15000);
+    }
+  });
   return result;
 }
 
