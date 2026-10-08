@@ -62,7 +62,6 @@ AI 成员不能代替创始人实名认证、签字、付款、提交政府申�
 |---|---|
 | `apps/miniapp/` | 微信原生小程序 |
 | `backend/` | 数据底座与 API（Python 3.12、FastAPI、PostgreSQL），见 `backend/README.md` |
-| `services/api/` | 旧的本地样机，仅作参考；功能迁移到 `backend/` 后删除 |
 | `docs/` | 总方案、执行手册、开发流程、决策记录、调研记录 |
 | `docs/adr/` | 架构决策记录 |
 | `docs/迭代/` | 每个迭代的计划、结果和回顾 |
