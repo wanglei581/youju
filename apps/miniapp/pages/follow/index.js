@@ -62,7 +62,7 @@ Page({
           tone: f.conditions.kind === '名单' ? 'orange' : 'blue',
           icon: f.conditions.kind === '名单' ? 'bulletpoint' : 'task-checked',
         }));
-        this.setData({ follows, newTotal: follows.reduce((n, f) => n + f.newCount, 0), loading: false });
+        this.setData({ follows, newTotal: typeof res.newTotal === 'number' ? res.newTotal : follows.reduce((n, f) => n + f.newCount, 0), loading: false });
         this.loadReminders();
         return this.loadChanges(follows);
       })
@@ -116,7 +116,10 @@ Page({
         const changes = [];
         [].concat(...lists)
           .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
-          .forEach((d) => { if (!seen[d.id]) { seen[d.id] = true; changes.push(d); } });
+          .forEach((d) => {
+            const key = d.group ? `group:${d.group.id}` : `doc:${d.id}`;
+            if (!seen[key]) { seen[key] = true; changes.push(d); }
+          });
         this.setData({ changes: changes.slice(0, 10), changesError: failed ? `新文件没有加载出来：${failed.message}` : '' });
       });
   },

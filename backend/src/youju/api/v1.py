@@ -14,8 +14,8 @@ from typing import Annotated, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, case, func, not_, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju import fields as field_rules
@@ -50,7 +50,7 @@ from youju.models import (
     Source,
 )
 from youju.report_revision import publication_revision
-from youju.repost import confirmed_members, labels_for
+from youju.repost import confirmed_members, grouped_documents, labels_for
 from youju.takedown import available_condition, is_taken_down
 from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
@@ -460,38 +460,7 @@ def _items(
 # 人工移出的都按单条显示。截止日期不随组合并：每个版本只显示它自己核对通过的截止，按版本标明。
 
 
-def _grouped(stmt: Select) -> Select:
-    """先筛选、再按转发组折叠（group=1）：命中筛选的版本里，同一确认过的转发组只留一条主条目。
-
-    主条目：部里原件在库就用原件，否则用最早发布的版本（同一天按编号）；选了地区筛选时命中的
-    只有该地区的版本，主条目自然是本地版本。主条目的标题、机关、日期、申报状态都是这一版自己的。
-    排序、翻页和计数都按主条目（stmt 是 _base() 派生的 select(Document, Source)）。"""
-    members = confirmed_members()
-    key = func.coalesce(-members.c.group_id, Document.id)
-    rank = (
-        func.row_number()
-        .over(
-            partition_by=key,
-            order_by=(
-                case((Source.province == _NATIONAL, 0), else_=1),
-                Document.publish_date.is_(None),
-                Document.publish_date,
-                Document.id,
-            ),
-        )
-        .label("repost_rank")
-    )
-    ranked = (
-        stmt.outerjoin(members, members.c.document_id == Document.id)
-        .with_only_columns(Document.id.label("doc_id"), rank)
-        .subquery()
-    )
-    return (
-        select(Document, Source)
-        .join(Source, Document.source_id == Source.id)
-        .join(ranked, ranked.c.doc_id == Document.id)
-        .where(ranked.c.repost_rank == 1)
-    )
+_grouped = grouped_documents
 
 
 def _province_name(province: str) -> str:
@@ -671,6 +640,7 @@ def _count(session: Session, stmt: Select) -> int:
 
 @router.get("/home")
 def home(
+    request: Request,
     session: SessionDep,
     group: Annotated[
         int | None,
@@ -750,6 +720,16 @@ def home(
             last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
         ),
     }
+    from youju.api import me
+
+    try:
+        user = me.known_user(request, session)
+        if user is not None:
+            user = me.current_user(user)
+            stats["followed_new"] = me.followed_week_count(session, user)
+    except HTTPException as exc:
+        if exc.status_code not in (401, 403):
+            raise
     if group == 1:
         stats["week_reposts"] = week_reposts
     return {"stats": stats, "items": _items(session, [tuple(r) for r in latest], group == 1)}

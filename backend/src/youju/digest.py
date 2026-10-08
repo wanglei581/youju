@@ -29,6 +29,7 @@ from youju.models import (
     Subscription,
     User,
 )
+from youju.repost import grouped_documents
 from youju.source_health import check_sources
 
 # AI 挑选时最多给它看多少份待核对通知、挑几份
@@ -113,11 +114,13 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
 
     # 新文件：同一通知的多个网址只算一份
     titles = session.execute(
-        visible_documents(
-            select(Document.title, Document.kind_override).where(
-                Document.is_baseline.is_(False), Document.first_seen_at >= since
+        grouped_documents(
+            visible_documents(
+                select(Document, Source)
+                .join(Source, Source.id == Document.source_id)
+                .where(Document.is_baseline.is_(False), Document.first_seen_at >= since)
             )
-        )
+        ).with_only_columns(Document.title, Document.kind_override)
     ).all()
     digest.new_documents = len(titles)
     digest.new_by_kind = dict(
