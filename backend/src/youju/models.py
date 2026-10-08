@@ -804,6 +804,20 @@ class Follow(Base):
     last_notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+class FollowRepostNotification(Base):
+    """本关注已成功提醒的转发组；随关注或组删除，避免用时间推断而误抑制新匹配。"""
+
+    __tablename__ = "follow_repost_notifications"
+
+    follow_id: Mapped[int] = mapped_column(
+        ForeignKey("follows.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("repost_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    notified_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
     __table_args__ = (

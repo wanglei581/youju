@@ -112,7 +112,7 @@ Page({
       this.buildMonth();
       this.refresh();
     }).catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }))
-      .finally(() => { this.fetching = false; });
+      .then(() => { this.fetching = false; });
     remindedDocs().then((reminded) => this.setData({ reminded }));
   },
 

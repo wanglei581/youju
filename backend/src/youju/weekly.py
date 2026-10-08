@@ -117,6 +117,7 @@ class Item:
     deadlines: tuple = ()
     support: tuple[str, ...] = ()
     entries: int = 0
+    versions: int = 0
 
 
 @dataclass
@@ -239,6 +240,7 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
             .group_by(master)
         ).all()
     )
+    versions = v1.repost_versions(session, ids)
     columns = {key: [] for key in COLUMNS}
     for row in rows:
         kind = row.kind_override or row.rule_kind
@@ -263,6 +265,7 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
             dues,
             tuple(sorted(support.get(row.id, set()))),
             counts.get(row.id, 0),
+            len(versions[row.id]["others"]) if row.id in versions else 0,
         )
         if row.published and start <= row.published <= end:
             column = {"申报通知": "applications", "名单": "lists", "政策": "policies"}.get(kind)
@@ -282,6 +285,21 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
             if upcoming:
                 selected = min(upcoming, key=lambda d: (d.approved_date, d.id))
                 columns["deadlines"].append((item, selected))
+    # 发布栏目先按方案和统计周筛选，再用列表的主条目规则折叠；截止栏目保留各版本。
+    for key in ("applications", "lists", "policies"):
+        values = columns[key]
+        kept = (
+            set(
+                session.scalars(
+                    v1._grouped(
+                        v1._base().where(Document.id.in_([item.id for item in values]))
+                    ).with_only_columns(Document.id)
+                )
+            )
+            if values
+            else set()
+        )
+        columns[key] = [item for item in values if item.id in kept]
     return columns
 
 
@@ -367,6 +385,9 @@ def render(profile: DigestProfile, start: date, end: date, today: date, columns:
             )
             lines.append(_public_text(item.title))
             metadata = [item.issuer]
+            group_summary = f"另有 {item.versions} 个转发版本" if item.versions else ""
+            if group_summary and key != "deadlines":
+                metadata.append(group_summary)
             day = _month_day(item.published) if item.published else "发布日期见原文"
             metadata.append(f"{day}发布" if item.published and key != "lists" else day)
             if key in {"applications", "deadlines"}:
@@ -393,7 +414,8 @@ def render(profile: DigestProfile, start: date, end: date, today: date, columns:
                     _one_line(field).replace("｜", "|")
                     for field in (
                         item.title,
-                        item.issuer,
+                        item.issuer
+                        + (f" · {group_summary}" if group_summary and key != "deadlines" else ""),
                         item.published.isoformat() if item.published else "发布日期见原文",
                         _deadline_text(item, due, linked=True),
                         item.url,

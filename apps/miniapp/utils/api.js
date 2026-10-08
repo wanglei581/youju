@@ -277,6 +277,7 @@ function exportFile(ids, format) {
         method: 'POST',
         header: { 'X-WX-SERVICE': config.cloudService, 'content-type': 'application/json' },
         data: body,
+        // 二进制内容：dataType 要设成 other，否则 SDK 会把内容当文字解析而报错（同附件下载）
         dataType: 'other',
         responseType: 'arraybuffer',
         timeout: 30000,

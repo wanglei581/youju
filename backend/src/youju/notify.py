@@ -9,12 +9,22 @@ from typing import Any
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju.api import v1
-from youju.api.me import new_count
+from youju.api.me import notification_statement
 from youju.config import Settings, get_settings
-from youju.models import Document, Follow, Source, Subscription, User
+from youju.models import (
+    Document,
+    Follow,
+    FollowRepostNotification,
+    RepostGroup,
+    Source,
+    Subscription,
+    User,
+)
+from youju.repost import confirmed_members
 
 log = logging.getLogger("youju.notify")
 
@@ -77,18 +87,41 @@ def _new_docs(session: Session, row: Subscription) -> tuple[dict, str] | str | N
     follow = session.get(Follow, row.follow_id)
     if follow is None:
         return "expired"
-    count = new_count(session, follow, follow.last_notified_at or follow.created_at)
+    stmt = notification_statement(session, follow)
+    count = v1._count(session, stmt)
     if not count:
         return None
+    members = confirmed_members()
+    group_ids = session.scalars(
+        select(members.c.group_id)
+        .distinct()
+        .where(members.c.document_id.in_(stmt.with_only_columns(Document.id)))
+    ).all()
+    doc, _ = session.execute(v1._ordered(stmt).limit(1)).one()
+    info = v1.repost_versions(session, [doc.id]).get(doc.id)
+    versions = len(info["others"]) if info else 0
+    group_summary = f"另有 {versions} 个转发版本" if versions else ""
     prefix, suffix = "你关注的'", f"'有 {count} 份新文件"
     summary = prefix + follow.name[: max(0, 20 - len(prefix) - len(suffix))] + suffix
     return (
         {
-            "name": follow.name,
+            "name": (
+                follow.name[: max(0, 19 - len(group_summary))] + " " + group_summary
+                if group_summary
+                else follow.name
+            ),
             "count": count,
-            "summary": summary,
+            "summary": (f"{count} 份新文件，{group_summary}" if group_summary else summary),
+            "title": (
+                doc.title[: max(0, 19 - len(group_summary))] + " " + group_summary
+                if group_summary
+                else doc.title
+            ),
+            "versions": versions,
+            "group_summary": group_summary,
+            "_group_ids": group_ids,
         },
-        "pages/follow/index",
+        f"pages/detail/index?id={doc.id}" if info else "pages/follow/index",
     )
 
 
@@ -168,6 +201,28 @@ def run_notify(
             follow = session.get(Follow, row.follow_id)
             if follow is not None:
                 follow.last_notified_at = stamp
+                # 发送期间组可能被移除；锁住仍存在的组再记录，和管理台一样按组编号加锁。
+                group_ids = (
+                    session.scalars(
+                        select(RepostGroup.id)
+                        .where(RepostGroup.id.in_(values["_group_ids"]))
+                        .order_by(RepostGroup.id)
+                        .with_for_update()
+                    ).all()
+                    if values["_group_ids"]
+                    else []
+                )
+                if group_ids:
+                    session.execute(
+                        insert(FollowRepostNotification)
+                        .values(
+                            [
+                                {"follow_id": follow.id, "group_id": group_id, "notified_at": stamp}
+                                for group_id in group_ids
+                            ]
+                        )
+                        .on_duplicate_key_update(notified_at=stamp)
+                    )
         session.commit()
         result[row.status] += 1
     return result

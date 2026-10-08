@@ -98,14 +98,3 @@ jobs:
       - name: 启动失败时打印容器日志
         if: failure()
         run: docker logs admin || true; docker logs api || true
-
-  legacy-prototype:
-    name: 旧样机测试（services/api）
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - run: pip install -r services/api/requirements.txt
-      - run: python -m unittest discover -s services/api/tests -v

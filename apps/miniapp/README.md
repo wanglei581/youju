@@ -4,15 +4,9 @@
 
 ## 本地启动
 
-1. 在项目根目录准备 Python 3 及 `openpyxl`、`python-docx`。运行：
+早期 SQLite 样机已于 2026-10 移除。当前后端的启动与管理台使用方式见[后端 README](../../backend/README.md)。
 
-   ```sh
-   LIBRARY_ADMIN_TOKEN='请换成至少16位的本地测试令牌' python3 services/api/server.py --host 127.0.0.1 --port 8766
-   ```
-
-2. 将本项目的有效 AppID 填入 `project.config.json`，在微信开发者工具中导入 `apps/miniapp/` 并编译。在本地开发设置中按需要关闭合法域名校验。模拟器默认请求 `http://127.0.0.1:8766`。
-3. 在浏览器打开 `http://127.0.0.1:8766/admin`，输入相同的本地管理令牌，登记获准来源、导入 CSV/XLSX、审核发布。公开端只有已发布资料。
-4. 在小程序“我的 → 服务地址”检测连接，回“找答案”查询。真机上的 `127.0.0.1` 指向手机本身，不能沿用模拟器默认地址。
+将本项目的有效 AppID 填入 `project.config.json`，在微信开发者工具中导入 `apps/miniapp/` 并编译。正式发布还需按当前后端配置服务连接。
 
 ## 当前功能边界
 
