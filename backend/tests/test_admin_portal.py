@@ -14,7 +14,15 @@ from sqlalchemy import select
 from youju import jobs, source_health
 from youju.api import app as admin
 from youju.db import get_session
-from youju.models import DocumentField, JobRun, ListEntry, Subscription
+from youju.fields import body_fingerprint
+from youju.models import (
+    ConditionItem,
+    ConditionList,
+    DocumentField,
+    JobRun,
+    ListEntry,
+    Subscription,
+)
 from youju.notify import run_cleanup
 
 from .test_digest import NOW
@@ -78,6 +86,27 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         body_hash="f" * 64,
     )
     session.add(field)
+    # 申报条件：现在这版正文的待确认清单算 1 份；正文对不上（旧版）的不算
+    for digest in (body_fingerprint("正文"), "0" * 64):
+        session.add(
+            ConditionList(
+                document_id=world["apply"].id,
+                body_hash=digest,
+                model="m",
+                prompt_version="v",
+                extracted_at=NOW,
+                items=[
+                    ConditionItem(
+                        position=1,
+                        category="主体资格",
+                        text="注册地在本省",
+                        original_text="注册地在本省",
+                        quote="正文",
+                        quote_offset=0,
+                    )
+                ],
+            )
+        )
     for n in (1, 2):
         session.add(
             ListEntry(
@@ -126,7 +155,10 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         "deadlines": 3,
         "deadlines_30": 1,
         "fields": 1,
+        "conditions": 1,
+        "repost": 0,
         "kinds": 1,
+        "kind_suggestions": 0,
         "audit": 1,
         "feedback": 1,
         "sources": 1,
@@ -146,7 +178,10 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         ("deadlines", "deadlines/count?due=all", "pending"),
         ("deadlines_30", "deadlines/count?due=30", "pending"),
         ("fields", "fields/count", "pending"),
+        ("conditions", "conditions/count", "pending"),
+        ("repost", "repost-groups/count", "pending"),
         ("kinds", "kinds/count", "pending"),
+        ("kind_suggestions", "kind-suggestions/count", "pending"),
         ("audit", "audit/count", "flagged"),
         ("feedback", "feedback/count", "pending"),
     ]:
@@ -176,6 +211,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     [
         ("review", "deadlines"),
         ("fields", "fields"),
+        ("repost", "repost-groups"),
         ("kinds", "kinds"),
         ("audit", "audit"),
         ("feedback", "feedback"),

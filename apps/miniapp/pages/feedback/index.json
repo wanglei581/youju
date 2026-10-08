@@ -1,3 +1,4 @@
 {
-  "navigationBarTitleText": "纠错与建议"
+  "navigationBarTitleText": "纠错与建议",
+  "usingComponents": { "feature-closed": "/components/closed/index" }
 }

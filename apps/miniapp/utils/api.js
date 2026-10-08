@@ -39,22 +39,62 @@ function forgetAgreed() {
 }
 
 // options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
+// 云托管服务缩到 0 台后，第一个请求会在冷启动期间收到网关的 502/503/504 或调用失败；
+// 查询类（GET）请求等一下再试，最多再试 2 次（10/7 早上实测：冷启动时连续 503，几秒后恢复）。
+// 只重试很快出错的：重试要在第一次发出后 5 秒内开始，每次最多等 15 秒，一次查询从发出到报错
+// 最多约 20 秒。超时（15 秒没有返回）不重试，再等一轮就要半分钟以上。
+const RETRY_DELAYS = [1000, 2500];
+const RETRY_WINDOW = 5000;
+const TIMEOUT = 15000;
+const GATEWAY_CODES = [502, 503, 504];
+
+function withRetry(attempt, method) {
+  const started = Date.now();
+  const run = (n) => attempt().catch((err) => {
+    if (method !== 'GET' || !err || !err.retryable || err.timeout || n >= RETRY_DELAYS.length) throw err;
+    if (Date.now() - started + RETRY_DELAYS[n] > RETRY_WINDOW) throw err;
+    return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
+  });
+  return run(0);
+}
+
+// 15 秒没有返回：算超时，不再重试
+function timeoutError() {
+  const err = new Error('网络不太好，请稍后再试');
+  err.timeout = true;
+  return err;
+}
+
+// 调用失败（没有拿到响应）：很快失败的可以重试；云托管自己报超时的不重试
+function callFailure(res) {
+  const err = new Error('网络不太好，请稍后再试');
+  err.retryable = true;
+  if (/timeout|超时/i.test(String((res && res.errMsg) || ''))) err.timeout = true;
+  return err;
+}
+
 function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = Object.assign(method === 'GET' ? {} : { 'content-type': 'application/json' }, options && options.header);
+  return withRetry(() => requestOnce(url, method, data, header), method);
+}
+
+function requestOnce(url, method, data, header) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
-    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 15000);
+    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
       if (res.statusCode === 403) forgetAgreed();
-      finish(reject, errorOf(res));
+      const err = errorOf(res);
+      if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
+      finish(reject, err);
     };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -63,9 +103,9 @@ function request(path, params, options) {
         method,
         header: Object.assign({ 'X-WX-SERVICE': config.cloudService }, header),
         data,
-        timeout: 15000,
+        timeout: TIMEOUT,
         success: done,
-        fail: () => finish(reject, new Error('网络不太好，请稍后再试')),
+        fail: (res) => finish(reject, callFailure(res)),
       });
     } else {
       wx.request({
@@ -73,7 +113,7 @@ function request(path, params, options) {
         method,
         header,
         data,
-        timeout: 15000,
+        timeout: TIMEOUT,
         success: done,
         fail: () => finish(reject, new Error('连不上开发用的后端，请确认 youju serve 已启动')),
       });
@@ -87,13 +127,14 @@ function coverage() {
   return copy(mock.coverage);
 }
 
+// group=1（D-055）：同一份部里通知的各地转发版本按组折叠、按组计数（管理台确认过的组才折叠）
 function home() {
-  if (isLive()) return request('/api/v1/home');
+  if (isLive()) return request('/api/v1/home', { group: 1 });
   return copy({ stats: mock.stats, items: mock.home });
 }
 
 function search(params) {
-  if (isLive()) return request('/api/v1/search', params);
+  if (isLive()) return request('/api/v1/search', Object.assign({}, params, { group: 1 }));
   return copy(mockSearch(mock.search.items, params));
 }
 
@@ -112,7 +153,7 @@ function deadlineReport(params) {
   const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
   const by = (key) => filtered.reduce((out, item) => { out[item[key]] = (out[item[key]] || 0) + 1; return out; }, {});
   const page = Number(params.page || 1); const size = Number(params.size || 20);
-  return copy({ days, summary, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
+  return copy({ days, summary, verified_total: ((mock.reports && mock.reports.deadlines) || []).length, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
 }
 
 function listBoard(params) {
@@ -164,7 +205,7 @@ function mockDetail(id) {
     const doc = pool.find((d) => d.id === id);
     if (doc) {
       return copy({
-        id: doc.id, kind: doc.kind, tags: [doc.kind], region: doc.region, title: doc.title, issuer: doc.issuer,
+        id: doc.id, kind: doc.kind, tags: [doc.kind], category: doc.category || null, region: doc.region, title: doc.title, issuer: doc.issuer,
         date: doc.date, url: doc.url, status: doc.status || null, app_status: doc.app_status || null,
         deadline: null, points: [['发文机关', doc.issuer]], excerpt: null, attachments: [], checked: null,
       });
@@ -188,15 +229,15 @@ function calendar() {
       const next = offset + 200;
       return next < Math.max(r.total, r.pastTotal || 0) && next < 1000 && (r.items.length || (r.past || []).length)
         ? page(next, items, past)
-        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
+        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, verifiedTotal: r.verifiedTotal, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
     });
     return page(0, [], []);
   }
-  return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)) });
+  return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
 }
 
 function lists() {
-  if (isLive()) return request('/api/v1/lists/recent', { limit: 20 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
+  if (isLive()) return request('/api/v1/lists/recent', { limit: 20, group: 1 }).then((r) => ({ week_total: r.week_total, total: r.total, items: r.items }));
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
@@ -236,6 +277,7 @@ function exportFile(ids, format) {
         method: 'POST',
         header: { 'X-WX-SERVICE': config.cloudService, 'content-type': 'application/json' },
         data: body,
+        dataType: 'other',
         responseType: 'arraybuffer',
         timeout: 30000,
         success: done,
@@ -247,11 +289,51 @@ function exportFile(ids, format) {
         method: 'POST',
         header: { 'content-type': 'application/json' },
         data: body,
+        dataType: 'other',
         responseType: 'arraybuffer',
         timeout: 30000,
         success: done,
         fail,
       });
+    }
+  });
+}
+
+// 附件副本的一段（ArrayBuffer）：服务端存有副本的附件按段取（每段不超过云托管返回上限 1000 KiB），
+// version 是详情接口给的版本，对不上（副本已更新）时服务端返回 409
+function attachmentPart(id, version, part) {
+  return withRetry(() => attachmentPartOnce(id, version, part), 'GET');
+}
+
+function attachmentPartOnce(id, version, part) {
+  const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
+    const done = (res) => {
+      if (res.statusCode === 200) { finish(resolve, res.data); return; }
+      const err = new Error(`附件下载失败（${res.statusCode}）`);
+      err.status = res.statusCode;
+      if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
+      finish(reject, err);
+    };
+    const fail = (res) => finish(reject, callFailure(res));
+    if (config.cloudEnv) {
+      wx.cloud.callContainer({
+        config: { env: config.cloudEnv },
+        path,
+        method: 'GET',
+        header: { 'X-WX-SERVICE': config.cloudService },
+        // 二进制内容：dataType 要设成 other，否则 SDK 会把内容当文字解析而报错（10/7 开发者工具实测）
+        dataType: 'other',
+        responseType: 'arraybuffer',
+        timeout: TIMEOUT,
+        success: done,
+        fail,
+      });
+    } else {
+      wx.request({ url: config.devBaseUrl + path, method: 'GET', dataType: 'other', responseType: 'arraybuffer', timeout: TIMEOUT, success: done, fail });
     }
   });
 }
@@ -388,6 +470,7 @@ function saveSubscription(kind, target) {
 
 module.exports = {
   isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
+  attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

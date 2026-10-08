@@ -1,4 +1,4 @@
-"""周报管理接口；口令和审计由管理台共用实现提供。"""
+"""周报和临期提醒的管理接口；口令和审计由管理台共用实现提供。"""
 
 from datetime import date
 from pathlib import Path
@@ -17,6 +17,7 @@ from youju.models import DigestIssue, DigestProfile
 from youju.sources.onboard import PROVINCES
 
 SessionDep = Annotated[Session, Depends(get_session)]
+Kind = Literal["weekly", "reminder"]
 
 
 class ProfileIn(BaseModel):
@@ -61,6 +62,7 @@ class ProfileIn(BaseModel):
 class GenerateIn(BaseModel):
     profile_id: int = Field(gt=0)
     week: date | None = None
+    kind: Kind = "weekly"
 
     @field_validator("week")
     @classmethod
@@ -96,6 +98,7 @@ def issue_out(issue, profile_name, *, detail=False):
         for key in (
             "id",
             "profile_id",
+            "kind",
             "week_start",
             "week_end",
             "title",
@@ -171,12 +174,15 @@ def router(require_admin, audit) -> APIRouter:
         session: SessionDep,
         request: Request,
         profile_id: int | None = None,
+        kind: Kind | None = None,
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ):
         stmt = select(DigestIssue, DigestProfile.name).join(DigestProfile)
         if profile_id:
             stmt = stmt.where(DigestIssue.profile_id == profile_id)
+        if kind:
+            stmt = stmt.where(DigestIssue.kind == kind)
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = session.execute(
             stmt.order_by(DigestIssue.week_start.desc(), DigestIssue.id.desc())
@@ -195,12 +201,19 @@ def router(require_admin, audit) -> APIRouter:
         available(session, issue)
         return issue_out(issue, session.get(DigestProfile, issue.profile_id).name, detail=True)
 
-    def run_generation(session, profile_id, week, request):
+    def run_generation(session, profile_id, week, request, kind="weekly"):
         try:
-            result = weekly.generate(session, profile_id, week)
+            result = weekly.generate(session, profile_id, week, kind=kind)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        audit(request, "weekly_generate", profile_id=profile_id, week=week, outcome=result.outcome)
+        audit(
+            request,
+            "weekly_generate",
+            profile_id=profile_id,
+            week=week,
+            kind=kind,
+            outcome=result.outcome,
+        )
         return {
             "outcome": result.outcome,
             "reason": result.reason,
@@ -209,14 +222,14 @@ def router(require_admin, audit) -> APIRouter:
 
     @routes.post("/generate")
     def generate(body: GenerateIn, session: SessionDep, request: Request):
-        return run_generation(session, body.profile_id, body.week, request)
+        return run_generation(session, body.profile_id, body.week, request, body.kind)
 
     @routes.post("/issues/{issue_id}/regenerate")
     def regenerate(issue_id: int, session: SessionDep, request: Request):
         issue = session.get(DigestIssue, issue_id)
         if issue is None:
             raise HTTPException(404, "周报不存在")
-        return run_generation(session, issue.profile_id, issue.week_start, request)
+        return run_generation(session, issue.profile_id, issue.week_start, request, issue.kind)
 
     @routes.post("/issues/{issue_id}/status")
     def status(issue_id: int, body: StatusIn, session: SessionDep, request: Request):

@@ -1,6 +1,7 @@
 """小程序用的公开接口（/api/v1）：首页、搜索筛选、文件详情、申报日历、报告、最近名单、查名单。
 
-返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；
+返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；待核对的候选
+只给"有没有"（deadline_state），不给日期；
 截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
 """
 
@@ -14,17 +15,22 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, func, not_, or_, select
+from sqlalchemy import Select, and_, case, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju import fields as field_rules
+from youju.attachments import attachment_items, is_recent
+from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
 from youju.classify import (
+    GUIDE,
+    KINDS,
     effective_kind,
     kind_filter,
     list_status,
     region_label,
     status_filter,
 )
+from youju.conditions import public_conditions
 from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -37,11 +43,16 @@ from youju.models import (
     DocumentDetail,
     DocumentField,
     DocumentMerge,
+    JobRun,
     ListEntry,
+    RepostGroup,
+    RepostGroupMember,
     Source,
 )
 from youju.report_revision import publication_revision
+from youju.repost import confirmed_members, labels_for
 from youju.takedown import available_condition, is_taken_down
+from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -63,7 +74,22 @@ REPORT_CACHE_MAX = 200
 TABS = {"all", "申报通知", "名单", "政策"}
 _LOOKUP_LIMIT = 100  # 查名单最多列出的名单份数
 _LOOKUP_SCAN = 2000  # 查名单最多扫描的名单文件数（按发布日期从新到旧），防止极端情况下查询过慢
-TYPES = {"申报通知": "申报通知", "名单与公示": "名单", "政策文件": "政策", "其他": "其他"}
+TYPES = {
+    "申报通知": "申报通知",
+    "名单与公示": "名单",
+    "政策文件": "政策",
+    GUIDE: GUIDE,
+    "其他": "其他",
+}
+# 项目类别（按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有）
+CATEGORY_SET = set(CATEGORIES)
+# 支持方式、产业方向（按标题归类，仅供检索参考，非官方分类；只用于筛选，不返回、不展示）。
+# 支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个或没有
+SUPPORT_SET = set(SUPPORT_MODES)
+INDUSTRY_SET = set(INDUSTRIES)
+# "资讯与指南"以外的类型：折叠资讯与指南时列这些（写成正面的类型列表，不用"不是资讯与指南"，
+# 免得规则列为空时 NOT 出空值把文件漏掉）
+_NOT_GUIDE = [k for k in KINDS if k != GUIDE]
 STATUSES = {"公示", "公布"}
 TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
 DEPTS = {"科技部门", "工信部门", "其他部门"}
@@ -74,6 +100,11 @@ PROVINCES = {
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
+# 层级筛选；地市还没接入，先不提供"市级"
+LEVELS = {"国家部委", "省级"}
+# 列表和详情的截止状态：verified 有核对通过的截止（deadline 给出日期）；unverified 没有核对通过的、
+# 但有待核对的候选（页面写"截止未核对"，不给任何日期）；none 没有候选（页面写"截止时间见原文"）
+DEADLINE_STATES = ("verified", "unverified", "none")
 # 31 个省级地区（不含港澳台），按国家行政区划顺序；用于"已收录 / 还没收录"（验收 A8）
 _PROVINCE_ORDER = (
     "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏", "浙江",
@@ -156,6 +187,54 @@ def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDe
     for items in out.values():
         items.sort(key=lambda d: (_DEADLINE_ORDER.get(d.kind, 9), d.approved_date or date.max))
     return out
+
+
+def _pending(session: Session, doc_ids: list[int]) -> set[int]:
+    """哪些文件（看整个归并组）有待核对的截止候选。只查有没有，不读候选日期。"""
+    if not doc_ids:
+        return set()
+    members = groups_for(session, doc_ids)
+    hit = set(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(
+                DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
+                DocumentDeadline.status == "pending",
+            )
+            .distinct()
+        )
+    )
+    return {doc_id for doc_id, ids in members.items() if hit.intersection(ids)}
+
+
+def deadline_state(approved: list[DocumentDeadline], pending: bool) -> str:
+    """三种截止状态（见 DEADLINE_STATES）。approved 只接收 _approved 的结果：
+    有核对通过的就是 verified，和 deadline 字段有日期一一对应。"""
+    if approved:
+        return "verified"
+    return "unverified" if pending else "none"
+
+
+def verified_total(session: Session) -> int:
+    """截止雷达、申报日历空状态里的"已核对 X 条"：有核对通过截止的公开文件份数。
+
+    与列表的 deadline_state == "verified" 同一口径：同一通知的不同网址算一份，已变更的不算，
+    已下架和不公开的不算。只给数字，不给日期。
+    """
+    ids = list(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(DocumentDeadline.status == "approved")
+            .distinct()
+        )
+    )
+    if not ids:
+        return 0
+    mapping = canonical_ids(session, ids)
+    masters = sorted({mapping.get(doc_id, doc_id) for doc_id in ids})
+    visible = [doc.id for doc, _ in session.execute(_base().where(Document.id.in_(masters)))]
+    approved = _approved(session, visible)
+    return sum(1 for doc_id in visible if approved.get(doc_id))
 
 
 def _public_fields() -> Select:
@@ -266,6 +345,23 @@ def application_status(
     }
 
 
+def upcoming_deadline(
+    deadlines: list[DocumentDeadline], stamp: datetime, days: int
+) -> DocumentDeadline | None:
+    """截止雷达口径：主截止（见 _selected_deadline）没过、且在今天起 days 天内时返回它。
+
+    只接收 _approved 返回的已核对截止；截止雷达和周报的临期提醒共用这一口径。
+    """
+    selected = _selected_deadline(deadlines)
+    if selected is None or selected.approved_date is None:
+        return None
+    status_value = application_status([selected], stamp)
+    if not status_value or status_value["code"] == "closed":
+        return None
+    remaining = (selected.approved_date - stamp.astimezone(_TZ).date()).days
+    return selected if 0 <= remaining <= days else None
+
+
 def _details(session: Session, doc_ids: list[int]) -> dict[int, DocumentDetail]:
     if not doc_ids:
         return {}
@@ -297,7 +393,11 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
 
 
 def _item(
-    doc: Document, src: Source, detail: DocumentDetail | None, deadlines: list[DocumentDeadline]
+    doc: Document,
+    src: Source,
+    detail: DocumentDetail | None,
+    deadlines: list[DocumentDeadline],
+    pending: bool = False,
 ) -> dict:
     """列表行（与小程序 doc-row 的数据格式一致）。"""
     kind = effective_kind(doc.title, doc.kind_override)
@@ -305,6 +405,8 @@ def _item(
     payload = {
         "id": str(doc.id),
         "kind": kind,
+        # 项目类别：按标题归类，仅供检索参考；只有申报通知和名单有，其他为 null
+        "category": shown_category(kind, doc.rule_category, doc.title),
         # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
         "status": list_status(doc.title, kind),
         "app_status": app_status,
@@ -314,15 +416,171 @@ def _item(
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
         "url": doc.url,
         "deadline": _deadline_brief(deadlines[0] if deadlines else None),
+        "deadline_state": deadline_state(deadlines, pending),
     }
     return payload
 
 
-def _items(session: Session, rows: list[tuple[Document, Source]]) -> list[dict]:
-    """批量取详情和截止日期（两次查询），不逐条查库。"""
+def _items(
+    session: Session, rows: list[tuple[Document, Source]], grouped: bool = False
+) -> list[dict]:
+    """批量取详情、截止日期和待核对标记（各一次查询），不逐条查库。
+
+    grouped（group=1，D-055）：主条目带上所在转发组的其他版本（group），旧版小程序不传、不给。"""
     ids = [doc.id for doc, _ in rows]
     details, approved = _details(session, ids), _approved(session, ids)
-    return [_item(doc, src, details.get(doc.id), approved.get(doc.id, [])) for doc, src in rows]
+    # 已有核对通过截止的不必再查候选
+    pending = _pending(session, [doc_id for doc_id in ids if not approved.get(doc_id)])
+    items = [
+        _item(doc, src, details.get(doc.id), approved.get(doc.id, []), doc.id in pending)
+        for doc, src in rows
+    ]
+    if grouped:
+        versions = repost_versions(session, ids)
+        for item in items:
+            info = versions.get(int(item["id"]))
+            if info and info["others"]:
+                others = info["others"]
+                item["group"] = {
+                    "id": info["group_id"],
+                    "label": info["label"],
+                    "versions": len(others),
+                    # 其他版本的地区（同省两个部门的只写一次），小程序最多写 3 个，多了写“等”
+                    "regions": list(dict.fromkeys(o["region"] for o in others)),
+                    "items": [
+                        {k: o[k] for k in ("id", "label", "region", "issuer", "date", "url")}
+                        for o in others
+                    ],
+                }
+    return items
+
+
+# ---- 转发组（D-055）：同一份部里通知的各地版本 ---------------------------------------------
+# 只有在管理台确认过的组员（repost_group_members.confirmed_at 有值）才对外按组折叠；没确认的、
+# 人工移出的都按单条显示。截止日期不随组合并：每个版本只显示它自己核对通过的截止，按版本标明。
+
+
+def _grouped(stmt: Select) -> Select:
+    """先筛选、再按转发组折叠（group=1）：命中筛选的版本里，同一确认过的转发组只留一条主条目。
+
+    主条目：部里原件在库就用原件，否则用最早发布的版本（同一天按编号）；选了地区筛选时命中的
+    只有该地区的版本，主条目自然是本地版本。主条目的标题、机关、日期、申报状态都是这一版自己的。
+    排序、翻页和计数都按主条目（stmt 是 _base() 派生的 select(Document, Source)）。"""
+    members = confirmed_members()
+    key = func.coalesce(-members.c.group_id, Document.id)
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=key,
+            order_by=(
+                case((Source.province == _NATIONAL, 0), else_=1),
+                Document.publish_date.is_(None),
+                Document.publish_date,
+                Document.id,
+            ),
+        )
+        .label("repost_rank")
+    )
+    ranked = (
+        stmt.outerjoin(members, members.c.document_id == Document.id)
+        .with_only_columns(Document.id.label("doc_id"), rank)
+        .subquery()
+    )
+    return (
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .join(ranked, ranked.c.doc_id == Document.id)
+        .where(ranked.c.repost_rank == 1)
+    )
+
+
+def _province_name(province: str) -> str:
+    return "国家部委" if province == _NATIONAL else province
+
+
+def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """这些文件所在的已确认转发组：{文件: {group_id, label 这一版的叫法, upstream, others}}。
+
+    others 是同组其他对外可见、已确认的版本（不含自己），按部里原件、发布日期排；每个版本带自己的
+    原文网址。没有其他可见版本的不算组（others 为空）。"""
+    if not doc_ids:
+        return {}
+    group_of = dict(
+        session.execute(
+            select(RepostGroupMember.document_id, RepostGroupMember.group_id)
+            .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+            .where(
+                RepostGroup.needs_review.is_(False),
+                RepostGroupMember.document_id.in_(doc_ids),
+                RepostGroupMember.active.is_(True),
+                RepostGroupMember.confirmed_at.is_not(None),
+            )
+        ).all()
+    )
+    if not group_of:
+        return {}
+    rows = session.execute(
+        _base()
+        .add_columns(RepostGroupMember.group_id)
+        .join(RepostGroupMember, RepostGroupMember.document_id == Document.id)
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+        .where(
+            RepostGroup.needs_review.is_(False),
+            RepostGroupMember.group_id.in_(set(group_of.values())),
+            RepostGroupMember.active.is_(True),
+            RepostGroupMember.confirmed_at.is_not(None),
+        )
+    ).all()
+    by_group: dict[int, list[tuple[Document, Source]]] = {}
+    for doc, src, group_id in rows:
+        by_group.setdefault(group_id, []).append((doc, src))
+    groups = {
+        g.id: g
+        for g in session.scalars(select(RepostGroup).where(RepostGroup.id.in_(list(by_group))))
+    }
+    details = _details(session, [doc.id for doc, _, _ in rows])
+    out: dict[int, dict[str, Any]] = {}
+    for doc_id, group_id in group_of.items():
+        members = sorted(
+            by_group.get(group_id, []),
+            key=lambda pair: (
+                pair[1].province != _NATIONAL,
+                pair[0].publish_date or date.max,
+                pair[0].id,
+            ),
+        )
+        if not any(doc.id == doc_id for doc, _ in members):
+            continue  # 自己不对外可见（下架等）
+        labels = labels_for({doc.id: src for doc, src in members})
+        group = groups[group_id]
+        out[doc_id] = {
+            "group_id": group_id,
+            "label": labels[doc_id],
+            "upstream": (
+                {"title": group.upstream_title, "number": group.upstream_number}
+                if group.upstream_number
+                else None
+            ),
+            "members": members,
+            "labels": labels,
+            "others": [
+                {
+                    "id": str(doc.id),
+                    "label": labels[doc.id],
+                    "region": _province_name(src.province),
+                    "issuer": (
+                        details[doc.id].issuer
+                        if doc.id in details and details[doc.id].issuer
+                        else src.dept_full_name
+                    ),
+                    "date": doc.publish_date.isoformat() if doc.publish_date else None,
+                    "url": doc.url,
+                }
+                for doc, src in members
+                if doc.id != doc_id
+            ],
+        }
+    return out
 
 
 def _kind_is(kinds: list[str]):
@@ -337,6 +595,60 @@ def _kind_is(kinds: list[str]):
         Document.kind_override.in_(kinds),
         and_(Document.kind_override.is_(None), by_rule),
     )
+
+
+def _category_is(categories: list[str]):
+    """项目类别筛选：只在申报通知和名单里找；类别入库时已算好存在 rule_category，
+    还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，结果一样。"""
+    by_rule = or_(
+        Document.rule_category.in_(categories),
+        and_(Document.rule_category.is_(None), category_filter(Document.title, categories)),
+    )
+    return and_(_kind_is(list(CATEGORY_KINDS)), by_rule)
+
+
+def _supports_are(supports: list[str]):
+    """支持方式筛选（按标题）：只在申报通知和名单里找；选了几项，有其中任一项就列出。"""
+    return and_(
+        _kind_is(list(SUPPORT_KINDS)),
+        SUPPORT_RULES.filter(Document.rule_supports, Document.title, supports),
+    )
+
+
+def _industries_are(industries: list[str]):
+    """产业方向筛选（按标题）：所有类型；选了几项，有其中任一项就列出。"""
+    return INDUSTRY_RULES.filter(Document.rule_industries, Document.title, industries)
+
+
+def _folds_guides(kind: str, types: str | None) -> bool:
+    """只在"全部"页签、没选类型时折叠资讯与指南；选了类型就按选的列（选了资讯与指南就照常列出）。"""
+    return kind == "all" and not _pick(types, TYPES, "类型")
+
+
+def fold_guides(
+    session: Session,
+    stmt: Select,
+    kind: str,
+    types: str | None,
+    fold: int | None,
+    group: bool = False,
+) -> tuple[Select, int, int]:
+    """按 fold 处理"资讯与指南"（搜索和关注的新文件共用）：返回（要列出的查询, 资讯与指南篇数,
+    折叠了几篇）。fold 不传时不统计（旧版小程序）；0 照常列出、给出篇数；1 不列出、只给篇数。
+    group 为真时按转发组算（返回的查询仍未折叠，由调用方折叠）：篇数是折叠资讯与指南后实际少掉的
+    条数（组数）。一个转发组里同时有“资讯与指南”和“其他”的版本时，折叠后这一组仍以“其他”那版
+    列出，不算折叠掉。"""
+    if fold is None or not _folds_guides(kind, types):
+        return stmt, 0, 0
+    if group:
+        guides = _count(session, _grouped(stmt)) - _count(
+            session, _grouped(stmt.where(_kind_is(_NOT_GUIDE)))
+        )
+    else:
+        guides = _count(session, stmt.where(_kind_is([GUIDE])))
+    if fold != 1:
+        return stmt, guides, 0
+    return stmt.where(_kind_is(_NOT_GUIDE)), guides, guides
 
 
 def _base() -> Select:
@@ -358,15 +670,52 @@ def _count(session: Session, stmt: Select) -> int:
 
 
 @router.get("/home")
-def home(session: SessionDep) -> dict:
-    """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最新 8 份。"""
+def home(
+    session: SessionDep,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
+) -> dict:
+    """首页：本周新增（按发布日期，北京时间周一起算）、分类计数、覆盖范围、最近一次成功检查的时间、
+    最新 8 份。
+
+    group=1（D-055）：本周新增按转发组算，本周有新版本的组计 1 份，week_reposts 是并进组里、
+    没有另计的版本数；最新 8 份也按组折叠。"""
     start, end = _week(now().date())
     week = visible_documents(
-        select(Document.title, Document.kind_override)
+        select(Document.id, Document.title, Document.kind_override)
         .join(Source, Document.source_id == Source.id)
         .where(public_condition())
     ).where(Document.publish_date >= start, Document.publish_date < end)
-    kinds = [effective_kind(t, override) for t, override in session.execute(week).all()]
+    week_rows = session.execute(week.order_by(Document.id)).all()
+    week_reposts = 0
+    if group == 1:
+        members = confirmed_members()
+        group_of = dict(
+            session.execute(
+                select(members.c.document_id, members.c.group_id).where(
+                    members.c.document_id.in_([row.id for row in week_rows] or [-1])
+                )
+            ).all()
+        )
+        seen: set[int] = set()
+        kept = []
+        for row in week_rows:
+            group_id = group_of.get(row.id)
+            if group_id is not None and group_id in seen:
+                week_reposts += 1
+                continue
+            if group_id is not None:
+                seen.add(group_id)
+            kept.append(row)
+        week_rows = kept
+    kinds = [effective_kind(row.title, row.kind_override) for row in week_rows]
     # 与收录范围（/coverage）同一口径：启用且至少成功检查过一次的栏目
     live = and_(Source.enabled.is_(True), Source.last_success_at.is_not(None))
     sources = session.scalar(select(func.count()).select_from(Source).where(live)) or 0
@@ -378,23 +727,32 @@ def home(session: SessionDep) -> dict:
         )
         or 0
     )
+    # 最近一次成功检查：定时任务台账里最近一次成功结束的抓取（crawl）的结束时间；没有记录时为空。
+    # 本周 0 份时小程序写"本周暂无新文件 · 最近检查 …"，只陈述检查时间，不推测原因。
+    last_checked = session.scalar(
+        select(func.max(JobRun.finished_at)).where(JobRun.job == "crawl", JobRun.status == "ok")
+    )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
-    latest = session.execute(
-        _ordered(_base().where(_kind_is(["申报通知", "名单", "政策"]))).limit(8)
-    ).all()
-    return {
-        "stats": {
-            "week_total": len(kinds),
-            "apply": kinds.count("申报通知"),
-            "lists": kinds.count("名单"),
-            "other": len(kinds) - kinds.count("申报通知") - kinds.count("名单"),
-            "provinces": provinces,
-            "sources": sources,
-            # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
-            "followed_new": None,
-        },
-        "items": _items(session, [tuple(r) for r in latest]),
+    latest_stmt = _base().where(_kind_is(["申报通知", "名单", "政策"]))
+    if group == 1:
+        latest_stmt = _grouped(latest_stmt)
+    latest = session.execute(_ordered(latest_stmt).limit(8)).all()
+    stats = {
+        "week_total": len(kinds),
+        "apply": kinds.count("申报通知"),
+        "lists": kinds.count("名单"),
+        "other": len(kinds) - kinds.count("申报通知") - kinds.count("名单"),
+        "provinces": provinces,
+        "sources": sources,
+        # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
+        "followed_new": None,
+        "last_checked_at": (
+            last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
+        ),
     }
+    if group == 1:
+        stats["week_reposts"] = week_reposts
+    return {"stats": stats, "items": _items(session, [tuple(r) for r in latest], group == 1)}
 
 
 @router.get("/coverage")
@@ -530,19 +888,84 @@ def search(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
+    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级")] = None,
+    categories: Annotated[
+        str | None,
+        Query(max_length=400, description="项目类别，逗号分隔（只在申报通知和名单里找）"),
+    ] = None,
+    fold: Annotated[
+        int | None,
+        Query(ge=0, le=1, description="1 折叠资讯与指南类文件；0 不折叠但给出篇数；不传则不统计"),
+    ] = None,
+    supports: Annotated[
+        str | None,
+        Query(max_length=400, description="支持方式（按标题），逗号分隔（只在申报通知和名单里找）"),
+    ] = None,
+    industries: Annotated[
+        str | None, Query(max_length=400, description="产业方向（按标题），逗号分隔")
+    ] = None,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
-    """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。"""
-    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open)
+    """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
+
+    group=1（D-055）：先按条件筛出各个版本，再把同一确认过的转发组折叠成一条主条目（见 _grouped），
+    total、total_all、guides、folded 都按组算；reposts 是折叠掉、没有另计的版本数，主条目带 group
+    （其他版本和各自的原文网址）。
+
+    fold=1 时"资讯与指南"类文件不列出、不计入 total 和 total_all，只在 folded 里给出折叠了几篇
+    （不悄悄藏：小程序写明"已折叠 X 篇"，点开就按 fold=0 列出来）；guides 是符合条件的
+    资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
+    不返回这两项。"""
+    filters = {"levels": levels, "categories": categories}
+    filters |= {"supports": supports, "industries": industries}
+    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
+    all_time = search_statement(
+        session, q, kind, regions, types, status, "不限", depts, open, **filters
+    )
+    grouped = group == 1
+    stmt, guides, folded = fold_guides(session, stmt, kind, types, fold, grouped)
+    if fold == 1 and _folds_guides(kind, types):
+        all_time = all_time.where(_kind_is(_NOT_GUIDE))
+    reposts = 0
+    if grouped:
+        versions = _count(session, stmt)
+        stmt, all_time = _grouped(stmt), _grouped(all_time)
     total = _count(session, stmt)
+    if grouped:
+        reposts = versions - total
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
-    return {
+    body = {
         "q": (q or "").strip(),
         "total": total,
-        "total_all": _count(
-            session, search_statement(session, q, kind, regions, types, status, "不限", depts, open)
-        ),
-        "items": _items(session, [tuple(r) for r in rows]),
+        "total_all": _count(session, all_time),
+        "items": _items(session, [tuple(r) for r in rows], grouped),
     }
+    if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
+        body |= {"folded": folded, "guides": guides}
+    if grouped:  # 旧版小程序不传 group，返回格式和以前一样
+        body["reposts"] = reposts
+    return body
+
+
+# 地区筛选的"国家部委"和层级筛选的"国家部委"共用这一个条件（来源省份填"国家"），两处不会不一致
+_NATIONAL = "国家"
+
+
+def _level_filter(levels: list[str]):
+    """层级：国家部委 = 国家级来源；省级 = 省级来源（不含国家级，地市接入后也不含市级）。"""
+    parts = {
+        "国家部委": Source.province == _NATIONAL,
+        "省级": and_(Source.province != _NATIONAL, Source.level == "省级"),
+    }
+    return or_(*(parts[level] for level in levels))
 
 
 def search_statement(
@@ -555,8 +978,20 @@ def search_statement(
     time: str,
     depts: str | None,
     open: int | None = None,
+    levels: str | None = None,
+    categories: str | None = None,
+    supports: str | None = None,
+    industries: str | None = None,
 ) -> Select:
-    """公开搜索、关注和提醒共用筛选校验及 SQL。"""
+    """公开搜索、关注和提醒共用筛选校验及 SQL。
+
+    各组筛选之间取交集，同一组里多选取并集。地区和层级也是这样：地区选的省份（或国家部委）
+    和层级选的国家部委 / 省级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
+    所以只在地区里选、只在层级里选、两边都选，结果相同；地区只选省份而层级只选国家部委，
+    或地区只选国家部委而层级只选省级，两者没有交集，结果为空（小程序在空结果里提示调整）。
+    项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。支持方式（按标题）
+    也一样；产业方向（按标题）所有类型都有。这三组都是同一组里多选取并集。
+    """
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
     if time not in TIMES:
@@ -565,6 +1000,10 @@ def search_statement(
     picked_regions = [r for r in _pick(regions, PROVINCES, "地区") if r != "不限地区"]
     picked_status = _pick(status, STATUSES, "名单状态")
     picked_depts = _pick(depts, DEPTS, "发文部门")
+    picked_levels = _pick(levels, LEVELS, "层级")
+    picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
+    picked_supports = _pick(supports, SUPPORT_SET, "支持方式")
+    picked_industries = _pick(industries, INDUSTRY_SET, "产业方向")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -576,12 +1015,20 @@ def search_statement(
         stmt = stmt.where(_kind_is(picked_types))
     if picked_regions:
         stmt = stmt.where(
-            Source.province.in_(["国家" if r == "国家部委" else r for r in picked_regions])
+            Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
         )
+    if picked_levels:
+        stmt = stmt.where(_level_filter(picked_levels))
     if picked_status:
         stmt = stmt.where(status_filter(Document.title, picked_status, _kind_is(["名单"])))
     if picked_depts:
         stmt = stmt.where(_dept_filter(picked_depts))
+    if picked_categories:
+        stmt = stmt.where(_category_is(picked_categories))
+    if picked_supports:
+        stmt = stmt.where(_supports_are(picked_supports))
+    if picked_industries:
+        stmt = stmt.where(_industries_are(picked_industries))
 
     if open is not None:
         if open != 1:
@@ -634,15 +1081,10 @@ def _report_payload(
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
-        selected = _selected_deadline(approved.get(doc.id, []))
-        if selected is None or selected.approved_date is None:
-            continue
-        status_value = application_status([selected], current)
-        if not status_value or status_value["code"] == "closed":
+        selected = upcoming_deadline(approved.get(doc.id, []), current, 30)
+        if selected is None:
             continue
         remaining = (selected.approved_date - today).days
-        if remaining < 0 or remaining > 30:
-            continue
         detail = details.get(doc.id)
         entries.append(
             {
@@ -690,6 +1132,15 @@ def _report_payload(
     }
 
 
+def _report_response(
+    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+) -> dict[str, Any]:
+    """截止雷达接口的返回：雷达数据，加上空状态说明用的已核对条数（不随筛选变化，只给数字）。"""
+    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload["verified_total"] = verified_total(session)
+    return payload
+
+
 @router.get("/reports/deadlines")
 def deadline_report(
     session: SessionDep,
@@ -720,7 +1171,7 @@ def deadline_report(
         .limit(1)
     ):
         # 当天带时刻的截止随时间变化；支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
-        return _report_payload(session, days, province, dept, support, page, size)
+        return _report_response(session, days, province, dept, support, page, size)
     # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
     revision = publication_revision(session, "deadlines")
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
@@ -728,7 +1179,7 @@ def deadline_report(
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload = _report_response(session, days, province, dept, support, page, size)
     if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
@@ -985,8 +1436,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
     doc, src = row
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
+    pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
     fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
+    # 申报条件（D-052 第④项）：只给整份人工确认过、和现在这版正文对得上的清单
+    apply_conditions = public_conditions(session, doc.id) if kind == "申报通知" else None
     status_value = application_status(approved) if kind == "申报通知" else None
     issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
     points = [["发文机关", issuer]]
@@ -1057,6 +1511,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],
+        # 项目类别：按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有
+        "category": shown_category(kind, doc.rule_category, doc.title),
         "region": region_label(src.province, src.level),
         "title": doc.title,
         "issuer": issuer,
@@ -1076,13 +1532,17 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "site": f"{src.dept_full_name}网站",
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
+        "deadline_state": deadline_state(approved, pending),
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
-        "attachments": [
-            {"ext": a.extension.upper(), "name": a.name, "url": a.url}
-            for a in (detail.attachments if detail else [])
-        ],
+        # 附件：存有副本的可以在小程序里打开（preview），其他的给原因（youju/attachments.py）
+        "attachments": attachment_items(
+            session,
+            detail.attachments if detail else [],
+            kind=kind,
+            recent=is_recent(doc.publish_date, doc.first_seen_at, now()),
+        ),
         "checked": checked,
         "body": body_for_reading(_reading_body(session, doc.id), kind),
     }
@@ -1090,7 +1550,65 @@ def document(doc_id: int, session: SessionDep) -> dict:
         payload["fields"] = fields
     else:
         payload.pop("fields", None)
+    if apply_conditions:
+        payload["apply_conditions"] = apply_conditions
+    # 转发组（D-055）：同一份部里通知的其他版本，各版本的截止各自列出（不互相套用）
+    repost = repost_versions(session, [doc.id]).get(doc.id)
+    if repost and repost["others"]:
+        payload["repost"] = _repost_detail(session, doc.id, repost)
     return payload
+
+
+def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
+    """详情页的“各版本”：本组每个对外可见、已确认的版本，各带自己的原文网址和自己核对通过的截止。
+
+    截止按版本标（“部里”只给库里的部里原件，其余写“江西版”），不同版本的日期不互相套用；
+    没核对的写截止未核对。顺序：部里原件、本版、其他版本按发布日期。"""
+    members = info["members"]
+    ids = [doc.id for doc, _ in members]
+    approved = _approved(session, ids)
+    pending = _pending(session, [i for i in ids if not approved.get(i)])
+    details = _details(session, ids)
+    ordered = sorted(
+        members,
+        key=lambda pair: (
+            pair[1].province != _NATIONAL,
+            pair[0].id != doc_id,
+            pair[0].publish_date or date.max,
+            pair[0].id,
+        ),
+    )
+    versions = []
+    for version, src in ordered:
+        deadlines = approved.get(version.id, [])
+        detail = details.get(version.id)
+        versions.append(
+            {
+                "id": str(version.id),
+                "label": info["labels"][version.id],
+                "current": version.id == doc_id,
+                "region": _province_name(src.province),
+                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "date": version.publish_date.isoformat() if version.publish_date else None,
+                "url": version.url,
+                "deadlines": [
+                    {
+                        "label": d.kind,
+                        "date": d.approved_date.isoformat(),
+                        "time": _hhmm(d.approved_time),
+                    }
+                    for d in deadlines
+                ],
+                "deadline_state": deadline_state(deadlines, version.id in pending),
+            }
+        )
+    return {
+        "group_id": info["group_id"],
+        "label": info["label"],
+        # 照录正文里引用的部里通知标题和文号（没有就不给），不写推断的内容
+        "upstream": info["upstream"],
+        "versions": versions,
+    }
 
 
 @router.get("/calendar")
@@ -1171,6 +1689,8 @@ def calendar(
         "items": items(upcoming),
         "pastTotal": len(past),
         "past": items(past),
+        # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
+        "verifiedTotal": verified_total(session),
     }
 
 
@@ -1179,19 +1699,31 @@ def recent_lists(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    group: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 按转发组折叠（D-055）：同一份部里通知的各地版本只列一条、计数按组；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
-    """最近发布的名单与公示，以及本周份数。"""
+    """最近发布的名单与公示，以及本周份数。group=1 时按转发组折叠和计数（名单一般没有转发组）。"""
+    grouped = group == 1
+    wrap = _grouped if grouped else (lambda stmt: stmt)
     stmt = _base().where(_kind_is(["名单"]))
     start, end = _week(now().date())
     week_total = _count(
-        session, stmt.where(Document.publish_date >= start, Document.publish_date < end)
+        session, wrap(stmt.where(Document.publish_date >= start, Document.publish_date < end))
     )
+    stmt = wrap(stmt)
     total = _count(session, stmt)
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
     return {
         "week_total": week_total,
         "total": total,
-        "items": _items(session, [tuple(r) for r in rows]),
+        "items": _items(session, [tuple(r) for r in rows], grouped),
     }
 
 

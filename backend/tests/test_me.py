@@ -963,3 +963,92 @@ def test_deadline_reminder_rechecks_publicity_when_sending(client, session, monk
 
     assert run_notify(session, settings=config, sender=forbidden, stamp=NOW)["expired"] == 1
     assert session.get(Subscription, sub_id).status == "expired"
+
+
+def test_follow_keeps_level_filter(client, session, monkeypatch):
+    """关注条件可以带层级；新文件计数按层级筛，层级取值不对时 422。"""
+    settings(monkeypatch)
+    agree(client)
+    assert follow(client, {"time": "不限", "levels": "市级"}).status_code == 422
+    national = follow(client, {"time": "不限", "levels": "国家部委"})
+    provincial = follow(client, {"time": "不限", "levels": "省级", "regions": "北京"})
+    assert national.status_code == 201 and provincial.status_code == 201
+    assert provincial.json()["conditions"]["levels"] == "省级"
+    source_and_doc(session)  # 北京省级来源的新文件
+    counts = {
+        row["id"]: row["newCount"] for row in client.get("/api/v1/me/follows").json()["items"]
+    }
+    assert counts == {national.json()["id"]: 0, provincial.json()["id"]: 1}
+
+
+def test_follow_saved_with_national_region_still_counts_like_level(client, session, monkeypatch):
+    """UI 第二轮起小程序的地区里没有"国家部委"（只在层级里）。之前保存的关注条件地区里还有它：
+    服务端照旧接受、照旧计数，和小程序换成层级后的条件新文件数相同；新界面"地区北京 + 层级
+    国家部委"保存的就是 regions=国家部委,北京，国家部委和北京的新文件都算。"""
+    settings(monkeypatch)
+    agree(client)
+    made = {
+        key: follow(client, {"time": "不限", **conditions}).json()["id"]
+        for key, conditions in {
+            "old_national": {"regions": "国家部委"},
+            "new_national": {"levels": "国家部委"},
+            "old_provincial": {"regions": "国家部委,北京", "levels": "省级"},
+            "new_provincial": {"regions": "北京", "levels": "省级"},
+            "national_and_beijing": {"regions": "国家部委,北京"},
+        }.items()
+    }
+    source_and_doc(session)  # 北京省级来源的新文件
+    national = Source(
+        level="国家级",
+        province="国家",
+        dept="科技",
+        dept_full_name="科学技术部",
+        column_name="通知",
+        url="https://example.gov.cn/national/",
+        parser_config={},
+    )
+    session.add(national)
+    session.flush()
+    session.add(
+        Document(
+            source_id=national.id,
+            url=f"{national.url}a.html",
+            url_key=f"{national.id}/a.html",
+            title="关于组织申报2026年度重点研发计划项目的通知",
+            publish_date=NOW.date(),
+            first_seen_at=NOW + timedelta(minutes=1),
+            last_seen_at=NOW + timedelta(minutes=1),
+        )
+    )
+    session.commit()
+    counts = {
+        row["id"]: row["newCount"] for row in client.get("/api/v1/me/follows").json()["items"]
+    }
+    got = {key: counts[follow_id] for key, follow_id in made.items()}
+    assert got == {
+        "old_national": 1,
+        "new_national": 1,
+        "old_provincial": 1,
+        "new_provincial": 1,
+        "national_and_beijing": 2,
+    }
+
+
+def test_follow_new_folds_guides_when_asked(client, session, monkeypatch):
+    """关注的新文件和搜索一样默认折叠资讯与指南（D-051）：写明折叠了几篇，点开照常列出。"""
+    settings(monkeypatch)
+    agree(client)
+    follow_id = follow(client).json()["id"]
+    source_and_doc(session)
+    source_and_doc(session, title="2026年8月份居民消费价格同比上涨0.8%")
+    url = f"/api/v1/me/follows/{follow_id}/new"
+    assert client.get(url).json()["total"] == 2  # 旧版小程序不传 fold：和以前一样
+    folded = client.get(url, params={"fold": 1}).json()
+    assert (folded["total"], folded["folded"], folded["guides"]) == (1, 1, 1)
+    assert [item["kind"] for item in folded["items"]] == ["申报通知"]
+    shown = client.get(url, params={"fold": 0}).json()
+    assert (shown["total"], shown["folded"], shown["guides"]) == (2, 0, 1)
+    # 关注条件选了类型的不折叠
+    typed = follow(client, {"time": "不限", "types": "申报通知"}).json()["id"]
+    body = client.get(f"/api/v1/me/follows/{typed}/new", params={"fold": 1}).json()
+    assert (body["total"], body["folded"]) == (1, 0)

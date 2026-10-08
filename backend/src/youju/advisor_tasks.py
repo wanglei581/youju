@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from openpyxl import load_workbook
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from youju import access_log
@@ -120,8 +120,42 @@ def usage_day(value: datetime) -> date:
     return _utc(value).astimezone(BEIJING).date()
 
 
+def usage_limit(kind: str) -> int:
+    return 3 if kind == "compare" else (5 if kind in AI_KINDS else 1)
+
+
+def usage_counts(
+    session: Session, user_id: int, day: date, *, lock: bool = False
+) -> dict[str, int]:
+    """日账本保持不变；名单比对汇总北京时间自然月，其他工具仍按日。"""
+    month = day.replace(day=1)
+    next_month = (month + timedelta(days=32)).replace(day=1)
+    stmt = select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
+        AdvisorUsage.user_id == user_id,
+        or_(
+            and_(
+                AdvisorUsage.kind == "compare",
+                AdvisorUsage.day >= month,
+                AdvisorUsage.day < next_month,
+            ),
+            and_(AdvisorUsage.kind != "compare", AdvisorUsage.day == day),
+        ),
+    )
+    # 占用额度时必须读最新值；普通快照可能早于等待用户行锁的并发请求。
+    if lock:
+        stmt = stmt.with_for_update()
+    counts = {}
+    for kind, used in session.execute(stmt):
+        counts[kind] = counts.get(kind, 0) + used
+    return counts
+
+
 def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
     """在调用方已锁定用户行后占用一次额度。"""
+    if kind == "compare" and usage_counts(session, user_id, day, lock=True).get(
+        kind, 0
+    ) >= usage_limit(kind):
+        return False
     row = session.scalar(
         select(AdvisorUsage)
         .where(AdvisorUsage.user_id == user_id, AdvisorUsage.kind == kind, AdvisorUsage.day == day)
@@ -131,8 +165,8 @@ def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
         row = AdvisorUsage(user_id=user_id, kind=kind, day=day, used_count=0)
         session.add(row)
         session.flush()
-    if kind in AI_KINDS:
-        if row.used_count >= 5:
+    if kind == "compare" or kind in AI_KINDS:
+        if row.used_count >= usage_limit(kind):
             return False
         row.used_count += 1
         return True
@@ -392,8 +426,12 @@ def process_ai(
                     settings.ai_base_url,
                     settings.ai_api_key.get_secret_value(),
                     model,
-                    timeout=min(30, timeout.total_seconds()),
+                    timeout=min(
+                        getattr(settings, "ai_advisor_timeout_seconds", 180),
+                        timeout.total_seconds(),
+                    ),
                     max_retries=0,
+                    extra_body=getattr(settings, "ai_request_extra", None),
                 )
             payload = chat_client.complete_json(
                 skill.system_prompt,

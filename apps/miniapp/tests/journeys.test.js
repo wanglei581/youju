@@ -25,9 +25,11 @@ const wxml = (page) => fs.readFileSync(path.join(__dirname, '..', 'pages', page,
 
 function searchPage(api, wx = {}) {
   return load('pages/search/index.js', {
+    '../../content/legal.js': { final: false },
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/exporter.js': {}, '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
+    '../../utils/exporter.js': {}, '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': {}, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
+    '../../utils/conditions.js': conditions,
   }, { wx });
 }
 
@@ -54,6 +56,7 @@ test('J-05 首页返回刷新、保持类型页签，合并在途请求并节流
   let resolve;
   let url;
   const page = load('pages/home/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => { calls += 1; return new Promise((done) => { resolve = done; }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { ...app, Date: { now: () => stamp }, wx: { navigateTo: (r) => { url = r.url; } } });
@@ -77,9 +80,12 @@ test('J-05 详情返回重新读取核定日期，下架清空正文与操作并
   let error;
   let back = false;
   const page = load('pages/detail/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => { calls += 1; return error ? Promise.reject(error) : Promise.resolve(result); } },
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
+    '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { Date: { now: () => stamp }, wx: { navigateBack: () => { back = true; } } });
   page.onLoad({ id: 1 }); page.onShow(); await flush(); assert.equal(calls, 1);
   result = { ...result, deadline: null };
@@ -106,7 +112,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': { myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
     '../../utils/advisor.js': { taskView: (task) => task },
-    '../../utils/conditions.js': conditions, '../../utils/consent.js': {},
+    '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true },
   }, { wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {},
     showModal: (m) => { modal = m; m.success({ confirm: true }); } } });
   page.load(); await flush();
@@ -130,7 +136,7 @@ test('J-09 雷达省份来自无筛选30天范围，筛部门/支持方式后仍
   const page = load('pages/report/index.js', {
     '../../utils/api.js': { deadlineReport: (p) => { calls.push({ ...p }); return Promise.resolve({ items: [], total: 0, by_province: p.days === 30 && !p.province ? { 北京: 1, 辽宁: 2 } : { 北京: 1 } }); } },
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-  });
+  }, app);
   page.onLoad(); await flush();
   assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
   const depts = Array.from(page.data.depts); const supports = Array.from(page.data.supports);
@@ -146,7 +152,7 @@ test('J-10 申请覆盖上限495，含前缀恰好500；超长明确提示且不
   const calls = []; let message;
   const page = load('pages/feedback/index.js', {
     '../../utils/api.js': { feedback: (_, content) => { calls.push(content); return Promise.resolve({}); } },
-    '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
+    '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
   }, { setTimeout() {}, wx: { setNavigationBarTitle() {}, showToast: (r) => { message = r.title; } } });
   page.onLoad({ type: 'coverage' }); assert.equal(page.data.max, 495);
   page.onInput({ detail: { value: '字'.repeat(496) } }); assert.match(message, /最多输入 495 字/);
@@ -175,24 +181,27 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
   const follow = load('pages/follow/index.js', {
     '../../utils/api.js': { isLive: () => true }, '../../content/legal.js': { final: true },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/subscribe.js': {},
-    '../../utils/consent.js': { syncConsent: pending }, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true, syncConsent: pending }, '../../utils/conditions.js': conditions,
   }); follow.load(); assert.equal(follow.data.loading, true);
   const calendar = load('pages/calendar/index.js', {
+    '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { calendar: pending }, '../../utils/format.js': format, '../../utils/subscribe.js': {},
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
   }); calendar.load(); assert.equal(calendar.data.loading, true); assert.equal(calendar.data.loaded, false);
   const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
   recent.onLoad(); assert.equal(recent.data.loading, true);
-  for (const p of ['search', 'follow', 'follow-new', 'calendar', 'report', 'lists']) {
+  for (const p of ['search', 'follow', 'follow-new', 'calendar', 'report']) {
     assert.match(wxml(p), /wx:if="{{loading[^}]*}}"[^>]*>正在加载…/);
   }
+  // 查名单的列表改用灰色占位块（骨架屏），读屏软件读"正在加载"
+  assert.match(wxml('lists'), /wx:if="{{loading}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
   assert.match(wxml('calendar'), /wx:if="{{loaded && !loading && !error}}"/);
   assert.match(wxml('report'), /!items.length && !loading && !error/);
   assert.match(wxml('lists'), /!shown.length && !loading && !error/);
 });
 
 test('本轮修改页面的 WXML 标签闭合，事件都有页面处理函数', () => {
-  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'my-data', 'feedback']) {
+  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'files', 'my-data', 'feedback', 'me']) {
     const source = wxml(page).replace(/<!--[\s\S]*?-->/g, '');
     const stack = [];
     const tags = /<(\/?)([\w:-]+)\b(?:"[^"]*"|'[^']*'|[^'"<>])*?>/g;
@@ -216,7 +225,7 @@ test('J-02 关注页的按此条件搜索入口保留 open 和其余筛选', asy
     '../../utils/api.js': { myFollows: () => Promise.resolve({ items: [{ id: 1, name: '未截止', newCount: 0, conditions: c }] }),
       mySubscriptions: () => Promise.resolve({ items: [] }) },
     '../../content/legal.js': { final: true }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/subscribe.js': {}, '../../utils/consent.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/subscribe.js': {}, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/conditions.js': conditions,
   }, { wx: { navigateTo: ({ url }) => { target = url; } } });
   page.loadLive(); await flush(); page.searchFollow(event({ id: '1' }));
   const params = Object.fromEntries(new URL(target, 'https://test.invalid').searchParams);

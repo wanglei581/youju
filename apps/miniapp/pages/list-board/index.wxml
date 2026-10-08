@@ -20,7 +20,7 @@
   <view wx:for="{{items}}" wx:key="id" class="item" data-id="{{item.id}}" bindtap="open">
     <view class="item-title">{{item.title}}</view>
     <view class="meta">{{item.dateText}} · {{item.issuer}} · {{item.province}}</view>
-    <view class="item-foot"><text wx:if="{{item.wording}}" class="wording">{{item.wording}}</text><text wx:if="{{item.count !== null && item.count !== undefined}}">{{item.count}} 条</text><text wx:else class="count-unparsed">条数未解析</text></view>
+    <view class="item-foot"><text wx:if="{{item.wording}}" class="status status--{{item.wordingCls}}">{{item.wording}}</text><text wx:if="{{item.count !== null && item.count !== undefined}}">{{item.count}} 条</text><text wx:else class="count-unparsed">条数未解析</text></view>
   </view>
   <view wx:if="{{!loading && !error && !items.length}}" class="empty">最近 30 天没有已收录的名单</view>
   <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
@@ -33,4 +33,5 @@
   <view class="stat-group"><view class="stat-title">按名单类型</view><view class="table-head"><text>类型</text><text>名单份数</text><text>名单条数</text></view><view wx:for="{{stats.by_type}}" wx:key="type" class="table-row"><text>{{item.type}}</text><text>{{item.lists}}</text><text>{{item.entries}}</text></view><view wx:if="{{!stats.by_type.length}}" class="muted stat-empty">暂无数据</view></view>
 </view>
 <view class="note">只统计已收录网站的名单；名单条数只含从名单原文中解析出的企业；公示期内的名单也计入，最终结果以原文为准</view>
+<view style="height: 60rpx"></view>
 <tool-fab blocked="{{toolPickerOpen}}" />

@@ -276,7 +276,9 @@ def main(argv: list[str] | None = None) -> int:
                 settings.ai_base_url,
                 settings.ai_api_key.get_secret_value(),
                 settings.ai_model,
+                timeout=settings.ai_advisor_timeout_seconds,
                 max_retries=0,
+                extra_body=settings.ai_request_extra,
             )
         records = evaluate(selected, client, args.skill)
         write_outputs(args.out, records, args.skill)

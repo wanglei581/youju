@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { loginOpen } = require('../../utils/consent.js');
 const context = require('../../utils/tool-context.js');
 const overlays = require('../../utils/tool-overlays.js');
 
@@ -15,7 +16,7 @@ Component({
     kind: { type: String, value: 'all' },
     filters: { type: Object, value: null },
   },
-  data: { enabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
+  data: { loginOpen: loginOpen(), enabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
   observers: {
     blocked() { if (this.data.visible) this.measure(); },
   },
@@ -43,6 +44,7 @@ Component({
   },
   methods: {
     show() {
+      if (!this.data.loginOpen) return;
       this.setData({ visible: true, navigating: false });
       this.measure();
       api.advisorStatus().then((res) => {

@@ -1,5 +1,7 @@
 .head { padding-top: 32rpx; padding-bottom: 32rpx; }
-.tags { display: flex; align-items: center; gap: 12rpx; }
+.tags { display: flex; flex-wrap: wrap; align-items: center; gap: 12rpx; }
+/* 项目类别：按标题归类、仅供检索参考，用描边和类型标签区分开 */
+.tag--cat { border: 2rpx solid var(--line2); color: var(--t2); line-height: 36rpx; font-weight: 400; }
 .region { font-size: 24rpx; color: var(--t2); line-height: 40rpx; }
 .title { margin-top: 20rpx; font-size: 40rpx; line-height: 60rpx; font-weight: 700; }
 .pub { margin-top: 20rpx; font-size: 26rpx; color: var(--t2); }
@@ -38,13 +40,24 @@
 .support-evidence-label { color: var(--t3); }
 .audience-text { margin-top: 12rpx; font-size: 28rpx; line-height: 1.8; color: var(--t1); }
 .audience-note { margin-top: 12rpx; font-size: 24rpx; line-height: 1.6; }
+/* 申报条件：左列类别（同类连着的只写一次），右侧是通知原文里的原句 */
+.cond { display: flex; align-items: flex-start; gap: 20rpx; padding: 20rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
+.cond-cat { flex-shrink: 0; width: 112rpx; font-size: 24rpx; line-height: 44.8rpx; color: var(--t3); }
+.cond-text { flex: 1; min-width: 0; color: var(--t1); }
+.cond-note { padding-top: 20rpx; font-size: 24rpx; line-height: 1.6; }
 
 .att { display: flex; align-items: center; gap: 24rpx; padding: 24rpx 0; border-bottom: 2rpx solid var(--line); }
-.att-ext { width: 72rpx; height: 72rpx; flex-shrink: 0; border-radius: 16rpx; display: flex; align-items: center; justify-content: center; font-size: 20rpx; font-weight: 700; }
+.att--pressed { opacity: 0.6; }
+.att-ext { width: 72rpx; height: 72rpx; flex-shrink: 0; border-radius: 16rpx; display: flex; align-items: center; justify-content: center; font-size: 20rpx; font-weight: 700; background: var(--fill); color: var(--t2); }
 .att-ext--PDF { background: var(--r-tint); color: var(--red); }
 .att-ext--XLSX, .att-ext--XLS { background: var(--g-tint); color: var(--g-txt); }
 .att-ext--DOC, .att-ext--DOCX { background: var(--brand-tint); color: var(--brand); }
-.att-name { flex: 1; font-size: 28rpx; line-height: 1.5; }
+.att-ext--PPT, .att-ext--PPTX { background: var(--o-tint); color: var(--o-txt); }
+.att-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4rpx; }
+.att-name { font-size: 28rpx; line-height: 1.5; }
+.att-meta { font-size: 24rpx; line-height: 1.5; color: var(--t3); }
+.att-action { flex-shrink: 0; font-size: 26rpx; color: var(--t3); }
+.att-action--open { color: var(--brand); font-weight: 500; }
 .att-foot { display: flex; align-items: center; padding: 22rpx 0 24rpx; font-size: 25rpx; color: var(--t2); }
 .copy { margin-left: auto; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
 .copy--big { font-size: 28rpx; }
@@ -58,7 +71,6 @@
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }
 .bar-main { margin-left: auto; padding: 0 44rpx; }
-.empty { padding: 48rpx 32rpx; text-align: center; color: var(--t2); }
 .status-note { margin-top: 12rpx; font-size: 24rpx; }
 /* 正文（D-030）：默认显示开头一段，点"展开全文"看全部 */
 .body-note { margin: -4rpx 0 16rpx; font-size: 22rpx; line-height: 1.6; }
@@ -66,3 +78,21 @@
 .body-more { margin-top: 16rpx; font-size: 26rpx; }
 .body-rest { margin-top: 12rpx; font-size: 24rpx; }
 .body-none { font-size: 26rpx; line-height: 1.6; }
+/* 加载中的占位块 */
+.sk-title { height: 40rpx; margin-top: 22rpx; }
+.sk-card { padding-top: 28rpx; padding-bottom: 28rpx; }
+.sk-section { width: 112rpx; height: 32rpx; }
+/* 转发版本（D-055）：各版本的截止按版本列出 */
+.ver-card { padding-bottom: 8rpx; }
+.ver-upstream { margin: 8rpx 0 4rpx; padding: 16rpx 20rpx; background: #F7F8FA; border-radius: 12rpx; font-size: 25rpx; line-height: 1.7; color: var(--t2); }
+.ver { padding: 22rpx 0; border-bottom: 2rpx solid var(--line); }
+.ver-top { display: flex; align-items: center; gap: 12rpx; }
+.ver-label { font-size: 28rpx; font-weight: 600; color: var(--t1); }
+.ver-here { padding: 0 10rpx; border-radius: 6rpx; background: var(--brand-tint); color: var(--brand); font-size: 22rpx; line-height: 36rpx; }
+.ver-go { margin-left: auto; display: flex; align-items: center; }
+.ver-due { margin-top: 6rpx; font-size: 28rpx; line-height: 1.6; color: var(--t1); }
+.ver-due--none { color: var(--t3); }
+.ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
+.ver-meta-text { flex: 1; min-width: 0; }
+.ver-copy { flex-shrink: 0; color: var(--brand); white-space: nowrap; }
+.ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }

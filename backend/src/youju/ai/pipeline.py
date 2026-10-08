@@ -8,16 +8,17 @@
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import extract_deadlines_with_ai
-from youju.classify import doc_kind
+from youju.classify import comparable_kind, doc_kind
 from youju.dedup import (
     canonical_ids,
     groups_for,
@@ -33,6 +34,8 @@ from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, So
 RETRY_AFTER = timedelta(hours=24)
 # 连续几份文件都出错就停下这一轮（多半是服务不可用或额度用完），由任务包装器发提醒
 MAX_CONSECUTIVE_ERRORS = 3
+# 截止日期按北京时间的今天算（和核对台"30 天内截止"一致）
+BEIJING = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass
@@ -48,6 +51,8 @@ class AIRunReport:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     stopped_early: bool = False
+    # 用了 due_first 时：排在最前、先补跑的文件份数（有快到期的待核对候选、AI 还没抽过截止）
+    due_soon_documents: int = 0
 
 
 TASKS = ("kind", "deadlines")
@@ -66,25 +71,59 @@ def _done(task: str, now: datetime):
     )
 
 
-def _documents_to_check(session: Session, limit: int, now: datetime):
-    """两项检查里还有没做完的文件，新发现的优先。"""
-    # 只查主文件：同一通知的其他网址（已归并）内容相同，不重复花用量；类型待定页也只列主文件
-    stmt = (
-        visible_documents(
-            select(Document, DocumentDetail)
-            .join(DocumentDetail, DocumentDetail.document_id == Document.id)
-            .join(Source, Source.id == Document.source_id)
-            .where(
-                DocumentDetail.status == "ok",
-                DocumentDetail.body_text != "",
-                Source.rights_level == 1,
-                or_(*(~_done(task, now) for task in TASKS)),
-            )
+def _checkable(*conditions):
+    """能交给 AI 检查的文件：正文抓到了、来源可用。只查主文件：同一通知的其他网址（已归并）
+    内容相同，不重复花用量；类型待定页也只列主文件。"""
+    return visible_documents(
+        select(Document, DocumentDetail)
+        .join(DocumentDetail, DocumentDetail.document_id == Document.id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            DocumentDetail.status == "ok",
+            DocumentDetail.body_text != "",
+            Source.rights_level == 1,
+            *conditions,
         )
-        .order_by(Document.id.desc())
-        .limit(limit)
     )
-    return session.execute(stmt).all()
+
+
+def _documents_due_soon(session: Session, limit: int, now: datetime, days: int):
+    """有 days 天内（北京时间今天起，含今天和第 days 天）截止的待核对候选、AI 还没抽过截止的
+    主文件，截止早的优先。候选在同一通知其他网址上的，查主文件（AI 结果按整个归并组比对）。"""
+    today = now.astimezone(BEIJING).date()
+    earliest_by_doc = session.execute(
+        select(DocumentDeadline.document_id, func.min(DocumentDeadline.candidate_date))
+        .where(
+            DocumentDeadline.status == "pending",
+            DocumentDeadline.candidate_date.between(today, today + timedelta(days=days)),
+        )
+        .group_by(DocumentDeadline.document_id)
+    ).all()
+    masters = canonical_ids(session, [doc_id for doc_id, _ in earliest_by_doc])
+    earliest: dict[int, date] = {}
+    for doc_id, due in earliest_by_doc:
+        master = masters.get(doc_id, doc_id)
+        earliest[master] = min(earliest.get(master, due), due)
+    if not earliest:
+        return []
+    rows = session.execute(
+        _checkable(~_done("deadlines", now), Document.id.in_(list(earliest)))
+    ).all()
+    rows.sort(key=lambda row: (earliest[row[0].id], -row[0].id))
+    return rows[:limit]
+
+
+def _documents_to_check(session: Session, limit: int, now: datetime, first: list | None = None):
+    """两项检查里还有没做完的文件，新发现的优先；first（先补跑的文件）排在最前，
+    合计不超过 limit。"""
+    first = list(first or [])[:limit]
+    if len(first) >= limit:
+        return first
+    stmt = _checkable(or_(*(~_done(task, now) for task in TASKS)))
+    if first:
+        stmt = stmt.where(Document.id.not_in([doc.id for doc, _ in first]))
+    rest = session.execute(stmt.order_by(Document.id.desc()).limit(limit - len(first))).all()
+    return first + rest
 
 
 def _pending_tasks(session: Session, document_id: int, now: datetime) -> list[str]:
@@ -203,13 +242,26 @@ def _apply_deadlines(
 
 
 def run_ai_checks(
-    session: Session, client: ChatClient, *, limit: int = 300, now: datetime | None = None
+    session: Session,
+    client: ChatClient,
+    *,
+    limit: int = 300,
+    now: datetime | None = None,
+    due_first: int | None = None,
 ) -> AIRunReport:
-    """对还没检查过的文件逐份做类型判断和截止抽取；每份做完就提交，中途停下不丢已做的。"""
+    """对还没检查过的文件逐份做类型判断和截止抽取；每份做完就提交，中途停下不丢已做的。
+
+    due_first（天数）：先补跑这么多天内截止的待核对候选所在的文件，核对台优先核的那些先有 AI 结果；
+    合计仍不超过 limit。只写 AI 检查记录、规则候选上的"AI 是否一致"，以及新增"仅 AI 找到"的
+    待核对候选；AI 的结果从不决定核对状态（通过与否只能由人在核对台点。归并组里同一截止已由人
+    核对过的，照原有规则沿用人的核对结果，见 sync_reviewed_twins）。
+    """
     now = now or datetime.now(UTC)
     report = AIRunReport()
     consecutive_errors = 0
-    for doc, detail in _documents_to_check(session, limit, now):
+    first = _documents_due_soon(session, limit, now, due_first) if due_first is not None else []
+    report.due_soon_documents = len(first)
+    for doc, detail in _documents_to_check(session, limit, now, first):
         report.documents += 1
         tasks = _pending_tasks(session, doc.id, now)
         failed = 0
@@ -243,7 +295,8 @@ def run_ai_checks(
                         usage=client.last_usage,
                     )
                     rule = doc_kind(doc.title)
-                    if rule == kind.kind:
+                    # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
+                    if comparable_kind(rule) == kind.kind:
                         report.kind_agree += 1
                     else:
                         report.kind_disagree.append((doc.id, doc.title, rule, kind.kind))

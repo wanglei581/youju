@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from youju.classify import doc_kind, kind_expr
+from youju.classify import comparable_kind, doc_kind, kind_expr
 from youju.models import Document, Source
 
 LABELED = json.loads(
@@ -24,10 +24,11 @@ MIN_ACCURACY = 0.95
 
 
 def test_accuracy_on_labeled_titles() -> None:
+    # 评测集是分出"资讯与指南"（D-051）之前标的：资讯与指南是从"其他"里分出来的，按"其他"比较
     wrong = [
         (x["title"], doc_kind(x["title"]), x["expected"])
         for x in LABELED
-        if doc_kind(x["title"]) not in x["expected"]
+        if comparable_kind(doc_kind(x["title"])) not in x["expected"]
     ]
     accuracy = 1 - len(wrong) / len(LABELED)
     assert accuracy >= MIN_ACCURACY, f"正确率 {accuracy:.1%}，判错的：{wrong}"

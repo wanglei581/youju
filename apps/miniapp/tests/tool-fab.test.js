@@ -13,7 +13,7 @@ function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Set, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
+    require(name) { if (name === '../../utils/consent.js' && !Object.hasOwn(dependencies, name)) return { loginOpen: () => true }; assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
   }, { filename: file });
@@ -53,6 +53,7 @@ function fab(api, properties = {}, options = {}) {
   };
   const view = load('components/tool-fab/index.js', {
     '../../utils/api.js': api, '../../utils/tool-context.js': context,
+    '../../utils/consent.js': { loginOpen: () => options.loginOpen !== false },
     '../../utils/tool-overlays.js': { subscribe(fn) { overlay = fn; fn(false); return () => removed.push(fn); } },
   }, { wx, getCurrentPages: () => [owner] });
   view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
@@ -80,9 +81,66 @@ test('app 级状态缓存：多个页面共用在途请求和结果，工具刷�
   one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(one.visible(), false);
 });
 
+test('协议未定稿时八页的工具入口均隐藏，不请求状态接口、不导航', async () => {
+  let calls = 0;
+  const button = fab({ advisorStatus: () => { calls += 1; return Promise.resolve({ enabled: true }); } }, {}, { loginOpen: false });
+  await flush();
+  button.view.pageLifetimes.show.call(button.view);
+  button.view.open();
+  assert.equal(button.visible(), false);
+  assert.equal(calls, 0);
+  assert.equal(button.navigation(), undefined);
+  assert.equal(button.view.data.loginOpen, false);
+  button.view.lifetimes.detached.call(button.view);
+});
+
+test('工具上下文保留主线新增的层级、项目类别、支持方式和产业方向', () => {
+  const filters = { region: ['辽宁'], level: ['国家部委', '省级'], category: ['人才'], support: ['资金支持'], industry: ['数字经济'] };
+  const parsed = context.read({ filters: context.url({ source: 'search', filters }).split('?filters=')[1] });
+  assert.equal(parsed.filters.levels, '国家部委,省级');
+  assert.equal(parsed.filters.categories, '人才');
+  assert.equal(parsed.filters.supports, '资金支持');
+  assert.equal(parsed.filters.industries, '数字经济');
+  for (const value of ['国家部委、省级', '人才', '资金支持', '数字经济']) assert.ok(parsed.label.includes(value));
+});
+
+test('演示额度按北京时间自然月累计，跨月取消只退回原月；跟进表仍每天一次', async () => {
+  const demo = demoHarness(); const api = demo.module('utils/api.js');
+  await api.agree(demo.module('utils/advisor.js').VERSION, 'advisor');
+  const body = { kind: 'compare', rows: ['示例公司'] };
+  const first = await api.createAdvisorTask(body, 'one');
+  demo.advance(86400000);
+  await api.createAdvisorTask(body, 'two');
+  assert.equal((await api.advisorStatus({ refresh: true })).quota.compare.used, 2);
+  await api.createAdvisorTask(body, 'three');
+  await assert.rejects(api.createAdvisorTask(body, 'four'), /本月/);
+  // 演示时钟起点为 10/3 北京时间 09:00，推进到 11/1 00:00。
+  demo.advance(28 * 86400000 - 9 * 3600000);
+  assert.equal((await api.advisorStatus({ refresh: true })).quota.compare.used, 0);
+  const next = await api.createAdvisorTask(body, 'next');
+  await api.cancelAdvisorTask(next.id);
+  assert.equal((await api.advisorStatus({ refresh: true })).quota.compare.used, 0);
+  assert.equal((await api.advisorTask(first.id)).status, 'done');
+  const track = { kind: 'track', rows: [{ name: '示例公司', province: '辽宁' }] };
+  await api.createAdvisorTask(track, 'track-one');
+  await assert.rejects(api.createAdvisorTask(track, 'track-two'), /今天/);
+  demo.advance(86400000);
+  assert.equal((await api.advisorStatus({ refresh: true })).quota.track.used, 0);
+  await api.createAdvisorTask(track, 'track-next');
+  const boundary = demoHarness(); const boundaryApi = boundary.module('utils/api.js');
+  await boundaryApi.agree(boundary.module('utils/advisor.js').VERSION, 'advisor');
+  boundary.advance(29 * 86400000 - 9 * 3600000 - 1000);
+  const old = await boundaryApi.createAdvisorTask(body, 'old-month');
+  boundary.advance(1000);
+  await boundaryApi.createAdvisorTask(body, 'new-month');
+  await boundaryApi.cancelAdvisorTask(old.id);
+  await boundaryApi.cancelAdvisorTask(old.id);
+  assert.equal((await boundaryApi.advisorStatus({ refresh: true })).quota.compare.used, 1);
+});
+
 test('关闭、404、请求失败和非布尔 enabled 均静默隐藏；失败也缓存', async () => {
   for (const response of [
-    { statusCode: 200, data: { enabled: false } }, { statusCode: 404 }, { statusCode: 503 },
+    { statusCode: 200, data: { enabled: false } }, { statusCode: 404 }, { statusCode: 500 },
     { statusCode: 200, data: { enabled: 'true' } },
   ]) {
     const harness = apiHarness(response); const button = fab(harness.api);
@@ -135,7 +193,7 @@ test('详情上下文与搜索全部筛选可往返，其他入口无上下文�
   const filters = { region: ['辽宁', '北京'], type: ['申报通知', '政策文件'], status: ['公示', '公布'], time: ['今年'], dept: ['科技部门'], open: ['只看未截止'] };
   const link = context.url({ source: 'search', keyword: ' 高新 & 科技 ', kind: '申报通知', filters });
   const parsed = context.read({ filters: link.split('?filters=')[1] });
-  assert.deepEqual(parsed.filters, { q: '高新 & 科技', kind: '申报通知', regions: '辽宁,北京', types: '申报通知,政策文件', status: '公示,公布', time: '今年', depts: '科技部门', open: 1 });
+  assert.deepEqual(parsed.filters, { q: '高新 & 科技', kind: '申报通知', regions: '辽宁,北京', types: '申报通知,政策文件', status: '公示,公布', time: '今年', depts: '科技部门', open: 1, levels: '', categories: '', supports: '', industries: '' });
   for (const value of ['高新 & 科技', '辽宁、北京', '申报通知、政策文件', '公示、公布', '今年', '科技部门', '只看未截止']) assert.ok(parsed.label.includes(value));
   assert.equal(context.url({}), '/pages/advisor/index'); assert.equal(context.read({}), null);
   assert.equal(context.read({ docId: '42', title: '原文标题 50%' }).title, '原文标题 50%');
@@ -230,7 +288,7 @@ function demoHarness() {
   const cache = {
     'utils/config.js': {}, 'utils/mockSearch.js': {},
     'mock/data.js': { files: [{ badge: 'XLSX', name: '静态演示记录', meta: '示例' }] },
-    'utils/consent.js': { ensureConsent: () => Promise.resolve(true) },
+    'utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
   };
   const globals = { wx, Date: Clock, getApp: () => app, setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout() {} };
   function module(file) {
@@ -250,13 +308,13 @@ test('整页任务板块保留并清除上下文，只列最近三条；刷新�
   const helpers = { taskView: (task) => ({ ...task, kindLabel: '名单比对', stateLabel: '已完成' }) };
   let taskError = true; let refreshed;
   const api = {
-    advisorStatus(options) { refreshed = options.refresh; return Promise.resolve({ enabled: true, quota: { compare: { used: 1, limit: 1, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }); },
+    advisorStatus(options) { refreshed = options.refresh; return Promise.resolve({ enabled: true, quota: { compare: { used: 1, limit: 3, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }); },
     advisorTasks: () => taskError ? Promise.reject(new Error('暂时连不上')) : Promise.resolve({ items: tasks }),
   };
   const urls = [];
   const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { navigateTo: ({ url }) => urls.push(url) } });
   page.onLoad({ docId: '7', title: encodeURIComponent('通知标题') }); assert.equal(page.data.context.label, '当前通知：通知标题');
-  page.onShow(); await flush(); assert.equal(refreshed, true); assert.deepEqual(Array.from(page.data.skills, (skill) => skill.remaining), [0, 1]);
+  page.onShow(); await flush(); assert.equal(refreshed, true); assert.deepEqual(Array.from(page.data.skills, (skill) => skill.remaining), [2, 1]);
   assert.match(page.data.recentError, /暂时连不上/); assert.equal(page.data.enabled, true);
   taskError = false; page.retryRecent(); await flush(); assert.deepEqual(Array.from(page.data.recent, (item) => item.id), [4, 3, 2]);
   page.tasks({ currentTarget: { dataset: { id: 3 } } }); assert.equal(urls.at(-1), '/pages/advisor-tasks/index?taskId=3');
@@ -278,7 +336,7 @@ test('页面演示闭环：同意、两种工具提交、进度、任务结果�
   assert.equal(demo.module('content/advisor-terms.js').final, false);
   terms.check({ detail: { value: ['agree'] } }); terms.agree(); await flush();
   assert.equal(terms.data.agreed, true);
-  const board = demo.page('advisor'); board.onLoad({}); board.onShow(); await flush(); assert.equal(board.data.skills[0].remaining, 1);
+  const board = demo.page('advisor'); board.onLoad({}); board.onShow(); await flush(); assert.equal(board.data.skills[0].remaining, 3);
   for (const kind of ['compare', 'track']) {
     const form = demo.page('advisor-form'); form.onLoad({ kind }); form.onShow(); await flush();
     assert.equal(form.data.agreed, true);
@@ -295,7 +353,7 @@ test('页面演示闭环：同意、两种工具提交、进度、任务结果�
     detail.radar(); assert.equal(demo.navigation.at(-1), '/pages/report/index'); detail.onHide();
   }
   board.onShow(); await flush(); assert.equal(board.data.recent.length, 2);
-  assert.deepEqual(Array.from(board.data.skills, (skill) => skill.remaining), [0, 0]);
+  assert.deepEqual(Array.from(board.data.skills, (skill) => skill.remaining), [2, 0]);
   const files = demo.page('files'); files.onShow(); await flush();
   assert.equal(files.data.files.length, 3); assert.equal(files.data.files[0].name, '在报项目跟进表');
   assert.equal(files.data.files[0].expired, false); assert.equal(files.data.files[1].name, '名单比对'); assert.equal(files.data.files[1].expired, true);

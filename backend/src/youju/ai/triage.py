@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.audit import MAX_CONSECUTIVE_ERRORS, _ai_check, _flag, _plan, rule_note
 from youju.ai.client import AIError, ChatClient
-from youju.classify import KINDS, effective_kind
+from youju.classify import AI_KINDS, comparable_kind, effective_kind
 from youju.dedup import canonical_ids
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Feedback
 
@@ -45,7 +45,8 @@ def _kind_note(session: Session, doc: Document) -> str | None:
     )
     ai_kind = check.result.get("kind") if check and isinstance(check.result, dict) else None
     shown = effective_kind(doc.title, None)
-    if ai_kind in KINDS and ai_kind != shown:
+    # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
+    if ai_kind in AI_KINDS and ai_kind != comparable_kind(shown):
         return f'类型：页面显示为{shown}，AI 认为是{ai_kind}（到"类型待定"处理）'
     return None
 

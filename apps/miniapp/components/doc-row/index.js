@@ -1,5 +1,6 @@
-const { dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
+const { groupLine } = require('../../utils/repost.js');
 
 // 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 复制原文链接
 Component({
@@ -14,7 +15,8 @@ Component({
     // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
     selecting: { type: Boolean, value: false },
   },
-  data: { segs: [], due: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false },
+  data: { segs: [], due: null, dueNote: '', kindCls: '', statusCls: '', statusText: '', issuerLong: false,
+    groupText: '', groupOpen: false },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
@@ -26,11 +28,18 @@ Component({
       this.setData({
         segs: highlight(doc.title, q),
         due: dueInfo(doc.deadline),
+        dueNote: deadlineNote(doc),
         kindCls: kindClass(doc.kind),
         statusCls,
         statusText,
         issuerLong: (doc.issuer || '').length > ISSUER_WRAP,
+        // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
+        groupText: groupLine(doc.group),
       });
+    },
+    // 换了一条（翻页、重新搜索）时收起
+    'doc.id': function () {
+      if (this.data.groupOpen) this.setData({ groupOpen: false });
     },
   },
   methods: {
@@ -40,6 +49,18 @@ Component({
     },
     copy() {
       copyLink(this.data.doc.url);
+    },
+    toggleGroup() {
+      if (this.data.selecting) return;
+      this.setData({ groupOpen: !this.data.groupOpen });
+    },
+    // 打开某个转发版本自己的详情（截止、原文都是那一版自己的）
+    openVersion(e) {
+      if (this.data.selecting) return;
+      wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` });
+    },
+    copyVersion(e) {
+      copyLink(e.currentTarget.dataset.url);
     },
   },
 });

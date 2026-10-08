@@ -1,9 +1,11 @@
+const { loginOpen } = require('../../utils/consent.js');
 const api = require('../../utils/api.js');
 const { KINDS, pasteRows, consent } = require('../../utils/advisor.js');
 
 Page({
-  data: { kind: 'compare', loading: true, error: '', inputError: '', agreed: false, mode: 'paste', text: '', fileName: '', rowCount: 0, previewing: false, submitting: false, remaining: 0, maxRows: 50 },
+  data: { loginOpen: loginOpen(), kind: 'compare', loading: true, error: '', inputError: '', agreed: false, mode: 'paste', text: '', fileName: '', rowCount: 0, previewing: false, submitting: false, remaining: 0, maxRows: 50 },
   onLoad(query) {
+    if (!this.data.loginOpen) return;
     const kind = query.kind === 'track' ? 'track' : 'compare';
     this.setData({ kind, title: KINDS[kind] });
     wx.setNavigationBarTitle({ title: KINDS[kind] });
@@ -19,6 +21,7 @@ Page({
   },
   onShow() { this.load(); },
   load() {
+    if (!this.data.loginOpen) return;
     this.setData({ loading: true, error: '' });
     Promise.all([api.advisorStatus({ refresh: true }), consent()]).then(([res, agreed]) => {
       if (!res.enabled) throw new Error('工具暂未开放');

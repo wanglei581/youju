@@ -38,26 +38,40 @@
     <view class="tile tile--plain"><t-icon name="app" size="44rpx" color="#4E5969" /></view><text>全部</text>
   </view>
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
-    <view class="tile tile--green"><t-icon name="calendar" size="44rpx" color="#FFFFFF" /></view><text>截止雷达</text>
+    <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view><text>截止雷达</text>
   </view>
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
-<view wx:if="{{loading && loaded}}" class="card list-tip">正在加载…</view>
-<view class="summary" wx:if="{{stats && !loading}}" bindtap="goSearch">
-  <view class="summary-num">
-    <text class="summary-label">本周新增</text>
-    <view><text class="big">{{stats.week_total}}</text><text class="unit"> 份</text></view>
-  </view>
+<!-- 本周新增：数据到之前用灰色占位块占住位置 -->
+<view wx:if="{{(loading || !stats) && !error}}" class="summary" aria-label="正在加载">
+  <view class="summary-num"><view class="sk sk-label"></view><view class="sk sk-big"></view></view>
   <view class="vline"></view>
-  <view class="summary-text">
-    <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
+  <view class="summary-text"><view class="sk sk-text"></view><view class="sk sk-text sk-line--short"></view></view>
+</view>
+<!-- 本周 0 份时只写"本周暂无新文件"和最近一次成功检查的时间，不推测原因 -->
+<view class="summary" wx:if="{{stats && !loading}}" bindtap="goSearch">
+  <block wx:if="{{stats.week_total}}">
+    <view class="summary-num">
+      <text class="summary-label">本周新增</text>
+      <view><text class="big">{{stats.week_total}}</text><text class="unit"> 份</text></view>
+    </view>
+    <view class="vline"></view>
+    <view class="summary-text">
+      <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
+      <view>来自 {{stats.provinces}} 个省和国家部委 · 每条都有出处</view>
+      <!-- 同一份部里通知的各地转发版本按 1 份计（D-055） -->
+      <view wx:if="{{stats.week_reposts}}" class="summary-reposts">另有 {{stats.week_reposts}} 个转发版本，未重复计</view>
+    </view>
+  </block>
+  <view wx:else class="summary-text">
+    <view class="summary-zero">本周暂无新文件<text wx:if="{{checkedText}}"> · 最近检查 {{checkedText}}</text></view>
     <view>来自 {{stats.provinces}} 个省和国家部委 · 每条都有出处</view>
   </view>
   <t-icon name="chevron-right" size="32rpx" color="#86909C" />
 </view>
 
-<view class="mine" wx:if="{{stats && stats.followed_new}}" bindtap="goFollow">
+<view class="mine" wx:if="{{loginOpen && stats && stats.followed_new}}" bindtap="goFollow">
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
   <text class="mine-text">你关注的条件本周有 <text class="mine-n">{{stats.followed_new}}</text> 份新文件</text>
   <text class="link">去看看</text>
@@ -71,17 +85,27 @@
       <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
     </view>
   </view>
+  <view wx:if="{{(loading || !loaded) && !error}}" aria-label="正在加载">
+    <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk-row">
+      <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+      <view class="sk sk-line"></view>
+      <view class="sk sk-line sk-line--short"></view>
+      <view class="sk sk-meta"></view>
+    </view>
+  </view>
   <doc-row wx:if="{{!loading}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
-  <view wx:if="{{(!shown.length || loading) && !error}}" class="list-tip">{{loading || !loaded ? '正在加载…' : '最新的文件里暂时没有这一类'}}</view>
+  <view wx:if="{{!shown.length && !loading && loaded && !error}}" class="list-tip">最新的文件里暂时没有这一类</view>
   <view class="more" bindtap="goMore">查看近 7 天的文件 <t-icon name="chevron-right" size="28rpx" /></view>
 </view>
 
 <view class="footer">
   <t-icon name="secured" size="36rpx" color="#4E5969" />
   <view class="footer-text">
-    <text>数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。</text>
+    <!-- 栏目数和省份数到了才写那半句，不出现空着的数字 -->
+    <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省，</text>每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。</text>
     <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
   </view>
 </view>
 <view class="home-disclaimer">第三方整理 · 非政府平台</view>
+<view wx:if="{{!loginOpen}}" class="tab-page-bottom"></view>
 <tool-fab tab-page="{{true}}" bottom-rpx="{{108}}" />

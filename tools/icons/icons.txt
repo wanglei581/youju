@@ -1,0 +1,39 @@
+# 小程序用到的图标（TDesign 图标名，一行一个；# 后面是注释）。
+# 加图标：在这里加一行，按 docs/设计/素材来源与许可.md 里的步骤重跑 build_icons.py。
+# 测试（apps/miniapp/tests/icon.test.js）会检查代码里用到的图标都在生成的字体里。
+
+# 通用
+chevron-right
+chevron-down
+chevron-left
+chevron-up
+close
+check
+add
+search
+filter
+copy
+download
+flag
+delete
+info-circle
+
+# 底栏
+home
+home-filled
+notification
+notification-filled
+file
+file-filled
+user
+user-filled
+
+# 首页入口、关注、我的
+task-checked      # 查申报
+bulletpoint       # 查名单
+book              # 查政策
+calendar          # 申报日历
+hourglass         # 截止雷达（和申报日历区分开：截止日期临近）
+app               # 全部
+secured           # 第三方整理说明
+user-safety       # 我的数据

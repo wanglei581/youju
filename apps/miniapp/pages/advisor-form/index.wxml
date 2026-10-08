@@ -1,10 +1,13 @@
 <notice-bar />
+<feature-closed wx:if="{{!loginOpen}}" />
+<block wx:if="{{loginOpen}}">
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <block wx:else>
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
-    <view class="advisor-text muted">今天剩余 {{remaining}} 次 · 每次最多 {{maxRows}} 行</view>
+    <view wx:if="{{kind === 'compare'}}" class="advisor-text muted">每月 3 次免费，每次 50 家以内 · 本月剩余 {{remaining}} 次</view>
+    <view wx:else class="advisor-text muted">今天剩余 {{remaining}} 次 · 每次最多 {{maxRows}} 行</view>
     <view class="advisor-actions">
       <button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{submitting || previewing}}">粘贴文本</button>
       <button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{submitting || previewing}}">选择文件</button>
@@ -34,3 +37,5 @@
   </view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>
+
+</block>

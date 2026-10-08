@@ -8,7 +8,12 @@ function save() { try { wx.setStorageSync(STORAGE, state); } catch (e) { /* 演�
 function copy(value) { return Promise.resolve(JSON.parse(JSON.stringify(value))); }
 function error(message, status) { const err = new Error(message); err.status = status; return err; }
 function day() { return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); }
-function usage(kind) { return state.usage[`${day()}:${kind}`] || 0; }
+function usage(kind) {
+  if (kind !== 'compare') return state.usage[`${day()}:${kind}`] || 0;
+  const month = day().slice(0, 7);
+  return Object.keys(state.usage).filter((key) => key.startsWith(month + '-') && key.endsWith(':compare'))
+    .reduce((total, key) => total + state.usage[key], 0);
+}
 function tick() {
   state.tasks.forEach((task) => {
     if (!['queued', 'running'].includes(task.status)) return;
@@ -25,7 +30,7 @@ function agree(version) {
   if (version !== VERSION) return Promise.reject(error('工具使用说明已更新，请重新阅读', 422));
   state.agreed = { version, at: new Date(Date.now()).toISOString() }; save(); return copy(state.agreed);
 }
-function status() { return copy({ enabled: true, quota: { compare: { used: usage('compare'), limit: 1, maxRows: 50 }, track: { used: usage('track'), limit: 1, maxRows: 50 } } }); }
+function status() { return copy({ enabled: true, quota: { compare: { used: usage('compare'), limit: 3, maxRows: 50 }, track: { used: usage('track'), limit: 1, maxRows: 50 } } }); }
 
 function xmlText(value) {
   return value.replace(/&#x([a-f\d]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
@@ -140,9 +145,11 @@ function create(body, key) {
   if (existing) return copy(publicTask(existing));
   return inputRows(body).then((rows) => {
     if (rows.length > 50) throw error('每次最多提交 50 行', 429);
-    if (usage(body.kind) >= 1) throw error('今天的免费额度已用完，请明天再试', 429);
+    if (usage(body.kind) >= (body.kind === 'compare' ? 3 : 1)) throw error(body.kind === 'compare' ? '本月的免费额度已用完，请下月再试' : '今天的免费额度已用完，请明天再试', 429);
     const task = { id: state.nextId++, key, kind: body.kind, status: 'queued', rowCount: rows.length, attempts: 0, createdAt: new Date(Date.now()).toISOString(), startedAt: null, finishedAt: null, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), hasFile: false, error: null };
-    state.tasks.unshift(task); state.usage[`${day()}:${body.kind}`] = usage(body.kind) + 1; save();
+    state.tasks.unshift(task);
+    const usageKey = `${day()}:${body.kind}`;
+    state.usage[usageKey] = (state.usage[usageKey] || 0) + 1; save();
     return publicTask(task);
   });
 }

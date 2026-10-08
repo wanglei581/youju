@@ -10,6 +10,7 @@ Page({
     navHeight: 44,
     menuWidth: 96,
     name: '',
+    rulesOpen: false, // 查询说明默认收起
     queried: '',
     looking: false,
     result: null,
@@ -82,6 +83,10 @@ Page({
         if (seq !== this.lookupSeq) return;
         this.setData({ looking: false, lookupError: err.message });
       });
+  },
+
+  toggleRules() {
+    this.setData({ rulesOpen: !this.data.rulesOpen });
   },
 
   // 点名称相近的企业：换成这个名称再查一次

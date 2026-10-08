@@ -1,15 +1,15 @@
 """顾问服务说明单独同意记录。
 
-Revision ID: 0016
-Revises: 0015
+Revision ID: 0023
+Revises: 0022
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import mysql
 
-revision = "0016"
-down_revision = "0015"
+revision = "0023"
+down_revision = "0022"
 branch_labels = None
 depends_on = None
 

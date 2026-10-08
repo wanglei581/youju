@@ -753,3 +753,412 @@ def test_weekly_clipboard_behavior():
     script = Path(__file__).resolve().parent / "js/weekly.cjs"
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---- 临期提醒（每周四）：口径与小程序截止雷达一致 ----
+
+THU = datetime(2026, 10, 8, 7, 30, tzinfo=weekly.BEIJING)
+THIS_WEEK = date(2026, 10, 5)
+REMINDER_ORDER = [
+    "今天下午截止",
+    "国家三天后截止",
+    "三天后截止",
+    "归并主文件截止",
+    "只有材料报送截止",
+    "第七天截止",
+]
+
+
+def reminder(session, profile, stamp=THU, week=None, **kw):
+    return weekly.generate(session, profile.id, week, stamp, "reminder", **kw)
+
+
+def linked_rows(issue):
+    return [line.split("｜") for line in issue.body_text_with_links.splitlines() if "｜" in line]
+
+
+@pytest.fixture
+def due_world(session, profile):
+    src = source(session)
+    national = source(session, "国家")
+    private = source(session, "北京", 3)
+    day = THU.date()
+    docs = {}
+
+    def notice(title, due, where=src, kind="申报通知", **kw):
+        doc = document(session, where, title, START, kind)
+        if due is not None:
+            deadline(session, doc, due, **kw)
+        docs[title] = doc
+        return doc
+
+    notice("三天后截止", day + timedelta(days=3))
+    notice("今天下午截止", day, approved_time=time(17))
+    notice("今天早上已截止", day, approved_time=time(7))
+    notice("第七天截止", day + timedelta(days=7))
+    notice("第八天截止", day + timedelta(days=8))
+    notice("昨天已截止", day - timedelta(days=1))
+    notice("待核对截止", day + timedelta(days=2), status="pending")
+    notice("已驳回截止", day + timedelta(days=2), status="rejected")
+    notice("国家三天后截止", day + timedelta(days=3), national, approved_time=time(9))
+    notice("非公开截止", day + timedelta(days=2), private)
+    notice("政策文件截止", day + timedelta(days=2), kind="政策")
+    notice("已下架截止", day + timedelta(days=2)).taken_down_at = THU
+    hidden = notice("副本下架截止", day + timedelta(days=2))
+    hidden_twin = document(session, src, "副本下架截止", START)
+    hidden_twin.taken_down_at = THU
+    session.add(
+        DocumentMerge(
+            duplicate_id=hidden_twin.id, canonical_id=hidden.id, match_key="r-hidden", active=True
+        )
+    )
+    # 核对过的截止在副本上：主文件只列一次，发文单位取同组详情。
+    master = notice("归并主文件截止", None)
+    twin = document(session, src, "归并主文件截止", START)
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, match_key="r-twin", active=True)
+    )
+    deadline(session, twin, day + timedelta(days=5))
+    detail(session, twin, issuer="省科技厅")
+    # 同组已标"已变更"的相同截止不再有效。
+    moved = notice("已延期截止", day + timedelta(days=4))
+    changed = deadline(
+        session,
+        moved,
+        day + timedelta(days=4),
+        status="changed",
+        change_reason="延期",
+        changed_to_document_id=docs["三天后截止"].id,
+    )
+    changed.changed_at = THU
+    # 主截止优先取企业申报截止（截止雷达口径）：企业申报截止在 7 天外就不收。
+    preferred = notice("企业截止在七天外", day + timedelta(days=10))
+    deadline(session, preferred, day + timedelta(days=2)).kind = "材料报送截止"
+    material = notice("只有材料报送截止", None)
+    deadline(session, material, day + timedelta(days=6)).kind = "材料报送截止"
+    session.commit()
+    return docs
+
+
+def test_reminder_reviewed_within_seven_days_sorted_like_mini_program(
+    session, profile, due_world, monkeypatch
+):
+    result = reminder(session, profile)
+    issue = result.issue
+    assert result.outcome == "generated"
+    assert (issue.kind, issue.week_start, issue.week_end) == (
+        "reminder",
+        THIS_WEEK,
+        date(2026, 10, 11),
+    )
+    assert issue.title == "申报临期提醒｜10 月 8 日—10 月 15 日（全国版）"
+    assert issue.counts == {"reminder": 6}
+    assert [row[0] for row in linked_rows(issue)] == REMINDER_ORDER
+    assert issue.document_ids == sorted(due_world[title].id for title in REMINDER_ORDER)
+    text = issue.body_text
+    for word in (
+        "早上",
+        "第八天",
+        "昨天",
+        "待核对",
+        "已驳回",
+        "非公开",
+        "政策文件",
+        "下架",
+        "已延期",
+    ):
+        assert word not in text + issue.body_text_with_links
+    assert "企业截止在七天外" not in text
+    lines = text.splitlines()
+    assert lines[:2] == ["未来 7 天内截止的申报通知（6 条）", "截止统计基准：2026-10-08"]
+    assert lines[lines.index("今天下午截止") + 1] == (
+        "浙江科技部门 · 截止：企业申报截止 10 月 8 日 17:00（已核对）"
+    )
+    assert lines[lines.index("归并主文件截止") + 1] == (
+        "省科技厅 · 截止：企业申报截止 10 月 13 日（已核对）"
+    )
+    assert lines[lines.index("只有材料报送截止") + 1] == (
+        "浙江科技部门 · 截止：材料报送截止 10 月 14 日（已核对）"
+    )
+    assert "10 月 16 日" not in text and "10 月 9 日" not in text  # 8 天后与候选日期都不输出
+    # 和小程序截止雷达（未来 7 天）逐条一致、顺序一致。
+    from youju.api import v1
+
+    monkeypatch.setattr(v1, "now", lambda: THU)
+    radar = v1._report_payload(session, 7, "", "", "", 1, 100)["items"]
+    assert [item["title"] for item in radar] == REMINDER_ORDER
+
+
+def test_reminder_two_versions_format_and_forbidden_terms(session, profile, due_world):
+    issue = reminder(session, profile).issue
+    tree = html.fragment_fromstring(issue.body_html)
+    for element in tree.iter():
+        assert element.tag in {"section", "p", "h2", "strong"}
+        assert set(element.attrib) <= {"style"}
+    assert not tree.xpath(".//a | .//h3")
+    assert "http" not in issue.body_text and "http" not in issue.body_html
+    # 公众号版：每条加粗标题加一行小字；纯文本与 HTML 的行一一对应。
+    assert "\n".join(tree.xpath("./*/text() | ./p/strong/text()")) == "\n".join(
+        line for line in issue.body_text.splitlines() if line
+    )
+    titles = tree.xpath("./p[strong]")
+    assert [p.findtext("strong") for p in titles] == REMINDER_ORDER
+    assert all("font-size:12px" in p.getnext().get("style") for p in titles)
+    assert issue.body_text.splitlines()[-2:] == [weekly.CALL_TO_ACTION, weekly.DISCLAIMER]
+    # 带链接版：每条一行四列，写完整日期与截止类型。
+    rows = linked_rows(issue)
+    assert all(len(row) == 4 and row[-1].startswith("https://example.gov.cn/") for row in rows)
+    assert rows[0] == [
+        "今天下午截止",
+        "浙江科技部门",
+        "截止：企业申报截止 2026-10-08 17:00（已核对）",
+        due_world["今天下午截止"].url,
+    ]
+    assert rows[4][2] == "截止：材料报送截止 2026-10-14（已核对）"
+    assert issue.body_text_with_links.splitlines()[-2:] == [
+        weekly.CALL_TO_ACTION,
+        weekly.DISCLAIMER,
+    ]
+    template_only = issue.title + issue.body_text + issue.body_text_with_links
+    for value in (*REMINDER_ORDER, "浙江科技部门", "国家科技部门", "省科技厅"):
+        template_only = template_only.replace(value, "")
+    assert not weekly.FORBIDDEN.search(template_only)
+
+
+def test_reminder_empty_still_generates_one_sentence(session, profile, due_world):
+    profile.keywords = ["没有这样的标题"]
+    session.commit()
+    result = reminder(session, profile)
+    issue = result.issue
+    assert result.outcome == "generated" and issue.counts == {"reminder": 0}
+    assert issue.document_ids == []
+    expected = [weekly.REMINDER_EMPTY, "", weekly.CALL_TO_ACTION, weekly.DISCLAIMER]
+    assert issue.body_text.splitlines() == expected
+    assert issue.body_text_with_links.splitlines() == expected
+    assert weekly.REMINDER_EMPTY == "本周未来 7 天没有已核对截止的申报项目"
+    tree = html.fragment_fromstring(issue.body_html)
+    assert tree.xpath("./p/text()") == [r for r in expected if r]
+    assert weekly.issue_available(session, issue)
+
+
+def test_reminder_profile_filters_and_cap(session, profile, due_world):
+    profile.provinces = ["北京"]
+    session.commit()
+    issue = reminder(session, profile).issue
+    assert [row[0] for row in linked_rows(issue)] == ["国家三天后截止"]
+    profile.provinces = []
+    profile.keywords = ["三天后", "第七天"]
+    session.commit()
+    issue = reminder(session, profile).issue
+    assert [row[0] for row in linked_rows(issue)] == ["国家三天后截止", "三天后截止", "第七天截止"]
+    profile.keywords = ["题录"]
+    src = due_world["三天后截止"].source_id
+    for n in range(35):
+        doc = document(session, session.get(Source, src), f"题录 {n:02}", START)
+        deadline(session, doc, THU.date() + timedelta(days=n % 8))
+    session.commit()
+    issue = reminder(session, profile).issue
+    assert issue.counts == {"reminder": 35} and len(issue.document_ids) == 30
+    assert issue.body_text.count("题录 ") == 30
+    assert "共 35 条，其余在「有据」小程序里查看" in issue.body_text
+
+
+def test_reminder_separate_from_weekly_draft_replaced_published_kept(session, profile, due_world):
+    weekly_issue = weekly.generate(session, profile.id, THIS_WEEK, THU).issue
+    issue = reminder(session, profile).issue
+    assert weekly_issue.week_start == issue.week_start == THIS_WEEK
+    assert (weekly_issue.kind, issue.kind) == ("weekly", "reminder")
+    assert weekly_issue.id != issue.id and "临期" not in weekly_issue.title
+    # 同一周再生成覆盖草稿，不新增；周一到周日任何一天都归入同一周。
+    due_world["三天后截止"].title = "改后的三天后截止"
+    session.commit()
+    sunday = THU + timedelta(days=3)
+    again = reminder(session, profile, sunday, THIS_WEEK).issue
+    assert again.id == issue.id and "改后的三天后截止" in again.body_text
+    assert again.title == "申报临期提醒｜10 月 11 日—10 月 18 日（全国版）"
+    issue.status = "published"
+    session.commit()
+    frozen = issue.body_text
+    due_world["三天后截止"].title = "再次修改"
+    session.commit()
+    assert reminder(session, profile).outcome == "published"
+    assert issue.body_text == frozen
+    assert len(session.scalars(select(DigestIssue)).all()) == 2
+    # 截止按生成当天计算，不能补生成以前的周。
+    with pytest.raises(ValueError, match="只能生成本周"):
+        reminder(session, profile, week=START)
+    with pytest.raises(ValueError, match="周一"):
+        reminder(session, profile, week=THU.date())
+    with pytest.raises(ValueError, match="类型"):
+        weekly.generate(session, profile.id, None, THU, "monthly")
+
+
+def test_reminder_only_missing_skips_existing(session, profile, due_world):
+    first = reminder(session, profile, only_missing=True)
+    assert first.outcome == "generated"
+    due_world["三天后截止"].title = "改后的标题"
+    session.commit()
+    second = reminder(session, profile, THU + timedelta(days=1), only_missing=True)
+    assert second.outcome == "exists" and second.issue.id == first.issue.id
+    assert "改后的标题" not in second.issue.body_text
+    assert len(session.scalars(select(DigestIssue)).all()) == 1
+
+
+def test_cli_reminder_thursday_schedule_catch_up_no_duplicate(
+    session_factory, session, profile, due_world, monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    other = DigestProfile(name="停用版", enabled=False)
+    session.add(other)
+    session.commit()
+
+    def run(stamp, *extra):
+        monkeypatch.setattr(weekly, "now", lambda: stamp)
+        code = cli.main(["weekly-digest", "--kind", "reminder", *extra])
+        return code, capsys.readouterr().out
+
+    def reminders():
+        session.expire_all()
+        return session.scalars(
+            select(DigestIssue).where(DigestIssue.kind == "reminder").order_by(DigestIssue.id)
+        ).all()
+
+    # 周三不安排；周四为启用方案生成，与方案的周报生成星期无关。
+    assert run(THU - timedelta(days=1), "--scheduled") == (
+        0,
+        "临期提醒每周四生成、周五到周日补跑，今天不安排\n",
+    )
+    assert reminders() == []
+    code, out = run(THU, "--scheduled")
+    assert code == 0 and "草稿已生成（临期提醒 #" in out
+    [issue] = reminders()
+    assert (issue.profile_id, issue.week_start) == (profile.id, THIS_WEEK)
+    snapshot = issue.body_text
+    due_world["三天后截止"].title = "周五改过的标题"
+    session.commit()
+    # 同一天重跑和周五到周日补跑都不重复生成、不覆盖。
+    for stamp in (THU, THU + timedelta(days=1), THU + timedelta(days=3)):
+        code, out = run(stamp, "--scheduled")
+        assert code == 0 and "本周临期提醒已生成，未重复生成" in out
+    assert [(row.id, row.body_text) for row in reminders()] == [(issue.id, snapshot)]
+    # 周四没生成成功时，周六补跑。
+    session.delete(issue)
+    session.commit()
+    code, out = run(THU + timedelta(days=2), "--scheduled")
+    assert code == 0 and "草稿已生成" in out
+    [catch_up] = reminders()
+    assert catch_up.week_start == THIS_WEEK and "周五改过的标题" in catch_up.body_text
+    # 下周四是新的一期。
+    code, out = run(THU + timedelta(days=7), "--scheduled")
+    assert [row.week_start for row in reminders()] == [THIS_WEEK, THIS_WEEK + timedelta(days=7)]
+    # 手动生成（不带 --scheduled）覆盖本周草稿；参数校验。
+    code, out = run(THU + timedelta(days=7), "--profile", "停用版")
+    assert code == 0 and "草稿已生成" in out
+    assert run(THU, "--week", "2026-09-28")[0] == 1
+    assert run(THU, "--week", "2026-10-05")[0] == 0
+    # 周报的定时生成照旧按方案星期筛选。
+    monkeypatch.setattr(weekly, "now", lambda: THU)
+    assert cli.main(["weekly-digest", "--scheduled"]) == 0
+    assert "没有需要生成" in capsys.readouterr().out
+
+
+def test_crontab_reminder_thursday_after_weekly_same_line():
+    path = Path(__file__).resolve().parents[1] / "deploy" / "crontab"
+    rows = [
+        line.split(None, 5)
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    weekly_rows = [row for row in rows if "job.sh weekly-digest" in row[5]]
+    assert [row[4] for row in weekly_rows] == ["1", "2-3", "4-7"]
+    assert all(row[:2] == ["30", "7"] for row in weekly_rows)
+    command = weekly_rows[-1][5]
+    # 共用 job.sh 任务锁：同一行先周报后提醒，不会同时启动互相跳过。
+    assert command.index("weekly-digest --scheduled;") < command.index(
+        "weekly-digest --kind reminder --scheduled"
+    )
+    assert sum("--kind reminder" in row[5] for row in rows) == 1
+
+
+def test_api_reminder_generate_list_detail_regenerate(
+    client, session, profile, due_world, monkeypatch
+):
+    monkeypatch.setattr(weekly, "now", lambda: THU)
+    prefix = "/api/admin/weekly"
+
+    def post(path, body=None):
+        kwargs = {"json": body} if body is not None else {}
+        return client.post(prefix + path, headers=HEADERS, **kwargs)
+
+    assert post("/generate", {"profile_id": profile.id, "kind": "monthly"}).status_code == 422
+    stale = post("/generate", {"profile_id": profile.id, "kind": "reminder", "week": "2026-09-28"})
+    assert stale.status_code == 422 and "只能生成本周" in stale.json()["detail"]
+    created = post("/generate", {"profile_id": profile.id, "kind": "reminder"})
+    assert created.status_code == 200 and created.json()["outcome"] == "generated"
+    rid = created.json()["issue_id"]
+    wid = post("/generate", {"profile_id": profile.id, "week": "2026-10-05"}).json()["issue_id"]
+    listed = client.get(prefix + "/issues", headers=HEADERS).json()
+    assert listed["total"] == 2
+    assert {(item["id"], item["kind"]) for item in listed["items"]} == {
+        (rid, "reminder"),
+        (wid, "weekly"),
+    }
+    assert all("body_text" not in item for item in listed["items"])
+    only = client.get(prefix + "/issues", params={"kind": "reminder"}, headers=HEADERS).json()
+    assert [item["id"] for item in only["items"]] == [rid] and only["total"] == 1
+    assert client.get(prefix + "/issues?kind=monthly", headers=HEADERS).status_code == 422
+    body = client.get(f"{prefix}/issues/{rid}", headers=HEADERS).json()
+    assert body["kind"] == "reminder" and body["counts"] == {"reminder": 6}
+    assert body["title"].startswith("申报临期提醒｜")
+    assert "https://example.gov.cn/" in body["body_text_with_links"]
+    assert "https://" not in body["body_text"] + body["body_html"]
+    due_world["第七天截止"].title = "改后的第七天截止"
+    session.commit()
+    again = post(f"/issues/{rid}/regenerate").json()
+    assert again == {"outcome": "generated", "reason": "草稿已生成", "issue_id": rid}
+    assert (
+        "改后的第七天截止"
+        in client.get(f"{prefix}/issues/{rid}", headers=HEADERS).json()["body_text"]
+    )
+    assert client.get(f"{prefix}/issues/{wid}", headers=HEADERS).json()["kind"] == "weekly"
+    # 已生成的提醒里有文件后来下架：预览和标已发布都拦住。
+    due_world["第七天截止"].taken_down_at = THU
+    session.commit()
+    assert client.get(f"{prefix}/issues/{rid}", headers=HEADERS).status_code == 409
+    assert post(f"/issues/{rid}/status", {"status": "published"}).status_code == 409
+
+
+def test_migration_0016_kind_upgrade_downgrade(db_engine, session, profile):
+    assert db_engine.url.database.startswith("youju_test")
+    for kind in ("weekly", "reminder"):
+        session.add(
+            DigestIssue(
+                profile_id=profile.id,
+                kind=kind,
+                week_start=THIS_WEEK,
+                week_end=THIS_WEEK + timedelta(days=6),
+                title=kind,
+                body_html="",
+                body_text="",
+                body_text_with_links="",
+                counts={},
+                document_ids=[],
+            )
+        )
+    session.commit()
+    cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
+
+    def uniques():
+        return {c["name"] for c in inspect(db_engine).get_unique_constraints("digest_issues")}
+
+    try:
+        command.downgrade(cfg, "0015")
+        columns = {c["name"] for c in inspect(db_engine).get_columns("digest_issues")}
+        assert "kind" not in columns
+        assert "uq_digest_issue_week" in uniques() and "uq_digest_issue_kind_week" not in uniques()
+    finally:
+        command.upgrade(cfg, "head")
+    session.expire_all()
+    [kept] = session.scalars(select(DigestIssue)).all()
+    assert (kept.title, kept.kind) == ("weekly", "weekly")
+    assert "uq_digest_issue_kind_week" in uniques() and "uq_digest_issue_week" not in uniques()

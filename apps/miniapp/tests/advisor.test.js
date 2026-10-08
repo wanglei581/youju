@@ -22,7 +22,7 @@ function zipEntries(base64) {
 function page(name, api, helpers, timers, wxOptions = {}) {
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
-    require: (module) => module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,
+    require: (module) => module.endsWith('consent.js') ? Object.assign({ loginOpen: () => true }, helpers) : module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,
     Page: (value) => { definition = value; },
     wx: Object.assign({ setNavigationBarTitle() {}, navigateTo() {}, redirectTo() {} }, wxOptions),
     setTimeout: timers ? timers.set : setTimeout,
@@ -186,7 +186,7 @@ test('通用协议过期时先更新本机状态并引导重新同意', async ()
 
 test('工具关闭、说明占位和加载失败时不允许同意，显示版本', async () => {
   const template = fs.readFileSync(path.join(__dirname, '../pages/advisor-terms/index.wxml'), 'utf8');
-  assert.match(template, /工具暂未开放/); assert.match(template, /说明定稿后开放/); assert.match(template, /当前版本：\{\{version\}\}/);
+  assert.match(template, /工具暂未开放/); assert.match(template, /这个功能暂未开放/); assert.match(template, /当前版本：\{\{version\}\}/);
   assert.match(template, /wx:elif="\{\{!final\}\}"/);
   let posted = 0;
   for (const setting of [
@@ -205,7 +205,7 @@ test('工具关闭、说明占位和加载失败时不允许同意，显示版�
 });
 
 test('工具卡片、提交告知、保存期限和两个填写页标题符合审阅口径', async () => {
-  const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 0, limit: 1, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }) };
+  const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 0, limit: 3, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }) };
   api.advisorTasks = () => Promise.resolve({ items: [] });
   const view = page('advisor', api, require('../utils/advisor.js')); view.onShow(); await flush();
   assert.equal(view.data.skills[0].description, '在已收录的公示/公布名单里查找客户');

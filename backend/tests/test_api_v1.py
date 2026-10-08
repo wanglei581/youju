@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,7 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentMerge,
+    JobRun,
     ListEntry,
     Source,
 )
@@ -231,9 +233,16 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     assert d["deadline"]["label"] == "企业申报截止" and d["deadline"]["date"] == "2026-10-18"
     assert d["deadline"]["notes"] == ["推荐或审核截止 10月20日 周二 17:00"]
     assert ["文号", "辽工信投资〔2026〕130号"] in d["points"]
-    assert d["attachments"] == [
-        {"ext": "PDF", "name": "附件1 实施细则", "url": "https://gxt.ln.gov.cn/a1.pdf"}
-    ]
+    # 还没有副本：不能在小程序里打开，给原因（副本见 test_attachments.py）
+    [attachment] = d["attachments"]
+    assert attachment["id"].isdigit()
+    assert {k: v for k, v in attachment.items() if k != "id"} == {
+        "ext": "PDF",
+        "name": "附件1 实施细则",
+        "url": "https://gxt.ln.gov.cn/a1.pdf",
+        "preview": False,
+        "reason": "pending",
+    }
     assert d["checked"] == "2026-09-26" and d["host"] == "gxt.ln.gov.cn"
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
@@ -358,6 +367,45 @@ def test_home_week_has_upper_bound_and_followed_new_is_null(client, seeded):
     assert stats["followed_new"] is None
 
 
+def test_home_last_checked_at_is_latest_successful_crawl(client, session, seeded):
+    # 没有运行记录时为空
+    assert client.get("/api/v1/home").json()["stats"]["last_checked_at"] is None
+    session.add_all(
+        [
+            # 最近一次成功结束的抓取：9/26 22:30 UTC = 9/27 06:30 北京时间
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 26, 22, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 26, 22, 30, tzinfo=UTC),
+                status="ok",
+            ),
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 25, 22, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 25, 22, 40, tzinfo=UTC),
+                status="ok",
+            ),
+            # 更晚的失败、还在跑的抓取和其他任务都不算
+            JobRun(
+                job="crawl",
+                started_at=datetime(2026, 9, 27, 0, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 27, 0, 30, tzinfo=UTC),
+                status="failed",
+            ),
+            JobRun(job="crawl", started_at=datetime(2026, 9, 27, 1, 0, tzinfo=UTC)),
+            JobRun(
+                job="round",
+                started_at=datetime(2026, 9, 27, 1, 0, tzinfo=UTC),
+                finished_at=datetime(2026, 9, 27, 1, 50, tzinfo=UTC),
+                status="ok",
+            ),
+        ]
+    )
+    session.commit()
+    stats = client.get("/api/v1/home").json()["stats"]
+    assert stats["last_checked_at"] == "2026-09-27T06:30:00+08:00"
+
+
 def test_calendar_skips_deadlines_already_passed_today(client, seeded):
     body = client.get("/api/v1/calendar").json()
     dues = [(i["due"], i["time"]) for i in body["items"]]
@@ -378,6 +426,7 @@ def test_calendar_skips_deadlines_already_passed_today(client, seeded):
         {"time": "近 90 天"},
         {"offset": 5001},
         {"regions": ",".join(["北京"] * 41)},
+        {"levels": "市级"},
     ],
 )
 def test_search_rejects_invalid_filters(client, seeded, params):
@@ -959,3 +1008,304 @@ def test_coverage_counts_only_successfully_checked_columns(client, session, seed
         None,
         "2026-09-28T09:30:00+08:00",
     ]
+
+
+def _candidate(doc_id, fingerprint, due, evidence, status="pending", clock=None):
+    """截止候选；status 为 approved 时同时填核定日期。"""
+    return DocumentDeadline(
+        document_id=doc_id,
+        fingerprint=fingerprint,
+        kind="企业申报截止",
+        candidate_date=due,
+        candidate_time=clock,
+        evidence=evidence,
+        confidence="中",
+        status=status,
+        approved_date=due if status == "approved" else None,
+        approved_time=clock if status == "approved" else None,
+    )
+
+
+def test_deadline_state_verified_unverified_none(client, session, seeded):
+    """三种截止状态：有核对通过的 verified；只有待核对候选的 unverified；没有候选的 none。"""
+    sd = session.get(Document, seeded["list"]).source
+    day = date(2026, 9, 25)
+    waiting = _doc(sd, 41, "山东省科学技术厅关于组织申报2027年度重点研发计划项目的通知", day)
+    plain = _doc(sd, 42, "山东省科学技术厅关于组织申报2027年度软科学研究计划项目的通知", day)
+    rejected = _doc(sd, 43, "山东省科学技术厅关于组织申报2027年度科技示范工程项目的通知", day)
+    master = _doc(sd, 44, "山东省科学技术厅关于组织申报2027年度技术创新引导项目的通知", day)
+    twin = _doc(sd, 45, master.title, day)
+    session.add_all([waiting, plain, rejected, master, twin])
+    session.flush()
+    session.add_all(
+        [
+            _candidate(waiting.id, "w", date(2026, 11, 23), "11月23日前提交"),
+            _candidate(rejected.id, "r", date(2026, 11, 23), "11月23日前提交", status="rejected"),
+            # 待核对候选在同一通知的另一个网址上：主文件也算"截止未核对"
+            _candidate(twin.id, "t", date(2026, 11, 23), "11月23日前提交"),
+            DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t"),
+        ]
+    )
+    session.commit()
+
+    body = client.get("/api/v1/search", params={"time": "不限", "limit": 50}).json()
+    items = {i["id"]: i for i in body["items"]}
+    assert all(i["deadline_state"] in v1.DEADLINE_STATES for i in body["items"])
+    assert all(
+        (i["deadline"] is not None) == (i["deadline_state"] == "verified") for i in items.values()
+    )
+    expected = {
+        seeded["apply"]: "verified",
+        waiting.id: "unverified",
+        plain.id: "none",
+        rejected.id: "none",
+        master.id: "unverified",
+    }
+    for doc_id, state in expected.items():
+        assert items[str(doc_id)]["kind"] == "申报通知"
+        assert items[str(doc_id)]["deadline_state"] == state
+        detail = client.get(f"/api/v1/documents/{doc_id}").json()
+        assert detail["deadline_state"] == state
+        assert (detail["deadline"] is not None) == (state == "verified")
+    assert str(twin.id) not in items
+    # 首页、最近名单用同一个列表格式
+    home = {i["id"]: i for i in client.get("/api/v1/home").json()["items"]}
+    assert home[str(waiting.id)]["deadline_state"] == "unverified"
+    assert client.get("/api/v1/lists/recent").json()["items"][0]["deadline_state"] == "unverified"
+
+    # 已有核对通过的截止，再来新的待核对候选：仍按已核对算，日期只给核对过的
+    session.add(_candidate(seeded["apply"], "p", date(2026, 10, 30), "10月30日前报送"))
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{seeded['apply']}").json()
+    assert detail["deadline_state"] == "verified" and detail["deadline"]["date"] == "2026-10-18"
+
+
+def test_empty_states_get_verified_total(client, session, seeded):
+    """截止雷达和申报日历返回已核对条数：有核对通过截止的公开文件份数，同一通知算一份。"""
+    v1._REPORT_CACHE.clear()
+    apply_doc = session.get(Document, seeded["apply"])
+    twin = _doc(apply_doc.source, 71, apply_doc.title, apply_doc.publish_date)
+    hidden_source = Source(
+        level="省级",
+        province="辽宁",
+        dept="工信",
+        dept_full_name="辽宁省工业和信息化厅",
+        column_name="转载",
+        url="https://example.gov.cn/zz/",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add_all([twin, hidden_source])
+    session.flush()
+    hidden = _doc(
+        hidden_source, 72, "辽宁省关于组织申报2026年度技术改造项目的通知", date(2026, 9, 20)
+    )
+    session.add(hidden)
+    session.flush()
+    session.add_all(
+        [
+            _candidate(twin.id, "twin", date(2026, 10, 18), "10月18日", status="approved"),
+            DocumentMerge(
+                duplicate_id=twin.id, canonical_id=apply_doc.id, active=True, match_key="t"
+            ),
+            # 只存题录的二级来源：不公开，不算
+            _candidate(hidden.id, "hidden", date(2026, 10, 9), "10月9日", status="approved"),
+        ]
+    )
+    session.commit()
+
+    # 申报通知（两个截止、两个网址）和政策各一份；名单只有待核对候选，不算
+    report = client.get("/api/v1/reports/deadlines", params={"days": 30}).json()
+    assert report["verified_total"] == 2
+    filtered = client.get("/api/v1/reports/deadlines", params={"province": "北京"}).json()
+    assert filtered["items"] == [] and filtered["verified_total"] == 2  # 不随筛选变化
+    assert client.get("/api/v1/calendar").json()["verifiedTotal"] == 2
+
+    # 线上现状：全部还在待核对。两处都没有内容，已核对条数为 0
+    for row in session.scalars(select(DocumentDeadline)).all():
+        row.status, row.approved_date, row.approved_time = "pending", None, None
+    session.commit()
+    report = client.get("/api/v1/reports/deadlines", params={"days": 30}).json()
+    assert report["items"] == [] and report["total"] == 0 and report["verified_total"] == 0
+    calendar = client.get("/api/v1/calendar").json()
+    assert calendar["items"] == [] and calendar["past"] == [] and calendar["verifiedTotal"] == 0
+    assert isinstance(calendar["verifiedTotal"], int)
+
+
+def test_search_level_filter_and_region_merge_rule(client, session, seeded):
+    """层级和地区同时用：组内取并集、组间取交集；两组里的"国家部委"是同一个条件。"""
+    city = Source(
+        level="市级",
+        province="山东",
+        dept="科技",
+        dept_full_name="济南市科学技术局",
+        column_name="通知",
+        url="https://jnsti.jinan.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(city)
+    session.flush()
+    city_doc = _doc(
+        city, 81, "济南市科学技术局关于组织申报2026年度科技计划项目的通知", date(2026, 9, 20)
+    )
+    session.add(city_doc)
+    session.commit()
+
+    def ids(**params):
+        response = client.get("/api/v1/search", params={"time": "不限", "limit": 50, **params})
+        assert response.status_code == 200, response.text
+        return {int(i["id"]) for i in response.json()["items"]}
+
+    everything = ids()
+    national = ids(regions="国家部委")
+    provincial = {seeded["apply"], seeded["list"], seeded["policy"]}
+    shandong_provincial = {seeded["list"], seeded["policy"]}
+    assert len(national) == 2 and city_doc.id in everything
+    # 现有行为不变：不传层级或传空串，和以前一样
+    assert ids(levels="") == everything
+    assert ids(regions="山东") == shandong_provincial | {city_doc.id}
+    # 国家部委：只在地区选、只在层级选、两边都选，结果相同
+    assert ids(levels="国家部委") == national
+    assert ids(regions="国家部委", levels="国家部委") == national
+    assert ids(regions="不限地区", levels="国家部委") == national
+    assert ids(regions="国家部委,山东", levels="国家部委") == national
+    # 省级不含国家级，也不含市级
+    assert ids(levels="省级") == provincial
+    assert ids(levels="国家部委,省级") == everything - {city_doc.id}
+    assert ids(regions="山东", levels="省级") == shandong_provincial
+    assert ids(regions="国家部委,山东", levels="省级") == shandong_provincial
+    assert ids(regions="国家部委,山东", levels="国家部委,省级") == national | shandong_provincial
+    # 没有交集的选法：结果为空，不报错
+    assert ids(regions="国家部委", levels="省级") == set()
+    assert ids(regions="山东", levels="国家部委") == set()
+    # 和其他筛选、页签、不限时间总数一起用
+    assert ids(levels="省级", kind="申报通知") == {seeded["apply"]}
+    body = client.get("/api/v1/search", params={"levels": "省级"}).json()
+    assert body["total"] == 2 and body["total_all"] == 3  # 8/1 的政策超出近 30 天
+    for bad in ("市级", "国家级", "省级,火星"):
+        assert client.get("/api/v1/search", params={"levels": bad}).status_code == 422
+
+
+def test_search_national_level_with_regions_as_miniapp_sends_it(client, session, seeded):
+    """UI 第二轮：小程序的地区里不再有"国家部委"，层级里的国家部委不受地区限制、和所选地区的文件
+    一起列出。服务端不改：小程序把请求拼成 regions=国家部委,省份（层级同时含省级时再带
+    levels=国家部委,省级），见 apps/miniapp/utils/conditions.js 的 requestScope。这里核对这样拼出来的
+    结果，以及旧条件打开后换成的新请求（migrateNational）结果不变。"""
+    city = Source(
+        level="市级",
+        province="山东",
+        dept="科技",
+        dept_full_name="济南市科学技术局",
+        column_name="通知",
+        url="https://jnsti.jinan.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(city)
+    session.flush()
+    city_doc = _doc(
+        city, 82, "济南市科学技术局关于组织申报2026年度科技计划项目的通知", date(2026, 9, 20)
+    )
+    session.add(city_doc)
+    session.commit()
+
+    def ids(**params):
+        response = client.get("/api/v1/search", params={"time": "不限", "limit": 50, **params})
+        assert response.status_code == 200, response.text
+        return {int(i["id"]) for i in response.json()["items"]}
+
+    national = ids(levels="国家部委")
+    provincial = ids(levels="省级")
+    shandong = {seeded["list"], seeded["policy"]}
+    assert len(national) == 2 and shandong <= provincial
+    # 界面：地区山东 + 层级国家部委 → 国家部委和山东的文件（地市暂未收录，线上就是省级）
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
+    # 地区山东 + 层级国家部委、省级 → 国家部委和山东的省级文件
+    assert ids(regions="国家部委,山东", levels="国家部委,省级") == national | shandong
+    # 地区山东 + 层级省级、不限地区 + 两级：和以前一样
+    assert ids(regions="山东", levels="省级") == shandong
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+
+    # 旧条件 → 打开后小程序发的请求（与 apps/miniapp/tests/search-r2.test.js 的转换表一致），结果相同
+    same = [
+        ({"regions": "国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        ({"regions": "不限地区,国家部委"}, {"regions": "不限地区", "levels": "国家部委"}),
+        (
+            {"regions": "国家部委", "levels": "国家部委,省级"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
+        (
+            {"regions": "国家部委,山东", "levels": "国家部委"},
+            {"regions": "不限地区", "levels": "国家部委"},
+        ),
+        (
+            {"regions": "国家部委,山东,北京", "levels": "省级"},
+            {"regions": "山东,北京", "levels": "省级"},
+        ),
+        ({"regions": "山东", "levels": "国家部委,省级"}, {"regions": "山东", "levels": "省级"}),
+    ]
+    for old, new in same:
+        assert ids(**old), old
+        assert ids(**old) == ids(**new), (old, new)
+    # 原来必然查不到的两种，打开后按字面意思列出
+    assert ids(regions="国家部委", levels="省级") == set()
+    assert ids(regions="不限地区", levels="国家部委,省级") == national | provincial
+    assert ids(regions="山东", levels="国家部委") == set()
+    assert ids(regions="国家部委,山东") == national | shandong | {city_doc.id}
+
+
+def test_no_public_output_contains_unverified_dates(client, session, seeded):
+    """红线：没核对的截止日期不能从任何公开接口出来（含时刻和原文证据）。
+
+    正文（D-030）是原文全文、页面写明未经核对，这里的正文不含候选日期，只检查结构化字段。
+    """
+    ln = session.get(Document, seeded["apply"]).source
+    notice = _doc(
+        ln, 91, "辽宁省工业和信息化厅关于组织申报2026年度数字化转型项目的通知", date(2026, 9, 25)
+    )
+    session.add(notice)
+    session.flush()
+    session.add_all(
+        [
+            DocumentDetail(
+                document_id=notice.id,
+                body_text="各有关单位：" + "请按要求组织申报。" * 40,
+                issuer="辽宁省工业和信息化厅",
+                fetched_at=datetime.now(UTC),
+                status="ok",
+            ),
+            _candidate(
+                notice.id, "x", date(2026, 11, 23), "请于11月23日16:30前提交", clock=time(16, 30)
+            ),
+            # 已核对的文件上又有一条待核对候选
+            _candidate(seeded["apply"], "y", date(2026, 11, 24), "材料11月24日前报送"),
+        ]
+    )
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    found = client.get("/api/v1/search", params={"time": "不限", "kind": "申报通知"}).json()
+    assert {i["id"]: i["deadline_state"] for i in found["items"]}[str(notice.id)] == "unverified"
+
+    forbidden = ("2026-11-23", "11月23日", "11-23", "16:30", "2026-11-24", "11月24日", "11-24")
+    forbidden += ("2026-10-05", "10月5日", "10-05")  # seeded 名单上的待核对候选
+    paths = [
+        "/api/v1/home",
+        "/api/v1/search?time=不限&limit=50",
+        "/api/v1/search?time=不限&kind=申报通知&levels=省级",
+        "/api/v1/search?time=不限&open=1",
+        "/api/v1/calendar",
+        "/api/v1/calendar?days=366&limit=200",
+        "/api/v1/reports/deadlines?days=30",
+        "/api/v1/lists/recent",
+        f"/api/v1/documents/{notice.id}",
+        f"/api/v1/documents/{seeded['apply']}",
+        f"/api/v1/documents/{seeded['list']}",
+    ]
+    for path in paths:
+        response = client.get(path)
+        assert response.status_code == 200, path
+        text = json.dumps(response.json(), ensure_ascii=False)
+        leaked = [value for value in forbidden if value in text]
+        assert not leaked, f"{path} 出现了未核对的日期：{leaked}"

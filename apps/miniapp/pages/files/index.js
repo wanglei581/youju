@@ -3,6 +3,7 @@ const exportsLog = require('../../utils/exports.js');
 const { exportDocs, open, exists, removeFiles } = require('../../utils/exporter.js');
 const { shortTime } = require('../../utils/format.js');
 const { openResult } = require('../../utils/advisor.js');
+const { loginOpen } = require('../../utils/consent.js');
 
 const FORMAT_NAME = { xlsx: 'Excel', docx: 'Word' };
 
@@ -14,7 +15,7 @@ function fileName(record) {
 
 // 导出记录只存在这台手机上（utils/exports.js）；演示模式显示演示数据
 Page({
-  data: { demo: true, files: [] },
+  data: { demo: true, files: [], loginOpen: loginOpen() },
 
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 2 });
@@ -30,6 +31,7 @@ Page({
       meta: `${r.count} ${r.source === 'advisor' ? '行' : '份'} · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
       expired: !exists(r.path),
       local: true,
+      canReexport: r.source !== 'advisor' || this.data.loginOpen,
     }));
     this.setData({ demo: !api.isLive(), files: records });
     if (!api.isLive()) api.files().then((files) => this.setData({ files: records.concat(files.map((f, i) => Object.assign({ id: `demo${i}` }, f))) }));
@@ -69,6 +71,7 @@ Page({
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据不能导出', icon: 'none' }); return; }
     if (r.source === 'advisor') {
+      if (!this.data.loginOpen) return;
       openResult(r.taskId, { task: { kind: r.kind, rowCount: r.count } }).then(() => this.load())
         .catch((err) => { this.load(); wx.showToast({ title: err.message, icon: 'none' }); });
       return;

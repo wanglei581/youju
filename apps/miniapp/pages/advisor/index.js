@@ -1,15 +1,18 @@
+const { loginOpen } = require('../../utils/consent.js');
 const api = require('../../utils/api.js');
 const { taskView } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { loading: true, error: '', enabled: false, skills: [], context: null, recent: [], recentLoading: true, recentError: '' },
-  onLoad(query) { this.setData({ context: context.read(query) }); },
+  data: { loginOpen: loginOpen(), loading: true, error: '', enabled: false, skills: [], context: null, recent: [], recentLoading: true, recentError: '' },
+  onLoad(query) {
+    if (!this.data.loginOpen) return; this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
   onUnload() { this.onHide(); },
   clearContext() { this.setData({ context: null }); },
   load() {
+    if (!this.data.loginOpen) return;
     const epoch = this.epoch = (this.epoch || 0) + 1;
     this.setData({ loading: true, error: '' });
     api.advisorStatus({ refresh: true }).then((res) => {

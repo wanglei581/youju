@@ -1,0 +1,5 @@
+<view class="card closed">
+  <view class="closed-title">这个功能暂未开放</view>
+  <view class="muted closed-text">可以先用首页的搜索、申报日历、查名单和导出</view>
+  <view class="btn-primary closed-btn" bindtap="goHome" aria-role="link">回首页</view>
+</view>

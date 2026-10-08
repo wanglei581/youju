@@ -1,9 +1,11 @@
+const { loginOpen } = require('../../utils/consent.js');
 const api = require('../../utils/api.js');
 const { taskView, openResult } = require('../../utils/advisor.js');
 
 Page({
-  data: { loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false },
+  data: { loginOpen: loginOpen(), loading: true, error: '', actionError: '', items: [], busyId: null, singleTask: false, demo: false },
   onLoad(query = {}) {
+    if (!this.data.loginOpen) return;
     this.taskId = query.taskId || null;
     this.setData({ singleTask: !!this.taskId });
     if (this.taskId) wx.setNavigationBarTitle({ title: '任务详情' });
@@ -13,6 +15,7 @@ Page({
   onUnload() { this.stop(); },
   stop() { this.visible = false; this.epoch = (this.epoch || 0) + 1; clearTimeout(this.timer); },
   load() {
+    if (!this.data.loginOpen) return;
     clearTimeout(this.timer);
     const epoch = this.epoch = (this.epoch || 0) + 1;
     this.setData({ loading: true, error: '' });
@@ -42,7 +45,10 @@ Page({
   lists() { wx.navigateTo({ url: '/pages/lists/index' }); },
   radar() { wx.navigateTo({ url: '/pages/report/index' }); },
   allTasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },
-  cancel(e) { this.mutate(e, api.cancelAdvisorTask, '取消排队任务', '取消后将退回今天的次数。'); },
+  cancel(e) {
+    const task = this.data.items.find((item) => String(item.id) === String(e.currentTarget.dataset.id));
+    this.mutate(e, api.cancelAdvisorTask, '取消排队任务', task && task.kind === 'compare' ? '取消后将退回任务提交月份的次数。' : '取消后将退回任务提交当天的次数。');
+  },
   remove(e) { this.mutate(e, api.deleteAdvisorTask, '删除任务', '删除任务后不能恢复；已导出的本机文件可在“文件”页清空。'); },
   mutate(e, call, title, content) {
     if (this.data.busyId !== null) return;

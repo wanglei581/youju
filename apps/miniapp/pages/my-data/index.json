@@ -1,3 +1,4 @@
 {
-  "navigationBarTitleText": "我的数据"
+  "navigationBarTitleText": "我的数据",
+  "usingComponents": { "feature-closed": "/components/closed/index" }
 }

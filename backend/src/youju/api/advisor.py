@@ -25,7 +25,7 @@ from youju.backup import BackupError
 from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, Document, Source, User
+from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
 from youju.track import read_customer_profiles
 
@@ -186,21 +186,15 @@ def _upload_consent(user: User) -> None:
 @router.get("/status", dependencies=[Depends(_enabled)])
 def status(session: SessionDep, user: KnownUserDep) -> dict:
     day = service.usage_day(_stamp())
-    usage = (
-        dict(
-            session.execute(
-                select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
-                    AdvisorUsage.user_id == user.id, AdvisorUsage.day == day
-                )
-            ).all()
-        )
-        if user
-        else {}
-    )
+    usage = service.usage_counts(session, user.id, day) if user else {}
     return {
         "enabled": True,
         "quota": {
-            kind: {"used": usage.get(kind, 0), "limit": 1, "maxRows": service.MAX_ROWS}
+            kind: {
+                "used": usage.get(kind, 0),
+                "limit": service.usage_limit(kind),
+                "maxRows": service.MAX_ROWS,
+            }
             for kind in ("compare", "track")
         },
     }
@@ -287,13 +281,7 @@ def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) ->
 def capabilities(session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     day = service.usage_day(_stamp())
-    counts = dict(
-        session.execute(
-            select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
-                AdvisorUsage.user_id == user.id, AdvisorUsage.day == day
-            )
-        ).all()
-    )
+    counts = service.usage_counts(session, user.id, day)
     data_enabled = settings.advisor_enabled
     ai_enabled = interpret.enabled(settings, user)
     return {
@@ -301,7 +289,8 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "enabled": data_enabled,
             "features": ["compare", "track"] if data_enabled else [],
             "remaining": {
-                k: max(0, 1 - counts.get(k, 0)) if data_enabled else 0 for k in ("compare", "track")
+                k: max(0, service.usage_limit(k) - counts.get(k, 0)) if data_enabled else 0
+                for k in ("compare", "track")
             },
         },
         "ai_advisor": {
@@ -364,7 +353,12 @@ def create_task(
             "interpret": "政策解读",
             "clause": "条款对照",
         }[body.kind]
-        raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
+        detail = (
+            f"{label}本月的免费额度已用完，请下月再试"
+            if body.kind == "compare"
+            else f"{label}今天的免费额度已用完，请明天再试"
+        )
+        raise HTTPException(status_code=429, detail=detail)
     task = AdvisorTask(
         user_id=user.id,
         kind=body.kind,

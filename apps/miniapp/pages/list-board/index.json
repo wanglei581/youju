@@ -2,7 +2,7 @@
   "navigationStyle": "custom",
   "navigationBarTitleText": "名单看板",
   "usingComponents": {
-    "t-icon": "tdesign-miniprogram/icon/icon",
+    "t-icon": "/components/icon/index",
     "tool-fab": "/components/tool-fab/index"
   }
 }

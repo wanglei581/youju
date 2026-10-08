@@ -1,8 +1,9 @@
 """公开导出只包含归并后的题录、原文网址和人工核对字段。"""
 
+import hashlib
 import json
 from collections import deque
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -15,7 +16,14 @@ from youju.api import exports
 from youju.api.app import app
 from youju.api.exports import MAX_BYTES
 from youju.db import get_session
-from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentMerge, Source
+from youju.models import (
+    Document,
+    DocumentDeadline,
+    DocumentDetail,
+    DocumentField,
+    DocumentMerge,
+    Source,
+)
 
 
 @pytest.fixture
@@ -140,7 +148,7 @@ def test_xlsx_export(client, docs):
     assert book.sheetnames == ["文件清单", "数据说明"]
     sheet = book["文件清单"]
     assert sheet.max_row == 3  # 两个原文网址归并为一行，请求顺序仍保留
-    assert [sheet.cell(1, i).value for i in range(1, 10)] == [
+    assert [sheet.cell(1, i).value for i in range(1, 13)] == [
         "序号",
         "标题",
         "类型",
@@ -150,16 +158,26 @@ def test_xlsx_export(client, docs):
         "发布日期",
         "地区",
         "截止日期",
+        "日期角色",
+        "支持方式",
+        "未核项",
     ]
-    assert sheet["J1"].value == "原文链接" and sheet["K1"].value == "原文链接 2"
+    assert sheet["M1"].value == "原文链接" and sheet["N1"].value == "原文链接 2"
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
     assert sheet["D2"].value is None  # 申报通知没有名单状态，status 契约保持不变
     assert sheet["D3"].value == "公示"
     assert "2026-10-20" in sheet["I2"].value
     assert "原定 企业申报截止 2026-10-18 已延期" in sheet["I2"].value
     assert "2026-10-05" not in sheet["I3"].value and sheet["I3"].value == "见原文"
-    assert sheet["J2"].hyperlink.target.endswith("/1.html")
-    assert sheet["K2"].hyperlink.target.endswith("/2.html")
+    # 日期角色按截止日期那一格的顺序写类型；已变更的注明；没有核对过的截止不写日期
+    assert sheet["J2"].value == "推荐或审核截止；企业申报截止（已延期）"
+    assert sheet["J3"].value == "截止时间见原文"
+    assert sheet["K2"].value == "见原文"  # 申报通知还没有核对通过的支持方式
+    assert sheet["K3"].value == "—"  # 名单没有支持方式
+    assert sheet["L2"].value == "支持方式"
+    assert sheet["L3"].value == "截止日期、名单状态"
+    assert sheet["M2"].hyperlink.target.endswith("/1.html")
+    assert sheet["N2"].hyperlink.target.endswith("/2.html")
     note = book["数据说明"]
     assert "第三方整理，非政府平台" in note["B1"].value
     assert note["D4"].value == "2026-09-25"
@@ -186,8 +204,183 @@ def test_docx_export(client, docs):
     assert "2026-10-20" in fields["截止日期"]
     assert "原定 企业申报截止 2026-10-18 已延期" in fields["截止日期"]
     assert fields["截止日期核对日期"] == "2026-09-26"
+    assert fields["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
+    assert fields["支持方式"] == "见原文"
+    assert fields["未核项"] == "支持方式"
     listed_fields = {row.cells[0].text: row.cells[1].text for row in book.tables[2].rows}
     assert listed_fields["截止日期"] == "见原文"
+    assert listed_fields["日期角色"] == "截止时间见原文"
+    assert listed_fields["支持方式"] == "—"
+    assert listed_fields["未核项"] == "截止日期、名单状态"
+
+
+@pytest.fixture
+def role_docs(session):
+    """日期角色、未核项用：全部核对过 / 截止只有待核对的候选 / 部分核对过。"""
+    source = Source(
+        level="省级",
+        province="辽宁",
+        dept="科技",
+        dept_full_name="辽宁省科学技术厅",
+        column_name="通知公告",
+        url="https://kjt.ln.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+        verified_on=date(2026, 9, 25),
+    )
+    session.add(source)
+    session.flush()
+    reviewed = datetime(2026, 9, 27, 2, tzinfo=UTC)
+    body = "本项目给予资金支持。对符合条件的贷款给予贴息。申报时间以通知为准。"
+    body_hash = hashlib.sha256(body.encode()).hexdigest()
+
+    def add_doc(slug, title):
+        now = datetime.now(UTC)
+        doc = Document(
+            source_id=source.id,
+            url=f"https://kjt.ln.gov.cn/{slug}.html",
+            url_key=f"kjt.ln.gov.cn/{slug}.html",
+            title=title,
+            publish_date=date(2026, 9, 24),
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        session.add(doc)
+        session.flush()
+        session.add(
+            DocumentDetail(
+                document_id=doc.id,
+                body_text=body,
+                issuer="辽宁省科学技术厅",
+                fetched_at=now,
+                status="ok",
+            )
+        )
+        return doc
+
+    def deadline(doc, fingerprint, kind, day, status, at=None, origin="rule"):
+        return DocumentDeadline(
+            document_id=doc.id,
+            fingerprint=fingerprint,
+            kind=kind,
+            candidate_date=day,
+            candidate_time=at,
+            evidence="核对记录",
+            confidence="高",
+            status=status,
+            origin=origin,
+            approved_date=day if status == "approved" else None,
+            approved_time=at if status == "approved" else None,
+            reviewed_by="审阅人" if status != "pending" else None,
+            reviewed_at=reviewed if status != "pending" else None,
+        )
+
+    def support(doc, value, status):
+        return DocumentField(
+            document_id=doc.id,
+            field="support",
+            value=value,
+            evidence=body[:10],
+            evidence_offset=0,
+            body_hash=body_hash,
+            status=status,
+            approved_value=value if status == "approved" else None,
+            reviewed_by="审阅人" if status == "approved" else None,
+            reviewed_at=reviewed if status == "approved" else None,
+        )
+
+    # 标题会被按标题归类打上筛选标签（贷款贴息、资金支持），导出的支持方式不能用这些标签
+    checked = add_doc("a", "辽宁省关于组织申报智能制造贷款贴息项目的通知")
+    unchecked = add_doc("b", "辽宁省关于组织申报数字经济项目资金补助的通知")
+    partial = add_doc("c", "辽宁省关于组织申报新材料项目的通知")
+    session.add_all(
+        [
+            deadline(checked, "a1", "企业申报截止", date(2026, 11, 10), "approved"),
+            support(checked, "资格认定", "approved"),
+            support(checked, "资金支持", "approved"),
+            # 只有待核对、已驳回的候选：任何格子里都不能出现这些日期
+            deadline(unchecked, "b1", "企业申报截止", date(2026, 11, 23), "pending", time(17, 0)),
+            deadline(unchecked, "b2", "材料报送截止", date(2026, 11, 27), "pending", origin="ai"),
+            deadline(unchecked, "b3", "推荐或审核截止", date(2026, 11, 25), "rejected"),
+            support(unchecked, "资金支持", "pending"),
+            # 已核对一部分：列出的已核对，另有待核对的截止和支持方式
+            deadline(partial, "c1", "材料报送截止", date(2026, 12, 1), "approved"),
+            deadline(partial, "c2", "推荐或审核截止", date(2026, 12, 8), "pending"),
+            support(partial, "资金支持", "approved"),
+            support(partial, "贷款贴息", "pending"),
+        ]
+    )
+    session.commit()
+    return checked, unchecked, partial
+
+
+ROW_COLUMNS = ("截止日期", "日期角色", "支持方式", "未核项")
+
+
+def _export_rows(client, docs, format_):
+    """导出后按标题取出（截止日期, 日期角色, 支持方式, 未核项），以及整个文件的全部文字。"""
+    response = client.post(
+        "/api/v1/exports", json={"ids": [str(d.id) for d in docs], "format": format_}
+    )
+    assert response.status_code == 200, response.text
+    if format_ == "xlsx":
+        book = load_workbook(BytesIO(response.content))
+        sheet = book["文件清单"]
+        header = [cell.value for cell in sheet[1]]
+        col = {name: header.index(name) for name in ("标题", *ROW_COLUMNS)}
+        rows = {
+            row[col["标题"]].value: tuple(row[col[name]].value for name in ROW_COLUMNS)
+            for row in sheet.iter_rows(min_row=2)
+        }
+        text = "\n".join(str(cell.value) for ws in book for row in ws for cell in row)
+        book.close()
+        return rows, text
+    book = WordDocument(BytesIO(response.content))
+    rows = {}
+    for table in book.tables[1:]:
+        fields = {row.cells[0].text: row.cells[1].text for row in table.rows}
+        rows[fields["标题"]] = tuple(fields[name] for name in ROW_COLUMNS)
+    text = "\n".join(
+        [p.text for p in book.paragraphs]
+        + [cell.text for table in book.tables for row in table.rows for cell in row.cells]
+    )
+    return rows, text
+
+
+@pytest.mark.parametrize("format_", ["xlsx", "docx"])
+def test_date_role_and_unchecked_columns(client, role_docs, format_):
+    checked, unchecked, partial = role_docs
+    rows, text = _export_rows(client, role_docs, format_)
+    assert rows[checked.title] == (
+        "企业申报截止 2026-11-10",
+        "企业申报截止",
+        "资金支持、资格认定",  # 只写人工核对通过的，顺序和详情页一致
+        "无",
+    )
+    assert rows[unchecked.title] == ("见原文", "截止时间见原文", "见原文", "截止日期、支持方式")
+    assert rows[partial.title] == (
+        "材料报送截止 2026-12-01",
+        "材料报送截止",
+        "资金支持",  # 待核对的贷款贴息不写
+        "其他截止日期、支持方式",
+    )
+    # 按标题归类的筛选标签不进支持方式这一列
+    assert checked.rule_supports == "贷款贴息" and unchecked.rule_supports == "资金支持"
+    assert "贷款贴息" not in rows[checked.title][2]
+    # 没有人工核对通过的截止日期，不管哪种写法都不能出现在文件里（含日期角色、数据说明）
+    for day in ("2026-11-23", "2026-11-25", "2026-11-27", "2026-12-08"):
+        y, m, d = day.split("-")
+        for shown in (day, f"{y}/{m}/{d}", f"{int(m)}月{int(d)}日", f"{m}-{d}", f"{m}月{d}日"):
+            assert shown not in text, shown
+    assert "以发文机关原文为准" in text and "未核项" in text
+
+
+def test_word_and_excel_columns_match(client, role_docs, docs, session):
+    ids = [*role_docs, *(session.get(Document, i) for i in docs)]
+    xlsx, _ = _export_rows(client, ids, "xlsx")
+    docx, _ = _export_rows(client, ids, "docx")
+    assert len(xlsx) == 5  # 归并的两个网址算一行
+    assert xlsx == docx
 
 
 def test_export_rejects_missing_ids_and_over_200(client, docs):
