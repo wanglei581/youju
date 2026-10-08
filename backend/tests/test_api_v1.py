@@ -227,6 +227,108 @@ def test_search_filters_and_totals(client, seeded):
     assert r["total"] == 0
 
 
+@pytest.fixture
+def city_search_docs(session):
+    specs = [
+        ("国家级", "国家", None),
+        ("省级", "山东", None),
+        ("市级", "山东", "青岛"),
+        ("市级", "山东", "济南"),
+        ("市级", "江苏", "青岛"),
+        ("省级", "江苏", None),
+    ]
+    ids = []
+    for n, (level, province, city) in enumerate(specs):
+        source = Source(
+            level=level,
+            province=province,
+            city=city,
+            dept="科技",
+            dept_full_name=f"{province}{city or ''}科技部门",
+            column_name="通知",
+            url=f"https://city{n}.gov.cn/tz/",
+            enabled=True,
+            parser_config={},
+            last_success_at=NOW,
+        )
+        session.add(source)
+        session.flush()
+        doc = _doc(source, n, "关于组织数字经济项目申报的通知", date(2026, 1, 1))
+        session.add(doc)
+        session.flush()
+        ids.append(str(doc.id))
+        session.add(
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint=f"city-{n}",
+                kind="企业申报截止",
+                candidate_date=date(2026, 10, 18),
+                evidence="10月18日截止",
+                confidence="高",
+                status="approved",
+                approved_date=date(2026, 10, 18),
+                reviewed_at=NOW,
+                reviewed_by="创始人",
+            )
+        )
+    session.commit()
+    return ids
+
+
+def test_search_city_union_national_and_provinces(client, city_search_docs):
+    ids = city_search_docs
+    params = {"time": "不限", "regions": "国家部委", "cities": "山东/青岛"}
+    res = client.get("/api/v1/search", params=params)
+    assert res.status_code == 200
+    assert {v["id"] for v in res.json()["items"]} == {ids[0], ids[2]}
+    # 市名和省份作为一对比较，不误列另一省同名城市。
+    params["regions"] = "国家部委,江苏"
+    res = client.get("/api/v1/search", params=params).json()
+    assert {v["id"] for v in res["items"]} == {ids[0], ids[2], ids[4], ids[5]}
+    assert res["total"] == res["total_all"] == 4
+    params |= {"regions": "国家部委", "cities": "山东/青岛,山东/济南"}
+    assert {v["id"] for v in client.get("/api/v1/search", params=params).json()["items"]} == {
+        ids[0],
+        ids[2],
+        ids[3],
+    }
+
+
+def test_client_search_city_open_industry_unlimited_time(client, session, city_search_docs):
+    ids = city_search_docs
+    # 未截止条件仍只认人工核对的截止，不能由标题或正文推定。
+    session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == int(ids[2]))
+    ).status = "pending"
+    session.commit()
+    params = {
+        "kind": "申报通知",
+        "time": "不限",
+        "open": 1,
+        "regions": "国家部委",
+        "cities": "山东/青岛",
+        "industries": "数字经济",
+        "group": 1,
+    }
+    res = client.get("/api/v1/search", params=params)
+    assert res.status_code == 200
+    assert [v["id"] for v in res.json()["items"]] == [ids[0]]
+    # 不限产业只移除该筛选，其他条件继续生效。
+    params["industries"] = "现代农业"
+    assert client.get("/api/v1/search", params=params).json()["total"] == 0
+    del params["industries"]
+    assert [v["id"] for v in client.get("/api/v1/search", params=params).json()["items"]] == [
+        ids[0]
+    ]
+
+
+@pytest.mark.parametrize("cities", ["山东/未收录", "青岛", "山东/青岛/其他", "江苏/济南"])
+def test_search_rejects_unknown_city(client, city_search_docs, cities):
+    res = client.get("/api/v1/search", params={"cities": cities})
+    assert res.status_code == 422
+    assert res.json()["detail"] == "城市未收录，请重新选择地区"
+
+
 def test_document_detail_only_approved_deadlines(client, seeded):
     d = client.get(f"/api/v1/documents/{seeded['apply']}").json()
     assert d["status"] is None and d["app_status"]["code"] == "open"

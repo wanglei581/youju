@@ -23,6 +23,7 @@
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
     <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
+    <view wx:if="{{standardKey}}" class="standard-link link" bindtap="openStandard" aria-role="button">对照国家认定条件原文<t-icon name="chevron-right" size="28rpx" color="#2A5CE0" /></view>
   </view>
 
   <view wx:if="{{due}}" class="card due-card">

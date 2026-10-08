@@ -1,0 +1,14 @@
+.result-head { padding-bottom: 24rpx; }
+.subtitle { font-size: 26rpx; margin: 12rpx 0 24rpx; overflow-wrap: break-word; }
+.explanation { color: var(--t2); background: var(--brand-tint); border-radius: 12rpx; padding: 20rpx; font-size: 26rpx; }
+.switch-row { display: flex; justify-content: space-between; align-items: center; margin-top: 24rpx; }
+.tag-note { margin-top: 12rpx; font-size: 24rpx; }
+.result-item { border-bottom: 2rpx solid var(--line); padding-bottom: 24rpx; }
+.result-item:last-child { border-bottom: 0; }
+.condition-link { display: flex; align-items: center; justify-content: space-between; color: var(--brand); padding: 16rpx 0; font-size: 26rpx; }
+.conditions { background: var(--fill); padding: 20rpx; border-radius: 12rpx; font-size: 26rpx; }
+.condition-caption { margin-bottom: 12rpx; font-size: 24rpx; }
+.quote { padding: 12rpx 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.highlight { color: var(--brand); background: var(--brand-tint); font-weight: 600; }
+.message { padding: 32rpx 0; text-align: center; }
+.page-bottom { height: calc(48rpx + env(safe-area-inset-bottom)); }

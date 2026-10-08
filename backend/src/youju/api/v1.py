@@ -885,6 +885,10 @@ def search(
     q: Annotated[str | None, Query(max_length=50, description="标题或文号关键词")] = None,
     kind: Annotated[str, Query(description="页签：all / 申报通知 / 名单 / 政策")] = "all",
     regions: Annotated[str | None, Query(max_length=400, description="省份，逗号分隔")] = None,
+    cities: Annotated[
+        str | None,
+        Query(max_length=2000, description="已收录城市，省/市逗号分隔，与地区取并集"),
+    ] = None,
     types: Annotated[
         str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
@@ -933,7 +937,7 @@ def search(
     资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
     不返回这两项。"""
     filters = {"levels": levels, "categories": categories}
-    filters |= {"supports": supports, "industries": industries}
+    filters |= {"supports": supports, "industries": industries, "cities": cities}
     stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
     all_time = search_statement(
         session, q, kind, regions, types, status, "不限", depts, open, **filters
@@ -991,6 +995,7 @@ def search_statement(
     categories: str | None = None,
     supports: str | None = None,
     industries: str | None = None,
+    cities: str | None = None,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
 
@@ -1013,6 +1018,23 @@ def search_statement(
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
     picked_supports = _pick(supports, SUPPORT_SET, "支持方式")
     picked_industries = _pick(industries, INDUSTRY_SET, "产业方向")
+    picked_cities = list(dict.fromkeys(c.strip() for c in (cities or "").split(",") if c.strip()))
+    if picked_cities:
+        # 只接受收录范围里的城市；自由文本客户名称及关键词不进入接口。
+        covered_cities = {
+            f"{province}/{city}"
+            for province, city in session.execute(
+                select(Source.province, Source.city).where(
+                    Source.enabled.is_(True),
+                    Source.last_success_at.is_not(None),
+                    Source.level == "市级",
+                    Source.city.is_not(None),
+                    Source.city != "",
+                )
+            )
+        }
+        if any(c not in covered_cities for c in picked_cities):
+            raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -1022,10 +1044,21 @@ def search_statement(
         stmt = stmt.where(_kind_is([kind]))
     if picked_types:
         stmt = stmt.where(_kind_is(picked_types))
-    if picked_regions:
-        stmt = stmt.where(
-            Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
+    if picked_regions or picked_cities:
+        area_parts = []
+        if picked_regions:
+            area_parts.append(
+                Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
+            )
+        area_parts.extend(
+            and_(
+                Source.province == c.split("/")[0],
+                Source.city == c.split("/")[1],
+                Source.level == "市级",
+            )
+            for c in picked_cities
         )
+        stmt = stmt.where(or_(*area_parts))
     if picked_levels:
         stmt = stmt.where(_level_filter(picked_levels))
     if picked_status:

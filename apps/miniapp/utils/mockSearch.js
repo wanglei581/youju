@@ -10,10 +10,11 @@ function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
 }
 
-function matchRegion(doc, regions) {
+function matchRegion(doc, regions, cities = []) {
   const picked = regions.filter((r) => r !== '不限地区');
-  if (!picked.length) return true;
-  return picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : (doc.province ? doc.province === r : doc.region.startsWith(r))));
+  if (!picked.length && !cities.length) return true;
+  return cities.includes(`${doc.province}/${doc.city}`)
+    || picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : (doc.province ? doc.province === r : doc.region.startsWith(r))));
 }
 
 // 新接口按 province/level 匹配，旧演示数据按 region 兼容。
@@ -63,6 +64,7 @@ function mockSearch(all, params) {
   const kw = (params.q || '').trim();
   const kind = params.kind || 'all';
   const regions = split(params.regions);
+  const cities = split(params.cities);
   const levels = split(params.levels);
   const types = split(params.types);
   const status = split(params.status);
@@ -72,7 +74,7 @@ function mockSearch(all, params) {
   const industries = split(params.industries);
   const matched = all.filter((d) => (!kw || d.title.includes(kw))
     && (kind === 'all' || d.kind === kind)
-    && matchRegion(d, regions) && matchLevel(d, levels) && matchType(d, types) && matchCategory(d, categories)
+    && matchRegion(d, regions, cities) && matchLevel(d, levels) && matchType(d, types) && matchCategory(d, categories)
     && matchTags(d, supports, 'supports', ['申报通知', '名单']) && matchTags(d, industries, 'industries')
     && (!status.length || status.includes(d.status))
     && (!params.open || matchOpen(d))
