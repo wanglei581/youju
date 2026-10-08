@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
 from youju.classify import GUIDE, effective_kind
@@ -733,6 +733,40 @@ def confirmed_members() -> object:
             RepostGroup.needs_review.is_(False),
         )
         .subquery()
+    )
+
+
+def grouped_documents(stmt: Select) -> Select:
+    """先筛选、再按转发组折叠（group=1）：命中筛选的版本里，同一确认过的转发组只留一条主条目。
+
+    主条目：部里原件在库就用原件，否则用最早发布的版本（同一天按编号）；选了地区筛选时命中的
+    只有该地区的版本，主条目自然是本地版本。主条目的标题、机关、日期、申报状态都是这一版自己的。
+    排序、翻页和计数都按主条目（stmt 是 _base() 派生的 select(Document, Source)）。"""
+    members = confirmed_members()
+    key = func.coalesce(-members.c.group_id, Document.id)
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=key,
+            order_by=(
+                case((Source.province == "国家", 0), else_=1),
+                Document.publish_date.is_(None),
+                Document.publish_date,
+                Document.id,
+            ),
+        )
+        .label("repost_rank")
+    )
+    ranked = (
+        stmt.outerjoin(members, members.c.document_id == Document.id)
+        .with_only_columns(Document.id.label("doc_id"), rank)
+        .subquery()
+    )
+    return (
+        select(Document, Source)
+        .join(Source, Document.source_id == Source.id)
+        .join(ranked, ranked.c.doc_id == Document.id)
+        .where(ranked.c.repost_rank == 1)
     )
 
 

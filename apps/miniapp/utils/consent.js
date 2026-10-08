@@ -168,11 +168,6 @@ function withdraw() {
   });
 }
 
-// 服务端记录的是旧版本的同意（协议已更新）
-function consentOutdated() {
-  return outdated;
-}
-
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, consentOutdated, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
 };

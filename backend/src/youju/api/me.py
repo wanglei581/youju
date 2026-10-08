@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,17 @@ from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
-from youju.models import Document, Event, Feedback, Follow, Source, Subscription, User
+from youju.models import (
+    Document,
+    Event,
+    Feedback,
+    Follow,
+    FollowRepostNotification,
+    Source,
+    Subscription,
+    User,
+)
+from youju.repost import confirmed_members
 from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
@@ -148,7 +158,37 @@ def new_statement(session: Session, follow: Follow, since):
 
 
 def new_count(session: Session, follow: Follow, since) -> int:
-    return v1._count(session, new_statement(session, follow, since))
+    return v1._count(session, v1._grouped(new_statement(session, follow, since)))
+
+
+def notification_statement(session: Session, follow: Follow):
+    since = follow.last_notified_at or follow.created_at
+    stmt = new_statement(session, follow, since)
+    members = confirmed_members()
+    sent_groups = select(FollowRepostNotification.group_id).where(
+        FollowRepostNotification.follow_id == follow.id
+    )
+    # 只认成功发送的记录；历史版本可能后来才核对通过或转为公开，不能按时间推断曾提醒过。
+    stmt = stmt.where(
+        ~Document.id.in_(select(members.c.document_id).where(members.c.group_id.in_(sent_groups)))
+    )
+    return v1._grouped(stmt)
+
+
+def followed_week_count(session: Session, user: User) -> int:
+    start, end = v1._week(v1.now().date())
+    follows = session.scalars(select(Follow).where(Follow.user_id == user.id)).all()
+    if not follows:
+        return 0
+    matches = union_all(
+        *[
+            _conditions_stmt(session, follow.conditions)
+            .where(Document.publish_date >= start, Document.publish_date < end)
+            .with_only_columns(Document.id)
+            for follow in follows
+        ]
+    ).subquery()
+    return v1._count(session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id)))))
 
 
 def _follow_out(session: Session, follow: Follow) -> dict:
@@ -477,7 +517,20 @@ def list_follows(session: SessionDep, user: UserDep) -> dict:
     follows = session.scalars(
         select(Follow).where(Follow.user_id == user.id).order_by(Follow.id)
     ).all()
-    return {"items": [_follow_out(session, row) for row in follows]}
+    total = 0
+    if follows:
+        matches = union_all(
+            *[
+                new_statement(
+                    session, follow, follow.last_seen_at or follow.created_at
+                ).with_only_columns(Document.id)
+                for follow in follows
+            ]
+        ).subquery()
+        total = v1._count(
+            session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id))))
+        )
+    return {"items": [_follow_out(session, row) for row in follows], "newTotal": total}
 
 
 @router.post("/me/follows", status_code=201)
@@ -550,10 +603,16 @@ def follow_new(
     since = row.last_seen_at or row.created_at
     conditions = Conditions().model_dump() | row.conditions
     stmt, guides, folded = v1.fold_guides(
-        session, new_statement(session, row, since), conditions["kind"], conditions["types"], fold
+        session,
+        new_statement(session, row, since),
+        conditions["kind"],
+        conditions["types"],
+        fold,
+        group=True,
     )
+    stmt = v1._grouped(stmt)
     rows = [tuple(r) for r in session.execute(v1._ordered(stmt).limit(limit).offset(offset)).all()]
-    body = {"total": v1._count(session, stmt), "items": v1._items(session, rows)}
+    body = {"total": v1._count(session, stmt), "items": v1._items(session, rows, grouped=True)}
     if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
         body |= {"folded": folded, "guides": guides}
     return body

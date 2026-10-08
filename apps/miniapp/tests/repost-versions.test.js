@@ -176,3 +176,20 @@ test('新加的文字不出现禁用字样', () => {
   ];
   for (const text of texts) for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} 出现在新文字里`);
 });
+
+test('多个关注命中同组不同版本：新文件流只列一条，未确认的单条仍各自保留', async () => {
+  const page = load('pages/follow/index.js', {
+    '../../utils/api.js': { followNew: (id) => Promise.resolve({ items: id === 1
+      ? [{ id: '11', date: '2026-09-22', group: GROUP }, { id: '20', date: '2026-09-20' }]
+      : [{ id: '12', date: '2026-09-23', group: GROUP }, { id: '21', date: '2026-09-21' }] }) },
+    '../../utils/format.js': format,
+    '../../utils/daywatch.js': {},
+    '../../utils/subscribe.js': {},
+    '../../utils/consent.js': { loginOpen: () => true },
+    '../../utils/conditions.js': {},
+  });
+  await page.loadChanges([{ id: 1, name: '陕西', newCount: 2 }, { id: 2, name: '天津', newCount: 2 }]);
+  assert.deepEqual(Array.from(page.data.changes, (d) => d.id), ['12', '21', '20']);
+  assert.equal(page.data.changes[0].group.versions, 2);
+  assert.equal(page.data.changes[0].label, '天津');
+});
