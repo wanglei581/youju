@@ -13,13 +13,13 @@ function split(value) {
 function matchRegion(doc, regions) {
   const picked = regions.filter((r) => r !== '不限地区');
   if (!picked.length) return true;
-  return picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : doc.region.startsWith(r)));
+  return picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : (doc.province ? doc.province === r : doc.region.startsWith(r))));
 }
 
-// 层级：国家部委 = 地区为"国家"的文件；省级 = "某省 · 省级"（与服务端一致，不含市级）
+// 新接口按 province/level 匹配，旧演示数据按 region 兼容。
 function matchLevel(doc, levels) {
   if (!levels.length) return true;
-  return levels.some((l) => (l === '国家部委' ? doc.region.startsWith('国家') : / · 省级$/.test(doc.region)));
+  return levels.some((l) => (l === '国家部委' ? doc.region.startsWith('国家') : (doc.level ? doc.level === l : doc.region.endsWith(` · ${l}`))));
 }
 
 function matchType(doc, types) {

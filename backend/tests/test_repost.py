@@ -918,3 +918,51 @@ def test_invalid_manually_preserved_group_cannot_be_confirmed(
     assert _members(session)[world["fujian"].id].group_id == gid
     response = _post(client, f"/{gid}/confirm", **_shown(client, gid))
     assert response.status_code == 409 and "90 天" in response.json()["detail"]
+
+
+def test_city_agencies_group_separately_and_have_city_labels(session):
+    from youju.repost import labels_for, load_candidates
+
+    title = "关于转发2026年高端医疗装备推广应用项目申报工作的通知"
+    docs, sources = [], {}
+    for index, city in enumerate((None, "青岛", "济南"), 1):
+        source = Source(
+            level="市级" if city else "省级",
+            province="山东",
+            city=city,
+            dept="科技",
+            dept_full_name=f"{city or '山东省'}科学技术部门",
+            column_name="通知",
+            url=f"https://city{index}.example.gov.cn/list/",
+        )
+        session.add(source)
+        session.flush()
+        doc = Document(
+            source_id=source.id,
+            title=title,
+            publish_date=date(2026, 9, 20),
+            url=source.url + "1.html",
+            url_key=f"city{index}/1",
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+        session.add(doc)
+        session.flush()
+        docs.append(doc)
+        sources[doc.id] = source
+    session.commit()
+    candidates = load_candidates(session)
+    assert {c.city for c in candidates} == {None, "青岛", "济南"}
+    assert _pair(candidates[0], candidates[1]) == "strong"
+    assert len(propose_groups(candidates)) == 1
+    info, before = member_facts(session, [d.id for d in docs])
+    from youju.repost import valid_group
+
+    assert valid_group(info, [d.id for d in docs])
+    labels = labels_for(sources)
+    assert list(labels.values()) == ["山东版", "青岛版", "济南版"]
+    sources[docs[1].id].city = "烟台"
+    session.commit()
+    _, after = member_facts(session, [d.id for d in docs])
+    assert before[docs[0].id] == after[docs[0].id]
+    assert before[docs[1].id] != after[docs[1].id]

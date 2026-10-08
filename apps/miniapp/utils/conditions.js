@@ -25,13 +25,13 @@ function split(value) {
 
 // 地区和层级（UI 第二轮起）：国家部委只在"层级"里选。界面上的意思是"层级选哪几层，地区只管省份那部分"：
 //   层级含国家部委 → 国家部委的文件不受地区限制，和所选地区的文件一起列出；
-//   层级含省级     → 所选地区（没选就是全部省份）的省级文件；
+//   层级含省级/市级 → 所选地区（没选就是全部省份）相应层级的文件；
 //   层级没选       → 只按地区（没选地区就是全部）。
 // 服务端 /api/v1/search 是地区、层级两组取交集，地区里的"国家部委"和层级的"国家部委"是同一个条件，
 // 所以请求这样拼（requestScope），后端不用改：
-//   选了地区且层级含国家部委：regions=国家部委,省份；层级同时含省级时 levels=国家部委,省级
+//   选了地区且层级含国家部委：regions=国家部委,省份；层级同时含省级或市级时传所选 levels
 //     （(国家部委 ∪ 省份) ∩ (国家部委 ∪ 省级) = 国家部委 ∪ 省份的省级），否则不传 levels
-//     （= 国家部委 ∪ 省份的全部文件；地市暂未收录，目前就是省级）；
+//     （= 国家部委 ∪ 省份的全部文件，包括已收录的市级）；
 //   其余照原样：regions=省份或不限地区，levels=所选层级。
 const NATIONAL = '国家部委';
 
@@ -39,7 +39,7 @@ function requestScope(region, level) {
   const provinces = (region || []).filter((r) => r !== '不限地区' && r !== NATIONAL);
   const levels = level || [];
   if (provinces.length && levels.includes(NATIONAL)) {
-    return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.includes('省级') ? levels.join(',') : undefined };
+    return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.some((l) => l !== NATIONAL) ? levels.join(',') : undefined };
   }
   return { regions: (region || []).join(','), levels: levels.length ? levels.join(',') : undefined };
 }
@@ -52,17 +52,17 @@ function migrateNational(regions, levels) {
   const region = regions || [];
   const level = levels || [];
   const provinces = region.filter((r) => r !== NATIONAL && r !== '不限地区');
-  const has = (value) => level.includes(value);
+  const local = level.filter((l) => l !== NATIONAL);
+  const national = level.includes(NATIONAL);
   if (!region.includes(NATIONAL)) {
-    // 省份 + 层级两级都选：原来国家部委被地区排除，只剩省份的省级文件
-    if (provinces.length && has(NATIONAL) && has('省级')) return { regions: provinces, levels: ['省级'] };
+    if (provinces.length && national && local.length) return { regions: provinces, levels: local };
     return { regions: region, levels: level };
   }
-  if (!provinces.length) return { regions: ['不限地区'], levels: has('省级') && !has(NATIONAL) ? [NATIONAL, '省级'] : [NATIONAL] };
+  if (!provinces.length) return { regions: ['不限地区'], levels: local.length && !national ? [NATIONAL].concat(local) : [NATIONAL] };
   if (!level.length) return { regions: provinces, levels: [NATIONAL] };
-  if (has(NATIONAL) && !has('省级')) return { regions: ['不限地区'], levels: [NATIONAL] };
-  if (!has(NATIONAL)) return { regions: provinces, levels: ['省级'] };
-  return { regions: provinces, levels: [NATIONAL, '省级'] };
+  if (national && !local.length) return { regions: ['不限地区'], levels: [NATIONAL] };
+  if (!national) return { regions: provinces, levels: local };
+  return { regions: provinces, levels: [NATIONAL].concat(local) };
 }
 
 // 选了项目类别（或支持方式），但页签或类型里没有申报通知和名单：必然查不到，搜索页在空结果里
