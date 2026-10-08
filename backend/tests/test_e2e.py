@@ -405,7 +405,7 @@ def test_offline_ingest_to_miniapp_e2e(session_factory, session, tmp_path, monke
         assert search_all["total"] == search_all["total_all"] == total_documents
         assert home["stats"]["sources"] == coverage["sources"] == 1
         assert coverage["provinces"] == 1 and coverage["regions"][0]["name"] == "北京"
-        assert home["stats"]["followed_new"] is None
+        assert home["stats"]["followed_new"] == int(week_start <= new_doc.publish_date < week_end)
 
         renamed = client.put(
             f"/api/v1/me/follows/{follow_id}", json={"name": "高企延期通知（已改名）"}
