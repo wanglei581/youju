@@ -36,7 +36,7 @@ Page({
       .catch((err) => this.setData(err.status === 403
         ? { loading: false, gated: true, items: [], total: 0, folded: 0 }
         : { loading: false, error: `加载失败：${err.message}` }))
-      .finally(() => { this.fetching = false; });
+      .then(() => { this.fetching = false; });
   },
 
   goMe() {
