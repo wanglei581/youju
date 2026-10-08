@@ -78,7 +78,7 @@ Page({
     api.deadlineReport({ days: 30, province: '', dept: '', support: '', page: 1, size: 1 })
       .then((res) => this.setOptions(res))
       .catch(() => {})
-      .finally(() => { this.optionsLoading = false; });
+      .then(() => { this.optionsLoading = false; });
   },
 
   retry() { this.load(true); },

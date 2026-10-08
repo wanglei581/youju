@@ -92,7 +92,7 @@ Page({
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
-      .finally(() => { this.refreshing = false; this.setData({ loading: false }); });
+      .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
   toggleBody() {

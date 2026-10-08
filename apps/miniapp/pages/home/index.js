@@ -54,7 +54,7 @@ Page({
         this.setData({ stats, items, shown, loaded: true, checkedText: clockText(stats && stats.last_checked_at) });
       })
       .catch((err) => this.setData({ stats: null, items: [], shown: [], error: `数据未更新：${err.message}` }))
-      .finally(() => { this.refreshing = false; this.setData({ loading: false }); });
+      .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
   onHide() {
