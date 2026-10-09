@@ -15,7 +15,9 @@
   <view class="muted plain steps">1. 首页搜索或点入口，按地区、类型、发文部门筛选通知；只看还没截止的，在"申报状态"里选"只看未截止"。
 2. 点开一条看发文机关、文号、正文和核对过的截止日期；"复制原文链接"后可在浏览器打开政府原文。
 3. "申报日历""截止雷达"按截止日期列出项目；"查名单"输入企业全称或统一社会信用代码，查它上过哪些公示、公布名单。
-4. <text wx:if="{{loginOpen}}">搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</text><text wx:else>在搜索结果点"选择"勾选文件，或在文件详情点"导出"，可导出 Excel 或 Word。</text></view>
+4. <text wx:if="{{loginOpen}}">搜索结果可"关注这个搜索"，有新文件时标出，也可订阅一次微信提醒；勾选文件可导出 Excel 或 Word。</text><text wx:else>在搜索结果点"选择"勾选文件，或在文件详情点"导出"，可导出 Excel 或 Word。</text>
+5. 首页“全部”里的“认定条件对照”逐条阅读国家认定办法原文，勾选只存在本机，不打分、不作认定判断。
+6. “按客户筛通知”保存本机客户卡片，按地区和产业方向筛未截止通知，关键词只高亮条件原文；客户信息只存在本机。</view>
 </view>
 
 <view class="card">
@@ -26,7 +28,7 @@
 <view wx:if="{{!cov && covFailed}}" class="card load-error"><text>收录范围没有加载出来</text><text class="link retry" bindtap="loadRange">重试</text></view>
 <view wx:if="{{cov}}" class="card">
   <view class="section-title">收录范围</view>
-  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖{{cov.national ? '国家部委和 ' : ' '}}{{cov.provinces}} 个省级地区<text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
+  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖{{cov.national ? '国家部委和 ' : ' '}}{{cov.provinces}} 个省级地区<text wx:if="{{cov.cities.length}}">、{{cov.cities.length}} 个城市</text><text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
   <view wx:for="{{cov.regions}}" wx:key="name" class="region">
     <view class="region-row" data-name="{{item.name}}" bindtap="toggleRegion" aria-role="button">
       <text class="region-name">{{item.name}}</text>
@@ -40,6 +42,7 @@
       </view>
     </view>
   </view>
+  <view wx:if="{{cov.cities.length}}" class="muted plain">已收录城市：<text wx:for="{{cov.cities}}" wx:key="city">{{index ? '、' : ''}}{{item.province}}·{{item.city}}（{{item.sources}} 个栏目）</text>。地市目前只收录部分城市。</view>
   <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们</text>。</view>
 </view>
 
@@ -49,7 +52,8 @@
   <view class="muted plain steps">1. 本版本不需要登录，不收集姓名、手机号等个人信息。
 2. 点"复制原文链接"或联系邮箱时，只把链接或邮箱写入剪切板，不读取剪切板。
 3. 导出的文件只保存在你的手机上，不保存在我们的服务器上。
-4. 为保障网络安全，服务器按法律要求保存访问日志（如 IP 地址）190 天，到期删除；不记录你输入的检索词和企业名称。</view>
+4. 认定条件勾选和客户卡片只保存在本机，可清空勾选或删除卡片；名称和高亮关键词不上传，检索只发送所选地区、产业方向等筛选参数。
+5. 为保障网络安全，服务器按法律要求保存访问日志（如 IP 地址）190 天，到期删除；不记录你输入的检索词和企业名称。</view>
 </view>
 
 <view class="card">

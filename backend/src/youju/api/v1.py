@@ -24,6 +24,7 @@ from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_
 from youju.classify import (
     GUIDE,
     KINDS,
+    applicable_region,
     effective_kind,
     kind_filter,
     list_status,
@@ -100,8 +101,8 @@ PROVINCES = {
     "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西", "海南", "重庆",
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
-# 层级筛选；地市还没接入，先不提供"市级"
-LEVELS = {"国家部委", "省级"}
+# 对外层级名称与来源登记中的“国家级”区分。
+LEVELS = {"国家部委", "省级", "市级"}
 # 列表和详情的截止状态：verified 有核对通过的截止（deadline 给出日期）；unverified 没有核对通过的、
 # 但有待核对的候选（页面写"截止未核对"，不给任何日期）；none 没有候选（页面写"截止时间见原文"）
 DEADLINE_STATES = ("verified", "unverified", "none")
@@ -410,7 +411,10 @@ def _item(
         # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
         "status": list_status(doc.title, kind),
         "app_status": app_status,
-        "region": region_label(src.province, src.level),
+        "region": region_label(src.province, src.level, src.city),
+        "province": src.province,
+        "city": src.city,
+        "level": src.level,
         "title": doc.title,
         "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
@@ -536,7 +540,9 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
                 {
                     "id": str(doc.id),
                     "label": labels[doc.id],
-                    "region": _province_name(src.province),
+                    "region": _province_name(
+                        src.city if src.level == "市级" and src.city else src.province
+                    ),
                     "issuer": (
                         details[doc.id].issuer
                         if doc.id in details and details[doc.id].issuer
@@ -697,6 +703,17 @@ def home(
         )
         or 0
     )
+    cities = (
+        session.scalar(
+            select(func.count()).select_from(
+                select(Source.province, Source.city)
+                .where(live, Source.level == "市级", Source.city.is_not(None), Source.city != "")
+                .distinct()
+                .subquery()
+            )
+        )
+        or 0
+    )
     # 最近一次成功检查：定时任务台账里最近一次成功结束的抓取（crawl）的结束时间；没有记录时为空。
     # 本周 0 份时小程序写"本周暂无新文件 · 最近检查 …"，只陈述检查时间，不推测原因。
     last_checked = session.scalar(
@@ -713,6 +730,7 @@ def home(
         "lists": kinds.count("名单"),
         "other": len(kinds) - kinds.count("申报通知") - kinds.count("名单"),
         "provinces": provinces,
+        "cities": cities,
         "sources": sources,
         # 关注条件的本周新增要登录后才能算（#30）；未登录为 null，小程序不显示那一栏
         "followed_new": None,
@@ -780,12 +798,22 @@ def coverage(session: SessionDep) -> dict:
             not_covered.append({"name": name, "reason": "网站不允许程序访问"})
         else:
             not_covered.append({"name": name, "reason": "暂未接入"})
+    city_columns: dict[tuple[str, str], int] = {}
+    for source in sources:
+        if source.enabled and source.last_success_at and source.level == "市级" and source.city:
+            key = (source.province, source.city)
+            city_columns[key] = city_columns.get(key, 0) + 1
+    cities = [
+        {"province": province, "city": city, "sources": count}
+        for (province, city), count in sorted(city_columns.items())
+    ]
     lasts = [r["lastUpdatedAt"] for r in regions]
     return {
         "sources": sum(r["sources"] for r in regions),
         "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
         "national": any(r["name"] == "国家部委" for r in regions),
         "regions": regions,
+        "cities": cities,
         "notCovered": not_covered,
         "updatedAt": max(lasts) if lasts else None,
     }
@@ -857,6 +885,10 @@ def search(
     q: Annotated[str | None, Query(max_length=50, description="标题或文号关键词")] = None,
     kind: Annotated[str, Query(description="页签：all / 申报通知 / 名单 / 政策")] = "all",
     regions: Annotated[str | None, Query(max_length=400, description="省份，逗号分隔")] = None,
+    cities: Annotated[
+        str | None,
+        Query(max_length=2000, description="已收录城市，省/市逗号分隔，与地区取并集"),
+    ] = None,
     types: Annotated[
         str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
@@ -868,7 +900,7 @@ def search(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
-    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级")] = None,
+    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级,市级")] = None,
     categories: Annotated[
         str | None,
         Query(max_length=400, description="项目类别，逗号分隔（只在申报通知和名单里找）"),
@@ -905,7 +937,7 @@ def search(
     资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
     不返回这两项。"""
     filters = {"levels": levels, "categories": categories}
-    filters |= {"supports": supports, "industries": industries}
+    filters |= {"supports": supports, "industries": industries, "cities": cities}
     stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
     all_time = search_statement(
         session, q, kind, regions, types, status, "不限", depts, open, **filters
@@ -940,10 +972,11 @@ _NATIONAL = "国家"
 
 
 def _level_filter(levels: list[str]):
-    """层级：国家部委 = 国家级来源；省级 = 省级来源（不含国家级，地市接入后也不含市级）。"""
+    """层级：国家部委 = 国家级来源；省级 = 省级来源（不含国家级、市级）。"""
     parts = {
         "国家部委": Source.province == _NATIONAL,
         "省级": and_(Source.province != _NATIONAL, Source.level == "省级"),
+        "市级": and_(Source.province != _NATIONAL, Source.level == "市级"),
     }
     return or_(*(parts[level] for level in levels))
 
@@ -962,11 +995,12 @@ def search_statement(
     categories: str | None = None,
     supports: str | None = None,
     industries: str | None = None,
+    cities: str | None = None,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
 
     各组筛选之间取交集，同一组里多选取并集。地区和层级也是这样：地区选的省份（或国家部委）
-    和层级选的国家部委 / 省级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
+    和层级选的国家部委 / 省级 / 市级同时满足才列出。"国家部委"在两组里是同一个条件（见 _NATIONAL），
     所以只在地区里选、只在层级里选、两边都选，结果相同；地区只选省份而层级只选国家部委，
     或地区只选国家部委而层级只选省级，两者没有交集，结果为空（小程序在空结果里提示调整）。
     项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。支持方式（按标题）
@@ -984,6 +1018,23 @@ def search_statement(
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
     picked_supports = _pick(supports, SUPPORT_SET, "支持方式")
     picked_industries = _pick(industries, INDUSTRY_SET, "产业方向")
+    picked_cities = list(dict.fromkeys(c.strip() for c in (cities or "").split(",") if c.strip()))
+    if picked_cities:
+        # 只接受收录范围里的城市；自由文本客户名称及关键词不进入接口。
+        covered_cities = {
+            f"{province}/{city}"
+            for province, city in session.execute(
+                select(Source.province, Source.city).where(
+                    Source.enabled.is_(True),
+                    Source.last_success_at.is_not(None),
+                    Source.level == "市级",
+                    Source.city.is_not(None),
+                    Source.city != "",
+                )
+            )
+        }
+        if any(c not in covered_cities for c in picked_cities):
+            raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -993,10 +1044,21 @@ def search_statement(
         stmt = stmt.where(_kind_is([kind]))
     if picked_types:
         stmt = stmt.where(_kind_is(picked_types))
-    if picked_regions:
-        stmt = stmt.where(
-            Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
+    if picked_regions or picked_cities:
+        area_parts = []
+        if picked_regions:
+            area_parts.append(
+                Source.province.in_([_NATIONAL if r == "国家部委" else r for r in picked_regions])
+            )
+        area_parts.extend(
+            and_(
+                Source.province == c.split("/")[0],
+                Source.city == c.split("/")[1],
+                Source.level == "市级",
+            )
+            for c in picked_cities
         )
+        stmt = stmt.where(or_(*area_parts))
     if picked_levels:
         stmt = stmt.where(_level_filter(picked_levels))
     if picked_status:
@@ -1072,6 +1134,8 @@ def _report_payload(
                 "title": doc.title,
                 "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
                 "province": "国家部委" if src.province == "国家" else src.province,
+                "city": src.city,
+                "level": src.level,
                 "dept": src.dept_full_name,
                 "label": selected.kind,
                 "deadline_type": selected.kind,
@@ -1234,6 +1298,8 @@ def _list_board_payload(
                 "wording": wording,
                 "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
                 "province": item_province,
+                "city": src.city,
+                "level": src.level,
                 "year": item_year,
                 "type": item_type,
                 "count": count,
@@ -1426,7 +1492,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     points = [["发文机关", issuer]]
     if detail and detail.doc_number:
         points.append(["文号", detail.doc_number])
-    points.append(["适用地区", "全国" if src.province == "国家" else src.province])
+    points.append(["适用地区", applicable_region(src.province, src.level, src.city)])
     if status_value:
         status_label = {"open": "征集中", "closing": "即将截止", "closed": "已截止"}[
             status_value["code"]
@@ -1493,7 +1559,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "tags": [kind],
         # 项目类别：按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有
         "category": shown_category(kind, doc.rule_category, doc.title),
-        "region": region_label(src.province, src.level),
+        "region": region_label(src.province, src.level, src.city),
+        "province": src.province,
+        "city": src.city,
+        "level": src.level,
         "title": doc.title,
         "issuer": issuer,
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
@@ -1567,7 +1636,9 @@ def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[
                 "id": str(version.id),
                 "label": info["labels"][version.id],
                 "current": version.id == doc_id,
-                "region": _province_name(src.province),
+                "region": _province_name(
+                    src.city if src.level == "市级" and src.city else src.province
+                ),
                 "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
                 "date": version.publish_date.isoformat() if version.publish_date else None,
                 "url": version.url,
@@ -1651,9 +1722,11 @@ def calendar(
             {
                 "id": f"dl{dl.id}",
                 "docId": str(doc.id),
+                "city": src.city,
+                "level": src.level,
                 "due": dl.approved_date.isoformat(),
                 "time": _hhmm(dl.approved_time),
-                "region": f"{'国家' if src.province == '国家' else src.province} · {src.dept}",
+                "region": f"{src.city or src.province} · {src.dept}",
                 "kind": effective_kind(doc.title, doc.kind_override),
                 "title": doc.title,
                 "what": dl.kind,

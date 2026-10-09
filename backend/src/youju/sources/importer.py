@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youju.models import URL_KEY_MAX, Source
+from youju.sources.onboard import checked_city
 
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
@@ -66,7 +67,12 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
             raise ValueError(f"来源清单第 {line} 行的栏目网址超过 {URL_KEY_MAX} 字")
         status = row.get("验证状态", "").strip()
         fetch_mode, enabled = mode_for(status)
+        try:
+            city = checked_city(row["层级"].strip(), row.get("城市"))
+        except ValueError as exc:
+            raise ValueError(f"来源清单第 {line} 行：{exc}") from exc
         fields = {
+            "city": city,
             "level": row["层级"].strip(),
             "province": row["省份"].strip(),
             "dept": row["部门"].strip(),

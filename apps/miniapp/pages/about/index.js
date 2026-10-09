@@ -32,6 +32,7 @@ Page({
           sources: c.sources,
           provinces: c.provinces,
           national: c.national,
+          cities: c.cities || [],
           updated: shortTime(c.updatedAt),
           regions: c.regions.map((r) => ({
             name: r.name,

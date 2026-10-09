@@ -969,7 +969,7 @@ def test_follow_keeps_level_filter(client, session, monkeypatch):
     """关注条件可以带层级；新文件计数按层级筛，层级取值不对时 422。"""
     settings(monkeypatch)
     agree(client)
-    assert follow(client, {"time": "不限", "levels": "市级"}).status_code == 422
+    assert follow(client, {"time": "不限", "levels": "县级"}).status_code == 422
     national = follow(client, {"time": "不限", "levels": "国家部委"})
     provincial = follow(client, {"time": "不限", "levels": "省级", "regions": "北京"})
     assert national.status_code == 201 and provincial.status_code == 201

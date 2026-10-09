@@ -342,3 +342,39 @@ def test_dry_run_failure_and_follow_deletion_do_not_leave_sent_groups(client, se
     session.delete(follow)
     session.commit()
     assert session.scalars(select(FollowRepostNotification)).all() == []
+
+
+def test_city_follow_and_notification_use_province_and_level(client, session, monkeypatch):
+    users.settings(monkeypatch)
+    users.agree(client)
+    follow_id = users.follow(client, {"regions": "山东", "levels": "市级", "time": "不限"}).json()[
+        "id"
+    ]
+    provincial = users.source_and_doc(session)
+    city = users.source_and_doc(session, title="关于组织申报科技计划项目的通知")
+    for doc in (provincial, city):
+        session.get(Source, doc.source_id).province = "山东"
+    source = session.get(Source, city.source_id)
+    source.level, source.city = "市级", "青岛"
+    session.commit()
+    result = client.get(f"/api/v1/me/follows/{follow_id}/new").json()
+    assert result["total"] == 1 and result["items"][0]["region"] == "青岛 · 市级"
+    values, page = _new_docs(session, SimpleNamespace(follow_id=follow_id))
+    assert values["count"] == 1 and page == "pages/follow/index"
+    user_id = session.get(Follow, follow_id).user_id
+    session.add(Subscription(user_id=user_id, follow_id=follow_id, kind="newDocs", template_id="n"))
+    session.commit()
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_newdocs={"id": "n", "fields": {"thing1": "summary", "number2": "count"}},
+        template_deadline=None,
+        agreement_version="2026-09",
+    )
+    sent = []
+    result = run_notify(
+        session,
+        settings=config,
+        sender=lambda p: sent.append(p) or {"errcode": 0},
+        stamp=users.NOW + timedelta(hours=1),
+    )
+    assert result["sent"] == 1 and sent[0]["data"]["number2"]["value"] == "1"

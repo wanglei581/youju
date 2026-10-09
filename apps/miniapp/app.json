@@ -18,7 +18,10 @@
     "pages/advisor/index",
     "pages/advisor-interpret/index",
     "pages/advisor-clause/index",
-    "pages/advisor-tasks/index"
+    "pages/advisor-tasks/index",
+    "pages/standards/index",
+    "pages/clients/index",
+    "pages/client-results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
