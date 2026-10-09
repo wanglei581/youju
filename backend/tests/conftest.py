@@ -86,6 +86,8 @@ def _reset_admin_throttle():
 
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
+    # 规则列算完没有：测试里每次都重新查，中途把列改成 NULL（模拟刚升级）马上生效
+    v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 0.0
     app_module._admin_fails.clear()
     exports._export_times.clear()
     exports._instance_times.clear()
@@ -96,6 +98,7 @@ def _reset_admin_throttle():
     yield
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
+    v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 60.0
     app_module._admin_fails.clear()
     exports._export_times.clear()
     exports._instance_times.clear()
