@@ -1,10 +1,11 @@
 const { loginOpen } = require('../../utils/consent.js');
 const api = require('../../utils/api.js');
 const { taskView } = require('../../utils/advisor.js');
+const pay = require('../../utils/pay.js');
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { loginOpen: loginOpen(), loading: true, error: '', enabled: false, skills: [], context: null, recent: [], recentLoading: true, recentError: '' },
+  data: { loginOpen: loginOpen(), loading: true, error: '', enabled: false, skills: [], context: null, recent: [], recentLoading: true, recentError: '', showPassLink: false, passNotice: '' },
   onLoad(query) {
     if (!this.data.loginOpen) return; this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
@@ -15,13 +16,14 @@ Page({
     if (!this.data.loginOpen) return;
     const epoch = this.epoch = (this.epoch || 0) + 1;
     this.setData({ loading: true, error: '' });
-    api.advisorStatus({ refresh: true }).then((res) => {
+    const products = typeof api.payProducts === 'function' ? api.payProducts().then(pay.normalizeProducts, () => []) : Promise.resolve([]);
+    Promise.all([api.advisorStatus({ refresh: true }), products]).then(([res, products]) => {
       if (!this.visible || epoch !== this.epoch) return;
       if (res.enabled !== true) { this.setData({ loading: false, enabled: false, skills: [] }); return; }
-      this.setData({ loading: false, enabled: true, skills: [
+      this.setData({ loading: false, enabled: true, showPassLink: !(res.pass && res.pass.active) && products.length > 0, passNotice: pay.toolStatus(res, 'compare').notice, skills: [
         { kind: 'compare', title: '名单比对', description: '在已收录的公示/公布名单里查找客户' },
         { kind: 'track', title: '在报项目跟进表', description: '按客户省份列出截止日期已核对、尚未截止的申报通知' },
-      ].map((skill) => Object.assign(skill, { remaining: Math.max(0, res.quota[skill.kind].limit - res.quota[skill.kind].used), maxRows: res.quota[skill.kind].maxRows })) });
+      ].map((skill) => Object.assign(skill, { remaining: Math.max(0, res.quota[skill.kind].limit - res.quota[skill.kind].used), statusLine: pay.toolStatus(res, skill.kind).line })) });
       if (res.enabled) this.loadRecent(epoch);
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, enabled: false, error: err.status === 404 ? '工具暂未开放' : err.message }); });
   },
@@ -33,6 +35,7 @@ Page({
       this.setData({ recentLoading: false, recent });
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ recentLoading: false, recentError: err.message }); });
   },
+  buy() { wx.navigateTo({ url: '/pages/pass/index' }); },
   retryRecent() { this.loadRecent(); },
   form(e) { wx.navigateTo({ url: `/pages/advisor-form/index?kind=${e.currentTarget.dataset.kind}` }); },
   tasks(e) {

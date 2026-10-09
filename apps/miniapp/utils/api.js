@@ -26,8 +26,9 @@ function query(params) {
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
-  const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
+  const err = new Error(typeof detail === 'string' ? detail : ((detail && detail.message) || validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
+  if (detail && typeof detail === 'object' && typeof detail.code === 'string') err.code = detail.code;
   return err;
 }
 
@@ -447,16 +448,25 @@ function payProducts() {
   return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
 }
 
-// data：{ product_id, rows, code }，code 来自 wx.login，只用于服务端签名，不保存。
+// data：{ product_id, code }，code 来自 wx.login，只用于服务端签名，不保存。
 function createPayOrder(data) {
   if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
   return request('/api/v1/pay/orders', null, { method: 'POST', data });
 }
 
-// 订单状态以服务端为准（中文状态和任务编号）。
+// 订单状态和使用期以服务端为准。
 function payOrder(id) {
   if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
   return request(`/api/v1/pay/orders/${encodeURIComponent(id)}`);
+}
+
+function payOrders() {
+  return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
+}
+
+function refundPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
 }
 
 // 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
@@ -507,5 +517,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
-  payProducts, createPayOrder, payOrder,
+  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder,
 };

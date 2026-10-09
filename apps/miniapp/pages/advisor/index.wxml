@@ -12,10 +12,11 @@
   <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
     <view class="advisor-title">{{item.title}}</view>
     <view class="advisor-text">{{item.description}}</view>
-    <view wx:if="{{item.kind === 'compare'}}" class="advisor-text muted">每月 3 次免费，每次 50 家以内 · 本月剩余 {{item.remaining}} 次</view>
-    <view wx:else class="advisor-text muted">今天剩余 {{item.remaining}} 次 · 每次最多 {{item.maxRows}} 行</view>
+    <view class="advisor-text muted">{{item.statusLine}}</view>
     <button class="advisor-button btn-primary" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
   </view>
+  <view wx:if="{{showPassLink}}" class="card advisor-card"><text class="advisor-link" bindtap="buy">客户多、要常用？看看客户工作台 30 天 ›</text></view>
+  <view wx:if="{{passNotice}}" class="card advisor-card advisor-text">{{passNotice}}</view>
   <view class="card advisor-card">
     <view class="advisor-title">最近任务</view>
     <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>

@@ -104,7 +104,7 @@ test('工具上下文保留主线新增的层级、项目类别、支持方式�
   for (const value of ['国家部委、省级', '人才', '资金支持', '数字经济']) assert.ok(parsed.label.includes(value));
 });
 
-test('演示额度按北京时间自然月累计，跨月取消只退回原月；跟进表仍每天一次', async () => {
+test('演示额度按北京时间自然月累计，跨月取消只退回原月；两种工具均每月三次', async () => {
   const demo = demoHarness(); const api = demo.module('utils/api.js');
   await api.agree(demo.module('utils/advisor.js').VERSION, 'advisor');
   const body = { kind: 'compare', rows: ['示例公司'] };
@@ -123,10 +123,12 @@ test('演示额度按北京时间自然月累计，跨月取消只退回原月�
   assert.equal((await api.advisorTask(first.id)).status, 'done');
   const track = { kind: 'track', rows: [{ name: '示例公司', province: '辽宁' }] };
   await api.createAdvisorTask(track, 'track-one');
-  await assert.rejects(api.createAdvisorTask(track, 'track-two'), /今天/);
+  await api.createAdvisorTask(track, 'track-two');
+  await api.createAdvisorTask(track, 'track-three');
+  await assert.rejects(api.createAdvisorTask(track, 'track-four'), /本月/);
   demo.advance(86400000);
-  assert.equal((await api.advisorStatus({ refresh: true })).quota.track.used, 0);
-  await api.createAdvisorTask(track, 'track-next');
+  assert.equal((await api.advisorStatus({ refresh: true })).quota.track.used, 3);
+  await assert.rejects(api.createAdvisorTask(track, 'track-next'), /本月/);
   const boundary = demoHarness(); const boundaryApi = boundary.module('utils/api.js');
   await boundaryApi.agree(boundary.module('utils/advisor.js').VERSION, 'advisor');
   boundary.advance(29 * 86400000 - 9 * 3600000 - 1000);
@@ -312,7 +314,7 @@ test('整页任务板块保留并清除上下文，只列最近三条；刷新�
     advisorTasks: () => taskError ? Promise.reject(new Error('暂时连不上')) : Promise.resolve({ items: tasks }),
   };
   const urls = [];
-  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { navigateTo: ({ url }) => urls.push(url) } });
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { navigateTo: ({ url }) => urls.push(url) } });
   page.onLoad({ docId: '7', title: encodeURIComponent('通知标题') }); assert.equal(page.data.context.label, '当前通知：通知标题');
   page.onShow(); await flush(); assert.equal(refreshed, true); assert.deepEqual(Array.from(page.data.skills, (skill) => skill.remaining), [2, 1]);
   assert.match(page.data.recentError, /暂时连不上/); assert.equal(page.data.enabled, true);
@@ -324,7 +326,7 @@ test('整页任务板块保留并清除上下文，只列最近三条；刷新�
   assert.match(read('pages/advisor/index.wxml'), /以下工具按你提交的客户名单处理，与当前通知无关/);
   page.onLoad({ filters: context.url({ source: 'search', keyword: '关键词' }).split('?filters=')[1] }); assert.match(page.data.context.label, /当前筛选：.*关键词/);
   page.onLoad({}); assert.equal(page.data.context, null);
-  const gated = load('pages/advisor/index.js', { '../../utils/api.js': { advisorStatus: () => Promise.resolve({ enabled: false }) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context });
+  const gated = load('pages/advisor/index.js', { '../../utils/api.js': { advisorStatus: () => Promise.resolve({ enabled: false }) }, '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context });
   gated.onShow(); await flush(); assert.equal(gated.data.enabled, false); assert.equal(gated.data.error, '');
 });
 
@@ -353,7 +355,7 @@ test('页面演示闭环：同意、两种工具提交、进度、任务结果�
     detail.radar(); assert.equal(demo.navigation.at(-1), '/pages/report/index'); detail.onHide();
   }
   board.onShow(); await flush(); assert.equal(board.data.recent.length, 2);
-  assert.deepEqual(Array.from(board.data.skills, (skill) => skill.remaining), [2, 0]);
+  assert.deepEqual(Array.from(board.data.skills, (skill) => skill.remaining), [2, 2]);
   const files = demo.page('files'); files.onShow(); await flush();
   assert.equal(files.data.files.length, 3); assert.equal(files.data.files[0].name, '在报项目跟进表');
   assert.equal(files.data.files[0].expired, false); assert.equal(files.data.files[1].name, '名单比对'); assert.equal(files.data.files[1].expired, true);

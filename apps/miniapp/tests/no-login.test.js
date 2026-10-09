@@ -135,7 +135,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
 
 test('"我的"：定稿后照旧——未登录、勾选同意、微信登录、纠错、申请覆盖都在，宫格三项', async () => {
   const { api, root } = await mePage(true);
-  assert.deepEqual(api.calls, ['me']);
+  assert.deepEqual(api.calls, ['me', 'payProducts', 'payOrders']);
   const all = textOf(root);
   for (const word of ['未登录', '登录后可以关注条件、订阅微信提醒、提交纠错', '微信登录', '我已阅读并同意', '纠错', '申请覆盖：你关心的地区还没有？']) {
     assert.ok(all.includes(word), `缺少：${word}`);
@@ -320,8 +320,8 @@ const CLOSED_PAGES = [
   }), api: {} },
   { name: 'advisor', title: '数据工具', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
-    '../../utils/advisor.js': { taskView: (task) => task }, '../../utils/tool-context.js': { read: () => null },
-  }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 }, track: { limit: 1, used: 0, maxRows: 50 } } }), advisorTasks: () => Promise.resolve({ items: [] }) } },
+    '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': { taskView: (task) => task }, '../../utils/tool-context.js': { read: () => null },
+  }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 }, track: { limit: 1, used: 0, maxRows: 50 } } }), payProducts: () => Promise.resolve({ items: [] }), advisorTasks: () => Promise.resolve({ items: [] }) } },
   { name: 'advisor-form', title: '名单比对', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
     '../../utils/advisor.js': { KINDS: { compare: '名单比对' }, consent: () => Promise.resolve(false) },

@@ -4,365 +4,209 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const pay = require('../utils/pay.js');
-
-const flush = async () => { for (let n = 0; n < 30; n += 1) await Promise.resolve(); };
-const PRODUCTS = { items: [{ productId: 'compare_200', price: 1990, maxRows: 200 }, { productId: 'compare_100', price: 990, maxRows: 100 }] };
-const ORDER = { orderId: 41, signData: '{"offerId":"offer-test"}', paySig: 'pay-sig', signature: 'user-sig', mode: 'short_series_goods' };
-const BANNED = /最|保证|智能|签约|联系我们|分享|关注|转发/;
-
+const { render, textOf, findAll, tapsTo } = require('./wxml-render.js');
+const ROOT = path.join(__dirname, '..');
+const flush = async () => { for (let n = 0; n < 24; n += 1) await Promise.resolve(); };
+const PRODUCT = { productId: 'workbench_30d', price: 2900, days: 30 };
+const ORDER = { orderId: 41, amount: 2900, status: '已完成', paidAt: '2026-10-09T01:00:00Z', passStartsAt: '2026-10-09T01:00:00Z', passEndsAt: '2026-11-08T01:00:00Z', passRevokedAt: null, canRefund: true, refundUnavailableReason: null };
+function status(used = 1, active = false, expiresAt = ORDER.passEndsAt) {
+  return { enabled: true, quota: { compare: { used, limit: 3, maxRows: active ? 500 : 50 }, track: { used, limit: 3, maxRows: active ? 500 : 50 } }, pass: { active, expiresAt: active ? expiresAt : null } };
+}
 function clock() {
-  let now = 1000000; let seq = 0; const queue = [];
-  return {
-    now: () => now,
-    set: (fn, delay) => { seq += 1; queue.push({ id: seq, fn, delay, at: now + delay }); return seq; },
-    clear: (id) => { const index = queue.findIndex((item) => item.id === id); if (index >= 0) queue.splice(index, 1); },
-    pending: () => queue.length,
-    delays: () => queue.map((item) => item.delay),
-    async runNext() { const item = queue.shift(); now = item.at; item.fn(); await flush(); },
-    advance(ms) { now += ms; },
+  let now = Date.parse('2026-10-09T01:00:00Z'); let serial = 0; const tasks = new Map();
+  class Clock extends Date { static now() { return now; } }
+  return { Clock, now: () => now, set: (fn, ms) => { const id = ++serial; tasks.set(id, { fn, at: now + ms }); return id; }, clear: (id) => tasks.delete(id), size: () => tasks.size,
+    async advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        const next = [...tasks].filter(([, value]) => value.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        now = next[1].at; tasks.delete(next[0]); next[1].fn(); await flush();
+      }
+      now = end; await flush();
+    },
   };
 }
-
-function formPage(api, wxOptions = {}, timers = clock(), termsOptions = {}) {
-  let definition;
-  // 默认：付费服务协议已定稿、用户已勾选（专门的测试会覆盖这两项）。
-  const payTerms = { final: termsOptions.final !== false, title: '付费服务协议', text: '测试正文' };
-  const helpers = {
-    KINDS: { compare: '名单比对', track: '在报项目跟进表' },
-    pasteRows: (kind, text) => text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
-    consent: () => Promise.resolve(true),
+function page(name, overrides = {}, options = {}) {
+  const timers = clock(); let view;
+  const calls = { orders: [], polls: 0, payments: [], urls: [], toasts: [], modals: [], tasks: [], feedback: [], refunds: [], lists: 0 };
+  const api = {
+    payProducts: () => Promise.resolve({ items: [PRODUCT] }), advisorStatus: () => Promise.resolve(status()),
+    createPayOrder: (body) => { calls.orders.push(body); return Promise.resolve({ orderId: 41, signData: 'data', paySig: 'sig', signature: 'user', mode: pay.PAY_MODE }); },
+    payOrder: () => { calls.polls += 1; return Promise.resolve({ status: '待支付' }); },
+    payOrders: () => { calls.lists += 1; return Promise.resolve({ items: [ORDER] }); },
+    refundPayOrder: (id) => { calls.refunds.push(id); return Promise.resolve({ ...ORDER, status: '退款中' }); },
+    createAdvisorTask: (body) => { calls.tasks.push(body); return Promise.resolve({ id: 9 }); },
+    advisorPreview: () => Promise.resolve({ rowCount: 120 }), advisorTasks: () => Promise.resolve({ items: [] }),
+    feedback: (id, content) => { calls.feedback.push({ id, content }); return Promise.resolve({}); }, ...overrides,
   };
-  const calls = { redirect: [], modal: [], payment: [], login: 0 };
-  const wx = Object.assign({
-    setNavigationBarTitle() {}, navigateTo() {}, showToast() {},
-    redirectTo: (options) => { calls.redirect.push(options.url); },
-    showModal: (options) => { calls.modal.push(options); options.success({ confirm: true }); },
-    login: (options) => { calls.login += 1; options.success({ code: 'login-code' }); },
-    requestVirtualPayment: (options) => { calls.payment.push(options); options.success({}); },
-  }, wxOptions);
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', 'advisor-form', 'index.js'), 'utf8'), {
-    require: (name) => name.endsWith('consent.js') ? { loginOpen: () => termsOptions.loginOpen !== false } : name.endsWith('api.js') ? api : name.endsWith('/pay.js') ? pay : name.endsWith('pay-terms.js') ? payTerms : helpers,
-    Page: (value) => { definition = value; },
-    wx,
-    setTimeout: timers.set, clearTimeout: timers.clear,
-    Date: { now: timers.now }, Math, Promise, JSON, encodeURIComponent,
+  const deps = {
+    '../../utils/api.js': api, '../../utils/pay.js': pay,
+    '../../utils/advisor.js': { ...require('../utils/advisor.js'), consent: () => Promise.resolve(options.consent !== false) },
+    '../../content/pay-terms.js': { final: options.final !== false, text: options.termsText || '正式正文' }, '../../content/legal.js': { final: true },
+    '../../utils/consent.js': { loginOpen: () => options.loginOpen !== false, ensureConsent: () => Promise.resolve(true) },
+    '../../utils/tool-context.js': { read: () => null }, '../../utils/subscribe.js': { remindOpen: () => false }, '../../utils/coverage.js': {},
+  };
+  const wx = {
+    setNavigationBarTitle: ({ title }) => { calls.title = title; }, navigateTo: ({ url }) => calls.urls.push(url), redirectTo: ({ url }) => calls.urls.push(url),
+    showToast: (value) => calls.toasts.push(value), showModal: (value) => { calls.modals.push(value); value.success({ confirm: options.confirm !== false }); },
+    login: (value) => value.success({ code: 'code' }), requestVirtualPayment: (value) => { calls.payments.push(value); if (options.cancel) value.fail({ errMsg: 'requestVirtualPayment:fail cancel' }); else if (options.fail) value.fail({ errCode: -1 }); else value.success({}); }, ...options.wx,
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'pages', name, 'index.js'), 'utf8'), {
+    require: (key) => { assert.ok(deps[key], `缺少依赖 ${key}`); return deps[key]; }, Page: (value) => { view = value; }, wx, Date: timers.Clock, Math, Promise, setTimeout: timers.set, clearTimeout: timers.clear,
   });
-  definition.setData = (next) => Object.assign(definition.data, next);
-  definition.payState = { termsAgreed: termsOptions.agreed !== false };
-  return { view: definition, calls, timers, wx };
+  view.setData = (values) => Object.assign(view.data, values);
+  const show = () => render(`pages/${name}/index.wxml`, view.data);
+  return { view, calls, api, timers, show, text: () => textOf(show()) };
 }
+async function purchase(overrides, options) { const p = page('pass', overrides, options); p.view.onShow(); await flush(); return p; }
+async function buy(p) { p.view.check({ detail: { value: ['agree'] } }); p.view.buy(); await flush(); }
+const event = (id) => ({ currentTarget: { dataset: { id } } });
+const BANNED = /试用|订阅|自动续费|充值|余额|原价|立省|AI|智能|推荐|匹配度/;
 
-function apiWith(overrides = {}) {
-  const calls = { orders: [], polls: 0 };
-  const api = Object.assign({
-    advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 3, limit: 3, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }),
-    payProducts: () => Promise.resolve(PRODUCTS),
-    createPayOrder: (body) => { calls.orders.push(body); return Promise.resolve(ORDER); },
-    payOrder: () => { calls.polls += 1; return Promise.resolve({ orderId: 41, status: '待支付', taskId: null }); },
-    createAdvisorTask: () => Promise.reject(new Error('不应提交免费任务')),
-  }, overrides);
-  return { api, calls };
-}
-
-async function ready(api, wxOptions, kind = 'compare') {
-  const page = formPage(api, wxOptions);
-  page.view.onLoad({ kind }); page.view.onShow(); await flush();
-  return page;
-}
-
-async function buy(page, text = '甲公司\n乙公司', productId = 'compare_100') {
-  page.view.input({ detail: { value: text } });
-  page.view.buy({ currentTarget: { dataset: { id: productId } } });
-  await flush();
-}
-
-test('付费档只在接口返回可售商品时显示；404、失败、空列表和跟进表都和原来一样', async () => {
-  for (const response of [
-    Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })),
-    Promise.reject(new Error('网络不太好，请稍后再试')),
-    Promise.resolve({ items: [] }), Promise.resolve({}), Promise.resolve(null),
-    Promise.resolve({ items: [{ productId: 'compare_100', price: 0, maxRows: 100 }, { productId: '', price: 990, maxRows: 100 }, { productId: 'x', price: '9.9', maxRows: 100 }] }),
-  ]) {
-    response.catch(() => {});
-    const { api } = apiWith({ payProducts: () => response });
-    const { view } = await ready(api);
-    view.input({ detail: { value: '甲公司' } });
-    assert.deepEqual(view.data.pay, { visible: false });
+for (const [name, response] of [
+  ['404', () => Promise.reject(Object.assign(new Error('未开放'), { status: 404 }))], ['空商品', () => Promise.resolve({ items: [] })], ['无价格', () => Promise.resolve({ items: [{ ...PRODUCT, price: null }] })],
+]) test(`购买页${name}：没有价格和支付按钮`, async () => {
+  const p = await purchase({ payProducts: response }); assert.match(p.text(), /付费服务暂未开放/); assert.doesNotMatch(p.text(), /29|支付 .*元/);
+  assert.equal(findAll(p.show(), tapsTo('buy')).length, 0); await buy(p); assert.equal(p.calls.orders.length, 0);
+});
+for (const options of [{ final: false }, { termsText: '【待律师定稿】' }, { loginOpen: false }]) test(`购买页协议门槛 ${JSON.stringify(options)}`, async () => {
+  const p = await purchase({}, options); assert.match(p.text(), /付费服务暂未开放/); assert.equal(findAll(p.show(), tapsTo('buy')).length, 0); await buy(p); assert.equal(p.calls.orders.length, 0);
+});
+test('购买完整文字，动态价格、天数、北京时间日期；默认未勾选，点击提示 P17', async () => {
+  const p = await purchase({ payProducts: () => Promise.resolve({ items: [{ ...PRODUCT, price: 3105, days: 28 }] }), advisorStatus: () => Promise.resolve(status(1, true, '2026-11-08T17:00:00Z')) });
+  for (const text of ['客户工作台 30 天', '31.05 元 · 买一次用 28 天，到期不再扣钱', '使用期到 2026-11-09 · 再买一次，往后顺延 28 天', '包含什么', '批量名单比对：不限次数，每次 500 家以内', '客户相关通知表：不限次数，每次 500 家以内', '结果可导出 Excel，带发文机关、日期和原文链接', '不买也能用', '批量名单比对、客户相关通知表：每月各 3 次，每次 50 家以内', '搜索、详情、附件、查名单、导出等一直免费', '购买前请知悉', '使用期从付款成功时起算，共 28 天', '只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看和导出。', '我已阅读并同意《付费服务协议》', '支付 31.05 元', '遇到问题']) assert.ok(p.text().includes(text), text);
+  assert.doesNotMatch(p.text(), BANNED); assert.equal(p.view.data.checked, false); p.view.buy(); await flush(); assert.equal(p.calls.toasts.at(-1).title, pay.TEXT.termsRequired); assert.equal(p.calls.orders.length, 0);
+});
+test('工具说明未同意先引导，不下单', async () => {
+  const p = await purchase({}, { consent: false }); await buy(p); assert.equal(p.calls.orders.length, 0); assert.equal(p.calls.urls.at(-1), '/pages/advisor-terms/index'); assert.equal(p.view.data.busy, false);
+});
+test('服务端确认开通，P19 和工具按钮；下单不含名单，不自动创建任务', async () => {
+  const p = await purchase({ payOrder: () => Promise.resolve(ORDER), advisorStatus: () => Promise.resolve(status(1, true)) }); await buy(p);
+  assert.deepEqual(JSON.parse(JSON.stringify(p.calls.orders)), [{ product_id: PRODUCT.productId, code: 'code' }]);
+  assert.deepEqual(Object.fromEntries(['mode', 'signData', 'paySig', 'signature'].map((key) => [key, p.calls.payments[0][key]])), { mode: pay.PAY_MODE, signData: 'data', paySig: 'sig', signature: 'user' });
+  assert.match(p.text(), /已开通，使用期到 2026-11-08/); assert.equal(findAll(p.show(), tapsTo('tools')).length, 1); assert.equal(p.calls.tasks.length, 0);
+  p.view.tools(); assert.equal(p.calls.urls.at(-1), '/pages/advisor/index'); p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay&orderId=41');
+});
+for (const options of [{}, { fail: true }, { cancel: true }]) test(`支付回调 ${JSON.stringify(options)} 都持续查单，取消不算错误`, async () => {
+  let checked = 0; const p = await purchase({ payOrder: () => Promise.resolve(++checked > 1 ? ORDER : { status: '待支付' }) }, options); await buy(p);
+  assert.equal(p.view.data.confirmed, false); assert.equal(p.view.data.busy, true); if (options.cancel) { assert.equal(p.view.data.message, '已取消支付'); assert.equal(p.view.data.payError, false); }
+  await p.timers.advance(2000); assert.equal(p.view.data.confirmed, true); assert.equal(checked, 2);
+});
+for (const hanging of [false, true]) test(`60 秒未确认显示 P20，请求悬挂=${hanging}`, async () => {
+  const p = await purchase(hanging ? { payOrder: () => new Promise(() => {}) } : {}); await buy(p); await p.timers.advance(59999); assert.equal(p.view.data.busy, true);
+  await p.timers.advance(1); assert.equal(p.view.data.message, pay.TEXT.timeout); assert.equal(p.view.data.busy, false); assert.equal(p.view.data.payError, false); assert.equal(p.timers.size(), 0);
+});
+test('隐藏停止并忽略在途结果，恢复沿用截止时间；卸载不更新', async () => {
+  let resolve; const p = await purchase({ payOrder: () => new Promise((done) => { resolve = done; }) }); await buy(p); p.view.onHide(); resolve(ORDER); await flush(); assert.equal(p.view.data.confirmed, false); assert.equal(p.timers.size(), 0);
+  await p.timers.advance(30000); p.view.onShow(); await flush(); await p.timers.advance(30000); assert.equal(p.view.data.message, pay.TEXT.timeout);
+  const q = await purchase({ payOrder: () => new Promise((done) => { resolve = done; }) }); await buy(q); q.view.onUnload(); resolve(ORDER); await flush(); assert.equal(q.view.data.confirmed, false); assert.equal(q.timers.size(), 0);
+});
+test('隐藏时收到回调，返回查单；重复点击不重复下单', async () => {
+  let callback; const p = await purchase({ payOrder: () => Promise.resolve(ORDER) }, { wx: { requestVirtualPayment: (value) => { callback = value; } } }); await buy(p); p.view.buy(); await flush(); assert.equal(p.calls.orders.length, 1);
+  p.view.onHide(); callback.success(); await flush(); assert.equal(p.view.data.confirmed, false); p.view.onShow(); await flush(); assert.equal(p.view.data.confirmed, true);
+});
+test('下单失败、登录失败、不支持支付均恢复操作', async () => {
+  for (const [overrides, options, message] of [[{ createPayOrder: () => Promise.reject(new Error('下单失败')) }, {}, '下单失败'], [{}, { wx: { login: (o) => o.fail({}) } }, pay.TEXT.login], [{}, { wx: { requestVirtualPayment: undefined } }, pay.TEXT.unsupported]]) {
+    const p = await purchase(overrides, options); await buy(p); assert.equal(p.view.data.message, message); assert.equal(p.view.data.busy, false);
   }
-  let asked = 0;
-  const { api } = apiWith({ payProducts: () => { asked += 1; return Promise.resolve(PRODUCTS); } });
-  const track = await ready(api, {}, 'track');
-  assert.deepEqual(track.view.data.pay, { visible: false }); assert.equal(asked, 0);
-  assert.deepEqual(pay.payView({ products: [], kind: 'compare', mode: 'paste', rowCount: 1 }), { visible: false });
-  // 模板里所有价格和付费字样都在 pay.visible 区块内。
-  const wxml = fs.readFileSync(path.join(__dirname, '..', 'pages', 'advisor-form', 'index.wxml'), 'utf8');
-  const block = /\n {2}<view wx:if="\{\{pay\.visible\}\}"[\s\S]*?\n {2}<\/view>/.exec(wxml);
-  assert.ok(block);
-  const outside = wxml.replace(block[0], '');
-  assert.doesNotMatch(outside, /付费|价格|元|退款|buy|pay\.(?!busy)/);
-  assert.doesNotMatch(block[0], BANNED);
 });
-
-test('有商品时按家数排序显示价格，超过档位、文件模式和未填写时不可选', async () => {
-  const { api } = apiWith();
-  const { view } = await ready(api);
-  assert.equal(view.data.pay.visible, true);
-  assert.equal(view.data.pay.hint, pay.TEXT.empty);
-  assert.deepEqual(Array.from(view.data.pay.items, (item) => item.label), ['100 家以内 · 9.90 元', '200 家以内 · 19.90 元']);
-  assert.ok(view.data.pay.items.every((item) => item.disabled));
-  view.input({ detail: { value: '甲公司' } });
-  assert.equal(view.data.pay.hint, '本月的免费次数已用完，可按次付费比对');
-  assert.ok(view.data.pay.items.every((item) => !item.disabled));
-  view.input({ detail: { value: Array.from({ length: 120 }, (_, n) => `公司${n}`).join('\n') } });
-  assert.equal(view.data.pay.hint, '超过免费的每次 50 家，可按次付费比对');
-  assert.deepEqual(Array.from(view.data.pay.items, (item) => item.disabled), [true, false]);
-  view.input({ detail: { value: Array.from({ length: 201 }, (_, n) => `公司${n}`).join('\n') } });
-  assert.equal(view.data.pay.hint, '超过 200 家，请减少客户后再付费比对');
-  view.mode({ currentTarget: { dataset: { mode: 'file' } } });
-  assert.equal(view.data.pay.hint, pay.TEXT.fileMode); assert.ok(view.data.pay.items.every((item) => item.disabled));
-  assert.equal(pay.yuan(5), '0.05 元'); assert.equal(pay.yuan(100), '1.00 元'); assert.equal(pay.yuan(123456), '1234.56 元');
-  const free = pay.payView({ products: pay.normalizeProducts(PRODUCTS), kind: 'compare', mode: 'paste', rowCount: 3, maxRows: 50, remaining: 1 });
-  assert.deepEqual(free, { visible: false });
-  for (const text of [view.data.pay.hint, view.data.pay.notes, ...Object.values(pay.TEXT)]) assert.doesNotMatch(text, BANNED);
-});
-
-test('本月还有免费次数且不超过 50 家时隐藏付费档；用完或 51 家起才显示，跨月重新隐藏', async () => {
-  let used = 2;
-  const { api, calls } = apiWith({ advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: 50 } } }) });
-  const page = await ready(api);
-  assert.deepEqual(page.view.data.pay, { visible: false });
-  await buy(page, Array.from({ length: 50 }, (_, n) => `公司${n}`).join('\n'));
-  assert.deepEqual(page.view.data.pay, { visible: false });
-  assert.equal(calls.orders.length, 0); assert.equal(page.calls.login, 0);
-  page.view.input({ detail: { value: Array.from({ length: 51 }, (_, n) => `公司${n}`).join('\n') } });
-  assert.equal(page.view.data.pay.visible, true);
-  assert.match(page.view.data.pay.hint, /超过免费的每次 50 家/);
-  page.view.input({ detail: { value: '甲公司' } });
-  assert.deepEqual(page.view.data.pay, { visible: false });
-  used = 3; page.view.onShow(); await flush();
-  assert.equal(page.view.data.pay.visible, true);
-  assert.match(page.view.data.pay.hint, /本月/);
-  used = 0; page.view.onShow(); await flush();
-  assert.equal(page.view.data.remaining, 3);
-  assert.deepEqual(page.view.data.pay, { visible: false });
-});
-
-test('用户协议未定稿时不请求额度或商品、不登录或下单', async () => {
-  let requested = 0;
-  const { api, calls } = apiWith({
-    advisorStatus: () => { requested += 1; return Promise.resolve({}); },
-    payProducts: () => { requested += 1; return Promise.resolve(PRODUCTS); },
+for (const kind of ['compare', 'track']) {
+  for (const [used, count, code, split] of [[0, 120, 'FREE_ROW_LIMIT', true], [3, 1, 'FREE_MONTHLY_LIMIT', false], [3, 120, 'FREE_ROW_LIMIT', false]]) test(`${kind} 本地预判 ${code} 不提交`, async () => {
+    const p = page('advisor-form', { advisorStatus: () => Promise.resolve(status(used)) }); p.view.onLoad({ kind }); p.view.onShow(); await flush(); p.view.setData({ rowCount: count, text: '甲公司' }); p.view.submit(); await flush();
+    assert.equal(p.calls.tasks.length, 0); assert.equal(p.view.data.limitHint.message, code === 'FREE_ROW_LIMIT' ? `这份名单有 ${count} 家，超过了免费的每次 50 家。` : `本月 3 次免费${kind === 'compare' ? '批量名单比对' : '客户相关通知表'}已用完，下月 1 日恢复。`);
+    assert.equal(p.view.data.limitHint.split, split); assert.ok(p.text().includes('客户工作台 30 天（29 元）：不限次数，每次 500 家以内。')); p.view.buy(); assert.equal(p.calls.urls.at(-1), '/pages/pass/index');
   });
-  const page = formPage(api, {}, clock(), { loginOpen: false });
-  page.view.onLoad({ kind: 'compare' }); page.view.onShow(); await flush();
-  page.view.buy({ currentTarget: { dataset: { id: 'compare_100' } } });
-  page.view.startPay(PRODUCTS.items[1], ['甲公司']); await flush();
-  assert.equal(requested, 0); assert.equal(calls.orders.length, 0); assert.equal(page.calls.login, 0);
-  assert.equal(page.view.data.pay.visible, false);
-});
-
-test('确认弹窗写清价格、家数、退款、保存期限和第三方说明；下单参数和支付参数来自后端', async () => {
-  const { api, calls } = apiWith({ payOrder: () => Promise.resolve({ orderId: 41, status: '处理中', taskId: 9 }) });
-  const page = await ready(api);
-  await buy(page);
-  const modal = page.calls.modal[0];
-  assert.equal(modal.title, '确认付费比对');
-  for (const phrase of ['单次 9.90 元，不自动续费', '覆盖 100 家以内', '本次 2 家', '付款后立即开始比对', '安卓等设备自动原路退款', '苹果手机免费重跑一次，仍失败人工处理', '结果保存 30 天，名单 7 天后删除', '不是政府平台，不代办，不承诺申报结果']) assert.ok(modal.content.includes(phrase), phrase);
-  assert.doesNotMatch(modal.content + modal.title + modal.confirmText, BANNED);
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.orders)), [{ product_id: 'compare_100', rows: ['甲公司', '乙公司'], code: 'login-code' }]);
-  const params = page.calls.payment[0];
-  assert.deepEqual({ signData: params.signData, paySig: params.paySig, signature: params.signature, mode: params.mode }, { signData: ORDER.signData, paySig: 'pay-sig', signature: 'user-sig', mode: 'short_series_goods' });
-  assert.equal(typeof params.signData, 'string');
-  assert.deepEqual(page.calls.redirect, ['/pages/advisor-tasks/index?taskId=9']);
-  assert.equal(page.view.data.pay.message, pay.TEXT.confirmed);
-});
-
-test('微信回调 success 但后端一直未支付：每 2 秒查一次，60 秒后提示未确认，不显示成功也不跳转', async () => {
-  const { api, calls } = apiWith();
-  const page = await ready(api);
-  await buy(page);
-  assert.equal(page.view.data.pay.message, pay.TEXT.confirming); assert.equal(page.view.data.pay.busy, true);
-  assert.deepEqual(page.timers.delays(), [2000]);
-  while (page.timers.pending()) await page.timers.runNext();
-  assert.equal(calls.polls, 31);
-  assert.equal(page.view.data.pay.message, pay.TEXT.timeoutPaid);
-  assert.doesNotMatch(page.view.data.pay.message, /成功|已确认/);
-  assert.equal(page.view.data.pay.busy, false); assert.deepEqual(page.calls.redirect, []);
-});
-
-test('先待支付后处理中才跳任务页；处理中但还没有任务编号时继续等', async () => {
-  const states = [{ status: '待支付', taskId: null }, { status: '处理中', taskId: null }, { status: '处理中', taskId: 12 }];
-  const { api } = apiWith({ payOrder: () => Promise.resolve(Object.assign({ orderId: 41 }, states.shift())) });
-  const page = await ready(api);
-  await buy(page);
-  await page.timers.runNext(); assert.deepEqual(page.calls.redirect, []);
-  await page.timers.runNext(); assert.deepEqual(page.calls.redirect, ['/pages/advisor-tasks/index?taskId=12']);
-  assert.equal(page.timers.pending(), 0);
-});
-
-test('页面隐藏时停止轮询并忽略在途结果，回到页面后重新查；卸载后不再查', async () => {
-  let resolvePoll; let polls = 0;
-  const { api } = apiWith({ payOrder: () => { polls += 1; return new Promise((resolve) => { resolvePoll = resolve; }); } });
-  const page = await ready(api);
-  await buy(page);
-  assert.equal(polls, 1);
-  page.view.onHide();
-  resolvePoll({ orderId: 41, status: '处理中', taskId: 3 }); await flush();
-  assert.deepEqual(page.calls.redirect, []); assert.equal(page.timers.pending(), 0);
-  assert.equal(page.view.data.pay.message, pay.TEXT.confirming);
-  page.view.onShow(); await flush();
-  assert.equal(polls, 2);
-  resolvePoll({ orderId: 41, status: '待支付', taskId: null }); await flush();
-  assert.equal(page.timers.pending(), 1);
-  page.view.onUnload(); assert.equal(page.timers.pending(), 0);
-  page.view.onShow(); await flush(); assert.equal(polls, 2);
-});
-
-test('支付回调发生在页面隐藏期间时，回到页面再开始查订单', async () => {
-  let pending;
-  const { api, calls } = apiWith();
-  const page = await ready(api, { requestVirtualPayment: (options) => { pending = options; } });
-  await buy(page);
-  page.view.onHide();
-  pending.success({}); await flush();
-  assert.equal(calls.polls, 0);
-  page.view.onShow(); await flush();
-  assert.equal(calls.polls, 1);
-});
-
-test('用户取消显示“已取消支付”，只核对一次订单；核对到已付款时仍以后端为准', async () => {
-  const cancel = (options) => options.fail({ errMsg: 'requestVirtualPayment:fail cancel', errCode: -2 });
-  const first = apiWith();
-  const page = await ready(first.api, { requestVirtualPayment: cancel });
-  await buy(page);
-  assert.equal(first.calls.polls, 1); assert.equal(page.timers.pending(), 0);
-  assert.equal(page.view.data.pay.message, '已取消支付'); assert.equal(page.view.data.pay.error, false);
-  assert.equal(page.view.data.pay.busy, false); assert.deepEqual(page.calls.redirect, []);
-  const paid = apiWith({ payOrder: () => Promise.resolve({ orderId: 41, status: '处理中', taskId: 5 }) });
-  const late = await ready(paid.api, { requestVirtualPayment: cancel });
-  await buy(late);
-  assert.deepEqual(late.calls.redirect, ['/pages/advisor-tasks/index?taskId=5']);
-  assert.equal(pay.isCancel({ errMsg: 'requestVirtualPayment:fail cancel' }), true);
-  assert.equal(pay.isCancel({ errMsg: 'requestVirtualPayment:fail', errCode: -1 }), false);
-});
-
-test('支付失败（非取消）仍查订单，超时后提示如已扣款到我的任务查看', async () => {
-  const { api, calls } = apiWith();
-  const page = await ready(api, { requestVirtualPayment: (options) => options.fail({ errMsg: 'requestVirtualPayment:fail', errCode: -1 }) });
-  await buy(page);
-  while (page.timers.pending()) await page.timers.runNext();
-  assert.equal(calls.polls, 31);
-  assert.equal(page.view.data.pay.message, pay.TEXT.timeoutFailed);
-});
-
-test('退款、人工、关闭显示后端状态文字；查单失败继续重试', async () => {
-  const expected = { 已退款: '比对没有完成，已原路退款', 需人工处理: '订单需要人工处理，可在“反馈”里留言，我们会尽快处理', 已关闭: '订单已关闭', 退款中: '比对没有完成，正在原路退款' };
-  for (const status of ['已退款', '需人工处理', '已关闭', '退款中']) {
-    const answers = [() => Promise.reject(new Error('网络不太好，请稍后再试')), () => Promise.resolve({ orderId: 41, status, taskId: 8 })];
-    let polls = 0;
-    const { api } = apiWith({ payOrder: () => { polls += 1; return answers.shift()(); } });
-    const page = await ready(api);
-    await buy(page);
-    await page.timers.runNext();
-    assert.equal(polls, 2);
-    assert.equal(page.view.data.pay.message, expected[status]);
-    assert.equal(page.view.data.pay.error, true); assert.equal(page.view.data.pay.busy, false);
-    assert.deepEqual(page.calls.redirect, []);
+  for (const code of ['FREE_ROW_LIMIT', 'FREE_MONTHLY_LIMIT']) test(`${kind} 服务端错误 ${code} 显示指定文案`, async () => {
+    const p = page('advisor-form', { createAdvisorTask: () => Promise.reject(Object.assign(new Error('原始文字'), { status: 429, code })) }); p.view.onLoad({ kind }); p.view.onShow(); await flush(); p.view.setData({ rowCount: 1, text: kind === 'track' ? '甲公司,辽宁' : '甲公司' }); p.view.submit(); await flush();
+    assert.ok(p.view.data.limitHint); assert.doesNotMatch(p.text(), /原始文字/); assert.equal(p.view.data.submitting, false);
+  });
+}
+test('有效使用期内 500 家可提交，501 家本地拦截，不消耗免费额度', async () => {
+  for (const count of [500, 501]) {
+    const p = page('advisor-form', { advisorStatus: () => Promise.resolve(status(3, true)) }); p.view.onLoad({}); p.view.onShow(); await flush(); p.view.input({ detail: { value: '甲公司\n'.repeat(count) } }); p.view.submit(); await flush();
+    assert.equal(p.calls.tasks.length, count === 500 ? 1 : 0); assert.equal(p.view.data.limitHint, null); if (count > 500) assert.match(p.view.data.inputError, /500/);
   }
-  assert.equal(pay.classify({ status: '已完成', taskId: 3 }), 'success');
-  assert.equal(pay.classify({ status: '处理中', taskId: null }), 'pending');
-  assert.equal(pay.classify({ status: '待支付', taskId: null }), 'pending');
-  assert.equal(pay.classify({ status: '未知状态', taskId: 1 }), 'pending');
-  assert.deepEqual(pay.resultView({ state: 'timeout', order: null }, { paid: true }).message, pay.TEXT.timeoutPaid);
 });
-
-test('下单失败显示后端原因；未同意、登录失败、微信版本不支持时不下单', async () => {
-  const rejected = apiWith({ createPayOrder: () => Promise.reject(Object.assign(new Error('待支付订单过多，请稍后再试'), { status: 429 })) });
-  const page = await ready(rejected.api);
-  await buy(page);
-  assert.equal(page.view.data.pay.message, '待支付订单过多，请稍后再试'); assert.equal(page.view.data.pay.error, true);
-  assert.equal(page.view.data.pay.busy, false); assert.equal(page.calls.payment.length, 0);
-  const consent = apiWith({ createPayOrder: () => Promise.reject(Object.assign(new Error('请先阅读并同意工具使用说明'), { status: 403 })) });
-  const revoked = await ready(consent.api);
-  await buy(revoked); assert.equal(revoked.view.data.agreed, false);
-  let opened = 0;
-  const unagreed = await ready(apiWith().api, { navigateTo: () => { opened += 1; } });
-  unagreed.view.setData({ agreed: false }); await buy(unagreed);
-  assert.equal(opened, 1); assert.equal(unagreed.calls.modal.length, 0);
-  const login = apiWith();
-  const noLogin = await ready(login.api, { login: (options) => options.fail({ errMsg: 'login:fail' }) });
-  await buy(noLogin);
-  assert.equal(noLogin.view.data.pay.message, pay.TEXT.login); assert.equal(login.calls.orders.length, 0);
-  const old = apiWith();
-  const unsupported = await ready(old.api, { requestVirtualPayment: undefined });
-  await buy(unsupported);
-  assert.equal(unsupported.view.data.pay.message, pay.TEXT.unsupported);
-  assert.equal(unsupported.calls.modal.length, 0); assert.equal(old.calls.orders.length, 0);
-  const over = apiWith();
-  const tooMany = await ready(over.api);
-  await buy(tooMany, Array.from({ length: 101 }, (_, n) => `公司${n}`).join('\n'), 'compare_100');
-  assert.match(tooMany.view.data.pay.message, /覆盖 100 家以内/); assert.equal(over.calls.orders.length, 0);
+test('文件预览触发行数预判；关闭商品时不捏造价格、购买入口', async () => {
+  const p = page('advisor-form', { payProducts: () => Promise.resolve({ items: [] }) }); p.view.onLoad({}); p.view.onShow(); await flush(); p.view.file = {}; p.view.setData({ mode: 'file' }); p.view.preview(); await flush();
+  assert.equal(p.view.data.rowCount, 120); assert.match(p.text(), /这份名单有 120 家/); assert.equal(findAll(p.show(), tapsTo('buy')).length, 0);
 });
-
-test('支付进行中不能重复下单，也不能同时提交免费任务或切换输入方式', async () => {
-  let pending;
-  const { api, calls } = apiWith();
-  const page = await ready(api, { requestVirtualPayment: (options) => { pending = options; } });
-  await buy(page);
-  page.view.buy({ currentTarget: { dataset: { id: 'compare_200' } } }); await flush();
-  assert.equal(calls.orders.length, 1); assert.equal(page.calls.modal.length, 1);
-  page.view.setData({ agreed: true, rowCount: 1 }); page.view.submit();
-  page.view.mode({ currentTarget: { dataset: { mode: 'file' } } }); assert.equal(page.view.data.mode, 'paste');
-  assert.equal(page.view.data.pay.items[0].loading, true);
-  // 支付进行中重新显示页面不刷新商品，付费区块不会消失。
-  let refreshed = 0; api.payProducts = () => { refreshed += 1; return Promise.reject(new Error('没有找到接口')); };
-  page.view.onShow(); await flush(); assert.equal(refreshed, 0); assert.equal(page.view.data.pay.visible, true);
-  assert.ok(pending);
+for (const [name, res, expected] of [['未买', status(1), '本功能每月免费 3 次，每次 50 家以内 · 本月剩余 2 次'], ['用完', status(3), '本功能每月免费 3 次，每次 50 家以内 · 本月剩余 0 次'], ['已买', status(3, true), '客户工作台使用期到 11-08 · 不限次数，每次 500 家以内'], ['临到期', status(3, true, new Date(Date.now() + 2 * 86400000).toISOString()), null]]) test(`工具首页${name}，两张卡状态和一次 T2`, async () => {
+  const p = page('advisor', { advisorStatus: () => Promise.resolve(res) }); p.view.onShow(); await flush(); if (expected) assert.equal(p.view.data.skills.filter((s) => s.statusLine === expected).length, 2);
+  assert.equal(findAll(p.show(), tapsTo('buy')).length, res.pass.active ? 0 : 1); assert.doesNotMatch(p.text(), /今天剩余/); if (name === '临到期') assert.match(p.text(), /客户工作台 .* 到期，到期不再扣钱；需要可以再买一次/);
 });
-
-test('演示数据不出售：商品为空，下单和查单被拒绝', async () => {
-  const config = require('../utils/config.js');
-  const original = { cloudEnv: config.cloudEnv, devBaseUrl: config.devBaseUrl };
-  global.wx = global.wx || { getStorageSync() {}, setStorageSync() {} };
-  config.cloudEnv = ''; config.devBaseUrl = '';
+test('商品关闭隐藏 T2；3 天提醒边界；到期回免费行', async () => {
+  const p = page('advisor', { payProducts: () => Promise.reject(Object.assign(new Error('关闭'), { status: 404 })) }); p.view.onShow(); await flush(); assert.equal(p.view.data.showPassLink, false);
+  const now = Date.now(); assert.ok(pay.toolStatus(status(0, true, new Date(now + 3 * 86400000).toISOString()), 'track', now).notice); assert.equal(pay.toolStatus(status(0, true, new Date(now + 3 * 86400000 + 1).toISOString()), 'track', now).notice, ''); assert.match(pay.toolStatus(status(), 'track').line, /本月剩余 2 次/);
+});
+for (const [reason, text] of [['付款已超过 7 天，请联系人工处理', '已超过 7 天'], ['这张票已用过付费的量，不能自助退款，请联系人工处理', '已提交过超过 50 家的名单或已超出每月免费次数'], ['苹果手机订单请在 App Store 申请退款', '苹果手机付款的订单请在 App Store 申请退款']]) test(`订单不可退：${text}`, async () => {
+  const p = page('orders', { payOrders: () => Promise.resolve({ items: [{ ...ORDER, canRefund: false, refundUnavailableReason: reason }] }) }); p.view.onShow(); await flush(); assert.ok(p.text().includes(text)); assert.equal(findAll(p.show(), tapsTo('refund')).length, 0); assert.equal(findAll(p.show(), tapsTo('invoice')).length, 1); p.view.refund(event(41)); assert.equal(p.calls.modals.length, 0);
+});
+test('订单可退：O1、O4、退款成功 O5 刷新；发票和问题带订单号', async () => {
+  const p = page('orders'); p.view.onShow(); await flush(); assert.ok(p.text().includes('客户工作台 30 天 · 29.00 元 · 2026-10-09 付款 · 已开通 · 使用期 10-09 至 11-08')); assert.equal(findAll(p.show(), tapsTo('refund')).length, 1);
+  p.view.refund(event(41)); await flush(); assert.equal(p.calls.modals[0].content, '退款后，这张订单对应的 30 天使用期取消，29.00 元原路退回。确定吗？'); assert.deepEqual(p.calls.refunds, [41]); assert.equal(p.calls.lists, 2); assert.ok(p.text().includes(pay.TEXT.refund));
+  p.view.invoice(event(41)); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=invoice&orderId=41'); p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay&orderId=41');
+});
+test('退款取消不发请求；退款失败重新刷新资格', async () => {
+  const p = page('orders', {}, { confirm: false }); p.view.onShow(); await flush(); p.view.refund(event(41)); assert.equal(p.calls.refunds.length, 0); assert.equal(p.view.data.refunding, null);
+  const q = page('orders', { refundPayOrder: () => Promise.reject(new Error('已超过 7 天')) }); q.view.onShow(); await flush(); q.view.refund(event(41)); await flush(); assert.equal(q.calls.lists, 2); assert.match(q.text(), /已超过 7 天/);
+});
+test('订单空列表和网络错误重试；问题无单号', async () => {
+  const p = page('orders', { payOrders: () => Promise.resolve({ items: [] }) }); p.view.onShow(); await flush(); assert.match(p.text(), /还没有订单/); p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay');
+  const q = page('orders', { payOrders: () => Promise.reject(new Error('网络错误')) }); q.view.onShow(); await flush(); assert.equal(findAll(q.show(), tapsTo('load')).length, 1);
+});
+for (const [open, hasOrders] of [[false, false], [true, false], [false, true], [true, true]]) test(`我的订单入口：可售=${open}、有历史订单=${hasOrders}`, async () => {
+  const p = page('me', { payProducts: () => open ? Promise.resolve({ items: [PRODUCT] }) : Promise.reject(Object.assign(new Error('关闭'), { status: 404 })), payOrders: () => Promise.resolve({ items: hasOrders ? [ORDER] : [] }) }); p.view.loadOrdersEntry(); await flush(); assert.equal(p.view.data.showOrders, open || hasOrders); assert.equal(findAll(p.show(), tapsTo('orders')).length, open || hasOrders ? 1 : 0);
+});
+for (const [type, title] of [['pay', '支付或订单遇到的问题'], ['invoice', '申请发票：请写发票抬头、税号和接收邮箱']]) test(`反馈 ${type} 标题占位、订单前缀和总字数`, async () => {
+  const p = page('feedback'); p.view.onLoad({ type, orderId: '41', id: '99' }); assert.equal(p.calls.title, title); assert.equal(findAll(p.show(), (n) => n.tag === 'textarea')[0].attrs.placeholder, title); assert.equal(p.view.data.max, 500 - '【订单 41】'.length);
+  p.view.onInput({ detail: { value: 'x'.repeat(500) } }); p.view.submit(); await flush(); assert.equal(p.calls.feedback[0].content.length, 500); assert.ok(p.calls.feedback[0].content.startsWith('【订单 41】')); assert.equal(p.calls.feedback[0].id, '');
+});
+test('支付反馈无单号不加前缀，覆盖反馈保留前缀', async () => {
+  for (const [query, prefix] of [[{ type: 'pay' }, ''], [{ type: 'coverage' }, '申请覆盖：']]) { const p = page('feedback'); p.view.onLoad(query); p.view.onInput({ detail: { value: '测试' } }); p.view.submit(); await flush(); assert.equal(p.calls.feedback[0].content, prefix + '测试'); }
+});
+test('真实 API 支付路径和请求体，保留后端结构化错误码；演示禁付', async () => {
+  const config = require('../utils/config.js'); const api = require('../utils/api.js'); const original = { cloudEnv: config.cloudEnv, devBaseUrl: config.devBaseUrl }; const originalWx = global.wx; let request; let response = { statusCode: 200, data: {} };
+  global.wx = { request: (options) => { request = options; options.success(response); } }; config.cloudEnv = ''; config.devBaseUrl = 'http://test';
   try {
-    const api = require('../utils/api.js');
-    assert.deepEqual(await api.payProducts(), { items: [] });
-    await assert.rejects(api.createPayOrder({ product_id: 'compare_100', rows: ['甲'], code: 'c' }), /演示数据不能支付/);
-    await assert.rejects(api.payOrder(1), /演示数据不能支付/);
-    config.devBaseUrl = 'http://test'; let request;
-    global.wx.request = (options) => { request = options; options.success({ statusCode: 201, data: ORDER }); };
-    await api.createPayOrder({ product_id: 'compare_100', rows: ['甲'], code: 'c' });
-    assert.equal(request.method, 'POST'); assert.equal(request.url, 'http://test/api/v1/pay/orders');
-    assert.deepEqual(request.data, { product_id: 'compare_100', rows: ['甲'], code: 'c' });
-    global.wx.request = (options) => { request = options; options.success({ statusCode: 200, data: { items: [] } }); };
-    await api.payOrder(41); assert.equal(request.url, 'http://test/api/v1/pay/orders/41'); assert.equal(request.method, 'GET');
-    await api.payProducts(); assert.equal(request.url, 'http://test/api/v1/pay/products');
-  } finally { Object.assign(config, original); }
+    await api.payProducts(); assert.equal(request.url, 'http://test/api/v1/pay/products'); await api.createPayOrder({ product_id: PRODUCT.productId, code: 'code' }); assert.equal(request.method, 'POST'); assert.deepEqual(request.data, { product_id: PRODUCT.productId, code: 'code' });
+    await api.payOrder(41); assert.equal(request.url, 'http://test/api/v1/pay/orders/41'); await api.payOrders(); assert.equal(request.url, 'http://test/api/v1/pay/orders'); await api.refundPayOrder(41); assert.equal(request.method, 'POST'); assert.equal(request.url, 'http://test/api/v1/pay/orders/41/refund');
+    for (const code of ['FREE_ROW_LIMIT', 'FREE_MONTHLY_LIMIT', 'PASS_ROW_LIMIT']) { response = { statusCode: 429, data: { detail: { code, message: '额度不足' } } }; await assert.rejects(api.createAdvisorTask({ kind: 'compare', rows: ['甲'] }, 'key'), (err) => err.status === 429 && err.code === code && err.message === '额度不足'); }
+    config.devBaseUrl = ''; assert.deepEqual(await api.payProducts(), { items: [] }); assert.deepEqual(await api.payOrders(), { items: [] }); await assert.rejects(api.createPayOrder({}), /不能支付/); await assert.rejects(api.refundPayOrder(41), /不能支付/);
+  } finally { Object.assign(config, original); global.wx = originalWx; }
+});
+test('新页面注册、标签闭合；旧按次包文字逻辑删除', () => {
+  const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8')); for (const name of ['pass', 'orders']) { assert.ok(app.pages.includes(`pages/${name}/index`)); page(name).show(); }
+  for (const file of ['utils/pay.js', 'pages/advisor-form/index.js', 'pages/advisor-form/index.wxml', 'content/pay-terms.js']) assert.doesNotMatch(fs.readFileSync(path.join(ROOT, file), 'utf8'), /按次包|苹果手机免费重跑|比对没有完成，正在原路退款|付款后立即开始比对/);
 });
 
-test('轮询器：stop 后在途结果忽略；start(true) 只查一次', async () => {
-  const timers = clock(); let resolve; const results = [];
-  const poller = pay.createPoller({ fetch: () => new Promise((r) => { resolve = r; }), onDone: (result) => results.push(result), timers, now: timers.now });
-  poller.start(); await flush(); assert.equal(poller.isActive(), true);
-  poller.stop(); resolve({ status: '已完成', taskId: 1 }); await flush();
-  assert.deepEqual(results, []); assert.equal(poller.isActive(), false); assert.equal(timers.pending(), 0);
-  poller.start(true); await flush(); resolve({ status: '待支付', taskId: null }); await flush();
-  assert.equal(results[0].state, 'timeout'); assert.equal(results[0].order.status, '待支付'); assert.equal(timers.pending(), 0);
+test('后端免费次数用完提示不会被商品迟到响应清掉，再提交先本地拦截', async () => {
+  let resolveProducts; let submitted = 0;
+  const p = page('advisor-form', {
+    payProducts: () => new Promise((resolve) => { resolveProducts = resolve; }),
+    createAdvisorTask: () => { submitted += 1; return Promise.reject(Object.assign(new Error('本月用完'), { code: 'FREE_MONTHLY_LIMIT', status: 429 })); },
+  });
+  p.view.onLoad({}); p.view.onShow(); await flush(); p.view.input({ detail: { value: '甲公司' } }); p.view.submit(); await flush();
+  resolveProducts({ items: [PRODUCT] }); await flush(); assert.match(p.view.data.limitHint.message, /下月 1 日恢复/); assert.match(p.view.data.limitHint.offer, /29 元/);
+  p.view.submit(); await flush(); assert.equal(submitted, 1);
 });
-
-
-test('付费服务协议未定稿时付费按钮不可用、点了也不下单；定稿后要勾选才可用', async () => {
-  for (const [termsOptions, note] of [[{ final: false }, '付费服务暂未开放'], [{ final: true, agreed: false }, '请先阅读并同意《付费服务协议》']]) {
-    const { api, calls } = apiWith();
-    const page = formPage(api, {}, clock(), termsOptions);
-    page.view.onLoad({ kind: 'compare' }); page.view.onShow(); await flush();
-    page.view.setData({ mode: 'paste', text: '甲公司\n乙公司', rowCount: 2 }); page.view.renderPay();
-    assert.equal(page.view.data.pay.termsNote, note);
-    assert.ok(page.view.data.pay.items.every((item) => item.disabled));
-    page.view.buy({ currentTarget: { dataset: { id: 'compare_100' } } }); await flush();
-    assert.equal(page.calls.modal.length, 0); assert.equal(calls.orders.length, 0);
+test('使用期在提交前过期，后端免费错误仍按 F1/F2 展示', async () => {
+  const p = page('advisor-form', { advisorStatus: () => Promise.resolve(status(3, true)), createAdvisorTask: () => Promise.reject(Object.assign(new Error('次数用完'), { code: 'FREE_MONTHLY_LIMIT' })) });
+  p.view.onLoad({}); p.view.onShow(); await flush(); p.view.input({ detail: { value: '甲公司' } }); p.view.submit(); await flush(); assert.match(p.text(), /本月 3 次免费批量名单比对已用完，下月 1 日恢复/); assert.equal(p.view.data.passActive, false);
+});
+test('订单失败状态没有工具按钮，不把退款状态视为任务失败退款', async () => {
+  for (const state of ['退款中', '已退款', '需人工处理', '已关闭']) {
+    const p = await purchase({ payOrder: () => Promise.resolve({ ...ORDER, status: state }) }); await buy(p);
+    assert.equal(p.view.data.confirmed, false); assert.equal(p.view.data.busy, false); assert.equal(p.view.data.message, `订单状态：${state}`); assert.equal(p.view.data.payError, true);
   }
-  const draft = require('../content/pay-terms.js');
-  assert.equal(draft.final, false);
+});
+test('购买页网络失败保留重试入口，没下单时问题入口无订单号', async () => {
+  const p = await purchase({ payProducts: () => Promise.reject(new Error('网络失败')) }); assert.match(p.text(), /网络失败/); assert.equal(findAll(p.show(), tapsTo('load')).length, 1);
+  p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay');
+});
+test('先停轮询再执行微任务，不再发送查单请求', async () => {
+  const timers = clock(); let fetched = 0;
+  const poller = pay.createPoller({ fetch: () => { fetched += 1; return Promise.resolve(ORDER); }, onDone: () => assert.fail('不应返回'), timers, now: timers.now });
+  poller.start(); poller.stop(); await flush(); assert.equal(fetched, 0); assert.equal(timers.size(), 0);
 });

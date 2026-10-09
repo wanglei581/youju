@@ -21,7 +21,9 @@
     "pages/advisor-terms/index",
     "pages/standards/index",
     "pages/clients/index",
-    "pages/client-results/index"
+    "pages/client-results/index",
+    "pages/pass/index",
+    "pages/orders/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

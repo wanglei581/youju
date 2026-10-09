@@ -7,18 +7,23 @@ const COVERAGE_PREFIX = '申请覆盖：';
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式。
 // 提交前要同意协议；协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"
 Page({
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, loginOpen: loginOpen() },
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, type: '', orderId: '', placeholder: '', prefix: '', loginOpen: loginOpen() },
 
   onLoad(query) {
     if (!this.data.loginOpen) return;
     // type=coverage：申请覆盖（想增加的地区和栏目），提交时内容前加"申请覆盖："方便核对台区分
     const coverage = query.type === 'coverage';
+    const type = ['pay', 'invoice'].includes(query.type) ? query.type : '';
+    const orderId = type && /^\d{1,20}$/.test(query.orderId || '') ? query.orderId : '';
+    const prefix = orderId ? `【订单 ${orderId}】` : (coverage ? COVERAGE_PREFIX : '');
+    const placeholder = type === 'pay' ? '支付或订单遇到的问题' : type === 'invoice' ? '申请发票：请写发票抬头、税号和接收邮箱' : '';
     this.setData({
-      docId: coverage ? '' : query.id || '',
-      title: !coverage && query.title ? decodeURIComponent(query.title) : '',
-      coverage,
-      max: coverage ? MAX - COVERAGE_PREFIX.length : MAX,
+      docId: coverage || type ? '' : query.id || '',
+      title: !coverage && !type && query.title ? decodeURIComponent(query.title) : '',
+      coverage, type, orderId, placeholder, prefix,
+      max: MAX - prefix.length,
     });
+    if (type) wx.setNavigationBarTitle({ title: placeholder });
     if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
   },
 
@@ -39,7 +44,7 @@ Page({
       return;
     }
     if (this.data.sending) return;
-    ensureConsent().then((ok) => { if (ok) this.send(this.data.coverage ? `${COVERAGE_PREFIX}${content}` : content); });
+    ensureConsent().then((ok) => { if (ok) this.send(`${this.data.prefix}${content}`); });
   },
 
   send(content) {

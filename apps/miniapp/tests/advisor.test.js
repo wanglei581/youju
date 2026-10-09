@@ -258,7 +258,7 @@ test('演示解析非标准首表、PK 开头文本、UTF-8/GBK、跨行 CSV 和
   assert.equal((await preview(Buffer.from('企业名称\n"甲\n乙公司"'))).rowCount, 1);
   assert.equal(require('../utils/advisor.js').csvRows('企业名称\r\n"甲\r\n乙公司"')[1][0], '甲\r\n乙公司');
   assert.equal((await preview(Buffer.from('甲公司\n\n乙公司'))).rowCount, 3);
-  await assert.rejects(preview(Buffer.from('企业名称\n' + '甲公司\n'.repeat(201))), /最多 200 行/);
+  await assert.rejects(preview(Buffer.from('企业名称\n' + '甲公司\n'.repeat(501))), /最多 500 行/);
   await assert.rejects(preview(Buffer.from('企业名称\n"未闭合公司')), /CSV 格式有误/);
   await assert.rejects(preview(Buffer.from('企业名称\n"甲公司"尾巴')), /CSV 格式有误/);
   for (const [method, options] of [[0], [8], [8, { strategy: zlib.constants.Z_FIXED }], [8, { level: 0 }]]) {
@@ -273,8 +273,8 @@ test('演示与线上一致限制工作表行、列、单元格、XML 迭代和�
     ['<row r="1000000"><c r="A1000000"/></row>', /行号过大/],
     ['<row r="1"><c r="A1000000"/></row>', /行号过大/],
     ['<row r="1"><c r="BM1"/></row>', /列数过多/],
-    ['<row r="1"><c r="A1"/></row>'.repeat(203), /行号过大/],
-    [`<row r="1">${'<c r="A1"/>'.repeat(12929)}</row>`, /单元格过多/],
+    ['<row r="1"><c r="A1"/></row>'.repeat(503), /行号过大/],
+    [`<row r="1">${'<c r="A1"/>'.repeat(32129)}</row>`, /单元格过多/],
     ['<x/>'.repeat(100001), /内容过多/],
   ];
   for (const [payload, reason] of cases) await assert.rejects(preview(makeZip(customWorkbook(sheetXml(payload)))), reason);
@@ -295,7 +295,7 @@ test('工具说明定稿并开放后可单独同意当前版本', async () => {
 });
 
 test('演示单元格上限累计覆盖所有工作表', async () => {
-  const files = customWorkbook(sheetXml(`<row r="1">${'<c r="A1"/>'.repeat(6500)}</row>`));
+  const files = customWorkbook(sheetXml(`<row r="1">${'<c r="A1"/>'.repeat(16100)}</row>`));
   files['custom/second.data'] = files['custom/clients.data'];
   files['xl/workbook.xml'] = files['xl/workbook.xml'].replace('</sheets>', '<sheet name="第二表" sheetId="2" r:id="rIdSecond"/></sheets>');
   files['xl/_rels/workbook.xml.rels'] = files['xl/_rels/workbook.xml.rels'].replace('</Relationships>', '<Relationship Id="rIdSecond" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/custom/second.data"/></Relationships>');

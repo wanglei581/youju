@@ -1,0 +1,20 @@
+<notice-bar />
+<feature-closed wx:if="{{!loginOpen}}" />
+<block wx:else>
+  <view wx:if="{{message}}" class="card advisor-card">{{message}}</view>
+  <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+  <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+  <view wx:elif="{{!items.length}}" class="card advisor-card muted">还没有订单</view>
+  <block wx:else>
+  <view wx:for="{{items}}" wx:key="orderId" class="card advisor-card">
+    <view class="advisor-text">{{item.summary}}</view>
+    <view class="advisor-text muted">订单号 {{item.orderId}}</view>
+    <view wx:if="{{!item.canRefund}}" class="advisor-text muted">{{item.reason}}</view>
+    <view class="advisor-actions">
+      <button wx:if="{{item.canRefund}}" class="advisor-button" data-id="{{item.orderId}}" bindtap="refund" disabled="{{refunding !== null}}" loading="{{refunding === item.orderId}}">申请退款</button>
+      <button class="advisor-button" data-id="{{item.orderId}}" bindtap="invoice">申请发票</button>
+    </view>
+  </view>
+  </block>
+  <view class="exits"><button class="exit-btn" bindtap="feedback">遇到问题</button></view>
+</block>
