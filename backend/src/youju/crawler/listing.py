@@ -25,6 +25,7 @@ import lxml.html
 from lxml import etree
 
 from youju.crawler.dates import date_from_url, parse_date_detail
+from youju.crawler.titles import clean_title
 from youju.crawler.urls import normalize_url, page_dir
 
 
@@ -98,12 +99,12 @@ def _clean(text: str | None) -> str:
 
 
 def _title_of(a: etree._Element) -> str:
-    text = _clean(a.text_content())
-    attr = _clean(a.get("title"))
+    text = clean_title(_clean(a.text_content()))
+    attr = clean_title(_clean(a.get("title")))
     # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅）：
     # 链接文字像标题就用链接文字；不像标题（如"详情"）才用去掉标签后的 title 属性
     if _MARKUP.search(attr):
-        stripped = _clean(_MARKUP.sub(" ", attr))
+        stripped = clean_title(_clean(_MARKUP.sub(" ", attr)))
         return text if _looks_like_title(text) or not stripped else stripped
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or text.endswith(("...", "…"))):
@@ -210,7 +211,7 @@ class _Page:
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
-        anchor_text = _clean(a.text_content())
+        anchor_text = clean_title(_clean(a.text_content()))
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
         for depth, el in enumerate(ancestors):
@@ -472,7 +473,7 @@ def _items_from_json_array(data: object, page: _Page) -> list[ListItem]:
     for obj in data if isinstance(data, list) else []:
         if not isinstance(obj, dict):
             continue
-        title = next((_clean(str(obj[k])) for k in _JSON_TITLE_KEYS if obj.get(k)), "")
+        title = next((clean_title(_clean(str(obj[k]))) for k in _JSON_TITLE_KEYS if obj.get(k)), "")
         href = next((_json_url(obj[k]) for k in _JSON_URL_KEYS if obj.get(k)), None)
         url = normalize_url(page.page_url, href)
         if not url or not _looks_like_title(title):

@@ -70,6 +70,7 @@
 .pick-go { margin-left: auto; padding: 0 48rpx; height: 80rpx; }
 .pick-go--off { opacity: 0.4; }
 .empty-note { margin-top: 12rpx; font-size: 24rpx; color: var(--t3); }
+.exit-note { margin-top: -4rpx; }
 /* 空结果：已选条件一行一个，右边"去掉"；下面"清空条件" */
 .empty-title { font-size: 28rpx; font-weight: 500; color: var(--t1); }
 .empty-conds { margin: 24rpx 16rpx 0; text-align: left; border-top: 2rpx solid var(--line); }

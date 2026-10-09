@@ -147,3 +147,19 @@ test('本轮改过的两页不出现禁用字样', () => {
     for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${page} 出现了 ${word}`);
   }
 });
+
+
+test('简称至少两字可查，候选名称点击后用全称查询；无候选和过短保持提示', async () => {
+  const calls = []; const toasts = [];
+  const page = load('pages/lists/index.js', {
+    '../../utils/api.js': { isLive: () => true, lookup: (q) => {
+      calls.push(q); return Promise.resolve({ items: [], similar: [], candidates: q === '海尔' ? ['海尔集团', '青岛海尔有限公司'] : [], coverage: { lists: 1 } });
+    } }, '../../utils/format.js': format, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
+  }, { wx: { showToast: (v) => toasts.push(v.title) } });
+  page.setData({ name: '海' }); page.query(); assert.equal(calls.length, 0); assert.match(toasts[0], /请输入企业全称/);
+  page.setData({ name: '海尔' }); page.query(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(Array.from(page.data.result.candidates), ['海尔集团', '青岛海尔有限公司']);
+  assert.match(wxml('lists'), /你要查的是不是：/);
+  page.pickSimilar({ currentTarget: { dataset: { name: '海尔集团' } } }); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.at(-1), '海尔集团'); assert.equal(page.data.result.candidates.length, 0);
+});

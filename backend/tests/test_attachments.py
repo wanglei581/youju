@@ -615,7 +615,7 @@ def test_cache_run_stores_only_allowed_attachments(session) -> None:
         ],
     )
     add_doc(session, 2, LIST, RECENT, [("名单", base + "list.pdf", "pdf")])
-    add_doc(session, 3, APPLY, date(2026, 6, 1), [("旧附件", base + "old.pdf", "pdf")])
+    add_doc(session, 3, APPLY, date(2026, 3, 1), [("旧附件", base + "old.pdf", "pdf")])
     add_doc(session, 4, APPLY, RECENT, [("下架", base + "down.pdf", "pdf")], taken_down=True)
     add_doc(session, 5, APPLY, RECENT, [("二级来源", base + "lvl2.pdf", "pdf")], rights_level=2)
     files = {
@@ -749,8 +749,8 @@ def test_expired_copies_are_deleted_but_backups_never(session) -> None:
     # 删不掉的不是附件副本，留在记录里，不当作删了
     assert set(rows_by_url(session)[base + "b.pdf"].stale_file_ids) == set(kept.stale_file_ids)
 
-    # 超过 90 天的同样删掉
-    report = run(session, fetcher, cloud, now=NOW + timedelta(days=120))
+    # 超过申报通知 180 天的同样删掉
+    report = run(session, fetcher, cloud, now=NOW + timedelta(days=200))
     assert report.removed == 1
 
 
@@ -988,7 +988,7 @@ def test_detail_lists_preview_info_and_reasons(client, session) -> None:
     assert all(item["preview"] is False for item in items[1:])
 
     listed = add_doc(session, 2, LIST, RECENT, [("名单", base + "guide.pdf", "pdf")])
-    old = add_doc(session, 3, APPLY, date(2026, 5, 1), [("旧", base + "old.pdf", "pdf")])
+    old = add_doc(session, 3, APPLY, date(2026, 3, 1), [("旧", base + "old.pdf", "pdf")])
     [item] = client.get(f"/api/v1/documents/{listed.id}").json()["attachments"]
     assert item["preview"] is False and item["reason"] == "kind"
     [item] = client.get(f"/api/v1/documents/{old.id}").json()["attachments"]
@@ -1283,3 +1283,37 @@ def test_migration_0018_downgrade_upgrade(db_engine) -> None:
     finally:
         command.upgrade(cfg, "head")
     assert "attachment_copies" in inspect(db_engine).get_table_names()
+
+
+def test_application_180_day_window_cache_detail_and_cleanup(client, session):
+    base = "https://kjt.ln.gov.cn/files/"
+    day = NOW.date() - timedelta(days=120)
+    application = add_doc(session, 10, APPLY, day, [("申报书", base + "apply.pdf", "pdf")])
+    policy = add_doc(
+        session, 11, "关于印发科技项目管理办法的通知", day, [("办法", base + "policy.pdf", "pdf")]
+    )
+    assert copies.candidates(session, NOW) == {base + "apply.pdf": "pdf"}
+    assert (
+        client.get(f"/api/v1/documents/{application.id}").json()["attachments"][0]["reason"]
+        == "pending"
+    )
+    assert client.get(f"/api/v1/documents/{policy.id}").json()["attachments"][0]["reason"] == "old"
+    cloud = FakeCloud()
+    fetcher = FakeFetcher({base + "apply.pdf": PDF})
+    run(session, fetcher, cloud)
+    assert (
+        client.get(f"/api/v1/documents/{application.id}").json()["attachments"][0]["preview"]
+        is True
+    )
+    run(session, fetcher, cloud, now=NOW + timedelta(days=61))
+    assert base + "apply.pdf" not in rows_by_url(session)
+    assert cloud.deleted
+
+
+@pytest.mark.parametrize("kind,days", [("申报通知", 180), ("政策", 90)])
+def test_attachment_window_boundary_and_missing_publish_date(kind, days):
+    boundary = NOW.date() - timedelta(days=days)
+    assert copies.is_recent(boundary, None, NOW, kind=kind)
+    assert not copies.is_recent(boundary - timedelta(days=1), NOW, NOW, kind=kind)
+    assert copies.is_recent(None, NOW - timedelta(days=days - 1), NOW, kind=kind)
+    assert not copies.is_recent(None, NOW - timedelta(days=days + 1), NOW, kind=kind)

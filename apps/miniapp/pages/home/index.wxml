@@ -50,6 +50,7 @@
   <view class="summary-text"><view class="sk sk-text"></view><view class="sk sk-text sk-line--short"></view></view>
 </view>
 <!-- 本周 0 份时只写"本周暂无新文件"和最近一次成功检查的时间，不推测原因 -->
+<view wx:if="{{loading && serviceStarting}}" class="muted startup-note">服务正在启动，请稍等…</view>
 <view class="summary" wx:if="{{stats && !loading}}" bindtap="goSearch">
   <block wx:if="{{stats.week_total}}">
     <view class="summary-num">

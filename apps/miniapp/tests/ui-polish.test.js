@@ -77,7 +77,7 @@ test('详情页和查名单的列表加载时用占位块，不写"正在加载�
   const page = load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => new Promise(() => {}) },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },

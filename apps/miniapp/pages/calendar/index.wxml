@@ -58,7 +58,7 @@
       <view class="item-title">{{item.title}}</view>
       <view class="muted item-what">{{item.what}}</view>
     </view>
-    <view wx:if="{{loginOpen}}" class="bell {{reminded[item.docId] ? 'bell--on' : ''}} {{item.days < 3 ? 'bell--off' : ''}}" data-id="{{item.id}}" data-days="{{item.days}}" bindtap="toggleRemind" aria-role="button" aria-label="设截止提醒">
+    <view wx:if="{{loginOpen && remindOpen}}" class="bell {{reminded[item.docId] ? 'bell--on' : ''}} {{item.days < 3 ? 'bell--off' : ''}}" data-id="{{item.id}}" data-days="{{item.days}}" bindtap="toggleRemind" aria-role="button" aria-label="设截止提醒">
       <t-icon name="notification" size="34rpx" />
     </view>
   </view>

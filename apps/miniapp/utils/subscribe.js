@@ -28,10 +28,16 @@ function requestOnce(kind, target) {
   });
 }
 
+// 订阅消息模板还没在小程序后台申请下来时（config.templates 里是空的），各页不显示订阅入口，
+// 免得用户点了只看到"还没开通"（10/9 走查）
+function remindOpen(kind) {
+  return !!config.templates[kind];
+}
+
 function ask(kind, target) {
   const id = config.templates[kind];
   if (!id) {
-    wx.showModal({ title: '订阅消息还没开通', content: '在小程序后台申请订阅消息模板后即可订阅（当前是开发版）。', showCancel: false });
+    wx.showToast({ title: '微信提醒暂未开通', icon: 'none' });
     return Promise.resolve(false);
   }
   return new Promise((resolve) => {
@@ -61,4 +67,4 @@ function ask(kind, target) {
   });
 }
 
-module.exports = { requestOnce };
+module.exports = { requestOnce, remindOpen };

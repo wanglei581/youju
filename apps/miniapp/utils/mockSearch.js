@@ -4,7 +4,7 @@ const { todayISO, daysUntil } = require('./format.js');
 const GUIDE = '资讯与指南';
 const TYPE_KIND = { 申报通知: '申报通知', 名单与公示: '名单', 政策文件: '政策', [GUIDE]: GUIDE };
 const MAIN_KINDS = ['申报通知', '名单', '政策', GUIDE];
-const TIME_DAYS = { '近 7 天': 7, '近 30 天': 30, 今年: 'year', 不限: 0 };
+const TIME_DAYS = { '近 7 天': 7, '近 30 天': 30, '近 90 天': 90, 今年: 'year', 不限: 0 };
 
 function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
@@ -78,6 +78,7 @@ function mockSearch(all, params) {
     && matchTags(d, supports, 'supports', ['申报通知', '名单']) && matchTags(d, industries, 'industries')
     && (!status.length || status.includes(d.status))
     && (!params.open || matchOpen(d))
+    && (!params.exclude_closed || !d.deadline || !d.deadline.verified || matchOpen(d))
     && (!depts.length || depts.includes(deptOf(d))));
   // 资讯与指南只在"全部"页签、没选类型时折叠（与服务端一致）；fold 不传时不统计
   const counted = params.fold !== undefined && params.fold !== null && kind === 'all' && !types.length;
@@ -88,6 +89,7 @@ function mockSearch(all, params) {
   const offset = params.offset || 0;
   const limit = params.limit || 20;
   return {
+    verified_open_total: all.filter((d) => d.kind === '申报通知' && matchOpen(d)).length,
     q: kw, total: timed.length, total_all: base.length, folded: folding ? guides : 0, guides,
     items: timed.slice(offset, offset + limit),
   };

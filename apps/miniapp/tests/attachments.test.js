@@ -165,7 +165,7 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   const page = load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
@@ -312,7 +312,7 @@ async function outcome({ api, clock }, call) {
   return { ...result, at: clock.now };
 }
 
-test('超时（15 秒没返回）不重试：一次查询最多等约 20 秒', async () => {
+test('单次15秒超时不重试，平台明确超时也不重试', async () => {
   // 一直不回：15 秒超时就报错，不再重试
   let s = retryApi([null, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
@@ -328,8 +328,8 @@ test('超时（15 秒没返回）不重试：一次查询最多等约 20 秒', a
   s = retryApi([{ after: 300, fail: true }, { after: 200, code: 503 }, null]);
   r = await outcome(s, (api) => api.coverage());
   assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0, 1300, 4000]);
-  assert.ok(r.at <= 20000, `等了 ${r.at} 毫秒`);
+  assert.deepEqual(s.sent, [0, 1800, 5000]);
+  assert.equal(r.at, 20000);
   // 附件分段同样处理
   s = retryApi([null, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
@@ -337,30 +337,39 @@ test('超时（15 秒没返回）不重试：一次查询最多等约 20 秒', a
   assert.deepEqual(s.sent, [0]);
 });
 
-test('只重试很快的失败和网关 502/503/504：重试要在第一次发出后 5 秒内开始', async () => {
-  // 很快失败（调用失败、网关 503）：重试，成功就返回
+
+test('GET 按1.5、3、5、8秒最多重试4次，网关慢返回仍重试、慢调用失败不重试', async () => {
   let s = retryApi([{ after: 200, fail: true }, { after: 300, code: 503 }, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
-  assert.deepEqual(r.value, { ok: 1 });
-  assert.deepEqual(s.sent, [0, 1200, 4000]);
-  // 慢的失败（发出 6 秒后才失败）：不重试
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 1700, 5000]);
   s = retryApi([{ after: 6000, fail: true }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
-  assert.ok(r.error);
-  assert.deepEqual(s.sent, [0]);
-  // 网关 504 来得慢（4.5 秒）：再等 1 秒才能重试，超出 5 秒，不重试
+  r = await outcome(s, (api) => api.coverage()); assert.ok(r.error); assert.deepEqual(s.sent, [0]);
   s = retryApi([{ after: 4500, code: 504 }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
-  assert.equal(r.error.status, 504);
-  assert.deepEqual(s.sent, [0]);
-  // 第二次失败时已过了 2.5 秒：再等 2.5 秒就超出 5 秒，不再重试第三次
-  s = retryApi([{ after: 500, code: 503 }, { after: 1200, code: 503 }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
-  assert.equal(r.error.status, 503);
-  assert.deepEqual(s.sent, [0, 1500]);
-  // 别的错误（如 404、422）不重试
+  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 6000]);
+  s = retryApi([502, 503, 504, 503, 502, 200].map((code) => ({ after: 0, code })));
+  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 502);
+  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500]); assert.equal(r.at, 17500);
   s = retryApi([{ after: 100, code: 404 }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
-  assert.equal(r.error.status, 404);
-  assert.deepEqual(s.sent, [0]);
+  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 404); assert.deepEqual(s.sent, [0]);
+});
+
+test('冷启动提示首次错误后出现，成功及全失败均消失，隐藏页面解除监听', async () => {
+  for (const last of [200, 503]) {
+    const s = retryApi([503, 503, 503, 503, last].map((code) => ({ after: 0, code })));
+    const seen = []; const page = { setData: (v) => seen.push(v.serviceStarting) };
+    s.api.watchStartup(page);
+    await outcome(s, (api) => api.coverage());
+    assert.deepEqual(seen, [false, true, false]);
+    s.api.stopStartup(page); s.api.watchStartup({ setData() {} });
+    assert.equal(seen.length, 3);
+  }
+});
+
+test('四页接通启动提示与生命周期，名单查询失败也能重试', () => {
+  for (const page of ['home', 'search', 'detail', 'lists']) {
+    const js = read(`pages/${page}/index.js`); const wxml = read(`pages/${page}/index.wxml`);
+    assert.match(js, /api.watchStartup/); assert.match(js, /api.stopStartup/);
+    assert.match(wxml, /服务正在启动，请稍等…/); assert.match(wxml, /serviceStarting/);
+  }
+  assert.match(read('pages/lists/index.wxml'), /bindtap="query">　重试/);
 });

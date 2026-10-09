@@ -3,7 +3,7 @@ const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
-const { requestOnce } = require('../../utils/subscribe.js');
+const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
@@ -26,8 +26,8 @@ const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
-  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'] },
-  { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '今年', '不限'] },
+  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: '只含已核对截止日期的通知（条数正在加载）' },
+  { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
   // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
   // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
@@ -75,6 +75,7 @@ Page({
     items: [],
     total: 0,
     totalAll: 0,
+    verifiedOpenTotal: 0,
     // 合并进转发组、没有另计的版本数（D-055）
     reposts: 0,
     loading: false,
@@ -112,10 +113,11 @@ Page({
   },
 
   onLoad(query) {
+    if (api.watchStartup) api.watchStartup(this);
     const kind = decodeURIComponent(query.kind || '');
     const time = decodeURIComponent(query.time || '');
     const picked = Object.assign({}, DEFAULT_PICKED);
-    if (['近 7 天', '近 30 天', '今年', '不限'].includes(time)) picked.time = [time];
+    if (['近 7 天', '近 30 天', '近 90 天', '今年', '不限'].includes(time)) picked.time = [time];
     [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
@@ -141,14 +143,17 @@ Page({
   },
 
   onHide() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onShow() {
+    if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     // 页面在后台跨过零点后再显示，时间筛选要按今天重新查
     if (this.loaded) this.apply(true);
@@ -184,6 +189,14 @@ Page({
   },
 
   // 网络不好出错时，点"重试"按当前条件重新搜索
+  removeOpen() {
+    this.setData({ picked: { ...this.data.picked, open: [] } });
+    this.refreshChips(); this.apply(true);
+  },
+  allTime() {
+    this.setData({ picked: { ...this.data.picked, time: ['不限'] } });
+    this.refreshChips(); this.apply(true);
+  },
   retry() {
     this.apply(true);
   },
@@ -206,6 +219,8 @@ Page({
           items: reset ? res.items : items.concat(res.items),
           total: res.total,
           totalAll: res.total_all,
+          verifiedOpenTotal: res.verified_open_total || 0,
+          groups: this.data.groups.map((g) => g.key === 'open' ? { ...g, note: `只含已核对截止日期的通知（目前 ${res.verified_open_total || 0} 条）` } : g),
           reposts: res.reposts || 0,
           folded,
           guides,
@@ -410,18 +425,25 @@ Page({
           if (!res.confirm) return;
           const name = (res.content || '').trim().slice(0, 40) || this.followName();
           api.createFollow(name, conditions)
-            .then((created) => wx.showModal({
-              title: '已关注',
-              content: '有新文件时会在"关注"里标出。要不要再订阅一次微信提醒？',
-              confirmText: '订阅提醒',
-              cancelText: '不用了',
-              success: (r) => {
-                if (!r.confirm) return;
-                requestOnce('newDocs', { followId: created.id }).then((subscribed) => {
-                  if (subscribed) wx.showToast({ title: '已订阅 1 次微信提醒', icon: 'none' });
-                });
-              },
-            }))
+            .then((created) => {
+              // 微信提醒还没开通时只告诉用户已关注，不问要不要订阅
+              if (!remindOpen('newDocs')) {
+                wx.showToast({ title: '已关注，有新文件时会在"关注"里标出', icon: 'none', duration: 2500 });
+                return undefined;
+              }
+              return wx.showModal({
+                title: '已关注',
+                content: '有新文件时会在"关注"里标出。要不要再订阅一次微信提醒？',
+                confirmText: '订阅提醒',
+                cancelText: '不用了',
+                success: (r) => {
+                  if (!r.confirm) return;
+                  requestOnce('newDocs', { followId: created.id }).then((subscribed) => {
+                    if (subscribed) wx.showToast({ title: '已订阅 1 次微信提醒', icon: 'none' });
+                  });
+                },
+              });
+            })
             .catch((err) => {
               const invalid = err.status === 422 && (!err.message || /422|输入内容或筛选条件/.test(err.message));
               wx.showToast({ title: invalid ? '关注条件或名称不符合要求，请调整后重试' : (err.message || '关注失败，请稍后再试'), icon: 'none' });

@@ -1,7 +1,7 @@
 const api = require('../../utils/api.js');
 const { dueInfo, deadlineNote, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
-const { requestOnce } = require('../../utils/subscribe.js');
+const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
 const { exportDocs } = require('../../utils/exporter.js');
@@ -50,8 +50,9 @@ Page({
     atts: [], attNote: '', versions: [], upstream: '', standardKey: '' },
 
   onLoad(query) {
+    if (api.watchStartup) api.watchStartup(this);
     // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
-    this.setData({ loginOpen: loginOpen() });
+    this.setData({ loginOpen: loginOpen(), remindOpen: remindOpen('deadline') });
     this.docId = query.id;
     this.lastShow = Date.now();
     this.load();
@@ -132,6 +133,7 @@ Page({
 
   // 跨日返回页面时重算剩余天数
   onShow() {
+    if (api.watchStartup) api.watchStartup(this);
     const stamp = Date.now();
     if (this.lastShow === undefined || stamp - this.lastShow >= 1000) {
       this.load();
@@ -143,10 +145,12 @@ Page({
   },
 
   onHide() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 

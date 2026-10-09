@@ -27,19 +27,23 @@ Page({
   },
 
   onHide() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onShow() {
+    if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
   },
 
   onLoad() {
+    if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight, menuWidth });
     this.reload();

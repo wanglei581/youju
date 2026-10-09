@@ -13,6 +13,7 @@
     <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk sk-line"></view>
   </view>
 </view>
+<view wx:if="{{loading && serviceStarting}}" class="muted startup-note">服务正在启动，请稍等…</view>
 <block wx:if="{{doc && !loading}}">
   <view class="card head">
     <view class="tags">
@@ -35,7 +36,7 @@
       <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
-    <view wx:if="{{loginOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
+    <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
     </view>

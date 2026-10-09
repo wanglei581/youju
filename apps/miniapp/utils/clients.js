@@ -41,22 +41,22 @@ function saveClients(clients) {
   return next;
 }
 
-function clientParams(client, ignoreIndustry) {
+function clientParams(client, ignoreIndustry, time = '近 90 天', verifiedOnly = false) {
   const c = normalize(client);
   // 省和城市取并集；没有选择地区时全国检索，始终包含国家部委。
   const scope = c.regions.length ? requestScope(c.regions, [NATIONAL])
     : { regions: c.cities.length ? NATIONAL : '不限地区', levels: undefined };
   return {
-    kind: '申报通知', open: 1, time: '不限', regions: scope.regions, levels: scope.levels,
+    kind: '申报通知', open: verifiedOnly ? 1 : undefined, exclude_closed: true, time, regions: scope.regions, levels: scope.levels,
     cities: c.cities.length ? c.cities.join(',') : undefined,
     industries: !ignoreIndustry && c.industries.length ? c.industries.join(',') : undefined,
   };
 }
 
-function subtitle(client, ignoreIndustry) {
+function subtitle(client, ignoreIndustry, time = '近 90 天', verifiedOnly = false) {
   const c = normalize(client);
   const regions = c.regions.concat(c.cities.map((v) => v.replace('/', '·')));
-  return `${regions.length ? regions.join('、') + '（含国家部委）' : '不限地区（含国家部委）'} · ${!ignoreIndustry && c.industries.length ? c.industries.join('、') : '不限产业方向'} · 申报通知 · 只看未截止 · 不限时间`;
+  return `${regions.length ? regions.join('、') + '（含国家部委）' : '不限地区（含国家部委）'} · ${!ignoreIndustry && c.industries.length ? c.industries.join('、') : '不限产业方向'} · 申报通知 · ${time === '今年' ? '今年发布' : time + '发布'} · ${verifiedOnly ? '只看已核对且未截止' : '已核对已截止的不列出'}`;
 }
 
 // 输出纯文本片段，避免把关键词或官方原句作为富文本执行；重叠关键词的区间取并集。

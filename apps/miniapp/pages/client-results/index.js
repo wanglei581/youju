@@ -6,7 +6,7 @@ const { TAG_NOTE } = require('../../utils/conditions.js');
 const PAGE_SIZE = 20;
 
 Page({
-  data: { items: [], total: 0, loading: false, error: '', client: null, ignoreIndustry: false, subtitle: '', tagNote: TAG_NOTE, states: {} },
+  data: { items: [], total: 0, loading: false, error: '', client: null, ignoreIndustry: false, subtitle: '', tagNote: TAG_NOTE, states: {}, time: '近 90 天', verifiedOnly: false, verifiedOpenTotal: 0, industryTotal: 0, yearTotal: 0, relaxedTotal: 0 },
   onLoad(query) {
     this.clientId = query.id;
   },
@@ -33,17 +33,35 @@ Page({
   toggleIndustry(e) {
     this.setData({ ignoreIndustry: !!e.detail.value }); this.apply(true);
   },
+  toggleVerified(e) { this.setData({ verifiedOnly: !!e.detail.value }); this.apply(true); },
+  relaxVerified() { this.setData({ verifiedOnly: false }); this.apply(true); },
+  relaxIndustry() { this.setData({ ignoreIndustry: true, verifiedOnly: false }); this.apply(true); },
+  thisYear() { this.setData({ time: '今年', ignoreIndustry: true, verifiedOnly: false }); this.apply(true); },
+  goSearch() { wx.navigateTo({ url: '/pages/search/index?kind=申报通知&time=今年' }); },
+  loadAlternatives(seq) {
+    const { client, ignoreIndustry, time, verifiedOnly } = this.data;
+    const count = (ignore, range) => api.search({ ...clientParams(client, ignore, range), limit: 1 })
+      .then((r) => r.total).catch(() => 0);
+    Promise.all([
+      !ignoreIndustry && client.industries.length ? count(true, time) : 0,
+      time !== '今年' ? count(true, '今年') : 0,
+      verifiedOnly ? count(ignoreIndustry, time) : 0,
+    ]).then(([industryTotal, yearTotal, relaxedTotal]) => {
+      if (seq === this.seq) this.setData({ industryTotal, yearTotal, relaxedTotal });
+    });
+  },
   apply(reset) {
     if (!this.data.client) return;
-    const { client, ignoreIndustry, items } = this.data;
+    const { client, ignoreIndustry, items, time, verifiedOnly } = this.data;
     const seq = this.seq = (this.seq || 0) + 1;
     if (reset) this.resultGeneration = (this.resultGeneration || 0) + 1;
-    this.setData({ loading: true, error: '', subtitle: subtitle(client, ignoreIndustry),
+    this.setData({ loading: true, error: '', subtitle: subtitle(client, ignoreIndustry, time, verifiedOnly), industryTotal: 0, yearTotal: 0, relaxedTotal: 0,
       ...(reset ? { items: [], states: {}, total: 0 } : {}) });
-    api.search({ ...clientParams(client, ignoreIndustry), limit: PAGE_SIZE, offset: reset ? 0 : items.length })
+    api.search({ ...clientParams(client, ignoreIndustry, time, verifiedOnly), limit: PAGE_SIZE, offset: reset ? 0 : items.length })
       .then((res) => {
         if (seq !== this.seq) return;
-        this.setData({ items: reset ? res.items : items.concat(res.items), total: res.total, loading: false });
+        this.setData({ items: reset ? res.items : items.concat(res.items), total: res.total, loading: false, verifiedOpenTotal: res.verified_open_total || 0 });
+        if (!res.total) this.loadAlternatives(seq);
       })
       .catch((err) => {
         if (seq !== this.seq) return;

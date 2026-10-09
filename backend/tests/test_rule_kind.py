@@ -107,3 +107,28 @@ def test_reclassify_fixes_stale_and_missing_kinds(session, session_factory, monk
     session.expire_all()
     stored = dict(session.execute(select(Document.title, Document.rule_kind)).all())
     assert all(stored[t] == doc_kind(t) for t in TITLES)
+
+
+def test_reclassify_cleans_existing_titles_idempotently(
+    session, session_factory, monkeypatch, capsys
+):
+    from youju import cli
+
+    source = add_source(session)
+    title = "》 自治区科技厅关于2026年第四批拟入库科技型中小企业名单的公示"
+    save_items(
+        session,
+        source,
+        [ListItem(title, "https://kjt.nx.gov.cn/old.html", date(2026, 10, 8))],
+        False,
+        datetime.now(UTC),
+    )
+    session.commit()
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    assert cli.main(["reclassify"]) == 0
+    assert "更新 1 份" in capsys.readouterr().out
+    session.expire_all()
+    doc = session.query(Document).one()
+    assert doc.title == title[2:] and doc.rule_kind == "名单"
+    assert cli.main(["reclassify"]) == 0
+    assert "更新 0 份" in capsys.readouterr().out
