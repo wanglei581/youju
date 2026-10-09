@@ -64,11 +64,20 @@ class TagRules:
         return and_(*(not_(_any(title, (w,))) for w in self.exclude), or_(*parts))
 
     def filter(
-        self, column: ColumnElement[str | None], title: ColumnElement[str], labels: list[str]
+        self,
+        column: ColumnElement[str | None],
+        title: ColumnElement[str],
+        labels: list[str],
+        *,
+        complete: bool = False,
     ) -> ColumnElement[bool]:
-        """筛选（同一组里多选取并集）：算好的比较存的那一列，还没算的当场按标题规则判断。"""
+        """筛选（同一组里多选取并集）：算好的比较存的那一列，还没算的当场按标题规则判断。
+        complete 为真表示调用方已确认这一列没有"还没算的"（NULL），不带当场判断那一段
+        （它写成 SQL 很长）。"""
         wrapped = func.concat(",", column, ",")
         stored = or_(*(wrapped.contains(f",{name},", autoescape=True) for name in labels))
+        if complete:
+            return and_(column.is_not(None), stored)
         return or_(
             and_(column.is_not(None), stored),
             and_(column.is_(None), self.sql_filter(title, labels)),

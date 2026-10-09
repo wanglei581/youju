@@ -127,3 +127,11 @@ page {
 /* 加载失败提示 */
 .load-error { padding: 28rpx 32rpx; display: flex; align-items: center; justify-content: space-between; gap: 24rpx; font-size: 26rpx; color: var(--t2); }
 .retry { flex-shrink: 0; }
+
+/* 冷启动时骨架屏下面的一行说明（utils/api.js 的 watchStartup） */
+.startup-note { text-align: center; padding: 16rpx 24rpx; font-size: 24rpx; }
+
+/* 空结果里的出路：一行一个胶囊按钮，点了一定有结果的用 exit-btn--main */
+.exits { margin: 28rpx 16rpx 0; display: flex; flex-direction: column; gap: 16rpx; }
+.exit-btn { min-height: 80rpx; padding: 0 32rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--line2); border-radius: 40rpx; font-size: 28rpx; color: var(--t1); }
+.exit-btn--main { border-color: var(--brand); background: var(--brand-tint); color: var(--brand); font-weight: 500; }

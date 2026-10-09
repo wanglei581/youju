@@ -91,7 +91,7 @@ test('我的页请求失败显示错误，重试后恢复服务端登录状态',
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => fail ? Promise.reject(new Error('网络故障')) : Promise.resolve({ agreed: { version: 'test' }, follows: 2, subscriptions: { deadline: 1 } }) },
     '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true },
-    '../../utils/coverage.js': {},
+    '../../utils/coverage.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
   });
   page.refresh();
   await flush();
@@ -114,7 +114,7 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
     '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdraw: () => { epoch += 1; return Promise.resolve(true); } },
-    '../../utils/coverage.js': {},
+    '../../utils/coverage.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
   });
   page.refresh(); page.refresh();
   requests[1].resolve({ agreed: {}, subscriptions: {} });
@@ -213,7 +213,7 @@ test('日历接收截断标记，并按截止时刻移入已截止列表', async
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { calendar: () => Promise.resolve({ truncated: true, items: [{ id: 1, due: '2026-09-30', time: '17:00', verified: true }] }) },
     '../../utils/format.js': { ...format, todayISO: () => '2026-09-30', daysUntil: (date, _, time) => format.daysUntil(date, new Date('2026-09-30T09:01:00Z'), time) },
-    '../../utils/subscribe.js': {}, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },
+    '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },
     '../../utils/daywatch.js': {},
   });
   page.load(); await flush();

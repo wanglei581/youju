@@ -12,9 +12,9 @@
     <view class="profile-main">
       <view class="profile-name">{{profileLoading ? '正在加载登录状态' : (profileError ? '登录状态未确认' : (signedIn ? '微信用户' : '未登录'))}}</view>
       <view wx:if="{{profileLoading || profileError}}" class="profile-sub">{{profileLoading ? '请稍候' : '请重试以确认登录状态'}}</view>
-      <view wx:elif="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件 · 还能提醒 {{reminderCount}} 次</view>
+      <view wx:elif="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件<text wx:if="{{remindOpen}}"> · 还能提醒 {{reminderCount}} 次</text></view>
       <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
-      <view wx:else class="profile-sub">登录后可以关注条件、订阅微信提醒、提交纠错</view>
+      <view wx:else class="profile-sub">登录后可以关注条件、{{remindOpen ? '订阅微信提醒、' : ''}}提交纠错</view>
     </view>
     <view wx:if="{{!profileLoading && !profileError && !signedIn && outdated}}" class="login login--on" bindtap="login">阅读更新</view>
     <view wx:elif="{{!profileLoading && !profileError && !signedIn}}" class="login {{agreed ? 'login--on' : ''}}" bindtap="login" aria-disabled="{{!agreed}}">微信登录</view>

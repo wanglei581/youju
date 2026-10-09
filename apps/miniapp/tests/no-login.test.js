@@ -102,6 +102,7 @@ async function mePage(final) {
     '../../utils/api.js': api,
     '../../utils/consent.js': consentFor(final),
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({ sources: 72, provinces: 28 }), notCoveredNames: () => '' },
+    '../../utils/subscribe.js': { remindOpen: () => true },
   }, { ...app, wx: {} });
   page.onLoad(); page.onShow(); await flush();
   return { page, api, root: shown('pages/me/index.wxml', page.data) };
@@ -175,7 +176,7 @@ async function searchPage(final, extra = {}) {
   const page = load('pages/search/index.js', {
     '../../utils/api.js': { search: () => Promise.resolve({ total: 1, total_all: 1, items: [{ id: '1', title: '甲' }] }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': { MAX: 200 },
-    '../../utils/consent.js': consentFor(final), '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': consentFor(final), '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   page.onLoad({}); await flush();
@@ -204,7 +205,7 @@ test('搜索页：未定稿时信息栏没有"关注"，底部没有"没找到�
 function detailRoot(final) {
   const page = load('pages/detail/index.js', {
     '../../utils/api.js': { detail: () => new Promise(() => {}) },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': daywatch, '../../utils/attachments.js': { decorate: () => [], note: () => '' },
     '../../utils/consent.js': consentFor(final),
@@ -236,7 +237,7 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
 test('申报日历：未定稿时每条没有截止提醒的铃铛，标题占满整行；定稿后照旧', () => {
   for (const final of STATES) {
     const page = load('pages/calendar/index.js', {
-      '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/subscribe.js': {},
+      '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
       '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
       '../../utils/consent.js': consentFor(final),
     });
@@ -299,7 +300,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
 const CLOSED_PAGES = [
   { name: 'follow', title: '我的关注', open: (p) => p.onShow(), deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/subscribe.js': {}, '../../utils/consent.js': consent, '../../utils/conditions.js': conditions,
+    '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/consent.js': consent, '../../utils/conditions.js': conditions,
   }), api: { isLive: () => false, follow: () => Promise.resolve({ week_start: '10-05', new_total: 0, subs: [], changes: [] }) } },
   { name: 'follow-new', title: '上次查看之后有', open: (p) => p.onLoad({ id: '7', name: '甲' }), deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/conditions.js': conditions, '../../utils/consent.js': consent,
@@ -414,4 +415,26 @@ test('小程序代码里不再有"协议定稿后开放""即将开放"这类字�
     const shownText = read(file).replace(/<!--[\s\S]*?-->/g, '').split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
     assert.doesNotMatch(shownText, NO_GATE_WORDS, file);
   }
+});
+
+test('订阅消息模板没配时不显示提醒入口：关注页、详情、日历、我的页都按 remindOpen 判断；关注后只提示已关注', async () => {
+  const consent = { ensureConsent: () => Promise.resolve(true), agreedHere: () => true, consentOpen: () => true };
+  const toasts = [];
+  const off = load('utils/subscribe.js', { './config.js': { templates: { newDocs: '', deadline: '' } }, './api.js': {}, './consent.js': consent },
+    { wx: { showToast: (o) => toasts.push(o.title), showModal: () => assert.fail('不应弹对话框') } });
+  assert.equal(off.remindOpen('newDocs'), false); assert.equal(off.remindOpen('deadline'), false);
+  assert.equal(await off.requestOnce('newDocs', { followId: 1 }), false);
+  assert.deepEqual(toasts, ['微信提醒暂未开通']);
+  const on = load('utils/subscribe.js', { './config.js': { templates: { newDocs: 'tmpl-1', deadline: '' } }, './api.js': {}, './consent.js': consent }, { wx: {} });
+  assert.equal(on.remindOpen('newDocs'), true); assert.equal(on.remindOpen('deadline'), false);
+
+  const follows = [{ id: 1, name: '山东专精特新', desc: '山东', newCount: 0 }];
+  const followData = { mode: 'live', loginOpen: true, follows, changes: [], remindLeft: {}, loading: false, error: '' };
+  assert.doesNotMatch(textOf(render('pages/follow/index.wxml', { ...followData, remindOpen: false })), /提醒/);
+  assert.match(textOf(render('pages/follow/index.wxml', { ...followData, remindOpen: true })), /提醒/);
+  assert.match(read('pages/detail/index.wxml'), /loginOpen && remindOpen && due\.days >= 3/);
+  assert.match(read('pages/calendar/index.wxml'), /loginOpen && remindOpen/);
+  assert.match(read('pages/me/index.wxml'), /wx:if="{{remindOpen}}"> · 还能提醒/);
+  const search = read('pages/search/index.js');
+  assert.ok(search.indexOf("if (!remindOpen('newDocs'))") < search.indexOf("confirmText: '订阅提醒'"));
 });
