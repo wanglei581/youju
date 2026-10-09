@@ -63,7 +63,15 @@ from youju.takedown import available_condition, is_taken_down
 from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
-SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def _request_session(session: Annotated[Session, Depends(get_session)]) -> Session:
+    # 每个请求先看规则列算完没有（60 秒查一次），后面的类型筛选据此决定带不带标题规则兜底
+    note_rules_complete(session)
+    return session
+
+
+SessionDep = Annotated[Session, Depends(_request_session)]
 
 _TZ = ZoneInfo("Asia/Shanghai")
 _WEEK = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
@@ -565,14 +573,49 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
     return out
 
 
+# —— 规则列是不是都算完了 ——
+# 类型、项目类别、支持方式、产业方向都在入库时按标题规则算好存成一列（rule_kind 等），规则改了由
+# youju reclassify 重算（admin 每次启动时跑）。筛选只比较这一列；值为 NULL 的行（刚加列、还没重算）
+# 才当场按标题规则判断。这段"当场判断"写成 SQL 很长："其他"一类 30 多万字符，折叠资讯与指南用的
+# "不是资讯与指南"近 50 万字符，数据库光解析一条就要零点几秒，一次搜索有五六条（10/9 线上实测：
+# 默认搜索 3–7 秒）。所以先看库里还有没有 NULL：没有就不带这段，结果完全一样；有才带上。
+_RULE_COLUMNS = (
+    Document.rule_kind,
+    Document.rule_category,
+    Document.rule_supports,
+    Document.rule_industries,
+)
+_RULES_RECHECK = 60.0  # 确认算完后隔多少秒再查一次
+_rules_complete = False
+_rules_checked_at = 0.0
+
+
+def note_rules_complete(session: Session) -> bool:
+    """查一下规则列是不是都算完了（没有 NULL），记在进程里，供 _kind_is 等决定带不带标题规则兜底。
+
+    请求一进来（SessionDep）和 search_statement 开头各调一次。确认算完后 60 秒内不再查；
+    没算完时每次都查，重算一结束就生效。没调过这个函数的进程（如定时任务）照旧带兜底，只是慢一些。
+    """
+    global _rules_complete, _rules_checked_at
+    stamp = _time.monotonic()
+    if _rules_complete and stamp - _rules_checked_at < _RULES_RECHECK:
+        return True
+    pending = session.scalar(
+        select(Document.id).where(or_(*(c.is_(None) for c in _RULE_COLUMNS))).limit(1)
+    )
+    _rules_complete, _rules_checked_at = pending is None, stamp
+    return _rules_complete
+
+
 def _kind_is(kinds: list[str]):
     """类型筛选：人工定过类型的按人工定的，没定过的按标题规则——规则结果入库时已算好
     存在 rule_kind，只比较这一列；还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，
-    结果一样。"""
-    by_rule = or_(
-        Document.rule_kind.in_(kinds),
-        and_(Document.rule_kind.is_(None), kind_filter(Document.title, kinds)),
-    )
+    结果一样。库里没有"还没算的"时不带当场判断那一段（见 note_rules_complete）。"""
+    by_rule = Document.rule_kind.in_(kinds)
+    if not _rules_complete:
+        by_rule = or_(
+            by_rule, and_(Document.rule_kind.is_(None), kind_filter(Document.title, kinds))
+        )
     return or_(
         Document.kind_override.in_(kinds),
         and_(Document.kind_override.is_(None), by_rule),
@@ -582,10 +625,12 @@ def _kind_is(kinds: list[str]):
 def _category_is(categories: list[str]):
     """项目类别筛选：只在申报通知和名单里找；类别入库时已算好存在 rule_category，
     还没算的（刚升级、还没跑 youju reclassify）当场按规则判断，结果一样。"""
-    by_rule = or_(
-        Document.rule_category.in_(categories),
-        and_(Document.rule_category.is_(None), category_filter(Document.title, categories)),
-    )
+    by_rule = Document.rule_category.in_(categories)
+    if not _rules_complete:
+        by_rule = or_(
+            by_rule,
+            and_(Document.rule_category.is_(None), category_filter(Document.title, categories)),
+        )
     return and_(_kind_is(list(CATEGORY_KINDS)), by_rule)
 
 
@@ -593,13 +638,17 @@ def _supports_are(supports: list[str]):
     """支持方式筛选（按标题）：只在申报通知和名单里找；选了几项，有其中任一项就列出。"""
     return and_(
         _kind_is(list(SUPPORT_KINDS)),
-        SUPPORT_RULES.filter(Document.rule_supports, Document.title, supports),
+        SUPPORT_RULES.filter(
+            Document.rule_supports, Document.title, supports, complete=_rules_complete
+        ),
     )
 
 
 def _industries_are(industries: list[str]):
     """产业方向筛选（按标题）：所有类型；选了几项，有其中任一项就列出。"""
-    return INDUSTRY_RULES.filter(Document.rule_industries, Document.title, industries)
+    return INDUSTRY_RULES.filter(
+        Document.rule_industries, Document.title, industries, complete=_rules_complete
+    )
 
 
 def _folds_guides(kind: str, types: str | None) -> bool:
@@ -1030,6 +1079,7 @@ def search_statement(
     项目类别只有申报通知和名单有：选了类别，政策、资讯与指南、其他就不再列出。支持方式（按标题）
     也一样；产业方向（按标题）所有类型都有。这三组都是同一组里多选取并集。
     """
+    note_rules_complete(session)  # 关注、提醒等不经过 SessionDep 的调用也在这里查一次
     if kind not in TABS:
         raise HTTPException(status_code=422, detail=f"页签不支持：{kind}")
     if time not in TIMES:

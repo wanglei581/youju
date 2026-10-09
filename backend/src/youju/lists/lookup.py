@@ -221,7 +221,8 @@ CANDIDATE_ROWS = 200
 def lookup_name_candidates(session: Session, value: str, *, limit: int = 20) -> list[str]:
     """简称候选：公开名单条目里名称包含这个词的企业和机构全称。
 
-    去重后按名称长度、字典序排，最多 20 个。查全部名单条目，不只看最近的（10/9 本机 20 万条实测：
+    去重后以这个词开头的排前面，再按名称长度、字典序排，最多 20 个。
+    查全部名单条目，不只看最近的（10/9 本机 20 万条实测：
     "海尔"查全部有 27 个候选，只查最近 2 万条只有 3 个）。两头带通配符的 LIKE 用不上索引，
     要把名称列扫一遍（本机约 0.2 秒），所以去重、排序、取前 CANDIDATE_ROWS 行都在数据库里做，
     不把命中的行全取回来；接口另有限流。条目入库时已校验是企业或机构，这里再校验一次，
@@ -241,8 +242,17 @@ def lookup_name_candidates(session: Session, value: str, *, limit: int = 20) -> 
         )
         .where(ListEntry.normalized_name.like(f"%{escaped}%", escape="!"))
         .group_by(ListEntry.normalized_name)
-        .order_by(func.char_length(ListEntry.normalized_name), ListEntry.normalized_name)
+        .order_by(
+            ListEntry.normalized_name.like(f"{escaped}%", escape="!").desc(),
+            func.char_length(ListEntry.normalized_name),
+            ListEntry.normalized_name,
+        )
         .limit(CANDIDATE_ROWS)
     )
-    names = [name for _, name, code in rows if valid_org_name(name, code)]
-    return sorted(names, key=lambda name: (len(name), name))[:limit]
+    # 以这个词开头的排前面（"海尔智家"先于"上海尔控科技"），再按名称长度、字典序
+    names = [
+        (not normalized.startswith(query), len(name), name)
+        for normalized, name, code in rows
+        if valid_org_name(name, code)
+    ]
+    return [name for *_, name in sorted(names)][:limit]
