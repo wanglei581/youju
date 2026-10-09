@@ -1,11 +1,13 @@
+const { loginOpen } = require('../../utils/consent.js');
 const api = require('../../utils/api.js');
 const payTerms = require('../../content/pay-terms.js');
 const { KINDS, pasteRows, consent } = require('../../utils/advisor.js');
 const pay = require('../../utils/pay.js');
 
 Page({
-  data: { kind: 'compare', loading: true, error: '', inputError: '', agreed: false, mode: 'paste', text: '', fileName: '', rowCount: 0, previewing: false, submitting: false, remaining: 0, maxRows: 50, pay: { visible: false } },
+  data: { loginOpen: loginOpen(), kind: 'compare', loading: true, error: '', inputError: '', agreed: false, mode: 'paste', text: '', fileName: '', rowCount: 0, previewing: false, submitting: false, remaining: 0, maxRows: 50, pay: { visible: false } },
   onLoad(query) {
+    if (!this.data.loginOpen) return;
     const kind = query.kind === 'track' ? 'track' : 'compare';
     this.setData({ kind, title: KINDS[kind] });
     wx.setNavigationBarTitle({ title: KINDS[kind] });
@@ -35,6 +37,7 @@ Page({
     if (this.poller) this.poller.stop();
   },
   load() {
+    if (!this.data.loginOpen) return;
     this.setData({ loading: true, error: '' });
     this.loadProducts();
     Promise.all([api.advisorStatus({ refresh: true }), consent()]).then(([res, agreed]) => {
@@ -126,7 +129,7 @@ Page({
   togglePayTerms(e) { this.renderPay({ termsAgreed: (e.detail.value || []).includes('agree') }); },
   payTermsDoc() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy(e) {
-    if (this.payBusy() || this.data.submitting || this.data.previewing) return;
+    if (!this.data.loginOpen || !this.data.pay.visible || this.payBusy() || this.data.submitting || this.data.previewing) return;
     if (!this.data.agreed) { this.terms(); return; }
     if (!payTerms.final || !(this.payState || {}).termsAgreed) {
       this.renderPay({ message: payTerms.final ? pay.TEXT.termsRequired : pay.TEXT.termsPending, error: true });
@@ -144,7 +147,7 @@ Page({
     } }));
   },
   startPay(product, rows) {
-    if (this.payBusy()) return;
+    if (!this.data.loginOpen || this.payBusy()) return;
     if (this.poller) this.poller.stop();
     this.payResume = false; this.payContext = null;
     this.renderPay({ busy: true, selected: product.productId, message: pay.TEXT.ordering, error: false });

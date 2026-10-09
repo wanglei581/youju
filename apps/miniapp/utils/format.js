@@ -55,6 +55,19 @@ function weekday(iso) {
   return WEEK[parseISO(iso).getUTCDay()];
 }
 
+// 带时区的时间（如服务端的 2026-10-06T06:30:00+08:00）→ 北京时间"10月6日 06:30"，不是今年的加上年份。
+// 自己解析，不依赖各平台 Date.parse 对时区和小数秒的支持；格式不对返回空串（页面就不写时间）。
+function clockText(iso, now) {
+  const m = typeof iso === 'string'
+    && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/.exec(iso.trim());
+  if (!m) return '';
+  const offset = m[7] === 'Z' ? 0 : (m[8] === '-' ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10])) * 60000;
+  const stamp = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)) - offset;
+  const d = beijingDate(new Date(stamp));
+  const year = d.getUTCFullYear() === beijingDate(now).getUTCFullYear() ? '' : `${d.getUTCFullYear()}年`;
+  return `${year}${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
 // 截止提示：14 天内红字，7 天内再加红底；已过期单独标出
 function dueTone(days) {
   if (days === undefined || days === null) return '';
@@ -74,6 +87,23 @@ function dueInfo(deadline, now) {
     tone: dueTone(days),
     text: days < 0 ? `${at}已截止` : `${at}截止 · 剩${days}天`,
   };
+}
+
+// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）：
+// 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
+// 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
+const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
+const NOTE_SEE_ORIGINAL = '截止时间见原文';
+function deadlineNote(doc) {
+  if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
+  return doc.deadline_state === 'unverified' ? NOTE_UNVERIFIED : NOTE_SEE_ORIGINAL;
+}
+
+// 截止雷达、申报日历没有内容时的说明；total 是服务端给的已核对条数（不是数字时不写条数）
+function verifyingNote(total) {
+  return typeof total === 'number' && total >= 0
+    ? `截止日期正在人工核对中，目前已核对 ${total} 条`
+    : '截止日期正在人工核对中';
 }
 
 // 类型标签颜色：申报=蓝，名单=橙，政策=绿
@@ -117,5 +147,6 @@ function shortTime(iso) {
 
 module.exports = {
   shortTime,
-  todayISO, daysUntil, monthDay, cnDate, weekday, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+  todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL,
 };

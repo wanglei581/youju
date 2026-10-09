@@ -1,5 +1,9 @@
-<view class="top">
-  <view class="nav"><view class="nav-back" bindtap="goBack"><t-icon name="chevron-left" size="42rpx" /></view><text class="nav-title">截止雷达</text></view>
+<!-- 和名单看板一样用自定义导航：标题和返回只在蓝色顶栏里出现一次，下面一行是说明 -->
+<view class="top" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav" style="height: {{navHeight}}px">
+    <view class="nav-back" bindtap="goBack" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" /></view>
+    <text class="nav-title">截止雷达</text>
+  </view>
   <view class="sub">只看核对过的申报截止日期</view>
 </view>
 <notice-bar />
@@ -20,7 +24,11 @@
     <view class="deadline"><text>{{item.label}} {{item.date}}{{item.time ? ' ' + item.time : ''}}</text><text class="left">剩 {{item.remaining_days}} 天</text></view>
     <view class="footline"><text wx:if="{{item.file_number}}">{{item.file_number}}</text><text class="export" data-id="{{item.id}}" catchtap="exportOne">导出</text></view>
   </view>
-  <view wx:if="{{!items.length && !loading && !error}}" class="empty">暂无符合条件的项目</view>
+  <view wx:if="{{!items.length && !loading && !error}}" class="empty">
+    <view wx:if="{{province || dept || support}}">暂无符合条件的项目</view>
+    <view class="{{province || dept || support ? 'empty-note' : ''}}">{{verifyingNote}}</view>
+    <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
+  </view>
   <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>
 <view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期，最终以原文为准。</view>

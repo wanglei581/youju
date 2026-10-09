@@ -176,6 +176,21 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_repost_groups(_: argparse.Namespace) -> int:
+    """按转发归组规则增量更新转发组（D-055）：新组和新加入的版本都待确认，确认后才对外合并。"""
+    from youju.repost import rebuild
+
+    with session_factory()() as session:
+        summary = rebuild(session)
+        session.commit()
+    print(
+        f"转发归组：规则提出 {summary.proposals} 组；新建 {summary.created} 组，新加入 "
+        f"{summary.joined} 个版本，去掉规则不再支持的 {summary.dropped} 个，转给主文件 "
+        f"{summary.moved} 个；需复核 {summary.needs_review} 组，所有组等人工确认"
+    )
+    return 0
+
+
 def _cmd_extract_fields(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.fields import extract_existing
@@ -205,10 +220,15 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     usage_ok = False
     try:
         with session_factory()() as session:
-            report = run_ai_checks(session, client, limit=args.limit)
+            report = run_ai_checks(session, client, limit=args.limit, due_first=args.due_first)
     finally:
         usage_ok = _finish_ai(client, "check")
     print(f"AI 检查 {report.documents} 份文件（模型 {client.model}）")
+    if args.due_first is not None:
+        print(
+            f"  其中先补跑 {report.due_soon_documents} 份："
+            f"有 {args.due_first} 天内截止的待核对候选、AI 还没抽过截止"
+        )
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
         f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
@@ -220,6 +240,43 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     )
     for doc_id, title, rule, ai_kind in report.kind_disagree[:20]:
         print(f"  类型不一致 #{doc_id} 规则={rule} AI={ai_kind}：{title[:60]}")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
+def _cmd_extract_conditions(args: argparse.Namespace) -> int:
+    from youju.ai import get_chat_client
+    from youju.conditions import run_extraction
+
+    # 一份清单输出较长（每条带原文原句），单次请求多等一会儿
+    client = get_chat_client(timeout=90.0)
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过申报条件抽取")
+        return 0
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = run_extraction(session, client, limit=args.limit, due_days=args.due_days)
+    finally:
+        usage_ok = _finish_ai(client, "conditions")
+    print(
+        f"申报条件：抽取 {report.documents} 份申报通知（模型 {client.model}），"
+        f"其中 {args.due_days} 天内截止的 {report.due_soon} 份排在前面"
+    )
+    print(
+        f"  送核对 {report.lists} 份、{report.items} 条（都要人工核对、整份确认后才对外）；"
+        f"没有条目的 {report.empty} 份"
+    )
+    reasons = "、".join(f"{k} {v}" for k, v in sorted(report.dropped_reasons.items()))
+    print(f"  没通过原文核对、已丢弃 {report.dropped} 条{f'（{reasons}）' if reasons else ''}")
+    if report.revived:
+        print(f"  正文改回以前那一版、恢复旧清单 {report.revived} 份（明细见日志）")
+    print(
+        f"  出错 {report.errors} 份；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
     if report.stopped_early:
         print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
         return 1
@@ -282,30 +339,55 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
-    """按当前的标题规则重算每份文件的类型（rule_kind），只写有变化的。规则改了之后要跑一次；
-    admin 服务每次启动时在迁移之后自动跑。"""
+    """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
+    （rule_supports、rule_industries），只写有变化的。规则改了之后要跑一次；admin 服务每次启动时
+    在迁移之后自动跑。"""
     from collections import defaultdict
 
     from sqlalchemy import update
 
+    from youju.categories import doc_category
     from youju.classify import doc_kind
+    from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
     with session_factory()() as session:
-        rows = session.execute(select(Document.id, Document.title, Document.rule_kind)).all()
-        changed: dict[str, list[int]] = defaultdict(list)
-        for doc_id, title, kind in rows:
-            new = doc_kind(title)
-            if new != kind:
+        rows = session.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.rule_kind,
+                Document.rule_category,
+                Document.rule_supports,
+                Document.rule_industries,
+            )
+        ).all()
+        changed: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
+        for doc_id, title, *stored in rows:
+            new = (
+                doc_kind(title),
+                doc_category(title),
+                SUPPORT_RULES.stored(title),
+                INDUSTRY_RULES.stored(title),
+            )
+            if new != tuple(stored):
                 changed[new].append(doc_id)
-        for kind, ids in changed.items():
+        for (kind, category, supports, industries), ids in changed.items():
             for start in range(0, len(ids), 1000):
                 session.execute(
                     update(Document)
                     .where(Document.id.in_(ids[start : start + 1000]))
-                    .values(rule_kind=kind)
+                    .values(
+                        rule_kind=kind,
+                        rule_category=category,
+                        rule_supports=supports,
+                        rule_industries=industries,
+                    )
                 )
         session.commit()
-    print(f"按当前规则重算文件类型：共 {len(rows)} 份，更新 {sum(map(len, changed.values()))} 份")
+    print(
+        f"按当前规则重算文件类型、项目类别和筛选标签：共 {len(rows)} 份，"
+        f"更新 {sum(map(len, changed.values()))} 份"
+    )
     return 0
 
 
@@ -497,6 +579,32 @@ def _cmd_compare_lists(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_quality_sample(args: argparse.Namespace) -> int:
+    from youju.quality import sample_csv
+
+    with session_factory()() as session:
+        data, rows = sample_csv(session, args.kind, n=args.n, seed=args.seed)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_bytes(data)
+    label = "通知" if args.kind == "notices" else "名单比对"
+    print(f"抽检表（{label}）已写入 {args.out}：{rows} 行（n={args.n}，seed={args.seed}）")
+    return 0
+
+
+def _positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("至少 1")
+    return number
+
+
+def _non_negative(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("不能小于 0")
+    return number
+
+
 def _cmd_track_clients(args: argparse.Namespace) -> int:
     from youju.track import export_track_excel, read_customer_profiles, track_clients
 
@@ -531,6 +639,67 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
         counts = run_cleanup(session)
     print("按保存期限清理：" + "，".join(f"{name} {count} 条" for name, count in counts.items()))
     return 0
+
+
+def _cmd_cache_attachments(args: argparse.Namespace) -> int:
+    """附件副本（youju/attachments.py）：下载近 90 天文件的附件存到对象存储 attachments/，
+    清理过期的。原网站下载失败是常事，记在表里、按时重试，不算任务失败；
+    对象存储出错才按失败退出（job.sh 提醒）。"""
+    from youju.attachments import cache_attachments
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法存附件副本")
+        return 1
+    with session_factory()() as session:
+        report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
+    if report.skipped:
+        print("附件副本：另一个附件任务（上一轮或手动重查）正在运行，本轮跳过")
+        return 0
+    failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
+    print(
+        f"附件副本：新登记 {report.added}，本轮下载 {report.checked}（{report.bytes} 字节），"
+        f"新存或更新 {report.stored}，未变 {report.unchanged}，删掉 {report.removed}，"
+        f"到期待下轮 {report.deferred}；没存成的原因：{failed}"
+    )
+    recheck = report.recheck
+    if recheck and (recheck.checked or recheck.unreadable):
+        dropped = "，".join(f"{code} {n}" for code, n in recheck.dropped.most_common()) or "无"
+        print(
+            f"旧规则版本的副本按新规则重查 {recheck.checked} 个：恢复提供 {recheck.kept}，"
+            f"不再提供 {sum(recheck.dropped.values())}（{dropped}）；"
+            f"读不到、下轮再查 {recheck.unreadable}"
+        )
+    if report.storage_error:
+        print(report.storage_error)
+        return 1
+    return 0
+
+
+def _cmd_recheck_attachments(args: argparse.Namespace) -> int:
+    """按现在的规则（个人信息、图片等）重新检查对象存储里已存的附件副本，不合格的改成不提供副本、
+    从对象存储删掉。规则收紧后跑一次；--dry-run 只报告不改。"""
+    from youju.attachments import recheck_copies
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法读取附件副本")
+        return 1
+    with session_factory()() as session:
+        report = recheck_copies(session, env, dry_run=args.dry_run)
+    if report.skipped:
+        print("附件副本的定时任务正在运行，这次没有重查，请稍后再跑")
+        return 1
+    dropped = "，".join(f"{code} {n}" for code, n in report.dropped.most_common()) or "无"
+    action = "（只检查，没有改动）" if args.dry_run else f"，从对象存储删掉 {report.removed} 个"
+    print(
+        f"附件副本重新检查：检查 {report.checked} 个，合格 {report.kept}；"
+        f"不合格 {sum(report.dropped.values())} 个（{dropped}），"
+        f"涉及 {report.rows} 条附件改为不提供副本{action}；读不到的 {report.unreadable} 个"
+    )
+    if report.storage_error:
+        print(report.storage_error)
+    return 1 if report.storage_error or report.unreadable else 0
 
 
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
@@ -613,25 +782,36 @@ def _cmd_weekly_digest(args: argparse.Namespace) -> int:
     from youju.models import DigestProfile
 
     stamp = weekly.now()
+    reminder = args.kind == "reminder"
+    weekday = stamp.astimezone(weekly.BEIJING).isoweekday()
     try:
-        weekly.week_interval(args.week, stamp)
+        weekly.interval(args.kind, args.week, stamp)
+        if args.scheduled and reminder and weekday < weekly.REMINDER_WEEKDAY:
+            print("临期提醒每周四生成、周五到周日补跑，今天不安排")
+            return 0
         with session_factory()() as session:
             stmt = select(DigestProfile).where(DigestProfile.enabled.is_(True))
             if args.profile:
                 stmt = select(DigestProfile).where(DigestProfile.name == args.profile)
-            if args.scheduled:
-                stmt = stmt.where(
-                    DigestProfile.weekday == stamp.astimezone(weekly.BEIJING).isoweekday()
-                )
+            if args.scheduled and not reminder:
+                stmt = stmt.where(DigestProfile.weekday == weekday)
             profiles = session.scalars(stmt.order_by(DigestProfile.id)).all()
             if args.profile and not profiles:
                 print("没有找到周报方案")
                 return 1
             for profile in profiles:
-                result = weekly.generate(session, profile.id, args.week, stamp)
+                # 临期提醒的定时补跑只补本周还没有的，已生成（含已发布）的不覆盖。
+                result = weekly.generate(
+                    session,
+                    profile.id,
+                    args.week,
+                    stamp,
+                    args.kind,
+                    only_missing=args.scheduled and reminder,
+                )
                 print(
                     f"方案 #{profile.id}：{result.reason}"
-                    + (f"（周报 #{result.issue.id}）" if result.issue else "")
+                    + (f"（{weekly.KINDS[args.kind]} #{result.issue.id}）" if result.issue else "")
                 )
             if not profiles:
                 print("没有需要生成的启用方案")
@@ -673,13 +853,39 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
 
+    sub.add_parser(
+        "repost-groups",
+        help="把同一份部里通知的各地版本归成转发组（待人工确认；所有组必须人工确认）",
+    ).set_defaults(func=_cmd_repost_groups)
+
     p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_fields)
 
     p = sub.add_parser("ai-check", help="AI 做类型判断和截止抽取，和规则互相印证（没配密钥时跳过）")
     p.add_argument("--limit", type=int, default=300, help="本轮最多检查多少份文件")
+    p.add_argument(
+        "--due-first",
+        type=_non_negative,
+        metavar="DAYS",
+        help="先补跑 DAYS 天内截止的待核对候选所在的文件（AI 还没抽过截止的），再查其他文件；"
+        "合计不超过 --limit。只写 AI 记录，不改候选的核对状态",
+    )
     p.set_defaults(func=_cmd_ai_check)
+
+    p = sub.add_parser(
+        "extract-conditions",
+        help="后台模型从申报通知正文抽申报条件（每条带原文引用），送核对台；没配密钥时跳过",
+    )
+    p.add_argument("--limit", type=int, default=60, help="本轮最多抽取多少份通知")
+    p.add_argument(
+        "--due-days",
+        type=_non_negative,
+        default=30,
+        metavar="DAYS",
+        help="DAYS 天内截止的通知排在前面先抽（默认 30）",
+    )
+    p.set_defaults(func=_cmd_extract_conditions)
 
     p = sub.add_parser(
         "audit-deadlines",
@@ -690,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "reclassify",
-        help="按当前的标题规则重算每份文件的类型（规则改了之后跑；admin 启动时自动跑）",
+        help="按当前标题规则重算类型、项目类别和筛选标签（规则改了之后跑；admin 启动时自动跑）",
     ).set_defaults(func=_cmd_reclassify)
 
     p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
@@ -743,16 +949,39 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
     p.set_defaults(func=_cmd_compare_lists)
 
+    p = sub.add_parser(
+        "quality-sample", help="生成数据质量抽检表（CSV）：抽样并先做程序核对，其余由人工看"
+    )
+    p.add_argument("--kind", choices=("notices", "compare"), required=True, help="通知或名单比对")
+    p.add_argument("--n", type=_positive, default=200, help="抽多少条，默认 200")
+    p.add_argument("--seed", type=int, default=1, help="抽样种子，同一种子同一份结果，默认 1")
+    p.add_argument("--out", type=Path, required=True, help="输出 CSV 文件")
+    p.set_defaults(func=_cmd_quality_sample)
+
     p = sub.add_parser("track-clients", help="按客户画像生成多客户在报项目跟进表")
     p.add_argument("file", type=Path, help="客户画像文件（.xlsx 或 .csv）")
     p.add_argument("-o", "--output", type=Path, required=True, help="输出 Excel 文件")
     p.set_defaults(func=_cmd_track_clients)
 
     sub.add_parser("report", help="打印来源健康和条目统计").set_defaults(func=_cmd_report)
-    p = sub.add_parser("weekly-digest", help="生成固定模板政策周报草稿，供人工复制发布")
+    p = sub.add_parser("weekly-digest", help="生成固定模板政策周报或临期提醒草稿，供人工复制发布")
     p.add_argument("--profile", help="方案名称；未指定时生成全部启用方案")
-    p.add_argument("--week", type=date.fromisoformat, help="统计周的周一，例如 2026-09-28")
-    p.add_argument("--scheduled", action="store_true", help="仅生成今天安排的方案（供定时任务用）")
+    p.add_argument(
+        "--kind",
+        choices=("weekly", "reminder"),
+        default="weekly",
+        help="weekly：周报（默认）；reminder：临期提醒，列出未来 7 天内截止且已核对的申报通知",
+    )
+    p.add_argument(
+        "--week",
+        type=date.fromisoformat,
+        help="统计周的周一，例如 2026-09-28；临期提醒只能是本周周一，留空即本周",
+    )
+    p.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="仅生成今天安排的方案（供定时任务用）；临期提醒周四至周日运行，本周已生成的跳过",
+    )
     p.set_defaults(func=_cmd_weekly_digest)
     p = sub.add_parser(
         "daily-report",
@@ -775,6 +1004,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )
+    p = sub.add_parser(
+        "cache-attachments",
+        help="下载近 90 天文件的附件存到对象存储，供小程序直接打开；清理过期的副本",
+    )
+    p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
+    p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
+    p.set_defaults(func=_cmd_cache_attachments)
+    p = sub.add_parser(
+        "recheck-attachments",
+        help="按现在的规则重新检查已存的附件副本，不合格的不再提供并从对象存储删掉（规则收紧后跑一次）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只检查、报告，不改表、不删文件")
+    p.set_defaults(func=_cmd_recheck_attachments)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")

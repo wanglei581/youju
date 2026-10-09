@@ -1,16 +1,29 @@
 <notice-bar />
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text wx:if="{{takenDown}}" class="link retry" bindtap="goBack">返回</text><text wx:else class="link retry" bindtap="load">重试</text></view>
-<view wx:elif="{{!doc}}" class="card empty">正在加载…</view>
-<view wx:if="{{loading && doc}}" class="card empty">正在加载…</view>
+<!-- 加载中：灰色占位块占住标题和要点的位置 -->
+<view wx:if="{{!error && (loading || !doc)}}" aria-label="正在加载">
+  <view class="card head">
+    <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+    <view class="sk sk-title"></view>
+    <view class="sk sk-title sk-line--short"></view>
+    <view class="sk sk-meta"></view>
+  </view>
+  <view class="card sk-card">
+    <view class="sk sk-section"></view>
+    <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk sk-line"></view>
+  </view>
+</view>
 <block wx:if="{{doc && !loading}}">
   <view class="card head">
     <view class="tags">
       <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>
+      <text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}</text>
       <text class="region">{{doc.region}}</text>
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
-    <view wx:if="{{doc.kind === '名单'}}" class="weak status-note">名单状态按标题用词标注，公示期和当前效力以原文为准</view>
+    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
+    <view wx:if="{{standardKey}}" class="standard-link link" bindtap="openStandard" aria-role="button">对照国家认定条件原文<t-icon name="chevron-right" size="28rpx" color="#2A5CE0" /></view>
   </view>
 
   <view wx:if="{{due}}" class="card due-card">
@@ -22,14 +35,14 @@
       <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
-    <view wx:if="{{due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
+    <view wx:if="{{loginOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
     </view>
   </view>
-  <view wx:elif="{{doc.kind === '申报通知' && !changes.length}}" class="card due-card">
+  <view wx:elif="{{dueNote && !changes.length}}" class="card due-card">
     <view class="due-label">申报截止</view>
-    <view class="due-unverified">截止时间见原文</view>
+    <view class="due-unverified">{{dueNote}}</view>
   </view>
 
   <view wx:if="{{changes.length}}" class="card change-card">
@@ -37,6 +50,26 @@
       <view class="change-text">原定{{item.label}} {{item.dateText}} 已{{item.reason}}<text wx:if="{{item.newDocId}}">，以新通知为准</text></view>
       <view wx:if="{{item.newTitle}}" class="change-new">{{item.newTitle}} ›</view>
     </view>
+  </view>
+
+  <!-- 转发版本（D-055）：同一份部里通知的各地版本，截止按版本列出、各自核对，不同版本的日期不互相套用；
+       点一行打开那一版自己的详情，原文链接也是那一版自己的 -->
+  <view wx:if="{{versions.length}}" class="card ver-card">
+    <view class="section-title">各版本的截止<text class="weak excerpt-sec">按各版本原文分别核对</text></view>
+    <view wx:if="{{upstream}}" class="ver-upstream">{{upstream}}</view>
+    <view wx:for="{{versions}}" wx:key="id" class="ver" data-id="{{item.id}}" data-current="{{item.current}}" bindtap="openVersion" aria-role="{{item.current ? 'text' : 'link'}}" aria-label="{{item.label}}：{{item.deadline}}">
+      <view class="ver-top">
+        <text class="ver-label">{{item.label}}</text>
+        <text wx:if="{{item.current}}" class="ver-here">本页</text>
+        <view wx:if="{{!item.current}}" class="ver-go"><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
+      </view>
+      <view class="ver-due {{item.verified ? '' : 'ver-due--none'}}">{{item.deadline}}</view>
+      <view class="ver-meta">
+        <text class="ver-meta-text">{{item.meta}}</text>
+        <text class="ver-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</text>
+      </view>
+    </view>
+    <view class="weak ver-note">各版本的推荐截止、报送要求可能不同，以各自原文为准</view>
   </view>
 
   <view class="card">
@@ -52,7 +85,7 @@
   </view>
 
   <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
-    <view class="section-title">支持方式</view>
+    <view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文</text></view>
     <view class="support-tags">
       <view wx:for="{{doc.fields.support}}" wx:key="*this" class="support-tag {{supportExpanded === item ? 'support-tag--on' : ''}}" data-label="{{item}}" bindtap="toggleSupport">{{item}}</view>
     </view>
@@ -63,6 +96,16 @@
     <view class="section-title">申报对象（原文摘录）</view>
     <view class="audience-text">{{doc.fields.audience.text}}</view>
     <view class="weak audience-note">条件可能未列全，以原文为准</view>
+  </view>
+
+  <!-- 申报条件：只显示人工逐条核对、整份确认过的条目；每条是类别和通知原文里的原句（逐字引用），不显示概括的说法；不作能否申报的判断 -->
+  <view wx:if="{{conds.length}}" class="card cond-card">
+    <view class="section-title">申报条件<text class="weak excerpt-sec">（已核对原文）</text></view>
+    <view wx:for="{{conds}}" wx:key="index" class="cond">
+      <text class="cond-cat">{{item.showCat ? item.category : ''}}</text>
+      <text class="cond-text" user-select>{{item.quote}}</text>
+    </view>
+    <view class="weak cond-note">条件以原文为准，不作为能否申报的判断</view>
   </view>
 
   <view wx:if="{{doc.body}}" class="card">
@@ -78,14 +121,18 @@
     <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
   </view>
 
-  <view wx:if="{{doc.attachments.length}}" class="card">
-    <view class="section-title">附件 {{doc.attachments.length}}</view>
-    <view wx:for="{{doc.attachments}}" wx:key="name" class="att">
+  <view wx:if="{{atts.length}}" class="card">
+    <view class="section-title">附件 {{atts.length}}</view>
+    <view wx:for="{{atts}}" wx:key="index" class="att" hover-class="att--pressed" data-index="{{index}}" bindtap="openAttachment" aria-role="button">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
-      <text class="att-name">{{item.name}}</text>
+      <view class="att-body">
+        <text class="att-name">{{item.name}}</text>
+        <text wx:if="{{item.meta}}" class="att-meta">{{item.meta}}</text>
+      </view>
+      <text class="att-action {{item.canOpen ? 'att-action--open' : ''}}">{{item.action}}</text>
     </view>
     <view class="att-foot">
-      <text>附件在原文页面下载</text>
+      <text>{{attNote}}</text>
       <view class="copy" bindtap="copy"><t-icon name="copy" size="28rpx" />复制原文链接</view>
     </view>
   </view>
@@ -102,9 +149,10 @@
   </view>
 
 
+  <view wx:if="{{!loginOpen}}" style="height: 220rpx"></view>
   <view class="bar">
     <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
-    <view class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
+    <view wx:if="{{loginOpen}}" class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
     <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
   </view>
 </block>

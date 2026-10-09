@@ -38,8 +38,12 @@
 </view>
 
 <view wx:if="{{!shown.length}}" class="card empty">
-  <view class="empty-title">这个时间段没有截止的申报事项</view>
+  <view class="empty-title">{{items.length ? '这个时间段没有截止的申报事项' : '暂时没有未截止的申报事项'}}</view>
   <view wx:if="{{nearest}}" class="muted empty-sub">最近的截止在 {{nearest.date}}，还有 {{nearest.days}} 天</view>
+  <block wx:if="{{!items.length}}">
+    <view class="muted empty-sub">{{verifyingNote}}</view>
+    <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
+  </block>
 </view>
 
 <view wx:for="{{shown}}" wx:key="id" class="card item">
@@ -54,7 +58,7 @@
       <view class="item-title">{{item.title}}</view>
       <view class="muted item-what">{{item.what}}</view>
     </view>
-    <view class="bell {{reminded[item.docId] ? 'bell--on' : ''}} {{item.days < 3 ? 'bell--off' : ''}}" data-id="{{item.id}}" data-days="{{item.days}}" bindtap="toggleRemind" aria-role="button" aria-label="设截止提醒">
+    <view wx:if="{{loginOpen}}" class="bell {{reminded[item.docId] ? 'bell--on' : ''}} {{item.days < 3 ? 'bell--off' : ''}}" data-id="{{item.id}}" data-days="{{item.days}}" bindtap="toggleRemind" aria-role="button" aria-label="设截止提醒">
       <t-icon name="notification" size="34rpx" />
     </view>
   </view>
@@ -73,4 +77,5 @@
 </view>
 </block>
 <view class="foot">只列人工核对过的截止时间，逐条取自原文。一个通知有多个截止时间时，按申报单位的截止时间排列，其余写在下方。申报请在主管部门的系统办理，有据不提供填报入口。</view>
+<view wx:if="{{!loginOpen}}" style="height: 60rpx"></view>
 <tool-fab />

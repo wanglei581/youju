@@ -19,7 +19,7 @@
 ## 目录
 
 - `apps/miniapp/`：微信原生小程序（四栏骨架）。
-- `services/api/`：本地样机 API 与资料管理台（标准库 HTTP + SQLite），将按总方案 §6 重写为 FastAPI + PostgreSQL。
+- `backend/`：当前后端与 API，见[后端 README](backend/README.md)；早期 SQLite 样机已于 2026-10 移除。
 - `docs/`：总方案、执行手册、决策记录、数据来源、调研记录。
 - `designs/产品原型/`：可点击的交互原型，使用明确标注的虚构样例。
 

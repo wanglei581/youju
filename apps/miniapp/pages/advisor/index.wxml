@@ -1,4 +1,6 @@
 <notice-bar />
+<feature-closed wx:if="{{!loginOpen}}" />
+<block wx:if="{{loginOpen}}">
 <view wx:if="{{context}}" class="card advisor-card advisor-context">
   <view class="context-row"><text class="context-label">{{context.label}}</text><button class="context-clear" bindtap="clearContext">清除</button></view>
   <view class="context-note">以下工具按你提交的客户名单处理，与当前通知无关</view>
@@ -10,7 +12,8 @@
   <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
     <view class="advisor-title">{{item.title}}</view>
     <view class="advisor-text">{{item.description}}</view>
-    <view class="advisor-text muted">今天剩余 {{item.remaining}} 次 · 每次最多 {{item.maxRows}} 行</view>
+    <view wx:if="{{item.kind === 'compare'}}" class="advisor-text muted">每月 3 次免费，每次 50 家以内 · 本月剩余 {{item.remaining}} 次</view>
+    <view wx:else class="advisor-text muted">今天剩余 {{item.remaining}} 次 · 每次最多 {{item.maxRows}} 行</view>
     <button class="advisor-button btn-primary" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
   </view>
   <view class="card advisor-card">
@@ -26,3 +29,5 @@
 </block>
 <view wx:else class="card advisor-card muted">暂时没有可用工具</view>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>
+
+</block>

@@ -742,3 +742,28 @@ def test_role_guard_and_admin_throttle(client, seeded, monkeypatch, caplog, tmp_
         client.get("/api/admin/deadlines/count", headers=spoof)
     other = {"X-Admin-Token": "t" * 32, "X-Original-Forwarded-For": "192.0.2.1"}
     assert client.get("/api/admin/deadlines/count", headers=other).status_code == 200
+
+
+def test_health_reports_db_error_type_and_code_only(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from youju.api import app as app_module
+    from youju.db import get_session
+
+    class _Orig(Exception):
+        pass
+
+    class _Session:
+        def execute(self, *_a, **_k):
+            err = Exception("wrapper with secret-host and user")
+            err.orig = _Orig(1045, "Access denied for user 'x'@'10.0.0.1'")
+            raise err
+
+    app_module.app.dependency_overrides[get_session] = lambda: _Session()
+    try:
+        response = TestClient(app_module.app).get("/health")
+    finally:
+        app_module.app.dependency_overrides.pop(get_session, None)
+    assert response.status_code == 503
+    assert response.json() == {"status": "db_error", "error": "_Orig", "code": 1045}
+    assert "secret" not in response.text and "10.0.0.1" not in response.text

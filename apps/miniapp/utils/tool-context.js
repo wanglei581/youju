@@ -1,4 +1,4 @@
-const FILTER_KEYS = ['regions', 'types', 'status', 'time', 'depts', 'open'];
+const FILTER_KEYS = ['regions', 'levels', 'types', 'categories', 'supports', 'industries', 'status', 'time', 'depts', 'open'];
 function decode(value) {
   try { return decodeURIComponent(value); } catch (e) { return value; }
 }
@@ -8,6 +8,8 @@ function searchContext(q, kind, picked) {
   return {
     q: (q || '').trim(), kind: kind || 'all',
     regions: (values.region || []).join(','), types: (values.type || []).join(','),
+    levels: (values.level || []).join(','), categories: (values.category || []).join(','),
+    supports: (values.support || []).join(','), industries: (values.industry || []).join(','),
     status: (values.status || []).join(','), time: (values.time || [])[0] || '',
     depts: (values.dept || []).join(','), open: (values.open || []).includes('只看未截止') ? 1 : 0,
   };

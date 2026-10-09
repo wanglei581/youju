@@ -13,7 +13,6 @@
 .item-title { font-size: 29rpx; font-weight: 600; line-height: 1.55; }
 .meta { margin-top: 10rpx; color: var(--t2); font-size: 24rpx; line-height: 1.5; }
 .item-foot { margin-top: 10rpx; display: flex; align-items: center; justify-content: space-between; color: var(--t2); font-size: 24rpx; }
-.wording { color: var(--brand); }
 .count-unparsed { color: var(--t3); font-size: 22rpx; }
 .empty { padding: 48rpx 20rpx; text-align: center; color: var(--t2); font-size: 26rpx; line-height: 1.6; }
 .retry { margin-left: 16rpx; color: var(--brand); }

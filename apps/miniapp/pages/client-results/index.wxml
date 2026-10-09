@@ -1,0 +1,29 @@
+<notice-bar />
+<view class="card result-head">
+  <view class="section-title">地区与产业检索结果</view>
+  <view class="muted subtitle">{{subtitle}}</view>
+  <view class="explanation">仅按所选地区和产业方向检索通知，不作资质判定；申报要求以官方当期原文为准。</view>
+  <view class="switch-row"><text>不限产业方向</text><switch checked="{{ignoreIndustry}}" color="#2A5CE0" bindchange="toggleIndustry" aria-label="不限产业方向" /></view>
+  <view class="weak tag-note">{{tagNote}}</view>
+  <view class="weak tag-note">“只看未截止”只包含截止日期已人工核对的通知。</view>
+</view>
+<view class="card results">
+  <view wx:for="{{items}}" wx:key="id" class="result-item">
+    <doc-row doc="{{item}}" today="{{today}}" last="{{true}}" />
+    <view class="condition-link" data-id="{{item.id}}" bindtap="toggleConditions" aria-role="button" aria-expanded="{{!!states[item.id].open}}">{{states[item.id].loaded && !states[item.id].rows.length ? '条件未核对，见原文' : states[item.id].open ? '收起条件原文' : '查看条件原文'}}<t-icon name="{{states[item.id].open ? 'chevron-up' : 'chevron-down'}}" size="28rpx" color="#2A5CE0" /></view>
+    <view wx:if="{{states[item.id].open}}" class="conditions">
+      <view wx:if="{{states[item.id].loading}}" class="weak">正在加载条件…</view>
+      <view wx:elif="{{states[item.id].error}}" class="link" data-id="{{item.id}}" bindtap="toggleConditions">{{states[item.id].error}}</view>
+      <block wx:else>
+        <view wx:if="{{states[item.id].rows.length}}" class="weak condition-caption">条件原文（已人工核对）</view>
+        <view wx:for="{{states[item.id].rows}}" wx:for-item="row" wx:key="quote" class="quote"><text user-select><text wx:for="{{row.segments}}" wx:for-item="seg" wx:key="index" class="{{seg.hit ? 'highlight' : ''}}">{{seg.text}}</text></text></view>
+        <view wx:if="{{!states[item.id].rows.length}}" class="weak">条件未核对，见原文</view>
+      </block>
+    </view>
+  </view>
+  <view wx:if="{{loading}}" class="message weak">正在加载…</view>
+  <view wx:elif="{{error}}" class="message">{{error}}<text wx:if="{{client}}" class="link" bindtap="retry">　重试</text></view>
+  <view wx:elif="{{!items.length}}" class="message muted">暂无检索结果，可切换“不限产业方向”再查。</view>
+  <view wx:elif="{{items.length < total}}" class="message link" bindtap="loadMore" aria-role="button">加载更多</view>
+</view>
+<view class="page-bottom"></view>

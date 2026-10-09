@@ -32,16 +32,27 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
+from youju.api import conditions as conditions_api
+from youju.api import repost as repost_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
+from youju.api.attachments import router as attachments_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.pay import push_router
 from youju.api.pay import router as pay_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
-from youju.classify import doc_kind, effective_kind, list_status
+from youju.classify import (
+    AI_KINDS,
+    SUGGEST_WORDS,
+    comparable_kind,
+    doc_kind,
+    effective_kind,
+    kind_suggestion,
+    list_status,
+)
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -78,6 +89,7 @@ app.include_router(v1_router)
 app.include_router(advisor_router)
 app.include_router(exports_router)
 app.include_router(me_router)
+app.include_router(attachments_router)
 
 app.include_router(pay_router)
 app.include_router(push_router)
@@ -323,6 +335,7 @@ class SourceOut(BaseModel):
     id: int
     level: str
     province: str
+    city: str | None = None
     dept: str
     dept_full_name: str
     column_name: str
@@ -337,6 +350,7 @@ class SourceOut(BaseModel):
 
 
 class DocumentOut(BaseModel):
+    level: str
     id: int
     title: str
     url: str
@@ -345,6 +359,7 @@ class DocumentOut(BaseModel):
     is_baseline: bool
     source_id: int
     province: str
+    city: str | None = None
     dept: str
     column_name: str
 
@@ -379,6 +394,21 @@ class ApprovedDeadlineOut(BaseModel):
     time: str | None
 
 
+class RepostSiblingDeadlineOut(BaseModel):
+    kind: str
+    date: date
+    time: str | None
+    status: str
+
+
+class RepostSiblingOut(BaseModel):
+    document_id: int
+    label: str
+    title: str
+    url: str
+    deadlines: list[RepostSiblingDeadlineOut]
+
+
 class PendingDeadlineOut(BaseModel):
     id: int
     document_id: int
@@ -396,6 +426,22 @@ class PendingDeadlineOut(BaseModel):
     ai_agrees: bool | None = None
     # 质检退回的：当时的存疑原因（重新核对时要看）
     reopen_note: str | None = None
+    # AI 预审提示（只读已有的 AI 检查记录，见 youju/ai/hints.py）：suggest 建议通过 / agree /
+    # kind_mismatch / mismatch / ai_only / unchecked；hint_text 是页面标签。只用来排序和提示，
+    # 通过与否仍由人在核对台点
+    hint: str = "unchecked"
+    hint_text: str = "AI 未核"
+    # 核对顺序的排序键（按字符串升序）；order=priority、group 时用作翻页游标 after
+    order_key: str = ""
+    # 转发组（D-055）：这份通知所在的组（不论是否已确认合并）、这一版的叫法（江西版）、事项名，
+    # 同组其他版本和它们各自的截止候选。只用来对照，截止仍逐条核对、不互相套用
+    repost_group_id: int | None = None
+    repost_label: str | None = None
+    repost_topic: str | None = None
+    repost_siblings: list[RepostSiblingOut] = []
+    # 同组别的版本已通过同类型、同日期、同时间的截止时的提示（如“同组福建版已核对过同一日期”）；
+    # 只是提示，这一条仍要看本版的证据句后自己点通过
+    repost_same: str | None = None
 
 
 class ReviewedDeadlineOut(BaseModel):
@@ -516,6 +562,8 @@ def _document_out(doc: Document, source: Source) -> DocumentOut:
         is_baseline=doc.is_baseline,
         source_id=source.id,
         province=source.province,
+        city=source.city,
+        level=source.level,
         dept=source.dept,
         column_name=source.column_name,
     )
@@ -623,11 +671,22 @@ CRON_HEARTBEAT = Path("/tmp/youju-cron-heartbeat")
 _HEARTBEAT_MAX_AGE = 900
 
 
-@app.get("/health")
-def health(session: SessionDep) -> dict[str, str]:
+@app.get("/health", response_model=None)
+def health(session: SessionDep) -> dict[str, str] | JSONResponse:
     """健康检查：数据库连得上；admin 服务还要求定时任务心跳 15 分钟内更新过
-    （cron 每 5 分钟写一次）。cron 停了就报不健康，由云托管重启容器，不会悄悄停掉每天的检查。"""
-    session.execute(text("select 1"))
+    （cron 每 5 分钟写一次）。cron 停了就报不健康，由云托管重启容器，不会悄悄停掉每天的检查。
+    连不上数据库时返回 503 和错误类型、驱动错误号（只有数字，不含地址、账号、密码），便于排查。"""
+    try:
+        session.execute(text("select 1"))
+    except Exception as exc:  # noqa: BLE001 - 只报类型和错误号
+        orig = getattr(exc, "orig", None) or exc.__cause__ or exc
+        args = getattr(orig, "args", ()) or ()
+        code = args[0] if args and isinstance(args[0], int) else None
+        error_log.error("健康检查连不上数据库 DBERR %s %s", type(orig).__name__, code)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "db_error", "error": type(orig).__name__, "code": code},
+        )
     if getattr(get_settings(), "role", "all") == "admin":
         try:
             age = clock.time() - CRON_HEARTBEAT.stat().st_mtime
@@ -826,6 +885,17 @@ app.include_router(weekly_api.router(_require_admin, _audit))
 app.add_api_route(
     "/admin/weekly", weekly_api.console, response_class=HTMLResponse, include_in_schema=False
 )
+app.include_router(conditions_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/conditions",
+    conditions_api.console,
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+app.include_router(repost_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/repost", repost_api.console, response_class=HTMLResponse, include_in_schema=False
+)
 
 
 class RestoreIn(BaseModel):
@@ -1017,9 +1087,15 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         return session.scalar(stmt) or 0
 
     docs = visible_documents(select(func.count(Document.id)))
-    approved = session.scalars(
-        select(DocumentDeadline).where(DocumentDeadline.status == "approved")
-    ).all()
+    # 已核对的截止（通过、驳回、已变更），和待核对一样按归并组去重：同一通知相同的候选只算一条
+    reviewed = defaultdict(list)
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        reviewed[row.status].append(row)
+    reviewed_counts = {status: len(_distinct(session, rows)) for status, rows in reviewed.items()}
+    pending_all = pending_count(session, None, "all")["pending"]
+    pending_30 = pending_count(session, None, "30")["pending"]
     latest_ids = (
         select(
             JobRun.id,
@@ -1043,6 +1119,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
     except OSError:
         heartbeat_age = None
     from youju.ai.interpret import openids
+    from youju.conditions import pending_count as pending_conditions
     from youju.models import AdvisorTask
 
     ai_tasks = select(func.count(AdvisorTask.id)).where(
@@ -1059,10 +1136,13 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             + pay["differences"]
             + pay["reconciliation_pending"]
             + pay["reconciliation_failed"],
-            "deadlines": pending_count(session, None, "all")["pending"],
-            "deadlines_30": pending_count(session, None, "30")["pending"],
+            "deadlines": pending_all,
+            "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
+            "conditions": pending_conditions(session),
+            "repost": repost_api.pending_count(session),
             "kinds": kinds_pending_count(session, None)["pending"],
+            "kind_suggestions": kind_suggestions_count(session, None)["pending"],
             "audit": audit_flagged_count(session, None)["flagged"],
             "feedback": feedback_pending_count(session, None)["pending"],
             "sources": len(check_sources(session).failures),
@@ -1075,12 +1155,22 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "applications": count(docs.where(v1_api._kind_is(["申报通知"]))),
             "lists": count(docs.where(v1_api._kind_is(["名单"]))),
             "list_entries": count(select(func.count(ListEntry.id))),
-            "approved_deadlines": len(_distinct(session, list(approved))),
+            "approved_deadlines": reviewed_counts.get("approved", 0),
             "users": count(select(func.count(User.id))),
             "follows": count(select(func.count(Follow.id))),
             "pending_reminders": count(
                 select(func.count(Subscription.id)).where(Subscription.status == "unused")
             ),
+        },
+        # 截止日期核对进度：已核对 reviewed（= 通过 + 驳回 + 已变更）/ 待审 pending
+        # （其中 30 天内截止的 pending_30）
+        "deadline_review": {
+            "reviewed": sum(reviewed_counts.values()),
+            "approved": reviewed_counts.get("approved", 0),
+            "rejected": reviewed_counts.get("rejected", 0),
+            "changed": reviewed_counts.get("changed", 0),
+            "pending": pending_all,
+            "pending_30": pending_30,
         },
         "jobs": [{"job": name, "latest": latest.get(name)} for name in OVERVIEW_JOBS],
         "heartbeat_age_seconds": heartbeat_age,
@@ -1127,6 +1217,33 @@ def admin_job_runs(
             }
         ),
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/admin/quality-sample")
+def admin_quality_sample(
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+    kind: Annotated[Literal["notices", "compare"], Query(description="通知 / 名单比对")],
+    n: Annotated[int, Query(ge=1, le=500, description="抽多少条")] = 200,
+    seed: Annotated[int, Query(ge=0, le=2**31 - 1, description="抽样种子")] = 1,
+) -> Response:
+    """数据质量抽检表（CSV 下载）：只读，抽样并先做程序核对，人工结论列留空。"""
+    from youju.quality import sample_csv
+
+    data, rows = sample_csv(session, kind, n=n, seed=seed)
+    _audit(request, "quality_sample", kind=kind, n=n, seed=seed, count=rows)
+    day = v1_api.now().strftime("%Y%m%d")
+    return Response(
+        data,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="youju-quality-{kind}-{day}-seed{seed}.csv"'
+            ),
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -1438,9 +1555,6 @@ def feedback_console() -> str:
     )
 
 
-KINDS = ("申报通知", "名单", "政策", "其他")
-
-
 class KindPendingOut(BaseModel):
     """AI 和标题规则判断不一致、等人定类型的文件。"""
 
@@ -1458,8 +1572,11 @@ class KindPendingOut(BaseModel):
     decided_by: str | None
 
 
+KindName = Literal["申报通知", "名单", "政策", "资讯与指南", "其他"]
+
+
 class KindDecisionIn(BaseModel):
-    kind: Literal["申报通知", "名单", "政策", "其他"]
+    kind: KindName
     decided_by: str = Field(min_length=1, max_length=80)
 
 
@@ -1484,7 +1601,8 @@ def _kind_disagreements(session: Session, include_decided: bool) -> list[KindPen
         result = check.result if isinstance(check.result, dict) else {}
         ai_kind = result.get("kind")
         rule_kind = doc_kind(doc.title)
-        if ai_kind not in KINDS or ai_kind == rule_kind:
+        # AI 只分四类：规则判"资讯与指南"、AI 判"其他"的算一致
+        if ai_kind not in AI_KINDS or ai_kind == comparable_kind(rule_kind):
             continue
         if doc.kind_override is not None and not include_decided:
             continue
@@ -1559,6 +1677,131 @@ def undo_kind(
     session.commit()
     _audit(request, "kind_undo", document_id=document_id)
     return {"kind": doc_kind(doc.title)}
+
+
+# 规则建议改成的类型（D-051 第二阶段）："其他"里像真申报的建议改为申报通知，像名单的建议改为名单
+SuggestedKind = Literal["申报通知", "名单"]
+
+
+class KindSuggestionOut(BaseModel):
+    """标题规则判为"其他"、但像真申报或名单的文件：建议改为申报通知或名单，
+    人在管理台确认后才改对外类型。"""
+
+    id: int
+    title: str
+    url: str
+    publish_date: date | None
+    source: str
+    # 现在给用户看的类型（没人定过时是"其他"）
+    shown_kind: str
+    suggested: str
+    # 标题里命中的词，例如"提名工作""立项""下达……经费"
+    reason: str
+    decided: str | None
+    decided_by: str | None
+
+
+class KindBatchIn(BaseModel):
+    """批量定类型：抽查后一次确认一批（最多 200 份）。"""
+
+    ids: list[int] = Field(min_length=1, max_length=200)
+    kind: KindName
+    decided_by: str = Field(min_length=1, max_length=80)
+
+
+def _kind_suggestions(
+    session: Session, decided: bool, suggested: str | None = None
+) -> list[KindSuggestionOut]:
+    """有类型建议的文件（同一通知的其他网址不重复列，已下架的不列），按发布日期从新到旧。
+    decided 为 False 列还没人定过的；为 True 列已经有人定过的（可以撤回）。suggested 只列
+    建议改成这一类的，不传列全部。先按标题规则类型（"其他"）和命中词在数据库里粗筛，再逐份判断。"""
+    rows = session.execute(
+        visible_documents(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                available_condition(),
+                Document.kind_override.is_not(None)
+                if decided
+                else Document.kind_override.is_(None),
+                or_(Document.rule_kind == "其他", Document.rule_kind.is_(None)),
+                or_(*(Document.title.contains(w, autoescape=True) for w in SUGGEST_WORDS)),
+            )
+        ).order_by(Document.publish_date.desc(), Document.id.desc())
+    ).all()
+    out: list[KindSuggestionOut] = []
+    for doc, src in rows:
+        hit = kind_suggestion(doc.title)
+        if hit is None or (suggested and hit[0] != suggested):
+            continue
+        out.append(
+            KindSuggestionOut(
+                id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                shown_kind=effective_kind(doc.title, doc.kind_override),
+                suggested=hit[0],
+                reason=hit[1],
+                decided=doc.kind_override,
+                decided_by=doc.kind_decided_by,
+            )
+        )
+    return out
+
+
+@app.get("/api/admin/kind-suggestions/count")
+def kind_suggestions_count(
+    session: SessionDep,
+    _admin: AdminDep,
+    suggested: Annotated[SuggestedKind | None, Query(description="只数建议改成这一类的")] = None,
+) -> dict[str, int]:
+    return {"pending": len(_kind_suggestions(session, decided=False, suggested=suggested))}
+
+
+@app.get("/api/admin/kind-suggestions", response_model=list[KindSuggestionOut])
+def admin_kind_suggestions(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "decided"] = "pending",
+    suggested: Annotated[SuggestedKind | None, Query(description="只列建议改成这一类的")] = None,
+    offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[KindSuggestionOut]:
+    items = _kind_suggestions(session, decided=status == "decided", suggested=suggested)
+    return items[offset : offset + limit]
+
+
+@app.post("/api/admin/kinds/batch")
+def decide_kinds(
+    body: KindBatchIn, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict[str, object]:
+    """批量人工定类型（规则建议抽查后一次确认）：和逐份定类型一样，给用户看的类型、筛选、
+    名单解析都按这个；可以逐份撤回。有一份不存在就整批不改。"""
+    ids = sorted(set(body.ids))
+    docs = session.scalars(select(Document).where(Document.id.in_(ids))).all()
+    missing = sorted(set(ids) - {doc.id for doc in docs})
+    if missing:
+        raise HTTPException(
+            status_code=404, detail=f"文件不存在：{'、'.join(f'#{i}' for i in missing[:5])}"
+        )
+    now = datetime.now(UTC)
+    for doc in docs:
+        doc.kind_override = body.kind
+        doc.kind_decided_by = body.decided_by
+        doc.kind_decided_at = now
+    session.commit()
+    _audit(request, "kind_batch", document_ids=ids, kind=body.kind, by=body.decided_by)
+    return {"updated": len(docs), "kind": body.kind}
+
+
+@app.get("/admin/kind-suggest", response_class=HTMLResponse, include_in_schema=False)
+def kind_suggest_console() -> str:
+    """类型建议：被判成"其他"、像真申报或名单的文件，抽查后批量确认；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "kind_suggest.html").read_text(
+        encoding="utf-8"
+    )
 
 
 @app.get("/admin/kinds", response_class=HTMLResponse, include_in_schema=False)
@@ -1752,6 +1995,7 @@ class SourceCreateIn(BaseModel):
     url: str = Field(min_length=8, max_length=URL_KEY_MAX)
     level: Literal["国家级", "省级", "市级"]
     province: str
+    city: str | None = Field(default=None, max_length=32)
     dept: str = Field(min_length=1, max_length=32)
     dept_full_name: str = Field(min_length=2, max_length=128)
     column_name: str = Field(min_length=2, max_length=64)
@@ -1762,12 +2006,13 @@ class SourceCreateIn(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self) -> SourceCreateIn:
-        from youju.sources.onboard import PROVINCES, valid_config
+        from youju.sources.onboard import PROVINCES, checked_city, valid_config
 
         if self.province not in PROVINCES:
             raise ValueError('省份要从列表里选（国家部委选"国家"）')
         if (self.level == "国家级") != (self.province == "国家"):
             raise ValueError('国家级来源的省份填"国家"，其他层级要选具体省份')
+        self.city = checked_city(self.level, self.city)
         if self.parser_config and valid_config(self.parser_config) is None:
             raise ValueError("抓取规则只能是合法的 CSS 选择器（item_selector 必填）")
         return self
@@ -1928,6 +2173,7 @@ def source_trial(
         proposal={
             "level": proposal.level,
             "province": proposal.province,
+            "city": proposal.city,
             "dept": proposal.dept,
             "dept_full_name": proposal.dept_full_name,
             "column_name": proposal.column_name,
@@ -1973,6 +2219,7 @@ def _insert_source(session: Session, body: SourceCreateIn, url: str, config: dic
         url=url,
         level=body.level,
         province=body.province,
+        city=body.city,
         dept=body.dept.strip(),
         dept_full_name=body.dept_full_name.strip(),
         column_name=body.column_name.strip(),
@@ -2081,6 +2328,94 @@ def unhandle_feedback(
     return result
 
 
+PendingOrder = Literal["id", "priority", "group"]
+
+_KEY = r"\d\|\d{4}-\d{2}-\d{2}\|\d{12}"
+# order=group 的排序键是“组里排最前那条的键~自己的键”
+_ORDER_KEY = rf"^{_KEY}(?:~{_KEY})?$"
+
+
+def _repost_context(session: Session, masters: list[int]) -> dict[int, dict]:
+    """核对台对照用：这些主文件所在的转发组（不论是否已确认）、各自的叫法和同组其他版本的截止候选。
+
+    只读，不改任何候选；转发组里的截止不同步、不合并显示（同步只认 document_merges）。"""
+    from youju.models import RepostGroup
+    from youju.repost import active_groups, labels_for
+
+    groups = active_groups(session, masters)
+    if not groups:
+        return {}
+    members = sorted({m for _, ids in groups.values() for m in ids})
+    docs = {
+        doc.id: (doc, src)
+        for doc, src in session.execute(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(members))
+        )
+    }
+    topics = dict(
+        session.execute(
+            select(RepostGroup.id, RepostGroup.topic).where(
+                RepostGroup.id.in_({gid for gid, _ in groups.values()})
+            )
+        ).all()
+    )
+    same_file = groups_for(session, members)
+    owner = {i: master for master, ids in same_file.items() for i in ids}
+    deadlines: dict[int, list[tuple]] = defaultdict(list)
+    for row in session.scalars(
+        select(DocumentDeadline)
+        .where(DocumentDeadline.document_id.in_(list(owner)))
+        .order_by(DocumentDeadline.candidate_date, DocumentDeadline.id)
+    ):
+        decided = row.status in ("approved", "changed")
+        day = row.approved_date if decided and row.approved_date else row.candidate_date
+        clock = row.approved_time if decided else row.candidate_time
+        item = (row.kind, day, clock, row.status)
+        if item not in deadlines[owner[row.document_id]]:
+            deadlines[owner[row.document_id]].append(item)
+    out: dict[int, dict] = {}
+    label_cache: dict[int, dict[int, str]] = {}
+    for master, (group_id, ids) in groups.items():
+        if group_id not in label_cache:
+            label_cache[group_id] = labels_for({i: docs[i][1] for i in ids})
+        labels = label_cache[group_id]
+        siblings = [
+            RepostSiblingOut(
+                document_id=i,
+                label=labels[i],
+                title=docs[i][0].title,
+                url=docs[i][0].url,
+                deadlines=[
+                    RepostSiblingDeadlineOut(kind=k, date=d, time=_hhmm(t), status=st)
+                    for k, d, t, st in deadlines.get(i, [])
+                ],
+            )
+            for i in ids
+            if i != master
+        ]
+        # 同组其他版本已通过（或已标变更）的（类型, 日期, 时间）→ 哪几版
+        checked: dict[tuple, list[str]] = defaultdict(list)
+        for i in ids:
+            if i == master:
+                continue
+            for kind, day, clock, status in deadlines.get(i, []):
+                if (
+                    status in ("approved", "changed")
+                    and labels[i] not in checked[(kind, day, clock)]
+                ):
+                    checked[(kind, day, clock)].append(labels[i])
+        out[master] = {
+            "group_id": group_id,
+            "label": labels[master],
+            "topic": topics.get(group_id),
+            "siblings": siblings,
+            "checked": checked,
+        }
+    return out
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
@@ -2088,13 +2423,43 @@ def pending_deadlines(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
     due: DueQuery = "all",
+    order: Annotated[
+        PendingOrder,
+        Query(
+            description="id：按编号从新到旧（默认）；priority：30 天内截止的先列，其中建议通过的"
+            "最前，其余按截止日期升序，已过期的最后；group：同 priority，但同一转发组的候选"
+            "排在一起（组的位置按组里排最前的那条）"
+        ),
+    ] = "id",
+    after: Annotated[
+        str | None,
+        Query(
+            pattern=_ORDER_KEY,
+            description="order=priority、group 的翻页游标：上一页最后一条的 order_key",
+        ),
+    ] = None,
 ) -> list[PendingDeadlineOut]:
-    """待核对的候选，按编号从新到旧；翻页用上一页最小的编号作 before_id，不受别人同时核对的影响。
+    """待核对的候选。默认按编号从新到旧；翻页用上一页最小的编号作 before_id，
+    不受别人同时核对的影响。
+    order=priority 时按核对优先顺序，翻页用上一页最后一条的 order_key 作 after；
+    order=group 时同一转发组（D-055）的候选连在一起，仍逐条核对。
 
     归并后同一通知的不同网址可能各有一份相同的候选（类型、日期、时间、证据句都相同）：只列编号最小的
     那条（之后新抽出的副本编号更大，不会把已在翻页范围里的这条挤掉），标题和链接用主文件；
-    本页凑不满就继续往下取，返回不足 limit 条说明已经取完。
+    本页凑不满就继续往下取，返回不足 limit 条说明已经取完。转发组的各版本不算副本：
+    每个版本的候选都单独列出、单独核对。
+
+    每条带 AI 预审提示（hint）：只读已有的 AI 检查记录，不调模型；"建议通过"只影响排序和标签，
+    这个接口不改任何候选。
     """
+    from youju.ai.hints import deadline_hints, order_key
+
+    if order != "id" and before_id is not None:
+        raise HTTPException(status_code=422, detail="按优先顺序翻页用 after，不用 before_id")
+    if order == "id" and after is not None:
+        raise HTTPException(status_code=422, detail="按编号翻页用 before_id，不用 after")
+    if after is not None and (order == "group") != ("~" in after):
+        raise HTTPException(status_code=422, detail="翻页游标和排序方式对不上，请重新载入")
     base = (
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
@@ -2104,40 +2469,85 @@ def pending_deadlines(
     condition = _due_condition(due)
     if condition is not None:
         base = base.where(condition)
-    rows: list[tuple[DocumentDeadline, Document, Source]] = []
-    cursor = before_id
-    while len(rows) < limit:
-        stmt = base if cursor is None else base.where(DocumentDeadline.id < cursor)
-        batch = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
-        if not batch:
-            break
-        cursor = batch[-1][0].id
+    # (候选, 文件, 来源, 主文件编号)
+    picked: list[tuple[DocumentDeadline, Document, Source, int]] = []
+    if order != "id":
+        # 待核对的总共几百条：整批取出，按 AI 预审提示和截止日期排好，再按游标切出这一页
+        batch = session.execute(base).all()
         shown = _pending_shown_ids(session, [d for d, _, _ in batch])
-        for deadline, doc, src in batch:
-            if deadline.id in shown:
-                master_id = shown[deadline.id]
-                master = doc if master_id == doc.id else session.get(Document, master_id)
-                rows.append((deadline, master, src if master_id == doc.id else master.source))
-    rows = rows[:limit]
-    return [
-        PendingDeadlineOut(
-            id=d.id,
-            document_id=doc.id,
-            title=doc.title,
-            url=doc.url,
-            publish_date=doc.publish_date,
-            source=src.dept_full_name,
-            kind=d.kind,
-            candidate_date=d.candidate_date,
-            candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
-            evidence=d.evidence,
-            confidence=d.confidence,
-            origin=d.origin,
-            ai_agrees=d.ai_agrees,
-            reopen_note=d.audit_note if d.audit_state == "reopened" else None,
+        picked = [(d, doc, src, shown[d.id]) for d, doc, src in batch if d.id in shown]
+    else:
+        cursor = before_id
+        while len(picked) < limit:
+            stmt = base if cursor is None else base.where(DocumentDeadline.id < cursor)
+            batch = session.execute(stmt.order_by(DocumentDeadline.id.desc()).limit(limit)).all()
+            if not batch:
+                break
+            cursor = batch[-1][0].id
+            shown = _pending_shown_ids(session, [d for d, _, _ in batch])
+            picked += [(d, doc, src, shown[d.id]) for d, doc, src in batch if d.id in shown]
+        picked = picked[:limit]
+    hints = deadline_hints(session, [(d, master_id) for d, _, _, master_id in picked])
+    today = v1_api.now().date()
+    keyed = [(order_key(item[0], hints[item[0].id], today), item) for item in picked]
+    context = _repost_context(session, sorted({item[3] for item in picked}))
+    if order == "group":
+        anchor: dict[int, str] = {}
+        for key, item in keyed:
+            group = context.get(item[3])
+            if group:
+                gid = group["group_id"]
+                anchor[gid] = min(anchor.get(gid, key), key)
+        keyed = [
+            (
+                f"{anchor[context[item[3]]['group_id']] if item[3] in context else key}~{key}",
+                item,
+            )
+            for key, item in keyed
+        ]
+    if order != "id":
+        keyed = sorted(
+            (pair for pair in keyed if after is None or pair[0] > after), key=lambda p: p[0]
+        )[:limit]
+    output = []
+    for key, (d, doc, src, master_id) in keyed:
+        if master_id != doc.id:
+            doc = session.get(Document, master_id)
+            src = doc.source
+        hint = hints[d.id]
+        group = context.get(master_id)
+        same = None
+        if group:
+            labels = group["checked"].get((d.kind, d.candidate_date, d.candidate_time)) or []
+            if labels:
+                same = f"同组{'、'.join(dict.fromkeys(labels))}已核对过同一日期"
+        output.append(
+            PendingDeadlineOut(
+                id=d.id,
+                document_id=doc.id,
+                title=doc.title,
+                url=doc.url,
+                publish_date=doc.publish_date,
+                source=src.dept_full_name,
+                kind=d.kind,
+                candidate_date=d.candidate_date,
+                candidate_time=d.candidate_time.strftime("%H:%M") if d.candidate_time else None,
+                evidence=d.evidence,
+                confidence=d.confidence,
+                origin=d.origin,
+                ai_agrees=d.ai_agrees,
+                reopen_note=d.audit_note if d.audit_state == "reopened" else None,
+                hint=hint.code,
+                hint_text=hint.text,
+                order_key=key,
+                repost_group_id=group["group_id"] if group else None,
+                repost_label=group["label"] if group else None,
+                repost_topic=group["topic"] if group else None,
+                repost_siblings=group["siblings"] if group else [],
+                repost_same=same,
+            )
         )
-        for d, doc, src in rows
-    ]
+    return output
 
 
 def _lock_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
@@ -2451,7 +2861,10 @@ def _check_change_target(session: Session, row: DocumentDeadline, new_document_i
     if new_doc is None:
         raise HTTPException(status_code=404, detail="没有找到新通知")
     old_doc = session.get(Document, row.document_id)
-    if new_doc.source.province != old_doc.source.province:
+    if (new_doc.source.province, new_doc.source.city) != (
+        old_doc.source.province,
+        old_doc.source.city,
+    ):
         raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
     if new_doc.publish_date is None or old_doc.publish_date is None:
         raise HTTPException(status_code=422, detail="发布日期不详，无法核对先后，请先到原文核对")

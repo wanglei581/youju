@@ -32,6 +32,9 @@
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
   .metric { text-align:left; padding:12px; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
   .metric strong { display:block; font-size:26px; color:var(--ink); }
+  .progress { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; margin:0 0 14px; }
+  .progress strong { font-size:16px; }
+  .progress meter { width:160px; height:8px; }
   .tablewrap { overflow-x:auto; }
   table { border-collapse:collapse; width:100%; min-width:700px; }
   th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
@@ -43,8 +46,8 @@
   [hidden] { display:none !important; }
   @media(max-width:700px) {
     header { padding:12px; } h1 { width:100%; } #token { width:170px; }
-    .layout { grid-template-columns:minmax(0,1fr); }
-    nav { display:flex; gap:4px; flex-wrap:wrap; padding:8px; border-right:0; border-bottom:1px solid var(--line); }
+    .layout { grid-template-columns:minmax(0,1fr); grid-template-rows:auto 1fr; }
+    nav { display:flex; gap:4px; flex-wrap:wrap; align-content:flex-start; padding:8px; border-right:0; border-bottom:1px solid var(--line); }
     nav p { display:none; } nav button { width:auto; margin:0; padding:6px 8px; }
     main { padding:12px; } .panel { padding:14px; } iframe { height:75vh; }
   }
@@ -68,7 +71,10 @@
     <p>数据核对</p>
     <button type="button" data-menu="review">截止日期</button>
     <button type="button" data-menu="fields">支持方式</button>
+    <button type="button" data-menu="conditions">申报条件</button>
+    <button type="button" data-menu="repost">转发归组</button>
     <button type="button" data-menu="kinds">类型复核</button>
+    <button type="button" data-menu="kind-suggest">类型建议</button>
     <button type="button" data-menu="audit">质检</button>
     <p>用户反馈</p>
     <button type="button" data-menu="feedback">纠错</button>
@@ -111,7 +117,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',kinds:'类型复核',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
+  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
   const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务','pay-run':'支付补单和退款','pay-reconcile':'支付对账'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
   let token = '', active = 'overview', next = null, sequence = 0, due = '30';
@@ -122,13 +128,28 @@
     token=''; sequence++; $('token').value=''; $('logout').hidden=true; $('token').disabled=false; $('enter').hidden=false;
     $('overview').replaceChildren(); $('jobRows').replaceChildren(); $('work').removeAttribute('src');
   }
-  async function api(path) {
+  async function request(path) {
     const response = await fetch(path,{headers:{'X-Admin-Token':token},cache:'no-store'});
     if (!response.ok) {
       if(response.status===401 || response.status===429) { clearSession(); show(active); }
       throw new Error(response.status===401 ? '管理口令不正确或尚未配置，请重新输入' : response.status===429 ? '口令输错次数太多，请 10 分钟后再试' : `载入失败（${response.status}），请刷新重试`);
     }
-    return response.json();
+    return response;
+  }
+  async function api(path) { return (await request(path)).json(); }
+  // 抽检表：口令放在请求头里，取回文件后在页面内保存，不把口令放进网址
+  async function downloadSample(kind, button, status) {
+    const seed=Math.max(0, parseInt($('sampleSeed').value, 10) || 0);
+    button.disabled=true; $('message').textContent=''; status.textContent='正在生成，名单比对可能要几十秒……';
+    try {
+      const response=await request(`/api/admin/quality-sample?kind=${kind}&n=200&seed=${seed}`);
+      const blob=await response.blob();
+      const named=/filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '');
+      const link=node('a'); link.href=URL.createObjectURL(blob); link.download=named ? named[1] : `youju-quality-${kind}.csv`;
+      document.body.append(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+      status.textContent=`已下载 ${link.download}`;
+    } catch(e) { status.textContent=''; $('message').textContent=e.message; }
+    finally { button.disabled=false; }
   }
   function show(menu, wanted, overviewData) {
     active=menu; if(wanted) due=wanted; sequence++; $('message').textContent=''; $('title').textContent=titles[menu];
@@ -152,14 +173,30 @@
     const seq=++sequence;
     try {
       const d=overviewData || await api('/api/admin/overview'); if(seq!==sequence) return;
-      const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'),grid);
-      [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['类型待复核','kinds','kinds'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      const todo=node('section',undefined,'panel'), grid=node('div',undefined,'grid'); todo.append(node('h3','待办'));
+      // 截止日期核对进度：已核对 = 通过 + 驳回 + 已变更，都按归并后去重计
+      const r=d.deadline_review;
+      if(r) {
+        const progress=node('p',undefined,'progress'), bar=node('meter');
+        bar.min=0; bar.max=Math.max(1,r.reviewed+r.pending); bar.value=r.reviewed; bar.setAttribute('aria-label','截止日期已核对比例');
+        progress.append(node('strong',`截止日期：已核对 ${r.reviewed} / 待审 ${r.pending}（30 天内待审 ${r.pending_30}）`),bar,node('span',`已核对里通过 ${r.approved}、驳回 ${r.rejected}、已变更 ${r.changed}`,'muted'));
+        todo.append(progress);
+      }
+      todo.append(grid);
+      [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
       if(d.pay) todo.append(node('p',`支付待办 ${d.todos.pay} 项`));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
       todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
       const data=node('section',undefined,'panel'), metrics=node('div',undefined,'grid'); data.append(node('h3','数据'),metrics);
-      [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已核对截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
-      data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已核对截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));
+      [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已通过截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
+      data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已通过截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));
+      const quality=node('section',undefined,'panel'), sampleForm=node('form'), sampleStatus=node('p','','muted');
+      quality.append(node('h3','数据质量抽检'));
+      const seedLabel=node('label','抽样种子'); seedLabel.htmlFor='sampleSeed';
+      const seedInput=node('input'); seedInput.id='sampleSeed'; seedInput.type='number'; seedInput.min='0'; seedInput.step='1'; seedInput.value='1'; seedInput.style.width='90px';
+      sampleForm.append(seedLabel,seedInput); sampleForm.onsubmit=e=>e.preventDefault();
+      [['notices','抽检表：通知'],['compare','抽检表：名单比对']].forEach(([kind,label])=>{ const b=node('button',label); b.type='button'; b.onclick=()=>downloadSample(kind,b,sampleStatus); sampleForm.append(b); });
+      quality.append(sampleForm,sampleStatus,node('p','每张表抽 200 条，同一种子、同一份数据得到同一份表。程序先核对来源网址、证据原句和日期，“人工结论”和“备注”两列留给人填。','muted'));
       const jobs=node('section',undefined,'panel'); jobs.append(node('h3','定时任务'));
       jobs.append(node('p',`定时任务心跳：${d.heartbeat_age_seconds===null?'暂无心跳':`${Math.floor(d.heartbeat_age_seconds/60)} 分 ${d.heartbeat_age_seconds%60} 秒前`} · 工具总开关：${d.advisor_enabled?'开':'关'}`));
       const wrap=node('div',undefined,'tablewrap'), table=node('table'), head=node('thead'), hr=node('tr'), body=node('tbody');
@@ -168,8 +205,7 @@
       table.append(head,body); wrap.append(table); jobs.append(wrap);
       const link=node('button','查看最近 7 天记录'); link.type='button'; link.onclick=()=>show('jobs'); jobs.append(link);
       jobs.append(node('p',`AI 顾问：${d.ai_advisor.enabled?'开':'关'} · 白名单 ${d.ai_advisor.whitelist_count} 人 · 近 7 天任务 ${d.ai_advisor.tasks_7d} 次 · 失败 ${d.ai_advisor.failed_7d} 次`));
-      if(d.pay) jobs.append(node('p',`支付 · 今日订单 ${d.pay.today_orders} 笔 · 实付金额 ${(d.pay.today_fee/100).toFixed(2)} 元 · 待人工处理 ${d.pay.manual} 笔 · 对账差异 ${d.pay.differences} 天 · 对账待完成 ${d.pay.reconciliation_pending} 天 · 对账失败 ${d.pay.reconciliation_failed ?? 0} 天`));
-      $('overview').replaceChildren(todo,data,jobs);
+      $('overview').replaceChildren(todo,data,quality,jobs);
     } catch(e) { if(seq===sequence || !token) $('message').textContent=e.message; }
   }
   async function loadJobs(reset) {

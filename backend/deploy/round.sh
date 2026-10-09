@@ -34,10 +34,17 @@ fi
 run crawl && run check-sources
 # 每天 2 轮，每轮 600 份，每天补详情总量和原来 4 轮 × 300 份一样
 run fetch-details --limit 600 --workers 4
+# 转发归组（D-055）：补完详情（有正文才看得到引用的部里文号）后，把同一份部里通知的各地版本归组，
+# 送管理台“转发归组”页确认；确认前对外仍按单条显示
+run repost-groups
 run extract-deadlines
 run extract-fields
-# 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做
-run ai-check --limit 600
+# 规则抽完再让 AI 检查，才能比对哪些候选两边一致；没配 AI 密钥时这一步什么也不做。
+# 先补跑 30 天内截止的待核对候选所在的文件（核对台先核这些，要先有 AI 的结果），再查新文件，合计 600 份
+run ai-check --limit 600 --due-first 30
+# 申报条件（D-052 第④项）：后台模型抽条件、每条带原文引用，送核对台，人工整份确认后才对外。
+# 30 天内截止的先抽，每轮最多 60 份（核对要人工，抽多了也核不完）；没配 AI 密钥时这一步什么也不做
+run extract-conditions --limit 60 --due-days 30
 # 用户纠错过的文件，用规则和 AI 复查已发布的截止日期，结果写在纠错旁边（纠错内容不发给 AI）
 run triage-feedback
 run parse-lists

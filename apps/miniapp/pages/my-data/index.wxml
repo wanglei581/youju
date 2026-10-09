@@ -1,8 +1,9 @@
 <notice-bar />
-<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+<feature-closed wx:if="{{!loginOpen}}" />
+<view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 <view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…</view>
 
-<block wx:if="{{!loading && !error}}">
+<block wx:if="{{loginOpen && !loading && !error}}">
   <view wx:if="{{!user}}" class="card intro">
     <view class="intro-title">你的账号下没有保存个人信息</view>
     <view class="muted intro-text">检索、查看、导出、查名单不需要登录。同意用户协议和隐私保护指引后使用关注、微信提醒、纠错，才会保存相关信息。访问日志按法律要求保存，不在这里显示。</view>

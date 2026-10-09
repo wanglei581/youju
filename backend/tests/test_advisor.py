@@ -91,7 +91,7 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     expected = {"used": 0, "limit": 1, "maxRows": 50}
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
-        "quota": {"compare": expected, "track": expected},
+        "quota": {"compare": {**expected, "limit": 3}, "track": expected},
     }
     agree(client)
     created = create(client).json()
@@ -122,6 +122,88 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
         ).status_code
         == 404
     )
+
+
+def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
+    client, session, monkeypatch
+):
+    agree(client)
+    stamps = [
+        datetime(2026, 9, 1, 0, 0, tzinfo=BJ),
+        datetime(2026, 9, 2, 0, 0, tzinfo=BJ),
+        datetime(2026, 9, 30, 23, 59, 59, tzinfo=BJ),
+    ]
+    created = []
+    for n, stamp in enumerate(stamps):
+        monkeypatch.setattr(v1, "now", lambda stamp=stamp: stamp.astimezone(UTC))
+        response = create(client, key=f"monthly-{n}", rows=["甲公司"] * 50)
+        assert response.status_code == 202
+        created.append(response.json()["id"])
+        assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == n + 1
+        assert (
+            client.get("/api/v1/advisor/capabilities").json()["data_tools"]["remaining"]["compare"]
+            == 2 - n
+        )
+    assert create(client, key="monthly-fourth").status_code == 429
+    assert len(list(session.scalars(select(AdvisorUsage)))) == 3
+
+    # UTC 尚在九月，北京时间已到十月；取消旧月任务不增加新月额度。
+    stamp = datetime(2026, 9, 30, 16, 0, tzinfo=UTC)
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"] == {
+        "used": 0,
+        "limit": 3,
+        "maxRows": 50,
+    }
+    assert create(client, key="new-month").status_code == 202
+    assert client.post(f"/api/v1/advisor/tasks/{created[0]}/cancel").status_code == 200
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 1
+    assert client.post(f"/api/v1/advisor/tasks/{created[0]}/cancel").status_code == 200
+    session.expire_all()
+    assert (
+        service.usage_counts(session, session.scalar(select(User.id)), stamps[0].date())["compare"]
+        == 2
+    )
+
+
+def test_track_quota_still_resets_daily(client, monkeypatch):
+    agree(client)
+    body = {"kind": "track", "rows": [{"name": "甲公司", "province": "辽宁"}]}
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-1"}
+        ).status_code
+        == 202
+    )
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-2"}
+        ).status_code
+        == 429
+    )
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=1))
+    assert client.get("/api/v1/advisor/status").json()["quota"]["track"]["used"] == 0
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-next"}
+        ).status_code
+        == 202
+    )
+
+
+def test_compare_reservation_reads_latest_usage_after_user_lock(client, session_factory):
+    agree(client)
+    assert create(client, key="first").status_code == 202
+    assert create(client, key="second").status_code == 202
+    with session_factory() as stale:
+        stale.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        user_id = stale.scalar(select(User.id))
+        day = service.usage_day(NOW)
+        assert service.usage_counts(stale, user_id, day)["compare"] == 2
+        # 另一个请求先占了最后一次；旧快照不能在拿到用户锁后继续放行。
+        assert create(client, key="third").status_code == 202
+        stale.execute(select(User.id).where(User.id == user_id).with_for_update()).one()
+        assert not service.reserve_usage(stale, user_id, "compare", day)
 
 
 @pytest.mark.parametrize(
@@ -346,20 +428,26 @@ def test_switch_idempotency_quota_rollover_and_cancel(
         client.post("/api/v1/advisor/tasks", json={"kind": "compare", "rows": ["x"]}).status_code
         == 422
     )
-    assert create(client, key="second").status_code == 429
+    assert create(client, key="second").status_code == 202
+    assert create(client, key="third").status_code == 202
+    blocked = create(client, key="fourth")
+    assert blocked.status_code == 429
+    assert "本月" in blocked.json()["detail"]
 
     cancelled = client.post("/api/v1/advisor/tasks/1/cancel")
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
     assert create(client, key="after-cancel").status_code == 202
 
     # 处理失败的任务不算用掉额度。
-    session.get(AdvisorTask, 2).status = "failed"
+    failed = session.get(AdvisorTask, 4)
+    failed.status = "failed"
+    service.release_usage(session, failed)
     session.commit()
     assert create(client, key="after-failed").status_code == 202
 
-    # 北京时间跨日后恢复当天一次免费额度。
+    # 北京时间自然月切换后恢复三次免费额度。
     monkeypatch.setattr(v1, "now", lambda: datetime(2026, 10, 1, 0, 1, tzinfo=BJ))
-    assert create(client, key="next-day").status_code == 202
+    assert create(client, key="next-month").status_code == 202
 
 
 def test_row_and_body_limits_and_personal_data(client):
@@ -553,6 +641,8 @@ def test_delete_terminal_task_keeps_usage_and_queued_delete_refunds(
     session.commit()
     assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
     assert session.scalar(select(AdvisorUsage.used_count)) == 1
+    assert create(client, key="ledger-second").status_code == 202
+    assert create(client, key="ledger-third").status_code == 202
     assert create(client, key="ledger-blocked").status_code == 429
 
 

@@ -26,6 +26,7 @@ uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
 uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
+uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
 uv run youju extract-deadlines --since 2026-07-01  # 生成待人工核对候选，重复运行不会覆盖核对结果
 uv run youju parse-lists --since 2026-07-01  # 补名单详情并解析政府表格附件，单次最多下载 200 个附件
 uv run youju report                  # 来源健康和条目统计
@@ -160,3 +161,5 @@ src/youju/
   sources/importer.py  来源清单导入
 tests/                 测试；fixtures/html/ 是真实政府网站列表页快照
 ```
+
+转发归组只在人工确认后对外折叠；内容变化由 `youju repost-groups` 重算检测，标为需复核后立即恢复单条显示。0022 在本分支直接修改，已执行旧版 0022 的环境不能靠再次 `upgrade head` 补齐字段，部署前须另行补齐 `needs_review` 和 `confirmed_fingerprint`，旧确认记录无快照时必须重新确认。

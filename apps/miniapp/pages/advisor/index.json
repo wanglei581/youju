@@ -1,3 +1,6 @@
 {
-  "navigationBarTitleText": "工具"
+  "navigationBarTitleText": "工具",
+  "usingComponents": {
+    "feature-closed": "/components/closed/index"
+  }
 }

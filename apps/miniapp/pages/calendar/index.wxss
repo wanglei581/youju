@@ -7,7 +7,6 @@
 .month { padding: 28rpx 32rpx 20rpx; }
 .month-head { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: 16rpx; }
 .month-title { font-size: 32rpx; font-weight: 600; }
-.month-hint { font-size: 24rpx; }
 .week { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 24rpx; color: var(--t3); padding-bottom: 8rpx; }
 .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4rpx; }
 .cell { height: 80rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4rpx; border-radius: 20rpx; }
@@ -22,6 +21,7 @@
 .empty { padding: 56rpx 32rpx; text-align: center; }
 .empty-title { font-size: 32rpx; font-weight: 600; }
 .empty-sub { margin-top: 12rpx; font-size: 26rpx; }
+.empty-link { display: inline-block; margin-top: 20rpx; padding: 8rpx 0; font-size: 26rpx; }
 .item { padding: 28rpx 32rpx; }
 .item-top { display: flex; align-items: center; gap: 16rpx; }
 .item-date { font-size: 32rpx; font-weight: 700; }

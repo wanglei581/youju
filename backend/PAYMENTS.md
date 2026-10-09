@@ -23,7 +23,7 @@
 三个支付密钥（包括 `YOUJU_WX_APPSECRET`）不从 dotenv 或 secret 文件来源取值。
 初始化参数仅保留供假客户端测试；部署密钥由创始人自己填环境变量。
 
-迁移新增 0017（0016 的后继），不修改旧迁移。部署由 Claude 审阅后执行；
+迁移新增 0026（0025 advisor_agreement 的后继），不修改旧迁移。部署由 Claude 审阅后执行；
 API 表权限见 deploy/mysql_accounts.sql 最后的两条 GRANT，不在本次执行。
 消息推送默认 `/api/wx/push`；用 `YOUJU_WX_PUSH_PATH` 在启动前配置，
 只在 API 服务开放，核对台服务拒绝这个路径。云托管开放接口服务需配置白名单。
@@ -125,7 +125,7 @@ ruff format/check。旧管理台统计断言补支付待办；0015 测试限定�
 改动文件索引：
 
 - `src/youju/config.py`：支付开关、密钥环境来源、商品价格与账单适配配置。
-- `src/youju/models.py`、`alembic/versions/0017_payments.py`：订单、事件、对账和付费任务外键。
+- `src/youju/models.py`、`alembic/versions/0026_payments.py`：订单、事件、对账和付费任务外键。
 - `src/youju/xpay.py`、`src/youju/payments.py`、`src/youju/api/pay.py`：签名/传输、支付生命周期、接口和推送。
 - `src/youju/advisor_tasks.py`：付费来源隔离，不扣/退免费额度，关闭时不领取付费任务。
 - `src/youju/api/me.py`、`src/youju/notify.py`：注销假名化和留存清理。

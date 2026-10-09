@@ -1,3 +1,6 @@
 {
-  "navigationBarTitleText": "填写客户"
+  "navigationBarTitleText": "填写客户",
+  "usingComponents": {
+    "feature-closed": "/components/closed/index"
+  }
 }

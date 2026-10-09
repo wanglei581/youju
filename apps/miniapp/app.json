@@ -18,7 +18,10 @@
     "pages/advisor/index",
     "pages/advisor-form/index",
     "pages/advisor-tasks/index",
-    "pages/advisor-terms/index"
+    "pages/advisor-terms/index",
+    "pages/standards/index",
+    "pages/clients/index",
+    "pages/client-results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -40,7 +43,7 @@
     ]
   },
   "usingComponents": {
-    "t-icon": "tdesign-miniprogram/icon/icon",
+    "t-icon": "/components/icon/index",
     "notice-bar": "/components/notice-bar/index",
     "doc-row": "/components/doc-row/index"
   },

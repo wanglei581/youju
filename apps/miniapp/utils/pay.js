@@ -30,7 +30,7 @@ const TEXT = {
   empty: '填写客户后可选择付费档',
   missing: '没有找到这个付费档，请返回后重试',
   notes: '比对失败：安卓等设备自动原路退款；苹果手机免费重跑一次，仍失败人工处理。结果保存 30 天，名单 7 天后删除。',
-  termsPending: '付费服务协议定稿后开放',
+  termsPending: '付费服务暂未开放',
   termsRequired: '请先阅读并同意《付费服务协议》',
 };
 
@@ -59,15 +59,16 @@ function hint(products, input) {
   if (!input.rowCount) return TEXT.empty;
   if (input.rowCount > largest) return `超过 ${largest} 家，请减少客户后再付费比对`;
   if (input.rowCount > input.maxRows) return `超过免费的每次 ${input.maxRows} 家，可按次付费比对`;
-  if (input.remaining <= 0) return '今天的免费次数已用完，可按次付费比对';
-  return '本次可免费提交；需要比对更多家时可按次付费';
+  if (input.remaining <= 0) return '本月的免费次数已用完，可按次付费比对';
+  return '每月 3 次免费，每次 50 家以内';
 }
 
-// 付费档视图：只有名单比对、且有可售商品时才显示，否则页面和未开通收费时完全一样。
+// D-054：本月免费额度用完或超过免费家数时才显示付费档；在途订单始终保留状态。
 function payView(input) {
   const products = input.products || [];
   if (input.kind !== 'compare' || !products.length) return { visible: false };
   const busy = !!input.busy;
+  if (!busy && input.remaining > 0 && input.rowCount <= input.maxRows) return { visible: false };
   return {
     visible: true,
     busy,

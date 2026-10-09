@@ -31,6 +31,6 @@ GRANT INSERT ON youju.access_logs TO 'youju_api'@'%';
 -- 访问日志用户编号的密钥：库里还没有时第一次用到的服务生成；只能新增，改不了已有的
 GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
 
--- 支付权限：仅迁移 0017 完成后，由创始人执行。金额记录不能由 API 删除。
+-- 支付权限：仅迁移 0026 完成后，由创始人执行。金额记录不能由 API 删除。
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';

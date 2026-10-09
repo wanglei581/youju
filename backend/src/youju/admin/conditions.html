@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>申报条件核对 · 有据</title>
+<style>
+body{margin:0;background:#f7f8fa;color:#20242b;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+header{padding:14px 20px;background:#fff;border-bottom:1px solid #e6e8eb;position:sticky;top:0;z-index:2}main{max-width:920px;margin:auto;padding:16px}
+.card{background:#fff;border-radius:12px;padding:16px;margin:0 0 12px;box-shadow:0 1px 3px #0000000b}.meta,.hint{color:#69707d;font-size:13px}
+.item{border-top:1px solid #edf0f2;padding:12px 0;scroll-margin-top:100px}.item.current{outline:3px solid #1769aa;outline-offset:3px;border-radius:7px}
+.tag{display:inline-block;background:#e8f1ff;color:#1769aa;border-radius:5px;padding:1px 7px;margin-right:8px;font-size:13px}
+.state{display:inline-block;border-radius:5px;padding:0 6px;margin-left:8px;font-size:12px}.state-approved{background:#e8f7f1;color:#0e8a63}.state-deleted{background:#ffecec;color:#c33}.state-pending{background:#f2f3f5;color:#69707d}
+.item.deleted .text{text-decoration:line-through;color:#86909c}.edited{color:#d9640f;font-size:12px;margin-left:6px}.orig{color:#86909c;font-size:12px}
+.quote{background:#f7f8fa;border-radius:6px;padding:8px 10px;margin-top:6px;font-size:14px;color:#4e5969;white-space:pre-wrap;word-break:break-all}.quote mark{background:#fff1b8;color:#20242b;padding:0 1px}
+button,input,select{font:inherit;padding:6px 10px;border:1px solid #ccd2d9;border-radius:7px;background:#fff}button{cursor:pointer;margin:8px 6px 0 0}button:disabled{opacity:.5;cursor:default}
+.primary{background:#1769aa;color:#fff;border-color:#1769aa}.danger{color:#c33;border-color:#f5c2c4}.bar,.auth{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bar input{width:180px}
+.foot{border-top:1px solid #edf0f2;padding-top:10px;margin-top:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.foot button{margin:0}
+.review-notice{background:#e8f7f1;padding:10px 12px;border-radius:8px;margin:12px 0}.msg{color:#c33;font-size:13px}.edit-panel{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}.edit-panel input{flex:1;min-width:240px}.edit-panel button{margin:0}
+[hidden]{display:none!important}
+</style>
+<header><strong>申报条件核对</strong>　<a href="/admin/review">截止日期核对</a>　<a href="/admin/fields">字段核对</a>　<span id="count"></span></header>
+<main>
+  <div class="bar auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><input id="reviewer" placeholder="核对人" aria-label="核对人"><select id="state" aria-label="查看"><option value="pending">待核对</option><option value="confirmed">已确认</option></select><button class="primary" id="load">加载</button></div>
+  <p class="hint">逐条看黄色高亮的原文：条件写得对就通过，措辞不准就改写（原文引用不能改），不是条件或对不上原文就删除。每条都核过后，确认整份才会在小程序详情页显示；确认后可以撤回。小程序只显示类别和原文原句（逐字引用），条件那句话（含改写）只在这里作核对参考，不对外。<br>快捷键：j / k 下一条 / 上一条；a 通过；e 改写（Enter 提交）；x 删除；z 撤回这一条的核对；c 确认当前这份；r 重新载入。输入框内不触发快捷键。</p>
+  <div id="notice" class="review-notice" role="status" hidden><span id="noticeText"></span> <button id="reopenNotice">撤回确认</button><span id="noticeError" class="msg"></span></div>
+  <p id="loadError" class="msg" role="status"></p>
+  <div id="list"></div>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const headers = () => ({ 'X-Admin-Token': youjuAdminToken(), 'Content-Type': 'application/json' });
+  const CATEGORIES = ['主体资格', '财务指标', '知识产权', '人员', '其他'];
+  const STATES = { pending: '待核', approved: '已通过', deleted: '已删除' };
+  let cards = [], entries = [], current = null, busy = false, loading = false, pending = 0, lastConfirmed = null;
+  try { $('reviewer').value = localStorage.getItem('youjuReviewer') || '创始人'; }
+  catch (_) { $('reviewer').value = '创始人'; }
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function reviewer() { return $('reviewer').value.trim(); }
+  function setCount() { $('count').textContent = `待确认 ${pending} 份`; }
+  async function refreshCount() {
+    try {
+      const res = await fetch('/api/admin/conditions/count', { headers: headers() });
+      if (res.ok) { pending = (await res.json()).pending; setCount(); }
+    } catch (_) { /* 计数刷新失败不影响核对。 */ }
+  }
+  async function post(path, body) {
+    const res = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `操作失败（${res.status}）`);
+    return data;
+  }
+  function selectItem(entry, scroll = true) {
+    if (current) current.node.classList.remove('current');
+    current = entry;
+    if (current) {
+      current.node.classList.add('current');
+      if (scroll) current.node.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function moveItem(step) {
+    const available = entries.filter(entry => !entry.card.node.hidden);
+    const at = available.indexOf(current);
+    selectItem(available[at < 0 ? 0 : Math.max(0, Math.min(available.length - 1, at + step))] || null);
+  }
+  function setBusy(value) {
+    busy = value;
+    $('load').disabled = busy || loading;
+    document.querySelectorAll('#list button').forEach(button => { button.disabled = busy || loading || button.dataset.off === '1'; });
+    $('reopenNotice').disabled = busy || !lastConfirmed;
+  }
+
+  function paintItem(entry) {
+    const { item, node } = entry;
+    node.classList.toggle('deleted', item.status === 'deleted');
+    entry.cat.textContent = item.category;
+    entry.text.textContent = item.text;
+    entry.state.textContent = STATES[item.status];
+    entry.state.className = `state state-${item.status}`;
+    entry.edited.hidden = item.text === item.original_text;
+    entry.orig.hidden = item.text === item.original_text;
+    entry.orig.textContent = `原拟：${item.original_text}`;
+    paintCard(entry.card);
+  }
+  function paintCard(card) {
+    if (!card.confirm) return;
+    const items = card.entries.map(entry => entry.item);
+    const waiting = items.filter(item => item.status === 'pending').length;
+    const approved = items.filter(item => item.status === 'approved').length;
+    card.progress.textContent = waiting
+      ? `还有 ${waiting} 条没核对（共 ${items.length} 条）`
+      : `都核过了：通过 ${approved} 条，删除 ${items.length - approved} 条${approved ? '' : '（确认后详情页不显示这张卡片）'}`;
+    card.confirm.dataset.off = waiting ? '1' : '0';
+    card.confirm.disabled = busy || loading || !!waiting;
+  }
+
+  async function decide(entry, action) {
+    if (busy || loading || entry.card.node.hidden || !entry.actions) return;
+    const who = reviewer();
+    if (!who) { entry.msg.textContent = '请先填写核对人'; return; }
+    const body = { reviewed_by: who };
+    if (action === 'edit') {
+      body.text = entry.input.value.trim();
+      body.category = entry.select.value;
+      if (!body.text) { entry.msg.textContent = '请先填写改后的条件'; return; }
+    }
+    setBusy(true); entry.msg.textContent = '';
+    try {
+      const data = await post(`/api/admin/conditions/items/${entry.item.id}/${action}`, body);
+      entry.item.status = data.status;
+      if (action === 'edit') { entry.item.text = data.text; entry.item.category = data.category; entry.panel.hidden = true; }
+      paintItem(entry);
+      try { localStorage.setItem('youjuReviewer', who); } catch (_) {}
+      if (action !== 'edit' && action !== 'reset') moveItem(1);
+    } catch (err) { entry.msg.textContent = err.message; }
+    finally { setBusy(false); }
+  }
+
+  async function confirmCard(card) {
+    if (busy || loading || !card.confirm || card.node.hidden || card.confirm.dataset.off === '1') return;
+    const who = reviewer();
+    if (!who) { card.msg.textContent = '请先填写核对人'; return; }
+    setBusy(true); card.msg.textContent = '';
+    try {
+      const data = await post(`/api/admin/conditions/${card.doc.list_id}/confirm`, { reviewed_by: who });
+      card.node.hidden = true;
+      const next = entries.find(entry => !entry.card.node.hidden && cards.indexOf(entry.card) > cards.indexOf(card));
+      selectItem(next || entries.find(entry => !entry.card.node.hidden) || null);
+      lastConfirmed = card;
+      $('notice').hidden = false; $('noticeError').textContent = '';
+      $('noticeText').textContent = `已确认：${card.doc.title}（通过 ${data.approved} 条${data.approved ? '，详情页已显示' : '，详情页不显示'}）`;
+      pending = Math.max(0, pending - 1); setCount();
+    } catch (err) { card.msg.textContent = err.message; }
+    finally { setBusy(false); }
+  }
+
+  async function reopen(card, msg) {
+    if (busy || loading) return;
+    const who = reviewer();
+    if (!who) { msg.textContent = '请先填写核对人'; return; }
+    setBusy(true); msg.textContent = '';
+    try {
+      await post(`/api/admin/conditions/${card.doc.list_id}/reopen`, { reviewed_by: who });
+      if (card === lastConfirmed) {
+        card.node.hidden = false;
+        lastConfirmed = null;
+        $('noticeText').textContent = `已撤回确认：${card.doc.title}，详情页已不再显示`;
+        selectItem(card.entries[0] || null);
+        await refreshCount();
+      } else {
+        card.node.hidden = true;
+        msg.textContent = '';
+      }
+    } catch (err) { msg.textContent = err.message; }
+    finally { setBusy(false); }
+  }
+
+  function quoteBlock(item) {
+    const box = el('div', 'quote');
+    if (item.before) box.append(`…${item.before}`);
+    box.append(el('mark', '', item.quote));
+    if (item.after) box.append(`${item.after}…`);
+    return box;
+  }
+  function renderItem(card, item, editable) {
+    const node = el('div', 'item');
+    const entry = { card, item, node, actions: editable };
+    entry.cat = el('span', 'tag'); entry.text = el('b', 'text'); entry.state = el('span', 'state');
+    entry.edited = el('span', 'edited', '已改写'); entry.orig = el('div', 'orig');
+    node.append(entry.cat, entry.text, entry.edited, entry.state, entry.orig, quoteBlock(item));
+    entry.msg = el('span', 'msg'); entry.msg.setAttribute('role', 'status');
+    if (editable) {
+      const approve = el('button', 'primary', '通过');
+      const edit = el('button', '', '改写');
+      const del = el('button', 'danger', '删除');
+      const reset = el('button', '', '撤回这条');
+      const panel = entry.panel = el('div', 'edit-panel'); panel.hidden = true;
+      const select = entry.select = el('select'); select.setAttribute('aria-label', '类别');
+      CATEGORIES.forEach(name => select.append(el('option', '', name)));
+      const input = entry.input = el('input'); input.maxLength = 120; input.setAttribute('aria-label', '改后的条件');
+      const submit = el('button', 'primary', '提交改写');
+      const cancel = el('button', '', '取消');
+      panel.append(select, input, submit, cancel);
+      entry.edit = () => {
+        if (busy || loading || card.node.hidden) return;
+        selectItem(entry, false); select.value = item.category; input.value = item.text;
+        panel.hidden = false; input.focus();
+      };
+      approve.onclick = () => decide(entry, 'approve');
+      del.onclick = () => decide(entry, 'delete');
+      reset.onclick = () => decide(entry, 'reset');
+      edit.onclick = entry.edit;
+      submit.onclick = () => decide(entry, 'edit');
+      cancel.onclick = () => { panel.hidden = true; input.blur(); };
+      input.onkeydown = event => {
+        if (event.key === 'Enter' && !event.isComposing && !event.repeat) { event.preventDefault(); decide(entry, 'edit'); }
+        else if (event.key === 'Escape') { panel.hidden = true; input.blur(); }
+      };
+      node.append(el('br'), approve, edit, del, reset, panel);
+    }
+    node.append(entry.msg);
+    node.onclick = event => { if (!busy && !loading && !event.target.closest('button, input, select')) selectItem(entry, false); };
+    return entry;
+  }
+  function renderCard(doc, editable) {
+    const node = el('article', 'card');
+    const card = { doc, node, entries: [] };
+    node.append(el('strong', 'title', doc.title));
+    const meta = el('div', 'meta');
+    if (editable) meta.append(`${doc.tier_label}${doc.due ? `（${doc.due}）` : ''}　`);
+    else meta.append(`${doc.confirmed_by} 确认于 ${new Date(doc.confirmed_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}${doc.current ? '' : '　原文已变化，已停止显示'}　`);
+    const link = el('a', '', '原文'); link.href = doc.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    meta.append(link);
+    if (doc.dropped) meta.append(`　另有 ${doc.dropped} 条引用对不上原文等，已自动丢弃`);
+    node.append(meta);
+    card.entries = doc.items.map(item => renderItem(card, item, editable));
+    card.entries.forEach(entry => node.append(entry.node));
+    const foot = el('div', 'foot');
+    card.msg = el('span', 'msg'); card.msg.setAttribute('role', 'status');
+    if (editable) {
+      card.confirm = el('button', 'primary', '确认整份（确认后对外显示）');
+      card.confirm.onclick = () => confirmCard(card);
+      card.progress = el('span', 'meta');
+      foot.append(card.confirm, card.progress, card.msg);
+    } else {
+      const undo = el('button', 'danger', '撤回确认');
+      undo.onclick = () => reopen(card, card.msg);
+      foot.append(undo, card.msg);
+    }
+    node.append(foot);
+    card.entries.forEach(paintItem);
+    paintCard(card);
+    return card;
+  }
+
+  async function load() {
+    if (loading || busy) return;
+    loading = true; setBusy(false); $('loadError').textContent = '';
+    const state = $('state').value;
+    try {
+      const res = await fetch(`/api/admin/conditions?state=${state}&limit=50`, { headers: headers() });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `加载失败（${res.status}）`);
+      const data = await res.json();
+      selectItem(null);
+      cards = data.map(doc => renderCard(doc, state === 'pending'));
+      entries = cards.flatMap(card => card.entries);
+      $('list').textContent = ''; cards.forEach(card => $('list').append(card.node));
+      if (!cards.length) $('list').append(el('p', 'empty', state === 'pending' ? '暂无待核对的申报条件' : '最近没有确认过的清单'));
+      selectItem(entries[0] || null, false);
+      await refreshCount();
+    } catch (err) { $('loadError').textContent = err.message; }
+    finally { loading = false; setBusy(false); }
+  }
+
+  $('load').onclick = () => load();
+  $('state').onchange = () => load();
+  $('reopenNotice').onclick = () => { if (lastConfirmed) reopen(lastConfirmed, $('noticeError')); };
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey ||
+      event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    const key = event.key.toLowerCase();
+    if (!['j', 'k', 'a', 'x', 'e', 'z', 'c', 'r'].includes(key)) return;
+    event.preventDefault();
+    if (busy || loading) return;
+    if (key === 'j' || key === 'k') moveItem(key === 'j' ? 1 : -1);
+    else if (key === 'r') load();
+    else if (current && current.actions) {
+      if (key === 'e') current.edit();
+      else if (key === 'c') confirmCard(current.card);
+      else decide(current, { a: 'approve', x: 'delete', z: 'reset' }[key]);
+    }
+  });
+})();
+</script>
+</html>

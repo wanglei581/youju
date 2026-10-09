@@ -1,7 +1,8 @@
 {
+  "navigationStyle": "custom",
   "navigationBarTitleText": "截止雷达",
   "usingComponents": {
-    "t-icon": "tdesign-miniprogram/icon/icon",
+    "t-icon": "/components/icon/index",
     "tool-fab": "/components/tool-fab/index"
   }
 }

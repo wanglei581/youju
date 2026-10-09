@@ -4,7 +4,6 @@
 .hero-row { margin-top: 8rpx; display: flex; align-items: center; justify-content: space-between; }
 .hero-num { font-size: 72rpx; font-weight: 700; }
 .hero-unit { font-size: 30rpx; }
-.hero-btn { height: 64rpx; padding: 0 28rpx; display: flex; align-items: center; border-radius: 32rpx; background: rgba(255, 255, 255, 0.2); font-size: 28rpx; }
 .manage { font-size: 28rpx; font-weight: 400; }
 .sub { display: flex; align-items: center; gap: 24rpx; padding: 24rpx 0; border-bottom: 2rpx solid var(--line); }
 .sub-icon { width: 76rpx; height: 76rpx; flex-shrink: 0; border-radius: 22rpx; display: flex; align-items: center; justify-content: center; }
@@ -20,8 +19,6 @@
 .remind-main { flex: 1; min-width: 0; }
 .remind-title { font-size: 30rpx; font-weight: 600; }
 .remind-text { margin-top: 6rpx; font-size: 24rpx; line-height: 1.5; }
-.remind-btn { flex-shrink: 0; height: 72rpx; padding: 0 32rpx; display: flex; align-items: center; border-radius: 36rpx; background: var(--brand); color: #FFFFFF; font-size: 28rpx; font-weight: 500; white-space: nowrap; }
-.remind-btn--on { background: var(--fill); color: var(--t2); }
 .gate { padding-top: 36rpx; padding-bottom: 36rpx; }
 .gate-title { font-size: 32rpx; font-weight: 600; }
 .gate-text { margin-top: 12rpx; font-size: 26rpx; line-height: 1.7; }

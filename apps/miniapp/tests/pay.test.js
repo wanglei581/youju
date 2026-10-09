@@ -41,7 +41,7 @@ function formPage(api, wxOptions = {}, timers = clock(), termsOptions = {}) {
     requestVirtualPayment: (options) => { calls.payment.push(options); options.success({}); },
   }, wxOptions);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', 'advisor-form', 'index.js'), 'utf8'), {
-    require: (name) => name.endsWith('api.js') ? api : name.endsWith('/pay.js') ? pay : name.endsWith('pay-terms.js') ? payTerms : helpers,
+    require: (name) => name.endsWith('consent.js') ? { loginOpen: () => termsOptions.loginOpen !== false } : name.endsWith('api.js') ? api : name.endsWith('/pay.js') ? pay : name.endsWith('pay-terms.js') ? payTerms : helpers,
     Page: (value) => { definition = value; },
     wx,
     setTimeout: timers.set, clearTimeout: timers.clear,
@@ -55,7 +55,7 @@ function formPage(api, wxOptions = {}, timers = clock(), termsOptions = {}) {
 function apiWith(overrides = {}) {
   const calls = { orders: [], polls: 0 };
   const api = Object.assign({
-    advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 1, limit: 1, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }),
+    advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used: 3, limit: 3, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }),
     payProducts: () => Promise.resolve(PRODUCTS),
     createPayOrder: (body) => { calls.orders.push(body); return Promise.resolve(ORDER); },
     payOrder: () => { calls.polls += 1; return Promise.resolve({ orderId: 41, status: '待支付', taskId: null }); },
@@ -111,7 +111,7 @@ test('有商品时按家数排序显示价格，超过档位、文件模式和�
   assert.deepEqual(Array.from(view.data.pay.items, (item) => item.label), ['100 家以内 · 9.90 元', '200 家以内 · 19.90 元']);
   assert.ok(view.data.pay.items.every((item) => item.disabled));
   view.input({ detail: { value: '甲公司' } });
-  assert.equal(view.data.pay.hint, '今天的免费次数已用完，可按次付费比对');
+  assert.equal(view.data.pay.hint, '本月的免费次数已用完，可按次付费比对');
   assert.ok(view.data.pay.items.every((item) => !item.disabled));
   view.input({ detail: { value: Array.from({ length: 120 }, (_, n) => `公司${n}`).join('\n') } });
   assert.equal(view.data.pay.hint, '超过免费的每次 50 家，可按次付费比对');
@@ -122,8 +122,43 @@ test('有商品时按家数排序显示价格，超过档位、文件模式和�
   assert.equal(view.data.pay.hint, pay.TEXT.fileMode); assert.ok(view.data.pay.items.every((item) => item.disabled));
   assert.equal(pay.yuan(5), '0.05 元'); assert.equal(pay.yuan(100), '1.00 元'); assert.equal(pay.yuan(123456), '1234.56 元');
   const free = pay.payView({ products: pay.normalizeProducts(PRODUCTS), kind: 'compare', mode: 'paste', rowCount: 3, maxRows: 50, remaining: 1 });
-  assert.equal(free.hint, '本次可免费提交；需要比对更多家时可按次付费');
-  for (const text of [free.hint, free.notes, ...Object.values(pay.TEXT)]) assert.doesNotMatch(text, BANNED);
+  assert.deepEqual(free, { visible: false });
+  for (const text of [view.data.pay.hint, view.data.pay.notes, ...Object.values(pay.TEXT)]) assert.doesNotMatch(text, BANNED);
+});
+
+test('本月还有免费次数且不超过 50 家时隐藏付费档；用完或 51 家起才显示，跨月重新隐藏', async () => {
+  let used = 2;
+  const { api, calls } = apiWith({ advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: 50 } } }) });
+  const page = await ready(api);
+  assert.deepEqual(page.view.data.pay, { visible: false });
+  await buy(page, Array.from({ length: 50 }, (_, n) => `公司${n}`).join('\n'));
+  assert.deepEqual(page.view.data.pay, { visible: false });
+  assert.equal(calls.orders.length, 0); assert.equal(page.calls.login, 0);
+  page.view.input({ detail: { value: Array.from({ length: 51 }, (_, n) => `公司${n}`).join('\n') } });
+  assert.equal(page.view.data.pay.visible, true);
+  assert.match(page.view.data.pay.hint, /超过免费的每次 50 家/);
+  page.view.input({ detail: { value: '甲公司' } });
+  assert.deepEqual(page.view.data.pay, { visible: false });
+  used = 3; page.view.onShow(); await flush();
+  assert.equal(page.view.data.pay.visible, true);
+  assert.match(page.view.data.pay.hint, /本月/);
+  used = 0; page.view.onShow(); await flush();
+  assert.equal(page.view.data.remaining, 3);
+  assert.deepEqual(page.view.data.pay, { visible: false });
+});
+
+test('用户协议未定稿时不请求额度或商品、不登录或下单', async () => {
+  let requested = 0;
+  const { api, calls } = apiWith({
+    advisorStatus: () => { requested += 1; return Promise.resolve({}); },
+    payProducts: () => { requested += 1; return Promise.resolve(PRODUCTS); },
+  });
+  const page = formPage(api, {}, clock(), { loginOpen: false });
+  page.view.onLoad({ kind: 'compare' }); page.view.onShow(); await flush();
+  page.view.buy({ currentTarget: { dataset: { id: 'compare_100' } } });
+  page.view.startPay(PRODUCTS.items[1], ['甲公司']); await flush();
+  assert.equal(requested, 0); assert.equal(calls.orders.length, 0); assert.equal(page.calls.login, 0);
+  assert.equal(page.view.data.pay.visible, false);
 });
 
 test('确认弹窗写清价格、家数、退款、保存期限和第三方说明；下单参数和支付参数来自后端', async () => {
@@ -318,7 +353,7 @@ test('轮询器：stop 后在途结果忽略；start(true) 只查一次', async 
 
 
 test('付费服务协议未定稿时付费按钮不可用、点了也不下单；定稿后要勾选才可用', async () => {
-  for (const [termsOptions, note] of [[{ final: false }, '付费服务协议定稿后开放'], [{ final: true, agreed: false }, '请先阅读并同意《付费服务协议》']]) {
+  for (const [termsOptions, note] of [[{ final: false }, '付费服务暂未开放'], [{ final: true, agreed: false }, '请先阅读并同意《付费服务协议》']]) {
     const { api, calls } = apiWith();
     const page = formPage(api, {}, clock(), termsOptions);
     page.view.onLoad({ kind: 'compare' }); page.view.onShow(); await flush();

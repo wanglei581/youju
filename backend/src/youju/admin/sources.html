@@ -179,6 +179,15 @@
     const p = data.proposal || {};
     const level = field(form, '层级', select(LEVELS, p.level));
     const province = field(form, '省份', select(PROVINCES, p.province));
+    const city = field(form, '城市（市级必填）', textInput(p.city, 32));
+    city.placeholder = '如 青岛（不加“市”）';
+    const syncCity = () => {
+      city.disabled = level.value !== '市级';
+      city.required = level.value === '市级';
+      if (city.disabled) city.value = '';
+    };
+    level.onchange = syncCity;
+    syncCity();
     const dept = field(form, '部门简称', textInput(p.dept, 32));
     const full = field(form, '部门全称', textInput(p.dept_full_name, 128));
     const column = field(form, '栏目名', textInput(p.column_name, 64));
@@ -194,12 +203,13 @@
       msg.className = 'msg'; msg.textContent = '';
       const reviewer = $('reviewer').value.trim();
       if (!reviewer) { msg.textContent = '先在右上角填核对人'; return; }
+      if (level.value === '市级' && !city.value.trim()) { msg.textContent = '市级来源必须填写城市'; return; }
       save.disabled = true;
       try {
         const res = await fetch('/api/admin/sources', {
           method: 'POST', headers: headers(),
           body: JSON.stringify({
-            url: data.url, level: level.value, province: province.value, dept: dept.value.trim(),
+            url: data.url, level: level.value, province: province.value, city: city.value.trim() || null, dept: dept.value.trim(),
             dept_full_name: full.value.trim(), column_name: column.value.trim(),
             parser_config: pickAi.checked ? data.ai_config : {}, reviewed_by: reviewer,
             trial_token: pickAi.checked ? data.ai_token : data.generic_token,
