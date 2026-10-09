@@ -140,7 +140,7 @@ test('商品关闭隐藏 T2；3 天提醒边界；到期回免费行', async () 
   const p = page('advisor', { payProducts: () => Promise.reject(Object.assign(new Error('关闭'), { status: 404 })) }); p.view.onShow(); await flush(); assert.equal(p.view.data.showPassLink, false);
   const now = Date.now(); assert.ok(pay.toolStatus(status(0, true, new Date(now + 3 * 86400000).toISOString()), 'track', now).notice); assert.equal(pay.toolStatus(status(0, true, new Date(now + 3 * 86400000 + 1).toISOString()), 'track', now).notice, ''); assert.match(pay.toolStatus(status(), 'track').line, /本月剩余 2 次/);
 });
-for (const [reason, text] of [['付款已超过 7 天，请联系人工处理', '已超过 7 天'], ['这张票已用过付费的量，不能自助退款，请联系人工处理', '已提交过超过 50 家的名单或已超出每月免费次数'], ['苹果手机订单请在 App Store 申请退款', '苹果手机付款的订单请在 App Store 申请退款']]) test(`订单不可退：${text}`, async () => {
+for (const [reason, text] of [['已超过 7 天', '已超过 7 天'], ['已提交过超过 50 家的名单或已超出每月免费次数', '已提交过超过 50 家的名单或已超出每月免费次数'], ['苹果手机付款的订单请在 App Store 申请退款', '苹果手机付款的订单请在 App Store 申请退款'], ['订单当前状态不能自助退款，可点“遇到问题”告诉我们', '订单当前状态不能自助退款，可点“遇到问题”告诉我们']]) test(`订单不可退：${text}`, async () => {
   const p = page('orders', { payOrders: () => Promise.resolve({ items: [{ ...ORDER, canRefund: false, refundUnavailableReason: reason }] }) }); p.view.onShow(); await flush(); assert.ok(p.text().includes(text)); assert.equal(findAll(p.show(), tapsTo('refund')).length, 0); assert.equal(findAll(p.show(), tapsTo('invoice')).length, 1); p.view.refund(event(41)); assert.equal(p.calls.modals.length, 0);
 });
 test('订单可退：O1、O4、退款成功 O5 刷新；发票和问题带订单号', async () => {
@@ -159,7 +159,7 @@ test('订单空列表和网络错误重试；问题无单号', async () => {
 for (const [open, hasOrders] of [[false, false], [true, false], [false, true], [true, true]]) test(`我的订单入口：可售=${open}、有历史订单=${hasOrders}`, async () => {
   const p = page('me', { payProducts: () => open ? Promise.resolve({ items: [PRODUCT] }) : Promise.reject(Object.assign(new Error('关闭'), { status: 404 })), payOrders: () => Promise.resolve({ items: hasOrders ? [ORDER] : [] }) }); p.view.loadOrdersEntry(); await flush(); assert.equal(p.view.data.showOrders, open || hasOrders); assert.equal(findAll(p.show(), tapsTo('orders')).length, open || hasOrders ? 1 : 0);
 });
-for (const [type, title] of [['pay', '支付或订单遇到的问题'], ['invoice', '申请发票：请写发票抬头、税号和接收邮箱']]) test(`反馈 ${type} 标题占位、订单前缀和总字数`, async () => {
+for (const [type, title] of [['pay', '支付或订单遇到的问题'], ['invoice', '申请发票：请写发票抬头和税号']]) test(`反馈 ${type} 标题占位、订单前缀和总字数`, async () => {
   const p = page('feedback'); p.view.onLoad({ type, orderId: '41', id: '99' }); assert.equal(p.calls.title, title); assert.equal(findAll(p.show(), (n) => n.tag === 'textarea')[0].attrs.placeholder, title); assert.equal(p.view.data.max, 500 - '【订单 41】'.length);
   p.view.onInput({ detail: { value: 'x'.repeat(500) } }); p.view.submit(); await flush(); assert.equal(p.calls.feedback[0].content.length, 500); assert.ok(p.calls.feedback[0].content.startsWith('【订单 41】')); assert.equal(p.calls.feedback[0].id, '');
 });

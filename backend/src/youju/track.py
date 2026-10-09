@@ -317,7 +317,8 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail = book.active
     detail.title = "跟进表"
     note = (
-        "第三方整理 · 非政府平台；近 90 天发布的申报通知；截止未核对，请以原文为准；"
+        "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
+        "截止日期只写人工核对过的，没核对的请以原文为准；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     headers = [

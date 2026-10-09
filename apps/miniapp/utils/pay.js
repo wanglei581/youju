@@ -47,10 +47,8 @@ function limitView(input) {
     split: code === 'FREE_ROW_LIMIT' && input.remaining > 0,
   };
 }
+// 不能自助退款的原因：服务端返回的就是给用户看的文字（payments.refund_reason）
 function refundReason(reason) {
-  if (/App Store/.test(reason || '')) return '苹果手机付款的订单请在 App Store 申请退款';
-  if (/超过 7 天/.test(reason || '')) return '已超过 7 天';
-  if (/用过付费的量/.test(reason || '')) return '已提交过超过 50 家的名单或已超出每月免费次数';
   return reason || '';
 }
 function orderView(order) {

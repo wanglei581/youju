@@ -161,25 +161,41 @@ def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
     if order.platform == "ios":
-        return "苹果手机订单请在 App Store 申请退款"
+        return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
-        return "支付平台尚未确认，请联系人工处理"
+        return "支付方式还没确认，可点“遇到问题”告诉我们"
     if order.status != "completed" or order.refund_status is not None:
-        return "订单当前状态不能自助退款，请联系人工处理"
+        return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
-        return "付款已超过 7 天，请联系人工处理"
+        return "已超过 7 天"
     ticket = order_pass(session, order, lock=lock)
     if ticket is None or ticket.revoked_at is not None:
-        return "使用期尚未开通或已收回，请联系人工处理"
+        return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
-        return "这张票已用过付费的量，不能自助退款，请联系人工处理"
+        return "已提交过超过 50 家的名单或已超出每月免费次数"
     return None
 
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
     ticket = order_pass(session, order, lock=True)
-    if ticket is not None and ticket.revoked_at is None:
-        ticket.revoked_at = stamp
+    if ticket is None or ticket.revoked_at is not None:
+        return
+    ticket.revoked_at = stamp
+    # 一次买了两张、退掉前面那张时，后面排着的使用期往前挪，不留空档
+    unused = ticket.ends_at - max(stamp, ticket.starts_at)
+    if unused <= timedelta(0):
+        return
+    for later in session.scalars(
+        select(WorkbenchPass)
+        .where(
+            WorkbenchPass.user_id == ticket.user_id,
+            WorkbenchPass.revoked_at.is_(None),
+            WorkbenchPass.starts_at >= ticket.ends_at,
+        )
+        .with_for_update()
+    ):
+        later.starts_at -= unused
+        later.ends_at -= unused
 
 
 def platform(order: dict, settings: Settings) -> str:

@@ -16,7 +16,7 @@ Page({
     const type = ['pay', 'invoice'].includes(query.type) ? query.type : '';
     const orderId = type && /^\d{1,20}$/.test(query.orderId || '') ? query.orderId : '';
     const prefix = orderId ? `【订单 ${orderId}】` : (coverage ? COVERAGE_PREFIX : '');
-    const placeholder = type === 'pay' ? '支付或订单遇到的问题' : type === 'invoice' ? '申请发票：请写发票抬头、税号和接收邮箱' : '';
+    const placeholder = type === 'pay' ? '支付或订单遇到的问题' : type === 'invoice' ? '申请发票：请写发票抬头和税号' : '';
     this.setData({
       docId: coverage || type ? '' : query.id || '',
       title: !coverage && !type && query.title ? decodeURIComponent(query.title) : '',

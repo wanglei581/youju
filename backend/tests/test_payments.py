@@ -1149,7 +1149,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     if case == "old":
         monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=7, microseconds=1))
     if case == "used":
-        assert submit(setup_pay, count=1).status_code == 202
+        assert submit(setup_pay, count=51).status_code == 202
     result = self_refund(setup_pay, row)
     assert result.status_code == expected
     session.expire_all()
@@ -1168,7 +1168,9 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     else:
         assert ticket.revoked_at is None
         reason = result.json()["detail"]
-        assert {"old": "超过 7 天", "used": "已用过", "ios": "App Store"}[case] in reason
+        assert {"old": "超过 7 天", "used": "已提交过超过 50 家", "ios": "App Store"}[
+            case
+        ] in reason
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
@@ -1177,7 +1179,7 @@ def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session
     setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     assert inquiry(setup_pay, row)["result_info"] == "未使用"
-    response = submit(setup_pay, count=1)
+    response = submit(setup_pay, count=51)
     task_id = response.json()["id"]
     session.expire_all()
     task = session.get(AdvisorTask, task_id)
@@ -1203,7 +1205,7 @@ def test_ios_refund_notification_revokes_only_its_pass(setup_pay, session):
     setup_pay[2].order_type = 7
     first = delivered(setup_pay, session)
     second = delivered(setup_pay, session)
-    assert submit(setup_pay).status_code == 202
+    assert submit(setup_pay, count=51).status_code == 202
     setup_pay[2].status, setup_pay[2].left_fee = 8, 0
     data = {
         "Event": "xpay_refund_notify",
@@ -1221,7 +1223,7 @@ def test_ios_refund_notification_revokes_only_its_pass(setup_pay, session):
 
 def test_task_failure_does_not_refund_and_payment_switch_does_not_pause_tasks(setup_pay, session):
     row = delivered(setup_pay, session)
-    task_id = submit(setup_pay).json()["id"]
+    task_id = submit(setup_pay, count=51).json()["id"]
     setup_pay[1].pay_enabled = False
     for _ in range(3):
         advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)
@@ -1235,7 +1237,7 @@ def test_task_failure_does_not_refund_and_payment_switch_does_not_pause_tasks(se
 
 def test_account_deletion_preserves_financial_and_usage_audit(setup_pay, session):
     row = delivered(setup_pay, session)
-    task_id = submit(setup_pay).json()["id"]
+    task_id = submit(setup_pay, count=51).json()["id"]
     ticket = payments.order_pass(session, row)
     assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
     session.expire_all()
@@ -1307,9 +1309,9 @@ def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, sessio
             stale.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             seen = stale.get(PayOrder, row.id)
             assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
-            assert submit(setup_pay).status_code == 202
+            assert submit(setup_pay, count=51).status_code == 202
             locked = payments.lock_order(stale, row.id)
-            assert "已用过" in payments.refund_reason(stale, locked, NOW, lock=True)
+            assert "已提交过" in payments.refund_reason(stale, locked, NOW, lock=True)
 
 
 def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
@@ -1357,7 +1359,7 @@ def test_free_failure_releases_only_once(setup_pay, session, kind):
 
 def test_latest_usage_evidence_is_not_overwritten_by_older_task(setup_pay, session):
     row = delivered(setup_pay, session)
-    ids = [submit(setup_pay, key=str(n)).json()["id"] for n in range(2)]
+    ids = [submit(setup_pay, count=51, key=str(n)).json()["id"] for n in range(2)]
     session.expire_all()
     older = session.get(AdvisorTask, ids[0])
     newer = session.get(AdvisorTask, ids[1])
@@ -1455,7 +1457,7 @@ def test_lock_order_takes_user_lock_before_flushing_payment_event(setup_pay, ses
 
 def test_account_deletion_locks_tasks_before_passes(setup_pay, session, db_engine):
     delivered(setup_pay, session)
-    assert submit(setup_pay).status_code == 202
+    assert submit(setup_pay, count=51).status_code == 202
     statements, stop = _capture_sql(db_engine)
     try:
         assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
@@ -1538,3 +1540,52 @@ def test_csv_submission_has_same_row_limits_as_inline(setup_pay, paid, count):
     assert response.status_code == (202 if count <= (500 if paid else 50) else 429)
     if response.status_code == 429:
         assert response.json()["detail"]["code"] == ("PASS_ROW_LIMIT" if paid else "FREE_ROW_LIMIT")
+
+
+def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, session):
+    """有使用期也先用免费的量：50 行以内、本月免费次数没用完的记为免费，不影响自助退款；
+    超过 50 行或免费次数用完才算用了付费的量（和付款页写的退款条件一致）。"""
+    row = delivered(setup_pay, session)
+    for n in range(3):
+        body = submit(setup_pay, count=50, key=f"small-{n}").json()
+        assert body["usageSource"] == "free"
+    session.expire_all()
+    assert payments.refund_reason(session, row, NOW) is None
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["quota"]["compare"]["used"] == 3
+    # 第 4 次：免费次数用完，才用使用期
+    assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
+    session.expire_all()
+    assert "已提交过超过 50 家" in payments.refund_reason(session, row, NOW)
+
+
+def test_orders_and_refund_stay_available_after_sales_switched_off(setup_pay, session):
+    """关掉收费只停卖：已经付款的用户照样能看订单、自助退款；商品和下单是 404。"""
+    client, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    settings.pay_enabled = False
+    assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
+    assert create(setup_pay).status_code == 404
+    listed = client.get("/api/v1/pay/orders", headers=HEADERS).json()["items"]
+    assert [item["orderId"] for item in listed] == [row.id] and listed[0]["canRefund"] is True
+    assert client.get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).status_code == 200
+    # 使用期照常有效
+    status = client.get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"]["active"] is True
+    assert self_refund(setup_pay, row).json()["status"] == "退款中"
+    assert len(_calls(fake, "/xpay/refund_order")) == 1
+
+
+def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, session):
+    """一次买了两张、退掉前面那张：后面那张往前挪到现在开始，不留空档。"""
+    first = delivered(setup_pay, session)
+    second = delivered(setup_pay, session)
+    a, b = payments.order_pass(session, first), payments.order_pass(session, second)
+    assert b.starts_at == a.ends_at
+    assert self_refund(setup_pay, first).status_code == 200
+    session.expire_all()
+    a, b = payments.order_pass(session, first), payments.order_pass(session, second)
+    assert a.revoked_at == NOW
+    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=payments.PASS_DAYS)
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"]["active"] is True

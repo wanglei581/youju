@@ -375,9 +375,15 @@ def create_task(
             raise HTTPException(
                 status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
             )
-    if ticket is None and not service.reserve_usage(
+    # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
+    # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
+    fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
+    reserved = fits_free and service.reserve_usage(
         session, user.id, body.kind, service.usage_day(stamp)
-    ):
+    )
+    if reserved:
+        ticket = None
+    if ticket is None and not reserved:
         if body.kind not in AI_KINDS:
             raise HTTPException(
                 status_code=429,

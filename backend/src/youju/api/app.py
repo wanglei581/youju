@@ -170,7 +170,11 @@ async def _role_guard(request: Request, call_next):
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
     # 推送路径不受支付开关控制（配置检测和非支付消息要能应答），由路由自己按服务角色隐藏。
-    if path.startswith("/api/v1/pay/"):
+    # 支付开关只停卖：商品和下单在关闭时一律 404（请求体不合法也是 404）；
+    # 订单列表、详情、自助退款不拦——已经付款的用户还要能看订单、退款。
+    if path == "/api/v1/pay/products" or (
+        path == "/api/v1/pay/orders" and request.method == "POST"
+    ):
         from youju.payments import enabled as pay_enabled
 
         if not pay_enabled(get_settings()):

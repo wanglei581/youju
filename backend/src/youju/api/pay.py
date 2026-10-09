@@ -28,7 +28,9 @@ def require_enabled() -> None:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-router = APIRouter(prefix="/api/v1/pay", tags=["支付"], dependencies=[Depends(require_enabled)])
+# 开关只停卖：商品和下单受开关控制；订单列表、详情、自助退款不受——
+# 关掉收费以后，已经付过款的用户还要能看到订单、退款。
+router = APIRouter(prefix="/api/v1/pay", tags=["支付"])
 
 
 def require_push_service() -> None:
@@ -60,7 +62,7 @@ class OrderIn(BaseModel):
     code: str = Field(min_length=1, max_length=512, repr=False)
 
 
-@router.get("/products")
+@router.get("/products", dependencies=[Depends(require_enabled)])
 def list_products() -> dict:
     """只读：已配置价格、可以下单的商品；小程序据此显示付费档，空列表时不显示。"""
     settings = get_settings()
@@ -75,7 +77,9 @@ def list_products() -> dict:
     }
 
 
-@router.post("/orders", status_code=201, dependencies=[Depends(_body_size)])
+@router.post(
+    "/orders", status_code=201, dependencies=[Depends(require_enabled), Depends(_body_size)]
+)
 def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDep) -> dict:
     settings = get_settings()
     _upload_consent(user)
