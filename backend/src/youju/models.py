@@ -742,9 +742,11 @@ class AdvisorTask(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    pay_order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("pay_orders.id", ondelete="SET NULL"), index=True
+    pass_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workbench_passes.id", ondelete="SET NULL"), index=True
     )
+    usage_source: Mapped[str] = mapped_column(String(16), default="free", server_default="free")
+    usage_released: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
     input_rows: Mapped[list | None] = mapped_column(JSONType)
@@ -925,7 +927,7 @@ class AppKey(Base):
 
 
 class PayOrder(Base):
-    """价格、商品和环境均为下单快照；输入七天删除，金额留作对账。"""
+    """价格、商品和环境均为下单快照；金额留作对账。"""
 
     __tablename__ = "pay_orders"
     __table_args__ = (
@@ -939,18 +941,12 @@ class PayOrder(Base):
     out_trade_no: Mapped[str] = mapped_column(String(32))
     product_id: Mapped[str] = mapped_column(String(128))
     price: Mapped[int] = mapped_column(Integer)
-    row_limit: Mapped[int] = mapped_column(Integer)
     env: Mapped[int] = mapped_column(Integer)
-    input_rows: Mapped[list | None] = mapped_column(JSONType)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     wx_order_id: Mapped[str | None] = mapped_column(String(128))
     paid_fee: Mapped[int | None] = mapped_column(Integer)
     paid_time: Mapped[datetime | None] = mapped_column(UTCDateTime())
     platform: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
-    # 编号留作凭据，任务删除后也保留；不反向设外键，避免循环依赖。
-    task_id: Mapped[int | None] = mapped_column(Integer)
-    task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    rerun_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_order_id: Mapped[str | None] = mapped_column(String(32), unique=True)
     refund_status: Mapped[str | None] = mapped_column(String(16))
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -964,6 +960,25 @@ class PayOrder(Base):
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class WorkbenchPass(Base):
+    """每张订单对应一段使用期；最少使用凭据在任务删除后仍保留。"""
+
+    __tablename__ = "workbench_passes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("pay_orders.id", ondelete="CASCADE"), unique=True
+    )
+    starts_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_task_id: Mapped[int | None] = mapped_column(Integer)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class PayEvent(Base):

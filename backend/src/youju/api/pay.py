@@ -1,4 +1,4 @@
-"""默认隐藏的按次支付接口及云托管消息推送。"""
+"""默认关闭的客户工作台支付接口及云托管消息推送。"""
 
 import asyncio
 import json
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from youju import payments
-from youju.api.advisor import SessionDep, TaskIn, _body_size, _file_rows, _stamp, _upload_consent
+from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
 from youju.api.me import KnownUserDep, UserDep
 from youju.config import get_settings
 from youju.models import PayOrder, User
@@ -57,7 +57,6 @@ WxDep = Annotated[XPayClient, Depends(wx_client)]
 class OrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_id: str = Field(min_length=1, max_length=128)
-    rows: list[str] = Field(min_length=1, max_length=200)
     code: str = Field(min_length=1, max_length=512, repr=False)
 
 
@@ -68,11 +67,12 @@ def list_products() -> dict:
     # 和下单条件一致：没有 offerId 时下单必然失败，不展示价格。
     if not settings.xpay_offer_id:
         return {"items": []}
-    items = [
-        {"productId": product, "price": price, "maxRows": limit}
-        for product, (price, limit) in payments.products(settings).items()
-    ]
-    return {"items": sorted(items, key=lambda item: item["maxRows"])}
+    return {
+        "items": [
+            {"productId": product, "name": payments.PASS_NAME, "price": price, "days": days}
+            for product, (price, days) in payments.products(settings).items()
+        ]
+    }
 
 
 @router.post("/orders", status_code=201, dependencies=[Depends(_body_size)])
@@ -82,12 +82,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     sku = payments.products(settings).get(body.product_id)
     if sku is None or not settings.xpay_offer_id:
         raise HTTPException(status_code=404, detail="没有找到商品")
-    rows = _file_rows(TaskIn(kind="compare", rows=body.rows))
-    if not any(row.strip() for row in rows) or any(len(row) > 256 for row in rows):
-        raise HTTPException(status_code=422, detail="名单为空或企业名称过长")
-    price, limit = sku
-    if len(rows) > limit:
-        raise HTTPException(status_code=422, detail=f"该商品最多提交 {limit} 行")
+    price, _ = sku
     stamp = _stamp()
     # 和免费任务使用同一用户锁，防止并发下单绕过限制及与注销竞态。
     if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
@@ -125,9 +120,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         out_trade_no=trade,
         product_id=body.product_id,
         price=price,
-        row_limit=limit,
         env=settings.xpay_env,
-        input_rows=rows,
         created_at=stamp,
         updated_at=stamp,
     )
@@ -142,24 +135,68 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     }
 
 
-@router.get("/orders/{order_id}")
-def get_order(order_id: int, session: SessionDep, user: KnownUserDep) -> dict:
-    if user is None:
-        raise HTTPException(status_code=404, detail="没有找到接口")
-    order = session.scalar(
-        select(PayOrder)
-        .where(PayOrder.id == order_id, PayOrder.user_id == user.id)
-        .with_for_update()
-    )
-    if order is None:
-        raise HTTPException(status_code=404, detail="没有找到接口")
-    payments.sync_task(session, order, _stamp())
-    session.commit()
+def order_out(session: Session, order: PayOrder) -> dict:
+    ticket = payments.order_pass(session, order)
+    reason = payments.refund_reason(session, order, _stamp())
     return {
         "orderId": order.id,
         "status": payments.STATUS_LABELS[order.status],
-        "taskId": order.task_id,
+        "amount": order.price,
+        "paidAt": order.paid_time,
+        "passStartsAt": ticket.starts_at if ticket else None,
+        "passEndsAt": ticket.ends_at if ticket else None,
+        "passRevokedAt": ticket.revoked_at if ticket else None,
+        "canRefund": reason is None,
+        "refundUnavailableReason": reason,
     }
+
+
+@router.get("/orders")
+def list_orders(session: SessionDep, user: KnownUserDep) -> dict:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    orders = session.scalars(
+        select(PayOrder)
+        .where(PayOrder.user_id == user.id)
+        .order_by(PayOrder.created_at.desc(), PayOrder.id.desc())
+        .limit(20)
+    )
+    return {"items": [order_out(session, order) for order in orders]}
+
+
+def owned_order(session: Session, user: User | None, order_id: int, *, lock=False) -> PayOrder:
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    order = session.scalar(
+        select(PayOrder).where(PayOrder.id == order_id, PayOrder.user_id == user.id)
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    if lock:
+        order = payments.lock_order(session, order.id)
+        if order is None or order.user_id != user.id:
+            raise HTTPException(status_code=404, detail="没有找到接口")
+    return order
+
+
+@router.get("/orders/{order_id}")
+def get_order(order_id: int, session: SessionDep, user: KnownUserDep) -> dict:
+    return order_out(session, owned_order(session, user, order_id))
+
+
+@router.post("/orders/{order_id}/refund")
+def refund_order(order_id: int, session: SessionDep, user: KnownUserDep, client: WxDep) -> dict:
+    order = owned_order(session, user, order_id, lock=True)
+    # 重复请求只返回同一个退款的状态，不重建退款单号。
+    if order.platform == "android" and order.status in ("refunding", "refunded"):
+        return order_out(session, order)
+    stamp = _stamp()
+    reason = payments.refund_reason(session, order, stamp, lock=True)
+    if reason:
+        raise HTTPException(status_code=422, detail=reason)
+    payments.revoke_pass(session, order, stamp)
+    payments.start_refund(session, order, client, stamp)
+    return order_out(session, order)
 
 
 async def push_payload(request: Request) -> tuple[dict, bool]:
@@ -226,7 +263,7 @@ def _ios_reply(bind, trade: str | None) -> dict:
             return decision
     except Exception:
         # 绝不把数据库连接或支付配置的异常文字放进退款凭据。
-        return {"result_code": 0, "result_info": "建议退款", "evidence": "本地任务状态暂不能核验"}
+        return {"result_code": 0, "result_info": "未使用", "evidence": "本地任务状态暂不能核验"}
 
 
 # 路径在服务启动时绑定，配置改变后须重新启动部署服务。
@@ -253,7 +290,7 @@ async def push(
         except TimeoutError:
             decision = {
                 "result_code": 0,
-                "result_info": "建议退款",
+                "result_info": "未使用",
                 "evidence": "本地任务状态核验超时",
             }
         return reply(xml, extra=decision)
@@ -265,11 +302,12 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
     trade = (
         data.get("OutTradeNo") if kind == "xpay_goods_deliver_notify" else data.get("MchOrderId")
     )
-    order = (
-        session.scalar(select(PayOrder).where(PayOrder.out_trade_no == trade).with_for_update())
+    order_id = (
+        session.scalar(select(PayOrder.id).where(PayOrder.out_trade_no == trade))
         if isinstance(trade, str) and trade
         else None
     )
+    order = payments.lock_order(session, order_id) if order_id is not None else None
     if order is None:
         # 本地没有的订单重推也没用：只记摘要（事件表按白名单字段保存），应答成功。
         payments.event(session, kind, data, None)
@@ -295,11 +333,16 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             accepted = payments.accept_payment(
                 session, order, checked, get_settings(), _stamp(), data
             )
-            if accepted:
-                order.goods_notified = True
         else:
             accepted = payments.mark_refunded(session, order, checked, _stamp())
         session.commit()
+        if (
+            accepted
+            and kind == "xpay_goods_deliver_notify"
+            and order.status == "completed"
+            and not order.goods_notified
+        ):
+            payments.provide_goods(session, order, client)
         return reply(xml, 0 if accepted else 1)
     except (XPayError, ValueError, TypeError, AttributeError, OverflowError):
         order.error = "推送暂未核验，将通过查单重试"

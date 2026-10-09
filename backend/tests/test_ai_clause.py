@@ -543,7 +543,7 @@ def test_migration_0015_only_constraint_and_cleanup(db_engine, session, settings
 
     original_columns = columns()
     cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
-    # 只比较 0015 本身的列变化；后续 0017 已合法增加 pay_order_id。
+    # 只比较 0015 本身的列变化；后续 0026 已合法增加使用期额度列。
     command.downgrade(cfg, "0015")
     columns_0015 = columns()
     command.downgrade(cfg, "0014")

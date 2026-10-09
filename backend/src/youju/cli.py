@@ -1004,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
         func=_cmd_cleanup
     )
-    sub.add_parser("pay-run", help="支付补单、退款和重跑（关闭后只处理未完结订单）").set_defaults(
+    sub.add_parser("pay-run", help="支付补单、退款及发货通知（关闭后处理未完结订单）").set_defaults(
         func=_cmd_pay
     )
     sub.add_parser(

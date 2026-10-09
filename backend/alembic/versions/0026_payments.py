@@ -1,4 +1,4 @@
-"""按次比对支付后台，默认关闭。
+"""客户工作台 30 天支付后台，默认关闭。
 
 Revision ID: 0026
 Revises: 0025
@@ -24,17 +24,12 @@ def upgrade() -> None:
         sa.Column("out_trade_no", sa.String(32), nullable=False),
         sa.Column("product_id", sa.String(128), nullable=False),
         sa.Column("price", sa.Integer(), nullable=False),
-        sa.Column("row_limit", sa.Integer(), nullable=False),
         sa.Column("env", sa.Integer(), nullable=False),
-        sa.Column("input_rows", sa.JSON(), nullable=True),
         sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
         sa.Column("wx_order_id", sa.String(128), nullable=True),
         sa.Column("paid_fee", sa.Integer(), nullable=True),
         sa.Column("paid_time", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("platform", sa.String(16), nullable=False, server_default="unknown"),
-        sa.Column("task_id", sa.Integer(), nullable=True),
-        sa.Column("task_completed_at", mysql.DATETIME(fsp=6), nullable=True),
-        sa.Column("rerun_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("refund_order_id", sa.String(32), nullable=True),
         sa.Column("refund_status", sa.String(16), nullable=True),
         sa.Column("refund_attempts", sa.Integer(), nullable=False, server_default="0"),
@@ -109,22 +104,55 @@ def upgrade() -> None:
     op.create_index("ix_pay_orders_user_created", "pay_orders", ["user_id", "created_at"])
     op.create_index("ix_pay_orders_status_created", "pay_orders", ["status", "created_at"])
     op.create_index("ix_pay_events_created", "pay_events", ["created_at"])
-    op.add_column("advisor_tasks", sa.Column("pay_order_id", sa.Integer(), nullable=True))
-    op.create_index("ix_advisor_tasks_pay_order_id", "advisor_tasks", ["pay_order_id"])
-    op.create_foreign_key(
-        "fk_advisor_tasks_pay_order",
+    op.create_table(
+        "workbench_passes",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        ),
+        sa.Column(
+            "order_id",
+            sa.Integer(),
+            sa.ForeignKey("pay_orders.id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+        ),
+        sa.Column("starts_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("ends_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("revoked_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("last_task_id", sa.Integer(), nullable=True),
+        sa.Column("last_used_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("last_task_completed_at", mysql.DATETIME(fsp=6), nullable=True),
+        **OPTIONS,
+    )
+    op.create_index("ix_workbench_passes_user_id", "workbench_passes", ["user_id"])
+    op.add_column(
         "advisor_tasks",
-        "pay_orders",
-        ["pay_order_id"],
+        sa.Column("usage_source", sa.String(16), nullable=False, server_default="free"),
+    )
+    op.add_column(
+        "advisor_tasks",
+        sa.Column("usage_released", sa.Boolean(), nullable=False, server_default="0"),
+    )
+    op.add_column("advisor_tasks", sa.Column("pass_id", sa.Integer(), nullable=True))
+    op.create_index("ix_advisor_tasks_pass_id", "advisor_tasks", ["pass_id"])
+    op.create_foreign_key(
+        "fk_advisor_tasks_pass",
+        "advisor_tasks",
+        "workbench_passes",
+        ["pass_id"],
         ["id"],
         ondelete="SET NULL",
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_advisor_tasks_pay_order", "advisor_tasks", type_="foreignkey")
-    op.drop_index("ix_advisor_tasks_pay_order_id", table_name="advisor_tasks")
-    op.drop_column("advisor_tasks", "pay_order_id")
+    op.drop_constraint("fk_advisor_tasks_pass", "advisor_tasks", type_="foreignkey")
+    op.drop_index("ix_advisor_tasks_pass_id", table_name="advisor_tasks")
+    op.drop_column("advisor_tasks", "pass_id")
+    op.drop_column("advisor_tasks", "usage_released")
+    op.drop_column("advisor_tasks", "usage_source")
+    op.drop_table("workbench_passes")
     op.drop_table("pay_reconciliations")
     op.drop_table("pay_events")
     op.drop_table("pay_orders")

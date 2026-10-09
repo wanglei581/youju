@@ -27,7 +27,7 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
     assert response.json()["data_tools"] == {
         "enabled": data_enabled,
         "features": ["compare", "track"] if data_enabled else [],
-        "remaining": {"compare": 3 * int(data_enabled), "track": int(data_enabled)},
+        "remaining": {"compare": 3 * int(data_enabled), "track": 3 * int(data_enabled)},
     }
     ai = response.json()["ai_advisor"]
     if ai_enabled and whitelisted:

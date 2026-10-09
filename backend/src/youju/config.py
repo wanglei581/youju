@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -85,10 +85,8 @@ class Settings(BaseSettings):
     xpay_appkey_sandbox: SecretStr | None = None
     wx_appsecret: SecretStr | None = None
     wx_appid: str = ""
-    xpay_price_100: int | None = Field(default=None, gt=0, le=2147483647)
-    xpay_price_200: int | None = Field(default=None, gt=0, le=2147483647)
-    xpay_product_100: str = "compare_100"
-    xpay_product_200: str = "compare_200"
+    xpay_price_pass: int | None = Field(default=None, gt=0, le=2147483647)
+    xpay_product_pass: str = "workbench_30d"
     wx_push_path: str = "/api/wx/push"
     # 空值按官方 order_type 枚举识别；可配置字段映射应对接口差异，未识别时不退款。
     xpay_platform_field: str = ""
@@ -101,6 +99,11 @@ class Settings(BaseSettings):
     xpay_bill_fee_column: str = ""
     xpay_bill_fee_unit: Literal["fen", "yuan"] = "fen"
     xpay_bill_hosts: list[str] = []
+
+    @field_validator("xpay_price_pass", mode="before")
+    @classmethod
+    def _empty_pass_price(cls, value):
+        return None if value == "" else value
 
     @classmethod
     def settings_customise_sources(

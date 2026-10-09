@@ -34,3 +34,4 @@ GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
 -- 支付权限：仅迁移 0026 完成后，由创始人执行。金额记录不能由 API 删除。
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';
+GRANT INSERT, UPDATE ON youju.workbench_passes TO 'youju_api'@'%';

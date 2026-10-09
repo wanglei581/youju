@@ -82,13 +82,13 @@ def test_file_reading_headers_and_encodings(tmp_path):
 
 def test_file_limits(tmp_path):
     path = tmp_path / "too-many.csv"
-    path.write_text("企业名称\n" + "\n".join(f"公司{i}" for i in range(201)), encoding="utf-8")
+    path.write_text("企业名称\n" + "\n".join(f"公司{i}" for i in range(501)), encoding="utf-8")
     try:
         read_customer_file(path)
     except CompareInputError as exc:
-        assert "200" in str(exc)
+        assert "500" in str(exc)
     else:
-        raise AssertionError("应拒绝超过 200 行")
+        raise AssertionError("应拒绝超过 500 行")
 
 
 def test_compare_deduplicates_groups_and_excludes_private(session):

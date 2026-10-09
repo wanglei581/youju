@@ -27,7 +27,7 @@ from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, PayOrder, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User, WorkbenchPass
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -93,8 +93,7 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
-        # 付费任务（按次包）付款即执行，不能取消；前端据此隐藏取消按钮。
-        "paid": task.pay_order_id is not None,
+        "usageSource": task.usage_source,
     }
     if include_result:
         result.update(
@@ -123,24 +122,24 @@ def usage_day(value: datetime) -> date:
 
 
 def usage_limit(kind: str) -> int:
-    return 3 if kind == "compare" else (5 if kind in AI_KINDS else 1)
+    return 5 if kind in AI_KINDS else 3
 
 
 def usage_counts(
     session: Session, user_id: int, day: date, *, lock: bool = False
 ) -> dict[str, int]:
-    """日账本保持不变；名单比对汇总北京时间自然月，其他工具仍按日。"""
+    """日账本保持不变；数据工具汇总北京时间自然月，解读工具仍按日。"""
     month = day.replace(day=1)
     next_month = (month + timedelta(days=32)).replace(day=1)
     stmt = select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
         AdvisorUsage.user_id == user_id,
         or_(
             and_(
-                AdvisorUsage.kind == "compare",
+                AdvisorUsage.kind.in_(("compare", "track")),
                 AdvisorUsage.day >= month,
                 AdvisorUsage.day < next_month,
             ),
-            and_(AdvisorUsage.kind != "compare", AdvisorUsage.day == day),
+            and_(AdvisorUsage.kind.not_in(("compare", "track")), AdvisorUsage.day == day),
         ),
     )
     # 占用额度时必须读最新值；普通快照可能早于等待用户行锁的并发请求。
@@ -154,70 +153,41 @@ def usage_counts(
 
 def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
     """在调用方已锁定用户行后占用一次额度。"""
-    if kind == "compare" and usage_counts(session, user_id, day, lock=True).get(
-        kind, 0
-    ) >= usage_limit(kind):
+    if usage_counts(session, user_id, day, lock=True).get(kind, 0) >= usage_limit(kind):
         return False
     row = session.scalar(
         select(AdvisorUsage)
-        .where(AdvisorUsage.user_id == user_id, AdvisorUsage.kind == kind, AdvisorUsage.day == day)
+        .where(
+            AdvisorUsage.user_id == user_id,
+            AdvisorUsage.kind == kind,
+            AdvisorUsage.day == day,
+        )
         .with_for_update()
     )
     if row is None:
         row = AdvisorUsage(user_id=user_id, kind=kind, day=day, used_count=0)
         session.add(row)
         session.flush()
-    if kind == "compare" or kind in AI_KINDS:
-        if row.used_count >= usage_limit(kind):
-            return False
-        row.used_count += 1
-        return True
-    if row.used_count >= 1:
-        # 兼容 0010 上线前已被后台标成 failed 的旧任务：旧代码没有台账，
-        # 首次遇到时补回一次；正常失败路径会在这里之前显式释放。
-        old_failed = session.scalar(
-            select(AdvisorTask.id)
-            .where(
-                AdvisorTask.user_id == user_id,
-                AdvisorTask.kind == kind,
-                AdvisorTask.pay_order_id.is_(None),
-                AdvisorTask.status == "failed",
-                AdvisorTask.created_at
-                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
-                AdvisorTask.created_at
-                < datetime.combine(
-                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
-                ).astimezone(UTC),
-            )
-            .limit(1)
-        )
-        active = session.scalar(
-            select(AdvisorTask.id)
-            .where(
-                AdvisorTask.user_id == user_id,
-                AdvisorTask.kind == kind,
-                AdvisorTask.pay_order_id.is_(None),
-                AdvisorTask.status.in_(("queued", "running", "done")),
-                AdvisorTask.created_at
-                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
-                AdvisorTask.created_at
-                < datetime.combine(
-                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
-                ).astimezone(UTC),
-            )
-            .limit(1)
-        )
-        if old_failed is None or active is not None:
-            return False
-        row.used_count -= 1
     row.used_count += 1
     return True
 
 
 def release_usage(session: Session, task: AdvisorTask) -> None:
     """释放一次已占用额度；重复释放安全。"""
-    if task.pay_order_id is not None:
+    if task.usage_source == "pass" or task.usage_released:
         return
+    # 原子标记保证两个释放路径至多退回一次，账本仍按原提交日期退款。
+    changed = session.execute(
+        update(AdvisorTask)
+        .where(
+            AdvisorTask.id == task.id,
+            AdvisorTask.usage_released == False,  # noqa: E712
+        )
+        .values(usage_released=True)
+    ).rowcount
+    if not changed:
+        return
+    task.usage_released = True
     row = session.scalar(
         select(AdvisorUsage)
         .where(
@@ -539,42 +509,18 @@ def process_clause(session: Session, task: AdvisorTask, **kwargs) -> bool:
     return process_ai(session, task, **kwargs)
 
 
-REVOKED_ORDER_STATUS = ("refunding", "refunded")
-REVOKED_RESULT = "订单已退款，结果不可用"
-
-
-def _paid_order(session: Session, task: AdvisorTask, *, lock: bool = False) -> PayOrder | None:
-    if task.pay_order_id is None:
-        return None
-    stmt = select(PayOrder).where(PayOrder.id == task.pay_order_id)
-    if lock:
-        stmt = stmt.with_for_update().execution_options(populate_existing=True)
-    return session.scalar(stmt)
-
-
-def order_revoked(order: PayOrder | None) -> bool:
-    """付费任务的订单已退款、退款中或开始过退款：结果不能再执行、查看或下载。"""
-    return order is not None and (
-        order.status in REVOKED_ORDER_STATUS or order.refund_status is not None
-    )
-
-
-def _cancel_revoked(session: Session, task: AdvisorTask, stamp: datetime) -> bool:
-    task.status, task.finished_at, task.error = "cancelled", stamp, REVOKED_RESULT
-    task.result_file_id, task.result_rows = None, None
-    session.commit()
-    return False
-
-
-def complete_paid_order(session: Session, task: AdvisorTask, stamp: datetime) -> None:
-    """付费任务成功时，在同一事务里把订单置为已完成（审阅第 2 条）。"""
-    order = _paid_order(session, task, lock=True)
-    if order is not None and order.status == "processing" and order.task_id == task.id:
-        order.status, order.task_completed_at, order.updated_at = (
-            "completed",
-            task.finished_at or stamp,
-            stamp,
+def record_pass_completion(session: Session, task: AdvisorTask) -> None:
+    if task.pass_id is None:
+        return
+    # 只更新最近提交任务的凭据，不让较早任务的晚完成覆盖最新任务。
+    session.execute(
+        update(WorkbenchPass)
+        .where(
+            WorkbenchPass.id == task.pass_id,
+            WorkbenchPass.last_task_id == task.id,
         )
+        .values(last_task_completed_at=task.finished_at)
+    )
 
 
 def process_task(
@@ -591,9 +537,6 @@ def process_task(
     stamp = _utc(stamp or datetime.now(UTC))
     if task.kind in AI_KINDS:
         return process_ai(session, task, settings=settings, stamp=stamp, timeout=timeout)
-    # 执行前不加锁检查：执行耗时长，持锁会挡住同时到达的退款推送；交付前再加锁复核。
-    if task.pay_order_id is not None and order_revoked(_paid_order(session, task)):
-        return _cancel_revoked(session, task, stamp)
     own_client = client is None
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
@@ -620,17 +563,12 @@ def process_task(
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
-        if task.pay_order_id is not None and order_revoked(_paid_order(session, task, lock=True)):
-            # 执行期间订单被退款：丢弃刚上传的结果，不交付。
-            _delete_and_record(session, [file_id], settings=settings, client=client)
-            uploaded_file_id = None
-            return _cancel_revoked(session, task, stamp)
         task.status = "done"
         task.result_file_id = file_id
         task.result_rows = rows
         task.finished_at = stamp
         task.error = None
-        complete_paid_order(session, task, stamp)
+        record_pass_completion(session, task)
         session.commit()
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
@@ -656,6 +594,7 @@ def process_task(
             task.started_at = None
             task.finished_at = stamp
             release_usage(session, task)
+            record_pass_completion(session, task)
         session.commit()
         log.warning("工具任务 #%s 失败（第 %s 次）：%s", task.id, task.attempts, task.error)
         return False
@@ -691,17 +630,6 @@ def run_advisor_tasks(
         getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings)
     ):
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
-    if not getattr(settings, "pay_enabled", False):
-        allowed = allowed & AdvisorTask.pay_order_id.is_(None)
-    # 关联订单已退款或退款中的付费任务不再领取（审阅第 1 条）。
-    allowed = allowed & (
-        AdvisorTask.pay_order_id.is_(None)
-        | AdvisorTask.pay_order_id.not_in(
-            select(PayOrder.id).where(
-                PayOrder.status.in_(REVOKED_ORDER_STATUS) | PayOrder.refund_status.is_not(None)
-            )
-        )
-    )
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
     claimed: set[int] = set()
@@ -844,6 +772,18 @@ def delete_user_tasks(
     """注销或用户删除任务时删除结果文件，再删除数据库任务记录。"""
     settings = settings or get_settings()
     tasks = list(session.scalars(select(AdvisorTask).where(AdvisorTask.user_id == user_id)))
+    if tasks:
+        # 锁定读取最新文件引用，避免注销的旧快照漏清理刚完成的结果。
+        tasks = list(
+            session.scalars(
+                select(AdvisorTask)
+                .where(
+                    AdvisorTask.user_id == user_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
     file_ids = [task.result_file_id for task in tasks if task.result_file_id]
     own_client = client is None
     if file_ids:
