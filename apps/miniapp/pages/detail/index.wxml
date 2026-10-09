@@ -13,7 +13,7 @@
     <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk sk-line"></view>
   </view>
 </view>
-<view wx:if="{{loading && serviceStarting}}" class="muted startup-note">服务正在启动，请稍等…</view>
+<view wx:if="{{loading && serviceStarting}}" class="muted startup-note">正在连接，比平时慢一点，请稍等…</view>
 <block wx:if="{{doc && !loading}}">
   <view class="card head">
     <view class="tags">

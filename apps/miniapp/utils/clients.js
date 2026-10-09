@@ -56,7 +56,7 @@ function clientParams(client, ignoreIndustry, time = '近 90 天', verifiedOnly 
 function subtitle(client, ignoreIndustry, time = '近 90 天', verifiedOnly = false) {
   const c = normalize(client);
   const regions = c.regions.concat(c.cities.map((v) => v.replace('/', '·')));
-  return `${regions.length ? regions.join('、') + '（含国家部委）' : '不限地区（含国家部委）'} · ${!ignoreIndustry && c.industries.length ? c.industries.join('、') : '不限产业方向'} · 申报通知 · ${time === '今年' ? '今年发布' : time + '发布'} · ${verifiedOnly ? '只看已核对且未截止' : '已核对已截止的不列出'}`;
+  return `${regions.length ? regions.join('、') + '（含国家部委）' : '不限地区（含国家部委）'} · ${!ignoreIndustry && c.industries.length ? c.industries.join('、') : '不限产业方向'} · 申报通知 · ${time === '今年' ? '今年发布' : time + '发布'} · ${verifiedOnly ? '只看已核对且未截止' : '含截止日期未核对的'}`;
 }
 
 // 输出纯文本片段，避免把关键词或官方原句作为富文本执行；重叠关键词的区间取并集。

@@ -51,7 +51,7 @@
 <view wx:if="{{!loading && !error && reposts}}" class="fold-note">同一通知的各地转发版本合为一条，另有 {{reposts}} 个转发版本未重复计</view>
 
 <view class="card">
-  <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">服务正在启动，请稍等…</view></view>
+  <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
   <block wx:if="{{!error}}">
   <view wx:for="{{items}}" wx:key="id" class="pick-row" data-id="{{item.id}}" bindtap="togglePick">
     <view wx:if="{{selecting}}" class="pick-box {{chosen[item.id] ? 'pick-box--on' : ''}}" aria-role="checkbox" aria-checked="{{chosen[item.id] ? 'true' : 'false'}}" aria-label="选择这份文件"><t-icon wx:if="{{chosen[item.id]}}" name="check" size="28rpx" color="#FFFFFF" /></view>
@@ -65,8 +65,8 @@
     <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它只含截止日期已核对的通知）；别的时间段有结果时直接去看 -->
     <view wx:if="{{picked.open.length || (totalAll > 0 && chipTime !== '不限')}}" class="exits">
       <view wx:if="{{picked.open.length}}" class="exit-btn exit-btn--main" bindtap="removeOpen" aria-role="button">去掉“只看未截止”</view>
-      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含截止日期已核对的通知，目前 {{verifiedOpenTotal}} 条</view>
-      <view wx:if="{{totalAll > 0 && chipTime !== '不限'}}" class="exit-btn exit-btn--main" bindtap="allTime" aria-role="button">查看不限时间的 {{totalAll}} 份</view>
+      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含截止日期已核对、还没截止的通知，目前 {{verifiedOpenTotal}} 份</view>
+      <view wx:if="{{totalAll > 0 && chipTime !== '不限'}}" class="exit-btn exit-btn--main" bindtap="allTime" aria-role="button">查看不限发布时间的 {{totalAll}} 份</view>
     </view>
     <view wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}</view>
     <!-- 列出已选条件，每个可以单独去掉；没有已选条件时提示换关键词 -->

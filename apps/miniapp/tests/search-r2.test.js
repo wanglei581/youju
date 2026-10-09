@@ -384,10 +384,10 @@ test('市级演示数据用省份筛选，国家部委拼法包含所选市级�
 test('未截止选项写明当前条数，空状态首先去掉未截止；不限时间按钮改变时间并刷新', async () => {
   const { page, calls } = searchPage({ respond: (p) => ({ items: p.open || p.time !== '不限' ? [] : [{ id: '1' }], total: p.open || p.time !== '不限' ? 0 : 6, total_all: p.open ? 0 : 6, verified_open_total: 0 }) });
   page.onLoad({ open: '1' }); await flush();
-  assert.match(page.data.groups.find((g) => g.key === 'open').note, /只含已核对截止日期的通知（目前 0 条）/);
+  assert.match(page.data.groups.find((g) => g.key === 'open').note, /只含截止日期已核对、还没截止的通知（目前 0 份）/);
   assert.ok(read('pages/search/index.wxml').indexOf('bindtap="removeOpen"') < read('pages/search/index.wxml').indexOf('bindtap="allTime"'));
   page.removeOpen(); await flush(); assert.equal(calls.at(-1).open, undefined); assert.equal(page.data.totalAll, 6);
-  assert.match(read('pages/search/index.wxml'), /查看不限时间的 {{totalAll}} 份/);
+  assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);
   page.allTime(); await flush(); assert.equal(calls.at(-1).time, '不限'); assert.equal(page.data.items.length, 1);
   page.onLoad({ time: encodeURIComponent('近 90 天') }); await flush(); assert.equal(calls.at(-1).time, '近 90 天');
 });

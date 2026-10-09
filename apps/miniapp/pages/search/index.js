@@ -26,7 +26,7 @@ const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
-  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: '只含已核对截止日期的通知（条数正在加载）' },
+  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: '只含截止日期已核对、还没截止的通知' },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
   // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
   // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
@@ -220,7 +220,7 @@ Page({
           total: res.total,
           totalAll: res.total_all,
           verifiedOpenTotal: res.verified_open_total || 0,
-          groups: this.data.groups.map((g) => g.key === 'open' ? { ...g, note: `只含已核对截止日期的通知（目前 ${res.verified_open_total || 0} 条）` } : g),
+          groups: this.data.groups.map((g) => g.key === 'open' ? { ...g, note: `只含截止日期已核对、还没截止的通知（目前 ${res.verified_open_total || 0} 份）` } : g),
           reposts: res.reposts || 0,
           folded,
           guides,

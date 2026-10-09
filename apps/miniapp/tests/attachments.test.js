@@ -369,7 +369,7 @@ test('四页接通启动提示与生命周期，名单查询失败也能重试',
   for (const page of ['home', 'search', 'detail', 'lists']) {
     const js = read(`pages/${page}/index.js`); const wxml = read(`pages/${page}/index.wxml`);
     assert.match(js, /api.watchStartup/); assert.match(js, /api.stopStartup/);
-    assert.match(wxml, /服务正在启动，请稍等…/); assert.match(wxml, /serviceStarting/);
+    assert.match(wxml, /正在连接，比平时慢一点，请稍等…/); assert.match(wxml, /serviceStarting/);
   }
   assert.match(read('pages/lists/index.wxml'), /bindtap="query">　重试/);
 });

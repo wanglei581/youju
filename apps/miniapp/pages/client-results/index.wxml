@@ -5,8 +5,8 @@
   <view class="explanation">仅按所选地区和产业方向检索通知，不作资质判定；申报要求以官方当期原文为准。</view>
   <view class="switch-row"><text>不限产业方向</text><switch checked="{{ignoreIndustry}}" color="#2A5CE0" bindchange="toggleIndustry" aria-label="不限产业方向" /></view>
   <view class="weak tag-note">{{tagNote}}</view>
-  <view class="switch-row"><text>只看截止日期已核对、还没截止的（目前 {{verifiedOpenTotal}} 份）</text><switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看截止日期已核对、还没截止的" /></view>
-  <view class="weak tag-note">默认列出近 90 天发布的申报通知；截止日期还没核对的也列出，是否截止请以原文为准。</view>
+  <view class="switch-row"><text>只看已核对且未截止的（目前 {{verifiedOpenTotal}} 份）</text><switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对且未截止的" /></view>
+  <view class="weak tag-note">默认列出近 90 天发布的申报通知，只去掉截止日期已人工核对、确认已截止的；截止日期还没核对的也列出，是否截止请以原文为准。</view>
 </view>
 <view class="card results">
   <view wx:for="{{items}}" wx:key="id" class="result-item">
@@ -25,10 +25,10 @@
   <view wx:if="{{loading}}" class="message weak">正在加载…</view>
   <view wx:elif="{{error}}" class="message">{{error}}<text wx:if="{{client}}" class="link" bindtap="retry">　重试</text></view>
   <view wx:elif="{{!items.length}}" class="message muted">
-    <view>这些条件下暂无通知</view>
+    <view>这些条件下暂未收录到通知</view>
     <!-- 只列点了一定有结果的出路（份数先查好），最后一个去搜索页 -->
     <view class="exits">
-      <view wx:if="{{relaxedTotal}}" class="exit-btn exit-btn--main" bindtap="relaxVerified" aria-role="button">去掉“只看已核对且未截止”（{{relaxedTotal}} 份）</view>
+      <view wx:if="{{relaxedTotal}}" class="exit-btn exit-btn--main" bindtap="relaxVerified" aria-role="button">关掉“只看已核对且未截止的”（{{relaxedTotal}} 份）</view>
       <view wx:if="{{industryTotal}}" class="exit-btn exit-btn--main" bindtap="relaxIndustry" aria-role="button">不限产业方向（{{industryTotal}} 份）</view>
       <view wx:if="{{yearTotal}}" class="exit-btn exit-btn--main" bindtap="thisYear" aria-role="button">今年发布 · 不限产业方向（{{yearTotal}} 份）</view>
       <view class="exit-btn" bindtap="goSearch" aria-role="button">去搜索页自己筛</view>

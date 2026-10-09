@@ -30,7 +30,7 @@
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
   <view class="section-title">"{{queried}}" 的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
-  <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…<view wx:if="{{serviceStarting}}">服务正在启动，请稍等…</view></view>
+  <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
   <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}<text class="link" bindtap="query">　重试</text></view>
   <block wx:elif="{{result}}">
     <block wx:if="{{result.items.length}}">
@@ -73,7 +73,7 @@
         <view class="sk sk-meta"></view>
       </view>
     </view>
-    <view wx:if="{{loading && serviceStarting}}" class="muted">服务正在启动，请稍等…</view>
+    <view wx:if="{{loading && serviceStarting}}" class="muted">正在连接，比平时慢一点，请稍等…</view>
     <view wx:if="{{chip !== '全部'}}" class="weak result-text">仅筛选最近加载的 {{items.length}} 份名单</view>
     <doc-row wx:if="{{!loading && !error}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" last="{{index === shown.length - 1}}" today="{{today}}" />
     <view wx:if="{{!shown.length && !loading && !error}}" class="empty-lookup">暂无符合类型的名单</view>

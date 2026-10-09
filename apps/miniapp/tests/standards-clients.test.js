@@ -283,7 +283,7 @@ test('客户默认近90天保留未核对；严格开关关闭后恢复，空结
   page.onLoad({ id: 'c1' }); page.onShow(); await flush();
   assert.equal(calls[0].open, undefined); assert.equal(calls[0].time, '近 90 天'); assert.equal(calls[0].exclude_closed, true);
   assert.equal(page.data.verifiedOnly, false);
-  assert.match(page.data.subtitle, /近 90 天发布 · 已核对已截止的不列出/);
+  assert.match(page.data.subtitle, /近 90 天发布 · 含截止日期未核对的/);
   const content = textOf(render('pages/client-results/index.wxml', page.data));
   assert.match(content, /不限产业方向（6 份）/); assert.match(content, /今年发布/); assert.match(content, /去搜索页/);
   page.relaxIndustry(); await flush(); assert.equal(page.data.items.length, 1);
