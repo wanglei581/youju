@@ -1642,9 +1642,12 @@ def test_lists_shorthand_candidates_are_orgs_sorted_unique_and_limited(client, s
         )
     session.commit()
     body = client.get("/api/v1/lists/lookup", params={"q": "海尔"}).json()
+    # 以"海尔"开头的排前面（"青岛海尔有限公司"排在后面），再按名称长度、字典序
     expected = sorted(
-        set(n for n in names if n not in {"张三", "海尔小王"}), key=lambda n: (len(n), n)
+        set(n for n in names if n not in {"张三", "海尔小王"}),
+        key=lambda n: (not n.startswith("海尔"), len(n), n),
     )[:20]
+    assert "青岛海尔有限公司" not in expected
     assert body["items"] == [] and body["candidates"] == expected
     exact = client.get("/api/v1/lists/lookup", params={"q": expected[0]}).json()
     assert len(exact["items"]) == 1 and exact["candidates"] == []
