@@ -35,10 +35,19 @@ function conditionRows(doc) {
   }));
 }
 
+function standardKey(doc) {
+  if (doc.category !== '资质与梯度培育') return '';
+  const title = doc.title || '';
+  if (title.includes('高新技术企业')) return 'gaoqi';
+  if (title.includes('科技型中小企业')) return 'kejixing';
+  if (title.includes('小巨人')) return 'xiaojuren';
+  return title.includes('专精特新') ? 'zhuanjingtexin' : '';
+}
+
 Page({
   data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '' },
+    atts: [], attNote: '', versions: [], upstream: '', standardKey: '' },
 
   onLoad(query) {
     // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
@@ -60,6 +69,7 @@ Page({
         const body = doc.body && doc.body.status === 'ok' ? doc.body : null;
         this.setData({
           doc,
+          standardKey: standardKey(doc),
           // 正文默认只显示开头一段；比这长的才给"展开全文"
           bodyOpen: false,
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,
@@ -88,7 +98,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '', standardKey: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -97,6 +107,10 @@ Page({
 
   toggleBody() {
     this.setData({ bodyOpen: !this.data.bodyOpen });
+  },
+
+  openStandard() {
+    if (this.data.standardKey) wx.navigateTo({ url: `/pages/standards/index?key=${this.data.standardKey}` });
   },
 
   toggleSupport(e) {

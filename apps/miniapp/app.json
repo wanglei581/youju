@@ -14,7 +14,10 @@
     "pages/feedback/index",
     "pages/follow-new/index",
     "pages/my-data/index",
-    "pages/about/index"
+    "pages/about/index",
+    "pages/standards/index",
+    "pages/clients/index",
+    "pages/client-results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

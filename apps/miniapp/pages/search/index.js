@@ -286,6 +286,10 @@ Page({
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
   },
 
+  goTool(e) {
+    wx.navigateTo({ url: e.currentTarget.dataset.url });
+  },
+
   pickTab(e) {
     this.setData({ tab: e.currentTarget.dataset.key });
     this.apply(true);
