@@ -1,4 +1,8 @@
 <notice-bar />
+<view class="card tools">
+  <view class="tool-entry" data-url="/pages/standards/index" bindtap="goTool" aria-role="button"><t-icon name="book" size="36rpx" color="#2A5CE0" /><text>认定条件对照</text><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
+  <view class="tool-entry" data-url="/pages/clients/index" bindtap="goTool" aria-role="button"><t-icon name="filter" size="36rpx" color="#2A5CE0" /><text>按客户筛通知</text><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
+</view>
 <view class="top">
   <view class="search-row">
     <view class="search-box">

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from youju.classify import effective_kind, list_status, region_label
+from youju.classify import applicable_region, effective_kind, list_status, region_label
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
@@ -323,7 +323,11 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 issuer=(best[1] if best and best[1] else source.dept_full_name),
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",
-                region=region_label(source.province, source.level),
+                region=(
+                    applicable_region(source.province, source.level, source.city)
+                    if source.level == "市级"
+                    else region_label(source.province, source.level)
+                ),
                 deadline="；".join(notes) if notes else "见原文",
                 date_role="；".join(dict.fromkeys(roles)) if roles else ROLE_SEE_ORIGINAL,
                 support=support,

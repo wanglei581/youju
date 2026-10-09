@@ -40,7 +40,7 @@ Page({
 
   loadStats() {
     loadCoverage().then((c) => {
-      if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces }, notCovered: notCoveredNames(c) });
+      if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces, cities: (c.cities || []).length }, notCovered: notCoveredNames(c) });
     });
   },
 

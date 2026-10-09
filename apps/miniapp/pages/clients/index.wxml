@@ -1,0 +1,37 @@
+<notice-bar />
+<view class="privacy">所填信息只保存在本机，不上传。</view>
+<view wx:if="{{error}}" class="card message">{{error}}</view>
+<block wx:if="{{!editing}}">
+  <view class="intro">保存常用的地区和产业方向，点客户卡片筛通知。最多保存 20 个客户。</view>
+  <view class="add btn-primary" bindtap="edit" aria-role="button">新增客户</view>
+  <view wx:for="{{clients}}" wx:key="id" class="card client-card">
+    <view class="section-title">{{item.displayName}}</view>
+    <view class="muted summary">{{item.summary}}</view>
+    <view wx:if="{{item.keywords.length}}" class="weak keywords">高亮关键词：<text wx:for="{{item.keywords}}" wx:for-item="word" wx:key="*this">{{index ? '、' : ''}}{{word}}</text></view>
+    <view class="actions"><view class="link action" data-id="{{item.id}}" bindtap="edit" aria-role="button">编辑</view><view class="muted action" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view><view class="btn-primary search-button" data-id="{{item.id}}" bindtap="search" aria-role="button">筛通知</view></view>
+  </view>
+  <view wx:if="{{!clients.length && !error}}" class="intro">暂无本机客户卡片，新增后即可筛通知。</view>
+</block>
+<view wx:else class="card editor">
+  <view class="section-title">{{form.id ? '编辑客户' : '新增客户'}}</view>
+  <view class="label">名称（可不填）</view>
+  <input class="field" value="{{form.name}}" placeholder="{{placeholder}}" maxlength="40" bindinput="nameInput" aria-label="客户名称" />
+  <view class="label">地区（可多选）</view>
+  <view class="weak help">不选为不限地区；选省包含该省已收录城市，只选城市则仅检索该市。检索始终包含国家部委。</view>
+  <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
+  <view class="label">已收录城市（可多选）</view>
+  <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
+  <view class="options"><view wx:for="{{form.cities}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeCity" aria-role="button" aria-label="移除城市{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
+  <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
+  <view wx:elif="{{!cityOptions.length}}" class="weak help">暂无已收录城市</view>
+  <view class="options"><view wx:for="{{cityOptions}}" wx:key="key" class="option {{picked['cities:' + item.key] ? 'option--on' : ''}}" data-group="cities" data-value="{{item.key}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['cities:' + item.key]}}">{{item.label}}</view></view>
+  <view class="label">产业方向（可多选）</view>
+  <view class="weak help">按标题归类，仅供检索参考，非官方分类</view>
+  <view class="options"><view wx:for="{{industries}}" wx:key="*this" class="option {{picked['industries:' + item] ? 'option--on' : ''}}" data-group="industries" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['industries:' + item]}}">{{item}}</view></view>
+  <view class="label">要高亮的关键词（可不填）</view>
+  <view class="weak help">最多 5 个，每个不超过 12 字，仅用于条件原文高亮。</view>
+  <view class="keyword-row"><input class="field" value="{{keywordInput}}" placeholder="例如：高新技术企业" maxlength="24" bindinput="keywordInput" bindconfirm="addKeyword" aria-label="高亮关键词" /><view class="link action" bindtap="addKeyword" aria-role="button">添加</view></view>
+  <view class="options"><view wx:for="{{form.keywords}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeKeyword" aria-role="button" aria-label="删除关键词{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
+  <view class="actions"><view class="muted action" bindtap="cancel" aria-role="button">取消</view><view class="btn-primary save-button" bindtap="save" aria-role="button">保存到本机</view></view>
+</view>
+<view class="page-bottom"></view>

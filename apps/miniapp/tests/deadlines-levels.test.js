@@ -121,7 +121,7 @@ test('申报日历空状态：写已核对条数，给去搜索申报通知的�
   assert.equal((await api.calendar()).verifiedTotal, 0);
 });
 
-test('层级筛选：只有国家部委、省级两项，条件带到接口、关注和返回搜索', async () => {
+test('层级筛选：国家部委、省级、市级三项，条件带到接口、关注和返回搜索', async () => {
   const calls = [];
   const page = load('pages/search/index.js', {
     '../../content/legal.js': { final: false },
@@ -132,7 +132,7 @@ test('层级筛选：只有国家部委、省级两项，条件带到接口、�
   }, { wx: {} });
   page.onLoad({}); await flush();
   const level = page.data.groups.find((g) => g.key === 'level');
-  assert.deepEqual(Array.from(level.options), ['国家部委', '省级']);
+  assert.deepEqual(Array.from(level.options), ['国家部委', '省级', '市级']);
   assert.equal(level.multi, true);
   assert.equal(calls.at(-1).levels, undefined); // 没选层级时不带，和以前的请求一样
   page.pickOption(event({ group: 'level', option: '省级' })); await flush();
@@ -179,7 +179,7 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   assert.deepEqual(titles(['不限地区'], ['省级']), ['b', 'd']);
   assert.deepEqual(titles(['山东'], []), ['b', 'c']);
   assert.deepEqual(titles(['山东'], ['省级']), ['b']);
-  assert.deepEqual(titles(['山东'], ['国家部委']), ['a', 'b', 'c']); // 国家部委 + 山东（地市暂未收录，线上就是省级）
+  assert.deepEqual(titles(['山东'], ['国家部委']), ['a', 'b', 'c']); // 国家部委 + 山东（包括已收录市级）
   assert.deepEqual(titles(['山东'], ['国家部委', '省级']), ['a', 'b']);
   // 搜索页：地区 + 层级国家部委不再是空结果的冲突；只看未截止没有结果时说明只含核对过的
   const calls = [];

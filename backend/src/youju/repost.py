@@ -204,6 +204,11 @@ class Candidate:
     dept: str
     publish_date: date | None
     body_head: str = ""
+    city: str | None = None
+
+    @property
+    def agency(self) -> tuple[str, str | None, str]:
+        return (self.province, self.city, self.dept)
 
 
 @dataclass
@@ -241,7 +246,7 @@ def kind_bucket(kind: str) -> str:
 
 def pair_strength(a: Candidate, sa: Signals, b: Candidate, sb: Signals) -> str | None:
     """两份文件是不是同一份上游通知的各地版本：strong 强证据 / weak 疑似 / None 不归组。"""
-    if (a.province, a.dept) == (b.province, b.dept):
+    if a.agency == b.agency:
         return None  # 同一机关的同名文件是不同阶段或不同批次，不是转发
     if a.publish_date is None or b.publish_date is None:
         return None
@@ -328,7 +333,7 @@ def link(docs: list[Candidate]) -> tuple[list[Proposal], dict[int, set[int]]]:
         return abs((left.publish_date - right.publish_date).days)
 
     parent = {doc_id: doc_id for doc_id in by_id}
-    agencies = {doc_id: {(doc.province, doc.dept)} for doc_id, doc in by_id.items()}
+    agencies = {doc_id: {doc.agency} for doc_id, doc in by_id.items()}
     span = {doc_id: (doc.publish_date, doc.publish_date) for doc_id, doc in by_id.items()}
     for edge, _strength in sorted(
         edges.items(), key=lambda item: (item[1] != "strong", apart(item[0]), item[0])
@@ -406,6 +411,7 @@ def load_candidates(session: Session) -> list[Candidate]:
             Document.kind_override,
             Document.publish_date,
             Source.province,
+            Source.city,
             Source.dept,
             func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
         )
@@ -424,11 +430,12 @@ def load_candidates(session: Session) -> list[Candidate]:
             title=title,
             kind=effective_kind(title, override),
             province=province,
+            city=city,
             dept=dept,
             publish_date=published,
             body_head=body or "",
         )
-        for doc_id, title, override, published, province, dept, body in rows
+        for doc_id, title, override, published, province, city, dept, body in rows
     ]
 
 
@@ -459,7 +466,7 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
         .where(Document.id.in_(ids))
         .execution_options(populate_existing=True)
     ):
-        info[doc.id] = ((src.province, src.dept), doc.publish_date)
+        info[doc.id] = ((src.province, src.city, src.dept), doc.publish_date)
         values = [
             doc.publish_date.isoformat() if doc.publish_date else None,
             src.province,
@@ -470,6 +477,9 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
             doc.title,
             hashlib.sha256((detail.body_text or "").encode()).hexdigest() if detail else None,
         ]
+        # 旧来源的确认快照保持原样，新增城市才加入快照以捕捉城市变更。
+        if src.city or src.level == "市级":
+            values.extend([src.level, src.city])
         fingerprints[doc.id] = hashlib.sha256(
             json.dumps(values, ensure_ascii=False).encode()
         ).hexdigest()
@@ -574,7 +584,7 @@ def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
     session.flush()
 
     candidates = load_candidates(session)
-    info = {c.id: ((c.province, c.dept), c.publish_date) for c in candidates}
+    info = {c.id: (c.agency, c.publish_date) for c in candidates}
     # 只有已有成员需要完整正文快照，其余候选沿用上面的轻量数据。
     member_info, fingerprints = member_facts(session, list(members))
     info.update(member_info)
@@ -818,8 +828,12 @@ def version_label(province: str, dept: str, same_province: bool) -> str:
 
 def labels_for(sources: dict[int, Source]) -> dict[int, str]:
     """同一组各版本的叫法（见 version_label）。"""
-    provinces = Counter(src.province for src in sources.values())
+
+    def place(src: Source) -> str:
+        return src.city if src.level == "市级" and src.city else src.province
+
+    provinces = Counter(place(src) for src in sources.values())
     return {
-        doc_id: version_label(src.province, src.dept, provinces[src.province] > 1)
+        doc_id: version_label(place(src), src.dept, provinces[place(src)] > 1)
         for doc_id, src in sources.items()
     }

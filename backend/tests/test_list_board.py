@@ -123,6 +123,8 @@ def test_board_counts_deduplicates_groups_and_names_and_keeps_public_status(
         "wording",
         "issuer",
         "province",
+        "city",
+        "level",
         "year",
         "type",
         "count",

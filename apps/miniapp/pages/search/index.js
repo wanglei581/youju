@@ -20,7 +20,7 @@ const KIND_TABS = [
 // 筛选弹层分左右两栏：左边按下面的顺序列组名（旁边是已选个数），右边是当前组的选项。
 // 地区"不限地区"与具体省份互斥；发布时间单选（取值与服务端 /api/v1/search 一致）。
 // 国家部委只在"层级"里选，不受地区限制，和所选地区的文件一起列出；省级只列所选地区的
-// （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；地市还没接入，先不放"市级"
+// （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
@@ -34,8 +34,8 @@ const GROUPS = [
   { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
   { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
   { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
-  { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级'],
-    note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的；地市暂未收录' },
+  { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级', '市级'],
+    note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的，市级也按所选地区筛选；地市目前只收录部分城市，见“我的 → 数据从哪里来”' },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
 const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
@@ -284,6 +284,10 @@ Page({
 
   cancel() {
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
+  },
+
+  goTool(e) {
+    wx.navigateTo({ url: e.currentTarget.dataset.url });
   },
 
   pickTab(e) {
