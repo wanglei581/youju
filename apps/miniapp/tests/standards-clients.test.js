@@ -158,7 +158,7 @@ test('编辑取消和存储失败保持已有客户；城市收录范围失败�
 });
 
 test('请求只包含筛选参数：省份并国家部委，城市可单独选择；空地区为全国；关键词名称从不上传', () => {
-  assert.deepEqual(clients.clientParams(CLIENT, false), { kind: '申报通知', open: 1, time: '不限', regions: '国家部委,山东', levels: undefined, cities: undefined, industries: '数字经济' });
+  assert.deepEqual(clients.clientParams(CLIENT, false), { kind: '申报通知', open: undefined, exclude_closed: true, time: '近 90 天', regions: '国家部委,山东', levels: undefined, cities: undefined, industries: '数字经济' });
   const city = clients.clientParams({ ...CLIENT, regions: [], cities: ['山东/青岛'] }, true);
   assert.equal(city.regions, '国家部委'); assert.equal(city.cities, '山东/青岛'); assert.equal(city.industries, undefined);
   assert.equal(clients.clientParams({ ...CLIENT, regions: [] }, false).regions, '不限地区');
@@ -260,7 +260,7 @@ test('详情入口严格限定项目类别和四类标题，打开对应资质�
   let doc = { ...DOC, category: '资质与梯度培育' }; const local = localWx();
   const page = load('pages/detail/index.js', {
     '../../utils/api.js': { detail: () => Promise.resolve(doc) }, '../../utils/format.js': format,
-    '../../utils/consent.js': { loginOpen: () => false }, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/consent.js': { loginOpen: () => false }, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': daywatch, '../../utils/attachments.js': { decorate: () => [], note: () => '' },
     '../../utils/repost.js': require('../utils/repost.js'),
@@ -270,4 +270,38 @@ test('详情入口严格限定项目类别和四类标题，打开对应资质�
     if (key) { page.openStandard(); assert.equal(local.calls.at(-1), `/pages/standards/index?key=${key}`); }
   }
   doc = { ...doc, title: '高新技术企业通知', category: '人才' }; page.onLoad({ id: '7' }); await flush(); assert.equal(page.data.standardKey, '');
+});
+
+
+test('客户默认近90天保留未核对；严格开关关闭后恢复，空结果只显示有结果的出路', async () => {
+  const local = localWx(); clientUtils(local.wx).saveClients([CLIENT]);
+  const calls = [];
+  const page = resultsPage(local, { search: (p) => {
+    calls.push(p);
+    return Promise.resolve({ items: !p.open && !p.industries ? [DOC] : [], total: !p.open && !p.industries ? 6 : 0, verified_open_total: 0 });
+  } });
+  page.onLoad({ id: 'c1' }); page.onShow(); await flush();
+  assert.equal(calls[0].open, undefined); assert.equal(calls[0].time, '近 90 天'); assert.equal(calls[0].exclude_closed, true);
+  assert.equal(page.data.verifiedOnly, false);
+  assert.match(page.data.subtitle, /近 90 天发布 · 含截止日期未核对的/);
+  const content = textOf(render('pages/client-results/index.wxml', page.data));
+  assert.match(content, /不限产业方向（6 份）/); assert.match(content, /今年发布/); assert.match(content, /去搜索页/);
+  page.relaxIndustry(); await flush(); assert.equal(page.data.items.length, 1);
+  page.toggleVerified(input(true)); await flush(); assert.equal(calls.findLast((p) => p.limit === 20).open, 1);
+  assert.equal(page.data.relaxedTotal, 6);
+  page.relaxVerified(); await flush(); assert.equal(page.data.items.length, 1);
+  page.thisYear(); await flush(); assert.equal(calls.at(-1).time, '今年');
+  page.goSearch(); assert.match(local.calls.at(-1), /search\/index/);
+});
+
+test('客户没有可用的放宽结果时只保留去搜索页，旧探测不回写新条件', async () => {
+  const local = localWx(); clientUtils(local.wx).saveClients([CLIENT]);
+  const pending = [];
+  const page = resultsPage(local, { search: (p) => p.limit === 1 ? new Promise((resolve) => pending.push(resolve)) : Promise.resolve({ items: [], total: 0 }) });
+  page.onLoad({ id: 'c1' }); page.onShow(); await flush();
+  page.toggleIndustry(input(true)); await flush();
+  pending[0]({ total: 8 }); pending[1]({ total: 9 }); pending[2]({ total: 0 }); await flush();
+  assert.equal(page.data.industryTotal, 0); assert.equal(page.data.yearTotal, 0);
+  const root = render('pages/client-results/index.wxml', page.data);
+  assert.deepEqual(findAll(root, (node) => /exit-btn/.test((node.attrs && node.attrs.class) || '')).map(textOf), ['去搜索页自己筛']);
 });

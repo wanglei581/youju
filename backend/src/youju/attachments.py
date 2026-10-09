@@ -1,7 +1,8 @@
 """附件副本：通知的附件在小程序里直接打开（打开后右上角菜单可转发、保存），不用复制原文链接到浏览器。
 
 方案（2026-10-05 用本机 curl 取回微信官方文档原文核对后选定，依据见 PR 说明）：
-- admin 定时任务（youju cache-attachments）从原网站下载近 90 天文件的附件，校验后存到云托管对象存储
+- admin 定时任务（youju cache-attachments）从原网站下载申报通知近 180 天、
+  其他类型近 90 天文件的附件，校验后存到云托管对象存储
   attachments/<内容的 SHA-256>.<格式>，和数据库备份 backups/、日志归档 logs/ 分开。
 - 小程序不直接读对象存储：存储安全规则以存储桶为边界、对桶里全部文件生效，放开读取会连备份一起放开，
   所以存储桶保持"只有管理员可读写"；也不用 wx.downloadFile（要创始人在小程序后台配 downloadFile
@@ -76,6 +77,7 @@ _FAMILY = {
 # 只给这两类文件存副本：和详情页显示正文的范围一致（D-030：名单、其他类可能有个人姓名）
 COPY_KINDS = ("申报通知", "政策")
 WINDOW_DAYS = 90
+APPLICATION_WINDOW_DAYS = 180
 MAX_BYTES = MAX_RESPONSE_BYTES  # 20MB，抓取器超过就停止下载
 # 每段大小：callContainer 返回包上限 1000 KiB，留出余量
 PART_SIZE = 900 * 1024
@@ -678,8 +680,8 @@ class CacheReport:
     skipped: bool = False
 
 
-def _since(now: datetime) -> tuple[date, datetime]:
-    day = now.astimezone(BEIJING).date() - timedelta(days=WINDOW_DAYS)
+def _since(now: datetime, days: int = WINDOW_DAYS) -> tuple[date, datetime]:
+    day = now.astimezone(BEIJING).date() - timedelta(days=days)
     return day, datetime.combine(day, time(), tzinfo=BEIJING)
 
 
@@ -693,6 +695,8 @@ def _recent(since: date, since_at: datetime):
 def candidates(session: Session, now: datetime) -> dict[str, str]:
     """要有副本的附件：原站链接 → 题录里的扩展名，按文件发布日期从新到旧。"""
     since, since_at = _since(now)
+    apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
+    kind = func.coalesce(Document.kind_override, Document.rule_kind)
     rows = session.execute(
         select(DocumentAttachment.url, DocumentAttachment.extension)
         .join(Document, Document.id == DocumentAttachment.document_id)
@@ -700,8 +704,11 @@ def candidates(session: Session, now: datetime) -> dict[str, str]:
         .where(
             Source.rights_level == 1,
             available_condition(),
-            _recent(since, since_at),
-            func.coalesce(Document.kind_override, Document.rule_kind).in_(COPY_KINDS),
+            or_(
+                _recent(since, since_at),
+                and_(kind == "申报通知", _recent(apply_since, apply_since_at)),
+            ),
+            kind.in_(COPY_KINDS),
         )
         .order_by(Document.publish_date.desc(), Document.id.desc(), DocumentAttachment.position)
     )
@@ -816,7 +823,7 @@ def _exclusive(session: Session) -> Iterator[bool]:
 
 def _referenced(session: Session, file_ids: set[str], live: set[str] | None) -> set[str]:
     """删除前在同一事务里再查一次（锁住这些行）：还有附件记录引用着的对象不删。
-    live 给定时只算还要提供的附件（超过 90 天、下架的正要一起删掉，不算）。"""
+    live 给定时只算还要提供的附件（超过类型对应保留期、下架的正要一起删掉，不算）。"""
     if not file_ids:
         return set()
     rows = session.execute(
@@ -830,7 +837,7 @@ def _referenced(session: Session, file_ids: set[str], live: set[str] | None) -> 
 def _cleanup(
     session: Session, client: httpx.Client, env: str, live: set[str], report: CacheReport
 ) -> None:
-    """删掉不再需要的副本：超过 90 天、下架、附件题录已变的，以及换下来的旧副本。
+    """删掉不再需要的副本：超过类型对应保留期、下架、附件题录已变的，以及换下来的旧副本。
     对象存储确认删掉后才删记录；别的记录还在用的同一对象不删。"""
     rows = session.scalars(select(AttachmentCopy)).all()
     expired = [r for r in rows if r.url_hash not in live]
@@ -1132,7 +1139,7 @@ def attachment_items(
     session: Session, attachments: list[DocumentAttachment], *, kind: str, recent: bool
 ) -> list[dict]:
     """详情页的附件列表：能打开的给格式、大小、版本和分段数；不能打开的给原因代码。
-    recent：这份文件在 90 天内（超过的不存副本）。"""
+    recent：这份文件在类型对应保留期内（超过的不存副本）。"""
     keys = {a.url: url_hash(a.url) for a in attachments}
     rows = (
         {
@@ -1174,8 +1181,10 @@ def attachment_items(
     return items
 
 
-def is_recent(published: date | None, first_seen: datetime | None, now: datetime) -> bool:
-    since, since_at = _since(now)
+def is_recent(
+    published: date | None, first_seen: datetime | None, now: datetime, *, kind: str = ""
+) -> bool:
+    since, since_at = _since(now, APPLICATION_WINDOW_DAYS if kind == "申报通知" else WINDOW_DAYS)
     if published is not None:
         return published >= since
     return first_seen is not None and first_seen >= since_at

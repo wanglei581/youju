@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 import time as _time
+from collections import OrderedDict, deque
 from datetime import date, datetime, timedelta
+from threading import Lock
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -36,7 +38,12 @@ from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
-from youju.lists.lookup import lookup_list_matches, public_condition
+from youju.lists.lookup import (
+    ListLookupResult,
+    lookup_list_matches,
+    lookup_name_candidates,
+    public_condition,
+)
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
@@ -92,7 +99,7 @@ INDUSTRY_SET = set(INDUSTRIES)
 # 免得规则列为空时 NOT 出空值把文件漏掉）
 _NOT_GUIDE = [k for k in KINDS if k != GUIDE]
 STATUSES = {"公示", "公布"}
-TIMES = {"近 7 天": 7, "近 30 天": 30, "今年": None, "不限": None}
+TIMES = {"近 7 天": 7, "近 30 天": 30, "近 90 天": 90, "今年": None, "不限": None}
 DEPTS = {"科技部门", "工信部门", "其他部门"}
 LIST_BOARD_TYPES = ("高新技术企业", "专精特新", "科技型中小企业", "其他")
 LIST_BOARD_TYPE_SET = set(LIST_BOARD_TYPES)
@@ -893,13 +900,18 @@ def search(
         str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
     status: Annotated[str | None, Query(max_length=400, description="公示,公布")] = None,
-    time: Annotated[str, Query(description="近 7 天 / 近 30 天 / 今年 / 不限")] = "近 30 天",
+    time: Annotated[
+        str, Query(description="近 7 天 / 近 30 天 / 近 90 天 / 今年 / 不限")
+    ] = "近 30 天",
     depts: Annotated[
         str | None, Query(max_length=400, description="科技部门,工信部门,其他部门")
     ] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
+    exclude_closed: Annotated[
+        bool, Query(description="只排除人工核对且已截止的申报通知；未核对的保留；不传不改变结果")
+    ] = False,
     levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级,市级")] = None,
     categories: Annotated[
         str | None,
@@ -937,7 +949,12 @@ def search(
     资讯与指南篇数（折叠时等于 folded）。只在"全部"页签、没选类型时折叠。不传 fold 时
     不返回这两项。"""
     filters = {"levels": levels, "categories": categories}
-    filters |= {"supports": supports, "industries": industries, "cities": cities}
+    filters |= {
+        "supports": supports,
+        "industries": industries,
+        "cities": cities,
+        "exclude_closed": exclude_closed,
+    }
     stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
     all_time = search_statement(
         session, q, kind, regions, types, status, "不限", depts, open, **filters
@@ -954,10 +971,16 @@ def search(
     if grouped:
         reposts = versions - total
     rows = session.execute(_ordered(stmt).limit(limit).offset(offset)).all()
+    open_now = _base().where(
+        _kind_is(["申报通知"]), Document.id.in_(_application_ids(session, {"open", "closing"}))
+    )
     body = {
         "q": (q or "").strip(),
         "total": total,
         "total_all": _count(session, all_time),
+        # 截止日期已人工核对、还没截止的申报通知一共几份（不随筛选条件变）：
+        # 小程序在"只看未截止"旁边如实写出来
+        "verified_open_total": _count(session, _grouped(open_now) if grouped else open_now),
         "items": _items(session, [tuple(r) for r in rows], grouped),
     }
     if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
@@ -996,6 +1019,7 @@ def search_statement(
     supports: str | None = None,
     industries: str | None = None,
     cities: str | None = None,
+    exclude_closed: bool = False,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
 
@@ -1075,18 +1099,14 @@ def search_statement(
     if open is not None:
         if open != 1:
             raise HTTPException(status_code=422, detail="open 只支持 1")
-        # 先从今天起、人工核对通过的截止取文件编号，再与公开的申报通知相交。
-        # 这样不会为 open=1 把全部公开文件加载到进程内；_approved 仍负责归并组和 changed 口径。
-        candidate_ids = _future_approved_canonical_ids(session, now().date())
-        stmt = stmt.where(_kind_is(["申报通知"]))
-        approved = _approved(session, candidate_ids)
-        open_ids = []
-        current = now()
-        for document_id in candidate_ids:
-            status_value = application_status(approved.get(document_id, []), current)
-            if status_value and status_value["code"] in ("open", "closing"):
-                open_ids.append(document_id)
-        stmt = stmt.where(Document.id.in_(open_ids or [-1]))
+        stmt = stmt.where(
+            _kind_is(["申报通知"]), Document.id.in_(_application_ids(session, {"open", "closing"}))
+        )
+    if exclude_closed:
+        # 只去掉可信的已截止状态；changed 会由 _approved 抑制，未核对、无日期的仍保留。
+        closed_ids = _application_ids(session, {"closed"})
+        if closed_ids:
+            stmt = stmt.where(not_(and_(_kind_is(["申报通知"]), Document.id.in_(closed_ids))))
 
     d = now().date()
     if TIMES[time]:
@@ -1094,6 +1114,34 @@ def search_statement(
     elif time == "今年":
         stmt = stmt.where(Document.publish_date >= date(d.year, 1, 1))
     return stmt
+
+
+def _application_ids(session: Session, codes: set[str]) -> list[int]:
+    """申报状态在 codes 里的文件编号（转发组取主版本）。
+
+    状态只按人工核对通过的截止日期算（_approved），没核对的文件没有状态，不会出现在这里。
+    只要 open、closing 时先按"今天起还没过的截止"缩小范围；要 closed 时得看全部核对通过的截止
+    （现在数量很少，多了以后再考虑存一列状态）。
+    """
+    current = now()
+    if "closed" not in codes:
+        ids = _future_approved_canonical_ids(session, current.date())
+    else:
+        candidates = list(
+            session.scalars(
+                select(DocumentDeadline.document_id)
+                .where(DocumentDeadline.status == "approved")
+                .distinct()
+            )
+        )
+        mapping = canonical_ids(session, candidates)
+        ids = sorted({mapping.get(i, i) for i in candidates})
+    approved = _approved(session, ids)
+    return [
+        i
+        for i in ids
+        if (state := application_status(approved.get(i, []), current)) and state["code"] in codes
+    ]
 
 
 def _report_payload(
@@ -1590,7 +1638,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             session,
             detail.attachments if detail else [],
             kind=kind,
-            recent=is_recent(doc.publish_date, doc.first_seen_at, now()),
+            recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
         ),
         "checked": checked,
         "body": body_for_reading(_reading_body(session, doc.id), kind),
@@ -1780,8 +1828,35 @@ def recent_lists(
     }
 
 
+# 包含查询成本高于精确查找：每个来源地址每分钟 30 次，单进程共 300 次；内存键数有上限。
+_LOOKUP_TIMES: OrderedDict[str, deque[float]] = OrderedDict()
+_LOOKUP_INSTANCE: deque[float] = deque()
+_LOOKUP_LOCK = Lock()
+
+
+def _limit_lookup(request: Request) -> None:
+    from youju.api.app import client_ip
+
+    stamp = _time.monotonic()
+    caller = client_ip(request)
+    with _LOOKUP_LOCK:
+        times = _LOOKUP_TIMES.get(caller, deque())
+        for queue in (times, _LOOKUP_INSTANCE):
+            while queue and queue[0] <= stamp - 60:
+                queue.popleft()
+        if len(times) >= 30 or len(_LOOKUP_INSTANCE) >= 300:
+            raise HTTPException(status_code=429, detail="查询太频繁，请稍后再试")
+        times.append(stamp)
+        _LOOKUP_INSTANCE.append(stamp)
+        _LOOKUP_TIMES[caller] = times
+        _LOOKUP_TIMES.move_to_end(caller)
+        while len(_LOOKUP_TIMES) > 1000:
+            _LOOKUP_TIMES.popitem(last=False)
+
+
 @router.get("/lists/lookup")
 def lookup_lists(
+    request: Request,
     session: SessionDep,
     q: Annotated[
         str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
@@ -1795,14 +1870,23 @@ def lookup_lists(
     同一份名单只列一次；同一通知的不同网址按内容归并（youju.dedup）后也只列一次。只查企业和机构，
     输入像个人姓名的返回 422。coverage 是已收录的名单范围，查不到时据此说明。
     """
+    _limit_lookup(request)
     query = normalize_name(q)
-    if not query or is_person_query(query):
+    # 像个人姓名的输入（2–4 个汉字、不含机构用词，企业简称如"海尔"也在内）不做精确比对，
+    # 只列名称包含它的企业和机构全称供选；一个候选也没有就照旧拒绝。
+    # 候选都过企业/机构校验，不会列出个人。
+    person = bool(query) and is_person_query(query)
+    if person or not query:
+        lookup = ListLookupResult(query, (), False, False)
+    else:
+        lookup = lookup_list_matches(
+            session, query, scan_limit=_LOOKUP_SCAN, result_limit=_LOOKUP_LIMIT
+        )
+    candidates = lookup_name_candidates(session, query) if query and not lookup.matches else []
+    if not query or (person and not candidates):
         raise HTTPException(
             status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
         )
-    lookup = lookup_list_matches(
-        session, query, scan_limit=_LOOKUP_SCAN, result_limit=_LOOKUP_LIMIT
-    )
     masters = lookup.master_ids
     best = {match.master_id: match for match in lookup.matches}
     rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
@@ -1822,7 +1906,7 @@ def lookup_lists(
     shown_names = {entry.normalized_name for entry in best.values()}
     similar: list[dict] = []
     key = candidate_key(query)
-    if len(query) >= 4 and not query.isascii() and len(key) >= 2:
+    if not person and len(query) >= 4 and not query.isascii() and len(key) >= 2:
         names = session.execute(
             select(
                 ListEntry.normalized_name,
@@ -1859,6 +1943,7 @@ def lookup_lists(
         "query": q.strip(),
         "items": items,
         "similar": similar,
+        "candidates": candidates,
         "ambiguous": lookup.ambiguous,
         "truncated": lookup.truncated,
         "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},

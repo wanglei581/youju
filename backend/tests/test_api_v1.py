@@ -525,7 +525,7 @@ def test_calendar_skips_deadlines_already_passed_today(client, seeded):
         {"status": "已撤销"},
         {"depts": "财政部门"},
         {"kind": "新闻"},
-        {"time": "近 90 天"},
+        {"time": "近 180 天"},
         {"offset": 5001},
         {"regions": ",".join(["北京"] * 41)},
         {"levels": "县级"},
@@ -1563,3 +1563,108 @@ def test_city_deadline_change_requires_same_city(session, city_document):
     with pytest.raises(HTTPException, match="不是同一地区") as error:
         _check_change_target(session, deadline, other.id)
     assert error.value.status_code == 422
+
+
+def test_client_search_90_days_excludes_only_verified_closed(client, seeded, session):
+    source = session.query(Source).filter_by(province="山东").one()
+    docs = [
+        _doc(source, 100 + i, f"第{i}项先进制造项目申报通知", day)
+        for i, day in enumerate(
+            [NOW.date(), date(2026, 6, 29), date(2026, 6, 28), NOW.date(), NOW.date(), NOW.date()]
+        )
+    ]
+    session.add_all(docs)
+    session.flush()
+    for i, state in [(0, "pending"), (3, "approved"), (4, "approved"), (5, "changed")]:
+        session.add(
+            DocumentDeadline(
+                document_id=docs[i].id,
+                fingerprint=str(i),
+                kind="企业申报截止",
+                status=state,
+                candidate_date=date(2026, 9, 26),
+                evidence="原文",
+                confidence="高",
+                approved_date=date(2026, 9, 26) if state != "pending" else None,
+                # 已变更的要写原因并关联发布变更的通知（数据库约束）
+                change_reason="延期" if state == "changed" else None,
+                changed_to_document_id=docs[0].id if state == "changed" else None,
+            )
+        )
+    # 第4项今天的截止已过，同样排除；无日期、候选过期和变更仍列出。
+    session.flush()
+    dl = session.query(DocumentDeadline).filter_by(document_id=docs[4].id).one()
+    dl.approved_date = NOW.date()
+    dl.approved_time = time(9, 0)
+    session.commit()
+    params = {"q": "先进制造", "kind": "申报通知", "time": "近 90 天"}
+    before = client.get("/api/v1/search", params=params).json()
+    assert before["total"] == 5
+    body = client.get("/api/v1/search", params={**params, "exclude_closed": 1}).json()
+    assert {i["id"] for i in body["items"]} == {str(docs[i].id) for i in [0, 1, 5]}
+    assert body["total_all"] == 4
+    assert all(i["deadline"] is None for i in body["items"])
+    assert body["verified_open_total"] == 1  # 全站已核对未截止，不受关键词影响
+    strict = client.get("/api/v1/search", params={**params, "open": 1}).json()
+    assert strict["total"] == 0
+    assert client.get("/api/v1/search", params={**params, "exclude_closed": 0}).json()["total"] == 5
+
+
+def test_client_search_zero_verified_still_lists_unverified(client, seeded, session):
+    for dl in session.query(DocumentDeadline):
+        dl.status = "pending"
+    session.commit()
+    body = client.get(
+        "/api/v1/search", params={"kind": "申报通知", "exclude_closed": 1, "time": "近 90 天"}
+    ).json()
+    assert body["total"] == 1 and body["verified_open_total"] == 0
+    assert body["items"][0]["deadline"] is None
+    assert client.get("/api/v1/search", params={"open": 1}).json()["total"] == 0
+
+
+def test_lists_shorthand_candidates_are_orgs_sorted_unique_and_limited(client, seeded, session):
+    from youju.lists.lookup import lookup_name_candidates
+    from youju.lists.rules import normalize_name
+
+    doc = session.query(Document).filter(Document.title.contains("拟入库科技型")).one()
+    names = ["海尔集团", "海尔研究院", "青岛海尔有限公司", "海尔集团", "张三", "海尔小王"]
+    names += [f"海尔{i:02d}技术有限公司" for i in range(25)]
+    for i, name in enumerate(names):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name=name,
+                normalized_name=normalize_name(name),
+                sequence=str(900 + i),
+                category="科技型中小企业",
+            )
+        )
+    session.commit()
+    body = client.get("/api/v1/lists/lookup", params={"q": "海尔"}).json()
+    expected = sorted(
+        set(n for n in names if n not in {"张三", "海尔小王"}), key=lambda n: (len(n), n)
+    )[:20]
+    assert body["items"] == [] and body["candidates"] == expected
+    exact = client.get("/api/v1/lists/lookup", params={"q": expected[0]}).json()
+    assert len(exact["items"]) == 1 and exact["candidates"] == []
+    assert client.get("/api/v1/lists/lookup", params={"q": "张三"}).status_code == 422
+    assert client.get("/api/v1/lists/lookup", params={"q": "海"}).status_code == 422
+    for query in ["海尔%", "海尔_", "' OR 1=1 --", "海尔!"]:
+        assert client.get("/api/v1/lists/lookup", params={"q": query}).json()["candidates"] == []
+    # 查全部条目，数量在数据库里限住
+    assert lookup_name_candidates(session, "海尔", limit=3) == expected[:3]
+    # 像个人姓名的输入不做精确比对：即使库里有同名的遗留条目也不返回
+    assert client.get("/api/v1/lists/lookup", params={"q": "海尔小王"}).status_code == 422
+    doc.kind_override = "其他"
+    session.commit()
+    assert client.get("/api/v1/lists/lookup", params={"q": "海尔集团"}).json()["candidates"] == []
+
+
+def test_lists_lookup_rate_limited_and_recovers(client, monkeypatch):
+    monkeypatch.setattr(v1._time, "monotonic", lambda: 1000)
+    for _ in range(30):
+        assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 200
+    assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 429
+    monkeypatch.setattr(v1._time, "monotonic", lambda: 1061)
+    assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 200
