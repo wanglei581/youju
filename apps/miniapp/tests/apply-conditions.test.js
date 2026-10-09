@@ -44,7 +44,7 @@ function detailPage(respond) {
   return load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => respond() },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },

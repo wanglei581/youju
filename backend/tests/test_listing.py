@@ -524,3 +524,38 @@ def test_amount_after_date_does_not_replace_it() -> None:
         date(2026, 9, 18),
         date(2026, 9, 15),
     ]
+
+
+def test_ningxia_decoration_removed_from_text_attribute_and_json():
+    import json
+
+    title = "关于公开征求《宁夏回族自治区技术研发项目管理办法》意见的通知"
+    html = f'<ul><li><span>2026-10-08</span><a href="./202610/t20261008_5365720.html"><em>》</em> {title}</a></li></ul>'
+    url = "https://kjt.nx.gov.cn/kjdt/tzgg/"
+    assert (
+        extract_items(html, url, {"item_selector": "li", "date_selector": "span"})[0].title == title
+    )
+    with_attr = html.replace("<em>》</em>", "》").replace(
+        "<a href=", f'<a title="》 {title}" href='
+    )
+    assert (
+        extract_items(with_attr, url, {"item_selector": "li", "date_selector": "span"})[0].title
+        == title
+    )
+    payload = {
+        "articleList": [
+            {
+                "title": "》 " + title,
+                "url": "./202610/t20261008_5365720.html",
+                "publishTime": "2026-10-08",
+            }
+        ]
+    }
+    script = "<script>var listData = " + json.dumps(payload, ensure_ascii=False) + ";</script>"
+    assert extract_items(script, url)[0].title == title
+
+    from youju.crawler.titles import clean_title
+
+    assert clean_title("《项目申报指南》") == "《项目申报指南》"
+    assert clean_title("关于《项目指南》的通知") == "关于《项目指南》的通知"
+    assert clean_title("》 》 关于《项目指南》的通知") == "关于《项目指南》的通知"

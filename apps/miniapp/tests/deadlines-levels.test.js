@@ -61,7 +61,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
   const page = load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
@@ -105,7 +105,7 @@ test('申报日历空状态：写已核对条数，给去搜索申报通知的�
   const page = load('pages/calendar/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { calendar: () => Promise.resolve({ items: [], past: [], verifiedTotal: 3 }) },
-    '../../utils/format.js': format, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
   }, { wx: { navigateTo: (r) => { url = r.url; } } });
   page.load(); await flush();
@@ -127,7 +127,7 @@ test('层级筛选：国家部委、省级、市级三项，条件带到接口�
     '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   page.onLoad({}); await flush();
@@ -150,7 +150,7 @@ test('层级筛选：国家部委、省级、市级三项，条件带到接口�
     '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   const url = new URL(conditions.searchUrl({ kind: 'all', regions: '山东', levels: '省级', time: '不限' }), 'https://test.invalid');
@@ -187,7 +187,7 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
     '../../content/legal.js': { final: false },
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
-    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': {}, '../../utils/conditions.js': conditions,
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/conditions.js': conditions,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx: {} });
   page.onLoad({ regions: '山东', levels: '国家部委' }); await flush();

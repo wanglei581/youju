@@ -30,8 +30,8 @@
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
   <view class="section-title">"{{queried}}" 的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
-  <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…</view>
-  <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}</view>
+  <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
+  <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}<text class="link" bindtap="query">　重试</text></view>
   <block wx:elif="{{result}}">
     <block wx:if="{{result.items.length}}">
       <view class="weak result-sum">在已收录的 {{result.coverage.lists}} 份名单中找到 {{result.items.length}} 份<text wx:if="{{result.truncated}}">（只列出最近的 {{result.items.length}} 份）</text></view>
@@ -41,6 +41,17 @@
         <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
       </view>
     </block>
+    <!-- 输入的是简称：没有叫这个名字的企业，但有名称里带这几个字的——先列候选，点一个按全称查 -->
+    <view wx:elif="{{result.candidates.length}}" class="empty-lookup">
+      <view class="empty-title">你要查的是不是：</view>
+      <view class="weak empty-text">名单里没有全称是"{{queried}}"的企业。下面是名称里带这几个字的，点一个按全称查。</view>
+      <view class="candidates">
+        <view wx:for="{{result.candidates}}" wx:key="*this" class="similar-item candidate" data-name="{{item}}" bindtap="pickSimilar" aria-role="button">
+          <text class="similar-name">{{item}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
+        </view>
+      </view>
+      <view class="weak empty-text">最多列 20 个，没有你要找的，请输入企业全称或统一社会信用代码再查。</view>
+    </view>
     <view wx:else class="empty-lookup">
       <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
       <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充。请核对企业全称，或换统一社会信用代码再查；最终以发文机关原文为准。</view>
@@ -68,6 +79,7 @@
         <view class="sk sk-meta"></view>
       </view>
     </view>
+    <view wx:if="{{loading && serviceStarting}}" class="muted">正在连接，比平时慢一点，请稍等…</view>
     <view wx:if="{{chip !== '全部'}}" class="weak result-text">仅筛选最近加载的 {{items.length}} 份名单</view>
     <doc-row wx:if="{{!loading && !error}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" last="{{index === shown.length - 1}}" today="{{today}}" />
     <view wx:if="{{!shown.length && !loading && !error}}" class="empty-lookup">暂无符合类型的名单</view>

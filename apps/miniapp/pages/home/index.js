@@ -38,6 +38,7 @@ Page({
   },
 
   onLoad() {
+    if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight, menuWidth });
     this.lastShow = Date.now();
@@ -58,14 +59,17 @@ Page({
   },
 
   onHide() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onShow() {
+    if (api.watchStartup) api.watchStartup(this);
     const stamp = Date.now();
     if (this.lastShow === undefined || stamp - this.lastShow >= 1000) {
       this.reload();
