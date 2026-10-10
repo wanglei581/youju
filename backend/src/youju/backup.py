@@ -153,7 +153,12 @@ def _orphans(conn: Connection, tables: dict[str, Table]) -> list[str]:
     for table in tables.values():
         for fk in table.foreign_keys:
             child, parent = fk.parent, fk.column
-            joined = table.outerjoin(parent.table, child == parent)
+            parent_table = parent.table
+            if parent_table is table:
+                # 引荐关系是 users 的自关联；父端须单独别名，并在恢复时一并声明表锁。
+                parent_table = table.alias(f"{table.name}_{child.name}_parent")
+                parent = parent_table.c[parent.name]
+            joined = table.outerjoin(parent_table, child == parent)
             count = conn.scalar(
                 select(func.count()).select_from(joined).where(child.is_not(None), parent.is_(None))
             )
@@ -237,7 +242,15 @@ def restore(engine: Engine, src: IO[bytes]) -> dict[str, int]:
     """把备份恢复到 engine 指向的库：这个库要已迁移到和备份相同的版本、而且是空的。
     锁住全部表后检查、写入、核对，全部对上才提交；否则回滚并报错。返回各表条数。"""
     tables = {t.name: t for t in backed_up_tables()}
-    locks = ", ".join([f"`{name}` WRITE" for name in tables] + ["`alembic_version` READ"])
+    parent_locks = [
+        f"`{table.name}` AS `{table.name}_{fk.parent.name}_parent` READ"
+        for table in tables.values()
+        for fk in table.foreign_keys
+        if fk.column.table is table
+    ]
+    locks = ", ".join(
+        [f"`{name}` WRITE" for name in tables] + parent_locks + ["`alembic_version` READ"]
+    )
     try:
         with gzip.GzipFile(fileobj=src, mode="rb") as gz:
             header = json.loads(gz.readline() or b"null")

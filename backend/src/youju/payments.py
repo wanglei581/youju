@@ -146,7 +146,7 @@ def pass_status(session: Session, user_id: int, stamp: datetime) -> dict:
 
 def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
     # last_used_at 是任务提交时的最少审计记录，删除、失败、取消均不抹去使用事实。
-    if ticket is None:
+    if ticket is None or ticket.order_id is None:
         return False
     return (
         ticket.last_used_at is not None

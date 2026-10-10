@@ -79,6 +79,72 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 失败、取消、删除任务都不会清除使用事实。
 使用期留最近一次任务编号、提交时间、完成/结束时间；不存企业名称或结果内容。
 
+## 奖励天数（2026-10-10）
+
+奖励是客户工作台使用天数，权益与购买相同：compare / track 每次最多 500 行，次数不限，
+仍先使用当月免费量。奖励接在发放时该用户所有未收回段的最晚结束时间后面；
+没有未来有效段时从发放时间开始。不能转让、不能折现，注销账号时作废。
+
+`YOUJU_REWARDS_ENABLED=false` 默认关闭，必须同时开启 `YOUJU_ADVISOR_ENABLED`。
+关闭时不自动发奖，`rewards-reconcile` 不写奖励，个人奖励和引荐接口 404（包括未登录请求），
+注册忽略引荐码，管理台不显示发奖按钮、发奖接口 404。已发出的使用期仍有效。
+只有服务端开关，没有审核隐藏开关。支付开关不控制奖励。
+
+每个北京时间自然月，所有奖励实际发放天数合计最多 30 天；不足时只给剩余天数。
+零天也写流水、备注说明达到上限，但不创建使用期段。同一对象不会重复发奖，
+超出的天数或名额不会顺延到下月，月统计按实际发放时间，不按使用期开始时间。
+
+| kind | 用户看到的名称 | 申请天数 | 限制 |
+|---|---|---|---|
+| first_batch | 第一次用批量功能 | 3 | 第一次 compare / track 成功完成，每个用户一次 |
+| correction | 纠错被采纳 | 1 | 管理员采纳，一条反馈一次 |
+| source | 提的栏目已接入 | 3 | 管理员确认接入，一条反馈一次，每人每月最多 2 次实际到账 |
+| referral | 请来一位同行 | 7 | 新用户第一次成功完成批量任务时，仅给引荐人，每月最多计入 4 位 |
+| deadline_clue | 补截止日期被采纳 | 1 | 预留类型，每人每月最多 10 天，一份通知一次；本次没有采纳入口 |
+
+只计算直接引荐的一层，新用户不会因引荐码多得天数，只按普通规则拿 first_batch。
+引荐码由安全随机数生成，固定 12 字符，不编码用户编号或 openid；老用户首次请求时生成，
+不回填。只在第一次建立用户记录时写引荐关系；已有记录更新协议不写关系，
+无效码（含超长或类型不符）忽略，自用码不记录。接口不公开被引荐人身份。
+当前去重以用户记录为边界；注销后重建会成为新记录。本次没有新增注销后的微信账号历史校验凭据，
+是否跨注销维持首次奖励和新用户引荐限制，待负责人补充口径。
+
+新迁移 **0027**，0026 不变：
+
+- `pass_rewards`：`id,user_id,kind,requested_days,granted_days,ref_type,ref_id,granted_at,note`。
+  `(ref_type,ref_id)` 唯一；用户外键允许置空，天数和类型有 CHECK 约束。
+  `ref_type` 分别使用 `user_first_batch`、`user_referral`、`feedback`、`document`；
+  first_batch 和 referral 的 ref_id 是首次完成者编号，其余是反馈或通知编号。
+  两种管理台操作共用反馈唯一键，不能对同一反馈各发一遍。
+- `workbench_passes.order_id` 改为可空，新增唯一可空外键 `reward_id`。
+  CHECK 保证订单和奖励来源有且只有一个。奖励流水通过 reward_id 反查对应使用期，
+  零天没有对应段，不增加循环外键。
+- `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
+  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的奖励 INSERT/UPDATE 授权；
+  本次只验证测试库，不执行正式库或账号授权操作。
+
+| 接口 | 最终字段 / 行为 |
+|---|---|
+| `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note`，不返回关联人或对象编号 |
+| `GET /api/v1/me/invite` | `inviteCode,monthCount,monthLimit,rules[]`；只显示实际计入人数，每月上限 4 |
+| `POST /api/v1/me/agreement` | 原字段加可选 `invite_code`；仅 general 的新记录写入关系 |
+| `GET /api/admin/feedback` | 原列表加 `rewardsEnabled,rewardKind,rewardDays`；未发奖的后两项为 null |
+| `POST /api/admin/feedback/{id}/reward/{kind}` | kind 为 correction 或 source；沿用 X-Admin-Token 和操作留痕，校验反馈类型，成功同时标为已处理；返回 `alreadyGranted,days,message,note`，重复返回“已经发过”（无 note） |
+
+任务完成和首次完成标记在同一事务持久化，之后 first_batch、referral 分别独立事务发放。
+发奖失败只写固定日志，不回滚成功任务、不暴露异常正文；后续完成不自动补发。
+`youju rewards-reconcile` 补发仍在库中的用户：读取首次完成标记，也兼容升级前保留的成功任务，
+跳过已有流水（包括零天），两种奖分别补发。补发按补发当天所属月份计算限制，使用期从补发时起。
+升级前成功任务已删除且没有首次完成标记的，无法凭空还原，不发奖。
+所有发奖先锁用户再写流水和使用期；同时涉及引荐双方时按用户编号排序锁行。
+备份恢复的自关联外键核验与表锁已适配引荐关系，备份包含奖励流水和使用期。
+
+退款资格只检查订单自己的段；奖励段上的任务不计入该订单的 paid_usage。
+订单接口只查订单，不把奖励段伪装成订单。退款收回订单段时，后续奖励段也按未用时长往前挪。
+注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除引荐关系两边的关联与时间，
+清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。
+
 ## 退款与苹果问询
 
 普通支付仅付款后 7 天内（含恰好 7 天）、未用过这张票的付费量且已开通时允许自助全额原路退。

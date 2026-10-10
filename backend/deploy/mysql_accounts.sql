@@ -35,3 +35,4 @@ GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.workbench_passes TO 'youju_api'@'%';
+GRANT INSERT, UPDATE ON youju.pass_rewards TO 'youju_api'@'%';

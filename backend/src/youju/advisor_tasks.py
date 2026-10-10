@@ -563,6 +563,31 @@ def process_task(
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
+        # 发奖与提交任务统一先锁用户；首次完成标记和任务完成同事务落库。
+        user = session.scalar(
+            select(User)
+            .where(User.id == task.user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if user is None:
+            raise CompareInputError("用户不存在，任务无法处理")
+        previous = None
+        if user.batch_completed_at is None:
+            previous = session.scalar(
+                select(AdvisorTask)
+                .where(
+                    AdvisorTask.user_id == user.id,
+                    AdvisorTask.kind.in_(("compare", "track")),
+                    AdvisorTask.status == "done",
+                    AdvisorTask.id != task.id,
+                )
+                .order_by(AdvisorTask.finished_at, AdvisorTask.id)
+                .limit(1)
+            )
+        first_batch = user.batch_completed_at is None and previous is None
+        if user.batch_completed_at is None:
+            user.batch_completed_at = (previous.finished_at if previous else None) or stamp
         task.status = "done"
         task.result_file_id = file_id
         task.result_rows = rows
@@ -570,6 +595,14 @@ def process_task(
         task.error = None
         record_pass_completion(session, task)
         session.commit()
+        if first_batch:
+            from youju import rewards
+
+            try:
+                rewards.first_completion(session, user.id, stamp, settings=settings)
+            except Exception:
+                session.rollback()
+                log.warning("首次批量任务奖励未发出，请运行 rewards-reconcile")
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
         session.rollback()

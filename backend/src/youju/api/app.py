@@ -495,6 +495,9 @@ class FeedbackOut(BaseModel):
     # 纠错分诊：规则和 AI 复查对应文件已发布截止日期的结果（还没分诊时为空）
     triageNote: str | None = None
     triagedAt: datetime | None = None
+    rewardsEnabled: bool = False
+    rewardKind: str | None = None
+    rewardDays: int | None = None
 
 
 class UnchangeIn(BaseModel):
@@ -2282,8 +2285,20 @@ def admin_feedback(
         doc.id: doc
         for doc in session.scalars(select(Document).where(Document.id.in_(doc_ids))).all()
     }
+    from youju import rewards
+    from youju.models import PassReward
+
+    reward_map = {
+        r.ref_id: r
+        for r in session.scalars(
+            select(PassReward).where(
+                PassReward.ref_type == "feedback", PassReward.ref_id.in_([r.id for r in rows])
+            )
+        )
+    }
     result = []
     for row in rows:
+        reward = reward_map.get(row.id)
         doc = documents.get(mapping.get(row.document_id, row.document_id))
         result.append(
             FeedbackOut(
@@ -2298,9 +2313,82 @@ def admin_feedback(
                 handledAt=row.handled_at,
                 triageNote=row.triage_note,
                 triagedAt=row.triaged_at,
+                rewardsEnabled=rewards.enabled(get_settings()),
+                rewardKind=reward.kind if reward else None,
+                rewardDays=reward.granted_days if reward else None,
             )
         )
     return result
+
+
+@app.post("/api/admin/feedback/{feedback_id}/reward/{kind}")
+def reward_feedback(
+    feedback_id: int,
+    kind: Literal["correction", "source"],
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    from youju import rewards
+    from youju.models import PassReward, User
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    row = session.get(Feedback, feedback_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到反馈")
+    owner = row.user_id
+    # 先用户再反馈；和注销及普通发奖保持一致的锁序。
+    if (
+        owner is None
+        or session.scalar(select(User.id).where(User.id == owner).with_for_update()) is None
+    ):
+        raise HTTPException(status_code=422, detail="用户已注销，无法发放天数")
+    row = session.scalar(
+        select(Feedback)
+        .where(Feedback.id == feedback_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.user_id != owner:
+        raise HTTPException(status_code=404, detail="没有找到反馈")
+    previous = session.scalar(
+        select(PassReward).where(
+            PassReward.ref_type == "feedback", PassReward.ref_id == feedback_id
+        )
+    )
+    if previous is not None:
+        _audit(
+            request,
+            "feedback_reward",
+            feedback_id=feedback_id,
+            kind=kind,
+            changed=False,
+            days=previous.granted_days,
+        )
+        return {"alreadyGranted": True, "days": previous.granted_days, "message": "已经发过"}
+    is_source = row.content.startswith("申请覆盖：")
+    if is_source != (kind == "source"):
+        raise HTTPException(status_code=422, detail="请按反馈类型选择发放操作")
+    reward = rewards.grant(
+        session, owner, kind, 3 if kind == "source" else 1, "feedback", feedback_id, v1_api.now()
+    )
+    row.handled_at = row.handled_at or v1_api.now()
+    session.commit()
+    _audit(
+        request,
+        "feedback_reward",
+        feedback_id=feedback_id,
+        kind=kind,
+        changed=True,
+        days=reward.granted_days,
+    )
+    return {
+        "alreadyGranted": False,
+        "days": reward.granted_days,
+        "message": f"已发放 {reward.granted_days} 天",
+        "note": reward.note,
+    }
 
 
 def _set_feedback_handled(feedback_id: int, session: Session, handled: bool) -> dict[str, bool]:

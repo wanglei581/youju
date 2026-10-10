@@ -720,6 +720,13 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
+    invited_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    invited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 不依赖任务留存：删除任务后仍能去重、补发，后续完成不会自动补旧奖励。
+    batch_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -964,17 +971,50 @@ class PayOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class PassReward(Base):
+    """包括发放零天的奖励审计；注销保留流水并断开用户关联。"""
+
+    __tablename__ = "pass_rewards"
+    __table_args__ = (
+        UniqueConstraint("ref_type", "ref_id", name="uq_pass_rewards_ref"),
+        Index("ix_pass_rewards_user_granted", "user_id", "granted_at"),
+        CheckConstraint(
+            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue')",
+            name="ck_pass_rewards_kind",
+        ),
+        CheckConstraint(
+            "requested_days > 0 AND granted_days >= 0 AND granted_days <= requested_days",
+            name="ck_pass_rewards_days",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(20))
+    requested_days: Mapped[int] = mapped_column(Integer)
+    granted_days: Mapped[int] = mapped_column(Integer)
+    ref_type: Mapped[str] = mapped_column(String(32))
+    ref_id: Mapped[int | None] = mapped_column(Integer)
+    granted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    note: Mapped[str | None] = mapped_column(String(200))
+
+
 class WorkbenchPass(Base):
-    """每张订单对应一段使用期；最少使用凭据在任务删除后仍保留。"""
+    """每张订单或奖励对应一段使用期；任务删除后仍保留最少使用凭据。"""
 
     __tablename__ = "workbench_passes"
+    __table_args__ = (
+        CheckConstraint(
+            "(order_id IS NULL) <> (reward_id IS NULL)", name="ck_workbench_pass_origin"
+        ),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
-    order_id: Mapped[int] = mapped_column(
+    order_id: Mapped[int | None] = mapped_column(
         ForeignKey("pay_orders.id", ondelete="CASCADE"), unique=True
     )
+    reward_id: Mapped[int | None] = mapped_column(ForeignKey("pass_rewards.id"), unique=True)
     starts_at: Mapped[datetime] = mapped_column(UTCDateTime())
     ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

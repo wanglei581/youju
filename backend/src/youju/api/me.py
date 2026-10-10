@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
@@ -99,6 +99,13 @@ class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
     scope: Literal["general", "advisor"] = "general"
+    invite_code: str | None = None
+
+    @field_validator("invite_code", mode="before")
+    @classmethod
+    def valid_invite_code(cls, value):
+        # 无效码不能妨碍同意协议；只把可能匹配固定码的短字符串送进查询。
+        return value if isinstance(value, str) and 0 < len(value) <= 16 else None
 
 
 class Conditions(BaseModel):
@@ -276,6 +283,67 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
     }
 
 
+def _require_rewards() -> None:
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@router.get("/me/rewards", dependencies=[Depends(_require_rewards)])
+def reward_history(session: SessionDep, user: UserDep) -> dict:
+    from youju import rewards
+    from youju.models import PassReward
+
+    days = sum(
+        row.granted_days for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
+    )
+    rows = session.scalars(
+        select(PassReward)
+        .where(PassReward.user_id == user.id)
+        .order_by(PassReward.granted_at.desc(), PassReward.id.desc())
+        .limit(50)
+    )
+    return {
+        "monthDays": days,
+        "monthLimit": rewards.MONTH_LIMIT,
+        "items": [
+            {
+                "kind": row.kind,
+                "name": rewards.LABELS[row.kind],
+                "requestedDays": row.requested_days,
+                "days": row.granted_days,
+                "grantedAt": _iso(row.granted_at),
+                "note": row.note,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/me/invite", dependencies=[Depends(_require_rewards)])
+def invite_status(session: SessionDep, user: UserDep) -> dict:
+    from youju import rewards
+
+    code = rewards.invite_code(session, user.id)
+    count = sum(
+        row.kind == "referral" and row.granted_days > 0
+        for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
+    )
+    session.commit()
+    return {
+        "inviteCode": code,
+        "monthCount": count,
+        "monthLimit": 4,
+        "rules": [
+            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天客户工作台使用期。",
+            "每月最多计入 4 位，各项奖励合计每月最多 30 天，超出部分不给、不顺延。",
+            "新用户不会因使用引荐码多得天数；只计算直接请来的同行。",
+            "使用天数不能转让、不能折现，注销账号时作废。",
+        ],
+    }
+
+
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。只接受当前版本。"""
@@ -292,11 +360,24 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     if body.version != get_settings().agreement_version:
         raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
     stamp = v1.now()
+    from youju import rewards
+
+    inviter = None
+    if (
+        rewards.enabled(get_settings())
+        and body.invite_code
+        and session.scalar(select(User.id).where(User.openid == request_openid(request))) is None
+    ):
+        inviter = session.scalar(
+            select(User.id).where(User.invite_code == body.invite_code).with_for_update()
+        )
     # 已有用户时 LAST_INSERT_ID(id) 让 lastrowid 返回已有那一行的编号
     row_id = session.execute(
         insert(User)
         .values(
             openid=request_openid(request),
+            invited_by_user_id=inviter,
+            invited_at=stamp if inviter is not None else None,
             last_visited_at=stamp,
             agreement_version=body.version,
             agreement_at=stamp,
@@ -318,8 +399,11 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
+        from youju import rewards
         from youju.payments import anonymize
 
+        # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
+        rewards.anonymize(session, user, v1.now())
         anonymize(session, user)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
