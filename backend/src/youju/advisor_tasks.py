@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import tempfile
 import time as monotonic_clock
 from datetime import UTC, date, datetime, timedelta
@@ -669,6 +670,51 @@ def download_url(client: httpx.Client, env: str, file_id: str) -> str | None:
     if item.get("status") not in (None, 0):
         return None
     return item.get("download_url") or item.get("url")
+
+
+# 结果文件由 api 自己从对象存储分段读出来再发给小程序（和附件副本同一种做法）：
+# 不把存储的下载地址交给小程序——手机直接下载要在小程序后台配 downloadFile 合法域名，
+# 10/10 真机试用前发现结果因此打不开。每段大小留在 callContainer 返回包上限（1000 KiB）以内。
+RESULT_PART_SIZE = 900 * 1024
+RESULT_MAX_BYTES = 20 * 1024 * 1024
+_FILE_ENV = re.compile(r"^cloud://([^./]+)\.")
+_RANGE_TOTAL = re.compile(r"^bytes \d+-\d+/(\d+)$")
+
+
+def result_env(settings, file_id: str) -> str | None:
+    """对象存储环境：优先用配置；api 服务没配时从文件编号里取（cloud://环境ID.存储桶/路径）。"""
+    configured = getattr(settings, "cloud_env", None)
+    if configured:
+        return configured
+    match = _FILE_ENV.match(file_id or "")
+    return match.group(1) if match else None
+
+
+def result_size(client: httpx.Client, url: str) -> int:
+    """结果文件的字节数：只请求第一个字节，从 Content-Range 里读总长度。"""
+    with client.stream("GET", url, headers={"Range": "bytes=0-0"}, timeout=10) as res:
+        if res.status_code == 206:
+            match = _RANGE_TOTAL.match(res.headers.get("content-range", ""))
+            if not match:
+                raise BackupError("读不出结果文件的大小")
+            total = int(match.group(1))
+        elif res.status_code == 200:
+            total = int(res.headers.get("content-length") or 0)
+        else:
+            raise BackupError(f"读取结果文件失败（HTTP {res.status_code}）")
+    if not 0 < total <= RESULT_MAX_BYTES:
+        raise BackupError("结果文件大小不对")
+    return total
+
+
+def read_result_part(client: httpx.Client, url: str, index: int, total: int) -> bytes:
+    """读结果文件的第 index 段（从 0 起）。"""
+    from youju.attachments import read_range
+
+    start = index * RESULT_PART_SIZE
+    if index < 0 or start >= total:
+        raise ValueError("没有这一段")
+    return read_range(client, url, start, min(total, start + RESULT_PART_SIZE), total)
 
 
 def delete_result_files(client: httpx.Client, env: str, file_ids: list[str]) -> list[str]:

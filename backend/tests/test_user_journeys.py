@@ -826,14 +826,23 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     )
     done = _json(j.client.get("/api/v1/advisor/tasks"))["items"][0]
     assert done["status"] == "done" and done["hasFile"] and done["resultRows"] >= 1
-    url = _json(j.client.get(f"/api/v1/advisor/tasks/{created['id']}/download"))
-    assert url["expiresIn"] == 600
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, content=storage[f"cloud://journey/{kind}"])
+    # 结果文件经接口分段取回，拼起来就是 Excel
+    stored = storage[f"cloud://journey/{kind}"]
+    monkeypatch.setattr(advisor_tasks, "result_size", lambda client, url: len(stored))
+    monkeypatch.setattr(
+        advisor_tasks,
+        "read_result_part",
+        lambda client, url, index, total: stored[
+            index * advisor_tasks.RESULT_PART_SIZE : (index + 1) * advisor_tasks.RESULT_PART_SIZE
+        ],
     )
-    with httpx.Client(transport=transport) as downloader:
-        downloaded = downloader.get(url["url"])
-    book = load_workbook(BytesIO(downloaded.content))
+    info = _json(j.client.get(f"/api/v1/advisor/tasks/{created['id']}/download"))
+    assert info["size"] == len(stored) and info["parts"] >= 1 and "url" not in info
+    downloaded = b"".join(
+        j.client.get(f"/api/v1/advisor/tasks/{created['id']}/file?part={n}").content
+        for n in range(info["parts"])
+    )
+    book = load_workbook(BytesIO(downloaded))
     try:
         text = "\n".join(str(cell.value) for sheet in book for row in sheet for cell in row)
         target = listed if kind == "compare" else application
@@ -883,6 +892,7 @@ def test_e_advisor_disabled_blocks_all_endpoints_and_worker(journey, monkeypatch
         ),
         ("get", "/api/v1/advisor/tasks/1", {}),
         ("get", "/api/v1/advisor/tasks/1/download", {}),
+        ("get", "/api/v1/advisor/tasks/1/file?part=0", {}),
         ("post", "/api/v1/advisor/tasks/1/cancel", {}),
         ("delete", "/api/v1/advisor/tasks/1", {}),
     ):
