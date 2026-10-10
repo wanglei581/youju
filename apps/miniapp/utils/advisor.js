@@ -4,7 +4,8 @@ const terms = require('../content/advisor-terms.js');
 const VERSION = terms.version;
 const TERMS_TEXT = terms.text;
 const TERMS_FINAL = terms.final && !!terms.text.trim() && !/待.*定稿|占位/.test(terms.text);
-const KINDS = { compare: '名单比对', track: '在报项目跟进表' };
+// 名字和购买页、奖励规则里的写法保持一致
+const KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。
@@ -64,11 +65,16 @@ function openResult(id, options = {}) {
   const exportsLog = require('./exports.js');
   return api.downloadAdvisorTask(id).then((result) => {
     if (!api.isLive()) return wx.base64ToArrayBuffer(result.contentBase64);
-    return new Promise((resolve, reject) => {
-      wx.downloadFile({ url: result.url, success: (res) => {
-        if (res.statusCode !== 200) { reject(new Error('文件下载失败，请重试')); return; }
-        wx.getFileSystemManager().readFile({ filePath: res.tempFilePath, success: (file) => resolve(file.data), fail: () => reject(new Error('文件没能读取，请重试')) });
-      }, fail: () => reject(new Error('文件下载失败，请重试')) });
+    // 结果文件经接口一段一段取回来再拼上（每段不超过 900 KiB），不用 wx.downloadFile
+    const parts = result.parts > 0 ? result.parts : 1; const chunks = [];
+    const next = (index) => index >= parts ? Promise.resolve()
+      : api.advisorTaskPart(id, index).then((chunk) => { chunks.push(new Uint8Array(chunk)); return next(index + 1); });
+    return next(0).then(() => {
+      const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+      if (!total || (result.size && total !== result.size)) throw new Error('文件没有取完整，请重试');
+      const whole = new Uint8Array(total); let offset = 0;
+      chunks.forEach((chunk) => { whole.set(chunk, offset); offset += chunk.byteLength; });
+      return whole.buffer;
     });
   }).then((buffer) => exporter.save(buffer, 'xlsx').then((filePath) => {
     const task = options.task || {};

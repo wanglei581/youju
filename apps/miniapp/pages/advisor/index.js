@@ -21,8 +21,8 @@ Page({
       if (!this.visible || epoch !== this.epoch) return;
       if (res.enabled !== true) { this.setData({ loading: false, enabled: false, skills: [] }); return; }
       this.setData({ loading: false, enabled: true, showPassLink: !(res.pass && res.pass.active) && products.length > 0, passNotice: pay.toolStatus(res, 'compare').notice, skills: [
-        { kind: 'compare', title: '名单比对', description: '在已收录的公示/公布名单里查找客户' },
-        { kind: 'track', title: '在报项目跟进表', description: '按客户省份列出截止日期已核对、尚未截止的申报通知' },
+        { kind: 'compare', title: '批量名单比对', description: '在已收录的公示/公布名单里查找客户' },
+        { kind: 'track', title: '客户相关通知表', description: '按客户省份列出近 90 天发布的申报通知；截止日期只写人工核对过的' },
       ].map((skill) => Object.assign(skill, { remaining: Math.max(0, res.quota[skill.kind].limit - res.quota[skill.kind].used), statusLine: pay.toolStatus(res, skill.kind).line })) });
       if (res.enabled) this.loadRecent(epoch);
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, enabled: false, error: err.status === 404 ? '工具暂未开放' : err.message }); });

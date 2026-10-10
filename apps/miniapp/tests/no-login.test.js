@@ -322,9 +322,9 @@ const CLOSED_PAGES = [
     '../../utils/api.js': api, '../../utils/consent.js': consent,
     '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': { taskView: (task) => task }, '../../utils/tool-context.js': { read: () => null },
   }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 }, track: { limit: 1, used: 0, maxRows: 50 } } }), payProducts: () => Promise.resolve({ items: [] }), advisorTasks: () => Promise.resolve({ items: [] }) } },
-  { name: 'advisor-form', title: '名单比对', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
+  { name: 'advisor-form', title: '批量名单比对', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
-    '../../utils/advisor.js': { KINDS: { compare: '名单比对' }, consent: () => Promise.resolve(false) },
+    '../../utils/advisor.js': { KINDS: { compare: '批量名单比对' }, consent: () => Promise.resolve(false) },
     '../../utils/pay.js': require('../utils/pay.js'),
   }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 } } }) } },
   { name: 'advisor-tasks', title: '还没有任务', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
