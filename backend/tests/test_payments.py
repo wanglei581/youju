@@ -161,6 +161,7 @@ def create(setup_pay, **values):
         json={
             "product_id": "workbench_30d",
             "code": "test-login",
+            "terms_version": "pay-test",
             **values,
         },
     )
@@ -1264,6 +1265,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
             product_id="workbench_30d",
             price=100,
             env=1,
+            terms_version="pay-test",
             created_at=NOW + timedelta(seconds=n),
         )
         for n in range(25)
@@ -1589,3 +1591,42 @@ def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, sessi
     assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=payments.PASS_DAYS)
     status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
     assert status["pass"]["active"] is True
+
+
+def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
+    setup_pay, session, monkeypatch
+):
+    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段仍接在旧段后面，
+    不能从付款时间算起和旧段重叠（否则少给天数）。"""
+    first = delivered(setup_pay, session)
+    old = payments.order_pass(session, first)
+    response = create(setup_pay)
+    row = order(session, response)
+    # 第 20 天付款，旧段第 30 天结束；第 31 天才收到确认
+    paid_at = NOW + timedelta(days=20)
+    setup_pay[2].status = 2
+    setup_pay[2].paid_time = int(paid_at.timestamp())
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=31))
+    data = payload(row)
+    data["WeChatPayInfo"]["PaidTime"] = int(paid_at.timestamp())
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    new = payments.order_pass(session, session.get(PayOrder, row.id))
+    assert new.starts_at == old.ends_at
+    assert new.ends_at == old.ends_at + timedelta(days=payments.PASS_DAYS)
+
+
+def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):
+    """订单记下用户同意的《付费服务协议》版本；服务端配了现行版本时，带旧版本来的不让下单。"""
+    client, settings, _ = setup_pay
+    response = create(setup_pay, terms_version="pay-2026-10")
+    assert response.status_code == 201
+    assert order(session, response).terms_version == "pay-2026-10"
+    missing = client.post(
+        "/api/v1/pay/orders", headers=HEADERS, json={"product_id": "workbench_30d", "code": "c"}
+    )
+    assert missing.status_code == 422
+    settings.pay_terms_version = "pay-2026-11"
+    outdated = create(setup_pay, terms_version="pay-2026-10")
+    assert outdated.status_code == 409 and "已更新" in outdated.json()["detail"]
+    assert create(setup_pay, terms_version="pay-2026-11").status_code == 201

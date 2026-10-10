@@ -79,6 +79,9 @@ class Settings(BaseSettings):
 
     # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
     pay_enabled: bool = False
+    # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。配了以后，
+    # 下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）；不配只记录不比对。
+    pay_terms_version: str = ""
     xpay_offer_id: str = ""
     xpay_env: Literal[0, 1] = 1
     xpay_appkey_prod: SecretStr | None = None

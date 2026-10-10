@@ -942,6 +942,8 @@ class PayOrder(Base):
     product_id: Mapped[str] = mapped_column(String(128))
     price: Mapped[int] = mapped_column(Integer)
     env: Mapped[int] = mapped_column(Integer)
+    # 下单时用户勾选同意的《付费服务协议》版本
+    terms_version: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     wx_order_id: Mapped[str | None] = mapped_column(String(128))
     paid_fee: Mapped[int | None] = mapped_column(Integer)

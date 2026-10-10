@@ -343,12 +343,14 @@ def accept_payment(
         order.status, order.error = "manual", "用户已注销，需处理已付款订单"
         return True
     # 在用户锁下读最新的所有未收回段；未来已排定的段也算入顺延。
+    # 按付款时间比，不按确认时间：付款时旧的一段还没结束、确认却晚到（推送延迟、查单兜底）时，
+    # 新的一段仍要接在旧的后面，否则两段重叠、少给天数（Codex 复审，10/10）。
     latest = session.scalar(
         select(WorkbenchPass.ends_at)
         .where(
             WorkbenchPass.user_id == order.user_id,
             WorkbenchPass.revoked_at.is_(None),
-            WorkbenchPass.ends_at > stamp,
+            WorkbenchPass.ends_at > paid_time,
         )
         .order_by(WorkbenchPass.ends_at.desc())
         .limit(1)

@@ -43,7 +43,7 @@ function page(name, overrides = {}, options = {}) {
   const deps = {
     '../../utils/api.js': api, '../../utils/pay.js': pay,
     '../../utils/advisor.js': { ...require('../utils/advisor.js'), consent: () => Promise.resolve(options.consent !== false) },
-    '../../content/pay-terms.js': { final: options.final !== false, text: options.termsText || '正式正文' }, '../../content/legal.js': { final: true },
+    '../../content/pay-terms.js': { final: options.final !== false, version: 'pay-test', text: options.termsText || '正式正文' }, '../../content/legal.js': { final: true },
     '../../utils/consent.js': { loginOpen: () => options.loginOpen !== false, ensureConsent: () => Promise.resolve(true) },
     '../../utils/tool-context.js': { read: () => null }, '../../utils/subscribe.js': { remindOpen: () => false }, '../../utils/coverage.js': {},
   };
@@ -83,7 +83,7 @@ test('工具说明未同意先引导，不下单', async () => {
 });
 test('服务端确认开通，P19 和工具按钮；下单不含名单，不自动创建任务', async () => {
   const p = await purchase({ payOrder: () => Promise.resolve(ORDER), advisorStatus: () => Promise.resolve(status(1, true)) }); await buy(p);
-  assert.deepEqual(JSON.parse(JSON.stringify(p.calls.orders)), [{ product_id: PRODUCT.productId, code: 'code' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(p.calls.orders)), [{ product_id: PRODUCT.productId, code: 'code', terms_version: 'pay-test' }]);
   assert.deepEqual(Object.fromEntries(['mode', 'signData', 'paySig', 'signature'].map((key) => [key, p.calls.payments[0][key]])), { mode: pay.PAY_MODE, signData: 'data', paySig: 'sig', signature: 'user' });
   assert.match(p.text(), /已开通，使用期到 2026-11-08/); assert.equal(findAll(p.show(), tapsTo('tools')).length, 1); assert.equal(p.calls.tasks.length, 0);
   p.view.tools(); assert.equal(p.calls.urls.at(-1), '/pages/advisor/index'); p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay&orderId=41');
@@ -198,7 +198,7 @@ test('使用期在提交前过期，后端免费错误仍按 F1/F2 展示', asyn
 test('订单失败状态没有工具按钮，不把退款状态视为任务失败退款', async () => {
   for (const state of ['退款中', '已退款', '需人工处理', '已关闭']) {
     const p = await purchase({ payOrder: () => Promise.resolve({ ...ORDER, status: state }) }); await buy(p);
-    assert.equal(p.view.data.confirmed, false); assert.equal(p.view.data.busy, false); assert.equal(p.view.data.message, `订单状态：${state}`); assert.equal(p.view.data.payError, true);
+    assert.equal(p.view.data.confirmed, false); assert.equal(p.view.data.busy, false); assert.equal(p.view.data.message, state === '已关闭' ? pay.TEXT.closed : `订单状态：${state}`); assert.equal(p.view.data.payError, state !== '已关闭');
   }
 });
 test('购买页网络失败保留重试入口，没下单时问题入口无订单号', async () => {
@@ -209,4 +209,37 @@ test('先停轮询再执行微任务，不再发送查单请求', async () => {
   const timers = clock(); let fetched = 0;
   const poller = pay.createPoller({ fetch: () => { fetched += 1; return Promise.resolve(ORDER); }, onDone: () => assert.fail('不应返回'), timers, now: timers.now });
   poller.start(); poller.stop(); await flush(); assert.equal(fetched, 0); assert.equal(timers.size(), 0);
+});
+
+test('确认超时后再点支付：不下第二单，接着查上一笔；后来确认了显示已开通', async () => {
+  let paid = false;
+  const p = await purchase({ payOrder: () => Promise.resolve(paid ? ORDER : { status: '待支付' }) });
+  await buy(p); assert.equal(p.calls.orders.length, 1); assert.equal(p.calls.orders[0].terms_version, 'pay-test');
+  await p.timers.advance(60000); assert.equal(p.view.data.message, pay.TEXT.timeout); assert.equal(p.view.data.busy, false);
+  p.view.buy(); await flush(); assert.equal(p.calls.orders.length, 1); assert.equal(p.calls.payments.length, 1); assert.equal(p.view.data.busy, true);
+  await p.timers.advance(60000); assert.equal(p.view.data.message, pay.TEXT.unsettled); assert.equal(p.view.data.payError, false);
+  paid = true; p.view.buy(); await flush(); await p.timers.advance(2000);
+  assert.equal(p.calls.orders.length, 1); assert.equal(p.view.data.confirmed, true); assert.match(p.view.data.message, /已开通，使用期到/);
+});
+test('上一笔没确认的订单记在本机，重新进页面也不下第二单；订单已关闭或查不到后可以重新支付', async () => {
+  const store = {};
+  const wx = { getStorageSync: (k) => store[k], setStorageSync: (k, v) => { store[k] = v; }, removeStorageSync: (k) => { delete store[k]; } };
+  const first = await purchase({}, { wx }); await buy(first); await first.timers.advance(60000);
+  assert.equal(store['pay.unsettled'].orderId, 41);
+  let state = { status: '待支付' };
+  const again = await purchase({ payOrder: () => state.reject ? Promise.reject(Object.assign(new Error('没有'), { status: 404 })) : Promise.resolve(state) }, { wx });
+  await buy(again); assert.equal(again.calls.orders.length, 0); await again.timers.advance(60000); assert.equal(again.view.data.message, pay.TEXT.unsettled);
+  state = { status: '已关闭' }; again.view.buy(); await flush(); await again.timers.advance(2000);
+  assert.equal(again.view.data.message, pay.TEXT.closed); assert.equal(store['pay.unsettled'], undefined);
+  again.view.buy(); await flush(); assert.equal(again.calls.orders.length, 1);
+  // 换了账号查不到这张订单（404）：当作已关闭，不一直挡着
+  store['pay.unsettled'] = { orderId: 7, at: again.timers.now() };
+  const other = await purchase({ payOrder: () => Promise.reject(Object.assign(new Error('没有'), { status: 404 })) }, { wx });
+  await buy(other); await other.timers.advance(2000); assert.equal(other.view.data.message, pay.TEXT.closed); assert.equal(store['pay.unsettled'], undefined);
+});
+test('用户取消支付：几秒后放开，可以马上重新支付（会下新的一单）', async () => {
+  const p = await purchase({}, { cancel: true }); await buy(p);
+  assert.equal(p.view.data.message, pay.TEXT.cancelled); await p.timers.advance(6000);
+  assert.equal(p.view.data.busy, false); assert.equal(p.view.data.message, pay.TEXT.cancelled);
+  p.view.buy(); await flush(); assert.equal(p.calls.orders.length, 2);
 });

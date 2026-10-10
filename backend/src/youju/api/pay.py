@@ -60,6 +60,8 @@ class OrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_id: str = Field(min_length=1, max_length=128)
     code: str = Field(min_length=1, max_length=512, repr=False)
+    # 用户勾选同意的《付费服务协议》版本，随订单保存，日后有争议时能说明当时同意的是哪一版
+    terms_version: str = Field(min_length=1, max_length=40)
 
 
 @router.get("/products", dependencies=[Depends(require_enabled)])
@@ -87,6 +89,10 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     if sku is None or not settings.xpay_offer_id:
         raise HTTPException(status_code=404, detail="没有找到商品")
     price, _ = sku
+    if settings.pay_terms_version and body.terms_version != settings.pay_terms_version:
+        raise HTTPException(
+            status_code=409, detail="《付费服务协议》已更新，请重新阅读并同意后再付款"
+        )
     stamp = _stamp()
     # 和免费任务使用同一用户锁，防止并发下单绕过限制及与注销竞态。
     if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
@@ -125,6 +131,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         product_id=body.product_id,
         price=price,
         env=settings.xpay_env,
+        terms_version=body.terms_version,
         created_at=stamp,
         updated_at=stamp,
     )

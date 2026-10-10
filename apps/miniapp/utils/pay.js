@@ -4,6 +4,8 @@ const POLL_TIMEOUT = 60000;
 const PAY_MODE = 'short_series_goods';
 const TEXT = {
   ordering: '正在创建订单…', confirming: '正在确认支付结果…', cancelled: '已取消支付',
+  closed: '这笔订单已关闭，可以重新支付',
+  unsettled: '上一笔付款还在确认，先不要再付。如果已经扣款会自动开通；超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
   login: '微信登录没有完成，请重试', unsupported: '当前微信版本不支持这项支付，请升级微信后重试',
   timeout: '暂未确认到支付结果，请稍后到"我的 → 订单"查看；如已扣款会自动开通。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
   orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',

@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("product_id", sa.String(128), nullable=False),
         sa.Column("price", sa.Integer(), nullable=False),
         sa.Column("env", sa.Integer(), nullable=False),
+        sa.Column("terms_version", sa.String(40), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
         sa.Column("wx_order_id", sa.String(128), nullable=True),
         sa.Column("paid_fee", sa.Integer(), nullable=True),
