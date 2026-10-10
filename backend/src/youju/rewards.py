@@ -1,16 +1,19 @@
 """奖励与购买共用使用期；grant 由调用方提交，自动发放与补发独立提交并隔离失败。"""
 
+import hashlib
+import hmac
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju.advisor_tasks import BEIJING, _utc
 from youju.config import get_settings
-from youju.models import AdvisorTask, PassReward, User, WorkbenchPass
+from youju.models import AdvisorTask, DeadlineClue, PassReward, RewardClaim, User, WorkbenchPass
 
 log = logging.getLogger("youju.rewards")
 MONTH_LIMIT = 30
@@ -29,6 +32,10 @@ def enabled(settings) -> bool:
     )
 
 
+def referral_enabled(settings) -> bool:
+    return enabled(settings) and bool(getattr(settings, "referral_enabled", False))
+
+
 def month_bounds(stamp: datetime) -> tuple[datetime, datetime]:
     local = _utc(stamp).astimezone(BEIJING)
     start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -43,6 +50,27 @@ def monthly(session: Session, user_id: int, stamp: datetime):
     )
 
 
+def claim_pseudonym(session: Session, openid: str) -> str:
+    from youju.access_log import log_key
+
+    # 用途分离且保留完整 SHA256，不把访问日志编号当身份凭据。
+    return hmac.new(
+        log_key(session.get_bind()), b"reward_claim:" + openid.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def record_claim(session: Session, openid: str, kind: str, stamp: datetime) -> bool:
+    """唯一键串行化同一微信账号；和关系或发奖在同一事务提交。"""
+    return (
+        session.execute(
+            insert(RewardClaim)
+            .prefix_with("IGNORE")
+            .values(pseudonym=claim_pseudonym(session, openid), kind=kind, claimed_at=stamp)
+        ).rowcount
+        == 1
+    )
+
+
 def grant(
     session: Session,
     user_id: int,
@@ -51,7 +79,7 @@ def grant(
     ref_type: str,
     ref_id: int,
     stamp: datetime,
-) -> PassReward:
+) -> PassReward | None:
     if kind not in LABELS or type(days) is not int or days <= 0:
         raise ValueError("奖励类型或天数不支持")
     stamp = _utc(stamp)
@@ -68,6 +96,19 @@ def grant(
         )
     if existing is not None:
         return existing
+    claim_user = (
+        session.get(User, user_id)
+        if kind == "first_batch"
+        else (
+            session.get(User, ref_id)
+            if kind == "referral" and ref_type == "user_referral"
+            else None
+        )
+    )
+    if claim_user is not None and kind == "referral":
+        record_claim(session, claim_user.openid, "referred", claim_user.invited_at or stamp)
+    if claim_user is not None and not record_claim(session, claim_user.openid, kind, stamp):
+        return None
     rows = session.scalars(monthly(session, user_id, stamp)).all()
     actual = min(days, max(0, MONTH_LIMIT - sum(r.granted_days for r in rows)))
     note = None
@@ -148,13 +189,14 @@ def first_completion(
 ) -> dict[str, int]:
     """已持久化首次完成后单独发奖；两个奖励各自隔离失败，日志不含异常参数。"""
     result = {"granted": 0, "failed": 0}
-    if not enabled(settings or get_settings()):
+    settings = settings or get_settings()
+    if not enabled(settings):
         return result
     # 全程按编号锁双方用户，避免注销引荐人时自关联外键与另一方互相等待。
     user = session.get(User, user_id)
     if user is None or user.batch_completed_at is None:
         return result
-    inviter_id = user.invited_by_user_id
+    inviter_id = user.invited_by_user_id if referral_enabled(settings) else None
     session.rollback()
     for owner, kind, days, ref_type in (
         (user_id, "first_batch", 3, "user_first_batch"),
@@ -185,8 +227,10 @@ def first_completion(
                     PassReward.ref_type == ref_type, PassReward.ref_id == user_id
                 )
             )
-            if existing is None:
-                grant(session, owner, kind, days, ref_type, user_id, stamp)
+            if (
+                existing is None
+                and grant(session, owner, kind, days, ref_type, user_id, stamp) is not None
+            ):
                 result["granted"] += 1
             session.commit()
         except Exception:
@@ -238,6 +282,11 @@ def reconcile(session: Session, *, settings=None, stamp: datetime | None = None)
         report = first_completion(session, user_id, stamp, settings=settings)
         for key in result:
             result[key] += report[key]
+    from youju.deadline_clues import award_accepted
+
+    report = award_accepted(session, settings, stamp)
+    for key in result:
+        result[key] += report[key]
     return result
 
 
@@ -253,6 +302,23 @@ def anonymize(session: Session, user: User, stamp: datetime) -> None:
             select(User.id).where(User.id.in_(sorted(related))).order_by(User.id).with_for_update()
         )
     )
+    session.execute(
+        delete(DeadlineClue).where(
+            DeadlineClue.user_id == user.id, DeadlineClue.status == "pending"
+        )
+    )
+    session.execute(
+        update(DeadlineClue).where(DeadlineClue.user_id == user.id).values(user_id=None)
+    )
+    # 兼容已有凭据：注销前记录旧关系和首次奖励，开关关闭也不能丢失历史。
+    if user.invited_by_user_id is not None:
+        record_claim(session, user.openid, "referred", user.invited_at or stamp)
+    for kind, ref_type in (("first_batch", "user_first_batch"), ("referral", "user_referral")):
+        existing = session.scalar(
+            select(PassReward).where(PassReward.ref_type == ref_type, PassReward.ref_id == user.id)
+        )
+        if existing is not None:
+            record_claim(session, user.openid, kind, existing.granted_at)
     # 引荐关系断开，不收回另一方已经拿到的使用天数。
     session.execute(
         update(User)

@@ -28,11 +28,13 @@ GRANT INSERT, UPDATE, DELETE ON youju.advisor_usage TO 'youju_api'@'%';
 GRANT INSERT ON youju.advisor_file_trash TO 'youju_api'@'%';
 -- 访问日志（网络日志留存）：只能新增，不能改、删（归档和删除由 admin 服务做）
 GRANT INSERT ON youju.access_logs TO 'youju_api'@'%';
--- 访问日志用户编号的密钥：库里还没有时第一次用到的服务生成；只能新增，改不了已有的
-GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
+-- 程序密钥只能新增，值不能修改；线索队列用名称原值更新占用行锁。
+GRANT INSERT, UPDATE (name) ON youju.app_keys TO 'youju_api'@'%';
 
 -- 支付权限：仅迁移 0026 完成后，由创始人执行。金额记录不能由 API 删除。
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.workbench_passes TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
+GRANT INSERT ON youju.reward_claims TO 'youju_api'@'%';
+GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';

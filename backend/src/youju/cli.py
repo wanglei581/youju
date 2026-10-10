@@ -1010,12 +1010,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "notify", help="发送一次性订阅提醒；未设置 YOUJU_SEND_WX_MESSAGES=true 时只演练"
     ).set_defaults(func=_cmd_notify)
-    sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
-        func=_cmd_cleanup
-    )
-    sub.add_parser("rewards-reconcile", help="补发漏掉的首次批量功能和同行引荐奖励").set_defaults(
-        func=_cmd_rewards_reconcile
-    )
+    sub.add_parser(
+        "cleanup", help="按保存期限删除埋点、纠错、奖励资格凭据和已用完的订阅授权"
+    ).set_defaults(func=_cmd_cleanup)
+    sub.add_parser(
+        "rewards-reconcile", help="补发漏掉的首次批量功能、同行引荐和截止线索奖励"
+    ).set_defaults(func=_cmd_rewards_reconcile)
     sub.add_parser("pay-run", help="支付补单、退款及发货通知（关闭后处理未完结订单）").set_defaults(
         func=_cmd_pay
     )

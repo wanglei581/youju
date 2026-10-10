@@ -15,7 +15,15 @@ from youju.api import app as app_module
 from youju.backup import dump, restore
 from youju.config import Settings
 from youju.db import get_session
-from youju.models import AdvisorTask, Feedback, PassReward, PayOrder, User, WorkbenchPass
+from youju.models import (
+    AdvisorTask,
+    Feedback,
+    PassReward,
+    PayOrder,
+    RewardClaim,
+    User,
+    WorkbenchPass,
+)
 
 NOW = datetime(2026, 10, 10, 4, tzinfo=UTC)
 NEXT_MONTH = datetime(2026, 10, 31, 16, tzinfo=UTC)
@@ -31,6 +39,7 @@ def context(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         rewards_enabled=True,
+        referral_enabled=True,
         advisor_enabled=True,
         trust_wx_headers=True,
         cloud_env="test-env",
@@ -798,3 +807,85 @@ def test_migration_down_up_preserves_order_segment_and_unlinks_reward_task(sessi
         command.upgrade(config, "head")
         session.expire_all()
     assert session.get(WorkbenchPass, bought_id).order_id == order_id
+
+
+@pytest.mark.parametrize(
+    "reward_on,referral_on", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_referral_separate_switch(context, session, reward_on, referral_on):
+    client, settings = context
+    settings.rewards_enabled, settings.referral_enabled = reward_on, referral_on
+    inviter = user(session, "inviter", invite_code="fixed-code")
+    active = reward_on and referral_on
+    assert client.get("/api/v1/me/invite", headers=headers(inviter.openid)).status_code == (
+        200 if active else 404
+    )
+    assert client.get("/api/v1/me/invite").status_code == (401 if active else 404)
+    client.post(
+        "/api/v1/me/agreement",
+        headers=headers("new"),
+        json={"version": "2026-10", "invite_code": "fixed-code"},
+    )
+    newcomer = session.scalar(select(User).where(User.openid == "new"))
+    assert newcomer.invited_by_user_id == (inviter.id if active else None)
+    # 已经存在的关系也不能绕过单独开关；补发同样受控。
+    newcomer.invited_by_user_id, newcomer.batch_completed_at = inviter.id, NOW
+    session.commit()
+    rewards.first_completion(session, newcomer.id, NOW, settings=settings)
+    rewards.reconcile(session, settings=settings, stamp=NOW)
+    assert session.scalar(
+        select(func.count(PassReward.id)).where(PassReward.kind == "first_batch")
+    ) == int(reward_on)
+    assert session.scalar(
+        select(func.count(PassReward.id)).where(PassReward.kind == "referral")
+    ) == int(active)
+    assert Settings(_env_file=None).referral_enabled is False
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_reregister_not_new_and_claim_retention(context, session, complete):
+    from youju.notify import run_cleanup
+
+    client, settings = context
+    inviter = user(session, "inviter", invite_code="fixed-code")
+
+    def register():
+        assert (
+            client.post(
+                "/api/v1/me/agreement",
+                headers=headers("repeat"),
+                json={"version": "2026-10", "invite_code": "fixed-code"},
+            ).status_code
+            == 200
+        )
+        return session.scalar(select(User).where(User.openid == "repeat"))
+
+    newcomer = register()
+    assert newcomer.invited_by_user_id == inviter.id
+    if complete:
+        newcomer.batch_completed_at = NOW
+        session.commit()
+        assert (
+            rewards.first_completion(session, newcomer.id, NOW, settings=settings)["granted"] == 2
+        )
+    assert client.delete("/api/v1/me", headers=headers("repeat")).status_code == 204
+    session.expire_all()
+    newcomer = register()
+    assert newcomer.invited_by_user_id is None
+    newcomer.batch_completed_at = NOW
+    session.commit()
+    assert rewards.first_completion(session, newcomer.id, NOW, settings=settings)["granted"] == int(
+        not complete
+    )
+    claims = session.scalars(select(RewardClaim)).all()
+    assert len(claims) == (3 if complete else 2)
+    assert all(len(c.pseudonym) == 64 and "repeat" not in c.pseudonym for c in claims)
+    assert (
+        run_cleanup(
+            session, settings=settings, stamp=NOW + timedelta(days=180) - timedelta(microseconds=1)
+        )["reward_claims"]
+        == 0
+    )
+    assert run_cleanup(session, settings=settings, stamp=NOW + timedelta(days=180))[
+        "reward_claims"
+    ] == len(claims)

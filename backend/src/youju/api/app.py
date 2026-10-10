@@ -61,6 +61,7 @@ from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     URL_KEY_MAX,
     AICheck,
+    DeadlineClue,
     Document,
     DocumentDeadline,
     DocumentDetail,
@@ -414,6 +415,7 @@ class RepostSiblingOut(BaseModel):
 
 
 class PendingDeadlineOut(BaseModel):
+    deadline_clues: list[dict] = Field(default_factory=list)
     id: int
     document_id: int
     title: str
@@ -2508,6 +2510,110 @@ def _repost_context(session: Session, masters: list[int]) -> dict[int, dict]:
     return out
 
 
+@app.get("/api/admin/deadline-clues")
+def admin_deadline_clues(session: SessionDep, _admin: AdminDep) -> dict:
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        return {"enabled": False, "items": []}
+    items = []
+    for row in session.scalars(
+        select(DeadlineClue)
+        .where(DeadlineClue.status == "pending")
+        .order_by(DeadlineClue.submitted_at, DeadlineClue.id)
+    ):
+        doc = session.get(Document, row.document_id)
+        has_candidate = (
+            session.scalar(
+                select(DocumentDeadline.id)
+                .where(DocumentDeadline.document_id.in_(clues.document_group(session, doc.id)))
+                .limit(1)
+            )
+            is not None
+        )
+        items.append(
+            {
+                **clues.out(row),
+                "title": doc.title,
+                "url": doc.url,
+                "can_build_candidate": not has_candidate,
+            }
+        )
+    return {"enabled": True, "items": items}
+
+
+def _require_clues() -> None:
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@app.post("/api/admin/deadline-clues/{clue_id}/candidate", dependencies=[Depends(_require_clues)])
+def clue_candidate(clue_id: int, session: SessionDep, _admin: AdminDep, request: Request) -> dict:
+    from youju import deadline_clues as clues
+
+    clues.lock_queue(session)
+    clue = session.get(DeadlineClue, clue_id)
+    if clue is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    ids = clues.lock_documents(session, clue.document_id)
+    clue = session.scalar(
+        select(DeadlineClue)
+        .where(DeadlineClue.id == clue_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if clue is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if clue.status != "pending":
+        raise HTTPException(status_code=409, detail="线索已处理")
+    if (
+        session.scalar(
+            select(DocumentDeadline.id).where(DocumentDeadline.document_id.in_(ids)).limit(1)
+        )
+        is not None
+    ):
+        raise HTTPException(status_code=409, detail="这份通知已有候选，请在候选中核对")
+    fingerprint = hashlib.sha256(
+        f"user|{clue.kind}|{clue.date}|{clue.time}|{clue.quote}".encode()
+    ).hexdigest()
+    row = DocumentDeadline(
+        document_id=clue.document_id,
+        fingerprint=fingerprint,
+        kind=clue.kind,
+        candidate_date=clue.date,
+        candidate_time=clue.time,
+        evidence=clue.quote,
+        confidence="低",
+        origin="user",
+        status="pending",
+    )
+    session.add(row)
+    session.flush()
+    clue.deadline_id = row.id
+    session.commit()
+    _audit(request, "clue_candidate", clue_id=clue_id, deadline_id=row.id)
+    return {"deadline_id": row.id, "status": "pending"}
+
+
+@app.post("/api/admin/deadline-clues/{clue_id}/reject", dependencies=[Depends(_require_clues)])
+def reject_clue(clue_id: int, session: SessionDep, _admin: AdminDep, request: Request) -> dict:
+    from youju import deadline_clues as clues
+
+    clues.lock_queue(session)
+    row = session.scalar(select(DeadlineClue).where(DeadlineClue.id == clue_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="线索已处理")
+    row.status, row.processed_at = "rejected", v1_api.now()
+    session.commit()
+    _audit(request, "clue_reject", clue_id=clue_id)
+    return {"status": clues.STATUSES[row.status]}
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
@@ -2601,6 +2707,19 @@ def pending_deadlines(
         keyed = sorted(
             (pair for pair in keyed if after is None or pair[0] > after), key=lambda p: p[0]
         )[:limit]
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    clue_map = defaultdict(list)
+    if rewards.enabled(get_settings()):
+        ids = {member for _, (_, _, _, master) in keyed for member in group_ids(session, master)}
+        master_map = canonical_ids(session, ids)
+        for clue in session.scalars(
+            select(DeadlineClue)
+            .where(DeadlineClue.document_id.in_(ids), DeadlineClue.status == "pending")
+            .order_by(DeadlineClue.submitted_at, DeadlineClue.id)
+        ):
+            clue_map[master_map.get(clue.document_id, clue.document_id)].append(clues.out(clue))
     output = []
     for key, (d, doc, src, master_id) in keyed:
         if master_id != doc.id:
@@ -2615,6 +2734,7 @@ def pending_deadlines(
                 same = f"同组{'、'.join(dict.fromkeys(labels))}已核对过同一日期"
         output.append(
             PendingDeadlineOut(
+                deadline_clues=clue_map.get(master_id, []),
                 id=d.id,
                 document_id=doc.id,
                 title=doc.title,
@@ -2695,6 +2815,13 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
     row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到候选")
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    process_clues = rewards.enabled(get_settings())
+    if process_clues:
+        clues.lock_queue(session)
+        clues.lock_documents(session, row.document_id)
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="候选已核对")
@@ -2719,7 +2846,12 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         body.new_date or row.candidate_date,
         parsed_time,
     )
+    document_id = row.document_id
+    if process_clues and status == "approved":
+        clues.settle(session, row, row.reviewed_at)
     session.commit()
+    if process_clues and status == "approved":
+        clues.award_accepted(session, get_settings(), v1_api.now(), document_id)
     return {"status": status}
 
 

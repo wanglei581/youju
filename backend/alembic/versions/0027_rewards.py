@@ -15,6 +15,62 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.drop_constraint("ck_document_deadline_origin", "document_deadlines", type_="check")
+    op.create_check_constraint(
+        "ck_document_deadline_origin", "document_deadlines", "origin IN ('rule', 'ai', 'user')"
+    )
+    op.alter_column(
+        "document_deadlines",
+        "evidence",
+        existing_type=sa.String(120),
+        type_=sa.String(200),
+        existing_nullable=False,
+    )
+    op.create_table(
+        "deadline_clues",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL")),
+        sa.Column(
+            "document_id",
+            sa.Integer(),
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("kind", sa.String(32), nullable=False),
+        sa.Column("date", sa.Date(), nullable=False),
+        sa.Column("time", sa.Time(), nullable=True),
+        sa.Column("quote", sa.String(200), nullable=False),
+        sa.Column("status", sa.String(16), nullable=False),
+        sa.Column("submitted_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("processed_at", mysql.DATETIME(fsp=6)),
+        sa.Column(
+            "deadline_id", sa.Integer(), sa.ForeignKey("document_deadlines.id", ondelete="SET NULL")
+        ),
+        sa.CheckConstraint(
+            "status IN ('pending', 'accepted', 'rejected')", name="ck_deadline_clue_status"
+        ),
+        sa.CheckConstraint(
+            "kind IN ('企业申报截止', '推荐或审核截止', '材料报送截止', '其他')",
+            name="ck_deadline_clue_kind",
+        ),
+        mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_0900_bin",
+    )
+    op.create_index("ix_deadline_clues_status", "deadline_clues", ["status"])
+    op.create_index("ix_deadline_clues_user_status", "deadline_clues", ["user_id", "status"])
+    op.create_index("ix_deadline_clues_document_kind", "deadline_clues", ["document_id", "kind"])
+    op.create_table(
+        "reward_claims",
+        sa.Column("pseudonym", sa.String(64), primary_key=True),
+        sa.Column("kind", sa.String(20), primary_key=True),
+        sa.Column("claimed_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.CheckConstraint(
+            "kind IN ('first_batch', 'referred', 'referral')", name="ck_reward_claim_kind"
+        ),
+        mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_0900_bin",
+    )
+    op.create_index("ix_reward_claims_claimed", "reward_claims", ["claimed_at"])
     op.add_column("users", sa.Column("invite_code", sa.String(16), nullable=True))
     op.create_unique_constraint("uq_users_invite_code", "users", ["invite_code"])
     op.add_column("users", sa.Column("invited_by_user_id", sa.Integer(), nullable=True))
@@ -60,6 +116,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_table("deadline_clues")
+    # 未上线迁移的回退：用户候选不能塞进旧 origin 约束，旧证据列只容 120 字。
+    op.execute("DELETE FROM document_deadlines WHERE origin = 'user'")
+    op.execute(
+        "UPDATE document_deadlines SET evidence = LEFT(evidence, 120) WHERE CHAR_LENGTH(evidence) > 120"
+    )
+    op.alter_column(
+        "document_deadlines",
+        "evidence",
+        existing_type=sa.String(200),
+        type_=sa.String(120),
+        existing_nullable=False,
+    )
+    op.drop_constraint("ck_document_deadline_origin", "document_deadlines", type_="check")
+    op.create_check_constraint(
+        "ck_document_deadline_origin", "document_deadlines", "origin IN ('rule', 'ai')"
+    )
+    op.drop_table("reward_claims")
     # 奖励段没有订单，先删除；任务 pass_id 由外键置空。
     op.execute("DELETE FROM workbench_passes WHERE reward_id IS NOT NULL")
     op.drop_constraint("ck_workbench_pass_origin", "workbench_passes", type_="check")

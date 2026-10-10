@@ -21,6 +21,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import (
+    DeadlineClue,
     Document,
     Event,
     Feedback,
@@ -321,7 +322,160 @@ def reward_history(session: SessionDep, user: UserDep) -> dict:
     }
 
 
-@router.get("/me/invite", dependencies=[Depends(_require_rewards)])
+class DeadlineClueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: int = Field(gt=0, strict=True)
+    kind: Literal["企业申报截止", "推荐或审核截止", "材料报送截止", "其他"]
+    deadline_date: date = Field(alias="date")
+    deadline_time: str | None = Field(default=None, alias="time")
+    quote: str
+
+    @field_validator("deadline_date", mode="before")
+    @classmethod
+    def valid_date(cls, value):
+        if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None:
+            raise ValueError("日期格式应为 YYYY-MM-DD")
+        return value
+
+    @field_validator("quote")
+    @classmethod
+    def valid_quote(cls, value):
+        value = value.strip()
+        if not 6 <= len(value) <= 200:
+            raise ValueError("原文句子须为 6–200 字")
+        return value
+
+    @field_validator("deadline_time")
+    @classmethod
+    def valid_time(cls, value):
+        if value is not None and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
+            raise ValueError("时间格式应为 HH:MM")
+        return value
+
+
+def _validate_clue_document(
+    session: Session, document_id: int, day: date, *, locked: bool = False
+) -> None:
+    from youju.classify import effective_kind
+
+    stmt = (
+        v1._base()
+        .where(Document.id == document_id)
+        .with_only_columns(Document)
+        .execution_options(populate_existing=True)
+    )
+    if locked:
+        stmt = stmt.with_for_update()
+    doc = session.scalar(stmt)
+    if doc is None or effective_kind(doc.title, doc.kind_override) != "申报通知":
+        raise HTTPException(status_code=422, detail="只接受公开申报通知的截止线索")
+    if doc.publish_date is None:
+        raise HTTPException(status_code=422, detail="这份通知的发布日期尚不明确")
+    # 按日历周年计算，闰日的第三年以二月末为界。
+    upper = (
+        doc.publish_date.replace(year=doc.publish_date.year + 3, day=28)
+        if doc.publish_date.month == 2 and doc.publish_date.day == 29
+        else doc.publish_date.replace(year=doc.publish_date.year + 3)
+    )
+    if not doc.publish_date <= day <= upper:
+        raise HTTPException(status_code=422, detail="日期须在通知发布日至发布后三年之间")
+
+
+@router.post("/me/deadline-clues", status_code=201, dependencies=[Depends(_require_rewards)])
+def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDep) -> dict:
+    from datetime import time
+
+    from youju import deadline_clues as clues
+
+    document_id = canonical_ids(session, [body.document_id]).get(body.document_id, body.document_id)
+    _validate_clue_document(session, document_id, body.deadline_date)
+    quote = v1.redact_sensitive(_mask_feedback(body.quote))
+    try:
+        passed = check_feedback(user.openid, quote)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise HTTPException(status_code=503, detail="内容安全校验暂不可用") from exc
+    if not passed:
+        raise HTTPException(status_code=422, detail="内容可能不合规，请修改后再提交")
+    # 校验网络请求不持行锁；之后串行检查容量与最新核对结果。
+    user_id = user.id
+    session.rollback()
+    clues.lock_queue(session)
+    locked_user = session.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_user is None:
+        raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
+    current_user(locked_user)
+    clues.lock_documents(session, document_id)
+    _validate_clue_document(session, document_id, body.deadline_date, locked=True)
+    if any(d.kind == body.kind for d in v1._approved(session, [document_id]).get(document_id, [])):
+        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
+    if clues.pending_count(session) >= 50:
+        raise HTTPException(status_code=409, detail="线索暂时收满了，过几天再来")
+    if (
+        session.scalar(
+            select(DeadlineClue.id).where(
+                DeadlineClue.user_id == user.id,
+                DeadlineClue.document_id == document_id,
+                DeadlineClue.kind == body.kind,
+                DeadlineClue.status == "pending",
+            )
+        )
+        is not None
+    ):
+        raise HTTPException(status_code=409, detail="你已经提交过这项线索，请等核对结果")
+    if clues.pending_count(session, user.id) >= 20:
+        raise HTTPException(status_code=409, detail="你已有 20 条待核对线索，请等核对结果")
+    row = DeadlineClue(
+        user_id=user.id,
+        document_id=document_id,
+        kind=body.kind,
+        date=body.deadline_date,
+        time=time.fromisoformat(body.deadline_time) if body.deadline_time else None,
+        quote=quote,
+        status="pending",
+        submitted_at=v1.now(),
+    )
+    session.add(row)
+    session.commit()
+    return clues.out(row)
+
+
+@router.get("/me/deadline-clues")
+def my_deadline_clues(session: SessionDep, user: UserDep) -> dict:
+    from youju import deadline_clues as clues
+
+    rows = session.scalars(
+        select(DeadlineClue)
+        .where(DeadlineClue.user_id == user.id)
+        .order_by(DeadlineClue.submitted_at.desc(), DeadlineClue.id.desc())
+        .limit(50)
+    )
+    return {"items": [clues.out(row) for row in rows]}
+
+
+@router.delete("/me/deadline-clues/{clue_id}", status_code=204)
+def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) -> None:
+    row = session.scalar(select(DeadlineClue).where(DeadlineClue.id == clue_id).with_for_update())
+    if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="只能删除待核对的线索")
+    session.delete(row)
+    session.commit()
+
+
+def _require_referral() -> None:
+    from youju import rewards
+
+    if not rewards.referral_enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@router.get("/me/invite", dependencies=[Depends(_require_referral)])
 def invite_status(session: SessionDep, user: UserDep) -> dict:
     from youju import rewards
 
@@ -364,13 +518,17 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
 
     inviter = None
     if (
-        rewards.enabled(get_settings())
+        rewards.referral_enabled(get_settings())
         and body.invite_code
         and session.scalar(select(User.id).where(User.openid == request_openid(request))) is None
     ):
         inviter = session.scalar(
             select(User.id).where(User.invite_code == body.invite_code).with_for_update()
         )
+    if inviter is not None and not rewards.record_claim(
+        session, request_openid(request), "referred", stamp
+    ):
+        inviter = None
     # 已有用户时 LAST_INSERT_ID(id) 让 lastrowid 返回已有那一行的编号
     row_id = session.execute(
         insert(User)
@@ -458,6 +616,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "subscriptionsTotal": 0,
         "feedback": [],
         "feedbackTotal": 0,
+        "deadlineClues": [],
+        "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
         "retention": {
@@ -471,6 +631,21 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     if user is None:
         return JSONResponse(result)
 
+    from youju import deadline_clues as clues
+
+    result["deadlineCluesTotal"] = (
+        session.scalar(select(func.count(DeadlineClue.id)).where(DeadlineClue.user_id == user.id))
+        or 0
+    )
+    result["deadlineClues"] = [
+        clues.out(row)
+        for row in session.scalars(
+            select(DeadlineClue)
+            .where(DeadlineClue.user_id == user.id)
+            .order_by(DeadlineClue.submitted_at.desc(), DeadlineClue.id.desc())
+            .limit(500)
+        )
+    ]
     from youju.models import AdvisorTask
 
     result["advisorTasksTotal"] = (
