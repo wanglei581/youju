@@ -716,7 +716,35 @@ def _cmd_advisor_run(_: argparse.Namespace) -> int:
 
     with session_factory()() as session:
         report = run_advisor_tasks(session)
-    print("顾问任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
+    print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
+    return 0
+
+
+def _cmd_pay(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    from youju import payments
+    from youju.config import get_settings
+    from youju.xpay import XPayClient
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    day = payments.advisor_tasks.usage_day(stamp) - timedelta(days=1)
+    with session_factory()() as session:
+        # 支付开关只停新下单：关闭后仍处理未完结订单；没有待办时只查本地库，不访问微信。
+        if args.command == "pay-reconcile":
+            if not payments.should_reconcile(session, settings, day):
+                return 0
+        elif not payments.has_work(session, settings):
+            return 0
+        with httpx.Client(trust_env=False) as http:
+            client = XPayClient(settings, http)
+            if args.command == "pay-reconcile":
+                payments.download_reconcile(session, day, client, stamp)
+            else:
+                payments.run_payments(session, settings=settings, client=client, stamp=stamp)
     return 0
 
 
@@ -976,6 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权").set_defaults(
         func=_cmd_cleanup
     )
+    sub.add_parser("pay-run", help="支付补单、退款及发货通知（关闭后处理未完结订单）").set_defaults(
+        func=_cmd_pay
+    )
+    sub.add_parser(
+        "pay-reconcile", help="前一天支付日账单对账（关闭后只在那天有本地订单时对账）"
+    ).set_defaults(func=_cmd_pay)
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )

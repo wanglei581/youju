@@ -123,7 +123,7 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch):
     add(national, "n", "国家数字化申报通知", 5)
     add(beijing, "b", "北京专精特新申报通知", 10, "贷款贴息")
     add(beijing, "late", "北京远期申报通知", 31)
-    add(beijing, "pending", "北京未核对通知", 5, status="pending")
+    add(beijing, "pending", "北京未核对申报通知", 5, status="pending")
     session.commit()
 
     radar = v1._report_payload(session, 30, "", "", "", 1, 100)
@@ -138,9 +138,77 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch):
     by_name = {client.customer_name: client for client in report.clients}
     beijing_items = by_name["北京客户"].items
     # 跟进表列全部未截止项目；30 天内的部分与截止雷达同口径（验收 A2）
-    assert len([item for item in beijing_items if item.remaining_days <= 30]) == radar["total"]
-    assert [item.title for item in beijing_items][-1] == "北京远期申报通知"
+    assert (
+        len(
+            [
+                item
+                for item in beijing_items
+                if item.remaining_days is not None and item.remaining_days <= 30
+            ]
+        )
+        == radar["total"]
+    )
+    assert [item.title for item in beijing_items][-1] == "北京未核对申报通知"
     # 每一行的剩余天数是它自己的，不是最后一份通知的
-    assert [item.remaining_days for item in beijing_items] == [5, 10, 31]
+    assert [item.remaining_days for item in beijing_items] == [5, 10, 31, None]
     assert [item.title for item in by_name["关键词客户"].items] == ["北京专精特新申报通知"]
     assert [item.title for item in by_name["上海客户"].items] == ["国家数字化申报通知"]
+
+
+def test_track_without_verified_deadlines_and_excludes_only_closed(session, monkeypatch, tmp_path):
+    stamp = datetime(2026, 10, 9, 12, tzinfo=BJ)
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+    source = Source(
+        level="省级",
+        province="北京",
+        dept="科技",
+        dept_full_name="北京科技部门",
+        column_name="通知",
+        url="https://example.gov.cn/notices",
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+
+    def add(key, age):
+        document = Document(
+            source_id=source.id,
+            title=f"{key}项目申报通知",
+            url=f"https://example.gov.cn/{key}",
+            url_key=f"example/{key}",
+            publish_date=stamp.date() - timedelta(days=age),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        session.add(document)
+        session.flush()
+        return document
+
+    recent = add("近期待核对", 1)
+    boundary = add("90天", 90)
+    add("91天", 91)
+    closed = add("已截止", 1)
+    session.commit()
+    report = track_clients(session, [CustomerProfile("客户", "北京")])
+    assert {item.document_id for item in report.items} == {recent.id, boundary.id, closed.id}
+    assert all(
+        item.as_dict()["deadline_status"] == "截止未核对，请以原文为准" for item in report.items
+    )
+    output = tmp_path / "unknown.xlsx"
+    export_track_excel(report, output)
+    assert load_workbook(output)["跟进表"]["F3"].value == "截止未核对，请以原文为准"
+    session.add(
+        DocumentDeadline(
+            document_id=closed.id,
+            fingerprint="closed",
+            kind="企业申报截止",
+            candidate_date=stamp.date() - timedelta(days=1),
+            approved_date=stamp.date() - timedelta(days=1),
+            evidence="截止",
+            confidence="高",
+            status="approved",
+        )
+    )
+    session.commit()
+    report = track_clients(session, [CustomerProfile("客户", "北京")])
+    assert {item.document_id for item in report.items} == {recent.id, boundary.id}

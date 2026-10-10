@@ -18,6 +18,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select, text
@@ -39,6 +40,8 @@ from youju.api.advisor import router as advisor_router
 from youju.api.attachments import router as attachments_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
+from youju.api.pay import push_router
+from youju.api.pay import router as pay_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import (
@@ -88,6 +91,9 @@ app.include_router(exports_router)
 app.include_router(me_router)
 app.include_router(attachments_router)
 
+app.include_router(pay_router)
+app.include_router(push_router)
+
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
     _handler = logging.StreamHandler()
@@ -130,6 +136,16 @@ def _printable(text: str, limit: int) -> str:
     return cleaned if len(cleaned) <= limit else cleaned[:limit] + "…"
 
 
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """请求校验失败只返回字段位置和提示，不回显 input（可能是客户名单、企业信息或文件内容）。"""
+    detail = [
+        {"loc": list(error.get("loc", ())), "msg": str(error.get("msg", ""))[:300]}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 @app.exception_handler(Exception)
 async def _server_error(request: Request, exc: Exception) -> JSONResponse:
     """没被处理的异常：返回 500，并提醒到群里（完整堆栈由 uvicorn 记录，这里只记一行）。
@@ -153,8 +169,20 @@ async def _role_guard(request: Request, call_next):
     （早期样机的 /api/documents 等不对外）。"""
     role = getattr(get_settings(), "role", "all")
     path = request.url.path
+    # 推送路径不受支付开关控制（配置检测和非支付消息要能应答），由路由自己按服务角色隐藏。
+    # 支付开关只停卖：商品和下单在关闭时一律 404（请求体不合法也是 404）；
+    # 订单列表、详情、自助退款不拦——已经付款的用户还要能看订单、退款。
+    if path == "/api/v1/pay/products" or (
+        path == "/api/v1/pay/orders" and request.method == "POST"
+    ):
+        from youju.payments import enabled as pay_enabled
+
+        if not pay_enabled(get_settings()):
+            return JSONResponse(status_code=404, content={"detail": "没有找到接口"})
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
-    mini_path = path.startswith("/api/v1/")
+    mini_path = path.startswith("/api/v1/") or path == getattr(
+        get_settings(), "wx_push_path", "/api/wx/push"
+    )
     blocked = (role == "api" and not (mini_path or path == "/health")) or (
         role == "admin" and not (admin_path or path == "/health")
     )
@@ -1102,8 +1130,16 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         AdvisorTask.kind.in_(("interpret", "clause")),
         AdvisorTask.created_at >= datetime.now(UTC) - timedelta(days=7),
     )
+    from youju.payments import overview as pay_overview
+
+    pay = pay_overview(session)
     result = {
+        "pay": pay,
         "todos": {
+            "pay": pay["manual"]
+            + pay["differences"]
+            + pay["reconciliation_pending"]
+            + pay["reconciliation_failed"],
             "deadlines": pending_all,
             "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],

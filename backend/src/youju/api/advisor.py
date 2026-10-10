@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -13,16 +16,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
+from youju import payments
 from youju.ai import interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
-from youju.api.me import UserDep, request_openid
+from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.backup import BackupError
+from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, Document, Source, User
+from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
+from youju.track import read_customer_profiles
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -37,7 +43,7 @@ async def _enabled(request: Request) -> None:
         return
     kind = None
     if request.method == "POST" and request.url.path.endswith("/tasks"):
-        _body_size(request)
+        await _body_size(request)
         try:
             raw = await request.json()
             kind = raw.get("kind") if isinstance(raw, dict) else None
@@ -70,7 +76,7 @@ async def _enabled(request: Request) -> None:
             raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _body_size(request: Request) -> None:
+async def _body_size(request: Request) -> None:
     raw = request.headers.get("content-length")
     if raw:
         try:
@@ -78,6 +84,14 @@ def _body_size(request: Request) -> None:
                 raise HTTPException(status_code=413, detail="请求内容不能超过 100 KiB")
         except ValueError:
             raise HTTPException(status_code=413, detail="请求内容大小无效") from None
+    if len(await request.body()) > service.MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="请求内容不能超过 100 KiB")
+
+
+class FileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    content_base64: str
 
 
 class TaskIn(BaseModel):
@@ -86,6 +100,7 @@ class TaskIn(BaseModel):
     kind: Literal["compare", "track", "interpret", "clause"]
     # 额度超限按 429 返回，不能由 Pydantic 的 422 max_length 提前截断。
     rows: list[Any] | None = Field(default=None, min_length=1)
+    file: FileIn | None = None
     doc_id: int | None = Field(default=None, gt=0, strict=True)
 
     company: Company | None = None
@@ -93,20 +108,18 @@ class TaskIn(BaseModel):
     @model_validator(mode="after")
     def validate_input(self) -> TaskIn:
         if self.kind in AI_KINDS:
-            if self.doc_id is None or "rows" in self.model_fields_set:
+            if self.doc_id is None or {"rows", "file"} & self.model_fields_set:
                 raise ValueError(
                     "解读仅接受 doc_id"
                     if self.kind == "interpret"
-                    else "条款对照必须提供 doc_id，不能提供 rows"
+                    else "条款对照必须提供 doc_id，不能提供 rows 或 file"
                 )
             if self.kind == "interpret" and "company" in self.model_fields_set:
                 raise ValueError("解读仅接受 doc_id")
-        elif (
-            self.rows is None
-            or "doc_id" in self.model_fields_set
-            or "company" in self.model_fields_set
-        ):
-            raise ValueError("数据工具必须提供 rows")
+        elif {"doc_id", "company"} & self.model_fields_set:
+            raise ValueError("数据工具不接受 doc_id 或 company")
+        elif (self.rows is None) == (self.file is None):
+            raise ValueError("请只提供 rows 或 file 中的一项")
         return self
 
     @field_validator("rows")
@@ -120,6 +133,88 @@ class TaskIn(BaseModel):
         if kind == "track" and any(not isinstance(row, dict) for row in rows):
             raise ValueError("跟进表的 rows 必须是客户画像对象")
         return rows
+
+
+def _file_rows(body: TaskIn) -> list[Any]:
+    upload = body.file
+    if upload is None:
+        return body.rows
+    if Path(upload.name).suffix.lower() not in (".xlsx", ".csv"):
+        raise HTTPException(status_code=422, detail="只支持 .xlsx 和 .csv 文件")
+    try:
+        content = base64.b64decode(upload.content_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="文件编码无效，请重新选择文件") from None
+    if len(content) > service.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=422, detail="文件不能超过 60 KB")
+    try:
+        # 完整 ZIP 签名和工作簿结构都成立才按 XLSX 读；PK 开头的文本仍是 CSV。
+        suffix = ".xlsx" if validate_xlsx(content) else ".csv"
+        if suffix == ".csv" and (
+            b"\x00" in content or any(value < 32 and value not in (9, 10, 13) for value in content)
+        ):
+            raise CompareInputError("文件内容不是 CSV 或 XLSX 表格")
+        if body.kind == "compare":
+            rows = read_customer_file("upload" + suffix, content=content)
+        else:
+            profiles = read_customer_profiles("upload" + suffix, content=content)
+            rows = [
+                {
+                    "name": row.name,
+                    "province": row.province,
+                    "keywords": list(row.keywords),
+                    "supports": list(row.supports),
+                }
+                for row in profiles
+            ]
+        if not rows or (body.kind == "compare" and not any(rows)):
+            raise CompareInputError("文件里没有可提交的客户行")
+        return rows
+    except Exception as exc:  # noqa: BLE001 - 文件解析库的异常统一返回中文
+        # CSV/XLSX 库的技术异常不暴露给用户；业务异常保留中文原因。
+        detail = str(exc) if isinstance(exc, CompareInputError) else "无法读取表格，请检查文件内容"
+        raise HTTPException(status_code=422, detail=detail) from None
+
+
+def _upload_consent(user: User) -> None:
+    if (
+        user.advisor_agreement_at is None
+        or user.advisor_agreement_version != service.ADVISOR_AGREEMENT_VERSION
+    ):
+        raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
+
+
+@router.get("/status", dependencies=[Depends(_enabled)])
+def status(session: SessionDep, user: KnownUserDep) -> dict:
+    if not get_settings().advisor_enabled:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    stamp = _stamp()
+    day = service.usage_day(stamp)
+    usage = service.usage_counts(session, user.id, day) if user else {}
+    ticket = payments.current_pass(session, user.id, stamp) if user else None
+    return {
+        "enabled": True,
+        "pass": payments.pass_status(session, user.id, stamp)
+        if user
+        else {"active": False, "expiresAt": None},
+        "quota": {
+            kind: {
+                "used": usage.get(kind, 0),
+                "limit": service.usage_limit(kind),
+                "maxRows": 500 if ticket else service.MAX_ROWS,
+            }
+            for kind in ("compare", "track")
+        },
+    }
+
+
+@router.post("/preview", dependencies=[Depends(_enabled), Depends(_body_size)])
+def preview(body: TaskIn, user: UserDep) -> dict:
+    _authorize(body.kind, user)
+    if body.kind in AI_KINDS:
+        raise HTTPException(status_code=422, detail="预览只支持 compare 或 track")
+    _upload_consent(user)
+    return {"rowCount": len(_file_rows(body))}
 
 
 def _stamp() -> datetime:
@@ -194,13 +289,7 @@ def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) ->
 def capabilities(session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     day = service.usage_day(_stamp())
-    counts = dict(
-        session.execute(
-            select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
-                AdvisorUsage.user_id == user.id, AdvisorUsage.day == day
-            )
-        ).all()
-    )
+    counts = service.usage_counts(session, user.id, day)
     data_enabled = settings.advisor_enabled
     ai_enabled = interpret.enabled(settings, user)
     return {
@@ -208,7 +297,8 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "enabled": data_enabled,
             "features": ["compare", "track"] if data_enabled else [],
             "remaining": {
-                k: max(0, 1 - counts.get(k, 0)) if data_enabled else 0 for k in ("compare", "track")
+                k: max(0, service.usage_limit(k) - counts.get(k, 0)) if data_enabled else 0
+                for k in ("compare", "track")
             },
         },
         "ai_advisor": {
@@ -257,31 +347,75 @@ def create_task(
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, session, include_result=False)
-    if body.rows is not None and len(body.rows) > service.MAX_ROWS:
-        label = "名单比对" if body.kind == "compare" else "跟进表"
-        raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
+    if body.file is not None:
+        _upload_consent(user)
     stamp = _stamp()
-    if not service.reserve_usage(session, user.id, body.kind, service.usage_day(stamp)):
-        label = {
-            "compare": "名单比对",
-            "track": "跟进表",
-            "interpret": "政策解读",
-            "clause": "条款对照",
-        }[body.kind]
+    ticket = (
+        payments.current_pass(session, user.id, stamp, lock=True)
+        if body.kind not in AI_KINDS
+        else None
+    )
+    try:
+        rows = _file_rows(body) if body.kind not in AI_KINDS else None
+    except HTTPException as exc:
+        if exc.status_code == 422 and isinstance(exc.detail, str) and "最多 500 行" in exc.detail:
+            limit = 500 if ticket else service.MAX_ROWS
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT",
+                    "message": f"每次最多提交 {limit} 行",
+                },
+            ) from None
+        raise
+    if rows is not None:
+        limit = 500 if ticket else service.MAX_ROWS
+        if len(rows) > limit:
+            code = "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT"
+            raise HTTPException(
+                status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
+            )
+    # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
+    # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
+    fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
+    reserved = fits_free and service.reserve_usage(
+        session, user.id, body.kind, service.usage_day(stamp)
+    )
+    if reserved:
+        ticket = None
+    if ticket is None and not reserved:
+        if body.kind not in AI_KINDS:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "FREE_MONTHLY_LIMIT",
+                    "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                },
+            )
+        label = "政策解读" if body.kind == "interpret" else "条款对照"
         raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
     task = AdvisorTask(
         user_id=user.id,
+        pass_id=ticket.id if ticket else None,
+        usage_source="pass" if ticket else "free",
         kind=body.kind,
         status="queued",
-        input_rows=body.rows,
+        input_rows=rows,
         input_json=input_json,
-        row_count=len(body.rows) if body.rows is not None else 0,
+        row_count=len(rows) if rows is not None else 0,
         idempotency_key=key,
         created_at=stamp,
         expires_at=stamp + service.FILE_RETENTION,
     )
     session.add(task)
     try:
+        session.flush()
+        if ticket:
+            ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
+                task.id,
+                stamp,
+                None,
+            )
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -391,7 +525,8 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
 
 @router.get("/tasks/{task_id}", dependencies=[Depends(_enabled)])
 def get_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
-    return _out(_owned(session, user, task_id), session)
+    task = _owned(session, user, task_id)
+    return _out(task, session)
 
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
@@ -401,6 +536,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
         task.status = "cancelled"
         task.finished_at = _stamp()
         task.error = "用户已取消"
+        service.record_pass_completion(session, task)
         service.release_usage(session, task)
         session.commit()
     elif task.status != "cancelled":

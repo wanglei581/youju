@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime
 from time import perf_counter
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import insert
 
@@ -81,13 +82,13 @@ def test_file_reading_headers_and_encodings(tmp_path):
 
 def test_file_limits(tmp_path):
     path = tmp_path / "too-many.csv"
-    path.write_text("企业名称\n" + "\n".join(f"公司{i}" for i in range(201)), encoding="utf-8")
+    path.write_text("企业名称\n" + "\n".join(f"公司{i}" for i in range(501)), encoding="utf-8")
     try:
         read_customer_file(path)
     except CompareInputError as exc:
-        assert "200" in str(exc)
+        assert "500" in str(exc)
     else:
-        raise AssertionError("应拒绝超过 200 行")
+        raise AssertionError("应拒绝超过 500 行")
 
 
 def test_compare_deduplicates_groups_and_excludes_private(session):
@@ -316,3 +317,39 @@ def test_compare_50_customers_with_20000_entries_under_five_seconds(session):
     assert elapsed < 5, f"名单比对耗时 {elapsed:.2f}s"
     assert len(report.rows) == 50
     assert all(row.status == "命中" and len(row.matches) == 1 for row in report.rows)
+
+
+def test_csv_preserves_quoted_newlines():
+    content = '企业名称\r\n"第一行\r\n第二行公司"\r\n'.encode()
+    assert read_customer_file("clients.csv", content=content) == ["第一行\r\n第二行公司"]
+
+
+@pytest.mark.parametrize("text", ['企业名称\n"未闭合公司', '企业名称\n"甲公司"多余内容'])
+def test_csv_malformed_quotes_return_chinese_reason(text):
+    with pytest.raises(CompareInputError, match="CSV 格式有误"):
+        read_customer_file("clients.csv", content=text.encode())
+
+
+def test_xlsx_rejects_overlong_cell_reference(tmp_path):
+    """超长列坐标直接报错，不做大整数计算。"""
+    import zipfile
+
+    import pytest
+    from openpyxl import Workbook
+
+    from youju.compare import CompareInputError, read_customer_file
+
+    good = tmp_path / "good.xlsx"
+    book = Workbook()
+    book.active["A1"] = "企业名称"
+    book.active["A2"] = "演示科技有限公司"
+    book.save(good)
+    bad = tmp_path / "bad.xlsx"
+    with zipfile.ZipFile(good) as src, zipfile.ZipFile(bad, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet"):
+                data = data.replace(b'r="A2"', b'r="' + b"A" * 5000 + b'2"')
+            dst.writestr(item, data)
+    with pytest.raises(CompareInputError, match="坐标无效"):
+        read_customer_file(bad)

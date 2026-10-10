@@ -841,14 +841,26 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     finally:
         book.close()
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasks"][0]["status"] == "done"
+    for n in (2, 3):
+        extra = _json(
+            j.client.post(
+                "/api/v1/advisor/tasks", headers={"Idempotency-Key": f"{kind}-{n}"}, json=body
+            ),
+            202,
+        )
+        # 已完成任务删除后仍占额度，任务列表留给原闭环验证。
+        row = j.session.get(AdvisorTask, extra["id"])
+        row.status = "done"
+        j.session.commit()
+        assert j.client.delete(f"/api/v1/advisor/tasks/{extra['id']}").status_code == 204
     limited = j.client.post(
-        "/api/v1/advisor/tasks", headers={"Idempotency-Key": f"{kind}-second"}, json=body
+        "/api/v1/advisor/tasks", headers={"Idempotency-Key": f"{kind}-blocked"}, json=body
     )
-    assert _json(limited, 429)["detail"].endswith("今天的免费额度已用完，请明天再试")
+    assert _json(limited, 429)["detail"]["code"] == "FREE_MONTHLY_LIMIT"
     assert j.client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
     assert storage == {} and _json(j.client.get("/api/v1/advisor/tasks"))["items"] == []
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasksTotal"] == 0
-    # 删已完成任务不能刷出当天新额度。
+    # 删已完成任务不能刷出当前周期的新额度。
     assert (
         j.client.post(
             "/api/v1/advisor/tasks", headers={"Idempotency-Key": f"{kind}-deleted"}, json=body

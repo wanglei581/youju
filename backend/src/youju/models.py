@@ -718,6 +718,8 @@ class User(Base):
     last_visited_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     agreement_version: Mapped[str | None] = mapped_column(String(20))
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
+    advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -740,6 +742,11 @@ class AdvisorTask(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    pass_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workbench_passes.id", ondelete="SET NULL"), index=True
+    )
+    usage_source: Mapped[str] = mapped_column(String(16), default="free", server_default="free")
+    usage_released: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     kind: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
     input_rows: Mapped[list | None] = mapped_column(JSONType)
@@ -917,3 +924,88 @@ class AppKey(Base):
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
     value: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class PayOrder(Base):
+    """价格、商品和环境均为下单快照；金额留作对账。"""
+
+    __tablename__ = "pay_orders"
+    __table_args__ = (
+        UniqueConstraint("out_trade_no", name="uq_pay_orders_trade"),
+        Index("ix_pay_orders_user_created", "user_id", "created_at"),
+        Index("ix_pay_orders_status_created", "status", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    pseudonym: Mapped[str | None] = mapped_column(String(64))
+    out_trade_no: Mapped[str] = mapped_column(String(32))
+    product_id: Mapped[str] = mapped_column(String(128))
+    price: Mapped[int] = mapped_column(Integer)
+    env: Mapped[int] = mapped_column(Integer)
+    # 下单时用户勾选同意的《付费服务协议》版本
+    terms_version: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    wx_order_id: Mapped[str | None] = mapped_column(String(128))
+    paid_fee: Mapped[int | None] = mapped_column(Integer)
+    paid_time: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    platform: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    refund_order_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    refund_status: Mapped[str | None] = mapped_column(String(16))
+    refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    query_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 通知发货失败次数；达到上限不再重试，转人工。
+    provide_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error: Mapped[str | None] = mapped_column(String(500))
+    alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class WorkbenchPass(Base):
+    """每张订单对应一段使用期；最少使用凭据在任务删除后仍保留。"""
+
+    __tablename__ = "workbench_passes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("pay_orders.id", ondelete="CASCADE"), unique=True
+    )
+    starts_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_task_id: Mapped[int | None] = mapped_column(Integer)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class PayEvent(Base):
+    """只保留允许的交易字段；原始 attach、姓名、手机号等不入库。"""
+
+    __tablename__ = "pay_events"
+    __table_args__ = (Index("ix_pay_events_created", "created_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("pay_orders.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[dict] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class PayReconciliation(Base):
+    __tablename__ = "pay_reconciliations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date, unique=True)
+    local_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    local_fee: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    bill_count: Mapped[int | None] = mapped_column(Integer)
+    bill_fee: Mapped[int | None] = mapped_column(Integer)
+    differences: Mapped[dict] = mapped_column(JSONType)
+    # pending / matched / different / failed；下载或解析失败次数，达到上限转 failed。
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
