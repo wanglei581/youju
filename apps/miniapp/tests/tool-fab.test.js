@@ -307,7 +307,7 @@ function demoHarness() {
 
 test('整页任务板块保留并清除上下文，只列最近三条；刷新额度、近期失败可单独重试', async () => {
   const tasks = [1, 4, 2, 3].map((id) => ({ id, kind: 'compare', status: 'done', rowCount: 1, createdAt: `2026-10-03T0${id}:00:00Z` }));
-  const helpers = { taskView: (task) => ({ ...task, kindLabel: '名单比对', stateLabel: '已完成' }) };
+  const helpers = { taskView: (task) => ({ ...task, kindLabel: '批量名单比对', stateLabel: '已完成' }) };
   let taskError = true; let refreshed;
   const api = {
     advisorStatus(options) { refreshed = options.refresh; return Promise.resolve({ enabled: true, quota: { compare: { used: 1, limit: 3, maxRows: 50 }, track: { used: 0, limit: 1, maxRows: 50 } } }); },
@@ -357,13 +357,13 @@ test('页面演示闭环：同意、两种工具提交、进度、任务结果�
   board.onShow(); await flush(); assert.equal(board.data.recent.length, 2);
   assert.deepEqual(Array.from(board.data.skills, (skill) => skill.remaining), [2, 2]);
   const files = demo.page('files'); files.onShow(); await flush();
-  assert.equal(files.data.files.length, 3); assert.equal(files.data.files[0].name, '在报项目跟进表');
-  assert.equal(files.data.files[0].expired, false); assert.equal(files.data.files[1].name, '名单比对'); assert.equal(files.data.files[1].expired, true);
+  assert.equal(files.data.files.length, 3); assert.equal(files.data.files[0].name, '客户相关通知表');
+  assert.equal(files.data.files[0].expired, false); assert.equal(files.data.files[1].name, '批量名单比对'); assert.equal(files.data.files[1].expired, true);
   const records = demo.module('utils/exports.js').list(); assert.equal(records.length, 2); assert.equal(records[0].source, 'advisor');
   assert.equal(records[0].count, 1); assert.equal(demo.files.size, 1);
   files.open({ currentTarget: { dataset: { index: 0 } } }); await flush(); assert.ok(demo.files.has(demo.opened()));
   files.reexport({ currentTarget: { dataset: { index: 1 } } }); await flush();
-  assert.equal(files.data.files[0].name, '名单比对'); assert.equal(files.data.files[0].expired, false); assert.equal(demo.module('utils/exports.js').list().length, 2);
+  assert.equal(files.data.files[0].name, '批量名单比对'); assert.equal(files.data.files[0].expired, false); assert.equal(demo.module('utils/exports.js').list().length, 2);
   const sample = await api.downloadAdvisorTask(2); const zip = demo.module('utils/advisor-file.js').zipFiles(new Uint8Array(Buffer.from(sample.contentBase64, 'base64')));
   const sheet = demo.module('utils/advisor-file.js').utf8(zip['xl/worksheets/sheet1.xml']);
   assert.match(sheet, /申报通知/); assert.match(sheet, /不代表真实查询/);

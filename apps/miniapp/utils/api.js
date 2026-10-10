@@ -454,7 +454,7 @@ function downloadAdvisorTask(id) {
   return isLive() ? request(`/api/v1/advisor/tasks/${id}/download`) : advisorMock.download(id);
 }
 
-// 名单比对按次包（默认关闭）：接口 404 或空列表时页面不显示付费内容；演示数据不出售。
+// 客户工作台 30 天（默认关闭）：接口 404 或空列表时页面不显示付费内容；演示数据不出售。
 function payProducts() {
   return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
 }
