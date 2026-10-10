@@ -120,6 +120,13 @@ def current_pass(
         .limit(1)
     )
     if lock:
+        # 开通收费之前，小程序接口用的数据库账号对这张表只有读权限，
+        # 而 MySQL 的 SELECT ... FOR UPDATE 要求账号有写权限：
+        # 没有使用期的用户（开通收费前的所有人）提交任务不能因此报错
+        # （10/10 线上实测：打开工具开关后提交名单返回 500）。先普通查询，查到了才加锁。
+        # 不会漏：调用方已经先锁了用户行，开通、顺延、收回使用期也都先锁用户。
+        if session.scalar(stmt) is None:
+            return None
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return session.scalar(stmt)
 

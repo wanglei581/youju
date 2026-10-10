@@ -1630,3 +1630,29 @@ def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, sessio
     outdated = create(setup_pay, terms_version="pay-2026-10")
     assert outdated.status_code == 409 and "已更新" in outdated.json()["detail"]
     assert create(setup_pay, terms_version="pay-2026-11").status_code == 201
+
+
+def test_submitting_without_a_pass_never_locks_the_pass_table(setup_pay, session):
+    """开通收费前，小程序接口的数据库账号对 workbench_passes 只有读权限，SELECT ... FOR UPDATE 会被拒绝：
+    没有使用期的用户提交任务时，不能对这张表（和订单表）发出加锁查询。有使用期时才加锁。"""
+    statements = []
+
+    def record(_conn, _cursor, statement, *_):
+        statements.append(" ".join(statement.split()))
+
+    engine = session.get_bind()
+    sa_event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert submit(setup_pay, count=5, key="no-pass").status_code == 202
+        locked = [
+            s
+            for s in statements
+            if "FOR UPDATE" in s and ("workbench_passes" in s or "pay_orders" in s)
+        ]
+        assert locked == []
+        delivered(setup_pay, session)
+        statements.clear()
+        assert submit(setup_pay, count=51, key="with-pass").json()["usageSource"] == "pass"
+        assert any("FOR UPDATE" in s and "workbench_passes" in s for s in statements)
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", record)
