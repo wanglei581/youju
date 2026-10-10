@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -468,12 +469,45 @@ def test_task_ownership_for_read_cancel_delete_download(
     monkeypatch.setattr(service, "download_url", lambda client, env, file_id: "https://download")
     row.expires_at = NOW.astimezone(UTC) + timedelta(minutes=1)
     session.commit()
+    # 结果文件由接口自己分段读出来发给小程序，不把对象存储的下载地址交出去
+    content = bytes(range(256)) * 4000  # 1 024 000 字节：分两段
+    monkeypatch.setattr(service, "result_size", lambda client, url: len(content))
+    monkeypatch.setattr(
+        service,
+        "read_result_part",
+        lambda client, url, index, total: (
+            content[index * service.RESULT_PART_SIZE : (index + 1) * service.RESULT_PART_SIZE]
+            or (_ for _ in ()).throw(ValueError("没有这一段"))
+        ),
+    )
     downloaded = client.get(f"/api/v1/advisor/tasks/{task_id}/download")
     assert downloaded.status_code == 200
-    assert downloaded.json() == {"url": "https://download", "expiresIn": 600}
+    assert downloaded.json() == {
+        "size": len(content),
+        "parts": 2,
+        "partSize": service.RESULT_PART_SIZE,
+    }
+    assert "url" not in downloaded.text and "https://" not in downloaded.text
+    parts = [client.get(f"/api/v1/advisor/tasks/{task_id}/file?part={n}") for n in (0, 1)]
+    assert [p.status_code for p in parts] == [200, 200]
+    assert b"".join(p.content for p in parts) == content
+    assert all(len(p.content) <= service.RESULT_PART_SIZE for p in parts)
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}/file?part=2").status_code == 404
+    # 别人取不到；api 服务没配存储环境时，从文件编号里取环境（线上 10/10 的情况）
+    advisor_settings.dev_openid = "other-user"
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}/file?part=0").status_code == 404
+    advisor_settings.dev_openid = "advisor-user"
+    assert service.result_env(SimpleNamespace(cloud_env=None), "cloud://prod-x.bucket/a.xlsx") == (
+        "prod-x"
+    )
+    assert service.result_env(SimpleNamespace(cloud_env="configured"), "cloud://prod-x.b/a") == (
+        "configured"
+    )
+    assert service.result_env(SimpleNamespace(cloud_env=None), "not-a-file-id") is None
     row.expires_at = NOW.astimezone(UTC)
     session.commit()
     assert client.get(f"/api/v1/advisor/tasks/{task_id}/download").status_code == 410
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}/file?part=0").status_code == 410
     assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code == 204
     assert deleted == ["cloud://owned"]
     session.expire_all()
@@ -839,3 +873,35 @@ def test_xlsx_cell_limit_across_worksheets(client):
             new.writestr(name, sheet if name.startswith("xl/worksheets/") else old.read(name))
     response = client.post("/api/v1/advisor/preview", json=upload_body(result.getvalue()))
     assert response.status_code == 422 and "单元格过多" in response.json()["detail"]
+
+
+def test_result_file_is_read_from_storage_in_ranges():
+    """结果文件按段从对象存储读：先用 Range: bytes=0-0 拿总长度，再按 900 KiB 一段读。"""
+    content = bytes(range(256)) * 4000
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        start, end = (int(v) for v in request.headers["range"].removeprefix("bytes=").split("-"))
+        seen.append((start, end))
+        return httpx.Response(
+            206,
+            content=content[start : end + 1],
+            headers={"content-range": f"bytes {start}-{end}/{len(content)}"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        assert service.result_size(http, "https://cos.test/a.xlsx") == len(content)
+        first = service.read_result_part(http, "https://cos.test/a.xlsx", 0, len(content))
+        second = service.read_result_part(http, "https://cos.test/a.xlsx", 1, len(content))
+        with pytest.raises(ValueError):
+            service.read_result_part(http, "https://cos.test/a.xlsx", 2, len(content))
+    assert first + second == content and len(first) == service.RESULT_PART_SIZE
+    assert seen[0] == (0, 0) and seen[1] == (0, service.RESULT_PART_SIZE - 1)
+
+    too_big = httpx.MockTransport(
+        lambda request: httpx.Response(
+            206, content=b"x", headers={"content-range": "bytes 0-0/99999999"}
+        )
+    )
+    with httpx.Client(transport=too_big) as http, pytest.raises(service.BackupError):
+        service.result_size(http, "https://cos.test/big.xlsx")
