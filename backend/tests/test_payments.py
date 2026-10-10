@@ -1,0 +1,1632 @@
+"""全部微信请求使用 MockTransport；禁止访问真实微信。
+
+签名向量来源：微信官方 virtual-payment.html 的 2.6 Python 示例，
+2026-10-04 取回原文。这里的密钥和 session_key 均为文档公开示例。
+"""
+
+import json
+import logging
+import os
+import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from xml.etree import ElementTree
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+from sqlalchemy import event as sa_event
+from sqlalchemy import func, select
+
+from youju import advisor_tasks, payments
+from youju.api import advisor, me, pay, v1
+from youju.api import app as app_module
+from youju.cli import main
+from youju.config import Settings
+from youju.db import get_session
+from youju.models import (
+    AdvisorTask,
+    AdvisorUsage,
+    PayEvent,
+    PayOrder,
+    PayReconciliation,
+    User,
+    WorkbenchPass,
+)
+from youju.xpay import XPayClient, XPayError, pay_signature, signature
+
+NOW = datetime(2026, 10, 4, 4, 0, tzinfo=UTC)
+HEADERS = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "pay-user"}
+
+
+class FakeWechat:
+    def __init__(self, settings):
+        self.settings = settings
+        self.status = 1
+        self.fee = 100
+        self.order_type = 0
+        self.left_fee = 100
+        self.calls = []
+        self.fail_refund = False
+        self.wrong_owner = False
+        self.bill_pending = False
+        self.bad_order = False
+        self.paid_time = int(NOW.timestamp())
+        self.fail_provide = False
+        self.bill_broken = None
+        self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
+        self.client = XPayClient(settings, self.http)
+
+    def handle(self, request):
+        path = request.url.path
+        body = json.loads(request.content) if request.content else {}
+        self.calls.append((path, body, str(request.url)))
+        if path.startswith("/xpay/"):
+            assert "access_token" not in request.url.params
+            assert request.url.params["pay_sig"] == pay_signature(
+                "12345", path, request.content.decode()
+            )
+        if path == "/sns/jscode2session":
+            return httpx.Response(
+                200,
+                json={
+                    "openid": "other" if self.wrong_owner else "pay-user",
+                    "session_key": "9hAb/NEYUlkaMBEsmFgzig==",
+                },
+            )
+        if path == "/xpay/query_order":
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "order": {
+                        "order_id": "wrong" if self.bad_order else body["order_id"],
+                        "openid": body["openid"],
+                        "status": self.status,
+                        "env_type": body["env"],
+                        "order_fee": self.fee,
+                        "paid_fee": self.fee,
+                        "left_fee": self.left_fee,
+                        "paid_time": self.paid_time,
+                        "wx_order_id": "wx-" + body["order_id"],
+                        "order_type": self.order_type,
+                        "channel_order_id": "mch-test",
+                        "wxpay_order_id": "tx-test",
+                    },
+                },
+            )
+        if path == "/xpay/refund_order":
+            return httpx.Response(200, json={"errcode": -1 if self.fail_refund else 0})
+        if path == "/xpay/notify_provide_goods":
+            return httpx.Response(200, json={"errcode": -1 if self.fail_provide else 0})
+        if path == "/xpay/download_bill":
+            if self.bill_pending:
+                return httpx.Response(200, json={"errcode": 268490011})
+            return httpx.Response(200, json={"errcode": 0, "url": "https://bill.example/file.csv"})
+        if request.url.host == "bill.example":
+            if self.bill_broken == "download":
+                return httpx.Response(500)
+            if self.bill_broken == "parse":
+                return httpx.Response(200, content=b"unknown\nnot-a-bill\n")
+            return httpx.Response(200, content=b"trade,fee\nextra,100\n")
+        raise AssertionError("不得发起其他 HTTP 请求")
+
+
+@pytest.fixture
+def setup_pay(session_factory, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        pay_enabled=True,
+        advisor_enabled=True,
+        trust_wx_headers=True,
+        xpay_offer_id="offer-test",
+        xpay_appkey_sandbox="12345",
+        xpay_price_pass=100,
+        agreement_version="2026-10",
+        xpay_bill_order_column="trade",
+        xpay_bill_fee_column="fee",
+        xpay_bill_hosts=["bill.example"],
+    )
+    fake = FakeWechat(settings)
+    monkeypatch.setattr(pay, "get_settings", lambda: settings)
+    monkeypatch.setattr(advisor, "get_settings", lambda: settings)
+    monkeypatch.setattr(me, "get_settings", lambda: settings)
+    monkeypatch.setattr(app_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(v1, "now", lambda: NOW)
+
+    def override():
+        with session_factory() as session:
+            yield session
+
+    app_module.app.dependency_overrides[get_session] = override
+    app_module.app.dependency_overrides[pay.wx_client] = lambda: fake.client
+    with TestClient(app_module.app) as client:
+        client.post("/api/v1/me/agreement", headers=HEADERS, json={"version": "2026-10"})
+        with session_factory() as session:
+            user = session.scalar(select(User))
+            user.advisor_agreement_version = advisor_tasks.ADVISOR_AGREEMENT_VERSION
+            user.advisor_agreement_at = NOW
+            session.commit()
+        yield client, settings, fake
+    app_module.app.dependency_overrides.clear()
+    fake.http.close()
+
+
+def create(setup_pay, **values):
+    client, _, _ = setup_pay
+    return client.post(
+        "/api/v1/pay/orders",
+        headers=HEADERS,
+        json={
+            "product_id": "workbench_30d",
+            "code": "test-login",
+            "terms_version": "pay-test",
+            **values,
+        },
+    )
+
+
+def order(session, response):
+    return session.get(PayOrder, response.json()["orderId"])
+
+
+def payload(order):
+    return {
+        "Event": "xpay_goods_deliver_notify",
+        "OpenId": "pay-user",
+        "OutTradeNo": order.out_trade_no,
+        "Env": 1,
+        "WeChatPayInfo": {
+            "MchOrderNo": "mch-test",
+            "TransactionId": "tx-test",
+            "PaidTime": int(NOW.timestamp()),
+        },
+        "GoodsInfo": {
+            "ProductId": "workbench_30d",
+            "Quantity": 1,
+            "OrigPrice": 100,
+            "ActualPrice": 100,
+            "Attach": order.out_trade_no,
+        },
+    }
+
+
+def push(setup_pay, data):
+    return setup_pay[0].post("/api/wx/push", headers=HEADERS, json=data)
+
+
+def run(session, setup_pay, stamp=NOW):
+    _, settings, fake = setup_pay
+    return payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=stamp, alert=lambda _: True
+    )
+
+
+def delivered(setup_pay, session):
+    response = create(setup_pay)
+    assert response.status_code == 201
+    row = order(session, response)
+    setup_pay[2].status = 2
+    assert push(setup_pay, payload(row)).json()["ErrCode"] == 0
+    session.expire_all()
+    return session.get(PayOrder, row.id)
+
+
+def test_official_signature_vectors():
+    raw = '{"openid": "xxx", "user_ip": "127.0.0.1", "env": 0}'
+    assert pay_signature("12345", "/xpay/query_user_balance", raw) == (
+        "c37809f27c6d7fd1837ad2500a04512b66b34fd793a39a385fade56dca89a4b5"
+    )
+    assert signature("9hAb/NEYUlkaMBEsmFgzig==", raw) == (
+        "089d9e8dc5d308977360c4b79ec600a93d736802802a807d634192328032f6c7"
+    )
+
+
+def test_defaults_and_env_only_secrets(tmp_path, monkeypatch):
+    config = Settings(_env_file=None)
+    assert not config.pay_enabled and config.xpay_env == 1
+    assert not payments.products(config)
+    assert config.xpay_product_pass == "workbench_30d"
+    monkeypatch.setenv("YOUJU_XPAY_PRICE_PASS", "")
+    assert not payments.products(Settings(_env_file=None))
+    path = tmp_path / "payment.env"
+    path.write_text("YOUJU_WX_APPSECRET=dotenv-test\nYOUJU_XPAY_APPKEY_SANDBOX=dotenv-test\n")
+    assert Settings(_env_file=path).wx_appsecret is None
+    assert Settings(_env_file=path).xpay_appkey_sandbox is None
+    monkeypatch.setenv("YOUJU_WX_APPSECRET", "environment-test")
+    assert Settings(_env_file=path).wx_appsecret.get_secret_value() == "environment-test"
+
+
+def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
+    response = create(setup_pay)
+    assert response.status_code == 201
+    data = response.json()
+    signed = json.loads(data["signData"])
+    row = order(session, response)
+    assert signed == {
+        "offerId": "offer-test",
+        "buyQuantity": 1,
+        "env": 1,
+        "currencyType": "CNY",
+        "productId": "workbench_30d",
+        "goodsPrice": 100,
+        "outTradeNo": row.out_trade_no,
+        "attach": row.out_trade_no,
+    }
+    assert data["paySig"] == pay_signature("12345", "requestVirtualPayment", data["signData"])
+    assert data["signature"] == signature("9hAb/NEYUlkaMBEsmFgzig==", data["signData"])
+    assert row.price == 100 and row.env == 1
+    assert create(setup_pay).status_code == 201
+    assert create(setup_pay).status_code == 201
+    assert create(setup_pay).status_code == 429
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"rows": []},
+        {"rows": [" "]},
+        {"rows": [3]},
+        {"rows": ["公司"] * 101},
+        {"product_id": "unknown"},
+        {"code": ""},
+    ],
+)
+def test_invalid_order_input(setup_pay, values):
+    assert create(setup_pay, **values).status_code in (404, 422)
+
+
+def test_consent_and_unconfigured_price(setup_pay, session):
+    user = session.scalar(select(User))
+    user.advisor_agreement_at = None
+    session.commit()
+    assert create(setup_pay).status_code == 403
+    user.advisor_agreement_at = NOW
+    session.commit()
+    setup_pay[1].xpay_price_pass = None
+    assert create(setup_pay).status_code == 404
+
+
+def test_products_lists_only_priced_items(setup_pay, session):
+    client, settings, fake = setup_pay
+    assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
+        "items": [
+            {"productId": "workbench_30d", "name": "客户工作台 30 天", "price": 100, "days": 30}
+        ]
+    }
+    assert session.scalar(select(func.count(PayOrder.id))) == 0
+    settings.xpay_price_pass = None
+    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    settings.xpay_price_pass = 100
+    settings.xpay_offer_id = ""
+    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert create(setup_pay).status_code == 404
+    assert not fake.calls
+
+
+def test_products_route_dependency_hides_when_closed(setup_pay):
+    settings = setup_pay[1]
+    settings.pay_enabled = False
+    with pytest.raises(pay.HTTPException) as caught:
+        pay.require_enabled()
+    assert caught.value.status_code == 404 and caught.value.detail == "没有找到接口"
+    route = next(r for r in pay.router.routes if r.path == "/api/v1/pay/products")
+    assert route.methods == {"GET"}
+    assert any(d.dependency is pay.require_enabled for d in route.dependencies)
+
+
+def test_login_identity_must_match(setup_pay, session):
+    setup_pay[2].wrong_owner = True
+    assert create(setup_pay).status_code == 503
+    assert session.scalar(select(func.count(PayOrder.id))) == 0
+
+
+def test_push_15_times_one_pass_no_task_or_quota(setup_pay, session):
+    row = delivered(setup_pay, session)
+    for _ in range(14):
+        assert push(setup_pay, payload(row)).json()["ErrCode"] == 0
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 1
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert session.scalar(select(func.count(AdvisorUsage.id))) == 0
+    ticket = payments.order_pass(session, row)
+    assert ticket.starts_at == NOW and ticket.ends_at == NOW + timedelta(days=30)
+    assert row.status == "completed" and row.goods_notified
+
+
+@pytest.mark.parametrize(
+    "mismatch", ["price", "product", "owner", "env", "trade", "wx", "quantity", "unpaid"]
+)
+def test_push_requires_matching_query(setup_pay, session, mismatch):
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status = 2
+    data = payload(row)
+    if mismatch == "price":
+        fake.fee = 101
+    elif mismatch == "product":
+        data["GoodsInfo"]["ProductId"] = "wrong"
+    elif mismatch == "owner":
+        data["OpenId"] = "wrong"
+    elif mismatch == "env":
+        data["Env"] = 0
+    elif mismatch == "trade":
+        fake.bad_order = True
+    elif mismatch == "wx":
+        data["WeChatPayInfo"]["TransactionId"] = "wrong"
+    elif mismatch == "quantity":
+        data["GoodsInfo"]["Quantity"] = 2
+    elif mismatch == "unpaid":
+        fake.status = 1
+    assert push(setup_pay, data).json()["ErrCode"] != 0
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+
+
+def test_push_source_xml_and_role_gate(setup_pay, session):
+    client, settings, fake = setup_pay
+    row = order(session, create(setup_pay))
+    assert client.post("/api/wx/push", json=payload(row)).status_code == 403
+    root = ElementTree.Element("xml")
+
+    def append(node, values):
+        for key, value in values.items():
+            child = ElementTree.SubElement(node, key)
+            if isinstance(value, dict):
+                append(child, value)
+            else:
+                child.text = str(value)
+
+    append(root, payload(row))
+    fake.status = 2
+    settings.role = "api"
+    response = client.post("/api/wx/push", headers=HEADERS, content=ElementTree.tostring(root))
+    assert response.status_code == 200
+    assert ElementTree.fromstring(response.content).findtext("ErrCode") == "0"
+
+
+def test_poll_delivery_and_complete(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(minutes=3)
+    session.commit()
+    setup_pay[2].status = 2
+    run(session, setup_pay)
+    assert payments.order_pass(session, row) and row.goods_notified
+    response = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS)
+    assert response.json()["status"] == "已完成"
+    assert response.json()["canRefund"] is True
+
+
+def test_refund_failure_retry_same_id_and_completion(setup_pay, session):
+    row = delivered(setup_pay, session)
+    fake = setup_pay[2]
+    fake.fail_refund = True
+    assert (
+        setup_pay[0].post(f"/api/v1/pay/orders/{row.id}/refund", headers=HEADERS).status_code == 200
+    )
+    session.expire_all()
+    assert row.refund_status == "retry"
+    refund_id = row.refund_order_id
+    fake.fail_refund = False
+    run(session, setup_pay, NOW + timedelta(minutes=3))
+    assert row.refund_status == "pending" and row.status == "refunding"
+    assert row.refund_order_id == refund_id
+    requests = [body for path, body, _ in fake.calls if path == "/xpay/refund_order"]
+    assert len(requests) == 2 and requests[0] == requests[1]
+    # 退款中的订单按 refund_retry_at 退避查单（审阅第 6 条），时间推进到到期点。
+    fake.status, fake.left_fee = 7, 100
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.refund_status == "retry"
+    fake.status = 2
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.refund_order_id == refund_id
+    fake.status, fake.left_fee = 5, 0
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.status == "refunded"
+
+
+def test_reconciliation_per_order_diff_and_pending_download(setup_pay, session):
+    row = delivered(setup_pay, session)
+    result = payments.reconcile(session, NOW.date(), {"other": 100}, NOW)
+    assert result.local_count == result.bill_count == 1
+    assert result.local_fee == result.bill_fee == 100
+    assert result.status == "different" and len(result.differences) == 2
+    assert payments.reconcile(session, NOW.date(), {row.out_trade_no: 100}, NOW).status == "matched"
+    fake = setup_pay[2]
+    fake.bill_pending = True
+    day = NOW.date() - timedelta(days=1)
+    payments.download_reconcile(session, day, fake.client, NOW)
+    report = session.scalar(select(PayReconciliation).where(PayReconciliation.day == day))
+    assert report.status == "pending"
+    assert payments.overview(session)["reconciliation_pending"] == 1
+    fake.bill_pending = False
+    run(session, setup_pay)
+    assert report.status == "different" and report.bill_fee == 100
+    assert payments.overview(session)["differences"] == 1
+
+
+@pytest.mark.parametrize("toggle", ["pay_enabled", "advisor_enabled"])
+def test_closed_all_endpoints_and_jobs(setup_pay, session, monkeypatch, toggle):
+    client, settings, fake = setup_pay
+    setattr(settings, toggle, False)
+    for response in [
+        create(setup_pay),
+        client.get("/api/v1/pay/orders/1", headers=HEADERS),
+        client.post("/api/v1/pay/orders", content=b"{"),
+        client.get("/api/v1/pay/products", headers=HEADERS),
+        client.get("/api/v1/pay/products"),
+    ]:
+        assert response.status_code == 404 and response.json()["detail"] == "没有找到接口"
+    # 推送路径不受开关控制：应答成功但不查单、不发货（审阅 A）。
+    response = push(setup_pay, {})
+    assert response.status_code == 200 and response.json()["ErrCode"] == 0
+    assert run(session, setup_pay) == {"processed": 0}
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    assert main(["pay-run"]) == 0
+    assert main(["pay-reconcile"]) == 0
+    assert not fake.calls
+
+
+def test_foreign_order_hidden(setup_pay):
+    response = create(setup_pay)
+    result = setup_pay[0].get(
+        f"/api/v1/pay/orders/{response.json()['orderId']}",
+        headers={**HEADERS, "X-WX-OPENID": "other"},
+    )
+    # 另一用户须已同意协议，才能验证归属 404。
+    setup_pay[0].post(
+        "/api/v1/me/agreement",
+        json={"version": "2026-10"},
+        headers={**HEADERS, "X-WX-OPENID": "other"},
+    )
+    result = setup_pay[0].get(
+        f"/api/v1/pay/orders/{response.json()['orderId']}",
+        headers={**HEADERS, "X-WX-OPENID": "other"},
+    )
+    assert result.status_code == 404
+
+
+def test_http_errors_do_not_expose_secrets(caplog):
+    config = Settings(
+        _env_file=None, xpay_appkey_sandbox="12345", wx_appsecret="test-secret", wx_appid="test-app"
+    )
+
+    def handler(request):
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = XPayClient(config, http)
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(XPayError) as exc:
+                client.session_key("test-code", "test-user")
+            assert "test-secret" not in str(exc.value)
+            with pytest.raises(XPayError):
+                client.query("test-user", "test-trade", 1)
+        assert "test-secret" not in caplog.text and "pay_sig=" not in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["xpay_refund_notify", "xpay_complaint_notify"])
+def test_official_refund_and_complaint_fields(setup_pay, session, kind):
+    row = delivered(setup_pay, session)
+    data = {
+        "Event": kind,
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+        "ComplaintDetail": "个人电话 13800138000",
+        "RefundFee": 100,
+        "RetCode": 0,
+    }
+    if kind == "xpay_refund_notify":
+        setup_pay[2].status, setup_pay[2].left_fee = 8, 0
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert row.status == ("refunded" if kind == "xpay_refund_notify" else "manual")
+    summary = session.scalar(select(PayEvent).where(PayEvent.kind == kind)).summary
+    assert "13800138000" not in str(summary) and "ComplaintDetail" not in summary
+
+
+def test_pending_order_window_and_confirmed_close(setup_pay, session):
+    row = order(session, create(setup_pay))
+    assert run(session, setup_pay)["processed"] == 0
+    # 超过 30 分钟仍继续查单（审阅第 3 条），只是间隔变为 10 分钟；未支付保持待支付。
+    row.created_at = NOW - timedelta(minutes=31)
+    session.commit()
+    assert run(session, setup_pay)["processed"] == 1
+    assert row.status == "pending"
+    assert run(session, setup_pay, NOW + timedelta(minutes=5))["processed"] == 0
+    row.created_at, row.query_retry_at = NOW - timedelta(minutes=3), None
+    session.commit()
+    setup_pay[2].status = 6
+    run(session, setup_pay)
+    assert row.status == "closed"
+
+
+def test_bill_adapter_rejects_unknown_schema_and_fractional_fen(setup_pay):
+    config = setup_pay[1]
+    for raw in [
+        b"",
+        b"unknown,fee\nabc,100\n",
+        b"trade,fee\na,0.5\n",
+        b"trade,fee\na,NaN\n",
+        b"trade,fee\na,100\na,100\n",
+    ]:
+        with pytest.raises(XPayError):
+            payments.parse_bill(raw, config)
+    config.xpay_bill_fee_unit = "yuan"
+    assert payments.parse_bill(b"trade,fee\na,1.25\n", config) == {"a": 125}
+
+
+def test_platform_can_be_replaced_with_configuration(setup_pay):
+    config = setup_pay[1]
+    config.xpay_platform_field = "confirmed_platform"
+    config.xpay_ios_values = ["apple"]
+    config.xpay_android_values = ["wechat"]
+    assert payments.platform({"confirmed_platform": "apple"}, config) == "ios"
+    assert payments.platform({"confirmed_platform": "wechat"}, config) == "android"
+    assert payments.platform({"order_type": 0}, config) == "unknown"
+
+
+def test_concurrent_delivery_transactions_are_idempotent(setup_pay, session, session_factory):
+    from concurrent.futures import ThreadPoolExecutor
+
+    row = order(session, create(setup_pay))
+    setup_pay[2].status = 2
+
+    def deliver(_):
+        with session_factory() as tx:
+            locked = payments.lock_order(tx, row.id)
+            checked = payments.query(tx, locked, setup_pay[2].client)
+            assert payments.accept_payment(tx, locked, checked, setup_pay[1], NOW)
+            tx.commit()
+            return payments.order_pass(tx, locked).id
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ids = list(pool.map(deliver, range(15)))
+    assert len(set(ids)) == 1
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 1
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+
+
+def test_ios_deadline_when_database_is_slow(setup_pay, monkeypatch):
+    import threading
+    import time
+
+    release, finished = threading.Event(), threading.Event()
+
+    def slow_reply(bind, trade):
+        release.wait(10)
+        finished.set()
+        return {"result_code": 1, "result_info": "任务已完成", "evidence": "任务测试凭据"}
+
+    monkeypatch.setattr(pay, "_ios_reply", slow_reply)
+    started = time.monotonic()
+    try:
+        response = push(
+            setup_pay,
+            {"Event": "xpay_subscribe_ios_refund_query_notify", "pay_order_id": "unknown"},
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        assert finished.wait(1)
+    assert elapsed < 3
+    assert response.json()["result_code"] == 0
+    assert "超时" in response.json()["evidence"]
+
+
+def test_payment_after_account_deletion_goes_to_manual_without_identity(setup_pay, session):
+    row = order(session, create(setup_pay))
+    data = payload(row)
+    assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    setup_pay[2].status = 2
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert row.status == "manual" and row.paid_fee == 100
+    assert row.user_id is None
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    for e in session.scalars(select(PayEvent)):
+        assert "OpenId" not in e.summary and "openid" not in e.summary
+
+
+def test_review_3_old_pending_payment_recovers_with_backoff(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(minutes=31)
+    session.commit()
+    fake = setup_pay[2]
+    fake.bad_order = True
+    assert run(session, setup_pay)["processed"] == 1
+    count = len(fake.calls)
+    assert run(session, setup_pay, NOW + timedelta(minutes=1))["processed"] == 0
+    assert len(fake.calls) == count
+    fake.bad_order, fake.status = False, 2
+    run(session, setup_pay, NOW + timedelta(minutes=10))
+    assert row.status == "completed" and payments.order_pass(session, row)
+
+
+@pytest.mark.parametrize("wx_status", [0, 1, 6, 2])
+def test_review_3_pending_after_48_hours_closes_or_is_manual(setup_pay, session, wx_status):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(hours=49)
+    session.commit()
+    setup_pay[2].status = wx_status
+    run(session, setup_pay)
+    assert row.status == ("completed" if wx_status == 2 else "closed")
+    assert bool(payments.order_pass(session, row)) == (wx_status == 2)
+
+
+def test_review_3_bill_paid_but_not_delivered_goes_manual(setup_pay, session):
+    row = order(session, create(setup_pay))
+    payments.reconcile(session, NOW.date(), {row.out_trade_no: row.price}, NOW)
+    assert row.status == "manual" and payments.order_pass(session, row) is None
+    run(session, setup_pay)
+    assert row.alerted_at and payments.overview(session)["manual"] == 1
+
+
+@pytest.mark.parametrize("exhausted", ["attempts", "age"])
+def test_review_6_exhausted_refund_moves_to_manual(setup_pay, session, exhausted):
+    row = delivered(setup_pay, session)
+    row.status, row.refund_status = "refunding", "retry"
+    row.refund_attempts = 7 if exhausted == "attempts" else 1
+    row.refund_started_at = NOW - timedelta(hours=25) if exhausted == "age" else NOW
+    session.commit()
+    setup_pay[2].fail_refund = True
+    run(session, setup_pay)
+    assert row.status == "manual" and row.alerted_at
+    assert payments.overview(session)["manual"] == 1
+    assert not any(path == "/xpay/refund_order" for path, _, _ in setup_pay[2].calls)
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        (
+            "/api/v1/pay/orders",
+            {
+                "product_id": "workbench_30d",
+                "rows": ["私密企业"],
+                "code": "private-code",
+                "unexpected": "私密企业",
+            },
+        ),
+        (
+            "/api/v1/advisor/tasks",
+            {
+                "kind": "compare",
+                "rows": ["私密企业"],
+                "file": {"name": "secret.csv", "content_base64": "secret-file"},
+            },
+        ),
+        ("/api/v1/advisor/tasks", {"kind": "track", "rows": ["私密企业"]}),
+    ],
+)
+def test_review_8_validation_never_echoes_lists(setup_pay, path, body):
+    response = setup_pay[0].post(
+        path, headers={**HEADERS, "Idempotency-Key": "ordinary"}, json=body
+    )
+    assert response.status_code == 422
+    assert "私密企业" not in response.text and "private-code" not in response.text
+    assert "secret-file" not in response.text
+    for error in response.json()["detail"]:
+        assert set(error) == {"loc", "msg"}
+
+
+@pytest.mark.parametrize("xml", [False, True])
+@pytest.mark.parametrize("data", [{"action": "CheckContainerPath"}, {"Event": "subscribe"}])
+def test_review_a_push_available_when_payment_disabled(setup_pay, xml, data):
+    client, settings, fake = setup_pay
+    settings.pay_enabled = False
+    if xml:
+        root = ElementTree.Element("xml")
+        for key, value in data.items():
+            ElementTree.SubElement(root, key).text = value
+        response = client.post("/api/wx/push", headers=HEADERS, content=ElementTree.tostring(root))
+        assert response.status_code == 200
+        assert ElementTree.fromstring(response.content).findtext("ErrCode") == "0"
+    else:
+        response = push(setup_pay, data)
+        assert response.status_code == 200
+        assert response.json() == {"ErrCode": 0, "ErrMsg": "success"}
+    assert not fake.calls
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "xpay_goods_deliver_notify",
+        "xpay_refund_notify",
+        "xpay_complaint_notify",
+        "xpay_subscribe_ios_refund_query_notify",
+    ],
+)
+def test_review_a_disabled_payment_event_is_acknowledged_and_recorded(setup_pay, session, kind):
+    setup_pay[1].pay_enabled = False
+    response = push(setup_pay, {"Event": kind, "OutTradeNo": "unknown", "private": "不入库"})
+    assert response.status_code == 200 and response.json()["ErrCode"] == 0
+    event = session.scalar(select(PayEvent))
+    assert event and event.kind == kind and "不入库" not in str(event.summary)
+    assert not setup_pay[2].calls
+
+
+def test_review_a_missing_appid_header_is_accepted(setup_pay):
+    setup_pay[1].wx_appid = "configured-app"
+    assert push(setup_pay, {"action": "CheckContainerPath"}).status_code == 200
+    bad = setup_pay[0].post(
+        "/api/wx/push",
+        headers={**HEADERS, "X-WX-APPID": "other"},
+        json={"action": "CheckContainerPath"},
+    )
+    assert bad.status_code == 403
+
+
+def test_review_a_private_service_accepts_push_without_source(setup_pay):
+    object.__setattr__(setup_pay[1], "wx_push_public", False)
+    assert (
+        setup_pay[0].post("/api/wx/push", json={"action": "CheckContainerPath"}).status_code == 200
+    )
+
+
+def test_review_a_untrusted_service_hides_push(setup_pay):
+    setup_pay[1].trust_wx_headers = False
+    assert push(setup_pay, {"action": "CheckContainerPath"}).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "kind", ["xpay_goods_deliver_notify", "xpay_refund_notify", "xpay_complaint_notify"]
+)
+def test_review_b_unknown_order_is_acknowledged_with_safe_event(setup_pay, session, kind):
+    response = push(
+        setup_pay,
+        {
+            "Event": kind,
+            "OutTradeNo": "unknown",
+            "MchOrderId": "unknown",
+            "ComplaintDetail": "个人电话 13800138000",
+        },
+    )
+    assert response.json()["ErrCode"] == 0
+    saved = session.scalar(select(PayEvent))
+    assert saved and saved.order_id is None and saved.kind == kind
+    assert "13800138000" not in str(saved.summary)
+    assert not setup_pay[2].calls
+
+
+def test_refunding_order_label(setup_pay, session):
+    row = delivered(setup_pay, session)
+    row.status = "refunding"
+    session.commit()
+    response = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS)
+    assert response.json()["status"] == "退款中"
+
+
+# ---- 第二轮审阅：9 个已确认问题（2026-10-04） ----
+
+
+def _capture_sql(db_engine):
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()).upper())
+
+    sa_event.listen(db_engine, "before_cursor_execute", capture)
+    return statements, lambda: sa_event.remove(db_engine, "before_cursor_execute", capture)
+
+
+def _calls(fake, path):
+    return [body for called, body, _ in fake.calls if called == path]
+
+
+def test_fix_1_anonymize_without_orders_never_locks_pay_orders(setup_pay, session, db_engine):
+    statements, stop = _capture_sql(db_engine)
+    try:
+        assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    finally:
+        stop()
+    pay_sql = [sql for sql in statements if "FROM PAY_ORDERS" in sql]
+    # 仍然检查过有没有订单，但只用普通查询；youju_api 只有 SELECT 权限时注销不能 500。
+    assert pay_sql and not any("FOR UPDATE" in sql for sql in pay_sql)
+    assert session.scalar(select(func.count(User.id))) == 0
+
+
+def test_fix_1_anonymize_with_orders_still_locks(setup_pay, session, db_engine):
+    row = order(session, create(setup_pay))
+    statements, stop = _capture_sql(db_engine)
+    try:
+        assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    finally:
+        stop()
+    assert any("FROM PAY_ORDERS" in sql and "FOR UPDATE" in sql for sql in statements)
+    session.expire_all()
+    assert row.status == "closed" and row.user_id is None
+
+
+@pytest.mark.parametrize("overdue", [False, True])
+@pytest.mark.parametrize("problem", ["fee", "paid_time"])
+def test_fix_2_paid_but_unverifiable_goes_manual(setup_pay, session, problem, overdue):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - (timedelta(hours=49) if overdue else timedelta(minutes=3))
+    session.commit()
+    fake = setup_pay[2]
+    fake.status = 2
+    if problem == "fee":
+        fake.fee = 101
+    else:
+        fake.paid_time = 0
+    run(session, setup_pay)
+    assert row.status == "manual" and payments.order_pass(session, row) is None and row.alerted_at
+    assert ("金额" if problem == "fee" else "支付时间") in row.error
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert not _calls(fake, "/xpay/notify_provide_goods")
+
+
+def test_fix_2_push_amount_mismatch_manual_and_alerted_once(setup_pay, session):
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status, fake.fee = 2, 101
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    assert (
+        row.status == "manual"
+        and row.alerted_at is None
+        and payments.order_pass(session, row) is None
+    )
+    run(session, setup_pay)
+    alerted = row.alerted_at
+    assert alerted
+    # 微信重推同一笔：仍不发货，也不重复告警。
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    assert row.status == "manual" and row.alerted_at == alerted
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+
+
+def test_fix_3_unconfirmable_pending_closes_after_48_hours(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(hours=47)
+    session.commit()
+    setup_pay[2].bad_order = True
+    run(session, setup_pay)
+    assert row.status == "pending"
+    row.created_at, row.query_retry_at = NOW - timedelta(hours=49), None
+    session.commit()
+    run(session, setup_pay)
+    assert row.status == "closed" and row.error == "超过 48 小时无法确认支付，已关闭"
+    assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
+
+
+def test_fix_4_unconfigured_bill_columns_fail_without_download(setup_pay, session):
+    settings, fake = setup_pay[1], setup_pay[2]
+    settings.xpay_bill_fee_column = ""
+    day = NOW.date() - timedelta(days=1)
+    payments.download_reconcile(session, day, fake.client, NOW, alert=lambda _: True)
+    report = session.scalar(select(PayReconciliation).where(PayReconciliation.day == day))
+    assert report.status == "failed" and report.differences == {"error": "未配置账单字段"}
+    assert not fake.calls
+    assert run(session, setup_pay)["processed"] == 0 and not fake.calls
+
+
+@pytest.mark.parametrize("broken", ["download", "parse"])
+def test_fix_4_bill_failures_are_counted_then_failed(setup_pay, session, broken):
+    settings, fake = setup_pay[1], setup_pay[2]
+    fake.bill_broken = broken
+    days = [NOW.date() - timedelta(days=offset) for offset in (4, 3, 2, 1)]
+    session.add_all(
+        PayReconciliation(day=day, differences={}, status="pending", created_at=NOW, updated_at=NOW)
+        for day in days
+    )
+    session.commit()
+    alerts = []
+
+    def run_once(minute):
+        payments.run_payments(
+            session,
+            settings=settings,
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=minute),
+            alert=alerts.append,
+        )
+        session.expire_all()
+        return {
+            row.day: (row.status, row.attempts)
+            for row in session.scalars(select(PayReconciliation))
+        }
+
+    for minute in range(4):
+        assert run_once(minute)[days[0]] == ("pending", minute + 1)
+    state = run_once(4)
+    assert [state[day] for day in days[:3]] == [("failed", 5)] * 3
+    assert state[days[3]] == ("pending", 0)
+    assert len(alerts) == 3 and all("对账" in text for text in alerts)
+    # 失败的日子不再占用每轮 3 天名额，排在后面的那天开始处理。
+    state = run_once(5)
+    assert state[days[3]] == ("pending", 1) and len(alerts) == 3
+    report = session.scalar(select(PayReconciliation).where(PayReconciliation.day == days[0]))
+    assert report.differences and "error" in report.differences
+
+
+def test_fix_5_closed_switch_without_open_orders_never_calls_wechat(
+    setup_pay, session, monkeypatch
+):
+    client, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    # 支付时间远离“昨天”：pay-reconcile 按真实当前日期取前一天，不能因测试日期不同而下载账单。
+    row.status, row.paid_time = "completed", datetime(2020, 1, 1, tzinfo=UTC)
+    closed = order(session, create(setup_pay))
+    closed.status = "closed"
+    session.commit()
+    settings.pay_enabled = settings.advisor_enabled = False
+    fake.calls.clear()
+    assert run(session, setup_pay) == {"processed": 0}
+    assert payments.should_reconcile(session, settings, datetime(2020, 1, 1).date())
+    assert not payments.should_reconcile(session, settings, datetime(2020, 1, 2).date())
+
+    def no_http(*args, **kwargs):
+        raise AssertionError("支付关闭且没有待办时不得创建 HTTP 客户端")
+
+    # CLI 自己创建真实 HTTP 客户端；这里禁止创建，保证不会访问微信。
+    monkeypatch.setattr(httpx, "Client", no_http)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    assert main(["pay-run"]) == 0
+    assert main(["pay-reconcile"]) == 0
+    assert not fake.calls
+
+
+def test_fix_5_closed_switch_push_still_handles_local_order(setup_pay, session):
+    row = delivered(setup_pay, session)
+    setup_pay[1].pay_enabled = False
+    data = {
+        "Event": "xpay_complaint_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+    }
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert row.status == "manual"
+
+
+@pytest.mark.parametrize("job", ["pay-run", "pay-reconcile", "advisor-run"])
+def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
+    from youju import jobs
+
+    assert "pay-run" not in jobs.OVERVIEW_JOBS and "pay-run" in jobs.JOB_NAMES
+    assert "pay-reconcile" in jobs.OVERVIEW_JOBS
+    for name, content in {
+        "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
+        "flock": '#!/bin/sh\nshift 4\nexec "$@"\n',
+        "youju": '#!/bin/sh\necho "$*" >> "$CALLS"\n[ "$1" = job-start ] && echo 42\nexit 0\n',
+    }.items():
+        (tmp_path / name).write_text(content)
+        (tmp_path / name).chmod(0o755)
+    script = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
+    script = script.replace(". /app/backend/deploy/env.sh", ":").replace("cd /app/backend", ":")
+    script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
+    (tmp_path / "job.sh").write_text(script)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(tmp_path / "c")}
+    result = subprocess.run(["sh", str(tmp_path / "job.sh"), job], env=env, timeout=30)
+    assert result.returncode == 0
+    calls = (tmp_path / "c").read_text()
+    assert job in calls
+    assert ("job-start" in calls) == (job == "pay-reconcile")
+
+
+@pytest.mark.parametrize("secret", [False, True])
+def test_fix_8_session_key_endpoint_per_mode(setup_pay, secret):
+    settings, fake = setup_pay[1], setup_pay[2]
+    if secret:
+        settings.wx_appid, settings.wx_appsecret = "test-app", SecretStr("test-secret")
+    assert fake.client.session_key("test-login", "pay-user") == "9hAb/NEYUlkaMBEsmFgzig=="
+    url = fake.calls[-1][2]
+    expected = "https" if secret else "http"
+    assert url.startswith(f"{expected}://api.weixin.qq.com/sns/jscode2session?")
+    assert ("secret=test-secret" in url) == secret
+
+
+def test_fix_9_provide_goods_retry_limit(setup_pay, session):
+    row = order(session, create(setup_pay))
+    row.created_at = NOW - timedelta(minutes=3)
+    session.commit()
+    fake = setup_pay[2]
+    fake.status, fake.fail_provide = 2, True
+    for _ in range(19):
+        run(session, setup_pay)
+    assert row.status == "completed" and row.provide_attempts == 19
+    run(session, setup_pay)
+    assert len(_calls(fake, "/xpay/notify_provide_goods")) == 20
+    assert row.provide_attempts == 20 and not row.goods_notified
+    assert row.status == "manual" and row.alerted_at and "通知发货" in row.error
+    run(session, setup_pay)
+    assert len(_calls(fake, "/xpay/notify_provide_goods")) == 20
+
+
+def submit(setup_pay, kind="compare", count=1, key="task"):
+    rows = (
+        ["示例科技有限公司"] * count
+        if kind == "compare"
+        else [{"name": "示例科技有限公司", "province": "北京"}] * count
+    )
+    return setup_pay[0].post(
+        "/api/v1/advisor/tasks",
+        headers={**HEADERS, "Idempotency-Key": key},
+        json={"kind": kind, "rows": rows},
+    )
+
+
+def self_refund(setup_pay, row):
+    return setup_pay[0].post(f"/api/v1/pay/orders/{row.id}/refund", headers=HEADERS)
+
+
+def inquiry(setup_pay, row):
+    return push(
+        setup_pay,
+        {"Event": "xpay_subscribe_ios_refund_query_notify", "pay_order_id": row.out_trade_no},
+    ).json()
+
+
+def test_pass_extends_and_expires(setup_pay, session, monkeypatch):
+    first = delivered(setup_pay, session)
+    second = delivered(setup_pay, session)
+    one, two = payments.order_pass(session, first), payments.order_pass(session, second)
+    assert one.starts_at == NOW and one.ends_at == two.starts_at
+    assert two.ends_at == NOW + timedelta(days=60)
+    assert payments.current_pass(session, first.user_id, NOW + timedelta(days=30)).id == two.id
+    assert payments.current_pass(session, first.user_id, NOW + timedelta(days=60)) is None
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=60))
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"] == {"active": False, "expiresAt": None}
+    assert submit(setup_pay, count=51).json()["detail"]["code"] == "FREE_ROW_LIMIT"
+
+
+def test_new_pass_after_expiry_starts_at_payment(setup_pay, session, monkeypatch):
+    first = delivered(setup_pay, session)
+    later = NOW + timedelta(days=31)
+    monkeypatch.setattr(v1, "now", lambda: later)
+    setup_pay[2].paid_time = int(later.timestamp())
+    response = create(setup_pay)
+    row = order(session, response)
+    data = payload(row)
+    data["WeChatPayInfo"]["PaidTime"] = int(later.timestamp())
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert payments.order_pass(session, row).starts_at == later
+    assert payments.order_pass(session, first).ends_at < later
+
+
+@pytest.mark.parametrize("kind", ["compare", "track"])
+def test_free_month_boundaries_and_two_codes(setup_pay, session, monkeypatch, kind):
+    stamp = datetime(2026, 9, 30, 15, 59, 59, tzinfo=UTC)
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+    assert submit(setup_pay, kind, 51, "large").json()["detail"] == {
+        "code": "FREE_ROW_LIMIT",
+        "message": "每次最多提交 50 行",
+    }
+    tasks = []
+    for n in range(3):
+        response = submit(setup_pay, kind, 50, f"free-{n}")
+        assert response.status_code == 202
+        tasks.append(response.json()["id"])
+        assert response.json()["usageSource"] == "free"
+    assert submit(setup_pay, kind, 50, "fourth").json()["detail"]["code"] == "FREE_MONTHLY_LIMIT"
+    # Each kind has its own allowance.
+    other = "track" if kind == "compare" else "compare"
+    assert submit(setup_pay, other, 1, "other").status_code == 202
+    stamp += timedelta(seconds=1)
+    assert submit(setup_pay, kind, 50, "october").status_code == 202
+    for _ in range(2):
+        assert (
+            setup_pay[0]
+            .post(f"/api/v1/advisor/tasks/{tasks[0]}/cancel", headers=HEADERS)
+            .status_code
+            == 200
+        )
+    session.expire_all()
+    user_id = session.scalar(select(User.id))
+    assert advisor_tasks.usage_counts(session, user_id, datetime(2026, 9, 30).date())[kind] == 2
+    assert advisor_tasks.usage_counts(session, user_id, datetime(2026, 10, 1).date())[kind] == 1
+
+
+@pytest.mark.parametrize("kind", ["compare", "track"])
+def test_pass_500_rows_and_unlimited_tasks(setup_pay, session, kind):
+    row = delivered(setup_pay, session)
+    for n in range(4):
+        response = submit(setup_pay, kind, 500, f"paid-{n}")
+        assert response.status_code == 202
+        assert response.json()["usageSource"] == "pass"
+    assert submit(setup_pay, kind, 501, "large").json()["detail"]["code"] == "PASS_ROW_LIMIT"
+    assert session.scalar(select(func.count(AdvisorUsage.id))) == 0
+    session.expire_all()
+    assert payments.paid_usage(session, payments.order_pass(session, row))
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"]["active"] and status["pass"]["expiresAt"]
+    assert status["quota"][kind] == {"used": 0, "limit": 3, "maxRows": 500}
+
+
+@pytest.mark.parametrize(
+    "case,expected", [("unused", 200), ("old", 422), ("used", 422), ("ios", 422)]
+)
+def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
+    if case == "ios":
+        setup_pay[2].order_type = 7
+    row = delivered(setup_pay, session)
+    if case == "old":
+        monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=7, microseconds=1))
+    if case == "used":
+        assert submit(setup_pay, count=51).status_code == 202
+    result = self_refund(setup_pay, row)
+    assert result.status_code == expected
+    session.expire_all()
+    ticket = payments.order_pass(session, row)
+    if expected == 200:
+        assert ticket.revoked_at == NOW and result.json()["status"] == "退款中"
+        first_id = row.refund_order_id
+        assert self_refund(setup_pay, row).status_code == 200
+        session.expire_all()
+        assert row.refund_order_id == first_id
+        assert len(_calls(setup_pay[2], "/xpay/refund_order")) == 1
+        assert (
+            setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()["pass"]["active"]
+            is False
+        )
+    else:
+        assert ticket.revoked_at is None
+        reason = result.json()["detail"]
+        assert {"old": "超过 7 天", "used": "已提交过超过 50 家", "ios": "App Store"}[
+            case
+        ] in reason
+        assert not _calls(setup_pay[2], "/xpay/refund_order")
+
+
+@pytest.mark.parametrize("state", ["queued", "done", "failed", "cancelled", "deleted"])
+def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session, state):
+    setup_pay[2].order_type = 7
+    row = delivered(setup_pay, session)
+    assert inquiry(setup_pay, row)["result_info"] == "未使用"
+    response = submit(setup_pay, count=51)
+    task_id = response.json()["id"]
+    session.expire_all()
+    task = session.get(AdvisorTask, task_id)
+    if state == "deleted":
+        assert (
+            setup_pay[0].delete(f"/api/v1/advisor/tasks/{task_id}", headers=HEADERS).status_code
+            == 204
+        )
+    elif state != "queued":
+        task.status, task.finished_at = state, NOW + timedelta(minutes=1)
+        advisor_tasks.record_pass_completion(session, task)
+        session.commit()
+    setup_pay[2].calls.clear()
+    result = inquiry(setup_pay, row)
+    assert result["result_code"] == 1 and result["result_info"] == "已使用"
+    assert str(task_id) in result["evidence"]
+    if state not in ("queued", "deleted"):
+        assert (NOW + timedelta(minutes=1)).isoformat() in result["evidence"]
+    assert not setup_pay[2].calls
+
+
+def test_ios_refund_notification_revokes_only_its_pass(setup_pay, session):
+    setup_pay[2].order_type = 7
+    first = delivered(setup_pay, session)
+    second = delivered(setup_pay, session)
+    assert submit(setup_pay, count=51).status_code == 202
+    setup_pay[2].status, setup_pay[2].left_fee = 8, 0
+    data = {
+        "Event": "xpay_refund_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": first.out_trade_no,
+        "WxOrderId": first.wx_order_id,
+    }
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert payments.order_pass(session, first).revoked_at == NOW
+    assert payments.order_pass(session, second).revoked_at is None
+    assert self_refund(setup_pay, first).status_code == 422
+    assert session.scalar(select(AdvisorTask.status)) == "queued"
+
+
+def test_task_failure_does_not_refund_and_payment_switch_does_not_pause_tasks(setup_pay, session):
+    row = delivered(setup_pay, session)
+    task_id = submit(setup_pay, count=51).json()["id"]
+    setup_pay[1].pay_enabled = False
+    for _ in range(3):
+        advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)
+    session.expire_all()
+    assert session.get(AdvisorTask, task_id).status == "failed"
+    assert payments.paid_usage(session, payments.order_pass(session, row))
+    run(session, setup_pay)
+    assert row.status == "completed" and row.refund_order_id is None
+    assert not _calls(setup_pay[2], "/xpay/refund_order")
+
+
+def test_account_deletion_preserves_financial_and_usage_audit(setup_pay, session):
+    row = delivered(setup_pay, session)
+    task_id = submit(setup_pay, count=51).json()["id"]
+    ticket = payments.order_pass(session, row)
+    assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    session.expire_all()
+    assert row.user_id is None and row.pseudonym and row.price == 100
+    assert (
+        ticket.user_id is None and ticket.revoked_at is not None and ticket.last_task_id == task_id
+    )
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert payments.paid_usage(session, ticket)
+    for e in session.scalars(select(PayEvent)):
+        assert "OpenId" not in e.summary and "openid" not in e.summary
+    payments.cleanup(session, setup_pay[1], NOW + timedelta(days=3651))
+    session.commit()
+    assert session.get(PayOrder, row.id) is None
+    assert session.scalar(select(WorkbenchPass.id).where(WorkbenchPass.id == ticket.id)) is None
+
+
+def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
+    row = delivered(setup_pay, session)
+    session.add_all(
+        PayOrder(
+            user_id=row.user_id,
+            out_trade_no=f"list-{n}",
+            product_id="workbench_30d",
+            price=100,
+            env=1,
+            terms_version="pay-test",
+            created_at=NOW + timedelta(seconds=n),
+        )
+        for n in range(25)
+    )
+    session.commit()
+    result = setup_pay[0].get("/api/v1/pay/orders", headers=HEADERS).json()["items"]
+    assert len(result) == 20 and result[0]["orderId"] > result[-1]["orderId"]
+    assert set(result[0]) == {
+        "orderId",
+        "status",
+        "amount",
+        "paidAt",
+        "passStartsAt",
+        "passEndsAt",
+        "passRevokedAt",
+        "canRefund",
+        "refundUnavailableReason",
+    }
+    assert result[0]["canRefund"] is False and result[0]["refundUnavailableReason"]
+    other = {**HEADERS, "X-WX-OPENID": "other"}
+    setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-10"})
+    assert setup_pay[0].get("/api/v1/pay/orders", headers=other).json() == {"items": []}
+    assert (
+        setup_pay[0].post(f"/api/v1/pay/orders/{row.id}/refund", headers=other).status_code == 404
+    )
+
+
+def test_refund_partial_success_is_manual(setup_pay, session):
+    row = delivered(setup_pay, session)
+    assert self_refund(setup_pay, row).status_code == 200
+    setup_pay[2].status, setup_pay[2].left_fee = 5, 50
+    run(session, setup_pay, NOW + timedelta(minutes=10))
+    session.expire_all()
+    assert row.status == "manual" and row.refund_status == "partial"
+    assert payments.order_pass(session, row).revoked_at is not None
+
+
+def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, session_factory):
+    with session_factory() as session:
+        row = delivered(setup_pay, session)
+        session.commit()
+        with session_factory() as stale:
+            stale.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            seen = stale.get(PayOrder, row.id)
+            assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
+            assert submit(setup_pay, count=51).status_code == 202
+            locked = payments.lock_order(stale, row.id)
+            assert "已提交过" in payments.refund_reason(stale, locked, NOW, lock=True)
+
+
+def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
+    from concurrent.futures import ThreadPoolExecutor
+
+    orders = [order(session, create(setup_pay)).id for _ in range(3)]
+    session.commit()
+    setup_pay[2].status = 2
+
+    def confirm(order_id):
+        with session_factory() as tx:
+            row = payments.lock_order(tx, order_id)
+            assert payments.accept_payment(
+                tx, row, payments.query(tx, row, setup_pay[2].client), setup_pay[1], NOW
+            )
+            tx.commit()
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(confirm, orders))
+    tickets = list(session.scalars(select(WorkbenchPass).order_by(WorkbenchPass.starts_at)))
+    assert [(p.starts_at, p.ends_at) for p in tickets] == [
+        (NOW + timedelta(days=n * 30), NOW + timedelta(days=(n + 1) * 30)) for n in range(3)
+    ]
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert datetime.fromisoformat(
+        status["pass"]["expiresAt"].replace("Z", "+00:00")
+    ) == NOW + timedelta(days=90)
+
+
+@pytest.mark.parametrize("kind", ["compare", "track"])
+def test_free_failure_releases_only_once(setup_pay, session, kind):
+    tasks = [submit(setup_pay, kind=kind, key=str(n)).json()["id"] for n in range(3)]
+    session.expire_all()
+    task = session.get(AdvisorTask, tasks[0])
+    task.status, task.attempts = "failed", 3
+    advisor_tasks.release_usage(session, task)
+    advisor_tasks.release_usage(session, task)
+    session.commit()
+    assert session.scalar(select(AdvisorUsage.used_count)) == 2
+    assert submit(setup_pay, kind=kind, key="replacement").status_code == 202
+    assert (
+        submit(setup_pay, kind=kind, key="extra").json()["detail"]["code"] == "FREE_MONTHLY_LIMIT"
+    )
+
+
+def test_latest_usage_evidence_is_not_overwritten_by_older_task(setup_pay, session):
+    row = delivered(setup_pay, session)
+    ids = [submit(setup_pay, count=51, key=str(n)).json()["id"] for n in range(2)]
+    session.expire_all()
+    older = session.get(AdvisorTask, ids[0])
+    newer = session.get(AdvisorTask, ids[1])
+    newer.finished_at = NOW + timedelta(minutes=1)
+    advisor_tasks.record_pass_completion(session, newer)
+    older.finished_at = NOW + timedelta(minutes=2)
+    advisor_tasks.record_pass_completion(session, older)
+    session.commit()
+    assert payments.order_pass(session, row).last_task_id == ids[1]
+    assert payments.order_pass(session, row).last_task_completed_at == newer.finished_at
+
+
+def test_500_rows_execute_compare_engine_without_refund(setup_pay, session, monkeypatch):
+    row = delivered(setup_pay, session)
+    response = submit(setup_pay, count=500)
+    task_id = response.json()["id"]
+    setup_pay[1].cloud_env = "fake-cloud"
+    monkeypatch.setattr(advisor_tasks, "upload", lambda *a, **kw: "fake-result-id")
+    result = advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)
+    assert result["done"] == 1
+    session.expire_all()
+    assert (
+        session.get(AdvisorTask, task_id).result_rows == 1
+    )  # duplicate enterprise names are merged
+    assert payments.order_pass(session, row).last_task_completed_at == NOW
+    assert row.status == "completed" and row.refund_status is None
+
+
+@pytest.mark.parametrize(
+    "stage,failed_response", [("query", False), ("refund", False), ("refund", True)]
+)
+def test_refund_notification_before_network_response_keeps_terminal_status(
+    setup_pay, session, monkeypatch, stage, failed_response
+):
+    row = delivered(setup_pay, session)
+    fake = setup_pay[2]
+    real_query, real_refund = fake.client.query, fake.client.refund
+    notified = False
+
+    def notify():
+        nonlocal notified
+        notified = True
+        fake.status, fake.left_fee = 5, 0
+        result = push(
+            setup_pay,
+            {
+                "Event": "xpay_refund_notify",
+                "OpenId": "pay-user",
+                "MchOrderId": row.out_trade_no,
+                "WxOrderId": row.wx_order_id,
+            },
+        )
+        assert result.json()["ErrCode"] == 0
+
+    def query_with_notice(*args):
+        checked = real_query(*args)
+        if stage == "query" and not notified:
+            notify()
+        return checked
+
+    def refund_with_notice(body):
+        real_refund(body)
+        notify()
+        if failed_response:
+            raise XPayError
+
+    monkeypatch.setattr(fake.client, "query", query_with_notice)
+    monkeypatch.setattr(fake.client, "refund", refund_with_notice)
+    result = self_refund(setup_pay, row)
+    assert result.status_code == 200 and result.json()["status"] == "已退款"
+    session.expire_all()
+    assert row.status == "refunded" and row.refund_status == "completed"
+    assert payments.order_pass(session, row).revoked_at is not None
+
+
+def test_lock_order_takes_user_lock_before_flushing_payment_event(setup_pay, session, db_engine):
+    row = delivered(setup_pay, session)
+    session.commit()
+    statements, stop = _capture_sql(db_engine)
+    try:
+        payments.event(session, "query_order", {"status": 2}, row)
+        payments.lock_order(session, row.id)
+        session.flush()
+    finally:
+        stop()
+    user_lock = next(
+        i for i, sql in enumerate(statements) if "FROM USERS" in sql and "FOR UPDATE" in sql
+    )
+    order_lock = next(
+        i for i, sql in enumerate(statements) if "FROM PAY_ORDERS" in sql and "FOR UPDATE" in sql
+    )
+    event_insert = next(i for i, sql in enumerate(statements) if "INSERT INTO PAY_EVENTS" in sql)
+    assert user_lock < order_lock < event_insert
+
+
+def test_account_deletion_locks_tasks_before_passes(setup_pay, session, db_engine):
+    delivered(setup_pay, session)
+    assert submit(setup_pay, count=51).status_code == 202
+    statements, stop = _capture_sql(db_engine)
+    try:
+        assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
+    finally:
+        stop()
+    locks = [sql for sql in statements if "FOR UPDATE" in sql]
+    task_lock = next(i for i, sql in enumerate(locks) if "FROM ADVISOR_TASKS" in sql)
+    pass_lock = next(i for i, sql in enumerate(locks) if "FROM WORKBENCH_PASSES" in sql)
+    assert task_lock < pass_lock
+
+
+def test_provide_response_does_not_overwrite_refund_notification(setup_pay, session, monkeypatch):
+    response = create(setup_pay)
+    row = order(session, response)
+    fake = setup_pay[2]
+    fake.status = 2
+
+    def provide(*args):
+        fake.status, fake.left_fee = 5, 0
+        session.expire_all()
+        assert (
+            push(
+                setup_pay,
+                {
+                    "Event": "xpay_refund_notify",
+                    "OpenId": "pay-user",
+                    "MchOrderId": row.out_trade_no,
+                    "WxOrderId": row.wx_order_id,
+                },
+            ).json()["ErrCode"]
+            == 0
+        )
+        raise XPayError
+
+    monkeypatch.setattr(fake.client, "provide", provide)
+    assert push(setup_pay, payload(row)).json()["ErrCode"] == 0
+    session.expire_all()
+    assert row.status == "refunded" and row.refund_status == "completed"
+
+
+@pytest.mark.parametrize("paid", [False, True])
+@pytest.mark.parametrize("count", [50, 51, 500, 501])
+def test_csv_submission_has_same_row_limits_as_inline(setup_pay, paid, count):
+    import base64
+
+    if paid:
+        create_response = create(setup_pay)
+        row_id = create_response.json()["orderId"]
+        # Resolve trade from the signed order snapshot without another DB session.
+        signed = json.loads(create_response.json()["signData"])
+        fake = setup_pay[2]
+        fake.status = 2
+        data = {
+            "Event": "xpay_goods_deliver_notify",
+            "OpenId": "pay-user",
+            "OutTradeNo": signed["outTradeNo"],
+            "Env": 1,
+            "GoodsInfo": {
+                "ProductId": "workbench_30d",
+                "Quantity": 1,
+                "OrigPrice": 100,
+                "ActualPrice": 100,
+                "Attach": signed["outTradeNo"],
+            },
+        }
+        assert push(setup_pay, data).json()["ErrCode"] == 0
+        assert row_id
+    content = "企业名称\n" + "\n".join(f"示例企业{i}" for i in range(count))
+    response = setup_pay[0].post(
+        "/api/v1/advisor/tasks",
+        headers={**HEADERS, "Idempotency-Key": "csv"},
+        json={
+            "kind": "compare",
+            "file": {
+                "name": "clients.csv",
+                "content_base64": base64.b64encode(content.encode()).decode(),
+            },
+        },
+    )
+    assert response.status_code == (202 if count <= (500 if paid else 50) else 429)
+    if response.status_code == 429:
+        assert response.json()["detail"]["code"] == ("PASS_ROW_LIMIT" if paid else "FREE_ROW_LIMIT")
+
+
+def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, session):
+    """有使用期也先用免费的量：50 行以内、本月免费次数没用完的记为免费，不影响自助退款；
+    超过 50 行或免费次数用完才算用了付费的量（和付款页写的退款条件一致）。"""
+    row = delivered(setup_pay, session)
+    for n in range(3):
+        body = submit(setup_pay, count=50, key=f"small-{n}").json()
+        assert body["usageSource"] == "free"
+    session.expire_all()
+    assert payments.refund_reason(session, row, NOW) is None
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["quota"]["compare"]["used"] == 3
+    # 第 4 次：免费次数用完，才用使用期
+    assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
+    session.expire_all()
+    assert "已提交过超过 50 家" in payments.refund_reason(session, row, NOW)
+
+
+def test_orders_and_refund_stay_available_after_sales_switched_off(setup_pay, session):
+    """关掉收费只停卖：已经付款的用户照样能看订单、自助退款；商品和下单是 404。"""
+    client, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    settings.pay_enabled = False
+    assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
+    assert create(setup_pay).status_code == 404
+    listed = client.get("/api/v1/pay/orders", headers=HEADERS).json()["items"]
+    assert [item["orderId"] for item in listed] == [row.id] and listed[0]["canRefund"] is True
+    assert client.get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).status_code == 200
+    # 使用期照常有效
+    status = client.get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"]["active"] is True
+    assert self_refund(setup_pay, row).json()["status"] == "退款中"
+    assert len(_calls(fake, "/xpay/refund_order")) == 1
+
+
+def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, session):
+    """一次买了两张、退掉前面那张：后面那张往前挪到现在开始，不留空档。"""
+    first = delivered(setup_pay, session)
+    second = delivered(setup_pay, session)
+    a, b = payments.order_pass(session, first), payments.order_pass(session, second)
+    assert b.starts_at == a.ends_at
+    assert self_refund(setup_pay, first).status_code == 200
+    session.expire_all()
+    a, b = payments.order_pass(session, first), payments.order_pass(session, second)
+    assert a.revoked_at == NOW
+    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=payments.PASS_DAYS)
+    status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
+    assert status["pass"]["active"] is True
+
+
+def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
+    setup_pay, session, monkeypatch
+):
+    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段仍接在旧段后面，
+    不能从付款时间算起和旧段重叠（否则少给天数）。"""
+    first = delivered(setup_pay, session)
+    old = payments.order_pass(session, first)
+    response = create(setup_pay)
+    row = order(session, response)
+    # 第 20 天付款，旧段第 30 天结束；第 31 天才收到确认
+    paid_at = NOW + timedelta(days=20)
+    setup_pay[2].status = 2
+    setup_pay[2].paid_time = int(paid_at.timestamp())
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=31))
+    data = payload(row)
+    data["WeChatPayInfo"]["PaidTime"] = int(paid_at.timestamp())
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    new = payments.order_pass(session, session.get(PayOrder, row.id))
+    assert new.starts_at == old.ends_at
+    assert new.ends_at == old.ends_at + timedelta(days=payments.PASS_DAYS)
+
+
+def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):
+    """订单记下用户同意的《付费服务协议》版本；服务端配了现行版本时，带旧版本来的不让下单。"""
+    client, settings, _ = setup_pay
+    response = create(setup_pay, terms_version="pay-2026-10")
+    assert response.status_code == 201
+    assert order(session, response).terms_version == "pay-2026-10"
+    missing = client.post(
+        "/api/v1/pay/orders", headers=HEADERS, json={"product_id": "workbench_30d", "code": "c"}
+    )
+    assert missing.status_code == 422
+    settings.pay_terms_version = "pay-2026-11"
+    outdated = create(setup_pay, terms_version="pay-2026-10")
+    assert outdated.status_code == 409 and "已更新" in outdated.json()["detail"]
+    assert create(setup_pay, terms_version="pay-2026-11").status_code == 201

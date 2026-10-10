@@ -1,6 +1,6 @@
 """多客户在报项目跟进表后台引擎。
 
-这里只处理内部批量任务：读取客户画像、按截止雷达的公开口径查询，生成结果并导出 Excel。
+读取客户画像，查询近 90 天发布且没有核对为已截止的申报通知，生成结果并导出 Excel。
 客户画像不用于推断行业；关键词和支持方式都是用户明确填写的筛选条件。
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,9 +63,9 @@ class TrackItem:
     issuer: str
     province: str
     deadline_type: str
-    deadline_date: date
+    deadline_date: date | None
     deadline_time: time | None
-    remaining_days: int
+    remaining_days: int | None
     support: str
     url: str
 
@@ -77,7 +77,8 @@ class TrackItem:
             "issuer": self.issuer,
             "province": self.province,
             "deadline_type": self.deadline_type,
-            "deadline_date": self.deadline_date.isoformat(),
+            "deadline_date": self.deadline_date.isoformat() if self.deadline_date else None,
+            "deadline_status": "已核对" if self.deadline_date else "截止未核对，请以原文为准",
             "deadline_time": self.deadline_time.strftime("%H:%M") if self.deadline_time else None,
             "remaining_days": self.remaining_days,
             "support": self.support,
@@ -168,10 +169,12 @@ def _profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
     )
 
 
-def read_customer_profiles(path: str | Path) -> list[CustomerProfile]:
+def read_customer_profiles(
+    path: str | Path, *, content: bytes | None = None
+) -> list[CustomerProfile]:
     """读取客户画像 xlsx/csv；省份不在固定清单时保留该行但标记为不查询。"""
 
-    rows = _file_rows(Path(path))
+    rows = _file_rows(Path(path), content=content)
     if not rows:
         return []
     header = rows[0]
@@ -180,7 +183,7 @@ def read_customer_profiles(path: str | Path) -> list[CustomerProfile]:
     if not required.issubset(columns):
         raise CompareInputError("客户画像必须包含“客户名称”和“省份”表头")
     if len(rows) - 1 > MAX_INPUT_ROWS:
-        raise CompareInputError("客户画像最多 200 行")
+        raise CompareInputError("客户画像最多 500 行")
     result: list[CustomerProfile] = []
     for row in rows[1:]:
         name_index, province_index = columns["客户名称"], columns["省份"]
@@ -233,7 +236,7 @@ def track_clients(
 
     customers = [_profile(item) for item in profiles]
     if len(customers) > MAX_INPUT_ROWS:
-        raise CompareInputError("客户画像最多 200 行")
+        raise CompareInputError("客户画像最多 500 行")
     customers.sort(key=lambda client: client.name)
     stamp = now()
     today = stamp.date()
@@ -241,25 +244,28 @@ def track_clients(
     if not valid:
         return TrackReport([CustomerTrack(client) for client in customers], stamp)
 
-    candidate_ids = v1._future_approved_canonical_ids(session, today)
-    statement = v1._base().where(Document.id.in_(candidate_ids), v1._kind_is(["申报通知"]))
+    statement = v1._base().where(
+        v1._kind_is(["申报通知"]),
+        Document.publish_date >= today - timedelta(days=90),
+        Document.publish_date <= today,
+        Document.id.not_in(v1._application_ids(session, {"closed"})),
+    )
     rows = session.execute(statement).all()
     selected_ids = [document.id for document, _ in rows]
     approved = v1._approved(session, selected_ids)
     details = v1._details(session, selected_ids)
     fields = v1._approved_fields(session, selected_ids)
-    notices: list[tuple[Document, Source, DocumentDetail | None, Any, tuple[str, ...], int]] = []
+    notices: list[
+        tuple[Document, Source, DocumentDetail | None, Any, tuple[str, ...], int | None]
+    ] = []
     for document, source in rows:
         deadline = v1._selected_deadline(approved.get(document.id, []))
-        if deadline is None or deadline.approved_date is None:
+        status = v1.application_status(approved.get(document.id, []), stamp)
+        if status and status["code"] == "closed":
             continue
-        status = v1.application_status([deadline], stamp)
-        if not status or status["code"] == "closed":
-            continue
-        remaining = (deadline.approved_date - today).days
-        # 跟进表列出全部未截止项目（不限 30 天）；30 天内的部分与截止雷达同口径，A2 按此核对。
-        if remaining < 0:
-            continue
+        remaining = (
+            (deadline.approved_date - today).days if deadline and deadline.approved_date else None
+        )
         supports = tuple(fields.get(document.id, {}).get("support", ()))
         detail = details.get(document.id)
         notices.append((document, source, detail, deadline, supports, remaining))
@@ -284,9 +290,9 @@ def track_clients(
                     title=document.title,
                     issuer=(detail.issuer if detail and detail.issuer else source.dept_full_name),
                     province="国家部委" if source.province == "国家" else source.province,
-                    deadline_type=deadline.kind,
-                    deadline_date=deadline.approved_date,
-                    deadline_time=deadline.approved_time,
+                    deadline_type=deadline.kind if deadline else "",
+                    deadline_date=deadline.approved_date if deadline else None,
+                    deadline_time=deadline.approved_time if deadline else None,
                     remaining_days=remaining,
                     support="、".join(supports),
                     url=document.url,
@@ -294,7 +300,7 @@ def track_clients(
             )
         items.sort(
             key=lambda item: (
-                item.deadline_date,
+                item.deadline_date or date.max,
                 item.deadline_time is None,
                 item.deadline_time or time.min,
                 item.document_id,
@@ -311,7 +317,8 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail = book.active
     detail.title = "跟进表"
     note = (
-        "第三方整理 · 非政府平台；只含人工核对过的截止日期，以原文为准；"
+        "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
+        "截止日期只写人工核对过的，没核对的请以原文为准；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     headers = [
@@ -337,9 +344,18 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
             (
                 client.customer_name,
                 count,
-                sum(item.remaining_days <= 7 for item in client.items),
-                sum(item.remaining_days <= 14 for item in client.items),
-                sum(item.remaining_days <= 30 for item in client.items),
+                sum(
+                    item.remaining_days is not None and item.remaining_days <= 7
+                    for item in client.items
+                ),
+                sum(
+                    item.remaining_days is not None and item.remaining_days <= 14
+                    for item in client.items
+                ),
+                sum(
+                    item.remaining_days is not None and item.remaining_days <= 30
+                    for item in client.items
+                ),
             )
         )
         items = client.items or [None]
@@ -350,8 +366,14 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
                 item.issuer if item else "",
                 item.province if item else (client.profile.province or ""),
                 item.deadline_type if item else "",
-                _deadline_text(item.deadline_date, item.deadline_time) if item else "",
-                item.remaining_days if item else "",
+                (
+                    _deadline_text(item.deadline_date, item.deadline_time)
+                    if item.deadline_date
+                    else "截止未核对，请以原文为准"
+                )
+                if item
+                else "",
+                item.remaining_days if item and item.remaining_days is not None else "",
                 item.support if item else "",
                 item.url if item else "",
             ]

@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # all（本机开发默认）全部开放
     role: Literal["all", "api", "admin"] = "all"
     trust_wx_headers: bool = False
+    # 开公网的推送入口必须带微信来源头；私网入口按云托管转发信任推送。
+    wx_push_public: bool = True
     dev_openid: str | None = None
     template_deadline: dict | None = None
     template_newdocs: dict | None = None
@@ -74,6 +76,55 @@ class Settings(BaseSettings):
     advisor_enabled: bool = False
     ai_advisor_enabled: bool = False
     ai_advisor_openids: str = ""
+
+    # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
+    pay_enabled: bool = False
+    # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。配了以后，
+    # 下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）；不配只记录不比对。
+    pay_terms_version: str = ""
+    xpay_offer_id: str = ""
+    xpay_env: Literal[0, 1] = 1
+    xpay_appkey_prod: SecretStr | None = None
+    xpay_appkey_sandbox: SecretStr | None = None
+    wx_appsecret: SecretStr | None = None
+    wx_appid: str = ""
+    xpay_price_pass: int | None = Field(default=None, gt=0, le=2147483647)
+    xpay_product_pass: str = "workbench_30d"
+    wx_push_path: str = "/api/wx/push"
+    # 空值按官方 order_type 枚举识别；可配置字段映射应对接口差异，未识别时不退款。
+    xpay_platform_field: str = ""
+    xpay_ios_values: list[str] = []
+    xpay_android_values: list[str] = []
+    # 财务留存期限为待确认配置值，不代表已经完成法律审阅。
+    retain_pay_orders_days: int = Field(default=3650, ge=180)
+    # 日账单字段和单位由线上样本确认；不配置则对账报告明确标为无法解析。
+    xpay_bill_order_column: str = ""
+    xpay_bill_fee_column: str = ""
+    xpay_bill_fee_unit: Literal["fen", "yuan"] = "fen"
+    xpay_bill_hosts: list[str] = []
+
+    @field_validator("xpay_price_pass", mode="before")
+    @classmethod
+    def _empty_pass_price(cls, value):
+        return None if value == "" else value
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        def public_dotenv():
+            values = dotenv_settings()
+            for key in ("wx_appsecret", "xpay_appkey_prod", "xpay_appkey_sandbox"):
+                values.pop(key, None)
+            return values
+
+        def public_file_secrets():
+            values = file_secret_settings()
+            for key in ("wx_appsecret", "xpay_appkey_prod", "xpay_appkey_sandbox"):
+                values.pop(key, None)
+            return values
+
+        return init_settings, env_settings, public_dotenv, public_file_secrets
 
     @model_validator(mode="after")
     def _production_identity(self) -> "Settings":

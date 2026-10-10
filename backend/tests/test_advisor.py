@@ -1,11 +1,15 @@
-"""顾问任务接口、队列状态和名单保存期限。"""
+"""工具任务接口、队列状态和名单保存期限。"""
 
+import base64
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from types import SimpleNamespace
+from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 from sqlalchemy import select
 
 from youju import advisor_tasks as service
@@ -53,6 +57,273 @@ def client(session_factory, advisor_settings):
 def agree(client):
     response = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
     assert response.status_code == 200
+
+
+def agree_advisor(client):
+    agree(client)
+    response = client.post(
+        "/api/v1/me/agreement",
+        json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+    )
+    assert response.status_code == 200
+
+
+def upload_body(content, *, name="clients.csv", kind="compare"):
+    return {
+        "kind": kind,
+        "file": {"name": name, "content_base64": base64.b64encode(content).decode()},
+    }
+
+
+def xlsx_content(rows):
+    book = Workbook()
+    for row in rows:
+        book.active.append(row)
+    output = BytesIO()
+    book.save(output)
+    return output.getvalue()
+
+
+def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkeypatch):
+    advisor_settings.advisor_enabled = False
+    assert client.get("/api/v1/advisor/status").status_code == 404
+    advisor_settings.advisor_enabled = True
+    expected = {"used": 0, "limit": 3, "maxRows": 50}
+    assert client.get("/api/v1/advisor/status").json() == {
+        "enabled": True,
+        "pass": {"active": False, "expiresAt": None},
+        "quota": {"compare": {**expected, "limit": 3}, "track": expected},
+    }
+    agree(client)
+    created = create(client).json()
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 1
+    client.post(f"/api/v1/advisor/tasks/{created['id']}/cancel")
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+    create(client, key="another")
+    monkeypatch.setattr(v1, "now", lambda: datetime(2026, 10, 1, 0, 1, tzinfo=BJ))
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+
+
+def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
+    agree(client)
+    assert (
+        client.post("/api/v1/me/agreement", json={"scope": "advisor", "version": "old"}).status_code
+        == 422
+    )
+    agree_advisor(client)
+    profile = client.get("/api/v1/me").json()
+    assert profile["agreed"]["version"] == "2026-09"
+    assert profile["advisorAgreed"]["version"] == service.ADVISOR_AGREEMENT_VERSION
+    assert client.get("/api/v1/me/data").json()["user"]["advisorAgreed"] == profile["advisorAgreed"]
+    advisor_settings.advisor_enabled = False
+    assert (
+        client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+        ).status_code
+        == 404
+    )
+
+
+def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
+    client, session, monkeypatch
+):
+    agree(client)
+    stamps = [
+        datetime(2026, 9, 1, 0, 0, tzinfo=BJ),
+        datetime(2026, 9, 2, 0, 0, tzinfo=BJ),
+        datetime(2026, 9, 30, 23, 59, 59, tzinfo=BJ),
+    ]
+    created = []
+    for n, stamp in enumerate(stamps):
+        monkeypatch.setattr(v1, "now", lambda stamp=stamp: stamp.astimezone(UTC))
+        response = create(client, key=f"monthly-{n}", rows=["甲公司"] * 50)
+        assert response.status_code == 202
+        created.append(response.json()["id"])
+        assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == n + 1
+        assert (
+            client.get("/api/v1/advisor/capabilities").json()["data_tools"]["remaining"]["compare"]
+            == 2 - n
+        )
+    assert create(client, key="monthly-fourth").status_code == 429
+    assert len(list(session.scalars(select(AdvisorUsage)))) == 3
+
+    # UTC 尚在九月，北京时间已到十月；取消旧月任务不增加新月额度。
+    stamp = datetime(2026, 9, 30, 16, 0, tzinfo=UTC)
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"] == {
+        "used": 0,
+        "limit": 3,
+        "maxRows": 50,
+    }
+    assert create(client, key="new-month").status_code == 202
+    assert client.post(f"/api/v1/advisor/tasks/{created[0]}/cancel").status_code == 200
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 1
+    assert client.post(f"/api/v1/advisor/tasks/{created[0]}/cancel").status_code == 200
+    session.expire_all()
+    assert (
+        service.usage_counts(session, session.scalar(select(User.id)), stamps[0].date())["compare"]
+        == 2
+    )
+
+
+def test_compare_reservation_reads_latest_usage_after_user_lock(client, session_factory):
+    agree(client)
+    assert create(client, key="first").status_code == 202
+    assert create(client, key="second").status_code == 202
+    with session_factory() as stale:
+        stale.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        user_id = stale.scalar(select(User.id))
+        day = service.usage_day(NOW)
+        assert service.usage_counts(stale, user_id, day)["compare"] == 2
+        # 另一个请求先占了最后一次；旧快照不能在拿到用户锁后继续放行。
+        assert create(client, key="third").status_code == 202
+        stale.execute(select(User.id).where(User.id == user_id).with_for_update()).one()
+        assert not service.reserve_usage(stale, user_id, "compare", day)
+
+
+@pytest.mark.parametrize(
+    "content,name",
+    [
+        ("企业名称\n甲公司\n乙公司\n".encode(), "clients.csv"),
+        ("企业名称\n甲公司\n乙公司\n".encode("gbk"), "clients.xlsx"),
+        (xlsx_content([["企业名称"], ["甲公司"], ["乙公司"]]), "clients.csv"),
+    ],
+)
+def test_upload_content_detection_preview_and_idempotency(client, session, content, name):
+    agree(client)
+    body = upload_body(content, name=name)
+    assert client.post("/api/v1/advisor/preview", json=body).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", headers={"Idempotency-Key": "file"}, json=body
+        ).status_code
+        == 403
+    )
+    agree_advisor(client)
+    assert client.post("/api/v1/advisor/preview", json=body).json() == {"rowCount": 2}
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+    first = client.post("/api/v1/advisor/tasks", headers={"Idempotency-Key": "file"}, json=body)
+    assert first.status_code == 202 and first.json()["rowCount"] == 2
+    row = session.get(AdvisorTask, first.json()["id"])
+    assert row.input_rows == ["甲公司", "乙公司"]
+    assert name not in str(row.input_rows) and "content_base64" not in first.text
+    duplicate = client.post(
+        "/api/v1/advisor/tasks", headers={"Idempotency-Key": "file"}, json=upload_body(b"PKinvalid")
+    )
+    assert duplicate.status_code == 202 and duplicate.json()["id"] == row.id
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 1
+
+
+@pytest.mark.parametrize("xlsx", [False, True])
+def test_upload_track_profiles(client, session, xlsx):
+    agree_advisor(client)
+    rows = [["客户名称", "省份", "关键词", "支持方式"], ["甲公司", "辽宁", "高新;科技", "资金支持"]]
+    content = xlsx_content(rows) if xlsx else "\n".join(",".join(row) for row in rows).encode()
+    body = upload_body(content, kind="track")
+    assert client.post("/api/v1/advisor/preview", json=body).json()["rowCount"] == 1
+    response = client.post("/api/v1/advisor/tasks", headers={"Idempotency-Key": "track"}, json=body)
+    assert response.status_code == 202
+    assert session.get(AdvisorTask, response.json()["id"]).input_rows == [
+        {
+            "name": "甲公司",
+            "province": "辽宁",
+            "keywords": ["高新", "科技"],
+            "supports": ["资金支持"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "body,reason",
+    [
+        (upload_body(b"test", name="clients.txt"), "只支持"),
+        ({"kind": "compare", "file": {"name": "a.csv", "content_base64": "!"}}, "编码无效"),
+        (upload_body(b"x" * (service.MAX_UPLOAD_BYTES + 1)), "60 KB"),
+        (upload_body(b"PK\x03\x04broken"), "不是 CSV"),
+        (upload_body(b"\x00\x01binary"), "不是 CSV"),
+        (upload_body(b""), "没有可提交"),
+        (upload_body(b"no header", kind="track"), "表头"),
+    ],
+)
+def test_bad_upload_does_not_use_quota(client, body, reason):
+    agree_advisor(client)
+    response = client.post("/api/v1/advisor/tasks", headers={"Idempotency-Key": "bad"}, json=body)
+    assert response.status_code == 422
+    assert reason in response.json()["detail"]
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+    assert client.get("/api/v1/advisor/tasks").json()["items"] == []
+
+
+def test_upload_limits_exclusive_inputs_and_chunked_body(client):
+    agree_advisor(client)
+    body = upload_body(b"\n".join([b"company"] * 51))
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", headers={"Idempotency-Key": "51"}, json=body
+        ).status_code
+        == 429
+    )
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks",
+            headers={"Idempotency-Key": "both"},
+            json=body | {"rows": ["x"]},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", headers={"Idempotency-Key": "none"}, json={"kind": "compare"}
+        ).status_code
+        == 422
+    )
+    content = b'{"kind":"compare","rows":["' + b"x" * service.MAX_BODY_BYTES + b'"]}'
+    response = client.post(
+        "/api/v1/advisor/tasks",
+        headers={"Idempotency-Key": "chunked", "content-type": "application/json"},
+        content=iter([content]),
+    )
+    assert response.status_code == 413
+
+
+def test_upload_exact_byte_boundary_and_xlsx_expansion(client):
+    agree_advisor(client)
+    boundary = upload_body(b"a" * service.MAX_UPLOAD_BYTES)
+    assert client.post("/api/v1/advisor/preview", json=boundary).json() == {"rowCount": 1}
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks", headers={"Idempotency-Key": "boundary"}, json=boundary
+        ).status_code
+        == 202
+    )
+    archive = BytesIO()
+    with ZipFile(archive, "w", compression=8) as book:
+        book.writestr("xl/worksheets/sheet1.xml", b" " * (2 * 1024 * 1024 + 1))
+    response = client.post("/api/v1/advisor/preview", json=upload_body(archive.getvalue()))
+    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_xlsx_untrusted_dimensions_and_sparse_rows(client, sparse):
+    agree_advisor(client)
+    source = xlsx_content([["企业名称"], ["甲公司"]])
+    archive = BytesIO()
+    with ZipFile(BytesIO(source)) as old, ZipFile(archive, "w", compression=8) as new:
+        for name in old.namelist():
+            content = old.read(name)
+            if name == "xl/worksheets/sheet1.xml":
+                content = content.replace(b'ref="A1:A2"', b'ref="A1:XFD1048576"')
+                if sparse:
+                    content = content.replace(b'<row r="2">', b'<row r="1000000">').replace(
+                        b'r="A2"', b'r="A1000000"'
+                    )
+            new.writestr(name, content)
+    response = client.post("/api/v1/advisor/preview", json=upload_body(archive.getvalue()))
+    if sparse:
+        assert response.status_code == 422 and "行号过大" in response.json()["detail"]
+    else:
+        assert response.json() == {"rowCount": 1}
 
 
 def create(client, key="k1", rows=None):
@@ -133,20 +404,26 @@ def test_switch_idempotency_quota_rollover_and_cancel(
         client.post("/api/v1/advisor/tasks", json={"kind": "compare", "rows": ["x"]}).status_code
         == 422
     )
-    assert create(client, key="second").status_code == 429
+    assert create(client, key="second").status_code == 202
+    assert create(client, key="third").status_code == 202
+    blocked = create(client, key="fourth")
+    assert blocked.status_code == 429
+    assert "本月" in blocked.json()["detail"]["message"]
 
     cancelled = client.post("/api/v1/advisor/tasks/1/cancel")
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
     assert create(client, key="after-cancel").status_code == 202
 
     # 处理失败的任务不算用掉额度。
-    session.get(AdvisorTask, 2).status = "failed"
+    failed = session.get(AdvisorTask, 4)
+    failed.status = "failed"
+    service.release_usage(session, failed)
     session.commit()
     assert create(client, key="after-failed").status_code == 202
 
-    # 北京时间跨日后恢复当天一次免费额度。
+    # 北京时间自然月切换后恢复三次免费额度。
     monkeypatch.setattr(v1, "now", lambda: datetime(2026, 10, 1, 0, 1, tzinfo=BJ))
-    assert create(client, key="next-day").status_code == 202
+    assert create(client, key="next-month").status_code == 202
 
 
 def test_row_and_body_limits_and_personal_data(client):
@@ -340,6 +617,8 @@ def test_delete_terminal_task_keeps_usage_and_queued_delete_refunds(
     session.commit()
     assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
     assert session.scalar(select(AdvisorUsage.used_count)) == 1
+    assert create(client, key="ledger-second").status_code == 202
+    assert create(client, key="ledger-third").status_code == 202
     assert create(client, key="ledger-blocked").status_code == 429
 
 
@@ -437,3 +716,126 @@ def test_uploaded_file_is_deleted_or_queued_when_task_times_out(
         is False
     )
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://timeout"
+
+
+def relocate_sheet(source, transform=lambda data: data):
+    """保留有效工作簿关系，将工作表移到无 .xml 后缀的非标准路径。"""
+    output = BytesIO()
+    old_path = "xl/worksheets/sheet1.xml"
+    new_path = "custom/customers.data"
+    with ZipFile(BytesIO(source)) as old, ZipFile(output, "w", compression=8) as new:
+        for name in old.namelist():
+            data = old.read(name)
+            if name == old_path:
+                name, data = new_path, transform(data)
+            elif name in ("xl/_rels/workbook.xml.rels", "[Content_Types].xml"):
+                data = data.replace(("/" + old_path).encode(), ("/" + new_path).encode())
+            new.writestr(name, data)
+    return output.getvalue()
+
+
+def test_upload_nonstandard_worksheet_path_and_first_sheet(client):
+    agree_advisor(client)
+    book = Workbook()
+    book.active.append(["企业名称"])
+    book.active.append(["首表公司"])
+    book.create_sheet("当前表").append(["其他公司"])
+    book.active = 1
+    output = BytesIO()
+    book.save(output)
+    body = upload_body(relocate_sheet(output.getvalue()))
+    assert client.post("/api/v1/advisor/preview", json=body).json() == {"rowCount": 1}
+    response = client.post("/api/v1/advisor/tasks", headers={"Idempotency-Key": "first"}, json=body)
+    assert response.status_code == 202
+    assert client.get(f"/api/v1/advisor/tasks/{response.json()['id']}").json()["rowCount"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload,reason",
+    [
+        (b'<row r="1000000"><c r="A1000000"/></row>', "行号过大"),
+        (b'<row r="1"><c r="A1000000"/></row>', "行号过大"),
+        (b'<row r="1"><c r="BM1"/></row>', "列数过多"),
+        (b'<row r="1"><c r="A1"/></row>' * 503, "行号过大"),
+        (b'<row r="1">' + b'<c r="A1"/>' * 32129 + b"</row>", "单元格过多"),
+        (b"<x/>" * 100001, "内容过多"),
+    ],
+    ids=["row-index", "cell-index", "columns", "rows", "cells", "elements"],
+)
+@pytest.mark.parametrize("kind", ["compare", "track"])
+def test_nonstandard_worksheet_limits(client, payload, reason, kind):
+    agree_advisor(client)
+    sheet = (
+        b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        + payload
+        + b"</sheetData></worksheet>"
+    )
+    content = relocate_sheet(xlsx_content([["企业名称"], ["甲公司"]]), lambda _: sheet)
+    response = client.post("/api/v1/advisor/preview", json=upload_body(content, kind=kind))
+    assert response.status_code == 422 and reason in response.json()["detail"]
+    assert client.get("/api/v1/advisor/status").json()["quota"][kind]["used"] == 0
+
+
+def test_xlsx_cumulative_expansion_limit(client):
+    agree_advisor(client)
+    output = BytesIO()
+    with ZipFile(output, "w", compression=8) as archive:
+        archive.writestr("a", b"x" * (1024 * 1024 + 1))
+        archive.writestr("b", b"x" * (1024 * 1024 + 1))
+    response = client.post("/api/v1/advisor/preview", json=upload_body(output.getvalue()))
+    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("content", [b"PK company\nOther company", b"PKbroken"])
+def test_pk_prefix_csv_is_not_zip(client, content):
+    agree_advisor(client)
+    response = client.post("/api/v1/advisor/preview", json=upload_body(content))
+    assert response.status_code == 200
+    assert response.json()["rowCount"] == len(content.splitlines())
+
+
+@pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
+def test_delete_requires_authorization_but_logout_ignores_switch_and_agreement(
+    client, advisor_settings, session, disabled, outdated
+):
+    agree_advisor(client)
+    created = create(client).json()
+    advisor_settings.advisor_enabled = not disabled
+    if outdated:
+        advisor_settings.agreement_version = "new-general-version"
+        user = session.scalar(select(User))
+        user.advisor_agreement_version = "old-advisor-version"
+        session.commit()
+    # 我的数据中的删除与我的任务使用同一个删除接口。
+    data = client.get("/api/v1/me/data")
+    assert data.status_code == 200
+    assert data.json()["advisorTasks"][0]["id"] == created["id"]
+    advisor_settings.dev_openid = "somebody-else"
+    expected = 404 if disabled else 403
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
+    advisor_settings.dev_openid = "advisor-user"
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
+    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["id"] == created["id"]
+    assert client.delete("/api/v1/me").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, created["id"]) is None
+    assert client.get("/api/v1/me").json()["agreed"] is None
+
+
+def test_xlsx_cell_limit_across_worksheets(client):
+    agree_advisor(client)
+    book = Workbook()
+    book.create_sheet("第二表")
+    output = BytesIO()
+    book.save(output)
+    sheet = (
+        b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">'
+        + b'<c r="A1"/>' * 16100
+        + b"</row></sheetData></worksheet>"
+    )
+    result = BytesIO()
+    with ZipFile(BytesIO(output.getvalue())) as old, ZipFile(result, "w", compression=8) as new:
+        for name in old.namelist():
+            new.writestr(name, sheet if name.startswith("xl/worksheets/") else old.read(name))
+    response = client.post("/api/v1/advisor/preview", json=upload_body(result.getvalue()))
+    assert response.status_code == 422 and "单元格过多" in response.json()["detail"]

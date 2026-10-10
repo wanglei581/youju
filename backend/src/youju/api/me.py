@@ -98,6 +98,7 @@ UserDep = Annotated[User, Depends(current_user)]
 class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
+    scope: Literal["general", "advisor"] = "general"
 
 
 class Conditions(BaseModel):
@@ -256,6 +257,16 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         "agreed": {"version": user.agreement_version, "at": user.agreement_at.isoformat()}
         if user.agreement_at
         else None,
+        **(
+            {
+                "advisorAgreed": {
+                    "version": user.advisor_agreement_version,
+                    "at": _iso(user.advisor_agreement_at),
+                }
+            }
+            if user.advisor_agreement_at
+            else {}
+        ),
         "follows": session.scalar(select(func.count(Follow.id)).where(Follow.user_id == user.id))
         or 0,
         "subscriptions": {
@@ -268,6 +279,16 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。只接受当前版本。"""
+    if body.scope == "advisor":
+        if not get_settings().advisor_enabled:
+            raise HTTPException(status_code=404, detail="没有找到接口")
+        user = current_user(known_user(request, session))
+        if body.version != advisor_service.ADVISOR_AGREEMENT_VERSION:
+            raise HTTPException(status_code=422, detail="工具使用说明已更新，请重新阅读并同意")
+        user.advisor_agreement_version = body.version
+        user.advisor_agreement_at = v1.now()
+        session.commit()
+        return {"version": body.version, "at": user.advisor_agreement_at.isoformat()}
     if body.version != get_settings().agreement_version:
         raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
     stamp = v1.now()
@@ -297,6 +318,9 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
+        from youju.payments import anonymize
+
+        anonymize(session, user)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
@@ -332,6 +356,16 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "agreed": {"version": user.agreement_version, "at": _iso(user.agreement_at)}
             if user.agreement_at is not None
             else None,
+            **(
+                {
+                    "advisorAgreed": {
+                        "version": user.advisor_agreement_version,
+                        "at": _iso(user.advisor_agreement_at),
+                    }
+                }
+                if user.advisor_agreement_at
+                else {}
+            ),
         }
         if user is not None
         else None,
