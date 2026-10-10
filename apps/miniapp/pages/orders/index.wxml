@@ -6,15 +6,17 @@
   <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
   <view wx:elif="{{!items.length}}" class="card advisor-card muted">还没有订单</view>
   <block wx:else>
-  <view wx:for="{{items}}" wx:key="orderId" class="card advisor-card">
-    <view class="advisor-text">{{item.summary}}</view>
-    <view class="advisor-text muted">订单号 {{item.orderId}}</view>
-    <view wx:if="{{!item.canRefund}}" class="advisor-text muted">{{item.reason}}</view>
-    <view class="advisor-actions">
-      <button wx:if="{{item.canRefund}}" class="advisor-button" data-id="{{item.orderId}}" bindtap="refund" disabled="{{refunding !== null}}" loading="{{refunding === item.orderId}}">申请退款</button>
-      <button class="advisor-button" data-id="{{item.orderId}}" bindtap="invoice">申请发票</button>
+  <view wx:for="{{items}}" wx:key="orderId" class="card order">
+    <view class="order-head"><text class="order-name">客户工作台 30 天</text><text class="order-status order-status--{{item.statusTone}}">{{item.statusText}}</text></view>
+    <view class="order-line"><text class="order-amount">{{item.amountText}} 元</text><text wx:if="{{item.paidText}}" class="muted"> · {{item.paidText}} 付款</text></view>
+    <view wx:if="{{item.period}}" class="order-line muted">使用期 {{item.period}}</view>
+    <view class="order-line weak">订单号 {{item.orderId}}</view>
+    <view wx:if="{{!item.canRefund && item.reason}}" class="order-reason">不能自助退款：{{item.reason}}</view>
+    <view class="order-actions">
+      <button wx:if="{{item.canRefund}}" class="order-btn" data-id="{{item.orderId}}" bindtap="refund" disabled="{{refunding !== null}}" loading="{{refunding === item.orderId}}">申请退款</button>
+      <button class="order-btn" data-id="{{item.orderId}}" bindtap="invoice">申请发票</button>
     </view>
   </view>
   </block>
-  <view class="exits"><button class="exit-btn" bindtap="feedback">遇到问题</button></view>
+  <view class="order-help">支付或订单有问题？<text class="link" bindtap="feedback" aria-role="button">遇到问题</text></view>
 </block>

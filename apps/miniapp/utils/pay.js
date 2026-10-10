@@ -57,6 +57,12 @@ function orderView(order) {
   const status = order.status === '已完成' && !order.passRevokedAt ? '已开通' : order.status;
   return Object.assign({}, order, {
     summary: `客户工作台 30 天 · ${yuan(order.amount, true)} 元${order.paidAt ? ` · ${date(order.paidAt)} 付款` : ''} · ${status}${start && end ? ` · 使用期 ${start} 至 ${end}` : ''}`,
+    // 订单页分行显示用：状态、金额、付款日期、使用期
+    statusText: status,
+    statusTone: status === '已开通' ? 'on' : /退款/.test(status) ? 'refund' : 'plain',
+    amountText: yuan(order.amount, true),
+    paidText: order.paidAt ? date(order.paidAt) : '',
+    period: start && end ? `${start} 至 ${end}` : '',
     reason: order.canRefund ? '' : refundReason(order.refundUnavailableReason),
     refundConfirm: `退款后，这张订单对应的 ${days} 天使用期取消，${yuan(order.amount, true)} 元原路退回。确定吗？`,
   });

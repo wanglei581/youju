@@ -75,7 +75,7 @@ for (const options of [{ final: false }, { termsText: '【待律师定稿】' },
 });
 test('购买完整文字，动态价格、天数、北京时间日期；默认未勾选，点击提示 P17', async () => {
   const p = await purchase({ payProducts: () => Promise.resolve({ items: [{ ...PRODUCT, price: 3105, days: 28 }] }), advisorStatus: () => Promise.resolve(status(1, true, '2026-11-08T17:00:00Z')) });
-  for (const text of ['客户工作台 30 天', '31.05 元 · 买一次用 28 天，到期不再扣钱', '使用期到 2026-11-09 · 再买一次，往后顺延 28 天', '包含什么', '批量名单比对：不限次数，每次 500 家以内', '客户相关通知表：不限次数，每次 500 家以内', '结果可导出 Excel，带发文机关、日期和原文链接', '不买也能用', '批量名单比对、客户相关通知表：每月各 3 次，每次 50 家以内', '搜索、详情、附件、查名单、导出等一直免费', '购买前请知悉', '使用期从付款成功时起算，共 28 天', '只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看和导出。', '我已阅读并同意《付费服务协议》', '支付 31.05 元', '遇到问题']) assert.ok(p.text().includes(text), text);
+  for (const text of ['客户工作台 30 天', '31.05元', '买一次用 28 天，到期不再扣钱', '使用期到 2026-11-09 · 再买一次，往后顺延 28 天', '包含什么', '批量名单比对不限次数，每次 500 家以内', '客户相关通知表不限次数，每次 500 家以内', '结果可导出 Excel带发文机关、日期和原文链接', '不买也能用', '批量名单比对、客户相关通知表：每月各 3 次，每次 50 家以内', '搜索、详情、附件、查名单、导出等一直免费', '购买前请知悉', '使用期从付款成功时起算，共 28 天', '只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看和导出。', '我已阅读并同意《付费服务协议》', '支付 31.05 元', '遇到问题']) assert.ok(p.text().includes(text), text);
   assert.doesNotMatch(p.text(), BANNED); assert.equal(p.view.data.checked, false); p.view.buy(); await flush(); assert.equal(p.calls.toasts.at(-1).title, pay.TEXT.termsRequired); assert.equal(p.calls.orders.length, 0);
 });
 test('工具说明未同意先引导，不下单', async () => {
@@ -144,7 +144,7 @@ for (const [reason, text] of [['已超过 7 天', '已超过 7 天'], ['已提�
   const p = page('orders', { payOrders: () => Promise.resolve({ items: [{ ...ORDER, canRefund: false, refundUnavailableReason: reason }] }) }); p.view.onShow(); await flush(); assert.ok(p.text().includes(text)); assert.equal(findAll(p.show(), tapsTo('refund')).length, 0); assert.equal(findAll(p.show(), tapsTo('invoice')).length, 1); p.view.refund(event(41)); assert.equal(p.calls.modals.length, 0);
 });
 test('订单可退：O1、O4、退款成功 O5 刷新；发票和问题带订单号', async () => {
-  const p = page('orders'); p.view.onShow(); await flush(); assert.ok(p.text().includes('客户工作台 30 天 · 29.00 元 · 2026-10-09 付款 · 已开通 · 使用期 10-09 至 11-08')); assert.equal(findAll(p.show(), tapsTo('refund')).length, 1);
+  const p = page('orders'); p.view.onShow(); await flush(); for (const text of ['客户工作台 30 天已开通', '29.00 元 · 2026-10-09 付款', '使用期 10-09 至 11-08', '订单号 41']) assert.ok(p.text().includes(text), text); assert.equal(p.view.data.items[0].summary, '客户工作台 30 天 · 29.00 元 · 2026-10-09 付款 · 已开通 · 使用期 10-09 至 11-08'); assert.equal(findAll(p.show(), tapsTo('refund')).length, 1);
   p.view.refund(event(41)); await flush(); assert.equal(p.calls.modals[0].content, '退款后，这张订单对应的 30 天使用期取消，29.00 元原路退回。确定吗？'); assert.deepEqual(p.calls.refunds, [41]); assert.equal(p.calls.lists, 2); assert.ok(p.text().includes(pay.TEXT.refund));
   p.view.invoice(event(41)); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=invoice&orderId=41'); p.view.feedback(); assert.equal(p.calls.urls.at(-1), '/pages/feedback/index?type=pay&orderId=41');
 });
