@@ -96,17 +96,19 @@ test('正式请求支持 202 和 Idempotency-Key，下载重新取地址', async
   let code = 202; let request; const config = require('../utils/config.js');
   const original = { cloudEnv: config.cloudEnv, devBaseUrl: config.devBaseUrl };
   config.cloudEnv = ''; config.devBaseUrl = 'http://test';
-  global.wx.request = (options) => { request = options; options.success({ statusCode: code, data: code === 202 ? { id: 7 } : { url: 'https://test/result' } }); };
+  const requests = []; global.wx.request = (options) => { request = options; requests.push(options.url); const part = /\/file\?part=(\d)$/.exec(options.url); options.success({ statusCode: code, data: code === 202 ? { id: 7 } : part ? new Uint8Array(part[1] === '0' ? [1, 2, 3] : [4]).buffer : { size: 4, parts: 2, partSize: 3 } }); };
   const api = require('../utils/api.js');
   try {
     assert.equal((await api.createAdvisorTask({ kind: 'compare', rows: ['甲公司'] }, 'stable-key')).id, 7);
     assert.equal(request.header['Idempotency-Key'], 'stable-key');
-    code = 200; let downloaded = false; let opened = false;
-    global.wx.downloadFile = (options) => { downloaded = true; assert.equal(options.url, 'https://test/result'); options.success({ statusCode: 200, tempFilePath: '/tmp/result' }); };
+    code = 200; let saved = null; let opened = false;
+    global.wx.downloadFile = () => assert.fail('结果文件不该让手机直接下载');
     global.wx.openDocument = (options) => { opened = true; assert.equal(options.fileType, 'xlsx'); options.success(); };
-    global.wx.getFileSystemManager = () => ({ readFile: (o) => o.success({ data: new ArrayBuffer(4) }), writeFile: (o) => o.success(), readdirSync: () => [] });
+    global.wx.getFileSystemManager = () => ({ readFile: (o) => o.success({ data: new ArrayBuffer(4) }), writeFile: (o) => { saved = o.data; o.success(); }, readdirSync: () => [] });
     await require('../utils/advisor.js').openResult(7);
-    assert.ok(downloaded && opened); assert.match(request.url, /\/7\/download$/);
+    // 先问大小和段数，再逐段取，拼起来是完整文件；不出现对象存储的地址
+    assert.ok(opened); assert.deepEqual(requests.slice(-3).map((u) => u.replace('http://test', '')), ['/api/v1/advisor/tasks/7/download', '/api/v1/advisor/tasks/7/file?part=0', '/api/v1/advisor/tasks/7/file?part=1']);
+    assert.deepEqual(Array.from(new Uint8Array(saved)), [1, 2, 3, 4]);
   } finally { Object.assign(config, original); }
 });
 

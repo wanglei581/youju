@@ -322,14 +322,25 @@ function attachmentPart(id, version, part) {
 }
 
 function attachmentPartOnce(id, version, part) {
-  const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
+  return binaryOnce(`/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`, '附件下载失败');
+}
+
+// 批量工具结果文件的一段（原始字节）。和附件一样经我们自己的接口分段取：
+// 不让手机直接去对象存储下载（那要在小程序后台配 downloadFile 合法域名，10/10 真机试用前发现结果因此打不开）。
+function advisorTaskPart(id, part) {
+  const path = `/api/v1/advisor/tasks/${encodeURIComponent(id)}/file${query({ part })}`;
+  return withRetry(() => binaryOnce(path, '结果文件下载失败'), 'GET');
+}
+
+// 取一段二进制内容（附件、工具结果共用）
+function binaryOnce(path, failText) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const done = (res) => {
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
-      const err = new Error(`附件下载失败（${res.statusCode}）`);
+      const err = new Error(`${failText}（${res.statusCode}）`);
       err.status = res.statusCode;
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
@@ -517,5 +528,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
-  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder,
+  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, advisorTaskPart,
 };
