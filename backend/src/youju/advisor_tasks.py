@@ -662,14 +662,23 @@ def run_advisor_tasks(
 
 
 def download_url(client: httpx.Client, env: str, file_id: str) -> str | None:
-    data = _open_api(client, "/tcb/batchdownloadfile", {"env": env, "file_list": [file_id]})
-    items = data.get("download_list") or data.get("file_list") or []
-    if not items:
+    """结果文件的临时下载链接（只在服务端用）。
+
+    请求和返回的格式同附件副本（attachments.download_link，线上一直在用）：
+    file_list 里每项是 {fileid, max_age}，返回的 file_list 每项带 status 和 download_url。
+    原来这里把文件编号直接当字符串传，10/10 第一次连真实环境时取不到链接。
+    """
+    data = _open_api(
+        client,
+        "/tcb/batchdownloadfile",
+        {"env": env, "file_list": [{"fileid": file_id, "max_age": 600}]},
+    )
+    items = data.get("file_list") or data.get("download_list") or []
+    item = next((i for i in items if i.get("fileid") in (None, file_id)), None)
+    if not item or item.get("status") not in (None, 0):
         return None
-    item = items[0]
-    if item.get("status") not in (None, 0):
-        return None
-    return item.get("download_url") or item.get("url")
+    url = item.get("download_url") or item.get("url") or ""
+    return url if url.startswith("https://") else None
 
 
 # 结果文件由 api 自己从对象存储分段读出来再发给小程序（和附件副本同一种做法）：

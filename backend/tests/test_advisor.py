@@ -384,8 +384,20 @@ class FakeObjectStore:
                 }
             )
         if url.endswith("/tcb/batchdownloadfile"):
+            # 按微信接口的真实格式：请求里每项是 {fileid, max_age}，返回的 file_list 每项带 fileid
+            asked = kwargs["json"]["file_list"]
+            assert all(set(item) == {"fileid", "max_age"} for item in asked)
             return FakeResponse(
-                {"errcode": 0, "download_list": [{"status": 0, "download_url": "https://download"}]}
+                {
+                    "errcode": 0,
+                    "file_list": [
+                        {
+                            "fileid": asked[0]["fileid"],
+                            "status": 0,
+                            "download_url": "https://download",
+                        }
+                    ],
+                }
             )
         return FakeResponse({"errcode": 0})
 
@@ -905,3 +917,27 @@ def test_result_file_is_read_from_storage_in_ranges():
     )
     with httpx.Client(transport=too_big) as http, pytest.raises(service.BackupError):
         service.result_size(http, "https://cos.test/big.xlsx")
+
+
+def test_download_url_handles_missing_file_and_bad_links():
+    """文件不存在（status 非 0）、返回的不是 https 链接、返回别的文件：都当作取不到。"""
+
+    class Store:
+        def __init__(self, items):
+            self.items = items
+
+        def post(self, url, **kwargs):
+            return FakeResponse({"errcode": 0, "file_list": self.items})
+
+    file_id = "cloud://env.bucket/advisor/1.xlsx"
+    ok = [{"fileid": file_id, "status": 0, "download_url": "https://cos.test/1.xlsx"}]
+    assert service.download_url(Store(ok), "env", file_id) == "https://cos.test/1.xlsx"
+    gone = [{"fileid": file_id, "status": -503002, "download_url": ""}]
+    assert service.download_url(Store(gone), "env", file_id) is None
+    plain = [{"fileid": file_id, "status": 0, "download_url": "http://cos.test/1.xlsx"}]
+    assert service.download_url(Store(plain), "env", file_id) is None
+    other = [
+        {"fileid": "cloud://env.bucket/advisor/2.xlsx", "status": 0, "download_url": "https://x"}
+    ]
+    assert service.download_url(Store(other), "env", file_id) is None
+    assert service.download_url(Store([]), "env", file_id) is None
