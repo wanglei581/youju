@@ -137,7 +137,7 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   };
   const page = load('pages/detail/index.js', {
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
-    '../../utils/format.js': format, '../../utils/copy.js': { copyLink: (url) => copied.push(url) }, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': { copyLink: (url) => copied.push(url) }, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': repost, '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
@@ -184,7 +184,7 @@ test('多个关注命中同组不同版本：新文件流只列一条，未确�
       : [{ id: '12', date: '2026-09-23', group: GROUP }, { id: '21', date: '2026-09-21' }] }) },
     '../../utils/format.js': format,
     '../../utils/daywatch.js': {},
-    '../../utils/subscribe.js': {},
+    '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/conditions.js': {},
   });

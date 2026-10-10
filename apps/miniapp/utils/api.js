@@ -38,24 +38,38 @@ function forgetAgreed() {
   try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 忽略 */ }
 }
 
-// options.method 默认 GET；POST、DELETE 时 options.data 按 JSON 发送
-// 云托管服务缩到 0 台后，第一个请求会在冷启动期间收到网关的 502/503/504 或调用失败；
-// 查询类（GET）请求等一下再试，最多再试 2 次（10/7 早上实测：冷启动时连续 503，几秒后恢复）。
-// 只重试很快出错的：重试要在第一次发出后 5 秒内开始，每次最多等 15 秒，一次查询从发出到报错
-// 最多约 20 秒。超时（15 秒没有返回）不重试，再等一轮就要半分钟以上。
-const RETRY_DELAYS = [1000, 2500];
-const RETRY_WINDOW = 5000;
+// 冷启动网关错误或单次 5 秒内的调用失败：GET 最多再试 4 次，等待共 17.5 秒。
+// 单次 15 秒未返回（包括平台报超时）不重试；POST 等写操作不重试。
+const RETRY_DELAYS = [1500, 3000, 5000, 8000];
 const TIMEOUT = 15000;
 const GATEWAY_CODES = [502, 503, 504];
+const startupPages = new Map();
+let startingRequests = 0;
+
+function emitStartup() {
+  startupPages.forEach((page) => page.setData({ serviceStarting: startingRequests > 0 }));
+}
+function watchStartup(page) {
+  startupPages.set(page, page);
+  page.setData({ serviceStarting: startingRequests > 0 });
+}
+function stopStartup(page) {
+  startupPages.delete(page);
+}
 
 function withRetry(attempt, method) {
-  const started = Date.now();
-  const run = (n) => attempt().catch((err) => {
-    if (method !== 'GET' || !err || !err.retryable || err.timeout || n >= RETRY_DELAYS.length) throw err;
-    if (Date.now() - started + RETRY_DELAYS[n] > RETRY_WINDOW) throw err;
-    return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
-  });
-  return run(0);
+  let starting = false;
+  const run = (n) => {
+    const sent = Date.now();
+    return attempt().catch((err) => {
+      if (method !== 'GET' || !err || !err.retryable || err.timeout || n >= RETRY_DELAYS.length) throw err;
+      if (!GATEWAY_CODES.includes(err.status) && Date.now() - sent > 5000) throw err;
+      if (!starting) { starting = true; startingRequests += 1; emitStartup(); }
+      return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
+    });
+  };
+  const finish = () => { if (starting) { startingRequests -= 1; emitStartup(); } };
+  return run(0).then((value) => { finish(); return value; }, (err) => { finish(); throw err; });
 }
 
 // 15 秒没有返回：算超时，不再重试
@@ -470,7 +484,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
+  watchStartup, stopStartup, isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
   attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,

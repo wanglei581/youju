@@ -1,12 +1,15 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
 const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE } = require('../../utils/consent.js');
+const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
 Page({
   data: {
     // 协议定稿前（D-056）不显示登录卡片、纠错和申请覆盖，也不查询登录状态；定稿后照旧
     loginOpen: loginOpen(),
+    // 订阅消息模板申请下来之前，不写"提醒"相关的字样
+    remindOpen: remindOpen('newDocs') || remindOpen('deadline'),
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,

@@ -28,7 +28,7 @@ function searchPage(api, wx = {}) {
     '../../content/legal.js': { final: false },
     '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/exporter.js': {}, '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
-    '../../utils/subscribe.js': {}, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
+    '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
     '../../utils/conditions.js': conditions,
   }, { wx });
 }
@@ -82,7 +82,7 @@ test('J-05 详情返回重新读取核定日期，下架清空正文与操作并
   const page = load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { detail: () => { calls += 1; return error ? Promise.reject(error) : Promise.resolve(result); } },
-    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
@@ -180,12 +180,12 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
   const search = searchPage({ search: pending }); search.onLoad({}); assert.equal(search.data.loading, true);
   const follow = load('pages/follow/index.js', {
     '../../utils/api.js': { isLive: () => true }, '../../content/legal.js': { final: true },
-    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/subscribe.js': {},
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/consent.js': { loginOpen: () => true, syncConsent: pending }, '../../utils/conditions.js': conditions,
   }); follow.load(); assert.equal(follow.data.loading, true);
   const calendar = load('pages/calendar/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
-    '../../utils/api.js': { calendar: pending }, '../../utils/format.js': format, '../../utils/subscribe.js': {},
+    '../../utils/api.js': { calendar: pending }, '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
   }); calendar.load(); assert.equal(calendar.data.loading, true); assert.equal(calendar.data.loaded, false);
   const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
@@ -225,7 +225,7 @@ test('J-02 关注页的按此条件搜索入口保留 open 和其余筛选', asy
     '../../utils/api.js': { myFollows: () => Promise.resolve({ items: [{ id: 1, name: '未截止', newCount: 0, conditions: c }] }),
       mySubscriptions: () => Promise.resolve({ items: [] }) },
     '../../content/legal.js': { final: true }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/subscribe.js': {}, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/conditions.js': conditions,
+    '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/conditions.js': conditions,
   }, { wx: { navigateTo: ({ url }) => { target = url; } } });
   page.loadLive(); await flush(); page.searchFollow(event({ id: '1' }));
   const params = Object.fromEntries(new URL(target, 'https://test.invalid').searchParams);

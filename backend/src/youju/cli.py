@@ -340,14 +340,15 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
     """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
-    （rule_supports、rule_industries），只写有变化的。规则改了之后要跑一次；admin 服务每次启动时
-    在迁移之后自动跑。"""
+    （rule_supports、rule_industries），并去掉标题开头从列表页带进来的装饰符号（crawler/titles.py），
+    只写有变化的。规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
     from collections import defaultdict
 
     from sqlalchemy import update
 
     from youju.categories import doc_category
     from youju.classify import doc_kind
+    from youju.crawler.titles import clean_title
     from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
     with session_factory()() as session:
@@ -362,12 +363,16 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
             )
         ).all()
         changed: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
+        cleaned_titles: dict[int, str] = {}
         for doc_id, title, *stored in rows:
+            cleaned = clean_title(title)
+            if cleaned != title:
+                cleaned_titles[doc_id] = cleaned
             new = (
-                doc_kind(title),
-                doc_category(title),
-                SUPPORT_RULES.stored(title),
-                INDUSTRY_RULES.stored(title),
+                doc_kind(cleaned),
+                doc_category(cleaned),
+                SUPPORT_RULES.stored(cleaned),
+                INDUSTRY_RULES.stored(cleaned),
             )
             if new != tuple(stored):
                 changed[new].append(doc_id)
@@ -383,10 +388,13 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
                         rule_industries=industries,
                     )
                 )
+        # 标题清理与标签批量重算分开，避免每种标题都单发一次标签 UPDATE。
+        for doc_id, title in cleaned_titles.items():
+            session.execute(update(Document).where(Document.id == doc_id).values(title=title))
+        updated_ids = set(cleaned_titles) | {i for ids in changed.values() for i in ids}
         session.commit()
     print(
-        f"按当前规则重算文件类型、项目类别和筛选标签：共 {len(rows)} 份，"
-        f"更新 {sum(map(len, changed.values()))} 份"
+        f"按当前规则重算文件类型、项目类别和筛选标签：共 {len(rows)} 份，更新 {len(updated_ids)} 份"
     )
     return 0
 
@@ -642,7 +650,8 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
 
 
 def _cmd_cache_attachments(args: argparse.Namespace) -> int:
-    """附件副本（youju/attachments.py）：下载近 90 天文件的附件存到对象存储 attachments/，
+    """附件副本（youju/attachments.py）：申报通知近 180 天、政策近 90 天的附件
+    存到对象存储 attachments/，
     清理过期的。原网站下载失败是常事，记在表里、按时重试，不算任务失败；
     对象存储出错才按失败退出（job.sh 提醒）。"""
     from youju.attachments import cache_attachments
@@ -972,7 +981,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p = sub.add_parser(
         "cache-attachments",
-        help="下载近 90 天文件的附件存到对象存储，供小程序直接打开；清理过期的副本",
+        help="下载申报通知近 180 天、政策近 90 天的附件存到对象存储，供小程序直接打开；"
+        "清理过期的副本",
     )
     p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
     p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
