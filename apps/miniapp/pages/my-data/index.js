@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { removeClue } = require('../../utils/rewards.js');
 const { taskView } = require('../../utils/advisor.js');
 const { describe } = require('../../utils/conditions.js');
 const { withdraw, loginOpen } = require('../../utils/consent.js');
@@ -21,7 +22,7 @@ function maskId(id) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], advisorTasks: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen() },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], deadlineClues: [], advisorTasks: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -67,8 +68,9 @@ Page({
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
+          deadlineClues: d.deadlineClues || [],
           advisorTasks: (d.advisorTasks || []).map(taskView),
-          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, advisor: d.advisorTasksTotal || 0 },
+          totals: { clues: d.deadlineCluesTotal || 0, subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, advisor: d.advisorTasksTotal || 0 },
           retention: d.retention,
         });
       })
@@ -88,7 +90,7 @@ Page({
   // 单条复制完整原始记录，包含条件、状态和时间。
   copyOne(e) {
     const { kind, id } = e.currentTarget.dataset;
-    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback' }[kind];
+    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback', clue: 'deadlineClues' }[kind];
     const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
     if (!row) return;
     wx.setClipboardData({
@@ -96,6 +98,10 @@ Page({
       success: () => wx.showToast({ title: '已复制这条完整记录', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制，请稍后再试', icon: 'none' }),
     });
+  },
+
+  removeClue(e) {
+    return removeClue(this.data.deadlineClues, e.currentTarget.dataset.id).then((ok) => { if (ok) this.load(); });
   },
 
   // 更正：改关注名称

@@ -242,7 +242,7 @@ test('查询类请求遇到冷启动 503 自动重试；提交类请求不重试
   const seen = [];
   let codes = [503, 503, 200];
   const api = load('utils/api.js', {
-    './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
+    './invite.js': { read: () => '', clear() {} }, './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
     '../mock/advisor.js': {}, '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
   }, {
     wx: {

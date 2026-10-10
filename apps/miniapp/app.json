@@ -23,7 +23,10 @@
     "pages/clients/index",
     "pages/client-results/index",
     "pages/pass/index",
-    "pages/orders/index"
+    "pages/orders/index",
+    "pages/rewards/index",
+    "pages/invite/index",
+    "pages/deadline-clue/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

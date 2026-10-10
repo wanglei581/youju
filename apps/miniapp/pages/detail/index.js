@@ -3,7 +3,7 @@ const { dueInfo, deadlineNote, cnDate, weekday, kindClass } = require('../../uti
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
-const { loginOpen } = require('../../utils/consent.js');
+const { loginOpen, syncConsent } = require('../../utils/consent.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
@@ -45,7 +45,7 @@ function standardKey(doc) {
 }
 
 Page({
-  data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
+  data: { signedIn: false, doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], attNote: '', versions: [], upstream: '', standardKey: '' },
 
@@ -97,6 +97,7 @@ Page({
           })),
         });
         this.syncReminded();
+        this.syncClueEntry();
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '', standardKey: '',
@@ -104,6 +105,21 @@ Page({
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
+  },
+
+  syncClueEntry() {
+    const doc = this.data.doc;
+    const seq = this.clueSeq = (this.clueSeq || 0) + 1;
+    this.setData({ signedIn: false });
+    if (!doc || !doc.can_submit_deadline_clue) return;
+    return syncConsent().then((signedIn) => {
+      if (seq === this.clueSeq && this.data.doc === doc) this.setData({ signedIn });
+    });
+  },
+
+  deadlineClue() {
+    const doc = this.data.doc;
+    if (doc && doc.can_submit_deadline_clue && this.data.signedIn) wx.navigateTo({ url: `/pages/deadline-clue/index?id=${encodeURIComponent(doc.id)}&title=${encodeURIComponent(doc.title)}` });
   },
 
   toggleBody() {
@@ -141,6 +157,7 @@ Page({
     }
     this.recompute();
     this.syncReminded();
+    this.syncClueEntry();
     watchDay(this, () => this.recompute());
   },
 

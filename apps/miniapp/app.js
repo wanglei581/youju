@@ -8,7 +8,12 @@ App({
     menuWidth: 96,
   },
 
-  onLaunch() {
+  onShow(options) {
+    require('./utils/invite.js').capture(options && options.query);
+  },
+
+  onLaunch(options) {
+    require('./utils/invite.js').capture(options && options.query);
     require('./utils/tool-overlays.js').install(wx);
     const config = require('./utils/config.js');
     if (config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });

@@ -369,8 +369,23 @@ function me() {
 
 function agree(version, scope) {
   if (!isLive() && scope === 'advisor') return advisorMock.agree(version);
-  return request('/api/v1/me/agreement', null, { method: 'POST', data: scope ? { version, scope } : { version } });
+  const invite = require('./invite.js');
+  const data = scope ? { version, scope } : { version };
+  const general = !scope || scope === 'general';
+  const code = general && invite.read();
+  if (code) data.invite_code = code;
+  return request('/api/v1/me/agreement', null, { method: 'POST', data }).then((res) => {
+    // 发出请求后可能又打开另一张卡片，只清除这次成功注册所用的码。
+    if (general && invite.read() === code) invite.clear();
+    return res;
+  });
 }
+
+function myRewards() { return request('/api/v1/me/rewards'); }
+function inviteInfo() { return request('/api/v1/me/invite'); }
+function submitDeadlineClue(data) { return request('/api/v1/me/deadline-clues', null, { method: 'POST', data }); }
+function myDeadlineClues() { return request('/api/v1/me/deadline-clues'); }
+function deleteDeadlineClue(id) { return request(`/api/v1/me/deadline-clues/${encodeURIComponent(id)}`, null, { method: 'DELETE' }); }
 
 // 注销：删除服务端的用户和关注、订阅、纠错、埋点
 function deleteMe() {
@@ -515,6 +530,7 @@ module.exports = {
   attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
+  myRewards, inviteInfo, submitDeadlineClue, myDeadlineClues, deleteDeadlineClue,
   follow, files, saveSubscription,
   advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
   payProducts, createPayOrder, payOrder, payOrders, refundPayOrder,

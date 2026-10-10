@@ -823,7 +823,9 @@ def test_switch_defaults_and_comma_config(monkeypatch):
 def test_admin_overview_ai_counts(client, session, settings, doc):
     settings.admin_token = "test-admin"
     settings.role = "all"
-    task = direct_task(session, doc)
+    # 总览按真实时间数“最近 7 天”的任务：任务时间要跟着当前时间走，
+    # 不能用写死的 NOW（10/3）——10/10 起它就落到 7 天以外，这项测试会一直失败。
+    task = direct_task(session, doc, stamp=datetime.now(UTC) - timedelta(hours=1))
     task.status = "failed"
     session.commit()
     response = client.get("/api/admin/overview", headers={"X-Admin-Token": "test-admin"})

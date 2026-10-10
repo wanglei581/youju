@@ -111,7 +111,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   const copied = []; let deleted; let modal;
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': { myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
-    '../../utils/advisor.js': { taskView: (task) => task },
+    '../../utils/rewards.js': {}, '../../utils/advisor.js': { taskView: (task) => task },
     '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true },
   }, { wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {},
     showModal: (m) => { modal = m; m.success({ confirm: true }); } } });
@@ -127,7 +127,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   raw.subscriptions[0].status = 'unused'; page.load(); await flush();
   page.remove(event({ kind: 'sub', id: 2 })); assert.equal(modal.title, '取消提醒');
   const template = wxml('my-data');
-  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 3);
+  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 4);
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 

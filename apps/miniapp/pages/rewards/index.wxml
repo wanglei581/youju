@@ -1,0 +1,38 @@
+<notice-bar />
+<view wx:if="{{closed}}" class="card advisor-card">这个功能暂未开放</view>
+<view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link" bindtap="load">重试</text></view>
+<view wx:elif="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<block wx:else>
+  <view class="card advisor-card">
+    <view class="advisor-title">奖励规则</view>
+    <view class="advisor-text">奖励只有一种：客户工作台的使用天数。直接加到你的使用期上；已有使用期的，接在后面顺延。</view>
+    <view class="advisor-title advisor-text">怎么得</view>
+    <view class="advisor-text">补截止日期：在申报通知的详情页点"补截止日期"，填日期并照抄原文里写日期的那句话。我们对照原文核对，被采纳 1 条送 1 天；多人提交时，只奖最早提交且被采纳的一位；每月最多 10 天。</view>
+    <view class="advisor-text">纠错：你指出的错误被采纳，送 1 天。</view>
+    <view class="advisor-text">提来源：你提的官方栏目被接入，送 3 天；每月最多 2 个。</view>
+    <view class="advisor-text">第一次用批量功能：第一次完成批量名单比对或客户相关通知表，送 3 天，每人一次。</view>
+    <view wx:if="{{inviteOpen}}" class="advisor-text link" bindtap="invite">请同行来用：规则见"请同行来用"页。</view>
+    <view class="advisor-title advisor-text">说明</view>
+    <view class="advisor-text">每人每月各种奖励合计最多 30 天，超出的不发。</view>
+    <view class="advisor-text">奖励的天数不能转让，不能折成现金；注销账号时没用完的作废。奖励的天数和购买订单的退款互不影响。</view>
+    <view class="advisor-text">采不采纳，由我们对照原文核对后决定。结果在本页"我的线索"里看。</view>
+    <view class="advisor-text">发现用虚假账号等方式骗取奖励的，会收回相应的天数。</view>
+  </view>
+  <view class="card advisor-card">
+    <view class="advisor-title">我的奖励 · 本月已得 {{monthDays}} 天</view>
+    <view wx:for="{{rewards}}" wx:key="index" class="advisor-text">
+      <view>{{item.name}} · {{item.days}} 天 · {{item.date}}</view>
+      <view wx:if="{{item.note}}" class="muted">{{item.note}}</view>
+    </view>
+    <view wx:if="{{!rewards.length}}" class="advisor-text muted">还没有奖励</view>
+  </view>
+  <view class="card advisor-card">
+    <view class="advisor-title">我的线索</view>
+    <view wx:for="{{clues}}" wx:key="id" class="advisor-text">
+      <view>{{item.title}} · {{item.kind}} {{item.date}} · {{item.status}}</view>
+      <text wx:if="{{item.status === '待核对'}}" class="link" data-id="{{item.id}}" bindtap="remove">删除</text>
+    </view>
+    <view wx:if="{{!clues.length}}" class="advisor-text muted">还没有提交过线索</view>
+  </view>
+</block>
+<view class="advisor-footer"></view>

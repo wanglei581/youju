@@ -72,6 +72,21 @@
     </view>
 
     <view class="card">
+      <view class="section-title">截止日期线索 {{totals.clues}}</view>
+      <view wx:for="{{deadlineClues}}" wx:key="id" class="item">
+        <view class="item-main">文件编号 {{item.document_id}} · {{item.kind}} {{item.date}}<text wx:if="{{item.time}}"> {{item.time}}</text> · {{item.status}}</view>
+        <view class="item-sub">{{item.quote}}</view>
+        <view class="item-sub">提交于 {{item.submitted_at}}<text wx:if="{{item.processed_at}}"> · 处理于 {{item.processed_at}}</text></view>
+        <view class="item-ops">
+          <text class="op" data-kind="clue" data-id="{{item.id}}" bindtap="copyOne">复制单条</text>
+          <text wx:if="{{item.status === '待核对'}}" class="op op--danger" data-id="{{item.id}}" bindtap="removeClue">删除</text>
+        </view>
+      </view>
+      <view wx:if="{{!deadlineClues.length}}" class="empty weak">还没有提交过线索</view>
+      <view wx:if="{{totals.clues > deadlineClues.length}}" class="more weak">只显示最近 {{deadlineClues.length}} 条，复制全部数据里也是这些</view>
+    </view>
+
+    <view class="card">
       <view class="section-title">工具任务 {{totals.advisor}}</view>
       <view wx:for="{{advisorTasks}}" wx:key="id" class="item">
         <view class="item-main">{{item.kindLabel}} · {{item.rowCount}} 行</view>

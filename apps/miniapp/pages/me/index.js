@@ -30,6 +30,8 @@ Page({
     stats: null,
     notCovered: '',
     showOrders: false,
+    rewardsOpen: false,
+    inviteOpen: false,
   },
 
   onLoad() {
@@ -54,6 +56,15 @@ Page({
   },
   orders() { wx.navigateTo({ url: '/pages/orders/index' }); },
 
+  loadRewardEntries() {
+    const seq = this.rewardSeq = (this.rewardSeq || 0) + 1;
+    if (!this.data.signedIn) { this.setData({ rewardsOpen: false, inviteOpen: false }); return; }
+    const available = (call) => call().then(() => true, (err) => err.status !== 404 && err.status !== 403 && err.status !== 401);
+    return Promise.all([available(api.myRewards), available(api.inviteInfo)]).then(([rewardsOpen, inviteOpen]) => {
+      if (seq === this.rewardSeq && this.data.signedIn) this.setData({ rewardsOpen, inviteOpen });
+    });
+  },
+
   loadStats() {
     loadCoverage().then((c) => {
       if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces, cities: (c.cities || []).length }, notCovered: notCoveredNames(c) });
@@ -64,9 +75,12 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '' });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', rewardsOpen: false, inviteOpen: false });
+      this.rewardSeq = (this.rewardSeq || 0) + 1;
       return;
     }
+    this.setData({ rewardsOpen: false, inviteOpen: false });
+    this.rewardSeq = (this.rewardSeq || 0) + 1;
     const started = consentEpoch();
     const seq = (this.profileSeq || 0) + 1;
     this.profileSeq = seq;
@@ -86,6 +100,7 @@ Page({
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
         });
+        this.loadRewardEntries();
       })
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
@@ -127,7 +142,7 @@ Page({
     withdraw().then((ok) => {
       if (ok) {
         this.ordersSerial = (this.ordersSerial || 0) + 1;
-        this.setData({ showOrders: false, signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
+        this.setData({ showOrders: false, rewardsOpen: false, inviteOpen: false, signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
         this.loadOrdersEntry();
       }
     });

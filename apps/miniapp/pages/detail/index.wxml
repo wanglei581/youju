@@ -46,6 +46,8 @@
     <view class="due-unverified">{{dueNote}}</view>
   </view>
 
+  <view wx:if="{{doc.can_submit_deadline_clue && signedIn}}" class="card due-card"><text class="link" bindtap="deadlineClue">这份通知还没有核对过的截止日期。原文里写了的话，可以补一下 ›</text></view>
+
   <view wx:if="{{changes.length}}" class="card change-card">
     <view wx:for="{{changes}}" wx:key="index" class="change-item" data-id="{{item.newDocId}}" bindtap="openNew" aria-role="{{item.newDocId ? 'link' : 'text'}}">
       <view class="change-text">原定{{item.label}} {{item.dateText}} 已{{item.reason}}<text wx:if="{{item.newDocId}}">，以新通知为准</text></view>

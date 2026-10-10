@@ -50,6 +50,8 @@
 </view>
 
 <view class="card">
+  <view wx:if="{{signedIn && rewardsOpen}}" class="row" data-url="/pages/rewards/index" bindtap="go" aria-role="button"><text class="row-text">奖励规则</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{signedIn && inviteOpen}}" class="row" data-url="/pages/invite/index" bindtap="go" aria-role="button"><text class="row-text">请同行来用</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{showOrders}}" class="row" bindtap="orders" aria-role="button"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->

@@ -26,6 +26,7 @@ from youju.compare import (
     _safe_cell,
     _text,
 )
+from youju.export_notes import add_excel_notes
 from youju.fields import SUPPORT_LABELS
 from youju.models import Document, DocumentDetail, Source
 from youju.sources.onboard import PROVINCES as SOURCE_PROVINCES
@@ -392,6 +393,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     for row_number, values in enumerate(summary_rows, 3):
         for column, value in enumerate(values, 1):
             summary.cell(row_number, column, _safe_cell(value))
+    add_excel_notes(book.create_sheet("数据说明"))
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     book.save(output_path)
