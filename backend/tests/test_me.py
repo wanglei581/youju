@@ -451,6 +451,8 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "subscriptionsTotal": 0,
         "feedback": [],
         "feedbackTotal": 0,
+        "deadlineClues": [],
+        "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
         "retention": {
@@ -872,6 +874,7 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         retain_unused_subscriptions_days=365,
     )
     assert run_cleanup(session, settings=config, stamp=NOW) == {
+        "reward_claims": 0,
         "job_runs": 0,
         "events": 1,
         "feedback": 1,

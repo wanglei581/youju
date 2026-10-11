@@ -106,6 +106,7 @@ function harness(embedded) {
     fetch: async (url, options = {}) => {
       calls.push({ url, ...options });
       const reply = (code, data) => ({ ok: code === 200, status: code, json: async () => data });
+      if (url === '/api/admin/deadline-clues') return reply(200, { enabled: false, items: [] });
       if (url.includes('/count?')) return reply(200, { pending: [...status.values()].filter(s => s === 'pending').length });
       if (url.includes('?limit=')) return reply(200, items.filter(i => status.get(i.id) === 'pending'));
       const [, id, action] = url.match(/deadlines\/(\d+)\/(\w+)/);

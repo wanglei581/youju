@@ -60,7 +60,7 @@ def extract_existing(
     added = 0
     for doc, detail in session.execute(stmt):
         docs += 1
-        # 只看规则候选：AI 找到的候选（origin=ai）由 AI 检查维护，规则重跑时不能当成过期删掉
+        # 只维护规则候选；其他来源的候选由各自流程维护，规则重跑不能将其当成过期删除。
         existing = {
             row.fingerprint: row
             for row in session.scalars(

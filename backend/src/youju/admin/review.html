@@ -365,6 +365,7 @@
       }
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `出错了（${res.status}）`);
       finishCard(entry);
+      if (action !== 'reject') item.deadline_clues = (item.deadline_clues || []).filter((clue) => clue.kind !== item.kind);
       rememberReview(entry, reviewer, action, started);
       msg.className = 'msg ok';
       msg.textContent = action === 'reject' ? '已驳回' : '已通过';
@@ -539,6 +540,35 @@
     return box;
   }
 
+  function cluesNode(items, canBuild) {
+    const box = el('section', 'clues');
+    box.append(el('p', '', '用户提交的线索，须对照原文核对后才会显示'));
+    items.forEach((clue) => {
+      const line = el('div', 'clue');
+      line.append(el('p', '', `${clue.kind} · ${clue.date}${clue.time ? ` ${clue.time}` : ''} · ${clue.submitted_at}`), el('blockquote', '', clue.quote));
+      const msg = el('span', 'msg');
+      const dismiss = el('button', '', '不采纳');
+      const build = el('button', '', '用这条线索建候选');
+      async function act(action) {
+        if (busy || loading) return;
+        busy = true; updateUndo();
+        dismiss.disabled = build.disabled = true;
+        try {
+          await postJSON(`/api/admin/deadline-clues/${clue.id}/${action}`, {});
+          busy = false; updateUndo();
+          await load(true);
+        } catch (err) { msg.textContent = err.message; }
+        finally { busy = false; updateUndo(); dismiss.disabled = build.disabled = false; }
+      }
+      dismiss.onclick = (event) => { event.stopPropagation(); act('reject'); };
+      build.onclick = (event) => { event.stopPropagation(); act('candidate'); };
+      line.append(dismiss);
+      if (canBuild && clue.can_build_candidate !== false) line.append(build);
+      line.append(msg); box.append(line);
+    });
+    return box;
+  }
+
   function render(item) {
     const card = el('section', 'card');
     card.onclick = () => {
@@ -588,6 +618,7 @@
     if (item.reopen_note) card.append(el('div', 'reopen', `退回原因：${item.reopen_note}`));
     card.append(evidenceNode(item.evidence, item.candidate_date), row);
     if (item.repost_group_id) card.append(repostNode(item));
+    if (item.deadline_clues && item.deadline_clues.length) card.append(cluesNode(item.deadline_clues, false));
     card.append(changePanel(item));
     return card;
   }
@@ -604,19 +635,34 @@
     const wanted = due();
     const wantedOrder = order();
     try {
-      const [countRes, res] = await Promise.all([
+      const [countRes, res, cluesRes] = await Promise.all([
         fetch(`/api/admin/deadlines/count?due=${wanted}`, { headers: headers() }),
         fetch(`/api/admin/deadlines?limit=50&due=${wanted}&order=${wantedOrder}${after}`, { headers: headers() }),
+        fetch(`/api/admin/deadline-clues`, { headers: headers() }).catch(() => null),
       ]);
       if (seq !== loadSeq) return;
       if (res.status === 403 || res.status === 401) throw new Error('口令不对，或服务端没有配置管理口令');
       if (!res.ok) throw new Error(`载入失败（${res.status}）`);
       const count = (await countRes.json()).pending;
       const items = await res.json();
+      const clueQueue = cluesRes && cluesRes.ok ? await cluesRes.json() : { enabled: false, items: [] };
       if (seq !== loadSeq) return;
       pending = count;
       setCount();
-      if (!items.length && !after) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
+      if (reset && clueQueue.enabled) {
+        const grouped = new Map();
+        clueQueue.items.forEach((clue) => {
+          if (!grouped.has(clue.document_id)) grouped.set(clue.document_id, []);
+          grouped.get(clue.document_id).push(clue);
+        });
+        grouped.forEach((clues) => {
+          const card = el('section', 'card');
+          const title = el('a', 'title', clues[0].title);
+          title.href = clues[0].url; title.target = '_blank'; title.rel = 'noopener noreferrer';
+          card.append(title, cluesNode(clues, true)); $('list').append(card);
+        });
+      }
+      if (!items.length && !after && !clueQueue.items.length) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
         const entry = { item, card: render(item) };

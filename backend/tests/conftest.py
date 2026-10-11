@@ -102,3 +102,62 @@ def _reset_admin_throttle():
     app_module._admin_fails.clear()
     exports._export_times.clear()
     exports._instance_times.clear()
+
+
+@pytest.fixture
+def restricted_api_factory(db_engine):
+    """按部署文件授权；with factory(new_grants=False) 模拟迁移后尚未追加授权。"""
+    import re
+    import secrets
+    from contextlib import contextmanager
+
+    from sqlalchemy.exc import DBAPIError
+
+    @contextmanager
+    def factory(*, new_grants=True):
+        url = db_engine.url
+        assert url.database.startswith("youju_test")
+        password = secrets.token_urlsafe(24)
+        created = False
+        engine = None
+        try:
+            try:
+                with db_engine.begin() as conn:
+                    conn.execute(
+                        text("CREATE USER 'youju_api_test'@'localhost' IDENTIFIED BY :password"),
+                        {"password": password},
+                    )
+                created = True
+            except DBAPIError as exc:
+                code = exc.orig.args[0]
+                if code in (1044, 1045, 1142, 1227):
+                    pytest.skip(
+                        f"测试 root 无 CREATE USER 权限（MySQL {code}），受限账号测试未运行"
+                    )
+                raise
+            sql = (Path(__file__).parents[1] / "deploy/mysql_accounts.sql").read_text()
+            if not new_grants:
+                sql = sql.split("-- 支付权限：", 1)[0]
+            grants = [
+                stmt
+                for stmt in re.findall(r"^GRANT\b[^;]*;", sql, re.MULTILINE)
+                if re.search(r"TO\s+'youju_api'@", stmt)
+            ]
+            assert grants
+            with db_engine.begin() as conn:
+                for stmt in grants:
+                    stmt = re.sub(
+                        r"\bON youju\.", "ON " + chr(96) + url.database + chr(96) + ".", stmt
+                    )
+                    stmt = stmt.replace("'youju_api'@'%'", "'youju_api_test'@'localhost'")
+                    conn.execute(text(stmt))
+            engine = create_mysql_engine(url.set(username="youju_api_test", password=password))
+            yield sessionmaker(bind=engine, expire_on_commit=False)
+        finally:
+            if engine is not None:
+                engine.dispose()
+            if created:
+                with db_engine.begin() as conn:
+                    conn.execute(text("DROP USER 'youju_api_test'@'localhost'"))
+
+    return factory

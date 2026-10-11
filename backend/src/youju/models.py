@@ -498,7 +498,7 @@ class DocumentDeadline(Base):
             " AND changed_to_document_id IS NOT NULL)",
             name="ck_document_deadline_changed",
         ),
-        CheckConstraint("origin IN ('rule', 'ai')", name="ck_document_deadline_origin"),
+        CheckConstraint("origin IN ('rule', 'ai', 'user')", name="ck_document_deadline_origin"),
         CheckConstraint(
             "audit_state IS NULL OR audit_state IN ('flagged', 'cleared', 'reopened')",
             name="ck_document_deadline_audit_state",
@@ -511,7 +511,7 @@ class DocumentDeadline(Base):
     kind: Mapped[str] = mapped_column(String(32))
     candidate_date: Mapped[date] = mapped_column(Date)
     candidate_time: Mapped["time | None"] = mapped_column(Time)
-    evidence: Mapped[str] = mapped_column(String(120))
+    evidence: Mapped[str] = mapped_column(String(200))
     confidence: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(16), default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
@@ -527,7 +527,7 @@ class DocumentDeadline(Base):
     changed_by: Mapped[str | None] = mapped_column(String(80))
     changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
-    # 候选从哪来：rule（规则抽取）/ ai（规则没找到、AI 找到的）。AI 找到的也要人工核对
+    # 候选来源 rule / ai / user；所有来源都必须人工核对后才公开。
     origin: Mapped[str] = mapped_column(String(8), default="rule", server_default="rule")
     # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
     ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
@@ -720,6 +720,13 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
+    invited_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    invited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 不依赖任务留存：删除任务后仍能去重、补发，后续完成不会自动补旧奖励。
+    batch_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -964,17 +971,96 @@ class PayOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class DeadlineClue(Base):
+    """私有线索；只有负责人核对 DocumentDeadline 后才影响公开截止。"""
+
+    __tablename__ = "deadline_clues"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'rejected')", name="ck_deadline_clue_status"
+        ),
+        CheckConstraint(
+            "kind IN ('企业申报截止', '推荐或审核截止', '材料报送截止', '其他')",
+            name="ck_deadline_clue_kind",
+        ),
+        Index("ix_deadline_clues_status", "status"),
+        Index("ix_deadline_clues_user_status", "user_id", "status"),
+        Index("ix_deadline_clues_document_kind", "document_id", "kind"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(32))
+    date: Mapped[date] = mapped_column(Date)
+    time: Mapped["time | None"] = mapped_column(Time)
+    quote: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    submitted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    processed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    deadline_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_deadlines.id", ondelete="SET NULL")
+    )
+
+
+class RewardClaim(Base):
+    """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。"""
+
+    __tablename__ = "reward_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('first_batch', 'referred', 'referral')", name="ck_reward_claim_kind"
+        ),
+        Index("ix_reward_claims_claimed", "claimed_at"),
+    )
+    pseudonym: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True)
+
+
+class PassReward(Base):
+    """包括发放零天的奖励审计；注销保留流水并断开用户关联。"""
+
+    __tablename__ = "pass_rewards"
+    __table_args__ = (
+        UniqueConstraint("ref_type", "ref_id", name="uq_pass_rewards_ref"),
+        Index("ix_pass_rewards_user_granted", "user_id", "granted_at"),
+        CheckConstraint(
+            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue')",
+            name="ck_pass_rewards_kind",
+        ),
+        CheckConstraint(
+            "requested_days > 0 AND granted_days >= 0 AND granted_days <= requested_days",
+            name="ck_pass_rewards_days",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(20))
+    requested_days: Mapped[int] = mapped_column(Integer)
+    granted_days: Mapped[int] = mapped_column(Integer)
+    ref_type: Mapped[str] = mapped_column(String(32))
+    ref_id: Mapped[int | None] = mapped_column(Integer)
+    granted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    note: Mapped[str | None] = mapped_column(String(200))
+
+
 class WorkbenchPass(Base):
-    """每张订单对应一段使用期；最少使用凭据在任务删除后仍保留。"""
+    """每张订单或奖励对应一段使用期；任务删除后仍保留最少使用凭据。"""
 
     __tablename__ = "workbench_passes"
+    __table_args__ = (
+        CheckConstraint(
+            "(order_id IS NULL) <> (reward_id IS NULL)", name="ck_workbench_pass_origin"
+        ),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
-    order_id: Mapped[int] = mapped_column(
+    order_id: Mapped[int | None] = mapped_column(
         ForeignKey("pay_orders.id", ondelete="CASCADE"), unique=True
     )
+    reward_id: Mapped[int | None] = mapped_column(ForeignKey("pass_rewards.id"), unique=True)
     starts_at: Mapped[datetime] = mapped_column(UTCDateTime())
     ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

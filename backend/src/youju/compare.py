@@ -25,6 +25,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind, list_status
+from youju.export_notes import add_excel_notes
 from youju.lists.lookup import ListLookupMatch, lookup_list_matches, public_condition
 from youju.lists.rules import is_person_query, normalize_credit_code, normalize_name
 from youju.models import Document, DocumentDetail, ListEntry, Source
@@ -525,6 +526,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         summary.cell(row_number, 1, _safe_cell(list_type))
         summary.cell(row_number, 2, year or "")
         summary.cell(row_number, 3, len(customers))
+    add_excel_notes(book.create_sheet("数据说明"))
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     book.save(output_path)
