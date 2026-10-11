@@ -25,7 +25,7 @@
     <picker mode="time" value="{{time}}" bindchange="timeChange">
       <view class="dc-field dc-field--last"><text class="dc-name">时间（选填）</text><text class="dc-value {{time ? '' : 'dc-value--empty'}}">{{time || '请选择时间'}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" /></view>
     </picker>
-    <view wx:if="{{time}}" class="dc-clear"><text class="link" bindtap="clearTime" aria-role="button">清除时间</text></view>
+    <view wx:if="{{time}}" class="dc-clear"><view class="link dc-clear-link" bindtap="clearTime" aria-role="button">清除时间</view></view>
   </view>
 
   <view class="card dc-card">
@@ -33,11 +33,11 @@
     <textarea class="dc-input" value="{{quote}}" maxlength="201" bindinput="quoteChange" placeholder='照抄原文，例如"申报截止时间为 2026 年 10 月 31 日 17:00"' placeholder-class="dc-ph" auto-height />
     <view class="dc-hint">只填公开文件里的原句，不要写姓名、电话等个人信息。采不采纳由我们核对后决定。</view>
   </view>
-  <view class="dc-space"></view>
 
-  <!-- 提交按钮固定在底部 -->
-  <view class="dc-bar">
+  <!-- 提交按钮跟在表单后面，不固定在底部 -->
+  <view class="dc-actions">
     <view wx:if="{{error}}" class="dc-error">{{error}}</view>
     <button class="dc-submit btn-primary" disabled="{{sending}}" bindtap="submit">提交</button>
   </view>
 </block>
+<view class="advisor-footer"></view>

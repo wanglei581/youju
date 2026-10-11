@@ -81,7 +81,7 @@
       <view class="rw-item-main">
         <view class="rw-item-name">{{item.title}} · {{item.kind}} {{item.date}} · {{item.status}}</view>
       </view>
-      <text wx:if="{{item.status === '待核对'}}" class="link rw-del" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
+      <view wx:if="{{item.status === '待核对'}}" class="link rw-del" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view>
     </view>
     <view wx:if="{{!clues.length}}" class="rw-empty">还没有提交过线索</view>
   </view>

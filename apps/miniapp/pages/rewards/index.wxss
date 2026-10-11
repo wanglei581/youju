@@ -28,5 +28,5 @@
 .rw-item-main { flex: 1; min-width: 0; }
 .rw-item-name { font-size: 28rpx; line-height: 1.6; color: var(--t1); overflow-wrap: break-word; }
 .rw-item-note { margin-top: 4rpx; font-size: 24rpx; color: var(--t3); }
-.rw-del { flex-shrink: 0; padding: 4rpx 0 4rpx 16rpx; font-size: 26rpx; }
+.rw-del { flex-shrink: 0; margin: -20rpx 0; min-height: 88rpx; padding-left: 32rpx; display: flex; align-items: center; font-size: 26rpx; }
 .rw-empty { margin-top: 20rpx; font-size: 26rpx; color: var(--t3); }
