@@ -52,8 +52,11 @@ for (const name of ['rewards', 'invite', 'deadline-clue']) {
 }
 test('奖励空状态完整，R8 仅在引荐接口可用时显示', async () => {
   const p = page('rewards', { inviteInfo: failure(404) }); await p.view.onShow();
-  assert.match(p.text(), /我的奖励 · 本月已得 0 天/); assert.match(p.text(), /还没有奖励/); assert.match(p.text(), /还没有提交过线索/); assert.doesNotMatch(p.text(), /请同行来用/);
-  p.api.inviteInfo = () => Promise.resolve({}); await p.view.load(); assert.match(p.text(), /请同行来用：规则见"请同行来用"页。/);
+  // 顶部写这个月已得几天；每种得法一行，右边写加几天
+  assert.match(p.text(), /奖励规则 · 本月已得\s*0\s*天/); assert.match(p.text(), /还没有奖励/); assert.match(p.text(), /还没有提交过线索/); assert.doesNotMatch(p.text(), /请同行来用|\+7 天/);
+  assert.deepEqual(findAll(p.show(), (n) => /\brw-plus\b/.test(n.attrs.class || '')).map((n) => textOf(n).trim()), ['+1 天', '+1 天', '+3 天', '+3 天']);
+  p.api.inviteInfo = () => Promise.resolve({}); await p.view.load(); assert.match(p.text(), /请同行来用\s*规则见"请同行来用"页/); assert.match(p.text(), /\+7 天/);
+  assert.equal(findAll(p.show(), tapsTo('invite')).length, 1);
 });
 test('奖励有数据：北京时间日期、独立备注、通知标题和三种状态；只删待核对', async () => {
   const p = page('rewards', { myRewards: () => Promise.resolve({ monthDays: 1, items: [{ name: '补截止日期被采纳', days: 1, grantedAt: '2026-10-11T17:00:00Z', note: '备注文字' }] }),

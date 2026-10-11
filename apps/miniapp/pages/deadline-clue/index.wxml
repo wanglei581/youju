@@ -1,25 +1,43 @@
 <notice-bar />
 <view wx:if="{{closed}}" class="card advisor-card">这个功能暂未开放</view>
 <view wx:elif="{{loading}}" class="card advisor-card muted">正在加载…</view>
-<view wx:elif="{{received}}" class="card advisor-card">已收到。核对需要几天，结果在"奖励规则 → 我的线索"里看</view>
+<view wx:elif="{{received}}" class="card dc-card dc-done">
+  <view class="dc-done-ico"><t-icon name="check" size="44rpx" color="#FFFFFF" /></view>
+  <view class="dc-done-text">已收到。核对需要几天，结果在"奖励规则 → 我的线索"里看</view>
+</view>
 <view wx:elif="{{!ready}}" class="card load-error"><text>{{error}}</text><text class="link" bindtap="load">重试</text></view>
 <block wx:else>
-  <view class="card advisor-card">
-    <view class="advisor-title">补截止日期</view>
-    <view wx:if="{{title}}" class="advisor-text">{{title}}</view>
-    <view class="advisor-text">填上原文里写的截止日期，并照抄写日期的那句话。我们对照原文核对后才会显示；被采纳送 1 天客户工作台使用期。</view>
-    <view class="advisor-text">日期的性质</view>
-    <picker range="{{kinds}}" value="{{kindIndex}}" bindchange="kindChange"><view class="exit-btn">{{kinds[kindIndex]}}</view></picker>
-    <view class="advisor-text">截止日期</view>
-    <picker mode="date" value="{{date}}" bindchange="dateChange"><view class="exit-btn">{{date || '请选择截止日期'}}</view></picker>
-    <view class="advisor-text">时间（选填）</view>
-    <picker mode="time" value="{{time}}" bindchange="timeChange"><view class="exit-btn">{{time || '请选择时间'}}</view></picker>
-    <text wx:if="{{time}}" class="link" bindtap="clearTime">清除时间</text>
-    <view class="advisor-text">原文里的那句话</view>
-    <textarea class="advisor-input" value="{{quote}}" maxlength="201" bindinput="quoteChange" placeholder='照抄原文，例如"申报截止时间为 2026 年 10 月 31 日 17:00"' />
-    <view class="advisor-text muted">只填公开文件里的原句，不要写姓名、电话等个人信息。采不采纳由我们核对后决定。</view>
-    <view wx:if="{{error}}" class="advisor-error">{{error}}</view>
-    <button class="btn-primary advisor-button" disabled="{{sending}}" bindtap="submit">提交</button>
+  <!-- 针对哪份通知、要填什么，先说清 -->
+  <view class="card dc-card">
+    <view class="dc-title">补截止日期</view>
+    <view wx:if="{{title}}" class="dc-doc">{{title}}</view>
+    <view class="dc-intro">填上原文里写的截止日期，并照抄写日期的那句话。我们对照原文核对后才会显示；被采纳送 1 天客户工作台使用期。</view>
+  </view>
+
+  <!-- 三个选择项：一行一项，左边名称、右边已选的值 -->
+  <view class="card dc-card dc-fields">
+    <picker range="{{kinds}}" value="{{kindIndex}}" bindchange="kindChange">
+      <view class="dc-field"><text class="dc-name">日期的性质</text><text class="dc-value">{{kinds[kindIndex]}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" /></view>
+    </picker>
+    <picker mode="date" value="{{date}}" bindchange="dateChange">
+      <view class="dc-field"><text class="dc-name">截止日期</text><text class="dc-value {{date ? '' : 'dc-value--empty'}}">{{date || '请选择截止日期'}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" /></view>
+    </picker>
+    <picker mode="time" value="{{time}}" bindchange="timeChange">
+      <view class="dc-field dc-field--last"><text class="dc-name">时间（选填）</text><text class="dc-value {{time ? '' : 'dc-value--empty'}}">{{time || '请选择时间'}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" /></view>
+    </picker>
+    <view wx:if="{{time}}" class="dc-clear"><text class="link" bindtap="clearTime" aria-role="button">清除时间</text></view>
+  </view>
+
+  <view class="card dc-card">
+    <view class="dc-name">原文里的那句话</view>
+    <textarea class="dc-input" value="{{quote}}" maxlength="201" bindinput="quoteChange" placeholder='照抄原文，例如"申报截止时间为 2026 年 10 月 31 日 17:00"' placeholder-class="dc-ph" auto-height />
+    <view class="dc-hint">只填公开文件里的原句，不要写姓名、电话等个人信息。采不采纳由我们核对后决定。</view>
+  </view>
+  <view class="dc-space"></view>
+
+  <!-- 提交按钮固定在底部 -->
+  <view class="dc-bar">
+    <view wx:if="{{error}}" class="dc-error">{{error}}</view>
+    <button class="dc-submit btn-primary" disabled="{{sending}}" bindtap="submit">提交</button>
   </view>
 </block>
-<view class="advisor-footer"></view>

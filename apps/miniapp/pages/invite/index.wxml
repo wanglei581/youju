@@ -3,18 +3,26 @@
 <view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link" bindtap="load">重试</text></view>
 <view wx:elif="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <block wx:else>
-  <view class="card advisor-card">
-    <view class="advisor-title">请同行来用</view>
-    <view class="advisor-text">把小程序转发给做申报的同行或同事。对方是第一次使用，并且完成了第一次批量名单比对或客户相关通知表，你就得 7 天客户工作台使用期，立即到账。</view>
-    <view class="advisor-title advisor-text">规则</view>
-    <view class="advisor-text">只有你得奖励；对方不会因为被你请来而多得任何东西。</view>
-    <view class="advisor-text">对方要真的完成一次批量名单比对或客户相关通知表才算，只是点开不算。</view>
-    <view class="advisor-text">每月最多计 4 位，超出的不发，也不顺延到下个月。</view>
-    <view class="advisor-text">只算你直接请来的人。以前用过小程序的人不算（包括注销后重新注册的），自己请自己不算。</view>
-    <view class="advisor-text">你只能看到人数，看不到是谁。</view>
-    <view class="advisor-text">请只转发给用得上的人。</view>
-    <view class="advisor-text">本月已计 {{monthCount}} 位，还可以计 {{remaining}} 位</view>
-    <button wx:if="{{inviteCode}}" class="btn-primary advisor-button" open-type="share">转发给同行</button>
+  <!-- 顶部：这件事是什么、这个月算了几位 -->
+  <view class="iv-hero">
+    <view class="iv-hero-title">请同行来用</view>
+    <view class="iv-hero-sub">把小程序转发给做申报的同行或同事。对方是第一次使用，并且完成了第一次批量名单比对或客户相关通知表，你就得 7 天客户工作台使用期，立即到账。</view>
+    <view class="iv-count">本月已计 {{monthCount}} 位，还可以计 {{remaining}} 位</view>
+  </view>
+
+  <view class="card iv-card">
+    <view class="iv-title">规则</view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">只有你得奖励；对方不会因为被你请来而多得任何东西。</view></view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">对方要真的完成一次批量名单比对或客户相关通知表才算，只是点开不算。</view></view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">每月最多计 4 位，超出的不发，也不顺延到下个月。</view></view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">只算你直接请来的人。以前用过小程序的人不算（包括注销后重新注册的），自己请自己不算。</view></view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">你只能看到人数，看不到是谁。</view></view>
+    <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">请只转发给用得上的人。</view></view>
+  </view>
+  <view class="iv-space"></view>
+
+  <!-- 转发按钮固定在底部；只有这一页能转发带码的卡片 -->
+  <view wx:if="{{inviteCode}}" class="iv-bar">
+    <button class="iv-share btn-primary" open-type="share">转发给同行</button>
   </view>
 </block>
-<view class="advisor-footer"></view>
