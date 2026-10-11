@@ -7,26 +7,25 @@
 <view wx:if="{{actionError}}" class="card advisor-card advisor-error">{{actionError}}，请重试相应操作。</view>
 <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">内部测试：</text>{{aiNotice}}</view>
 <block wx:if="{{!loading}}">
-  <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="advisor-text muted">提交工具任务后，可以在这里查看进度和打开结果。</view><button class="advisor-button" bindtap="form">去填写客户</button></view>
-  <view wx:for="{{items}}" wx:key="id" class="card advisor-card">
-    <view class="advisor-title">{{item.kindLabel}}</view>
-    <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
-    <view class="advisor-text">{{item.stateLabel}}<text wx:if="{{item.kind === 'compare' || item.kind === 'track'}}"> · {{item.rowCount}} 行</text></view>
-    <view class="advisor-text muted">{{item.time}}</view>
-    <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
-    <view class="advisor-actions">
-      <button wx:if="{{aiEnabled && item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" bindtap="openTask" disabled="{{busyId !== null}}">查看解读</button>
-      <button wx:if="{{aiEnabled && item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" bindtap="openTask" disabled="{{busyId !== null}}">查看条款对照</button>
-      <button wx:if="{{item.status === 'queued' && (item.kind === 'interpret' || item.kind === 'clause' || !item.paid)}}" class="advisor-button" data-id="{{item.id}}" bindtap="cancel" disabled="{{busyId !== null}}">取消</button>
-      <button wx:if="{{item.status === 'done' && item.hasFile && (item.kind === 'compare' || item.kind === 'track')}}" class="advisor-button btn-primary" data-id="{{item.id}}" bindtap="open" loading="{{busyId === item.id}}" disabled="{{busyId !== null}}">打开 Excel</button>
-      <text wx:if="{{item.status === 'done' && !item.hasFile && (item.kind === 'compare' || item.kind === 'track')}}" class="advisor-text muted">结果文件已过期或已删除</text>
-      <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" bindtap="remove" disabled="{{busyId !== null}}">删除</button>
-    </view>
-    <view wx:if="{{item.status === 'done' && (item.kind === 'compare' || item.kind === 'track')}}" class="advisor-actions">
-      <button class="advisor-button" bindtap="lists">查名单</button><button class="advisor-button" bindtap="radar">截止雷达</button>
+  <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="tool-desc">提交工具任务后，可以在这里查看进度和打开结果。</view><button class="advisor-button btn-primary tool-go" bindtap="form">去填写客户</button></view>
+  <!-- 一个任务一张卡片：名称和状态；行数和时间；主要操作一个按钮，其余是文字链接 -->
+  <view wx:for="{{items}}" wx:key="id" class="card advisor-card task">
+    <view class="task-head"><view class="advisor-title">{{item.kindLabel}}</view><text class="task-state task-state--{{item.status}}">{{item.stateLabel}}</text></view>
+    <view wx:if="{{item.docTitle}}" class="task-doc">{{item.docTitle}}</view>
+    <view class="task-meta"><text wx:if="{{item.kind === 'compare' || item.kind === 'track'}}">{{item.rowCount}} 行 · </text>{{item.time}}</view>
+    <view wx:if="{{item.error}}" class="task-meta">{{item.error}}</view>
+    <button wx:if="{{aiEnabled && item.kind === 'interpret'}}" class="advisor-button btn-primary tool-go" data-id="{{item.id}}" bindtap="openTask" disabled="{{busyId !== null}}">查看解读</button>
+    <button wx:if="{{aiEnabled && item.kind === 'clause'}}" class="advisor-button btn-primary tool-go" data-id="{{item.id}}" bindtap="openTask" disabled="{{busyId !== null}}">查看条款对照</button>
+    <button wx:if="{{item.status === 'done' && item.hasFile && (item.kind === 'compare' || item.kind === 'track')}}" class="advisor-button btn-primary tool-go" data-id="{{item.id}}" bindtap="open" loading="{{busyId === item.id}}" disabled="{{busyId !== null}}">打开 Excel</button>
+    <view wx:if="{{item.status === 'done' && !item.hasFile && (item.kind === 'compare' || item.kind === 'track')}}" class="task-meta">结果文件已过期或已删除</view>
+    <view class="task-links">
+      <button wx:if="{{item.status === 'done' && (item.kind === 'compare' || item.kind === 'track')}}" class="task-link" bindtap="lists">查名单</button>
+      <button wx:if="{{item.status === 'done' && (item.kind === 'compare' || item.kind === 'track')}}" class="task-link" bindtap="radar">截止雷达</button>
+      <button wx:if="{{item.status === 'queued' && (item.kind === 'interpret' || item.kind === 'clause' || !item.paid)}}" class="task-link" data-id="{{item.id}}" bindtap="cancel" disabled="{{busyId !== null}}">取消</button>
+      <button wx:if="{{item.terminal}}" class="task-link task-link--danger" data-id="{{item.id}}" bindtap="remove" disabled="{{busyId !== null}}">删除</button>
     </view>
   </view>
-  <view wx:if="{{singleTask}}" class="card advisor-card"><button class="advisor-button" bindtap="allTasks">全部任务</button></view>
+  <view wx:if="{{singleTask}}" class="all-tasks"><text class="link" bindtap="allTasks" aria-role="link">全部任务 ›</text></view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>
 

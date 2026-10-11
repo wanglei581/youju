@@ -9,47 +9,56 @@
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <block wx:elif="{{enabled}}">
   <view wx:if="{{context}}" class="card advisor-card context-note">以下工具按你提交的客户名单处理，与当前通知无关</view>
-  <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
-    <view class="advisor-title">{{item.title}}</view>
-    <view class="advisor-text">{{item.description}}</view>
-    <view class="advisor-text muted">{{item.statusLine}}</view>
-    <button class="advisor-button btn-primary" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
+  <!-- 每个工具一张卡片：图标、名称、一句说明；这个月还能用几次；一个按钮 -->
+  <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card tool">
+    <view class="tool-head">
+      <view class="tool-ico"><t-icon wx:if="{{item.kind === 'compare'}}" name="bulletpoint" size="40rpx" color="#2A5CE0" /><t-icon wx:if="{{item.kind !== 'compare'}}" name="notification" size="40rpx" color="#2A5CE0" /></view>
+      <view class="tool-main">
+        <view class="advisor-title">{{item.title}}</view>
+        <view class="tool-desc">{{item.description}}</view>
+      </view>
+    </view>
+    <view class="tool-quota">{{item.statusLine}}</view>
+    <button class="advisor-button btn-primary tool-go" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
   </view>
-  <view wx:if="{{showPassLink}}" class="card advisor-card"><text class="advisor-link" bindtap="buy">客户多、要常用？看看客户工作台 30 天 ›</text></view>
+  <view wx:if="{{showPassLink}}" class="card advisor-card pass-link" bindtap="buy" aria-role="link"><text class="advisor-link">客户多、要常用？看看客户工作台 30 天 ›</text></view>
   <view wx:if="{{passNotice}}" class="card advisor-card advisor-text">{{passNotice}}</view>
-
 </block>
 <view wx:if="{{aiLoading}}" class="card advisor-card muted">正在检查工具权限…</view>
 <block wx:if="{{aiEnabled}}">
   <view class="task-section-title">AI 内部测试</view>
   <view class="ai-internal"><text class="ai-internal-tag">内部测试：</text>{{aiNotice}}</view>
-  <view wx:if="{{interpretEnabled}}" class="card advisor-card">
+  <view wx:if="{{interpretEnabled}}" class="card advisor-card tool">
     <view class="advisor-title">政策解读与材料清单</view>
-    <view class="advisor-text">AI 模型把通知正文按申报对象、支持方式、申报条件、时间、方式、材料摘录出原句，每条附段落编号，可回到原文</view>
-    <view class="advisor-text muted">今天剩余 {{remaining}} 次</view>
-    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">解读这篇通知</button>
-    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可解读当前通知</view>
+    <view class="tool-desc">AI 模型把通知正文按申报对象、支持方式、申报条件、时间、方式、材料摘录出原句，每条附段落编号，可回到原文</view>
+    <view class="tool-quota">今天剩余 {{remaining}} 次</view>
+    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary tool-go" bindtap="interpret">解读这篇通知</button>
+    <view wx:else class="tool-desc">在通知详情页点右下角“AI 内测”进入，可解读当前通知</view>
   </view>
-  <view wx:if="{{clauseEnabled}}" class="card advisor-card">
+  <view wx:if="{{clauseEnabled}}" class="card advisor-card tool">
     <view class="advisor-title">条款对照</view>
-    <view class="advisor-text">AI 模型把通知里申报对象、申报条件的原句列出来，旁边对照你填的企业情况；不判断能不能报</view>
-    <view class="advisor-text muted">今天剩余 {{clauseRemaining}} 次</view>
-    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="clause">填写企业情况</button>
-    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可对照当前通知</view>
+    <view class="tool-desc">AI 模型把通知里申报对象、申报条件的原句列出来，旁边对照你填的企业情况；不判断能不能报</view>
+    <view class="tool-quota">今天剩余 {{clauseRemaining}} 次</view>
+    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary tool-go" bindtap="clause">填写企业情况</button>
+    <view wx:else class="tool-desc">在通知详情页点右下角“AI 内测”进入，可对照当前通知</view>
   </view>
   <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
 </block>
 <view wx:if="{{!loading && !aiLoading && !enabled && !aiEnabled && !error}}" class="card advisor-card muted">暂时没有可用工具</view>
 <block wx:if="{{enabled || aiEnabled}}">
   <view class="card advisor-card">
-    <view class="advisor-title">最近任务</view>
+    <view class="recent-head"><view class="advisor-title">最近任务</view><text class="link recent-all" bindtap="tasks" aria-role="link">全部任务 ›</text></view>
     <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
     <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
     <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有任务，填写客户后可查看进度和结果。</view>
     <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted"><text wx:if="{{item.kind === 'compare' || item.kind === 'track'}}">{{item.rowCount}} 行 · </text>{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
+      <view class="recent-main">
+        <view class="recent-name">{{item.kindLabel}}</view>
+        <view class="recent-meta"><text wx:if="{{item.kind === 'compare' || item.kind === 'track'}}">{{item.rowCount}} 行 · </text>{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
+      </view>
+      <text class="task-state task-state--{{item.status}}">{{item.stateLabel}}</text>
+      <t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
     </button>
-    <button class="advisor-button" bindtap="tasks">全部任务</button>
   </view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -16,3 +16,11 @@
 /* AI 内测：页面顶部的内部测试标注（显式标识 AI 生成） */
 .ai-internal { margin: 20rpx 24rpx 0; padding: 20rpx 28rpx; background: var(--o-tint); color: var(--o-txt); border: 2rpx solid var(--orange); border-radius: 24rpx; font-size: 28rpx; line-height: 1.7; word-break: break-word; }
 .ai-internal-tag { font-weight: 600; }
+/* 工具页共用：说明、次数、整行按钮、状态 */
+.tool-desc { margin-top: 8rpx; font-size: 28rpx; line-height: 1.65; color: var(--t2); }
+.tool-quota { margin-top: 24rpx; padding: 16rpx 20rpx; border-radius: 12rpx; background: var(--fill); font-size: 26rpx; line-height: 1.6; color: var(--t2); }
+/* 微信的 button 默认是固定宽度，主按钮要占满一行 */
+.tool-go { width: 100% !important; margin-top: 28rpx; min-height: 92rpx; padding: 0; font-size: 32rpx; line-height: 92rpx; }
+.task-state { flex-shrink: 0; padding: 0 16rpx; line-height: 44rpx; border-radius: 8rpx; background: var(--fill); color: var(--t2); font-size: 24rpx; font-weight: 500; white-space: nowrap; }
+.task-state--done { background: var(--brand-tint); color: var(--brand); }
+.task-state--failed { background: var(--r-tint); color: var(--red); }
