@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const { render, textOf, findAll, tapsTo } = require('./wxml-render.js');
 
 // 工具首页、填写客户、我的任务三页重排后（10/11）：每种状态下该有的操作都在，不该有的不出现。
@@ -48,6 +51,50 @@ test('填写客户：没有可提交的行时提交按钮不能点；说明入�
   assert.equal(findAll(filled, tapsTo('submit'))[0].attrs.disabled, false); assert.match(textOf(filled), /首次使用前请单独阅读并同意《工具使用说明》/);
   const file = render('pages/advisor-form/index.wxml', { ...data, mode: 'file', inputError: '文件读取失败' });
   assert.equal(count(file, 'choose'), 1); assert.equal(count(file, 'preview'), 1); assert.match(textOf(file), /还没有选择文件/);
-  const over = render('pages/advisor-form/index.wxml', { ...data, limitHint: { message: '这份名单有 80 家', offer: '客户工作台 30 天', split: true } });
+  const over = render('pages/advisor-form/index.wxml', { ...data, text: '甲公司', rowCount: 80, limitHint: { message: '这份名单有 80 家', offer: '客户工作台 30 天', split: true } });
   assert.equal(count(over, 'buy'), 1); assert.match(textOf(over), /也可以把名单拆成 50 家以内，分次提交。/);
+  // 超出免费范围：提交按钮不能点（点了本来也不会提交），原因在下面的提示里
+  assert.equal(findAll(over, tapsTo('submit'))[0].attrs.disabled, true);
+  // 名单在输入框里滚动，不随行数把页面撑长
+  const input = findAll(filled, (n) => n.tag === 'textarea')[0];
+  assert.ok(!('auto-height' in input.attrs)); assert.match(input.attrs.class, /\bform-list\b/);
+  assert.match(fs.readFileSync(path.join(__dirname, '../pages/advisor-form/index.wxss'), 'utf8'), /\.form-list \{ height: 400rpx; \}/);
+});
+
+// 页面逻辑（10/11 Codex 审查后改的两处）
+function loadPage(name, deps) {
+  let definition;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
+    require: (key) => { for (const [suffix, value] of Object.entries(deps)) if (key.endsWith(suffix)) return value; throw new Error(`缺少依赖 ${key}`); },
+    Page: (value) => { definition = value; }, wx: { setNavigationBarTitle() {}, navigateTo() {}, redirectTo() {} },
+    setTimeout: () => 1, clearTimeout() {}, Date, Math, Promise, JSON,
+  });
+  definition.data = JSON.parse(JSON.stringify(definition.data));
+  definition.setData = function setData(next) { Object.assign(this.data, next); };
+  return definition;
+}
+const settle = async () => { for (let n = 0; n < 12; n += 1) await Promise.resolve(); };
+
+test('填写客户：再点一次已选中的填法不清空名单；换一种填法才清空', () => {
+  const advisor = require('../utils/advisor.js');
+  const page = loadPage('advisor-form', { 'consent.js': { loginOpen: () => true }, 'api.js': {}, 'advisor.js': advisor, 'pay.js': require('../utils/pay.js') });
+  page.input({ detail: { value: '甲公司\n乙公司' } });
+  assert.equal(page.data.rowCount, 2);
+  page.mode({ currentTarget: { dataset: { mode: 'paste' } } });
+  assert.equal(page.data.text, '甲公司\n乙公司'); assert.equal(page.data.rowCount, 2);
+  page.mode({ currentTarget: { dataset: { mode: 'file' } } });
+  assert.equal(page.data.mode, 'file'); assert.equal(page.data.text, ''); assert.equal(page.data.rowCount, 0);
+});
+
+test('我的任务：重新加载失败时不留着上一次的任务和操作，只显示原因和重试', async () => {
+  let fail = false;
+  const api = { isLive: () => true, advisorCapabilities: () => Promise.resolve({}),
+    advisorTasks: () => fail ? Promise.reject(Object.assign(new Error('请先阅读并同意用户协议和隐私保护指引'), { status: 403 })) : Promise.resolve({ items: [{ id: 1, kind: 'compare', status: 'done', rowCount: 5, hasFile: true }] }) };
+  const page = loadPage('advisor-tasks', { 'consent.js': { loginOpen: () => true }, 'api.js': api, 'advisor.js': require('../utils/advisor.js') });
+  page.onLoad({}); page.onShow(); await settle();
+  assert.equal(page.data.items.length, 1);
+  fail = true; page.load(); await settle();
+  assert.equal(page.data.error, '请先阅读并同意用户协议和隐私保护指引'); assert.equal(page.data.items.length, 0);
+  const tree = render('pages/advisor-tasks/index.wxml', page.data);
+  assert.deepEqual(['open', 'remove', 'lists', 'radar', 'form'].map((h) => count(tree, h)), [0, 0, 0, 0, 0]); assert.equal(count(tree, 'load'), 1);
 });

@@ -24,7 +24,8 @@ Page({
       if (!this.visible || epoch !== this.epoch) return;
       this.setData({ loading: false, items: res.items.map(taskView) });
       this.schedule(epoch);
-    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message }); });
+    // 重新加载失败（断网、在别的手机上注销了等）：不留着上一次的任务和操作按钮，只显示原因和"重试"
+    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message, items: [] }); });
   },
   schedule(epoch) {
     if (!this.visible || !this.data.items.some((item) => !item.terminal)) return;

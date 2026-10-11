@@ -2,7 +2,8 @@
   position: fixed;
   right: 24rpx;
   z-index: 110;
-  width: 112rpx;
+  /* 微信的 button 默认固定宽 184px，不加 !important 会被撑成一个扁椭圆 */
+  width: 112rpx !important;
   min-height: 112rpx;
   margin: 0;
   padding: 16rpx 8rpx;

@@ -36,6 +36,8 @@ Page({
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
   mode(e) {
     if (this.data.submitting || this.data.previewing) return;
+    // 再点一次已经选中的那一种：不动，免得把填好的名单清空
+    if (e.currentTarget.dataset.mode === this.data.mode) return;
     this.file = null;
     this.setData({ mode: e.currentTarget.dataset.mode, text: '', fileName: '', rowCount: 0, inputError: '' });
     this.refreshKey();
