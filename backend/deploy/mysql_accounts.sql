@@ -35,3 +35,13 @@ GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.workbench_passes TO 'youju_api'@'%';
+
+-- 奖励权限：迁移 0027 完成后、打开奖励开关（YOUJU_REWARDS_ENABLED）之前，由创始人执行。
+-- 要和上面 workbench_passes 那一行一起执行：有奖励使用期的用户提交任务、注销时要改这张表。
+-- 线索队列、凭据队列靠"把名称更新成原值"占用行锁来排队；密钥的值仍然不能改。
+GRANT UPDATE (name) ON youju.app_keys TO 'youju_api'@'%';
+-- API 只在注销时断开流水关联；发奖 INSERT 由 admin 定时任务/核对台执行。
+GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
+-- 凭据只追加（含注销时刻的保留记录），不需要 UPDATE/DELETE 或行锁权限。
+GRANT INSERT ON youju.reward_claims TO 'youju_api'@'%';
+GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';

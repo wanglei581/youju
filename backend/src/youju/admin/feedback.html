@@ -141,7 +141,41 @@
         msg.textContent = err.message;
       } finally { action.disabled = false; }
     };
-    row.append(action, msg);
+    const rewardState = el('span', 'meta', item.rewardKind ? `已发奖 ${item.rewardDays} 天` : '尚未发奖');
+    if (item.rewardsEnabled) {
+      const choices = [['correction', '采纳并送 1 天'], ['source', '已接入并送 3 天']];
+      for (const [kind, label] of choices) {
+        const button = el('button', '', label);
+        button.disabled = Boolean(item.rewardKind) || (kind === 'source') !== (item.kind === '申请覆盖');
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            const res = await fetch(`/api/admin/feedback/${item.id}/reward/${kind}`, { method: 'POST', headers: headers() });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.detail || errorFor(res));
+            item.rewardKind = kind;
+            item.rewardDays = body.days;
+            rewardState.textContent = `已发奖 ${body.days} 天`;
+            msg.className = 'msg ok';
+            msg.textContent = body.message + (body.note ? `；${body.note}` : '');
+            state.className = 'tag handled';
+            state.textContent = '已处理';
+            item.handledAt = item.handledAt || new Date().toISOString();
+            action.textContent = '撤回';
+            action.className = '';
+            row.querySelectorAll('[data-reward]').forEach((b) => { b.disabled = true; });
+            try { await refreshCount(); } catch (e) { /* 下次载入更新计数 */ }
+          } catch (err) {
+            msg.className = 'msg';
+            msg.textContent = err.message;
+            button.disabled = false;
+          }
+        };
+        button.dataset.reward = kind;
+        row.append(button);
+      }
+    }
+    row.append(action, rewardState, msg);
     card.append(meta, content, docLine, triage, check, row);
     return card;
   }

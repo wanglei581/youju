@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import (
+    DeadlineClue,
     Document,
     Event,
     Feedback,
@@ -99,6 +100,13 @@ class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
     scope: Literal["general", "advisor"] = "general"
+    invite_code: str | None = None
+
+    @field_validator("invite_code", mode="before")
+    @classmethod
+    def valid_invite_code(cls, value):
+        # 无效码不能妨碍同意协议；只把可能匹配固定码的短字符串送进查询。
+        return value if isinstance(value, str) and 0 < len(value) <= 16 else None
 
 
 class Conditions(BaseModel):
@@ -276,6 +284,225 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
     }
 
 
+def _require_rewards() -> None:
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@router.get("/me/rewards", dependencies=[Depends(_require_rewards)])
+def reward_history(session: SessionDep, user: UserDep) -> dict:
+    from youju import rewards
+    from youju.models import PassReward
+
+    days = sum(
+        row.granted_days for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
+    )
+    rows = session.scalars(
+        select(PassReward)
+        .where(PassReward.user_id == user.id)
+        .order_by(PassReward.granted_at.desc(), PassReward.id.desc())
+        .limit(50)
+    )
+    return {
+        "monthDays": days,
+        "monthLimit": rewards.MONTH_LIMIT,
+        "items": [
+            {
+                "kind": row.kind,
+                "name": rewards.LABELS[row.kind],
+                "requestedDays": row.requested_days,
+                "days": row.granted_days,
+                "grantedAt": _iso(row.granted_at),
+                "note": row.note,
+            }
+            for row in rows
+        ],
+    }
+
+
+class DeadlineClueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: int = Field(gt=0, strict=True)
+    kind: Literal["企业申报截止", "推荐或审核截止", "材料报送截止", "其他"]
+    deadline_date: date = Field(alias="date")
+    deadline_time: str | None = Field(default=None, alias="time")
+    quote: str
+
+    @field_validator("deadline_date", mode="before")
+    @classmethod
+    def valid_date(cls, value):
+        if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None:
+            raise ValueError("日期格式应为 YYYY-MM-DD")
+        return value
+
+    @field_validator("quote")
+    @classmethod
+    def valid_quote(cls, value):
+        value = value.strip()
+        if not 6 <= len(value) <= 200:
+            raise ValueError("原文句子须为 6–200 字")
+        return value
+
+    @field_validator("deadline_time")
+    @classmethod
+    def valid_time(cls, value):
+        if value is not None and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
+            raise ValueError("时间格式应为 HH:MM")
+        return value
+
+
+def _validate_clue_document(session: Session, document_id: int, day: date) -> None:
+    from youju.classify import effective_kind
+
+    stmt = (
+        v1._base()
+        .where(Document.id == document_id)
+        .with_only_columns(Document)
+        .execution_options(populate_existing=True)
+    )
+    doc = session.scalar(stmt)
+    if doc is None or effective_kind(doc.title, doc.kind_override) != "申报通知":
+        raise HTTPException(status_code=422, detail="只接受公开申报通知的截止线索")
+    if doc.publish_date is None:
+        raise HTTPException(status_code=422, detail="这份通知的发布日期尚不明确")
+    # 按日历周年计算，闰日的第三年以二月末为界。
+    upper = (
+        doc.publish_date.replace(year=doc.publish_date.year + 3, day=28)
+        if doc.publish_date.month == 2 and doc.publish_date.day == 29
+        else doc.publish_date.replace(year=doc.publish_date.year + 3)
+    )
+    if not doc.publish_date <= day <= upper:
+        raise HTTPException(status_code=422, detail="日期须在通知发布日至发布后三年之间")
+
+
+@router.post("/me/deadline-clues", status_code=201, dependencies=[Depends(_require_rewards)])
+def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDep) -> dict:
+    from datetime import time
+
+    from youju import deadline_clues as clues
+
+    document_id = canonical_ids(session, [body.document_id]).get(body.document_id, body.document_id)
+    _validate_clue_document(session, document_id, body.deadline_date)
+    quote = v1.redact_sensitive(_mask_feedback(body.quote))
+    if not 6 <= len(quote) <= 200:
+        raise HTTPException(status_code=422, detail="原文句子脱敏后须为 6–200 字，请缩短后再提交")
+    try:
+        passed = check_feedback(user.openid, quote)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise HTTPException(status_code=503, detail="内容安全校验暂不可用") from exc
+    if not passed:
+        raise HTTPException(status_code=422, detail="内容可能不合规，请修改后再提交")
+    # 校验网络请求不持行锁；之后串行检查容量与最新核对结果。
+    user_id = user.id
+    session.rollback()
+    clues.lock_queue(session)
+    locked_user = session.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_user is None:
+        raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
+    current_user(locked_user)
+    _validate_clue_document(session, document_id, body.deadline_date)
+    if any(d.kind == body.kind for d in v1._approved(session, [document_id]).get(document_id, [])):
+        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
+    if clues.pending_count(session) >= 50:
+        raise HTTPException(status_code=409, detail="线索暂时收满了，过几天再来")
+    if (
+        session.scalar(
+            select(DeadlineClue.id).where(
+                DeadlineClue.user_id == user.id,
+                DeadlineClue.document_id == document_id,
+                DeadlineClue.kind == body.kind,
+                DeadlineClue.status == "pending",
+            )
+        )
+        is not None
+    ):
+        raise HTTPException(status_code=409, detail="你已经提交过这项线索，请等核对结果")
+    if clues.pending_count(session, user.id) >= 20:
+        raise HTTPException(status_code=409, detail="你已有 20 条待核对线索，请等核对结果")
+    row = DeadlineClue(
+        user_id=user.id,
+        document_id=document_id,
+        kind=body.kind,
+        date=body.deadline_date,
+        time=time.fromisoformat(body.deadline_time) if body.deadline_time else None,
+        quote=quote,
+        status="pending",
+        submitted_at=v1.now(),
+    )
+    session.add(row)
+    session.commit()
+    return clues.out(row)
+
+
+@router.get("/me/deadline-clues")
+def my_deadline_clues(session: SessionDep, user: UserDep) -> dict:
+    from youju import deadline_clues as clues
+
+    rows = session.scalars(
+        select(DeadlineClue)
+        .where(DeadlineClue.user_id == user.id)
+        .order_by(DeadlineClue.submitted_at.desc(), DeadlineClue.id.desc())
+        .limit(50)
+    )
+    return {"items": [clues.out(row) for row in rows]}
+
+
+@router.delete("/me/deadline-clues/{clue_id}", status_code=204)
+def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) -> None:
+    row = session.get(DeadlineClue, clue_id)
+    if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    row = session.scalar(
+        select(DeadlineClue)
+        .where(DeadlineClue.id == clue_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="只能删除待核对的线索")
+    session.delete(row)
+    session.commit()
+
+
+def _require_referral() -> None:
+    from youju import rewards
+
+    if not rewards.referral_enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@router.get("/me/invite", dependencies=[Depends(_require_referral)])
+def invite_status(session: SessionDep, user: UserDep) -> dict:
+    from youju import rewards
+
+    code = rewards.invite_code(session, user.id)
+    count = sum(
+        row.kind == "referral" and row.granted_days > 0
+        for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
+    )
+    session.commit()
+    return {
+        "inviteCode": code,
+        "monthCount": count,
+        "monthLimit": 4,
+        "rules": [
+            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天客户工作台使用期。",
+            "每月最多计入 4 位，各项奖励合计每月最多 30 天，超出部分不给、不顺延。",
+            "新用户不会因使用引荐码多得天数；只计算直接请来的同行。",
+            "使用天数不能转让、不能折现，注销账号时作废。",
+        ],
+    }
+
+
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。只接受当前版本。"""
@@ -292,11 +519,28 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     if body.version != get_settings().agreement_version:
         raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
     stamp = v1.now()
+    from youju import rewards
+
+    inviter = None
+    if (
+        rewards.referral_enabled(get_settings())
+        and body.invite_code
+        and session.scalar(select(User.id).where(User.openid == request_openid(request))) is None
+    ):
+        inviter = session.scalar(
+            select(User.id).where(User.invite_code == body.invite_code).with_for_update()
+        )
+    if inviter is not None and not rewards.record_claim(
+        session, request_openid(request), "referred", stamp
+    ):
+        inviter = None
     # 已有用户时 LAST_INSERT_ID(id) 让 lastrowid 返回已有那一行的编号
     row_id = session.execute(
         insert(User)
         .values(
             openid=request_openid(request),
+            invited_by_user_id=inviter,
+            invited_at=stamp if inviter is not None else None,
             last_visited_at=stamp,
             agreement_version=body.version,
             agreement_at=stamp,
@@ -318,8 +562,11 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
+        from youju import rewards
         from youju.payments import anonymize
 
+        # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
+        rewards.anonymize(session, user, v1.now(), settings=get_settings())
         anonymize(session, user)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
@@ -374,6 +621,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "subscriptionsTotal": 0,
         "feedback": [],
         "feedbackTotal": 0,
+        "deadlineClues": [],
+        "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
         "retention": {
@@ -387,6 +636,21 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     if user is None:
         return JSONResponse(result)
 
+    from youju import deadline_clues as clues
+
+    result["deadlineCluesTotal"] = (
+        session.scalar(select(func.count(DeadlineClue.id)).where(DeadlineClue.user_id == user.id))
+        or 0
+    )
+    result["deadlineClues"] = [
+        clues.out(row)
+        for row in session.scalars(
+            select(DeadlineClue)
+            .where(DeadlineClue.user_id == user.id)
+            .order_by(DeadlineClue.submitted_at.desc(), DeadlineClue.id.desc())
+            .limit(500)
+        )
+    ]
     from youju.models import AdvisorTask
 
     result["advisorTasksTotal"] = (
