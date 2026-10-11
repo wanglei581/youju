@@ -7,13 +7,16 @@ const { removeFiles } = require('./exporter.js');
 
 // 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
 function consentOpen() {
-  return legal.final && api.isLive();
+  // 工具内测包（只上传体验版、不提审；创始人 10/10 要在真机上试批量工具）：协议还是草案也开放同意。
+  // 正式版本（main）仍以 legal.final 为准，等律师定稿。
+  return api.isLive();
 }
 
 // 需要同意协议的功能（登录、关注、订阅提醒、纠错、申请覆盖）这个版本显不显示入口（D-056）：
 // 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final，不是服务端开关
 function loginOpen() {
-  return legal.final === true;
+  // 工具内测包（只上传体验版、不提审）：协议还是草案也显示登录和同意入口。正式版本仍以 legal.final 为准（D-056）。
+  return true;
 }
 
 function agreedHere() {
