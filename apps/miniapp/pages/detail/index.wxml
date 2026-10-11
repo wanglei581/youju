@@ -159,4 +159,5 @@
     <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
   </view>
 </block>
+<!-- 工具入口：数据工具或白名单能力开放时显示，带上当前通知。 -->
 <tool-fab bottom-rpx="{{130}}" bottom-selector=".bar" blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" />

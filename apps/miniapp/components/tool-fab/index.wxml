@@ -1,2 +1,2 @@
-<view wx:if="{{loginOpen}}" class="tool-spacer" style="height: calc({{barHeight || bottomRpx + 'rpx'}} + {{enabled ? '160rpx' : '80rpx'}} + env(safe-area-inset-bottom))"></view>
-<button wx:if="{{enabled && visible && !blocked && !keyboard && !overlay}}" class="tool-fab" style="bottom: calc({{barHeight || bottomRpx + 'rpx'}} + env(safe-area-inset-bottom) + 24rpx)" bindtap="open" aria-label="打开工具">工具</button>
+<view wx:if="{{loginOpen}}" class="tool-spacer" style="height: calc({{barHeight || bottomRpx + 'rpx'}} + {{(enabled || aiEnabled) ? '160rpx' : '80rpx'}} + env(safe-area-inset-bottom))"></view>
+<button wx:if="{{(enabled || aiEnabled) && visible && !blocked && !keyboard && !overlay}}" class="tool-fab" style="bottom: calc({{barHeight || bottomRpx + 'rpx'}} + env(safe-area-inset-bottom) + 24rpx)" bindtap="open" aria-label="打开工具"><text wx:if="{{aiEnabled}}">AI 内测</text><text wx:else>工具</text></button>

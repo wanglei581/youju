@@ -31,6 +31,7 @@ function page(name, overrides = {}, options = {}) {
   const timers = clock(); let view;
   const calls = { orders: [], polls: 0, payments: [], urls: [], toasts: [], modals: [], tasks: [], feedback: [], refunds: [], lists: 0 };
   const api = {
+    advisorCapabilities: () => Promise.resolve({}),
     payProducts: () => Promise.resolve({ items: [PRODUCT] }), advisorStatus: () => Promise.resolve(status()),
     createPayOrder: (body) => { calls.orders.push(body); return Promise.resolve({ orderId: 41, signData: 'data', paySig: 'sig', signature: 'user', mode: pay.PAY_MODE }); },
     payOrder: () => { calls.polls += 1; return Promise.resolve({ status: '待支付' }); },

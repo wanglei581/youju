@@ -13,7 +13,7 @@ function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Set, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/consent.js' && !Object.hasOwn(dependencies, name)) return { loginOpen: () => true }; assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
+    require(name) { if (name === '../../utils/api.js') return { advisorCapabilities: () => Promise.resolve({}), payProducts: () => Promise.resolve({ items: [] }), ...dependencies[name] }; if (name === '../../utils/consent.js' && !Object.hasOwn(dependencies, name)) return { loginOpen: () => true }; assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
   }, { filename: file });
@@ -31,6 +31,7 @@ function apiHarness(response) {
     if (response) options.success(response);
     else pending.push(options);
   } } });
+  api.advisorCapabilities = () => Promise.resolve({});
   return { api, app, pending, calls: () => calls };
 }
 
@@ -335,7 +336,7 @@ test('页面演示闭环：同意、两种工具提交、进度、任务结果�
   const terms = demo.page('advisor-terms'); terms.onShow(); await flush();
   assert.equal(terms.data.demo, true); assert.equal(terms.data.final, true);
   assert.match(terms.data.text, /虚构企业信息/);
-  assert.equal(demo.module('content/advisor-terms.js').final, false);
+  assert.equal(demo.module('content/advisor-terms.js').final, true);
   terms.check({ detail: { value: ['agree'] } }); terms.agree(); await flush();
   assert.equal(terms.data.agreed, true);
   const board = demo.page('advisor'); board.onLoad({}); board.onShow(); await flush(); assert.equal(board.data.skills[0].remaining, 3);

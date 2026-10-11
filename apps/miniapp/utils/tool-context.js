@@ -27,7 +27,7 @@ function describe(filters) {
   return parts.join(' · ');
 }
 
-function url(properties) {
+function url(properties = {}) {
   const base = '/pages/advisor/index';
   if (properties.docId) return `${base}?docId=${encodeURIComponent(properties.docId)}&title=${encodeURIComponent(properties.docTitle || '')}`;
   if (properties.source === 'search') {
@@ -39,11 +39,11 @@ function url(properties) {
 function read(query = {}) {
   // 链接损坏时直接忽略上下文，仍可使用数据工具。
   try {
-    if (query.docId) {
+    if (query && query.docId) {
       const title = decode(query.title || '');
-      return { docId: decode(query.docId), title, label: `当前通知：${title}` };
+      return { docId: decode(String(query.docId)), title, label: `当前通知：${title}` };
     }
-    if (query.filters) {
+    if (query && query.filters) {
       let input;
       try { input = JSON.parse(query.filters); } catch (e) { input = JSON.parse(decode(query.filters)); }
       const filters = { q: typeof input.q === 'string' ? input.q : '', kind: typeof input.kind === 'string' ? input.kind : 'all' };

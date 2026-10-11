@@ -26,7 +26,9 @@
     "pages/orders/index",
     "pages/rewards/index",
     "pages/invite/index",
-    "pages/deadline-clue/index"
+    "pages/deadline-clue/index",
+    "pages/advisor-interpret/index",
+    "pages/advisor-clause/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -41,10 +43,22 @@
     "selectedColor": "#2A5CE0",
     "backgroundColor": "#FFFFFF",
     "list": [
-      { "pagePath": "pages/home/index", "text": "首页" },
-      { "pagePath": "pages/follow/index", "text": "关注" },
-      { "pagePath": "pages/files/index", "text": "文件" },
-      { "pagePath": "pages/me/index", "text": "我的" }
+      {
+        "pagePath": "pages/home/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/follow/index",
+        "text": "关注"
+      },
+      {
+        "pagePath": "pages/files/index",
+        "text": "文件"
+      },
+      {
+        "pagePath": "pages/me/index",
+        "text": "我的"
+      }
     ]
   },
   "usingComponents": {

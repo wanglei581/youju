@@ -16,7 +16,7 @@ Component({
     kind: { type: String, value: 'all' },
     filters: { type: Object, value: null },
   },
-  data: { loginOpen: loginOpen(), enabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
+  data: { loginOpen: loginOpen(), enabled: false, aiEnabled: false, visible: false, keyboard: false, overlay: false, barHeight: '', navigating: false },
   observers: {
     blocked() { if (this.data.visible) this.measure(); },
   },
@@ -47,9 +47,16 @@ Component({
       if (!this.data.loginOpen) return;
       this.setData({ visible: true, navigating: false });
       this.measure();
+      this.load();
       api.advisorStatus().then((res) => {
         if (this.alive) this.setData({ enabled: res.enabled === true });
       }).catch(() => { if (this.alive) this.setData({ enabled: false }); });
+    },
+    load() {
+      // 同一次启动内共用缓存，不会每个页面都请求；AI 页面进入时会刷新。
+      api.advisorCapabilities().then((res) => {
+        if (this.alive) this.setData({ aiEnabled: !!res && !!res.ai_advisor && res.ai_advisor.enabled === true });
+      }).catch(() => { if (this.alive) this.setData({ aiEnabled: false }); });
     },
     measure() {
       const pages = getCurrentPages(); const page = pages[pages.length - 1];
@@ -67,7 +74,7 @@ Component({
       }).exec();
     },
     open() {
-      if (!this.data.enabled || !this.data.visible || this.data.keyboard || this.data.overlay || this.properties.blocked || this.data.navigating) return;
+      if (!(this.data.enabled || this.data.aiEnabled) || !this.data.visible || this.data.keyboard || this.data.overlay || this.properties.blocked || this.data.navigating) return;
       this.setData({ navigating: true });
       wx.navigateTo({ url: context.url(this.properties), complete: () => { if (this.alive) this.setData({ navigating: false }); } });
     },

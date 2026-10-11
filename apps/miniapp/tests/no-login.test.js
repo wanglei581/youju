@@ -320,8 +320,8 @@ const CLOSED_PAGES = [
   }), api: {} },
   { name: 'advisor', title: '数据工具', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
-    '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': { taskView: (task) => task }, '../../utils/tool-context.js': { read: () => null },
-  }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 }, track: { limit: 1, used: 0, maxRows: 50 } } }), payProducts: () => Promise.resolve({ items: [] }), advisorTasks: () => Promise.resolve({ items: [] }) } },
+    '../../utils/pay.js': require('../utils/pay.js'), '../../utils/advisor.js': { ...require('../utils/advisor.js'), taskView: (task) => task }, '../../utils/tool-context.js': { read: () => null },
+  }), api: { advisorCapabilities: () => Promise.resolve({}), advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 }, track: { limit: 1, used: 0, maxRows: 50 } } }), payProducts: () => Promise.resolve({ items: [] }), advisorTasks: () => Promise.resolve({ items: [] }) } },
   { name: 'advisor-form', title: '批量名单比对', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
     '../../utils/advisor.js': { KINDS: { compare: '批量名单比对' }, consent: () => Promise.resolve(false) },
@@ -329,8 +329,8 @@ const CLOSED_PAGES = [
   }), api: { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 0, maxRows: 50 } } }) } },
   { name: 'advisor-tasks', title: '还没有任务', open: (p) => { p.onLoad({}); p.onShow(); }, deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
-    '../../utils/advisor.js': { taskView: (task) => task },
-  }), api: { advisorTasks: () => Promise.resolve({ items: [] }) } },
+    '../../utils/advisor.js': { ...require('../utils/advisor.js'), taskView: (task) => task },
+  }), api: { advisorCapabilities: () => Promise.resolve({}), advisorTasks: () => Promise.resolve({ items: [] }) } },
   { name: 'advisor-terms', title: '工具使用说明', open: (p) => p.onShow(), deps: (api, consent) => ({
     '../../utils/api.js': api, '../../utils/consent.js': consent,
     '../../utils/advisor.js': { VERSION: 'test', TERMS_FINAL: true, TERMS_TEXT: '正式说明', consent: () => Promise.resolve(false) },

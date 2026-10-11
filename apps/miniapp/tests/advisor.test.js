@@ -20,6 +20,7 @@ function zipEntries(base64) {
 }
 
 function page(name, api, helpers, timers, wxOptions = {}) {
+  api = { advisorCapabilities: () => Promise.resolve({}), payProducts: () => Promise.resolve({ items: [] }), ...api };
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
     require: (module) => module.endsWith('consent.js') ? Object.assign({ loginOpen: () => true }, helpers) : module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : module.endsWith('/pay.js') ? require('../utils/pay.js') : helpers,
@@ -114,18 +115,18 @@ test('正式请求支持 202 和 Idempotency-Key，下载重新取地址', async
 
 test('轮询从三秒增至十五秒，隐藏页后忽略在途结果并停止', async () => {
   const delays = []; const callbacks = []; let cleared = 0; let resolveTask;
-  const api = { isLive: () => true, advisorTasks: () => Promise.resolve({ items: [{ id: 1, status: 'queued' }] }), advisorTask: () => new Promise((resolve) => { resolveTask = resolve; }) };
+  const api = { isLive: () => true, advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'compare', status: 'queued' }] }), advisorTask: () => new Promise((resolve) => { resolveTask = resolve; }) };
   const helpers = { taskView: (task) => Object.assign({}, task, { terminal: task.status === 'done' }) };
   const view = page('advisor-tasks', api, helpers, { set: (fn, delay) => { delays.push(delay); callbacks.push(fn); return callbacks.length; }, clear: () => { cleared += 1; } });
   view.onShow(); await flush();
   for (let n = 0; n < 5; n += 1) {
-    callbacks[n](); resolveTask({ id: 1, status: 'running' }); await flush();
+    callbacks[n](); resolveTask({ id: 1, kind: 'compare', status: 'running' }); await flush();
   }
   assert.deepEqual(delays, [3000, 6000, 9000, 12000, 15000, 15000]);
-  callbacks[5](); view.onHide(); resolveTask({ id: 1, status: 'done' }); await flush();
+  callbacks[5](); view.onHide(); resolveTask({ id: 1, kind: 'compare', status: 'done' }); await flush();
   assert.ok(cleared); assert.equal(view.data.items[0].status, 'running'); assert.equal(delays.length, 6);
   view.onShow(); await flush(); assert.equal(delays[6], 3000);
-  callbacks[6](); resolveTask({ id: 1, status: 'done' }); await flush(); assert.equal(delays.length, 7);
+  callbacks[6](); resolveTask({ id: 1, kind: 'compare', status: 'done' }); await flush(); assert.equal(delays.length, 7);
 });
 
 test('表单重试沿用幂等键，上传预览失败不能提交', async () => {

@@ -5,7 +5,7 @@ const VERSION = terms.version;
 const TERMS_TEXT = terms.text;
 const TERMS_FINAL = terms.final && !!terms.text.trim() && !/待.*定稿|占位/.test(terms.text);
 // 名字和购买页、奖励规则里的写法保持一致
-const KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
+const KINDS = { compare: '批量名单比对', track: '客户相关通知表', interpret: '政策解读', clause: '条款对照' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。
@@ -35,6 +35,28 @@ function pasteRows(kind, text) {
     if (row.length < 2 || row.length > 4 || !row[0] || !row[1]) throw new Error(`第 ${index + 1} 行请填写客户名称和省份，最多四列`);
     return { name: row[0], province: row[1], keywords: row[2] || '', supports: row[3] || '' };
   });
+}
+
+// 《人工智能生成合成内容标识办法》要求显式标识：如实写明由 AI 模型生成。
+const INTERNAL_PREFIX = '内部测试：';
+const INTERNAL_NOTICE = '结果由 AI 模型根据原文生成，每条都附原文引用，请以原文为准，不作为能否申报的判断。';
+
+// 后端 capabilities 的 disclosure 如果带了说明文字（字符串或 text 字段），优先显示后端的；
+// 目前线上只返回 modelLabel、filingNo，所以显示固定文字。
+function internalNotice(disclosure) {
+  let text = '';
+  if (typeof disclosure === 'string') text = disclosure;
+  else if (disclosure && typeof disclosure.text === 'string') text = disclosure.text;
+  text = text.trim();
+  if (text.startsWith(INTERNAL_PREFIX)) text = text.slice(INTERNAL_PREFIX.length).trim();
+  return text || INTERNAL_NOTICE;
+}
+
+// 只保留当前账号有权限的 AI 任务；条款对照还要 features 里有 clause。
+function allowedKinds(ai) {
+  if (!ai || ai.enabled !== true) return [];
+  const features = Array.isArray(ai.features) ? ai.features : [];
+  return ['interpret', 'clause'].filter((kind) => features.includes(kind));
 }
 
 function taskView(task) {
@@ -89,4 +111,4 @@ function openResult(id, options = {}) {
   }));
 }
 
-module.exports = { VERSION, TERMS_TEXT, TERMS_FINAL, KINDS, STATES, csvRows, pasteRows, taskView, consent, openResult };
+module.exports = { VERSION, TERMS_TEXT, TERMS_FINAL, KINDS, STATES, csvRows, pasteRows, taskView, consent, openResult, INTERNAL_PREFIX, INTERNAL_NOTICE, internalNotice, allowedKinds };

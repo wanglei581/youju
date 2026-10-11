@@ -28,6 +28,7 @@ function errorOf(res) {
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
   const err = new Error(typeof detail === 'string' ? detail : ((detail && detail.message) || validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
+  err.detail = detail;
   if (detail && typeof detail === 'object' && typeof detail.code === 'string') err.code = detail.code;
   return err;
 }
@@ -426,6 +427,36 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
+const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
+let capabilitiesPromise;
+let capabilitiesPending;
+function advisorCapabilities(options = {}) {
+  // 本次启动内共用一个请求；开启的结果一直缓存，关闭或失败的结果只缓存 15 秒；AI 页面进入时 refresh 重新取额度。
+  if (capabilitiesPending) return capabilitiesPending;
+  if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
+  const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
+  const result = source.then((res) => {
+    const ai = (res && res.ai_advisor) || {};
+    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED) };
+    return { ai_advisor: {
+      enabled: true,
+      features: Array.isArray(ai.features) ? ai.features : [],
+      remaining: ai.remaining || {},
+      disclosure: ai.disclosure == null ? null : ai.disclosure,
+    } };
+  }).catch(() => ({ ai_advisor: Object.assign({}, AI_DISABLED) }));
+  capabilitiesPromise = result;
+  capabilitiesPending = result;
+  result.then((res) => {
+    if (capabilitiesPending === result) capabilitiesPending = null;
+    // “关闭”的结果只缓存 15 秒：登录前查到的关闭（403）不能一直记着，登录或加进白名单后回到页面要能重新查到
+    if (!(res && res.ai_advisor && res.ai_advisor.enabled === true)) {
+      setTimeout(() => { if (capabilitiesPromise === result) capabilitiesPromise = null; }, 15000);
+    }
+  });
+  return result;
+}
+
 function advisorStatus(options = {}) {
   // 悬浮入口在本次启动内共用一个请求，失败也缓存；工具页主动刷新额度。
   const cache = typeof getApp === 'function' ? getApp().globalData : null;
@@ -446,7 +477,22 @@ function advisorPreview(data) {
 }
 
 function createAdvisorTask(data, key) {
-  return isLive() ? request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }) : advisorMock.create(data, key);
+  if (data.kind !== 'interpret' && data.kind !== 'clause') {
+    return isLive() ? request('/api/v1/advisor/tasks', null, { method: 'POST', data, header: { 'Idempotency-Key': key } }) : advisorMock.create(data, key);
+  }
+  if (!isLive()) {
+    return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
+  }
+  const body = data.kind === 'clause'
+    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
+    : { kind: 'interpret', doc_id: Number(data.doc_id) };
+  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: { 'Idempotency-Key': key } }).catch((err) => {
+    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string') {
+      err.message = Array.isArray(err.detail)
+        ? err.detail.map((item) => (item && item.msg) || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
+    }
+    throw err;
+  });
 }
 
 function advisorTasks() {
@@ -454,15 +500,15 @@ function advisorTasks() {
 }
 
 function advisorTask(id) {
-  return isLive() ? request(`/api/v1/advisor/tasks/${id}`) : advisorMock.get(id);
+  return isLive() ? request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}`) : advisorMock.get(id);
 }
 
 function cancelAdvisorTask(id) {
-  return isLive() ? request(`/api/v1/advisor/tasks/${id}/cancel`, null, { method: 'POST', data: {} }) : advisorMock.cancel(id);
+  return isLive() ? request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/cancel`, null, { method: 'POST', data: {} }) : advisorMock.cancel(id);
 }
 
 function deleteAdvisorTask(id) {
-  return isLive() ? request(`/api/v1/advisor/tasks/${id}`, null, { method: 'DELETE' }) : advisorMock.remove(id);
+  return isLive() ? request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}`, null, { method: 'DELETE' }) : advisorMock.remove(id);
 }
 
 function downloadAdvisorTask(id) {
@@ -543,6 +589,6 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   myRewards, inviteInfo, submitDeadlineClue, myDeadlineClues, deleteDeadlineClue,
   follow, files, saveSubscription,
-  advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
+  advisorCapabilities, advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
   payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, advisorTaskPart,
 };
