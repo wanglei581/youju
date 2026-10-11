@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
+from youju import payments
 from youju.ai import interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
@@ -185,15 +186,22 @@ def _upload_consent(user: User) -> None:
 
 @router.get("/status", dependencies=[Depends(_enabled)])
 def status(session: SessionDep, user: KnownUserDep) -> dict:
-    day = service.usage_day(_stamp())
+    if not get_settings().advisor_enabled:
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    stamp = _stamp()
+    day = service.usage_day(stamp)
     usage = service.usage_counts(session, user.id, day) if user else {}
+    ticket = payments.current_pass(session, user.id, stamp) if user else None
     return {
         "enabled": True,
+        "pass": payments.pass_status(session, user.id, stamp)
+        if user
+        else {"active": False, "expiresAt": None},
         "quota": {
             kind: {
                 "used": usage.get(kind, 0),
                 "limit": service.usage_limit(kind),
-                "maxRows": service.MAX_ROWS,
+                "maxRows": 500 if ticket else service.MAX_ROWS,
             }
             for kind in ("compare", "track")
         },
@@ -341,26 +349,55 @@ def create_task(
         return _out(existing, session, include_result=False)
     if body.file is not None:
         _upload_consent(user)
-    rows = _file_rows(body) if body.kind not in AI_KINDS else None
-    if rows is not None and len(rows) > service.MAX_ROWS:
-        label = "名单比对" if body.kind == "compare" else "跟进表"
-        raise HTTPException(status_code=429, detail=f"{label}每次最多提交 50 行")
     stamp = _stamp()
-    if not service.reserve_usage(session, user.id, body.kind, service.usage_day(stamp)):
-        label = {
-            "compare": "名单比对",
-            "track": "跟进表",
-            "interpret": "政策解读",
-            "clause": "条款对照",
-        }[body.kind]
-        detail = (
-            f"{label}本月的免费额度已用完，请下月再试"
-            if body.kind == "compare"
-            else f"{label}今天的免费额度已用完，请明天再试"
-        )
-        raise HTTPException(status_code=429, detail=detail)
+    ticket = (
+        payments.current_pass(session, user.id, stamp, lock=True)
+        if body.kind not in AI_KINDS
+        else None
+    )
+    try:
+        rows = _file_rows(body) if body.kind not in AI_KINDS else None
+    except HTTPException as exc:
+        if exc.status_code == 422 and isinstance(exc.detail, str) and "最多 500 行" in exc.detail:
+            limit = 500 if ticket else service.MAX_ROWS
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT",
+                    "message": f"每次最多提交 {limit} 行",
+                },
+            ) from None
+        raise
+    if rows is not None:
+        limit = 500 if ticket else service.MAX_ROWS
+        if len(rows) > limit:
+            code = "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT"
+            raise HTTPException(
+                status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
+            )
+    # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
+    # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
+    fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
+    reserved = fits_free and service.reserve_usage(
+        session, user.id, body.kind, service.usage_day(stamp)
+    )
+    if reserved:
+        ticket = None
+    if ticket is None and not reserved:
+        if body.kind not in AI_KINDS:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "FREE_MONTHLY_LIMIT",
+                    "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                },
+            )
+        label = "政策解读" if body.kind == "interpret" else "条款对照"
+        raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
     task = AdvisorTask(
         user_id=user.id,
+        pass_id=ticket.id if ticket else None,
+        usage_source="pass" if ticket else "free",
         kind=body.kind,
         status="queued",
         input_rows=rows,
@@ -372,6 +409,13 @@ def create_task(
     )
     session.add(task)
     try:
+        session.flush()
+        if ticket:
+            ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
+                task.id,
+                stamp,
+                None,
+            )
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -481,7 +525,8 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
 
 @router.get("/tasks/{task_id}", dependencies=[Depends(_enabled)])
 def get_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
-    return _out(_owned(session, user, task_id), session)
+    task = _owned(session, user, task_id)
+    return _out(task, session)
 
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(_enabled)])
@@ -491,6 +536,7 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
         task.status = "cancelled"
         task.finished_at = _stamp()
         task.error = "用户已取消"
+        service.record_pass_completion(session, task)
         service.release_usage(session, task)
         session.commit()
     elif task.status != "cancelled":

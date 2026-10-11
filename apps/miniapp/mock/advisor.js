@@ -6,12 +6,11 @@ try { const saved = wx.getStorageSync(STORAGE); if (saved && saved.tasks) state 
 
 function save() { try { wx.setStorageSync(STORAGE, state); } catch (e) { /* 演示仍可在本次启动内继续 */ } }
 function copy(value) { return Promise.resolve(JSON.parse(JSON.stringify(value))); }
-function error(message, status) { const err = new Error(message); err.status = status; return err; }
+function error(message, status, code) { const err = new Error(message); err.status = status; if (code) err.code = code; return err; }
 function day() { return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); }
 function usage(kind) {
-  if (kind !== 'compare') return state.usage[`${day()}:${kind}`] || 0;
   const month = day().slice(0, 7);
-  return Object.keys(state.usage).filter((key) => key.startsWith(month + '-') && key.endsWith(':compare'))
+  return Object.keys(state.usage).filter((key) => key.startsWith(month + '-') && key.endsWith(`:${kind}`))
     .reduce((total, key) => total + state.usage[key], 0);
 }
 function tick() {
@@ -30,7 +29,7 @@ function agree(version) {
   if (version !== VERSION) return Promise.reject(error('工具使用说明已更新，请重新阅读', 422));
   state.agreed = { version, at: new Date(Date.now()).toISOString() }; save(); return copy(state.agreed);
 }
-function status() { return copy({ enabled: true, quota: { compare: { used: usage('compare'), limit: 3, maxRows: 50 }, track: { used: usage('track'), limit: 1, maxRows: 50 } } }); }
+function status() { return copy({ enabled: true, pass: { active: false, expiresAt: null }, quota: { compare: { used: usage('compare'), limit: 3, maxRows: 50 }, track: { used: usage('track'), limit: 3, maxRows: 50 } } }); }
 
 function xmlText(value) {
   return value.replace(/&#x([a-f\d]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
@@ -130,12 +129,12 @@ function inputRows(body) {
       if (column < 0) column = header.findIndex((cell) => ['统一社会信用代码', '信用代码'].includes(cell));
       const hasHeader = column >= 0;
       const values = (hasHeader ? rows.slice(1) : rows).map((row) => row[hasHeader ? column : 0] || '');
-      if (values.length > 200) throw error('客户名单最多 200 行', 422);
+      if (values.length > 500) throw error('客户名单最多 500 行', 422);
       return values;
     }
     const name = header.indexOf('客户名称'); const province = header.indexOf('省份');
     if (name < 0 || province < 0) throw error('客户画像必须包含“客户名称”和“省份”表头', 422);
-    if (rows.length - 1 > 200) throw error('客户画像最多 200 行', 422);
+    if (rows.length - 1 > 500) throw error('客户画像最多 500 行', 422);
     return rows.slice(1).filter((row) => row[name] || row[province]).map((row) => ({ name: row[name] || '', province: row[province] || '', keywords: row[header.indexOf('关键词')] || '', supports: row[header.indexOf('支持方式')] || '' }));
   }).then((rows) => { if (!rows.length || (body.kind === 'compare' && !rows.some(Boolean))) throw error('文件里没有可提交的客户行', 422); return rows; });
 }
@@ -144,8 +143,8 @@ function create(body, key) {
   const existing = state.tasks.find((task) => task.key === key);
   if (existing) return copy(publicTask(existing));
   return inputRows(body).then((rows) => {
-    if (rows.length > 50) throw error('每次最多提交 50 行', 429);
-    if (usage(body.kind) >= (body.kind === 'compare' ? 3 : 1)) throw error(body.kind === 'compare' ? '本月的免费额度已用完，请下月再试' : '今天的免费额度已用完，请明天再试', 429);
+    if (rows.length > 50) throw error('每次最多提交 50 行', 429, 'FREE_ROW_LIMIT');
+    if (usage(body.kind) >= 3) throw error('本月免费次数已用完', 429, 'FREE_MONTHLY_LIMIT');
     const task = { id: state.nextId++, key, kind: body.kind, status: 'queued', rowCount: rows.length, attempts: 0, createdAt: new Date(Date.now()).toISOString(), startedAt: null, finishedAt: null, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), hasFile: false, error: null };
     state.tasks.unshift(task);
     const usageKey = `${day()}:${body.kind}`;

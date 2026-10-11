@@ -29,9 +29,9 @@ from youju.lists.lookup import ListLookupMatch, lookup_list_matches, public_cond
 from youju.lists.rules import is_person_query, normalize_credit_code, normalize_name
 from youju.models import Document, DocumentDetail, ListEntry, Source
 
-MAX_INPUT_ROWS = 200
+MAX_INPUT_ROWS = 500
 MAX_FILE_BYTES = 2 * 1024 * 1024
-MAX_XLSX_ROWS = 202
+MAX_XLSX_ROWS = 502
 MAX_XLSX_COLUMNS = 64
 MAX_XLSX_CELLS = MAX_XLSX_ROWS * MAX_XLSX_COLUMNS
 MAX_XML_ELEMENTS = 100_000
@@ -290,7 +290,7 @@ def read_customer_file(path: str | Path, *, content: bytes | None = None) -> lis
         column = 0
     values = [_text(row[column]) if column < len(row) else "" for row in data]
     if len(values) > MAX_INPUT_ROWS:
-        raise CompareInputError("客户名单最多 200 行")
+        raise CompareInputError("客户名单最多 500 行")
     return values
 
 
@@ -305,7 +305,7 @@ def _input_rows(values: Iterable[str]) -> tuple[list[tuple[str, str, str]], list
     seen: set[tuple[str, str]] = set()
     all_values = list(values)
     if len(all_values) > MAX_INPUT_ROWS:
-        raise CompareInputError("客户名单最多 200 行")
+        raise CompareInputError("客户名单最多 500 行")
     for raw in all_values:
         original = _text(raw)
         if not original:

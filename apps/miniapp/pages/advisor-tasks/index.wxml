@@ -6,23 +6,22 @@
 <view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <view wx:if="{{actionError}}" class="card advisor-card advisor-error">{{actionError}}，请重试相应操作。</view>
 <block wx:if="{{!loading}}">
-  <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="advisor-text muted">填写客户后，可以在这里查看进度和打开结果。</view><button class="advisor-button" bindtap="form">去填写客户</button></view>
-  <view wx:for="{{items}}" wx:key="id" class="card advisor-card">
-    <view class="advisor-title">{{item.kindLabel}}</view>
-    <view class="advisor-text">{{item.stateLabel}} · {{item.rowCount}} 行</view>
-    <view class="advisor-text muted">{{item.time}}</view>
-    <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
-    <view class="advisor-actions">
-      <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" bindtap="cancel" disabled="{{busyId !== null}}">取消</button>
-      <button wx:if="{{item.status === 'done' && item.hasFile}}" class="advisor-button btn-primary" data-id="{{item.id}}" bindtap="open" loading="{{busyId === item.id}}" disabled="{{busyId !== null}}">打开 Excel</button>
-      <text wx:if="{{item.status === 'done' && !item.hasFile}}" class="advisor-text muted">结果文件已过期或已删除</text>
-      <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" bindtap="remove" disabled="{{busyId !== null}}">删除</button>
-    </view>
-    <view wx:if="{{item.status === 'done'}}" class="advisor-actions">
-      <button class="advisor-button" bindtap="lists">查名单</button><button class="advisor-button" bindtap="radar">截止雷达</button>
+  <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="tool-desc">填写客户后，可以在这里查看进度和打开结果。</view><button class="advisor-button btn-primary tool-go" bindtap="form">去填写客户</button></view>
+  <!-- 一个任务一张卡片：名称和状态；行数和时间；主要操作一个按钮，其余是文字链接 -->
+  <view wx:for="{{items}}" wx:key="id" class="card advisor-card task">
+    <view class="task-head"><view class="advisor-title">{{item.kindLabel}}</view><text class="task-state task-state--{{item.status}}">{{item.stateLabel}}</text></view>
+    <view class="task-meta">{{item.rowCount}} 行 · {{item.time}}</view>
+    <view wx:if="{{item.error}}" class="task-meta">{{item.error}}</view>
+    <button wx:if="{{item.status === 'done' && item.hasFile}}" class="advisor-button btn-primary tool-go" data-id="{{item.id}}" bindtap="open" loading="{{busyId === item.id}}" disabled="{{busyId !== null}}">打开 Excel</button>
+    <view wx:if="{{item.status === 'done' && !item.hasFile}}" class="task-meta">结果文件已过期或已删除</view>
+    <view class="task-links">
+      <button wx:if="{{item.status === 'done'}}" class="task-link" bindtap="lists">查名单</button>
+      <button wx:if="{{item.status === 'done'}}" class="task-link" bindtap="radar">截止雷达</button>
+      <button wx:if="{{item.status === 'queued' && !item.paid}}" class="task-link" data-id="{{item.id}}" bindtap="cancel" disabled="{{busyId !== null}}">取消</button>
+      <button wx:if="{{item.terminal}}" class="task-link task-link--danger" data-id="{{item.id}}" bindtap="remove" disabled="{{busyId !== null}}">删除</button>
     </view>
   </view>
-  <view wx:if="{{singleTask}}" class="card advisor-card"><button class="advisor-button" bindtap="allTasks">全部任务</button></view>
+  <view wx:if="{{singleTask}}" class="all-tasks"><text class="link" bindtap="allTasks" aria-role="link">全部任务 ›</text></view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>
 

@@ -1,4 +1,5 @@
 const legal = require('../../content/legal.js');
+const payTerms = require('../../content/pay-terms.js');
 const api = require('../../utils/api.js');
 const { consentOpen, markAgreed, loginOpen } = require('../../utils/consent.js');
 
@@ -13,8 +14,14 @@ Page({
     const consent = query.consent === '1' && consentOpen();
     let docs;
     if (consent) docs = [legal.user, legal.privacy];
+    else if (query.type === 'pay') docs = [{ title: payTerms.title, sections: [{ h: '', p: [payTerms.text] }] }];
     else docs = [query.type === 'privacy' ? legal.privacy : legal.user];
-    this.setData({ docs, final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent });
+    const isPay = !consent && query.type === 'pay';
+    this.setData({
+      docs, consent, disclaimer: legal.disclaimer,
+      final: isPay ? payTerms.final : legal.final,
+      status: isPay ? '草稿：律师定稿前不开放付费' : legal.status,
+    });
     wx.setNavigationBarTitle({ title: consent ? '用户协议和隐私保护指引' : docs[0].title });
   },
 

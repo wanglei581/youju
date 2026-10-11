@@ -1,1 +1,15 @@
 @import "../../utils/advisor.wxss";
+
+.task-head { display: flex; align-items: center; justify-content: space-between; gap: 24rpx; }
+.task-doc { margin-top: 12rpx; font-size: 28rpx; line-height: 1.6; color: var(--t1); }
+.task-meta { margin-top: 8rpx; font-size: 26rpx; line-height: 1.6; color: var(--t3); }
+
+/* 次要操作：一行文字链接，删除在最右边 */
+.task-links { margin-top: 24rpx; padding-top: 8rpx; display: flex; align-items: center; gap: 48rpx; border-top: 2rpx solid var(--line); }
+/* 微信 button 默认左右居中、固定宽度，这里要靠左排、按文字宽度 */
+.task-link { margin: 0 !important; padding: 0; width: auto !important; min-height: 88rpx; line-height: 88rpx; background: transparent; color: var(--brand); font-size: 28rpx; font-weight: 400; }
+.task-link::after { border: 0; }
+.task-link--danger { margin-left: auto !important; color: var(--red); }
+.task-link[disabled] { background: transparent !important; color: var(--t3) !important; }
+.all-tasks { padding-top: 12rpx; display: flex; justify-content: center; font-size: 28rpx; }
+.all-tasks .link { min-height: 88rpx; padding: 0 32rpx; display: flex; align-items: center; }

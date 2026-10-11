@@ -27,7 +27,7 @@ from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User
+from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User, WorkbenchPass
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -93,6 +93,7 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
+        "usageSource": task.usage_source,
     }
     if include_result:
         result.update(
@@ -121,24 +122,24 @@ def usage_day(value: datetime) -> date:
 
 
 def usage_limit(kind: str) -> int:
-    return 3 if kind == "compare" else (5 if kind in AI_KINDS else 1)
+    return 5 if kind in AI_KINDS else 3
 
 
 def usage_counts(
     session: Session, user_id: int, day: date, *, lock: bool = False
 ) -> dict[str, int]:
-    """日账本保持不变；名单比对汇总北京时间自然月，其他工具仍按日。"""
+    """日账本保持不变；数据工具汇总北京时间自然月，解读工具仍按日。"""
     month = day.replace(day=1)
     next_month = (month + timedelta(days=32)).replace(day=1)
     stmt = select(AdvisorUsage.kind, AdvisorUsage.used_count).where(
         AdvisorUsage.user_id == user_id,
         or_(
             and_(
-                AdvisorUsage.kind == "compare",
+                AdvisorUsage.kind.in_(("compare", "track")),
                 AdvisorUsage.day >= month,
                 AdvisorUsage.day < next_month,
             ),
-            and_(AdvisorUsage.kind != "compare", AdvisorUsage.day == day),
+            and_(AdvisorUsage.kind.not_in(("compare", "track")), AdvisorUsage.day == day),
         ),
     )
     # 占用额度时必须读最新值；普通快照可能早于等待用户行锁的并发请求。
@@ -152,66 +153,41 @@ def usage_counts(
 
 def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
     """在调用方已锁定用户行后占用一次额度。"""
-    if kind == "compare" and usage_counts(session, user_id, day, lock=True).get(
-        kind, 0
-    ) >= usage_limit(kind):
+    if usage_counts(session, user_id, day, lock=True).get(kind, 0) >= usage_limit(kind):
         return False
     row = session.scalar(
         select(AdvisorUsage)
-        .where(AdvisorUsage.user_id == user_id, AdvisorUsage.kind == kind, AdvisorUsage.day == day)
+        .where(
+            AdvisorUsage.user_id == user_id,
+            AdvisorUsage.kind == kind,
+            AdvisorUsage.day == day,
+        )
         .with_for_update()
     )
     if row is None:
         row = AdvisorUsage(user_id=user_id, kind=kind, day=day, used_count=0)
         session.add(row)
         session.flush()
-    if kind == "compare" or kind in AI_KINDS:
-        if row.used_count >= usage_limit(kind):
-            return False
-        row.used_count += 1
-        return True
-    if row.used_count >= 1:
-        # 兼容 0010 上线前已被后台标成 failed 的旧任务：旧代码没有台账，
-        # 首次遇到时补回一次；正常失败路径会在这里之前显式释放。
-        old_failed = session.scalar(
-            select(AdvisorTask.id)
-            .where(
-                AdvisorTask.user_id == user_id,
-                AdvisorTask.kind == kind,
-                AdvisorTask.status == "failed",
-                AdvisorTask.created_at
-                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
-                AdvisorTask.created_at
-                < datetime.combine(
-                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
-                ).astimezone(UTC),
-            )
-            .limit(1)
-        )
-        active = session.scalar(
-            select(AdvisorTask.id)
-            .where(
-                AdvisorTask.user_id == user_id,
-                AdvisorTask.kind == kind,
-                AdvisorTask.status.in_(("queued", "running", "done")),
-                AdvisorTask.created_at
-                >= datetime.combine(day, datetime.min.time(), tzinfo=BEIJING).astimezone(UTC),
-                AdvisorTask.created_at
-                < datetime.combine(
-                    day + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING
-                ).astimezone(UTC),
-            )
-            .limit(1)
-        )
-        if old_failed is None or active is not None:
-            return False
-        row.used_count -= 1
     row.used_count += 1
     return True
 
 
 def release_usage(session: Session, task: AdvisorTask) -> None:
     """释放一次已占用额度；重复释放安全。"""
+    if task.usage_source == "pass" or task.usage_released:
+        return
+    # 原子标记保证两个释放路径至多退回一次，账本仍按原提交日期退款。
+    changed = session.execute(
+        update(AdvisorTask)
+        .where(
+            AdvisorTask.id == task.id,
+            AdvisorTask.usage_released == False,  # noqa: E712
+        )
+        .values(usage_released=True)
+    ).rowcount
+    if not changed:
+        return
+    task.usage_released = True
     row = session.scalar(
         select(AdvisorUsage)
         .where(
@@ -533,6 +509,20 @@ def process_clause(session: Session, task: AdvisorTask, **kwargs) -> bool:
     return process_ai(session, task, **kwargs)
 
 
+def record_pass_completion(session: Session, task: AdvisorTask) -> None:
+    if task.pass_id is None:
+        return
+    # 只更新最近提交任务的凭据，不让较早任务的晚完成覆盖最新任务。
+    session.execute(
+        update(WorkbenchPass)
+        .where(
+            WorkbenchPass.id == task.pass_id,
+            WorkbenchPass.last_task_id == task.id,
+        )
+        .values(last_task_completed_at=task.finished_at)
+    )
+
+
 def process_task(
     session: Session,
     task: AdvisorTask,
@@ -578,6 +568,7 @@ def process_task(
         task.result_rows = rows
         task.finished_at = stamp
         task.error = None
+        record_pass_completion(session, task)
         session.commit()
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
@@ -603,6 +594,7 @@ def process_task(
             task.started_at = None
             task.finished_at = stamp
             release_usage(session, task)
+            record_pass_completion(session, task)
         session.commit()
         log.warning("工具任务 #%s 失败（第 %s 次）：%s", task.id, task.attempts, task.error)
         return False
@@ -780,6 +772,18 @@ def delete_user_tasks(
     """注销或用户删除任务时删除结果文件，再删除数据库任务记录。"""
     settings = settings or get_settings()
     tasks = list(session.scalars(select(AdvisorTask).where(AdvisorTask.user_id == user_id)))
+    if tasks:
+        # 锁定读取最新文件引用，避免注销的旧快照漏清理刚完成的结果。
+        tasks = list(
+            session.scalars(
+                select(AdvisorTask)
+                .where(
+                    AdvisorTask.user_id == user_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
     file_ids = [task.result_file_id for task in tasks if task.result_file_id]
     own_client = client is None
     if file_ids:

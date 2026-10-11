@@ -6,34 +6,43 @@
 <block wx:else>
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
-    <view wx:if="{{kind === 'compare'}}" class="advisor-text muted">每月 3 次免费，每次 50 家以内 · 本月剩余 {{remaining}} 次</view>
-    <view wx:else class="advisor-text muted">今天剩余 {{remaining}} 次 · 每次最多 {{maxRows}} 行</view>
-    <view class="advisor-actions">
-      <button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{submitting || previewing}}">粘贴文本</button>
-      <button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{submitting || previewing}}">选择文件</button>
+    <view class="tool-quota">{{statusLine}}</view>
+    <!-- 两种填法：粘贴文本、选择文件 -->
+    <view class="seg">
+      <button class="seg-item {{mode === 'paste' ? 'seg-item--on' : ''}}" data-mode="paste" bindtap="mode" disabled="{{submitting || previewing}}">粘贴文本</button>
+      <button class="seg-item {{mode === 'file' ? 'seg-item--on' : ''}}" data-mode="file" bindtap="mode" disabled="{{submitting || previewing}}">选择文件</button>
     </view>
     <block wx:if="{{mode === 'paste'}}">
-      <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或信用代码' : '一行一家：客户名称,省份,关键词,支持方式；后两项可留空，多项用分号分隔'}}</view>
-      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '演示科技有限公司' : '演示科技有限公司,辽宁,高新技术,资金支持'}}" bindinput="input" disabled="{{submitting}}" />
-      <view wx:if="{{!text}}" class="advisor-text muted">还没有填写客户</view>
+      <view class="form-label">{{kind === 'compare' ? '一行一家，填写企业名称或信用代码' : '一行一家：客户名称,省份,关键词,支持方式；后两项可留空，多项用分号分隔'}}</view>
+      <textarea class="advisor-input form-list" value="{{text}}" maxlength="30000" placeholder="{{kind === 'compare' ? '演示科技有限公司' : '演示科技有限公司,辽宁,高新技术,资金支持'}}" placeholder-class="form-ph" bindinput="input" disabled="{{submitting}}" />
+      <view wx:if="{{!text}}" class="form-hint">还没有填写客户</view>
     </block>
     <block wx:else>
-      <view class="advisor-text">只收 XLSX / CSV，文件不超过 60 KB。{{kind === 'track' ? '表头须包含：客户名称、省份；可选：关键词、支持方式。' : '可用企业名称或统一社会信用代码表头，无表头时读取第一列。'}}</view>
-      <button class="advisor-button" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>
-      <view class="advisor-text muted">{{fileName || '还没有选择文件'}}</view>
-      <view wx:if="{{previewing}}" class="advisor-text muted">正在读取行数…</view>
+      <view class="form-label">只收 XLSX / CSV，文件不超过 60 KB。{{kind === 'track' ? '表头须包含：客户名称、省份；可选：关键词、支持方式。' : '可用企业名称或统一社会信用代码表头，无表头时读取第一列。'}}</view>
+      <button class="advisor-button form-pick" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>
+      <view class="form-hint">{{fileName || '还没有选择文件'}}</view>
+      <view wx:if="{{previewing}}" class="form-hint">正在读取行数…</view>
     </block>
-    <view class="advisor-text muted">提交前请确认你有权提交这些客户信息，不要填写个人姓名、身份证号、手机号</view>
-    <view class="advisor-text">将提交 {{rowCount}} 行</view>
-    <view wx:if="{{rowCount > maxRows}}" class="advisor-error">超过每次 {{maxRows}} 行，请减少客户后再提交</view>
+    <view class="form-warn">提交前请确认你有权提交这些客户信息，不要填写个人姓名、身份证号、手机号</view>
     <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>
-    <button wx:if="{{mode === 'file' && inputError}}" class="advisor-button" bindtap="preview" disabled="{{previewing || submitting}}">重试读取</button>
+    <button wx:if="{{mode === 'file' && inputError}}" class="advisor-button form-pick" bindtap="preview" disabled="{{previewing || submitting}}">重试读取</button>
   </view>
   <view class="card advisor-card">
-    <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</view>
-    <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
-    <view class="advisor-text muted">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）</view>
-    <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || rowCount > maxRows}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+    <view class="terms-row" bindtap="terms" aria-role="link">
+      <text class="terms-text">{{agreed ? '已单独同意《工具使用说明》' : '首次使用前请单独阅读并同意《工具使用说明》'}}</text>
+      <text class="link terms-open">阅读工具使用说明 ›</text>
+    </view>
+    <view class="form-hint">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）</view>
+    <view class="form-count">将提交 {{rowCount}} 行</view>
+    <button class="advisor-button btn-primary tool-go form-submit" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || !!limitHint}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+  </view>
+  <view wx:if="{{limitHint}}" class="card advisor-card">
+    <view class="advisor-error limit-lead">{{limitHint.message}}</view>
+    <block wx:if="{{limitHint.offer}}">
+      <view class="advisor-text">{{limitHint.offer}}</view>
+      <button class="advisor-button btn-primary tool-go" bindtap="buy">了解并购买</button>
+    </block>
+    <view wx:if="{{limitHint.split}}" class="advisor-text">也可以把名单拆成 50 家以内，分次提交。</view>
   </view>
 </block>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -88,9 +88,10 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     advisor_settings.advisor_enabled = False
     assert client.get("/api/v1/advisor/status").status_code == 404
     advisor_settings.advisor_enabled = True
-    expected = {"used": 0, "limit": 1, "maxRows": 50}
+    expected = {"used": 0, "limit": 3, "maxRows": 50}
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
+        "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
     }
     agree(client)
@@ -163,31 +164,6 @@ def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
     assert (
         service.usage_counts(session, session.scalar(select(User.id)), stamps[0].date())["compare"]
         == 2
-    )
-
-
-def test_track_quota_still_resets_daily(client, monkeypatch):
-    agree(client)
-    body = {"kind": "track", "rows": [{"name": "甲公司", "province": "辽宁"}]}
-    assert (
-        client.post(
-            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-1"}
-        ).status_code
-        == 202
-    )
-    assert (
-        client.post(
-            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-2"}
-        ).status_code
-        == 429
-    )
-    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=1))
-    assert client.get("/api/v1/advisor/status").json()["quota"]["track"]["used"] == 0
-    assert (
-        client.post(
-            "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "track-next"}
-        ).status_code
-        == 202
     )
 
 
@@ -432,7 +408,7 @@ def test_switch_idempotency_quota_rollover_and_cancel(
     assert create(client, key="third").status_code == 202
     blocked = create(client, key="fourth")
     assert blocked.status_code == 429
-    assert "本月" in blocked.json()["detail"]
+    assert "本月" in blocked.json()["detail"]["message"]
 
     cancelled = client.post("/api/v1/advisor/tasks/1/cancel")
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
@@ -780,10 +756,11 @@ def test_upload_nonstandard_worksheet_path_and_first_sheet(client):
         (b'<row r="1000000"><c r="A1000000"/></row>', "行号过大"),
         (b'<row r="1"><c r="A1000000"/></row>', "行号过大"),
         (b'<row r="1"><c r="BM1"/></row>', "列数过多"),
-        (b'<row r="1"><c r="A1"/></row>' * 203, "行号过大"),
-        (b'<row r="1">' + b'<c r="A1"/>' * 12929 + b"</row>", "单元格过多"),
+        (b'<row r="1"><c r="A1"/></row>' * 503, "行号过大"),
+        (b'<row r="1">' + b'<c r="A1"/>' * 32129 + b"</row>", "单元格过多"),
         (b"<x/>" * 100001, "内容过多"),
     ],
+    ids=["row-index", "cell-index", "columns", "rows", "cells", "elements"],
 )
 @pytest.mark.parametrize("kind", ["compare", "track"])
 def test_nonstandard_worksheet_limits(client, payload, reason, kind):
@@ -853,7 +830,7 @@ def test_xlsx_cell_limit_across_worksheets(client):
     book.save(output)
     sheet = (
         b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">'
-        + b'<c r="A1"/>' * 6500
+        + b'<c r="A1"/>' * 16100
         + b"</row></sheetData></worksheet>"
     )
     result = BytesIO()

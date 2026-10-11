@@ -1,1 +1,24 @@
 @import "../../utils/advisor.wxss";
+
+/* 两种填法的切换：一条灰底，选中的一格是白底蓝字 */
+.seg { margin-top: 28rpx; padding: 6rpx; display: flex; gap: 6rpx; border-radius: 16rpx; background: var(--fill); }
+.seg-item { flex: 1; margin: 0; padding: 0; min-height: 76rpx; line-height: 76rpx; border-radius: 12rpx; background: transparent; color: var(--t2); font-size: 28rpx; font-weight: 500; }
+.seg-item::after { border: 0; }
+.seg-item--on { background: var(--card); color: var(--brand); font-weight: 600; box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06); }
+
+.form-label { margin-top: 28rpx; font-size: 28rpx; line-height: 1.65; color: var(--t1); }
+/* 名单固定高度、在框里滚动：粘贴几百家也不会把提交按钮推到几十屏以外 */
+.form-list { height: 400rpx; }
+.form-ph { color: var(--t3); }
+.form-hint { margin-top: 16rpx; font-size: 26rpx; line-height: 1.7; color: var(--t3); }
+.form-warn { margin-top: 20rpx; font-size: 26rpx; line-height: 1.7; color: var(--t2); }
+.form-pick { width: 100% !important; background: var(--brand-tint); color: var(--brand); font-weight: 500; }
+
+/* 工具使用说明：一行，点了去看全文 */
+.terms-row { margin: -12rpx 0; display: flex; align-items: center; justify-content: space-between; gap: 24rpx; min-height: 88rpx; }
+.terms-text { flex: 1; min-width: 0; font-size: 28rpx; line-height: 1.6; color: var(--t1); }
+.terms-open { flex-shrink: 0; font-size: 28rpx; line-height: 1.6; }
+
+.form-count { margin-top: 28rpx; padding-top: 24rpx; border-top: 2rpx solid var(--line); font-size: 30rpx; font-weight: 500; color: var(--t1); }
+.form-submit { margin-top: 20rpx; }
+.limit-lead { margin-top: 0; }

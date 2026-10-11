@@ -26,8 +26,9 @@ function query(params) {
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
-  const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
+  const err = new Error(typeof detail === 'string' ? detail : ((detail && detail.message) || validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
+  if (detail && typeof detail === 'object' && typeof detail.code === 'string') err.code = detail.code;
   return err;
 }
 
@@ -321,14 +322,25 @@ function attachmentPart(id, version, part) {
 }
 
 function attachmentPartOnce(id, version, part) {
-  const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
+  return binaryOnce(`/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`, '附件下载失败');
+}
+
+// 批量工具结果文件的一段（原始字节）。和附件一样经我们自己的接口分段取：
+// 不让手机直接去对象存储下载（那要在小程序后台配 downloadFile 合法域名，10/10 真机试用前发现结果因此打不开）。
+function advisorTaskPart(id, part) {
+  const path = `/api/v1/advisor/tasks/${encodeURIComponent(id)}/file${query({ part })}`;
+  return withRetry(() => binaryOnce(path, '结果文件下载失败'), 'GET');
+}
+
+// 取一段二进制内容（附件、工具结果共用）
+function binaryOnce(path, failText) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const done = (res) => {
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
-      const err = new Error(`附件下载失败（${res.statusCode}）`);
+      const err = new Error(`${failText}（${res.statusCode}）`);
       err.status = res.statusCode;
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
@@ -442,6 +454,32 @@ function downloadAdvisorTask(id) {
   return isLive() ? request(`/api/v1/advisor/tasks/${id}/download`) : advisorMock.download(id);
 }
 
+// 客户工作台 30 天（默认关闭）：接口 404 或空列表时页面不显示付费内容；演示数据不出售。
+function payProducts() {
+  return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
+}
+
+// data：{ product_id, code }，code 来自 wx.login，只用于服务端签名，不保存。
+function createPayOrder(data) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request('/api/v1/pay/orders', null, { method: 'POST', data });
+}
+
+// 订单状态和使用期以服务端为准。
+function payOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}`);
+}
+
+function payOrders() {
+  return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
+}
+
+function refundPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能支付'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
+}
+
 // 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
 function renameFollow(id, name) {
   return request(`/api/v1/me/follows/${id}`, null, { method: 'PUT', data: { name } });
@@ -490,4 +528,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask,
+  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, advisorTaskPart,
 };

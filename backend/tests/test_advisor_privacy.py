@@ -27,7 +27,7 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
     assert response.json()["data_tools"] == {
         "enabled": data_enabled,
         "features": ["compare", "track"] if data_enabled else [],
-        "remaining": {"compare": 3 * int(data_enabled), "track": int(data_enabled)},
+        "remaining": {"compare": 3 * int(data_enabled), "track": 3 * int(data_enabled)},
     }
     ai = response.json()["ai_advisor"]
     if ai_enabled and whitelisted:
@@ -74,24 +74,11 @@ def test_creation_kind_response_groups(
     elif kind in ("interpret", "clause"):
         expected = (202, None)
     elif kind == "omitted":
-        expected = (
-            422,
-            [{"type": "missing", "loc": ["body", "kind"], "msg": "Field required", "input": body}],
-        )
+        # 校验错误只返回字段位置和提示，不回显 input（支付审阅第 8 条）。
+        expected = (422, [{"loc": ["body", "kind"], "msg": "Field required"}])
     else:
         allowed = "'compare', 'track', 'interpret' or 'clause'"
-        expected = (
-            422,
-            [
-                {
-                    "type": "literal_error",
-                    "loc": ["body", "kind"],
-                    "msg": f"Input should be {allowed}",
-                    "input": kind,
-                    "ctx": {"expected": allowed},
-                }
-            ],
-        )
+        expected = (422, [{"loc": ["body", "kind"], "msg": f"Input should be {allowed}"}])
     assert (response.status_code, response.json().get("detail")) == expected
     if expected[0] == 202:
         if kind in ("interpret", "clause"):

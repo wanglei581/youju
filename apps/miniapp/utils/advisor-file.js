@@ -1,5 +1,5 @@
 // 与后台 compare.py 共用的上传边界：202 行、64 列、12928 单元格、2 MiB 解压总量。
-const MAX_ROWS = 202; const MAX_COLUMNS = 64; const MAX_CELLS = MAX_ROWS * MAX_COLUMNS;
+const MAX_ROWS = 502; const MAX_COLUMNS = 64; const MAX_CELLS = MAX_ROWS * MAX_COLUMNS;
 const MAX_BYTES = 2 * 1024 * 1024; const MAX_ELEMENTS = 100000; const MAX_ENTRIES = 512;
 function fail(message) { const err = new Error(message); err.status = 422; throw err; }
 const CRC_TABLE = Array.from({ length: 256 }, (_, value) => {

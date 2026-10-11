@@ -22,7 +22,7 @@ function zipEntries(base64) {
 function page(name, api, helpers, timers, wxOptions = {}) {
   let definition;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'pages', name, 'index.js'), 'utf8'), {
-    require: (module) => module.endsWith('consent.js') ? Object.assign({ loginOpen: () => true }, helpers) : module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : helpers,
+    require: (module) => module.endsWith('consent.js') ? Object.assign({ loginOpen: () => true }, helpers) : module.endsWith('api.js') ? api : module.endsWith('tool-context.js') ? require('../utils/tool-context.js') : module.endsWith('/pay.js') ? require('../utils/pay.js') : helpers,
     Page: (value) => { definition = value; },
     wx: Object.assign({ setNavigationBarTitle() {}, navigateTo() {}, redirectTo() {} }, wxOptions),
     setTimeout: timers ? timers.set : setTimeout,
@@ -96,17 +96,19 @@ test('正式请求支持 202 和 Idempotency-Key，下载重新取地址', async
   let code = 202; let request; const config = require('../utils/config.js');
   const original = { cloudEnv: config.cloudEnv, devBaseUrl: config.devBaseUrl };
   config.cloudEnv = ''; config.devBaseUrl = 'http://test';
-  global.wx.request = (options) => { request = options; options.success({ statusCode: code, data: code === 202 ? { id: 7 } : { url: 'https://test/result' } }); };
+  const requests = []; global.wx.request = (options) => { request = options; requests.push(options.url); const part = /\/file\?part=(\d)$/.exec(options.url); options.success({ statusCode: code, data: code === 202 ? { id: 7 } : part ? new Uint8Array(part[1] === '0' ? [1, 2, 3] : [4]).buffer : { size: 4, parts: 2, partSize: 3 } }); };
   const api = require('../utils/api.js');
   try {
     assert.equal((await api.createAdvisorTask({ kind: 'compare', rows: ['甲公司'] }, 'stable-key')).id, 7);
     assert.equal(request.header['Idempotency-Key'], 'stable-key');
-    code = 200; let downloaded = false; let opened = false;
-    global.wx.downloadFile = (options) => { downloaded = true; assert.equal(options.url, 'https://test/result'); options.success({ statusCode: 200, tempFilePath: '/tmp/result' }); };
+    code = 200; let saved = null; let opened = false;
+    global.wx.downloadFile = () => assert.fail('结果文件不该让手机直接下载');
     global.wx.openDocument = (options) => { opened = true; assert.equal(options.fileType, 'xlsx'); options.success(); };
-    global.wx.getFileSystemManager = () => ({ readFile: (o) => o.success({ data: new ArrayBuffer(4) }), writeFile: (o) => o.success(), readdirSync: () => [] });
+    global.wx.getFileSystemManager = () => ({ readFile: (o) => o.success({ data: new ArrayBuffer(4) }), writeFile: (o) => { saved = o.data; o.success(); }, readdirSync: () => [] });
     await require('../utils/advisor.js').openResult(7);
-    assert.ok(downloaded && opened); assert.match(request.url, /\/7\/download$/);
+    // 先问大小和段数，再逐段取，拼起来是完整文件；不出现对象存储的地址
+    assert.ok(opened); assert.deepEqual(requests.slice(-3).map((u) => u.replace('http://test', '')), ['/api/v1/advisor/tasks/7/download', '/api/v1/advisor/tasks/7/file?part=0', '/api/v1/advisor/tasks/7/file?part=1']);
+    assert.deepEqual(Array.from(new Uint8Array(saved)), [1, 2, 3, 4]);
   } finally { Object.assign(config, original); }
 });
 
@@ -128,7 +130,7 @@ test('轮询从三秒增至十五秒，隐藏页后忽略在途结果并停止',
 
 test('表单重试沿用幂等键，上传预览失败不能提交', async () => {
   const keys = []; const api = { createAdvisorTask: (body, key) => { keys.push(key); return Promise.reject(new Error('超时')); }, advisorPreview: () => Promise.reject(new Error('读取失败')) };
-  const helpers = { KINDS: { compare: '名单比对' }, pasteRows: (kind, text) => text.split('\n') };
+  const helpers = { KINDS: { compare: '批量名单比对' }, pasteRows: (kind, text) => text.split('\n') };
   const view = page('advisor-form', api, helpers);
   view.onLoad({}); view.setData({ agreed: true, text: '甲公司', rowCount: 1 });
   view.submit(); await flush(); view.submit(); await flush(); assert.equal(keys[0], keys[1]);
@@ -151,7 +153,7 @@ function helpersWith(api, general, terms = { version: 'advisor-test', final: tru
 test('修改文本、文件或工具后换键，同一内容网络失败重试保留键', async () => {
   const calls = []; let selected = { name: 'a.csv', data: 'YQ==' };
   const api = { createAdvisorTask: (body, key) => { calls.push({ body, key }); return Promise.reject(new Error('超时')); }, advisorPreview: () => Promise.resolve({ rowCount: 1 }) };
-  const helpers = { KINDS: { compare: '名单比对', track: '在报项目跟进表' }, pasteRows: (kind, text) => text.split('\n') };
+  const helpers = { KINDS: { compare: '批量名单比对', track: '客户相关通知表' }, pasteRows: (kind, text) => text.split('\n') };
   const view = page('advisor-form', api, helpers, null, {
     chooseMessageFile: (o) => o.success({ tempFiles: [{ name: selected.name, size: 1, path: '/selected' }] }),
     getFileSystemManager: () => ({ readFile: (o) => o.success({ data: selected.data }) }),
@@ -209,7 +211,7 @@ test('工具卡片、提交告知、保存期限和两个填写页标题符合�
   api.advisorTasks = () => Promise.resolve({ items: [] });
   const view = page('advisor', api, require('../utils/advisor.js')); view.onShow(); await flush();
   assert.equal(view.data.skills[0].description, '在已收录的公示/公布名单里查找客户');
-  assert.equal(view.data.skills[1].description, '按客户省份列出截止日期已核对、尚未截止的申报通知');
+  assert.equal(view.data.skills[1].description, '按客户省份列出近 90 天发布的申报通知；截止日期只写人工核对过的');
   const text = fs.readFileSync(path.join(__dirname, '../pages/advisor-form/index.wxml'), 'utf8');
   assert.ok(text.includes('提交前请确认你有权提交这些客户信息，不要填写个人姓名、身份证号、手机号'));
   assert.ok(text.includes('原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）'));
@@ -258,7 +260,7 @@ test('演示解析非标准首表、PK 开头文本、UTF-8/GBK、跨行 CSV 和
   assert.equal((await preview(Buffer.from('企业名称\n"甲\n乙公司"'))).rowCount, 1);
   assert.equal(require('../utils/advisor.js').csvRows('企业名称\r\n"甲\r\n乙公司"')[1][0], '甲\r\n乙公司');
   assert.equal((await preview(Buffer.from('甲公司\n\n乙公司'))).rowCount, 3);
-  await assert.rejects(preview(Buffer.from('企业名称\n' + '甲公司\n'.repeat(201))), /最多 200 行/);
+  await assert.rejects(preview(Buffer.from('企业名称\n' + '甲公司\n'.repeat(501))), /最多 500 行/);
   await assert.rejects(preview(Buffer.from('企业名称\n"未闭合公司')), /CSV 格式有误/);
   await assert.rejects(preview(Buffer.from('企业名称\n"甲公司"尾巴')), /CSV 格式有误/);
   for (const [method, options] of [[0], [8], [8, { strategy: zlib.constants.Z_FIXED }], [8, { level: 0 }]]) {
@@ -273,8 +275,8 @@ test('演示与线上一致限制工作表行、列、单元格、XML 迭代和�
     ['<row r="1000000"><c r="A1000000"/></row>', /行号过大/],
     ['<row r="1"><c r="A1000000"/></row>', /行号过大/],
     ['<row r="1"><c r="BM1"/></row>', /列数过多/],
-    ['<row r="1"><c r="A1"/></row>'.repeat(203), /行号过大/],
-    [`<row r="1">${'<c r="A1"/>'.repeat(12929)}</row>`, /单元格过多/],
+    ['<row r="1"><c r="A1"/></row>'.repeat(503), /行号过大/],
+    [`<row r="1">${'<c r="A1"/>'.repeat(32129)}</row>`, /单元格过多/],
     ['<x/>'.repeat(100001), /内容过多/],
   ];
   for (const [payload, reason] of cases) await assert.rejects(preview(makeZip(customWorkbook(sheetXml(payload)))), reason);
@@ -295,7 +297,7 @@ test('工具说明定稿并开放后可单独同意当前版本', async () => {
 });
 
 test('演示单元格上限累计覆盖所有工作表', async () => {
-  const files = customWorkbook(sheetXml(`<row r="1">${'<c r="A1"/>'.repeat(6500)}</row>`));
+  const files = customWorkbook(sheetXml(`<row r="1">${'<c r="A1"/>'.repeat(16100)}</row>`));
   files['custom/second.data'] = files['custom/clients.data'];
   files['xl/workbook.xml'] = files['xl/workbook.xml'].replace('</sheets>', '<sheet name="第二表" sheetId="2" r:id="rIdSecond"/></sheets>');
   files['xl/_rels/workbook.xml.rels'] = files['xl/_rels/workbook.xml.rels'].replace('</Relationships>', '<Relationship Id="rIdSecond" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/custom/second.data"/></Relationships>');

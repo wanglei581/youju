@@ -1,3 +1,4 @@
+const pay = require('../../utils/pay.js');
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
 const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE } = require('../../utils/consent.js');
@@ -28,6 +29,7 @@ Page({
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
     stats: null,
     notCovered: '',
+    showOrders: false,
   },
 
   onLoad() {
@@ -38,8 +40,19 @@ Page({
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 3 });
     this.refresh();
+    this.loadOrdersEntry();
     this.loadStats();
   },
+
+  loadOrdersEntry() {
+    if (!this.data.loginOpen) { this.setData({ showOrders: false }); return; }
+    const serial = this.ordersSerial = (this.ordersSerial || 0) + 1;
+    Promise.all([
+      api.payProducts().then((res) => pay.normalizeProducts(res).length > 0, () => false),
+      api.payOrders().then((res) => res.items.length > 0, () => false),
+    ]).then(([open, hasOrders]) => { if (serial === this.ordersSerial) this.setData({ showOrders: open || hasOrders }); });
+  },
+  orders() { wx.navigateTo({ url: '/pages/orders/index' }); },
 
   loadStats() {
     loadCoverage().then((c) => {
@@ -112,7 +125,11 @@ Page({
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
   deleteAccount() {
     withdraw().then((ok) => {
-      if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
+      if (ok) {
+        this.ordersSerial = (this.ordersSerial || 0) + 1;
+        this.setData({ showOrders: false, signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
+        this.loadOrdersEntry();
+      }
     });
   },
 
