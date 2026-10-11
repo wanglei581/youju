@@ -185,11 +185,22 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
     ticket = order_pass(session, order, lock=True)
+    if ticket is not None:
+        revoke_workbench_pass(session, ticket, stamp)
+
+
+def unused_pass_time(ticket: WorkbenchPass | None, stamp: datetime) -> timedelta:
     if ticket is None or ticket.revoked_at is not None:
+        return timedelta(0)
+    return max(timedelta(0), ticket.ends_at - max(stamp, ticket.starts_at))
+
+
+def revoke_workbench_pass(session: Session, ticket: WorkbenchPass, stamp: datetime) -> None:
+    """调用方先锁用户和该段；退款和奖励收回共用后续使用期的前移逻辑。"""
+    if ticket.revoked_at is not None:
         return
+    unused = unused_pass_time(ticket, stamp)
     ticket.revoked_at = stamp
-    # 一次买了两张、退掉前面那张时，后面排着的使用期往前挪，不留空档
-    unused = ticket.ends_at - max(stamp, ticket.starts_at)
     if unused <= timedelta(0):
         return
     for later in session.scalars(
@@ -200,6 +211,7 @@ def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
             WorkbenchPass.starts_at >= ticket.ends_at,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     ):
         later.starts_at -= unused
         later.ends_at -= unused
