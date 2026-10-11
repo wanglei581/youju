@@ -13,7 +13,15 @@ from sqlalchemy.orm import Session
 
 from youju.advisor_tasks import BEIJING, _utc
 from youju.config import get_settings
-from youju.models import AdvisorTask, DeadlineClue, PassReward, RewardClaim, User, WorkbenchPass
+from youju.models import (
+    AdvisorTask,
+    AppKey,
+    DeadlineClue,
+    PassReward,
+    RewardClaim,
+    User,
+    WorkbenchPass,
+)
 
 log = logging.getLogger("youju.rewards")
 MONTH_LIMIT = 30
@@ -59,13 +67,29 @@ def claim_pseudonym(session: Session, openid: str) -> str:
     ).hexdigest()
 
 
-def record_claim(session: Session, openid: str, kind: str, stamp: datetime) -> bool:
-    """唯一键串行化同一微信账号；和关系或发奖在同一事务提交。"""
+def record_claim(
+    session: Session, openid: str, kind: str, stamp: datetime, *, retain: bool = False
+) -> bool:
+    """只追加凭据；注销追加当时的保留记录，API 不需要 UPDATE 权限。"""
+    # 凭据表仅可 INSERT，不能用 FOR UPDATE；队列锁串行化同账号跨用户注册。
+    stmt = insert(AppKey).values(name="reward_claim_queue", value="1")
+    session.execute(stmt.on_duplicate_key_update(name=stmt.inserted.name))
+    pseudonym = claim_pseudonym(session, openid)
+    if (
+        not retain
+        and session.scalar(
+            select(RewardClaim.kind)
+            .where(RewardClaim.pseudonym == pseudonym, RewardClaim.kind == kind)
+            .limit(1)
+        )
+        is not None
+    ):
+        return False
     return (
         session.execute(
             insert(RewardClaim)
             .prefix_with("IGNORE")
-            .values(pseudonym=claim_pseudonym(session, openid), kind=kind, claimed_at=stamp)
+            .values(pseudonym=pseudonym, kind=kind, claimed_at=stamp)
         ).rowcount
         == 1
     )
@@ -290,7 +314,8 @@ def reconcile(session: Session, *, settings=None, stamp: datetime | None = None)
     return result
 
 
-def anonymize(session: Session, user: User, stamp: datetime) -> None:
+def anonymize(session: Session, user: User, stamp: datetime, *, settings=None) -> None:
+    settings = settings or get_settings()
     # 发奖需要双方用户；注销也按编号锁关系中的用户，避免外键更新与发奖互锁。
     related = set(session.scalars(select(User.id).where(User.invited_by_user_id == user.id))) | {
         user.id
@@ -302,23 +327,35 @@ def anonymize(session: Session, user: User, stamp: datetime) -> None:
             select(User.id).where(User.id.in_(sorted(related))).order_by(User.id).with_for_update()
         )
     )
-    session.execute(
-        delete(DeadlineClue).where(
-            DeadlineClue.user_id == user.id, DeadlineClue.status == "pending"
+    if (
+        session.scalar(
+            select(DeadlineClue.id)
+            .where(DeadlineClue.user_id == user.id, DeadlineClue.status == "pending")
+            .limit(1)
         )
-    )
-    session.execute(
-        update(DeadlineClue).where(DeadlineClue.user_id == user.id).values(user_id=None)
-    )
-    # 兼容已有凭据：注销前记录旧关系和首次奖励，开关关闭也不能丢失历史。
-    if user.invited_by_user_id is not None:
-        record_claim(session, user.openid, "referred", user.invited_at or stamp)
+        is not None
+    ):
+        session.execute(
+            delete(DeadlineClue).where(
+                DeadlineClue.user_id == user.id, DeadlineClue.status == "pending"
+            )
+        )
+    if (
+        session.scalar(select(DeadlineClue.id).where(DeadlineClue.user_id == user.id).limit(1))
+        is not None
+    ):
+        session.execute(
+            update(DeadlineClue).where(DeadlineClue.user_id == user.id).values(user_id=None)
+        )
+    # 所有旧用户都不能重新成为被引荐人；引荐关闭时不新增 referred 凭据。
+    if referral_enabled(settings):
+        record_claim(session, user.openid, "referred", stamp, retain=True)
     for kind, ref_type in (("first_batch", "user_first_batch"), ("referral", "user_referral")):
         existing = session.scalar(
             select(PassReward).where(PassReward.ref_type == ref_type, PassReward.ref_id == user.id)
         )
         if existing is not None:
-            record_claim(session, user.openid, kind, existing.granted_at)
+            record_claim(session, user.openid, kind, stamp, retain=True)
     # 引荐关系断开，不收回另一方已经拿到的使用天数。
     session.execute(
         update(User)
@@ -337,9 +374,17 @@ def anonymize(session: Session, user: User, stamp: datetime) -> None:
             select(AdvisorTask.id).where(AdvisorTask.user_id == user.id).with_for_update()
         )
     )
-    session.execute(
-        update(WorkbenchPass)
-        .where(WorkbenchPass.user_id == user.id, WorkbenchPass.reward_id.is_not(None))
-        .values(user_id=None, revoked_at=stamp)
-    )
+    if (
+        session.scalar(
+            select(WorkbenchPass.id)
+            .where(WorkbenchPass.user_id == user.id, WorkbenchPass.reward_id.is_not(None))
+            .limit(1)
+        )
+        is not None
+    ):
+        session.execute(
+            update(WorkbenchPass)
+            .where(WorkbenchPass.user_id == user.id, WorkbenchPass.reward_id.is_not(None))
+            .values(user_id=None, revoked_at=stamp)
+        )
     session.execute(update(PassReward).where(PassReward.user_id == user.id).values(user_id=None))

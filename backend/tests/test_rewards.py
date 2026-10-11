@@ -889,3 +889,187 @@ def test_reregister_not_new_and_claim_retention(context, session, complete):
     assert run_cleanup(session, settings=settings, stamp=NOW + timedelta(days=180))[
         "reward_claims"
     ] == len(claims)
+
+
+@pytest.mark.parametrize("switch", ["rewards_enabled", "referral_enabled"])
+def test_delete_empty_account_without_new_table_writes(context, session, db_engine, switch):
+    from sqlalchemy import event
+
+    client, settings = context
+    owner = user(session)
+    setattr(settings, switch, False)
+    statements = []
+
+    def capture(conn, cursor, statement, params, ctx, many):
+        statements.append(statement.lower())
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
+        assert (
+            client.delete(
+                "/api/v1/me/deadline-clues/999", headers=headers(owner.openid)
+            ).status_code
+            == 404
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    for sql in statements:
+        if any(
+            table in sql
+            for table in (
+                "deadline_clues",
+                "reward_claims",
+                "pass_rewards",
+                "workbench_passes",
+                "pay_orders",
+                "pay_events",
+            )
+        ):
+            assert sql.lstrip().startswith("select") and "for update" not in sql
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
+
+
+@pytest.mark.parametrize("history", ["none", "referred", "completed"])
+def test_deletion_retains_eligibility_from_deletion_time(context, session, history):
+    from youju.notify import run_cleanup
+
+    client, settings = context
+    old = NOW - timedelta(days=181)
+    inviter = user(session, "inviter", invite_code="fixed-code")
+    owner = user(
+        session,
+        "repeat",
+        **({"invited_by_user_id": inviter.id, "invited_at": old} if history != "none" else {}),
+    )
+    if history != "none":
+        rewards.record_claim(session, owner.openid, "referred", old)
+    if history == "completed":
+        owner.batch_completed_at = old
+        session.commit()
+        assert rewards.first_completion(session, owner.id, old, settings=settings)["granted"] == 2
+    session.commit()
+    assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
+    session.expire_all()
+    run_cleanup(session, settings=settings, stamp=NOW)
+    claims = session.scalars(select(RewardClaim)).all()
+    assert {c.kind for c in claims} == (
+        {"referred", "first_batch", "referral"} if history == "completed" else {"referred"}
+    )
+    assert all(c.claimed_at == NOW for c in claims)
+    assert (
+        client.post(
+            "/api/v1/me/agreement",
+            headers=headers("repeat"),
+            json={"version": "2026-10", "invite_code": "fixed-code"},
+        ).status_code
+        == 200
+    )
+    new = session.scalar(select(User).where(User.openid == "repeat"))
+    assert new.invited_by_user_id is None
+    new.batch_completed_at = NOW
+    session.commit()
+    rewards.first_completion(session, new.id, NOW, settings=settings)
+    assert session.scalar(
+        select(func.count(PassReward.id)).where(PassReward.kind == "referral")
+    ) == int(history == "completed")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_completion_locks_user_before_flushing_task(
+    context, session, db_engine, monkeypatch, enabled
+):
+    from sqlalchemy import event
+
+    _, settings = context
+    settings.rewards_enabled = enabled
+    owner = user(session)
+    row = task(session, owner)
+
+    def engine(s, task, output):
+        task.result_document_ids = [123]
+        output.write_bytes(b"test")
+        return 1
+
+    monkeypatch.setattr(advisor_tasks, "_run_engine", engine)
+    statements = []
+
+    def capture(conn, cursor, statement, params, ctx, many):
+        statements.append(statement.lower())
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        assert (
+            advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)[
+                "done"
+            ]
+            == 1
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    lock = next(
+        i for i, sql in enumerate(statements) if "from users" in sql and "for update" in sql
+    )
+    finish = next(
+        i
+        for i, sql in enumerate(statements)
+        if sql.startswith("update advisor_tasks") and "result_document_ids" in sql
+    )
+    assert lock < finish
+    session.refresh(row)
+    assert row.status == "done" and row.result_document_ids == [123]
+    assert owner.batch_completed_at == NOW
+
+
+@pytest.mark.parametrize("advisor_enabled", [False, True])
+def test_restricted_api_without_new_grants(
+    context, restricted_api_factory, monkeypatch, advisor_enabled
+):
+    from youju import access_log
+
+    client, settings = context
+    settings.rewards_enabled = settings.referral_enabled = settings.pay_enabled = False
+    settings.advisor_enabled = advisor_enabled
+    with restricted_api_factory(new_grants=False) as limited:
+        monkeypatch.setattr(access_log, "get_engine", lambda: limited.kw["bind"])
+
+        def override():
+            with limited() as s:
+                yield s
+
+        app_module.app.dependency_overrides[get_session] = override
+        identity = headers("limited-off")
+        assert (
+            client.post(
+                "/api/v1/me/agreement",
+                headers=identity,
+                json={"version": settings.agreement_version},
+            ).status_code
+            == 200
+        )
+        if advisor_enabled:
+            assert (
+                client.post(
+                    "/api/v1/me/agreement",
+                    headers=identity,
+                    json={"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION},
+                ).status_code
+                == 200
+            )
+        submitted = client.post(
+            "/api/v1/advisor/tasks",
+            headers={**identity, "Idempotency-Key": "limited-task"},
+            json={"kind": "compare", "rows": ["甲公司"]},
+        )
+        assert submitted.status_code == (202 if advisor_enabled else 404), submitted.text
+        task_id = submitted.json()["id"] if advisor_enabled else 999
+        assert client.get(f"/api/v1/advisor/tasks/{task_id}", headers=identity).status_code == (
+            200 if advisor_enabled else 404
+        )
+        assert client.get("/api/v1/advisor/tasks", headers=identity).status_code == (
+            200 if advisor_enabled else 404
+        )
+        for path in ("/api/v1/me", "/api/v1/me/data"):
+            assert client.get(path, headers=identity).status_code == 200
+        assert client.delete("/api/v1/me/deadline-clues/999", headers=identity).status_code == 404
+        assert client.delete("/api/v1/me", headers=identity).status_code == 204

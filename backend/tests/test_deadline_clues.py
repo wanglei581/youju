@@ -639,3 +639,206 @@ def test_document_changed_during_safety_check(world, session, monkeypatch, mutat
     monkeypatch.setattr(me, "check_feedback", check)
     assert submit(world).status_code == 422
     assert session.scalar(select(func.count(DeadlineClue.id))) == 0
+
+
+def test_api_submission_only_locks_writable_tables(world, db_engine):
+    from sqlalchemy import event
+
+    statements = []
+
+    def capture(conn, cursor, statement, params, ctx, many):
+        statements.append(statement.lower())
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        assert submit(world).status_code == 201
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    assert any("app_keys" in sql and sql.startswith("insert") for sql in statements)
+    assert not any(
+        ("documents" in sql or "sources" in sql) and "for update" in sql for sql in statements
+    )
+
+
+@pytest.mark.parametrize(
+    "state,kind,can_build",
+    [
+        ("rejected", "企业申报截止", True),
+        ("pending", "材料报送截止", True),
+        ("approved", "材料报送截止", True),
+        ("pending", "企业申报截止", False),
+    ],
+)
+def test_candidate_blocking_is_kind_and_status_specific(world, session, state, kind, can_build):
+    client, _, owner, doc = world
+    submitted = clue(session, owner, doc)
+    candidate(session, doc, status=state, kind=kind)
+    items = client.get("/api/admin/deadline-clues", headers=ADMIN).json()["items"]
+    assert items[0]["id"] == submitted.id and items[0]["can_build_candidate"] == can_build
+    html = client.get("/admin/review").text
+    assert "clueQueue.items.forEach" in html
+    assert "clueQueue.items.filter" not in html
+    response = client.post(f"/api/admin/deadline-clues/{submitted.id}/candidate", headers=ADMIN)
+    assert response.status_code == (200 if can_build else 409)
+    assert (
+        client.post(f"/api/admin/deadline-clues/{submitted.id}/reject", headers=ADMIN).status_code
+        == 200
+    )
+    assert deadline_clues.pending_count(session) == 0
+
+
+@pytest.mark.parametrize("status", ["approved", "rejected"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_import_settles_clues_like_single_review(world, session, monkeypatch, status, dry_run):
+    client, _, owner, doc = world
+    submitted = clue(session, owner, doc)
+    row = candidate(session, doc)
+    row.fingerprint = "a" * 64
+    session.commit()
+    calls = []
+    original = deadline_clues.settle
+
+    def settle(s, d, stamp):
+        calls.append(d.status)
+        original(s, d, stamp)
+
+    monkeypatch.setattr(deadline_clues, "settle", settle)
+    response = client.post(
+        f"/api/admin/reviews/import?dry_run={str(dry_run).lower()}",
+        headers=ADMIN,
+        json={
+            "version": 1,
+            "items": [
+                {
+                    "urlKey": doc.url_key,
+                    "fingerprint": row.fingerprint,
+                    "kind": row.kind,
+                    "candidateDate": row.candidate_date.isoformat(),
+                    "evidence": row.evidence,
+                    "status": status,
+                    "approvedDate": "2026-10-20" if status == "approved" else None,
+                    "reviewedBy": "负责人",
+                    "reviewedAt": NOW.isoformat(),
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] == 1 and calls == [status]
+    session.refresh(submitted)
+    assert submitted.status == ("accepted" if status == "approved" and not dry_run else "pending")
+    assert session.scalar(select(func.count(PassReward.id))) == int(
+        status == "approved" and not dry_run
+    )
+    if status == "rejected" and not dry_run:
+        assert (
+            client.post(
+                f"/api/admin/deadline-clues/{submitted.id}/candidate", headers=ADMIN
+            ).status_code
+            == 200
+        )
+
+
+def test_quote_expanded_by_redaction_returns_422(world, session):
+    segment = "，联系人：张三。"
+    quote = "字" * (200 - len(segment)) + segment
+    assert len(quote) == 200
+    assert len(v1.redact_sensitive(me._mask_feedback(quote))) > 200
+    response = submit(world, quote=quote)
+    assert response.status_code == 422 and "脱敏后" in response.json()["detail"]
+    assert session.scalar(select(func.count(DeadlineClue.id))) == 0
+
+
+def test_restricted_api_all_grants_and_switches(
+    world, session, restricted_api_factory, monkeypatch
+):
+    from youju import access_log, advisor_tasks
+    from youju.api import app as app_module
+    from youju.db import get_session
+    from youju.models import User
+
+    client, settings, _, doc = world
+    settings.pay_enabled = True
+    inviter = user(session, "limited-inviter", invite_code="limited-code")
+    identity = headers("limited-on")
+    with restricted_api_factory() as limited:
+        monkeypatch.setattr(access_log, "get_engine", lambda: limited.kw["bind"])
+
+        def override():
+            with limited() as s:
+                yield s
+
+        app_module.app.dependency_overrides[get_session] = override
+        assert (
+            client.post(
+                "/api/v1/me/agreement",
+                headers=identity,
+                json={"version": settings.agreement_version, "invite_code": inviter.invite_code},
+            ).status_code
+            == 200
+        )
+        owner = session.scalar(select(User).where(User.openid == "limited-on"))
+        assert owner.invited_by_user_id == inviter.id
+        # 模拟 admin 发奖，再用受限 API 验证只需 UPDATE 流水即可注销。
+        owner.batch_completed_at = NOW
+        session.commit()
+        assert rewards.first_completion(session, owner.id, NOW, settings=settings)["granted"] == 2
+        assert (
+            client.post(
+                "/api/v1/me/agreement",
+                headers=identity,
+                json={"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION},
+            ).status_code
+            == 200
+        )
+        submitted = client.post("/api/v1/me/deadline-clues", headers=identity, json=body(doc))
+        assert submitted.status_code == 201, submitted.text
+        items = client.get("/api/v1/me/deadline-clues", headers=identity)
+        assert items.status_code == 200 and items.json()["items"][0]["id"] == submitted.json()["id"]
+        clue_id = submitted.json()["id"]
+        assert (
+            client.delete(
+                f"/api/v1/me/deadline-clues/{clue_id}", headers=headers("owner")
+            ).status_code
+            == 404
+        )
+        assert (
+            client.delete(f"/api/v1/me/deadline-clues/{clue_id}", headers=identity).status_code
+            == 204
+        )
+        assert (
+            client.post("/api/v1/me/deadline-clues", headers=identity, json=body(doc)).status_code
+            == 201
+        )
+        for path in ("/api/v1/me/rewards", "/api/v1/me/invite", "/api/v1/me", "/api/v1/me/data"):
+            result = client.get(path, headers=identity)
+            assert result.status_code == 200, result.text
+        assert client.delete("/api/v1/me", headers=identity).status_code == 204
+        session.expire_all()
+        assert session.scalar(select(User.id).where(User.openid == "limited-on")) is None
+        assert session.scalar(select(func.count(DeadlineClue.id))) == 0
+        assert (
+            session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id.is_(None)))
+            == 1
+        )
+
+
+def test_rebuild_rejected_user_candidate_reuses_fingerprint(world):
+    client = world[0]
+    submitted = submit(world).json()
+    url = f"/api/admin/deadline-clues/{submitted['id']}/candidate"
+    first = client.post(url, headers=ADMIN).json()["deadline_id"]
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{first}/reject", headers=ADMIN, json={"reviewed_by": "负责人"}
+        ).status_code
+        == 200
+    )
+    rebuilt = client.post(url, headers=ADMIN)
+    assert rebuilt.status_code == 200 and rebuilt.json()["deadline_id"] == first
+    assert (
+        client.post(
+            f"/api/admin/deadlines/{first}/approve", headers=ADMIN, json={"reviewed_by": "负责人"}
+        ).status_code
+        == 200
+    )

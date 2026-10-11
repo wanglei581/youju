@@ -2524,13 +2524,8 @@ def admin_deadline_clues(session: SessionDep, _admin: AdminDep) -> dict:
         .order_by(DeadlineClue.submitted_at, DeadlineClue.id)
     ):
         doc = session.get(Document, row.document_id)
-        has_candidate = (
-            session.scalar(
-                select(DocumentDeadline.id)
-                .where(DocumentDeadline.document_id.in_(clues.document_group(session, doc.id)))
-                .limit(1)
-            )
-            is not None
+        has_candidate = clues.pending_candidate(
+            session, clues.document_group(session, doc.id), row.kind
         )
         items.append(
             {
@@ -2569,27 +2564,37 @@ def clue_candidate(clue_id: int, session: SessionDep, _admin: AdminDep, request:
         raise HTTPException(status_code=404, detail="没有找到线索")
     if clue.status != "pending":
         raise HTTPException(status_code=409, detail="线索已处理")
-    if (
-        session.scalar(
-            select(DocumentDeadline.id).where(DocumentDeadline.document_id.in_(ids)).limit(1)
-        )
-        is not None
-    ):
+    if clues.pending_candidate(session, ids, clue.kind):
         raise HTTPException(status_code=409, detail="这份通知已有候选，请在候选中核对")
     fingerprint = hashlib.sha256(
         f"user|{clue.kind}|{clue.date}|{clue.time}|{clue.quote}".encode()
     ).hexdigest()
-    row = DocumentDeadline(
-        document_id=clue.document_id,
-        fingerprint=fingerprint,
-        kind=clue.kind,
-        candidate_date=clue.date,
-        candidate_time=clue.time,
-        evidence=clue.quote,
-        confidence="低",
-        origin="user",
-        status="pending",
+    row = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == clue.document_id,
+            DocumentDeadline.fingerprint == fingerprint,
+        )
     )
+    if row is None:
+        row = DocumentDeadline(
+            document_id=clue.document_id,
+            fingerprint=fingerprint,
+            kind=clue.kind,
+            candidate_date=clue.date,
+            candidate_time=clue.time,
+            evidence=clue.quote,
+            confidence="低",
+            origin="user",
+            status="pending",
+        )
+    elif row.status == "rejected":
+        # 同一线索重新送核对，复用指纹，避免撞文件/指纹唯一约束。
+        row.status = "pending"
+        row.reviewed_by = row.reviewed_at = None
+        row.approved_date = row.approved_time = None
+        row.audit_state = row.audit_note = row.audit_at = row.audit_by = None
+    else:
+        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
     session.add(row)
     session.flush()
     clue.deadline_id = row.id
@@ -2765,6 +2770,9 @@ def pending_deadlines(
 def _lock_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """按编号顺序一次锁住这条候选和归并组里同一候选的副本（类型、日期、时间、证据句都相同），
     并刷新成最新状态；并发核对时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     return list(
@@ -2847,7 +2855,7 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         parsed_time,
     )
     document_id = row.document_id
-    if process_clues and status == "approved":
+    if process_clues:
         clues.settle(session, row, row.reviewed_at)
     session.commit()
     if process_clues and status == "approved":
@@ -2886,6 +2894,9 @@ class UndoReviewIn(BaseModel):
 
 def _lock_undo_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """一次按编号锁住同组同类型截止，覆盖核对时副本及后来沿用核对结果的副本。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     return list(
@@ -3116,6 +3127,9 @@ def _apply_change(
 def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """按编号顺序一次锁住这条截止和归并组里类型、核定日期时间都相同的副本（含自己），
     并刷新成最新状态；并发操作时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     same_time = (
@@ -3277,6 +3291,13 @@ def import_reviews(
     记为冲突、不覆盖。已变更的截止，这边还没有变更通知时整条先不导入：只导入"通过"会让
     已经变更的截止重新显示出来；等抓到变更通知后再导入一次即可。
     """
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    process_clues = rewards.enabled(get_settings())
+    if process_clues:
+        clues.lock_queue(session)
+    awarded_documents = set()
     counts = dict.fromkeys(
         ("applied", "already", "conflict", "missingDocument", "missingCandidate", "missingTarget"),
         0,
@@ -3359,6 +3380,10 @@ def import_reviews(
                 continue
         final = "rejected" if item.status == "rejected" else "approved"
         _apply_review(row, locked, final, item.reviewedBy, item.reviewedAt, item.approvedDate, at)
+        if process_clues:
+            clues.settle(session, row, item.reviewedAt)
+            if final == "approved":
+                awarded_documents.add(doc_id)
         if item.status == "changed":
             # 先写进事务：锁组查询会从数据库刷新记录，没写进去的核定日期会被刷掉
             session.flush()
@@ -3374,6 +3399,9 @@ def import_reviews(
         session.rollback()
     else:
         session.commit()
+    if not dry_run and process_clues:
+        for doc_id in sorted(awarded_documents):
+            clues.award_accepted(session, get_settings(), v1_api.now(), doc_id)
     _audit(request, "reviews_import", dry_run=dry_run, **counts)
     return {"dryRun": dry_run, **counts, "problems": problems}
 

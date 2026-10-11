@@ -63,7 +63,7 @@ def upgrade() -> None:
         "reward_claims",
         sa.Column("pseudonym", sa.String(64), primary_key=True),
         sa.Column("kind", sa.String(20), primary_key=True),
-        sa.Column("claimed_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("claimed_at", mysql.DATETIME(fsp=6), primary_key=True),
         sa.CheckConstraint(
             "kind IN ('first_batch', 'referred', 'referral')", name="ck_reward_claim_kind"
         ),

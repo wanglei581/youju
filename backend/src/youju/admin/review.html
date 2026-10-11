@@ -563,7 +563,7 @@
       dismiss.onclick = (event) => { event.stopPropagation(); act('reject'); };
       build.onclick = (event) => { event.stopPropagation(); act('candidate'); };
       line.append(dismiss);
-      if (canBuild) line.append(build);
+      if (canBuild && clue.can_build_candidate !== false) line.append(build);
       line.append(msg); box.append(line);
     });
     return box;
@@ -651,7 +651,7 @@
       setCount();
       if (reset && clueQueue.enabled) {
         const grouped = new Map();
-        clueQueue.items.filter((clue) => clue.can_build_candidate).forEach((clue) => {
+        clueQueue.items.forEach((clue) => {
           if (!grouped.has(clue.document_id)) grouped.set(clue.document_id, []);
           grouped.get(clue.document_id).push(clue);
         });
@@ -662,7 +662,7 @@
           card.append(title, cluesNode(clues, true)); $('list').append(card);
         });
       }
-      if (!items.length && !after && !clueQueue.items.some((clue) => clue.can_build_candidate)) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
+      if (!items.length && !after && !clueQueue.items.length) $('list').append(el('div', 'empty', '没有待核对的截止日期'));
       items.filter((item) => !shown.has(item.id)).forEach((item) => {
         shown.add(item.id);
         const entry = { item, card: render(item) };
