@@ -96,6 +96,13 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 零天也写流水、备注说明达到上限，但不创建使用期段。同一对象不会重复发奖，
 超出的天数或名额不会顺延到下月，月统计按实际发放时间，不按使用期开始时间。
 
+负责人在管理服务运行 `youju rewards-revoke --reward-id N --reason "核实为虚假账号领奖"`
+收回一笔奖励，原因必填且为 6–100 字；先加 `--dry-run` 可查看种类、天数、发放时间、
+用户内部编号、使用期起止及待收回时长，不写入。奖励开关关闭后仍可运行。
+收回撤销对应使用期，仅将未用时长从后续付费及奖励段中前移；重复执行不再前移。
+用户奖励记录保留原天数，note 显示“已收回：原因”（原备注附在后面，总长最多 200 字），
+并返回 `revoked: true`。零天及已注销用户的奖励只记备注。收回不退还当月额度。
+
 | kind | 用户看到的名称 | 申请天数 | 限制 |
 |---|---|---|---|
 | first_batch | 第一次用批量功能 | 3 | 第一次 compare / track 成功完成，每个用户一次 |
@@ -144,7 +151,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 
 | 接口 | 最终字段 / 行为 |
 |---|---|
-| `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note`，不返回关联人或对象编号 |
+| `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note,revoked`，不返回关联人或对象编号 |
 | `POST /api/v1/me/deadline-clues` | `{document_id,kind,date,time?,quote}`；201 返回下述线索字段；关闭奖励时 404 |
 | `GET /api/v1/me/deadline-clues` | 本人最近 50 条 `items[]`，按提交时间、编号倒序；开关关闭仍可查看 |
 | `DELETE /api/v1/me/deadline-clues/{id}` | 仅本人待核对线索，204；已处理 409；开关关闭、协议更新后仍可删除 |

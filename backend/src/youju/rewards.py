@@ -32,6 +32,51 @@ LABELS = {
     "referral": "请来一位同行",
     "deadline_clue": "补截止日期被采纳",
 }
+REVOKED_PREFIX = "已收回："
+
+
+def is_revoked(reward: PassReward) -> bool:
+    # 零天、已注销奖励没有可用的使用期，统一用保留在流水中的前缀判重。
+    return bool(reward.note and reward.note.startswith(REVOKED_PREFIX))
+
+
+def lock_reward(session: Session, reward_id: int) -> tuple[PassReward, WorkbenchPass | None]:
+    with session.no_autoflush:
+        owner = session.scalar(select(PassReward.user_id).where(PassReward.id == reward_id))
+        if owner is not None:
+            session.scalar(select(User.id).where(User.id == owner).with_for_update())
+        reward = session.scalar(
+            select(PassReward)
+            .where(PassReward.id == reward_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if reward is None:
+            raise ValueError("没有找到这笔奖励")
+        ticket = session.scalar(
+            select(WorkbenchPass)
+            .where(WorkbenchPass.reward_id == reward_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    return reward, ticket
+
+
+def revoke(session: Session, reward_id: int, reason: str, stamp: datetime) -> str:
+    """只收回未用时间，不退月额度；与 grant 一样由调用方提交事务。"""
+    from youju.payments import revoke_workbench_pass
+
+    reward, ticket = lock_reward(session, reward_id)
+    if is_revoked(reward):
+        return "已经收回过"
+    if reward.user_id is not None and ticket is not None:
+        revoke_workbench_pass(session, ticket, _utc(stamp))
+    # 为原备注预留位置；原备注本身很长时也须留至少一个字记收回原因。
+    suffix = ("；" + reward.note)[:195] if reward.note else ""
+    reward.note = (
+        REVOKED_PREFIX + reason.strip()[: 200 - len(REVOKED_PREFIX) - len(suffix)] + suffix
+    )
+    return "已收回"
 
 
 def enabled(settings) -> bool:

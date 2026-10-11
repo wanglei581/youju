@@ -108,6 +108,300 @@ def ticket(session, reward):
     return session.scalar(select(WorkbenchPass).where(WorkbenchPass.reward_id == reward.id))
 
 
+@pytest.mark.parametrize("elapsed", [-2, 1.5, 3, 4])
+def test_revoke_reward_advances_paid_and_reward_segments(session, elapsed):
+    owner = user(session)
+    other = user(session, "other")
+    row = award(session, owner, "source", 3)
+    segment = ticket(session, row)
+    if elapsed < 0:
+        segment.starts_at += timedelta(days=2)
+        segment.ends_at += timedelta(days=2)
+        session.commit()
+    order, bought = paid(session, owner, segment.ends_at)
+    following = ticket(session, award(session, owner, ref=2))
+    untouched = ticket(session, award(session, other, ref=3))
+    original = (segment.starts_at, segment.ends_at, bought.starts_at, following.starts_at)
+    stamp = segment.starts_at + timedelta(days=elapsed)
+    unused = timedelta(days=3 - max(0, min(3, elapsed)))
+
+    assert rewards.revoke(session, row.id, "核实为虚假账号领奖", stamp) == "已收回"
+    session.commit()
+    assert segment.revoked_at == stamp
+    assert (segment.starts_at, segment.ends_at) == original[:2]
+    assert bought.starts_at == original[2] - unused
+    assert bought.ends_at == bought.starts_at + timedelta(days=30)
+    assert following.starts_at == original[3] - unused == bought.ends_at
+    assert following.ends_at == following.starts_at + timedelta(days=1)
+    assert untouched.starts_at == NOW and untouched.revoked_at is None
+    assert row.granted_days == 3 and row.note == "已收回：核实为虚假账号领奖"
+    assert order.status == "completed"
+
+    assert (
+        rewards.revoke(session, row.id, "再次核实账号违规", stamp + timedelta(hours=1))
+        == "已经收回过"
+    )
+    session.commit()
+    assert segment.revoked_at == stamp and row.note == "已收回：核实为虚假账号领奖"
+    assert bought.starts_at == original[2] - unused
+    assert following.starts_at == original[3] - unused
+
+
+def test_revoke_preserves_prior_and_already_revoked_segments(session):
+    owner = user(session)
+    prior = ticket(session, award(session, owner, "first_batch", 3))
+    row = award(session, owner, ref=2)
+    segment = ticket(session, row)
+    removed = ticket(session, award(session, owner, ref=3))
+    removed.revoked_at = NOW
+    session.commit()
+    after = ticket(session, award(session, owner, ref=4))
+    before = (prior.starts_at, prior.ends_at, removed.starts_at, removed.ends_at)
+    rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW)
+    session.commit()
+    assert segment.revoked_at == NOW
+    assert (prior.starts_at, prior.ends_at, removed.starts_at, removed.ends_at) == before
+    assert after.starts_at == prior.ends_at and after.ends_at == prior.ends_at + timedelta(days=1)
+
+
+@pytest.mark.parametrize(
+    "old,reason",
+    [
+        (None, "原因" * 150),
+        ("原来的备注", "原因" * 150),
+        ("备" * 200, "核实为虚假账号领奖"),
+        ("原来的备注", "核实为虚假账号领奖"),
+    ],
+)
+def test_revoke_note_truncation_preserves_old_note(session, old, reason):
+    row = award(session, user(session))
+    row.note = old
+    session.commit()
+    rewards.revoke(session, row.id, reason, NOW)
+    session.commit()
+    session.refresh(row)
+    assert row.note.startswith("已收回：" + reason[0]) and len(row.note) <= 200
+    if old:
+        assert row.note.split("；", 1)[1] == old[:194]
+    else:
+        assert row.note == "已收回：" + reason[:196]
+
+
+def test_revoke_does_not_restore_monthly_allowance(session):
+    owner = user(session)
+    row = award(session, owner, days=30)
+    rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW)
+    session.commit()
+    denied = award(session, owner, ref=2)
+    assert row.granted_days == 30 and denied.granted_days == 0
+    assert (
+        sum(r.granted_days for r in session.scalars(rewards.monthly(session, owner.id, NOW))) == 30
+    )
+
+
+def test_revoke_zero_day_reward_note_only(session):
+    owner = user(session)
+    first = award(session, owner, days=30)
+    row = award(session, owner, ref=2)
+    assert row.granted_days == 0 and ticket(session, row) is None
+    rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW)
+    session.commit()
+    assert row.note == "已收回：核实为虚假账号领奖；本月奖励已到上限"
+    assert ticket(session, first).revoked_at is None
+    assert rewards.revoke(session, row.id, "再次核实账号违规", NOW) == "已经收回过"
+    assert row.note == "已收回：核实为虚假账号领奖；本月奖励已到上限"
+
+
+def test_revoke_deleted_user_note_only(context, session):
+    client, _ = context
+    owner = user(session)
+    row = award(session, owner)
+    segment = ticket(session, row)
+    assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
+    session.refresh(row)
+    session.refresh(segment)
+    before = (segment.user_id, segment.starts_at, segment.ends_at, segment.revoked_at)
+    assert row.user_id is None
+    assert rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW) == "已收回"
+    session.commit()
+    assert row.note == "已收回：核实为虚假账号领奖" and row.granted_days == 1
+    assert (segment.user_id, segment.starts_at, segment.ends_at, segment.revoked_at) == before
+    assert rewards.revoke(session, row.id, "再次核实账号违规", NOW) == "已经收回过"
+
+
+def test_revoke_locks_user_before_reward_pass_and_pending_write(session, db_engine):
+    from sqlalchemy import event
+
+    owner = user(session)
+    row = award(session, owner)
+    pending = task(session, owner)
+    pending.result_document_ids = [123]
+    statements = []
+
+    def capture(conn, cursor, statement, params, ctx, many):
+        statements.append(statement.lower())
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW)
+        session.commit()
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    locks = [sql for sql in statements if "for update" in sql]
+    assert "from users" in locks[0]
+    assert "from pass_rewards" in locks[1]
+    assert "from workbench_passes" in locks[2]
+    first_lock = next(i for i, sql in enumerate(statements) if "for update" in sql)
+    first_write = next(i for i, sql in enumerate(statements) if sql.startswith("update "))
+    assert first_lock < first_write
+
+
+def test_revoke_refreshes_stale_rows_and_serializes_duplicates(session_factory, session):
+    owner = user(session)
+    row = award(session, owner, "source", 3)
+    following = ticket(session, award(session, owner, ref=2))
+    reward_id = row.id
+    session.commit()
+
+    def run():
+        with session_factory() as s:
+            result = rewards.revoke(s, reward_id, "核实为虚假账号领奖", NOW + timedelta(days=1))
+            s.commit()
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: run(), range(2)))
+    assert sorted(results) == sorted(["已收回", "已经收回过"])
+    assert (
+        rewards.revoke(session, reward_id, "再次核实账号违规", NOW + timedelta(days=2))
+        == "已经收回过"
+    )
+    session.commit()
+    session.refresh(following)
+    assert following.starts_at == NOW + timedelta(days=1)
+
+
+def test_reward_history_returns_revoked_and_keeps_existing_fields(context, session):
+    client, _ = context
+    owner = user(session)
+    first = award(session, owner, days=30)
+    zero = award(session, owner, ref=2)
+    third = award(session, owner, ref=3)
+    for row in (first, zero):
+        rewards.revoke(session, row.id, "核实为虚假账号领奖", NOW)
+    session.commit()
+    response = client.get("/api/v1/me/rewards", headers=headers(owner.openid))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["monthDays"] == body["monthLimit"] == 30
+    assert [item["revoked"] for item in body["items"]] == [False, True, True]
+    for item, row in zip(body["items"], (third, zero, first), strict=True):
+        assert item == {
+            "kind": row.kind,
+            "name": rewards.LABELS[row.kind],
+            "requestedDays": row.requested_days,
+            "days": row.granted_days,
+            "grantedAt": row.granted_at.astimezone(advisor_tasks.BEIJING).isoformat(),
+            "note": row.note,
+            "revoked": rewards.is_revoked(row),
+        }
+    assert owner.openid not in str(body)
+
+
+@pytest.mark.parametrize("state", ["future", "half", "expired", "zero", "deleted", "revoked"])
+def test_rewards_revoke_cli_preview_and_execute(context, session, monkeypatch, capsys, state):
+    client, settings = context
+    owner = user(session)
+    if state == "zero":
+        award(session, owner, days=30)
+    row = award(session, owner, "source", 3, ref=2)
+    segment = ticket(session, row)
+    stamp = NOW
+    if state == "future":
+        segment.starts_at += timedelta(days=2)
+        segment.ends_at += timedelta(days=2)
+        session.commit()
+    elif state == "half":
+        stamp += timedelta(days=1.5)
+    elif state == "expired":
+        stamp += timedelta(days=4)
+    elif state == "deleted":
+        assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
+        session.refresh(row)
+        session.refresh(segment)
+    elif state == "revoked":
+        rewards.revoke(session, row.id, "核实为虚假账号领奖", stamp)
+        session.commit()
+    following = None
+    if state not in ("zero", "deleted"):
+        following = ticket(session, award(session, owner, ref=3))
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return stamp
+
+    monkeypatch.setattr(cli, "datetime", Clock)
+    settings.rewards_enabled = settings.advisor_enabled = False
+    snapshots = {
+        p.id: (p.starts_at, p.ends_at, p.revoked_at) for p in session.scalars(select(WorkbenchPass))
+    }
+    note = row.note
+    reward_id = row.id
+    unused = payments.unused_pass_time(segment, stamp) if row.user_id is not None else timedelta(0)
+    args = ["rewards-revoke", "--reward-id", str(reward_id), "--reason", "核实为虚假账号领奖"]
+    session.rollback()
+    assert cli.main([*args, "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "未写入" in output and "source（提的栏目已接入）" in output
+    assert "发放天数：" in output and NOW.isoformat() in output
+    assert f"将要收回时间：{unused}（{unused.total_seconds():g} 秒）" in output
+    assert "用户内部编号：" in output and "openid" not in output and "reward-user" not in output
+    if segment is not None:
+        assert segment.starts_at.isoformat() in output and segment.ends_at.isoformat() in output
+    else:
+        assert "使用期：无" in output
+    session.expire_all()
+    assert session.get(PassReward, reward_id).note == note
+    assert {
+        p.id: (p.starts_at, p.ends_at, p.revoked_at) for p in session.scalars(select(WorkbenchPass))
+    } == snapshots
+    session.rollback()
+    assert cli.main(args) == 0
+    assert ("已经收回过" if state == "revoked" else "已收回") in capsys.readouterr().out
+    session.expire_all()
+    assert session.get(PassReward, reward_id).note.startswith("已收回：")
+    if following is not None:
+        assert following.starts_at == snapshots[following.id][0] - unused
+        assert following.ends_at == snapshots[following.id][1] - unused
+    session.rollback()
+    assert cli.main(args) == 0
+    assert "已经收回过" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("reason", [None, "太短", " " * 6, "字" * 101])
+def test_rewards_revoke_cli_rejects_invalid_reason(monkeypatch, capsys, reason):
+    def no_database():
+        pytest.fail("无效原因不应连接数据库")
+
+    monkeypatch.setattr(cli, "session_factory", no_database)
+    args = ["rewards-revoke", "--reward-id", "1"]
+    if reason is not None:
+        args += ["--reason", reason]
+    with pytest.raises(SystemExit) as exc:
+        cli.main(args)
+    assert exc.value.code == 2
+    assert "--reason" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rewards_revoke_cli_missing_reward(context, session, capsys, dry_run):
+    args = ["rewards-revoke", "--reward-id", "999", "--reason", "核实为虚假账号领奖"]
+    assert cli.main(args + (["--dry-run"] if dry_run else [])) == 1
+    assert "没有找到这笔奖励" in capsys.readouterr().out
+    assert session.scalar(select(func.count(PassReward.id))) == 0
+
+
 def paid(session, owner, start=NOW):
     order = PayOrder(
         user_id=owner.id,
