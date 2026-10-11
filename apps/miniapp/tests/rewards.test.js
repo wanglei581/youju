@@ -55,7 +55,8 @@ test('奖励空状态完整，R8 仅在引荐接口可用时显示', async () =>
   // 顶部写这个月已得几天；每种得法一行，右边写加几天
   assert.match(p.text(), /奖励规则 · 本月已得\s*0\s*天/); assert.match(p.text(), /还没有奖励/); assert.match(p.text(), /还没有提交过线索/); assert.doesNotMatch(p.text(), /请同行来用|\+7 天/);
   assert.deepEqual(findAll(p.show(), (n) => /\brw-plus\b/.test(n.attrs.class || '')).map((n) => textOf(n).trim()), ['+1 天', '+1 天', '+3 天', '+3 天']);
-  p.api.inviteInfo = () => Promise.resolve({}); await p.view.load(); assert.match(p.text(), /请同行来用\s*规则见"请同行来用"页/); assert.match(p.text(), /\+7 天/);
+  // 引荐这一行只指向"请同行来用"页，不在规则页写送几天（D-059：别处不出现"转发得天数"一类的话）
+  p.api.inviteInfo = () => Promise.resolve({}); await p.view.load(); assert.match(p.text(), /请同行来用\s*规则见"请同行来用"页/); assert.doesNotMatch(p.text(), /\+7 天|7 天/);
   assert.equal(findAll(p.show(), tapsTo('invite')).length, 1);
 });
 test('奖励有数据：北京时间日期、独立备注、通知标题和三种状态；只删待核对', async () => {

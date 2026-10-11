@@ -316,6 +316,7 @@ def reward_history(session: SessionDep, user: UserDep) -> dict:
                 "days": row.granted_days,
                 "grantedAt": _iso(row.granted_at),
                 "note": row.note,
+                "revoked": rewards.is_revoked(row),
             }
             for row in rows
         ],

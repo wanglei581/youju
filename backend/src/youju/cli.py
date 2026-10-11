@@ -729,6 +729,47 @@ def _cmd_rewards_reconcile(_: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
+def _reward_revoke_reason(value: str) -> str:
+    reason = value.strip()
+    if not 6 <= len(reason) <= 100:
+        raise argparse.ArgumentTypeError("收回原因须为 6–100 字")
+    return reason
+
+
+def _cmd_rewards_revoke(args: argparse.Namespace) -> int:
+    from youju import payments, rewards
+
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        try:
+            reward, ticket = rewards.lock_reward(session, args.reward_id)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        unused = (
+            payments.unused_pass_time(ticket, stamp)
+            if reward.user_id is not None and not rewards.is_revoked(reward)
+            else timedelta(0)
+        )
+        print(f"奖励 #{reward.id}：{reward.kind}（{rewards.LABELS[reward.kind]}）")
+        print(f"发放天数：{reward.granted_days}；发放时间：{reward.granted_at.isoformat()}")
+        print(f"用户内部编号：{reward.user_id if reward.user_id is not None else '已注销'}")
+        print(
+            f"使用期：{ticket.starts_at.isoformat()} 至 {ticket.ends_at.isoformat()}"
+            if ticket is not None
+            else "使用期：无"
+        )
+        print(f"将要收回时间：{unused}（{unused.total_seconds():g} 秒）")
+        if args.dry_run:
+            print("演练完成，未写入")
+            session.rollback()
+        else:
+            result = rewards.revoke(session, args.reward_id, args.reason, stamp)
+            session.commit()
+            print(result)
+    return 0
+
+
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
@@ -1016,6 +1057,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "rewards-reconcile", help="补发漏掉的首次批量功能、同行引荐和截止线索奖励"
     ).set_defaults(func=_cmd_rewards_reconcile)
+    p = sub.add_parser("rewards-revoke", help="收回一笔奖励的未用时间（开关关闭后仍可运行）")
+    p.add_argument("--reward-id", type=int, required=True, help="奖励流水编号")
+    p.add_argument(
+        "--reason",
+        type=_reward_revoke_reason,
+        required=True,
+        help="收回原因，6–100 字；用户能在自己的奖励记录里看到这句话",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只打印，不写入")
+    p.set_defaults(func=_cmd_rewards_revoke)
     sub.add_parser("pay-run", help="支付补单、退款及发货通知（关闭后处理未完结订单）").set_defaults(
         func=_cmd_pay
     )
