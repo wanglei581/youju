@@ -51,7 +51,8 @@
         <view class="rw-lead">请同行来用</view>
         <view class="rw-desc link">规则见"请同行来用"页 ›</view>
       </view>
-      <text class="rw-plus">+7 天</text>
+      <!-- 这一行不写送几天：送几天只在"请同行来用"页里说（D-059：别处不出现"转发得天数"一类的话） -->
+      <t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
     </view>
   </view>
 
