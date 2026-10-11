@@ -9,23 +9,33 @@
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <block wx:elif="{{enabled}}">
   <view class="task-section-title">数据工具</view>
-  <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card">
-    <view class="advisor-title">{{item.title}}</view>
-    <view class="advisor-text">{{item.description}}</view>
-    <view class="advisor-text muted">{{item.statusLine}}</view>
-    <button class="advisor-button btn-primary" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
+  <!-- 每个工具一张卡片：图标、名称、一句说明；这个月还能用几次；一个按钮 -->
+  <view wx:for="{{skills}}" wx:key="kind" class="card advisor-card tool">
+    <view class="tool-head">
+      <view class="tool-ico"><t-icon wx:if="{{item.kind === 'compare'}}" name="bulletpoint" size="40rpx" color="#2A5CE0" /><t-icon wx:if="{{item.kind !== 'compare'}}" name="notification" size="40rpx" color="#2A5CE0" /></view>
+      <view class="tool-main">
+        <view class="advisor-title">{{item.title}}</view>
+        <view class="tool-desc">{{item.description}}</view>
+      </view>
+    </view>
+    <view class="tool-quota">{{item.statusLine}}</view>
+    <button class="advisor-button btn-primary tool-go" data-kind="{{item.kind}}" bindtap="form">填写客户</button>
   </view>
-  <view wx:if="{{showPassLink}}" class="card advisor-card"><text class="advisor-link" bindtap="buy">客户多、要常用？看看客户工作台 30 天 ›</text></view>
+  <view wx:if="{{showPassLink}}" class="card advisor-card pass-link" bindtap="buy" aria-role="link"><text class="advisor-link">客户多、要常用？看看客户工作台 30 天 ›</text></view>
   <view wx:if="{{passNotice}}" class="card advisor-card advisor-text">{{passNotice}}</view>
   <view class="card advisor-card">
-    <view class="advisor-title">最近任务</view>
+    <view class="recent-head"><view class="advisor-title">最近任务</view><text class="link recent-all" bindtap="tasks" aria-role="link">全部任务 ›</text></view>
     <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
     <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
     <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有任务，填写客户后可查看进度和结果。</view>
     <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.rowCount}} 行 · {{item.time}}</view>
+      <view class="recent-main">
+        <view class="recent-name">{{item.kindLabel}}</view>
+        <view class="recent-meta">{{item.rowCount}} 行 · {{item.time}}</view>
+      </view>
+      <text class="task-state task-state--{{item.status}}">{{item.stateLabel}}</text>
+      <t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
     </button>
-    <button class="advisor-button" bindtap="tasks">全部任务</button>
   </view>
 </block>
 <view wx:else class="card advisor-card muted">暂时没有可用工具</view>
