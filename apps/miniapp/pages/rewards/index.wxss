@@ -1,1 +1,32 @@
 @import "../../utils/advisor.wxss";
+
+/* 顶部：和付款页、关注页同一种蓝色渐变 */
+.rw-hero { margin: 20rpx 24rpx 0; padding: 36rpx 40rpx 36rpx; border-radius: 24rpx; background: linear-gradient(135deg, var(--brand-g1), var(--brand-g2)); color: #FFFFFF; }
+.rw-hero-label { font-size: 28rpx; opacity: 0.92; }
+.rw-hero-num { margin-top: 4rpx; display: flex; align-items: baseline; gap: 8rpx; }
+.rw-num { font-size: 88rpx; font-weight: 700; line-height: 1.15; }
+.rw-unit { font-size: 32rpx; font-weight: 500; }
+.rw-hero-sub { margin-top: 8rpx; font-size: 26rpx; line-height: 1.6; opacity: 0.95; }
+
+.rw-card { padding-top: 32rpx; padding-bottom: 28rpx; }
+.rw-title { font-size: 30rpx; font-weight: 600; color: var(--t1); }
+
+/* 怎么得：图标 + 名称和说明 + 右边加几天 */
+.rw-row { margin-top: 28rpx; display: flex; align-items: flex-start; gap: 20rpx; }
+.rw-ico { flex-shrink: 0; width: 64rpx; height: 64rpx; border-radius: 16rpx; background: var(--brand-tint); display: flex; align-items: center; justify-content: center; }
+.rw-main { flex: 1; min-width: 0; }
+.rw-lead { font-size: 30rpx; font-weight: 500; color: var(--t1); line-height: 1.5; }
+.rw-desc { margin-top: 4rpx; font-size: 26rpx; color: var(--t2); line-height: 1.65; }
+.rw-plus { flex-shrink: 0; margin-top: 6rpx; padding: 0 16rpx; line-height: 44rpx; border-radius: 8rpx; background: var(--brand-tint); color: var(--brand); font-size: 24rpx; font-weight: 500; white-space: nowrap; }
+
+/* 说明：字小一号、颜色浅一级 */
+.rw-note { margin-top: 18rpx; font-size: 26rpx; line-height: 1.75; color: var(--t2); }
+
+/* 我的奖励、我的线索：一行一条，行间细线 */
+.rw-item { margin-top: 20rpx; padding-bottom: 20rpx; display: flex; align-items: flex-start; justify-content: space-between; gap: 24rpx; border-bottom: 2rpx solid var(--line); }
+.rw-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.rw-item-main { flex: 1; min-width: 0; }
+.rw-item-name { font-size: 28rpx; line-height: 1.6; color: var(--t1); overflow-wrap: break-word; }
+.rw-item-note { margin-top: 4rpx; font-size: 24rpx; color: var(--t3); }
+.rw-del { flex-shrink: 0; padding: 4rpx 0 4rpx 16rpx; font-size: 26rpx; }
+.rw-empty { margin-top: 20rpx; font-size: 26rpx; color: var(--t3); }
