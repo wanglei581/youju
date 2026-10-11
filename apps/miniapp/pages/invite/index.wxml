@@ -19,10 +19,10 @@
     <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">你只能看到人数，看不到是谁。</view></view>
     <view class="iv-rule"><view class="iv-dot"></view><view class="iv-rule-text">请只转发给用得上的人。</view></view>
   </view>
-  <view class="iv-space"></view>
 
-  <!-- 转发按钮固定在底部；只有这一页能转发带码的卡片 -->
-  <view wx:if="{{inviteCode}}" class="iv-bar">
+  <!-- 转发按钮放在规则下面，读完规则才看到，不固定在底部；只有这一页能转发带码的卡片 -->
+  <view wx:if="{{inviteCode}}" class="iv-actions">
     <button class="iv-share btn-primary" open-type="share">转发给同行</button>
   </view>
 </block>
+<view class="advisor-footer"></view>

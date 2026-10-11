@@ -14,7 +14,7 @@
     </view>
     <block wx:if="{{mode === 'paste'}}">
       <view class="form-label">{{kind === 'compare' ? '一行一家，填写企业名称或信用代码' : '一行一家：客户名称,省份,关键词,支持方式；后两项可留空，多项用分号分隔'}}</view>
-      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '演示科技有限公司' : '演示科技有限公司,辽宁,高新技术,资金支持'}}" placeholder-class="form-ph" bindinput="input" disabled="{{submitting}}" />
+      <textarea class="advisor-input form-list" value="{{text}}" maxlength="30000" placeholder="{{kind === 'compare' ? '演示科技有限公司' : '演示科技有限公司,辽宁,高新技术,资金支持'}}" placeholder-class="form-ph" bindinput="input" disabled="{{submitting}}" />
       <view wx:if="{{!text}}" class="form-hint">还没有填写客户</view>
     </block>
     <block wx:else>
@@ -34,7 +34,7 @@
     </view>
     <view class="form-hint">原文件不保存；客户名单 7 天后清空，结果文件 30 天后删除；可在“我的任务”或“我的数据”中删除（处理中的任务结束后才能删除）</view>
     <view class="form-count">将提交 {{rowCount}} 行</view>
-    <button class="advisor-button btn-primary tool-go form-submit" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
+    <button class="advisor-button btn-primary tool-go form-submit" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !rowCount || !!limitHint}}">{{submitting ? '正在提交…' : '提交任务'}}</button>
   </view>
   <view wx:if="{{limitHint}}" class="card advisor-card">
     <view class="advisor-error limit-lead">{{limitHint.message}}</view>

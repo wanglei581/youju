@@ -12,8 +12,7 @@
 .iv-dot { flex-shrink: 0; margin-top: 18rpx; width: 10rpx; height: 10rpx; border-radius: 50%; background: var(--brand); }
 .iv-rule-text { flex: 1; min-width: 0; font-size: 28rpx; line-height: 1.7; color: var(--t1); }
 
-.iv-space { height: calc(180rpx + env(safe-area-inset-bottom)); }
-.iv-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(24rpx + env(safe-area-inset-bottom)); background: var(--card); box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.06); }
+.iv-actions { margin: 32rpx 24rpx 0; }
 /* 微信的 button 默认是固定宽度，这里要占满一行 */
 .iv-share { width: 100% !important; margin: 0; min-height: 96rpx; font-size: 32rpx; line-height: 96rpx; padding: 0; }
 .iv-share::after { border: 0; }

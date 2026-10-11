@@ -191,3 +191,11 @@ test('新页面注册、所有固定界面文字符合禁用词要求，既有�
     assert.doesNotMatch(read(`pages/${name}/index.wxss`), /animation|@keyframes/);
   }
 });
+test('转发按钮在规则后面、不固定在底部；补截止日期的提交按钮也跟着表单走', async () => {
+  // agy 10/11：常驻底部的大转发按钮容易被看成强化利诱，读完规则才看到更稳妥；Codex：固定底栏会挡住报错和提示
+  for (const name of ['invite', 'deadline-clue']) assert.doesNotMatch(read(`pages/${name}/index.wxss`), /position:\s*fixed/);
+  const wxml = read('pages/invite/index.wxml');
+  assert.ok(wxml.indexOf('open-type="share"') > wxml.lastIndexOf('iv-rule-text'), '转发按钮要排在最后一条规则之后');
+  const p = page('invite'); await p.view.onShow();
+  assert.equal(findAll(p.show(), (n) => n.tag === 'button' && n.attrs['open-type'] === 'share').length, 1);
+});

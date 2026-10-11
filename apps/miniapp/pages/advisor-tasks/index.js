@@ -34,7 +34,8 @@ Page({
       this.rawItems = res.items || [];
       this.updateItems(); this.setData({ loading: false });
       this.schedule(epoch);
-    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message }); });
+    // 重新加载失败（断网、在别的手机上注销了等）：不留着上一次的任务和操作按钮，只显示原因和"重试"
+    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message, items: [] }); });
   },
   allowed(items, kinds = this.data.kinds) {
     return (items || []).filter((task) => ['compare', 'track'].includes(task.kind) || kinds.includes(task.kind));
