@@ -353,9 +353,7 @@ class DeadlineClueIn(BaseModel):
         return value
 
 
-def _validate_clue_document(
-    session: Session, document_id: int, day: date, *, locked: bool = False
-) -> None:
+def _validate_clue_document(session: Session, document_id: int, day: date) -> None:
     from youju.classify import effective_kind
 
     stmt = (
@@ -364,8 +362,6 @@ def _validate_clue_document(
         .with_only_columns(Document)
         .execution_options(populate_existing=True)
     )
-    if locked:
-        stmt = stmt.with_for_update()
     doc = session.scalar(stmt)
     if doc is None or effective_kind(doc.title, doc.kind_override) != "申报通知":
         raise HTTPException(status_code=422, detail="只接受公开申报通知的截止线索")
@@ -390,6 +386,8 @@ def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDe
     document_id = canonical_ids(session, [body.document_id]).get(body.document_id, body.document_id)
     _validate_clue_document(session, document_id, body.deadline_date)
     quote = v1.redact_sensitive(_mask_feedback(body.quote))
+    if not 6 <= len(quote) <= 200:
+        raise HTTPException(status_code=422, detail="原文句子脱敏后须为 6–200 字，请缩短后再提交")
     try:
         passed = check_feedback(user.openid, quote)
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
@@ -409,8 +407,7 @@ def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDe
     if locked_user is None:
         raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
     current_user(locked_user)
-    clues.lock_documents(session, document_id)
-    _validate_clue_document(session, document_id, body.deadline_date, locked=True)
+    _validate_clue_document(session, document_id, body.deadline_date)
     if any(d.kind == body.kind for d in v1._approved(session, [document_id]).get(document_id, [])):
         raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
     if clues.pending_count(session) >= 50:
@@ -459,8 +456,16 @@ def my_deadline_clues(session: SessionDep, user: UserDep) -> dict:
 
 @router.delete("/me/deadline-clues/{clue_id}", status_code=204)
 def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) -> None:
-    row = session.scalar(select(DeadlineClue).where(DeadlineClue.id == clue_id).with_for_update())
+    row = session.get(DeadlineClue, clue_id)
     if row is None or user is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    row = session.scalar(
+        select(DeadlineClue)
+        .where(DeadlineClue.id == clue_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.user_id != user.id:
         raise HTTPException(status_code=404, detail="没有找到线索")
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="只能删除待核对的线索")
@@ -561,7 +566,7 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
         from youju.payments import anonymize
 
         # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
-        rewards.anonymize(session, user, v1.now())
+        rewards.anonymize(session, user, v1.now(), settings=get_settings())
         anonymize(session, user)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)

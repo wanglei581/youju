@@ -1014,7 +1014,7 @@ class RewardClaim(Base):
     )
     pseudonym: Mapped[str] = mapped_column(String(64), primary_key=True)
     kind: Mapped[str] = mapped_column(String(20), primary_key=True)
-    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True)
 
 
 class PassReward(Base):

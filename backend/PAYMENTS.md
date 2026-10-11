@@ -109,8 +109,10 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 不回填。只在第一次建立用户记录时写引荐关系；已有记录更新协议不写关系，
 无效码（含超长或类型不符）忽略，自用码不记录。接口不公开被引荐人身份。
 `reward_claims` 保留 openid 的用途分离 HMAC-SHA256 假名、类型、记录时间；复用 app_keys 程序密钥，
-不存 openid 或用户外键，注销不删除。first_batch、referred（已被引荐）、referral（已触发引荐奖）
-分别唯一；180 天内重新注册不重复领取首次奖励或建立引荐关系。`youju cleanup` 清除满 180 天记录。
+不存 openid 或用户外键，注销不删除。first_batch、referred（曾使用过账号）、referral（已触发引荐奖）
+按假名和类型查重；引荐开启时所有用户注销均追加 referred，首次奖励/引荐奖励有历史时也追加对应凭据，
+时间统一为注销时刻，避免旧凭据已满 180 天时立即丢失资格限制。引荐关闭时不追加 referred。
+180 天内重新注册不重复领取首次奖励或建立引荐关系。`youju cleanup` 清除满 180 天记录。
 待办：启用前在隐私保护指引增加防重复领奖假名的用途、注销后保留及 180 天期限；本次不改 docs/。
 
 新迁移 **0027**，0026 不变：
@@ -122,8 +124,9 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   截止线索使用 `deadline_` 加性质 SHA256 前 20 位作为 ref_type、主通知编号作为 ref_id，
   唯一键保证同一通知同一性质只奖励一次，补发同时检查归并组内旧编号的流水，撤回核对不清除奖励流水。
   两种管理台操作共用反馈唯一键，不能对同一反馈各发一遍。
-- `reward_claims`：`pseudonym,kind,claimed_at`；前两列为联合主键，类型为 first_batch/referred/referral。
-  无身份外键，零天奖励也消耗首次资格，关系/发奖与凭据在同一事务提交。
+- `reward_claims`：`pseudonym,kind,claimed_at`；三列为联合主键（直接修改未上线的 0027），类型为 first_batch/referred/referral。
+  无身份外键，凭据只追加；app_keys 的 reward_claim_queue 行锁串行化查重和追加，
+  API 不锁凭据表、不需要 UPDATE/DELETE。零天奖励也消耗首次资格，关系/发奖与凭据同事务提交。
 - `deadline_clues`：`id,user_id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`。
   kind 沿用 DocumentDeadline，time 可空，quote 脱敏后最多 200 字，status 为 pending/accepted/rejected；
   用户、候选外键允许置空，文件删除级联删除。公开接口不输出线索或提交人。
@@ -133,8 +136,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   零天没有对应段，不增加循环外键。
 - `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
   `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。
-- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的奖励 INSERT/UPDATE 授权；
-  本次只验证测试库，不执行正式库或账号授权操作。
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
+  reward_claims 仅 INSERT，pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）。
+  workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
+  注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
+  本次只验证指定测试库，不执行正式库操作。
 
 | 接口 | 最终字段 / 行为 |
 |---|---|
@@ -165,11 +171,15 @@ status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，
 详情布尔值按奖励及工具开关、申报通知、无核对通过截止、全站未满计算；登录、日期和个人限制
 仍由提交接口检查。归并的多个网址按主通知处理，转载组各版本仍独立。
 
-核对台只显示日期、性质、原句及提交时间，不显示提交人；只有线索时可建 origin=user 的待核对候选，
+API 提交不锁 documents/sources，依靠 app_keys 队列锁与管理端建候选、核对、导入串行化；
+原句脱敏后再次校验 6–200 字，超长返回中文 422。
+核对台列出全部待核对线索，只显示日期、性质、原句及提交时间，不显示提交人；
+只有同一性质的待核对候选阻止建 origin=user 候选，已驳回或其他性质候选不阻止；每条线索均可不采纳。
 之后仍须负责人对照原文点通过/驳回。通过按实际核定日期采纳同性质同日期待核对线索，
 其他日期标未采纳（时间不参与匹配）；采纳/未采纳状态和核对在同一事务写入。
 仅最早提交者拿 1 天；发奖独立提交、失败记固定日志，由 rewards-reconcile 重试。
-驳回候选不处理线索；撤回核对不追回奖励、不改变线索状态；不采纳按钮可处理无效线索。
+单条和批量导入核对均调用线索结算；导入预览回滚、正式通过后单独发奖。
+驳回候选保留线索待核对，可重新建候选或不采纳；撤回核对不追回奖励、不改变线索状态；不采纳按钮可处理无效线索。
 关闭奖励时隐藏相关内容，核对通过不处理线索。注销删除待核对线索，已处理保留且断开用户关联，
 最早提交者已注销时不把奖励转给后来者。
 
@@ -185,11 +195,21 @@ status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，
 订单接口只查订单，不把奖励段伪装成订单。退款收回订单段时，后续奖励段也按未用时长往前挪。
 注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除引荐关系两边的关联与时间，
 清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。
+批量任务收尾用 no_autoflush 先锁用户，再刷新任务，避免引擎已修改结果引用时提前写任务造成与注销互锁。
+受限账号测试按部署 SQL 的 GRANT 自动授权到测试库；可跳过“支付权限”之后的追加授权，
+仅创建随机密码的 youju_api_test@localhost，结束 DROP USER；root 无 CREATE USER 权限则自动跳过并报告。
 
-本次奖励扩展最终验证（2026-10-10）：指定虚拟环境、指定 `youju_test_codex2` 测试库，
-串行全量 **2022 passed，未跳过数据库测试，292.34 秒**；两条已有警告（Starlette/httpx 弃用、ZIP 重复名称）。
-ruff format/check、核对台脚本语法/快捷键检查、git diff --check 通过。
-仍在 `feat/rewards`，只改 backend，未 commit/push/部署。正式复核、隐私指引更新、
+本次修复验证（2026-10-11）：指定虚拟环境、指定 youju_test_codex2 测试库，
+串行全量 **2055 passed，2 failed，无跳过，732.17 秒**；新增 21 个回归用例全部通过，
+其中 3 个受限账号场景实际执行，账号在每例结束后删除。
+两条失败均是固定日期数据与当日时钟不一致的旧测试，本次未改其代码：
+
+- tests/test_conditions.py::test_queue_shows_items_with_highlight_context：10 月 10 日截止已过，卡片不再是“30 天内截止”。
+- tests/test_digest.py::test_daily_report_cli_sends_once_and_records_ai_usage：CLI 按 10 月 11 日取候选，假 AI 返回的旧通知截止已过，无法生成“AI 建议先核对”。
+
+两条已有警告（Starlette/httpx 弃用、ZIP 重复名称）。
+ruff format --check、ruff check、核对台脚本语法、git diff --check 通过。
+仍在 feat/rewards，只改 backend，未 commit/push/部署。正式复核、隐私指引更新、
 迁移与授权、真实微信内容安全及浏览器验收待办；180 天清理后不再跨注销维持资格限制。
 
 ## 退款与苹果问询
@@ -284,4 +304,3 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 
 苹果退款问询在本地核验出错或超过两秒时仍答“未使用”：核验不了时宁可让用户能退，
 不把没用过的人答成“已使用”。平台对这种情况有没有规定的应答，上线前按真实问询确认。
-

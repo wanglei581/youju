@@ -60,6 +60,9 @@ def lock_documents(session: Session, document_id: int) -> list[int]:
 
 
 def settle(session: Session, deadline: DocumentDeadline, stamp: datetime) -> None:
+    # 驳回候选只是否定该日期，保留用户线索供重新建候选或人工不采纳。
+    if deadline.status not in ("approved", "changed"):
+        return
     ids = document_group(session, deadline.document_id)
     rows = session.scalars(
         select(DeadlineClue)
@@ -74,6 +77,28 @@ def settle(session: Session, deadline: DocumentDeadline, stamp: datetime) -> Non
     for clue in rows:
         clue.status = "accepted" if clue.date == deadline.approved_date else "rejected"
         clue.processed_at, clue.deadline_id = stamp, deadline.id
+
+
+def pending_candidate(session: Session, ids: list[int], kind: str) -> bool:
+    return (
+        session.scalar(
+            select(DocumentDeadline.id)
+            .where(
+                DocumentDeadline.document_id.in_(ids),
+                DocumentDeadline.kind == kind,
+                DocumentDeadline.status == "pending",
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def lock_review_queue(session: Session, *, settings=None) -> None:
+    from youju.config import get_settings
+
+    if rewards.enabled(settings or get_settings()):
+        lock_queue(session)
 
 
 def reward_ref(kind: str) -> str:

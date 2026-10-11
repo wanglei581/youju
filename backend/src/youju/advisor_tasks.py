@@ -565,12 +565,14 @@ def process_task(
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
         # 发奖与提交任务统一先锁用户；首次完成标记和任务完成同事务落库。
-        user = session.scalar(
-            select(User)
-            .where(User.id == task.user_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        # 引擎已修改任务的结果引用；自动刷新会先写任务再等待用户，和注销互锁。
+        with session.no_autoflush:
+            user = session.scalar(
+                select(User)
+                .where(User.id == task.user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
         if user is None:
             raise CompareInputError("用户不存在，任务无法处理")
         previous = None
