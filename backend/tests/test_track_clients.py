@@ -42,10 +42,10 @@ def test_export_keeps_empty_clients_and_escapes_formula(tmp_path: Path):
     )
     assert export_track_excel(report, output) == 1
     book = load_workbook(output, data_only=False)
-    assert book["跟进表"]["A3"].value == "'=客户"
-    assert book["跟进表"]["B3"].value == "暂无"
+    assert book["客户相关通知"]["A3"].value == "'=客户"
+    assert book["客户相关通知"]["B3"].value == "暂无"
     assert book["汇总"]["B3"].value == 0
-    assert "2026-09-30 09:02" in book["跟进表"]["A1"].value
+    assert "2026-09-30 09:02" in book["客户相关通知"]["A1"].value
 
 
 def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch):
@@ -196,7 +196,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     )
     output = tmp_path / "unknown.xlsx"
     export_track_excel(report, output)
-    assert load_workbook(output)["跟进表"]["F3"].value == "截止未核对，请以原文为准"
+    assert load_workbook(output)["客户相关通知"]["F3"].value == "截止未核对，请以原文为准"
     session.add(
         DocumentDeadline(
             document_id=closed.id,
