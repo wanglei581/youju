@@ -23,6 +23,7 @@ OVERVIEW_JOBS = (
 JOB_NAMES = OVERVIEW_JOBS + (
     "advisor-run",
     "pay-run",
+    "rewards-reconcile",
     "crawl",
     "check-sources",
     "fetch-details",

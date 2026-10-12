@@ -18,13 +18,8 @@ App({
     const config = require('./utils/config.js');
     if (config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });
     try {
-      const win = wx.getWindowInfo();
-      const menu = wx.getMenuButtonBoundingClientRect();
-      const statusBar = win.statusBarHeight || 20;
-      this.globalData.statusBarHeight = statusBar;
-      // 导航内容区高度：让胶囊在内容区里上下居中
-      this.globalData.navHeight = (menu.top - statusBar) * 2 + menu.height;
-      this.globalData.menuWidth = win.windowWidth - menu.left;
+      // 尺寸怎么算、电脑版怎么兜底见 utils/nav.js
+      Object.assign(this.globalData, require('./utils/nav.js').navMetrics(wx.getWindowInfo(), wx.getMenuButtonBoundingClientRect()));
     } catch (e) {
       // 取不到时用默认值，页面照常显示
     }
