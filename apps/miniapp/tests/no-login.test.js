@@ -281,6 +281,8 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.ok(all.includes('侵权投诉：发邮件至联系邮箱'));
     assert.ok(all.includes('可导出 Excel 或 Word'));
     assert.ok(all.includes('网站不允许程序访问的，我们不绕过'));
+    // 副标题和后台填的简介一个口径：不用“政务”“官方”这类容易让人以为是政府办的词（运营规范 5.14.3）
+    assert.ok(all.includes('公开通知与名单检索 · 第三方整理')); assert.ok(!/政务|官方平台(?!，)/.test(all.replace('不是政府官方平台', '')));
     // 定稿前不打开草案协议，只有"隐私保护指引"一行（官方指引）；定稿后照旧是用户协议、隐私保护指引两行
     assert.deepEqual(findAll(root, tapsTo('openAgreement')).map((n) => n.attrs['data-type']), final ? ['user', 'privacy'] : []);
     assert.deepEqual(texts(root, tapsTo('openPrivacy')), final ? [] : ['隐私保护指引']);

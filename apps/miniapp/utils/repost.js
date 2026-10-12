@@ -1,6 +1,6 @@
 // 转发版本（D-055）：同一份部里通知，各地转发或据此发的通知归成一组，管理台确认后才合并显示。
 // 列表里只列一条，下面写“另有 N 个转发版本（天津、福建）”，点开看各版本；
-// 详情里按版本列出各自核对过的截止（库里有部里原件时它叫“部里”，其余叫“江西版”），
+// 详情里按版本列出各自核对过的截止（库里有部里原件时它叫“部委”，其余叫“江西版”），
 // 不同版本的日期不互相套用，没核对的只写“截止未核对”、不写日期。
 const { monthDay, NOTE_SEE_ORIGINAL } = require('./format.js');
 
@@ -41,7 +41,7 @@ function versionRows(repost) {
 function upstreamLine(repost) {
   const up = repost && repost.upstream;
   if (!up || !up.number) return '';
-  return `这些通知都转发或依据同一份部里通知：${up.title ? `《${up.title}》` : ''}（${up.number}）`;
+  return `这些通知都转发或依据同一份部委通知：${up.title ? `《${up.title}》` : ''}（${up.number}）`;
 }
 
 module.exports = { groupLine, versionDeadline, versionRows, upstreamLine, MAX_REGIONS };
