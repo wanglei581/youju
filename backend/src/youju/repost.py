@@ -820,9 +820,9 @@ def active_groups(session: Session, doc_ids: list[int]) -> dict[int, tuple[int, 
 
 
 def version_label(province: str, dept: str, same_province: bool) -> str:
-    """版本的叫法：国家级来源是“部里”；其余是“江西版”，同组里同省有两个部门时写“四川科技版”。"""
+    """版本的叫法：国家级来源是“部委”（给用户看的写法，口头说的“部里”）；其余是“江西版”，同组里同省有两个部门时写“四川科技版”。"""
     if province == "国家":
-        return "部里"
+        return "部委"
     return f"{province}{dept}版" if same_province else f"{province}版"
 
 

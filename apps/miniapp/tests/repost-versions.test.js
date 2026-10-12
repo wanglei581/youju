@@ -64,9 +64,9 @@ test('各版本的截止只写各自核对过的；没核对的不写日期', ()
   assert.equal(rows[3].deadline, '截止时间见原文');
   assert.equal(rows[2].url, 'https://gyxxh.tj.gov.cn/1.html'); // 每个版本自己的原文
   assert.equal(rows[1].meta, '陕西省工业和信息化厅 · 2026-09-22 发布');
-  // 库里有部里原件时叫“部里”，标签照接口给的写，不另拼
-  const ministry = repost.versionRows({ versions: [{ id: '1', label: '部里', deadlines: [{ label: '企业申报截止', date: '2026-10-20', time: '' }] }] });
-  assert.equal(ministry[0].label, '部里');
+  // 库里有部里原件时叫“部委”，标签照接口给的写，不另拼
+  const ministry = repost.versionRows({ versions: [{ id: '1', label: '部委', deadlines: [{ label: '企业申报截止', date: '2026-10-20', time: '' }] }] });
+  assert.equal(ministry[0].label, '部委');
   assert.equal(ministry[0].deadline, '企业申报截止 10月20日');
   assert.deepEqual(repost.versionRows(undefined), []);
 });
@@ -74,7 +74,7 @@ test('各版本的截止只写各自核对过的；没核对的不写日期', ()
 test('部里通知只照录正文引用的标题和文号；没有文号就不写', () => {
   assert.equal(
     repost.upstreamLine(REPOST),
-    '这些通知都转发或依据同一份部里通知：《工业和信息化部等七部门办公厅（办公室）关于组织开展2026年度视听系统典型案例征集工作的通知》（工信厅联电子函〔2026〕376号）',
+    '这些通知都转发或依据同一份部委通知：《工业和信息化部等七部门办公厅（办公室）关于组织开展2026年度视听系统典型案例征集工作的通知》（工信厅联电子函〔2026〕376号）',
   );
   assert.equal(repost.upstreamLine({ upstream: null }), '');
   assert.equal(repost.upstreamLine(undefined), '');
@@ -148,7 +148,7 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   assert.equal(page.data.versions.length, 4);
   assert.equal(page.data.versions[0].deadline, '截止未核对');
   assert.equal(page.data.due, null); // 本版没有核对过的截止：不借用其他版本的
-  assert.match(page.data.upstream, /^这些通知都转发或依据同一份部里通知：《/);
+  assert.match(page.data.upstream, /^这些通知都转发或依据同一份部委通知：《/);
   page.openVersion(event({ id: '13', current: true }));
   assert.deepEqual(opened, []);
   page.openVersion(event({ id: '12', current: false }));
