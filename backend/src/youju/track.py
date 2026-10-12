@@ -69,6 +69,7 @@ class TrackItem:
     remaining_days: int | None
     support: str
     url: str
+    publish_date: date | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +78,7 @@ class TrackItem:
             "title": self.title,
             "issuer": self.issuer,
             "province": self.province,
+            "publish_date": self.publish_date.isoformat() if self.publish_date else None,
             "deadline_type": self.deadline_type,
             "deadline_date": self.deadline_date.isoformat() if self.deadline_date else None,
             "deadline_status": "已核对" if self.deadline_date else "截止未核对，请以原文为准",
@@ -225,6 +227,11 @@ def _province_match(profile: CustomerProfile, source: Source) -> bool:
     return profile.province != "国家部委" and source.province == _source_province(profile)
 
 
+VERIFIED_TEXT = "已核对"
+UNVERIFIED_TEXT = "未核对，请以原文为准"
+UNVERIFIED_SUMMARY = "未核对"
+
+
 def _deadline_text(value: date, clock: time | None) -> str:
     return f"{value.isoformat()} {clock:%H:%M}" if clock else value.isoformat()
 
@@ -297,13 +304,16 @@ def track_clients(
                     remaining_days=remaining,
                     support="、".join(supports),
                     url=document.url,
+                    publish_date=document.publish_date,
                 )
             )
+        # 核对过截止日期的排前面、截止早的先；没核对的排后面、新发布的先
         items.sort(
             key=lambda item: (
                 item.deadline_date or date.max,
                 item.deadline_time is None,
                 item.deadline_time or time.min,
+                -(item.publish_date.toordinal() if item.publish_date else 0),
                 item.document_id,
             )
         )
@@ -322,11 +332,15 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         "截止日期只写人工核对过的，没核对的请以原文为准；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
+    # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：
+    # 免得把说明文字当成日期，也免得把“没核对”看成“没有截止”（10/12 用户视角评审）
     headers = [
         "客户名称",
         "通知标题",
         "发文机关",
         "省份",
+        "发布日期",
+        "截止核对情况",
         "截止类型",
         "截止日期",
         "剩余天数",
@@ -338,25 +352,28 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     for column, header in enumerate(headers, 1):
         detail.cell(2, column, header)
     row_count = 0
-    summary_rows: list[tuple[str, int, int, int, int]] = []
+    summary_rows: list[tuple[object, ...]] = []
     for client in report.clients:
         count = len(client.items)
+        verified = sum(item.deadline_date is not None for item in client.items)
+
+        def within(days: int, items=client.items, verified=verified) -> object:
+            # 一条都没核对时不写 0：0 会被看成“没有快截止的”，其实是不知道
+            if not verified:
+                return UNVERIFIED_SUMMARY if items else ""
+            return sum(
+                item.remaining_days is not None and item.remaining_days <= days for item in items
+            )
+
         summary_rows.append(
             (
                 client.customer_name,
                 count,
-                sum(
-                    item.remaining_days is not None and item.remaining_days <= 7
-                    for item in client.items
-                ),
-                sum(
-                    item.remaining_days is not None and item.remaining_days <= 14
-                    for item in client.items
-                ),
-                sum(
-                    item.remaining_days is not None and item.remaining_days <= 30
-                    for item in client.items
-                ),
+                verified,
+                within(7),
+                within(14),
+                within(30),
+                count - verified,
             )
         )
         items = client.items or [None]
@@ -366,13 +383,11 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
                 item.title if item else "暂无",
                 item.issuer if item else "",
                 item.province if item else (client.profile.province or ""),
+                item.publish_date.isoformat() if item and item.publish_date else "",
+                (VERIFIED_TEXT if item.deadline_date else UNVERIFIED_TEXT) if item else "",
                 item.deadline_type if item else "",
-                (
-                    _deadline_text(item.deadline_date, item.deadline_time)
-                    if item.deadline_date
-                    else "截止未核对，请以原文为准"
-                )
-                if item
+                _deadline_text(item.deadline_date, item.deadline_time)
+                if item and item.deadline_date
                 else "",
                 item.remaining_days if item and item.remaining_days is not None else "",
                 item.support if item else "",
@@ -385,9 +400,23 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
             row_count += 1
 
     summary = book.create_sheet("汇总")
-    summary_headers = ["客户名称", "项目数", "7天内截止数", "14天内截止数", "30天内截止数"]
+    summary_headers = [
+        "客户名称",
+        "通知数",
+        "已核对截止日期的",
+        "7 天内截止",
+        "14 天内截止",
+        "30 天内截止",
+        "截止未核对的",
+    ]
     summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
-    summary.cell(1, 1, _safe_cell(note))
+    summary.cell(
+        1,
+        1,
+        _safe_cell(
+            note + "；“N 天内截止”只数已核对截止日期的通知，“截止未核对的”也可能快截止，请看原文"
+        ),
+    )
     for column, header in enumerate(summary_headers, 1):
         summary.cell(2, column, header)
     for row_number, values in enumerate(summary_rows, 3):
