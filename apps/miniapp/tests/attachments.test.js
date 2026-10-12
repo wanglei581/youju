@@ -312,7 +312,7 @@ async function outcome({ api, clock }, call) {
   return { ...result, at: clock.now };
 }
 
-test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报超时也接着重试，60 秒内不再发新请求就报错', async () => {
+test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报超时也接着重试，90 秒内不再发新请求就报错', async () => {
   // 第一次一直不回：15 秒超时后 1.5 秒再试，成功
   let s = retryApi([null, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
@@ -323,12 +323,18 @@ test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报�
   r = await outcome(s, (api) => api.coverage());
   assert.deepEqual(r.value, { ok: 1 });
   assert.deepEqual(s.sent, [0, 15500]);
-  // 一直起不来：快失败、网关错误、超时都再试，下一次发出会超过 60 秒时报错
+  // 一直起不来：快失败、网关错误、超时都再试，下一次发出会超过 90 秒时报错
   s = retryApi([{ after: 300, fail: true }, { after: 200, code: 503 }, null]);
   r = await outcome(s, (api) => api.coverage());
   assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0, 1800, 5000, 25000, 48000]);
-  assert.equal(r.at, 63000);
+  assert.deepEqual(s.sent, [0, 1800, 5000, 25000, 48000, 73000]);
+  assert.equal(r.at, 88000);
+  // 10/12 实测的冷启动：头两次超时，第三次 503，第 67 秒左右才起来，之后发的请求很快成功——90 秒内等得到
+  s = retryApi([null, null, { after: 8000, code: 503 }, null, { after: 300, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 16500, 34500, 47500, 70500]);
+  assert.equal(r.at, 70800);
   // 附件分段同样处理
   s = retryApi([null, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
@@ -337,7 +343,7 @@ test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报�
 });
 
 
-test('GET 按1.5、3、5、8秒再试，之后每 10 秒一次，60 秒为止；慢的调用失败也再试；404 等不重试', async () => {
+test('GET 按1.5、3、5、8秒再试，之后每 10 秒一次，90 秒为止；慢的调用失败也再试；404 等不重试', async () => {
   let s = retryApi([{ after: 200, fail: true }, { after: 300, code: 503 }, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
   assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 1700, 5000]);
@@ -350,7 +356,7 @@ test('GET 按1.5、3、5、8秒再试，之后每 10 秒一次，60 秒为止；
   assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500]);
   s = retryApi(Array.from({ length: 20 }, () => ({ after: 0, code: 503 })));
   r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 503);
-  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500]); assert.equal(r.at, 57500);
+  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500, 67500, 77500, 87500]); assert.equal(r.at, 87500);
   s = retryApi([{ after: 100, code: 404 }, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 404); assert.deepEqual(s.sent, [0]);
 });

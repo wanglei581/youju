@@ -37,11 +37,12 @@ function forgetAgreed() {
   try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 忽略 */ }
 }
 
-// 冷启动（10/12 诊断）：接口服务空闲时缩到 0 个实例，下次请求要等新实例起来。期间网关可能回 502/503/504、
-// 调用很快失败，也可能一直不回到 15 秒超时。读数据（GET）遇到这三种情况都接着重试，间隔 1.5、3、5、8 秒，
-// 之后每 10 秒一次，从第一次发出算起超过 60 秒就不再发新的请求；写操作（POST 等）不重试，404、422、500 等也不重试。
+// 冷启动（10/12 诊断）：接口服务空闲时缩到 0 个实例，下次请求要等新实例起来——10/12 实测空闲 25 分钟后
+// 67 秒才第一次成功。期间网关可能回 502/503/504、调用很快失败，也可能一直不回到 15 秒超时。读数据（GET）
+// 遇到这三种情况都接着重试，间隔 1.5、3、5、8 秒，之后每 10 秒一次，从第一次发出算起超过 90 秒就不再发新的请求；
+// 写操作（POST 等）不重试，404、422、500 等也不重试。
 const RETRY_DELAYS = [1500, 3000, 5000, 8000, 10000];
-const MAX_WAIT = 60000;
+const MAX_WAIT = 90000;
 const TIMEOUT = 15000;
 const GATEWAY_CODES = [502, 503, 504];
 const startupPages = new Map();
@@ -72,7 +73,7 @@ function withRetry(attempt, method) {
   return run(0).then((value) => { finish(); return value; }, (err) => { finish(); throw err; });
 }
 
-// 15 秒没有返回：算超时（读数据的请求在 60 秒内会再试）
+// 15 秒没有返回：算超时（读数据的请求在 90 秒内会再试）
 function timeoutError() {
   const err = new Error('网络不太好，请稍后再试');
   err.timeout = true;
@@ -80,7 +81,7 @@ function timeoutError() {
   return err;
 }
 
-// 调用失败（没有拿到响应，包括云托管自己报超时）：读数据的请求在 60 秒内会再试
+// 调用失败（没有拿到响应，包括云托管自己报超时）：读数据的请求在 90 秒内会再试
 function callFailure(res) {
   const err = new Error('网络不太好，请稍后再试');
   err.retryable = true;
