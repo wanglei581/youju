@@ -88,10 +88,12 @@ test('首页、搜索、名单页的请求都带 group=1（按组折叠、按组
   await api.home();
   await api.search({ q: '视听', kind: 'all' });
   await api.lists();
-  assert.deepEqual(urls.map((u) => [u.pathname, u.searchParams.get('group')]), [
-    ['/api/v1/home', '1'], ['/api/v1/search', '1'], ['/api/v1/lists/recent', '1'],
+  // 首页（D-061）另取最新的 8 份申报通知，也按组折叠；首页上只显示人工核对过的截止，所以这一请求不带 excerpts
+  assert.deepEqual(urls.map((u) => [u.pathname, u.searchParams.get('group'), u.searchParams.get('excerpts')]), [
+    ['/api/v1/home', '1', '1'], ['/api/v1/search', '1', null], ['/api/v1/search', '1', '1'], ['/api/v1/lists/recent', '1', null],
   ]);
-  assert.equal(urls[1].searchParams.get('q'), '视听');
+  assert.equal(urls[1].searchParams.get('kind'), '申报通知'); assert.equal(urls[1].searchParams.get('limit'), '8');
+  assert.equal(urls[2].searchParams.get('q'), '视听');
 });
 
 test('列表行：组的主条目写“另有 N 个转发版本”，点开逐个列出，各版本打开自己的详情、复制自己的原文链接', () => {

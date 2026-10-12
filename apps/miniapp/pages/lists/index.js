@@ -24,6 +24,9 @@ Page({
     items: [],
     loading: true,
     shown: [],
+    // 比对范围：按类型、省份、年度的名单份数和读出的企业条数（原名单看板的统计）
+    scope: null,
+    scopeOpen: false,
   },
 
   onHide() {
@@ -51,6 +54,7 @@ Page({
 
   reload() {
     this.setData({ loading: true, error: '' });
+    this.loadScope();
     api.lists()
       .then((res) => {
         this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items });
@@ -103,8 +107,22 @@ Page({
     wx.navigateTo({ url: '/pages/search/index?kind=名单&time=不限' });
   },
 
-  openBoard() {
-    wx.navigateTo({ url: '/pages/list-board/index' });
+  // 比对范围加载失败不影响查名单，只是不显示这一块
+  loadScope() {
+    api.listBoard({ days: 30, page: 1, size: 1 })
+      .then((res) => {
+        const stats = res.stats || {};
+        const byType = stats.by_type || [];
+        this.setData({ scope: byType.length ? {
+          lists: byType.reduce((sum, item) => sum + (item.lists || 0), 0),
+          byType, byProvince: stats.by_province || [], byYear: stats.by_year || [],
+        } : null });
+      })
+      .catch(() => {});
+  },
+
+  toggleScope() {
+    this.setData({ scopeOpen: !this.data.scopeOpen });
   },
 
   pickChip(e) {

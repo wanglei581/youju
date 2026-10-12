@@ -1,5 +1,0 @@
-{
-  "navigationStyle": "custom",
-  "navigationBarTitleText": "名单看板",
-  "usingComponents": { "t-icon": "/components/icon/index" }
-}

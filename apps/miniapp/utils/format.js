@@ -93,6 +93,37 @@ function dueInfo(deadline, now) {
 // 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
 // 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
 const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
+
+// 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
+// - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
+// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"机器摘录·未经人工核对"，必须带原句；
+// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止未核对"。
+// 摘录没带原句、按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天）或在 30 天以后，
+// 这里再拦一次，只写"截止未核对"。
+const VERIFIED_LABEL = '已人工核对';
+const EXCERPT_LABEL = '机器摘录·未经人工核对';
+const EXCERPT_MIN_DAYS = 8;
+const EXCERPT_MAX_DAYS = 30;
+function dueView(due, now) {
+  if (!due) return null;
+  const excerpt = due.source === 'excerpt';
+  if (due.date && (due.source === 'verified' || (excerpt && due.quote))) {
+    const days = daysUntil(due.date, now, due.time);
+    if (!excerpt || (days >= EXCERPT_MIN_DAYS && days <= EXCERPT_MAX_DAYS)) {
+      const at = `${monthDay(due.date)}${due.time ? ` ${due.time}` : ''}`;
+      return {
+        source: due.source,
+        kind: due.kind || '',
+        days,
+        tone: excerpt ? 'excerpt' : dueTone(days),
+        text: days < 0 ? `${at}已截止` : `${at}截止 · 剩${days}天`,
+        label: excerpt ? EXCERPT_LABEL : VERIFIED_LABEL,
+        quote: due.quote || '',
+      };
+    }
+  }
+  return { source: 'unverified', kind: due.kind || '', days: null, tone: '', text: NOTE_UNVERIFIED, label: '', quote: '' };
+}
 const NOTE_SEE_ORIGINAL = '截止时间见原文';
 function deadlineNote(doc) {
   if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
@@ -148,5 +179,5 @@ function shortTime(iso) {
 module.exports = {
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
-  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL,
+  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
 };

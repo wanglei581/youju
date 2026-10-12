@@ -7,6 +7,8 @@
     <text wx:elif="{{dueNote}}" class="due">{{dueNote}}</text>
   </view>
   <view class="title" bindtap="open"><text wx:for="{{segs}}" wx:key="index" class="{{item.hl ? 'hl' : ''}}">{{item.t}}</text></view>
+  <!-- 机器摘录的截止（D-061）：同一条里写明未经人工核对，并附原文那句话 -->
+  <view wx:if="{{excerpt}}" class="excerpt" bindtap="open"><text class="excerpt-tag">{{excerpt.label}}</text><text class="excerpt-quote">原文：{{excerpt.quote}}</text></view>
   <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>
   <view class="meta">
     <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}">{{doc.date}}</text></text>

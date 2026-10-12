@@ -97,3 +97,11 @@
 .ver-copy { flex-shrink: 0; color: var(--brand); white-space: nowrap; }
 .ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }
 .standard-link { display: flex; align-items: center; justify-content: space-between; padding: 24rpx 0 0; font-size: 26rpx; }
+/* 按类型逐条的截止（D-061） */
+.dls-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8rpx; }
+.dl { padding-top: 20rpx; display: flex; flex-direction: column; gap: 10rpx; }
+.dl--line { margin-top: 20rpx; border-top: 2rpx solid var(--line); }
+.src { align-self: flex-start; padding: 4rpx 12rpx; border-radius: 8rpx; font-size: 22rpx; font-weight: 600; }
+.src--verified { background: var(--g-tint); color: var(--g-txt); }
+.src--excerpt { background: var(--fill); color: var(--t2); }
+.dl-quote { padding: 12rpx 16rpx; border-radius: 10rpx; background: var(--fill); font-size: 26rpx; line-height: 1.7; color: var(--t2); }

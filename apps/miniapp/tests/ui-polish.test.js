@@ -63,7 +63,7 @@ test('首页加载时用占位块：本周新增和最新列表都不写"正在�
   assert.ok(!template.includes('正在加载…'));
   assert.match(template, /<view wx:if="{{\(loading \|\| !stats\) && !error}}" class="summary" aria-label="正在加载">/);
   assert.match(template, /<view wx:if="{{\(loading \|\| !loaded\) && !error}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
-  assert.match(template, /<view wx:if="{{!shown.length && !loading && loaded && !error}}" class="list-tip">最新的文件里暂时没有这一类<\/view>/);
+  assert.match(template, /<view wx:if="{{!items.length && !loading && loaded && !error}}" class="list-tip">暂时没有新的申报通知<\/view>/);
   // {{stats.sources}}、{{stats.provinces}} 只出现在 stats 到了以后才显示的地方
   const footer = template.slice(template.indexOf('<view class="footer">'));
   assert.match(footer, /<text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市<\/text>，<\/text>每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。/);
@@ -89,16 +89,16 @@ test('详情页和查名单的列表加载时用占位块，不写"正在加载�
   assert.ok(!lists.includes('正在加载…'));
 });
 
-test('截止雷达只有一处标题和一个返回：自定义导航，原来的副标题保留为一行说明', () => {
+test('截止页（D-061）只有一处标题和一个返回：自定义导航，下面一行常驻"机器摘录仅供参考，以原文为准"', () => {
   const template = wxml('report');
   assert.equal(JSON.parse(read('pages/report/index.json')).navigationStyle, 'custom');
-  assert.equal((template.match(/截止雷达/g) || []).length, 2); // 顶栏标题 + 底部说明里的"截止雷达只含……"
+  assert.match(template, /<text class="nav-title">截止<\/text>/);
+  assert.doesNotMatch(template.replace(/<!--[\s\S]*?-->/g, ''), /截止雷达|申报日历/);
   assert.equal((template.match(/class="nav-title"/g) || []).length, 1);
   assert.equal((template.match(/bindtap="goBack"/g) || []).length, 1);
-  assert.match(template, /<view class="sub">只看核对过的申报截止日期<\/view>/);
+  assert.match(template, /<view class="sub">机器摘录仅供参考，以原文为准<\/view>/);
   assert.match(template, /style="padding-top: {{statusBarHeight}}px"/);
 });
-
 test('关注的新文件：没同意协议（403）显示说明卡和去"我的"的入口，不写"加载失败"和"重试"', async () => {
   let fail = { status: 403, message: '请先阅读并同意用户协议和隐私保护指引' };
   let tab = '';
@@ -130,26 +130,16 @@ test('关注的新文件：没同意协议（403）显示说明卡和去"我的"
 
 // 协议定稿前的入口（D-056）在 no-login.test.js：两种状态下各渲染一遍
 
-test('名单看板的公示、公布和列表行用同一种标签：公示橙色虚线框，公布灰色实线框', async () => {
-  const page = load('pages/list-board/index.js', {
-    '../../utils/format.js': format,
-    '../../utils/api.js': { listBoard: () => Promise.resolve({ recent: { total: 3, items: [
-      { id: 1, title: 'A', wording: '公示' }, { id: 2, title: 'B', wording: '公布' }, { id: 3, title: 'C', wording: null },
-    ] }, stats: {} }) },
-  });
-  page.load(true); await flush();
-  assert.deepEqual(page.data.items.map((i) => i.wordingCls), ['public', 'final', '']);
-  const template = wxml('list-board');
-  assert.match(template, /<text wx:if="{{item.wording}}" class="status status--{{item.wordingCls}}">{{item.wording}}<\/text>/);
-  assert.ok(!/class="wording"/.test(template));
+test('名单的公示、公布在列表行里用同一种标签：公示橙色虚线框，公布灰色实线框（名单看板并入查名单后照旧）', () => {
   assert.match(read('components/doc-row/index.wxml'), /class="status status--{{statusCls}}"/);
   assert.match(read('app.wxss'), /\.status--public \{ border: 2rpx dashed var\(--o-txt\); color: var\(--o-txt\); \}/);
+  assert.equal(format.statusClass('公示'), 'public'); assert.equal(format.statusClass('公布'), 'final');
 });
 
 test('本轮改过的界面文字不出现禁用字样，各页保留"第三方整理 · 非政府平台"', () => {
-  const texts = ['home', 'detail', 'lists', 'report', 'follow', 'follow-new', 'me', 'list-board'].map(wxml);
+  const texts = ['home', 'detail', 'lists', 'report', 'clients', 'follow', 'follow-new', 'me'].map(wxml);
   for (const text of texts) for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} 出现在界面文字里`);
   assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台/);
-  for (const p of ['detail', 'report', 'follow', 'follow-new', 'list-board']) assert.match(wxml(p), /<notice-bar\b/);
+  for (const p of ['detail', 'report', 'clients', 'lists', 'follow', 'follow-new']) assert.match(wxml(p), /<notice-bar\b/);
   assert.match(wxml('home'), /第三方整理 · 非政府平台/);
 });

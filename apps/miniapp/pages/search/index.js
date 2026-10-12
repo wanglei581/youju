@@ -22,11 +22,14 @@ const KIND_TABS = [
 // 国家部委只在"层级"里选，不受地区限制，和所选地区的文件一起列出；省级只列所选地区的
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
+// "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
+// 以及 7 天内有候选、还没核对的
+const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
-  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: '只含截止日期已核对、还没截止的通知' },
+  { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: OPEN_GROUP_NOTE },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
   // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
   // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
@@ -45,7 +48,7 @@ const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category
 const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
-const OPEN_NOTE = '“只看未截止”只包含截止日期已经人工核对的申报通知，截止日期正在核对中，可以去掉这个条件再看';
+const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';
 const PAGE = 20;
 
 // 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算
@@ -64,8 +67,8 @@ function chipLabel(group, option) {
 }
 
 // 筛选入口那一排是固定文字；入口管的组里有已选时变品牌蓝，点开时右栏显示有已选的那一组
-const ENTRY_GROUPS = { region: ['region', 'level'], time: ['time'], status: ['open', 'status'] };
-const MORE_GROUPS = ['type', 'category', 'support', 'industry', 'dept'];
+const ENTRY_GROUPS = { region: ['region', 'level'], time: ['time'], status: ['open', 'status'], dept: ['dept'] };
+const MORE_GROUPS = ['type', 'category', 'support', 'industry'];
 
 Page({
   data: {
@@ -93,7 +96,7 @@ Page({
     picked: DEFAULT_PICKED,
     pickedMap: {},
     // 筛选入口：on 是否变蓝，group 点开时右栏显示哪一组；chipTime 是发布时间（"不限时间共 X 份"用）
-    entries: { region: { on: false, group: 'region' }, time: { on: false, group: 'time' }, status: { on: false, group: 'open' } },
+    entries: { region: { on: false, group: 'region' }, time: { on: false, group: 'time' }, status: { on: false, group: 'open' }, dept: { on: false, group: 'dept' } },
     moreOn: false,
     chipTime: '近 30 天',
     // 选择模式：勾选文件后导出 Excel / Word
@@ -220,7 +223,6 @@ Page({
           total: res.total,
           totalAll: res.total_all,
           verifiedOpenTotal: res.verified_open_total || 0,
-          groups: this.data.groups.map((g) => g.key === 'open' ? { ...g, note: `只含截止日期已核对、还没截止的通知（目前 ${res.verified_open_total || 0} 份）` } : g),
           reposts: res.reposts || 0,
           folded,
           guides,
@@ -299,10 +301,6 @@ Page({
 
   cancel() {
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
-  },
-
-  goTool(e) {
-    wx.navigateTo({ url: e.currentTarget.dataset.url });
   },
 
   pickTab(e) {

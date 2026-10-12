@@ -130,33 +130,25 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
   assert.equal(page.data.hasRecord, false);
 });
 
-test('名单看板筛选后仍可直接切换完整省份和年度', async () => {
-  const calls = [];
-  const page = load('pages/list-board/index.js', {
-    '../../utils/format.js': format,
-    '../../utils/api.js': { listBoard: (params) => {
-      calls.push(params);
-      return Promise.resolve({ recent: { total: 0, items: [] }, stats: {
-        by_province: (params.province ? [params.province] : ['北京', '上海']).map((province) => ({ province })),
-        by_year: (params.year ? [params.year] : [2026, 2025]).map((year) => ({ year })),
-      } });
-    } },
+test('查名单的比对范围（D-061 并入名单看板的统计）：按类型合计份数，省份和年度点开看；加载失败不显示这一块', async () => {
+  let fail = false;
+  const stats = { by_type: [{ type: '高新技术企业', lists: 3, entries: 120 }, { type: '其他', lists: 2, entries: 0 }], by_province: [{ province: '山东', lists: 5, entries: 120 }], by_year: [{ year: 2026, lists: 5, entries: 120 }] };
+  const page = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => Promise.resolve({ week_total: 0, total: 0, items: [] }), listBoard: () => (fail ? Promise.reject(new Error('x')) : Promise.resolve({ stats })) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': {},
   });
-  page.load(true); await flush();
-  page.pickProvince({ detail: { value: 1 } }); await flush();
-  page.pickYear({ detail: { value: 1 } }); await flush();
-  assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '上海']);
-  assert.deepEqual(Array.from(page.data.years), ['不限年度', '2026', '2025']);
-  page.pickProvince({ detail: { value: 2 } });
-  page.pickYear({ detail: { value: 2 } }); await flush();
-  assert.equal(calls.at(-1).province, '上海');
-  assert.equal(calls.at(-1).year, 2025);
+  page.reload(); await flush();
+  assert.equal(page.data.scope.lists, 5); assert.equal(page.data.scope.byType.length, 2);
+  assert.equal(page.data.scopeOpen, false); page.toggleScope(); assert.equal(page.data.scopeOpen, true);
+  fail = true; page.setData({ scope: null }); page.reload(); await flush();
+  assert.equal(page.data.scope, null);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'pages/lists/index.wxml'), 'utf8'), /wx:if="{{scope}}" class="card scope"/);
 });
 
 test('名单类型筛选改变显示列表，全部恢复；重新加载保留筛选', async () => {
   const items = [{ title: '科技型中小企业名单' }, { title: '专精特新名单' }, { title: '其他名单' }];
   const page = load('pages/lists/index.js', {
-    '../../utils/api.js': { lists: () => Promise.resolve({ week_total: 3, total: 3, items }) },
+    '../../utils/api.js': { lists: () => Promise.resolve({ week_total: 3, total: 3, items }), listBoard: () => Promise.resolve({ stats: {} }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': {},
   });
   page.reload(); await flush();
@@ -208,16 +200,20 @@ test('日历上限截断有标记；刚好 1000 条无误报', async () => {
   }
 });
 
-test('日历接收截断标记，并按截止时刻移入已截止列表', async () => {
-  const page = load('pages/calendar/index.js', {
-    '../../utils/consent.js': { loginOpen: () => true },
-    '../../utils/api.js': { calendar: () => Promise.resolve({ truncated: true, items: [{ id: 1, due: '2026-09-30', time: '17:00', verified: true }] }) },
-    '../../utils/format.js': { ...format, todayISO: () => '2026-09-30', daysUntil: (date, _, time) => format.daysUntil(date, new Date('2026-09-30T09:01:00Z'), time) },
-    '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },
-    '../../utils/daywatch.js': {},
-  });
-  page.load(); await flush();
+test('截止页按月看：接收截断标记，并按截止时刻移入已截止', async () => {
+  const now = new Date('2026-09-30T09:01:00Z');
+  const page = load('pages/report/index.js', {
+    '../../utils/api.js': {
+      deadlineReport: () => Promise.resolve({ items: [], total: 0 }),
+      calendar: () => Promise.resolve({ truncated: true, items: [{ id: 'dl1', docId: '1', due: '2026-09-30', time: '17:00', verified: true, title: '甲', what: '企业申报截止' }] }),
+    },
+    '../../utils/exporter.js': {}, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
+    '../../utils/format.js': { ...format, todayISO: () => '2026-09-30', dueView: (due) => format.dueView(due, now) },
+  }, { getApp: () => ({ globalData: {} }) });
+  page.onLoad(); await flush();
+  page.pickTab({ currentTarget: { dataset: { key: 0 } } }); await flush();
   assert.equal(page.data.truncated, true);
-  assert.equal(page.data.items.length, 0);
+  assert.equal(page.data.rows.length, 0);
   assert.equal(page.data.past.length, 1);
+  assert.equal(page.data.cells.find((c) => c.day === 30).past, true);
 });

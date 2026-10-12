@@ -1,4 +1,4 @@
-const { dueInfo, deadlineNote, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { groupLine } = require('../../utils/repost.js');
 
@@ -15,7 +15,7 @@ Component({
     // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
     selecting: { type: Boolean, value: false },
   },
-  data: { segs: [], due: null, dueNote: '', kindCls: '', statusCls: '', statusText: '', issuerLong: false,
+  data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
     groupText: '', groupOpen: false },
   observers: {
     'doc, q, today': function (doc, q) {
@@ -25,10 +25,21 @@ Component({
       const statusText = appStatus && typeof appStatus === 'object'
         ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status;
       const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
+      // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；其余只写"截止未核对"
+      const view = Object.prototype.hasOwnProperty.call(doc, 'due') && doc.kind === '申报通知' ? dueView(doc.due) : undefined;
+      let due = dueInfo(doc.deadline);
+      let dueNote = deadlineNote(doc);
+      let excerpt = null;
+      if (view !== undefined) {
+        due = view && view.source !== 'unverified' ? { days: view.days, tone: view.tone, text: view.text } : null;
+        dueNote = due ? '' : (view || doc.dueSoonUnverified ? '截止未核对，请以原文为准' : '截止时间见原文');
+        excerpt = view && view.source === 'excerpt' ? { label: view.label, quote: view.quote } : null;
+      }
       this.setData({
         segs: highlight(doc.title, q),
-        due: dueInfo(doc.deadline),
-        dueNote: deadlineNote(doc),
+        due,
+        dueNote,
+        excerpt,
         kindCls: kindClass(doc.kind),
         statusCls,
         statusText,

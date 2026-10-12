@@ -3,12 +3,12 @@
 # 用法：cleanup-worktrees.sh [--dry-run] [要保留的目录名 ...]
 # 只删同时满足这两条的：① 没有未提交的改动、没有未跟踪的文件（被 .gitignore 忽略的如 .venv、.env 会一起删掉）；
 # ② 当前提交已经在 GitHub 上某个分支里（代码都推上去了，删目录不丢东西）。分支本身不删。
-# 始终保留：ai（主线）、ai-internal（AI 内测包）、miniapp-release（创始人的上传目录）、mysql（本机数据库）、closeout（文档工作区）。
+# 始终保留：ai（主线）、miniapp-release（创始人的上传目录）、mysql（本机数据库）。AI 内测包按 D-061 冻结，10/12 已删它的工作区。
 ROOT=/Users/wanglei/youju-worktrees
 MAIN=$ROOT/ai
 DRY=0
 [ "$1" = "--dry-run" ] && { DRY=1; shift; }
-KEEP="ai ai-internal miniapp-release mysql closeout $*"
+KEEP="ai miniapp-release mysql $*"
 git -C "$MAIN" fetch -q --prune origin
 git -C "$MAIN" worktree prune
 for dir in "$ROOT"/*/; do

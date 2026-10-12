@@ -36,6 +36,12 @@
 .chip--on { background: var(--brand-tint); color: var(--brand); }
 .load-more { height: 96rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; color: var(--t3); }
 
-/* 名单看板入口放在“最近发布的名单”标题右侧：导航栏右侧被微信胶囊按钮挡住 */
-.sec-right { display: flex; align-items: center; gap: 20rpx; }
-.board-link { font-size: 26rpx; font-weight: 400; }
+/* 比对范围（原名单看板的统计） */
+.scope { padding-bottom: 16rpx; }
+.scope-text { padding-bottom: 16rpx; font-size: 24rpx; line-height: 1.7; }
+.scope-toggle { min-height: 80rpx; display: flex; align-items: center; justify-content: center; gap: 8rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; }
+.stat-title { padding: 20rpx 0 12rpx; font-size: 27rpx; font-weight: 600; color: var(--t1); }
+.table-head, .table-row { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 12rpx; align-items: start; }
+.table-head { padding-bottom: 10rpx; color: var(--t3); font-size: 22rpx; }
+.table-row { min-height: 54rpx; padding: 12rpx 0; border-top: 2rpx solid var(--line); color: var(--t2); font-size: 25rpx; line-height: 1.45; }
+.table-row text:nth-child(2), .table-row text:nth-child(3), .table-head text:nth-child(2), .table-head text:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }

@@ -50,7 +50,7 @@ test('J-02 保存未截止条件，关注描述和返回搜索完整恢复条件
   assert.doesNotMatch(message, /服务出错|422/);
 });
 
-test('J-05 首页返回刷新、保持类型页签，合并在途请求并节流；J-12 带搜索类型', async () => {
+test('J-05 首页返回刷新，合并在途请求并节流；J-12 带搜索类型（D-061：三种搜索范围）', async () => {
   let stamp = 10000;
   let calls = 0;
   let resolve;
@@ -61,16 +61,17 @@ test('J-05 首页返回刷新、保持类型页签，合并在途请求并节流
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { ...app, Date: { now: () => stamp }, wx: { navigateTo: (r) => { url = r.url; } } });
   page.onLoad(); page.onShow(); assert.equal(calls, 1);
-  resolve({ stats: {}, items: [{ id: 1, kind: '政策' }, { id: 2, kind: '申报通知' }] }); await flush();
-  page.pickTab(event({ key: '政策' }));
+  resolve({ stats: {}, items: [{ id: 1, kind: '申报通知' }, { id: 2, kind: '申报通知' }] }); await flush();
   page.onHide(); stamp += 2000; page.onShow(); assert.equal(calls, 2);
-  resolve({ stats: {}, items: [{ id: 3, kind: '政策' }] }); await flush();
-  assert.equal(page.data.shown[0].id, 3);
+  resolve({ stats: {}, items: [{ id: 3, kind: '申报通知' }] }); await flush();
+  assert.equal(page.data.items[0].id, 3);
   page.onShow(); assert.equal(calls, 2);
-  for (const [index, kind] of [[0, '申报通知'], [2, '政策'], [3, 'all']]) {
+  assert.deepEqual(page.data.scopes.map((s) => s.label), ['查申报', '查名单', '查政策']);
+  for (const [index, kind] of [[0, '申报通知'], [2, '政策']]) {
     page.pickScope(event({ index })); page.goSearch(event({ q: '高企' }));
     assert.equal(new URL(url, 'https://test.invalid').searchParams.get('kind'), kind);
   }
+  page.pickScope(event({ index: 1 })); assert.equal(url, '/pages/lists/index');
 });
 
 test('J-05 详情返回重新读取核定日期，下架清空正文与操作并提供返回；网络失败标明未更新', async () => {
@@ -100,8 +101,8 @@ test('J-05 详情返回重新读取核定日期，下架清空正文与操作并
   assert.match(page.data.error, /数据未更新/);
 });
 
-test('J-06 雷达和名单看板复用平台说明组件', () => {
-  for (const p of ['report', 'list-board']) assert.match(wxml(p), /<notice-bar\s*\/>/);
+test('J-06 截止页和查名单复用平台说明组件', () => {
+  for (const p of ['report', 'lists', 'clients']) assert.match(wxml(p), /<notice-bar\s*\/>/);
 });
 
 test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单条复制，历史提醒可删除', async () => {
@@ -130,7 +131,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 
-test('J-09 雷达省份来自无筛选30天范围，筛部门/支持方式后仍能直接切省份', async () => {
+test('J-09 截止页省份来自无筛选30天范围，筛部门后仍能直接切省份', async () => {
   const calls = [];
   const page = load('pages/report/index.js', {
     '../../utils/api.js': { deadlineReport: (p) => { calls.push({ ...p }); return Promise.resolve({ items: [], total: 0, by_province: p.days === 30 && !p.province ? { 北京: 1, 辽宁: 2 } : { 北京: 1 } }); } },
@@ -138,13 +139,13 @@ test('J-09 雷达省份来自无筛选30天范围，筛部门/支持方式后仍
   }, app);
   page.onLoad(); await flush();
   assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
-  const depts = Array.from(page.data.depts); const supports = Array.from(page.data.supports);
+  const depts = Array.from(page.data.depts);
   page.pickProvince({ detail: { value: 1 } }); await flush();
   page.pickDept({ detail: { value: 1 } }); await flush();
-  page.pickSupport({ detail: { value: 1 } }); await flush();
   assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
-  assert.deepEqual(Array.from(page.data.depts), depts); assert.deepEqual(Array.from(page.data.supports), supports);
+  assert.deepEqual(Array.from(page.data.depts), depts);
   page.pickProvince({ detail: { value: 2 } }); await flush(); assert.equal(calls.at(-1).province, '辽宁');
+  assert.ok(calls.every((p) => !('support' in p)), '截止页不再按支持方式筛（D-061：按省份、部门筛）');
 });
 
 test('J-10 申请覆盖上限495，含前缀恰好500；超长明确提示且不发请求', async () => {
@@ -181,25 +182,23 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/consent.js': { loginOpen: () => true, syncConsent: pending }, '../../utils/conditions.js': conditions,
   }); follow.load(); assert.equal(follow.data.loading, true);
-  const calendar = load('pages/calendar/index.js', {
-    '../../utils/consent.js': { loginOpen: () => true },
-    '../../utils/api.js': { calendar: pending }, '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
-    '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
-  }); calendar.load(); assert.equal(calendar.data.loading, true); assert.equal(calendar.data.loaded, false);
-  const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
+  const deadlines = load('pages/report/index.js', {
+    '../../utils/api.js': { deadlineReport: pending, calendar: pending }, '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+  }, app); deadlines.onLoad(); assert.equal(deadlines.data.loading, true);
+  deadlines.pickTab(event({ key: 0 })); assert.equal(deadlines.data.loading, true); assert.equal(deadlines.data.cells.length, 0);
+  const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending, listBoard: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
   recent.onLoad(); assert.equal(recent.data.loading, true);
-  for (const p of ['search', 'follow', 'follow-new', 'calendar', 'report']) {
+  for (const p of ['search', 'follow', 'follow-new', 'report', 'clients']) {
     assert.match(wxml(p), /wx:if="{{loading[^}]*}}"[^>]*>正在加载…/);
   }
   // 查名单的列表改用灰色占位块（骨架屏），读屏软件读"正在加载"
   assert.match(wxml('lists'), /wx:if="{{loading}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
-  assert.match(wxml('calendar'), /wx:if="{{loaded && !loading && !error}}"/);
-  assert.match(wxml('report'), /!items.length && !loading && !error/);
+  assert.match(wxml('report'), /!rows.length && !loading && !error/);
   assert.match(wxml('lists'), /!shown.length && !loading && !error/);
 });
 
 test('本轮修改页面的 WXML 标签闭合，事件都有页面处理函数', () => {
-  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'calendar', 'report', 'list-board', 'lists', 'files', 'my-data', 'feedback', 'me']) {
+  for (const page of ['home', 'detail', 'search', 'follow', 'follow-new', 'report', 'lists', 'clients', 'about', 'files', 'my-data', 'feedback', 'me']) {
     const source = wxml(page).replace(/<!--[\s\S]*?-->/g, '');
     const stack = [];
     const tags = /<(\/?)([\w:-]+)\b(?:"[^"]*"|'[^']*'|[^'"<>])*?>/g;

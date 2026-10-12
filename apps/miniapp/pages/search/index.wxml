@@ -1,8 +1,4 @@
 <notice-bar />
-<view class="card tools">
-  <view class="tool-entry" data-url="/pages/standards/index" bindtap="goTool" aria-role="button"><t-icon name="book" size="36rpx" color="#2A5CE0" /><text>认定条件对照</text><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
-  <view class="tool-entry" data-url="/pages/clients/index" bindtap="goTool" aria-role="button"><t-icon name="filter" size="36rpx" color="#2A5CE0" /><text>按客户筛通知</text><t-icon name="chevron-right" size="28rpx" color="#86909C" /></view>
-</view>
 <view class="top">
   <view class="search-row">
     <view class="search-box">
@@ -20,11 +16,12 @@
   </view>
 </view>
 
-<!-- 筛选入口：固定文字，管的组里有已选时变品牌蓝（发布时间默认的近 30 天不算），具体值只在下面的已选条件条里 -->
+<!-- 筛选入口（D-061：地区、时间、状态、部门放外面，类型在上面的页签里，其余在"筛选"里）：固定文字，管的组里有已选时变品牌蓝（发布时间默认的近 30 天不算），具体值只在下面的已选条件条里 -->
 <view class="chips">
   <view class="chip {{entries.region.on ? 'chip--on' : ''}}" data-group="{{entries.region.group}}" bindtap="openFilter">地区<t-icon name="chevron-down" size="26rpx" color="{{entries.region.on ? '#2A5CE0' : '#4E5969'}}" /></view>
   <view class="chip {{entries.time.on ? 'chip--on' : ''}}" data-group="{{entries.time.group}}" bindtap="openFilter">时间<t-icon name="chevron-down" size="26rpx" color="{{entries.time.on ? '#2A5CE0' : '#4E5969'}}" /></view>
   <view class="chip {{entries.status.on ? 'chip--on' : ''}}" data-group="{{entries.status.group}}" bindtap="openFilter">状态<t-icon name="chevron-down" size="26rpx" color="{{entries.status.on ? '#2A5CE0' : '#4E5969'}}" /></view>
+  <view class="chip {{entries.dept.on ? 'chip--on' : ''}}" data-group="{{entries.dept.group}}" bindtap="openFilter">部门<t-icon name="chevron-down" size="26rpx" color="{{entries.dept.on ? '#2A5CE0' : '#4E5969'}}" /></view>
   <view class="filter-link {{moreOn ? 'filter-link--on' : ''}}" bindtap="openFilter"><t-icon name="filter" size="34rpx" color="{{moreOn ? '#2A5CE0' : '#1D2129'}}" />筛选</view>
 </view>
 
@@ -62,10 +59,10 @@
   <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。<text wx:if="{{loginOpen}}">想要这个地区，可以在"我的 → 申请覆盖"告诉我们</text></view>
   <view wx:elif="{{!items.length && !loading}}" class="empty">
     <view class="empty-title">没有符合条件的文件</view>
-    <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它只含截止日期已核对的通知）；别的时间段有结果时直接去看 -->
+    <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它不含没写明截止日期、或截止日期还没理清的通知）；别的时间段有结果时直接去看 -->
     <view wx:if="{{picked.open.length || (totalAll > 0 && chipTime !== '不限')}}" class="exits">
       <view wx:if="{{picked.open.length}}" class="exit-btn exit-btn--main" bindtap="removeOpen" aria-role="button">去掉“只看未截止”</view>
-      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含截止日期已核对、还没截止的通知，目前 {{verifiedOpenTotal}} 份</view>
+      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含能看到截止日期、还没截止的通知，加上可能 7 天内截止、日期还没核对的</view>
       <view wx:if="{{totalAll > 0 && chipTime !== '不限'}}" class="exit-btn exit-btn--main" bindtap="allTime" aria-role="button">查看不限发布时间的 {{totalAll}} 份</view>
     </view>
     <view wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}</view>

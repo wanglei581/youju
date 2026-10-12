@@ -1,34 +1,93 @@
-<!-- 和名单看板一样用自定义导航：标题和返回只在蓝色顶栏里出现一次，下面一行是说明 -->
+<!-- 截止（D-061）：原截止雷达 + 申报日历合成一页。自定义导航：标题和返回只在蓝色顶栏里出现一次，下面一行常驻说明 -->
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="nav" style="height: {{navHeight}}px">
     <view class="nav-back" bindtap="goBack" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" /></view>
-    <text class="nav-title">截止雷达</text>
+    <text class="nav-title">截止</text>
   </view>
-  <view class="sub">只看核对过的申报截止日期</view>
+  <view class="sub">机器摘录仅供参考，以原文为准</view>
 </view>
 <notice-bar />
 <view class="tabs" aria-role="tablist">
-  <view wx:for="{{[7,14,30]}}" wx:key="*this" class="tab {{days === item ? 'tab--on' : ''}}" data-days="{{item}}" bindtap="pickDays"><text class="num">{{loading || error ? '—' : summary[item]}}</text><text>{{item}} 天内</text></view>
+  <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
+    <t-icon wx:if="{{!item.key}}" name="calendar" size="40rpx" />
+    <text wx:else class="num">{{tab && (loading || error) ? '—' : summary[item.key]}}</text>
+    <text>{{item.label}}</text>
+  </view>
 </view>
-<view class="filters">
+<view wx:if="{{tab}}" class="filters">
   <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
   <picker mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{supports}}" bindchange="pickSupport"><view class="filter">{{support || '不限支持方式'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
-<view wx:if="{{error}}" class="card empty">{{error}} <text class="link" bindtap="retry">重试</text></view>
-<view class="card list">
-  <view wx:if="{{loading}}" class="empty">正在加载…</view>
-  <view wx:if="{{!error}}" wx:for="{{items}}" wx:key="id" class="item" data-id="{{item.id}}" bindtap="open">
+<view class="switch-row">
+  <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看包含全部地区和部门）</text></text>
+  <switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对" />
+</view>
+
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="retry">重试</text></view>
+
+<view wx:if="{{!tab && !error && cells.length}}" class="card month">
+  <view class="month-head">
+    <text class="arrow" data-step="-1" bindtap="shiftMonth" aria-role="button" aria-label="上个月">‹</text>
+    <text class="month-title">{{year}}年{{month}}月</text>
+    <text class="arrow" data-step="1" bindtap="shiftMonth" aria-role="button" aria-label="下个月">›</text>
+  </view>
+  <view class="week"><text wx:for="{{['一','二','三','四','五','六','日']}}" wx:key="*this">{{item}}</text></view>
+  <view class="grid">
+    <view wx:for="{{cells}}" wx:key="key" class="cell {{item.has ? 'cell--has' : ''}} {{sel && item.day === selDay ? 'cell--sel' : ''}}" data-day="{{item.day}}" data-has="{{item.has}}" bindtap="pickDay">
+      <block wx:if="{{!item.blank}}">
+        <text class="cnum {{item.weekend && !item.has ? 'cnum--weekend' : ''}} {{item.today ? 'cnum--today' : ''}}">{{item.day}}</text>
+        <view class="dot {{item.due ? 'dot--due' : ''}} {{item.ex ? 'dot--ex' : ''}} {{item.past ? 'dot--past' : ''}}"></view>
+      </block>
+    </view>
+  </view>
+  <view class="weak legend">实心点：核对过的截止　空心点：机器摘录　灰点：已截止</view>
+</view>
+<view wx:if="{{!tab && sel}}" class="sel-row"><text>只看 <text class="b">{{selLabel}}</text> 截止的</text><text class="link" bindtap="clearSel">看整个月</text></view>
+<view wx:if="{{!tab && truncated}}" class="weak trunc">未截止和已截止各最多显示 1000 条。</view>
+
+<view wx:if="{{!error && (rows.length || loading)}}" class="card list">
+  <view wx:if="{{loading && !rows.length}}" class="empty">正在加载…</view>
+  <view wx:for="{{rows}}" wx:key="key" class="item" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
     <view class="item-title">{{item.title}}</view>
-    <view class="meta">{{item.issuer}} · {{item.province}}</view>
-    <view class="deadline"><text>{{item.label}} {{item.date}}{{item.time ? ' ' + item.time : ''}}</text><text class="left">剩 {{item.remaining_days}} 天</text></view>
-    <view class="footline"><text wx:if="{{item.file_number}}">{{item.file_number}}</text><text class="export" data-id="{{item.id}}" catchtap="exportOne">导出</text></view>
+    <view wx:if="{{item.meta}}" class="meta">{{item.meta}}</view>
+    <view class="deadline">
+      <text wx:if="{{item.dateText}}">{{item.kindText}} {{item.dateText}} {{item.week}}</text>
+      <text wx:else>{{item.kindText}}：截止未核对，请以原文为准</text>
+      <text wx:if="{{item.dateText}}" class="pill pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
+    </view>
+    <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
+    <view wx:if="{{item.quote}}" class="quote">原文：{{item.quote}}</view>
+    <view class="footline"><text>{{item.fileNumber}}</text><text class="export" data-id="{{item.docId}}" catchtap="exportOne">导出</text></view>
   </view>
-  <view wx:if="{{!items.length && !loading && !error}}" class="empty">
-    <view wx:if="{{province || dept || support}}">暂无符合条件的项目</view>
-    <view class="{{province || dept || support ? 'empty-note' : ''}}">{{verifyingNote}}</view>
-    <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
-  </view>
-  <view wx:if="{{items.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
+  <view wx:if="{{tab && rows.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>
-<view class="note">只统计已收录网站的文件；截止雷达只含核对过的截止日期，最终以原文为准。</view>
+<view wx:if="{{!rows.length && !loading && !error && !sel}}" class="card empty">
+  <view class="empty-title">{{emptyTitle}}</view>
+  <block wx:if="{{!soon.total}}">
+    <view class="empty-sub">{{verifyingNote}}</view>
+    <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
+  </block>
+</view>
+
+<view wx:if="{{!tab && past.length && !loading && !error}}" class="card past">
+  <view class="past-head" bindtap="togglePast" aria-role="button"><text>{{month}}月已截止 {{past.length}} 项</text><t-icon name="{{pastOpen ? 'chevron-up' : 'chevron-down'}}" size="32rpx" color="#86909C" /></view>
+  <block wx:if="{{pastOpen}}">
+    <view wx:for="{{past}}" wx:key="key" class="past-item" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
+      <view class="past-top"><text class="weak past-date">{{item.dateText}} {{item.week}}</text><text class="pill pill--past">已截止</text></view>
+      <view class="past-title">{{item.title}}</view>
+    </view>
+  </block>
+</view>
+
+<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061） -->
+<view wx:if="{{soon.total && !loading && !error}}" class="card soon">
+  <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
+  <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
+    <view class="soon-item-title">{{item.title}}</view>
+    <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text></view>
+    <view class="soon-due">截止未核对，请以原文为准</view>
+  </view>
+  <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
+</view>
+
+<view class="note">7 天内到期的只写人工核对过的日期；8–30 天到期的，可能写机器从原文摘出的日期，并附原文那句话。只统计已收录网站的文件；申报请在主管部门的系统办理，最终以原文为准。</view>

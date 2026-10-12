@@ -1,16 +1,58 @@
 <notice-bar />
-<view class="privacy">所填信息只保存在本机，不上传。</view>
+<view class="privacy">客户信息只保存在本机，不上传；检索只发送所选地区和产业方向。</view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
-  <view class="intro">保存常用的地区和产业方向，点客户卡片筛通知。最多保存 20 个客户。</view>
-  <view class="add btn-primary" bindtap="edit" aria-role="button">新增客户</view>
-  <view wx:for="{{clients}}" wx:key="id" class="card client-card">
-    <view class="section-title">{{item.displayName}}</view>
-    <view class="muted summary">{{item.summary}}</view>
-    <view wx:if="{{item.keywords.length}}" class="weak keywords">高亮关键词：<text wx:for="{{item.keywords}}" wx:for-item="word" wx:key="*this">{{index ? '、' : ''}}{{word}}</text></view>
-    <view class="actions"><view class="link action" data-id="{{item.id}}" bindtap="edit" aria-role="button">编辑</view><view class="muted action" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view><view class="btn-primary search-button" data-id="{{item.id}}" bindtap="search" aria-role="button">筛通知</view></view>
+  <view class="seg" aria-role="tablist">
+    <view class="seg-item {{tab === 'docs' ? 'seg-item--on' : ''}}" data-tab="docs" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'docs'}}">相关通知{{loaded && clients.length ? ' ' + rows.length : ''}}</view>
+    <view class="seg-item {{tab === 'cards' ? 'seg-item--on' : ''}}" data-tab="cards" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'cards'}}">客户卡片 {{clients.length}}</view>
   </view>
-  <view wx:if="{{!clients.length && !error}}" class="intro">暂无本机客户卡片，新增后即可筛通知。</view>
+
+  <!-- 相关通知：一条通知一行，写明和哪几家客户有关（D-061），不判断能不能报 -->
+  <block wx:if="{{tab === 'docs'}}">
+    <view wx:if="{{!clients.length}}" class="card empty">
+      <view class="empty-title">还没有客户</view>
+      <view class="muted empty-sub">添加客户的地区和产业方向，这里会按地区和产业方向把相关的申报通知一条一行列出来，写明和哪几家客户有关、什么时候截止。不判断客户能不能申报。</view>
+      <view class="btn-primary empty-btn" bindtap="edit" aria-role="button">新增客户</view>
+    </view>
+    <block wx:else>
+      <scroll-view scroll-x class="chips" enhanced show-scrollbar="{{false}}">
+        <view class="chips-row">
+          <view class="chip {{only ? '' : 'chip--on'}}" data-id="" bindtap="pickOnly" aria-role="button">全部客户</view>
+          <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
+        </view>
+      </scroll-view>
+      <view class="weak scope-note">按你填的地区和产业方向列出近 90 天发布的申报通知，不判断客户能不能申报；快截止的排在前面，已核对、确认已截止的不列。</view>
+      <view wx:if="{{loadError}}" class="card load-error"><text>{{loadError}}</text><text class="link retry" bindtap="reload">重试</text></view>
+      <view class="card list">
+        <view wx:if="{{loading}}" class="message weak">正在加载…</view>
+        <block wx:else>
+          <view wx:for="{{shown}}" wx:key="id" class="doc">
+            <doc-row doc="{{item.doc}}" today="{{today}}" last="{{true}}" />
+            <view class="involved">相关客户：{{item.names}}</view>
+          </view>
+          <view wx:if="{{loaded && !shown.length && !loadError}}" class="message muted">近 90 天没有和{{only ? '这家客户' : '这些客户'}}相关的申报通知</view>
+        </block>
+      </view>
+      <view wx:if="{{truncated && !loading}}" class="weak scope-note">有的客户相关通知较多，每组地区和产业方向只列最新的 50 份。</view>
+      <view wx:if="{{shown.length && !loading}}" class="export-bar">
+        <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">导出这 {{shown.length}} 份</view>
+        <view class="weak export-note">客户名称只存在本机，导出的表里不含客户名称。</view>
+      </view>
+    </block>
+  </block>
+
+  <!-- 客户卡片 -->
+  <block wx:else>
+    <view class="intro">保存客户的地区和产业方向，最多 20 家。</view>
+    <view class="add btn-primary" bindtap="edit" aria-role="button">新增客户</view>
+    <view wx:for="{{clients}}" wx:key="id" class="card client-card">
+      <view class="section-title">{{item.displayName}}</view>
+      <view class="muted summary">{{item.summary}}</view>
+      <view wx:if="{{loaded && !loading}}" class="weak count">近 90 天相关申报通知 {{counts[item.id] || 0}} 份</view>
+      <view class="actions"><view class="link action" data-id="{{item.id}}" bindtap="edit" aria-role="button">编辑</view><view class="muted action" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view><view class="btn-primary search-button" data-id="{{item.id}}" bindtap="showClient" aria-role="button">看相关通知</view></view>
+    </view>
+    <view wx:if="{{!clients.length && !error}}" class="intro">暂无本机客户卡片。</view>
+  </block>
 </block>
 <view wx:else class="card editor">
   <view class="section-title">{{form.id ? '编辑客户' : '新增客户'}}</view>
@@ -28,10 +70,6 @@
   <view class="label">产业方向（可多选）</view>
   <view class="weak help">按标题归类，仅供检索参考，非官方分类</view>
   <view class="options"><view wx:for="{{industries}}" wx:key="*this" class="option {{picked['industries:' + item] ? 'option--on' : ''}}" data-group="industries" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['industries:' + item]}}">{{item}}</view></view>
-  <view class="label">要高亮的关键词（可不填）</view>
-  <view class="weak help">最多 5 个，每个不超过 12 字，仅用于条件原文高亮。</view>
-  <view class="keyword-row"><input class="field" value="{{keywordInput}}" placeholder="例如：高新技术企业" maxlength="24" bindinput="keywordInput" bindconfirm="addKeyword" aria-label="高亮关键词" /><view class="link action" bindtap="addKeyword" aria-role="button">添加</view></view>
-  <view class="options"><view wx:for="{{form.keywords}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeKeyword" aria-role="button" aria-label="删除关键词{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view class="actions"><view class="muted action" bindtap="cancel" aria-role="button">取消</view><view class="btn-primary save-button" bindtap="save" aria-role="button">保存到本机</view></view>
 </view>
 <view class="page-bottom"></view>

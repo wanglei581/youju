@@ -1,8 +1,14 @@
 const { INDUSTRIES, NATIONAL, requestScope } = require('./conditions.js');
+const { dueView } = require('./format.js');
 
+// 我的客户（D-061）：客户卡片只存在本机，名称不上传；检索只发送地区和产业方向。
 const STORAGE_KEY = 'youjuLocalClientsV1';
 const PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
 const MAX_CLIENTS = 20;
+// 每组检索条件取最新的 50 份（接口一页最多 50）；合并后最多列 200 份（导出一次最多 200 份）
+const PER_QUERY = 50;
+const MAX_DOCS = 200;
+const TIME = '近 90 天';
 
 const unique = (values) => [...new Set(values)];
 const strings = (values) => Array.isArray(values) ? values.filter((v) => typeof v === 'string') : [];
@@ -18,7 +24,6 @@ function normalize(value) {
       return parts.length === 2 && PROVINCES.includes(parts[0]) && parts[1].length > 0 && parts[1].length <= 32;
     })),
     industries: unique(strings(c.industries).filter((v) => INDUSTRIES.includes(v))),
-    keywords: unique(strings(c.keywords).map((v) => v.trim()).filter(Boolean)),
   };
 }
 
@@ -32,59 +37,78 @@ function loadClients() {
 function saveClients(clients) {
   if (clients.length > MAX_CLIENTS) throw new Error('最多保存 20 个客户');
   const next = clients.map(normalize);
-  next.forEach((c) => {
-    if (!c.id || c.keywords.length > 5 || c.keywords.some((v) => Array.from(v).length > 12)) {
-      throw new Error('关键词最多 5 个，每个不超过 12 字');
-    }
-  });
+  if (next.some((c) => !c.id)) throw new Error('本机客户记录无法保存');
   wx.setStorageSync(STORAGE_KEY, next);
   return next;
 }
 
-function clientParams(client, ignoreIndustry, time = '近 90 天', verifiedOnly = false) {
+// 没填名称的按顺序叫"客户 1、客户 2"
+const displayName = (client, index) => client.name || `客户 ${index + 1}`;
+
+// 一家客户的检索条件：近 90 天的申报通知，去掉已核对、确认已截止的。
+// 省和城市取并集；没有选择地区时全国检索，始终包含国家部委。
+function clientParams(client) {
   const c = normalize(client);
-  // 省和城市取并集；没有选择地区时全国检索，始终包含国家部委。
   const scope = c.regions.length ? requestScope(c.regions, [NATIONAL])
     : { regions: c.cities.length ? NATIONAL : '不限地区', levels: undefined };
   return {
-    kind: '申报通知', open: verifiedOnly ? 1 : undefined, exclude_closed: true, time, regions: scope.regions, levels: scope.levels,
+    kind: '申报通知', exclude_closed: true, time: TIME, regions: scope.regions, levels: scope.levels,
     cities: c.cities.length ? c.cities.join(',') : undefined,
-    industries: !ignoreIndustry && c.industries.length ? c.industries.join(',') : undefined,
+    industries: c.industries.length ? c.industries.join(',') : undefined,
   };
 }
 
-function subtitle(client, ignoreIndustry, time = '近 90 天', verifiedOnly = false) {
+function cardSummary(client) {
   const c = normalize(client);
   const regions = c.regions.concat(c.cities.map((v) => v.replace('/', '·')));
-  return `${regions.length ? regions.join('、') + '（含国家部委）' : '不限地区（含国家部委）'} · ${!ignoreIndustry && c.industries.length ? c.industries.join('、') : '不限产业方向'} · 申报通知 · ${time === '今年' ? '今年发布' : time + '发布'} · ${verifiedOnly ? '只看已核对且未截止' : '含截止日期未核对的'}`;
+  return `${regions.length ? `${regions.join('、')}（含国家部委）` : '不限地区（含国家部委）'} · ${c.industries.length ? c.industries.join('、') : '不限产业方向'}`;
 }
 
-// 输出纯文本片段，避免把关键词或官方原句作为富文本执行；重叠关键词的区间取并集。
-function highlightWords(text, keywords) {
-  const marked = new Array(text.length).fill(false);
-  normalize({ keywords }).keywords.slice(0, 5).filter((v) => Array.from(v).length <= 12).forEach((word) => {
-    let from = 0;
-    let at;
-    while ((at = text.indexOf(word, from)) !== -1) {
-      for (let i = at; i < at + word.length; i += 1) marked[i] = true;
-      from = at + 1;
-    }
+// 条件相同的客户只查一次：返回 [{ key, params, ids }]
+function queryGroups(clients) {
+  const groups = new Map();
+  clients.forEach((c) => {
+    const params = clientParams(c);
+    const key = JSON.stringify(params);
+    if (!groups.has(key)) groups.set(key, { key, params, ids: [] });
+    groups.get(key).ids.push(c.id);
   });
-  const segments = [];
-  for (let i = 0; i < text.length; i += 1) {
-    const hit = marked[i];
-    const last = segments[segments.length - 1];
-    if (last && last.hit === hit) last.text += text[i];
-    else segments.push({ text: text[i], hit });
-  }
-  return segments;
+  return [...groups.values()];
 }
 
-function conditionQuotes(doc) {
-  // 当前公开详情接口只返回已人工确认的 apply_conditions；其他字段不作为条件展示。
-  const value = doc && doc.apply_conditions;
-  if (!value || !value.checked || !Array.isArray(value.items)) return [];
-  return unique(value.items.filter((v) => v && typeof v.quote === 'string' && v.quote).map((v) => v.quote));
+// 排序用：核对过的和机器摘录的按剩余天数；可能 7 天内截止、没核对的排在 7 天内的后面；
+// 其余（截止见原文、没核对）排最后，按发布日期从新到旧
+function urgency(doc, now) {
+  const view = doc && doc.due ? dueView(doc.due, now) : null;
+  if (view && view.source !== 'unverified' && view.days >= 0) return view.days;
+  if (doc && doc.dueSoonUnverified) return 7.5;
+  return Infinity;
 }
 
-module.exports = { PROVINCES, INDUSTRIES, MAX_CLIENTS, STORAGE_KEY, normalize, loadClients, saveClients, clientParams, subtitle, highlightWords, conditionQuotes };
+// 把各组的检索结果按通知合并：一条通知一行，记下涉及哪几家客户（按客户卡片的顺序）
+// results: [{ ids: [客户编号], items: [通知] }]
+function mergeRelated(clients, results, now) {
+  const order = new Map(clients.map((c, i) => [c.id, i]));
+  const merged = new Map();
+  results.forEach(({ ids, items }) => {
+    (items || []).forEach((doc) => {
+      const id = String(doc.id);
+      if (!merged.has(id)) merged.set(id, { id, doc, ids: new Set() });
+      ids.forEach((v) => merged.get(id).ids.add(v));
+    });
+  });
+  const rows = [...merged.values()].map((row) => {
+    const ids = [...row.ids].filter((v) => order.has(v)).sort((a, b) => order.get(a) - order.get(b));
+    return {
+      id: row.id, doc: row.doc, ids, key: urgency(row.doc, now),
+      names: ids.map((v) => displayName(clients[order.get(v)], order.get(v))).join('、'),
+    };
+  });
+  rows.sort((a, b) => (a.key - b.key) || ((b.doc.date || '') > (a.doc.date || '') ? 1 : (b.doc.date || '') < (a.doc.date || '') ? -1 : 0));
+  return rows;
+}
+
+module.exports = {
+  PROVINCES, INDUSTRIES, MAX_CLIENTS, STORAGE_KEY, PER_QUERY, MAX_DOCS, TIME,
+  normalize, loadClients, saveClients, displayName, clientParams, cardSummary, queryGroups, mergeRelated,
+};
