@@ -312,43 +312,45 @@ async function outcome({ api, clock }, call) {
   return { ...result, at: clock.now };
 }
 
-test('单次15秒超时不重试，平台明确超时也不重试', async () => {
-  // 一直不回：15 秒超时就报错，不再重试
+test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报超时也接着重试，60 秒内不再发新请求就报错', async () => {
+  // 第一次一直不回：15 秒超时后 1.5 秒再试，成功
   let s = retryApi([null, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
-  assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0]);
-  assert.equal(r.at, 15000);
-  // 云托管自己报超时的调用失败，同样不重试
+  assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 16500]);
+  // 云托管自己报超时的调用失败，同样再试
   s = retryApi([{ after: 14000, fail: true, errMsg: 'cloud.callContainer:fail timeout' }, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.coverage());
-  assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0]);
-  // 很快失败的重试，最后一次超时：从发出到报错不超过 20 秒
+  assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 15500]);
+  // 一直起不来：快失败、网关错误、超时都再试，下一次发出会超过 60 秒时报错
   s = retryApi([{ after: 300, fail: true }, { after: 200, code: 503 }, null]);
   r = await outcome(s, (api) => api.coverage());
   assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0, 1800, 5000]);
-  assert.equal(r.at, 20000);
+  assert.deepEqual(s.sent, [0, 1800, 5000, 25000, 48000]);
+  assert.equal(r.at, 63000);
   // 附件分段同样处理
   s = retryApi([null, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
-  assert.ok(r.error && r.error.timeout);
-  assert.deepEqual(s.sent, [0]);
+  assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 16500]);
 });
 
 
-test('GET 按1.5、3、5、8秒最多重试4次，网关慢返回仍重试、慢调用失败不重试', async () => {
+test('GET 按1.5、3、5、8秒再试，之后每 10 秒一次，60 秒为止；慢的调用失败也再试；404 等不重试', async () => {
   let s = retryApi([{ after: 200, fail: true }, { after: 300, code: 503 }, { after: 100, code: 200 }]);
   let r = await outcome(s, (api) => api.coverage());
   assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 1700, 5000]);
   s = retryApi([{ after: 6000, fail: true }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage()); assert.ok(r.error); assert.deepEqual(s.sent, [0]);
+  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 7500]);
   s = retryApi([{ after: 4500, code: 504 }, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 6000]);
   s = retryApi([502, 503, 504, 503, 502, 200].map((code) => ({ after: 0, code })));
-  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 502);
-  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500]); assert.equal(r.at, 17500);
+  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 });
+  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500]);
+  s = retryApi(Array.from({ length: 20 }, () => ({ after: 0, code: 503 })));
+  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 503);
+  assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500]); assert.equal(r.at, 57500);
   s = retryApi([{ after: 100, code: 404 }, { after: 100, code: 200 }]);
   r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 404); assert.deepEqual(s.sent, [0]);
 });

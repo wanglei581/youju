@@ -61,9 +61,10 @@ test('首页本周 0 份：写"本周暂无新文件 · 最近检查 …"，不�
 test('首页加载时用占位块：本周新增和最新列表都不写"正在加载…"，底部的栏目数、省份数到了才显示那半句', () => {
   const template = wxml('home');
   assert.ok(!template.includes('正在加载…'));
-  assert.match(template, /<view wx:if="{{\(loading \|\| !stats\) && !error}}" class="summary" aria-label="正在加载">/);
-  assert.match(template, /<view wx:if="{{\(loading \|\| !loaded\) && !error}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
-  assert.match(template, /<view wx:if="{{!items.length && !loading && loaded && !error}}" class="list-tip">暂时没有新的申报通知<\/view>/);
+  // 有上次存在本机的数据时先显示它（10/12），占位块只在一点数据都没有时出现
+  assert.match(template, /<view wx:if="{{!stats && !error}}" class="summary" aria-label="正在加载">/);
+  assert.match(template, /<view wx:if="{{!loaded && !error}}" aria-label="正在加载">\s*<view wx:for="{{\[1, 2, 3\]}}" wx:key="\*this" class="sk-row">/);
+  assert.match(template, /<view wx:if="{{!items.length && loaded && !error}}" class="list-tip">暂时没有新的申报通知<\/view>/);
   // {{stats.sources}}、{{stats.provinces}} 只出现在 stats 到了以后才显示的地方
   const footer = template.slice(template.indexOf('<view class="footer">'));
   assert.match(footer, /<text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市<\/text>，<\/text>每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。/);

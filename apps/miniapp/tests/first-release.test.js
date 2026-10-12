@@ -256,3 +256,41 @@ test('评审发现的问题（10/12）：被拦下的摘录在详情不显示原
   assert.match(flat(item), /已截止/); assert.doesNotMatch(flat(item), /剩-1天/);
   assert.equal(report.data.rows[0].tone, 'past');
 });
+
+test('首页先显示上次存在本机的数据（10/12 冷启动诊断）：取新的成功就换掉并存下；失败留着上次的、写明没更新；超过 3 天的不用', async () => {
+  const stored = {};
+  const local = {
+    getStorageSync: (k) => (stored[k] ? plain(stored[k]) : ''), setStorageSync: (k, v) => { stored[k] = plain(v); }, navigateTo() {},
+  };
+  let next;
+  const homePage = () => load('pages/home/index.js', {
+    '../../utils/api.js': { home: () => new Promise((resolve, reject) => { next = { resolve, reject }; }) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
+  }, { getApp: () => ({ globalData: {} }), wx: local });
+  const fresh = { stats: { week_total: 2, provinces: 28, sources: 70, last_checked_at: null }, items: [{ id: '1', kind: '申报通知', title: '新的' }],
+    dueSoon: [{ id: '9', title: '核对过的', label: '企业申报截止', date: plus(3), source: 'verified' }], dueSoonUnverifiedTotal: 4 };
+  // 第一次打开：本机没有，显示占位；取到后存下
+  let page = homePage(); page.onLoad();
+  assert.equal(page.data.loaded, false);
+  next.resolve(plain(fresh)); await flush(); await flush();
+  assert.equal(page.data.items[0].title, '新的'); assert.equal(page.data.cachedText, '');
+  assert.ok(stored.youjuHomeCacheV1 && stored.youjuHomeCacheV1.data.items[0].title === '新的');
+  // 再打开：还没回来就先显示上次的，写明是上次的
+  page = homePage(); page.onLoad();
+  assert.equal(page.data.loaded, true); assert.equal(page.data.items[0].title, '新的');
+  assert.match(page.data.cachedText, /^上次更新 /); assert.deepEqual(page.data.soon.map((s) => s.id), ['9']);
+  let root = render('pages/home/index.wxml', page.data);
+  assert.match(textOf(root), /下面是上次更新 .*的数据，正在更新…/);
+  assert.equal(findAll(root, (n) => n.attrs && n.attrs['aria-label'] === '正在加载').length, 0);
+  // 取新的失败：留着上次的，写明没更新
+  next.reject(new Error('网络不太好，请稍后再试')); await flush(); await flush();
+  assert.equal(page.data.items[0].title, '新的'); assert.match(page.data.error, /数据未更新/);
+  root = render('pages/home/index.wxml', page.data);
+  assert.match(textOf(root), /下面是上次更新 .*的数据/); assert.doesNotMatch(textOf(root), /正在更新…/);
+  // 超过 3 天的不用：显示占位，失败时是空的
+  stored.youjuHomeCacheV1.at = Date.now() - 4 * 86400000;
+  page = homePage(); page.onLoad();
+  assert.equal(page.data.loaded, false);
+  next.reject(new Error('网络不太好，请稍后再试')); await flush(); await flush();
+  assert.equal(page.data.items.length, 0); assert.match(page.data.error, /数据未更新/);
+});
