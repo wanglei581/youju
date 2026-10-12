@@ -101,7 +101,9 @@ def test_pending_can_be_filtered_by_due_date(client, candidates) -> None:
     assert _listed(client, "future") == {ids["today"], ids["soon"], ids["later"]}
     assert _count(client, "future") == 3
     assert _listed(client, "all") == set(ids.values())
-    bad = client.get("/api/admin/deadlines", headers=HEADERS, params={"due": "7"})
+    # 7 天内（D-061，核对台默认）：今天到第 7 天，含两端
+    assert _listed(client, "7") == {ids["today"]} and _count(client, "7") == 1
+    bad = client.get("/api/admin/deadlines", headers=HEADERS, params={"due": "8"})
     assert bad.status_code == 422
 
 

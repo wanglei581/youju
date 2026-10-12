@@ -226,7 +226,10 @@ def world(session):
             body=UPSTREAM + "福建",
         ),
         "other": _doc(
-            session, _source(session, "江苏"), "关于开展2026年度省级工业设计中心认定的通知"
+            # 核对队列只列申报通知（D-061）：用一份标题明确是申报的通知
+            session,
+            _source(session, "江苏"),
+            "关于组织开展2026年度省级工业设计中心认定工作的通知",
         ),
     }
     session.commit()
