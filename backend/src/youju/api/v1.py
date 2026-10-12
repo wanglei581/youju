@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from youju import deadline_excerpts
 from youju import fields as field_rules
 from youju.attachments import attachment_items, is_recent
 from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
@@ -172,11 +173,13 @@ def deadline_open(deadline, stamp: datetime) -> bool:
     )
 
 
-def _approved(session: Session, doc_ids: list[int]) -> dict[int, list[DocumentDeadline]]:
+def _approved(
+    session: Session, doc_ids: list[int], members: dict[int, list[int]] | None = None
+) -> dict[int, list[DocumentDeadline]]:
     """每份文件核对通过的截止日期，按显示优先级排好。"""
     if not doc_ids:
         return {}
-    members = groups_for(session, doc_ids)
+    members = members if members is not None else groups_for(session, doc_ids)
     rows = session.scalars(
         select(DocumentDeadline).where(
             DocumentDeadline.document_id.in_([i for ids in members.values() for i in ids]),
@@ -399,6 +402,38 @@ def _details(session: Session, doc_ids: list[int]) -> dict[int, DocumentDetail]:
     }
 
 
+def _detail_meta(
+    session: Session, doc_ids: list[int], members: dict[int, list[int]] | None = None
+) -> dict[int, tuple[str | None, str | None]]:
+    """列表汇总只需发文机关、文号；不再次传输完整正文。"""
+    if not doc_ids:
+        return {}
+    members = members if members is not None else groups_for(session, doc_ids)
+    rows = {
+        doc_id: (issuer, number, length or 0)
+        for doc_id, issuer, number, length in session.execute(
+            select(
+                DocumentDetail.document_id,
+                DocumentDetail.issuer,
+                DocumentDetail.doc_number,
+                func.char_length(DocumentDetail.body_text),
+            ).where(DocumentDetail.document_id.in_([i for ids in members.values() for i in ids]))
+        )
+    }
+    return {
+        doc_id: (best[1], best[2])
+        for doc_id, ids in members.items()
+        if (
+            best := max(
+                ((member, *rows[member]) for member in ids if member in rows),
+                key=lambda row: (bool(row[3]), row[3], row[0] == doc_id),
+                default=None,
+            )
+        )
+        is not None
+    }
+
+
 def _hhmm(value: Any) -> str:
     return value.strftime("%H:%M") if value else ""
 
@@ -442,7 +477,10 @@ def _item(
 
 
 def _items(
-    session: Session, rows: list[tuple[Document, Source]], grouped: bool = False
+    session: Session,
+    rows: list[tuple[Document, Source]],
+    grouped: bool = False,
+    excerpts: bool = False,
 ) -> list[dict]:
     """批量取详情、截止日期和待核对标记（各一次查询），不逐条查库。
 
@@ -455,6 +493,13 @@ def _items(
         _item(doc, src, details.get(doc.id), approved.get(doc.id, []), doc.id in pending)
         for doc, src in rows
     ]
+    if excerpts:
+        views, soon, _ = deadline_excerpts.batch(session, ids, approved, now().date())
+        for item in items:
+            doc_id = int(item["id"])
+            due = deadline_excerpts.selected(views.get(doc_id, []))
+            item["due"] = due.public(now().date()) if due else None
+            item["dueSoonUnverified"] = soon.get(doc_id, False)
     if grouped:
         versions = repost_versions(session, ids)
         for item in items:
@@ -705,6 +750,7 @@ def _count(session: Session, stmt: Select) -> int:
 def home(
     request: Request,
     session: SessionDep,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     group: Annotated[
         int | None,
         Query(
@@ -807,7 +853,15 @@ def home(
             raise
     if group == 1:
         stats["week_reposts"] = week_reposts
-    return {"stats": stats, "items": _items(session, [tuple(r) for r in latest], group == 1)}
+    payload = {
+        "stats": stats,
+        "items": _items(session, [tuple(r) for r in latest], group == 1, excerpts == 1),
+    }
+    if excerpts == 1:
+        report = _report_payload_excerpts(session, 7, "", "", "", 1, 5)
+        payload["dueSoon"] = report["items"]
+        payload["dueSoonUnverifiedTotal"] = report["unverifiedSoon"]["total"]
+    return payload
 
 
 @router.get("/coverage")
@@ -939,6 +993,7 @@ def _keyword_ids(session: Session, kw: str) -> Select:
 @router.get("/search")
 def search(
     session: SessionDep,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     q: Annotated[str | None, Query(max_length=50, description="标题或文号关键词")] = None,
     kind: Annotated[str, Query(description="页签：all / 申报通知 / 名单 / 政策")] = "all",
     regions: Annotated[str | None, Query(max_length=400, description="省份，逗号分隔")] = None,
@@ -1005,10 +1060,17 @@ def search(
         "cities": cities,
         "exclude_closed": exclude_closed,
     }
-    stmt = search_statement(session, q, kind, regions, types, status, time, depts, open, **filters)
-    all_time = search_statement(
-        session, q, kind, regions, types, status, "不限", depts, open, **filters
+    effective_open = None if excerpts == 1 and open == 1 else open
+    stmt = search_statement(
+        session, q, kind, regions, types, status, time, depts, effective_open, **filters
     )
+    all_time = search_statement(
+        session, q, kind, regions, types, status, "不限", depts, effective_open, **filters
+    )
+    if excerpts == 1 and open == 1:
+        active_ids = _open_excerpt_ids(session)
+        stmt = stmt.where(Document.id.in_(active_ids))
+        all_time = all_time.where(Document.id.in_(active_ids))
     grouped = group == 1
     stmt, guides, folded = fold_guides(session, stmt, kind, types, fold, grouped)
     if fold == 1 and _folds_guides(kind, types):
@@ -1031,7 +1093,7 @@ def search(
         # 截止日期已人工核对、还没截止的申报通知一共几份（不随筛选条件变）：
         # 小程序在"只看未截止"旁边如实写出来
         "verified_open_total": _count(session, _grouped(open_now) if grouped else open_now),
-        "items": _items(session, [tuple(r) for r in rows], grouped),
+        "items": _items(session, [tuple(r) for r in rows], grouped, excerpts == 1),
     }
     if fold is not None:  # 旧版小程序不传 fold，返回格式和以前一样
         body |= {"folded": folded, "guides": guides}
@@ -1195,6 +1257,95 @@ def _application_ids(session: Session, codes: set[str]) -> list[int]:
     ]
 
 
+def _excerpt_candidate_ids(session: Session, today: date | None = None) -> list[int]:
+    """只扫描可能仍有效的候选：没过期的已核对截止，和 30 天内的待核对候选（30 天以后的
+    机器摘录不给日期，D-061）；归并组在批量判定时处理。"""
+    today = today or now().date()
+    raw = list(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(
+                or_(
+                    and_(
+                        DocumentDeadline.status == "approved",
+                        DocumentDeadline.approved_date >= today,
+                    ),
+                    and_(
+                        DocumentDeadline.status == "pending",
+                        DocumentDeadline.candidate_date.between(
+                            today, today + timedelta(days=deadline_excerpts.EXCERPT_LAST_DAY)
+                        ),
+                    ),
+                )
+            )
+            .distinct()
+        )
+    )
+    mapping = canonical_ids(session, raw)
+    return sorted({mapping.get(doc_id, doc_id) for doc_id in raw})
+
+
+# 首页、截止页和"只看未截止"共用的整批判定：{"universe": (缓存键, 取的时刻, 结果)}
+_EXCERPT_CACHE: dict[str, tuple[tuple, float, Any]] = {}
+
+
+def _excerpt_universe(
+    session: Session,
+) -> tuple[list[int], dict[int, list[deadline_excerpts.View]], dict[int, bool]]:
+    """还可能有截止的全部通知（未过期的已核对或待核对候选）逐类型判定一次。
+
+    按（北京时间日期、截止数据版本）缓存 300 秒：核对、撤回、新候选让版本变化，立刻重算；
+    正文改动和雷达缓存一样由 300 秒兜底（版本不读正文）。列表和详情不用这份缓存，按当页现算。"""
+    today = now().date()
+    key = (today, publication_revision(session, "deadlines"))
+    stamp = _time.monotonic()
+    cached = _EXCERPT_CACHE.get("universe")
+    if cached and cached[0] == key and stamp - cached[1] < REPORT_CACHE_TTL:
+        return cached[2]
+    ids = _excerpt_candidate_ids(session, today)
+    members = groups_for(session, ids)
+    views, soon, _ = deadline_excerpts.batch(
+        session, ids, _approved(session, ids, members), today, members
+    )
+    result = (ids, views, soon)
+    _EXCERPT_CACHE["universe"] = (key, stamp, result)
+    return result
+
+
+def _open_excerpt_ids(session: Session) -> list[int]:
+    ids, views, soon = _excerpt_universe(session)
+    kinds = {
+        doc_id: effective_kind(title, override)
+        for doc_id, title, override in session.execute(
+            select(Document.id, Document.title, Document.kind_override).where(Document.id.in_(ids))
+        )
+    }
+    current = now()
+    return [
+        doc_id
+        for doc_id in ids
+        if kinds.get(doc_id) == "申报通知"
+        and (
+            (
+                (due := deadline_excerpts.selected(views.get(doc_id, []))) is not None
+                and due.day is not None
+                and (due.source == "excerpt" or _view_open(due, current))
+            )
+            or soon.get(doc_id, False)
+        )
+    ]
+
+
+def _view_open(view: deadline_excerpts.View, stamp: datetime) -> bool:
+    if view.day is None:
+        return False
+    stamp = stamp.astimezone(_TZ)
+    return view.day > stamp.date() or (
+        view.day == stamp.date()
+        and (view.clock is None or view.clock >= stamp.time().replace(tzinfo=None))
+    )
+
+
 def _report_payload(
     session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
 ) -> dict[str, Any]:
@@ -1275,6 +1426,109 @@ def _report_payload(
     }
 
 
+def _report_payload_excerpts(
+    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+) -> dict[str, Any]:
+    current = now()
+    today = current.date()
+    universe, views, soon = _excerpt_universe(session)
+    stmt = _base().where(Document.id.in_(universe))
+    if support:
+        stmt = stmt.where(_support_condition(support))
+    rows = session.execute(stmt).all()
+    ids = [doc.id for doc, _ in rows]
+    details = _detail_meta(session, ids)
+    entries = []
+    unverified = []
+    for doc, src in rows:
+        if effective_kind(doc.title, doc.kind_override) != "申报通知":
+            continue
+        shown_province = "国家部委" if src.province == "国家" else src.province
+        if province and province != shown_province:
+            continue
+        if dept and _dept_bucket(src.dept) != dept:
+            continue
+        detail = details.get(doc.id)
+        issuer = detail[0] if detail and detail[0] else src.dept_full_name
+        due = deadline_excerpts.selected(views.get(doc.id, []))
+        if soon.get(doc.id, False):
+            soon_kind = next(
+                (view.kind for view in views.get(doc.id, []) if view.source == "unverified"),
+                "截止未核对",
+            )
+            unverified.append(
+                {
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "issuer": issuer,
+                    "province": shown_province,
+                    "kind": soon_kind,
+                }
+            )
+        if due is None or due.day is None or not _view_open(due, current):
+            continue
+        remaining = (due.day - today).days
+        if remaining > 30:
+            continue
+        entries.append(
+            {
+                "id": str(doc.id),
+                "title": doc.title,
+                "issuer": issuer,
+                "province": shown_province,
+                "city": src.city,
+                "level": src.level,
+                "dept": src.dept_full_name,
+                "label": due.kind,
+                "deadline_type": due.kind,
+                "date": due.day.isoformat(),
+                "time": due.clock.strftime("%H:%M") if due.clock else None,
+                "remaining_days": remaining,
+                "file_number": detail[1] if detail else None,
+                "doc_number": detail[1] if detail else None,
+                "source": due.source,
+                "quote": due.quote,
+                "due": due.public(today),
+                "dueSoonUnverified": soon.get(doc.id, False),
+            }
+        )
+    entries.sort(
+        key=lambda item: (item["date"], item["time"] is None, item["time"] or "", item["id"])
+    )
+    summary_verified = {
+        str(limit): sum(
+            item["source"] == "verified" and item["remaining_days"] <= limit for item in entries
+        )
+        for limit in (7, 14, 30)
+    }
+    summary = {
+        str(limit): sum(item["remaining_days"] <= limit for item in entries)
+        for limit in (7, 14, 30)
+    }
+    shown = [item for item in entries if item["remaining_days"] <= days]
+    by_province: dict[str, int] = {}
+    by_dept: dict[str, int] = {}
+    for item in shown:
+        by_province[item["province"]] = by_province.get(item["province"], 0) + 1
+        bucket = _dept_bucket(item["dept"])
+        by_dept[bucket] = by_dept.get(bucket, 0) + 1
+    start = (page - 1) * size
+    return {
+        "days": days,
+        "summary": summary,
+        "summaryVerified": summary_verified,
+        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
+        "by_province": by_province,
+        "by_dept": by_dept,
+        "province_counts": by_province,
+        "dept_counts": by_dept,
+        "total": len(shown),
+        "page": page,
+        "size": size,
+        "items": shown[start : start + size],
+    }
+
+
 def _report_response(
     session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
 ) -> dict[str, Any]:
@@ -1287,6 +1541,7 @@ def _report_response(
 @router.get("/reports/deadlines")
 def deadline_report(
     session: SessionDep,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     days: Annotated[int, Query(description="未来 7、14 或 30 天")] = 7,
     province: Annotated[str, Query(max_length=32)] = "",
     dept: Annotated[str, Query(max_length=128)] = "",
@@ -1304,6 +1559,10 @@ def deadline_report(
         raise HTTPException(status_code=422, detail="部门不支持")
     if support and support not in SUPPORT_LABELS:
         raise HTTPException(status_code=422, detail="支持方式不支持")
+    if excerpts == 1:
+        payload = _report_payload_excerpts(session, days, province, dept, support, page, size)
+        payload["verified_total"] = verified_total(session)
+        return payload
     if support or session.scalar(
         select(DocumentDeadline.id)
         .where(
@@ -1581,6 +1840,9 @@ def document(doc_id: int, session: SessionDep) -> dict:
     doc, src = row
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
+    deadline_views, _, _ = deadline_excerpts.batch(
+        session, [doc.id], {doc.id: approved}, now().date()
+    )
     pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
     fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
@@ -1691,6 +1953,9 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
         "deadline_state": deadline_state(approved, pending),
+        "deadlines": [view.public(now().date()) for view in deadline_views.get(doc.id, [])]
+        if effective_kind(doc.title, doc.kind_override) == "申报通知"
+        else [],
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
@@ -1774,6 +2039,7 @@ def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[
 @router.get("/calendar")
 def calendar(
     session: SessionDep,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     days: Annotated[int, Query(ge=1, le=366)] = 366,
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
@@ -1782,6 +2048,8 @@ def calendar(
 
     每条的 id 是截止记录编号（一份文件可以有多个截止）；打开详情用 docId。
     """
+    if excerpts == 1:
+        return _calendar_payload_excerpts(session, days, limit, offset)
     current = now()
     d = current.date()
     stmt = (
@@ -1842,17 +2110,117 @@ def calendar(
                 "hasDetail": True,
                 "verified": True,
             }
-            for dl, doc, src in rows[offset : offset + limit]
+            for dl, doc, src in rows
         ]
 
     return {
         "today": d.isoformat(),
         "total": len(upcoming),
-        "items": items(upcoming),
+        "items": items(upcoming)[offset : offset + limit],
         "pastTotal": len(past),
-        "past": items(past),
+        "past": items(past)[offset : offset + limit],
         # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
         "verifiedTotal": verified_total(session),
+    }
+
+
+def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: int) -> dict:
+    current = now()
+    today = current.date()
+    raw_ids = list(
+        session.scalars(
+            select(DocumentDeadline.document_id)
+            .where(
+                or_(
+                    and_(
+                        DocumentDeadline.status == "approved",
+                        DocumentDeadline.approved_date >= today - timedelta(days=30),
+                        DocumentDeadline.approved_date <= today + timedelta(days=days),
+                    ),
+                    and_(
+                        DocumentDeadline.status == "pending",
+                        DocumentDeadline.candidate_date >= today,
+                        DocumentDeadline.candidate_date <= today + timedelta(days=max(days, 7)),
+                    ),
+                )
+            )
+            .distinct()
+        )
+    )
+    mapping = canonical_ids(session, raw_ids)
+    ids = sorted({mapping.get(doc_id, doc_id) for doc_id in raw_ids})
+    rows = session.execute(
+        _base()
+        .add_columns(DocumentDetail.issuer)
+        .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+        .where(Document.id.in_(ids))
+    ).all()
+    ids = [doc.id for doc, _, _ in rows]
+    members = groups_for(session, ids)
+    views, soon, _ = deadline_excerpts.batch(
+        session, ids, _approved(session, ids, members), today, members
+    )
+    upcoming, past, unverified = [], [], []
+    for doc, src, detail_issuer in rows:
+        kind = effective_kind(doc.title, doc.kind_override)
+        due = deadline_excerpts.selected(views.get(doc.id, []))
+        if kind == "申报通知" and soon.get(doc.id, False):
+            unverified.append(
+                {
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "issuer": detail_issuer or src.dept_full_name,
+                    "province": "国家部委" if src.province == "国家" else src.province,
+                    "kind": next(
+                        (v.kind for v in views[doc.id] if v.source == "unverified"), "截止未核对"
+                    ),
+                }
+            )
+        for view in views.get(doc.id, []):
+            if view.day is None or view.source == "unverified":
+                continue
+            if view.source == "excerpt" and kind != "申报通知":
+                continue
+            if view.day > today + timedelta(days=days):
+                continue
+            open_now = _view_open(view, current)
+            if not open_now and (
+                view.source != "verified" or view.day < today - timedelta(days=30)
+            ):
+                continue
+            item = {
+                "id": f"dl{view.record_id}",
+                "docId": str(doc.id),
+                "city": src.city,
+                "level": src.level,
+                "due": due.public(today) if due else None,
+                "date": view.day.isoformat(),
+                "time": _hhmm(view.clock),
+                "region": f"{src.city or src.province} · {src.dept}",
+                "kind": kind,
+                "title": doc.title,
+                "what": view.kind,
+                "hasDetail": True,
+                "verified": view.source == "verified",
+                "source": view.source,
+                "quote": view.quote,
+                "dueSoonUnverified": soon.get(doc.id, False),
+            }
+            (upcoming if open_now else past).append(item)
+
+    def sort_key(item):
+        return (item["date"], item["time"] == "", item["time"], item["id"])
+
+    upcoming.sort(key=sort_key)
+    past.sort(key=sort_key, reverse=True)
+    return {
+        "today": today.isoformat(),
+        "total": len(upcoming),
+        "items": upcoming[offset : offset + limit],
+        "pastTotal": len(past),
+        "past": past[offset : offset + limit],
+        "verifiedTotal": verified_total(session),
+        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
     }
 
 

@@ -8,6 +8,7 @@
 """
 
 import re
+from functools import lru_cache
 
 from sqlalchemy import ColumnElement, and_, case, not_, or_
 
@@ -80,8 +81,15 @@ LIST_OFF_TOPIC = (
     "项目信息",
 )
 # 招聘是个人事项：不管标题怎么写，都不是企业申报，也不列进名单。
-# 职称申报通知仍算申报通知（科技服务机构常代办，#43 定的规则），职称名单则按上面的规则归"其他"
+# D-061 取代 #43：个人职称申报与评审不再算企业申报通知。
 PERSONAL_WORDS = ("招聘",)
+PERSONAL_QUALIFICATIONS = ("职称", "专业技术资格", "任职资格")
+# "复核"不算事后工作：专精特新、创新型中小企业等资质复核要企业重新报材料，顾问照样要盯（10/12 复核）
+POST_WORK = ("验收", "绩效评价", "绩效考核", "中期检查", "结题")
+NEW_ROUND = ("申报", "推荐", "认定", "征集")
+PROCUREMENT = ("采购", "招标", "比选", "磋商", "询价")
+PERSONAL_CONTEST = ("技能大赛", "职业技能竞赛", "职业技能大赛")
+DISBURSEMENT = ("奖金发放", "资金拨付", "资金下达", "拨付资金", "下达资金")
 # 网站专题栏目的归档入口（标题以"（已归档"结尾），不是文件（列表解析已不收，这里兜底）
 JUNK_SUFFIXES = ("（已归档", "(已归档", "（已归档）", "(已归档)")
 # 征求意见：政策草案（写了"征求意见稿"），或只凭"公示"二字才像名单的，不算名单，
@@ -490,6 +498,32 @@ def _has(title: str, words: tuple[str, ...]) -> bool:
     return any(w in title for w in words)
 
 
+def _forced_other(title: str) -> bool:
+    """D-061：剔除个人事项、事后工作、服务采购和资金发放。"""
+    if "征求意见稿" in title:
+        return False
+    if _has(title, PERSONAL_QUALIFICATIONS + PROCUREMENT + DISBURSEMENT):
+        return True
+    if _has(title, ("下达", "拨付")) and _has(title, ("资金", "经费", "运行费", "奖金", "补助")):
+        return True
+    if _has(title, PERSONAL_CONTEST) and "创新创业" not in title:
+        return True
+    if _has(title, ("征求意见", "征集意见建议", "征求", "意见建议")):
+        return True
+    # 遴选、采购供应商是政府买服务；"征集……供应商目录"是企业申请进目录，仍算申报（10/12 复核）
+    if _has(title, ("供应商",)) and _has(title, ("遴选", "采购")):
+        return True
+    if _has(title, ("服务机构", "供应商")) and "遴选" in title:
+        return True
+    if _has(title, POST_WORK):
+        return not (
+            _has(title, NEW_ROUND)
+            and _has(title, ("和", "及", "与"))
+            and "绩效评价申报" not in title
+        )
+    return False
+
+
 def _publish_list(title: str) -> bool:
     return (
         _has(title, PUBLISH_WORDS)
@@ -550,6 +584,8 @@ def _base_kind(title: str) -> str:
         return "名单"
     if _early_policy(title):
         return "政策"
+    if _forced_other(title) and _is_apply(title, consult):
+        return "其他"
     if _is_apply(title, consult):
         return "申报通知"
     if _has(title, POLICY_WORDS + POLICY_MARKS) and not _has(title, POLICY_EXCLUDE):
@@ -561,9 +597,18 @@ def _suggests_apply(title: str) -> bool:
     return _has(title, SUGGEST_APPLY_WORDS) and not _has(title, SUGGEST_APPLY_EXCLUDE)
 
 
+@lru_cache(maxsize=4096)
 def doc_kind(title: str) -> str:
     """按标题判断类型。原有规则判为"其他"的，再分出"资讯与指南"；像真申报的（见 apply_suggestion）
     留在"其他"等人确认，不折叠。"""
+    if (
+        _forced_other(title)
+        and not _off_topic(title)
+        and (_consult(title) or not _is_list(title))
+        and not _early_policy(title)
+        and _is_apply(title, _consult(title))
+    ):
+        return "其他"
     kind = _base_kind(title)
     if (
         kind == "其他"
@@ -650,6 +695,30 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
         not_(title.contains("《", autoescape=True)),
         not_(_any_in(title, APPLY_WORDS + PUBLISH_EXCLUDE + POLICY_WORDS)),
     )
+    forced_other = and_(
+        not_(_any_in(title, DRAFT_WORDS)),
+        or_(
+            _any_in(title, PERSONAL_QUALIFICATIONS + PROCUREMENT + DISBURSEMENT),
+            and_(
+                _any_in(title, ("下达", "拨付")),
+                _any_in(title, ("资金", "经费", "运行费", "奖金", "补助")),
+            ),
+            and_(_any_in(title, PERSONAL_CONTEST), not_(title.contains("创新创业"))),
+            _any_in(title, ("征求意见", "征集意见建议", "征求", "意见建议")),
+            and_(_any_in(title, ("供应商",)), _any_in(title, ("遴选", "采购"))),
+            and_(_any_in(title, ("服务机构", "供应商")), title.contains("遴选")),
+            and_(
+                _any_in(title, POST_WORK),
+                not_(
+                    and_(
+                        _any_in(title, NEW_ROUND),
+                        _any_in(title, ("和", "及", "与")),
+                        not_(title.contains("绩效评价申报")),
+                    )
+                ),
+            ),
+        ),
+    )
     off_topic = or_(
         and_(or_(has_list, publish_list), _any_in(title, LIST_OFF_TOPIC)),
         _any_in(title, PERSONAL_WORDS),
@@ -688,18 +757,23 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             named_policy,
         ),
     )
+    apply_words = or_(
+        _any_in(title, APPLY_WORDS),
+        and_(
+            _any_in(title, WEAK_APPLY_WORDS),
+            not_(_any_in(title, APPLY_EXCLUDE + POLICY_MARKS)),
+        ),
+        and_(has_list, not_(consult)),
+    )
+    blocked_apply = and_(
+        forced_other, not_(off_topic), not_(is_list), not_(is_draft_policy), apply_words
+    )
     is_apply = and_(
         not_(off_topic),
         not_(is_list),
         not_(is_draft_policy),
-        or_(
-            _any_in(title, APPLY_WORDS),
-            and_(
-                _any_in(title, WEAK_APPLY_WORDS),
-                not_(_any_in(title, APPLY_EXCLUDE + POLICY_MARKS)),
-            ),
-            and_(has_list, not_(consult)),
-        ),
+        not_(blocked_apply),
+        apply_words,
     )
     is_policy = or_(
         is_draft_policy,
@@ -707,6 +781,7 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
             not_(off_topic),
             not_(is_list),
             not_(is_apply),
+            not_(blocked_apply),
             _any_in(title, POLICY_WORDS + POLICY_MARKS),
             not_(_any_in(title, POLICY_EXCLUDE)),
         ),
@@ -714,6 +789,7 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
     base_other = and_(not_(is_list), not_(is_apply), not_(is_policy))
     is_guide = and_(
         base_other,
+        not_(blocked_apply),
         or_(
             _any_in(title, GUIDE_WORDS),
             or_(*(title.like("%" + suffix) for suffix in JUNK_SUFFIXES)),

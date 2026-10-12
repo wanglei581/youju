@@ -16,6 +16,7 @@ from typing import Any
 from openpyxl import Workbook
 from sqlalchemy.orm import Session
 
+from youju import deadline_excerpts
 from youju.api import v1
 from youju.compare import (
     MAX_INPUT_ROWS,
@@ -70,6 +71,8 @@ class TrackItem:
     support: str
     url: str
     publish_date: date | None = None
+    deadline_source: str = "unverified"
+    deadline_quote: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -81,7 +84,14 @@ class TrackItem:
             "publish_date": self.publish_date.isoformat() if self.publish_date else None,
             "deadline_type": self.deadline_type,
             "deadline_date": self.deadline_date.isoformat() if self.deadline_date else None,
-            "deadline_status": "已核对" if self.deadline_date else "截止未核对，请以原文为准",
+            "deadline_status": (
+                VERIFIED_TEXT
+                if self.deadline_source == "verified"
+                else EXCERPT_TEXT
+                if self.deadline_source == "excerpt"
+                else UNVERIFIED_TEXT
+            ),
+            "deadline_quote": self.deadline_quote,
             "deadline_time": self.deadline_time.strftime("%H:%M") if self.deadline_time else None,
             "remaining_days": self.remaining_days,
             "support": self.support,
@@ -227,7 +237,8 @@ def _province_match(profile: CustomerProfile, source: Source) -> bool:
     return profile.province != "国家部委" and source.province == _source_province(profile)
 
 
-VERIFIED_TEXT = "已核对"
+VERIFIED_TEXT = "已人工核对"
+EXCERPT_TEXT = "机器摘录，未经人工核对"
 UNVERIFIED_TEXT = "未核对，请以原文为准"
 UNVERIFIED_SUMMARY = "未核对"
 
@@ -261,19 +272,18 @@ def track_clients(
     rows = session.execute(statement).all()
     selected_ids = [document.id for document, _ in rows]
     approved = v1._approved(session, selected_ids)
+    views, _, _ = deadline_excerpts.batch(session, selected_ids, approved, today)
     details = v1._details(session, selected_ids)
     fields = v1._approved_fields(session, selected_ids)
     notices: list[
         tuple[Document, Source, DocumentDetail | None, Any, tuple[str, ...], int | None]
     ] = []
     for document, source in rows:
-        deadline = v1._selected_deadline(approved.get(document.id, []))
+        deadline = deadline_excerpts.selected(views.get(document.id, []))
         status = v1.application_status(approved.get(document.id, []), stamp)
         if status and status["code"] == "closed":
             continue
-        remaining = (
-            (deadline.approved_date - today).days if deadline and deadline.approved_date else None
-        )
+        remaining = (deadline.day - today).days if deadline and deadline.day else None
         supports = tuple(fields.get(document.id, {}).get("support", ()))
         detail = details.get(document.id)
         notices.append((document, source, detail, deadline, supports, remaining))
@@ -299,12 +309,14 @@ def track_clients(
                     issuer=(detail.issuer if detail and detail.issuer else source.dept_full_name),
                     province="国家部委" if source.province == "国家" else source.province,
                     deadline_type=deadline.kind if deadline else "",
-                    deadline_date=deadline.approved_date if deadline else None,
-                    deadline_time=deadline.approved_time if deadline else None,
+                    deadline_date=deadline.day if deadline else None,
+                    deadline_time=deadline.clock if deadline else None,
                     remaining_days=remaining,
                     support="、".join(supports),
                     url=document.url,
                     publish_date=document.publish_date,
+                    deadline_source=deadline.source if deadline else "unverified",
+                    deadline_quote=deadline.quote or "" if deadline else "",
                 )
             )
         # 核对过截止日期的排前面、截止早的先；没核对的排后面、新发布的先
@@ -329,7 +341,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
-        "截止日期只写人工核对过的，没核对的请以原文为准；"
+        "截止日期以原文为准，标“机器摘录”的未经人工核对；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：
@@ -343,6 +355,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         "截止核对情况",
         "截止类型",
         "截止日期",
+        "截止原文句子",
         "剩余天数",
         "支持方式",
         "原文链接",
@@ -355,14 +368,22 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     summary_rows: list[tuple[object, ...]] = []
     for client in report.clients:
         count = len(client.items)
-        verified = sum(item.deadline_date is not None for item in client.items)
+        verified = sum(item.deadline_source == "verified" for item in client.items)
 
-        def within(days: int, items=client.items, verified=verified) -> object:
-            # 一条都没核对时不写 0：0 会被看成“没有快截止的”，其实是不知道
-            if not verified:
-                return UNVERIFIED_SUMMARY if items else ""
+        dated = sum(item.deadline_source in ("verified", "excerpt") for item in client.items)
+
+        def within(days: int, items=client.items, verified=verified, dated=dated) -> object:
+            if not items:
+                return ""
+            # 能看到日期的一条都没有时不写 0：0 会被看成“没有快截止的”，其实是不知道。
+            # 7 天内只认人工核对过的（D-061），14、30 天另含机器摘录的
+            if not (verified if days <= 7 else dated):
+                return UNVERIFIED_SUMMARY
             return sum(
-                item.remaining_days is not None and item.remaining_days <= days for item in items
+                item.remaining_days is not None
+                and item.remaining_days <= days
+                and (days > 7 or item.deadline_source == "verified")
+                for item in items
             )
 
         summary_rows.append(
@@ -384,11 +405,20 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
                 item.issuer if item else "",
                 item.province if item else (client.profile.province or ""),
                 item.publish_date.isoformat() if item and item.publish_date else "",
-                (VERIFIED_TEXT if item.deadline_date else UNVERIFIED_TEXT) if item else "",
+                (
+                    VERIFIED_TEXT
+                    if item.deadline_source == "verified"
+                    else EXCERPT_TEXT
+                    if item.deadline_source == "excerpt"
+                    else UNVERIFIED_TEXT
+                )
+                if item
+                else "",
                 item.deadline_type if item else "",
                 _deadline_text(item.deadline_date, item.deadline_time)
                 if item and item.deadline_date
                 else "",
+                item.deadline_quote if item else "",
                 item.remaining_days if item and item.remaining_days is not None else "",
                 item.support if item else "",
                 item.url if item else "",
@@ -403,7 +433,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     summary_headers = [
         "客户名称",
         "通知数",
-        "已核对截止日期的",
+        "人工核对过截止日期的",
         "7 天内截止",
         "14 天内截止",
         "30 天内截止",
@@ -414,7 +444,8 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         1,
         1,
         _safe_cell(
-            note + "；“N 天内截止”只数已核对截止日期的通知，“截止未核对的”也可能快截止，请看原文"
+            note + "；“7 天内截止”只数人工核对过的，“14 天内”“30 天内”另含机器摘录的；"
+            "“截止未核对的”也可能快截止，请看原文"
         ),
     )
     for column, header in enumerate(summary_headers, 1):
