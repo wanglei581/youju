@@ -303,6 +303,18 @@ def test_digest_drops_ai_picks_first_when_the_message_is_too_long(
     assert cut.endswith("…") and len(cut.encode()) <= len(base.encode()) // 2 - prefix
 
 
+def _freeze_cli_clock(monkeypatch, cli) -> None:
+    """日报命令用真实的当前时间；测试数据里的候选截止日期是写死的（10 月 10 日、12 月 20 日），
+    过了那天"候选截止还没过"的通知就没了。把命令看到的时间固定在 NOW。"""
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(cli, "datetime", Frozen)
+
+
 def test_daily_report_cli_sends_once_and_records_ai_usage(
     session, session_factory, world, monkeypatch, capsys
 ) -> None:
@@ -310,6 +322,7 @@ def test_daily_report_cli_sends_once_and_records_ai_usage(
     from youju import alerts, cli
 
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    _freeze_cli_clock(monkeypatch, cli)
     monkeypatch.setattr(
         ai_module, "get_chat_client", lambda: fake_ai(lambda _: [{"id": world["apply"].id}])[0]
     )
@@ -335,6 +348,7 @@ def test_usage_that_cannot_be_recorded_fails_the_command(
     from youju import cli
 
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    _freeze_cli_clock(monkeypatch, cli)
     monkeypatch.setattr(
         ai_module, "get_chat_client", lambda: fake_ai(lambda _: [{"id": world["apply"].id}])[0]
     )

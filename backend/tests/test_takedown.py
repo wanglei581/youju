@@ -449,6 +449,7 @@ def test_tool_generation_and_existing_download(
 ):
     monkeypatch.setattr(advisor_tasks, "upload", lambda *a, **kw: "cloud://test-file")
     monkeypatch.setattr(advisor_tasks, "download_url", lambda *a: "https://example.test/file")
+    monkeypatch.setattr(advisor_tasks, "result_size", lambda *a: 10)
     task_id = client.post(
         "/api/v1/advisor/tasks",
         headers={"Idempotency-Key": "before"},
@@ -523,6 +524,7 @@ def test_legacy_tool_download_checks_actual_excel(
     transport = httpx.MockTransport(lambda request: httpx.Response(200, content=content))
     monkeypatch.setattr(advisor.httpx, "Client", lambda **kw: real_client(transport=transport))
     monkeypatch.setattr(advisor_tasks, "download_url", lambda *a: "https://example.test/file")
+    monkeypatch.setattr(advisor_tasks, "result_size", lambda *a: 10)
     endpoint = f"/api/v1/advisor/tasks/{task.id}/download"
     response = client.get(endpoint)
     assert response.status_code == {"hidden": 410, "clean": 200, "corrupt": 503}[state]

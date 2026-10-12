@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import JSON, func, select
 from sqlalchemy.exc import IntegrityError
@@ -479,8 +479,10 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
     }
 
 
-@router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
-def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
+def _result_link(session: Session, user: User, task_id: int) -> tuple[httpx.Client, str]:
+    """核对这份结果还能不能取，返回（HTTP 客户端，对象存储的临时链接）。
+
+    链接只在服务端用，不发给小程序。调用方负责关闭客户端。"""
     task = _owned(session, user, task_id)
     if (
         task.status != "done"
@@ -488,7 +490,7 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
         or (task.expires_at is not None and task.expires_at <= _stamp())
     ):
         raise HTTPException(status_code=410, detail="结果文件已过期或已删除")
-    # 已生成的 Excel 也要在每次取下载地址时复核。
+    # 已生成的 Excel 也要在每次取文件时复核。
     hidden = select(Document.id).where(~available_condition())
     legacy_check = task.result_document_ids is None and session.scalar(hidden.limit(1)) is not None
     if (
@@ -497,30 +499,76 @@ def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
         is not None
     ):
         raise HTTPException(status_code=410, detail="结果包含已下架文件，请重新生成")
-    settings = get_settings()
-    cloud_env = getattr(settings, "cloud_env", None)
+    cloud_env = service.result_env(get_settings(), task.result_file_id)
     if not cloud_env:
         raise HTTPException(status_code=503, detail="对象存储暂不可用")
+    client = httpx.Client(trust_env=False)
     try:
-        with httpx.Client(trust_env=False) as client:
-            url = service.download_url(client, cloud_env, task.result_file_id)
-            if url and legacy_check:
-                try:
-                    ids = service.legacy_result_document_ids(session, client, url)
-                except Exception:  # noqa: BLE001 - 旧文件损坏不能绕过核验
-                    raise HTTPException(
-                        status_code=503, detail="结果文件暂时无法核验，请重新生成"
-                    ) from None
-                task.result_document_ids = ids
-                session.commit()
-                if session.scalar(hidden.where(Document.id.in_(ids)).limit(1)) is not None:
-                    raise HTTPException(status_code=410, detail="结果包含已下架文件，请重新生成")
+        url = service.download_url(client, cloud_env, task.result_file_id)
+        if url and legacy_check:
+            try:
+                ids = service.legacy_result_document_ids(session, client, url)
+            except Exception:  # noqa: BLE001 - 旧文件损坏不能绕过核验
+                raise HTTPException(
+                    status_code=503, detail="结果文件暂时无法核验，请重新生成"
+                ) from None
+            task.result_document_ids = ids
+            session.commit()
+            if session.scalar(hidden.where(Document.id.in_(ids)).limit(1)) is not None:
+                raise HTTPException(status_code=410, detail="结果包含已下架文件，请重新生成")
     except (BackupError, httpx.HTTPError):
-        raise HTTPException(status_code=503, detail="下载地址暂时无法生成，请稍后重试") from None
+        client.close()
+        raise HTTPException(status_code=503, detail="结果文件暂时取不到，请稍后重试") from None
+    except HTTPException:
+        client.close()
+        raise
     if not url:
+        client.close()
         raise HTTPException(status_code=410, detail="结果文件已过期或已删除")
+    return client, url
+
+
+@router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
+def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
+    """结果文件有多大、分几段。小程序随后逐段取 /tasks/{id}/file?part=N，拼起来就是 Excel。"""
+    client, url = _result_link(session, user, task_id)
+    try:
+        size = service.result_size(client, url)
+    except (BackupError, httpx.HTTPError):
+        raise HTTPException(status_code=503, detail="结果文件暂时取不到，请稍后重试") from None
+    finally:
+        client.close()
     # 统一个人接口的驼峰字段命名；不要同时保留 snake_case 别名。
-    return {"url": url, "expiresIn": 600}
+    return {
+        "size": size,
+        "parts": max(1, -(-size // service.RESULT_PART_SIZE)),
+        "partSize": service.RESULT_PART_SIZE,
+    }
+
+
+@router.get("/tasks/{task_id}/file", dependencies=[Depends(_enabled)])
+def task_file(
+    task_id: int,
+    session: SessionDep,
+    user: UserDep,
+    part: Annotated[int, Query(ge=0, le=64)] = 0,
+) -> Response:
+    """结果文件的一段（原始字节）。每次都重新核对归属、有效期和下架情况。"""
+    client, url = _result_link(session, user, task_id)
+    try:
+        size = service.result_size(client, url)
+        data = service.read_result_part(client, url, part, size)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="没有这一段") from None
+    except (BackupError, httpx.HTTPError):
+        raise HTTPException(status_code=503, detail="结果文件暂时取不到，请稍后重试") from None
+    finally:
+        client.close()
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/tasks/{task_id}", dependencies=[Depends(_enabled)])

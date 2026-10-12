@@ -1,4 +1,4 @@
-"""多客户在报项目跟进表后台引擎。
+"""客户相关通知表（原名“在报项目跟进表”）的后台引擎。
 
 读取客户画像，查询近 90 天发布且没有核对为已截止的申报通知，生成结果并导出 Excel。
 客户画像不用于推断行业；关键词和支持方式都是用户明确填写的筛选条件。
@@ -26,6 +26,7 @@ from youju.compare import (
     _safe_cell,
     _text,
 )
+from youju.export_notes import add_excel_notes
 from youju.fields import SUPPORT_LABELS
 from youju.models import Document, DocumentDetail, Source
 from youju.sources.onboard import PROVINCES as SOURCE_PROVINCES
@@ -311,11 +312,11 @@ def track_clients(
 
 
 def export_track_excel(report: TrackReport, output: str | Path) -> int:
-    """导出“跟进表”和“汇总”，返回跟进表数据行数。"""
+    """导出“客户相关通知”和“汇总”两页，返回通知页的数据行数。"""
 
     book = Workbook()
     detail = book.active
-    detail.title = "跟进表"
+    detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
         "截止日期只写人工核对过的，没核对的请以原文为准；"
@@ -392,6 +393,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     for row_number, values in enumerate(summary_rows, 3):
         for column, value in enumerate(values, 1):
             summary.cell(row_number, column, _safe_cell(value))
+    add_excel_notes(book.create_sheet("数据说明"))
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     book.save(output_path)

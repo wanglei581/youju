@@ -34,6 +34,7 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
+from youju.config import get_settings
 from youju.crawler.detail import redact_sensitive
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -1651,7 +1652,17 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    can_submit_clue = (
+        rewards.enabled(get_settings())
+        and kind == "申报通知"
+        and not approved
+        and clues.pending_count(session) < 50
+    )
     payload = {
+        "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import tempfile
 import time as monotonic_clock
 from datetime import UTC, date, datetime, timedelta
@@ -563,6 +564,33 @@ def process_task(
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
+        # 发奖与提交任务统一先锁用户；首次完成标记和任务完成同事务落库。
+        # 引擎已修改任务的结果引用；自动刷新会先写任务再等待用户，和注销互锁。
+        with session.no_autoflush:
+            user = session.scalar(
+                select(User)
+                .where(User.id == task.user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        if user is None:
+            raise CompareInputError("用户不存在，任务无法处理")
+        previous = None
+        if user.batch_completed_at is None:
+            previous = session.scalar(
+                select(AdvisorTask)
+                .where(
+                    AdvisorTask.user_id == user.id,
+                    AdvisorTask.kind.in_(("compare", "track")),
+                    AdvisorTask.status == "done",
+                    AdvisorTask.id != task.id,
+                )
+                .order_by(AdvisorTask.finished_at, AdvisorTask.id)
+                .limit(1)
+            )
+        first_batch = user.batch_completed_at is None and previous is None
+        if user.batch_completed_at is None:
+            user.batch_completed_at = (previous.finished_at if previous else None) or stamp
         task.status = "done"
         task.result_file_id = file_id
         task.result_rows = rows
@@ -570,6 +598,14 @@ def process_task(
         task.error = None
         record_pass_completion(session, task)
         session.commit()
+        if first_batch:
+            from youju import rewards
+
+            try:
+                rewards.first_completion(session, user.id, stamp, settings=settings)
+            except Exception:
+                session.rollback()
+                log.warning("首次批量任务奖励未发出，请运行 rewards-reconcile")
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
         session.rollback()
@@ -661,14 +697,68 @@ def run_advisor_tasks(
 
 
 def download_url(client: httpx.Client, env: str, file_id: str) -> str | None:
-    data = _open_api(client, "/tcb/batchdownloadfile", {"env": env, "file_list": [file_id]})
-    items = data.get("download_list") or data.get("file_list") or []
-    if not items:
+    """结果文件的临时下载链接（只在服务端用）。
+
+    请求和返回的格式同附件副本（attachments.download_link，线上一直在用）：
+    file_list 里每项是 {fileid, max_age}，返回的 file_list 每项带 status 和 download_url。
+    原来这里把文件编号直接当字符串传，10/10 第一次连真实环境时取不到链接。
+    """
+    data = _open_api(
+        client,
+        "/tcb/batchdownloadfile",
+        {"env": env, "file_list": [{"fileid": file_id, "max_age": 600}]},
+    )
+    items = data.get("file_list") or data.get("download_list") or []
+    item = next((i for i in items if i.get("fileid") in (None, file_id)), None)
+    if not item or item.get("status") not in (None, 0):
         return None
-    item = items[0]
-    if item.get("status") not in (None, 0):
-        return None
-    return item.get("download_url") or item.get("url")
+    url = item.get("download_url") or item.get("url") or ""
+    return url if url.startswith("https://") else None
+
+
+# 结果文件由 api 自己从对象存储分段读出来再发给小程序（和附件副本同一种做法）：
+# 不把存储的下载地址交给小程序——手机直接下载要在小程序后台配 downloadFile 合法域名，
+# 10/10 真机试用前发现结果因此打不开。每段大小留在 callContainer 返回包上限（1000 KiB）以内。
+RESULT_PART_SIZE = 900 * 1024
+RESULT_MAX_BYTES = 20 * 1024 * 1024
+_FILE_ENV = re.compile(r"^cloud://([^./]+)\.")
+_RANGE_TOTAL = re.compile(r"^bytes \d+-\d+/(\d+)$")
+
+
+def result_env(settings, file_id: str) -> str | None:
+    """对象存储环境：优先用配置；api 服务没配时从文件编号里取（cloud://环境ID.存储桶/路径）。"""
+    configured = getattr(settings, "cloud_env", None)
+    if configured:
+        return configured
+    match = _FILE_ENV.match(file_id or "")
+    return match.group(1) if match else None
+
+
+def result_size(client: httpx.Client, url: str) -> int:
+    """结果文件的字节数：只请求第一个字节，从 Content-Range 里读总长度。"""
+    with client.stream("GET", url, headers={"Range": "bytes=0-0"}, timeout=10) as res:
+        if res.status_code == 206:
+            match = _RANGE_TOTAL.match(res.headers.get("content-range", ""))
+            if not match:
+                raise BackupError("读不出结果文件的大小")
+            total = int(match.group(1))
+        elif res.status_code == 200:
+            total = int(res.headers.get("content-length") or 0)
+        else:
+            raise BackupError(f"读取结果文件失败（HTTP {res.status_code}）")
+    if not 0 < total <= RESULT_MAX_BYTES:
+        raise BackupError("结果文件大小不对")
+    return total
+
+
+def read_result_part(client: httpx.Client, url: str, index: int, total: int) -> bytes:
+    """读结果文件的第 index 段（从 0 起）。"""
+    from youju.attachments import read_range
+
+    start = index * RESULT_PART_SIZE
+    if index < 0 or start >= total:
+        raise ValueError("没有这一段")
+    return read_range(client, url, start, min(total, start + RESULT_PART_SIZE), total)
 
 
 def delete_result_files(client: httpx.Client, env: str, file_ids: list[str]) -> list[str]:

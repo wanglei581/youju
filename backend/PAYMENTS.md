@@ -79,6 +79,147 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 失败、取消、删除任务都不会清除使用事实。
 使用期留最近一次任务编号、提交时间、完成/结束时间；不存企业名称或结果内容。
 
+## 奖励天数（2026-10-10）
+
+奖励是客户工作台使用天数，权益与购买相同：compare / track 每次最多 500 行，次数不限，
+仍先使用当月免费量。奖励接在发放时该用户所有未收回段的最晚结束时间后面；
+没有未来有效段时从发放时间开始。不能转让、不能折现，注销账号时作废。
+
+`YOUJU_REWARDS_ENABLED=false` 默认关闭，必须同时开启 `YOUJU_ADVISOR_ENABLED`。
+关闭时不自动发奖，`rewards-reconcile` 不写奖励，个人奖励和引荐接口 404（包括未登录请求），
+注册忽略引荐码，管理台不显示发奖按钮、发奖接口 404。已发出的使用期仍有效。
+只有服务端开关，没有审核隐藏开关。支付开关不控制奖励。
+`YOUJU_REFERRAL_ENABLED=false` 单独控制引荐，须奖励与工具开关也开启。关闭时引荐接口 404，
+注册忽略 invite_code，自动发奖及 rewards-reconcile 均跳过 referral，其他奖励照常。
+
+每个北京时间自然月，所有奖励实际发放天数合计最多 30 天；不足时只给剩余天数。
+零天也写流水、备注说明达到上限，但不创建使用期段。同一对象不会重复发奖，
+超出的天数或名额不会顺延到下月，月统计按实际发放时间，不按使用期开始时间。
+
+负责人在管理服务运行 `youju rewards-revoke --reward-id N --reason "核实为虚假账号领奖"`
+收回一笔奖励，原因必填且为 6–100 字；先加 `--dry-run` 可查看种类、天数、发放时间、
+用户内部编号、使用期起止及待收回时长，不写入。奖励开关关闭后仍可运行。
+收回撤销对应使用期，仅将未用时长从后续付费及奖励段中前移；重复执行不再前移。
+用户奖励记录保留原天数，note 显示“已收回：原因”（原备注附在后面，总长最多 200 字），
+并返回 `revoked: true`。零天及已注销用户的奖励只记备注。收回不退还当月额度。
+
+| kind | 用户看到的名称 | 申请天数 | 限制 |
+|---|---|---|---|
+| first_batch | 第一次用批量功能 | 3 | 第一次 compare / track 成功完成，每个用户一次 |
+| correction | 纠错被采纳 | 1 | 管理员采纳，一条反馈一次 |
+| source | 提的栏目已接入 | 3 | 管理员确认接入，一条反馈一次，每人每月最多 2 次实际到账 |
+| referral | 请来一位同行 | 7 | 新用户第一次成功完成批量任务时，仅给引荐人，每月最多计入 4 位 |
+| deadline_clue | 补截止日期被采纳 | 1 | 人工通过后只奖日期相同且最早提交者；每人每月最多 10 天，同一通知同一性质一次 |
+
+只计算直接引荐的一层，新用户不会因引荐码多得天数，只按普通规则拿 first_batch。
+引荐码由安全随机数生成，固定 12 字符，不编码用户编号或 openid；老用户首次请求时生成，
+不回填。只在第一次建立用户记录时写引荐关系；已有记录更新协议不写关系，
+无效码（含超长或类型不符）忽略，自用码不记录。接口不公开被引荐人身份。
+`reward_claims` 保留 openid 的用途分离 HMAC-SHA256 假名、类型、记录时间；复用 app_keys 程序密钥，
+不存 openid 或用户外键，注销不删除。first_batch、referred（曾使用过账号）、referral（已触发引荐奖）
+按假名和类型查重；引荐开启时所有用户注销均追加 referred，首次奖励/引荐奖励有历史时也追加对应凭据，
+时间统一为注销时刻，避免旧凭据已满 180 天时立即丢失资格限制。引荐关闭时不追加 referred。
+180 天内重新注册不重复领取首次奖励或建立引荐关系。`youju cleanup` 清除满 180 天记录。
+待办：启用前在隐私保护指引增加防重复领奖假名的用途、注销后保留及 180 天期限；本次不改 docs/。
+
+新迁移 **0027**，0026 不变：
+
+- `pass_rewards`：`id,user_id,kind,requested_days,granted_days,ref_type,ref_id,granted_at,note`。
+  `(ref_type,ref_id)` 唯一；用户外键允许置空，天数和类型有 CHECK 约束。
+  `ref_type` 分别使用 `user_first_batch`、`user_referral`、`feedback`、`document`；
+  first_batch 和 referral 的 ref_id 是首次完成者编号，其余是反馈或通知编号。
+  截止线索使用 `deadline_` 加性质 SHA256 前 20 位作为 ref_type、主通知编号作为 ref_id，
+  唯一键保证同一通知同一性质只奖励一次，补发同时检查归并组内旧编号的流水，撤回核对不清除奖励流水。
+  两种管理台操作共用反馈唯一键，不能对同一反馈各发一遍。
+- `reward_claims`：`pseudonym,kind,claimed_at`；三列为联合主键（直接修改未上线的 0027），类型为 first_batch/referred/referral。
+  无身份外键，凭据只追加；app_keys 的 reward_claim_queue 行锁串行化查重和追加，
+  API 不锁凭据表、不需要 UPDATE/DELETE。零天奖励也消耗首次资格，关系/发奖与凭据同事务提交。
+- `deadline_clues`：`id,user_id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`。
+  kind 沿用 DocumentDeadline，time 可空，quote 脱敏后最多 200 字，status 为 pending/accepted/rejected；
+  用户、候选外键允许置空，文件删除级联删除。公开接口不输出线索或提交人。
+- `document_deadlines.origin` 新增 user；evidence 扩至 200 字，完整保留线索句子；user 指纹有独立前缀，规则重跑不覆盖或碰撞。
+- `workbench_passes.order_id` 改为可空，新增唯一可空外键 `reward_id`。
+  CHECK 保证订单和奖励来源有且只有一个。奖励流水通过 reward_id 反查对应使用期，
+  零天没有对应段，不增加循环外键。
+- `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
+  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
+  reward_claims 仅 INSERT，pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）。
+  workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
+  注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
+  本次只验证指定测试库，不执行正式库操作。
+
+| 接口 | 最终字段 / 行为 |
+|---|---|
+| `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note,revoked`，不返回关联人或对象编号 |
+| `POST /api/v1/me/deadline-clues` | `{document_id,kind,date,time?,quote}`；201 返回下述线索字段；关闭奖励时 404 |
+| `GET /api/v1/me/deadline-clues` | 本人最近 50 条 `items[]`，按提交时间、编号倒序；开关关闭仍可查看 |
+| `DELETE /api/v1/me/deadline-clues/{id}` | 仅本人待核对线索，204；已处理 409；开关关闭、协议更新后仍可删除 |
+| `GET /api/v1/me/data` | 加 `deadlineClues,deadlineCluesTotal`，最多 500 条线索元数据及总数 |
+| `GET /api/v1/documents/{id}` | 加 `can_submit_deadline_clue` 布尔值，不含他人线索 |
+| `GET /api/admin/deadlines` | 候选加 `deadline_clues[]`，只含待核对线索，不含提交人；关闭奖励时为空 |
+| `GET /api/admin/deadline-clues` | `enabled,items[]`；线索字段加 `title,url,can_build_candidate`；关闭时 false/空数组 |
+| `POST /api/admin/deadline-clues/{id}/candidate` | 无业务请求体，返回 `deadline_id,status=pending`；只在整份通知无任何候选时建候选 |
+| `POST /api/admin/deadline-clues/{id}/reject` | 无业务请求体，返回 `status=未采纳`；两项写操作沿用管理口令和操作留痕 |
+| `GET /api/v1/me/invite` | `inviteCode,monthCount,monthLimit,rules[]`；只显示实际计入人数，每月上限 4 |
+| `POST /api/v1/me/agreement` | 原字段加可选 `invite_code`；仅 general 的新记录写入关系 |
+| `GET /api/admin/feedback` | 原列表加 `rewardsEnabled,rewardKind,rewardDays`；未发奖的后两项为 null |
+| `POST /api/admin/feedback/{id}/reward/{kind}` | kind 为 correction 或 source；沿用 X-Admin-Token 和操作留痕，校验反馈类型，成功同时标为已处理；返回 `alreadyGranted,days,message,note`，重复返回“已经发过”（无 note） |
+
+线索返回字段：`id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`，
+status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，日期 YYYY-MM-DD，time 为 HH:MM 或 null。
+提交须登录并同意当前协议，文件须公开可见且属于申报通知；缺发布日期不接收。
+日期含发布当天至三周年当天（闰日三周年取二月末）；原句去首尾空白后 6–200 字，
+复用纠错的微信内容安全检查并脱敏，所有环境均检查，检查不通过或服务出错均不写库。
+同人同通知同性质只留一条待核对；每人最多 20 条，全站最多 50 条，重复/满额/已有同性质
+核对通过日期均 409。全站满额说明“线索暂时收满了，过几天再来”；已有日期说明
+“这份通知的截止日期已经核对过了”。用 app_keys 的 deadline_clue_queue 名称原值更新占用队列行锁，串行计数防并发超额；
+部署脚本仅补充该表 name 列 UPDATE 权限，程序密钥 value 不可由 API 修改。
+详情布尔值按奖励及工具开关、申报通知、无核对通过截止、全站未满计算；登录、日期和个人限制
+仍由提交接口检查。归并的多个网址按主通知处理，转载组各版本仍独立。
+
+API 提交不锁 documents/sources，依靠 app_keys 队列锁与管理端建候选、核对、导入串行化；
+原句脱敏后再次校验 6–200 字，超长返回中文 422。
+核对台列出全部待核对线索，只显示日期、性质、原句及提交时间，不显示提交人；
+只有同一性质的待核对候选阻止建 origin=user 候选，已驳回或其他性质候选不阻止；每条线索均可不采纳。
+之后仍须负责人对照原文点通过/驳回。通过按实际核定日期采纳同性质同日期待核对线索，
+其他日期标未采纳（时间不参与匹配）；采纳/未采纳状态和核对在同一事务写入。
+仅最早提交者拿 1 天；发奖独立提交、失败记固定日志，由 rewards-reconcile 重试。
+单条和批量导入核对均调用线索结算；导入预览回滚、正式通过后单独发奖。
+驳回候选保留线索待核对，可重新建候选或不采纳；撤回核对不追回奖励、不改变线索状态；不采纳按钮可处理无效线索。
+关闭奖励时隐藏相关内容，核对通过不处理线索。注销删除待核对线索，已处理保留且断开用户关联，
+最早提交者已注销时不把奖励转给后来者。
+
+任务完成和首次完成标记在同一事务持久化，之后 first_batch、referral 分别独立事务发放。
+发奖失败只写固定日志，不回滚成功任务、不暴露异常正文；后续完成不自动补发。
+admin 服务的定时任务每小时运行一次 `youju rewards-reconcile`（`deploy/crontab`；开关关闭时直接返回）。
+`youju rewards-reconcile` 补发仍在库中的用户：读取首次完成标记，也兼容升级前保留的成功任务，
+跳过已有流水（包括零天），两种奖分别补发，另补发已采纳线索中最早提交者尚未收到的奖励。补发按补发当天所属月份计算限制，使用期从补发时起。
+升级前成功任务已删除且没有首次完成标记的，无法凭空还原，不发奖。
+所有发奖先锁用户再写流水和使用期；同时涉及引荐双方时按用户编号排序锁行。
+备份恢复的自关联外键核验与表锁已适配引荐关系，备份包含奖励流水和使用期。
+
+退款资格只检查订单自己的段；奖励段上的任务不计入该订单的 paid_usage。
+订单接口只查订单，不把奖励段伪装成订单。退款收回订单段时，后续奖励段也按未用时长往前挪。
+注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除引荐关系两边的关联与时间，
+清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。
+批量任务收尾用 no_autoflush 先锁用户，再刷新任务，避免引擎已修改结果引用时提前写任务造成与注销互锁。
+受限账号测试按部署 SQL 的 GRANT 自动授权到测试库；可跳过“支付权限”之后的追加授权，
+仅创建随机密码的 youju_api_test@localhost，结束 DROP USER；root 无 CREATE USER 权限则自动跳过并报告。
+
+本次修复验证（2026-10-11）：指定虚拟环境、指定 youju_test_codex2 测试库，
+串行全量 **2055 passed，2 failed，无跳过，732.17 秒**；新增 21 个回归用例全部通过，
+其中 3 个受限账号场景实际执行，账号在每例结束后删除。
+两条失败均是固定日期数据与当日时钟不一致的旧测试，本次未改其代码：
+
+- tests/test_conditions.py::test_queue_shows_items_with_highlight_context：10 月 10 日截止已过，卡片不再是“30 天内截止”。
+- tests/test_digest.py::test_daily_report_cli_sends_once_and_records_ai_usage：CLI 按 10 月 11 日取候选，假 AI 返回的旧通知截止已过，无法生成“AI 建议先核对”。
+
+两条已有警告（Starlette/httpx 弃用、ZIP 重复名称）。
+ruff format --check、ruff check、核对台脚本语法、git diff --check 通过。
+仍在 feat/rewards，只改 backend，未 commit/push/部署。正式复核、隐私指引更新、
+迁移与授权、真实微信内容安全及浏览器验收待办；180 天清理后不再跨注销维持资格限制。
+
 ## 退款与苹果问询
 
 普通支付仅付款后 7 天内（含恰好 7 天）、未用过这张票的付费量且已开通时允许自助全额原路退。
@@ -171,4 +312,3 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 
 苹果退款问询在本地核验出错或超过两秒时仍答“未使用”：核验不了时宁可让用户能退，
 不把没用过的人答成“已使用”。平台对这种情况有没有规定的应答，上线前按真实问询确认。
-

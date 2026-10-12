@@ -61,6 +61,7 @@ from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     URL_KEY_MAX,
     AICheck,
+    DeadlineClue,
     Document,
     DocumentDeadline,
     DocumentDetail,
@@ -414,6 +415,7 @@ class RepostSiblingOut(BaseModel):
 
 
 class PendingDeadlineOut(BaseModel):
+    deadline_clues: list[dict] = Field(default_factory=list)
     id: int
     document_id: int
     title: str
@@ -495,6 +497,9 @@ class FeedbackOut(BaseModel):
     # 纠错分诊：规则和 AI 复查对应文件已发布截止日期的结果（还没分诊时为空）
     triageNote: str | None = None
     triagedAt: datetime | None = None
+    rewardsEnabled: bool = False
+    rewardKind: str | None = None
+    rewardDays: int | None = None
 
 
 class UnchangeIn(BaseModel):
@@ -2282,8 +2287,20 @@ def admin_feedback(
         doc.id: doc
         for doc in session.scalars(select(Document).where(Document.id.in_(doc_ids))).all()
     }
+    from youju import rewards
+    from youju.models import PassReward
+
+    reward_map = {
+        r.ref_id: r
+        for r in session.scalars(
+            select(PassReward).where(
+                PassReward.ref_type == "feedback", PassReward.ref_id.in_([r.id for r in rows])
+            )
+        )
+    }
     result = []
     for row in rows:
+        reward = reward_map.get(row.id)
         doc = documents.get(mapping.get(row.document_id, row.document_id))
         result.append(
             FeedbackOut(
@@ -2298,9 +2315,82 @@ def admin_feedback(
                 handledAt=row.handled_at,
                 triageNote=row.triage_note,
                 triagedAt=row.triaged_at,
+                rewardsEnabled=rewards.enabled(get_settings()),
+                rewardKind=reward.kind if reward else None,
+                rewardDays=reward.granted_days if reward else None,
             )
         )
     return result
+
+
+@app.post("/api/admin/feedback/{feedback_id}/reward/{kind}")
+def reward_feedback(
+    feedback_id: int,
+    kind: Literal["correction", "source"],
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    from youju import rewards
+    from youju.models import PassReward, User
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    row = session.get(Feedback, feedback_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到反馈")
+    owner = row.user_id
+    # 先用户再反馈；和注销及普通发奖保持一致的锁序。
+    if (
+        owner is None
+        or session.scalar(select(User.id).where(User.id == owner).with_for_update()) is None
+    ):
+        raise HTTPException(status_code=422, detail="用户已注销，无法发放天数")
+    row = session.scalar(
+        select(Feedback)
+        .where(Feedback.id == feedback_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.user_id != owner:
+        raise HTTPException(status_code=404, detail="没有找到反馈")
+    previous = session.scalar(
+        select(PassReward).where(
+            PassReward.ref_type == "feedback", PassReward.ref_id == feedback_id
+        )
+    )
+    if previous is not None:
+        _audit(
+            request,
+            "feedback_reward",
+            feedback_id=feedback_id,
+            kind=kind,
+            changed=False,
+            days=previous.granted_days,
+        )
+        return {"alreadyGranted": True, "days": previous.granted_days, "message": "已经发过"}
+    is_source = row.content.startswith("申请覆盖：")
+    if is_source != (kind == "source"):
+        raise HTTPException(status_code=422, detail="请按反馈类型选择发放操作")
+    reward = rewards.grant(
+        session, owner, kind, 3 if kind == "source" else 1, "feedback", feedback_id, v1_api.now()
+    )
+    row.handled_at = row.handled_at or v1_api.now()
+    session.commit()
+    _audit(
+        request,
+        "feedback_reward",
+        feedback_id=feedback_id,
+        kind=kind,
+        changed=True,
+        days=reward.granted_days,
+    )
+    return {
+        "alreadyGranted": False,
+        "days": reward.granted_days,
+        "message": f"已发放 {reward.granted_days} 天",
+        "note": reward.note,
+    }
 
 
 def _set_feedback_handled(feedback_id: int, session: Session, handled: bool) -> dict[str, bool]:
@@ -2420,6 +2510,115 @@ def _repost_context(session: Session, masters: list[int]) -> dict[int, dict]:
     return out
 
 
+@app.get("/api/admin/deadline-clues")
+def admin_deadline_clues(session: SessionDep, _admin: AdminDep) -> dict:
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        return {"enabled": False, "items": []}
+    items = []
+    for row in session.scalars(
+        select(DeadlineClue)
+        .where(DeadlineClue.status == "pending")
+        .order_by(DeadlineClue.submitted_at, DeadlineClue.id)
+    ):
+        doc = session.get(Document, row.document_id)
+        has_candidate = clues.pending_candidate(
+            session, clues.document_group(session, doc.id), row.kind
+        )
+        items.append(
+            {
+                **clues.out(row),
+                "title": doc.title,
+                "url": doc.url,
+                "can_build_candidate": not has_candidate,
+            }
+        )
+    return {"enabled": True, "items": items}
+
+
+def _require_clues() -> None:
+    from youju import rewards
+
+    if not rewards.enabled(get_settings()):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+@app.post("/api/admin/deadline-clues/{clue_id}/candidate", dependencies=[Depends(_require_clues)])
+def clue_candidate(clue_id: int, session: SessionDep, _admin: AdminDep, request: Request) -> dict:
+    from youju import deadline_clues as clues
+
+    clues.lock_queue(session)
+    clue = session.get(DeadlineClue, clue_id)
+    if clue is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    ids = clues.lock_documents(session, clue.document_id)
+    clue = session.scalar(
+        select(DeadlineClue)
+        .where(DeadlineClue.id == clue_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if clue is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if clue.status != "pending":
+        raise HTTPException(status_code=409, detail="线索已处理")
+    if clues.pending_candidate(session, ids, clue.kind):
+        raise HTTPException(status_code=409, detail="这份通知已有候选，请在候选中核对")
+    fingerprint = hashlib.sha256(
+        f"user|{clue.kind}|{clue.date}|{clue.time}|{clue.quote}".encode()
+    ).hexdigest()
+    row = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == clue.document_id,
+            DocumentDeadline.fingerprint == fingerprint,
+        )
+    )
+    if row is None:
+        row = DocumentDeadline(
+            document_id=clue.document_id,
+            fingerprint=fingerprint,
+            kind=clue.kind,
+            candidate_date=clue.date,
+            candidate_time=clue.time,
+            evidence=clue.quote,
+            confidence="低",
+            origin="user",
+            status="pending",
+        )
+    elif row.status == "rejected":
+        # 同一线索重新送核对，复用指纹，避免撞文件/指纹唯一约束。
+        row.status = "pending"
+        row.reviewed_by = row.reviewed_at = None
+        row.approved_date = row.approved_time = None
+        row.audit_state = row.audit_note = row.audit_at = row.audit_by = None
+    else:
+        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
+    session.add(row)
+    session.flush()
+    clue.deadline_id = row.id
+    session.commit()
+    _audit(request, "clue_candidate", clue_id=clue_id, deadline_id=row.id)
+    return {"deadline_id": row.id, "status": "pending"}
+
+
+@app.post("/api/admin/deadline-clues/{clue_id}/reject", dependencies=[Depends(_require_clues)])
+def reject_clue(clue_id: int, session: SessionDep, _admin: AdminDep, request: Request) -> dict:
+    from youju import deadline_clues as clues
+
+    clues.lock_queue(session)
+    row = session.scalar(select(DeadlineClue).where(DeadlineClue.id == clue_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有找到线索")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="线索已处理")
+    row.status, row.processed_at = "rejected", v1_api.now()
+    session.commit()
+    _audit(request, "clue_reject", clue_id=clue_id)
+    return {"status": clues.STATUSES[row.status]}
+
+
 @app.get("/api/admin/deadlines", response_model=list[PendingDeadlineOut])
 def pending_deadlines(
     session: SessionDep,
@@ -2513,6 +2712,19 @@ def pending_deadlines(
         keyed = sorted(
             (pair for pair in keyed if after is None or pair[0] > after), key=lambda p: p[0]
         )[:limit]
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    clue_map = defaultdict(list)
+    if rewards.enabled(get_settings()):
+        ids = {member for _, (_, _, _, master) in keyed for member in group_ids(session, master)}
+        master_map = canonical_ids(session, ids)
+        for clue in session.scalars(
+            select(DeadlineClue)
+            .where(DeadlineClue.document_id.in_(ids), DeadlineClue.status == "pending")
+            .order_by(DeadlineClue.submitted_at, DeadlineClue.id)
+        ):
+            clue_map[master_map.get(clue.document_id, clue.document_id)].append(clues.out(clue))
     output = []
     for key, (d, doc, src, master_id) in keyed:
         if master_id != doc.id:
@@ -2527,6 +2739,7 @@ def pending_deadlines(
                 same = f"同组{'、'.join(dict.fromkeys(labels))}已核对过同一日期"
         output.append(
             PendingDeadlineOut(
+                deadline_clues=clue_map.get(master_id, []),
                 id=d.id,
                 document_id=doc.id,
                 title=doc.title,
@@ -2557,6 +2770,9 @@ def pending_deadlines(
 def _lock_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """按编号顺序一次锁住这条候选和归并组里同一候选的副本（类型、日期、时间、证据句都相同），
     并刷新成最新状态；并发核对时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     return list(
@@ -2607,6 +2823,13 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
     row = session.get(DocumentDeadline, deadline_id)
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到候选")
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    process_clues = rewards.enabled(get_settings())
+    if process_clues:
+        clues.lock_queue(session)
+        clues.lock_documents(session, row.document_id)
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="候选已核对")
@@ -2631,7 +2854,12 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
         body.new_date or row.candidate_date,
         parsed_time,
     )
+    document_id = row.document_id
+    if process_clues:
+        clues.settle(session, row, row.reviewed_at)
     session.commit()
+    if process_clues and status == "approved":
+        clues.award_accepted(session, get_settings(), v1_api.now(), document_id)
     return {"status": status}
 
 
@@ -2666,6 +2894,9 @@ class UndoReviewIn(BaseModel):
 
 def _lock_undo_candidates(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """一次按编号锁住同组同类型截止，覆盖核对时副本及后来沿用核对结果的副本。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     return list(
@@ -2896,6 +3127,9 @@ def _apply_change(
 def _lock_group(session: Session, row: DocumentDeadline) -> list[DocumentDeadline]:
     """按编号顺序一次锁住这条截止和归并组里类型、核定日期时间都相同的副本（含自己），
     并刷新成最新状态；并发操作时不会互相等待成死锁，调用方锁住后再判断状态。"""
+    from youju import deadline_clues as clues
+
+    clues.lock_review_queue(session, settings=get_settings())
     master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
     members = groups_for(session, [master])[master]
     same_time = (
@@ -3057,6 +3291,13 @@ def import_reviews(
     记为冲突、不覆盖。已变更的截止，这边还没有变更通知时整条先不导入：只导入"通过"会让
     已经变更的截止重新显示出来；等抓到变更通知后再导入一次即可。
     """
+    from youju import deadline_clues as clues
+    from youju import rewards
+
+    process_clues = rewards.enabled(get_settings())
+    if process_clues:
+        clues.lock_queue(session)
+    awarded_documents = set()
     counts = dict.fromkeys(
         ("applied", "already", "conflict", "missingDocument", "missingCandidate", "missingTarget"),
         0,
@@ -3139,6 +3380,10 @@ def import_reviews(
                 continue
         final = "rejected" if item.status == "rejected" else "approved"
         _apply_review(row, locked, final, item.reviewedBy, item.reviewedAt, item.approvedDate, at)
+        if process_clues:
+            clues.settle(session, row, item.reviewedAt)
+            if final == "approved":
+                awarded_documents.add(doc_id)
         if item.status == "changed":
             # 先写进事务：锁组查询会从数据库刷新记录，没写进去的核定日期会被刷掉
             session.flush()
@@ -3154,6 +3399,9 @@ def import_reviews(
         session.rollback()
     else:
         session.commit()
+    if not dry_run and process_clues:
+        for doc_id in sorted(awarded_documents):
+            clues.award_accepted(session, get_settings(), v1_api.now(), doc_id)
     _audit(request, "reviews_import", dry_run=dry_run, **counts)
     return {"dryRun": dry_run, **counts, "problems": problems}
 

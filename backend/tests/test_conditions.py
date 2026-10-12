@@ -367,7 +367,9 @@ def test_admin_api_requires_token(client):
 
 
 def test_queue_shows_items_with_highlight_context(session, client):
-    doc, row = extracted(session, due=date(2026, 10, 10))
+    # 排队分档按真实的今天算（接口不接受指定时间），截止日期要相对今天写：写死的日期过了那天就变成"已过截止"
+    due = datetime.now(UTC).astimezone(service.BEIJING).date() + timedelta(days=4)
+    doc, row = extracted(session, due=due)
     data = client.get("/api/admin/conditions", headers=HEADERS).json()
     assert client.get("/api/admin/conditions/count", headers=HEADERS).json() == {"pending": 1}
     assert len(data) == 1
@@ -376,7 +378,7 @@ def test_queue_shows_items_with_highlight_context(session, client):
         row.id,
         doc.id,
         0,
-        "2026-10-10",
+        due.isoformat(),
     )
     assert card["tier_label"] == "30 天内截止" and card["dropped"] == 7
     body = service.public_body(BODY)

@@ -120,6 +120,13 @@ def current_pass(
         .limit(1)
     )
     if lock:
+        # 开通收费之前，小程序接口用的数据库账号对这张表只有读权限，
+        # 而 MySQL 的 SELECT ... FOR UPDATE 要求账号有写权限：
+        # 没有使用期的用户（开通收费前的所有人）提交任务不能因此报错
+        # （10/10 线上实测：打开工具开关后提交名单返回 500）。先普通查询，查到了才加锁。
+        # 不会漏：调用方已经先锁了用户行，开通、顺延、收回使用期也都先锁用户。
+        if session.scalar(stmt) is None:
+            return None
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return session.scalar(stmt)
 
@@ -146,7 +153,7 @@ def pass_status(session: Session, user_id: int, stamp: datetime) -> dict:
 
 def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
     # last_used_at 是任务提交时的最少审计记录，删除、失败、取消均不抹去使用事实。
-    if ticket is None:
+    if ticket is None or ticket.order_id is None:
         return False
     return (
         ticket.last_used_at is not None
@@ -178,11 +185,22 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
     ticket = order_pass(session, order, lock=True)
+    if ticket is not None:
+        revoke_workbench_pass(session, ticket, stamp)
+
+
+def unused_pass_time(ticket: WorkbenchPass | None, stamp: datetime) -> timedelta:
     if ticket is None or ticket.revoked_at is not None:
+        return timedelta(0)
+    return max(timedelta(0), ticket.ends_at - max(stamp, ticket.starts_at))
+
+
+def revoke_workbench_pass(session: Session, ticket: WorkbenchPass, stamp: datetime) -> None:
+    """调用方先锁用户和该段；退款和奖励收回共用后续使用期的前移逻辑。"""
+    if ticket.revoked_at is not None:
         return
+    unused = unused_pass_time(ticket, stamp)
     ticket.revoked_at = stamp
-    # 一次买了两张、退掉前面那张时，后面排着的使用期往前挪，不留空档
-    unused = ticket.ends_at - max(stamp, ticket.starts_at)
     if unused <= timedelta(0):
         return
     for later in session.scalars(
@@ -193,6 +211,7 @@ def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
             WorkbenchPass.starts_at >= ticket.ends_at,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     ):
         later.starts_at -= unused
         later.ends_at -= unused
