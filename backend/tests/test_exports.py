@@ -521,3 +521,65 @@ def test_home_and_calendar_skip_restricted_sources(client, session, monkeypatch)
     assert all(item["id"] != str(doc.id) for item in home["items"])
     calendar = json.dumps(client.get("/api/v1/calendar").json(), ensure_ascii=False)
     assert "智能制造" not in calendar
+
+
+def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatch):
+    """D-061：小程序在请求体里带 excerpts=1（网址参数也认）。8–30 天的机器摘录在截止日期后写
+    "（机器摘录）"，旁边一列放原句；说明里写明未经人工核对。不带时和以前一样，不出现候选日期。"""
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from youju.api import v1
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    source = session.scalar(select(Source))
+    stamp = datetime.now(UTC)
+    doc = Document(
+        source_id=source.id,
+        url="https://gxt.ln.gov.cn/9.html",
+        url_key="gxt.ln.gov.cn/9.html",
+        title="辽宁省关于组织申报2026年度工业项目的通知",
+        publish_date=date(2026, 10, 9),
+        first_seen_at=stamp,
+        last_seen_at=stamp,
+    )
+    session.add(doc)
+    session.flush()
+    quote = "请于2026年10月25日前将申报材料报送至省工业和信息化厅。"
+    session.add(
+        DocumentDetail(
+            document_id=doc.id, body_text=f"一、申报要求\n{quote}", status="ok", fetched_at=stamp
+        )
+    )
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="excerpt",
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 25),
+            evidence=quote,
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+
+    def sheet(**request):
+        response = client.post("/api/v1/exports", **request)
+        assert response.status_code == 200, response.text
+        book = load_workbook(BytesIO(response.content))
+        rows = [[cell.value for cell in row] for row in book["文件清单"].iter_rows()]
+        return dict(zip(rows[0], rows[1], strict=False)), book["数据说明"]["B1"].value
+
+    body = {"ids": [str(doc.id)], "format": "xlsx"}
+    for request in ({"json": {**body, "excerpts": 1}}, {"json": body, "params": {"excerpts": 1}}):
+        row, notice = sheet(**request)
+        assert row["截止日期"] == "2026-10-25（机器摘录）"
+        assert row["截止原文句子"] == quote
+        assert "机器摘录" in notice and "未经人工核对" in notice
+    row, notice = sheet(json=body)
+    assert "截止原文句子" not in row and "2026-10-25" not in str(row["截止日期"])
+    assert "机器摘录" not in notice

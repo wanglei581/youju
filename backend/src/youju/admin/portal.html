@@ -120,7 +120,7 @@
   const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
   const names = {round:'每轮抓取',backup:'备份','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务','pay-run':'支付补单和退款','pay-reconcile':'支付对账'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
-  let token = '', active = 'overview', next = null, sequence = 0, due = '30';
+  let token = '', active = 'overview', next = null, sequence = 0, due = '7';
   window.getYoujuAdminToken = () => token;
   function node(tag, text, className) { const e=document.createElement(tag); if(text !== undefined) e.textContent=text; if(className) e.className=className; return e; }
   function stamp(value) { return value ? new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) : '—'; }
@@ -183,7 +183,7 @@
         todo.append(progress);
       }
       todo.append(grid);
-      [['截止日期 · 全部','deadlines','review','all'],['截止日期 · 30 天内','deadlines_30','review','30'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      [['截止日期 · 7 天内','deadlines_7','review','7'],['截止日期 · 30 天内','deadlines_30','review','30'],['截止日期 · 全部','deadlines','review','all'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
       if(d.pay) todo.append(node('p',`支付待办 ${d.todos.pay} 项`));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
       todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));

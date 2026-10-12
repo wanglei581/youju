@@ -176,6 +176,55 @@ def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_deadline_excerpts(args: argparse.Namespace) -> int:
+    """只读抽查：仅展示汇总，不输出正文或候选日期。"""
+    from youju.api import v1
+    from youju.classify import effective_kind
+    from youju.deadline_excerpts import batch
+    from youju.models import DocumentDeadline
+
+    with session_factory()() as session:
+        candidates = list(
+            session.scalars(
+                select(DocumentDeadline.document_id)
+                .where(DocumentDeadline.status.in_(("pending", "approved")))
+                .distinct()
+                .order_by(DocumentDeadline.document_id.desc())
+                .limit(args.sample * 10)
+            )
+        )
+        raw = [
+            doc.id
+            for doc, _ in session.execute(
+                v1._base().where(Document.id.in_(candidates)).order_by(Document.id.desc())
+            )
+            if effective_kind(doc.title, doc.kind_override) == "申报通知"
+        ][: args.sample]
+        approved = v1._approved(session, raw)
+        views, _, reasons = batch(session, raw, approved, v1.now().date())
+    counts = Counter(view.source for entries in views.values() for view in entries)
+    names = {"verified": "已核对", "excerpt": "机器摘录", "unverified": "不写日期"}
+    print(
+        f"抽查 {len(raw)} 份通知，按截止类型计："
+        + "，".join(f"{names[source]} {counts[source]}" for source in names)
+    )
+    print(
+        "不写日期的原因："
+        + "，".join(
+            f"{reason} {reasons[reason]}"
+            for reason in (
+                "7 天内",
+                "30 天以后",
+                "过期",
+                "冲突",
+                "日期不在原句里",
+                "原句不在正文里",
+            )
+        )
+    )
+    return 0
+
+
 def _cmd_repost_groups(_: argparse.Namespace) -> int:
     """按转发归组规则增量更新转发组（D-055）：新组和新加入的版本都待确认，确认后才对外合并。"""
     from youju.repost import rebuild
@@ -911,6 +960,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
     p.set_defaults(func=_cmd_extract_deadlines)
+    p = sub.add_parser("deadline-excerpts", help="只读检查截止摘录来源与拦下原因")
+    p.add_argument("--sample", type=int, default=50)
+    p.set_defaults(func=_cmd_deadline_excerpts)
 
     sub.add_parser(
         "repost-groups",

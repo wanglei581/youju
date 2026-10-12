@@ -1104,6 +1104,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         reviewed[row.status].append(row)
     reviewed_counts = {status: len(_distinct(session, rows)) for status, rows in reviewed.items()}
     pending_all = pending_count(session, None, "all")["pending"]
+    pending_7 = pending_count(session, None, "7")["pending"]
     pending_30 = pending_count(session, None, "30")["pending"]
     latest_ids = (
         select(
@@ -1146,6 +1147,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             + pay["reconciliation_pending"]
             + pay["reconciliation_failed"],
             "deadlines": pending_all,
+            "deadlines_7": pending_7,
             "deadlines_30": pending_30,
             "fields": field_pending_count(session, None)["pending"],
             "conditions": pending_conditions(session),
@@ -1256,10 +1258,13 @@ def admin_quality_sample(
     )
 
 
-DueFilter = Literal["all", "30", "future"]
+DueFilter = Literal["all", "7", "30", "future"]
 DueQuery = Annotated[
     DueFilter,
-    Query(description="只看哪些：all 全部；30 未过期且 30 天内截止；future 未过期"),
+    Query(
+        description="只看哪些：all 全部；7 未过期且 7 天内截止；30 未过期且 30 天内截止；"
+        "future 未过期"
+    ),
 ]
 
 
@@ -1268,15 +1273,25 @@ def _due_condition(due: DueFilter):
     if due == "all":
         return None
     today = v1_api.now().date()
-    if due == "30":
-        return DocumentDeadline.candidate_date.between(today, today + timedelta(days=30))
+    if due in ("7", "30"):
+        return DocumentDeadline.candidate_date.between(today, today + timedelta(days=int(due)))
     return DocumentDeadline.candidate_date >= today
+
+
+def _queue_kind():
+    """待核对队列只列申报通知（D-061）：职称、验收、征求意见等被类型规则剔出申报通知的，
+    候选留在库里但不进队列，免得核对的时间花在不显示截止日期的文件上；类型改回来会重新出现。"""
+    return v1_api._kind_is(["申报通知"])
 
 
 @app.get("/api/admin/deadlines/count")
 def pending_count(session: SessionDep, _admin: AdminDep, due: DueQuery = "all") -> dict[str, int]:
     """待核对条数，与列表同一规则：归并组里相同的候选只算一条。"""
-    stmt = select(DocumentDeadline).where(DocumentDeadline.status == "pending")
+    stmt = (
+        select(DocumentDeadline)
+        .join(Document, DocumentDeadline.document_id == Document.id)
+        .where(DocumentDeadline.status == "pending", _queue_kind())
+    )
     condition = _due_condition(due)
     if condition is not None:
         stmt = stmt.where(condition)
@@ -2667,7 +2682,7 @@ def pending_deadlines(
         select(DocumentDeadline, Document, Source)
         .join(Document, DocumentDeadline.document_id == Document.id)
         .join(Source, Document.source_id == Source.id)
-        .where(DocumentDeadline.status == "pending")
+        .where(DocumentDeadline.status == "pending", _queue_kind())
     )
     condition = _due_condition(due)
     if condition is not None:

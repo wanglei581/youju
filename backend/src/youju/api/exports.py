@@ -14,7 +14,7 @@ from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 from docx import Document as WordDocument
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -54,6 +54,18 @@ NOTICE = (
     "“日期角色”是人工核对时确认的截止类型；“支持方式”只写申报通知里人工核对通过的；"
     "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
+EXCERPT_NOTICE = "标“机器摘录”的截止日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+
+
+def _notice(excerpts: bool) -> str:
+    if not excerpts:
+        return NOTICE
+    return (
+        NOTICE.replace("截止日期只列人工核对通过的记录，", "截止日期包含人工核对过的和机器摘录的，")
+        + EXCERPT_NOTICE
+    )
+
+
 # 日期角色：没有人工核对过的截止时固定写这句，不写任何日期（未核对的候选日期不进导出文件）
 ROLE_SEE_ORIGINAL = "截止时间见原文"
 
@@ -61,6 +73,8 @@ ROLE_SEE_ORIGINAL = "截止时间见原文"
 class ExportIn(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=200)
     format: Literal["xlsx", "docx"]
+    # 首发版小程序（D-061）在请求体里带 excerpts=1；网址参数 ?excerpts=1 也认
+    excerpts: Literal[1] | None = None
 
 
 @dataclass
@@ -83,6 +97,7 @@ class ExportItem:
     source_checked: str
     deadline_checked: str
     change_checked: str
+    deadline_quote: str = ""
 
 
 def _date_time(value: datetime | None) -> str:
@@ -127,7 +142,7 @@ def _is_web_url(url: str) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
-def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
+def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list[ExportItem]:
     valid: list[tuple[str, int]] = []
     invalid: list[str] = []
     for raw in raw_ids:
@@ -235,6 +250,13 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
     }
     # 已核对的支持方式和详情页同一口径（当前正文、一级来源、人工通过）
     approved_fields = v1._approved_fields(session, ordered)
+    excerpt_views = {}
+    if excerpts:
+        from youju.deadline_excerpts import batch
+
+        excerpt_views, _, _ = batch(
+            session, ordered, v1._approved(session, ordered), v1.now().date()
+        )
     target_masters = canonical_ids(session, target_ids)
     titles = {
         doc_id: title
@@ -290,6 +312,22 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 roles.append(f"{d.kind}（已{d.change_reason}）")
                 seen.add(key)
         kind = effective_kind(doc.title, doc.kind_override)
+        excerpt_quote = ""
+        if excerpts and kind == "申报通知":
+            from youju.deadline_excerpts import selected
+
+            due = selected(excerpt_views.get(master, []))
+            if due and due.day:
+                notes = [
+                    due.day.isoformat()
+                    + (f" {due.clock.strftime('%H:%M')}" if due.clock else "")
+                    + ("（机器摘录）" if due.source == "excerpt" else "")
+                ]
+                roles = [due.kind]
+                excerpt_quote = due.quote or ""
+            elif excerpt_views.get(master):
+                notes = ["截止未核对，以原文为准"]
+                roles = ["截止未核对"]
         # 支持方式：和详情页"支持方式（已核对原文）"同一来源、同样叫法，只有申报通知有；
         # 不用按标题归类的筛选标签（rule_supports）
         supports = approved_fields.get(master, {}).get("support", [])
@@ -338,6 +376,7 @@ def _items(session: Session, raw_ids: list[str]) -> list[ExportItem]:
                 source_checked="、".join(source_dates) or "未记录",
                 deadline_checked="、".join(review_dates) or "未记录",
                 change_checked="、".join(change_dates) or "未记录",
+                deadline_quote=excerpt_quote,
             )
         )
     return result
@@ -350,12 +389,13 @@ def _cell(sheet, row: int, column: int, value: str | int) -> None:
     cell.alignment = Alignment(vertical="top", wrap_text=True)
 
 
-def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
+def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
     book = Workbook()
     sheet = book.active
     sheet.title = "文件清单"
     max_urls = max(len(item.urls) for item in items)
-    headers = [*HEADERS, "原文链接", *(f"原文链接 {n}" for n in range(2, max_urls + 1))]
+    headings = [*HEADERS, *(["截止原文句子"] if excerpts else [])]
+    headers = [*headings, "原文链接", *(f"原文链接 {n}" for n in range(2, max_urls + 1))]
     for column, title in enumerate(headers, 1):
         _cell(sheet, 1, column, title)
         sheet.cell(1, column).font = Font(bold=True)
@@ -373,11 +413,12 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
             item.date_role,
             item.support,
             item.unchecked,
+            *([item.deadline_quote] if excerpts else []),
             *item.urls,
         )
         for column, value in enumerate(values, 1):
             _cell(sheet, row, column, value)
-        for column, url in enumerate(item.urls, len(HEADERS) + 1):
+        for column, url in enumerate(item.urls, len(headings) + 1):
             if _is_web_url(url):
                 sheet.cell(row, column).hyperlink = url
                 sheet.cell(row, column).font = Font(color="0563C1", underline="single")
@@ -386,11 +427,11 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
     widths = {"标题": 60, "截止日期": 60, "日期角色": 26, "支持方式": 22, "未核项": 22}
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[sheet.cell(1, column).column_letter].width = (
-            60 if column > len(HEADERS) else widths.get(HEADERS[column - 1], 18)
+            60 if column > len(headings) else widths.get(headings[column - 1], 18)
         )
 
     note = book.create_sheet("数据说明")
-    note.append(["数据说明", NOTICE])
+    note.append(["数据说明", _notice(excerpts)])
     note.append(["导出时间（北京时间）", stamp])
     note.append(
         ["序号", "文件编号", "来源网站", "来源核对日期", "截止日期核对日期", "变更核对日期"]
@@ -416,10 +457,10 @@ def _xlsx(items: list[ExportItem], stamp: str) -> bytes:
     return output.getvalue()
 
 
-def _docx(items: list[ExportItem], stamp: str) -> bytes:
+def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
     book = WordDocument()
     book.add_heading("有据导出 · 数据说明", 0)
-    book.add_paragraph(NOTICE)
+    book.add_paragraph(_notice(excerpts))
     book.add_paragraph(DISCLAIMER)
     book.add_paragraph(SEARCH_NOTICE)
     book.add_paragraph(f"导出时间（北京时间）：{stamp}")
@@ -454,6 +495,7 @@ def _docx(items: list[ExportItem], stamp: str) -> bytes:
             ("发布日期", item.published),
             ("地区", item.region),
             ("截止日期", item.deadline),
+            *([("截止原文句子", item.deadline_quote)] if excerpts else []),
             ("日期角色", item.date_role),
             ("支持方式", item.support),
             ("未核项", item.unchecked),
@@ -523,7 +565,12 @@ def _allow_export(caller: str, now: float) -> str | None:
 
 
 @router.post("/exports")
-def export_documents(payload: ExportIn, session: SessionDep, request: Request) -> Response:
+def export_documents(
+    payload: ExportIn,
+    session: SessionDep,
+    request: Request,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
+) -> Response:
     refused = _allow_export(_caller(request), clock.monotonic())
     if refused == "user":
         raise HTTPException(status_code=429, detail="导出太频繁，请 10 分钟后再试")
@@ -532,15 +579,18 @@ def export_documents(payload: ExportIn, session: SessionDep, request: Request) -
     if not _export_slots.acquire(timeout=_EXPORT_SLOTS_WAIT):
         raise HTTPException(status_code=503, detail="现在导出的人多，请稍后再试")
     try:
-        return _export(payload, session)
+        return _export(payload, session, excerpts == 1 or payload.excerpts == 1)
     finally:
         _export_slots.release()
 
 
-def _export(payload: ExportIn, session: Session) -> Response:
-    items = _items(session, payload.ids)
+def _export(payload: ExportIn, session: Session, excerpts: bool = False) -> Response:
+    items = _items(session, payload.ids, True) if excerpts else _items(session, payload.ids)
     stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-    data = _xlsx(items, stamp) if payload.format == "xlsx" else _docx(items, stamp)
+    if payload.format == "xlsx":
+        data = _xlsx(items, stamp, True) if excerpts else _xlsx(items, stamp)
+    else:
+        data = _docx(items, stamp, True) if excerpts else _docx(items, stamp)
     if len(data) >= MAX_BYTES:
         raise HTTPException(status_code=413, detail="导出文件超过 1000 KiB，请减少文件数量")
     filename = f"有据导出_{stamp[:10]}.{payload.format}"

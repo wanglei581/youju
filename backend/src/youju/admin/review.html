@@ -98,7 +98,8 @@
         <option value="group">同一转发组放在一起</option>
       </select>
       <select id="due" aria-label="只看哪些候选">
-        <option value="30" selected>30 天内截止</option>
+        <option value="7" selected>7 天内截止</option>
+        <option value="30">30 天内截止</option>
         <option value="future">未过期</option>
         <option value="all">全部（含已过期）</option>
       </select>
@@ -110,7 +111,7 @@
   <p class="hint">快捷键：j / k 下一张 / 上一张；a 通过；x 驳回；e 修改日期（Enter 改日期后通过）；u 撤回上一次；r 重新载入。输入框内不触发快捷键。</p>
   <div class="row hint"><button id="undoLast" disabled>撤回上一次</button></div>
   <div id="reviewNotice" class="review-notice" role="status" hidden><span id="reviewNoticeText"></span> <button id="undoNotice" disabled>撤回</button><span id="undoError" class="msg"></span></div>
-  <p class="hint">列表按核对顺序排：30 天内截止的在前，其中标"建议通过"（规则和 AI 找到同一天、同一类型，证据句里写着这个日期）的最前；其余按截止日期从早到晚，已过期的最后。"建议通过"只是参考，不会自动通过。日期旁的色条是截止类型：蓝色企业申报截止，橙色推荐或审核截止，绿色材料报送截止，红色其他（不是申报截止，通过前尤其要看清）。</p>
+  <p class="hint">每天先核"7 天内截止"的：小程序里 7 天内到期的只显示核对过的日期（D-061）；核完再切到"30 天内截止"。只列申报通知。列表按核对顺序排：30 天内截止的在前，其中标"建议通过"（规则和 AI 找到同一天、同一类型，证据句里写着这个日期）的最前；其余按截止日期从早到晚，已过期的最后。"建议通过"只是参考，不会自动通过。日期旁的色条是截止类型：蓝色企业申报截止，橙色推荐或审核截止，绿色材料报送截止，红色其他（不是申报截止，通过前尤其要看清）。</p>
   <p class="hint">转发组：同一份部里通知的各地版本（如江西版、福建版）。卡片下方列出同组其他版本的截止候选，方便对照；各版本的推荐截止、报送要求常常不同，只能按本版原文核对，不同版本的日期不互相套用，也没有整组通过。选“同一转发组放在一起”可以一次看完一件事。</p>
   <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
   <details class="card tools">
@@ -149,7 +150,7 @@
   let pending = 0;
   let cursor = null; // 已载入的最后一条的排序键（order_key，翻页游标）
   // 只看哪些：先核快到期的；已过期的核了也进不了日历
-  const DUE_LABEL = { '30': '30 天内截止', future: '未过期', all: '全部' };
+  const DUE_LABEL = { '7': '7 天内截止', '30': '30 天内截止', future: '未过期', all: '全部' };
   const due = () => $('due').value;
   const order = () => ($('order').value === 'group' ? 'group' : 'priority');
   let loadSeq = 0;

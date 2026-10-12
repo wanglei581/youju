@@ -164,11 +164,16 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch, tmp_p
         for row in book["客户相关通知"].iter_rows(min_row=3)
         if row[0].value == "北京客户"
     ]
-    assert [row[5] for row in rows] == ["已核对", "已核对", "已核对", "未核对，请以原文为准"]
+    assert [row[5] for row in rows] == [
+        "已人工核对",
+        "已人工核对",
+        "已人工核对",
+        "未核对，请以原文为准",
+    ]
     assert [row[7] is not None for row in rows] == [True, True, True, False]
     # 有具体时间的连时间一起写（Codex 10/12 审查：要么只写日期，要么写明带时间；这里选带时间，不丢信息）
     assert all(row[7] is None or row[7][:4] == "2026" for row in rows)
-    assert [row[8] for row in rows] == [5, 10, 31, None]
+    assert [row[9] for row in rows] == [5, 10, 31, None]
     summary = {
         row[0].value: [cell.value for cell in row] for row in book["汇总"].iter_rows(min_row=3)
     }
@@ -212,9 +217,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     session.commit()
     report = track_clients(session, [CustomerProfile("客户", "北京")])
     assert {item.document_id for item in report.items} == {recent.id, boundary.id, closed.id}
-    assert all(
-        item.as_dict()["deadline_status"] == "截止未核对，请以原文为准" for item in report.items
-    )
+    assert all(item.as_dict()["deadline_status"] == "未核对，请以原文为准" for item in report.items)
     # 没核对的排在后面，新发布的先（发布 1 天的两份在前，90 天的在后）
     assert {item.document_id for item in report.items[:2]} == {recent.id, closed.id}
     assert report.items[-1].document_id == boundary.id
@@ -231,6 +234,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "截止核对情况",
         "截止类型",
         "截止日期",
+        "截止原文句子",
         "剩余天数",
         "支持方式",
         "原文链接",
@@ -244,14 +248,14 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     assert [cell.value for cell in summary[2]] == [
         "客户名称",
         "通知数",
-        "已核对截止日期的",
+        "人工核对过截止日期的",
         "7 天内截止",
         "14 天内截止",
         "30 天内截止",
         "截止未核对的",
     ]
     assert [cell.value for cell in summary[3]] == ["客户", 3, 0, "未核对", "未核对", "未核对", 3]
-    assert "只数已核对截止日期的通知" in summary["A1"].value
+    assert "“7 天内截止”只数人工核对过的" in summary["A1"].value
     session.add(
         DocumentDeadline(
             document_id=closed.id,
@@ -267,3 +271,64 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     session.commit()
     report = track_clients(session, [CustomerProfile("客户", "北京")])
     assert {item.document_id for item in report.items} == {recent.id, boundary.id}
+
+
+def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
+    """D-061：8–30 天的机器摘录写日期、标"机器摘录，未经人工核对"并附原句；汇总里 7 天只认人工核对的，
+    14、30 天另含机器摘录的；能看到日期的一条都没有时写"未核对"。"""
+    stamp = datetime(2026, 10, 12, 9, tzinfo=BJ)
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+    source = Source(
+        level="省级",
+        province="北京",
+        dept="科技",
+        dept_full_name="北京科技部门",
+        column_name="通知",
+        url="https://example.gov.cn/notices",
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    document = Document(
+        source_id=source.id,
+        title="机器摘录项目申报通知",
+        url="https://example.gov.cn/excerpt",
+        url_key="example/excerpt",
+        publish_date=stamp.date() - timedelta(days=3),
+        first_seen_at=stamp,
+        last_seen_at=stamp,
+    )
+    session.add(document)
+    session.flush()
+    quote = "请于2026年11月1日前完成网上申报。"
+    session.add(
+        DocumentDetail(
+            document_id=document.id,
+            body_text=f"一、申报要求\n{quote}\n二、其他",
+            status="ok",
+            fetched_at=stamp,
+        )
+    )
+    session.add(
+        DocumentDeadline(
+            document_id=document.id,
+            fingerprint="excerpt",
+            kind="企业申报截止",
+            candidate_date=date(2026, 11, 1),
+            evidence=quote,
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    report = track_clients(session, [CustomerProfile("客户", "北京")])
+    [item] = report.items
+    assert item.as_dict()["deadline_status"] == "机器摘录，未经人工核对"
+    assert item.as_dict()["deadline_quote"] == quote and item.remaining_days == 20
+    output = tmp_path / "excerpt.xlsx"
+    export_track_excel(report, output)
+    book = load_workbook(output)
+    row = [cell.value for cell in book["客户相关通知"][3]]
+    assert row[5:10] == ["机器摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
+    summary = [cell.value for cell in book["汇总"][3]]
+    assert summary == ["客户", 1, 0, "未核对", 0, 1, 1]
