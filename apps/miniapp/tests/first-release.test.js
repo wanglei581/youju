@@ -31,7 +31,7 @@ function load(file, deps = {}, globals = {}) {
 
 test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 天以后才写日期；其余只写截止未核对', () => {
   const verified = format.dueView({ kind: '企业申报截止', source: 'verified', date: plus(3), time: '17:00', quote: null });
-  assert.equal(verified.label, '已核对'); assert.equal(verified.days, 3); assert.equal(verified.tone, 'urgent');
+  assert.equal(verified.label, '已人工核对'); assert.equal(verified.days, 3); assert.equal(verified.tone, 'urgent');
   assert.match(verified.text, /17:00截止 · 剩3天/);
   const excerpt = format.dueView({ kind: '企业申报截止', source: 'excerpt', date: plus(12), time: null, quote: QUOTE });
   assert.equal(excerpt.label, '机器摘录·未经人工核对'); assert.equal(excerpt.quote, QUOTE); assert.equal(excerpt.tone, 'excerpt');
@@ -93,13 +93,13 @@ test('详情页：一份通知几种截止逐条写类型；已核对、机器�
   const page = detailPage(() => ({ ...DOC, deadlines }));
   page.onLoad({ id: '5' }); await flush();
   assert.deepEqual(page.data.dls.map((v) => [v.kind, v.source, v.label]), [
-    ['企业申报截止', 'excerpt', '机器摘录·未经人工核对'], ['推荐或审核截止', 'verified', '已核对'], ['材料报送截止', 'unverified', ''],
+    ['企业申报截止', 'excerpt', '机器摘录·未经人工核对'], ['推荐或审核截止', 'verified', '已人工核对'], ['材料报送截止', 'unverified', ''],
   ]);
   const root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const rows = findAll(root, hasClass('dl'));
   assert.equal(rows.length, 3);
   assert.match(flat(rows[0]), /^企业申报截止.*17:00剩20天机器摘录·未经人工核对原文：请于2026年10月30日前/);
-  assert.match(flat(rows[1]), /^推荐或审核截止.*剩25天已核对$/);
+  assert.match(flat(rows[1]), /^推荐或审核截止.*剩25天已人工核对$/);
   assert.equal(flat(rows[2]), '材料报送截止截止未核对，请以原文为准');
   assert.doesNotMatch(textOf(rows[2]), DIGITS);
   // 有逐条截止时，不再另出旧的"申报截止"说明卡片
@@ -141,11 +141,11 @@ test('截止页（列表）：已核对、机器摘录分开标，摘录带原�
   assert.equal(main[0].params.days, 7); assert.equal(main[0].opts.verifiedOnly, false);
   assert.ok(calls.every((c) => !('support' in c.params)));
   assert.deepEqual(page.data.rows.map((r) => [r.docId, r.source, r.srcLabel]), [
-    ['1', 'verified', '已核对'], ['2', 'excerpt', '机器摘录·未经人工核对'], ['3', 'unverified', ''],
+    ['1', 'verified', '已人工核对'], ['2', 'excerpt', '机器摘录·未经人工核对'], ['3', 'unverified', ''],
   ]);
   const root = render('pages/report/index.wxml', page.data);
   const items = findAll(root, hasClass('item'));
-  assert.match(flat(items[0]), /企业申报截止.*17:00剩5天已核对/);
+  assert.match(flat(items[0]), /企业申报截止.*17:00剩5天已人工核对/);
   assert.match(flat(items[1]), /剩12天机器摘录·未经人工核对原文：请于2026年10月30日前/);
   assert.match(flat(items[2]), /材料报送截止：截止未核对，请以原文为准/); assert.doesNotMatch(flat(items[2]).replace(/^摘录没带原句的通知/, ''), /剩/);
   const soon = findAll(root, hasClass('soon'))[0];

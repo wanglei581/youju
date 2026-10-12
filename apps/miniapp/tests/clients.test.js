@@ -144,7 +144,7 @@ test('相关通知：每组条件取 50 份，合并后一条一行；分客户�
   assert.deepEqual(plain(page.data.counts), { c1: 2, c2: 2, c3: 2 });
   assert.equal(page.data.truncated, true);
   const root = render('pages/clients/index.wxml', page.data);
-  assert.deepEqual(findAll(root, hasClass('involved')).map(textOf), ['涉及：本机客户名称、乙公司、丙公司', '涉及：丙公司', '涉及：本机客户名称、乙公司']);
+  assert.deepEqual(findAll(root, hasClass('involved')).map(textOf), ['相关客户：本机客户名称、乙公司、丙公司', '相关客户：丙公司', '相关客户：本机客户名称、乙公司']);
   assert.match(textOf(findAll(root, hasClass('export-btn'))[0]), /导出这 3 份/);
   page.pickOnly(tap({ id: 'c3' })); assert.deepEqual(plain(page.data.shown.map((r) => r.id)), ['2', '1']);
   page.exportShown();

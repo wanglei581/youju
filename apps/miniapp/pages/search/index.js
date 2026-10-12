@@ -48,7 +48,7 @@ const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category
 const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
-const OPEN_NOTE = '“只看未截止”不含截止日期没抽到、或几个日期对不上的通知，可以去掉这个条件再看';
+const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';
 const PAGE = 20;
 
 // 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算

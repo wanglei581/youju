@@ -7,11 +7,11 @@
     <view class="seg-item {{tab === 'cards' ? 'seg-item--on' : ''}}" data-tab="cards" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'cards'}}">客户卡片 {{clients.length}}</view>
   </view>
 
-  <!-- 相关通知：一条通知一行，写明涉及哪几家客户（D-061） -->
+  <!-- 相关通知：一条通知一行，写明和哪几家客户有关（D-061），不判断能不能报 -->
   <block wx:if="{{tab === 'docs'}}">
     <view wx:if="{{!clients.length}}" class="card empty">
       <view class="empty-title">还没有客户</view>
-      <view class="muted empty-sub">添加客户的地区和产业方向，这里会把和他们相关的申报通知一条一行列出来，写明涉及哪几家、什么时候截止。</view>
+      <view class="muted empty-sub">添加客户的地区和产业方向，这里会按地区和产业方向把相关的申报通知一条一行列出来，写明和哪几家客户有关、什么时候截止。不判断客户能不能申报。</view>
       <view class="btn-primary empty-btn" bindtap="edit" aria-role="button">新增客户</view>
     </view>
     <block wx:else>
@@ -21,14 +21,14 @@
           <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
         </view>
       </scroll-view>
-      <view class="weak scope-note">近 90 天发布的申报通知，快截止的排在前面；已核对、确认已截止的不列。</view>
+      <view class="weak scope-note">按你填的地区和产业方向列出近 90 天发布的申报通知，不判断客户能不能申报；快截止的排在前面，已核对、确认已截止的不列。</view>
       <view wx:if="{{loadError}}" class="card load-error"><text>{{loadError}}</text><text class="link retry" bindtap="reload">重试</text></view>
       <view class="card list">
         <view wx:if="{{loading}}" class="message weak">正在加载…</view>
         <block wx:else>
           <view wx:for="{{shown}}" wx:key="id" class="doc">
             <doc-row doc="{{item.doc}}" today="{{today}}" last="{{true}}" />
-            <view class="involved">涉及：{{item.names}}</view>
+            <view class="involved">相关客户：{{item.names}}</view>
           </view>
           <view wx:if="{{loaded && !shown.length && !loadError}}" class="message muted">近 90 天没有和{{only ? '这家客户' : '这些客户'}}相关的申报通知</view>
         </block>
@@ -36,7 +36,7 @@
       <view wx:if="{{truncated && !loading}}" class="weak scope-note">有的客户相关通知较多，每组地区和产业方向只列最新的 50 份。</view>
       <view wx:if="{{shown.length && !loading}}" class="export-bar">
         <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">导出这 {{shown.length}} 份</view>
-        <view class="weak export-note">导出的表里没有客户名称（客户信息不上传）。</view>
+        <view class="weak export-note">客户名称只存在本机，导出的表里不含客户名称。</view>
       </view>
     </block>
   </block>

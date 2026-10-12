@@ -198,7 +198,7 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   assert.equal(calls.at(-1).levels, undefined);
   assert.equal(page.data.emptyHint, '');
   page.onLoad({ open: '1' }); await flush();
-  assert.match(page.data.emptyHint, /“只看未截止”不含截止日期没抽到、或几个日期对不上的通知/);
+  assert.match(page.data.emptyHint, /“只看未截止”不含没写明截止日期、或截止日期还没理清的通知/);
   assert.doesNotMatch(page.data.emptyHint, DIGITS);
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');
