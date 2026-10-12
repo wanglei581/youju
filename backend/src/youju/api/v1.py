@@ -2377,3 +2377,47 @@ def lookup_lists(
         "truncated": lookup.truncated,
         "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
     }
+
+
+# 首屏快照（10/12 冷启动诊断）：接口服务空闲后缩到 0 个实例，实测空闲 25 分钟后 67 秒才取到数据。
+# admin 服务常驻 1 个实例、不会冷启动：小程序打开时先从它取首页、截止页默认视图、
+# 查名单要用的公开数据，接口服务醒了再换成实时的。admin 上只认经小程序云调用来的请求
+# （带 X-WX-SOURCE，见 app._role_guard），公网直接访问是 404，不对外开放数据接口（D-050）。
+# 只有公开数据、不按用户区分：调首页时用一个不带请求头的空请求，认不出用户
+# （不带"你关注的条件"那一栏）。
+# 按北京时间日期缓存 60 秒。
+_SNAPSHOT_CACHE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
+SNAPSHOT_TTL = 60
+
+
+@router.get("/snapshot")
+def snapshot(session: SessionDep) -> dict[str, Any]:
+    """首屏快照：home（同 /home?group=1&excerpts=1，列表换成最新 8 份申报通知，不带机器摘录）、
+    deadlines（同 /reports/deadlines?days=7&excerpts=1）、lists（同 /lists/recent?group=1）、
+    scope（同 /reports/lists 的 stats）。"""
+    current = now()
+    key = (current.astimezone(_TZ).date(),)
+    stamp = _time.monotonic()
+    cached = _SNAPSHOT_CACHE.get("first")
+    if cached and cached[0] == key and stamp - cached[1] < SNAPSHOT_TTL:
+        return cached[2]
+    anonymous = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/home",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+    first = home(anonymous, session, excerpts=1, group=1)
+    first["items"] = search(session, kind="申报通知", limit=8, offset=0, group=1)["items"]
+    payload = {
+        "generatedAt": current.astimezone(_TZ).isoformat(timespec="seconds"),
+        "home": first,
+        "deadlines": deadline_report(session, excerpts=1, days=7, page=1, size=20),
+        "lists": recent_lists(session, limit=20, offset=0, group=1),
+        "scope": list_board_report(session, days=30, page=1, size=1)["stats"],
+    }
+    _SNAPSHOT_CACHE["first"] = (key, stamp, payload)
+    return payload

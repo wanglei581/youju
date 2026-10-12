@@ -10,7 +10,7 @@
 <view class="tabs" aria-role="tablist">
   <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
     <t-icon wx:if="{{!item.key}}" name="calendar" size="40rpx" />
-    <text wx:else class="num">{{tab && (loading || error) && !cachedText ? '—' : summary[item.key]}}</text>
+    <text wx:else class="num">{{tab && (loading || error) && !prefilled ? '—' : summary[item.key]}}</text>
     <text>{{item.label}}</text>
   </view>
 </view>
@@ -82,7 +82,7 @@
 </view>
 
 <!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061） -->
-<view wx:if="{{soon.total && (cachedText || (!loading && !error))}}" class="card soon">
+<view wx:if="{{soon.total && (prefilled || (!loading && !error))}}" class="card soon">
   <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>

@@ -184,8 +184,11 @@ async def _role_guard(request: Request, call_next):
     mini_path = path.startswith("/api/v1/") or path == getattr(
         get_settings(), "wx_push_path", "/api/wx/push"
     )
+    # 首屏快照（10/12 冷启动）：admin 常驻不冷启动，小程序打开时先从它取；
+    # 只认经云调用来的（带 X-WX-SOURCE）
+    snapshot = path == "/api/v1/snapshot" and bool(request.headers.get("X-WX-SOURCE"))
     blocked = (role == "api" and not (mini_path or path == "/health")) or (
-        role == "admin" and not (admin_path or path == "/health")
+        role == "admin" and not (admin_path or path == "/health" or snapshot)
     )
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})

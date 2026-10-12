@@ -372,3 +372,67 @@ test('查名单先显示上次存在本机的最近名单和比对范围；取�
   assert.equal(page.data.cachedText, ''); assert.equal(page.data.shown[0].title, '新名单');
   assert.equal(stored.youjuListsCacheV1.data.items[0].title, '新名单');
 });
+
+test('首屏快照（10/12 冷启动）：只向常驻的 admin 要一次，60 秒内各页共用；取不到返回 null，不重试', async () => {
+  const calls = []; let now = 1000; let reply = (o) => o.success({ statusCode: 200, data: { home: { stats: {} }, deadlines: {}, lists: {} } });
+  const api = load('utils/api.js', {
+    './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
+    '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
+  }, { Date: { now: () => now }, wx: { cloud: { callContainer: (o) => { calls.push([o.path, o.header['X-WX-SERVICE']]); reply(o); } } } });
+  const a = await api.snapshotOnce(); const b = await api.snapshotOnce();
+  assert.ok(a && a.home); assert.equal(a, b);
+  assert.deepEqual(calls, [['/api/v1/snapshot', 'admin']]);
+  now += 61000; reply = (o) => o.success({ statusCode: 503, data: {} });
+  assert.equal(await api.snapshotOnce(), null);
+  assert.equal(calls.length, 2);
+  // 演示数据（没配云环境）不取
+  const demo = load('utils/api.js', {
+    './config.js': { cloudEnv: '', cloudService: '', devBaseUrl: '', templates: {} }, '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
+  }, { wx: {} });
+  assert.equal(await demo.snapshotOnce(), null);
+});
+
+test('首屏快照：首页、截止页、查名单在实时数据回来前先显示快照，之后实时的失败不报错、成功就换成实时的', async () => {
+  const snap = {
+    home: { stats: { week_total: 1, provinces: 28, sources: 70 }, items: [{ id: '1', kind: '申报通知', title: '快照里的' }], dueSoon: [], dueSoonUnverifiedTotal: 3 },
+    deadlines: { ...plain(REPORT), items: [REPORT.items[1]] },
+    lists: { week_total: 2, total: 2, items: [{ id: '7', title: '快照名单' }] },
+    scope: { by_type: [{ type: '其他', lists: 5, entries: 9 }], by_province: [], by_year: [] },
+  };
+  const deferred = () => { let d; const p = new Promise((resolve, reject) => { d = { resolve, reject }; }); return { p, d }; };
+  const { stored, wx } = storageWx();
+  // 首页
+  let live = deferred();
+  const home = load('pages/home/index.js', {
+    '../../utils/api.js': { home: () => live.p, snapshotOnce: () => Promise.resolve(plain(snap)) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
+    '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  home.onLoad(); await flush();
+  assert.equal(home.data.items[0].title, '快照里的'); assert.equal(home.data.fresh, true); assert.equal(home.data.cachedText, '');
+  assert.equal(stored.youjuHomeCacheV1.data.items[0].title, '快照里的');
+  live.d.reject(new Error('网络不太好，请稍后再试')); await flush(); await flush();
+  assert.equal(home.data.error, ''); assert.equal(home.data.items[0].title, '快照里的');
+  // 截止页
+  live = deferred();
+  const report = load('pages/report/index.js', {
+    '../../utils/api.js': { deadlineReport: (p) => (p.size === 20 ? live.p : new Promise(() => {})), snapshotOnce: () => Promise.resolve(plain(snap)) },
+    '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  report.onLoad(); await flush();
+  assert.deepEqual(plain(report.data.rows.map((r) => r.docId)), ['2']); assert.equal(report.data.prefilled, true);
+  assert.equal(flat(findAll(render('pages/report/index.wxml', report.data), hasClass('tab'))[1]), '214天内');
+  live.d.resolve(plain(REPORT)); await flush();
+  assert.deepEqual(plain(report.data.rows.map((r) => r.docId)), ['1', '2', '3']); assert.equal(report.data.prefilled, false);
+  // 查名单
+  live = deferred();
+  const lists = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => live.p, listBoard: () => new Promise(() => {}), snapshotOnce: () => Promise.resolve(plain(snap)) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  delete stored.youjuListsCacheV1; delete stored.youjuListScopeV1;
+  lists.reload(); await flush();
+  assert.equal(lists.data.shown[0].title, '快照名单'); assert.equal(lists.data.scope.lists, 5); assert.equal(lists.data.loading, false);
+  live.d.reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.ok(!lists.data.error); assert.equal(lists.data.staleError, false);
+});

@@ -109,6 +109,8 @@ Page({
     emptyTitle: '',
     // 显示的是本机存的上次数据时写明（取到新数据后清空）
     cachedText: '',
+    // 显示的是本机存的或快照的数据、实时数据还没回来：份数照常写，不写"—"
+    prefilled: false,
     loading: false,
     error: '',
     // 按月看
@@ -156,37 +158,50 @@ Page({
     const cacheable = reset && isDefaultView(this.data);
     const cached = cacheable && !this.data.rows.length ? readCache(DEADLINE_CACHE) : null;
     if (cached) {
-      this.show(cached.data, { reset: true, page: 1, cachedText: cachedLabel(cached.at) });
+      this.show(cached.data, { reset: true, page: 1, cachedText: cachedLabel(cached.at), prefilled: true });
       this.setData({ loading: true, error: '' });
     } else {
-      this.setData(reset ? { loading: true, error: '', rows: [], cachedText: '' } : { loading: true, error: '' });
+      this.setData(reset ? { loading: true, error: '', rows: [], cachedText: '', prefilled: false } : { loading: true, error: '' });
+    }
+    const save = (res) => writeCache(DEADLINE_CACHE, {
+      summary: res.summary, items: res.items, total: res.total, unverifiedSoon: res.unverifiedSoon,
+      verified_total: res.verified_total,
+    });
+    // 默认视图另向常驻的 admin 要首屏快照（不等接口服务冷启动）；实时的回来了就以实时的为准
+    let live = false;
+    let fresh = false;
+    if (cacheable && api.snapshotOnce) {
+      api.snapshotOnce().then((snap) => {
+        if (!snap || !snap.deadlines || live || requestSeq !== this.requestSeq) return;
+        fresh = true;
+        this.show(snap.deadlines, { reset: true, page: 1, cachedText: '', prefilled: true });
+        this.setData({ loading: true });
+        save(snap.deadlines);
+      });
     }
     api.deadlineReport({ days: tab, province, dept, page, size: PAGE_SIZE }, { verifiedOnly })
       .then((res) => {
         if (requestSeq !== this.requestSeq) return;
+        live = true;
         if (unfiltered && !this.filterOptionsLoaded) this.setOptions(res);
-        this.show(res, { reset, page, cachedText: '' });
-        if (cacheable) {
-          writeCache(DEADLINE_CACHE, {
-            summary: res.summary, items: res.items, total: res.total, unverifiedSoon: res.unverifiedSoon,
-            verified_total: res.verified_total,
-          });
-        }
+        this.show(res, { reset, page, cachedText: '', prefilled: false });
+        if (cacheable) save(res);
       })
       .catch((err) => {
         if (requestSeq !== this.requestSeq) return;
-        // 显示着上次的数据就留着，只在上面写明没更新
-        this.setData({ loading: false, error: err.message });
+        // 显示着快照（一分钟内的数据）就不报错；显示着本机存的上次数据就留着，只在上面写明没更新
+        if (fresh) this.setData({ loading: false, prefilled: false });
+        else this.setData({ loading: false, error: err.message });
       });
   },
 
   // 显示一页结果（接口刚返回的，或本机存的上次的）；截止日期按手机当天重新算
-  show(res, { reset, page, cachedText }) {
+  show(res, { reset, page, cachedText, prefilled }) {
     const rows = (res.items || []).map(reportRow);
     this.setData({
       summary: res.summary || { 7: 0, 14: 0, 30: 0 },
       rows: reset ? rows : this.data.rows.concat(rows),
-      total: res.total, page, loading: false, cachedText,
+      total: res.total, page, loading: false, cachedText, prefilled: !!prefilled,
       soon: this.data.verifiedOnly ? NO_SOON : (res.unverifiedSoon || NO_SOON),
       verifyingNote: verifyingNote(res.verified_total),
       emptyTitle: emptyTitle(this.data),
