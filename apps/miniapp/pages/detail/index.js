@@ -44,7 +44,8 @@ function deadlineRows(deadlines) {
       kind: d.kind || '截止',
       source: view.source,
       label: view.label,
-      quote: d.quote || '',
+      // 被拦下的摘录（按手机日期进了 7 天内、超过 30 天）不显示原句：原句里就写着日期
+      quote: dated ? view.quote : '',
       days: dated ? view.days : null,
       tone: dated ? (view.source === 'excerpt' ? 'normal' : (view.tone || 'normal')) : '',
       dateText: dated ? cnDate(d.date) : '',

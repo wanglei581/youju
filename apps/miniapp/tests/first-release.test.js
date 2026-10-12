@@ -33,6 +33,8 @@ test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 
   const verified = format.dueView({ kind: '企业申报截止', source: 'verified', date: plus(3), time: '17:00', quote: null });
   assert.equal(verified.label, '已人工核对'); assert.equal(verified.days, 3); assert.equal(verified.tone, 'urgent');
   assert.match(verified.text, /17:00截止 · 剩3天/);
+  assert.equal(format.dueView({ source: 'excerpt', date: plus(30), quote: QUOTE }).source, 'excerpt');
+  assert.equal(format.dueView({ source: 'excerpt', date: plus(8), quote: QUOTE }).source, 'excerpt');
   const excerpt = format.dueView({ kind: '企业申报截止', source: 'excerpt', date: plus(12), time: null, quote: QUOTE });
   assert.equal(excerpt.label, '机器摘录·未经人工核对'); assert.equal(excerpt.quote, QUOTE); assert.equal(excerpt.tone, 'excerpt');
   assert.match(excerpt.text, /剩12天/);
@@ -41,6 +43,8 @@ test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 
     { source: 'excerpt', date: plus(12), quote: '' },
     { source: 'excerpt', date: plus(7), quote: QUOTE },
     { source: 'excerpt', date: plus(-2), quote: QUOTE },
+    { source: 'excerpt', date: plus(31), quote: QUOTE }, // 机器摘录只在 8–30 天显示日期
+    { source: 'excerpt', date: plus(45), quote: QUOTE },
     { source: 'unverified', date: null, quote: null },
     { source: 'unverified', date: plus(20), quote: QUOTE }, // 即使收到日期也不写
   ]) {
@@ -236,4 +240,19 @@ test('搜索页（D-061）：外面放地区、时间、状态、部门，类型
   assert.deepEqual([...chips.matchAll(/class="chip [^"]*"[^>]*bindtap="openFilter">([^<]+)</g)].map((m) => m[1]), ['地区', '时间', '状态', '部门']);
   assert.match(chips, /class="filter-link[^"]*" bindtap="openFilter"><t-icon[^>]*\/>筛选<\/view>/);
   assert.doesNotMatch(template, /tool-entry|goTool/);
+});
+
+test('评审发现的问题（10/12）：被拦下的摘录在详情不显示原句；截止页手机日期已过写"已截止"；卡片上的"看相关通知"总是只看这一家', async () => {
+  // 1. 详情：服务端给的摘录按手机日期已在 7 天内 → 不写日期，也不写原句（原句里就有日期）
+  const page = detailPage(() => ({ ...DOC, deadlines: [{ kind: '企业申报截止', source: 'excerpt', date: plus(5), time: null, remainingDays: 8, quote: QUOTE }] }));
+  page.onLoad({ id: '5' }); await flush();
+  assert.deepEqual(plain(page.data.dls.map((d) => [d.source, d.quote, d.dateText])), [['unverified', '', '']]);
+  const root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(findAll(root, hasClass('dl-quote')).length, 0);
+  // 2. 截止页：接口还算没截止、手机日期已过的核对过的截止 → "已截止"，不写"剩 -1 天"
+  const report = deadlinePage({ deadlineReport: () => Promise.resolve(plain({ ...REPORT, items: [{ ...REPORT.items[0], date: plus(-1), time: null }], unverifiedSoon: undefined })) });
+  report.onLoad(); await flush();
+  const item = findAll(render('pages/report/index.wxml', report.data), hasClass('item'))[0];
+  assert.match(flat(item), /已截止/); assert.doesNotMatch(flat(item), /剩-1天/);
+  assert.equal(report.data.rows[0].tone, 'past');
 });

@@ -53,7 +53,7 @@
     <view class="deadline">
       <text wx:if="{{item.dateText}}">{{item.kindText}} {{item.dateText}} {{item.week}}</text>
       <text wx:else>{{item.kindText}}：截止未核对，请以原文为准</text>
-      <text wx:if="{{item.dateText}}" class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
+      <text wx:if="{{item.dateText}}" class="pill pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
     </view>
     <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
     <view wx:if="{{item.quote}}" class="quote">原文：{{item.quote}}</view>

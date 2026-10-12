@@ -96,18 +96,20 @@ const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
 
 // 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
 // - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
-// - excerpt：机器从原文摘出的，只会是 8 天以后到期的，写日期并标"机器摘录·未经人工核对"，必须带原句；
-// - unverified：有候选但不显示日期（7 天内没核对的、过期的、几个日期对不上的），只写"截止未核对"。
-// 摘录没带原句、或者按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天），这里再拦一次，只写"截止未核对"。
+// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"机器摘录·未经人工核对"，必须带原句；
+// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止未核对"。
+// 摘录没带原句、按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天）或在 30 天以后，
+// 这里再拦一次，只写"截止未核对"。
 const VERIFIED_LABEL = '已人工核对';
 const EXCERPT_LABEL = '机器摘录·未经人工核对';
 const EXCERPT_MIN_DAYS = 8;
+const EXCERPT_MAX_DAYS = 30;
 function dueView(due, now) {
   if (!due) return null;
   const excerpt = due.source === 'excerpt';
   if (due.date && (due.source === 'verified' || (excerpt && due.quote))) {
     const days = daysUntil(due.date, now, due.time);
-    if (!excerpt || days >= EXCERPT_MIN_DAYS) {
+    if (!excerpt || (days >= EXCERPT_MIN_DAYS && days <= EXCERPT_MAX_DAYS)) {
       const at = `${monthDay(due.date)}${due.time ? ` ${due.time}` : ''}`;
       return {
         source: due.source,

@@ -27,7 +27,7 @@ function row(base, due) {
     srcLabel: view.label,
     quote: dated ? view.quote : '',
     days: dated ? view.days : null,
-    tone: dated && view.source === 'verified' ? (view.tone || 'normal') : 'normal',
+    tone: dated && view.days < 0 ? 'past' : (dated && view.source === 'verified' ? (view.tone || 'normal') : 'normal'),
     dateText: dated ? monthDay(due.date) : '',
     week: dated ? `${weekday(due.date)}${due.time ? ` ${due.time}` : ''}` : '',
   });

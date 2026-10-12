@@ -144,12 +144,13 @@ function coverage() {
 // excerpts=1（D-061）：列表带主截止 due，8 天以后到期的可以是"机器摘录"；不带这个参数时接口和以前一样
 const EXCERPTS = { excerpts: 1 };
 // 首页（D-061）：本周统计和"7 天内截止"（dueSoon 只有核对过的，最多 5 条）来自 /home，
-// 下面的列表是最新的 8 份申报通知（和搜索同一口径，已剔除不是企业能报的杂项）
+// 下面的列表是最新的 8 份申报通知（和搜索同一口径，已剔除不是企业能报的杂项）。
+// 首页上只显示人工核对过的截止：列表那一请求不带 excerpts，不出现机器摘录的日期
 function home() {
   if (isLive()) {
     return Promise.all([
       request('/api/v1/home', Object.assign({ group: 1 }, EXCERPTS)),
-      request('/api/v1/search', Object.assign({ kind: '申报通知', limit: 8, offset: 0, group: 1 }, EXCERPTS)),
+      request('/api/v1/search', { kind: '申报通知', limit: 8, offset: 0, group: 1 }),
     ]).then(([h, latest]) => Object.assign({}, h, { items: latest.items || [] }));
   }
   return copy({ stats: mock.stats, items: mock.home.filter((d) => d.kind === '申报通知'), dueSoon: [], dueSoonUnverifiedTotal: 0 });

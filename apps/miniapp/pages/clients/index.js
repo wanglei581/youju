@@ -94,6 +94,11 @@ Page({
     this.setData({ only: this.data.only === id ? '' : id, tab: 'docs' });
     this.refreshShown();
   },
+  // 客户卡片上的"看相关通知"：总是只看这一家（不像上面的筛选条那样再点一次取消）
+  showClient(e) {
+    this.setData({ only: e.currentTarget.dataset.id, tab: 'docs' });
+    this.refreshShown();
+  },
   refreshShown() {
     const { rows, only } = this.data;
     const list = only ? rows.filter((r) => r.ids.includes(only)) : rows;
