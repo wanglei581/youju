@@ -56,6 +56,7 @@ test('J-05 首页返回刷新，合并在途请求并节流；J-12 带搜索类�
   let resolve;
   let url;
   const page = load('pages/home/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => { calls += 1; return new Promise((done) => { resolve = done; }); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
@@ -134,6 +135,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
 test('J-09 截止页省份来自无筛选30天范围，筛部门后仍能直接切省份', async () => {
   const calls = [];
   const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { deadlineReport: (p) => { calls.push({ ...p }); return Promise.resolve({ items: [], total: 0, by_province: p.days === 30 && !p.province ? { 北京: 1, 辽宁: 2 } : { 北京: 1 } }); } },
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, app);
@@ -183,10 +185,11 @@ test('J-11 首次等待及失败时不显示空结果或零月份，六页都有
     '../../utils/consent.js': { loginOpen: () => true, syncConsent: pending }, '../../utils/conditions.js': conditions,
   }); follow.load(); assert.equal(follow.data.loading, true);
   const deadlines = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { deadlineReport: pending, calendar: pending }, '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, app); deadlines.onLoad(); assert.equal(deadlines.data.loading, true);
   deadlines.pickTab(event({ key: 0 })); assert.equal(deadlines.data.loading, true); assert.equal(deadlines.data.cells.length, 0);
-  const recent = load('pages/lists/index.js', { '../../utils/api.js': { lists: pending, listBoard: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
+  const recent = load('pages/lists/index.js', { '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' }, '../../utils/api.js': { lists: pending, listBoard: pending }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch }, app);
   recent.onLoad(); assert.equal(recent.data.loading, true);
   for (const p of ['search', 'follow', 'follow-new', 'report', 'clients']) {
     assert.match(wxml(p), /wx:if="{{loading[^}]*}}"[^>]*>正在加载…/);

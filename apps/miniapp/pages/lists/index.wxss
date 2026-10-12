@@ -45,3 +45,4 @@
 .table-head { padding-bottom: 10rpx; color: var(--t3); font-size: 22rpx; }
 .table-row { min-height: 54rpx; padding: 12rpx 0; border-top: 2rpx solid var(--line); color: var(--t2); font-size: 25rpx; line-height: 1.45; }
 .table-row text:nth-child(2), .table-row text:nth-child(3), .table-head text:nth-child(2), .table-head text:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+.cached-note { padding-bottom: 12rpx; font-size: 24rpx; }

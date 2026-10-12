@@ -27,6 +27,7 @@ const FORBIDDEN = ['AI', '智能', '大模型'];
 
 function homePage(stats) {
   return load('pages/home/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => Promise.resolve({ stats, items: [] }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,

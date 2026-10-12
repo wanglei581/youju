@@ -1,6 +1,11 @@
 const api = require('../../utils/api.js');
 const { todayISO, cnDate } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
+
+// 最近发布的名单和比对范围存一份到本机，下次打开先显示（utils/cache.js）
+const LISTS_CACHE = 'youjuListsCacheV1';
+const SCOPE_CACHE = 'youjuListScopeV1';
 
 const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
@@ -26,6 +31,9 @@ Page({
     shown: [],
     // 比对范围：按类型、省份、年度的名单份数和读出的企业条数（原名单看板的统计）
     scope: null,
+    // 最近发布的名单显示的是本机存的上次数据时写明；staleError：这次没更新成功
+    cachedText: '',
+    staleError: false,
     scopeOpen: false,
   },
 
@@ -53,14 +61,28 @@ Page({
   },
 
   reload() {
-    this.setData({ loading: true, error: '' });
+    if (!this.listsShown) {
+      const cached = readCache(LISTS_CACHE);
+      if (cached) {
+        this.listsShown = true;
+        this.setData({ loading: false, weekTotal: cached.data.week_total, total: cached.data.total, items: cached.data.items, cachedText: cachedLabel(cached.at) });
+        this.filterItems();
+      }
+    }
+    this.setData(this.data.cachedText ? { error: '', staleError: false } : { loading: true, error: '' });
     this.loadScope();
     api.lists()
       .then((res) => {
-        this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items });
+        this.listsShown = true;
+        this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items, cachedText: '', staleError: false });
         this.filterItems();
+        writeCache(LISTS_CACHE, { week_total: res.week_total, total: res.total, items: res.items });
       })
-      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+      .catch((err) => {
+        // 显示着上次的名单就留着，只写明这次没更新
+        if (this.data.cachedText) this.setData({ staleError: true });
+        else this.setData({ loading: false, error: `加载失败：${err.message}` });
+      });
   },
 
   back() {
@@ -109,14 +131,20 @@ Page({
 
   // 比对范围加载失败不影响查名单，只是不显示这一块
   loadScope() {
+    if (!this.data.scope) {
+      const cached = readCache(SCOPE_CACHE);
+      if (cached) this.setData({ scope: cached.data });
+    }
     api.listBoard({ days: 30, page: 1, size: 1 })
       .then((res) => {
         const stats = res.stats || {};
         const byType = stats.by_type || [];
-        this.setData({ scope: byType.length ? {
+        const scope = byType.length ? {
           lists: byType.reduce((sum, item) => sum + (item.lists || 0), 0),
           byType, byProvince: stats.by_province || [], byYear: stats.by_year || [],
-        } : null });
+        } : null;
+        this.setData({ scope });
+        if (scope) writeCache(SCOPE_CACHE, scope);
       })
       .catch(() => {});
   },

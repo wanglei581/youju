@@ -67,6 +67,8 @@
 
 <view class="card">
   <view class="section-title">最近发布的名单<text class="weak count">{{loading || error ? '' : '本周 ' + weekTotal + ' 份'}}</text></view>
+  <!-- 显示的是本机存的上次数据时写明（10/12） -->
+  <view wx:if="{{cachedText}}" class="weak cached-note">下面是{{cachedText}}的名单{{staleError ? '，这次没更新成功' : '，正在更新…'}}</view>
   <view class="chips">
     <view wx:for="{{chips}}" wx:key="*this" class="chip {{chip === item ? 'chip--on' : ''}}" data-chip="{{item}}" bindtap="pickChip">{{item}}</view>
   </view>

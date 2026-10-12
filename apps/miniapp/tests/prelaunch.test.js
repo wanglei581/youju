@@ -133,7 +133,7 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
 test('查名单的比对范围（D-061 并入名单看板的统计）：按类型合计份数，省份和年度点开看；加载失败不显示这一块', async () => {
   let fail = false;
   const stats = { by_type: [{ type: '高新技术企业', lists: 3, entries: 120 }, { type: '其他', lists: 2, entries: 0 }], by_province: [{ province: '山东', lists: 5, entries: 120 }], by_year: [{ year: 2026, lists: 5, entries: 120 }] };
-  const page = load('pages/lists/index.js', {
+  const page = load('pages/lists/index.js', { '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { lists: () => Promise.resolve({ week_total: 0, total: 0, items: [] }), listBoard: () => (fail ? Promise.reject(new Error('x')) : Promise.resolve({ stats })) },
     '../../utils/format.js': format, '../../utils/daywatch.js': {},
   });
@@ -147,7 +147,7 @@ test('查名单的比对范围（D-061 并入名单看板的统计）：按类�
 
 test('名单类型筛选改变显示列表，全部恢复；重新加载保留筛选', async () => {
   const items = [{ title: '科技型中小企业名单' }, { title: '专精特新名单' }, { title: '其他名单' }];
-  const page = load('pages/lists/index.js', {
+  const page = load('pages/lists/index.js', { '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { lists: () => Promise.resolve({ week_total: 3, total: 3, items }), listBoard: () => Promise.resolve({ stats: {} }) },
     '../../utils/format.js': format, '../../utils/daywatch.js': {},
   });
@@ -167,6 +167,7 @@ test('截止雷达返回跨日重载第一页；停留跨日刷新并清理定�
   let stopped = 0;
   const calls = [];
   const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { deadlineReport: (params) => { calls.push(params); return Promise.resolve({ items: [], total: 0 }); } },
     '../../utils/exporter.js': {}, '../../utils/format.js': { todayISO: () => day },
     '../../utils/daywatch.js': { watchDay: (_, callback) => { onChange = callback; }, stopDay: () => { stopped += 1; } },
@@ -203,6 +204,7 @@ test('日历上限截断有标记；刚好 1000 条无误报', async () => {
 test('截止页按月看：接收截断标记，并按截止时刻移入已截止', async () => {
   const now = new Date('2026-09-30T09:01:00Z');
   const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': {
       deadlineReport: () => Promise.resolve({ items: [], total: 0 }),
       calendar: () => Promise.resolve({ truncated: true, items: [{ id: 'dl1', docId: '1', due: '2026-09-30', time: '17:00', verified: true, title: '甲', what: '企业申报截止' }] }),

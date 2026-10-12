@@ -2,6 +2,7 @@ const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 
 // 截止（D-061）：原截止雷达和申报日历合成一页。7/14/30 天按列表看，也可以按月看。
 // 日期只给人工核对过的，和 8 天以后到期、带原句的机器摘录；7 天内到期还没核对的只列标题，不写日期。
@@ -16,6 +17,9 @@ const TABS = [
 ];
 const DEPTS = ['不限部门', '科技部门', '工信部门', '其他部门'];
 const NO_SOON = { total: 0, items: [] };
+// 默认视图（7 天内、不筛省份部门、没开"只看已核对"）存一份到本机，下次打开先显示（utils/cache.js）
+const DEADLINE_CACHE = 'youjuDeadlineCacheV1';
+const isDefaultView = ({ tab, province, dept, verifiedOnly }) => tab === 7 && !province && !dept && !verifiedOnly;
 
 // 一条截止怎么显示。机器摘录按手机日期已进了 7 天内、或者没带原句的，不写日期（dueView 再拦一次）
 function row(base, due) {
@@ -103,6 +107,8 @@ Page({
     // 没有内容时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
     verifyingNote: '',
     emptyTitle: '',
+    // 显示的是本机存的上次数据时写明（取到新数据后清空）
+    cachedText: '',
     loading: false,
     error: '',
     // 按月看
@@ -147,25 +153,44 @@ Page({
     const { tab, province, dept, verifiedOnly } = this.data;
     const unfiltered = tab === 30 && !province && !dept;
     if (!this.optionsLoading && !this.filterOptionsLoaded && !unfiltered) this.loadOptions();
-    this.setData(reset ? { loading: true, error: '', rows: [] } : { loading: true, error: '' });
+    const cacheable = reset && isDefaultView(this.data);
+    const cached = cacheable && !this.data.rows.length ? readCache(DEADLINE_CACHE) : null;
+    if (cached) {
+      this.show(cached.data, { reset: true, page: 1, cachedText: cachedLabel(cached.at) });
+      this.setData({ loading: true, error: '' });
+    } else {
+      this.setData(reset ? { loading: true, error: '', rows: [], cachedText: '' } : { loading: true, error: '' });
+    }
     api.deadlineReport({ days: tab, province, dept, page, size: PAGE_SIZE }, { verifiedOnly })
       .then((res) => {
         if (requestSeq !== this.requestSeq) return;
         if (unfiltered && !this.filterOptionsLoaded) this.setOptions(res);
-        const rows = (res.items || []).map(reportRow);
-        this.setData({
-          summary: res.summary || { 7: 0, 14: 0, 30: 0 },
-          rows: reset ? rows : this.data.rows.concat(rows),
-          total: res.total, page, loading: false,
-          soon: verifiedOnly ? NO_SOON : (res.unverifiedSoon || NO_SOON),
-          verifyingNote: verifyingNote(res.verified_total),
-          emptyTitle: emptyTitle(this.data),
-        });
+        this.show(res, { reset, page, cachedText: '' });
+        if (cacheable) {
+          writeCache(DEADLINE_CACHE, {
+            summary: res.summary, items: res.items, total: res.total, unverifiedSoon: res.unverifiedSoon,
+            verified_total: res.verified_total,
+          });
+        }
       })
       .catch((err) => {
         if (requestSeq !== this.requestSeq) return;
+        // 显示着上次的数据就留着，只在上面写明没更新
         this.setData({ loading: false, error: err.message });
       });
+  },
+
+  // 显示一页结果（接口刚返回的，或本机存的上次的）；截止日期按手机当天重新算
+  show(res, { reset, page, cachedText }) {
+    const rows = (res.items || []).map(reportRow);
+    this.setData({
+      summary: res.summary || { 7: 0, 14: 0, 30: 0 },
+      rows: reset ? rows : this.data.rows.concat(rows),
+      total: res.total, page, loading: false, cachedText,
+      soon: this.data.verifiedOnly ? NO_SOON : (res.unverifiedSoon || NO_SOON),
+      verifyingNote: verifyingNote(res.verified_total),
+      emptyTitle: emptyTitle(this.data),
+    });
   },
 
   setOptions(res) {
@@ -183,6 +208,7 @@ Page({
 
   // 按月看：一次取全部（接口分页取到 1000 条为止），换月、点日子、切"只看已核对"都在本机算
   loadMonth() {
+    if (this.data.cachedText) this.setData({ cachedText: '' });
     const seq = (this.calSeq || 0) + 1;
     this.calSeq = seq;
     this.requestSeq = (this.requestSeq || 0) + 1; // 丢掉还没回来的列表请求

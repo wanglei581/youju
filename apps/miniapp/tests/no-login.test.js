@@ -243,6 +243,7 @@ test('截止页（D-061 合并申报日历）：每条都没有截止提醒的�
 test('首页：未定稿时不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）；定稿后照旧', () => {
   for (const final of STATES) {
     const page = load('pages/home/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
       '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
       '../../utils/consent.js': consentFor(final),
     }, app);
