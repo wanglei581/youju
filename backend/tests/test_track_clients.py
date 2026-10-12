@@ -45,10 +45,12 @@ def test_export_keeps_empty_clients_and_escapes_formula(tmp_path: Path):
     assert book["客户相关通知"]["A3"].value == "'=客户"
     assert book["客户相关通知"]["B3"].value == "暂无"
     assert book["汇总"]["B3"].value == 0
+    # 没有通知的客户：不写“未核对”，也不写 0 以外的数
+    assert [cell.value for cell in book["汇总"][3]][2:] == [0, None, None, None, 0]
     assert "2026-09-30 09:02" in book["客户相关通知"]["A1"].value
 
 
-def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch):
+def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch, tmp_path):
     stamp = datetime(2026, 9, 30, 10, 0, tzinfo=BJ)
     monkeypatch.setattr(v1, "now", lambda: stamp)
     national = Source(
@@ -153,6 +155,23 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch):
     assert [item.remaining_days for item in beijing_items] == [5, 10, 31, None]
     assert [item.title for item in by_name["关键词客户"].items] == ["北京专精特新申报通知"]
     assert [item.title for item in by_name["上海客户"].items] == ["国家数字化申报通知"]
+    # 导出：核对过的写日期和“已核对”；汇总只在已核对的里面数 7/14/30 天，另列没核对的条数
+    output = tmp_path / "mixed.xlsx"
+    export_track_excel(report, output)
+    book = load_workbook(output)
+    rows = [
+        [cell.value for cell in row]
+        for row in book["客户相关通知"].iter_rows(min_row=3)
+        if row[0].value == "北京客户"
+    ]
+    assert [row[5] for row in rows] == ["已核对", "已核对", "已核对", "未核对，请以原文为准"]
+    assert [row[7] is not None for row in rows] == [True, True, True, False]
+    assert [row[8] for row in rows] == [5, 10, 31, None]
+    summary = {
+        row[0].value: [cell.value for cell in row] for row in book["汇总"].iter_rows(min_row=3)
+    }
+    assert summary["北京客户"] == ["北京客户", 4, 3, 1, 2, 2, 1]
+    assert summary["上海客户"] == ["上海客户", 1, 1, 1, 1, 1, 0]
 
 
 def test_track_without_verified_deadlines_and_excludes_only_closed(session, monkeypatch, tmp_path):
@@ -194,9 +213,43 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     assert all(
         item.as_dict()["deadline_status"] == "截止未核对，请以原文为准" for item in report.items
     )
+    # 没核对的排在后面，新发布的先（发布 1 天的两份在前，90 天的在后）
+    assert {item.document_id for item in report.items[:2]} == {recent.id, closed.id}
+    assert report.items[-1].document_id == boundary.id
     output = tmp_path / "unknown.xlsx"
     export_track_excel(report, output)
-    assert load_workbook(output)["客户相关通知"]["F3"].value == "截止未核对，请以原文为准"
+    book = load_workbook(output)
+    sheet = book["客户相关通知"]
+    assert [cell.value for cell in sheet[2]] == [
+        "客户名称",
+        "通知标题",
+        "发文机关",
+        "省份",
+        "发布日期",
+        "截止核对情况",
+        "截止类型",
+        "截止日期",
+        "剩余天数",
+        "支持方式",
+        "原文链接",
+    ]
+    # 截止日期一列只写日期：没核对的留空，核对情况另写一列
+    assert sheet["E3"].value == (stamp.date() - timedelta(days=1)).isoformat()
+    assert sheet["F3"].value == "未核对，请以原文为准"
+    assert sheet["G3"].value is None and sheet["H3"].value is None and sheet["I3"].value is None
+    # 汇总：一条都没核对时，“N 天内截止”写“未核对”，不写 0（0 会被看成没有快截止的）
+    summary = book["汇总"]
+    assert [cell.value for cell in summary[2]] == [
+        "客户名称",
+        "通知数",
+        "已核对截止日期的",
+        "7 天内截止",
+        "14 天内截止",
+        "30 天内截止",
+        "截止未核对的",
+    ]
+    assert [cell.value for cell in summary[3]] == ["客户", 3, 0, "未核对", "未核对", "未核对", 3]
+    assert "只数已核对截止日期的通知" in summary["A1"].value
     session.add(
         DocumentDeadline(
             document_id=closed.id,

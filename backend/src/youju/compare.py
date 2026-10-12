@@ -471,7 +471,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
     detail.cell(1, 1, _safe_cell(note))
     headers = [
         "客户输入",
-        "归一化值",
+        "比对用的名称",
         "结果",
         "名单标题",
         "发布日期",
