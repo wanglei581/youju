@@ -27,6 +27,7 @@ function errorOf(res) {
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
   const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
   err.status = res ? res.statusCode : 0;
+  err.detail = detail;
   return err;
 }
 
@@ -93,7 +94,7 @@ function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
-  const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
+  const header = Object.assign(method === 'GET' ? {} : { 'content-type': 'application/json' }, options && options.header);
   return withRetry(() => requestOnce(url, method, data, header), method);
 }
 
@@ -103,7 +104,7 @@ function requestOnce(url, method, data, header, service) {
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     // 15 秒没有返回就算超时
     const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
-    const ok = (code) => code === 200 || code === 201 || code === 204;
+    const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
@@ -432,6 +433,72 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
+// ---- AI 内测（feat/ai-v2，D-062：只上传体验版、手续办下来前不合并）：政策解读、条款对照 ----
+// 只对接线上已有的 /api/v1/advisor 接口；入口和页面都以 capabilities.ai_advisor.enabled === true 为准。
+
+const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
+let capabilitiesPromise;
+let capabilitiesPending;
+function advisorCapabilities(options = {}) {
+  // 本次启动内共用一个请求；开启的结果一直缓存，关闭或失败的结果只缓存 15 秒；AI 页面进入时 refresh 重新取额度。
+  if (capabilitiesPending) return capabilitiesPending;
+  if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
+  const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
+  const result = source.then((res) => {
+    const ai = (res && res.ai_advisor) || {};
+    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED) };
+    return { ai_advisor: {
+      enabled: true,
+      features: Array.isArray(ai.features) ? ai.features : [],
+      remaining: ai.remaining || {},
+      disclosure: ai.disclosure == null ? null : ai.disclosure,
+    } };
+  }).catch(() => ({ ai_advisor: Object.assign({}, AI_DISABLED) }));
+  capabilitiesPromise = result;
+  capabilitiesPending = result;
+  result.then((res) => {
+    if (capabilitiesPending === result) capabilitiesPending = null;
+    // “关闭”的结果只缓存 15 秒：登录前查到的关闭（403）不能一直记着，登录或加进白名单后回到页面要能重新查到
+    if (!(res && res.ai_advisor && res.ai_advisor.enabled === true)) {
+      setTimeout(() => { if (capabilitiesPromise === result) capabilitiesPromise = null; }, 15000);
+    }
+  });
+  return result;
+}
+
+// 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
+function createAdvisorTask(data, key) {
+  if (!isLive() || (data.kind !== 'interpret' && data.kind !== 'clause')) {
+    return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
+  }
+  const body = data.kind === 'clause'
+    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
+    : { kind: 'interpret', doc_id: Number(data.doc_id) };
+  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: { 'Idempotency-Key': key } }).catch((err) => {
+    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string') {
+      err.message = Array.isArray(err.detail)
+        ? err.detail.map((item) => (item && item.msg) || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
+    }
+    throw err;
+  });
+}
+
+function advisorTasks() {
+  return isLive() ? request('/api/v1/advisor/tasks') : Promise.resolve({ items: [] });
+}
+
+function advisorTask(id) {
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}`);
+}
+
+function cancelAdvisorTask(id) {
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/cancel`, null, { method: 'POST', data: {} });
+}
+
+function deleteAdvisorTask(id) {
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}`, null, { method: 'DELETE' });
+}
+
 // 改关注名称（小程序的 wx.request 不支持 PATCH，用 PUT）
 function renameFollow(id, name) {
   return request(`/api/v1/me/follows/${id}`, null, { method: 'PUT', data: { name } });
@@ -479,4 +546,5 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
+  advisorCapabilities, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask,
 };

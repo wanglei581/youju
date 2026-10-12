@@ -1,0 +1,35 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<block wx:elif="{{aiEnabled}}">
+  <view class="ai-internal"><text class="ai-internal-tag">内部测试：</text>{{aiNotice}}</view>
+  <view wx:if="{{context}}" class="card advisor-card advisor-context">
+    <view class="context-row"><text class="context-label">{{context.label}}</text><button class="context-clear" bindtap="clearContext">清除</button></view>
+  </view>
+  <view wx:if="{{interpretEnabled}}" class="card advisor-card">
+    <view class="advisor-title">政策解读与材料清单</view>
+    <view class="advisor-text">AI 模型把通知正文按申报对象、支持方式、申报条件、时间、方式、材料摘录出原句，每条附段落编号，可回到原文</view>
+    <view class="advisor-text muted">今天剩余 {{remaining}} 次</view>
+    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">解读这篇通知</button>
+    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可解读当前通知</view>
+  </view>
+  <view wx:if="{{clauseEnabled}}" class="card advisor-card">
+    <view class="advisor-title">条款对照</view>
+    <view class="advisor-text">AI 模型把通知里申报对象、申报条件的原句列出来，旁边对照你填的企业情况；不判断能不能报</view>
+    <view class="advisor-text muted">今天剩余 {{clauseRemaining}} 次</view>
+    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="clause">填写企业情况</button>
+    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可对照当前通知</view>
+  </view>
+  <view class="card advisor-card">
+    <view class="advisor-title">最近任务</view>
+    <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
+    <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
+    <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有任务。</view>
+    <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
+      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
+    </button>
+    <button class="advisor-button" bindtap="tasks">全部任务</button>
+  </view>
+  <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
+</block>
+<view wx:else class="card advisor-card muted">暂时没有可用工具</view>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -1,1 +1,1 @@
-{ "navigationBarTitleText": "文件详情", "usingComponents": {} }
+{ "navigationBarTitleText": "文件详情", "usingComponents": { "tool-fab": "/components/tool-fab/index" } }
