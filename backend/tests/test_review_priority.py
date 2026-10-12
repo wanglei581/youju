@@ -484,7 +484,9 @@ def test_queue_lists_only_application_notices(client, session_factory) -> None:
         kept_id, other_id, doc_id = kept.id, other.id, other.document_id
     ids = [i["id"] for i in _list(client, order="priority", due="7")]
     assert ids == [kept_id]
-    assert client.get("/api/admin/deadlines/count?due=all", headers=HEADERS).json() == {"pending": 1}
+    assert client.get("/api/admin/deadlines/count?due=all", headers=HEADERS).json() == {
+        "pending": 1
+    }
     with session_factory() as s:
         s.get(Document, doc_id).kind_override = "申报通知"
         s.commit()

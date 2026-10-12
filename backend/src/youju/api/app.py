@@ -1261,7 +1261,10 @@ def admin_quality_sample(
 DueFilter = Literal["all", "7", "30", "future"]
 DueQuery = Annotated[
     DueFilter,
-    Query(description="只看哪些：all 全部；7 未过期且 7 天内截止；30 未过期且 30 天内截止；future 未过期"),
+    Query(
+        description="只看哪些：all 全部；7 未过期且 7 天内截止；30 未过期且 30 天内截止；"
+        "future 未过期"
+    ),
 ]
 
 
