@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, cnDate, weekday, kindClass } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
@@ -35,19 +35,28 @@ function conditionRows(doc) {
   }));
 }
 
-function standardKey(doc) {
-  if (doc.category !== '资质与梯度培育') return '';
-  const title = doc.title || '';
-  if (title.includes('高新技术企业')) return 'gaoqi';
-  if (title.includes('科技型中小企业')) return 'kejixing';
-  if (title.includes('小巨人')) return 'xiaojuren';
-  return title.includes('专精特新') ? 'zhuanjingtexin' : '';
+// 详情的截止（D-061）：每个类型一行。日期只给核对过的和机器摘录的（摘录只会是 8 天以后到期的）
+function deadlineRows(deadlines) {
+  return deadlines.map((d) => {
+    const view = dueView(d);
+    const dated = view.source !== 'unverified';
+    return {
+      kind: d.kind || '截止',
+      source: view.source,
+      label: view.label,
+      quote: d.quote || '',
+      days: dated ? view.days : null,
+      tone: dated ? (view.source === 'excerpt' ? 'normal' : (view.tone || 'normal')) : '',
+      dateText: dated ? cnDate(d.date) : '',
+      week: dated ? `${weekday(d.date)}${d.time ? ` ${d.time}` : ''}` : '',
+    };
+  });
 }
 
 Page({
   data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '', standardKey: '' },
+    atts: [], attNote: '', versions: [], upstream: '' },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -68,9 +77,11 @@ Page({
         // 只有人工核对过的截止日期才显示（合规红线）
         const due = dueInfo(doc.deadline);
         const body = doc.body && doc.body.status === 'ok' ? doc.body : null;
+        // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
+        // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
+        const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
         this.setData({
           doc,
-          standardKey: standardKey(doc),
           // 正文默认只显示开头一段；比这长的才给"展开全文"
           bodyOpen: false,
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,
@@ -83,6 +94,7 @@ Page({
           versions: versionRows(doc.repost),
           upstream: upstreamLine(doc.repost),
           due,
+          dls,
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
@@ -99,7 +111,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '', standardKey: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -108,10 +120,6 @@ Page({
 
   toggleBody() {
     this.setData({ bodyOpen: !this.data.bodyOpen });
-  },
-
-  openStandard() {
-    if (this.data.standardKey) wx.navigateTo({ url: `/pages/standards/index?key=${this.data.standardKey}` });
   },
 
   toggleSupport(e) {
@@ -174,7 +182,8 @@ Page({
   },
 
   recompute() {
-    if (this.data.doc) this.setData({ due: dueInfo(this.data.doc.deadline) });
+    const doc = this.data.doc;
+    if (doc) this.setData({ due: dueInfo(doc.deadline), dls: Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功

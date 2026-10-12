@@ -6,18 +6,14 @@
     "pages/me/index",
     "pages/search/index",
     "pages/detail/index",
-    "pages/calendar/index",
     "pages/report/index",
-    "pages/list-board/index",
     "pages/lists/index",
     "pages/agreement/index",
     "pages/feedback/index",
     "pages/follow-new/index",
     "pages/my-data/index",
     "pages/about/index",
-    "pages/standards/index",
-    "pages/clients/index",
-    "pages/client-results/index"
+    "pages/clients/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -32,10 +28,22 @@
     "selectedColor": "#2A5CE0",
     "backgroundColor": "#FFFFFF",
     "list": [
-      { "pagePath": "pages/home/index", "text": "首页" },
-      { "pagePath": "pages/follow/index", "text": "关注" },
-      { "pagePath": "pages/files/index", "text": "文件" },
-      { "pagePath": "pages/me/index", "text": "我的" }
+      {
+        "pagePath": "pages/home/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/follow/index",
+        "text": "关注"
+      },
+      {
+        "pagePath": "pages/files/index",
+        "text": "文件"
+      },
+      {
+        "pagePath": "pages/me/index",
+        "text": "我的"
+      }
     ]
   },
   "usingComponents": {

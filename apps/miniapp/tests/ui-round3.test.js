@@ -28,7 +28,7 @@ const bare = (text) => text.replace(/[，。；、\s]/g, '');
 
 function listsPage(lookup = () => new Promise(() => {})) {
   return load('pages/lists/index.js', {
-    '../../utils/api.js': { lists: () => new Promise(() => {}), lookup, isLive: () => true },
+    '../../utils/api.js': { lists: () => new Promise(() => {}), listBoard: () => new Promise(() => {}), lookup, isLive: () => true },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { getApp: () => ({ globalData: {} }), wx: { showToast() {} } });
 }
@@ -42,9 +42,9 @@ test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 
   // 顶部的说明文字只有标题和副标题两行
   assert.deepEqual([...top.matchAll(/<view class="(h1|sub)">/g)].map((m) => m[1]), ['h1', 'sub']);
   assert.ok(!/notice-bar|第三方整理|查企业在已收录名单里的记录/.test(top));
-  // 和名单看板、截止雷达一样：顶部结束后紧接着一行出处说明（灰底，不是蓝底版本）
+  // 和截止页一样：顶部结束后紧接着一行出处说明（灰底，不是蓝底版本）
   assert.match(template, /<\/view>\s*<notice-bar \/>\s*<view class="rules">/);
-  assert.match(wxml('list-board'), /<\/view>\s*<notice-bar \/>/);
+  assert.match(wxml('report'), /<\/view>\s*<notice-bar \/>/);
   assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台/);
 });
 

@@ -16,3 +16,8 @@
 .version-meta { font-size: 24rpx; line-height: 1.5; color: var(--t2); }
 .version-copy { flex-shrink: 0; font-size: 24rpx; color: var(--brand); white-space: nowrap; }
 .versions-note { padding: 14rpx 0 6rpx; font-size: 23rpx; line-height: 1.6; color: var(--t3); }
+/* 机器摘录的截止（D-061）：灰色标签 + 原句，和核对过的区分开 */
+.due--excerpt { color: var(--t2); }
+.excerpt { margin-top: 8rpx; display: flex; flex-direction: column; gap: 4rpx; }
+.excerpt-tag { align-self: flex-start; padding: 2rpx 10rpx; border-radius: 6rpx; background: var(--fill); color: var(--t2); font-size: 22rpx; }
+.excerpt-quote { font-size: 24rpx; line-height: 1.6; color: var(--t2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

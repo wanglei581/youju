@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO, clockText } = require('../../utils/format.js');
+const { todayISO, clockText, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { loginOpen } = require('../../utils/consent.js');
 
@@ -7,14 +7,19 @@ const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
   { key: 'list', label: '查名单', placeholder: '输入企业全称或信用代码查名单' },
   { key: 'policy', label: '查政策', placeholder: '搜政策文件，如"数字经济"' },
-  { key: 'number', label: '查文号', placeholder: '输入文号，如"辽工信投资〔2026〕130号"' },
 ];
-const TABS = [
-  { key: 'all', label: '最新' },
-  { key: '申报通知', label: '申报通知' },
-  { key: '名单', label: '名单与公示' },
-  { key: '政策', label: '政策' },
-];
+
+// "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
+function soonRows(list) {
+  return (list || []).map((d) => {
+    const view = dueView({ kind: d.label, source: d.source || 'verified', date: d.date, time: d.time, quote: d.quote });
+    if (!view || view.source !== 'verified' || view.days < 0) return null;
+    return {
+      id: String(d.id), title: d.title, kindText: d.label || '申报截止', days: view.days, tone: view.tone || 'normal',
+      dateText: monthDay(d.date), week: `${weekday(d.date)}${d.time ? ` ${d.time}` : ''}`,
+    };
+  }).filter(Boolean).slice(0, 5);
+}
 
 Page({
   data: {
@@ -23,14 +28,14 @@ Page({
     menuWidth: 96,
     scopes: SCOPES,
     scope: 0,
-    tabs: TABS,
-    tab: 'all',
     hot: ['高新技术企业', '专精特新', '科技型中小企业'],
     stats: null,
     // 最近一次成功检查的时间（北京时间，如"10月6日 06:30"）；本周 0 份时写在"本周暂无新文件"后面
     checkedText: '',
     items: [],
-    shown: [],
+    // 7 天内截止（只放核对过的）和 7 天内有候选、还没核对的份数
+    soon: [],
+    soonUnverified: 0,
     loaded: false,
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
@@ -50,11 +55,14 @@ Page({
     this.refreshing = true;
     this.setData({ loading: true, error: '' });
     api.home()
-      .then(({ stats, items }) => {
-        const shown = this.data.tab === 'all' ? items : items.filter((d) => d.kind === this.data.tab);
-        this.setData({ stats, items, shown, loaded: true, checkedText: clockText(stats && stats.last_checked_at) });
+      .then(({ stats, items, dueSoon, dueSoonUnverifiedTotal }) => {
+        this.dueSoon = dueSoon || [];
+        this.setData({
+          stats, items, loaded: true, checkedText: clockText(stats && stats.last_checked_at),
+          soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
+        });
       })
-      .catch((err) => this.setData({ stats: null, items: [], shown: [], error: `数据未更新：${err.message}` }))
+      .catch((err) => this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
@@ -76,7 +84,7 @@ Page({
       this.lastShow = stamp;
     }
     this.setData({ today: todayISO() });
-    watchDay(this, (day) => this.setData({ today: day }));
+    watchDay(this, (day) => this.setData({ today: day, soon: soonRows(this.dueSoon) }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
@@ -91,27 +99,23 @@ Page({
     this.setData({ scope });
   },
 
-  pickTab(e) {
-    const tab = e.currentTarget.dataset.key;
-    const shown = tab === 'all' ? this.data.items : this.data.items.filter((d) => d.kind === tab);
-    this.setData({ tab, shown });
-  },
-
   goSearch(e) {
     const q = (e && e.currentTarget.dataset.q) || '';
     const kind = { apply: '申报通知', policy: '政策' }[SCOPES[this.data.scope].key] || 'all';
     wx.navigateTo({ url: `/pages/search/index?q=${encodeURIComponent(q)}&kind=${encodeURIComponent(kind)}` });
   },
 
-  // 卡片底部：按当前页签到搜索页看近 7 天的文件（搜索没有"本周"这个时间段，所以不写本周的份数）
+  // 卡片底部：到搜索页看近 7 天的申报通知（搜索没有"本周"这个时间段，所以不写本周的份数）
   goMore() {
-    const params = [`time=${encodeURIComponent('近 7 天')}`];
-    if (this.data.tab !== 'all') params.push(`kind=${encodeURIComponent(this.data.tab)}`);
-    wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
+    wx.navigateTo({ url: `/pages/search/index?time=${encodeURIComponent('近 7 天')}&kind=${encodeURIComponent('申报通知')}` });
   },
 
   goEntry(e) {
     wx.navigateTo({ url: e.currentTarget.dataset.url });
+  },
+
+  openDoc(e) {
+    wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` });
   },
 
   goFollow() {

@@ -1,4 +1,4 @@
-<!-- 首页：品牌蓝顶部（字标、第三方整理角标、搜索范围、搜索框、热词）→ 5 个入口 → 本周新增 → 关注提醒 → 文件列表 -->
+<!-- 首页（D-061）：品牌蓝顶部（字标、第三方整理角标、搜索范围、搜索框、热词）→ 3 个入口 → 本周新增 → 7 天内截止 → 最新申报通知 -->
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="brand-row" style="height: {{navHeight}}px; padding-right: {{menuWidth}}px">
     <text class="brand">有据</text>
@@ -22,23 +22,17 @@
 </view>
 
 <view class="entries">
-  <view class="entry" data-url="/pages/search/index?kind=申报通知" bindtap="goEntry">
-    <view class="tile tile--blue"><t-icon name="task-checked" size="44rpx" color="#FFFFFF" /></view><text>查申报</text>
+  <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
+    <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view>
+    <text class="entry-name">截止</text><text class="entry-sub">7 / 14 / 30 天</text>
+  </view>
+  <view class="entry" data-url="/pages/clients/index" bindtap="goEntry">
+    <view class="tile tile--blue"><t-icon name="user" size="44rpx" color="#FFFFFF" /></view>
+    <text class="entry-name">我的客户</text><text class="entry-sub">本机最多 20 家</text>
   </view>
   <view class="entry" data-url="/pages/lists/index" bindtap="goEntry">
-    <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view><text>查名单</text>
-  </view>
-  <view class="entry" data-url="/pages/search/index?kind=政策" bindtap="goEntry">
-    <view class="tile tile--green"><t-icon name="book" size="44rpx" color="#FFFFFF" /></view><text>查政策</text>
-  </view>
-  <view class="entry" data-url="/pages/calendar/index" bindtap="goEntry">
-    <view class="tile tile--blue"><t-icon name="calendar" size="44rpx" color="#FFFFFF" /></view><text>申报日历</text>
-  </view>
-  <view class="entry" data-url="/pages/search/index" bindtap="goEntry">
-    <view class="tile tile--plain"><t-icon name="app" size="44rpx" color="#4E5969" /></view><text>全部</text>
-  </view>
-  <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
-    <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view><text>截止雷达</text>
+    <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view>
+    <text class="entry-name">查名单</text><text class="entry-sub">上过哪些名单</text>
   </view>
 </view>
 
@@ -79,13 +73,20 @@
   <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
 </view>
 
-<view class="card">
-  <view class="tabs" aria-role="tablist" aria-label="按类型看">
-    <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
-      <text>{{item.label}}</text>
-      <view class="tab-bar" wx:if="{{tab === item.key}}"></view>
-    </view>
+<!-- 7 天内截止：只放人工核对过的，最多 5 条，没有就不显示这一块（D-061） -->
+<view wx:if="{{soon.length && !loading}}" class="card soon">
+  <view class="card-head" data-url="/pages/report/index" bindtap="goEntry">
+    <text class="card-title">7 天内截止</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text>
   </view>
+  <view wx:for="{{soon}}" wx:key="id" class="soon-item" data-id="{{item.id}}" bindtap="openDoc">
+    <view class="soon-title">{{item.title}}</view>
+    <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text></view>
+  </view>
+  <view wx:if="{{soonUnverified}}" class="soon-foot" data-url="/pages/report/index" bindtap="goEntry">另有 {{soonUnverified}} 份可能 7 天内截止，日期还没核对 ›</view>
+</view>
+
+<view class="card">
+  <view class="card-head"><text class="card-title">最新申报通知</text></view>
   <view wx:if="{{(loading || !loaded) && !error}}" aria-label="正在加载">
     <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk-row">
       <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
@@ -94,9 +95,9 @@
       <view class="sk sk-meta"></view>
     </view>
   </view>
-  <doc-row wx:if="{{!loading}}" wx:for="{{shown}}" wx:key="id" doc="{{item}}" today="{{today}}" />
-  <view wx:if="{{!shown.length && !loading && loaded && !error}}" class="list-tip">最新的文件里暂时没有这一类</view>
-  <view class="more" bindtap="goMore">查看近 7 天的文件 <t-icon name="chevron-right" size="28rpx" /></view>
+  <doc-row wx:if="{{!loading}}" wx:for="{{items}}" wx:key="id" doc="{{item}}" today="{{today}}" />
+  <view wx:if="{{!items.length && !loading && loaded && !error}}" class="list-tip">暂时没有新的申报通知</view>
+  <view class="more" bindtap="goMore">查看近 7 天的申报通知 <t-icon name="chevron-right" size="28rpx" /></view>
 </view>
 
 <view class="footer">

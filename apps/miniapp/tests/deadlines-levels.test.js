@@ -100,21 +100,24 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
   assert.equal(format.verifyingNote(undefined), '截止日期正在人工核对中');
 });
 
-test('申报日历空状态：写已核对条数，给去搜索申报通知的入口；接口透传已核对条数', async () => {
+test('截止页按月看的空状态：写已核对条数，给去搜索申报通知的入口；接口透传已核对条数', async () => {
   let url;
-  const page = load('pages/calendar/index.js', {
-    '../../utils/consent.js': { loginOpen: () => true },
-    '../../utils/api.js': { calendar: () => Promise.resolve({ items: [], past: [], verifiedTotal: 3 }) },
-    '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
-    '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
-  }, { wx: { navigateTo: (r) => { url = r.url; } } });
-  page.load(); await flush();
-  assert.equal(page.data.items.length, 0);
+  const page = load('pages/report/index.js', {
+    '../../utils/api.js': {
+      deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: { 7: 0, 14: 0, 30: 0 }, by_province: {}, verified_total: 3 }),
+      calendar: () => Promise.resolve({ items: [], past: [], verifiedTotal: 3 }),
+    },
+    '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+  }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: (r) => { url = r.url; } } });
+  page.onLoad(); await flush();
+  page.pickTab(event({ key: 0 })); await flush();
+  assert.equal(page.data.rows.length, 0);
   assert.equal(page.data.verifyingNote, '截止日期正在人工核对中，目前已核对 3 条');
+  assert.equal(page.data.emptyTitle, `${page.data.month}月没有核对过或机器摘录的截止日期`);
   page.goSearch();
   assert.equal(new URL(url, 'https://test.invalid').searchParams.get('kind'), '申报通知');
-  const template = read('pages/calendar/index.wxml');
-  assert.match(template, /wx:if="{{!items.length}}"[\s\S]*{{verifyingNote}}[\s\S]*bindtap="goSearch"[^>]*>去搜索申报通知/);
+  const template = read('pages/report/index.wxml');
+  assert.match(template, /wx:if="{{!rows.length && !loading && !error && !sel}}"[\s\S]*{{verifyingNote}}[\s\S]*bindtap="goSearch"[^>]*>去搜索申报通知/);
   const api = load('utils/api.js', {
     './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': format,
   }, { wx: { request: ({ success }) => success({ statusCode: 200, data: { total: 0, items: [], pastTotal: 0, past: [], verifiedTotal: 0 } }) } });
@@ -195,7 +198,7 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   assert.equal(calls.at(-1).levels, undefined);
   assert.equal(page.data.emptyHint, '');
   page.onLoad({ open: '1' }); await flush();
-  assert.match(page.data.emptyHint, /只包含截止日期已经人工核对的申报通知/);
+  assert.match(page.data.emptyHint, /“只看未截止”不含截止日期没抽到、或几个日期对不上的通知/);
   assert.doesNotMatch(page.data.emptyHint, DIGITS);
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');

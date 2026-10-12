@@ -62,7 +62,7 @@ test('所有登记 t-icon 的地方都指向本地组件，不再用 TDesign 的
     for (const [key, value] of Object.entries(using)) assert.ok(!/tdesign-miniprogram\/icon/.test(value), `${file} 的 ${key} 还在用 TDesign 图标`);
     if (using['t-icon']) { assert.equal(using['t-icon'], '/components/icon/index', file); owners.push(file); }
   }
-  for (const file of ['app.json', 'custom-tab-bar/index.json', 'components/doc-row/index.json', 'components/notice-bar/index.json', 'pages/report/index.json', 'pages/list-board/index.json']) {
+  for (const file of ['app.json', 'custom-tab-bar/index.json', 'components/doc-row/index.json', 'components/notice-bar/index.json', 'pages/report/index.json']) {
     assert.ok(owners.includes(file), `${file} 没有登记本地图标`);
   }
 });
@@ -116,9 +116,11 @@ test('还在用的 TDesign 弹层不开自带的关闭按钮：它内部的 t-ic
   }
 });
 
-test('首页"截止雷达"入口和"申报日历"用不同的图标', () => {
+test('首页三个入口（D-061）：截止用沙漏、我的客户用人像、查名单用列表图标', () => {
   const home = read('pages/home/index.wxml');
-  const iconOf = (label) => new RegExp(`<t-icon name="([a-z0-9-]+)"[^>]*\\/><\\/view><text>${label}<\\/text>`).exec(home)[1];
-  assert.equal(iconOf('申报日历'), 'calendar');
-  assert.equal(iconOf('截止雷达'), 'hourglass');
+  const iconOf = (label) => new RegExp(`<t-icon name="([a-z0-9-]+)"[^>]*\\/><\\/view>\\s*<text class="entry-name">${label}<\\/text>`).exec(home)[1];
+  assert.equal(iconOf('截止'), 'hourglass');
+  assert.equal(iconOf('我的客户'), 'user');
+  assert.equal(iconOf('查名单'), 'bulletpoint');
+  assert.equal((home.match(/class="entry"/g) || []).length, 3);
 });

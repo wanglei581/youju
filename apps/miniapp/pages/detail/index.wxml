@@ -24,10 +24,29 @@
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
     <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
-    <view wx:if="{{standardKey}}" class="standard-link link" bindtap="openStandard" aria-role="button">对照国家认定条件原文<t-icon name="chevron-right" size="28rpx" color="#2A5CE0" /></view>
   </view>
 
-  <view wx:if="{{due}}" class="card due-card">
+  <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->
+  <view wx:if="{{dls && dls.length}}" class="card due-card">
+    <view class="dls-head"><text class="due-label">截止时间</text><text class="weak">以原文为准</text></view>
+    <view wx:for="{{dls}}" wx:key="kind" class="dl {{index ? 'dl--line' : ''}}">
+      <view class="due-top">
+        <view>
+          <view class="due-label">{{item.kind}}</view>
+          <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
+          <view wx:else class="due-unverified">截止未核对，请以原文为准</view>
+        </view>
+        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : '剩 ' + item.days + ' 天'}}</text>
+      </view>
+      <text wx:if="{{item.label}}" class="src src--{{item.source}}">{{item.label}}</text>
+      <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
+    </view>
+    <view wx:if="{{due && loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
+      <t-icon name="notification" size="34rpx" />
+      <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
+    </view>
+  </view>
+  <view wx:elif="{{due}}" class="card due-card">
     <view class="due-top">
       <view>
         <view class="due-label">{{doc.deadline.label}}</view>

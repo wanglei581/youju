@@ -123,7 +123,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   // 宫格只剩两项，按两列排，不留空位
   const [grid] = findAll(root, hasClass('grid'));
   assert.ok(hasClass('grid--2')(grid));
-  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '申报日历']);
+  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户']);
   assert.match(read('pages/me/index.wxss'), /\.grid--2 \{ grid-template-columns: repeat\(2, 1fr\); \}/);
   // 不打开草案协议：那一行改为"隐私保护指引"，打开小程序后台填写的官方指引；关于有据照旧，最后一行没有下划线
   const rows = findAll(root, hasClass('row'));
@@ -144,7 +144,7 @@ test('"我的"：定稿后照旧——未登录、勾选同意、微信登录、
   assert.equal(findAll(root, hasClass('brand')).length, 0);
   const [grid] = findAll(root, hasClass('grid'));
   assert.ok(!hasClass('grid--2')(grid));
-  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '申报日历', '纠错']);
+  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户', '纠错']);
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
@@ -234,19 +234,10 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
   }
 });
 
-test('申报日历：未定稿时每条没有截止提醒的铃铛，标题占满整行；定稿后照旧', () => {
-  for (const final of STATES) {
-    const page = load('pages/calendar/index.js', {
-      '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
-      '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/daywatch.js': daywatch,
-      '../../utils/consent.js': consentFor(final),
-    });
-    Object.assign(page.data, { loading: false, loaded: true, shown: [{ id: 1, docId: '9', date: '10月17日', week: '周六', time: '', days: 10, kind: '申报通知', region: '山东', title: '甲', what: '乙' }] });
-    const root = shown('pages/calendar/index.wxml', page.data);
-    assert.equal(findAll(root, hasClass('bell')).length, final ? 1 : 0);
-    assert.equal(findAll(root, tapsTo('toggleRemind')).length, final ? 1 : 0);
-    assert.equal(findAll(root, hasClass('item-main')).length, 1);
-  }
+test('截止页（D-061 合并申报日历）：每条都没有截止提醒的铃铛，提醒只在详情页（定稿后按 remindOpen 显示）', () => {
+  const template = read('pages/report/index.wxml');
+  assert.doesNotMatch(template, /toggleRemind|class="bell/);
+  assert.doesNotMatch(read('pages/report/index.js'), /requestOnce|loginOpen/);
 });
 
 test('首页：未定稿时不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）；定稿后照旧', () => {
@@ -380,7 +371,7 @@ test('小程序代码里不再有"协议定稿后开放""即将开放"这类字�
   }
 });
 
-test('订阅消息模板没配时不显示提醒入口：关注页、详情、日历、我的页都按 remindOpen 判断；关注后只提示已关注', async () => {
+test('订阅消息模板没配时不显示提醒入口：关注页、详情、我的页都按 remindOpen 判断；关注后只提示已关注', async () => {
   const consent = { ensureConsent: () => Promise.resolve(true), agreedHere: () => true, consentOpen: () => true };
   const toasts = [];
   const off = load('utils/subscribe.js', { './config.js': { templates: { newDocs: '', deadline: '' } }, './api.js': {}, './consent.js': consent },
@@ -396,7 +387,6 @@ test('订阅消息模板没配时不显示提醒入口：关注页、详情、�
   assert.doesNotMatch(textOf(render('pages/follow/index.wxml', { ...followData, remindOpen: false })), /提醒/);
   assert.match(textOf(render('pages/follow/index.wxml', { ...followData, remindOpen: true })), /提醒/);
   assert.match(read('pages/detail/index.wxml'), /loginOpen && remindOpen && due\.days >= 3/);
-  assert.match(read('pages/calendar/index.wxml'), /loginOpen && remindOpen/);
   assert.match(read('pages/me/index.wxml'), /wx:if="{{remindOpen}}"> · 还能提醒/);
   const search = read('pages/search/index.js');
   assert.ok(search.indexOf("if (!remindOpen('newDocs'))") < search.indexOf("confirmText: '订阅提醒'"));

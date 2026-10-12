@@ -141,32 +141,45 @@ function coverage() {
 }
 
 // group=1（D-055）：同一份部里通知的各地转发版本按组折叠、按组计数（管理台确认过的组才折叠）
+// excerpts=1（D-061）：列表带主截止 due，8 天以后到期的可以是"机器摘录"；不带这个参数时接口和以前一样
+const EXCERPTS = { excerpts: 1 };
+// 首页（D-061）：本周统计和"7 天内截止"（dueSoon 只有核对过的，最多 5 条）来自 /home，
+// 下面的列表是最新的 8 份申报通知（和搜索同一口径，已剔除不是企业能报的杂项）
 function home() {
-  if (isLive()) return request('/api/v1/home', { group: 1 });
-  return copy({ stats: mock.stats, items: mock.home });
+  if (isLive()) {
+    return Promise.all([
+      request('/api/v1/home', Object.assign({ group: 1 }, EXCERPTS)),
+      request('/api/v1/search', Object.assign({ kind: '申报通知', limit: 8, offset: 0, group: 1 }, EXCERPTS)),
+    ]).then(([h, latest]) => Object.assign({}, h, { items: latest.items || [] }));
+  }
+  return copy({ stats: mock.stats, items: mock.home.filter((d) => d.kind === '申报通知'), dueSoon: [], dueSoonUnverifiedTotal: 0 });
 }
 
 function search(params) {
-  if (isLive()) return request('/api/v1/search', Object.assign({}, params, { group: 1 }));
+  if (isLive()) return request('/api/v1/search', Object.assign({}, params, { group: 1 }, EXCERPTS));
   return copy(mockSearch(mock.search.items, params));
 }
 
-function deadlineReport(params) {
-  if (isLive()) return request('/api/v1/reports/deadlines', params);
+// 截止页的列表。opts.verifiedOnly（"只看已核对"）时不带 excerpts，结果和以前的截止雷达一样只有核对过的
+function deadlineReport(params, opts) {
+  const verifiedOnly = Boolean(opts && opts.verifiedOnly);
+  if (isLive()) return request('/api/v1/reports/deadlines', verifiedOnly ? params : Object.assign({}, params, EXCERPTS));
   const days = Number((params && params.days) || 7);
   const all = ((mock.reports && mock.reports.deadlines) || [])
+    .filter((item) => !verifiedOnly || (item.source || 'verified') === 'verified')
     .map((item) => Object.assign({}, item, { remaining_days: daysUntil(item.date, undefined, item.time) }))
-    .filter((item) => item.remaining_days >= 0);
+    // 演示数据和接口同一口径：机器摘录只给 8 天以后到期的
+    .filter((item) => item.remaining_days >= ((item.source || 'verified') === 'excerpt' ? 8 : 0));
   const deptOf = (value) => (/科技/.test(value) ? '科技部门' : (/工业和信息化|经济和信息化|工信|经信/.test(value) ? '工信部门' : '其他部门'));
   const scoped = all
     .filter((item) => !params.province || item.province === params.province)
-    .filter((item) => !params.dept || deptOf(item.dept) === params.dept)
-    .filter((item) => !params.support || (item.support || []).includes(params.support));
+    .filter((item) => !params.dept || deptOf(item.dept) === params.dept);
   const filtered = scoped.filter((item) => item.remaining_days <= days);
   const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
   const by = (key) => filtered.reduce((out, item) => { out[item[key]] = (out[item[key]] || 0) + 1; return out; }, {});
   const page = Number(params.page || 1); const size = Number(params.size || 20);
-  return copy({ days, summary, verified_total: ((mock.reports && mock.reports.deadlines) || []).length, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) });
+  const soon = (mock.reports && mock.reports.unverifiedSoon) || { total: 0, items: [] };
+  return copy(Object.assign({ days, summary, verified_total: ((mock.reports && mock.reports.deadlines) || []).filter((x) => (x.source || 'verified') === 'verified').length, by_province: by('province'), by_dept: filtered.reduce((out, item) => { const key = deptOf(item.dept); out[key] = (out[key] || 0) + 1; return out; }, {}), total: filtered.length, page, size, items: filtered.slice((page - 1) * size, page * size) }, verifiedOnly ? {} : { unverifiedSoon: soon }));
 }
 
 function listBoard(params) {
@@ -236,13 +249,15 @@ function detail(id) {
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar() {
   if (isLive()) {
-    const page = (offset, acc, closed) => request('/api/v1/calendar', { limit: 200, offset }).then((r) => {
+    let soon = null;
+    const page = (offset, acc, closed) => request('/api/v1/calendar', Object.assign({ limit: 200, offset }, EXCERPTS)).then((r) => {
+      if (!soon) soon = r.unverifiedSoon || { total: 0, items: [] };
       const items = acc.concat(r.items).slice(0, 1000);
       const past = closed.concat(r.past || []).slice(0, 1000);
       const next = offset + 200;
       return next < Math.max(r.total, r.pastTotal || 0) && next < 1000 && (r.items.length || (r.past || []).length)
         ? page(next, items, past)
-        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, verifiedTotal: r.verifiedTotal, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
+        : { items, past, total: r.total, pastTotal: r.pastTotal || 0, verifiedTotal: r.verifiedTotal, unverifiedSoon: soon, truncated: r.total > items.length || (r.pastTotal || 0) > past.length };
     });
     return page(0, [], []);
   }
@@ -274,7 +289,8 @@ const EXPORT_ERRORS = {
   422: '有的文件已不存在或超过 200 份，请刷新后再试',
 };
 function exportFile(ids, format) {
-  const body = { ids: ids.map(String), format };
+  // excerpts=1（D-061）：导出的截止列也按首发版规则写，机器摘录的另附原句
+  const body = { ids: ids.map(String), format, excerpts: 1 };
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
