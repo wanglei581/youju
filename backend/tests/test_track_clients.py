@@ -166,6 +166,8 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch, tmp_p
     ]
     assert [row[5] for row in rows] == ["已核对", "已核对", "已核对", "未核对，请以原文为准"]
     assert [row[7] is not None for row in rows] == [True, True, True, False]
+    # 有具体时间的连时间一起写（Codex 10/12 审查：要么只写日期，要么写明带时间；这里选带时间，不丢信息）
+    assert all(row[7] is None or row[7][:4] == "2026" for row in rows)
     assert [row[8] for row in rows] == [5, 10, 31, None]
     summary = {
         row[0].value: [cell.value for cell in row] for row in book["汇总"].iter_rows(min_row=3)
