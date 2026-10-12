@@ -3,7 +3,7 @@
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">
-    <view class="seg-item {{tab === 'docs' ? 'seg-item--on' : ''}}" data-tab="docs" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'docs'}}">相关通知<text wx:if="{{loaded && clients.length}}"> {{rows.length}}</text></view>
+    <view class="seg-item {{tab === 'docs' ? 'seg-item--on' : ''}}" data-tab="docs" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'docs'}}">相关通知{{loaded && clients.length ? ' ' + rows.length : ''}}</view>
     <view class="seg-item {{tab === 'cards' ? 'seg-item--on' : ''}}" data-tab="cards" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === 'cards'}}">客户卡片 {{clients.length}}</view>
   </view>
 
@@ -15,9 +15,11 @@
       <view class="btn-primary empty-btn" bindtap="edit" aria-role="button">新增客户</view>
     </view>
     <block wx:else>
-      <scroll-view scroll-x class="chips" enable-flex>
-        <view class="chip {{only ? '' : 'chip--on'}}" data-id="" bindtap="pickOnly" aria-role="button">全部客户</view>
-        <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
+      <scroll-view scroll-x class="chips" enhanced show-scrollbar="{{false}}">
+        <view class="chips-row">
+          <view class="chip {{only ? '' : 'chip--on'}}" data-id="" bindtap="pickOnly" aria-role="button">全部客户</view>
+          <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
+        </view>
       </scroll-view>
       <view class="weak scope-note">近 90 天发布的申报通知，快截止的排在前面；已核对、确认已截止的不列。</view>
       <view wx:if="{{loadError}}" class="card load-error"><text>{{loadError}}</text><text class="link retry" bindtap="reload">重试</text></view>
