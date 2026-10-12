@@ -72,3 +72,4 @@
 .soon-due { margin-top: 8rpx; font-size: 24rpx; color: var(--o-txt); }
 .soon-more { padding: 16rpx 0 20rpx; font-size: 24rpx; text-align: center; }
 .note { margin: 24rpx 32rpx 60rpx; color: var(--t3); font-size: 24rpx; line-height: 1.7; }
+.cached-note { margin: 16rpx 32rpx 0; font-size: 24rpx; }

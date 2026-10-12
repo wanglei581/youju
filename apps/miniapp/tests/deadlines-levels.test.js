@@ -82,6 +82,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
 test('截止雷达空状态：写已核对条数，给去搜索申报通知的入口', async () => {
   let url;
   const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: { 7: 0, 14: 0, 30: 0 }, by_province: {}, verified_total: 0 }) },
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: (r) => { url = r.url; } } });
@@ -103,6 +104,7 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
 test('截止页按月看的空状态：写已核对条数，给去搜索申报通知的入口；接口透传已核对条数', async () => {
   let url;
   const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': {
       deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: { 7: 0, 14: 0, 30: 0 }, by_province: {}, verified_total: 3 }),
       calendar: () => Promise.resolve({ items: [], past: [], verifiedTotal: 3 }),

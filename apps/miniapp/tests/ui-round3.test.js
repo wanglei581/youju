@@ -27,7 +27,7 @@ const OLD_RULES = '按企业全称逐行比对名单原文；名称相近的企�
 const bare = (text) => text.replace(/[，。；、\s]/g, '');
 
 function listsPage(lookup = () => new Promise(() => {})) {
-  return load('pages/lists/index.js', {
+  return load('pages/lists/index.js', { '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { lists: () => new Promise(() => {}), listBoard: () => new Promise(() => {}), lookup, isLive: () => true },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { getApp: () => ({ globalData: {} }), wx: { showToast() {} } });
@@ -151,7 +151,7 @@ test('本轮改过的两页不出现禁用字样', () => {
 
 test('简称至少两字可查，候选名称点击后用全称查询；无候选和过短保持提示', async () => {
   const calls = []; const toasts = [];
-  const page = load('pages/lists/index.js', {
+  const page = load('pages/lists/index.js', { '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': { isLive: () => true, lookup: (q) => {
       calls.push(q); return Promise.resolve({ items: [], similar: [], candidates: q === '海尔' ? ['海尔集团', '青岛海尔有限公司'] : [], coverage: { lists: 1 } });
     } }, '../../utils/format.js': format, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },

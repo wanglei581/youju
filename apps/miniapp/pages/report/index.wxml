@@ -10,7 +10,7 @@
 <view class="tabs" aria-role="tablist">
   <view wx:for="{{tabs}}" wx:key="key" class="tab {{tab === item.key ? 'tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
     <t-icon wx:if="{{!item.key}}" name="calendar" size="40rpx" />
-    <text wx:else class="num">{{tab && (loading || error) ? '—' : summary[item.key]}}</text>
+    <text wx:else class="num">{{tab && (loading || error) && !cachedText ? '—' : summary[item.key]}}</text>
     <text>{{item.label}}</text>
   </view>
 </view>
@@ -24,6 +24,8 @@
 </view>
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="retry">重试</text></view>
+<!-- 显示的是本机存的上次数据时写明（10/12）：正在更新，或这次没更新成功 -->
+<view wx:if="{{cachedText && (loading || error)}}" class="weak cached-note">下面是{{cachedText}}的数据{{loading ? '，正在更新…' : ''}}</view>
 
 <view wx:if="{{!tab && !error && cells.length}}" class="card month">
   <view class="month-head">
@@ -45,7 +47,7 @@
 <view wx:if="{{!tab && sel}}" class="sel-row"><text>只看 <text class="b">{{selLabel}}</text> 截止的</text><text class="link" bindtap="clearSel">看整个月</text></view>
 <view wx:if="{{!tab && truncated}}" class="weak trunc">未截止和已截止各最多显示 1000 条。</view>
 
-<view wx:if="{{!error && (rows.length || loading)}}" class="card list">
+<view wx:if="{{rows.length || (loading && !error)}}" class="card list">
   <view wx:if="{{loading && !rows.length}}" class="empty">正在加载…</view>
   <view wx:for="{{rows}}" wx:key="key" class="item" data-id="{{item.docId}}" data-has="{{item.hasDetail}}" bindtap="open">
     <view class="item-title">{{item.title}}</view>
@@ -80,7 +82,7 @@
 </view>
 
 <!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061） -->
-<view wx:if="{{soon.total && !loading && !error}}" class="card soon">
+<view wx:if="{{soon.total && (cachedText || (!loading && !error))}}" class="card soon">
   <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>

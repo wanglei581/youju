@@ -124,6 +124,7 @@ test('详情页：接口给了空的 deadlines（没抽到候选）写"截止时
 
 function deadlinePage(api, globals = {}) {
   return load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/api.js': api, '../../utils/exporter.js': { exportDocs() {} }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { getApp: () => ({ globalData: {} }), wx: { navigateTo() {} }, ...globals });
 }
@@ -206,6 +207,7 @@ test('首页（D-061）：三个入口；"7 天内截止"只放核对过的、�
   };
   const page = load('pages/home/index.js', {
     '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => false },
   }, { getApp: () => ({ globalData: {} }), wx: { navigateTo() {} } });
   page.onLoad(); await flush();
@@ -263,8 +265,14 @@ test('首页先显示上次存在本机的数据（10/12 冷启动诊断）：�
     getStorageSync: (k) => (stored[k] ? plain(stored[k]) : ''), setStorageSync: (k, v) => { stored[k] = plain(v); }, navigateTo() {},
   };
   let next;
+  const cacheModule = () => {
+    const module = { exports: {} };
+    vm.runInNewContext(read('utils/cache.js'), { module, wx: local, require: () => format });
+    return module.exports;
+  };
   const homePage = () => load('pages/home/index.js', {
     '../../utils/api.js': { home: () => new Promise((resolve, reject) => { next = { resolve, reject }; }) },
+    '../../utils/cache.js': cacheModule(),
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
   }, { getApp: () => ({ globalData: {} }), wx: local });
   const fresh = { stats: { week_total: 2, provinces: 28, sources: 70, last_checked_at: null }, items: [{ id: '1', kind: '申报通知', title: '新的' }],
@@ -293,4 +301,74 @@ test('首页先显示上次存在本机的数据（10/12 冷启动诊断）：�
   assert.equal(page.data.loaded, false);
   next.reject(new Error('网络不太好，请稍后再试')); await flush(); await flush();
   assert.equal(page.data.items.length, 0); assert.match(page.data.error, /数据未更新/);
+});
+
+function storageWx() {
+  const stored = {};
+  return { stored, wx: { getStorageSync: (k) => (stored[k] ? plain(stored[k]) : ''), setStorageSync: (k, v) => { stored[k] = plain(v); }, navigateTo() {} } };
+}
+function realCache(wxStub) {
+  const module = { exports: {} };
+  vm.runInNewContext(read('utils/cache.js'), { module, wx: wxStub, require: () => format });
+  return module.exports;
+}
+
+test('截止页先显示上次存在本机的默认视图（7 天内、不筛选）：截止按手机当天重新算；取新的失败留着上次的；换了页签不用缓存', async () => {
+  const { stored, wx } = storageWx();
+  stored.youjuDeadlineCacheV1 = { at: Date.now() - 3600e3, data: {
+    summary: { 7: 1, 14: 2, 30: 3 }, total: 1, verified_total: 1,
+    items: [
+      { id: '1', title: '核对过', issuer: '某厅', province: '山东', label: '企业申报截止', date: plus(5), source: 'verified' },
+      // 存的时候是 8 天以后的机器摘录，按今天算已进入 7 天内：不写日期，也不写原句
+      { id: '3', title: '摘录', issuer: '某厅', province: '山东', label: '企业申报截止', date: plus(6), source: 'excerpt', quote: QUOTE },
+    ],
+    unverifiedSoon: { total: 2, items: [{ id: '8', title: '没核对', issuer: '某厅', province: '山东', kind: '企业申报截止' }] },
+  } };
+  let next; const calls = [];
+  const page = load('pages/report/index.js', {
+    '../../utils/api.js': { deadlineReport: (p, o) => { calls.push(p); return new Promise((resolve, reject) => { if (p.size === 20) next = { resolve, reject }; }); } },
+    '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  page.onLoad();
+  // 还没回来：先显示上次的，份数也照上次的写，不写"—"
+  assert.deepEqual(plain(page.data.rows.map((r) => [r.docId, r.source, r.days, r.quote])), [['1', 'verified', 5, ''], ['3', 'unverified', null, '']]);
+  assert.match(page.data.cachedText, /^上次更新 /); assert.equal(page.data.loading, true);
+  let root = render('pages/report/index.wxml', page.data);
+  assert.match(flat(root), /下面是上次更新.*的数据，正在更新…/);
+  assert.equal(flat(findAll(root, hasClass('tab'))[0]), '17天内');
+  assert.equal(findAll(root, hasClass('soon')).length, 1);
+  // 失败：留着上次的
+  next.reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.equal(page.data.rows.length, 2); assert.equal(page.data.error, '网络不太好，请稍后再试');
+  root = render('pages/report/index.wxml', page.data);
+  assert.match(flat(root), /下面是上次更新.*的数据/); assert.doesNotMatch(flat(root), /正在更新…/);
+  // 重试成功：换成新的并存下
+  page.retry();
+  next.resolve(plain({ ...REPORT, items: [REPORT.items[1]] })); await flush();
+  assert.equal(page.data.cachedText, ''); assert.deepEqual(page.data.rows.map((r) => r.docId), ['2']);
+  assert.deepEqual(stored.youjuDeadlineCacheV1.data.items.map((i) => i.id), ['2']);
+  // 换到 14 天：不用缓存，先清空再加载
+  page.pickTab({ currentTarget: { dataset: { key: 14 } } });
+  assert.equal(page.data.cachedText, ''); assert.equal(page.data.rows.length, 0);
+});
+
+test('查名单先显示上次存在本机的最近名单和比对范围；取新的失败写明这次没更新成功', async () => {
+  const { stored, wx } = storageWx();
+  stored.youjuListsCacheV1 = { at: Date.now() - 600e3, data: { week_total: 3, total: 3, items: [{ id: '5', title: '专精特新名单' }] } };
+  stored.youjuListScopeV1 = { at: Date.now() - 600e3, data: { lists: 9, byType: [{ type: '其他', lists: 9, entries: 1 }], byProvince: [], byYear: [] } };
+  let next;
+  const page = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => new Promise((resolve, reject) => { next = { resolve, reject }; }), listBoard: () => new Promise(() => {}) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  page.reload();
+  assert.equal(page.data.loading, false); assert.equal(page.data.shown[0].title, '专精特新名单');
+  assert.equal(page.data.scope.lists, 9); assert.match(page.data.cachedText, /^上次更新 /);
+  next.reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.equal(page.data.staleError, true); assert.ok(!page.data.error);
+  assert.match(textOf(render('pages/lists/index.wxml', page.data)), /这次没更新成功/);
+  page.reload();
+  next.resolve({ week_total: 1, total: 1, items: [{ id: '6', title: '新名单' }] }); await flush();
+  assert.equal(page.data.cachedText, ''); assert.equal(page.data.shown[0].title, '新名单');
+  assert.equal(stored.youjuListsCacheV1.data.items[0].title, '新名单');
 });

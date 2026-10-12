@@ -1,6 +1,7 @@
 const api = require('../../utils/api.js');
 const { todayISO, clockText, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
 
 const SCOPES = [
@@ -9,20 +10,8 @@ const SCOPES = [
   { key: 'policy', label: '查政策', placeholder: '搜政策文件，如"数字经济"' },
 ];
 
-// 首页先显示上次的数据（10/12 诊断：接口空闲后冷启动要等，打开时不再是空白页）：每次取到新数据就存一份到本机，
-// 下次打开先显示（3 天内的），同时去取新的；取新的失败就留着上次的，写明"数据未更新"。只存公开数据。
+// 首页先显示上次存在本机的数据（见 utils/cache.js）；取新的失败就留着上次的，写明"数据未更新"
 const HOME_CACHE = 'youjuHomeCacheV1';
-const CACHE_MS = 3 * 86400000;
-function readCache() {
-  try {
-    const value = wx.getStorageSync(HOME_CACHE);
-    if (value && value.at && value.data && Date.now() - value.at < CACHE_MS) return value;
-  } catch (e) { /* 读不到就当没有 */ }
-  return null;
-}
-function writeCache(data) {
-  try { wx.setStorageSync(HOME_CACHE, { at: Date.now(), data }); } catch (e) { /* 存不了不影响显示 */ }
-}
 
 // "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
 function soonRows(list) {
@@ -71,14 +60,14 @@ Page({
     if (this.refreshing) return;
     this.refreshing = true;
     if (!this.data.loaded) {
-      const cached = readCache();
-      if (cached) this.show(cached.data, `上次更新 ${clockText(new Date(cached.at).toISOString())}`);
+      const cached = readCache(HOME_CACHE);
+      if (cached) this.show(cached.data, cachedLabel(cached.at));
     }
     this.setData({ loading: true, error: '' });
     api.home()
       .then((data) => {
         this.show(data, '');
-        writeCache({ stats: data.stats, items: data.items, dueSoon: data.dueSoon || [], dueSoonUnverifiedTotal: data.dueSoonUnverifiedTotal || 0 });
+        writeCache(HOME_CACHE, { stats: data.stats, items: data.items, dueSoon: data.dueSoon || [], dueSoonUnverifiedTotal: data.dueSoonUnverifiedTotal || 0 });
       })
       .catch((err) => {
         // 已经显示着（上次的）数据就留着，只在上面写明没更新
