@@ -37,9 +37,11 @@ function forgetAgreed() {
   try { wx.removeStorageSync(AGREED_KEY); } catch (e) { /* 忽略 */ }
 }
 
-// 冷启动网关错误或单次 5 秒内的调用失败：GET 最多再试 4 次，等待共 17.5 秒。
-// 单次 15 秒未返回（包括平台报超时）不重试；POST 等写操作不重试。
-const RETRY_DELAYS = [1500, 3000, 5000, 8000];
+// 冷启动（10/12 诊断）：接口服务空闲时缩到 0 个实例，下次请求要等新实例起来。期间网关可能回 502/503/504、
+// 调用很快失败，也可能一直不回到 15 秒超时。读数据（GET）遇到这三种情况都接着重试，间隔 1.5、3、5、8 秒，
+// 之后每 10 秒一次，从第一次发出算起超过 60 秒就不再发新的请求；写操作（POST 等）不重试，404、422、500 等也不重试。
+const RETRY_DELAYS = [1500, 3000, 5000, 8000, 10000];
+const MAX_WAIT = 60000;
 const TIMEOUT = 15000;
 const GATEWAY_CODES = [502, 503, 504];
 const startupPages = new Map();
@@ -58,27 +60,27 @@ function stopStartup(page) {
 
 function withRetry(attempt, method) {
   let starting = false;
-  const run = (n) => {
-    const sent = Date.now();
-    return attempt().catch((err) => {
-      if (method !== 'GET' || !err || !err.retryable || err.timeout || n >= RETRY_DELAYS.length) throw err;
-      if (!GATEWAY_CODES.includes(err.status) && Date.now() - sent > 5000) throw err;
-      if (!starting) { starting = true; startingRequests += 1; emitStartup(); }
-      return new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[n])).then(() => run(n + 1));
-    });
-  };
+  const first = Date.now();
+  const run = (n) => attempt().catch((err) => {
+    if (method !== 'GET' || !err || !err.retryable) throw err;
+    const delay = RETRY_DELAYS[Math.min(n, RETRY_DELAYS.length - 1)];
+    if (Date.now() + delay - first >= MAX_WAIT) throw err;
+    if (!starting) { starting = true; startingRequests += 1; emitStartup(); }
+    return new Promise((resolve) => setTimeout(resolve, delay)).then(() => run(n + 1));
+  });
   const finish = () => { if (starting) { startingRequests -= 1; emitStartup(); } };
   return run(0).then((value) => { finish(); return value; }, (err) => { finish(); throw err; });
 }
 
-// 15 秒没有返回：算超时，不再重试
+// 15 秒没有返回：算超时（读数据的请求在 60 秒内会再试）
 function timeoutError() {
   const err = new Error('网络不太好，请稍后再试');
   err.timeout = true;
+  err.retryable = true;
   return err;
 }
 
-// 调用失败（没有拿到响应）：很快失败的可以重试；云托管自己报超时的不重试
+// 调用失败（没有拿到响应，包括云托管自己报超时）：读数据的请求在 60 秒内会再试
 function callFailure(res) {
   const err = new Error('网络不太好，请稍后再试');
   err.retryable = true;

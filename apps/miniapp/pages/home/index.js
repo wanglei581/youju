@@ -9,6 +9,21 @@ const SCOPES = [
   { key: 'policy', label: '查政策', placeholder: '搜政策文件，如"数字经济"' },
 ];
 
+// 首页先显示上次的数据（10/12 诊断：接口空闲后冷启动要等，打开时不再是空白页）：每次取到新数据就存一份到本机，
+// 下次打开先显示（3 天内的），同时去取新的；取新的失败就留着上次的，写明"数据未更新"。只存公开数据。
+const HOME_CACHE = 'youjuHomeCacheV1';
+const CACHE_MS = 3 * 86400000;
+function readCache() {
+  try {
+    const value = wx.getStorageSync(HOME_CACHE);
+    if (value && value.at && value.data && Date.now() - value.at < CACHE_MS) return value;
+  } catch (e) { /* 读不到就当没有 */ }
+  return null;
+}
+function writeCache(data) {
+  try { wx.setStorageSync(HOME_CACHE, { at: Date.now(), data }); } catch (e) { /* 存不了不影响显示 */ }
+}
+
 // "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
 function soonRows(list) {
   return (list || []).map((d) => {
@@ -33,6 +48,8 @@ Page({
     // 最近一次成功检查的时间（北京时间，如"10月6日 06:30"）；本周 0 份时写在"本周暂无新文件"后面
     checkedText: '',
     items: [],
+    // 显示的是上次存在本机的数据时，写明是什么时候的（取到新数据后清空）
+    cachedText: '',
     // 7 天内截止（只放核对过的）和 7 天内有候选、还没核对的份数
     soon: [],
     soonUnverified: 0,
@@ -53,17 +70,30 @@ Page({
   reload() {
     if (this.refreshing) return;
     this.refreshing = true;
+    if (!this.data.loaded) {
+      const cached = readCache();
+      if (cached) this.show(cached.data, `上次更新 ${clockText(new Date(cached.at).toISOString())}`);
+    }
     this.setData({ loading: true, error: '' });
     api.home()
-      .then(({ stats, items, dueSoon, dueSoonUnverifiedTotal }) => {
-        this.dueSoon = dueSoon || [];
-        this.setData({
-          stats, items, loaded: true, checkedText: clockText(stats && stats.last_checked_at),
-          soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
-        });
+      .then((data) => {
+        this.show(data, '');
+        writeCache({ stats: data.stats, items: data.items, dueSoon: data.dueSoon || [], dueSoonUnverifiedTotal: data.dueSoonUnverifiedTotal || 0 });
       })
-      .catch((err) => this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` }))
+      .catch((err) => {
+        // 已经显示着（上次的）数据就留着，只在上面写明没更新
+        if (this.data.loaded) this.setData({ error: `数据未更新：${err.message}` });
+        else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` });
+      })
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
+  },
+
+  show({ stats, items, dueSoon, dueSoonUnverifiedTotal }, cachedText) {
+    this.dueSoon = dueSoon || [];
+    this.setData({
+      stats, items: items || [], loaded: true, cachedText, checkedText: clockText(stats && stats.last_checked_at),
+      soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
+    });
   },
 
   onHide() {
