@@ -30,6 +30,9 @@
   .pagebar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
   .panel { background:#fff; padding:20px; border:1px solid var(--line); border-radius:8px; margin-bottom:16px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .paused { margin-top:14px; }
+  .paused summary { cursor:pointer; color:#4E5969; padding:6px 0; }
+  .paused .grid { margin-top:8px; opacity:.75; }
   .metric { text-align:left; padding:12px; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
   .metric strong { display:block; font-size:26px; color:var(--ink); }
   .progress { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; margin:0 0 14px; }
@@ -183,7 +186,12 @@
         todo.append(progress);
       }
       todo.append(grid);
-      [['截止日期 · 7 天内','deadlines_7','review','7'],['截止日期 · 30 天内','deadlines_30','review','30'],['截止日期 · 全部','deadlines','review','all'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['质检存疑','audit','audit'],['未处理纠错','feedback','feedback'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      // D-061：每天先核 7 天内截止；申请条件、支持方式、转发归组、类型复核、纠错暂缓，收进下面的折叠区
+      [['截止日期 · 7 天内','deadlines_7','review','7'],['截止日期 · 30 天内','deadlines_30','review','30'],['质检存疑','audit','audit'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      const paused=node('details',undefined,'paused'), pausedGrid=node('div',undefined,'grid');
+      paused.append(node('summary','暂缓的队列（D-061：首发前不用处理，数字只作参考）'),pausedGrid);
+      [['截止日期 · 全部','deadlines','review','all'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['未处理纠错','feedback','feedback']].forEach(([label,key,menu,wanted])=>pausedGrid.append(metric(label,d.todos[key],menu,wanted)));
+      todo.append(paused);
       if(d.pay) todo.append(node('p',`支付待办 ${d.todos.pay} 项`));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
       todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
