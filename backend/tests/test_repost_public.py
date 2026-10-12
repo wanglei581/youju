@@ -240,8 +240,8 @@ def test_deadlines_stay_per_version(client, session, world) -> None:
         {"label": "企业申报截止", "date": "2026-10-12", "time": "16:00"}
     ]
     assert versions["天津版"]["url"] == world["tianjin"].url
-    # 库里没有部里原件：不出现“部里”
-    assert all(v["label"] != "部里" for v in repost["versions"])
+    # 库里没有部里原件：不出现“部委”
+    assert all(v["label"] != "部委" for v in repost["versions"])
 
     tianjin = client.get(f"/api/v1/documents/{world['tianjin'].id}").json()
     assert tianjin["deadline"]["label"] == "企业申报截止"
@@ -267,7 +267,7 @@ def test_national_original_is_main_and_called_ministry(client, session, world) -
     assert main["id"] == str(national.id) and main["group"]["versions"] == 3
     detail = client.get(f"/api/v1/documents/{world['shaanxi'].id}").json()
     first = detail["repost"]["versions"][0]
-    assert first["label"] == "部里" and first["deadlines"][0]["label"] == "企业申报截止"
+    assert first["label"] == "部委" and first["deadlines"][0]["label"] == "企业申报截止"
     assert detail["repost"]["versions"][1]["label"] == "陕西版"
 
 

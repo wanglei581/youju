@@ -1,7 +1,7 @@
 <notice-bar />
 <view class="card brand">
   <view class="brand-name">有据</view>
-  <view class="muted brand-sub">政务公开文件检索 · 第三方整理</view>
+  <view class="muted brand-sub">公开通知与名单检索 · 第三方整理</view>
   <view wx:if="{{version}}" class="weak brand-ver">版本 {{version}}</view>
 </view>
 

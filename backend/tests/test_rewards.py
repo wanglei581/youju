@@ -1367,3 +1367,15 @@ def test_restricted_api_without_new_grants(
             assert client.get(path, headers=identity).status_code == 200
         assert client.delete("/api/v1/me/deadline-clues/999", headers=identity).status_code == 404
         assert client.delete("/api/v1/me", headers=identity).status_code == 204
+
+
+def test_reconcile_is_scheduled_hourly_and_recorded():
+    """发奖失败只记日志，补发靠定时任务：crontab 里要有且只有一行 rewards-reconcile，job.sh 认得这个任务名。"""
+    from pathlib import Path
+
+    from youju import jobs
+
+    crontab = (Path(__file__).resolve().parents[1] / "deploy" / "crontab").read_text()
+    lines = [line for line in crontab.splitlines() if "job.sh rewards-reconcile" in line]
+    assert lines == ["20 * * * * /app/backend/deploy/job.sh rewards-reconcile"]
+    assert "rewards-reconcile" in jobs.JOB_NAMES and "rewards-reconcile" not in jobs.OVERVIEW_JOBS
