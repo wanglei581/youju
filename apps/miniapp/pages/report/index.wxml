@@ -35,7 +35,7 @@
   <view class="grid">
     <view wx:for="{{cells}}" wx:key="key" class="cell {{item.has ? 'cell--has' : ''}} {{sel && item.day === selDay ? 'cell--sel' : ''}}" data-day="{{item.day}}" data-has="{{item.has}}" bindtap="pickDay">
       <block wx:if="{{!item.blank}}">
-        <text class="cnum {{item.weekend && !item.has ? 'cnum--weekend' : ''}}">{{item.day}}</text>
+        <text class="cnum {{item.weekend && !item.has ? 'cnum--weekend' : ''}} {{item.today ? 'cnum--today' : ''}}">{{item.day}}</text>
         <view class="dot {{item.due ? 'dot--due' : ''}} {{item.ex ? 'dot--ex' : ''}} {{item.past ? 'dot--past' : ''}}"></view>
       </block>
     </view>

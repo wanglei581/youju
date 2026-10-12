@@ -55,8 +55,10 @@ function calendarRow(d) {
   }, { kind: d.what, source, date: iso, time: d.time, quote: d.quote });
 }
 
+const prefixOf = (year, month) => `${year}-${month < 10 ? `0${month}` : month}-`;
+
 // 某年某月的日历格子，周一开头。due：有核对过的截止；ex：只有机器摘录；past：已截止
-function monthCells(year, month, marks) {
+function monthCells(year, month, marks, today) {
   const first = new Date(year, month - 1, 1).getDay(); // 0=周日
   const lead = (first + 6) % 7;
   const total = new Date(year, month, 0).getDate();
@@ -67,12 +69,11 @@ function monthCells(year, month, marks) {
     const mark = marks[day] || '';
     cells.push({
       key: `d${day}`, day, due: mark === 'due', ex: mark === 'ex', past: mark === 'past', has: mark === 'due' || mark === 'ex',
-      weekend: dow === 0 || dow === 6,
+      weekend: dow === 0 || dow === 6, today: `${prefixOf(year, month)}${day < 10 ? `0${day}` : day}` === today,
     });
   }
   return cells;
 }
-const prefixOf = (year, month) => `${year}-${month < 10 ? `0${month}` : month}-`;
 
 // 没有带日期的截止时第一行写什么。7 天内只会有核对过的（机器摘录只给 8 天以后的）
 function emptyTitle({ tab, month, verifiedOnly, province, dept }) {
@@ -220,7 +221,7 @@ Page({
     const inMonth = upcoming.filter((d) => d.iso.startsWith(prefix));
     const shown = sel ? inMonth.filter((d) => d.iso === sel) : inMonth;
     this.setData({
-      cells: monthCells(year, month, marks),
+      cells: monthCells(year, month, marks, todayISO()),
       rows: shown,
       total: shown.length,
       past: sel ? [] : past.filter((d) => d.iso.startsWith(prefix)),

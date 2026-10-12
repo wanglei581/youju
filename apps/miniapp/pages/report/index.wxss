@@ -48,6 +48,8 @@
 .cnum { font-size: 28rpx; color: var(--t2); }
 .cnum--weekend { color: var(--t3); }
 .cell--has .cnum { color: var(--t1); font-weight: 700; }
+.cnum--today { color: var(--brand); font-weight: 700; }
+.cell--has .cnum--today { color: var(--brand); }
 .dot { width: 10rpx; height: 10rpx; box-sizing: border-box; border-radius: 6rpx; }
 .dot--due { background: var(--brand); }
 .dot--ex { border: 2rpx solid var(--brand); }
