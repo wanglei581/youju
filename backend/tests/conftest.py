@@ -6,6 +6,7 @@
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,24 @@ os.environ["YOUJU_DATABASE_URL"] = TEST_DB_URL
 # 测试只使用显式环境配置，避免读取开发环境的密钥或连接信息。
 Settings.model_config["env_file"] = None
 get_settings.cache_clear()
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """仅在显式要求时移动 Python 时钟，且早于收集、建库和所有夹具。"""
+    days = os.environ.get("YOUJU_TEST_SHIFT_DAYS")
+    if days is None:
+        return
+    import time_machine
+
+    travel = time_machine.travel(datetime.now(UTC) + timedelta(days=int(days)), tick=True)
+    travel.start()
+    session.config._youju_time_travel = travel
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    travel = getattr(session.config, "_youju_time_travel", None)
+    if travel is not None:
+        travel.stop()
 
 
 @pytest.fixture(scope="session")

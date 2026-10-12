@@ -142,6 +142,8 @@ uv run pytest          # 全部测试（需要数据库的测试连 youju_test �
 
 CI（`.github/workflows/ci.yml`）在每个 PR 上运行同样的检查，并要求数据库测试必须执行。
 
+日期敏感测试可用 `YOUJU_TEST_SHIFT_DAYS=75 uv run pytest` 将测试进程时钟拨到当前时间后 75 天并继续走；不设置时照常使用真实时间。建议每月初或修改日期逻辑后，分别用 0、20、75、200、400 天运行全量测试。此开关只移动 Python 时钟，MySQL 的 `NOW()`、`CURDATE()` 和 `CURRENT_TIMESTAMP` 仍使用数据库真实时间。
+
 ## 目录
 
 ```text
