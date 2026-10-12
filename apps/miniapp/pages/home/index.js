@@ -56,21 +56,39 @@ Page({
     this.reload();
   },
 
+  // 取数据：先显示本机存的上次数据；同时向常驻的 admin 要首屏快照（不等接口服务冷启动），
+  // 再取接口服务的实时数据。实时的回来了就以它为准；快照只在实时的还没回来时显示。
   reload() {
     if (this.refreshing) return;
     this.refreshing = true;
+    const seq = this.homeSeq = (this.homeSeq || 0) + 1;
+    let live = false;
+    let fresh = false;
     if (!this.data.loaded) {
       const cached = readCache(HOME_CACHE);
       if (cached) this.show(cached.data, cachedLabel(cached.at));
     }
     this.setData({ loading: true, error: '' });
+    const save = (data) => writeCache(HOME_CACHE, {
+      stats: data.stats, items: data.items, dueSoon: data.dueSoon || [], dueSoonUnverifiedTotal: data.dueSoonUnverifiedTotal || 0,
+    });
+    if (api.snapshotOnce) {
+      api.snapshotOnce().then((snap) => {
+        if (!snap || live || seq !== this.homeSeq) return;
+        fresh = true;
+        this.show(snap.home, '');
+        save(snap.home);
+      });
+    }
     api.home()
       .then((data) => {
+        live = true;
         this.show(data, '');
-        writeCache(HOME_CACHE, { stats: data.stats, items: data.items, dueSoon: data.dueSoon || [], dueSoonUnverifiedTotal: data.dueSoonUnverifiedTotal || 0 });
+        save(data);
       })
       .catch((err) => {
-        // 已经显示着（上次的）数据就留着，只在上面写明没更新
+        // 已经显示着快照（一分钟内的数据）就不报错；显示着本机存的上次数据就留着，只在上面写明没更新
+        if (fresh) return;
         if (this.data.loaded) this.setData({ error: `数据未更新：${err.message}` });
         else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` });
       })
@@ -80,7 +98,8 @@ Page({
   show({ stats, items, dueSoon, dueSoonUnverifiedTotal }, cachedText) {
     this.dueSoon = dueSoon || [];
     this.setData({
-      stats, items: items || [], loaded: true, cachedText, checkedText: clockText(stats && stats.last_checked_at),
+      // fresh：显示的是快照或实时数据（不是本机存的上次数据），这时不再提示"正在连接"
+      stats, items: items || [], loaded: true, cachedText, fresh: !cachedText, checkedText: clockText(stats && stats.last_checked_at),
       soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
     });
   },

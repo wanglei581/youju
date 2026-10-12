@@ -97,7 +97,7 @@ function request(path, params, options) {
   return withRetry(() => requestOnce(url, method, data, header), method);
 }
 
-function requestOnce(url, method, data, header) {
+function requestOnce(url, method, data, header, service) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
@@ -117,7 +117,7 @@ function requestOnce(url, method, data, header) {
         config: { env: config.cloudEnv },
         path: url,
         method,
-        header: Object.assign({ 'X-WX-SERVICE': config.cloudService }, header),
+        header: Object.assign({ 'X-WX-SERVICE': service || config.cloudService }, header),
         data,
         timeout: TIMEOUT,
         success: done,
@@ -135,6 +135,24 @@ function requestOnce(url, method, data, header) {
       });
     }
   });
+}
+
+// 首屏快照（10/12 冷启动诊断）：接口服务空闲后要 67 秒才能取到数据；admin 服务常驻、不冷启动，
+// 打开时先从它取首页、截止页默认视图、查名单要用的公开数据（后端 /api/v1/snapshot），页面先显示它，
+// 接口服务的实时数据回来再换掉。只试一次、不重试；取不到返回 null，页面照常等实时数据。
+// 同一次打开里各页共用一份：60 秒内不重复取。
+const SNAPSHOT_SERVICE = 'admin';
+const SNAPSHOT_REUSE = 60000;
+let snapshotMemo = null;
+function snapshotOnce() {
+  if (snapshotMemo && Date.now() - snapshotMemo.at < SNAPSHOT_REUSE) return snapshotMemo.promise;
+  let promise;
+  if (config.cloudEnv) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {}, SNAPSHOT_SERVICE);
+  else if (config.devBaseUrl) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {});
+  else promise = Promise.resolve(null);
+  promise = promise.then((snap) => (snap && snap.home ? snap : null), () => null);
+  snapshotMemo = { at: Date.now(), promise };
+  return promise;
 }
 
 // 收录范围：已收录的地区（栏目数、最近更新时间）和还没收录的省份（验收 A8）
@@ -456,7 +474,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, isLive, request, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
+  watchStartup, stopStartup, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
   attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,

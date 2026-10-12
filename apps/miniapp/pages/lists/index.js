@@ -71,15 +71,32 @@ Page({
     }
     this.setData(this.data.cachedText ? { error: '', staleError: false } : { loading: true, error: '' });
     this.loadScope();
+    const seq = this.listSeq = (this.listSeq || 0) + 1;
+    let live = false;
+    let fresh = false;
+    const showLists = (res, cachedText) => {
+      this.listsShown = true;
+      this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items, cachedText, staleError: false });
+      this.filterItems();
+      writeCache(LISTS_CACHE, { week_total: res.week_total, total: res.total, items: res.items });
+    };
+    // 另向常驻的 admin 要首屏快照（不等接口服务冷启动）；实时的回来了就以实时的为准
+    if (api.snapshotOnce) {
+      api.snapshotOnce().then((snap) => {
+        if (!snap || !snap.lists || live || seq !== this.listSeq) return;
+        fresh = true;
+        showLists(snap.lists, '');
+        if (snap.scope) this.applyScope(snap.scope);
+      });
+    }
     api.lists()
       .then((res) => {
-        this.listsShown = true;
-        this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items, cachedText: '', staleError: false });
-        this.filterItems();
-        writeCache(LISTS_CACHE, { week_total: res.week_total, total: res.total, items: res.items });
+        live = true;
+        showLists(res, '');
       })
       .catch((err) => {
-        // 显示着上次的名单就留着，只写明这次没更新
+        // 显示着快照就不报错；显示着本机存的上次名单就留着，只写明这次没更新
+        if (fresh) return;
         if (this.data.cachedText) this.setData({ staleError: true });
         else this.setData({ loading: false, error: `加载失败：${err.message}` });
       });
@@ -136,17 +153,19 @@ Page({
       if (cached) this.setData({ scope: cached.data });
     }
     api.listBoard({ days: 30, page: 1, size: 1 })
-      .then((res) => {
-        const stats = res.stats || {};
-        const byType = stats.by_type || [];
-        const scope = byType.length ? {
-          lists: byType.reduce((sum, item) => sum + (item.lists || 0), 0),
-          byType, byProvince: stats.by_province || [], byYear: stats.by_year || [],
-        } : null;
-        this.setData({ scope });
-        if (scope) writeCache(SCOPE_CACHE, scope);
-      })
+      .then((res) => this.applyScope(res.stats || {}))
       .catch(() => {});
+  },
+
+  // 名单看板的统计 → 比对范围（按类型合计份数）
+  applyScope(stats) {
+    const byType = stats.by_type || [];
+    const scope = byType.length ? {
+      lists: byType.reduce((sum, item) => sum + (item.lists || 0), 0),
+      byType, byProvince: stats.by_province || [], byYear: stats.by_year || [],
+    } : null;
+    this.setData({ scope });
+    if (scope) writeCache(SCOPE_CACHE, scope);
   },
 
   toggleScope() {

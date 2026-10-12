@@ -767,3 +767,64 @@ def test_health_reports_db_error_type_and_code_only(monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"status": "db_error", "error": "_Orig", "code": 1045}
     assert "secret" not in response.text and "10.0.0.1" not in response.text
+
+
+def test_snapshot_matches_endpoints_without_user_data(client, seeded, monkeypatch) -> None:
+    """首屏快照（10/12 冷启动）：内容和各接口一样；调首页时不带请求头，认不出用户，不混进个人数据。"""
+    from youju.api import me, v1
+
+    v1._SNAPSHOT_CACHE.clear()
+    v1._REPORT_CACHE.clear()
+    seen = []
+    real = me.known_user
+
+    def spy(request, session):
+        seen.append(dict(request.headers))
+        return real(request, session)
+
+    monkeypatch.setattr(me, "known_user", spy)
+    wx = {"X-WX-SOURCE": "wx_client", "X-WX-OPENID": "o-snapshot"}
+    snap = client.get("/api/v1/snapshot", headers=wx).json()
+    assert seen == [{}]
+    home = client.get("/api/v1/home", params={"group": 1, "excerpts": 1}).json()
+    latest = client.get(
+        "/api/v1/search", params={"kind": "申报通知", "limit": 8, "offset": 0, "group": 1}
+    ).json()
+    assert snap["home"]["stats"] == home["stats"]
+    assert snap["home"]["dueSoon"] == home["dueSoon"]
+    assert snap["home"]["dueSoonUnverifiedTotal"] == home["dueSoonUnverifiedTotal"]
+    assert snap["home"]["items"] == latest["items"]
+    assert (
+        snap["deadlines"]
+        == client.get(
+            "/api/v1/reports/deadlines", params={"days": 7, "excerpts": 1, "page": 1, "size": 20}
+        ).json()
+    )
+    assert (
+        snap["lists"]
+        == client.get("/api/v1/lists/recent", params={"limit": 20, "offset": 0, "group": 1}).json()
+    )
+    assert (
+        snap["scope"]
+        == client.get("/api/v1/reports/lists", params={"days": 30, "page": 1, "size": 1}).json()[
+            "stats"
+        ]
+    )
+    assert snap["generatedAt"][:10] == v1.now().date().isoformat()
+    # 60 秒内再取是同一份（不重复算）
+    assert client.get("/api/v1/snapshot", headers=wx).json() == snap
+    assert len(seen) == 1 + 1  # 上面比对用的 /home 调过一次
+
+
+def test_snapshot_on_admin_only_through_cloud_calls(client, seeded, monkeypatch) -> None:
+    """admin 服务只放行经小程序云调用来的快照请求（带 X-WX-SOURCE）；公网直接访问和其他小程序接口仍是 404。"""
+    from youju.api import app as app_module
+
+    settings = {"role": "admin", "admin_token": "t" * 32}
+    monkeypatch.setattr(app_module, "get_settings", lambda: SimpleNamespace(**settings))
+    assert client.get("/api/v1/snapshot").status_code == 404
+    assert client.get("/api/v1/snapshot", headers={"X-WX-SOURCE": "wx_client"}).status_code == 200
+    assert client.get("/api/v1/home", headers={"X-WX-SOURCE": "wx_client"}).status_code == 404
+    assert client.get("/api/v1/search", headers={"X-WX-SOURCE": "wx_client"}).status_code == 404
+    settings["role"] = "api"
+    assert client.get("/api/v1/snapshot").status_code == 200
