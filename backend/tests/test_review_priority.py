@@ -206,6 +206,11 @@ def test_priority_order_and_labels(client, queue, session_factory) -> None:
     # 默认的 30 天内筛选：同样的顺序，只是没有 30 天以后和已过期的
     soon = _list(client, order="priority", due="30")
     assert [names[i["id"]] for i in soon] == PRIORITY[:9]
+    # 7 天内（D-061，核对台的默认）：今天 9/28，10/5 及以前截止的，顺序不变
+    week = _list(client, order="priority", due="7")
+    assert [names[i["id"]] for i in week] == ["suggest", "mismatch", "kind", "reopened", "ai_only"]
+    count = client.get("/api/admin/deadlines/count?due=7", headers=HEADERS).json()
+    assert count == {"pending": 5}
     # 按编号的旧顺序照旧可用，也带标签
     by_id = _list(client, due="all", limit=200)
     assert [i["id"] for i in by_id] == sorted(queue.values(), reverse=True)
@@ -467,3 +472,24 @@ def test_no_path_approves_a_candidate(client, session, session_factory) -> None:
         rows = s.scalars(select(DocumentDeadline)).all()
         assert rows and {r.status for r in rows} == {"pending"}
         assert all(r.approved_date is None and r.reviewed_by is None for r in rows)
+
+
+def test_queue_lists_only_application_notices(client, session_factory) -> None:
+    """D-061：被类型规则剔出申报通知的文件（职称、验收、征求意见等），候选不进核对队列；类型改回来就回来。"""
+    with session_factory() as s:
+        kept = _candidate(s, "apply", date(2026, 10, 3))
+        other = _candidate(s, "other", date(2026, 10, 3))
+        s.get(Document, other.document_id).kind_override = "其他"
+        s.commit()
+        kept_id, other_id, doc_id = kept.id, other.id, other.document_id
+    ids = [i["id"] for i in _list(client, order="priority", due="7")]
+    assert ids == [kept_id]
+    assert client.get("/api/admin/deadlines/count?due=all", headers=HEADERS).json() == {"pending": 1}
+    with session_factory() as s:
+        s.get(Document, doc_id).kind_override = "申报通知"
+        s.commit()
+    ids = {i["id"] for i in _list(client, order="priority", due="7")}
+    assert ids == {kept_id, other_id}
+    # 只读：候选本身一直是待核对
+    with session_factory() as s:
+        assert s.get(DocumentDeadline, other_id).status == "pending"

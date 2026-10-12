@@ -151,9 +151,11 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     response = client.get("/api/admin/overview", headers=HEADERS)
     assert response.status_code == 200
     data = response.json()
+    # 截止核对只数申报通知的候选（D-061）：名单、科技统计上的候选不进队列
     assert data["todos"] == {
         "pay": 0,
-        "deadlines": 3,
+        "deadlines": 1,
+        "deadlines_7": 0,
         "deadlines_30": 1,
         "fields": 1,
         "conditions": 1,
@@ -177,6 +179,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     }
     for key, path, count_key in [
         ("deadlines", "deadlines/count?due=all", "pending"),
+        ("deadlines_7", "deadlines/count?due=7", "pending"),
         ("deadlines_30", "deadlines/count?due=30", "pending"),
         ("fields", "fields/count", "pending"),
         ("conditions", "conditions/count", "pending"),
