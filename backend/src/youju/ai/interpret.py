@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -69,9 +69,34 @@ def openids(settings: Settings) -> set[str]:
     return {s.strip() for s in getattr(settings, "ai_advisor_openids", "").split(",") if s.strip()}
 
 
-def enabled(settings: Settings, user: User | None) -> bool:
+def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
     return bool(
-        getattr(settings, "ai_advisor_enabled", False) and user and user.openid in openids(settings)
+        getattr(settings, "ai_advisor_enabled", False)
+        and openid
+        and (
+            getattr(settings, "ai_advisor_audience", "whitelist") == "all"
+            or openid in openids(settings)
+        )
+    )
+
+
+def enabled(settings: Settings, user: User | None) -> bool:
+    return enabled_for_openid(settings, user.openid if user else None)
+
+
+def worker_user_ids(settings: Settings):
+    """当前 AI 设置允许领取任务的用户 ID 查询。"""
+    if not getattr(settings, "ai_advisor_enabled", False):
+        return select(User.id).where(false())
+    if getattr(settings, "ai_advisor_audience", "whitelist") == "all":
+        return select(User.id)
+    return select(User.id).where(User.openid.in_(openids(settings)))
+
+
+def worker_enabled(settings: Settings) -> bool:
+    return bool(
+        getattr(settings, "ai_advisor_enabled", False)
+        and (getattr(settings, "ai_advisor_audience", "whitelist") == "all" or openids(settings))
     )
 
 

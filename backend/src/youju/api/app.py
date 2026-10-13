@@ -1191,6 +1191,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         "advisor_enabled": get_settings().advisor_enabled,
         "ai_advisor": {
             "enabled": getattr(get_settings(), "ai_advisor_enabled", False),
+            "audience": getattr(get_settings(), "ai_advisor_audience", "whitelist"),
             "whitelist_count": len(openids(get_settings())),
             "tasks_7d": count(ai_tasks),
             "failed_7d": count(ai_tasks.where(AdvisorTask.status == "failed")),

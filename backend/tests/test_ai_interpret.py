@@ -73,6 +73,8 @@ def settings(monkeypatch):
         advisor_enabled=False,
         ai_advisor_enabled=True,
         ai_advisor_openids="internal,second",
+        ai_advisor_audience="whitelist",
+        ai_advisor_daily_cap=200,
         ai_model="fake-model",
         ai_api_key=SecretStr("fake-test-value"),
         ai_base_url="https://fake.invalid",
@@ -464,6 +466,68 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     )
 
 
+def test_all_audience_submission_worker_and_consent(client, settings, doc, session):
+    settings.ai_advisor_audience = "all"
+    settings.ai_advisor_openids = ""
+    assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["enabled"]
+    created = create(client, doc.id)
+    assert created.status_code == 202
+    assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
+    assert session.get(AdvisorTask, created.json()["id"]).status == "done"
+
+    user = session.scalar(select(User).where(User.openid == "internal"))
+    user.agreement_version = "old"
+    session.commit()
+    assert create(client, doc.id, key="no-consent").status_code == 403
+    settings.ai_advisor_enabled = False
+    assert create(client, doc.id, key="disabled").status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["interpret", "clause"])
+def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc, kind):
+    settings.ai_advisor_daily_cap = 2
+    other = User(openid="second", agreement_version="2026-10", agreement_at=NOW)
+    session.add(other)
+    session.flush()
+    session.add(
+        AdvisorUsage(user_id=other.id, kind="clause", day=service.usage_day(NOW), used_count=2)
+    )
+    session.commit()
+
+    def submit(key):
+        return client.post(
+            "/api/v1/advisor/tasks",
+            json={"kind": kind, "doc_id": doc.id},
+            headers={"Idempotency-Key": key},
+        )
+
+    blocked = submit("at-global-cap")
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == {
+        "code": "AI_DAILY_CAP",
+        "message": "今天的 AI 使用次数已满，请明天再试",
+    }
+    own_id = session.scalar(select(User.id).where(User.openid == "internal"))
+    assert service.usage_counts(session, own_id, service.usage_day(NOW)).get(kind, 0) == 0
+    assert session.scalar(select(AdvisorTask.id)) is None
+
+    settings.advisor_enabled = True
+    assert (
+        client.post(
+            "/api/v1/advisor/tasks",
+            json={"kind": "compare", "rows": ["甲公司"]},
+            headers={"Idempotency-Key": "data-tool-at-ai-cap"},
+        ).status_code
+        == 202
+    )
+
+    row = session.scalar(select(AdvisorUsage).where(AdvisorUsage.user_id == other.id))
+    row.used_count = 1
+    session.commit()
+    assert submit("below-global-cap").status_code == 202
+    assert service.usage_counts(session, own_id, service.usage_day(NOW))[kind] == 1
+
+
 def test_quota_idempotency_rollover_and_refunds(client, settings, session, doc, monkeypatch):
     first = create(client, doc.id)
     assert create(client, doc.id).json()["id"] == first.json()["id"]
@@ -812,12 +876,18 @@ def test_switch_defaults_and_comma_config(monkeypatch):
 
     monkeypatch.delenv("YOUJU_AI_ADVISOR_ENABLED", raising=False)
     monkeypatch.delenv("YOUJU_AI_ADVISOR_OPENIDS", raising=False)
+    monkeypatch.delenv("YOUJU_AI_ADVISOR_AUDIENCE", raising=False)
+    monkeypatch.delenv("YOUJU_AI_ADVISOR_DAILY_CAP", raising=False)
     settings = Settings(_env_file=None)
     assert not settings.ai_advisor_enabled and not interpret.openids(settings)
+    assert settings.ai_advisor_audience == "whitelist" and settings.ai_advisor_daily_cap == 200
     monkeypatch.setenv("YOUJU_AI_ADVISOR_ENABLED", "true")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_OPENIDS", " user-a, user-b, user-a, ")
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_AUDIENCE", "all")
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_DAILY_CAP", "12")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
+    assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12
 
 
 def test_admin_overview_ai_counts(client, session, settings, doc):
@@ -832,6 +902,7 @@ def test_admin_overview_ai_counts(client, session, settings, doc):
     assert response.status_code == 200
     assert response.json()["ai_advisor"] == {
         "enabled": True,
+        "audience": "whitelist",
         "whitelist_count": 2,
         "tasks_7d": 1,
         "failed_7d": 1,
