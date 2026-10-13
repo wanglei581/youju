@@ -275,3 +275,12 @@ test('页面已注册，所有静态文字无禁止字样；模板闭合，样�
   const template = read('pages/advisor-clause/index.wxml');
   assert.match(template, /bindtap="original" disabled="\{\{!docId\}\}"/); assert.match(template, /bindtap="feedback" disabled="\{\{!docId\}\}"/);
 });
+
+test('条款对照的条目和引用也去掉 PDF 版面换行（10/13）', () => {
+  const clause = require('../utils/ai-clause.js');
+  const quote = '牵头医疗机构为三级甲等，在所在地省级行政区综合排名\n或所申报领域的专业排名靠前。';
+  const view = clause.resultView({ rows: [{ type: '条件', text: quote, refs: [{ pid: 'P010', quote }], company: [] }] });
+  const row = view.sections.find((s) => s.type === '条件').items[0];
+  assert.equal(row.text, '牵头医疗机构为三级甲等，在所在地省级行政区综合排名或所申报领域的专业排名靠前。');
+  assert.equal(row.refs[0].quote, row.text);
+});

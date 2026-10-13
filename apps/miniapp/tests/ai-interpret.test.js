@@ -290,3 +290,14 @@ test('新增页已注册、模板闭合，原句样式没有截断或新颜色',
   assert.doesNotMatch(read('pages/advisor-interpret/index.wxss'), /#[0-9a-fA-F]|gradient|text-overflow|line-clamp/);
   assert.doesNotMatch(read('pages/advisor-interpret/index.wxml'), /智能|保证|权威|符合|不符合/);
 });
+
+test('原文片段跨了 PDF 版面换行时，显示前去掉换行；英文单词之间留一个空格（10/13）', () => {
+  assert.equal(logic.oneLine('近三年未\n发生重大安全事故。'), '近三年未发生重大安全事故。');
+  assert.equal(logic.oneLine('求索对话 DeepSeek\nChat 备案'), '求索对话 DeepSeek Chat 备案');
+  assert.equal(logic.oneLine(null), '');
+  const quote = '具有独立法人资格的企事业单位，近三年未\n发生重大安全、环保、质量事故。';
+  const view = logic.resultView({ items: [{ type: '条件', text: quote, refs: [{ pid: 'P002', quote }] }] });
+  const row = view.sections.find((s) => s.type === '条件').items[0];
+  assert.equal(row.text, '具有独立法人资格的企事业单位，近三年未发生重大安全、环保、质量事故。');
+  assert.equal(row.refs[0].quote, row.text);
+});

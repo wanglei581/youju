@@ -61,7 +61,7 @@ function resultView(result = {}) {
   return Object.assign({}, base, {
     sections: result.refusal ? [] : SECTIONS.map(([type, title]) => {
       const items = (result.rows || []).filter((row) => row.type === type).map((row, index) => ({
-        key: index, text: row.text, refs: (row.refs || []).map((ref, key) => ({ key, pid: ref.pid, quote: ref.quote })),
+        key: index, text: interpret.oneLine(row.text), refs: (row.refs || []).map((ref, key) => ({ key, pid: ref.pid, quote: interpret.oneLine(ref.quote) })),
         company: (row.company || []).map((item, key) => ({ key: item.key || key, label: item.label, value: item.value })),
         companyHint: (row.company || []).length ? '' : EMPTY_COMPANY,
       }));

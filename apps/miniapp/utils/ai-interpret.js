@@ -26,11 +26,17 @@ function resultView(result = {}) {
     sections: result.refusal ? [] : SECTIONS.map(([type, title]) => ({
       type, title, missing: missing.includes(type),
       items: (result.items || []).filter((item) => item.type === type).map((item, index) => ({
-        key: index, text: item.text,
-        refs: (item.refs || []).map((ref, refIndex) => ({ key: refIndex, pid: ref.pid, quote: ref.quote })),
+        key: index, text: oneLine(item.text),
+        refs: (item.refs || []).map((ref, refIndex) => ({ key: refIndex, pid: ref.pid, quote: oneLine(ref.quote) })),
       })),
     })),
   };
+}
+
+// 后端返回的原文片段可能跨了 PDF 的版面换行（10/13 起接回整句），显示时去掉换行；
+// 两边都是字母数字时留一个空格，免得英文单词粘在一起
+function oneLine(value) {
+  return String(value || '').replace(/([A-Za-z0-9])\s*\n\s*(?=[A-Za-z0-9])/g, '$1 ').replace(/\s*\n\s*/g, '');
 }
 
 function hasConsent(storage) {
@@ -153,4 +159,4 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, resultView, hasConsent, saveConsent, taskContext, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, createSession };
