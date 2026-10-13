@@ -59,6 +59,15 @@ class Skill:
 INTERPRET = Skill("interpret", PROMPT_VERSION, SYSTEM_PROMPT, TYPES)
 # 保留标点；不使用 NFKC，避免把不同原文字符当作同一个字。
 SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*")
+# PDF 转出的正文按版面换行，一句话常被拆在几行里（10/13 抽查：条款对照约 30 条只剩半句）。
+# 核对引用时，换行前没有句末标点、这一行不像标题（不太短）、下一行也不以编号开头，就接成同一句。
+# 原文片段照样带着换行（仍是正文里原样的一段），展示时由小程序去掉；给模型的段落不变。
+SENTENCE_END = re.compile(r"[。！？!?；;][\"'”’）)]*\s*$")
+ITEM_START = re.compile(
+    r"\s*(?:[一二三四五六七八九十百]+[、．.]|[（(][一二三四五六七八九十百\d]+[）)]"
+    r"|\d+(?:\.\d+)*[、．.）)]|\d+(?:\.\d+)+\s|[①-⑳]|第[一二三四五六七八九十百\d]+[条章节]|附件)"
+)
+SHORT_LINE = 12
 
 
 class InterpretRefusal(ValueError):
@@ -279,6 +288,34 @@ def paragraph_body(paragraphs: list[dict]) -> str:
     return body
 
 
+def sentence_spans(body: str) -> list[tuple[int, int]]:
+    """句子在完整正文里的区间；PDF 版面换行拆开的句子接回一句。"""
+    spans: list[tuple[int, int]] = []
+    for match in SENTENCES.finditer(body):
+        sentence = match.group()
+        left = len(sentence) - len(sentence.lstrip())
+        right = len(sentence.rstrip())
+        if left >= right:
+            continue
+        start, end = match.start() + left, match.start() + right
+        if spans and _continues(body, spans[-1][1], start):
+            spans[-1] = (spans[-1][0], end)
+        else:
+            spans.append((start, end))
+    return spans
+
+
+def _continues(body: str, prev_end: int, start: int) -> bool:
+    """上一句到这里只隔着换行，且像是版面换行（不是句末、不是标题、下一行不是编号）。"""
+    gap = body[prev_end:start]
+    if "\n" not in gap or gap.strip():
+        return False
+    line = body[body.rfind("\n", 0, prev_end) + 1 : prev_end]
+    if SENTENCE_END.search(line) or len(line.strip()) < SHORT_LINE:
+        return False
+    return not ITEM_START.match(body, start)
+
+
 def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise ValueError("模型结果结构无效")
@@ -287,13 +324,7 @@ def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET)
     normalized_body, body_offsets = normalize(body)
     normalized_paragraphs = {p["pid"]: normalize(p["text"]) for p in paragraphs}
     # 句界在完整正文上算，超长句即使被硬切分段仍按同一句回填。
-    sentences = []
-    for match in SENTENCES.finditer(body):
-        sentence = match.group()
-        left = len(sentence) - len(sentence.lstrip())
-        right = len(sentence.rstrip())
-        if left < right:
-            sentences.append((match.start() + left, match.start() + right))
+    sentences = sentence_spans(body)
     kept = []
     reasons = dict.fromkeys(DROPPED_REASONS, 0)
     seen = set()

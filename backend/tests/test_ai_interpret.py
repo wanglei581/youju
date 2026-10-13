@@ -1042,6 +1042,53 @@ def test_quote_alignment_and_contiguous_display(body, quote, pid, expected, actu
     assert result["dropped"] == 0
 
 
+PDF_BODY = (
+    "一、申报条件\n"
+    "（一）在中华人民共和国境内注册，具有独立法人资格的企事业单位，近三年未\n"
+    "发生重大安全、环保、质量事故。\n"
+    "1.1 联合体能力 医疗装备生产企业为行业内同类产品产业规模排名前10企业，或工业和信息化部发\n"
+    "布的专精特新“小巨人”企业。\n"
+    "2026 年重点方向见附件\n"
+    "二、申报材料\n"
+    "申报单位须承诺所提交材料真实有效；\n"
+    "逾期不予受理。\n"
+)
+
+
+def test_sentence_spans_join_pdf_line_breaks_but_not_headings_or_items():
+    # 10/13：PDF 按版面换行，句子被拆在两行；标题、编号行、句末标点后的换行仍是句界
+    assert [PDF_BODY[a:b] for a, b in interpret.sentence_spans(PDF_BODY)] == [
+        "一、申报条件",
+        "（一）在中华人民共和国境内注册，具有独立法人资格的企事业单位，近三年未\n"
+        "发生重大安全、环保、质量事故。",
+        "1.1 联合体能力 医疗装备生产企业为行业内同类产品产业规模排名前10企业，或工业和信息化部发\n"
+        "布的专精特新“小巨人”企业。",
+        "2026 年重点方向见附件",
+        "二、申报材料",
+        "申报单位须承诺所提交材料真实有效；",
+        "逾期不予受理。",
+    ]
+
+
+def test_quote_in_half_line_expands_to_whole_sentence_across_pdf_line_break():
+    entry = item("具有独立法人资格的企事业单位", "P002", "条件")
+    result = interpret.validate({"items": [entry]}, interpret.split_paragraphs(PDF_BODY))
+    expected = (
+        "（一）在中华人民共和国境内注册，具有独立法人资格的企事业单位，近三年未\n"
+        "发生重大安全、环保、质量事故。"
+    )
+    assert result["items"] == [
+        {"type": "条件", "text": expected, "refs": [{"pid": "P002", "quote": expected}]}
+    ]
+    # 仍是正文里原样的一段（只是带着换行），逐字核对的约束不变
+    assert expected in PDF_BODY
+    # 下半行的引用也回到同一整句，按同句同类型去重
+    second = item("发生重大安全、环保、质量事故", "P003", "条件")
+    result = interpret.validate({"items": [entry, second]}, interpret.split_paragraphs(PDF_BODY))
+    assert [x["text"] for x in result["items"]] == [expected]
+    assert result["dropped_reasons"]["duplicate"] == 1
+
+
 def test_all_dropped_reasons_and_range_deduplication():
     body = "请提交申请材料。\n请提交申请材料。\n申报要求为[手机号已脱敏]并提交申请书。"
     entries = [
