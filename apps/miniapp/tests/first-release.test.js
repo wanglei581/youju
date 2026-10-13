@@ -260,6 +260,20 @@ test('查名单：比对范围取不到、手里也没有上次的，写明没�
   assert.equal(page.data.scopeError, false); assert.equal(page.data.scope.lists, 9);
 });
 
+test('查名单：连点两次重试、回来的顺序反了（后一次先成功，前一次后失败），不提示没加载出来', async () => {
+  const { wx } = storageWx();
+  const board = [];
+  const page = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => new Promise(() => {}), listBoard: () => new Promise((resolve, reject) => { board.push({ resolve, reject }); }) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  page.loadScope(); page.loadScope();
+  board[1].resolve({ stats: { by_type: [{ type: '其他', lists: 7, entries: 2 }] } }); await flush();
+  board[0].reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.equal(page.data.scope.lists, 7); assert.equal(page.data.scopeError, false);
+  assert.doesNotMatch(textOf(render('pages/lists/index.wxml', page.data)), /没加载出来/);
+});
+
 test('接口：截止页"只看已核对"不带 excerpts；列表、日历、首页、导出都带 excerpts=1', async () => {
   const urls = [];
   const api = load('utils/api.js', {

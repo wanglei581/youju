@@ -903,7 +903,7 @@ def coverage(session: SessionDep) -> dict:
                     ],
                 }
             )
-        elif enabled or any(s.fetch_mode == "browser" for s in mine):
+        elif enabled:
             not_covered.append({"name": name, "reason": "正在接入"})
         elif any(s.fetch_mode == "blocked" for s in mine):
             not_covered.append({"name": name, "reason": "网站不允许程序访问"})
