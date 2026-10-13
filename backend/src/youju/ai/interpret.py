@@ -59,6 +59,21 @@ class Skill:
 INTERPRET = Skill("interpret", PROMPT_VERSION, SYSTEM_PROMPT, TYPES)
 # 保留标点；不使用 NFKC，避免把不同原文字符当作同一个字。
 SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*")
+# PDF 转出的正文按版面换行，一句话常被拆在几行里（10/13 抽查：条款对照约 30 条只剩半句）。
+# 判断版面换行不靠猜标题：PDF 里被折行的那一行几乎排满版面，标题和段落末行短得多。
+# 只有上一行没有句末标点、长度接近这份正文常见的整行宽度、中间没有空行、下一行也不以编号开头时，
+# 才接成同一句。网页转出来的正文一段一行、长短不一，基本不会触发。
+# 原文片段照样带着换行（仍是正文里原样的一段），展示时由小程序去掉；给模型的段落不变。
+SENTENCE_END = re.compile(r"[。！？!?；;][\"'”’）)]*\s*$")
+ITEM_START = re.compile(
+    r"\s*(?:[一二三四五六七八九十百]+[、．.]|[（(][一二三四五六七八九十百\d]+[）)]"
+    r"|\d+(?:\.\d+)*[、．.）)](?!\d)|\d+(?:\.\d+)+\s+(?![万亿千百元个项人家年月日%倍以及左余多岁天米吨])"
+    r"|[①-⑳]|[A-Za-z][、．.）)](?![A-Za-z0-9])|第[一二三四五六七八九十百\d]+[条章节项部分]|附件)"
+)
+# 以文件名结尾的长行是标题（如"关于组织开展……工作的通知"），排满一行也不接下一段
+TITLE_END = re.compile(r"(?:通知|公告|通告|指南|办法|细则|方案|意见|规定|决定|批复|函)\s*$")
+FULL_LINE = 0.85  # 上一行至少达到常见整行宽度的这个比例，才算被版面折行
+MIN_WIDTH = 15  # 常见整行宽度低于这个字数（短行为主，如表格）时不接
 
 
 class InterpretRefusal(ValueError):
@@ -279,6 +294,43 @@ def paragraph_body(paragraphs: list[dict]) -> str:
     return body
 
 
+def line_width(body: str) -> int:
+    """这份正文常见的整行宽度：较长的那四分之一行的长度（PDF 折行的整行占多数）。"""
+    lengths = sorted(len(line.strip()) for line in body.split("\n") if line.strip())
+    if len(lengths) < 4:
+        return 0
+    return lengths[(len(lengths) * 3) // 4]
+
+
+def sentence_spans(body: str) -> list[tuple[int, int]]:
+    """句子在完整正文里的区间；PDF 版面换行拆开的句子接回一句。"""
+    width = line_width(body)
+    spans: list[tuple[int, int]] = []
+    for match in SENTENCES.finditer(body):
+        sentence = match.group()
+        left = len(sentence) - len(sentence.lstrip())
+        right = len(sentence.rstrip())
+        if left >= right:
+            continue
+        start, end = match.start() + left, match.start() + right
+        if spans and _continues(body, spans[-1][1], start, width):
+            spans[-1] = (spans[-1][0], end)
+        else:
+            spans.append((start, end))
+    return spans
+
+
+def _continues(body: str, prev_end: int, start: int, width: int) -> bool:
+    """上一句到这里只隔着一个换行，且是版面折行：没有句末标点、接近整行宽度、下一行不是编号。"""
+    gap = body[prev_end:start]
+    if gap.count("\n") != 1 or gap.strip() or width < MIN_WIDTH:
+        return False
+    line = body[body.rfind("\n", 0, prev_end) + 1 : prev_end].strip()
+    if SENTENCE_END.search(line) or TITLE_END.search(line) or len(line) < width * FULL_LINE:
+        return False
+    return not ITEM_START.match(body, start)
+
+
 def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise ValueError("模型结果结构无效")
@@ -287,13 +339,7 @@ def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET)
     normalized_body, body_offsets = normalize(body)
     normalized_paragraphs = {p["pid"]: normalize(p["text"]) for p in paragraphs}
     # 句界在完整正文上算，超长句即使被硬切分段仍按同一句回填。
-    sentences = []
-    for match in SENTENCES.finditer(body):
-        sentence = match.group()
-        left = len(sentence) - len(sentence.lstrip())
-        right = len(sentence.rstrip())
-        if left < right:
-            sentences.append((match.start() + left, match.start() + right))
+    sentences = sentence_spans(body)
     kept = []
     reasons = dict.fromkeys(DROPPED_REASONS, 0)
     seen = set()
