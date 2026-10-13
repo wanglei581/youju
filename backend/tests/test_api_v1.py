@@ -1073,7 +1073,8 @@ def test_coverage_lists_covered_regions_and_uncovered_provinces(client, session,
     assert body["updatedAt"] == "2026-09-28T09:30:00+08:00"
     reasons = {item["name"]: item["reason"] for item in body["notCovered"]}
     assert reasons["辽宁"] == "正在接入"  # 已启用但还没成功检查过
-    assert reasons["浙江"] == "正在接入"  # 需要浏览器渲染
+    # 需要浏览器渲染的没有接入计划（浙江 9/29 决定不绕过网站的访问限制，#16），不写"正在接入"（10/13）
+    assert reasons["浙江"] == "暂未接入"
     assert reasons["广西"] == "网站不允许程序访问"
     assert reasons["北京"] == "暂未接入"
     assert "山东" not in reasons and "国家部委" not in reasons

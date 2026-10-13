@@ -130,7 +130,7 @@
 
   <view wx:if="{{doc.body}}" class="card">
     <view class="section-title">正文</view>
-    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期请看上面核对过的日期，并以原文为准。</view>
+    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期看上面的"截止时间"，并以原文为准。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
