@@ -196,7 +196,7 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
-    assert.equal(output.includes('内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，请以原文为准，不作为能否申报的判断。'), enabled === true);
+    assert.equal(output.includes('内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。'), enabled === true);
     assert.equal(navigationTitle, enabled === true ? '政策解读 · 内部测试' : '工具');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
   }

@@ -13,7 +13,7 @@ const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks'];
-const NOTICE = '内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，请以原文为准，不作为能否申报的判断。';
+const NOTICE = '内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
 const caps = (enabled, extra = {}) => ({
   data_tools: { enabled: false, features: [], remaining: {} },
   ai_advisor: enabled === false ? { enabled: false, features: [], remaining: {} }

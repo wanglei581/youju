@@ -4,7 +4,7 @@ const KINDS = { interpret: '政策解读', clause: '条款对照' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 // 《人工智能生成合成内容标识办法》要求显式标识：如实写明由 AI 模型生成。
 const INTERNAL_PREFIX = '内部测试：';
-const INTERNAL_NOTICE = '结果由 AI 模型根据原文生成，每条都附原文引用，请以原文为准，不作为能否申报的判断。';
+const INTERNAL_NOTICE = '结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
 
 // 后端 capabilities 的 disclosure 如果带了说明文字（字符串或 text 字段），优先显示后端的；
 // 目前线上只返回 modelLabel、filingNo，所以显示固定文字。
