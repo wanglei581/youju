@@ -154,9 +154,12 @@ Page({
       if (cached) this.setData({ scope: cached.data });
     }
     this.setData({ scopeError: false });
+    // 连点重试时只认最后一次请求的结果，先发的晚回来也不覆盖
+    const seq = (this.scopeSeq || 0) + 1;
+    this.scopeSeq = seq;
     api.listBoard({ days: 30, page: 1, size: 1 })
-      .then((res) => this.applyScope(res.stats || {}))
-      .catch(() => { if (!this.data.scope) this.setData({ scopeError: true }); });
+      .then((res) => { if (seq === this.scopeSeq) this.applyScope(res.stats || {}); })
+      .catch(() => { if (seq === this.scopeSeq && !this.data.scope) this.setData({ scopeError: true }); });
   },
 
   // 名单看板的统计 → 比对范围（按类型合计份数）

@@ -272,6 +272,11 @@ test('查名单：连点两次重试、回来的顺序反了（后一次先成�
   board[0].reject(new Error('网络不太好，请稍后再试')); await flush();
   assert.equal(page.data.scope.lists, 7); assert.equal(page.data.scopeError, false);
   assert.doesNotMatch(textOf(render('pages/lists/index.wxml', page.data)), /没加载出来/);
+  // 两次都成功、先发的晚回来：只认后发的
+  page.loadScope(); page.loadScope();
+  board[3].resolve({ stats: { by_type: [{ type: '其他', lists: 8, entries: 3 }] } }); await flush();
+  board[2].resolve({ stats: { by_type: [{ type: '其他', lists: 5, entries: 1 }] } }); await flush();
+  assert.equal(page.data.scope.lists, 8);
 });
 
 test('接口：截止页"只看已核对"不带 excerpts；列表、日历、首页、导出都带 excerpts=1', async () => {
