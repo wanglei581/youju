@@ -55,9 +55,7 @@ async def _enabled(request: Request) -> None:
                     openid = request_openid(request)
                 except HTTPException:
                     openid = None
-                if not getattr(
-                    settings, "ai_advisor_enabled", False
-                ) or openid not in interpret.openids(settings):
+                if not interpret.enabled_for_openid(settings, openid):
                     # 先于 TaskIn 的 Literal 校验，固定提示不含未开放类型或用户输入。
                     if settings.advisor_enabled:
                         raise HTTPException(status_code=422, detail="kind 只能是 compare 或 track")
@@ -70,9 +68,7 @@ async def _enabled(request: Request) -> None:
             openid = request_openid(request)
         except HTTPException:
             raise HTTPException(status_code=404, detail="没有找到接口") from None
-        if not getattr(settings, "ai_advisor_enabled", False) or openid not in interpret.openids(
-            settings
-        ):
+        if not interpret.enabled_for_openid(settings, openid):
             raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -375,6 +371,15 @@ def create_task(
             raise HTTPException(
                 status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
             )
+    if (
+        body.kind in AI_KINDS
+        and service.global_ai_usage(session, service.usage_day(stamp))
+        >= get_settings().ai_advisor_daily_cap
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
+        )
     # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
     # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
     fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
