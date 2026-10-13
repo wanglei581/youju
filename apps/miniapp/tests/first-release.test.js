@@ -195,7 +195,7 @@ test('截止页（按月看）：实心点是核对过的、空心点是只有�
   assert.equal(findAll(root, hasClass('filters')).length, 0, '按月看不显示省份、部门筛选');
 });
 
-test('首页（D-061）：三个入口；"7 天内截止"只放核对过的、最多 5 条，没有就不显示；另写没核对的份数', async () => {
+test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过的、最多 5 条；没核对的写份数，一份没核对也显示这一块；都没有才不显示', async () => {
   let res = {
     stats: { week_total: 1, apply: 1, lists: 0, other: 0, provinces: 28, sources: 70 }, items: [],
     dueSoon: [
@@ -216,10 +216,48 @@ test('首页（D-061）：三个入口；"7 天内截止"只放核对过的、�
   const block = findAll(root, hasClass('soon'))[0];
   assert.match(flat(block), /^7天内截止全部甲企业申报截止.*17:00剩2天另有4份可能7天内截止，日期还没核对›$/);
   assert.deepEqual(findAll(root, hasClass('entry-name')).map(textOf), ['截止', '我的客户', '查名单']);
+  // 一份都没核对（10/13 线上就是这样）：照样显示这一块，只写份数、不写日期，字号放大
   res = { ...res, dueSoon: [] }; page.lastShow = 0; page.reload(); await flush();
+  root = render('pages/home/index.wxml', { ...page.data, loading: false });
+  const only = findAll(root, hasClass('soon'));
+  assert.equal(only.length, 1);
+  assert.equal(flat(only[0]), '7天内截止全部4份通知可能7天内截止，日期还没核对，点开看是哪些›');
+  assert.equal(findAll(root, hasClass('soon-foot--only')).length, 1);
+  // 核对过的和没核对的都没有，才不显示
+  res = { ...res, dueSoon: [], dueSoonUnverifiedTotal: 0 }; page.lastShow = 0; page.reload(); await flush();
   root = render('pages/home/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(root, hasClass('soon')).length, 0);
   assert.match(textOf(root), /最新申报通知/);
+});
+
+test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）', () => {
+  const wxml = read('pages/detail/index.wxml');
+  assert.doesNotMatch(wxml, /核对过的日期/);
+  assert.match(wxml, /截止日期看上面的"截止时间"，并以原文为准/);
+});
+
+test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {
+  const { wx } = storageWx();
+  const board = [];
+  const page = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => new Promise(() => {}), listBoard: () => new Promise((resolve, reject) => { board.push({ resolve, reject }); }) },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  page.loadScope();
+  board[0].reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.equal(page.data.scopeError, true);
+  let root = render('pages/lists/index.wxml', page.data);
+  assert.match(textOf(root), /比对范围（拿哪些名单比的）没加载出来/);
+  page.loadScope();
+  assert.equal(page.data.scopeError, false);
+  board[1].resolve({ stats: { by_type: [{ type: '其他', lists: 9, entries: 1 }] } }); await flush();
+  assert.equal(page.data.scope.lists, 9);
+  root = render('pages/lists/index.wxml', page.data);
+  assert.doesNotMatch(textOf(root), /没加载出来/);
+  // 已经有上次的范围：再失败也不提示，照旧显示上次的
+  page.loadScope();
+  board[2].reject(new Error('网络不太好，请稍后再试')); await flush();
+  assert.equal(page.data.scopeError, false); assert.equal(page.data.scope.lists, 9);
 });
 
 test('接口：截止页"只看已核对"不带 excerpts；列表、日历、首页、导出都带 excerpts=1', async () => {

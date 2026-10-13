@@ -31,6 +31,7 @@ Page({
     shown: [],
     // 比对范围：按类型、省份、年度的名单份数和读出的企业条数（原名单看板的统计）
     scope: null,
+    scopeError: false,
     // 最近发布的名单显示的是本机存的上次数据时写明；staleError：这次没更新成功
     cachedText: '',
     staleError: false,
@@ -146,15 +147,16 @@ Page({
     wx.navigateTo({ url: '/pages/search/index?kind=名单&time=不限' });
   },
 
-  // 比对范围加载失败不影响查名单，只是不显示这一块
+  // 比对范围加载失败不影响查名单；手里没有上次的范围时写明没取到，可以重试
   loadScope() {
     if (!this.data.scope) {
       const cached = readCache(SCOPE_CACHE);
       if (cached) this.setData({ scope: cached.data });
     }
+    this.setData({ scopeError: false });
     api.listBoard({ days: 30, page: 1, size: 1 })
       .then((res) => this.applyScope(res.stats || {}))
-      .catch(() => {});
+      .catch(() => { if (!this.data.scope) this.setData({ scopeError: true }); });
   },
 
   // 名单看板的统计 → 比对范围（按类型合计份数）

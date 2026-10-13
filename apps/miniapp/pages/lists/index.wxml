@@ -104,4 +104,5 @@
     <view wx:for="{{scope.byYear}}" wx:key="year" class="table-row"><text>{{item.year}}</text><text>{{item.lists}}</text><text>{{item.entries}}</text></view>
   </block>
 </view>
+<view wx:elif="{{scopeError}}" class="card load-error"><text>比对范围（拿哪些名单比的）没加载出来</text><text class="link retry" bindtap="loadScope">重试</text></view>
 <view style="height: 80rpx"></view>
