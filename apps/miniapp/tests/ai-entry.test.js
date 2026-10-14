@@ -13,7 +13,7 @@ const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks'];
-const NOTICE = '内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
+const NOTICE = 'AI 生成 · 内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
 const caps = (enabled, extra = {}) => ({
   data_tools: { enabled: false, features: [], remaining: {} },
   ai_advisor: enabled === false ? { enabled: false, features: [], remaining: {} }
@@ -190,9 +190,9 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
 });
 
 test('内部测试标注：后端 disclosure 带说明文字时优先显示后端的，否则用固定文字', async () => {
-  assert.equal(helpers.INTERNAL_PREFIX + helpers.internalNotice(undefined), NOTICE);
+  assert.equal(`AI 生成 · ${helpers.INTERNAL_PREFIX}${helpers.internalNotice(undefined)}`, NOTICE);
   for (const value of [null, {}, { modelLabel: '模型', filingNo: '编号' }, { text: '  ' }, '', 3]) {
-    assert.equal(helpers.INTERNAL_PREFIX + helpers.internalNotice(value), NOTICE);
+    assert.equal(`AI 生成 · ${helpers.INTERNAL_PREFIX}${helpers.internalNotice(value)}`, NOTICE);
   }
   assert.equal(helpers.internalNotice('后端说明文字'), '后端说明文字');
   assert.equal(helpers.internalNotice({ text: '后端说明', modelLabel: '模型' }), '后端说明');

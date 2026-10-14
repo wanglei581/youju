@@ -4,7 +4,7 @@
 <view wx:if="{{actionError}}" class="card advisor-card advisor-error">{{actionError}}，请重试相应操作。</view>
 <block wx:if="{{!loading}}">
   <block wx:if="{{aiEnabled}}">
-    <view class="ai-internal"><text class="ai-internal-tag">内部测试：</text>{{aiNotice}}</view>
+    <view class="ai-internal"><text class="ai-internal-tag">AI 生成 · 内部测试：</text>{{aiNotice}}</view>
     <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="advisor-text muted">在通知详情页点右下角“AI 内测”，可以解读通知或做条款对照。</view></view>
     <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
       <view class="advisor-title">{{item.kindLabel}}</view>
