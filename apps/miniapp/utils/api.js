@@ -89,20 +89,46 @@ function callFailure(res) {
   return err;
 }
 
+// 冷启动（10/14 实测空闲后 1–5 分钟才恢复）：不需要身份的只读接口先走常驻的 admin 服务（后端 ADMIN_READ_PATHS，
+// 首屏快照 10/12 起就这样），8 秒没回就放弃。admin 拦下（404 "Not Found"）、出错（5xx）、调用失败或超时时，
+// 这一次改走接口服务，接口服务冷启动再按上面的规则重试；接口自己的答复（如"该文件已下架"、422、429）直接报。
+const ADMIN_READS = [
+  /^\/api\/v1\/(home|coverage|search|calendar|snapshot)(\?|$)/,
+  /^\/api\/v1\/reports\/(deadlines|lists)(\?|$)/,
+  /^\/api\/v1\/lists\/(recent|lookup)(\?|$)/,
+  /^\/api\/v1\/documents\/\d+(\?|$)/,
+];
+const ADMIN_SERVICE = 'admin';
+const ADMIN_TIMEOUT = 8000;
+
+function adminRead(url, method) {
+  return method === 'GET' && Boolean(config.cloudEnv) && ADMIN_READS.some((re) => re.test(url));
+}
+
+function tryApiInstead(err) {
+  if (!err || !err.status || err.retryable) return true;
+  return err.status >= 500 || (err.status === 404 && err.message === 'Not Found');
+}
+
 function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
-  return withRetry(() => requestOnce(url, method, data, header), method);
+  const viaApi = () => withRetry(() => requestOnce(url, method, data, header), method);
+  if (!adminRead(url, method)) return viaApi();
+  return requestOnce(url, method, data, header, ADMIN_SERVICE, ADMIN_TIMEOUT).catch((err) => {
+    if (!tryApiInstead(err)) throw err;
+    return viaApi();
+  });
 }
 
-function requestOnce(url, method, data, header, service) {
+function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    // 15 秒没有返回就算超时
-    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
+    // 15 秒（走 admin 的只读请求 8 秒）没有返回就算超时
+    const timer = setTimeout(() => finish(reject, timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 204;
     const done = (res) => {
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
@@ -119,7 +145,7 @@ function requestOnce(url, method, data, header, service) {
         method,
         header: Object.assign({ 'X-WX-SERVICE': service || config.cloudService }, header),
         data,
-        timeout: TIMEOUT,
+        timeout,
         success: done,
         fail: (res) => finish(reject, callFailure(res)),
       });
@@ -141,7 +167,7 @@ function requestOnce(url, method, data, header, service) {
 // 打开时先从它取首页、截止页默认视图、查名单要用的公开数据（后端 /api/v1/snapshot），页面先显示它，
 // 接口服务的实时数据回来再换掉。只试一次、不重试；取不到返回 null，页面照常等实时数据。
 // 同一次打开里各页共用一份：60 秒内不重复取。
-const SNAPSHOT_SERVICE = 'admin';
+const SNAPSHOT_SERVICE = ADMIN_SERVICE;
 const SNAPSHOT_REUSE = 60000;
 let snapshotMemo = null;
 function snapshotOnce() {
