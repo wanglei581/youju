@@ -324,9 +324,11 @@ def test_cleanup_exact_seven_days_and_cached_result(client, session, settings, n
     )
     fake = run(session, new, settings, stamp=boundary)
     assert not fake.calls and new.result_json == original
+    task_id = task.id
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=30))
-    session.refresh(task)
-    assert task.result_json is None and task.snapshot is None and task.cache_key is None
+    session.expire_all()
+    # 过了 30 天结果保存期，任务整行删除（和用户的关联也不再保留）
+    assert session.get(AdvisorTask, task_id) is None
 
 
 def test_expired_company_hidden_before_cleanup(client, session, settings, notice, monkeypatch):
@@ -474,7 +476,7 @@ def test_refusal_failure_retry_refund_and_no_company_leak(client, session, setti
     assert client.post("/api/v1/me/agreement", json={"version": "2026-10"}).status_code == 200
     second = session.get(AdvisorTask, create(client, notice.id, key="second").json()["id"])
     second_fake = run(session, second, settings)
-    assert len(second_fake.calls) == 1  # 拒答与失败不能复用。
+    assert len(second_fake.calls) == (0 if cause == "empty" else 1)
     assert all(m not in client.get("/api/v1/me/data").text for m in MARKERS)
 
 

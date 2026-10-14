@@ -883,6 +883,8 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "advisor_input_rows": 0,
         "pay_events": 0,
         "advisor_files": 0,
+        "advisor_ai_tasks": 0,
+        "advisor_usage_rows": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1
     assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]

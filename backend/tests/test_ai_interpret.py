@@ -3,11 +3,15 @@
 import copy
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from threading import Barrier, Lock
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from alembic import command
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import inspect, select, text
@@ -87,7 +91,7 @@ def settings(monkeypatch):
         retain_unused_subscriptions_days=365,
         cloud_env=None,
     )
-    for module in (api, me, service, app_module):
+    for module in (api, me, service, app_module, v1):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     # 所有 worker 路径均被替换，配置错误也不会真的连模型。
@@ -528,6 +532,179 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert service.usage_counts(session, own_id, service.usage_day(NOW))[kind] == 1
 
 
+def test_model_calls_remain_capped_after_refund(client, session, settings, doc):
+    settings.ai_advisor_daily_cap = 1
+    first = direct_task(session, doc)
+    assert len(run(session, first, settings, FakeChat({"items": []})).calls) == 1
+    assert first.result_json["refusal"] and first.usage_released
+    assert service.global_ai_usage(session, service.usage_day(NOW)) == 0
+    assert service.global_ai_calls(session, service.usage_day(NOW)) == 1
+
+    cached = direct_task(session, doc, key="cached-at-cap")
+    assert run(session, cached, settings).calls == [] and cached.usage_released
+
+    # 新正文无法命中拒答缓存，仍须在调用前拦截并退款。
+    doc.detail.body_text += "\n新增申报材料。"
+    session.commit()
+    second = direct_task(session, doc, key="new-body")
+    fake = run(session, second, settings)
+    assert fake.calls == []
+    assert second.status == "failed" and second.error == service.AI_CAP_MESSAGE
+    assert second.usage_released
+    assert create(client, doc.id, "submit-after-calls").status_code == 429
+    tomorrow = NOW.replace(hour=16)
+    next_task = direct_task(session, doc, key="next-day", stamp=tomorrow)
+    assert len(run(session, next_task, settings, stamp=tomorrow).calls) == 1
+
+
+def test_model_refusal_cache_reuses_without_charging(session, settings, doc):
+    first = direct_task(session, doc)
+    run(session, first, settings, FakeChat({"items": [item("不存在的原句。")]}))
+    assert first.result_json["refusal"] and first.cache_key
+    second = direct_task(session, doc, "second", "reuse-refusal")
+    fake = run(session, second, settings)
+    assert fake.calls == [] and second.result_json == first.result_json
+    assert second.usage_released and service.global_ai_calls(session, service.usage_day(NOW)) == 1
+    # 拒答只复用 1 天：第二天再提交会重新调用模型（模型输出会波动，不把一次拒答锁 30 天）
+    later_stamp = NOW + timedelta(days=2)
+    later = direct_task(session, doc, key="later-refusal", stamp=later_stamp)
+    refusal_again = FakeChat({"items": [item("不存在的原句。")]})
+    assert len(run(session, later, settings, refusal_again, stamp=later_stamp).calls) == 1
+    assert later.result_json["refusal"]
+    expired_stamp = NOW + timedelta(days=31)
+    expired = direct_task(session, doc, key="expired-refusal", stamp=expired_stamp)
+    assert len(run(session, expired, settings, stamp=expired_stamp).calls) == 1
+    doc.detail.body_text += "\n正文变化。"
+    session.commit()
+    changed = direct_task(session, doc, key="changed-refusal")
+    assert len(run(session, changed, settings).calls) == 1
+
+
+def test_concurrent_submission_uses_one_global_slot(session_factory, session, settings, doc):
+    settings.ai_advisor_daily_cap = 1
+    settings.ai_advisor_audience = "all"
+    session.add_all([User(openid="internal"), User(openid="second")])
+    session.commit()
+    barrier = Barrier(2)
+
+    def submit(openid):
+        with session_factory() as work:
+            user = work.scalar(select(User).where(User.openid == openid))
+            barrier.wait(timeout=5)
+            try:
+                api.create_task(
+                    api.TaskIn(kind="interpret", doc_id=doc.id),
+                    SimpleNamespace(state=SimpleNamespace()),
+                    work,
+                    user,
+                    openid,
+                )
+                return 202
+            except HTTPException as exc:
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(submit, ("internal", "second")))
+    assert sorted(statuses) == [202, 429]
+    assert service.global_ai_usage(session, service.usage_day(NOW)) == 1
+
+
+def test_submission_lock_timeout_returns_503(client, session, doc, monkeypatch):
+    def busy(_session):
+        raise service.AdvisorBusy
+
+    monkeypatch.setattr(service, "ai_cap_lock", busy)
+    response = create(client, doc.id, "busy")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "系统繁忙，请稍后重试"
+    assert session.scalar(select(AdvisorTask.id)) is None
+
+
+def test_ai_queue_position_and_eta(client, session, settings, doc):
+    settings.ai_advisor_concurrency = 1
+    first = create(client, doc.id, "queue-first").json()
+    second = create(client, doc.id, "queue-second").json()
+    assert (first["queuePosition"], first["etaSeconds"]) == (0, 30)
+    assert (second["queuePosition"], second["etaSeconds"]) == (1, 60)
+    listed = {row["id"]: row for row in client.get("/api/v1/advisor/tasks").json()["items"]}
+    assert listed[second["id"]]["queuePosition"] == 1
+    assert listed[second["id"]]["etaSeconds"] == 60
+    old = session.get(AdvisorTask, first["id"])
+    old.status, old.started_at, old.finished_at = "done", NOW - timedelta(seconds=20), NOW
+    session.commit()
+    detail = client.get(f"/api/v1/advisor/tasks/{second['id']}").json()
+    assert detail["queuePosition"] == 0 and detail["etaSeconds"] == 20
+    assert "queuePosition" not in client.get(f"/api/v1/advisor/tasks/{first['id']}").json()
+
+
+def test_ai_workers_claim_once_and_isolate_failure(session, settings, doc, monkeypatch):
+    settings.ai_advisor_concurrency = 2
+    tasks = [direct_task(session, doc, key=f"parallel-{i}") for i in range(2)]
+    ids = {task.id for task in tasks}
+    for task in tasks:
+        task.status = "queued"
+    session.commit()
+    barrier = Barrier(2)
+    lock = Lock()
+    seen = []
+
+    def process(work, task, **kwargs):
+        with lock:
+            seen.append(task.id)
+        barrier.wait(timeout=5)
+        if task.id == tasks[0].id:
+            raise RuntimeError("isolated failure")
+        task.status, task.finished_at = "done", NOW
+        work.commit()
+        return True
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
+    assert set(seen) == ids and len(seen) == 2
+    assert result == {"processed": 2, "done": 1, "failed": 1, "requeued": 0}
+    assert {session.get(AdvisorTask, task_id).status for task_id in ids} == {"done", "failed"}
+
+
+def test_live_worker_records_duration_and_call_day(session, settings, doc):
+    row = direct_task(session, doc, key="timed")
+    row.status = "queued"
+    session.commit()
+    assert service.run_advisor_tasks(session, settings=settings)["done"] == 1
+    session.refresh(row)
+    assert row.finished_at > row.started_at
+    assert service.global_ai_calls(session, service.usage_day(datetime.now(UTC))) == 1
+
+
+def test_public_document_ai_flags_share_prepare_checks(client, session, settings, doc):
+    url = f"/api/v1/documents/{doc.id}"
+    # 白名单内测：不对所有人开放，但文件能不能做照样给（内测成员的入口靠它）
+    settings.ai_advisor_audience = "whitelist"
+    assert client.get(url).json()["ai"] == {"open": False, "interpret": True, "clause": True}
+    settings.ai_advisor_audience = "all"
+    assert client.get(url).json()["ai"] == {"open": True, "interpret": True, "clause": True}
+    settings.role = "admin"
+    assert client.get(url, headers={"X-WX-SOURCE": "miniapp"}).json()["ai"] == {
+        "open": True,
+        "interpret": True,
+        "clause": True,
+    }
+    settings.role = "api"
+    assert client.get(url).json()["ai"]["interpret"] is True
+    settings.role = "all"
+    doc.kind_override = "名单"
+    session.commit()
+    assert client.get(url).json()["ai"] == {"open": True, "interpret": False, "clause": False}
+    doc.kind_override = "申报通知"
+    doc.detail.body_text = " "
+    session.commit()
+    assert client.get(url).json()["ai"]["interpret"] is False
+    doc.detail.body_text = "申报材料。" * 5000
+    session.commit()
+    assert client.get(url).json()["ai"]["clause"] is False
+    settings.ai_advisor_enabled = False
+    assert client.get(url).json()["ai"] == {"open": False, "interpret": False, "clause": False}
+
+
 def test_quota_idempotency_rollover_and_refunds(client, settings, session, doc, monkeypatch):
     first = create(client, doc.id)
     assert create(client, doc.id).json()["id"] == first.json()["id"]
@@ -740,10 +917,11 @@ def test_get_result_invalidated_and_cleanup(client, session, settings, doc):
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=8))
     session.refresh(task)
     assert task.input_json is None and task.result_json is not None
+    task_id = task.id
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=31))
-    session.refresh(task)
-    assert task.result_json is None and task.snapshot is None and task.cache_key is None
-    assert task.model is None and task.prompt_version is None
+    session.expire_all()
+    # 过了 30 天结果保存期，任务整行删除（和用户的关联也不再保留）
+    assert session.get(AdvisorTask, task_id) is None
 
 
 def test_delete_and_logout_remove_result_fields(client, session, settings, doc):
@@ -878,9 +1056,11 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     monkeypatch.delenv("YOUJU_AI_ADVISOR_OPENIDS", raising=False)
     monkeypatch.delenv("YOUJU_AI_ADVISOR_AUDIENCE", raising=False)
     monkeypatch.delenv("YOUJU_AI_ADVISOR_DAILY_CAP", raising=False)
+    monkeypatch.delenv("YOUJU_AI_ADVISOR_CONCURRENCY", raising=False)
     settings = Settings(_env_file=None)
     assert not settings.ai_advisor_enabled and not interpret.openids(settings)
     assert settings.ai_advisor_audience == "whitelist" and settings.ai_advisor_daily_cap == 200
+    assert settings.ai_advisor_concurrency == 3
     monkeypatch.setenv("YOUJU_AI_ADVISOR_ENABLED", "true")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_OPENIDS", " user-a, user-b, user-a, ")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_AUDIENCE", "all")
@@ -888,6 +1068,11 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_CONCURRENCY", "8")
+    assert Settings(_env_file=None).ai_advisor_concurrency == 8
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_CONCURRENCY", "9")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
 
 
 def test_admin_overview_ai_counts(client, session, settings, doc):
