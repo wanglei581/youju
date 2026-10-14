@@ -54,6 +54,7 @@
     </view>
     <view wx:else class="empty-lookup">
       <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
+      <view class="warn">没找到不代表没上过名单：扫描件、图片等读不出文字的名单查不到，地市发布的名单也还没收录。</view>
       <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称，或换统一社会信用代码再查；最终以发文机关原文为准。</view>
     </view>
     <view wx:if="{{result.similar.length}}" class="similar">
