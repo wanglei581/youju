@@ -324,9 +324,11 @@ def test_cleanup_exact_seven_days_and_cached_result(client, session, settings, n
     )
     fake = run(session, new, settings, stamp=boundary)
     assert not fake.calls and new.result_json == original
+    task_id = task.id
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=30))
-    session.refresh(task)
-    assert task.result_json is None and task.snapshot is None and task.cache_key is None
+    session.expire_all()
+    # 过了 30 天结果保存期，任务整行删除（和用户的关联也不再保留）
+    assert session.get(AdvisorTask, task_id) is None
 
 
 def test_expired_company_hidden_before_cleanup(client, session, settings, notice, monkeypatch):

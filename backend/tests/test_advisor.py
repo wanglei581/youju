@@ -339,7 +339,7 @@ def task(session, user_id, **values):
     status = values.pop("status", "queued")
     row = AdvisorTask(
         user_id=user_id,
-        kind="compare",
+        kind=values.pop("kind", "compare"),
         status=status,
         input_rows=["客户秘密"],
         row_count=1,
@@ -645,6 +645,53 @@ def test_cleanup_ignores_switch_and_deletes_expired_files(session, advisor_setti
     assert result["advisor_input_rows"] == 1 and result["advisor_files"] == 1
     session.refresh(old)
     assert old.input_rows is None and old.result_file_id is None and deleted == ["cloud://old"]
+
+
+def test_cleanup_deletes_expired_ai_tasks_and_old_usage(session, advisor_settings):
+    """AI 任务过了 30 天结果保存期整行删除；使用次数只留本月和上个月。"""
+    user = User(openid="retention-user")
+    session.add(user)
+    session.commit()
+    stamp = NOW.astimezone(UTC)
+    expired = task(
+        session,
+        user.id,
+        kind="interpret",
+        idempotency_key="ai-expired",
+        created_at=stamp - timedelta(days=31),
+        expires_at=stamp - timedelta(days=1),
+    )
+    fresh = task(
+        session,
+        user.id,
+        kind="clause",
+        idempotency_key="ai-fresh",
+        created_at=stamp - timedelta(days=1),
+        expires_at=stamp + timedelta(days=29),
+    )
+    data_tool = task(
+        session,
+        user.id,
+        idempotency_key="data-expired",
+        created_at=stamp - timedelta(days=31),
+        expires_at=stamp - timedelta(days=1),
+    )
+    today = service.usage_day(stamp)
+    this_month = today.replace(day=1)
+    last_month = (this_month - timedelta(days=1)).replace(day=1)
+    two_months_ago = (last_month - timedelta(days=1)).replace(day=1)
+    for day in (today, last_month, two_months_ago):
+        session.add(AdvisorUsage(user_id=user.id, kind="interpret", day=day, used_count=1))
+    session.commit()
+    expired_id, fresh_id, data_id = expired.id, fresh.id, data_tool.id
+    result = service.cleanup_advisor(session, settings=advisor_settings, stamp=stamp)
+    assert result["advisor_ai_tasks"] == 1 and result["advisor_usage_rows"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, expired_id) is None
+    assert session.get(AdvisorTask, fresh_id) is not None
+    assert session.get(AdvisorTask, data_id) is not None
+    days = sorted(session.scalars(select(AdvisorUsage.day)))
+    assert days == [last_month, today]
 
 
 def test_delete_account_removes_advisor_tasks_and_files(

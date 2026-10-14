@@ -917,10 +917,11 @@ def test_get_result_invalidated_and_cleanup(client, session, settings, doc):
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=8))
     session.refresh(task)
     assert task.input_json is None and task.result_json is not None
+    task_id = task.id
     service.cleanup_advisor(session, settings=settings, stamp=NOW + timedelta(days=31))
-    session.refresh(task)
-    assert task.result_json is None and task.snapshot is None and task.cache_key is None
-    assert task.model is None and task.prompt_version is None
+    session.expire_all()
+    # 过了 30 天结果保存期，任务整行删除（和用户的关联也不再保留）
+    assert session.get(AdvisorTask, task_id) is None
 
 
 def test_delete_and_logout_remove_result_fields(client, session, settings, doc):

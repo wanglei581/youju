@@ -1028,8 +1028,28 @@ def cleanup_advisor(
         for row in trash:
             if row.file_id in successful:
                 session.delete(row)
+    # AI 任务过了结果保存期（30 天）整行删除，任务和用户的关联不再保留（隐私保护指引一·14）；
+    # 数据工具的任务另有付费记录引用，照旧只清空文件。
+    ai_tasks = (
+        session.execute(
+            delete(AdvisorTask).where(
+                AdvisorTask.kind.in_(AI_KINDS), AdvisorTask.expires_at <= stamp
+            )
+        ).rowcount
+        or 0
+    )
+    # 每人每天的使用次数只用于每日、每月上限和自助退款条件，保留本月和上个月，更早的删除。
+    keep_from = (usage_day(stamp).replace(day=1) - timedelta(days=1)).replace(day=1)
+    usage_rows = (
+        session.execute(delete(AdvisorUsage).where(AdvisorUsage.day < keep_from)).rowcount or 0
+    )
     session.commit()
-    return {"advisor_input_rows": input_count, "advisor_files": deleted_count}
+    return {
+        "advisor_input_rows": input_count,
+        "advisor_files": deleted_count,
+        "advisor_ai_tasks": ai_tasks,
+        "advisor_usage_rows": usage_rows,
+    }
 
 
 def delete_user_tasks(
