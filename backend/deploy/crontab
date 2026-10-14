@@ -19,6 +19,8 @@
 0 4 * * *  /app/backend/deploy/job.sh backup
 # 每天校验最近一份备份的完整性和迁移版本；失败由 job.sh 发提醒
 40 4 * * *  /app/backend/deploy/job.sh backup-verify
+# 原网页还在不在：每天查一批近 90 天的文件（每份约一周一次），撤下的在小程序里提示
+10 5 * * *  /app/backend/deploy/job.sh check-links --limit 400
 # 附件副本：每天 2 次，在两轮抓取之后（补详情要先跑完才有新附件），每次最多下载 100 个；
 # 存到对象存储 attachments/（和 backups/ 分开），供小程序直接打开。对象存储出错时 job.sh 提醒
 15 10 * * *  /app/backend/deploy/job.sh cache-attachments

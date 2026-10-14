@@ -9,7 +9,7 @@ function copyLink(url, message) {
     },
     // 剪贴板属于隐私接口：用户没有同意隐私保护指引时会失败
     fail() {
-      wx.showToast({ title: '没能复制，请同意隐私保护指引后再试', icon: 'none', duration: 2500 });
+      wx.showToast({ title: '没能复制：请先同意微信弹出的隐私保护指引，再点一次', icon: 'none', duration: 2500 });
     },
   });
 }

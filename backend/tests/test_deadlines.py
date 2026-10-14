@@ -117,3 +117,38 @@ def test_evidence_starts_at_clause_boundary() -> None:
     assert result[0].evidence.startswith(("补充证明", "项目纸质"))
     assert "10月16日" in result[0].evidence
     assert len(result[0].evidence) <= 120
+
+
+# PDF 转出的正文按版面换行（10/15 全面测试：证据句只剩"…报送至省工业和信息"、或只剩日期）
+PDF_WRAPPED = "\n".join(
+    [
+        "关于组织申报省级专精特新产业孵化园的通知",
+        "各市（州）工业和信息化主管部门，各有关单位：",
+        "为加快培育专精特新中小企业，打造一批产业孵化载体，现组织",
+        "开展省级专精特新产业孵化园申报工作，有关事项通知如下。",
+        "一、申报材料",
+        "申报单位按要求编制申报材料，经所在地主管部门审核后，于",
+        "10 月 26 日前完成纸质申报,并将材料报送至省工业和信息",
+        "化厅中小企业处，逾期不予受理，请各单位认真组织好申报。",
+        "（二）申报时间：",
+        "2026 年 9 月 20 日-10 月 26 日。",
+    ]
+)
+
+
+def test_pdf_line_wraps_are_joined_before_cutting_evidence():
+    found = {(c.due_date, c.evidence) for c in extract_deadlines(PDF_WRAPPED, PUBLISHED)}
+    evidences = [e for d, e in found if d == date(2026, 10, 26)]
+    assert any("报送至省工业和信息化厅中小企业处" in e for e in evidences), evidences
+    # 单独一行的"申报时间："接上下一行的日期，证据句写明是什么时间
+    assert any(e.startswith("（二）申报时间：2026 年 9 月 20 日-10 月 26 日") for e in evidences), (
+        evidences
+    )
+    # 标题、编号开头的行照旧分开，不和上一行接成一句
+    assert not any("通知各市" in e or "如下。一、" in e for e in evidences)
+
+
+def test_web_text_one_paragraph_per_line_is_unchanged():
+    body = "各单位：\n请于2026年10月20日前提交申报材料。\n联系人：张某\n电话：0531-1234567"
+    [candidate] = extract_deadlines(body, PUBLISHED)
+    assert candidate.evidence == "请于2026年10月20日前提交申报材料"

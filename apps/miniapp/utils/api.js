@@ -25,7 +25,7 @@ function query(params) {
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
-  const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
+  const err = new Error(typeof detail === 'string' ? detail : (validation || (res ? `服务暂时出错（${res.statusCode}），请稍后重试` : '网络连接失败，请检查网络后重试')));
   err.status = res ? res.statusCode : 0;
   return err;
 }

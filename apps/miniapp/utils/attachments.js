@@ -19,7 +19,7 @@ const REASONS = {
   too_large: '附件超过 20MB，请看原文',
   personal: '附件含个人信息，请看原文',
   scan: '扫描件附件请看原文',
-  image: '附件含图片，无法核验个人信息',
+  image: '附件含图片，请看原文',
   failed: '附件副本没能从原网站取到',
 };
 

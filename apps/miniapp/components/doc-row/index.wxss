@@ -8,6 +8,8 @@
 .meta { margin-top: 14rpx; display: flex; align-items: center; gap: 24rpx; font-size: 25rpx; color: var(--t2); }
 .issuer + .meta { margin-top: 4rpx; }
 .copy { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
+.gone { margin-left: auto; flex-shrink: 0; color: var(--orange); white-space: nowrap; }
+.gone + .copy { margin-left: 0; }
 .group { margin-top: 16rpx; display: inline-flex; align-items: center; gap: 6rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: var(--fill); font-size: 25rpx; line-height: 1.6; color: var(--t2); }
 .versions { margin-top: 12rpx; padding: 4rpx 20rpx; border-left: 4rpx solid var(--line2); }
 .version { display: flex; align-items: center; gap: 16rpx; padding: 16rpx 0; border-bottom: 2rpx solid var(--line); }
