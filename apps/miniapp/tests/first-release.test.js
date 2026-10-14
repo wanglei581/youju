@@ -493,3 +493,31 @@ test('首屏快照：首页、截止页、查名单在实时数据回来前先�
   live.d.reject(new Error('网络不太好，请稍后再试')); await flush();
   assert.ok(!lists.data.error); assert.equal(lists.data.staleError, false);
 });
+
+test('截止核对断档（定稿方案第八节）：3 个及以上工作日没人工核对，首页"7 天内截止"写"今日未更新"', async () => {
+  // 2026-10-14 是周三（北京时间中午）
+  const now = new Date('2026-10-14T04:00:00Z');
+  assert.equal(format.reviewStaleNote(null, now), '今日未更新：截止日期还没有人工核对');
+  assert.equal(format.reviewStaleNote('2026-10-14T09:00:00+08:00', now), '');
+  assert.equal(format.reviewStaleNote('2026-10-10T18:00:00+08:00', now), '今日未更新：截止日期最近一次人工核对是 10月10日');   // 周六核对，之后周一到周三 3 个工作日
+  assert.equal(format.reviewStaleNote('2026-10-09T18:00:00+08:00', new Date('2026-10-13T04:00:00Z')), '');   // 周五核对，到下周二只过了 2 个工作日
+  assert.equal(format.reviewStaleNote('2026-10-09T18:00:00+08:00', now), '今日未更新：截止日期最近一次人工核对是 10月9日');
+  assert.equal(format.reviewStaleNote('2026-10-12T23:30:00+08:00', now), '');   // 周一晚核对，过了周二、三 → 2 个工作日
+  assert.equal(format.reviewStaleNote('not-a-date', now), '');
+  // 首页：后端给了这个字段才显示；一份都没核对时和"有几份日期还没核对"一起显示
+  let res = { stats: { week_total: 1, provinces: 28, sources: 70, deadline_reviewed_at: null }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
+  const page = load('pages/home/index.js', {
+    '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+    '../../utils/consent.js': { loginOpen: () => false },
+  }, { getApp: () => ({ globalData: {} }), wx: { navigateTo() {} } });
+  page.onLoad(); await flush();
+  let root = render('pages/home/index.wxml', { ...page.data, loading: false });
+  assert.equal(flat(findAll(root, hasClass('soon-stale'))[0]), '今日未更新：截止日期还没有人工核对');
+  // 老版本后端没有这个字段：不显示
+  res = { stats: { week_total: 1, provinces: 28, sources: 70 }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
+  page.lastShow = 0; page.reload(); await flush();
+  root = render('pages/home/index.wxml', { ...page.data, loading: false });
+  assert.equal(findAll(root, hasClass('soon-stale')).length, 0);
+});
+

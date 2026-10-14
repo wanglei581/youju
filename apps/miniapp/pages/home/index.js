@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO, clockText, dueView, monthDay, weekday } = require('../../utils/format.js');
+const { todayISO, clockText, dueView, monthDay, weekday, reviewStaleNote } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -14,6 +14,11 @@ const SCOPES = [
 const HOME_CACHE = 'youjuHomeCacheV1';
 
 // "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
+// 后端没给这个字段（老版本或本机演示数据）时不写，免得误报"今日未更新"
+function reviewNoteOf(stats) {
+  return stats && Object.prototype.hasOwnProperty.call(stats, 'deadline_reviewed_at') ? reviewStaleNote(stats.deadline_reviewed_at) : '';
+}
+
 function soonRows(list) {
   return (list || []).map((d) => {
     const view = dueView({ kind: d.label, source: d.source || 'verified', date: d.date, time: d.time, quote: d.quote });
@@ -42,6 +47,7 @@ Page({
     // 7 天内截止（只放核对过的）和 7 天内有候选、还没核对的份数
     soon: [],
     soonUnverified: 0,
+    reviewNote: '',
     loaded: false,
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
@@ -90,7 +96,7 @@ Page({
         // 已经显示着快照（一分钟内的数据）就不报错；显示着本机存的上次数据就留着，只在上面写明没更新
         if (fresh) return;
         if (this.data.loaded) this.setData({ error: `数据未更新：${err.message}` });
-        else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` });
+        else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, reviewNote: '', error: `数据未更新：${err.message}` });
       })
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
@@ -101,6 +107,7 @@ Page({
       // fresh：显示的是快照或实时数据（不是本机存的上次数据），这时不再提示"正在连接"
       stats, items: items || [], loaded: true, cachedText, fresh: !cachedText, checkedText: clockText(stats && stats.last_checked_at),
       soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
+      reviewNote: reviewNoteOf(stats),
     });
   },
 
@@ -122,7 +129,7 @@ Page({
       this.lastShow = stamp;
     }
     this.setData({ today: todayISO() });
-    watchDay(this, (day) => this.setData({ today: day, soon: soonRows(this.dueSoon) }));
+    watchDay(this, (day) => this.setData({ today: day, soon: soonRows(this.dueSoon), reviewNote: reviewNoteOf(this.data.stats) }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }

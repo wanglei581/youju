@@ -508,6 +508,33 @@ def test_home_last_checked_at_is_latest_successful_crawl(client, session, seeded
     assert stats["last_checked_at"] == "2026-09-27T06:30:00+08:00"
 
 
+def test_home_deadline_reviewed_at_is_latest_human_review(client, session, seeded):
+    """截止核对断档（定稿方案第八节）：首页统计给最近一次人工核对截止的时间，待核对的不算。"""
+    from sqlalchemy import func, update
+
+    stats = client.get("/api/v1/home").json()["stats"]
+    latest = session.scalar(
+        select(func.max(DocumentDeadline.reviewed_at)).where(DocumentDeadline.status != "pending")
+    )
+    assert latest is not None
+    assert stats["deadline_reviewed_at"] == latest.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(
+        timespec="seconds"
+    )
+    # 一条都没人工核对过：为空
+    session.execute(
+        update(DocumentDeadline).values(
+            status="pending",
+            reviewed_at=None,
+            reviewed_by=None,
+            approved_date=None,
+            approved_time=None,
+            changed_to_document_id=None,
+        )
+    )
+    session.commit()
+    assert client.get("/api/v1/home").json()["stats"]["deadline_reviewed_at"] is None
+
+
 def test_calendar_skips_deadlines_already_passed_today(client, seeded):
     body = client.get("/api/v1/calendar").json()
     dues = [(i["due"], i["time"]) for i in body["items"]]
