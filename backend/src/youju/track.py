@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from youju import deadline_excerpts
@@ -27,7 +28,7 @@ from youju.compare import (
     _safe_cell,
     _text,
 )
-from youju.export_notes import add_excel_notes
+from youju.export_notes import DEADLINE_HEADER, add_excel_notes
 from youju.fields import SUPPORT_LABELS
 from youju.models import Document, DocumentDetail, Source
 from youju.sources.onboard import PROVINCES as SOURCE_PROVINCES
@@ -341,7 +342,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
-        "截止日期以原文为准，标“机器摘录”的未经人工核对；"
+        f"“{DEADLINE_HEADER}”列中标“机器摘录”的未经人工核对；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：
@@ -354,7 +355,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         "发布日期",
         "截止核对情况",
         "截止类型",
-        "截止日期",
+        DEADLINE_HEADER,
         "截止原文句子",
         "剩余天数",
         "支持方式",
@@ -364,6 +365,8 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.cell(1, 1, _safe_cell(note))
     for column, header in enumerate(headers, 1):
         detail.cell(2, column, header)
+    deadline_column = get_column_letter(headers.index(DEADLINE_HEADER) + 1)
+    detail.column_dimensions[deadline_column].width = 28
     row_count = 0
     summary_rows: list[tuple[object, ...]] = []
     for client in report.clients:

@@ -10,7 +10,15 @@ import httpx
 import pytest
 from sqlalchemy import func, select, text
 
-from youju.backup import BackupError, dump, object_path, restore, run_backup
+from youju.backup import (
+    BackupError,
+    download_latest,
+    dump,
+    object_path,
+    restore,
+    run_backup,
+    verify,
+)
 from youju.db import create_mysql_engine
 from youju.models import (
     AICheck,
@@ -425,3 +433,125 @@ def test_undeleted_old_backups_are_logged(caplog, monkeypatch) -> None:
     logged = [r for r in caplog.records if r.name == "youju.backup"]
     assert len(logged) == 8 and all(r.levelno == logging.INFO for r in logged)
     assert "旧备份没删掉" in logged[0].getMessage()
+
+
+def test_verify_checks_backup_without_writing_database(session, db_engine) -> None:
+    populate(session)
+    raw = _dump(db_engine)
+    counts = verify(db_engine, io.BytesIO(raw))
+    assert counts["documents"] == 1 and counts["follows"] == 1
+    assert session.scalar(select(Document.id)) is not None
+
+
+def test_verify_reports_corruption_and_schema_mismatch(session, db_engine) -> None:
+    populate(session)
+    raw = _dump(db_engine)
+
+    def change_header(lines, **changes):
+        header = json.loads(lines[0])
+        header.update(changes)
+        lines[0] = (json.dumps(header) + "\n").encode()
+        return lines
+
+    def wrong_count(lines):
+        header = json.loads(lines[0])
+        header["tables"]["documents"] += 1
+        return change_header(lines, tables=header["tables"])
+
+    def bad_json(lines):
+        lines[1] = b"{bad json}\n"
+        return lines
+
+    def bad_table(lines):
+        for i, line in enumerate(lines[1:-1], start=1):
+            if b'"t": "' in line:
+                lines[i] = line.replace(b'"t": "', b'"t": "unknown_', 1)
+                break
+        return lines
+
+    def bad_digest(lines):
+        trailer = json.loads(lines[-1])
+        trailer["sha256"]["documents"] = "0" * 64
+        lines[-1] = (json.dumps(trailer) + "\n").encode()
+        return lines
+
+    cases = [
+        (raw[:-8], "损坏或不完整"),
+        (_rewrite(raw, lambda lines: lines[:-1]), "没有结尾"),
+        (_rewrite(raw, wrong_count), "实际条数"),
+        (_rewrite(raw, bad_json), "损坏或不完整"),
+        (_rewrite(raw, bad_table), "表名或字段"),
+        (_rewrite(raw, bad_digest), "SHA-256"),
+        (_rewrite(raw, lambda lines: change_header(lines, format="other")), "格式版本"),
+        (_rewrite(raw, lambda lines: change_header(lines, version=2)), "格式版本"),
+        (_rewrite(raw, lambda lines: change_header(lines, revision="0099")), "迁移版本"),
+    ]
+    for data, message in cases:
+        with pytest.raises(BackupError, match=message):
+            verify(db_engine, io.BytesIO(data))
+
+
+def test_download_latest_uses_open_api_and_retries(tmp_path) -> None:
+    raw = gzip.compress(b"backup")
+    today = date(2026, 10, 14)
+    latest = object_path(date(2026, 10, 13))
+    prefix = "cloud://prod-1.bucket/"
+    seen = {"gets": 0, "links": 0, "paths": [], "probes": []}
+
+    def handler(request):
+        url = str(request.url)
+        if url.endswith("/tcb/uploadfile"):
+            path = json.loads(request.content)["path"]
+            seen["probes"].append(path)
+            return httpx.Response(200, json={"errcode": 0, "file_id": prefix + path})
+        if url.endswith("/tcb/batchdownloadfile"):
+            seen["links"] += 1
+            ids = [item["fileid"] for item in json.loads(request.content)["file_list"]]
+            seen["paths"] += ids
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "file_list": [
+                        {
+                            "fileid": name,
+                            "status": 0 if name == prefix + latest else -1,
+                            "download_url": "https://cos.example.test/backup",
+                        }
+                        for name in ids
+                    ],
+                },
+            )
+        if url == "https://cos.example.test/backup":
+            seen["gets"] += 1
+            return httpx.Response(503 if seen["gets"] == 1 else 200, content=raw)
+        return httpx.Response(404)
+
+    waits = []
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        dest = tmp_path / "latest.jsonl.gz"
+        assert download_latest(client, "prod-1", dest, today=today, sleep=waits.append) == latest
+    assert dest.read_bytes() == raw
+    assert seen["paths"][:2] == [prefix + object_path(today), prefix + latest]
+    assert seen["links"] == 2 and seen["gets"] == 2 and waits == [5]
+    # 取前缀用专门的探测路径，不拿真实备份的路径申请上传链接
+    assert seen["probes"] == ["backups/prefix-probe"]
+
+
+def test_cli_backup_verify_file(session, db_engine, tmp_path, monkeypatch, capsys) -> None:
+    from youju import cli
+
+    populate(session)
+    source = tmp_path / "backup.jsonl.gz"
+    source.write_bytes(_dump(db_engine))
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: SimpleNamespace(database_url=TEST_DB_URL, cloud_env=None)
+    )
+    assert cli.main(["backup-verify", "--file", str(source)]) == 0
+    output = capsys.readouterr().out
+    assert "备份校验通过" in output and "documents: 1" in output
+    source.write_bytes(source.read_bytes()[:-8])
+    assert cli.main(["backup-verify", "--file", str(source)]) == 1
+    assert "备份校验失败" in capsys.readouterr().out
+    assert cli.main(["backup-verify"]) == 1
+    assert "YOUJU_CLOUD_ENV" in capsys.readouterr().out

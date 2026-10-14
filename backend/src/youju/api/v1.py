@@ -822,6 +822,9 @@ def home(
     last_checked = session.scalar(
         select(func.max(JobRun.finished_at)).where(JobRun.job == "crawl", JobRun.status == "ok")
     )
+    last_reviewed = session.scalar(
+        select(func.max(DocumentDeadline.reviewed_at)).where(DocumentDeadline.status != "pending")
+    )
     # 首页"最新"只放申报通知、名单、政策三类；统计数据发布等其他文件在搜索里能找到
     latest_stmt = _base().where(_kind_is(["申报通知", "名单", "政策"]))
     if group == 1:
@@ -839,6 +842,11 @@ def home(
         "followed_new": None,
         "last_checked_at": (
             last_checked.astimezone(_TZ).isoformat(timespec="seconds") if last_checked else None
+        ),
+        # 截止核对是否断档（定稿方案第八节）：最近一次人工核对截止的时间，从没核对过为空；
+        # 小程序据此在连续 3 个工作日没核对时写"今日未更新"
+        "deadline_reviewed_at": (
+            last_reviewed.astimezone(_TZ).isoformat(timespec="seconds") if last_reviewed else None
         ),
     }
     from youju.api import me

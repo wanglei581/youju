@@ -5,6 +5,19 @@ const { consentOpen, markAgreed, loginOpen } = require('../../utils/consent.js')
 // 阅读协议。consent=1 时是"同意模式"：依次显示《用户协议》和《隐私保护指引》全文，
 // 同意按钮放在最后，读完才能同意（首次同意"先看协议"、协议更新后重新同意都走这里）。
 // 协议定稿前（loginOpen 为 false，D-056）不显示草案：入口都改为打开官方隐私保护指引，直接打开这一页时只显示"暂未开放"
+// 重点条款（民法典第 496 条，10/14）：每份文件顶部列出 keyPoints，正文里以 keyParagraphs 开头的段落加粗
+function withKeys(doc) {
+  const keys = doc.keyParagraphs || [];
+  return {
+    title: doc.title,
+    keyPoints: doc.keyPoints || [],
+    sections: (doc.sections || []).map((s) => ({
+      h: s.h,
+      p: (s.p || []).map((text) => ({ text, key: keys.some((k) => String(text).startsWith(k)) })),
+    })),
+  };
+}
+
 Page({
   data: { docs: [], final: false, status: '', disclaimer: '', consent: false, sending: false, loginOpen: loginOpen() },
 
@@ -14,7 +27,7 @@ Page({
     let docs;
     if (consent) docs = [legal.user, legal.privacy];
     else docs = [query.type === 'privacy' ? legal.privacy : legal.user];
-    this.setData({ docs, final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent });
+    this.setData({ docs: docs.map(withKeys), final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent });
     wx.setNavigationBarTitle({ title: consent ? '用户协议和隐私保护指引' : docs[0].title });
   },
 

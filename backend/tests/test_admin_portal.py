@@ -142,6 +142,13 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
                 status="ok",
                 summary="任务执行完成",
             ),
+            JobRun(
+                job="backup-verify",
+                started_at=started,
+                finished_at=started + timedelta(seconds=1),
+                status="failed",
+                summary="任务执行失败（退出码 1）",
+            ),
         ]
     )
     session.commit()
@@ -195,6 +202,10 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         )
     assert data["jobs"][0]["latest"]["summary"] == "任务执行完成"
     assert data["jobs"][1]["latest"] is None
+    assert (
+        next(item for item in data["jobs"] if item["job"] == "backup-verify")["latest"]["status"]
+        == "failed"
+    )
     assert data["heartbeat_age_seconds"] < 10 and data["advisor_enabled"] is False
     assert "o-fresh" not in response.text and "日期不对" not in response.text
     assert response.headers["cache-control"] == "no-store"

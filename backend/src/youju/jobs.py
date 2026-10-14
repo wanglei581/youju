@@ -12,6 +12,7 @@ log = logging.getLogger("youju.jobs")
 OVERVIEW_JOBS = (
     "round",
     "backup",
+    "backup-verify",
     "archive-logs",
     "cleanup",
     "audit-deadlines",

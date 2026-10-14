@@ -157,7 +157,7 @@ def test_xlsx_export(client, docs):
         "文号",
         "发布日期",
         "地区",
-        "截止日期",
+        "截止日期（以原文为准）",
         "日期角色",
         "支持方式",
         "未核项",
@@ -175,11 +175,12 @@ def test_xlsx_export(client, docs):
     assert sheet["K2"].value == "见原文"  # 申报通知还没有核对通过的支持方式
     assert sheet["K3"].value == "—"  # 名单没有支持方式
     assert sheet["L2"].value == "支持方式"
-    assert sheet["L3"].value == "截止日期、名单状态"
+    assert sheet["L3"].value == "截止日期（以原文为准）、名单状态"
     assert sheet["M2"].hyperlink.target.endswith("/1.html")
     assert sheet["N2"].hyperlink.target.endswith("/2.html")
     note = book["数据说明"]
     assert "第三方整理，非政府平台" in note["B1"].value
+    assert "“截止日期（以原文为准）”列" in note["B1"].value
     assert note["D4"].value == "2026-09-25"
     assert note["E4"].value == "2026-09-26"
 
@@ -201,17 +202,17 @@ def test_docx_export(client, docs):
     assert len(book.tables[0].rows) == 3
     assert book.tables[0].rows[1].cells[4].text == "2026-09-26"
     fields = {row.cells[0].text: row.cells[1].text for row in book.tables[1].rows}
-    assert "2026-10-20" in fields["截止日期"]
-    assert "原定 企业申报截止 2026-10-18 已延期" in fields["截止日期"]
+    assert "2026-10-20" in fields["截止日期（以原文为准）"]
+    assert "原定 企业申报截止 2026-10-18 已延期" in fields["截止日期（以原文为准）"]
     assert fields["截止日期核对日期"] == "2026-09-26"
     assert fields["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
     assert fields["支持方式"] == "见原文"
     assert fields["未核项"] == "支持方式"
     listed_fields = {row.cells[0].text: row.cells[1].text for row in book.tables[2].rows}
-    assert listed_fields["截止日期"] == "见原文"
+    assert listed_fields["截止日期（以原文为准）"] == "见原文"
     assert listed_fields["日期角色"] == "截止时间见原文"
     assert listed_fields["支持方式"] == "—"
-    assert listed_fields["未核项"] == "截止日期、名单状态"
+    assert listed_fields["未核项"] == "截止日期（以原文为准）、名单状态"
 
 
 @pytest.fixture
@@ -314,7 +315,7 @@ def role_docs(session):
     return checked, unchecked, partial
 
 
-ROW_COLUMNS = ("截止日期", "日期角色", "支持方式", "未核项")
+ROW_COLUMNS = ("截止日期（以原文为准）", "日期角色", "支持方式", "未核项")
 
 
 def _export_rows(client, docs, format_):
@@ -357,12 +358,17 @@ def test_date_role_and_unchecked_columns(client, role_docs, format_):
         "资金支持、资格认定",  # 只写人工核对通过的，顺序和详情页一致
         "无",
     )
-    assert rows[unchecked.title] == ("见原文", "截止时间见原文", "见原文", "截止日期、支持方式")
+    assert rows[unchecked.title] == (
+        "见原文",
+        "截止时间见原文",
+        "见原文",
+        "截止日期（以原文为准）、支持方式",
+    )
     assert rows[partial.title] == (
         "材料报送截止 2026-12-01",
         "材料报送截止",
         "资金支持",  # 待核对的贷款贴息不写
-        "其他截止日期、支持方式",
+        "其他截止日期（以原文为准）、支持方式",
     )
     # 按标题归类的筛选标签不进支持方式这一列
     assert checked.rule_supports == "贷款贴息" and unchecked.rule_supports == "资金支持"
@@ -577,9 +583,10 @@ def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatc
     body = {"ids": [str(doc.id)], "format": "xlsx"}
     for request in ({"json": {**body, "excerpts": 1}}, {"json": body, "params": {"excerpts": 1}}):
         row, notice = sheet(**request)
-        assert row["截止日期"] == "2026-10-25（机器摘录）"
+        assert row["截止日期（以原文为准）"] == "2026-10-25（机器摘录）"
         assert row["截止原文句子"] == quote
         assert "机器摘录" in notice and "未经人工核对" in notice
+        assert "“截止日期（以原文为准）”列" in notice
     row, notice = sheet(json=body)
-    assert "截止原文句子" not in row and "2026-10-25" not in str(row["截止日期"])
+    assert "截止原文句子" not in row and "2026-10-25" not in str(row["截止日期（以原文为准）"])
     assert "机器摘录" not in notice

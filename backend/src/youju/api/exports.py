@@ -26,7 +26,7 @@ from youju.classify import applicable_region, effective_kind, list_status, regio
 from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
-from youju.export_notes import DISCLAIMER, SEARCH_NOTICE, add_excel_notes
+from youju.export_notes import DEADLINE_HEADER, DISCLAIMER, SEARCH_NOTICE, add_excel_notes
 from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentField, Source
 from youju.takedown import available_condition
 
@@ -43,25 +43,30 @@ HEADERS = (
     "文号",
     "发布日期",
     "地区",
-    "截止日期",
+    DEADLINE_HEADER,
     "日期角色",
     "支持方式",
     "未核项",
 )
 NOTICE = (
-    "本文件由第三方整理，非政府平台；截止日期只列人工核对通过的记录，"
+    f"本文件由第三方整理，非政府平台；“{DEADLINE_HEADER}”列只列人工核对通过的记录，"
     "请以发文机关原文为准；名单状态仅按标题用词标注。"
     "“日期角色”是人工核对时确认的截止类型；“支持方式”只写申报通知里人工核对通过的；"
     "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
-EXCERPT_NOTICE = "标“机器摘录”的截止日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+EXCERPT_NOTICE = (
+    f"“{DEADLINE_HEADER}”列中标“机器摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+)
 
 
 def _notice(excerpts: bool) -> str:
     if not excerpts:
         return NOTICE
     return (
-        NOTICE.replace("截止日期只列人工核对通过的记录，", "截止日期包含人工核对过的和机器摘录的，")
+        NOTICE.replace(
+            f"“{DEADLINE_HEADER}”列只列人工核对通过的记录，",
+            f"“{DEADLINE_HEADER}”列包含人工核对过的和机器摘录的，",
+        )
         + EXCERPT_NOTICE
     )
 
@@ -120,16 +125,16 @@ def _unchecked(
 ) -> list[str]:
     """这一行还没有人工核对的关键字段（固定顺序）。只看核对状态，不按正文或标题推断。
 
-    - 截止日期：没有核对过的截止（截止日期那一格写"见原文"）；已有核对过的、但还有
-      待核对的候选时写"其他截止日期"（列出的已核对，可能还有别的截止没核对）
+    - 截止日期（以原文为准）：没有核对过的截止（这一格写"见原文"）；已有核对过的、
+      但还有待核对的候选时写"其他截止日期（以原文为准）"（可能还有别的截止没核对）
     - 支持方式：只有申报通知有；没有核对通过的，或还有待核对（含正文变了要重核）的候选
     - 名单状态：只有名单有；只照录标题用词（D-018），没有人工核对这一步
     """
     items: list[str] = []
     if not has_deadline:
-        items.append("截止日期")
+        items.append(DEADLINE_HEADER)
     elif deadline_pending:
-        items.append("其他截止日期")
+        items.append(f"其他{DEADLINE_HEADER}")
     if kind == "申报通知" and (not support_approved or support_pending):
         items.append("支持方式")
     if kind == "名单":
@@ -424,7 +429,7 @@ def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
                 sheet.cell(row, column).font = Font(color="0563C1", underline="single")
     sheet.freeze_panes = "B2"
     sheet.auto_filter.ref = sheet.dimensions
-    widths = {"标题": 60, "截止日期": 60, "日期角色": 26, "支持方式": 22, "未核项": 22}
+    widths = {"标题": 60, DEADLINE_HEADER: 60, "日期角色": 26, "支持方式": 22, "未核项": 36}
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[sheet.cell(1, column).column_letter].width = (
             60 if column > len(headings) else widths.get(headings[column - 1], 18)
@@ -494,7 +499,7 @@ def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             ("文号", item.doc_number),
             ("发布日期", item.published),
             ("地区", item.region),
-            ("截止日期", item.deadline),
+            (DEADLINE_HEADER, item.deadline),
             *([("截止原文句子", item.deadline_quote)] if excerpts else []),
             ("日期角色", item.date_role),
             ("支持方式", item.support),

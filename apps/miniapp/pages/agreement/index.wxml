@@ -5,9 +5,13 @@
 <view wx:if="{{consent}}" class="card intro">请阅读下面的《用户协议》和《隐私保护指引》全文，同意按钮在最后。不同意不影响检索、查看和导出。</view>
 <view wx:for="{{docs}}" wx:for-item="doc" wx:key="title" class="card doc">
   <view class="doc-title">《{{doc.title}}》</view>
+  <view wx:if="{{doc.keyPoints.length}}" class="keybox">
+    <view class="keybox-h">请重点阅读（正文里加粗的条款）</view>
+    <view wx:for="{{doc.keyPoints}}" wx:key="*this" class="keybox-p">· {{item}}</view>
+  </view>
   <view wx:for="{{doc.sections}}" wx:for-item="s" wx:key="h" class="sec">
     <view class="sec-h">{{s.h}}</view>
-    <view wx:for="{{s.p}}" wx:key="index" class="sec-p">{{item}}</view>
+    <view wx:for="{{s.p}}" wx:key="index" class="sec-p {{item.key ? 'sec-p--key' : ''}}">{{item.text}}</view>
   </view>
 </view>
 <view class="card note">{{disclaimer}}</view>
