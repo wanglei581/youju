@@ -1,10 +1,10 @@
 // AI 内测：我的 AI 任务（只上传体验版、不合并）。只列当前账号有权限的政策解读、条款对照任务，
 // 可查看结果、取消排队、删除；数据工具（Excel 结果）的后端没有上线，这里不处理。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, aiTitle, AI_LABEL } = require('../../utils/advisor.js');
 
 Page({
-  data: { loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
+  data: { aiLabel: AI_LABEL, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
   onShow() { this.visible = true; this.delay = 3000; this.load(); },
   onHide() { this.stop(); },
   onUnload() { this.stop(); },
@@ -19,7 +19,7 @@ Page({
       const ai = (caps && caps.ai_advisor) || {};
       const kinds = allowedKinds(ai);
       const aiEnabled = ai.enabled === true && kinds.length > 0;
-      if (aiEnabled) wx.setNavigationBarTitle({ title: 'AI 任务 · 内部测试' });
+      if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 任务') });
       // 权限关闭时先清空已有列表，避免请求失败后仍显示此前的 AI 任务。
       this.setData({ aiEnabled, kinds, aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });
       if (!aiEnabled) { this.setData({ loading: false, items: [] }); return null; }

@@ -2,7 +2,7 @@
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:elif="{{!aiEnabled}}" class="card advisor-card muted">暂时没有可用工具</view>
 <block wx:elif="{{aiEnabled}}">
-  <view class="ai-internal"><text class="ai-internal-tag">AI 生成 · 内部测试：</text>{{aiNotice}}</view>
+  <view class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{phase === 'form'}}" class="card advisor-card">
     <view class="advisor-title">企业情况</view>
     <view class="advisor-text muted">只用于在结果里对照显示，不发给模型，7 天后自动清除</view>

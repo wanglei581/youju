@@ -287,7 +287,7 @@ test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureCo
   // 兜底：协议定稿前万一走到 ensureConsent，只轻提示，不弹对话框
   let toast;
   const consent = load('utils/consent.js', {
-    '../content/legal.js': { final: false }, './api.js': {}, './exports.js': {}, './exporter.js': {},
+    '../content/legal.js': { final: false }, './api.js': {}, './exports.js': {}, './exporter.js': {}, './config.js': {},
   }, { wx: { showToast: (o) => { toast = o; }, showModal: () => assert.fail('协议定稿前不弹对话框') } });
   assert.equal(consent.loginOpen(), false);
   assert.equal(await consent.ensureConsent(), false);

@@ -1,11 +1,11 @@
 // AI 内测入口页（只上传体验版、不合并）：政策解读、条款对照和最近任务。
 // 只对接线上已有的 /api/v1/advisor 接口；capabilities 没开放时只显示“暂时没有可用工具”。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, aiTitle, AI_LABEL } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
+  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '' },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
@@ -22,7 +22,7 @@ Page({
       const kinds = allowedKinds(ai);
       const aiEnabled = ai.enabled === true && kinds.length > 0;
       const disclosure = ai.disclosure || {};
-      if (aiEnabled) wx.setNavigationBarTitle({ title: 'AI 内部测试' });
+      if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 工具') });
       this.setData({ loading: false, aiEnabled,
         interpretEnabled: aiEnabled && kinds.includes('interpret'),
         clauseEnabled: aiEnabled && kinds.includes('clause'),

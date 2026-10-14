@@ -2,7 +2,7 @@
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:elif="{{!aiEnabled}}" class="card advisor-card muted">暂时没有可用工具</view>
 <block wx:elif="{{aiEnabled}}">
-  <view class="ai-internal"><text class="ai-internal-tag">AI 生成 · 内部测试：</text>{{aiNotice}}</view>
+  <view class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{needsConsent}}" class="card advisor-card">
     <view class="advisor-title">使用须知</view>
     <view wx:for="{{terms}}" wx:key="*this" class="advisor-text">{{index + 1}}. {{item}}</view>

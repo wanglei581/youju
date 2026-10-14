@@ -178,7 +178,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
       assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, 0);
     }
     assert.doesNotMatch(rendered, /数据工具|名单比对|填写客户/);
-    assert.equal(navigationTitle, aiEnabled ? 'AI 内部测试' : '工具');
+    assert.equal(navigationTitle, aiEnabled ? 'AI 工具 · 内部测试' : '工具');
     if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /在通知详情页点右下角“AI 内测”进入/); }
     page.onHide();
   }

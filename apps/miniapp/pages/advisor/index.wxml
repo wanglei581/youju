@@ -1,7 +1,7 @@
 <notice-bar />
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <block wx:elif="{{aiEnabled}}">
-  <view class="ai-internal"><text class="ai-internal-tag">AI 生成 · 内部测试：</text>{{aiNotice}}</view>
+  <view class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{context}}" class="card advisor-card advisor-context">
     <view class="context-row"><text class="context-label">{{context.label}}</text><button class="context-clear" bindtap="clearContext">清除</button></view>
   </view>

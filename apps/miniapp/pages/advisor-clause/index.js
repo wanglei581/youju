@@ -1,12 +1,12 @@
 // AI 内测：条款对照（只上传体验版、不合并）。直达也要 capabilities 开放且含 clause 才显示。
 const api = require('../../utils/api.js');
 const clause = require('../../utils/ai-clause.js');
-const { internalNotice, allowedKinds } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, AI_LABEL } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 
 Page({
-  data: { loading: true, aiEnabled: false, aiNotice: '', phase: 'form', error: '', title: '', docId: '', taskId: '',
+  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, aiNotice: '', phase: 'form', error: '', title: '', docId: '', taskId: '',
     checked: false, needsConsent: false, terms: [], result: null, canRetry: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
     qualificationOptions: [], today: '' },
@@ -29,7 +29,7 @@ Page({
       if (!this.visible || epoch !== this.epoch) return;
       const ai = res.ai_advisor || {};
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('clause');
-      if (aiEnabled) wx.setNavigationBarTitle({ title: '条款对照 · 内部测试' });
+      if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
       this.setData({ loading: false, aiEnabled, aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
       if (aiEnabled && this.session) this.session.show();
     }).catch(() => {

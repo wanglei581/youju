@@ -189,6 +189,42 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
   }
 });
 
+test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI 生成"，标题不带"内部测试"；登录和同意只看协议是否定稿', async () => {
+  const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+  assert.equal(release.AI_LABEL, 'AI 生成：');
+  assert.equal(release.aiTitle('政策解读'), '政策解读');
+  assert.equal(release.AI_INTERNAL, false);
+  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true } });
+  assert.equal(internal.AI_LABEL, 'AI 生成 · 内部测试：');
+  assert.equal(internal.aiTitle('政策解读'), '政策解读 · 内部测试');
+  // 正式版的四个页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
+  for (const name of AI_PAGES) {
+    const titles = [];
+    const api = { advisorCapabilities: () => Promise.resolve(caps(true)), advisorTasks: () => Promise.resolve({ items: [] }), advisorTask: (id) => Promise.resolve({ id, status: 'running' }) };
+    const storage = new Map();
+    const wx = { setNavigationBarTitle: ({ title }) => titles.push(title), getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) };
+    const page = load(`pages/${name}/index.js`, { '../../utils/api.js': api, '../../utils/advisor.js': release, '../../utils/tool-context.js': context,
+      '../../utils/ai-interpret.js': require('../utils/ai-interpret.js'), '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': require('../utils/format.js') }, { wx });
+    if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
+    page.onShow(); await flush(); await flush();
+    const output = render(read(`pages/${name}/index.wxml`), page.data);
+    assert.ok(output.startsWith('AI 生成：结果由 AI 模型根据原文生成'), name);
+    assert.doesNotMatch(output, /内部测试/, name);
+    assert.ok(titles.length > 0 && titles.every((title) => !/内部测试/.test(title)), name);
+    page.onUnload ? page.onUnload() : page.onHide();
+  }
+  // 登录和同意：正式版只看 legal.final；内测包协议是草案也开放
+  const consentWith = (aiInternal, final) => load('utils/consent.js', {
+    '../content/legal.js': { final, version: 'v-test' }, './api.js': { isLive: () => true }, './exports.js': {}, './exporter.js': {}, './config.js': { aiInternal },
+  }, { wx: { getStorageSync: () => '', setStorageSync() {}, showToast() {}, showModal() {} } });
+  assert.equal(consentWith(false, false).loginOpen(), false);
+  assert.equal(consentWith(false, false).consentOpen(), false);
+  assert.equal(consentWith(false, true).loginOpen(), true);
+  assert.equal(consentWith(false, true).consentOpen(), true);
+  assert.equal(consentWith(true, false).loginOpen(), true);
+  assert.equal(consentWith(true, false).consentOpen(), true);
+});
+
 test('内部测试标注：后端 disclosure 带说明文字时优先显示后端的，否则用固定文字', async () => {
   assert.equal(`AI 生成 · ${helpers.INTERNAL_PREFIX}${helpers.internalNotice(undefined)}`, NOTICE);
   for (const value of [null, {}, { modelLabel: '模型', filingNo: '编号' }, { text: '  ' }, '', 3]) {

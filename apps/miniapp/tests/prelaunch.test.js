@@ -56,7 +56,7 @@ function accountHarness({ cancel = false, fail = false, filesFail = false } = {}
   }, { wx });
   const consent = load('utils/consent.js', {
     '../content/legal.js': { final: true, version: 'test' }, './api.js': api,
-    './exports.js': exportsLog, './exporter.js': exporter,
+    './exports.js': exportsLog, './exporter.js': exporter, './config.js': {},
   }, { wx });
   return { consent, storage, deleted };
 }
