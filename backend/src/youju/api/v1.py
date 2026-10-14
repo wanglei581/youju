@@ -1839,6 +1839,8 @@ def _reading_body(session: Session, doc_id: int) -> str | None:
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
+    from youju.ai import interpret
+
     if is_taken_down(session, doc_id):
         raise HTTPException(status_code=404, detail="该文件已下架")
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
@@ -1846,6 +1848,19 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, src = row
+    # AI 入口用（不需要身份）：open 是对所有用户开放（D-066）；interpret、clause 是这份
+    # 文件能不能做。白名单内测时 open 为假，但文件能不能做照样给，内测成员的入口靠它判断。
+    # 总开关关着时都不算。
+    settings = get_settings()
+    ai_enabled = bool(getattr(settings, "ai_advisor_enabled", False))
+    ai_open = ai_enabled and getattr(settings, "ai_advisor_audience", None) == "all"
+    ai_eligible = False
+    if ai_enabled:
+        try:
+            interpret.eligible_body(session, doc.id)
+            ai_eligible = True
+        except interpret.InterpretRefusal:
+            pass
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
@@ -1932,6 +1947,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         and clues.pending_count(session) < 50
     )
     payload = {
+        "ai": {"open": ai_open, "interpret": ai_eligible, "clause": ai_eligible},
         "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,

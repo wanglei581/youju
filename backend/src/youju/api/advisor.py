@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -251,6 +252,12 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     if task.kind in AI_KINDS:
         doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
         result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
+        if task.status == "queued":
+            result.update(
+                service.queue_info(
+                    session, task, getattr(get_settings(), "ai_advisor_concurrency", 3)
+                )
+            )
     if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
     if task.kind in AI_KINDS and task.result_json:
@@ -268,6 +275,18 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
                 result["result"] = None
                 result["error"] = str(exc)
     return result
+
+
+@contextmanager
+def _submission_lock(session: Session, kind: str):
+    try:
+        if kind in AI_KINDS:
+            with service.ai_cap_lock(session):
+                yield
+        else:
+            yield
+    except service.AdvisorBusy:
+        raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
 
 
 def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) -> AdvisorTask:
@@ -371,67 +390,71 @@ def create_task(
             raise HTTPException(
                 status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
             )
-    if (
-        body.kind in AI_KINDS
-        and service.global_ai_usage(session, service.usage_day(stamp))
-        >= get_settings().ai_advisor_daily_cap
-    ):
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
-        )
-    # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
-    # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
-    fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
-    reserved = fits_free and service.reserve_usage(
-        session, user.id, body.kind, service.usage_day(stamp)
-    )
-    if reserved:
-        ticket = None
-    if ticket is None and not reserved:
-        if body.kind not in AI_KINDS:
+    with _submission_lock(session, body.kind):
+        if (
+            body.kind in AI_KINDS
+            and max(
+                service.global_ai_usage(session, service.usage_day(stamp)),
+                service.global_ai_calls(session, service.usage_day(stamp)),
+            )
+            >= get_settings().ai_advisor_daily_cap
+        ):
             raise HTTPException(
                 status_code=429,
-                detail={
-                    "code": "FREE_MONTHLY_LIMIT",
-                    "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
-                },
+                detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
             )
-        label = "政策解读" if body.kind == "interpret" else "条款对照"
-        raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
-    task = AdvisorTask(
-        user_id=user.id,
-        pass_id=ticket.id if ticket else None,
-        usage_source="pass" if ticket else "free",
-        kind=body.kind,
-        status="queued",
-        input_rows=rows,
-        input_json=input_json,
-        row_count=len(rows) if rows is not None else 0,
-        idempotency_key=key,
-        created_at=stamp,
-        expires_at=stamp + service.FILE_RETENTION,
-    )
-    session.add(task)
-    try:
-        session.flush()
-        if ticket:
-            ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
-                task.id,
-                stamp,
-                None,
-            )
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        existing = session.scalar(
-            select(AdvisorTask).where(
-                AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
-            )
+        # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
+        # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
+        fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
+        reserved = fits_free and service.reserve_usage(
+            session, user.id, body.kind, service.usage_day(stamp)
         )
-        if existing is None:
-            raise
-        task = existing
+        if reserved:
+            ticket = None
+        if ticket is None and not reserved:
+            if body.kind not in AI_KINDS:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "FREE_MONTHLY_LIMIT",
+                        "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                    },
+                )
+            label = "政策解读" if body.kind == "interpret" else "条款对照"
+            raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
+        task = AdvisorTask(
+            user_id=user.id,
+            pass_id=ticket.id if ticket else None,
+            usage_source="pass" if ticket else "free",
+            kind=body.kind,
+            status="queued",
+            input_rows=rows,
+            input_json=input_json,
+            row_count=len(rows) if rows is not None else 0,
+            idempotency_key=key,
+            created_at=stamp,
+            expires_at=stamp + service.FILE_RETENTION,
+        )
+        session.add(task)
+        try:
+            session.flush()
+            if ticket:
+                ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
+                    task.id,
+                    stamp,
+                    None,
+                )
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            existing = session.scalar(
+                select(AdvisorTask).where(
+                    AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
+                )
+            )
+            if existing is None:
+                raise
+            task = existing
     request.state.audit = {"action": "advisor_task_create", "task_id": task.id, "kind": task.kind}
     return _out(task, session, include_result=False)
 
@@ -476,6 +499,13 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
                 **service.task_dict(task, include_result=False),
                 "hasResult": bool(has_result),
                 **_document_out(doc_id, titles),
+                **(
+                    service.queue_info(
+                        session, task, getattr(settings, "ai_advisor_concurrency", 3)
+                    )
+                    if task.status == "queued"
+                    else {}
+                ),
             }
             if task.kind in AI_KINDS
             else service.task_dict(task)

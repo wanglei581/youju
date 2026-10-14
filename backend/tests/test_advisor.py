@@ -572,6 +572,28 @@ def test_queue_state_stale_recovery_and_retry(session, advisor_settings, monkeyp
     assert failing.attempts == 3 and failing.status == "failed"
 
 
+def test_data_tool_worker_stays_serial(session, advisor_settings, monkeypatch):
+    user = User(openid="serial-data", agreement_version="2026-09", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    tasks = [task(session, user.id, idempotency_key=kind) for kind in ("compare", "track")]
+    tasks[1].kind = "track"
+    session.commit()
+    seen = []
+
+    def process(work, row, **kwargs):
+        assert work is session
+        seen.append(row.id)
+        row.status, row.finished_at = "done", NOW
+        work.commit()
+        return True
+
+    monkeypatch.setattr(service, "process_task", process)
+    report = service.run_advisor_tasks(session, settings=advisor_settings, stamp=NOW)
+    assert seen == [row.id for row in tasks]
+    assert report == {"processed": 2, "done": 2, "failed": 0, "requeued": 0}
+
+
 def test_fake_object_store_upload_download_and_expiry(session, advisor_settings, monkeypatch):
     user = User(openid="file-user", agreement_version="2026-09", agreement_at=NOW)
     session.add(user)

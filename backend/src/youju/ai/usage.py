@@ -22,12 +22,18 @@ FREE_QUOTA = 1_000_000
 
 
 def record_usage(
-    session: Session, client: ChatClient, task: str, now: datetime | None = None
+    session: Session,
+    client: ChatClient,
+    task: str,
+    now: datetime | None = None,
+    *,
+    precounted_calls: int = 0,
 ) -> None:
     """把客户端的累计用量加到今天（北京时间）这项任务的台账上，记完清零，重复调用不会重复记。"""
     totals = dict(client.totals)
     if not totals["calls"]:
         return
+    totals["calls"] = max(0, totals["calls"] - precounted_calls)
     day = (now or datetime.now(UTC)).astimezone(BEIJING).date()
     table = AIUsage.__table__
     stmt = insert(table).values(day=day, task=task, model=client.model, **totals)

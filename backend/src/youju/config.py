@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     ai_advisor_openids: str = ""
     ai_advisor_audience: Literal["whitelist", "all"] = "whitelist"
     ai_advisor_daily_cap: int = Field(default=200, ge=0)
+    ai_advisor_concurrency: int = Field(default=3, ge=1, le=8)
 
     # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
     pay_enabled: bool = False

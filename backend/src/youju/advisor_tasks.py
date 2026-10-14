@@ -5,20 +5,25 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import re
 import tempfile
 import time as monotonic_clock
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 import httpx
 from openpyxl import load_workbook
-from sqlalchemy import and_, delete, func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy.dialects.mysql import insert
+from sqlalchemy.orm import Session, sessionmaker
 
 from youju import access_log
 from youju.ai import clause, interpret
@@ -28,7 +33,15 @@ from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
-from youju.models import AdvisorFileTrash, AdvisorTask, AdvisorUsage, Document, User, WorkbenchPass
+from youju.models import (
+    AdvisorFileTrash,
+    AdvisorTask,
+    AdvisorUsage,
+    AIUsage,
+    Document,
+    User,
+    WorkbenchPass,
+)
 from youju.track import export_track_excel, track_clients
 
 log = logging.getLogger("youju.advisor")
@@ -41,6 +54,89 @@ TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
 INPUT_RETENTION = timedelta(days=7)
 FILE_RETENTION = timedelta(days=30)
+REFUSAL_CACHE = timedelta(days=1)
+AI_CAP_LOCK = "youju_ai_advisor_daily_cap"
+AI_CAP_LOCAL_LOCK = Lock()
+AI_CAP_MESSAGE = "今天的 AI 使用次数已满，请明天再试"
+
+
+class AdvisorBusy(Exception):
+    """全站额度锁未及时获得。"""
+
+
+class AICapReached(Exception):
+    """实际模型调用已达到当天上限。"""
+
+
+@contextmanager
+def ai_cap_lock(session: Session):
+    """锁在独立连接上；额度事务提交后才释放命名锁。"""
+    with AI_CAP_LOCAL_LOCK, session.get_bind().connect() as conn:
+        if conn.scalar(text("SELECT GET_LOCK(:name, 2)"), {"name": AI_CAP_LOCK}) != 1:
+            raise AdvisorBusy
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": AI_CAP_LOCK})
+
+
+def global_ai_calls(session: Session, day: date) -> int:
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(AIUsage.calls), 0)).where(
+                AIUsage.day == day, AIUsage.task.in_(AI_KINDS)
+            )
+        )
+        or 0
+    )
+
+
+def reserve_ai_call(session: Session, kind: str, model: str, stamp: datetime, cap: int) -> None:
+    """调用前持久化一次不可退的调用；进程中断时宁可少调用。"""
+    day = usage_day(stamp)
+    with ai_cap_lock(session):
+        if global_ai_calls(session, day) >= cap:
+            raise AICapReached
+        table = AIUsage.__table__
+        stmt = insert(table).values(
+            day=day, task=kind, model=model, calls=1, errors=0, prompt_tokens=0, completion_tokens=0
+        )
+        session.execute(stmt.on_duplicate_key_update(calls=table.c.calls + 1))
+        session.commit()
+
+
+def queue_info(session: Session, task: AdvisorTask, concurrency: int) -> dict[str, int]:
+    """只统计排在本任务前的 AI 任务；ETA 包含本任务完成所需时间。"""
+    ahead = int(
+        session.scalar(
+            select(func.count(AdvisorTask.id)).where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "queued",
+                AdvisorTask.id < task.id,
+            )
+        )
+        or 0
+    )
+    durations = session.execute(
+        select(AdvisorTask.started_at, AdvisorTask.finished_at)
+        .where(
+            AdvisorTask.kind.in_(AI_KINDS),
+            AdvisorTask.status == "done",
+            AdvisorTask.started_at.is_not(None),
+            AdvisorTask.finished_at.is_not(None),
+        )
+        .order_by(AdvisorTask.finished_at.desc())
+        .limit(20)
+    ).all()
+    average = (
+        (
+            sum(max(0, (_utc(end) - _utc(start)).total_seconds()) for start, end in durations)
+            / len(durations)
+        )
+        if durations
+        else 30
+    )
+    return {"queuePosition": ahead, "etaSeconds": math.ceil((ahead // concurrency + 1) * average)}
 
 
 def business_now(value: datetime | None = None) -> datetime:
@@ -348,6 +444,7 @@ def process_ai(
     stamp: datetime,
     timeout: timedelta = TASK_TIMEOUT,
     chat_client: ChatClient | None = None,
+    live_time: bool = False,
 ) -> bool:
     """拒答是有原因的完成结果；暂时性调用失败最多重排两次。"""
     if task.status not in ("running", "queued") or not interpret.enabled(
@@ -358,6 +455,8 @@ def process_ai(
     started = monotonic_clock.monotonic()
     own_client = chat_client is None
     model = settings.ai_model
+    call_reserved = False
+    call_stamp = stamp
     task.model, task.prompt_version = model, skill.prompt_version
     try:
         if not task.input_json:
@@ -384,10 +483,13 @@ def process_ai(
             .limit(1)
         )
         reusable = False
-        if cached is not None and cached.result_json and not cached.result_json.get("refusal"):
+        if cached is not None and cached.result_json:
             generated = _utc(datetime.fromisoformat(cached.result_json["generated_at"]))
             # 复制结果不会刷新模型生成时间，避免连续命中把 30 天期限无限延长。
-            if generated > stamp - FILE_RETENTION and cached.snapshot:
+            # 模型拒答（逐字核对后一条不剩）只复用 1 天：挡住反复提交同一份触发模型调用，
+            # 又不让一次偶然的拒答把这份通知锁 30 天（模型输出会波动，见 AI 评测第八节）。
+            window = REFUSAL_CACHE if cached.result_json.get("refusal") else FILE_RETENTION
+            if generated > stamp - window and cached.snapshot:
                 try:
                     _, _, cached_current_key = interpret.prepare(
                         session, cached.snapshot["doc_id"], model, skill=skill
@@ -402,9 +504,9 @@ def process_ai(
                 else copy.deepcopy(cached.result_json)
             )
         else:
+            if chat_client is None and not settings.ai_api_key:
+                raise AIError("AI 服务尚未配置")
             if chat_client is None:
-                if not settings.ai_api_key:
-                    raise AIError("AI 服务尚未配置")
                 chat_client = ChatClient(
                     settings.ai_base_url,
                     settings.ai_api_key.get_secret_value(),
@@ -416,6 +518,9 @@ def process_ai(
                     max_retries=0,
                     extra_body=getattr(settings, "ai_request_extra", None),
                 )
+            call_stamp = datetime.now(UTC) if live_time else stamp
+            reserve_ai_call(session, skill.kind, model, call_stamp, settings.ai_advisor_daily_cap)
+            call_reserved = True
             payload = chat_client.complete_json(
                 skill.system_prompt,
                 json.dumps({"paragraphs": snapshot["paragraphs"]}, ensure_ascii=False),
@@ -447,6 +552,13 @@ def process_ai(
             release_usage(session, task)
         session.commit()
         return True
+    except AICapReached:
+        task.status, task.finished_at, task.error = "failed", stamp, AI_CAP_MESSAGE
+        task.result_json = None
+        task.cache_key = None
+        release_usage(session, task)
+        session.commit()
+        return False
     except interpret.InterpretRefusal as exc:
         task.result_json = interpret.result_metadata(
             {
@@ -500,7 +612,13 @@ def process_ai(
     finally:
         if chat_client is not None:
             try:
-                record_usage(session, chat_client, skill.kind, now=stamp)
+                record_usage(
+                    session,
+                    chat_client,
+                    skill.kind,
+                    now=call_stamp,
+                    precounted_calls=int(call_reserved),
+                )
             finally:
                 if own_client:
                     chat_client.close()
@@ -538,12 +656,15 @@ def process_task(
     client: httpx.Client | None = None,
     stamp: datetime | None = None,
     timeout: timedelta = TASK_TIMEOUT,
+    live_time: bool = False,
 ) -> bool:
     """处理一条已锁定为 running 的任务；失败按最多两次重试回队列。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
     if task.kind in AI_KINDS:
-        return process_ai(session, task, settings=settings, stamp=stamp, timeout=timeout)
+        return process_ai(
+            session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time
+        )
     own_client = client is None
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
@@ -655,46 +776,103 @@ def run_advisor_tasks(
 ) -> dict[str, int]:
     """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。"""
     settings = settings or get_settings()
+    live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
     _fail_revoked_interpret(session, settings, stamp)
-    allowed_kinds = []
-    if getattr(settings, "advisor_enabled", False):
-        allowed_kinds.extend(("compare", "track"))
-    allowed = AdvisorTask.kind.in_(allowed_kinds)
-    if interpret.worker_enabled(settings):
-        allowed = allowed | (
-            (AdvisorTask.kind.in_(AI_KINDS))
-            & AdvisorTask.user_id.in_(interpret.worker_user_ids(settings))
-        )
-    if not allowed_kinds and not interpret.worker_enabled(settings):
+    data_enabled = getattr(settings, "advisor_enabled", False)
+    ai_enabled = interpret.worker_enabled(settings)
+    data_allowed = AdvisorTask.kind.in_(("compare", "track"))
+    ai_allowed = AdvisorTask.kind.in_(AI_KINDS) & AdvisorTask.user_id.in_(
+        interpret.worker_user_ids(settings)
+    )
+    if not data_enabled and not ai_enabled:
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
+    allowed = data_allowed if data_enabled else ai_allowed
+    if data_enabled and ai_enabled:
+        allowed = data_allowed | ai_allowed
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
     claimed: set[int] = set()
-    while max_tasks is None or result["processed"] < max_tasks:
-        stmt = (
-            select(AdvisorTask)
-            .where(AdvisorTask.status == "queued", allowed)
-            .order_by(AdvisorTask.id)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
-        if claimed:
-            stmt = stmt.where(AdvisorTask.id.not_in(claimed))
-        task = session.scalar(stmt)
-        if task is None:
-            break
-        task.status = "running"
-        task.started_at = stamp
-        task.attempts += 1
-        task.error = None
-        session.commit()
-        claimed.add(task.id)
-        result["processed"] += 1
-        if process_task(session, task, settings=settings, stamp=stamp, timeout=timeout):
-            result["done"] += 1
-        else:
-            result["failed"] += 1
+    claim_lock = Lock()
+
+    def claim(work_session: Session, condition) -> AdvisorTask | None:
+        # 临界区只负责领取；耗时的模型请求在锁外并行运行。
+        with claim_lock:
+            if max_tasks is not None and result["processed"] >= max_tasks:
+                return None
+            stmt = (
+                select(AdvisorTask)
+                .where(AdvisorTask.status == "queued", condition)
+                .order_by(AdvisorTask.id)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            if claimed:
+                stmt = stmt.where(AdvisorTask.id.not_in(claimed))
+            task = work_session.scalar(stmt)
+            if task is None:
+                work_session.rollback()
+                return None
+            task.status = "running"
+            task.started_at = datetime.now(UTC) if live_timing else stamp
+            task.attempts += 1
+            task.error = None
+            work_session.commit()
+            claimed.add(task.id)
+            result["processed"] += 1
+            return task
+
+    def run_one(work_session: Session, task: AdvisorTask) -> None:
+        try:
+            done = process_task(
+                work_session,
+                task,
+                settings=settings,
+                stamp=datetime.now(UTC) if live_timing else stamp,
+                timeout=timeout,
+                live_time=live_timing,
+            )
+        except Exception:
+            work_session.rollback()
+            log.exception("顾问任务 #%s 处理异常", task.id)
+            failed_task = work_session.get(AdvisorTask, task.id)
+            if failed_task is not None:
+                failed_task.status, failed_task.finished_at = "failed", stamp
+                failed_task.error = "系统繁忙，请稍后重试"
+                release_usage(work_session, failed_task)
+                work_session.commit()
+            done = False
+        if live_timing and task.status in ("done", "failed"):
+            task.finished_at = datetime.now(UTC)
+            work_session.commit()
+        with claim_lock:
+            result["done" if done else "failed"] += 1
+
+    def run_data() -> None:
+        # 数据工具始终由入口会话逐个处理。
+        while data_enabled:
+            task = claim(session, data_allowed)
+            if task is None:
+                break
+            run_one(session, task)
+
+    if ai_enabled:
+        factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+
+        def ai_worker() -> None:
+            with factory() as work_session:
+                while (task := claim(work_session, ai_allowed)) is not None:
+                    run_one(work_session, task)
+
+        concurrency = getattr(settings, "ai_advisor_concurrency", 3)
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = [pool.submit(ai_worker) for _ in range(concurrency)]
+            run_data()
+            for future in futures:
+                future.result()
+    else:
+        run_data()
+    session.expire_all()
     return result
 
 

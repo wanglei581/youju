@@ -154,9 +154,8 @@ def split_paragraphs(body: str) -> list[dict]:
     ]
 
 
-def prepare(
-    session: Session, doc_id: int, model: str, *, skill: Skill = INTERPRET
-) -> tuple[dict, list, str]:
+def eligible_body(session: Session, doc_id: int) -> tuple[Document, str, str, str]:
+    """解读和详情共用的轻量前置检查；不读取核对记录。"""
     # 延迟引入 v1，避免 API 路由装载时形成循环依赖。
     from youju.api import v1
 
@@ -175,6 +174,15 @@ def prepare(
         raise InterpretRefusal("没有可公开的完整正文，请查看官方原文")
     if len(body) > 24000:
         raise InterpretRefusal("正文超过 24000 字，请查看官方原文")
+    return doc, kind, raw, body
+
+
+def prepare(
+    session: Session, doc_id: int, model: str, *, skill: Skill = INTERPRET
+) -> tuple[dict, list, str]:
+    from youju.api import v1
+
+    doc, kind, raw, body = eligible_body(session, doc_id)
     ids = group_ids(session, doc.id)
     body_id = session.scalar(
         select(DocumentDetail.document_id)
