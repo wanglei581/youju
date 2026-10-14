@@ -416,3 +416,20 @@ test('冷启动（10/14）：只读接口先走常驻的 admin；admin 拦下、
   assert.deepEqual(s.services, ['api']);
 });
 
+test('冷启动（10/14，Codex 审查）：admin 8 秒没回就同时问接口服务，admin 迟到但先回也用它，接口服务就不再重试', async () => {
+  // admin 第 12 秒才回；接口服务第 8 秒发出后一直不回（冷启动）：第 12 秒拿到 admin 的数据
+  let s = retryApi([{ after: 12000, code: 200 }, null]);
+  let r = await outcome(s, (api) => api.search({ q: '专精特新' }));
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin', 'api']); assert.deepEqual(s.sent, [0, 8000]);
+  // 接口服务那次 15 秒超时后不再重试，冷启动提示也不留着
+  const seen = []; s = retryApi([{ after: 12000, code: 200 }, null]);
+  s.api.watchStartup({ setData: (v) => seen.push(v.serviceStarting) });
+  await outcome(s, (api) => api.search({ q: '专精特新' }));
+  assert.deepEqual(s.sent, [0, 8000]); assert.equal(seen[seen.length - 1], false);
+  // admin 一直不回（30 秒放弃），接口服务第 20 秒醒来：用接口服务的
+  s = retryApi([null, { after: 12000, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  // 接口服务第 8 秒发出、12 秒后回（第 20 秒拿到）；admin 那次第 30 秒超时，结果已用接口服务的、不再变
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 8000]); assert.deepEqual(s.services, ['admin', 'api']);
+});
+

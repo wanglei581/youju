@@ -59,15 +59,20 @@ function stopStartup(page) {
   startupPages.delete(page);
 }
 
-function withRetry(attempt, method) {
+// token.cancelled 为真时不再发新的重试（admin 先回了，接口服务这边就停，"正在连接"提示也跟着消失）
+function withRetry(attempt, method, token) {
   let starting = false;
   const first = Date.now();
+  const stopped = () => Boolean(token && token.cancelled);
   const run = (n) => attempt().catch((err) => {
-    if (method !== 'GET' || !err || !err.retryable) throw err;
+    if (method !== 'GET' || !err || !err.retryable || stopped()) throw err;
     const delay = RETRY_DELAYS[Math.min(n, RETRY_DELAYS.length - 1)];
     if (Date.now() + delay - first >= MAX_WAIT) throw err;
     if (!starting) { starting = true; startingRequests += 1; emitStartup(); }
-    return new Promise((resolve) => setTimeout(resolve, delay)).then(() => run(n + 1));
+    return new Promise((resolve) => setTimeout(resolve, delay)).then(() => {
+      if (stopped()) throw err;
+      return run(n + 1);
+    });
   });
   const finish = () => { if (starting) { startingRequests -= 1; emitStartup(); } };
   return run(0).then((value) => { finish(); return value; }, (err) => { finish(); throw err; });
@@ -90,8 +95,9 @@ function callFailure(res) {
 }
 
 // 冷启动（10/14 实测空闲后 1–5 分钟才恢复）：不需要身份的只读接口先走常驻的 admin 服务（后端 ADMIN_READ_PATHS，
-// 首屏快照 10/12 起就这样），8 秒没回就放弃。admin 拦下（404 "Not Found"）、出错（5xx）、调用失败或超时时，
-// 这一次改走接口服务，接口服务冷启动再按上面的规则重试；接口自己的答复（如"该文件已下架"、422、429）直接报。
+// 首屏快照 10/12 起就这样）。admin 拦下（404 "Not Found"）、出错（5xx）、调用失败时马上改走接口服务；
+// admin 8 秒没回，就同时去问接口服务，两边谁先回用谁（admin 最多等 30 秒），一边回了另一边就不再重试。
+// 接口服务冷启动按上面的规则重试；接口自己的答复（如"该文件已下架"、422、429）直接报。
 const ADMIN_READS = [
   /^\/api\/v1\/(home|coverage|search|calendar|snapshot)(\?|$)/,
   /^\/api\/v1\/reports\/(deadlines|lists)(\?|$)/,
@@ -99,7 +105,8 @@ const ADMIN_READS = [
   /^\/api\/v1\/documents\/\d+(\?|$)/,
 ];
 const ADMIN_SERVICE = 'admin';
-const ADMIN_TIMEOUT = 8000;
+const ADMIN_FIRST_WAIT = 8000;
+const ADMIN_TIMEOUT = 30000;
 
 function adminRead(url, method) {
   return method === 'GET' && Boolean(config.cloudEnv) && ADMIN_READS.some((re) => re.test(url));
@@ -115,11 +122,31 @@ function request(path, params, options) {
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
-  const viaApi = () => withRetry(() => requestOnce(url, method, data, header), method);
-  if (!adminRead(url, method)) return viaApi();
-  return requestOnce(url, method, data, header, ADMIN_SERVICE, ADMIN_TIMEOUT).catch((err) => {
-    if (!tryApiInstead(err)) throw err;
-    return viaApi();
+  if (!adminRead(url, method)) return withRetry(() => requestOnce(url, method, data, header), method);
+  return new Promise((resolve, reject) => {
+    const token = { cancelled: false };
+    let settled = false;
+    let apiStarted = false;
+    let timer = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true; token.cancelled = true; clearTimeout(timer); fn(value);
+    };
+    const startApi = () => {
+      if (apiStarted) return;
+      apiStarted = true;
+      withRetry(() => requestOnce(url, method, data, header), method, token)
+        .then((value) => settle(resolve, value), (err) => settle(reject, err));
+    };
+    timer = setTimeout(startApi, ADMIN_FIRST_WAIT);
+    requestOnce(url, method, data, header, ADMIN_SERVICE, ADMIN_TIMEOUT).then(
+      (value) => settle(resolve, value),
+      (err) => {
+        if (!tryApiInstead(err)) { settle(reject, err); return; }
+        clearTimeout(timer);
+        startApi();
+      },
+    );
   });
 }
 
