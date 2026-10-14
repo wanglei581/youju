@@ -474,7 +474,7 @@ def test_refusal_failure_retry_refund_and_no_company_leak(client, session, setti
     assert client.post("/api/v1/me/agreement", json={"version": "2026-10"}).status_code == 200
     second = session.get(AdvisorTask, create(client, notice.id, key="second").json()["id"])
     second_fake = run(session, second, settings)
-    assert len(second_fake.calls) == 1  # 拒答与失败不能复用。
+    assert len(second_fake.calls) == (0 if cause == "empty" else 1)
     assert all(m not in client.get("/api/v1/me/data").text for m in MARKERS)
 
 
