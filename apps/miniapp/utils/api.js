@@ -497,16 +497,21 @@ function advisorCapabilities(options = {}) {
   if (capabilitiesPending) return capabilitiesPending;
   if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
   const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
+  // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
-    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED) };
+    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: 'off' };
     return { ai_advisor: {
       enabled: true,
       features: Array.isArray(ai.features) ? ai.features : [],
       remaining: ai.remaining || {},
       disclosure: ai.disclosure == null ? null : ai.disclosure,
-    } };
-  }).catch(() => ({ ai_advisor: Object.assign({}, AI_DISABLED) }));
+    }, reason: '' };
+  }).catch((err) => {
+    const status = err && err.status;
+    const reason = status === 403 ? 'consent' : (status && status < 500 && status !== 429 ? 'off' : 'offline');
+    return { ai_advisor: Object.assign({}, AI_DISABLED), reason };
+  });
   capabilitiesPromise = result;
   capabilitiesPending = result;
   result.then((res) => {

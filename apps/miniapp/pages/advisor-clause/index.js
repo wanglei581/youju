@@ -1,13 +1,13 @@
-// AI 内测：条款对照（只上传体验版、不合并）。直达也要 capabilities 开放且含 clause 才显示。
+// 条款对照。直达也要 capabilities 开放且含 clause 才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
 const clause = require('../../utils/ai-clause.js');
-const { internalNotice, allowedKinds, aiTitle, AI_LABEL } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, aiNotice: '', phase: 'form', error: '', title: '', docId: '', taskId: '',
-    checked: false, needsConsent: false, terms: [], result: null, canRetry: false,
+  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
+    checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
     qualificationOptions: [], today: '' },
   onLoad(query = {}) {
@@ -30,12 +30,19 @@ Page({
       const ai = res.ai_advisor || {};
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('clause');
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
-      this.setData({ loading: false, aiEnabled, aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
+      const gate = aiEnabled ? '' : gateState(res);
+      this.setData({ loading: false, aiEnabled, gate, gateText: GATE_TEXT[gate] || '', aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
       if (aiEnabled && this.session) this.session.show();
     }).catch(() => {
-      if (this.visible && epoch === this.epoch) this.setData({ loading: false, aiEnabled: false });
+      if (this.visible && epoch === this.epoch) this.setData({ loading: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT });
     });
   },
+  // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
+  consent() {
+    if (this.data.gate !== 'consent') return;
+    require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.onShow(); });
+  },
+  reload() { if (this.data.gate === 'offline') this.onShow(); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; if (this.session) this.session.hide(); },
   onUnload() { this.onHide(); },
   input(e) {
@@ -73,6 +80,8 @@ Page({
   agree() { if (this.data.aiEnabled && this.session) this.session.agree(); },
   retry() {
     if (!this.data.aiEnabled || !this.data.canRetry) return;
+    // 上次是没连上：接着用原来的任务或请求编号，不用重新填写，也不会重复扣次数
+    if (this.session && this.session.resumable()) { this.session.retry(); return; }
     this.session.hide(); this.session = null;
     this.setData({ phase: 'form', needsConsent: false, taskId: '', error: '', canRetry: false, result: null });
   },
@@ -81,4 +90,5 @@ Page({
     if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/feedback/index?id=${encodeURIComponent(this.data.docId)}&title=${encodeURIComponent(this.data.title)}` });
   },
   tasks() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
+  report() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/complaint/index' }); },
 });

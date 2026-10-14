@@ -7,17 +7,18 @@
   </view>
   <view wx:if="{{interpretEnabled}}" class="card advisor-card">
     <view class="advisor-title">政策解读与材料清单</view>
-    <view class="advisor-text">AI 模型把通知正文按申报对象、支持方式、申报条件、时间、方式、材料摘录出原句，每条附段落编号，可回到原文</view>
+    <view class="advisor-text">AI 模型把通知正文里的申报对象、支持方式、申报条件、时间、方式和材料摘成原句，每条附段落编号，可以回到原文核对</view>
     <view class="advisor-text muted">今天剩余 {{remaining}} 次</view>
     <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">解读这篇通知</button>
-    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可解读当前通知</view>
+    <view wx:else class="advisor-text muted">请先打开一份申报通知，在详情页点右下角“{{fabText}}”</view>
+    <button wx:if="{{!(context && context.docId)}}" class="advisor-button" bindtap="search">去找通知</button>
   </view>
   <view wx:if="{{clauseEnabled}}" class="card advisor-card">
     <view class="advisor-title">条款对照</view>
-    <view class="advisor-text">AI 模型把通知里申报对象、申报条件的原句列出来，旁边对照你填的企业情况；不判断能不能报</view>
+    <view class="advisor-text">AI 模型列出通知里申报对象、申报条件的原句，和你填写的企业情况并排显示，方便你自己对照（不作资格判断）</view>
     <view class="advisor-text muted">今天剩余 {{clauseRemaining}} 次</view>
     <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="clause">填写企业情况</button>
-    <view wx:else class="advisor-text muted">在通知详情页点右下角“AI 内测”进入，可对照当前通知</view>
+    <view wx:else class="advisor-text muted">请先打开一份申报通知，在详情页点右下角“{{fabText}}”</view>
   </view>
   <view class="card advisor-card">
     <view class="advisor-title">最近任务</view>
@@ -29,7 +30,18 @@
     </button>
     <button class="advisor-button" bindtap="tasks">全部任务</button>
   </view>
+  <view class="card advisor-card">
+    <view class="advisor-title">适用范围</view>
+    <view wx:for="{{scope}}" wx:key="*this" class="advisor-text">{{item}}</view>
+  </view>
   <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
+  <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
 </block>
-<view wx:else class="card advisor-card muted">暂时没有可用工具</view>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>
+<block wx:else>
+  <view class="card advisor-card muted">
+    <view>{{gateText}}</view>
+    <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
+    <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+  </view>
+  <view class="advisor-footer">第三方整理 · 非政府平台</view>
+</block>

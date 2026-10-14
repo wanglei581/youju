@@ -176,4 +176,4 @@
   </view>
 </block>
 <!-- 内测入口（D-062，只在 feat/ai-v2 内部包里）：只有白名单（capabilities.ai_advisor.enabled）才显示，其余用户不渲染任何内容 -->
-<tool-fab bottom-rpx="{{130}}" blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" />
+<tool-fab bottom-rpx="{{130}}" blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" />

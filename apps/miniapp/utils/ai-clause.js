@@ -27,7 +27,7 @@ function validateForm(form = {}, today = todayISO()) {
     const amount = text(form[`${field}Amount`]); const stamp = text(form[`${field}Year`]);
     if (!amount && !stamp) continue;
     if (!amount || !/^\d+(\.\d{1,2})?$/.test(amount) || !Number.isFinite(Number(amount)) || Number(amount) > 1000000000) {
-      errors[`${field}Amount`] = '请填写 0 到 1000000000 的万元金额，至多两位小数';
+      errors[`${field}Amount`] = '金额格式不对：请填写数字，单位万元，至多两位小数';
     }
     if (!/^\d{4}$/.test(stamp) || Number(stamp) < 2000 || Number(stamp) > year) errors[`${field}Year`] = `请填写 2000 到 ${year} 的四位年份`;
   }

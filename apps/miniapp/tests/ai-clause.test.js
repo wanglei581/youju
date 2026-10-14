@@ -131,16 +131,18 @@ test('共享同一须知文字与本机标记，不勾选不创建；同意后�
   const next = harness({ storage: local }); next.session.show(); await flush(); assert.equal(next.state.needsConsent, false); next.session.hide();
 });
 
-test('复用轮询：隐藏忽略在途结果、恢复查询已有任务、90 秒超时且晚到结果不覆盖', async () => {
+test('复用轮询：隐藏忽略在途结果、恢复查询已有任务；90 秒后改慢查，挂起的旧查询晚到不覆盖', async () => {
   let resolve;
   const h = harness({ api: { advisorTask: () => new Promise((done) => { resolve = done; }) } });
   h.session.show(); await flush(); await h.advance(1999); assert.equal(resolve, undefined);
   await h.advance(1); h.session.hide(); assert.equal(h.timers.size, 0);
   resolve({ id: 7, status: 'done', result: {} }); await flush(); assert.equal(h.state.phase, 'processing');
   h.session.show(); await flush(); assert.equal(h.calls.length, 1);
-  await h.advance(90000); assert.equal(h.state.phase, 'timeout'); assert.equal(h.timers.size, 0);
+  await h.advance(90000); assert.equal(h.state.phase, 'timeout');
+  assert.match(h.state.error, /可以先离开，完成后在“我的任务”里查看/);
+  assert.equal(h.timers.size, 1); // 只剩下 15 秒后的慢查询
   resolve({ id: 7, status: 'done', result: {} }); await flush(); assert.equal(h.state.phase, 'timeout');
-  assert.equal(h.state.error, '还在处理，可稍后在任务里查看'); h.session.hide();
+  h.session.hide(); assert.equal(h.timers.size, 0);
 });
 
 test('失败、422、429、404 与结果失效的处理复用解读规则', async () => {

@@ -43,7 +43,7 @@ function apiHarness(config = { devBaseUrl: 'https://test.invalid' }) {
 
 function fab(api, properties = {}) {
   const navigations = [];
-  const view = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context },
+  const view = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context, '../../utils/advisor.js': helpers },
     { wx: { navigateTo(options) { navigations.push(options); } } });
   view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
   Object.assign(view.properties, properties); Object.assign(view, view.methods);
@@ -132,7 +132,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
     const name = route.split('/')[1]; const template = read(`${route}.wxml`);
     const usesFab = !!(JSON.parse(read(`${route}.json`)).usingComponents || {})['tool-fab'];
     if (name === 'detail') {
-      assert.match(template, /<tool-fab bottom-rpx="\{\{130\}\}" blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" \/>/);
+      assert.match(template, /<tool-fab bottom-rpx="\{\{130\}\}" blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" ai="\{\{doc.ai\}\}" \/>/);
       assert.equal(usesFab, true);
     } else {
       assert.doesNotMatch(template, /<tool-fab\b/, route); assert.equal(usesFab, false, route);
@@ -263,4 +263,99 @@ test('任务页取消、删除走线上接口并刷新；进行中的任务轮�
   page.remove({ currentTarget: { dataset: { id: 7 } } }); await flush(); await flush();
   assert.deepEqual(calls, [['cancel', 7], ['delete', 7]]);
   page.onHide();
+});
+
+// ---------- AI 正式版（config.aiInternal 为 false，D-066）：上线即对所有用户开放 ----------
+const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+
+function releaseFab(api, properties = {}) {
+  const navigations = [];
+  const view = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context, '../../utils/advisor.js': release },
+    { wx: { navigateTo(options) { navigations.push(options); } } });
+  view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
+  Object.assign(view.properties, properties); Object.assign(view, view.methods);
+  view.lifetimes.attached.call(view);
+  return { view, navigations, text: () => render(read('components/tool-fab/index.wxml'), { ...view.data, ...view.properties }) };
+}
+
+test('正式版入口：详情说对所有人开放、这份文件能做就显示"AI 解读"，不用先同意协议；名单等做不了的不显示；没开放时只看白名单', async () => {
+  const notAgreed = { advisorCapabilities: () => Promise.resolve({ ai_advisor: { enabled: false }, reason: 'consent' }) };
+  const open = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: { open: true, interpret: true, clause: true } }); await flush();
+  assert.equal(open.text(), 'AI 解读'); open.view.open(); assert.equal(open.navigations.length, 1);
+  const list = releaseFab(notAgreed, { docId: '43', docTitle: '名单', ai: { open: true, interpret: false, clause: false } }); await flush();
+  assert.equal(list.text(), '');
+  const closed = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: { open: false, interpret: true, clause: true } }); await flush();
+  assert.equal(closed.text(), '');
+  const whitelisted = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '42', docTitle: '通知', ai: { open: false, interpret: true, clause: false } }); await flush();
+  assert.equal(whitelisted.text(), 'AI 解读');
+  const whitelistedList = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '43', docTitle: '名单', ai: { open: false, interpret: false, clause: false } }); await flush();
+  assert.equal(whitelistedList.text(), '');
+  // 旧后台没有 ai 字段：只看白名单
+  const legacy = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '42', docTitle: '通知' }); await flush();
+  assert.equal(legacy.text(), 'AI 解读');
+  // 详情晚到：ai 字段变化后重新判断
+  const late = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: null }); await flush();
+  assert.equal(late.text(), '');
+  late.view.properties.ai = { open: true, interpret: true, clause: false }; late.view.observers.ai.call(late.view); await flush();
+  assert.equal(late.text(), 'AI 解读');
+});
+
+test('capabilities 用不了的原因：403 没同意协议、503 和网络失败是连不上（重试完仍失败）、404 和关着是 off', async () => {
+  const cases = [
+    [{ statusCode: 403, data: { detail: '请先阅读并同意用户协议和隐私保护指引' } }, 'consent'],
+    [{ statusCode: 503 }, 'offline'],
+    ['fail', 'offline'],
+    [{ statusCode: 404, data: { detail: '没有找到接口' } }, 'off'],
+    [{ statusCode: 200, data: caps(false) }, 'off'],
+    [{ statusCode: 200, data: caps(true) }, ''],
+  ];
+  for (const [response, reason] of cases) {
+    // 假定时器：自动重试的等待立即执行，重试完才给结果
+    const timers = []; const pending = [];
+    const api = load('utils/api.js', { './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {} },
+      { wx: { request(options) { pending.push(options); }, removeStorageSync() {}, showToast() {}, hideToast() {}, showLoading() {}, hideLoading() {} },
+        setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout() {} });
+    let result; api.advisorCapabilities({ refresh: true }).then((value) => { result = value; });
+    for (let round = 0; round < 60 && result === undefined; round += 1) {
+      while (pending.length) { const request = pending.shift(); if (response === 'fail') request.fail({ errMsg: 'request:fail' }); else request.success(response); }
+      await flush(); await flush();
+      while (timers.length && result === undefined) { timers.shift()(); await flush(); }
+    }
+    assert.notEqual(result, undefined, JSON.stringify(response));
+    assert.equal(result.reason, reason, JSON.stringify(response));
+  }
+});
+
+test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试，关着时写"AI 功能暂时不可用"', async () => {
+  for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', 'AI 功能暂时不可用，请稍后再试', '']]) {
+    for (const name of AI_PAGES) {
+      let consentCalls = 0; let capabilityCalls = 0;
+      const api = { advisorCapabilities: () => { capabilityCalls += 1; return Promise.resolve({ ai_advisor: { enabled: false, features: [], remaining: {} }, reason }); }, advisorTasks: () => Promise.resolve({ items: [] }) };
+      const storage = new Map();
+      const wx = { setNavigationBarTitle() {}, getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) };
+      const page = load(`pages/${name}/index.js`, { '../../utils/api.js': api, '../../utils/advisor.js': release, '../../utils/tool-context.js': context,
+        '../../utils/ai-interpret.js': require('../utils/ai-interpret.js'), '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': require('../utils/format.js'),
+        '../../utils/consent.js': { ensureConsent: () => { consentCalls += 1; return Promise.resolve(true); } } }, { wx });
+      if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
+      page.onShow(); await flush(); await flush();
+      const output = render(read(`pages/${name}/index.wxml`), page.data);
+      assert.match(output, new RegExp(text), `${name} ${reason}`);
+      if (button) assert.match(output, new RegExp(button), `${name} ${reason}`);
+      else assert.doesNotMatch(output, /阅读并同意|重试/, `${name} ${reason}`);
+      const before = capabilityCalls;
+      if (reason === 'consent') { page.consent(); await flush(); await flush(); assert.equal(consentCalls, 1, name); assert.ok(capabilityCalls > before, name); }
+      if (reason === 'offline') { page.reload(); await flush(); assert.ok(capabilityCalls > before, name); }
+      page.onUnload ? page.onUnload() : page.onHide();
+    }
+  }
+});
+
+test('投诉举报页：写明可以投诉什么、怎么提交、处理流程和 15 个工作日的反馈时限；AI 页面底部有入口', () => {
+  const output = read('pages/complaint/index.wxml');
+  for (const text of ['可以投诉举报什么', '怎么提交', '处理流程和时限', '15 个工作日内答复处理结果', '联系邮箱']) assert.ok(output.includes(text), text);
+  assert.ok(JSON.parse(read('app.json')).pages.includes('pages/complaint/index'));
+  for (const name of ['advisor', 'advisor-interpret', 'advisor-clause']) {
+    assert.match(read(`pages/${name}/index.wxml`), /bindtap="report">投诉举报</, name);
+    assert.match(read(`pages/${name}/index.js`), /\/pages\/complaint\/index/, name);
+  }
 });

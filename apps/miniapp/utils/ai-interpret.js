@@ -66,13 +66,41 @@ function idempotencyKey() {
   return `interpret-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
+// 等结果：头 90 秒每 2 秒查一次；还没好就改成每 15 秒查一次，页面开着就接着等（最多 15 分钟），
+// 离开页面再回来按任务号接着查。排队时显示前面还有几个、大约等多久（后台给了才显示）。
+const FAST_WINDOW = 90000;
+const FAST_INTERVAL = 2000;
+const SLOW_INTERVAL = 15000;
+const SLOW_WINDOW = 15 * 60000;
+const SLOW_TEXT = '还在处理，可以先离开，完成后在“我的任务”里查看；停在这一页会自动显示结果。';
+const GIVE_UP_TEXT = '还在处理，请稍后在“我的任务”里查看结果。';
+
+function progressText(task) {
+  if (task && task.status === 'queued') {
+    const ahead = Number(task.queuePosition);
+    const eta = Number(task.etaSeconds);
+    if (Number.isFinite(ahead) && ahead > 0) {
+      const wait = Number.isFinite(eta) && eta > 0 ? `，预计约 ${Math.max(1, Math.round(eta / 60))} 分钟` : '';
+      return `排队中：前面还有 ${ahead} 个${wait}`;
+    }
+    return '排队中，马上开始';
+  }
+  return '正在对照原文摘录…';
+}
+
+// 请求没连上（没有状态码、服务端出错）和任务本身失败要分开：前者重试时接着查同一个任务、或用同一个请求编号再提交
+// （服务端按请求编号认出已建的任务，不会重复建、重复扣次数）；后者重试才重新提交。
+function transient(error) {
+  return !error || !error.status || error.status >= 500 || error.retryable === true;
+}
+
 // 页面生命周期、在途请求和倒计时共用一代编号，隐藏后旧回调不能再写页面或开始轮询。
 function createSession({ api, storage, update, docId = '', title = '', taskId = '', now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout, makeKey = idempotencyKey,
   kind = 'interpret', company = {}, viewResult = resultView, useTaskMetadata = false }) {
   let agreed = hasConsent(storage); let checked = false; let visible = false; let epoch = 0;
-  let pollTimer; let deadlineTimer; let busy = false; let creation; let timedOut = false;
-  let creationKey; let deadline = 0;
+  let pollTimer; let deadlineTimer; let busy = false; let creation; let creationKey; let creationError = null;
+  let deadline = 0; let giveUpAt = 0; let slow = false; let failure = '';
   const metadata = taskId ? taskContext(storage, taskId) : {};
   docId = docId || metadata.docId || ''; title = title || metadata.title || '';
   const emit = (value) => update(Object.assign({ docId, title, taskId }, value));
@@ -81,10 +109,16 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     visible = false; epoch += 1; busy = false;
     clearTimer(pollTimer); clearTimer(deadlineTimer);
   }
+  function later(version) {
+    pollTimer = setTimer(() => poll(version), slow ? SLOW_INTERVAL : FAST_INTERVAL);
+  }
+  // 90 秒还没好：作废在途的查询（晚到的旧结果不再写页面），改成慢慢查
   function timeout(version) {
     if (!active(version)) return;
-    clearTimer(pollTimer); clearTimer(deadlineTimer); epoch += 1; busy = false; timedOut = true;
-    emit({ phase: 'timeout', error: '还在处理，可稍后在任务里查看' });
+    clearTimer(pollTimer); clearTimer(deadlineTimer);
+    slow = true; const next = ++epoch;
+    emit({ phase: 'timeout', error: SLOW_TEXT });
+    later(next);
   }
   function accept(task, version) {
     if (!active(version)) return;
@@ -102,40 +136,58 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
       poll(version); return;
     }
     if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
-      clearTimer(deadlineTimer); busy = false;
-      if (task.status === 'done' && task.result) emit({ phase: 'done', result: viewResult(task.result), error: '' });
-      else emit({ phase: 'failed', error: task.error || '结果已失效，请重新提交', canRetry: !!docId });
+      clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
+      if (task.status === 'done' && task.result) {
+        failure = ''; emit({ phase: 'done', result: viewResult(task.result), error: '', progress: '' });
+      } else {
+        failure = 'task'; emit({ phase: 'failed', error: task.error || '结果已失效，请重新提交', canRetry: !!docId, resumable: false, progress: '' });
+      }
       return;
     }
-    if (now() >= deadline) { timeout(version); return; }
-    emit({ phase: 'processing', error: '' });
-    pollTimer = setTimer(() => poll(version), 2000);
+    if (!slow && now() >= deadline) { timeout(version); return; }
+    if (slow && now() >= giveUpAt) {
+      clearTimer(pollTimer); busy = false;
+      emit({ phase: 'timeout', error: GIVE_UP_TEXT, progress: '' }); return;
+    }
+    emit(slow ? { phase: 'timeout', error: SLOW_TEXT, progress: progressText(task) }
+      : { phase: 'processing', error: '', progress: progressText(task) });
+    later(version);
   }
   function fail(error, version) {
     if (!active(version)) return;
-    clearTimer(deadlineTimer); busy = false;
-    emit({ phase: 'failed', error: errorText(error), canRetry: error.status !== 404 && error.status !== 429 && !!docId });
+    if (slow && taskId && transient(error)) { later(version); return; } // 慢慢等的时候偶尔没连上，下次再查
+    clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
+    failure = transient(error) ? 'request' : 'task';
+    emit({ phase: 'failed', error: errorText(error), progress: '', resumable: failure === 'request',
+      canRetry: error.status !== 404 && error.status !== 429 && !!docId });
   }
   function poll(version) {
     if (!active(version)) return;
-    if (now() >= deadline) { timeout(version); return; }
+    if (!slow && now() >= deadline) { timeout(version); return; }
+    if (!taskId) {
+      // 创建请求还没回来（接口服务冷启动）：等它；它失败了就报出来，重试时用同一个请求编号
+      if (creationError) { slow = false; fail(creationError, version); return; }
+      later(version); return;
+    }
     Promise.resolve().then(() => api.advisorTask(taskId)).then((task) => accept(task, version)).catch((err) => fail(err, version));
   }
   function run() {
-    if (!visible || !agreed || busy || timedOut) return;
+    if (!visible || !agreed || busy) return;
     if (!taskId && !docId) { emit({ phase: 'failed', error: '缺少通知编号，请从通知详情页进入', canRetry: false }); return; }
-    busy = true; const version = ++epoch; deadline = now() + 90000;
-    emit({ phase: 'processing', error: '', canRetry: false });
-    deadlineTimer = setTimer(() => timeout(version), 90000);
+    busy = true; slow = false; failure = ''; const version = ++epoch;
+    deadline = now() + FAST_WINDOW; giveUpAt = now() + SLOW_WINDOW;
+    emit({ phase: 'processing', error: '', canRetry: false, resumable: false, progress: '' });
+    deadlineTimer = setTimer(() => timeout(version), FAST_WINDOW);
     if (taskId) { poll(version); return; }
     // 隐藏期间创建请求仍可能完成，保留任务编号；重新显示时复用同一在途请求。
     if (!creation) {
-      creationKey = creationKey || makeKey();
+      creationKey = creationKey || makeKey(); creationError = null;
       const body = { kind, doc_id: Number(docId) };
       if (kind === 'clause') body.company = company;
       creation = Promise.resolve().then(() => api.createAdvisorTask(body, creationKey)).then((task) => {
         taskId = task.id; taskContext(storage, taskId, { docId, title }); return task;
       });
+      creation.catch((err) => { creationError = err; });
     }
     creation.then((task) => accept(task, version)).catch((err) => fail(err, version));
   }
@@ -151,12 +203,18 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
       if (!visible || !saveConsent(storage, checked)) return;
       agreed = true; emit({ needsConsent: false }); run();
     },
+    // 上次是没连上（不是任务本身失败）：重试时接着用原来的任务或请求编号
+    resumable() { return failure === 'request'; },
     retry() {
       if (!visible || !agreed || busy || !docId) return;
       clearTimer(pollTimer); clearTimer(deadlineTimer); epoch += 1;
-      taskId = ''; creation = null; creationKey = null; timedOut = false; run();
+      if (failure === 'request') {
+        if (!taskId) { creation = null; creationError = null; }
+        run(); return;
+      }
+      taskId = ''; creation = null; creationError = null; creationKey = null; run();
     },
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, createSession };

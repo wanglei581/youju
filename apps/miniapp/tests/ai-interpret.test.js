@@ -113,14 +113,60 @@ test('创建过程中隐藏后返回，复用请求且回调不会重复开启�
   assert.deepEqual(logic.taskContext(h.storage, 9), { docId: '42', title: '通知标题' }); h.session.hide();
 });
 
-test('90 秒超时停止请求；查询挂起也能超时，晚到的完成结果不覆盖提示', async () => {
-  const h = sessionHarness(); h.session.show(); await flush(); await h.advance(90000);
-  assert.equal(h.state.phase, 'timeout'); assert.equal(h.state.error, '还在处理，可稍后在任务里查看');
-  assert.equal(h.timers.size, 0); const count = h.polled(); await h.advance(20000); assert.equal(h.polled(), count); h.session.hide();
-  let resolve;
-  const hung = sessionHarness({ api: { advisorTask: () => new Promise((done) => { resolve = done; }) } });
+test('90 秒还没好：改成每 15 秒查一次，完成后自动显示；挂起的旧查询晚到不写页面；15 分钟后停，回到页面接着查', async () => {
+  let status = 'running'; let polls = 0;
+  const h = sessionHarness({ api: { advisorTask: (id) => {
+    polls += 1; return Promise.resolve(status === 'done' ? { id, status, result: { notice: '晚到的结果' } } : { id, status: 'running' });
+  } } });
+  h.session.show(); await flush(); await h.advance(90000);
+  assert.equal(h.state.phase, 'timeout'); assert.match(h.state.error, /可以先离开/);
+  const count = polls; assert.ok(count > 40); await h.advance(14999); assert.equal(polls, count);
+  await h.advance(1); assert.equal(polls, count + 1); assert.equal(h.state.phase, 'timeout');
+  status = 'done'; await h.advance(15000);
+  assert.equal(h.state.phase, 'done'); assert.equal(h.state.result.notice, '晚到的结果'); assert.equal(h.timers.size, 0);
+  h.session.hide();
+
+  let resolve; let calls = 0;
+  const hung = sessionHarness({ api: { advisorTask: (id) => {
+    calls += 1; return calls === 1 ? new Promise((done) => { resolve = done; }) : Promise.resolve({ id, status: 'running' });
+  } } });
   hung.session.show(); await flush(); await hung.advance(90000); assert.equal(hung.state.phase, 'timeout');
-  resolve({ id: 1, status: 'done', result: {} }); await flush(); assert.equal(hung.state.phase, 'timeout'); hung.session.hide();
+  resolve({ id: 1, status: 'done', result: { notice: '旧查询' } }); await flush(); assert.equal(hung.state.phase, 'timeout');
+  hung.session.hide();
+
+  const idle = sessionHarness(); idle.session.show(); await flush(); await idle.advance(15 * 60000 + 15000);
+  assert.equal(idle.timers.size, 0); assert.match(idle.state.error, /请稍后在“我的任务”里查看结果/);
+  const before = idle.polled(); idle.session.hide(); idle.session.show(); await flush(); await idle.advance(2000);
+  assert.ok(idle.polled() > before); assert.equal(idle.created(), 1); idle.session.hide();
+});
+
+test('排队时显示前面还有几个、预计多久；没给就只写排队中', () => {
+  assert.equal(logic.progressText({ status: 'queued', queuePosition: 3, etaSeconds: 150 }), '排队中：前面还有 3 个，预计约 3 分钟');
+  assert.equal(logic.progressText({ status: 'queued', queuePosition: 2 }), '排队中：前面还有 2 个');
+  assert.equal(logic.progressText({ status: 'queued', queuePosition: 0, etaSeconds: 20 }), '排队中，马上开始');
+  assert.equal(logic.progressText({ status: 'queued' }), '排队中，马上开始');
+  assert.equal(logic.progressText({ status: 'running' }), '正在对照原文摘录…');
+});
+
+test('没连上和任务失败分开：创建没连上重试用同一个请求编号，查询没连上重试接着查同一个任务', async () => {
+  let fails = 1;
+  const h = sessionHarness({ api: { createAdvisorTask(body, key) {
+    h.keys.push(key);
+    if (fails > 0) { fails -= 1; return Promise.reject(Object.assign(new Error('网络不好'), { retryable: true })); }
+    return Promise.resolve({ id: 5, status: 'queued' });
+  } } });
+  h.session.show(); await flush(); assert.equal(h.state.phase, 'failed'); assert.equal(h.state.canRetry, true);
+  assert.equal(h.session.resumable(), true);
+  h.session.retry(); await flush(); assert.equal(h.keys.length, 2); assert.equal(h.keys[0], h.keys[1]);
+  assert.equal(h.state.taskId, 5); h.session.hide();
+
+  let pollFails = 1;
+  const q = sessionHarness({ api: { advisorTask: (id) => {
+    if (pollFails > 0) { pollFails -= 1; return Promise.reject(Object.assign(new Error('服务器忙'), { status: 503 })); }
+    return Promise.resolve({ id, status: 'running' });
+  } } });
+  q.session.show(); await flush(); await q.advance(2000); assert.equal(q.state.phase, 'failed');
+  q.session.retry(); await flush(); assert.equal(q.created(), 1); assert.equal(q.state.phase, 'processing'); q.session.hide();
 });
 
 test('任务失败与结果失效显示后端 error；重试使用新幂等键', async () => {
@@ -162,7 +208,8 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
   for (const [dataEnabled, aiEnabled] of [[false, false], [true, false], [false, true], [true, true]]) {
     let navigationTitle; const capabilities = caps(dataEnabled, aiEnabled);
     const api = { advisorCapabilities: () => Promise.resolve(capabilities), advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'interpret', status: 'done', docTitle: '通知' }, { id: 2, kind: 'compare', status: 'done' }] }) };
-    const fab = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor });
+    const fab = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers });
+    fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
     Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
     const text = render(read('components/tool-fab/index.wxml'), { ...fab.data, bottomRpx: 0, blocked: false });
     assert.equal(text, aiEnabled ? 'AI 内测' : '');
@@ -179,7 +226,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     }
     assert.doesNotMatch(rendered, /数据工具|名单比对|填写客户/);
     assert.equal(navigationTitle, aiEnabled ? 'AI 工具 · 内部测试' : '工具');
-    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /在通知详情页点右下角“AI 内测”进入/); }
+    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /请先打开一份申报通知，在详情页点右下角“AI 内测”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }
   for (const file of ['components/tool-fab/index.wxml', 'pages/advisor/index.wxml']) assertAiGuarded(read(file));
@@ -224,7 +271,7 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   page.onLoad({ docId: '42', title: encodeURIComponent('通知 & 标题'), taskId: 7 }); page.onShow(); await flush();
   page.setData({ result: logic.resultView({ notice: '固定原文提示', items: [{ type: '对象', text: '很长的原句，完整显示。', refs: [{ pid: 'P002', quote: '很长的原句，完整显示。' }] }], missing: ['材料'], verified: [{ value: '人工核对值', quote: '核对原句' }], warning: '警示原文', attachment_notice: '附件原文' }) });
   const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
-  for (const expected of ['内部测试：结果由 AI 模型根据原文生成', '固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '段落 P002', '未摘录到相关原句，请查看原文', '警示原文', '附件原文', '第三方整理 · 非政府平台']) assert.ok(output.includes(expected), expected);
+  for (const expected of ['内部测试：结果由 AI 模型根据原文生成', '固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '段落 P002', '没有摘录到相关原句（原文可能没写，也可能漏摘），请查看原文', '警示原文', '附件原文', '第三方整理 · 非政府平台']) assert.ok(output.includes(expected), expected);
   assert.doesNotMatch(output, /模型：/);
   page.original(); assert.equal(urls.at(-1), '/pages/detail/index?id=42');
   page.feedback(); assert.equal(urls.at(-1), '/pages/feedback/index?id=42&title=' + encodeURIComponent('通知 & 标题'));

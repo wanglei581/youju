@@ -1,10 +1,10 @@
-// AI 内测：我的 AI 任务（只上传体验版、不合并）。只列当前账号有权限的政策解读、条款对照任务，
+// 我的 AI 任务。只列当前账号有权限的政策解读、条款对照任务，
 // 可查看结果、取消排队、删除；数据工具（Excel 结果）的后端没有上线，这里不处理。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds, aiTitle, AI_LABEL } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
+  data: { aiLabel: AI_LABEL, fabText: FAB_TEXT, gate: 'off', gateText: OFF_TEXT, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
   onShow() { this.visible = true; this.delay = 3000; this.load(); },
   onHide() { this.stop(); },
   onUnload() { this.stop(); },
@@ -21,7 +21,8 @@ Page({
       const aiEnabled = ai.enabled === true && kinds.length > 0;
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 任务') });
       // 权限关闭时先清空已有列表，避免请求失败后仍显示此前的 AI 任务。
-      this.setData({ aiEnabled, kinds, aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });
+      const gate = aiEnabled ? '' : gateState(caps);
+      this.setData({ aiEnabled, kinds, gate, gateText: GATE_TEXT[gate] || '', aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });
       if (!aiEnabled) { this.setData({ loading: false, items: [] }); return null; }
       return api.advisorTasks().then((res) => {
         if (!this.visible || epoch !== this.epoch) return;
@@ -30,6 +31,13 @@ Page({
       });
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ loading: false, error: err.message }); });
   },
+  // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
+  consent() {
+    if (this.data.gate !== 'consent') return;
+    require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.load(); });
+  },
+  reload() { if (this.data.gate === 'offline') this.load(); },
+  search() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/search/index' }); },
   schedule(epoch) {
     if (!this.visible || !this.data.items.some((item) => !item.terminal)) return;
     this.timer = setTimeout(() => this.poll(epoch), this.delay);

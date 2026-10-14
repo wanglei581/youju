@@ -1,0 +1,18 @@
+<view class="card">
+  <view class="section-title">可以投诉举报什么</view>
+  <view class="complaint-p">内容和政府原文不一致、自动生成的解读或对照结果有误，违法和不良信息，侵犯你的权益，个人信息方面的问题。</view>
+</view>
+
+<view class="card">
+  <view class="section-title">怎么提交</view>
+  <view wx:if="{{loginOpen}}" class="complaint-p">1. 针对某份通知或某条结果：在文件详情页或结果旁点"纠错"，写明哪里有问题。</view>
+  <view class="complaint-p">{{loginOpen ? '2' : '1'}}. 发邮件至联系邮箱，写明问题、涉及的文件标题和你的联系方式；侵权投诉请附权利证明。</view>
+  <view class="complaint-kv" bindtap="copyEmail"><text class="muted">联系邮箱</text><text class="link">{{op.email}}</text></view>
+  <view wx:if="{{loginOpen}}" class="complaint-go" bindtap="feedback" aria-role="button">去纠错</view>
+</view>
+
+<view class="card">
+  <view class="section-title">处理流程和时限</view>
+  <view class="complaint-p">收到后先核实，再处理（更正内容，或删除、下架有问题的内容），然后答复你。</view>
+  <view class="complaint-p">15 个工作日内答复处理结果；核实是违法和不良信息的，立即下架。</view>
+</view>
