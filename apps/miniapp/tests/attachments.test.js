@@ -283,6 +283,7 @@ async function drive(clock) {
 function retryApi(plan) {
   const clock = fakeClock();
   const sent = [];
+  const services = [];
   const api = load('utils/api.js', {
     './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
     '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
@@ -292,17 +293,18 @@ function retryApi(plan) {
       cloud: {
         callContainer: (o) => {
           sent.push(clock.now);
+          services.push(o.header['X-WX-SERVICE']);
           const step = plan.shift();
           if (!step) return;
           clock.setTimeout(() => (step.fail
             ? o.fail({ errMsg: step.errMsg || 'cloud.callContainer:fail' })
-            : o.success({ statusCode: step.code, data: step.code === 200 ? { ok: 1 } : {} })), step.after);
+            : o.success({ statusCode: step.code, data: step.data || (step.code === 200 ? { ok: 1 } : {}) })), step.after);
         },
       },
       removeStorageSync() {}, getStorageSync() { return ''; }, setStorageSync() {},
     },
   });
-  return { api, clock, sent };
+  return { api, clock, sent, services };
 }
 
 async function outcome({ api, clock }, call) {
@@ -315,23 +317,23 @@ async function outcome({ api, clock }, call) {
 test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报超时也接着重试，90 秒内不再发新请求就报错', async () => {
   // 第一次一直不回：15 秒超时后 1.5 秒再试，成功
   let s = retryApi([null, { after: 100, code: 200 }]);
-  let r = await outcome(s, (api) => api.coverage());
+  let r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
   assert.deepEqual(r.value, { ok: 1 });
   assert.deepEqual(s.sent, [0, 16500]);
   // 云托管自己报超时的调用失败，同样再试
   s = retryApi([{ after: 14000, fail: true, errMsg: 'cloud.callContainer:fail timeout' }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
   assert.deepEqual(r.value, { ok: 1 });
   assert.deepEqual(s.sent, [0, 15500]);
   // 一直起不来：快失败、网关错误、超时都再试，下一次发出会超过 90 秒时报错
   s = retryApi([{ after: 300, fail: true }, { after: 200, code: 503 }, null]);
-  r = await outcome(s, (api) => api.coverage());
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
   assert.ok(r.error && r.error.timeout);
   assert.deepEqual(s.sent, [0, 1800, 5000, 25000, 48000, 73000]);
   assert.equal(r.at, 88000);
   // 10/12 实测的冷启动：头两次超时，第三次 503，第 67 秒左右才起来，之后发的请求很快成功——90 秒内等得到
   s = retryApi([null, null, { after: 8000, code: 503 }, null, { after: 300, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage());
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
   assert.deepEqual(r.value, { ok: 1 });
   assert.deepEqual(s.sent, [0, 16500, 34500, 47500, 70500]);
   assert.equal(r.at, 70800);
@@ -345,20 +347,20 @@ test('冷启动（10/12）：读数据的请求单次 15 秒超时、平台报�
 
 test('GET 按1.5、3、5、8秒再试，之后每 10 秒一次，90 秒为止；慢的调用失败也再试；404 等不重试', async () => {
   let s = retryApi([{ after: 200, fail: true }, { after: 300, code: 503 }, { after: 100, code: 200 }]);
-  let r = await outcome(s, (api) => api.coverage());
+  let r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
   assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 1700, 5000]);
   s = retryApi([{ after: 6000, fail: true }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 7500]);
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0)); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 7500]);
   s = retryApi([{ after: 4500, code: 504 }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 6000]);
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0)); assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 6000]);
   s = retryApi([502, 503, 504, 503, 502, 200].map((code) => ({ after: 0, code })));
-  r = await outcome(s, (api) => api.coverage()); assert.deepEqual(r.value, { ok: 1 });
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0)); assert.deepEqual(r.value, { ok: 1 });
   assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500]);
   s = retryApi(Array.from({ length: 20 }, () => ({ after: 0, code: 503 })));
-  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 503);
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0)); assert.equal(r.error.status, 503);
   assert.deepEqual(s.sent, [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500, 67500, 77500, 87500]); assert.equal(r.at, 87500);
   s = retryApi([{ after: 100, code: 404 }, { after: 100, code: 200 }]);
-  r = await outcome(s, (api) => api.coverage()); assert.equal(r.error.status, 404); assert.deepEqual(s.sent, [0]);
+  r = await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0)); assert.equal(r.error.status, 404); assert.deepEqual(s.sent, [0]);
 });
 
 test('冷启动提示首次错误后出现，成功及全失败均消失，隐藏页面解除监听', async () => {
@@ -366,7 +368,7 @@ test('冷启动提示首次错误后出现，成功及全失败均消失，隐�
     const s = retryApi([503, 503, 503, 503, last].map((code) => ({ after: 0, code })));
     const seen = []; const page = { setData: (v) => seen.push(v.serviceStarting) };
     s.api.watchStartup(page);
-    await outcome(s, (api) => api.coverage());
+    await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
     assert.deepEqual(seen, [false, true, false]);
     s.api.stopStartup(page); s.api.watchStartup({ setData() {} });
     assert.equal(seen.length, 3);
@@ -381,3 +383,53 @@ test('四页接通启动提示与生命周期，名单查询失败也能重试',
   }
   assert.match(read('pages/lists/index.wxml'), /bindtap="query">　重试/);
 });
+
+test('冷启动（10/14）：只读接口先走常驻的 admin；admin 拦下、出错、调用失败或超时就改走接口服务', async () => {
+  const OK = { after: 50, code: 200 };
+  // admin 直接答复：只发一次，走 admin
+  let s = retryApi([OK]);
+  let r = await outcome(s, (api) => api.coverage());
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin']);
+  // admin 还没放行这个接口（404 Not Found）、出错（503）、调用失败：马上改走接口服务
+  for (const first of [{ after: 30, code: 404, data: { detail: 'Not Found' } }, { after: 30, code: 503 }, { after: 30, fail: true }]) {
+    s = retryApi([first, OK]);
+    r = await outcome(s, (api) => api.search({ q: '专精特新' }));
+    assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin', 'api']);
+  }
+  // admin 8 秒没回：放弃，改走接口服务
+  s = retryApi([null, OK]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin', 'api']); assert.deepEqual(s.sent, [0, 8000]);
+  // 接口自己的答复（文件已下架、请求不对、太频繁）直接报，不再多等接口服务
+  for (const [code, detail] of [[404, '该文件已下架'], [422, [{ loc: ['query', 'q'], msg: 'x' }]], [429, '查询太频繁，请稍后再试']]) {
+    s = retryApi([{ after: 30, code, data: { detail } }, OK]);
+    r = await outcome(s, (api) => api.coverage());
+    assert.equal(r.error.status, code); assert.deepEqual(s.services, ['admin']);
+  }
+  // 改走接口服务后，接口服务冷启动照旧按规则重试
+  s = retryApi([{ after: 30, code: 503 }, { after: 0, code: 503 }, OK]);
+  r = await outcome(s, (api) => api.coverage());
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin', 'api', 'api']);
+  // 要身份或按用户计次的（附件分段）只走接口服务
+  s = retryApi([OK]);
+  await outcome(s, (api) => api.attachmentPart('7', 'abcdef0123456789', 0));
+  assert.deepEqual(s.services, ['api']);
+});
+
+test('冷启动（10/14，Codex 审查）：admin 8 秒没回就同时问接口服务，admin 迟到但先回也用它，接口服务就不再重试', async () => {
+  // admin 第 12 秒才回；接口服务第 8 秒发出后一直不回（冷启动）：第 12 秒拿到 admin 的数据
+  let s = retryApi([{ after: 12000, code: 200 }, null]);
+  let r = await outcome(s, (api) => api.search({ q: '专精特新' }));
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.services, ['admin', 'api']); assert.deepEqual(s.sent, [0, 8000]);
+  // 接口服务那次 15 秒超时后不再重试，冷启动提示也不留着
+  const seen = []; s = retryApi([{ after: 12000, code: 200 }, null]);
+  s.api.watchStartup({ setData: (v) => seen.push(v.serviceStarting) });
+  await outcome(s, (api) => api.search({ q: '专精特新' }));
+  assert.deepEqual(s.sent, [0, 8000]); assert.equal(seen[seen.length - 1], false);
+  // admin 一直不回（30 秒放弃），接口服务第 20 秒醒来：用接口服务的
+  s = retryApi([null, { after: 12000, code: 200 }]);
+  r = await outcome(s, (api) => api.coverage());
+  // 接口服务第 8 秒发出、12 秒后回（第 20 秒拿到）；admin 那次第 30 秒超时，结果已用接口服务的、不再变
+  assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 8000]); assert.deepEqual(s.services, ['admin', 'api']);
+});
+
