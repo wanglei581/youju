@@ -163,6 +163,34 @@ async def _server_error(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"detail": "服务出错了，请稍后再试"})
 
 
+# 冷启动（10/14）：接口服务空闲后要 1–5 分钟才恢复。小程序不需要身份的只读接口
+# 也由常驻的 admin 提供（首屏快照 10/12 起就这样），只认经云调用来的 GET
+# （带平台注入的 X-WX-SOURCE）。要身份或按用户计次的（导出、附件、我的、顾问、支付）
+# 仍只在 api；admin 不信任身份头，这些接口在 admin 上一律 404。
+ADMIN_READ_PATHS = frozenset(
+    {
+        "/api/v1/home",
+        "/api/v1/coverage",
+        "/api/v1/search",
+        "/api/v1/calendar",
+        "/api/v1/snapshot",
+        "/api/v1/reports/deadlines",
+        "/api/v1/reports/lists",
+        "/api/v1/lists/recent",
+        "/api/v1/lists/lookup",
+    }
+)
+ADMIN_READ_DOCUMENT = re.compile(r"/api/v1/documents/\d+")
+
+
+def _admin_read(request: Request, path: str) -> bool:
+    return (
+        request.method == "GET"
+        and bool(request.headers.get("X-WX-SOURCE"))
+        and (path in ADMIN_READ_PATHS or ADMIN_READ_DOCUMENT.fullmatch(path) is not None)
+    )
+
+
 @app.middleware("http")
 async def _role_guard(request: Request, call_next):
     """按部署角色开放路径（白名单）：api 服务只开放小程序接口（/api/v1/）和健康检查，
@@ -184,11 +212,8 @@ async def _role_guard(request: Request, call_next):
     mini_path = path.startswith("/api/v1/") or path == getattr(
         get_settings(), "wx_push_path", "/api/wx/push"
     )
-    # 首屏快照（10/12 冷启动）：admin 常驻不冷启动，小程序打开时先从它取；
-    # 只认经云调用来的（带 X-WX-SOURCE）
-    snapshot = path == "/api/v1/snapshot" and bool(request.headers.get("X-WX-SOURCE"))
     blocked = (role == "api" and not (mini_path or path == "/health")) or (
-        role == "admin" and not (admin_path or path == "/health" or snapshot)
+        role == "admin" and not (admin_path or path == "/health" or _admin_read(request, path))
     )
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
@@ -1191,6 +1216,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
         "advisor_enabled": get_settings().advisor_enabled,
         "ai_advisor": {
             "enabled": getattr(get_settings(), "ai_advisor_enabled", False),
+            "audience": getattr(get_settings(), "ai_advisor_audience", "whitelist"),
             "whitelist_count": len(openids(get_settings())),
             "tasks_7d": count(ai_tasks),
             "failed_7d": count(ai_tasks.where(AdvisorTask.status == "failed")),

@@ -816,15 +816,37 @@ def test_snapshot_matches_endpoints_without_user_data(client, seeded, monkeypatc
     assert len(seen) == 1 + 1  # 上面比对用的 /home 调过一次
 
 
-def test_snapshot_on_admin_only_through_cloud_calls(client, seeded, monkeypatch) -> None:
-    """admin 服务只放行经小程序云调用来的快照请求（带 X-WX-SOURCE）；公网直接访问和其他小程序接口仍是 404。"""
+def test_public_reads_on_admin_only_through_cloud_calls(client, seeded, monkeypatch) -> None:
+    """admin 服务只放行经小程序云调用来的只读接口（GET、带 X-WX-SOURCE，10/14 冷启动）；
+    公网直接访问、写操作、要身份或按用户计次的接口仍是 404。"""
     from youju.api import app as app_module
 
     settings = {"role": "admin", "admin_token": "t" * 32}
     monkeypatch.setattr(app_module, "get_settings", lambda: SimpleNamespace(**settings))
-    assert client.get("/api/v1/snapshot").status_code == 404
-    assert client.get("/api/v1/snapshot", headers={"X-WX-SOURCE": "wx_client"}).status_code == 200
-    assert client.get("/api/v1/home", headers={"X-WX-SOURCE": "wx_client"}).status_code == 404
-    assert client.get("/api/v1/search", headers={"X-WX-SOURCE": "wx_client"}).status_code == 404
+    wx = {"X-WX-SOURCE": "wx_client"}
+    doc_id = 999999  # 没有这份文件：被放行时是详情接口自己的 404，被拦下时是 "Not Found"
+    reads = [
+        "/api/v1/snapshot",
+        "/api/v1/home",
+        "/api/v1/coverage",
+        "/api/v1/search",
+        "/api/v1/calendar",
+        "/api/v1/reports/deadlines",
+        "/api/v1/reports/lists",
+        "/api/v1/lists/recent",
+        "/api/v1/lists/lookup?q=测试企业",
+    ]
+    for path in reads:
+        assert client.get(path).status_code == 404, path  # 公网直接访问
+        assert client.get(path, headers=wx).status_code == 200, path
+    assert client.get(f"/api/v1/documents/{doc_id}").json()["detail"] == "Not Found"
+    assert client.get(f"/api/v1/documents/{doc_id}", headers=wx).json()["detail"] != "Not Found"
+    # 只开 GET；要身份或按用户计次的接口不在 admin 上开
+    assert client.post("/api/v1/exports", headers=wx, json={"ids": ["1"]}).status_code == 404
+    assert client.get("/api/v1/attachments/1/content", headers=wx).status_code == 404
+    assert client.get("/api/v1/me", headers=wx).status_code == 404
+    assert client.get("/api/v1/advisor/capabilities", headers=wx).status_code == 404
+    assert client.get(f"/api/v1/documents/{doc_id}/x", headers=wx).status_code == 404
+    assert client.head("/api/v1/search", headers=wx).status_code == 404
     settings["role"] = "api"
     assert client.get("/api/v1/snapshot").status_code == 200

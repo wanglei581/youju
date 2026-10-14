@@ -75,8 +75,9 @@
   <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
 </view>
 
-<!-- 7 天内截止：只放人工核对过的，最多 5 条，没有就不显示这一块（D-061） -->
-<view wx:if="{{soon.length}}" class="card soon">
+<!-- 7 天内截止：日期只放人工核对过的，最多 5 条（D-061）；还没核对的只写份数、不写日期。
+     一份都没核对时也显示这一块，免得顾问以为这周没有要截止的（10/13 Grok、Codex 审查）；两样都没有才不显示 -->
+<view wx:if="{{soon.length || soonUnverified}}" class="card soon">
   <view class="card-head" data-url="/pages/report/index" bindtap="goEntry">
     <text class="card-title">7 天内截止</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text>
   </view>
@@ -84,7 +85,7 @@
     <view class="soon-title">{{item.title}}</view>
     <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text></view>
   </view>
-  <view wx:if="{{soonUnverified}}" class="soon-foot" data-url="/pages/report/index" bindtap="goEntry">另有 {{soonUnverified}} 份可能 7 天内截止，日期还没核对 ›</view>
+  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止，日期还没核对 ›' : soonUnverified + ' 份通知可能 7 天内截止，日期还没核对，点开看是哪些 ›'}}</view>
 </view>
 
 <view class="card">

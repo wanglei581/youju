@@ -96,6 +96,16 @@ def usage(session, task):
     )
 
 
+def test_all_audience_clause_worker(client, session, settings, notice):
+    settings.ai_advisor_audience = "all"
+    settings.ai_advisor_openids = ""
+    created = create(client, notice.id, COMPANY_A)
+    assert created.status_code == 202
+    assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
+    task = session.get(AdvisorTask, created.json()["id"])
+    assert task.status == "done" and usage(session, task) == 1
+
+
 @pytest.mark.parametrize(
     "company",
     [

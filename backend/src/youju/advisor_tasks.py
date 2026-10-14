@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from openpyxl import load_workbook
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from youju import access_log
@@ -124,6 +124,15 @@ def usage_day(value: datetime) -> date:
 
 def usage_limit(kind: str) -> int:
     return 5 if kind in AI_KINDS else 3
+
+
+def global_ai_usage(session: Session, day: date) -> int:
+    """当天已占用的解读和条款对照次数；失败退款已从账本扣除。"""
+    return session.scalar(
+        select(func.coalesce(func.sum(AdvisorUsage.used_count), 0)).where(
+            AdvisorUsage.day == day, AdvisorUsage.kind.in_(AI_KINDS)
+        )
+    )
 
 
 def usage_counts(
@@ -267,14 +276,11 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
 
 def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> None:
     """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。"""
-    openids = (
-        interpret.openids(settings) if getattr(settings, "ai_advisor_enabled", False) else set()
-    )
     tasks = session.scalars(
         select(AdvisorTask)
         .where(
             AdvisorTask.kind.in_(AI_KINDS),
-            AdvisorTask.user_id.not_in(select(User.id).where(User.openid.in_(openids))),
+            AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings)),
             (AdvisorTask.status == "queued")
             | (
                 (AdvisorTask.status == "running")
@@ -655,16 +661,12 @@ def run_advisor_tasks(
     if getattr(settings, "advisor_enabled", False):
         allowed_kinds.extend(("compare", "track"))
     allowed = AdvisorTask.kind.in_(allowed_kinds)
-    if getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings):
+    if interpret.worker_enabled(settings):
         allowed = allowed | (
             (AdvisorTask.kind.in_(AI_KINDS))
-            & AdvisorTask.user_id.in_(
-                select(User.id).where(User.openid.in_(interpret.openids(settings)))
-            )
+            & AdvisorTask.user_id.in_(interpret.worker_user_ids(settings))
         )
-    if not allowed_kinds and not (
-        getattr(settings, "ai_advisor_enabled", False) and interpret.openids(settings)
-    ):
+    if not allowed_kinds and not interpret.worker_enabled(settings):
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
     requeued = recover_stale(session, stamp, allowed)
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
