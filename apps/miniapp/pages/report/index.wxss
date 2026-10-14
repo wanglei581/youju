@@ -41,6 +41,7 @@
 .month-head { display: flex; align-items: center; justify-content: center; gap: 24rpx; padding-bottom: 16rpx; }
 .month-title { font-size: 32rpx; font-weight: 600; }
 .arrow { padding: 0 20rpx; font-size: 40rpx; color: var(--t2); line-height: 1; }
+.arrow--off { opacity: 0.25; }
 .week { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 24rpx; color: var(--t3); padding-bottom: 8rpx; }
 .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4rpx; }
 .cell { height: 80rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4rpx; border-radius: 20rpx; }

@@ -144,3 +144,10 @@ def test_verified_has_priority_over_excerpt():
         ]
     )
     assert selected.source == "verified"
+
+
+def test_selected_uses_open_excerpt_before_expired_verified():
+    past = excerpts.View("企业申报截止", "verified", TODAY - timedelta(days=1))
+    future = excerpts.View("材料报送截止", "excerpt", TODAY + timedelta(days=8))
+    assert excerpts.selected([past, future], TODAY) == future
+    assert excerpts.selected([past], TODAY) == past

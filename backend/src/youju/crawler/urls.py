@@ -12,6 +12,16 @@ _PATH_SESSION = re.compile(r";(?:jsessionid|sessionid)=[^/?#]*", re.IGNORECASE)
 _INDEX_PAGE = re.compile(r"/(?:index|default)\.(?:html?|shtml|jsp|php|aspx?)$", re.IGNORECASE)
 
 
+def public_url(url: str) -> str:
+    """修正被来源误写为 HTTP 443 的原文地址。"""
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "http" or not parts.netloc.lower().endswith(":443"):
+        return url
+    return urlunsplit(
+        ("https", parts.netloc.rsplit(":", 1)[0], parts.path, parts.query, parts.fragment)
+    )
+
+
 def normalize_url(base: str, href: str | None) -> str | None:
     """把相对链接转成绝对网址；去掉片段（#…）；非 http(s) 链接返回 None。"""
     if not href:
@@ -22,8 +32,8 @@ def normalize_url(base: str, href: str | None) -> str | None:
     parts = urlsplit(urljoin(base, href))
     if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
         return None
-    return urlunsplit(
-        (parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, "")
+    return public_url(
+        urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
     )
 
 

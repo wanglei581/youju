@@ -172,6 +172,13 @@ def test_url_variants_are_the_same_document(session) -> None:
     assert (doc.url_key, doc.url) == ("kw.beijing.gov.cn/a/1.html", variants[0].url)
 
 
+def test_save_items_fixes_http_443_source_url(session) -> None:
+    source = make_source(session)
+    item = ListItem("关于开展新项目申报的通知", "http://kw.beijing.gov.cn:443/new.html", None)
+    save_items(session, source, [item], baseline=False, seen_at=datetime.now(UTC))
+    assert session.scalar(select(Document)).url == "https://kw.beijing.gov.cn/new.html"
+
+
 def test_no_transaction_or_lock_is_held_while_fetching(session_factory) -> None:
     with session_factory() as s:
         source_id = make_source(s).id

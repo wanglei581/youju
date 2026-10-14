@@ -157,6 +157,11 @@ def test_density_fallback_ignores_navigation_and_redacts() -> None:
         ("国家外汇管理局 上海市分局", "国家外汇管理局上海市分局"),
         ("海关总署 沈阳海关", "海关总署沈阳海关"),
         ("辽宁省财政厅 国家税务总局 辽宁省税务局", "辽宁省财政厅、国家税务总局辽宁省税务局"),
+        ("安 徽 省 财 政 厅", "安徽省财政厅"),
+        (
+            "福建省工程技术经济专业职称改革领导小组 福建省职称改革工作办公室",
+            "福建省工程技术经济专业职称改革领导小组、福建省职称改革工作办公室",
+        ),
     ],
 )
 def test_issuer_branch_names_are_not_split(line: str, expected: str) -> None:
@@ -167,3 +172,22 @@ def test_issuer_branch_names_are_not_split(line: str, expected: str) -> None:
         f"<p>{line}</p><p>2026年9月24日</p></div></body></html>"
     )
     assert parse_detail(sample, "https://example.gov.cn/a.html").issuer == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("安徽省工业和信息化厅、安 徽 省 财 政 厅", "安徽省工业和信息化厅、安徽省财政厅"),
+        (
+            "福建省工程技术经济专业职称改革领导小组 福建省职称改革工作办公室",
+            "福建省工程技术经济专业职称改革领导小组、福建省职称改革工作办公室",
+        ),
+        ("国家税务总局 安徽省税务局", "国家税务总局安徽省税务局"),
+        # 名称中间的排版空格不当成两个机关
+        ("上海市 科学技术委员会", "上海市 科学技术委员会"),
+    ],
+)
+def test_normalize_issuer_display(value: str, expected: str) -> None:
+    from youju.issuer import normalize_issuer
+
+    assert normalize_issuer(value) == expected

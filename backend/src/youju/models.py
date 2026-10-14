@@ -240,6 +240,12 @@ class Document(Base):
     restore_note: Mapped[str | None] = mapped_column(String(300))
     restored_by: Mapped[str | None] = mapped_column(String(80))
 
+    # 原网页还在不在（youju/link_check.py）：上次检查时间；第一次 404/410 的时间；
+    # 隔天再确认仍是 404/410 的时间（有值即"原网页已失效"），一次能打开就清空
+    link_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    link_suspect_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    link_gone_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
     fields: Mapped[list["DocumentField"]] = relationship(

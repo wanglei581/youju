@@ -584,9 +584,86 @@ def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatc
     for request in ({"json": {**body, "excerpts": 1}}, {"json": body, "params": {"excerpts": 1}}):
         row, notice = sheet(**request)
         assert row["截止日期（以原文为准）"] == "2026-10-25（机器摘录）"
+        assert row["日期角色"] == "企业申报截止（机器摘录）"
+        assert row["未核项"] == "截止日期（以原文为准）、支持方式"
         assert row["截止原文句子"] == quote
         assert "机器摘录" in notice and "未经人工核对" in notice
+        assert "机器摘录的“日期角色”也标有“（机器摘录）”" in notice
+        assert "“日期角色”是人工核对时确认的截止类型" not in notice
         assert "“截止日期（以原文为准）”列" in notice
     row, notice = sheet(json=body)
     assert "截止原文句子" not in row and "2026-10-25" not in str(row["截止日期（以原文为准）"])
     assert "机器摘录" not in notice
+
+
+def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(
+    client, session, docs, monkeypatch
+):
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from youju.api import v1
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    original, duplicate, _ = docs
+    session.get(Document, original).url = "http://gxt.ln.gov.cn:443/1.html"
+    detail = session.scalar(select(DocumentDetail).where(DocumentDetail.document_id == duplicate))
+    detail.issuer = "安 徽 省 财 政 厅 福建省职称改革工作办公室"
+    session.commit()
+    response = client.post(
+        "/api/v1/exports",
+        json={"ids": [str(original)], "format": "xlsx", "excerpts": 1},
+    )
+    assert response.status_code == 200, response.text
+    book = load_workbook(BytesIO(response.content))
+    rows = [[cell.value for cell in row] for row in book["文件清单"].iter_rows()]
+    row = dict(zip(rows[0], rows[1], strict=False))
+    assert "推荐或审核截止 2026-10-20" in row["截止日期（以原文为准）"]
+    assert "原定 企业申报截止 2026-10-18 已延期" in row["截止日期（以原文为准）"]
+    assert row["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
+    assert row["发文机关"] == "安徽省财政厅、福建省职称改革工作办公室"
+    assert row["原文链接"] == "https://gxt.ln.gov.cn/1.html"
+
+
+def test_excerpt_export_only_falls_back_when_no_verified_deadline(
+    client, session, role_docs, monkeypatch
+):
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from youju.api import v1
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    _, unchecked, partial = role_docs
+    quote = "推荐或审核截止：2026年10月25日。"
+    pending = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == partial.id,
+            DocumentDeadline.status == "pending",
+        )
+    )
+    pending.candidate_date = date(2026, 10, 25)
+    pending.evidence = quote
+    detail = session.scalar(select(DocumentDetail).where(DocumentDetail.document_id == partial.id))
+    detail.body_text += quote
+    session.commit()
+    response = client.post(
+        "/api/v1/exports",
+        json={"ids": [str(partial.id), str(unchecked.id)], "format": "xlsx", "excerpts": 1},
+    )
+    assert response.status_code == 200, response.text
+    book = load_workbook(BytesIO(response.content))
+    rows = [[cell.value for cell in row] for row in book["文件清单"].iter_rows()]
+    records = {row[1]: dict(zip(rows[0], row, strict=False)) for row in rows[1:]}
+    assert records[partial.title]["截止日期（以原文为准）"] == "材料报送截止 2026-12-01"
+    assert records[partial.title]["日期角色"] == "材料报送截止"
+    assert "其他截止日期（以原文为准）" in records[partial.title]["未核项"]
+    assert records[unchecked.title]["截止日期（以原文为准）"] == "截止未核对，以原文为准"
+    assert "截止日期（以原文为准）" in records[unchecked.title]["未核项"]
+    assert "其他截止日期" not in records[unchecked.title]["未核项"]

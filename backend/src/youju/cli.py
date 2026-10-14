@@ -530,6 +530,19 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_check_links(args: argparse.Namespace) -> int:
+    from youju.link_check import check_links
+
+    with session_factory()() as session:
+        counts = check_links(session, limit=args.limit)
+    print(
+        f"检查原网页 {counts['checked']} 份：能打开 {counts['ok']}，"
+        f"第一次打不开待确认 {counts['suspect']}，确认失效 {counts['gone']}，"
+        f"暂时判断不了 {counts['unknown']}"
+    )
+    return 0
+
+
 def _cmd_archive_logs(args: argparse.Namespace) -> int:
     from youju.access_log import run_archive
     from youju.backup import BackupError
@@ -1047,6 +1060,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
     p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
     p.set_defaults(func=_cmd_backup)
+
+    p = sub.add_parser(
+        "check-links", help="检查近 90 天文件的原网页还能不能打开（失效的在小程序里提示）"
+    )
+    p.add_argument("--limit", type=int, default=400, help="这次最多检查几份")
+    p.set_defaults(func=_cmd_check_links)
 
     p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
     p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")

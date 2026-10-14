@@ -25,7 +25,7 @@ function query(params) {
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
-  const err = new Error(typeof detail === 'string' ? detail : (validation || `服务出错了（${res ? res.statusCode : '网络'}）`));
+  const err = new Error(typeof detail === 'string' ? detail : (validation || (res ? `服务暂时出错（${res.statusCode}），请稍后重试` : '网络连接失败，请检查网络后重试')));
   err.status = res ? res.statusCode : 0;
   return err;
 }
@@ -219,12 +219,13 @@ function coverage() {
 const EXCERPTS = { excerpts: 1 };
 // 首页（D-061）：本周统计和"7 天内截止"（dueSoon 只有核对过的，最多 5 条）来自 /home，
 // 下面的列表是最新的 8 份申报通知（和搜索同一口径，已剔除不是企业能报的杂项）。
-// 首页上只显示人工核对过的截止：列表那一请求不带 excerpts，不出现机器摘录的日期
+// 首页上只显示人工核对过的截止：列表那一请求不带 excerpts，不出现机器摘录的日期。
+// 不限发布时间（搜索默认只看近 30 天；一个月没有新通知时列表不该是空的，同首屏快照）
 function home() {
   if (isLive()) {
     return Promise.all([
       request('/api/v1/home', Object.assign({ group: 1 }, EXCERPTS)),
-      request('/api/v1/search', { kind: '申报通知', limit: 8, offset: 0, group: 1 }),
+      request('/api/v1/search', { kind: '申报通知', time: '不限', limit: 8, offset: 0, group: 1 }),
     ]).then(([h, latest]) => Object.assign({}, h, { items: latest.items || [] }));
   }
   return copy({ stats: mock.stats, items: mock.home.filter((d) => d.kind === '申报通知'), dueSoon: [], dueSoonUnverifiedTotal: 0 });

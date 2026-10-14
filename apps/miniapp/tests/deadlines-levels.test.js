@@ -126,6 +126,30 @@ test('截止页按月看的空状态：写已核对条数，给去搜索申报�
   assert.equal((await api.calendar()).verifiedTotal, 0);
 });
 
+test('按月看只能翻到有数据的月份：近 30 天到一年后，翻出去不误显示"没有截止日期"（10/15 全面测试）', async () => {
+  const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+    '../../utils/api.js': {
+      deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: { 7: 0, 14: 0, 30: 0 }, by_province: {}, verified_total: 0 }),
+      calendar: () => Promise.resolve({ items: [], past: [], verifiedTotal: 0 }),
+    },
+    '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+  }, { getApp: () => ({ globalData: {} }), wx: {} });
+  page.onLoad(); await flush();
+  page.pickTab(event({ key: 0 })); await flush();
+  const start = page.data.year * 12 + page.data.month;
+  assert.equal(page.data.canNext, true);
+  for (let i = 0; i < 20; i += 1) page.shiftMonth(event({ step: 1 }));
+  const last = page.data.year * 12 + page.data.month;
+  assert.ok(last - start >= 11 && last - start <= 12, String(last - start));
+  assert.equal(page.data.canNext, false);
+  for (let i = 0; i < 20; i += 1) page.shiftMonth(event({ step: -1 }));
+  const first = page.data.year * 12 + page.data.month;
+  assert.ok(start - first >= 0 && start - first <= 1, String(start - first));
+  assert.equal(page.data.canPrev, false);
+  assert.match(read('pages/report/index.wxml'), /arrow {{canPrev \? '' : 'arrow--off'}}/);
+});
+
 test('层级筛选：国家部委、省级、市级三项，条件带到接口、关注和返回搜索', async () => {
   const calls = [];
   const page = load('pages/search/index.js', {

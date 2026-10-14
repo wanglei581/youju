@@ -13,6 +13,7 @@ OVERVIEW_JOBS = (
     "round",
     "backup",
     "backup-verify",
+    "check-links",
     "archive-logs",
     "cleanup",
     "audit-deadlines",
