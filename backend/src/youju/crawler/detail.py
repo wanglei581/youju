@@ -10,6 +10,7 @@ from lxml import etree, html
 
 from youju.crawler.dates import parse_date_detail
 from youju.crawler.urls import normalize_url
+from youju.issuer import normalize_issuer
 
 _FILE_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "wps", "et", "zip", "rar", "ofd"}
 # 一篇通知收录的附件个数上限：正常通知不过几个到几十个，异常页面（整站文件目录等）不全收
@@ -38,13 +39,6 @@ _AGENCY = re.compile(
 )
 _AGENCY_END = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]+）)?$"
-)
-_BRANCH_AGENCIES = (
-    ("国家税务总局", "税务局"),
-    ("国家金融监督管理总局", "监管局"),
-    ("中国人民银行", "分行"),
-    ("国家外汇管理局", "分局"),
-    ("海关总署", "海关"),
 )
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
 _JUNK_CLASS = re.compile(
@@ -231,23 +225,17 @@ def _issuer(lines: list[str], root: etree._Element, prefix: str) -> str | None:
     ):
         value = match.group(1).strip()
         if _AGENCY_END.search(value):
-            return value
+            return normalize_issuer(value)
     for name in ("issuer", "publishingorganization", "contentSource"):
         value = _metadata(root, name)
         if value and len(value) <= 60 and _AGENCY_END.search(value):
-            return value
+            return normalize_issuer(value)
     return None
 
 
 def _split_issuer_line(line: str) -> str:
     """落款中的空格可分隔联合发文机关，也可只是总局与地方分支间的排版空格。"""
-    for parent, branch in _BRANCH_AGENCIES:
-        line = re.sub(
-            rf"({parent})\s+(?=[\u4e00-\u9fff]+{branch}(?:\s|、|$))",
-            r"\1",
-            line,
-        )
-    return re.sub(r"(?<=[厅局部委署关行])\s+(?=[\u4e00-\u9fff])", "、", line)
+    return normalize_issuer(line)
 
 
 def _doc_number(lines: list[str], root: etree._Element, prefix: str) -> str | None:

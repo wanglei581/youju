@@ -16,7 +16,7 @@ from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
-from youju.crawler.urls import host_of, url_key
+from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
 from youju.models import URL_KEY_MAX, Document, Source, SourceCheck
 from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
@@ -72,7 +72,7 @@ def save_items(
     rows = [
         {
             "source_id": source.id,
-            "url": item.url,
+            "url": public_url(item.url),
             "url_key": key,
             "title": item.title,
             # 一次插入多行时字段的自动默认值取不到本行的标题，这里直接按标题规则算好类型

@@ -247,7 +247,7 @@ test('查名单：比对范围取不到、手里也没有上次的，写明没�
   board[0].reject(new Error('网络不太好，请稍后再试')); await flush();
   assert.equal(page.data.scopeError, true);
   let root = render('pages/lists/index.wxml', page.data);
-  assert.match(textOf(root), /比对范围（拿哪些名单比的）没加载出来/);
+  assert.match(textOf(root), /比对范围没加载出来/);
   page.loadScope();
   assert.equal(page.data.scopeError, false);
   board[1].resolve({ stats: { by_type: [{ type: '其他', lists: 9, entries: 1 }] } }); await flush();

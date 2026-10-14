@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import time as _time
 from collections import OrderedDict, deque
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -37,9 +37,11 @@ from youju.classify import (
 from youju.conditions import public_conditions
 from youju.config import get_settings
 from youju.crawler.detail import redact_sensitive
+from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
+from youju.issuer import normalize_issuer
 from youju.lists.lookup import (
     ListLookupResult,
     lookup_list_matches,
@@ -444,6 +446,16 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
     return {"date": d.approved_date.isoformat(), "time": _hhmm(d.approved_time), "verified": True}
 
 
+def _link_gone(doc: Document) -> str | None:
+    """原网页确认失效的日期（北京时间）；能打开或还没确认的为 None（youju/link_check.py）。"""
+    gone = doc.link_gone_at
+    if gone is None:
+        return None
+    if gone.tzinfo is None:
+        gone = gone.replace(tzinfo=UTC)
+    return gone.astimezone(_TZ).date().isoformat()
+
+
 def _item(
     doc: Document,
     src: Source,
@@ -467,9 +479,12 @@ def _item(
         "city": src.city,
         "level": src.level,
         "title": doc.title,
-        "issuer": (detail.issuer if detail and detail.issuer else src.dept_full_name),
+        "issuer": normalize_issuer(
+            detail.issuer if detail and detail.issuer else src.dept_full_name
+        ),
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
-        "url": doc.url,
+        "url": public_url(doc.url),
+        "link_gone": _link_gone(doc),
         "deadline": _deadline_brief(deadlines[0] if deadlines else None),
         "deadline_state": deadline_state(deadlines, pending),
     }
@@ -497,7 +512,7 @@ def _items(
         views, soon, _ = deadline_excerpts.batch(session, ids, approved, now().date())
         for item in items:
             doc_id = int(item["id"])
-            due = deadline_excerpts.selected(views.get(doc_id, []))
+            due = deadline_excerpts.selected(views.get(doc_id, []), now().date())
             item["due"] = due.public(now().date()) if due else None
             item["dueSoonUnverified"] = soon.get(doc_id, False)
     if grouped:
@@ -604,13 +619,13 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
                     "region": _province_name(
                         src.city if src.level == "市级" and src.city else src.province
                     ),
-                    "issuer": (
+                    "issuer": normalize_issuer(
                         details[doc.id].issuer
                         if doc.id in details and details[doc.id].issuer
                         else src.dept_full_name
                     ),
                     "date": doc.publish_date.isoformat() if doc.publish_date else None,
-                    "url": doc.url,
+                    "url": public_url(doc.url),
                 }
                 for doc, src in members
                 if doc.id != doc_id
@@ -1335,7 +1350,8 @@ def _open_excerpt_ids(session: Session) -> list[int]:
         if kinds.get(doc_id) == "申报通知"
         and (
             (
-                (due := deadline_excerpts.selected(views.get(doc_id, []))) is not None
+                (due := deadline_excerpts.selected(views.get(doc_id, []), current.date()))
+                is not None
                 and due.day is not None
                 and (due.source == "excerpt" or _view_open(due, current))
             )
@@ -1390,7 +1406,9 @@ def _report_payload(
             {
                 "id": str(doc.id),
                 "title": doc.title,
-                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "issuer": normalize_issuer(
+                    detail.issuer if detail and detail.issuer else src.dept_full_name
+                ),
                 "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
                 "level": src.level,
@@ -1457,9 +1475,16 @@ def _report_payload_excerpts(
         if dept and _dept_bucket(src.dept) != dept:
             continue
         detail = details.get(doc.id)
-        issuer = detail[0] if detail and detail[0] else src.dept_full_name
-        due = deadline_excerpts.selected(views.get(doc.id, []))
-        if soon.get(doc.id, False):
+        issuer = normalize_issuer(detail[0] if detail and detail[0] else src.dept_full_name)
+        due = deadline_excerpts.selected(views.get(doc.id, []), today)
+        verified_soon = (
+            due is not None
+            and due.source == "verified"
+            and due.day is not None
+            and (due.day - today).days <= 7
+            and _view_open(due, current)
+        )
+        if soon.get(doc.id, False) and not verified_soon:
             soon_kind = next(
                 (view.kind for view in views.get(doc.id, []) if view.source == "unverified"),
                 "截止未核对",
@@ -1637,10 +1662,9 @@ def _list_board_payload(
     parsed_masters: set[int] = set()
     for document_id, normalized_name in entry_rows:
         master = owner.get(document_id)
-        if master is not None:
+        if master is not None and normalized_name:
             parsed_masters.add(master)
-            if normalized_name:
-                names_by_master[master].add(normalized_name)
+            names_by_master[master].add(normalized_name)
 
     records: list[dict[str, Any]] = []
     for doc, src in rows:
@@ -1662,7 +1686,9 @@ def _list_board_payload(
                 "title": doc.title,
                 "date": doc.publish_date.isoformat() if doc.publish_date else None,
                 "wording": wording,
-                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "issuer": normalize_issuer(
+                    detail.issuer if detail and detail.issuer else src.dept_full_name
+                ),
                 "province": item_province,
                 "city": src.city,
                 "level": src.level,
@@ -1678,14 +1704,15 @@ def _list_board_payload(
     def stat_rows(field: str) -> list[dict[str, Any]]:
         grouped: dict[str, list[int]] = {}
         for record in records:
+            if record["count"] is None:
+                continue
             value = record[field]
             if value is None:
                 continue
             key = str(value)
             current = grouped.setdefault(key, [0, 0])
             current[0] += 1
-            if record["count"] is not None:
-                current[1] += record["count"]
+            current[1] += record["count"]
         result = [
             _list_board_stats_item(
                 field, int(key) if field == "year" else key, values[0], values[1]
@@ -1872,7 +1899,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     # 申报条件（D-052 第④项）：只给整份人工确认过、和现在这版正文对得上的清单
     apply_conditions = public_conditions(session, doc.id) if kind == "申报通知" else None
     status_value = application_status(approved) if kind == "申报通知" else None
-    issuer = detail.issuer if detail and detail.issuer else src.dept_full_name
+    issuer = normalize_issuer(detail.issuer if detail and detail.issuer else src.dept_full_name)
     points = [["发文机关", issuer]]
     if detail and detail.doc_number:
         points.append(["文号", detail.doc_number])
@@ -1964,9 +1991,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "status": list_status(doc.title, kind),
         "app_status": status_value,
         "fields": fields,
-        "url": doc.url,
+        "url": public_url(doc.url),
+        "link_gone": _link_gone(doc),
         "original_urls": [
-            d.url
+            public_url(d.url)
             for d in session.scalars(
                 select(Document)
                 .where(Document.id.in_(group_ids(session, doc.id)))
@@ -2037,9 +2065,11 @@ def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[
                 "region": _province_name(
                     src.city if src.level == "市级" and src.city else src.province
                 ),
-                "issuer": detail.issuer if detail and detail.issuer else src.dept_full_name,
+                "issuer": normalize_issuer(
+                    detail.issuer if detail and detail.issuer else src.dept_full_name
+                ),
                 "date": version.publish_date.isoformat() if version.publish_date else None,
-                "url": version.url,
+                "url": public_url(version.url),
                 "deadlines": [
                     {
                         "label": d.kind,
@@ -2187,13 +2217,13 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
     upcoming, past, unverified = [], [], []
     for doc, src, detail_issuer in rows:
         kind = effective_kind(doc.title, doc.kind_override)
-        due = deadline_excerpts.selected(views.get(doc.id, []))
+        due = deadline_excerpts.selected(views.get(doc.id, []), today)
         if kind == "申报通知" and soon.get(doc.id, False):
             unverified.append(
                 {
                     "id": str(doc.id),
                     "title": doc.title,
-                    "issuer": detail_issuer or src.dept_full_name,
+                    "issuer": normalize_issuer(detail_issuer or src.dept_full_name),
                     "province": "国家部委" if src.province == "国家" else src.province,
                     "kind": next(
                         (v.kind for v in views[doc.id] if v.source == "unverified"), "截止未核对"
@@ -2435,7 +2465,9 @@ def snapshot(session: SessionDep) -> dict[str, Any]:
         }
     )
     first = home(anonymous, session, excerpts=1, group=1)
-    first["items"] = search(session, kind="申报通知", limit=8, offset=0, group=1)["items"]
+    first["items"] = search(session, kind="申报通知", time="不限", limit=8, offset=0, group=1)[
+        "items"
+    ]
     payload = {
         "generatedAt": current.astimezone(_TZ).isoformat(timespec="seconds"),
         "home": first,

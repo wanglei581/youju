@@ -24,9 +24,11 @@ from sqlalchemy.orm import Session
 
 from youju.classify import applicable_region, effective_kind, list_status, region_label
 from youju.config import get_settings
+from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
 from youju.export_notes import DEADLINE_HEADER, DISCLAIMER, SEARCH_NOTICE, add_excel_notes
+from youju.issuer import normalize_issuer
 from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentField, Source
 from youju.takedown import available_condition
 
@@ -56,6 +58,7 @@ NOTICE = (
 )
 EXCERPT_NOTICE = (
     f"“{DEADLINE_HEADER}”列中标“机器摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+    "机器摘录的“日期角色”也标有“（机器摘录）”，未经人工核对。"
 )
 
 
@@ -66,6 +69,9 @@ def _notice(excerpts: bool) -> str:
         NOTICE.replace(
             f"“{DEADLINE_HEADER}”列只列人工核对通过的记录，",
             f"“{DEADLINE_HEADER}”列包含人工核对过的和机器摘录的，",
+        ).replace(
+            "“日期角色”是人工核对时确认的截止类型；",
+            "“日期角色”标明截止类型，机器摘录的行另有标记；",
         )
         + EXCERPT_NOTICE
     )
@@ -125,7 +131,7 @@ def _unchecked(
 ) -> list[str]:
     """这一行还没有人工核对的关键字段（固定顺序）。只看核对状态，不按正文或标题推断。
 
-    - 截止日期（以原文为准）：没有核对过的截止（这一格写"见原文"）；已有核对过的、
+    - 截止日期（以原文为准）：没有核对过的截止；已有核对过的、
       但还有待核对的候选时写"其他截止日期（以原文为准）"（可能还有别的截止没核对）
     - 支持方式：只有申报通知有；没有核对通过的，或还有待核对（含正文变了要重核）的候选
     - 名单状态：只有名单有；只照录标题用词（D-018），没有人工核对这一步
@@ -318,17 +324,17 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 seen.add(key)
         kind = effective_kind(doc.title, doc.kind_override)
         excerpt_quote = ""
-        if excerpts and kind == "申报通知":
+        if excerpts and kind == "申报通知" and not (approved or changed):
             from youju.deadline_excerpts import selected
 
-            due = selected(excerpt_views.get(master, []))
+            due = selected(excerpt_views.get(master, []), v1.now().date())
             if due and due.day:
                 notes = [
                     due.day.isoformat()
                     + (f" {due.clock.strftime('%H:%M')}" if due.clock else "")
                     + ("（机器摘录）" if due.source == "excerpt" else "")
                 ]
-                roles = [due.kind]
+                roles = [due.kind + ("（机器摘录）" if due.source == "excerpt" else "")]
                 excerpt_quote = due.quote or ""
             elif excerpt_views.get(master):
                 notes = ["截止未核对，以原文为准"]
@@ -339,13 +345,13 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
         support = ("、".join(supports) or "见原文") if kind == "申报通知" else "—"
         unchecked = _unchecked(
             kind,
-            has_deadline=bool(notes),
+            has_deadline=bool(approved or changed),
             deadline_pending=master in pending_deadline,
             support_approved=bool(supports),
             support_pending=master in pending_support,
         )
         group = members[master]
-        urls = list(dict.fromkeys(item.url for item, _ in group))
+        urls = list(dict.fromkeys(public_url(item.url) for item, _ in group))
         sites = list(
             dict.fromkeys(
                 f"{src.dept_full_name}（{urlsplit(item.url).hostname or src.url}）"
@@ -364,7 +370,7 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 title=doc.title,
                 kind=kind,
                 status=list_status(doc.title, kind) or "",
-                issuer=(best[1] if best and best[1] else source.dept_full_name),
+                issuer=normalize_issuer(best[1] if best and best[1] else source.dept_full_name),
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",
                 region=(

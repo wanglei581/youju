@@ -3,7 +3,16 @@ from datetime import date
 import pytest
 
 from youju.crawler.dates import date_from_url, parse_date, parse_date_detail
-from youju.crawler.urls import normalize_url, page_dir, url_key
+from youju.crawler.urls import normalize_url, page_dir, public_url, url_key
+
+
+def test_http_443_is_https_only_for_that_port():
+    old = "http://example.gov.cn:443/a.html?q=1#part"
+    assert public_url(old) == "https://example.gov.cn/a.html?q=1#part"
+    assert normalize_url("https://example.gov.cn/", old) == "https://example.gov.cn/a.html?q=1"
+    assert public_url("http://example.gov.cn:80/a.html") == "http://example.gov.cn:80/a.html"
+    assert public_url("https://example.gov.cn:443/a.html") == "https://example.gov.cn:443/a.html"
+
 
 TODAY = date(2026, 9, 26)
 

@@ -90,6 +90,20 @@ def test_fetch_details_records_success_and_failures_once(session) -> None:
     assert len(fake.calls) == 3
 
 
+def test_fetch_details_normalizes_new_issuer_on_ingest(session) -> None:
+    doc = add_document(session, 12)
+    sample = (
+        "<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。"
+        "申报单位应按规定提交材料。</p><p>安 徽 省 财 政 厅 福建省职称改革工作办公室</p>"
+        "<p>2026年9月24日</p></div></body></html>"
+    )
+    fake = FakeFetcher(
+        {doc.url: FetchResult(doc.url, "ok", final_url=doc.url, http_status=200, text=sample)}
+    )
+    assert fetch_details(session, limit=1, fetcher=fake)[0].status == "ok"
+    assert session.get(DocumentDetail, doc.id).issuer == "安徽省财政厅、福建省职称改革工作办公室"
+
+
 def test_fetch_details_limit_source_rights_and_unsupported_url(session) -> None:
     first = add_document(session, 1)
     second = add_document(session, 2, source_id=first.source_id)
