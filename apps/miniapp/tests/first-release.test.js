@@ -521,3 +521,22 @@ test('截止核对断档（定稿方案第八节）：3 个及以上工作日没
   assert.equal(findAll(root, hasClass('soon-stale')).length, 0);
 });
 
+test('协议页（民法典第 496 条，10/14）：每份文件顶部列出重点条款，正文里对应的段落加粗', () => {
+  const legal = require('../content/legal.js');
+  const page = load('pages/agreement/index.js', {
+    '../../content/legal.js': { ...legal, final: true },
+    '../../utils/api.js': { agree: () => Promise.resolve({}) },
+    '../../utils/consent.js': { consentOpen: () => true, markAgreed() {}, loginOpen: () => true },
+  }, { wx: { setNavigationBarTitle() {}, showToast() {}, navigateBack() {}, switchTab() {} } });
+  page.onLoad({ consent: '1' });
+  const root = render('pages/agreement/index.wxml', page.data);
+  const boxes = findAll(root, hasClass('keybox'));
+  assert.equal(boxes.length, 2);
+  assert.match(flat(boxes[0]), /请重点阅读.*依法有管辖权的人民法院起诉/);
+  const bold = findAll(root, hasClass('sec-p--key')).map((n) => flat(n));
+  for (const head of ['3.核对与责任：', '3.账号注销：', '5.上传名单：', '2.若您与我们因本协议', '8.访问日志：', '5.其他请求']) {
+    assert.ok(bold.some((t) => t.startsWith(head)), head);
+  }
+  assert.equal(bold.length, legal.user.keyParagraphs.length + legal.privacy.keyParagraphs.length);
+});
+
