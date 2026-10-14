@@ -8,3 +8,8 @@
 .intro { padding: 24rpx 32rpx; font-size: 26rpx; line-height: 1.7; color: var(--t2); }
 .agree { margin: 40rpx 32rpx 0; }
 .agree--off { opacity: 0.5; }
+.sec-p--key { font-weight: 600; }
+.keybox { margin-top: 20rpx; padding: 20rpx 24rpx; background: var(--o-tint); border-radius: 16rpx; }
+.keybox-h { font-size: 26rpx; font-weight: 600; color: var(--o-txt); }
+.keybox-p { margin-top: 8rpx; font-size: 25rpx; line-height: 1.7; color: var(--t1); }
+

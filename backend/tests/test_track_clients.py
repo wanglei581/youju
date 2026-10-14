@@ -233,7 +233,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "发布日期",
         "截止核对情况",
         "截止类型",
-        "截止日期",
+        "截止日期（以原文为准）",
         "截止原文句子",
         "剩余天数",
         "支持方式",
@@ -242,6 +242,8 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     # 截止日期一列只写日期：没核对的留空，核对情况另写一列
     assert sheet["E3"].value == (stamp.date() - timedelta(days=1)).isoformat()
     assert sheet["F3"].value == "未核对，请以原文为准"
+    assert "“截止日期（以原文为准）”列" in sheet["A1"].value
+    assert sheet.column_dimensions["H"].width == 28
     assert sheet["G3"].value is None and sheet["H3"].value is None and sheet["I3"].value is None
     # 汇总：一条都没核对时，“N 天内截止”写“未核对”，不写 0（0 会被看成没有快截止的）
     summary = book["汇总"]
@@ -328,6 +330,7 @@ def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
     output = tmp_path / "excerpt.xlsx"
     export_track_excel(report, output)
     book = load_workbook(output)
+    assert book["客户相关通知"]["H2"].value == "截止日期（以原文为准）"
     row = [cell.value for cell in book["客户相关通知"][3]]
     assert row[5:10] == ["机器摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
     summary = [cell.value for cell in book["汇总"][3]]

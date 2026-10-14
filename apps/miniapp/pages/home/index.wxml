@@ -81,6 +81,7 @@
   <view class="card-head" data-url="/pages/report/index" bindtap="goEntry">
     <text class="card-title">7 天内截止</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text>
   </view>
+  <view wx:if="{{reviewNote}}" class="soon-stale">{{reviewNote}}</view>
   <view wx:for="{{soon}}" wx:key="id" class="soon-item" data-id="{{item.id}}" bindtap="openDoc">
     <view class="soon-title">{{item.title}}</view>
     <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text></view>

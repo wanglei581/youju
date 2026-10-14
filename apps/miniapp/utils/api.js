@@ -154,7 +154,7 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    // 15 秒（走 admin 的只读请求 8 秒）没有返回就算超时
+    // 15 秒（走 admin 的只读请求 30 秒，8 秒没回会同时问接口服务）没有返回就算超时
     const timer = setTimeout(() => finish(reject, timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 204;
     const done = (res) => {

@@ -176,7 +176,29 @@ function shortTime(iso) {
   return `${year}${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${hm}`;
 }
 
+// 截止核对断档（定稿方案第八节）：最近一次人工核对截止之后，已经过了 3 个及以上工作日（周一到周五，
+// 不扣节假日）没再核对，首页写"今日未更新"；从没核对过也写。reviewedAt 是后端给的带时区的时间。
+const STALE_WORKDAYS = 3;
+function workdaysSince(iso, now) {
+  const today = parseISO(todayISO(now));
+  let count = 0;
+  for (let t = parseISO(iso).getTime() + 86400000; t <= today.getTime() && count < STALE_WORKDAYS; t += 86400000) {
+    const day = new Date(t).getUTCDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+function reviewStaleNote(reviewedAt, now) {
+  if (!reviewedAt) return '今日未更新：截止日期还没有人工核对';
+  const stamp = Date.parse(reviewedAt);
+  if (Number.isNaN(stamp)) return '';
+  const day = todayISO(new Date(stamp));
+  if (workdaysSince(day, now) < STALE_WORKDAYS) return '';
+  return `今日未更新：截止日期最近一次人工核对是 ${monthDay(day)}`;
+}
+
 module.exports = {
+  reviewStaleNote,
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
   deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,

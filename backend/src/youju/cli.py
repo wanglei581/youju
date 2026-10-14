@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import tempfile
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -491,6 +492,39 @@ def _cmd_restore(args: argparse.Namespace) -> int:
     finally:
         engine.dispose()
     print(f"已恢复 {sum(counts.values())} 条记录，各表条数、外键和内容都和备份一致：")
+    for name, count in counts.items():
+        print(f"  {name}: {count}")
+    return 0
+
+
+def _cmd_backup_verify(args: argparse.Namespace) -> int:
+    from youju.backup import BackupError, download_latest, verify
+    from youju.db import create_mysql_engine
+
+    settings = get_settings()
+    if not args.file and not settings.cloud_env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法下载备份")
+        return 1
+    engine = create_mysql_engine(settings.database_url)
+    try:
+        if args.file:
+            with args.file.open("rb") as src:
+                counts = verify(engine, src)
+            path = str(args.file)
+        else:
+            import httpx
+
+            with tempfile.TemporaryDirectory() as tmp, httpx.Client(trust_env=False) as client:
+                local = Path(tmp) / "backup.jsonl.gz"
+                path = download_latest(client, settings.cloud_env, local)
+                with local.open("rb") as src:
+                    counts = verify(engine, src)
+    except (BackupError, OSError) as exc:
+        print(f"备份校验失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"备份校验通过：{path}，共 {sum(counts.values())} 条记录")
     for name, count in counts.items():
         print(f"  {name}: {count}")
     return 0
@@ -1013,6 +1047,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("backup", help="备份数据库：导出整库，上传到云托管对象存储，保留 30 天")
     p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
     p.set_defaults(func=_cmd_backup)
+
+    p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
+    p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")
+    p.set_defaults(func=_cmd_backup_verify)
 
     p = sub.add_parser(
         "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
