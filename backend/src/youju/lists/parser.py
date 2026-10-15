@@ -20,6 +20,32 @@ _CODE_HEADERS = ("统一社会信用代码", "统一信用代码", "社会信用
 _REGION_HEADERS = ("所在地", "注册地", "所属地区", "所属区市", "地区", "地市", "区县", "所属区县")
 _PERSON_HEADERS = ("联系人", "法定代表人", "负责人", "姓名", "电话", "身份证", "手机号", "银行账号")
 _MAX_ROWS = 100_000
+_MAX_COLUMNS = 256
+_MAX_CELLS = 1_000_000
+_MAX_TEXT_CHARS = 8 * 1024 * 1024
+
+
+@dataclass
+class _TableBudget:
+    # 整份文件共用预算；稀疏 Excel 的声明范围也可能展开成巨大的空矩阵。
+    rows: int = 0
+    cells: int = 0
+    text_chars: int = 0
+
+    def read(self, rows: Iterable[list[object] | tuple[object, ...]]) -> list[list[object]]:
+        result = []
+        for row in rows:
+            self.rows += 1
+            self.cells += len(row)
+            if len(row) > _MAX_COLUMNS or self.rows > _MAX_ROWS or self.cells > _MAX_CELLS:
+                raise ValueError("暂不支持超过安全解析预算的表格（行列或单元格过多）")
+            self.text_chars += sum(len(str(value)) for value in row if value is not None)
+            if self.text_chars > _MAX_TEXT_CHARS:
+                raise ValueError("暂不支持超过安全解析预算的表格（文字过多）")
+            result.append(list(row))
+        return result
+
+
 # 单个超长 PDF 的逐页表格识别很耗时；最多处理前 300 页，避免阻塞整批回填。
 MAX_PDF_PAGES = 300
 _MAX_ZIP_UNCOMPRESSED = 100 * 1024 * 1024
@@ -71,13 +97,21 @@ def _header_index(headers: list[str], terms: tuple[str, ...]) -> int | None:
 def parse_table_rows(
     rows: Iterable[list[object] | tuple[object, ...]],
     pick_name_column: NameColumnPicker | None = None,
+    *,
+    _budget: _TableBudget | None = None,
 ) -> list[ParsedEntry]:
     """仅在明确的企业/机构名称表头之下抽取，避免把人员名单误收。
 
     规则一条也没抽到、又传了 pick_name_column 时，请 AI 认出名称列再抽（见 youju.ai.tables）；
     抽出的名称同样要通过机构名称规则。
     """
-    materialized = [list(row) for row in islice(rows, _MAX_ROWS)]
+    materialized = (_budget or _TableBudget()).read(rows)
+    return _parse_bounded_rows(materialized, pick_name_column)
+
+
+def _parse_bounded_rows(
+    materialized: list[list[object]], pick_name_column: NameColumnPicker | None
+) -> list[ParsedEntry]:
     output = _rule_entries(materialized)
     if output or pick_name_column is None:
         return output
@@ -186,11 +220,12 @@ def parse_html_tables(
 ) -> list[ParsedEntry]:
     root = html.fromstring(text)
     entries: list[ParsedEntry] = []
+    budget = _TableBudget()
     for table in root.xpath("//table[not(ancestor::table)]"):
-        rows = [
+        rows = (
             [cell.text_content() for cell in tr.xpath("./th|./td")] for tr in table.xpath(".//tr")
-        ]
-        entries.extend(parse_table_rows(rows, pick_name_column))
+        )
+        entries.extend(parse_table_rows(rows, pick_name_column, _budget=budget))
     return _unique(entries)
 
 
@@ -216,6 +251,7 @@ def parse_attachment_result(
     extension = extension.lower().lstrip(".")
     entries: list[ParsedEntry] = []
     failure_reason = None
+    budget = _TableBudget()
     if extension == "pdf":
         if not data.startswith(b"%PDF-"):
             raise ValueError("不是 PDF 文件")
@@ -226,46 +262,75 @@ def parse_attachment_result(
             if page_count > MAX_PDF_PAGES:
                 failure_reason = f"PDF 共{page_count}页，仅解析前{MAX_PDF_PAGES}页"
             for page in islice(pdf.pages, MAX_PDF_PAGES):
-                has_text = has_text or bool((page.extract_text() or "").strip())
-                tables = page.extract_tables()
-                for table in tables:
-                    rows.extend(table)
-                if not tables:
-                    for table in page.extract_tables(
-                        table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
-                    ):
-                        rows.extend(table)
+                try:
+                    has_text = has_text or bool((page.extract_text() or "").strip())
+                    tables = page.extract_tables()
+                    if not tables:
+                        tables = page.extract_tables(
+                            table_settings={
+                                "vertical_strategy": "text",
+                                "horizontal_strategy": "text",
+                            }
+                        )
+                    for table in tables:
+                        rows.extend(budget.read(table))
+                finally:
+                    # pdfplumber 缓存布局和文本对象；异常或超预算也必须释放当前页。
+                    page.close()
             if not has_text:
                 reason = f"；{failure_reason}" if failure_reason else ""
                 raise ValueError(f"暂不支持扫描件{reason}")
-            entries.extend(parse_table_rows(rows, pick_name_column))
+            entries.extend(_parse_bounded_rows(rows, pick_name_column))
     elif extension == "xlsx":
         _check_zip(data)
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
             for sheet in workbook.worksheets:
+                # dimension 可缺失或不准确。重置后缺失行为空，不按声明宽度补齐矩阵，
+                # 也不因过小声明漏掉真实数据；实际行、列仍由共享预算拒绝。
+                sheet.reset_dimensions()
                 entries.extend(
-                    parse_table_rows(sheet.iter_rows(values_only=True), pick_name_column)
+                    parse_table_rows(
+                        sheet.iter_rows(values_only=True), pick_name_column, _budget=budget
+                    )
                 )
         finally:
             workbook.close()
     elif extension == "xls":
-        workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
-        for sheet in workbook.sheets():
-            entries.extend(
-                parse_table_rows(
-                    [sheet.row_values(i) for i in range(min(sheet.nrows, _MAX_ROWS))],
-                    pick_name_column,
-                )
-            )
-        workbook.release_resources()
+        workbook = xlrd.open_workbook(file_contents=data, on_demand=True, ragged_rows=True)
+        try:
+            # sheets() 会同时加载全部工作表；ragged_rows 防止稀疏短行补齐到最宽列。
+            for index in range(workbook.nsheets):
+                sheet = workbook.sheet_by_index(index)
+                try:
+                    if sheet.ncols > _MAX_COLUMNS or sheet.nrows > _MAX_ROWS:
+                        raise ValueError("暂不支持超过安全解析预算的表格（声明行列过多）")
+                    entries.extend(
+                        parse_table_rows(
+                            (sheet.row_values(i) for i in range(sheet.nrows)),
+                            pick_name_column,
+                            _budget=budget,
+                        )
+                    )
+                finally:
+                    workbook.unload_sheet(index)
+        finally:
+            workbook.release_resources()
     elif extension == "docx":
         _check_zip(data)
         document = DocxDocument(io.BytesIO(data))
         for table in document.tables:
+            # python-docx 的 row.cells 会按 gridSpan 展开引用；先检查原始 XML，
+            # 避免一格声明超大横向合并就在预算生效前制造巨型 tuple。
+            for row in table.rows:
+                spans = [cell.grid_span for cell in row._tr.tc_lst]
+                if any(span < 1 for span in spans) or sum(spans) > _MAX_COLUMNS:
+                    raise ValueError("暂不支持超过安全解析预算的表格（合并列过多）")
             entries.extend(
                 parse_table_rows(
-                    [[cell.text for cell in row.cells] for row in table.rows], pick_name_column
+                    ([cell.text for cell in row.cells] for row in table.rows),
+                    pick_name_column,
+                    _budget=budget,
                 )
             )
     elif extension in {"doc", "wps", "et", "ofd"}:
