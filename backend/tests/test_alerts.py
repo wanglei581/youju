@@ -29,9 +29,9 @@ def test_webhook_is_masked_in_settings_repr() -> None:
 def test_alert_without_webhook(monkeypatch, caplog, capsys) -> None:
     monkeypatch.setattr(alerts, "get_settings", lambda: SimpleNamespace(alert_webhook=None))
     with caplog.at_level(logging.INFO):
-        assert cli.main(["alert", "测试"]) == 0
+        assert cli.main(["alert", "测试"]) == 1
     assert "未配置提醒，跳过" in caplog.text
-    assert capsys.readouterr().out == ""
+    assert "未配置告警，消息未发送" in capsys.readouterr().out
 
 
 def test_alert_posts_text_and_limits_utf8_bytes(monkeypatch, caplog, capsys) -> None:
