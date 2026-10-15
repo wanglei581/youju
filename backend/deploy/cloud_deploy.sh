@@ -51,7 +51,7 @@ case "$ENV_ID" in
 esac
 
 ROOT=$(git rev-parse --show-toplevel)
-SHA=$(git -C "$ROOT" rev-parse --short --verify "$REV^{commit}")
+SHA=$(git -C "$ROOT" rev-parse --verify --end-of-options "$REV^{commit}")
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -70,6 +70,8 @@ git -C "$ROOT" archive -o "$STAGE/src.tar" "$SHA" $PATHS
 IFS=$OLD_IFS
 tar -x -f "$STAGE/src.tar" -C "$STAGE"
 rm "$STAGE/src.tar"
+# 镜像内保留完整来源提交；探针不依赖部署时手填环境变量。
+python3 "$ROOT/tools/release/write_build.py" --revision "$SHA" --output "$STAGE/backend/src/youju/_build.json"
 find "$STAGE" -name __pycache__ -prune -exec rm -rf {} +
 
 # 发布前查一遍：像密钥、口令、机器人地址、带口令的连接地址（任何数据库或服务）的内容一律不上传

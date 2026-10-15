@@ -15,3 +15,6 @@ backend/.pgdata.log
 backend/.mysql/
 .ruff_cache/
 .pytest_cache/
+
+# 构建时写入来源版本，不把生成物提交成过时的SHA。
+backend/src/youju/_build.json
