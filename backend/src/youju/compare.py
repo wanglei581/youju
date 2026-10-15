@@ -73,6 +73,7 @@ class ListMatch:
     batch: str = ""
     sequence: str = ""
     region: str = ""
+    district: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -83,6 +84,7 @@ class ListMatch:
             "issuer": self.issuer,
             "province": self.province,
             "city": self.city,
+            "district": self.district,
             "level": self.level,
             "name": self.name,
             "credit_code": self.credit_code,
@@ -347,7 +349,18 @@ def _input_rows(values: Iterable[str]) -> tuple[list[tuple[str, str, str]], list
 def _make_match(
     entry: ListLookupMatch,
     document: tuple[
-        int, str, date | None, str, str | None, str, str, str | None, str | None, str | None, str
+        int,
+        str,
+        date | None,
+        str,
+        str | None,
+        str,
+        str,
+        str | None,
+        str | None,
+        str | None,
+        str,
+        str | None,
     ],
 ) -> ListMatch:
     (
@@ -362,6 +375,7 @@ def _make_match(
         kind_override,
         city,
         level,
+        district,
     ) = document
     kind = effective_kind(title, kind_override)
     issuer = issuer or dept_full_name or ""
@@ -373,6 +387,7 @@ def _make_match(
         issuer=issuer,
         province=province,
         city=city or "",
+        district=district or "",
         level=level,
         name=entry.name,
         credit_code=entry.credit_code or "",
@@ -403,6 +418,7 @@ def _canonical_metadata(session: Session, ids: set[int]):
             Document.kind_override,
             Source.city,
             Source.level,
+            Source.district,
         )
         .join(Source, Source.id == Document.source_id)
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
@@ -516,6 +532,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         "批次",
         "名单序号",
         "名单中企业地区",
+        "区县",
     ]
     detail.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     for col, header in enumerate(headers, 1):
@@ -546,6 +563,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
                 match.batch if match else "",
                 match.sequence if match else "",
                 match.region if match else "",
+                match.district if match else "",
             ]
             for col, value in enumerate(values, 1):
                 detail.cell(row_count + 3, col, _safe_cell(value))

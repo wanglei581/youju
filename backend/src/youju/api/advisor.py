@@ -165,6 +165,7 @@ def _file_rows(body: TaskIn) -> list[Any]:
                     "name": row.name,
                     "province": row.province,
                     "city": row.city,
+                    **({"district": row.district} if row.district else {}),
                     "keywords": list(row.keywords),
                     "supports": list(row.supports),
                 }
@@ -375,6 +376,8 @@ def create_task(
         # 不填城市时保留旧任务输入合同，部署后同一幂等键仍可返回原任务。
         if not input_json["company"].get("city"):
             input_json["company"].pop("city", None)
+        if not input_json["company"].get("district"):
+            input_json["company"].pop("district", None)
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key

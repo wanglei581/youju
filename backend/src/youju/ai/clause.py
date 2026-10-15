@@ -125,6 +125,7 @@ class Company(Structured):
     established: date | None = None
     region: str | None = Field(default=None, strict=True)
     city: str | None = Field(default=None, strict=True, max_length=32)
+    district: str | None = Field(default=None, strict=True, max_length=32)
     revenue: Amount | None = None
     rd: Amount | None = None
     employees: Annotated[int, Field(ge=0, le=1_000_000, strict=True)] | None = None
@@ -147,8 +148,19 @@ class Company(Structured):
 
     @model_validator(mode="after")
     def city_with_province(self):
-        if self.city and (not self.region or re.search(r"[/,，;；\n\r]", self.city)):
+        from youju.regions import checked_area_name, district_parent_city
+
+        # 保留 None/空的旧请求合同；任何非空城市、区县都使用同一单名称约束。
+        if self.city is not None:
+            self.city = checked_area_name(self.city, "城市")
+        if self.district is not None:
+            self.district = checked_area_name(self.district, "区县")
+        if self.city and not self.region:
             raise ValueError("填写城市时须提供省份，城市须为单个城市名称")
+        if self.district:
+            if not self.region or not self.city:
+                raise ValueError("填写区县时须提供所属省份和城市")
+            self.city = district_parent_city(self.region, self.city)
         return self
 
 
@@ -185,7 +197,11 @@ def with_company(result: dict, input_json: dict | None) -> dict:
     result = notification_result(result)
     company = dict((input_json or {}).get("company") or {})
     if company.get("region") and company.get("city"):
-        company["region"] = f"{company['region']} · {company['city']}"
+        company["region"] = " · ".join(
+            dict.fromkeys(
+                v for v in [company["region"], company["city"], company.get("district")] if v
+            )
+        )
     for row in result["rows"]:
         row["company"] = [
             {

@@ -856,15 +856,23 @@ def dept_group(dept: str) -> str:
     return "其他部门"
 
 
-def region_label(province: str, level: str, city: str | None = None) -> str:
+def region_label(
+    province: str, level: str, city: str | None = None, district: str | None = None
+) -> str:
     """列表上显示的地区：国家级来源显示"国家"，省级"省份 · 级别"，市级"城市 · 级别"。"""
     if province == "国家":
         return "国家"
+    if level == "区县级" and district:
+        return f"{city}·{district} · {level}"
     return f"{city if level == '市级' and city else province} · {level}"
 
 
-def applicable_region(province: str, level: str, city: str | None = None) -> str:
+def applicable_region(
+    province: str, level: str, city: str | None = None, district: str | None = None
+) -> str:
     """详情要点和导出保留市级来源的所属省份。"""
     if province == "国家":
         return "全国"
+    if level == "区县级" and city and district:
+        return "·".join(dict.fromkeys([province, city, district]))
     return f"{province}·{city}" if level == "市级" and city else province

@@ -775,9 +775,10 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
     assert session.get(Subscription, d).errcode == 43101
 
 
+@pytest.mark.parametrize("area_kind", ["city", "district"])
 @pytest.mark.parametrize("field,value", [("enabled", False), ("last_success_at", None)])
 def test_unavailable_city_follow_remains_visible_and_home_keeps_valid_counts(
-    client, session, monkeypatch, field, value
+    client, session, monkeypatch, field, value, area_kind
 ):
     settings(monkeypatch)
     agree(client)
@@ -785,8 +786,12 @@ def test_unavailable_city_follow_remains_visible_and_home_keeps_valid_counts(
     city_source = session.get(Source, city_doc.source_id)
     city_source.province, city_source.city, city_source.level = "山东", "青岛市", "市级"
     city_source.last_success_at = NOW
+    area = {"cities": "山东/青岛"}
+    if area_kind == "district":
+        city_source.level, city_source.district = "区县级", "市南区"
+        area = {"districts": "山东/青岛/市南区"}
     session.commit()
-    city_follow = follow(client, {"cities": "山东/青岛", "time": "不限"})
+    city_follow = follow(client, {**area, "time": "不限"})
     assert city_follow.status_code == 201
     city_id = city_follow.json()["id"]
     source_and_doc(session, title="合成北京通知")
@@ -856,9 +861,10 @@ def test_follow_views_do_not_hide_infrastructure_failure(
     assert caught.value is error
 
 
+@pytest.mark.parametrize("area_kind", ["city", "district"])
 @pytest.mark.parametrize("send", [False, True])
 def test_notify_unavailable_city_keeps_authorization_and_continues(
-    client, session, monkeypatch, caplog, send
+    client, session, monkeypatch, caplog, send, area_kind
 ):
     settings(monkeypatch)
     agree(client)
@@ -866,8 +872,12 @@ def test_notify_unavailable_city_keeps_authorization_and_continues(
     city_source = session.get(Source, city_doc.source_id)
     city_source.province, city_source.city, city_source.level = "山东", "青岛市", "市级"
     city_source.last_success_at = NOW
+    area = {"cities": "山东/青岛"}
+    if area_kind == "district":
+        city_source.level, city_source.district = "区县级", "市南区"
+        area = {"districts": "山东/青岛/市南区"}
     session.commit()
-    city_follow = follow(client, {"cities": "山东/青岛", "time": "不限"})
+    city_follow = follow(client, {**area, "time": "不限"})
     assert city_follow.status_code == 201, city_follow.text
     source_and_doc(session, title="合成北京项目通知")
     valid_follow = follow(client, {"regions": "北京", "time": "不限"})

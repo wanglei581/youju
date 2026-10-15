@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youju.models import URL_KEY_MAX, Source
-from youju.sources.onboard import checked_city
+from youju.regions import district_parent_city
+from youju.sources.onboard import checked_city, checked_district
 
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
@@ -69,10 +70,14 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
         fetch_mode, enabled = mode_for(status)
         try:
             city = checked_city(row["层级"].strip(), row.get("城市"))
+            district = checked_district(row["层级"].strip(), row.get("区县"))
+            if district:
+                city = district_parent_city(row["省份"].strip(), city)
         except ValueError as exc:
             raise ValueError(f"来源清单第 {line} 行：{exc}") from exc
         fields = {
             "city": city,
+            "district": district,
             "level": row["层级"].strip(),
             "province": row["省份"].strip(),
             "dept": row["部门"].strip(),

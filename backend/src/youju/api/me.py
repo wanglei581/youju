@@ -133,6 +133,7 @@ class Conditions(BaseModel):
     kind: str = "all"
     regions: str | None = Field(default=None, max_length=400)
     cities: str | None = Field(default=None, max_length=2000)
+    districts: str | None = Field(default=None, max_length=4000)
     types: str | None = Field(default=None, max_length=400)
     status: str | None = Field(default=None, max_length=400)
     time: str = "近 30 天"

@@ -126,9 +126,10 @@ class Source(Base):
     __tablename__ = "sources"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    level: Mapped[str] = mapped_column(String(16))  # 国家级 / 省级 / 市级
+    level: Mapped[str] = mapped_column(String(16))  # 国家级 / 省级 / 市级 / 区县级
     province: Mapped[str] = mapped_column(String(32))  # 国家级来源填"国家"
-    city: Mapped[str | None] = mapped_column(String(32))  # 市级来源填城市简称，其余为空
+    city: Mapped[str | None] = mapped_column(String(32))  # 市级及区县级来源的父城市
+    district: Mapped[str | None] = mapped_column(String(32))  # 仅区县级填写，不推断历史来源
     dept: Mapped[str] = mapped_column(String(32))  # 部门简称：科技、工信、发改委……
     dept_full_name: Mapped[str] = mapped_column(String(128))
     column_name: Mapped[str] = mapped_column(String(64))

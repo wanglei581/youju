@@ -243,6 +243,8 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "客户省份",
         "客户城市",
         "查询说明",
+        "区县",
+        "客户区县",
     ]
     # 截止日期一列只写日期：没核对的留空，核对情况另写一列
     assert sheet["E3"].value == (stamp.date() - timedelta(days=1)).isoformat()
@@ -263,6 +265,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "客户省份",
         "客户城市",
         "查询说明",
+        "客户区县",
     ]
     assert [cell.value for cell in summary[3]][:7] == [
         "客户",

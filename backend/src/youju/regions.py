@@ -36,3 +36,48 @@ def resolve_city(province: str, city: str, covered: Collection[tuple[str, str]])
         name for area, name in covered if area == province and city_key(name) == city_key(city)
     }
     return next(iter(aliases)) if len(aliases) == 1 else None
+
+
+MUNICIPALITIES = {"北京", "天津", "上海", "重庆"}
+
+
+def checked_area_name(value: str | None, label: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{label}须填写文字")
+    value = value.strip()
+    if len(value) > 32 or any(c in value for c in "/\\,，;；、|\t\n\r"):
+        raise ValueError(f"{label}须为单个名称，最多32字")
+    return value
+
+
+def district_parent_city(province: str, city: str) -> str:
+    if province in MUNICIPALITIES and (city_key(city) == province or city in {"市辖区", "县"}):
+        return province
+    return city
+
+
+def covered_district_scopes(session: Session) -> set[tuple[str, str, str]]:
+    return set(
+        session.execute(
+            select(Source.province, Source.city, Source.district).where(
+                Source.enabled.is_(True),
+                Source.last_success_at.is_not(None),
+                Source.level == "区县级",
+                Source.city.is_not(None),
+                Source.city != "",
+                Source.district.is_not(None),
+                Source.district != "",
+            )
+        ).all()
+    )
+
+
+def resolve_district(
+    province: str, city: str, district: str, covered: Collection[tuple[str, str, str]]
+) -> tuple[str, str] | None:
+    city = district_parent_city(province, city)
+    parents = {(p, c) for p, c, d in covered if d == district}
+    resolved = resolve_city(province, city, parents)
+    return (resolved, district) if resolved is not None else None

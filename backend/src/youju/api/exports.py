@@ -323,7 +323,9 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 roles.append(f"{d.kind}（已{d.change_reason}）")
                 seen.add(key)
         kind = effective_kind(doc.title, doc.kind_override)
-        excerpt_quote = ""
+        excerpt_quote = "\n".join(
+            dict.fromkeys(d.evidence for d in [*approved, *changed] if d.evidence)
+        )
         if excerpts and kind == "申报通知" and not (approved or changed):
             from youju.deadline_excerpts import selected
 
@@ -374,9 +376,9 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 doc_number=(best[2] if best and best[2] else ""),
                 published=doc.publish_date.isoformat() if doc.publish_date else "",
                 region=(
-                    applicable_region(source.province, source.level, source.city)
-                    if source.level == "市级"
-                    else region_label(source.province, source.level)
+                    applicable_region(source.province, source.level, source.city, source.district)
+                    if source.level in ("市级", "区县级")
+                    else region_label(source.province, source.level, source.city, source.district)
                 ),
                 deadline="；".join(notes) if notes else "见原文",
                 date_role="；".join(dict.fromkeys(roles)) if roles else ROLE_SEE_ORIGINAL,
@@ -405,7 +407,7 @@ def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
     sheet = book.active
     sheet.title = "文件清单"
     max_urls = max(len(item.urls) for item in items)
-    headings = [*HEADERS, *(["截止原文句子"] if excerpts else [])]
+    headings = [*HEADERS, "截止原文句子"]
     headers = [*headings, "原文链接", *(f"原文链接 {n}" for n in range(2, max_urls + 1))]
     for column, title in enumerate(headers, 1):
         _cell(sheet, 1, column, title)
@@ -424,7 +426,7 @@ def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             item.date_role,
             item.support,
             item.unchecked,
-            *([item.deadline_quote] if excerpts else []),
+            item.deadline_quote,
             *item.urls,
         )
         for column, value in enumerate(values, 1):
@@ -506,7 +508,7 @@ def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             ("发布日期", item.published),
             ("地区", item.region),
             (DEADLINE_HEADER, item.deadline),
-            *([("截止原文句子", item.deadline_quote)] if excerpts else []),
+            ("截止原文句子", item.deadline_quote),
             ("日期角色", item.date_role),
             ("支持方式", item.support),
             ("未核项", item.unchecked),

@@ -205,10 +205,11 @@ class Candidate:
     publish_date: date | None
     body_head: str = ""
     city: str | None = None
+    district: str | None = None
 
     @property
-    def agency(self) -> tuple[str, str | None, str]:
-        return (self.province, self.city, self.dept)
+    def agency(self) -> tuple[str, str | None, str | None, str]:
+        return (self.province, self.city, self.district, self.dept)
 
 
 @dataclass
@@ -412,6 +413,7 @@ def load_candidates(session: Session) -> list[Candidate]:
             Document.publish_date,
             Source.province,
             Source.city,
+            Source.district,
             Source.dept,
             func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
         )
@@ -431,11 +433,12 @@ def load_candidates(session: Session) -> list[Candidate]:
             kind=effective_kind(title, override),
             province=province,
             city=city,
+            district=district,
             dept=dept,
             publish_date=published,
             body_head=body or "",
         )
-        for doc_id, title, override, published, province, city, dept, body in rows
+        for doc_id, title, override, published, province, city, district, dept, body in rows
     ]
 
 
@@ -466,7 +469,7 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
         .where(Document.id.in_(ids))
         .execution_options(populate_existing=True)
     ):
-        info[doc.id] = ((src.province, src.city, src.dept), doc.publish_date)
+        info[doc.id] = ((src.province, src.city, src.district, src.dept), doc.publish_date)
         values = [
             doc.publish_date.isoformat() if doc.publish_date else None,
             src.province,
@@ -480,6 +483,8 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
         # 旧来源的确认快照保持原样，新增城市才加入快照以捕捉城市变更。
         if src.city or src.level == "市级":
             values.extend([src.level, src.city])
+        if src.district or src.level == "区县级":
+            values.append(src.district)
         fingerprints[doc.id] = hashlib.sha256(
             json.dumps(values, ensure_ascii=False).encode()
         ).hexdigest()
@@ -830,6 +835,8 @@ def labels_for(sources: dict[int, Source]) -> dict[int, str]:
     """同一组各版本的叫法（见 version_label）。"""
 
     def place(src: Source) -> str:
+        if src.level == "区县级" and src.district:
+            return f"{src.city}·{src.district}"
         return src.city if src.level == "市级" and src.city else src.province
 
     provinces = Counter(place(src) for src in sources.values())

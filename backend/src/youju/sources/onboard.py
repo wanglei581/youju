@@ -21,7 +21,7 @@ from youju.ai.client import AIError, ChatClient
 from youju.crawler.fetcher import PoliteFetcher
 from youju.crawler.listing import ListItem, extract_items
 
-LEVELS = ("国家级", "省级", "市级")
+LEVELS = ("国家级", "省级", "市级", "区县级")
 PROVINCES = (
     "国家",
     "北京",
@@ -67,8 +67,9 @@ _TEXT_MAX = 30
 
 _META_SYSTEM = """你是政府网站栏目登记员。必须只返回 JSON 对象。
 根据网页标题、网站名、栏目名和列表前几条标题，给出这个栏目的登记信息：
-level（国家级、省级、市级之一）、province（省级行政区简称，如"山东""内蒙古"；国家部委填"国家"）、
-city（城市简称，市级必填，如"青岛"；其他层级写空字符串）、
+level（国家级、省级、市级、区县级之一）、province（省级行政区简称，如"山东""内蒙古"；国家部委填"国家"）、
+city（城市简称，市级和区县级必填，如"青岛"；直辖市区县父城市写"北京"等）、
+district（区县级必填完整名称，如"黄岛区"；其他层级写空字符串）、
 dept（部门简称，如 科技、工信、发改委、商务、财政、人社、市场监管）、
 dept_full_name（部门全称，照抄网页里写的，如"山东省科学技术厅"）、
 column_name（栏目名，照抄网页里写的，如"通知公告"）。拿不准的字段写空字符串。"""
@@ -94,6 +95,7 @@ class Proposal:
     level: str = ""
     province: str = ""
     city: str = ""
+    district: str = ""
     dept: str = ""
     dept_full_name: str = ""
     column_name: str = ""
@@ -168,7 +170,10 @@ def _checked(raw: dict, facts: PageFacts) -> Proposal:
     return Proposal(
         level=level,
         province=province,
-        city=city if level == "市级" and _on_page(city, facts) else "",
+        city=city if level in ("市级", "区县级") and _on_page(city, facts) else "",
+        district=str(raw.get("district") or "").strip()[:32]
+        if level == "区县级" and _on_page(str(raw.get("district") or "").strip(), facts)
+        else "",
         dept=dept,
         dept_full_name=full if _on_page(full, facts) else "",
         column_name=column if _on_page(column, facts) else "",
@@ -178,13 +183,26 @@ def _checked(raw: dict, facts: PageFacts) -> Proposal:
 def checked_city(level: str, city: str | None) -> str | None:
     """接入和 CSV 共用约束，防止城市信息缺失或挂在错误层级上。"""
     city = (city or "").strip() or None
-    if level == "市级" and not city:
+    if level in ("市级", "区县级") and not city:
         raise ValueError("市级来源必须填写城市")
-    if level != "市级" and city:
+    if level not in ("市级", "区县级") and city:
         raise ValueError("其他层级的城市必须为空")
     if city and len(city) > 32:
         raise ValueError("城市最多 32 字")
-    return city
+    from youju.regions import checked_area_name
+
+    return checked_area_name(city, "城市") or None
+
+
+def checked_district(level: str, district: str | None) -> str | None:
+    from youju.regions import checked_area_name
+
+    district = checked_area_name(district, "区县")
+    if level == "区县级" and not district:
+        raise ValueError("区县级来源必须填写区县")
+    if level != "区县级" and district:
+        raise ValueError("其他层级的区县必须为空")
+    return district or None
 
 
 def propose(client: ChatClient | None, facts: PageFacts, items: list[ListItem]) -> Proposal:

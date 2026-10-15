@@ -370,6 +370,7 @@ class SourceOut(BaseModel):
     level: str
     province: str
     city: str | None = None
+    district: str | None = None
     dept: str
     dept_full_name: str
     column_name: str
@@ -394,6 +395,7 @@ class DocumentOut(BaseModel):
     source_id: int
     province: str
     city: str | None = None
+    district: str | None = None
     dept: str
     column_name: str
 
@@ -601,6 +603,7 @@ def _document_out(doc: Document, source: Source) -> DocumentOut:
         source_id=source.id,
         province=source.province,
         city=source.city,
+        district=source.district,
         level=source.level,
         dept=source.dept,
         column_name=source.column_name,
@@ -2058,9 +2061,10 @@ class SourceTrialOut(BaseModel):
 class SourceCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     url: str = Field(min_length=8, max_length=URL_KEY_MAX)
-    level: Literal["国家级", "省级", "市级"]
+    level: Literal["国家级", "省级", "市级", "区县级"]
     province: str
     city: str | None = Field(default=None, max_length=32)
+    district: str | None = Field(default=None, max_length=32)
     dept: str = Field(min_length=1, max_length=32)
     dept_full_name: str = Field(min_length=2, max_length=128)
     column_name: str = Field(min_length=2, max_length=64)
@@ -2071,13 +2075,17 @@ class SourceCreateIn(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self) -> SourceCreateIn:
-        from youju.sources.onboard import PROVINCES, checked_city, valid_config
+        from youju.regions import district_parent_city
+        from youju.sources.onboard import PROVINCES, checked_city, checked_district, valid_config
 
         if self.province not in PROVINCES:
             raise ValueError('省份要从列表里选（国家部委选"国家"）')
         if (self.level == "国家级") != (self.province == "国家"):
             raise ValueError('国家级来源的省份填"国家"，其他层级要选具体省份')
         self.city = checked_city(self.level, self.city)
+        self.district = checked_district(self.level, self.district)
+        if self.district:
+            self.city = district_parent_city(self.province, self.city)
         if self.parser_config and valid_config(self.parser_config) is None:
             raise ValueError("抓取规则只能是合法的 CSS 选择器（item_selector 必填）")
         return self
@@ -2239,6 +2247,7 @@ def source_trial(
             "level": proposal.level,
             "province": proposal.province,
             "city": proposal.city,
+            "district": proposal.district,
             "dept": proposal.dept,
             "dept_full_name": proposal.dept_full_name,
             "column_name": proposal.column_name,
@@ -2285,6 +2294,7 @@ def _insert_source(session: Session, body: SourceCreateIn, url: str, config: dic
         level=body.level,
         province=body.province,
         city=body.city,
+        district=body.district,
         dept=body.dept.strip(),
         dept_full_name=body.dept_full_name.strip(),
         column_name=body.column_name.strip(),
@@ -2294,7 +2304,7 @@ def _insert_source(session: Session, body: SourceCreateIn, url: str, config: dic
         rights_level=1,
         verification_status=f"已验证（后台接入，{body.reviewed_by}）"[:64],
         verified_on=v1_api.now().date(),
-        note="来源接入：试跑后由人确认接入" + ("，用 AI 写的抓取规则" if config else ""),
+        note="来源接入：试跑核验后接入" + ("，用 AI 写的抓取规则" if config else ""),
     )
     session.add(source)
     try:
@@ -3152,9 +3162,10 @@ def _check_change_target(session: Session, row: DocumentDeadline, new_document_i
     if new_doc is None:
         raise HTTPException(status_code=404, detail="没有找到新通知")
     old_doc = session.get(Document, row.document_id)
-    if (new_doc.source.province, new_doc.source.city) != (
+    if (new_doc.source.province, new_doc.source.city, new_doc.source.district) != (
         old_doc.source.province,
         old_doc.source.city,
+        old_doc.source.district,
     ):
         raise HTTPException(status_code=422, detail="新通知与原通知不是同一地区，请核对")
     if new_doc.publish_date is None or old_doc.publish_date is None:
