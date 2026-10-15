@@ -210,6 +210,97 @@ def test_home_counts_week_and_skips_other_kinds_in_latest(client, session, seede
     assert apply_item["deadline"] == {"date": "2026-10-18", "time": "", "verified": True}
 
 
+def test_home_unverified_count_excludes_verified_due_soon(client, session, seeded):
+    approved = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == seeded["apply"],
+            DocumentDeadline.kind == "企业申报截止",
+        )
+    )
+    approved.approved_date = date(2026, 9, 30)
+    session.add(
+        DocumentDeadline(
+            document_id=seeded["apply"],
+            fingerprint="other-pending",
+            kind="材料报送截止",
+            candidate_date=date(2026, 10, 1),
+            evidence="材料报送截止10月1日",
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    v1._EXCERPT_CACHE.clear()
+    v1._REPORT_CACHE.clear()
+    body = client.get("/api/v1/home", params={"excerpts": 1}).json()
+    assert [item["id"] for item in body["dueSoon"]] == [str(seeded["apply"])]
+    assert body["dueSoonUnverifiedTotal"] == 0
+
+
+def test_excerpt_report_uses_future_machine_date_after_verified_dates_expire(
+    client, session, seeded
+):
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == seeded["apply"])
+    ):
+        row.approved_date = date(2026, 9, 25)
+    detail = session.scalar(
+        select(DocumentDetail).where(DocumentDetail.document_id == seeded["apply"])
+    )
+    detail.body_text = "材料报送截止：2026年10月10日。"
+    session.add(
+        DocumentDeadline(
+            document_id=seeded["apply"],
+            fingerprint="future-excerpt",
+            kind="材料报送截止",
+            candidate_date=date(2026, 10, 10),
+            evidence="材料报送截止：2026年10月10日。",
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    v1._EXCERPT_CACHE.clear()
+    v1._REPORT_CACHE.clear()
+    body = client.get("/api/v1/reports/deadlines", params={"days": 30, "excerpts": 1}).json()
+    item = next(item for item in body["items"] if item["id"] == str(seeded["apply"]))
+    assert item["source"] == "excerpt"
+    assert item["date"] == "2026-10-10"
+
+
+def test_snapshot_latest_apply_has_no_time_limit(client, session, seeded):
+    source = session.get(Document, seeded["apply"]).source_id
+    old = Document(
+        source_id=source,
+        url="https://gxt.ln.gov.cn/older-apply.html",
+        url_key="gxt.ln.gov.cn/older-apply.html",
+        title="关于组织申报上一批科技项目的通知",
+        publish_date=date(2026, 8, 1),
+        first_seen_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+    )
+    session.add(old)
+    session.commit()
+    v1._SNAPSHOT_CACHE.clear()
+    body = client.get("/api/v1/snapshot").json()
+    assert str(old.id) in {item["id"] for item in body["home"]["items"]}
+
+
+def test_api_cleans_legacy_issuer_and_source_url(client, session, seeded):
+    doc = session.get(Document, seeded["apply"])
+    doc.url = "http://gxt.ln.gov.cn:443/1.html"
+    detail = session.scalar(select(DocumentDetail).where(DocumentDetail.document_id == doc.id))
+    detail.issuer = "安 徽 省 财 政 厅 福建省职称改革工作办公室"
+    session.commit()
+    expected = "安徽省财政厅、福建省职称改革工作办公室"
+    for item in (
+        next(i for i in client.get("/api/v1/home").json()["items"] if i["id"] == str(doc.id)),
+        client.get(f"/api/v1/documents/{doc.id}").json(),
+    ):
+        assert item["issuer"] == expected
+        assert item["url"] == "https://gxt.ln.gov.cn/1.html"
+
+
 def test_search_filters_and_totals(client, seeded):
     r = client.get("/api/v1/search", params={"q": "科技型中小企业"}).json()
     assert [i["id"] for i in r["items"]] == [str(seeded["list"])]
@@ -327,6 +418,18 @@ def test_search_rejects_unknown_city(client, city_search_docs, cities):
     res = client.get("/api/v1/search", params={"cities": cities})
     assert res.status_code == 422
     assert res.json()["detail"] == "城市未收录，请重新选择地区"
+
+
+def test_link_gone_date_in_detail_and_cards(client, session, seeded):
+    """原网页确认失效（youju/link_check.py）：详情和卡片都带上失效日期（北京时间），能打开的为 None。"""
+    doc = session.get(Document, seeded["apply"])
+    assert client.get(f"/api/v1/documents/{doc.id}").json()["link_gone"] is None
+    doc.link_gone_at = datetime(2026, 10, 15, 20, 0, tzinfo=UTC)  # 北京时间 10 月 16 日 4:00
+    session.commit()
+    assert client.get(f"/api/v1/documents/{doc.id}").json()["link_gone"] == "2026-10-16"
+    items = client.get("/api/v1/search", params={"time": "不限"}).json()["items"]
+    card = next(item for item in items if item["id"] == str(doc.id))
+    assert card["link_gone"] == "2026-10-16"
 
 
 def test_document_detail_only_approved_deadlines(client, seeded):

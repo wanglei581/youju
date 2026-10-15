@@ -58,7 +58,7 @@ Page({
     wx.setClipboardData({
       data: email,
       success: () => wx.showToast({ title: '邮箱已复制', icon: 'none' }),
-      fail: () => wx.showToast({ title: '没能复制，请同意隐私保护指引后再试', icon: 'none' }),
+      fail: () => wx.showToast({ title: '没能复制：请先同意微信弹出的隐私保护指引，再点一次', icon: 'none' }),
     });
   },
 

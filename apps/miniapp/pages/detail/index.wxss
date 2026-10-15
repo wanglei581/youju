@@ -67,6 +67,7 @@
 .source-label { font-size: 24rpx; }
 .source-site { margin-top: 4rpx; font-size: 28rpx; }
 .source-note { margin-top: 20rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
+.source-gone { margin-top: 20rpx; font-size: 26rpx; line-height: 1.7; color: var(--orange); }
 
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }

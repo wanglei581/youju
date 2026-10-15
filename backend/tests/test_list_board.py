@@ -133,8 +133,8 @@ def test_board_counts_deduplicates_groups_and_names_and_keeps_public_status(
     assert types["高新技术企业"]["lists"] == 1
     assert types["高新技术企业"]["entries"] == 3
     assert set(body["stats"]) == {"by_year", "by_province", "by_type"}
-    assert types["其他"]["lists"] == 1
-    assert types["其他"]["entries"] == 0
+    assert "其他" not in types  # 未读出企业名称的名单仍可浏览，但不计入查名单范围
+    assert sum(item["lists"] for item in types.values()) == 2
     assert "江苏省2026年高新技术企业名单公布" not in [
         item["title"] for item in body["recent"]["items"]
     ]

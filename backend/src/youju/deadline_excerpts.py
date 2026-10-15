@@ -98,13 +98,16 @@ class View:
         }
 
 
-def selected(views: list[View]) -> View | None:
-    """已核对优先；同一来源内企业申报优先，否则最早截止。"""
+def selected(views: list[View], today: date | None = None) -> View | None:
+    """未过期优先；同一时段已核对优先、企业申报优先，否则最早截止。"""
     visible = [view for view in views if view.source in ("verified", "excerpt")]
     if not visible:
         return None
-    verified = [view for view in visible if view.source == "verified"]
-    pool = verified or visible
+    today = today or date.today()
+    future = [view for view in visible if view.day is not None and view.day >= today]
+    pool = future or visible
+    verified = [view for view in pool if view.source == "verified"]
+    pool = verified or pool
     enterprise = [view for view in pool if view.kind == "企业申报截止"]
     return min(
         enterprise or pool,

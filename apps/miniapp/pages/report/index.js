@@ -4,6 +4,13 @@ const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../u
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 
+// 日历能翻到的月份：近 30 天所在的月到一年后所在的月（年×12+月，便于比较）
+function monthRange(today) {
+  const day = new Date(`${today}T00:00:00Z`).getTime();
+  const at = (ms) => { const d = new Date(ms); return d.getUTCFullYear() * 12 + d.getUTCMonth() + 1; };
+  return [at(day - 30 * 86400000), at(day + 365 * 86400000)];
+}
+
 // 截止（D-061）：原截止雷达和申报日历合成一页。7/14/30 天按列表看，也可以按月看。
 // 日期只给人工核对过的，和 8 天以后到期、带原句的机器摘录；7 天内到期还没核对的只列标题，不写日期。
 // "只看已核对"打开时列表不请求机器摘录（接口不带 excerpts，和以前的截止雷达一样），按月看在本机去掉摘录。
@@ -261,7 +268,10 @@ Page({
     });
     const inMonth = upcoming.filter((d) => d.iso.startsWith(prefix));
     const shown = sel ? inMonth.filter((d) => d.iso === sel) : inMonth;
+    const [first, last] = monthRange(todayISO());
     this.setData({
+      canPrev: year * 12 + month > first,
+      canNext: year * 12 + month < last,
       cells: monthCells(year, month, marks, todayISO()),
       rows: shown,
       total: shown.length,
@@ -298,6 +308,10 @@ Page({
     month += Number(e.currentTarget.dataset.step);
     if (month === 0) { month = 12; year -= 1; }
     if (month === 13) { month = 1; year += 1; }
+    // 日历数据只有近 30 天到未来一年（后台接口的范围），翻出去会误显示"没有截止日期"
+    const [first, last] = monthRange(todayISO());
+    const key = year * 12 + month;
+    if (key < first || key > last) return;
     this.setData({ year, month, sel: '', pastOpen: false });
     this.showMonth();
   },

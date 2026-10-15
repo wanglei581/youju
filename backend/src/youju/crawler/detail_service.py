@@ -14,6 +14,7 @@ from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_body
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.dedup import reconcile_documents
+from youju.issuer import normalize_issuer
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
 
 
@@ -78,7 +79,11 @@ def _save_result(
     body = outcome.parsed.body_text if outcome.parsed else ""
     # 数据库正文列有上限（MEDIUMTEXT 16MB），超长的截断，不让整份详情写入失败
     detail.body_text = body[:BODY_TEXT_MAX_CHARS]
-    detail.issuer = outcome.parsed.issuer if outcome.parsed else None
+    detail.issuer = (
+        normalize_issuer(outcome.parsed.issuer)
+        if outcome.parsed and outcome.parsed.issuer
+        else None
+    )
     detail.doc_number = outcome.parsed.doc_number if outcome.parsed else None
     detail.publish_date = outcome.parsed.publish_date if outcome.parsed else None
     detail.fetched_at = outcome.fetched_at

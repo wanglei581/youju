@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, time
 
+from youju.text_lines import unwrap_layout_lines
+
 _DATE = re.compile(
     r"(?:(?P<year>20\d{2})\s*[年./-]\s*)?"
     r"(?P<month>1[0-2]|0?[1-9])\s*[月./-]\s*"
@@ -70,6 +72,9 @@ def _evidence(sentence: str, date_start: int, date_end: int) -> str:
 def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCandidate]:
     results: list[DeadlineCandidate] = []
     seen: set[tuple[str, date, time | None, str]] = set()
+    # PDF 版面折行先接回整句，单独一行的"申报时间："这类标签也接上下一行的日期，否则证据句
+    # 只剩半句（如"…报送至省工业和信息"）或只剩日期、看不出是什么时间（10/15 全面测试发现）
+    body = unwrap_layout_lines(body, join_labels=True)
     for raw in _SPLIT.split(body):
         sentence = " ".join(raw.split()).strip("，, 、")
         if not sentence or len(sentence) > 500 or _EXCLUDE.search(sentence):
@@ -87,7 +92,8 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
             if re.match(r"\s*(?:以后|以来|之后|起)", after):
                 continue
             nearby = before + match.group() + after
-            range_end = bool(re.search(r"[至到]", before[-20:])) and bool(
+            # 时间段的结尾："至/到"，或前一个日期后面紧跟的短横线（"9 月 20 日-10 月 26 日"）
+            range_end = bool(re.search(r"[至到]|日\s*[—–~-]\s*$", before[-20:])) and bool(
                 re.search(r"(?:申报|提交|受理|填报|报名|征集)时间", sentence)
             )
             if not range_end and not (_ACTION.search(nearby) and _CUE.search(nearby)):
