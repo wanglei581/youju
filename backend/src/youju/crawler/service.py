@@ -5,6 +5,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -44,6 +45,7 @@ class CheckSummary:
     error: str | None
     # True：这是该来源第一次成功检查，新入库的条目都是基线，不算"新增"
     baseline: bool = False
+    recorded: bool = True
 
 
 def _now() -> datetime:
@@ -194,6 +196,41 @@ def check_source(
     return check
 
 
+def _record_internal_error(
+    session: Session, source_id: int, threshold: int, started: datetime, t0: float
+) -> bool:
+    """原事务可能已经失效；重新锁定来源记失败，不能让今天旧的成功掩盖异常。"""
+    try:
+        session.rollback()
+        source = session.get(Source, source_id)
+        if source is None:
+            return False
+        _lock_source(session, source)
+        finished = _now()
+        session.add(
+            SourceCheck(
+                source_id=source_id,
+                started_at=started,
+                finished_at=finished,
+                status="internal_error",
+                items_found=0,
+                items_new=0,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                error="内部错误",
+                is_baseline=False,
+            )
+        )
+        _update_health(source, "internal_error", "内部错误", threshold, finished)
+        session.commit()
+        return True
+    except Exception:
+        with suppress(Exception):
+            session.rollback()
+        # 异常可能含 SQL 参数或响应原文，只记录固定描述与来源编号。
+        log.error("来源 #%s 的失败记录未能保存", source_id)
+        return False
+
+
 def crawl_sources(
     session_factory: Callable[[], Session],
     source_ids: Sequence[int],
@@ -212,15 +249,22 @@ def crawl_sources(
         summaries = []
         with session_factory() as session:
             for source_id in ids:
-                source = session.get(Source, source_id)
-                if source is None:
-                    continue
+                started, t0 = _now(), time.monotonic()
                 try:
+                    source = session.get(Source, source_id)
+                    if source is None:
+                        continue
                     check = check_source(session, source, fetcher, failure_threshold)
                 except Exception:  # 单个来源出错不影响其他来源
-                    session.rollback()
-                    log.exception("检查来源 #%s 时出错", source_id)
-                    summaries.append(CheckSummary(source_id, "internal_error", 0, 0, "内部错误"))
+                    log.error("检查来源 #%s 时出错（内部错误）", source_id)
+                    recorded = _record_internal_error(
+                        session, source_id, failure_threshold, started, t0
+                    )
+                    summaries.append(
+                        CheckSummary(
+                            source_id, "internal_error", 0, 0, "内部错误", recorded=recorded
+                        )
+                    )
                     continue
                 summaries.append(
                     CheckSummary(

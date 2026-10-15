@@ -115,6 +115,10 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         print("未成功的来源：")
         for r in failed:
             print(f"  #{r.source_id} {names.get(r.source_id, '')}：{r.status}（{r.error or ''}）")
+    # 正常失败已有检查记录，仍让 round.sh 继续核对；记账失败则不能用旧记录判成功。
+    if any(not r.recorded for r in results):
+        print("部分来源的失败记录未能保存，本轮检查未完成")
+        return 1
     return 0
 
 
@@ -387,7 +391,9 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     text = digest_text(digest, picks)
     print(text)
     sent = None if args.dry_run else send_alert(text)
-    return 1 if sent is False or not usage_ok else 0
+    if not args.dry_run and sent is None:
+        print("未配置告警，日报未发送")
+    return 0 if usage_ok and (args.dry_run or sent is True) else 1
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
@@ -899,7 +905,10 @@ def _cmd_pay(args: argparse.Namespace) -> int:
 def _cmd_alert(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
 
-    return 1 if send_alert(args.text) is False else 0
+    sent = send_alert(args.text)
+    if sent is None:
+        print("未配置告警，消息未发送")
+    return 0 if sent is True else 1
 
 
 def _cmd_alert_probe(args: argparse.Namespace) -> int:
