@@ -34,8 +34,9 @@ function placeholders(value, where, found) {
 }
 
 const withLogin = legal.final === true;
+const hasTemplates = Boolean(config.templates && config.templates.newDocs && config.templates.deadline);
 console.log(withLogin
-  ? '协议已定稿：本次提审含登录、关注、提醒、纠错\n'
+  ? `协议已定稿：本次提审含登录、关注、纠错${hasTemplates ? '、订阅提醒' : '（订阅提醒等模板申请下来再开）'}\n`
   : '协议未定稿：本次提审不含登录、关注、提醒、纠错（D-056），这些入口都不显示\n');
 const marks = withLogin
   ? placeholders(legal, '', [])
@@ -49,9 +50,9 @@ check('接了云托管（cloudEnv、cloudService）', config.cloudEnv && config.
   '填 utils/config.js 的 cloudEnv、cloudService；都空时整个小程序用演示数据');
 check('没有连本机开发后端（devBaseUrl 为空）', !config.devBaseUrl, '提交前清空 utils/config.js 的 devBaseUrl');
 const templates = config.templates || {};
-if (withLogin) {
-  check('订阅消息模板已填（newDocs、deadline）', templates.newDocs && templates.deadline,
-    '模板申请下来后填 utils/config.js 的 templates；否则点订阅会提示"订阅消息还没开通"');
+if (withLogin && !(templates.newDocs && templates.deadline)) {
+  // 模板没填时各页不显示订阅提醒入口（utils/subscribe.js 的 remindOpen），不算没过（D-067）
+  console.log('提示  订阅消息模板还没填（newDocs、deadline）：本次提审不含订阅提醒入口，模板申请下来后填 utils/config.js 再开\n');
 }
 check('app.json 没开调试（debug）', app.debug !== true, '去掉 app.json 里的 "debug": true');
 
