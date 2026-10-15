@@ -25,14 +25,24 @@ function csvRows(text, keepBlank = false) {
   return keepBlank ? rows : rows.filter((cells) => cells.some(Boolean));
 }
 
+// 城市规则与服务端 track.CustomerProfile 一致：只填一个、不超过 32 字、不含分隔符；直辖市填本市按省级；
+// 国家部委不带城市。关键词、支持方式仍可用分号填多项。空行参与编号，第 N 行与输入框所见一致。
 function pasteRows(kind, text) {
   if (kind === 'compare') return text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  return csvRows(text).map((row, index) => {
-    if (row.length < 2 || row.length > 5 || !row[0] || !row[1]) throw new Error(`第 ${index + 1} 行请填写客户名称和省份，最多五列（第五列为可选城市）`);
+  const result = [];
+  csvRows(text, true).forEach((row, index) => {
+    if (!row.some(Boolean)) return;
+    const line = `第 ${index + 1} 行`;
+    if (row.length > 5) throw new Error(`${line}最多五列：客户名称,省份,关键词,支持方式,城市；城市只填一个`);
+    if (!row[0] || !row[1]) throw new Error(`${line}请填写客户名称和省份`);
     const province = regions.provinceName(row[1]) || row[1];
-    const city = regions.cityName(row[4] || '');
-    return { name: row[0], province, keywords: row[2] || '', supports: row[3] || '', city: ['北京', '天津', '上海', '重庆'].includes(province) && city === province ? '' : city };
+    let city = regions.cityName(row[4] || '');
+    if (['北京', '天津', '上海', '重庆'].includes(province) && city === province) city = '';
+    if (city && ['国家', '国家部委'].includes(province)) throw new Error(`${line}省份为国家部委时城市请留空`);
+    if (city.length > 32 || /[\/,，;；\n\r]/.test(city)) throw new Error(`${line}城市只填一个，不超过 32 字，不用逗号、分号或斜杠`);
+    result.push({ name: row[0], province, keywords: row[2] || '', supports: row[3] || '', city });
   });
+  return result;
 }
 
 function toolConsent(options = {}) {

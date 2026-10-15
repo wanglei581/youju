@@ -22,10 +22,14 @@ function regionSelection(values, coverage) {
   if (!city || city.length > 32 || /[\/,，;；\n\r]/.test(city)) throw new Error('城市名称无效，请重新选择');
   return { province, city, note: '' };
 }
+// 来源可能记"青岛市"、条件里存"青岛"：只在同一省内按 cityName 比较，不跨省合并，也不改动条件本身。
 function uncoveredCities(keys, coverage) {
   if (!coverage || !Array.isArray(coverage.cities)) return [];
-  const known = new Set(coverage.cities.map((c) => `${c.province}/${c.city}`));
-  return keys.filter((key) => !known.has(key));
+  const known = new Set(coverage.cities.map((c) => `${c.province}/${cityName(c.city)}`));
+  return keys.filter((key) => {
+    const [province, city] = String(key).split('/');
+    return !known.has(`${province}/${cityName(city)}`);
+  });
 }
 function withoutCityProvinces(provinces, cities) {
   const parents = new Set((cities || []).map((c) => c.split('/')[0]));

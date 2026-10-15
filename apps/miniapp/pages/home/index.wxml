@@ -78,6 +78,16 @@
   <text class="link">去看看</text>
   <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
 </view>
+<!-- 部分关注暂不可查询（如城市来源停用）：followed_new 为 null，只写可查询那部分的本周新增，不当作 0 -->
+<view class="mine" wx:elif="{{loginOpen && stats && stats.followed_unavailable}}" bindtap="goFollow">
+  <t-icon name="notification" size="36rpx" color="#2A5CE0" />
+  <view class="mine-text">
+    <view>部分关注暂不可查询<text wx:if="{{stats.followed_available_new}}">；其余关注本周有 <text class="mine-n">{{stats.followed_available_new}}</text> 份新文件</text></view>
+    <view wx:if="{{stats.followed_message}}" class="muted">{{stats.followed_message}}</view>
+  </view>
+  <text class="link">去看看</text>
+  <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
+</view>
 
 <!-- 7 天内截止：日期只放人工核对过的，最多 5 条（D-061）；还没核对的只写份数、不写日期。
      一份都没核对时也显示这一块，免得顾问以为这周没有要截止的（10/13 Grok、Codex 审查）；两样都没有才不显示 -->

@@ -232,3 +232,50 @@ test('J-02 关注页的按此条件搜索入口保留 open 和其余筛选', asy
   assert.deepEqual(params, { ...c, open: '1' });
   assert.match(page.data.follows[0].desc, /只看未截止/);
 });
+
+test('关注范围暂不可查询：保留条件卡和删除，点卡回搜索按原条件修改；总数只写可查询部分，不把 null 当 0；首页照常并提示', async () => {
+  const { render, textOf, findAll, hasClass, tapsTo } = require('./wxml-render.js');
+  const city = { kind: '申报通知', regions: '', cities: '山东/青岛', time: '不限' };
+  const message = '关注范围暂不可查询，请重新选择地区或等待来源恢复';
+  const off = { id: 1, name: '青岛关注', conditions: city, newCount: null, queryUnavailable: true, queryMessage: message };
+  let response = { items: [off, { id: 2, name: '江苏关注', conditions: { kind: '申报通知', regions: '江苏', time: '不限' }, newCount: 2 }], newTotal: null, availableNewTotal: 2, unavailableCount: 1 };
+  const targets = []; const opened = [];
+  const page = load('pages/follow/index.js', {
+    '../../utils/api.js': { myFollows: () => Promise.resolve(response), mySubscriptions: () => Promise.resolve({ items: [] }), followNew: (id) => { opened.push(id); return Promise.resolve({ items: [] }); } },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/subscribe.js': { remindOpen: () => false }, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/conditions.js': conditions,
+  }, { wx: { navigateTo: ({ url }) => { targets.push(url); } } });
+  const shown = () => render('pages/follow/index.wxml', page.data);
+  page.loadLive(); await flush(); await flush();
+  assert.equal(page.data.newTotal, 2); assert.deepEqual(opened, [2]);
+  let text = textOf(shown());
+  assert.match(text, /部分关注暂不可查询，见下方说明；上次查看之后，其余关注有\s*2 份新文件/);
+  const [card] = findAll(shown(), hasClass('sub'));
+  assert.match(textOf(card), /山东·青岛/); assert.match(textOf(card), new RegExp(message)); assert.match(textOf(card), /回搜索修改条件/); assert.doesNotMatch(textOf(card), /新 \d/);
+  page.openFollow(event({ id: 1, name: '青岛关注' }));
+  assert.deepEqual(Object.fromEntries(new URL(targets.at(-1), 'https://test.invalid').searchParams), { kind: '申报通知', cities: '山东/青岛', time: '不限' });
+  page.openFollow(event({ id: 2, name: '江苏关注' })); assert.match(targets.at(-1), /^\/pages\/follow-new\/index\?id=2&/);
+  page.toggleManage(); assert.equal(findAll(shown(), tapsTo('remove')).length, 2); page.toggleManage();
+  // 全部不可查询：不写数字，也不写成 0 份
+  response = { items: [off], newTotal: null, availableNewTotal: 0, unavailableCount: 1 };
+  page.loadLive(); await flush(); await flush();
+  assert.equal(page.data.newTotal, null); text = textOf(shown());
+  assert.match(text, /关注范围暂不可查询，见下方说明/); assert.doesNotMatch(text, /份新文件/);
+  // 旧服务（没有新字段）照旧
+  response = { items: [{ id: 3, name: '旧', conditions: { kind: '申报通知' }, newCount: 1 }] };
+  page.loadLive(); await flush(); await flush();
+  assert.equal(page.data.newTotal, 1); assert.match(textOf(shown()), /上次查看之后，你关注的条件有\s*1 份新文件/);
+
+  const home = load('pages/home/index.js', {
+    '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' }, '../../utils/consent.js': { loginOpen: () => true },
+  }, app);
+  const stats = { week_total: 3, apply: 1, lists: 1, other: 1, provinces: 28, followed_new: null, followed_available_new: 2, followed_unavailable: 1, followed_message: message };
+  const homeText = (s) => { home.show({ stats: s, items: [] }, ''); return textOf(render('pages/home/index.wxml', home.data)); };
+  text = homeText(stats);
+  assert.match(text, /部分关注暂不可查询；其余关注本周有 2 份新文件/); assert.match(text, new RegExp(message)); assert.match(text, /本周新增/); assert.doesNotMatch(text, /你关注的条件本周有/);
+  text = homeText({ ...stats, followed_available_new: 0 });
+  assert.match(text, /部分关注暂不可查询/); assert.doesNotMatch(text, /其余关注本周有|0 份新文件/);
+  text = homeText({ ...stats, followed_new: 4, followed_available_new: undefined, followed_unavailable: 0, followed_message: undefined });
+  assert.match(text, /你关注的条件本周有 4 份新文件/); assert.doesNotMatch(text, /暂不可查询/);
+});

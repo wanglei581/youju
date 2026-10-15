@@ -18,3 +18,9 @@ test('自治州、地区名称保留，直辖市按省级，省直管占位和�
   assert.throws(() => regionSelection(['香港特别行政区', '香港岛']), /暂不在/);
   assert.deepEqual(uncoveredCities(['山东/青岛'], { cities: [] }), ['山东/青岛']);
 });
+test('收录判断在同省内按城市简称比较：来源记“青岛市”时已保存的“山东/青岛”不算未收录；不跨省合并、不做模糊匹配', () => {
+  const coverage = { cities: [{ province: '山东', city: '青岛市' }, { province: '吉林', city: '延边朝鲜族自治州' }] };
+  assert.deepEqual(uncoveredCities(['山东/青岛', '山东/青岛市', '吉林/延边朝鲜族自治州'], coverage), []);
+  assert.deepEqual(uncoveredCities(['江苏/青岛', '山东/烟台', '吉林/延边'], coverage), ['江苏/青岛', '山东/烟台', '吉林/延边']);
+  assert.deepEqual(uncoveredCities(['山东/青岛市'], { cities: [{ province: '山东', city: '青岛' }] }), []);
+});

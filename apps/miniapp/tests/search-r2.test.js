@@ -424,3 +424,32 @@ test('关注与我的数据共用摘要保留类型、名单状态和发文部�
   const description = conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '山东/青岛' });
   assert.match(description, /名单与公示/); assert.match(description, /名单状态：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
 });
+
+test('移除最后一个城市恢复不限地区高亮，但保留其他省份条件', async () => {
+  const { page, calls } = searchPage({ coverage: { cities: [{ province: '山东', city: '青岛' }] } });
+  page.onLoad({}); await flush();
+  page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
+  page.removePicked(event({ group: 'city', option: '山东/青岛' })); await flush();
+  assert.deepEqual(plain(page.data.picked.region), ['不限地区']);
+  assert.equal(page.data.pickedMap['region:不限地区'], true);
+  assert.equal(calls.at(-1).cities, undefined);
+  page.pickOption(event({ group: 'region', option: '江苏' })); await flush();
+  page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
+  page.removePicked(event({ group: 'city', option: '山东/青岛' })); await flush();
+  assert.deepEqual(plain(page.data.picked.region), ['江苏']);
+  assert.match(calls.at(-1).regions, /江苏/);
+});
+
+test('来源记“青岛市”时已保存的“山东/青岛”照常查询；别省同名仍明确未收录且不改成全省；零覆盖文案不说现在能保存关注', async () => {
+  const coverage = { cities: [{ province: '山东', city: '青岛市' }] };
+  const { page, calls } = searchPage({ coverage });
+  page.onLoad({ cities: encodeURIComponent('山东/青岛') }); await flush(); await flush();
+  assert.equal(page.data.error, ''); assert.equal(calls.length, 2); assert.equal(calls.at(-1).cities, '山东/青岛');
+  const other = searchPage({ coverage });
+  other.page.onLoad({ cities: encodeURIComponent('江苏/青岛') }); await flush(); await flush();
+  assert.match(other.page.data.error, /江苏·青岛暂未收录市级来源/); assert.equal(other.calls.length, 1);
+  assert.equal(other.page.conditions().cities, '江苏/青岛'); assert.doesNotMatch(other.page.conditions().regions, /江苏/);
+  const empty = searchPage({ coverage: { cities: [] } });
+  empty.page.onLoad({}); await flush();
+  assert.match(empty.page.data.cityCoverageNote, /可以选择城市，数据接入后才能按城市查询和关注/); assert.doesNotMatch(empty.page.data.cityCoverageNote, /保存/);
+});

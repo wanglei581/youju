@@ -91,7 +91,8 @@
   <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />导出</view>
 </view>
 
-<t-popup visible="{{filterOpen}}" placement="bottom" bind:visible-change="onFilterVisible">
+<!-- 原生省市选择器在独立层渲染，筛选弹层和遮罩都必须在它下方。 -->
+<t-popup visible="{{filterOpen}}" placement="bottom" z-index="{{900}}" overlay-props="{{ { zIndex: 899 } }}" bind:visible-change="onFilterVisible">
   <view class="sheet">
     <view class="sheet-head">
       <text class="sheet-title">筛选</text>

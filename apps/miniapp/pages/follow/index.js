@@ -5,10 +5,13 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { ensureConsent, syncConsent, loginOpen } = require('../../utils/consent.js');
 const { describe, searchUrl } = require('../../utils/conditions.js');
 
+// 关注范围暂不可查询（如城市来源停用后的旧关注）：服务端保留条件，newCount 为 null、queryUnavailable 为真
+const UNAVAILABLE_TEXT = '关注范围暂不可查询，请重新选择地区或等待来源恢复';
+
 // 三种状态：demo 没连接口时的演示数据；gated 未登录；live 真实的关注。
 // 协议定稿前（loginOpen 为 false，D-056）底栏没有这一页，从分享或旧链接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { mode: 'demo', weekStart: '', today: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', loginOpen: loginOpen(), remindOpen: remindOpen('newDocs') },
+  data: { mode: 'demo', weekStart: '', today: '', newTotal: 0, partialNote: '', follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', loginOpen: loginOpen(), remindOpen: remindOpen('newDocs') },
 
   onHide() {
     stopDay(this);
@@ -56,16 +59,28 @@ Page({
     this.setData({ mode: 'live', loading: true, error: '' });
     api.myFollows()
       .then((res) => {
-        const follows = res.items.map((f) => ({
-          id: f.id,
-          name: f.name,
-          desc: describe(f.conditions),
-          searchUrl: searchUrl(f.conditions),
-          newCount: f.newCount,
-          tone: f.conditions.kind === '名单' ? 'orange' : 'blue',
-          icon: f.conditions.kind === '名单' ? 'bulletpoint' : 'task-checked',
-        }));
-        this.setData({ follows, newTotal: typeof res.newTotal === 'number' ? res.newTotal : follows.reduce((n, f) => n + f.newCount, 0), loading: false });
+        const follows = res.items.map((f) => {
+          const unavailable = f.queryUnavailable === true || typeof f.newCount !== 'number';
+          return {
+            id: f.id,
+            name: f.name,
+            desc: describe(f.conditions),
+            searchUrl: searchUrl(f.conditions),
+            newCount: unavailable ? null : f.newCount,
+            unavailable,
+            queryMessage: unavailable ? (f.queryMessage || UNAVAILABLE_TEXT) : '',
+            tone: f.conditions.kind === '名单' ? 'orange' : 'blue',
+            icon: f.conditions.kind === '名单' ? 'bulletpoint' : 'task-checked',
+          };
+        });
+        // 未知不等于没有新增：有暂不可查询的关注时不把 null 当 0 累加，只写可查询那部分
+        // （服务端去重后的 availableNewTotal）；全部不可查询或没有这个数时不写数字
+        const off = follows.filter((f) => f.unavailable).length;
+        const partial = off > 0 || res.newTotal === null;
+        const newTotal = !partial ? (typeof res.newTotal === 'number' ? res.newTotal : follows.reduce((n, f) => n + f.newCount, 0))
+          : off < follows.length && typeof res.availableNewTotal === 'number' ? res.availableNewTotal : null;
+        const partialNote = !partial ? '' : off && off === follows.length ? '关注范围暂不可查询，见下方说明' : '部分关注暂不可查询，见下方说明';
+        this.setData({ follows, newTotal, partialNote, loading: false });
         this.loadReminders();
         return this.loadChanges(follows);
       })
@@ -139,6 +154,9 @@ Page({
       return;
     }
     const { id, name } = e.currentTarget.dataset;
+    // 暂不可查询的关注回搜索页按原条件修改（城市未收录时搜索页写明，不改成全省），不进新文件页
+    const f = this.data.follows.find((item) => String(item.id) === String(id));
+    if (f && f.unavailable) { this.searchFollow(e); return; }
     wx.navigateTo({ url: `/pages/follow-new/index?id=${id}&name=${encodeURIComponent(name)}` });
   },
 

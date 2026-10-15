@@ -13,8 +13,10 @@
 <block wx:else>
   <view wx:if="{{!loading && !error}}" class="hero">
     <view wx:if="{{mode === 'demo'}}" class="hero-sub">本周（{{weekStart}}起）你关注的条件有</view>
+    <!-- 有关注暂不可查询时只写可查询那部分的数，没有这个数就不写数字，不显示成 0 -->
+    <view wx:elif="{{partialNote}}" class="hero-sub">{{partialNote}}{{newTotal === null ? '' : '；上次查看之后，其余关注有'}}</view>
     <view wx:else class="hero-sub">上次查看之后，你关注的条件有</view>
-    <view class="hero-row">
+    <view wx:if="{{newTotal !== null}}" class="hero-row">
       <view><text class="hero-num">{{newTotal}}</text><text class="hero-unit"> 份新文件</text></view>
     </view>
   </view>
@@ -28,7 +30,9 @@
       <view class="sub-main">
         <view class="sub-name">{{item.name}}</view>
         <view class="sub-desc">{{item.desc}}</view>
-        <text wx:if="{{mode === 'live'}}" class="link" data-id="{{item.id}}" catchtap="searchFollow">按此条件搜索</text>
+        <!-- 暂不可查询：条件原样保留，点卡片或下面的链接回搜索修改；不写"没有新文件" -->
+        <view wx:if="{{item.unavailable}}" class="sub-left">{{item.queryMessage}}</view>
+        <text wx:if="{{mode === 'live'}}" class="link" data-id="{{item.id}}" catchtap="searchFollow">{{item.unavailable ? '回搜索修改条件' : '按此条件搜索'}}</text>
         <view wx:if="{{mode === 'live' && remindOpen && remindLeft}}" class="sub-left {{remindLeft[item.id] ? 'sub-left--on' : ''}}">{{remindLeft[item.id] ? '微信提醒还剩 ' + remindLeft[item.id] + ' 次' : '未订阅微信提醒，点"提醒"订阅'}}</view>
       </view>
       <text wx:if="{{managing}}" class="sub-del" data-id="{{item.id}}" data-name="{{item.name}}" catchtap="remove" aria-role="button">删除</text>

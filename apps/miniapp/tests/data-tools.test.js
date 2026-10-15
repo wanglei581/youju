@@ -417,3 +417,55 @@ test('旧服务未返回账号摘要时明确关闭提交；全称省市粘贴�
   assert.deepEqual(plain(logic.pasteRows('track', '合成企业,山东省,创新,资金支持,青岛市')), [{ name: '合成企业', province: '山东', keywords: '创新', supports: '资金支持', city: '青岛' }]);
   assert.equal(logic.pasteRows('track', '合成企业,吉林省,,,延边朝鲜族自治州')[0].city, '延边朝鲜族自治州');
 });
+test('客户通知表粘贴按服务端城市规则逐行报错：只填一个、32字内、无分隔符，国家部委不带城市，直辖市归省级，空行计入行号', async () => {
+  const logic = dataLogic();
+  for (const [text, message] of [
+    ['合成甲,山东,,,青岛;烟台', /第 1 行城市只填一个/], ['合成甲,山东,,,青岛；烟台', /第 1 行城市/], ['合成甲,山东,,,青岛，烟台', /第 1 行城市/],
+    ['合成甲,山东,,,青岛/烟台', /第 1 行城市/], ['合成甲,山东,,,"青岛,烟台"', /第 1 行城市/], [`合成甲,山东,,,${'城'.repeat(33)}`, /第 1 行城市/],
+    ['合成甲,山东\n\n合成乙,国家部委,科技,,北京', /第 3 行省份为国家部委时城市请留空/], ['合成甲,国家,,,青岛', /第 1 行省份为国家部委/],
+    ['合成甲,山东,科技,资金支持,青岛,烟台', /第 1 行最多五列/], ['合成甲,山东\n\n\n合成乙', /第 4 行请填写客户名称和省份/],
+  ]) assert.throws(() => logic.pasteRows('track', text), message, text);
+  assert.equal(logic.pasteRows('track', `合成甲,山东,,,${'城'.repeat(32)}市`)[0].city, '城'.repeat(32));
+  assert.deepEqual(plain(logic.pasteRows('track', '合成甲,北京市,,,北京市\n合成乙,重庆,,,重庆\n合成丙,国家部委,科技;创新,资金支持;资格认定')).map(r => [r.province, r.city, r.keywords, r.supports]),
+    [['北京', '', '', ''], ['重庆', '', '', ''], ['国家部委', '', '科技;创新', '资金支持;资格认定']]);
+  const h = form({ kind: 'track' }); await flush();
+  h.page.input({ detail: { value: '合成甲,山东,,,青岛;烟台' } }); assert.match(h.page.data.inputError, /第 1 行城市只填一个/); assert.equal(h.page.data.rowCount, 0);
+  h.page.preview(); assert.equal(h.calls.length, 0);
+  const shown = textOf(render('pages/advisor-form/index.wxml', h.page.data));
+  assert.match(shown, /关键词、支持方式多项用分号分隔，城市只填一个/); assert.match(shown, /国家部委不填城市/); assert.doesNotMatch(shown, /后三项可留空，多项用分号分隔/);
+  h.page.onUnload();
+});
+test('真实表单A未知提交→切到B→回A：同一内容沿用A的键只扣一次，B另起键，A的键切换时不丢', async () => {
+  const B = 'b'.repeat(64); let owner = OWNER;
+  const storage = new Map(); const server = new Map(); const keys = [];
+  const createAdvisorTask = (body, key) => {
+    keys.push(key);
+    if (!server.has(key)) { server.set(key, { id: server.size + 1 }); return Promise.reject(Object.assign(new Error('响应丢失'), { status: 504 })); }
+    return Promise.resolve(server.get(key));
+  };
+  const h = form({ storage, api: { me: () => Promise.resolve({ advisorAgreed: { version: terms.version }, taskOwner: owner }), createAdvisorTask } }); await flush();
+  const send = async () => { h.page.input({ detail: { value: '合成跨账号企业' } }); h.page.preview(); await flush(); h.page.submit(); await flush(); };
+  await send(); assert.match(h.page.data.inputError, /状态尚未确认/);
+  owner = B; h.page.onHide(); h.page.onShow(); await flush();
+  assert.equal(h.page.data.text, ''); assert.deepEqual(storage.get(idempotency.STORAGE_KEY).others[OWNER].map(e => e.key), [keys[0]]);
+  await send(); assert.notEqual(keys[1], keys[0]);
+  owner = OWNER; h.page.onHide(); h.page.onShow(); await flush();
+  await send();
+  assert.equal(keys[2], keys[0]); assert.equal(server.size, 2); assert.equal(h.page.data.accepted, true);
+  const saved = storage.get(idempotency.STORAGE_KEY);
+  assert.equal(saved.owner, OWNER); assert.equal(saved.entries.length, 0); assert.deepEqual(Object.keys(saved.others), [B]); assert.deepEqual(saved.others[B].map(e => e.key), [keys[1]]);
+  assert.doesNotMatch(JSON.stringify([...storage]), /合成跨账号企业/); h.page.onUnload();
+});
+test('未同意通用协议：工具中心与任务中心写通用工具文案、不提AI，按钮仍走通用同意', async () => {
+  const gated = () => Promise.resolve({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent' });
+  for (const name of ['advisor', 'advisor-tasks']) {
+    let asked = 0;
+    const page = load(`pages/${name}/index.js`, { '../../utils/api.js': { advisorCapabilities: gated, advisorTasks: () => Promise.resolve({ items: [] }) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context,
+      '../../utils/consent.js': { ensureConsent: () => { asked += 1; return Promise.resolve(false); } } }, { wx: { setNavigationBarTitle() {} } });
+    if (page.onLoad) page.onLoad({});
+    page.onShow(); await flush();
+    const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
+    assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
+  }
+});

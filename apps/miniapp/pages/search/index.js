@@ -152,7 +152,7 @@ Page({
       const names = notCoveredNames(c);
       const extra = names ? `${names}暂未收录` : '';
       this.setData({ groups: this.data.groups.map((g) => g.key === 'region' ? { ...g, extra } : g),
-        cityCoverageNote: c && Array.isArray(c.cities) ? (c.cities.length ? `当前仅有 ${c.cities.length} 个城市的部分来源，不代表全市数据完整。` : '当前尚未接入市级来源。可选择并保存城市条件，相关数据暂不可查询。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。' });
+        cityCoverageNote: c && Array.isArray(c.cities) ? (c.cities.length ? `当前仅有 ${c.cities.length} 个城市的部分来源，不代表全市数据完整。` : '当前尚未接入市级来源。可以选择城市，数据接入后才能按城市查询和关注。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。' });
       if (this.data.picked.city.length) this.apply(true);
     });
   },
@@ -396,7 +396,10 @@ Page({
 
   setPicked(group, next) {
     const picked = { ...this.data.picked, [group]: next };
-    if (group === 'city') picked.region = withoutCityProvinces(picked.region, next);
+    if (group === 'city') {
+      picked.region = withoutCityProvinces(picked.region, next);
+      if (!next.length && !picked.region.length) picked.region = ['不限地区'];
+    }
     if (group === 'region') picked.city = next.includes('不限地区') ? [] : picked.city.filter((c) => !next.includes(c.split('/')[0]));
     this.setData({ picked });
     this.refreshChips();
