@@ -421,7 +421,7 @@ def test_undeleted_old_backups_are_logged(caplog, monkeypatch) -> None:
     project = logging.getLogger("youju")
     before = project.level
     try:
-        assert cli.main(["alert", "测试"]) == 0
+        assert cli.main(["alert", "测试"]) == 1
         assert logging.getLogger("youju.backup").getEffectiveLevel() == logging.INFO
 
         client, _, prefix = fake_cloud()
