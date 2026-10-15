@@ -51,7 +51,8 @@
     <view wx:for="{{clients}}" wx:key="id" class="card client-card">
       <view class="section-title">{{item.displayName}}</view>
       <view class="muted summary">{{item.summary}}</view>
-      <view wx:if="{{loaded && !loading}}" class="weak count">近 90 天相关申报通知 {{counts[item.id] || 0}} 份</view>
+      <view wx:if="{{loaded && !loading && clientErrors[item.id]}}" class="weak count">暂未查询：{{clientErrors[item.id]}}</view>
+      <view wx:elif="{{loaded && !loading}}" class="weak count">近 90 天相关申报通知 {{counts[item.id] || 0}} 份</view>
       <view class="actions"><view class="link action" data-id="{{item.id}}" bindtap="edit" aria-role="button">编辑</view><view class="muted action" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view><view class="btn-primary search-button" data-id="{{item.id}}" bindtap="showClient" aria-role="button">看相关通知</view></view>
     </view>
     <view wx:if="{{!clients.length && !error}}" class="intro">暂无本机客户卡片。</view>

@@ -381,6 +381,11 @@ test('本机客户：区县未收录或收录范围没取到时这一组不查�
     assert.equal(calls.length, 1); assert.ok(calls.every((p) => p.districts === undefined && p.regions === '国家部委,江苏'));
     assert.match(page.data.loadError, message); assert.match(page.data.loadError, /不会改为全市或全省/);
     assert.deepEqual(plain(page.data.shown.map((r) => r.id)), ['9']);
+    assert.equal(page.data.clientErrors.a, undefined); assert.match(page.data.clientErrors.b, message);
+    page.pickTab(tap({ tab: 'cards' }));
+    const cards = findAll(render('pages/clients/index.wxml', page.data), hasClass('client-card'));
+    assert.match(textOf(cards[0]), /近 90 天相关申报通知 1 份/);
+    assert.match(textOf(cards[1]), /暂未查询/); assert.doesNotMatch(textOf(cards[1]), /相关申报通知 0 份/);
     page.edit(tap({ id: 'b' })); assert.match(page.data.cityError, coverage && coverage.districts ? /暂未收录区县来源/ : /查询前会再核对/);
   }
 });

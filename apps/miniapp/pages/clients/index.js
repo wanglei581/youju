@@ -33,7 +33,7 @@ Page({
     tab: 'docs', clients: [], editing: false, form: {}, provinces: PROVINCES, industries: INDUSTRIES,
     cityOptions: [], cityRegion: [], cityError: '', cityCoverageNote: '', districtLabels: [], picked: {}, error: '', coverageError: '', placeholder: '客户 1',
     // 相关通知
-    rows: [], shown: [], only: '', counts: {}, loading: false, loaded: false, loadError: '', truncated: false, today: '',
+    rows: [], shown: [], only: '', counts: {}, clientErrors: {}, loading: false, loaded: false, loadError: '', truncated: false, today: '',
   },
 
   onLoad(query) {
@@ -64,7 +64,7 @@ Page({
     const { clients } = this.data;
     const seq = this.seq = (this.seq || 0) + 1;
     if (!clients.length) {
-      this.setData({ rows: [], shown: [], counts: {}, loading: false, loaded: true, loadError: '', truncated: false, only: '' });
+      this.setData({ rows: [], shown: [], counts: {}, clientErrors: {}, loading: false, loaded: true, loadError: '', truncated: false, only: '' });
       return;
     }
     const only = clients.some((c) => c.id === this.data.only) ? this.data.only : '';
@@ -89,9 +89,13 @@ Page({
         const cityNote = [...new Set(results.map((r) => r.cityError).filter(Boolean))].join('；');
         const rows = mergeRelated(clients, ok);
         const counts = {};
+        const clientErrors = {};
+        results.filter((r) => r.failed).forEach((r) => r.ids.forEach((id) => {
+          clientErrors[id] = r.cityError || '相关通知加载失败，请重试';
+        }));
         rows.forEach((row) => row.ids.forEach((id) => { counts[id] = (counts[id] || 0) + 1; }));
         this.setData({
-          rows, counts, loading: false, loaded: true,
+          rows, counts, clientErrors, loading: false, loaded: true,
           truncated: ok.some((r) => r.total > r.items.length) || rows.length > MAX_DOCS,
           loadError: cityNote ? `${cityNote}。未查询的城市、区县不会改为全市或全省，未查到不代表没有通知。` : failed === results.length ? '相关通知没有加载出来' : (failed ? `有 ${failed} 组客户的通知没有加载出来` : ''),
         });
