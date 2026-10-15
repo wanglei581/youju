@@ -131,6 +131,9 @@ def _fake_pdf(page_count: int, visited: list[int]):
         def __init__(self, number: int):
             self.number = number
 
+        def close(self):
+            pass
+
         def extract_text(self):
             visited.append(self.number)
             return "企业名称" if self.number == MAX_PDF_PAGES else ""
