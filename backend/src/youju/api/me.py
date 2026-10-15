@@ -16,6 +16,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
+from youju.agreements import agreement_at_least
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -67,21 +68,12 @@ def request_openid(request: Request) -> str:
     return openid
 
 
-# 协议版本号写成"年-月"开头（2026-10、2026-11……），按时间可排序，直接比字符串；写法不对的一律不算
-VERSION_PREFIX = re.compile(r"\d{4}-\d{2}")
-
-
 def agreement_range(settings) -> tuple[str, str]:
     """（仍认的最早版本, 当前版本）。版本号按时间可排序（2026-10 < 2026-11），直接比字符串；
     最早版本比当前版本还新的配置启动时就拒绝（config.Settings）。"""
     current = settings.agreement_version
     oldest = (getattr(settings, "agreement_min_version", "") or "").strip() or current
     return oldest, current
-
-
-def agreement_at_least(version: str | None, needed: str) -> bool:
-    """同意的版本不早于 needed（如 AI 条款第一次写进去的那一版）。写法不对的不算。"""
-    return bool(version) and VERSION_PREFIX.match(version) is not None and version >= needed
 
 
 def agreement_valid(version: str | None, settings) -> bool:

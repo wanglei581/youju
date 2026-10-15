@@ -220,6 +220,12 @@ def _stamp() -> datetime:
 
 def _authorize(kind: str, user: User) -> None:
     settings = get_settings()
+    if (
+        kind in AI_KINDS
+        and interpret.enabled_for_openid(settings, user.openid)
+        and not interpret.ai_agreed(settings, user)
+    ):
+        raise HTTPException(status_code=403, detail="AI 条款已更新，请更新小程序并重新阅读同意协议")
     allowed = interpret.enabled(settings, user) if kind in AI_KINDS else settings.advisor_enabled
     if not allowed:
         raise HTTPException(status_code=404, detail="没有找到接口")
@@ -323,7 +329,15 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
         }
         if ai_enabled
-        else {"enabled": False, "features": [], "remaining": {}},
+        else {
+            "enabled": False,
+            "features": [],
+            "remaining": {},
+            "reason": "consent"
+            if interpret.enabled_for_openid(settings, user.openid)
+            and not interpret.ai_agreed(settings, user)
+            else "off",
+        },
     }
 
 

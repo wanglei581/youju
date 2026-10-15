@@ -587,7 +587,7 @@ function advisorCapabilities(options = {}) {
   // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
-    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: 'off' };
+    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
     return { ai_advisor: {
       enabled: true,
       features: Array.isArray(ai.features) ? ai.features : [],

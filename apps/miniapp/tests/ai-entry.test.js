@@ -13,6 +13,10 @@ const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks'];
+// 每个用例独立加载 API；失败重试/缓存定时器必须随用例一起结束。
+const liveTimers = new Set();
+test.afterEach(() => { liveTimers.forEach(clearTimeout); liveTimers.clear(); });
+const trackedTimeout = (fn, delay) => { const id = setTimeout(() => { liveTimers.delete(id); fn(); }, delay); liveTimers.add(id); return id; };
 const NOTICE = 'AI 生成 · 内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
 const caps = (enabled, extra = {}) => ({
   data_tools: { enabled: false, features: [], remaining: {} },
@@ -23,7 +27,7 @@ const caps = (enabled, extra = {}) => ({
 function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
-    module, Date, Math, Promise, Set, setTimeout, clearTimeout,
+    module, Date, Math, Promise, Set, setTimeout: trackedTimeout, clearTimeout,
     require(name) { assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
@@ -307,19 +311,24 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
     ['fail', 'offline'],
     [{ statusCode: 404, data: { detail: '没有找到接口' } }, 'off'],
     [{ statusCode: 200, data: caps(false) }, 'off'],
+    [{ statusCode: 200, data: { ai_advisor: { enabled: false, reason: 'consent' } } }, 'consent'],
     [{ statusCode: 200, data: caps(true) }, ''],
   ];
   for (const [response, reason] of cases) {
     // 假定时器：自动重试的等待立即执行，重试完才给结果
-    const timers = []; const pending = [];
+    const timers = []; const pending = []; const cancelled = new Set(); let clock = 0; let timerId = 0;
     const api = load('utils/api.js', { './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {} },
       { wx: { request(options) { pending.push(options); }, removeStorageSync() {}, showToast() {}, hideToast() {}, showLoading() {}, hideLoading() {} },
-        setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout() {} });
+        Date: { now: () => clock },
+        setTimeout: (fn, delay = 0) => { const id = ++timerId; timers.push(() => { if (!cancelled.has(id)) { clock += delay; fn(); } }); return id; },
+        clearTimeout(id) { cancelled.add(id); } });
     let result; api.advisorCapabilities({ refresh: true }).then((value) => { result = value; });
     for (let round = 0; round < 60 && result === undefined; round += 1) {
       while (pending.length) { const request = pending.shift(); if (response === 'fail') request.fail({ errMsg: 'request:fail' }); else request.success(response); }
       await flush(); await flush();
-      while (timers.length && result === undefined) { timers.shift()(); await flush(); }
+      // 每轮只推进已有定时器，再处理新发出的请求；模拟时间而非等真实的90秒。
+      const scheduled = timers.splice(0);
+      for (const runTimer of scheduled) { if (result !== undefined) break; runTimer(); await flush(); }
     }
     assert.notEqual(result, undefined, JSON.stringify(response));
     assert.equal(result.reason, reason, JSON.stringify(response));
