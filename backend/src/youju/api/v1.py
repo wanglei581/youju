@@ -61,6 +61,13 @@ from youju.models import (
     RepostGroupMember,
     Source,
 )
+from youju.regions import (
+    checked_area_name,
+    covered_city_scopes,
+    covered_district_scopes,
+    resolve_city,
+    resolve_district,
+)
 from youju.report_revision import publication_revision
 from youju.repost import confirmed_members, grouped_documents, labels_for
 from youju.takedown import available_condition, is_taken_down
@@ -121,7 +128,7 @@ PROVINCES = {
     "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆", "不限地区",
 }  # fmt: skip
 # 对外层级名称与来源登记中的“国家级”区分。
-LEVELS = {"国家部委", "省级", "市级"}
+LEVELS = {"国家部委", "省级", "市级", "区县级"}
 # 列表和详情的截止状态：verified 有核对通过的截止（deadline 给出日期）；unverified 没有核对通过的、
 # 但有待核对的候选（页面写"截止未核对"，不给任何日期）；none 没有候选（页面写"截止时间见原文"）
 DEADLINE_STATES = ("verified", "unverified", "none")
@@ -474,9 +481,10 @@ def _item(
         # status 一直是名单状态；申报状态只放在新增的 app_status，保持导出和旧客户端兼容。
         "status": list_status(doc.title, kind),
         "app_status": app_status,
-        "region": region_label(src.province, src.level, src.city),
+        "region": region_label(src.province, src.level, src.city, src.district),
         "province": src.province,
         "city": src.city,
+        "district": src.district,
         "level": src.level,
         "title": doc.title,
         "issuer": normalize_issuer(
@@ -617,7 +625,11 @@ def repost_versions(session: Session, doc_ids: list[int]) -> dict[int, dict[str,
                     "id": str(doc.id),
                     "label": labels[doc.id],
                     "region": _province_name(
-                        src.city if src.level == "市级" and src.city else src.province
+                        f"{src.city}·{src.district}"
+                        if src.level == "区县级" and src.district
+                        else src.city
+                        if src.level == "市级" and src.city
+                        else src.province
                     ),
                     "issuer": normalize_issuer(
                         details[doc.id].issuer
@@ -870,7 +882,7 @@ def home(
         user = me.known_user(request, session)
         if user is not None:
             user = me.current_user(user)
-            stats["followed_new"] = me.followed_week_count(session, user)
+            stats.update(me.followed_week_stats(session, user))
     except HTTPException as exc:
         if exc.status_code not in (401, 403):
             raise
@@ -941,6 +953,21 @@ def coverage(session: SessionDep) -> dict:
         {"province": province, "city": city, "sources": count}
         for (province, city), count in sorted(city_columns.items())
     ]
+    district_columns: dict[tuple[str, str, str], int] = {}
+    for source in sources:
+        if (
+            source.enabled
+            and source.last_success_at
+            and source.level == "区县级"
+            and source.city
+            and source.district
+        ):
+            key = (source.province, source.city, source.district)
+            district_columns[key] = district_columns.get(key, 0) + 1
+    districts = [
+        {"province": p, "city": c, "district": d, "sources": count}
+        for (p, c, d), count in sorted(district_columns.items())
+    ]
     lasts = [r["lastUpdatedAt"] for r in regions]
     return {
         "sources": sum(r["sources"] for r in regions),
@@ -948,6 +975,7 @@ def coverage(session: SessionDep) -> dict:
         "national": any(r["name"] == "国家部委" for r in regions),
         "regions": regions,
         "cities": cities,
+        "districts": districts,
         "notCovered": not_covered,
         "updatedAt": max(lasts) if lasts else None,
     }
@@ -1024,6 +1052,9 @@ def search(
         str | None,
         Query(max_length=2000, description="已收录城市，省/市逗号分隔，与地区取并集"),
     ] = None,
+    districts: Annotated[
+        str | None, Query(max_length=4000, description="省/市/区，逗号分隔")
+    ] = None,
     types: Annotated[
         str | None, Query(max_length=400, description="申报通知,名单与公示,政策文件,其他")
     ] = None,
@@ -1040,7 +1071,9 @@ def search(
     exclude_closed: Annotated[
         bool, Query(description="只排除人工核对且已截止的申报通知；未核对的保留；不传不改变结果")
     ] = False,
-    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级,市级")] = None,
+    levels: Annotated[
+        str | None, Query(max_length=400, description="国家部委,省级,市级,区县级")
+    ] = None,
     categories: Annotated[
         str | None,
         Query(max_length=400, description="项目类别，逗号分隔（只在申报通知和名单里找）"),
@@ -1081,6 +1114,7 @@ def search(
         "supports": supports,
         "industries": industries,
         "cities": cities,
+        "districts": districts,
         "exclude_closed": exclude_closed,
     }
     effective_open = None if excerpts == 1 and open == 1 else open
@@ -1135,6 +1169,7 @@ def _level_filter(levels: list[str]):
         "国家部委": Source.province == _NATIONAL,
         "省级": and_(Source.province != _NATIONAL, Source.level == "省级"),
         "市级": and_(Source.province != _NATIONAL, Source.level == "市级"),
+        "区县级": and_(Source.province != _NATIONAL, Source.level == "区县级"),
     }
     return or_(*(parts[level] for level in levels))
 
@@ -1154,6 +1189,7 @@ def search_statement(
     supports: str | None = None,
     industries: str | None = None,
     cities: str | None = None,
+    districts: str | None = None,
     exclude_closed: bool = False,
 ) -> Select:
     """公开搜索、关注和提醒共用筛选校验及 SQL。
@@ -1181,20 +1217,26 @@ def search_statement(
     picked_cities = list(dict.fromkeys(c.strip() for c in (cities or "").split(",") if c.strip()))
     if picked_cities:
         # 只接受收录范围里的城市；自由文本客户名称及关键词不进入接口。
-        covered_cities = {
-            f"{province}/{city}"
-            for province, city in session.execute(
-                select(Source.province, Source.city).where(
-                    Source.enabled.is_(True),
-                    Source.last_success_at.is_not(None),
-                    Source.level == "市级",
-                    Source.city.is_not(None),
-                    Source.city != "",
-                )
-            )
-        }
-        if any(c not in covered_cities for c in picked_cities):
-            raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
+        covered = covered_city_scopes(session)
+        resolved_cities = []
+        for picked in picked_cities:
+            province, separator, city = picked.partition("/")
+            resolved = resolve_city(province, city, covered) if separator and city else None
+            if resolved is None:
+                raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
+            resolved_cities.append(f"{province}/{resolved}")
+        picked_cities = list(dict.fromkeys(resolved_cities))
+
+    picked_districts = []
+    for picked in dict.fromkeys(c.strip() for c in (districts or "").split(",") if c.strip()):
+        parts = picked.split("/")
+        if len(parts) != 3 or not all(parts):
+            raise HTTPException(status_code=422, detail="区县须为省/市/区完整路径")
+        province, city, district = parts
+        city, district = _validate_district_scope(session, province, city, district)
+        picked_districts.append((province, city, district))
+    if districts and districts.strip() and not picked_districts:
+        raise HTTPException(status_code=422, detail="区县须为省/市/区完整路径")
 
     stmt = _base()
     kw = (q or "").strip()
@@ -1204,7 +1246,7 @@ def search_statement(
         stmt = stmt.where(_kind_is([kind]))
     if picked_types:
         stmt = stmt.where(_kind_is(picked_types))
-    if picked_regions or picked_cities:
+    if picked_regions or picked_cities or picked_districts:
         area_parts = []
         if picked_regions:
             area_parts.append(
@@ -1217,6 +1259,15 @@ def search_statement(
                 Source.level == "市级",
             )
             for c in picked_cities
+        )
+        area_parts.extend(
+            and_(
+                Source.province == p,
+                Source.city == c,
+                Source.district == d,
+                Source.level == "区县级",
+            )
+            for p, c, d in picked_districts
         )
         stmt = stmt.where(or_(*area_parts))
     if picked_levels:
@@ -1370,8 +1421,61 @@ def _view_open(view: deadline_excerpts.View, stamp: datetime) -> bool:
     )
 
 
+def _validate_city_scope(session: Session, province: str, city: str) -> str:
+    if not city:
+        return ""
+    resolved = resolve_city(province, city, covered_city_scopes(session))
+    if resolved is not None:
+        return resolved
+    raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区；不会改为全省查询")
+
+
+def _validate_district_scope(
+    session: Session, province: str, city: str, district: str
+) -> tuple[str, str]:
+    try:
+        city = checked_area_name(city, "城市")
+        district = checked_area_name(district, "区县")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    if not district:
+        return _validate_city_scope(session, province, city), ""
+    resolved = (
+        resolve_district(province, city, district, covered_district_scopes(session))
+        if province and city
+        else None
+    )
+    if resolved is None:
+        raise HTTPException(
+            status_code=422, detail="区县暂未收录或不属于所选省市，不会改为全市查询"
+        )
+    return resolved
+
+
+def _city_matches(source: Source, province: str, city: str, district: str = "") -> bool:
+    if district:
+        return (
+            source.level == "区县级"
+            and source.province == province
+            and source.city == city
+            and source.district == district
+        )
+    shown = "国家部委" if source.province == "国家" else source.province
+    return (not province or province == shown) and (
+        not city or (source.level == "市级" and city == source.city)
+    )
+
+
 def _report_payload(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
+    district: str = "",
 ) -> dict[str, Any]:
     """截止雷达数据；同一份文件只取方案规定的主截止。"""
     current = now().astimezone(_TZ)
@@ -1390,10 +1494,7 @@ def _report_payload(
     for doc, src in rows:
         if effective_kind(doc.title, doc.kind_override) != "申报通知":
             continue
-        if province and province not in (
-            src.province,
-            "国家部委" if src.province == "国家" else src.province,
-        ):
+        if not _city_matches(src, province, city, district):
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
@@ -1411,6 +1512,7 @@ def _report_payload(
                 ),
                 "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
+                "district": src.district,
                 "level": src.level,
                 "dept": src.dept_full_name,
                 "label": selected.kind,
@@ -1453,7 +1555,15 @@ def _report_payload(
 
 
 def _report_payload_excerpts(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
+    district: str = "",
 ) -> dict[str, Any]:
     current = now()
     today = current.date()
@@ -1470,7 +1580,7 @@ def _report_payload_excerpts(
         if effective_kind(doc.title, doc.kind_override) != "申报通知":
             continue
         shown_province = "国家部委" if src.province == "国家" else src.province
-        if province and province != shown_province:
+        if not _city_matches(src, province, city, district):
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
@@ -1495,6 +1605,9 @@ def _report_payload_excerpts(
                     "title": doc.title,
                     "issuer": issuer,
                     "province": shown_province,
+                    "city": src.city,
+                    "district": src.district,
+                    "level": src.level,
                     "kind": soon_kind,
                 }
             )
@@ -1510,6 +1623,7 @@ def _report_payload_excerpts(
                 "issuer": issuer,
                 "province": shown_province,
                 "city": src.city,
+                "district": src.district,
                 "level": src.level,
                 "dept": src.dept_full_name,
                 "label": due.kind,
@@ -1563,10 +1677,18 @@ def _report_payload_excerpts(
 
 
 def _report_response(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
+    district: str = "",
 ) -> dict[str, Any]:
     """截止雷达接口的返回：雷达数据，加上空状态说明用的已核对条数（不随筛选变化，只给数字）。"""
-    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload = _report_payload(session, days, province, dept, support, page, size, city, district)
     payload["verified_total"] = verified_total(session)
     return payload
 
@@ -1577,6 +1699,8 @@ def deadline_report(
     excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     days: Annotated[int, Query(description="未来 7、14 或 30 天")] = 7,
     province: Annotated[str, Query(max_length=32)] = "",
+    city: Annotated[str, Query(max_length=32)] = "",
+    district: Annotated[str, Query(max_length=32)] = "",
     dept: Annotated[str, Query(max_length=128)] = "",
     support: Annotated[str, Query(max_length=16)] = "",
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
@@ -1585,6 +1709,8 @@ def deadline_report(
     if days not in (7, 14, 30):
         raise HTTPException(status_code=422, detail="days 只支持 7、14、30")
     province = province.strip()
+    city = city.strip()
+    city, district = _validate_district_scope(session, province, city, district)
     dept = dept.strip()
     if province and province not in (set(PROVINCES) - {"不限地区"}):
         raise HTTPException(status_code=422, detail="省份不支持")
@@ -1593,20 +1719,26 @@ def deadline_report(
     if support and support not in SUPPORT_LABELS:
         raise HTTPException(status_code=422, detail="支持方式不支持")
     if excerpts == 1:
-        payload = _report_payload_excerpts(session, days, province, dept, support, page, size)
+        payload = _report_payload_excerpts(
+            session, days, province, dept, support, page, size, city, district
+        )
         payload["verified_total"] = verified_total(session)
         return payload
-    if support or session.scalar(
-        select(DocumentDeadline.id)
-        .where(
-            DocumentDeadline.status == "approved",
-            DocumentDeadline.approved_date == now().date(),
-            DocumentDeadline.approved_time.is_not(None),
+    if (
+        city
+        or support
+        or session.scalar(
+            select(DocumentDeadline.id)
+            .where(
+                DocumentDeadline.status == "approved",
+                DocumentDeadline.approved_date == now().date(),
+                DocumentDeadline.approved_time.is_not(None),
+            )
+            .limit(1)
         )
-        .limit(1)
     ):
         # 当天带时刻的截止随时间变化；支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
-        return _report_response(session, days, province, dept, support, page, size)
+        return _report_response(session, days, province, dept, support, page, size, city, district)
     # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
     revision = publication_revision(session, "deadlines")
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
@@ -1614,7 +1746,7 @@ def deadline_report(
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_response(session, days, province, dept, support, page, size)
+    payload = _report_response(session, days, province, dept, support, page, size, city, district)
     if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
@@ -1691,6 +1823,7 @@ def _list_board_payload(
                 ),
                 "province": item_province,
                 "city": src.city,
+                "district": src.district,
                 "level": src.level,
                 "year": item_year,
                 "type": item_type,
@@ -1903,7 +2036,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     points = [["发文机关", issuer]]
     if detail and detail.doc_number:
         points.append(["文号", detail.doc_number])
-    points.append(["适用地区", applicable_region(src.province, src.level, src.city)])
+    points.append(["适用地区", applicable_region(src.province, src.level, src.city, src.district)])
     if status_value:
         status_label = {"open": "征集中", "closing": "即将截止", "closed": "已截止"}[
             status_value["code"]
@@ -1981,9 +2114,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "tags": [kind],
         # 项目类别：按标题归类，仅供检索参考，非官方分类；只有申报通知和名单有
         "category": shown_category(kind, doc.rule_category, doc.title),
-        "region": region_label(src.province, src.level, src.city),
+        "region": region_label(src.province, src.level, src.city, src.district),
         "province": src.province,
         "city": src.city,
+        "district": src.district,
         "level": src.level,
         "title": doc.title,
         "issuer": issuer,
@@ -2063,7 +2197,11 @@ def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[
                 "label": info["labels"][version.id],
                 "current": version.id == doc_id,
                 "region": _province_name(
-                    src.city if src.level == "市级" and src.city else src.province
+                    f"{src.city}·{src.district}"
+                    if src.level == "区县级" and src.district
+                    else src.city
+                    if src.level == "市级" and src.city
+                    else src.province
                 ),
                 "issuer": normalize_issuer(
                     detail.issuer if detail and detail.issuer else src.dept_full_name
@@ -2097,13 +2235,19 @@ def calendar(
     days: Annotated[int, Query(ge=1, le=366)] = 366,
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    province: Annotated[str, Query(max_length=32)] = "",
+    city: Annotated[str, Query(max_length=32)] = "",
+    district: Annotated[str, Query(max_length=32)] = "",
 ) -> dict:
     """申报日历：核对通过的未截止事项及近 30 天已截止事项，分别分页和统计。
 
     每条的 id 是截止记录编号（一份文件可以有多个截止）；打开详情用 docId。
     """
+    if province and province not in (set(PROVINCES) - {"不限地区"}):
+        raise HTTPException(status_code=422, detail="省份不支持")
+    city, district = _validate_district_scope(session, province, city, district)
     if excerpts == 1:
-        return _calendar_payload_excerpts(session, days, limit, offset)
+        return _calendar_payload_excerpts(session, days, limit, offset, province, city, district)
     current = now()
     d = current.date()
     stmt = (
@@ -2133,7 +2277,9 @@ def calendar(
         key = (master_id, dl.kind, dl.approved_date, dl.approved_time)
         if key not in unique:
             master = session.get(Document, master_id) if master_id != doc.id else doc
-            unique[key] = (dl, master, master.source if master_id != doc.id else src)
+            selected_source = master.source if master_id != doc.id else src
+            if _city_matches(selected_source, province, city, district):
+                unique[key] = (dl, master, selected_source)
     # 与详情一样抑制归并组中已变更的截止，不能让旧副本进入日历。
     approved = _approved(session, [key[0] for key in unique])
     valid = {
@@ -2153,11 +2299,16 @@ def calendar(
             {
                 "id": f"dl{dl.id}",
                 "docId": str(doc.id),
+                "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
+                "district": src.district,
                 "level": src.level,
                 "due": dl.approved_date.isoformat(),
                 "time": _hhmm(dl.approved_time),
-                "region": f"{src.city or src.province} · {src.dept}",
+                "region": (
+                    f"{applicable_region(src.province, src.level, src.city, src.district)}"
+                    f" · {src.dept}"
+                ),
                 "kind": effective_kind(doc.title, doc.kind_override),
                 "title": doc.title,
                 "what": dl.kind,
@@ -2178,7 +2329,15 @@ def calendar(
     }
 
 
-def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: int) -> dict:
+def _calendar_payload_excerpts(
+    session: Session,
+    days: int,
+    limit: int,
+    offset: int,
+    province: str = "",
+    city: str = "",
+    district: str = "",
+) -> dict:
     current = now()
     today = current.date()
     raw_ids = list(
@@ -2216,6 +2375,8 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
     )
     upcoming, past, unverified = [], [], []
     for doc, src, detail_issuer in rows:
+        if not _city_matches(src, province, city, district):
+            continue
         kind = effective_kind(doc.title, doc.kind_override)
         due = deadline_excerpts.selected(views.get(doc.id, []), today)
         if kind == "申报通知" and soon.get(doc.id, False):
@@ -2225,6 +2386,9 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
                     "title": doc.title,
                     "issuer": normalize_issuer(detail_issuer or src.dept_full_name),
                     "province": "国家部委" if src.province == "国家" else src.province,
+                    "city": src.city,
+                    "district": src.district,
+                    "level": src.level,
                     "kind": next(
                         (v.kind for v in views[doc.id] if v.source == "unverified"), "截止未核对"
                     ),
@@ -2245,12 +2409,17 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
             item = {
                 "id": f"dl{view.record_id}",
                 "docId": str(doc.id),
+                "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
+                "district": src.district,
                 "level": src.level,
                 "due": due.public(today) if due else None,
                 "date": view.day.isoformat(),
                 "time": _hhmm(view.clock),
-                "region": f"{src.city or src.province} · {src.dept}",
+                "region": (
+                    f"{applicable_region(src.province, src.level, src.city, src.district)}"
+                    f" · {src.dept}"
+                ),
                 "kind": kind,
                 "title": doc.title,
                 "what": view.kind,

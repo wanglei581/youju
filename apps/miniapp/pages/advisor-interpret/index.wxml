@@ -1,0 +1,59 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:elif="{{!aiEnabled}}" class="card advisor-card muted">
+  <view>{{gateText}}</view>
+  <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
+  <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+</view>
+<block wx:elif="{{aiEnabled}}">
+  <view class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
+  <view wx:if="{{needsConsent}}" class="card advisor-card">
+    <view class="advisor-title">使用须知</view>
+    <view wx:for="{{terms}}" wx:key="*this" class="advisor-text">{{index + 1}}. {{item}}</view>
+    <checkbox-group bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" /><text>我已阅读并知晓上述说明</text></label></checkbox-group>
+    <button class="advisor-button btn-primary" disabled="{{!checked}}" bindtap="agree">开始使用</button>
+  </view>
+  <view wx:elif="{{phase === 'processing'}}" class="card advisor-card">
+    <view>{{progress || '正在对照原文摘录…'}}</view>
+    <view class="advisor-text muted">一般 10–30 秒。可以先离开，完成后在“我的任务”里查看。</view>
+  </view>
+  <view wx:elif="{{phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
+    <view>{{error}}</view>
+    <view wx:if="{{phase === 'timeout' && progress}}" class="advisor-text muted">{{progress}}</view>
+    <button wx:if="{{canRetry}}" class="advisor-button" bindtap="retry">重试</button>
+    <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">查看我的任务</button>
+  </view>
+  <block wx:elif="{{phase === 'done'}}">
+    <view wx:if="{{result.notice}}" class="interpret-notice">{{result.notice}}</view>
+    <view class="card advisor-card"><view class="advisor-title">{{title || '通知解读'}}</view><view wx:if="{{!docId}}" class="interpret-meta">这条任务没有关联到通知原文，请从通知详情页重新打开。</view></view>
+    <view wx:if="{{result.verified.length}}" class="card advisor-card">
+      <view class="advisor-title">已核对</view>
+      <view class="interpret-meta">截止日期、支持方式由人工对照原文核对。</view>
+      <view wx:for="{{result.verified}}" wx:key="key" class="interpret-item">
+        <view>{{item.displayValue}}</view><view class="advisor-text">{{item.quote}}</view>
+      </view>
+    </view>
+    <view wx:if="{{result.refusal}}" class="card advisor-card">
+      <view>{{result.refusal}}</view><button class="advisor-button" bindtap="original" disabled="{{!docId}}">看原文</button>
+    </view>
+    <view wx:for="{{result.sections}}" wx:for-item="section" wx:key="type" class="card advisor-card">
+      <view class="advisor-title">{{section.title}}</view>
+      <view wx:if="{{section.missing}}" class="advisor-text muted">没有摘录到相关原句（原文可能没写，也可能漏摘），请查看原文</view>
+      <view wx:for="{{section.items}}" wx:key="key" class="interpret-item">
+        <view>{{item.text}}</view>
+        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key">
+          <view wx:if="{{ref.quote && ref.quote !== item.text}}" class="advisor-text">{{ref.quote}}</view>
+          <view class="interpret-meta">段落 {{ref.pid}}</view>
+        </view>
+        <view class="interpret-ops">
+          <button class="interpret-link" bindtap="original" disabled="{{!docId}}">看原文</button>
+          <button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">纠错</button>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
+    <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
+    <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
+  </block>
+  <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
+</block>

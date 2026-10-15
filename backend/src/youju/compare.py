@@ -66,6 +66,14 @@ class ListMatch:
     url: str
     list_type: str
     year: int | None
+    city: str = ""
+    level: str = ""
+    name: str = ""
+    credit_code: str = ""
+    batch: str = ""
+    sequence: str = ""
+    region: str = ""
+    district: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -75,6 +83,14 @@ class ListMatch:
             "status": self.status,
             "issuer": self.issuer,
             "province": self.province,
+            "city": self.city,
+            "district": self.district,
+            "level": self.level,
+            "name": self.name,
+            "credit_code": self.credit_code,
+            "batch": self.batch,
+            "sequence": self.sequence,
+            "region": self.region,
             "doc_number": self.doc_number,
             "url": self.url,
             "list_type": self.list_type,
@@ -332,7 +348,20 @@ def _input_rows(values: Iterable[str]) -> tuple[list[tuple[str, str, str]], list
 
 def _make_match(
     entry: ListLookupMatch,
-    document: tuple[int, str, date | None, str, str | None, str, str, str | None, str | None],
+    document: tuple[
+        int,
+        str,
+        date | None,
+        str,
+        str | None,
+        str,
+        str,
+        str | None,
+        str | None,
+        str | None,
+        str,
+        str | None,
+    ],
 ) -> ListMatch:
     (
         document_id,
@@ -344,6 +373,9 @@ def _make_match(
         province,
         dept_full_name,
         kind_override,
+        city,
+        level,
+        district,
     ) = document
     kind = effective_kind(title, kind_override)
     issuer = issuer or dept_full_name or ""
@@ -354,6 +386,14 @@ def _make_match(
         status=list_status(title, kind),
         issuer=issuer,
         province=province,
+        city=city or "",
+        district=district or "",
+        level=level,
+        name=entry.name,
+        credit_code=entry.credit_code or "",
+        batch=entry.batch or "",
+        sequence=entry.sequence or "",
+        region=entry.region or "",
         doc_number=doc_number or "",
         url=url,
         list_type=entry.category or "其他",
@@ -376,6 +416,9 @@ def _canonical_metadata(session: Session, ids: set[int]):
             Source.province,
             Source.dept_full_name,
             Document.kind_override,
+            Source.city,
+            Source.level,
+            Source.district,
         )
         .join(Source, Source.id == Document.source_id)
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
@@ -467,7 +510,6 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         note += "；已去掉" + "、".join(
             f"{reason}{count}行" for reason, count in removed_counts.items()
         )
-    detail.merge_cells(start_row=1, start_column=1, end_row=1, end_column=12)
     detail.cell(1, 1, _safe_cell(note))
     headers = [
         "客户输入",
@@ -483,7 +525,16 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         "名单类型",
         "年度",
         "说明",
+        "城市",
+        "层级",
+        "名单中名称",
+        "统一社会信用代码",
+        "批次",
+        "名单序号",
+        "名单中企业地区",
+        "区县",
     ]
+    detail.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     for col, header in enumerate(headers, 1):
         detail.cell(2, col, header)
     row_count = 0
@@ -505,6 +556,14 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
                 match.list_type if match else "",
                 match.year if match else "",
                 row.note,
+                match.city if match else "",
+                match.level if match else "",
+                match.name if match else "",
+                match.credit_code if match else "",
+                match.batch if match else "",
+                match.sequence if match else "",
+                match.region if match else "",
+                match.district if match else "",
             ]
             for col, value in enumerate(values, 1):
                 detail.cell(row_count + 3, col, _safe_cell(value))

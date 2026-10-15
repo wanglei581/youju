@@ -99,6 +99,9 @@ def usage(session, task):
 def test_all_audience_clause_worker(client, session, settings, notice):
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    user = session.scalar(select(User).where(User.openid == "internal"))
+    user.agreement_version = interpret.AI_AGREEMENT_VERSION
+    session.commit()
     created = create(client, notice.id, COMPANY_A)
     assert created.status_code == 202
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1

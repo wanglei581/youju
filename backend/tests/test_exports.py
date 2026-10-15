@@ -162,7 +162,8 @@ def test_xlsx_export(client, docs):
         "支持方式",
         "未核项",
     ]
-    assert sheet["M1"].value == "原文链接" and sheet["N1"].value == "原文链接 2"
+    assert sheet["M1"].value == "截止原文句子"
+    assert sheet["N1"].value == "原文链接" and sheet["O1"].value == "原文链接 2"
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
     assert sheet["D2"].value is None  # 申报通知没有名单状态，status 契约保持不变
     assert sheet["D3"].value == "公示"
@@ -176,8 +177,8 @@ def test_xlsx_export(client, docs):
     assert sheet["K3"].value == "—"  # 名单没有支持方式
     assert sheet["L2"].value == "支持方式"
     assert sheet["L3"].value == "截止日期（以原文为准）、名单状态"
-    assert sheet["M2"].hyperlink.target.endswith("/1.html")
-    assert sheet["N2"].hyperlink.target.endswith("/2.html")
+    assert sheet["N2"].hyperlink.target.endswith("/1.html")
+    assert sheet["O2"].hyperlink.target.endswith("/2.html")
     note = book["数据说明"]
     assert "第三方整理，非政府平台" in note["B1"].value
     assert "“截止日期（以原文为准）”列" in note["B1"].value
@@ -592,7 +593,7 @@ def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatc
         assert "“日期角色”是人工核对时确认的截止类型" not in notice
         assert "“截止日期（以原文为准）”列" in notice
     row, notice = sheet(json=body)
-    assert "截止原文句子" not in row and "2026-10-25" not in str(row["截止日期（以原文为准）"])
+    assert row["截止原文句子"] is None and "2026-10-25" not in str(row["截止日期（以原文为准）"])
     assert "机器摘录" not in notice
 
 

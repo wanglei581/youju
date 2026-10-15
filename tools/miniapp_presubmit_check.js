@@ -6,6 +6,7 @@ const path = require('node:path');
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
   'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
+const DATA_PAGES = ['advisor-form', 'advisor-terms'].map(p => `pages/${p}/index`);
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -13,8 +14,8 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, mode = 'submit', profile = 'first-release' }) {
-  if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release'].includes(profile)) {
+function inspect({ legal, config, app, toolTerms, mode = 'submit', profile = 'first-release' }) {
+  if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release', 'complete-candidate'].includes(profile)) {
     throw new Error('参数不支持');
   }
   const checks = [];
@@ -29,17 +30,23 @@ function inspect({ legal, config, app, mode = 'submit', profile = 'first-release
   add('local', '没有本机开发后端', !config.devBaseUrl, '清空 devBaseUrl');
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, profile === 'complete-candidate' ? DATA_PAGES : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对首发14页或AI版19页，不把批量、支付、奖励等未确认页面带入');
+  '核对历史首发14页、AI版19页或完整候选21页；支付、奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
   add('tabs', '底栏为首页、关注、文件、我的', JSON.stringify(tabs) === JSON.stringify(FIRST_PAGES.slice(0, 4)), '按 D-067 使用四栏');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
-  else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal'), '内测 true，正式 false；本工具不代替准入验证');
+  else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式 false；本工具不代替准入验证');
   if (profile === 'ai-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
-  add('internal-submit', '不把AI内测包提交审核', !(mode === 'submit' && profile === 'ai-internal'), '内测包只能 prepare，手续与质量验证完成后另做 AI 正式包');
+  add('internal-submit', '不把内测或完整候选包提交审核', !(mode === 'submit' && ['ai-internal', 'complete-candidate'].includes(profile)), '候选只能 prepare；完整交付须另行核对准入、实际业务验收及创始人批准');
+  if (profile === 'complete-candidate') {
+    add('tool-terms', '完整候选包含独立工具使用说明', !!toolTerms && toolTerms.version === 'advisor-2026-09-v1'
+      && Array.isArray(toolTerms.paragraphs) && toolTerms.paragraphs.length >= 6 && toolTerms.paragraphs.every(nonempty)
+      && !hasPlaceholder(toolTerms), '核对工具协议版本与服务器一致，提供上传、留存、删除、额度和结果边界的完整说明');
+    add('tool-review', '工具说明公开发布复核', !!toolTerms && toolTerms.reviewedForRelease === true, '候选可体验；公开发布复核及实际准入证据仍须单独完成', true);
+  }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {
     add(`template-${id}`, `${name}提醒模板`, nonempty((config.templates || {})[id]), `该提醒模板未配置，对应入口保持隐藏`, true);
   }
@@ -53,11 +60,12 @@ function main(args) {
     if (args[i] === '--mode' && args[i + 1]) mode = args[++i];
     else if (args[i] === '--profile' && args[i + 1]) profile = args[++i];
     else if (args[i] === '--json') json = true;
-    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|ai-internal|ai-release] [--json]');
+    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|ai-internal|ai-release|complete-candidate] [--json]');
   }
   const root = path.join(__dirname, '..', 'apps', 'miniapp');
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
-    app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')), mode, profile});
+    app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
+    toolTerms: profile === 'complete-candidate' ? require(path.join(root, 'content/advisor-terms.js')) : undefined, mode, profile});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(result.notice + '\n');

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
+from hashlib import sha256
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
+from youju.agreements import agreement_at_least
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -67,21 +69,12 @@ def request_openid(request: Request) -> str:
     return openid
 
 
-# 协议版本号写成"年-月"开头（2026-10、2026-11……），按时间可排序，直接比字符串；写法不对的一律不算
-VERSION_PREFIX = re.compile(r"\d{4}-\d{2}")
-
-
 def agreement_range(settings) -> tuple[str, str]:
     """（仍认的最早版本, 当前版本）。版本号按时间可排序（2026-10 < 2026-11），直接比字符串；
     最早版本比当前版本还新的配置启动时就拒绝（config.Settings）。"""
     current = settings.agreement_version
     oldest = (getattr(settings, "agreement_min_version", "") or "").strip() or current
     return oldest, current
-
-
-def agreement_at_least(version: str | None, needed: str) -> bool:
-    """同意的版本不早于 needed（如 AI 条款第一次写进去的那一版）。写法不对的不算。"""
-    return bool(version) and VERSION_PREFIX.match(version) is not None and version >= needed
 
 
 def agreement_valid(version: str | None, settings) -> bool:
@@ -139,6 +132,8 @@ class Conditions(BaseModel):
     q: str | None = Field(default=None, max_length=50)
     kind: str = "all"
     regions: str | None = Field(default=None, max_length=400)
+    cities: str | None = Field(default=None, max_length=2000)
+    districts: str | None = Field(default=None, max_length=4000)
     types: str | None = Field(default=None, max_length=400)
     status: str | None = Field(default=None, max_length=400)
     time: str = "近 30 天"
@@ -209,30 +204,60 @@ def notification_statement(session: Session, follow: Follow):
     return v1._grouped(stmt)
 
 
-def followed_week_count(session: Session, user: User) -> int:
+FOLLOW_QUERY_UNAVAILABLE = "关注范围暂不可查询，请重新选择地区或等待来源恢复"
+
+
+def followed_week_stats(session: Session, user: User) -> dict:
     start, end = v1._week(v1.now().date())
     follows = session.scalars(select(Follow).where(Follow.user_id == user.id)).all()
-    if not follows:
-        return 0
-    matches = union_all(
-        *[
-            _conditions_stmt(session, follow.conditions)
-            .where(Document.publish_date >= start, Document.publish_date < end)
-            .with_only_columns(Document.id)
-            for follow in follows
-        ]
-    ).subquery()
-    return v1._count(session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id)))))
+    statements, unavailable = [], 0
+    for follow in follows:
+        try:
+            statement = _conditions_stmt(session, follow.conditions)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            unavailable += 1
+            continue
+        statements.append(
+            statement.where(
+                Document.publish_date >= start, Document.publish_date < end
+            ).with_only_columns(Document.id)
+        )
+    total = 0
+    if statements:
+        matches = union_all(*statements).subquery()
+        total = v1._count(
+            session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id))))
+        )
+    if unavailable:
+        return {
+            "followed_new": None,
+            "followed_available_new": total,
+            "followed_unavailable": unavailable,
+            "followed_message": FOLLOW_QUERY_UNAVAILABLE,
+        }
+    return {"followed_new": total}
+
+
+def followed_week_count(session: Session, user: User) -> int | None:
+    return followed_week_stats(session, user)["followed_new"]
 
 
 def _follow_out(session: Session, follow: Follow) -> dict:
     since = follow.last_seen_at or follow.created_at
-    return {
+    result = {
         "id": follow.id,
         "name": follow.name,
         "conditions": follow.conditions,
-        "newCount": new_count(session, follow, since),
     }
+    try:
+        result["newCount"] = new_count(session, follow, since)
+    except HTTPException as exc:
+        if exc.status_code != 422:
+            raise
+        result.update(newCount=None, queryUnavailable=True, queryMessage=FOLLOW_QUERY_UNAVAILABLE)
+    return result
 
 
 def _owned_follow(session: Session, user: User, follow_id: int) -> Follow:
@@ -287,6 +312,8 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         ).all()
     )
     return {
+        # 仅供本机安全重试记录分区，不暴露 openid；不是鉴权凭据。
+        "taskOwner": sha256(f"youju-task-owner:{user.id}:{user.openid}".encode()).hexdigest(),
         # valid：这份同意现在还算不算数（仍认的最早版本调高后，旧版本的同意不算了）。
         # 小程序据此请用户重新同意，太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）
         "agreed": {
@@ -863,20 +890,32 @@ def list_follows(session: SessionDep, user: UserDep) -> dict:
     follows = session.scalars(
         select(Follow).where(Follow.user_id == user.id).order_by(Follow.id)
     ).all()
+    items = [_follow_out(session, row) for row in follows]
+    available = [
+        row for row, item in zip(follows, items, strict=True) if not item.get("queryUnavailable")
+    ]
     total = 0
-    if follows:
+    if available:
         matches = union_all(
             *[
                 new_statement(
                     session, follow, follow.last_seen_at or follow.created_at
                 ).with_only_columns(Document.id)
-                for follow in follows
+                for follow in available
             ]
         ).subquery()
         total = v1._count(
             session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id))))
         )
-    return {"items": [_follow_out(session, row) for row in follows], "newTotal": total}
+    unavailable = len(follows) - len(available)
+    if unavailable:
+        return {
+            "items": items,
+            "newTotal": None,
+            "availableNewTotal": total,
+            "unavailableCount": unavailable,
+        }
+    return {"items": items, "newTotal": total}
 
 
 @router.post("/me/follows", status_code=201)

@@ -1,9 +1,11 @@
 const { INDUSTRIES, NATIONAL, requestScope } = require('./conditions.js');
+const { PROVINCES, MUNICIPALITIES, SEPARATORS, areaParts, areaLabel, withoutCityProvinces, withoutDistrictCities } = require('./regions.js');
 const { dueView } = require('./format.js');
 
 // 我的客户（D-061）：客户卡片只存在本机，名称不上传；检索只发送地区和产业方向。
+// 区县（districts，"省/市/区县"）是后加的字段：旧记录没有这一项时按空处理，地区、城市、产业方向原样保留，键名不变
 const STORAGE_KEY = 'youjuLocalClientsV1';
-const PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
+
 const MAX_CLIENTS = 20;
 // 每组检索条件取最新的 50 份（接口一页最多 50）；合并后最多列 200 份（导出一次最多 200 份）
 const PER_QUERY = 50;
@@ -12,17 +14,30 @@ const TIME = '近 90 天';
 
 const unique = (values) => [...new Set(values)];
 const strings = (values) => Array.isArray(values) ? values.filter((v) => typeof v === 'string') : [];
+const single = (value) => value.length > 0 && value.length <= 32 && !SEPARATORS.test(value);
 
+// 区县必须带所属省、市；直辖市的市写本市简称
+function validDistrict(key) {
+  const parts = key.split('/');
+  const { province, city, district } = areaParts(key);
+  return parts.length === 3 && PROVINCES.includes(province) && single(city) && single(district)
+    && (!MUNICIPALITIES.includes(province) || city === province);
+}
+
+// 具体区县替换所属城市和全省，具体城市替换全省（与搜索页选择时的规则一致）
 function normalize(value) {
   const c = value && typeof value === 'object' ? value : {};
+  const districts = unique(strings(c.districts).filter(validDistrict));
+  const cities = withoutDistrictCities(unique(strings(c.cities).filter((v) => {
+    const parts = v.split('/');
+    return parts.length === 2 && PROVINCES.includes(parts[0]) && single(parts[1]);
+  })), districts);
   return {
     id: typeof c.id === 'string' ? c.id : '',
     name: typeof c.name === 'string' ? c.name.trim().slice(0, 40) : '',
-    regions: unique(strings(c.regions).filter((v) => PROVINCES.includes(v))),
-    cities: unique(strings(c.cities).filter((v) => {
-      const parts = v.split('/');
-      return parts.length === 2 && PROVINCES.includes(parts[0]) && parts[1].length > 0 && parts[1].length <= 32;
-    })),
+    regions: withoutCityProvinces(unique(strings(c.regions).filter((v) => PROVINCES.includes(v))), cities, districts),
+    cities,
+    districts,
     industries: unique(strings(c.industries).filter((v) => INDUSTRIES.includes(v))),
   };
 }
@@ -46,21 +61,23 @@ function saveClients(clients) {
 const displayName = (client, index) => client.name || `客户 ${index + 1}`;
 
 // 一家客户的检索条件：近 90 天的申报通知，去掉已核对、确认已截止的。
-// 省和城市取并集；没有选择地区时全国检索，始终包含国家部委。
+// 具体城市替换同省的全省条件、具体区县替换所属城市和全省；其他省份仍可并选。没有选择地区时全国检索，始终包含国家部委。
 function clientParams(client) {
   const c = normalize(client);
   const scope = c.regions.length ? requestScope(c.regions, [NATIONAL])
-    : { regions: c.cities.length ? NATIONAL : '不限地区', levels: undefined };
+    : { regions: c.cities.length || c.districts.length ? NATIONAL : '不限地区', levels: undefined };
   return {
     kind: '申报通知', exclude_closed: true, time: TIME, regions: scope.regions, levels: scope.levels,
     cities: c.cities.length ? c.cities.join(',') : undefined,
+    // 没选区县时不带这一项，和加区县之前的请求一样
+    districts: c.districts.length ? c.districts.join(',') : undefined,
     industries: c.industries.length ? c.industries.join(',') : undefined,
   };
 }
 
 function cardSummary(client) {
   const c = normalize(client);
-  const regions = c.regions.concat(c.cities.map((v) => v.replace('/', '·')));
+  const regions = c.regions.concat(c.cities.map(areaLabel), c.districts.map(areaLabel));
   return `${regions.length ? `${regions.join('、')}（含国家部委）` : '不限地区（含国家部委）'} · ${c.industries.length ? c.industries.join('、') : '不限产业方向'}`;
 }
 

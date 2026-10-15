@@ -73,3 +73,6 @@
 .list-tip { padding: 48rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }
 .summary-reposts { color: var(--t3); }
 .cached-note { margin: 16rpx 32rpx 0; font-size: 24rpx; color: var(--t3); }
+
+.entries--tools { grid-template-columns: repeat(4, 1fr); }
+.entries--tools .entry-sub { font-size: 22rpx; }

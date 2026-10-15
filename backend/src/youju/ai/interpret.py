@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
 
+from youju.agreements import agreement_at_least
 from youju.classify import effective_kind
 from youju.config import Settings
 from youju.dedup import group_ids
@@ -92,8 +93,23 @@ def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
     )
 
 
+# 首发 2026-10 不含 AI 条款。正式 AI 包必须升版；回退环境配置不能降低这道门槛。
+AI_AGREEMENT_VERSION = "2026-11"
+
+
+def ai_agreed(settings: Settings, user: User | None) -> bool:
+    # 白名单体验包已含 AI 条款，继续使用内测协议；公开版本必须重新同意。
+    if getattr(settings, "ai_advisor_audience", "whitelist") != "all":
+        return True
+    return bool(
+        user
+        and user.agreement_at is not None
+        and agreement_at_least(user.agreement_version, AI_AGREEMENT_VERSION)
+    )
+
+
 def enabled(settings: Settings, user: User | None) -> bool:
-    return enabled_for_openid(settings, user.openid if user else None)
+    return enabled_for_openid(settings, user.openid if user else None) and ai_agreed(settings, user)
 
 
 def worker_user_ids(settings: Settings):
@@ -101,7 +117,11 @@ def worker_user_ids(settings: Settings):
     if not getattr(settings, "ai_advisor_enabled", False):
         return select(User.id).where(false())
     if getattr(settings, "ai_advisor_audience", "whitelist") == "all":
-        return select(User.id)
+        return select(User.id).where(
+            User.agreement_at.is_not(None),
+            User.agreement_version.regexp_match("^[0-9]{4}-[0-9]{2}"),
+            User.agreement_version >= AI_AGREEMENT_VERSION,
+        )
     return select(User.id).where(User.openid.in_(openids(settings)))
 
 

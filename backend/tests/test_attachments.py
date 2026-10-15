@@ -720,7 +720,9 @@ def test_recheck_updates_changed_files_and_drops_removed_ones(session) -> None:
     assert all(r.stale_file_ids is None for r in rows.values())
 
 
-def test_expired_copies_are_deleted_but_backups_never(session) -> None:
+def test_expired_copies_are_deleted_but_backups_never(session, monkeypatch) -> None:
+    retry = copies._retrying
+    monkeypatch.setattr(copies, "_retrying", lambda action, sleep: retry(action, lambda _: None))
     base = "https://kjt.ln.gov.cn/files/"
     doc = add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf")])
     add_doc(session, 2, APPLY, RECENT, [("b", base + "b.pdf", "pdf")])
@@ -742,6 +744,7 @@ def test_expired_copies_are_deleted_but_backups_never(session) -> None:
     assert a_file in cloud.deleted and BACKUP_ID not in cloud.deleted
     assert all("/attachments/" in i and i.startswith(PREFIX) for i in cloud.deleted)
     assert report.removed == 0 and base + "a.pdf" in rows_by_url(session)
+    assert report.storage_error and "删除未确认" in report.storage_error
     cloud.delete_fails = set()
     report = run(session, fetcher, cloud)
     assert report.removed == 1 and base + "a.pdf" not in rows_by_url(session)
@@ -1317,3 +1320,196 @@ def test_attachment_window_boundary_and_missing_publish_date(kind, days):
     assert not copies.is_recent(boundary - timedelta(days=1), NOW, NOW, kind=kind)
     assert copies.is_recent(None, NOW - timedelta(days=days - 1), NOW, kind=kind)
     assert not copies.is_recent(None, NOW - timedelta(days=days + 1), NOW, kind=kind)
+
+
+def test_delete_copies_retries_temporary_busy_then_confirms_only_returned_ids():
+    file_id = PREFIX + obj(PDF, "pdf")
+    requests, waits = [], []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"errcode": -1})
+        return httpx.Response(
+            200, json={"errcode": 0, "delete_list": [{"fileid": file_id, "status": 0}]}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert copies.delete_copies(client, ENV, [file_id, BACKUP_ID], sleep=waits.append) == {
+            file_id
+        }
+    assert waits == [5]
+    assert requests == [{"env": ENV, "fileid_list": [file_id]}] * 2
+
+
+def test_delete_copies_permanent_error_does_not_retry():
+    file_id = PREFIX + obj(PDF, "pdf")
+    requests, waits = [], []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={"errcode": 40013})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.BackupError, match="40013"),
+    ):
+        copies.delete_copies(client, ENV, [file_id], sleep=waits.append)
+    assert len(requests) == 1 and waits == []
+
+
+def test_delete_copies_exhaustion_preserves_stale_reference_for_next_run(session, monkeypatch):
+    row = add_copy(session, "https://example.gov.cn/retry-synthetic.pdf", PDF, "pdf")
+    stale_id = PREFIX + obj(b"synthetic obsolete content", "pdf")
+    current_id = row.file_id
+    row.stale_file_ids = [stale_id]
+    session.commit()
+    requests, waits = [], []
+    retry = copies._retrying
+    monkeypatch.setattr(copies, "_retrying", lambda action, sleep: retry(action, waits.append))
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"errcode": -1})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.BackupError, match="errcode -1"),
+    ):
+        copies._drop_stale(session, client, ENV)
+    session.expire_all()
+    assert row.stale_file_ids == [stale_id] and row.file_id == current_id
+    assert waits == [5, 15] and len(requests) == 3
+    assert all(r == {"env": ENV, "fileid_list": [stale_id]} for r in requests)
+
+
+def test_delete_partial_temporary_failure_retries_only_unconfirmed_items():
+    ids = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(2)]
+    requests, waits = [], []
+
+    def handle(request):
+        pending = json.loads(request.content)["fileid_list"]
+        requests.append(pending)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {
+                        "fileid": file_id,
+                        "status": -1 if len(requests) == 1 and file_id == ids[1] else 0,
+                    }
+                    for file_id in pending
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert copies.delete_copies(client, ENV, ids, sleep=waits.append) == set(ids)
+    assert requests == [ids, [ids[1]]] and waits == [5]
+
+
+@pytest.mark.parametrize("status", [None, 40097])
+def test_delete_missing_or_permanent_item_is_not_silent_success(status):
+    file_id = PREFIX + obj(PDF, "pdf")
+    requests, waits = [], []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [] if status is None else [{"fileid": file_id, "status": status}],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+    ):
+        copies.delete_copies(client, ENV, [file_id], sleep=waits.append)
+    assert len(requests) == 1 and waits == [] and error.value.confirmed == set()
+
+
+def test_partial_cleanup_settles_only_confirmed_and_keeps_failure_for_alert(session):
+    row = add_copy(session, "https://example.gov.cn/partial-synthetic.pdf", PDF, "pdf")
+    good, bad = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(2)]
+    row.stale_file_ids = [good, bad]
+    session.commit()
+
+    def handle(request):
+        ids = json.loads(request.content)["fileid_list"]
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {"fileid": file_id, "status": 0 if file_id == good else 40097}
+                    for file_id in ids
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.BackupError, match="未确认"),
+    ):
+        copies._drop_stale(session, client, ENV)
+    session.expire_all()
+    assert row.stale_file_ids == [bad]
+    assert row.file_id == PREFIX + obj(PDF, "pdf")
+
+
+def test_delete_batches_preserve_fifty_item_limit_and_ownership():
+    ids = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(101)]
+    sizes = []
+
+    def handle(request):
+        batch = json.loads(request.content)["fileid_list"]
+        sizes.append(len(batch))
+        assert all(file_id in ids for file_id in batch)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [{"fileid": file_id, "status": 0} for file_id in batch],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert copies.delete_copies(client, ENV, ids + [BACKUP_ID], sleep=lambda _: None) == set(
+            ids
+        )
+    assert sizes == [50, 50, 1]
+
+
+def test_expired_partial_cleanup_clears_confirmed_current_id_but_retains_pending_stale(session):
+    row = add_copy(session, "https://example.gov.cn/expired-partial.pdf", PDF, "pdf")
+    current = row.file_id
+    stale = PREFIX + f"attachments/{2:064x}.pdf"
+    row.stale_file_ids = [stale]
+    session.commit()
+    report = copies.CacheReport()
+
+    def handle(request):
+        ids = json.loads(request.content)["fileid_list"]
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {"fileid": file_id, "status": 0 if file_id == current else 40097}
+                    for file_id in ids
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.BackupError, match="未确认"),
+    ):
+        copies._cleanup(session, client, ENV, set(), report)
+    session.expire_all()
+    assert row.file_id is None and row.stale_file_ids == [stale]
+    assert report.removed == 1

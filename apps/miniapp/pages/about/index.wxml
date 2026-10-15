@@ -27,7 +27,7 @@
 <view wx:if="{{!cov && covFailed}}" class="card load-error"><text>收录范围没有加载出来</text><text class="link retry" bindtap="loadRange">重试</text></view>
 <view wx:if="{{cov}}" class="card">
   <view class="section-title">收录范围</view>
-  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖{{cov.national ? '国家部委和 ' : ' '}}{{cov.provinces}} 个省级地区<text wx:if="{{cov.cities.length}}">、{{cov.cities.length}} 个城市</text><text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
+  <view class="muted plain">共 {{cov.sources}} 个政府网站栏目，覆盖{{cov.national ? '国家部委和 ' : ' '}}{{cov.provinces}} 个省级地区<text wx:if="{{cov.cities.length}}">、{{cov.cities.length}} 个城市</text><text wx:if="{{cov.districts.length}}">、{{cov.districts.length}} 个区县</text><text wx:if="{{cov.updated}}">；最近更新 {{cov.updated}}</text>。点地区查看栏目。</view>
   <view wx:for="{{cov.regions}}" wx:key="name" class="region">
     <view class="region-row" data-name="{{item.name}}" bindtap="toggleRegion" aria-role="button">
       <text class="region-name">{{item.name}}</text>
@@ -42,6 +42,8 @@
     </view>
   </view>
   <view wx:if="{{cov.cities.length}}" class="muted plain">已收录城市：<text wx:for="{{cov.cities}}" wx:key="city">{{index ? '、' : ''}}{{item.province}}·{{item.city}}（{{item.sources}} 个栏目）</text>。地市目前只收录部分城市。</view>
+  <!-- 区县按省、市、区县三项列出：同名区县不同省市分开写；直辖市不重复写市名 -->
+  <view wx:if="{{cov.districts.length}}" class="muted plain">已收录区县：<text wx:for="{{cov.districts}}" wx:key="key">{{index ? '、' : ''}}{{item.province}}<text wx:if="{{item.city && item.city !== item.province}}">·{{item.city}}</text>·{{item.district}}<text wx:if="{{item.sources}}">（{{item.sources}} 个栏目）</text></text>。区县目前只收录少数地方；搜索里的省市区选项来自微信，不代表已收录。</view>
   <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在"我的 → 申请覆盖"告诉我们</text>。</view>
 </view>
 

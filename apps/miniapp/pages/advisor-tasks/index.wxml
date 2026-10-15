@@ -1,0 +1,34 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:if="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+<view wx:if="{{actionError}}" class="card advisor-card advisor-error">操作没有成功：{{actionError}}</view>
+<block wx:if="{{!loading}}">
+  <block wx:if="{{toolsEnabled}}">
+    <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
+    <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有任务</view><view class="advisor-text muted">在工具中心创建任务，处理结束后会显示结果。</view><button class="advisor-button" bindtap="tools">去工具中心</button></view>
+    <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
+      <view class="advisor-title">{{item.kindLabel}}</view>
+      <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
+      <view class="advisor-text">{{item.stateLabel}}</view>
+      <view class="advisor-text muted">{{item.time}}</view>
+      <view wx:if="{{item.dataTask}}" class="advisor-text">提交 {{item.rowCount}} 家<text wx:if="{{item.status === 'done'}}"> · 结果 {{item.resultRows || 0}} 行</text></view>
+      <view wx:if="{{item.downloadable && item.expiresText}}" class="advisor-text muted">结果保存至 {{item.expiresText}}，请及时下载</view>
+      <view wx:if="{{item.resultNote}}" class="advisor-text muted">{{item.resultNote}}</view>
+      <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
+      <view class="advisor-actions">
+        <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="download" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">下载 Excel</button>
+        <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写任务</button>
+        <button wx:if="{{item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看解读</button>
+        <button wx:if="{{item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看条款对照</button>
+        <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" catchtap="cancel" disabled="{{busyId !== null}}">取消</button>
+        <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" catchtap="remove" disabled="{{busyId !== null}}">删除</button>
+      </view>
+    </view>
+  </block>
+  <view wx:elif="{{!error}}" class="card advisor-card muted">
+    <view>{{gateText}}</view>
+    <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
+    <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+  </view>
+</block>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>

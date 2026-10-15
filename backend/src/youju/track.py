@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,11 +31,37 @@ from youju.compare import (
 from youju.export_notes import DEADLINE_HEADER, add_excel_notes
 from youju.fields import SUPPORT_LABELS
 from youju.models import Document, DocumentDetail, Source
+from youju.regions import (
+    checked_area_name,
+    city_key,
+    covered_city_scopes,
+    covered_district_scopes,
+    district_parent_city,
+    resolve_city,
+    resolve_district,
+)
 from youju.sources.onboard import PROVINCES as SOURCE_PROVINCES
 
 _TZ = v1._TZ
 _PROVINCES = frozenset((*SOURCE_PROVINCES, "国家部委"))
 _PROVINCE_TO_SOURCE = {"国家部委": "国家"}
+_PROVINCE_ALIASES = {
+    f"{p}省": p
+    for p in SOURCE_PROVINCES
+    if p not in {"国家", "北京", "天津", "上海", "重庆", "内蒙古", "广西", "西藏", "宁夏", "新疆"}
+}
+_PROVINCE_ALIASES.update({f"{p}市": p for p in ("北京", "天津", "上海", "重庆")})
+_PROVINCE_ALIASES.update(
+    {
+        "内蒙古自治区": "内蒙古",
+        "广西壮族自治区": "广西",
+        "西藏自治区": "西藏",
+        "宁夏回族自治区": "宁夏",
+        "新疆维吾尔自治区": "新疆",
+    }
+)
+
+
 _SPLIT = re.compile(r"[;,；，、|]+")
 
 
@@ -48,14 +74,49 @@ class CustomerProfile:
     keywords: tuple[str, ...] = ()
     supports: tuple[str, ...] = ()
     invalid_province: bool = False
+    city: str = ""
+    invalid_city: bool = False
+    district: str = ""
+    invalid_district: bool = False
 
     def __post_init__(self) -> None:
+        province = _PROVINCE_ALIASES.get(self.province.strip(), self.province.strip())
+        object.__setattr__(self, "province", province)
+        try:
+            district = checked_area_name(self.district, "区县")
+        except ValueError as exc:
+            raise CompareInputError(str(exc)) from None
+        object.__setattr__(self, "district", district)
+        if district and (not self.city or province in ("国家", "国家部委")):
+            raise CompareInputError("填写区县时必须提供所属省份和城市")
+        if isinstance(self.city, str):
+            city = self.city.strip()
+            if province in ("北京", "天津", "上海", "重庆") and city_key(city) == province:
+                city = province if district else ""
+            object.__setattr__(
+                self, "city", district_parent_city(province, city) if district else city
+            )
+        if district and not self.city:
+            raise CompareInputError("填写区县时必须提供所属省份和城市")
+        if self.city and (
+            not isinstance(self.city, str)
+            or len(self.city) > 32
+            or any(c in self.city for c in "/\\,，;；、|\t\n\r")
+            or self.province in ("国家", "国家部委")
+        ):
+            raise CompareInputError("城市须填写所属省份内的城市简称，国家部委范围请留空")
         if self.province not in _PROVINCES:
             object.__setattr__(self, "invalid_province", True)
 
     @property
     def valid(self) -> bool:
-        return bool(self.name and self.province and not self.invalid_province)
+        return bool(
+            self.name
+            and self.province
+            and not self.invalid_province
+            and not self.invalid_city
+            and not self.invalid_district
+        )
 
 
 @dataclass(frozen=True)
@@ -74,6 +135,9 @@ class TrackItem:
     publish_date: date | None = None
     deadline_source: str = "unverified"
     deadline_quote: str = ""
+    city: str = ""
+    level: str = ""
+    district: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +146,9 @@ class TrackItem:
             "title": self.title,
             "issuer": self.issuer,
             "province": self.province,
+            "city": self.city,
+            "district": self.district,
+            "level": self.level,
             "publish_date": self.publish_date.isoformat() if self.publish_date else None,
             "deadline_type": self.deadline_type,
             "deadline_date": self.deadline_date.isoformat() if self.deadline_date else None,
@@ -142,6 +209,10 @@ class TrackReport:
                 {
                     "customer_name": client.customer_name,
                     "province": client.profile.province,
+                    "city": client.profile.city,
+                    "district": client.profile.district,
+                    "invalid_district": client.profile.invalid_district,
+                    "invalid_city": client.profile.invalid_city,
                     "keywords": list(client.profile.keywords),
                     "supports": list(client.profile.supports),
                     "invalid_province": client.profile.invalid_province,
@@ -164,23 +235,42 @@ def _parts(value: object) -> tuple[str, ...]:
     return tuple(part for part in (_text(v).strip() for v in _SPLIT.split(_text(value))) if part)
 
 
-def _profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
+def parse_customer_profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
+    """文件、JSON 预览和后台任务共用单行解析，非法城市不得留到扣额度后才发现。"""
     if isinstance(value, CustomerProfile):
         return value
     if not isinstance(value, Mapping):
         raise CompareInputError("客户画像必须是 CustomerProfile 或字典")
     name = _text(value.get("客户名称", value.get("name", "")))
     province = _text(value.get("省份", value.get("province", "")))
+    raw_city = value.get("城市", value.get("city", ""))
+    if raw_city is not None and not isinstance(raw_city, str):
+        raise CompareInputError("城市须填写文字")
+    city = _text(raw_city)
+    try:
+        district = checked_area_name(value.get("区县", value.get("district", "")), "区县")
+    except ValueError as exc:
+        raise CompareInputError(str(exc)) from None
     keywords = _parts(value.get("关键词", value.get("keywords", "")))
     raw_supports = _parts(value.get("支持方式", value.get("supports", value.get("support", ""))))
     supports = tuple(item for item in raw_supports if item in SUPPORT_LABELS)
     return CustomerProfile(
         name=name,
         province=province,
+        city=city,
+        district=district,
         keywords=keywords,
         supports=supports,
-        invalid_province=province not in _PROVINCES,
     )
+
+
+def validate_customer_rows(rows: Iterable[Mapping[str, object]]) -> None:
+    """在提交前逐行验证；错误只给位置与原因，不回显客户内容。"""
+    for row_number, row in enumerate(rows, 1):
+        try:
+            parse_customer_profile(row)
+        except CompareInputError as exc:
+            raise CompareInputError(f"第 {row_number} 行：{exc}") from None
 
 
 def read_customer_profiles(
@@ -199,7 +289,7 @@ def read_customer_profiles(
     if len(rows) - 1 > MAX_INPUT_ROWS:
         raise CompareInputError("客户画像最多 500 行")
     result: list[CustomerProfile] = []
-    for row in rows[1:]:
+    for row_number, row in enumerate(rows[1:], 2):
         name_index, province_index = columns["客户名称"], columns["省份"]
         name = _text(row[name_index] if name_index < len(row) else "")
         province = _text(row[province_index] if province_index < len(row) else "")
@@ -216,10 +306,19 @@ def read_customer_profiles(
         values = {
             "name": name,
             "province": province,
+            "city": row[columns["城市"]]
+            if "城市" in columns and columns["城市"] < len(row)
+            else "",
+            "district": row[columns["区县"]]
+            if "区县" in columns and columns["区县"] < len(row)
+            else "",
             "keywords": _parts(keyword),
             "supports": _parts(support),
         }
-        result.append(_profile(values))
+        try:
+            result.append(parse_customer_profile(values))
+        except CompareInputError as exc:
+            raise CompareInputError(f"第 {row_number} 行：{exc}") from None
     return result
 
 
@@ -235,7 +334,20 @@ def _province_match(profile: CustomerProfile, source: Source) -> bool:
     # 国家部委通知对所有客户可见；客户填“国家部委”时只看国家部委通知。
     if source.province == "国家":
         return True
-    return profile.province != "国家部委" and source.province == _source_province(profile)
+    if profile.province == "国家部委" or source.province != _source_province(profile):
+        return False
+    # 填城市时仍保留本省省级通知；市级只匹配该市，缺失城市的市级来源不猜测。
+    return (
+        not profile.city
+        or source.level == "省级"
+        or (source.level == "市级" and city_key(source.city or "") == city_key(profile.city))
+        or (
+            profile.district
+            and source.level == "区县级"
+            and source.city == profile.city
+            and source.district == profile.district
+        )
+    )
 
 
 VERIFIED_TEXT = "已人工核对"
@@ -254,9 +366,34 @@ def track_clients(
 ) -> TrackReport:
     """按客户画像批量查询在报项目，查询只做一次，适合 200 客户。"""
 
-    customers = [_profile(item) for item in profiles]
+    customers = [parse_customer_profile(item) for item in profiles]
     if len(customers) > MAX_INPUT_ROWS:
         raise CompareInputError("客户画像最多 500 行")
+    if any(client.city and not client.invalid_province for client in customers):
+        covered = covered_city_scopes(session)
+        district_scopes = covered_district_scopes(session)
+        normalized = []
+        for client in customers:
+            if client.district:
+                resolved = resolve_district(
+                    client.province, client.city, client.district, district_scopes
+                )
+                normalized.append(
+                    replace(client, city=resolved[0], district=resolved[1])
+                    if resolved
+                    else replace(client, invalid_district=True)
+                )
+                continue
+            if not client.city or (client.province, client.city) in covered:
+                normalized.append(client)
+                continue
+            city = resolve_city(client.province, client.city, covered)
+            normalized.append(
+                replace(client, city=city)
+                if city is not None
+                else replace(client, invalid_city=True)
+            )
+        customers = normalized
     customers.sort(key=lambda client: client.name)
     stamp = now()
     today = stamp.date()
@@ -309,6 +446,9 @@ def track_clients(
                     title=document.title,
                     issuer=(detail.issuer if detail and detail.issuer else source.dept_full_name),
                     province="国家部委" if source.province == "国家" else source.province,
+                    city=source.city or "",
+                    district=source.district or "",
+                    level=source.level,
                     deadline_type=deadline.kind if deadline else "",
                     deadline_date=deadline.day if deadline else None,
                     deadline_time=deadline.clock if deadline else None,
@@ -332,6 +472,20 @@ def track_clients(
         )
         result.append(CustomerTrack(client, items))
     return TrackReport(result, stamp)
+
+
+def _scope_note(profile: CustomerProfile) -> str:
+    if profile.invalid_province:
+        return "省份不支持，未查询"
+    if profile.invalid_district:
+        return "区县未收录或不属于所填省市，未查询；不会改为全市查询"
+    if profile.district:
+        return "含国家部委、本省省级及本市市级通知；区县级仅所填区县"
+    if profile.invalid_city:
+        return "城市未收录或不属于所填省份，未查询"
+    return (
+        "含国家部委及本省省级通知；市级仅所填城市" if profile.city else "未指定城市，按省份范围查询"
+    )
 
 
 def export_track_excel(report: TrackReport, output: str | Path) -> int:
@@ -360,6 +514,13 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         "剩余天数",
         "支持方式",
         "原文链接",
+        "城市",
+        "层级",
+        "客户省份",
+        "客户城市",
+        "查询说明",
+        "区县",
+        "客户区县",
     ]
     detail.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     detail.cell(1, 1, _safe_cell(note))
@@ -398,6 +559,10 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
                 within(14),
                 within(30),
                 count - verified,
+                client.profile.province,
+                client.profile.city,
+                _scope_note(client.profile),
+                client.profile.district,
             )
         )
         items = client.items or [None]
@@ -425,6 +590,13 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
                 item.remaining_days if item and item.remaining_days is not None else "",
                 item.support if item else "",
                 item.url if item else "",
+                item.city if item else "",
+                item.level if item else "",
+                client.profile.province,
+                client.profile.city,
+                _scope_note(client.profile),
+                item.district if item else "",
+                client.profile.district,
             ]
             if item is None and client.profile.invalid_province:
                 values[3] = f"{client.profile.province}（不支持，未查询）"
@@ -441,6 +613,10 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         "14 天内截止",
         "30 天内截止",
         "截止未核对的",
+        "客户省份",
+        "客户城市",
+        "查询说明",
+        "客户区县",
     ]
     summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
     summary.cell(

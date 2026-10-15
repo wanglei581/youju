@@ -775,6 +775,186 @@ def test_notify_dry_run_and_one_shot_results(client, session, monkeypatch):
     assert session.get(Subscription, d).errcode == 43101
 
 
+@pytest.mark.parametrize("area_kind", ["city", "district"])
+@pytest.mark.parametrize("field,value", [("enabled", False), ("last_success_at", None)])
+def test_unavailable_city_follow_remains_visible_and_home_keeps_valid_counts(
+    client, session, monkeypatch, field, value, area_kind
+):
+    settings(monkeypatch)
+    agree(client)
+    city_doc = source_and_doc(session, title="合成青岛通知")
+    city_source = session.get(Source, city_doc.source_id)
+    city_source.province, city_source.city, city_source.level = "山东", "青岛市", "市级"
+    city_source.last_success_at = NOW
+    area = {"cities": "山东/青岛"}
+    if area_kind == "district":
+        city_source.level, city_source.district = "区县级", "市南区"
+        area = {"districts": "山东/青岛/市南区"}
+    session.commit()
+    city_follow = follow(client, {**area, "time": "不限"})
+    assert city_follow.status_code == 201
+    city_id = city_follow.json()["id"]
+    source_and_doc(session, title="合成北京通知")
+    valid = follow(client, {"regions": "北京", "time": "不限"})
+    assert valid.status_code == 201
+    setattr(city_source, field, value)
+    session.commit()
+
+    response = client.get("/api/v1/me/follows")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["newTotal"] is None
+    assert body["availableNewTotal"] == 1 and body["unavailableCount"] == 1
+    unavailable, available = body["items"]
+    assert unavailable["id"] == city_id and unavailable["newCount"] is None
+    assert unavailable["queryUnavailable"] is True
+    assert unavailable["queryMessage"] == me.FOLLOW_QUERY_UNAVAILABLE
+    assert unavailable["conditions"] == city_follow.json()["conditions"]
+    assert available["newCount"] == 1 and "queryUnavailable" not in available
+    home = client.get("/api/v1/home")
+    assert home.status_code == 200, home.text
+    stats = home.json()["stats"]
+    assert stats["followed_new"] is None and stats["followed_available_new"] == 1
+    assert stats["followed_unavailable"] == 1
+    assert stats["followed_message"] == me.FOLLOW_QUERY_UNAVAILABLE
+    assert client.get(f"/api/v1/me/follows/{city_id}/new").status_code == 422
+
+    # 恢复来源后原关注自动可查；不改存储条件，也不把暂时不可用伪装成零条。
+    setattr(city_source, field, True if field == "enabled" else NOW)
+    session.commit()
+    restored = client.get("/api/v1/me/follows").json()
+    assert restored["newTotal"] == 2 and "unavailableCount" not in restored
+    assert all("queryUnavailable" not in item for item in restored["items"])
+    assert client.get("/api/v1/home").json()["stats"]["followed_new"] == 2
+    setattr(city_source, field, value)
+    session.commit()
+    assert client.delete(f"/api/v1/me/follows/{city_id}").status_code == 204
+    assert client.get("/api/v1/me/follows").json()["newTotal"] == 1
+
+
+@pytest.mark.parametrize("target", ["_follow_out", "followed_week_stats", "list_follows"])
+@pytest.mark.parametrize("failure", ["database", "http-503"])
+def test_follow_views_do_not_hide_infrastructure_failure(
+    client, session, monkeypatch, target, failure
+):
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+
+    settings(monkeypatch)
+    agree(client)
+    item = follow(client)
+    assert item.status_code == 201
+    saved = session.get(Follow, item.json()["id"])
+    user = session.get(User, saved.user_id)
+    error = (
+        OperationalError("synthetic query", {}, Exception("synthetic database unavailable"))
+        if failure == "database"
+        else HTTPException(status_code=503, detail="synthetic unavailable")
+    )
+
+    def unavailable(*args):
+        raise error
+
+    monkeypatch.setattr(me, "_conditions_stmt", unavailable)
+    with pytest.raises(type(error)) as caught:
+        getattr(me, target)(session, saved if target == "_follow_out" else user)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("area_kind", ["city", "district"])
+@pytest.mark.parametrize("send", [False, True])
+def test_notify_unavailable_city_keeps_authorization_and_continues(
+    client, session, monkeypatch, caplog, send, area_kind
+):
+    settings(monkeypatch)
+    agree(client)
+    city_doc = source_and_doc(session, title="合成青岛项目通知")
+    city_source = session.get(Source, city_doc.source_id)
+    city_source.province, city_source.city, city_source.level = "山东", "青岛市", "市级"
+    city_source.last_success_at = NOW
+    area = {"cities": "山东/青岛"}
+    if area_kind == "district":
+        city_source.level, city_source.district = "区县级", "市南区"
+        area = {"districts": "山东/青岛/市南区"}
+    session.commit()
+    city_follow = follow(client, {**area, "time": "不限"})
+    assert city_follow.status_code == 201, city_follow.text
+    source_and_doc(session, title="合成北京项目通知")
+    valid_follow = follow(client, {"regions": "北京", "time": "不限"})
+    assert valid_follow.status_code == 201
+    subscriptions = []
+    for item in (city_follow, valid_follow):
+        created = client.post(
+            "/api/v1/me/subscriptions",
+            json={"kind": "newDocs", "templateId": "n", "followId": item.json()["id"]},
+        )
+        assert created.status_code == 201, created.text
+        subscriptions.append(created.json()["id"])
+    # 保存关注时合法；之后来源停用，第一条输入失效不能影响第二条通知。
+    city_source.enabled = False
+    session.commit()
+    config = SimpleNamespace(
+        send_wx_messages=send,
+        template_newdocs={"id": "n", "fields": {"thing1": "title", "number2": "count"}},
+        template_deadline=None,
+        agreement_version="2026-09",
+    )
+    payloads = []
+
+    def sender(payload):
+        payloads.append(payload)
+        return {"errcode": 0}
+
+    result = run_notify(session, settings=config, sender=sender, stamp=NOW)
+    assert result["skipped"] == 1
+    assert result["sent" if send else "dry_run"] == 1
+    skipped = session.get(Subscription, subscriptions[0])
+    assert skipped.status == "unused" and skipped.attempted_at is None and skipped.errcode is None
+    assert session.get(Follow, city_follow.json()["id"]).last_notified_at is None
+    assert session.get(Subscription, subscriptions[1]).status == ("sent" if send else "unused")
+    assert "关注筛选条件已不可用（HTTP 422）" in caplog.text
+    if send:
+        assert len(payloads) == 1
+        assert payloads[0]["data"] == {
+            "thing1": {"value": "合成北京项目通知"},
+            "number2": {"value": "1"},
+        }
+    else:
+        assert payloads == []
+
+
+@pytest.mark.parametrize("failure", ["database", "http-503"])
+def test_notify_does_not_hide_infrastructure_failure(client, session, monkeypatch, failure):
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+
+    from youju import notify
+
+    settings(monkeypatch)
+    agree(client)
+    follow_id = follow(client).json()["id"]
+    created = client.post(
+        "/api/v1/me/subscriptions",
+        json={"kind": "newDocs", "templateId": "n", "followId": follow_id},
+    )
+    assert created.status_code == 201
+    error = (
+        OperationalError("synthetic query", {}, Exception("synthetic database unavailable"))
+        if failure == "database"
+        else HTTPException(status_code=503, detail="synthetic unavailable")
+    )
+
+    def unavailable(*args):
+        raise error
+
+    monkeypatch.setattr(notify, "notification_statement", unavailable)
+    with pytest.raises(type(error)) as caught:
+        run_notify(session, settings=SimpleNamespace(send_wx_messages=True), stamp=NOW)
+    assert caught.value is error
+    row = session.get(Subscription, created.json()["id"])
+    assert row.status == "unused" and row.attempted_at is None
+
+
 def test_notify_expired_failed_and_missing_template(client, session, monkeypatch):
     settings(monkeypatch)
     agree(client)
@@ -1163,3 +1343,18 @@ def test_follow_new_folds_guides_when_asked(client, session, monkeypatch):
     typed = follow(client, {"time": "不限", "types": "申报通知"}).json()["id"]
     body = client.get(f"/api/v1/me/follows/{typed}/new", params={"fold": 1}).json()
     assert (body["total"], body["folded"]) == (1, 0)
+
+
+def test_profile_task_owner_is_stable_opaque_and_account_scoped(client, monkeypatch):
+    settings(monkeypatch, openid="synthetic-owner-one")
+    agree(client)
+    first = client.get("/api/v1/me").json()
+    assert len(first["taskOwner"]) == 64
+    assert set(first["taskOwner"]) <= set("0123456789abcdef")
+    assert "synthetic-owner-one" not in str(first)
+    assert client.get("/api/v1/me").json()["taskOwner"] == first["taskOwner"]
+    settings(monkeypatch, openid="synthetic-owner-two")
+    agree(client)
+    second = client.get("/api/v1/me").json()
+    assert second["taskOwner"] != first["taskOwner"]
+    assert "synthetic-owner-two" not in str(second)

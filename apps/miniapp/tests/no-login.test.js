@@ -26,7 +26,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(name) { return Object.hasOwn(deps, name) ? deps[name] : {}; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); return Object.hasOwn(deps, name) ? deps[name] : {}; },
     Page(d) { def = d; },
     Component(d) { def = d; },
     ...globals,
@@ -137,7 +137,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   assert.ok(hasClass('row--last')(rows[1]));
 });
 
-test('"我的"：定稿后照旧——未登录、勾选同意、微信登录、纠错、申请覆盖都在，宫格三项', async () => {
+test('"我的"：保留登录与同意，完整候选增加工具中心和共同任务入口', async () => {
   const { api, root } = await mePage(true);
   assert.deepEqual(api.calls, ['me']);
   const all = textOf(root);
@@ -148,12 +148,12 @@ test('"我的"：定稿后照旧——未登录、勾选同意、微信登录、
   assert.equal(findAll(root, hasClass('brand')).length, 0);
   const [grid] = findAll(root, hasClass('grid'));
   assert.ok(!hasClass('grid--2')(grid));
-  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户', '纠错']);
+  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户', '工具中心', '纠错']);
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['申请覆盖：你关心的地区还没有？', '用户协议与隐私保护指引', '关于有据']);
-  assert.equal(rows[1].attrs.bindtap, 'openAgreement');
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['任务中心', '申请覆盖：你关心的地区还没有？', '用户协议与隐私保护指引', '关于有据']);
+  assert.equal(rows[2].attrs.bindtap, 'openAgreement');
   assert.equal(findAll(root, tapsTo('openPrivacy')).length, 0);
 });
 

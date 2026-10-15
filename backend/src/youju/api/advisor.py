@@ -29,7 +29,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
-from youju.track import read_customer_profiles
+from youju.track import read_customer_profiles, validate_customer_rows
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -135,6 +135,11 @@ class TaskIn(BaseModel):
 def _file_rows(body: TaskIn) -> list[Any]:
     upload = body.file
     if upload is None:
+        if body.kind == "track":
+            try:
+                validate_customer_rows(body.rows)
+            except CompareInputError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
         return body.rows
     if Path(upload.name).suffix.lower() not in (".xlsx", ".csv"):
         raise HTTPException(status_code=422, detail="只支持 .xlsx 和 .csv 文件")
@@ -159,6 +164,8 @@ def _file_rows(body: TaskIn) -> list[Any]:
                 {
                     "name": row.name,
                     "province": row.province,
+                    "city": row.city,
+                    **({"district": row.district} if row.district else {}),
                     "keywords": list(row.keywords),
                     "supports": list(row.supports),
                 }
@@ -220,6 +227,12 @@ def _stamp() -> datetime:
 
 def _authorize(kind: str, user: User) -> None:
     settings = get_settings()
+    if (
+        kind in AI_KINDS
+        and interpret.enabled_for_openid(settings, user.openid)
+        and not interpret.ai_agreed(settings, user)
+    ):
+        raise HTTPException(status_code=403, detail="AI 条款已更新，请更新小程序并重新阅读同意协议")
     allowed = interpret.enabled(settings, user) if kind in AI_KINDS else settings.advisor_enabled
     if not allowed:
         raise HTTPException(status_code=404, detail="没有找到接口")
@@ -323,7 +336,17 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
         }
         if ai_enabled
-        else {"enabled": False, "features": [], "remaining": {}},
+        else {
+            "enabled": False,
+            "features": [],
+            "remaining": {},
+            **(
+                {"reason": "consent"}
+                if interpret.enabled_for_openid(settings, user.openid)
+                and not interpret.ai_agreed(settings, user)
+                else {}
+            ),
+        },
     }
 
 
@@ -350,6 +373,11 @@ def create_task(
     input_json = {"doc_id": body.doc_id} if body.kind in AI_KINDS else None
     if body.kind == "clause":
         input_json["company"] = body.company.model_dump(mode="json") if body.company else {}
+        # 不填城市时保留旧任务输入合同，部署后同一幂等键仍可返回原任务。
+        if not input_json["company"].get("city"):
+            input_json["company"].pop("city", None)
+        if not input_json["company"].get("district"):
+            input_json["company"].pop("district", None)
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -362,7 +390,7 @@ def create_task(
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, session, include_result=False)
-    if body.file is not None:
+    if body.kind not in AI_KINDS:
         _upload_consent(user)
     stamp = _stamp()
     ticket = (
@@ -380,6 +408,7 @@ def create_task(
                 detail={
                     "code": "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT",
                     "message": f"每次最多提交 {limit} 行",
+                    "maxRows": limit,
                 },
             ) from None
         raise
@@ -388,7 +417,8 @@ def create_task(
         if len(rows) > limit:
             code = "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT"
             raise HTTPException(
-                status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
+                status_code=429,
+                detail={"code": code, "message": f"每次最多提交 {limit} 行", "maxRows": limit},
             )
     with _submission_lock(session, body.kind):
         if (

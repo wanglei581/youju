@@ -46,7 +46,7 @@ def test_export_keeps_empty_clients_and_escapes_formula(tmp_path: Path):
     assert book["客户相关通知"]["B3"].value == "暂无"
     assert book["汇总"]["B3"].value == 0
     # 没有通知的客户：不写“未核对”，也不写 0 以外的数
-    assert [cell.value for cell in book["汇总"][3]][2:] == [0, None, None, None, 0]
+    assert [cell.value for cell in book["汇总"][3]][2:7] == [0, None, None, None, 0]
     assert "2026-09-30 09:02" in book["客户相关通知"]["A1"].value
 
 
@@ -177,8 +177,8 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch, tmp_p
     summary = {
         row[0].value: [cell.value for cell in row] for row in book["汇总"].iter_rows(min_row=3)
     }
-    assert summary["北京客户"] == ["北京客户", 4, 3, 1, 2, 2, 1]
-    assert summary["上海客户"] == ["上海客户", 1, 1, 1, 1, 1, 0]
+    assert summary["北京客户"][:7] == ["北京客户", 4, 3, 1, 2, 2, 1]
+    assert summary["上海客户"][:7] == ["上海客户", 1, 1, 1, 1, 1, 0]
 
 
 def test_track_without_verified_deadlines_and_excludes_only_closed(session, monkeypatch, tmp_path):
@@ -238,6 +238,13 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "剩余天数",
         "支持方式",
         "原文链接",
+        "城市",
+        "层级",
+        "客户省份",
+        "客户城市",
+        "查询说明",
+        "区县",
+        "客户区县",
     ]
     # 截止日期一列只写日期：没核对的留空，核对情况另写一列
     assert sheet["E3"].value == (stamp.date() - timedelta(days=1)).isoformat()
@@ -255,8 +262,20 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "14 天内截止",
         "30 天内截止",
         "截止未核对的",
+        "客户省份",
+        "客户城市",
+        "查询说明",
+        "客户区县",
     ]
-    assert [cell.value for cell in summary[3]] == ["客户", 3, 0, "未核对", "未核对", "未核对", 3]
+    assert [cell.value for cell in summary[3]][:7] == [
+        "客户",
+        3,
+        0,
+        "未核对",
+        "未核对",
+        "未核对",
+        3,
+    ]
     assert "“7 天内截止”只数人工核对过的" in summary["A1"].value
     session.add(
         DocumentDeadline(
@@ -334,4 +353,4 @@ def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
     row = [cell.value for cell in book["客户相关通知"][3]]
     assert row[5:10] == ["机器摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
     summary = [cell.value for cell in book["汇总"][3]]
-    assert summary == ["客户", 1, 0, "未核对", 0, 1, 1]
+    assert summary[:7] == ["客户", 1, 0, "未核对", 0, 1, 1]

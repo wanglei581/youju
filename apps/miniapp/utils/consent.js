@@ -6,15 +6,21 @@ const api = require('./api.js');
 const exportsLog = require('./exports.js');
 const { removeFiles } = require('./exporter.js');
 
-// 协议已定稿、连着真实接口时，才开放同意和需要同意的功能
+// AI 内测包（config.aiInternal 为 true，只上传体验版、给白名单内测，D-062）：协议还是草案也开放同意和登录，
+// 好让内测成员同意后试用 AI 页面。首发版和 AI 正式版都是 false，只看 legal.final（D-056、D-066）。
+function aiInternal() {
+  return config.aiInternal === true;
+}
+
+// 协议已定稿（或 AI 内测包）、连着真实接口时，才开放同意和需要同意的功能
 function consentOpen() {
-  return legal.final && api.isLive();
+  return Boolean(legal.final || aiInternal()) && api.isLive();
 }
 
 // 需要同意协议的功能（登录、关注、订阅提醒、纠错、申请覆盖）这个版本显不显示入口（D-056）：
-// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final，不是服务端开关
+// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final（AI 内测包例外），不是服务端开关
 function loginOpen() {
-  return legal.final === true;
+  return legal.final === true || aiInternal();
 }
 
 // 服务端记的版本不早于本机代码包里的协议版本，就算已同意：版本号按时间可排序（2026-10 < 2026-11）。
@@ -172,7 +178,7 @@ function withdraw() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录，以及本机的导出记录和文件，删除后不能恢复。`,
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录、工具输入、任务与结果，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
@@ -182,6 +188,7 @@ function withdraw() {
             exportsLog.clear();
             // 文件缺失或无法删除不影响注销；清空本机缓存也涵盖后续新增的个人数据。
             try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
+            try { wx.removeStorageSync('youjuDataTaskKeysV1'); } catch (e) { /* 下方清空存储再次清理 */ }
             try { wx.clearStorageSync(); } catch (e) { forget(); }
             outdated = false;
             notAgreed = true;

@@ -1,4 +1,5 @@
 <notice-bar />
+<view wx:if="{{loginOpen}}" class="card"><view class="message">工具任务记录可通过“复制全部”查阅（数据工具只包含任务元数据，结果请在任务中心下载）。删除单个任务及其结果，请打开任务中心；处理中任务需要等待结束后删除。</view><button bindtap="tasks">管理工具任务</button></view>
 <feature-closed wx:if="{{!loginOpen}}" />
 <view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 <view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -19,6 +20,8 @@
     <view class="card">
       <view class="section-title">账号</view>
       <view class="kv"><text class="kv-k">微信用户标识</text><text class="kv-v">{{user.id}}</text></view>
+      <!-- 内部包（D-062）：给自己开 AI 内测时，把完整标识填到云托管的 YOUJU_AI_ADVISOR_OPENIDS -->
+      <view class="kv"><text class="kv-k">内测白名单</text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制完整标识</text></view>
       <view class="kv"><text class="kv-k">同意的协议版本</text><text class="kv-v">{{user.agreedVersion || '未同意'}}</text></view>
       <view wx:if="{{user.agreedAt}}" class="kv"><text class="kv-k">同意时间</text><text class="kv-v">{{user.agreedAt}}</text></view>
       <view class="kv kv--last"><text class="kv-k">最近使用</text><text class="kv-v">{{user.visited || user.created}}</text></view>

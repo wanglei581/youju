@@ -1,0 +1,14 @@
+区县来源接入说明（2026-10-15）
+本次明确清单仅1个栏目：山东/青岛/黄岛区，工业和信息化局公示公告。
+不将区县伪装成市级，不将西海岸新区另建为平行行政区。区县字段与0029迁移必须先完成，生产再次通过原有 trial token 校验后才允许接入；本文不是已生产接入证明。
+
+本机真实证据：PoliteFetcher 保留 robots、公网 IP、3秒间隔，列表20条，抽查申报详情HTTP200，正文1087字符、2个附件元数据（未下载附件）。未连接生产数据库。源码仅通用解析{}，无需绕过任何防护。首篇issuer自动解析为空，不能标完整抽取。
+独立复核：实际agy对登记元数据与规则给CONDITIONAL PASS，条件是区县schema/API实现和服务端验证；不以全国区县覆盖作为此单源字段交付前提。Codex另打开官方PDF核实黄岛区政府与西海岸新区管委工作部门“一套机构两块牌子”。
+
+栏目：https://www.xihaian.gov.cn/zwgk/bmgk/xxhj/gkml/gsgg/
+抽查原文：https://www.xihaian.gov.cn/zwgk/bmgk/xxhj/gkml/gsgg/202609/t20260901_10718832.shtml
+机构关系官方说明：https://www.xihaian.gov.cn/ztzl/xzzf/ztml/202412/P020241213394631947050.pdf
+
+综合通知栏目https://www.xihaian.gov.cn/ywdt/tzgg/另试跑15条，但混有规划、公交等，不纳入本次接入清单。崂山、市南、济南区县未验证，不计覆盖。
+
+实际接入时：登记level=区县级、province=山东、city=青岛、district=黄岛区；记录真实AI核验人，不写成人工核对。首轮crawl为baseline。API的province/city/district、原文URL和coverage三元组与清单逐项核对；区外/同名异市/未知区不能落回全市。截止、金额、名单状态仍按原有独立核验流程，不因来源成功自动确认。

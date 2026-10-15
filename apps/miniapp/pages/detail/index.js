@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
@@ -55,7 +55,7 @@ function deadlineRows(deadlines) {
 }
 
 Page({
-  data: { doc: null, due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
+  data: { doc: null, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], attNote: '', versions: [], upstream: '' },
 
@@ -83,6 +83,8 @@ Page({
         const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
         this.setData({
           doc,
+          // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
+          regionText: regionText(doc),
           // 正文默认只显示开头一段；比这长的才给"展开全文"
           bodyOpen: false,
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,

@@ -33,6 +33,8 @@ Page({
           provinces: c.provinces,
           national: c.national,
           cities: c.cities || [],
+          // 区县按省、市、区县三项列出，同名区县不同省市分开
+          districts: (c.districts || []).map((d) => Object.assign({ key: `${d.province}/${d.city}/${d.district}` }, d)),
           updated: shortTime(c.updatedAt),
           regions: c.regions.map((r) => ({
             name: r.name,

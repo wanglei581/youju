@@ -13,7 +13,14 @@
     "pages/follow-new/index",
     "pages/my-data/index",
     "pages/about/index",
-    "pages/clients/index"
+    "pages/advisor/index",
+    "pages/advisor-interpret/index",
+    "pages/advisor-clause/index",
+    "pages/advisor-tasks/index",
+    "pages/clients/index",
+    "pages/complaint/index",
+    "pages/advisor-form/index",
+    "pages/advisor-terms/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

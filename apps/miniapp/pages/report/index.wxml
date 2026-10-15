@@ -14,12 +14,16 @@
     <text>{{item.label}}</text>
   </view>
 </view>
-<view wx:if="{{tab}}" class="filters">
+<view class="filters">
   <picker mode="selector" range="{{provinces}}" bindchange="pickProvince"><view class="filter">{{province || '不限省份'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
-  <picker mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  <!-- 省市区三级，每列顶部“全部”：城市一栏选它是全省，区县一栏选它是全市 -->
+  <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="filter">{{areaText || '选择城市或区县'}}</view></picker>
+  <view wx:if="{{city || district}}" class="filter" bindtap="clearCity">改看全省</view>
+  <picker wx:if="{{tab}}" mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
+<view class="weak cached-note">省市区选项来自微信，不代表已收录；区县一栏选“全部”仅查询已收录市级来源，区县来源请单独选择；未收录的城市、区县会明确提示，不改为全市或全省，不推断当地没有通知。{{cityError}}</view>
 <view class="switch-row">
-  <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看包含全部地区和部门）</text></text>
+  <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看不筛部门）</text></text>
   <switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对" />
 </view>
 
@@ -86,7 +90,7 @@
   <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>
-    <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text></view>
+    <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text><text wx:if="{{item.city}}"> · {{item.city}}</text><text wx:if="{{item.district}}"> · {{item.district}}</text></view>
     <view class="soon-due">截止未核对，请以原文为准</view>
   </view>
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>

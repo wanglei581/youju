@@ -21,7 +21,7 @@
   </view>
 </view>
 
-<view class="entries">
+<view class="entries {{loginOpen ? 'entries--tools' : ''}}">
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
     <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view>
     <text class="entry-name">截止</text><text class="entry-sub">7 / 14 / 30 天</text>
@@ -33,6 +33,10 @@
   <view class="entry" data-url="/pages/lists/index" bindtap="goEntry">
     <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view>
     <text class="entry-name">查名单</text><text class="entry-sub">上过哪些名单</text>
+  </view>
+  <view wx:if="{{loginOpen}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
+    <view class="tile tile--blue"><t-icon name="app" size="44rpx" color="#FFFFFF" /></view>
+    <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
   </view>
 </view>
 
@@ -71,6 +75,16 @@
 <view class="mine" wx:if="{{loginOpen && stats && stats.followed_new}}" bindtap="goFollow">
   <t-icon name="notification" size="36rpx" color="#2A5CE0" />
   <text class="mine-text">你关注的条件本周有 <text class="mine-n">{{stats.followed_new}}</text> 份新文件</text>
+  <text class="link">去看看</text>
+  <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
+</view>
+<!-- 部分关注暂不可查询（如城市来源停用）：followed_new 为 null，只写可查询那部分的本周新增，不当作 0 -->
+<view class="mine" wx:elif="{{loginOpen && stats && stats.followed_unavailable}}" bindtap="goFollow">
+  <t-icon name="notification" size="36rpx" color="#2A5CE0" />
+  <view class="mine-text">
+    <view>部分关注暂不可查询<text wx:if="{{stats.followed_available_new}}">；其余关注本周有 <text class="mine-n">{{stats.followed_available_new}}</text> 份新文件</text></view>
+    <view wx:if="{{stats.followed_message}}" class="muted">{{stats.followed_message}}</view>
+  </view>
   <text class="link">去看看</text>
   <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
 </view>

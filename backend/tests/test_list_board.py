@@ -124,6 +124,7 @@ def test_board_counts_deduplicates_groups_and_names_and_keeps_public_status(
         "issuer",
         "province",
         "city",
+        "district",
         "level",
         "year",
         "type",

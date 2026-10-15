@@ -165,6 +165,16 @@ function highlight(text, q) {
 // 发文机关超过 11 个字时单独一行，不截断
 const ISSUER_WRAP = 11;
 
+// 列表和详情的地区：照录服务端 region（如"青岛 · 市级"）；来源带区县、region 里又没写区县名时补上，
+// 写成"青岛·市南区 · 级别"，不丢区县。没有区县的原样显示
+function regionText(doc) {
+  const region = (doc && doc.region) || '';
+  const district = doc && typeof doc.district === 'string' ? doc.district.trim() : '';
+  if (!district || region.includes(district)) return region;
+  const area = [doc.city && doc.city !== district ? doc.city : '', district].filter(Boolean).join('·');
+  return doc.level ? `${area} · ${doc.level}` : [region, district].filter(Boolean).join(' · ');
+}
+
 // "今天 10:42"、"9月27日 10:42"，不是今年的带年份"2025年9月27日 10:42"（北京时间）
 function shortTime(iso) {
   if (!iso) return '';
@@ -200,6 +210,6 @@ function reviewStaleNote(reviewedAt, now) {
 module.exports = {
   reviewStaleNote,
   shortTime,
-  todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP,
+  todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
 };
