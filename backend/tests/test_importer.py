@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 import pytest
@@ -115,3 +116,49 @@ def test_import_optional_city_column(session, tmp_path, level, city, valid):
     assert source.city == (city or None)
     import_sources(session, path)
     assert session.scalar(select(Source)).city == (city or None)
+
+
+def test_city_candidate_manifest_stays_disabled(session):
+    """补城市字段不能让历史候选的“已验证”标签悄悄开启抓取。"""
+    path = DEFAULT_SOURCES_CSV.parent / "地市来源候选_R1.5_v1.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 55
+    assert all(row["层级"] == "市级" and row["城市"] for row in rows)
+    assert sum(not row["栏目URL"] for row in rows) == 2
+    summary = import_sources(session, path)
+    assert (summary.created, summary.enabled, summary.disabled) == (53, 0, 53)
+    assert not session.scalars(select(Source).where(Source.enabled.is_(True))).all()
+    by_url = {source.url: source for source in session.scalars(select(Source))}
+    for row in rows:
+        if row["栏目URL"]:
+            source = by_url[row["栏目URL"]]
+            assert (source.level, source.province, source.city) == (
+                "市级",
+                row["省份"],
+                row["城市"],
+            )
+    second = import_sources(session, path)
+    assert (second.created, second.updated, second.enabled) == (0, 53, 0)
+
+
+def test_city_activation_manifest_only_promotes_reviewed_two(session):
+    """显式接入清单只提升本轮两条；济南、青岛和历史候选仍保持停用。"""
+    directory = DEFAULT_SOURCES_CSV.parent
+    import_sources(session, directory / "地市来源候选_R1.5_v1.csv")
+    path = directory / "地市来源接入_2026-10-15.csv"
+    first = import_sources(session, path)
+    assert (first.created, first.updated, first.enabled, first.disabled) == (0, 2, 2, 0)
+    active = session.scalars(select(Source).where(Source.enabled.is_(True))).all()
+    assert {(s.province, s.city, s.level, s.dept) for s in active} == {
+        ("广东", "广州", "市级", "科技"),
+        ("江苏", "苏州", "市级", "科技"),
+    }
+    assert {s.url for s in active} == {
+        "http://kjj.gz.gov.cn/xxgk/zwdt/tztg/wjgg/",
+        "https://kjj.suzhou.gov.cn/szkj/tzgg/common_list.shtml",
+    }
+    assert all(s.parser_config == {} and s.rights_level == 1 for s in active)
+    second = import_sources(session, path)
+    assert (second.created, second.updated) == (0, 2)
+    assert session.scalar(select(func.count(Source.id))) == 53
