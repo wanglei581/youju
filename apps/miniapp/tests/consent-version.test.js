@@ -28,6 +28,7 @@ function consent() {
   };
   const mod = load('utils/consent.js', {
     '../content/legal.js': { final: true, version: '2026-10' },
+    './config.js': { templates: {} },
     './api.js': { isLive: () => true, AGREED_KEY: 'agreed', forgetAgreed() { delete shown.stored.agreed; } },
     './exports.js': {}, './exporter.js': {},
   }, { wx });

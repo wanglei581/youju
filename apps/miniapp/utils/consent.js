@@ -1,6 +1,7 @@
 // 关注、订阅提醒、纠错之前，先确认用户已同意用户协议和隐私保护指引（服务端记录，本机缓存版本号）。
 // 协议还是草案（legal.final 为 false）时不开放同意，这些功能的入口都不显示（D-056）。
 const legal = require('../content/legal.js');
+const config = require('./config.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
 const { removeFiles } = require('./exporter.js');
@@ -35,6 +36,17 @@ function agreeFailed(err) {
     return;
   }
   wx.showToast({ title: (err && err.message) || '网络不太好，请稍后再试', icon: 'none' });
+}
+
+// 订阅消息模板申请下来之前（utils/config.js 的 templates 为空）没有微信提醒，提示里不写"微信提醒"
+// （10/15 模拟用户走查：同意弹窗、同意成功的提示、我的数据、注销都还写着）
+function remindAny() {
+  const templates = config.templates || {};
+  return Boolean(templates.newDocs || templates.deadline);
+}
+
+function featureNames() {
+  return remindAny() ? '关注、微信提醒和纠错' : '关注和纠错';
 }
 
 function agreedHere() {
@@ -119,7 +131,7 @@ function askConsent() {
   if (outdated) {
     wx.showModal({
       title: '协议已更新',
-      content: '《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用关注、微信提醒和纠错。',
+      content: `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${featureNames()}。`,
       confirmText: '阅读全文',
       cancelText: '暂不',
       success: (res) => { if (res.confirm) wx.navigateTo({ url: CONSENT_PAGE }); },
@@ -129,7 +141,7 @@ function askConsent() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '请先阅读并同意',
-      content: '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
+      content: `使用${featureNames()}前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。`,
       confirmText: '同意',
       cancelText: '先看协议',
       success: (res) => {
@@ -160,7 +172,7 @@ function withdraw() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，以及本机的导出记录和文件，删除后不能恢复。',
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
@@ -189,5 +201,5 @@ function withdraw() {
 
 module.exports = {
   ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
-  covers, agreeFailed,
+  covers, agreeFailed, remindAny, featureNames,
 };

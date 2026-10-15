@@ -34,6 +34,8 @@
         </block>
       </view>
       <view wx:if="{{truncated && !loading}}" class="weak scope-note">有的客户相关通知较多，每组地区和产业方向只列最新的 50 份。</view>
+      <!-- 结果很少时给出路（10/15 走查：江苏 + 一个产业方向，近 90 天只有 1 份） -->
+      <view wx:if="{{loaded && !loading && !loadError && shown.length && shown.length < 3}}" class="weak scope-note">结果较少：可以在客户卡片里多选几个产业方向，或不选产业方向、只按地区看。</view>
       <view wx:if="{{shown.length && !loading}}" class="export-bar">
         <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">导出这 {{shown.length}} 份</view>
         <view class="weak export-note">客户名称只存在本机，导出的表里不含客户名称。</view>
@@ -61,12 +63,14 @@
   <view class="label">地区（可多选）</view>
   <view class="weak help">不选为不限地区；选省包含该省已收录城市，只选城市则仅检索该市。检索始终包含国家部委。</view>
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
+  <!-- 没有已收录城市、也没选过城市时整栏不显示（10/15 走查：只写"暂无已收录城市"像没做完） -->
+  <block wx:if="{{cityOptions.length || form.cities.length || coverageError}}">
   <view class="label">已收录城市（可多选）</view>
   <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
   <view class="options"><view wx:for="{{form.cities}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeCity" aria-role="button" aria-label="移除城市{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
-  <view wx:elif="{{!cityOptions.length}}" class="weak help">暂无已收录城市</view>
   <view class="options"><view wx:for="{{cityOptions}}" wx:key="key" class="option {{picked['cities:' + item.key] ? 'option--on' : ''}}" data-group="cities" data-value="{{item.key}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['cities:' + item.key]}}">{{item.label}}</view></view>
+  </block>
   <view class="label">产业方向（可多选）</view>
   <view class="weak help">按标题归类，仅供检索参考，非官方分类</view>
   <view class="options"><view wx:for="{{industries}}" wx:key="*this" class="option {{picked['industries:' + item] ? 'option--on' : ''}}" data-group="industries" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['industries:' + item]}}">{{item}}</view></view>

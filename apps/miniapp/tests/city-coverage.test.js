@@ -40,7 +40,7 @@ test('收录范围显示省份、城市、栏目数；旧响应无 cities 时仍
       '../../content/legal.js': { operator: {}, disclaimer: '' },
       '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({ ...coverage, cities: list }) },
       '../../utils/format.js': format,
-      '../../utils/consent.js': { loginOpen: () => false },
+      '../../utils/consent.js': { loginOpen: () => false, remindAny: () => false },
     });
     page.loadRange(); await flush();
     const text = shown('about', page.data);
