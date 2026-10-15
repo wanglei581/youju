@@ -692,3 +692,22 @@ test('admin公开读取的403不清除本机协议同意，api的403仍清除', 
   await outcome(s, (api) => api.me());
   assert.equal(s.forgotten(), 1);
 });
+
+test('已超时请求的迟到403不清除后来完成的同意记录', async () => {
+  const plan = [
+    { after: 0, code: 200 }, { after: 16000, code: 403 },
+    { after: 0, code: 200 }, { after: 0, code: 201 }, { after: 0, code: 200 },
+  ];
+  const s = retryApi(plan);
+  await outcome(s, (api) => api.me());
+  s.api.me().catch(() => {});
+  await advance(s.clock, 15500);
+  let agreed = false;
+  s.api.agree('2026-10').then(() => { agreed = true; });
+  await advance(s.clock, 15500);
+  assert.equal(agreed, true);
+  await advance(s.clock, 16000);
+  assert.equal(s.forgotten(), 0);
+  await drive(s.clock);
+  assert.equal(s.calls.filter((c) => c[1] === 'POST').length, 1);
+});
