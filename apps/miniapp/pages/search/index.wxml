@@ -33,9 +33,9 @@
   </view>
 </scroll-view>
 
-<!-- 结果信息：第一行是份数，写明当前看的发布时间（默认近 30 天，10/15 走查：只写"3 份 不限时间共 12 份"看不懂；选了不限时只写份数）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
+<!-- 结果信息：第一行是份数，写明当前看的发布时间（默认近 30 天，10/15 走查：只写"3 份 不限时间共 12 份"看不懂；改为"近 30 天 3 份 · 共 12 份"，字数和原来差不多、不挤换行；选了不限时只写份数）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
 <view wx:if="{{!loading && !error}}" class="summary">
-  <view class="summary-left"><text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} </text><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 不限时间 {{totalAll}} 份</text></view>
+  <view class="summary-left"><text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} </text><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 共 {{totalAll}} 份</text></view>
   <view class="summary-right">
     <text>按发布时间 ↓</text>
     <text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text>

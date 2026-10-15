@@ -265,13 +265,13 @@ test('已选条件条：按组的顺序列出，点一个去掉并立即重新�
   assert.ok(template.indexOf('picked-bar') < template.indexOf('class="summary"'));
 });
 
-test('结果信息栏：第一行写明当前发布时间和份数、淡色"不限时间 X 份"（选了不限时间时都不写）、排序、选择、关注小按钮；折叠说明单独一行，文字不变', async () => {
+test('结果信息栏：第一行写明当前发布时间和份数、淡色"共 X 份"（选了不限时间时都不写）、排序、选择、关注小按钮；折叠说明单独一行，文字不变', async () => {
   const { page } = searchPage({ respond: () => ({ total: 544, total_all: 1268, folded: 141, guides: 141, items: [] }) });
   page.onLoad({}); await flush();
   assert.equal(`${page.data.fold.text}${page.data.fold.link}`, '已折叠 141 篇非申报类文件（资讯与指南），点开查看');
   const template = read('pages/search/index.wxml');
   const summary = /<view wx:if="{{!loading && !error}}" class="summary">[\s\S]*?\n<\/view>/.exec(template)[0];
-  assert.match(summary, /<text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} <\/text><text class="b">{{total}}<\/text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 不限时间 {{totalAll}} 份<\/text>/);
+  assert.match(summary, /<text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} <\/text><text class="b">{{total}}<\/text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 共 {{totalAll}} 份<\/text>/);
   assert.match(summary, /按发布时间 ↓/);
   assert.match(summary, /bindtap="select"/);
   assert.match(summary, /<view wx:if="{{loginOpen}}" class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
