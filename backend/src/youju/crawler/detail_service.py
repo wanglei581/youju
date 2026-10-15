@@ -1,5 +1,6 @@
 """按网站抓取详情，复用列表抓取器的 robots、限速与标识。"""
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -16,6 +17,8 @@ from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.dedup import reconcile_documents
 from youju.issuer import normalize_issuer
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -201,7 +204,20 @@ def _fetch_selected(
         by_host.setdefault((urlsplit(url).hostname or "").lower(), []).append((document_id, url))
 
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
-        return [_fetch_one(document_id, url, fetcher) for document_id, url in documents]
+        results = []
+        for document_id, url in documents:
+            try:
+                results.append(_fetch_one(document_id, url, fetcher))
+            except Exception as exc:  # noqa: BLE001 - 一份异常文件不阻断整批详情保存
+                # 依赖异常可能带请求信息；只记录类型，不记录异常正文或 traceback。
+                reason = f"详情处理异常：{type(exc).__name__}"
+                log.warning("详情 %s %s", document_id, reason)
+                results.append(
+                    _FetchOutcome(
+                        document_id, datetime.now(UTC), None, None, "processing_error", reason
+                    )
+                )
+        return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:

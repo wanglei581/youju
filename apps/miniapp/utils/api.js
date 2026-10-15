@@ -125,12 +125,30 @@ function tryApiInstead(err) {
 // 它空闲约 25 分钟后缩到 0 个实例，所以 20 分钟内答复过就当它醒着。
 const WARM_FOR = 20 * 60 * 1000;
 let apiAnsweredAt = null;
+let answerGeneration = 0;
 
 function noteAnswer(service, statusCode) {
   if (service !== config.cloudService || GATEWAY_CODES.includes(statusCode)) return;
+  answerGeneration += 1;
   apiAnsweredAt = Date.now();
   // 别的请求先拿到了接口服务的答复：正在叫醒的不必再等自己那次 /health（Codex 审查）
   if (waking) waking.awake();
+}
+
+// 失败会撤销旧暖态，但早先请求的迟到失败不能覆盖后来收到的成功答复。
+function availability(service) {
+  const generation = answerGeneration;
+  const failed = () => {
+    if (config.cloudEnv && service === config.cloudService && generation === answerGeneration) apiAnsweredAt = null;
+  };
+  return {
+    failed,
+    answered(code) {
+      if (!config.cloudEnv) return;
+      if (GATEWAY_CODES.includes(code)) failed();
+      else noteAnswer(service, code);
+    },
+  };
 }
 
 function apiAwake() {
@@ -238,16 +256,19 @@ function request(path, params, options) {
 
 function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
   return new Promise((resolve, reject) => {
+    const target = service || config.cloudService;
+    const state = availability(target);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const fail = (err) => { if (!settled) { state.failed(); finish(reject, err); } };
     // 15 秒（走 admin 的只读请求 30 秒，8 秒没回会同时问接口服务）没有返回就算超时
-    const timer = setTimeout(() => finish(reject, timeoutError()), timeout);
+    const timer = setTimeout(() => fail(timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 204;
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(service || config.cloudService, res.statusCode);
+      state.answered(res.statusCode);
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
-      if (res.statusCode === 403) forgetAgreed();
+      if (res.statusCode === 403 && target === config.cloudService) forgetAgreed();
       const err = errorOf(res);
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
@@ -261,7 +282,7 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
         data,
         timeout,
         success: done,
-        fail: (res) => finish(reject, callFailure(res)),
+        fail: (res) => fail(callFailure(res)),
       });
     } else {
       wx.request({
@@ -460,15 +481,18 @@ function exportFile(ids, format) {
 
 function exportOnce(body) {
   return new Promise((resolve, reject) => {
+    const state = availability(config.cloudService);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 30000);
+    const fail = () => {
+      if (!settled) { state.failed(); finish(reject, new Error('网络不太好，请稍后再试')); }
+    };
+    const timer = setTimeout(fail, 30000);
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
+      state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
       else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
     };
-    const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
@@ -508,18 +532,20 @@ function attachmentPart(id, version, part) {
 function attachmentPartOnce(id, version, part) {
   const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
   return new Promise((resolve, reject) => {
+    const state = availability(config.cloudService);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
+    const failWith = (err) => { if (!settled) { state.failed(); finish(reject, err); } };
+    const timer = setTimeout(() => failWith(timeoutError()), TIMEOUT);
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
+      state.answered(res.statusCode);
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
       err.status = res.statusCode;
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
     };
-    const fail = (res) => finish(reject, callFailure(res));
+    const fail = (res) => failWith(callFailure(res));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },

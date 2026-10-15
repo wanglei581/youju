@@ -412,3 +412,64 @@ def test_refetch_requires_explicit_ids_and_still_obeys_rights(session):
     assert fetch_details(session, limit=1, document_ids=[doc.id], refetch=True, fetcher=fake) == []
     assert fetch_details(session, limit=1, document_ids=[], refetch=True, fetcher=fake) == []
     assert fake.calls == []
+
+
+def test_one_refetch_exception_does_not_lose_other_results_or_expose_error(session, caplog):
+    from youju.lists.service import RESCAN_DETAILS_BEFORE
+
+    first = add_document(session, 91)
+    second = add_document(session, 92, source_id=first.source_id)
+    session.add(
+        DocumentDetail(
+            document_id=first.id,
+            status="ok",
+            body_text="此前成功正文",
+            fetched_at=RESCAN_DETAILS_BEFORE - timedelta(days=1),
+            attempt_count=1,
+        )
+    )
+    session.commit()
+
+    class Fetcher:
+        def fetch(self, url):
+            if url == first.url:
+                raise RuntimeError("do-not-print-sensitive-marker")
+            return FetchResult(
+                url,
+                "ok",
+                http_status=200,
+                text="<div id='zoom'>这份公开通知应当正常保存，单个文件处理失败不会影响其他文件。</div>",
+            )
+
+    results = fetch_details(
+        session, limit=2, document_ids=[first.id, second.id], refetch=True, fetcher=Fetcher()
+    )
+    assert [r.status for r in results] == ["processing_error", "ok"]
+    assert session.get(DocumentDetail, first.id).body_text == "此前成功正文"
+    assert session.get(DocumentDetail, first.id).status == "ok"
+    assert session.get(DocumentDetail, second.id).status == "ok"
+    assert "do-not-print-sensitive-marker" not in caplog.text + repr(results)
+
+
+def test_rescan_does_not_run_before_cutoff(session, monkeypatch):
+    import youju.lists.service as lists
+
+    doc = add_document(session, 93)
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            status="ok",
+            body_text="原正文",
+            fetched_at=lists.RESCAN_DETAILS_BEFORE - timedelta(days=1),
+            attempt_count=1,
+        )
+    )
+    session.commit()
+
+    class Before(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return lists.RESCAN_DETAILS_BEFORE - timedelta(seconds=1)
+
+    monkeypatch.setattr(lists, "datetime", Before)
+    assert lists._details_to_rescan(session, [doc.id]) == []

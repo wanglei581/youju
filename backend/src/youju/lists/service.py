@@ -228,7 +228,7 @@ def _parse_source(
 
 def _details_to_rescan(session: Session, selected_ids: list[int]) -> list[int]:
     """选择旧详情且无企业名的名单，按编号取最多 RESCAN_LIMIT 份，遵守失败退避。"""
-    if not selected_ids:
+    if not selected_ids or datetime.now(UTC) < RESCAN_DETAILS_BEFORE:
         return []
     with_entries = select(ListEntry.document_id).where(ListEntry.document_id.in_(selected_ids))
     return list(
