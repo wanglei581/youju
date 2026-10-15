@@ -169,6 +169,7 @@ async def _server_error(request: Request, exc: Exception) -> JSONResponse:
 # 仍只在 api；admin 不信任身份头，这些接口在 admin 上一律 404。
 ADMIN_READ_PATHS = frozenset(
     {
+        "/api/v1/version",
         "/api/v1/home",
         "/api/v1/coverage",
         "/api/v1/search",
@@ -706,6 +707,17 @@ def search_lists(
 
 CRON_HEARTBEAT = Path("/tmp/youju-cron-heartbeat")
 _HEARTBEAT_MAX_AGE = 900
+
+
+@app.get("/api/v1/version")
+def release_version() -> JSONResponse:
+    """只读构建探针：不查用户/数据库，不输出环境或配置；admin 仍只认云调用。"""
+    from youju.version import build_revision
+
+    return JSONResponse(
+        {"revision": build_revision(), "role": get_settings().role},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/health", response_model=None)

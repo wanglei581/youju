@@ -63,7 +63,7 @@ def journey(session_factory, session, monkeypatch):
     # 身份通过可信微信头传入，禁止退回开发身份；配置显式禁用 .env。
     settings = Settings(
         _env_file=None,
-        database_url=str(session_factory.kw["bind"].url),
+        database_url=session_factory.kw["bind"].url.render_as_string(hide_password=False),
         trust_wx_headers=True,
         dev_openid=None,
         admin_token=ADMIN["X-Admin-Token"],

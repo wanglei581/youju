@@ -74,7 +74,8 @@ function withRetry(attempt, method, token, opts) {
     if (Date.now() + delay >= budget.until) throw err;
     if (!starting && !quiet) { starting = true; startingRequests += 1; emitStartup(); }
     return new Promise((resolve) => setTimeout(resolve, delay)).then(() => {
-      if (stopped()) throw err;
+      // 小程序切到后台后定时器可能很晚才恢复，必须在真正发送前再核对期限。
+      if (stopped() || Date.now() >= budget.until) throw err;
       return run(n + 1);
     });
   });
@@ -125,12 +126,30 @@ function tryApiInstead(err) {
 // 它空闲约 25 分钟后缩到 0 个实例，所以 20 分钟内答复过就当它醒着。
 const WARM_FOR = 20 * 60 * 1000;
 let apiAnsweredAt = null;
+let answerGeneration = 0;
 
 function noteAnswer(service, statusCode) {
   if (service !== config.cloudService || GATEWAY_CODES.includes(statusCode)) return;
+  answerGeneration += 1;
   apiAnsweredAt = Date.now();
   // 别的请求先拿到了接口服务的答复：正在叫醒的不必再等自己那次 /health（Codex 审查）
   if (waking) waking.awake();
+}
+
+// 失败会撤销旧暖态，但早先请求的迟到失败不能覆盖后来收到的成功答复。
+function availability(service) {
+  const generation = answerGeneration;
+  const failed = () => {
+    if (config.cloudEnv && service === config.cloudService && generation === answerGeneration) apiAnsweredAt = null;
+  };
+  return {
+    failed,
+    answered(code) {
+      if (!config.cloudEnv) return;
+      if (GATEWAY_CODES.includes(code)) failed();
+      else noteAnswer(service, code);
+    },
+  };
 }
 
 function apiAwake() {
@@ -141,7 +160,7 @@ function apiAwake() {
 // 或等到超时（10/15 实测"我的"页面约 2 分钟才拿到登录状态）。所以先发 GET /health 叫醒它（按读数据的冷启动规则
 // 重试：90 秒后不再发新的，最后一次最多再等 15 秒），接口服务有了答复（这次 /health 或别的请求）再发写操作。
 // /health 不要身份、不记网络日志。打开小程序和回到前台时也悄悄叫一次（prewarm），多数时候用户点按钮时它已经醒了。
-// 同一时间只叫一路；写操作赶上正在进行的预热，从这时起再给足 90 秒。
+// 同一时间只叫一路；每次用户操作最多等 90 秒，后来加入的操作不延长先前操作的等待。
 let waking = null;
 
 function wake(extend) {
@@ -181,17 +200,25 @@ function hideConnecting() {
 // 用调用方自己的提示，如导出的"正在生成…"），叫不醒就不发，请用户过一会儿再试
 function afterWake(send, ownLoading = true) {
   if (apiAwake()) return send();
+  const until = Date.now() + MAX_WAIT;
   if (ownLoading) showConnecting();
   const done = () => { if (ownLoading) hideConnecting(); };
-  return wake(true).then(
-    () => { done(); return send(); },
-    () => {
-      done();
-      // /health 答复了别的（如 500）也说明它醒了，照常发
-      if (apiAwake()) return send();
-      throw new Error('服务正在启动，请过一分钟再试');
-    },
-  );
+  const expired = new Error('服务正在启动，请过一分钟再试');
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(expired), MAX_WAIT);
+  });
+  const ready = wake(true).catch((err) => {
+    // /health 答复了别的（如 500）也说明它醒了，照常发。
+    if (!apiAwake()) throw err;
+  });
+  const finish = () => { clearTimeout(timer); done(); };
+  return Promise.race([ready, deadline]).then(() => {
+    finish();
+    // 恢复到前台时即使预热先完成，也不提交已超过用户等待期限的写操作。
+    if (Date.now() >= until) throw expired;
+    return send();
+  }, () => { finish(); throw expired; });
 }
 
 function request(path, params, options) {
@@ -230,16 +257,20 @@ function request(path, params, options) {
 
 function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
   return new Promise((resolve, reject) => {
+    const target = service || config.cloudService;
+    const state = availability(target);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const fail = (err) => { if (!settled) { state.failed(); finish(reject, err); } };
     // 15 秒（走 admin 的只读请求 30 秒，8 秒没回会同时问接口服务）没有返回就算超时
-    const timer = setTimeout(() => finish(reject, timeoutError()), timeout);
+    const timer = setTimeout(() => fail(timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(service || config.cloudService, res.statusCode);
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
+      state.answered(res.statusCode);
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
-      if (res.statusCode === 403) forgetAgreed();
+      if (res.statusCode === 403 && target === config.cloudService) forgetAgreed();
       const err = errorOf(res);
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
@@ -253,7 +284,7 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
         data,
         timeout,
         success: done,
-        fail: (res) => finish(reject, callFailure(res)),
+        fail: (res) => fail(callFailure(res)),
       });
     } else {
       wx.request({
@@ -452,15 +483,19 @@ function exportFile(ids, format) {
 
 function exportOnce(body) {
   return new Promise((resolve, reject) => {
+    const state = availability(config.cloudService);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 30000);
+    const fail = () => {
+      if (!settled) { state.failed(); finish(reject, new Error('网络不太好，请稍后再试')); }
+    };
+    const timer = setTimeout(fail, 30000);
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
+      state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
       else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
     };
-    const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
@@ -500,18 +535,21 @@ function attachmentPart(id, version, part) {
 function attachmentPartOnce(id, version, part) {
   const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
   return new Promise((resolve, reject) => {
+    const state = availability(config.cloudService);
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
-    const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
+    const failWith = (err) => { if (!settled) { state.failed(); finish(reject, err); } };
+    const timer = setTimeout(() => failWith(timeoutError()), TIMEOUT);
     const done = (res) => {
-      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
+      state.answered(res.statusCode);
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
       err.status = res.statusCode;
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
     };
-    const fail = (res) => finish(reject, callFailure(res));
+    const fail = (res) => failWith(callFailure(res));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
@@ -587,7 +625,7 @@ function advisorCapabilities(options = {}) {
   // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
-    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: 'off' };
+    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
     return { ai_advisor: {
       enabled: true,
       features: Array.isArray(ai.features) ? ai.features : [],

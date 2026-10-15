@@ -11,11 +11,12 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, or_, select, union_all
+from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
+from youju.agreements import agreement_at_least
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -67,13 +68,26 @@ def request_openid(request: Request) -> str:
     return openid
 
 
+def agreement_range(settings) -> tuple[str, str]:
+    """（仍认的最早版本, 当前版本）。版本号按时间可排序（2026-10 < 2026-11），直接比字符串；
+    最早版本比当前版本还新的配置启动时就拒绝（config.Settings）。"""
+    current = settings.agreement_version
+    oldest = (getattr(settings, "agreement_min_version", "") or "").strip() or current
+    return oldest, current
+
+
+def agreement_valid(version: str | None, settings) -> bool:
+    """这份同意还算数：不早于仍认的最早版本。比当前版本新的也算（同意过更新的条款）。"""
+    return agreement_at_least(version, agreement_range(settings)[0])
+
+
 def known_user(request: Request, session: SessionDep) -> User | None:
     """已有的用户记录；没有就返回 None，不新建——同意用户协议和隐私保护指引之前不保存 openid。"""
     user = session.scalar(select(User).where(User.openid == request_openid(request)))
     if (
         user is not None
         and user.agreement_at is not None
-        and user.agreement_version == get_settings().agreement_version
+        and agreement_valid(user.agreement_version, get_settings())
         and v1.now() - user.last_visited_at > timedelta(hours=1)
     ):
         user.last_visited_at = v1.now()  # 最近访问时间一小时记一次，不必每次请求都写库
@@ -81,14 +95,17 @@ def known_user(request: Request, session: SessionDep) -> User | None:
     return user
 
 
+OUTDATED = "用户协议或隐私保护指引已更新，请重新阅读并同意"
+# 小程序带的协议版本后台已不再认（停在很旧的版本）：要先更新小程序
+STALE_AGREEMENT = "协议已更新，请关闭小程序后重新打开，更新到新版本后再同意"
+
+
 def current_user(user: Annotated[User | None, Depends(known_user)]) -> User:
-    """关注、订阅、纠错、埋点：必须已同意当前版本的用户协议和隐私保护指引。"""
+    """关注、订阅、纠错、埋点：必须已同意仍认的版本（默认就是当前版本）的用户协议和隐私保护指引。"""
     if user is None or user.agreement_at is None:
         raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
-    if user.agreement_version != get_settings().agreement_version:
-        raise HTTPException(
-            status_code=403, detail="用户协议或隐私保护指引已更新，请重新阅读并同意"
-        )
+    if not agreement_valid(user.agreement_version, get_settings()):
+        raise HTTPException(status_code=403, detail=OUTDATED)
     return user
 
 
@@ -262,7 +279,13 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         ).all()
     )
     return {
-        "agreed": {"version": user.agreement_version, "at": user.agreement_at.isoformat()}
+        # valid：这份同意现在还算不算数（仍认的最早版本调高后，旧版本的同意不算了）。
+        # 小程序据此请用户重新同意，太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）
+        "agreed": {
+            "version": user.agreement_version,
+            "at": user.agreement_at.isoformat(),
+            "valid": agreement_valid(user.agreement_version, get_settings()),
+        }
         if user.agreement_at
         else None,
         **(
@@ -506,7 +529,9 @@ def invite_status(session: SessionDep, user: UserDep) -> dict:
 
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
-    """同意用户协议和隐私保护指引：从这时起才建立用户记录。只接受当前版本。"""
+    """同意用户协议和隐私保护指引：从这时起才建立用户记录。接受仍认的最早版本到当前版本之间的版本
+    （协议升版的过渡期里，还没更新的旧版小程序要能同意旧版）。已同意过更新的版本（如在另一台手机的新版
+    小程序里）时不改回旧版本，免得新功能失效、两台手机来回请用户同意（Codex 审查）。"""
     if body.scope == "advisor":
         if not get_settings().advisor_enabled:
             raise HTTPException(status_code=404, detail="没有找到接口")
@@ -517,8 +542,9 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         user.advisor_agreement_at = v1.now()
         session.commit()
         return {"version": body.version, "at": user.advisor_agreement_at.isoformat()}
-    if body.version != get_settings().agreement_version:
-        raise HTTPException(status_code=422, detail="协议已更新，请刷新后重新阅读并同意")
+    oldest, current = agreement_range(get_settings())
+    if not oldest <= body.version <= current:
+        raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
     from youju import rewards
 
@@ -535,6 +561,11 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         session, request_openid(request), "referred", stamp
     ):
         inviter = None
+    # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
+    newer = and_(
+        User.agreement_version.regexp_match("^[0-9]{4}-[0-9]{2}"),
+        User.agreement_version > body.version,
+    )
     # 已有用户时 LAST_INSERT_ID(id) 让 lastrowid 返回已有那一行的编号
     row_id = session.execute(
         insert(User)
@@ -547,15 +578,23 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
             agreement_at=stamp,
         )
         .on_duplicate_key_update(
-            id=func.last_insert_id(User.id),
-            last_visited_at=stamp,
-            agreement_version=body.version,
-            agreement_at=stamp,
+            [
+                ("id", func.last_insert_id(User.id)),
+                ("last_visited_at", stamp),
+                # 先算时间、再改版本：MySQL 按从左到右的顺序赋值，后面的式子看到的是已经改过的值
+                ("agreement_at", case((newer, User.agreement_at), else_=stamp)),
+                ("agreement_version", case((newer, User.agreement_version), else_=body.version)),
+            ]
         )
     ).lastrowid
     session.commit()
     user = session.get(User, row_id)
-    return {"version": user.agreement_version, "at": user.agreement_at.isoformat()}
+    # 和 /me 的 agreed 同一格式
+    return {
+        "version": user.agreement_version,
+        "at": user.agreement_at.isoformat(),
+        "valid": agreement_valid(user.agreement_version, get_settings()),
+    }
 
 
 @router.delete("/me", status_code=204)

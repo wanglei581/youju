@@ -1,7 +1,7 @@
 <notice-bar />
 <feature-closed wx:if="{{!loginOpen}}" />
 <block wx:else>
-<view wx:if="{{loading}}" class="card empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
+<view wx:if="{{loading}}" class="card muted loading-card">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
 <view wx:if="{{mode === 'demo' && !loading}}" class="local">演示数据：连上接口并登录后，这里显示你自己的关注</view>
 
 <view wx:if="{{mode === 'gated'}}" class="card gate">

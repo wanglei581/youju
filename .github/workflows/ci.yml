@@ -3,13 +3,34 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/ai-v2]
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  miniapp:
+    name: 小程序与发布工具（测试 + 体验准备）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 小程序测试
+        run: node --test apps/miniapp/tests/*.test.js
+      - name: 发布工具回归
+        run: |
+          node --test tools/tests/*.test.js
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+      # 备案办理中可准备体验版；正式提审仍必须运行默认的严格检查。
+      - name: AI内测体验准备检查
+        run: node tools/miniapp_presubmit_check.js --profile ai-internal --mode prepare
+
   backend:
     name: 后端（代码检查 + 测试）
     runs-on: ubuntu-latest
@@ -65,6 +86,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # 境外机器上用官方源构建（云托管默认用腾讯云源）；依赖按锁文件校验哈希，装出来的包一样
+      - name: 写入构建来源版本
+        run: python3 tools/release/write_build.py
       - name: 构建镜像
         run: >-
           docker build -t youju:ci
@@ -90,6 +113,10 @@ jobs:
             curl -fsS --retry 20 --retry-delay 2 --retry-all-errors "http://localhost:$port/health"
             echo
           done
+          # 版本响应只含SHA和角色；admin探针仍要求云调用头，不向公网开放。
+          curl -fsS -H 'X-WX-SOURCE: ci' http://localhost:8081/api/v1/version > /tmp/admin-version.json
+          curl -fsS http://localhost:8082/api/v1/version > /tmp/api-version.json
+          python3 -c 'import json, os; assert all(json.load(open("/tmp/" + role + "-version.json")) == {"revision": os.environ["GITHUB_SHA"], "role": role} for role in ("admin", "api"))'
           docker exec admin crontab -l
           # 定时任务按北京时间跑：容器的系统时区是 +0800
           test "$(docker exec admin date +%z)" = "+0800"

@@ -404,6 +404,7 @@ Page({
     if (c.supports) parts.push(c.supports.split(',').slice(0, 2).join('、'));
     if (c.industries) parts.push(c.industries.split(',').slice(0, 2).join('、'));
     parts.push(tab ? tab.label : '全部');
+    if (c.time && c.time !== '不限') parts.push(c.time);
     if (c.open) parts.push('只看未截止');
     return parts.join(' · ').slice(0, 40);
   },

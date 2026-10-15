@@ -6,13 +6,13 @@
 <block wx:if="{{loginOpen && !loading && !error}}">
   <view wx:if="{{!user}}" class="card intro">
     <view class="intro-title">你的账号下没有保存个人信息</view>
-    <view class="muted intro-text">检索、查看、导出、查名单不需要登录。同意用户协议和隐私保护指引后使用关注、微信提醒、纠错，才会保存相关信息。访问日志按法律要求保存，不在这里显示。</view>
+    <view class="muted intro-text">检索、查看、导出、查名单不需要登录。同意用户协议和隐私保护指引后使用关注、{{remindOpen ? '微信提醒、' : ''}}纠错，才会保存相关信息。访问日志按法律要求保存，不在这里显示。</view>
   </view>
 
   <block wx:else>
     <view class="card intro">
       <view class="intro-title">你账号下保存的个人信息</view>
-      <view class="muted intro-text">同意记录、关注、微信提醒授权、纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
+      <view class="muted intro-text">同意记录、关注、{{remindOpen || subs.length ? '微信提醒授权、' : ''}}纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
       <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制全部数据</view>
     </view>
 
@@ -40,7 +40,8 @@
       <view wx:if="{{!follows.length}}" class="empty weak">没有</view>
     </view>
 
-    <view class="card">
+    <!-- 订阅模板申请下来之前没有微信提醒：没有授权记录时整栏不显示（以前的内测版留下的记录照样列出） -->
+    <view wx:if="{{remindOpen || subs.length}}" class="card">
       <view class="section-title">微信提醒授权 {{totals.subs}}</view>
       <view wx:for="{{subs}}" wx:key="id" class="item">
         <view class="item-main">{{item.kind}}：{{item.target}}</view>
@@ -81,7 +82,7 @@
       <view class="muted plain">
         <view>· 账号、同意记录、关注：保存到你注销</view>
         <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
-        <view>· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
+        <view wx:if="{{remindOpen || subs.length}}">· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
         <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
         <view>· 访问日志：保存 190 天（法律要求不少于 6 个月），不在这里显示</view>
       </view>

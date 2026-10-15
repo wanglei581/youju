@@ -164,7 +164,7 @@ Page({
     if (this.data.mode !== 'live') return;
     wx.showModal({
       title: '取消关注',
-      content: `不再关注"${name}"？这个关注的微信提醒也会一起取消。`,
+      content: `不再关注"${name}"？${this.data.remindOpen ? '这个关注的微信提醒也会一起取消。' : ''}`,
       confirmText: '取消关注',
       confirmColor: '#E5484D',
       cancelText: '再想想',

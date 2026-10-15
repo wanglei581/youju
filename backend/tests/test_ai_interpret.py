@@ -473,6 +473,9 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
 def test_all_audience_submission_worker_and_consent(client, settings, doc, session):
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    user = session.scalar(select(User).where(User.openid == "internal"))
+    user.agreement_version = interpret.AI_AGREEMENT_VERSION
+    session.commit()
     assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["enabled"]
     created = create(client, doc.id)
     assert created.status_code == 202
@@ -583,7 +586,12 @@ def test_model_refusal_cache_reuses_without_charging(session, settings, doc):
 def test_concurrent_submission_uses_one_global_slot(session_factory, session, settings, doc):
     settings.ai_advisor_daily_cap = 1
     settings.ai_advisor_audience = "all"
-    session.add_all([User(openid="internal"), User(openid="second")])
+    session.add_all(
+        [
+            User(openid=openid, agreement_at=NOW, agreement_version=interpret.AI_AGREEMENT_VERSION)
+            for openid in ("internal", "second")
+        ]
+    )
     session.commit()
     barrier = Barrier(2)
 
@@ -1513,3 +1521,57 @@ def test_background_client_can_use_separate_model(monkeypatch):
     client = ai_module.get_chat_client()
     assert client.model == "cheap" and client.extra_body == {"thinking": {"type": "disabled"}}
     client.close()
+
+
+@pytest.mark.parametrize("kind", ["interpret", "clause"])
+def test_public_ai_old_consent_blocks_submission_before_quota(client, session, settings, doc, kind):
+    settings.ai_advisor_audience = "all"
+    # 后台当前版本回退为 2026-10，也不能把无 AI 条款的旧同意当成正式 AI 授权。
+    settings.agreement_version = "2026-10"
+    capability = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
+    assert capability["enabled"] is False
+    assert capability["reason"] == "consent"
+    response = client.post(
+        "/api/v1/advisor/tasks",
+        json={"kind": kind, "doc_id": doc.id},
+        headers={"Idempotency-Key": "old-ai-consent"},
+    )
+    assert response.status_code == 403
+    assert "AI 条款" in response.json()["detail"]
+    assert session.scalar(select(AdvisorTask.id)) is None
+    assert service.global_ai_usage(session, service.usage_day(NOW)) == 0
+    # 常规同意仍然有效：不要求所有旧用户为了关注/纠错升级。
+    assert client.get("/api/v1/me").json()["agreed"]["valid"] is True
+
+
+def test_public_ai_worker_rejects_queued_old_consent(session, settings, doc):
+    task = direct_task(session, doc, key="old-queued-consent")
+    task.status = "queued"
+    session.commit()
+    settings.ai_advisor_audience = "all"
+    assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["processed"] == 0
+    session.refresh(task)
+    assert task.status == "failed"
+    assert (
+        service.usage_counts(session, task.user_id, service.usage_day(NOW)).get("interpret", 0) == 0
+    )
+    assert service.global_ai_calls(session, service.usage_day(NOW)) == 0
+
+
+@pytest.mark.parametrize(
+    "version,stamp,expected",
+    [
+        ("2026-10", NOW, False),
+        ("old", NOW, False),
+        ("2026-11", None, False),
+        ("2026-11", NOW, True),
+        ("2026-12", NOW, True),
+    ],
+)
+def test_public_ai_user_and_worker_consent_agree(session, settings, version, stamp, expected):
+    settings.ai_advisor_audience = "all"
+    user = User(openid="consent-cases", agreement_version=version, agreement_at=stamp)
+    session.add(user)
+    session.commit()
+    assert interpret.enabled(settings, user) is expected
+    assert (user.id in session.scalars(interpret.worker_user_ids(settings)).all()) is expected

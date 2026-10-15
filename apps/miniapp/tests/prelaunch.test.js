@@ -55,6 +55,7 @@ function accountHarness({ cancel = false, fail = false, filesFail = false } = {}
     './api.js': api, './format.js': format, './exports.js': exportsLog,
   }, { wx });
   const consent = load('utils/consent.js', {
+    './config.js': { templates: {} },
     '../content/legal.js': { final: true, version: 'test' }, './api.js': api,
     './exports.js': exportsLog, './exporter.js': exporter, './config.js': {},
   }, { wx });

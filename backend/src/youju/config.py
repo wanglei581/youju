@@ -1,5 +1,6 @@
 """运行配置：全部从环境变量（前缀 YOUJU_）或 backend/.env 读取。"""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -30,8 +31,16 @@ class Settings(BaseSettings):
     template_newdocs: dict | None = None
     # 定时任务真正发送订阅消息（云托管开放接口服务）；不开时只演练。与是否信任请求头分开设置
     send_wx_messages: bool = False
-    # 用户协议和隐私保护指引的当前版本：只接受同意这个版本；更新版本后，旧版的同意失效、要重新同意
+    # 用户协议和隐私保护指引的当前版本，和小程序 content/legal.js 的 version 一致。
+    # 版本号按时间可排序（2026-10、2026-11……），后端和小程序都直接比字符串：
+    # 同意过更新的版本也算同意了旧的
     agreement_version: str = "2026-10"
+    # 仍然认的最早版本，平时不填（等于当前版本，旧版的同意失效、要重新同意）。
+    # 协议升版只是给新功能加了条款（如 AI 版）时，填升版前的版本：旧的同意照旧能用旧功能
+    # （关注、纠错、提醒），新功能要求同意过写进它的条款的那一版（me.agreement_at_least），
+    # 还没更新的旧版小程序也能同意旧版。
+    # 只有旧条款不再覆盖旧功能时才调高；调高后停在旧版本的用户要更新小程序、重新同意
+    agreement_min_version: str = ""
     # 个人信息保存期限（天），以隐私保护指引为准，由创始人确认
     retain_events_days: int = 90
     retain_feedback_days: int = 180
@@ -148,6 +157,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "YOUJU_ROLE=api 时要设置 YOUJU_TRUST_WX_HEADERS=true，用户身份取云托管注入的请求头"
             )
+        # 协议版本按"年-月"直接比字符串：写法不对、最早版本比当前版本还新，都会让同意的判断出错
+        versions = [self.agreement_version] + [self.agreement_min_version] * bool(
+            self.agreement_min_version
+        )
+        if not all(re.match(r"\d{4}-\d{2}", v) for v in versions):
+            raise ValueError(
+                "YOUJU_AGREEMENT_VERSION、YOUJU_AGREEMENT_MIN_VERSION 要写成年-月开头，如 2026-10"
+            )
+        if self.agreement_min_version > self.agreement_version:
+            raise ValueError("YOUJU_AGREEMENT_MIN_VERSION 不能比 YOUJU_AGREEMENT_VERSION 新")
         return self
 
 

@@ -1082,7 +1082,7 @@ def test_migration_down_up_preserves_order_segment_and_unlinks_reward_task(sessi
     pending.pass_id = ticket(session, reward).id
     session.commit()
     order_id, task_id, bought_id = order.id, pending.id, bought.id
-    config = alembic_config(str(db_engine.url))
+    config = alembic_config(db_engine.url.render_as_string(hide_password=False))
     try:
         command.downgrade(config, "0026")
         assert "pass_rewards" not in inspect(db_engine).get_table_names()

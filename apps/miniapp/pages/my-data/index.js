@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { describe } = require('../../utils/conditions.js');
-const { withdraw, loginOpen } = require('../../utils/consent.js');
+const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
 
 const SUB_KIND = { newDocs: '关注有新文件', deadline: '截止前提醒' };
 const SUB_STATUS = { unused: '还没发出', sent: '已发出', failed: '发送失败', refused: '被拒收', expired: '已失效' };
@@ -20,7 +20,7 @@ function maskId(id) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen() },
+  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -135,7 +135,7 @@ Page({
     const { kind, id } = e.currentTarget.dataset;
     const sub = kind === 'sub' && this.data.subs.find((item) => String(item.id) === String(id));
     const cancelling = sub && sub.unused;
-    const what = { follow: '这个关注（它的微信提醒也会一起取消）', sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录', feedback: '这条纠错' }[kind];
+    const what = { follow: this.data.remindOpen ? '这个关注（它的微信提醒也会一起取消）' : '这个关注', sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录', feedback: '这条纠错' }[kind];
     const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback }[kind];
     wx.showModal({
       title: cancelling ? '取消提醒' : '删除记录',

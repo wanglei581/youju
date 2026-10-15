@@ -13,7 +13,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju.api import v1
-from youju.api.me import notification_statement
+from youju.api.me import agreement_valid, notification_statement
 from youju.config import Settings, get_settings
 from youju.models import (
     Document,
@@ -168,8 +168,8 @@ def run_notify(
             continue
         values, page = target
         user = session.get(User, row.user_id)
-        # 协议更新后还没重新同意的用户先不发（授权保留，重新同意后照常发）
-        if user.agreement_version != settings.agreement_version:
+        # 协议更新后还没重新同意的用户先不发（授权保留，重新同意后照常发）；仍认的旧版本照常发
+        if not agreement_valid(user.agreement_version, settings):
             result["skipped"] += 1
             continue
         try:

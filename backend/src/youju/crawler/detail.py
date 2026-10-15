@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from html import unescape as unescape_html
 from itertools import chain
 from urllib.parse import unquote, urlsplit
 
@@ -273,15 +274,38 @@ def _publish_date(root: etree._Element, prefix: str) -> date | None:
     return None
 
 
+# 有的政府网站（TRS 模板，如重庆市科技局、宁夏科技厅和工信厅）把附件链接写在脚本的字符串里
+# （var hasFJ='<a href="./P0….pdf">附件…</a><BR/>…'），浏览器运行后才显示，页面结构里没有这些链接。
+# 10/15 查"查名单"读不出企业名时发现：重庆入库科技型企业名单、宁夏专精特新名单在这里。
+# 只看页面自带的脚本（不看 src 引用的外部脚本），找 <a href=…>…</a> 片段，按同样的规则收附件。
+_SCRIPT_ANCHOR = re.compile(
+    r"""<a\s[^<>]*?href\s*=\s*\\?["']([^"'\\<>]+)\\?["'][^<>]*>(.*?)</a>""", re.I | re.S
+)
+
+
+def _anchors(root: etree._Element):
+    """页面里的链接（href、文字），再加上写在页面自带脚本里的链接片段。"""
+    for anchor in root.xpath("//a[@href]"):
+        yield anchor.get("href"), " ".join(anchor.text_content().split())
+    for script in root.xpath("//script[not(@src)]"):
+        # 只还原常见的斜杠转义，不执行脚本或求值拼接表达式。
+        source = (script.text or "").replace(r"\/", "/")
+        for match in _SCRIPT_ANCHOR.finditer(source):
+            href, inner = match.groups()
+            yield (
+                unescape_html(href),
+                " ".join(unescape_html(re.sub(r"<[^>]+>", " ", inner)).split()),
+            )
+
+
 def _attachments(root: etree._Element, url: str) -> list[Attachment]:
     result: list[Attachment] = []
     seen: set[str] = set()
     page_host = urlsplit(url).hostname
-    for anchor in root.xpath("//a[@href]"):
-        target = normalize_url(url, anchor.get("href"))
+    for href, label in _anchors(root):
+        target = normalize_url(url, href)
         if not target or target in seen:
             continue
-        label = " ".join(anchor.text_content().split())
         filename = unquote(urlsplit(target).path.rsplit("/", 1)[-1])
         match = _FILE_PATTERN.search(target) or _FILE_PATTERN.search(label)
         if not match or match.group(1).lower() not in _FILE_EXTENSIONS:
