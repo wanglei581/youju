@@ -1098,6 +1098,7 @@ def test_free_month_boundaries_and_two_codes(setup_pay, session, monkeypatch, ki
     assert submit(setup_pay, kind, 51, "large").json()["detail"] == {
         "code": "FREE_ROW_LIMIT",
         "message": "每次最多提交 50 行",
+        "maxRows": 50,
     }
     tasks = []
     for n in range(3):

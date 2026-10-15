@@ -203,30 +203,60 @@ def notification_statement(session: Session, follow: Follow):
     return v1._grouped(stmt)
 
 
-def followed_week_count(session: Session, user: User) -> int:
+FOLLOW_QUERY_UNAVAILABLE = "关注范围暂不可查询，请重新选择地区或等待来源恢复"
+
+
+def followed_week_stats(session: Session, user: User) -> dict:
     start, end = v1._week(v1.now().date())
     follows = session.scalars(select(Follow).where(Follow.user_id == user.id)).all()
-    if not follows:
-        return 0
-    matches = union_all(
-        *[
-            _conditions_stmt(session, follow.conditions)
-            .where(Document.publish_date >= start, Document.publish_date < end)
-            .with_only_columns(Document.id)
-            for follow in follows
-        ]
-    ).subquery()
-    return v1._count(session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id)))))
+    statements, unavailable = [], 0
+    for follow in follows:
+        try:
+            statement = _conditions_stmt(session, follow.conditions)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            unavailable += 1
+            continue
+        statements.append(
+            statement.where(
+                Document.publish_date >= start, Document.publish_date < end
+            ).with_only_columns(Document.id)
+        )
+    total = 0
+    if statements:
+        matches = union_all(*statements).subquery()
+        total = v1._count(
+            session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id))))
+        )
+    if unavailable:
+        return {
+            "followed_new": None,
+            "followed_available_new": total,
+            "followed_unavailable": unavailable,
+            "followed_message": FOLLOW_QUERY_UNAVAILABLE,
+        }
+    return {"followed_new": total}
+
+
+def followed_week_count(session: Session, user: User) -> int | None:
+    return followed_week_stats(session, user)["followed_new"]
 
 
 def _follow_out(session: Session, follow: Follow) -> dict:
     since = follow.last_seen_at or follow.created_at
-    return {
+    result = {
         "id": follow.id,
         "name": follow.name,
         "conditions": follow.conditions,
-        "newCount": new_count(session, follow, since),
     }
+    try:
+        result["newCount"] = new_count(session, follow, since)
+    except HTTPException as exc:
+        if exc.status_code != 422:
+            raise
+        result.update(newCount=None, queryUnavailable=True, queryMessage=FOLLOW_QUERY_UNAVAILABLE)
+    return result
 
 
 def _owned_follow(session: Session, user: User, follow_id: int) -> Follow:
@@ -859,20 +889,32 @@ def list_follows(session: SessionDep, user: UserDep) -> dict:
     follows = session.scalars(
         select(Follow).where(Follow.user_id == user.id).order_by(Follow.id)
     ).all()
+    items = [_follow_out(session, row) for row in follows]
+    available = [
+        row for row, item in zip(follows, items, strict=True) if not item.get("queryUnavailable")
+    ]
     total = 0
-    if follows:
+    if available:
         matches = union_all(
             *[
                 new_statement(
                     session, follow, follow.last_seen_at or follow.created_at
                 ).with_only_columns(Document.id)
-                for follow in follows
+                for follow in available
             ]
         ).subquery()
         total = v1._count(
             session, v1._grouped(v1._base().where(Document.id.in_(select(matches.c.id))))
         )
-    return {"items": [_follow_out(session, row) for row in follows], "newTotal": total}
+    unavailable = len(follows) - len(available)
+    if unavailable:
+        return {
+            "items": items,
+            "newTotal": None,
+            "availableNewTotal": total,
+            "unavailableCount": unavailable,
+        }
+    return {"items": items, "newTotal": total}
 
 
 @router.post("/me/follows", status_code=201)

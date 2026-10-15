@@ -54,6 +54,14 @@ def test_creation_kind_response_groups(
     settings.advisor_enabled = data_enabled
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
+    if data_enabled and kind in ("compare", "track"):
+        assert (
+            client.post(
+                "/api/v1/me/agreement",
+                json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+            ).status_code
+            == 200
+        )
     body = {"kind": kind, "doc_id": doc.id}
     if kind == "omitted":
         del body["kind"]

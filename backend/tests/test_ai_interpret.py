@@ -459,6 +459,13 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
     settings.advisor_enabled = True
+    assert (
+        client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+        ).status_code
+        == 200
+    )
     assert client.get("/api/v1/advisor/tasks").json()["items"] == []
     assert (
         client.post(
@@ -519,6 +526,13 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert session.scalar(select(AdvisorTask.id)) is None
 
     settings.advisor_enabled = True
+    assert (
+        client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+        ).status_code
+        == 200
+    )
     assert (
         client.post(
             "/api/v1/advisor/tasks",

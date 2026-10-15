@@ -61,6 +61,7 @@ from youju.models import (
     RepostGroupMember,
     Source,
 )
+from youju.regions import covered_city_scopes, resolve_city
 from youju.report_revision import publication_revision
 from youju.repost import confirmed_members, grouped_documents, labels_for
 from youju.takedown import available_condition, is_taken_down
@@ -870,7 +871,7 @@ def home(
         user = me.known_user(request, session)
         if user is not None:
             user = me.current_user(user)
-            stats["followed_new"] = me.followed_week_count(session, user)
+            stats.update(me.followed_week_stats(session, user))
     except HTTPException as exc:
         if exc.status_code not in (401, 403):
             raise
@@ -1181,20 +1182,15 @@ def search_statement(
     picked_cities = list(dict.fromkeys(c.strip() for c in (cities or "").split(",") if c.strip()))
     if picked_cities:
         # 只接受收录范围里的城市；自由文本客户名称及关键词不进入接口。
-        covered_cities = {
-            f"{province}/{city}"
-            for province, city in session.execute(
-                select(Source.province, Source.city).where(
-                    Source.enabled.is_(True),
-                    Source.last_success_at.is_not(None),
-                    Source.level == "市级",
-                    Source.city.is_not(None),
-                    Source.city != "",
-                )
-            )
-        }
-        if any(c not in covered_cities for c in picked_cities):
-            raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
+        covered = covered_city_scopes(session)
+        resolved_cities = []
+        for picked in picked_cities:
+            province, separator, city = picked.partition("/")
+            resolved = resolve_city(province, city, covered) if separator and city else None
+            if resolved is None:
+                raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区")
+            resolved_cities.append(f"{province}/{resolved}")
+        picked_cities = list(dict.fromkeys(resolved_cities))
 
     stmt = _base()
     kw = (q or "").strip()
@@ -1373,22 +1369,9 @@ def _view_open(view: deadline_excerpts.View, stamp: datetime) -> bool:
 def _validate_city_scope(session: Session, province: str, city: str) -> str:
     if not city:
         return ""
-    short = city.removesuffix("市")
-    covered = set(
-        session.scalars(
-            select(Source.city).where(
-                Source.province == province,
-                Source.city.in_({city, short, short + "市"}),
-                Source.level == "市级",
-                Source.enabled.is_(True),
-                Source.last_success_at.is_not(None),
-            )
-        ).all()
-    )
-    if city in covered:
-        return city
-    if len(covered) == 1:
-        return next(iter(covered))
+    resolved = resolve_city(province, city, covered_city_scopes(session))
+    if resolved is not None:
+        return resolved
     raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区；不会改为全省查询")
 
 

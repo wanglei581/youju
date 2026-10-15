@@ -15,7 +15,6 @@ from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youju import deadline_excerpts
@@ -32,6 +31,7 @@ from youju.compare import (
 from youju.export_notes import DEADLINE_HEADER, add_excel_notes
 from youju.fields import SUPPORT_LABELS
 from youju.models import Document, DocumentDetail, Source
+from youju.regions import city_key, covered_city_scopes, resolve_city
 from youju.sources.onboard import PROVINCES as SOURCE_PROVINCES
 
 _TZ = v1._TZ
@@ -54,11 +54,6 @@ _PROVINCE_ALIASES.update(
 )
 
 
-def _city_key(value: str) -> str:
-    # 仅末尾“市”参与同省别名匹配；自治州、地区及地名内部的“市”保持原样。
-    return value.removesuffix("市")
-
-
 _SPLIT = re.compile(r"[;,；，、|]+")
 
 
@@ -79,13 +74,13 @@ class CustomerProfile:
         object.__setattr__(self, "province", province)
         if isinstance(self.city, str):
             city = self.city.strip()
-            if province in ("北京", "天津", "上海", "重庆") and _city_key(city) == province:
+            if province in ("北京", "天津", "上海", "重庆") and city_key(city) == province:
                 city = ""
             object.__setattr__(self, "city", city)
         if self.city and (
             not isinstance(self.city, str)
             or len(self.city) > 32
-            or any(c in self.city for c in "/,，;；\n\r")
+            or any(c in self.city for c in "/\\,，;；、|\t\n\r")
             or self.province in ("国家", "国家部委")
         ):
             raise CompareInputError("城市须填写所属省份内的城市简称，国家部委范围请留空")
@@ -211,14 +206,18 @@ def _parts(value: object) -> tuple[str, ...]:
     return tuple(part for part in (_text(v).strip() for v in _SPLIT.split(_text(value))) if part)
 
 
-def _profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
+def parse_customer_profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
+    """文件、JSON 预览和后台任务共用单行解析，非法城市不得留到扣额度后才发现。"""
     if isinstance(value, CustomerProfile):
         return value
     if not isinstance(value, Mapping):
         raise CompareInputError("客户画像必须是 CustomerProfile 或字典")
     name = _text(value.get("客户名称", value.get("name", "")))
     province = _text(value.get("省份", value.get("province", "")))
-    city = _text(value.get("城市", value.get("city", "")))
+    raw_city = value.get("城市", value.get("city", ""))
+    if raw_city is not None and not isinstance(raw_city, str):
+        raise CompareInputError("城市须填写文字")
+    city = _text(raw_city)
     keywords = _parts(value.get("关键词", value.get("keywords", "")))
     raw_supports = _parts(value.get("支持方式", value.get("supports", value.get("support", ""))))
     supports = tuple(item for item in raw_supports if item in SUPPORT_LABELS)
@@ -229,6 +228,15 @@ def _profile(value: CustomerProfile | Mapping[str, object]) -> CustomerProfile:
         keywords=keywords,
         supports=supports,
     )
+
+
+def validate_customer_rows(rows: Iterable[Mapping[str, object]]) -> None:
+    """在提交前逐行验证；错误只给位置与原因，不回显客户内容。"""
+    for row_number, row in enumerate(rows, 1):
+        try:
+            parse_customer_profile(row)
+        except CompareInputError as exc:
+            raise CompareInputError(f"第 {row_number} 行：{exc}") from None
 
 
 def read_customer_profiles(
@@ -247,7 +255,7 @@ def read_customer_profiles(
     if len(rows) - 1 > MAX_INPUT_ROWS:
         raise CompareInputError("客户画像最多 500 行")
     result: list[CustomerProfile] = []
-    for row in rows[1:]:
+    for row_number, row in enumerate(rows[1:], 2):
         name_index, province_index = columns["客户名称"], columns["省份"]
         name = _text(row[name_index] if name_index < len(row) else "")
         province = _text(row[province_index] if province_index < len(row) else "")
@@ -270,7 +278,10 @@ def read_customer_profiles(
             "keywords": _parts(keyword),
             "supports": _parts(support),
         }
-        result.append(_profile(values))
+        try:
+            result.append(parse_customer_profile(values))
+        except CompareInputError as exc:
+            raise CompareInputError(f"第 {row_number} 行：{exc}") from None
     return result
 
 
@@ -312,34 +323,20 @@ def track_clients(
 ) -> TrackReport:
     """按客户画像批量查询在报项目，查询只做一次，适合 200 客户。"""
 
-    customers = [_profile(item) for item in profiles]
+    customers = [parse_customer_profile(item) for item in profiles]
     if len(customers) > MAX_INPUT_ROWS:
         raise CompareInputError("客户画像最多 500 行")
     if any(client.city and not client.invalid_province for client in customers):
-        covered = set(
-            session.execute(
-                select(Source.province, Source.city).where(
-                    Source.enabled.is_(True),
-                    Source.last_success_at.is_not(None),
-                    Source.level == "市级",
-                    Source.city.is_not(None),
-                    Source.city != "",
-                )
-            ).all()
-        )
+        covered = covered_city_scopes(session)
         normalized = []
         for client in customers:
             if not client.city or (client.province, client.city) in covered:
                 normalized.append(client)
                 continue
-            aliases = {
-                city
-                for province, city in covered
-                if province == client.province and _city_key(city) == _city_key(client.city)
-            }
+            city = resolve_city(client.province, client.city, covered)
             normalized.append(
-                replace(client, city=next(iter(aliases)))
-                if len(aliases) == 1
+                replace(client, city=city)
+                if city is not None
                 else replace(client, invalid_city=True)
             )
         customers = normalized

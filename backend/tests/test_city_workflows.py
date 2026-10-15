@@ -6,6 +6,9 @@ from datetime import UTC, date, datetime
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from tests.test_advisor import advisor_settings as advisor_settings
+from tests.test_advisor import agree_advisor
+from tests.test_advisor import client as client
 from youju.api import advisor, me, v1
 from youju.compare import compare_lists, export_compare_excel
 from youju.models import Document, DocumentDeadline, ListEntry, Source
@@ -224,13 +227,13 @@ def test_company_city_is_optional_local_display_and_does_not_change_model_keys()
 
 
 def test_track_strings_and_lists_already_share_multiple_condition_contract():
-    from youju.track import _profile
+    from youju.track import parse_customer_profile
 
     for keywords, supports in [
         ("科技;创新", "资金支持;资格认定"),
         (["科技", "创新"], ["资金支持", "资格认定"]),
     ]:
-        profile = _profile(
+        profile = parse_customer_profile(
             {
                 "name": "合成科技有限公司",
                 "province": "山东",
@@ -267,9 +270,9 @@ def test_track_json_full_names_match_only_same_province_city(session, city_docs)
     ],
 )
 def test_track_profile_preserves_autonomous_city_and_region_names(province, city, expected):
-    from youju.track import _profile
+    from youju.track import parse_customer_profile
 
-    profile = _profile({"name": "合成企业", "province": province, "city": city})
+    profile = parse_customer_profile({"name": "合成企业", "province": province, "city": city})
     assert profile.province == expected and profile.city == city and not profile.invalid_province
 
 
@@ -284,4 +287,65 @@ def test_calendar_and_report_resolve_full_short_city_to_real_source(session, cit
     assert (
         v1.calendar(session, excerpts=excerpts, province="山东", city="青岛")["items"][0]["city"]
         == "青岛市"
+    )
+
+
+@pytest.mark.parametrize("stored,selected", [("青岛市", "青岛"), ("青岛", "青岛市")])
+def test_search_and_follow_share_same_province_city_alias(
+    client, session, city_docs, stored, selected
+):
+    agree_advisor(client)
+    session.get(Source, city_docs["青岛"].source_id).city = stored
+    session.commit()
+    params = {"cities": f"山东/{selected}", "time": "不限"}
+    result = client.get("/api/v1/search", params=params)
+    assert result.status_code == 200, result.text
+    assert {row["id"] for row in result.json()["items"]} == {str(city_docs["青岛"].id)}
+    assert result.json()["items"][0]["city"] == stored
+    followed = client.post(
+        "/api/v1/me/follows", json={"name": "合成城市关注", "conditions": params}
+    )
+    assert followed.status_code == 201, followed.text
+    conditions = followed.json()["conditions"]
+    ids = {row[0].id for row in session.execute(me._conditions_stmt(session, conditions))}
+    assert ids == {city_docs["青岛"].id}
+    assert client.get(f"/api/v1/me/follows/{followed.json()['id']}/new").status_code == 200
+    # 另一个省没有该城市，不能按名称命中或退回全省。
+    params["cities"] = f"江苏/{selected}"
+    assert client.get("/api/v1/search", params=params).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/me/follows", json={"name": "跨省错误", "conditions": params}
+        ).status_code
+        == 422
+    )
+
+
+def test_city_alias_resolution_prefers_exact_and_preserves_other_names():
+    from youju.regions import resolve_city
+
+    covered = {("山东", "青岛"), ("山东", "青岛市"), ("吉林", "延边朝鲜族自治州")}
+    assert resolve_city("山东", "青岛", covered) == "青岛"
+    assert resolve_city("山东", "青岛市", covered) == "青岛市"
+    assert resolve_city("江苏", "青岛市", covered) is None
+    assert resolve_city("吉林", "延边朝鲜族自治州", covered) == "延边朝鲜族自治州"
+    assert resolve_city("吉林", "延边朝鲜族", covered) is None
+
+
+@pytest.mark.parametrize("field,value", [("enabled", False), ("last_success_at", None)])
+def test_search_and_follow_reject_unavailable_city_without_province_fallback(
+    client, session, city_docs, field, value
+):
+    agree_advisor(client)
+    source = session.get(Source, city_docs["青岛"].source_id)
+    source.city = "青岛市"
+    setattr(source, field, value)
+    session.commit()
+    params = {"cities": "山东/青岛", "time": "不限"}
+    assert client.get("/api/v1/search", params=params).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/me/follows", json={"name": "已失效城市", "conditions": params}
+        ).status_code
+        == 422
     )

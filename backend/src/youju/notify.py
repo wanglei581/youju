@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
@@ -148,9 +149,24 @@ def run_notify(
         row = session.scalar(stmt)
         if row is None:
             continue
-        target = (
-            _deadline(session, row, stamp) if row.kind == "deadline" else _new_docs(session, row)
-        )
+        try:
+            target = (
+                _deadline(session, row, stamp)
+                if row.kind == "deadline"
+                else _new_docs(session, row)
+            )
+        except HTTPException as exc:
+            if row.kind != "newDocs" or exc.status_code != 422:
+                raise
+            # 来源停用或旧筛选项失效仅影响这条关注；不能退回全省、消费授权或中止其他提醒。
+            log.warning(
+                "关注筛选条件已不可用（HTTP 422），保留授权 #%s、关注 #%s，等待修正或恢复收录",
+                row.id,
+                row.follow_id,
+            )
+            session.rollback()  # 本轮尚未消费授权，释放行锁让之后的运行可重新检查。
+            result["skipped"] += 1
+            continue
         if target == "expired":
             if settings.send_wx_messages:
                 row.status, row.attempted_at = "expired", stamp

@@ -1035,3 +1035,60 @@ def test_pasted_rows_require_independent_tool_agreement(client, kind, rows):
     )
     assert accepted.status_code == 202
     assert client.get("/api/v1/advisor/status").json()["quota"][kind]["used"] == 1
+
+
+@pytest.mark.parametrize("endpoint", ["preview", "tasks"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"city": "青岛;烟台"},
+        {"city": "青岛/烟台"},
+        {"city": "青岛，烟台"},
+        {"city": "青岛；烟台"},
+        {"city": "青岛|烟台"},
+        {"city": "青岛、烟台"},
+        {"city": "青岛\t烟台"},
+        {"city": "青岛\n烟台"},
+        {"city": "城" * 33},
+        {"province": "国家部委", "city": "北京"},
+        {"province": "国家", "city": "北京"},
+        {"city": 123},
+        {"city": ["青岛"]},
+    ],
+)
+def test_track_invalid_city_rejected_before_quota(client, session, endpoint, invalid):
+    agree_advisor(client)
+    valid = {"name": "合成正常客户", "province": "山东", "city": "青岛"}
+    body = {"kind": "track", "rows": [valid, {**valid, "name": "不得回显客户", **invalid}]}
+    response = client.post(
+        f"/api/v1/advisor/{endpoint}", json=body, headers={"Idempotency-Key": "city-validation"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("第 2 行：城市")
+    assert "不得回显客户" not in response.text
+    assert session.scalar(select(AdvisorTask.id)) is None
+    assert session.scalar(select(AdvisorUsage.id)) is None
+    assert client.get("/api/v1/advisor/status").json()["quota"]["track"]["used"] == 0
+    # 修正输入后同一个键仍可正常创建；验证失败没有占用键或额度。
+    accepted = client.post(
+        "/api/v1/advisor/tasks",
+        json={"kind": "track", "rows": [valid]},
+        headers={"Idempotency-Key": "city-validation"},
+    )
+    assert accepted.status_code == 202
+    assert client.get("/api/v1/advisor/status").json()["quota"]["track"]["used"] == 1
+
+
+@pytest.mark.parametrize("xlsx", [False, True])
+def test_track_file_city_validation_reports_physical_row(client, xlsx):
+    agree_advisor(client)
+    rows = [
+        ["客户名称", "省份", "城市"],
+        ["合成正常客户", "山东", "青岛"],
+        ["不得回显客户", "山东", "青岛;烟台"],
+    ]
+    content = xlsx_content(rows) if xlsx else "\n".join(",".join(row) for row in rows).encode()
+    response = client.post("/api/v1/advisor/preview", json=upload_body(content, kind="track"))
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("第 3 行：城市")
+    assert "不得回显客户" not in response.text

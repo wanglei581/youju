@@ -770,6 +770,12 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     j.session.commit()
     _support(j, application)
     _agree(j)
+    _json(
+        j.client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION},
+        )
+    )
     storage = {}
 
     def upload(client, env, remote_path, local_path, **kwargs):
@@ -957,6 +963,12 @@ def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, 
     j = journey
     j.settings.advisor_enabled = True
     _agree(j)
+    _json(
+        j.client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION},
+        )
+    )
     owner_id = j.session.scalar(select(User.id).where(User.openid == IDENTITY["X-WX-OPENID"]))
     follow = _follow(j, "本人关注", {})
     _subscribe(j, "newDocs", followId=follow["id"])

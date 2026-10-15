@@ -447,14 +447,23 @@ def test_follow_markers_and_both_notifications(client, docs, session, settings):
 def test_tool_generation_and_existing_download(
     client, docs, session, settings, monkeypatch, tmp_path, kind, index, rows
 ):
+    assert (
+        client.post(
+            "/api/v1/me/agreement",
+            json={"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION},
+        ).status_code
+        == 200
+    )
     monkeypatch.setattr(advisor_tasks, "upload", lambda *a, **kw: "cloud://test-file")
     monkeypatch.setattr(advisor_tasks, "download_url", lambda *a: "https://example.test/file")
     monkeypatch.setattr(advisor_tasks, "result_size", lambda *a: 10)
-    task_id = client.post(
+    created = client.post(
         "/api/v1/advisor/tasks",
         headers={"Idempotency-Key": "before"},
         json={"kind": kind, "rows": rows},
-    ).json()["id"]
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["id"]
     task = session.get(AdvisorTask, task_id)
     task.status = "running"
     assert advisor_tasks.process_task(session, task, settings=settings)

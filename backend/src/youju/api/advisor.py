@@ -29,7 +29,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
-from youju.track import read_customer_profiles
+from youju.track import read_customer_profiles, validate_customer_rows
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -135,6 +135,11 @@ class TaskIn(BaseModel):
 def _file_rows(body: TaskIn) -> list[Any]:
     upload = body.file
     if upload is None:
+        if body.kind == "track":
+            try:
+                validate_customer_rows(body.rows)
+            except CompareInputError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
         return body.rows
     if Path(upload.name).suffix.lower() not in (".xlsx", ".csv"):
         raise HTTPException(status_code=422, detail="只支持 .xlsx 和 .csv 文件")
