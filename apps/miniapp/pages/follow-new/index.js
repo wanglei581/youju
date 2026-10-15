@@ -20,6 +20,18 @@ Page({
     this.load(true);
   },
 
+  onShow() {
+    if (this.data.loginOpen && api.watchStartup) api.watchStartup(this);
+  },
+
+  onHide() {
+    if (api.stopStartup) api.stopStartup(this);
+  },
+
+  onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
+  },
+
   load(reset) {
     if (this.fetching) return;
     this.fetching = true;

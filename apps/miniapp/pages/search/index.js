@@ -72,6 +72,8 @@ const MORE_GROUPS = ['type', 'category', 'support', 'industry'];
 
 Page({
   data: {
+    // 列表行用的当天日期：onShow 时填上；先给空串，第一次渲染时不给组件传 null
+    today: '',
     q: '',
     tabs: KIND_TABS,
     tab: 'all',

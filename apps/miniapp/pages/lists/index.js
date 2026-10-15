@@ -11,6 +11,8 @@ const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
 Page({
   data: {
+    // 列表行用的当天日期：onShow 时填上；先给空串，第一次渲染时不给组件传 null
+    today: '',
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,
