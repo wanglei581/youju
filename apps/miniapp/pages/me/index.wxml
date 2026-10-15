@@ -47,6 +47,7 @@
     <view class="num num--line"><view class="num-v">2</view><view class="muted num-k">次 / 天检查</view></view>
   </view>
   <view wx:if="{{stats.cities}}" class="data-note">其中已收录 {{stats.cities}} 个城市的栏目。地市目前只收录部分城市，<text class="link" data-url="/pages/about/index" bindtap="go">查看城市和栏目</text>。</view>
+  <view wx:if="{{stats.districts}}" class="data-note">其中已收录 {{stats.districts}} 个区县的栏目。区县目前只收录少数地方，<text class="link" data-url="/pages/about/index" bindtap="go">查看区县和栏目</text>。</view>
   <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>
 

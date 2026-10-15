@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { PROVINCES, regionSelection } = require('../../utils/regions.js');
+const { PROVINCES, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -27,7 +27,11 @@ const DEPTS = ['不限部门', '科技部门', '工信部门', '其他部门'];
 const NO_SOON = { total: 0, items: [] };
 // 默认视图（7 天内、不筛省份部门、没开"只看已核对"）存一份到本机，下次打开先显示（utils/cache.js）
 const DEADLINE_CACHE = 'youjuDeadlineCacheV1';
-const isDefaultView = ({ tab, province, city, dept, verifiedOnly }) => tab === 7 && !province && !city && !dept && !verifiedOnly;
+const isDefaultView = ({ tab, province, city, district, dept, verifiedOnly }) => tab === 7 && !province && !city && !district && !dept && !verifiedOnly;
+// 省市区参数：区县是后加的，没选区县时不带这一项，请求和以前一样
+const areaParams = ({ province, city, district }) => (district ? { province, city, district } : { province, city });
+// 选择器那一格显示的城市、区县：直辖市只写区县（省份已在左边）
+const areaText = ({ province, city, district }) => [city !== province ? city : '', district].filter(Boolean).join(' · ');
 
 // 一条截止怎么显示。机器摘录按手机日期已进了 7 天内、或者没带原句的，不写日期（dueView 再拦一次）
 function row(base, due) {
@@ -52,7 +56,7 @@ function reportRow(d) {
     : { kind: d.label, source: d.source || 'verified', date: d.date, time: d.time, quote: d.quote };
   return row({
     key: `r${d.id}`, docId: String(d.id), hasDetail: true, title: d.title,
-    meta: [d.issuer, d.province, d.city].filter(Boolean).join(' · '), fileNumber: d.file_number || '',
+    meta: [d.issuer, d.province, d.city, d.district].filter(Boolean).join(' · '), fileNumber: d.file_number || '',
   }, due);
 }
 
@@ -61,9 +65,11 @@ function reportRow(d) {
 function calendarRow(d) {
   const iso = typeof d.due === 'string' ? d.due : d.date;
   const source = d.source || (d.verified ? 'verified' : 'unverified');
+  // 地区文字照录服务端；来源是区县而文字里没写区县名时补上，不丢区县
+  const region = d.region || '';
   return row({
     key: d.id, docId: String(d.docId || d.id), hasDetail: d.hasDetail !== false, title: d.title,
-    meta: d.region || '', fileNumber: '', iso,
+    meta: d.district && !region.includes(d.district) ? [region, d.district].filter(Boolean).join(' · ') : region, fileNumber: '', iso,
   }, { kind: d.what, source, date: iso, time: d.time, quote: d.quote });
 }
 
@@ -102,7 +108,7 @@ Page({
     tabs: TABS,
     tab: 7,
     verifiedOnly: false,
-    province: '', city: '', cityRegion: [], cityError: '',
+    province: '', city: '', district: '', areaText: '', cityRegion: [], cityError: '',
     dept: '',
     provinces: ['不限省份', '国家部委'].concat(PROVINCES),
     depts: DEPTS,
@@ -160,8 +166,8 @@ Page({
     this.requestSeq = requestSeq;
     this.calSeq = (this.calSeq || 0) + 1; // 丢掉还没回来的按月看请求
     this.loadedDay = todayISO();
-    const { tab, province, city, dept, verifiedOnly } = this.data;
-    const unfiltered = tab === 30 && !province && !city && !dept;
+    const { tab, province, city, district, dept, verifiedOnly } = this.data;
+    const unfiltered = tab === 30 && !province && !city && !district && !dept;
     if (!this.optionsLoading && !this.filterOptionsLoaded && !unfiltered) this.loadOptions();
     const cacheable = reset && isDefaultView(this.data);
     const cached = cacheable && !this.data.rows.length ? readCache(DEADLINE_CACHE) : null;
@@ -187,7 +193,8 @@ Page({
         save(snap.deadlines);
       });
     }
-    api.deadlineReport({ days: tab, province, city, dept, page, size: PAGE_SIZE }, { verifiedOnly })
+    const request = () => api.deadlineReport(Object.assign({ days: tab }, areaParams(this.data), { dept, page, size: PAGE_SIZE }), { verifiedOnly });
+    (district ? this.districtGate().then(request) : request())
       .then((res) => {
         if (requestSeq !== this.requestSeq) return;
         live = true;
@@ -238,14 +245,28 @@ Page({
     this.loadedDay = todayISO();
     if (this.cal) { this.setData({ loading: false, error: '' }); this.showMonth(); return; }
     this.setData({ loading: true, error: '', rows: [] });
-    api.calendar({ province: this.data.province, city: this.data.city }).then((res) => {
+    const request = () => api.calendar(areaParams(this.data));
+    (this.data.district ? this.districtGate().then(request) : request()).then((res) => {
       if (seq !== this.calSeq) return;
       this.cal = res;
       this.setData({ loading: false, truncated: !!res.truncated, verifyingNote: verifyingNote(res.verifiedTotal) });
       this.showMonth();
     }).catch((err) => {
       if (seq !== this.calSeq) return;
-      this.setData({ loading: false, error: `加载失败：${err.message}` });
+      this.setData({ loading: false, error: err.unqueried ? err.message : `加载失败：${err.message}` });
+    });
+  },
+
+  // 选了区县：先确认收录范围里有这个省、市、区县再查。旧服务会忽略区县参数，不能先查成全市或全省；
+  // 收录范围没取到也不查。只有选了区县才按需加载收录范围，平时截止页不多发请求
+  districtGate() {
+    const { province, city, district } = this.data;
+    const key = `${province}/${city}/${district}`;
+    const stop = (message) => { throw Object.assign(new Error(`${message}没有查询，不会改为全市或全省；未查询不代表没有相关通知。`), { unqueried: true }); };
+    return require('../../utils/coverage.js').loadCoverage().catch(() => null).then((c) => {
+      if (!uncoveredDistricts([key], c).length) return;
+      if (c && Array.isArray(c.districts)) stop(`${areaLabel(key)}暂未收录区县来源，`);
+      stop('区县收录范围没有取到，暂不能确认该区县是否已收录，');
     });
   },
 
@@ -294,18 +315,22 @@ Page({
     this.setData({ verifiedOnly: !!e.detail.value, sel: '' });
     if (this.data.tab === MONTH) { if (this.cal) this.showMonth(); else this.loadMonth(); } else this.load(true);
   },
+  // 换省份清掉城市和区县；省市区选择器重新打开时停在这个省
   pickProvince(e) {
     const index = Number(e.detail.value);
-    this.setData({ province: index === 0 ? '' : this.data.provinces[index], city: '', cityError: '' }); this.reloadArea();
+    const province = index === 0 ? '' : this.data.provinces[index];
+    this.setData({ province, city: '', district: '', areaText: '', cityRegion: regionValue(province), cityError: '' }); this.reloadArea();
   },
+  // 单选：省份一栏选“全部”是不限省份，城市一栏“全部”是全省，区县一栏“全部”是全市
   chooseCity(e) {
     try {
       const selected = regionSelection(e.detail.value);
-      this.setData({ province: selected.province, city: selected.city, cityRegion: e.detail.value, cityError: selected.note });
+      const area = { province: selected.province, city: selected.city, district: selected.district };
+      this.setData({ ...area, areaText: areaText(area), cityRegion: e.detail.value, cityError: selected.note });
       this.reloadArea();
     } catch (err) { this.setData({ cityError: err.message }); }
   },
-  clearCity() { this.setData({ city: '', cityError: '' }); this.reloadArea(); },
+  clearCity() { this.setData({ city: '', district: '', areaText: '', cityRegion: regionValue(this.data.province), cityError: '' }); this.reloadArea(); },
   reloadArea() { this.cal = null; this.setData({ sel: '', rows: [], past: [], soon: NO_SOON }); if (this.data.tab === MONTH) this.loadMonth(); else this.load(true); },
   pickDept(e) {
     const index = Number(e.detail.value);
@@ -344,9 +369,10 @@ Page({
   // 国家部委在搜索里是"层级"（UI 第二轮起不在地区里），服务端两处是同一个条件，结果相同
   goSearch() {
     const params = [`kind=${encodeURIComponent('申报通知')}`];
-    const { province } = this.data;
+    const { province, city, district } = this.data;
     if (province === '国家部委') params.push(`levels=${encodeURIComponent(province)}`);
-    else if (this.data.city) params.push(`cities=${encodeURIComponent(`${province}/${this.data.city}`)}`);
+    else if (district) params.push(`districts=${encodeURIComponent(`${province}/${city}/${district}`)}`);
+    else if (city) params.push(`cities=${encodeURIComponent(`${province}/${city}`)}`);
     else if (province) params.push(`regions=${encodeURIComponent(province)}`);
     if (this.data.dept) params.push(`depts=${encodeURIComponent(this.data.dept)}`);
     wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });

@@ -1,3 +1,5 @@
+const { areaLabel } = require('./regions.js');
+
 const KIND_LABEL = { all: '全部类型', 申报通知: '申报通知', 名单: '名单与公示', 政策: '政策' };
 
 // 与申报无关的新闻、会议培训、招聘、行政许可、统计数据、办事指南等（服务端的文件类型）
@@ -33,12 +35,13 @@ function split(value) {
 //     （(国家部委 ∪ 省份) ∩ (国家部委 ∪ 省级) = 国家部委 ∪ 省份的省级），否则不传 levels
 //     （= 国家部委 ∪ 省份的全部文件，包括已收录的市级）；
 //   其余照原样：regions=省份或不限地区，levels=所选层级。
+// 城市、区县（cities、districts 另传）和省份同样算"选了地区"。
 const NATIONAL = '国家部委';
 
-function requestScope(region, level, cities = []) {
+function requestScope(region, level, cities = [], districts = []) {
   const provinces = (region || []).filter((r) => r !== '不限地区' && r !== NATIONAL);
   const levels = level || [];
-  if ((provinces.length || cities.length) && levels.includes(NATIONAL)) {
+  if ((provinces.length || cities.length || districts.length) && levels.includes(NATIONAL)) {
     return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.some((l) => l !== NATIONAL) ? levels.join(',') : undefined };
   }
   return { regions: (region || []).join(','), levels: levels.length ? levels.join(',') : undefined };
@@ -85,13 +88,12 @@ function foldNote(folded, shown) {
   return { text: '', link: '' };
 }
 
-// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"
+// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"；城市、区县写成"山东·青岛""山东·青岛·市南区"
 function describe(c) {
   const parts = [];
   if (c.q) parts.push(`"${c.q}"`);
   const regions = split(c.regions).filter((r) => r !== '不限地区');
-  const cities = split(c.cities).map((v) => v.replace('/', '·'));
-  const areas = regions.concat(cities);
+  const areas = regions.concat(split(c.cities).map(areaLabel), split(c.districts).map(areaLabel));
   parts.push(areas.length ? areas.join('、') : '不限地区');
   const levels = split(c.levels);
   if (levels.length) parts.push(levels.join('、'));

@@ -18,11 +18,14 @@
     <view class="clause-label">注册地省份</view>
     <picker mode="selector" range="{{provinces}}" value="{{provinceIndex}}" bindchange="region"><view class="clause-control">{{form.region || '暂不填写'}}</view></picker>
     <view wx:if="{{errors.region}}" class="advisor-error">{{errors.region}}</view>
-    <view class="clause-label">注册地城市（可不填）</view>
-    <picker mode="region" level="city" value="{{cityRegion}}" bindchange="chooseCity"><view class="clause-control">{{form.city || '选择省份与城市'}}</view></picker>
+    <view class="clause-label">注册地城市、区县（可不填）</view>
+    <!-- 省市区三级，每列顶部“全部”：城市一栏选它只填省份，区县一栏选它填到城市 -->
+    <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="clause-control">{{form.city || form.district ? form.city + (form.district ? ' · ' + form.district : '') : '选择省份、城市或区县'}}</view></picker>
+    <button wx:if="{{form.district}}" class="interpret-link" data-field="district" bindtap="clear">清空区县</button>
     <button wx:if="{{form.city}}" class="interpret-link" data-field="city" bindtap="clear">清空城市</button>
     <view wx:if="{{errors.city}}" class="advisor-error">{{errors.city}}</view>
-    <view class="advisor-text muted">城市仅作为企业自述并排显示，不表示该市的数据已收录，不核实属地要求。直辖市按省级填写。</view>
+    <view wx:if="{{errors.district}}" class="advisor-error">{{errors.district}}</view>
+    <view class="advisor-text muted">城市、区县仅作为企业自述并排显示，不表示当地的数据已收录，不核实属地要求。直辖市未选区县时按省级填写。</view>
     <view class="clause-label">营业收入（万元）</view>
     <input class="clause-control" type="digit" value="{{form.revenueAmount}}" data-field="revenueAmount" bindinput="input" placeholder="金额，可不填" />
     <view wx:if="{{errors.revenueAmount}}" class="advisor-error">{{errors.revenueAmount}}</view>
@@ -87,7 +90,10 @@
       <view wx:for="{{section.items}}" wx:key="key" class="card advisor-card clause-row">
         <view class="advisor-title">通知要求</view>
         <view class="advisor-text">{{item.text}}</view>
-        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key" class="interpret-meta">段落 {{ref.pid}}</view>
+        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key">
+          <view wx:if="{{ref.quote && ref.quote !== item.text}}" class="advisor-text">{{ref.quote}}</view>
+          <view class="interpret-meta">段落 {{ref.pid}}</view>
+        </view>
         <view class="clause-label">你填写的情况（AI 按条件内容匹配，请自己核对）</view>
         <view wx:for="{{item.company}}" wx:for-item="entry" wx:key="key" class="advisor-text">{{entry.label}}：{{entry.value}}</view>
         <view wx:if="{{item.companyHint}}" class="advisor-text muted">{{item.companyHint}}</view>

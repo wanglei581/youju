@@ -25,22 +25,29 @@ function csvRows(text, keepBlank = false) {
   return keepBlank ? rows : rows.filter((cells) => cells.some(Boolean));
 }
 
-// 城市规则与服务端 track.CustomerProfile 一致：只填一个、不超过 32 字、不含分隔符；直辖市填本市按省级；
-// 国家部委不带城市。关键词、支持方式仍可用分号填多项。空行参与编号，第 N 行与输入框所见一致。
+// 列顺序：客户名称,省份,关键词,支持方式,城市,区县（旧四列、五列位置不变）。城市、区县规则与服务端 track.CustomerProfile 一致：
+// 各只填一个、不超过 32 字、不含 / \ , ， ; ； 、 | 和制表换行；国家部委不带城市和区县。直辖市城市填本市：没填区县按省级，
+// 填了区县时城市记本市简称（北京,北京,朝阳区）；区县必须同时填所属城市，区县名照录，不去掉"区""县"。
+// 关键词、支持方式仍可用分号填多项。空行参与编号，第 N 行与输入框所见一致；报错只写第几行和原因，不回显客户内容。
+// 没填区县的行不带 district，提交内容（和安全重试摘要）与加区县之前完全相同。
 function pasteRows(kind, text) {
   if (kind === 'compare') return text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const result = [];
   csvRows(text, true).forEach((row, index) => {
     if (!row.some(Boolean)) return;
     const line = `第 ${index + 1} 行`;
-    if (row.length > 5) throw new Error(`${line}最多五列：客户名称,省份,关键词,支持方式,城市；城市只填一个`);
+    if (row.length > 6) throw new Error(`${line}最多六列：客户名称,省份,关键词,支持方式,城市,区县；城市、区县各只填一个`);
     if (!row[0] || !row[1]) throw new Error(`${line}请填写客户名称和省份`);
     const province = regions.provinceName(row[1]) || row[1];
+    const district = row[5] || '';
     let city = regions.cityName(row[4] || '');
-    if (['北京', '天津', '上海', '重庆'].includes(province) && city === province) city = '';
-    if (city && ['国家', '国家部委'].includes(province)) throw new Error(`${line}省份为国家部委时城市请留空`);
-    if (city.length > 32 || /[\/,，;；\n\r]/.test(city)) throw new Error(`${line}城市只填一个，不超过 32 字，不用逗号、分号或斜杠`);
-    result.push({ name: row[0], province, keywords: row[2] || '', supports: row[3] || '', city });
+    if (regions.MUNICIPALITIES.includes(province) && city === province && !district) city = '';
+    if ((city || district) && ['国家', '国家部委'].includes(province)) throw new Error(`${line}省份为国家部委时城市请留空，区县也请留空`);
+    if (city.length > 32 || regions.SEPARATORS.test(city)) throw new Error(`${line}城市只填一个，不超过 32 字，不用逗号、分号、顿号、竖线或斜杠`);
+    if (district && !city) throw new Error(`${line}填写区县时请同时填写所属城市；直辖市的城市填本市，如北京`);
+    if (district && regions.MUNICIPALITIES.includes(province) && city !== province) throw new Error(`${line}直辖市填写区县时，城市填本市，如${province}`);
+    if (district.length > 32 || regions.SEPARATORS.test(district)) throw new Error(`${line}区县只填一个，不超过 32 字，不用逗号、分号、顿号、竖线或斜杠`);
+    result.push(Object.assign({ name: row[0], province, keywords: row[2] || '', supports: row[3] || '', city }, district ? { district } : {}));
   });
   return result;
 }

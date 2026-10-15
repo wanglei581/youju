@@ -10,10 +10,11 @@ function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
 }
 
-function matchRegion(doc, regions, cities = []) {
+// 省份、城市、区县取并集（与服务端一致）；区县按"省/市/区县"完整匹配
+function matchRegion(doc, regions, cities = [], districts = []) {
   const picked = regions.filter((r) => r !== '不限地区');
-  if (!picked.length && !cities.length) return true;
-  return cities.includes(`${doc.province}/${doc.city}`)
+  if (!picked.length && !cities.length && !districts.length) return true;
+  return cities.includes(`${doc.province}/${doc.city}`) || (!!doc.district && districts.includes(`${doc.province}/${doc.city}/${doc.district}`))
     || picked.some((r) => (r === '国家部委' ? doc.region.startsWith('国家') : (doc.province ? doc.province === r : doc.region.startsWith(r))));
 }
 
@@ -59,12 +60,13 @@ function matchTags(doc, picked, field, kinds) {
   return (doc[field] || []).some((t) => picked.includes(t));
 }
 
-// params 与接口相同：q, kind, regions, levels, types, categories, supports, industries, status, time, depts, fold, limit, offset
+// params 与接口相同：q, kind, regions, cities, districts, levels, types, categories, supports, industries, status, time, depts, fold, limit, offset
 function mockSearch(all, params) {
   const kw = (params.q || '').trim();
   const kind = params.kind || 'all';
   const regions = split(params.regions);
   const cities = split(params.cities);
+  const districts = split(params.districts);
   const levels = split(params.levels);
   const types = split(params.types);
   const status = split(params.status);
@@ -74,7 +76,7 @@ function mockSearch(all, params) {
   const industries = split(params.industries);
   const matched = all.filter((d) => (!kw || d.title.includes(kw))
     && (kind === 'all' || d.kind === kind)
-    && matchRegion(d, regions, cities) && matchLevel(d, levels) && matchType(d, types) && matchCategory(d, categories)
+    && matchRegion(d, regions, cities, districts) && matchLevel(d, levels) && matchType(d, types) && matchCategory(d, categories)
     && matchTags(d, supports, 'supports', ['申报通知', '名单']) && matchTags(d, industries, 'industries')
     && (!status.length || status.includes(d.status))
     && (!params.open || matchOpen(d))

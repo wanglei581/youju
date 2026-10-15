@@ -20,7 +20,7 @@
       <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>
       <text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}</text>
       <text wx:if="{{doc.status}}" class="tag">名单状态：{{doc.status}}</text>
-      <text class="region">{{doc.region}}</text>
+      <text class="region">{{regionText || doc.region}}</text>
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>

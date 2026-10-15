@@ -2,7 +2,7 @@
   <view class="head" bindtap="open">
     <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
     <text wx:if="{{statusText}}" class="status status--{{statusCls}}">{{statusText}}</text>
-    <text class="region">{{label || doc.region}}</text>
+    <text class="region">{{label || regionText || doc.region}}</text>
     <text wx:if="{{due}}" class="due {{due.tone ? 'due--' + due.tone : ''}}">{{due.text}}</text>
     <text wx:elif="{{dueNote}}" class="due">{{dueNote}}</text>
   </view>

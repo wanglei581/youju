@@ -41,7 +41,10 @@
       <view wx:if="{{section.missing}}" class="advisor-text muted">没有摘录到相关原句（原文可能没写，也可能漏摘），请查看原文</view>
       <view wx:for="{{section.items}}" wx:key="key" class="interpret-item">
         <view>{{item.text}}</view>
-        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key" class="interpret-meta">段落 {{ref.pid}}</view>
+        <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key">
+          <view wx:if="{{ref.quote && ref.quote !== item.text}}" class="advisor-text">{{ref.quote}}</view>
+          <view class="interpret-meta">段落 {{ref.pid}}</view>
+        </view>
         <view class="interpret-ops">
           <button class="interpret-link" bindtap="original" disabled="{{!docId}}">看原文</button>
           <button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">纠错</button>

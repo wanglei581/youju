@@ -1,5 +1,5 @@
 <notice-bar />
-<view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区和产业方向。</view>
+<view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
 <view wx:if="{{!editing}}" class="card"><view class="message">需要批量处理或生成 Excel？工具中心支持名单比对和客户相关通知表。须另行确认上传，不会自动发送这里的客户卡片。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
@@ -62,15 +62,17 @@
   <view class="label">名称（可不填）</view>
   <input class="field" value="{{form.name}}" placeholder="{{placeholder}}" maxlength="40" bindinput="nameInput" aria-label="客户名称" />
   <view class="label">地区（可多选）</view>
-  <view class="weak help">不选为不限地区；选省包含该省已收录城市；选择具体城市会替换同省的全省条件。检索始终包含国家部委。</view>
+  <view class="weak help">不选为不限地区；选省包含该省已收录城市、区县；选择具体城市会替换同省的全省条件，选择具体区县会替换所属城市和全省的条件。检索始终包含国家部委。</view>
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
-  <view class="label">城市（省市联动，可多选）</view>
-  <picker mode="region" level="city" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省份与城市</view></picker>
-  <view class="weak help">城市清单由微信提供，选项不代表数据已覆盖。直辖市按省级范围查询；选择器无法使用时请升级微信。</view>
+  <view class="label">城市与区县（省市区联动，可多选）</view>
+  <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
+  <view class="weak help">省市区清单由微信提供，选项不代表数据已覆盖。城市一栏选“全部”按全省，区县一栏选“全部”仅查询已收录市级来源；区县来源请单独选择；直辖市未选区县时按省级范围查询；选择器无法使用时请升级微信。</view>
   <view class="weak help">{{cityCoverageNote}}</view>
   <view wx:if="{{cityError}}" class="help">{{cityError}}</view>
   <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
   <view class="options"><view wx:for="{{form.cities}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeCity" aria-role="button" aria-label="移除城市{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
+  <view wx:if="{{districtLabels.length}}" class="weak help">已选区县，点此移除：</view>
+  <view class="options"><view wx:for="{{districtLabels}}" wx:key="key" class="option option--on" data-value="{{item.key}}" bindtap="removeDistrict" aria-role="button" aria-label="移除区县{{item.label}}">{{item.label}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
   <view class="label">产业方向（可多选）</view>
   <view class="weak help">按标题归类，仅供检索参考，非官方分类</view>

@@ -9,15 +9,15 @@
     <view wx:if="{{!passActive && !remaining}}" class="advisor-error">本月免费次数已用完，下月可继续使用。不需要购买。若上次提交状态未确认，可预览同一内容后重试。</view>
     <view class="advisor-actions"><button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{previewing || submitting}}">粘贴文本</button><button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{previewing || submitting}}">选择文件</button></view>
     <block wx:if="{{mode === 'paste'}}">
-      <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或统一社会信用代码' : '一行一家：客户名称,省份,关键词,支持方式,城市；后三项可留空；关键词、支持方式多项用分号分隔，城市只填一个；旧四列格式仍有效'}}</view>
-      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛'}}" bindinput="input" disabled="{{previewing || submitting}}" />
+      <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或统一社会信用代码' : '一行一家：客户名称,省份,关键词,支持方式,城市,区县；后四项可留空；关键词、支持方式多项用分号分隔，城市只填一个，区县也只填一个，写在第 6 列；旧四列、五列格式仍有效'}}</view>
+      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛,市南区'}}" bindinput="input" disabled="{{previewing || submitting}}" />
     </block>
     <block wx:else>
-      <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市。'}}</view>
+      <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}</view>
       <button class="advisor-button" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>
       <view class="advisor-text muted">{{fileName || '还没有选择文件'}}</view>
     </block>
-    <view wx:if="{{kind === 'track'}}" class="advisor-text muted">省市支持全称或简称（如山东省、青岛市）；城市须已收录，不填按全省，直辖市按省级，国家部委不填城市；填写后包含国家部委、本省省级和该市通知。城市未收录或省市不匹配会在结果中注明未查询，不代表没有相关通知。</view>
+    <view wx:if="{{kind === 'track'}}" class="advisor-text muted">省市支持全称或简称（如山东省、青岛市），区县写完整名称（如市南区）；城市、区县须已收录，不填城市按全省、不填区县按全市；直辖市不填区县时按省级，填区县时城市写本市（如北京,北京,朝阳区）；国家部委不填城市和区县。填写城市后包含国家部委、本省省级和该市通知，填写区县后的范围见结果中的查询说明。城市、区县未收录或省市区不匹配会在结果中注明未查询，不改为全市或全省，不代表没有相关通知。</view>
     <view class="advisor-text">输入 {{rowCount}} 行{{previewed ? '，服务器预览通过' : ''}}</view>
     <view class="advisor-text muted">预览会将内容发到服务器，但不创建任务、不占次数。请先确认有权提交；不要填写个人姓名、身份证号、手机号或银行账号。</view>
     <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>

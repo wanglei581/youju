@@ -1,4 +1,4 @@
-const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText } = require('../../utils/format.js');
 const { copyLink } = require('../../utils/copy.js');
 const { groupLine } = require('../../utils/repost.js');
 
@@ -16,7 +16,7 @@ Component({
     selecting: { type: Boolean, value: false },
   },
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
-    groupText: '', groupOpen: false },
+    groupText: '', groupOpen: false, regionText: '' },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
@@ -44,6 +44,8 @@ Component({
         statusCls,
         statusText,
         issuerLong: (doc.issuer || '').length > ISSUER_WRAP,
+        // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
+        regionText: regionText(doc),
         // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
         groupText: groupLine(doc.group),
       });

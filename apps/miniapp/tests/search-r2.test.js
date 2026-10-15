@@ -43,8 +43,9 @@ const chipLabels = (page) => plain(page.data.activeChips.map((c) => c.label));
 test('两栏筛选：左栏按约定顺序列出 11 组，组名旁边是已选个数；默认的不限地区、近 30 天不算', async () => {
   const { page } = searchPage();
   page.onLoad({}); await flush();
+  // 区县并在城市这一组里（同一个省市区选择器），不另加入口
   assert.deepEqual(page.data.groups.map((g) => g.title),
-    ['地区', '城市', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
+    ['地区', '城市区县', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
   assert.ok(Object.values(page.data.counts).every((n) => n === 0));
   page.pickOption(event({ group: 'region', option: '江苏' })); await flush();
   page.pickOption(event({ group: 'region', option: '山东' })); await flush();
@@ -414,7 +415,8 @@ test('城市清单用原生完整省市选择器，零覆盖可选择但明确�
   page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
   assert.equal(page.conditions().cities, '山东/青岛'); assert.equal(calls.length, before);
   assert.match(page.data.error, /暂未收录市级来源/); assert.equal(page.data.items.length, 0);
-  assert.match(read('pages/search/index.wxml'), /picker mode="region" level="city"/);
+  assert.match(read('pages/search/index.wxml'), /picker mode="region" custom-item="全部"/);
+  assert.doesNotMatch(read('pages/search/index.wxml'), /level="city"/);
   page.chooseCity({ detail: { value: ['北京市', '北京市'] } }); await flush();
   assert.match(page.data.cityError, /直辖市/);
   assert.equal(page.conditions().regions, '北京');

@@ -1,5 +1,6 @@
 const interpret = require('./ai-interpret.js');
 const PROVINCES = require('./provinces.js');
+const { MUNICIPALITIES, SEPARATORS } = require('./regions.js');
 const { todayISO } = require('./format.js');
 
 const QUALIFICATIONS = ['高新技术企业', '科技型中小企业', '专精特新中小企业', '专精特新“小巨人”企业', '创新型中小企业'];
@@ -8,8 +9,10 @@ const EMPTY_COMPANY = '请自行对照原文';
 const text = (value) => value == null ? '' : String(value).trim();
 
 function emptyForm() {
-  return { established: '', region: '', city: '', revenueAmount: '', revenueYear: '', rdAmount: '', rdYear: '', employees: '', qualification: [] };
+  return { established: '', region: '', city: '', district: '', revenueAmount: '', revenueYear: '', rdAmount: '', rdYear: '', employees: '', qualification: [] };
 }
+// 城市、区县各是一个名称，不超过 32 字，不含分隔符（与搜索、批量表格同一规则）
+const singleName = (value) => value.length <= 32 && !SEPARATORS.test(value);
 function validDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
@@ -23,7 +26,11 @@ function validateForm(form = {}, today = todayISO()) {
   const established = text(form.established);
   if (established && (!validDate(established) || established > today)) errors.established = '成立日期须为有效日期，不能晚于今天';
   if (text(form.region) && !PROVINCES.includes(form.region)) errors.region = '请从省份清单选择注册地';
-  if (text(form.city) && (!text(form.region) || text(form.city).length > 32 || /[/,，;；\n\r]/.test(text(form.city)))) errors.city = '填写城市时请先选择省份，城市须为单个城市名称';
+  if (text(form.city) && (!text(form.region) || !singleName(text(form.city)))) errors.city = '填写城市时请先选择省份，城市须为单个城市名称';
+  // 注册区县要有所属省份和城市；直辖市的城市写本市简称（北京 · 北京 · 朝阳区）
+  const district = text(form.district);
+  if (district && (!text(form.region) || !text(form.city) || !singleName(district)
+    || (MUNICIPALITIES.includes(text(form.region)) && text(form.city) !== text(form.region)))) errors.district = '填写区县时请先选择省份和城市，区县须为单个区县名称';
   for (const field of ['revenue', 'rd']) {
     const amount = text(form[`${field}Amount`]); const stamp = text(form[`${field}Year`]);
     if (!amount && !stamp) continue;
@@ -47,8 +54,9 @@ function validateForm(form = {}, today = todayISO()) {
 function toCompany(form = {}, today = todayISO()) {
   const errors = validateForm(form, today);
   if (Object.keys(errors).length) throw Object.assign(new Error('请检查企业情况'), { errors });
+  // 只带填了的项：没填区县时不带 district，和加区县之前的 company 一样
   const company = {};
-  for (const field of ['established', 'region', 'city']) if (text(form[field])) company[field] = text(form[field]);
+  for (const field of ['established', 'region', 'city', 'district']) if (text(form[field])) company[field] = text(form[field]);
   for (const field of ['revenue', 'rd']) if (text(form[`${field}Amount`])) {
     company[field] = { amount: Number(form[`${field}Amount`]), year: Number(form[`${field}Year`]) };
   }

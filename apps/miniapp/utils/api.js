@@ -361,6 +361,7 @@ function deadlineReport(params, opts) {
   const scoped = all
     .filter((item) => !params.province || item.province === params.province)
     .filter((item) => !params.city || item.city === params.city)
+    .filter((item) => !params.district || item.district === params.district)
     .filter((item) => !params.dept || deptOf(item.dept) === params.dept);
   const filtered = scoped.filter((item) => item.remaining_days <= days);
   const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
@@ -449,7 +450,7 @@ function calendar(params = {}) {
     });
     return page(0, [], []);
   }
-  return copy({ items: mock.calendar.filter((d) => (!params.province || d.province === params.province) && (!params.city || d.city === params.city)).map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
+  return copy({ items: mock.calendar.filter((d) => (!params.province || d.province === params.province) && (!params.city || d.city === params.city) && (!params.district || d.district === params.district)).map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
 }
 
 function lists() {

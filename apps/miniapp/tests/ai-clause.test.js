@@ -290,5 +290,7 @@ test('注册地城市可选，不影响旧省份输入，企业自述和已核�
   assert.ok(clause.validateForm({ city: '青岛' }, today).city);
   const view = clause.resultView({ rows: [], verified: [{ kind: '企业申报截止', value: '2026-10-20', time: '17:00' }, { kind: '推荐或审核截止', value: '2026-10-21' }] });
   assert.equal(view.verified[0].displayValue, '企业申报截止 2026-10-20 17:00'); assert.equal(view.verified[1].displayValue, '推荐或审核截止 2026-10-21');
-  assert.match(read('pages/advisor-clause/index.wxml'), /picker mode="region" level="city"/);
+  // 省市区三级（默认 level），每列顶部“全部”：可只填省份或城市
+  assert.match(read('pages/advisor-clause/index.wxml'), /picker mode="region" custom-item="全部"/);
+  assert.doesNotMatch(read('pages/advisor-clause/index.wxml'), /level="city"/);
 });

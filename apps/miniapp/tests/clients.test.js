@@ -203,5 +203,6 @@ test('本机城市保存不受覆盖清单缺失影响，城市替换同省全�
   assert.deepEqual(plain(page.data.form.regions), ['江苏']); assert.deepEqual(plain(page.data.form.cities), ['山东/青岛']);
   assert.match(page.data.cityError, /暂未收录/); page.save(); await settle();
   assert.deepEqual(plain(clientUtils(local.wx).loadClients()[0].cities), ['山东/青岛']);
-  assert.match(read('pages/clients/index.wxml'), /picker mode="region" level="city"/);
+  assert.match(read('pages/clients/index.wxml'), /picker mode="region" custom-item="全部"/);
+  assert.doesNotMatch(read('pages/clients/index.wxml'), /level="city"/);
 });

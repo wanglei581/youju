@@ -1,6 +1,6 @@
 // 条款对照。直达也要 capabilities 开放且含 clause 才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
-const { regionSelection } = require('../../utils/regions.js');
+const { regionSelection, regionValue } = require('../../utils/regions.js');
 const clause = require('../../utils/ai-clause.js');
 const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
@@ -49,17 +49,23 @@ Page({
   input(e) {
     const field = e.currentTarget.dataset.field;
     if (!Object.prototype.hasOwnProperty.call(this.data.form, field) || field === 'qualification') return;
-    this.setData({ form: { ...this.data.form, [field]: e.detail.value }, errors: {} });
+    const form = { ...this.data.form, [field]: e.detail.value };
+    // 清空城市时区县一起清掉：区县离不开所属城市
+    if (field === 'city' && !e.detail.value) form.district = '';
+    this.setData({ form, errors: {} });
   },
+  // 换省份清掉城市和区县；省市区选择器重新打开时停在这个省
   region(e) {
     const provinceIndex = Number(e.detail.value);
-    this.setData({ provinceIndex, form: { ...this.data.form, region: clause.PROVINCES[provinceIndex - 1] || '', city: '' }, errors: {} });
+    const region = clause.PROVINCES[provinceIndex - 1] || '';
+    this.setData({ provinceIndex, cityRegion: regionValue(region), form: { ...this.data.form, region, city: '', district: '' }, errors: {} });
   },
+  // 省份一栏选“全部”是暂不填写，城市一栏“全部”只填省份，区县一栏“全部”填到城市；直辖市未选区县只填省份
   chooseCity(e) {
     try {
       const selected = regionSelection(e.detail.value);
       this.setData({ cityRegion: e.detail.value, provinceIndex: clause.PROVINCES.indexOf(selected.province) + 1,
-        form: { ...this.data.form, region: selected.province, city: selected.city }, errors: {} });
+        form: { ...this.data.form, region: selected.province, city: selected.city, district: selected.district }, errors: {} });
     } catch (err) { this.setData({ errors: { city: err.message } }); }
   },
   clear(e) { this.input({ currentTarget: e.currentTarget, detail: { value: '' } }); },
