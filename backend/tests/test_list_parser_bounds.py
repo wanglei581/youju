@@ -23,12 +23,19 @@ def test_sparse_xlsx_rejected_before_expanding_rows(monkeypatch):
     payload = _xlsx(workbook)
     assert len(payload) < 6_000
 
-    def unexpected_rows(*args, **kwargs):
-        pytest.fail("稀疏声明范围必须在展开空行之前拒绝")
+    materialized_widths = []
+    original_get_row = ReadOnlyWorksheet._get_row
 
-    monkeypatch.setattr(ReadOnlyWorksheet, "iter_rows", unexpected_rows)
+    def record_row(self, *args, **kwargs):
+        row = original_get_row(self, *args, **kwargs)
+        materialized_widths.append(len(row))
+        return row
+
+    monkeypatch.setattr(ReadOnlyWorksheet, "_get_row", record_row)
     with pytest.raises(ValueError, match="暂不支持.*安全解析预算"):
         parser.parse_attachment_result(payload, "xlsx")
+    # 缺失的 99997 行为空；只把真实末行展开一次，不能把每一行都补到16384列。
+    assert materialized_widths == [1, 1, 16_384]
 
 
 @pytest.mark.parametrize(
@@ -136,12 +143,14 @@ def test_oversize_source_is_recorded_without_aborting_batch(monkeypatch):
     assert recorded[0][-1].startswith("暂不支持超过安全解析预算")
 
 
-def test_dimensionless_xlsx_is_rejected_before_unbounded_row_allocation(monkeypatch):
+@pytest.mark.parametrize("dimension", [None, "A1", "A1:XFD1048576"])
+def test_xlsx_optional_or_wrong_dimension_does_not_drop_real_rows(dimension):
     import re
     import zipfile
 
     workbook = Workbook()
     workbook.active.append(["企业名称"])
+    workbook.active.append(["示例科技有限公司"])
     output = BytesIO()
     with (
         zipfile.ZipFile(BytesIO(_xlsx(workbook))) as source,
@@ -150,10 +159,95 @@ def test_dimensionless_xlsx_is_rejected_before_unbounded_row_allocation(monkeypa
         for name in source.namelist():
             data = source.read(name)
             if name == "xl/worksheets/sheet1.xml":
-                data = re.sub(rb"<dimension[^>]*/>", b"", data)
+                replacement = (
+                    b"" if dimension is None else f'<dimension ref="{dimension}"/>'.encode()
+                )
+                data = re.sub(rb"<dimension[^>]*/>", replacement, data)
             target.writestr(name, data)
-    monkeypatch.setattr(
-        ReadOnlyWorksheet, "iter_rows", lambda *args, **kwargs: pytest.fail("必须先拒绝")
-    )
-    with pytest.raises(ValueError, match="暂不支持未声明行列范围"):
-        parser.parse_attachment_result(output.getvalue(), "xlsx")
+    assert [entry.name for entry in parser.parse_attachment(output.getvalue(), "xlsx")] == [
+        "示例科技有限公司"
+    ]
+
+
+def test_write_only_xlsx_without_dimension_is_supported():
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet()
+    sheet.append(["企业名称"])
+    sheet.append(["示例科技有限公司"])
+    assert [entry.name for entry in parser.parse_attachment(_xlsx(workbook), "xlsx")] == [
+        "示例科技有限公司"
+    ]
+
+
+def test_docx_large_grid_span_rejected_before_cell_expansion(monkeypatch):
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.table import _Row
+
+    document = Document()
+    table = document.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.text = "企业名称"
+    span = OxmlElement("w:gridSpan")
+    span.set(qn("w:val"), "1000000000")
+    cell._tc.get_or_add_tcPr().append(span)
+    output = BytesIO()
+    document.save(output)
+    assert len(output.getvalue()) < 40_000
+    monkeypatch.setattr(_Row, "cells", property(lambda _: pytest.fail("不能先展开合并格")))
+    with pytest.raises(ValueError, match="暂不支持.*合并列过多"):
+        parser.parse_attachment(output.getvalue(), "docx")
+
+
+def test_docx_normal_horizontal_and_vertical_merge_is_supported():
+    from docx import Document
+
+    document = Document()
+    table = document.add_table(rows=3, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "企业名称"
+    table.cell(1, 0).merge(table.cell(1, 1)).text = "示例科技有限公司"
+    table.cell(1, 0).merge(table.cell(2, 1))
+    output = BytesIO()
+    document.save(output)
+    assert [entry.name for entry in parser.parse_attachment(output.getvalue(), "docx")] == [
+        "示例科技有限公司"
+    ]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_xls_loads_ragged_sheets_one_at_a_time_and_unloads_on_error(monkeypatch, fail):
+    events = []
+
+    class Sheet:
+        ncols = 1
+        nrows = 2
+
+        def row_values(self, index):
+            return ["企业名称"] if index == 0 else ["示例科技有限公司"]
+
+    class Book:
+        nsheets = 2
+
+        def sheet_by_index(self, index):
+            assert events == list(range(index))
+            return Sheet()
+
+        def unload_sheet(self, index):
+            events.append(index)
+
+        def release_resources(self):
+            events.append("released")
+
+    def open_workbook(**kwargs):
+        assert kwargs == {"file_contents": b"synthetic", "on_demand": True, "ragged_rows": True}
+        return Book()
+
+    monkeypatch.setattr(parser.xlrd, "open_workbook", open_workbook)
+    if fail:
+        monkeypatch.setattr(parser, "_MAX_CELLS", 1)
+        with pytest.raises(ValueError, match="安全解析预算"):
+            parser.parse_attachment(b"synthetic", "xls")
+    else:
+        assert len(parser.parse_attachment(b"synthetic", "xls")) == 1
+    assert events == ([0, "released"] if fail else [0, 1, "released"])
