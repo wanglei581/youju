@@ -46,12 +46,15 @@ function consentFor(final, api = {}) {
 }
 
 // 记下页面请求过哪些接口：协议未定稿时关注、纠错、我的数据等不应发任何请求
+// （watchStartup / stopStartup 只是订阅"正在连接"提示，不发请求，不记）
+const NOT_REQUESTS = ['watchStartup', 'stopStartup'];
 function apiSpy(extra = {}) {
   const calls = [];
   const spy = new Proxy(extra, {
     get(target, name) {
       if (name === 'calls') return calls;
       if (name === 'isLive') return target.isLive || (() => true);
+      if (NOT_REQUESTS.includes(name)) return () => {};
       if (Object.hasOwn(target, name)) return (...args) => { calls.push(name); return target[name](...args); };
       return () => { calls.push(name); return new Promise(() => {}); };
     },

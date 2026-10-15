@@ -284,16 +284,23 @@ function retryApi(plan) {
   const clock = fakeClock();
   const sent = [];
   const services = [];
+  // 每次调用：[发出时间, 方法, 路径, 服务]；"正在连接…"之类的加载提示
+  const calls = [];
+  const loading = [];
+  let hidden = 0;
   const api = load('utils/api.js', {
     './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
     '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
   }, {
     Date: clock.Date, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     wx: {
+      showLoading: ({ title }) => loading.push(title),
+      hideLoading: () => { hidden += 1; },
       cloud: {
         callContainer: (o) => {
           sent.push(clock.now);
           services.push(o.header['X-WX-SERVICE']);
+          calls.push([clock.now, o.method, o.path, o.header['X-WX-SERVICE']]);
           const step = plan.shift();
           if (!step) return;
           clock.setTimeout(() => (step.fail
@@ -304,7 +311,21 @@ function retryApi(plan) {
       removeStorageSync() {}, getStorageSync() { return ''; }, setStorageSync() {},
     },
   });
-  return { api, clock, sent, services };
+  return { api, clock, sent, services, calls, loading, hidden: () => hidden };
+}
+
+// 把假时钟往前走到 until（只触发到那时为止的定时器）
+async function advance(clock, until) {
+  for (let i = 0; i < 200; i += 1) {
+    await flush();
+    const due = [...clock.timers.entries()].filter(([, t]) => t.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+    if (!due) break;
+    clock.timers.delete(due[0]);
+    clock.now = Math.max(clock.now, due[1].at);
+    due[1].fn();
+  }
+  clock.now = Math.max(clock.now, until);
+  await flush();
 }
 
 async function outcome({ api, clock }, call) {
@@ -433,3 +454,162 @@ test('冷启动（10/14，Codex 审查）：admin 8 秒没回就同时问接口�
   assert.deepEqual(r.value, { ok: 1 }); assert.deepEqual(s.sent, [0, 8000]); assert.deepEqual(s.services, ['admin', 'api']);
 });
 
+
+// 写操作前先叫醒接口服务（10/15 打开登录后）：同意协议、关注、纠错、删除、导出都不自动重试，
+// 接口服务没醒时先用 GET /health 叫醒（按读数据的冷启动规则），答复了再发
+const health = (at) => [at, 'GET', '/health', 'api'];
+
+test('写操作（10/15）：接口服务没醒先叫醒再提交，等的时候显示"正在连接…"；20 分钟内答复过就直接提交', async () => {
+  const plan = [{ after: 0, code: 503 }, { after: 0, code: 503 }, { after: 100, code: 200 }, { after: 50, code: 201, data: { id: 1 } }];
+  const s = retryApi(plan);
+  let r = await outcome(s, (api) => api.agree('2026-10'));
+  assert.deepEqual(r.value, { id: 1 });
+  assert.deepEqual(s.calls, [health(0), health(1500), health(4500), [4600, 'POST', '/api/v1/me/agreement', 'api']]);
+  assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
+  // 10 分钟后再提交：上次答复还不到 20 分钟，直接发，不再叫醒、不显示提示
+  s.calls.length = 0; s.clock.now += 10 * 60 * 1000;
+  plan.push({ after: 50, code: 201, data: { id: 2 } });
+  r = await outcome(s, (api) => api.feedback(52118, '截止日期写错了'));
+  assert.deepEqual(r.value, { id: 2 });
+  assert.deepEqual(s.calls.map((c) => [c[1], c[2]]), [['POST', '/api/v1/feedback']]);
+  assert.equal(s.loading.length, 1);
+  // 又过了 21 分钟（接口服务多半已缩到 0）：先叫醒
+  s.calls.length = 0; s.clock.now += 21 * 60 * 1000;
+  plan.push({ after: 0, code: 200 }, { after: 0, code: 204 });
+  r = await outcome(s, (api) => api.deleteFollow(14));
+  assert.deepEqual(s.calls.map((c) => [c[1], c[2]]), [['GET', '/health'], ['DELETE', '/api/v1/me/follows/14']]);
+  assert.deepEqual(s.loading, ['正在连接…', '正在连接…']); assert.equal(s.hidden(), 2);
+});
+
+test('写操作（10/15）：90 秒叫不醒就不提交，请用户过一分钟再试；/health 答复了别的也算醒了', async () => {
+  let s = retryApi(Array.from({ length: 20 }, () => ({ after: 0, code: 503 })));
+  let r = await outcome(s, (api) => api.createFollow('专精特新', { kind: '申报通知' }));
+  assert.equal(r.error.message, '服务正在启动，请过一分钟再试');
+  assert.ok(s.calls.every((c) => c[2] === '/health'));
+  assert.deepEqual(s.calls.map((c) => c[0]), [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500, 67500, 77500, 87500]);
+  assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
+  // /health 回 500（如数据库一时连不上）：接口服务本身醒着，照常提交，由提交的结果说话
+  s = retryApi([{ after: 0, code: 500 }, { after: 0, code: 201, data: { id: 3 } }]);
+  r = await outcome(s, (api) => api.agree('2026-10'));
+  assert.deepEqual(r.value, { id: 3 });
+  assert.deepEqual(s.calls.map((c) => c[2]), ['/health', '/api/v1/me/agreement']);
+  // 提交本身失败照旧不重试
+  s = retryApi([{ after: 0, code: 200 }, { after: 0, code: 503 }, { after: 0, code: 201 }]);
+  r = await outcome(s, (api) => api.agree('2026-10'));
+  assert.equal(r.error.status, 503);
+  assert.deepEqual(s.calls.map((c) => c[2]), ['/health', '/api/v1/me/agreement']);
+});
+
+test('预热（10/15）：打开时悄悄叫醒、不显示提示；用户提交时赶上预热就跟着等，并从这时起再给足 90 秒', async () => {
+  const plan = Array.from({ length: 13 }, () => ({ after: 0, code: 503 }));
+  plan.push({ after: 0, code: 200 }, { after: 0, code: 201, data: { id: 4 } });
+  const s = retryApi(plan);
+  const seen = [];
+  s.api.watchStartup({ setData: (v) => seen.push(v.serviceStarting) });
+  s.api.prewarm();
+  await advance(s.clock, 80000);
+  assert.deepEqual(s.calls.map((c) => c[0]), [0, 1500, 4500, 9500, 17500, 27500, 37500, 47500, 57500, 67500, 77500]);
+  // 第 80 秒点"同意"：不另起一路，跟着预热等；预热原本第 90 秒就停，现在等到第 170 秒
+  const r = await outcome(s, (api) => api.agree('2026-10'));
+  assert.deepEqual(r.value, { id: 4 });
+  assert.deepEqual(s.calls.slice(11), [health(87500), health(97500), health(107500), [107500, 'POST', '/api/v1/me/agreement', 'api']]);
+  assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
+  // 预热不碰页面上的"正在连接"提示
+  assert.ok(seen.every((v) => v === false));
+  // 已经醒着：再预热不发请求
+  const before = s.calls.length;
+  s.api.prewarm();
+  await drive(s.clock);
+  assert.equal(s.calls.length, before);
+});
+
+test('预热和写操作（10/15）：admin 的答复不算接口服务醒了；接口服务答复过读请求就算', async () => {
+  const plan = [{ after: 0, code: 200 }, { after: 0, code: 200 }, { after: 0, code: 201 }];
+  let s = retryApi(plan);
+  await outcome(s, (api) => api.coverage());
+  await outcome(s, (api) => api.agree('2026-10'));
+  assert.deepEqual(s.calls.map((c) => [c[2], c[3]]), [['/api/v1/coverage', 'admin'], ['/health', 'api'], ['/api/v1/me/agreement', 'api']]);
+  s = retryApi([{ after: 0, code: 200, data: { agreed: null } }, { after: 0, code: 201 }]);
+  await outcome(s, (api) => api.me());
+  await outcome(s, (api) => api.agree('2026-10'));
+  assert.deepEqual(s.calls.map((c) => c[2]), ['/api/v1/me', '/api/v1/me/agreement']);
+  assert.deepEqual(s.loading, []);
+});
+
+test('导出（10/15）：先叫醒接口服务，等的时候仍是导出自己的"正在生成…"，不另外弹提示', async () => {
+  const s = retryApi([{ after: 0, code: 503 }, { after: 0, code: 200 }, { after: 0, code: 200, data: new ArrayBuffer(4) }]);
+  const r = await outcome(s, (api) => api.exportFile([7, 8], 'xlsx'));
+  assert.equal(r.value.byteLength, 4);
+  assert.deepEqual(s.calls.map((c) => [c[0], c[1], c[2]]), [[0, 'GET', '/health'], [1500, 'GET', '/health'], [1500, 'POST', '/api/v1/exports']]);
+  assert.deepEqual(s.loading, []); assert.equal(s.hidden(), 0);
+});
+
+test('小程序（10/15）：打开和回到前台时预热接口服务；有新版本时提示重启，选"稍后"不重启', () => {
+  let app; let warmed = 0; let ready = null; let applied = 0; let answer = true;
+  const modals = [];
+  vm.runInNewContext(read('app.js'), {
+    App(def) { app = def; },
+    require(name) {
+      if (name === './utils/config.js') return { cloudEnv: 'prod-test' };
+      if (name === './utils/nav.js') return { navMetrics: () => ({ navHeight: 40 }) };
+      if (name === './utils/api.js') return { prewarm: () => { warmed += 1; } };
+      throw new Error(`没有替身：${name}`);
+    },
+    wx: {
+      cloud: { init() {} },
+      getWindowInfo: () => ({}),
+      getMenuButtonBoundingClientRect: () => ({}),
+      getUpdateManager: () => ({ onUpdateReady: (fn) => { ready = fn; }, applyUpdate: () => { applied += 1; } }),
+      showModal: (o) => { modals.push(o); o.success({ confirm: answer }); },
+    },
+  });
+  app.onLaunch();
+  assert.equal(app.globalData.navHeight, 40);
+  app.onShow();
+  app.onShow();
+  assert.equal(warmed, 2);
+  assert.equal(typeof ready, 'function');
+  ready();
+  assert.equal(modals[0].confirmText, '重启'); assert.equal(modals[0].cancelText, '稍后');
+  assert.equal(applied, 1);
+  answer = false;
+  ready();
+  assert.equal(applied, 1);
+});
+
+test('登录后的四页（10/15）：接通"正在连接"提示和生命周期', () => {
+  for (const page of ['me', 'follow', 'my-data', 'follow-new']) {
+    const js = read(`pages/${page}/index.js`); const wxml = read(`pages/${page}/index.wxml`);
+    assert.match(js, /api\.watchStartup\(this\)/, page); assert.match(js, /api\.stopStartup\(this\)/, page);
+    assert.match(js, /onHide\(\)/, page); assert.match(js, /onUnload\(\)/, page);
+    assert.match(wxml, /正在连接，比平时慢一点，请稍等…/, page); assert.match(wxml, /serviceStarting/, page);
+  }
+});
+
+test('写操作（10/15，Codex 审查）：别的请求先拿到接口服务的答复，就不再等自己那次 /health；叫醒的也停下', async () => {
+  // 预热：第一次 503，第 1.5 秒那次一直不回；第 2 秒用户点同意，同时"我的"页查登录状态，第 3 秒拿到答复
+  const s = retryApi([{ after: 0, code: 503 }, null, { after: 1000, code: 200, data: { agreed: null } }, { after: 0, code: 201, data: { id: 5 } }]);
+  s.api.prewarm();
+  await advance(s.clock, 2000);
+  let agreed = null;
+  s.api.agree('2026-10').then((v) => { agreed = v; });
+  s.api.me();
+  await advance(s.clock, 3000);
+  assert.deepEqual(agreed, { id: 5 });
+  assert.deepEqual(s.calls, [health(0), health(1500), [2000, 'GET', '/api/v1/me', 'api'], [3000, 'POST', '/api/v1/me/agreement', 'api']]);
+  // 那次 /health 第 16.5 秒超时后不再重试
+  await drive(s.clock);
+  assert.equal(s.calls.length, 4);
+  assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
+});
+
+test('写操作（10/15，Codex 审查）：几个写操作同时等，只显示一个"正在连接…"，都等完才关', async () => {
+  const s = retryApi([{ after: 0, code: 503 }, { after: 0, code: 200 }, { after: 0, code: 201, data: { id: 1 } }, { after: 0, code: 201, data: { id: 2 } }]);
+  const results = [];
+  s.api.agree('2026-10').then((v) => results.push(v));
+  s.api.createFollow('专精特新', { kind: '申报通知' }).then((v) => results.push(v));
+  await drive(s.clock);
+  assert.deepEqual(results, [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(s.calls.map((c) => [c[0], c[1], c[2]]), [[0, 'GET', '/health'], [1500, 'GET', '/health'], [1500, 'POST', '/api/v1/me/agreement'], [1500, 'POST', '/api/v1/me/follows']]);
+  assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
+});

@@ -8,18 +8,21 @@ const { describe, searchUrl } = require('../../utils/conditions.js');
 // 三种状态：demo 没连接口时的演示数据；gated 未登录；live 真实的关注。
 // 协议定稿前（loginOpen 为 false，D-056）底栏没有这一页，从分享或旧链接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { mode: 'demo', weekStart: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', loginOpen: loginOpen(), remindOpen: remindOpen('newDocs') },
+  data: { mode: 'demo', weekStart: '', today: '', newTotal: 0, follows: [], changes: [], changesError: '', remindLeft: null, managing: false, loading: true, error: '', loginOpen: loginOpen(), remindOpen: remindOpen('newDocs') },
 
   onHide() {
     stopDay(this);
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   onUnload() {
     stopDay(this);
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   onShow() {
     this.retried = false;
+    if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });
