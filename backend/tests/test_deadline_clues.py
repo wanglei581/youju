@@ -558,7 +558,7 @@ def test_migration_user_candidate_down_up(world, session, db_engine):
         f"/api/admin/deadline-clues/{submitted['id']}/candidate", headers=ADMIN
     ).json()
     deadline_id = response["deadline_id"]
-    config = alembic_config(str(db_engine.url))
+    config = alembic_config(db_engine.url.render_as_string(hide_password=False))
     try:
         command.downgrade(config, "0026")
         assert "deadline_clues" not in inspect(db_engine).get_table_names()

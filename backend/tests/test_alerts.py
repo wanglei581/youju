@@ -403,3 +403,71 @@ def test_first_round_runs_every_step_through_job_sh(
     if expected[2:3] == ["fetch-details"]:
         # 补详情一次补完：--limit 2000（定时任务每轮只补 300）
         assert "--limit 2000" in calls[2]
+
+
+def test_alert_probe_missing_configuration_fails_without_sending(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(
+        alerts, "get_settings", lambda: SimpleNamespace(alert_webhook=None, role="admin")
+    )
+    monkeypatch.setattr(alerts, "send_alert", lambda _: pytest.fail("must not send"))
+    for args in ([], ["--send"]):
+        assert cli.main(["alert-probe", *args]) == 2
+        result = json.loads(capsys.readouterr().out)
+        assert result["state"] == "not_configured"
+        assert result["configured"] is False
+        assert result["received"] is False
+        assert result["ready_for_release"] is False
+        assert "probe_id" not in result
+
+
+def test_alert_probe_is_read_only_by_default(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(
+        alerts,
+        "get_settings",
+        lambda: SimpleNamespace(alert_webhook=SecretStr(WEBHOOK), role="api"),
+    )
+    monkeypatch.setattr(alerts, "send_alert", lambda _: pytest.fail("must not send"))
+    assert cli.main(["alert-probe"]) == 0
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["configured"] is True
+    assert result["state"] == "not_tested"
+    assert result["received"] is False
+    assert result["ready_for_release"] is False
+    assert "test-secret-key" not in output
+
+
+@pytest.mark.parametrize(
+    "sent,code,state", [(True, 0, "submitted"), (False, 1, "failed"), (None, 1, "failed")]
+)
+def test_alert_probe_correlates_submission_without_claiming_receipt(
+    monkeypatch, capsys, sent, code, state
+):
+    import json
+
+    monkeypatch.setattr(
+        alerts,
+        "get_settings",
+        lambda: SimpleNamespace(alert_webhook=SecretStr(WEBHOOK), role="admin"),
+    )
+    messages = []
+    monkeypatch.setattr(alerts, "send_alert", lambda message: messages.append(message) or sent)
+    assert cli.main(["alert-probe", "--send", "--probe-id", "acceptance-1015"]) == code
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == state
+    assert result["probe_id"] == "acceptance-1015"
+    assert result["received"] is False
+    assert result["ready_for_release"] is False
+    assert messages == ["告警验收测试，标记 acceptance-1015。这是受控测试，无需处理业务故障。"]
+
+
+def test_alert_probe_rejects_arbitrary_message_in_marker(monkeypatch, capsys):
+    monkeypatch.setattr(alerts, "send_alert", lambda _: pytest.fail("must not send"))
+    assert cli.main(["alert-probe", "--send", "--probe-id", "secret\nmessage"]) == 2
+    output = capsys.readouterr()
+    assert not output.out
+    assert "secret" not in output.err
