@@ -35,12 +35,21 @@ function write(fs, filePath, buffer) {
   });
 }
 
-// 文件名用完整的毫秒时间，不会和旧文件重名（重名会让旧记录打开新文件）
+// 同一毫秒的并行保存也必须使用不同路径，取消旧下载时不能误删新文件。
+let saveSequence = 0;
 function save(buffer, format) {
   const fs = wx.getFileSystemManager();
-  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now()}.${format}`;
+  const filePath = `${wx.env.USER_DATA_PATH}/有据导出_${todayISO()}_${Date.now()}_${++saveSequence}.${format}`;
   // 写入失败就提示，不动旧文件
   return write(fs, filePath, buffer).catch(() => { throw new Error('保存文件失败，请稍后再试'); });
+}
+
+// 仅删除本次保存返回的应用导出路径，不接受任意文件路径或目录穿越。
+function remove(filePath) {
+  const prefix = `${wx.env.USER_DATA_PATH}/有据导出_`;
+  if (typeof filePath !== 'string' || !filePath.startsWith(prefix) || !/^[^/\\]+\.(xlsx|docx)$/.test(filePath.slice(prefix.length))) return false;
+  try { wx.getFileSystemManager().unlinkSync(filePath); return true; }
+  catch (err) { return !exists(filePath); }
 }
 
 // 清空导出记录时，把本机的导出文件也删掉；返回没删掉的文件数
@@ -116,4 +125,4 @@ function exportDocs(ids, options) {
   });
 }
 
-module.exports = { exportDocs, MAX, open, exists, removeFiles };
+module.exports = { exportDocs, MAX, open, exists, removeFiles, save, clearOld, remove };

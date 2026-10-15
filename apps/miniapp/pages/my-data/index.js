@@ -88,6 +88,8 @@ Page({
     wx.setClipboardData({ data: openid, success: () => wx.showToast({ title: '已复制完整标识', icon: 'none' }) });
   },
 
+  tasks() { wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
+
   copyAll() {
     if (!this.raw) return;
     wx.setClipboardData({

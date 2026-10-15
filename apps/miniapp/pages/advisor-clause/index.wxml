@@ -15,9 +15,14 @@
     <picker mode="date" end="{{today}}" value="{{form.established}}" data-field="established" bindchange="input"><view class="clause-control">{{form.established || '暂不填写'}}</view></picker>
     <button wx:if="{{form.established}}" class="interpret-link" data-field="established" bindtap="clear">清空日期</button>
     <view wx:if="{{errors.established}}" class="advisor-error">{{errors.established}}</view>
-    <view class="clause-label">注册地</view>
+    <view class="clause-label">注册地省份</view>
     <picker mode="selector" range="{{provinces}}" value="{{provinceIndex}}" bindchange="region"><view class="clause-control">{{form.region || '暂不填写'}}</view></picker>
     <view wx:if="{{errors.region}}" class="advisor-error">{{errors.region}}</view>
+    <view class="clause-label">注册地城市（可不填）</view>
+    <picker mode="region" level="city" value="{{cityRegion}}" bindchange="chooseCity"><view class="clause-control">{{form.city || '选择省份与城市'}}</view></picker>
+    <button wx:if="{{form.city}}" class="interpret-link" data-field="city" bindtap="clear">清空城市</button>
+    <view wx:if="{{errors.city}}" class="advisor-error">{{errors.city}}</view>
+    <view class="advisor-text muted">城市仅作为企业自述并排显示，不表示该市的数据已收录，不核实属地要求。直辖市按省级填写。</view>
     <view class="clause-label">营业收入（万元）</view>
     <input class="clause-control" type="digit" value="{{form.revenueAmount}}" data-field="revenueAmount" bindinput="input" placeholder="金额，可不填" />
     <view wx:if="{{errors.revenueAmount}}" class="advisor-error">{{errors.revenueAmount}}</view>

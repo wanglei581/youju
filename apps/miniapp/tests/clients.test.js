@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
 const conditions = require('../utils/conditions.js');
+const regions = require('../utils/regions.js');
 const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 
 // 我的客户（D-061）：客户卡片只存在本机；所有客户的相关通知按通知合并，写明涉及哪几家、什么时候截止。
@@ -43,13 +44,14 @@ function clientUtils(wx) {
   // 本机工具模块在隔离上下文里运行，不污染其他并发测试的全局 wx。
   const module = { exports: {} };
   vm.runInNewContext(read('utils/clients.js'), {
-    module, wx, require: (name) => (name === './format.js' ? format : conditions),
+    module, wx, require: (name) => (name === './format.js' ? format : name === './regions.js' ? regions : conditions),
   });
   return module.exports;
 }
 const clients = clientUtils({});
 function clientsPage(local, { search, coverage = { cities: [{ province: '山东', city: '青岛' }] }, exported = [] } = {}) {
   return load('pages/clients/index.js', {
+    '../../utils/regions.js': regions,
     '../../utils/api.js': { search: search || (() => Promise.resolve({ items: [], total: 0 })) },
     '../../utils/clients.js': clientUtils(local.wx),
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(coverage) },
@@ -67,8 +69,8 @@ test('新增、编辑、删除卡片，仅本机保存，空名称显示客户 1
   page.pick(tap({ group: 'cities', value: '山东/青岛' }));
   for (const value of ['数字经济', '先进制造']) page.pick(tap({ group: 'industries', value }));
   page.save(); await settle();
-  assert.equal(page.data.clients[0].displayName, '客户 1'); assert.equal(page.data.clients[0].regions.length, 2);
-  assert.equal(page.data.clients[0].summary, '山东、江苏、山东·青岛（含国家部委） · 数字经济、先进制造');
+  assert.equal(page.data.clients[0].displayName, '客户 1'); assert.equal(page.data.clients[0].regions.length, 1);
+  assert.equal(page.data.clients[0].summary, '江苏、山东·青岛（含国家部委） · 数字经济、先进制造');
   const id = page.data.clients[0].id;
   page.edit(tap({ id })); page.nameInput(input('客户甲')); page.save(); await settle();
   assert.equal(page.data.clients[0].displayName, '客户甲');
@@ -191,4 +193,15 @@ test('入口、页面注册与 notice-bar 完整；无登录依赖，界面文�
   assert.match(read('pages/home/index.wxml'), /data-url="\/pages\/clients\/index"/);
   const about = read('pages/about/index.wxml');
   assert.ok(about.includes('我的客户')); assert.doesNotMatch(about, /认定条件|按客户筛通知/);
+});
+
+test('本机城市保存不受覆盖清单缺失影响，城市替换同省全省、其他省份保留', async () => {
+  const local = localWx(); const page = clientsPage(local, { coverage: { cities: [] } });
+  page.onLoad({}); page.onShow(); await settle(); page.edit(tap({}));
+  page.pick(tap({ group: 'regions', value: '山东' })); page.pick(tap({ group: 'regions', value: '江苏' }));
+  page.chooseCity({ detail: { value: ['山东省', '青岛市'] } });
+  assert.deepEqual(plain(page.data.form.regions), ['江苏']); assert.deepEqual(plain(page.data.form.cities), ['山东/青岛']);
+  assert.match(page.data.cityError, /暂未收录/); page.save(); await settle();
+  assert.deepEqual(plain(clientUtils(local.wx).loadClients()[0].cities), ['山东/青岛']);
+  assert.match(read('pages/clients/index.wxml'), /picker mode="region" level="city"/);
 });

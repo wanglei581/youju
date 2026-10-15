@@ -23,7 +23,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -192,7 +192,7 @@ test('截止页（按月看）：实心点是核对过的、空心点是只有�
   }
   const root = render('pages/report/index.wxml', page.data);
   assert.match(flat(root), /实心点：核对过的截止空心点：机器摘录灰点：已截止/);
-  assert.equal(findAll(root, hasClass('filters')).length, 0, '按月看不显示省份、部门筛选');
+  assert.equal(findAll(root, hasClass('filters')).length, 1, '按月看保留省市筛选，隐藏部门筛选');
 });
 
 test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过的、最多 5 条；没核对的写份数，一份没核对也显示这一块；都没有才不显示', async () => {
@@ -540,3 +540,11 @@ test('协议页（民法典第 496 条，10/14）：每份文件顶部列出重�
   assert.equal(bold.length, legal.user.keyParagraphs.length + legal.privacy.keyParagraphs.length);
 });
 
+
+test('名单详情显示实际公示或公布状态；缺失状态不编造', () => {
+  for (const status of ['公示', '公布']) {
+    const tree = render('pages/detail/index.wxml', { doc: { title: '合成名单', status }, loading: false });
+    assert.match(textOf(tree), new RegExp(`名单状态：${status}`));
+  }
+  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { doc: { title: '合成通知' }, loading: false })), /名单状态：/);
+});

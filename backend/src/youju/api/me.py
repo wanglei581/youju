@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
+from hashlib import sha256
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
@@ -131,6 +132,7 @@ class Conditions(BaseModel):
     q: str | None = Field(default=None, max_length=50)
     kind: str = "all"
     regions: str | None = Field(default=None, max_length=400)
+    cities: str | None = Field(default=None, max_length=2000)
     types: str | None = Field(default=None, max_length=400)
     status: str | None = Field(default=None, max_length=400)
     time: str = "近 30 天"
@@ -279,6 +281,8 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         ).all()
     )
     return {
+        # 仅供本机安全重试记录分区，不暴露 openid；不是鉴权凭据。
+        "taskOwner": sha256(f"youju-task-owner:{user.id}:{user.openid}".encode()).hexdigest(),
         # valid：这份同意现在还算不算数（仍认的最早版本调高后，旧版本的同意不算了）。
         # 小程序据此请用户重新同意，太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）
         "agreed": {

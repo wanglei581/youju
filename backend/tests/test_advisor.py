@@ -95,7 +95,7 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
         "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
     }
-    agree(client)
+    agree_advisor(client)
     created = create(client).json()
     assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 1
     client.post(f"/api/v1/advisor/tasks/{created['id']}/cancel")
@@ -129,7 +129,7 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
 def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
     client, session, monkeypatch
 ):
-    agree(client)
+    agree_advisor(client)
     stamps = [
         datetime(2026, 9, 1, 0, 0, tzinfo=BJ),
         datetime(2026, 9, 2, 0, 0, tzinfo=BJ),
@@ -169,7 +169,7 @@ def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
 
 
 def test_compare_reservation_reads_latest_usage_after_user_lock(client, session_factory):
-    agree(client)
+    agree_advisor(client)
     assert create(client, key="first").status_code == 202
     assert create(client, key="second").status_code == 202
     with session_factory() as stale:
@@ -229,6 +229,7 @@ def test_upload_track_profiles(client, session, xlsx):
         {
             "name": "甲公司",
             "province": "辽宁",
+            "city": "",
             "keywords": ["高新", "科技"],
             "supports": ["资金支持"],
         }
@@ -408,7 +409,7 @@ def test_switch_idempotency_quota_rollover_and_cancel(
     advisor_settings.advisor_enabled = False
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     advisor_settings.advisor_enabled = True
-    agree(client)
+    agree_advisor(client)
     assert create(client, key="missing").status_code == 202
     duplicate = create(client, key="missing", rows=["不同内容"])
     assert duplicate.status_code == 202
@@ -440,7 +441,7 @@ def test_switch_idempotency_quota_rollover_and_cancel(
 
 
 def test_row_and_body_limits_and_personal_data(client):
-    agree(client)
+    agree_advisor(client)
     assert create(client, key="too-many", rows=["x"] * 51).status_code == 429
     huge = "x" * (service.MAX_BODY_BYTES + 1)
     response = create(client, key="huge", rows=[huge])
@@ -458,7 +459,7 @@ def test_row_and_body_limits_and_personal_data(client):
 def test_task_ownership_for_read_cancel_delete_download(
     client, advisor_settings, session, monkeypatch
 ):
-    agree(client)
+    agree_advisor(client)
     created = create(client, key="owned").json()
     task_id = created["id"]
     user = session.scalar(select(User).where(User.openid == "advisor-user"))
@@ -471,7 +472,7 @@ def test_task_ownership_for_read_cancel_delete_download(
     )
 
     advisor_settings.dev_openid = "other-user"
-    agree(client)
+    agree_advisor(client)
     assert client.get(f"/api/v1/advisor/tasks/{task_id}").status_code == 404
     assert client.post(f"/api/v1/advisor/tasks/{task_id}/cancel").status_code == 404
     assert client.get(f"/api/v1/advisor/tasks/{task_id}/download").status_code == 404
@@ -697,7 +698,7 @@ def test_cleanup_deletes_expired_ai_tasks_and_old_usage(session, advisor_setting
 def test_delete_account_removes_advisor_tasks_and_files(
     client, advisor_settings, session, monkeypatch
 ):
-    agree(client)
+    agree_advisor(client)
     created = create(client, key="logout").json()
     row = session.get(AdvisorTask, created["id"])
     row.status, row.result_file_id = "done", "cloud://logout"
@@ -715,7 +716,7 @@ def test_delete_account_removes_advisor_tasks_and_files(
 def test_delete_terminal_task_keeps_usage_and_queued_delete_refunds(
     client, advisor_settings, session
 ):
-    agree(client)
+    agree_advisor(client)
     created = create(client, key="ledger").json()
     usage = session.scalar(select(AdvisorUsage))
     assert usage is not None and usage.used_count == 1
@@ -773,7 +774,7 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
 def test_delete_and_logout_succeed_when_storage_delete_fails(
     client, advisor_settings, session, monkeypatch
 ):
-    agree(client)
+    agree_advisor(client)
     created = create(client, key="api-trash").json()
     row = session.get(AdvisorTask, created["id"])
     row.status, row.result_file_id = "done", "cloud://api-trash"
@@ -1010,3 +1011,27 @@ def test_download_url_handles_missing_file_and_bad_links():
     ]
     assert service.download_url(Store(other), "env", file_id) is None
     assert service.download_url(Store([]), "env", file_id) is None
+
+
+@pytest.mark.parametrize(
+    "kind,rows",
+    [
+        ("compare", ["合成城市科技有限公司"]),
+        ("track", [{"name": "合成城市科技有限公司", "province": "山东", "city": "青岛"}]),
+    ],
+)
+def test_pasted_rows_require_independent_tool_agreement(client, kind, rows):
+    agree(client)
+    body = {"kind": kind, "rows": rows}
+    response = client.post(
+        "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "paste-consent"}
+    )
+    assert response.status_code == 403
+    assert "工具使用说明" in response.json()["detail"]
+    assert client.get("/api/v1/advisor/status").json()["quota"][kind]["used"] == 0
+    agree_advisor(client)
+    accepted = client.post(
+        "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "paste-consent"}
+    )
+    assert accepted.status_code == 202
+    assert client.get("/api/v1/advisor/status").json()["quota"][kind]["used"] == 1

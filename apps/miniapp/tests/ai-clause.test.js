@@ -24,7 +24,7 @@ function storage(agreed = true) {
 }
 function load(file, api, wx = {}, extra = {}) {
   let definition; const module = { exports: {} };
-  const dependencies = { '../../utils/api.js': api, '../../utils/ai-clause.js': clause,
+  const dependencies = { '../../utils/regions.js': require('../utils/regions.js'), '../../utils/api.js': api, '../../utils/ai-clause.js': clause,
     '../../utils/tool-context.js': context, '../../utils/format.js': format, '../../utils/advisor.js': advisor,
     ...extra };
   vm.runInNewContext(read(file), { module, Date, Math, Promise, setTimeout, clearTimeout,
@@ -82,9 +82,7 @@ test('金额至多两位小数且与年份一起填写，年份 2000 到今年�
 test('注册地用省份清单（和搜索页一致），资质限制名称、日期和六项上限', () => {
   assert.equal(clause.PROVINCES, require('../utils/provinces.js'));
   // 内测包不改搜索页：清单内容须与搜索页保持一致
-  const searchList = /const ALL_PROVINCES = (\[[^\]]*\]);/.exec(read('pages/search/index.js'));
-  assert.ok(searchList, '搜索页省份清单');
-  assert.deepEqual(JSON.parse(searchList[1].replace(/'/g, '"')), clause.PROVINCES);
+  assert.deepEqual(require('../utils/regions.js').PROVINCES, clause.PROVINCES);
   assert.equal(clause.PROVINCES.length, 31); assert.ok(!clause.PROVINCES.includes('国家'));
   assert.ok(clause.validateForm({ region: '北京市' }, today).region);
   const qualification = Array.from({ length: 6 }, () => ({ name: clause.QUALIFICATIONS[0], valid_until: null }));
@@ -285,4 +283,12 @@ test('条款对照的条目和引用也去掉 PDF 版面换行（10/13）', () =
   const row = view.sections.find((s) => s.type === '条件').items[0];
   assert.equal(row.text, '牵头医疗机构为三级甲等，在所在地省级行政区综合排名或所申报领域的专业排名靠前。');
   assert.equal(row.refs[0].quote, row.text);
+});
+
+test('注册地城市可选，不影响旧省份输入，企业自述和已核对截止类型均完整显示', () => {
+  assert.deepEqual(clause.toCompany({ region: '山东', city: '青岛' }, today), { region: '山东', city: '青岛' });
+  assert.ok(clause.validateForm({ city: '青岛' }, today).city);
+  const view = clause.resultView({ rows: [], verified: [{ kind: '企业申报截止', value: '2026-10-20', time: '17:00' }, { kind: '推荐或审核截止', value: '2026-10-21' }] });
+  assert.equal(view.verified[0].displayValue, '企业申报截止 2026-10-20 17:00'); assert.equal(view.verified[1].displayValue, '推荐或审核截止 2026-10-21');
+  assert.match(read('pages/advisor-clause/index.wxml'), /picker mode="region" level="city"/);
 });

@@ -21,7 +21,7 @@
   </view>
 </view>
 
-<view class="entries">
+<view class="entries {{loginOpen ? 'entries--tools' : ''}}">
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
     <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view>
     <text class="entry-name">截止</text><text class="entry-sub">7 / 14 / 30 天</text>
@@ -33,6 +33,10 @@
   <view class="entry" data-url="/pages/lists/index" bindtap="goEntry">
     <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view>
     <text class="entry-name">查名单</text><text class="entry-sub">上过哪些名单</text>
+  </view>
+  <view wx:if="{{loginOpen}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
+    <view class="tile tile--blue"><t-icon name="app" size="44rpx" color="#FFFFFF" /></view>
+    <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
   </view>
 </view>
 

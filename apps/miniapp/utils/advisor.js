@@ -1,8 +1,8 @@
-// AI 页面共用：任务列表的显示、页面顶部的"AI 生成"标注和页面标题。
-// 数据工具（名单比对、跟进表）的后端没有上线，这里只处理 AI 任务。
+// 共同任务的显示与 AI 独立授权；数据工具开关不能扩大 AI 权限。
 const config = require('./config.js');
 
 const KINDS = { interpret: '政策解读', clause: '条款对照' };
+const DATA_KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 // 《人工智能生成合成内容标识办法》第四条要求显式标识：页面顶部固定写"AI 生成"，如实说明由 AI 模型生成。
 // AI 内测包（config.aiInternal）再加"内部测试"；AI 正式版（D-066）只写"AI 生成"。
@@ -58,14 +58,42 @@ function allowedKinds(ai) {
   return Object.keys(KINDS).filter((kind) => features.includes(kind));
 }
 
+function dataKinds(data) {
+  return data && data.enabled === true && Array.isArray(data.features) ? Object.keys(DATA_KINDS).filter((kind) => data.features.includes(kind)) : [];
+}
+
+function allKinds(caps) {
+  return dataKinds(caps && caps.data_tools).concat(allowedKinds(caps && caps.ai_advisor));
+}
+
+// 只记任务编号和文件身份，不保存结果或客户内容。模块在页面销毁后仍保留，
+// 列表中任务消失或文件身份改变才解除 410，避免轮询/重新进页复活下载按钮。
+const unavailableResults = new Map();
+const fileIdentity = (task) => JSON.stringify([task.kind, task.hasFile, task.createdAt, task.finishedAt, task.expiresAt]);
+function blockDownload(task, message) { unavailableResults.set(String(task.id), { identity: fileIdentity(task), message }); }
+function taskViews(items) {
+  const ids = new Set(items.map((task) => String(task.id)));
+  for (const id of unavailableResults.keys()) if (!ids.has(id)) unavailableResults.delete(id);
+  return items.map(taskView);
+}
+
 function taskView(task) {
+  const blocked = unavailableResults.get(String(task.id));
+  const unavailable = blocked && blocked.identity === fileIdentity(task);
+  if (blocked && !unavailable) unavailableResults.delete(String(task.id));
   const stamp = task.createdAt && Date.parse(task.createdAt);
+  const dataTask = Object.prototype.hasOwnProperty.call(DATA_KINDS, task.kind);
+  const expired = Boolean(task.expiresAt && Date.parse(task.expiresAt) <= Date.now());
   return Object.assign({}, task, {
-    kindLabel: KINDS[task.kind] || task.kind,
+    kindLabel: KINDS[task.kind] || DATA_KINDS[task.kind] || task.kind,
     stateLabel: STATES[task.status] || task.status,
     time: Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ') : '',
     terminal: ['done', 'failed', 'cancelled'].includes(task.status),
+    dataTask, expired,
+    downloadable: dataTask && task.status === 'done' && task.hasFile === true && !expired && !unavailable,
+    resultNote: unavailable ? blocked.message : dataTask && task.status === 'done' && (!task.hasFile || expired) ? '结果已过期或已删除，请重新提交' : '',
+    expiresText: task.expiresAt ? String(task.expiresAt).slice(0, 10) : '',
   });
 }
 
-module.exports = { KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, taskView };
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };

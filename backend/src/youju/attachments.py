@@ -50,7 +50,7 @@ import httpx
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from youju.backup import BEIJING, BackupError, _open_api, _retrying, upload
+from youju.backup import _BUSY_CODES, BEIJING, BackupError, _open_api, _retrying, upload
 from youju.classify import effective_kind
 from youju.config import get_settings
 from youju.crawler.detail import has_personal_numbers
@@ -563,19 +563,60 @@ def store_copy(
     return file_id
 
 
-def delete_copies(client: httpx.Client, env: str, file_ids: list[str]) -> set[str]:
-    """从对象存储删掉附件副本，返回确认删掉的。
-    只删本环境 attachments/ 下的文件，别的（如备份）一律不碰。"""
+class DeleteCopiesError(BackupError):
+    """清理未全部确认；confirmed 仅供结算已确认成功的引用，不把部分成功写成全部成功。"""
+
+    def __init__(self, error: BackupError, confirmed: set[str]) -> None:
+        super().__init__(str(error), retryable=error.retryable)
+        self.confirmed = set(confirmed)
+
+
+def delete_copies(
+    client: httpx.Client,
+    env: str,
+    file_ids: list[str],
+    *,
+    sleep: Callable[[float], None] = clock.sleep,
+) -> set[str]:
+    """只删本环境 attachments/ 文件；任何未确认项均失败，保留引用供下轮处理。"""
     ids = [i for i in file_ids if (parsed := parse_file_id(i)) and parsed[0] == env][:_DELETE_MAX]
     deleted: set[str] = set()
     for start in range(0, len(ids), _DELETE_BATCH):
         batch = ids[start : start + _DELETE_BATCH]
-        data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": batch})
-        for item in data.get("delete_list", []):
-            if item.get("status") == 0 and item.get("fileid") in batch:
-                deleted.add(item["fileid"])
-            else:
-                log.info("附件副本没删掉：%s（%s）", item.get("fileid"), item.get("errmsg"))
+
+        def attempt(batch=batch):
+            # 已确认成功的对象不重复发送；不依赖平台未核实的 notfound 返回语义。
+            pending = [file_id for file_id in batch if file_id not in deleted]
+            data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": pending})
+            statuses = defaultdict(list)
+            items = data.get("delete_list")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and item.get("fileid") in pending:
+                        statuses[item["fileid"]].append(item.get("status"))
+            failed = []
+            for file_id in pending:
+                values = statuses[file_id]
+                if len(values) == 1 and type(values[0]) is int and values[0] == 0:
+                    deleted.add(file_id)
+                else:
+                    failed.append(
+                        values[0] if len(values) == 1 and type(values[0]) is int else None
+                    )
+            if failed:
+                codes = ",".join(str(code) for code in sorted({c for c in failed if c is not None}))
+                if None in failed:
+                    codes += ",漏项或无效响应"
+                raise BackupError(
+                    f"附件副本删除未确认：{len(failed)} 个（状态 {codes.lstrip(',')}）",
+                    retryable=all(code in _BUSY_CODES for code in failed),
+                )
+
+        try:
+            # 与备份相同：暂时繁忙/网络错误等待 5、15 秒，永久错误立即上报。
+            _retrying(attempt, sleep)
+        except BackupError as exc:
+            raise DeleteCopiesError(exc, deleted) from exc
     return deleted
 
 
@@ -848,16 +889,24 @@ def _cleanup(
     wanted -= in_use
     kept = _referenced(session, wanted, live)
     wanted -= kept
-    deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
+    failure = None
+    try:
+        deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
+    except DeleteCopiesError as exc:
+        deleted, failure = exc.confirmed, exc
     report.removed += len(deleted)
     settled = deleted | in_use | kept
     for row in rows:
         if row.stale_file_ids:
             row.stale_file_ids = [i for i in row.stale_file_ids if i not in settled] or None
     for row in expired:
+        if row.file_id in deleted:
+            row.file_id = None  # 仍有待清理旧副本时保留记录，但不重复请求已确认删除的当前副本。
         if (not row.file_id or row.file_id in settled) and not row.stale_file_ids:
             session.delete(row)
     session.commit()
+    if failure is not None:
+        raise failure
 
 
 def cache_attachments(
@@ -1002,12 +1051,18 @@ def _drop_stale(session: Session, client: httpx.Client, env: str) -> int:
     wanted = {i for r in rows for i in (r.stale_file_ids or [])} - in_use
     kept = _referenced(session, wanted, None)
     wanted -= kept
-    deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
+    failure = None
+    try:
+        deleted = delete_copies(client, env, sorted(wanted)) if wanted else set()
+    except DeleteCopiesError as exc:
+        deleted, failure = exc.confirmed, exc
     settled = deleted | in_use | kept
     for row in rows:
         if row.stale_file_ids:
             row.stale_file_ids = [i for i in row.stale_file_ids if i not in settled] or None
     session.commit()
+    if failure is not None:
+        raise failure
     return len(deleted)
 
 

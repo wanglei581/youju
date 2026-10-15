@@ -178,7 +178,7 @@ function withdraw() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录，以及本机的导出记录和文件，删除后不能恢复。`,
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录、工具输入、任务与结果，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
@@ -188,6 +188,7 @@ function withdraw() {
             exportsLog.clear();
             // 文件缺失或无法删除不影响注销；清空本机缓存也涵盖后续新增的个人数据。
             try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
+            try { wx.removeStorageSync('youjuDataTaskKeysV1'); } catch (e) { /* 下方清空存储再次清理 */ }
             try { wx.clearStorageSync(); } catch (e) { forget(); }
             outdated = false;
             notAgreed = true;

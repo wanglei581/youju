@@ -25,9 +25,10 @@ function query(params) {
 function errorOf(res) {
   const detail = res && res.data && res.data.detail;
   const validation = res && res.statusCode === 422 ? '输入内容或筛选条件不符合要求，请检查后重试' : '';
-  const err = new Error(typeof detail === 'string' ? detail : (validation || (res ? `服务暂时出错（${res.statusCode}），请稍后重试` : '网络连接失败，请检查网络后重试')));
+  const err = new Error(typeof detail === 'string' ? detail : (detail && typeof detail.message === 'string' ? detail.message : validation || (res ? `服务暂时出错（${res.statusCode}），请稍后重试` : '网络连接失败，请检查网络后重试')));
   err.status = res ? res.statusCode : 0;
   err.detail = detail;
+  if (detail && typeof detail.code === 'string') err.code = detail.code;
   return err;
 }
 
@@ -359,6 +360,7 @@ function deadlineReport(params, opts) {
   const deptOf = (value) => (/科技/.test(value) ? '科技部门' : (/工业和信息化|经济和信息化|工信|经信/.test(value) ? '工信部门' : '其他部门'));
   const scoped = all
     .filter((item) => !params.province || item.province === params.province)
+    .filter((item) => !params.city || item.city === params.city)
     .filter((item) => !params.dept || deptOf(item.dept) === params.dept);
   const filtered = scoped.filter((item) => item.remaining_days <= days);
   const summary = { 7: scoped.filter((x) => x.remaining_days <= 7).length, 14: scoped.filter((x) => x.remaining_days <= 14).length, 30: scoped.filter((x) => x.remaining_days <= 30).length };
@@ -433,10 +435,10 @@ function detail(id) {
 
 // 日历每条的 id 是截止记录编号，打开详情用 docId（演示数据里两者相同）
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
-function calendar() {
+function calendar(params = {}) {
   if (isLive()) {
     let soon = null;
-    const page = (offset, acc, closed) => request('/api/v1/calendar', Object.assign({ limit: 200, offset }, EXCERPTS)).then((r) => {
+    const page = (offset, acc, closed) => request('/api/v1/calendar', Object.assign({}, params, { limit: 200, offset }, EXCERPTS)).then((r) => {
       if (!soon) soon = r.unverifiedSoon || { total: 0, items: [] };
       const items = acc.concat(r.items).slice(0, 1000);
       const past = closed.concat(r.past || []).slice(0, 1000);
@@ -447,7 +449,7 @@ function calendar() {
     });
     return page(0, [], []);
   }
-  return copy({ items: mock.calendar.map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
+  return copy({ items: mock.calendar.filter((d) => (!params.province || d.province === params.province) && (!params.city || d.city === params.city)).map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
 }
 
 function lists() {
@@ -534,6 +536,10 @@ function attachmentPart(id, version, part) {
 
 function attachmentPartOnce(id, version, part) {
   const path = `/api/v1/attachments/${encodeURIComponent(id)}/content${query({ v: version, part })}`;
+  return binaryPartOnce(path, false);
+}
+
+function binaryPartOnce(path, advisor) {
   return new Promise((resolve, reject) => {
     const state = availability(config.cloudService);
     let settled = false;
@@ -544,7 +550,8 @@ function attachmentPartOnce(id, version, part) {
       if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
-      const err = new Error(`附件下载失败（${res.statusCode}）`);
+      const messages = { 401: '请重新登录后下载', 403: '请重新确认协议和任务权限', 404: '没有找到这份任务或结果', 410: '结果已过期、删除或包含下架文件，请重新生成', 503: '结果文件暂时取不到，请稍后重试' };
+      const err = new Error(advisor ? messages[res.statusCode] || `结果下载失败（${res.statusCode}）` : `附件下载失败（${res.statusCode}）`);
       err.status = res.statusCode;
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
@@ -581,8 +588,8 @@ function me() {
   return request('/api/v1/me');
 }
 
-function agree(version) {
-  return request('/api/v1/me/agreement', null, { method: 'POST', data: { version } });
+function agree(version, scope) {
+  return request('/api/v1/me/agreement', null, { method: 'POST', data: { version, ...(scope ? { scope } : {}) } });
 }
 
 // 注销：删除服务端的用户和关注、订阅、纠错、埋点
@@ -611,10 +618,10 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
-// ---- AI 内测（feat/ai-v2，D-062：只上传体验版、手续办下来前不合并）：政策解读、条款对照 ----
-// 只对接线上已有的 /api/v1/advisor 接口；入口和页面都以 capabilities.ai_advisor.enabled === true 为准。
+// 工具能力分别授权：数据工具不依赖 AI 或支付开关，AI 仍按其独立准入条件开放。
 
 const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
+const DATA_DISABLED = { enabled: false, features: [], remaining: {} };
 let capabilitiesPromise;
 let capabilitiesPending;
 function advisorCapabilities(options = {}) {
@@ -625,8 +632,10 @@ function advisorCapabilities(options = {}) {
   // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
-    if (ai.enabled !== true) return { ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
-    return { ai_advisor: {
+    const data = (res && res.data_tools) || {};
+    const data_tools = data.enabled === true ? { enabled: true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
+    if (ai.enabled !== true) return { data_tools, ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
+    return { data_tools, ai_advisor: {
       enabled: true,
       features: Array.isArray(ai.features) ? ai.features : [],
       remaining: ai.remaining || {},
@@ -635,14 +644,14 @@ function advisorCapabilities(options = {}) {
   }).catch((err) => {
     const status = err && err.status;
     const reason = status === 403 ? 'consent' : (status && status < 500 && status !== 429 ? 'off' : 'offline');
-    return { ai_advisor: Object.assign({}, AI_DISABLED), reason };
+    return { data_tools: Object.assign({}, DATA_DISABLED), ai_advisor: Object.assign({}, AI_DISABLED), reason };
   });
   capabilitiesPromise = result;
   capabilitiesPending = result;
   result.then((res) => {
     if (capabilitiesPending === result) capabilitiesPending = null;
     // “关闭”的结果只缓存 15 秒：登录前查到的关闭（403）不能一直记着，登录或加进白名单后回到页面要能重新查到
-    if (!(res && res.ai_advisor && res.ai_advisor.enabled === true)) {
+    if (!(res && res.ai_advisor && res.ai_advisor.enabled === true && res.data_tools && res.data_tools.enabled === true)) {
       setTimeout(() => { if (capabilitiesPromise === result) capabilitiesPromise = null; }, 15000);
     }
   });
@@ -651,10 +660,12 @@ function advisorCapabilities(options = {}) {
 
 // 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
 function createAdvisorTask(data, key) {
-  if (!isLive() || (data.kind !== 'interpret' && data.kind !== 'clause')) {
+  if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
     return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
   }
-  const body = data.kind === 'clause'
+  const body = ['compare', 'track'].includes(data.kind)
+    ? { kind: data.kind, ...(data.file ? { file: data.file } : { rows: data.rows }) }
+    : data.kind === 'clause'
     ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
     : { kind: 'interpret', doc_id: Number(data.doc_id) };
   return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: { 'Idempotency-Key': key } }).catch((err) => {
@@ -664,6 +675,23 @@ function createAdvisorTask(data, key) {
     }
     throw err;
   });
+}
+
+function advisorStatus() {
+  return isLive() ? request('/api/v1/advisor/status') : Promise.reject(new Error('连接真实服务后才能使用工具'));
+}
+
+function advisorPreview(data) {
+  if (!isLive() || !['compare', 'track'].includes(data.kind)) return Promise.reject(new Error('暂时没有可用工具'));
+  return request('/api/v1/advisor/preview', null, { method: 'POST', data: { kind: data.kind, ...(data.file ? { file: data.file } : { rows: data.rows }) } });
+}
+
+function downloadAdvisorTask(id) {
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/download`);
+}
+
+function advisorTaskPart(id, part) {
+  return withRetry(() => binaryPartOnce(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/file${query({ part })}`, true), 'GET');
 }
 
 function advisorTasks() {
@@ -729,5 +757,5 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask,
+  advisorCapabilities, advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
 };

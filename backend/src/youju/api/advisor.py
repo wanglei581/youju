@@ -159,6 +159,7 @@ def _file_rows(body: TaskIn) -> list[Any]:
                 {
                     "name": row.name,
                     "province": row.province,
+                    "city": row.city,
                     "keywords": list(row.keywords),
                     "supports": list(row.supports),
                 }
@@ -366,6 +367,9 @@ def create_task(
     input_json = {"doc_id": body.doc_id} if body.kind in AI_KINDS else None
     if body.kind == "clause":
         input_json["company"] = body.company.model_dump(mode="json") if body.company else {}
+        # 不填城市时保留旧任务输入合同，部署后同一幂等键仍可返回原任务。
+        if not input_json["company"].get("city"):
+            input_json["company"].pop("city", None)
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -378,7 +382,7 @@ def create_task(
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, session, include_result=False)
-    if body.file is not None:
+    if body.kind not in AI_KINDS:
         _upload_consent(user)
     stamp = _stamp()
     ticket = (
@@ -396,6 +400,7 @@ def create_task(
                 detail={
                     "code": "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT",
                     "message": f"每次最多提交 {limit} 行",
+                    "maxRows": limit,
                 },
             ) from None
         raise
@@ -404,7 +409,8 @@ def create_task(
         if len(rows) > limit:
             code = "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT"
             raise HTTPException(
-                status_code=429, detail={"code": code, "message": f"每次最多提交 {limit} 行"}
+                status_code=429,
+                detail={"code": code, "message": f"每次最多提交 {limit} 行", "maxRows": limit},
             )
     with _submission_lock(session, body.kind):
         if (

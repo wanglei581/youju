@@ -16,9 +16,15 @@ Page({
   data: { demo: true, files: [] },
 
   onShow() {
+    this.dead = false;
+    this.visible = true;
+    this.epoch = (this.epoch || 0) + 1;
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 2 });
     this.load();
   },
+
+  onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
+  onUnload() { this.dead = true; this.onHide(); },
 
   load() {
     if (!api.isLive()) {
@@ -32,7 +38,7 @@ Page({
         id: r.id,
         badge: r.format.toUpperCase(),
         name: r.label,
-        meta: `${r.count} 份 · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
+        meta: `${r.count} ${r.source === 'advisor' ? '家' : '份'} · ${FORMAT_NAME[r.format] || r.format} · ${Math.max(1, Math.round((r.size || 0) / 1024))} KB · ${shortTime(r.at)}`,
         expired: !exists(r.path),
       })),
     });
@@ -70,6 +76,21 @@ Page({
   reexport(e) {
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据不能导出', icon: 'none' }); return; }
+    if (r.source === 'advisor') {
+      if (this.downloading) return;
+      this.downloading = true;
+      const epoch = this.epoch;
+      wx.showLoading({ title: '正在下载…', mask: true });
+      let downloadError = null;
+      require('../../utils/data-tools.js').openResult(r.taskId, { task: { kind: r.kind, rowCount: r.count }, current: () => this.visible && epoch === this.epoch })
+        .catch((err) => { downloadError = err; })
+        .then(() => {
+          this.downloading = false; wx.hideLoading();
+          if (!this.dead) this.load();
+          if (downloadError && !downloadError.cancelled && this.visible) wx.showToast({ title: downloadError.message, icon: 'none' });
+        });
+      return;
+    }
     // 新文件和记录存好后，新记录替代这一条（打开失败也替代）
     exportDocs(r.ids, { label: r.label, format: r.format, replaces: r.id }).then(() => this.load());
   },
@@ -82,6 +103,8 @@ Page({
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;
+        // 清空确认立即使下载失效；在途写文件完成后只删除那次下载的独立路径。
+        this.epoch = (this.epoch || 0) + 1;
         // 记录和文件都要删，删完再看结果
         const cleared = exportsLog.clear();
         const filesLeft = removeFiles();

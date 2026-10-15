@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { PROVINCES, regionSelection, uncoveredCities, withoutCityProvinces } = require('../../utils/regions.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { exportDocs, MAX } = require('../../utils/exporter.js');
@@ -28,6 +29,7 @@ const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，�
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
+  { key: 'city', title: '城市', hint: '省市联动 · 可多选', multi: true, options: [], note: '城市选项由微信提供，选项齐全不代表已收录数据；选择具体城市会替换同省的全省条件。' },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: OPEN_GROUP_NOTE },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
@@ -41,9 +43,9 @@ const GROUPS = [
     note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的，市级也按所选地区筛选；地市目前只收录部分城市，见“我的 → 数据从哪里来”' },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
-const ALL_PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
+const ALL_PROVINCES = PROVINCES;
 const DEFAULT_TIME = '近 30 天';
-const DEFAULT_PICKED = { region: ['不限地区'], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
+const DEFAULT_PICKED = { region: ['不限地区'], city: [], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
 // 关注确认框的标题：写关注之后会怎样
 const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
@@ -60,6 +62,7 @@ function activeValues(group, values) {
 
 // 已选条件条上的文字：脱离了组名也要看得懂
 function chipLabel(group, option) {
+  if (group === 'city') return option.replace('/', '·');
   if (group === 'type' && option === '其他') return '其他类型';
   if (group === 'time' && option === '不限') return '不限时间';
   if (group === 'status') return `名单${option}`;
@@ -67,7 +70,7 @@ function chipLabel(group, option) {
 }
 
 // 筛选入口那一排是固定文字；入口管的组里有已选时变品牌蓝，点开时右栏显示有已选的那一组
-const ENTRY_GROUPS = { region: ['region', 'level'], time: ['time'], status: ['open', 'status'], dept: ['dept'] };
+const ENTRY_GROUPS = { region: ['region', 'city', 'level'], time: ['time'], status: ['open', 'status'], dept: ['dept'] };
 const MORE_GROUPS = ['type', 'category', 'support', 'industry'];
 
 Page({
@@ -75,6 +78,7 @@ Page({
     // 列表行用的当天日期：onShow 时填上；先给空串，第一次渲染时不给组件传 null
     today: '',
     q: '',
+    cityRegion: [], cityError: '', cityCoverageNote: '',
     tabs: KIND_TABS,
     tab: 'all',
     items: [],
@@ -123,7 +127,7 @@ Page({
     const time = decodeURIComponent(query.time || '');
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '近 90 天', '今年', '不限'].includes(time)) picked.time = [time];
-    [['regions', 'region'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
+    [['regions', 'region'], ['cities', 'city'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
       if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
@@ -131,6 +135,7 @@ Page({
     const migrated = migrateNational(picked.region, picked.level);
     picked.region = migrated.regions;
     picked.level = migrated.levels;
+    if (picked.city.length) picked.region = withoutCityProvinces(picked.region, picked.city);
     this.setData({ picked });
     this.setData({
       q: decodeURIComponent(query.q || ''),
@@ -138,13 +143,29 @@ Page({
     });
     this.refreshChips();
     this.apply(true);
-    // 地区筛选下的说明：还没收录的省份
+    this.loadCities();
+  },
+
+  loadCities() {
     loadCoverage().then((c) => {
+      this.coverage = c;
       const names = notCoveredNames(c);
-      if (!names) return;
-      const extra = `${names}暂未收录`;
-      this.setData({ groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { extra }) : g)) });
+      const extra = names ? `${names}暂未收录` : '';
+      this.setData({ groups: this.data.groups.map((g) => g.key === 'region' ? { ...g, extra } : g),
+        cityCoverageNote: c && Array.isArray(c.cities) ? (c.cities.length ? `当前仅有 ${c.cities.length} 个城市的部分来源，不代表全市数据完整。` : '当前尚未接入市级来源。可选择并保存城市条件，相关数据暂不可查询。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。' });
+      if (this.data.picked.city.length) this.apply(true);
     });
+  },
+  chooseCity(e) {
+    try {
+      const choice = regionSelection(e.detail.value, this.coverage);
+      this.setData({ cityRegion: e.detail.value, cityError: choice.note });
+      if (!choice.city) {
+        this.setPicked('region', [...new Set(this.data.picked.region.filter((p) => p !== '不限地区').concat(choice.province))]);
+        return;
+      }
+      this.setPicked('city', [...new Set(this.data.picked.city.concat(`${choice.province}/${choice.city}`))]);
+    } catch (err) { this.setData({ cityError: err.message }); }
   },
 
   onHide() {
@@ -174,11 +195,12 @@ Page({
     const { q, tab, picked } = this.data;
     // 地区和层级按 requestScope 拼：选了地区且层级含国家部委时，地区里加上国家部委。
     // 没选层级时不带 levels，和加层级之前保存的关注条件一致
-    const scope = requestScope(picked.region, picked.level);
+    const scope = requestScope(picked.region, picked.level, picked.city);
     return {
       q: q.trim(),
       kind: tab,
       regions: scope.regions,
+      cities: picked.city.length ? picked.city.join(',') : undefined,
       levels: scope.levels,
       types: picked.type.join(','),
       // 没选项目类别时不带这一项，和加项目类别之前保存的关注条件一致
@@ -214,6 +236,11 @@ Page({
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
     this.setData(reset ? { loading: true, error: '', chosen: {}, chosenCount: 0, uncovered: '', notCoveredNote: '', emptyHint: '' } : { loading: true, error: '' });
+    const missing = uncoveredCities(this.data.picked.city, this.coverage);
+    if (missing.length) {
+      this.setData({ loading: false, items: [], total: 0, totalAll: 0, verifiedOpenTotal: 0, reposts: 0, folded: 0, guides: 0, fold: foldNote(0, 0), error: `${missing.map((v) => v.replace('/', '·')).join('、')}暂未收录市级来源。请移除该城市或改选全省；未查询不代表没有相关通知。` });
+      return;
+    }
     api.search(params)
       .then((res) => {
         if (seq !== this.seq) return; // 只用最后一次查询的结果
@@ -279,7 +306,7 @@ Page({
       entries[name] = { on: !!hit, group: hit || keys[0] };
     });
     this.setData({
-      groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { options }) : g)),
+      groups: this.data.groups.map((g) => (g.key === 'region' ? Object.assign({}, g, { options }) : g.key === 'city' ? { ...g, options: picked.city } : g)),
       counts,
       activeChips,
       pickedMap,
@@ -351,6 +378,7 @@ Page({
       return;
     }
     const def = GROUPS.find((g) => g.key === group);
+    if (!def) return;
     const cur = this.data.picked[group] || [];
     let next;
     if (group === 'open') {
@@ -367,7 +395,10 @@ Page({
   },
 
   setPicked(group, next) {
-    this.setData({ picked: Object.assign({}, this.data.picked, { [group]: next }) });
+    const picked = { ...this.data.picked, [group]: next };
+    if (group === 'city') picked.region = withoutCityProvinces(picked.region, next);
+    if (group === 'region') picked.city = next.includes('不限地区') ? [] : picked.city.filter((c) => !next.includes(c.split('/')[0]));
+    this.setData({ picked });
     this.refreshChips();
     this.apply(true);
   },
@@ -395,7 +426,7 @@ Page({
     const c = this.conditions();
     const { picked } = this.data;
     const tab = KIND_TABS.find((t) => t.key === c.kind);
-    const regions = picked.region.filter((r) => r && r !== '不限地区');
+    const regions = picked.region.filter((r) => r && r !== '不限地区').concat(picked.city.map((c) => c.replace('/', '·')));
     const parts = [];
     if (c.q) parts.push(`\u201c${c.q}\u201d`);
     parts.push(regions.length ? regions.slice(0, 3).join('、') : '不限地区');

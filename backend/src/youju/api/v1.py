@@ -1370,8 +1370,44 @@ def _view_open(view: deadline_excerpts.View, stamp: datetime) -> bool:
     )
 
 
+def _validate_city_scope(session: Session, province: str, city: str) -> str:
+    if not city:
+        return ""
+    short = city.removesuffix("市")
+    covered = set(
+        session.scalars(
+            select(Source.city).where(
+                Source.province == province,
+                Source.city.in_({city, short, short + "市"}),
+                Source.level == "市级",
+                Source.enabled.is_(True),
+                Source.last_success_at.is_not(None),
+            )
+        ).all()
+    )
+    if city in covered:
+        return city
+    if len(covered) == 1:
+        return next(iter(covered))
+    raise HTTPException(status_code=422, detail="城市未收录，请重新选择地区；不会改为全省查询")
+
+
+def _city_matches(source: Source, province: str, city: str) -> bool:
+    shown = "国家部委" if source.province == "国家" else source.province
+    return (not province or province == shown) and (
+        not city or (source.level == "市级" and city == source.city)
+    )
+
+
 def _report_payload(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
 ) -> dict[str, Any]:
     """截止雷达数据；同一份文件只取方案规定的主截止。"""
     current = now().astimezone(_TZ)
@@ -1390,10 +1426,7 @@ def _report_payload(
     for doc, src in rows:
         if effective_kind(doc.title, doc.kind_override) != "申报通知":
             continue
-        if province and province not in (
-            src.province,
-            "国家部委" if src.province == "国家" else src.province,
-        ):
+        if not _city_matches(src, province, city):
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
@@ -1453,7 +1486,14 @@ def _report_payload(
 
 
 def _report_payload_excerpts(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
 ) -> dict[str, Any]:
     current = now()
     today = current.date()
@@ -1470,7 +1510,7 @@ def _report_payload_excerpts(
         if effective_kind(doc.title, doc.kind_override) != "申报通知":
             continue
         shown_province = "国家部委" if src.province == "国家" else src.province
-        if province and province != shown_province:
+        if not _city_matches(src, province, city):
             continue
         if dept and _dept_bucket(src.dept) != dept:
             continue
@@ -1495,6 +1535,8 @@ def _report_payload_excerpts(
                     "title": doc.title,
                     "issuer": issuer,
                     "province": shown_province,
+                    "city": src.city,
+                    "level": src.level,
                     "kind": soon_kind,
                 }
             )
@@ -1563,10 +1605,17 @@ def _report_payload_excerpts(
 
 
 def _report_response(
-    session: Session, days: int, province: str, dept: str, support: str, page: int, size: int
+    session: Session,
+    days: int,
+    province: str,
+    dept: str,
+    support: str,
+    page: int,
+    size: int,
+    city: str = "",
 ) -> dict[str, Any]:
     """截止雷达接口的返回：雷达数据，加上空状态说明用的已核对条数（不随筛选变化，只给数字）。"""
-    payload = _report_payload(session, days, province, dept, support, page, size)
+    payload = _report_payload(session, days, province, dept, support, page, size, city)
     payload["verified_total"] = verified_total(session)
     return payload
 
@@ -1577,6 +1626,7 @@ def deadline_report(
     excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
     days: Annotated[int, Query(description="未来 7、14 或 30 天")] = 7,
     province: Annotated[str, Query(max_length=32)] = "",
+    city: Annotated[str, Query(max_length=32)] = "",
     dept: Annotated[str, Query(max_length=128)] = "",
     support: Annotated[str, Query(max_length=16)] = "",
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
@@ -1585,6 +1635,8 @@ def deadline_report(
     if days not in (7, 14, 30):
         raise HTTPException(status_code=422, detail="days 只支持 7、14、30")
     province = province.strip()
+    city = city.strip()
+    city = _validate_city_scope(session, province, city)
     dept = dept.strip()
     if province and province not in (set(PROVINCES) - {"不限地区"}):
         raise HTTPException(status_code=422, detail="省份不支持")
@@ -1593,20 +1645,24 @@ def deadline_report(
     if support and support not in SUPPORT_LABELS:
         raise HTTPException(status_code=422, detail="支持方式不支持")
     if excerpts == 1:
-        payload = _report_payload_excerpts(session, days, province, dept, support, page, size)
+        payload = _report_payload_excerpts(session, days, province, dept, support, page, size, city)
         payload["verified_total"] = verified_total(session)
         return payload
-    if support or session.scalar(
-        select(DocumentDeadline.id)
-        .where(
-            DocumentDeadline.status == "approved",
-            DocumentDeadline.approved_date == now().date(),
-            DocumentDeadline.approved_time.is_not(None),
+    if (
+        city
+        or support
+        or session.scalar(
+            select(DocumentDeadline.id)
+            .where(
+                DocumentDeadline.status == "approved",
+                DocumentDeadline.approved_date == now().date(),
+                DocumentDeadline.approved_time.is_not(None),
+            )
+            .limit(1)
         )
-        .limit(1)
     ):
         # 当天带时刻的截止随时间变化；支持方式依赖正文指纹，缓存命中会绕过即时 stale 检查。
-        return _report_response(session, days, province, dept, support, page, size)
+        return _report_response(session, days, province, dept, support, page, size, city)
     # 管理服务和公开服务可能是不同进程；用数据库历史版本让缓存即时失效。
     revision = publication_revision(session, "deadlines")
     key = (days, province, dept, support, page, size, now().astimezone(_TZ).date(), revision)
@@ -1614,7 +1670,7 @@ def deadline_report(
     current = _time.monotonic()
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         return cached[1]
-    payload = _report_response(session, days, province, dept, support, page, size)
+    payload = _report_response(session, days, province, dept, support, page, size, city)
     if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
         _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
     _REPORT_CACHE[key] = (current, payload)
@@ -2097,13 +2153,18 @@ def calendar(
     days: Annotated[int, Query(ge=1, le=366)] = 366,
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+    province: Annotated[str, Query(max_length=32)] = "",
+    city: Annotated[str, Query(max_length=32)] = "",
 ) -> dict:
     """申报日历：核对通过的未截止事项及近 30 天已截止事项，分别分页和统计。
 
     每条的 id 是截止记录编号（一份文件可以有多个截止）；打开详情用 docId。
     """
+    if province and province not in (set(PROVINCES) - {"不限地区"}):
+        raise HTTPException(status_code=422, detail="省份不支持")
+    city = _validate_city_scope(session, province, city)
     if excerpts == 1:
-        return _calendar_payload_excerpts(session, days, limit, offset)
+        return _calendar_payload_excerpts(session, days, limit, offset, province, city)
     current = now()
     d = current.date()
     stmt = (
@@ -2133,7 +2194,9 @@ def calendar(
         key = (master_id, dl.kind, dl.approved_date, dl.approved_time)
         if key not in unique:
             master = session.get(Document, master_id) if master_id != doc.id else doc
-            unique[key] = (dl, master, master.source if master_id != doc.id else src)
+            selected_source = master.source if master_id != doc.id else src
+            if _city_matches(selected_source, province, city):
+                unique[key] = (dl, master, selected_source)
     # 与详情一样抑制归并组中已变更的截止，不能让旧副本进入日历。
     approved = _approved(session, [key[0] for key in unique])
     valid = {
@@ -2153,11 +2216,12 @@ def calendar(
             {
                 "id": f"dl{dl.id}",
                 "docId": str(doc.id),
+                "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
                 "level": src.level,
                 "due": dl.approved_date.isoformat(),
                 "time": _hhmm(dl.approved_time),
-                "region": f"{src.city or src.province} · {src.dept}",
+                "region": f"{applicable_region(src.province, src.level, src.city)} · {src.dept}",
                 "kind": effective_kind(doc.title, doc.kind_override),
                 "title": doc.title,
                 "what": dl.kind,
@@ -2178,7 +2242,9 @@ def calendar(
     }
 
 
-def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: int) -> dict:
+def _calendar_payload_excerpts(
+    session: Session, days: int, limit: int, offset: int, province: str = "", city: str = ""
+) -> dict:
     current = now()
     today = current.date()
     raw_ids = list(
@@ -2216,6 +2282,8 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
     )
     upcoming, past, unverified = [], [], []
     for doc, src, detail_issuer in rows:
+        if not _city_matches(src, province, city):
+            continue
         kind = effective_kind(doc.title, doc.kind_override)
         due = deadline_excerpts.selected(views.get(doc.id, []), today)
         if kind == "申报通知" and soon.get(doc.id, False):
@@ -2225,6 +2293,8 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
                     "title": doc.title,
                     "issuer": normalize_issuer(detail_issuer or src.dept_full_name),
                     "province": "国家部委" if src.province == "国家" else src.province,
+                    "city": src.city,
+                    "level": src.level,
                     "kind": next(
                         (v.kind for v in views[doc.id] if v.source == "unverified"), "截止未核对"
                     ),
@@ -2245,12 +2315,13 @@ def _calendar_payload_excerpts(session: Session, days: int, limit: int, offset: 
             item = {
                 "id": f"dl{view.record_id}",
                 "docId": str(doc.id),
+                "province": "国家部委" if src.province == "国家" else src.province,
                 "city": src.city,
                 "level": src.level,
                 "due": due.public(today) if due else None,
                 "date": view.day.isoformat(),
                 "time": _hhmm(view.clock),
-                "region": f"{src.city or src.province} · {src.dept}",
+                "region": f"{applicable_region(src.province, src.level, src.city)} · {src.dept}",
                 "kind": kind,
                 "title": doc.title,
                 "what": view.kind,

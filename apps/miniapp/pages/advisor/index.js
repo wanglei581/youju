@@ -1,11 +1,10 @@
-// AI 入口页：政策解读、条款对照、适用范围和最近任务。
-// capabilities 没开放时：内测包只显示“暂时没有可用工具”；正式版没同意协议时引导同意，连不上时给重试。
+// 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
+  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '' },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
@@ -15,31 +14,50 @@ Page({
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具' });
-    this.setData({ loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '' });
+    this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '' });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
       const ai = res.ai_advisor || {};
       const kinds = allowedKinds(ai);
       const aiEnabled = ai.enabled === true && kinds.length > 0;
+      const data = dataKinds(res.data_tools);
+      const toolsEnabled = aiEnabled || data.length > 0;
       const disclosure = ai.disclosure || {};
-      if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 工具') });
-      const gate = aiEnabled ? '' : gateState(res);
-      this.setData({ loading: false, aiEnabled, gate, gateText: GATE_TEXT[gate] || '',
+      if (aiEnabled && !data.length) wx.setNavigationBarTitle({ title: aiTitle('AI 工具') });
+      const aiGate = aiEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
+      const gate = toolsEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
+      this.setData({ loading: false, aiGate, aiGateText: GATE_TEXT[aiGate] || '', toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: GATE_TEXT[gate] || '',
         interpretEnabled: aiEnabled && kinds.includes('interpret'),
         clauseEnabled: aiEnabled && kinds.includes('clause'),
         remaining: (ai.remaining || {}).interpret || 0,
         clauseRemaining: (ai.remaining || {}).clause || 0,
         aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         disclosure: aiEnabled && disclosure.modelLabel && disclosure.filingNo ? `模型：${disclosure.modelLabel}｜备案号：${disclosure.filingNo}` : '' });
-      this.kinds = aiEnabled ? kinds : [];
-      if (aiEnabled) this.loadRecent(epoch);
+      this.kinds = allKinds(res);
+      if (toolsEnabled) this.loadRecent(epoch);
+      if (data.length) this.loadQuota(epoch);
     }).catch(() => {
-      if (this.visible && epoch === this.epoch) this.setData({ loading: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, disclosure: '', aiNotice: '' });
+      if (this.visible && epoch === this.epoch) this.setData({ loading: false, toolsEnabled: false, dataEnabled: false, aiEnabled: false, gate: 'offline', gateText: GATE_TEXT.offline, disclosure: '', aiNotice: '' });
     });
+  },
+  loadQuota(epoch = this.epoch) {
+    this.setData({ dataError: '' });
+    api.advisorStatus().then((res) => {
+      if (!this.visible || epoch !== this.epoch) return;
+      const quota = res.quota || {};
+      if (!res.enabled || !['compare', 'track'].every((kind) => quota[kind] && Number.isFinite(quota[kind].limit) && Number.isFinite(quota[kind].used) && Number.isFinite(quota[kind].maxRows))) throw new Error('额度信息不完整，请重试');
+      const remaining = (kind) => Math.max(0, ((quota[kind] || {}).limit || 0) - ((quota[kind] || {}).used || 0));
+      this.setData({ dataStatus: res.pass && res.pass.active ? `工作台使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数` : `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家。免费额度不需要购买` });
+    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ dataError: `额度未能更新：${err.message}` }); });
+  },
+  refreshQuota() { this.loadQuota(); },
+  dataTool(e) {
+    const kind = e.currentTarget.dataset.kind;
+    if ((this.kinds || []).includes(kind) && ['compare', 'track'].includes(kind)) wx.navigateTo({ url: `/pages/advisor-form/index?kind=${kind}` });
   },
   // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
   consent() {
-    if (this.data.gate !== 'consent') return;
+    if (this.data.gate !== 'consent' && this.data.aiGate !== 'consent') return;
     require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.load(); });
   },
   reload() { if (this.data.gate === 'offline') this.load(); },
@@ -67,7 +85,7 @@ Page({
     wx.navigateTo({ url: `/pages/advisor-clause/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
   },
   tasks(e) {
-    if (!this.data.aiEnabled) return;
+    if (!this.data.toolsEnabled) return;
     const id = e && e.currentTarget && e.currentTarget.dataset.id;
     const task = id != null && this.data.recent.find((item) => String(item.id) === String(id));
     if (task && task.kind === 'clause' && this.data.clauseEnabled) {

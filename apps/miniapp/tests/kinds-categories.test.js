@@ -13,7 +13,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;

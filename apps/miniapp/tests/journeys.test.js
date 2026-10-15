@@ -12,7 +12,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -132,7 +132,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 
-test('J-09 截止页省份来自无筛选30天范围，筛部门后仍能直接切省份', async () => {
+test('J-09 截止页保留完整省份选项，筛部门后仍能直接切省份', async () => {
   const calls = [];
   const page = load('pages/report/index.js', {
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
@@ -140,13 +140,13 @@ test('J-09 截止页省份来自无筛选30天范围，筛部门后仍能直接�
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, app);
   page.onLoad(); await flush();
-  assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
+  assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '国家部委'].concat(require('../utils/regions.js').PROVINCES));
   const depts = Array.from(page.data.depts);
   page.pickProvince({ detail: { value: 1 } }); await flush();
   page.pickDept({ detail: { value: 1 } }); await flush();
-  assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '北京', '辽宁']);
+  assert.deepEqual(Array.from(page.data.provinces), ['不限省份', '国家部委'].concat(require('../utils/regions.js').PROVINCES));
   assert.deepEqual(Array.from(page.data.depts), depts);
-  page.pickProvince({ detail: { value: 2 } }); await flush(); assert.equal(calls.at(-1).province, '辽宁');
+  page.pickProvince({ detail: { value: page.data.provinces.indexOf('辽宁') } }); await flush(); assert.equal(calls.at(-1).province, '辽宁');
   assert.ok(calls.every((p) => !('support' in p)), '截止页不再按支持方式筛（D-061：按省份、部门筛）');
 });
 

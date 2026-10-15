@@ -9,7 +9,14 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from youju.ai.interpret import Skill
 from youju.sources.onboard import PROVINCES
@@ -117,6 +124,7 @@ class Qualification(Structured):
 class Company(Structured):
     established: date | None = None
     region: str | None = Field(default=None, strict=True)
+    city: str | None = Field(default=None, strict=True, max_length=32)
     revenue: Amount | None = None
     rd: Amount | None = None
     employees: Annotated[int, Field(ge=0, le=1_000_000, strict=True)] | None = None
@@ -136,6 +144,12 @@ class Company(Structured):
         if value is not None and value not in PROVINCES[1:]:
             raise ValueError("注册地必须是省份清单中的名称")
         return value
+
+    @model_validator(mode="after")
+    def city_with_province(self):
+        if self.city and (not self.region or re.search(r"[/,，;；\n\r]", self.city)):
+            raise ValueError("填写城市时须提供省份，城市须为单个城市名称")
+        return self
 
 
 def notification_result(result: dict) -> dict:
@@ -169,7 +183,9 @@ def display_value(key: str, value) -> str:
 
 def with_company(result: dict, input_json: dict | None) -> dict:
     result = notification_result(result)
-    company = (input_json or {}).get("company") or {}
+    company = dict((input_json or {}).get("company") or {})
+    if company.get("region") and company.get("city"):
+        company["region"] = f"{company['region']} · {company['city']}"
     for row in result["rows"]:
         row["company"] = [
             {

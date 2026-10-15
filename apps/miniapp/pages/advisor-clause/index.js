@@ -1,5 +1,6 @@
 // 条款对照。直达也要 capabilities 开放且含 clause 才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
+const { regionSelection } = require('../../utils/regions.js');
 const clause = require('../../utils/ai-clause.js');
 const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
@@ -9,7 +10,7 @@ Page({
   data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
     checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
-    qualificationOptions: [], today: '' },
+    qualificationOptions: [], today: '', cityRegion: [] },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     this.setData({ docId: doc.docId || '', title: doc.title || '', taskId: query.taskId || '',
@@ -52,7 +53,14 @@ Page({
   },
   region(e) {
     const provinceIndex = Number(e.detail.value);
-    this.setData({ provinceIndex, form: { ...this.data.form, region: clause.PROVINCES[provinceIndex - 1] || '' }, errors: {} });
+    this.setData({ provinceIndex, form: { ...this.data.form, region: clause.PROVINCES[provinceIndex - 1] || '', city: '' }, errors: {} });
+  },
+  chooseCity(e) {
+    try {
+      const selected = regionSelection(e.detail.value);
+      this.setData({ cityRegion: e.detail.value, provinceIndex: clause.PROVINCES.indexOf(selected.province) + 1,
+        form: { ...this.data.form, region: selected.province, city: selected.city }, errors: {} });
+    } catch (err) { this.setData({ errors: { city: err.message } }); }
   },
   clear(e) { this.input({ currentTarget: e.currentTarget, detail: { value: '' } }); },
   qualifications(e) {

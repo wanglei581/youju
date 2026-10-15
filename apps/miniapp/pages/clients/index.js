@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { regionSelection, uncoveredCities } = require('../../utils/regions.js');
 const { loadCoverage } = require('../../utils/coverage.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { todayISO } = require('../../utils/format.js');
@@ -27,9 +28,10 @@ function runLimited(tasks, limit) {
 }
 
 Page({
+  tools() { wx.navigateTo({ url: '/pages/advisor/index' }); },
   data: {
     tab: 'docs', clients: [], editing: false, form: {}, provinces: PROVINCES, industries: INDUSTRIES,
-    cityOptions: [], picked: {}, error: '', coverageError: '', placeholder: '客户 1',
+    cityOptions: [], cityRegion: [], cityError: '', cityCoverageNote: '', picked: {}, error: '', coverageError: '', placeholder: '客户 1',
     // 相关通知
     rows: [], shown: [], only: '', counts: {}, loading: false, loaded: false, loadError: '', truncated: false, today: '',
   },
@@ -70,18 +72,19 @@ Page({
     const groups = queryGroups(clients);
     const tasks = groups.map((g) => () => api.search({ ...g.params, limit: PER_QUERY, offset: 0 })
       .then((res) => ({ ids: g.ids, items: res.items || [], total: res.total || 0 }))
-      .catch(() => ({ ids: g.ids, failed: true })));
+      .catch((err) => ({ ids: g.ids, failed: true, cityError: /城市/.test(err.message || '') ? err.message : '' })));
     runLimited(tasks, PARALLEL).then((results) => {
       if (seq !== this.seq) return;
       const ok = results.filter((r) => !r.failed);
       const failed = results.length - ok.length;
+      const cityNote = [...new Set(results.map((r) => r.cityError).filter(Boolean))].join('；');
       const rows = mergeRelated(clients, ok);
       const counts = {};
       rows.forEach((row) => row.ids.forEach((id) => { counts[id] = (counts[id] || 0) + 1; }));
       this.setData({
         rows, counts, loading: false, loaded: true,
         truncated: ok.some((r) => r.total > r.items.length) || rows.length > MAX_DOCS,
-        loadError: failed === results.length ? '相关通知没有加载出来' : (failed ? `有 ${failed} 组客户的通知没有加载出来` : ''),
+        loadError: cityNote ? `${cityNote}。未查询的城市不会改为全省，未查到不代表没有通知。` : failed === results.length ? '相关通知没有加载出来' : (failed ? `有 ${failed} 组客户的通知没有加载出来` : ''),
       });
       this.refreshShown();
     });
@@ -113,7 +116,8 @@ Page({
 
   loadCities() {
     loadCoverage().then((c) => {
-      this.setData({ cityOptions: (c && c.cities || []).map((v) => ({ key: `${v.province}/${v.city}`, label: `${v.province}·${v.city}` })),
+      this.coverage = c;
+      this.setData({ cityCoverageNote: c && Array.isArray(c.cities) ? (c.cities.length ? `只已收录 ${c.cities.length} 个城市的部分来源，不代表全市完整覆盖。` : '当前尚未接入市级来源；城市可以保存，相关通知暂不可查询。') : '', cityOptions: (c && c.cities || []).map((v) => ({ key: `${v.province}/${v.city}`, label: `${v.province}·${v.city}` })),
         coverageError: c ? '' : '已收录城市未加载，可重试；省级地区仍可选择' });
     }).catch(() => this.setData({ coverageError: '已收录城市未加载，可重试；省级地区仍可选择' }));
   },
@@ -131,7 +135,8 @@ Page({
   refreshPicked() {
     const picked = {};
     ['regions', 'cities', 'industries'].forEach((group) => this.data.form[group].forEach((v) => { picked[`${group}:${v}`] = true; }));
-    this.setData({ picked });
+    const missing = uncoveredCities(this.data.form.cities, this.coverage);
+    this.setData({ picked, cityError: missing.length ? `${missing.join('、')}暂未收录市级来源。保留此条件后不会改为全省查询。` : '' });
   },
   nameInput(e) { this.setData({ form: { ...this.data.form, name: e.detail.value } }); },
   pick(e) {
@@ -140,7 +145,20 @@ Page({
     if (!['regions', 'cities', 'industries'].includes(group) || !allowed.includes(value)) return;
     const current = this.data.form[group];
     const next = current.includes(value) ? current.filter((v) => v !== value) : current.concat(value);
-    this.setData({ form: { ...this.data.form, [group]: next } }); this.refreshPicked();
+    const form = { ...this.data.form, [group]: next };
+    if (group === 'regions') form.cities = form.cities.filter((c) => !next.includes(c.split('/')[0]));
+    this.setData({ form: normalize(form) }); this.refreshPicked();
+  },
+  chooseCity(e) {
+    try {
+      const choice = regionSelection(e.detail.value, this.coverage);
+      const form = { ...this.data.form };
+      if (choice.city) form.cities = [...new Set(form.cities.concat(`${choice.province}/${choice.city}`))];
+      else { form.regions = [...new Set(form.regions.concat(choice.province))]; form.cities = form.cities.filter((c) => c.split('/')[0] !== choice.province); }
+      this.setData({ form: normalize(form), cityRegion: e.detail.value });
+      this.refreshPicked();
+      if (choice.note) this.setData({ cityError: choice.note });
+    } catch (err) { this.setData({ cityError: err.message }); }
   },
   removeCity(e) {
     this.setData({ form: { ...this.data.form, cities: this.data.form.cities.filter((v) => v !== e.currentTarget.dataset.value) } });

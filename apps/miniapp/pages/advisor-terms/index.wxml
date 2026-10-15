@@ -1,0 +1,12 @@
+<notice-bar />
+<view class="card advisor-card">
+  <view class="advisor-title">工具使用说明</view>
+  <view wx:for="{{paragraphs}}" wx:key="*this" class="advisor-text">{{item}}</view>
+  <view wx:if="{{loading}}" class="advisor-text muted">正在核对同意记录…</view>
+  <view wx:if="{{error}}" class="advisor-error">{{error}}</view>
+  <button wx:if="{{error && !enabled}}" class="advisor-button" bindtap="load">重试</button>
+  <view wx:if="{{agreed}}" class="advisor-text">你已单独同意本说明。</view>
+  <checkbox-group wx:if="{{enabled && !agreed}}" bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" disabled="{{sending}}" /><text>我已阅读并同意工具使用说明，确认有权提交这些企业信息</text></label></checkbox-group>
+  <button wx:if="{{enabled && !agreed}}" class="advisor-button btn-primary" bindtap="agree" loading="{{sending}}" disabled="{{!checked || sending}}">同意并返回</button>
+</view>
+<view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -35,10 +35,10 @@ function split(value) {
 //   其余照原样：regions=省份或不限地区，levels=所选层级。
 const NATIONAL = '国家部委';
 
-function requestScope(region, level) {
+function requestScope(region, level, cities = []) {
   const provinces = (region || []).filter((r) => r !== '不限地区' && r !== NATIONAL);
   const levels = level || [];
-  if (provinces.length && levels.includes(NATIONAL)) {
+  if ((provinces.length || cities.length) && levels.includes(NATIONAL)) {
     return { regions: [NATIONAL].concat(provinces).join(','), levels: levels.some((l) => l !== NATIONAL) ? levels.join(',') : undefined };
   }
   return { regions: (region || []).join(','), levels: levels.length ? levels.join(',') : undefined };
@@ -90,10 +90,17 @@ function describe(c) {
   const parts = [];
   if (c.q) parts.push(`"${c.q}"`);
   const regions = split(c.regions).filter((r) => r !== '不限地区');
-  parts.push(regions.length ? regions.join('、') : '不限地区');
+  const cities = split(c.cities).map((v) => v.replace('/', '·'));
+  const areas = regions.concat(cities);
+  parts.push(areas.length ? areas.join('、') : '不限地区');
   const levels = split(c.levels);
   if (levels.length) parts.push(levels.join('、'));
-  parts.push(KIND_LABEL[c.kind] || '全部类型');
+  const types = split(c.types);
+  parts.push(types.length ? types.join('、') : KIND_LABEL[c.kind] || '全部类型');
+  const statuses = split(c.status);
+  if (statuses.length) parts.push(`名单状态：${statuses.join('、')}`);
+  const depts = split(c.depts);
+  if (depts.length) parts.push(`发文部门：${depts.join('、')}`);
   const categories = split(c.categories);
   if (categories.length) parts.push(`项目类别：${categories.join('、')}`);
   const supports = split(c.supports);

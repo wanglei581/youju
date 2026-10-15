@@ -8,7 +8,7 @@ const EMPTY_COMPANY = '请自行对照原文';
 const text = (value) => value == null ? '' : String(value).trim();
 
 function emptyForm() {
-  return { established: '', region: '', revenueAmount: '', revenueYear: '', rdAmount: '', rdYear: '', employees: '', qualification: [] };
+  return { established: '', region: '', city: '', revenueAmount: '', revenueYear: '', rdAmount: '', rdYear: '', employees: '', qualification: [] };
 }
 function validDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -23,6 +23,7 @@ function validateForm(form = {}, today = todayISO()) {
   const established = text(form.established);
   if (established && (!validDate(established) || established > today)) errors.established = '成立日期须为有效日期，不能晚于今天';
   if (text(form.region) && !PROVINCES.includes(form.region)) errors.region = '请从省份清单选择注册地';
+  if (text(form.city) && (!text(form.region) || text(form.city).length > 32 || /[/,，;；\n\r]/.test(text(form.city)))) errors.city = '填写城市时请先选择省份，城市须为单个城市名称';
   for (const field of ['revenue', 'rd']) {
     const amount = text(form[`${field}Amount`]); const stamp = text(form[`${field}Year`]);
     if (!amount && !stamp) continue;
@@ -47,7 +48,7 @@ function toCompany(form = {}, today = todayISO()) {
   const errors = validateForm(form, today);
   if (Object.keys(errors).length) throw Object.assign(new Error('请检查企业情况'), { errors });
   const company = {};
-  for (const field of ['established', 'region']) if (text(form[field])) company[field] = text(form[field]);
+  for (const field of ['established', 'region', 'city']) if (text(form[field])) company[field] = text(form[field]);
   for (const field of ['revenue', 'rd']) if (text(form[`${field}Amount`])) {
     company[field] = { amount: Number(form[`${field}Amount`]), year: Number(form[`${field}Year`]) };
   }

@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const { PROVINCES, regionSelection } = require('../../utils/regions.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -26,7 +27,7 @@ const DEPTS = ['不限部门', '科技部门', '工信部门', '其他部门'];
 const NO_SOON = { total: 0, items: [] };
 // 默认视图（7 天内、不筛省份部门、没开"只看已核对"）存一份到本机，下次打开先显示（utils/cache.js）
 const DEADLINE_CACHE = 'youjuDeadlineCacheV1';
-const isDefaultView = ({ tab, province, dept, verifiedOnly }) => tab === 7 && !province && !dept && !verifiedOnly;
+const isDefaultView = ({ tab, province, city, dept, verifiedOnly }) => tab === 7 && !province && !city && !dept && !verifiedOnly;
 
 // 一条截止怎么显示。机器摘录按手机日期已进了 7 天内、或者没带原句的，不写日期（dueView 再拦一次）
 function row(base, due) {
@@ -51,7 +52,7 @@ function reportRow(d) {
     : { kind: d.label, source: d.source || 'verified', date: d.date, time: d.time, quote: d.quote };
   return row({
     key: `r${d.id}`, docId: String(d.id), hasDetail: true, title: d.title,
-    meta: [d.issuer, d.province].filter(Boolean).join(' · '), fileNumber: d.file_number || '',
+    meta: [d.issuer, d.province, d.city].filter(Boolean).join(' · '), fileNumber: d.file_number || '',
   }, due);
 }
 
@@ -101,9 +102,9 @@ Page({
     tabs: TABS,
     tab: 7,
     verifiedOnly: false,
-    province: '',
+    province: '', city: '', cityRegion: [], cityError: '',
     dept: '',
-    provinces: ['不限省份'],
+    provinces: ['不限省份', '国家部委'].concat(PROVINCES),
     depts: DEPTS,
     summary: { 7: 0, 14: 0, 30: 0 },
     rows: [],
@@ -159,8 +160,8 @@ Page({
     this.requestSeq = requestSeq;
     this.calSeq = (this.calSeq || 0) + 1; // 丢掉还没回来的按月看请求
     this.loadedDay = todayISO();
-    const { tab, province, dept, verifiedOnly } = this.data;
-    const unfiltered = tab === 30 && !province && !dept;
+    const { tab, province, city, dept, verifiedOnly } = this.data;
+    const unfiltered = tab === 30 && !province && !city && !dept;
     if (!this.optionsLoading && !this.filterOptionsLoaded && !unfiltered) this.loadOptions();
     const cacheable = reset && isDefaultView(this.data);
     const cached = cacheable && !this.data.rows.length ? readCache(DEADLINE_CACHE) : null;
@@ -186,7 +187,7 @@ Page({
         save(snap.deadlines);
       });
     }
-    api.deadlineReport({ days: tab, province, dept, page, size: PAGE_SIZE }, { verifiedOnly })
+    api.deadlineReport({ days: tab, province, city, dept, page, size: PAGE_SIZE }, { verifiedOnly })
       .then((res) => {
         if (requestSeq !== this.requestSeq) return;
         live = true;
@@ -217,7 +218,7 @@ Page({
 
   setOptions(res) {
     this.filterOptionsLoaded = true;
-    this.setData({ provinces: ['不限省份'].concat(Object.keys(res.by_province || {}).sort()) });
+    this.setData({ provinces: ['不限省份', '国家部委'].concat(PROVINCES) });
   },
 
   loadOptions() {
@@ -237,7 +238,7 @@ Page({
     this.loadedDay = todayISO();
     if (this.cal) { this.setData({ loading: false, error: '' }); this.showMonth(); return; }
     this.setData({ loading: true, error: '', rows: [] });
-    api.calendar().then((res) => {
+    api.calendar({ province: this.data.province, city: this.data.city }).then((res) => {
       if (seq !== this.calSeq) return;
       this.cal = res;
       this.setData({ loading: false, truncated: !!res.truncated, verifyingNote: verifyingNote(res.verifiedTotal) });
@@ -295,8 +296,17 @@ Page({
   },
   pickProvince(e) {
     const index = Number(e.detail.value);
-    this.setData({ province: index === 0 ? '' : this.data.provinces[index] }); this.load(true);
+    this.setData({ province: index === 0 ? '' : this.data.provinces[index], city: '', cityError: '' }); this.reloadArea();
   },
+  chooseCity(e) {
+    try {
+      const selected = regionSelection(e.detail.value);
+      this.setData({ province: selected.province, city: selected.city, cityRegion: e.detail.value, cityError: selected.note });
+      this.reloadArea();
+    } catch (err) { this.setData({ cityError: err.message }); }
+  },
+  clearCity() { this.setData({ city: '', cityError: '' }); this.reloadArea(); },
+  reloadArea() { this.cal = null; this.setData({ sel: '', rows: [], past: [], soon: NO_SOON }); if (this.data.tab === MONTH) this.loadMonth(); else this.load(true); },
   pickDept(e) {
     const index = Number(e.detail.value);
     this.setData({ dept: index === 0 ? '' : this.data.depts[index] }); this.load(true);
@@ -336,6 +346,7 @@ Page({
     const params = [`kind=${encodeURIComponent('申报通知')}`];
     const { province } = this.data;
     if (province === '国家部委') params.push(`levels=${encodeURIComponent(province)}`);
+    else if (this.data.city) params.push(`cities=${encodeURIComponent(`${province}/${this.data.city}`)}`);
     else if (province) params.push(`regions=${encodeURIComponent(province)}`);
     if (this.data.dept) params.push(`depts=${encodeURIComponent(this.data.dept)}`);
     wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });

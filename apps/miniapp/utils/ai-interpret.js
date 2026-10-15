@@ -21,7 +21,7 @@ function resultView(result = {}) {
     notice: result.notice || '', refusal: result.refusal || '', warning: result.warning || '',
     attachmentNotice: result.attachment_notice || '', disclosure: disclosureLine(result.disclosure),
     verified: (result.verified || []).map((item, index) => Object.assign({}, item, {
-      key: index, displayValue: [item.value, item.time].filter(Boolean).join(' '),
+      key: index, displayValue: [item.kind, item.value, item.time].filter(Boolean).join(' '),
     })),
     sections: result.refusal ? [] : SECTIONS.map(([type, title]) => ({
       type, title, missing: missing.includes(type),

@@ -1,9 +1,10 @@
 const { INDUSTRIES, NATIONAL, requestScope } = require('./conditions.js');
+const { PROVINCES, withoutCityProvinces } = require('./regions.js');
 const { dueView } = require('./format.js');
 
 // 我的客户（D-061）：客户卡片只存在本机，名称不上传；检索只发送地区和产业方向。
 const STORAGE_KEY = 'youjuLocalClientsV1';
-const PROVINCES = ['北京', '天津', '河北', '山西', '内蒙古', '辽宁', '吉林', '黑龙江', '上海', '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南', '广东', '广西', '海南', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'];
+
 const MAX_CLIENTS = 20;
 // 每组检索条件取最新的 50 份（接口一页最多 50）；合并后最多列 200 份（导出一次最多 200 份）
 const PER_QUERY = 50;
@@ -15,14 +16,15 @@ const strings = (values) => Array.isArray(values) ? values.filter((v) => typeof 
 
 function normalize(value) {
   const c = value && typeof value === 'object' ? value : {};
+  const cities = unique(strings(c.cities).filter((v) => {
+    const parts = v.split('/');
+    return parts.length === 2 && PROVINCES.includes(parts[0]) && parts[1].length > 0 && parts[1].length <= 32;
+  }));
   return {
     id: typeof c.id === 'string' ? c.id : '',
     name: typeof c.name === 'string' ? c.name.trim().slice(0, 40) : '',
-    regions: unique(strings(c.regions).filter((v) => PROVINCES.includes(v))),
-    cities: unique(strings(c.cities).filter((v) => {
-      const parts = v.split('/');
-      return parts.length === 2 && PROVINCES.includes(parts[0]) && parts[1].length > 0 && parts[1].length <= 32;
-    })),
+    regions: withoutCityProvinces(unique(strings(c.regions).filter((v) => PROVINCES.includes(v))), cities),
+    cities,
     industries: unique(strings(c.industries).filter((v) => INDUSTRIES.includes(v))),
   };
 }
@@ -46,7 +48,7 @@ function saveClients(clients) {
 const displayName = (client, index) => client.name || `客户 ${index + 1}`;
 
 // 一家客户的检索条件：近 90 天的申报通知，去掉已核对、确认已截止的。
-// 省和城市取并集；没有选择地区时全国检索，始终包含国家部委。
+// 具体城市替换同省的全省条件；其他省份仍可并选。没有选择地区时全国检索，始终包含国家部委。
 function clientParams(client) {
   const c = normalize(client);
   const scope = c.regions.length ? requestScope(c.regions, [NATIONAL])

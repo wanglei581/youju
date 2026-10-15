@@ -28,7 +28,7 @@ function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Set, setTimeout: trackedTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
   }, { filename: file });
@@ -182,7 +182,8 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
       if (enabled) {
         // 标注在页面最上方（notice-bar 之后、其他内容之前）
         assert.ok(output.startsWith(NOTICE), name);
-        assert.match(titles.at(-1), /内部测试/, name);
+        if (name === 'advisor-tasks') assert.equal(titles.at(-1), '任务中心');
+        else assert.match(titles.at(-1), /内部测试/, name);
       } else {
         assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/, name);
         assert.match(output, /暂时没有可用工具/, name);
@@ -262,7 +263,7 @@ test('任务页取消、删除走线上接口并刷新；进行中的任务轮�
   page.onShow(); await flush(); await flush();
   assert.equal(page.data.items[0].stateLabel, '排队中'); assert.equal(timers.length, 1);
   assert.match(render(read('pages/advisor-tasks/index.wxml'), page.data), /取消/);
-  timers[0](); await flush(); await flush(); assert.equal(page.data.items[0].stateLabel, '已完成');
+  status = 'done'; timers[0](); await flush(); await flush(); assert.equal(page.data.items[0].stateLabel, '已完成');
   page.cancel({ currentTarget: { dataset: { id: 7 } } }); await flush(); await flush();
   page.remove({ currentTarget: { dataset: { id: 7 } } }); await flush(); await flush();
   assert.deepEqual(calls, [['cancel', 7], ['delete', 7]]);

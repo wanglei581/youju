@@ -11,7 +11,7 @@ function load(file, dependencies, globals = {}) {
   let page;
   const context = {
     module, setTimeout, clearTimeout,
-    require(name) {
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js');
       assert.ok(Object.hasOwn(dependencies, name), `缺少测试依赖：${name}`);
       return dependencies[name];
     },
@@ -29,7 +29,7 @@ const tap = (key, value) => ({ currentTarget: { dataset: { [key]: value } } });
 function accountHarness({ cancel = false, fail = false, filesFail = false } = {}) {
   const storage = new Map([
     ['youjuAgreedVersion', 'test'], ['youjuExports', [{ id: 1, path: '/local/有据导出_test.xlsx' }]],
-    ['personalCache', { value: 'test' }],
+    ['personalCache', { value: 'test' }], ['youjuDataTaskKeysV1', { owner: 'a'.repeat(64), entries: [] }],
   ]);
   const files = ['有据导出_test.xlsx', '有据导出_orphan.docx', 'public.txt'];
   const deleted = [];
@@ -81,7 +81,7 @@ test('取消注销或服务端删除失败保留本机数据', async () => {
   for (const options of [{ cancel: true }, { fail: true }]) {
     const { consent, storage, deleted } = accountHarness(options);
     assert.equal(await consent.withdraw(), false);
-    assert.equal(storage.size, 3);
+    assert.equal(storage.size, 4);
     assert.equal(deleted.length, 0);
   }
 });

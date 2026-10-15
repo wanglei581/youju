@@ -1163,3 +1163,18 @@ def test_follow_new_folds_guides_when_asked(client, session, monkeypatch):
     typed = follow(client, {"time": "不限", "types": "申报通知"}).json()["id"]
     body = client.get(f"/api/v1/me/follows/{typed}/new", params={"fold": 1}).json()
     assert (body["total"], body["folded"]) == (1, 0)
+
+
+def test_profile_task_owner_is_stable_opaque_and_account_scoped(client, monkeypatch):
+    settings(monkeypatch, openid="synthetic-owner-one")
+    agree(client)
+    first = client.get("/api/v1/me").json()
+    assert len(first["taskOwner"]) == 64
+    assert set(first["taskOwner"]) <= set("0123456789abcdef")
+    assert "synthetic-owner-one" not in str(first)
+    assert client.get("/api/v1/me").json()["taskOwner"] == first["taskOwner"]
+    settings(monkeypatch, openid="synthetic-owner-two")
+    agree(client)
+    second = client.get("/api/v1/me").json()
+    assert second["taskOwner"] != first["taskOwner"]
+    assert "synthetic-owner-two" not in str(second)

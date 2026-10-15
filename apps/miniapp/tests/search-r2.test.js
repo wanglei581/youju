@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
 const conditions = require('../utils/conditions.js');
+const regions = require('../utils/regions.js');
 const { mockSearch } = require('../utils/mockSearch.js');
 
 // UI 第二轮：搜索页的两栏筛选弹层、国家部委只在层级里、已选条件条、结果信息栏、空结果。
@@ -14,7 +15,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -25,24 +26,25 @@ const daywatch = { watchDay() {}, stopDay() {} };
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function searchPage({ respond = () => ({ total: 0, total_all: 0, items: [] }), final = false, consent = {}, wx = {} } = {}) {
+function searchPage({ respond = () => ({ total: 0, total_all: 0, items: [] }), final = false, consent = {}, wx = {}, coverage = {} } = {}) {
   const calls = [];
   const page = load('pages/search/index.js', {
+    '../../utils/regions.js': regions,
     '../../utils/api.js': { search: (p) => { calls.push(p); return Promise.resolve(respond(p)); } },
     '../../content/legal.js': { final },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/exporter.js': {},
     '../../utils/consent.js': { loginOpen: () => final, ...consent }, '../../utils/subscribe.js': { remindOpen: () => true }, '../../utils/conditions.js': conditions,
-    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({}), notCoveredNames: () => '', allUncovered: () => [] },
+    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(coverage), notCoveredNames: () => '', allUncovered: () => [] },
   }, { wx });
   return { page, calls };
 }
 const chipLabels = (page) => plain(page.data.activeChips.map((c) => c.label));
 
-test('两栏筛选：左栏按约定顺序列出 10 组，组名旁边是已选个数；默认的不限地区、近 30 天不算', async () => {
+test('两栏筛选：左栏按约定顺序列出 11 组，组名旁边是已选个数；默认的不限地区、近 30 天不算', async () => {
   const { page } = searchPage();
   page.onLoad({}); await flush();
   assert.deepEqual(page.data.groups.map((g) => g.title),
-    ['地区', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
+    ['地区', '城市', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
   assert.ok(Object.values(page.data.counts).every((n) => n === 0));
   page.pickOption(event({ group: 'region', option: '江苏' })); await flush();
   page.pickOption(event({ group: 'region', option: '山东' })); await flush();
@@ -332,7 +334,7 @@ test('按标题归类的三组：右栏顶部统一一行说明，下面只写�
   assert.deepEqual(page.data.groups.filter((g) => g.tagged).map((g) => g.key), ['category', 'support', 'industry']);
   for (const g of page.data.groups) assert.ok(!(g.note || '').includes('仅供检索参考'), g.key);
   const template = read('pages/search/index.wxml');
-  assert.match(template, /<view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}<\/text><\/view>\s*<view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}<\/view>\s*<view class="options">/);
+  assert.match(template, /<view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}<\/text><\/view>[\s\S]*?<view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}<\/view>\s*<view class="options">/);
   assert.equal((template.match(/{{tagNote}}/g) || []).length, 1);
 });
 
@@ -390,4 +392,35 @@ test('未截止选项写明口径（D-061：含机器摘录和可能 7 天内截
   assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);
   page.allTime(); await flush(); assert.equal(calls.at(-1).time, '不限'); assert.equal(page.data.items.length, 1);
   page.onLoad({ time: encodeURIComponent('近 90 天') }); await flush(); assert.equal(calls.at(-1).time, '近 90 天');
+});
+
+test('具体城市路由恢复、关注名称与请求保留省市；选城市不被同省全省条件吞掉', async () => {
+  const { page, calls } = searchPage({ coverage: { cities: [{ province: '山东', city: '青岛' }] } });
+  page.onLoad({ regions: encodeURIComponent('国家部委,山东'), cities: encodeURIComponent('山东/青岛') }); await flush();
+  assert.equal(page.conditions().regions, '国家部委'); assert.equal(page.conditions().cities, '山东/青岛');
+  assert.equal(page.conditions().levels, undefined);
+  assert.match(page.followName(), /山东·青岛/); assert.ok(chipLabels(page).includes('山东·青岛'));
+  assert.equal(calls.at(-1).cities, '山东/青岛');
+  page.pickOption(event({ group: 'region', option: '山东' })); await flush();
+  assert.equal(page.conditions().cities, undefined);
+  page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
+  assert.equal(page.conditions().regions, '国家部委'); assert.equal(page.conditions().cities, '山东/青岛');
+  assert.match(conditions.describe(page.conditions()), /山东·青岛/);
+});
+
+test('城市清单用原生完整省市选择器，零覆盖可选择但明确未查询，不退回全省', async () => {
+  const { page, calls } = searchPage({ coverage: { cities: [] } });
+  page.onLoad({}); await flush(); const before = calls.length;
+  page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
+  assert.equal(page.conditions().cities, '山东/青岛'); assert.equal(calls.length, before);
+  assert.match(page.data.error, /暂未收录市级来源/); assert.equal(page.data.items.length, 0);
+  assert.match(read('pages/search/index.wxml'), /picker mode="region" level="city"/);
+  page.chooseCity({ detail: { value: ['北京市', '北京市'] } }); await flush();
+  assert.match(page.data.cityError, /直辖市/);
+  assert.equal(page.conditions().regions, '北京');
+});
+
+test('关注与我的数据共用摘要保留类型、名单状态和发文部门，不写成全部类型', () => {
+  const description = conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '山东/青岛' });
+  assert.match(description, /名单与公示/); assert.match(description, /名单状态：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
 });

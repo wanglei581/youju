@@ -10,7 +10,7 @@ const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const helpers = require('../utils/advisor.js');
-// 线上 capabilities 的结构（backend/src/youju/api/advisor.py）：数据工具没上线，保持关闭。
+// capabilities 的两类能力独立授权。
 const caps = (dataEnabled, aiEnabled) => ({
   data_tools: { enabled: dataEnabled, features: dataEnabled ? ['compare', 'track'] : [], remaining: { compare: 1, track: 1 } },
   ai_advisor: { enabled: aiEnabled, features: aiEnabled ? ['interpret'] : [], remaining: { interpret: 3 }, disclosure: { modelLabel: '模型名称', filingNo: '登记编号' } },
@@ -207,7 +207,7 @@ test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文
 test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据工具开关不影响', async () => {
   for (const [dataEnabled, aiEnabled] of [[false, false], [true, false], [false, true], [true, true]]) {
     let navigationTitle; const capabilities = caps(dataEnabled, aiEnabled);
-    const api = { advisorCapabilities: () => Promise.resolve(capabilities), advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'interpret', status: 'done', docTitle: '通知' }, { id: 2, kind: 'compare', status: 'done' }] }) };
+    const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 2, maxRows: 50 }, track: { limit: 3, used: 2, maxRows: 50 } } }), advisorCapabilities: () => Promise.resolve(capabilities), advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'interpret', status: 'done', docTitle: '通知' }, { id: 2, kind: 'compare', status: 'done' }] }) };
     const fab = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers });
     fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
     Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
@@ -220,12 +220,12 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     if (aiEnabled) {
       assert.match(rendered, /内部测试：结果由 AI 模型根据原文生成/); assert.match(rendered, /今天剩余 3 次/); assert.match(rendered, /解读这篇通知/);
       assert.match(rendered, /模型：模型名称｜备案号：登记编号/);
-      assert.deepEqual(page.data.recent.map((task) => task.kind), ['interpret']);
+      assert.deepEqual(page.data.recent.map((task) => task.kind).sort(), dataEnabled ? ['compare', 'interpret'] : ['interpret']);
     } else {
-      assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, 0);
+      assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, dataEnabled ? 1 : 0);
     }
-    assert.doesNotMatch(rendered, /数据工具|名单比对|填写客户/);
-    assert.equal(navigationTitle, aiEnabled ? 'AI 工具 · 内部测试' : '工具');
+    assert.equal(rendered.includes('批量名单比对'), dataEnabled);
+    assert.equal(navigationTitle, aiEnabled && !dataEnabled ? 'AI 工具 · 内部测试' : '工具');
     if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /请先打开一份申报通知，在详情页点右下角“AI 内测”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }
@@ -295,12 +295,15 @@ test('capabilities 缓存与 refresh 并发合并，失败静默且 interpret �
   assert.deepEqual(plain(requests[2].data), { kind: 'interpret', doc_id: 42 }); assert.equal(requests[2].header['Idempotency-Key'], 'unique-key');
   assert.equal(requests[2].method, 'POST'); assert.equal(requests[2].url, 'https://test.invalid/api/v1/advisor/tasks');
   requests[2].success({ statusCode: 202, data: { id: 7 } }); assert.equal((await task).id, 7);
-  // 未上线的数据工具一律不发请求
-  await assert.rejects(api.createAdvisorTask({ kind: 'compare', rows: ['甲'] }, 'k'), (err) => err.status === 404);
-  assert.equal(requests.length, 3);
+  // 数据工具走同一接口，但不发送 AI 字段；未知类型仍拒绝。
+  const compare = api.createAdvisorTask({ kind: 'compare', rows: ['甲'], doc_id: 42 }, 'k');
+  assert.deepEqual(plain(requests[3].data), { kind: 'compare', rows: ['甲'] });
+  requests[3].success({ statusCode: 202, data: { id: 8 } }); assert.equal((await compare).id, 8);
+  await assert.rejects(api.createAdvisorTask({ kind: 'unknown' }, 'k'), (err) => err.status === 404);
+  assert.equal(requests.length, 4);
 });
 
-test('任务页只列有权限的解读任务；白名单类型名与入口正确', async () => {
+test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问权', async () => {
   for (const enabled of [false, true]) {
     const urls = []; const tasks = [{ id: 7, kind: 'interpret', status: 'done', hasResult: true, rowCount: 0, docTitle: '通知标题' }, { id: 8, kind: 'compare', status: 'done', rowCount: 2, hasFile: true }];
     let listed = 0;
@@ -309,9 +312,9 @@ test('任务页只列有权限的解读任务；白名单类型名与入口正�
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
     assert.equal(output.includes('政策解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
-    assert.equal(output.includes('通知标题'), enabled); assert.doesNotMatch(output, /名单比对|Excel/);
-    assert.equal(listed, enabled ? 1 : 0);
-    if (!enabled) { assert.doesNotMatch(output, /AI|内部测试/); assert.match(output, /暂时没有可用工具/); }
+    assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*下载 Excel/);
+    assert.equal(listed, 1);
+    if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);
     page.openTask({ currentTarget: { dataset: { id: 7 } } }); assert.equal(urls.length, enabled ? 1 : 0);
     page.openTask({ currentTarget: { dataset: { id: 8 } } }); assert.equal(urls.length, enabled ? 1 : 0);
     if (enabled) assert.equal(urls[0], '/pages/advisor-interpret/index?taskId=7'); page.onHide();

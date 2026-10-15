@@ -110,6 +110,12 @@
         <scroll-view wx:if="{{activeGroup === g.key}}" class="pane" scroll-y enhanced show-scrollbar="{{false}}">
           <view class="pane-inner">
             <view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}</text></view>
+            <block wx:if="{{g.key === 'city'}}">
+              <picker mode="region" level="city" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省份与城市</view></picker>
+              <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
+              <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
+              <view class="group-note">已选城市点一下移除；直辖市按省级范围查询。选择器无法使用时请升级微信。</view>
+            </block>
             <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">
               <view wx:for="{{g.options}}" wx:for-item="o" wx:key="*this" class="option {{pickedMap[g.key + ':' + o] ? 'option--on' : ''}}"

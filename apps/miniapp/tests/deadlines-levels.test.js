@@ -13,7 +13,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -229,4 +229,25 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');
   assert.match(read('pages/search/index.wxml'), /wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}/);
+});
+
+test('截止列表和按月视图均携带省市，换省清城市，未收录城市反馈错误而不扩大查询', async () => {
+  const requests = []; let unknown = false; let target;
+  const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+    '../../utils/api.js': {
+      deadlineReport: p => { requests.push(['report', p]); return Promise.resolve({ items: [{ id: 1, title: '合成通知', issuer: '合成机关', province: '山东', city: '青岛', date: '2026-12-01' }], total: 1, summary: {}, verified_total: 1 }); },
+      calendar: p => { requests.push(['calendar', p]); return unknown ? Promise.reject(new Error('城市未收录')) : Promise.resolve({ items: [], past: [], verifiedTotal: 1 }); },
+    },
+    '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+  }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: r => { target = r.url; } } });
+  page.onLoad(); await flush(); page.chooseCity({ detail: { value: ['山东省', '青岛市'] } }); await flush();
+  assert.equal(requests.at(-1)[1].province, '山东'); assert.equal(requests.at(-1)[1].city, '青岛');
+  assert.match(page.data.rows[0].meta, /山东 · 青岛/);
+  page.goSearch(); assert.equal(new URL(target, 'https://test.invalid').searchParams.get('cities'), '山东/青岛');
+  page.pickTab(event({ key: 0 })); await flush(); assert.equal(requests.at(-1)[0], 'calendar'); assert.equal(requests.at(-1)[1].city, '青岛');
+  page.pickProvince({ detail: { value: page.data.provinces.indexOf('江苏') } }); await flush();
+  assert.equal(requests.at(-1)[1].province, '江苏'); assert.equal(requests.at(-1)[1].city, '');
+  unknown = true; page.chooseCity({ detail: { value: ['江苏省', '苏州市'] } }); await flush();
+  assert.equal(page.data.error, '加载失败：城市未收录'); assert.equal(requests.at(-1)[1].city, '苏州'); assert.equal(page.data.rows.length, 0);
 });
