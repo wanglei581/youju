@@ -613,3 +613,35 @@ test('写操作（10/15，Codex 审查）：几个写操作同时等，只显示
   assert.deepEqual(s.calls.map((c) => [c[0], c[1], c[2]]), [[0, 'GET', '/health'], [1500, 'GET', '/health'], [1500, 'POST', '/api/v1/me/agreement'], [1500, 'POST', '/api/v1/me/follows']]);
   assert.deepEqual(s.loading, ['正在连接…']); assert.equal(s.hidden(), 1);
 });
+
+test('后台挂起后超出重试预算，不再发出迟到的GET', async () => {
+  const s = retryApi([{ after: 0, code: 503 }, { after: 0, code: 200 }]);
+  let result;
+  s.api.attachmentPart('7', 'abcdef0123456789', 0).then(
+    (value) => { result = { value }; }, (error) => { result = { error }; },
+  );
+  await advance(s.clock, 0);
+  s.clock.now = 120000; // 模拟小程序切后台，重试计时器到恢复前台才执行
+  await drive(s.clock);
+  assert.ok(result.error);
+  assert.equal(result.error.status, 503);
+  assert.deepEqual(s.sent, [0]);
+});
+
+test('后来的写操作不能无限延长先前用户的等待，超时写操作不会迟到提交', async () => {
+  const plan = Array.from({ length: 13 }, () => ({ after: 0, code: 503 }));
+  plan.push({ after: 0, code: 200 }, { after: 0, code: 201, data: { id: 2 } });
+  const s = retryApi(plan);
+  let first; let second;
+  s.api.agree('2026-10').then((value) => { first = { value }; }, (error) => { first = { error }; });
+  await advance(s.clock, 80000);
+  s.api.createFollow('专精特新', { kind: '申报通知' }).then((value) => { second = { value }; }, (error) => { second = { error }; });
+  await advance(s.clock, 90000);
+  assert.equal(first && first.error && first.error.message, '服务正在启动，请过一分钟再试');
+  assert.equal(second, undefined);
+  assert.equal(s.hidden(), 0); // 第二个操作仍等待，只保留一个提示
+  await drive(s.clock);
+  assert.deepEqual(second.value, { id: 2 });
+  assert.deepEqual(s.calls.filter((c) => c[1] === 'POST').map((c) => c[2]), ['/api/v1/me/follows']);
+  assert.equal(s.hidden(), 1);
+});

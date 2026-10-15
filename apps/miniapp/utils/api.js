@@ -73,7 +73,8 @@ function withRetry(attempt, method, token, opts) {
     if (Date.now() + delay >= budget.until) throw err;
     if (!starting && !quiet) { starting = true; startingRequests += 1; emitStartup(); }
     return new Promise((resolve) => setTimeout(resolve, delay)).then(() => {
-      if (stopped()) throw err;
+      // 小程序切到后台后定时器可能很晚才恢复，必须在真正发送前再核对期限。
+      if (stopped() || Date.now() >= budget.until) throw err;
       return run(n + 1);
     });
   });
@@ -140,7 +141,7 @@ function apiAwake() {
 // 或等到超时（10/15 实测"我的"页面约 2 分钟才拿到登录状态）。所以先发 GET /health 叫醒它（按读数据的冷启动规则
 // 重试：90 秒后不再发新的，最后一次最多再等 15 秒），接口服务有了答复（这次 /health 或别的请求）再发写操作。
 // /health 不要身份、不记网络日志。打开小程序和回到前台时也悄悄叫一次（prewarm），多数时候用户点按钮时它已经醒了。
-// 同一时间只叫一路；写操作赶上正在进行的预热，从这时起再给足 90 秒。
+// 同一时间只叫一路；每次用户操作最多等 90 秒，后来加入的操作不延长先前操作的等待。
 let waking = null;
 
 function wake(extend) {
@@ -180,17 +181,25 @@ function hideConnecting() {
 // 用调用方自己的提示，如导出的"正在生成…"），叫不醒就不发，请用户过一会儿再试
 function afterWake(send, ownLoading = true) {
   if (apiAwake()) return send();
+  const until = Date.now() + MAX_WAIT;
   if (ownLoading) showConnecting();
   const done = () => { if (ownLoading) hideConnecting(); };
-  return wake(true).then(
-    () => { done(); return send(); },
-    () => {
-      done();
-      // /health 答复了别的（如 500）也说明它醒了，照常发
-      if (apiAwake()) return send();
-      throw new Error('服务正在启动，请过一分钟再试');
-    },
-  );
+  const expired = new Error('服务正在启动，请过一分钟再试');
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(expired), MAX_WAIT);
+  });
+  const ready = wake(true).catch((err) => {
+    // /health 答复了别的（如 500）也说明它醒了，照常发。
+    if (!apiAwake()) throw err;
+  });
+  const finish = () => { clearTimeout(timer); done(); };
+  return Promise.race([ready, deadline]).then(() => {
+    finish();
+    // 恢复到前台时即使预热先完成，也不提交已超过用户等待期限的写操作。
+    if (Date.now() >= until) throw expired;
+    return send();
+  }, () => { finish(); throw expired; });
 }
 
 function request(path, params, options) {
