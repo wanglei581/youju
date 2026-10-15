@@ -358,7 +358,7 @@ test('市级条件恢复、已选条、关注和国家部委组合均保留市�
   assert.ok(chipLabels(page).includes('市级'));
   assert.match(page.followName(), /山东 · 市级/);
   const level = page.data.groups.find((g) => g.key === 'level');
-  assert.match(level.note, /地市目前只收录部分城市/);
+  assert.match(level.note, /市区目前仅收录部分来源/);
   assert.match(level.note, /我的 → 数据从哪里来/);
   page.pickOption(event({ group: 'level', option: '国家部委' })); await flush();
   assert.equal(calls.at(-1).regions, '国家部委,山东');

@@ -150,7 +150,7 @@ test('按月看只能翻到有数据的月份：近 30 天到一年后，翻出�
   assert.match(read('pages/report/index.wxml'), /arrow {{canPrev \? '' : 'arrow--off'}}/);
 });
 
-test('层级筛选：国家部委、省级、市级三项，条件带到接口、关注和返回搜索', async () => {
+test('层级筛选：国家部委、省级、市级、区县级四项，条件带到接口、关注和返回搜索', async () => {
   const calls = [];
   const page = load('pages/search/index.js', {
     '../../content/legal.js': { final: false },
@@ -161,7 +161,7 @@ test('层级筛选：国家部委、省级、市级三项，条件带到接口�
   }, { wx: {} });
   page.onLoad({}); await flush();
   const level = page.data.groups.find((g) => g.key === 'level');
-  assert.deepEqual(Array.from(level.options), ['国家部委', '省级', '市级']);
+  assert.deepEqual(Array.from(level.options), ['国家部委', '省级', '市级', '区县级']);
   assert.equal(level.multi, true);
   assert.equal(calls.at(-1).levels, undefined); // 没选层级时不带，和以前的请求一样
   page.pickOption(event({ group: 'level', option: '省级' })); await flush();

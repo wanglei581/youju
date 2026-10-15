@@ -1071,7 +1071,7 @@ def search(
     exclude_closed: Annotated[
         bool, Query(description="只排除人工核对且已截止的申报通知；未核对的保留；不传不改变结果")
     ] = False,
-    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级,市级")] = None,
+    levels: Annotated[str | None, Query(max_length=400, description="国家部委,省级,市级,区县级")] = None,
     categories: Annotated[
         str | None,
         Query(max_length=400, description="项目类别，逗号分隔（只在申报通知和名单里找）"),

@@ -183,6 +183,7 @@ test('北京/朝阳区：区县键保留本市简称，标签不重复，区县�
   assert.match(page.data.cityError, /直辖市/);
   // 只选区县再加层级国家部委：请求、保存再打开都一样（旧条件迁移不掉区县）
   const level = searchPage();
+  assert.ok(level.page.data.groups.find((g) => g.key === 'level').options.includes('区县级'));
   level.page.onLoad({}); await settle();
   level.page.chooseCity(pick('北京市', '北京市', '朝阳区')); level.page.pickOption(tap({ group: 'level', option: '国家部委' })); await settle();
   const saved = plain(level.page.conditions());
