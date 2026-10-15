@@ -333,10 +333,12 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "enabled": False,
             "features": [],
             "remaining": {},
-            "reason": "consent"
-            if interpret.enabled_for_openid(settings, user.openid)
-            and not interpret.ai_agreed(settings, user)
-            else "off",
+            **(
+                {"reason": "consent"}
+                if interpret.enabled_for_openid(settings, user.openid)
+                and not interpret.ai_agreed(settings, user)
+                else {}
+            ),
         },
     }
 

@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,6 +32,8 @@ get_settings.cache_clear()
 @pytest.fixture(scope="session")
 def db_engine() -> Iterator[Engine]:
     url = make_url(TEST_DB_URL)
+    # 此夹具会重建整个库，先拒绝非测试库，不能依赖调用者命名自觉。
+    assert url.database and re.fullmatch(r"youju_test[A-Za-z0-9_]*", url.database)
     server = create_mysql_engine(url.set(database=""))
     try:
         with server.connect() as conn:
@@ -111,7 +114,6 @@ def _reset_admin_throttle():
 @pytest.fixture
 def restricted_api_factory(db_engine):
     """按部署文件授权；with factory(new_grants=False) 模拟迁移后尚未追加授权。"""
-    import re
     import secrets
     from contextlib import contextmanager
 
@@ -122,19 +124,26 @@ def restricted_api_factory(db_engine):
         url = db_engine.url
         assert url.database.startswith("youju_test")
         password = secrets.token_urlsafe(24)
+        account = {"test_user": "youju_api_test"}
         created = False
         engine = None
         try:
             try:
                 with db_engine.begin() as conn:
+                    # CI通过Docker网桥连接；以服务器实际看到的来源建账号，不开放任意主机。
+                    account["test_host"] = conn.scalar(
+                        text("SELECT SUBSTRING_INDEX(USER(), '@', -1)")
+                    )
                     conn.execute(
-                        text("CREATE USER 'youju_api_test'@'localhost' IDENTIFIED BY :password"),
-                        {"password": password},
+                        text("CREATE USER :test_user@:test_host IDENTIFIED BY :password"),
+                        {**account, "password": password},
                     )
                 created = True
             except DBAPIError as exc:
                 code = exc.orig.args[0]
                 if code in (1044, 1045, 1142, 1227):
+                    if os.environ.get("YOUJU_REQUIRE_DB") == "1":
+                        raise
                     pytest.skip(
                         f"测试 root 无 CREATE USER 权限（MySQL {code}），受限账号测试未运行"
                     )
@@ -153,8 +162,8 @@ def restricted_api_factory(db_engine):
                     stmt = re.sub(
                         r"\bON youju\.", "ON " + chr(96) + url.database + chr(96) + ".", stmt
                     )
-                    stmt = stmt.replace("'youju_api'@'%'", "'youju_api_test'@'localhost'")
-                    conn.execute(text(stmt))
+                    stmt = stmt.replace("'youju_api'@'%'", ":test_user@:test_host")
+                    conn.execute(text(stmt), account)
             engine = create_mysql_engine(url.set(username="youju_api_test", password=password))
             yield sessionmaker(bind=engine, expire_on_commit=False)
         finally:
@@ -162,6 +171,6 @@ def restricted_api_factory(db_engine):
                 engine.dispose()
             if created:
                 with db_engine.begin() as conn:
-                    conn.execute(text("DROP USER 'youju_api_test'@'localhost'"))
+                    conn.execute(text("DROP USER :test_user@:test_host"), account)
 
     return factory
