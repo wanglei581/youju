@@ -689,3 +689,35 @@ test('收录范围页和我的：区县另列、同名区县按省市分开，�
   const sources = ['app.json', ...['search', 'clients', 'report', 'advisor-clause'].flatMap((p) => [`pages/${p}/index.js`, `pages/${p}/index.wxml`]), 'utils/regions.js'];
   for (const file of sources) assert.doesNotMatch(read(file), /getLocation|chooseLocation|getFuzzyLocation|<map\b|requiredPrivateInfos/, file);
 });
+
+test('未收录吉林朝阳区后再选北京全部：两条提示同时可见，再次选择不累计，保存不请求未知区且卡片暂未查询', async () => {
+  const local = localWx();
+  const { page, calls } = clientsPage(local);
+  page.onLoad({}); page.onShow(); await settle();
+  const before = calls.length;
+  page.edit(tap({}));
+  page.chooseCity(pick('吉林省', '长春市', '朝阳区'));
+  page.chooseCity(pick('北京市', '北京市', '全部'));
+  assert.deepEqual(plain(page.data.form.districts), ['吉林/长春/朝阳区']);
+  assert.ok(plain(page.data.form.regions).includes('北京'));
+  const uncovered = '暂未收录区县来源';
+  const note = '直辖市未选区县时按省级范围查询';
+  assert.ok(page.data.cityError.includes(uncovered));
+  assert.ok(page.data.cityError.includes(note));
+  const editing = textOf(render('pages/clients/index.wxml', page.data));
+  assert.ok(editing.includes(uncovered));
+  assert.ok(editing.includes(note));
+  page.chooseCity(pick('北京市', '北京市', '全部'));
+  assert.equal(page.data.cityError.split(note).length - 1, 1);
+  assert.ok(page.data.cityError.includes(uncovered));
+  assert.deepEqual(plain(page.data.form.districts), ['吉林/长春/朝阳区']);
+  page.nameInput({ detail: { value: '合成乙公司' } });
+  page.save(); await settle();
+  assert.equal(calls.length, before);
+  assert.ok(!JSON.stringify(calls).includes('吉林/长春/朝阳区'));
+  assert.deepEqual(local.stored.youjuLocalClientsV1[0].districts, ['吉林/长春/朝阳区']);
+  page.pickTab(tap({ tab: 'cards' }));
+  const card = textOf(render('pages/clients/index.wxml', page.data));
+  assert.ok(card.includes('合成乙公司'));
+  assert.ok(card.includes('暂未查询'));
+});

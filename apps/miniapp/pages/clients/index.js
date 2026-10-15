@@ -204,7 +204,10 @@ Page({
       const next = applyAreaChoice({ regions: form.regions, cities: form.cities, districts: form.districts }, choice);
       this.setData({ form: normalize({ ...form, regions: next.regions, cities: next.cities, districts: next.districts }), cityRegion: e.detail.value });
       this.refreshPicked();
-      if (choice.note) this.setData({ cityError: choice.note });
+      if (choice.note) {
+        const kept = this.data.cityError || '';
+        this.setData({ cityError: kept.includes(choice.note) ? kept : `${kept}${kept ? ' ' : ''}${choice.note}` });
+      }
     } catch (err) { this.setData({ cityError: err.message }); }
   },
   removeCity(e) {
