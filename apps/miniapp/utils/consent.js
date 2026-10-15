@@ -16,6 +16,27 @@ function loginOpen() {
   return legal.final === true;
 }
 
+// 服务端记的版本不早于本机代码包里的协议版本，就算已同意：版本号按时间可排序（2026-10 < 2026-11）。
+// 用户在另一台手机的新版小程序里同意过更新的版本时，这里不再请他同意——不然会把服务端记录改回旧版本，
+// 新功能失效、两台手机来回请用户同意（Codex 审查）
+function covers(version) {
+  return typeof version === 'string' && /^\d{4}-\d{2}/.test(version) && version >= legal.version;
+}
+
+// 同意没成功：小程序带的协议版本后台已不再认（422，小程序太旧）时弹窗请用户更新，其余照旧提示
+function agreeFailed(err) {
+  if (err && err.status === 422) {
+    wx.showModal({
+      title: '需要更新小程序',
+      content: err.message || '协议已更新，请关闭小程序后重新打开，更新到新版本后再同意',
+      showCancel: false,
+      confirmText: '知道了',
+    });
+    return;
+  }
+  wx.showToast({ title: (err && err.message) || '网络不太好，请稍后再试', icon: 'none' });
+}
+
 function agreedHere() {
   try { return wx.getStorageSync(api.AGREED_KEY) === legal.version; } catch (e) { return false; }
 }
@@ -44,7 +65,9 @@ function consentEpoch() {
 // startedAt 是发出查询时的 consentEpoch()：之后本机又同意或注销过，这个结果已过时，不改状态
 function applyServer(agreed, startedAt) {
   if (startedAt !== epoch) return agreedHere();
-  const ok = !!agreed && agreed.version === legal.version;
+  // valid 为假：服务端已不认这份同意（仍认的最早版本调高了）——即使版本号和本机的一样也要重新同意，
+  // 太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）。旧后台不带 valid 时只看版本号
+  const ok = !!agreed && agreed.valid !== false && covers(agreed.version);
   if (ok) remember();
   else forget();
   outdated = !!agreed && !ok;
@@ -117,7 +140,7 @@ function askConsent() {
         }
         api.agree(legal.version)
           .then(() => { markAgreed(); resolve(true); })
-          .catch((err) => { wx.showToast({ title: err.message || '网络不太好，请稍后再试', icon: 'none' }); resolve(false); });
+          .catch((err) => { agreeFailed(err); resolve(false); });
       },
       fail: () => resolve(false),
     });
@@ -166,4 +189,5 @@ function withdraw() {
 
 module.exports = {
   ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  covers, agreeFailed,
 };

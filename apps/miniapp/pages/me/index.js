@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE, agreeFailed } = require('../../utils/consent.js');
 const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
@@ -115,7 +115,7 @@ Page({
         wx.showToast({ title: '已登录，关注和微信提醒可以用了', icon: 'none' });
         this.refresh();
       })
-      .catch((err) => wx.showToast({ title: err.message || '网络不太好，请稍后再试', icon: 'none' }));
+      .catch(agreeFailed);
   },
 
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
