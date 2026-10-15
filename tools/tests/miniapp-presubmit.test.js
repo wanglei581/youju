@@ -1,11 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { inspect } = require('../miniapp_presubmit_check');
+const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
   legal:{final:true, operator:{icp:'测试备案号',email:'contact@example.test'}},
-  config:{cloudEnv:'test',cloudService:'api',devBaseUrl:'',templates:{newDocs:'',deadline:''}},
+  config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
+  project:{appid:releaseIdentity.appid},
   app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
 }; }
+function identityText(result) {
+  return JSON.stringify(result);
+}
 test('备案办理中只允许准备检查，默认提审保持失败',()=>{
  const x=input(); x.legal.operator.icp='';
  assert.equal(inspect(x).ok,false);
@@ -52,4 +59,69 @@ test('完整候选严格限定 21 页，不能借此放宽旧版本或提交审�
  for(const change of [y=>y.app.pages.push('pages/pass/index'),y=>y.app.pages.pop(),y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
+});
+function assertNoIdentityValues(result) {
+  const text = identityText(result);
+  for (const value of [releaseIdentity.appid, releaseIdentity.cloudEnv, releaseIdentity.cloudService, 'wx3251e7a7b42bc59d', 'other-env', 'other-service']) {
+    assert.equal(text.includes(value), false);
+  }
+}
+test('旧 AppID、缺失 AppID、错误云环境或服务不能通过准备或提审',()=>{
+  const cases = [
+    [x => { x.project.appid = 'wx3251e7a7b42bc59d'; }, 'pass'],
+    [x => { delete x.project.appid; }, 'pass'],
+    [x => { x.project = {}; }, 'pass'],
+    [x => { x.project.appid = ''; }, 'pass'],
+    [x => { delete x.project; }, 'pass'],
+    [x => { x.config.cloudEnv = 'other-env'; }, 'fail'],
+    [x => { x.config.cloudEnv = ''; }, 'fail'],
+    [x => { delete x.config.cloudEnv; }, 'fail'],
+    [x => { x.config.cloudService = 'other-service'; }, 'fail'],
+    [x => { x.config.cloudService = ''; }, 'fail'],
+    [x => { delete x.config.cloudService; }, 'fail'],
+  ];
+  for (const [change, cloudState] of cases) {
+    for (const mode of ['prepare', 'submit']) {
+      const x = input();
+      change(x);
+      const r = inspect({ ...x, mode });
+      assert.equal(r.ok, false);
+      assert.equal(r.readyToSubmit, false);
+      assert.equal(r.checks.find(c => c.id === 'release-identity').state, 'fail');
+      assert.equal(r.checks.find(c => c.id === 'cloud').state, cloudState);
+      assertNoIdentityValues(r);
+    }
+  }
+});
+test('已确认正式发布身份可以通过静态对照，环境变量不能改写',()=>{
+  const previousApp = process.env.YOUJU_APPID;
+  const previousEnv = process.env.YOUJU_CLOUD_ENV;
+  process.env.YOUJU_APPID = 'wx3251e7a7b42bc59d';
+  process.env.YOUJU_CLOUD_ENV = 'other-env';
+  try {
+    for (const mode of ['prepare', 'submit']) {
+      const r = inspect({ ...input(), mode });
+      assert.equal(r.ok, true);
+      assert.equal(r.readyToSubmit, false);
+      assert.equal(r.externalEvidence, 'not_checked');
+      assert.equal(r.checks.find(c => c.id === 'release-identity').state, 'pass');
+      assert.equal(r.checks.find(c => c.id === 'cloud').state, 'pass');
+      assertNoIdentityValues(r);
+    }
+    const project = JSON.parse(fs.readFileSync(path.join(__dirname, '../../apps/miniapp/project.config.json'), 'utf8'));
+    const config = require('../../apps/miniapp/utils/config.js');
+    const committed = input();
+    committed.project = { appid: project.appid };
+    committed.config.cloudEnv = config.cloudEnv;
+    committed.config.cloudService = config.cloudService;
+    const committedResult = inspect({ ...committed, mode: 'prepare' });
+    assert.equal(committedResult.checks.find(c => c.id === 'release-identity').state, 'pass');
+    assert.equal(committedResult.externalEvidence, 'not_checked');
+    assertNoIdentityValues(committedResult);
+  } finally {
+    if (previousApp === undefined) delete process.env.YOUJU_APPID;
+    else process.env.YOUJU_APPID = previousApp;
+    if (previousEnv === undefined) delete process.env.YOUJU_CLOUD_ENV;
+    else process.env.YOUJU_CLOUD_ENV = previousEnv;
+  }
 });

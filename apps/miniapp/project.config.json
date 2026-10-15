@@ -1,7 +1,7 @@
 {
   "description": "有据 · 微信小程序（原生 + TDesign 组件）",
   "projectname": "youju-miniapp",
-  "appid": "wx3251e7a7b42bc59d",
+  "appid": "wxcf20754e505e9bfa",
   "compileType": "miniprogram",
   "libVersion": "2.32.3",
   "packOptions": {

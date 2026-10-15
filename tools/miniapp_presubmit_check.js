@@ -1,8 +1,17 @@
 #!/usr/bin/env node
 // 默认严格提审；--mode prepare 只检查体验准备，备案办理中仍明确不能提审。
 // 不输出协议正文、运营者信息或配置值。AI 内测包永远不能通过 submit。
+// 发布身份只对照本产品的 tools/release/release-identity.json。不读环境变量，也不核验微信或云托管的线上授权。
 const fs = require('node:fs');
 const path = require('node:path');
+const RELEASE_IDENTITY = (() => {
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'release-identity.json'), 'utf8'));
+  const identity = { appid: raw.appid, cloudEnv: raw.cloudEnv, cloudService: raw.cloudService };
+  if (Object.values(identity).some(value => typeof value !== 'string' || value.trim() === '' || value !== value.trim())) {
+    throw new Error('发布身份无效');
+  }
+  return Object.freeze(identity);
+})();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
   'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
@@ -14,7 +23,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, toolTerms, mode = 'submit', profile = 'first-release' }) {
+function inspect({ legal, config, app, project, toolTerms, mode = 'submit', profile = 'first-release' }) {
   if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release', 'complete-candidate'].includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -26,7 +35,10 @@ function inspect({ legal, config, app, toolTerms, mode = 'submit', profile = 'fi
   add('placeholders', '协议没有未填占位', !hasPlaceholder(legal), '补齐协议占位内容');
   add('filing', '关于页有备案号', filed, '备案办理中；号下来后填 operator.icp。体验准备通过不等于可提审', mode === 'prepare');
   add('email', '关于页有联系邮箱', nonempty(op.email) && !hasPlaceholder(op.email), '填写真实联系邮箱');
-  add('cloud', '连接正式云托管', nonempty(config.cloudEnv) && nonempty(config.cloudService), '填写云托管环境和服务');
+  const releaseIdentityOk = !!project && project.appid === RELEASE_IDENTITY.appid
+    && config.cloudEnv === RELEASE_IDENTITY.cloudEnv && config.cloudService === RELEASE_IDENTITY.cloudService;
+  add('cloud', '连接正式云托管', config.cloudEnv === RELEASE_IDENTITY.cloudEnv && config.cloudService === RELEASE_IDENTITY.cloudService, '云环境或云服务缺失，或不是本产品已确认的正式云托管');
+  add('release-identity', '发布身份与本产品正式包一致', releaseIdentityOk, 'AppID、云环境或云服务缺失，或与本产品已确认的正式发布身份不一致。本检查只做仓库内静态对照，不验证线上授权');
   add('local', '没有本机开发后端', !config.devBaseUrl, '清空 devBaseUrl');
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
@@ -65,6 +77,7 @@ function main(args) {
   const root = path.join(__dirname, '..', 'apps', 'miniapp');
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
+    project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
     toolTerms: profile === 'complete-candidate' ? require(path.join(root, 'content/advisor-terms.js')) : undefined, mode, profile});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
