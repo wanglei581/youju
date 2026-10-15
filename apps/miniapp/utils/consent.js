@@ -1,10 +1,10 @@
 // 关注、订阅提醒、纠错之前，先确认用户已同意用户协议和隐私保护指引（服务端记录，本机缓存版本号）。
 // 协议还是草案（legal.final 为 false）时不开放同意，这些功能的入口都不显示（D-056）。
 const legal = require('../content/legal.js');
+const config = require('./config.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
 const { removeFiles } = require('./exporter.js');
-const config = require('./config.js');
 
 // AI 内测包（config.aiInternal 为 true，只上传体验版、给白名单内测，D-062）：协议还是草案也开放同意和登录，
 // 好让内测成员同意后试用 AI 页面。首发版和 AI 正式版都是 false，只看 legal.final（D-056、D-066）。
@@ -21,6 +21,38 @@ function consentOpen() {
 // 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final（AI 内测包例外），不是服务端开关
 function loginOpen() {
   return legal.final === true || aiInternal();
+}
+
+// 服务端记的版本不早于本机代码包里的协议版本，就算已同意：版本号按时间可排序（2026-10 < 2026-11）。
+// 用户在另一台手机的新版小程序里同意过更新的版本时，这里不再请他同意——不然会把服务端记录改回旧版本，
+// 新功能失效、两台手机来回请用户同意（Codex 审查）
+function covers(version) {
+  return typeof version === 'string' && /^\d{4}-\d{2}/.test(version) && version >= legal.version;
+}
+
+// 同意没成功：小程序带的协议版本后台已不再认（422，小程序太旧）时弹窗请用户更新，其余照旧提示
+function agreeFailed(err) {
+  if (err && err.status === 422) {
+    wx.showModal({
+      title: '需要更新小程序',
+      content: err.message || '协议已更新，请关闭小程序后重新打开，更新到新版本后再同意',
+      showCancel: false,
+      confirmText: '知道了',
+    });
+    return;
+  }
+  wx.showToast({ title: (err && err.message) || '网络不太好，请稍后再试', icon: 'none' });
+}
+
+// 订阅消息模板申请下来之前（utils/config.js 的 templates 为空）没有微信提醒，提示里不写"微信提醒"
+// （10/15 模拟用户走查：同意弹窗、同意成功的提示、我的数据、注销都还写着）
+function remindAny() {
+  const templates = config.templates || {};
+  return Boolean(templates.newDocs || templates.deadline);
+}
+
+function featureNames() {
+  return remindAny() ? '关注、微信提醒和纠错' : '关注和纠错';
 }
 
 function agreedHere() {
@@ -51,7 +83,9 @@ function consentEpoch() {
 // startedAt 是发出查询时的 consentEpoch()：之后本机又同意或注销过，这个结果已过时，不改状态
 function applyServer(agreed, startedAt) {
   if (startedAt !== epoch) return agreedHere();
-  const ok = !!agreed && agreed.version === legal.version;
+  // valid 为假：服务端已不认这份同意（仍认的最早版本调高了）——即使版本号和本机的一样也要重新同意，
+  // 太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）。旧后台不带 valid 时只看版本号
+  const ok = !!agreed && agreed.valid !== false && covers(agreed.version);
   if (ok) remember();
   else forget();
   outdated = !!agreed && !ok;
@@ -103,7 +137,7 @@ function askConsent() {
   if (outdated) {
     wx.showModal({
       title: '协议已更新',
-      content: '《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用关注、微信提醒和纠错。',
+      content: `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${featureNames()}。`,
       confirmText: '阅读全文',
       cancelText: '暂不',
       success: (res) => { if (res.confirm) wx.navigateTo({ url: CONSENT_PAGE }); },
@@ -113,7 +147,7 @@ function askConsent() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '请先阅读并同意',
-      content: '使用关注、微信提醒和纠错前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。',
+      content: `使用${featureNames()}前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。`,
       confirmText: '同意',
       cancelText: '先看协议',
       success: (res) => {
@@ -124,7 +158,7 @@ function askConsent() {
         }
         api.agree(legal.version)
           .then(() => { markAgreed(); resolve(true); })
-          .catch((err) => { wx.showToast({ title: err.message || '网络不太好，请稍后再试', icon: 'none' }); resolve(false); });
+          .catch((err) => { agreeFailed(err); resolve(false); });
       },
       fail: () => resolve(false),
     });
@@ -144,7 +178,7 @@ function withdraw() {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: '将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、微信提醒、纠错记录，以及本机的导出记录和文件，删除后不能恢复。',
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
@@ -173,4 +207,5 @@ function withdraw() {
 
 module.exports = {
   ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  covers, agreeFailed, remindAny, featureNames,
 };

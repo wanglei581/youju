@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from youju.api import me, v1
 from youju.api.app import app
+from youju.config import Settings
 from youju.db import get_session
 from youju.models import (
     Document,
@@ -56,7 +57,14 @@ def client(session_factory, monkeypatch):
 
 
 def settings(
-    monkeypatch, *, trust=False, openid="dev-user", deadline=None, newdocs=None, version="2026-09"
+    monkeypatch,
+    *,
+    trust=False,
+    openid="dev-user",
+    deadline=None,
+    newdocs=None,
+    version="2026-09",
+    oldest="",
 ):
     monkeypatch.setattr(
         me,
@@ -67,6 +75,7 @@ def settings(
             template_deadline=deadline,
             template_newdocs=newdocs,
             agreement_version=version,
+            agreement_min_version=oldest,
             retain_events_days=90,
             retain_feedback_days=180,
             retain_used_subscriptions_days=30,
@@ -904,6 +913,102 @@ def test_agreement_version_must_be_current(client, session, monkeypatch):
     ok = client.post("/api/v1/me/agreement", json={"version": "2026-12"})
     assert ok.status_code == 200
     assert client.get("/api/v1/me/follows").status_code == 200
+
+
+def test_agreement_min_version_keeps_old_agreements(client, session, monkeypatch):
+    """协议升版只给新功能加了条款时（如 AI 版）：仍认升版前的版本——旧版小程序照旧能同意旧版、用关注；
+    新功能只认当前版本；已同意过新版本的不会被旧版小程序改回旧版本（Codex 审查）。"""
+    settings(monkeypatch, version="2026-12", oldest=" 2026-09 ")
+    agree(client)  # 旧版小程序同意的是 2026-09
+    assert client.get("/api/v1/me/follows").status_code == 200
+    assert client.get("/api/v1/me").json()["agreed"]["version"] == "2026-09"
+    # 早于仍认的最早版本、晚于当前版本的都不收；提示更新小程序
+    for version in ("2025-01", "2027-01"):
+        response = client.post("/api/v1/me/agreement", json={"version": version})
+        assert response.status_code == 422 and "重新打开" in response.json()["detail"]
+    # 新功能要求同意过写进它的条款的那一版（AI 分支里固定为 AI 条款的版本，回退配置也不会放宽）
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert not me.agreement_at_least(user.agreement_version, "2026-12")
+    # 新版小程序请用户重新同意当前版本后，新功能也能用
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-12"}).status_code == 200
+    session.expire_all()
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert me.agreement_at_least(user.agreement_version, "2026-12")
+    agreed_at = user.agreement_at
+    # 另一台手机上的旧版小程序又提交了 2026-09：保留 2026-12 那次同意，版本和时间都不动
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
+    assert response.status_code == 200 and response.json()["version"] == "2026-12"
+    session.expire_all()
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert (user.agreement_version, user.agreement_at) == ("2026-12", agreed_at)
+    assert client.get("/api/v1/me").json()["agreed"]["valid"] is True
+
+
+def test_agreement_version_must_look_like_year_month(client, session, monkeypatch):
+    """版本号按"年-月"开头比较：写法不对的同意一律不算；重新同意时也不当成"更新的版本"留着。"""
+    settings(monkeypatch)
+    agree(client)
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    user.agreement_version = "old"  # 字母排在数字后面，直接比字符串会被当成"更新"
+    session.commit()
+    assert client.get("/api/v1/me/follows").status_code == 403
+    agree(client)
+    session.expire_all()
+    stored = session.scalar(select(User.agreement_version).where(User.openid == "dev-user"))
+    assert stored == "2026-09"
+    assert client.get("/api/v1/me/follows").status_code == 200
+
+
+def test_agreement_min_version_raised_requires_update(client, monkeypatch):
+    """调高仍认的最早版本（旧条款不再覆盖旧功能）后：停在旧版本的用户要更新小程序、重新同意。"""
+    settings(monkeypatch, version="2026-12", oldest="2026-09")
+    agree(client)
+    assert client.get("/api/v1/me/follows").status_code == 200
+    settings(monkeypatch, version="2026-12")
+    response = client.get("/api/v1/me/follows")
+    assert response.status_code == 403 and "已更新" in response.json()["detail"]
+    # /me 写明这份同意已不算数：版本号和旧版小程序的一样，小程序也会请用户重新同意
+    agreed = client.get("/api/v1/me").json()["agreed"]
+    assert (agreed["version"], agreed["valid"]) == ("2026-09", False)
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
+    assert response.status_code == 422 and "更新到新版本" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("version", "oldest"), [("2026-10", "2026-11"), ("v2", ""), ("2026-10", "old")]
+)
+def test_agreement_version_settings_checked_at_startup(version, oldest):
+    """协议版本写法不对、最早版本比当前版本还新：配错就不启动，不会悄悄放宽或卡住所有人。"""
+    with pytest.raises(ValueError, match="AGREEMENT"):
+        Settings(_env_file=None, agreement_version=version, agreement_min_version=oldest)
+    assert Settings(_env_file=None, agreement_version="2026-11", agreement_min_version="2026-10")
+
+
+def test_notify_sends_to_users_on_still_accepted_version(client, session, monkeypatch):
+    """仍认的旧版本：提醒照常发。"""
+    settings(monkeypatch)
+    agree(client)
+    doc = source_and_doc(session, due=NOW.date() + timedelta(days=1))
+    created = client.post(
+        "/api/v1/me/subscriptions",
+        json={"kind": "deadline", "templateId": "d", "docId": doc.id},
+    )
+    assert created.status_code == 201
+    config = SimpleNamespace(
+        send_wx_messages=True,
+        template_deadline={"id": "d", "fields": {"thing1": "title", "date2": "date"}},
+        template_newdocs=None,
+        agreement_version="2026-12",
+        agreement_min_version="2026-09",
+    )
+    sent = []
+
+    def sender(payload):
+        sent.append(payload)
+        return {"errcode": 0}
+
+    result = run_notify(session, settings=config, sender=sender, stamp=NOW)
+    assert result["sent"] == 1 and len(sent) == 1
 
 
 def test_notify_skips_users_on_old_agreement(client, session, monkeypatch):

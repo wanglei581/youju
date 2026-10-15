@@ -113,7 +113,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   const copied = []; let deleted; let modal;
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': { myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
-    '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true },
+    '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => true },
   }, { wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {},
     showModal: (m) => { modal = m; m.success({ confirm: true }); } } });
   page.load(); await flush();

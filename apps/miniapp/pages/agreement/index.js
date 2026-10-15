@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { consentOpen, markAgreed, loginOpen } = require('../../utils/consent.js');
+const { consentOpen, markAgreed, loginOpen, agreeFailed, featureNames } = require('../../utils/consent.js');
 
 // 阅读协议。consent=1 时是"同意模式"：依次显示《用户协议》和《隐私保护指引》全文，
 // 同意按钮放在最后，读完才能同意（首次同意"先看协议"、协议更新后重新同意都走这里）。
@@ -37,12 +37,12 @@ Page({
     api.agree(legal.version)
       .then(() => {
         markAgreed();
-        wx.showToast({ title: '已同意，关注和微信提醒可以用了', icon: 'none' });
+        wx.showToast({ title: `已同意，${featureNames()}可以用了`, icon: 'none' });
         setTimeout(() => wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/me/index' }) }), 1000);
       })
       .catch((err) => {
         this.setData({ sending: false });
-        wx.showToast({ title: err.message || '网络不太好，请稍后再试', icon: 'none' });
+        agreeFailed(err);
       });
   },
 });

@@ -37,9 +37,10 @@ function load(file, deps = {}, globals = {}) {
 }
 
 // 真的 consent.js，只换掉协议内容和接口
-function consentFor(final, api = {}) {
+function consentFor(final, api = {}, templates = {}) {
   return load('utils/consent.js', {
     '../content/legal.js': { final, version: 'v-test' },
+    './config.js': { templates },
     './api.js': { isLive: () => true, forgetAgreed() {}, ...api },
     './exports.js': {}, './exporter.js': {},
   }, { wx: { getStorageSync: () => '', setStorageSync() {}, showToast() {}, showModal() {} } });
@@ -270,7 +271,8 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     const all = textOf(root);
     assert.equal(findAll(root, tapsTo('feedback')).length, final ? 1 : 0);
     assert.equal(all.includes('关注这个搜索'), final);
-    assert.equal(all.includes('订阅一次微信提醒'), final);
+    // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
+    assert.equal(all.includes('订阅一次微信提醒'), false);
     assert.equal(all.includes('申请覆盖'), final);
     assert.equal(all.includes('内容和原文不一致：发邮件至联系邮箱'), !final);
     assert.ok(all.includes('侵权投诉：发邮件至联系邮箱'));
