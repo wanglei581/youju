@@ -40,7 +40,7 @@ function forgetAgreed() {
 // 冷启动（10/12 诊断）：接口服务空闲时缩到 0 个实例，下次请求要等新实例起来——10/12 实测空闲 25 分钟后
 // 67 秒才第一次成功。期间网关可能回 502/503/504、调用很快失败，也可能一直不回到 15 秒超时。读数据（GET）
 // 遇到这三种情况都接着重试，间隔 1.5、3、5、8 秒，之后每 10 秒一次，从第一次发出算起超过 90 秒就不再发新的请求；
-// 写操作（POST 等）不重试，404、422、500 等也不重试。
+// 写操作（POST 等）不重试（先叫醒接口服务再发，见 afterWake），404、422、500 等也不重试。
 const RETRY_DELAYS = [1500, 3000, 5000, 8000, 10000];
 const MAX_WAIT = 90000;
 const TIMEOUT = 15000;
@@ -59,16 +59,19 @@ function stopStartup(page) {
   startupPages.delete(page);
 }
 
-// token.cancelled 为真时不再发新的重试（admin 先回了，接口服务这边就停，"正在连接"提示也跟着消失）
-function withRetry(attempt, method, token) {
+// token.cancelled 为真时不再发新的重试（admin 先回了，接口服务这边就停，"正在连接"提示也跟着消失）。
+// opts.quiet：不显示页面上的"正在连接"提示（叫醒接口服务用）；opts.budget.until：到这个时间就不再发新的请求，
+// 默认从第一次发出算 90 秒，别人可以把它往后推（见 wake）
+function withRetry(attempt, method, token, opts) {
   let starting = false;
-  const first = Date.now();
+  const quiet = Boolean(opts && opts.quiet);
+  const budget = (opts && opts.budget) || { until: Date.now() + MAX_WAIT };
   const stopped = () => Boolean(token && token.cancelled);
   const run = (n) => attempt().catch((err) => {
     if (method !== 'GET' || !err || !err.retryable || stopped()) throw err;
     const delay = RETRY_DELAYS[Math.min(n, RETRY_DELAYS.length - 1)];
-    if (Date.now() + delay - first >= MAX_WAIT) throw err;
-    if (!starting) { starting = true; startingRequests += 1; emitStartup(); }
+    if (Date.now() + delay >= budget.until) throw err;
+    if (!starting && !quiet) { starting = true; startingRequests += 1; emitStartup(); }
     return new Promise((resolve) => setTimeout(resolve, delay)).then(() => {
       if (stopped()) throw err;
       return run(n + 1);
@@ -117,11 +120,85 @@ function tryApiInstead(err) {
   return err.status >= 500 || (err.status === 404 && err.message === 'Not Found');
 }
 
+// 接口服务最近一次答复的时间：收到它自己的任何答复都算（包括 404、422），网关的 502/503/504、调用失败、超时不算。
+// 它空闲约 25 分钟后缩到 0 个实例，所以 20 分钟内答复过就当它醒着。
+const WARM_FOR = 20 * 60 * 1000;
+let apiAnsweredAt = null;
+
+function noteAnswer(service, statusCode) {
+  if (service !== config.cloudService || GATEWAY_CODES.includes(statusCode)) return;
+  apiAnsweredAt = Date.now();
+  // 别的请求先拿到了接口服务的答复：正在叫醒的不必再等自己那次 /health（Codex 审查）
+  if (waking) waking.awake();
+}
+
+function apiAwake() {
+  return !config.cloudEnv || (apiAnsweredAt !== null && Date.now() - apiAnsweredAt < WARM_FOR);
+}
+
+// 写操作（同意协议、关注、纠错、删除、导出等）不自动重试，怕重复提交；接口服务刚缩到 0 时直接发，会很快失败
+// 或等到超时（10/15 实测"我的"页面约 2 分钟才拿到登录状态）。所以先发 GET /health 叫醒它（按读数据的冷启动规则
+// 重试：90 秒后不再发新的，最后一次最多再等 15 秒），接口服务有了答复（这次 /health 或别的请求）再发写操作。
+// /health 不要身份、不记网络日志。打开小程序和回到前台时也悄悄叫一次（prewarm），多数时候用户点按钮时它已经醒了。
+// 同一时间只叫一路；写操作赶上正在进行的预热，从这时起再给足 90 秒。
+let waking = null;
+
+function wake(extend) {
+  if (apiAwake()) return Promise.resolve();
+  if (waking) {
+    if (extend) waking.budget.until = Math.max(waking.budget.until, Date.now() + MAX_WAIT);
+    return waking.promise;
+  }
+  const budget = { until: Date.now() + MAX_WAIT };
+  const token = { cancelled: false };
+  let awake;
+  const early = new Promise((resolve) => { awake = resolve; });
+  const loop = withRetry(() => requestOnce('/health', 'GET', undefined, {}), 'GET', token, { quiet: true, budget });
+  const promise = Promise.race([loop, early])
+    .then(() => { token.cancelled = true; waking = null; }, (err) => { waking = null; throw err; });
+  waking = { promise, budget, awake };
+  return promise;
+}
+
+function prewarm() {
+  wake(false).catch(() => { /* 叫不醒不提示：用户真要提交时会再叫 */ });
+}
+
+// "正在连接…"：几个写操作同时等时只显示一个，最后一个等完才关。页面自己不会发写操作（都是用户点了才发），
+// 导出、打开附件的提示都挡住整页，等的时候用户点不了别的，所以不会关掉别人的提示
+let connecting = 0;
+function showConnecting() {
+  connecting += 1;
+  if (connecting === 1) wx.showLoading({ title: '正在连接…', mask: true });
+}
+function hideConnecting() {
+  connecting -= 1;
+  if (connecting === 0) wx.hideLoading();
+}
+
+// 写操作：接口服务醒着就直接发；没醒先叫醒，等的时候显示"正在连接…"（ownLoading 为假时不显示，
+// 用调用方自己的提示，如导出的"正在生成…"），叫不醒就不发，请用户过一会儿再试
+function afterWake(send, ownLoading = true) {
+  if (apiAwake()) return send();
+  if (ownLoading) showConnecting();
+  const done = () => { if (ownLoading) hideConnecting(); };
+  return wake(true).then(
+    () => { done(); return send(); },
+    () => {
+      done();
+      // /health 答复了别的（如 500）也说明它醒了，照常发
+      if (apiAwake()) return send();
+      throw new Error('服务正在启动，请过一分钟再试');
+    },
+  );
+}
+
 function request(path, params, options) {
   const url = path + query(params);
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = method === 'GET' ? {} : { 'content-type': 'application/json' };
+  if (method !== 'GET') return afterWake(() => requestOnce(url, method, data, header));
   if (!adminRead(url, method)) return withRetry(() => requestOnce(url, method, data, header), method);
   return new Promise((resolve, reject) => {
     const token = { cancelled: false };
@@ -158,6 +235,7 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
     const timer = setTimeout(() => finish(reject, timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 204;
     const done = (res) => {
+      if (config.cloudEnv) noteAnswer(service || config.cloudService, res.statusCode);
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
       if (res.statusCode === 403) forgetAgreed();
@@ -367,13 +445,20 @@ const EXPORT_ERRORS = {
 function exportFile(ids, format) {
   // excerpts=1（D-061）：导出的截止列也按首发版规则写，机器摘录的另附原句
   const body = { ids: ids.map(String), format, excerpts: 1 };
+  // 先叫醒接口服务（等的时候仍显示导出自己的"正在生成…"）
+  return afterWake(() => exportOnce(body), false);
+}
+
+function exportOnce(body) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => finish(reject, new Error('网络不太好，请稍后再试')), 30000);
-    const done = (res) => (res.statusCode === 200
-      ? finish(resolve, res.data)
-      : finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`)));
+    const done = (res) => {
+      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
+      if (res.statusCode === 200) finish(resolve, res.data);
+      else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
+    };
     const fail = () => finish(reject, new Error('网络不太好，请稍后再试'));
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -418,6 +503,7 @@ function attachmentPartOnce(id, version, part) {
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => finish(reject, timeoutError()), TIMEOUT);
     const done = (res) => {
+      if (config.cloudEnv) noteAnswer(config.cloudService, res.statusCode);
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
       err.status = res.statusCode;
@@ -528,7 +614,7 @@ function saveSubscription(kind, target) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
+  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
   attachmentPart,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,

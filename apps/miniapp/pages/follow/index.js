@@ -12,14 +12,17 @@ Page({
 
   onHide() {
     stopDay(this);
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   onUnload() {
     stopDay(this);
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   onShow() {
     this.retried = false;
+    if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 1 });

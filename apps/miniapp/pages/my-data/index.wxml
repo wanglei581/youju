@@ -1,7 +1,7 @@
 <notice-bar />
 <feature-closed wx:if="{{!loginOpen}}" />
 <view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
-<view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…</view>
+<view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
 
 <block wx:if="{{loginOpen && !loading && !error}}">
   <view wx:if="{{!user}}" class="card intro">

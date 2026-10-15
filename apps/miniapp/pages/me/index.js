@@ -37,8 +37,17 @@ Page({
 
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 3 });
+    if (api.watchStartup) api.watchStartup(this);
     this.refresh();
     this.loadStats();
+  },
+
+  onHide() {
+    if (api.stopStartup) api.stopStartup(this);
+  },
+
+  onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   loadStats() {

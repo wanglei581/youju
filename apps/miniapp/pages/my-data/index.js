@@ -24,7 +24,16 @@ Page({
 
   onShow() {
     if (!this.data.loginOpen) return;
+    if (api.watchStartup) api.watchStartup(this);
     this.load();
+  },
+
+  onHide() {
+    if (api.stopStartup) api.stopStartup(this);
+  },
+
+  onUnload() {
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   load() {
