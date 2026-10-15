@@ -266,6 +266,7 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
     const timer = setTimeout(() => fail(timeoutError()), timeout);
     const ok = (code) => code === 200 || code === 201 || code === 202 || code === 204;
     const done = (res) => {
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (ok(res.statusCode)) { finish(resolve, res.data); return; }
       // 403：服务端没有同意记录（如在别的设备注销过）或协议已更新
@@ -490,6 +491,7 @@ function exportOnce(body) {
     };
     const timer = setTimeout(fail, 30000);
     const done = (res) => {
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
       else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
@@ -539,6 +541,7 @@ function attachmentPartOnce(id, version, part) {
     const failWith = (err) => { if (!settled) { state.failed(); finish(reject, err); } };
     const timer = setTimeout(() => failWith(timeoutError()), TIMEOUT);
     const done = (res) => {
+      if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) { finish(resolve, res.data); return; }
       const err = new Error(`附件下载失败（${res.statusCode}）`);
