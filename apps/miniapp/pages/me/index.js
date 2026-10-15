@@ -1,6 +1,6 @@
 const legal = require('../../content/legal.js');
 const api = require('../../utils/api.js');
-const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE, agreeFailed } = require('../../utils/consent.js');
+const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE, agreeFailed, featureNames } = require('../../utils/consent.js');
 const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
@@ -112,7 +112,7 @@ Page({
     api.agree(legal.version)
       .then(() => {
         markAgreed();
-        wx.showToast({ title: '已登录，关注和微信提醒可以用了', icon: 'none' });
+        wx.showToast({ title: `已登录，${featureNames()}可以用了`, icon: 'none' });
         this.refresh();
       })
       .catch(agreeFailed);
