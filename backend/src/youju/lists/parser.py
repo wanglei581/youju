@@ -286,11 +286,9 @@ def parse_attachment_result(
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
             for sheet in workbook.worksheets:
-                # 没有范围声明时，openpyxl 会按实际远端列号补齐整行，无法先控制分配。
-                if sheet.max_column is None or sheet.max_row is None:
-                    raise ValueError("暂不支持未声明行列范围的表格")
-                if sheet.max_column > _MAX_COLUMNS or sheet.max_row > _MAX_ROWS:
-                    raise ValueError("暂不支持超过安全解析预算的表格（声明行列过多）")
+                # dimension 可缺失或不准确。重置后缺失行为空，不按声明宽度补齐矩阵，
+                # 也不因过小声明漏掉真实数据；实际行、列仍由共享预算拒绝。
+                sheet.reset_dimensions()
                 entries.extend(
                     parse_table_rows(
                         sheet.iter_rows(values_only=True), pick_name_column, _budget=budget
@@ -299,24 +297,35 @@ def parse_attachment_result(
         finally:
             workbook.close()
     elif extension == "xls":
-        workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
+        workbook = xlrd.open_workbook(file_contents=data, on_demand=True, ragged_rows=True)
         try:
-            for sheet in workbook.sheets():
-                if sheet.ncols > _MAX_COLUMNS or sheet.nrows > _MAX_ROWS:
-                    raise ValueError("暂不支持超过安全解析预算的表格（声明行列过多）")
-                entries.extend(
-                    parse_table_rows(
-                        (sheet.row_values(i) for i in range(sheet.nrows)),
-                        pick_name_column,
-                        _budget=budget,
+            # sheets() 会同时加载全部工作表；ragged_rows 防止稀疏短行补齐到最宽列。
+            for index in range(workbook.nsheets):
+                sheet = workbook.sheet_by_index(index)
+                try:
+                    if sheet.ncols > _MAX_COLUMNS or sheet.nrows > _MAX_ROWS:
+                        raise ValueError("暂不支持超过安全解析预算的表格（声明行列过多）")
+                    entries.extend(
+                        parse_table_rows(
+                            (sheet.row_values(i) for i in range(sheet.nrows)),
+                            pick_name_column,
+                            _budget=budget,
+                        )
                     )
-                )
+                finally:
+                    workbook.unload_sheet(index)
         finally:
             workbook.release_resources()
     elif extension == "docx":
         _check_zip(data)
         document = DocxDocument(io.BytesIO(data))
         for table in document.tables:
+            # python-docx 的 row.cells 会按 gridSpan 展开引用；先检查原始 XML，
+            # 避免一格声明超大横向合并就在预算生效前制造巨型 tuple。
+            for row in table.rows:
+                spans = [cell.grid_span for cell in row._tr.tc_lst]
+                if any(span < 1 for span in spans) or sum(spans) > _MAX_COLUMNS:
+                    raise ValueError("暂不支持超过安全解析预算的表格（合并列过多）")
             entries.extend(
                 parse_table_rows(
                     ([cell.text for cell in row.cells] for row in table.rows),
