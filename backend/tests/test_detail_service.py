@@ -312,3 +312,103 @@ def test_overlong_body_is_truncated_not_failed(session, monkeypatch) -> None:
     assert [r.status for r in fetch_details(session, limit=1, fetcher=fake)] == ["ok"]
     detail = session.get(DocumentDetail, doc.id)
     assert len(detail.body_text) == 20
+
+
+@pytest.mark.parametrize(
+    "status,http_status",
+    [
+        ("network_error", None),
+        ("http_error", 503),
+        ("robots_disallowed", None),
+        ("http_error", 404),
+    ],
+)
+def test_failed_refetch_preserves_good_detail_and_bounds_automatic_retries(
+    session, status, http_status
+):
+    from youju.crawler.detail_service import REFETCH_FAILURE_PREFIX
+    from youju.lists.service import RESCAN_DETAILS_BEFORE, _details_to_rescan
+    from youju.models import DocumentAttachment
+
+    doc = add_document(session, 81)
+    old_time = RESCAN_DETAILS_BEFORE - timedelta(days=1)
+    detail = DocumentDetail(
+        document_id=doc.id,
+        status="ok",
+        body_text="已有正式正文不可因补附件失败被清空。",
+        issuer="辽宁省工业和信息化厅",
+        doc_number="辽工信〔2026〕81号",
+        fetched_at=old_time,
+        http_status=200,
+        final_url=doc.url,
+        attempt_count=3,
+        attachments=[
+            DocumentAttachment(position=0, name="原附件", url=doc.url + ".xlsx", extension="xlsx")
+        ],
+    )
+    session.add(detail)
+    session.commit()
+    fake = FakeFetcher({doc.url: FetchResult(doc.url, status, http_status=http_status)})
+    assert _details_to_rescan(session, [doc.id]) == [doc.id]
+    assert (
+        fetch_details(session, limit=1, document_ids=[doc.id], refetch=True, fetcher=fake)[0].status
+        == status
+    )
+    assert detail.status == "ok"
+    assert detail.body_text == "已有正式正文不可因补附件失败被清空。"
+    assert detail.issuer == "辽宁省工业和信息化厅"
+    assert detail.doc_number == "辽工信〔2026〕81号"
+    assert detail.fetched_at == old_time
+    assert detail.http_status == 200 and detail.final_url == doc.url
+    assert detail.attachments[0].url == doc.url + ".xlsx"
+    assert detail.failure_reason == REFETCH_FAILURE_PREFIX + status
+    assert detail.attempt_count == 1
+    assert _details_to_rescan(session, [doc.id]) == []
+    assert fetch_details(session, limit=1, fetcher=fake) == []
+    transient = status == "network_error" or http_status == 503
+    if transient:
+        for attempt in (2, 3):
+            detail.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+            session.commit()
+            assert _details_to_rescan(session, [doc.id]) == [doc.id]
+            assert fetch_details(session, limit=1, fetcher=fake)[0].status == status
+            assert detail.attempt_count == attempt
+            assert detail.status == "ok" and detail.fetched_at == old_time
+        assert len(fake.calls) == 3
+    else:
+        assert len(fake.calls) == 1
+    assert detail.next_retry_at is None
+    assert _details_to_rescan(session, [doc.id]) == []
+    assert fetch_details(session, limit=1, fetcher=fake) == []
+
+
+def test_refetch_success_updates_attachments_and_finishes_rescan(session):
+    from youju.lists.service import RESCAN_DETAILS_BEFORE, _details_to_rescan
+
+    doc = add_document(session, 82)
+    detail = DocumentDetail(
+        document_id=doc.id,
+        status="ok",
+        body_text="原正文",
+        fetched_at=RESCAN_DETAILS_BEFORE - timedelta(days=1),
+        attempt_count=1,
+    )
+    session.add(detail)
+    session.commit()
+    sample = """<div id='zoom'>这是重新取得的政府公开通知正文，申报单位应当按规定准备材料。<script>var a = '<a href="/new.xlsx">企业名单.xlsx</a>';</script></div>"""
+    fake = FakeFetcher({doc.url: FetchResult(doc.url, "ok", http_status=200, text=sample)})
+    fetch_details(session, limit=1, document_ids=[doc.id], refetch=True, fetcher=fake)
+    assert detail.attachments[0].url == "https://gxt.ln.gov.cn/new.xlsx"
+    assert detail.fetched_at >= RESCAN_DETAILS_BEFORE
+    assert detail.failure_reason is None and detail.next_retry_at is None
+    assert _details_to_rescan(session, [doc.id]) == []
+
+
+def test_refetch_requires_explicit_ids_and_still_obeys_rights(session):
+    doc = add_document(session, 83, rights_level=2)
+    fake = FakeFetcher({})
+    with pytest.raises(ValueError, match="document_ids"):
+        fetch_details(session, limit=1, refetch=True, fetcher=fake)
+    assert fetch_details(session, limit=1, document_ids=[doc.id], refetch=True, fetcher=fake) == []
+    assert fetch_details(session, limit=1, document_ids=[], refetch=True, fetcher=fake) == []
+    assert fake.calls == []

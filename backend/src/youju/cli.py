@@ -1,7 +1,9 @@
 """命令行：数据库、来源抓取、详情抓取、报告和 API。"""
 
 import argparse
+import json
 import logging
+import sys
 import tempfile
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
@@ -900,6 +902,20 @@ def _cmd_alert(args: argparse.Namespace) -> int:
     return 1 if send_alert(args.text) is False else 0
 
 
+def _cmd_alert_probe(args: argparse.Namespace) -> int:
+    from youju.alerts import probe_alert
+
+    try:
+        result = probe_alert(send=args.send, probe_id=args.probe_id)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False))
+    if not result["configured"]:
+        return 2
+    return 1 if result["state"] == "failed" else 0
+
+
 def _cmd_check_sources(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
     from youju.source_health import check_sources
@@ -1203,6 +1219,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")
     p.set_defaults(func=_cmd_alert)
+
+    p = sub.add_parser("alert-probe", help="只读检查告警配置；显式--send才发受控测试消息")
+    p.add_argument("--send", action="store_true", help="向已配置的接收端提交一条验收消息")
+    p.add_argument("--probe-id", help="可选的验收标记（6至64位字母、数字、下划线或连字符）")
+    p.set_defaults(func=_cmd_alert_probe)
 
     p = sub.add_parser("check-sources", help="检查今天（北京时间零点起）全部启用栏目的成功率")
     p.add_argument("--job", action="store_true", help=argparse.SUPPRESS)

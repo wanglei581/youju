@@ -31,6 +31,7 @@ class DetailFetcher:
 
 
 _RETRY_DELAYS = (timedelta(hours=6), timedelta(hours=24))
+REFETCH_FAILURE_PREFIX = "详情重抓未完成："
 _FILE_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".wps", ".et", ".zip", ".rar", ".ofd")
 
 
@@ -65,6 +66,24 @@ def _save_result(
     if doc is None:
         return DetailFetchSummary(document_id, "missing", "题录已删除")
     detail = session.get(DocumentDetail, document_id)
+    if detail is not None and detail.status == "ok" and outcome.status != "ok":
+        # 补附件失败不能抹掉已经成功入库的正文、附件与原抓取时间。复用重试字段，
+        # 用固定标记区分本次维护与首次抓取的次数；永久失败不自动重试。
+        attempts = (
+            (detail.attempt_count or 0) + 1
+            if (detail.failure_reason or "").startswith(REFETCH_FAILURE_PREFIX)
+            else 1
+        )
+        detail.attempt_count = attempts
+        detail.failure_reason = REFETCH_FAILURE_PREFIX + outcome.status
+        detail.next_retry_at = (
+            outcome.fetched_at + _RETRY_DELAYS[attempts - 1]
+            if attempts <= len(_RETRY_DELAYS)
+            and _retryable(outcome.status, outcome.fetch.http_status if outcome.fetch else None)
+            else None
+        )
+        session.commit()
+        return DetailFetchSummary(document_id, outcome.status, outcome.failure_reason)
     if detail is None:
         detail = DocumentDetail(document_id=document_id)
         session.add(detail)
@@ -204,17 +223,25 @@ def fetch_details(
     since: date | None = None,
     notices_only: bool = False,
     document_ids: list[int] | None = None,
+    refetch: bool = False,
 ) -> list[DetailFetchSummary]:
-    """抓尚无详情或已到重试时间的公开政府文件；临时失败最多尝试三次。"""
+    """抓尚无详情或已到重试时间的公开政府文件；临时失败最多尝试三次。
+    refetch：和 document_ids 一起用，详情已抓成功的也重抓一次（解析规则改进后补附件等）。"""
     if limit < 1:
         raise ValueError("limit 必须大于 0")
+    if refetch and document_ids is None:
+        raise ValueError("refetch 必须指定 document_ids")
     now = datetime.now(UTC)
     stmt = (
         select(Document.id, Document.url)
         .join(Source, Document.source_id == Source.id)
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
-        .where(
-            Source.rights_level == 1,
+        .where(Source.rights_level == 1)
+        .order_by(Document.id)
+        .limit(limit)
+    )
+    if not (refetch and document_ids is not None):
+        stmt = stmt.where(
             or_(
                 DocumentDetail.document_id.is_(None),
                 and_(
@@ -222,11 +249,8 @@ def fetch_details(
                     DocumentDetail.next_retry_at <= now,
                     DocumentDetail.attempt_count < 3,
                 ),
-            ),
+            )
         )
-        .order_by(Document.id)
-        .limit(limit)
-    )
     if source_id is not None:
         stmt = stmt.where(Document.source_id == source_id)
     if since is not None:

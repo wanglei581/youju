@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind, list_status
 from youju.config import get_settings
-from youju.crawler.detail_service import _government_url, fetch_details
+from youju.crawler.detail_service import REFETCH_FAILURE_PREFIX, _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
 from youju.lists.parser import (
     NameColumnPicker,
@@ -31,6 +31,10 @@ from youju.models import (
 )
 
 SUPPORTED = {"pdf", "xlsx", "xls", "docx"}
+# 10/15 起详情页也识别脚本里的附件链接。旧名单详情且尚未读出企业名的，按新规则补附件。
+# 成功后不再重抓；临时失败按详情重试规则退避，永久失败停止。每轮最多 RESCAN_LIMIT 份。
+RESCAN_DETAILS_BEFORE = datetime(2026, 10, 15, 8, 0, tzinfo=UTC)
+RESCAN_LIMIT = 100
 UNSUPPORTED = {"doc", "wps", "et", "ofd", "zip", "rar"}
 PERMANENT = {"ok", "empty", "unsupported"}
 _PROTECTED = re.compile(r"验证码|人机验证|安全验证|访问过于频繁|异常访问")
@@ -222,6 +226,31 @@ def _parse_source(
         _save(session, doc, url, kind, classification, entries, partial_reason=partial_reason)
 
 
+def _details_to_rescan(session: Session, selected_ids: list[int]) -> list[int]:
+    """选择旧详情且无企业名的名单，按编号取最多 RESCAN_LIMIT 份，遵守失败退避。"""
+    if not selected_ids:
+        return []
+    with_entries = select(ListEntry.document_id).where(ListEntry.document_id.in_(selected_ids))
+    return list(
+        session.scalars(
+            select(DocumentDetail.document_id)
+            .where(
+                DocumentDetail.document_id.in_(selected_ids),
+                DocumentDetail.status == "ok",
+                DocumentDetail.fetched_at < RESCAN_DETAILS_BEFORE,
+                DocumentDetail.document_id.not_in(with_entries),
+                or_(
+                    DocumentDetail.failure_reason.is_(None),
+                    ~DocumentDetail.failure_reason.startswith(REFETCH_FAILURE_PREFIX),
+                    DocumentDetail.next_retry_at <= datetime.now(UTC),
+                ),
+            )
+            .order_by(DocumentDetail.document_id)
+            .limit(RESCAN_LIMIT)
+        )
+    )
+
+
 def _prune_invalid_entries(session: Session, selected_ids: list[int]) -> None:
     if not selected_ids:
         return
@@ -409,6 +438,11 @@ def parse_lists(
         ]
         if missing:
             fetch_details(session, limit=len(missing), document_ids=missing, fetcher=fetcher)
+        rescan = _details_to_rescan(session, selected_ids)
+        if rescan:
+            fetch_details(
+                session, limit=len(rescan), document_ids=rescan, fetcher=fetcher, refetch=True
+            )
         attachments_fetched = 0
         attachments_deferred = 0
         for doc, info in selected:

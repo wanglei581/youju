@@ -191,3 +191,61 @@ def test_normalize_issuer_display(value: str, expected: str) -> None:
     from youju.issuer import normalize_issuer
 
     assert normalize_issuer(value) == expected
+
+
+def test_attachment_links_written_in_page_scripts() -> None:
+    """TRS 模板把附件链接写在脚本里（var hasFJ='<a href=...>'），页面结构里没有（10/15 查名单读不出企业名的原因）。"""
+    result = parse_detail(
+        read_fixture_html("detail_chongqing_kjj_script_attachments"),
+        "https://kjj.cq.gov.cn/zwxx_176/tzgg/202609/t20260904_16033963.html",
+    )
+    assert [(a.name, a.url, a.extension) for a in result.attachments] == [
+        (
+            "2026年第八批入库科技型企业名单.pdf",
+            "https://kjj.cq.gov.cn/zwxx_176/tzgg/202609/P020260904620028456189.pdf",
+            "pdf",
+        )
+    ]
+    result = parse_detail(
+        read_fixture_html("detail_ningxia_gxt_script_attachments"),
+        "https://gxt.nx.gov.cn/zwgk/fdzdgknr/glfw/gsgg/202609/t20260923_5354445.html",
+    )
+    assert [a.name for a in result.attachments] == [
+        "附件1.2026年度认定的自治区专精特新中小企业名单.xlsx",
+        "附件2.复核通过的自治区专精特新中小企业名单（第二批）.xlsx",
+        "附件3.取消认定的自治区专精特新中小企业名单（第二批）.xlsx",
+    ]
+    assert all(
+        a.extension == "xlsx" and a.url.startswith("https://gxt.nx.gov.cn/")
+        for a in result.attachments
+    )
+
+
+def test_script_links_follow_the_same_rules() -> None:
+    """脚本里的链接按同样的规则收：要是文件、外站的要标明附件、同一地址只收一次；外部脚本不看。"""
+    sample = (
+        "<html><head><script src='https://example.gov.cn/a.js'></script></head><body>"
+        "<div id='zoom'><p>关于公布有关名单的通知，全文见附件。</p>"
+        "<p><a href='/files/list.xlsx'>附件1.名单.xlsx</a></p></div>"
+        '<script>var hasFJ=\'<a href="/files/list.xlsx">附件1.名单.xlsx</a><BR/>'
+        '<a href="./more.pdf">附件2.补充名单.pdf</a><BR/>'
+        '<a href="https://other.example.com/ref.pdf">引用的文件.pdf</a>\';'
+        "var stat='<a href=\"https://tongji.example.com/track\">统计</a>';"
+        "var other='<a href=\"https://other.example.com/notice-att.docx\">附件3.通知.docx</a>';</script>"
+        "</body></html>"
+    )
+    result = parse_detail(sample, "https://example.gov.cn/zw/a.html")
+    assert [(a.name, a.url) for a in result.attachments] == [
+        ("附件1.名单.xlsx", "https://example.gov.cn/files/list.xlsx"),
+        ("附件2.补充名单.pdf", "https://example.gov.cn/zw/more.pdf"),
+        ("附件3.通知.docx", "https://other.example.com/notice-att.docx"),
+    ]
+
+
+def test_script_attachment_escaped_slashes_and_markup():
+    sample = r"""<div id="zoom">这是一份公开的名单通知，申报单位请按规定准备材料。
+    <script>var a = '<a href=".\/files\/list.xlsx"><b>附件名单.xlsx</b><\/a>';</script></div>"""
+    result = parse_detail(sample, "https://example.gov.cn/notice/index.html")
+    assert len(result.attachments) == 1
+    assert result.attachments[0].url == "https://example.gov.cn/notice/files/list.xlsx"
+    assert result.attachments[0].name == "附件名单.xlsx"
