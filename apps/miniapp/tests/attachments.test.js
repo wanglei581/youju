@@ -288,6 +288,7 @@ function retryApi(plan) {
   const calls = [];
   const loading = [];
   let hidden = 0;
+  let forgotten = 0;
   const api = load('utils/api.js', {
     './config.js': { cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '', templates: {} },
     '../mock/data.js': {}, './mockSearch.js': { mockSearch() {} }, './format.js': format,
@@ -308,10 +309,10 @@ function retryApi(plan) {
             : o.success({ statusCode: step.code, data: step.data || (step.code === 200 ? { ok: 1 } : {}) })), step.after);
         },
       },
-      removeStorageSync() {}, getStorageSync() { return ''; }, setStorageSync() {},
+      removeStorageSync() { forgotten += 1; }, getStorageSync() { return ''; }, setStorageSync() {},
     },
   });
-  return { api, clock, sent, services, calls, loading, hidden: () => hidden };
+  return { api, clock, sent, services, calls, loading, hidden: () => hidden, forgotten: () => forgotten };
 }
 
 // 把假时钟往前走到 until（只触发到那时为止的定时器）
@@ -644,4 +645,50 @@ test('后来的写操作不能无限延长先前用户的等待，超时写操�
   assert.deepEqual(second.value, { id: 2 });
   assert.deepEqual(s.calls.filter((c) => c[1] === 'POST').map((c) => c[2]), ['/api/v1/me/follows']);
   assert.equal(s.hidden(), 1);
+});
+
+
+for (const kind of ['write', 'export', 'attachment']) {
+  for (const failure of ['gateway', 'network', 'timeout']) {
+    test(`暖态失效：${kind}的${failure}不自动重写，下一次用户操作重新预热`, async () => {
+      const step = failure === 'timeout' ? null : failure === 'network' ? { after: 0, fail: true } : { after: 0, code: 503 };
+      const plan = [{ after: 0, code: 200 }, step];
+      const s = retryApi(plan);
+      await outcome(s, (api) => api.me());
+      let error;
+      const action = kind === 'write' ? () => s.api.agree('2026-10')
+        : kind === 'export' ? () => s.api.exportFile(['7'], 'xlsx')
+          : () => s.api.attachmentPart('7', 'abcdef0123456789', 0);
+      action().catch((err) => { error = err; });
+      await advance(s.clock, 0);
+      s.clock.now = 120000;
+      await drive(s.clock);
+      assert.ok(error);
+      assert.equal(s.calls.length, 2);
+      plan.push({ after: 0, code: 200 }, { after: 0, code: 201 });
+      const r = await outcome(s, (api) => api.agree('2026-10'));
+      assert.ok(!r.error);
+      assert.deepEqual(s.calls.slice(2).map((c) => c[2]), ['/health', '/api/v1/me/agreement']);
+    });
+  }
+}
+
+test('较早请求的失败不覆盖后来收到的成功暖态', async () => {
+  const plan = [{ after: 0, code: 200 }, { after: 100, fail: true }, { after: 10, code: 200 }];
+  const s = retryApi(plan);
+  await outcome(s, (api) => api.me());
+  s.api.agree('2026-10').catch(() => {});
+  s.api.me().catch(() => {});
+  await advance(s.clock, 200);
+  plan.push({ after: 0, code: 201 });
+  await outcome(s, (api) => api.agree('2026-10'));
+  assert.equal(s.calls.filter((c) => c[2] === '/health').length, 0);
+});
+
+test('admin公开读取的403不清除本机协议同意，api的403仍清除', async () => {
+  const s = retryApi([{ after: 0, code: 403 }, { after: 0, code: 403 }]);
+  await outcome(s, (api) => api.coverage());
+  assert.equal(s.forgotten(), 0);
+  await outcome(s, (api) => api.me());
+  assert.equal(s.forgotten(), 1);
 });
