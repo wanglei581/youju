@@ -30,6 +30,7 @@ uv run youju backfill-titles          # 列表页截断的历史标题用详情�
 uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
 uv run youju extract-deadlines --since 2026-07-01  # 生成待人工核对候选，重复运行不会覆盖核对结果
 uv run youju parse-lists --since 2026-07-01  # 补名单详情并解析政府表格附件，单次最多下载 200 个附件
+uv run youju rescan-list-details     # 还没读出企业名的名单详情按附件文件服务器新规则重抓补附件：默认只预览，加 --apply 才写入
 uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
