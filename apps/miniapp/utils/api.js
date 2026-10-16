@@ -623,6 +623,11 @@ function myData() {
 
 const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
 const DATA_DISABLED = { enabled: false, features: [], remaining: {} };
+// 收费入口（D-058）：服务端说在售（enabled）或有过订单（hasOrders）才显示；只认严格的 true
+function payEntry(res) {
+  const entry = (res && res.pay) || {};
+  return { enabled: entry.enabled === true, hasOrders: entry.hasOrders === true };
+}
 let capabilitiesPromise;
 let capabilitiesPending;
 function advisorCapabilities(options = {}) {
@@ -635,8 +640,10 @@ function advisorCapabilities(options = {}) {
     const ai = (res && res.ai_advisor) || {};
     const data = (res && res.data_tools) || {};
     const data_tools = data.enabled === true ? { enabled: true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
-    if (ai.enabled !== true) return { data_tools, ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
-    return { data_tools, ai_advisor: {
+    // pay 原样带给工具表单：原来这里丢了 pay，收费开放后也不出现开通卡片（Codex 对接核对，10/16）
+    const pay = payEntry(res);
+    if (ai.enabled !== true) return { data_tools, pay, ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
+    return { data_tools, pay, ai_advisor: {
       enabled: true,
       features: Array.isArray(ai.features) ? ai.features : [],
       remaining: ai.remaining || {},
@@ -645,7 +652,7 @@ function advisorCapabilities(options = {}) {
   }).catch((err) => {
     const status = err && err.status;
     const reason = status === 403 ? 'consent' : (status && status < 500 && status !== 429 ? 'off' : 'offline');
-    return { data_tools: Object.assign({}, DATA_DISABLED), ai_advisor: Object.assign({}, AI_DISABLED), reason };
+    return { data_tools: Object.assign({}, DATA_DISABLED), pay: payEntry(null), ai_advisor: Object.assign({}, AI_DISABLED), reason };
   });
   capabilitiesPromise = result;
   capabilitiesPending = result;

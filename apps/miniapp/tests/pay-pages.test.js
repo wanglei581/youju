@@ -191,6 +191,33 @@ function toolForm(overrides = {}) {
   return { page, urls, seen };
 }
 
+test('能力接口把服务端的 pay 原样带给页面（只认严格的 true），失败时按不在售处理，防止收费开放了却不出现开通卡片', async () => {
+  // 用真实的 utils/api.js，模拟线上 wx.request 的返回（原来整理返回值时丢了 pay，页面测试替换了这个函数所以没测出来）
+  async function capabilities(response) {
+    const urls = [];
+    // 每次请求都马上按同一个结果应答（失败只用不重试的 403、404；会重试的失败走的是同一个出错分支）
+    const request = (options) => {
+      urls.push(options.url);
+      Promise.resolve().then(() => options.success(response));
+    };
+    const api = load('utils/api.js', {
+      './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {},
+    }, { wx: { request, removeStorageSync() {}, getStorageSync() {}, setStorageSync() {} },
+      // 请求都马上应答：15 秒超时计时器不用真的挂着（否则测试进程要白等 15 秒才结束）
+      setTimeout: () => 0, clearTimeout() {} });
+    const result = await api.advisorCapabilities({ refresh: true });
+    assert.ok(urls.length >= 1 && urls.every((url) => /\/api\/v1\/advisor\/capabilities$/.test(url)), urls.join());
+    return result;
+  }
+  const body = (pay, ai = false) => ({ statusCode: 200, data: { data_tools: { enabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: ai, features: [] }, pay } });
+  assert.deepEqual(plain((await capabilities(body({ enabled: true, hasOrders: false }))).pay), { enabled: true, hasOrders: false });
+  assert.deepEqual(plain((await capabilities(body({ enabled: false, hasOrders: true }, true))).pay), { enabled: false, hasOrders: true });
+  assert.deepEqual(plain((await capabilities(body({ enabled: 'true', hasOrders: 1 }))).pay), { enabled: false, hasOrders: false });
+  assert.deepEqual(plain((await capabilities(body(undefined))).pay), { enabled: false, hasOrders: false });
+  assert.deepEqual(plain((await capabilities({ statusCode: 404, data: { detail: '没有找到接口' } })).pay), { enabled: false, hasOrders: false });
+  assert.deepEqual(plain((await capabilities({ statusCode: 403, data: { detail: '请先同意' } })).pay), { enabled: false, hasOrders: false });
+});
+
 test('购买页在商品 404 或空列表时只显示未开放、没有付款按钮，防止关掉售卖后还能付款', async () => {
   for (const payProducts of [
     () => Promise.reject(Object.assign(new Error('开关关闭'), { status: 404 })),
