@@ -77,6 +77,8 @@ class DetailResult:
     publish_date: date | None = None
     attachments: list[Attachment] = field(default_factory=list)
     failure_reason: str | None = None
+    # 页面自己标明的标题：ArticleTitle 元数据、h1。只用来补全列表页截断的标题（crawler/titles.py）
+    page_titles: list[str] = field(default_factory=list)
 
 
 def redact_sensitive(text: str) -> str:
@@ -206,6 +208,16 @@ def _metadata(root: etree._Element, name: str) -> str | None:
         if key == name.lower():
             return (node.get("content") or "").strip() or None
     return None
+
+
+def _page_titles(root: etree._Element) -> list[str]:
+    """政府网站常用的 ArticleTitle 元数据（10/16 查的 8 个站点里 6 个有），再加页面的 h1
+    （青海科技厅、西藏经信厅只在 h1 里写完整标题）。<title> 常带站名、栏目名或只有站名，不用。"""
+    values = [_metadata(root, "ArticleTitle") or ""]
+    values += [h1.text_content() for h1 in root.xpath("//h1")]
+    titles = [title for value in values if (title := " ".join(value.split()))]
+    # 标题入库不脱敏：带手机号、身份证号等个人信息的（正常通知标题不会有）不收，宁可不补全
+    return [title for title in titles if redact_sensitive(title) == title]
 
 
 def _issuer(lines: list[str], root: etree._Element, prefix: str) -> str | None:
@@ -349,6 +361,7 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
             publish_date=_publish_date(root, visible[:700]),
             attachments=attachments,
             failure_reason=None if attachments else "未识别到正文容器",
+            page_titles=_page_titles(root),
         )
     lines = _plain_lines(node)
     raw_body = "\n".join(lines)
@@ -366,4 +379,5 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         publish_date=_publish_date(root, prefix),
         attachments=attachments,
         failure_reason=None if raw_body or attachments else "未识别到正文或附件",
+        page_titles=_page_titles(root),
     )
