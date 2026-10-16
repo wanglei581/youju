@@ -752,6 +752,32 @@ function saveSubscription(kind, target) {
   return request('/api/v1/me/subscriptions', null, { method: 'POST', data });
 }
 
+// ---- 客户工作台 30 天（D-058；服务端开关关着时商品接口返回 404，小程序不显示购买入口） ----
+function payProducts() {
+  return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
+}
+// 下单是写操作：不自动重试（重复下单由服务端"10 分钟内待支付最多 3 单"兜住，页面也会先查上一笔）
+function createPayOrder(data) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request('/api/v1/pay/orders', null, { method: 'POST', data });
+}
+function payOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}`);
+}
+function payOrders() {
+  return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
+}
+function refundPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
+}
+// 申请或修改发票（同一订单待开时可改，幂等）
+function requestInvoice(id, data) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/invoice`, null, { method: 'PUT', data });
+}
+
 module.exports = {
   watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
   attachmentPart,
@@ -759,4 +785,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorCapabilities, advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
 };

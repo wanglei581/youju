@@ -47,16 +47,21 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.equal(JSON.stringify(inspect(x)).includes('private@example.test'),false);
 });
 
-test('完整候选严格限定 21 页，不能借此放宽旧版本或提交审核',()=>{
+test('完整候选严格限定 23 页（含购买页、订单页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms'].map(p=>`pages/${p}/index`));
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','pass','orders'].map(p=>`pages/${p}/index`));
  x.toolTerms={version:'advisor-2026-09-v1',reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-candidate',mode:'prepare'});
  assert.equal(r.ok,true);assert.equal(r.readyToSubmit,false);
  assert.equal(r.checks.find(c=>c.id==='tool-review').state,'warning');
+ // 付费协议没传或没定稿：只提示，不挡体验准备
+ assert.equal(r.checks.find(c=>c.id==='pay-terms').state,'warning');
+ assert.equal(inspect({...x,payTerms:{final:true,text:'付费服务协议正文'},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-terms').state,'pass');
+ assert.equal(inspect({...x,payTerms:{final:true,text:'【付费服务协议：待律师定稿】'},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-terms').state,'warning');
  for(const profile of ['first-release','ai-internal','ai-release']) assert.equal(inspect({...x,profile,mode:'prepare'}).ok,false);
  assert.equal(inspect({...x,profile:'complete-candidate',mode:'submit'}).ok,false);
- for(const change of [y=>y.app.pages.push('pages/pass/index'),y=>y.app.pages.pop(),y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
+ // 奖励等不在范围的页面、缺了购买页或订单页、子包都不行
+ for(const change of [y=>y.app.pages.push('pages/rewards/index'),y=>y.app.pages.pop(),y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/pass/index');},y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
 });

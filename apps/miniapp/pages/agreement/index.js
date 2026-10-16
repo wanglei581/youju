@@ -1,4 +1,5 @@
 const legal = require('../../content/legal.js');
+const payTerms = require('../../content/pay-terms.js');
 const api = require('../../utils/api.js');
 const { consentOpen, markAgreed, loginOpen, agreeFailed, featureNames } = require('../../utils/consent.js');
 
@@ -26,6 +27,8 @@ Page({
     const consent = query.consent === '1' && consentOpen();
     let docs;
     if (consent) docs = [legal.user, legal.privacy];
+    // type=pay：购买页的《付费服务协议》（只在协议定稿后由购买页打开，见 utils/pay.js termsFinal）
+    else if (query.type === 'pay') docs = [{ title: payTerms.title, sections: [{ h: '', p: String(payTerms.text || '').split(/\n+/).filter(Boolean) }] }];
     else docs = [query.type === 'privacy' ? legal.privacy : legal.user];
     this.setData({ docs: docs.map(withKeys), final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent });
     wx.setNavigationBarTitle({ title: consent ? '用户协议和隐私保护指引' : docs[0].title });

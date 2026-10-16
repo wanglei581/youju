@@ -31,7 +31,7 @@ function load(file, deps, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

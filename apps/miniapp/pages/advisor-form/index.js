@@ -2,10 +2,18 @@ const api = require('../../utils/api.js');
 const idempotency = require('../../utils/data-idempotency.js');
 const { DATA_KINDS, dataKinds } = require('../../utils/advisor.js');
 const { pasteRows, toolConsent, quotaView } = require('../../utils/data-tools.js');
+const pay = require('../../utils/pay.js');
+
+// 超出免费量时的说明：支付在售（offer 有值）时提示可以开通客户工作台，没开放时照旧写"不需要购买"（D-058、D-068）
+function limitText(offer) {
+  return offer ? '本月免费次数已用完，下月 1 日恢复；也可以开通客户工作台 30 天，不限次数' : '本月免费次数已用完，下月可继续使用；不需要购买';
+}
 
 Page({
   data: { kind: 'compare', title: DATA_KINDS.compare, loading: true, error: '', gate: '', enabled: false, agreed: false,
-    mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false },
+    mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
+    // 客户工作台 30 天（只有服务端在售时才有值）：{ price: '29', days: 30 }
+    offer: null },
   onLoad(query) {
     const kind = query.kind === 'track' ? 'track' : 'compare';
     this.setData({ kind, title: DATA_KINDS[kind] });
@@ -25,6 +33,7 @@ Page({
         this.setData({ loading: false, gate: caps.reason || 'off', error: caps.reason === 'consent' ? '请先阅读并同意用户协议和隐私保护指引' : caps.reason === 'offline' ? '暂时连不上服务器，请重试' : '这项工具暂时不可用，请稍后重试' });
         return;
       }
+      this.loadOffer(caps.pay, serial);
       return Promise.all([api.advisorStatus(), toolConsent({ identity: true })]).then(([status, agreement]) => {
         if (this.dead || serial !== this.serial) return;
         const agreed = agreement.agreed;
@@ -41,6 +50,16 @@ Page({
       });
     }).catch((err) => { if (!this.dead && serial === this.serial) this.setData({ loading: false, error: err.message, gate: err.status === 403 ? 'consent' : '' }); });
   },
+  // 在售时取一次价格；取不到就当没在售，不影响免费使用
+  loadOffer(entry, serial) {
+    if (!(entry && entry.enabled)) { this.setData({ offer: null }); return; }
+    api.payProducts().then((res) => {
+      if (this.dead || serial !== this.serial) return;
+      const product = pay.normalizeProducts(res)[0];
+      this.setData({ offer: product ? { price: pay.yuan(product.price), days: product.days } : null });
+    }).catch(() => { if (!this.dead && serial === this.serial) this.setData({ offer: null }); });
+  },
+  buyPass() { wx.navigateTo({ url: '/pages/pass/index' }); },
   consent() { require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); }); },
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
   tasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },
@@ -122,7 +141,7 @@ Page({
   submit() {
     if (this.data.submitting || this.data.previewing || this.data.accepted || !this.data.enabled) return;
     if (!this.data.agreed) { this.terms(); return; }
-    if (!this.data.passActive && this.data.remaining <= 0 && !this.data.previewed) { this.setData({ inputError: '本月免费次数已用完，下月可继续使用；不需要购买' }); return; }
+    if (!this.data.passActive && this.data.remaining <= 0 && !this.data.previewed) { this.setData({ inputError: limitText(this.data.offer) }); return; }
     if (!this.data.previewed) { this.setData({ inputError: '请先预览并确认本次输入' }); return; }
     let body;
     try { body = this.body(); } catch (err) { this.setData({ inputError: err.message }); return; }
@@ -131,7 +150,7 @@ Page({
     catch (err) { this.setData({ inputError: err.message }); return; }
     if (!request.existing && !this.data.passActive && this.data.remaining <= 0) {
       try { idempotency.confirm(wx, request); } catch (ignored) { /* 未发送，不自动重试 */ }
-      this.setData({ inputError: '本月免费次数已用完，下月可继续使用；不需要购买' }); return;
+      this.setData({ inputError: limitText(this.data.offer) }); return;
     }
     this.setData({ submitting: true, inputError: '' });
     api.createAdvisorTask(body, this.key).then((task) => {
@@ -147,7 +166,7 @@ Page({
       if (this.dead || this.taskOwner !== request.owner) return;
       const change = { submitting: false, agreed: err.status === 403 ? false : this.data.agreed,
         inputError: (!err.status || [502, 503, 504].includes(err.status)) ? `${err.message}。提交状态尚未确认；可重试同一内容，或到任务中心查看是否已受理。` : err.message };
-      if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, { remaining: 0, passActive: false, inputError: '本月免费次数已用完，下月可继续使用；不需要购买' });
+      if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, { remaining: 0, passActive: false, inputError: limitText(this.data.offer) });
       if (['FREE_ROW_LIMIT', 'PASS_ROW_LIMIT'].includes(err.code)) {
         const limit = err.detail && err.detail.maxRows;
         Object.assign(change, { previewed: false, ...(Number.isInteger(limit) && limit > 0 ? { maxRows: limit } : {}), ...(err.code === 'FREE_ROW_LIMIT' ? { passActive: false } : {}) });

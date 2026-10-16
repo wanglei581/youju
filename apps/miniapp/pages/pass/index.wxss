@@ -1,0 +1,40 @@
+@import "../../utils/advisor.wxss";
+
+/* 价格卡片：和"关注"页顶部同一种蓝色渐变 */
+.pass-hero { margin: 20rpx 24rpx 0; padding: 36rpx 40rpx 40rpx; border-radius: 24rpx; background: linear-gradient(135deg, var(--brand-g1), var(--brand-g2)); color: #FFFFFF; }
+.pass-name { font-size: 28rpx; opacity: 0.92; }
+.pass-price { margin-top: 4rpx; display: flex; align-items: baseline; gap: 8rpx; }
+.pass-num { font-size: 88rpx; font-weight: 700; line-height: 1.15; }
+.pass-unit { font-size: 32rpx; font-weight: 500; }
+.pass-sub { margin-top: 4rpx; font-size: 28rpx; opacity: 0.95; }
+.pass-now { margin-top: 24rpx; padding: 14rpx 20rpx; border-radius: 12rpx; background: rgba(255, 255, 255, 0.16); font-size: 24rpx; line-height: 1.6; }
+
+.pass-card { padding-top: 32rpx; padding-bottom: 28rpx; }
+.pass-title { font-size: 30rpx; font-weight: 600; color: var(--t1); }
+
+/* 包含什么：图标 + 名称 + 一行说明 */
+.pass-row { margin-top: 24rpx; display: flex; align-items: flex-start; gap: 20rpx; }
+.pass-ico { flex-shrink: 0; width: 64rpx; height: 64rpx; border-radius: 16rpx; background: var(--brand-tint); display: flex; align-items: center; justify-content: center; }
+.pass-main { flex: 1; min-width: 0; }
+.pass-lead { font-size: 30rpx; font-weight: 500; color: var(--t1); line-height: 1.5; }
+.pass-desc { font-size: 26rpx; color: var(--t2); line-height: 1.6; }
+
+/* 不买也能用：一行一条，前面小圆点 */
+.pass-line { position: relative; margin-top: 16rpx; padding-left: 28rpx; font-size: 28rpx; line-height: 1.7; color: var(--t1); }
+.pass-line::before { content: ''; position: absolute; left: 6rpx; top: 20rpx; width: 10rpx; height: 10rpx; border-radius: 50%; background: var(--brand); }
+
+/* 购买前请知悉：字小一号、颜色浅一级，段间留空 */
+.pass-note { margin-top: 18rpx; font-size: 26rpx; line-height: 1.75; color: var(--t2); }
+.pass-help { margin-top: 28rpx; padding-top: 24rpx; border-top: 2rpx solid var(--line); font-size: 26rpx; color: var(--t2); }
+
+/* 底部付款栏 */
+.pass-space { height: calc(300rpx + env(safe-area-inset-bottom)); }
+.pass-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(24rpx + env(safe-area-inset-bottom)); background: var(--card); box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.06); }
+.pass-check { display: flex; align-items: center; flex-wrap: wrap; gap: 8rpx; min-height: 80rpx; font-size: 26rpx; color: var(--t1); }
+.pass-check checkbox { transform: scale(0.82); transform-origin: left center; }
+/* 微信的 button 默认是固定宽度，这里要占满一行 */
+.pass-pay { width: 100% !important; margin: 8rpx 0 0; min-height: 96rpx; font-size: 32rpx; line-height: 96rpx; padding: 0; }
+.pass-pay::after { border: 0; }
+.pass-msg { padding: 8rpx 0 4rpx; font-size: 26rpx; line-height: 1.6; color: var(--t2); }
+.pass-msg--error { color: var(--red); }
+.pass-closed { padding: 24rpx 0; text-align: center; font-size: 28rpx; color: var(--t2); }
