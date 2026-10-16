@@ -353,10 +353,13 @@ def query(
     data = client.query(openid, order.out_trade_no, order.env)
     event(session, "query_order", data, order)
     # 返回未包含 openid 时，微信已在请求中按此 openid 查询；返回有身份字段则逐项核验。
+    # 环境：请求的 env 是 0 现网、1 沙箱，官方 query_order 返回的 env_type 却是 1 现网、2 沙箱
+    # （10/16 核对官方文档；原来直接比较，按文档每次查单都会判不一致）。两种写法都认，
+    # 只拒绝明确是另一个环境的值；查单本身按 env 查，不会查到另一个环境的单。
     if (
         data.get("order_id") != order.out_trade_no
         or data.get("openid", openid) != openid
-        or data.get("env_type", order.env) != order.env
+        or data.get("env_type", order.env + 1) not in (order.env, order.env + 1)
     ):
         raise XPayError
     if order.wx_order_id and data.get("wx_order_id") != order.wx_order_id:

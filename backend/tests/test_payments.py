@@ -56,6 +56,7 @@ class FakeWechat:
         self.paid_time = int(NOW.timestamp())
         self.fail_provide = False
         self.bill_broken = None
+        self.env_type = None
         self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
         self.client = XPayClient(settings, self.http)
 
@@ -85,7 +86,8 @@ class FakeWechat:
                         "order_id": "wrong" if self.bad_order else body["order_id"],
                         "openid": body["openid"],
                         "status": self.status,
-                        "env_type": body["env"],
+                        # 官方文档：返回的 env_type 是 1 现网、2 沙箱（请求的 env 是 0、1）
+                        "env_type": body["env"] + 1 if self.env_type is None else self.env_type,
                         "order_fee": self.fee,
                         "paid_fee": self.fee,
                         "left_fee": self.left_fee,
@@ -263,6 +265,33 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 429
+
+
+@pytest.mark.parametrize(
+    ("env", "env_type", "ok"),
+    [
+        (1, 2, True),  # 官方文档写法：沙箱 2
+        (1, 1, True),  # 和请求一样的写法也认
+        (1, 0, False),  # 0 只能是现网（请求写法）
+        (0, 1, True),  # 官方文档写法：现网 1
+        (0, 0, True),
+        (0, 2, False),  # 2 只能是沙箱（官方写法）
+    ],
+)
+def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, env, env_type, ok):
+    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。"""
+    _, settings, fake = setup_pay
+    settings.xpay_env = env
+    if env == 0:
+        settings.pay_terms_version = "pay-test"
+        settings.xpay_appkey_prod = SecretStr("12345")
+    row = order(session, create(setup_pay))
+    fake.env_type = env_type
+    if ok:
+        assert payments.query(session, row, fake.client)["order_id"] == row.out_trade_no
+    else:
+        with pytest.raises(XPayError):
+            payments.query(session, row, fake.client)
 
 
 def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
