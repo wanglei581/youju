@@ -267,7 +267,8 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
 
 def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     """下新单前先问微信 10 分钟内的待支付单：已经付了款（推送和补单还没到；小程序取消回调不准、
-    付款中途被关掉时本机没记下这一笔）就先开通、不下新单；没付照常下；微信查不了先不下（agy 审阅，10/16）。"""
+    付款中途被关掉时本机没记下这一笔）就先开通、不下新单；没付照常下（agy 审阅，10/16）。
+    查不了不挡新单：没调起过支付的单微信那边可能查不到，官方错误码也区分不了。"""
     _, _, fake = setup_pay
     first = order(session, create(setup_pay))
     fake.calls.clear()
@@ -296,16 +297,18 @@ def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     assert response.status_code == 409 and "人工核对" in response.json()["detail"]
     session.expire_all()
     assert session.get(PayOrder, fourth.id).status == "manual"
-    # 微信查不了：先不下新单，免得重复扣款
+    # 微信查不了（比如这笔没调起过支付）：不挡新单，上一笔留给补单
     fake.status, fake.fee = 1, 100
     fifth = order(session, create(setup_pay))
     fake.bad_order = True
-    response = create(setup_pay)
-    assert response.status_code == 503
-    assert session.scalar(select(func.count(PayOrder.id))) == 5
+    sixth = order(session, create(setup_pay))
+    session.expire_all()
+    assert session.get(PayOrder, fifth.id).status == "pending"
+    assert session.scalar(select(func.count(PayOrder.id))) == 6
     # 超过 10 分钟的待支付单不在下单时查（交给每分钟的补单）
     fake.bad_order = False
-    session.get(PayOrder, fifth.id).created_at = NOW - timedelta(minutes=11)
+    for row in (fifth, sixth):
+        session.get(PayOrder, row.id).created_at = NOW - timedelta(minutes=11)
     session.commit()
     fake.calls.clear()
     assert create(setup_pay).status_code == 201

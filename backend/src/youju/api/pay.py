@@ -107,6 +107,8 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         raise HTTPException(status_code=404, detail="没有找到接口")
     # 下新单前先问微信：10 分钟内的待支付单可能已经付了款，只是推送和补单还没到
     # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
+    # 查不了不挡新单：没调起过支付的单（下单回应没送到手机）微信那边可能查不到，
+    # 官方错误码里也没有「订单不存在」可以区分；这类单交给每分钟的补单处理。
     recent = session.scalars(
         select(PayOrder)
         .where(
@@ -121,7 +123,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         try:
             data = payments.query(session, old, client)
         except XPayError:
-            raise HTTPException(status_code=503, detail="支付暂不可用，请稍后重试") from None
+            continue
         if data.get("status") == 6:
             old.status, old.updated_at = "closed", stamp
             continue
