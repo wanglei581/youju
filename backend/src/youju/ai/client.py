@@ -9,11 +9,12 @@ import httpx
 
 
 class AIError(RuntimeError):
-    """AI 服务调用失败；错误信息不包含密钥或响应原文。"""
+    """AI 服务调用失败；错误信息不包含密钥或响应原文。code 是可选的稳定分类。"""
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, message: str, *, retryable: bool = False, code: str | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.code = code
 
 
 def _add_usage(total: dict[str, int], usage: object) -> None:
@@ -22,6 +23,50 @@ def _add_usage(total: dict[str, int], usage: object) -> None:
             value = usage.get(key)
             if isinstance(value, int):
                 total[key] += value
+
+
+_JSON_PREFIX = "AI 返回内容不是合法 JSON 对象"
+
+
+def _json_error(code: str) -> str:
+    return f"{_JSON_PREFIX}（{code}）"
+
+
+def _parse_json_object(envelope: object) -> tuple[dict[str, Any] | None, str | None]:
+    """取出 JSON 对象。失败时返回 (None, code)，不抛出带响应正文的异常。
+
+    信封先要有 choices[0].message。finish_reason 缺失或为 None 时沿用原来的内容判断。
+    length 一律算截断，哪怕内容刚好能解析成对象。其它显式非 stop 记为 non_stop_finish，
+    不把 reason 原文写进错误。不剥围栏、不补括号、不二次解码。
+    """
+    if not isinstance(envelope, dict):
+        return None, "invalid_envelope"
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None, "invalid_envelope"
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return None, "invalid_envelope"
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        return None, "truncated"
+    if finish is not None and finish != "stop":
+        return None, "non_stop_finish"
+    content = message.get("content")
+    if content is None or (isinstance(content, str) and not content.strip()):
+        return None, "empty_content"
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except ValueError:
+            return None, "invalid_json"
+    else:
+        # 旧接口可能已经把 content 解成对象；列表、数字等仍不是对象
+        parsed = content
+    if not isinstance(parsed, dict):
+        return None, "not_object"
+    return parsed, None
 
 
 class ChatClient:
@@ -68,7 +113,7 @@ class ChatClient:
         self.close()
 
     def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
-        """请求 JSON 对象，针对暂时性错误和非法 JSON 自动重试；成功、失败都计入累计用量。"""
+        """请求 JSON 对象。暂时性错误和非法 JSON 会重试；截断和非正常结束不重试。用量都累计。"""
         self.totals["calls"] += 1
         # 先清零：这次调用在拿到任何响应前就失败时，不会把上一次的用量再记一遍
         self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -99,6 +144,7 @@ class ChatClient:
         usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
         self.last_usage = usage_total
         last_error = "AI 请求失败"
+        last_code = None
         for attempt in range(self.max_retries + 1):
             try:
                 response = self._client.post(
@@ -129,17 +175,21 @@ class ChatClient:
                 raise AIError(f"AI 请求被拒绝（HTTP {response.status_code}）")
             try:
                 envelope = response.json()
-                if isinstance(envelope, dict):
-                    _add_usage(usage_total, envelope.get("usage"))
-                content = envelope["choices"][0]["message"]["content"]
-                parsed = json.loads(content) if isinstance(content, str) else content
-                if not isinstance(parsed, dict):
-                    raise ValueError("不是 JSON 对象")
-            except (ValueError, TypeError, KeyError, IndexError) as exc:
-                last_error = "AI 返回内容不是合法 JSON 对象"
+            except ValueError:
+                envelope = None
+            if isinstance(envelope, dict):
+                _add_usage(usage_total, envelope.get("usage"))
+            parsed, code = _parse_json_object(envelope)
+            if code is not None:
+                # 分类错误不链出解码异常，避免 JSONDecodeError 夹带响应正文。
+                # 用量已经计入。截断和非正常结束再请求同一预算不会变好，立即失败。
+                last_error = _json_error(code)
+                last_code = code
+                if code in {"truncated", "non_stop_finish"}:
+                    raise AIError(last_error, retryable=False, code=code) from None
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
-                raise AIError(last_error) from exc
+                raise AIError(last_error, code=code) from None
             return parsed
-        raise AIError(last_error)
+        raise AIError(last_error, code=last_code) from None

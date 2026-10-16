@@ -18,7 +18,8 @@ from youju.models import CONDITION_CATEGORIES
 from .client import AIError, ChatClient
 from .interpret import SENTENCES, normalize
 
-PROMPT_VERSION = "conditions-v1"
+# 新输出来源。已入库清单和候选筛选不改。
+PROMPT_VERSION = "conditions-v2"
 CATEGORIES = CONDITION_CATEGORIES
 # 条件那句话最长多少字（提示词要求 60 字以内，留余量）；人工改写时同样的上限
 TEXT_MAX = 120
@@ -55,6 +56,10 @@ SYSTEM_PROMPT = (
     "quote 必须从正文中逐字连续复制，是包含这条要求的原句，不拼接、不改写、不省略。"
     "支持方式、资金额度、申报材料、时间、申报程序和联系方式不是条件，不要列。"
     "正文没有写条件就返回空数组。"
+    f"必须完整提取，conditions 最多{MAX_ITEMS}条。"
+    f"若正文中的申报条件超过{MAX_ITEMS}条，不要只保留前面的条目，"
+    '返回 {"conditions":[],"overflow":true}。'
+    "必须输出完整JSON对象，不输出Markdown或解释文字。"
 )
 
 # 判断能否申报的说法：条件只复述原文要求，不替用户下结论
@@ -138,7 +143,16 @@ def _numbers(value: str) -> set[str]:
 
 def validate(payload: dict, body: str) -> ExtractResult:
     """模型结果逐条校验；body 是发给模型之前的整篇（脱敏后）正文。结构整体不对时抛 AIError。"""
-    items = payload.get("conditions") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise AIError("AI 返回的申报条件结构无效")
+    # overflow 为 true 时整份作废，不把前若干条当成完整清单
+    if "overflow" in payload:
+        overflow = payload["overflow"]
+        if not isinstance(overflow, bool):
+            raise AIError("AI 返回的申报条件结构无效")
+        if overflow:
+            raise AIError("申报条件超过清单容量，需人工整理", code="conditions_overflow")
+    items = payload.get("conditions")
     if not isinstance(items, list):
         raise AIError("AI 返回的申报条件结构无效")
     squashed_body, positions = squash(body)
@@ -208,7 +222,8 @@ def _check(item, body, squashed_body, positions, sentences):
 
 def extract_conditions_with_ai(client: ChatClient, title: str, body: str) -> ExtractResult:
     """调用模型并校验；body 是脱敏后的整篇正文。"""
+    # 输出预算固定 6000，不在通用客户端里按失败再加。
     payload = client.complete_json(
-        SYSTEM_PROMPT, f"标题：{title}\n正文：\n{prepare_text(body)}", max_tokens=3000
+        SYSTEM_PROMPT, f"标题：{title}\n正文：\n{prepare_text(body)}", max_tokens=6000
     )
     return validate(payload, body)
