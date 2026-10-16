@@ -21,6 +21,7 @@ dependencies = [
     "python-docx>=1.2",
     "pymysql>=1.1",
     "cryptography>=43",
+    "olefile>=0.47",
 ]
 
 [project.scripts]

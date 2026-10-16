@@ -8,3 +8,5 @@
 | `heilongjiang_30.xlsx` | [黑龙江省科技厅公示](https://kjt.hlj.gov.cn/kjt/c113908/202608/c00_31965158.shtml) | 取 XLSX 附件前 30 条，保留序号、企业名称、注册地。 |
 | `heilongjiang_30.xls` | [黑龙江省科技厅公示](https://kjt.hlj.gov.cn/kjt/c113908/202608/c00_31965158.shtml) | 将同一份裁剪表重编码成旧版 XLS，验证旧格式读取。 |
 | `shanghai_page1.pdf` | [上海市科委公告](https://stcsm.sh.gov.cn/zwgk/tzgs/gsgg/zhgsgg/20260710/ce6b24b93a774c1bafdfc347003e39e3.html) | 从 PDF 附件第 1 页取前 27 条企业名称，重新排版成小型表格 PDF；原 PDF 未入库、未提交。 |
+| `shanxi_green_factories.doc` | [山西省工信厅：2026年度省级绿色工厂、绿色工业园区名单](https://gxt.shanxi.gov.cn/xwdt/tzgg/202609/t20260902_10212170.shtml) | 附件原件（Word 97 二进制，113 KB），2026-10-16 取得。本机没有 Office，二进制 .doc 没法裁剪重存，所以保存原件；逐字核对过全文只有序号、所在市、工厂/园区名称，没有联系人、电话等个人信息。验证 .doc 读取和"工厂名称"表头。 |
+| `fujian_green_manufacturing.wps` | [福建省工信厅：2026年度省级绿色制造拟认定名单公示](https://gxt.fujian.gov.cn/zwgk/gsgg/202608/t20260812_7198718.htm) | 附件 1 原件（金山 WPS 文字，内部是 Word 97 二进制，204 KB），2026-10-16 取得。同样不能裁剪，保存原件；全文只有序号、企业名称、地区，没有个人信息。验证 .wps 读取。 |

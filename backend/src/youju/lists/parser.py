@@ -13,9 +13,30 @@ from docx import Document as DocxDocument
 from lxml import html
 from openpyxl import load_workbook
 
+from youju.lists import doc97
 from youju.lists.rules import normalize_credit_code, normalize_name, valid_org_name
 
-_NAME_HEADERS = ("企业名称", "单位名称", "机构名称", "主体名称", "公司名称", "申报单位", "企业全称")
+_NAME_HEADERS = (
+    "企业名称",
+    "单位名称",
+    "机构名称",
+    "主体名称",
+    "公司名称",
+    "申报单位",
+    "企业全称",
+    "工厂名称",
+)
+# 整格就写这几个字的也是名称列（10/16：福建水效领跑者名单表头是"企业"）。只认整格相等：
+# "企业类型""企业规模"之类不算；不收单写"单位"的：获奖名单里常是获奖人所在单位，不是上榜的机构
+_NAME_HEADERS_EXACT = (
+    "企业",
+    "企业(单位)",
+    "单位(企业)",
+    "申报企业",
+    "推荐企业",
+    "获奖企业",
+    "入选企业",
+)
 _CODE_HEADERS = ("统一社会信用代码", "统一信用代码", "社会信用代码")
 _REGION_HEADERS = ("所在地", "注册地", "所属地区", "所属区市", "地区", "地市", "区县", "所属区县")
 _PERSON_HEADERS = ("联系人", "法定代表人", "负责人", "姓名", "电话", "身份证", "手机号", "银行账号")
@@ -85,11 +106,18 @@ def _cell(value: object) -> str:
     return _HAN_GAP.sub("", " ".join(str(value).replace("\xa0", " ").split()))
 
 
-def _header_index(headers: list[str], terms: tuple[str, ...]) -> int | None:
+# 表头里括号中的补充说明（"企业（团队）名称""单位名称（盖章）"）比对名称列时去掉；
+# 表头已经过 normalize_name，全角括号换成了半角
+_HEADER_NOTE = re.compile(r"\([^()]*\)")
+
+
+def _header_index(
+    headers: list[str], terms: tuple[str, ...], exact: tuple[str, ...] = ()
+) -> int | None:
     for i, header in enumerate(headers):
-        if any(term in header for term in terms) and not any(
-            term in header for term in _PERSON_HEADERS
-        ):
+        bare = _HEADER_NOTE.sub("", header)
+        named = any(term in header or term in bare for term in terms) or header in exact
+        if named and not any(term in header for term in _PERSON_HEADERS):
             return i
     return None
 
@@ -158,7 +186,7 @@ def _rule_entries(rows: list[list[object]]) -> list[ParsedEntry]:
     for row in rows:
         cells = [_cell(value) for value in row]
         current = [normalize_name(value) for value in cells]
-        name_index = _header_index(current, _NAME_HEADERS)
+        name_index = _header_index(current, _NAME_HEADERS, _NAME_HEADERS_EXACT)
         if name_index is not None:
             headers = current
             indices = (
@@ -239,8 +267,73 @@ def _check_zip(data: bytes) -> None:
             raise ValueError("压缩文件展开后过大")
 
 
+def _docx_entries(
+    data: bytes, pick_name_column: NameColumnPicker | None, budget: _TableBudget
+) -> list[ParsedEntry]:
+    _check_zip(data)
+    document = DocxDocument(io.BytesIO(data))
+    entries: list[ParsedEntry] = []
+    for table in document.tables:
+        # python-docx 的 row.cells 会按 gridSpan 展开引用；先检查原始 XML，
+        # 避免一格声明超大横向合并就在预算生效前制造巨型 tuple。
+        for row in table.rows:
+            spans = [cell.grid_span for cell in row._tr.tc_lst]
+            if any(span < 1 for span in spans) or sum(spans) > _MAX_COLUMNS:
+                raise ValueError("暂不支持超过安全解析预算的表格（合并列过多）")
+        entries.extend(
+            parse_table_rows(
+                ([cell.text for cell in row.cells] for row in table.rows),
+                pick_name_column,
+                _budget=budget,
+            )
+        )
+    return entries
+
+
+_META_CHARSET = re.compile(rb"charset\s*=\s*[\"']?\s*([A-Za-z0-9_-]+)", re.I)
+
+
+def _decode_html(data: bytes) -> str:
+    """存成 .doc 的网页：按 meta 声明的编码解码（政府网站常见 GBK/GB2312）；
+    没声明就先试 UTF-8，再按 GB18030。"""
+    match = _META_CHARSET.search(data[:4096])
+    if match:
+        name = match.group(1).decode("ascii").lower()
+        if name in {"gbk", "gb2312", "gb18030", "x-gbk"}:
+            return data.decode("gb18030", "replace")
+        try:
+            return data.decode(name, "replace")
+        except LookupError:
+            pass
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("gb18030", "replace")
+
+
+def _word97_entries(
+    data: bytes, pick_name_column: NameColumnPicker | None, budget: _TableBudget
+) -> list[ParsedEntry]:
+    """.doc / .wps：按文件内容判断。实际是 DOCX（改了扩展名）就按 DOCX 读，是网页就读网页表格，
+    RTF 不支持；Word 97 二进制按 doc97 还原表格（10/16 起）。"""
+    head = data[:512].lstrip().lower()
+    if data.startswith(b"PK"):
+        return _docx_entries(data, pick_name_column, budget)
+    if head.startswith(b"{\\rtf"):
+        raise ValueError("暂不支持 RTF 格式")
+    if head.startswith((b"<!doctype html", b"<html")):
+        return parse_html_tables(_decode_html(data), pick_name_column)
+    if not doc97.is_ole(data):
+        # 带括号说明：和以前代码记的原话区分开，补解析一次以后不再重试（service.LEGACY_UNSUPPORTED）
+        raise ValueError("暂不支持旧版或专有格式（不是 Word 97 文档）")
+    entries: list[ParsedEntry] = []
+    for rows in doc97.doc_tables(doc97.doc_text(data)):
+        entries.extend(parse_table_rows(rows, pick_name_column, _budget=budget))
+    return entries
+
+
 def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
-    """支持可读取表格的 PDF/XLSX/XLS/DOCX；旧 DOC 和扫描件留失败原因。"""
+    """支持可读取表格的 PDF/XLSX/XLS/DOCX/DOC/WPS（Word 97 二进制）；ET、OFD 和扫描件留失败原因。"""
     return parse_attachment_result(data, extension).entries
 
 
@@ -317,23 +410,10 @@ def parse_attachment_result(
         finally:
             workbook.release_resources()
     elif extension == "docx":
-        _check_zip(data)
-        document = DocxDocument(io.BytesIO(data))
-        for table in document.tables:
-            # python-docx 的 row.cells 会按 gridSpan 展开引用；先检查原始 XML，
-            # 避免一格声明超大横向合并就在预算生效前制造巨型 tuple。
-            for row in table.rows:
-                spans = [cell.grid_span for cell in row._tr.tc_lst]
-                if any(span < 1 for span in spans) or sum(spans) > _MAX_COLUMNS:
-                    raise ValueError("暂不支持超过安全解析预算的表格（合并列过多）")
-            entries.extend(
-                parse_table_rows(
-                    ([cell.text for cell in row.cells] for row in table.rows),
-                    pick_name_column,
-                    _budget=budget,
-                )
-            )
-    elif extension in {"doc", "wps", "et", "ofd"}:
+        entries.extend(_docx_entries(data, pick_name_column, budget))
+    elif extension in {"doc", "wps"}:
+        entries.extend(_word97_entries(data, pick_name_column, budget))
+    elif extension in {"et", "ofd"}:
         raise ValueError("暂不支持旧版或专有格式")
     else:
         raise ValueError("暂不支持此附件格式")
