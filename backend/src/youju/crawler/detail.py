@@ -318,23 +318,26 @@ def _anchors(root: etree._Element):
 _FILE_SERVERS = {"xcoss.henan.gov.cn": ".henan.gov.cn"}
 
 
-def _same_site(target: str, page_host: str | None) -> bool:
-    """同一个网站：主机名相同，或者是本省政府网站群统一的附件文件服务器
-    （_FILE_SERVERS，主机名精确匹配，只认默认端口）。"""
+def _on_file_server(target: str, page_host: str | None) -> bool:
+    """链到本省政府网站群统一的附件文件服务器（_FILE_SERVERS，主机名精确匹配，只认默认端口），
+    且页面在这个省的政府网站上（主机名以"."加省份后缀结尾）。"""
     parts = urlsplit(target)
-    host = parts.hostname
-    if not host or not page_host:
-        return False
-    if host == page_host:
-        return True
-    suffix = _FILE_SERVERS.get(host)
-    if suffix is None or not page_host.lower().endswith(suffix):
+    suffix = _FILE_SERVERS.get(parts.hostname or "")
+    if suffix is None or not page_host or not page_host.lower().endswith(suffix):
         return False
     try:
         port = parts.port
     except ValueError:
         return False
     return port is None or port == {"http": 80, "https": 443}.get(parts.scheme)
+
+
+def _same_site(target: str, page_host: str | None) -> bool:
+    """同一个网站：主机名相同，或者是本省的附件文件服务器（_on_file_server）。"""
+    host = urlsplit(target).hostname
+    if not host or not page_host:
+        return False
+    return host == page_host or _on_file_server(target, page_host)
 
 
 def _attachments(root: etree._Element, url: str) -> list[Attachment]:

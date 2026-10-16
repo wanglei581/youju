@@ -3,8 +3,9 @@
 10/16 爬虫开始认本省政府网站群统一的附件文件服务器（crawler/detail.py 的 _FILE_SERVERS，
 如河南 xcoss.henan.gov.cn）。以前抓过的详情页里，这种附件当时没认出来、也没记下，
 补详情和名单解析都不会再回头看。这里只挑这些省份网站上、详情抓成功了、还没读出企业名的名单，
-按补详情同一套抓取和解析（礼貌地重新打开页面）找出按新规则多认出的附件。
-默认只预览，不写库；加 apply 才写入，而且只追加新认出的附件：正文、原有附件和抓取记录都不动，
+按补详情同一套抓取和解析（礼貌地重新打开页面）找出按新规则才认得出的附件：链到列出的文件服务器、
+且这次打开的页面（跳转后）仍在这个省的网站上。别的附件变化不归这个命令管。
+默认只预览，不写库；加 apply 才写入，而且只追加这些附件：正文、原有附件和抓取记录都不动，
 页面临时缺内容也不会覆盖已有的。写入以后，下一轮名单解析（parse-lists）就会去读新附件。
 """
 
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from youju.config import get_settings
 from youju.crawler import detail_service
-from youju.crawler.detail import _FILE_SERVERS, MAX_ATTACHMENTS, Attachment
+from youju.crawler.detail import _FILE_SERVERS, MAX_ATTACHMENTS, Attachment, _on_file_server
 from youju.lists.rules import classify_title
 from youju.models import Document, DocumentAttachment, DocumentDetail, ListEntry, Source
 
@@ -36,10 +37,17 @@ def file_server_suffixes() -> list[str]:
     return sorted(set(_FILE_SERVERS.values()))
 
 
-def _candidates(session: Session, suffixes: list[str], limit: int) -> list[Document]:
+def _candidates(session: Session, suffixes: list[str], limit: int) -> list[tuple[int, str, str]]:
+    """返回 (编号, 网址, 标题)。只取需要的列，不读正文。"""
     with_entries = select(ListEntry.document_id).distinct()
     rows = session.execute(
-        select(Document, DocumentDetail)
+        select(
+            Document.id,
+            Document.url,
+            Document.title,
+            Document.kind_override,
+            DocumentDetail.final_url,
+        )
         .join(Source, Document.source_id == Source.id)
         .join(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(
@@ -56,15 +64,15 @@ def _candidates(session: Session, suffixes: list[str], limit: int) -> list[Docum
         )
         .order_by(Document.id)
     ).all()
-    picked: list[Document] = []
-    for doc, detail in rows:
+    picked: list[tuple[int, str, str]] = []
+    for document_id, url, title, kind_override, final_url in rows:
         # 解析附件时按跳转后的最终网址判断页面在哪个网站，这里同样
-        host = (urlsplit(detail.final_url or doc.url).hostname or "").lower()
+        host = (urlsplit(final_url or url).hostname or "").lower()
         if not any(host.endswith(suffix) for suffix in suffixes):
             continue
-        if not classify_title(doc.title, doc.kind_override).is_list:
+        if not classify_title(title, kind_override).is_list:
             continue
-        picked.append(doc)
+        picked.append((int(document_id), url, title))
         if len(picked) >= limit:
             break
     return picked
@@ -113,16 +121,17 @@ def rescan_list_details(
     fetcher: detail_service.DetailFetcher | None = None,
     max_workers: int | None = None,
 ) -> list[RescanResult]:
-    """预览或写入；返回每份名单新认出的附件。suffixes 默认是 _FILE_SERVERS 服务的省份。
+    """预览或写入；返回每份名单按新规则新认出的附件。suffixes 默认是 _FILE_SERVERS 服务的省份。
     预览和写入走同一套抓取和解析（detail_service._fetch_outcomes），写入只是把预览的结果追加进去。"""
     targets = _candidates(session, suffixes or file_server_suffixes(), limit)
     if not targets:
         return []
-    titles = {doc.id: doc.title for doc in targets}
+    titles = {document_id: title for document_id, _, title in targets}
     known = {
-        doc.id: {a.url for a in session.get(DocumentDetail, doc.id).attachments} for doc in targets
+        document_id: {a.url for a in session.get(DocumentDetail, document_id).attachments}
+        for document_id, _, _ in targets
     }
-    selected = [(doc.id, doc.url) for doc in targets]
+    selected = [(document_id, url) for document_id, url, _ in targets]
     # 同补详情：网络请求期间不占用数据库连接和行锁
     session.commit()
     workers = max_workers if max_workers is not None else get_settings().max_workers
@@ -132,14 +141,20 @@ def rescan_list_details(
         with detail_service._polite_fetcher() as polite:
             outcomes = detail_service._fetch_outcomes(selected, polite, workers)
     results = []
-    for document_id, _ in selected:
+    for document_id, url in selected:
         outcome = outcomes[document_id]
-        if outcome.status != "ok" or outcome.parsed is None:
+        if outcome.status != "ok" or outcome.parsed is None or outcome.fetch is None:
             # 没抓成功：什么都不写，原来的正文和附件照旧
             reason = outcome.failure_reason or outcome.status
             results.append(RescanResult(document_id, titles[document_id], reason=reason))
             continue
-        fresh = [a for a in outcome.parsed.attachments if a.url not in known[document_id]]
+        # 只要按新规则才认得出的：链到文件服务器、且这次打开的页面（跳转后）仍在这个省的网站上
+        page_host = urlsplit(outcome.fetch.final_url or url).hostname
+        fresh = [
+            a
+            for a in outcome.parsed.attachments
+            if a.url not in known[document_id] and _on_file_server(a.url, page_host)
+        ]
         reason = None
         if apply and fresh:
             fresh, reason = _append(session, document_id, fresh)

@@ -170,12 +170,42 @@ def test_rescan_selects_by_final_page_host(session) -> None:
         final_url="https://gxt.hebei.gov.cn/2026/3.html",
     )
     session.commit()
+    henan_page = "http://gxt.henan.gov.cn/2026/09-10/2.html"
     pages = {
-        doc.url: FetchResult(doc.url, "ok", final_url=doc.url, http_status=200, text=PAGE)
-        for doc in (port, moved)
+        port.url: FetchResult(port.url, "ok", final_url=port.url, http_status=200, text=PAGE),
+        moved.url: FetchResult(moved.url, "ok", final_url=henan_page, http_status=200, text=PAGE),
     }
     results = rescan_list_details(session, fetcher=FakeFetcher(pages))
-    assert [r.document_id for r in results] == [port.id, moved.id]
+    assert [(r.document_id, r.new_attachments) for r in results] == [
+        (port.id, [(PDF_NAME, PDF_URL)]),
+        (moved.id, [(PDF_NAME, PDF_URL)]),
+    ]
+
+
+def test_rescan_only_appends_file_server_attachments_on_province_pages(session) -> None:
+    """只补按新规则才认得出的附件：同站新出现的附件不归这个命令管；
+    这次打开时页面跳到了外省网站，文件服务器上的附件也不算。"""
+    henan, _ = _henan_lists(session)
+    same_site = PAGE.replace(
+        "</div>", "<p><a href='/2026/09-02/new.xlsx'>补充名单.xlsx</a></p></div>"
+    )
+    elsewhere = "https://kjt.hebei.gov.cn/2026/09-02/1.html"
+    fake = FakeFetcher(
+        {LIST_URL: FetchResult(LIST_URL, "ok", final_url=LIST_URL, http_status=200, text=same_site)}
+    )
+    preview = rescan_list_details(session, fetcher=fake)
+    assert [r.new_attachments for r in preview] == [[(PDF_NAME, PDF_URL)]]
+
+    moved = FakeFetcher(
+        {
+            LIST_URL: FetchResult(
+                LIST_URL, "ok", final_url=elsewhere, http_status=200, text=same_site
+            )
+        }
+    )
+    applied = rescan_list_details(session, apply=True, fetcher=moved)
+    assert [(r.new_attachments, r.reason) for r in applied] == [([], None)]
+    assert _stored(session, henan.id)[1] == [(0, "旧附件", OLD_URL, "pdf")]
 
 
 def test_rescan_reports_failed_refetch_and_keeps_detail(session) -> None:
