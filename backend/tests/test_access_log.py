@@ -1,5 +1,6 @@
 """网络日志：每次请求记一条（不记查询参数），每天归档到对象存储，保留 190 天。"""
 
+import contextlib
 import gzip
 import hashlib
 import io
@@ -13,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, make_url, select, text
+from sqlalchemy.exc import OperationalError
 
 from youju import access_log
 from youju.access_log import export_day, log_key, log_uid, object_path, run_archive
@@ -350,9 +352,15 @@ def test_api_account_with_insert_only_grant_can_write(session, db_engine, monkey
         f"GRANT INSERT ON `{url.database}`.access_logs TO '{name}'@'%'",
         f"GRANT INSERT ON `{url.database}`.app_keys TO '{name}'@'%'",
     ]
-    with db_engine.begin() as conn:
-        for statement in grants:
-            conn.execute(text(statement))
+    try:
+        with db_engine.begin() as conn:
+            for statement in grants:
+                conn.execute(text(statement))
+    except OperationalError:
+        # 测试库账号没有建账号的权限（CI 和本机都用 root，有权限）：跳过，不当失败
+        with contextlib.suppress(OperationalError), db_engine.begin() as conn:
+            conn.execute(text(f"DROP USER IF EXISTS '{name}'@'%'"))
+        pytest.skip("测试库账号不能建 MySQL 账号")
     restricted = create_mysql_engine(url.set(username=name, password=password))
     monkeypatch.setattr(access_log, "_key", None)
     monkeypatch.setattr(access_log, "_send_in_background", lambda message: None)
@@ -372,4 +380,4 @@ def test_api_account_with_insert_only_grant_can_write(session, db_engine, monkey
     finally:
         restricted.dispose()
         with db_engine.begin() as conn:
-            conn.execute(text(f"DROP USER '{name}'@'%'"))
+            conn.execute(text(f"DROP USER IF EXISTS '{name}'@'%'"))
