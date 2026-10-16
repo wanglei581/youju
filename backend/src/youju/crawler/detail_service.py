@@ -9,14 +9,18 @@ from urllib.parse import urlsplit
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from youju.categories import doc_category
+from youju.classify import doc_kind
 from youju.config import get_settings
 from youju.crawler.detail import DetailResult, parse_detail
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_body
+from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.dedup import reconcile_documents
 from youju.issuer import normalize_issuer
 from youju.models import Document, DocumentAttachment, DocumentDetail, Source
+from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +62,16 @@ def _retryable(status: str, http_status: int | None) -> bool:
 def _government_url(url: str) -> bool:
     host = (urlsplit(url).hostname or "").lower()
     return host == "gov.cn" or host.endswith(".gov.cn")
+
+
+def _apply_full_title(doc: Document, title: str) -> None:
+    """换成详情页的完整标题；按标题算的类型、类别和筛选标签随之重算（同入库和 youju reclassify）。
+    人工定的类型（kind_override）不动。"""
+    doc.title = title
+    doc.rule_kind = doc_kind(title)
+    doc.rule_category = doc_category(title)
+    doc.rule_supports = SUPPORT_RULES.stored(title)
+    doc.rule_industries = INDUSTRY_RULES.stored(title)
 
 
 def _save_result(
@@ -113,13 +127,20 @@ def _save_result(
     detail.status = outcome.status
     detail.failure_reason = outcome.failure_reason
     detail.final_url = outcome.fetch.final_url if outcome.fetch else None
+    titles = {doc.title}
     if outcome.parsed and outcome.status == "ok":
         detail.attachments = [
             DocumentAttachment(position=i, name=a.name, url=a.url, extension=a.extension)
             for i, a in enumerate(outcome.parsed.attachments)
         ]
         doc.status = "fetched"
-    reconcile_documents(session, {doc.title})
+        # 列表页截断的标题（以"..."或"…"结尾）用详情页标明的完整标题补全，对不上不改
+        full = completed_title(doc.title, outcome.parsed.page_titles)
+        if full is not None:
+            _apply_full_title(doc, full)
+            titles.add(full)
+    # 截断的旧标题不参与归并；补全后按新标题归并（同一文件的其他网址可能早就是完整标题）
+    reconcile_documents(session, titles)
     session.commit()
     return DetailFetchSummary(document_id, outcome.status, outcome.failure_reason)
 
@@ -194,11 +215,9 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     return _FetchOutcome(document_id, now, fetched, parsed, status, parsed.failure_reason)
 
 
-def _fetch_selected(
-    session: Session, selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
-) -> list[DetailFetchSummary]:
-    if not selected:
-        return []
+def _fetch_outcomes(
+    selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
+) -> dict[int, _FetchOutcome]:
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
         by_host.setdefault((urlsplit(url).hostname or "").lower(), []).append((document_id, url))
@@ -221,12 +240,30 @@ def _fetch_selected(
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-        outcomes = {
+        return {
             outcome.document_id: outcome
             for group in pool.map(run_host, by_host.values())
             for outcome in group
         }
+
+
+def _fetch_selected(
+    session: Session, selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
+) -> list[DetailFetchSummary]:
+    if not selected:
+        return []
+    outcomes = _fetch_outcomes(selected, fetcher, max_workers)
     return [_save_result(session, outcomes[document_id]) for document_id, _ in selected]
+
+
+def _polite_fetcher() -> PoliteFetcher:
+    settings = get_settings()
+    return PoliteFetcher(
+        settings.user_agent,
+        settings.request_timeout,
+        settings.per_host_interval,
+        url_allowed=_government_url,
+    )
 
 
 def fetch_details(
@@ -287,14 +324,98 @@ def fetch_details(
     selected = [(int(i), url) for i, url in session.execute(stmt).all()]
     # 查询事务先结束；网络请求期间不占用数据库连接和行锁。
     session.commit()
-    settings = get_settings()
-    workers = max_workers if max_workers is not None else settings.max_workers
+    workers = max_workers if max_workers is not None else get_settings().max_workers
     if fetcher is not None:
         return _fetch_selected(session, selected, fetcher, workers)
-    with PoliteFetcher(
-        settings.user_agent,
-        settings.request_timeout,
-        settings.per_host_interval,
-        url_allowed=_government_url,
-    ) as polite:
+    with _polite_fetcher() as polite:
         return _fetch_selected(session, selected, polite, workers)
+
+
+@dataclass(frozen=True)
+class TitleBackfill:
+    document_id: int
+    old_title: str
+    # filled：可补全（预览）或已补全（写入）；no_match：详情页没有对得上的完整标题，不改；
+    # not_truncated：去掉装饰符和粘连的正文后不是截断标题（youju reclassify 会清理），不抓也不改；
+    # unavailable：详情页没抓到或没解析出内容（原因见 reason）；missing：题录已删除
+    result: str
+    new_title: str | None = None
+    reason: str | None = None
+    page_titles: tuple[str, ...] = ()
+
+
+def backfill_truncated_titles(
+    session: Session,
+    *,
+    apply: bool = False,
+    limit: int,
+    source_id: int | None = None,
+    since: date | None = None,
+    after_id: int | None = None,
+    fetcher: DetailFetcher | None = None,
+    max_workers: int | None = None,
+) -> list[TitleBackfill]:
+    """一次性补全已入库的截断标题：重新打开详情页，按补详情时的同一规则（completed_title）找完整标题。
+
+    默认只预览，apply=True 才写入。只改标题和按标题算的类型、类别、筛选标签，并按新标题重算归并；
+    详情、附件、抓取记录都不动。补全后不再以省略号结尾，重复运行不会再选中，也就不会再改。
+    按编号从小到大处理；对不上的每次都还会选中，分批时用 after_id 从上一批最后一份之后接着处理。"""
+    if limit < 1:
+        raise ValueError("limit 必须大于 0")
+    stmt = (
+        select(Document.id, Document.url, Document.title)
+        .join(Source, Document.source_id == Source.id)
+        .where(
+            Source.rights_level == 1,
+            or_(Document.title.like("%..."), Document.title.like("%…")),
+        )
+        .order_by(Document.id)
+        .limit(limit)
+    )
+    if source_id is not None:
+        stmt = stmt.where(Document.source_id == source_id)
+    if since is not None:
+        stmt = stmt.where(Document.publish_date >= since)
+    if after_id is not None:
+        stmt = stmt.where(Document.id > after_id)
+    rows = [(int(i), url, title) for i, url, title in session.execute(stmt).all()]
+    # 同补详情：网络请求期间不占用数据库连接和行锁。
+    session.commit()
+    selected = [(i, url) for i, url, title in rows if is_truncated(clean_title(title))]
+    workers = max_workers if max_workers is not None else get_settings().max_workers
+    if not selected:
+        outcomes: dict[int, _FetchOutcome] = {}
+    elif fetcher is not None:
+        outcomes = _fetch_outcomes(selected, fetcher, workers)
+    else:
+        with _polite_fetcher() as polite:
+            outcomes = _fetch_outcomes(selected, polite, workers)
+    results: list[TitleBackfill] = []
+    for document_id, _, title in rows:
+        outcome = outcomes.get(document_id)
+        if outcome is None:
+            results.append(TitleBackfill(document_id, title, "not_truncated"))
+            continue
+        if outcome.status != "ok" or outcome.parsed is None:
+            reason = outcome.status
+            results.append(TitleBackfill(document_id, title, "unavailable", reason=reason))
+            continue
+        page_titles = tuple(outcome.parsed.page_titles)
+        doc = session.get(Document, document_id) if apply else None
+        if apply:
+            if doc is None:
+                results.append(TitleBackfill(document_id, title, "missing"))
+                continue
+            # 按写入时库里的标题再判断一次：期间被别的任务改过的，按改过的算
+            title = doc.title
+        full = completed_title(title, page_titles)
+        if full is None:
+            result = "no_match" if is_truncated(clean_title(title)) else "not_truncated"
+            results.append(TitleBackfill(document_id, title, result, page_titles=page_titles))
+            continue
+        if doc is not None:
+            _apply_full_title(doc, full)
+            reconcile_documents(session, {title, full})
+            session.commit()
+        results.append(TitleBackfill(document_id, title, "filled", full, page_titles=page_titles))
+    return results

@@ -1,13 +1,16 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
 import pytest
 from sqlalchemy import select
 
+from youju.categories import doc_category
+from youju.classify import doc_kind
 from youju.crawler.detail_service import fetch_details
 from youju.crawler.fetcher import FetchResult
-from youju.models import Document, DocumentDetail, Source
+from youju.models import Document, DocumentDetail, DocumentMerge, Source
+from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
 
 class FakeFetcher:
@@ -21,7 +24,7 @@ class FakeFetcher:
         return response.pop(0) if isinstance(response, list) else response
 
 
-def add_document(session, number, *, source_id=None, rights_level=1):
+def add_document(session, number, *, source_id=None, rights_level=1, title=None):
     if source_id is None:
         source = Source(
             level="省级",
@@ -43,7 +46,7 @@ def add_document(session, number, *, source_id=None, rights_level=1):
         source_id=source_id,
         url=f"https://gxt.ln.gov.cn/detail/{number}.html",
         url_key=f"gxt.ln.gov.cn/detail/{number}.html",
-        title=f"关于第{number}项公开事项的通知",
+        title=title or f"关于第{number}项公开事项的通知",
         first_seen_at=now,
         last_seen_at=now,
         is_baseline=False,
@@ -473,3 +476,87 @@ def test_rescan_does_not_run_before_cutoff(session, monkeypatch):
 
     monkeypatch.setattr(lists, "datetime", Before)
     assert lists._details_to_rescan(session, [doc.id]) == []
+
+
+# 10/16 模拟器验收（详情 id=35765）：河南工信厅列表页把标题截成"……享受增..."，详情页的
+# ArticleTitle 元数据和 h1 才是完整标题
+HENAN_TRUNCATED = (
+    "河南省工业和信息化厅 河南省科学技术厅 河南省财政厅 河南省税务局关于做好2026年度享受增..."
+)
+HENAN_FULL = (
+    "河南省工业和信息化厅 河南省科学技术厅 河南省财政厅 河南省税务局关于做好2026年度"
+    "享受增值税加计抵减政策先进制造业企业名单制定工作的通知"
+)
+
+
+def detail_page(
+    title: str, *, article_title: str | None = None, site: str = "河南省工业和信息化厅"
+):
+    """仿河南工信厅详情页：<title> 带站名，ArticleTitle 元数据和 h1 是标题。"""
+    meta = f"<meta name='ArticleTitle' content='{article_title or title}'>"
+    return (
+        f"<html><head><title>{title}-{site}</title>{meta}</head><body>"
+        f"<h1 id='title'>{title}</h1><div id='zoom'><p>各省辖市工业和信息化主管部门：</p>"
+        "<p>为做好享受增值税加计抵减政策的企业名单制定工作，现将有关事项通知如下。</p>"
+        "</div></body></html>"
+    )
+
+
+def test_fetch_details_completes_truncated_list_title(session) -> None:
+    truncated = add_document(session, 101, title=HENAN_TRUNCATED)
+    assert truncated.rule_kind == doc_kind(HENAN_TRUNCATED) == "其他"
+    # 对不上：详情页是另一份文件的标题；没截断：详情页标题再长也不改
+    other = add_document(
+        session,
+        102,
+        source_id=truncated.source_id,
+        title="关于开展2026年度专精特新中小企业认定工作的...",
+    )
+    full = add_document(
+        session, 103, source_id=truncated.source_id, title="关于开展2026年度绿色工厂申报工作的通知"
+    )
+    pages = {
+        truncated.url: detail_page(HENAN_FULL),
+        other.url: detail_page("关于公布2026年度专精特新中小企业名单的通知"),
+        full.url: detail_page("关于开展2026年度绿色工厂申报工作的通知（第二批）"),
+    }
+    fake = FakeFetcher(
+        {
+            url: FetchResult(url, "ok", final_url=url, http_status=200, text=t)
+            for url, t in pages.items()
+        }
+    )
+    assert [r.status for r in fetch_details(session, limit=3, fetcher=fake)] == ["ok"] * 3
+    doc = session.get(Document, truncated.id)
+    assert doc.title == HENAN_FULL
+    # 按标题算的类型、类别、筛选标签随完整标题重算（截断时是"其他"，进不了申报通知筛选）
+    assert doc.rule_kind == doc_kind(HENAN_FULL) == "申报通知"
+    assert (doc.rule_category, doc.rule_supports, doc.rule_industries) == (
+        doc_category(HENAN_FULL),
+        SUPPORT_RULES.stored(HENAN_FULL),
+        INDUSTRY_RULES.stored(HENAN_FULL),
+    )
+    assert session.get(Document, other.id).title == "关于开展2026年度专精特新中小企业认定工作的..."
+    assert session.get(Document, full.id).title == "关于开展2026年度绿色工厂申报工作的通知"
+    assert session.get(DocumentDetail, truncated.id).body_text.startswith("各省辖市")
+
+    # 再抓一次（解析规则改进后的重抓）：已是完整标题，不再变
+    fetch_details(session, limit=1, document_ids=[truncated.id], refetch=True, fetcher=fake)
+    assert session.get(Document, truncated.id).title == HENAN_FULL
+
+
+def test_completed_title_joins_the_copy_that_already_had_the_full_title(session) -> None:
+    """同一份文件在另一个栏目里是完整标题：截断时不参与归并，补全后按新标题归到一组。"""
+    copy = add_document(session, 111, title=HENAN_FULL)
+    truncated = add_document(session, 112, source_id=copy.source_id, title=HENAN_TRUNCATED)
+    for doc in (copy, truncated):
+        doc.publish_date = date(2026, 9, 26)
+    session.commit()
+    page = detail_page(HENAN_FULL)
+    fake = FakeFetcher(
+        {truncated.url: FetchResult(truncated.url, "ok", final_url=truncated.url, text=page)}
+    )
+    assert session.scalars(select(DocumentMerge)).all() == []
+    fetch_details(session, limit=1, document_ids=[truncated.id], fetcher=fake)
+    merge = session.get(DocumentMerge, truncated.id)
+    assert merge is not None and merge.active and merge.canonical_id == copy.id

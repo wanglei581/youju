@@ -174,6 +174,53 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backfill_titles(args: argparse.Namespace) -> int:
+    """一次性补全列表页截断的历史标题；默认只预览，加 --apply 才写入。"""
+    from youju.classify import doc_kind
+    from youju.crawler.detail_service import backfill_truncated_titles
+
+    with session_factory()() as session:
+        results = backfill_truncated_titles(
+            session,
+            apply=args.apply,
+            limit=args.limit,
+            source_id=args.source_id,
+            since=args.since,
+            after_id=args.after_id,
+            max_workers=args.workers,
+        )
+    by_result = Counter(r.result for r in results)
+    kind_changed = 0
+    for r in results:
+        if r.result == "filled" and r.new_title:
+            before, after = doc_kind(r.old_title), doc_kind(r.new_title)
+            kind_changed += before != after
+            change = f"（类型 {before} → {after}）" if before != after else ""
+            print(f"  #{r.document_id} {r.old_title}\n      → {r.new_title}{change}")
+        elif r.result == "no_match":
+            seen = "｜".join(t[:60] for t in r.page_titles[:3]) or "无"
+            print(f"  #{r.document_id} 对不上，不改：{r.old_title}（页面标题：{seen}）")
+        elif r.result == "unavailable":
+            print(f"  #{r.document_id} 详情页不可用（{r.reason}），不改：{r.old_title}")
+        elif r.result == "not_truncated":
+            print(f"  #{r.document_id} 清理后不是截断标题，不改（youju reclassify 会清理）")
+        else:
+            print(f"  #{r.document_id} 题录已删除")
+    print(
+        f"{'已写入' if args.apply else '预览（未写入）'}：截断标题 {len(results)} 份，"
+        f"{'已补全' if args.apply else '可补全'} {by_result['filled']} 份"
+        f"（其中按标题算的类型会变 {kind_changed} 份），对不上不改 {by_result['no_match']} 份，"
+        f"详情页不可用 {by_result['unavailable']} 份，"
+        f"清理后不是截断标题 {by_result['not_truncated']} 份"
+    )
+    if len(results) == args.limit:
+        last = results[-1].document_id
+        print(f"已到 --limit {args.limit} 份，后面可能还有：加 --after-id {last} 接着处理")
+    if not args.apply:
+        print("确认无误后加 --apply 写入；写入时按库里当时的标题重新判断")
+    return 0
+
+
 def _cmd_extract_deadlines(args: argparse.Namespace) -> int:
     from youju.extract.service import extract_existing
 
@@ -1053,6 +1100,18 @@ def main(argv: list[str] | None = None) -> int:
         "--notices-only", action="store_true", help="只处理标题含申报/征集/推荐/遴选/认定的文件"
     )
     p.set_defaults(func=_cmd_fetch_details)
+
+    p = sub.add_parser(
+        "backfill-titles",
+        help="用详情页的完整标题补全列表页截断的历史标题（默认只预览，加 --apply 才写入）",
+    )
+    p.add_argument("--apply", action="store_true", help="写入；不加只预览")
+    p.add_argument("--limit", type=int, default=500, help="最多处理多少份，默认 500")
+    p.add_argument("--source-id", type=int, help="只处理指定来源")
+    p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
+    p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
+    p.add_argument("--workers", type=int, help="同时抓取的网站数")
+    p.set_defaults(func=_cmd_backfill_titles)
 
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")

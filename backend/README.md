@@ -26,6 +26,7 @@ uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
 uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
+uv run youju backfill-titles          # 列表页截断的历史标题用详情页完整标题补全：默认只预览，加 --apply 才写入
 uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
 uv run youju extract-deadlines --since 2026-07-01  # 生成待人工核对候选，重复运行不会覆盖核对结果
 uv run youju parse-lists --since 2026-07-01  # 补名单详情并解析政府表格附件，单次最多下载 200 个附件
