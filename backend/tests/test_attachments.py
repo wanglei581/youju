@@ -1513,3 +1513,210 @@ def test_expired_partial_cleanup_clears_confirmed_current_id_but_retains_pending
     session.expire_all()
     assert row.file_id is None and row.stale_file_ids == [stale]
     assert report.removed == 1
+
+
+def _assert_hints(message: str, **counts: int) -> None:
+    expected = {name: 0 for name in copies._HINT_NAMES}
+    expected.update(counts)
+    text = " ".join(f"{name}={expected[name]}" for name in copies._HINT_NAMES)
+    assert f"平台提示分类（仅文本提示，不是删除结果）{text}" in message
+
+
+def _delete_response(file_id: str, status: object, errmsg: object):
+    def handle(request):
+        assert json.loads(request.content)["fileid_list"] == [file_id]
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [{"fileid": file_id, "status": status, "errmsg": errmsg}],
+            },
+        )
+
+    return handle
+
+
+@pytest.mark.parametrize(
+    ("errmsg", "hint"),
+    [
+        ("STORAGE_FILE_NONEXIST", "not_found_hint"),
+        ("  file not exist\n", "not_found_hint"),
+        ("STORAGE_EXCEED_AUTHORITY", "permission_hint"),
+        ("permission denied", "permission_hint"),
+        ("INVALID_FILEID", "invalid_file_id_hint"),
+        ("invalid fileid", "invalid_file_id_hint"),
+    ],
+)
+def test_delete_status1_platform_hint_is_not_success(errmsg, hint):
+    file_id = PREFIX + obj(PDF, "pdf")
+    waits = []
+    with (
+        httpx.Client(transport=httpx.MockTransport(_delete_response(file_id, 1, errmsg))) as client,
+        pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+    ):
+        copies.delete_copies(client, ENV, [file_id], sleep=waits.append)
+    message = str(error.value)
+    assert error.value.confirmed == set() and waits == [] and "状态 1" in message
+    _assert_hints(message, **{hint: 1})
+    assert errmsg.strip() not in message
+
+
+def test_delete_unknown_or_sensitive_errmsg_is_not_recorded():
+    file_id = PREFIX + obj(PDF, "pdf")
+    secret = (
+        "https://secret.example/a?signature=sig-123&key=abcd&token=tok"
+        "&fileid=cloud://prod-1.bucket/attachments/secret"
+    )
+    samples = (
+        secret,
+        "STORAGE_FILE_NONEXIST " + secret,
+        "https://a.co/x",
+        "nope",
+        "ok",
+        "文件不存在",
+    )
+    for errmsg in samples:
+        waits = []
+        with (
+            httpx.Client(
+                transport=httpx.MockTransport(_delete_response(file_id, 1, errmsg))
+            ) as client,
+            pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+        ):
+            copies.delete_copies(client, ENV, [file_id], sleep=waits.append)
+        message = str(error.value)
+        assert error.value.confirmed == set() and waits == []
+        _assert_hints(message, unknown=1)
+        for leaked in (errmsg, "https://", "signature", "secret", "cloud://", file_id, "STORAGE_"):
+            assert leaked not in message
+
+
+def test_delete_mixed_success_and_status1_confirms_only_success():
+    good, bad = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(2)]
+    secret = "https://secret.example/path?signature=sig-123&key=abcd"
+    requests, waits = [], []
+
+    def handle(request):
+        pending = json.loads(request.content)["fileid_list"]
+        requests.append(pending)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {"fileid": good, "status": 0, "errmsg": secret},
+                    {"fileid": bad, "status": 1, "errmsg": "AccessDenied"},
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+    ):
+        copies.delete_copies(client, ENV, [good, bad], sleep=waits.append)
+    message = str(error.value)
+    assert error.value.confirmed == {good} and waits == [] and requests == [[good, bad]]
+    _assert_hints(message, permission_hint=1)
+    for leaked in (secret, "https://", "signature", "AccessDenied", good, bad):
+        assert leaked not in message
+
+
+def test_delete_non_string_overlong_duplicate_and_missing_errmsg(caplog):
+    file_id = PREFIX + obj(PDF, "pdf")
+    secret = "https://user:pass@example.com/attachments/secret?signature=abc&key=k"
+    caplog.set_level("DEBUG", logger="youju.attachments")
+    # bytes 不能放进 httpx.Response(json=...)，非字符串分类直接测。
+    assert copies._platform_hint(b"STORAGE_FILE_NONEXIST") == "unknown"
+    non_strings = (
+        None,
+        1,
+        1.5,
+        True,
+        {"errmsg": "STORAGE_FILE_NONEXIST"},
+        ["STORAGE_FILE_NONEXIST"],
+    )
+    for errmsg in non_strings:
+        with (
+            httpx.Client(
+                transport=httpx.MockTransport(_delete_response(file_id, 1, errmsg))
+            ) as client,
+            pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+        ):
+            copies.delete_copies(client, ENV, [file_id], sleep=lambda _delay: None)
+        message = str(error.value)
+        assert error.value.confirmed == set()
+        _assert_hints(message, unknown=1)
+        assert "STORAGE_FILE_NONEXIST" not in message
+
+    overlong = "STORAGE_FILE_NONEXIST " + secret + ("x" * 80)
+    # 不是严格整数 0 的一律不确认。能整段对上的 errmsg 仍只记文本提示。
+    classified_rejects = (
+        (True, "STORAGE_FILE_NONEXIST", "not_found_hint"),
+        ("0", "invalid fileid", "invalid_file_id_hint"),
+    )
+    for status, errmsg in ((1, overlong), (0.0, "ok")):
+        with (
+            httpx.Client(
+                transport=httpx.MockTransport(_delete_response(file_id, status, errmsg))
+            ) as client,
+            pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+        ):
+            copies.delete_copies(client, ENV, [file_id], sleep=lambda _delay: None)
+        message = str(error.value)
+        assert error.value.confirmed == set()
+        _assert_hints(message, unknown=1)
+        for leaked in (secret, "https://", "signature", overlong, "STORAGE_FILE_NONEXIST"):
+            assert leaked not in message
+    for status, errmsg, hint in classified_rejects:
+        with (
+            httpx.Client(
+                transport=httpx.MockTransport(_delete_response(file_id, status, errmsg))
+            ) as client,
+            pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+        ):
+            copies.delete_copies(client, ENV, [file_id], sleep=lambda _delay: None)
+        message = str(error.value)
+        assert error.value.confirmed == set() and "状态 0" not in message
+        _assert_hints(message, **{hint: 1})
+        assert errmsg not in message and secret not in message
+
+    def duplicate(request):
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {"fileid": file_id, "status": 0, "errmsg": "ok"},
+                    {"fileid": file_id, "status": 1, "errmsg": secret},
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(duplicate)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="漏项或无效响应") as error,
+    ):
+        copies.delete_copies(client, ENV, [file_id], sleep=lambda _delay: None)
+    message = str(error.value)
+    assert error.value.confirmed == set()
+    _assert_hints(message, unknown=1)
+    assert secret not in message and "https://" not in message
+
+    def missing(request):
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [{"fileid": "other", "status": 0, "errmsg": secret}],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(missing)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="漏项或无效响应") as error,
+    ):
+        copies.delete_copies(client, ENV, [file_id], sleep=lambda _delay: None)
+    assert error.value.confirmed == set()
+    _assert_hints(str(error.value), unknown=1)
+    assert secret not in str(error.value) and secret not in caplog.text

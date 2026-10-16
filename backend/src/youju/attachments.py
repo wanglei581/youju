@@ -98,6 +98,27 @@ _FILE_ID = re.compile(
 )
 _DELETE_BATCH = 50
 _DELETE_MAX = 500
+# delete_list.errmsg 只做整段相等的文本分类。过长、非字符串、空白后对不上，都是 unknown。
+# 这些词只说明平台返回了哪类提示，不能据此认为文件不存在、权限不足，或删除已经成功。
+_HINT_TEXT_MAX = 48
+_HINT_NAMES = (
+    "not_found_hint",
+    "permission_hint",
+    "invalid_file_id_hint",
+    "unknown",
+)
+_PLATFORM_HINTS = {
+    "STORAGE_FILE_NONEXIST": "not_found_hint",
+    "STORAGE_FILE_NOT_EXIST": "not_found_hint",
+    "NoSuchKey": "not_found_hint",
+    "file not exist": "not_found_hint",
+    "STORAGE_EXCEED_AUTHORITY": "permission_hint",
+    "AccessDenied": "permission_hint",
+    "permission denied": "permission_hint",
+    "INVALID_FILEID": "invalid_file_id_hint",
+    "InvalidFileId": "invalid_file_id_hint",
+    "invalid fileid": "invalid_file_id_hint",
+}
 RUN_BYTES = 1024**3  # 每轮最多下载 1GB
 _PDF_PAGES = 300
 _TEXT_MAX = 100 * 1024 * 1024  # Office 文件解压后的文字部分上限（防压缩炸弹）
@@ -563,6 +584,13 @@ def store_copy(
     return file_id
 
 
+def _platform_hint(errmsg: object) -> str:
+    """把单条 errmsg 收成固定分类。不返回原文，也不接受超长或非字符串。"""
+    if type(errmsg) is not str or len(errmsg) > _HINT_TEXT_MAX:
+        return "unknown"
+    return _PLATFORM_HINTS.get(errmsg.strip(), "unknown")
+
+
 class DeleteCopiesError(BackupError):
     """清理未全部确认；confirmed 仅供结算已确认成功的引用，不把部分成功写成全部成功。"""
 
@@ -589,12 +617,15 @@ def delete_copies(
             pending = [file_id for file_id in batch if file_id not in deleted]
             data = _open_api(client, "/tcb/batchdeletefile", {"env": env, "fileid_list": pending})
             statuses = defaultdict(list)
+            hints = defaultdict(list)
             items = data.get("delete_list")
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict) and item.get("fileid") in pending:
                         statuses[item["fileid"]].append(item.get("status"))
+                        hints[item["fileid"]].append(_platform_hint(item.get("errmsg")))
             failed = []
+            hint_counts: Counter[str] = Counter()
             for file_id in pending:
                 values = statuses[file_id]
                 if len(values) == 1 and type(values[0]) is int and values[0] == 0:
@@ -603,12 +634,19 @@ def delete_copies(
                     failed.append(
                         values[0] if len(values) == 1 and type(values[0]) is int else None
                     )
+                    # 重复项或漏项没有唯一提示，只记 unknown，不保留任何原文。
+                    if len(hints[file_id]) == 1:
+                        hint_counts[hints[file_id][0]] += 1
+                    else:
+                        hint_counts["unknown"] += 1
             if failed:
                 codes = ",".join(str(code) for code in sorted({c for c in failed if c is not None}))
                 if None in failed:
                     codes += ",漏项或无效响应"
+                categories = " ".join(f"{name}={hint_counts[name]}" for name in _HINT_NAMES)
                 raise BackupError(
-                    f"附件副本删除未确认：{len(failed)} 个（状态 {codes.lstrip(',')}）",
+                    f"附件副本删除未确认：{len(failed)} 个（状态 {codes.lstrip(',')}）"
+                    f"平台提示分类（仅文本提示，不是删除结果）{categories}",
                     retryable=all(code in _BUSY_CODES for code in failed),
                 )
 
