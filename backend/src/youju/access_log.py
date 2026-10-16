@@ -170,8 +170,10 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         for item, item_openid in batch:
             if item_openid and item["uid"] is None:
                 item["uid"] = log_uid(item_openid, engine)
-        stmt = mysql_insert(AccessLog)
-        stmt = stmt.on_duplicate_key_update(rid=stmt.inserted.rid)
+        # INSERT IGNORE：编号相同的只留一条。线上 api 账号对这张表只有 INSERT（只能新增），
+        # 不能用 ON DUPLICATE KEY UPDATE：它要 UPDATE 权限，会被拒（1142），
+        # api 的日志一条都写不进库（9/29 上线起如此，10/16 发布核对时发现）。
+        stmt = mysql_insert(AccessLog).prefix_with("IGNORE")
         with (engine or get_engine()).begin() as conn:
             conn.execute(stmt, [item for item, _ in batch])
         saved = True

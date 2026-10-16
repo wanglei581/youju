@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, make_url, select, text
 
 from youju import access_log
 from youju.access_log import export_day, log_key, log_uid, object_path, run_archive
@@ -20,7 +20,7 @@ from youju.api import app as app_module
 from youju.api import me
 from youju.api.app import app
 from youju.backup import BackupError, dump, restore
-from youju.db import get_session
+from youju.db import create_mysql_engine, get_session
 from youju.models import AccessLog, AppKey
 
 from .conftest import TEST_DB_URL
@@ -336,3 +336,40 @@ def test_rows_put_back_are_ordered_by_request_time():
     access_log._pending.append((new, None))
     access_log._keep([(old, None)])
     assert [row["path"] for row, _ in access_log._pending] == ["/old", "/new"]
+
+
+def test_api_account_with_insert_only_grant_can_write(session, db_engine, monkeypatch):
+    """线上 api 账号对 access_logs、app_keys 只有 INSERT（deploy/mysql_accounts.sql）。
+    INSERT … ON DUPLICATE KEY UPDATE 要 UPDATE 权限，会被拒（1142），api 的访问日志一条都写不进库
+    （10/16 发布核对时发现；测试一直用 root 连库，所以没测出来）。这里用和线上一样授权的账号写。"""
+    url = make_url(TEST_DB_URL)
+    name, password = "ylog_" + secrets.token_hex(4), "Aa1-" + secrets.token_hex(8)
+    grants = [
+        f"CREATE USER '{name}'@'%' IDENTIFIED BY '{password}'",
+        f"GRANT SELECT ON `{url.database}`.* TO '{name}'@'%'",
+        f"GRANT INSERT ON `{url.database}`.access_logs TO '{name}'@'%'",
+        f"GRANT INSERT ON `{url.database}`.app_keys TO '{name}'@'%'",
+    ]
+    with db_engine.begin() as conn:
+        for statement in grants:
+            conn.execute(text(statement))
+    restricted = create_mysql_engine(url.set(username=name, password=password))
+    monkeypatch.setattr(access_log, "_key", None)
+    monkeypatch.setattr(access_log, "_send_in_background", lambda message: None)
+    try:
+        entry = {"service": "api", "method": "GET", "path": "/api/v1/home", "status": 200, "ms": 1}
+        access_log.write({**entry, "openid": "dev-user"}, engine=restricted)
+        [row] = rows(session)
+        assert row.uid == log_uid("dev-user", db_engine) and not access_log._pending
+        # 提交其实成功了却报错时会再写一次：编号相同只留一条，也不报权限错误
+        again = {name: getattr(row, name) for name in ("rid", "at", "service", "method", "path")}
+        access_log._pending.append(
+            ({**again, "status": 200, "ms": 1, "ip": None, "uid": row.uid, "detail": None}, None)
+        )
+        access_log.write({**entry, "path": "/api/v1/calendar"}, engine=restricted)
+        assert [r.path for r in rows(session)] == ["/api/v1/home", "/api/v1/calendar"]
+        assert not access_log._pending
+    finally:
+        restricted.dispose()
+        with db_engine.begin() as conn:
+            conn.execute(text(f"DROP USER '{name}'@'%'"))
