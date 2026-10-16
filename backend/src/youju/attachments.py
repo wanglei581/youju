@@ -27,8 +27,10 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import io
+import json
 import logging
 import math
 import re
@@ -59,6 +61,7 @@ from youju.crawler.fetcher import MAX_RESPONSE_BYTES, FetchResult, PoliteFetcher
 from youju.dedup import canonical_ids
 from youju.models import AttachmentCopy, Document, DocumentAttachment, Source
 from youju.takedown import available_condition
+from youju.version import build_revision
 
 log = logging.getLogger("youju.attachments")
 
@@ -609,14 +612,21 @@ class _DeleteItemFailure(BackupError):
 
 class DeleteCopiesError(BackupError):
     """清理未全部确认；confirmed 仅供结算已确认成功的引用，不把部分成功写成全部成功。
-    unconfirmed 是逐项未确认的明细，只给 settle_missing_copies 核对证据用，不写进报错文字。"""
+    unconfirmed 是逐项未确认的明细，只给 settle_missing_copies 核对证据用，不写进报错文字；
+    stopped：整体出错提前停下了（后面的批次没发）。"""
 
     def __init__(
-        self, error: BackupError, confirmed: set[str], unconfirmed: Unconfirmed | None = None
+        self,
+        error: BackupError,
+        confirmed: set[str],
+        unconfirmed: Unconfirmed | None = None,
+        *,
+        stopped: bool = False,
     ) -> None:
         super().__init__(str(error), retryable=error.retryable)
         self.confirmed = set(confirmed)
         self.unconfirmed = dict(unconfirmed or {})
+        self.stopped = stopped
 
 
 def _unconfirmed_message(items: list[tuple[int | None, str]]) -> tuple[str, bool]:
@@ -730,7 +740,8 @@ def delete_copies(
         if on_confirmed is not None and confirmed:
             on_confirmed(confirmed)
         if top is not None:
-            raise DeleteCopiesError(_delete_error(unconfirmed, top), deleted, unconfirmed) from top
+            error = _delete_error(unconfirmed, top)
+            raise DeleteCopiesError(error, deleted, unconfirmed, stopped=True) from top
     if unconfirmed:
         raise DeleteCopiesError(_delete_error(unconfirmed, None), deleted, unconfirmed)
     return deleted
@@ -1327,6 +1338,267 @@ def _recheck(
         if owns_client:
             client.close()
     return report
+
+
+# ---- 删不掉、对象存储里也没有的副本：凭存储桶清单核对后结算（youju settle-missing-copies） ----
+#
+# 删除接口对不在的对象返回状态 1 和"不存在"一类提示，但官方没把它定义成删除成功（权限、
+# 路径不对也会这样返回），所以定时清理从不凭它结算。对象早已删掉、引用没结算的（旧版代码删了
+# 到期记录的当前副本却没清空、进程在删除和提交之间退出等）就会每轮报警、永远删不掉。
+# 这里要第二份独立证据：运维在本机用 wxcloud storage:list 取对象存储 attachments/ 的完整清单
+# （backend/scripts/attachment_listing.py 生成），同一存储桶、24 小时内取得、清单里没有，
+# 而且这次再删仍是整数状态 1 + 不存在提示，才结算；结算前先把明细写进对象存储
+# ops/attachment-settlements/ 留档，留档失败就不结算。
+
+LISTING_MAX_AGE = timedelta(hours=24)
+# 清单里每个对象只带内容 SHA-256 的前 4 个字节（要能粘贴进容器终端）：撞上了只会把不在的
+# 当成"可能还在"多保留，不会把还在的当成不在
+_HEAD_BYTES = 4
+_BUCKET = re.compile(r"[0-9a-z][0-9a-z-]{2,80}")
+_FILE_BUCKET = re.compile(r"cloud://[^./]+\.([^/]+)/")
+AUDIT_PREFIX = "ops/attachment-settlements/"
+
+
+def _bucket_of(file_id: str | None) -> str | None:
+    match = _FILE_BUCKET.match(file_id or "")
+    return match.group(1) if match else None
+
+
+@dataclass(frozen=True)
+class Listing:
+    """对象存储 attachments/ 的完整清单（只有每个对象内容 SHA-256 的前 4 字节）。"""
+
+    bucket: str
+    listed_at: datetime
+    count: int
+    digest: str
+    heads: frozenset[bytes]
+
+    def has(self, file_id: str) -> bool:
+        """在清单里，或者前缀撞上了（都按"可能还在"算）；认不出的文件 ID 也按还在算。"""
+        parsed = parse_file_id(file_id)
+        if parsed is None:
+            return True
+        return bytes.fromhex(parsed[1][len(PREFIX) :][: _HEAD_BYTES * 2]) in self.heads
+
+
+def parse_listing(text: str, now: datetime) -> Listing:
+    """第一行 JSON（v、bucket、prefix、listed_at、count、sha256），后面几行是 base64：
+    每个对象 SHA-256 的前 4 字节，从小到大排好接在一起。任何一项对不上就整份拒绝。"""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    try:
+        head = json.loads(lines[0]) if lines else None
+        payload = base64.b64decode("".join(lines[1:]), validate=True)
+        listed_at = datetime.fromisoformat(head["listed_at"])
+    except (ValueError, TypeError, KeyError) as exc:  # binascii.Error 是 ValueError
+        raise ValueError("清单格式不对（可能没有复制完整）") from exc
+    if not isinstance(head, dict) or head.get("v") != 1 or head.get("prefix") != PREFIX:
+        raise ValueError("清单的格式版本或前缀不对")
+    bucket, count = head.get("bucket"), head.get("count")
+    if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket):
+        raise ValueError("清单的存储桶名不对")
+    if listed_at.tzinfo is None:
+        raise ValueError("清单的取得时间要带时区")
+    if not now - LISTING_MAX_AGE <= listed_at <= now + timedelta(minutes=10):
+        raise ValueError("清单不是最近 24 小时内取得的，请重新取")
+    if not payload or len(payload) % _HEAD_BYTES or type(count) is not int:
+        raise ValueError("清单是空的或长度不对")
+    heads = [payload[i : i + _HEAD_BYTES] for i in range(0, len(payload), _HEAD_BYTES)]
+    if count != len(heads) or any(a >= b for a, b in zip(heads, heads[1:], strict=False)):
+        raise ValueError("清单条数对不上或没有排好序")
+    digest = sha256(payload).hexdigest()
+    if head.get("sha256") != digest:
+        raise ValueError("清单校验和对不上（可能没有复制完整）")
+    return Listing(bucket, listed_at, count, digest, frozenset(heads))
+
+
+@dataclass
+class MissingReport:
+    # 和定时清理同一口径要删的副本（本环境的），其中清单里有、没有、存储桶和清单不同的个数
+    wanted: int = 0
+    listed: int = 0
+    unlisted: int = 0
+    bucket_mismatch: int = 0
+    # 还在提供、但清单里没有的副本（打不开）；--apply 时改回待下载的个数
+    live_missing: int = 0
+    live_reset: int = 0
+    # 以下只在 --apply 时有：这次确认删掉（照常结算）、未确认、未确认里清单有（平台提示和
+    # 清单矛盾）、不是"状态 1 + 不存在提示"的、证据齐全按已不存在结算的
+    deleted: int = 0
+    unconfirmed: int = 0
+    listed_unconfirmed: int = 0
+    other_status: int = 0
+    settled: int = 0
+    audit: str | None = None
+    applied: bool = False
+    skipped: bool = False
+    error: str | None = None
+
+
+def settle_missing_copies(
+    session: Session,
+    env: str,
+    listing: Listing,
+    *,
+    client: httpx.Client | None = None,
+    now: datetime | None = None,
+    apply: bool = False,
+    sleep: Callable[[float], None] = clock.sleep,
+) -> MissingReport:
+    """不加 apply 只读：按清单统计要删的副本、还在提供的副本各有几个不在对象存储里，不删不改。
+    apply：先照常删（确认删掉的照常结算），删不掉的逐项核对证据，齐全的先留档再结算；还在提供、
+    清单里没有、清单之前存的副本改回待下载（下轮定时任务重新下载）。和附件任务共用一把锁。"""
+    now = now or datetime.now(UTC)
+    with _exclusive(session) as got:
+        if not got:
+            return MissingReport(skipped=True)
+        owns_client = client is None
+        client = client or httpx.Client(trust_env=False)
+        try:
+            return _settle_missing(session, env, listing, client, now, apply, sleep)
+        finally:
+            if owns_client:
+                client.close()
+
+
+def _settle_missing(
+    session: Session,
+    env: str,
+    listing: Listing,
+    client: httpx.Client,
+    now: datetime,
+    apply: bool,
+    sleep: Callable[[float], None],
+) -> MissingReport:
+    report = MissingReport(applied=apply)
+    live = {url_hash(url) for url in candidates(session, now)}
+    rows = session.scalars(select(AttachmentCopy)).all()
+    expired = [r for r in rows if r.url_hash not in live]
+    in_use = {r.file_id for r in rows if r.url_hash in live and r.file_id}
+    wanted = {r.file_id for r in expired if r.file_id}
+    for row in rows:
+        wanted.update(row.stale_file_ids or [])
+    wanted = {i for i in wanted - in_use if (parsed := parse_file_id(i)) and parsed[0] == env}
+    same_bucket = {i for i in wanted if _bucket_of(i) == listing.bucket}
+    report.wanted, report.bucket_mismatch = len(wanted), len(wanted) - len(same_bucket)
+    report.listed = sum(1 for i in same_bucket if listing.has(i))
+    report.unlisted = len(same_bucket) - report.listed
+    serving = [
+        r
+        for r in rows
+        if r.url_hash in live
+        and r.status == "ready"
+        and _bucket_of(r.file_id) == listing.bucket
+        and parse_file_id(r.file_id) is not None
+    ]
+    # 清单之后存的副本清单里本来就没有，不算
+    dangling = [
+        r
+        for r in serving
+        if not listing.has(r.file_id)
+        and r.fetched_at is not None
+        and r.fetched_at < listing.listed_at
+    ]
+    report.live_missing = len(dangling)
+    if serving and not any(listing.has(r.file_id) for r in serving):
+        session.rollback()
+        report.error = "还在提供的副本一个都不在清单里，清单可能取错了存储桶或前缀：没有改动"
+        return report
+    if not apply:
+        session.rollback()
+        return report
+    kept = _referenced(session, wanted, live)
+    wanted -= kept
+    settle = _Settlement(session, list(rows), expired, in_use | kept)
+    try:
+        failure: DeleteCopiesError | None = None
+        try:
+            if wanted:
+                delete_copies(
+                    client,
+                    env,
+                    sorted(wanted),
+                    sleep=sleep,
+                    salt=_order_salt(now),
+                    on_confirmed=settle,
+                )
+        except DeleteCopiesError as exc:
+            failure = exc
+        report.deleted = len(settle.deleted)
+        if failure is not None and failure.stopped:
+            settle(set())
+            report.error = f"删除附件副本中途出错，这次不按清单结算：{failure}"
+            return report
+        unconfirmed = failure.unconfirmed if failure is not None else {}
+        report.unconfirmed = len(unconfirmed)
+        gone: Unconfirmed = {}
+        for file_id, (code, hint) in unconfirmed.items():
+            if _bucket_of(file_id) != listing.bucket:
+                continue  # 已计入 bucket_mismatch
+            if listing.has(file_id):
+                report.listed_unconfirmed += 1
+            elif type(code) is int and code == 1 and hint == "not_found_hint":
+                gone[file_id] = (code, hint)
+            else:
+                report.other_status += 1
+        if gone or dangling:
+            report.audit = _upload_settlement(client, env, now, listing, gone, dangling, sleep)
+            for row in dangling:
+                # 对象已不在（清单为证），引用直接去掉，不放进旧副本列表（那样每轮又删不掉）
+                row.status = "pending"
+                row.file_id = row.file_type = row.sha256 = None
+                row.size = None
+                row.next_check_at = None
+                row.attempts = 0
+            settle(set(gone))
+            report.settled, report.live_reset = len(gone), len(dangling)
+            log.info(
+                "附件副本按清单结算已不存在的 %d 个，改回待下载 %d 个，留档 %s",
+                len(gone),
+                len(dangling),
+                report.audit,
+            )
+        settle(set())
+    except BackupError as exc:
+        session.rollback()
+        report.error = f"按清单结算失败，没有改动：{exc}"
+    return report
+
+
+def _upload_settlement(
+    client: httpx.Client,
+    env: str,
+    now: datetime,
+    listing: Listing,
+    gone: Unconfirmed,
+    dangling: list[AttachmentCopy],
+    sleep: Callable[[float], None],
+) -> str:
+    """结算明细先写进对象存储留档（只有管理员可读的存储桶），返回对象路径。"""
+    record = {
+        "v": 1,
+        "at": now.astimezone(UTC).isoformat(),
+        "revision": build_revision(),
+        "listing": {
+            "bucket": listing.bucket,
+            "listed_at": listing.listed_at.astimezone(UTC).isoformat(),
+            "count": listing.count,
+            "sha256": listing.digest,
+        },
+        "settled": [
+            {"file_id": file_id, "status": code, "hint": hint}
+            for file_id, (code, hint) in sorted(gone.items())
+        ],
+        "reset_to_pending": [
+            {"url_hash": row.url_hash, "file_id": row.file_id} for row in dangling
+        ],
+    }
+    path = f"{AUDIT_PREFIX}{now.astimezone(UTC):%Y%m%dT%H%M%S}Z.json"
+    with tempfile.TemporaryDirectory() as tmp:
+        local = Path(tmp) / "settlement.json"
+        local.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+        _retrying(lambda: upload(client, env, path, local, what="结算留档"), sleep)
+    return path
 
 
 # ---- 小程序接口用 ----

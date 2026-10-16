@@ -815,6 +815,31 @@ def _cmd_recheck_attachments(args: argparse.Namespace) -> int:
     return 1 if report.storage_error or report.unreadable else 0
 
 
+def _cmd_settle_missing_copies(args: argparse.Namespace) -> int:
+    """删不掉的附件副本凭对象存储清单核对（见 attachments.settle_missing_copies）。只输出个数、
+    留档路径和固定说明的 JSON，不输出文件 ID。"""
+    from dataclasses import asdict
+
+    from youju.attachments import parse_listing, settle_missing_copies
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法核对附件副本")
+        return 1
+    now = datetime.now(UTC)
+    try:
+        listing = parse_listing(sys.stdin.read(), now)
+    except ValueError as exc:
+        print(json.dumps({"error": f"清单不能用：{exc}"}, ensure_ascii=False))
+        return 1
+    with session_factory()() as session:
+        report = settle_missing_copies(session, env, listing, now=now, apply=args.apply)
+    print(json.dumps(asdict(report), ensure_ascii=False))
+    if report.skipped:
+        return 75
+    return 1 if report.error else 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
@@ -1224,6 +1249,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只检查、报告，不改表、不删文件")
     p.set_defaults(func=_cmd_recheck_attachments)
+    p = sub.add_parser(
+        "settle-missing-copies",
+        help="从标准输入读对象存储清单（scripts/attachment_listing.py 生成），核对删不掉、"
+        "清单里也没有的附件副本；加 --apply 才留档并结算",
+    )
+    p.add_argument("--apply", action="store_true", help="照常删除，证据齐全的留档后结算")
+    p.set_defaults(func=_cmd_settle_missing_copies)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")
