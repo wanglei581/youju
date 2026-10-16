@@ -12,7 +12,16 @@ from sqlalchemy import select
 from youju import cli
 from youju import conditions as service
 from youju.ai.client import AIError
-from youju.ai.conditions import INPUT_MAX, QUOTE_MAX, prepare_text, validate
+from youju.ai.conditions import (
+    INPUT_MAX,
+    MAX_ITEMS,
+    PROMPT_VERSION,
+    QUOTE_MAX,
+    SYSTEM_PROMPT,
+    extract_conditions_with_ai,
+    prepare_text,
+    validate,
+)
 from youju.api import app as app_module
 from youju.api import v1
 from youju.config import get_settings
@@ -643,3 +652,91 @@ def test_eval_script_simulated_model_never_calls_real_model():
     assert summary["documents"] == 1 and summary["kept"] >= 2
     assert summary["verbatim_errors"] == 0
     assert summary["dropped"].get("judgement") == summary["planted"]["judgement"] == 1
+
+
+def test_extract_uses_fixed_budget_and_item_cap_prompt():
+    seen = {}
+
+    class Recorder:
+        def complete_json(self, system, user, max_tokens=800):
+            seen["system"] = system
+            seen["user"] = user
+            seen["max_tokens"] = max_tokens
+            return {"conditions": GOOD}
+
+    body = service.public_body(BODY)
+    result = extract_conditions_with_ai(Recorder(), "关于组织申报科技项目的通知", body)
+    assert seen["max_tokens"] == 6000
+    assert seen["system"] == SYSTEM_PROMPT
+    assert f"必须完整提取，conditions 最多{MAX_ITEMS}条。" in SYSTEM_PROMPT
+    assert f"超过{MAX_ITEMS}条" in SYSTEM_PROMPT
+    assert '{"conditions":[],"overflow":true}' in SYSTEM_PROMPT
+    assert "按正文出现顺序保留" not in SYSTEM_PROMPT
+    assert "必须输出完整JSON对象" in SYSTEM_PROMPT
+    assert "逐字连续复制" in SYSTEM_PROMPT
+    assert "数字、单位和比例照原文写" in SYSTEM_PROMPT
+    assert "不判断谁能否申报" in SYSTEM_PROMPT
+    assert PROMPT_VERSION == "conditions-v2"
+    assert "13812345678" not in seen["user"]
+    assert len(result.items) == 3
+    for item in result.items:
+        assert body[item.offset : item.offset + len(item.quote)] == item.quote
+
+
+def test_validate_still_drops_items_beyond_max_and_keeps_verbatim():
+    sentences = [f"申报单位须具备第{n}类试验设备的合法使用权。" for n in range(1, MAX_ITEMS + 2)]
+    body = "\n".join(sentences)
+    payload = {
+        "conditions": [
+            {
+                "category": "其他",
+                "text": f"具备第{n}类试验设备的合法使用权",
+                "quote": sentence,
+            }
+            for n, sentence in enumerate(sentences, 1)
+        ]
+    }
+    result = validate(payload, body)
+    assert len(result.items) == MAX_ITEMS
+    assert result.reasons["too_many"] == 1
+    assert [item.quote for item in result.items] == sentences[:MAX_ITEMS]
+    for item in result.items:
+        assert body[item.offset : item.offset + len(item.quote)] == item.quote
+
+
+def test_validate_overflow_true_false_missing_and_bad_type():
+    body = service.public_body(BODY)
+    with pytest.raises(AIError) as overflow:
+        validate({"conditions": GOOD, "overflow": True}, body)
+    assert str(overflow.value) == "申报条件超过清单容量，需人工整理"
+    assert overflow.value.code == "conditions_overflow"
+    assert overflow.value.retryable is False
+    with pytest.raises(AIError) as empty:
+        validate({"conditions": [], "overflow": True}, body)
+    assert empty.value.code == "conditions_overflow"
+
+    kept = validate({"conditions": GOOD, "overflow": False}, body)
+    missing = validate({"conditions": GOOD}, body)
+    assert [(item.category, item.text, item.quote) for item in kept.items] == [
+        (item.category, item.text, item.quote) for item in missing.items
+    ]
+    assert len(kept.items) == 3
+    for bad in (1, 0, "true", "false", None, [], {}):
+        with pytest.raises(AIError) as error:
+            validate({"conditions": GOOD, "overflow": bad}, body)
+        assert str(error.value) == "AI 返回的申报条件结构无效"
+        assert error.value.code is None
+
+
+def test_run_extraction_overflow_records_error_and_saves_no_list(session):
+    doc = add_notice(session, 1)
+    client = FakeClient(lambda user: {"conditions": GOOD, "overflow": True})
+    report = service.run_extraction(session, client, now=NOW)
+    assert report.errors == 1 and report.lists == 0
+    assert session.scalars(select(ConditionList)).all() == []
+    assert session.scalars(select(ConditionItem)).all() == []
+    check = session.scalar(select(AICheck).where(AICheck.document_id == doc.id))
+    assert check.task == "conditions"
+    assert check.error == "申报条件超过清单容量，需人工整理"
+    assert check.result is None
+    assert (check.prompt_tokens, check.completion_tokens) == (100, 20)
