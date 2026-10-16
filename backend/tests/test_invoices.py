@@ -236,6 +236,13 @@ def test_pay_entry_flags_in_capabilities_and_me(pay, session):
         "enabled": False,
         "hasOrders": False,
     }
+    # 现网（真扣钱）没配定稿协议版本时不算在售，不出现付不了款的入口；沙箱可以
+    settings.xpay_price_pass, settings.xpay_env = 100, 0
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
+    settings.pay_terms_version = "pay-2026-11"
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
+    settings.pay_terms_version, settings.xpay_env = "", 1
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
 
 
 def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):

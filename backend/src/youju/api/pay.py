@@ -74,8 +74,8 @@ class OrderIn(BaseModel):
 def list_products() -> dict:
     """只读：已配置价格、可以下单的商品；小程序据此显示付费档，空列表时不显示。"""
     settings = get_settings()
-    # 和下单条件一致：没有 offerId 时下单必然失败，不展示价格。
-    if not settings.xpay_offer_id:
+    # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
+    if not payments.orderable(settings):
         return {"items": [], "sandbox": settings.xpay_env == 1}
     return {
         "items": [
@@ -94,7 +94,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     settings = get_settings()
     _upload_consent(user)
     sku = payments.products(settings).get(body.product_id)
-    if sku is None or not settings.xpay_offer_id:
+    if sku is None or not payments.orderable(settings):
         raise HTTPException(status_code=404, detail="没有找到商品")
     price, _ = sku
     if settings.pay_terms_version and body.terms_version != settings.pay_terms_version:

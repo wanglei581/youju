@@ -320,6 +320,8 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   补单、退款、对账等定时任务只看总开关，已有订单照常处理。判断函数：`payments.selling_to`。
 - **沙箱标记**：`GET /api/v1/pay/products` 返回 `sandbox`（`YOUJU_XPAY_ENV=1` 时为 true）。小程序在沙箱下
   对测试名单放开付款按钮（页面写明不扣真钱），现网仍须《付费服务协议》定稿（`content/pay-terms.js` final）。
+  服务端同样把关：现网（`YOUJU_XPAY_ENV=0`）没配 `YOUJU_PAY_TERMS_VERSION`（律师定稿版本）时不展示商品、
+  不下单、不算在售（`payments.orderable`，商品列表、下单、购买入口共用），不出现看得到价格却付不了款的入口。
 - **支付入口**：`GET /api/v1/advisor/capabilities` 和 `GET /api/v1/me` 带 `pay: {enabled, hasOrders}`。
   enabled = 对这个用户在售；hasOrders = 有过订单（停卖后仍能进订单页退款、开票）。都为 false 时小程序不出现任何购买字样。
 - **开票申请**（迁移 0030，表 `invoice_requests`）：`PUT /api/v1/pay/orders/{id}/invoice`

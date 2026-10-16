@@ -104,14 +104,19 @@ def selling_to(settings, openid: str | None) -> bool:
     return bool(openid) and openid in testers
 
 
+def orderable(settings) -> bool:
+    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了律师定稿的协议版本
+    （YOUJU_PAY_TERMS_VERSION）。沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、
+    购买入口都按这一条判断，不出现看得到价格却付不了款的入口。"""
+    if not getattr(settings, "xpay_offer_id", "") or not products(settings):
+        return False
+    return settings.xpay_env == 1 or bool(getattr(settings, "pay_terms_version", ""))
+
+
 def entry(session: Session, settings, user: User | None) -> dict:
-    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、配了 offerId 和价格），
+    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户开放、能下单），
     或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
-    selling = (
-        selling_to(settings, user.openid if user else None)
-        and bool(getattr(settings, "xpay_offer_id", ""))
-        and bool(products(settings))
-    )
+    selling = selling_to(settings, user.openid if user else None) and orderable(settings)
     has_orders = (
         user is not None
         and session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1))

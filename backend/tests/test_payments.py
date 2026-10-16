@@ -308,8 +308,16 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
     assert create(setup_pay).status_code == 404
     assert not fake.calls
+    # 现网（真扣钱）：没配律师定稿的协议版本时不展示价格、不下单；配了才卖
     settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
-    assert client.get("/api/v1/pay/products").json()["sandbox"] is False
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": False}
+    assert create(setup_pay).status_code == 404
+    assert not fake.calls
+    settings.pay_terms_version = "pay-2026-11"
+    listed = client.get("/api/v1/pay/products").json()
+    assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
+        "workbench_30d"
+    ]
 
 
 def test_products_route_dependency_hides_when_closed(setup_pay):
