@@ -1,1 +1,4 @@
 @import "../../utils/advisor.wxss";
+
+/* 超出免费量时的开通提示：浅底，不抢主操作 */
+.advisor-offer { margin-top: 16rpx; padding: 20rpx 24rpx; border-radius: 16rpx; background: var(--brand-tint); }

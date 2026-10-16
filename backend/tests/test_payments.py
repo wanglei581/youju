@@ -10,6 +10,7 @@ import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import httpx
@@ -55,6 +56,7 @@ class FakeWechat:
         self.paid_time = int(NOW.timestamp())
         self.fail_provide = False
         self.bill_broken = None
+        self.env_type = None
         self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
         self.client = XPayClient(settings, self.http)
 
@@ -84,7 +86,8 @@ class FakeWechat:
                         "order_id": "wrong" if self.bad_order else body["order_id"],
                         "openid": body["openid"],
                         "status": self.status,
-                        "env_type": body["env"],
+                        # 官方文档：返回的 env_type 是 1 现网、2 沙箱（请求的 env 是 0、1）
+                        "env_type": body["env"] + 1 if self.env_type is None else self.env_type,
                         "order_fee": self.fee,
                         "paid_fee": self.fee,
                         "left_fee": self.left_fee,
@@ -118,6 +121,8 @@ def setup_pay(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         pay_enabled=True,
+        # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices
+        pay_audience="all",
         advisor_enabled=True,
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
@@ -263,6 +268,103 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
 
 
 @pytest.mark.parametrize(
+    ("env", "env_type", "ok"),
+    [
+        (1, 2, True),  # 官方文档写法：沙箱 2
+        (1, 1, True),  # 和请求一样的写法也认
+        (1, 0, False),  # 0 只能是现网（请求写法）
+        (0, 1, True),  # 官方文档写法：现网 1
+        (0, 0, True),
+        (0, 2, False),  # 2 只能是沙箱（官方写法）
+    ],
+)
+def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, env, env_type, ok):
+    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。"""
+    _, settings, fake = setup_pay
+    settings.xpay_env = env
+    if env == 0:
+        settings.pay_terms_version = "pay-test"
+        settings.xpay_appkey_prod = SecretStr("12345")
+    row = order(session, create(setup_pay))
+    fake.env_type = env_type
+    if ok:
+        assert payments.query(session, row, fake.client)["order_id"] == row.out_trade_no
+    else:
+        with pytest.raises(XPayError):
+            payments.query(session, row, fake.client)
+
+
+def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
+    """下新单前先问微信 10 分钟内的待支付单：已经付了款（推送和补单还没到；小程序取消回调不准、
+    付款中途被关掉时本机没记下这一笔）就先开通、不下新单；没付照常下（agy 审阅，10/16）。
+    查不了不挡新单：没调起过支付的单微信那边可能查不到，官方错误码也区分不了。"""
+    _, _, fake = setup_pay
+    first = order(session, create(setup_pay))
+    fake.calls.clear()
+    # 没付：照常下新单，只查了上一笔
+    second = order(session, create(setup_pay))
+    assert [c[0] for c in fake.calls].count("/xpay/query_order") == 1
+    # 微信说已关闭：两笔都关掉，照常下新单
+    fake.status = 6
+    third = order(session, create(setup_pay))
+    session.expire_all()
+    assert session.get(PayOrder, first.id).status == "closed"
+    assert session.get(PayOrder, second.id).status == "closed"
+    # 已付：开通上一笔、不下新单
+    fake.status = 2
+    response = create(setup_pay)
+    assert response.status_code == 409 and "上一笔已经付款" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(PayOrder, third.id).status == "completed"
+    assert session.scalar(select(WorkbenchPass).where(WorkbenchPass.order_id == third.id))
+    assert session.scalar(select(func.count(PayOrder.id))) == 3
+    # 付款核验不过（金额不符）：转人工，也不下新单
+    fake.status = 1
+    fourth = order(session, create(setup_pay))
+    fake.status, fake.fee = 2, 99
+    response = create(setup_pay)
+    assert response.status_code == 409 and "人工核对" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(PayOrder, fourth.id).status == "manual"
+    # 微信查不了（比如这笔没调起过支付）：不挡新单，上一笔留给补单
+    fake.status, fake.fee = 1, 100
+    fifth = order(session, create(setup_pay))
+    fake.bad_order = True
+    sixth = order(session, create(setup_pay))
+    session.expire_all()
+    assert session.get(PayOrder, fifth.id).status == "pending"
+    assert session.scalar(select(func.count(PayOrder.id))) == 6
+    # 超过 10 分钟的待支付单不在下单时查（交给每分钟的补单）
+    fake.bad_order = False
+    for row in (fifth, sixth):
+        session.get(PayOrder, row.id).created_at = NOW - timedelta(minutes=11)
+    session.commit()
+    fake.calls.clear()
+    assert create(setup_pay).status_code == 201
+    assert "/xpay/query_order" not in [c[0] for c in fake.calls]
+
+
+def test_new_order_locks_previous_orders_by_primary_key_only(setup_pay, session):
+    """下单时对订单表只按主键加锁，不做范围锁：范围锁加插入会让两个新用户同时下单时互相等待甚至死锁。"""
+    first = order(session, create(setup_pay))
+    statements = []
+
+    def record(_conn, _cursor, statement, *_):
+        statements.append(" ".join(statement.split()))
+
+    engine = session.get_bind()
+    sa_event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert create(setup_pay).status_code == 201
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", record)
+    locked = [s for s in statements if "FROM pay_orders" in s and "FOR UPDATE" in s]
+    assert locked, "上一笔待支付单应当按主键加锁后再查微信"
+    assert all(" WHERE pay_orders.id = " in s and " AND " not in s for s in locked), locked
+    assert first.id
+
+
+@pytest.mark.parametrize(
     "values",
     [
         {"rows": []},
@@ -293,23 +395,36 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
         "items": [
             {"productId": "workbench_30d", "name": "客户工作台 30 天", "price": 100, "days": 30}
-        ]
+        ],
+        # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
+        "sandbox": True,
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
     settings.xpay_price_pass = None
-    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
     settings.xpay_price_pass = 100
     settings.xpay_offer_id = ""
-    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
     assert create(setup_pay).status_code == 404
     assert not fake.calls
+    # 现网（真扣钱）：没配律师定稿的协议版本时不展示价格、不下单；配了才卖
+    settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": False}
+    assert create(setup_pay).status_code == 404
+    assert not fake.calls
+    settings.pay_terms_version = "pay-2026-11"
+    listed = client.get("/api/v1/pay/products").json()
+    assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
+        "workbench_30d"
+    ]
 
 
 def test_products_route_dependency_hides_when_closed(setup_pay):
     settings = setup_pay[1]
     settings.pay_enabled = False
     with pytest.raises(pay.HTTPException) as caught:
-        pay.require_enabled()
+        # 只看请求头里的 openid（测试名单用），这里给一个最小的请求对象
+        pay.require_enabled(SimpleNamespace(headers=HEADERS))
     assert caught.value.status_code == 404 and caught.value.detail == "没有找到接口"
     route = next(r for r in pay.router.routes if r.path == "/api/v1/pay/products")
     assert route.methods == {"GET"}
@@ -1284,6 +1399,8 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "passRevokedAt",
         "canRefund",
         "refundUnavailableReason",
+        "canInvoice",
+        "invoice",
     }
     assert result[0]["canRefund"] is False and result[0]["refundUnavailableReason"]
     other = {**HEADERS, "X-WX-OPENID": "other"}

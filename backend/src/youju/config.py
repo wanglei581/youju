@@ -93,6 +93,10 @@ class Settings(BaseSettings):
 
     # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
     pay_enabled: bool = False
+    # 开关打开后先只卖给测试名单（沙箱联调：体验版和正式版连的是同一个后端，不能让所有用户看到）；
+    # 门槛达标、创始人批准后改成 all 才对全体开放。名单是逗号分隔的 openid（我的数据页可复制）。
+    pay_audience: Literal["whitelist", "all"] = "whitelist"
+    pay_openids: str = ""
     # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。配了以后，
     # 下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）；不配只记录不比对。
     pay_terms_version: str = ""

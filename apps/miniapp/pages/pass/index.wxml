@@ -1,0 +1,60 @@
+<notice-bar />
+<view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
+<view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
+<view wx:elif="{{!product}}" class="card advisor-card">付费服务暂未开放</view>
+<block wx:else>
+  <!-- 最上面一眼看到：卖什么、多少钱、会不会再扣钱 -->
+  <view wx:if="{{sandbox}}" class="card pass-sandbox">沙箱测试：只对测试人员开放，付款不扣真钱，开通的使用期仅供测试。正式收费前《付费服务协议》会由律师定稿。</view>
+  <view class="pass-hero">
+    <view class="pass-name">客户工作台 30 天</view>
+    <view class="pass-price"><text class="pass-num">{{price}}</text><text class="pass-unit">元</text></view>
+    <view class="pass-sub">买一次用 {{product.days}} 天，到期不再扣钱</view>
+    <view wx:if="{{expires}}" class="pass-now">使用期到 {{expires}} · 再买一次，往后顺延 {{product.days}} 天</view>
+  </view>
+
+  <view class="card pass-card">
+    <view class="pass-title">包含什么</view>
+    <view class="pass-row">
+      <view class="pass-ico"><t-icon name="bulletpoint" size="36rpx" color="#2A5CE0" /></view>
+      <view class="pass-main"><view class="pass-lead">批量名单比对</view><view class="pass-desc">不限次数，每次 500 家以内</view></view>
+    </view>
+    <view class="pass-row">
+      <view class="pass-ico"><t-icon name="task-checked" size="36rpx" color="#2A5CE0" /></view>
+      <view class="pass-main"><view class="pass-lead">客户相关通知表</view><view class="pass-desc">不限次数，每次 500 家以内</view></view>
+    </view>
+    <view class="pass-row">
+      <view class="pass-ico"><t-icon name="download" size="36rpx" color="#2A5CE0" /></view>
+      <view class="pass-main"><view class="pass-lead">结果可导出 Excel</view><view class="pass-desc">带发文机关、日期和原文链接</view></view>
+    </view>
+  </view>
+
+  <!-- 不买能用多少，和上面挨着写清楚：不想买的人不用猜 -->
+  <view class="card pass-card">
+    <view class="pass-title">不买也能用</view>
+    <view class="pass-line">批量名单比对、客户相关通知表：每月各 3 次，每次 50 家以内</view>
+    <view class="pass-line">搜索、详情、附件、查名单、导出等一直免费</view>
+  </view>
+
+  <view class="card pass-card">
+    <view class="pass-title">购买前请知悉</view>
+    <view class="pass-note">这是第三方整理公开信息的工具，不是政府平台；不代办申报，不承诺申报结果。信息整理自政府部门公开网站，以发文机关原文为准。</view>
+    <view class="pass-note">使用期从付款成功时起算，共 {{product.days}} 天；已有使用期的，接着往后顺延。</view>
+    <view class="pass-note">只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看和导出。</view>
+    <view class="pass-note">退款：用安卓、鸿蒙手机或电脑微信付款的，7 天内没有提交过超过 50 家的名单、没有超出每月免费次数、也没有开过发票，可在"我的 → 订单"里申请，全额原路退回；重复扣款或因系统故障无法使用的，点"遇到问题"告诉我们，核实后全额原路退回；开过发票的，退款也请点"遇到问题"。苹果手机付款的，只能在 App Store 申请退款，是否退款由苹果公司决定。</view>
+    <view class="pass-note">发票：在"我的 → 订单"里申请，每月统一开具一次电子发票。</view>
+    <view class="pass-help">支付或订单有问题？<text class="link" bindtap="feedback" aria-role="button">遇到问题</text></view>
+  </view>
+  <view class="pass-space"></view>
+
+  <!-- 付款栏固定在底部：不用翻到最后才找到按钮；协议不默认勾选 -->
+  <view class="pass-bar">
+    <view wx:if="{{message}}" class="pass-msg {{payError ? 'pass-msg--error' : ''}}">{{message}}</view>
+    <block wx:if="{{(termsFinal || sandbox) && loginOpen && !confirmed}}">
+      <checkbox-group bindchange="check"><label class="pass-check"><checkbox value="agree" checked="{{checked}}" disabled="{{busy}}" /><text>我已阅读并同意</text><text class="advisor-link" catchtap="terms">《付费服务协议》</text></label></checkbox-group>
+      <button class="pass-pay btn-primary" bindtap="buy" loading="{{busy}}" disabled="{{busy}}">{{sandbox ? '沙箱支付' : '支付'}} {{price}} 元{{sandbox ? '（不扣真钱）' : ''}}</button>
+    </block>
+    <view wx:elif="{{!confirmed}}" class="pass-closed">付费服务暂未开放</view>
+    <button wx:if="{{confirmed}}" class="pass-pay btn-primary" bindtap="tools">去用工具</button>
+  </view>
+</block>
+<view wx:if="{{loading || error || !product}}" class="exits"><button class="exit-btn" bindtap="feedback">遇到问题</button></view>

@@ -3,23 +3,30 @@ const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 
 const MAX = 500;
 const COVERAGE_PREFIX = '申请覆盖：';
+// type=pay：从购买页、订单页点"遇到问题"进来；带上订单号，核对台据此找到订单
+function payPrefix(orderId) { return /^\d{1,12}$/.test(orderId || '') ? `支付问题（订单 ${orderId}）：` : '支付问题：'; }
 
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式。
 // 提交前要同意协议；协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"
 Page({
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, loginOpen: loginOpen() },
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, pay: false, prefix: '', loginOpen: loginOpen() },
 
   onLoad(query) {
     if (!this.data.loginOpen) return;
     // type=coverage：申请覆盖（想增加的地区和栏目），提交时内容前加"申请覆盖："方便核对台区分
     const coverage = query.type === 'coverage';
+    const pay = query.type === 'pay';
+    const prefix = coverage ? COVERAGE_PREFIX : pay ? payPrefix(query.orderId) : '';
     this.setData({
-      docId: coverage ? '' : query.id || '',
-      title: !coverage && query.title ? decodeURIComponent(query.title) : '',
+      docId: coverage || pay ? '' : query.id || '',
+      title: !coverage && !pay && query.title ? decodeURIComponent(query.title) : '',
       coverage,
-      max: coverage ? MAX - COVERAGE_PREFIX.length : MAX,
+      pay,
+      prefix,
+      max: MAX - prefix.length,
     });
     if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
+    if (pay) wx.setNavigationBarTitle({ title: '支付和订单问题' });
   },
 
   onInput(e) {
@@ -31,7 +38,7 @@ Page({
   submit() {
     const content = this.data.content.trim();
     if (!content) {
-      wx.showToast({ title: '请写下要纠正或建议的内容', icon: 'none' });
+      wx.showToast({ title: this.data.pay ? '请写下遇到的支付或订单问题' : '请写下要纠正或建议的内容', icon: 'none' });
       return;
     }
     if (content.length > this.data.max) {
@@ -39,7 +46,7 @@ Page({
       return;
     }
     if (this.data.sending) return;
-    ensureConsent().then((ok) => { if (ok) this.send(this.data.coverage ? `${COVERAGE_PREFIX}${content}` : content); });
+    ensureConsent().then((ok) => { if (ok) this.send(`${this.data.prefix}${content}`); });
   },
 
   send(content) {

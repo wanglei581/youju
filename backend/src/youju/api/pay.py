@@ -2,8 +2,9 @@
 
 import asyncio
 import json
+import re
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 from xml.etree import ElementTree
 
@@ -17,14 +18,19 @@ from starlette.concurrency import run_in_threadpool
 
 from youju import payments
 from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
-from youju.api.me import KnownUserDep, UserDep
+from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
-from youju.models import PayOrder, User
+from youju.models import InvoiceRequest, PayOrder, User
 from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature
 
 
-def require_enabled() -> None:
-    if not payments.enabled(get_settings()):
+def require_enabled(request: Request) -> None:
+    # 在售才有商品和下单：总开关开着，且对全体开放或这个用户在测试名单里
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        openid = None
+    if not payments.selling_to(get_settings(), openid):
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -68,14 +74,16 @@ class OrderIn(BaseModel):
 def list_products() -> dict:
     """只读：已配置价格、可以下单的商品；小程序据此显示付费档，空列表时不显示。"""
     settings = get_settings()
-    # 和下单条件一致：没有 offerId 时下单必然失败，不展示价格。
-    if not settings.xpay_offer_id:
-        return {"items": []}
+    # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
+    if not payments.orderable(settings):
+        return {"items": [], "sandbox": settings.xpay_env == 1}
     return {
         "items": [
             {"productId": product, "name": payments.PASS_NAME, "price": price, "days": days}
             for product, (price, days) in payments.products(settings).items()
-        ]
+        ],
+        # 沙箱（不扣真钱、只有测试名单看得到）：小程序在《付费服务协议》定稿前也放开付款按钮供联调
+        "sandbox": settings.xpay_env == 1,
     }
 
 
@@ -86,7 +94,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     settings = get_settings()
     _upload_consent(user)
     sku = payments.products(settings).get(body.product_id)
-    if sku is None or not settings.xpay_offer_id:
+    if sku is None or not payments.orderable(settings):
         raise HTTPException(status_code=404, detail="没有找到商品")
     price, _ = sku
     if settings.pay_terms_version and body.terms_version != settings.pay_terms_version:
@@ -97,6 +105,46 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     # 和免费任务使用同一用户锁，防止并发下单绕过限制及与注销竞态。
     if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
         raise HTTPException(status_code=404, detail="没有找到接口")
+    # 下新单前先问微信：10 分钟内的待支付单可能已经付了款，只是推送和补单还没到
+    # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
+    # 查不了不挡新单：没调起过支付的单（下单回应没送到手机）微信那边可能查不到，
+    # 官方错误码里也没有「订单不存在」可以区分；这类单交给每分钟的补单处理。
+    # 候选先普通查（不加范围锁：两个新用户同时下单时，范围锁加插入会互相等待甚至死锁），
+    # 再按主键逐个加锁、复核状态；推送或补单刚开通的这里会看到不是待支付，跳过。
+    recent = session.scalars(
+        select(PayOrder.id)
+        .where(
+            PayOrder.user_id == user.id,
+            PayOrder.status == "pending",
+            PayOrder.created_at > stamp - timedelta(minutes=10),
+        )
+        .order_by(PayOrder.id)
+    ).all()
+    for old_id in recent:
+        old = session.scalar(
+            select(PayOrder)
+            .where(PayOrder.id == old_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if old is None or old.status != "pending":
+            continue
+        try:
+            data = payments.query(session, old, client)
+        except XPayError:
+            continue
+        if data.get("status") == 6:
+            old.status, old.updated_at = "closed", stamp
+            continue
+        payments.accept_payment(session, old, data, settings, stamp)
+        if old.status != "pending":
+            session.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="上一笔已经付款，正在为你开通，可到“我的订单”查看"
+                if old.status == "completed"
+                else "上一笔付款需要人工核对，请点“遇到问题”告诉我们",
+            )
     count = session.scalar(
         select(func.count(PayOrder.id)).where(
             PayOrder.user_id == user.id,
@@ -149,6 +197,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
 def order_out(session: Session, order: PayOrder) -> dict:
     ticket = payments.order_pass(session, order)
     reason = payments.refund_reason(session, order, _stamp())
+    invoice = payments.order_invoice(session, order)
     return {
         "orderId": order.id,
         "status": payments.STATUS_LABELS[order.status],
@@ -159,7 +208,67 @@ def order_out(session: Session, order: PayOrder) -> dict:
         "passRevokedAt": ticket.revoked_at if ticket else None,
         "canRefund": reason is None,
         "refundUnavailableReason": reason,
+        # 只有已完成、没在退款的订单能申请发票；申请过的照原样带回（用户自己填的抬头和邮箱）
+        "canInvoice": order.status == "completed" and order.refund_status is None,
+        "invoice": payments.invoice_out(invoice),
     }
+
+
+# 统一社会信用代码 18 位；老的税务登记号 15 或 20 位：只认数字和大写字母
+_TAX_ID = re.compile(r"[0-9A-Z]{15}|[0-9A-Z]{18}|[0-9A-Z]{20}")
+_EMAIL = re.compile(r"[^@\s]{1,64}@[^@\s.]+(?:\.[^@\s.]+)+")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+class InvoiceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title_type: Literal["personal", "company"]
+    title: str = Field(min_length=1, max_length=100)
+    tax_id: str | None = Field(default=None, max_length=20)
+    email: str = Field(min_length=3, max_length=254)
+
+
+def _invoice_fields(body: InvoiceIn) -> tuple[str, str | None, str]:
+    title, email = body.title.strip(), body.email.strip()
+    tax_id = (body.tax_id or "").strip().upper() or None
+    if not title or _CONTROL.search(title):
+        raise HTTPException(status_code=422, detail="请填写发票抬头")
+    if body.title_type == "company" and (tax_id is None or not _TAX_ID.fullmatch(tax_id)):
+        raise HTTPException(status_code=422, detail="单位抬头要填税号（统一社会信用代码）")
+    if body.title_type == "personal":
+        tax_id = None
+    if not _EMAIL.fullmatch(email):
+        raise HTTPException(status_code=422, detail="请填写能收发票的邮箱")
+    return title, tax_id, email
+
+
+@router.put("/orders/{order_id}/invoice", dependencies=[Depends(_body_size)])
+def request_invoice(
+    order_id: int, body: InvoiceIn, session: SessionDep, user: KnownUserDep
+) -> dict:
+    """申请或修改发票：每笔已完成的订单一份，待开时可以改；不受支付开关控制（停卖后已付款的照常开）。"""
+    title, tax_id, email = _invoice_fields(body)
+    order = owned_order(session, user, order_id, lock=True)
+    if order.status != "completed" or order.refund_status is not None:
+        raise HTTPException(status_code=422, detail="只有已完成、没有退款的订单可以申请发票")
+    stamp = _stamp()
+    invoice = payments.order_invoice(session, order, lock=True)
+    if invoice is not None and invoice.status != "pending":
+        raise HTTPException(
+            status_code=409, detail="这张订单的发票已处理，不能再改；有问题请点“遇到问题”告诉我们"
+        )
+    if invoice is None:
+        invoice = InvoiceRequest(order_id=order.id, user_id=order.user_id, created_at=stamp)
+        session.add(invoice)
+    invoice.title_type, invoice.title, invoice.tax_id, invoice.email = (
+        body.title_type,
+        title,
+        tax_id,
+        email,
+    )
+    invoice.updated_at = stamp
+    session.commit()
+    return order_out(session, order)
 
 
 @router.get("/orders")

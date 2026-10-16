@@ -161,6 +161,8 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
     # 截止核对只数申报通知的候选（D-061）：名单、科技统计上的候选不进队列
     assert data["todos"] == {
         "pay": 0,
+        # 待开发票（收费第一期）：开关关着、没有订单时为 0
+        "invoices": 0,
         "deadlines": 1,
         "deadlines_7": 0,
         "deadlines_30": 1,

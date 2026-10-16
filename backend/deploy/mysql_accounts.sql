@@ -35,6 +35,8 @@ GRANT INSERT ON youju.app_keys TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_orders TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.pay_events TO 'youju_api'@'%';
 GRANT INSERT, UPDATE ON youju.workbench_passes TO 'youju_api'@'%';
+-- 开票申请：迁移 0030 完成后和上面三行一起执行。用户在订单页申请、改抬头，退款时作废未开的申请；不能删除。
+GRANT INSERT, UPDATE ON youju.invoice_requests TO 'youju_api'@'%';
 
 -- 奖励权限：迁移 0027 完成后、打开奖励开关（YOUJU_REWARDS_ENABLED）之前，由创始人执行。
 -- 要和上面 workbench_passes 那一行一起执行：有奖励使用期的用户提交任务、注销时要改这张表。

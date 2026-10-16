@@ -586,6 +586,8 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         "agreed": None,
         "follows": 0,
         "subscriptions": {"newDocs": 0, "deadline": 0},
+        # 注销后：不在售，也没有订单（小程序不显示购买入口和「我的订单」）
+        "pay": {"enabled": False, "hasOrders": False},
     }
     empty = _json(j.client.get("/api/v1/me/data"))
     assert (

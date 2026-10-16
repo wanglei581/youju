@@ -14,13 +14,21 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
 from youju.access_log import log_uid
 from youju.config import Settings, get_settings
-from youju.models import AdvisorTask, PayEvent, PayOrder, PayReconciliation, User, WorkbenchPass
+from youju.models import (
+    AdvisorTask,
+    InvoiceRequest,
+    PayEvent,
+    PayOrder,
+    PayReconciliation,
+    User,
+    WorkbenchPass,
+)
 from youju.xpay import XPayClient, XPayError
 
 STATUS_LABELS = {
@@ -31,6 +39,8 @@ STATUS_LABELS = {
     "manual": "需人工处理",
     "closed": "已关闭",
 }
+INVOICE_LABELS = {"pending": "待开", "issued": "已开", "rejected": "不开"}
+INVOICE_VOID_NOTE = "订单已退款，不再开票"
 
 
 # 通知发货最多尝试次数、账单下载/解析最多失败次数；到达后转人工 / failed 并告警。
@@ -81,6 +91,38 @@ def products(settings: Settings) -> dict[str, tuple[int, int]]:
     if settings.xpay_product_pass and settings.xpay_price_pass is not None:
         return {settings.xpay_product_pass: (settings.xpay_price_pass, PASS_DAYS)}
     return {}
+
+
+def selling_to(settings, openid: str | None) -> bool:
+    """这个用户能不能看到购买入口、下新单：总开关开着，并且对全体开放或在测试名单里。
+    补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
+    if not enabled(settings):
+        return False
+    if getattr(settings, "pay_audience", "whitelist") == "all":
+        return True
+    testers = {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
+    return bool(openid) and openid in testers
+
+
+def orderable(settings) -> bool:
+    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了律师定稿的协议版本
+    （YOUJU_PAY_TERMS_VERSION）。沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、
+    购买入口都按这一条判断，不出现看得到价格却付不了款的入口。"""
+    if not getattr(settings, "xpay_offer_id", "") or not products(settings):
+        return False
+    return settings.xpay_env == 1 or bool(getattr(settings, "pay_terms_version", ""))
+
+
+def entry(session: Session, settings, user: User | None) -> dict:
+    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户开放、能下单），
+    或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
+    selling = selling_to(settings, user.openid if user else None) and orderable(settings)
+    has_orders = (
+        user is not None
+        and session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1))
+        is not None
+    )
+    return {"enabled": selling, "hasOrders": has_orders}
 
 
 def lock_order(session: Session, order_id: int) -> PayOrder | None:
@@ -175,12 +217,47 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
         return "已超过 7 天"
+    # 退款时加锁读发票（锁顺序：用户 → 订单 → 发票，和管理台开票一致）：否则查完发票、
+    # 作废之前，管理台可能刚把它标成已开，已开发票的订单就被退了款（Grok 红队，10/16）
+    invoice = order_invoice(session, order, lock=lock)
+    if invoice is not None and invoice.status == "issued":
+        # 已开的发票要先冲红，不能自助退
+        return "已开过发票，退款请点“遇到问题”告诉我们"
     ticket = order_pass(session, order, lock=lock)
     if ticket is None or ticket.revoked_at is not None:
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
         return "已提交过超过 50 家的名单或已超出每月免费次数"
     return None
+
+
+def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRequest | None:
+    stmt = select(InvoiceRequest).where(InvoiceRequest.order_id == order.id)
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return session.scalar(stmt)
+
+
+def void_invoice(session: Session, order: PayOrder, stamp: datetime) -> None:
+    """退款时还没开的发票作废；已开的留着，由创始人按退款冲红（不能自助退款，见 refund_reason）。"""
+    invoice = order_invoice(session, order, lock=True)
+    if invoice is not None and invoice.status == "pending":
+        invoice.status, invoice.note, invoice.updated_at = "rejected", INVOICE_VOID_NOTE, stamp
+
+
+def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
+    if invoice is None:
+        return None
+    return {
+        "status": INVOICE_LABELS[invoice.status],
+        "titleType": invoice.title_type,
+        "title": invoice.title,
+        "taxId": invoice.tax_id,
+        "email": invoice.email,
+        "note": invoice.note,
+        "issuedAt": invoice.issued_at,
+        "canEdit": invoice.status == "pending",
+    }
 
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
@@ -276,10 +353,13 @@ def query(
     data = client.query(openid, order.out_trade_no, order.env)
     event(session, "query_order", data, order)
     # 返回未包含 openid 时，微信已在请求中按此 openid 查询；返回有身份字段则逐项核验。
+    # 环境：请求的 env 是 0 现网、1 沙箱，官方 query_order 返回的 env_type 却是 1 现网、2 沙箱
+    # （10/16 核对官方文档；原来直接比较，按文档每次查单都会判不一致）。两种写法都认，
+    # 只拒绝明确是另一个环境的值；查单本身按 env 查，不会查到另一个环境的单。
     if (
         data.get("order_id") != order.out_trade_no
         or data.get("openid", openid) != openid
-        or data.get("env_type", order.env) != order.env
+        or data.get("env_type", order.env + 1) not in (order.env, order.env + 1)
     ):
         raise XPayError
     if order.wx_order_id and data.get("wx_order_id") != order.wx_order_id:
@@ -401,6 +481,7 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
     order.status, order.refund_status, order.error = "refunded", "completed", None
     order.updated_at = stamp
     revoke_pass(session, order, stamp)
+    void_invoice(session, order, stamp)
     return True
 
 
@@ -420,6 +501,7 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
     order.refund_started_at = order.refund_started_at or stamp
     order.refund_order_id = order.refund_order_id or uuid4().hex
     order.updated_at = stamp
+    void_invoice(session, order, stamp)
     # 请求前持久化同一个退款单号和使用期收回；网络期间不持锁阻塞推送。
     session.commit()
     order_id = order.id
@@ -850,6 +932,10 @@ def anonymize(session: Session, user: User) -> None:
         select(PayEvent).where(PayEvent.order_id.in_([o.id for o in orders]))
     ):
         row.summary = {k: v for k, v in row.summary.items() if k not in ("OpenId", "openid")}
+    # 开票申请是订单的会计凭证，和订单一样只断开用户、按订单保存期保留（隐私指引已写明）
+    session.execute(
+        update(InvoiceRequest).where(InvoiceRequest.user_id == user.id).values(user_id=None)
+    )
     session.flush()
 
 
@@ -877,6 +963,10 @@ def overview(session: Session) -> dict:
         or 0,
         "differences": session.scalar(
             select(func.count(PayReconciliation.id)).where(PayReconciliation.status == "different")
+        )
+        or 0,
+        "invoices_pending": session.scalar(
+            select(func.count(InvoiceRequest.id)).where(InvoiceRequest.status == "pending")
         )
         or 0,
     }

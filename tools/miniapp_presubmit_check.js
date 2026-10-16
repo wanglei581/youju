@@ -16,6 +16,8 @@ const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'repor
   'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
 const DATA_PAGES = ['advisor-form', 'advisor-terms'].map(p => `pages/${p}/index`);
+// 收费第一期（D-058，10/16 创始人决定接进完整版）：购买页、订单页随包，入口只在服务端在售或有订单时出现
+const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -23,7 +25,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, mode = 'submit', profile = 'first-release' }) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release' }) {
   if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release', 'complete-candidate'].includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -42,11 +44,11 @@ function inspect({ legal, config, app, project, toolTerms, mode = 'submit', prof
   add('local', '没有本机开发后端', !config.devBaseUrl, '清空 devBaseUrl');
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, profile === 'complete-candidate' ? DATA_PAGES : []);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, profile === 'complete-candidate' ? DATA_PAGES.concat(PAY_PAGES) : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整候选21页；支付、奖励及子包不属于本次范围');
+  '核对历史首发14页、AI版19页或完整候选23页（含购买页、订单页）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
   add('tabs', '底栏为首页、关注、文件、我的', JSON.stringify(tabs) === JSON.stringify(FIRST_PAGES.slice(0, 4)), '按 D-067 使用四栏');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
@@ -58,6 +60,9 @@ function inspect({ legal, config, app, project, toolTerms, mode = 'submit', prof
       && Array.isArray(toolTerms.paragraphs) && toolTerms.paragraphs.length >= 6 && toolTerms.paragraphs.every(nonempty)
       && !hasPlaceholder(toolTerms), '核对工具协议版本与服务器一致，提供上传、留存、删除、额度和结果边界的完整说明');
     add('tool-review', '工具说明公开发布复核', !!toolTerms && toolTerms.reviewedForRelease === true, '候选可体验；公开发布复核及实际准入证据仍须单独完成', true);
+    // 付费协议没定稿时购买页的付款按钮不可用（pages/pass 用 utils/pay.js termsFinal 判断），这里只提示
+    const payFinal = !!payTerms && payTerms.final === true && nonempty(payTerms.text) && !/待.*定稿|占位/.test(payTerms.text) && !hasPlaceholder(payTerms);
+    add('pay-terms', '付费服务协议已定稿', payFinal, '律师定稿前购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
   }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {
     add(`template-${id}`, `${name}提醒模板`, nonempty((config.templates || {})[id]), `该提醒模板未配置，对应入口保持隐藏`, true);
@@ -78,7 +83,8 @@ function main(args) {
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
-    toolTerms: profile === 'complete-candidate' ? require(path.join(root, 'content/advisor-terms.js')) : undefined, mode, profile});
+    toolTerms: profile === 'complete-candidate' ? require(path.join(root, 'content/advisor-terms.js')) : undefined,
+    payTerms: profile === 'complete-candidate' ? require(path.join(root, 'content/pay-terms.js')) : undefined, mode, profile});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(result.notice + '\n');
