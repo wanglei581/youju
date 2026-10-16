@@ -320,7 +320,11 @@ def test_listing_script_format_matches_parser(monkeypatch):
         {
             "Name": BUCKET,
             "IsTruncated": "false",
-            "Contents": [{"Key": f"attachments/{sha(2)}.doc"}],
+            # 大写或其他扩展名也列入（列多了只会多保留）
+            "Contents": [
+                {"Key": f"attachments/{sha(2)}.doc"},
+                {"Key": f"attachments/{sha(3).upper()}.PDF"},
+            ],
         },
     ]
     markers = []
@@ -332,4 +336,4 @@ def test_listing_script_format_matches_parser(monkeypatch):
     monkeypatch.setattr(module, "_page", page)
     bucket, heads, others = module.listing("prod-1")
     assert bucket == BUCKET and others == 1 and markers == [None, "attachments/x.txt"]
-    assert heads == sorted({bytes.fromhex(sha(1)[:8]), bytes.fromhex(sha(2)[:8])})
+    assert heads == sorted({bytes.fromhex(sha(n)[:8]) for n in (1, 2, 3)})

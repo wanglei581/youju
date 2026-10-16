@@ -18,7 +18,9 @@ import sys
 from datetime import datetime, timezone
 
 PREFIX = "attachments/"
-KEY = re.compile(r"attachments/([0-9a-f]{64})\.(?:docx?|xlsx?|pptx?|pdf)")
+# 以 64 位十六进制开头的对象都列入，不限扩展名和大小写：列多了只会让核对时把更多引用当成
+# "可能还在"而保留，不会多结算
+KEY = re.compile(r"attachments/([0-9a-fA-F]{64})(?:\.[^/]*)?")
 HEAD_BYTES = 4
 
 
@@ -27,8 +29,12 @@ def _page(env: str, marker: str | None) -> dict:
     if marker:
         cmd += ["--marker", marker]
     out = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180).stdout
-    # CLI 先打印两行说明再打印 JSON
-    return json.loads(out[out.index("{") :])
+    # CLI 先打印几行说明，JSON 从第一个以 { 开头的行起
+    lines = out.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("{")), None)
+    if start is None:
+        raise SystemExit("wxcloud storage:list 没有输出 JSON，停止")
+    return json.loads("\n".join(lines[start:]))
 
 
 def listing(env: str) -> tuple[str, list[bytes], int]:
@@ -43,7 +49,7 @@ def listing(env: str) -> tuple[str, list[bytes], int]:
         for item in contents:
             match = KEY.fullmatch(item.get("Key", ""))
             if match:
-                heads.add(bytes.fromhex(match.group(1)[: HEAD_BYTES * 2]))
+                heads.add(bytes.fromhex(match.group(1)[: HEAD_BYTES * 2].lower()))
             else:
                 others += 1
         if str(page.get("IsTruncated")).lower() != "true":

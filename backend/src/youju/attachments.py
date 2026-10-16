@@ -1379,6 +1379,7 @@ class Listing:
         parsed = parse_file_id(file_id)
         if parsed is None:
             return True
+        # _FILE_ID 保证路径是 attachments/ 加 64 位小写十六进制，fromhex 不会出错
         return bytes.fromhex(parsed[1][len(PREFIX) :][: _HEAD_BYTES * 2]) in self.heads
 
 
@@ -1479,6 +1480,9 @@ def _settle_missing(
     for row in rows:
         wanted.update(row.stale_file_ids or [])
     wanted = {i for i in wanted - in_use if (parsed := parse_file_id(i)) and parsed[0] == env}
+    # 和 _cleanup 一样再查一次还有附件在用的（只读时也扣掉，统计和 --apply 实际处理的一致）
+    kept = _referenced(session, wanted, live)
+    wanted -= kept
     same_bucket = {i for i in wanted if _bucket_of(i) == listing.bucket}
     report.wanted, report.bucket_mismatch = len(wanted), len(wanted) - len(same_bucket)
     report.listed = sum(1 for i in same_bucket if listing.has(i))
@@ -1507,8 +1511,6 @@ def _settle_missing(
     if not apply:
         session.rollback()
         return report
-    kept = _referenced(session, wanted, live)
-    wanted -= kept
     settle = _Settlement(session, list(rows), expired, in_use | kept)
     try:
         failure: DeleteCopiesError | None = None
