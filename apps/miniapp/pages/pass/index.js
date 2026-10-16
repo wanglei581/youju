@@ -11,6 +11,8 @@ const UNSETTLED_KEY = 'pay.unsettled';
 const UNSETTLED_TTL = 48 * 3600 * 1000;
 // 用户取消支付后只再查几秒（防取消回调不准），不用等满一分钟
 const CANCEL_CHECK = 6000;
+// 付款后切到后台，回来时截止时间可能已过：至少再查这么久，不直接判超时（agy 审阅，10/16）
+const RESUME_CHECK = 10000;
 function readUnsettled() {
   try {
     const saved = wx.getStorageSync(UNSETTLED_KEY);
@@ -29,7 +31,11 @@ Page({
   data: { loginOpen: loginOpen(), loading: true, error: '', product: null, price: '', expires: '', termsFinal: pay.termsFinal(payTerms), sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
   onShow() {
     this.visible = true;
-    if (this.payResume && this.poller) { this.payResume = false; this.poller.start(this.payDeadline); }
+    if (this.payResume && this.poller) {
+      this.payResume = false;
+      this.payDeadline = Math.max(this.payDeadline || 0, Date.now() + RESUME_CHECK);
+      this.poller.start(this.payDeadline);
+    }
     if (!this.data.busy) this.load();
   },
   onHide() {
@@ -68,7 +74,12 @@ Page({
       if (this.unloaded) return;
       if (!agreed) { this.setData({ busy: false, message: '' }); wx.navigateTo({ url: '/pages/advisor-terms/index' }); return; }
       return this.startPay();
-    }).catch((err) => { if (!this.unloaded) this.setData({ busy: false, message: err.message || pay.TEXT.orderFailed, payError: true }); });
+    }).catch((err) => {
+      if (this.unloaded) return;
+      this.setData({ busy: false, message: err.message || pay.TEXT.orderFailed, payError: true });
+      // 409：上一笔其实已付款、刚开通（服务端下单前先查了微信），或协议已更新——重新载入使用期和商品
+      if (err && err.status === 409) this.load();
+    });
   },
   watch(orderId) {
     this.orderId = orderId;

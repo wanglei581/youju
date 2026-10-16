@@ -10,7 +10,7 @@ const TEXT = {
   timeout: '暂未确认到支付结果，请稍后到"我的 → 订单"查看；如已扣款会自动开通。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
   orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',
   termsRequired: '请先阅读并同意《付费服务协议》',
-  refund: '正在原路退款，一般 1–3 个工作日到账',
+  refund: '已申请退款，按原支付方式退回，到账时间以微信支付为准',
   invoiceSent: '已提交开票申请：每月统一开具一次电子发票，发到你填的邮箱',
 };
 function yuan(fen, fixed = false) { return fixed ? (fen / 100).toFixed(2) : String(Number((fen / 100).toFixed(2))); }

@@ -217,7 +217,9 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
         return "已超过 7 天"
-    invoice = order_invoice(session, order)
+    # 退款时加锁读发票（锁顺序：用户 → 订单 → 发票，和管理台开票一致）：否则查完发票、
+    # 作废之前，管理台可能刚把它标成已开，已开发票的订单就被退了款（Grok 红队，10/16）
+    invoice = order_invoice(session, order, lock=lock)
     if invoice is not None and invoice.status == "issued":
         # 已开的发票要先冲红，不能自助退
         return "已开过发票，退款请点“遇到问题”告诉我们"
@@ -231,7 +233,9 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 
 def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRequest | None:
     stmt = select(InvoiceRequest).where(InvoiceRequest.order_id == order.id)
-    return session.scalar(stmt.with_for_update() if lock else stmt)
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return session.scalar(stmt)
 
 
 def void_invoice(session: Session, order: PayOrder, stamp: datetime) -> None:

@@ -2569,16 +2569,25 @@ def admin_invoices(
 
 
 def _decide_invoice(session: Session, invoice_id: int, issue: bool, note: str | None) -> dict:
-    from youju.models import InvoiceRequest, PayOrder
+    from youju.models import InvoiceRequest
+    from youju.payments import lock_order
 
+    order_id = session.scalar(
+        select(InvoiceRequest.order_id).where(InvoiceRequest.id == invoice_id)
+    )
+    # 和用户退款同一锁顺序：用户 → 订单 → 发票。先锁订单再看它是否在退款，
+    # 否则退款查完发票、作废之前，这里会把发票标成已开（Grok 红队，10/16）
+    order = lock_order(session, order_id) if order_id is not None else None
     invoice = session.scalar(
-        select(InvoiceRequest).where(InvoiceRequest.id == invoice_id).with_for_update()
+        select(InvoiceRequest)
+        .where(InvoiceRequest.id == invoice_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invoice is None:
         raise HTTPException(status_code=404, detail="没有这条开票申请")
     if invoice.status != "pending":
         raise HTTPException(status_code=409, detail="这条申请已经处理过了")
-    order = session.get(PayOrder, invoice.order_id)
     if issue and (order is None or order.status != "completed" or order.refund_status is not None):
         raise HTTPException(status_code=409, detail="订单已退款或不是已完成状态，不能开票")
     stamp = datetime.now(UTC)

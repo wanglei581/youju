@@ -25,7 +25,7 @@ const flush = async () => { await new Promise(setImmediate); await new Promise(s
 const shown = (file, data) => textOf(render(file, data));
 const payButtons = (data) => findAll(render('pages/pass/index.wxml', data), tapsTo('buy'));
 
-function load(file, deps, globals = {}) {
+function load(file, deps, globals = {}, options = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
@@ -41,8 +41,9 @@ function load(file, deps, globals = {}) {
     ...page,
     data: plain(page.data),
     // 订单页用 form.title 这种路径写表单，要按小程序的方式落到嵌套字段
+    // byReference：按引用落数据、不复制（小程序框架最不利的情形），用来查共用对象被改的问题
     setData(value) {
-      const data = plain(value);
+      const data = options.byReference ? value : plain(value);
       for (const [key, item] of Object.entries(data)) {
         if (!key.includes('.')) { this.data[key] = item; continue; }
         const parts = key.split('.');
@@ -86,6 +87,7 @@ function passPage(options = {}) {
     advisorStatus: () => Promise.resolve({ pass: { active: false } }),
     createPayOrder(body) {
       calls.push(['create', plain(body)]);
+      if (options.create) return options.create(body);
       return Promise.resolve({ orderId: 41, signData: 'sign-data-1', paySig: 'pay-sig-1', signature: 'signature-1', mode: 'short_series_goods' });
     },
     payOrder(id) {
@@ -141,7 +143,7 @@ function ordersPage(items, options = {}) {
   const page = load('pages/orders/index.js', {
     '../../utils/api.js': api,
     '../../utils/consent.js': { loginOpen: () => true },
-  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {} } });
+  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {} } }, { byReference: options.byReference });
   page.onShow();
   return { page, calls, modal: () => modal };
 }
@@ -227,6 +229,7 @@ test('购买页在沙箱下协议没定稿也能联调付款，顶部写明不�
   assert.equal(sandbox.page.data.sandbox, true);
   assert.match(shown('pages/pass/index.wxml', sandbox.page.data), /沙箱测试：只对测试人员开放，付款不扣真钱/);
   assert.equal(payButtons(sandbox.page.data).length, 1);
+  assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（不扣真钱）');
   sandbox.page.check({ detail: { value: ['agree'] } });
   sandbox.page.buy();
   await flush();
@@ -250,6 +253,7 @@ test('购买页未勾选协议或未同意工具说明时都不下单，防止�
   await flush();
   assert.equal(h.page.data.termsFinal, true);
   assert.equal(payButtons(h.page.data).length, 1);
+  assert.equal(textOf(payButtons(h.page.data)[0]).trim(), '支付 29 元');
   h.page.buy();
   assert.equal(h.page.data.message, '请先阅读并同意《付费服务协议》');
   assert.equal(h.toasts.at(-1).title, '请先阅读并同意《付费服务协议》');
@@ -313,6 +317,58 @@ test('购买页取消支付不记未完成单；其他失败记下来，确认�
   await flush();
   assert.equal(failed.calls.filter((call) => call[0] === 'create').length, 1);
   assert.deepEqual(failed.calls.filter((call) => call[0] === 'order').map((call) => call[1]), [41, 41]);
+});
+
+test('购买页付款后切到后台超过一分钟，回来时再查一次服务端，查到已完成就显示开通，防止付了款却停在超时提示', async () => {
+  let payment = null;
+  const h = passPage({
+    onPay: (payload) => { payment = payload; },
+    order: () => Promise.resolve({ orderId: 41, status: '已完成', amount: 2900, ...PERIOD }),
+  });
+  await flush();
+  h.page.check({ detail: { value: ['agree'] } });
+  h.page.buy();
+  await flush();
+  h.page.onHide();
+  payment.success();
+  assert.equal(h.page.payResume, true);
+  // 在后台待了一分多钟：原来的确认截止时间已经过了
+  h.page.payDeadline = Date.now() - 1000;
+  h.page.onShow();
+  await flush();
+  assert.equal(h.page.data.confirmed, true);
+  assert.match(h.page.data.message, /已开通，使用期到/);
+});
+
+test('购买页下单时服务端说上一笔已经付款（409），显示服务端文字、重新载入使用期，不调起支付，防止又付一笔', async () => {
+  let products = 0;
+  const said = '上一笔已经付款，正在为你开通，可到“我的订单”查看';
+  const h = passPage({
+    payProducts: () => { products += 1; return Promise.resolve({ items: [PRODUCT] }); },
+    create: () => Promise.reject(Object.assign(new Error(said), { status: 409 })),
+  });
+  await flush();
+  assert.equal(products, 1);
+  h.page.check({ detail: { value: ['agree'] } });
+  h.page.buy();
+  await flush();
+  assert.equal(h.page.data.message, said);
+  assert.equal(h.page.data.payError, true);
+  assert.equal(h.page.data.busy, false);
+  assert.equal(products, 2);
+  assert.equal(h.calls.filter((call) => call[0] === 'virtual').length, 0);
+});
+
+test('订单页换一张订单开票时表单是空的，不带上一张没提交的内容，防止把别的订单的抬头提交上去', async () => {
+  const h = ordersPage([orderRecord({ orderId: 41, canInvoice: true }), orderRecord({ orderId: 42, canInvoice: true })], { byReference: true });
+  await flush();
+  h.page.invoice({ currentTarget: { dataset: { id: 41 } } });
+  h.page.titleType({ detail: { value: 'company' } });
+  h.page.field({ currentTarget: { dataset: { field: 'title' } }, detail: { value: '甲公司' } });
+  h.page.cancelInvoice();
+  h.page.invoice({ currentTarget: { dataset: { id: 42 } } });
+  assert.equal(h.page.data.invoiceFor, 42);
+  assert.deepEqual(plain(h.page.data.form), { titleType: 'personal', title: '', taxId: '', email: '' });
 });
 
 test('订单页展示金额、使用期和订单号；可退款要确认后才退并刷新，不能退时写明原因，防止误退和没有原因', async () => {

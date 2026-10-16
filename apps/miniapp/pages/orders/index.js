@@ -2,11 +2,13 @@ const api = require('../../utils/api.js');
 const pay = require('../../utils/pay.js');
 const { loginOpen } = require('../../utils/consent.js');
 
-const EMPTY_FORM = { titleType: 'personal', title: '', taxId: '', email: '' };
+// 每次打开都给一份新的空表单：表单按 form.title 这样的路径改字段，共用一个对象会把上一张订单
+// 没提交的内容带到下一张（agy 审阅，10/16）
+function emptyForm() { return { titleType: 'personal', title: '', taxId: '', email: '' }; }
 
 Page({
   data: { loginOpen: loginOpen(), loading: true, error: '', items: [], refunding: null, message: '',
-    invoiceFor: null, form: EMPTY_FORM, formError: '', sending: false },
+    invoiceFor: null, form: emptyForm(), formError: '', sending: false },
   onShow() { this.visible = true; this.load(); },
   onHide() { this.visible = false; this.serial = (this.serial || 0) + 1; },
   onUnload() { this.onHide(); },
@@ -42,7 +44,7 @@ Page({
     this.orderId = order.orderId;
     const old = order.invoice;
     this.setData({ invoiceFor: order.orderId, formError: '',
-      form: old ? { titleType: old.titleType, title: old.title, taxId: old.taxId || '', email: old.email } : EMPTY_FORM });
+      form: old ? { titleType: old.titleType, title: old.title, taxId: old.taxId || '', email: old.email } : emptyForm() });
   },
   cancelInvoice() { if (!this.data.sending) this.setData({ invoiceFor: null, formError: '' }); },
   titleType(e) { this.setData({ 'form.titleType': e.detail.value, formError: '' }); },

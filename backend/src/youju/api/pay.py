@@ -105,6 +105,35 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     # 和免费任务使用同一用户锁，防止并发下单绕过限制及与注销竞态。
     if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
         raise HTTPException(status_code=404, detail="没有找到接口")
+    # 下新单前先问微信：10 分钟内的待支付单可能已经付了款，只是推送和补单还没到
+    # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
+    recent = session.scalars(
+        select(PayOrder)
+        .where(
+            PayOrder.user_id == user.id,
+            PayOrder.status == "pending",
+            PayOrder.created_at > stamp - timedelta(minutes=10),
+        )
+        .order_by(PayOrder.id)
+        .with_for_update()
+    ).all()
+    for old in recent:
+        try:
+            data = payments.query(session, old, client)
+        except XPayError:
+            raise HTTPException(status_code=503, detail="支付暂不可用，请稍后重试") from None
+        if data.get("status") == 6:
+            old.status, old.updated_at = "closed", stamp
+            continue
+        payments.accept_payment(session, old, data, settings, stamp)
+        if old.status != "pending":
+            session.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="上一笔已经付款，正在为你开通，可到“我的订单”查看"
+                if old.status == "completed"
+                else "上一笔付款需要人工核对，请点“遇到问题”告诉我们",
+            )
     count = session.scalar(
         select(func.count(PayOrder.id)).where(
             PayOrder.user_id == user.id,

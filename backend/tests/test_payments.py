@@ -265,6 +265,53 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     assert create(setup_pay).status_code == 429
 
 
+def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
+    """下新单前先问微信 10 分钟内的待支付单：已经付了款（推送和补单还没到；小程序取消回调不准、
+    付款中途被关掉时本机没记下这一笔）就先开通、不下新单；没付照常下；微信查不了先不下（agy 审阅，10/16）。"""
+    _, _, fake = setup_pay
+    first = order(session, create(setup_pay))
+    fake.calls.clear()
+    # 没付：照常下新单，只查了上一笔
+    second = order(session, create(setup_pay))
+    assert [c[0] for c in fake.calls].count("/xpay/query_order") == 1
+    # 微信说已关闭：两笔都关掉，照常下新单
+    fake.status = 6
+    third = order(session, create(setup_pay))
+    session.expire_all()
+    assert session.get(PayOrder, first.id).status == "closed"
+    assert session.get(PayOrder, second.id).status == "closed"
+    # 已付：开通上一笔、不下新单
+    fake.status = 2
+    response = create(setup_pay)
+    assert response.status_code == 409 and "上一笔已经付款" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(PayOrder, third.id).status == "completed"
+    assert session.scalar(select(WorkbenchPass).where(WorkbenchPass.order_id == third.id))
+    assert session.scalar(select(func.count(PayOrder.id))) == 3
+    # 付款核验不过（金额不符）：转人工，也不下新单
+    fake.status = 1
+    fourth = order(session, create(setup_pay))
+    fake.status, fake.fee = 2, 99
+    response = create(setup_pay)
+    assert response.status_code == 409 and "人工核对" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(PayOrder, fourth.id).status == "manual"
+    # 微信查不了：先不下新单，免得重复扣款
+    fake.status, fake.fee = 1, 100
+    fifth = order(session, create(setup_pay))
+    fake.bad_order = True
+    response = create(setup_pay)
+    assert response.status_code == 503
+    assert session.scalar(select(func.count(PayOrder.id))) == 5
+    # 超过 10 分钟的待支付单不在下单时查（交给每分钟的补单）
+    fake.bad_order = False
+    session.get(PayOrder, fifth.id).created_at = NOW - timedelta(minutes=11)
+    session.commit()
+    fake.calls.clear()
+    assert create(setup_pay).status_code == 201
+    assert "/xpay/query_order" not in [c[0] for c in fake.calls]
+
+
 @pytest.mark.parametrize(
     "values",
     [

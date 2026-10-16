@@ -4,6 +4,7 @@
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import event as sa_event
 from sqlalchemy import select
 
 from tests.test_payments import HEADERS, NOW, create, delivered, order, run, setup_pay  # noqa: F401
@@ -269,3 +270,45 @@ def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
     assert payments.selling_to(settings, "anyone") is True
     settings.pay_enabled = False
     assert payments.selling_to(settings, "pay-user") is False
+
+
+def test_refund_and_admin_issue_lock_order_before_invoice(pay, session):
+    """自助退款和管理台开票都按 用户 → 订单 → 发票 加锁，退款读发票也加锁。否则退款查完发票、
+    作废之前，管理台会把发票标成已开，已开发票的订单就被退了款（Grok 红队，10/16）。"""
+    engine = session.get_bind()
+    statements = []
+
+    def record(_conn, _cursor, statement, *_):
+        statements.append(" ".join(statement.split()))
+
+    def run_locked(call):
+        statements.clear()
+        sa_event.listen(engine, "before_cursor_execute", record)
+        try:
+            response = call()
+        finally:
+            sa_event.remove(engine, "before_cursor_execute", record)
+        assert response.status_code == 200
+        return [s for s in statements if "FOR UPDATE" in s]
+
+    def first(locked, table):
+        return next(i for i, s in enumerate(locked) if f"FROM {table} " in s)
+
+    issued = delivered(pay, session)
+    ask(pay, issued)
+    invoice_id = session.scalar(
+        select(InvoiceRequest.id).where(InvoiceRequest.order_id == issued.id)
+    )
+    locked = run_locked(
+        lambda: pay[0].post(f"/api/admin/invoices/{invoice_id}/issue", headers=ADMIN)
+    )
+    assert first(locked, "users") < first(locked, "pay_orders") < first(locked, "invoice_requests")
+
+    refunded = delivered(pay, session)
+    ask(pay, refunded)
+    locked = run_locked(
+        lambda: pay[0].post(f"/api/v1/pay/orders/{refunded.id}/refund", headers=HEADERS)
+    )
+    reads = [s for s in statements if "FROM invoice_requests " in s]
+    assert "FOR UPDATE" in reads[0]
+    assert first(locked, "pay_orders") < first(locked, "invoice_requests")
