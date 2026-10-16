@@ -1345,10 +1345,12 @@ def _recheck(
 # 删除接口对不在的对象返回状态 1 和"不存在"一类提示，但官方没把它定义成删除成功（权限、
 # 路径不对也会这样返回），所以定时清理从不凭它结算。对象早已删掉、引用没结算的（旧版代码删了
 # 到期记录的当前副本却没清空、进程在删除和提交之间退出等）就会每轮报警、永远删不掉。
-# 这里要第二份独立证据：运维在本机用 wxcloud storage:list 取对象存储 attachments/ 的完整清单
-# （backend/scripts/attachment_listing.py 生成），同一存储桶、24 小时内取得、清单里没有，
-# 而且这次再删仍是整数状态 1 + 不存在提示，才结算；结算前先把明细写进对象存储
-# ops/attachment-settlements/ 留档，留档失败就不结算。
+# 这里要另外两份独立证据：运维在本机用 wxcloud storage:list 取对象存储 attachments/ 的完整清单
+# （backend/scripts/attachment_listing.py 生成，时间记扫描开始时），同一存储桶、24 小时内取得、
+# 清单里没有；这次再删仍是整数状态 1 + 不存在提示；再向平台要临时下载链接也被明确拒绝
+# （给了链接就说明对象还在，清单可能漏列或取清单时正在上传）。三项齐全才结算；结算前先把明细
+# 写进对象存储 ops/attachment-settlements/ 留档，留档失败就不结算。
+# 进程在删除和提交之间退出（_Settlement 最多丢一批）造成的"已删未结算"，也靠这里恢复。
 
 LISTING_MAX_AGE = timedelta(hours=24)
 # 清单里每个对象只带内容 SHA-256 的前 4 个字节（要能粘贴进容器终端）：撞上了只会把不在的
@@ -1420,15 +1422,21 @@ class MissingReport:
     listed: int = 0
     unlisted: int = 0
     bucket_mismatch: int = 0
-    # 还在提供、但清单里没有的副本（打不开）；--apply 时改回待下载的个数
+    # 还在提供、但清单里没有的副本（可能打不开；只读时只按清单算）；--apply 时再问下载链接，
+    # 平台明确拒绝的才改回待下载；给了链接（对象在）、说不清的都不动
     live_missing: int = 0
     live_reset: int = 0
+    live_link_issued: int = 0
+    live_link_unknown: int = 0
     # 以下只在 --apply 时有：这次确认删掉（照常结算）、未确认、未确认里清单有（平台提示和
-    # 清单矛盾）、不是"状态 1 + 不存在提示"的、证据齐全按已不存在结算的
+    # 清单矛盾）、不是"状态 1 + 不存在提示"的；其余再问下载链接：给了链接（对象在）、
+    # 说不清的不结算，明确拒绝的才按已不存在结算（settled）
     deleted: int = 0
     unconfirmed: int = 0
     listed_unconfirmed: int = 0
     other_status: int = 0
+    link_issued: int = 0
+    link_unknown: int = 0
     settled: int = 0
     audit: str | None = None
     applied: bool = False
@@ -1446,9 +1454,10 @@ def settle_missing_copies(
     apply: bool = False,
     sleep: Callable[[float], None] = clock.sleep,
 ) -> MissingReport:
-    """不加 apply 只读：按清单统计要删的副本、还在提供的副本各有几个不在对象存储里，不删不改。
-    apply：先照常删（确认删掉的照常结算），删不掉的逐项核对证据，齐全的先留档再结算；还在提供、
-    清单里没有、清单之前存的副本改回待下载（下轮定时任务重新下载）。和附件任务共用一把锁。"""
+    """不加 apply 只读：按清单统计要删的副本、还在提供的副本各有几个不在对象存储里，不删不改、
+    不调平台接口。apply：先照常删（确认删掉的照常结算），删不掉的逐项核对证据，再问平台要下载
+    链接，三项齐全的先留档再结算；还在提供、清单里没有、清单之前存、平台也拒绝给链接的副本改回
+    待下载（下轮定时任务重新下载）。和附件任务共用一把锁。"""
     now = now or datetime.now(UTC)
     with _exclusive(session) as got:
         if not got:
@@ -1533,16 +1542,26 @@ def _settle_missing(
             return report
         unconfirmed = failure.unconfirmed if failure is not None else {}
         report.unconfirmed = len(unconfirmed)
-        gone: Unconfirmed = {}
+        absent: Unconfirmed = {}
         for file_id, (code, hint) in unconfirmed.items():
             if _bucket_of(file_id) != listing.bucket:
                 continue  # 已计入 bucket_mismatch
             if listing.has(file_id):
                 report.listed_unconfirmed += 1
             elif type(code) is int and code == 1 and hint == "not_found_hint":
-                gone[file_id] = (code, hint)
+                absent[file_id] = (code, hint)
             else:
                 report.other_status += 1
+        # 第三份证据：清单是某一时刻的快照，取清单时正在上传的、或清单漏列的对象可能其实还在。
+        # 向平台要临时下载链接（不下载）：给了链接说明对象在，一律不动
+        links = _link_states(client, env, set(absent) | {r.file_id for r in dangling}, sleep)
+        gone = {i: v for i, v in absent.items() if links.get(i) == "refused"}
+        report.link_issued = sum(1 for i in absent if links.get(i) == "issued")
+        report.link_unknown = len(absent) - len(gone) - report.link_issued
+        live_gone = [r for r in dangling if links.get(r.file_id) == "refused"]
+        report.live_link_issued = sum(1 for r in dangling if links.get(r.file_id) == "issued")
+        report.live_link_unknown = len(dangling) - len(live_gone) - report.live_link_issued
+        dangling = live_gone
         if gone or dangling:
             report.audit = _upload_settlement(client, env, now, listing, gone, dangling, sleep)
             for row in dangling:
@@ -1567,6 +1586,46 @@ def _settle_missing(
     return report
 
 
+def _link_states(
+    client: httpx.Client, env: str, file_ids: set[str], sleep: Callable[[float], None]
+) -> dict[str, str]:
+    """向平台要临时下载链接（不下载）：issued 给了 https 链接（对象在）；refused 逐项明确拒绝
+    （整数状态，且不是忙码）；unknown 网络、HTTP、errcode、漏项、重复项或格式不对。
+    只当作附加证据：issued 一票否决结算，refused 也不单独作为结算依据。"""
+    states: dict[str, str] = {}
+    ids = sorted(file_ids)
+    for start in range(0, len(ids), _DELETE_BATCH):
+        batch = ids[start : start + _DELETE_BATCH]
+        payload = {"env": env, "file_list": [{"fileid": i, "max_age": 60} for i in batch]}
+        try:
+            data = _retrying(
+                lambda payload=payload: _open_api(client, "/tcb/batchdownloadfile", payload),
+                sleep,
+            )
+        except Exception:  # noqa: BLE001 - 拿不到就是说不清，不结算
+            states.update(dict.fromkeys(batch, "unknown"))
+            continue
+        items = data.get("file_list")
+        if not isinstance(items, list):
+            items = data.get("download_list")
+        found: dict[str, list[dict]] = defaultdict(list)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and item.get("fileid") in batch:
+                    found[item["fileid"]].append(item)
+        for file_id in batch:
+            entries = found[file_id]
+            status = entries[0].get("status") if len(entries) == 1 else None
+            url = entries[0].get("download_url") if len(entries) == 1 else None
+            if type(status) is int and status == 0 and isinstance(url, str):
+                states[file_id] = "issued" if url.startswith("https://") else "unknown"
+            elif type(status) is int and status != 0 and status not in _BUSY_CODES:
+                states[file_id] = "refused"
+            else:
+                states[file_id] = "unknown"
+    return states
+
+
 def _upload_settlement(
     client: httpx.Client,
     env: str,
@@ -1587,12 +1646,15 @@ def _upload_settlement(
             "count": listing.count,
             "sha256": listing.digest,
         },
+        # 证据：清单里没有、这次删除是整数状态 1 + 不存在提示、平台拒绝给下载链接
         "settled": [
-            {"file_id": file_id, "status": code, "hint": hint}
+            {"file_id": file_id, "status": code, "hint": hint, "link": "refused"}
             for file_id, (code, hint) in sorted(gone.items())
         ],
+        # 证据：还在提供、清单里没有、下载时间早于清单、平台拒绝给下载链接
         "reset_to_pending": [
-            {"url_hash": row.url_hash, "file_id": row.file_id} for row in dangling
+            {"url_hash": row.url_hash, "file_id": row.file_id, "link": "refused"}
+            for row in dangling
         ],
     }
     path = f"{AUDIT_PREFIX}{now.astimezone(UTC):%Y%m%dT%H%M%S}Z.json"

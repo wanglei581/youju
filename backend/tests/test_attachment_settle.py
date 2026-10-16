@@ -45,17 +45,35 @@ def listing_text(present: list[int], *, listed_at=NOW, bucket=BUCKET, **override
 class Cloud:
     """删除按 statuses 返回（没写的算 0）；上传留档记下内容。"""
 
-    def __init__(self, statuses=None, *, delete_errcode=0, upload_errcode=0):
+    def __init__(
+        self, statuses=None, *, missing=(), delete_errcode=0, upload_errcode=0, link_errcode=0
+    ):
         self.statuses = statuses or {}
+        # 平台拒绝给下载链接的（对象不在）；其余都给 https 链接
+        self.missing = set(missing)
         self.delete_errcode, self.upload_errcode = delete_errcode, upload_errcode
+        self.link_errcode = link_errcode
         self.requests: list[str] = []
         self.deleted: list[str] = []
+        self.linked: list[str] = []
         self.audits: list[dict] = []
         self.client = httpx.Client(transport=httpx.MockTransport(self.handle))
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         self.requests.append(url)
+        if url == f"{OPEN}/tcb/batchdownloadfile":
+            if self.link_errcode:
+                return httpx.Response(200, json={"errcode": self.link_errcode})
+            ids = [item["fileid"] for item in json.loads(request.content)["file_list"]]
+            self.linked += ids
+            items = [
+                {"fileid": i, "status": 1, "errmsg": "STORAGE_FILE_NONEXIST"}
+                if i in self.missing
+                else {"fileid": i, "status": 0, "download_url": "https://b.example.test/x"}
+                for i in ids
+            ]
+            return httpx.Response(200, json={"errcode": 0, "file_list": items})
         if url == f"{OPEN}/tcb/batchdeletefile":
             if self.delete_errcode:
                 return httpx.Response(200, json={"errcode": self.delete_errcode})
@@ -190,7 +208,8 @@ def test_apply_settles_only_status1_not_found_absent_from_listing(session, live)
         {
             fid(3): (1, "STORAGE_FILE_NONEXIST"),
             fid(11): (1, "file not exist"),
-        }
+        },
+        missing={fid(2), fid(3), fid(11)},
     )
     listing = copies.parse_listing(listing_text([1, 12]), NOW)
     report = copies.settle_missing_copies(
@@ -198,7 +217,10 @@ def test_apply_settles_only_status1_not_found_absent_from_listing(session, live)
     )
     assert report.error is None
     assert (report.deleted, report.unconfirmed, report.settled, report.live_reset) == (1, 2, 2, 1)
+    assert (report.link_issued, report.link_unknown, report.live_link_issued) == (0, 0, 0)
     assert cloud.deleted == [fid(12)]
+    # 只对清单里没有的问下载链接，清单里有的、已确认删掉的不问
+    assert sorted(cloud.linked) == sorted([fid(2), fid(3), fid(11)])
     assert report.audit and report.audit.startswith("ops/attachment-settlements/")
     [audit] = cloud.audits
     assert {item["file_id"] for item in audit["settled"]} == {fid(3), fid(11)}
@@ -236,8 +258,11 @@ def test_apply_keeps_listed_other_status_and_other_bucket(session, live):
 
 def test_audit_upload_failure_settles_nothing_by_listing(session, live):
     one, two, three = setup_rows(session, live)
-    cloud = Cloud({fid(3): (1, "STORAGE_FILE_NONEXIST"), fid(11): (1, "file not exist")})
-    cloud.upload_errcode = 40013
+    cloud = Cloud(
+        {fid(3): (1, "STORAGE_FILE_NONEXIST"), fid(11): (1, "file not exist")},
+        missing={fid(2), fid(3), fid(11)},
+        upload_errcode=40013,
+    )
     listing = copies.parse_listing(listing_text([1, 12]), NOW)
     report = copies.settle_missing_copies(
         session, ENV, listing, client=cloud.client, now=NOW, apply=True, sleep=lambda _: None
@@ -248,6 +273,81 @@ def test_audit_upload_failure_settles_nothing_by_listing(session, live):
     assert one.stale_file_ids == [fid(11)]
     assert two.status == "ready" and two.file_id == fid(2)
     assert session.get(AttachmentCopy, three.id).file_id == fid(3)
+
+
+def test_link_issued_means_object_still_there_and_vetoes_settlement(session, live):
+    # 清单漏列或取清单时正在上传：平台给了下载链接，对象就还在，既不结算也不改回待下载
+    one, two, three = setup_rows(session, live)
+    cloud = Cloud(
+        {fid(3): (1, "STORAGE_FILE_NONEXIST"), fid(11): (1, "file not exist")},
+        missing={fid(11)},
+    )
+    listing = copies.parse_listing(listing_text([1, 12]), NOW)
+    report = copies.settle_missing_copies(
+        session, ENV, listing, client=cloud.client, now=NOW, apply=True
+    )
+    assert report.error is None
+    assert (report.settled, report.link_issued, report.link_unknown) == (1, 1, 0)
+    assert (report.live_missing, report.live_reset, report.live_link_issued) == (1, 0, 1)
+    [audit] = cloud.audits
+    assert [item["file_id"] for item in audit["settled"]] == [fid(11)]
+    assert audit["reset_to_pending"] == []
+    session.expire_all()
+    assert one.stale_file_ids is None
+    assert two.status == "ready" and two.file_id == fid(2)
+    assert session.get(AttachmentCopy, three.id).file_id == fid(3)
+
+
+def test_link_check_failure_settles_nothing_by_listing(session, live):
+    # 下载链接接口出错：说不清对象在不在，按清单的一个都不结算、不改回待下载
+    one, two, three = setup_rows(session, live)
+    cloud = Cloud(
+        {fid(3): (1, "STORAGE_FILE_NONEXIST"), fid(11): (1, "file not exist")},
+        missing={fid(2), fid(3), fid(11)},
+        link_errcode=40013,
+    )
+    listing = copies.parse_listing(listing_text([1, 12]), NOW)
+    report = copies.settle_missing_copies(
+        session, ENV, listing, client=cloud.client, now=NOW, apply=True, sleep=lambda _: None
+    )
+    assert report.error is None and report.settled == 0 and report.live_reset == 0
+    assert (report.link_unknown, report.live_link_unknown) == (2, 1)
+    assert cloud.audits == []
+    session.expire_all()
+    assert one.stale_file_ids == [fid(11)]
+    assert two.status == "ready" and session.get(AttachmentCopy, three.id).file_id == fid(3)
+
+
+def test_link_states_are_strict():
+    # 只有唯一一条、整数 0、https 链接算"给了链接"；忙码、漏项、重复、非整数都算说不清
+    ids = [fid(n) for n in range(6)]
+
+    def handle(request):
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "file_list": [
+                    {"fileid": ids[0], "status": 0, "download_url": "https://b.example.test/0"},
+                    {"fileid": ids[1], "status": 1},
+                    {"fileid": ids[2], "status": -1},
+                    {"fileid": ids[3], "status": "1"},
+                    {"fileid": ids[4], "status": 0, "download_url": "https://x"},
+                    {"fileid": ids[4], "status": 0, "download_url": "https://x"},
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        states = copies._link_states(client, ENV, set(ids), lambda _: None)
+    assert states == {
+        ids[0]: "issued",
+        ids[1]: "refused",
+        ids[2]: "unknown",
+        ids[3]: "unknown",
+        ids[4]: "unknown",
+        ids[5]: "unknown",
+    }
 
 
 def test_delete_stopping_midway_skips_listing_settlement(session, live):

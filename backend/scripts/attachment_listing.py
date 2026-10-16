@@ -66,6 +66,9 @@ def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
+    # 记扫描开始的时间（往前取整到秒）：扫描期间才上传的对象可能不在清单里，核对时只看这个时间
+    # 之前存的副本。本机自带的 python3 可能是 3.9（没有 datetime.UTC）
+    started = datetime.now(timezone.utc).replace(microsecond=0)  # noqa: UP017
     bucket, heads, others = listing(sys.argv[1])
     if not heads:
         raise SystemExit("attachments/ 下一个副本都没有，不生成清单")
@@ -74,8 +77,7 @@ def main() -> int:
         "v": 1,
         "bucket": bucket,
         "prefix": PREFIX,
-        # 本机自带的 python3 可能是 3.9（没有 datetime.UTC）
-        "listed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),  # noqa: UP017
+        "listed_at": started.isoformat(),
         "count": len(heads),
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
