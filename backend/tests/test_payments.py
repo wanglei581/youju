@@ -315,6 +315,26 @@ def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     assert "/xpay/query_order" not in [c[0] for c in fake.calls]
 
 
+def test_new_order_locks_previous_orders_by_primary_key_only(setup_pay, session):
+    """下单时对订单表只按主键加锁，不做范围锁：范围锁加插入会让两个新用户同时下单时互相等待甚至死锁。"""
+    first = order(session, create(setup_pay))
+    statements = []
+
+    def record(_conn, _cursor, statement, *_):
+        statements.append(" ".join(statement.split()))
+
+    engine = session.get_bind()
+    sa_event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert create(setup_pay).status_code == 201
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", record)
+    locked = [s for s in statements if "FROM pay_orders" in s and "FOR UPDATE" in s]
+    assert locked, "上一笔待支付单应当按主键加锁后再查微信"
+    assert all(" WHERE pay_orders.id = " in s and " AND " not in s for s in locked), locked
+    assert first.id
+
+
 @pytest.mark.parametrize(
     "values",
     [

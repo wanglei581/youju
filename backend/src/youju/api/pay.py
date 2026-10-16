@@ -109,17 +109,26 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
     # 查不了不挡新单：没调起过支付的单（下单回应没送到手机）微信那边可能查不到，
     # 官方错误码里也没有「订单不存在」可以区分；这类单交给每分钟的补单处理。
+    # 候选先普通查（不加范围锁：两个新用户同时下单时，范围锁加插入会互相等待甚至死锁），
+    # 再按主键逐个加锁、复核状态；推送或补单刚开通的这里会看到不是待支付，跳过。
     recent = session.scalars(
-        select(PayOrder)
+        select(PayOrder.id)
         .where(
             PayOrder.user_id == user.id,
             PayOrder.status == "pending",
             PayOrder.created_at > stamp - timedelta(minutes=10),
         )
         .order_by(PayOrder.id)
-        .with_for_update()
     ).all()
-    for old in recent:
+    for old_id in recent:
+        old = session.scalar(
+            select(PayOrder)
+            .where(PayOrder.id == old_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if old is None or old.status != "pending":
+            continue
         try:
             data = payments.query(session, old, client)
         except XPayError:
