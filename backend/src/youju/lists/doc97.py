@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import io
 import struct
+from array import array
 
 import olefile
 
@@ -32,7 +33,9 @@ ROW_END = "\x1d"
 MAX_CHARS = 5_000_000
 MAX_PIECES = 100_000
 MAX_FIELD_DEPTH = 64
-MAX_FKP_PAGES = 40_000  # 段落属性页数（20 MB 的文档最多约 4 万页）
+MAX_FKP_PAGES = (
+    10_000  # 段落属性页数：8722 行的名单约 1200 页；每页最多 29 段，上限时区间约 29 万个
+)
 _WORD97_MIN_NFIB = 0x00C1
 # FibRgFcLcb97 里第 13 对是 PlcBtePapx（段落属性页），第 33 对是 Clx（文字片段表）；
 # FibRgLw97 里第 3 个是 ccpText（正文字数）
@@ -166,9 +169,7 @@ def _main_text(wd: bytes, table: bytes, data_stream: bytes = b"") -> str:
     return "".join(parts)
 
 
-def _ttp_runs(
-    wd: bytes, table: bytes, data_stream: bytes = b""
-) -> tuple[list[int], list[int], list[bool]]:
+def _ttp_runs(wd: bytes, table: bytes, data_stream: bytes = b"") -> tuple[array, array, bytearray]:
     """段落属性页（PapxFkp）里的区间：(起点, 终点, 是否行尾段落)，按起点排好，供二分查找。"""
     fc_bte, lcb_bte = _fib_pair(wd, _PAPX_PAIR)
     if lcb_bte < 8 or fc_bte + lcb_bte > len(table):
@@ -180,7 +181,8 @@ def _ttp_runs(
     pages = dict.fromkeys(
         pn & 0x3FFFFF for pn in struct.unpack_from(f"<{count}I", table, fc_bte + (count + 1) * 4)
     )
-    runs: list[tuple[int, int, bool]] = []
+    # 紧凑存放（#272 审阅：上万页时元组列表要上百 MB）
+    starts, ends, ttp = array("I"), array("I"), bytearray()
     for page_number in pages:
         base = page_number * _FKP_SIZE
         if base + _FKP_SIZE > len(wd):
@@ -192,12 +194,19 @@ def _ttp_runs(
         fcs = struct.unpack_from(f"<{crun + 1}I", page, 0)
         for r in range(crun):
             bx = (crun + 1) * 4 + r * 13
-            runs.append((fcs[r], fcs[r + 1], _papx_is_ttp(page, page[bx] * 2, data_stream)))
-    runs.sort()
-    return [r[0] for r in runs], [r[1] for r in runs], [r[2] for r in runs]
+            starts.append(fcs[r])
+            ends.append(fcs[r + 1])
+            ttp.append(_papx_is_ttp(page, page[bx] * 2, data_stream))
+    # 规范要求按位置排好；乱序的（损坏或特制文件）按起点重排
+    if any(starts[k] > starts[k + 1] for k in range(len(starts) - 1)):
+        order = sorted(range(len(starts)), key=starts.__getitem__)
+        starts = array("I", (starts[k] for k in order))
+        ends = array("I", (ends[k] for k in order))
+        ttp = bytearray(ttp[k] for k in order)
+    return starts, ends, ttp
 
 
-def _is_row_end(runs: tuple[list[int], list[int], list[bool]], fc: int) -> bool:
+def _is_row_end(runs: tuple[array, array, bytearray], fc: int) -> bool:
     starts, ends, ttp = runs
     i = bisect.bisect_right(starts, fc) - 1
     return i >= 0 and fc < ends[i] and ttp[i]

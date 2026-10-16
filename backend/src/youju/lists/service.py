@@ -36,9 +36,11 @@ SUPPORTED = {"pdf", "xlsx", "xls", "docx", "doc", "wps"}
 RESCAN_DETAILS_BEFORE = datetime(2026, 10, 15, 8, 0, tzinfo=UTC)
 RESCAN_LIMIT = 100
 UNSUPPORTED = {"et", "ofd", "zip", "rar"}
-# 10/16 起能读 Word 97 二进制（.doc、金山 WPS 文字的 .wps，见 lists/doc97.py）。在这之前记作
-# "暂不支持旧版或专有格式"的这两种附件补解析一次；补过以后（不管结果）按原规则不再重试
-WORD97_SINCE = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
+# 10/16 起能读 Word 97 二进制（.doc、金山 WPS 文字的 .wps，见 lists/doc97.py）。
+# 以前的代码把这两种附件一律记作下面这句原话；原因恰好是这句原话的补解析一次。
+# 不看时间：上线前每一轮都还跑在旧代码上，会继续记这句话（#272 审阅）。新代码对 .doc/.wps 的
+# 失败原因都带括号说明（如"……（不是 Word 97 文档）"），补过一次就不再等于原话
+LEGACY_UNSUPPORTED = "暂不支持旧版或专有格式"
 WORD97_EXTENSIONS = {"doc", "wps"}
 PERMANENT = {"ok", "empty", "unsupported"}
 _PROTECTED = re.compile(r"验证码|人机验证|安全验证|访问过于频繁|异常访问")
@@ -120,8 +122,7 @@ def _should_attempt(record: ListParse | None, extension: str | None = None) -> b
         return True
     if (
         record.status == "unsupported"
-        and record.attempted_at < WORD97_SINCE
-        and (record.failure_reason or "").startswith("暂不支持旧版或专有格式")
+        and record.failure_reason == LEGACY_UNSUPPORTED
         and (extension or _extension(record.source_url)).lower() in WORD97_EXTENSIONS
     ):
         return True

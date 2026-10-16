@@ -290,6 +290,27 @@ def _docx_entries(
     return entries
 
 
+_META_CHARSET = re.compile(rb"charset\s*=\s*[\"']?\s*([A-Za-z0-9_-]+)", re.I)
+
+
+def _decode_html(data: bytes) -> str:
+    """存成 .doc 的网页：按 meta 声明的编码解码（政府网站常见 GBK/GB2312）；
+    没声明就先试 UTF-8，再按 GB18030。"""
+    match = _META_CHARSET.search(data[:4096])
+    if match:
+        name = match.group(1).decode("ascii").lower()
+        if name in {"gbk", "gb2312", "gb18030", "x-gbk"}:
+            return data.decode("gb18030", "replace")
+        try:
+            return data.decode(name, "replace")
+        except LookupError:
+            pass
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("gb18030", "replace")
+
+
 def _word97_entries(
     data: bytes, pick_name_column: NameColumnPicker | None, budget: _TableBudget
 ) -> list[ParsedEntry]:
@@ -301,9 +322,10 @@ def _word97_entries(
     if head.startswith(b"{\\rtf"):
         raise ValueError("暂不支持 RTF 格式")
     if head.startswith((b"<!doctype html", b"<html")):
-        return parse_html_tables(data.decode("utf-8", "replace"), pick_name_column)
+        return parse_html_tables(_decode_html(data), pick_name_column)
     if not doc97.is_ole(data):
-        raise ValueError("暂不支持旧版或专有格式")
+        # 带括号说明：和以前代码记的原话区分开，补解析一次以后不再重试（service.LEGACY_UNSUPPORTED）
+        raise ValueError("暂不支持旧版或专有格式（不是 Word 97 文档）")
     entries: list[ParsedEntry] = []
     for rows in doc97.doc_tables(doc97.doc_text(data)):
         entries.extend(parse_table_rows(rows, pick_name_column, _budget=budget))

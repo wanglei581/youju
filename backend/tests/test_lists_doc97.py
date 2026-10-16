@@ -10,7 +10,7 @@ from docx import Document as DocxDocument
 
 from youju.lists import doc97
 from youju.lists.parser import parse_attachment, parse_table_rows
-from youju.lists.service import WORD97_SINCE, _should_attempt
+from youju.lists.service import LEGACY_UNSUPPORTED, _should_attempt
 from youju.models import ListParse
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lists"
@@ -169,31 +169,44 @@ def _record(url: str, status: str, reason: str | None, attempted: datetime) -> L
 
 
 def test_old_word_records_are_retried_once() -> None:
-    """以前记作"暂不支持旧版或专有格式"的 .doc/.wps 补解析一次；补过的、别的格式照旧不重试。"""
-    before = WORD97_SINCE - timedelta(days=3)
-    after = WORD97_SINCE + timedelta(minutes=5)
-    reason = "暂不支持旧版或专有格式"
-    assert _should_attempt(_record("https://a.gov.cn/f/名单.doc", "unsupported", reason, before))
-    assert _should_attempt(_record("https://a.gov.cn/f/名单.WPS", "unsupported", reason, before))
-    assert not _should_attempt(_record("https://a.gov.cn/f/名单.doc", "unsupported", reason, after))
-    assert not _should_attempt(_record("https://a.gov.cn/f/名单.et", "unsupported", reason, before))
+    """以前的代码对 .doc/.wps 记的原话"暂不支持旧版或专有格式"：补解析一次，不看时间（上线前每轮都还会记）；
+    新代码的失败原因带括号说明，不再等于原话，所以不会反复重试（#272 审阅）。"""
+    now = datetime.now(UTC)
+    old = LEGACY_UNSUPPORTED
+    assert old == "暂不支持旧版或专有格式"
+    assert _should_attempt(_record("https://a.gov.cn/f/名单.doc", "unsupported", old, now))
+    assert _should_attempt(_record("https://a.gov.cn/f/名单.WPS", "unsupported", old, now))
+    newer = "暂不支持旧版或专有格式（不是 Word 97 文档）"
+    assert not _should_attempt(_record("https://a.gov.cn/f/名单.doc", "unsupported", newer, now))
+    assert not _should_attempt(_record("https://a.gov.cn/f/名单.et", "unsupported", old, now))
     assert not _should_attempt(
-        _record("https://a.gov.cn/f/名单.doc", "unsupported", "文件超过20MB", before)
+        _record("https://a.gov.cn/f/名单.doc", "unsupported", "文件超过20MB", now)
     )
-    assert not _should_attempt(_record("https://a.gov.cn/f/名单.doc", "empty", None, before))
+    assert not _should_attempt(_record("https://a.gov.cn/f/名单.doc", "empty", None, now))
     # 网址不带扩展名、附件题录里认出是 .doc（链接文字"名单.doc"）的也补
-    no_ext = _record("https://a.gov.cn/download?id=7", "unsupported", reason, before)
+    no_ext = _record("https://a.gov.cn/download?id=7", "unsupported", old, now)
     assert _should_attempt(no_ext, "doc")
     assert not _should_attempt(no_ext)
     # 临时失败照旧 6 小时后再试
     assert _should_attempt(
-        _record(
-            "https://a.gov.cn/f/名单.doc",
-            "failed",
-            "抓取失败",
-            datetime.now(UTC) - timedelta(hours=7),
-        )
+        _record("https://a.gov.cn/f/名单.doc", "failed", "抓取失败", now - timedelta(hours=7))
     )
+    # 新代码对读不了的 .doc 给的原因都不是原话
+    for data in (b"old doc", (FIXTURES / "heilongjiang_30.xls").read_bytes()):
+        with pytest.raises(ValueError) as caught:
+            parse_attachment(data, "doc")
+        assert str(caught.value).startswith("暂不支持") and str(caught.value) != old
+
+
+def test_html_saved_as_doc_in_gbk() -> None:
+    """存成 .doc 的网页按 meta 声明的编码解码（政府网站常见 GBK），不出乱码（#272 审阅）。"""
+    page = (
+        "<html><head><meta http-equiv='Content-Type' content='text/html; charset=gb2312'></head>"
+        "<body><table><tr><td>企业名称</td></tr><tr><td>上海云帆科技有限公司</td></tr></table>"
+    ).encode("gbk")
+    assert [e.name for e in parse_attachment(page, "doc")] == ["上海云帆科技有限公司"]
+    undeclared = page.replace(b"; charset=gb2312", b"")
+    assert [e.name for e in parse_attachment(undeclared, "doc")] == ["上海云帆科技有限公司"]
 
 
 def test_pieces_must_cover_main_text() -> None:
