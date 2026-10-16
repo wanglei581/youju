@@ -347,6 +347,8 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
                 else {}
             ),
         },
+        # 超出免费量时要不要提示开通客户工作台（D-058）；没开放支付时不出现任何购买字样
+        "pay": payments.entry(session, settings, user),
     }
 
 

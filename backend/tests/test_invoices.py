@@ -215,3 +215,24 @@ def test_runs_ignore_invoices(pay, session):
     ask(pay, row)
     run(session, pay, NOW + timedelta(minutes=5))
     assert session.scalar(select(InvoiceRequest)).status == "pending"
+
+
+def test_pay_entry_flags_in_capabilities_and_me(pay, session):
+    client, settings, _ = pay
+    caps = client.get("/api/v1/advisor/capabilities", headers=HEADERS).json()
+    assert caps["pay"] == {"enabled": True, "hasOrders": False}
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"] == caps["pay"]
+    delivered(pay, session)
+    # 停卖后：购买入口关掉，已付款的用户仍能进"我的订单"
+    settings.pay_enabled = False
+    caps = client.get("/api/v1/advisor/capabilities", headers=HEADERS).json()
+    assert caps["pay"] == {"enabled": False, "hasOrders": True}
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"] == caps["pay"]
+    # 没配价格或 offerId 时不算在售
+    settings.pay_enabled, settings.xpay_price_pass = True, None
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
+    stranger = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "nobody"}
+    assert client.get("/api/v1/me", headers=stranger).json()["pay"] == {
+        "enabled": False,
+        "hasOrders": False,
+    }

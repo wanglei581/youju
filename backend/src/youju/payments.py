@@ -93,6 +93,22 @@ def products(settings: Settings) -> dict[str, tuple[int, int]]:
     return {}
 
 
+def entry(session: Session, settings, user: User | None) -> dict:
+    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、配了 offerId 和价格），
+    或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
+    selling = (
+        enabled(settings)
+        and bool(getattr(settings, "xpay_offer_id", ""))
+        and bool(products(settings))
+    )
+    has_orders = (
+        user is not None
+        and session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1))
+        is not None
+    )
+    return {"enabled": selling, "hasOrders": has_orders}
+
+
 def lock_order(session: Session, order_id: int) -> PayOrder | None:
     # 与提交任务、注销统一先锁用户，再锁订单/使用期，串行化顺延与退款判断。
     # query() 待写事件的订单外键会取共享锁，必须在用户锁之后才 flush。
