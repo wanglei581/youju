@@ -273,8 +273,9 @@ def request_invoice(
 
 @router.get("/orders")
 def list_orders(session: SessionDep, user: KnownUserDep) -> dict:
+    # 还没有用户记录的人没有订单：返回空列表，不用 404（小程序会把 404 说成「付费服务暂未开放」）
     if user is None:
-        raise HTTPException(status_code=404, detail="没有找到接口")
+        return {"items": []}
     orders = session.scalars(
         select(PayOrder)
         .where(PayOrder.user_id == user.id)

@@ -1406,6 +1406,10 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
     other = {**HEADERS, "X-WX-OPENID": "other"}
     setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-10"})
     assert setup_pay[0].get("/api/v1/pay/orders", headers=other).json() == {"items": []}
+    # 还没有用户记录的人（没同意过协议）：也是空列表，不是 404（小程序会把 404 说成付费服务未开放）
+    unknown = {**HEADERS, "X-WX-OPENID": "never-agreed"}
+    response = setup_pay[0].get("/api/v1/pay/orders", headers=unknown)
+    assert response.status_code == 200 and response.json() == {"items": []}
     assert (
         setup_pay[0].post(f"/api/v1/pay/orders/{row.id}/refund", headers=other).status_code == 404
     )
