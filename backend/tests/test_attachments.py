@@ -1484,6 +1484,112 @@ def test_delete_batches_preserve_fifty_item_limit_and_ownership():
     assert sizes == [50, 50, 1]
 
 
+def test_first_fifty_item_failures_still_confirm_fifty_first():
+    ids = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(51)]
+    requests, waits = [], []
+
+    def handle(request):
+        pending = json.loads(request.content)["fileid_list"]
+        requests.append(pending)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {
+                        "fileid": file_id,
+                        "status": 0 if file_id == ids[50] else 1,
+                        "errmsg": "STORAGE_FILE_NONEXIST",
+                    }
+                    for file_id in pending
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+    ):
+        copies.delete_copies(client, ENV, ids, sleep=waits.append)
+    message = str(error.value)
+    assert waits == [] and requests == [ids[:50], [ids[50]]]
+    assert error.value.confirmed == {ids[50]}
+    assert "状态 1" in message
+    _assert_hints(message, not_found_hint=50)
+    assert "STORAGE_FILE_NONEXIST" not in message
+    for file_id in ids:
+        assert file_id not in message
+
+
+def test_later_batch_top_level_error_stops_and_keeps_earlier_success():
+    ids = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(101)]
+    requests = []
+
+    def handle(request):
+        pending = json.loads(request.content)["fileid_list"]
+        requests.append(pending)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "errcode": 0,
+                    "delete_list": [{"fileid": file_id, "status": 0} for file_id in pending],
+                },
+            )
+        return httpx.Response(200, json={"errcode": 40013, "errmsg": "https://secret.example/x"})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="40013") as error,
+    ):
+        copies.delete_copies(client, ENV, ids, sleep=lambda _delay: None)
+    assert error.value.confirmed == set(ids[:50])
+    assert requests == [ids[:50], ids[50:100]]
+    assert ids[100] not in {file_id for batch in requests for file_id in batch}
+    assert "https://" not in str(error.value)
+    for file_id in ids[:50]:
+        assert file_id not in str(error.value)
+
+
+def test_drop_stale_commits_only_cross_batch_success(session):
+    row = add_copy(session, "https://example.gov.cn/cross-batch.pdf", PDF, "pdf")
+    current = row.file_id
+    failed = [PREFIX + f"attachments/{i:064x}.pdf" for i in range(50)]
+    succeeded = PREFIX + f"attachments/{50:064x}.pdf"
+    row.stale_file_ids = failed + [succeeded]
+    session.commit()
+    requests = []
+
+    def handle(request):
+        pending = json.loads(request.content)["fileid_list"]
+        requests.append(pending)
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "delete_list": [
+                    {
+                        "fileid": file_id,
+                        "status": 0 if file_id == succeeded else 1,
+                        "errmsg": "file not exist",
+                    }
+                    for file_id in pending
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(copies.DeleteCopiesError, match="未确认") as error,
+    ):
+        copies._drop_stale(session, client, ENV)
+    session.expire_all()
+    assert requests == [failed, [succeeded]]
+    assert error.value.confirmed == {succeeded}
+    assert row.stale_file_ids == failed and row.file_id == current
+    assert "file not exist" not in str(error.value)
+
+
 def test_expired_partial_cleanup_clears_confirmed_current_id_but_retains_pending_stale(session):
     row = add_copy(session, "https://example.gov.cn/expired-partial.pdf", PDF, "pdf")
     current = row.file_id
