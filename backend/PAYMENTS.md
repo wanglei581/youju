@@ -312,3 +312,19 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 
 苹果退款问询在本地核验出错或超过两秒时仍答“未使用”：核验不了时宁可让用户能退，
 不把没用过的人答成“已使用”。平台对这种情况有没有规定的应答，上线前按真实问询确认。
+
+## 收费第一期补充（2026-10-16，#266，开关仍默认关闭）
+
+- **测试名单**：`YOUJU_PAY_AUDIENCE=whitelist`（默认）时，即使 `YOUJU_PAY_ENABLED=true`，也只有
+  `YOUJU_PAY_OPENIDS`（逗号分隔 openid）里的人能看到商品、下单；对全体收费要改成 `all`（创始人另行批准）。
+  补单、退款、对账等定时任务只看总开关，已有订单照常处理。判断函数：`payments.selling_to`。
+- **沙箱标记**：`GET /api/v1/pay/products` 返回 `sandbox`（`YOUJU_XPAY_ENV=1` 时为 true）。小程序在沙箱下
+  对测试名单放开付款按钮（页面写明不扣真钱），现网仍须《付费服务协议》定稿（`content/pay-terms.js` final）。
+- **支付入口**：`GET /api/v1/advisor/capabilities` 和 `GET /api/v1/me` 带 `pay: {enabled, hasOrders}`。
+  enabled = 对这个用户在售；hasOrders = 有过订单（停卖后仍能进订单页退款、开票）。都为 false 时小程序不出现任何购买字样。
+- **开票申请**（迁移 0030，表 `invoice_requests`）：`PUT /api/v1/pay/orders/{id}/invoice`
+  `{title_type: personal|company, title, tax_id?, email}`；每笔已完成、没退款的订单一份，待开时可改；
+  单位税号 15/18/20 位数字或大写字母。订单结构新增 `canInvoice`、`invoice`（status 待开/已开/不开、note）。
+  已开发票的订单不能自助退款（先冲红）；自助退款或平台退款完成时作废未开的申请。管理台 `/admin/invoices`
+  标记已开、不开（不开要写原因）。注销只断开用户、保留记录；订单按保存期清理时一并删除。
+  上线前执行 `deploy/mysql_accounts.sql` 里 `invoice_requests` 的授权。

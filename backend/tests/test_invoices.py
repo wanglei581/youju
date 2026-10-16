@@ -236,3 +236,29 @@ def test_pay_entry_flags_in_capabilities_and_me(pay, session):
         "enabled": False,
         "hasOrders": False,
     }
+
+
+def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
+    client, settings, _ = pay
+    settings.pay_audience, settings.pay_openids = "whitelist", ""
+    # 名单为空：开关开着也没人能看到商品、下单
+    assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
+    assert create(pay).status_code == 404
+    caps = client.get("/api/v1/advisor/capabilities", headers=HEADERS).json()
+    assert caps["pay"] == {"enabled": False, "hasOrders": False}
+    # 进了名单的测试人员才能买；别人照样看不到
+    settings.pay_openids = " other-tester , pay-user "
+    assert client.get("/api/v1/pay/products", headers=HEADERS).json()["items"]
+    assert create(pay).status_code == 201
+    stranger = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "someone-else"}
+    assert client.get("/api/v1/pay/products", headers=stranger).status_code == 404
+    assert client.get("/api/v1/pay/products").status_code == 404
+    assert client.get("/api/v1/me", headers=stranger).json()["pay"]["enabled"] is False
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
+    # 定时任务只看总开关：名单之外不影响已有订单的补单、对账
+    assert payments.has_work(session, settings) is True
+    assert payments.selling_to(settings, None) is False
+    settings.pay_audience = "all"
+    assert payments.selling_to(settings, "anyone") is True
+    settings.pay_enabled = False
+    assert payments.selling_to(settings, "pay-user") is False

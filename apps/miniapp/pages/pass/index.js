@@ -25,7 +25,8 @@ function clearUnsettled() {
 }
 
 Page({
-  data: { loginOpen: loginOpen(), loading: true, error: '', product: null, price: '', expires: '', termsFinal: pay.termsFinal(payTerms), checked: false, busy: false, message: '', payError: false, confirmed: false },
+  // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
+  data: { loginOpen: loginOpen(), loading: true, error: '', product: null, price: '', expires: '', termsFinal: pay.termsFinal(payTerms), sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
   onShow() {
     this.visible = true;
     if (this.payResume && this.poller) { this.payResume = false; this.poller.start(this.payDeadline); }
@@ -42,20 +43,20 @@ Page({
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const product = pay.normalizeProducts(res)[0] || null;
-      this.setData({ loading: false, product, price: product ? pay.yuan(product.price) : '' });
+      this.setData({ loading: false, product, price: product ? pay.yuan(product.price) : '', sandbox: !!(res && res.sandbox === true) });
       if (product && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
         if (serial === this.loadSerial) this.setData({ expires: status.pass && status.pass.active ? pay.date(status.pass.expiresAt) : '' });
       }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
-      this.setData({ loading: false, product: null, price: '', error: err.status === 404 ? '' : err.message });
+      this.setData({ loading: false, product: null, price: '', sandbox: false, error: err.status === 404 ? '' : err.message });
     });
   },
   check(e) { this.setData({ checked: (e.detail.value || []).includes('agree') }); },
   terms() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy() {
     if (!this.data.product || this.data.busy || this.data.confirmed || !this.data.loginOpen) return;
-    if (!this.data.termsFinal) { this.setData({ message: pay.TEXT.termsPending }); return; }
+    if (!this.data.termsFinal && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
     if (!this.data.checked) { this.setData({ message: pay.TEXT.termsRequired, payError: false }); wx.showToast({ title: pay.TEXT.termsRequired, icon: 'none' }); return; }
     if (typeof wx.requestVirtualPayment !== 'function') { this.setData({ message: pay.TEXT.unsupported, payError: true }); return; }
     // 上一笔还没确认完：不下新单，接着查它

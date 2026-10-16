@@ -38,3 +38,6 @@
 .pass-msg { padding: 8rpx 0 4rpx; font-size: 26rpx; line-height: 1.6; color: var(--t2); }
 .pass-msg--error { color: var(--red); }
 .pass-closed { padding: 24rpx 0; text-align: center; font-size: 28rpx; color: var(--t2); }
+
+/* 沙箱联调提示：醒目，避免测试人员以为是真付款 */
+.pass-sandbox { margin: 20rpx 24rpx 0; padding: 20rpx 24rpx; border-radius: 16rpx; background: var(--o-tint); color: var(--o-txt); font-size: 26rpx; line-height: 1.6; }

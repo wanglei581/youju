@@ -93,11 +93,22 @@ def products(settings: Settings) -> dict[str, tuple[int, int]]:
     return {}
 
 
+def selling_to(settings, openid: str | None) -> bool:
+    """这个用户能不能看到购买入口、下新单：总开关开着，并且对全体开放或在测试名单里。
+    补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
+    if not enabled(settings):
+        return False
+    if getattr(settings, "pay_audience", "whitelist") == "all":
+        return True
+    testers = {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
+    return bool(openid) and openid in testers
+
+
 def entry(session: Session, settings, user: User | None) -> dict:
     """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、配了 offerId 和价格），
     或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
     selling = (
-        enabled(settings)
+        selling_to(settings, user.openid if user else None)
         and bool(getattr(settings, "xpay_offer_id", ""))
         and bool(products(settings))
     )

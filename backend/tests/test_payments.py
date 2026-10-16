@@ -10,6 +10,7 @@ import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import httpx
@@ -118,6 +119,8 @@ def setup_pay(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         pay_enabled=True,
+        # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices
+        pay_audience="all",
         advisor_enabled=True,
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
@@ -293,23 +296,28 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
         "items": [
             {"productId": "workbench_30d", "name": "客户工作台 30 天", "price": 100, "days": 30}
-        ]
+        ],
+        # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
+        "sandbox": True,
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
     settings.xpay_price_pass = None
-    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
     settings.xpay_price_pass = 100
     settings.xpay_offer_id = ""
-    assert client.get("/api/v1/pay/products").json() == {"items": []}
+    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
     assert create(setup_pay).status_code == 404
     assert not fake.calls
+    settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
+    assert client.get("/api/v1/pay/products").json()["sandbox"] is False
 
 
 def test_products_route_dependency_hides_when_closed(setup_pay):
     settings = setup_pay[1]
     settings.pay_enabled = False
     with pytest.raises(pay.HTTPException) as caught:
-        pay.require_enabled()
+        # 只看请求头里的 openid（测试名单用），这里给一个最小的请求对象
+        pay.require_enabled(SimpleNamespace(headers=HEADERS))
     assert caught.value.status_code == 404 and caught.value.detail == "没有找到接口"
     route = next(r for r in pay.router.routes if r.path == "/api/v1/pay/products")
     assert route.methods == {"GET"}

@@ -4,6 +4,7 @@
 <view wx:elif="{{!product}}" class="card advisor-card">付费服务暂未开放</view>
 <block wx:else>
   <!-- 最上面一眼看到：卖什么、多少钱、会不会再扣钱 -->
+  <view wx:if="{{sandbox}}" class="card pass-sandbox">沙箱测试：只对测试人员开放，付款不扣真钱，开通的使用期仅供测试。正式收费前《付费服务协议》会由律师定稿。</view>
   <view class="pass-hero">
     <view class="pass-name">客户工作台 30 天</view>
     <view class="pass-price"><text class="pass-num">{{price}}</text><text class="pass-unit">元</text></view>
@@ -48,7 +49,7 @@
   <!-- 付款栏固定在底部：不用翻到最后才找到按钮；协议不默认勾选 -->
   <view class="pass-bar">
     <view wx:if="{{message}}" class="pass-msg {{payError ? 'pass-msg--error' : ''}}">{{message}}</view>
-    <block wx:if="{{termsFinal && loginOpen && !confirmed}}">
+    <block wx:if="{{(termsFinal || sandbox) && loginOpen && !confirmed}}">
       <checkbox-group bindchange="check"><label class="pass-check"><checkbox value="agree" checked="{{checked}}" disabled="{{busy}}" /><text>我已阅读并同意</text><text class="advisor-link" catchtap="terms">《付费服务协议》</text></label></checkbox-group>
       <button class="pass-pay btn-primary" bindtap="buy" loading="{{busy}}" disabled="{{busy}}">支付 {{price}} 元</button>
     </block>

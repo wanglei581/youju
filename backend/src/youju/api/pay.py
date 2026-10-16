@@ -18,14 +18,19 @@ from starlette.concurrency import run_in_threadpool
 
 from youju import payments
 from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
-from youju.api.me import KnownUserDep, UserDep
+from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
 from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature
 
 
-def require_enabled() -> None:
-    if not payments.enabled(get_settings()):
+def require_enabled(request: Request) -> None:
+    # 在售才有商品和下单：总开关开着，且对全体开放或这个用户在测试名单里
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        openid = None
+    if not payments.selling_to(get_settings(), openid):
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -71,12 +76,14 @@ def list_products() -> dict:
     settings = get_settings()
     # 和下单条件一致：没有 offerId 时下单必然失败，不展示价格。
     if not settings.xpay_offer_id:
-        return {"items": []}
+        return {"items": [], "sandbox": settings.xpay_env == 1}
     return {
         "items": [
             {"productId": product, "name": payments.PASS_NAME, "price": price, "days": days}
             for product, (price, days) in payments.products(settings).items()
-        ]
+        ],
+        # 沙箱（不扣真钱、只有测试名单看得到）：小程序在《付费服务协议》定稿前也放开付款按钮供联调
+        "sandbox": settings.xpay_env == 1,
     }
 
 

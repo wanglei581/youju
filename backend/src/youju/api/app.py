@@ -205,9 +205,14 @@ async def _role_guard(request: Request, call_next):
     if path == "/api/v1/pay/products" or (
         path == "/api/v1/pay/orders" and request.method == "POST"
     ):
-        from youju.payments import enabled as pay_enabled
+        from youju.api.me import request_openid
+        from youju.payments import selling_to
 
-        if not pay_enabled(get_settings()):
+        try:
+            openid = request_openid(request)
+        except HTTPException:
+            openid = None
+        if not selling_to(get_settings(), openid):
             return JSONResponse(status_code=404, content={"detail": "没有找到接口"})
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
     mini_path = path.startswith("/api/v1/") or path == getattr(
