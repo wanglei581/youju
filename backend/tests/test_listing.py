@@ -42,6 +42,38 @@ def test_real_list_pages(name: str, page_url: str, min_items: int) -> None:
     assert max(i.publish_date for i in items) >= date(2026, 1, 1)
 
 
+def test_tianjin_truncated_link_text_with_date_inside_uses_title_attribute() -> None:
+    # 天津科技局（工信局同一模板）：<a title="完整标题">截断的标题...<span class="time">日期</span></a>。
+    # 文字结尾是日期，曾看不出截断，入库的是"……"结尾的标题（10/16 验收缺陷 1）
+    items = extract_items(
+        read_fixture_html("tianjin_kjt_tzgg"),
+        "https://kxjs.tj.gov.cn/ZWGK4143/TZGG2079/",
+        today=TODAY,
+    )
+    by_page = {i.url.rsplit("/", 1)[-1]: i for i in items}
+    assert len(items) == 20
+    assert not [i.title for i in items if i.title.endswith(("...", "…"))]
+    assert [
+        (by_page[name].title, by_page[name].publish_date)
+        for name in ("t20260831_7362409.html", "t20260818_7353950.html", "t20260817_7353261.html")
+    ] == [
+        (
+            "市科技局关于组织申报国家重点研发计划“战略性科技创新合作”重点专项2026年度联合研发与示范项目的通知",
+            date(2026, 8, 31),
+        ),
+        (
+            "关于对《天津市推动生物制造创新发展行动计划（2026-2030年）（征求意见稿）》公开征求意见的通知",
+            date(2026, 8, 17),
+        ),
+        (
+            "关于组织申报国家重点研发计划“城镇可持续发展关键技术与装备”重点专项2026年度项目的通知",
+            date(2026, 8, 17),
+        ),
+    ]
+    # 发布日期仍取链接里写的日期，不改用网址里的（上面第二条网址是 0818，这条是 0819）
+    assert by_page["t20260819_7354595.html"].publish_date == date(2026, 8, 18)
+
+
 def test_picks_main_list_not_sidebar() -> None:
     html = """
     <html><body>
@@ -323,6 +355,41 @@ def test_short_date_at_end_of_anchor_text() -> None:
         ("关于开展专项申报工作的通知", date(2026, 9, 20)),
         ("关于公布第三批认定名单的公示", date(2026, 9, 18)),
         ("关于征集2026年项目需求的通知", date(2026, 9, 15)),
+    ]
+
+
+def test_date_inside_link_text_does_not_hide_truncation() -> None:
+    # 链接文字两端的日期不算标题：去掉后 title 属性是它的完整写法就用 title 属性，日期照样取链接里写的
+    html = """<ul>
+      <li><a href="/a/1.html" title="关于开展2026年度科技型中小企业评价工作的通知">关于开展2026年度科技型中小…<span>2026-09-20</span></a></li>
+      <li><a href="/a/2.html" title="关于组织申报2026年度省重点研发计划项目的通知">关于组织申报2026年度省重点<span>2026-09-19</span></a></li>
+      <li><a href="/a/3.html" title="关于公布第三批专精特新中小企业认定名单的公示">[2026-09-18] 关于公布第三批专精特新...</a></li>
+      <li><a href="/a/4.html">关于征集2026年项目需求的通知 <span>2026-09-15</span></a></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于开展2026年度科技型中小企业评价工作的通知", date(2026, 9, 20)),
+        # 截断时没加省略号：title 属性以链接文字开头、更长，也是完整写法
+        ("关于组织申报2026年度省重点研发计划项目的通知", date(2026, 9, 19)),
+        # 开头写日期的，以前取了 title 属性却丢了日期，网址里又没有日期，整条被丢掉
+        ("关于公布第三批专精特新中小企业认定名单的公示", date(2026, 9, 18)),
+        ("关于征集2026年项目需求的通知", date(2026, 9, 15)),
+    ]
+
+
+def test_title_attribute_not_completing_link_text_with_date_is_ignored() -> None:
+    # 链接里写着日期、title 属性却不是链接文字的完整写法（"详情"这类无关文字），或者自己也带日期时，
+    # 照旧用链接文字：宁可标题截断（补详情时再补全），也不要无关标题、丢条目或取错日期（PR 审阅反例）
+    html = """<ul>
+      <li><a href="/a/1.html" title="详情">关于开展2026年度专项申报工作的通知……<span>2026-09-20</span></a></li>
+      <li><a href="/a/2.html" title="点击此处查看这条信息的详细内容">关于开展专项工作的通知<span>2026-09-19</span></a></li>
+      <li><a href="/a/3.html" title="关于发布产业实施方案的公示（2026-01-01）">关于发布产业实施方案的公示...<span>2026-09-18</span></a></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=TODAY)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于开展2026年度专项申报工作的通知……", date(2026, 9, 20)),
+        ("关于开展专项工作的通知", date(2026, 9, 19)),
+        ("关于发布产业实施方案的公示...", date(2026, 9, 18)),
     ]
 
 

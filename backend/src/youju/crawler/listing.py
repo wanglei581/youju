@@ -25,7 +25,7 @@ import lxml.html
 from lxml import etree
 
 from youju.crawler.dates import date_from_url, parse_date_detail
-from youju.crawler.titles import clean_title
+from youju.crawler.titles import clean_title, is_truncated
 from youju.crawler.urls import normalize_url, page_dir
 
 
@@ -98,8 +98,12 @@ def _clean(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _link_text(a: etree._Element) -> str:
+    return clean_title(_clean(a.text_content()))
+
+
 def _title_of(a: etree._Element) -> str:
-    text = clean_title(_clean(a.text_content()))
+    text = _link_text(a)
     attr = clean_title(_clean(a.get("title")))
     # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅）：
     # 链接文字像标题就用链接文字；不像标题（如"详情"）才用去掉标签后的 title 属性
@@ -107,9 +111,23 @@ def _title_of(a: etree._Element) -> str:
         stripped = clean_title(_clean(_MARKUP.sub(" ", attr)))
         return text if _looks_like_title(text) or not stripped else stripped
     # 链接文字常被截断成"……"，title 属性里才是完整标题
-    if attr and (len(attr) >= len(text) or text.endswith(("...", "…"))):
+    if attr and (len(attr) >= len(text) or is_truncated(text)):
+        return attr
+    # 日期写在链接里时（天津科技局、工信局：
+    # <a title="完整标题">截断的标题...<span>2026-09-09</span></a>），文字结尾是日期，
+    # 上面看不出截断，长度也多算了日期。去掉两端的日期再看：title 属性是剩下文字的完整写法、
+    # 本身不带日期才用（"详情"这类无关文字不用）；日期由 _extract_heuristic 从链接文字里取
+    shown = _clean(_EDGE_DATE.sub(" ", text))
+    if shown != text and _completes(attr, shown) and not _EDGE_DATE.search(attr):
         return attr
     return text
+
+
+def _completes(full: str, shown: str) -> bool:
+    """full 是不是 shown 的完整写法：以 shown（去掉末尾省略号）开头，并且更长。空格不算。"""
+    head = shown.rstrip(".…").replace(" ", "")
+    full = full.replace(" ", "")
+    return bool(head) and len(full) > len(head) and full.startswith(head)
 
 
 def _looks_like_title(title: str) -> bool:
@@ -211,7 +229,7 @@ class _Page:
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
-        anchor_text = clean_title(_clean(a.text_content()))
+        anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
         for depth, el in enumerate(ancestors):
@@ -355,6 +373,9 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         row, found, full = page.find_row(a, title, url)
         if found is None:
             title, found, full = _date_inside_anchor(title, page.today)
+            if found is None:
+                # 标题取自 title 属性时，链接文字里写的日期（如天津科技局）照样是发布日期
+                _, found, full = _date_inside_anchor(_link_text(a), page.today)
             if found is not None:
                 row = a
         url_date = date_from_url(url, page.today)
