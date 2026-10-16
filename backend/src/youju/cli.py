@@ -174,6 +174,37 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
+    """一次性：重抓还没读出企业名的名单详情，补上按新规则才认得出的附件；默认只预览。"""
+    from youju.lists.rescan import file_server_suffixes, rescan_list_details
+
+    suffixes = args.host_suffix or file_server_suffixes()
+    with session_factory()() as session:
+        results = rescan_list_details(
+            session, apply=args.apply, limit=args.limit, suffixes=suffixes
+        )
+    gained = [r for r in results if r.new_attachments]
+    for r in results:
+        if r.new_attachments:
+            print(f"  #{r.document_id} {r.title}")
+            for name, url in r.new_attachments:
+                print(f"      + {name}  {url}")
+        elif r.reason:
+            print(f"  #{r.document_id} {r.reason}：{r.title}")
+    verb = "新记下" if args.apply else "会新认出"
+    print(
+        f"{'已写入' if args.apply else '预览（未写入）'}：检查 {len(results)} 份名单"
+        f"（{'、'.join(suffixes)}），{verb}附件的 {len(gained)} 份"
+    )
+    if args.apply and gained:
+        print("下一轮名单解析（youju parse-lists）会读这些附件。")
+    elif not args.apply and gained:
+        print("加 --apply 写入")
+    if len(results) == args.limit:
+        print(f"已到 --limit {args.limit} 上限，可能还有没检查的，调大 --limit 再跑")
+    return 0
+
+
 def _cmd_backfill_titles(args: argparse.Namespace) -> int:
     """一次性补全列表页截断的历史标题；默认只预览，加 --apply 才写入。"""
     from youju.classify import doc_kind
@@ -1112,6 +1143,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_backfill_titles)
+
+    p = sub.add_parser(
+        "rescan-list-details",
+        help="一次性：重抓还没读出企业名的名单详情，补上按新规则才认得出的附件"
+        "（默认只预览，加 --apply 才写入）",
+    )
+    p.add_argument("--apply", action="store_true", help="写入；不加只预览")
+    p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
+    p.add_argument(
+        "--host-suffix",
+        action="append",
+        help="只查这些网站后缀（如 .henan.gov.cn，可重复）；默认是附件文件服务器服务的省份",
+    )
+    p.set_defaults(func=_cmd_rescan_list_details)
 
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
