@@ -274,3 +274,42 @@ def test_attachments_on_provincial_file_server() -> None:
     # 文件服务器只对本省的页面放开：别的省的页面链过去，没写"附件"照旧不收
     other = page.replace("附件：<a", "<a")
     assert parse_detail(other, "https://kjt.hebei.gov.cn/a/1.html").attachments == []
+
+
+def test_attachment_rule_counterexamples() -> None:
+    """外站文件只看链接自己的文字里有没有"附件"，不看链接前面写的"附件："；
+    文件服务器按主机名精确匹配，页面主机名要以"."加省份后缀结尾。"""
+    page_url = "https://gxt.fujian.gov.cn/zwgk/tzgg/1.html"
+    # 福建工信厅那种写法：正文"附件：1."后面链到国务院网站一份旧文件，真正的附件在页面底部
+    cited = (
+        "<html><body><div id='zoom'><p>根据相关文件精神，现将有关事项通知如下。</p>"
+        "<p>附件：1.<a href='https://www.gov.cn/zhengce/2023/policy.pdf'>国务院有关文件</a></p>"
+        "<p><a href='/attach/list.xlsx'>名单.xlsx</a></p></div></body></html>"
+    )
+    assert [a.url for a in parse_detail(cited, page_url).attachments] == [
+        "https://gxt.fujian.gov.cn/attach/list.xlsx"
+    ]
+    # 链接自己的文字写了"附件"的外站文件照旧收（原有规则，没改）
+    labelled = cited.replace(">国务院有关文件<", ">附件1：国务院有关文件<")
+    assert "https://www.gov.cn/zhengce/2023/policy.pdf" in [
+        a.url for a in parse_detail(labelled, page_url).attachments
+    ]
+    henan = "http://kjt.henan.gov.cn/2026/09-02/1.html"
+    for href in (
+        "https://xcoss.henan.gov.cn.example.com/typtfile/a.pdf",  # 仿冒主机名
+        "https://xcoss.henan.gov.cn@example.com/typtfile/a.pdf",  # 用户名里写服务器名
+        "https://oss.henan.gov.cn/typtfile/a.pdf",  # 同省别的子域，没列出
+    ):
+        lookalike = (
+            f"<html><body><div id='zoom'><p><a href='{href}'>名单</a></p></div></body></html>"
+        )
+        assert parse_detail(lookalike, henan).attachments == [], href
+    upper = (
+        "<html><body><div id='zoom'><p>"
+        "<a href='https://XCOSS.HENAN.GOV.CN/typtfile/a.pdf'>名单</a></p></div></body></html>"
+    )
+    assert [a.url for a in parse_detail(upper, henan).attachments] == [
+        "https://xcoss.henan.gov.cn/typtfile/a.pdf"
+    ]
+    # 页面主机名只是以"henan.gov.cn"结尾、前面不是"."的，不算河南的网站
+    assert parse_detail(upper, "https://www.zhenan.gov.cn/a/1.html").attachments == []

@@ -184,6 +184,7 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
             session, apply=args.apply, limit=args.limit, suffixes=suffixes
         )
     gained = [r for r in results if r.new_attachments]
+    failed = [r for r in results if r.reason]
     for r in results:
         if r.new_attachments:
             print(f"  #{r.document_id} {r.title}")
@@ -194,7 +195,8 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
     verb = "新记下" if args.apply else "会新认出"
     print(
         f"{'已写入' if args.apply else '预览（未写入）'}：检查 {len(results)} 份名单"
-        f"（{'、'.join(suffixes)}），{verb}附件的 {len(gained)} 份"
+        f"（{'、'.join(suffixes)}），{verb}附件的 {len(gained)} 份，"
+        f"没有新附件的 {len(results) - len(gained) - len(failed)} 份，没抓成功的 {len(failed)} 份"
     )
     if args.apply and gained:
         print("下一轮名单解析（youju parse-lists）会读这些附件。")

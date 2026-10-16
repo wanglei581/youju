@@ -155,7 +155,10 @@ def test_rescan_list_details_command(session, monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert f"  #{henan.id} 河南省2026年第一批入库科技型中小企业名单公告" in out
     assert f"      + {PDF_NAME}  {PDF_URL}" in out
-    assert "预览（未写入）：检查 1 份名单（.henan.gov.cn），会新认出附件的 1 份" in out
+    assert (
+        "预览（未写入）：检查 1 份名单（.henan.gov.cn），会新认出附件的 1 份，"
+        "没有新附件的 0 份，没抓成功的 0 份"
+    ) in out
     assert "加 --apply 写入" in out
 
     assert cli.main(["rescan-list-details", "--apply"]) == 0
@@ -165,5 +168,5 @@ def test_rescan_list_details_command(session, monkeypatch, capsys) -> None:
 
     assert cli.main(["rescan-list-details", "--limit", "1"]) == 0
     out = capsys.readouterr().out
-    assert "会新认出附件的 0 份" in out
+    assert "会新认出附件的 0 份，没有新附件的 1 份，没抓成功的 0 份" in out
     assert "已到 --limit 1 上限" in out
