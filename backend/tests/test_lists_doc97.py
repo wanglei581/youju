@@ -235,3 +235,16 @@ def test_row_end_flag_in_data_stream_and_after_special_tabs() -> None:
     tabs = struct.pack("<H", 0xC615) + bytes([255, 1]) + b"\x01\x00\x02\x00" + bytes([1]) + b"abc"
     assert doc97._grpprl_has_ttp(tabs + struct.pack("<HB", 0x2417, 1), b"")
     assert not doc97._grpprl_has_ttp(tabs + struct.pack("<HB", 0x2417, 0), b"")
+
+
+def test_header_with_note_in_brackets() -> None:
+    """表头括号里有补充说明（重庆"创客中国"决赛名单："企业（团队）名称"）也认名称列。"""
+    rows = [
+        ["序号", "企业（团队）名称", "项目名称"],
+        ["1", "重庆星河智能科技有限公司", "智能巡检机器人"],
+    ]
+    assert [e.name for e in parse_table_rows(rows)] == ["重庆星河智能科技有限公司"]
+    # 括号里的人员说明照样排除
+    assert (
+        parse_table_rows([["序号", "企业名称（联系人）"], ["1", "重庆星河智能科技有限公司"]]) == []
+    )

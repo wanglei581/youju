@@ -106,13 +106,18 @@ def _cell(value: object) -> str:
     return _HAN_GAP.sub("", " ".join(str(value).replace("\xa0", " ").split()))
 
 
+# 表头里括号中的补充说明（"企业（团队）名称""单位名称（盖章）"）比对名称列时去掉；
+# 表头已经过 normalize_name，全角括号换成了半角
+_HEADER_NOTE = re.compile(r"\([^()]*\)")
+
+
 def _header_index(
     headers: list[str], terms: tuple[str, ...], exact: tuple[str, ...] = ()
 ) -> int | None:
     for i, header in enumerate(headers):
-        if (any(term in header for term in terms) or header in exact) and not any(
-            term in header for term in _PERSON_HEADERS
-        ):
+        bare = _HEADER_NOTE.sub("", header)
+        named = any(term in header or term in bare for term in terms) or header in exact
+        if named and not any(term in header for term in _PERSON_HEADERS):
             return i
     return None
 
