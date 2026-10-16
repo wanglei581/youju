@@ -249,3 +249,28 @@ def test_script_attachment_escaped_slashes_and_markup():
     assert len(result.attachments) == 1
     assert result.attachments[0].url == "https://example.gov.cn/notice/files/list.xlsx"
     assert result.attachments[0].name == "附件名单.xlsx"
+
+
+def test_attachments_on_provincial_file_server() -> None:
+    """附件放在本省政府网站群统一的文件服务器上（河南科技厅 kjt.henan.gov.cn → xcoss.henan.gov.cn），
+    链接文字里没写"附件"（10/16：河南 2026 年第一批 11903 家入库科技型中小企业名单原来没认出来）。
+    只认明确列出的文件服务器：同省别的子域、别的政府网站、非政府网站，没写"附件"的照旧不收。"""
+    page = (
+        "<html><body><div id='zoom'><p>现将通过公示的河南省2026年第一批入库企业名单（详见附件）予以公告。</p>"
+        "<p>附件：<a href='https://xcoss.henan.gov.cn/typtfile/20260902/6f6b.pdf'>"
+        "河南省2026年第一批入库科技型中小企业名单</a></p>"
+        "<p>参考：<a href='https://www.henan.gov.cn/zwgk/policy.pdf'>省政府有关文件</a></p>"
+        "<p>参考：<a href='https://www.most.gov.cn/xxgk/policy.pdf'>科技部有关文件</a></p>"
+        "<p>另见<a href='https://other.example.com/notice.pdf'>其他网站的文件</a></p>"
+        "</div></body></html>"
+    )
+    result = parse_detail(page, "http://kjt.henan.gov.cn/2026/09-02/3410350.html")
+    assert [(a.name, a.url) for a in result.attachments] == [
+        (
+            "河南省2026年第一批入库科技型中小企业名单",
+            "https://xcoss.henan.gov.cn/typtfile/20260902/6f6b.pdf",
+        )
+    ]
+    # 文件服务器只对本省的页面放开：别的省的页面链过去，没写"附件"照旧不收
+    other = page.replace("附件：<a", "<a")
+    assert parse_detail(other, "https://kjt.hebei.gov.cn/a/1.html").attachments == []
