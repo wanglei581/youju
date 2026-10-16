@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开票申请 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --line: #EEF0F3; --line2: #E5E6EB;
+    --green: #0E8A63; --g-tint: #E8F7F1; --red: #E5484D; --r-tint: #FDECEC;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 880px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  .count, .meta, .hint { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .hint { margin: 0 0 12px; }
+  .row, .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .filters { margin-bottom: 12px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .meta { font-size: 13px; }
+  .tag { padding: 0 6px; border-radius: 4px; background: var(--brand-tint); color: var(--brand); font-size: 12px; font-weight: 500; }
+  .issued { background: var(--g-tint); color: var(--green); }
+  .rejected { background: var(--r-tint); color: var(--red); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 12px 0; }
+  dt { color: var(--t2); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .copy { margin-left: 8px; padding: 0 8px; font-size: 13px; }
+  .note { flex: 1 1 260px; }
+  .msg { font-size: 13px; color: var(--red); }
+  .ok { color: var(--green); }
+  .empty { text-align: center; color: var(--t2); padding: 48px 0; }
+  .more { display: block; margin: 8px auto 32px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>开票申请</h1>
+    <span class="count" id="count"></span>
+    <div class="auth">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button class="primary" id="load">载入</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">每月统一开一次电子发票：按抬头、税号开具，发到申请里的邮箱，再点"已开"。不能开的写明原因再点"不开"，用户在订单页能看到原因。订单退款后，没开的申请会自动作废；已开的要先冲红再退款。</p>
+  <div class="row filters">
+    <label for="status">显示</label>
+    <select id="status"><option value="pending">待开</option><option value="all">全部</option></select>
+  </div>
+  <div id="list"></div>
+  <button class="more" id="more" hidden>再载入 20 条</button>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const shown = new Set();
+  let cursor = null;
+
+  function headers(json) {
+    const h = { 'X-Admin-Token': youjuAdminToken() };
+    if (json) h['Content-Type'] = 'application/json';
+    return h;
+  }
+  function el(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function errorFor(res) {
+    if (res.status === 401 || res.status === 429) return '口令不对、未配置，或输错次数过多';
+    return `请求失败（${res.status}）`;
+  }
+  function yuan(fen) { return fen === null || fen === undefined ? '—' : (fen / 100).toFixed(2) + ' 元'; }
+  function when(value) { return value ? new Date(value).toLocaleString('zh-CN') : '—'; }
+  const TONE = { '已开': 'tag issued', '不开': 'tag rejected' };
+  function field(dl, label, value, copy) {
+    const dd = el('dd', '', value || '—');
+    if (copy && value) {
+      const button = el('button', 'copy', '复制');
+      button.onclick = async () => {
+        try { await navigator.clipboard.writeText(value); button.textContent = '已复制'; }
+        catch (e) { button.textContent = '复制失败'; }
+      };
+      dd.append(button);
+    }
+    dl.append(el('dt', '', label), dd);
+  }
+  function render(item) {
+    const card = el('section', 'card');
+    const meta = el('div', 'meta');
+    const state = el('span', TONE[item.status] || 'tag', item.status);
+    meta.append(state, el('span', '', `订单 ${item.orderId}`), el('span', '', `申请于 ${when(item.createdAt)}`));
+    const dl = el('dl');
+    field(dl, '抬头类型', item.titleType === 'company' ? '单位' : '个人');
+    field(dl, '发票抬头', item.title, true);
+    if (item.titleType === 'company') field(dl, '税号', item.taxId, true);
+    field(dl, '接收邮箱', item.email, true);
+    field(dl, '实付金额', yuan(item.paidFee));
+    field(dl, '付款时间', when(item.paidAt));
+    field(dl, '支付平台', item.platform === 'ios' ? '苹果手机' : item.platform === 'android' ? '安卓手机' : item.platform);
+    field(dl, '订单状态', item.orderStatus);
+    if (item.note) field(dl, '说明', item.note);
+    if (item.issuedAt) field(dl, '开具时间', when(item.issuedAt));
+    const row = el('div', 'row');
+    const msg = el('span', 'msg');
+    if (item.status === '待开') {
+      const issue = el('button', 'primary', '已开');
+      const note = el('input', 'note');
+      note.placeholder = '不开的原因（用户能看到）';
+      note.maxLength = 300;
+      const reject = el('button', '', '不开');
+      const finish = (label, tone, text) => {
+        state.className = tone; state.textContent = label;
+        issue.remove(); reject.remove(); note.remove();
+        msg.className = 'msg ok'; msg.textContent = text;
+      };
+      issue.onclick = async () => {
+        issue.disabled = reject.disabled = true; msg.textContent = '';
+        try {
+          const res = await fetch(`/api/admin/invoices/${item.id}/issue`, { method: 'POST', headers: headers() });
+          if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
+          finish('已开', 'tag issued', '已标记为已开');
+          try { await refreshCount(); } catch (e) { /* 下次载入更新计数 */ }
+        } catch (err) { msg.className = 'msg'; msg.textContent = err.message; issue.disabled = reject.disabled = false; }
+      };
+      reject.onclick = async () => {
+        if (!note.value.trim()) { msg.className = 'msg'; msg.textContent = '请先写明不开的原因'; return; }
+        issue.disabled = reject.disabled = true; msg.textContent = '';
+        try {
+          const res = await fetch(`/api/admin/invoices/${item.id}/reject`, { method: 'POST', headers: headers(true), body: JSON.stringify({ note: note.value }) });
+          if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
+          finish('不开', 'tag rejected', '已标记为不开');
+          try { await refreshCount(); } catch (e) { /* 下次载入更新计数 */ }
+        } catch (err) { msg.className = 'msg'; msg.textContent = err.message; issue.disabled = reject.disabled = false; }
+      };
+      row.append(issue, note, reject);
+    }
+    row.append(msg);
+    card.append(meta, dl, row);
+    return card;
+  }
+  async function refreshCount() {
+    const res = await fetch('/api/admin/invoices?status=pending&limit=100', { headers: headers() });
+    if (!res.ok) throw new Error(errorFor(res));
+    const items = await res.json();
+    $('count').textContent = `待开 ${items.length}${items.length === 100 ? '+' : ''} 张`;
+  }
+  async function load(reset) {
+    if (reset) { shown.clear(); cursor = null; $('list').textContent = ''; }
+    const after = cursor ? `&before_id=${cursor}` : '';
+    try {
+      const res = await fetch(`/api/admin/invoices?status=${$('status').value}&limit=20${after}`, { headers: headers() });
+      if (!res.ok) throw new Error(errorFor(res));
+      const items = await res.json();
+      await refreshCount();
+      if (!items.length && !after) $('list').append(el('div', 'empty', '没有开票申请'));
+      items.filter((item) => !shown.has(item.id)).forEach((item) => { shown.add(item.id); $('list').append(render(item)); });
+      if (items.length) cursor = Math.min(...items.map((item) => item.id));
+      $('more').hidden = items.length < 20;
+    } catch (err) {
+      $('list').append(el('div', 'empty', err.message));
+      $('more').hidden = true;
+    }
+  }
+  $('load').onclick = () => load(true);
+  $('status').onchange = () => load(true);
+  $('more').onclick = () => load(false);
+})();
+</script>
+</body>
+</html>

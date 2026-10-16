@@ -14,13 +14,21 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
 from youju.access_log import log_uid
 from youju.config import Settings, get_settings
-from youju.models import AdvisorTask, PayEvent, PayOrder, PayReconciliation, User, WorkbenchPass
+from youju.models import (
+    AdvisorTask,
+    InvoiceRequest,
+    PayEvent,
+    PayOrder,
+    PayReconciliation,
+    User,
+    WorkbenchPass,
+)
 from youju.xpay import XPayClient, XPayError
 
 STATUS_LABELS = {
@@ -31,6 +39,8 @@ STATUS_LABELS = {
     "manual": "需人工处理",
     "closed": "已关闭",
 }
+INVOICE_LABELS = {"pending": "待开", "issued": "已开", "rejected": "不开"}
+INVOICE_VOID_NOTE = "订单已退款，不再开票"
 
 
 # 通知发货最多尝试次数、账单下载/解析最多失败次数；到达后转人工 / failed 并告警。
@@ -175,12 +185,43 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
         return "已超过 7 天"
+    invoice = order_invoice(session, order)
+    if invoice is not None and invoice.status == "issued":
+        # 已开的发票要先冲红，不能自助退
+        return "已开过发票，退款请点“遇到问题”告诉我们"
     ticket = order_pass(session, order, lock=lock)
     if ticket is None or ticket.revoked_at is not None:
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
         return "已提交过超过 50 家的名单或已超出每月免费次数"
     return None
+
+
+def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRequest | None:
+    stmt = select(InvoiceRequest).where(InvoiceRequest.order_id == order.id)
+    return session.scalar(stmt.with_for_update() if lock else stmt)
+
+
+def void_invoice(session: Session, order: PayOrder, stamp: datetime) -> None:
+    """退款时还没开的发票作废；已开的留着，由创始人按退款冲红（不能自助退款，见 refund_reason）。"""
+    invoice = order_invoice(session, order, lock=True)
+    if invoice is not None and invoice.status == "pending":
+        invoice.status, invoice.note, invoice.updated_at = "rejected", INVOICE_VOID_NOTE, stamp
+
+
+def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
+    if invoice is None:
+        return None
+    return {
+        "status": INVOICE_LABELS[invoice.status],
+        "titleType": invoice.title_type,
+        "title": invoice.title,
+        "taxId": invoice.tax_id,
+        "email": invoice.email,
+        "note": invoice.note,
+        "issuedAt": invoice.issued_at,
+        "canEdit": invoice.status == "pending",
+    }
 
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
@@ -401,6 +442,7 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
     order.status, order.refund_status, order.error = "refunded", "completed", None
     order.updated_at = stamp
     revoke_pass(session, order, stamp)
+    void_invoice(session, order, stamp)
     return True
 
 
@@ -420,6 +462,7 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
     order.refund_started_at = order.refund_started_at or stamp
     order.refund_order_id = order.refund_order_id or uuid4().hex
     order.updated_at = stamp
+    void_invoice(session, order, stamp)
     # 请求前持久化同一个退款单号和使用期收回；网络期间不持锁阻塞推送。
     session.commit()
     order_id = order.id
@@ -850,6 +893,10 @@ def anonymize(session: Session, user: User) -> None:
         select(PayEvent).where(PayEvent.order_id.in_([o.id for o in orders]))
     ):
         row.summary = {k: v for k, v in row.summary.items() if k not in ("OpenId", "openid")}
+    # 开票申请是订单的会计凭证，和订单一样只断开用户、按订单保存期保留（隐私指引已写明）
+    session.execute(
+        update(InvoiceRequest).where(InvoiceRequest.user_id == user.id).values(user_id=None)
+    )
     session.flush()
 
 
@@ -877,6 +924,10 @@ def overview(session: Session) -> dict:
         or 0,
         "differences": session.scalar(
             select(func.count(PayReconciliation.id)).where(PayReconciliation.status == "different")
+        )
+        or 0,
+        "invoices_pending": session.scalar(
+            select(func.count(InvoiceRequest.id)).where(InvoiceRequest.status == "pending")
         )
         or 0,
     }

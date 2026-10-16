@@ -2,8 +2,9 @@
 
 import asyncio
 import json
+import re
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 from xml.etree import ElementTree
 
@@ -19,7 +20,7 @@ from youju import payments
 from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
 from youju.api.me import KnownUserDep, UserDep
 from youju.config import get_settings
-from youju.models import PayOrder, User
+from youju.models import InvoiceRequest, PayOrder, User
 from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature
 
 
@@ -149,6 +150,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
 def order_out(session: Session, order: PayOrder) -> dict:
     ticket = payments.order_pass(session, order)
     reason = payments.refund_reason(session, order, _stamp())
+    invoice = payments.order_invoice(session, order)
     return {
         "orderId": order.id,
         "status": payments.STATUS_LABELS[order.status],
@@ -159,7 +161,67 @@ def order_out(session: Session, order: PayOrder) -> dict:
         "passRevokedAt": ticket.revoked_at if ticket else None,
         "canRefund": reason is None,
         "refundUnavailableReason": reason,
+        # 只有已完成、没在退款的订单能申请发票；申请过的照原样带回（用户自己填的抬头和邮箱）
+        "canInvoice": order.status == "completed" and order.refund_status is None,
+        "invoice": payments.invoice_out(invoice),
     }
+
+
+# 统一社会信用代码 18 位；老的税务登记号 15 或 20 位：只认数字和大写字母
+_TAX_ID = re.compile(r"[0-9A-Z]{15}|[0-9A-Z]{18}|[0-9A-Z]{20}")
+_EMAIL = re.compile(r"[^@\s]{1,64}@[^@\s.]+(?:\.[^@\s.]+)+")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+class InvoiceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title_type: Literal["personal", "company"]
+    title: str = Field(min_length=1, max_length=100)
+    tax_id: str | None = Field(default=None, max_length=20)
+    email: str = Field(min_length=3, max_length=254)
+
+
+def _invoice_fields(body: InvoiceIn) -> tuple[str, str | None, str]:
+    title, email = body.title.strip(), body.email.strip()
+    tax_id = (body.tax_id or "").strip().upper() or None
+    if not title or _CONTROL.search(title):
+        raise HTTPException(status_code=422, detail="请填写发票抬头")
+    if body.title_type == "company" and (tax_id is None or not _TAX_ID.fullmatch(tax_id)):
+        raise HTTPException(status_code=422, detail="单位抬头要填税号（统一社会信用代码）")
+    if body.title_type == "personal":
+        tax_id = None
+    if not _EMAIL.fullmatch(email):
+        raise HTTPException(status_code=422, detail="请填写能收发票的邮箱")
+    return title, tax_id, email
+
+
+@router.put("/orders/{order_id}/invoice", dependencies=[Depends(_body_size)])
+def request_invoice(
+    order_id: int, body: InvoiceIn, session: SessionDep, user: KnownUserDep
+) -> dict:
+    """申请或修改发票：每笔已完成的订单一份，待开时可以改；不受支付开关控制（停卖后已付款的照常开）。"""
+    title, tax_id, email = _invoice_fields(body)
+    order = owned_order(session, user, order_id, lock=True)
+    if order.status != "completed" or order.refund_status is not None:
+        raise HTTPException(status_code=422, detail="只有已完成、没有退款的订单可以申请发票")
+    stamp = _stamp()
+    invoice = payments.order_invoice(session, order, lock=True)
+    if invoice is not None and invoice.status != "pending":
+        raise HTTPException(
+            status_code=409, detail="这张订单的发票已处理，不能再改；有问题请点“遇到问题”告诉我们"
+        )
+    if invoice is None:
+        invoice = InvoiceRequest(order_id=order.id, user_id=order.user_id, created_at=stamp)
+        session.add(invoice)
+    invoice.title_type, invoice.title, invoice.tax_id, invoice.email = (
+        body.title_type,
+        title,
+        tax_id,
+        email,
+    )
+    invoice.updated_at = stamp
+    session.commit()
+    return order_out(session, order)
 
 
 @router.get("/orders")

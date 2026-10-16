@@ -1284,6 +1284,8 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "passRevokedAt",
         "canRefund",
         "refundUnavailableReason",
+        "canInvoice",
+        "invoice",
     }
     assert result[0]["canRefund"] is False and result[0]["refundUnavailableReason"]
     other = {**HEADERS, "X-WX-OPENID": "other"}

@@ -1189,6 +1189,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             + pay["differences"]
             + pay["reconciliation_pending"]
             + pay["reconciliation_failed"],
+            "invoices": pay["invoices_pending"],
             "deadlines": pending_all,
             "deadlines_7": pending_7,
             "deadlines_30": pending_30,
@@ -2485,6 +2486,124 @@ def unhandle_feedback(
 ) -> dict[str, bool]:
     result = _set_feedback_handled(feedback_id, session, False)
     _audit(request, "feedback_unhandle", feedback_id=feedback_id, changed=result["changed"])
+    return result
+
+
+# ---- 开票申请（D-058 第一期）：用户在"我的 → 订单"里申请，创始人每月统一开具后在这里标记 ----
+
+
+@app.get("/admin/invoices", response_class=HTMLResponse, include_in_schema=False)
+def invoices_console() -> str:
+    """开票申请；口令仅由页面请求管理接口时发送。"""
+    return (Path(__file__).resolve().parent.parent / "admin" / "invoices.html").read_text(
+        encoding="utf-8"
+    )
+
+
+class InvoiceAdminOut(BaseModel):
+    id: int
+    orderId: int
+    # 实付金额（分）、付款时间、平台和订单状态：开票前核对用
+    paidFee: int | None
+    paidAt: datetime | None
+    platform: str
+    orderStatus: str
+    titleType: str
+    title: str
+    taxId: str | None
+    email: str
+    status: str
+    note: str | None
+    createdAt: datetime
+    issuedAt: datetime | None
+
+
+class InvoiceDecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str | None = Field(default=None, max_length=300)
+
+
+def _invoice_admin_out(invoice, order) -> InvoiceAdminOut:
+    from youju.payments import INVOICE_LABELS, STATUS_LABELS
+
+    return InvoiceAdminOut(
+        id=invoice.id,
+        orderId=order.id,
+        paidFee=order.paid_fee,
+        paidAt=order.paid_time,
+        platform=order.platform,
+        orderStatus=STATUS_LABELS[order.status],
+        titleType=invoice.title_type,
+        title=invoice.title,
+        taxId=invoice.tax_id,
+        email=invoice.email,
+        status=INVOICE_LABELS[invoice.status],
+        note=invoice.note,
+        createdAt=invoice.created_at,
+        issuedAt=invoice.issued_at,
+    )
+
+
+@app.get("/api/admin/invoices", response_model=list[InvoiceAdminOut])
+def admin_invoices(
+    session: SessionDep,
+    _admin: AdminDep,
+    status: Literal["pending", "all"] = "pending",
+    before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[InvoiceAdminOut]:
+    from youju.models import InvoiceRequest, PayOrder
+
+    stmt = select(InvoiceRequest, PayOrder).join(PayOrder, PayOrder.id == InvoiceRequest.order_id)
+    if status == "pending":
+        stmt = stmt.where(InvoiceRequest.status == "pending")
+    if before_id is not None:
+        stmt = stmt.where(InvoiceRequest.id < before_id)
+    rows = session.execute(stmt.order_by(InvoiceRequest.id.desc()).limit(limit)).all()
+    return [_invoice_admin_out(invoice, order) for invoice, order in rows]
+
+
+def _decide_invoice(session: Session, invoice_id: int, issue: bool, note: str | None) -> dict:
+    from youju.models import InvoiceRequest, PayOrder
+
+    invoice = session.scalar(
+        select(InvoiceRequest).where(InvoiceRequest.id == invoice_id).with_for_update()
+    )
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="没有这条开票申请")
+    if invoice.status != "pending":
+        raise HTTPException(status_code=409, detail="这条申请已经处理过了")
+    order = session.get(PayOrder, invoice.order_id)
+    if issue and (order is None or order.status != "completed" or order.refund_status is not None):
+        raise HTTPException(status_code=409, detail="订单已退款或不是已完成状态，不能开票")
+    stamp = datetime.now(UTC)
+    invoice.status = "issued" if issue else "rejected"
+    invoice.note = (note or "").strip() or None
+    invoice.issued_at = stamp if issue else None
+    invoice.updated_at = stamp
+    session.commit()
+    return {"status": invoice.status}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/issue")
+def issue_invoice(invoice_id: int, session: SessionDep, _admin: AdminDep, request: Request) -> dict:
+    result = _decide_invoice(session, invoice_id, True, None)
+    _audit(request, "invoice_issue", invoice_id=invoice_id)
+    return result
+
+
+@app.post("/api/admin/invoices/{invoice_id}/reject")
+def reject_invoice(
+    invoice_id: int,
+    body: InvoiceDecisionIn,
+    session: SessionDep,
+    _admin: AdminDep,
+    request: Request,
+) -> dict:
+    if not (body.note or "").strip():
+        raise HTTPException(status_code=422, detail="请写明不开的原因（用户能看到）")
+    result = _decide_invoice(session, invoice_id, False, body.note)
+    _audit(request, "invoice_reject", invoice_id=invoice_id)
     return result
 
 

@@ -978,6 +978,35 @@ class PayOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class InvoiceRequest(Base):
+    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人每月统一开具后在管理台标记。
+    属于订单的会计凭证：注销时只断开用户，不删除；订单按保存期清理时一并删除。"""
+
+    __tablename__ = "invoice_requests"
+    __table_args__ = (
+        UniqueConstraint("order_id", name="uq_invoice_requests_order"),
+        Index("ix_invoice_requests_status_created", "status", "created_at"),
+        CheckConstraint("title_type IN ('personal', 'company')", name="ck_invoice_title_type"),
+        CheckConstraint(
+            "status IN ('pending', 'issued', 'rejected')", name="ck_invoice_request_status"
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("pay_orders.id", ondelete="CASCADE"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # personal：个人；company：单位（要税号）
+    title_type: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(100))
+    tax_id: Mapped[str | None] = mapped_column(String(20))
+    email: Mapped[str] = mapped_column(String(254))
+    # pending 待开；issued 已开；rejected 不开（note 写原因，用户能看到）
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    note: Mapped[str | None] = mapped_column(String(300))
+    issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
 class DeadlineClue(Base):
     """私有线索；只有负责人核对 DocumentDeadline 后才影响公开截止。"""
 
