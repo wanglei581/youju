@@ -7,13 +7,15 @@ SHA-256 的前 4 字节，从小到大排好接在一起（每行 76 个字符�
 用法：python3 scripts/attachment_listing.py <环境 ID> > listing.txt
 """
 
+from __future__ import annotations
+
 import base64
 import hashlib
 import json
 import re
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 PREFIX = "attachments/"
 KEY = re.compile(r"attachments/([0-9a-f]{64})\.(?:docx?|xlsx?|pptx?|pdf)")
@@ -66,7 +68,8 @@ def main() -> int:
         "v": 1,
         "bucket": bucket,
         "prefix": PREFIX,
-        "listed_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        # 本机自带的 python3 可能是 3.9（没有 datetime.UTC）
+        "listed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),  # noqa: UP017
         "count": len(heads),
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
