@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from youju import cli
 from youju.crawler import detail_service
 from youju.crawler.fetcher import FetchResult
+from youju.lists import rescan
 from youju.lists.rescan import file_server_suffixes, rescan_list_details
 from youju.models import Document, DocumentAttachment, DocumentDetail, ListEntry, Source
 
@@ -274,3 +275,58 @@ def test_rescan_list_details_command(session, monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "会新认出附件的 0 份，没有新附件的 1 份，没抓成功或未写入的 0 份" in out
     assert "已到 --limit 1 上限" in out
+
+
+def test_rescan_judges_by_page_url_when_body_comes_from_pdf(session, monkeypatch) -> None:
+    """页面没有正文、只有一个 PDF 附件时，补详情会另抓这个 PDF 取正文；判断页面在哪个省仍按页面网址：
+    PDF 跳到别的政府网站也照补；页面这次跳到了外省，标作附件的文件服务器 PDF 也不补。"""
+    monkeypatch.setattr(detail_service, "extract_pdf_body", lambda content: ("名单正文", None))
+    source = _source(session)
+    henan = _document(session, source, LIST_URL, "河南省2026年第一批入库科技型中小企业名单公告")
+    other_url = "http://kjt.henan.gov.cn/2026/09-02/2.html"
+    other = _document(session, source, other_url, "河南省2026年第二批入库科技型中小企业名单公告")
+    session.commit()
+    bare = (
+        f"<html><body><div id='zoom'><p><a href='{PDF_URL}'>{PDF_NAME}</a></p></div></body></html>"
+    )
+    labelled = bare.replace(f">{PDF_NAME}<", f">附件：{PDF_NAME}<")
+    hebei = "https://kjt.hebei.gov.cn/2026/09-02/2.html"
+    pdf = FetchResult(
+        PDF_URL,
+        "ok",
+        final_url="https://www.gov.cn/files/list.pdf",
+        http_status=200,
+        content=b"%PDF-1.4",
+        content_type="application/pdf",
+    )
+    fake = FakeFetcher(
+        {
+            LIST_URL: FetchResult(LIST_URL, "ok", final_url=LIST_URL, http_status=200, text=bare),
+            other_url: FetchResult(
+                other_url, "ok", final_url=hebei, http_status=200, text=labelled
+            ),
+            PDF_URL: pdf,
+        }
+    )
+    results = rescan_list_details(session, apply=True, fetcher=fake)
+    assert [(r.document_id, r.new_attachments, r.reason) for r in results] == [
+        (henan.id, [(PDF_NAME, PDF_URL)], None),
+        (other.id, [], None),
+    ]
+    assert fake.calls.count(PDF_URL) == 2  # 两份都另抓了 PDF 取正文
+    assert _stored(session, other.id)[1] == []
+
+
+def test_rescan_reads_candidates_in_batches(session, monkeypatch) -> None:
+    monkeypatch.setattr(rescan, "_BATCH", 2)
+    source = _source(session)
+    urls = [f"http://kjt.henan.gov.cn/2026/09-02/{i}.html" for i in range(5)]
+    docs = [_document(session, source, url, f"河南省第{i}批名单公告") for i, url in enumerate(urls)]
+    # 中间夹着不是名单的，分批时也要跳过
+    _document(session, source, "http://kjt.henan.gov.cn/2026/09-02/x.html", "关于申报的通知")
+    session.commit()
+    ok = {url: FetchResult(url, "ok", final_url=url, http_status=200, text=PAGE) for url in urls}
+    assert [
+        r.document_id for r in rescan_list_details(session, limit=3, fetcher=FakeFetcher(ok))
+    ] == [doc.id for doc in docs[:3]]
+    assert len(rescan_list_details(session, limit=50, fetcher=FakeFetcher(ok))) == 5

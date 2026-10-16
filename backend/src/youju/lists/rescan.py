@@ -37,44 +37,55 @@ def file_server_suffixes() -> list[str]:
     return sorted(set(_FILE_SERVERS.values()))
 
 
+_BATCH = 500
+
+
 def _candidates(session: Session, suffixes: list[str], limit: int) -> list[tuple[int, str, str]]:
-    """返回 (编号, 网址, 标题)。只取需要的列，不读正文。"""
+    """返回 (编号, 网址, 标题)。只取需要的列、不读正文；按编号分批读，选够 limit 份就停。"""
     with_entries = select(ListEntry.document_id).distinct()
-    rows = session.execute(
-        select(
-            Document.id,
-            Document.url,
-            Document.title,
-            Document.kind_override,
-            DocumentDetail.final_url,
+    # 粗筛：网址或跳转后的最终网址里有省份后缀（带端口的也算）；精确判断在下面
+    near = or_(
+        *(
+            or_(Document.url.contains(suffix), DocumentDetail.final_url.contains(suffix))
+            for suffix in suffixes
         )
-        .join(Source, Document.source_id == Source.id)
-        .join(DocumentDetail, DocumentDetail.document_id == Document.id)
-        .where(
-            Source.rights_level == 1,
-            DocumentDetail.status == "ok",
-            Document.id.not_in(with_entries),
-            # 粗筛：网址或跳转后的最终网址里有省份后缀（带端口的也算）；精确判断在下面
-            or_(
-                *(
-                    or_(Document.url.contains(suffix), DocumentDetail.final_url.contains(suffix))
-                    for suffix in suffixes
-                )
-            ),
-        )
-        .order_by(Document.id)
-    ).all()
+    )
     picked: list[tuple[int, str, str]] = []
-    for document_id, url, title, kind_override, final_url in rows:
-        # 解析附件时按跳转后的最终网址判断页面在哪个网站，这里同样
-        host = (urlsplit(final_url or url).hostname or "").lower()
-        if not any(host.endswith(suffix) for suffix in suffixes):
-            continue
-        if not classify_title(title, kind_override).is_list:
-            continue
-        picked.append((int(document_id), url, title))
-        if len(picked) >= limit:
+    after = 0
+    while len(picked) < limit:
+        rows = session.execute(
+            select(
+                Document.id,
+                Document.url,
+                Document.title,
+                Document.kind_override,
+                DocumentDetail.final_url,
+            )
+            .join(Source, Document.source_id == Source.id)
+            .join(DocumentDetail, DocumentDetail.document_id == Document.id)
+            .where(
+                Source.rights_level == 1,
+                DocumentDetail.status == "ok",
+                Document.id.not_in(with_entries),
+                near,
+                Document.id > after,
+            )
+            .order_by(Document.id)
+            .limit(_BATCH)
+        ).all()
+        if not rows:
             break
+        after = rows[-1][0]
+        for document_id, url, title, kind_override, final_url in rows:
+            # 解析附件时按跳转后的最终网址判断页面在哪个网站，这里同样
+            host = (urlsplit(final_url or url).hostname or "").lower()
+            if not any(host.endswith(suffix) for suffix in suffixes):
+                continue
+            if not classify_title(title, kind_override).is_list:
+                continue
+            picked.append((int(document_id), url, title))
+            if len(picked) >= limit:
+                break
     return picked
 
 
@@ -148,7 +159,9 @@ def rescan_list_details(
             reason = outcome.failure_reason or outcome.status
             results.append(RescanResult(document_id, titles[document_id], reason=reason))
             continue
-        # 只要按新规则才认得出的：链到文件服务器、且这次打开的页面（跳转后）仍在这个省的网站上
+        # 只要按新规则才认得出的：链到文件服务器、且这次打开的页面（跳转后）仍在这个省的网站上。
+        # 抓成功时 outcome.fetch 是详情页本身那次请求（只有附件 PDF 的页面另抓 PDF 取正文，
+        # 也只在失败时才带回 PDF 那次请求），所以这里是页面网址，不是 PDF 网址
         page_host = urlsplit(outcome.fetch.final_url or url).hostname
         fresh = [
             a
