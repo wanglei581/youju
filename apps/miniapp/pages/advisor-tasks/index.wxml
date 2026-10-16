@@ -17,7 +17,7 @@
       <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
       <view class="advisor-actions">
         <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="download" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">下载 Excel</button>
-        <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写任务</button>
+        <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写</button>
         <button wx:if="{{item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看解读</button>
         <button wx:if="{{item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看条款对照</button>
         <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" catchtap="cancel" disabled="{{busyId !== null}}">取消</button>
