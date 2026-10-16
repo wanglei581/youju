@@ -184,24 +184,27 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
             session, apply=args.apply, limit=args.limit, suffixes=suffixes
         )
     gained = [r for r in results if r.new_attachments]
-    failed = [r for r in results if r.reason]
+    failed = [r for r in results if r.reason and not r.new_attachments]
     for r in results:
         if r.new_attachments:
             print(f"  #{r.document_id} {r.title}")
             for name, url in r.new_attachments:
                 print(f"      + {name}  {url}")
+            if r.reason:
+                print(f"      ！{r.reason}")
         elif r.reason:
             print(f"  #{r.document_id} {r.reason}：{r.title}")
     verb = "新记下" if args.apply else "会新认出"
     print(
         f"{'已写入' if args.apply else '预览（未写入）'}：检查 {len(results)} 份名单"
         f"（{'、'.join(suffixes)}），{verb}附件的 {len(gained)} 份，"
-        f"没有新附件的 {len(results) - len(gained) - len(failed)} 份，没抓成功的 {len(failed)} 份"
+        f"没有新附件的 {len(results) - len(gained) - len(failed)} 份，"
+        f"没抓成功或未写入的 {len(failed)} 份"
     )
     if args.apply and gained:
         print("下一轮名单解析（youju parse-lists）会读这些附件。")
     elif not args.apply and gained:
-        print("加 --apply 写入")
+        print("加 --apply 写入（只追加新附件，不改正文和原有附件）")
     if len(results) == args.limit:
         print(f"已到 --limit {args.limit} 上限，可能还有没检查的，调大 --limit 再跑")
     return 0
@@ -1151,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
         help="一次性：重抓还没读出企业名的名单详情，补上按新规则才认得出的附件"
         "（默认只预览，加 --apply 才写入）",
     )
-    p.add_argument("--apply", action="store_true", help="写入；不加只预览")
+    p.add_argument("--apply", action="store_true", help="写入（只追加新认出的附件）；不加只预览")
     p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
     p.add_argument(
         "--host-suffix",

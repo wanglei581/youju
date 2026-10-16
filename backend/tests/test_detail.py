@@ -299,6 +299,7 @@ def test_attachment_rule_counterexamples() -> None:
         "https://xcoss.henan.gov.cn.example.com/typtfile/a.pdf",  # 仿冒主机名
         "https://xcoss.henan.gov.cn@example.com/typtfile/a.pdf",  # 用户名里写服务器名
         "https://oss.henan.gov.cn/typtfile/a.pdf",  # 同省别的子域，没列出
+        "http://xcoss.henan.gov.cn:8080/typtfile/a.pdf",  # 非默认端口
     ):
         lookalike = (
             f"<html><body><div id='zoom'><p><a href='{href}'>名单</a></p></div></body></html>"
@@ -310,6 +311,10 @@ def test_attachment_rule_counterexamples() -> None:
     )
     assert [a.url for a in parse_detail(upper, henan).attachments] == [
         "https://xcoss.henan.gov.cn/typtfile/a.pdf"
+    ]
+    port = upper.replace("XCOSS.HENAN.GOV.CN", "xcoss.henan.gov.cn:443")
+    assert [a.url for a in parse_detail(port, henan).attachments] == [
+        "https://xcoss.henan.gov.cn:443/typtfile/a.pdf"
     ]
     # 页面主机名只是以"henan.gov.cn"结尾、前面不是"."的，不算河南的网站
     assert parse_detail(upper, "https://www.zhenan.gov.cn/a/1.html").attachments == []

@@ -318,14 +318,23 @@ def _anchors(root: etree._Element):
 _FILE_SERVERS = {"xcoss.henan.gov.cn": ".henan.gov.cn"}
 
 
-def _same_site(host: str | None, page_host: str | None) -> bool:
-    """同一个网站：主机名相同，或者是本省政府网站群统一的附件文件服务器（_FILE_SERVERS）。"""
+def _same_site(target: str, page_host: str | None) -> bool:
+    """同一个网站：主机名相同，或者是本省政府网站群统一的附件文件服务器
+    （_FILE_SERVERS，主机名精确匹配，只认默认端口）。"""
+    parts = urlsplit(target)
+    host = parts.hostname
     if not host or not page_host:
         return False
     if host == page_host:
         return True
-    suffix = _FILE_SERVERS.get(host.lower())
-    return suffix is not None and page_host.lower().endswith(suffix)
+    suffix = _FILE_SERVERS.get(host)
+    if suffix is None or not page_host.lower().endswith(suffix):
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is None or port == {"http": 80, "https": 443}.get(parts.scheme)
 
 
 def _attachments(root: etree._Element, url: str) -> list[Attachment]:
@@ -341,7 +350,7 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
         if not match or match.group(1).lower() not in _FILE_EXTENSIONS:
             continue
         # 外站 PDF 往往是正文引用。只有明确标作附件、或同一个政府网站群的才收入附件题录。
-        if not _same_site(urlsplit(target).hostname, page_host) and "附件" not in label:
+        if not _same_site(target, page_host) and "附件" not in label:
             continue
         if redact_sensitive(target) != target:
             continue
