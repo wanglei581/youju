@@ -393,7 +393,7 @@ def test_attachment_limit(session) -> None:
     assert retry.parsed_documents == 1
 
 
-def test_direct_old_doc_is_unsupported_without_fetch(session) -> None:
+def _direct_list_document(session, url: str) -> None:
     source = Source(
         level="省级",
         province="北京",
@@ -412,8 +412,8 @@ def test_direct_old_doc_is_unsupported_without_fetch(session) -> None:
     session.add(
         Document(
             source_id=source.id,
-            url="https://kw.beijing.gov.cn/old-list.doc",
-            url_key="kw.beijing.gov.cn/old-list.doc",
+            url=url,
+            url_key=url.split("://", 1)[1],
             title="2026年高新技术企业名单公告",
             publish_date=date(2026, 8, 1),
             first_seen_at=now,
@@ -422,10 +422,26 @@ def test_direct_old_doc_is_unsupported_without_fetch(session) -> None:
         )
     )
     session.commit()
+
+
+def test_direct_unsupported_format_is_not_fetched(session) -> None:
+    _direct_list_document(session, "https://kw.beijing.gov.cn/old-list.et")
     fake = FakeFetcher({})
     report = parse_lists(session, fetcher=fake)
     assert report.failures == {"暂不支持旧版或专有格式": 1}
     assert fake.calls == []
+
+
+def test_direct_old_doc_is_parsed(session) -> None:
+    """10/16 起 Word 97 二进制（.doc/.wps）也能读：文件本身就是 .doc 的通知照常下载解析。"""
+    url = "https://kw.beijing.gov.cn/old-list.doc"
+    _direct_list_document(session, url)
+    content = (FIXTURES / "shanxi_green_factories.doc").read_bytes()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=content)})
+    report = parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+    assert report.failures == {}
+    assert session.query(ListEntry).count() == 79
 
 
 def test_cells_drop_line_breaks_inside_chinese_names() -> None:
