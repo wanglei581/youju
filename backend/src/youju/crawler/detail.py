@@ -310,6 +310,36 @@ def _anchors(root: etree._Element):
             )
 
 
+# 各省政府网站群统一的附件文件服务器：页面在这个省的政府网站上（主机名以后缀结尾）时，
+# 链到这台服务器的文件算附件，链接文字里不写"附件"也收。只列核实过的，
+# 不按 gov.cn 子域笼统放开，免得把外链误认成附件。
+# - 10/16 河南：科技厅等的附件放在 xcoss.henan.gov.cn
+#   （2026 年第一批 11903 家入库科技型中小企业名单）
+_FILE_SERVERS = {"xcoss.henan.gov.cn": ".henan.gov.cn"}
+
+
+def _on_file_server(target: str, page_host: str | None) -> bool:
+    """链到本省政府网站群统一的附件文件服务器（_FILE_SERVERS，主机名精确匹配，只认默认端口），
+    且页面在这个省的政府网站上（主机名以"."加省份后缀结尾）。"""
+    parts = urlsplit(target)
+    suffix = _FILE_SERVERS.get(parts.hostname or "")
+    if suffix is None or not page_host or not page_host.lower().endswith(suffix):
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is None or port == {"http": 80, "https": 443}.get(parts.scheme)
+
+
+def _same_site(target: str, page_host: str | None) -> bool:
+    """同一个网站：主机名相同，或者是本省的附件文件服务器（_on_file_server）。"""
+    host = urlsplit(target).hostname
+    if not host or not page_host:
+        return False
+    return host == page_host or _on_file_server(target, page_host)
+
+
 def _attachments(root: etree._Element, url: str) -> list[Attachment]:
     result: list[Attachment] = []
     seen: set[str] = set()
@@ -322,8 +352,8 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
         match = _FILE_PATTERN.search(target) or _FILE_PATTERN.search(label)
         if not match or match.group(1).lower() not in _FILE_EXTENSIONS:
             continue
-        # 外站 PDF 往往是正文引用。只有明确标作附件时才收入附件题录。
-        if urlsplit(target).hostname != page_host and "附件" not in label:
+        # 外站 PDF 往往是正文引用。只有明确标作附件、或同一个政府网站群的才收入附件题录。
+        if not _same_site(target, page_host) and "附件" not in label:
             continue
         if redact_sensitive(target) != target:
             continue
