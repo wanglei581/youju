@@ -154,7 +154,7 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
   const template = read('pages/detail/index.wxml');
   assert.match(template, /<text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}<\/text>/);
   // 标题下只有一行说明（D-053 UI 第一轮）：不再分"名单状态""项目类别"两三行
-  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和名单状态按标题归类，${DISCLAIMER}，以原文为准</view>`));
+  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和名单状态按标题归类，${DISCLAIMER}</view>`));
   assert.equal((template.match(/status-note/g) || []).length, 1);
 });
 

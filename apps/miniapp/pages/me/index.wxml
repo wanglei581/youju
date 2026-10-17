@@ -48,7 +48,7 @@
   </view>
   <view wx:if="{{stats.cities}}" class="data-note">其中已收录 {{stats.cities}} 个城市的栏目。地市目前只收录部分城市，<text class="link" data-url="/pages/about/index" bindtap="go">查看城市和栏目</text>。</view>
   <view wx:if="{{stats.districts}}" class="data-note">其中已收录 {{stats.districts}} 个区县的栏目。区县目前只收录少数地方，<text class="link" data-url="/pages/about/index" bindtap="go">查看区县和栏目</text>。</view>
-  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
+  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>
 
 <view class="card">
@@ -62,5 +62,4 @@
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
-<view class="foot">有据 · 第三方整理 · 每条都有出处</view>
 <view class="tab-page-bottom"></view>

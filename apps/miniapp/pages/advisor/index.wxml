@@ -47,7 +47,7 @@
     </block>
   </view>
   <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
-  <view class="advisor-footer">第三方整理 · 非政府平台<text wx:if="{{aiEnabled}}"> · </text><text wx:if="{{aiEnabled}}" class="link" bindtap="report">投诉举报</text></view>
+  <view wx:if="{{aiEnabled}}" class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>
 <block wx:else>
   <view class="card advisor-card muted">
@@ -55,5 +55,4 @@
     <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
     <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
   </view>
-  <view class="advisor-footer">第三方整理 · 非政府平台</view>
 </block>

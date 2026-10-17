@@ -9,4 +9,3 @@
   <checkbox-group wx:if="{{enabled && !agreed}}" bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" disabled="{{sending}}" /><text>我已阅读并同意工具使用说明，确认有权提交这些企业信息</text></label></checkbox-group>
   <button wx:if="{{enabled && !agreed}}" class="advisor-button btn-primary" bindtap="agree" loading="{{sending}}" disabled="{{!checked || sending}}">同意并返回</button>
 </view>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>

@@ -33,6 +33,5 @@
 .row { display: flex; align-items: center; gap: 24rpx; padding: 28rpx 0; border-bottom: 2rpx solid var(--line); }
 .row--last { border-bottom: 0; }
 .row-text { flex: 1; font-size: 30rpx; }
-.foot { margin-top: 28rpx; text-align: center; font-size: 24rpx; color: var(--t3); }
 
 .danger { color: var(--red); }
