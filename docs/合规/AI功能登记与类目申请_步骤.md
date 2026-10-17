@@ -80,10 +80,10 @@ Grok 检索，Claude 用本机取回原文核对。
 
 1. 登录云开发平台（AI 模块入口：`https://tcb.cloud.tencent.com/dev#/ai`，用小程序管理员的微信扫码），进入我们现在的环境，打开 AI 模块：确认套餐是资源点套餐（不是就先升级），打开要用的模型开关。
 2. 点“获取算法合作协议”，填小程序 AppID 和主体名称，保存两份材料：技术主体的算法备案截图、《深度合成算法合作协议》。截图要截全，包含算法名称、应用场景或备案编号。前提：小程序已做企业认证，环境有效期至少 3 个月。
-3. 在 AI 模块创建 API Key，填到本机 `backend/.env` 和云托管环境变量里，不发给任何人：
-   - `YOUJU_AI_API_KEY=`（刚创建的 Key）
-   - `YOUJU_AI_BASE_URL=https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase`
-   - `YOUJU_AI_MODEL=deepseek-v4-pro-0813`（10/4 创始人选定 DeepSeek；要在协议覆盖的范围内，见上面第 2 条。现在后台预审用的是 DeepSeek 官方接口，对外的 AI 顾问上线前改走这里，并重跑评测。**10/13：协议只写混元，创始人定正常仍走 DeepSeek（D-063），见文首 10/13 状态**）
+3. 在 AI 模块创建 API Key，填到本机 `backend/.env`（团队在本机数据副本上评测用）和云托管 admin 服务的环境变量里（三项一起填），不发给任何人。10/17 创始人定：只有对外的 AI 走这里，后台核对继续直连 DeepSeek 官方，所以填的是单独的 `YOUJU_AI_ADVISOR_*`，原来的 `YOUJU_AI_*` 不动：
+   - `YOUJU_AI_ADVISOR_API_KEY=`（刚创建的 Key）
+   - `YOUJU_AI_ADVISOR_BASE_URL=https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase`
+   - `YOUJU_AI_ADVISOR_MODEL=deepseek-v4-pro-0813`（10/4 创始人选定 DeepSeek；要在协议覆盖的范围内，见上面第 2 条。现在后台预审用的是 DeepSeek 官方接口，对外的 AI 顾问上线前改走这里，并重跑评测。**10/13：协议只写混元，创始人定正常仍走 DeepSeek（D-063），见文首 10/13 状态**）
 4. 把协议里的算法名称和备案编号告诉团队（页面公示和登记材料要用）；协议本身不用发。
 
 **第 2 步：属地网信办登记（周期最长，尽早问）**

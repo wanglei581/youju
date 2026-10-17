@@ -927,6 +927,40 @@ def test_worker_enabled_independently(session, settings, doc, monkeypatch):
     assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None}]
 
 
+def test_worker_uses_separate_advisor_endpoint(session, settings, doc, monkeypatch):
+    """对外 AI 单独设置（走腾讯云开发）时，顾问任务用单独的地址、密钥、模型和附加参数；
+    任务记下的模型、用量台账也是单独的那个（10/17 创始人确认：后台核对仍直连原来的）。"""
+    settings.ai_advisor_base_url = "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase"
+    settings.ai_advisor_api_key = SecretStr("advisor-test-value")
+    settings.ai_advisor_model = "advisor-model"
+    settings.ai_advisor_request_extra = {}
+    settings.ai_request_extra = {"thinking": {"type": "disabled"}}
+    task = direct_task(session, doc)
+    task.status = "queued"
+    session.commit()
+    fake = FakeChat()
+    # 真实客户端带着创建时的模型名，用量台账按它记
+    fake.model = "advisor-model"
+    calls = []
+
+    def factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return fake
+
+    monkeypatch.setattr(service, "ChatClient", factory)
+    result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
+    assert result["done"] == 1 and fake.closed
+    assert calls == [
+        (
+            (settings.ai_advisor_base_url, "advisor-test-value", "advisor-model"),
+            {"timeout": 180, "max_retries": 0, "extra_body": {}},
+        )
+    ]
+    session.expire_all()
+    assert session.get(AdvisorTask, task.id).model == "advisor-model"
+    assert session.scalars(select(AIUsage.model)).all() == ["advisor-model"]
+
+
 def test_get_result_invalidated_and_cleanup(client, session, settings, doc):
     created = create(client, doc.id).json()
     task = session.get(AdvisorTask, created["id"])

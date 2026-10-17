@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     ai_request_extra: dict = {}
     # 后台核对（截止日期交叉抽取、质检）用的模型；空值表示和 ai_model 相同。调用量大，适合便宜的模型
     ai_background_model: str = ""
+    # 对外的 AI（政策解读、条款对照）单独的调用地址、密钥、模型和附加参数（10/17 创始人确认）：
+    # 对外 AI 走腾讯云开发（和微信「深度合成 > AI 问答」类目的算法合作协议、网信办登记材料一致），
+    # 后台核对继续直连 DeepSeek 官方。地址、密钥、模型三项要么都不填（沿用上面后台的），要么一起填；
+    # 附加参数不填沿用 YOUJU_AI_REQUEST_EXTRA，换平台时按新平台填（如 {}）
+    ai_advisor_base_url: str = ""
+    ai_advisor_api_key: SecretStr | None = None
+    ai_advisor_model: str = ""
+    ai_advisor_request_extra: dict | None = None
     ai_model_label: str = ""
     ai_model_filing: str = ""
 
@@ -143,6 +151,19 @@ class Settings(BaseSettings):
             return values
 
         return init_settings, env_settings, public_dotenv, public_file_secrets
+
+    @model_validator(mode="after")
+    def _advisor_endpoint_complete(self) -> "Settings":
+        """对外 AI 单独设置时三项一起填：只改了地址、没改密钥或模型，
+        每次调用都会失败，所以配错就不启动。"""
+        key = self.ai_advisor_api_key.get_secret_value() if self.ai_advisor_api_key else ""
+        parts = (bool(self.ai_advisor_base_url), bool(key), bool(self.ai_advisor_model))
+        if any(parts) and not all(parts):
+            raise ValueError(
+                "对外 AI 单独设置时，YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、"
+                "YOUJU_AI_ADVISOR_MODEL 三项要一起填"
+            )
+        return self
 
     @model_validator(mode="after")
     def _production_identity(self) -> "Settings":
