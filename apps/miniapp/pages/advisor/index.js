@@ -5,12 +5,13 @@ const context = require('../../utils/tool-context.js');
 
 Page({
   data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
-    aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '' },
+    aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
   onUnload() { this.onHide(); },
   clearContext() { this.setData({ context: null }); },
+  toggleScope() { this.setData({ showScope: !this.data.showScope }); },
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具' });

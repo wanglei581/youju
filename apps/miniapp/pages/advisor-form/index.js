@@ -158,14 +158,14 @@ Page({
       if (this.dead || this.taskOwner !== request.owner) return;
       this.file = null;
       this.setData({ submitting: false, accepted: true, text: '', fileName: '', rowCount: 0 });
-      if (this.visible) wx.redirectTo({ url: `/pages/advisor-tasks/index?taskId=${encodeURIComponent(task.id)}`, fail: () => wx.showToast({ title: '已提交，请到任务中心查看', icon: 'none' }) });
+      if (this.visible) wx.redirectTo({ url: `/pages/advisor-tasks/index?taskId=${encodeURIComponent(task.id)}`, fail: () => wx.showToast({ title: '已提交，请到“我的记录”查看', icon: 'none' }) });
     }).catch((err) => {
       if (!request.existing && err.status >= 400 && err.status < 500 && err.status !== 408) {
         try { idempotency.confirm(wx, request); } catch (ignored) { /* 存储失败保留旧键 */ }
       }
       if (this.dead || this.taskOwner !== request.owner) return;
       const change = { submitting: false, agreed: err.status === 403 ? false : this.data.agreed,
-        inputError: (!err.status || [502, 503, 504].includes(err.status)) ? `${err.message}。提交状态尚未确认；可重试同一内容，或到任务中心查看是否已受理。` : err.message };
+        inputError: (!err.status || [502, 503, 504].includes(err.status)) ? `${err.message}。提交状态尚未确认；可重试同一内容，或到“我的记录”查看是否已受理。` : err.message };
       if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, { remaining: 0, passActive: false, inputError: limitText(this.data.offer) });
       if (['FREE_ROW_LIMIT', 'PASS_ROW_LIMIT'].includes(err.code)) {
         const limit = err.detail && err.detail.maxRows;

@@ -1,7 +1,7 @@
 <notice-bar />
 <view wx:if="{{loading}}" class="card advisor-card muted">正在读取工具与额度…</view>
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button><button wx:else class="advisor-button" bindtap="load">重试</button></view>
-<view wx:elif="{{accepted}}" class="card advisor-card"><view class="advisor-title">任务已提交</view><view class="advisor-text">可以离开页面，稍后到任务中心查看结果。</view><button class="advisor-button btn-primary" bindtap="tasks">查看任务</button></view>
+<view wx:elif="{{accepted}}" class="card advisor-card"><view class="advisor-title">已提交</view><view class="advisor-text">可以离开页面，稍后到“我的记录”查看结果。</view><button class="advisor-button btn-primary" bindtap="tasks">查看任务</button></view>
 <block wx:elif="{{enabled}}">
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
@@ -31,7 +31,7 @@
   <view class="card advisor-card">
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '提交前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
-    <view class="advisor-text muted">原文件不保存；提交的名单 7 天后清空，结果 30 天后删除。在任务中心可取消排队任务、删除任务及结果。</view>
+    <view class="advisor-text muted">原文件不保存；提交的名单 7 天后清空，结果 30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !previewed}}">提交任务</button>
     <button class="advisor-button" bindtap="tasks" disabled="{{submitting}}">查看已有任务</button>
   </view>

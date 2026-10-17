@@ -53,20 +53,38 @@ function sessionHarness(options = {}) {
   return { session, state, timers, storage: local, advance, keys, created: () => created, polled: () => polled };
 }
 
-test('结果分成固定六节，保留原句、段落、missing 和人工核对值', () => {
+test('结果按六类顺序排，没摘到的类别合成一行；保留原句、引用编号和人工核对值（10/17 精简）', () => {
   const result = logic.resultView({
     items: [{ type: '材料', text: '材料原句', refs: [{ pid: 'P021', quote: '材料原句' }] }, { type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }],
     missing: ['支持', '条件', '时间', '方式'], verified: [{ type: '时间', value: '2026-11-01', time: '17:00', quote: '截止原句' }],
     notice: '原样提示', warning: '原样警示', attachment_notice: '附件提示', disclosure: { modelLabel: '模型', filingNo: '编号' },
   });
-  assert.deepEqual(result.sections.map((section) => section.title), ['申报对象', '支持方式', '申报条件', '申报时间', '申报方式', '材料清单']);
+  assert.deepEqual(result.sections.map((section) => section.title), ['申报对象', '材料清单']);
+  assert.equal(result.missingText, '支持方式、申报条件、申报时间、申报方式');
   assert.equal(result.sections[0].items[0].text, '对象原句');
-  assert.equal(result.sections[5].items[0].refs[0].pid, 'P021');
-  assert.deepEqual(result.sections.map((section) => section.missing), [false, true, true, true, true, false]);
+  assert.equal(result.sections[1].items[0].refs[0].pid, 'P021');
   assert.equal(result.verified[0].displayValue, '2026-11-01 17:00');
   assert.equal(result.verified[0].quote, '截止原句');
   assert.equal(result.notice, '原样提示'); assert.equal(result.warning, '原样警示');
   assert.equal(result.attachmentNotice, '附件提示'); assert.equal(result.disclosure, '模型：模型｜备案号：编号');
+  // 后端没标 missing、但这一类一条都没有：也算没摘到
+  assert.equal(logic.resultView({ items: [{ type: '对象', text: '对象原句' }] }).missingText, '支持方式、申报条件、申报时间、申报方式、材料清单');
+});
+
+test('同一句原文只出现一次：首次出现处标"也属于"，只剩重复句的类别写和哪一类相同（10/17）', () => {
+  const same = '请各市组织企业通过平台申报';
+  const result = logic.resultView({ items: [
+    { type: '时间', text: same, refs: [{ pid: 'P005', quote: same }] },
+    { type: '方式', text: same, refs: [{ pid: 'P005', quote: same }] },
+    { type: '材料', text: `${same}\n`, refs: [] }, { type: '材料', text: '提交申请书', refs: [] },
+    { type: '材料', text: '提交申请书', refs: [] },
+  ] });
+  assert.deepEqual(result.sections.map((section) => section.title), ['申报时间', '申报方式', '材料清单']);
+  const [time, way, material] = result.sections;
+  assert.deepEqual(time.items.map((item) => [item.text, item.alsoInText]), [[same, '申报方式、材料清单']]);
+  assert.deepEqual(way.items, []); assert.equal(way.sameAs, '申报时间');
+  assert.deepEqual(material.items.map((item) => item.text), ['提交申请书']); assert.equal(material.sameAs, '申报时间');
+  assert.equal(result.missingText, '申报对象、支持方式、申报条件');
 });
 
 test('拒答不显示六节；disclosure 两项都非空才显示', () => {
@@ -89,6 +107,14 @@ test('须知未勾选不保存、不创建；同意后本机记住且重复点�
   harness.session.hide();
   const second = sessionHarness({ storage: local }); second.session.show(); await flush();
   assert.equal(second.state.needsConsent, false); assert.equal(second.created(), 1); second.session.hide();
+});
+
+test('使用须知一个按钮：start 等于确认并开始，本机记住，重复点击只建一次（10/17）', async () => {
+  const local = storage(); const harness = sessionHarness({ storage: local });
+  harness.session.show(); await flush(); assert.equal(harness.state.phase, 'consent'); assert.equal(harness.created(), 0);
+  harness.session.start(); harness.session.start(); await flush();
+  assert.equal(harness.created(), 1); assert.equal(logic.hasConsent(local), true); assert.equal(harness.state.needsConsent, false);
+  harness.session.hide();
 });
 
 test('每两秒轮询；隐藏页清除定时器，忽略在途结果，返回只查询已有任务', async () => {
@@ -135,7 +161,7 @@ test('90 秒还没好：改成每 15 秒查一次，完成后自动显示；挂�
   hung.session.hide();
 
   const idle = sessionHarness(); idle.session.show(); await flush(); await idle.advance(15 * 60000 + 15000);
-  assert.equal(idle.timers.size, 0); assert.match(idle.state.error, /请稍后在“我的任务”里查看结果/);
+  assert.equal(idle.timers.size, 0); assert.match(idle.state.error, /请稍后在“我的 → 我的记录”里查看结果/);
   const before = idle.polled(); idle.session.hide(); idle.session.show(); await flush(); await idle.advance(2000);
   assert.ok(idle.polled() > before); assert.equal(idle.created(), 1); idle.session.hide();
 });
@@ -212,13 +238,13 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
     Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
     const text = render(read('components/tool-fab/index.wxml'), { ...fab.data, bottomRpx: 0, blocked: false });
-    assert.equal(text, aiEnabled ? 'AI 内测' : '');
+    assert.equal(text, aiEnabled ? 'AI 解读' : '');
     const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers },
       { wx: { setNavigationBarTitle: ({ title }) => { navigationTitle = title; } } });
     page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await flush();
     const rendered = render(read('pages/advisor/index.wxml'), page.data);
     if (aiEnabled) {
-      assert.match(rendered, /内部测试：结果由 AI 模型根据原文生成/); assert.match(rendered, /今天剩余 3 次/); assert.match(rendered, /解读这篇通知/);
+      assert.match(rendered, /内部测试：摘录通知原文原句/); assert.match(rendered, /今天还能用 3 次（失败、拒答不扣次数）/); assert.match(rendered, /开始解读/);
       assert.match(rendered, /模型：模型名称｜备案号：登记编号/);
       assert.deepEqual(page.data.recent.map((task) => task.kind).sort(), dataEnabled ? ['compare', 'interpret'] : ['interpret']);
     } else {
@@ -226,7 +252,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     }
     assert.equal(rendered.includes('批量名单比对'), dataEnabled);
     assert.equal(navigationTitle, aiEnabled && !dataEnabled ? 'AI 工具 · 内部测试' : '工具');
-    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /请先打开一份申报通知，在详情页点右下角“AI 内测”/); assert.match(noContext, /去找通知/); }
+    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，点右下角“AI 解读”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }
   for (const file of ['components/tool-fab/index.wxml', 'pages/advisor/index.wxml']) assertAiGuarded(read(file));
@@ -243,8 +269,8 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
-    assert.equal(output.includes('内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。'), enabled === true);
-    assert.equal(navigationTitle, enabled === true ? '政策解读 · 内部测试' : '工具');
+    assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
+    assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '工具');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
   }
 });
@@ -271,8 +297,16 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   page.onLoad({ docId: '42', title: encodeURIComponent('通知 & 标题'), taskId: 7 }); page.onShow(); await flush();
   page.setData({ result: logic.resultView({ notice: '固定原文提示', items: [{ type: '对象', text: '很长的原句，完整显示。', refs: [{ pid: 'P002', quote: '很长的原句，完整显示。' }] }], missing: ['材料'], verified: [{ value: '人工核对值', quote: '核对原句' }], warning: '警示原文', attachment_notice: '附件原文' }) });
   const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
-  for (const expected of ['内部测试：结果由 AI 模型根据原文生成', '固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '段落 P002', '没有摘录到相关原句（原文可能没写，也可能漏摘），请查看原文', '警示原文', '附件原文', '第三方整理 · 非政府平台']) assert.ok(output.includes(expected), expected);
+  for (const expected of ['固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '正文里没找到：支持方式、申报条件、申报时间、申报方式、材料清单。可能写在附件里，也可能原文没写，请查看原文。', '这句摘错了', '看原文', '警示原文', '附件原文', '第三方整理 · 非政府平台']) assert.ok(output.includes(expected), expected);
   assert.doesNotMatch(output, /模型：/);
+  // 10/17：免责只说一次（出结果后只留吸顶的"AI 生成"提示）；不显示段落编号；附件提醒放在分类前面
+  assert.doesNotMatch(output, /内部测试：摘录通知原文原句/); assert.doesNotMatch(output, /段落 P0/);
+  assert.ok(output.indexOf('附件原文') < output.indexOf('申报对象'));
+  // 解读结果下面可选"和我的企业对一下"：没开条款对照的不显示、点了也不跳；开了才带通知编号进条款对照
+  assert.doesNotMatch(output, /和我的企业对一下/); const before = urls.length; page.clause(); assert.equal(urls.length, before);
+  page.setData({ clauseEnabled: true });
+  assert.match(render(read('pages/advisor-interpret/index.wxml'), page.data), /和我的企业对一下（可选）/); page.clause();
+  assert.equal(urls.at(-1), `/pages/advisor-clause/index?docId=42&title=${encodeURIComponent('通知 & 标题')}`);
   page.original(); assert.equal(urls.at(-1), '/pages/detail/index?id=42');
   page.feedback(); assert.equal(urls.at(-1), '/pages/feedback/index?id=42&title=' + encodeURIComponent('通知 & 标题'));
   page.setData({ result: logic.resultView({ refusal: '拒答原文' }) });
@@ -311,7 +345,7 @@ test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问�
     const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { navigateTo: ({ url }) => urls.push(url), setNavigationBarTitle() {} } });
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
-    assert.equal(output.includes('政策解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
+    assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
     assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*下载 Excel/);
     assert.equal(listed, 1);
     if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);
@@ -326,7 +360,7 @@ test('关闭权限后任务列表请求失败，也不显示此前的解读任�
     '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps(true, false)), advisorTasks: () => Promise.reject(new Error('网络错误')) },
     '../../utils/advisor.js': helpers,
   }, { wx: { setNavigationBarTitle() {} } });
-  page.setData({ aiEnabled: true, kinds: ['interpret'], items: [{ id: 7, kind: 'interpret', kindLabel: '政策解读' }] });
+  page.setData({ aiEnabled: true, kinds: ['interpret'], items: [{ id: 7, kind: 'interpret', kindLabel: 'AI 解读' }] });
   page.onShow(); await flush();
   assert.deepEqual(plain(page.data.items), []); assert.doesNotMatch(render(read('pages/advisor-tasks/index.wxml'), page.data), /政策解读|AI/);
   page.onHide();

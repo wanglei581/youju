@@ -46,7 +46,11 @@ Component({
     open() {
       if (!this.data.aiEnabled || this.properties.blocked || this.data.navigating) return;
       this.setData({ navigating: true });
-      wx.navigateTo({ url: context.url(this.properties), complete: () => { if (this.alive) this.setData({ navigating: false }); } });
+      // 直接进解读；这份文件只能做条款对照时进条款对照（10/17：不再先进工具页）
+      const ai = this.properties.ai;
+      const onlyClause = !!ai && typeof ai === 'object' && ai.interpret !== true && ai.clause === true;
+      const url = onlyClause ? context.clauseUrl(this.properties) : context.interpretUrl(this.properties);
+      wx.navigateTo({ url, complete: () => { if (this.alive) this.setData({ navigating: false }); } });
     },
   },
 });

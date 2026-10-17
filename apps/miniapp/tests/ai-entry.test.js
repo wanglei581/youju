@@ -17,7 +17,7 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const liveTimers = new Set();
 test.afterEach(() => { liveTimers.forEach(clearTimeout); liveTimers.clear(); });
 const trackedTimeout = (fn, delay) => { const id = setTimeout(() => { liveTimers.delete(id); fn(); }, delay); liveTimers.add(id); return id; };
-const NOTICE = 'AI 生成 · 内部测试：结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
+const NOTICE = 'AI 生成 · 内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。';
 const caps = (enabled, extra = {}) => ({
   data_tools: { enabled: false, features: [], remaining: {} },
   ai_advisor: enabled === false ? { enabled: false, features: [], remaining: {} }
@@ -58,7 +58,7 @@ function fab(api, properties = {}) {
   };
 }
 
-test('入口只在 ai_advisor.enabled 严格为 true 时显示“AI 内测”，其余返回一律不渲染也不能进入', async () => {
+test('入口只在 ai_advisor.enabled 严格为 true 时显示“AI 解读”（内测包也叫这个，10/17），其余返回一律不渲染也不能进入', async () => {
   const cases = [
     [{ statusCode: 200, data: caps(true) }, true],
     [{ statusCode: 200, data: caps(false) }, false],
@@ -78,7 +78,7 @@ test('入口只在 ai_advisor.enabled 严格为 true 时显示“AI 内测”，
     assert.equal(request.url, 'https://test.invalid/api/v1/advisor/capabilities');
     if (response === 'fail') request.fail(); else request.success(response);
     await flush(); await flush();
-    assert.equal(button.text(), shown ? 'AI 内测' : '', JSON.stringify(response));
+    assert.equal(button.text(), shown ? 'AI 解读' : '', JSON.stringify(response));
     assert.equal(/AI/.test(button.text()), shown);
     button.view.open();
     assert.equal(button.navigations.length, shown ? 1 : 0);
@@ -90,15 +90,20 @@ test('入口带当前通知进入；通知没加载完（blocked）时不显示�
   const blocked = fab(api, { blocked: true, docId: '42', docTitle: '通知' }); await flush();
   assert.equal(blocked.text(), ''); blocked.view.open(); assert.equal(blocked.navigations.length, 0);
   const button = fab(api, { docId: '42', docTitle: '通知：科技 & 申报（50%）' }); await flush();
-  assert.equal(button.text(), 'AI 内测');
+  assert.equal(button.text(), 'AI 解读');
   button.view.open(); button.view.open(); assert.equal(button.navigations.length, 1);
   const url = button.navigations[0].url;
-  assert.equal(url, `/pages/advisor/index?docId=42&title=${encodeURIComponent('通知：科技 & 申报（50%）')}`);
+  // 10/17：直接进解读页，不再先进工具页
+  assert.equal(url, `/pages/advisor-interpret/index?docId=42&title=${encodeURIComponent('通知：科技 & 申报（50%）')}`);
   const query = Object.fromEntries(new URL(`https://test.invalid${url}`).searchParams);
   query.title = encodeURIComponent(query.title); // 小程序 onLoad 里再解码一次
   assert.deepEqual(context.read(query), { docId: '42', title: '通知：科技 & 申报（50%）', label: '当前通知：通知：科技 & 申报（50%）' });
   button.navigations[0].complete(); assert.equal(button.view.data.navigating, false);
   assert.equal(context.url({}), '/pages/advisor/index'); assert.equal(context.read({}), null);
+  // 这份文件只能做条款对照（详情接口 ai.interpret 为假）时直接进条款对照
+  const onlyClause = fab(api, { docId: '43', docTitle: '只能对照', ai: { open: false, interpret: false, clause: true } }); await flush();
+  assert.equal(onlyClause.text(), 'AI 解读'); onlyClause.view.open();
+  assert.equal(onlyClause.navigations[0].url, `/pages/advisor-clause/index?docId=43&title=${encodeURIComponent('只能对照')}`);
 });
 
 test('同一次启动多个页面共用一个请求，失败也缓存；AI 页面 refresh 才重新请求；关掉后入口随之消失', async () => {
@@ -106,7 +111,7 @@ test('同一次启动多个页面共用一个请求，失败也缓存；AI 页�
   const one = fab(harness.api); const two = fab(harness.api);
   assert.equal(harness.calls(), 1);
   harness.pending[0].success({ statusCode: 200, data: caps(true) }); await flush(); await flush();
-  assert.equal(one.text(), 'AI 内测'); assert.equal(two.text(), 'AI 内测');
+  assert.equal(one.text(), 'AI 解读'); assert.equal(two.text(), 'AI 解读');
   one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(harness.calls(), 1);
   const refreshed = harness.api.advisorCapabilities({ refresh: true });
   assert.equal(harness.api.advisorCapabilities({ refresh: true }), refreshed); assert.equal(harness.calls(), 2);
@@ -182,7 +187,7 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
       if (enabled) {
         // 标注在页面最上方（notice-bar 之后、其他内容之前）
         assert.ok(output.startsWith(NOTICE), name);
-        if (name === 'advisor-tasks') assert.equal(titles.at(-1), '任务中心');
+        if (name === 'advisor-tasks') assert.equal(titles.at(-1), '我的记录');
         else assert.match(titles.at(-1), /内部测试/, name);
       } else {
         assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/, name);
@@ -213,7 +218,7 @@ test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI �
     if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
     page.onShow(); await flush(); await flush();
     const output = render(read(`pages/${name}/index.wxml`), page.data);
-    assert.ok(output.startsWith('AI 生成：结果由 AI 模型根据原文生成'), name);
+    assert.ok(output.startsWith('AI 生成：摘录通知原文原句'), name);
     assert.doesNotMatch(output, /内部测试/, name);
     assert.ok(titles.length > 0 && titles.every((title) => !/内部测试/.test(title)), name);
     page.onUnload ? page.onUnload() : page.onHide();
@@ -242,7 +247,7 @@ test('内部测试标注：后端 disclosure 带说明文字时优先显示后�
   const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { setNavigationBarTitle() {} } });
   page.onLoad({}); page.onShow(); await flush(); await flush();
   const output = render(read('pages/advisor/index.wxml'), page.data);
-  assert.match(output, /内部测试：后端给出的 AI 生成说明/); assert.doesNotMatch(output, /结果由 AI 模型根据原文生成/);
+  assert.match(output, /内部测试：后端给出的 AI 生成说明/); assert.doesNotMatch(output, /摘录通知原文原句，可能不全/);
   assert.match(output, /模型：模型甲｜备案号：编号乙/);
 });
 

@@ -8,7 +8,7 @@ const { todayISO } = require('../../utils/format.js');
 
 Page({
   data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
-    checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false,
+    checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false, showTerms: false, showMore: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
     qualificationOptions: [], today: '', cityRegion: [] },
   onLoad(query = {}) {
@@ -92,6 +92,15 @@ Page({
   },
   check(e) { if (this.session) this.session.check((e.detail.value || []).includes('agree')); },
   agree() { if (this.data.aiEnabled && this.session) this.session.agree(); },
+  // 使用须知只有一个"我知道了，开始对照"按钮（10/17）
+  start() { if (this.data.aiEnabled && this.session) this.session.start(); },
+  toggleTerms() { this.setData({ showTerms: !this.data.showTerms }); },
+  // 研发费用、已有资质默认收起；已经填了的不收起，免得看不到
+  toggleMore() {
+    const form = this.data.form;
+    const filled = !!(form.rdAmount || form.rdYear || (form.qualification || []).length);
+    this.setData({ showMore: filled ? true : !this.data.showMore });
+  },
   retry() {
     if (!this.data.aiEnabled || !this.data.canRetry) return;
     // 上次是没连上：接着用原来的任务或请求编号，不用重新填写，也不会重复扣次数

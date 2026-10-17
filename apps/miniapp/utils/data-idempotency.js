@@ -58,7 +58,7 @@ function load(storage) {
   const names = isMap(others) ? Object.keys(others) : [];
   if (!isMap(saved) || !isHex(saved.owner) || !validList(saved.entries) || !isMap(others) || names.length > MAX_TOTAL
     || names.some(name => !isHex(name) || name === saved.owner || !validList(others[name]))
-    || names.reduce((sum, name) => sum + others[name].length, saved.entries.length) > MAX_TOTAL) throw new Error('安全重试记录无法读取，请先到任务中心核对');
+    || names.reduce((sum, name) => sum + others[name].length, saved.entries.length) > MAX_TOTAL) throw new Error('安全重试记录无法读取，请先到“我的记录”核对');
   return { owner: saved.owner, entries: saved.entries, others: { ...others } };
 }
 function save(storage, state) {
@@ -95,8 +95,8 @@ function claim(storage, owner, body, stamp = Date.now()) {
       existing.expiresAt = stamp + TTL; save(storage, state);
       return { ...existing, existing: true, owner };
     }
-    if (state.entries.length >= MAX_PENDING) throw new Error('未确认的提交较多，请先到任务中心核对并重试原内容');
-    if (Object.keys(state.others).reduce((sum, name) => sum + state.others[name].length, state.entries.length) >= MAX_TOTAL) throw new Error('本机其他账号的未确认提交较多，请先回到原账号，在任务中心核对并重试原内容');
+    if (state.entries.length >= MAX_PENDING) throw new Error('未确认的提交较多，请先到“我的记录”核对并重试原内容');
+    if (Object.keys(state.others).reduce((sum, name) => sum + state.others[name].length, state.entries.length) >= MAX_TOTAL) throw new Error('本机其他账号的未确认提交较多，请先回到原账号，在“我的记录”核对并重试原内容');
     const entry = { digest, key: `data-${stamp.toString(36)}-${Math.random().toString(36).slice(2)}-${digest.slice(0,16)}`, expiresAt: stamp + TTL };
     state.entries.push(entry); save(storage, state);
     return { ...entry, existing: false, owner };

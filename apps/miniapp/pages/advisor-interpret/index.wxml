@@ -6,26 +6,37 @@
   <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
 </view>
 <block wx:elif="{{aiEnabled}}">
-  <view class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
+  <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17） -->
+  <view wx:if="{{!(phase === 'done' && result.notice)}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
+  <!-- 第一次用：一段话说清楚做什么，一个按钮开始；完整说明默认收起（10/17） -->
   <view wx:if="{{needsConsent}}" class="card advisor-card">
     <view class="advisor-title">使用须知</view>
-    <view wx:for="{{terms}}" wx:key="*this" class="advisor-text">{{index + 1}}. {{item}}</view>
-    <checkbox-group bindchange="check"><label class="advisor-check"><checkbox value="agree" checked="{{checked}}" /><text>我已阅读并知晓上述说明</text></label></checkbox-group>
-    <button class="advisor-button btn-primary" disabled="{{!checked}}" bindtap="agree">开始使用</button>
+    <view class="advisor-text">AI 会把这份通知里的申报对象、条件、时间、材料等原文原句摘出来分好类，约半分钟。只摘原文、不改写，仅供参考；不判断能否申报，以原文和主管部门解释为准。</view>
+    <button class="advisor-button btn-primary" bindtap="start">我知道了，开始解读</button>
+    <view class="advisor-text link" bindtap="toggleTerms" aria-role="button">{{showTerms ? '收起完整说明' : '查看完整说明'}}</view>
+    <block wx:if="{{showTerms}}">
+      <view wx:for="{{terms}}" wx:key="*this" class="advisor-text muted">{{index + 1}}. {{item}}</view>
+    </block>
   </view>
   <view wx:elif="{{phase === 'processing'}}" class="card advisor-card">
-    <view>{{progress || '正在对照原文摘录…'}}</view>
-    <view class="advisor-text muted">一般 10–30 秒。可以先离开，完成后在“我的任务”里查看。</view>
+    <view>{{progress || '正在摘录原文要点…'}}</view>
+    <view class="advisor-text muted">一般 10–30 秒。可以先离开，之后在“我的 → 我的记录”里查看。</view>
   </view>
   <view wx:elif="{{phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
     <view>{{error}}</view>
     <view wx:if="{{phase === 'timeout' && progress}}" class="advisor-text muted">{{progress}}</view>
     <button wx:if="{{canRetry}}" class="advisor-button" bindtap="retry">重试</button>
-    <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">查看我的任务</button>
+    <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">打开我的记录</button>
   </view>
   <block wx:elif="{{phase === 'done'}}">
     <view wx:if="{{result.notice}}" class="interpret-notice">{{result.notice}}</view>
-    <view class="card advisor-card"><view class="advisor-title">{{title || '通知解读'}}</view><view wx:if="{{!docId}}" class="interpret-meta">这条任务没有关联到通知原文，请从通知详情页重新打开。</view></view>
+    <view class="card advisor-card">
+      <view class="advisor-title">{{title || '通知解读'}}</view>
+      <view wx:if="{{!docId}}" class="interpret-meta">这条记录没有关联到通知原文，请从通知详情页重新打开。</view>
+      <view wx:else class="interpret-ops"><button class="interpret-link" bindtap="original">看原文</button></view>
+    </view>
+    <!-- 附件提醒放在前面：材料清单可能不全，先告诉用户（10/17） -->
+    <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>
       <view class="interpret-meta">截止日期、支持方式由人工对照原文核对。</view>
@@ -36,23 +47,26 @@
     <view wx:if="{{result.refusal}}" class="card advisor-card">
       <view>{{result.refusal}}</view><button class="advisor-button" bindtap="original" disabled="{{!docId}}">看原文</button>
     </view>
+    <!-- 同一句原文只出现一次（标"也属于"）；段落编号原文页没有，不再显示 -->
     <view wx:for="{{result.sections}}" wx:for-item="section" wx:key="type" class="card advisor-card">
       <view class="advisor-title">{{section.title}}</view>
-      <view wx:if="{{section.missing}}" class="advisor-text muted">没有摘录到相关原句（原文可能没写，也可能漏摘），请查看原文</view>
+      <view wx:if="{{section.sameAs}}" class="advisor-text muted">{{section.items.length ? '另有和「' + section.sameAs + '」相同的原句，见上。' : '和「' + section.sameAs + '」是同一句原文，见上。'}}</view>
       <view wx:for="{{section.items}}" wx:key="key" class="interpret-item">
         <view>{{item.text}}</view>
         <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key">
           <view wx:if="{{ref.quote && ref.quote !== item.text}}" class="advisor-text">{{ref.quote}}</view>
-          <view class="interpret-meta">段落 {{ref.pid}}</view>
         </view>
-        <view class="interpret-ops">
-          <button class="interpret-link" bindtap="original" disabled="{{!docId}}">看原文</button>
-          <button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">纠错</button>
-        </view>
+        <view wx:if="{{item.alsoInText}}" class="interpret-meta">也属于：{{item.alsoInText}}</view>
+        <view class="interpret-ops"><button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">这句摘错了</button></view>
       </view>
     </view>
+    <view wx:if="{{result.missingText}}" class="card advisor-card muted">正文里没找到：{{result.missingText}}。可能写在附件里，也可能原文没写，请查看原文。</view>
     <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
-    <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
+    <view wx:if="{{clauseEnabled && docId && !result.refusal}}" class="card advisor-card">
+      <view class="advisor-title">和我的企业对一下（可选）</view>
+      <view class="advisor-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
+      <button class="advisor-button" bindtap="clause">去对照</button>
+    </view>
     <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
   </block>
   <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>

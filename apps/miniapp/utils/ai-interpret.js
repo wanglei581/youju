@@ -15,21 +15,40 @@ function disclosureLine(value = {}) {
   return value && value.modelLabel && value.filingNo ? `模型：${value.modelLabel}｜备案号：${value.filingNo}` : '';
 }
 
+// 结果页（10/17 创始人试用后精简）：同一句原文只出现一次，标出它同时属于哪几类；
+// 只剩重复句的类别写"和「X」是同一句原文"；没摘到的类别合成一行（missingText），不再各占一张卡
 function resultView(result = {}) {
   const missing = result.missing || [];
+  const first = new Map();
+  const sections = result.refusal ? [] : SECTIONS.map(([type, title]) => {
+    const items = []; const sameAs = [];
+    (result.items || []).filter((item) => item.type === type).forEach((item) => {
+      const text = oneLine(item.text);
+      const seen = first.get(text);
+      if (seen) {
+        if (seen.title !== title) {
+          if (!seen.item.alsoIn.includes(title)) seen.item.alsoIn.push(title);
+          if (!sameAs.includes(seen.title)) sameAs.push(seen.title);
+        }
+        return;
+      }
+      const view = {
+        key: items.length, text, alsoIn: [],
+        refs: (item.refs || []).map((ref, refIndex) => ({ key: refIndex, pid: ref.pid, quote: oneLine(ref.quote) })),
+      };
+      first.set(text, { title, item: view }); items.push(view);
+    });
+    return { type, title, items, sameAs: sameAs.join('」「'), missing: !items.length && (missing.includes(type) || !sameAs.length) };
+  });
+  sections.forEach((section) => section.items.forEach((item) => { item.alsoInText = item.alsoIn.join('、'); }));
   return {
     notice: result.notice || '', refusal: result.refusal || '', warning: result.warning || '',
     attachmentNotice: result.attachment_notice || '', disclosure: disclosureLine(result.disclosure),
     verified: (result.verified || []).map((item, index) => Object.assign({}, item, {
       key: index, displayValue: [item.kind, item.value, item.time].filter(Boolean).join(' '),
     })),
-    sections: result.refusal ? [] : SECTIONS.map(([type, title]) => ({
-      type, title, missing: missing.includes(type),
-      items: (result.items || []).filter((item) => item.type === type).map((item, index) => ({
-        key: index, text: oneLine(item.text),
-        refs: (item.refs || []).map((ref, refIndex) => ({ key: refIndex, pid: ref.pid, quote: oneLine(ref.quote) })),
-      })),
-    })),
+    sections: sections.filter((section) => !section.missing),
+    missingText: sections.filter((section) => section.missing).map((section) => section.title).join('、'),
   };
 }
 
@@ -72,8 +91,8 @@ const FAST_WINDOW = 90000;
 const FAST_INTERVAL = 2000;
 const SLOW_INTERVAL = 15000;
 const SLOW_WINDOW = 15 * 60000;
-const SLOW_TEXT = '还在处理，可以先离开，完成后在“我的任务”里查看；停在这一页会自动显示结果。';
-const GIVE_UP_TEXT = '还在处理，请稍后在“我的任务”里查看结果。';
+const SLOW_TEXT = '还在处理，可以先离开，之后在“我的 → 我的记录”里查看；停在这一页会自动显示结果。';
+const GIVE_UP_TEXT = '还在处理，请稍后在“我的 → 我的记录”里查看结果。';
 
 function progressText(task) {
   if (task && task.status === 'queued') {
@@ -199,6 +218,8 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     },
     hide: stop,
     check(value) { checked = value === true; emit({ checked }); },
+    // 使用须知只有一个"我知道了，开始"按钮（10/17）：等于确认后开始
+    start() { checked = true; emit({ checked }); this.agree(); },
     agree() {
       if (!visible || !saveConsent(storage, checked)) return;
       agreed = true; emit({ needsConsent: false }); run();
