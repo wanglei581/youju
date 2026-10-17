@@ -91,7 +91,7 @@ SCOPE_ROWS = [
     ("适用场合", "阅读政府部门发布的申报通知、准备申报材料时。"),
     ("用途", "从通知原文里摘出申报对象、条件、时间、材料等原句；回答通知里的问题并注明出处；把原文条件和你填的企业情况并排列出，供你自己对照。"),
     ("不适用", "判断企业能不能申报；代写申报材料或代办申报；代替阅读通知原文。不面向未成年人。"),
-    ("次数", "每人每天 5 次：提问、划重点、对照、识别图片各算 1 次；联网查政府网站另算，每天 [次数] 次。处理失败、没有回答的不扣次数。"),
+    ("次数", "每人每天免费 5 次：提问、划重点、对照、识别图片各算 1 次（要准备哪些材料和划重点共用 1 次）；联网查政府网站另算，每天 [次数] 次。处理失败、没有回答、图片没通过检测或没找到原文的，不扣次数。"),
     ("图片", "先做内容安全检测，只用来识别文字；识别完不保存图片。"),
     ("保存", "你填的企业情况保存 7 天，对话和整理结果保存 30 天，可以随时删除。"),
     ("模型", "[模型名称] · 备案号 [备案号]"),
@@ -510,7 +510,7 @@ def s5_sheet():
              + opt("拍照", "对着纸质通知拍一张")
              + opt("从相册选", "手机里存的截图、照片")
              + opt("从微信聊天里选", "群里、聊天里别人转来的通知截图", last=True)
-             + f'<div style="padding: 8px 0 10px; font-size: 12px; color: {T3}; text-align: center">图片先做内容安全检测，识别完不保存；识别图片不算今天的次数</div>'
+             + f'<div style="padding: 8px 0 10px; font-size: 12px; color: {T3}; text-align: center">图片先做内容安全检测，识别完不保存；识别一张算 1 次，没通过检测、没找到原文的不算</div>'
              + f'<div style="margin: 0 -16px; height: 8px; background: {BG}"></div>'
              + f'<div style="padding-top: 14px; font-size: 16px; text-align: center; color: {T1}">取消</div></div>')
     top = nav() + strip() + intro(False) + section_label("可以这样问") + rows_card([ex_row(t, last=(i == 1)) for i, t in enumerate(EXAMPLES[:2])], mt=8) + home_foot()
@@ -595,7 +595,8 @@ def s6_license():
     ask = (para("营业执照只能读出成立日期和注册地；营业收入、研发费用、职工人数、已有资质要你自己填，都可以不填。", 14.5)
            + caution("只读成立日期和注册地，不读法定代表人姓名、统一社会信用代码；图片识别完就删除。"
                      "你填的企业情况只用于这次对照，不发给 AI 模型，7 天后自动清除。", mt=10)
-           + f'<div style="display: flex; gap: 8px; margin-top: 12px">{btn("同意并拍营业执照", True, "plus", grow=True)}{btn("手动填写", grow=True)}</div>')
+           + f'<div style="margin-top: 10px; font-size: 12.5px; line-height: 1.6; color: {T2}">拍营业执照：识别算 1 次，开始对照再算 1 次。手动填写：只在开始对照时算 1 次。</div>'
+           + f'<div style="display: flex; gap: 8px; margin-top: 10px">{btn("同意并拍营业执照", True, "plus", grow=True)}{btn("手动填写", grow=True)}</div>')
     form = (f'<div style="font-size: 12.5px; color: {T2}">从营业执照读到 2 项，请核对，识别可能有误</div>'
             f'<div style="margin-top: 4px">'
             + f'<div style="display: flex; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid {LINE}">'
@@ -613,7 +614,7 @@ def s6_license():
             + field("研发费用", "可不填 · 万元", placeholder=True)
             + field("职工人数", "可不填", placeholder=True, last=True)
             + f'</div><div style="display: flex; margin-top: 12px">{btn("开始对照", True, grow=True)}</div>'
-            + f'<div style="margin-top: 8px; text-align: center; font-size: 12px; color: {T3}">开始对照算 1 次；识别营业执照不算；图片已删除</div>')
+            + f'<div style="margin-top: 8px; text-align: center; font-size: 12px; color: {T3}">营业执照识别已算 1 次，开始对照再算 1 次；图片已删除</div>')
     top = (nav() + strip() + ctx_bar(HN) + user_msg("和我的企业对一下")
            + ai_card("先填企业情况", ask, foot=None)
            + user_img(photo_license(), "图片已通过内容安全检测")
@@ -731,7 +732,7 @@ def s9_states():
            + state_label("连不上服务器")
            + state_card("没有发出去", "连不上服务器，你的问题还在输入框里。网络恢复后点重试，不扣次数。", btn("重试", True), tone="warn")
            + state_label("照片里的通知没在收录里找到")
-           + state_card("没在收录里找到这份通知", "照片里识别出的标题是《[识别出的标题]》，有据还没有收录。可以按这个标题到政府网站查一查；识别的文字只用来查找，不作为回答的依据。",
+           + state_card("没在收录里找到这份通知", "照片里识别出的标题是《[识别出的标题]》，有据还没有收录，这次不扣次数。可以按这个标题到政府网站查一查；识别的文字只用来查找，不作为回答的依据。",
                         btn("到政府网站查一查", True) + btn("重新拍"), tone="warn")
            + state_label("删除企业情况以后")
            + state_card("企业情况已删除", "你填的企业情况和营业执照的识别结果都删了，对照结果里也不再显示。下次对照要重新填。", tone="off")
@@ -777,8 +778,9 @@ def detail_head(tags, d):
             f'<div style="margin-top: 6px; font-size: 11.5px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</div></div>')
 
 
-def detail_due():
-    """详情页的截止时间（D-061：8–30 天内可显示机器摘录，附原句、标未经人工核对）。"""
+def detail_due(fold=False):
+    """详情页的截止时间（D-061：8–30 天内可显示机器摘录，附原句、标未经人工核对）。
+    fold=True：有两条以上截止时，原句先显示一行、点“展开”看全句，给下面的 AI 解读卡片腾出第一屏的位置。"""
     rows = [("企业填报截止", "10月30日", "周五", 13, "……组织本地区企业，通过“5G+工业互联网发展管理平台”……于10月30日前填报项目并上传相关材料"),
             ("市（州）报送截止", "11月4日", "周三", 18, "……于11月4日前将盖章版推荐项目汇总表发送到指定邮箱")]
     out = []
@@ -790,7 +792,10 @@ def detail_due():
                    f'<span style="height: 26px; padding: 0 10px; display: inline-flex; align-items: center; border-radius: 13px; background: {BLUE_TINT}; '
                    f'color: {RED if days <= 14 else BLUE}; font-size: 13px; font-weight: 600">剩 {days} 天</span></div>'
                    f'<div style="margin-top: 6px"><span style="padding: 0 6px; line-height: 20px; border-radius: 4px; border: 1px dashed {O_TXT}; color: {O_TXT}; font-size: 11.5px">机器摘录 · 未经人工核对</span></div>'
-                   f'<div style="margin-top: 6px; padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{quote}</div></div>')
+                   + (f'<div style="margin-top: 6px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; color: {T2}">'
+                      f'<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">原文：{quote}</span>'
+                      f'<span style="flex-shrink: 0; color: {BLUE}">展开</span></div></div>' if fold else
+                      f'<div style="margin-top: 6px; padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{quote}</div></div>'))
     return (f'<div style="margin: 10px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px">'
             f'<div style="display: flex; justify-content: space-between; font-size: 12px"><span style="font-weight: 600; color: {T1}">截止时间</span><span style="color: {T3}">以原文为准</span></div>'
             f'<div style="margin-top: 8px">{"".join(out)}</div></div>')
@@ -815,17 +820,18 @@ def detail_ai_card(history="", left=5, done=False):
     问过这份通知的，卡片里多一行“接着看”，第二天回来从通知里就能找到上次的结果。"""
     h = (f'<div style="margin-top: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; background: {BLUE_TINT}; border-radius: 8px; font-size: 13.5px">'
          f'<span style="flex-grow: 1; min-width: 0">{history}</span><span style="flex-shrink: 0; color: {BLUE}; font-weight: 500">接着看 ›</span></div>') if history else ""
-    return (f'<div style="margin: 10px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px; box-shadow: inset 0 0 0 1px {BLUE_TINT}">'
-            f'<div style="display: flex; align-items: baseline"><span style="font-size: 16px; font-weight: 600">AI 解读</span>'
-            f'<span style="margin-left: auto; font-size: 12px; color: {T3}">今天还能免费用 {left} 次</span></div>'
-            f'<div style="margin-top: 4px; font-size: 12.5px; line-height: 1.6; color: {T2}">用 AI 从这份通知的原文里摘句、回答问题，每句标出处；不判断能否申报。</div>{h}'
-            f'<div style="margin-top: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr))">'
+    # 卡片要尽量进第一屏：一句话说明并进标题行，次数放到卡片底部（按钮下的小字已经说清每个按钮做什么）
+    return (f'<div style="margin: 10px 12px 0; padding: 14px 16px 12px; background: {CARD}; border-radius: 12px; box-shadow: inset 0 0 0 1px {BLUE_TINT}">'
+            f'<div style="display: flex; align-items: baseline; gap: 10px"><span style="font-size: 16px; font-weight: 600">AI 解读</span>'
+            f'<span style="font-size: 12px; color: {T3}">从原文摘句，每句标出处 · 不判断能否申报</span></div>{h}'
+            f'<div style="margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr))">'
             + (ai_tile("list", BLUE_TINT, BLUE, "划重点", "已整理 · 点开看", BLUE) if done else ai_tile("list", BLUE_TINT, BLUE, "划重点", "对象、条件、截止"))
             + ai_tile("doc", G_TINT, GREEN, "要准备哪些材料", "材料和附件")
             + ai_tile("user", O_TINT, ORANGE, "和我的企业对一下", "条件并排对照") + '</div>'
-            f'<div style="margin-top: 14px; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 20px; background: {FILL}; '
+            f'<div style="margin-top: 12px; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 20px; background: {FILL}; '
             f'font-size: 13.5px; color: {T3}">{icon("search", 15, T3)}<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; '
-            f'text-overflow: ellipsis">问这份通知，如：推荐项目必须已经建成吗？</span>{icon("chev", 14, T3)}</div></div>')
+            f'text-overflow: ellipsis">问这份通知，如：推荐项目必须已经建成吗？</span>{icon("chev", 14, T3)}</div>'
+            f'<div style="margin-top: 8px; font-size: 12px; color: {T3}">今天还能免费用 {left} 次</div></div>')
 
 
 def detail_ai_off(title, text, action=None, mt=10):
@@ -851,29 +857,64 @@ def detail_bar():
             f'color: #FFFFFF; border-radius: 22px; font-size: 15px; font-weight: 500">{icon("copy", 16, "#FFFFFF")}复制原文链接</span></div>')
 
 
-def e2_detail_ok():
+def detail_parts():
     body = body_card(f'<div style="margin-top: 4px; font-size: 11.5px; line-height: 1.6; color: {T3}">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准。</div>'
                      f'<div style="margin-top: 10px; font-size: 14.5px; line-height: 1.8">川经信办函〔2026〕356号<br>各市（州）经济和信息化局：<br>'
                      f'根据工业和信息化部办公厅《关于组织开展2026年5G工厂名录遴选工作的通知》（工信管函〔2026〕477号）要求，我厅会同四川通信管理局……</div>'
                      f'<div style="margin-top: 8px; font-size: 13px; color: {BLUE}">展开全文 ›</div>')
-    top = (nav("文件详情") + site_bar() + detail_head(tag_type("申报通知"), SC5G) + detail_due()
-           + detail_points([("发文机关", SC5G["issuer"]), ("文号", SC5G["no"]), ("适用地区", "四川省")])
-           + detail_ai_card() + body)
-    return phone(top, detail_bar())
+    return dict(head=nav("文件详情") + site_bar() + detail_head(tag_type("申报通知"), SC5G), due=detail_due(), due_fold=detail_due(fold=True),
+                points=detail_points([("发文机关", SC5G["issuer"]), ("文号", SC5G["no"]), ("适用地区", "四川省")]),
+                ai=detail_ai_card(), body=body)
+
+
+# 卡片放哪：截止时间是点开通知最先要看的（有据的核心是核对过的截止），不能被挤下去；
+# “要点”只有发文机关、文号、地区，排在 AI 后面影响不大。所以放在截止时间下面、要点上面（10/17 晚定的推荐）。
+POS_ORDERS = {"a": ("head", "due", "points", "ai", "body"), "b": ("head", "ai", "due", "points", "body"),
+              "c": ("head", "due_fold", "ai", "points", "body")}
+
+
+def e2_detail_ok():
+    d = detail_parts()
+    return phone("".join(d[k] for k in POS_ORDERS["c"]), detail_bar())
+
+
+def first_screen(top, bottom):
+    """只看手机第一屏（844 高）：下面的内容截掉，底部操作栏固定在最下面。"""
+    return (f'<div class="yj-phone" style="width: 390px; height: 844px; display: flex; flex-direction: column; background: {BG}; color: {T1}; '
+            f'font-family: {FONT}; font-size: 14px; line-height: 1.5; font-variant-numeric: tabular-nums; position: relative; overflow: hidden; text-align: left">'
+            f'<div style="flex: 1; min-height: 0; overflow: hidden">{top}</div>{bottom}</div>')
+
+
+def pos_variant(key):
+    d = detail_parts()
+    return first_screen("".join(d[k] for k in POS_ORDERS[key]), detail_bar())
+
+
+def pos_a():
+    return pos_variant("a")
+
+
+def pos_b():
+    return pos_variant("b")
+
+
+def pos_c():
+    return pos_variant("c")
 
 
 def e2_detail_off():
     body = body_card(f'<div style="margin-top: 8px; font-size: 13.5px; line-height: 1.7; color: {T2}">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用“查名单”。</div>')
+    # 没有截止时间的页面，卡片就在标题卡片下面（截止时间下面、要点上面的同一个位置）
     top = (nav("文件详情") + site_bar() + detail_head(tag_type("名单") + plain_tag("名单状态：公示"), SH6)
-           + detail_points([("发文机关", SH6["issuer"]), ("适用地区", "上海市")])
-           + detail_ai_off(*OFF_REASONS[0][1:]) + body)
+           + detail_ai_off(*OFF_REASONS[0][1:])
+           + detail_points([("发文机关", SH6["issuer"]), ("适用地区", "上海市")]) + body)
     return phone(top, detail_bar())
 
 
 def e2_reasons():
     parts = "".join(state_label("不能用：" + label) + detail_ai_off(title, text, action) for label, title, text, action in OFF_REASONS)
     top = (f'<div style="padding: 20px 16px 0; font-size: 16px; font-weight: 600">「AI 解读」卡片的其他状态</div>'
-           f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">卡片总在详情页同一个位置（要点下面）。问过的能接着看；不能用就写清原因和下一步。</div>'
+           f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">卡片总在详情页同一个位置（截止时间下面、要点上面）。问过的能接着看；不能用就写清原因和下一步。</div>'
            + state_label("问过这份通知以后") + detail_ai_card("昨天划了重点、问了 2 个问题", left=4, done=True)
            + parts)
     return phone(top, '<div style="height: 20px"></div>', min_h=0)
@@ -965,10 +1006,10 @@ ENTRIES = [
      "底栏变成 5 个，AI 助手在每个底栏页都能点到；代价见下面「为什么放首页、不放底栏」。",
      ["对比用"]),
     ("e2a", "入口 2", "通知详情：AI 解读卡片（能用）", e2_detail_ok,
-     "取代右下角浮动按钮（它在手机上变成压住正文的大椭圆）。卡片嵌在「要点」下面：三个常用按钮和一行提问框，点哪个都进同一个对话页，并带上这份通知。截止时间多的通知，卡片在第一屏下面一点；想更显眼可以挪到标题卡片下面。",
+     "取代右下角浮动按钮（它在手机上变成压住正文的大椭圆）。卡片嵌在截止时间下面、要点上面：三个常用按钮和一行提问框，点哪个都进同一个对话页，并带上这份通知。有两条以上截止时，原句先收成一行，让按钮进第一屏。",
      ["不挡内容", "不判断能否申报", "次数"]),
     ("e2b", "入口 2", "通知详情：AI 解读卡片（不能用）", e2_detail_off,
-     "名单页也有这张卡片，位置不变，写明「名单不需要 AI 解读」，并给出该去哪：查名单。",
+     "名单页也有这张卡片，写明「名单不需要 AI 解读」，并给出该去哪：查名单。没有截止时间的页面，卡片就在标题卡片下面。",
      ["写明原因", "给下一步"]),
     ("e2c", "入口 2", "卡片的其他状态", e2_reasons,
      "问过这份通知的，卡片里多一行「接着看」，第二天回来从通知里就能找到上次的结果。不能用的 6 种说法：前 5 种对应后端的拒绝原因，第 6 种是当天次数用完。",
@@ -995,7 +1036,7 @@ RULES = [
     ("点了就有反应", "示例问题点了直接发出；卡片里的按钮点了直接开始；处理中显示进度和大约多久。"),
     ("不能用就说为什么", "通知卡片 6 种说法、对话页 8 种情况，每种都写原因和下一步。"),
     ("结果找得回来", "三条路：首页「AI 助手」的「最近问过」、那份通知卡片里的「接着看」、「我的」里的「AI 助手记录」。没有「任务」这个概念。"),
-    ("次数看得见", "输入框下面一直写今天还能免费用几次；识别图片不算次数；没扣次数的都写明「不扣次数」。"),
+    ("次数看得见", "输入框下面一直写今天还能免费用几次；识别图片也算 1 次，拍之前写明；没扣次数的都写明「不扣次数」。"),
     ("三种复制分清楚", "复制回答（带「AI 生成」）、复制原文链接、复制网页链接。"),
     ("填表不被键盘挡", "企业情况用半屏弹层填；营业执照只读两项，读完让用户核对。"),
     ("换通知不丢东西", "换一份通知后，原来的对话还在「最近问过」里。"),
@@ -1007,6 +1048,20 @@ TASKS = [
     ("用营业执照对照海南专精特新，看完删掉企业情况", "卡片里和我的企业对一下 → 同意并拍营业执照 → 核对 → 开始对照 → 删除企业情况", "6 下", "已改：能立即删除并提示已删除；每项资质分别填有效期；拍照前先说只读两项"),
     ("第二天回来，找昨天的划重点", "首页 AI 助手 → 最近问过；通知卡片里「接着看」；我的 → AI 助手记录", "2 下", "已改：通知卡片加「接着看」，划重点标「已整理」，再点不扣次数；「我的」加 AI 助手记录"),
     ("名单页想用 AI；当天次数用完", "名单卡片写「名单不需要 AI 解读」→ 去查名单；次数用完写明天恢复", "0–1 下", "顺利"),
+]
+
+
+# 卡片放哪：三种放法的第一屏（10/17 晚。Claude 先倾向 B，Codex 独立推荐 C 并给出减轻办法，合起来定 C）
+POSITIONS = [
+    ("pa", "放法 A", "放在要点下面（原来的方案）", pos_a,
+     "第一屏完全看不到卡片：截止有两条时卡片从 844 点才开始，只有一条时从 682 点开始；真机去掉状态栏，第一屏大约只到 710 点。",
+     ["不推荐"]),
+    ("pb", "放法 B", "放在标题下面", pos_b,
+     "卡片整张在第一屏，但截止时间被挤下去：两条截止时，第二条要往下滑才看到。",
+     ["不推荐"]),
+    ("pc", "放法 C · 推荐", "放在截止时间下面", pos_c,
+     "截止时间先完整看到，用户马上能判断来不来得及。有两条以上截止时，原句先收成一行（点「展开」看全句），卡片也压紧了，三个按钮在 643–728 点，真机第一屏看得到；只有一条截止时，整张卡片在 446–681 点。",
+     ["推荐", "截止在前", "按钮在第一屏"]),
 ]
 
 # ---------- 评审稿 ----------
@@ -1077,8 +1132,8 @@ TECH = [
 ]
 
 QUESTIONS = [
-    ("次数怎么算", "建议：划重点、对照、提问共用每人每天 5 次；联网单独算，每天 [3] 次。也可以沿用现在的「每类 5 次」。"),
-    ("对话接口放哪台服务", "建议先放在常驻的 admin 上（不加钱，抓取忙时可能变慢）；用的人多了再给 api 留常驻实例（要加钱，10/12 没同意）。"),
+    ("次数怎么算", "已定：识别图片也算次数，拍之前写明。还要定：提问、划重点、对照、识别图片共用每人每天免费 5 次（建议），还是每类各 5 次；联网单独算，每天 [3] 次。"),
+    ("对话接口放哪台服务", "建议先放在常驻的 admin 上（不加钱，抓取忙时可能变慢）；用的人多了再给 api 留常驻实例（要加钱，10/12 暂缓过）。"),
     ("图片怎么识别", "建议用文字识别接口，模型继续用 DeepSeek，公示和登记不用改；换能看图的模型要重新评测、改公示。"),
     ("联网检索用哪家服务、每天几次", "建议先选一家能限定政府网站的搜索接口试用，团队给出两三家的价格和效果对比后你定；次数先从每人每天 [3] 次起。"),
     ("「AI 助手」放在哪", "建议：首页加「AI 助手」入口，通知详情页右下角改叫「AI 解读」；不放进底栏。「工具中心」只留批量名单比对和客户相关通知表。"),
@@ -1095,6 +1150,7 @@ def shot(sid, label, title, fn, intent, chips):
 def board():
     shots = [shot(sid, f"屏 {n}", title, fn, intent, chips) for sid, n, title, fn, intent, chips in SCREENS]
     entry_shots = [shot(*e) for e in ENTRIES]
+    pos_shots = [shot(*e) for e in POSITIONS]
     why = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in ENTRY_WHY)
     rules = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in RULES)
     tasks = "".join(f'<tr><td class="c-what">{i + 1}. {a}</td><td>{b}</td><td class="c-num">{c}</td><td>{d}</td></tr>' for i, (a, b, c, d) in enumerate(TASKS))
@@ -1204,6 +1260,8 @@ ul.rules {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px
 <h2>两个入口</h2>
 <p class="sub">两个入口进的是同一个对话页。通知详情里的入口改成嵌在页面里的卡片，不再用浮动按钮；卡片在每份通知的同一个位置，能不能用都写清楚。</p>
 <div class="screens">{"".join(entry_shots)}</div>
+<div class="why"><h3>「AI 解读」卡片放哪：推荐放在截止时间下面</h3><p class="sub">三种放法都按真实尺寸排出第一屏（以 5G 工厂这份为例，它有两条截止时间）。截止时间是用户点开通知最先要看的，要先完整看到；AI 的按钮也要在第一屏，用户才知道能用。所以放在截止时间下面，有两条以上截止时把原句先收成一行。Claude 一开始倾向放标题下面，Codex（设计主审）独立推荐放截止时间下面，并提出把原句收起来腾位置，合起来定这个方案。</p></div>
+<div class="screens">{"".join(pos_shots)}</div>
 <div class="why"><h3>为什么放首页、不放底栏</h3><ul class="list">{why}</ul><p class="sub">{ENTRY_LATER}</p></div>
 </section>
 
@@ -1264,6 +1322,6 @@ if __name__ == "__main__":
     st_dir.mkdir(parents=True, exist_ok=True)
     out_board.parent.mkdir(parents=True, exist_ok=True)
     out_board.write_text(board(), encoding="utf-8")
-    for sid, label, title, fn, intent, chips in ENTRIES + [(a, f"屏 {b}", c, d, e, f) for a, b, c, d, e, f in SCREENS]:
+    for sid, label, title, fn, intent, chips in ENTRIES + POSITIONS + [(a, f"屏 {b}", c, d, e, f) for a, b, c, d, e, f in SCREENS]:
         (st_dir / f"{sid}.html").write_text(static_page(sid, fn), encoding="utf-8")
         print(sid, title)
