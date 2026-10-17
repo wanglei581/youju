@@ -69,5 +69,5 @@
     </view>
     <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
   </block>
-  <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
+  <view class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>

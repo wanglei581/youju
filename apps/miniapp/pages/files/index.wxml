@@ -32,5 +32,4 @@
   <view class="pc-tip">在电脑上保存：转发到“文件传输助手”，在电脑版微信打开</view>
 </view>
 <view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可以重新导出。</view>
-<view class="tip">导出的表格和文档每份都带原文链接和数据说明（来源网站、核对日期、以原文为准）。</view>
 <view class="tab-page-bottom"></view>
