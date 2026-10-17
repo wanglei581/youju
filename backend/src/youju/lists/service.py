@@ -172,10 +172,11 @@ def _save(
     record = session.scalar(
         select(ListParse).where(ListParse.document_id == doc.id, ListParse.source_url == url)
     )
-    if failure and record is not None and record.entry_count and _cut_below_limit(record):
-        # 重读以前被截断的名单时失败了：原来读到的条目和状态照旧，不能因为一次失败清掉已读到的企业。
-        # 抓取失败（网站临时出错）留着原话，6 小时后再试；解析出错等确定的结果在原因后面记上，
-        # 不再重读（Codex 审阅 #274）
+    if failure and record is not None and _cut_below_limit(record):
+        # 重读以前被截断的名单没成功：原来的条目和状态照旧。不能因为一次失败清掉已读到的企业，
+        # 也不能把 ok/empty/扫描件这些永久状态变成每 6 小时重试的 failed。
+        # 抓取失败（网站临时出错）留着原话，6 小时后再试；解析出错、仍是扫描件等确定的结果
+        # 在原因后面记上，不再重读（Codex 审阅 #274）
         if not failure.startswith("抓取失败"):
             record.failure_reason = f"{record.failure_reason}；重读失败：{failure}"
         record.attempted_at = datetime.now(UTC)

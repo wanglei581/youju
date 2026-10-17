@@ -477,6 +477,71 @@ def test_reread_parse_failure_keeps_entries_and_stops(session) -> None:
     assert fake.calls == [url]
 
 
+@pytest.mark.parametrize(
+    ("status", "reason", "content", "kept"),
+    [
+        # 没读出企业的截断记录：解析出错时状态照旧，不变成反复重试的 failed
+        ("empty", "PDF 共680页，仅解析前300页", b"not a pdf", "重读失败：解析失败"),
+        # 扫描件重读后仍是扫描件：照旧是 unsupported，原因记上，不再重读
+        (
+            "unsupported",
+            "暂不支持扫描件；PDF 共450页，仅解析前300页",
+            b"%PDF-fake",
+            "重读失败：暂不支持扫描件",
+        ),
+    ],
+)
+def test_reread_without_entries_keeps_status_and_stops(
+    session, monkeypatch, status, reason, content, kept
+) -> None:
+    """Codex 复核 #274：没有条目的截断记录重读没成功时，也保留原状态、记上原因、不再重读。"""
+
+    class Page:
+        def close(self):
+            pass
+
+        def extract_text(self):
+            return ""
+
+        def extract_tables(self, table_settings=None):
+            return []
+
+    class Pdf:
+        pages = [Page() for _ in range(450)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    url = f"https://kjt.henan.gov.cn/2026-list-{status}.pdf"
+    document = _henan_list(session, url)
+    session.add(
+        ListParse(
+            document_id=document.id,
+            source_url=url,
+            source_kind="document",
+            status=status,
+            failure_reason=reason,
+            entry_count=0,
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=content)})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    assert record.status == status
+    assert record.failure_reason.startswith(f"{reason}；{kept}")
+    record.attempted_at = datetime.now(UTC) - timedelta(days=1)
+    session.commit()
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+
+
 def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch) -> None:
     """以前记成扫描件、只看了前 300 页的：后面的页有名单，重读后能读出来（Codex 审阅 #274）。"""
 
