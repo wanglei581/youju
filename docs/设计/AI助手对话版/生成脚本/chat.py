@@ -164,7 +164,7 @@ def footer(kind):
     return (f'<div style="margin-top: 12px; padding: 10px 14px 12px; border-top: 1px solid {LINE}; font-size: 11.5px; line-height: 1.6; color: {T3}">'
             f'<div>AI 生成 · {FOOT[kind]}</div>'
             f'<div style="margin-top: 3px; display: flex; align-items: center; gap: 12px"><span>模型 [模型名称] · 备案号 [备案号]</span>'
-            f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("copy", 13, T2)}复制</span>'
+            f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("copy", 13, T2)}复制回答</span>'
             f'<span style="color: {T2}">投诉举报</span></div></div>')
 
 
@@ -198,7 +198,7 @@ def tag_cat(t):
             f'white-space: nowrap">{t}</span>')
 
 
-def link_row(left="看原文", right_flag=True, right_text="这句摘错了", copy=False):
+def link_row(left="看原文", right_flag=True, right_text="纠错", copy=False):
     r = (f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("flag", 13, T2)}{right_text}</span>'
          if right_flag else "")
     c = (f'<span style="margin-left: 16px; display: inline-flex; align-items: center; gap: 3px; color: {BLUE}">{icon("copy", 13, BLUE)}复制原文链接</span>'
@@ -356,13 +356,13 @@ def s1_first():
     top = (nav() + strip() + intro(True) + section_label("可以这样问")
            + rows_card([ex_row(t) for t in EXAMPLES] + [ex_row("拍一张纸质通知，找到官方原文", last=True, ic="plus", color=BLUE)], mt=8)
            + home_foot())
-    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能用 5 次"))
+    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能免费用 5 次"))
 
 
 def s1_scope():
     top = (nav() + strip(expanded=True) + intro(False) + section_label("可以这样问")
            + rows_card([ex_row(t, last=(i == 1)) for i, t in enumerate(EXAMPLES[:2])], mt=8))
-    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能用 5 次"))
+    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能免费用 5 次"))
 
 
 def recent_row(d, what, when, last=False):
@@ -371,7 +371,7 @@ def recent_row(d, what, when, last=False):
             f'<span style="font-size: 12px; color: {T2}">{d["region"]}</span><span style="margin-left: auto; font-size: 12px; color: {T3}">{when}</span></div>'
             f'<div style="margin-top: 6px; display: flex; align-items: center; gap: 10px"><div style="flex-grow: 1; min-width: 0">'
             f'<div style="font-size: 14.5px; font-weight: 600; line-height: 1.55">{d["title"]}</div>'
-            f'<div style="margin-top: 3px; font-size: 12.5px; color: {T2}">{what}</div></div>{icon("chev", 16, T3)}</div></div>')
+            f'<div style="margin-top: 3px; font-size: 12.5px; color: {T2}">{what}</div></div><span style="flex-shrink: 0; font-size: 12.5px; color: {BLUE}">接着看 ›</span></div></div>')
 
 
 def s1_again():
@@ -381,7 +381,7 @@ def s1_again():
            + f'<div style="padding: 8px 16px 0; font-size: 12px; color: {T3}">对话和整理结果保存 30 天，左滑可以删除</div>'
            + section_label("可以这样问") + rows_card([ex_row(t, last=(i == 1)) for i, t in enumerate(EXAMPLES[1:])], mt=8)
            + home_foot())
-    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能用 4 次"))
+    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能免费用 4 次"))
 
 
 def action_row(ic, bg, fg, title, desc, last=False):
@@ -411,7 +411,7 @@ def s2_from_notice():
            + "".join(f'<span style="height: 34px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 17px; background: {CARD}; '
                      f'border: 1px solid {LINE2}; font-size: 13.5px; white-space: nowrap">{t}</span>' for t in ["推荐项目必须已经建成吗？", "企业在哪个平台填报？", "截止到哪天？"])
            + '</div>')
-    return phone(top, input_bar("问这份通知，如：截止到哪天？", "今天还能用 5 次 · 划重点和要准备哪些材料共用 1 次"))
+    return phone(top, input_bar("问这份通知，如：截止到哪天？", "今天还能免费用 5 次 · 划重点和要准备哪些材料共用 1 次"))
 
 
 def deadline_block():
@@ -446,7 +446,7 @@ def s3_highlights():
             + items)
     top = (nav() + strip() + ctx_bar(SC5G) + user_msg("划重点")
            + ai_card("划重点", body, right="5 句 · 都和原文逐字一致", foot="quote"))
-    return phone(top, quick_chips(["要准备哪些材料", "和我的企业对一下", "截止到哪天？"]) + input_bar("问这份通知，如：在哪个平台填报？", "今天还能用 4 次"))
+    return phone(top, quick_chips(["要准备哪些材料", "和我的企业对一下", "截止到哪天？"]) + input_bar("问这份通知，如：在哪个平台填报？", "今天还能免费用 4 次"))
 
 
 def s4_ask():
@@ -465,7 +465,7 @@ def s4_ask():
            + ai_card("回答", a1, right="依据 1 句原文", foot="answer")
            + user_msg("入选以后有补贴吗？")
            + ai_card("回答", a2, right="没找到 · 不扣次数", foot="answer"))
-    return phone(top, input_bar("继续问这份通知", "今天还能用 3 次"))
+    return phone(top, input_bar("继续问这份通知", "今天还能免费用 3 次"))
 
 
 def notice_box(d, buttons):
@@ -489,8 +489,28 @@ def s5_photo():
              + notice_box(GD8, btn("划重点", True, grow=True) + btn("要准备哪些材料", grow=True) + btn("看原文")))
     tail = para("后面的回答都按政府网站上的原文来，不按照片里的字。照片识别完就删除，不保存。", 12.5, T2, 12)
     top = (nav() + strip() + user_img(photo_notice(), "图片已通过内容安全检测") + user_msg("帮我找到这份通知的原文")
-           + ai_card("识别图片", ocr + found + tail, right="用了 1 次", foot="image"))
-    return phone(top, quick_chips(["划重点", "要准备哪些材料", "截止到哪天？"]) + input_bar("问这份通知", "今天还能用 4 次"))
+           + ai_card("识别图片", ocr + found + tail, right="已找到原文", foot="image"))
+    return phone(top, quick_chips(["截止到哪天？", "谁可以申报？"]) + input_bar("问这份通知", "今天还能免费用 4 次"))
+
+
+def s5_sheet():
+    """点输入框左边的 ＋：自己画的底部弹层（微信自带的操作菜单只能放一行字，写不下每种图片拿来做什么）。"""
+    def opt(title, desc, last=False):
+        b = "" if last else f"border-bottom: 1px solid {LINE};"
+        return (f'<div style="padding: 13px 0; {b}"><div style="font-size: 16px; text-align: center">{title}</div>'
+                f'<div style="margin-top: 2px; font-size: 12px; color: {T3}; text-align: center">{desc}</div></div>')
+    sheet = (f'<div style="position: absolute; left: 0; right: 0; bottom: 0; background: {CARD}; border-radius: 16px 16px 0 0; padding: 6px 16px 30px">'
+             f'<div style="padding: 12px 0 6px; font-size: 13px; line-height: 1.7; color: {T2}; text-align: center">'
+             f'拍通知、截图：识别标题和文号，找到官方原文。<br>营业执照：先打开要对照的通知，点「和我的企业对一下」再拍。</div>'
+             + opt("拍照", "对着纸质通知拍一张")
+             + opt("从相册选", "手机里存的截图、照片")
+             + opt("从微信聊天里选", "群里、聊天里别人转来的通知截图", last=True)
+             + f'<div style="padding: 8px 0 10px; font-size: 12px; color: {T3}; text-align: center">图片先做内容安全检测，识别完不保存；识别图片不算今天的次数</div>'
+             + f'<div style="margin: 0 -16px; height: 8px; background: {BG}"></div>'
+             + f'<div style="padding-top: 14px; font-size: 16px; text-align: center; color: {T1}">取消</div></div>')
+    top = nav() + strip() + intro(False) + section_label("可以这样问") + rows_card([ex_row(t, last=(i == 1)) for i, t in enumerate(EXAMPLES[:2])], mt=8) + home_foot()
+    overlay = '<div style="position: absolute; inset: 0; background: rgba(15, 20, 35, 0.5)"></div>' + sheet
+    return phone(top, input_bar("输入问题，或点左边拍图片", "今天还能免费用 5 次") + overlay)
 
 
 def field(label, value, src="", placeholder=False, last=False):
@@ -509,16 +529,16 @@ def qual_chip(t, on=False):
 
 
 def s6_license():
-    ask = (para("对照只用到这几项：成立日期、注册地、营业收入、研发费用、职工人数、已有资质。每项都可以不填。", 14.5)
-           + caution("营业执照上有法定代表人姓名、统一社会信用代码等信息。图片只用来识别成立日期和注册地，识别完就删除；"
+    ask = (para("营业执照只能读出成立日期和注册地；营业收入、研发费用、职工人数、已有资质要你自己填，都可以不填。", 14.5)
+           + caution("只读成立日期和注册地，不读法定代表人姓名、统一社会信用代码；图片识别完就删除。"
                      "你填的企业情况只用于这次对照，不发给 AI 模型，7 天后自动清除。", mt=10)
            + f'<div style="display: flex; gap: 8px; margin-top: 12px">{btn("同意并拍营业执照", True, "plus", grow=True)}{btn("手动填写", grow=True)}</div>')
     form = (f'<div style="font-size: 12.5px; color: {T2}">从营业执照读到 2 项，请核对，识别可能有误</div>'
             f'<div style="margin-top: 4px">'
             + f'<div style="display: flex; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid {LINE}">'
             f'<span style="width: 64px; flex-shrink: 0; font-size: 13px; color: {T2}">哪家企业</span>'
-            f'<span style="flex-grow: 1; min-width: 0; font-size: 14px; color: {T3}">[企业简称，只用来区分]</span>'
-            f'<span style="flex-shrink: 0; font-size: 12.5px; color: {BLUE}">从我的客户选</span></div>'
+            f'<span style="flex-grow: 1; min-width: 0; font-size: 14px; color: {T3}">[填个简称，可不填]</span>'
+            '</div>'
             + field("成立日期", "[识别出的日期]", "营业执照")
             + field("注册地", "海南省 · 海口市 · [区县]", "营业执照")
             + f'<div style="padding: 11px 0; border-bottom: 1px solid {LINE}"><div style="font-size: 13px; color: {T2}">已有资质（可多选）</div>'
@@ -530,12 +550,12 @@ def s6_license():
             + field("研发费用", "可不填 · 万元", placeholder=True)
             + field("职工人数", "可不填", placeholder=True, last=True)
             + f'</div><div style="display: flex; margin-top: 12px">{btn("开始对照", True, grow=True)}</div>'
-            + f'<div style="margin-top: 8px; text-align: center; font-size: 12px; color: {T3}">开始对照算 1 次；营业执照图片已删除</div>')
+            + f'<div style="margin-top: 8px; text-align: center; font-size: 12px; color: {T3}">开始对照算 1 次；识别营业执照不算；图片已删除</div>')
     top = (nav() + strip() + ctx_bar(HN) + user_msg("和我的企业对一下")
            + ai_card("先填企业情况", ask, foot=None)
            + user_img(photo_license(), "图片已通过内容安全检测")
            + ai_card("核对企业情况", form, foot=None))
-    return phone(top, input_bar("也可以直接打字补充企业情况", "今天还能用 3 次"))
+    return phone(top, input_bar("也可以直接打字补充企业情况", "今天还能免费用 3 次"))
 
 
 def clause_row(text, src, mine, last=False):
@@ -560,7 +580,7 @@ def clause_row(text, src, mine, last=False):
 
 def s7_clause():
     head = (para("左边是 AI 从通知原文摘出的申报对象和条件，右边是你填的企业情况（只在这里并排显示，没有发给 AI 模型）。有据不判断能不能申报，每一行请你自己对照。", 14)
-            + caution("这份通知有 4 个附件。认定标准在附件 4《优质中小企业梯度培育管理办法（2026年）》里，这里没有对照，只对照了网页正文。", "看原文附件", mt=10)
+            + caution("<b style=\"font-weight: 600\">认定标准没有对照。</b>它在附件 4《优质中小企业梯度培育管理办法（2026年）》里，这里只对照了网页正文，请打开附件自己核对。", "打开附件 4", mt=10)
             + f'<div style="margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; font-size: 12px; color: {T3}">'
             f'<span>通知原文（正文 5 条，不含附件）</span><span>你填的情况</span></div>')
     rows = "".join(clause_row(t, s, m, last=(i == len(HN_ROWS) - 1)) for i, (t, s, m) in enumerate(HN_ROWS))
@@ -568,7 +588,7 @@ def s7_clause():
             f'<span style="color: {BLUE}">修改企业情况</span><span style="color: {BLUE}">删除企业情况</span><span style="margin-left: auto; color: {T3}">不删也会 7 天后清除</span></div>')
     top = (nav() + strip() + ctx_bar(HN) + user_msg("开始对照")
            + ai_card("和我的企业对一下", head + rows + tail, right="条款对照", foot="clause"))
-    return phone(top, quick_chips(["要准备哪些材料", "线上填报到哪天？", "划重点"]) + input_bar("问这份通知", "今天还能用 2 次"))
+    return phone(top, quick_chips(["要准备哪些材料", "线上填报到哪天？", "划重点"]) + input_bar("问这份通知", "今天还能免费用 2 次"))
 
 
 def web_src(n, w, last=False):
@@ -593,7 +613,7 @@ def s8_web():
            + f'<div style="padding: 14px 16px 0; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: {T2}">{icon("search", 14, T2)}'
            f'查了政府网站，找到 2 个相关网页 · 用了 1 次联网</div>'
            + ai_card("联网查政府网站", body, right="来自政府网站", foot="web"))
-    return phone(top, input_bar("继续问这份通知", "今天还能用 3 次 · 联网还剩 [次数] 次"))
+    return phone(top, input_bar("继续问这份通知", "今天还能免费用 3 次 · 联网还剩 [次数] 次"))
 
 
 def state_label(text):
@@ -647,6 +667,9 @@ def s9_states():
                         btn("看原文", True) + btn("重试"), tone="warn")
            + state_label("连不上服务器")
            + state_card("没有发出去", "连不上服务器，你的问题还在输入框里。网络恢复后点重试，不扣次数。", btn("重试", True), tone="warn")
+           + state_label("照片里的通知没在收录里找到")
+           + state_card("没在收录里找到这份通知", "照片里识别出的标题是《[识别出的标题]》，有据还没有收录。可以按这个标题到政府网站查一查；识别的文字只用来查找，不作为回答的依据。",
+                        btn("到政府网站查一查", True) + btn("重新拍"), tone="warn")
            + state_label("图片没通过检测")
            + state_card("这张图片没有识别", "图片没有通过内容安全检测，没有识别，也没有扣次数。请换一张只拍通知正文的照片。", btn("重新选图片"), tone="warn"))
     return phone(top, input_bar("今天的次数已用完，明天恢复", "已经整理好的结果可以继续看", disabled=True))
@@ -721,12 +744,15 @@ def ai_tile(ic, bg, fg, label):
             f'<span style="font-size: 12.5px; white-space: nowrap">{label}</span></div>')
 
 
-def detail_ai_card():
-    """能用：放在“要点”下面，取代右下角浮动按钮；点哪个都进同一个对话页，并带上这份通知。"""
+def detail_ai_card(history="", left=5):
+    """能用：放在“要点”下面，取代右下角浮动按钮；点哪个都进同一个对话页，并带上这份通知。
+    问过这份通知的，卡片里多一行“接着看”，第二天回来从通知里就能找到上次的结果。"""
+    h = (f'<div style="margin-top: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; background: {BLUE_TINT}; border-radius: 8px; font-size: 13.5px">'
+         f'<span style="flex-grow: 1; min-width: 0">{history}</span><span style="flex-shrink: 0; color: {BLUE}; font-weight: 500">接着看 ›</span></div>') if history else ""
     return (f'<div style="margin: 10px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px; box-shadow: inset 0 0 0 1px {BLUE_TINT}">'
             f'<div style="display: flex; align-items: baseline"><span style="font-size: 16px; font-weight: 600">AI 解读</span>'
-            f'<span style="margin-left: auto; font-size: 12px; color: {T3}">今天还能用 5 次</span></div>'
-            f'<div style="margin-top: 4px; font-size: 12.5px; line-height: 1.6; color: {T2}">用 AI 从这份通知的原文里摘句、回答问题，每句标出处；不判断能否申报。</div>'
+            f'<span style="margin-left: auto; font-size: 12px; color: {T3}">今天还能免费用 {left} 次</span></div>'
+            f'<div style="margin-top: 4px; font-size: 12.5px; line-height: 1.6; color: {T2}">用 AI 从这份通知的原文里摘句、回答问题，每句标出处；不判断能否申报。</div>{h}'
             f'<div style="margin-top: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr))">'
             + ai_tile("list", BLUE_TINT, BLUE, "划重点") + ai_tile("doc", G_TINT, GREEN, "要准备哪些材料")
             + ai_tile("user", O_TINT, ORANGE, "和我的企业对一下") + '</div>'
@@ -778,9 +804,10 @@ def e2_detail_off():
 
 
 def e2_reasons():
-    parts = "".join(state_label(label) + detail_ai_off(title, text, action) for label, title, text, action in OFF_REASONS)
-    top = (f'<div style="padding: 20px 16px 0; font-size: 16px; font-weight: 600">「AI 解读」卡片不能用时怎么写</div>'
-           f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">卡片总在详情页同一个位置（要点下面）。能不能用都看得到，不能用就写清原因和下一步。</div>'
+    parts = "".join(state_label("不能用：" + label) + detail_ai_off(title, text, action) for label, title, text, action in OFF_REASONS)
+    top = (f'<div style="padding: 20px 16px 0; font-size: 16px; font-weight: 600">「AI 解读」卡片的其他状态</div>'
+           f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">卡片总在详情页同一个位置（要点下面）。问过的能接着看；不能用就写清原因和下一步。</div>'
+           + state_label("问过这份通知以后") + detail_ai_card("昨天划了重点、问了 2 个问题", left=4)
            + parts)
     return phone(top, '<div style="height: 20px"></div>', min_h=0)
 
@@ -876,8 +903,8 @@ ENTRIES = [
     ("e2b", "入口 2", "通知详情：AI 解读卡片（不能用）", e2_detail_off,
      "名单页也有这张卡片，位置不变，写明「名单不需要 AI 解读」，并给出该去哪：查名单。",
      ["写明原因", "给下一步"]),
-    ("e2c", "入口 2", "不能用时的 6 种说法", e2_reasons,
-     "前 5 种和后端的拒绝原因一一对应（名单、其他类文件、只收录标题的来源、没有完整正文、正文超过 2.4 万字），第 6 种是当天次数用完。",
+    ("e2c", "入口 2", "卡片的其他状态", e2_reasons,
+     "问过这份通知的，卡片里多一行「接着看」，第二天回来从通知里就能找到上次的结果。不能用的 6 种说法：前 5 种对应后端的拒绝原因，第 6 种是当天次数用完。",
      ["和后端原因对应"]),
 ]
 
@@ -889,6 +916,27 @@ ENTRY_WHY = [
 ]
 ENTRY_LATER = "上线后看数据：如果不带通知的提问和拍照占到 AI 使用的一半以上，再把 AI 助手挪进底栏，对话页本身不用改。"
 
+
+
+# 第一次用的人能不能用明白（创始人 10/17 晚的要求）：用起来的规矩，和 6 个任务走查
+RULES = [
+    ("一个东西一个名字", "首页叫「AI 助手」，通知里叫「AI 解读」，进去是同一个对话页，顶部写着正在问哪份通知。"),
+    ("点了就有反应", "示例问题点了直接发出；卡片里的按钮点了直接开始；处理中显示进度和大约多久。"),
+    ("不能用就说为什么", "通知卡片 6 种说法、对话页 8 种情况，每种都写原因和下一步。"),
+    ("结果找得回来", "首页「AI 助手」的「最近问过」，或者那份通知卡片里的「接着看」。没有「任务」这个概念。"),
+    ("次数看得见", "输入框下面一直写今天还能用几次；没扣次数的都写明「不扣次数」。"),
+    ("三种复制分清楚", "复制回答（带「AI 生成」）、复制原文链接、复制网页链接。"),
+    ("填表不被键盘挡", "企业情况用半屏弹层填；营业执照只读两项，读完让用户核对。"),
+    ("换通知不丢东西", "换一份通知后，原来的对话还在「最近问过」里。"),
+]
+TASKS = [
+    ("第一次打开，问「四川 5G 工厂名录在哪个平台填报」，看答案出自哪句原文", "首页 AI 助手 → 点示例问题 → 勾选须知、开始提问 → 回答下面就是原句", "4 下", "顺利"),
+    ("打开 5G 工厂通知，找截止日期和要交的材料", "详情页 AI 解读卡片 → 划重点：最上面是截止时间，点「材料清单」只看材料", "1–2 下", "卡片在第一屏下面一点，位置待定"),
+    ("拿着纸质通知，找官方原文再看要交什么", "AI 助手 → ＋ → 拍照 → 找到原文 → 要准备哪些材料", "5 下", "已改：＋ 弹层写清照片拿来做什么；没收录时给下一步"),
+    ("用营业执照对照海南专精特新，看完删掉企业情况", "卡片里和我的企业对一下 → 同意并拍营业执照 → 核对 → 开始对照 → 删除企业情况", "6 下", "已改：能立即删除；每项资质分别填有效期"),
+    ("第二天回来，找昨天的划重点", "首页 AI 助手 → 最近问过；或通知卡片里「接着看」", "2 下", "已改：通知卡片加「接着看」"),
+    ("名单页想用 AI；当天次数用完", "名单卡片写「名单不需要 AI 解读」→ 去查名单；次数用完写明天恢复", "0–1 下", "顺利"),
+]
 
 # ---------- 评审稿 ----------
 SCREENS = [
@@ -910,6 +958,9 @@ SCREENS = [
     ("s4", "4", "自由提问", s4_ask,
      "先一句话回答，再贴出所依据的原句；找不到就说没找到、不扣次数，并给出下一步。",
      ["AI 生成", "出处到原句", "找不到就说", "不判断能否申报", "模型和备案号"]),
+    ("s5a", "5", "点 ＋ 以后", s5_sheet,
+     "输入框左边的 ＋ 弹出三种来源，写清两种照片各拿来做什么：通知用来找官方原文，营业执照只读两项用来对照。",
+     ["图片安全检测", "不保存图片"]),
     ("s5", "5", "拍纸质通知", s5_photo,
      "照片只用来找原文：识别出标题和文号，在收录里找到官方通知后，后面的回答都按政府网站上的原文来。",
      ["AI 生成", "图片安全检测", "不保存图片"]),
@@ -923,7 +974,7 @@ SCREENS = [
      "只查政府网站，整块标「来自政府网站 · 未经人工核对」；每条结论对应一个网页和摘录，链接可以复制。",
      ["AI 生成", "未经人工核对", "只查政府网站", "模型和备案号"]),
     ("s9", "9", "次数用完、出错、连不上", s9_states,
-     "7 种情况放在一起看，实际一次只出现一种。每种都说清楚原因、扣没扣次数、下一步怎么办；问题留在输入框里，不用重打。",
+     "8 种情况放在一起看，实际一次只出现一种。每种都说清楚原因、扣没扣次数、下一步怎么办；问题留在输入框里，不用重打。",
      ["AI 生成", "使用须知", "次数上限", "不扣次数", "不面向未成年人"]),
 ]
 
@@ -932,7 +983,7 @@ COMPLIANCE = [
      "每屏导航栏下方固定一条，不能关闭；每张回答卡片开头、末尾各标一次；复制出去的内容开头带「AI 生成」", "1–9"),
     ("第三方整理 · 非政府平台", "全站统一（D-014）", "顶部那一条；使用须知第 1 条", "1–9"),
     ("不判断能否申报，以通知原文和主管部门解释为准", "用户协议 八·1", "每张回答卡片末尾；对照卡片开头说明，每行「请你自己判断」", "3、4、7、8"),
-    ("投诉举报入口", "暂行办法第十五条；用户协议 八·4（15 个工作日内答复）", "说明面板；每张回答卡片末尾；每句「这句摘错了」", "1、3、4、7、8"),
+    ("投诉举报入口", "暂行办法第十五条；用户协议 八·4（15 个工作日内答复）", "说明面板；每张回答卡片末尾；每句「纠错」", "1、3、4、7、8"),
     ("适用人群、场合、用途、不适用", "《生成式人工智能服务管理暂行办法》第十条", "导航栏下方那一条右边的「说明」，点开就是（默认收起）", "1"),
     ("模型名称和备案号", "网信办 2025-09-10 公告", "每张回答卡片末尾、说明面板；[模型名称] [备案号] 等网信办答复后填", "1、3、4、7、8"),
     ("每天次数上限，失败、拒答不扣", "用户协议 八·1", "输入框下方剩余次数；说明面板；每个失败状态写明「不扣次数」", "1–9"),
@@ -971,6 +1022,8 @@ def board():
     shots = [shot(sid, f"屏 {n}", title, fn, intent, chips) for sid, n, title, fn, intent, chips in SCREENS]
     entry_shots = [shot(*e) for e in ENTRIES]
     why = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in ENTRY_WHY)
+    rules = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in RULES)
+    tasks = "".join(f'<tr><td class="c-what">{i + 1}. {a}</td><td>{b}</td><td class="c-num">{c}</td><td>{d}</td></tr>' for i, (a, b, c, d) in enumerate(TASKS))
     comp_rows = "".join(f'<tr><td class="c-what">{a}</td><td>{b}</td><td>{c}</td><td class="c-num">{d}</td></tr>' for a, b, c, d in COMPLIANCE)
     tech = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in TECH)
     qs = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in QUESTIONS)
@@ -1041,6 +1094,7 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 .foot {{ margin-top: 40px; font-size: 13px; color: var(--faint); }}
 .why {{ margin-top: 4px; max-width: 820px; }}
 .why h3 {{ margin: 0; font-size: 18px; }}
+ul.rules {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }}
 @media (max-width: 860px) {{
   .flow {{ grid-template-columns: minmax(0, 1fr); }}
   .arrow {{ transform: rotate(90deg); justify-self: start; margin-left: 12px; }}
@@ -1083,6 +1137,13 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 <h2>对话页 9 屏</h2>
 <p class="sub">画面宽 390，按小程序真实尺寸画；长的画面是整条对话的长截图，输入框在最下面。图标只用小程序本地图标集里已有的。</p>
 <div class="screens">{"".join(shots)}</div>
+</section>
+
+<section>
+<h2>第一次用的人能不能用明白</h2>
+<p class="sub">按创始人的要求（让用户知道怎么用、会用、能用明白），把设计稿当成没人教的新用户走了 6 个任务，数点几下、看哪一步要靠猜，然后改稿。下面是开发要守的规矩和走查结果。</p>
+<ul class="list rules">{rules}</ul>
+<div class="table-wrap"><table><thead><tr><th>任务</th><th>怎么走</th><th>点几下</th><th>结果</th></tr></thead><tbody>{tasks}</tbody></table></div>
 </section>
 
 <section>
