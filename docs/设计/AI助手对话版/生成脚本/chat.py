@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "原型v2" / "生成脚本"))
 
 import ds  # noqa: E402
-from ds import (BG, BLUE, BLUE_TINT, CARD, FILL, FONT, FONTS_LINK, G_TINT, GREEN, LINE, LINE2, O_TINT, O_TXT,  # noqa: E402
+from ds import (BG, BLUE, BLUE_G1, BLUE_G2, BLUE_TINT, CARD, FILL, FONT, FONTS_LINK, G_TINT, GREEN, LINE, LINE2, O_TINT, O_TXT,  # noqa: E402
                 ORANGE, RED, T1, T2, T3, capsule, tag_type)
 
 # ---------- 图标：只许用小程序本地图标集里有的 ----------
@@ -652,6 +652,244 @@ def s9_states():
     return phone(top, input_bar("今天的次数已用完，明天恢复", "已经整理好的结果可以继续看", disabled=True))
 
 
+# ---------- 两个入口（10/17 晚加，创始人 18:43 的反馈）：首页「AI 助手」和通知详情里的「AI 解读」卡片 ----------
+# 首页“截止”入口用沙漏：小程序本地图标集里有，原型 v2 的图标目录 10/17 补上（tdesign-icons-svg@0.4.7）
+ds.LIB_ICONS.setdefault("hourglass", "hourglass")
+
+SH6 = dict(region="上海 · 省级", title="关于上海市2026年第六批拟入库科技型中小企业名单的公示", issuer="上海市科学技术委员会",
+           date="2026-09-24")
+
+# 详情页“AI 解读”卡片不能用时的说法，和后端 interpret.eligible_body 的拒绝原因一一对应
+OFF_REASONS = [
+    ("名单", "名单不需要 AI 解读", "名单是一串企业名称，没有要摘的条件。想知道某家企业在不在名单上，用「查名单」。", "去查名单"),
+    ("其他类文件", "这类文件不做 AI 解读", "AI 解读只做申报通知和政策文件，这份是其他类文件。请看原文。", "复制原文链接"),
+    ("只收录标题的来源", "这个来源只收录标题和链接", "按来源的授权，有据只保存标题和链接，没有正文，不能解读。请看原文。", "复制原文链接"),
+    ("没有完整正文", "还没有拿到完整正文", "正文可能在附件或图片里，有据还没提取到可以公开的完整正文，暂不能解读。请看原文和附件。", "看附件"),
+    ("正文超过 2.4 万字", "正文超过 2.4 万字，暂不能解读", "太长的通知一次整理不完，容易漏句。请先看上面的要点和原文。", None),
+    ("今天次数用完", "今天的 5 次用完了", "明天恢复。这份通知以前整理过的结果，随时可以看。", "看以前的结果"),
+]
+
+
+def site_bar():
+    """全站统一的出处说明条（现有 notice-bar 组件）。"""
+    return (f'<div style="height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11.5px; color: {T3}">'
+            f'{icon("shield", 12, T3)}第三方整理 · 非政府平台 · 每条附原文链接</div>')
+
+
+def plain_tag(text):
+    return (f'<span style="padding: 0 6px; line-height: 20px; border-radius: 4px; background: {FILL}; color: {T2}; font-size: 12px; '
+            f'white-space: nowrap">{text}</span>')
+
+
+def detail_head(tags, d):
+    return (f'<div style="margin: 0 12px; padding: 16px; background: {CARD}; border-radius: 12px">'
+            f'<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">{tags}<span style="font-size: 12px; color: {T2}">{d["region"]}</span></div>'
+            f'<div style="margin-top: 10px; font-size: 20px; line-height: 30px; font-weight: 700">{d["title"]}</div>'
+            f'<div style="margin-top: 10px; font-size: 13px; color: {T2}">{d["issuer"]} · {d["date"]} 发布</div>'
+            f'<div style="margin-top: 6px; font-size: 11.5px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</div></div>')
+
+
+def detail_due():
+    """详情页的截止时间（D-061：8–30 天内可显示机器摘录，附原句、标未经人工核对）。"""
+    rows = [("企业填报截止", "10月30日", "周五", 13, "……组织本地区企业，通过“5G+工业互联网发展管理平台”……于10月30日前填报项目并上传相关材料"),
+            ("市（州）报送截止", "11月4日", "周三", 18, "……于11月4日前将盖章版推荐项目汇总表发送到指定邮箱")]
+    out = []
+    for i, (kind, date, week, days, quote) in enumerate(rows):
+        b = f"margin-top: 12px; padding-top: 12px; border-top: 1px solid {LINE};" if i else ""
+        out.append(f'<div style="{b}"><div style="display: flex; align-items: flex-end; justify-content: space-between">'
+                   f'<div><div style="font-size: 12px; color: {T2}">{kind}</div><div style="margin-top: 2px; display: flex; align-items: baseline; gap: 8px">'
+                   f'<span style="font-size: 21px; font-weight: 700; line-height: 1.3">{date}</span><span style="font-size: 13px; color: {T2}">{week}</span></div></div>'
+                   f'<span style="height: 26px; padding: 0 10px; display: inline-flex; align-items: center; border-radius: 13px; background: {BLUE_TINT}; '
+                   f'color: {RED if days <= 14 else BLUE}; font-size: 13px; font-weight: 600">剩 {days} 天</span></div>'
+                   f'<div style="margin-top: 6px"><span style="padding: 0 6px; line-height: 20px; border-radius: 4px; border: 1px dashed {O_TXT}; color: {O_TXT}; font-size: 11.5px">机器摘录 · 未经人工核对</span></div>'
+                   f'<div style="margin-top: 6px; padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{quote}</div></div>')
+    return (f'<div style="margin: 10px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px">'
+            f'<div style="display: flex; justify-content: space-between; font-size: 12px"><span style="font-weight: 600; color: {T1}">截止时间</span><span style="color: {T3}">以原文为准</span></div>'
+            f'<div style="margin-top: 8px">{"".join(out)}</div></div>')
+
+
+def detail_points(rows):
+    kv = "".join(f'<div style="display: flex; gap: 12px; padding: 12px 0; {"" if i == len(rows) - 1 else f"border-bottom: 1px solid {LINE};"} font-size: 14px; line-height: 1.6">'
+                 f'<span style="min-width: 72px; color: {T3}">{k}</span><span style="flex: 1">{v}</span></div>' for i, (k, v) in enumerate(rows))
+    return (f'<div style="margin: 10px 12px 0; padding: 0 16px; background: {CARD}; border-radius: 12px">'
+            f'<div style="padding-top: 14px; font-size: 16px; font-weight: 600">要点</div>{kv}</div>')
+
+
+def ai_tile(ic, bg, fg, label):
+    return (f'<div style="display: flex; flex-direction: column; align-items: center; gap: 6px">'
+            f'<span style="width: 40px; height: 40px; border-radius: 12px; background: {bg}; display: flex; align-items: center; justify-content: center">{icon(ic, 20, fg)}</span>'
+            f'<span style="font-size: 12.5px; white-space: nowrap">{label}</span></div>')
+
+
+def detail_ai_card():
+    """能用：放在“要点”下面，取代右下角浮动按钮；点哪个都进同一个对话页，并带上这份通知。"""
+    return (f'<div style="margin: 10px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px; box-shadow: inset 0 0 0 1px {BLUE_TINT}">'
+            f'<div style="display: flex; align-items: baseline"><span style="font-size: 16px; font-weight: 600">AI 解读</span>'
+            f'<span style="margin-left: auto; font-size: 12px; color: {T3}">今天还能用 5 次</span></div>'
+            f'<div style="margin-top: 4px; font-size: 12.5px; line-height: 1.6; color: {T2}">用 AI 从这份通知的原文里摘句、回答问题，每句标出处；不判断能否申报。</div>'
+            f'<div style="margin-top: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr))">'
+            + ai_tile("list", BLUE_TINT, BLUE, "划重点") + ai_tile("doc", G_TINT, GREEN, "要准备哪些材料")
+            + ai_tile("user", O_TINT, ORANGE, "和我的企业对一下") + '</div>'
+            f'<div style="margin-top: 14px; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 20px; background: {FILL}; '
+            f'font-size: 13.5px; color: {T3}">{icon("search", 15, T3)}<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; '
+            f'text-overflow: ellipsis">问这份通知，如：推荐项目必须已经建成吗？</span>{icon("chev", 14, T3)}</div></div>')
+
+
+def detail_ai_off(title, text, action=None, mt=10):
+    """不能用：卡片还在同一个位置，写明为什么、该去哪。"""
+    a = f'<div style="margin-top: 6px; font-size: 13px; color: {BLUE}">{action} ›</div>' if action else ""
+    return (f'<div style="margin: {mt}px 12px 0; padding: 14px 16px; background: {CARD}; border-radius: 12px">'
+            f'<div style="font-size: 16px; font-weight: 600">AI 解读</div>'
+            f'<div style="margin-top: 8px; display: flex; gap: 8px"><span style="flex-shrink: 0; padding-top: 2px">{icon("info", 15, T3)}</span>'
+            f'<div style="min-width: 0"><div style="font-size: 14px; font-weight: 500">{title}</div>'
+            f'<div style="margin-top: 2px; font-size: 13px; line-height: 1.65; color: {T2}">{text}</div>{a}</div></div></div>')
+
+
+def body_card(inner):
+    return (f'<div style="margin: 10px 12px 0; padding: 0 16px 14px; background: {CARD}; border-radius: 12px">'
+            f'<div style="padding-top: 14px; font-size: 16px; font-weight: 600">正文</div>{inner}</div>')
+
+
+def detail_bar():
+    items = "".join(f'<span style="width: 50px; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; '
+                    f'font-size: 11px; color: {T2}">{icon(i, 22, T2)}<span>{t}</span></span>' for t, i in [("导出", "download"), ("纠错", "flag")])
+    return (f'<div style="flex-shrink: 0; box-sizing: border-box; padding: 8px 16px 28px; background: {CARD}; border-top: 1px solid {LINE}; display: flex; align-items: center; gap: 4px">'
+            f'{items}<span style="margin-left: auto; height: 44px; padding: 0 22px; display: inline-flex; align-items: center; gap: 6px; background: {BLUE}; '
+            f'color: #FFFFFF; border-radius: 22px; font-size: 15px; font-weight: 500">{icon("copy", 16, "#FFFFFF")}复制原文链接</span></div>')
+
+
+def e2_detail_ok():
+    body = body_card(f'<div style="margin-top: 4px; font-size: 11.5px; line-height: 1.6; color: {T3}">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准。</div>'
+                     f'<div style="margin-top: 10px; font-size: 14.5px; line-height: 1.8">川经信办函〔2026〕356号<br>各市（州）经济和信息化局：<br>'
+                     f'根据工业和信息化部办公厅《关于组织开展2026年5G工厂名录遴选工作的通知》（工信管函〔2026〕477号）要求，我厅会同四川通信管理局……</div>'
+                     f'<div style="margin-top: 8px; font-size: 13px; color: {BLUE}">展开全文 ›</div>')
+    top = (nav("文件详情") + site_bar() + detail_head(tag_type("申报通知"), SC5G) + detail_due()
+           + detail_points([("发文机关", SC5G["issuer"]), ("文号", SC5G["no"]), ("适用地区", "四川省")])
+           + detail_ai_card() + body)
+    return phone(top, detail_bar())
+
+
+def e2_detail_off():
+    body = body_card(f'<div style="margin-top: 8px; font-size: 13.5px; line-height: 1.7; color: {T2}">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用“查名单”。</div>')
+    top = (nav("文件详情") + site_bar() + detail_head(tag_type("名单") + plain_tag("名单状态：公示"), SH6)
+           + detail_points([("发文机关", SH6["issuer"]), ("适用地区", "上海市")])
+           + detail_ai_off(*OFF_REASONS[0][1:]) + body)
+    return phone(top, detail_bar())
+
+
+def e2_reasons():
+    parts = "".join(state_label(label) + detail_ai_off(title, text, action) for label, title, text, action in OFF_REASONS)
+    top = (f'<div style="padding: 20px 16px 0; font-size: 16px; font-weight: 600">「AI 解读」卡片不能用时怎么写</div>'
+           f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">卡片总在详情页同一个位置（要点下面）。能不能用都看得到，不能用就写清原因和下一步。</div>'
+           + parts)
+    return phone(top, '<div style="height: 20px"></div>', min_h=0)
+
+
+def home_header(ai_bar=True):
+    scopes = (f'<div style="height: 36px; display: flex; align-items: stretch; gap: 22px; font-size: 15px">'
+              f'<span style="font-weight: 700; display: inline-flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px">查申报'
+              f'<span style="width: 18px; height: 3px; border-radius: 2px; background: #FFFFFF"></span></span>'
+              + "".join(f'<span style="display: inline-flex; align-items: center; padding-bottom: 7px; color: rgba(255,255,255,0.8)">{t}</span>' for t in ("查名单", "查政策"))
+              + '</div>')
+    search = (f'<div style="margin-top: 6px; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 14px; background: #FFFFFF; border-radius: 22px; '
+              f'box-shadow: 0 4px 14px rgba(20, 45, 120, 0.18)">{icon("search", 18, T3)}<span style="flex-grow: 1; color: {T3}; font-size: 14px">搜申报通知，如“高新技术企业”</span>'
+              f'<span style="height: 36px; padding: 0 18px; display: inline-flex; align-items: center; background: {BLUE}; color: #FFFFFF; border-radius: 18px; font-size: 14px; font-weight: 500">搜索</span></div>')
+    hot = (f'<div style="margin-top: 10px; display: flex; gap: 14px; font-size: 12px; white-space: nowrap"><span style="color: rgba(255,255,255,0.68)">大家在查</span>'
+           + "".join(f'<span style="color: rgba(255,255,255,0.95)">{t}</span>' for t in ("高新技术企业", "专精特新", "科技型中小企业")) + '</div>')
+    bar = ""
+    if ai_bar:
+        bar = (f'<div style="margin-top: 14px; height: 48px; padding: 0 12px 0 14px; box-sizing: border-box; display: flex; align-items: center; gap: 10px; border-radius: 12px; '
+               f'background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3)">'
+               f'<span style="font-size: 15.5px; font-weight: 700; white-space: nowrap">AI 助手</span>'
+               f'<span style="flex-grow: 1; min-width: 0; font-size: 12.5px; color: rgba(255,255,255,0.88); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">拍通知、问条件，回答都标出处</span>'
+               f'{icon("chev", 16, "#FFFFFF")}</div>')
+    return (f'<div style="flex-shrink: 0; background: linear-gradient(180deg, {BLUE_G1} 0%, {BLUE_G2} 100%); color: #FFFFFF; padding: 0 16px 30px; position: relative">'
+            f'<div style="height: 48px; display: flex; align-items: center; gap: 10px; position: relative">'
+            f'<span style="font-weight: 700; font-size: 20px; letter-spacing: 1px">有据</span>'
+            f'<span style="font-size: 11.5px; color: rgba(255,255,255,0.88); padding: 1px 6px; border: 1px solid rgba(255,255,255,0.4); border-radius: 4px">第三方整理 · 非政府平台</span>'
+            f'{capsule(True).replace("right: 10px", "right: -6px")}</div>{scopes}{search}{hot}{bar}</div>')
+
+
+def home_entry(label, sub, ic, g1, g2):
+    return (f'<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">'
+            f'<span style="width: 42px; height: 42px; border-radius: 13px; background: linear-gradient(145deg, {g1}, {g2}); display: flex; align-items: center; justify-content: center">'
+            f'{icon(ic, 22, "#FFFFFF")}</span><span style="font-size: 13px">{label}</span><span style="margin-top: -3px; font-size: 11px; color: {T3}; white-space: nowrap">{sub}</span></div>')
+
+
+def home_body():
+    entries = (f'<div style="margin: -16px 12px 0; position: relative; padding: 14px 2px 12px; background: {CARD}; border-radius: 12px; box-shadow: 0 2px 10px rgba(29, 33, 41, 0.05); '
+               f'display: grid; grid-template-columns: repeat(4, minmax(0, 1fr))">'
+               + home_entry("截止", "7 / 14 / 30 天", "hourglass", "#3FD0A6", GREEN) + home_entry("我的客户", "本机最多 20 家", "user", "#5B8CFF", BLUE)
+               + home_entry("查名单", "上过哪些名单", "list", "#FFAB5C", ORANGE) + home_entry("批量工具", "名单比对等", "grid", "#5B8CFF", BLUE) + '</div>')
+    summary = (f'<div style="margin: 10px 12px 0; height: 58px; padding: 0 16px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; background: {CARD}; border-radius: 12px">'
+               f'<div style="flex-shrink: 0"><div style="font-size: 12px; color: {T2}; line-height: 1.3">本周新增</div>'
+               f'<div style="font-size: 18px; font-weight: 700; line-height: 1.3; color: {BLUE}">[N]<span style="font-size: 12px; font-weight: 500; color: {T2}"> 份</span></div></div>'
+               f'<div style="width: 1px; height: 28px; background: {LINE}"></div>'
+               f'<div style="flex-grow: 1; font-size: 12.5px; line-height: 1.6; color: {T2}">申报 [N] · 名单与公示 [N] · 其他 [N]<br>来自 [N] 个省和国家部委 · 每条都有出处</div>{icon("chev", 16, T3)}</div>')
+    rows = []
+    for i, d in enumerate((SC5G, GD8)):
+        b = "" if i == 1 else f"border-bottom: 1px solid {LINE};"
+        rows.append(f'<div style="padding: 13px 0; {b}"><div style="display: flex; align-items: center; gap: 6px">{tag_type("申报通知")}'
+                    f'<span style="font-size: 12px; color: {T2}">{d["region"]}</span></div>'
+                    f'<div style="margin-top: 6px; font-size: 15.5px; font-weight: 600; line-height: 1.55">{d["title"]}</div>'
+                    f'<div style="margin-top: 6px; display: flex; align-items: center; font-size: 12.5px; color: {T2}"><span>{d["issuer"]} · {d["date"]}</span>'
+                    f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {BLUE}">{icon("copy", 14, BLUE)}复制原文链接</span></div></div>')
+    latest = (f'<div style="margin: 10px 12px 0; padding: 0 16px; background: {CARD}; border-radius: 12px">'
+              f'<div style="padding-top: 14px; font-size: 16px; font-weight: 600">最新申报通知</div>{"".join(rows)}</div>')
+    return entries + summary + latest
+
+
+def home_tabbar(with_ai=False):
+    items = [("首页", "home", True), ("关注", "bell", False), ("文件", "doc", False), ("我的", "user", False)]
+    out = []
+    for i, (label, key, on) in enumerate(items):
+        color = BLUE if on else T3
+        out.append(f'<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: {color}; font-size: 11px; '
+                   f'{"font-weight: 600;" if on else ""}">{icon(key, 24, color, filled=on)}<span>{label}</span></div>')
+        if with_ai and i == 0:
+            out.append(f'<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: {T3}; font-size: 11px">'
+                       f'<span style="width: 24px; height: 24px; box-sizing: border-box; border: 2px solid {T3}; border-radius: 7px; display: flex; align-items: center; '
+                       f'justify-content: center; font-size: 10px; font-weight: 700; letter-spacing: -0.3px">AI</span><span>AI 助手</span></div>')
+    cols = len(out)
+    return (f'<div style="flex-shrink: 0; height: 84px; box-sizing: border-box; padding-bottom: 30px; background: {CARD}; border-top: 1px solid {LINE}; '
+            f'display: grid; grid-template-columns: repeat({cols}, minmax(0, 1fr))">{"".join(out)}</div>')
+
+
+def e1_home():
+    return phone(home_header(ai_bar=True) + home_body(), home_tabbar())
+
+
+def e1_tab():
+    return phone(home_header(ai_bar=False) + home_body(), home_tabbar(with_ai=True))
+
+
+ENTRIES = [
+    ("e1", "入口 1 · 推荐", "首页：搜索框下面一条「AI 助手」", e1_home,
+     "放在首页第一屏、搜索框正下方：找通知用搜索，问通知用 AI 助手，两件事挨着。原来的「工具中心」只剩批量名单比对和客户通知表，改叫「批量工具」。",
+     ["不进底栏", "关掉 AI 时整条隐藏"]),
+    ("e1b", "入口 1 · 对比", "放进底栏（不推荐）", e1_tab,
+     "底栏变成 5 个，AI 助手在每个底栏页都能点到；代价见下面「为什么放首页、不放底栏」。",
+     ["对比用"]),
+    ("e2a", "入口 2", "通知详情：AI 解读卡片（能用）", e2_detail_ok,
+     "取代右下角浮动按钮（它在手机上变成压住正文的大椭圆）。卡片嵌在「要点」下面：三个常用按钮和一行提问框，点哪个都进同一个对话页，并带上这份通知。截止时间多的通知，卡片在第一屏下面一点；想更显眼可以挪到标题卡片下面。",
+     ["不挡内容", "不判断能否申报", "次数"]),
+    ("e2b", "入口 2", "通知详情：AI 解读卡片（不能用）", e2_detail_off,
+     "名单页也有这张卡片，位置不变，写明「名单不需要 AI 解读」，并给出该去哪：查名单。",
+     ["写明原因", "给下一步"]),
+    ("e2c", "入口 2", "不能用时的 6 种说法", e2_reasons,
+     "前 5 种和后端的拒绝原因一一对应（名单、其他类文件、只收录标题的来源、没有完整正文、正文超过 2.4 万字），第 6 种是当天次数用完。",
+     ["和后端原因对应"]),
+]
+
+ENTRY_WHY = [
+    ("多数时候是从通知进来的", "AI 解读卡片在每份通知的详情页里；首页这一条只管不带通知的提问和拍照，用得没那么频繁，还不值得占一个底栏位。"),
+    ("底栏页面不能带参数打开", "详情页要带着通知进对话页。AI 助手做成底栏页，就得另做一个对话页、两个入口分开维护；放首页只要一个对话页，返回还能回到通知。"),
+    ("AI 有开关和额度", "总开关关掉或首发版不带 AI 时，首页这一条直接不显示；底栏少一格要改所有底栏页和提审包。"),
+    ("底栏保持四个", "首页、关注、文件、我的和首发版一致，老用户不用重新找。"),
+]
+ENTRY_LATER = "上线后看数据：如果不带通知的提问和拍照占到 AI 使用的一半以上，再把 AI 助手挪进底栏，对话页本身不用改。"
+
+
 # ---------- 评审稿 ----------
 SCREENS = [
     ("s1a", "1", "首页 · 第一次打开", s1_first,
@@ -722,13 +960,17 @@ QUESTIONS = [
 ]
 
 
+def shot(sid, label, title, fn, intent, chips):
+    tags = "".join(f'<span class="chip">{c}</span>' for c in chips)
+    return (f'<figure class="shot" id="{sid}"><figcaption><div class="shot-no">{label}</div><h3>{title}</h3>'
+            f'<p>{intent}</p><div class="chips">{tags}</div></figcaption>'
+            f'<div class="frame-wrap"><div class="frame">{fn()}</div></div></figure>')
+
+
 def board():
-    shots = []
-    for sid, n, title, fn, intent, chips in SCREENS:
-        tags = "".join(f'<span class="chip">{c}</span>' for c in chips)
-        shots.append(f'<figure class="shot" id="{sid}"><figcaption><div class="shot-no">屏 {n}</div><h3>{title}</h3>'
-                     f'<p>{intent}</p><div class="chips">{tags}</div></figcaption>'
-                     f'<div class="frame-wrap"><div class="frame">{fn()}</div></div></figure>')
+    shots = [shot(sid, f"屏 {n}", title, fn, intent, chips) for sid, n, title, fn, intent, chips in SCREENS]
+    entry_shots = [shot(*e) for e in ENTRIES]
+    why = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in ENTRY_WHY)
     comp_rows = "".join(f'<tr><td class="c-what">{a}</td><td>{b}</td><td>{c}</td><td class="c-num">{d}</td></tr>' for a, b, c, d in COMPLIANCE)
     tech = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in TECH)
     qs = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in QUESTIONS)
@@ -797,6 +1039,8 @@ ol.list li b::before {{ content: counter(q) "　"; color: var(--accent); }}
 .sources a:hover, .sources a:focus-visible {{ text-decoration: underline; }}
 a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }}
 .foot {{ margin-top: 40px; font-size: 13px; color: var(--faint); }}
+.why {{ margin-top: 4px; max-width: 820px; }}
+.why h3 {{ margin: 0; font-size: 18px; }}
 @media (max-width: 860px) {{
   .flow {{ grid-template-columns: minmax(0, 1fr); }}
   .arrow {{ transform: rotate(90deg); justify-self: start; margin-left: 12px; }}
@@ -818,7 +1062,7 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 <h2>入口和流程</h2>
 <p class="sub">只有一个对话页。从哪里进来，决定对话开头带不带一份通知；原来的两项 AI 能力变成对话里的卡片，用户不用再理解「工具页」「任务」。</p>
 <div class="flow">
-<div><div class="box">首页「AI 助手」<small>不带通知，空白对话</small></div><div class="box">通知详情「AI 解读」<small>带上这份通知</small></div></div>
+<div><div class="box">首页搜索框下面的「AI 助手」<small>不带通知，空白对话</small></div><div class="box">通知详情里的「AI 解读」卡片<small>在「要点」下面，带上这份通知；取代右下角浮动按钮</small></div></div>
 <div class="arrow" aria-hidden="true">→</div>
 <div class="box">AI 助手对话页<small>顶部固定「AI 生成」；每份通知一条对话，记录保存 30 天</small></div>
 <div class="arrow" aria-hidden="true">→</div>
@@ -829,7 +1073,14 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 </section>
 
 <section>
-<h2>9 屏画面</h2>
+<h2>两个入口</h2>
+<p class="sub">两个入口进的是同一个对话页。通知详情里的入口改成嵌在页面里的卡片，不再用浮动按钮；卡片在每份通知的同一个位置，能不能用都写清楚。</p>
+<div class="screens">{"".join(entry_shots)}</div>
+<div class="why"><h3>为什么放首页、不放底栏</h3><ul class="list">{why}</ul><p class="sub">{ENTRY_LATER}</p></div>
+</section>
+
+<section>
+<h2>对话页 9 屏</h2>
 <p class="sub">画面宽 390，按小程序真实尺寸画；长的画面是整条对话的长截图，输入框在最下面。图标只用小程序本地图标集里已有的。</p>
 <div class="screens">{"".join(shots)}</div>
 </section>
@@ -878,6 +1129,6 @@ if __name__ == "__main__":
     st_dir.mkdir(parents=True, exist_ok=True)
     out_board.parent.mkdir(parents=True, exist_ok=True)
     out_board.write_text(board(), encoding="utf-8")
-    for sid, n, title, fn, intent, chips in SCREENS:
+    for sid, label, title, fn, intent, chips in ENTRIES + [(a, f"屏 {b}", c, d, e, f) for a, b, c, d, e, f in SCREENS]:
         (st_dir / f"{sid}.html").write_text(static_page(sid, fn), encoding="utf-8")
         print(sid, title)
