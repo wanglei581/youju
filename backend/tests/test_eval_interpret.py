@@ -222,6 +222,33 @@ def test_main_read_only_and_no_queue(
     )
 
 
+def test_main_uses_separate_advisor_endpoint(db_engine, session, documents, tmp_path, monkeypatch):
+    """评测和线上对外 AI 用同一条线路：单独设置了（走腾讯云开发，10/17）就评测那条。"""
+    settings = Settings(
+        _env_file=None,
+        database_url=db_engine.url.render_as_string(hide_password=False),
+        ai_api_key=SecretStr("background"),
+        ai_model="background-model",
+        ai_advisor_base_url="https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase",
+        ai_advisor_api_key=SecretStr("advisor"),
+        ai_advisor_model="advisor-model",
+    )
+    monkeypatch.setattr(eval_script, "get_settings", lambda: settings)
+    monkeypatch.setattr(eval_script, "create_mysql_engine", lambda url: db_engine)
+    fake = FakeChat()
+    calls = []
+
+    def factory(*args, **kwargs):
+        calls.append(args)
+        return fake
+
+    monkeypatch.setattr(eval_script, "ChatClient", factory)
+    args = ["--limit", "1", "--out", str(tmp_path), "--doc-ids", str(documents[0])]
+    assert eval_script.main(args) == 0
+    assert calls == [(settings.ai_advisor_base_url, "advisor", "advisor-model")]
+    assert fake.calls == 1
+
+
 def test_invalid_model_shape_and_empty_summary(session, documents):
     class BadShape(FakeChat):
         def complete_json(self, *args, **kwargs):

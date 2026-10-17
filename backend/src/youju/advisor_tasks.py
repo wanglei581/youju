@@ -26,7 +26,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from youju import access_log
-from youju.ai import clause, interpret
+from youju.ai import advisor_endpoint, clause, interpret
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -454,7 +454,8 @@ def process_ai(
     skill = get_skill(task.kind)
     started = monotonic_clock.monotonic()
     own_client = chat_client is None
-    model = settings.ai_model
+    # 对外 AI 的模型（YOUJU_AI_ADVISOR_MODEL，没单独配就是 YOUJU_AI_MODEL）；也是结果缓存键的一部分
+    advisor_url, advisor_key, model, advisor_extra = advisor_endpoint(settings)
     call_reserved = False
     call_stamp = stamp
     task.model, task.prompt_version = model, skill.prompt_version
@@ -504,19 +505,19 @@ def process_ai(
                 else copy.deepcopy(cached.result_json)
             )
         else:
-            if chat_client is None and not settings.ai_api_key:
+            if chat_client is None and not advisor_key:
                 raise AIError("AI 服务尚未配置")
             if chat_client is None:
                 chat_client = ChatClient(
-                    settings.ai_base_url,
-                    settings.ai_api_key.get_secret_value(),
+                    advisor_url,
+                    advisor_key,
                     model,
                     timeout=min(
                         getattr(settings, "ai_advisor_timeout_seconds", 180),
                         timeout.total_seconds(),
                     ),
                     max_retries=0,
-                    extra_body=getattr(settings, "ai_request_extra", None),
+                    extra_body=advisor_extra,
                 )
             call_stamp = datetime.now(UTC) if live_time else stamp
             reserve_ai_call(session, skill.kind, model, call_stamp, settings.ai_advisor_daily_cap)

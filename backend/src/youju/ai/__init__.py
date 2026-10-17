@@ -12,7 +12,8 @@ def get_chat_client(timeout: float = 30.0) -> ChatClient | None:
     key = settings.ai_api_key.get_secret_value() if settings.ai_api_key else ""
     if not key:
         return None
-    # 后台核对可以单独用便宜的模型（YOUJU_AI_BACKGROUND_MODEL），不填就和 AI 顾问用同一个
+    # 后台核对可以单独用便宜的模型（YOUJU_AI_BACKGROUND_MODEL），不填就用 YOUJU_AI_MODEL。
+    # 对外 AI 单独设置的线路（YOUJU_AI_ADVISOR_*）不影响这里：后台核对一直走这一套
     model = getattr(settings, "ai_background_model", "") or settings.ai_model
     return ChatClient(
         settings.ai_base_url,
@@ -23,4 +24,23 @@ def get_chat_client(timeout: float = 30.0) -> ChatClient | None:
     )
 
 
-__all__ = ["AIError", "ChatClient", "get_chat_client"]
+def advisor_endpoint(settings) -> tuple[str, str, str, dict | None]:
+    """对外 AI（政策解读、条款对照）的调用地址、密钥、模型和附加参数。
+    单独配了（YOUJU_AI_ADVISOR_*，三项一起填，见 config）用单独的；没配沿用后台 AI 的。
+    密钥为空表示没配置，调用方据此报「AI 服务尚未配置」。"""
+    advisor_key = getattr(settings, "ai_advisor_api_key", None)
+    advisor_key = advisor_key.get_secret_value() if advisor_key else ""
+    if getattr(settings, "ai_advisor_base_url", "") and advisor_key:
+        base_url, key = settings.ai_advisor_base_url, advisor_key
+        model = getattr(settings, "ai_advisor_model", "") or settings.ai_model
+    else:
+        base_url = settings.ai_base_url
+        key = settings.ai_api_key.get_secret_value() if settings.ai_api_key else ""
+        model = settings.ai_model
+    extra = getattr(settings, "ai_advisor_request_extra", None)
+    if extra is None:
+        extra = getattr(settings, "ai_request_extra", None)
+    return base_url, key, model, extra
+
+
+__all__ = ["AIError", "ChatClient", "advisor_endpoint", "get_chat_client"]

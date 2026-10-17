@@ -1,3 +1,5 @@
+import pytest
+
 from youju.ai import ChatClient, get_chat_client
 from youju.config import get_settings
 
@@ -23,3 +25,81 @@ def test_get_chat_client_with_key_does_not_expose_it(monkeypatch):
         assert "sk-test-secret" not in str(get_settings().model_dump())
     finally:
         get_settings.cache_clear()
+
+
+ADVISOR_ENV = {
+    "YOUJU_AI_ADVISOR_BASE_URL": "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase",
+    "YOUJU_AI_ADVISOR_API_KEY": "sk-advisor-secret",
+    "YOUJU_AI_ADVISOR_MODEL": "deepseek-v4-pro-0813",
+}
+
+
+def _settings(monkeypatch, **env):
+    from youju.config import Settings
+
+    for name in (*ADVISOR_ENV, "YOUJU_AI_ADVISOR_REQUEST_EXTRA", "YOUJU_AI_REQUEST_EXTRA"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("YOUJU_AI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("YOUJU_AI_API_KEY", "sk-background-secret")
+    monkeypatch.setenv("YOUJU_AI_MODEL", "deepseek-v4-pro")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return Settings(_env_file=None)
+
+
+def test_advisor_endpoint_falls_back_to_background_settings(monkeypatch):
+    """对外 AI 没单独设置：沿用后台的地址、密钥、模型和附加参数（行为和以前一样）。"""
+    from youju.ai import advisor_endpoint
+
+    settings = _settings(monkeypatch, YOUJU_AI_REQUEST_EXTRA='{"thinking": {"type": "disabled"}}')
+    assert advisor_endpoint(settings) == (
+        "https://api.deepseek.com",
+        "sk-background-secret",
+        "deepseek-v4-pro",
+        {"thinking": {"type": "disabled"}},
+    )
+
+
+def test_advisor_endpoint_uses_its_own_settings_background_unchanged(monkeypatch):
+    """对外 AI 单独设置（走腾讯云开发）：用自己的地址、密钥、模型；后台核对仍直连原来的（10/17 创始人确认）。"""
+    from youju.ai import advisor_endpoint
+
+    settings = _settings(
+        monkeypatch,
+        YOUJU_AI_REQUEST_EXTRA='{"thinking": {"type": "disabled"}}',
+        YOUJU_AI_BACKGROUND_MODEL="deepseek-flash",
+        **ADVISOR_ENV,
+    )
+    url, key, model, extra = advisor_endpoint(settings)
+    assert (url, key, model) == tuple(ADVISOR_ENV.values())
+    # 附加参数没单独填：沿用后台的；单独填了（换平台时如 {}）用单独的
+    assert extra == {"thinking": {"type": "disabled"}}
+    settings = _settings(monkeypatch, YOUJU_AI_ADVISOR_REQUEST_EXTRA="{}", **ADVISOR_ENV)
+    assert advisor_endpoint(settings)[3] == {}
+    # 后台客户端不受影响
+    get_settings.cache_clear()
+    monkeypatch.setenv("YOUJU_AI_BACKGROUND_MODEL", "deepseek-flash")
+    try:
+        client = get_chat_client()
+        assert client.model == "deepseek-flash"
+        assert client.base_url == "https://api.deepseek.com"
+        client.close()
+        # 密钥不能出现在配置的打印内容里
+        dumped = repr(get_settings()) + str(get_settings().model_dump())
+        assert "sk-advisor-secret" not in dumped and "sk-background-secret" not in dumped
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"YOUJU_AI_ADVISOR_BASE_URL": ADVISOR_ENV["YOUJU_AI_ADVISOR_BASE_URL"]},
+        {k: v for k, v in ADVISOR_ENV.items() if k != "YOUJU_AI_ADVISOR_MODEL"},
+        {"YOUJU_AI_ADVISOR_API_KEY": "sk-advisor-secret"},
+    ],
+)
+def test_advisor_endpoint_settings_must_be_filled_together(monkeypatch, partial):
+    """只改了地址、没改密钥或模型：每次调用都会失败，配错就不启动。"""
+    with pytest.raises(ValueError, match="三项要一起填"):
+        _settings(monkeypatch, **partial)

@@ -15,7 +15,7 @@ from pathlib import Path
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from youju.ai import clause, interpret
+from youju.ai import advisor_endpoint, clause, interpret
 from youju.ai.client import ChatClient
 from youju.ai.skills import get_skill
 from youju.config import get_settings
@@ -259,7 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     engine = None
     try:
         settings = get_settings()
-        if not args.dry_run and not settings.ai_api_key:
+        # 和线上对外 AI 用同一条线路（单独设置了 YOUJU_AI_ADVISOR_* 就是那条，没设置就是后台的）
+        base_url, key, model, extra = advisor_endpoint(settings)
+        if not args.dry_run and not key:
             print("没有配置 AI 密钥，只能用 --dry-run")
             return 1
         engine = create_mysql_engine(settings.database_url)
@@ -267,18 +269,16 @@ def main(argv: list[str] | None = None) -> int:
             # 数据库层强制只读，防止今后 prepare 的变动意外写表。
             connection.execute(text("START TRANSACTION READ ONLY"))
             with Session(bind=connection, autoflush=False) as session:
-                selected = select_documents(
-                    session, settings.ai_model, args.limit, args.doc_ids, args.skill
-                )
+                selected = select_documents(session, model, args.limit, args.doc_ids, args.skill)
             connection.rollback()
         if not args.dry_run:
             client = ChatClient(
-                settings.ai_base_url,
-                settings.ai_api_key.get_secret_value(),
-                settings.ai_model,
+                base_url,
+                key,
+                model,
                 timeout=settings.ai_advisor_timeout_seconds,
                 max_retries=0,
-                extra_body=settings.ai_request_extra,
+                extra_body=extra,
             )
         records = evaluate(selected, client, args.skill)
         write_outputs(args.out, records, args.skill)
