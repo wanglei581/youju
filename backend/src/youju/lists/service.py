@@ -15,6 +15,7 @@ from youju.config import get_settings
 from youju.crawler.detail_service import REFETCH_FAILURE_PREFIX, _government_url, fetch_details
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, PoliteFetcher
 from youju.lists.parser import (
+    MAX_PDF_PAGES,
     NameColumnPicker,
     ParsedEntry,
     parse_attachment_result,
@@ -41,6 +42,11 @@ UNSUPPORTED = {"et", "ofd", "zip", "rar"}
 # 不看时间：上线前每一轮都还跑在旧代码上，会继续记这句话（#272 审阅）。新代码对 .doc/.wps 的
 # 失败原因都带括号说明（如"……（不是 Word 97 文档）"），补过一次就不再等于原话
 LEGACY_UNSUPPORTED = "暂不支持旧版或专有格式"
+# PDF 只读了前 N 页的记录：原因恰好是 parser 写的截断原话（"PDF 共567页，仅解析前300页"，
+# 扫描件前面带"暂不支持扫描件；"），N 小于现在的上限（parser.MAX_PDF_PAGES，10/17 由 300 调到 1000）
+# 就重读一次。重读成功后原因里的页数是现在的上限（或不再截断）；重读失败时原因后面加"；重读失败：……"
+# （已有条目照旧，见 _save）。两种情况都不再是原话，所以只重读一次（Codex 审阅 #274）
+_PDF_TRUNCATED = re.compile(r"(?:暂不支持扫描件；)?PDF 共\d+页，仅解析前(\d+)页")
 WORD97_EXTENSIONS = {"doc", "wps"}
 PERMANENT = {"ok", "empty", "unsupported"}
 _PROTECTED = re.compile(r"验证码|人机验证|安全验证|访问过于频繁|异常访问")
@@ -126,8 +132,23 @@ def _should_attempt(record: ListParse | None, extension: str | None = None) -> b
         and (extension or _extension(record.source_url)).lower() in WORD97_EXTENSIONS
     ):
         return True
+    # 和 failed 一样 6 小时内不重复试（临时抓取失败后会留着原话，见 _save）
+    if _cut_below_limit(record) and record.attempted_at < datetime.now(UTC) - timedelta(hours=6):
+        return True
     return record.status not in PERMANENT and record.attempted_at < datetime.now(UTC) - timedelta(
         hours=6
+    )
+
+
+def _cut_below_limit(record: ListParse) -> bool:
+    """以前在更低的页数上限下被截断、还没重读过的 PDF（见 _PDF_TRUNCATED）。"""
+    reason = record.failure_reason or ""
+    match = _PDF_TRUNCATED.fullmatch(reason)
+    if match is None or int(match.group(1)) >= MAX_PDF_PAGES:
+        return False
+    # 扫描件：前 N 页没有文字，后面的页可能有名单
+    return record.status in ("ok", "empty") or (
+        record.status == "unsupported" and reason.startswith("暂不支持扫描件；")
     )
 
 
@@ -151,6 +172,16 @@ def _save(
     record = session.scalar(
         select(ListParse).where(ListParse.document_id == doc.id, ListParse.source_url == url)
     )
+    if failure and record is not None and _cut_below_limit(record):
+        # 重读以前被截断的名单没成功：原来的条目和状态照旧。不能因为一次失败清掉已读到的企业，
+        # 也不能把 ok/empty/扫描件这些永久状态变成每 6 小时重试的 failed。
+        # 抓取失败（网站临时出错）留着原话，6 小时后再试；解析出错、仍是扫描件等确定的结果
+        # 在原因后面记上，不再重读（Codex 审阅 #274）
+        if not failure.startswith("抓取失败"):
+            record.failure_reason = f"{record.failure_reason}；重读失败：{failure}"
+        record.attempted_at = datetime.now(UTC)
+        session.commit()
+        return
     session.query(ListEntry).filter_by(document_id=doc.id, source_url=url).delete()
     if record is None:
         record = ListParse(document_id=doc.id, source_url=url)

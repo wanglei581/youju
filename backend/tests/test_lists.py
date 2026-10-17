@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -21,7 +21,7 @@ from youju.lists.rules import (
     normalize_name,
     valid_org_name,
 )
-from youju.lists.service import parse_lists
+from youju.lists.service import _should_attempt, parse_lists
 from youju.models import Document, DocumentAttachment, DocumentDetail, ListEntry, ListParse, Source
 
 FIXTURES = Path(__file__).parent / "fixtures" / "lists"
@@ -156,8 +156,8 @@ def _fake_pdf(page_count: int, visited: list[int]):
     return Pdf()
 
 
-@pytest.mark.parametrize("page_count", [300, 301])
-def test_pdf_page_limit_keeps_first_300_pages(monkeypatch, page_count: int) -> None:
+@pytest.mark.parametrize("page_count", [MAX_PDF_PAGES, MAX_PDF_PAGES + 1])
+def test_pdf_page_limit_keeps_first_pages(monkeypatch, page_count: int) -> None:
     visited: list[int] = []
     monkeypatch.setattr(
         "youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(page_count, visited)
@@ -171,12 +171,15 @@ def test_pdf_page_limit_keeps_first_300_pages(monkeypatch, page_count: int) -> N
 
 
 def test_pdf_page_limit_is_recorded_for_scanned_file(monkeypatch) -> None:
-    pdf = _fake_pdf(301, [])
+    pdf = _fake_pdf(MAX_PDF_PAGES + 1, [])
     for page in pdf.pages:
         page.extract_text = lambda: ""
         page.extract_tables = lambda table_settings=None: []
     monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: pdf)
-    with pytest.raises(ValueError, match="暂不支持扫描件；PDF 共301页，仅解析前300页"):
+    over = MAX_PDF_PAGES + 1
+    with pytest.raises(
+        ValueError, match=f"暂不支持扫描件；PDF 共{over}页，仅解析前{MAX_PDF_PAGES}页"
+    ):
         parse_attachment_result(b"%PDF-fake", "pdf")
 
 
@@ -192,7 +195,8 @@ class FakeFetcher:
 
 def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None:
     visited: list[int] = []
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(301, visited))
+    over = MAX_PDF_PAGES + 1
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(over, visited))
     source = Source(
         level="省级",
         province="北京",
@@ -227,7 +231,7 @@ def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None
     record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
     assert record.status == "ok"
     assert record.entry_count == 1
-    assert record.failure_reason == "PDF 共301页，仅解析前300页"
+    assert record.failure_reason == f"PDF 共{over}页，仅解析前{MAX_PDF_PAGES}页"
     assert report.names == 1
     assert report.failures == {record.failure_reason: 1}
     assert session.query(ListEntry).filter_by(
@@ -242,7 +246,349 @@ def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None
     session.commit()
     assert parse_lists(session, fetcher=fake).names == 0
     assert record.status == "empty"
-    assert record.failure_reason == "PDF 共301页，仅解析前300页"
+    assert record.failure_reason == f"PDF 共{over}页，仅解析前{MAX_PDF_PAGES}页"
+
+
+def _parse_record(status: str, reason: str | None, hours_ago: float = 24) -> ListParse:
+    return ListParse(
+        document_id=1,
+        source_url="https://a.gov.cn/f/名单.pdf",
+        source_kind="attachment",
+        status=status,
+        failure_reason=reason,
+        attempted_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+    )
+
+
+def test_pdfs_cut_at_an_older_page_limit_are_reread_once() -> None:
+    """10/17 PDF 上限由 300 调到 1000：原因恰好是以前上限下的截断原话（ok、empty，或扫描件）的重读一次；
+    重读成功后原因变了，重读失败会加上"；重读失败"，都不再是原话，所以只重读一次（Codex 审阅 #274）。"""
+    assert MAX_PDF_PAGES == 1000
+    assert _should_attempt(_parse_record("ok", "PDF 共567页，仅解析前300页"))
+    assert _should_attempt(_parse_record("empty", "PDF 共680页，仅解析前300页"))
+    assert not _should_attempt(_parse_record("ok", f"PDF 共1200页，仅解析前{MAX_PDF_PAGES}页"))
+    # 扫描件：前 300 页没有文字，后面的页可能有名单
+    assert _should_attempt(
+        _parse_record("unsupported", "暂不支持扫描件；PDF 共400页，仅解析前300页")
+    )
+    assert not _should_attempt(
+        _parse_record("unsupported", f"暂不支持扫描件；PDF 共1200页，仅解析前{MAX_PDF_PAGES}页")
+    )
+    assert not _should_attempt(_parse_record("unsupported", "暂不支持扫描件"))
+    assert not _should_attempt(_parse_record("ok", None))
+    assert not _should_attempt(_parse_record("empty", "未识别到企业或机构名称表格"))
+    # 只认 parser 写的整句原话：重读失败记过的、别的原因里带着相近文字的都不重读
+    assert not _should_attempt(
+        _parse_record("ok", "PDF 共567页，仅解析前300页；重读失败：抓取失败：error")
+    )
+    assert not _should_attempt(_parse_record("ok", "附件 PDF 共567页，仅解析前300页"))
+    # failed 本来就按 6 小时规则重试，这里只看截断规则：1 小时内不因截断而重读
+    assert not _should_attempt(_parse_record("failed", "PDF 共567页，仅解析前300页", hours_ago=1))
+    # 和 failed 一样 6 小时内不重复试（临时抓取失败后留着原话）
+    assert not _should_attempt(_parse_record("ok", "PDF 共567页，仅解析前300页", hours_ago=1))
+
+
+def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch) -> None:
+    """以前只读了前 300 页的名单：重读后条目整份换成新结果（不重复叠加），原因清掉；再跑不再重读。"""
+    visited: list[int] = []
+
+    class Page:
+        def __init__(self, number: int):
+            self.number = number
+
+        def close(self):
+            pass
+
+        def extract_text(self):
+            return "名单"
+
+        def extract_tables(self, table_settings=None):
+            if table_settings is None:
+                visited.append(self.number)
+            # 企业名称表格在第 400 页：旧的 300 页上限读不到
+            return [[["企业名称"], ["北京星河科技有限公司"]]] if self.number == 400 else []
+
+    class Pdf:
+        pages = [Page(i) for i in range(1, 568)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    source = Source(
+        level="省级",
+        province="河南",
+        dept="科技",
+        dept_full_name="河南省科学技术厅",
+        column_name="通知公告",
+        url="https://kjt.henan.gov.cn/list/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    now = datetime.now(UTC)
+    url = "https://kjt.henan.gov.cn/2026-list.pdf"
+    document = Document(
+        source_id=source.id,
+        url=url,
+        url_key="kjt.henan.gov.cn/2026-list.pdf",
+        title="2026年第一批入库科技型中小企业名单公告",
+        publish_date=date(2026, 9, 2),
+        first_seen_at=now,
+        last_seen_at=now,
+        is_baseline=False,
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        ListParse(
+            document_id=document.id,
+            source_url=url,
+            source_kind="document",
+            status="ok",
+            failure_reason="PDF 共567页，仅解析前300页",
+            entry_count=1,
+            attempted_at=now - timedelta(days=1),
+        )
+    )
+    session.add(
+        ListEntry(
+            document_id=document.id,
+            source_url=url,
+            name="旧条目有限公司",
+            normalized_name="旧条目有限公司",
+            category="科技型中小企业",
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=b"%PDF-fake")})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
+    assert names == ["北京星河科技有限公司"]
+    assert record.status == "ok" and record.failure_reason is None and record.entry_count == 1
+    assert visited == list(range(1, 568))
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+
+
+def _henan_list(session, url: str):
+    source = Source(
+        level="省级",
+        province="河南",
+        dept="科技",
+        dept_full_name="河南省科学技术厅",
+        column_name="通知公告",
+        url="https://kjt.henan.gov.cn/list/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    now = datetime.now(UTC)
+    document = Document(
+        source_id=source.id,
+        url=url,
+        url_key=url.split("://", 1)[1],
+        title="2026年第一批入库科技型中小企业名单公告",
+        publish_date=date(2026, 9, 2),
+        first_seen_at=now,
+        last_seen_at=now,
+        is_baseline=False,
+    )
+    session.add(document)
+    session.flush()
+    return document
+
+
+def _cut_record(session, url: str) -> Document:
+    """以前只读了前 300 页、已有 1 条条目的名单（一天前解析的）。"""
+    document = _henan_list(session, url)
+    session.add(
+        ListParse(
+            document_id=document.id,
+            source_url=url,
+            source_kind="document",
+            status="ok",
+            failure_reason="PDF 共567页，仅解析前300页",
+            entry_count=1,
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    session.add(
+        ListEntry(
+            document_id=document.id,
+            source_url=url,
+            name="已读到有限公司",
+            normalized_name="已读到有限公司",
+            category="科技型中小企业",
+        )
+    )
+    session.commit()
+    return document
+
+
+def test_reread_fetch_failure_keeps_entries_and_retries_later(session) -> None:
+    """重读时网站临时出错：已读到的条目、状态、原因都照旧，只记下这次尝试时间；
+    6 小时内不再试，之后再试（Codex 审阅 #274：一次临时失败不能清掉条目，也不能从此不再重读）。"""
+    url = "https://kjt.henan.gov.cn/2026-list-b.pdf"
+    document = _cut_record(session, url)
+    fake = FakeFetcher({url: FetchResult(url, "network_error", final_url=url, error="503")})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
+    assert names == ["已读到有限公司"]
+    assert record.status == "ok" and record.entry_count == 1
+    assert record.failure_reason == "PDF 共567页，仅解析前300页"
+    assert record.attempted_at > datetime.now(UTC) - timedelta(minutes=5)
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+    record.attempted_at = datetime.now(UTC) - timedelta(hours=7)
+    session.commit()
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url, url]
+
+
+def test_reread_parse_failure_keeps_entries_and_stops(session) -> None:
+    """重读时解析出错（确定的结果）：条目和状态照旧，原因后面记上这次失败，之后不再重读。"""
+    url = "https://kjt.henan.gov.cn/2026-list-d.pdf"
+    document = _cut_record(session, url)
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=b"not a pdf")})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
+    assert names == ["已读到有限公司"]
+    assert record.status == "ok" and record.entry_count == 1
+    assert record.failure_reason.startswith("PDF 共567页，仅解析前300页；重读失败：解析失败")
+    record.attempted_at = datetime.now(UTC) - timedelta(days=1)
+    session.commit()
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "content", "kept"),
+    [
+        # 没读出企业的截断记录：解析出错时状态照旧，不变成反复重试的 failed
+        ("empty", "PDF 共680页，仅解析前300页", b"not a pdf", "重读失败：解析失败"),
+        # 扫描件重读后仍是扫描件：照旧是 unsupported，原因记上，不再重读
+        (
+            "unsupported",
+            "暂不支持扫描件；PDF 共450页，仅解析前300页",
+            b"%PDF-fake",
+            "重读失败：暂不支持扫描件",
+        ),
+    ],
+)
+def test_reread_without_entries_keeps_status_and_stops(
+    session, monkeypatch, status, reason, content, kept
+) -> None:
+    """Codex 复核 #274：没有条目的截断记录重读没成功时，也保留原状态、记上原因、不再重读。"""
+
+    class Page:
+        def close(self):
+            pass
+
+        def extract_text(self):
+            return ""
+
+        def extract_tables(self, table_settings=None):
+            return []
+
+    class Pdf:
+        pages = [Page() for _ in range(450)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    url = f"https://kjt.henan.gov.cn/2026-list-{status}.pdf"
+    document = _henan_list(session, url)
+    session.add(
+        ListParse(
+            document_id=document.id,
+            source_url=url,
+            source_kind="document",
+            status=status,
+            failure_reason=reason,
+            entry_count=0,
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=content)})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    assert record.status == status
+    assert record.failure_reason.startswith(f"{reason}；{kept}")
+    record.attempted_at = datetime.now(UTC) - timedelta(days=1)
+    session.commit()
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+
+
+def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch) -> None:
+    """以前记成扫描件、只看了前 300 页的：后面的页有名单，重读后能读出来（Codex 审阅 #274）。"""
+
+    class Page:
+        def __init__(self, number: int):
+            self.number = number
+
+        def close(self):
+            pass
+
+        def extract_text(self):
+            return "名单" if self.number >= 350 else ""
+
+        def extract_tables(self, table_settings=None):
+            return [[["企业名称"], ["郑州星河科技有限公司"]]] if self.number == 400 else []
+
+    class Pdf:
+        pages = [Page(i) for i in range(1, 451)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    url = "https://kjt.henan.gov.cn/2026-list-c.pdf"
+    document = _henan_list(session, url)
+    session.add(
+        ListParse(
+            document_id=document.id,
+            source_url=url,
+            source_kind="document",
+            status="unsupported",
+            failure_reason="暂不支持扫描件；PDF 共450页，仅解析前300页",
+            entry_count=0,
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=b"%PDF-fake")})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    assert record.status == "ok" and record.failure_reason is None
+    names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
+    assert names == ["郑州星河科技有限公司"]
 
 
 def test_parse_lists_backfills_detail_and_is_idempotent(session) -> None:
