@@ -11,7 +11,7 @@
   </view>
   <view wx:if="{{aiEnabled && interpretEnabled}}" class="card advisor-card">
     <view class="advisor-title">AI 解读</view>
-    <view class="advisor-text">打开一份申报通知，点右下角“{{fabText}}”：约半分钟把申报对象、条件、时间、材料等原文原句分好类，每条都能回原文核对。</view>
+    <view class="advisor-text">打开一份申报通知，在“要点”下面的“{{fabText}}”卡片里点“开始解读”：约半分钟把申报对象、条件、时间、材料等原文原句分好类，每条都能回原文核对。</view>
     <view class="advisor-text muted">今天还能用 {{remaining}} 次（失败、拒答不扣次数）</view>
     <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">开始解读</button>
     <button wx:else class="advisor-button btn-primary" bindtap="search">去找通知</button>

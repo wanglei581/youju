@@ -1,4 +1,0 @@
-<block wx:if="{{aiEnabled}}">
-  <view class="tool-spacer" style="height: calc(140rpx + env(safe-area-inset-bottom))"></view>
-  <button wx:if="{{!blocked}}" class="tool-fab" style="bottom: calc({{bottomRpx}}rpx + env(safe-area-inset-bottom) + 24rpx)" bindtap="open" aria-label="打开 {{fabText}}">{{fabText}}</button>
-</block>

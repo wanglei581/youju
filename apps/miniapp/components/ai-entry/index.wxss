@@ -1,0 +1,6 @@
+/* 嵌在详情页里的卡片：.card、.section-title、.btn-primary、.link 沿用 app.wxss（styleIsolation: apply-shared） */
+.ai-entry { padding-bottom: 32rpx; }
+.ai-entry-text { margin-top: 8rpx; font-size: 28rpx; line-height: 1.7; word-break: break-word; }
+.ai-entry-reason { color: var(--t2); }
+.ai-entry-btn { margin-top: 24rpx; }
+.ai-entry-link { margin-top: 20rpx; padding: 8rpx 0; text-align: center; font-size: 28rpx; }

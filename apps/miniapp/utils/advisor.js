@@ -9,7 +9,7 @@ const STATES = { queued: '排队中', running: '处理中', done: '已完成', f
 const AI_INTERNAL = config.aiInternal === true;
 const AI_LABEL = AI_INTERNAL ? 'AI 生成 · 内部测试：' : 'AI 生成：';
 const INTERNAL_PREFIX = '内部测试：';
-// 通知详情页右下角入口的文字：内测包和正式版都叫"AI 解读"（10/17 创始人定，同一件事只用一个名字；
+// AI 入口的名字（通知详情页"要点"下面的卡片标题）：内测包和正式版都叫"AI 解读"（10/17 创始人定，同一件事只用一个名字；
 // 内测包的区别只在页面顶部和标题写"内部测试"）
 const FAB_TEXT = 'AI 解读';
 // 任务列表（原"任务中心""我的任务""全部任务""最近任务"）统一叫这个，入口在"我的"页

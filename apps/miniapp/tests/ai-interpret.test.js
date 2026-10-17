@@ -244,11 +244,11 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
   for (const [dataEnabled, aiEnabled] of [[false, false], [true, false], [false, true], [true, true]]) {
     let navigationTitle; const capabilities = caps(dataEnabled, aiEnabled);
     const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 2, maxRows: 50 }, track: { limit: 3, used: 2, maxRows: 50 } } }), advisorCapabilities: () => Promise.resolve(capabilities), advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'interpret', status: 'done', docTitle: '通知' }, { id: 2, kind: 'compare', status: 'done' }] }) };
-    const fab = load('components/tool-fab/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers });
+    const fab = load('components/ai-entry/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers });
     fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
     Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
-    const text = render(read('components/tool-fab/index.wxml'), { ...fab.data, bottomRpx: 0, blocked: false });
-    assert.equal(text, aiEnabled ? 'AI 解读' : '');
+    const text = render(read('components/ai-entry/index.wxml'), { ...fab.data, blocked: false });
+    assert.equal(text.startsWith('AI 解读') && text.includes('开始解读'), aiEnabled); if (!aiEnabled) assert.equal(text, '');
     const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers },
       { wx: { setNavigationBarTitle: ({ title }) => { navigationTitle = title; } } });
     page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await flush();
@@ -262,10 +262,10 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     }
     assert.equal(rendered.includes('批量名单比对'), dataEnabled);
     assert.equal(navigationTitle, aiEnabled && !dataEnabled ? 'AI 工具 · 内部测试' : '工具');
-    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，点右下角“AI 解读”/); assert.match(noContext, /去找通知/); }
+    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，在“要点”下面的“AI 解读”卡片里点“开始解读”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }
-  for (const file of ['components/tool-fab/index.wxml', 'pages/advisor/index.wxml']) assertAiGuarded(read(file));
+  for (const file of ['components/ai-entry/index.wxml', 'pages/advisor/index.wxml']) assertAiGuarded(read(file));
 });
 
 test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知也不创建任务', async () => {
