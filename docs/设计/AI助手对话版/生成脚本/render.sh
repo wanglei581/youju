@@ -8,7 +8,8 @@ export SRC OUT CH
 shot() {
   n=$1; h=$2; out=$3
   rm -f "$out"
-  "$CH" --headless=new --disable-gpu --hide-scrollbars --no-first-run --user-data-dir="$SRC/chrome-profile-$n" \
+  prof=$(mktemp -d)  # 每次截图用一次性的 Chrome 配置目录，截完删掉（每个几 MB，留着占硬盘）
+  "$CH" --headless=new --disable-gpu --hide-scrollbars --no-first-run --user-data-dir="$prof" \
     --force-device-scale-factor=2 --window-size=390,$h --virtual-time-budget=8000 \
     --screenshot="$out" "file://$SRC/$n.html" >/dev/null 2>&1 &
   pid=$!
@@ -20,7 +21,8 @@ shot() {
       sleep 1
     fi
   done
-  kill "$pid" 2>/dev/null; pkill -f "chrome-profile-$n" 2>/dev/null; wait "$pid" 2>/dev/null
+  kill "$pid" 2>/dev/null; pkill -f "$prof" 2>/dev/null; wait "$pid" 2>/dev/null
+  rm -rf "$prof"
 }
 one() {
   n=$1
@@ -31,6 +33,7 @@ im = Image.open('$SRC/$n.measure.png').convert('RGB'); w, H = im.size; px = im.l
 y = H - 1
 while y > 0 and all(px[x, y] == (255, 0, 255) for x in range(0, w, 7)): y -= 1
 print((y + 1) // 2)")
+  rm -f "$SRC/$n.measure.png"
   shot "$n" "$h" "$OUT/$n.png"
   echo "$n ${h}px $(wc -c < "$OUT/$n.png" 2>/dev/null || echo 失败)"
 }
