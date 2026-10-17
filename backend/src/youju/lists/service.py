@@ -132,7 +132,8 @@ def _should_attempt(record: ListParse | None, extension: str | None = None) -> b
         and (extension or _extension(record.source_url)).lower() in WORD97_EXTENSIONS
     ):
         return True
-    if _cut_below_limit(record):
+    # 和 failed 一样 6 小时内不重复试（临时抓取失败后会留着原话，见 _save）
+    if _cut_below_limit(record) and record.attempted_at < datetime.now(UTC) - timedelta(hours=6):
         return True
     return record.status not in PERMANENT and record.attempted_at < datetime.now(UTC) - timedelta(
         hours=6
@@ -172,9 +173,11 @@ def _save(
         select(ListParse).where(ListParse.document_id == doc.id, ListParse.source_url == url)
     )
     if failure and record is not None and record.entry_count and _cut_below_limit(record):
-        # 重读以前被截断的名单时失败了（网站临时出错、文件变了等）：原来读到的条目和状态照旧，
-        # 原因后面记上这次失败，不再重读，免得一次失败把已有的条目清掉（Codex 审阅 #274）
-        record.failure_reason = f"{record.failure_reason}；重读失败：{failure}"
+        # 重读以前被截断的名单时失败了：原来读到的条目和状态照旧，不能因为一次失败清掉已读到的企业。
+        # 抓取失败（网站临时出错）留着原话，6 小时后再试；解析出错等确定的结果在原因后面记上，
+        # 不再重读（Codex 审阅 #274）
+        if not failure.startswith("抓取失败"):
+            record.failure_reason = f"{record.failure_reason}；重读失败：{failure}"
         record.attempted_at = datetime.now(UTC)
         session.commit()
         return

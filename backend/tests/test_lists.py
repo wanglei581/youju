@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -249,14 +249,14 @@ def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None
     assert record.failure_reason == f"PDF 共{over}页，仅解析前{MAX_PDF_PAGES}页"
 
 
-def _parse_record(status: str, reason: str | None) -> ListParse:
+def _parse_record(status: str, reason: str | None, hours_ago: float = 24) -> ListParse:
     return ListParse(
         document_id=1,
         source_url="https://a.gov.cn/f/名单.pdf",
         source_kind="attachment",
         status=status,
         failure_reason=reason,
-        attempted_at=datetime.now(UTC),
+        attempted_at=datetime.now(UTC) - timedelta(hours=hours_ago),
     )
 
 
@@ -282,7 +282,10 @@ def test_pdfs_cut_at_an_older_page_limit_are_reread_once() -> None:
         _parse_record("ok", "PDF 共567页，仅解析前300页；重读失败：抓取失败：error")
     )
     assert not _should_attempt(_parse_record("ok", "附件 PDF 共567页，仅解析前300页"))
-    assert not _should_attempt(_parse_record("failed", "PDF 共567页，仅解析前300页"))
+    # failed 本来就按 6 小时规则重试，这里只看截断规则：1 小时内不因截断而重读
+    assert not _should_attempt(_parse_record("failed", "PDF 共567页，仅解析前300页", hours_ago=1))
+    # 和 failed 一样 6 小时内不重复试（临时抓取失败后留着原话）
+    assert not _should_attempt(_parse_record("ok", "PDF 共567页，仅解析前300页", hours_ago=1))
 
 
 def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch) -> None:
@@ -351,7 +354,7 @@ def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch) -
             status="ok",
             failure_reason="PDF 共567页，仅解析前300页",
             entry_count=1,
-            attempted_at=now,
+            attempted_at=now - timedelta(days=1),
         )
     )
     session.add(
@@ -407,10 +410,8 @@ def _henan_list(session, url: str):
     return document
 
 
-def test_failed_reread_keeps_entries_and_is_not_retried(session) -> None:
-    """重读以前被截断的名单失败（网站临时出错）：原来读到的条目和状态照旧，原因后面记上这次失败，
-    之后不再重读（Codex 审阅 #274：一次失败不能把已有条目清掉）。"""
-    url = "https://kjt.henan.gov.cn/2026-list-b.pdf"
+def _cut_record(session, url: str) -> Document:
+    """以前只读了前 300 页、已有 1 条条目的名单（一天前解析的）。"""
     document = _henan_list(session, url)
     session.add(
         ListParse(
@@ -420,7 +421,7 @@ def test_failed_reread_keeps_entries_and_is_not_retried(session) -> None:
             status="ok",
             failure_reason="PDF 共567页，仅解析前300页",
             entry_count=1,
-            attempted_at=datetime.now(UTC),
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
         )
     )
     session.add(
@@ -433,6 +434,14 @@ def test_failed_reread_keeps_entries_and_is_not_retried(session) -> None:
         )
     )
     session.commit()
+    return document
+
+
+def test_reread_fetch_failure_keeps_entries_and_retries_later(session) -> None:
+    """重读时网站临时出错：已读到的条目、状态、原因都照旧，只记下这次尝试时间；
+    6 小时内不再试，之后再试（Codex 审阅 #274：一次临时失败不能清掉条目，也不能从此不再重读）。"""
+    url = "https://kjt.henan.gov.cn/2026-list-b.pdf"
+    document = _cut_record(session, url)
     fake = FakeFetcher({url: FetchResult(url, "network_error", final_url=url, error="503")})
 
     parse_lists(session, fetcher=fake)
@@ -440,7 +449,30 @@ def test_failed_reread_keeps_entries_and_is_not_retried(session) -> None:
     names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
     assert names == ["已读到有限公司"]
     assert record.status == "ok" and record.entry_count == 1
-    assert record.failure_reason.startswith("PDF 共567页，仅解析前300页；重读失败：抓取失败")
+    assert record.failure_reason == "PDF 共567页，仅解析前300页"
+    assert record.attempted_at > datetime.now(UTC) - timedelta(minutes=5)
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url]
+    record.attempted_at = datetime.now(UTC) - timedelta(hours=7)
+    session.commit()
+    parse_lists(session, fetcher=fake)
+    assert fake.calls == [url, url]
+
+
+def test_reread_parse_failure_keeps_entries_and_stops(session) -> None:
+    """重读时解析出错（确定的结果）：条目和状态照旧，原因后面记上这次失败，之后不再重读。"""
+    url = "https://kjt.henan.gov.cn/2026-list-d.pdf"
+    document = _cut_record(session, url)
+    fake = FakeFetcher({url: FetchResult(url, "ok", final_url=url, content=b"not a pdf")})
+
+    parse_lists(session, fetcher=fake)
+    record = session.query(ListParse).filter_by(document_id=document.id, source_url=url).one()
+    names = [e.name for e in session.query(ListEntry).filter_by(document_id=document.id)]
+    assert names == ["已读到有限公司"]
+    assert record.status == "ok" and record.entry_count == 1
+    assert record.failure_reason.startswith("PDF 共567页，仅解析前300页；重读失败：解析失败")
+    record.attempted_at = datetime.now(UTC) - timedelta(days=1)
+    session.commit()
     parse_lists(session, fetcher=fake)
     assert fake.calls == [url]
 
@@ -481,7 +513,7 @@ def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch) -> None:
             status="unsupported",
             failure_reason="暂不支持扫描件；PDF 共450页，仅解析前300页",
             entry_count=0,
-            attempted_at=datetime.now(UTC),
+            attempted_at=datetime.now(UTC) - timedelta(days=1),
         )
     )
     session.commit()
