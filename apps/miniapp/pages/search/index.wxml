@@ -45,7 +45,7 @@
 </view>
 <view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
 <!-- 同一份部里通知的各地转发版本合为一条（D-055），份数按合并后的算 -->
-<view wx:if="{{!loading && !error && reposts}}" class="fold-note">另有 {{reposts}} 个转发版本，未重复计算</view>
+<view wx:if="{{!loading && !error && reposts}}" class="fold-note">已合并 {{reposts}} 个各地转发版本</view>
 
 <view class="card">
   <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
