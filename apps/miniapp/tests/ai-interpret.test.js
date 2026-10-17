@@ -85,6 +85,16 @@ test('同一句原文只出现一次：首次出现处标"也属于"，只剩重
   assert.deepEqual(way.items, []); assert.equal(way.sameAs, '申报时间');
   assert.deepEqual(material.items.map((item) => item.text), ['提交申请书']); assert.equal(material.sameAs, '申报时间');
   assert.equal(result.missingText, '申报对象、支持方式、申报条件');
+  // 重复句带的不同引用并到第一次出现的那条里，同样的引用只留一条
+  const merged = logic.resultView({ items: [
+    { type: '对象', text: same, refs: [{ pid: 'P001', quote: '甲' }] },
+    { type: '对象', text: same, refs: [{ pid: 'P001', quote: '甲' }, { pid: 'P002', quote: '乙' }] },
+    { type: '条件', text: same, refs: [{ pid: 'P003', quote: '丙' }] },
+  ], missing: ['条件'] });
+  assert.deepEqual(merged.sections[0].items[0].refs.map((ref) => [ref.key, ref.pid, ref.quote]), [[0, 'P001', '甲'], [1, 'P002', '乙'], [2, 'P003', '丙']]);
+  // 后端把"条件"列为没摘到、但实际有和"对象"同一句：以条目为准，不再出现在"没找到"里
+  assert.deepEqual(merged.sections.map((section) => [section.title, section.sameAs]), [['申报对象', ''], ['申报条件', '申报对象']]);
+  assert.doesNotMatch(merged.missingText, /申报条件/);
 });
 
 test('拒答不显示六节；disclosure 两项都非空才显示', () => {

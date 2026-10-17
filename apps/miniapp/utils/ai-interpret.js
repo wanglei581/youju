@@ -18,27 +18,34 @@ function disclosureLine(value = {}) {
 // 结果页（10/17 创始人试用后精简）：同一句原文只出现一次，标出它同时属于哪几类；
 // 只剩重复句的类别写"和「X」是同一句原文"；没摘到的类别合成一行（missingText），不再各占一张卡
 function resultView(result = {}) {
-  const missing = result.missing || [];
   const first = new Map();
   const sections = result.refusal ? [] : SECTIONS.map(([type, title]) => {
     const items = []; const sameAs = [];
     (result.items || []).filter((item) => item.type === type).forEach((item) => {
       const text = oneLine(item.text);
+      const refs = (item.refs || []).map((ref) => ({ pid: ref.pid, quote: oneLine(ref.quote) }));
       const seen = first.get(text);
       if (seen) {
+        // 重复的句子不再单列，但它带的引用并到第一次出现的那条里，引文一条不丢（Codex 复核 #277）
+        refs.forEach((ref) => {
+          if (!seen.item.refs.some((known) => known.pid === ref.pid && known.quote === ref.quote)) {
+            seen.item.refs.push(Object.assign({ key: seen.item.refs.length }, ref));
+          }
+        });
         if (seen.title !== title) {
           if (!seen.item.alsoIn.includes(title)) seen.item.alsoIn.push(title);
           if (!sameAs.includes(seen.title)) sameAs.push(seen.title);
         }
         return;
       }
-      const view = {
-        key: items.length, text, alsoIn: [],
-        refs: (item.refs || []).map((ref, refIndex) => ({ key: refIndex, pid: ref.pid, quote: oneLine(ref.quote) })),
-      };
+      const view = { key: items.length, text, alsoIn: [], refs: [] };
+      refs.forEach((ref) => {
+        if (!view.refs.some((known) => known.pid === ref.pid && known.quote === ref.quote)) view.refs.push(Object.assign({ key: view.refs.length }, ref));
+      });
       first.set(text, { title, item: view }); items.push(view);
     });
-    return { type, title, items, sameAs: sameAs.join('」「'), missing: !items.length && (missing.includes(type) || !sameAs.length) };
+    // 有实际条目（包括和别的类别同一句）就以条目为准；一条都没有才算没摘到（Codex 复核 #277）
+    return { type, title, items, sameAs: sameAs.join('」「'), missing: !items.length && !sameAs.length };
   });
   sections.forEach((section) => section.items.forEach((item) => { item.alsoInText = item.alsoIn.join('、'); }));
   return {

@@ -63,7 +63,7 @@
     <view wx:if="{{result.missingText}}" class="card advisor-card muted">正文里没找到：{{result.missingText}}。可能写在附件里，也可能原文没写，请查看原文。</view>
     <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
     <view wx:if="{{clauseEnabled && docId && !result.refusal}}" class="card advisor-card">
-      <view class="advisor-title">和我的企业对一下（可选）</view>
+      <view class="advisor-title">条款对照：和我的企业对一下（可选）</view>
       <view class="advisor-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
       <button class="advisor-button" bindtap="clause">去对照</button>
     </view>

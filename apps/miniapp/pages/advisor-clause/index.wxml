@@ -9,7 +9,7 @@
   <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17） -->
   <view wx:if="{{!(phase === 'done' && result.notice)}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{phase === 'form'}}" class="card advisor-card">
-    <view class="advisor-title">和我的企业对一下</view>
+    <view class="advisor-title">条款对照：和我的企业对一下</view>
     <view class="advisor-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。只填想对照的项就行。</view>
     <view class="advisor-text muted">你填的情况只用于并排显示，不发给 AI 模型，7 天后自动清除。</view>
     <view class="clause-label">成立日期</view>
@@ -106,7 +106,7 @@
         <view wx:for="{{item.refs}}" wx:for-item="ref" wx:key="key">
           <view wx:if="{{ref.quote && ref.quote !== item.text}}" class="advisor-text">{{ref.quote}}</view>
         </view>
-        <view class="clause-label">你填的情况（AI 按条件挑出相关的项，请你自己对照判断）</view>
+        <view class="clause-label">你填的情况（请你自己对照判断）</view>
         <view wx:for="{{item.company}}" wx:for-item="entry" wx:key="key" class="advisor-text">{{entry.label}}：{{entry.value}}</view>
         <view wx:if="{{item.companyHint}}" class="advisor-text muted">{{item.companyHint}}</view>
         <view class="interpret-ops"><button class="interpret-link" bindtap="feedback" disabled="{{!docId}}">这句摘错了</button></view>
