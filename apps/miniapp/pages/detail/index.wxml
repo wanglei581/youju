@@ -100,6 +100,9 @@
     </view>
   </view>
 
+  <!-- 解读入口卡片（10/17 取代右下角浮动按钮）：只有白名单（capabilities.ai_advisor.enabled）或正式开放后才渲染，其余用户不渲染任何内容；做不了的文件写明原因 -->
+  <ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" />
+
   <view wx:if="{{doc.excerpt}}" class="card">
     <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>
     <view class="excerpt">“{{doc.excerpt.text}}”</view>
@@ -177,5 +180,3 @@
     <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
   </view>
 </block>
-<!-- 内测入口（D-062，只在 feat/ai-v2 内部包里）：只有白名单（capabilities.ai_advisor.enabled）才显示，其余用户不渲染任何内容 -->
-<tool-fab bottom-rpx="{{130}}" blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" />

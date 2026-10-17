@@ -18,7 +18,7 @@ Page({
       const kinds = allKinds(caps);
       const aiEnabled = allowedKinds(ai).length > 0;
       const toolsEnabled = kinds.length > 0;
-      wx.setNavigationBarTitle({ title: '任务中心' });
+      wx.setNavigationBarTitle({ title: '我的记录' });
       // 权限关闭时先清空已有列表，避免请求失败后仍显示此前的 AI 任务。
       const gate = toolsEnabled ? '' : (caps.reason === 'consent' || caps.reason === 'offline' ? caps.reason : gateState(caps));
       this.setData({ toolsEnabled, aiEnabled, kinds, gate, gateText: GATE_TEXT[gate] || '', aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });

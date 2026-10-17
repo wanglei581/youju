@@ -1,7 +1,7 @@
 // 共同任务的显示与 AI 独立授权；数据工具开关不能扩大 AI 权限。
 const config = require('./config.js');
 
-const KINDS = { interpret: '政策解读', clause: '条款对照' };
+const KINDS = { interpret: 'AI 解读', clause: '条款对照' };
 const DATA_KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 // 《人工智能生成合成内容标识办法》第四条要求显式标识：页面顶部固定写"AI 生成"，如实说明由 AI 模型生成。
@@ -9,8 +9,11 @@ const STATES = { queued: '排队中', running: '处理中', done: '已完成', f
 const AI_INTERNAL = config.aiInternal === true;
 const AI_LABEL = AI_INTERNAL ? 'AI 生成 · 内部测试：' : 'AI 生成：';
 const INTERNAL_PREFIX = '内部测试：';
-// 通知详情页右下角入口的文字
-const FAB_TEXT = AI_INTERNAL ? 'AI 内测' : 'AI 解读';
+// AI 入口的名字（通知详情页"要点"下面的卡片标题）：内测包和正式版都叫"AI 解读"（10/17 创始人定，同一件事只用一个名字；
+// 内测包的区别只在页面顶部和标题写"内部测试"）
+const FAB_TEXT = 'AI 解读';
+// 任务列表（原"任务中心""我的任务""全部任务""最近任务"）统一叫这个，入口在"我的"页
+const RECORDS_TEXT = '我的记录';
 // 用不了时的提示。内测包对不在白名单的人只写"暂时没有可用工具"，不提 AI；
 // 正式版分三种：没同意协议（引导同意）、连不上服务器（给重试）、功能关着。
 // 没同意通用协议时数据工具和 AI 一起不可用（capabilities 403），工具中心、任务中心共用这句，不写 AI。
@@ -27,7 +30,7 @@ const SCOPE = [
   '用途：把通知里的申报对象、条件、材料等原句摘出来分类，方便快速找到；条款对照把原文条件和你填写的企业情况并排列出，供你自己对照。',
   '不适用：判断企业能不能申报、代替阅读通知原文。不面向未成年人。',
 ];
-const INTERNAL_NOTICE = '结果由 AI 模型根据原文生成，每条都附原文引用，可能不全，请以原文为准，不作为能否申报的判断。';
+const INTERNAL_NOTICE = '摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。';
 
 // 后端 capabilities 的 disclosure 如果带了说明文字（字符串或 text 字段），优先显示后端的；
 // 目前线上只返回 modelLabel、filingNo，所以显示固定文字。
@@ -97,4 +100,4 @@ function taskView(task) {
   });
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };
