@@ -6,9 +6,15 @@
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">{{statusLine}}</view>
-    <view wx:if="{{!passActive && !remaining}}" class="advisor-error">本月免费次数已用完，下月{{offer ? ' 1 日恢复' : '可继续使用。不需要购买'}}。若上次提交状态未确认，可预览同一内容后重试。</view>
+    <view wx:if="{{seasonLine}}" class="advisor-text">{{seasonLine}}</view>
+    <view wx:if="{{!passActive && !trialActive && !remaining}}" class="advisor-error">本月免费次数已用完，下月{{offer ? ' 1 日恢复' : '可继续使用。不需要购买'}}。{{trialAvailable ? '也可以先开始 3 天加量体验（见下方）。' : ''}}若上次提交状态未确认，可预览同一内容后重试。</view>
+    <!-- 加量体验（D-070 ③）：有资格就一直有入口；本月免费次数用完、或这次超过 50 家时放显眼（推荐）。不提购买 -->
+    <view wx:if="{{trialAvailable}}" class="advisor-trial {{!remaining || rowCount > maxRows ? 'advisor-trial-strong' : ''}}">
+      <view class="advisor-text">{{trialPitch}}</view>
+      <button class="advisor-button {{!remaining || rowCount > maxRows ? 'btn-primary' : ''}}" bindtap="openTrial">了解加量体验</button>
+    </view>
     <!-- 只在超出免费量、且服务端在售时出现；查信息的过程中不出现付费提示（D-058 第六节） -->
-    <view wx:if="{{offer && !passActive && (!remaining || rowCount > maxRows)}}" class="advisor-offer">
+    <view wx:if="{{offer && !passActive && !trialActive && (!remaining || rowCount > maxRows)}}" class="advisor-offer">
       <view class="advisor-text">客户工作台 30 天（{{offer.price}} 元）：不限次数，每次 500 家以内。买一次用 {{offer.days}} 天，到期不再扣钱。</view>
       <button class="advisor-button" bindtap="buyPass">了解客户工作台</button>
     </view>

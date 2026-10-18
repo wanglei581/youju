@@ -1,0 +1,6 @@
+@import "../../utils/advisor.wxss";
+
+/* 规则逐项：标题一行、说明一行，窄屏也不挤 */
+.trial-item { margin-top: 24rpx; }
+.trial-label { display: block; font-weight: 600; }
+.trial-text { display: block; margin-top: 4rpx; }

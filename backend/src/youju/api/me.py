@@ -646,12 +646,14 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
-        from youju import rewards
+        from youju import boost, rewards
         from youju.payments import anonymize
 
         # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
         rewards.anonymize(session, user, v1.now(), settings=get_settings())
         anonymize(session, user)
+        # 用过加量体验的记一条去标识凭据，重新同意后不能再体验；体验记录随用户删除
+        boost.anonymize(session, user, v1.now())
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
@@ -709,6 +711,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
+        "boostTrial": None,
         "retention": {
             "events": settings.retain_events_days,
             "feedback": settings.retain_feedback_days,
@@ -777,6 +780,12 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         }
         for row in advisor_rows
     ]
+    # 加量体验记录（开始和结束时间）；每天用了几次在额度账本里，和工具次数一样只保留本月和上个月
+    from youju import boost
+
+    trial = boost.trial_of(session, user.id)
+    if trial is not None:
+        result["boostTrial"] = {"startedAt": _iso(trial.started_at), "endsAt": _iso(trial.ends_at)}
 
     follows = session.scalars(
         select(Follow)

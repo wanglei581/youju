@@ -2,9 +2,10 @@
 const api = require('../../utils/api.js');
 const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
+const boost = require('../../utils/boost.js');
 
 Page({
-  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
+  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
@@ -48,7 +49,11 @@ Page({
       const quota = res.quota || {};
       if (!res.enabled || !['compare', 'track'].every((kind) => quota[kind] && Number.isFinite(quota[kind].limit) && Number.isFinite(quota[kind].used) && Number.isFinite(quota[kind].maxRows))) throw new Error('额度信息不完整，请重试');
       const remaining = (kind) => Math.max(0, ((quota[kind] || {}).limit || 0) - ((quota[kind] || {}).used || 0));
-      this.setData({ dataStatus: res.pass && res.pass.active ? `工作台使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数` : `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家。免费额度不需要购买` });
+      // 加量体验中（D-070 ③）显示体验的每天次数；申报季加量的起止日期另起一行
+      const trial = boost.trialView(res.trial);
+      this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: res.pass && res.pass.active ? `工作台使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数`
+        : trial.trialActive ? boost.trialLine(trial)
+          : `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家。免费额度不需要购买` });
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ dataError: `额度未能更新：${err.message}` }); });
   },
   refreshQuota() { this.loadQuota(); },

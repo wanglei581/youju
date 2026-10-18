@@ -3,6 +3,7 @@ const api = require('./api.js');
 const regions = require('./regions.js');
 const terms = require('../content/advisor-terms.js');
 const { DATA_KINDS } = require('./advisor.js');
+const boost = require('./boost.js');
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。
 function csvRows(text, keepBlank = false) {
@@ -61,13 +62,18 @@ function toolConsent(options = {}) {
   });
 }
 
-function quotaView(status, kind) {
+// 额度一行和加量体验、申报季加量的状态（D-070）；体验期间不占每月免费次数，remaining 仍是本月免费剩余
+function quotaView(status, kind, now) {
   const quota = status && status.quota && status.quota[kind];
   if (!status || !status.enabled || !quota || !Number.isFinite(quota.limit) || !Number.isFinite(quota.used) || !Number.isFinite(quota.maxRows)) throw new Error('未能读取工具额度，请重试');
   const active = !!(status.pass && status.pass.active);
   const remaining = Math.max(0, quota.limit - quota.used);
-  return { maxRows: quota.maxRows, remaining, passActive: active,
-    statusLine: active ? `工作台使用期内，每次最多 ${quota.maxRows} 家，不限提交次数` : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家` };
+  const trial = boost.trialView(status.trial, now);
+  const statusLine = active ? `工作台使用期内，每次最多 ${quota.maxRows} 家，不限提交次数`
+    : trial.trialActive ? boost.trialLine(trial)
+      : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家`;
+  return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, seasonLine: boost.seasonLine(status.season), ...trial,
+    trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial) : '' };
 }
 
 // 服务端最多 20 MiB、每段 900 KiB。预先限制元数据并逐段校验，避免异常元数据导致无界分配。

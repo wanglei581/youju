@@ -90,10 +90,13 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     assert client.get("/api/v1/advisor/status").status_code == 404
     advisor_settings.advisor_enabled = True
     expected = {"used": 0, "limit": 3, "maxRows": 50}
+    # 加量体验、申报季加量的开关默认关：不出现在额度里
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
         "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
+        "trial": None,
+        "season": None,
     }
     agree_advisor(client)
     created = create(client).json()
