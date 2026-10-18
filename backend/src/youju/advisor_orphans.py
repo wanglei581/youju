@@ -113,7 +113,7 @@ class OrphanReport:
         head += "没有任何记录指向（用户已经取不到，应该删除；多半是有任务上传结果后中断过）"
         if not self.deleting:
             return f"{head}。确认后在 admin 服务的容器里运行 youju advisor-orphans --delete 删除。"
-        return f"{head}，{self._done()}。"
+        return f"{head}，已{self._done()}。"
 
 
 @dataclass(frozen=True)
