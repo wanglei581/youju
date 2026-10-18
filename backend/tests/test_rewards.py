@@ -25,6 +25,9 @@ from youju.models import (
     WorkbenchPass,
 )
 
+# 当前的用户协议版本：取后台默认值，升版本时不用改测试
+AGREEMENT = Settings.model_fields["agreement_version"].default
+
 NOW = datetime(2026, 10, 10, 4, tzinfo=UTC)
 NEXT_MONTH = datetime(2026, 10, 31, 16, tzinfo=UTC)
 ADMIN = {"X-Admin-Token": "test-admin"}
@@ -79,7 +82,7 @@ def context(session_factory, monkeypatch):
 def user(session, name="reward-user", **values):
     row = User(
         openid=name,
-        agreement_version="2026-10",
+        agreement_version=AGREEMENT,
         agreement_at=NOW,
         advisor_agreement_version=advisor_tasks.ADVISOR_AGREEMENT_VERSION,
         advisor_agreement_at=NOW,
@@ -577,7 +580,7 @@ def test_registration_invite_cases(context, session, case):
     openid = "inviter" if case == "self" else "new-user"
     old = user(session, openid) if case in ("old", "advisor_scope") else None
     code = "invalid" if case == "invalid" else "fixed-invite"
-    body = {"version": "2026-10", **({"invite_code": code} if case != "missing" else {})}
+    body = {"version": AGREEMENT, **({"invite_code": code} if case != "missing" else {})}
     if case == "advisor_scope":
         body.update(version=advisor_tasks.ADVISOR_AGREEMENT_VERSION, scope="advisor")
     assert (
@@ -595,7 +598,7 @@ def test_registration_invite_cases(context, session, case):
             client.post(
                 "/api/v1/me/agreement",
                 headers=headers(openid),
-                json={"version": "2026-10", "invite_code": "second-code"},
+                json={"version": AGREEMENT, "invite_code": "second-code"},
             ).status_code
             == 200
         )
@@ -742,7 +745,7 @@ def test_switch_disabled_api_registration_admin_auto_and_cli(context, session, s
         client.post(
             "/api/v1/me/agreement",
             headers=headers("new"),
-            json={"version": "2026-10", "invite_code": "fixed-code"},
+            json={"version": AGREEMENT, "invite_code": "fixed-code"},
         ).status_code
         == 200
     )
@@ -944,7 +947,7 @@ def test_invalid_code_does_not_block_registration(context, session, code):
     response = client.post(
         "/api/v1/me/agreement",
         headers=headers("new"),
-        json={"version": "2026-10", "invite_code": code},
+        json={"version": AGREEMENT, "invite_code": code},
     )
     assert response.status_code == 200
     assert session.scalar(select(User).where(User.openid == "new")).invited_by_user_id is None
@@ -1130,7 +1133,7 @@ def test_referral_separate_switch(context, session, reward_on, referral_on):
     client.post(
         "/api/v1/me/agreement",
         headers=headers("new"),
-        json={"version": "2026-10", "invite_code": "fixed-code"},
+        json={"version": AGREEMENT, "invite_code": "fixed-code"},
     )
     newcomer = session.scalar(select(User).where(User.openid == "new"))
     assert newcomer.invited_by_user_id == (inviter.id if active else None)
@@ -1160,7 +1163,7 @@ def test_reregister_not_new_and_claim_retention(context, session, complete):
             client.post(
                 "/api/v1/me/agreement",
                 headers=headers("repeat"),
-                json={"version": "2026-10", "invite_code": "fixed-code"},
+                json={"version": AGREEMENT, "invite_code": "fixed-code"},
             ).status_code
             == 200
         )
@@ -1267,7 +1270,7 @@ def test_deletion_retains_eligibility_from_deletion_time(context, session, histo
         client.post(
             "/api/v1/me/agreement",
             headers=headers("repeat"),
-            json={"version": "2026-10", "invite_code": "fixed-code"},
+            json={"version": AGREEMENT, "invite_code": "fixed-code"},
         ).status_code
         == 200
     )

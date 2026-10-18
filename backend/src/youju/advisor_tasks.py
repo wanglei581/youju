@@ -49,9 +49,11 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 MAX_ROWS = 50
 MAX_BODY_BYTES = 100 * 1024
 MAX_UPLOAD_BYTES = 60 * 1024
-ADVISOR_AGREEMENT_VERSION = "advisor-2026-09-v1"
+ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
+# 处理中超过这么久的一定已经没人在跑（清理过期任务时才用，见 cleanup_advisor）
+ABANDONED = timedelta(days=1)
 INPUT_RETENTION = timedelta(days=7)
 FILE_RETENTION = timedelta(days=30)
 REFUSAL_CACHE = timedelta(days=1)
@@ -684,6 +686,9 @@ def process_task(
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
     uploaded_file_id: str | None = None
+    # 处理途中任务行可能被删（用户注销、过期清理）：rollback 之后再读 task.id
+    # 会报 ObjectDeletedError，先记下编号，失败分支用它重新取
+    task_id = task.id
     try:
         cloud_env = getattr(settings, "cloud_env", None)
         if not cloud_env:
@@ -758,7 +763,7 @@ def process_task(
                 settings=settings,
                 client=client,
             )
-        task = session.get(AdvisorTask, task.id)
+        task = session.get(AdvisorTask, task_id)
         if task is None:
             session.commit()
             return False
@@ -838,6 +843,8 @@ def run_advisor_tasks(
             return task
 
     def run_one(work_session: Session, task: AdvisorTask) -> None:
+        # 任务行可能在处理途中被删（注销、过期清理）：之后只按编号重新取，不读 task 的属性
+        task_id = task.id
         try:
             done = process_task(
                 work_session,
@@ -849,16 +856,17 @@ def run_advisor_tasks(
             )
         except Exception:
             work_session.rollback()
-            log.exception("顾问任务 #%s 处理异常", task.id)
-            failed_task = work_session.get(AdvisorTask, task.id)
+            log.exception("顾问任务 #%s 处理异常", task_id)
+            failed_task = work_session.get(AdvisorTask, task_id)
             if failed_task is not None:
                 failed_task.status, failed_task.finished_at = "failed", stamp
                 failed_task.error = "系统繁忙，请稍后重试"
                 release_usage(work_session, failed_task)
                 work_session.commit()
             done = False
-        if live_timing and task.status in ("done", "failed"):
-            task.finished_at = datetime.now(UTC)
+        current = work_session.get(AdvisorTask, task_id) if live_timing else None
+        if current is not None and current.status in ("done", "failed"):
+            current.finished_at = datetime.now(UTC)
             work_session.commit()
         with claim_lock:
             result["done" if done else "failed"] += 1
@@ -975,7 +983,8 @@ def cleanup_advisor(
     stamp: datetime | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, int]:
-    """清理七天输入和三十天导出；对象存储删除成功后才清空 file id。"""
+    """清理七天输入和三十天导出；对象存储删除成功后才清空 file id，
+    过了三十天的数据工具任务行随后整行删除。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
     input_count = (
@@ -1043,12 +1052,52 @@ def cleanup_advisor(
         for row in trash:
             if row.file_id in successful:
                 session.delete(row)
-    # AI 任务过了结果保存期（30 天）整行删除，任务和用户的关联不再保留（隐私保护指引一·14）；
-    # 数据工具的任务另有付费记录引用，照旧只清空文件。
+    # AI 任务过了结果保存期（30 天）整行删除，任务和用户的关联不再保留（隐私保护指引一·14）。
     ai_tasks = (
         session.execute(
             delete(AdvisorTask).where(
                 AdvisorTask.kind.in_(AI_KINDS), AdvisorTask.expires_at <= stamp
+            )
+        ).rowcount
+        or 0
+    )
+    # 数据工具的任务记录和结果文件一起保存 30 天（隐私保护指引一·13，个保法第十九条）：
+    # 文件删成以后整行删除；这次没删成的（result_file_id 还在）留到下次删成再删，免得丢了文件编号。
+    # 付费核对看使用期上的 last_used_at 等最少记录，不靠任务行（用户本来也能随时删任务）
+    session.flush()
+    expired_data = (
+        AdvisorTask.kind.not_in(AI_KINDS),
+        AdvisorTask.expires_at <= stamp,
+        AdvisorTask.result_file_id.is_(None),
+    )
+    # 批量工具关着时排队的不会再处理、处理中的也不会被放回队列：过了保存期先退回占用的次数
+    # （按原提交日退，账本已清掉的不退），标成已取消，和已结束的一起删。worker 领取时锁住排队的行、
+    # 立刻改成处理中，所以这里跳过被锁的就不会抢；处理中的行在处理期间并不一直锁着，只动开始超过
+    # ABANDONED 的（换版本时旧实例还会跑十几分钟，一天以上不可能还在跑），免得删掉正在上传结果的
+    for stale in session.scalars(
+        select(AdvisorTask)
+        .where(
+            *expired_data,
+            or_(
+                AdvisorTask.status == "queued",
+                and_(
+                    AdvisorTask.status == "running",
+                    AdvisorTask.started_at <= stamp - ABANDONED,
+                ),
+            ),
+        )
+        .with_for_update(skip_locked=True)
+    ).all():
+        release_usage(session, stale)
+        stale.status = "cancelled"
+    session.flush()
+    data_tasks = (
+        session.execute(
+            delete(AdvisorTask).where(
+                AdvisorTask.kind.not_in(AI_KINDS),
+                AdvisorTask.expires_at <= stamp,
+                AdvisorTask.result_file_id.is_(None),
+                AdvisorTask.status.in_(("done", "failed", "cancelled")),
             )
         ).rowcount
         or 0
@@ -1063,6 +1112,7 @@ def cleanup_advisor(
         "advisor_input_rows": input_count,
         "advisor_files": deleted_count,
         "advisor_ai_tasks": ai_tasks,
+        "advisor_data_tasks": data_tasks,
         "advisor_usage_rows": usage_rows,
     }
 

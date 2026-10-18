@@ -55,7 +55,7 @@ test('体验状态：字段缺了或格式不对就当没有体验；进行中�
   const lastDay = new Date('2026-10-23T01:00:00Z'); // 北京时间 10 月 23 日 9:00，体验 10:00 结束
   assert.equal(boost.trialCapText(boost.trialView(trialActive(10), lastDay), lastDay), '今天的 10 次加量体验已用完；体验到 10月23日 10:00 结束，之后回到免费版');
   assert.equal(boost.trialView(trialActive(12)).trialLeft, 0);
-  assert.equal(boost.unavailableText(boost.trialView({ ...trialAvailable(), available: false, reason: 'used' })), '加量体验已经用过，每个微信只能体验一次。');
+  assert.equal(boost.unavailableText(boost.trialView({ ...trialAvailable(), available: false, reason: 'used' })), '加量体验已经用过，每个账号只能体验一次。');
   assert.match(boost.unavailableText(boost.trialView({ ...trialAvailable(), available: false, reason: 'pass' })), /体验留到以后/);
 });
 
@@ -66,7 +66,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   for (const must of [/连续 3 天/, /连续 72 小时/, /中途不能暂停/, /到 10月23日 10:00（北京时间）结束/, /每次最多 500 家（平时每次 50 家）/,
     /两项合计每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
     /体验期间只用体验的次数，这些不扣、也不能改用，体验结束后接着用/,
-    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个微信号只能体验一次/, /同事共用这一次/, /名单准备好再开始/]) {
+    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次：账号跟着微信号走/, /同事共用这一次/, /名单准备好再开始/]) {
     assert.match(text, must);
   }
   assert.doesNotMatch(text, SALES);
@@ -133,7 +133,7 @@ const rows = (n) => Array.from({ length: n }, (_, i) => `合成企业${i}`).join
 test('批量工具页：有资格时一直有加量体验入口；还有免费次数时不抢眼，用满或超过 50 家时推荐', async () => {
   const h = form({ status: status({ trial: trialAvailable() }) }); await flush();
   let tree = shown(h.page);
-  assert.match(textOf(tree), /加量体验（免费，每个微信一次）：从点“开始体验”起连续 3 天，每次最多 500 家，名单比对和通知表合计每天 10 次，不占本月免费次数。名单准备好再开始。/);
+  assert.match(textOf(tree), /加量体验（免费，每个账号一次）：从点“开始体验”起连续 3 天，每次最多 500 家，名单比对和通知表合计每天 10 次，不占本月免费次数。名单准备好再开始。/);
   let entry = findAll(tree, tapsTo('openTrial'));
   assert.equal(entry.length, 1); assert.doesNotMatch(entry[0].attrs.class, /btn-primary/);
   // 这次超过 50 家：入口变成主按钮，预览提示里也推荐，提示下面紧跟一个"了解加量体验"（不用翻回上方找）
@@ -285,11 +285,27 @@ function trialPage(options = {}) {
   const api = { advisorStatus: () => { calls.push('status'); return Promise.resolve(current); },
     startBoostTrial: () => { calls.push('start'); return options.start ? options.start() : Promise.resolve(trialActive()); } };
   const wx = { navigateBack: (o) => { nav.push('back'); if (options.noBack && o && o.fail) o.fail(); }, redirectTo: ({ url }) => nav.push(url), showToast: ({ title }) => toasts.push(title) };
-  const page = load('pages/advisor-trial/index.js', { '../../utils/api.js': api, '../../utils/boost.js': boost }, { wx });
+  const consent = options.consent || { ensureConsent: () => Promise.resolve(false) };
+  const page = load('pages/advisor-trial/index.js', { '../../utils/api.js': api, '../../utils/boost.js': boost, '../../utils/consent.js': consent }, { wx });
   page.onShow();
   return { page, calls, nav, toasts, set: (value) => { current = value; } };
 }
 const trialShown = (page) => render('pages/advisor-trial/index.wxml', page.data);
+
+test('确认页：开始时协议已更新（403）就请他重新阅读并同意；同意了重新读状态，没同意就留着提示', async () => {
+  const outdated = () => Promise.reject(Object.assign(new Error('用户协议或隐私保护指引已更新，请重新阅读并同意'), { status: 403 }));
+  let asked = 0;
+  const yes = trialPage({ start: outdated, consent: { ensureConsent: () => { asked += 1; return Promise.resolve(true); } } });
+  await flush();
+  yes.page.start(); await flush();
+  assert.equal(asked, 1);
+  assert.deepEqual(yes.calls, ['status', 'start', 'status']);
+  const no = trialPage({ start: outdated });
+  await flush();
+  no.page.start(); await flush();
+  assert.deepEqual(no.calls, ['status', 'start']);
+  assert.match(textOf(trialShown(no.page)), /已更新，请重新阅读并同意/);
+});
 
 test('确认页：开始之前写全规则，点一次才开始，重复点不重复请求；开始后写结束时间', async () => {
   const h = trialPage(); await flush();
@@ -298,7 +314,7 @@ test('确认页：开始之前写全规则，点一次才开始，重复点不�
   assert.match(text, /3 天内每次最多 500 家（免费）/);
   assert.match(text, /开始之前请看完/);
   for (const must of [/连续 72 小时，中途不能暂停/, /每次最多 500 家/, /两项合计每天最多 10 次/, /本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
-    /不需要填写任何付款信息/, /自动回到免费版/, /照样能看、能导出/, /每个微信号只能体验一次/]) assert.match(text, must);
+    /不需要填写任何付款信息/, /自动回到免费版/, /照样能看、能导出/, /每个账号只能体验一次/]) assert.match(text, must);
   assert.doesNotMatch(text, SALES);
   const startButton = findAll(tree, tapsTo('start'))[0];
   assert.match(textOf(startButton), /开始体验（立即起算 72 小时）/); assert.match(startButton.attrs.class, /btn-primary/);
@@ -315,14 +331,14 @@ test('确认页：开始之前写全规则，点一次才开始，重复点不�
 });
 
 test('确认页：用过了、使用期内、没开放时说明原因，不给开始；开始失败按服务端最新状态重新显示', async () => {
-  for (const [trial, note] of [[{ ...trialAvailable(), available: false, reason: 'used' }, /已经用过，每个微信只能体验一次/],
+  for (const [trial, note] of [[{ ...trialAvailable(), available: false, reason: 'used' }, /已经用过，每个账号只能体验一次/],
     [{ ...trialAvailable(), available: false, reason: 'pass' }, /体验留到以后再用/], [null, /加量体验暂未开放/]]) {
     const h = trialPage({ status: status({ trial }) }); await flush();
     const tree = trialShown(h.page);
     assert.match(textOf(tree), note); assert.equal(findAll(tree, tapsTo('start')).length, 0);
     h.page.start(); assert.equal(h.calls.includes('start'), false); h.page.onUnload();
   }
-  const conflict = trialPage({ start: () => Promise.reject(Object.assign(new Error('加量体验已经用过，每个微信只能体验一次'), { status: 409, code: 'TRIAL_USED' })) }); await flush();
+  const conflict = trialPage({ start: () => Promise.reject(Object.assign(new Error('加量体验已经用过，每个账号只能体验一次'), { status: 409, code: 'TRIAL_USED' })) }); await flush();
   conflict.set(status({ trial: { ...trialAvailable(), available: false, reason: 'used' } }));
   conflict.page.start(); await flush(); await flush();
   assert.match(textOf(trialShown(conflict.page)), /已经用过/); assert.equal(findAll(trialShown(conflict.page), tapsTo('start')).length, 0);

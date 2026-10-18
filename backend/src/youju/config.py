@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # 用户协议和隐私保护指引的当前版本，和小程序 content/legal.js 的 version 一致。
     # 版本号按时间可排序（2026-10、2026-11……），后端和小程序都直接比字符串：
     # 同意过更新的版本也算同意了旧的
-    agreement_version: str = "2026-10"
+    agreement_version: str = "2026-11"
     # 仍然认的最早版本，平时不填（等于当前版本，旧版的同意失效、要重新同意）。
     # 协议升版只是给新功能加了条款（如 AI 版）时，填升版前的版本：旧的同意照旧能用旧功能
     # （关注、纠错、提醒），新功能要求同意过写进它的条款的那一版（me.agreement_at_least），
@@ -100,7 +100,8 @@ class Settings(BaseSettings):
     ai_advisor_daily_cap: int = Field(default=200, ge=0)
     ai_advisor_concurrency: int = Field(default=3, ge=1, le=8)
     # 加量体验（D-070 ③，见 boost.py）：单独开关，默认关，还要批量工具开关开着。打开之前先执行
-    # mysql_accounts.sql 里的"加量体验权限"，并让隐私保护指引写明体验记录（PR 说明里有建议文字）。
+    # mysql_accounts.sql 里的"加量体验权限"，并让写明体验记录的 2026-11 版隐私保护指引先上线
+    # （只同意过更早版本的开始不了体验，见 agreements.TOOLS_AGREEMENT_VERSION）。
     # 关掉只是不能再开始新的体验，已经开始的照常用满 72 小时（开始前承诺了连续 3 天）
     boost_trial_enabled: bool = False
     # 申报季加量（D-070 ⑤）：起止日期（北京时间，含首尾）内免费批量次数每月 5 次，每次仍 50 家以内。

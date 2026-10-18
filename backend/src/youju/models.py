@@ -1054,7 +1054,8 @@ class DeadlineClue(Base):
 class RewardClaim(Base):
     """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。
 
-    boost_trial：注销时还记着这个微信用过加量体验（boost.py），重新同意协议后不能再开始一次。"""
+    boost_trial：迁移 0031 加的类型；10/18 起加量体验注销即删，不再写这种凭据
+    （约束留着，旧数据和回退用）。"""
 
     __tablename__ = "reward_claims"
     __table_args__ = (
@@ -1105,7 +1106,7 @@ class BoostTrial(Base):
     """加量体验（D-070 ③）：用户自己点开始才建，一人一行，不是批量工具的使用天数。
 
     体验期内每次提交记在 advisor_usage 的 trial 账本上（按北京日期），不占每月免费次数。
-    注销随用户删除；用过的事实另记去标识凭据（reward_claims，kind=boost_trial）。"""
+    注销随用户删除，不另留凭据（D-071 第②条改为注销即删）。"""
 
     __tablename__ = "boost_trials"
     __table_args__ = (

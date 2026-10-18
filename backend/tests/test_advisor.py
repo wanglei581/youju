@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from youju import advisor_tasks as service
 from youju.api import advisor as advisor_api
@@ -31,7 +31,7 @@ def advisor_settings(monkeypatch):
         cloud_env="test-env",
         dev_openid="advisor-user",
         trust_wx_headers=False,
-        agreement_version="2026-09",
+        agreement_version="2026-11",
         retain_events_days=90,
         retain_feedback_days=180,
         retain_used_subscriptions_days=30,
@@ -56,7 +56,7 @@ def client(session_factory, advisor_settings):
 
 
 def agree(client):
-    response = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-11"})
     assert response.status_code == 200
 
 
@@ -116,7 +116,7 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
     )
     agree_advisor(client)
     profile = client.get("/api/v1/me").json()
-    assert profile["agreed"]["version"] == "2026-09"
+    assert profile["agreed"]["version"] == "2026-11"
     assert profile["advisorAgreed"]["version"] == service.ADVISOR_AGREEMENT_VERSION
     assert client.get("/api/v1/me/data").json()["user"]["advisorAgreed"] == profile["advisorAgreed"]
     advisor_settings.advisor_enabled = False
@@ -628,10 +628,12 @@ def test_cleanup_ignores_switch_and_deletes_expired_files(session, advisor_setti
         session,
         user.id,
         idempotency_key="old",
+        status="done",
         created_at=(NOW - timedelta(days=30)).astimezone(UTC),
         expires_at=NOW.astimezone(UTC),
         result_file_id="cloud://old",
     )
+    old_id = old.id
     advisor_settings.advisor_enabled = False
     deleted = []
     client = SimpleNamespace()
@@ -647,12 +649,15 @@ def test_cleanup_ignores_switch_and_deletes_expired_files(session, advisor_setti
     )
     monkeypatch.undo()
     assert result["advisor_input_rows"] == 1 and result["advisor_files"] == 1
-    session.refresh(old)
-    assert old.input_rows is None and old.result_file_id is None and deleted == ["cloud://old"]
+    # 文件删成以后任务行也删掉（任务记录和结果文件一起保存 30 天）
+    assert result["advisor_data_tasks"] == 1 and deleted == ["cloud://old"]
+    session.expire_all()
+    assert session.get(AdvisorTask, old_id) is None
 
 
 def test_cleanup_deletes_expired_ai_tasks_and_old_usage(session, advisor_settings):
-    """AI 任务过了 30 天结果保存期整行删除；使用次数只留本月和上个月。"""
+    """AI 任务过了 30 天结果保存期整行删除；使用次数只留本月和上个月。
+    数据工具的任务（10/18 起）也是过了 30 天整行删除，见下一个测试。"""
     user = User(openid="retention-user")
     session.add(user)
     session.commit()
@@ -693,9 +698,103 @@ def test_cleanup_deletes_expired_ai_tasks_and_old_usage(session, advisor_setting
     session.expire_all()
     assert session.get(AdvisorTask, expired_id) is None
     assert session.get(AdvisorTask, fresh_id) is not None
-    assert session.get(AdvisorTask, data_id) is not None
+    assert session.get(AdvisorTask, data_id) is None
     days = sorted(session.scalars(select(AdvisorUsage.day)))
     assert days == [last_month, today]
+
+
+def test_cleanup_deletes_finished_data_tasks_after_their_files(
+    session, advisor_settings, monkeypatch
+):
+    """数据工具的任务记录和结果文件一起保存 30 天（隐私保护指引一·13）：文件删成以后整行删除；
+    批量工具关着时一直排队、处理中超过一天没人管的，过期后先退回占用的次数再删；文件这次没删成的、
+    处理中不到一天的、没到期的留着。"""
+    user = User(openid="data-retention-user")
+    session.add(user)
+    session.commit()
+    stamp = NOW.astimezone(UTC)
+    old = {"created_at": stamp - timedelta(days=30), "expires_at": stamp}
+    rows = {
+        "failed": task(session, user.id, idempotency_key="d-failed", status="failed", **old),
+        "done": task(
+            session,
+            user.id,
+            idempotency_key="d-done",
+            status="done",
+            result_file_id="cloud://done",
+            **old,
+        ),
+        "stuck_file": task(
+            session,
+            user.id,
+            kind="track",
+            idempotency_key="d-stuck-file",
+            status="done",
+            result_file_id="cloud://stuck",
+            **old,
+        ),
+        "queued": task(session, user.id, idempotency_key="d-queued", **old),
+        "stale_running": task(
+            session,
+            user.id,
+            idempotency_key="d-stale",
+            status="running",
+            started_at=stamp - timedelta(days=29),
+            **old,
+        ),
+        "running_now": task(
+            session,
+            user.id,
+            idempotency_key="d-running",
+            status="running",
+            started_at=stamp - timedelta(minutes=1),
+            **old,
+        ),
+        # 超过 STALE_RUNNING 但不到一天：换版本时旧实例可能还在跑，不动（worker 会放回队列）
+        "running_hours": task(
+            session,
+            user.id,
+            idempotency_key="d-running-hours",
+            status="running",
+            started_at=stamp - timedelta(hours=2),
+            **old,
+        ),
+        "fresh": task(
+            session,
+            user.id,
+            idempotency_key="d-fresh",
+            status="done",
+            created_at=stamp - timedelta(days=1),
+            expires_at=stamp + timedelta(days=29),
+        ),
+    }
+    ids = {name: row.id for name, row in rows.items()}
+    submitted = service.usage_day(stamp - timedelta(days=30))
+    session.add(AdvisorUsage(user_id=user.id, kind="compare", day=submitted, used_count=3))
+    session.commit()
+    monkeypatch.setattr(
+        service,
+        "delete_result_files",
+        lambda client, env, file_ids: [f for f in file_ids if f != "cloud://stuck"],
+    )
+    result = service.cleanup_advisor(
+        session, settings=advisor_settings, stamp=stamp, client=SimpleNamespace()
+    )
+    assert result["advisor_data_tasks"] == 4 and result["advisor_files"] == 1
+    session.expire_all()
+    for name in ("failed", "done", "queued", "stale_running"):
+        assert session.get(AdvisorTask, ids[name]) is None, name
+    assert session.get(AdvisorTask, ids["stuck_file"]).result_file_id == "cloud://stuck"
+    assert session.get(AdvisorTask, ids["running_now"]).status == "running"
+    assert session.get(AdvisorTask, ids["running_hours"]).status == "running"
+    assert session.get(AdvisorTask, ids["fresh"]) is not None
+    # 排队和卡住的两个没处理过：按原提交日退回次数
+    used = session.scalar(
+        select(AdvisorUsage.used_count).where(
+            AdvisorUsage.user_id == user.id, AdvisorUsage.day == submitted
+        )
+    )
+    assert used == 1
 
 
 def test_delete_account_removes_advisor_tasks_and_files(
@@ -749,9 +848,11 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
         session,
         user.id,
         idempotency_key="trash",
+        status="done",
         expires_at=NOW.astimezone(UTC),
         result_file_id="cloud://trash",
     )
+    row_id = row.id
     attempts = iter([RuntimeError("暂时失败"), ["cloud://trash"]])
     monkeypatch.setattr(service, "delete_result_files", lambda *args: next(attempts))
     first = service.cleanup_advisor(
@@ -768,9 +869,9 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
         stamp=(NOW + timedelta(days=1)).astimezone(UTC),
         client=SimpleNamespace(),
     )
-    assert second["advisor_files"] == 1
-    session.refresh(row)
-    assert row.result_file_id is None
+    assert second["advisor_files"] == 1 and second["advisor_data_tasks"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, row_id) is None
     assert session.scalar(select(AdvisorFileTrash.file_id)) is None
 
 
@@ -835,6 +936,82 @@ def test_uploaded_file_is_deleted_or_queued_when_task_times_out(
         is False
     )
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://timeout"
+
+
+def test_task_removed_by_cleanup_mid_upload_leaves_no_file_behind(
+    session, session_factory, advisor_settings, monkeypatch
+):
+    """清理（和处理中注销一样）在 worker 上传结果时删掉了任务行：worker 最后提交失败，
+    刚上传的结果文件随即删除（删不掉就记进待删表），不会留下没人管的文件（Codex 第四轮）。"""
+    user = User(openid="midway-user", agreement_version="2026-11", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    stamp = NOW.astimezone(UTC)
+    row = task(
+        session,
+        user.id,
+        idempotency_key="midway",
+        status="running",
+        created_at=stamp - timedelta(days=31),
+        expires_at=stamp - timedelta(days=1),
+        started_at=stamp - timedelta(days=2),
+    )
+    task_id = row.id
+    monkeypatch.setattr(
+        service, "_run_engine", lambda session, task, output: output.write_bytes(b"x") or 1
+    )
+
+    def upload_while_cleanup_runs(*args, **kwargs):
+        with session_factory() as other:
+            report = service.cleanup_advisor(
+                other, settings=advisor_settings, stamp=stamp, client=SimpleNamespace()
+            )
+        assert report["advisor_data_tasks"] == 1
+        return "cloud://midway"
+
+    monkeypatch.setattr(service, "upload", upload_while_cleanup_runs)
+    deleted = []
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda client, env, ids: deleted.extend(ids) or list(ids)
+    )
+    result = service.process_task(
+        session, row, settings=advisor_settings, client=SimpleNamespace(), stamp=stamp
+    )
+    assert result is False and deleted == ["cloud://midway"]
+    with session_factory() as fresh:
+        assert fresh.get(AdvisorTask, task_id) is None
+        assert fresh.scalar(select(AdvisorFileTrash.file_id)) is None
+
+
+def test_worker_round_survives_task_deleted_mid_processing(
+    session, session_factory, advisor_settings, monkeypatch
+):
+    """处理途中用户注销（或清理）删掉了任务：这一轮照常结束、记为失败，刚上传的文件删掉，
+    不因为再读已删除的任务而报异常（按生产的计时方式跑，覆盖 run_one 收尾那一段）。"""
+    user = User(openid="worker-midway", agreement_version="2026-11", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    task_id = task(session, user.id, idempotency_key="worker-midway").id
+    monkeypatch.setattr(
+        service, "_run_engine", lambda session, task, output: output.write_bytes(b"x") or 1
+    )
+
+    def upload_then_delete(*args, **kwargs):
+        with session_factory() as other:
+            other.execute(delete(AdvisorTask).where(AdvisorTask.id == task_id))
+            other.commit()
+        return "cloud://worker-midway"
+
+    monkeypatch.setattr(service, "upload", upload_then_delete)
+    deleted = []
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda client, env, ids: deleted.extend(ids) or list(ids)
+    )
+    report = service.run_advisor_tasks(session, settings=advisor_settings, max_tasks=1)
+    assert report["processed"] == 1 and report["failed"] == 1
+    assert deleted == ["cloud://worker-midway"]
+    with session_factory() as fresh:
+        assert fresh.get(AdvisorTask, task_id) is None
 
 
 def relocate_sheet(source, transform=lambda data: data):
