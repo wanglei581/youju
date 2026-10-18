@@ -170,6 +170,24 @@ def test_start_needs_agreement_runs_72_hours_and_only_once(ctx, session):
     assert used.status_code == 409 and used.json()["detail"]["code"] == "TRIAL_USED"
 
 
+def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
+    """协议升版过渡期（最早版本填 2026-10）：只同意过 2026-10 的照旧算登录，但那一版没写体验记录和
+    注销后的去标识编号，开始体验要先重新同意（403 后小程序清掉本机同意、请他重新同意）。"""
+    client = ctx.client
+    assert boost.AGREEMENT_VERSION <= AGREEMENT
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    assert status(client, identity)["trial"]["available"] is True
+    response = start(client, identity)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(BoostTrial.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
+    assert new.status_code == 200
+    assert start(client, identity).status_code == 200
+
+
 def test_double_tap_that_waited_for_the_lock_gets_the_same_trial(ctx, db_engine):
     """连点两次：后拿到锁的那个请求可能比先建成的那段更早到达，开始时间要在锁后取，
     返回同一段，不报"已经用过"。"""

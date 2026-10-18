@@ -34,6 +34,10 @@ SEASON_MONTHLY = 5
 CLAIM_KIND = "boost_trial"
 DATA_KINDS = ("compare", "track")
 USED = "加量体验已经用过，每个微信只能体验一次"
+# 体验记录和注销后的去标识编号写进隐私保护指引（一·15）的那一版：只同意过更早版本的不能开始体验。
+# 协议升版过渡期（YOUJU_AGREEMENT_MIN_VERSION 填旧版本）旧的同意照旧能用关注、纠错，但没告知过体验记录，
+# 所以固定写在这里，回退配置也不放宽（同 ai/interpret.py 的 AI_AGREEMENT_VERSION）
+AGREEMENT_VERSION = "2026-11"
 HAS_PASS = "使用期内不限次数，不需要加量体验；体验留到以后再用"
 
 
