@@ -651,14 +651,13 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
-        from youju import boost, rewards
+        from youju import rewards
         from youju.payments import anonymize
 
         # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
+        # 加量体验的记录随用户删除（外键级联），不另留凭据（D-071 第②条改为注销即删）
         rewards.anonymize(session, user, v1.now(), settings=get_settings())
         anonymize(session, user)
-        # 用过加量体验的记一条去标识凭据，重新同意后不能再体验；体验记录随用户删除
-        boost.anonymize(session, user, v1.now())
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()

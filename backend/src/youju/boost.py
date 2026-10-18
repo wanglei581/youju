@@ -1,15 +1,16 @@
 """加量体验（D-070 ③）和申报季加量（D-070 ⑤）：各有单独开关，默认都关。
 
 加量体验是单独的一种权益，不是批量工具的使用天数（不发 WorkbenchPass）：
-- 每个微信身份一次；用户自己在确认页点"开始体验"才起算，连续 72 小时，不能暂停；
+- 每个账号一次；用户自己在确认页点"开始体验"才起算，连续 72 小时，不能暂停；
 - 体验期内批量名单比对、客户相关通知表每次 500 家以内，两项合计每天（北京时间）最多 10 次，
   记在体验账本上（advisor_usage 的 trial 类型），不占每月免费次数；当天 10 次用完就等第二天，
   不改用每月免费次数（D-070 第二轮：先用完免费次数再开体验的人，体验结束不能只剩 0 次）；
 - 到期按 ends_at 自动回到免费量，不需要定时任务；体验期的结果和其他任务一样保存 30 天；
 - 已有付费使用期的不能开始（体验留到以后），万一重叠，先用体验次数、当天用完再用使用期。
 开关关掉只是不能开始新的体验，已经开始的照常用满 72 小时（开始前承诺了连续 3 天）。
-"每个微信一次"跨注销靠去标识凭据：注销时记一条 reward_claims（kind=boost_trial，HMAC 编号，
-不含微信身份），清理任务 180 天后删除。
+注销即删：体验记录随用户删除（外键级联），不另留防重复领取的凭据，注销后用同一个微信重新同意算新账号、
+可以再体验一次（D-071 第②条 10/18 由"凭据留 180 天"改为注销即删：《网络数据安全管理条例》第二十四条
+要求注销后删除或匿名化，凭据是去标识化、不是匿名化，PR #286）。
 
 申报季加量：起止日期（北京时间，含首尾）内的那几天，所在月份的免费批量次数按每月 5 次算
 （这个月已用的次数都算进去），每次仍 50 家以内；离开起止日期就回到 3 次，多用的不倒扣。
@@ -20,20 +21,18 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as service
 from youju import payments
-from youju.models import BoostTrial, RewardClaim, User
+from youju.models import BoostTrial, User
 
 TRIAL_HOURS = 72
 TRIAL_DAILY = 10
 TRIAL_MAX_ROWS = 500
 SEASON_MONTHLY = 5
-CLAIM_KIND = "boost_trial"
 DATA_KINDS = ("compare", "track")
-USED = "加量体验已经用过，每个微信只能体验一次"
+USED = "加量体验已经用过，每个账号只能体验一次"
 HAS_PASS = "使用期内不限次数，不需要加量体验；体验留到以后再用"
 
 
@@ -103,23 +102,6 @@ def active_trial(session: Session, user_id: int, stamp: datetime) -> BoostTrial 
     return trial if is_active(trial, stamp) else None
 
 
-def claimed(session: Session, openid: str) -> bool:
-    """这个微信以前的账号注销前用过体验（凭据还在保存期内）。"""
-    from youju.rewards import claim_pseudonym
-
-    return (
-        session.scalar(
-            select(RewardClaim.kind)
-            .where(
-                RewardClaim.pseudonym == claim_pseudonym(session, openid),
-                RewardClaim.kind == CLAIM_KIND,
-            )
-            .limit(1)
-        )
-        is not None
-    )
-
-
 def start(session: Session, user: User, stamp: datetime) -> BoostTrial:
     """开始体验；调用方已检查开关、锁定用户行，并负责提交。
 
@@ -130,8 +112,6 @@ def start(session: Session, user: User, stamp: datetime) -> BoostTrial:
     if trial is not None:
         if is_active(trial, stamp):
             return trial
-        raise TrialError("TRIAL_USED", USED)
-    if claimed(session, user.openid):
         raise TrialError("TRIAL_USED", USED)
     if payments.current_pass(session, user.id, stamp) is not None:
         raise TrialError("TRIAL_HAS_PASS", HAS_PASS)
@@ -178,28 +158,10 @@ def trial_status(
         if counts is None:
             counts = service.usage_counts(session, user.id, service.usage_day(stamp))
         result["usedToday"] = counts.get(service.TRIAL_USAGE, 0)
-    elif trial is not None or (user is not None and claimed(session, user.openid)):
+    elif trial is not None:
         result["reason"] = "used"
     elif user is not None and payments.current_pass(session, user.id, stamp) is not None:
         result["reason"] = "pass"
     else:
         result["available"] = True
     return result
-
-
-def anonymize(session: Session, user: User, stamp: datetime) -> None:
-    """注销：用过体验的，记一条去标识凭据（HMAC 编号，不含微信身份、不连用户，180 天后清理），
-    体验记录随用户删除（外键级联）。从没用过的什么也不写，开关一直关着时不需要新的写权限。"""
-    if trial_of(session, user.id) is None and not claimed(session, user.openid):
-        return
-    from youju.rewards import claim_pseudonym
-
-    session.execute(
-        insert(RewardClaim)
-        .prefix_with("IGNORE")
-        .values(
-            pseudonym=claim_pseudonym(session, user.openid),
-            kind=CLAIM_KIND,
-            claimed_at=service._utc(stamp),
-        )
-    )
