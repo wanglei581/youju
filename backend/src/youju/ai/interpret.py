@@ -53,6 +53,8 @@ SYSTEM_PROMPT = (
     "不拼接、不改写、不推断、不总结、不判断能否申报。无依据的类别放入 missing。"
 )
 NOTICE = "AI 生成，仅供参考，以原文和主管部门解释为准"
+# 正文变了，旧结果的原文摘录可能对不上，作废（D-073：只在正文变了时作废）
+BODY_CHANGED = "通知正文已变化，请重新解读"
 TYPES = ("对象", "支持", "条件", "时间", "方式", "材料")
 
 
@@ -457,12 +459,39 @@ def result_metadata(
         **({"model": model, "prompt_version": skill.prompt_version} if not skill.keys else {}),
         "disclosure": model_disclosure or {"modelLabel": "", "filingNo": ""},
         "attachments": attachments,
-        "attachment_notice": (
-            f"本通知有 {attachments} 个附件，解读只覆盖网页正文；"
-            "申请表、材料清单可能在附件里，请查看原文附件。"
-        )
-        if attachments
-        else None,
+        "attachment_notice": attachment_notice(attachments),
         "notice": NOTICE,
         "warning": "部分内容未通过校验" if result["dropped"] else None,
+    }
+
+
+def attachment_notice(attachments: int) -> str | None:
+    if not attachments:
+        return None
+    return (
+        f"本通知有 {attachments} 个附件，解读只覆盖网页正文；"
+        "申请表、材料清单可能在附件里，请查看原文附件。"
+    )
+
+
+def body_changed(stored: dict | None, current: dict) -> bool:
+    """旧结果的正文指纹和现在的不同（或旧任务没记指纹）就算正文变了。"""
+    return not stored or stored.get("body_hash") != current["body_hash"]
+
+
+def verification_changed(stored: dict | None, current: dict) -> bool:
+    """核对（截止、支持方式等）或附件数和生成结果时不同。只是模型或提示词版本变了不算。"""
+    return not stored or stored.get("verification_version") != current["verification_version"]
+
+
+def refresh_verification(result: dict, verified: list, attachments: int) -> dict:
+    """正文没变、只是核对、附件、模型或提示词版本变了（D-073）：原文摘录照旧有效；
+    "已核对"一栏和附件提醒换成现在的，撤回的核对不再显示。"""
+    if "verified" not in result:
+        return result
+    return {
+        **result,
+        "verified": verified,
+        "attachments": attachments,
+        "attachment_notice": attachment_notice(attachments),
     }
