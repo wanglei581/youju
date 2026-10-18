@@ -26,6 +26,8 @@ for round in 1 2 3 4 5; do
     if [ -s "$R/out.md" ]; then
       echo "exit ok (model $m, round $round)"
       cat "$R/out.md"
+      # 结果末尾没换行时补一个：外面追加的 exit= 才会单独成行（10/18 有个等 "^exit=" 的循环因此空转了 4 小时）
+      [ -n "$(tail -c1 "$R/out.md")" ] && echo
       exit 0
     fi
     if grep -q "401 Unauthorized" "$R/log.txt"; then
