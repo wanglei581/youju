@@ -159,7 +159,7 @@ def setup_pay(session_factory, monkeypatch):
 
 
 def create(setup_pay, **values):
-    client, _, _ = setup_pay
+    client, settings, _ = setup_pay
     return client.post(
         "/api/v1/pay/orders",
         headers=HEADERS,
@@ -167,6 +167,8 @@ def create(setup_pay, **values):
             "product_id": "workbench_30d",
             "code": "test-login",
             "terms_version": "pay-test",
+            # 购买页带上它显示的发票类型（现网要和配置一致，D-070）
+            "invoice_type": payments.invoice_type(settings),
             **values,
         },
     )

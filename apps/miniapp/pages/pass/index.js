@@ -122,7 +122,8 @@ Page({
     }).then((code) => {
       if (this.unloaded) return null;
       // terms_version：用户刚勾选同意的《付费服务协议》版本，随订单保存
-      return api.createPayOrder({ product_id: this.data.product.productId, code, terms_version: payTerms.version });
+      // invoice_type：页面上写的发票类型，服务端核对和现在的一致才下单（订单记下用户看到的那句）
+      return api.createPayOrder({ product_id: this.data.product.productId, code, terms_version: payTerms.version, invoice_type: this.data.invoiceText });
     }).then((order) => {
       if (!order || this.unloaded) return;
       this.rechecking = false;

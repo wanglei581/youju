@@ -68,6 +68,9 @@ class OrderIn(BaseModel):
     code: str = Field(min_length=1, max_length=512, repr=False)
     # 用户勾选同意的《付费服务协议》版本，随订单保存，日后有争议时能说明当时同意的是哪一版
     terms_version: str = Field(min_length=1, max_length=40)
+    # 购买页上写的"能开哪种发票"（商品接口带回的那句）：和现在的配置不一致就不下单，
+    # 订单记下的就是用户付款前看到的那句（Codex 第四轮）
+    invoice_type: str = Field(default="", max_length=100)
 
 
 @router.get("/products", dependencies=[Depends(require_enabled)])
@@ -120,6 +123,11 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     if settings.pay_terms_version and body.terms_version != settings.pay_terms_version:
         raise HTTPException(
             status_code=409, detail="《付费服务协议》已更新，请重新阅读并同意后再付款"
+        )
+    invoice = payments.invoice_type(settings)
+    if invoice and body.invoice_type.strip() != invoice:
+        raise HTTPException(
+            status_code=409, detail="能开的发票类型有更新，请重新看一下购买页再付款"
         )
     stamp = _stamp()
     # 和免费任务使用同一用户锁，防止并发下单绕过限制及与注销竞态。
@@ -201,8 +209,8 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         days=days,
         # 下单时续买多送开着才算数（付款页这时写着这条规则）；付款时间符合才真的送
         bonus_days=payments.RENEW_BONUS_DAYS if payments.renew_bonus_enabled(settings) else 0,
-        # 购买页当时写的发票类型（沙箱联调时可能还没填）
-        invoice_type=payments.invoice_type(settings)[:100] or None,
+        # 购买页上写的发票类型（上面已核对和现在的配置一致；沙箱联调时可能还没填）
+        invoice_type=invoice or None,
         env=settings.xpay_env,
         terms_version=body.terms_version,
         created_at=stamp,

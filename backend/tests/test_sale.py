@@ -98,14 +98,15 @@ def join(client, identity):
     )
 
 
-def create(shop, product="workbench_30d"):
+def create(shop, product="workbench_30d", invoice_type=None):
     # 微信那边待支付：下新单前查上一笔时，不会把还没付的单当成已付款
     shop.fake.status = 1
-    return shop.client.post(
-        "/api/v1/pay/orders",
-        headers=HEADERS,
-        json={"product_id": product, "code": "test-login", "terms_version": "pay-test"},
+    body = {"product_id": product, "code": "test-login", "terms_version": "pay-test"}
+    # 购买页带上它显示的发票类型（默认就是现在配置的那句）
+    body["invoice_type"] = (
+        payments.invoice_type(shop.settings) if invoice_type is None else invoice_type
     )
+    return shop.client.post("/api/v1/pay/orders", headers=HEADERS, json=body)
 
 
 def deliver(shop, out_trade_no, product, paid_at):
@@ -137,11 +138,11 @@ def deliver(shop, out_trade_no, product, paid_at):
     )
 
 
-def buy(shop, session, product="workbench_30d", *, at=None, confirmed=None):
+def buy(shop, session, product="workbench_30d", *, at=None, confirmed=None, invoice_type=None):
     """at 下单并付款；confirmed 收到推送的时间（默认就是付款时间）。"""
     at = at or shop.clock.at
     shop.clock.at = at
-    response = create(shop, product)
+    response = create(shop, product, invoice_type)
     assert response.status_code == 201, response.text
     row = session.get(PayOrder, response.json()["orderId"])
     shop.clock.at = confirmed or at
@@ -214,9 +215,13 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
 
 
 def test_order_keeps_the_invoice_type_shown_when_it_was_placed(shop, session):
-    """订单记下下单时购买页写的发票类型：日后改了配置，历史订单仍查得到当时写的是什么（Codex 第三轮）。"""
+    """订单记下用户付款前看到的发票类型：页面带来的那句和现在的配置不一致（看页面后改了配置）就不下单；
+    日后改了配置，历史订单仍查得到当时写的是什么（Codex 第三、四轮）。"""
     shop.settings.pay_invoice_type = "电子普通发票（测试）"
-    row = buy(shop, session)
+    for seen in ("", "旧的一句（测试）"):
+        stale = create(shop, invoice_type=seen)
+        assert stale.status_code == 409 and "发票类型有更新" in stale.json()["detail"]
+    row = buy(shop, session, invoice_type="电子普通发票（测试）")
     shop.settings.pay_invoice_type = "另一种发票（测试）"
     session.expire_all()
     assert session.get(PayOrder, row.id).invoice_type == "电子普通发票（测试）"

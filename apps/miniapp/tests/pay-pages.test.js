@@ -264,7 +264,7 @@ test('购买页在沙箱下协议没定稿也能联调付款，顶部写明不�
   sandbox.page.buy();
   await flush();
   assert.deepEqual(sandbox.calls.find((call) => call[0] === 'create')[1], {
-    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: payTerms.version,
+    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: payTerms.version, invoice_type: '',
   });
   // sandbox 必须是布尔 true：其他值（字符串、缺省）都按现网处理
   for (const res of [{ items: [PRODUCT], sandbox: 'true' }, { items: [PRODUCT], sandbox: false }]) {
@@ -308,7 +308,7 @@ test('购买页勾选后下单带上商品、登录码和协议版本，支付�
   h.page.buy();
   await flush();
   assert.deepEqual(h.calls.find((call) => call[0] === 'create')[1], {
-    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: FINAL_TERMS.version,
+    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: FINAL_TERMS.version, invoice_type: INVOICE,
   });
   assert.deepEqual(h.calls.find((call) => call[0] === 'virtual')[1], {
     signData: 'sign-data-1', paySig: 'pay-sig-1', signature: 'signature-1', mode: 'short_series_goods',
@@ -629,6 +629,8 @@ test('购买页两档并排，默认 30 天，90 天写折合每 30 天约 26 �
   h.page.buy();
   await flush();
   assert.equal(h.calls.find((call) => call[0] === 'create')[1].product_id, 'workbench_90d');
+  // 带上页面写的发票类型，服务端核对一致才下单
+  assert.equal(h.calls.find((call) => call[0] === 'create')[1].invoice_type, INVOICE);
   // 付款中不能换档
   h.page.setData({ busy: true });
   h.page.pick({ currentTarget: { dataset: { index: 0 } } });
