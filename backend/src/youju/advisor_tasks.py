@@ -49,7 +49,7 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 MAX_ROWS = 50
 MAX_BODY_BYTES = 100 * 1024
 MAX_UPLOAD_BYTES = 60 * 1024
-ADVISOR_AGREEMENT_VERSION = "advisor-2026-09-v1"
+ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
 INPUT_RETENTION = timedelta(days=7)
