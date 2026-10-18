@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { PROVINCES, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
+const { PROVINCES, ALL, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
 const { exportDocs } = require('../../utils/exporter.js');
 const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -32,6 +32,61 @@ const isDefaultView = ({ tab, province, city, district, dept, verifiedOnly }) =>
 const areaParams = ({ province, city, district }) => (district ? { province, city, district } : { province, city });
 // 选择器那一格显示的城市、区县：直辖市只写区县（省份已在左边）
 const areaText = ({ province, city, district }) => [city !== province ? city : '', district].filter(Boolean).join(' · ');
+
+// 转发（D-070）：路径带上正在看的视图（天数或月份、省市区、部门、只看已核对），接收人打开是同样的筛选条件，
+// 结果按打开时的数据。参数逐个编码；接收端逐个解码，坏的编码不报错，不认识的值不用
+const pad = (n) => (n < 10 ? `0${n}` : `${n}`);
+const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
+
+function sharePath(d) {
+  const params = d.tab === MONTH ? [`month=${d.year}-${pad(d.month)}`] : [`days=${d.tab}`];
+  [['province', d.province], ['city', d.city], ['district', d.district], ['dept', d.dept]].forEach(([key, value]) => {
+    if (value) params.push(`${key}=${encodeURIComponent(value)}`);
+  });
+  if (d.verifiedOnly) params.push('verified=1');
+  return `/pages/report/index?${params.join('&')}`;
+}
+
+// 卡片标题，如"山东·济南 7 天内截止的申报通知（科技部门）""2026年11月截止的申报通知"。按月看不筛部门，标题里不写部门
+function shareTitle(d) {
+  const area = [d.province, d.city !== d.province ? d.city : '', d.district].filter(Boolean).join('·');
+  const when = d.tab === MONTH ? `${d.year}年${d.month}月` : `${d.tab} 天内`;
+  const dept = d.tab !== MONTH && d.dept ? `（${d.dept}）` : '';
+  return `${area ? `${area} ` : ''}${when}截止的申报通知${dept}${d.verifiedOnly ? '，只看已核对' : ''}`;
+}
+
+// 转发路径里的参数 → 页面的视图。天数只认 7/14/30；月份超出能翻到的范围就看本月；省份要在列表里，
+// 城市区县按省市区选择器同样的规则整理（不合法就只按省份）；部门只认三个选项
+function viewFromQuery(query, today) {
+  const q = {};
+  ['days', 'month', 'province', 'city', 'district', 'dept', 'verified'].forEach((key) => { q[key] = decode(query && query[key]).trim(); });
+  const [thisYear, thisMonth] = today.split('-').map(Number);
+  const view = { tab: 7, year: thisYear, month: thisMonth, province: '', city: '', district: '', dept: '', verifiedOnly: q.verified === '1' };
+  if (q.month) {
+    view.tab = MONTH;
+    const ym = /^(\d{4})-(\d{2})$/.exec(q.month);
+    const [year, month] = ym ? [Number(ym[1]), Number(ym[2])] : [0, 0];
+    const [first, last] = monthRange(today);
+    if (month >= 1 && month <= 12 && year * 12 + month >= first && year * 12 + month <= last) Object.assign(view, { year, month });
+  } else if ([7, 14, 30].includes(Number(q.days)) && /^\d+$/.test(q.days)) {
+    view.tab = Number(q.days);
+  }
+  if (q.province === '国家部委') view.province = q.province;
+  else if (PROVINCES.includes(q.province)) {
+    view.province = q.province;
+    if (q.city) {
+      try {
+        const area = regionSelection([q.province, q.city, q.district || ALL]);
+        if (area.province === q.province) Object.assign(view, { city: area.city, district: area.district });
+      } catch (e) { /* 城市区县不合法：只按省份 */ }
+    }
+  }
+  if (DEPTS.slice(1).includes(q.dept)) view.dept = q.dept;
+  return view;
+}
+
+// 从转发卡片打开时页面栈里只有这一页：左上角显示"首页"（点了回首页），不显示返回箭头
+const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
 
 // 一条截止怎么显示。机器摘录按手机日期已进了 7 天内、或者没带原句的，不写日期（dueView 再拦一次）
 function row(base, due) {
@@ -105,6 +160,8 @@ Page({
   data: {
     statusBarHeight: 20,
     navHeight: 44,
+    // 页面栈里只有这一页（从转发卡片打开）：左上角显示"首页"
+    firstPage: false,
     tabs: TABS,
     tab: 7,
     verifiedOnly: false,
@@ -139,11 +196,16 @@ Page({
     truncated: false,
   },
 
-  onLoad() {
+  onLoad(query) {
     const { statusBarHeight, navHeight } = getApp().globalData;
-    const [year, month] = todayISO().split('-').map(Number);
-    this.setData({ statusBarHeight, navHeight, year, month });
-    this.load(true);
+    // 从转发卡片打开时按卡片上的视图显示；平常打开是 7 天内、不筛选
+    const view = viewFromQuery(query, todayISO());
+    this.setData({ statusBarHeight, navHeight, firstPage: firstPage(), ...view, areaText: areaText(view), cityRegion: regionValue(view.province) });
+    if (view.tab === MONTH) this.loadMonth(); else this.load(true);
+  },
+  // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
+  onShareAppMessage() {
+    return { title: shareTitle(this.data), path: sharePath(this.data) };
   },
   onShow() {
     if (this.loadedDay && this.loadedDay !== todayISO()) this.reload();

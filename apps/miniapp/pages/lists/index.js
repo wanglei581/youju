@@ -9,6 +9,12 @@ const SCOPE_CACHE = 'youjuListScopeV1';
 
 const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
+// 转发（D-070）：查到了名单才在卡片标题和路径里带企业名称（名单上的都是企业和机构）；没查、正在查、
+// 没查到、查询出错（如输入像个人姓名被服务端拒绝）时只转发这一页，不带输入的内容
+const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
+// 从转发卡片打开时页面栈里只有这一页：左上角显示"首页"（点了回首页），不显示返回箭头
+const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
+
 Page({
   data: {
     // 列表行用的当天日期：onShow 时填上；先给空串，第一次渲染时不给组件传 null
@@ -16,6 +22,8 @@ Page({
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,
+    // 页面栈里只有这一页（从转发卡片打开）：左上角显示"首页"
+    firstPage: false,
     name: '',
     rulesOpen: false, // 查询说明默认收起
     queried: '',
@@ -56,11 +64,25 @@ Page({
     watchDay(this, (day) => this.setData({ today: day }));
   },
 
-  onLoad() {
+  onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
-    this.setData({ statusBarHeight, navHeight, menuWidth });
+    this.setData({ statusBarHeight, navHeight, menuWidth, firstPage: firstPage() });
     this.reload();
+    // 从带企业名称的转发卡片打开：按这个名称查一次，和转发人看到的是同一个查询
+    const name = decode(query && query.q).trim();
+    if (name.replace(/\s+/g, '').length >= 2) {
+      this.setData({ name });
+      this.query();
+    }
+  },
+
+  // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
+  onShareAppMessage() {
+    const { queried, result, looking, lookupError } = this.data;
+    const found = !looking && !lookupError && result && result.items && result.items.length > 0;
+    if (!found) return { title: '查企业上过哪些名单', path: '/pages/lists/index' };
+    return { title: `查名单：${queried}`, path: `/pages/lists/index?q=${encodeURIComponent(queried)}` };
   },
 
   reload() {

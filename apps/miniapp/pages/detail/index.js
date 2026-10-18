@@ -12,6 +12,24 @@ const { versionRows, upstreamLine } = require('../../utils/repost.js');
 // 正文默认显示的字数：在这个长度附近的换行处截断，读起来不断在半句
 const BODY_PREVIEW = 600;
 
+// 转发卡片的标题（D-070：卡片只显示通知标题和发文机关）："发文机关｜通知标题"，标题里已经写了发文机关的不重复。
+// 微信卡片只显示两行左右，太长的截到 60 字
+const SHARE_TITLE_MAX = 60;
+function shareTitle(doc) {
+  const title = String(doc.title || '').trim();
+  const issuer = String(doc.issuer || '').trim();
+  const text = issuer && !title.includes(issuer) ? `${issuer}｜${title}` : title;
+  return text.length > SHARE_TITLE_MAX ? `${text.slice(0, SHARE_TITLE_MAX - 1)}…` : text;
+}
+
+// 文件加载出来以后才能转发：没加载完、打不开（下架、编号不对、网络出错）时右上角的"转发"是灰的，
+// 不会转出一张打不开或没有标题的卡片。不开朋友圈
+function allowShare(on) {
+  if (typeof wx === 'undefined') return;
+  if (on && wx.showShareMenu) wx.showShareMenu({ menus: ['shareAppMessage'] });
+  if (!on && wx.hideShareMenu) wx.hideShareMenu({ menus: ['shareAppMessage', 'shareTimeline'] });
+}
+
 function previewOf(text) {
   if (text.length <= BODY_PREVIEW) return text;
   const cut = text.lastIndexOf('\n', BODY_PREVIEW);
@@ -65,7 +83,15 @@ Page({
     this.setData({ loginOpen: loginOpen(), remindOpen: remindOpen('deadline') });
     this.docId = query.id;
     this.lastShow = Date.now();
+    allowShare(false);
     this.load();
+  },
+
+  // 转发给好友和群（D-070）：接收人不用登录也能打开同一份文件；不带任何奖励
+  onShareAppMessage() {
+    const { doc } = this.data;
+    if (!doc) return { title: '文件详情', path: `/pages/detail/index?id=${encodeURIComponent(this.docId || '')}` };
+    return { title: shareTitle(doc), path: `/pages/detail/index?id=${encodeURIComponent(doc.id)}` };
   },
 
   // 网络不好加载失败时，页面上点"重试"再加载一次
@@ -111,13 +137,17 @@ Page({
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
           })),
         });
+        allowShare(true);
         this.syncReminded();
       })
-      .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
-        takenDown: err.status === 404 && err.message === '该文件已下架',
-        error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
-      }))
+      .catch((err) => {
+        allowShare(false);
+        this.setData({
+          doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
+          takenDown: err.status === 404 && err.message === '该文件已下架',
+          error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
+        });
+      })
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 

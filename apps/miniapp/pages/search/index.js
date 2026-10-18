@@ -10,8 +10,15 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
-  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl, describe,
 } = require('../../utils/conditions.js');
+
+// 转发（D-070）：路径带上当前的检索条件（和"关注"打开搜索同一套参数），接收人打开是同样的条件，结果按打开时的数据。
+// 微信没写转发路径的长度上限，参照它"链接打开小程序"的参数上限（1024 个字符）保守处理：条件多到超过时只带
+// 关键词、页签、发布时间和"只看未截止"，卡片标题按实际带上的条件写，接收人看到的条件和标题一致
+const SHARE_PATH_MAX = 1000;
+// 网址参数解码：坏的编码（如被截断的 %E4）不报错，原样当作文字
+const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -126,12 +133,12 @@ Page({
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
-    const kind = decodeURIComponent(query.kind || '');
-    const time = decodeURIComponent(query.time || '');
+    const kind = decode(query.kind);
+    const time = decode(query.time);
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '近 90 天', '今年', '不限'].includes(time)) picked.time = [time];
     [['regions', 'region'], ['cities', 'city'], ['districts', 'district'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
-      if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
+      if (query[param]) picked[group] = decode(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
     // 旧条件地区里的"国家部委"：结果相同时换成层级
@@ -145,7 +152,7 @@ Page({
     }
     this.setData({ picked });
     this.setData({
-      q: decodeURIComponent(query.q || ''),
+      q: decode(query.q),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
     this.refreshChips();
@@ -531,6 +538,15 @@ Page({
         },
       });
     });
+  },
+
+  // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
+  onShareAppMessage() {
+    const c = this.conditions();
+    const path = searchUrl(c);
+    if (path.length <= SHARE_PATH_MAX) return { title: `搜索结果：${this.followName()}`, path };
+    const core = { q: c.q.slice(0, 30), kind: c.kind, time: c.time, open: c.open };
+    return { title: `搜索结果：${describe(core)}`.slice(0, 60), path: searchUrl(core) };
   },
 
   // 进入或退出选择模式；退出时清空勾选
