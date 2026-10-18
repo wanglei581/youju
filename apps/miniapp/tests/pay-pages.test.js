@@ -154,6 +154,7 @@ function dataLogic(api) {
     './regions.js': require('../utils/regions.js'),
     './advisor.js': helpers,
     '../content/advisor-terms.js': advisorTerms,
+    './boost.js': require('../utils/boost.js'),
   });
 }
 

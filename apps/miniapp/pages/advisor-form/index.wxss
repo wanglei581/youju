@@ -2,3 +2,10 @@
 
 /* 超出免费量时的开通提示：浅底，不抢主操作 */
 .advisor-offer { margin-top: 16rpx; padding: 20rpx 24rpx; border-radius: 16rpx; background: var(--brand-tint); }
+
+/* 加量体验入口：平时浅灰底；免费次数用完或超过 50 家时换成品牌浅底并用主按钮（推荐） */
+.advisor-trial { margin-top: 16rpx; padding: 20rpx 24rpx; border-radius: 16rpx; background: var(--fill); }
+.advisor-trial-strong { background: var(--brand-tint); }
+
+/* 粘贴框固定高度、框内滚动（约 8 行）：一次贴几百家时，预览、提交按钮和提示不会被推到页面很下面 */
+.advisor-paste { height: 440rpx; }

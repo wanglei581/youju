@@ -30,7 +30,7 @@ function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Set, setTimeout: trackedTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
   }, { filename: file });

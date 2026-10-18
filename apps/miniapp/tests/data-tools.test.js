@@ -18,7 +18,7 @@ function load(file, deps, globals = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
     // 纯函数模块（支付文案和格式化）直接用真的，其他依赖必须由测试给出
-    require(key) { if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
@@ -26,7 +26,7 @@ function load(file, deps, globals = {}) {
 const caps = (data = true, ai = false) => ({ data_tools: { enabled: data, features: data ? ['compare', 'track'] : [], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: ai, features: ai ? ['interpret', 'clause'] : [] } });
 const status = (pass = false, used = 0) => ({ enabled: true, pass: { active: pass }, quota: { compare: { used, limit: 3, maxRows: pass ? 500 : 50 }, track: { used, limit: 3, maxRows: pass ? 500 : 50 } } });
 function dataLogic(api = {}, deps = {}, wx = {}) {
-  return load('utils/data-tools.js', { './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers, '../content/advisor-terms.js': terms, ...deps }, { wx });
+  return load('utils/data-tools.js', { './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers, '../content/advisor-terms.js': terms, './boost.js': require('../utils/boost.js'), ...deps }, { wx });
 }
 function form(options = {}) {
   const calls = []; const urls = []; let picked;
@@ -202,8 +202,9 @@ test('独立说明须主动勾选，并先确认通用协议，再记录 advisor
 test('新增表单和独立说明均注册，模板完整；工具入口覆盖首页、我的、客户页', () => {
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
-  assert.equal(app.pages.length, 23);
-  for (const page of ['advisor-form', 'advisor-terms', 'pass', 'orders']) {
+  // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）
+  assert.equal(app.pages.length, 24);
+  for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }
   for (const page of ['home', 'me', 'clients']) assert.match(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'), /工具中心/);
