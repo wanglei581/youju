@@ -1,4 +1,8 @@
-"""付款开通使用期：事务内一次发货；补单、退款及对账。
+"""付款开通批量工具使用期：事务内一次发货；补单、退款及对账。
+
+批量工具两档（D-070）：30 天、90 天，一次付清、到期不扣钱。逐笔记账：每笔订单一段使用期，
+每次赠送（续买多送、加量体验折算）一笔流水（pass_rewards）加一段使用期；退哪笔只退那笔，
+随那笔订单送的续买天数一起收回。
 
 未知平台不主动退款；任何原始用户内容或微信错误文字均不写入事件摘要。
 """
@@ -7,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import math
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
@@ -14,7 +19,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -23,6 +28,7 @@ from youju.config import Settings, get_settings
 from youju.models import (
     AdvisorTask,
     InvoiceRequest,
+    PassReward,
     PayEvent,
     PayOrder,
     PayReconciliation,
@@ -83,14 +89,86 @@ def should_reconcile(session: Session, settings, day: date) -> bool:
     return enabled(settings) or bool(_local_orders(session, day))
 
 
-PASS_DAYS = 30
-PASS_NAME = "客户工作台 30 天"
+PASS_NAME = "批量工具"
+DAY = timedelta(days=1)
+# 续买多送（D-070 ⑥）："到期前后 7 天内续买，每次多送 3 天"，资格按付款时间算
+RENEW_BONUS_DAYS = 3
+RENEW_WINDOW = timedelta(days=7)
+# 随订单发的赠送：流水的 ref_type（ref_id 是订单编号）。续买多送随订单退款一起收回；
+# 加量体验折算的是用户自己没用完的体验时间，退款不收回（D-070 ③"不浪费"）
+RENEWAL_REF = "order_renewal"
+TRIAL_REF = "order_trial"
+ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
+# 退款发起方：self 用户自助（7 天内没用过付费的量）；staff 负责人按规则发起（系统故障、停止服务）
+SELF_REFUND, STAFF_REFUND = "self", "staff"
+
+
+def pass_name(days: int) -> str:
+    return f"{PASS_NAME} {days} 天"
 
 
 def products(settings: Settings) -> dict[str, tuple[int, int]]:
-    if settings.xpay_product_pass and settings.xpay_price_pass is not None:
-        return {settings.xpay_product_pass: (settings.xpay_price_pass, PASS_DAYS)}
-    return {}
+    """在售的档位：商品编号 →（价格分，天数），按天数从短到长。没配价格的那一档不卖。"""
+    tiers = (
+        (settings.xpay_product_pass, settings.xpay_price_pass, 30),
+        (
+            getattr(settings, "xpay_product_pass_90", ""),
+            getattr(settings, "xpay_price_pass_90", None),
+            90,
+        ),
+    )
+    return {product: (price, days) for product, price, days in tiers if product and price}
+
+
+def renew_bonus_enabled(settings) -> bool:
+    return bool(getattr(settings, "renew_bonus_enabled", False))
+
+
+def renewal_due(
+    session: Session, user_id: int, paid_time: datetime, *, order_id: int | None = None
+) -> bool:
+    """这次付款算不算"到期前后 7 天内续买"（D-070 ⑥）。资格按付款时间算：
+
+    - 以前买过：有一笔付款早于这次、使用期没收回（没退款）的订单；加量体验、赠送的天数不算买过；
+    - 到期：这个用户现在所有没收回的使用期里最晚的结束时间（已经续上的、送的天数都算），
+      付款时间在它前后 7 天以内（含两端）。提前好几次续买的，只有落在最后到期前后 7 天的那次送。
+    调用方已锁用户行，这次订单自己的使用期还没建（order_id 只是保险，排除它）。"""
+    others = (
+        or_(WorkbenchPass.order_id.is_(None), WorkbenchPass.order_id != order_id)
+        if order_id is not None
+        else true()
+    )
+    bought = session.scalar(
+        select(WorkbenchPass.id)
+        .join(PayOrder, PayOrder.id == WorkbenchPass.order_id)
+        .where(
+            WorkbenchPass.user_id == user_id,
+            WorkbenchPass.revoked_at.is_(None),
+            PayOrder.paid_time < paid_time,
+            others,
+        )
+        .limit(1)
+    )
+    if bought is None:
+        return False
+    expiry = session.scalar(
+        select(func.max(WorkbenchPass.ends_at)).where(
+            WorkbenchPass.user_id == user_id, WorkbenchPass.revoked_at.is_(None), others
+        )
+    )
+    return expiry is not None and expiry - RENEW_WINDOW <= paid_time <= expiry + RENEW_WINDOW
+
+
+def renew_offer(session: Session, settings, user: User | None, stamp: datetime) -> dict | None:
+    """付款页和价格同一屏写的续买规则（开关关着时为 None，页面不提）；
+    eligibleNow：现在付款符合"到期前后 7 天内续买"（实际按付款时间再算一次）。"""
+    if not renew_bonus_enabled(settings):
+        return None
+    return {
+        "days": RENEW_BONUS_DAYS,
+        "windowDays": RENEW_WINDOW.days,
+        "eligibleNow": user is not None and renewal_due(session, user.id, stamp),
+    }
 
 
 def selling_to(settings, openid: str | None) -> bool:
@@ -104,13 +182,22 @@ def selling_to(settings, openid: str | None) -> bool:
     return bool(openid) and openid in testers
 
 
+def invoice_type(settings) -> str:
+    """购买页写的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE）；没填或还是占位时为空串。"""
+    value = getattr(settings, "pay_invoice_type", "").strip()
+    return "" if not value or "【" in value or "待" in value else value
+
+
 def orderable(settings) -> bool:
-    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了律师定稿的协议版本
-    （YOUJU_PAY_TERMS_VERSION）。沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、
-    购买入口都按这一条判断，不出现看得到价格却付不了款的入口。"""
+    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了定稿的协议版本
+    （YOUJU_PAY_TERMS_VERSION）和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
+    沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、购买入口都按这一条判断，
+    不出现看得到价格却付不了款的入口，也不能绕过购买页直接下单。"""
     if not getattr(settings, "xpay_offer_id", "") or not products(settings):
         return False
-    return settings.xpay_env == 1 or bool(getattr(settings, "pay_terms_version", ""))
+    return settings.xpay_env == 1 or bool(
+        getattr(settings, "pay_terms_version", "") and invoice_type(settings)
+    )
 
 
 def entry(session: Session, settings, user: User | None) -> dict:
@@ -209,6 +296,9 @@ def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
 
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
+    """自助全额退款的条件（D-070 统一退款口径）：安卓、鸿蒙、电脑版微信付款（微信的普通支付），
+    付款 7 天内（含恰好 7 天），这一笔的使用期没用过付费的量（没超出每月免费次数、
+    没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，每笔分开算。"""
     if order.platform == "ios":
         return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
@@ -227,8 +317,62 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
     if ticket is None or ticket.revoked_at is not None:
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
-        return "已提交过超过 50 家的名单或已超出每月免费次数"
+        return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
     return None
+
+
+def remaining_days(
+    order: PayOrder, ticket: WorkbenchPass | None, stamp: datetime, extra_days: int = 0
+) -> int:
+    """这笔订单没提供的天数（系统故障、停止服务按剩余天数退）：使用期剩下的时间，不足一天按一天，
+    还没开始的（提前续买排在后面的）按整笔天数，已收回的为 0；extra_days 是此前因系统故障不能用、
+    又没有延长补上的天数（负责人核实后填，付费服务协议 v2 第二节）。最多整笔天数。
+    送的天数不算钱，不在这里。"""
+    left = math.ceil(unused_pass_time(ticket, stamp) / DAY)
+    return min(order.days, left + max(0, extra_days))
+
+
+def remaining_fee(
+    order: PayOrder, ticket: WorkbenchPass | None, stamp: datetime, extra_days: int = 0
+) -> int:
+    """按没提供的天数退的金额（分）：订单金额 × 天数 ÷ 这一档的天数，不足一分按一分。"""
+    return -(-order.price * remaining_days(order, ticket, stamp, extra_days) // order.days)
+
+
+def staff_refund_problem(
+    session: Session, order: PayOrder, *, invoice_reversed: bool = False
+) -> str | None:
+    """负责人按规则发起退款（系统故障、停止服务，youju pay-refund）之前的检查；None 表示可以退。
+    调用方已按 用户 → 订单 的顺序加锁。"""
+    if order.platform == "ios":
+        return "苹果手机付款的订单只能由用户在 App Store 申请退款，是否退款由苹果公司决定"
+    if order.platform != "android":
+        return "支付平台没有确认，不能主动退款，请核对后人工处理"
+    if order.status != "completed" or order.refund_status is not None:
+        return f"订单当前状态（{STATUS_LABELS[order.status]}）不能退款"
+    if order.user_id is None:
+        return "用户已注销，退款需要人工核对"
+    invoice = order_invoice(session, order, lock=True)
+    if invoice is not None and invoice.status == "issued" and not invoice_reversed:
+        return "这笔已开过发票：先按退款金额开红字发票，再加 --invoice-reversed 重新运行"
+    return None
+
+
+def begin_refund(
+    session: Session,
+    order: PayOrder,
+    stamp: datetime,
+    *,
+    fee: int,
+    source: str,
+    note: str | None = None,
+) -> None:
+    """受理一笔退款：记下退多少、谁发起，收回这一笔的使用期和随它送的续买天数，作废没开的发票。
+    之后由 start_refund 向微信发起（同一个退款单号，网络失败按原单号重试）。
+    调用方已锁 用户 → 订单。"""
+    order.refund_fee, order.refund_source, order.refund_note = fee, source, note
+    revoke_pass(session, order, stamp)
+    void_invoice(session, order, stamp)
 
 
 def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRequest | None:
@@ -261,9 +405,100 @@ def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
 
 
 def revoke_pass(session: Session, order: PayOrder, stamp: datetime) -> None:
+    """退款（自助、人工、苹果、平台）：收回这一笔的使用期，随它送的续买天数一起收回；
+    加量体验折算的天数是用户自己的体验时间，不收回（跟着往前挪）。调用方已锁 用户 → 订单。"""
     ticket = order_pass(session, order, lock=True)
     if ticket is not None:
         revoke_workbench_pass(session, ticket, stamp)
+    from youju import rewards
+
+    for gift, _ in order_gifts(session, order, lock=True):
+        if gift.ref_type == RENEWAL_REF and gift.user_id is not None:
+            rewards.revoke(session, gift.id, "随订单退款", stamp)
+
+
+def order_gifts(
+    session: Session, order: PayOrder, *, lock=False
+) -> list[tuple[PassReward, WorkbenchPass | None]]:
+    """随这笔订单送的天数（续买多送、加量体验折算）：每次一笔流水和对应的一段使用期。"""
+    stmt = (
+        select(PassReward)
+        .where(PassReward.ref_type.in_(ORDER_GIFT_REFS), PassReward.ref_id == order.id)
+        .order_by(PassReward.id)
+    )
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    gifts = list(session.scalars(stmt))
+    if not gifts:
+        return []
+    tickets = select(WorkbenchPass).where(WorkbenchPass.reward_id.in_([g.id for g in gifts]))
+    if lock:
+        tickets = tickets.with_for_update().execution_options(populate_existing=True)
+    by_reward = {t.reward_id: t for t in session.scalars(tickets)}
+    return [(gift, by_reward.get(gift.id)) for gift in gifts]
+
+
+def _append_gift(
+    session: Session,
+    order: PayOrder,
+    kind: str,
+    ref_type: str,
+    days: int,
+    stamp: datetime,
+    note: str | None = None,
+) -> PassReward:
+    """记一笔赠送，并接在这个用户所有没收回的使用期最后面（这时就是刚开通的这一笔后面）。"""
+    gift = PassReward(
+        user_id=order.user_id,
+        kind=kind,
+        requested_days=days,
+        granted_days=days,
+        ref_type=ref_type,
+        ref_id=order.id,
+        granted_at=stamp,
+        note=note,
+    )
+    session.add(gift)
+    session.flush()
+    latest = session.scalar(
+        select(func.max(WorkbenchPass.ends_at)).where(
+            WorkbenchPass.user_id == order.user_id, WorkbenchPass.revoked_at.is_(None)
+        )
+    )
+    starts = max(stamp, latest) if latest else stamp
+    session.add(
+        WorkbenchPass(
+            user_id=order.user_id,
+            reward_id=gift.id,
+            starts_at=starts,
+            ends_at=starts + timedelta(days=days),
+        )
+    )
+    session.flush()
+    return gift
+
+
+def _convert_trial(session: Session, order: PayOrder, stamp: datetime) -> None:
+    """体验期内买了批量工具（D-070 ③）：使用期立即生效，体验就此结束；
+    没用完的体验时间折成天数（不足一天按一天）接在这一笔后面，不浪费。
+    看的是开通（确认）时体验还剩多少：使用期也从确认时起算，确认之前用户一直在用体验，不算浪费。
+    付款后、确认前才开始的体验同样处理——使用期和体验不同时进行。"""
+    from youju import boost
+
+    trial = boost.trial_of(session, order.user_id)
+    if not boost.is_active(trial, stamp):
+        return
+    left = trial.ends_at - stamp
+    days = math.ceil(left / DAY)
+    hours = math.ceil(left / timedelta(hours=1))
+    note = f"加量体验还剩约 {hours} 小时（原定 {_beijing(trial.ends_at)} 结束），折成 {days} 天"
+    # 体验到现在为止：之后提交按使用期算，不再记体验次数（结束时间要晚于开始时间，表上有约束）
+    trial.ends_at = max(stamp, trial.started_at + timedelta(microseconds=1))
+    _append_gift(session, order, "trial", TRIAL_REF, days, stamp, note)
+
+
+def _beijing(value: datetime) -> str:
+    return advisor_tasks.business_now(value).strftime("%m-%d %H:%M")
 
 
 def unused_pass_time(ticket: WorkbenchPass | None, stamp: datetime) -> timedelta:
@@ -455,30 +690,46 @@ def accept_payment(
         .limit(1)
         .with_for_update()
     )
-    starts = max(paid_time, latest) if latest else paid_time
+    # 最早从确认开通时起算：推送晚到、补单兜底时，确认之前用不了付费的量，
+    # 不能让这段时间白白算进使用期（D-070 开卖前 Codex 审阅；正常情况下确认就在付款那一刻）。
+    # 体验折算也就只需看确认时还剩多少
+    starts = max(paid_time, stamp, latest) if latest else max(paid_time, stamp)
+    # 续买资格要在这一笔的使用期建好之前判断（"到期"是以前那些使用期的到期）
+    renewal = order.bonus_days > 0 and renewal_due(
+        session, order.user_id, paid_time, order_id=order.id
+    )
     session.add(
         WorkbenchPass(
             user_id=order.user_id,
             order_id=order.id,
             starts_at=starts,
-            ends_at=starts + timedelta(days=PASS_DAYS),
+            ends_at=starts + timedelta(days=order.days),
         )
     )
     session.flush()
+    # 每次赠送单独记一笔，接在这一笔后面：先续买多送，再体验折算
+    if renewal:
+        _append_gift(session, order, "renewal", RENEWAL_REF, order.bonus_days, stamp)
+    _convert_trial(session, order, stamp)
     return True
 
 
 def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime) -> bool:
     if data.get("status") not in (5, 8):
         return False
-    if data.get("left_fee") != 0:
+    left = data.get("left_fee")
+    # 按剩余天数退的（refund_fee 小于订单金额），退完还剩"订单金额 − 退款金额"；
+    # 全额退的（自助、苹果、平台）剩 0。都不是就转人工核对
+    planned = order.price - order.refund_fee if order.refund_fee is not None else 0
+    if type(left) is not int or left not in (0, planned):
         order.status, order.refund_status, order.error = (
             "manual",
             "partial",
-            "订单部分退款，需人工核对",
+            "订单部分退款，退款金额和预期不符，需人工核对",
         )
         return True
     order.status, order.refund_status, order.error = "refunded", "completed", None
+    order.refund_fee = order.price - left
     order.updated_at = stamp
     revoke_pass(session, order, stamp)
     void_invoice(session, order, stamp)
@@ -542,15 +793,20 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
             order.status, order.error = "manual", "用户已注销，退款需人工处理"
             session.commit()
             return
+        fee = order.refund_fee if order.refund_fee is not None else order.price
+        staff = order.refund_source == STAFF_REFUND
         request = {
             "openid": user.openid,
             "order_id": order.out_trade_no,
             "refund_order_id": order.refund_order_id,
             "left_fee": data["left_fee"],
-            "refund_fee": order.price,
+            "refund_fee": fee,
             "biz_meta": order.out_trade_no,
-            "refund_reason": "1",
-            "req_from": "3",
+            # 官方 refund_order 的枚举（10/18 核对原文）：退款原因 1 产品问题、
+            # 3 意愿问题（用户主动退款）；来源 1 人工客服、2 用户自己发起。
+            # 负责人按规则退的是系统故障或停止服务
+            "refund_reason": "1" if staff else "3",
+            "req_from": "1" if staff else "2",
             "env": order.env,
         }
         session.commit()
@@ -919,9 +1175,11 @@ def anonymize(session: Session, user: User) -> None:
     )
     pseudonym = log_uid(user.openid, session.get_bind())
     for order in orders:
-        revoke_pass(session, order, datetime.now(UTC))
-        ticket = order_pass(session, order)
-        if ticket:
+        # 只收回订单自己的使用期：送的天数（续买多送、体验折算）由 rewards.anonymize 统一作废，
+        # 那不是退款，流水备注不写"随订单退款"
+        ticket = order_pass(session, order, lock=True)
+        if ticket is not None:
+            revoke_workbench_pass(session, ticket, datetime.now(UTC))
             ticket.user_id = None
         order.user_id, order.pseudonym = None, pseudonym
         if order.status == "pending":
