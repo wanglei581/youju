@@ -77,6 +77,12 @@
 .entries--tools { grid-template-columns: repeat(4, 1fr); }
 .entries--tools .entry-sub { font-size: 22rpx; }
 
+/* 申报季加量（D-070 ⑤）：和"你关注的条件本周有新文件"同样的浅蓝条，不用红色、不加红点 */
+.season { margin: 20rpx 24rpx 0; padding: 20rpx 28rpx; display: flex; align-items: center; gap: 20rpx; background: var(--brand-tint); border-radius: 24rpx; }
+.season-body { flex: 1; min-width: 0; }
+.season-title { font-size: 28rpx; font-weight: 600; line-height: 1.5; }
+.season-text { margin-top: 4rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
+
 /* 新手引导"三步上手"（D-070 ④）：和其他卡片同样的白底圆角，序号圆点同"文件"页的导出步骤 */
 .guide-head { min-height: 88rpx; display: flex; align-items: center; justify-content: space-between; }
 .guide-title { font-size: 30rpx; font-weight: 600; }

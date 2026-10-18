@@ -3,6 +3,7 @@ const { todayISO, clockText, dueView, monthDay, weekday, reviewStaleNote } = req
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
+const boost = require('../../utils/boost.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -74,6 +75,8 @@ Page({
     // 新手引导"三步上手"：没点过"不再显示"时显示
     guide: false,
     guideSteps: [],
+    // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页同一句；没有这项活动或取不到时为空，不显示
+    seasonText: '',
   },
 
   onLoad() {
@@ -101,6 +104,8 @@ Page({
   // 取数据：先显示本机存的上次数据；同时向常驻的 admin 要首屏快照（不等接口服务冷启动），
   // 再取接口服务的实时数据。实时的回来了就以它为准；快照只在实时的还没回来时显示。
   reload() {
+    // 申报季一行自己取、自己共用（见 loadSeason）：首页数据还在取（如冷启动）时回到首页也照常刷新它
+    this.loadSeason();
     if (this.refreshing) return;
     this.refreshing = true;
     const seq = this.homeSeq = (this.homeSeq || 0) + 1;
@@ -137,6 +142,16 @@ Page({
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
 
+  // 申报季加量一行：和首页数据分开取，首页不等它；取不到、批量工具没开就不显示，不报错。
+  // 协议没定稿的版本没有工具中心入口（批量工具要先同意协议），不取也不显示。refresh：停在首页跨过 0 点时重新取
+  // （"将于…开始"变成进行中，过了结束日不再显示）
+  loadSeason(refresh) {
+    if (!this.data.loginOpen || !api.advisorSeason) return;
+    const seq = this.seasonSeq = (this.seasonSeq || 0) + 1;
+    const show = (season) => { if (seq === this.seasonSeq) this.setData({ seasonText: boost.seasonLine(season) }); };
+    api.advisorSeason({ refresh: Boolean(refresh) }).then(show, () => show(null));
+  },
+
   show({ stats, items, dueSoon, dueSoonUnverifiedTotal }, cachedText) {
     this.dueSoon = dueSoon || [];
     this.setData({
@@ -165,7 +180,10 @@ Page({
       this.lastShow = stamp;
     }
     this.setData({ today: todayISO() });
-    watchDay(this, (day) => this.setData({ today: day, soon: soonRows(this.dueSoon), reviewNote: reviewNoteOf(this.data.stats) }));
+    watchDay(this, (day) => {
+      this.setData({ today: day, soon: soonRows(this.dueSoon), reviewNote: reviewNoteOf(this.data.stats) });
+      this.loadSeason(true);
+    });
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
