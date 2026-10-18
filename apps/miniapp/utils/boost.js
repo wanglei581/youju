@@ -1,6 +1,6 @@
 // 加量体验（D-070 ③）和申报季加量（⑤）的页面文字。规则和数字都以服务端 /advisor/status 为准（后端 boost.py），
 // 这里只拼文字；字段缺了或格式不对就当没有这项活动，不猜。
-// 体验规则：每个微信一次；点"开始体验"起连续 72 小时，不能暂停；每次 500 家以内，名单比对和通知表合计每天 10 次
+// 体验规则：每个账号一次（注销即删，不留凭据）；点"开始体验"起连续 72 小时，不能暂停；每次 500 家以内，名单比对和通知表合计每天 10 次
 // （北京时间 0 点重新计数）；不占每月免费次数；结束自动回到免费版。开卖之前体验相关的文字不提购买（D-070）。
 const format = require('./format.js');
 
@@ -73,7 +73,7 @@ function trialEndedText(trial, now) {
 
 // 批量工具页上一直在的入口（有资格时）：写清楚是什么、多久、一次性。页面上只有一项工具，"两项"要写出是哪两项
 function trialPitch(view) {
-  return `加量体验（免费，每个微信一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，名单比对和通知表合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
+  return `加量体验（免费，每个账号一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，名单比对和通知表合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
 }
 
 function nextDay(iso) {
@@ -100,7 +100,7 @@ function seasonLine(season) {
 }
 
 // 确认页（点"开始"之前）要写全的每一项（D-070）：几天、不能暂停、每次多少家、每天几次、不用填付款信息、
-// 结束后回到免费版、本月还剩几次免费、结果结束后照样能看能导出；再加上"每个微信一次"和预计结束时间
+// 结束后回到免费版、本月还剩几次免费、结果结束后照样能看能导出；再加上"每个账号一次"和预计结束时间
 function confirmItems(status, now) {
   const view = trialView(status && status.trial, now);
   if (!view.trialAvailable) return [];
@@ -132,14 +132,14 @@ function confirmItems(status, now) {
     { label: '不占免费次数', text: free },
     { label: '不用付款', text: `不需要填写任何付款信息。体验结束后自动回到免费版：每次 ${normal} 家以内，每月免费次数照常。` },
     { label: '结果', text: '体验期间生成的结果保存 30 天，体验结束后照样能看、能导出。' },
-    { label: '只能一次', text: '跟着微信号走：每个微信号只能体验一次，用同一个微信号的同事共用这一次。建议客户名单准备好再开始。' },
+    { label: '只能一次', text: '每个账号只能体验一次：账号跟着微信号走，用同一个微信号的同事共用这一次。建议客户名单准备好再开始。' },
   ];
 }
 
 // 不能开始时给用户看的原因
 function unavailableText(view) {
   if (view.trialActive) return '';
-  if (view.trialReason === 'used') return '加量体验已经用过，每个微信只能体验一次。';
+  if (view.trialReason === 'used') return '加量体验已经用过，每个账号只能体验一次。';
   if (view.trialReason === 'pass') return '使用期内不限次数，不需要加量体验；体验留到以后再用。';
   return '加量体验暂未开放。';
 }
