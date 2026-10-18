@@ -27,6 +27,8 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
 // 收费第一期（D-058，10/16 创始人决定接进完整版）：购买页、订单页随包，入口只在服务端在售或有订单时出现
 const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
+// 公众号"本期清单"页（公众号方案 PR #287 第 3 件事，10/18 创始人同意）：从公众号周报和"我的 → 本周周报"进入
+const GZH_PAGES = ['digest'].map(p => `pages/${p}/index`);
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -53,11 +55,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('local', '没有本机开发后端', !config.devBaseUrl, '清空 devBaseUrl');
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, profile === 'complete-candidate' ? DATA_PAGES.concat(PAY_PAGES) : []);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, profile === 'complete-candidate' ? DATA_PAGES.concat(PAY_PAGES, GZH_PAGES) : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整候选24页（含加量体验确认页、购买页、订单页）；奖励及子包不属于本次范围');
+  '核对历史首发14页、AI版19页或完整候选25页（含加量体验确认页、购买页、订单页、本期清单页）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
   add('tabs', '底栏为首页、关注、文件、我的', JSON.stringify(tabs) === JSON.stringify(FIRST_PAGES.slice(0, 4)), '按 D-067 使用四栏');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
