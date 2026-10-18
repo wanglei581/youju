@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from youju import advisor_tasks as service
 from youju.api import advisor as advisor_api
@@ -31,7 +31,7 @@ def advisor_settings(monkeypatch):
         cloud_env="test-env",
         dev_openid="advisor-user",
         trust_wx_headers=False,
-        agreement_version="2026-09",
+        agreement_version="2026-11",
         retain_events_days=90,
         retain_feedback_days=180,
         retain_used_subscriptions_days=30,
@@ -56,7 +56,7 @@ def client(session_factory, advisor_settings):
 
 
 def agree(client):
-    response = client.post("/api/v1/me/agreement", json={"version": "2026-09"})
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-11"})
     assert response.status_code == 200
 
 
@@ -116,7 +116,7 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
     )
     agree_advisor(client)
     profile = client.get("/api/v1/me").json()
-    assert profile["agreed"]["version"] == "2026-09"
+    assert profile["agreed"]["version"] == "2026-11"
     assert profile["advisorAgreed"]["version"] == service.ADVISOR_AGREEMENT_VERSION
     assert client.get("/api/v1/me/data").json()["user"]["advisorAgreed"] == profile["advisorAgreed"]
     advisor_settings.advisor_enabled = False
@@ -707,8 +707,8 @@ def test_cleanup_deletes_finished_data_tasks_after_their_files(
     session, advisor_settings, monkeypatch
 ):
     """数据工具的任务记录和结果文件一起保存 30 天（隐私保护指引一·13）：文件删成以后整行删除；
-    批量工具关着时一直排队、卡在处理中的，过期后先退回占用的次数再删；文件这次没删成的、
-    刚开始处理的、没到期的留着。"""
+    批量工具关着时一直排队、处理中超过一天没人管的，过期后先退回占用的次数再删；文件这次没删成的、
+    处理中不到一天的、没到期的留着。"""
     user = User(openid="data-retention-user")
     session.add(user)
     session.commit()
@@ -750,6 +750,15 @@ def test_cleanup_deletes_finished_data_tasks_after_their_files(
             started_at=stamp - timedelta(minutes=1),
             **old,
         ),
+        # 超过 STALE_RUNNING 但不到一天：换版本时旧实例可能还在跑，不动（worker 会放回队列）
+        "running_hours": task(
+            session,
+            user.id,
+            idempotency_key="d-running-hours",
+            status="running",
+            started_at=stamp - timedelta(hours=2),
+            **old,
+        ),
         "fresh": task(
             session,
             user.id,
@@ -777,6 +786,7 @@ def test_cleanup_deletes_finished_data_tasks_after_their_files(
         assert session.get(AdvisorTask, ids[name]) is None, name
     assert session.get(AdvisorTask, ids["stuck_file"]).result_file_id == "cloud://stuck"
     assert session.get(AdvisorTask, ids["running_now"]).status == "running"
+    assert session.get(AdvisorTask, ids["running_hours"]).status == "running"
     assert session.get(AdvisorTask, ids["fresh"]) is not None
     # 排队和卡住的两个没处理过：按原提交日退回次数
     used = session.scalar(
@@ -926,6 +936,82 @@ def test_uploaded_file_is_deleted_or_queued_when_task_times_out(
         is False
     )
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://timeout"
+
+
+def test_task_removed_by_cleanup_mid_upload_leaves_no_file_behind(
+    session, session_factory, advisor_settings, monkeypatch
+):
+    """清理（和处理中注销一样）在 worker 上传结果时删掉了任务行：worker 最后提交失败，
+    刚上传的结果文件随即删除（删不掉就记进待删表），不会留下没人管的文件（Codex 第四轮）。"""
+    user = User(openid="midway-user", agreement_version="2026-11", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    stamp = NOW.astimezone(UTC)
+    row = task(
+        session,
+        user.id,
+        idempotency_key="midway",
+        status="running",
+        created_at=stamp - timedelta(days=31),
+        expires_at=stamp - timedelta(days=1),
+        started_at=stamp - timedelta(days=2),
+    )
+    task_id = row.id
+    monkeypatch.setattr(
+        service, "_run_engine", lambda session, task, output: output.write_bytes(b"x") or 1
+    )
+
+    def upload_while_cleanup_runs(*args, **kwargs):
+        with session_factory() as other:
+            report = service.cleanup_advisor(
+                other, settings=advisor_settings, stamp=stamp, client=SimpleNamespace()
+            )
+        assert report["advisor_data_tasks"] == 1
+        return "cloud://midway"
+
+    monkeypatch.setattr(service, "upload", upload_while_cleanup_runs)
+    deleted = []
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda client, env, ids: deleted.extend(ids) or list(ids)
+    )
+    result = service.process_task(
+        session, row, settings=advisor_settings, client=SimpleNamespace(), stamp=stamp
+    )
+    assert result is False and deleted == ["cloud://midway"]
+    with session_factory() as fresh:
+        assert fresh.get(AdvisorTask, task_id) is None
+        assert fresh.scalar(select(AdvisorFileTrash.file_id)) is None
+
+
+def test_worker_round_survives_task_deleted_mid_processing(
+    session, session_factory, advisor_settings, monkeypatch
+):
+    """处理途中用户注销（或清理）删掉了任务：这一轮照常结束、记为失败，刚上传的文件删掉，
+    不因为再读已删除的任务而报异常（按生产的计时方式跑，覆盖 run_one 收尾那一段）。"""
+    user = User(openid="worker-midway", agreement_version="2026-11", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    task_id = task(session, user.id, idempotency_key="worker-midway").id
+    monkeypatch.setattr(
+        service, "_run_engine", lambda session, task, output: output.write_bytes(b"x") or 1
+    )
+
+    def upload_then_delete(*args, **kwargs):
+        with session_factory() as other:
+            other.execute(delete(AdvisorTask).where(AdvisorTask.id == task_id))
+            other.commit()
+        return "cloud://worker-midway"
+
+    monkeypatch.setattr(service, "upload", upload_then_delete)
+    deleted = []
+    monkeypatch.setattr(
+        service, "delete_result_files", lambda client, env, ids: deleted.extend(ids) or list(ids)
+    )
+    report = service.run_advisor_tasks(session, settings=advisor_settings, max_tasks=1)
+    assert report["processed"] == 1 and report["failed"] == 1
+    assert deleted == ["cloud://worker-midway"]
+    with session_factory() as fresh:
+        assert fresh.get(AdvisorTask, task_id) is None
 
 
 def relocate_sheet(source, transform=lambda data: data):

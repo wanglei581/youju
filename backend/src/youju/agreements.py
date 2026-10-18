@@ -4,10 +4,11 @@ import re
 
 VERSION_PREFIX = re.compile(r"\d{4}-\d{2}")
 
-# 加量体验（隐私保护指引一·15，含注销后的核对编号）写进指引的那一版。协议升版过渡期
-# （YOUJU_AGREEMENT_MIN_VERSION 填旧版本）旧的同意照旧能用关注、纠错，但没告知过体验记录，
-# 所以开始体验时另外核对；固定写在这里，回退配置也不放宽（同 AI 的 AI_AGREEMENT_VERSION）
-TRIAL_AGREEMENT_VERSION = "2026-11"
+# 批量工具的任务记录和次数（隐私保护指引一·13）、加量体验（一·15，含注销后的核对编号）
+# 写进指引的那一版。协议升版过渡期（YOUJU_AGREEMENT_MIN_VERSION 填旧版本）旧的同意
+# 照旧能用关注、纠错，但没告知过这些，所以同意工具使用说明、提交名单、开始加量体验时另外核对；
+# 固定写在这里，回退配置也不放宽（同 AI 的 AI_AGREEMENT_VERSION）
+TOOLS_AGREEMENT_VERSION = "2026-11"
 
 
 def agreement_at_least(version: str | None, needed: str) -> bool:

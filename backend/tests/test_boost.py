@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from youju import advisor_tasks, boost, notify, rewards
-from youju.agreements import TRIAL_AGREEMENT_VERSION
+from youju.agreements import TOOLS_AGREEMENT_VERSION
 from youju.api import advisor, me, pay, v1
 from youju.api import app as app_module
 from youju.config import Settings
@@ -175,7 +175,7 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
     """协议升版过渡期（最早版本填 2026-10）：只同意过 2026-10 的照旧算登录，但那一版没写体验记录和
     注销后的去标识编号，开始体验要先重新同意（403 后小程序清掉本机同意、请他重新同意）。"""
     client = ctx.client
-    assert TRIAL_AGREEMENT_VERSION <= AGREEMENT
+    assert TOOLS_AGREEMENT_VERSION <= AGREEMENT
     ctx.settings.agreement_min_version = "2026-10"
     identity = headers("old-consent")
     old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
@@ -190,8 +190,8 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
 
 
 def test_old_agreement_cannot_accept_the_new_tool_terms(ctx):
-    """工具使用说明和当前版本的隐私保护指引一起读（任务记录和次数写在指引一·13）：过渡期只同意过旧版的，
-    先重新同意当前版本，才能同意工具使用说明（提交名单要求同意过这一版说明，所以挡在这里就够）。"""
+    """批量工具的任务记录和次数从 2026-11 版指引起才写明（一·13）：过渡期只同意过旧版的，
+    先重新同意新版指引，才能同意工具使用说明和提交名单。"""
     client = ctx.client
     ctx.settings.agreement_min_version = "2026-10"
     identity = headers("old-consent-tools")
@@ -208,6 +208,31 @@ def test_old_agreement_cannot_accept_the_new_tool_terms(ctx):
         == 200
     )
     assert client.post("/api/v1/me/agreement", headers=identity, json=terms).status_code == 200
+    assert submit(client, identity).status_code == 202
+
+
+def test_old_agreement_with_tool_terms_still_cannot_preview_or_submit(ctx, session):
+    """过渡期（当前 2026-11、最早 2026-10）只同意过 2026-10 的，即使记着同意过新版工具使用说明
+    （比如回退配置时留下的），预览、提交也拦下（付费下单走同一个 advisor._upload_consent）；
+    经接口重新同意新版指引后放行。"""
+    client = ctx.client
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent-preview")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    user = session.scalar(select(User).where(User.openid == "old-consent-preview"))
+    user.advisor_agreement_version = advisor_tasks.ADVISOR_AGREEMENT_VERSION
+    user.advisor_agreement_at = NOW
+    session.commit()
+    body = {"kind": "compare", "rows": ["合成企业"]}
+    preview = client.post("/api/v1/advisor/preview", headers=identity, json=body)
+    assert preview.status_code == 403 and preview.json()["detail"] == me.OUTDATED
+    blocked = submit(client, identity)
+    assert blocked.status_code == 403 and blocked.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
+    assert new.status_code == 200
+    assert client.post("/api/v1/advisor/preview", headers=identity, json=body).status_code == 200
     assert submit(client, identity).status_code == 202
 
 

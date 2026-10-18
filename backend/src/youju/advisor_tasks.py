@@ -52,6 +52,8 @@ MAX_UPLOAD_BYTES = 60 * 1024
 ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
+# 处理中超过这么久的一定已经没人在跑（清理过期任务时才用，见 cleanup_advisor）
+ABANDONED = timedelta(days=1)
 INPUT_RETENTION = timedelta(days=7)
 FILE_RETENTION = timedelta(days=30)
 REFUSAL_CACHE = timedelta(days=1)
@@ -684,6 +686,9 @@ def process_task(
     client = client or httpx.Client(trust_env=False)
     started = monotonic_clock.monotonic()
     uploaded_file_id: str | None = None
+    # 处理途中任务行可能被删（用户注销、过期清理）：rollback 之后再读 task.id
+    # 会报 ObjectDeletedError，先记下编号，失败分支用它重新取
+    task_id = task.id
     try:
         cloud_env = getattr(settings, "cloud_env", None)
         if not cloud_env:
@@ -758,7 +763,7 @@ def process_task(
                 settings=settings,
                 client=client,
             )
-        task = session.get(AdvisorTask, task.id)
+        task = session.get(AdvisorTask, task_id)
         if task is None:
             session.commit()
             return False
@@ -838,6 +843,8 @@ def run_advisor_tasks(
             return task
 
     def run_one(work_session: Session, task: AdvisorTask) -> None:
+        # 任务行可能在处理途中被删（注销、过期清理）：之后只按编号重新取，不读 task 的属性
+        task_id = task.id
         try:
             done = process_task(
                 work_session,
@@ -849,16 +856,17 @@ def run_advisor_tasks(
             )
         except Exception:
             work_session.rollback()
-            log.exception("顾问任务 #%s 处理异常", task.id)
-            failed_task = work_session.get(AdvisorTask, task.id)
+            log.exception("顾问任务 #%s 处理异常", task_id)
+            failed_task = work_session.get(AdvisorTask, task_id)
             if failed_task is not None:
                 failed_task.status, failed_task.finished_at = "failed", stamp
                 failed_task.error = "系统繁忙，请稍后重试"
                 release_usage(work_session, failed_task)
                 work_session.commit()
             done = False
-        if live_timing and task.status in ("done", "failed"):
-            task.finished_at = datetime.now(UTC)
+        current = work_session.get(AdvisorTask, task_id) if live_timing else None
+        if current is not None and current.status in ("done", "failed"):
+            current.finished_at = datetime.now(UTC)
             work_session.commit()
         with claim_lock:
             result["done" if done else "failed"] += 1
@@ -1063,8 +1071,9 @@ def cleanup_advisor(
         AdvisorTask.result_file_id.is_(None),
     )
     # 批量工具关着时排队的不会再处理、处理中的也不会被放回队列：过了保存期先退回占用的次数
-    # （按原提交日退，账本已清掉的不退），标成已取消，和已结束的一起删。处理中的只动已经卡住的
-    # （开始超过 STALE_RUNNING），正被 worker 锁住的跳过，免得删掉正在跑的
+    # （按原提交日退，账本已清掉的不退），标成已取消，和已结束的一起删。worker 领取时锁住排队的行、
+    # 立刻改成处理中，所以这里跳过被锁的就不会抢；处理中的行在处理期间并不一直锁着，只动开始超过
+    # ABANDONED 的（换版本时旧实例还会跑十几分钟，一天以上不可能还在跑），免得删掉正在上传结果的
     for stale in session.scalars(
         select(AdvisorTask)
         .where(
@@ -1073,7 +1082,7 @@ def cleanup_advisor(
                 AdvisorTask.status == "queued",
                 and_(
                     AdvisorTask.status == "running",
-                    AdvisorTask.started_at <= stamp - STALE_RUNNING,
+                    AdvisorTask.started_at <= stamp - ABANDONED,
                 ),
             ),
         )

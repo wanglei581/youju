@@ -66,7 +66,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   for (const must of [/连续 3 天/, /连续 72 小时/, /中途不能暂停/, /到 10月23日 10:00（北京时间）结束/, /每次最多 500 家（平时每次 50 家）/,
     /两项合计每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
     /体验期间只用体验的次数，这些不扣、也不能改用，体验结束后接着用/,
-    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /用过一次后，账号还在就不能再体验/, /同事共用这一次/, /注销账号后 180 天内，用这个微信号重新登录也不能再体验/, /名单准备好再开始/]) {
+    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /用过一次后，账号还在就不能再体验/, /同事共用这一次/, /注销账号后 180 天内（这期间再注销的，从最后一次算起），用这个微信号重新登录也不能再体验/, /名单准备好再开始/]) {
     assert.match(text, must);
   }
   assert.doesNotMatch(text, SALES);
@@ -285,11 +285,27 @@ function trialPage(options = {}) {
   const api = { advisorStatus: () => { calls.push('status'); return Promise.resolve(current); },
     startBoostTrial: () => { calls.push('start'); return options.start ? options.start() : Promise.resolve(trialActive()); } };
   const wx = { navigateBack: (o) => { nav.push('back'); if (options.noBack && o && o.fail) o.fail(); }, redirectTo: ({ url }) => nav.push(url), showToast: ({ title }) => toasts.push(title) };
-  const page = load('pages/advisor-trial/index.js', { '../../utils/api.js': api, '../../utils/boost.js': boost }, { wx });
+  const consent = options.consent || { ensureConsent: () => Promise.resolve(false) };
+  const page = load('pages/advisor-trial/index.js', { '../../utils/api.js': api, '../../utils/boost.js': boost, '../../utils/consent.js': consent }, { wx });
   page.onShow();
   return { page, calls, nav, toasts, set: (value) => { current = value; } };
 }
 const trialShown = (page) => render('pages/advisor-trial/index.wxml', page.data);
+
+test('确认页：开始时协议已更新（403）就请他重新阅读并同意；同意了重新读状态，没同意就留着提示', async () => {
+  const outdated = () => Promise.reject(Object.assign(new Error('用户协议或隐私保护指引已更新，请重新阅读并同意'), { status: 403 }));
+  let asked = 0;
+  const yes = trialPage({ start: outdated, consent: { ensureConsent: () => { asked += 1; return Promise.resolve(true); } } });
+  await flush();
+  yes.page.start(); await flush();
+  assert.equal(asked, 1);
+  assert.deepEqual(yes.calls, ['status', 'start', 'status']);
+  const no = trialPage({ start: outdated });
+  await flush();
+  no.page.start(); await flush();
+  assert.deepEqual(no.calls, ['status', 'start']);
+  assert.match(textOf(trialShown(no.page)), /已更新，请重新阅读并同意/);
+});
 
 test('确认页：开始之前写全规则，点一次才开始，重复点不重复请求；开始后写结束时间', async () => {
   const h = trialPage(); await flush();

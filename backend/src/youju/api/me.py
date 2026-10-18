@@ -17,7 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import agreement_at_least
+from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -582,11 +582,10 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         user = current_user(known_user(request, session))
         if body.version != advisor_service.ADVISOR_AGREEMENT_VERSION:
             raise HTTPException(status_code=422, detail="工具使用说明已更新，请重新阅读并同意")
-        # 工具使用说明和当前版本的隐私保护指引一起读（批量工具的任务记录和次数写在指引一·13）：
-        # 过渡期（填了最早版本）只同意过旧版的照旧能用关注、纠错，
-        # 但要先重新同意当前版本才能同意新的说明。提交名单要求同意过这一版工具使用说明，
-        # 所以在这里核对一次就够，不必每次提交再查
-        if not agreement_at_least(user.agreement_version, agreement_range(get_settings())[1]):
+        # 批量工具的任务记录和次数从 2026-11 版隐私保护指引起才写明（一·13）：过渡期（填了最早版本）
+        # 只同意过旧版的照旧能用关注、纠错，但要先重新同意新版指引才能同意工具使用说明。
+        # 固定版本，回退配置也不放宽（Codex 第三轮）；提交名单时 advisor._upload_consent 再查一次
+        if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
             raise HTTPException(status_code=403, detail=OUTDATED)
         user.advisor_agreement_version = body.version
         user.advisor_agreement_at = v1.now()

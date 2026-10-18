@@ -48,7 +48,7 @@ def settings(monkeypatch):
         dev_openid="takedown-user",
         advisor_enabled=True,
         cloud_env="test-env",
-        agreement_version="2026-09",
+        agreement_version="2026-11",
         send_wx_messages=True,
         template_deadline={"id": "due", "fields": {"thing1": "title"}},
         template_newdocs={"id": "new", "fields": {"thing1": "summary"}},
@@ -139,7 +139,7 @@ def docs(session, client):
         )
     )
     session.commit()
-    assert client.post("/api/v1/me/agreement", json={"version": "2026-09"}).status_code == 200
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-11"}).status_code == 200
     return result
 
 

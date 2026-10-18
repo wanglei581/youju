@@ -44,6 +44,8 @@ Page({
       this.setData({ starting: false, error: (err && err.message) || '没能开始，请重试' });
       // 用过了、有使用期、开关关了：按服务端的最新状态重新显示
       if (err && (err.status === 404 || err.status === 409)) this.load();
+      // 协议已更新（只同意过写进体验记录之前的版本，后台 TOOLS_AGREEMENT_VERSION）：请他读新版全文并同意，回来重新读状态
+      if (err && err.status === 403) require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); });
     });
   },
   back() { wx.navigateBack({ fail: () => wx.redirectTo({ url: '/pages/advisor-form/index' }) }); },

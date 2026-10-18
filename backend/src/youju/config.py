@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     ai_advisor_concurrency: int = Field(default=3, ge=1, le=8)
     # 加量体验（D-070 ③，见 boost.py）：单独开关，默认关，还要批量工具开关开着。打开之前先执行
     # mysql_accounts.sql 里的"加量体验权限"，并让写明体验记录的 2026-11 版隐私保护指引先上线
-    # （只同意过更早版本的开始不了体验，见 agreements.TRIAL_AGREEMENT_VERSION）。
+    # （只同意过更早版本的开始不了体验，见 agreements.TOOLS_AGREEMENT_VERSION）。
     # 关掉只是不能再开始新的体验，已经开始的照常用满 72 小时（开始前承诺了连续 3 天）
     boost_trial_enabled: bool = False
     # 申报季加量（D-070 ⑤）：起止日期（北京时间，含首尾）内免费批量次数每月 5 次，每次仍 50 家以内。
