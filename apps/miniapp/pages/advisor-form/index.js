@@ -15,7 +15,7 @@ Page({
   data: { kind: 'compare', title: DATA_KINDS.compare, loading: true, error: '', gate: '', enabled: false, agreed: false,
     mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
     // 加量体验、申报季加量（D-070，都以服务端 /advisor/status 为准，见 utils/boost.js）
-    trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', seasonLine: '',
+    trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', trialHint: '', seasonLine: '',
     // 客户工作台 30 天（只有服务端在售时才有值）：{ price: '29', days: 30 }
     offer: null },
   onLoad(query) {
@@ -90,15 +90,18 @@ Page({
   },
   // 现在还能不能提交：使用期不限次数；体验期看体验当天还剩几次；其余看本月免费次数
   blocked() { return !this.data.passActive && (this.data.trialActive ? this.data.trialLeft <= 0 : this.data.remaining <= 0); },
+  // 额度和行数的提示都从这两个方法出来，记下最近一句（trialHint）：页面上显示的正是这句、且推荐了体验时，
+  // 提示下面才出现"了解加量体验"按钮；格式错误、网络错误下面不出现（Codex 审阅）。
   // 体验刚结束（7 天内，trialEnded 有值）的提示先说"加量体验已结束"，不然用户不知道每次 500 家为什么不行了
   limitMessage() {
-    if (this.data.trialActive) return this.data.trialCap;
-    return `${this.data.trialEnded ? '加量体验已结束。' : ''}${limitText(this.data.offer, this.data.trialAvailable)}`;
+    if (this.data.trialActive) return this.hint(this.data.trialCap);
+    return this.hint(`${this.data.trialEnded ? '加量体验已结束。' : ''}${limitText(this.data.offer, this.data.trialAvailable)}`);
   },
   rowsMessage() {
     const more = this.data.trialAvailable && !this.data.passActive ? '；或开始 3 天加量体验，每次最多 500 家' : '';
-    return `${this.data.trialEnded ? '加量体验已结束，' : ''}每次最多 ${this.data.maxRows} 家，请减少行数${more}`;
+    return this.hint(`${this.data.trialEnded ? '加量体验已结束，' : ''}每次最多 ${this.data.maxRows} 家，请减少行数${more}`);
   },
+  hint(message) { this.setData({ trialHint: message }); return message; },
   consent() { require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); }); },
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
   tasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },

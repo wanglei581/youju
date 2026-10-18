@@ -36,8 +36,8 @@
     <view class="advisor-text">输入 {{rowCount}} 行{{previewed ? '，服务器预览通过' : ''}}</view>
     <view class="advisor-text muted">预览会将内容发到服务器，但不创建任务、不占次数。请先确认有权提交；不要填写个人姓名、身份证号、手机号或银行账号。</view>
     <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>
-    <!-- 提示里推荐了加量体验（超过 50 家、本月免费次数用完）：按钮紧跟在提示下面，不用翻回页面上方找 -->
-    <button wx:if="{{inputError && trialAvailable && !passActive && (!remaining || rowCount > maxRows)}}" class="advisor-button" bindtap="openTrial">了解加量体验</button>
+    <!-- 提示里推荐了加量体验（超过 50 家、本月免费次数用完）：按钮紧跟在提示下面，不用翻回页面上方找；别的提示下面不出现 -->
+    <button wx:if="{{inputError && inputError === trialHint && trialAvailable && !passActive}}" class="advisor-button" bindtap="openTrial">了解加量体验</button>
     <button class="advisor-button" bindtap="preview" loading="{{previewing}}" disabled="{{previewing || submitting}}">预览并核对行数</button>
   </view>
   <view class="card advisor-card">

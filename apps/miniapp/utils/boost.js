@@ -119,7 +119,7 @@ function confirmItems(status, now) {
   const crosses = beijingDay(new Date(stamp)).slice(0, 7) !== beijingDay(now).slice(0, 7);
   let free;
   if (compare === null || track === null) free = '体验期间只用体验的次数，每月免费次数不扣、也不能改用；体验结束后照常使用。';
-  else if (compare + track === 0) free = '本月免费次数已经用完；体验的次数另算，不受影响。';
+  else if (compare + track === 0) free = '本月免费次数已经用完，体验的次数另算。体验期间只用体验的次数，不能改用每月免费次数；体验结束后照常使用。';
   else {
     free = `现在本月免费还剩：名单比对 ${compare} 次、客户相关通知表 ${track} 次。体验期间只用体验的次数，这些不扣、也不能改用`;
     free += crosses ? '。注意：现在开始的话体验会跨过月底，本月剩下的免费次数用不上（不顺延到下个月），想用的话先用完再开始。'

@@ -72,7 +72,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   assert.doesNotMatch(text, SALES);
   assert.doesNotMatch(text, /跨过月底/);
   // 本月免费次数已经用完：写明体验另算
-  assert.match(boost.confirmItems(status({ used: 3, trial: trialAvailable() }), NOW).map((i) => i.text).join(), /本月免费次数已经用完；体验的次数另算，不受影响/);
+  assert.match(boost.confirmItems(status({ used: 3, trial: trialAvailable() }), NOW).map((i) => i.text).join(), /本月免费次数已经用完，体验的次数另算。体验期间只用体验的次数，不能改用每月免费次数；体验结束后照常使用。/);
   // 月底开始会跨月：本月剩下的免费次数体验期间用不了、也不顺延，开始前写明（不能写"体验结束后接着用"）
   const monthEnd = new Date('2026-10-30T02:00:00Z'); // 北京时间 10 月 30 日 10:00，体验到 11 月 2 日
   const crossing = boost.confirmItems(status({ used: 1, trial: trialAvailable() }), monthEnd).map((i) => i.text).join('\n');
@@ -154,6 +154,12 @@ test('批量工具页：有资格时一直有加量体验入口；还有免费�
   assert.equal(used.page.data.inputError, '本月免费次数已用完，下月 1 日恢复；也可以开始 3 天加量体验（免费，每次 500 家以内）');
   assert.equal(findAll(shown(used.page), tapsTo('openTrial')).length, 2);
   assert.equal(used.calls.length, 0); used.page.onUnload();
+
+  // 别的提示（网络、格式）下面不出现"了解加量体验"，只有推荐了体验的那句下面才有（Codex 审阅）
+  const offline = form({ status: status({ used: 3, trial: trialAvailable() }), api: { advisorPreview: () => Promise.reject(new Error('网络连接失败，请检查网络后重试')) } }); await flush();
+  offline.page.input({ detail: { value: '合成企业甲' } }); offline.page.preview(); await flush();
+  assert.equal(offline.page.data.inputError, '网络连接失败，请检查网络后重试');
+  assert.equal(findAll(shown(offline.page), tapsTo('openTrial')).length, 1); offline.page.onUnload();
 
   // 没有资格（用过了、开关关着）：不出现入口
   const none = form({ status: status({ used: 3, trial: { ...trialAvailable(), available: false, reason: 'used' } }) }); await flush();
