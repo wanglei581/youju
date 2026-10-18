@@ -34,7 +34,7 @@
       <textarea class="advisor-input advisor-paste" value="{{text}}" maxlength="30000" placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛,市南区'}}" bindinput="input" disabled="{{previewing || submitting}}" />
     </block>
     <block wx:else>
-      <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}</view>
+      <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}其他列（如联系人、电话）不读取。</view>
       <!-- 10/18 验收：第一次用的人不知道表格要先放进微信聊天才能选 -->
       <view class="advisor-text muted">电脑或手机里的表格，请先发到微信聊天里（例如发给“文件传输助手”），再点“从聊天中选文件”。</view>
       <button class="advisor-button" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>

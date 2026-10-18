@@ -262,7 +262,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
       assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, dataEnabled ? 1 : 0);
     }
     assert.equal(rendered.includes('批量名单比对'), dataEnabled);
-    assert.equal(navigationTitle, aiEnabled && !dataEnabled ? 'AI 工具 · 内部测试' : '工具中心');
+    assert.equal(navigationTitle, '工具中心');
     if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，在“要点”下面的“AI 解读”卡片里点“开始解读”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }

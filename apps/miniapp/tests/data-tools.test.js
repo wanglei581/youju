@@ -47,6 +47,9 @@ test('像手机号、身份证号的行能认出来（只给行号）；统一�
   // 第 3 行身份证号校验位正确；第 5 行校验位不对，不当成身份证号
   assert.deepEqual(plain(logic.personalInfoLines(text)), [2, 3]);
   assert.deepEqual(plain(logic.personalInfoLines('合成样例乙生物有限公司\n913702001234567890')), []);
+  // Codex 审阅：分段写的、全角的手机号也认；校验位不对的号码后面还有真的身份证号也认；座机（单位总机）不提醒
+  const more = ['电话 138 1234 5678', '电话 138-1234-5678', '电话 １３８１２３４５６７８', '110105199003078214、110105199003078211', '总机 0532-88886666', '合成样例丙公司 2026 年 3 月'].join('\n');
+  assert.deepEqual(plain(logic.personalInfoLines(more)), [1, 2, 3, 4]);
 });
 
 test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"才发，同一段内容不重复提醒', async () => {
@@ -68,6 +71,7 @@ test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"
 test('表单写明怎样把表格放进微信、每提交一次算 1 次；通知表的长说明默认收起', () => {
   const wxml = fs.readFileSync(path.join(root, 'pages/advisor-form/index.wxml'), 'utf8');
   assert.match(wxml, /文件传输助手/); assert.match(wxml, /每提交一次算 1 次/); assert.match(wxml, /临时解析行数，不保存/);
+  assert.match(wxml, /其他列（如联系人、电话）不读取/);
   assert.match(wxml, /kind === 'track' && showFillHelp/);
 });
 
@@ -512,6 +516,8 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
     assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    // 403 时不知道服务端开没开批量工具：介绍卡只说"有什么"，不承诺同意后一定能用（Codex 审阅）
+    if (name === 'advisor') { assert.match(shown, /工具中心有什么/); assert.doesNotMatch(shown, /同意后可以用/); }
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });

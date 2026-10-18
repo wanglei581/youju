@@ -92,6 +92,7 @@
         <view wx:if="{{remindOpen || subs.length}}">· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
         <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
         <view>· 访问日志：保存 190 天（法律要求不少于 6 个月），不在这里显示</view>
+        <view>· 数据库备份：每天备份一次，保留 30 天，只用于数据丢失时恢复；注销后的数据随备份到期清除</view>
       </view>
     </view>
 

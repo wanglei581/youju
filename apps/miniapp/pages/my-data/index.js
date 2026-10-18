@@ -85,7 +85,7 @@ Page({
   },
 
   // 复制全部：完整的 JSON，可以粘贴保存（剪贴板只写不读）
-  // 内部包（D-062）：复制完整的微信用户标识，填到云托管的 YOUJU_AI_ADVISOR_OPENIDS 里给自己开 AI 内测
+  // 复制完整的微信用户标识：联系客服排查问题时用；给自己开 AI 白名单时填到云托管的 YOUJU_AI_ADVISOR_OPENIDS
   copyOpenid() {
     const openid = this.raw && this.raw.user && this.raw.user.openid;
     if (!openid) return;

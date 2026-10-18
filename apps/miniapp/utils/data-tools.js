@@ -27,20 +27,30 @@ function csvRows(text, keepBlank = false) {
 }
 
 // 粘贴的名单里像手机号、身份证号的行（从 1 开始的行号）：只提醒，不拦，不回显内容（10/18 验收，agy 提出）。
-// 统一社会信用代码也是 18 位，身份证号再按出生日期和校验位确认一次，误报很少。
-const MOBILE = /(^|\D)1[3-9]\d{9}(?!\d)/;
-const ID_CARD = /(?:^|[^0-9A-Za-z])([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx])(?![0-9A-Za-z])/;
+// 手机号认连写和 3-4-4 分段（空格或横线），全角数字先换成半角；座机多是单位总机，不提醒。
+// 统一社会信用代码也是 18 位，身份证号再按出生日期和校验位确认一次（一行里每个候选都看），误报很少。
+const MOBILE = /(^|\D)1[3-9]\d(?:[ -]?\d{4}){2}(?!\d)/;
+const ID_CARD = /(?:^|[^0-9A-Za-z])([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx])(?![0-9A-Za-z])/g;
+function halfWidth(text) {
+  return String(text || '')
+    .replace(/[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/\uFF0D/g, '-').replace(/\u3000/g, ' ');
+}
 function idChecksumOk(id) {
   const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
   let sum = 0;
   for (let i = 0; i < 17; i += 1) sum += Number(id[i]) * weights[i];
   return '10X98765432'[sum % 11] === id[17].toUpperCase();
 }
+function hasIdNumber(line) {
+  ID_CARD.lastIndex = 0;
+  for (let m = ID_CARD.exec(line); m; m = ID_CARD.exec(line)) if (idChecksumOk(m[1])) return true;
+  return false;
+}
 function personalInfoLines(text) {
   const hits = [];
-  String(text || '').split(/\r?\n/).forEach((line, index) => {
-    const id = ID_CARD.exec(line);
-    if (MOBILE.test(line) || (id && idChecksumOk(id[1]))) hits.push(index + 1);
+  halfWidth(text).split(/\r?\n/).forEach((line, index) => {
+    if (MOBILE.test(line) || hasIdNumber(line)) hits.push(index + 1);
   });
   return hits;
 }

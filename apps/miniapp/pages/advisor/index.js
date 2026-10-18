@@ -1,6 +1,6 @@
 // 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
 
@@ -25,7 +25,6 @@ Page({
       const data = dataKinds(res.data_tools);
       const toolsEnabled = aiEnabled || data.length > 0;
       const disclosure = ai.disclosure || {};
-      if (aiEnabled && !data.length) wx.setNavigationBarTitle({ title: aiTitle('AI 工具') });
       const aiGate = aiEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
       const gate = toolsEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
       this.setData({ loading: false, aiGate, aiGateText: gateText(aiGate, res), toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: gateText(gate, res),

@@ -192,7 +192,9 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
       if (enabled) {
         // 标注在页面最上方（notice-bar 之后、其他内容之前）
         assert.ok(output.startsWith(NOTICE), name);
+        // 工具中心只有 AI 时标题也叫"工具中心"（10/18 Codex 审阅：和入口同名）；页面最上方仍有内部测试标注
         if (name === 'advisor-tasks') assert.equal(titles.at(-1), '我的记录');
+        else if (name === 'advisor') assert.equal(titles.at(-1), '工具中心');
         else assert.match(titles.at(-1), /内部测试/, name);
       } else {
         assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/, name);
