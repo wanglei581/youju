@@ -28,6 +28,9 @@ from youju.models import (
     WorkbenchPass,
 )
 
+# 当前的用户协议版本：取后台默认值，升版本时不用改测试（同 #286 对 test_boost、test_rewards 的改法）
+AGREEMENT = Settings.model_fields["agreement_version"].default
+
 # 北京时间 11 月 2 日 10:00
 NOW = datetime(2026, 11, 2, 2, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
@@ -58,7 +61,7 @@ def shop(session_factory, monkeypatch):
         xpay_appkey_sandbox="12345",
         xpay_price_pass=2900,
         xpay_price_pass_90=7900,
-        agreement_version="2026-10",
+        agreement_version=AGREEMENT,
         admin_token="test-admin",
         cloud_env="test-env",
     )
@@ -84,7 +87,7 @@ def shop(session_factory, monkeypatch):
 def join(client, identity):
     assert (
         client.post(
-            "/api/v1/me/agreement", headers=identity, json={"version": "2026-10"}
+            "/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT}
         ).status_code
         == 200
     )
@@ -695,7 +698,7 @@ def test_stop_service_refunds_every_active_order_by_remaining_days(shop, session
     first = buy(shop, session)
     renewal = buy(shop, session, at=NOW + 25 * DAY)
     # 另一位用苹果手机付款的用户：只列出来，不主动退
-    other = User(openid="apple-user", agreement_version="2026-10", agreement_at=NOW)
+    other = User(openid="apple-user", agreement_version=AGREEMENT, agreement_at=NOW)
     session.add(other)
     session.flush()
     apple = PayOrder(
