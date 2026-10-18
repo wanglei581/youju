@@ -923,6 +923,32 @@ def _cmd_settle_missing_copies(args: argparse.Namespace) -> int:
     return 1 if report.error else 0
 
 
+def _cmd_advisor_orphans(args: argparse.Namespace) -> int:
+    """批量工具结果文件巡检（见 youju/advisor_orphans.py）：对象存储里有、任务表和待删表都没有、
+    超过 31 天的结果文件。默认只报个数，加 --delete 才删；只输出个数和文件编号前缀。"""
+    from youju import advisor_orphans
+    from youju.backup import BackupError
+
+    settings = get_settings()
+    if not settings.cloud_env:
+        print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法巡检结果文件")
+        return 1
+    try:
+        with session_factory()() as session:
+            report = advisor_orphans.scan(session, settings, delete=args.delete)
+    except BackupError as exc:
+        print(f"结果文件巡检失败，没有删除任何文件：{exc}")
+        return 1
+    print(report.text())
+    if args.alert and report.orphans:
+        from youju.alerts import send_alert
+
+        if send_alert(report.alert_text()) is not True:
+            print("提醒没有发出去")
+            return 1
+    return 1 if report.failed or report.blocked else 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
@@ -1365,6 +1391,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--apply", action="store_true", help="照常删除，证据齐全的留档后结算")
     p.set_defaults(func=_cmd_settle_missing_copies)
+    p = sub.add_parser(
+        "advisor-orphans",
+        help="巡检批量工具的结果文件：对象存储里有、任务表和待删表都没有、超过 31 天的；"
+        "默认只报个数，加 --delete 才删",
+    )
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--delete", action="store_true", help="删掉找到的文件（删不掉的记进待删表，清理会重试）"
+    )
+    mode.add_argument("--alert", action="store_true", help="找到时发一条提醒到群里（定时任务用）")
+    p.set_defaults(func=_cmd_advisor_orphans)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")
     p.add_argument("text", help="提醒正文")
