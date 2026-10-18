@@ -1437,11 +1437,11 @@ def main(argv: list[str] | None = None) -> int:
         "notify", help="发送一次性订阅提醒；未设置 YOUJU_SEND_WX_MESSAGES=true 时只演练"
     ).set_defaults(func=_cmd_notify)
     sub.add_parser(
-        "cleanup", help="按保存期限删除埋点、纠错、奖励资格凭据和已用完的订阅授权"
+        "cleanup", help="按保存期限删除埋点、纠错和已用完的订阅授权；旧的奖励资格凭据一律删除"
     ).set_defaults(func=_cmd_cleanup)
-    sub.add_parser(
-        "rewards-reconcile", help="补发漏掉的首次批量功能、同行引荐和截止线索奖励"
-    ).set_defaults(func=_cmd_rewards_reconcile)
+    sub.add_parser("rewards-reconcile", help="补发漏掉的截止线索奖励").set_defaults(
+        func=_cmd_rewards_reconcile
+    )
     p = sub.add_parser("rewards-revoke", help="收回一笔奖励的未用时间（开关关闭后仍可运行）")
     p.add_argument("--reward-id", type=int, required=True, help="奖励流水编号")
     p.add_argument(
