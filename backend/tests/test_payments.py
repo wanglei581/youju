@@ -394,22 +394,25 @@ def test_products_lists_only_priced_items(setup_pay, session):
     client, settings, fake = setup_pay
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
         "items": [
-            {"productId": "workbench_30d", "name": "客户工作台 30 天", "price": 100, "days": 30}
+            {"productId": "workbench_30d", "name": "批量工具 30 天", "price": 100, "days": 30}
         ],
         # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
         "sandbox": True,
+        # 续买多送开关默认关：付款页不提
+        "renewBonus": None,
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
+    closed = {"items": [], "sandbox": True, "renewBonus": None}
     settings.xpay_price_pass = None
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
+    assert client.get("/api/v1/pay/products").json() == closed
     settings.xpay_price_pass = 100
     settings.xpay_offer_id = ""
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
+    assert client.get("/api/v1/pay/products").json() == closed
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     # 现网（真扣钱）：没配律师定稿的协议版本时不展示价格、不下单；配了才卖
     settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": False}
+    assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     settings.pay_terms_version = "pay-2026-11"
@@ -1285,9 +1288,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     else:
         assert ticket.revoked_at is None
         reason = result.json()["detail"]
-        assert {"old": "超过 7 天", "used": "已提交过超过 50 家", "ios": "App Store"}[
-            case
-        ] in reason
+        assert {"old": "超过 7 天", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
@@ -1380,6 +1381,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
             out_trade_no=f"list-{n}",
             product_id="workbench_30d",
             price=100,
+            days=30,
             env=1,
             terms_version="pay-test",
             created_at=NOW + timedelta(seconds=n),
@@ -1391,12 +1393,16 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
     assert len(result) == 20 and result[0]["orderId"] > result[-1]["orderId"]
     assert set(result[0]) == {
         "orderId",
+        "name",
+        "days",
         "status",
         "amount",
         "paidAt",
         "passStartsAt",
         "passEndsAt",
         "passRevokedAt",
+        "gifts",
+        "refundAmount",
         "canRefund",
         "refundUnavailableReason",
         "canInvoice",
@@ -1435,7 +1441,7 @@ def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, sessio
             assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
             assert submit(setup_pay, count=51).status_code == 202
             locked = payments.lock_order(stale, row.id)
-            assert "已提交过" in payments.refund_reason(stale, locked, NOW, lock=True)
+            assert "已用过付费的量" in payments.refund_reason(stale, locked, NOW, lock=True)
 
 
 def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
@@ -1680,7 +1686,7 @@ def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, sessi
     # 第 4 次：免费次数用完，才用使用期
     assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
     session.expire_all()
-    assert "已提交过超过 50 家" in payments.refund_reason(session, row, NOW)
+    assert "已用过付费的量" in payments.refund_reason(session, row, NOW)
 
 
 def test_orders_and_refund_stay_available_after_sales_switched_off(setup_pay, session):
@@ -1710,7 +1716,7 @@ def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, sessi
     session.expire_all()
     a, b = payments.order_pass(session, first), payments.order_pass(session, second)
     assert a.revoked_at == NOW
-    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=payments.PASS_DAYS)
+    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=30)
     status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
     assert status["pass"]["active"] is True
 
@@ -1735,7 +1741,7 @@ def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
     session.expire_all()
     new = payments.order_pass(session, session.get(PayOrder, row.id))
     assert new.starts_at == old.ends_at
-    assert new.ends_at == old.ends_at + timedelta(days=payments.PASS_DAYS)
+    assert new.ends_at == old.ends_at + timedelta(days=30)
 
 
 def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):

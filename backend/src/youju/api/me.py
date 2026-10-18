@@ -298,7 +298,7 @@ def _available_subscription():
 
 @router.get("/me")
 def profile(session: SessionDep, user: KnownUserDep) -> dict:
-    from youju import payments
+    from youju import payments, rewards
 
     if user is None:
         return {
@@ -306,6 +306,7 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
             "follows": 0,
             "subscriptions": {"newDocs": 0, "deadline": 0},
             "pay": payments.entry(session, get_settings(), None),
+            "correctionReward": rewards.correction_info(get_settings()),
         }
     counts = dict(
         session.execute(
@@ -348,6 +349,8 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         },
         # 购买入口和"我的订单"显示与否（小程序没开放支付时两个都是 False，不放空入口）
         "pay": payments.entry(session, get_settings(), user),
+        # 纠错被采纳送天数（D-070 ⑦）开着时，纠错页公开写出规则和采纳标准；关着为 None
+        "correctionReward": rewards.correction_info(get_settings()),
     }
 
 
@@ -563,7 +566,7 @@ def invite_status(session: SessionDep, user: UserDep) -> dict:
         "monthCount": count,
         "monthLimit": 4,
         "rules": [
-            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天客户工作台使用期。",
+            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天批量工具使用期。",
             "每月最多计入 4 位，各项奖励合计每月最多 30 天，超出部分不给、不顺延。",
             "新用户不会因使用引荐码多得天数；只计算直接请来的同行。",
             "使用天数不能转让、不能折现，注销账号时作废。",
@@ -712,6 +715,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "events": [],
         "eventsTotal": 0,
         "boostTrial": None,
+        "passGifts": [],
         "retention": {
             "events": settings.retain_events_days,
             "feedback": settings.retain_feedback_days,
@@ -786,6 +790,27 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     trial = boost.trial_of(session, user.id)
     if trial is not None:
         result["boostTrial"] = {"startedAt": _iso(trial.started_at), "endsAt": _iso(trial.ends_at)}
+    # 送的批量工具天数，每次一笔（续买多送、加量体验折算、纠错被采纳等，D-070 逐笔记账）；
+    # 订单本身在"我的订单"
+    from youju import rewards
+    from youju.models import PassReward
+
+    result["passGifts"] = [
+        {
+            "kind": row.kind,
+            "name": rewards.LABELS[row.kind],
+            "days": row.granted_days,
+            "grantedAt": _iso(row.granted_at),
+            "note": row.note,
+            "revoked": rewards.is_revoked(row),
+        }
+        for row in session.scalars(
+            select(PassReward)
+            .where(PassReward.user_id == user.id)
+            .order_by(PassReward.granted_at.desc(), PassReward.id.desc())
+            .limit(500)
+        )
+    ]
 
     follows = session.scalars(
         select(Follow)

@@ -1,4 +1,4 @@
-// 客户工作台 30 天：购买、订单与开票、工具表单的开通卡片、我的订单、支付反馈、付费协议。
+// 批量工具（30 天、90 天两档，D-070）：购买、订单与开票、工具表单的价格卡片、我的订单、支付反馈、付费协议。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -18,7 +18,9 @@ const FINAL_TERMS = {
   version: 'pay-2026-10-final',
   final: true,
   title: '付费服务协议',
-  text: '购买客户工作台 30 天。使用期从付款成功起算，到期不再扣款。',
+  text: '购买批量工具 30 天。使用期从付款成功起算，到期不再扣款。',
+  // 测试用的发票说明（真实的一句等创始人确认，D-070）
+  invoice: '可开电子普通发票（测试文字）',
 };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = async () => { await new Promise(setImmediate); await new Promise(setImmediate); };
@@ -257,7 +259,7 @@ test('购买页在沙箱下协议没定稿也能联调付款，顶部写明不�
   assert.equal(sandbox.page.data.sandbox, true);
   assert.match(shown('pages/pass/index.wxml', sandbox.page.data), /沙箱测试：只对测试人员开放，付款不扣真钱/);
   assert.equal(payButtons(sandbox.page.data).length, 1);
-  assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（不扣真钱）');
+  assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（30 天，不扣真钱）');
   sandbox.page.check({ detail: { value: ['agree'] } });
   sandbox.page.buy();
   await flush();
@@ -281,7 +283,7 @@ test('购买页未勾选协议或未同意工具说明时都不下单，防止�
   await flush();
   assert.equal(h.page.data.termsFinal, true);
   assert.equal(payButtons(h.page.data).length, 1);
-  assert.equal(textOf(payButtons(h.page.data)[0]).trim(), '支付 29 元');
+  assert.equal(textOf(payButtons(h.page.data)[0]).trim(), '支付 29 元（30 天）');
   h.page.buy();
   assert.equal(h.page.data.message, '请先阅读并同意《付费服务协议》');
   assert.equal(h.toasts.at(-1).title, '请先阅读并同意《付费服务协议》');
@@ -481,7 +483,7 @@ test('订单页缺税号或邮箱不对时本机拦住，409 显示服务端文�
   assert.match(shown('pages/orders/index.wxml', h.page.data), /这张发票正在开具，不能修改/);
 });
 
-test('工具表单在支付关闭时不查商品也不出现客户工作台，免费用完只提示不需要购买，防止关着支付还引导购买', async () => {
+test('工具表单在支付关闭时不查商品也不出现批量工具价格，免费用完只提示不需要购买，防止关着支付还引导购买', async () => {
   const h = toolForm({ api: {
     advisorCapabilities: () => Promise.resolve(caps({ enabled: false })),
     advisorStatus: () => Promise.resolve(quota(3)),
@@ -491,20 +493,21 @@ test('工具表单在支付关闭时不查商品也不出现客户工作台，�
   assert.equal(h.page.data.offer, null);
   const text = shown('pages/advisor-form/index.wxml', h.page.data);
   assert.match(text, /不需要购买/);
-  assert.doesNotMatch(text, /客户工作台/);
+  assert.doesNotMatch(text, /客户工作台|批量工具：|元/);
 });
 
-test('工具表单在售时给出 29 元 30 天卡片并可进入购买页，商品接口失败则不推销且免费功能仍可用，防止接口失败弄坏免费工具', async () => {
+test('工具表单在售时给出两档价格卡片并可进入购买页，商品接口失败则不推销且免费功能仍可用，防止接口失败弄坏免费工具', async () => {
   const selling = toolForm({ api: {
     advisorCapabilities: () => Promise.resolve(caps({ enabled: true })),
     advisorStatus: () => Promise.resolve(quota(3)),
-    payProducts: () => Promise.resolve({ items: [{ productId: 'workbench_30d', price: 2900, days: 30 }] }),
+    payProducts: () => Promise.resolve({ items: [{ productId: 'workbench_90d', price: 7900, days: 90 }, { productId: 'workbench_30d', price: 2900, days: 30 }] }),
   } });
   await flush();
   assert.equal(selling.seen.products, 1);
-  assert.deepEqual(selling.page.data.offer, { price: '29', days: 30 });
+  assert.deepEqual(plain(selling.page.data.offer), { line: '30 天 29 元、90 天 79 元', renew: null });
   const tree = render('pages/advisor-form/index.wxml', selling.page.data);
-  assert.match(textOf(tree), /客户工作台 30 天（29 元）/);
+  assert.match(textOf(tree), /批量工具：30 天 29 元、90 天 79 元，不限次数，每次 500 家以内。一次付清，到期不再扣钱。/);
+  assert.doesNotMatch(textOf(tree), /客户工作台/);
   assert.equal(findAll(tree, tapsTo('buyPass')).length, 1);
   selling.page.buyPass();
   assert.deepEqual(selling.urls, ['/pages/pass/index']);
@@ -520,7 +523,7 @@ test('工具表单在售时给出 29 元 30 天卡片并可进入购买页，商
   assert.equal(failed.page.data.enabled, true);
   const text = shown('pages/advisor-form/index.wxml', failed.page.data);
   assert.match(text, /提交任务/);
-  assert.doesNotMatch(text, /客户工作台/);
+  assert.doesNotMatch(text, /客户工作台|批量工具：/);
   failed.page.input({ detail: { value: '合成企业甲' } });
   failed.page.preview();
   await flush();
@@ -598,4 +601,214 @@ test('协议页 type=pay 只显示一份文件，标题用付费协议的 title�
   const heads = findAll(render('pages/agreement/index.wxml', page.data), (node) => String(node.attrs.class || '').split(/\s+/).includes('doc-title'));
   assert.equal(heads.length, 1);
   assert.equal(textOf(heads[0]), `《${payTerms.title}》`);
+});
+
+// ---- D-070 开卖那批：两档、续买多送、付款前要看得到的、到期提示、订单逐笔、我的 → 批量工具、纠错规则 ----
+
+const TIERS = [{ productId: 'workbench_30d', price: 2900, days: 30 }, { productId: 'workbench_90d', price: 7900, days: 90 }];
+const pay = require('../utils/pay.js');
+
+test('购买页两档并排，默认 30 天，90 天写折合每 30 天约 26 元、不写原价和立省；选 90 天后按 90 天下单，防止价格比较违规和下错档', async () => {
+  const h = passPage({ payProducts: () => Promise.resolve({ items: [TIERS[1], TIERS[0]] }), onPay: (payload) => payload.fail({ errCode: -2 }) });
+  await flush();
+  assert.deepEqual(plain(h.page.data.tiers).map((tier) => [tier.days, tier.price, tier.per30]), [[30, '29', ''], [90, '79', '折合每 30 天约 26 元']]);
+  assert.equal(h.page.data.selected, 0);
+  const text = shown('pages/pass/index.wxml', h.page.data);
+  assert.match(text, /批量工具/);
+  assert.match(text, /折合每 30 天约 26 元/);
+  assert.doesNotMatch(text, /原价|立省|省 \d|推荐|限时|名额/);
+  assert.equal(textOf(payButtons(h.page.data)[0]).trim(), '支付 29 元（30 天）');
+  const tiers = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('pick'));
+  assert.equal(tiers.length, 2);
+  h.page.pick({ currentTarget: { dataset: { index: tiers[1].attrs['data-index'] } } });
+  assert.equal(textOf(payButtons(h.page.data)[0]).trim(), '支付 79 元（90 天）');
+  // 选中的那一档在页面上标出来（无障碍也读得到）
+  const picked = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('pick')).map((node) => String(node.attrs['aria-checked']));
+  assert.deepEqual(picked, ['false', 'true']);
+  h.page.check({ detail: { value: ['agree'] } });
+  h.page.buy();
+  await flush();
+  assert.equal(h.calls.find((call) => call[0] === 'create')[1].product_id, 'workbench_90d');
+  // 付款中不能换档
+  h.page.setData({ busy: true });
+  h.page.pick({ currentTarget: { dataset: { index: 0 } } });
+  assert.equal(h.page.data.product.days, 90);
+});
+
+test('购买页第一句写给谁用，付款前写全收录范围、只限本人、苹果退款、发票和到期后结果，防止只管本企业的人被带去付款、付了才知道限制', async () => {
+  const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS }) });
+  await flush();
+  const text = shown('pages/pass/index.wxml', h.page.data);
+  assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
+  assert.match(text, /只限本人的微信使用/);
+  assert.match(text, /苹果手机付款的，只能向 App Store 申请退款/);
+  assert.match(text, /发票：可开电子普通发票（测试文字）/);
+  assert.match(text, /到期后，已经生成的结果仍可查看、导出/);
+  assert.match(text, /按剩余天数退款/);
+  assert.match(text, /停止服务（会提前至少 30 天公告）/);
+  assert.match(text, /体验没用完的时间折成天数加在后面/);
+  // 第一句在价格前面
+  assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
+  const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));
+  assert.equal(links.length, 1);
+  assert.match(textOf(links[0]), /查看收录范围/);
+  h.page.coverage();
+  assert.deepEqual(h.urls, ['/pages/about/index']);
+});
+
+test('购买页没写能开哪种发票时现网没有付款按钮，沙箱照常联调，防止带着发票占位上线收费', async () => {
+  const noInvoice = { ...FINAL_TERMS, invoice: '' };
+  const live = passPage({ terms: noInvoice, payProducts: () => Promise.resolve({ items: TIERS }) });
+  await flush();
+  assert.equal(live.page.data.invoiceReady, false);
+  assert.equal(payButtons(live.page.data).length, 0);
+  assert.match(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定/);
+  live.page.buy();
+  assert.equal(live.calls.length, 0);
+  const sandbox = passPage({ terms: noInvoice, payProducts: () => Promise.resolve({ items: TIERS, sandbox: true }) });
+  await flush();
+  assert.equal(payButtons(sandbox.page.data).length, 1);
+  // 写了"待定"之类的占位也不算
+  assert.equal(pay.invoiceReady({ invoice: '发票类型待创始人确认' }), false);
+  assert.equal(pay.invoiceReady({ invoice: '  ' }), false);
+  // 仓库里的协议现在既没定稿也没写发票：现网一定付不了款
+  assert.equal(pay.invoiceReady(payTerms), false);
+});
+
+test('续买规则只有一句，和价格在同一屏；现在付款符合时说一声，开关关着时不提，防止规则藏在别处或不在售时出现', async () => {
+  const on = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } }) });
+  await flush();
+  const hero = findAll(render('pages/pass/index.wxml', on.page.data), (node) => String(node.attrs.class || '').split(/\s+/).includes('pass-hero'))[0];
+  assert.match(textOf(hero), /29.*79.*到期前后 7 天内续买，每次多送 3 天：现在付款就送/);
+  const later = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: false } }) });
+  await flush();
+  const text = shown('pages/pass/index.wxml', later.page.data);
+  assert.match(text, /到期前后 7 天内续买，每次多送 3 天/);
+  assert.doesNotMatch(text, /现在付款就送/);
+  for (const renewBonus of [null, undefined, { days: '3', windowDays: 7 }, { days: 3, windowDays: 0 }]) {
+    const off = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus }) });
+    await flush();
+    assert.equal(off.page.data.renew, null);
+    assert.doesNotMatch(shown('pages/pass/index.wxml', off.page.data), /续买，每次多送/);
+  }
+});
+
+test('购买页写出现有使用期到哪天，3 天内到期改成到期提示，防止续买的人不知道还剩多久', async () => {
+  const soon = new Date(Date.now() + 2 * 86400000).toISOString();
+  const far = new Date(Date.now() + 20 * 86400000).toISOString();
+  for (const [expiresAt, pattern] of [[soon, /批量工具 \d{2}-\d{2} 到期，到期不再扣钱；需要可以再买一次/], [far, /你的批量工具到 \d{4}-\d{2}-\d{2}；再买一次，接着往后顺延/]]) {
+    const status = { pass: { active: true, expiresAt } };
+    const api = { payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => Promise.resolve(status) };
+    const page = load('pages/pass/index.js', {
+      '../../utils/api.js': api, '../../utils/consent.js': { loginOpen: () => true },
+      '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(true) }, '../../content/pay-terms.js': FINAL_TERMS,
+    }, { wx: { getStorageSync() {}, setStorageSync() {}, removeStorageSync() {}, navigateTo() {}, showToast() {} } });
+    page.onShow();
+    await flush();
+    assert.match(shown('pages/pass/index.wxml', page.data), pattern);
+  }
+});
+
+test('订单页按档位写名称，逐笔列出续买多送和体验折算，按剩余天数退的写退回多少，退款确认说明送的天数一起收回，防止看不出每笔订单得了什么', async () => {
+  const h = ordersPage([
+    orderRecord({ orderId: 51, name: '批量工具 90 天', days: 90, amount: 7900, canRefund: true,
+      gifts: [{ kind: 'renewal', name: '续买多送', days: 3, startsAt: '2026-12-30T00:00:00Z', endsAt: '2027-01-02T00:00:00Z', revoked: false },
+        { kind: 'trial', name: '加量体验折算', days: 2, startsAt: '2027-01-02T00:00:00Z', endsAt: '2027-01-04T00:00:00Z', revoked: false }] }),
+    orderRecord({ orderId: 52, name: '批量工具 30 天', days: 30, status: '已退款', refundAmount: 1934,
+      gifts: [{ kind: 'renewal', name: '续买多送', days: 3, revoked: true }] }),
+    orderRecord({ orderId: 53, status: '已退款', refundAmount: 2900 }),
+  ]);
+  await flush();
+  const first = textOf(orderCard(h.page.data, 51));
+  assert.match(first, /批量工具 90 天/);
+  assert.match(first, /79\.00 元/);
+  assert.match(first, /续买多送 3 天：12-30 至 01-02/);
+  assert.match(first, /加量体验折算 2 天：01-02 至 01-04/);
+  const second = textOf(orderCard(h.page.data, 52));
+  assert.match(second, /批量工具 30 天/);
+  assert.match(second, /续买多送 3 天（已收回）/);
+  assert.match(second, /退回 19\.34 元（按剩余天数）/);
+  // 全额退的不另写退回多少（金额就是订单金额）
+  assert.doesNotMatch(textOf(orderCard(h.page.data, 53)), /退回/);
+  h.page.refund({ currentTarget: { dataset: { id: 51 } } });
+  assert.equal(h.modal().content, '退款后，这张订单对应的 90 天使用期和续买多送的 3 天取消，79.00 元原路退回。确定吗？');
+  assert.doesNotMatch(shown('pages/orders/index.wxml', h.page.data), /客户工作台/);
+});
+
+test('我的页只给在售时买过的人显示"批量工具"续买入口，进入购买页，防止停卖后还引导续买、没买过的人在我的页看到推销', async () => {
+  const urls = []; const pay = { enabled: false, hasOrders: false };
+  const page = load('pages/me/index.js', {
+    '../../content/legal.js': { final: true, version: '2026-10' },
+    '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }) },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/subscribe.js': { remindOpen: () => false },
+    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
+  }, { wx: { navigateTo: ({ url }) => urls.push(url), switchTab() {}, showToast() {} } });
+  const row = () => findAll(render('pages/me/index.wxml', page.data), (node) => node.attrs['data-url'] === '/pages/pass/index');
+  for (const [enabled, hasOrders, shownRow] of [[false, false, false], [true, false, false], [false, true, false], [true, true, true]]) {
+    Object.assign(pay, { enabled, hasOrders });
+    page.refresh();
+    await flush();
+    assert.equal(row().length, shownRow ? 1 : 0, JSON.stringify(pay));
+  }
+  assert.match(textOf(row()[0]), /批量工具/);
+  page.go({ currentTarget: { dataset: { url: row()[0].attrs['data-url'] } } });
+  assert.deepEqual(urls, ['/pages/pass/index']);
+});
+
+test('工具表单在使用期 3 天内到期且在售时写到期提示、续买规则和续买按钮；不在售或还早时不写，防止催买或停卖后还让人买', async () => {
+  const pass = (days) => ({ enabled: true, pass: { active: true, expiresAt: new Date(Date.now() + days * 86400000).toISOString() },
+    quota: { compare: { used: 0, limit: 3, maxRows: 500 }, track: { used: 0, limit: 3, maxRows: 500 } } });
+  const products = () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } });
+  const soon = toolForm({ api: { advisorCapabilities: () => Promise.resolve(caps({ enabled: true })), advisorStatus: () => Promise.resolve(pass(2)), payProducts: products } });
+  await flush();
+  const text = shown('pages/advisor-form/index.wxml', soon.page.data);
+  assert.match(text, /批量工具 \d{2}-\d{2} 到期，到期不再扣钱；需要可以再买一次/);
+  assert.match(text, /到期前后 7 天内续买，每次多送 3 天/);
+  assert.match(text, /批量工具使用期内，每次最多 500 家，不限提交次数/);
+  const renew = findAll(render('pages/advisor-form/index.wxml', soon.page.data), tapsTo('buyPass'));
+  assert.equal(renew.length, 1);
+  assert.equal(textOf(renew[0]), '续买批量工具');
+  for (const [entry, days] of [[{ enabled: false }, 2], [{ enabled: true }, 10]]) {
+    const quiet = toolForm({ api: { advisorCapabilities: () => Promise.resolve(caps(entry)), advisorStatus: () => Promise.resolve(pass(days)), payProducts: products } });
+    await flush();
+    const words = shown('pages/advisor-form/index.wxml', quiet.page.data);
+    assert.doesNotMatch(words, /再买一次|续买/);
+    assert.equal(findAll(render('pages/advisor-form/index.wxml', quiet.page.data), tapsTo('buyPass')).length, 0);
+  }
+});
+
+test('纠错页在开关开着时写出纠错送天数的采纳标准，申请覆盖、支付问题不写，读不到就不写，防止规则不公开或误导', async () => {
+  async function open(query, me) {
+    const page = load('pages/feedback/index.js', {
+      '../../utils/api.js': { me, feedback: () => Promise.resolve({}) },
+      '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
+    }, { wx: { setNavigationBarTitle() {}, showToast() {}, navigateBack() {}, switchTab() {} } });
+    page.onLoad(query);
+    await flush();
+    return shown('pages/feedback/index.wxml', page.data);
+  }
+  const rule = '第一个指出、经核对属实的事实错误（日期、链接、名单状态等）才算；重复的、核对不了的不算';
+  const on = () => Promise.resolve({ correctionReward: { days: 1, monthLimit: 3, rule } });
+  assert.match(await open({ id: '7', title: '某通知' }, on), /纠错被采纳送 1 天批量工具使用期：第一个指出、经核对属实的事实错误.*每人每月最多 3 天/);
+  for (const query of [{ type: 'coverage' }, { type: 'pay', orderId: '41' }]) assert.doesNotMatch(await open(query, on), /纠错被采纳送/);
+  for (const me of [() => Promise.resolve({ correctionReward: null }), () => Promise.reject(new Error('离线')), () => Promise.resolve({ correctionReward: { days: '1', monthLimit: 3, rule } })]) {
+    assert.doesNotMatch(await open({}, me), /纠错被采纳送/);
+  }
+});
+
+test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {
+  const files = [];
+  const walk = (dir) => {
+    for (const name of fs.readdirSync(path.join(root, dir))) {
+      const rel = path.join(dir, name);
+      if (fs.statSync(path.join(root, rel)).isDirectory()) walk(rel);
+      else if (/\.(js|wxml|json|wxss)$/.test(name)) files.push(rel);
+    }
+  };
+  ['pages', 'utils', 'components'].forEach(walk);
+  files.push('content/pay-terms.js', 'app.json');
+  const hits = files.filter((file) => /客户工作台|工作台使用期/.test(fs.readFileSync(path.join(root, file), 'utf8')));
+  assert.deepEqual(hits, []);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'pages/pass/index.json'), 'utf8')).navigationBarTitleText, '批量工具');
 });

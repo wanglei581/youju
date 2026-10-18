@@ -5,10 +5,10 @@ const { pasteRows, toolConsent, quotaView, quotaStale } = require('../../utils/d
 const pay = require('../../utils/pay.js');
 
 // 超出免费量时的说明：有加量体验资格时先推荐体验（免费，D-070；提示下面紧跟"了解加量体验"按钮）；
-// 支付在售（offer 有值）时提示可以开通客户工作台，没开放时照旧写"不需要购买"（D-058、D-068）
+// 支付在售（offer 有值）时提示可以买批量工具，没开放时照旧写"不需要购买"（D-058、D-068）
 function limitText(offer, trial) {
   if (trial) return '本月免费次数已用完，下月 1 日恢复；也可以开始 3 天加量体验（免费，每次 500 家以内）';
-  return offer ? '本月免费次数已用完，下月 1 日恢复；也可以开通客户工作台 30 天（不限次数，每次 500 家以内）' : '本月免费次数已用完，下月可继续使用；不需要购买';
+  return offer ? `本月免费次数已用完，下月 1 日恢复；也可以买批量工具（${offer.line}，不限次数，每次 500 家以内）` : '本月免费次数已用完，下月可继续使用；不需要购买';
 }
 
 Page({
@@ -16,8 +16,10 @@ Page({
     mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
     // 加量体验、申报季加量（D-070，都以服务端 /advisor/status 为准，见 utils/boost.js）
     trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', trialHint: '', seasonLine: '',
-    // 客户工作台 30 天（只有服务端在售时才有值）：{ price: '29', days: 30 }
-    offer: null },
+    // 批量工具（只有服务端在售时才有值）：{ line: '30 天 29 元、90 天 79 元', renew: 续买规则或 null }
+    offer: null,
+    // 使用期 3 天内到期的提示（在售时才显示，D-070："到期不再扣钱；需要可以再买一次"）
+    passNotice: '' },
   onLoad(query) {
     const kind = query.kind === 'track' ? 'track' : 'compare';
     this.setData({ kind, title: DATA_KINDS[kind] });
@@ -49,18 +51,22 @@ Page({
         }
         this.taskOwner = agreement.owner;
         if (this.taskOwner) idempotency.syncOwner(wx, this.taskOwner);
-        this.setData({ ...quotaView(status, this.data.kind), loading: false, enabled: true, agreed, gate: '', error: '' });
+        this.setData({ ...this.quota(status), loading: false, enabled: true, agreed, gate: '', error: '' });
         this.resumeFilePreview();
       });
     }).catch((err) => { if (!this.dead && serial === this.serial) this.setData({ loading: false, error: err.message, gate: err.status === 403 ? 'consent' : '' }); });
+  },
+  // 额度一行和到期提示（服务端 /advisor/status）
+  quota(status) {
+    return { ...quotaView(status, this.data.kind), passNotice: pay.expiryNotice(status.pass) };
   },
   // 在售时取一次价格；取不到就当没在售，不影响免费使用
   loadOffer(entry, serial) {
     if (!(entry && entry.enabled)) { this.setData({ offer: null }); return; }
     api.payProducts().then((res) => {
       if (this.dead || serial !== this.serial) return;
-      const product = pay.normalizeProducts(res)[0];
-      this.setData({ offer: product ? { price: pay.yuan(product.price), days: product.days } : null });
+      const products = pay.normalizeProducts(res);
+      this.setData({ offer: products.length ? { line: pay.tiersLine(products), renew: pay.renewRule(res) } : null });
     }).catch(() => { if (!this.dead && serial === this.serial) this.setData({ offer: null }); });
   },
   buyPass() { wx.navigateTo({ url: '/pages/pass/index' }); },
@@ -71,7 +77,7 @@ Page({
     const serial = this.serial;
     return api.advisorStatus().then((status) => {
       if (this.dead || serial !== this.serial) return false;
-      this.setData(quotaView(status, this.data.kind));
+      this.setData(this.quota(status));
       return true;
     });
   },

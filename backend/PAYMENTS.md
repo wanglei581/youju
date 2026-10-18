@@ -1,4 +1,6 @@
-# 客户工作台 30 天支付后台（D-058，2026-10-09）
+# 批量工具支付后台（D-058 起，D-070 改为两档）
+
+> 2026-10-18（D-070）：商品改名为"批量工具"，开卖就上 30 天、90 天两档，加续买多送、逐笔记账的退款、体验期内购买折算、纠错送天数（可选），见文末"开卖那批（D-070）"。下面 D-058 时期的记录照旧保留，"客户工作台"即现在的"批量工具"；和文末冲突的以文末为准。
 
 买一次用 30 天，到期不扣钱。只卖一个商品，默认编号 `workbench_30d`。
 付款仅开通使用期，用户自行提交 compare / track 任务。任务失败、取消和钱无关。
@@ -339,3 +341,64 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   判不一致（推送核验、补单、退款都过不去）。沙箱联调时以真实返回为准再确认一次。
 - **锁顺序**：用户 → 订单 → 使用期 / 发票。自助退款读发票加锁，管理台开票先锁订单再锁发票，
   不会出现「退款查完发票、作废之前被标成已开」。
+
+## 开卖那批（D-070，2026-10-18，开关仍默认关闭）
+
+规则以 [付费套餐与营销活动方案](../docs/商业/付费套餐与营销活动方案_专家团_2026-10-17.md) 第二、三节为准。
+
+### 两档商品
+- `YOUJU_XPAY_PRODUCT_PASS`（默认 `workbench_30d`）+ `YOUJU_XPAY_PRICE_PASS`：批量工具 30 天；
+  `YOUJU_XPAY_PRODUCT_PASS_90`（默认 `workbench_90d`）+ `YOUJU_XPAY_PRICE_PASS_90`：批量工具 90 天。
+  价格单位分（29 元填 2900、79 元填 7900），没配价格的那一档不卖；两档商品编号相同服务不启动。
+  天数跟着档位走（`payments.products`），**下单时记在订单上**（`pay_orders.days`），开通按订单记的天数给。
+- `GET /api/v1/pay/products`：`items[]` 按天数从短到长，`name` 为"批量工具 30 天 / 90 天"；新增 `renewBonus`
+  （续买多送开关关着为 null；开着为 `{days: 3, windowDays: 7, eligibleNow}`，认不出用户时 eligibleNow 为 false）。
+  看价格不要求登录。
+- 订单结构新增 `name, days, gifts[], refundAmount`；`gifts[]` 每次赠送一笔：`kind`（renewal / trial）、`name`、`days`、
+  `startsAt, endsAt, revoked`。`refundAmount` 是退了多少（分），没退款为 null。
+
+### 续买多送（`YOUJU_RENEW_BONUS_ENABLED`，默认关）
+- 规则一句："到期前后 7 天内续买，每次多送 3 天"。**下单时**开关开着才算数（`pay_orders.bonus_days` 记 3，否则 0），
+  资格**按付款时间**算（`payments.renewal_due`）：以前买过（有付款更早、没退款的订单使用期），且付款时间在这个用户现在
+  所有没收回的使用期里最晚的结束时间前后 7 天内（含两端）。提前好几次续买的，只有落在最后到期前后 7 天的那次送。
+- 每次赠送记一笔 `pass_rewards`（kind=renewal，ref_type=order_renewal，ref_id=订单编号）和一段使用期，接在这一笔后面。
+  不占奖励的每月上限（`rewards.monthly` 不算随订单送的）。
+
+### 体验期内购买（D-070 ③）
+- 付款确认时用户还在加量体验期内：使用期照常从付款时间起算（立即生效），体验到确认时结束（`boost_trials.ends_at`
+  改成确认时间），没用完的体验时间折成天数（不足一天按一天，最多 3 天）记一笔 `pass_rewards`（kind=trial，
+  ref_type=order_trial），接在这一笔（和续买多送）后面。确认时体验已经结束的不折。
+- 退款**不收回**体验折算的天数：那是用户自己没用完的体验时间，跟着往前挪。
+
+### 退款（统一口径，逐笔记账）
+- 自助全额退（不变，文字改了）：安卓、鸿蒙、电脑版微信付款，7 天内这一笔的使用期没用过付费的量（没超出每月免费次数、
+  没有一次超过 50 家）、没开过发票。每笔分开算：提前续买的那笔还没开始，7 天内可以单独退。
+- 退哪笔只收回那笔的使用期和**随它送的续买天数**（`rewards.revoke`，流水备注"已收回：随订单退款"），后面的段往前挪。
+  苹果手机的退款通知、平台退款同样处理。
+- 系统故障、停止服务按剩余天数退：负责人在 admin 服务运行
+  `youju pay-refund --order-id N --remaining --reason "原因"`（重复扣款、整段不能用的用 `--full`；停止服务用
+  `--all-active --remaining`），先加 `--dry-run` 看要退哪些、退多少。剩余天数 = 这一笔使用期剩下的时间，不足一天按一天，
+  还没开始的按整笔；金额 = 订单金额 × 剩余天数 ÷ 这一档天数，不足一分按一分。送的天数不算钱，一起收回。
+  只退安卓、鸿蒙、电脑版微信付款的；苹果手机付款的列出来、不退（请用户向 App Store 申请）；已开发票的先开红字发票，
+  再加 `--invoice-reversed` 单独退（批量模式跳过它们）。订单记 `refund_fee`、`refund_source`（self / staff）、`refund_note`。
+- 部分退款：微信 `refund_order` 支持 `refund_fee ∈ (0, left_fee]`（10/18 核对官方原文）。查单状态 5/8 且剩余金额
+  等于"订单金额 − 退款金额"时记为已退款；剩 0（全额）也按实际记；其他转人工。退款请求的原因和来源按官方枚举：
+  自助 `refund_reason=3`（意愿问题，用户主动退款）、`req_from=2`（用户自己发起）；负责人发起 `1`（产品问题）、`1`（人工客服）。
+  原来写的 `1`、`3` 对自助退款不对，一并改了。
+
+### 纠错被采纳送 1 天（`YOUJU_CORRECTION_REWARD_ENABLED`，默认关，可选）
+- 单独开关，还要批量工具开关开着；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会连带首次批量、
+  引荐、补截止日期这些已不做的奖励（`rewards.first_completion`、`rewards-reconcile` 仍只看旧开关）。
+- 管理台纠错列表的"采纳并送 1 天"一键发放：写 `pass_rewards`（kind=correction，ref_type=feedback）、标为已处理、
+  记操作日志；每人每月最多 3 天（`rewards.CORRECTION_MONTH_DAYS`），超出的记零天流水并备注。申请覆盖、支付问题不发。
+- `GET /api/v1/me` 新增 `correctionReward`（开着时 `{days: 1, monthLimit: 3, rule}`，纠错页公开写出采纳标准）。
+- `GET /api/v1/me/data` 新增 `passGifts`：送的天数每次一笔（续买多送、体验折算、纠错被采纳等）。
+
+### 迁移 0032 与权限
+- `pay_orders` 加 `days`（已有订单回填 30）、`bonus_days`、`refund_fee`、`refund_source`、`refund_note`；
+  `pass_rewards.kind` 的 CHECK 加 `renewal`、`trial`。回退时删除这两种流水和对应使用期。
+- `deploy/mysql_accounts.sql` 新增"批量工具两档开卖权限"三行（迁移 0032 后、打开收费前执行，"支付权限"四行要先执行）：
+  `pass_rewards` 的 INSERT（付款确认时记赠送）和 UPDATE（退款收回；奖励段也有）、`boost_trials` 只能改 `ends_at`
+  （体验期内买时结束体验）。`restricted_api_factory()` 按部署文件授权跑完体验期内买、续买多送、自助退款收回、注销；
+  去掉其中任一行，测试报权限不足（已验证）。
+- 测试：`tests/test_sale.py`。

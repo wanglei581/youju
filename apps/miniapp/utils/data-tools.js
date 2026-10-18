@@ -69,7 +69,7 @@ function quotaView(status, kind, now) {
   const active = !!(status.pass && status.pass.active);
   const remaining = Math.max(0, quota.limit - quota.used);
   const trial = boost.trialView(status.trial, now);
-  const statusLine = active ? `工作台使用期内，每次最多 ${quota.maxRows} 家，不限提交次数`
+  const statusLine = active ? `批量工具使用期内，每次最多 ${quota.maxRows} 家，不限提交次数`
     : trial.trialActive ? boost.trialLine(trial)
       : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家`;
   return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, seasonLine: boost.seasonLine(status.season), ...trial,

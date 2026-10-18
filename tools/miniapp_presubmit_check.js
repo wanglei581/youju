@@ -64,6 +64,9 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     // 付费协议没定稿时购买页的付款按钮不可用（pages/pass 用 utils/pay.js termsFinal 判断），这里只提示
     const payFinal = !!payTerms && payTerms.final === true && nonempty(payTerms.text) && !/待.*定稿|占位/.test(payTerms.text) && !hasPlaceholder(payTerms);
     add('pay-terms', '付费服务协议已定稿', payFinal, '律师定稿前购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
+    // 付款前要写明能开哪种发票（D-070）：没写时现网购买页没有付款按钮（utils/pay.js invoiceReady），这里只提示
+    const invoiceSet = !!payTerms && nonempty(payTerms.invoice) && !/待|占位/.test(payTerms.invoice) && !hasPlaceholder(payTerms.invoice);
+    add('pay-invoice', '购买页写明能开哪种发票', invoiceSet, '创始人确认发票类型后写进 content/pay-terms.js 的 invoice；没写时现网付款按钮不可用', true);
   }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {
     add(`template-${id}`, `${name}提醒模板`, nonempty((config.templates || {})[id]), `该提醒模板未配置，对应入口保持隐藏`, true);

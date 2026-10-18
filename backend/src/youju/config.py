@@ -124,8 +124,19 @@ class Settings(BaseSettings):
     xpay_appkey_sandbox: SecretStr | None = None
     wx_appsecret: SecretStr | None = None
     wx_appid: str = ""
+    # 批量工具两档（D-070）：30 天、90 天各是小程序后台的一个道具，商品编号和价格（分）分别配；
+    # 天数跟着档位走（payments.products）。没配价格的那一档不卖
     xpay_price_pass: int | None = Field(default=None, gt=0, le=2147483647)
     xpay_product_pass: str = "workbench_30d"
+    xpay_price_pass_90: int | None = Field(default=None, gt=0, le=2147483647)
+    xpay_product_pass_90: str = "workbench_90d"
+    # 续买多送 3 天（D-070 ⑥）：到期前后 7 天内续买，每次多送 3 天。单独开关，默认关；
+    # 下单时开着才算数（订单记下当时的赠送天数），关掉以后新订单不再送，已经送的不收回
+    renew_bonus_enabled: bool = False
+    # 纠错被采纳送 1 天（D-070 ⑦，可选）：单独开关，默认关，还要批量工具开关开着。
+    # 和旧的奖励总开关（rewards_enabled）分开：只开这一项，
+    # 不会连带首次批量、引荐、补截止这些已不做的奖励
+    correction_reward_enabled: bool = False
     wx_push_path: str = "/api/wx/push"
     # 空值按官方 order_type 枚举识别；可配置字段映射应对接口差异，未识别时不退款。
     xpay_platform_field: str = ""
@@ -139,7 +150,7 @@ class Settings(BaseSettings):
     xpay_bill_fee_unit: Literal["fen", "yuan"] = "fen"
     xpay_bill_hosts: list[str] = []
 
-    @field_validator("xpay_price_pass", mode="before")
+    @field_validator("xpay_price_pass", "xpay_price_pass_90", mode="before")
     @classmethod
     def _empty_pass_price(cls, value):
         return None if value == "" else value
@@ -207,6 +218,19 @@ class Settings(BaseSettings):
             )
         if self.agreement_min_version > self.agreement_version:
             raise ValueError("YOUJU_AGREEMENT_MIN_VERSION 不能比 YOUJU_AGREEMENT_VERSION 新")
+        return self
+
+    @model_validator(mode="after")
+    def _pass_products_distinct(self) -> "Settings":
+        """两档用了同一个商品编号：付款推送分不清买的是哪一档，所以不启动。"""
+        if (
+            self.xpay_price_pass is not None
+            and self.xpay_price_pass_90 is not None
+            and self.xpay_product_pass.strip() == self.xpay_product_pass_90.strip()
+        ):
+            raise ValueError(
+                "YOUJU_XPAY_PRODUCT_PASS 和 YOUJU_XPAY_PRODUCT_PASS_90 不能是同一个商品编号"
+            )
         return self
 
     @model_validator(mode="after")

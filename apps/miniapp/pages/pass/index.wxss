@@ -2,12 +2,22 @@
 
 /* 价格卡片：和"关注"页顶部同一种蓝色渐变 */
 .pass-hero { margin: 20rpx 24rpx 0; padding: 36rpx 40rpx 40rpx; border-radius: 24rpx; background: linear-gradient(135deg, var(--brand-g1), var(--brand-g2)); color: #FFFFFF; }
-.pass-name { font-size: 28rpx; opacity: 0.92; }
-.pass-price { margin-top: 4rpx; display: flex; align-items: baseline; gap: 8rpx; }
-.pass-num { font-size: 88rpx; font-weight: 700; line-height: 1.15; }
-.pass-unit { font-size: 32rpx; font-weight: 500; }
-.pass-sub { margin-top: 4rpx; font-size: 28rpx; opacity: 0.95; }
-.pass-now { margin-top: 24rpx; padding: 14rpx 20rpx; border-radius: 12rpx; background: rgba(255, 255, 255, 0.16); font-size: 24rpx; line-height: 1.6; }
+.pass-name { font-size: 34rpx; font-weight: 600; }
+/* 第一句：给谁用（D-070）。只管本企业的人看到这句就知道不用买 */
+.pass-lead { margin-top: 8rpx; font-size: 26rpx; line-height: 1.6; opacity: 0.92; }
+/* 两档并排：选中的白底蓝字，没选中的半透明；价格、天数一样大，不做"推荐""省"之类的标记 */
+.pass-tiers { margin-top: 28rpx; display: flex; gap: 20rpx; }
+.pass-tier { flex: 1; min-width: 0; padding: 20rpx 24rpx 22rpx; border-radius: 18rpx; border: 2rpx solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); }
+.pass-tier--on { background: #FFFFFF; border-color: #FFFFFF; color: var(--brand); }
+.pass-tier-days { font-size: 28rpx; font-weight: 600; }
+.pass-tier-sub { font-size: 24rpx; line-height: 1.5; opacity: 0.9; }
+.pass-price { margin-top: 2rpx; display: flex; align-items: baseline; gap: 6rpx; }
+.pass-num { font-size: 72rpx; font-weight: 700; line-height: 1.15; }
+.pass-unit { font-size: 28rpx; font-weight: 500; }
+.pass-sub { margin-top: 20rpx; font-size: 26rpx; opacity: 0.95; }
+/* 续买多送：规则只有一句，和价格同一屏 */
+.pass-renew { margin-top: 8rpx; font-size: 26rpx; font-weight: 500; }
+.pass-now { margin-top: 20rpx; padding: 14rpx 20rpx; border-radius: 12rpx; background: rgba(255, 255, 255, 0.16); font-size: 24rpx; line-height: 1.6; }
 
 .pass-card { padding-top: 32rpx; padding-bottom: 28rpx; }
 .pass-title { font-size: 30rpx; font-weight: 600; color: var(--t1); }
@@ -16,7 +26,7 @@
 .pass-row { margin-top: 24rpx; display: flex; align-items: flex-start; gap: 20rpx; }
 .pass-ico { flex-shrink: 0; width: 64rpx; height: 64rpx; border-radius: 16rpx; background: var(--brand-tint); display: flex; align-items: center; justify-content: center; }
 .pass-main { flex: 1; min-width: 0; }
-.pass-lead { font-size: 30rpx; font-weight: 500; color: var(--t1); line-height: 1.5; }
+.pass-lead-item { font-size: 30rpx; font-weight: 500; color: var(--t1); line-height: 1.5; }
 .pass-desc { font-size: 26rpx; color: var(--t2); line-height: 1.6; }
 
 /* 不买也能用：一行一条，前面小圆点 */

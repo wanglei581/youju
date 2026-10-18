@@ -1,4 +1,4 @@
-"""默认关闭的客户工作台支付接口及云托管消息推送。"""
+"""默认关闭的批量工具支付接口（30 天、90 天两档，D-070）及云托管消息推送。"""
 
 import asyncio
 import json
@@ -71,19 +71,32 @@ class OrderIn(BaseModel):
 
 
 @router.get("/products", dependencies=[Depends(require_enabled)])
-def list_products() -> dict:
-    """只读：已配置价格、可以下单的商品；小程序据此显示付费档，空列表时不显示。"""
+def list_products(request: Request, session: SessionDep) -> dict:
+    """只读：已配置价格、可以下单的档位（批量工具 30 天、90 天，按天数从短到长）；
+    小程序据此显示付费档，空列表时不显示。renewBonus：和价格同一屏写的续买规则，开关关着为 None。"""
     settings = get_settings()
     # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
     if not payments.orderable(settings):
-        return {"items": [], "sandbox": settings.xpay_env == 1}
+        return {"items": [], "sandbox": settings.xpay_env == 1, "renewBonus": None}
+    # 看价格不要求登录；认得出是谁时才算"现在续买送不送"
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        openid = None
+    user = session.scalar(select(User).where(User.openid == openid)) if openid else None
     return {
         "items": [
-            {"productId": product, "name": payments.PASS_NAME, "price": price, "days": days}
+            {
+                "productId": product,
+                "name": payments.pass_name(days),
+                "price": price,
+                "days": days,
+            }
             for product, (price, days) in payments.products(settings).items()
         ],
         # 沙箱（不扣真钱、只有测试名单看得到）：小程序在《付费服务协议》定稿前也放开付款按钮供联调
         "sandbox": settings.xpay_env == 1,
+        "renewBonus": payments.renew_offer(session, settings, user, _stamp()),
     }
 
 
@@ -96,7 +109,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     sku = payments.products(settings).get(body.product_id)
     if sku is None or not payments.orderable(settings):
         raise HTTPException(status_code=404, detail="没有找到商品")
-    price, _ = sku
+    price, days = sku
     if settings.pay_terms_version and body.terms_version != settings.pay_terms_version:
         raise HTTPException(
             status_code=409, detail="《付费服务协议》已更新，请重新阅读并同意后再付款"
@@ -178,6 +191,9 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         out_trade_no=trade,
         product_id=body.product_id,
         price=price,
+        days=days,
+        # 下单时续买多送开着才算数（付款页这时写着这条规则）；付款时间符合才真的送
+        bonus_days=payments.RENEW_BONUS_DAYS if payments.renew_bonus_enabled(settings) else 0,
         env=settings.xpay_env,
         terms_version=body.terms_version,
         created_at=stamp,
@@ -195,17 +211,36 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
 
 
 def order_out(session: Session, order: PayOrder) -> dict:
+    from youju import rewards
+
     ticket = payments.order_pass(session, order)
     reason = payments.refund_reason(session, order, _stamp())
     invoice = payments.order_invoice(session, order)
     return {
         "orderId": order.id,
+        "name": payments.pass_name(order.days),
+        "days": order.days,
         "status": payments.STATUS_LABELS[order.status],
         "amount": order.price,
         "paidAt": order.paid_time,
         "passStartsAt": ticket.starts_at if ticket else None,
         "passEndsAt": ticket.ends_at if ticket else None,
         "passRevokedAt": ticket.revoked_at if ticket else None,
+        # 随这笔送的天数，每次一笔（续买多送、加量体验折算）；收回的写着已收回
+        "gifts": [
+            {
+                "kind": gift.kind,
+                "name": rewards.LABELS[gift.kind],
+                "days": gift.granted_days,
+                "startsAt": pass_.starts_at if pass_ else None,
+                "endsAt": pass_.ends_at if pass_ else None,
+                "revoked": rewards.is_revoked(gift)
+                or (pass_ is not None and pass_.revoked_at is not None),
+            }
+            for gift, pass_ in payments.order_gifts(session, order)
+        ],
+        # 退了多少（分）：按剩余天数退的少于订单金额；没退款的为 None
+        "refundAmount": order.refund_fee if order.refund_status is not None else None,
         "canRefund": reason is None,
         "refundUnavailableReason": reason,
         # 只有已完成、没在退款的订单能申请发票；申请过的照原样带回（用户自己填的抬头和邮箱）
@@ -315,7 +350,8 @@ def refund_order(order_id: int, session: SessionDep, user: KnownUserDep, client:
     reason = payments.refund_reason(session, order, stamp, lock=True)
     if reason:
         raise HTTPException(status_code=422, detail=reason)
-    payments.revoke_pass(session, order, stamp)
+    # 自助退款退全额，收回这一笔的使用期和随它送的续买天数
+    payments.begin_refund(session, order, stamp, fee=order.price, source=payments.SELF_REFUND)
     payments.start_refund(session, order, client, stamp)
     return order_out(session, order)
 

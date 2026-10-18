@@ -28,7 +28,12 @@ function clearUnsettled() {
 
 Page({
   // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
-  data: { loginOpen: loginOpen(), loading: true, error: '', product: null, price: '', expires: '', termsFinal: pay.termsFinal(payTerms), sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
+  // tiers：在售的档位（30 天、90 天，D-070），selected 是选中的那一档；product 是选中的那一档（下单用）
+  // renew：续买多送的规则一句（和价格同一屏）；expires：现有使用期到哪天；soon：3 天内到期的提示
+  // invoiceReady：能开哪种发票已写明（content/pay-terms.js 的 invoice）；没写时现网不能付款
+  data: { loginOpen: loginOpen(), loading: true, error: '', tiers: [], selected: 0, product: null, price: '', renew: null, expires: '', soon: '',
+    termsFinal: pay.termsFinal(payTerms), invoiceReady: pay.invoiceReady(payTerms), invoiceText: pay.invoiceReady(payTerms) ? payTerms.invoice.trim() : '',
+    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
   onShow() {
     this.visible = true;
     if (this.payResume && this.poller) {
@@ -48,21 +53,35 @@ Page({
     this.setData({ loading: true, error: '' });
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
-      const product = pay.normalizeProducts(res)[0] || null;
-      this.setData({ loading: false, product, price: product ? pay.yuan(product.price) : '', sandbox: !!(res && res.sandbox === true) });
-      if (product && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
-        if (serial === this.loadSerial) this.setData({ expires: status.pass && status.pass.active ? pay.date(status.pass.expiresAt) : '' });
-      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '' }); });
+      const tiers = pay.normalizeProducts(res).map(pay.tierView);
+      // 重新载入时保留用户选的那一档（按天数认），没有了就回到第一档
+      const keep = this.data.product ? tiers.findIndex((tier) => tier.days === this.data.product.days) : -1;
+      const selected = keep >= 0 ? keep : 0;
+      this.setData({ loading: false, tiers, selected, product: tiers[selected] || null, price: tiers[selected] ? tiers[selected].price : '',
+        renew: pay.renewRule(res), sandbox: !!(res && res.sandbox === true) });
+      if (tiers.length && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
+        if (serial !== this.loadSerial) return;
+        const active = !!(status.pass && status.pass.active);
+        this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass) });
+      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
-      this.setData({ loading: false, product: null, price: '', sandbox: false, error: err.status === 404 ? '' : err.message });
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, sandbox: false, error: err.status === 404 ? '' : err.message });
     });
+  },
+  // 选一档：付款中、已开通时不能换
+  pick(e) {
+    if (this.data.busy || this.data.confirmed) return;
+    const index = Number(e.currentTarget.dataset.index);
+    const tier = this.data.tiers[index];
+    if (!tier) return;
+    this.setData({ selected: index, product: tier, price: tier.price, message: '', payError: false });
   },
   check(e) { this.setData({ checked: (e.detail.value || []).includes('agree') }); },
   terms() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy() {
     if (!this.data.product || this.data.busy || this.data.confirmed || !this.data.loginOpen) return;
-    if (!this.data.termsFinal && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
+    if (!(this.data.termsFinal && this.data.invoiceReady) && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
     if (!this.data.checked) { this.setData({ message: pay.TEXT.termsRequired, payError: false }); wx.showToast({ title: pay.TEXT.termsRequired, icon: 'none' }); return; }
     if (typeof wx.requestVirtualPayment !== 'function') { this.setData({ message: pay.TEXT.unsupported, payError: true }); return; }
     // 上一笔还没确认完：不下新单，接着查它
@@ -136,7 +155,7 @@ Page({
       this.setData({ busy: false, confirmed: true, message: `已开通，使用期到 ${pay.date(order.passEndsAt)}`, payError: false });
       // 续购、退款造成的分段使用期，以状态接口的连续到期时间展示。
       api.advisorStatus({ refresh: true }).then((status) => {
-        if (!this.unloaded && status.pass && status.pass.active) this.setData({ expires: pay.date(status.pass.expiresAt), message: `已开通，使用期到 ${pay.date(status.pass.expiresAt)}` });
+        if (!this.unloaded && status.pass && status.pass.active) this.setData({ expires: pay.date(status.pass.expiresAt), soon: pay.expiryNotice(status.pass), message: `已开通，使用期到 ${pay.date(status.pass.expiresAt)}` });
       }).catch(() => {});
     } else if (result.state === 'timeout') {
       const message = this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout;
@@ -147,5 +166,7 @@ Page({
     }
   },
   tools() { wx.navigateTo({ url: '/pages/advisor/index' }); },
+  // 付款前要看得到：已收录哪些省、哪些城市（D-070）
+  coverage() { wx.navigateTo({ url: '/pages/about/index' }); },
   feedback() { wx.navigateTo({ url: `/pages/feedback/index?type=pay${this.orderId ? '&orderId=' + encodeURIComponent(this.orderId) : ''}` }); },
 });

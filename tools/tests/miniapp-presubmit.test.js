@@ -58,6 +58,10 @@ test('完整候选严格限定 24 页（含加量体验确认页、购买页、�
  assert.equal(r.checks.find(c=>c.id==='pay-terms').state,'warning');
  assert.equal(inspect({...x,payTerms:{final:true,text:'付费服务协议正文'},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-terms').state,'pass');
  assert.equal(inspect({...x,payTerms:{final:true,text:'【付费服务协议：待律师定稿】'},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-terms').state,'warning');
+ // 能开哪种发票（D-070）：没写、写了占位只提示；写了一句才通过
+ assert.equal(r.checks.find(c=>c.id==='pay-invoice').state,'warning');
+ for (const invoice of ['', '待创始人确认', '【发票类型】']) assert.equal(inspect({...x,payTerms:{final:true,text:'正文',invoice},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-invoice').state,'warning');
+ assert.equal(inspect({...x,payTerms:{final:true,text:'正文',invoice:'可开电子普通发票'},profile:'complete-candidate',mode:'prepare'}).checks.find(c=>c.id==='pay-invoice').state,'pass');
  for(const profile of ['first-release','ai-internal','ai-release']) assert.equal(inspect({...x,profile,mode:'prepare'}).ok,false);
  assert.equal(inspect({...x,profile:'complete-candidate',mode:'submit'}).ok,false);
  // 奖励等不在范围的页面、缺了购买页或订单页、子包都不行

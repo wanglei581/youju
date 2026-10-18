@@ -955,6 +955,10 @@ class PayOrder(Base):
     out_trade_no: Mapped[str] = mapped_column(String(32))
     product_id: Mapped[str] = mapped_column(String(128))
     price: Mapped[int] = mapped_column(Integer)
+    # 这一档的天数（30 或 90，D-070）：下单快照，开通时按它给使用期，不按当时的配置
+    days: Mapped[int] = mapped_column(Integer)
+    # 续买多送的天数（D-070 ⑥）：下单时开关开着记 3，关着记 0；付款时间符合"到期前后 7 天"才真的送
+    bonus_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     env: Mapped[int] = mapped_column(Integer)
     # 下单时用户勾选同意的《付费服务协议》版本
     terms_version: Mapped[str] = mapped_column(String(40))
@@ -965,6 +969,13 @@ class PayOrder(Base):
     platform: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
     refund_order_id: Mapped[str | None] = mapped_column(String(32), unique=True)
     refund_status: Mapped[str | None] = mapped_column(String(16))
+    # 这次退多少（分）：自助退款是全额；系统故障、停止服务按剩余天数退（payments.remaining_fee）。
+    # 旧订单为空，按全额处理
+    refund_fee: Mapped[int | None] = mapped_column(Integer)
+    # 谁发起的：self 用户自助；staff 负责人按规则人工发起（youju pay-refund）
+    refund_source: Mapped[str | None] = mapped_column(String(16))
+    # 人工退款的原因（负责人填写），自助退款为空
+    refund_note: Mapped[str | None] = mapped_column(String(200))
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -1057,14 +1068,19 @@ class RewardClaim(Base):
 
 
 class PassReward(Base):
-    """包括发放零天的奖励审计；注销保留流水并断开用户关联。"""
+    """赠送天数的流水，每次赠送一笔（D-070 逐笔记账）；包括发放零天的奖励审计；
+    注销保留流水并断开用户关联。
+
+    renewal（续买多送）、trial（加量体验折算）随订单发：ref_type 是 order_renewal / order_trial，
+    ref_id 是订单编号，见 payments.py；其余是奖励（rewards.py）。"""
 
     __tablename__ = "pass_rewards"
     __table_args__ = (
         UniqueConstraint("ref_type", "ref_id", name="uq_pass_rewards_ref"),
         Index("ix_pass_rewards_user_granted", "user_id", "granted_at"),
         CheckConstraint(
-            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue')",
+            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue',"
+            " 'renewal', 'trial')",
             name="ck_pass_rewards_kind",
         ),
         CheckConstraint(

@@ -387,7 +387,7 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
                 else {}
             ),
         },
-        # 超出免费量时要不要提示开通客户工作台（D-058）；没开放支付时不出现任何购买字样
+        # 超出免费量时要不要提示买批量工具（D-058、D-070）；没开放支付时不出现任何购买字样
         "pay": payments.entry(session, settings, user),
     }
 
@@ -508,11 +508,20 @@ def create_task(
                 ticket = None
             if ticket is None and not reserved:
                 if data_kind:
+                    # 不在售（开关关着、不对这个用户开放、下不了单）时不提购买（D-058、D-068）
+                    selling = payments.selling_to(settings, user.openid) and payments.orderable(
+                        settings
+                    )
                     raise HTTPException(
                         status_code=429,
                         detail={
                             "code": "FREE_MONTHLY_LIMIT",
-                            "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                            "message": "本月免费次数已用完，下月 1 日恢复"
+                            + (
+                                "；也可以买批量工具，不限次数、每次 500 家以内，到期不扣钱"
+                                if selling
+                                else ""
+                            ),
                         },
                     )
                 label = "政策解读" if body.kind == "interpret" else "条款对照"

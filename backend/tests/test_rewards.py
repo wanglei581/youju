@@ -34,6 +34,13 @@ def headers(openid):
     return {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": openid}
 
 
+@pytest.fixture(autouse=True)
+def _legacy_correction_cap(monkeypatch):
+    """这个文件测的是旧的奖励规则（各项合计每月 30 天），借"纠错被采纳"当没有单项上限的奖励。
+    D-070 起纠错每人每月最多 3 天，在 test_sale.py 里测。"""
+    monkeypatch.setattr(rewards, "CORRECTION_MONTH_DAYS", 1000)
+
+
 @pytest.fixture
 def context(session_factory, monkeypatch):
     settings = Settings(
@@ -408,6 +415,7 @@ def paid(session, owner, start=NOW):
         out_trade_no=f"order-{owner.id}",
         product_id="workbench_30d",
         price=100,
+        days=30,
         env=1,
         terms_version="test",
         status="completed",
@@ -875,9 +883,9 @@ def test_admin_buttons_authorization_repeat_state_and_audit(
     assert client.post(url.rsplit("/", 1)[0] + "/" + other, headers=ADMIN).json()["alreadyGranted"]
     assert session.scalar(select(func.count(PassReward.id))) == 1
     page = client.get("/admin/feedback").text
-    assert (
-        "采纳并送 1 天" in page and "已接入并送 3 天" in page and "if (item.rewardsEnabled)" in page
-    )
+    assert "采纳并送 1 天" in page and "已接入并送 3 天" in page
+    assert "item.correctionRewardEnabled && item.kind === '纠错'" in page
+    assert "item.rewardsEnabled && item.kind === '申请覆盖'" in page
 
 
 def test_admin_wrong_type_and_missing(context, session):
