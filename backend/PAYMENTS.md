@@ -121,8 +121,9 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 仍算个人信息，和《网络数据安全管理条例》第二十四条（注销账号后应当删除个人信息或者匿名化处理）冲突。**2026-10-18 起不再写入**：
 注销即删，和加量体验一个口径（D-071 第②条）；注销后用同一个微信重新同意算新账号。
 `youju cleanup`（admin 每天 03:30）把库里剩下的旧凭据不论多久一律删掉；注销本身不碰这张表
-（API 账号没有它的删除权限），所以部署后到第一次清理之间，旧凭据最多再留一天。从旧备份恢复时旧凭据
-会跟着回来，同样由下一次清理删掉，要立即删就在 admin 里跑一次 `youju cleanup`。表、约束和 `users` 的
+（API 账号没有它的删除权限）。**上线必做**：新版 api 全量发布、旧版实例归零后（约 15 分钟），
+在 admin 里跑一次 `youju cleanup`，再跑一次确认 reward_claims 是 0 条（10/18 的备份校验显示线上有 1 行旧凭据）。
+从旧备份恢复后，重新开放服务前同样先跑 `youju cleanup` 并确认是 0 条。表、约束和 `users` 的
 `invite_code,invited_by_user_id,invited_at,batch_completed_at` 四列暂时留着，程序不再写入；删表、删列另提迁移。
 
 新迁移 **0027**，0026 不变：
@@ -388,8 +389,8 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   原来写的 `1`、`3` 对自助退款不对，一并改了。
 
 ### 纠错被采纳送 1 天（`YOUJU_CORRECTION_REWARD_ENABLED`，默认关，可选）
-- 只看自己的开关（还要批量工具开关开着）；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会连带补截止日期
-  这些已不做的奖励（`rewards-reconcile` 仍只看旧开关；首次批量、引荐两项 10/18 已删）；旧开关开着也不会
+- 只看自己的开关（还要批量工具开关开着）；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会启用截止线索、
+  栏目接入这些归旧开关管的奖励（`rewards-reconcile` 仍只看旧开关；首次批量、引荐两项 10/18 已删）；旧开关开着也不会
   打开纠错送天数（Codex 审阅后改）。
 - 管理台纠错列表的"采纳并送 1 天"一键发放：写 `pass_rewards`（kind=correction，ref_type=feedback）、标为已处理、
   记操作日志；每人每月最多 3 天（`rewards.CORRECTION_MONTH_DAYS`），超出的记零天流水并备注。申请覆盖、支付问题不发。
