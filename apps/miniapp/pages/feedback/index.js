@@ -9,7 +9,8 @@ function payPrefix(orderId) { return /^\d{1,12}$/.test(orderId || '') ? `支付�
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式。
 // 提交前要同意协议；协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"
 Page({
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, pay: false, prefix: '', loginOpen: loginOpen() },
+  // reward：纠错被采纳送天数的规则（D-070 ⑦，服务端开关开着时 /me 带回；只在纠错时显示）
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, pay: false, prefix: '', loginOpen: loginOpen(), reward: '' },
 
   onLoad(query) {
     if (!this.data.loginOpen) return;
@@ -27,6 +28,17 @@ Page({
     });
     if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
     if (pay) wx.setNavigationBarTitle({ title: '支付和订单问题' });
+    if (!coverage && !pay) this.loadReward();
+  },
+
+  // 采纳标准在提交之前写出来（D-070 ⑦："采纳标准公开"）；读不到就不写，不影响纠错
+  loadReward() {
+    if (typeof api.me !== 'function') return;
+    api.me().then((res) => {
+      const reward = res && res.correctionReward;
+      if (!reward || !Number.isInteger(reward.days) || !Number.isInteger(reward.monthLimit) || typeof reward.rule !== 'string') return;
+      this.setData({ reward: `纠错被采纳送 ${reward.days} 天批量工具使用期：${reward.rule}；每人每月最多 ${reward.monthLimit} 天。` });
+    }).catch(() => { /* 读不到规则也照常能纠错 */ });
   },
 
   onInput(e) {

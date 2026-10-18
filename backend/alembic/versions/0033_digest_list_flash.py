@@ -8,15 +8,15 @@
   和 weekly.scope 一样），升级前发布的全国版周报也找得到。旧期刊没记当时的范围，方案发布后
   又改过范围的只能按现在的算（这次升级前公众号还没开，没有真正发布过的周报）。
 
-Revision ID: 0032
-Revises: 0031
+Revision ID: 0033
+Revises: 0032
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0032"
-down_revision = "0031"
+revision = "0033"
+down_revision = "0032"
 branch_labels = None
 depends_on = None
 

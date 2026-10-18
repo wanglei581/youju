@@ -7,9 +7,12 @@
   <view wx:elif="{{!items.length}}" class="card advisor-card muted">还没有订单</view>
   <block wx:else>
   <view wx:for="{{items}}" wx:key="orderId" class="card order">
-    <view class="order-head"><text class="order-name">客户工作台 30 天</text><text class="order-status order-status--{{item.statusTone}}">{{item.statusText}}</text></view>
+    <view class="order-head"><text class="order-name">{{item.name}}</text><text class="order-status order-status--{{item.statusTone}}">{{item.statusText}}</text></view>
     <view class="order-line"><text class="order-amount">{{item.amountText}} 元</text><text wx:if="{{item.paidText}}" class="muted"> · {{item.paidText}} 付款</text></view>
+    <view wx:if="{{item.refundText}}" class="order-line muted">{{item.refundText}}</view>
     <view wx:if="{{item.period}}" class="order-line muted">使用期 {{item.period}}</view>
+    <!-- 随这笔送的天数，每次一行（续买多送、加量体验折算） -->
+    <view wx:for="{{item.gifts}}" wx:for-item="gift" wx:key="*this" class="order-line muted">{{gift}}</view>
     <view class="order-line weak">订单号 {{item.orderId}}</view>
     <view wx:if="{{!item.canRefund && item.reason}}" class="order-reason">不能自助退款：{{item.reason}}</view>
     <view wx:if="{{item.invoice}}" class="order-invoice">

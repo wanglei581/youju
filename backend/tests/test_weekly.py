@@ -1627,7 +1627,7 @@ def test_api_list_flash_lists_generate_paths_and_period(
     )
 
 
-def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile, lists_world):
+def test_migration_0033_list_flash_upgrade_downgrade(db_engine, session, profile, lists_world):
     assert db_engine.url.database.startswith("youju_test")
     weekly_issue = generate(session, profile).issue
     # 已有数据里限了地区却叫"全国"的方案：回填时不能算全国版
@@ -1644,7 +1644,7 @@ def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile
         return columns, uniques
 
     try:
-        command.downgrade(cfg, "0031")
+        command.downgrade(cfg, "0032")
         columns, uniques = shape()
         assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}

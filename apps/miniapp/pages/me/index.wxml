@@ -56,6 +56,7 @@
   <view wx:if="{{digestEntry}}" class="row" bindtap="openDigest" aria-role="button" aria-label="本周周报：{{digestEntry.week}}"><t-icon name="calendar" size="40rpx" color="#4E5969" /><text class="row-text">本周周报</text><text class="row-sub">{{digestEntry.week}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <follow-account variant="row" />
   <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{loginOpen && renewEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text class="row-hint">到期日、续买</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->

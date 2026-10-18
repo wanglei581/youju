@@ -827,7 +827,7 @@ function saveSubscription(kind, target) {
   return request('/api/v1/me/subscriptions', null, { method: 'POST', data });
 }
 
-// ---- 客户工作台 30 天（D-058；服务端开关关着时商品接口返回 404，小程序不显示购买入口） ----
+// ---- 批量工具 30 天、90 天（D-058、D-070；服务端开关关着时商品接口返回 404，小程序不显示购买入口） ----
 function payProducts() {
   return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
 }

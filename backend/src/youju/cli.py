@@ -982,6 +982,123 @@ def _cmd_rewards_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refund_reason(value: str) -> str:
+    reason = value.strip()
+    if not 6 <= len(reason) <= 100:
+        raise argparse.ArgumentTypeError("退款原因须为 6–100 字")
+    return reason
+
+
+def _refund_one(session, order_id: int, args, stamp, client) -> str:
+    """处理一笔：打印要退多少，演练时不写入；返回 refunded（已发起）/ skipped / missing。"""
+    from youju import payments, rewards
+
+    order = payments.lock_order(session, order_id)
+    if order is None:
+        session.rollback()
+        print(f"订单 #{order_id}：没有找到")
+        return "missing"
+    problem = payments.staff_refund_problem(session, order, invoice_reversed=args.invoice_reversed)
+    ticket = payments.order_pass(session, order, lock=True)
+    extra = args.extra_days or 0
+    fee = order.price if args.full else payments.remaining_fee(order, ticket, stamp, extra)
+    days = order.days if args.full else payments.remaining_days(order, ticket, stamp, extra)
+    period = (
+        f"{ticket.starts_at.isoformat()} 至 {ticket.ends_at.isoformat()}"
+        + ("（已收回）" if ticket.revoked_at else "")
+        if ticket
+        else "无"
+    )
+    print(
+        f"订单 #{order.id}：{payments.pass_name(order.days)}，{order.price / 100:.2f} 元，"
+        f"付款 {order.paid_time.isoformat() if order.paid_time else '未确认'}；使用期 {period}"
+    )
+    gifts = [
+        f"{gift.granted_days} 天{'（已收回）' if rewards.is_revoked(gift) else ''}"
+        for gift, _ in payments.order_gifts(session, order)
+        if gift.ref_type == payments.RENEWAL_REF
+    ]
+    if problem is None and fee <= 0:
+        problem = "使用期已经用完，没有可退的金额"
+    if problem is not None:
+        session.rollback()
+        print(f"  不退：{problem}")
+        return "skipped"
+    print(
+        f"  {'全额退' if args.full else f'按剩余 {days} 天退'}：{fee / 100:.2f} 元"
+        + (f"（含此前没补上的 {extra} 天）" if extra and not args.full else "")
+        + "；"
+        f"收回这一笔的使用期{'和随它送的续买 ' + '、'.join(gifts) if gifts else ''}"
+    )
+    if args.dry_run:
+        session.rollback()
+        return "refunded"
+    payments.begin_refund(
+        session, order, stamp, fee=fee, source=payments.STAFF_REFUND, note=args.reason
+    )
+    payments.start_refund(session, order, client, stamp)
+    session.expire_all()
+    order = session.get(type(order), order_id)
+    print(
+        f"  已发起：订单状态 {payments.STATUS_LABELS[order.status]}"
+        + (f"（{order.error}）" if order.error else "")
+    )
+    return "refunded"
+
+
+def _cmd_pay_refund(args: argparse.Namespace) -> int:
+    """负责人按规则发起退款（D-070）：系统故障、停止服务按剩余天数退（--remaining），
+    重复扣款、整段没法用的全额退（--full）。只退安卓、鸿蒙、电脑版微信付款的；苹果手机的请用户向
+    App Store 申请。先加 --dry-run 看清楚要退哪些、退多少。"""
+    import httpx
+
+    from youju.config import get_settings
+    from youju.models import PayOrder, WorkbenchPass
+    from youju.xpay import XPayClient
+
+    if args.all_active and (args.full or args.invoice_reversed or args.extra_days):
+        # 停止服务按剩余天数退；已开发票的要一笔一笔先冲红，再用 --order-id 单独退
+        print("--all-active 只能和 --remaining 一起用，不能加 --invoice-reversed、--extra-days")
+        return 2
+    if args.full and args.extra_days:
+        print("--extra-days 只能和 --remaining 一起用（全额退不用另算天数）")
+        return 2
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    with session_factory()() as session, httpx.Client(trust_env=False) as http:
+        client = XPayClient(settings, http)
+        if args.order_id is not None:
+            ids = [args.order_id]
+        else:
+            # 停止服务：使用期还没用完、没退过款的订单（含提前续买、还没开始的）
+            ids = list(
+                session.scalars(
+                    select(PayOrder.id)
+                    .join(WorkbenchPass, WorkbenchPass.order_id == PayOrder.id)
+                    .where(
+                        PayOrder.status == "completed",
+                        PayOrder.refund_status.is_(None),
+                        WorkbenchPass.revoked_at.is_(None),
+                        WorkbenchPass.ends_at > stamp,
+                    )
+                    .order_by(PayOrder.id)
+                )
+            )
+            session.rollback()
+            print(f"使用期还没用完的订单 {len(ids)} 笔")
+        report = {"refunded": 0, "skipped": 0, "missing": 0}
+        for order_id in ids:
+            report[_refund_one(session, order_id, args, stamp, client)] += 1
+    print(
+        ("演练完成，未写入：可退 " if args.dry_run else "已发起退款 ")
+        + f"{report['refunded']} 笔，不退 {report['skipped']} 笔"
+        + (f"，没找到 {report['missing']} 笔" if report["missing"] else "")
+    )
+    if report["skipped"] and not args.dry_run:
+        print("不退的订单请按上面的原因处理（苹果手机付款的请用户在 App Store 申请）")
+    return 1 if report["missing"] else 0
+
+
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
@@ -1341,6 +1458,36 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser(
         "pay-reconcile", help="前一天支付日账单对账（关闭后只在那天有本地订单时对账）"
     ).set_defaults(func=_cmd_pay)
+    p = sub.add_parser(
+        "pay-refund",
+        help="负责人按规则退款：系统故障或停止服务按剩余天数退，重复扣款全额退（开关关闭后仍可运行）",
+    )
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--order-id", type=int, help="订单编号（用户订单页上的订单号）")
+    which.add_argument(
+        "--all-active", action="store_true", help="停止服务：使用期还没用完的所有订单"
+    )
+    how = p.add_mutually_exclusive_group(required=True)
+    how.add_argument("--remaining", action="store_true", help="按剩余天数退（不足一天按一天）")
+    how.add_argument("--full", action="store_true", help="全额退")
+    p.add_argument(
+        "--reason", type=_refund_reason, required=True, help="退款原因，6–100 字，记在订单上"
+    )
+    p.add_argument(
+        "--extra-days",
+        type=int,
+        choices=range(0, 91),
+        metavar="0-90",
+        help="此前因系统故障不能用、又没有延长补上的天数，核实后加进去一起退"
+        "（只对 --order-id --remaining 有用）",
+    )
+    p.add_argument(
+        "--invoice-reversed",
+        action="store_true",
+        help="这笔已开的发票已按退款金额开了红字发票（只对 --order-id 有用）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
+    p.set_defaults(func=_cmd_pay_refund)
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )

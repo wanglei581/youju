@@ -35,6 +35,8 @@ Page({
     reminderCount: 0,
     // "我的订单"：支付在售、或有过订单时才显示（服务端 /me 的 pay；没开放支付时不放空入口，D-068）
     ordersEntry: false,
+    // "批量工具"：给买过的人续买（D-070），在售并且有过订单才显示；停卖后只剩"我的订单"
+    renewEntry: false,
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
     stats: null,
     notCovered: '',
@@ -86,7 +88,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, renewEntry: false });
       return;
     }
     const started = consentEpoch();
@@ -108,6 +110,7 @@ Page({
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
           ordersEntry: !!(res.pay && (res.pay.enabled || res.pay.hasOrders)),
+          renewEntry: !!(res.pay && res.pay.enabled === true && res.pay.hasOrders === true),
         });
       })
       .catch((err) => {

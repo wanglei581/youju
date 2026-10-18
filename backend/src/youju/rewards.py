@@ -25,13 +25,24 @@ from youju.models import (
 
 log = logging.getLogger("youju.rewards")
 MONTH_LIMIT = 30
+# 纠错被采纳（D-070 ⑦）：每条送 1 天，每人每月最多 3 天
+CORRECTION_DAYS = 1
+CORRECTION_MONTH_DAYS = 3
+# 采纳标准（D-070 ⑦，开关开着时纠错页公开写出来）
+CORRECTION_RULE = (
+    "第一个指出、经核对属实的事实错误（日期、链接、名单状态等）才算；重复的、核对不了的不算"
+)
 LABELS = {
     "first_batch": "第一次用批量功能",
     "correction": "纠错被采纳",
     "source": "提的栏目已接入",
     "referral": "请来一位同行",
     "deadline_clue": "补截止日期被采纳",
+    # 随订单发的赠送（payments.py 发放和收回），不是奖励：不走 grant，不占每月奖励上限
+    "renewal": "续买多送",
+    "trial": "加量体验折算",
 }
+ORDER_KINDS = ("renewal", "trial")
 REVOKED_PREFIX = "已收回："
 
 
@@ -89,6 +100,22 @@ def referral_enabled(settings) -> bool:
     return enabled(settings) and bool(getattr(settings, "referral_enabled", False))
 
 
+def correction_enabled(settings) -> bool:
+    """纠错被采纳送天数（D-070 ⑦）：只看单独开关 correction_reward_enabled
+    （旧的奖励总开关开着也不算，Codex 审阅），还要批量工具开关开着（天数是批量工具的使用期）。"""
+    return bool(
+        getattr(settings, "correction_reward_enabled", False)
+        and getattr(settings, "advisor_enabled", False)
+    )
+
+
+def correction_info(settings) -> dict | None:
+    """纠错页公开写的规则（开关关着时为 None，页面不提送天数）。"""
+    if not correction_enabled(settings):
+        return None
+    return {"days": CORRECTION_DAYS, "monthLimit": CORRECTION_MONTH_DAYS, "rule": CORRECTION_RULE}
+
+
 def month_bounds(stamp: datetime) -> tuple[datetime, datetime]:
     local = _utc(stamp).astimezone(BEIJING)
     start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -97,9 +124,13 @@ def month_bounds(stamp: datetime) -> tuple[datetime, datetime]:
 
 
 def monthly(session: Session, user_id: int, stamp: datetime):
+    """这个月发的奖励（不含随订单送的续买多送、体验折算）。"""
     start, end = month_bounds(stamp)
     return select(PassReward).where(
-        PassReward.user_id == user_id, PassReward.granted_at >= start, PassReward.granted_at < end
+        PassReward.user_id == user_id,
+        PassReward.granted_at >= start,
+        PassReward.granted_at < end,
+        PassReward.kind.not_in(ORDER_KINDS),
     )
 
 
@@ -149,7 +180,7 @@ def grant(
     ref_id: int,
     stamp: datetime,
 ) -> PassReward | None:
-    if kind not in LABELS or type(days) is not int or days <= 0:
+    if kind not in LABELS or kind in ORDER_KINDS or type(days) is not int or days <= 0:
         raise ValueError("奖励类型或天数不支持")
     stamp = _utc(stamp)
     # 和下单、提交任务、注销同序；不让待写外键在用户锁之前自动刷新。
@@ -190,6 +221,11 @@ def grant(
         actual = min(actual, max(0, 10 - sum(r.granted_days for r in same)))
         if actual < days:
             note = note or "本月该项奖励已到上限"
+    if kind == "correction":
+        # D-070 ⑦：纠错被采纳每人每月最多 3 天（超出的记零天流水，备注写明）
+        actual = min(actual, max(0, CORRECTION_MONTH_DAYS - sum(r.granted_days for r in same)))
+        if actual < days:
+            note = note or f"本月纠错奖励已到上限（每月最多 {CORRECTION_MONTH_DAYS} 天）"
     reward = PassReward(
         user_id=user_id,
         kind=kind,
