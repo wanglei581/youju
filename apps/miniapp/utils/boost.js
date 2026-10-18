@@ -5,11 +5,25 @@
 const format = require('./format.js');
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const STAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/;
 const count = (value) => (Number.isInteger(value) && value > 0 ? value : 0);
+
+// 服务端带时区的时间 → 毫秒；格式不对返回 0。不用 Date.parse：各平台对时区和 6 位小数秒的支持不一
+function timeMs(iso) {
+  const m = typeof iso === 'string' && STAMP.exec(iso.trim());
+  if (!m) return 0;
+  const offset = m[7] === 'Z' ? 0 : (m[8] === '-' ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10])) * 60000;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)) - offset;
+}
+
+// 北京时间的日期（如 2026-10-20）：每天 10 次按它重新计数
+function beijingDay(now) {
+  return format.todayISO(now);
+}
 
 // 服务端的体验状态 → 页面字段。active 要有结束时间才算数，避免显示"到 结束"这样的半句话
 function trialView(trial, now) {
-  const none = { trialAvailable: false, trialActive: false, trialReason: '', trialLeft: 0, trialDaily: 0, trialRows: 0, trialHours: 0, trialEnd: '' };
+  const none = { trialAvailable: false, trialActive: false, trialReason: '', trialLeft: 0, trialDaily: 0, trialRows: 0, trialHours: 0, trialEnd: '', trialEndsMs: 0 };
   if (!trial || typeof trial !== 'object') return none;
   const daily = count(trial.dailyLimit);
   const rows = count(trial.maxRows);
@@ -23,6 +37,7 @@ function trialView(trial, now) {
     trialReason: typeof trial.reason === 'string' ? trial.reason : '',
     trialLeft: end ? Math.max(0, daily - used) : 0,
     trialDaily: daily, trialRows: rows, trialHours: hours, trialEnd: end,
+    trialEndsMs: end ? timeMs(trial.endsAt) : 0,
   };
 }
 
@@ -99,4 +114,4 @@ function unavailableText(view) {
   return '加量体验暂未开放。';
 }
 
-module.exports = { trialView, trialLine, trialCapText, trialPitch, seasonLine, confirmItems, unavailableText };
+module.exports = { trialView, trialLine, trialCapText, trialPitch, seasonLine, confirmItems, unavailableText, timeMs, beijingDay };

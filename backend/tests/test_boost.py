@@ -166,6 +166,68 @@ def test_start_needs_agreement_runs_72_hours_and_only_once(ctx, session):
     assert used.status_code == 409 and used.json()["detail"]["code"] == "TRIAL_USED"
 
 
+def test_double_tap_that_waited_for_the_lock_gets_the_same_trial(ctx, db_engine):
+    """连点两次：后拿到锁的那个请求可能比先建成的那段更早到达，开始时间要在锁后取，
+    返回同一段，不报"已经用过"。"""
+    from sqlalchemy import event
+
+    client, clock = ctx.client, ctx.clock
+    identity = join(client)
+    assert start(client, identity).status_code == 200
+    clock.at = NOW - timedelta(seconds=1)
+
+    def waited(conn, cursor, statement, *args):
+        sql = statement.lower()
+        if sql.startswith("select users.id") and "for update" in sql:
+            clock.at = NOW + timedelta(seconds=1)
+
+    event.listen(db_engine, "before_cursor_execute", waited)
+    try:
+        again = start(client, identity)
+    finally:
+        event.remove(db_engine, "before_cursor_execute", waited)
+    assert again.status_code == 200, again.text
+    assert again.json()["startedAt"] == NOW.isoformat()
+
+
+def test_unique_constraint_returns_the_trial_already_started(ctx, session, monkeypatch):
+    """没读到已建成的那段（并发）时，插入撞唯一约束：返回同一段，不是 500。"""
+    client = ctx.client
+    identity = join(client)
+    assert start(client, identity).status_code == 200
+    real, calls = boost.trial_of, []
+
+    def missed_once(db, user_id):
+        calls.append(user_id)
+        return None if len(calls) == 1 else real(db, user_id)
+
+    monkeypatch.setattr(boost, "trial_of", missed_once)
+    again = start(client, identity)
+    assert again.status_code == 200, again.text
+    assert again.json()["startedAt"] == NOW.isoformat()
+    assert session.scalar(select(func.count(BoostTrial.id))) == 1
+
+
+def test_start_sees_a_pass_granted_while_waiting_for_the_user_lock(
+    ctx, session_factory, monkeypatch
+):
+    """读用户之后、锁用户之前别处刚发了使用期：锁后读得到（连接是 READ COMMITTED），不能开始体验。"""
+    client = ctx.client
+    identity = join(client)
+    real = boost.trial_enabled
+
+    def granted_meanwhile(settings):
+        with session_factory() as other:
+            owner = other.scalar(select(User).where(User.openid == "trial-user"))
+            rewards.grant(other, owner.id, "correction", 30, "correction", 9, NOW)
+            other.commit()
+        return real(settings)
+
+    monkeypatch.setattr(boost, "trial_enabled", granted_meanwhile)
+    blocked = start(client, identity)
+    assert blocked.status_code == 409 and blocked.json()["detail"]["code"] == "TRIAL_HAS_PASS"
+
+
 def test_trial_does_not_touch_monthly_free_quota_and_caps_ten_a_day(ctx, session):
     client, clock = ctx.client, ctx.clock
     identity = join(client)

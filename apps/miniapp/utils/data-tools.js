@@ -73,7 +73,15 @@ function quotaView(status, kind, now) {
     : trial.trialActive ? boost.trialLine(trial)
       : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家`;
   return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, seasonLine: boost.seasonLine(status.season), ...trial,
-    trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial) : '' };
+    trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial) : '',
+    quotaDay: boost.beijingDay(now) };
+}
+
+// 页面一直开着（电脑版微信常这样）跨过北京时间 0 点、或过了体验结束时间：页面上的额度可能已经变了，
+// 挡住提交之前先重新读一次（体验每天 10 次按北京时间重新计数，到期回到免费量）
+function quotaStale(view, now) {
+  const at = now || new Date();
+  return view.quotaDay !== boost.beijingDay(at) || (view.trialActive === true && view.trialEndsMs > 0 && at.getTime() >= view.trialEndsMs);
 }
 
 // 服务端最多 20 MiB、每段 900 KiB。预先限制元数据并逐段校验，避免异常元数据导致无界分配。
@@ -117,4 +125,4 @@ function openResult(id, options = {}) {
     });
   });
 }
-module.exports = { pasteRows, csvRows, toolConsent, quotaView, openResult, MAX_RESULT_BYTES, PART_BYTES };
+module.exports = { pasteRows, csvRows, toolConsent, quotaView, quotaStale, openResult, MAX_RESULT_BYTES, PART_BYTES };

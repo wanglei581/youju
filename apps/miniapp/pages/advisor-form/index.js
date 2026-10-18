@@ -1,7 +1,7 @@
 const api = require('../../utils/api.js');
 const idempotency = require('../../utils/data-idempotency.js');
 const { DATA_KINDS, dataKinds } = require('../../utils/advisor.js');
-const { pasteRows, toolConsent, quotaView } = require('../../utils/data-tools.js');
+const { pasteRows, toolConsent, quotaView, quotaStale } = require('../../utils/data-tools.js');
 const pay = require('../../utils/pay.js');
 
 // 超出免费量时的说明：有加量体验资格时先推荐体验（免费，D-070）；支付在售（offer 有值）时提示可以开通客户工作台，
@@ -66,12 +66,27 @@ Page({
   buyPass() { wx.navigateTo({ url: '/pages/pass/index' }); },
   // 加量体验的确认页：规则写全，用户点"开始体验"才起算；回到本页时 onShow 重新读额度
   openTrial() { wx.navigateTo({ url: '/pages/advisor-trial/index' }); },
-  // 静默刷新额度（服务端说次数或上限变了时），不清空已填的内容
+  // 静默刷新额度（服务端说次数或上限变了、或页面上的额度已旧），不清空已填的内容；读到了返回 true
   refreshQuota() {
     const serial = this.serial;
-    api.advisorStatus().then((status) => {
-      if (!this.dead && serial === this.serial) this.setData(quotaView(status, this.data.kind));
-    }).catch(() => { /* 下次进入页面会重新读取 */ });
+    return api.advisorStatus().then((status) => {
+      if (this.dead || serial !== this.serial) return false;
+      this.setData(quotaView(status, this.data.kind));
+      return true;
+    });
+  },
+  // 被挡住但额度可能已旧（跨天、体验到期）：重读一次再按新的额度走提交。每次点击最多自动重读一次
+  // （手机时钟比服务器快时，体验结束前后会一直判断为"已旧"）；读不到就提示
+  recheck() {
+    if (this.rechecking) return;
+    this.rechecking = true;
+    this.refreshQuota().then((fresh) => {
+      this.rechecking = false;
+      if (fresh && !this.dead) { this.rechecked = true; this.submit(); }
+    }).catch((err) => {
+      this.rechecking = false;
+      if (!this.dead) this.setData({ inputError: `未能读取工具额度：${err.message}` });
+    });
   },
   // 现在还能不能提交：使用期不限次数；体验期看体验当天还剩几次；其余看本月免费次数
   blocked() { return !this.data.passActive && (this.data.trialActive ? this.data.trialLeft <= 0 : this.data.remaining <= 0); },
@@ -161,6 +176,8 @@ Page({
   submit() {
     if (this.data.submitting || this.data.previewing || this.data.accepted || !this.data.enabled) return;
     if (!this.data.agreed) { this.terms(); return; }
+    const rechecked = this.rechecked; this.rechecked = false;
+    if (!rechecked && this.blocked() && quotaStale(this.data)) { this.recheck(); return; }
     if (this.blocked() && !this.data.previewed) { this.setData({ inputError: this.limitMessage() }); return; }
     if (!this.data.previewed) { this.setData({ inputError: '请先预览并确认本次输入' }); return; }
     let body;
@@ -197,7 +214,7 @@ Page({
       }
       this.setData(change);
       if (err.code === 'FREE_ROW_LIMIT' && this.data.trialAvailable) this.setData({ inputError: this.rowsMessage() });
-      if (ended) this.refreshQuota();
+      if (ended) this.refreshQuota().catch(() => { /* 下次进入页面会重新读取 */ });
     });
   },
 });

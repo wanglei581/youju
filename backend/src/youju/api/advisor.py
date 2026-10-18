@@ -227,9 +227,11 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     if not boost.trial_enabled(settings):
         raise HTTPException(status_code=404, detail="没有找到接口")
-    stamp = _stamp()
-    # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期
+    # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
+    # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
+    # 连点两次时，后拿到锁的请求不会早于先建成的那段，返回同一段而不是"已经用过"
     session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
+    stamp = _stamp()
     try:
         boost.start(session, user, stamp)
         session.commit()
@@ -239,8 +241,9 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
             status_code=409, detail={"code": exc.code, "message": str(exc)}
         ) from None
     except IntegrityError:
-        # 同一用户两个请求同时开始：唯一约束只让一个建成，另一个返回建成的那段
+        # 唯一约束兜底（另一个请求已经建成）：返回建成的那段
         session.rollback()
+        stamp = _stamp()
         if boost.active_trial(session, user.id, stamp) is None:
             raise
     request.state.audit = {"action": "boost_trial_start"}
