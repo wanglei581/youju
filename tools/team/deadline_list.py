@@ -250,12 +250,16 @@ def main() -> int:
         if failed(more, extra):
             return 1
         for job in more:
+            if (extra[job["id"]].get("total") or 0) != (results[job["of"]].get("total") or 0):
+                print("取的时候截止条目有变动（前后几页的总数不一样），请重跑")
+                return 1
             results[job["of"]]["items"] = (results[job["of"]].get("items") or []) + (extra[job["id"]].get("items") or [])
+    # 翻页之间有新条目插进来，后一页会重复前一页末尾的、漏掉一条：按编号去重后数够才算取齐
     short = [
         key
         for n, _ in enumerate(scopes)
         for key in (f"a{n}", f"b{n}")
-        if len(results[key].get("items") or []) < (results[key].get("total") or 0)
+        if len({i.get("id") for i in results[key].get("items") or []}) < (results[key].get("total") or 0)
     ]
     if short:
         print(f"截止条目没取齐（{'、'.join(short)}），请重跑")

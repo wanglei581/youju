@@ -104,7 +104,8 @@ class MainTests(unittest.TestCase):
                 return {j["id"]: {"status": 200, "url": "" if j["id"][1:] in no_url else f"https://example.gov.cn/{j['id']}"}
                         for j in jobs}
             if label == "取后面几页":
-                return {j["id"]: {"status": 200, "items": pages[j["id"]]} for j in jobs}
+                return {j["id"]: {"status": 200, "items": pages[j["id"]], "total": results[j["id"][:2]]["total"]}
+                        for j in jobs}
             return results
 
         with tempfile.TemporaryDirectory() as tmp, \
@@ -145,6 +146,12 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         shareable = next(t for n, t in files.items() if "可转发" in n)
         self.assertIn("第7项", shareable)
+
+    def test_page_overlap_counts_as_not_complete(self):
+        # 翻页时新插进一条：第二页重复第一页的第 1 条，按编号去重后只有 1 条，总数 2，不出清单
+        with mock.patch.object(MODULE, "PAGE_SIZE", 1):
+            code, files = self.run_main([entry(1, "2026-10-23")], [], [], pages={"a0p2": [entry(1, "2026-10-23")]})
+        self.assertEqual((code, files), (1, {}))
 
     def test_missing_link_returns_error(self):
         code, _ = self.run_main([entry(1, "2026-10-23")], [], [], no_url=("1",))

@@ -218,8 +218,10 @@ def read_clients(path: Path) -> list[dict]:
     if name_col is None or not looks_like_header(header):
         # 没有表头：第一列就是企业名称（第一行"某某有限公司"也带"公司"二字，不能当表头）
         name_col, region_col, industry_col, body = 0, None, None, rows
+        print(f"没有表头，第一行就是第一家：{rows[0][0]}")
     else:
         body = rows[1:]
+        print(f"第一行当表头（不算企业）：{'、'.join(c for c in header if c)}")
     clients, by_name = [], {}
     for row in body:
         name = row[name_col] if name_col < len(row) else ""
@@ -257,23 +259,22 @@ def read_clients(path: Path) -> list[dict]:
     return clients
 
 
-# 列名里的词；第一行有一格是这样的短列名、又没有一格像企业或机构全称，才当表头
+# 第一行当不当表头：有一格是短列名（带这些词，12 个字以内），而且没有一格带"有限""股份"
+# （企业全称几乎都带）。这是猜的，所以读完会把第一行怎么处理的打印出来，让人看一眼。
 _HEADER_WORDS = ("企业", "公司", "名称", "地区", "省", "产业", "方向")
-_ORG_ENDS = ("公司", "厂", "集团", "中心", "研究院", "研究所", "合作社", "事务所", "医院", "学校", "大学")
+_ORG_MARKS = ("有限", "股份")
 
 
 def looks_like_header(row: list[str]) -> bool:
     cells = [cell for cell in row if cell]
 
-    def named(cell: str) -> bool:
-        return any(w in cell for w in _HEADER_WORDS)
-
     def org_like(cell: str) -> bool:
-        return cell.endswith(_ORG_ENDS) or (len(cell) > 12 and not named(cell))
+        return any(mark in cell for mark in _ORG_MARKS)
 
-    return any(named(c) and len(c) <= 20 for c in cells) and not any(
-        org_like(c) for c in cells
-    )
+    def label(cell: str) -> bool:
+        return len(cell) <= 12 and any(w in cell for w in _HEADER_WORDS) and not org_like(cell)
+
+    return any(label(c) for c in cells) and not any(org_like(c) for c in cells)
 
 
 def notice_key(client: dict) -> str:
@@ -512,7 +513,7 @@ def park_book(
             ),
             f"【名单怎么处理】园区给的企业名单只用来做这一张表；{HANDLING}",
             *(
-                [f"【注意】有 {cut} 家企业的查询结果没取全（只列了最近的名单），备注里有标注，请在小程序里再查。"]
+                [f"【注意】有 {cut} 家企业的查询结果没取全（只列了最近的名单），“结果”或“备注”列里有标注，请在小程序里再查。"]
                 if cut
                 else []
             ),
@@ -676,7 +677,7 @@ def advisor_book(
                 else []
             ),
             *(
-                [f"【注意】有 {cut} 家客户的上榜结果没取全（只列了最近的名单），备注里有标注，请在小程序里再查。"]
+                [f"【注意】有 {cut} 家客户的上榜结果没取全（只列了最近的名单），“结果”或“备注”列里有标注，请在小程序里再查。"]
                 if cut
                 else []
             ),

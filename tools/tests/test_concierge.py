@@ -115,6 +115,15 @@ class ReadClientsTests(unittest.TestCase):
         self.assertEqual(clients[0]["provinces"], ["山东"])
         self.assertEqual(clients[0]["industries"], ["数字经济"])
 
+    def test_branch_name_in_brackets_is_still_a_company(self):
+        clients = self.read("北京甲有限公司（北京分公司）\n乙公司\n")
+        self.assertEqual(clients[0]["name"], "北京甲有限公司（北京分公司）")
+
+    def test_short_header_words_are_a_header(self):
+        clients = self.read("公司,省,产业方向\n甲科技有限公司,山东,数字经济\n")
+        self.assertEqual([c["name"] for c in clients], ["甲科技有限公司"])
+        self.assertEqual((clients[0]["provinces"], clients[0]["industries"]), (["山东"], ["数字经济"]))
+
     def test_same_company_on_two_rows_is_merged(self):
         clients = self.read("企业名称,地区,产业方向\n甲公司,山东,数字经济\n甲公司,江苏,先进制造、食品\n")
         self.assertEqual(len(clients), 1)
