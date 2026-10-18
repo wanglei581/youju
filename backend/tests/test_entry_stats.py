@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from youju import entry_stats
 from youju.api import app as app_module
+from youju.api import entry_stats as entry_api
 from youju.api import me, v1
 from youju.api.entry_stats import PATH
 from youju.db import get_session
@@ -26,6 +27,14 @@ TOKEN = {"X-Admin-Token": "entry-stats-token"}
 # 经云调用来的请求：平台注入 X-WX-SOURCE，也会带上 openid
 CLOUD = {"X-WX-SOURCE": "wx_client", "X-WX-OPENID": "o-entry-user"}
 MINIAPP = Path(__file__).resolve().parents[2] / "apps" / "miniapp"
+
+
+@pytest.fixture(autouse=True)
+def _reset_limit():
+    """限流计数在进程内存里，每个测试从零开始。"""
+    entry_api._limit.update(minute=None, ips={}, total=0)
+    yield
+    entry_api._limit.update(minute=None, ips={}, total=0)
 
 
 @pytest.fixture
@@ -123,11 +132,14 @@ def test_unrecognised_values_are_counted_without_being_stored(make_client, sessi
         {"scene": 1047, "from": "x" * 25, "page": "pages/../me/index"},
     ):
         assert client.post(PATH, json=body, headers=CLOUD).status_code == 204
+    # 超长、超范围的也不拒收（整个请求体不过 1 KB），清洗后照样记一次
+    body = {"scene": 10**30, "from": "x" * 300, "page": "pages/" + "a" * 300 + "/index"}
+    assert client.post(PATH, json=body, headers=CLOUD).status_code == 204
     # 大写当小写，页面前面的 / 去掉
     body = {"scene": 1047, "from": " Export ", "page": "/pages/home/index"}
     assert client.post(PATH, json=body, headers=CLOUD).status_code == 204
     assert stats(session) == [
-        (TODAY, 0, "", "", 1),
+        (TODAY, 0, "", "", 2),
         (TODAY, 1047, "", "", 1),
         (TODAY, 1047, "export", "pages/home/index", 1),
     ]
@@ -159,6 +171,32 @@ def test_body_limit_also_applies_without_declared_length(make_client, session):
     response = make_client("admin").post(PATH, content=chunks, headers=CLOUD)
     assert response.status_code == 413
     assert stats(session) == []
+
+
+def test_rate_limited_by_source_ip_and_in_total(make_client, session, monkeypatch):
+    # 来源 IP 由平台写进 X-Original-Forwarded-For（伪造不了，部署文档 9/30 实测），按它限
+    now = {"t": 1_800_000_000.0}
+    monkeypatch.setattr(entry_api, "clock", SimpleNamespace(time=lambda: now["t"]))
+    monkeypatch.setattr(entry_api, "PER_IP_PER_MINUTE", 2)
+    monkeypatch.setattr(entry_api, "TOTAL_PER_MINUTE", 3)
+    client = make_client("admin")
+    body = {"scene": 1001, "page": "pages/home/index"}
+
+    def post(ip):
+        headers = {**CLOUD, "X-Original-Forwarded-For": ip}
+        return client.post(PATH, json=body, headers=headers).status_code
+
+    assert [post("203.0.113.7"), post("203.0.113.7"), post("203.0.113.7")] == [204, 204, 429]
+    # 别的 IP 照常，到了全部来源的上限就都不收
+    assert [post("198.51.100.1"), post("198.51.100.2")] == [204, 429]
+    assert stats(session) == [(TODAY, 1001, "", "pages/home/index", 3)]
+    # 下一分钟重新计
+    now["t"] += 60
+    assert post("203.0.113.7") == 204
+    # 被限的请求照常记访问日志（状态 429），没有用户编号
+    statuses = sorted(r.status for r in session.scalars(select(AccessLog)))
+    assert statuses == [204, 204, 204, 204, 429, 429]
+    assert {r.uid for r in session.scalars(select(AccessLog))} == {None}
 
 
 def test_new_combinations_beyond_daily_cap_share_one_row(make_client, session, monkeypatch):

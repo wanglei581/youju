@@ -26,7 +26,7 @@ App({
     try { require('./utils/api.js').prewarm(); } catch (e) { /* 叫不醒不影响使用：提交时会再叫 */ }
   },
 
-  // 切到后台：打开不到 3 秒就走的，来源统计现在发（之后小程序可能被挂起、销毁）
+  // 切到后台：来源统计还没发的（首屏刚出来就走的）现在发（之后小程序可能被挂起、销毁）
   onHide() {
     try { require('./utils/entry-stats.js').flush(); } catch (e) { /* 忽略 */ }
   },

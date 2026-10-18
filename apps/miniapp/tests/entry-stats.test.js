@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// 来源统计（utils/entry-stats.js）：冷启动时只在手机上记场景值、来源编号和第一个页面，3 秒后（或切到后台时）
-// 发一次给常驻的 admin；不发别的参数和用户编号，不重试，不提示；只统计正式版。
+// 来源统计（utils/entry-stats.js）：冷启动时只在手机上记场景值、来源编号和第一个页面，首屏渲染完 1 秒后
+// （取不到渲染信号时打开后 3 秒，切到后台时立刻）发一次给常驻的 admin；不发别的参数和用户编号，不重试，不提示；只统计正式版。
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -33,7 +33,7 @@ function load({ config = { cloudEnv: 'prod-test', cloudService: 'api' }, env = '
 
 const SHARED = { scene: 1008, path: 'pages/detail/index', query: { id: '128', from: 'GZH1103', q: '%E6%9F%90%E6%9F%90%E7%A7%91%E6%8A%80' } };
 
-test('正式版：打开时不发请求，3 秒后发一次给 admin，只有场景值、来源编号和页面', () => {
+test('正式版（取不到性能接口）：打开时不发请求，3 秒后发一次给 admin，只有场景值、来源编号和页面', () => {
   const { stats, calls, timers, fire } = load();
   stats.capture(SHARED);
   assert.equal(calls.length, 0);
@@ -59,7 +59,7 @@ test('正式版：打开时不发请求，3 秒后发一次给 admin，只有场
   assert.equal(calls.length, 1);
 });
 
-test('3 秒内切到后台：切走时就发；之后定时器到了不再发第二次', () => {
+test('还没发就切到后台：切走时就发；之后定时器到了不再发第二次', () => {
   const { stats, calls, timers, fire } = load();
   stats.capture({ scene: 1047, path: 'pages/home/index', query: {} });
   stats.flush();
@@ -69,6 +69,64 @@ test('3 秒内切到后台：切走时就发；之后定时器到了不再发第
   fire();
   assert.equal(calls.length, 1);
   assert.deepEqual(plain(calls[0][1].data), { scene: 1047, from: '', page: 'pages/home/index' });
+});
+
+// 官方性能接口的替身：记下观察回调，手动送渲染指标
+function perf() {
+  const state = { callback: null, observed: null, disconnected: 0 };
+  return {
+    state,
+    getPerformance: () => ({
+      createObserver(cb) {
+        state.callback = cb;
+        return { observe(o) { state.observed = plain(o); }, disconnect() { state.disconnected += 1; } };
+      },
+    }),
+    deliver(entries) { state.callback({ getEntries: () => entries }); },
+  };
+}
+
+test('首屏：等第一个页面的 firstRender，渲染完 1 秒后发；等不到时最晚 10 秒', () => {
+  const p = perf();
+  const { stats, calls, timers, fire } = load({ wx: { getPerformance: p.getPerformance } });
+  stats.capture(SHARED);
+  assert.deepEqual(p.state.observed, { entryTypes: ['render'] });
+  assert.deepEqual(timers.map((t) => t.ms), [10000]);
+  // 别的渲染指标不算
+  p.deliver([{ entryType: 'render', name: 'firstPaint' }, { entryType: 'navigation', name: 'appLaunch' }]);
+  assert.deepEqual(timers.filter((t) => !t.cleared).map((t) => t.ms), [10000]);
+  p.deliver([{ entryType: 'render', name: 'firstRender', path: 'pages/detail/index' }]);
+  assert.deepEqual(timers.filter((t) => !t.cleared).map((t) => t.ms), [1000]);
+  assert.equal(p.state.disconnected, 1);
+  assert.equal(calls.length, 0);
+  fire();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(plain(calls[0][1].data), { scene: 1008, from: 'gzh1103', page: 'pages/detail/index' });
+  // 后面页面的渲染不再触发
+  p.deliver([{ entryType: 'render', name: 'firstRender', path: 'pages/home/index' }]);
+  fire();
+  assert.equal(calls.length, 1);
+});
+
+test('首屏前就切到后台：切走时发，停止观察，之后的渲染信号不再发', () => {
+  const p = perf();
+  const { stats, calls, timers, fire } = load({ wx: { getPerformance: p.getPerformance } });
+  stats.capture(SHARED);
+  stats.flush();
+  assert.equal(calls.length, 1);
+  assert.equal(p.state.disconnected, 1);
+  p.deliver([{ entryType: 'render', name: 'firstRender' }]);
+  fire();
+  assert.equal(calls.length, 1);
+  assert.equal(timers.filter((t) => !t.cleared).length, 0);
+});
+
+test('性能接口出错时退回打开后 3 秒', () => {
+  const { stats, calls, timers, fire } = load({ wx: { getPerformance() { throw new Error('不支持'); } } });
+  stats.capture(SHARED);
+  assert.deepEqual(timers.map((t) => t.ms), [3000]);
+  fire();
+  assert.equal(calls.length, 1);
 });
 
 test('开发版、体验版不发；取不到版本时也不发', () => {

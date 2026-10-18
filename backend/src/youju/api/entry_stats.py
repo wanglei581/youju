@@ -2,9 +2,11 @@
 
 上报接口只在 admin 服务上开放（app._role_guard），只认经云调用来的 POST
 （带平台注入的 X-WX-SOURCE），不读任何身份头。请求体只有三个字段、不到 1 KB：
-在解析之前就按实际字节数限长，多带字段的拒收。
+在解析之前就按实际字节数限长，多带字段的拒收；字段值不认得的不拒收，清洗成 0 或空再计数。
 """
 
+import threading
+import time as clock
 from pathlib import Path
 from typing import Annotated
 
@@ -20,19 +22,55 @@ from youju.db import get_session
 PATH = "/api/v1/entry-stats"
 BODY_LIMIT = 1024
 
+# 限流（进程内按分钟计；admin 固定 1 个实例、1 个进程）：admin 开着公网，
+# 公网请求可能自带 X-WX-SOURCE（部署文档第五节第 7 条），伪造的上报最多只能刷计数，
+# 碰不到任何用户数据。来源 IP 由平台写入、伪造不了（9/30 实测），按它限：
+# 同一个 IP 每分钟最多 PER_IP_PER_MINUTE 次，全部来源每分钟最多 TOTAL_PER_MINUTE 次，
+# 超出的回 429、不计数，也不读请求体。正常用户一次冷启动只发一次；
+# 运营商共用出口 IP 时一分钟内也到不了上限。
+PER_IP_PER_MINUTE = 20
+TOTAL_PER_MINUTE = 600
+# 一分钟内最多记这么多个 IP（内存上限）；记满后新来的 IP 这一分钟不收
+MAX_IPS = 10000
+_limit_lock = threading.Lock()
+_limit: dict = {"minute": None, "ips": {}, "total": 0}
+
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+def _allowed(ip: str) -> bool:
+    minute = int(clock.time() // 60)
+    with _limit_lock:
+        if _limit["minute"] != minute:
+            _limit.update(minute=minute, ips={}, total=0)
+        ips = _limit["ips"]
+        used = ips.get(ip, 0)
+        if (
+            _limit["total"] >= TOTAL_PER_MINUTE
+            or used >= PER_IP_PER_MINUTE
+            or (not used and len(ips) >= MAX_IPS)
+        ):
+            return False
+        ips[ip] = used + 1
+        _limit["total"] += 1
+        return True
+
+
 class EntryIn(BaseModel):
-    """小程序发来的一次打开：场景值、来源编号（JSON 里叫 from）、第一个页面。"""
+    """小程序发来的一次打开：场景值、来源编号（JSON 里叫 from）、第一个页面。
+    长度不另设上限（整个请求体不过 1 KB），超长、不合格的都在计数前清洗掉。"""
 
     model_config = ConfigDict(extra="forbid")
-    scene: int = Field(ge=0, le=99999)
-    code: str = Field(default="", alias="from", max_length=64)
-    page: str = Field(default="", max_length=128)
+    scene: int
+    code: str = Field(default="", alias="from")
+    page: str = ""
 
 
 async def _entry(request: Request) -> EntryIn:
+    from youju.api.app import client_ip
+
+    if not _allowed(client_ip(request)):
+        raise HTTPException(status_code=429, detail="上报太频繁，这次不计")
     declared = request.headers.get("content-length")
     if declared is not None:
         try:
