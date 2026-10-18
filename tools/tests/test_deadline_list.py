@@ -30,6 +30,9 @@ class TextTests(unittest.TestCase):
     def test_day_text_has_weekday_and_time(self):
         self.assertEqual(MODULE.day_text("2026-10-30", "17:00"), "10月30日（周五）17:00")
         self.assertEqual(MODULE.day_text("2026-10-19", None), "10月19日（周一）")
+        # 不是今年的写年份
+        self.assertEqual(MODULE.day_text("2027-01-05", None, date(2026, 12, 28)), "2027年1月5日（周二）")
+        self.assertEqual(MODULE.day_text("2026-12-30", None, date(2026, 12, 28)), "12月30日（周三）")
 
     def test_shareable_empty_says_do_not_send(self):
         text = MODULE.shareable_text("山东", [], "范围", TODAY)
@@ -46,6 +49,7 @@ class TextTests(unittest.TestCase):
         self.assertIn("不是企业自己提交的截止", text)
         self.assertIn("不是全部通知", text)
         self.assertIn("人工核对", text.splitlines()[1])
+        self.assertEqual(text.splitlines()[2], "范围")  # 范围紧跟标题
 
     def test_private_has_three_sections_links_and_do_not_forward(self):
         verified = [entry(1, "2026-10-23")]
@@ -70,7 +74,8 @@ class TextTests(unittest.TestCase):
     def test_scope_text(self):
         self.assertIn("加上已收录的青岛市黄岛区", MODULE.scope_text("山东", "", False, COVERAGE))
         self.assertIn("不含国家部委", MODULE.scope_text("山东", "", False, COVERAGE))
-        self.assertIn("市、区目前都没有收录", MODULE.scope_text("山东", "济南", True, COVERAGE))
+        self.assertIn("济南市的通知目前没有收录", MODULE.scope_text("山东", "济南", True, COVERAGE))
+        self.assertIn("市、区目前都没有收录", MODULE.scope_text("河北", "", False, COVERAGE))
         self.assertIn("含国家部委", MODULE.scope_text("山东", "济南", True, COVERAGE))
         self.assertIn("加上已收录的广州市", MODULE.scope_text("广东", "", False, COVERAGE))
 
@@ -84,17 +89,22 @@ class TextTests(unittest.TestCase):
 class MainTests(unittest.TestCase):
     """main() 的筛选：用替身代替开发者工具，不连线上。"""
 
-    def run_main(self, a_items, b_items, soon, soon_total=None, argv=("山东",)):
+    def run_main(self, a_items, b_items, soon, soon_total=None, argv=("山东",), pages=None, no_url=()):
         results = {
             "cov": COVERAGE,
             "a0": {"status": 200, "items": a_items},
             "b0": {"status": 200, "items": b_items, "soon": soon,
                    "soonTotal": len(soon) if soon_total is None else soon_total},
         }
+        for key, extra in (pages or {}).items():  # 后面几页：{"a0p2": [...]}，第一页写明 total
+            results[key[:2]]["total"] = len(results[key[:2]]["items"]) + len(extra)
 
         def fake_run(jobs, label):
             if label == "取原文链接":
-                return {j["id"]: {"status": 200, "url": f"https://example.gov.cn/{j['id']}"} for j in jobs}
+                return {j["id"]: {"status": 200, "url": "" if j["id"][1:] in no_url else f"https://example.gov.cn/{j['id']}"}
+                        for j in jobs}
+            if label == "取后面几页":
+                return {j["id"]: {"status": 200, "items": pages[j["id"]]} for j in jobs}
             return results
 
         with tempfile.TemporaryDirectory() as tmp, \
@@ -125,8 +135,20 @@ class MainTests(unittest.TestCase):
         self.assertIn("二、机器摘录·未经人工核对（2 条", private)  # 第 2、5 条
         for absent in ("第3项", "第4项"):
             self.assertNotIn(absent, private)
-        self.assertIn("三、7 天内可能截止、还没人工核对（1 条", private)  # 第 1 条已在可转发里
+        # 第 1 条的另一类截止已核对、也在可转发里，7 天内还没核对的那类照样列出
+        self.assertIn("三、7 天内可能截止、还没人工核对（2 条", private)
         self.assertIn("https://example.gov.cn/d2", private)
+
+    def test_more_pages_are_fetched_before_filtering(self):
+        with mock.patch.object(MODULE, "PAGE_SIZE", 1):
+            code, files = self.run_main([entry(1, "2026-10-23")], [], [], pages={"a0p2": [entry(7, "2026-10-24")]})
+        self.assertEqual(code, 0)
+        shareable = next(t for n, t in files.items() if "可转发" in n)
+        self.assertIn("第7项", shareable)
+
+    def test_missing_link_returns_error(self):
+        code, _ = self.run_main([entry(1, "2026-10-23")], [], [], no_url=("1",))
+        self.assertEqual(code, 1)
 
     def test_city_filter_and_empty_shareable(self):
         b_items = [entry(5, "2026-10-31", source="excerpt", quote="10月31日前", level="市级", city="济南")]

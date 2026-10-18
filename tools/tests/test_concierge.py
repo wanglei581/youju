@@ -2,7 +2,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 TEAM = Path(__file__).parents[1] / "team"
@@ -16,7 +16,7 @@ try:  # CI 的工具测试环境没有 openpyxl：出 Excel 的测试只在本�
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
-TODAY = date(2026, 10, 19)
+NOW = datetime(2026, 10, 19, 9, 0, tzinfo=MODULE.TZ)
 QUOTE = "请于2026年10月30日17:00前完成网上申报"
 
 
@@ -29,17 +29,23 @@ class DeadlineTextTests(unittest.TestCase):
 
     def test_verified(self):
         text = MODULE.deadline_text(
-            item(kind="企业申报截止", source="verified", date="2026-10-21", time="17:00"), TODAY
+            item(kind="企业申报截止", source="verified", date="2026-10-21", time="17:00"), NOW
         )
         self.assertEqual(text, "2026-10-21 17:00（企业申报截止，已人工核对）")
 
     def test_verified_past_says_closed(self):
-        text = MODULE.deadline_text(item(source="verified", date="2026-10-18"), TODAY)
+        text = MODULE.deadline_text(item(source="verified", date="2026-10-18"), NOW)
         self.assertEqual(text, "2026-10-18已截止（已人工核对）")
+
+    def test_verified_today_after_its_time_says_closed(self):
+        due = {"source": "verified", "date": "2026-10-19", "time": "08:30"}
+        self.assertEqual(MODULE.deadline_text(item(**due), NOW), "2026-10-19 08:30已截止（已人工核对）")
+        due["time"] = "17:00"
+        self.assertEqual(MODULE.deadline_text(item(**due), NOW), "2026-10-19 17:00（已人工核对）")
 
     def test_excerpt_in_window_has_label_and_quote(self):
         text = MODULE.deadline_text(
-            item(kind="企业申报截止", source="excerpt", date="2026-10-30", quote=QUOTE), TODAY
+            item(kind="企业申报截止", source="excerpt", date="2026-10-30", quote=QUOTE), NOW
         )
         self.assertIn("机器摘录·未经人工核对", text)
         self.assertIn(QUOTE, text)
@@ -52,14 +58,14 @@ class DeadlineTextTests(unittest.TestCase):
             {"source": "excerpt", "date": "2026-11-19", "quote": QUOTE},  # 31 天
         ):
             with self.subTest(due=due):
-                self.assertEqual(MODULE.deadline_text(item(**due), TODAY), "截止未核对，请以原文为准")
+                self.assertEqual(MODULE.deadline_text(item(**due), NOW), "截止未核对，请以原文为准")
 
     def test_old_api_and_no_candidate(self):
         self.assertEqual(
-            MODULE.deadline_text({"deadline": {"date": "2026-10-25"}}, TODAY), "2026-10-25（已人工核对）"
+            MODULE.deadline_text({"deadline": {"date": "2026-10-25"}}, NOW), "2026-10-25（已人工核对）"
         )
         self.assertEqual(
-            MODULE.deadline_text({"due": None, "deadline_state": "none"}, TODAY), "截止时间见原文"
+            MODULE.deadline_text({"due": None, "deadline_state": "none"}, NOW), "截止时间见原文"
         )
 
     def test_notice_search_asks_for_excerpts(self):
@@ -92,6 +98,31 @@ LOOKUPS = {
 }
 
 
+class ReadClientsTests(unittest.TestCase):
+    def read(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.csv"
+            path.write_text(text, encoding="utf-8")
+            return MODULE.read_clients(path)
+
+    def test_single_column_without_header_keeps_first_company(self):
+        clients = self.read("甲科技有限公司\n乙制药股份有限公司\n")
+        self.assertEqual([c["name"] for c in clients], ["甲科技有限公司", "乙制药股份有限公司"])
+
+    def test_header_is_skipped_and_columns_found(self):
+        clients = self.read("企业名称,所在地区,产业方向\n甲科技有限公司,山东省青岛市,数字经济\n")
+        self.assertEqual(clients[0]["name"], "甲科技有限公司")
+        self.assertEqual(clients[0]["provinces"], ["山东"])
+        self.assertEqual(clients[0]["industries"], ["数字经济"])
+
+    def test_same_company_on_two_rows_is_merged(self):
+        clients = self.read("企业名称,地区,产业方向\n甲公司,山东,数字经济\n甲公司,江苏,先进制造、食品\n")
+        self.assertEqual(len(clients), 1)
+        self.assertEqual(clients[0]["provinces"], ["山东", "江苏"])
+        self.assertEqual(clients[0]["industries"], ["数字经济", "先进制造"])
+        self.assertEqual(clients[0]["ignored"], ["食品"])
+
+
 class LookupRowsTests(unittest.TestCase):
     def test_rows_failures_and_by_list(self):
         rows, failed, by_list = MODULE.lookup_rows(CLIENTS, LOOKUPS)
@@ -105,6 +136,15 @@ class LookupRowsTests(unittest.TestCase):
             by_list[LIST_A["url"]]["clients"], [("甲公司", "甲公司"), ("乙公司", "乙公司（更名前）")]
         )
         self.assertEqual(len(by_list), 2)
+
+    def test_truncated_results_are_marked(self):
+        lookups = {"l0": {**found(LIST_A, written="甲公司"), "truncated": True},
+                   "l1": {"status": 200, "items": [], "truncated": True}}
+        rows, failed, _ = MODULE.lookup_rows(CLIENTS[:2], lookups)
+        self.assertIn("只列出最近的 1 份", rows[0][9])
+        self.assertIn("没查完", rows[1][1])
+        self.assertEqual(failed, 0)
+        self.assertEqual(MODULE.truncated_count(CLIENTS[:2], lookups), 2)
 
     def test_coverage_text_mentions_count_and_start_date(self):
         text = MODULE.coverage_text(LOOKUPS)

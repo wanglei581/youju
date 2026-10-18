@@ -37,8 +37,11 @@ GAP_MS = 400
 NATIONAL = "国家部委"
 
 
-def report_path(province: str, excerpts: bool) -> str:
-    params = {"days": str(DAYS), "province": province, "size": "100"}
+PAGE_SIZE = 100  # 截止雷达每页最多 100 条
+
+
+def report_path(province: str, excerpts: bool, page: int = 1) -> str:
+    params = {"days": str(DAYS), "province": province, "size": str(PAGE_SIZE), "page": str(page)}
     if excerpts:
         params["excerpts"] = "1"
     return "/api/v1/reports/deadlines?" + "&".join(
@@ -58,9 +61,11 @@ def place(name: str) -> str:
     return name if name.endswith(("市", "自治州", "盟", "地区")) else name + "市"
 
 
-def day_text(iso: str, clock: str | None) -> str:
+def day_text(iso: str, clock: str | None, today: date | None = None) -> str:
+    """不是今年的写上年份（12 月底出的清单里有次年 1 月的截止）。"""
     day = date.fromisoformat(iso)
-    text = f"{day.month}月{day.day}日（周{WEEKDAYS[day.weekday()]}）"
+    year = f"{day.year}年" if today and day.year != today.year else ""
+    text = f"{year}{day.month}月{day.day}日（周{WEEKDAYS[day.weekday()]}）"
     return text + (clock or "")
 
 
@@ -81,10 +86,15 @@ def scope_text(province: str, city: str, national: bool, coverage: dict) -> str:
     ]
     covered = "、".join(cities + districts)
     text = f"范围：{province}的省级部门"
-    text += f"，加上已收录的{covered}" if covered else "（这个省的市、区目前都没有收录）"
+    if covered:
+        text += f"，加上已收录的{covered}"
+    elif city:
+        text += f"（{place(city)}的通知目前没有收录）"
+    else:
+        text += "（这个省的市、区目前都没有收录）"
     text += "发布的申报通知"
     text += "，含国家部委" if national else "，不含国家部委"
-    return text + "；其他市、区的通知请另看当地政府网站。"
+    return text + "；其他市、区（包括高新区、开发区）的通知请另看当地政府网站。"
 
 
 def shareable_text(label: str, items: list[dict], scope: str, today: date) -> str:
@@ -98,11 +108,12 @@ def shareable_text(label: str, items: list[dict], scope: str, today: date) -> st
     lines = [
         f"{label} · 未来 {DAYS} 天截止的申报通知",
         f"（截止日期已对照政府原文人工核对；{stamp}整理）",
+        scope,  # 范围紧跟标题：标题看着像全省，其实只有省级部门和收录了的市、区
         "",
     ]
     for n, item in enumerate(items, 1):
         lines += [
-            f"{n}. {day_text(item['date'], item.get('time'))}｜{item.get('label') or '截止'}",
+            f"{n}. {day_text(item['date'], item.get('time'), today)}｜{item.get('label') or '截止'}",
             item.get("title") or "",
             item.get("issuer") or "",
             "",
@@ -145,7 +156,7 @@ def private_text(
     ]
     for n, item in enumerate(verified, 1):
         lines += [
-            f"{n}. {day_text(item['date'], item.get('time'))}｜{item.get('label') or '截止'}",
+            f"{n}. {day_text(item['date'], item.get('time'), today)}｜{item.get('label') or '截止'}",
             item.get("title") or "",
             item.get("issuer") or "",
             link(item),
@@ -153,10 +164,13 @@ def private_text(
         ]
     if not verified:
         lines += ["（没有）", ""]
-    lines.append(f"二、机器摘录·未经人工核对（{len(excerpts)} 条，只会是 8 天以后到期的）")
+    lines.append(
+        f"二、机器摘录·未经人工核对（{len(excerpts)} 条，只会是 8 天以后到期的；"
+        "日期和截止类型都是程序从原文里摘的，可能不准）"
+    )
     for n, item in enumerate(excerpts, 1):
         lines += [
-            f"{n}. {day_text(item['date'], item.get('time'))}｜{item.get('label') or '截止'}（机器摘录）",
+            f"{n}. {day_text(item['date'], item.get('time'), today)}｜{item.get('label') or '截止'}（机器摘录）",
             item.get("title") or "",
             item.get("issuer") or "",
             f"原文这句：“{item.get('quote')}”",
@@ -183,9 +197,22 @@ def private_text(
         lines += ["（没有）", ""]
     lines += [
         scope,
-        "要把二、三里的哪一条转出去，先告诉我们；对照原文核对好以后，它会出现在可转发的那份里。",
+        "二、三里的没有人工核对，请不要转；想转哪条，把标题发我们，对照原文核对好以后放进可转发的那份。",
     ]
     return "\n".join(lines) + "\n"
+
+
+def failed(jobs: list[dict], results: dict[str, dict]) -> bool:
+    bad = [job["id"] for job in jobs if (results.get(job["id"]) or {}).get("status") != 200]
+    if bad:
+        print(
+            "没取成："
+            + "、".join(
+                f"{i}（{(results.get(i) or {}).get('error') or (results.get(i) or {}).get('status')}）"
+                for i in bad
+            )
+        )
+    return bool(bad)
 
 
 def main() -> int:
@@ -207,9 +234,31 @@ def main() -> int:
         jobs.append({"id": f"a{n}", "path": report_path(name, False), "gap": GAP_MS, "slim": "report"})
         jobs.append({"id": f"b{n}", "path": report_path(name, True), "gap": GAP_MS, "slim": "report"})
     results = concierge.run_jobs(jobs, "取截止")
-    bad = [job["id"] for job in jobs if (results.get(job["id"]) or {}).get("status") != 200]
-    if bad:
-        print("没取成：" + "、".join(f"{i}（{(results.get(i) or {}).get('error') or (results.get(i) or {}).get('status')}）" for i in bad))
+    if failed(jobs, results):
+        return 1
+    # 一页最多 100 条：超过的翻页取齐（--city 要在取齐以后再筛），取不齐就不出清单
+    more = []
+    for n, name in enumerate(scopes):
+        for key, excerpts in ((f"a{n}", False), (f"b{n}", True)):
+            pages = -(-(results[key].get("total") or 0) // PAGE_SIZE)
+            more += [
+                {"id": f"{key}p{page}", "path": report_path(name, excerpts, page), "gap": GAP_MS, "slim": "report", "of": key}
+                for page in range(2, pages + 1)
+            ]
+    if more:
+        extra = concierge.run_jobs([{k: v for k, v in job.items() if k != "of"} for job in more], "取后面几页")
+        if failed(more, extra):
+            return 1
+        for job in more:
+            results[job["of"]]["items"] = (results[job["of"]].get("items") or []) + (extra[job["id"]].get("items") or [])
+    short = [
+        key
+        for n, _ in enumerate(scopes)
+        for key in (f"a{n}", f"b{n}")
+        if len(results[key].get("items") or []) < (results[key].get("total") or 0)
+    ]
+    if short:
+        print(f"截止条目没取齐（{'、'.join(short)}），请重跑")
         return 1
     coverage = results["cov"]
     if province in {c.get("name") for c in coverage.get("notCovered") or []}:
@@ -238,7 +287,8 @@ def main() -> int:
             if item.get("source") == "excerpt" and item.get("quote") and concierge.EXCERPT_MIN_DAYS <= days <= DAYS:
                 excerpts.append(item)
         raw = report.get("soon") or []
-        listed = [s for s in raw if s.get("id") not in shared and in_scope(s, city)]
+        # 不按文件编号去掉：同一份通知可以一类截止已核对（12 天后）、另一类 7 天内还没核对
+        listed = [s for s in raw if in_scope(s, city)]
         soon += listed
         # 接口最多给 50 条。给全了就按列出的算；没给全时，不筛市的能从总数推出来，筛了市的推不出来
         if (report.get("soonTotal") or 0) > len(raw):
@@ -246,7 +296,7 @@ def main() -> int:
                 soon_more = True
                 soon_total += len(listed)
             else:
-                soon_total += (report.get("soonTotal") or 0) - (len(raw) - len(listed))
+                soon_total += report.get("soonTotal") or 0
         else:
             soon_total += len(listed)
     verified.sort(key=by_due)
@@ -284,7 +334,8 @@ def main() -> int:
         print("可转发的那份是空的：先在管理台核对“只给专员”那份里的条目，再重新生成")
     missing = [i for i in ids if not urls[i]]
     if missing:
-        print(f"有 {len(missing)} 条没取到原文链接（编号 {'、'.join(missing)}），可以重跑")
+        print(f"有 {len(missing)} 条没取到原文链接（编号 {'、'.join(missing)}）：“只给专员”那份先别发，重跑一次")
+        return 1
     return 0
 
 

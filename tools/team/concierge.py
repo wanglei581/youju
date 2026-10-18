@@ -11,8 +11,8 @@
 不替客户猜行业。
 
 园区版（--park，推广与获客方案第五节的"园区企业上榜汇总"）：园区给入驻企业名单（只要企业全称），
-只查上榜、不查通知，出三页：说明（写给园区的）、按名单看（每份名单上有园区哪几家，方便年终统计）、
-按企业看。
+只查上榜、不查通知，出三页：说明（写给园区的）、按名单看（每份名单上有园区哪几家，年底统计时可以拿来
+查漏）、按企业看。
 
 怎么取数：api 服务不对公网开放，只能从小程序里调用。这里借微信开发者工具的自动化接口，在模拟器里
 用 wx.cloud.callContainer 调线上接口（只读的查询接口）。所以运行前：开发者工具要开着"有据"项目、
@@ -71,6 +71,8 @@ STATEMENT = (
     "有据是第三方整理政府网站公开信息的工具，不是政府平台，不代办申报；"
     "每条附政府原文链接，截止日期写明人工核对或机器摘录，以原文为准。"
 )
+# 名单怎么处理（和外联包 v2 第二节的保密说明一致：名称发去比对，但服务器不保存、不记录）
+HANDLING = "查的时候企业名称逐个发到查询接口比对，服务器不保存名单，也不记录查了哪些企业；交付当天删除本机文件。"
 # 10/18 试跑发现：名单解析目前不收"某某公司（某某工厂）"这类按工厂写的条目（后端 valid_org_name 不认），
 # 查不到要提醒对方看原文；后端改好以后删掉这句
 PLANT_NOTE = "名单里按工厂写的条目（如“某某公司（某某工厂）”）目前可能没有收录，查不到时请打开原文再看一眼。"
@@ -176,11 +178,11 @@ def run_jobs(jobs: list[dict], label: str) -> dict[str, dict]:
                     results[job_id] = value
                     fetched.add(job_id)
             print(f"  {label}：{len(results)}/{len(jobs)}", end="\r", flush=True)
-        # 限流、网关错误、调用失败的再试；422（像个人姓名或太短）不重试
+        # 限流、服务端临时出错、网关错误、调用失败的再试；422（像个人姓名或太短）不重试
         pending = {
             i: job
             for i, job in pending.items()
-            if results.get(i, {}).get("status") in (0, 429, 502, 503, 504)
+            if results.get(i, {}).get("status") in (0, 429, 500, 502, 503, 504)
         }
     print()
     return results
@@ -213,16 +215,16 @@ def read_clients(path: Path) -> list[dict]:
         column("地区", "省"),
         column("产业", "方向"),
     )
-    if name_col is None:  # 没有表头：第一列就是企业名称
+    if name_col is None or not looks_like_header(header):
+        # 没有表头：第一列就是企业名称（第一行"某某有限公司"也带"公司"二字，不能当表头）
         name_col, region_col, industry_col, body = 0, None, None, rows
     else:
         body = rows[1:]
-    clients, seen = [], set()
+    clients, by_name = [], {}
     for row in body:
         name = row[name_col] if name_col < len(row) else ""
-        if not name or name in seen:
+        if not name:
             continue
-        seen.add(name)
         region_text = (
             row[region_col] if region_col is not None and region_col < len(row) else ""
         )
@@ -233,18 +235,45 @@ def read_clients(path: Path) -> list[dict]:
         )
         provinces = [p for p in PROVINCES if p in region_text]
         wanted = [v for v in _SPLIT.split(industry_text) if v]
-        clients.append(
-            {
+        client = by_name.get(name)
+        if client is None:
+            client = by_name[name] = {
                 "name": name,
-                "provinces": provinces,
-                "industries": [v for v in wanted if v in INDUSTRIES],
-                "ignored": [v for v in wanted if v not in INDUSTRIES],
+                "provinces": [],
+                "industries": [],
+                "ignored": [],
                 "region_text": region_text,
             }
-        )
+            clients.append(client)
+        # 同一家写了几行（如两个产业方向）：合并成一家，省份和方向都留下
+        for key, values in (
+            ("provinces", provinces),
+            ("industries", [v for v in wanted if v in INDUSTRIES]),
+            ("ignored", [v for v in wanted if v not in INDUSTRIES]),
+        ):
+            client[key] += [v for v in values if v not in client[key]]
     if len(clients) > MAX_CLIENTS:
         raise SystemExit(f"清单有 {len(clients)} 家，一次最多 {MAX_CLIENTS} 家")
     return clients
+
+
+# 列名里的词；第一行有一格是这样的短列名、又没有一格像企业或机构全称，才当表头
+_HEADER_WORDS = ("企业", "公司", "名称", "地区", "省", "产业", "方向")
+_ORG_ENDS = ("公司", "厂", "集团", "中心", "研究院", "研究所", "合作社", "事务所", "医院", "学校", "大学")
+
+
+def looks_like_header(row: list[str]) -> bool:
+    cells = [cell for cell in row if cell]
+
+    def named(cell: str) -> bool:
+        return any(w in cell for w in _HEADER_WORDS)
+
+    def org_like(cell: str) -> bool:
+        return cell.endswith(_ORG_ENDS) or (len(cell) > 12 and not named(cell))
+
+    return any(named(c) and len(c) <= 20 for c in cells) and not any(
+        org_like(c) for c in cells
+    )
 
 
 def notice_key(client: dict) -> str:
@@ -271,22 +300,31 @@ def notice_path(client: dict) -> str:
     return "/api/v1/search?" + "&".join(f"{k}={quote(v)}" for k, v in params.items())
 
 
+def now_cn() -> datetime:
+    return datetime.now(TZ)
+
+
 def today_cn() -> date:
-    return datetime.now(TZ).date()
+    return now_cn().date()
 
 
-def deadline_text(item: dict, today: date | None = None) -> str:
+def deadline_text(item: dict, now: datetime | None = None) -> str:
     """截止日期一格，和小程序 utils/format.js 的 dueView、deadlineNote 同一个口径（D-061）。
 
-    机器摘录这里再拦一次：没带原句、按今天算不在 8–30 天里的，都不写日期。"""
-    today = today or today_cn()
+    机器摘录这里再拦一次：没带原句、按今天算不在 8–30 天里的，都不写日期。
+    已核对的过了日期，或者就是今天、已经过了写明的时刻，写"已截止"（和小程序 daysUntil 一样）。"""
+    now = now or now_cn()
+    today = now.date()
     due = item.get("due") or {}
     if due.get("date"):
         at = due["date"] + (f" {due['time']}" if due.get("time") else "")
         kind = f"{due['kind']}，" if due.get("kind") else ""
         days = (date.fromisoformat(due["date"]) - today).days
         if due.get("source") == "verified":
-            return f"{at}{'已截止' if days < 0 else ''}（{kind}已人工核对）"
+            closed = days < 0 or (
+                days == 0 and bool(due.get("time")) and now.strftime("%H:%M") >= due["time"]
+            )
+            return f"{at}{'已截止' if closed else ''}（{kind}已人工核对）"
         if (
             due.get("source") == "excerpt"
             and due.get("quote")
@@ -316,6 +354,8 @@ def lookup_rows(
                     note.append("按统一社会信用代码相同找到（名单里的名称不同）")
                 if found.get("ambiguous"):
                     note.append("名单里有同名但信用代码不同的企业，请核对")
+                if found.get("truncated"):  # 和小程序查名单一样的说法
+                    note.append(f"只列出最近的 {len(found['items'])} 份，可能还有更早的")
                 rows.append(
                     [
                         client["name"],
@@ -344,14 +384,19 @@ def lookup_rows(
             hints = []
             if found.get("similar"):
                 hints.append(
-                    "名称相近的（不算同一家，请自己核对）："
+                    "名称相近的（没有算作同一家，是不是同一家请核对原文）："
                     + "、".join(
                         f"{s['name']}（{s['lists']} 份）" for s in found["similar"]
                     )
                 )
             if found.get("candidates"):
                 hints.append("名称里带这几个字的有：" + "、".join(found["candidates"]))
-            result, note = "已收录的名单里没查到", "；".join(hints)
+            result = (
+                "没查完（只查了最近的名单），请在小程序里再查"
+                if found.get("truncated")
+                else "已收录的名单里没查到"
+            )
+            note = "；".join(hints)
         elif status == 422:
             result, note = "没查：名称太短或像个人姓名，请给企业全称", ""
         else:
@@ -359,6 +404,12 @@ def lookup_rows(
             result, note = f"没查成（{found.get('error') or status}），请重跑", ""
         rows.append([client["name"], result, "", "", "", "", "", "", "", note])
     return rows, failed, by_list
+
+
+def truncated_count(clients: list[dict], lookups: dict[str, dict]) -> int:
+    return sum(
+        1 for i in range(len(clients)) if (lookups.get(f"l{i}") or {}).get("truncated")
+    )
 
 
 def coverage_text(lookups: dict[str, dict]) -> str:
@@ -434,6 +485,7 @@ def park_book(
 
     rows, failed, by_list = lookup_rows(clients, lookups)
     hit = len({row[0] for row in rows if str(row[1]).startswith("上榜")})
+    cut = truncated_count(clients, lookups)
     book = Workbook()
     write_intro(
         book,
@@ -449,10 +501,21 @@ def park_book(
             "",
             "【怎么查的】企业全称和名单原文完全相同才算查到；名单里名称不同、但统一社会信用代码相同的，"
             "也列出来并在备注里写明。没查到不等于没上榜：" + coverage_text(lookups) + PLANT_NOTE,
-            "【按名单看】每份名单上有园区的哪几家企业，按发布日期从新到旧排，方便年终统计。",
-            "【按企业看】每家企业上了哪些名单；没查到的也列在这里，名称相近的写在备注里（不算同一家）。",
-            "【公示和公布】写“公示”的还在公示期，不是最终结果，以正式公布的文件为准；统计时请看这一列。",
-            "【名单怎么处理】园区给的企业名单只用来做这一张表，没有上传到服务器，交付当天删除本机文件。",
+            (
+                "【按名单看】每份名单上有园区的哪几家企业，按发布日期从新到旧排。年底统计时可以拿来查漏，"
+                "但不能当完整的统计：只含已收录的名单（见上一条）。"
+            ),
+            "【按企业看】每家企业上了哪些名单；没查到的也列在这里，名称相近的写在备注里（没有算作同一家，请核对原文）。",
+            (
+                "【公示和公布】标“公示”的是公示文件，不是最终结果；有没有正式公布，请看原文和后续文件。"
+                "统计时请看这一列。"
+            ),
+            f"【名单怎么处理】园区给的企业名单只用来做这一张表；{HANDLING}",
+            *(
+                [f"【注意】有 {cut} 家企业的查询结果没取全（只列了最近的名单），备注里有标注，请在小程序里再查。"]
+                if cut
+                else []
+            ),
         ],
     )
     list_rows = []
@@ -509,9 +572,9 @@ def advisor_book(
     """顾问版四页：说明、上榜情况、相关通知、按通知看。返回工作簿、查到的客户数、通知条数、没查成的个数。"""
     from openpyxl import Workbook
 
-    today = today_cn()
+    now = now_cn()
     list_rows, failed, _ = lookup_rows(clients, lookups)
-    notice_rows, by_notice = [], {}
+    notice_rows, by_notice, cut_notices = [], {}, 0
     for client in clients:
         result = notices.get(notice_key(client)) or {}
         region = (
@@ -553,13 +616,14 @@ def advisor_book(
                     item.get("issuer"),
                     item.get("date"),
                     item.get("category") or "",
-                    deadline_text(item, today),
+                    deadline_text(item, now),
                     item.get("url"),
                 ]
             )
             entry = by_notice.setdefault(item.get("url"), {"item": item, "clients": []})
             entry["clients"].append(client["name"])
         if items and (result.get("total") or 0) > len(items):
+            cut_notices += 1
             notice_rows.append(
                 [
                     client["name"],
@@ -576,6 +640,7 @@ def advisor_book(
 
     book = Workbook()
     hit = len({row[0] for row in list_rows if str(row[1]).startswith("上榜")})
+    cut = truncated_count(clients, lookups)
     write_intro(
         book,
         [
@@ -599,7 +664,22 @@ def advisor_book(
                 "请打开原文看。"
             ),
             "【按通知看】同一条通知和哪些客户有关，方便一次通知多家。",
-            "【客户清单怎么处理】只用来做这一张表，没有上传到服务器，交付当天删除本机文件。",
+            f"【客户清单怎么处理】只用来做这一张表；{HANDLING}",
+            *(
+                [
+                    (
+                        f"【注意】有 {cut_notices} 家客户的相关通知超过 {NOTICE_LIMIT} 条，只列了最新的 {NOTICE_LIMIT} 条"
+                        "（“相关通知”页有标注），“按通知看”也只含列出来的这些。"
+                    )
+                ]
+                if cut_notices
+                else []
+            ),
+            *(
+                [f"【注意】有 {cut} 家客户的上榜结果没取全（只列了最近的名单），备注里有标注，请在小程序里再查。"]
+                if cut
+                else []
+            ),
         ],
     )
     write_sheet(book, "上榜情况", ["客户", *LIST_HEADER[1:]], list_rows, LIST_WIDTHS)
@@ -637,7 +717,7 @@ def advisor_book(
                 e["item"].get("title"),
                 e["item"].get("issuer"),
                 e["item"].get("date"),
-                deadline_text(e["item"], today),
+                deadline_text(e["item"], now),
                 len(e["clients"]),
                 "、".join(e["clients"]),
                 url,
