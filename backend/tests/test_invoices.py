@@ -241,8 +241,11 @@ def test_pay_entry_flags_in_capabilities_and_me(pay, session):
     settings.xpay_price_pass, settings.xpay_env = 100, 0
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
     settings.pay_terms_version = "pay-2026-11"
+    # 还要写明能开哪种发票（D-070）
+    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
+    settings.pay_invoice_type = "电子普通发票（测试）"
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
-    settings.pay_terms_version, settings.xpay_env = "", 1
+    settings.pay_terms_version, settings.pay_invoice_type, settings.xpay_env = "", "", 1
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
 
 

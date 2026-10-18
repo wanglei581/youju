@@ -53,3 +53,12 @@ GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
 GRANT INSERT ON youju.boost_trials TO 'youju_api'@'%';
 -- 注销时体验记录随用户删除，不另留凭据（10/18 改为注销即删），所以不需要 reward_claims 的权限。
 -- 体验期每天的次数记在 advisor_usage（上面顾问任务权限已有），申报季加量不需要新权限。
+
+-- 批量工具两档开卖权限（D-070）：迁移 0032 完成后、打开收费（YOUJU_PAY_ENABLED）之前，由创始人执行；
+-- 上面"支付权限"四行要先执行（或一起执行）。
+-- 付款确认（微信推送、下新单前查上一笔）时随订单记一笔赠送（续买多送、加量体验折算）：只新增，不删除。
+GRANT INSERT ON youju.pass_rewards TO 'youju_api'@'%';
+-- 退款时收回随订单送的续买天数（流水备注写"已收回"）；上面奖励段也有这一行，没开奖励也要执行。
+GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
+-- 体验期内买了批量工具：体验到付款确认时结束，没用完的折成天数。只能改结束时间。
+GRANT UPDATE (ends_at) ON youju.boost_trials TO 'youju_api'@'%';

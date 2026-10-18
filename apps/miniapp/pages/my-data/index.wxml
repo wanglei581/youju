@@ -1,5 +1,5 @@
 <notice-bar />
-<view wx:if="{{loginOpen}}" class="card"><view class="message">工具任务记录和加量体验记录（开始、结束时间）可通过下方“复制全部数据”查阅（数据工具只包含任务元数据，结果请在“我的记录”下载）。删除单条记录及其结果，请打开“我的记录”；处理中的需要等待结束后删除。</view><button bindtap="tasks">管理工具任务</button></view>
+<view wx:if="{{loginOpen}}" class="card"><view class="message">工具任务记录、加量体验记录（开始、结束时间）和送的批量工具天数（每次一笔）可通过下方“复制全部数据”查阅（数据工具只包含任务元数据，结果请在“我的记录”下载；订单在“我的订单”）。删除单条记录及其结果，请打开“我的记录”；处理中的需要等待结束后删除。</view><button bindtap="tasks">管理工具任务</button></view>
 <feature-closed wx:if="{{!loginOpen}}" />
 <view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 <view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>

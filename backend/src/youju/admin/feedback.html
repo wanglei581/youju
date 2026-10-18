@@ -141,12 +141,20 @@
         msg.textContent = err.message;
       } finally { action.disabled = false; }
     };
-    const rewardState = el('span', 'meta', item.rewardKind ? `已发奖 ${item.rewardDays} 天` : '尚未发奖');
-    if (item.rewardsEnabled) {
-      const choices = [['correction', '采纳并送 1 天'], ['source', '已接入并送 3 天']];
+    const rewardText = (days, note) => `已发奖 ${days} 天${note ? `（${note}）` : ''}`;
+    const rewardState = el('span', 'meta', item.rewardKind ? rewardText(item.rewardDays, item.rewardNote) : '尚未发奖');
+    // 纠错送 1 天有单独开关（D-070 ⑦）；"已接入并送 3 天"只跟旧的奖励总开关。支付问题不发奖
+    const choices = [
+      ...(item.correctionRewardEnabled && item.kind === '纠错' ? [['correction', '采纳并送 1 天']] : []),
+      ...(item.rewardsEnabled && item.kind === '申请覆盖' ? [['source', '已接入并送 3 天']] : []),
+    ];
+    // 采纳标准和小程序纠错页公开的一致：每人每月最多 3 天，超过的记零天
+    const criteria = el('div', 'meta', '采纳标准：第一个指出、经核对属实的事实错误（日期、链接、名单状态等）；重复的、核对不了的不算。每人每月最多 3 天。');
+    criteria.hidden = !choices.some(([kind]) => kind === 'correction');
+    if (choices.length) {
       for (const [kind, label] of choices) {
         const button = el('button', '', label);
-        button.disabled = Boolean(item.rewardKind) || (kind === 'source') !== (item.kind === '申请覆盖');
+        button.disabled = Boolean(item.rewardKind);
         button.onclick = async () => {
           button.disabled = true;
           try {
@@ -155,7 +163,7 @@
             if (!res.ok) throw new Error(body.detail || errorFor(res));
             item.rewardKind = kind;
             item.rewardDays = body.days;
-            rewardState.textContent = `已发奖 ${body.days} 天`;
+            rewardState.textContent = rewardText(body.days, body.note);
             msg.className = 'msg ok';
             msg.textContent = body.message + (body.note ? `；${body.note}` : '');
             state.className = 'tag handled';
@@ -176,7 +184,7 @@
       }
     }
     row.append(action, rewardState, msg);
-    card.append(meta, content, docLine, triage, check, row);
+    card.append(meta, content, docLine, triage, check, criteria, row);
     return card;
   }
   async function load(reset) {
