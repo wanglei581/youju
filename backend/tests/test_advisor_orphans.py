@@ -1,4 +1,4 @@
-"""批量工具结果文件巡检（youju advisor-orphans）：有记录的、待删表里的、不到 31 天的、任务还在排队的
+"""批量工具结果文件巡检（youju advisor-orphans）：有记录的、待删表里的、任务还在排队的、不到 1 天的
 都不动；默认只列不删，加 --delete 才删；删除前复查；对象存储出错时什么都不删。
 
 开放接口和 COS 全部用测试替身，不联网；签名另用腾讯云文档里的示例核对。"""
@@ -14,7 +14,7 @@ from xml.sax.saxutils import escape
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from youju import advisor_orphans as orphans
 from youju import cli, storage_list
@@ -25,13 +25,18 @@ ENV = "test-env"
 BUCKET = "7465-test-env-1250000000"
 PREFIX = f"cloud://{ENV}.{BUCKET}/"
 OPEN = "http://api.weixin.qq.com"
-COS_HOST = f"{BUCKET}.cos.ap-shanghai.myqcloud.com"
 NOW = datetime(2026, 10, 18, 2, 0, tzinfo=UTC)
 OLD = NOW - timedelta(days=40)
 UID = "0123456789abcdef"
 OTHER_UID = "fedcba9876543210"
 SETTINGS = SimpleNamespace(cloud_env=ENV)
-AUTH = {"TmpSecretId": "AKIDtest", "TmpSecretKey": "tmp-secret", "Token": "tmp-token"}
+# 失效时间两小时后（取一次够用）；ExpiredTime 按文档是失效时的 Unix 时间戳
+AUTH = {
+    "TmpSecretId": "AKIDtest",
+    "TmpSecretKey": "tmp-secret",
+    "Token": "tmp-token",
+    "ExpiredTime": int(time.time()) + 7200,
+}
 
 
 def no_sleep(_seconds):
@@ -77,6 +82,8 @@ class Cloud:
         list_statuses=(),
         bucket_name=BUCKET,
         probe_env=ENV,
+        region="ap-shanghai",
+        upload_url=None,
     ):
         self.objects = dict(objects)
         self.page_size = page_size
@@ -86,19 +93,24 @@ class Cloud:
         self.list_statuses = list(list_statuses)
         self.bucket_name = bucket_name
         self.probe_env = probe_env
+        self.region = region
+        self.upload_url = upload_url
         self.requests: list[str] = []
+        self.auth_calls = 0
         self.markers: list[str] = []
         self.probe_paths: list[str] = []
         self.deleted: list[str] = []
+        self.delete_batches: list[int] = []
         self.client = httpx.Client(transport=httpx.MockTransport(self.handle))
 
     def deletes(self) -> int:
-        return sum(1 for item in self.requests if item.endswith("/tcb/batchdeletefile"))
+        return len(self.delete_batches)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = request.url
         self.requests.append(f"{request.method} {url.scheme}://{url.host}{url.path}")
         if request.method == "GET" and str(url) == f"{OPEN}/_/cos/getauth":
+            self.auth_calls += 1
             return httpx.Response(200, json=self.auth)
         if request.method == "POST" and str(url) == f"{OPEN}/tcb/uploadfile":
             path = json.loads(request.content)["path"]
@@ -108,18 +120,21 @@ class Cloud:
                 200,
                 json={
                     "errcode": 0,
-                    "url": f"https://cos.ap-shanghai.myqcloud.com/{bucket}/{path}",
+                    "url": self.upload_url
+                    or f"https://cos.{self.region}.myqcloud.com/{bucket}/{path}",
                     "token": "upload-token",
                     "authorization": "upload-signature",
                     "file_id": f"cloud://{self.probe_env}.{bucket}/{path}",
                     "cos_file_id": "cos-file",
                 },
             )
-        if request.method == "GET" and url.host == COS_HOST:
+        if request.method == "GET" and url.host == f"{BUCKET}.cos.{self.region}.myqcloud.com":
             return self.list_page(request)
         if request.method == "POST" and str(url) == f"{OPEN}/tcb/batchdeletefile":
+            file_ids = json.loads(request.content)["fileid_list"]
+            self.delete_batches.append(len(file_ids))
             items = []
-            for file_id in json.loads(request.content)["fileid_list"]:
+            for file_id in file_ids:
                 path = file_id.removeprefix(PREFIX)
                 if file_id in self.fail_delete or path not in self.objects:
                     items.append({"fileid": file_id, "status": 1, "errmsg": "delete failed"})
@@ -187,8 +202,8 @@ def add_task(session, user_id, idempotency_key, **values):
 
 @pytest.fixture
 def scene(session):
-    """对象存储里 7 个文件：有记录、待删表里、不到 31 天、任务还在排队、不是结果文件各 1 个，
-    孤儿 2 个（其中 1 个刚过 31 天）。"""
+    """对象存储里 7 个文件：有记录、待删表里、任务还在排队、不到 1 天、不是结果文件各 1 个，
+    孤儿 2 个（其中 1 个刚过 1 天）。"""
     owner = User(openid="orphan-owner")
     session.add(owner)
     session.commit()
@@ -199,8 +214,8 @@ def scene(session):
     objects = {
         key(900): OLD,
         key(901): OLD,
-        key(902): NOW - orphans.MIN_AGE + timedelta(minutes=1),
         key(queued.id): OLD,
+        key(902): NOW - orphans.MIN_AGE + timedelta(minutes=1),
         "advisor/out/readme.txt": OLD,
         key(903): NOW - orphans.MIN_AGE - timedelta(minutes=1),
         key(904, uid=OTHER_UID): OLD,
@@ -219,8 +234,8 @@ def test_list_only_counts_and_deletes_nothing(session, scene):
         report.listed,
         report.referenced,
         report.trash,
-        report.recent,
         report.pending,
+        report.recent,
         report.other,
         report.orphans,
     )
@@ -261,6 +276,13 @@ def test_failed_delete_is_recorded_in_trash_and_left_to_cleanup(session, scene):
     assert (again.trash, again.orphans, again.deleted) == (2, 0, 0)
 
 
+def test_delete_goes_in_batches_of_50(session):
+    cloud = Cloud({key(n): OLD for n in range(1000, 1120)})
+    report = scan(session, cloud, delete=True)
+    assert (report.orphans, report.deleted) == (120, 120)
+    assert cloud.delete_batches == [50, 50, 20] and cloud.objects == {}
+
+
 def test_reference_written_while_listing_is_not_deleted(session_factory, session, scene):
     """读完任务表之后、删除之前别的进程写进了记录（如任务刚完成）：删除前复查时发现，不删。"""
 
@@ -275,12 +297,51 @@ def test_reference_written_while_listing_is_not_deleted(session_factory, session
     assert key(903) in cloud.objects
 
 
+def test_task_deleted_while_listing_keeps_its_file_this_round(session_factory, session, scene):
+    """读任务表时还在排队的任务，列文件期间被删掉（用户删除、过期清理）：这一轮按读到的不动，
+    下一轮再删。"""
+
+    def task_deleted():
+        with session_factory() as other:
+            other.execute(delete(AdvisorTask).where(AdvisorTask.id == scene.queued.id))
+            other.commit()
+
+    cloud = Cloud(scene.objects, on_list=task_deleted)
+    report = scan(session, cloud, delete=True)
+    assert (report.pending, report.orphans, report.deleted) == (1, 2, 2)
+    assert key(scene.queued.id) in cloud.objects
+    later = scan(session, Cloud(cloud.objects), delete=True)
+    assert (later.pending, later.orphans, later.deleted) == (0, 1, 1)
+
+
 def test_listing_follows_next_marker_across_pages(session):
     objects = {key(n): OLD for n in range(1, 6)}
     cloud = Cloud(objects, page_size=2)
     report = scan(session, cloud)
     assert (report.listed, report.orphans) == (5, 5)
     assert cloud.markers == ["", key(2), key(4)]
+    # 临时密钥离失效还早：整个翻页只取一次
+    assert cloud.auth_calls == 1
+
+
+def test_expiring_credentials_are_renewed_before_next_page(session):
+    cloud = Cloud(
+        {key(n): OLD for n in range(1, 6)},
+        page_size=2,
+        auth={**AUTH, "ExpiredTime": str(int(time.time()) + 100)},
+    )
+    assert scan(session, cloud).listed == 5
+    assert cloud.auth_calls == 3
+
+
+def test_region_comes_from_upload_link(session):
+    cloud = Cloud({key(1): OLD}, region="ap-guangzhou")
+    assert scan(session, cloud).orphans == 1
+    assert f"GET https://{BUCKET}.cos.ap-guangzhou.myqcloud.com/" in cloud.requests
+    # 上传地址认不出地域时，用云托管默认的上海
+    fallback = Cloud({key(1): OLD}, upload_url="https://upload.example.test/x")
+    assert scan(session, fallback).orphans == 1
+    assert f"GET https://{BUCKET}.cos.ap-shanghai.myqcloud.com/" in fallback.requests
 
 
 def test_busy_cos_is_retried(session):
@@ -304,7 +365,7 @@ def test_storage_problems_stop_before_any_delete(session, scene, cloud_options, 
         scan(session, cloud, delete=True)
     assert message in str(caught.value)
     # 报错信息里不带临时密钥
-    assert all(value not in str(caught.value) for value in AUTH.values())
+    assert all(str(value) not in str(caught.value) for value in AUTH.values())
     assert cloud.deletes() == 0 and cloud.objects == scene.objects
 
 
@@ -312,9 +373,10 @@ def test_unrecognized_file_id_in_records_blocks_delete(session, scene):
     add_task(session, scene.owner.id, "odd", result_file_id="not-a-file-id")
     cloud = Cloud(scene.objects)
     report = scan(session, cloud, delete=True)
-    assert (report.unparsed, report.orphans, report.deleted) == (1, 2, 0)
+    assert (report.unparsed, report.orphans, report.deleted, report.blocked) == (1, 2, 0, True)
     assert cloud.deletes() == 0
-    assert "认不出格式" in report.text()
+    assert "疑似没有记录指向的：2 个" in report.text() and "认不出格式" in report.text()
+    assert "疑似没有记录指向" in report.alert_text() and "查清前没有删除" in report.alert_text()
 
 
 def test_signature_matches_cos_doc_examples():
@@ -364,7 +426,7 @@ def test_signature_matches_cos_doc_examples():
         "get",
         "/",
         {"prefix": "advisor/out/", "max-keys": "1000"},
-        {"host": COS_HOST},
+        {"host": f"{BUCKET}.cos.ap-shanghai.myqcloud.com"},
         "1557989753;1557996953",
     )
     assert auth.startswith(
@@ -376,8 +438,7 @@ def test_signature_matches_cos_doc_examples():
 
 @pytest.fixture
 def run_cli(monkeypatch, session_factory):
-    """命令行入口：连测试库、用测试替身，返回（退出码，输出）。"""
-
+    """命令行入口：连测试库、用测试替身，返回退出码。"""
     real_scan = orphans.scan
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
 
@@ -400,14 +461,14 @@ def test_cli_prints_only_counts_and_prefix(run_cli, scene, capsys):
     assert run_cli(cloud) == 0
     out = capsys.readouterr().out
     assert f"结果文件巡检（{PREFIX}advisor/out/）：对象存储里共 7 个文件" in out
-    assert "没有任何记录指向、超过 31 天的：2 个（只列出，没有删除；确认后加 --delete 删除）" in out
+    assert "没有任何记录指向的：2 个（只列出，没有删除；确认后加 --delete 删除）" in out
     # 不输出用户编号、任务编号和文件名
     assert UID not in out and OTHER_UID not in out and ".xlsx" not in out and "903" not in out
     assert cloud.deletes() == 0
 
     assert run_cli(cloud, "--delete") == 0
     out = capsys.readouterr().out
-    assert "没有任何记录指向、超过 31 天的：2 个，删掉 2 个。" in out
+    assert "没有任何记录指向的：2 个，删掉 2 个。" in out
     assert UID not in out and OTHER_UID not in out and ".xlsx" not in out
     assert len(cloud.deleted) == 2
 
@@ -420,17 +481,26 @@ def test_cli_alert_and_failures(run_cli, scene, monkeypatch, capsys):
     cloud = Cloud(scene.objects)
     assert run_cli(cloud, "--alert") == 0
     assert len(sent) == 1 and "2 个批量工具结果文件没有任何记录指向" in sent[0]
+    assert "--delete" in sent[0]
     assert UID not in sent[0] and ".xlsx" not in sent[0]
     assert cloud.deletes() == 0
 
-    # 删不掉的记进待删表，退出码 1
-    failing = Cloud(scene.objects, fail_delete={PREFIX + key(903)})
-    assert run_cli(failing, "--delete") == 1
-    assert "没删掉 1 个（已记进待删表" in capsys.readouterr().out
-
-    # 没有孤儿时不发提醒；对象存储出错时退出码 1、写明什么都没删
+    # 自动删除时也能提醒：写明删掉几个；删不掉的记进待删表，退出码 1
     sent.clear()
-    assert run_cli(Cloud({key(1): NOW}), "--alert") == 0 and sent == []
+    failing = Cloud(scene.objects, fail_delete={PREFIX + key(903)})
+    assert run_cli(failing, "--delete", "--alert") == 1
+    assert "没删掉 1 个（已记进待删表" in capsys.readouterr().out
+    assert len(sent) == 1 and "删掉 1 个，没删掉 1 个（已记进待删表" in sent[0]
+    assert UID not in sent[0] and OTHER_UID not in sent[0] and ".xlsx" not in sent[0]
+
+    # 没有孤儿时不发提醒；提醒发不出去时退出码 1
+    sent.clear()
+    assert run_cli(Cloud({key(1999): NOW}), "--alert") == 0 and sent == []
+    monkeypatch.setattr(alerts, "send_alert", lambda text: None)
+    assert run_cli(Cloud({key(2000): OLD}), "--alert") == 1
+    assert "提醒没有发出去" in capsys.readouterr().out
+
+    # 对象存储出错时退出码 1、写明什么都没删；没配环境不跑
     assert run_cli(Cloud(scene.objects, list_statuses=[403]), "--delete") == 1
     assert "结果文件巡检失败，没有删除任何文件" in capsys.readouterr().out
     assert run_cli(Cloud({}), settings=SimpleNamespace(cloud_env=None)) == 1

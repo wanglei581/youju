@@ -924,8 +924,8 @@ def _cmd_settle_missing_copies(args: argparse.Namespace) -> int:
 
 
 def _cmd_advisor_orphans(args: argparse.Namespace) -> int:
-    """批量工具结果文件巡检（见 youju/advisor_orphans.py）：对象存储里有、任务表和待删表都没有、
-    超过 31 天的结果文件。默认只报个数，加 --delete 才删；只输出个数和文件编号前缀。"""
+    """批量工具结果文件巡检（见 youju/advisor_orphans.py）：对象存储里有、但没有任何记录指向的
+    结果文件。默认只报个数，加 --delete 才删；只输出个数和文件编号前缀。"""
     from youju import advisor_orphans
     from youju.backup import BackupError
 
@@ -1393,14 +1393,17 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_settle_missing_copies)
     p = sub.add_parser(
         "advisor-orphans",
-        help="巡检批量工具的结果文件：对象存储里有、任务表和待删表都没有、超过 31 天的；"
+        help="巡检批量工具的结果文件：找出对象存储里有、但没有任何记录指向的；"
         "默认只报个数，加 --delete 才删",
     )
-    mode = p.add_mutually_exclusive_group()
-    mode.add_argument(
+    p.add_argument(
         "--delete", action="store_true", help="删掉找到的文件（删不掉的记进待删表，清理会重试）"
     )
-    mode.add_argument("--alert", action="store_true", help="找到时发一条提醒到群里（定时任务用）")
+    p.add_argument(
+        "--alert",
+        action="store_true",
+        help="找到时发一条提醒到群里（给定时任务用，可和 --delete 同用）",
+    )
     p.set_defaults(func=_cmd_advisor_orphans)
 
     p = sub.add_parser("alert", help="发送一条定时任务文本提醒")

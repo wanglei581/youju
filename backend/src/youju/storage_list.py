@@ -8,10 +8,12 @@
   上传、删除照旧走开放接口。
 - 不另装 COS SDK：签名按腾讯云 COS 文档《请求签名》自己算（HMAC-SHA1，签 host 和全部查询参数），
   测试里用文档的两个签名示例核对。
-- 临时密钥只在内存里用：不打日志、不进报错信息。
-- 存储桶名取自文件 ID（cloud://环境.存储桶/路径）：和 backup-verify 一样，用专门的路径
-  backups/prefix-probe 申请一次上传链接，只取返回的文件 ID，不上传。地域用云托管默认的上海
-  （官方《存储配置》："对象存储地域：默认上海地域"）；不是上海时列文件会报错，不会列错地方。
+- 临时密钥只在内存里用：不打日志、不进报错信息；快到返回的失效时间就重新取。
+- 存储桶名、地域取自开放接口的上传链接：和 backup-verify 一样，用专门的路径 backups/prefix-probe
+  申请一次上传链接（不上传），文件 ID（cloud://环境.存储桶/路径）里是存储桶名，上传地址
+  （官方示例 https://cos.ap-shanghai.myqcloud.com/存储桶/路径）里是地域；认不出地域时用云托管默认的
+  上海（官方《存储配置》："对象存储地域：默认上海地域"）。存储桶或地域不对时列文件会报错，
+  不会列错地方。
 """
 
 import hashlib
@@ -28,30 +30,55 @@ import httpx
 
 from youju.backup import _BUSY_CODES, OPEN_API, PROBE_PATH, BackupError, _open_api, _retrying
 
-REGION = "ap-shanghai"
+DEFAULT_REGION = "ap-shanghai"
 # 每页最多 1000 个（COS 的上限）；超过 1000 页（100 万个文件）就停，不当成列完了
 PAGE_SIZE = 1000
 MAX_PAGES = 1000
 # 签名有效时间：往前留 60 秒容忍两边时钟差（COS 的 SDK 也这样），往后 10 分钟够列一页
 _SIGN_BEFORE = 60
 _SIGN_AFTER = 600
+# 临时密钥离失效不到 5 分钟就换新的
+_REFRESH_BEFORE = 300
 _PREFIX = re.compile(r"cloud://([^./]+)\.([0-9a-z][0-9a-z-]{2,80})/")
+_REGION = re.compile(
+    r"https://(?:[0-9a-z-]+\.)?cos\.([a-z]+-[a-z]+(?:-[a-z0-9]+)?)\.myqcloud\.com/"
+)
 _ERROR_CODE = re.compile(r"[A-Za-z]{1,64}")
 
 
 @dataclass(frozen=True)
 class Credentials:
-    """临时密钥。repr 不显示内容，免得被打进日志。"""
+    """临时密钥。repr 不显示内容，免得被打进日志。expires_at 是返回的失效时间（Unix 秒），
+    没给就是 None（不主动换）。"""
 
     secret_id: str = field(repr=False)
     secret_key: str = field(repr=False)
     token: str = field(repr=False)
+    expires_at: float | None = None
+
+    def expiring(self, at: float) -> bool:
+        return self.expires_at is not None and at >= self.expires_at - _REFRESH_BEFORE
+
+
+@dataclass(frozen=True)
+class Bucket:
+    prefix: str  # 文件 ID 前缀：cloud://环境.存储桶/
+    name: str
+    region: str
 
 
 @dataclass(frozen=True)
 class StoredObject:
     key: str
     last_modified: datetime
+
+
+def _expires_at(value: object) -> float | None:
+    if type(value) in (int, float):
+        return float(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return float(value)
+    return None
 
 
 def credentials(
@@ -82,15 +109,15 @@ def credentials(
                     f"调用 {api} 失败（errcode {code}）", retryable=code in _BUSY_CODES
                 )
             raise BackupError(f"调用 {api} 失败：返回里没有临时密钥")
-        return Credentials(*values)
+        return Credentials(*values, expires_at=_expires_at(data.get("ExpiredTime")))
 
     return _retrying(fetch, sleep)
 
 
 def bucket_of(
     client: httpx.Client, env: str, *, sleep: Callable[[float], None] = clock.sleep
-) -> tuple[str, str]:
-    """返回（文件 ID 前缀 cloud://环境.存储桶/，存储桶名）。"""
+) -> Bucket:
+    """这个环境的存储桶：文件 ID 前缀、存储桶名、地域。"""
     link = _retrying(
         lambda: _open_api(client, "/tcb/uploadfile", {"env": env, "path": PROBE_PATH}), sleep
     )
@@ -101,7 +128,9 @@ def bucket_of(
     match = _PREFIX.fullmatch(prefix)
     if not match or match.group(1) != env:
         raise BackupError("文件 ID 的格式和预期不同，没有列文件")
-    return prefix, match.group(2)
+    url = link.get("url")
+    region = _REGION.match(url) if isinstance(url, str) else None
+    return Bucket(prefix, match.group(2), region.group(1) if region else DEFAULT_REGION)
 
 
 def _encode(value: str) -> str:
@@ -229,8 +258,7 @@ def _page(
 
 def list_objects(
     client: httpx.Client,
-    creds: Credentials,
-    bucket: str,
+    bucket: Bucket,
     prefix: str,
     *,
     sleep: Callable[[float], None] = clock.sleep,
@@ -238,17 +266,20 @@ def list_objects(
 ) -> list[StoredObject]:
     """列出存储桶里以 prefix 开头的全部文件（按 NextMarker 翻页；每页网络中断、服务繁忙时
     重试两次）。任何一页不对就整个报错，不返回列了一半的结果。"""
-    host = f"{bucket}.cos.{REGION}.myqcloud.com"
+    host = f"{bucket.name}.cos.{bucket.region}.myqcloud.com"
+    creds: Credentials | None = None
     found: list[StoredObject] = []
     marker = ""
     for _ in range(MAX_PAGES):
+        if creds is None or creds.expiring(now()):
+            creds = credentials(client, sleep=sleep)
         params = {"prefix": prefix, "max-keys": str(PAGE_SIZE)}
         if marker:
             params["marker"] = marker
         name, truncated, next_marker, objects = _retrying(
-            lambda params=params: _page(client, creds, host, params, now), sleep
+            lambda creds=creds, params=params: _page(client, creds, host, params, now), sleep
         )
-        if name != bucket:
+        if name != bucket.name:
             raise BackupError("列出来的存储桶和文件 ID 里的不一致，停止")
         if any(not item.key.startswith(prefix) for item in objects):
             raise BackupError("列出来的文件不在要列的路径下，停止")
