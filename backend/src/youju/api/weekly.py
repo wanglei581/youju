@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -57,6 +57,13 @@ class ProfileIn(BaseModel):
         if set(value) != set(weekly.COLUMNS):
             raise ValueError("请提供四个栏目开关")
         return value
+
+    @model_validator(mode="after")
+    def national_name(self):
+        # 标题里"（全国）"和"我的 → 本周周报"都靠它认全国版：限了范围的方案不能叫"全国"
+        if self.name == "全国" and (self.provinces or self.keywords):
+            raise ValueError("限了省份或关键词的方案不能叫“全国”，请换个名称，如“浙江版”")
+        return self
 
 
 class GenerateIn(BaseModel):

@@ -352,7 +352,7 @@ test('本期清单：条目全下架时写明；跨年的统计周两头写年�
   page.onLoad({ id: '12' });
   await flush();
   const text = textOf(render('pages/digest/index.wxml', page.data));
-  assert.match(text, /这一期的条目都已下架或不再公开。/);
+  assert.match(text, /这一期的条目现已都不再提供。/);
   assert.match(text, /另有 6 条现已不再提供/);
   assert.equal(page.data.weekText, '2025年12月29日—2026年1月4日');
 });

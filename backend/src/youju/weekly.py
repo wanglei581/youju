@@ -462,8 +462,14 @@ def _week_text(start: date, end: date) -> str:
 
 
 def scope(profile: DigestProfile) -> str:
-    """标题里的范围：不限省份、不筛关键词的方案写"全国"，其余写方案名称（照旧由管理员起名）。"""
-    return "全国" if not profile.provinces and not profile.keywords else profile.name
+    """标题里的范围：不限省份、不筛关键词的方案写"全国"，其余写方案名称（照旧由管理员起名）。
+
+    限了范围的方案恰好叫"全国"时补"·限定范围"，免得标题和"本周周报"把它当成全国版
+    （管理台也不让这样起名，这里兜底已有数据）。"""
+    if not profile.provinces and not profile.keywords:
+        return "全国"
+    name = profile.name.strip()
+    return f"{name}·限定范围" if name == "全国" else profile.name
 
 
 def _province_name(province: str) -> str:

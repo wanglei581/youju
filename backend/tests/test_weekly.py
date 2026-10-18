@@ -499,6 +499,15 @@ def test_title_span_scope_and_cross_year_week(session, profile):
     session.commit()
     issue = weekly.generate(session, profile.id, date(2026, 10, 12), NOW).issue
     assert issue.title.startswith("申报周报｜10月12日—18日（全国版）：")
+    assert issue.scope == "全国版"
+    # 已有数据里限了范围却叫"全国"的方案：补"·限定范围"，不当成全国版
+    profile.name = "全国"
+    session.commit()
+    issue = weekly.generate(session, profile.id, date(2026, 10, 12), NOW).issue
+    assert issue.title.startswith("申报周报｜10月12日—18日（全国·限定范围）")
+    assert issue.scope == "全国·限定范围"
+    profile.name = "全国版"
+    session.commit()
     assert issue.body_text.splitlines()[1].startswith("本期新通知 1 条。")
 
 
@@ -697,6 +706,7 @@ def test_api_profiles_generate_publish_retract_audit(client, session, profile, w
         {"weekday": 0},
         {"name": "智能版"},
         {"columns": {"bad": True}},
+        {"name": "全国"},  # 限了省份的方案不能叫"全国"
     ):
         assert (
             client.put(f"{prefix}/profiles/{pid}", json=config | patch, headers=HEADERS).status_code
@@ -1636,5 +1646,7 @@ def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile
     # 回退只删名单速报，周报保留；升级后旧期刊没有 items（本期清单按正文里的文件给）
     [kept] = session.scalars(select(DigestIssue)).all()
     assert (kept.id, kept.kind, kept.subject_id, kept.items) == (weekly_issue.id, "weekly", 0, None)
+    # 升级时按方案回填范围：升级前发布的全国版周报，"本周周报"也找得到
+    assert kept.scope == "全国"
     columns, uniques = shape()
     assert {"subject_id", "items", "scope"} <= columns and uniques == {"uq_digest_issue_subject"}
