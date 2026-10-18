@@ -1,6 +1,7 @@
 """运行配置：全部从环境变量（前缀 YOUJU_）或 backend/.env 读取。"""
 
 import re
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -98,6 +99,15 @@ class Settings(BaseSettings):
     ai_advisor_audience: Literal["whitelist", "all"] = "whitelist"
     ai_advisor_daily_cap: int = Field(default=200, ge=0)
     ai_advisor_concurrency: int = Field(default=3, ge=1, le=8)
+    # 加量体验（D-070 ③，见 boost.py）：单独开关，默认关，还要批量工具开关开着。打开之前先执行
+    # mysql_accounts.sql 里的"加量体验权限"，并让隐私保护指引写明体验记录（PR 说明里有建议文字）。
+    # 关掉只是不能再开始新的体验，已经开始的照常用满 72 小时（开始前承诺了连续 3 天）
+    boost_trial_enabled: bool = False
+    # 申报季加量（D-070 ⑤）：起止日期（北京时间，含首尾）内免费批量次数每月 5 次，每次仍 50 家以内。
+    # 开关开着就要两个日期都填（如 2026-11-01），开始不能晚于结束，配错就不启动
+    season_boost_enabled: bool = False
+    season_boost_start: date | None = None
+    season_boost_end: date | None = None
 
     # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
     pay_enabled: bool = False
@@ -132,6 +142,11 @@ class Settings(BaseSettings):
     @field_validator("xpay_price_pass", mode="before")
     @classmethod
     def _empty_pass_price(cls, value):
+        return None if value == "" else value
+
+    @field_validator("season_boost_start", "season_boost_end", mode="before")
+    @classmethod
+    def _empty_season_date(cls, value):
         return None if value == "" else value
 
     @classmethod
@@ -192,6 +207,20 @@ class Settings(BaseSettings):
             )
         if self.agreement_min_version > self.agreement_version:
             raise ValueError("YOUJU_AGREEMENT_MIN_VERSION 不能比 YOUJU_AGREEMENT_VERSION 新")
+        return self
+
+    @model_validator(mode="after")
+    def _season_boost_dates(self) -> "Settings":
+        """申报季加量开着却没写日期、或开始晚于结束：页面上的起止日期和实际次数会对不上，所以不启动。"""
+        if self.season_boost_enabled and (
+            self.season_boost_start is None
+            or self.season_boost_end is None
+            or self.season_boost_start > self.season_boost_end
+        ):
+            raise ValueError(
+                "YOUJU_SEASON_BOOST_ENABLED=true 时要填 YOUJU_SEASON_BOOST_START 和"
+                " YOUJU_SEASON_BOOST_END（如 2026-11-01），开始不能晚于结束"
+            )
         return self
 
 

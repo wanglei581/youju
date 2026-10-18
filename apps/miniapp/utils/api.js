@@ -689,6 +689,12 @@ function advisorStatus() {
   return isLive() ? request('/api/v1/advisor/status') : Promise.reject(new Error('连接真实服务后才能使用工具'));
 }
 
+// 开始加量体验（D-070 ③）：只在确认页点"开始体验"时调用。服务端重复调用返回同一段体验，不会重新起算
+function startBoostTrial() {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后才能开始体验'));
+  return request('/api/v1/advisor/trial', null, { method: 'POST', data: {} });
+}
+
 function advisorPreview(data) {
   if (!isLive() || !['compare', 'track'].includes(data.kind)) return Promise.reject(new Error('暂时没有可用工具'));
   return request('/api/v1/advisor/preview', null, { method: 'POST', data: { kind: data.kind, ...(data.file ? { file: data.file } : { rows: data.rows }) } });
@@ -791,6 +797,6 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, advisorStatus, advisorPreview, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  advisorCapabilities, advisorStatus, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
 };

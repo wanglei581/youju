@@ -249,7 +249,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
     const text = render(read('components/ai-entry/index.wxml'), { ...fab.data, blocked: false });
     assert.equal(text.startsWith('AI 解读') && text.includes('开始解读'), aiEnabled); if (!aiEnabled) assert.equal(text, '');
-    const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers },
+    const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers, '../../utils/boost.js': require('../utils/boost.js') },
       { wx: { setNavigationBarTitle: ({ title }) => { navigationTitle = title; } } });
     page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await flush();
     const rendered = render(read('pages/advisor/index.wxml'), page.data);

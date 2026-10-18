@@ -222,6 +222,15 @@ def usage_limit(kind: str) -> int:
     return 5 if kind in AI_KINDS else 3
 
 
+# 加量体验期内的提交（两种数据工具合计）记在这个账本上，按北京日期计，不进每月免费汇总（boost.py）
+TRIAL_USAGE = "trial"
+
+
+def ledger_kind(task: AdvisorTask) -> str:
+    """任务占用的是哪本账：体验期的提交记在体验账本，其余按任务类型记。"""
+    return TRIAL_USAGE if task.usage_source == "trial" else task.kind
+
+
 def global_ai_usage(session: Session, day: date) -> int:
     """当天已占用的解读和条款对照次数；失败退款已从账本扣除。"""
     return session.scalar(
@@ -257,9 +266,14 @@ def usage_counts(
     return counts
 
 
-def reserve_usage(session: Session, user_id: int, kind: str, day: date) -> bool:
-    """在调用方已锁定用户行后占用一次额度。"""
-    if usage_counts(session, user_id, day, lock=True).get(kind, 0) >= usage_limit(kind):
+def reserve_usage(
+    session: Session, user_id: int, kind: str, day: date, *, limit: int | None = None
+) -> bool:
+    """在调用方已锁定用户行后占用一次额度。kind 是账本类型（体验账本是 TRIAL_USAGE）；
+    limit 不传按 usage_limit（申报季加量、加量体验由调用方传入当时的上限）。"""
+    if limit is None:
+        limit = usage_limit(kind)
+    if usage_counts(session, user_id, day, lock=True).get(kind, 0) >= limit:
         return False
     row = session.scalar(
         select(AdvisorUsage)
@@ -298,7 +312,7 @@ def release_usage(session: Session, task: AdvisorTask) -> None:
         select(AdvisorUsage)
         .where(
             AdvisorUsage.user_id == task.user_id,
-            AdvisorUsage.kind == task.kind,
+            AdvisorUsage.kind == ledger_kind(task),
             AdvisorUsage.day == usage_day(task.created_at),
         )
         .with_for_update()

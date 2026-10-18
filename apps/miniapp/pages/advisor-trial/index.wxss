@@ -1,0 +1,9 @@
+@import "../../utils/advisor.wxss";
+
+/* 规则逐项：标题一行、说明一行，窄屏也不挤 */
+.trial-item { margin-top: 24rpx; }
+.trial-label { display: block; font-weight: 600; }
+.trial-text { display: block; margin-top: 4rpx; }
+
+/* 开始、暂不开始、去提交名单占满整行：按钮文字"开始体验（立即起算 72 小时）"一行放得下，不折成两行 */
+.trial-actions .advisor-button { width: 100% !important; }

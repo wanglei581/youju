@@ -126,6 +126,8 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |
 | `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
+| `YOUJU_BOOST_TRIAL_ENABLED` | `false` | 加量体验开关（D-070 ③，见 `youju/boost.py`）；还要数据工具开关开着。打开前先执行 `deploy/mysql_accounts.sql` 的"加量体验权限"，隐私保护指引写明体验记录；关掉后已开始的体验照常用满 72 小时 |
+| `YOUJU_SEASON_BOOST_ENABLED`、`YOUJU_SEASON_BOOST_START`、`YOUJU_SEASON_BOOST_END` | `false`、空、空 | 申报季加量（D-070 ⑤）：起止日期（北京时间，含首尾，如 `2026-11-01`）内免费批量次数每月 5 次（每次仍 50 家）；开着就要填两个日期，开始不能晚于结束，配错不启动 |
 | `YOUJU_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 模型方 OpenAI 兼容接口地址 |
 | `YOUJU_AI_MODEL` | `qwen-flash` | 调用的模型标识 |
 | `YOUJU_AI_API_KEY` | 未配置 | 模型调用密钥，不记录、不输出 |

@@ -444,7 +444,7 @@ test('截止：区县未收录、收录范围没取到或旧服务没给区县�
 });
 
 function dataLogic(api = {}) {
-  return load('utils/data-tools.js', { './regions.js': regions, './api.js': api, './advisor.js': advisorHelpers, '../content/advisor-terms.js': terms });
+  return load('utils/data-tools.js', { './regions.js': regions, './api.js': api, './advisor.js': advisorHelpers, '../content/advisor-terms.js': terms, './boost.js': require('../utils/boost.js') });
 }
 const caps = () => ({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: false, features: [] } });
 const status = () => ({ enabled: true, pass: { active: false }, quota: { compare: { used: 0, limit: 3, maxRows: 50 }, track: { used: 0, limit: 3, maxRows: 50 } } });

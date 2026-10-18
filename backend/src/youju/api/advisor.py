@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import payments
+from youju import boost, payments
 from youju.ai import interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
@@ -190,12 +190,17 @@ def _upload_consent(user: User) -> None:
 
 @router.get("/status", dependencies=[Depends(_enabled)])
 def status(session: SessionDep, user: KnownUserDep) -> dict:
-    if not get_settings().advisor_enabled:
+    settings = get_settings()
+    if not settings.advisor_enabled:
         raise HTTPException(status_code=404, detail="没有找到接口")
     stamp = _stamp()
     day = service.usage_day(stamp)
     usage = service.usage_counts(session, user.id, day) if user else {}
     ticket = payments.current_pass(session, user.id, stamp) if user else None
+    # quota 仍是每月免费次数（体验期间不占用，确认页要写本月还剩几次）；
+    # 体验期自己的每天次数在 trial 里，maxRows 按现在能提交的上限
+    trial = boost.trial_status(session, settings, user, stamp, usage)
+    wide = ticket is not None or bool(trial and trial["active"])
     return {
         "enabled": True,
         "pass": payments.pass_status(session, user.id, stamp)
@@ -204,12 +209,45 @@ def status(session: SessionDep, user: KnownUserDep) -> dict:
         "quota": {
             kind: {
                 "used": usage.get(kind, 0),
-                "limit": service.usage_limit(kind),
-                "maxRows": 500 if ticket else service.MAX_ROWS,
+                "limit": boost.free_limit(settings, kind, day),
+                "maxRows": 500 if wide else service.MAX_ROWS,
             }
             for kind in ("compare", "track")
         },
+        "trial": trial,
+        "season": boost.season_status(settings, day),
     }
+
+
+@router.post("/trial", dependencies=[Depends(_enabled)])
+def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
+    """开始加量体验：用户在确认页看完规则点"开始体验"。重复点返回同一段体验，不会重新起算。
+
+    开始体验不提交客户信息，不要求先同意工具使用说明；要求已同意用户协议（要保存体验记录）。"""
+    settings = get_settings()
+    if not boost.trial_enabled(settings):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
+    # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
+    # 连点两次时，后拿到锁的请求不会早于先建成的那段，返回同一段而不是"已经用过"
+    session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
+    stamp = _stamp()
+    try:
+        boost.start(session, user, stamp)
+        session.commit()
+    except boost.TrialError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": str(exc)}
+        ) from None
+    except IntegrityError:
+        # 唯一约束兜底（另一个请求已经建成）：返回建成的那段
+        session.rollback()
+        stamp = _stamp()
+        if boost.active_trial(session, user.id, stamp) is None:
+            raise
+    request.state.audit = {"action": "boost_trial_start"}
+    return boost.trial_status(session, settings, user, stamp)
 
 
 @router.post("/preview", dependencies=[Depends(_enabled), Depends(_body_size)])
@@ -325,7 +363,9 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             "enabled": data_enabled,
             "features": ["compare", "track"] if data_enabled else [],
             "remaining": {
-                k: max(0, service.usage_limit(k) - counts.get(k, 0)) if data_enabled else 0
+                k: max(0, boost.free_limit(settings, k, day) - counts.get(k, 0))
+                if data_enabled
+                else 0
                 for k in ("compare", "track")
             },
         },
@@ -395,69 +435,95 @@ def create_task(
     if body.kind not in AI_KINDS:
         _upload_consent(user)
     stamp = _stamp()
-    ticket = (
-        payments.current_pass(session, user.id, stamp, lock=True)
-        if body.kind not in AI_KINDS
-        else None
-    )
+    settings = get_settings()
+    day = service.usage_day(stamp)
+    data_kind = body.kind not in AI_KINDS
+    ticket = payments.current_pass(session, user.id, stamp, lock=True) if data_kind else None
+    # 加量体验期内每次 500 家以内，记在体验账本上，不占每月免费次数（boost.py）
+    trial = boost.active_trial(session, user.id, stamp) if data_kind else None
+    row_limit = 500 if ticket or trial else service.MAX_ROWS
+    row_code = "PASS_ROW_LIMIT" if ticket else "TRIAL_ROW_LIMIT" if trial else "FREE_ROW_LIMIT"
     try:
-        rows = _file_rows(body) if body.kind not in AI_KINDS else None
+        rows = _file_rows(body) if data_kind else None
     except HTTPException as exc:
         if exc.status_code == 422 and isinstance(exc.detail, str) and "最多 500 行" in exc.detail:
-            limit = 500 if ticket else service.MAX_ROWS
             raise HTTPException(
                 status_code=429,
                 detail={
-                    "code": "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT",
-                    "message": f"每次最多提交 {limit} 行",
-                    "maxRows": limit,
+                    "code": row_code,
+                    "message": f"每次最多提交 {row_limit} 行",
+                    "maxRows": row_limit,
                 },
             ) from None
         raise
-    if rows is not None:
-        limit = 500 if ticket else service.MAX_ROWS
-        if len(rows) > limit:
-            code = "PASS_ROW_LIMIT" if ticket else "FREE_ROW_LIMIT"
-            raise HTTPException(
-                status_code=429,
-                detail={"code": code, "message": f"每次最多提交 {limit} 行", "maxRows": limit},
-            )
+    if rows is not None and len(rows) > row_limit:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": row_code,
+                "message": f"每次最多提交 {row_limit} 行",
+                "maxRows": row_limit,
+            },
+        )
     with _submission_lock(session, body.kind):
         if (
             body.kind in AI_KINDS
             and max(
-                service.global_ai_usage(session, service.usage_day(stamp)),
-                service.global_ai_calls(session, service.usage_day(stamp)),
+                service.global_ai_usage(session, day),
+                service.global_ai_calls(session, day),
             )
-            >= get_settings().ai_advisor_daily_cap
+            >= settings.ai_advisor_daily_cap
         ):
             raise HTTPException(
                 status_code=429,
                 detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
             )
-        # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，不算用过付费的量。
-        # 付款页写的自助退款条件就是"没有提交过超过 50 家的名单、也没有超出每月免费次数"。
-        fits_free = body.kind in AI_KINDS or (rows is not None and len(rows) <= service.MAX_ROWS)
-        reserved = fits_free and service.reserve_usage(
-            session, user.id, body.kind, service.usage_day(stamp)
-        )
-        if reserved:
-            ticket = None
-        if ticket is None and not reserved:
-            if body.kind not in AI_KINDS:
+        if trial is not None:
+            # 体验期先用体验当天的次数（两项合计）；用完了有使用期的用使用期，
+            # 否则等第二天——不改用每月免费次数，体验结束后它们照常可用
+            if service.reserve_usage(
+                session, user.id, service.TRIAL_USAGE, day, limit=boost.TRIAL_DAILY
+            ):
+                ticket = None
+            elif ticket is None:
                 raise HTTPException(
                     status_code=429,
                     detail={
-                        "code": "FREE_MONTHLY_LIMIT",
-                        "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                        "code": "TRIAL_DAILY_LIMIT",
+                        "message": f"今天的 {boost.TRIAL_DAILY} 次加量体验已用完，明天 0 点恢复；"
+                        "本月免费次数不受影响，体验结束后照常可用",
+                        "dailyLimit": boost.TRIAL_DAILY,
                     },
                 )
-            label = "政策解读" if body.kind == "interpret" else "条款对照"
-            raise HTTPException(status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试")
+            source = "pass" if ticket else "trial"
+        else:
+            # 有使用期也先用免费的量：50 行以内、本月免费次数还没用完的，记为免费，
+            # 不算用过付费的量。付款页写的自助退款条件就是
+            # "没有提交过超过 50 家的名单、也没有超出每月免费次数"。
+            fits_free = not data_kind or len(rows) <= service.MAX_ROWS
+            reserved = fits_free and service.reserve_usage(
+                session, user.id, body.kind, day, limit=boost.free_limit(settings, body.kind, day)
+            )
+            if reserved:
+                ticket = None
+            if ticket is None and not reserved:
+                if data_kind:
+                    raise HTTPException(
+                        status_code=429,
+                        detail={
+                            "code": "FREE_MONTHLY_LIMIT",
+                            "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                        },
+                    )
+                label = "政策解读" if body.kind == "interpret" else "条款对照"
+                raise HTTPException(
+                    status_code=429, detail=f"{label}今天的免费额度已用完，请明天再试"
+                )
+            source = "pass" if ticket else "free"
         task = AdvisorTask(
             user_id=user.id,
             pass_id=ticket.id if ticket else None,
-            usage_source="pass" if ticket else "free",
+            usage_source=source,
             kind=body.kind,
             status="queued",
             input_rows=rows,

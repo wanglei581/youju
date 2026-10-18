@@ -1039,12 +1039,15 @@ class DeadlineClue(Base):
 
 
 class RewardClaim(Base):
-    """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。"""
+    """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。
+
+    boost_trial：注销时还记着这个微信用过加量体验（boost.py），重新同意协议后不能再开始一次。"""
 
     __tablename__ = "reward_claims"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('first_batch', 'referred', 'referral')", name="ck_reward_claim_kind"
+            "kind IN ('first_batch', 'referred', 'referral', 'boost_trial')",
+            name="ck_reward_claim_kind",
         ),
         Index("ix_reward_claims_claimed", "claimed_at"),
     )
@@ -1078,6 +1081,23 @@ class PassReward(Base):
     ref_id: Mapped[int | None] = mapped_column(Integer)
     granted_at: Mapped[datetime] = mapped_column(UTCDateTime())
     note: Mapped[str | None] = mapped_column(String(200))
+
+
+class BoostTrial(Base):
+    """加量体验（D-070 ③）：用户自己点开始才建，一人一行，不是批量工具的使用天数。
+
+    体验期内每次提交记在 advisor_usage 的 trial 账本上（按北京日期），不占每月免费次数。
+    注销随用户删除；用过的事实另记去标识凭据（reward_claims，kind=boost_trial）。"""
+
+    __tablename__ = "boost_trials"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_boost_trials_user"),
+        CheckConstraint("ends_at > started_at", name="ck_boost_trials_period"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class WorkbenchPass(Base):

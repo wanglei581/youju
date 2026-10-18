@@ -21,6 +21,7 @@
     "pages/complaint/index",
     "pages/advisor-form/index",
     "pages/advisor-terms/index",
+    "pages/advisor-trial/index",
     "pages/pass/index",
     "pages/orders/index"
   ],
