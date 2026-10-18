@@ -4,6 +4,14 @@ const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy,
 const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 
+// 周报的统计周：同月写"9月28日—30日"，跨月写"9月28日—10月4日"（和本期清单页一样）
+function weekText(start, end) {
+  const a = /^\d{4}-\d{2}-\d{2}$/.test(start || '') ? start.split('-').map(Number) : null;
+  const b = /^\d{4}-\d{2}-\d{2}$/.test(end || '') ? end.split('-').map(Number) : null;
+  if (!a || !b) return '';
+  return `${a[1]}月${a[2]}日—${a[0] === b[0] && a[1] === b[1] ? `${b[2]}日` : `${b[1]}月${b[2]}日`}`;
+}
+
 Page({
   data: {
     // 协议定稿前（D-056）不显示登录卡片、纠错和申请覆盖，也不查询登录状态；定稿后照旧
@@ -30,6 +38,8 @@ Page({
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
     stats: null,
     notCovered: '',
+    // "本周周报"（公众号方案 PR #287）：全国版最近一期已发布的周报，打开"本期清单"；还没有发布的不显示
+    digestEntry: null,
   },
 
   onLoad() {
@@ -42,6 +52,7 @@ Page({
     if (api.watchStartup) api.watchStartup(this);
     this.refresh();
     this.loadStats();
+    this.loadDigest();
   },
 
   onHide() {
@@ -56,6 +67,19 @@ Page({
     loadCoverage().then((c) => {
       if (c) this.setData({ stats: { sources: c.sources, provinces: c.provinces, cities: (c.cities || []).length, districts: (c.districts || []).length }, notCovered: notCoveredNames(c) });
     });
+  },
+
+  // 本周周报：有已发布的一期才显示这一行（取不到就不显示，不报错）
+  loadDigest() {
+    if (!api.latestDigest) return;
+    api.latestDigest()
+      .then((d) => this.setData({ digestEntry: d && d.id !== undefined ? { id: String(d.id), week: weekText(d.weekStart, d.weekEnd) } : null }))
+      .catch(() => this.setData({ digestEntry: null }));
+  },
+
+  openDigest() {
+    const entry = this.data.digestEntry;
+    if (entry) wx.navigateTo({ url: `/pages/digest/index?id=${encodeURIComponent(entry.id)}` });
   },
 
   // 以服务端记录为准：换了设备也能恢复登录状态；服务端没有记录（如在别处注销过）或协议更新了，清掉本机记录。

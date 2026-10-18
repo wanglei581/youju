@@ -202,8 +202,8 @@ test('独立说明须主动勾选，并先确认通用协议，再记录 advisor
 test('新增表单和独立说明均注册，模板完整；工具入口覆盖首页、我的、客户页', () => {
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
-  // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）
-  assert.equal(app.pages.length, 24);
+  // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）+ 公众号周报的本期清单（PR #287）
+  assert.equal(app.pages.length, 25);
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }

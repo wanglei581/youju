@@ -1,4 +1,4 @@
-"""周报和临期提醒的管理接口；口令和审计由管理台共用实现提供。"""
+"""周报、临期提醒和名单速报的管理接口；口令和审计由管理台共用实现提供。"""
 
 from datetime import date
 from pathlib import Path
@@ -17,7 +17,7 @@ from youju.models import DigestIssue, DigestProfile
 from youju.sources.onboard import PROVINCES
 
 SessionDep = Annotated[Session, Depends(get_session)]
-Kind = Literal["weekly", "reminder"]
+Kind = Literal["weekly", "reminder", "list_flash"]
 
 
 class ProfileIn(BaseModel):
@@ -63,6 +63,9 @@ class GenerateIn(BaseModel):
     profile_id: int = Field(gt=0)
     week: date | None = None
     kind: Kind = "weekly"
+    # 名单速报：写哪份名单（文件编号）；公示期由人照原文填写，系统里没有核对过的公示期字段
+    subject_id: int = Field(default=0, ge=0)
+    period: str = Field(default="", max_length=60)
 
     @field_validator("week")
     @classmethod
@@ -99,6 +102,7 @@ def issue_out(issue, profile_name, *, detail=False):
             "id",
             "profile_id",
             "kind",
+            "subject_id",
             "week_start",
             "week_end",
             "title",
@@ -114,6 +118,9 @@ def issue_out(issue, profile_name, *, detail=False):
             body_html=issue.body_html,
             body_text=issue.body_text,
             body_text_with_links=issue.body_text_with_links,
+            # 公众号编辑器里插入小程序链接时填的页面路径（本期清单要先标为已发布）
+            paths=weekly.page_paths(issue),
+            period=(issue.items or [{}])[0].get("period", "") if issue.kind == "list_flash" else "",
         )
     return out
 
@@ -201,9 +208,13 @@ def router(require_admin, audit) -> APIRouter:
         available(session, issue)
         return issue_out(issue, session.get(DigestProfile, issue.profile_id).name, detail=True)
 
-    def run_generation(session, profile_id, week, request, kind="weekly"):
+    def run_generation(
+        session, profile_id, week, request, kind="weekly", subject_id=0, period=None
+    ):
         try:
-            result = weekly.generate(session, profile_id, week, kind=kind)
+            result = weekly.generate(
+                session, profile_id, week, kind=kind, subject_id=subject_id, period=period
+            )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         audit(
@@ -212,6 +223,7 @@ def router(require_admin, audit) -> APIRouter:
             profile_id=profile_id,
             week=week,
             kind=kind,
+            subject_id=subject_id,
             outcome=result.outcome,
         )
         return {
@@ -222,14 +234,36 @@ def router(require_admin, audit) -> APIRouter:
 
     @routes.post("/generate")
     def generate(body: GenerateIn, session: SessionDep, request: Request):
-        return run_generation(session, body.profile_id, body.week, request, body.kind)
+        return run_generation(
+            session,
+            body.profile_id,
+            body.week,
+            request,
+            body.kind,
+            body.subject_id,
+            # 公示期留空沿用上次填的（已填过的不用每次重填）
+            (body.period.strip() or None) if body.kind == "list_flash" else None,
+        )
 
     @routes.post("/issues/{issue_id}/regenerate")
     def regenerate(issue_id: int, session: SessionDep, request: Request):
         issue = session.get(DigestIssue, issue_id)
         if issue is None:
             raise HTTPException(404, "周报不存在")
-        return run_generation(session, issue.profile_id, issue.week_start, request, issue.kind)
+        # 名单速报重新生成沿用上次填的公示期
+        return run_generation(
+            session, issue.profile_id, issue.week_start, request, issue.kind, issue.subject_id
+        )
+
+    @routes.get("/lists")
+    def flash_lists(profile_id: int, session: SessionDep, request: Request):
+        """名单速报选名单：近 14 天发布、在方案范围内的名单，按条数从多到少。"""
+        profile = session.get(DigestProfile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "周报方案不存在")
+        items = weekly.flash_candidates(session, profile)
+        audit(request, "weekly_lists", profile_id=profile_id, count=len(items))
+        return {"items": items}
 
     @routes.post("/issues/{issue_id}/status")
     def status(issue_id: int, body: StatusIn, session: SessionDep, request: Request):

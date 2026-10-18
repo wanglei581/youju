@@ -114,7 +114,8 @@ async function mePage(final) {
 
 test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登录"，不查登录状态；没有登录、勾选、纠错、申请覆盖；协议阅读入口保留', async () => {
   const { api, root } = await mePage(false);
-  assert.deepEqual(api.calls, []);
+  // 只问"本周周报"（公开、不带身份，PR #287），不查登录状态
+  assert.deepEqual(api.calls, ['latestDigest']);
   const all = textOf(root);
   assert.deepEqual(texts(root, hasClass('brand')), ['有据 检索和导出不需要登录']);
   for (const word of ['未登录', '微信登录', '我已阅读并同意', '纠错', '申请覆盖', '注销', '我的数据', '登录后']) {
@@ -139,7 +140,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
 
 test('"我的"：保留登录与同意，完整候选增加工具中心和共同任务入口', async () => {
   const { api, root } = await mePage(true);
-  assert.deepEqual(api.calls, ['me']);
+  assert.deepEqual(api.calls, ['me', 'latestDigest']);
   const all = textOf(root);
   for (const word of ['未登录', '登录后可以关注条件、订阅微信提醒、提交纠错', '微信登录', '我已阅读并同意', '纠错', '申请覆盖：你关心的地区还没有？']) {
     assert.ok(all.includes(word), `缺少：${word}`);

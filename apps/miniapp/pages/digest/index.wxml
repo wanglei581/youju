@@ -1,0 +1,42 @@
+<!-- 本期清单（公众号方案 PR #287）：公众号周报正文每省只列 5 条、不能放政府网站链接，这一页列这一期的全部条目，
+     按省份看（国家部委在前，各省按条数从多到少），点一条进详情看原文。只有已发布的一期能打开 -->
+<notice-bar />
+<view wx:if="{{loading && !digest}}" class="card" aria-label="正在加载">
+  <view wx:for="{{[1, 2, 3]}}" wx:key="*this" class="sk-row">
+    <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+    <view class="sk sk-line"></view>
+    <view class="sk sk-meta"></view>
+  </view>
+</view>
+<view wx:elif="{{error && !digest}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
+<view wx:elif="{{missing}}" class="card empty">
+  <view class="empty-title">{{missing}}</view>
+  <view class="empty-sub">公众号每周一发申报周报；截止日期、名单也可以直接在小程序里查。</view>
+  <view class="exits">
+    <view class="exit-btn exit-btn--main" bindtap="goReport" aria-role="button">看 7 天内截止</view>
+    <view class="exit-btn" bindtap="goHome" aria-role="button">回首页</view>
+  </view>
+</view>
+<block wx:elif="{{digest}}">
+  <view class="card head">
+    <view class="head-week">{{weekText}} 申报周报<text wx:if="{{digest.demo}}" class="demo">演示数据</text></view>
+    <view class="head-sum">共 {{digest.total}} 条，按省份分好；点一条看详情和原文出处。</view>
+    <view class="weak head-note">第三方整理，非政府平台，以原文为准<text wx:if="{{dataText}}"> · 数据截至 {{dataText}}</text></view>
+  </view>
+  <view wx:if="{{labels.length > 2}}" class="filters">
+    <picker mode="selector" range="{{labels}}" value="{{index}}" bindchange="pickProvince"><view class="filter">{{labels[index]}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
+  </view>
+  <view wx:for="{{groups}}" wx:key="province" wx:for-item="group" class="card list">
+    <view class="group-head"><text class="group-name">{{group.name}}</text><text class="weak">{{group.count}} 条</text></view>
+    <block wx:for="{{group.sections}}" wx:key="key" wx:for-item="section">
+      <view class="section-label">{{section.label}}</view>
+      <doc-row wx:for="{{section.items}}" wx:key="id" doc="{{item}}" today="{{today}}" last="{{index === section.items.length - 1}}" />
+    </block>
+  </view>
+  <view wx:if="{{rest}}" class="more-btn" bindtap="more" aria-role="button">显示更多（还有 {{rest}} 条）</view>
+  <view wx:if="{{!digest.listed}}" class="card empty">这一期的条目都已下架或不再公开。</view>
+  <view wx:if="{{digest.hidden}}" class="weak page-note">另有 {{digest.hidden}} 条已下架或不再公开，这里不再列出。</view>
+  <view wx:if="{{digest.truncated}}" class="weak page-note">这一期条目较多，这里只列出前 {{digest.listed}} 条，其余请在首页搜索。</view>
+  <view class="weak page-note">截止日期只写人工核对过的，按现在的核对结果显示；"30 天内截止"等栏目是这一期发布时的分法。申报请在主管部门的系统办理，以原文为准。</view>
+</block>
+<view style="height: 80rpx"></view>

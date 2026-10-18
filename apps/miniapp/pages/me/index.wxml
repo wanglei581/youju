@@ -52,6 +52,9 @@
 </view>
 
 <view class="card">
+  <!-- 公众号（PR #287）：本周周报打开小程序里的"本期清单"（有已发布的一期才显示）；关注公众号没配原始 ID 时不显示（组件里判断） -->
+  <view wx:if="{{digestEntry}}" class="row" bindtap="openDigest" aria-role="button" aria-label="本周周报：{{digestEntry.week}}"><t-icon name="calendar" size="40rpx" color="#4E5969" /><text class="row-text">本周周报</text><text class="row-sub">{{digestEntry.week}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <follow-account variant="row" />
   <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
