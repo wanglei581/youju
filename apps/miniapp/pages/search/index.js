@@ -10,14 +10,13 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
-  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl, describe,
+  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
 } = require('../../utils/conditions.js');
 
-// 转发（D-070）：路径带上当前的检索条件（和"关注"打开搜索同一套参数），接收人打开是同样的条件，结果按打开时的数据。
-// 微信没写转发路径的长度上限，参照它"链接打开小程序"的参数上限（1024 个字符）保守处理：条件多到超过时只带
-// 关键词、页签、发布时间和"只看未截止"，卡片标题按实际带上的条件写，接收人看到的条件和标题一致
-const SHARE_PATH_MAX = 1000;
-// 网址参数解码：坏的编码（如被截断的 %E4）不报错，原样当作文字
+// 转发（D-070）：路径带上当前的全部检索条件（和"关注"打开搜索同一套参数），接收人打开是同样的条件，结果按打开时的数据。
+// 条件不删减：删了接收人看到的就和转发人不一样。微信没写转发路径的长度上限，条件很多时由真机验证
+// 网址参数解码：微信把路径里的参数原样（没解码）交给 onLoad（开发者工具实测，navigateTo 和从聊天卡片打开都是），
+// 这里解码一次；坏的编码（如被截断的 %E4）不报错，原样当作文字
 const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 
 const KIND_TABS = [
@@ -542,11 +541,7 @@ Page({
 
   // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
   onShareAppMessage() {
-    const c = this.conditions();
-    const path = searchUrl(c);
-    if (path.length <= SHARE_PATH_MAX) return { title: `搜索结果：${this.followName()}`, path };
-    const core = { q: c.q.slice(0, 30), kind: c.kind, time: c.time, open: c.open };
-    return { title: `搜索结果：${describe(core)}`.slice(0, 60), path: searchUrl(core) };
+    return { title: `搜索结果：${this.followName()}`, path: searchUrl(this.conditions()) };
   },
 
   // 进入或退出选择模式；退出时清空勾选

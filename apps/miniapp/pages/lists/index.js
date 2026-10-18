@@ -10,7 +10,11 @@ const SCOPE_CACHE = 'youjuListScopeV1';
 const CHIPS = ['全部', '科技型中小企业', '专精特新'];
 
 // 转发（D-070）：查到了名单才在卡片标题和路径里带企业名称（名单上的都是企业和机构）；没查、正在查、
-// 没查到、查询出错（如输入像个人姓名被服务端拒绝）时只转发这一页，不带输入的内容
+// 没查到、查询出错（如输入像个人姓名被服务端拒绝）时只转发这一页，不带输入的内容。
+// 名称里连续的空白并成一个；超过 60 个字的不带（企业全称和统一社会信用代码都远短于这个长度），打开时也不自动查
+const NAME_MAX = 60;
+const shareName = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+// 网址参数解码：微信把路径里的参数原样（没解码）交给 onLoad，这里解码一次；坏的编码不报错，原样当作文字
 const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 // 从转发卡片打开时页面栈里只有这一页：左上角显示"首页"（点了回首页），不显示返回箭头
 const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
@@ -70,8 +74,8 @@ Page({
     this.setData({ statusBarHeight, navHeight, menuWidth, firstPage: firstPage() });
     this.reload();
     // 从带企业名称的转发卡片打开：按这个名称查一次，和转发人看到的是同一个查询
-    const name = decode(query && query.q).trim();
-    if (name.replace(/\s+/g, '').length >= 2) {
+    const name = shareName(decode(query && query.q));
+    if (name.replace(/\s/g, '').length >= 2 && name.length <= NAME_MAX) {
       this.setData({ name });
       this.query();
     }
@@ -81,8 +85,9 @@ Page({
   onShareAppMessage() {
     const { queried, result, looking, lookupError } = this.data;
     const found = !looking && !lookupError && result && result.items && result.items.length > 0;
-    if (!found) return { title: '查企业上过哪些名单', path: '/pages/lists/index' };
-    return { title: `查名单：${queried}`, path: `/pages/lists/index?q=${encodeURIComponent(queried)}` };
+    const name = shareName(queried);
+    if (!found || !name || name.length > NAME_MAX) return { title: '查企业上过哪些名单', path: '/pages/lists/index' };
+    return { title: `查名单：${name}`, path: `/pages/lists/index?q=${encodeURIComponent(name)}` };
   },
 
   reload() {
@@ -127,7 +132,9 @@ Page({
       });
   },
 
+  // 从转发卡片打开（左上角是"首页"）时直接回首页；平常返回上一页，返回不了也回首页
   back() {
+    if (this.data.firstPage) { wx.switchTab({ url: '/pages/home/index' }); return; }
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
   },
 

@@ -34,7 +34,8 @@ const areaParams = ({ province, city, district }) => (district ? { province, cit
 const areaText = ({ province, city, district }) => [city !== province ? city : '', district].filter(Boolean).join(' · ');
 
 // 转发（D-070）：路径带上正在看的视图（天数或月份、省市区、部门、只看已核对），接收人打开是同样的筛选条件，
-// 结果按打开时的数据。参数逐个编码；接收端逐个解码，坏的编码不报错，不认识的值不用
+// 结果按打开时的数据。参数逐个编码；微信把路径里的参数原样（没解码）交给 onLoad，接收端逐个解码一次，
+// 坏的编码不报错，不认识的值不用
 const pad = (n) => (n < 10 ? `0${n}` : `${n}`);
 const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 
@@ -213,7 +214,11 @@ Page({
   },
   onHide() { stopDay(this); },
   onUnload() { stopDay(this); },
-  goBack() { wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) }); },
+  // 从转发卡片打开（左上角是"首页"）时直接回首页；平常返回上一页，返回不了也回首页
+  goBack() {
+    if (this.data.firstPage) { wx.switchTab({ url: '/pages/home/index' }); return; }
+    wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
+  },
 
   reload() {
     this.cal = null;

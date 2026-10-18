@@ -37,14 +37,14 @@ function load(file, deps = {}, globals = {}) {
   return { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, values); } };
 }
 
-// 转发路径 → 页面和 onLoad 收到的参数。decoded 为真时模拟参数已经解过码再交给页面（两种情况页面都要能用）
-function open(sharePath, decoded = false) {
+// 转发路径 → 页面和 onLoad 收到的参数。微信把路径里的参数原样（没解码）交给 onLoad：开发者工具实测
+// navigateTo 和用场景值 1007/1008 从聊天卡片打开都是这样，页面自己解码一次
+function open(sharePath) {
   const [page, search = ''] = sharePath.split('?');
   const query = {};
   for (const part of search.split('&').filter(Boolean)) {
     const at = part.indexOf('=');
-    const value = part.slice(at + 1);
-    query[part.slice(0, at)] = decoded ? decodeURIComponent(value) : value;
+    query[part.slice(0, at)] = part.slice(at + 1);
   }
   return { page, query };
 }
@@ -89,14 +89,12 @@ test('通知详情：加载出来才能转发，标题"发文机关｜通知标�
   const share = shareOf(sender);
   assert.deepEqual(share, { title: '山东省科学技术厅｜关于组织申报2026年度高新技术企业认定的通知', path: '/pages/detail/index?id=128' });
   for (const word of PROMO) assert.ok(!share.title.includes(word), word);
-  for (const decoded of [false, true]) {
-    const { page, query } = open(share.path, decoded);
-    assert.equal(page, '/pages/detail/index');
-    const receiver = detailPage(detail); // 接收人：没有登录、没有同意协议，也不经过首页
-    receiver.onLoad(query); await flush();
-    assert.equal(receiver.data.doc.title, DOC.title);
-  }
-  assert.deepEqual(asked, ['128', '128', '128']);
+  const { page, query } = open(share.path);
+  assert.equal(page, '/pages/detail/index');
+  const receiver = detailPage(detail); // 接收人：没有登录、没有同意协议，也不经过首页
+  receiver.onLoad(query); await flush();
+  assert.equal(receiver.data.doc.title, DOC.title);
+  assert.deepEqual(asked, ['128', '128']);
 });
 
 test('通知详情：标题里已有发文机关不重复；太长截到 60 字；没有发文机关只用标题', async () => {
@@ -109,22 +107,33 @@ test('通知详情：标题里已有发文机关不重复；太长截到 60 字�
   assert.equal(await titleFor({ ...DOC, issuer: '' }), DOC.title);
   const long = await titleFor({ ...DOC, title: `关于${'某某专项'.repeat(20)}的通知` });
   assert.equal(long.length, 60); assert.ok(long.startsWith('山东省科学技术厅｜关于某某专项')); assert.ok(long.endsWith('…'));
+  // 截断处是表情等双字节字符时不截成半个（半个字符会让微信处理标题时出错）
+  const emoji = await titleFor({ ...DOC, issuer: '', title: `${'甲'.repeat(58)}😀😀😀` });
+  assert.equal(Array.from(emoji).length, 60); assert.equal(emoji, `${'甲'.repeat(58)}😀…`);
+  assert.doesNotThrow(() => encodeURIComponent(emoji));
 });
 
-test('通知详情：打不开（下架、编号不对、网络出错）时转发一直是灰的；刷新成功后才恢复', async () => {
+test('通知详情：打不开（下架、编号不对、网络出错）时转发一直是灰的；回到这页刷新时先变灰，刷新成功才恢复', async () => {
   const menu = [];
   const wx = { showShareMenu: () => menu.push('show'), hideShareMenu: () => menu.push('hide') };
   let reply = () => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 }));
   const page = detailPage(() => reply(), wx);
   page.onLoad({ id: '999999' }); await flush();
-  assert.deepEqual(menu, ['hide', 'hide']);
+  assert.deepEqual(menu, ['hide']);
   assert.equal(page.data.doc, null); assert.equal(page.data.error, '没有找到这份文件');
   reply = () => Promise.reject(Object.assign(new Error('网络连接失败'), { status: 0 }));
   page.refreshing = false; page.load(); await flush();
-  assert.deepEqual(menu, ['hide', 'hide', 'hide']);
+  assert.deepEqual(menu, ['hide', 'hide']);
   reply = () => Promise.resolve(plain(DOC));
   page.refreshing = false; page.load(); await flush();
-  assert.equal(menu.at(-1), 'show');
+  assert.deepEqual(menu, ['hide', 'hide', 'hide', 'show']);
+  // 显示着的文件在刷新：请求还没回来时不能转发（文件可能刚下架），回来以后按结果
+  let settle;
+  reply = () => new Promise((resolve, reject) => { settle = { resolve, reject }; });
+  page.lastShow = 0; page.onShow();
+  assert.equal(menu.at(-1), 'hide'); assert.equal(page.data.doc.title, DOC.title);
+  settle.reject(Object.assign(new Error('该文件已下架'), { status: 404 })); await flush();
+  assert.equal(menu.at(-1), 'hide'); assert.equal(page.data.doc, null); assert.equal(page.data.takenDown, true);
   // 没有编号也不报错
   const none = detailPage(() => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 })), wx);
   none.onLoad({}); await flush();
@@ -151,6 +160,7 @@ test('搜索结果：转发路径带上全部检索条件，接收人打开后�
     { kind: '申报通知', cities: '山东/济南', districts: '山东/济南/历下区', time: '近 30 天' },
     { kind: '名单', categories: '人才,试点示范', supports: '资金支持', industries: '数字经济', status: '公示', time: '今年' },
     { q: 'A&B 100% +专精特新=是', kind: '政策', time: '近 7 天' },
+    { q: '降本%20增效 %E4%B8', kind: 'all', time: '不限' }, // 关键词里本来就有 %20、%E4 这样的文字
   ];
   for (const c of cases) {
     const sent = [];
@@ -159,36 +169,34 @@ test('搜索结果：转发路径带上全部检索条件，接收人打开后�
     const share = shareOf(sender);
     assert.equal(share.title, `搜索结果：${sender.followName()}`);
     for (const word of PROMO) assert.ok(!share.title.includes(word), word);
-    for (const decoded of [false, true]) {
-      const got = [];
-      const { page, query } = open(share.path, decoded);
-      assert.equal(page, '/pages/search/index');
-      const receiver = searchPage(got);
-      receiver.onLoad(query); await flush();
-      assert.deepEqual(plain(receiver.conditions()), plain(sender.conditions()), JSON.stringify(c));
-      assert.deepEqual(plain(got.at(-1)), plain(sent.at(-1)), JSON.stringify(c));
-    }
+    const got = [];
+    const { page, query } = open(share.path);
+    assert.equal(page, '/pages/search/index');
+    const receiver = searchPage(got);
+    receiver.onLoad(query); await flush();
+    assert.deepEqual(plain(receiver.conditions()), plain(sender.conditions()), JSON.stringify(c));
+    assert.deepEqual(plain(got.at(-1)), plain(sent.at(-1)), JSON.stringify(c));
+    if (c.q) assert.equal(receiver.data.q, c.q);
   }
 });
 
-test('搜索结果：条件多到路径超过 1000 字符时只带关键词、页签、时间和"只看未截止"，标题按实际带上的写', async () => {
+test('搜索结果：条件再多也不删减，接收人看到的条件和转发人一样', async () => {
   const many = {
     q: '高新技术企业认定和科技型中小企业评价入库以及专精特新中小企业认定', kind: '申报通知', regions: regions.PROVINCES.join(','),
     categories: conditions.CATEGORIES.join(','), supports: conditions.SUPPORT_MODES.join(','), industries: conditions.INDUSTRIES.join(','),
     types: '申报通知,名单与公示', depts: '科技部门,工信部门', time: '近 90 天', open: 1,
   };
-  const sender = searchPage();
+  const sent = [];
+  const sender = searchPage(sent);
   sender.onLoad(open(conditions.searchUrl(many)).query); await flush();
-  assert.ok(conditions.searchUrl(sender.conditions()).length > 1000);
   const share = shareOf(sender);
-  assert.ok(share.path.length <= 1000, share.path.length);
-  const core = { q: many.q.slice(0, 30), kind: '申报通知', time: '近 90 天', open: 1 };
-  assert.equal(share.title, `搜索结果：${conditions.describe(core)}`.slice(0, 60));
-  const receiver = searchPage();
+  assert.equal(share.path, conditions.searchUrl(sender.conditions()));
+  assert.ok(share.path.length > 1000, share.path.length); // 这么多条件时路径很长，由真机验证能不能转发
+  const got = [];
+  const receiver = searchPage(got);
   receiver.onLoad(open(share.path).query); await flush();
-  const got = plain(receiver.conditions());
-  assert.equal(got.q, core.q); assert.equal(got.kind, '申报通知'); assert.equal(got.time, '近 90 天'); assert.equal(got.open, 1);
-  assert.equal(got.regions, '不限地区'); assert.equal(got.categories, undefined); assert.equal(got.industries, undefined);
+  assert.deepEqual(plain(receiver.conditions()), plain(sender.conditions()));
+  assert.deepEqual(plain(got.at(-1)), plain(sent.at(-1)));
 });
 
 test('搜索结果：网址参数编码坏了也能打开，不报错', async () => {
@@ -199,7 +207,7 @@ test('搜索结果：网址参数编码坏了也能打开，不报错', async ()
 });
 
 // ---------- 截止 ----------
-function reportPage({ today = '2026-10-18', pages } = {}) {
+function reportPage({ today = '2026-10-18', pages, wx } = {}) {
   const calls = [];
   const page = load('pages/report/index.js', {
     '../../utils/api.js': {
@@ -209,7 +217,7 @@ function reportPage({ today = '2026-10-18', pages } = {}) {
     '../../utils/exporter.js': {}, '../../utils/format.js': { ...format, todayISO: () => today },
     '../../utils/daywatch.js': daywatch, '../../utils/cache.js': noCache,
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(plain(COVERAGE)) },
-  }, { getApp: () => ({ globalData: { statusBarHeight: 20, navHeight: 44 } }), ...(pages ? { getCurrentPages: () => pages } : {}) });
+  }, { getApp: () => ({ globalData: { statusBarHeight: 20, navHeight: 44 } }), ...(pages ? { getCurrentPages: () => pages } : {}), ...(wx ? { wx } : {}) });
   page.calls = calls;
   return page;
 }
@@ -232,13 +240,11 @@ test('截止：平常打开是 7 天内；转发路径带天数、省市区、�
   assert.equal(share.title, '山东·济南·历下区 14 天内截止的申报通知（科技部门），只看已核对');
   for (const word of PROMO) assert.ok(!share.title.includes(word), word);
   assert.equal(share.path, `/pages/report/index?days=14&province=${encodeURIComponent('山东')}&city=${encodeURIComponent('济南')}&district=${encodeURIComponent('历下区')}&dept=${encodeURIComponent('科技部门')}&verified=1`);
-  for (const decoded of [false, true]) {
-    const receiver = reportPage();
-    receiver.onLoad(open(share.path, decoded).query); await flush();
-    assert.deepEqual(viewOf(receiver), viewOf(sender));
-    assert.deepEqual(plain(receiver.calls.at(-1)), plain(sender.calls.at(-1)));
-    assert.equal(shareOf(receiver).path, share.path);
-  }
+  const receiver = reportPage();
+  receiver.onLoad(open(share.path).query); await flush();
+  assert.deepEqual(viewOf(receiver), viewOf(sender));
+  assert.deepEqual(plain(receiver.calls.at(-1)), plain(sender.calls.at(-1)));
+  assert.equal(shareOf(receiver).path, share.path);
 });
 
 test('截止：按月看转发当月，接收人打开同一个月；直辖市写区县；国家部委只带省份一项', async () => {
@@ -281,27 +287,31 @@ test('截止：不认识的参数不用、编码坏了不报错；月份超出�
   assert.equal(broken.data.tab, 7); assert.equal(broken.data.province, '');
 });
 
-test('截止、查名单：从转发卡片打开（页面栈只有这一页）时左上角是"首页"，平常是返回箭头；点了都能回去', async () => {
+test('截止、查名单：从转发卡片打开（页面栈只有这一页）时左上角是"首页"，点了直接回首页；平常是返回箭头，点了返回上一页', async () => {
   for (const [file, wxml] of [['report', 'pages/report/index.wxml'], ['lists', 'pages/lists/index.wxml']]) {
-    for (const [pages, icon, label] of [[[{}], 'home', '回首页'], [[{}, {}], 'chevron-left', '返回']]) {
-      const page = file === 'report' ? reportPage({ pages }) : listsPage({ pages });
+    for (const [pages, icon, label, went] of [[[{}], 'home', '回首页', 'switchTab:/pages/home/index'], [[{}, {}], 'chevron-left', '返回', 'navigateBack']]) {
+      const nav = [];
+      const wx = { showToast() {}, switchTab: ({ url }) => nav.push(`switchTab:${url}`), navigateBack: () => nav.push('navigateBack') };
+      const page = file === 'report' ? reportPage({ pages, wx }) : listsPage({ pages, wx });
       page.onLoad({}); await flush();
       const root = render(wxml, page.data);
       const back = findAll(root, hasClass('nav-back'));
       assert.equal(back.length, 1);
       assert.equal(back[0].attrs['aria-label'], label);
       assert.equal(findAll(back[0], (n) => n.tag === 't-icon')[0].attrs.name, icon);
+      page[back[0].attrs.bindtap]();
+      assert.deepEqual(nav, [went], `${file} ${label}`);
     }
   }
 });
 
 // ---------- 查名单 ----------
-function listsPage({ lookup = () => new Promise(() => {}), pages } = {}) {
+function listsPage({ lookup = () => new Promise(() => {}), pages, wx = { showToast() {} } } = {}) {
   const asked = [];
   const page = load('pages/lists/index.js', {
     '../../utils/api.js': { lists: () => new Promise(() => {}), listBoard: () => new Promise(() => {}), isLive: () => true, lookup: (q) => { asked.push(q); return lookup(q); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': noCache,
-  }, { getApp: () => ({ globalData: {} }), wx: { showToast() {} }, ...(pages ? { getCurrentPages: () => pages } : {}) });
+  }, { getApp: () => ({ globalData: {} }), wx, ...(pages ? { getCurrentPages: () => pages } : {}) });
   page.asked = asked;
   return page;
 }
@@ -318,12 +328,17 @@ test('查名单：查到了名单才带企业名称转发，接收人打开自�
   await flush();
   const share = shareOf(sender);
   assert.deepEqual(share, { title: `查名单：${COMPANY}`, path: `/pages/lists/index?q=${encodeURIComponent(COMPANY)}` });
-  for (const decoded of [false, true]) {
-    const receiver = listsPage({ lookup: () => Promise.resolve(plain(FOUND)) });
-    receiver.onLoad(open(share.path, decoded).query); await flush();
-    assert.deepEqual(receiver.asked, [COMPANY]);
-    assert.equal(receiver.data.queried, COMPANY); assert.equal(receiver.data.result.items.length, 1);
-  }
+  const receiver = listsPage({ lookup: () => Promise.resolve(plain(FOUND)) });
+  receiver.onLoad(open(share.path).query); await flush();
+  assert.deepEqual(receiver.asked, [COMPANY]);
+  assert.equal(receiver.data.queried, COMPANY); assert.equal(receiver.data.result.items.length, 1);
+  // 名称里连续的空白并成一个；超过 60 个字的不带名称
+  const spaced = listsPage({ lookup: () => Promise.resolve(plain(FOUND)) });
+  spaced.onLoad({}); spaced.onInput({ detail: { value: 'Demo   Tech \t Co., Ltd.' } }); spaced.query(); await flush();
+  assert.deepEqual(shareOf(spaced), { title: '查名单：Demo Tech Co., Ltd.', path: `/pages/lists/index?q=${encodeURIComponent('Demo Tech Co., Ltd.')}` });
+  const long = listsPage({ lookup: () => Promise.resolve(plain(FOUND)) });
+  long.onLoad({}); long.onInput({ detail: { value: `演${' 示'.repeat(40)}` } }); long.query(); await flush();
+  assert.deepEqual(shareOf(long), GENERIC);
 });
 
 test('查名单：没查到、只有相近名称、查询出错（如输入像个人姓名）时不带输入的内容；参数太短或坏了不报错', async () => {
@@ -342,6 +357,9 @@ test('查名单：没查到、只有相近名称、查询出错（如输入像�
   const short = listsPage();
   short.onLoad({ q: encodeURIComponent('演') });
   assert.deepEqual(short.asked, []);
+  const tooLong = listsPage();
+  tooLong.onLoad({ q: encodeURIComponent('演示'.repeat(31)) });
+  assert.deepEqual(tooLong.asked, []); assert.equal(tooLong.data.name, '');
   const broken = listsPage();
   assert.doesNotThrow(() => broken.onLoad({ q: '%E6%BC' }));
 });
