@@ -182,13 +182,22 @@ def selling_to(settings, openid: str | None) -> bool:
     return bool(openid) and openid in testers
 
 
+def invoice_type(settings) -> str:
+    """购买页写的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE）；没填或还是占位时为空串。"""
+    value = getattr(settings, "pay_invoice_type", "").strip()
+    return "" if not value or "【" in value or "待" in value else value
+
+
 def orderable(settings) -> bool:
-    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了律师定稿的协议版本
-    （YOUJU_PAY_TERMS_VERSION）。沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、
-    购买入口都按这一条判断，不出现看得到价格却付不了款的入口。"""
+    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了定稿的协议版本
+    （YOUJU_PAY_TERMS_VERSION）和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
+    沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、购买入口都按这一条判断，
+    不出现看得到价格却付不了款的入口，也不能绕过购买页直接下单。"""
     if not getattr(settings, "xpay_offer_id", "") or not products(settings):
         return False
-    return settings.xpay_env == 1 or bool(getattr(settings, "pay_terms_version", ""))
+    return settings.xpay_env == 1 or bool(
+        getattr(settings, "pay_terms_version", "") and invoice_type(settings)
+    )
 
 
 def entry(session: Session, settings, user: User | None) -> dict:

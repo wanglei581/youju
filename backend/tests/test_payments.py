@@ -284,6 +284,7 @@ def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, 
     settings.xpay_env = env
     if env == 0:
         settings.pay_terms_version = "pay-test"
+        settings.pay_invoice_type = "电子普通发票（测试）"
         settings.xpay_appkey_prod = SecretStr("12345")
     row = order(session, create(setup_pay))
     fake.env_type = env_type
@@ -400,9 +401,11 @@ def test_products_lists_only_priced_items(setup_pay, session):
         "sandbox": True,
         # 续买多送开关默认关：付款页不提
         "renewBonus": None,
+        # 沙箱联调时发票类型可以还没填
+        "invoiceType": None,
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
-    closed = {"items": [], "sandbox": True, "renewBonus": None}
+    closed = {"items": [], "sandbox": True, "renewBonus": None, "invoiceType": None}
     settings.xpay_price_pass = None
     assert client.get("/api/v1/pay/products").json() == closed
     settings.xpay_price_pass = 100
@@ -416,10 +419,17 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     settings.pay_terms_version = "pay-2026-11"
+    # 现网还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
+    for invoice in ("", "【发票类型】", "待确认"):
+        settings.pay_invoice_type = invoice
+        assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
+        assert create(setup_pay).status_code == 404
+    settings.pay_invoice_type = "电子普通发票（测试）"
     listed = client.get("/api/v1/pay/products").json()
     assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
         "workbench_30d"
     ]
+    assert listed["invoiceType"] == "电子普通发票（测试）"
 
 
 def test_products_route_dependency_hides_when_closed(setup_pay):

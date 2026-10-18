@@ -30,9 +30,9 @@ Page({
   // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
   // tiers：在售的档位（30 天、90 天，D-070），selected 是选中的那一档；product 是选中的那一档（下单用）
   // renew：续买多送的规则一句（和价格同一屏）；expires：现有使用期到哪天；soon：3 天内到期的提示
-  // invoiceReady：能开哪种发票已写明（content/pay-terms.js 的 invoice）；没写时现网不能付款
+  // invoiceText：能开哪种发票（服务端商品接口带回）；没有时现网不能付款，服务端也不卖
   data: { loginOpen: loginOpen(), loading: true, error: '', tiers: [], selected: 0, product: null, price: '', renew: null, expires: '', soon: '',
-    termsFinal: pay.termsFinal(payTerms), invoiceReady: pay.invoiceReady(payTerms), invoiceText: pay.invoiceReady(payTerms) ? payTerms.invoice.trim() : '',
+    termsFinal: pay.termsFinal(payTerms), invoiceText: '',
     sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
   onShow() {
     this.visible = true;
@@ -58,7 +58,7 @@ Page({
       const keep = this.data.product ? tiers.findIndex((tier) => tier.days === this.data.product.days) : -1;
       const selected = keep >= 0 ? keep : 0;
       this.setData({ loading: false, tiers, selected, product: tiers[selected] || null, price: tiers[selected] ? tiers[selected].price : '',
-        renew: pay.renewRule(res), sandbox: !!(res && res.sandbox === true) });
+        renew: pay.renewRule(res), invoiceText: pay.invoiceType(res), sandbox: !!(res && res.sandbox === true) });
       if (tiers.length && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
         if (serial !== this.loadSerial) return;
         const active = !!(status.pass && status.pass.active);
@@ -66,7 +66,7 @@ Page({
       }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
-      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, sandbox: false, error: err.status === 404 ? '' : err.message });
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.status === 404 ? '' : err.message });
     });
   },
   // 选一档：付款中、已开通时不能换
@@ -81,7 +81,7 @@ Page({
   terms() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy() {
     if (!this.data.product || this.data.busy || this.data.confirmed || !this.data.loginOpen) return;
-    if (!(this.data.termsFinal && this.data.invoiceReady) && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
+    if (!(this.data.termsFinal && this.data.invoiceText) && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
     if (!this.data.checked) { this.setData({ message: pay.TEXT.termsRequired, payError: false }); wx.showToast({ title: pay.TEXT.termsRequired, icon: 'none' }); return; }
     if (typeof wx.requestVirtualPayment !== 'function') { this.setData({ message: pay.TEXT.unsupported, payError: true }); return; }
     // 上一笔还没确认完：不下新单，接着查它

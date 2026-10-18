@@ -201,6 +201,7 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     ]
     # 第一次买：不是续买，eligibleNow 为 False
     assert listed["renewBonus"] == {"days": 3, "windowDays": 7, "eligibleNow": False}
+    assert listed["invoiceType"] is None
     row = buy(shop, session, "workbench_90d")
     assert (row.days, row.price, row.bonus_days) == (90, 7900, 3)
     assert segments(session) == [(True, NOW, NOW + 90 * DAY, False)]

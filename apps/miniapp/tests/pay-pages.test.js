@@ -19,9 +19,9 @@ const FINAL_TERMS = {
   final: true,
   title: '付费服务协议',
   text: '购买批量工具 30 天。使用期从付款成功起算，到期不再扣款。',
-  // 测试用的发票说明（真实的一句等创始人确认，D-070）
-  invoice: '可开电子普通发票（测试文字）',
 };
+// 服务端商品接口带回的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE；真实的一句等创始人确认，D-070）
+const INVOICE = '可开电子普通发票（测试文字）';
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = async () => { await new Promise(setImmediate); await new Promise(setImmediate); };
 const shown = (file, data) => textOf(render(file, data));
@@ -85,7 +85,7 @@ function firePollTimeout(clock) {
 function passPage(options = {}) {
   const calls = []; const urls = []; const toasts = []; const storage = new Map(); const clock = makeClock();
   const api = {
-    payProducts: options.payProducts || (() => Promise.resolve({ items: [PRODUCT] })),
+    payProducts: options.payProducts || (() => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE })),
     advisorStatus: () => Promise.resolve({ pass: { active: false } }),
     createPayOrder(body) {
       calls.push(['create', plain(body)]);
@@ -374,7 +374,7 @@ test('购买页下单时服务端说上一笔已经付款（409），显示服�
   let products = 0;
   const said = '上一笔已经付款，正在为你开通，可到“我的订单”查看';
   const h = passPage({
-    payProducts: () => { products += 1; return Promise.resolve({ items: [PRODUCT] }); },
+    payProducts: () => { products += 1; return Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE }); },
     create: () => Promise.reject(Object.assign(new Error(said), { status: 409 })),
   });
   await flush();
@@ -609,7 +609,7 @@ const TIERS = [{ productId: 'workbench_30d', price: 2900, days: 30 }, { productI
 const pay = require('../utils/pay.js');
 
 test('购买页两档并排，默认 30 天，90 天写折合每 30 天约 26 元、不写原价和立省；选 90 天后按 90 天下单，防止价格比较违规和下错档', async () => {
-  const h = passPage({ payProducts: () => Promise.resolve({ items: [TIERS[1], TIERS[0]] }), onPay: (payload) => payload.fail({ errCode: -2 }) });
+  const h = passPage({ payProducts: () => Promise.resolve({ items: [TIERS[1], TIERS[0]], invoiceType: INVOICE }), onPay: (payload) => payload.fail({ errCode: -2 }) });
   await flush();
   assert.deepEqual(plain(h.page.data.tiers).map((tier) => [tier.days, tier.price, tier.per30]), [[30, '29', ''], [90, '79', '折合每 30 天约 26 元']]);
   assert.equal(h.page.data.selected, 0);
@@ -636,7 +636,7 @@ test('购买页两档并排，默认 30 天，90 天写折合每 30 天约 26 �
 });
 
 test('购买页第一句写给谁用，付款前写全收录范围、只限本人、苹果退款、发票和到期后结果，防止只管本企业的人被带去付款、付了才知道限制', async () => {
-  const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS }) });
+  const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }) });
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
   assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
@@ -647,6 +647,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /按剩余天数退款/);
   assert.match(text, /停止服务（会提前至少 30 天公告）/);
   assert.match(text, /体验没用完的时间折成天数加在后面/);
+  assert.match(text, /使用期从开通时起算（付款成功后马上开通）/);
   // 第一句在价格前面
   assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
   const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));
@@ -656,23 +657,25 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.deepEqual(h.urls, ['/pages/about/index']);
 });
 
-test('购买页没写能开哪种发票时现网没有付款按钮，沙箱照常联调，防止带着发票占位上线收费', async () => {
-  const noInvoice = { ...FINAL_TERMS, invoice: '' };
-  const live = passPage({ terms: noInvoice, payProducts: () => Promise.resolve({ items: TIERS }) });
-  await flush();
-  assert.equal(live.page.data.invoiceReady, false);
-  assert.equal(payButtons(live.page.data).length, 0);
-  assert.match(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定/);
-  live.page.buy();
-  assert.equal(live.calls.length, 0);
-  const sandbox = passPage({ terms: noInvoice, payProducts: () => Promise.resolve({ items: TIERS, sandbox: true }) });
+test('购买页的发票类型以服务端为准，服务端没给时现网没有付款按钮，沙箱照常联调，防止带着发票占位上线收费', async () => {
+  for (const invoiceType of [undefined, null, '', '  ', '发票类型待创始人确认', '【发票类型】']) {
+    const live = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType }) });
+    await flush();
+    assert.equal(live.page.data.invoiceText, '');
+    assert.equal(payButtons(live.page.data).length, 0);
+    assert.match(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定/);
+    live.page.buy();
+    assert.equal(live.calls.length, 0);
+  }
+  const sandbox = passPage({ payProducts: () => Promise.resolve({ items: TIERS, sandbox: true }) });
   await flush();
   assert.equal(payButtons(sandbox.page.data).length, 1);
-  // 写了"待定"之类的占位也不算
-  assert.equal(pay.invoiceReady({ invoice: '发票类型待创始人确认' }), false);
-  assert.equal(pay.invoiceReady({ invoice: '  ' }), false);
-  // 仓库里的协议现在既没定稿也没写发票：现网一定付不了款
-  assert.equal(pay.invoiceReady(payTerms), false);
+  const ready = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: ` ${INVOICE} ` }) });
+  await flush();
+  assert.equal(ready.page.data.invoiceText, INVOICE);
+  assert.equal(payButtons(ready.page.data).length, 1);
+  // 协议文件里不另写一份发票类型（只认服务端那一句）
+  assert.equal(Object.hasOwn(payTerms, 'invoice'), false);
 });
 
 test('续买规则只有一句，和价格在同一屏；现在付款符合时说一声，开关关着时不提，防止规则藏在别处或不在售时出现', async () => {
@@ -718,6 +721,7 @@ test('订单页按档位写名称，逐笔列出续买多送和体验折算，�
       gifts: [{ kind: 'renewal', name: '续买多送', days: 3, revoked: true }] }),
     orderRecord({ orderId: 53, status: '已退款', refundAmount: 2900 }),
     orderRecord({ orderId: 54, status: '退款中', refundAmount: 1934 }),
+    orderRecord({ orderId: 55, status: '需人工处理', refundAmount: 1934 }),
   ]);
   await flush();
   const first = textOf(orderCard(h.page.data, 51));
@@ -735,6 +739,8 @@ test('订单页按档位写名称，逐笔列出续买多送和体验折算，�
   assert.doesNotMatch(textOf(orderCard(h.page.data, 53)), /退回/);
   assert.match(textOf(orderCard(h.page.data, 54)), /按剩余天数退 19\.34 元，处理中/);
   assert.doesNotMatch(textOf(orderCard(h.page.data, 54)), /已退回/);
+  // 转了人工的不写"处理中"
+  assert.match(textOf(orderCard(h.page.data, 55)), /按剩余天数退 19\.34 元，正在人工核对/);
   h.page.refund({ currentTarget: { dataset: { id: 51 } } });
   assert.equal(h.modal().content, '退款后，这张订单对应的 90 天使用期和续买多送的 3 天取消，79.00 元原路退回。确定吗？');
   assert.doesNotMatch(shown('pages/orders/index.wxml', h.page.data), /客户工作台/);
@@ -818,8 +824,6 @@ test('小程序的页面和工具代码里不再有"客户工作台"，改叫"�
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'pages/pass/index.json'), 'utf8')).navigationBarTitleText, '批量工具');
 });
 
-test('付费协议标了定稿就必须写明能开哪种发票：服务端只认定稿版本号，定稿的版本一定带发票说明，防止绕过页面直接下单时看不到发票类型', () => {
-  // 两者在同一个文件、同一次升版本（content/pay-terms.js）；没定稿时现网本来就不能付款
-  if (payTerms.final) assert.ok(pay.invoiceReady(payTerms), '定稿的 pay-terms.js 要填 invoice');
+test('付费协议的草稿版本号不能标定稿：服务端也拒绝用草稿版本号收费，防止带着草稿协议上线', () => {
   assert.ok(!/draft/i.test(payTerms.version) || payTerms.final === false, '草稿版本号不能标定稿');
 });

@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。配了以后，
     # 下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）；不配只记录不比对。
     pay_terms_version: str = ""
+    # 能开哪种发票（D-070：付款前要看得到），创始人确认后填一句，
+    # 如"增值税电子普通发票，个人或单位抬头"。购买页照这句显示；
+    # 现网（真扣钱）没填就不卖（payments.orderable），沙箱联调不受影响
+    pay_invoice_type: str = ""
     xpay_offer_id: str = ""
     xpay_env: Literal[0, 1] = 1
     xpay_appkey_prod: SecretStr | None = None
@@ -223,7 +227,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _final_pay_terms(self) -> "Settings":
         """现网收费只认定稿的《付费服务协议》（payments.orderable）：填成草稿版本号，
-        还没写明发票类型的旧小程序也能下单，所以不启动（D-070 开卖前 Codex 审阅）。"""
+        带着草稿协议的旧小程序也能下单，所以不启动（D-070 开卖前 Codex 审阅）。"""
         if "draft" in self.pay_terms_version.lower():
             raise ValueError(
                 "YOUJU_PAY_TERMS_VERSION 不能填草稿版本（如 pay-2026-10-draft），要填定稿的版本号"

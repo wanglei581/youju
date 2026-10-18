@@ -351,7 +351,7 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   `YOUJU_XPAY_PRODUCT_PASS_90`（默认 `workbench_90d`）+ `YOUJU_XPAY_PRICE_PASS_90`：批量工具 90 天。
   价格单位分（29 元填 2900、79 元填 7900），没配价格的那一档不卖；两档商品编号相同服务不启动。
   天数跟着档位走（`payments.products`），**下单时记在订单上**（`pay_orders.days`），开通按订单记的天数给。
-- `GET /api/v1/pay/products`：`items[]` 按天数从短到长，`name` 为"批量工具 30 天 / 90 天"；新增 `renewBonus`
+- `GET /api/v1/pay/products`：`items[]` 按天数从短到长，`name` 为"批量工具 30 天 / 90 天"；新增 `invoiceType`（见下）和 `renewBonus`
   （续买多送开关关着为 null；开着为 `{days: 3, windowDays: 7, eligibleNow}`，认不出用户时 eligibleNow 为 false）。
   看价格不要求登录。
 - 订单结构新增 `name, days, gifts[], refundAmount`；`gifts[]` 每次赠送一笔：`kind`（renewal / trial）、`name`、`days`、
@@ -403,8 +403,10 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 - `pay_orders` 加 `days`（已有订单回填 30）、`bonus_days`、`refund_fee`、`refund_source`、`refund_note`；
   `pass_rewards.kind` 的 CHECK 加 `renewal`、`trial`。回退时删除这两种流水和对应使用期；还有没到期的赠送天数、
   或按剩余天数退款没办完（退款中、转人工）的订单时，回退直接报错不执行（旧代码不认赠送、只会全额退），先人工处理。
-- `YOUJU_PAY_TERMS_VERSION` 填成草稿版本号（含 draft）服务不启动：现网只认定稿协议，定稿的 `content/pay-terms.js` 必须写明
-  发票类型（小程序测试检查），这样绕过页面直接调下单接口也拿不到没写发票说明的版本。
+- `YOUJU_PAY_TERMS_VERSION` 填成草稿版本号（含 draft）服务不启动：现网只认定稿协议。
+- `YOUJU_PAY_INVOICE_TYPE`（能开哪种发票，付款前要看得到）：商品接口带回 `invoiceType`，购买页照它显示；**现网没填（或还是占位）
+  就不卖**（`payments.orderable`：商品列表空、下单 404、购买入口不出现），绕过购买页直接调下单接口也不行。沙箱联调不受影响。
+  协议正文第四节定稿时写同一句（Codex 第二轮审阅后从小程序改到服务端）。
 - `deploy/mysql_accounts.sql` 新增"批量工具两档开卖权限"三行（迁移 0032 后、打开收费前执行，"支付权限"四行要先执行）：
   `pass_rewards` 的 INSERT（付款确认时记赠送）和 UPDATE（退款收回；奖励段也有）、`boost_trials` 只能改 `ends_at`
   （体验期内买时结束体验）。`restricted_api_factory()` 按部署文件授权跑完体验期内买、续买多送、自助退款收回、注销；

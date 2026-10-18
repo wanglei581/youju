@@ -77,7 +77,12 @@ def list_products(request: Request, session: SessionDep) -> dict:
     settings = get_settings()
     # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
     if not payments.orderable(settings):
-        return {"items": [], "sandbox": settings.xpay_env == 1, "renewBonus": None}
+        return {
+            "items": [],
+            "sandbox": settings.xpay_env == 1,
+            "renewBonus": None,
+            "invoiceType": None,
+        }
     # 看价格不要求登录；认得出是谁时才算"现在续买送不送"
     try:
         openid = request_openid(request)
@@ -97,6 +102,8 @@ def list_products(request: Request, session: SessionDep) -> dict:
         # 沙箱（不扣真钱、只有测试名单看得到）：小程序在《付费服务协议》定稿前也放开付款按钮供联调
         "sandbox": settings.xpay_env == 1,
         "renewBonus": payments.renew_offer(session, settings, user, _stamp()),
+        # 能开哪种发票（付款前要看得到）；沙箱联调时可以还没填（None），现网没填就不卖
+        "invoiceType": payments.invoice_type(settings) or None,
     }
 
 

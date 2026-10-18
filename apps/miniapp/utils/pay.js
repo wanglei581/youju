@@ -51,9 +51,11 @@ function renewRule(res) {
 function termsFinal(terms) {
   return !!(terms && terms.final && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
 }
-// 能开哪种发票（D-070：付款前要看得到）：创始人确认后写进 content/pay-terms.js 的 invoice；空着时现网没有付款按钮
-function invoiceReady(terms) {
-  return !!(terms && typeof terms.invoice === 'string' && terms.invoice.trim() && !/待|占位/.test(terms.invoice));
+// 能开哪种发票（D-070：付款前要看得到）：以服务端为准（YOUJU_PAY_INVOICE_TYPE，商品接口带回 invoiceType）；
+// 没有时现网没有付款按钮，服务端也不卖（payments.orderable）
+function invoiceType(res) {
+  const value = res && typeof res.invoiceType === 'string' ? res.invoiceType.trim() : '';
+  return value && !/【|待/.test(value) ? value : '';
 }
 // 到期前 3 天的提示（D-070 第二节"在哪里买"③）：不发消息，只在批量工具页、购买页写一句
 function expiryNotice(pass, now = Date.now()) {
@@ -119,7 +121,8 @@ function orderView(order) {
     period: start && end ? `${start} 至 ${end}` : '',
     gifts: giftLines(order.gifts),
     refundText: !partial ? '' : order.status === '已退款' ? `已退回 ${yuan(order.refundAmount, true)} 元（按剩余天数）`
-      : `按剩余天数退 ${yuan(order.refundAmount, true)} 元，处理中`,
+      : order.status === '退款中' ? `按剩余天数退 ${yuan(order.refundAmount, true)} 元，处理中`
+        : order.status === '需人工处理' ? `按剩余天数退 ${yuan(order.refundAmount, true)} 元，正在人工核对` : '',
     // 已经退款或正在退款的不再写"不能自助退款"
     reason: order.canRefund || /退款/.test(order.status || '') ? '' : refundReason(order.refundUnavailableReason),
     refundConfirm: `退款后，这张订单对应的 ${days} 天使用期${bonus ? `和续买多送的 ${bonus} 天` : ''}取消，${yuan(order.amount, true)} 元原路退回。确定吗？`,
@@ -190,4 +193,4 @@ function createPoller(options) {
     stop, isActive: () => active,
   };
 }
-module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceReady, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
+module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
