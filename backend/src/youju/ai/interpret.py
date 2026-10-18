@@ -474,9 +474,16 @@ def attachment_notice(attachments: int) -> str | None:
     )
 
 
-def body_changed(stored: dict | None, current: dict) -> bool:
-    """旧结果的正文指纹和现在的不同（或旧任务没记指纹）就算正文变了。"""
-    return not stored or stored.get("body_hash") != current["body_hash"]
+def body_changed(stored: dict | None, current: dict, *, same_key: bool = False) -> bool:
+    """正文变了：原文指纹不同，或发给模型的（脱敏后）段落不同——原文没变、脱敏规则改了也算，
+    免得旧摘录里新规则要遮的内容继续显示（Codex 审阅）。
+    旧任务没记这两项时：缓存键还一样就当没变（和以前一样），不一样就无法确认，按变了算。"""
+    if stored and stored.get("body_hash") and stored.get("paragraphs") is not None:
+        return (
+            stored["body_hash"] != current["body_hash"]
+            or stored["paragraphs"] != current["paragraphs"]
+        )
+    return not same_key
 
 
 def verification_changed(stored: dict | None, current: dict) -> bool:
@@ -487,8 +494,6 @@ def verification_changed(stored: dict | None, current: dict) -> bool:
 def refresh_verification(result: dict, verified: list, attachments: int) -> dict:
     """正文没变、只是核对、附件、模型或提示词版本变了（D-073）：原文摘录照旧有效；
     "已核对"一栏和附件提醒换成现在的，撤回的核对不再显示。"""
-    if "verified" not in result:
-        return result
     return {
         **result,
         "verified": verified,

@@ -294,6 +294,41 @@ def test_prompt_or_model_change_keeps_result_without_update_notice(client, sessi
     assert body["outdated"] is False
 
 
+def test_redaction_change_with_same_original_invalidates(client, session, settings, doc):
+    """原文没变、发给模型的脱敏后段落变了（例如脱敏规则改了），缓存键一样也作废（Codex 审阅）。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.snapshot = {**task.snapshot, "paragraphs": ["旧规则下没遮住的段落"]}
+    session.commit()
+    body = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert body["result"] is None and body["error"] == interpret.BODY_CHANGED
+
+
+@pytest.mark.parametrize("same_key", [True, False])
+def test_old_snapshot_without_body_fields(client, session, settings, doc, same_key):
+    """很老的任务快照缺正文指纹和段落、甚至缺 doc_id：键一样照常显示，键不一样无法确认按作废；都不报错。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.snapshot = {
+        k: v for k, v in task.snapshot.items() if k not in ("doc_id", "body_hash", "paragraphs")
+    }
+    if not same_key:
+        task.cache_key = "built-with-an-older-prompt"
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task.id}")
+    assert response.status_code == 200
+    if same_key:
+        assert response.json()["result"]["items"]
+    else:
+        assert response.json()["result"] is None
+
+
+def test_refresh_verification_fills_missing_verified_and_attachments():
+    refreshed = interpret.refresh_verification({"items": [], "attachments": 0}, [], 2)
+    assert refreshed["verified"] == [] and refreshed["attachments"] == 2
+    assert refreshed["attachment_notice"].startswith("本通知有 2 个附件")
+
+
 def test_review_during_model_call_still_publishes(session, settings, doc):
     """D-073：调用模型期间只是核对了截止（正文没变）：照常发布，"已核对"带上新的，次数照常扣。"""
     task = direct_task(session, doc)
