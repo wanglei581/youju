@@ -5,10 +5,11 @@ const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, ga
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, viewing: false },
+  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
-    // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建
+    // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建。
+    // viewing 不写进上面的 data：和 D-073 的 PR 改的是同一行，免得合并冲突
     this.setData({ viewing: !!query.taskId });
     this.session = createSession({ api, storage: wx, docId: doc.docId, title: doc.title, taskId: query.taskId,
       update: (value) => { if (this.visible && this.data.aiEnabled) this.setData(value); } });
