@@ -698,6 +698,63 @@ def test_cleanup_deletes_expired_ai_tasks_and_old_usage(session, advisor_setting
     assert days == [last_month, today]
 
 
+def test_cleanup_deletes_finished_data_tasks_after_their_files(
+    session, advisor_settings, monkeypatch
+):
+    """数据工具的任务记录和结果文件一起保存 30 天（隐私保护指引一·13）：文件删成以后整行删除；
+    文件这次没删成的、还没处理完的、没到期的留着。"""
+    user = User(openid="data-retention-user")
+    session.add(user)
+    session.commit()
+    stamp = NOW.astimezone(UTC)
+    old = {"created_at": stamp - timedelta(days=30), "expires_at": stamp}
+    rows = {
+        "failed": task(session, user.id, idempotency_key="d-failed", status="failed", **old),
+        "done": task(
+            session,
+            user.id,
+            idempotency_key="d-done",
+            status="done",
+            result_file_id="cloud://done",
+            **old,
+        ),
+        "stuck": task(
+            session,
+            user.id,
+            kind="track",
+            idempotency_key="d-stuck",
+            status="done",
+            result_file_id="cloud://stuck",
+            **old,
+        ),
+        "queued": task(session, user.id, idempotency_key="d-queued", **old),
+        "fresh": task(
+            session,
+            user.id,
+            idempotency_key="d-fresh",
+            status="done",
+            created_at=stamp - timedelta(days=1),
+            expires_at=stamp + timedelta(days=29),
+        ),
+    }
+    ids = {name: row.id for name, row in rows.items()}
+    monkeypatch.setattr(
+        service,
+        "delete_result_files",
+        lambda client, env, file_ids: [f for f in file_ids if f != "cloud://stuck"],
+    )
+    result = service.cleanup_advisor(
+        session, settings=advisor_settings, stamp=stamp, client=SimpleNamespace()
+    )
+    assert result["advisor_data_tasks"] == 2 and result["advisor_files"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, ids["failed"]) is None
+    assert session.get(AdvisorTask, ids["done"]) is None
+    assert session.get(AdvisorTask, ids["stuck"]).result_file_id == "cloud://stuck"
+    assert session.get(AdvisorTask, ids["queued"]) is not None
+    assert session.get(AdvisorTask, ids["fresh"]) is not None
+
+
 def test_delete_account_removes_advisor_tasks_and_files(
     client, advisor_settings, session, monkeypatch
 ):

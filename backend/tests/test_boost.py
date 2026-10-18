@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from youju import advisor_tasks, boost, notify, rewards
+from youju.agreements import TRIAL_AGREEMENT_VERSION
 from youju.api import advisor, me, pay, v1
 from youju.api import app as app_module
 from youju.config import Settings
@@ -174,7 +175,7 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
     """协议升版过渡期（最早版本填 2026-10）：只同意过 2026-10 的照旧算登录，但那一版没写体验记录和
     注销后的去标识编号，开始体验要先重新同意（403 后小程序清掉本机同意、请他重新同意）。"""
     client = ctx.client
-    assert boost.AGREEMENT_VERSION <= AGREEMENT
+    assert TRIAL_AGREEMENT_VERSION <= AGREEMENT
     ctx.settings.agreement_min_version = "2026-10"
     identity = headers("old-consent")
     old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
@@ -186,6 +187,28 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
     new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
     assert new.status_code == 200
     assert start(client, identity).status_code == 200
+
+
+def test_old_agreement_cannot_accept_the_new_tool_terms(ctx):
+    """工具使用说明和当前版本的隐私保护指引一起读（任务记录和次数写在指引一·13）：过渡期只同意过旧版的，
+    先重新同意当前版本，才能同意工具使用说明（提交名单要求同意过这一版说明，所以挡在这里就够）。"""
+    client = ctx.client
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent-tools")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    terms = {"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION}
+    refused = client.post("/api/v1/me/agreement", headers=identity, json=terms)
+    assert refused.status_code == 403 and refused.json()["detail"] == me.OUTDATED
+    assert submit(client, identity).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT}
+        ).status_code
+        == 200
+    )
+    assert client.post("/api/v1/me/agreement", headers=identity, json=terms).status_code == 200
+    assert submit(client, identity).status_code == 202
 
 
 def test_double_tap_that_waited_for_the_lock_gets_the_same_trial(ctx, db_engine):

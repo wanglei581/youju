@@ -975,7 +975,8 @@ def cleanup_advisor(
     stamp: datetime | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, int]:
-    """清理七天输入和三十天导出；对象存储删除成功后才清空 file id。"""
+    """清理七天输入和三十天导出；对象存储删除成功后才清空 file id，
+    过了三十天的数据工具任务行随后整行删除。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
     input_count = (
@@ -1043,12 +1044,26 @@ def cleanup_advisor(
         for row in trash:
             if row.file_id in successful:
                 session.delete(row)
-    # AI 任务过了结果保存期（30 天）整行删除，任务和用户的关联不再保留（隐私保护指引一·14）；
-    # 数据工具的任务另有付费记录引用，照旧只清空文件。
+    # AI 任务过了结果保存期（30 天）整行删除，任务和用户的关联不再保留（隐私保护指引一·14）。
     ai_tasks = (
         session.execute(
             delete(AdvisorTask).where(
                 AdvisorTask.kind.in_(AI_KINDS), AdvisorTask.expires_at <= stamp
+            )
+        ).rowcount
+        or 0
+    )
+    # 数据工具的任务记录和结果文件一起保存 30 天（隐私保护指引一·13，个保法第十九条）：
+    # 文件删成以后整行删除；这次没删成的（result_file_id 还在）留到下次删成再删，免得丢了文件编号。
+    # 付费核对看使用期上的 last_used_at 等最少记录，不靠任务行（用户本来也能随时删任务）
+    session.flush()
+    data_tasks = (
+        session.execute(
+            delete(AdvisorTask).where(
+                AdvisorTask.kind.not_in(AI_KINDS),
+                AdvisorTask.expires_at <= stamp,
+                AdvisorTask.result_file_id.is_(None),
+                AdvisorTask.status.in_(("done", "failed", "cancelled")),
             )
         ).rowcount
         or 0
@@ -1063,6 +1078,7 @@ def cleanup_advisor(
         "advisor_input_rows": input_count,
         "advisor_files": deleted_count,
         "advisor_ai_tasks": ai_tasks,
+        "advisor_data_tasks": data_tasks,
         "advisor_usage_rows": usage_rows,
     }
 
