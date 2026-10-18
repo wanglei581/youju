@@ -41,6 +41,44 @@ function form(options = {}) {
   return { page, calls, urls, storage, picked: () => picked };
 }
 
+test('像手机号、身份证号的行能认出来（只给行号）；统一社会信用代码和普通企业名不误报（10/18 验收）', () => {
+  const logic = dataLogic();
+  const text = ['合成样例甲科技有限公司', '联系人 13812345678', '110105199003078211', '91370200MA3C9X7Y2K', '110105199003078214', '合成样例2026年度十佳企业'].join('\n');
+  // 第 3 行身份证号校验位正确；第 5 行校验位不对，不当成身份证号
+  assert.deepEqual(plain(logic.personalInfoLines(text)), [2, 3]);
+  assert.deepEqual(plain(logic.personalInfoLines('合成样例乙生物有限公司\n913702001234567890')), []);
+});
+
+test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"才发，同一段内容不重复提醒', async () => {
+  const modals = [];
+  let answer = { cancel: false, confirm: true };
+  const h = form({ wx: { showModal: (o) => { modals.push(o); o.success(answer); } } });
+  await flush();
+  h.page.input({ detail: { value: '合成样例甲科技有限公司\n联系人 13812345678' } });
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 1); assert.match(modals[0].content, /第 2 行/); assert.doesNotMatch(modals[0].content, /13812345678/);
+  assert.equal(h.calls.filter((c) => c[0] === 'preview').length, 0);
+  answer = { cancel: true, confirm: false };
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 2); assert.equal(h.calls.filter((c) => c[0] === 'preview').length, 1);
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 2);
+});
+
+test('表单写明怎样把表格放进微信、每提交一次算 1 次；通知表的长说明默认收起', () => {
+  const wxml = fs.readFileSync(path.join(root, 'pages/advisor-form/index.wxml'), 'utf8');
+  assert.match(wxml, /文件传输助手/); assert.match(wxml, /每提交一次算 1 次/); assert.match(wxml, /临时解析行数，不保存/);
+  assert.match(wxml, /kind === 'track' && showFillHelp/);
+});
+
+test('我的记录：失败、取消的任务写明"这次不算次数"，完成的不写（10/18 验收）', () => {
+  assert.equal(helpers.taskView({ id: 1, kind: 'compare', status: 'failed' }).refundNote, '这次不算次数');
+  assert.equal(helpers.taskView({ id: 2, kind: 'track', status: 'cancelled' }).refundNote, '这次不算次数');
+  assert.equal(helpers.taskView({ id: 3, kind: 'compare', status: 'done' }).refundNote, '');
+  assert.equal(helpers.taskView({ id: 4, kind: 'compare', status: 'queued' }).refundNote, '');
+  assert.match(fs.readFileSync(path.join(root, 'pages/advisor-tasks/index.wxml'), 'utf8'), /item\.refundNote/);
+});
+
 test('CSV 引号与多条件保留，格式错误拒绝，不把名称里的逗号拆成新客户', () => {
   const logic = dataLogic();
   assert.deepEqual(plain(logic.pasteRows('compare', '甲公司\n\n  91370000ABC  \r\n')), ['甲公司', '91370000ABC']);
@@ -436,6 +474,9 @@ test('客户通知表粘贴按服务端城市规则逐行报错：只填一个�
   const h = form({ kind: 'track' }); await flush();
   h.page.input({ detail: { value: '合成甲,山东,,,青岛;烟台' } }); assert.match(h.page.data.inputError, /第 1 行城市只填一个/); assert.equal(h.page.data.rowCount, 0);
   h.page.preview(); assert.equal(h.calls.length, 0);
+  // 10/18：省、市、区县的长说明默认收起，点开后才显示
+  assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', h.page.data)), /区县写完整名称/);
+  h.page.toggleFillHelp();
   const shown = textOf(render('pages/advisor-form/index.wxml', h.page.data));
   assert.match(shown, /关键词、支持方式多项用分号分隔，城市只填一个/); assert.match(shown, /国家部委不填城市/); assert.doesNotMatch(shown, /后三项可留空，多项用分号分隔/);
   h.page.onUnload();
@@ -471,6 +512,19 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
     assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
+  }
+});
+test('老用户协议更新后：工具中心和我的记录直接写"协议已更新"，按钮照旧走同意', async () => {
+  const gated = () => Promise.resolve({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent', consentUpdated: true });
+  for (const name of ['advisor', 'advisor-tasks']) {
+    let asked = 0;
+    const page = load(`pages/${name}/index.js`, { '../../utils/api.js': { advisorCapabilities: gated, advisorTasks: () => Promise.resolve({ items: [] }) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context,
+      '../../utils/consent.js': { ensureConsent: () => { asked += 1; return Promise.resolve(false); } } }, { wx: { setNavigationBarTitle() {} } });
+    if (page.onLoad) page.onLoad({});
+    page.onShow(); await flush();
+    const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
+    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用工具/, name); assert.doesNotMatch(shown, /使用工具前/, name);
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });

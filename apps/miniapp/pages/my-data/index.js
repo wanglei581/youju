@@ -20,7 +20,7 @@ function maskId(id) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -75,6 +75,10 @@ Page({
           })),
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal },
           retention: d.retention,
+          // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
+          // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
+          aiRetention: (d.advisorTasks || []).some((t) => t.kind === 'interpret' || t.kind === 'clause') && d.retention && d.retention.toolTasks
+            ? `· AI 解读和条款对照：任务输入 ${d.retention.toolInput} 天后删除，任务和结果 ${d.retention.toolTasks} 天后删除` : '',
         });
       })
       .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));

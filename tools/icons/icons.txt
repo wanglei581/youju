@@ -17,6 +17,7 @@ download
 flag
 delete
 info-circle
+share             # 通知详情底栏"转发"（10/18 验收：园区专员找不到右上角的转发）
 
 # 底栏
 home

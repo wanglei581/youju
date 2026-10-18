@@ -45,7 +45,7 @@ REMINDER_WEEKDAY = 4
 REMINDER_HEADING = f"未来 {REMINDER_DAYS} 天内截止的申报通知"
 REMINDER_EMPTY = f"本周未来 {REMINDER_DAYS} 天没有已核对截止的申报项目"
 DISCLAIMER = "第三方整理，非政府平台；信息来自政府网站公开发布的文件，以原文为准。"
-CALL_TO_ACTION = "查看原文和订阅截止提醒：在微信搜索小程序「有据」，搜标题即可。"
+CALL_TO_ACTION = "查看原文和订阅截止提醒：在微信搜索小程序「有据申报与行业助手」，搜标题即可。"
 PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
 # 公众号正文中的题录字段也可能夹带网址，展示时统一去掉；带链接版保留原题录。
 URL_IN_TEXT = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)[^\s<>\"'，。；、（）]+", re.IGNORECASE)
@@ -423,7 +423,7 @@ def render(profile: DigestProfile, start: date, end: date, today: date, columns:
                 )
             )
         if len(values) > LIMIT:
-            paragraph(f"共 {len(values)} 条，其余在「有据」小程序里查看")
+            paragraph(f"共 {len(values)} 条，其余在小程序里查看")
     if not sum(counts.values()):
         return None
     lines.append("")
@@ -540,7 +540,7 @@ def render_reminder(profile: DigestProfile, today: date, items: list[Item]):
                 )
             )
         if len(items) > LIMIT:
-            paragraph(f"共 {len(items)} 条，其余在「有据」小程序里查看")
+            paragraph(f"共 {len(items)} 条，其余在小程序里查看")
     else:
         paragraph(REMINDER_EMPTY)
     lines.append("")
