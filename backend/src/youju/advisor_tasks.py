@@ -513,9 +513,10 @@ def process_ai(
                         session, cached_doc, model, skill=skill
                     )
                     # 缓存键相同只说明原文和核对一样；发给模型的脱敏后段落也要一样才复用，
-                    # 免得脱敏规则改了以后旧摘录被新任务复制出来（D-073，Codex 第二轮）
+                    # 免得脱敏规则改了以后旧摘录被新任务复制出来；旧缓存缺正文指纹或段落的不复用，
+                    # 重新调用模型（D-073，Codex 第二、三轮）
                     reusable = cached_current_key == key and not interpret.body_changed(
-                        cached.snapshot, snapshot, same_key=True
+                        cached.snapshot, snapshot
                     )
                 except interpret.InterpretRefusal:
                     pass

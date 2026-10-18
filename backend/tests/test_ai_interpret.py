@@ -989,6 +989,13 @@ def test_cache_not_reused_after_redaction_change_or_without_doc_id(session, sett
     third = direct_task(session, doc, key="no-doc-id")
     assert len(run(session, third, settings).calls) == 1
     assert third.status == "done"
+    # 很老的缓存缺正文指纹和段落：无法确认脱敏前后一致，不复用（Codex 第三轮）
+    third.snapshot = {
+        k: v for k, v in third.snapshot.items() if k not in ("body_hash", "paragraphs")
+    }
+    session.commit()
+    fourth = direct_task(session, doc, "second", "old-cache-without-body-fields")
+    assert len(run(session, fourth, settings).calls) == 1
 
 
 def test_cache_expires_after_thirty_days(session, settings, doc):
