@@ -233,7 +233,8 @@ test('本期清单：带期号打开，按省份分组（顺序照接口），�
   assert.match(text, /9月28日—10月4日 申报周报/);
   assert.match(text, /共 6 条，按省份分好；点一条看详情和原文出处。/);
   assert.match(text, /第三方整理，非政府平台，以原文为准 · 数据截至 10月5日 07:30/);
-  assert.match(text, /另有 1 条已下架或不再公开，这里不再列出。/);
+  assert.match(text, /另有 1 条现已不再提供，这里不列出。/);
+  assert.match(text, /地市、区县组织初审或推荐的，报送时间可能更早。/);
   assert.doesNotMatch(text, /显示更多/);
   // 每条用列表行组件：点进详情看原文（doc-row 自己打开 /pages/detail/index?id=）
   assert.equal(findAll(root, (n) => n.tag === 'doc-row').length, 6);
@@ -352,7 +353,7 @@ test('本期清单：条目全下架时写明；跨年的统计周两头写年�
   await flush();
   const text = textOf(render('pages/digest/index.wxml', page.data));
   assert.match(text, /这一期的条目都已下架或不再公开。/);
-  assert.match(text, /另有 6 条已下架或不再公开/);
+  assert.match(text, /另有 6 条现已不再提供/);
   assert.equal(page.data.weekText, '2025年12月29日—2026年1月4日');
 });
 

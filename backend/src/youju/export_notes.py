@@ -23,7 +23,8 @@ def official_account_notice() -> str | None:
     name = (get_settings().official_account_name or "").strip()
     if not name or not _ACCOUNT_NAME.fullmatch(name):
         return None
-    return f"关注微信公众号「{name}」，每周一收申报周报。"
+    # 陈述句、不用"关注"祈使：导出文件常转给领导和客户（agy 合规意见）
+    return f"微信公众号「{name}」：每周一发申报周报。"
 
 
 def add_excel_notes(sheet: Worksheet) -> None:

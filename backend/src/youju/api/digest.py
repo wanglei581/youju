@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import time as _time
 from typing import Annotated, Any
 
@@ -25,9 +26,11 @@ from youju.report_revision import publication_revision
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 
-# 每页条数：每条约 0.7 KB（标题、网址特别长的也不到 4 KB），200 条在 1000 KB 的回包上限以内。
+# 每页条数：每条约 0.7 KB；另按实际字节数截页（标题、网址特别长时少给几条），回包不超过云调用
+# 1000 KB 的上限。小程序按实际取到的条数接着取下一页。
 PAGE_MAX = 200
 PAGE_DEFAULT = 100
+PAGE_BYTES = 600_000
 # 公众号推送后短时间内很多人打开同一期：按期、日期、截止/下架版本和来源公开级别缓存 60 秒。
 CACHE_TTL = 60
 CACHE_MAX = 50
@@ -48,15 +51,15 @@ def _published(session, issue_id: int) -> DigestIssue | None:
 
 @router.get("/digests/latest")
 def latest_digest(session: v1.SessionDep) -> dict[str, Any]:
-    """ "我的 → 本周周报"：全国方案（不限省份、不筛关键词）最近一期已发布的周报。"""
+    """ "我的 → 本周周报"：最近一期已发布的全国版周报（生成时不限省份、不筛关键词，见 scope）。
+
+    按期刊上记下的范围找，方案后来改了地区或关键词也不影响已发布的期（Codex 第二轮）。"""
     issue = session.scalar(
         select(DigestIssue)
-        .join(DigestProfile, DigestProfile.id == DigestIssue.profile_id)
         .where(
             DigestIssue.kind == "weekly",
             DigestIssue.status == "published",
-            func.json_length(DigestProfile.provinces) == 0,
-            func.json_length(DigestProfile.keywords) == 0,
+            DigestIssue.scope == "全国",
         )
         .order_by(DigestIssue.week_start.desc(), DigestIssue.id.desc())
         .limit(1)
@@ -69,6 +72,17 @@ def latest_digest(session: v1.SessionDep) -> dict[str, Any]:
         "weekStart": issue.week_start.isoformat(),
         "weekEnd": issue.week_end.isoformat(),
     }
+
+
+def _within_budget(items: list[dict]) -> list[dict]:
+    """按序列化后的字节数截页：至少给一条，累计超过 PAGE_BYTES 就停（Codex 第二轮）。"""
+    page, size = [], 0
+    for item in items:
+        size += len(json.dumps(item, ensure_ascii=False, default=str).encode())
+        if page and size > PAGE_BYTES:
+            break
+        page.append(item)
+    return page
 
 
 def _source_revision(session) -> tuple:
@@ -215,5 +229,5 @@ def digest(
         "province": province,
         "total": len(items),
         "offset": offset,
-        "items": items[offset : offset + limit],
+        "items": _within_budget(items[offset : offset + limit]),
     }

@@ -121,7 +121,7 @@ def test_broken_optional_image_keeps_text_export(kind, mini_code, tmp_path):
     assert SEARCH_NOTICE in [cell.value for row in note for cell in row]
 
 
-ACCOUNT_NOTICE = "关注微信公众号「有据申报与行业助手」，每周一收申报周报。"
+ACCOUNT_NOTICE = "微信公众号「有据申报与行业助手」：每周一发申报周报。"
 
 
 @pytest.mark.parametrize(

@@ -233,7 +233,8 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
         "本期全国新通知 4 条、30 天内截止 3 项（已核对）、名单 2 份、政策文件 1 份。"
         "全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
     )
-    assert text.index("国家部委（1 条）") < text.index("浙江（8 条）")
+    # 块标题不写条数（免得和标题的"新通知4条"被看成对不上）；国家部委在前
+    assert lines.index("国家部委") < lines.index("浙江")
     assert lines[lines.index("项目申报通知") + 1] == (
         "企业申报截止 10 月 10 日（10 月 5 日核对） · 浙江科技部门 · 9 月 28 日发布 · "
         "支持方式：资金支持"
@@ -253,8 +254,9 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     for word in ("下架项目", "非公开", "已过期", "远期"):
         assert word not in text
     assert lines[-1] == weekly.FOOT
-    assert lines[-5:-1] == [
+    assert lines[-6:-1] == [
         "30 天内截止从 10 月 5 日算起，只收人工核对过的日期。",
+        weekly.LOCAL_EARLIER,
         "数据截至 2026 年 10 月 5 日 07:30（北京时间）。",
         weekly.GUIDE,
         weekly.CORRECTION,
@@ -319,19 +321,19 @@ def test_province_blocks_national_first_then_by_count_policies_apart(session, pr
     root = html.fragment_fromstring(issue.body_html)
     # 国家部委在前（全国性政策文件另列，块里只剩名单 1 条）；各省按条数从多到少，一样多按省份顺序
     assert root.xpath("./h3/text()") == [
-        "国家部委（1 条）",
-        "安徽（3 条）",
-        "北京（2 条）",
-        "浙江（2 条）",
-        "江苏（1 条）",
-        "全国性政策文件（1 份）",
+        "国家部委",
+        "安徽",
+        "北京",
+        "浙江",
+        "江苏",
+        "全国性政策文件",
     ]
     lines = issue.body_text.splitlines()
     # 块内顺序：30 天内截止 → 新申报通知 → 名单 → 政策文件
-    block = lines[lines.index("安徽（3 条）") + 1 : lines.index("北京（2 条）") - 1]
+    block = lines[lines.index("安徽") + 1 : lines.index("北京") - 1]
     assert block[0::2] == ["安徽申报通知2", "安徽名单1", "安徽政策0"]
     assert block[1].startswith("企业申报截止 ")
-    assert lines.index("全国性政策文件（1 份）") > lines.index("江苏（1 条）")
+    assert lines.index("全国性政策文件") > lines.index("江苏")
     titles = {doc.id: doc.title for doc in session.scalars(select(Document))}
     assert [(titles[item["id"]], item["province"]) for item in issue.items] == [
         ("国家名单1", "国家"),
@@ -453,7 +455,7 @@ def test_province_cap_five_overflow_line_and_full_items(session, profile, column
     issue = generate(session, profile).issue
     assert issue.counts[column] == 35
     assert issue.body_text.count("题录 ") == weekly.PER_BLOCK == 5
-    assert "浙江（35 条）" in issue.body_text
+    assert "浙江" in issue.body_text.splitlines()
     assert "浙江还有 30 条，在本期清单里看。" in issue.body_text.splitlines()
     assert len(issue.document_ids) == 5 and len(issue.items) == 35
     assert {item["section"] for item in issue.items} == {column}
@@ -467,7 +469,7 @@ def test_national_policies_listed_apart_with_cap(session, profile):
     issue = generate(session, profile).issue
     lines = issue.body_text.splitlines()
     assert "国家部委（" not in issue.body_text  # 国家部委只有政策文件：不单独成块
-    assert "全国性政策文件（12 份）" in lines
+    assert "全国性政策文件" in lines
     assert issue.body_text.count("国家政策 ") == weekly.POLICY_LIMIT == 10
     assert "还有 2 份，在本期清单里看。" in lines
     assert lines[lines.index("国家政策 00") + 1] == (
@@ -1093,6 +1095,19 @@ def test_reminder_two_versions_format_and_forbidden_terms(session, profile, due_
     assert not weekly.FORBIDDEN.search(template_only)
 
 
+def test_reminder_cross_year_title_drops_years_to_fit(session, profile):
+    src = source(session)
+    stamp = datetime(2026, 12, 28, 7, 30, tzinfo=weekly.BEIJING)
+    for n in range(12):
+        deadline(session, document(session, src, f"跨年截止 {n:02}", START), date(2026, 12, 30))
+    session.commit()
+    issue = weekly.generate(session, profile.id, None, stamp, "reminder").issue
+    # 带年份是 41 字，超过 32 字：去掉年份（正文首行写了完整日期）
+    assert issue.title == "临期提醒｜12月28日—1月4日截止的12个申报项目（已核对）"
+    assert "截止从 2026 年 12 月 28 日算起" in issue.body_text.splitlines()[0]
+    assert weekly.LOCAL_EARLIER in issue.body_text.splitlines()
+
+
 def test_reminder_empty_still_generates_one_sentence(session, profile, due_world):
     profile.keywords = ["没有这样的标题"]
     session.commit()
@@ -1397,7 +1412,8 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
     issue = result.issue
     assert result.outcome == "generated"
     assert (issue.kind, issue.subject_id, issue.week_start) == ("list_flash", big.id, START)
-    assert issue.title == f"名单速报｜{FLASH_TITLE}（共4家）"
+    # 照录原标题，括号里补地区和条数
+    assert issue.title == f"名单速报｜{FLASH_TITLE}（浙江·共4家）"
     assert issue.counts == {"entries": 4} and issue.document_ids == [big.id]
     assert issue.items == [{"id": big.id, "section": "lists", "province": "浙江", "period": PERIOD}]
     lines = issue.body_text.splitlines()
@@ -1429,13 +1445,15 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
     assert not weekly.FORBIDDEN.search(template_only)
     # 公布名单没有公示期；没填公示期的公示名单写"见原文"；条数取不到写"见原文"
     final = flash(session, profile, lists_world["final"]).issue
-    assert final.title == "名单速报｜2026年专精特新中小企业名单（共1家）"
+    assert final.title == "名单速报｜2026年专精特新中小企业名单（北京·共1家）"
     assert "公示期" not in final.body_text
     assert "北京科技部门 · 9 月 29 日" in final.body_text.splitlines()
     bare = document(session, session.get(Source, big.source_id), "又一份名单公示", START, "名单")
     session.commit()
     bare_issue = flash(session, profile, bare).issue
-    assert bare_issue.title == "名单速报｜又一份名单公示"
+    assert bare_issue.title == "名单速报｜又一份名单公示（浙江）"
+    # 名单速报不写截止，文末不加"初审可能更早"那句
+    assert weekly.LOCAL_EARLIER not in bare_issue.body_text
     assert "公示期：见原文" in bare_issue.body_text.splitlines()
     assert "名单条数：见原文" in bare_issue.body_text.splitlines()
 
@@ -1489,6 +1507,13 @@ def test_list_flash_rejects_unlisted_documents_and_cleans_period(session, profil
     session.commit()
     with pytest.raises(ValueError, match="列的是个人"):
         flash(session, profile, person)
+    for title in ("2026年评审专家名单", "政府采购供应商名单", "2026年高层次人才名单"):
+        other = document(
+            session, session.get(Source, lists_world["big"].source_id), title, START, "名单"
+        )
+        session.commit()
+        with pytest.raises(ValueError, match="列的是个人"):
+            flash(session, profile, other)
     assert person.id not in [item["id"] for item in weekly.flash_candidates(session, profile, NOW)]
     profile.provinces = ["北京"]
     session.commit()
@@ -1603,7 +1628,7 @@ def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile
     try:
         command.downgrade(cfg, "0031")
         columns, uniques = shape()
-        assert "subject_id" not in columns and "items" not in columns
+        assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}
     finally:
         command.upgrade(cfg, "head")
@@ -1612,4 +1637,4 @@ def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile
     [kept] = session.scalars(select(DigestIssue)).all()
     assert (kept.id, kept.kind, kept.subject_id, kept.items) == (weekly_issue.id, "weekly", 0, None)
     columns, uniques = shape()
-    assert {"subject_id", "items"} <= columns and uniques == {"uq_digest_issue_subject"}
+    assert {"subject_id", "items", "scope"} <= columns and uniques == {"uq_digest_issue_subject"}

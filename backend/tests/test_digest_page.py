@@ -1,5 +1,6 @@
 """小程序"本期清单"公开接口：只给已发布的周报，撤下或不再公开的条目不返回（PR #287）。"""
 
+import json
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -210,6 +211,11 @@ def test_latest_is_newest_published_national_weekly(client, session, profile, wo
     newer.status = "published"
     session.commit()
     assert client.get("/api/v1/digests/latest").json()["id"] == newer.id
+    # 按期刊上记下的范围找：全国版方案后来改成地区版，已发布的全国版周报照样找得到
+    assert (newer.scope, session.get(DigestIssue, issue.id).scope) == ("全国", "全国")
+    profile.provinces = ["浙江"]
+    session.commit()
+    assert client.get("/api/v1/digests/latest").json()["id"] == newer.id
 
 
 def test_legacy_issue_without_items_uses_article_documents(client, session, profile, world):
@@ -238,6 +244,28 @@ def test_paged_and_filtered_by_province(client, session, profile, world):
     assert client.get(path, params={"province": "没有的省"}).json()["items"] == []
     for bad in ({"limit": 201}, {"limit": 0}, {"offset": -1}, {"province": "长" * 33}):
         assert client.get(path, params=bad).status_code == 422, bad
+
+
+def test_page_cut_by_bytes_keeps_at_least_one(client, session, profile, world, monkeypatch):
+    issue = published(session, profile)
+    path = f"/api/v1/digests/{issue.id}"
+    # 标题、网址特别长时按字节数少给几条（不超过云调用回包上限）；小程序按实际条数取下一页
+    monkeypatch.setattr(digest_api, "PAGE_BYTES", 1200)
+    seen, offset = [], 0
+    while True:
+        body = client.get(path, params={"offset": offset}).json()
+        sizes = [len(json.dumps(item, ensure_ascii=False).encode()) for item in body["items"]]
+        assert body["items"] and body["total"] == 9
+        assert len(sizes) == 1 or sum(sizes) <= 1200
+        seen += titles(body)
+        offset += len(body["items"])
+        if offset >= body["total"]:
+            break
+    digest_api._CACHE.clear()
+    monkeypatch.setattr(digest_api, "PAGE_BYTES", 1)
+    assert len(client.get(path).json()["items"]) == 1  # 至少给一条
+    monkeypatch.setattr(digest_api, "PAGE_BYTES", 600_000)
+    assert seen == titles(client.get(path).json())
 
 
 def test_merged_into_master_outside_profile_scope_is_hidden(client, session, world):

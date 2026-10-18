@@ -62,6 +62,11 @@ HEAD = "第三方整理，非政府平台，以原文为准。"
 FOOT = "第三方整理的公开信息索引，不代办申报、不承诺结果。"
 CORRECTION = "纠错：在小程序文件详情页点「纠错」，或直接给本号发消息。"
 GUIDE = "使用说明：见本号《使用说明》，讲收录范围和截止日期怎么核对。"
+# 写截止日期的稿件文末加一句（agy 合规意见）：初审、推荐往往比文件写的截止早，
+# 免得读者按文件日期误了时间。
+LOCAL_EARLIER = (
+    "地市、区县组织初审或推荐的，报送时间可能早于文件写的截止，以属地主管部门的要求为准。"
+)
 NATIONAL = "国家"
 PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
 # 公众号正文中的题录字段也可能夹带网址，展示时统一去掉；带链接版保留原题录。
@@ -423,6 +428,24 @@ def _span(start: date, end: date) -> str:
     return f"{start.month}月{start.day}日—{tail}"
 
 
+def _fit(*titles: str) -> str:
+    """按顺序取第一个不超过 32 字的标题；都超了用最后一个（最短的），由管理台提示人工删减。"""
+    for title in titles:
+        if len(title) <= TITLE_LIMIT:
+            return title
+    return titles[-1]
+
+
+def _span_short(start: date, end: date) -> str:
+    """不带年份的日期范围：跨年的标题放不下时用。"""
+    tail = (
+        f"{end.day}日"
+        if (start.year, start.month) == (end.year, end.month)
+        else (f"{end.month}月{end.day}日")
+    )
+    return f"{start.month}月{start.day}日—{tail}"
+
+
 def _span_text(start: date, end: date) -> str:
     """正文里的日期范围，写法同正文其他日期（数字两边留空格）。"""
     tail = (
@@ -510,11 +533,13 @@ class _Page:
         # 带链接版每条一行，字段间用全角竖线；字段里自带的竖线换成半角，列数固定。
         self.linked.append("｜".join(_one_line(value).replace("｜", "|") for value in linked))
 
-    def footer(self, stamp: datetime, lines: list[str]):
+    def footer(self, stamp: datetime, lines: list[str], *, deadlines: bool = True):
         local = stamp.astimezone(BEIJING)
         self.blank()
         for line in lines:
             self.paragraph(line, _NOTE)
+        if deadlines:
+            self.paragraph(LOCAL_EARLIER, _NOTE)
         self.paragraph(f"数据截至 {_full_date(local.date())} {local:%H:%M}（北京时间）。", _NOTE)
         self.paragraph(GUIDE, _NOTE)
         self.paragraph(CORRECTION, _NOTE)
@@ -660,7 +685,9 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
     for province, values in blocks:
         name = _province_name(province)
         page.blank()
-        page.heading(f"{name}（{len(values)} 条）")
+        # 块标题不写条数：和标题里的"新通知 X 条"放在一起容易被看成对不上
+        # （块里还有截止、名单、政策）
+        page.heading(name)
         for section, item, dues in values[:PER_BLOCK]:
             shown.add(item.id)
             _weekly_entry(page, section, item, dues)
@@ -668,7 +695,7 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
             page.paragraph(f"{name}还有 {len(values) - PER_BLOCK} 条，在本期清单里看。", _NOTE)
     if policies:
         page.blank()
-        page.heading(f"全国性政策文件（{len(policies)} 份）")
+        page.heading("全国性政策文件")
         for section, item, dues in policies[:POLICY_LIMIT]:
             shown.add(item.id)
             _weekly_entry(page, section, item, dues)
@@ -747,12 +774,13 @@ def render_reminder(profile: DigestProfile, stamp: datetime, items: list[Item]) 
     end = today + timedelta(days=REMINDER_DAYS)
     area = scope(profile)
     tag = "已核对" if area == "全国" else f"{area}，已核对"
-    span = _span(today, end)
-    title = (
-        f"临期提醒｜{span}截止的{len(items)}个申报项目（{tag}）"
-        if items
-        else f"临期提醒｜{span}：没有已核对的截止项目" + ("" if area == "全国" else f"（{area}）")
-    )
+    # 跨年那一期写年份，放不下 32 字就去掉年份（正文首行写了完整日期）
+    spans = (_span(today, end), _span_short(today, end))
+    if items:
+        title = _fit(*(f"临期提醒｜{span}截止的{len(items)}个申报项目（{tag}）" for span in spans))
+    else:
+        suffix = "" if area == "全国" else f"（{area}）"
+        title = _fit(*(f"临期提醒｜{span}：没有已核对的截止项目{suffix}" for span in spans))
     page = _Page()
     page.paragraph(f"{HEAD}截止从 {_full_date(today)}算起，只列人工核对过的日期。")
     shown = items[:REMINDER_LIMIT]
@@ -842,7 +870,28 @@ def _flash_items(session: Session, profile: DigestProfile, rows) -> list[Item]:
 
 # 列个人的或和企业申报无关的名单（招聘、职称、考试、专家、采购等）：人工改成了"名单"
 # 也不写速报（D-018）
-_FLASH_OFF = LIST_OFF_TOPIC + PERSONAL_WORDS + PERSONAL_QUALIFICATIONS + PERSONAL_CONTEST
+_FLASH_OFF = (
+    *LIST_OFF_TOPIC,
+    *PERSONAL_WORDS,
+    *PERSONAL_QUALIFICATIONS,
+    *PERSONAL_CONTEST,
+    # 标题里的常见变体（Codex 第二轮）：评审专家、采购供应商、考试考生、人才和各类人员名单
+    "专家",
+    "采购",
+    "供应商",
+    "招标",
+    "考试",
+    "考生",
+    "人才",
+    "人员",
+    "特派员",
+    "教师",
+    "医师",
+    "学生",
+    "毕业生",
+    "党员",
+    "干部",
+)
 
 
 def flash_target(session: Session, profile: DigestProfile, document_id: int) -> Item:
@@ -910,8 +959,10 @@ def clean_period(value: str | None) -> str:
 def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: str) -> Rendered:
     """名单速报：名单标题、发文机关、公示期、条数、怎么在小程序里查一家。不列企业名称。"""
     status = list_status(item.title, "名单")
-    title = f"名单速报｜{_public_text(item.title)}" + (
-        f"（共{item.entries}家）" if item.entries else ""
+    # 照录原标题；括号里补地区（原标题常不写省份，读者按"省份 名单"搜得到）和条数
+    area = _province_name(item.province)
+    title = f"名单速报｜{_public_text(item.title)}（{area}" + (
+        f"·共{item.entries}家）" if item.entries else "）"
     )
     page = _Page()
     page.paragraph(HEAD)
@@ -943,7 +994,7 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
         "打开小程序「查名单」，输入企业全称或统一社会信用代码，能看到它上过哪些公示、公布名单。"
     )
     page.paragraph("看这份名单的原文：在小程序里打开这份名单，点「复制原文链接」，用浏览器打开。")
-    page.footer(stamp, [])
+    page.footer(stamp, [], deadlines=False)
     body_html, body_text, linked = page.done()
     return Rendered(
         title[:200],
@@ -1053,6 +1104,8 @@ def generate(
         rendered.items,
     )
     issue.generated_at = stamp
+    # 记下生成时的范围："我的 → 本周周报"按它找全国版，方案后来改了地区也不影响已发布的期
+    issue.scope = scope(profile)[:80]
     session.commit()
     return Generation(issue, "generated", "草稿已生成")
 

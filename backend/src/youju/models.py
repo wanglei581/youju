@@ -123,6 +123,8 @@ class DigestIssue(Base):
     counts: Mapped[dict] = mapped_column(JSONType)
     document_ids: Mapped[list] = mapped_column(JSONType)
     items: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+    # 生成时的范围（"全国"或方案名称，见 weekly.scope）；旧期刊为空
+    scope: Mapped[str] = mapped_column(String(80), default="", server_default="")
     generated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     note: Mapped[str] = mapped_column(String(500), default="", server_default="")
