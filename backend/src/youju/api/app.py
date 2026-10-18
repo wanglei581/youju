@@ -523,7 +523,7 @@ class AdminDocumentOut(BaseModel):
 class FeedbackOut(BaseModel):
     id: int
     createdAt: datetime
-    kind: Literal["申请覆盖", "纠错"]
+    kind: Literal["申请覆盖", "纠错", "支付问题"]
     content: str
     checkResult: str
     docId: int | None
@@ -534,8 +534,12 @@ class FeedbackOut(BaseModel):
     triageNote: str | None = None
     triagedAt: datetime | None = None
     rewardsEnabled: bool = False
+    # 纠错被采纳送 1 天（D-070 ⑦）开着：纠错可以一键"采纳并送 1 天"（旧的奖励总开关开着时也可以）
+    correctionRewardEnabled: bool = False
     rewardKind: str | None = None
     rewardDays: int | None = None
+    # 发放时的备注，例如"本月纠错奖励已到上限"（实际送了 0 天）
+    rewardNote: str | None = None
 
 
 class UnchangeIn(BaseModel):
@@ -2371,6 +2375,7 @@ def admin_feedback(
         )
     }
     result = []
+    settings = get_settings()
     for row in rows:
         reward = reward_map.get(row.id)
         doc = documents.get(mapping.get(row.document_id, row.document_id))
@@ -2378,7 +2383,7 @@ def admin_feedback(
             FeedbackOut(
                 id=row.id,
                 createdAt=row.created_at,
-                kind="申请覆盖" if row.content.startswith("申请覆盖：") else "纠错",
+                kind=_feedback_kind(row.content),
                 content=row.content,
                 checkResult=row.check_result,
                 docId=doc.id if doc else None,
@@ -2387,12 +2392,23 @@ def admin_feedback(
                 handledAt=row.handled_at,
                 triageNote=row.triage_note,
                 triagedAt=row.triaged_at,
-                rewardsEnabled=rewards.enabled(get_settings()),
+                rewardsEnabled=rewards.enabled(settings),
+                correctionRewardEnabled=rewards.correction_enabled(settings),
                 rewardKind=reward.kind if reward else None,
                 rewardDays=reward.granted_days if reward else None,
+                rewardNote=reward.note if reward else None,
             )
         )
     return result
+
+
+def _feedback_kind(content: str) -> str:
+    # 小程序提交时加的前缀：申请覆盖、支付和订单问题（见 pages/feedback）；其余是纠错
+    if content.startswith("申请覆盖："):
+        return "申请覆盖"
+    if content.startswith("支付问题"):
+        return "支付问题"
+    return "纠错"
 
 
 @app.post("/api/admin/feedback/{feedback_id}/reward/{kind}")
@@ -2406,7 +2422,12 @@ def reward_feedback(
     from youju import rewards
     from youju.models import PassReward, User
 
-    if not rewards.enabled(get_settings()):
+    # 纠错送天数有单独开关（D-070 ⑦）；"提的栏目已接入"仍只跟旧的奖励总开关
+    settings = get_settings()
+    allowed = (
+        rewards.correction_enabled(settings) if kind == "correction" else rewards.enabled(settings)
+    )
+    if not allowed:
         raise HTTPException(status_code=404, detail="没有找到接口")
     row = session.get(Feedback, feedback_id)
     if row is None:
@@ -2441,11 +2462,17 @@ def reward_feedback(
             days=previous.granted_days,
         )
         return {"alreadyGranted": True, "days": previous.granted_days, "message": "已经发过"}
-    is_source = row.content.startswith("申请覆盖：")
-    if is_source != (kind == "source"):
+    feedback_kind = _feedback_kind(row.content)
+    if feedback_kind == "支付问题" or (feedback_kind == "申请覆盖") != (kind == "source"):
         raise HTTPException(status_code=422, detail="请按反馈类型选择发放操作")
     reward = rewards.grant(
-        session, owner, kind, 3 if kind == "source" else 1, "feedback", feedback_id, v1_api.now()
+        session,
+        owner,
+        kind,
+        3 if kind == "source" else rewards.CORRECTION_DAYS,
+        "feedback",
+        feedback_id,
+        v1_api.now(),
     )
     row.handled_at = row.handled_at or v1_api.now()
     session.commit()
@@ -2460,7 +2487,10 @@ def reward_feedback(
     return {
         "alreadyGranted": False,
         "days": reward.granted_days,
-        "message": f"已发放 {reward.granted_days} 天",
+        # 到了每月上限也记一笔零天的流水（反馈照样标为已处理），说清楚这次没送
+        "message": f"已发放 {reward.granted_days} 天"
+        if reward.granted_days
+        else "已记录，这次没有送天数",
         "note": reward.note,
     }
 

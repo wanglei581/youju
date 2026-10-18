@@ -16,10 +16,11 @@ import pytest
 from docx import Document as WordDocument
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, update
 from sqlalchemy.sql import Select, visitors
 
 from youju import advisor_tasks, track
+from youju.agreements import TOOLS_AGREEMENT_VERSION
 from youju.api import advisor, exports, me, v1
 from youju.api import app as admin
 from youju.config import Settings
@@ -113,6 +114,17 @@ def _agree(j):
     )
     assert _json(j.client.get("/api/v1/me"))["agreed"] == agreed
     return agreed
+
+
+def _tools_ready(j):
+    """批量工具要求同意过写进任务记录的那一版指引（2026-11）；旅程按 2026-10 配置，
+    用批量工具前先把本人的同意补到 2026-11，再同意工具使用说明。"""
+    j.session.execute(
+        update(User)
+        .where(User.openid == IDENTITY["X-WX-OPENID"])
+        .values(agreement_version=TOOLS_AGREEMENT_VERSION)
+    )
+    j.session.commit()
 
 
 def _source(session, province="北京", dept="科技", suffix="default"):
@@ -588,6 +600,8 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         "subscriptions": {"newDocs": 0, "deadline": 0},
         # 注销后：不在售，也没有订单（小程序不显示购买入口和「我的订单」）
         "pay": {"enabled": False, "hasOrders": False},
+        # 纠错送天数开关默认关：纠错页不提送天数
+        "correctionReward": None,
     }
     empty = _json(j.client.get("/api/v1/me/data"))
     assert (
@@ -772,6 +786,7 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     j.session.commit()
     _support(j, application)
     _agree(j)
+    _tools_ready(j)
     _json(
         j.client.post(
             "/api/v1/me/agreement",
@@ -965,6 +980,7 @@ def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, 
     j = journey
     j.settings.advisor_enabled = True
     _agree(j)
+    _tools_ready(j)
     _json(
         j.client.post(
             "/api/v1/me/agreement",

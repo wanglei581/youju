@@ -1,4 +1,4 @@
-"""奖励使用期、一次成功触发、同行引荐及后台操作；只连接指定测试库。"""
+"""奖励使用期和后台发奖；首次批量、同行引荐已删，注销不留防重复领取的凭据；只连接指定测试库。"""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -25,6 +25,9 @@ from youju.models import (
     WorkbenchPass,
 )
 
+# 当前的用户协议版本：取后台默认值，升版本时不用改测试
+AGREEMENT = Settings.model_fields["agreement_version"].default
+
 NOW = datetime(2026, 10, 10, 4, tzinfo=UTC)
 NEXT_MONTH = datetime(2026, 10, 31, 16, tzinfo=UTC)
 ADMIN = {"X-Admin-Token": "test-admin"}
@@ -34,12 +37,20 @@ def headers(openid):
     return {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": openid}
 
 
+@pytest.fixture(autouse=True)
+def _legacy_correction_cap(monkeypatch):
+    """这个文件测的是旧的奖励规则（各项合计每月 30 天），借"纠错被采纳"当没有单项上限的奖励。
+    D-070 起纠错每人每月最多 3 天，在 test_sale.py 里测。"""
+    monkeypatch.setattr(rewards, "CORRECTION_MONTH_DAYS", 1000)
+
+
 @pytest.fixture
 def context(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         rewards_enabled=True,
-        referral_enabled=True,
+        # D-070 起纠错送天数只看自己的开关（rewards.correction_enabled）
+        correction_reward_enabled=True,
         advisor_enabled=True,
         trust_wx_headers=True,
         cloud_env="test-env",
@@ -70,7 +81,7 @@ def context(session_factory, monkeypatch):
 def user(session, name="reward-user", **values):
     row = User(
         openid=name,
-        agreement_version="2026-10",
+        agreement_version=AGREEMENT,
         agreement_at=NOW,
         advisor_agreement_version=advisor_tasks.ADVISOR_AGREEMENT_VERSION,
         advisor_agreement_at=NOW,
@@ -106,6 +117,40 @@ def award(session, owner, kind="correction", days=1, ref=1, stamp=NOW, ref_type=
 
 def ticket(session, reward):
     return session.scalar(select(WorkbenchPass).where(WorkbenchPass.reward_id == reward.id))
+
+
+def legacy_referral(session, inviter, newcomer):
+    """以前（D-059 时期）留下的引荐关系和两笔奖励：首次批量给新用户、引荐给引荐人。
+    两项已删，程序不再写这些数据，这里直接写库，模拟库里的旧数据。"""
+    newcomer.invited_by_user_id, newcomer.invited_at = inviter.id, NOW
+    newcomer.batch_completed_at = NOW
+    rows = {}
+    for owner, kind, days, ref_type in (
+        (newcomer, "first_batch", 3, "user_first_batch"),
+        (inviter, "referral", 7, "user_referral"),
+    ):
+        reward = PassReward(
+            user_id=owner.id,
+            kind=kind,
+            requested_days=days,
+            granted_days=days,
+            ref_type=ref_type,
+            ref_id=newcomer.id,
+            granted_at=NOW,
+        )
+        session.add(reward)
+        session.flush()
+        session.add(
+            WorkbenchPass(
+                user_id=owner.id,
+                reward_id=reward.id,
+                starts_at=NOW,
+                ends_at=NOW + timedelta(days=days),
+            )
+        )
+        rows[kind] = reward
+    session.commit()
+    return rows
 
 
 @pytest.mark.parametrize("elapsed", [-2, 1.5, 3, 4])
@@ -149,7 +194,7 @@ def test_revoke_reward_advances_paid_and_reward_segments(session, elapsed):
 
 def test_revoke_preserves_prior_and_already_revoked_segments(session):
     owner = user(session)
-    prior = ticket(session, award(session, owner, "first_batch", 3))
+    prior = ticket(session, award(session, owner, "source", 3))
     row = award(session, owner, ref=2)
     segment = ticket(session, row)
     removed = ticket(session, award(session, owner, ref=3))
@@ -408,6 +453,7 @@ def paid(session, owner, start=NOW):
         out_trade_no=f"order-{owner.id}",
         product_id="workbench_30d",
         price=100,
+        days=30,
         env=1,
         terms_version="test",
         status="completed",
@@ -424,10 +470,7 @@ def paid(session, owner, start=NOW):
     return order, row
 
 
-@pytest.mark.parametrize(
-    "kind,days",
-    [("first_batch", 3), ("correction", 1), ("source", 3), ("referral", 7), ("deadline_clue", 1)],
-)
+@pytest.mark.parametrize("kind,days", [("correction", 1), ("source", 3), ("deadline_clue", 1)])
 def test_grant_types_and_dedup(session, kind, days):
     owner = user(session)
     row = award(session, owner, kind, days)
@@ -443,10 +486,15 @@ def test_grant_types_and_dedup(session, kind, days):
     assert session.scalar(select(func.count(WorkbenchPass.id))) == 1
 
 
-def test_first_batch_once_even_different_reference_and_deleted_task(session):
+@pytest.mark.parametrize("kind", ["first_batch", "referral"])
+def test_retired_kinds_are_not_granted(session, kind):
+    """首次批量、同行引荐不再发放（D-061、D-070）；名称留着，旧流水照常显示。"""
     owner = user(session)
-    original = award(session, owner, "first_batch", 3)
-    assert award(session, owner, "first_batch", 3, ref=2).id == original.id
+    with pytest.raises(ValueError, match="不再发放"):
+        rewards.grant(session, owner.id, kind, 3, f"user_{kind}", owner.id, NOW)
+    session.rollback()
+    assert session.scalar(select(func.count(PassReward.id))) == 0
+    assert kind in rewards.LABELS
 
 
 def test_month_limit_partial_zero_and_beijing_boundary(session):
@@ -454,12 +502,12 @@ def test_month_limit_partial_zero_and_beijing_boundary(session):
     before = NEXT_MONTH - timedelta(microseconds=1)
     for i in range(29):
         award(session, owner, ref=i, stamp=before)
-    partial = award(session, owner, "referral", 7, ref=101, stamp=before)
+    partial = award(session, owner, "source", 3, ref=101, stamp=before)
     zero = award(session, owner, "source", 3, ref=102, stamp=before)
-    assert partial.granted_days == 1 and partial.requested_days == 7
+    assert partial.granted_days == 1 and partial.requested_days == 3
     assert partial.note == zero.note == "本月奖励已到上限"
     assert zero.granted_days == 0 and ticket(session, zero) is None
-    assert award(session, owner, "referral", 7, ref=103, stamp=NEXT_MONTH).granted_days == 7
+    assert award(session, owner, "source", 3, ref=103, stamp=NEXT_MONTH).granted_days == 3
     assert award(session, owner, "source", 3, ref=102, stamp=NEXT_MONTH).id == zero.id
     assert (
         sum(r.granted_days for r in session.scalars(rewards.monthly(session, owner.id, before)))
@@ -467,13 +515,11 @@ def test_month_limit_partial_zero_and_beijing_boundary(session):
     )
     assert (
         sum(r.granted_days for r in session.scalars(rewards.monthly(session, owner.id, NEXT_MONTH)))
-        == 7
+        == 3
     )
 
 
-@pytest.mark.parametrize(
-    "kind,days,limit", [("source", 3, 2), ("referral", 7, 4), ("deadline_clue", 1, 10)]
-)
+@pytest.mark.parametrize("kind,days,limit", [("source", 3, 2), ("deadline_clue", 1, 10)])
 def test_kind_month_limits_and_cross_month(session, kind, days, limit):
     owner = user(session)
     assert [award(session, owner, kind, days, ref=i).granted_days for i in range(limit)] == [
@@ -505,7 +551,7 @@ def test_start_and_extension(session, state):
             session.commit()
         if state in ("active", "future"):
             expected = segment.ends_at
-    segment = ticket(session, award(session, owner, "first_batch", 3))
+    segment = ticket(session, award(session, owner, "source", 3))
     assert segment.starts_at == expected and segment.ends_at == expected + timedelta(days=3)
 
 
@@ -545,197 +591,65 @@ def test_concurrent_grants_same_user_cap_and_reference(session_factory):
         assert session.scalar(select(func.count(PassReward.id))) == 34
 
 
-def test_invite_code_fixed_private_and_collision(context, session, monkeypatch):
+def test_referral_is_gone(context, session):
+    """同行引荐已删（D-061、D-070）：引荐接口没有了，同意协议不再收引荐码，开关也删了。"""
     client, _ = context
-    owner = user(session, "private-openid")
-    other = user(session, "other", invite_code="existingcode")
-    codes = iter([other.invite_code, "random-code"])
-    monkeypatch.setattr(rewards.secrets, "token_urlsafe", lambda _: next(codes))
-    body = client.get("/api/v1/me/invite", headers=headers(owner.openid)).json()
-    assert (
-        body["inviteCode"] == "random-code" and body["monthCount"] == 0 and body["monthLimit"] == 4
+    owner = user(session, "owner", invite_code="fixed-code")
+    assert client.get("/api/v1/me/invite", headers=headers(owner.openid)).status_code == 404
+    with_code = {"version": AGREEMENT, "invite_code": "fixed-code"}
+    response = client.post("/api/v1/me/agreement", headers=headers("new"), json=with_code)
+    assert response.status_code == 422
+    assert session.scalar(select(User).where(User.openid == "new")) is None
+    response = client.post(
+        "/api/v1/me/agreement", headers=headers("new"), json={"version": AGREEMENT}
     )
-    assert client.get("/api/v1/me/invite", headers=headers(owner.openid)).json() == body
-    assert set(body) == {"inviteCode", "monthCount", "monthLimit", "rules"}
-    assert "private-openid" not in str(body) and "other" not in str(body)
-
-
-@pytest.mark.parametrize("case", ["new", "old", "self", "invalid", "missing", "advisor_scope"])
-def test_registration_invite_cases(context, session, case):
-    client, _ = context
-    inviter = user(session, "inviter", invite_code="fixed-invite")
-    openid = "inviter" if case == "self" else "new-user"
-    old = user(session, openid) if case in ("old", "advisor_scope") else None
-    code = "invalid" if case == "invalid" else "fixed-invite"
-    body = {"version": "2026-10", **({"invite_code": code} if case != "missing" else {})}
-    if case == "advisor_scope":
-        body.update(version=advisor_tasks.ADVISOR_AGREEMENT_VERSION, scope="advisor")
-    assert (
-        client.post("/api/v1/me/agreement", headers=headers(openid), json=body).status_code == 200
-    )
-    session.expire_all()
-    registered = session.scalar(select(User).where(User.openid == openid))
-    assert registered.invited_by_user_id == (inviter.id if case == "new" else None)
-    assert (registered.invited_at is not None) == (case == "new")
-    if old:
-        assert registered.id == old.id
-    if case == "new":
-        user(session, "second-inviter", invite_code="second-code")
-        assert (
-            client.post(
-                "/api/v1/me/agreement",
-                headers=headers(openid),
-                json={"version": "2026-10", "invite_code": "second-code"},
-            ).status_code
-            == 200
-        )
-        session.refresh(registered)
-        assert registered.invited_by_user_id == inviter.id and registered.invited_at == NOW
+    assert response.status_code == 200
+    new = session.scalar(select(User).where(User.openid == "new"))
+    assert (new.invited_by_user_id, new.invited_at, new.invite_code) == (None, None, None)
+    assert "referral_enabled" not in Settings.model_fields
+    assert not hasattr(rewards, "invite_code") and not hasattr(rewards, "referral_enabled")
 
 
 @pytest.mark.parametrize("kind", ["compare", "track"])
-def test_first_success_auto_referral_once_and_one_level(context, session, kind):
+def test_first_success_grants_nothing_and_writes_no_claim(context, session, kind):
+    """首次批量奖励已删：奖励开关开着，第一次完成批量任务也不发天数、不写首次完成标记，
+    补发也不补；以前留下的引荐关系不会再给引荐人发奖。"""
     _, settings = context
-    grandparent = user(session, "grandparent")
-    inviter = user(session, "inviter", invited_by_user_id=grandparent.id, invited_at=NOW)
+    inviter = user(session, "inviter")
     newcomer = user(session, "newcomer", invited_by_user_id=inviter.id, invited_at=NOW)
-    row = task(session, newcomer, kind=kind)
+    done = task(session, newcomer, kind=kind)
     assert (
         advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)["done"]
         == 1
     )
-    session.refresh(newcomer)
-    assert newcomer.batch_completed_at == NOW
-    history = session.scalars(select(PassReward).order_by(PassReward.id)).all()
-    assert [(r.user_id, r.kind, r.granted_days) for r in history] == [
-        (newcomer.id, "first_batch", 3),
-        (inviter.id, "referral", 7),
-    ]
-    assert advisor_tasks.process_task(session, row, settings=settings, stamp=NOW)
-    task(session, newcomer, kind=kind, key="second")
-    advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)
-    assert session.scalar(select(func.count(PassReward.id))) == 2
-    assert (
-        context[0].get("/api/v1/me/invite", headers=headers(inviter.openid)).json()["monthCount"]
-        == 1
-    )
-    assert "newcomer" not in str(
-        context[0].get("/api/v1/me/rewards", headers=headers(inviter.openid)).json()
-    )
-    session.delete(row)
-    session.commit()
-    task(session, newcomer, key="third")
-    advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)
-    assert session.scalar(select(func.count(PassReward.id))) == 2
-
-
-def test_failed_task_no_award_then_success(context, session, monkeypatch):
-    _, settings = context
-    inviter = user(session, "inviter")
-    newcomer = user(session, invited_by_user_id=inviter.id)
-    row = task(session, newcomer)
-    row.attempts = 3
-    row.status = "running"
-    session.commit()
-    monkeypatch.setattr(
-        advisor_tasks, "_run_engine", lambda *args: (_ for _ in ()).throw(RuntimeError())
-    )
-    assert advisor_tasks.process_task(session, row, settings=settings, stamp=NOW) is False
-    session.refresh(row)
-    session.refresh(newcomer)
-    assert row.status == "failed" and newcomer.batch_completed_at is None
-    assert session.scalar(select(func.count(PassReward.id))) == 0
-
-
-def test_fifth_referral_never_deferred(context, session):
-    _, settings = context
-    inviter = user(session, "inviter")
-    for i in range(5):
-        newcomer = user(session, f"new-{i}", invited_by_user_id=inviter.id, invited_at=NOW)
-        task(session, newcomer)
-        advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)
-    rows = session.scalars(
-        select(PassReward).where(PassReward.kind == "referral").order_by(PassReward.id)
-    ).all()
-    assert [r.granted_days for r in rows] == [7, 7, 7, 7, 0]
-    assert rewards.reconcile(session, settings=settings, stamp=NEXT_MONTH) == {
-        "granted": 0,
-        "failed": 0,
-    }
-    assert (
-        context[0].get("/api/v1/me/invite", headers=headers(inviter.openid)).json()["monthCount"]
-        == 4
-    )
-
-
-@pytest.mark.parametrize("broken_kind", ["first_batch", "referral", "both"])
-def test_award_failure_no_task_failure_or_next_task_retry_reconcile(
-    context, session, monkeypatch, broken_kind
-):
-    _, settings = context
-    inviter = user(session, "inviter")
-    newcomer = user(session, invited_by_user_id=inviter.id, invited_at=NOW)
-    first = task(session, newcomer)
-    original = rewards.grant
-
-    def broken(s, user_id, kind, *args):
-        if broken_kind in (kind, "both"):
-            original(s, user_id, kind, *args)
-            raise RuntimeError("must never enter log or task error")
-        return original(s, user_id, kind, *args)
-
-    monkeypatch.setattr(rewards, "grant", broken)
-    assert (
-        advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)["done"]
-        == 1
-    )
-    session.refresh(first)
-    assert first.status == "done" and first.error is None and first.result_file_id
-    count = session.scalar(select(func.count(PassReward.id)))
-    assert count == (0 if broken_kind == "both" else 1)
-    monkeypatch.setattr(rewards, "grant", original)
-    task(session, newcomer, key="next")
-    advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)
-    assert session.scalar(select(func.count(PassReward.id))) == count
-    session.delete(first)
-    session.commit()
-    report = rewards.reconcile(session, settings=settings, stamp=NOW)
-    assert report == {"granted": 2 - count, "failed": 0}
-    assert session.scalar(select(func.count(PassReward.id))) == 2
-    assert rewards.reconcile(session, settings=settings, stamp=NOW)["granted"] == 0
-
-
-def test_reconcile_legacy_done_only_and_cli(context, session):
-    completed = user(session, "done")
-    failed = user(session, "failed")
-    task(session, completed, status="done")
-    task(session, failed, status="failed")
+    session.refresh(done)
+    assert done.status == "done" and done.error is None and done.result_file_id
+    assert rewards.reconcile(session, settings=settings, stamp=NOW) == {"granted": 0, "failed": 0}
     assert cli.main(["rewards-reconcile"]) == 0
-    assert [(r.user_id, r.kind) for r in session.scalars(select(PassReward))] == [
-        (completed.id, "first_batch")
-    ]
-    session.refresh(completed)
-    assert completed.batch_completed_at == NOW
+    session.refresh(newcomer)
+    assert newcomer.batch_completed_at is None
+    assert session.scalar(select(func.count(PassReward.id))) == 0
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
+    assert not hasattr(rewards, "first_completion")
 
 
 @pytest.mark.parametrize("switch", ["rewards_enabled", "advisor_enabled"])
 def test_switch_disabled_api_registration_admin_auto_and_cli(context, session, switch):
     client, settings = context
-    inviter = user(session, "inviter", invite_code="fixed-code")
+    inviter = user(session, "inviter")
     setattr(settings, switch, False)
+    # 纠错送天数有自己的开关（D-070 ⑦，开着时的情况在 test_sale.py）；这里测全部关掉
+    settings.correction_reward_enabled = False
     for path in ("/api/v1/me/rewards", "/api/v1/me/invite"):
         assert client.get(path).status_code == 404
         assert client.get(path, headers=headers(inviter.openid)).status_code == 404
     assert (
         client.post(
-            "/api/v1/me/agreement",
-            headers=headers("new"),
-            json={"version": "2026-10", "invite_code": "fixed-code"},
+            "/api/v1/me/agreement", headers=headers("new"), json={"version": AGREEMENT}
         ).status_code
         == 200
     )
     newcomer = session.scalar(select(User).where(User.openid == "new"))
-    assert newcomer.invited_by_user_id is None
     row = task(session, newcomer)
     assert advisor_tasks.process_task(session, row, settings=settings, stamp=NOW)
     assert session.scalar(select(func.count(PassReward.id))) == 0
@@ -756,7 +670,7 @@ def test_switch_disabled_api_registration_admin_auto_and_cli(context, session, s
 def test_reward_pass_quota_500_unlimited_and_status(context, session, kind):
     client, _ = context
     owner = user(session)
-    reward = award(session, owner, "first_batch", 3)
+    reward = award(session, owner, "source", 3)
     for i in range(6):
         rows = (
             [f"单位 {j}" for j in range(500)]
@@ -786,7 +700,7 @@ def test_reward_pass_quota_500_unlimited_and_status(context, session, kind):
 def test_reward_usage_does_not_block_order_refund_and_reward_moves(context, session):
     client, _ = context
     owner = user(session)
-    prior_reward = award(session, owner, "first_batch", 3)
+    prior_reward = award(session, owner, "source", 3, ref=2)
     reward_segment = ticket(session, prior_reward)
     order, bought = paid(session, owner, reward_segment.ends_at)
     used = task(session, owner)
@@ -809,21 +723,36 @@ def test_reward_usage_does_not_block_order_refund_and_reward_moves(context, sess
     assert len(client.get("/api/v1/pay/orders", headers=headers(owner.openid)).json()["items"]) == 1
 
 
+@pytest.mark.parametrize("rewards_on", [False, True])
 @pytest.mark.parametrize("who", ["inviter", "newcomer"])
-def test_delete_account_clears_relations_preserves_others_rewards(context, session, who):
+def test_delete_account_clears_relations_preserves_others_rewards(
+    context, session, db_engine, who, rewards_on
+):
+    """以前留下的引荐关系和首次批量、引荐流水：注销时断开关系、流水去关联、没用完的天数作废
+    （奖励开关关着也一样），另一方已经拿到的天数不收回；不碰防重复领取的凭据表（注销即删）。"""
+    from sqlalchemy import event
+
     client, settings = context
     inviter = user(session, "inviter")
-    newcomer = user(
-        session, "newcomer", invited_by_user_id=inviter.id, invited_at=NOW, batch_completed_at=NOW
-    )
-    rewards.first_completion(session, newcomer.id, NOW, settings=settings)
+    newcomer = user(session, "newcomer")
+    legacy_referral(session, inviter, newcomer)
     deleted, survivor = (inviter, newcomer) if who == "inviter" else (newcomer, inviter)
     survivor_id, deleted_id = survivor.id, deleted.id
     survivor_pass_id = session.scalar(
         select(WorkbenchPass.id).where(WorkbenchPass.user_id == survivor_id)
     )
-    settings.rewards_enabled = False
-    assert client.delete("/api/v1/me", headers=headers(deleted.openid)).status_code == 204
+    settings.rewards_enabled = rewards_on
+    statements = []
+
+    def capture(conn, cursor, statement, params, ctx, many):
+        statements.append(statement.lower())
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        assert client.delete("/api/v1/me", headers=headers(deleted.openid)).status_code == 204
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    assert statements and not any("reward_claims" in sql for sql in statements)
     session.expire_all()
     assert session.get(User, deleted_id) is None
     surviving_pass = session.get(WorkbenchPass, survivor_pass_id)
@@ -843,6 +772,7 @@ def test_delete_account_clears_relations_preserves_others_rewards(context, sessi
     if who == "inviter":
         assert session.get(User, survivor_id).invited_by_user_id is None
         assert session.get(User, survivor_id).invited_at is None
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
 
 
 @pytest.mark.parametrize(
@@ -875,9 +805,9 @@ def test_admin_buttons_authorization_repeat_state_and_audit(
     assert client.post(url.rsplit("/", 1)[0] + "/" + other, headers=ADMIN).json()["alreadyGranted"]
     assert session.scalar(select(func.count(PassReward.id))) == 1
     page = client.get("/admin/feedback").text
-    assert (
-        "采纳并送 1 天" in page and "已接入并送 3 天" in page and "if (item.rewardsEnabled)" in page
-    )
+    assert "采纳并送 1 天" in page and "已接入并送 3 天" in page
+    assert "item.correctionRewardEnabled && item.kind === '纠错'" in page
+    assert "item.rewardsEnabled && item.kind === '申请覆盖'" in page
 
 
 def test_admin_wrong_type_and_missing(context, session):
@@ -918,63 +848,13 @@ def test_history_latest_50_total_actual_and_labels(context, session):
         "智能",
         "推荐",
     )
-    visible = (
-        str(body)
-        + str(client.get("/api/v1/me/invite", headers=headers(owner.openid)).json())
-        + str(rewards.LABELS)
-    )
-    assert not any(word in visible for word in forbidden)
-
-
-@pytest.mark.parametrize("code", ["x" * 1000, 123, [], {}, "", None])
-def test_invalid_code_does_not_block_registration(context, session, code):
-    client, _ = context
-    response = client.post(
-        "/api/v1/me/agreement",
-        headers=headers("new"),
-        json={"version": "2026-10", "invite_code": code},
-    )
-    assert response.status_code == 200
-    assert session.scalar(select(User).where(User.openid == "new")).invited_by_user_id is None
-
-
-def test_success_before_upgrade_no_auto_catchup(context, session):
-    _, settings = context
-    owner = user(session)
-    task(session, owner, status="done", key="old")
-    task(session, owner, key="new")
-    assert (
-        advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)["done"]
-        == 1
-    )
-    assert session.scalar(select(func.count(PassReward.id))) == 0
-    assert rewards.reconcile(session, settings=settings, stamp=NOW)["granted"] == 1
-
-
-def test_concurrent_referral_first_completion(session_factory, context):
-    _, settings = context
-    with session_factory() as session:
-        inviter = user(session, "inviter")
-        newcomer_id = user(
-            session, "new", invited_by_user_id=inviter.id, invited_at=NOW, batch_completed_at=NOW
-        ).id
-
-    def complete(_):
-        with session_factory() as session:
-            return rewards.first_completion(session, newcomer_id, NOW, settings=settings)
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        reports = list(pool.map(complete, range(8)))
-    assert sum(r["granted"] for r in reports) == 2
-    assert sum(r["failed"] for r in reports) == 0
-    with session_factory() as session:
-        assert session.scalar(select(func.count(PassReward.id))) == 2
+    assert not any(word in str(body) + str(rewards.LABELS) for word in forbidden)
 
 
 def test_refund_api_after_reward_usage_advances_reward_segment(context, session):
     client, settings = context
     owner = user(session)
-    first = ticket(session, award(session, owner, "first_batch", 3))
+    first = ticket(session, award(session, owner, "source", 3, ref=2))
     first.last_used_at = NOW
     order, bought = paid(session, owner, first.ends_at)
     following = ticket(session, award(session, owner, "source", 3))
@@ -1052,10 +932,8 @@ def test_backup_restore_invitations_rewards_and_passes(session, db_engine):
     from .test_backup import clear_restore_target
 
     inviter = user(session, "inviter", invite_code="fixed-code")
-    newcomer = user(
-        session, "new", invited_by_user_id=inviter.id, invited_at=NOW, batch_completed_at=NOW
-    )
-    reward = award(session, inviter, "referral", 7, ref=newcomer.id, ref_type="user_referral")
+    newcomer = user(session, "new")
+    reward = legacy_referral(session, inviter, newcomer)["referral"]
     reward_id, inviter_id, newcomer_id = reward.id, inviter.id, newcomer.id
     output = BytesIO()
     counts = dump(db_engine, output, now=NOW)
@@ -1103,89 +981,56 @@ def test_migration_down_up_preserves_order_segment_and_unlinks_reward_task(sessi
     assert session.get(WorkbenchPass, bought_id).order_id == order_id
 
 
-@pytest.mark.parametrize(
-    "reward_on,referral_on", [(False, False), (False, True), (True, False), (True, True)]
-)
-def test_referral_separate_switch(context, session, reward_on, referral_on):
-    client, settings = context
-    settings.rewards_enabled, settings.referral_enabled = reward_on, referral_on
-    inviter = user(session, "inviter", invite_code="fixed-code")
-    active = reward_on and referral_on
-    assert client.get("/api/v1/me/invite", headers=headers(inviter.openid)).status_code == (
-        200 if active else 404
-    )
-    assert client.get("/api/v1/me/invite").status_code == (401 if active else 404)
-    client.post(
-        "/api/v1/me/agreement",
-        headers=headers("new"),
-        json={"version": "2026-10", "invite_code": "fixed-code"},
-    )
-    newcomer = session.scalar(select(User).where(User.openid == "new"))
-    assert newcomer.invited_by_user_id == (inviter.id if active else None)
-    # 已经存在的关系也不能绕过单独开关；补发同样受控。
-    newcomer.invited_by_user_id, newcomer.batch_completed_at = inviter.id, NOW
-    session.commit()
-    rewards.first_completion(session, newcomer.id, NOW, settings=settings)
-    rewards.reconcile(session, settings=settings, stamp=NOW)
-    assert session.scalar(
-        select(func.count(PassReward.id)).where(PassReward.kind == "first_batch")
-    ) == int(reward_on)
-    assert session.scalar(
-        select(func.count(PassReward.id)).where(PassReward.kind == "referral")
-    ) == int(active)
-    assert Settings(_env_file=None).referral_enabled is False
-
-
-@pytest.mark.parametrize("complete", [False, True])
-def test_reregister_not_new_and_claim_retention(context, session, complete):
-    from youju.notify import run_cleanup
-
-    client, settings = context
-    inviter = user(session, "inviter", invite_code="fixed-code")
+def test_reregister_after_deletion_is_a_new_account_and_keeps_no_claim(context, session):
+    """注销即删：有过奖励的账号注销后什么凭据也不留（不写 reward_claims），
+    同一个微信重新同意建的是新账号。"""
+    client, _ = context
 
     def register():
         assert (
             client.post(
-                "/api/v1/me/agreement",
-                headers=headers("repeat"),
-                json={"version": "2026-10", "invite_code": "fixed-code"},
+                "/api/v1/me/agreement", headers=headers("repeat"), json={"version": AGREEMENT}
             ).status_code
             == 200
         )
         return session.scalar(select(User).where(User.openid == "repeat"))
 
-    newcomer = register()
-    assert newcomer.invited_by_user_id == inviter.id
-    if complete:
-        newcomer.batch_completed_at = NOW
-        session.commit()
-        assert (
-            rewards.first_completion(session, newcomer.id, NOW, settings=settings)["granted"] == 2
-        )
+    first = register()
+    first_id = first.id
+    award(session, first, "source", 3)
     assert client.delete("/api/v1/me", headers=headers("repeat")).status_code == 204
     session.expire_all()
-    newcomer = register()
-    assert newcomer.invited_by_user_id is None
-    newcomer.batch_completed_at = NOW
-    session.commit()
-    assert rewards.first_completion(session, newcomer.id, NOW, settings=settings)["granted"] == int(
-        not complete
-    )
-    claims = session.scalars(select(RewardClaim)).all()
-    assert len(claims) == (3 if complete else 2)
-    assert all(len(c.pseudonym) == 64 and "repeat" not in c.pseudonym for c in claims)
+    assert session.get(User, first_id) is None
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
+    again = register()
+    assert again.id != first_id and again.invited_by_user_id is None
     assert (
-        run_cleanup(
-            session, settings=settings, stamp=NOW + timedelta(days=180) - timedelta(microseconds=1)
-        )["reward_claims"]
-        == 0
+        session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id == again.id)) == 0
     )
-    assert run_cleanup(session, settings=settings, stamp=NOW + timedelta(days=180))[
-        "reward_claims"
-    ] == len(claims)
 
 
-@pytest.mark.parametrize("switch", ["rewards_enabled", "referral_enabled"])
+def test_cleanup_deletes_leftover_claims_of_any_age(context, session):
+    """凭据不再写入；库里如果还有以前留下的（引荐开关开着时注销留下的、从旧备份恢复回来的），
+    注销本身不碰这张表（API 没有它的删除权限），下一次 youju cleanup 不论多久都删掉。"""
+    from youju.notify import run_cleanup
+
+    client, settings = context
+    for i, age in enumerate((0, 1, 179, 180, 181)):
+        session.add(
+            RewardClaim(
+                pseudonym=f"{i:064x}", kind="referred", claimed_at=NOW - timedelta(days=age)
+            )
+        )
+    owner = user(session, "had-a-claim")
+    session.commit()
+    assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 5
+    assert run_cleanup(session, settings=settings, stamp=NOW)["reward_claims"] == 5
+    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
+    assert run_cleanup(session, settings=settings, stamp=NOW)["reward_claims"] == 0
+
+
+@pytest.mark.parametrize("switch", ["rewards_enabled", "advisor_enabled"])
 def test_delete_empty_account_without_new_table_writes(context, session, db_engine, switch):
     from sqlalchemy import event
 
@@ -1208,12 +1053,13 @@ def test_delete_empty_account_without_new_table_writes(context, session, db_engi
         )
     finally:
         event.remove(db_engine, "before_cursor_execute", capture)
+    # 凭据表连查都不查（注销即删，不再判断要不要留）
+    assert not any("reward_claims" in sql for sql in statements)
     for sql in statements:
         if any(
             table in sql
             for table in (
                 "deadline_clues",
-                "reward_claims",
                 "pass_rewards",
                 "workbench_passes",
                 "pay_orders",
@@ -1222,51 +1068,6 @@ def test_delete_empty_account_without_new_table_writes(context, session, db_engi
         ):
             assert sql.lstrip().startswith("select") and "for update" not in sql
     assert session.scalar(select(func.count(RewardClaim.kind))) == 0
-
-
-@pytest.mark.parametrize("history", ["none", "referred", "completed"])
-def test_deletion_retains_eligibility_from_deletion_time(context, session, history):
-    from youju.notify import run_cleanup
-
-    client, settings = context
-    old = NOW - timedelta(days=181)
-    inviter = user(session, "inviter", invite_code="fixed-code")
-    owner = user(
-        session,
-        "repeat",
-        **({"invited_by_user_id": inviter.id, "invited_at": old} if history != "none" else {}),
-    )
-    if history != "none":
-        rewards.record_claim(session, owner.openid, "referred", old)
-    if history == "completed":
-        owner.batch_completed_at = old
-        session.commit()
-        assert rewards.first_completion(session, owner.id, old, settings=settings)["granted"] == 2
-    session.commit()
-    assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
-    session.expire_all()
-    run_cleanup(session, settings=settings, stamp=NOW)
-    claims = session.scalars(select(RewardClaim)).all()
-    assert {c.kind for c in claims} == (
-        {"referred", "first_batch", "referral"} if history == "completed" else {"referred"}
-    )
-    assert all(c.claimed_at == NOW for c in claims)
-    assert (
-        client.post(
-            "/api/v1/me/agreement",
-            headers=headers("repeat"),
-            json={"version": "2026-10", "invite_code": "fixed-code"},
-        ).status_code
-        == 200
-    )
-    new = session.scalar(select(User).where(User.openid == "repeat"))
-    assert new.invited_by_user_id is None
-    new.batch_completed_at = NOW
-    session.commit()
-    rewards.first_completion(session, new.id, NOW, settings=settings)
-    assert session.scalar(
-        select(func.count(PassReward.id)).where(PassReward.kind == "referral")
-    ) == int(history == "completed")
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -1312,7 +1113,6 @@ def test_completion_locks_user_before_flushing_task(
     assert lock < finish
     session.refresh(row)
     assert row.status == "done" and row.result_document_ids == [123]
-    assert owner.batch_completed_at == NOW
 
 
 @pytest.mark.parametrize("advisor_enabled", [False, True])
@@ -1322,7 +1122,7 @@ def test_restricted_api_without_new_grants(
     from youju import access_log
 
     client, settings = context
-    settings.rewards_enabled = settings.referral_enabled = settings.pay_enabled = False
+    settings.rewards_enabled = settings.pay_enabled = False
     settings.advisor_enabled = advisor_enabled
     with restricted_api_factory(new_grants=False) as limited:
         monkeypatch.setattr(access_log, "get_engine", lambda: limited.kw["bind"])

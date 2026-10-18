@@ -12,6 +12,14 @@ const RELEASE_IDENTITY = (() => {
   }
   return Object.freeze(identity);
 })();
+// 工具使用说明的版本要和后台一致（backend/src/youju/advisor_tasks.py 的 ADVISOR_AGREEMENT_VERSION）：
+// 不一致时用户点了同意也会被后台拒绝。直接读后台的常量，升版本时不用再改这里
+const SERVER_TOOL_TERMS_VERSION = (() => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'backend', 'src', 'youju', 'advisor_tasks.py'), 'utf8');
+  const m = /^ADVISOR_AGREEMENT_VERSION = "([^"]+)"$/m.exec(source);
+  if (!m) throw new Error('读不到后台的工具使用说明版本');
+  return m[1];
+})();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
   'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
@@ -57,7 +65,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   if (profile === 'ai-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
   add('internal-submit', '不把内测或完整候选包提交审核', !(mode === 'submit' && ['ai-internal', 'complete-candidate'].includes(profile)), '候选只能 prepare；完整交付须另行核对准入、实际业务验收及创始人批准');
   if (profile === 'complete-candidate') {
-    add('tool-terms', '完整候选包含独立工具使用说明', !!toolTerms && toolTerms.version === 'advisor-2026-09-v1'
+    add('tool-terms', '完整候选包含独立工具使用说明', !!toolTerms && toolTerms.version === SERVER_TOOL_TERMS_VERSION
       && Array.isArray(toolTerms.paragraphs) && toolTerms.paragraphs.length >= 6 && toolTerms.paragraphs.every(nonempty)
       && !hasPlaceholder(toolTerms), '核对工具协议版本与服务器一致，提供上传、留存、删除、额度和结果边界的完整说明');
     add('tool-review', '工具说明公开发布复核', !!toolTerms && toolTerms.reviewedForRelease === true, '候选可体验；公开发布复核及实际准入证据仍须单独完成', true);
@@ -98,4 +106,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect };
+module.exports = { inspect, SERVER_TOOL_TERMS_VERSION };

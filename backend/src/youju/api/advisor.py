@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
 from youju import boost, payments
+from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
 from youju.ai import interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
-from youju.api.me import KnownUserDep, UserDep, request_openid
+from youju.api.me import OUTDATED, KnownUserDep, UserDep, request_openid
 from youju.backup import BackupError
 from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
@@ -186,6 +187,9 @@ def _upload_consent(user: User) -> None:
         or user.advisor_agreement_version != service.ADVISOR_AGREEMENT_VERSION
     ):
         raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
+    # 同意工具使用说明时已核对过；同意记录只会往新版本走，这里再查一次，不靠那一处
+    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+        raise HTTPException(status_code=403, detail=OUTDATED)
 
 
 @router.get("/status", dependencies=[Depends(_enabled)])
@@ -223,10 +227,14 @@ def status(session: SessionDep, user: KnownUserDep) -> dict:
 def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
     """开始加量体验：用户在确认页看完规则点"开始体验"。重复点返回同一段体验，不会重新起算。
 
-    开始体验不提交客户信息，不要求先同意工具使用说明；要求已同意用户协议（要保存体验记录）。"""
+    开始体验不提交客户信息，不要求先同意工具使用说明；要求同意过写进体验记录的那一版用户协议和
+    隐私保护指引（TOOLS_AGREEMENT_VERSION）：过渡期里只同意过旧版的返回 403，小程序清掉本机的
+    同意记录，下次用需要登录的功能时请他重新同意。"""
     settings = get_settings()
     if not boost.trial_enabled(settings):
         raise HTTPException(status_code=404, detail="没有找到接口")
+    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+        raise HTTPException(status_code=403, detail=OUTDATED)
     # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
     # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
     # 连点两次时，后拿到锁的请求不会早于先建成的那段，返回同一段而不是"已经用过"
@@ -387,7 +395,7 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
                 else {}
             ),
         },
-        # 超出免费量时要不要提示开通客户工作台（D-058）；没开放支付时不出现任何购买字样
+        # 超出免费量时要不要提示买批量工具（D-058、D-070）；没开放支付时不出现任何购买字样
         "pay": payments.entry(session, settings, user),
     }
 
@@ -508,11 +516,20 @@ def create_task(
                 ticket = None
             if ticket is None and not reserved:
                 if data_kind:
+                    # 不在售（开关关着、不对这个用户开放、下不了单）时不提购买（D-058、D-068）
+                    selling = payments.selling_to(settings, user.openid) and payments.orderable(
+                        settings
+                    )
                     raise HTTPException(
                         status_code=429,
                         detail={
                             "code": "FREE_MONTHLY_LIMIT",
-                            "message": "本月免费次数已用完，买一次客户工作台可用 30 天，到期不扣钱",
+                            "message": "本月免费次数已用完，下月 1 日恢复"
+                            + (
+                                "；也可以买批量工具，不限次数、每次 500 家以内，到期不扣钱"
+                                if selling
+                                else ""
+                            ),
                         },
                     )
                 label = "政策解读" if body.kind == "interpret" else "条款对照"

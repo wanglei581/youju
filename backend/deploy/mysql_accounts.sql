@@ -40,17 +40,25 @@ GRANT INSERT, UPDATE ON youju.invoice_requests TO 'youju_api'@'%';
 
 -- 奖励权限：迁移 0027 完成后、打开奖励开关（YOUJU_REWARDS_ENABLED）之前，由创始人执行。
 -- 要和上面 workbench_passes 那一行一起执行：有奖励使用期的用户提交任务、注销时要改这张表。
--- 线索队列、凭据队列靠"把名称更新成原值"占用行锁来排队；密钥的值仍然不能改。
+-- 线索队列靠"把名称更新成原值"占用行锁来排队；密钥的值仍然不能改。
 GRANT UPDATE (name) ON youju.app_keys TO 'youju_api'@'%';
 -- API 只在注销时断开流水关联；发奖 INSERT 由 admin 定时任务/核对台执行。
 GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
--- 凭据只追加（含注销时刻的保留记录），不需要 UPDATE/DELETE 或行锁权限。
-GRANT INSERT ON youju.reward_claims TO 'youju_api'@'%';
+-- 防重复领取的凭据（reward_claims）10/18 起不再写入（注销即删），API 不需要这张表的任何权限。
+-- 以前执行过旧版这里的 INSERT 授权的，可以收回：REVOKE INSERT ON youju.reward_claims FROM 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
 
 -- 加量体验权限（D-070 ③）：迁移 0031 完成后、打开体验开关（YOUJU_BOOST_TRIAL_ENABLED）之前，由创始人执行。
 -- 用户点"开始体验"时新增一行；注销时随用户行级联删除（MySQL 外键级联不另查子表权限），API 不改也不删。
 GRANT INSERT ON youju.boost_trials TO 'youju_api'@'%';
--- 注销时给用过体验的微信记一条去标识凭据（只追加，180 天后由 admin 清理任务删除；上面奖励段也有这一行）。
-GRANT INSERT ON youju.reward_claims TO 'youju_api'@'%';
+-- 注销时体验记录随用户删除，不另留凭据（10/18 改为注销即删），所以不需要 reward_claims 的权限。
 -- 体验期每天的次数记在 advisor_usage（上面顾问任务权限已有），申报季加量不需要新权限。
+
+-- 批量工具两档开卖权限（D-070）：迁移 0032 完成后、打开收费（YOUJU_PAY_ENABLED）之前，由创始人执行；
+-- 上面"支付权限"四行要先执行（或一起执行）。
+-- 付款确认（微信推送、下新单前查上一笔）时随订单记一笔赠送（续买多送、加量体验折算）：只新增，不删除。
+GRANT INSERT ON youju.pass_rewards TO 'youju_api'@'%';
+-- 退款时收回随订单送的续买天数（流水备注写"已收回"）；上面奖励段也有这一行，没开奖励也要执行。
+GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
+-- 体验期内买了批量工具：体验到付款确认时结束，没用完的折成天数。只能改结束时间。
+GRANT UPDATE (ends_at) ON youju.boost_trials TO 'youju_api'@'%';

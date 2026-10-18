@@ -465,6 +465,8 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "events": [],
         "eventsTotal": 0,
         "boostTrial": None,
+        "passGifts": [],
+        "passGiftsTotal": 0,
         "retention": {
             "events": 90,
             "feedback": 180,
@@ -1074,6 +1076,7 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "pay_events": 0,
         "advisor_files": 0,
         "advisor_ai_tasks": 0,
+        "advisor_data_tasks": 0,
         "advisor_usage_rows": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1

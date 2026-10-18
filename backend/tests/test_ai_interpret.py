@@ -14,9 +14,10 @@ from alembic import command
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, select, text, update
 
 from youju import advisor_tasks as service
+from youju.agreements import TOOLS_AGREEMENT_VERSION
 from youju.ai import interpret
 from youju.ai.client import AIError, ChatClient
 from youju.api import advisor as api
@@ -140,6 +141,15 @@ def doc(session):
     session.add(DocumentDetail(document_id=row.id, body_text=BODY, fetched_at=NOW, status="ok"))
     session.commit()
     return row
+
+
+def tools_ready(session, openid="internal"):
+    """批量工具要求同意过写进任务记录的那一版指引（2026-11）；本文件按 2026-10 配置测 AI，
+    要用批量工具时先把这个用户的同意补到 2026-11，再同意工具使用说明。"""
+    session.execute(
+        update(User).where(User.openid == openid).values(agreement_version=TOOLS_AGREEMENT_VERSION)
+    )
+    session.commit()
 
 
 def create(client, doc_id, key="first"):
@@ -459,6 +469,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
     settings.advisor_enabled = True
+    tools_ready(session)
     assert (
         client.post(
             "/api/v1/me/agreement",
@@ -526,6 +537,7 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert session.scalar(select(AdvisorTask.id)) is None
 
     settings.advisor_enabled = True
+    tools_ready(session)
     assert (
         client.post(
             "/api/v1/me/agreement",

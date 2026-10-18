@@ -17,7 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import agreement_at_least
+from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -118,13 +118,6 @@ class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
     scope: Literal["general", "advisor"] = "general"
-    invite_code: str | None = None
-
-    @field_validator("invite_code", mode="before")
-    @classmethod
-    def valid_invite_code(cls, value):
-        # 无效码不能妨碍同意协议；只把可能匹配固定码的短字符串送进查询。
-        return value if isinstance(value, str) and 0 < len(value) <= 16 else None
 
 
 class Conditions(BaseModel):
@@ -298,7 +291,7 @@ def _available_subscription():
 
 @router.get("/me")
 def profile(session: SessionDep, user: KnownUserDep) -> dict:
-    from youju import payments
+    from youju import payments, rewards
 
     if user is None:
         return {
@@ -306,6 +299,7 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
             "follows": 0,
             "subscriptions": {"newDocs": 0, "deadline": 0},
             "pay": payments.entry(session, get_settings(), None),
+            "correctionReward": rewards.correction_info(get_settings()),
         }
     counts = dict(
         session.execute(
@@ -348,6 +342,8 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
         },
         # 购买入口和"我的订单"显示与否（小程序没开放支付时两个都是 False，不放空入口）
         "pay": payments.entry(session, get_settings(), user),
+        # 纠错被采纳送天数（D-070 ⑦）开着时，纠错页公开写出规则和采纳标准；关着为 None
+        "correctionReward": rewards.correction_info(get_settings()),
     }
 
 
@@ -541,36 +537,6 @@ def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) 
     session.commit()
 
 
-def _require_referral() -> None:
-    from youju import rewards
-
-    if not rewards.referral_enabled(get_settings()):
-        raise HTTPException(status_code=404, detail="没有找到接口")
-
-
-@router.get("/me/invite", dependencies=[Depends(_require_referral)])
-def invite_status(session: SessionDep, user: UserDep) -> dict:
-    from youju import rewards
-
-    code = rewards.invite_code(session, user.id)
-    count = sum(
-        row.kind == "referral" and row.granted_days > 0
-        for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
-    )
-    session.commit()
-    return {
-        "inviteCode": code,
-        "monthCount": count,
-        "monthLimit": 4,
-        "rules": [
-            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天客户工作台使用期。",
-            "每月最多计入 4 位，各项奖励合计每月最多 30 天，超出部分不给、不顺延。",
-            "新用户不会因使用引荐码多得天数；只计算直接请来的同行。",
-            "使用天数不能转让、不能折现，注销账号时作废。",
-        ],
-    }
-
-
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。接受仍认的最早版本到当前版本之间的版本
@@ -582,6 +548,11 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         user = current_user(known_user(request, session))
         if body.version != advisor_service.ADVISOR_AGREEMENT_VERSION:
             raise HTTPException(status_code=422, detail="工具使用说明已更新，请重新阅读并同意")
+        # 批量工具的任务记录和次数从 2026-11 版隐私保护指引起才写明（一·13）：过渡期（填了最早版本）
+        # 只同意过旧版的照旧能用关注、纠错，但要先重新同意新版指引才能同意工具使用说明。
+        # 固定版本，回退配置也不放宽（Codex 第三轮）；提交名单时 advisor._upload_consent 再查一次
+        if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+            raise HTTPException(status_code=403, detail=OUTDATED)
         user.advisor_agreement_version = body.version
         user.advisor_agreement_at = v1.now()
         session.commit()
@@ -590,21 +561,6 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     if not oldest <= body.version <= current:
         raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
-    from youju import rewards
-
-    inviter = None
-    if (
-        rewards.referral_enabled(get_settings())
-        and body.invite_code
-        and session.scalar(select(User.id).where(User.openid == request_openid(request))) is None
-    ):
-        inviter = session.scalar(
-            select(User.id).where(User.invite_code == body.invite_code).with_for_update()
-        )
-    if inviter is not None and not rewards.record_claim(
-        session, request_openid(request), "referred", stamp
-    ):
-        inviter = None
     # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
     newer = and_(
         User.agreement_version.regexp_match("^[0-9]{4}-[0-9]{2}"),
@@ -615,8 +571,6 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         insert(User)
         .values(
             openid=request_openid(request),
-            invited_by_user_id=inviter,
-            invited_at=stamp if inviter is not None else None,
             last_visited_at=stamp,
             agreement_version=body.version,
             agreement_at=stamp,
@@ -646,14 +600,14 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
     """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
-        from youju import boost, rewards
+        from youju import rewards
         from youju.payments import anonymize
 
         # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
-        rewards.anonymize(session, user, v1.now(), settings=get_settings())
+        # 加量体验的记录随用户删除（外键级联）；奖励和体验都不另留防重复领取的凭据（注销即删，
+        # D-071 第②条）
+        rewards.anonymize(session, user, v1.now())
         anonymize(session, user)
-        # 用过加量体验的记一条去标识凭据，重新同意后不能再体验；体验记录随用户删除
-        boost.anonymize(session, user, v1.now())
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
@@ -712,6 +666,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "events": [],
         "eventsTotal": 0,
         "boostTrial": None,
+        "passGifts": [],
+        "passGiftsTotal": 0,
         "retention": {
             "events": settings.retain_events_days,
             "feedback": settings.retain_feedback_days,
@@ -786,6 +742,30 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     trial = boost.trial_of(session, user.id)
     if trial is not None:
         result["boostTrial"] = {"startedAt": _iso(trial.started_at), "endsAt": _iso(trial.ends_at)}
+    # 送的批量工具天数，每次一笔（续买多送、加量体验折算、纠错被采纳等，D-070 逐笔记账）；
+    # 订单本身在"我的订单"
+    from youju import rewards
+    from youju.models import PassReward
+
+    result["passGiftsTotal"] = (
+        session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id == user.id)) or 0
+    )
+    result["passGifts"] = [
+        {
+            "kind": row.kind,
+            "name": rewards.LABELS[row.kind],
+            "days": row.granted_days,
+            "grantedAt": _iso(row.granted_at),
+            "note": row.note,
+            "revoked": rewards.is_revoked(row),
+        }
+        for row in session.scalars(
+            select(PassReward)
+            .where(PassReward.user_id == user.id)
+            .order_by(PassReward.granted_at.desc(), PassReward.id.desc())
+            .limit(500)
+        )
+    ]
 
     follows = session.scalars(
         select(Follow)

@@ -1,4 +1,6 @@
-# 客户工作台 30 天支付后台（D-058，2026-10-09）
+# 批量工具支付后台（D-058 起，D-070 改为两档）
+
+> 2026-10-18（D-070）：商品改名为"批量工具"，开卖就上 30 天、90 天两档，加续买多送、逐笔记账的退款、体验期内购买折算、纠错送天数（可选），见文末"开卖那批（D-070）"。下面 D-058 时期的记录照旧保留，"客户工作台"即现在的"批量工具"；和文末冲突的以文末为准。
 
 买一次用 30 天，到期不扣钱。只卖一个商品，默认编号 `workbench_30d`。
 付款仅开通使用期，用户自行提交 compare / track 任务。任务失败、取消和钱无关。
@@ -86,11 +88,14 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 没有未来有效段时从发放时间开始。不能转让、不能折现，注销账号时作废。
 
 `YOUJU_REWARDS_ENABLED=false` 默认关闭，必须同时开启 `YOUJU_ADVISOR_ENABLED`。
-关闭时不自动发奖，`rewards-reconcile` 不写奖励，个人奖励和引荐接口 404（包括未登录请求），
-注册忽略引荐码，管理台不显示发奖按钮、发奖接口 404。已发出的使用期仍有效。
+关闭时不自动发奖，`rewards-reconcile` 不写奖励，个人奖励接口 404（包括未登录请求），
+管理台不显示发奖按钮、发奖接口 404。已发出的使用期仍有效。
 只有服务端开关，没有审核隐藏开关。支付开关不控制奖励。
-`YOUJU_REFERRAL_ENABLED=false` 单独控制引荐，须奖励与工具开关也开启。关闭时引荐接口 404，
-注册忽略 invite_code，自动发奖及 rewards-reconcile 均跳过 referral，其他奖励照常。
+
+**2026-10-18 删除首次批量奖励和同行引荐**（D-061、D-070 不再做）：`first_completion`、引荐码、
+`GET /me/invite`、`YOUJU_REFERRAL_ENABLED` 都删了，同意协议不再接受 `invite_code`（未知字段 422）；
+`rewards.grant` 拒绝 first_batch、referral，名称留着给旧流水显示。防重复领取的凭据随之不再写入，
+见下文"注销"。
 
 每个北京时间自然月，所有奖励实际发放天数合计最多 30 天；不足时只给剩余天数。
 零天也写流水、备注说明达到上限，但不创建使用期段。同一对象不会重复发奖，
@@ -105,35 +110,34 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 
 | kind | 用户看到的名称 | 申请天数 | 限制 |
 |---|---|---|---|
-| first_batch | 第一次用批量功能 | 3 | 第一次 compare / track 成功完成，每个用户一次 |
+| first_batch | 第一次用批量功能 | 3 | **已删**（2026-10-18），不再发放 |
 | correction | 纠错被采纳 | 1 | 管理员采纳，一条反馈一次 |
 | source | 提的栏目已接入 | 3 | 管理员确认接入，一条反馈一次，每人每月最多 2 次实际到账 |
-| referral | 请来一位同行 | 7 | 新用户第一次成功完成批量任务时，仅给引荐人，每月最多计入 4 位 |
+| referral | 请来一位同行 | 7 | **已删**（2026-10-18），不再发放 |
 | deadline_clue | 补截止日期被采纳 | 1 | 人工通过后只奖日期相同且最早提交者；每人每月最多 10 天，同一通知同一性质一次 |
 
-只计算直接引荐的一层，新用户不会因引荐码多得天数，只按普通规则拿 first_batch。
-引荐码由安全随机数生成，固定 12 字符，不编码用户编号或 openid；老用户首次请求时生成，
-不回填。只在第一次建立用户记录时写引荐关系；已有记录更新协议不写关系，
-无效码（含超长或类型不符）忽略，自用码不记录。接口不公开被引荐人身份。
-`reward_claims` 保留 openid 的用途分离 HMAC-SHA256 假名、类型、记录时间；复用 app_keys 程序密钥，
-不存 openid 或用户外键，注销不删除。first_batch、referred（曾使用过账号）、referral（已触发引荐奖）
-按假名和类型查重；引荐开启时所有用户注销均追加 referred，首次奖励/引荐奖励有历史时也追加对应凭据，
-时间统一为注销时刻，避免旧凭据已满 180 天时立即丢失资格限制。引荐关闭时不追加 referred。
-180 天内重新注册不重复领取首次奖励或建立引荐关系。`youju cleanup` 清除满 180 天记录。
-待办：启用前在隐私保护指引增加防重复领奖假名的用途、注销后保留及 180 天期限；本次不改 docs/。
+`reward_claims` 原来保存 openid 的 HMAC-SHA256 假名、类型和时间，注销后留 180 天，防止注销后重新注册
+重复领首次奖励、重复建立引荐关系。我们能对同一个微信重算出这个假名，它是去标识化、不是匿名化，
+仍算个人信息，和《网络数据安全管理条例》第二十四条（注销账号后应当删除个人信息或者匿名化处理）冲突。**2026-10-18 起不再写入**：
+注销即删，和加量体验一个口径（D-071 第②条）；注销后用同一个微信重新同意算新账号。
+`youju cleanup`（admin 每天 03:30）把库里剩下的旧凭据不论多久一律删掉；注销本身不碰这张表
+（API 账号没有它的删除权限）。**上线必做**：部署 admin 之后、部署 api 之前，在 admin 里跑一次 `youju cleanup`，
+先把库里已有的旧凭据清掉（10/18 的备份校验显示线上有 1 行）；新版 api 全量发布、
+旧版实例归零后（约 15 分钟，旧版归零前仍可能在注销时写凭据）再跑两次，确认第二次 reward_claims 是 0 条。
+从旧备份恢复后，重新开放服务前同样先跑 `youju cleanup` 并确认是 0 条。表、约束和 `users` 的
+`invite_code,invited_by_user_id,invited_at,batch_completed_at` 四列暂时留着，程序不再写入；删表、删列另提迁移。
 
 新迁移 **0027**，0026 不变：
 
 - `pass_rewards`：`id,user_id,kind,requested_days,granted_days,ref_type,ref_id,granted_at,note`。
   `(ref_type,ref_id)` 唯一；用户外键允许置空，天数和类型有 CHECK 约束。
-  `ref_type` 分别使用 `user_first_batch`、`user_referral`、`feedback`、`document`；
+  `ref_type` 分别使用 `user_first_batch`、`user_referral`（这两种只在旧流水里）、`feedback`、`document`；
   first_batch 和 referral 的 ref_id 是首次完成者编号，其余是反馈或通知编号。
   截止线索使用 `deadline_` 加性质 SHA256 前 20 位作为 ref_type、主通知编号作为 ref_id，
   唯一键保证同一通知同一性质只奖励一次，补发同时检查归并组内旧编号的流水，撤回核对不清除奖励流水。
   两种管理台操作共用反馈唯一键，不能对同一反馈各发一遍。
 - `reward_claims`：`pseudonym,kind,claimed_at`；三列为联合主键（直接修改未上线的 0027），类型为 first_batch/referred/referral。
-  无身份外键，凭据只追加；app_keys 的 reward_claim_queue 行锁串行化查重和追加，
-  API 不锁凭据表、不需要 UPDATE/DELETE。零天奖励也消耗首次资格，关系/发奖与凭据同事务提交。
+  无身份外键。2026-10-18 起不再写入（见上），API 不需要这张表的任何权限。
 - `deadline_clues`：`id,user_id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`。
   kind 沿用 DocumentDeadline，time 可空，quote 脱敏后最多 200 字，status 为 pending/accepted/rejected；
   用户、候选外键允许置空，文件删除级联删除。公开接口不输出线索或提交人。
@@ -142,9 +146,9 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   CHECK 保证订单和奖励来源有且只有一个。奖励流水通过 reward_id 反查对应使用期，
   零天没有对应段，不增加循环外键。
 - `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
-  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。
+  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。2026-10-18 起四列都不再写入。
 - 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
-  reward_claims 仅 INSERT，pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）。
+  pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）；reward_claims 10/18 起不用授权。
   workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
   注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
   本次只验证指定测试库，不执行正式库操作。
@@ -161,8 +165,8 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 | `GET /api/admin/deadline-clues` | `enabled,items[]`；线索字段加 `title,url,can_build_candidate`；关闭时 false/空数组 |
 | `POST /api/admin/deadline-clues/{id}/candidate` | 无业务请求体，返回 `deadline_id,status=pending`；只在整份通知无任何候选时建候选 |
 | `POST /api/admin/deadline-clues/{id}/reject` | 无业务请求体，返回 `status=未采纳`；两项写操作沿用管理口令和操作留痕 |
-| `GET /api/v1/me/invite` | `inviteCode,monthCount,monthLimit,rules[]`；只显示实际计入人数，每月上限 4 |
-| `POST /api/v1/me/agreement` | 原字段加可选 `invite_code`；仅 general 的新记录写入关系 |
+| `GET /api/v1/me/invite` | 2026-10-18 删除（同行引荐不做） |
+| `POST /api/v1/me/agreement` | 2026-10-18 起不再接受 `invite_code`（未知字段 422） |
 | `GET /api/admin/feedback` | 原列表加 `rewardsEnabled,rewardKind,rewardDays`；未发奖的后两项为 null |
 | `POST /api/admin/feedback/{id}/reward/{kind}` | kind 为 correction 或 source；沿用 X-Admin-Token 和操作留痕，校验反馈类型，成功同时标为已处理；返回 `alreadyGranted,days,message,note`，重复返回“已经发过”（无 note） |
 
@@ -190,19 +194,16 @@ API 提交不锁 documents/sources，依靠 app_keys 队列锁与管理端建候
 关闭奖励时隐藏相关内容，核对通过不处理线索。注销删除待核对线索，已处理保留且断开用户关联，
 最早提交者已注销时不把奖励转给后来者。
 
-任务完成和首次完成标记在同一事务持久化，之后 first_batch、referral 分别独立事务发放。
-发奖失败只写固定日志，不回滚成功任务、不暴露异常正文；后续完成不自动补发。
-admin 服务的定时任务每小时运行一次 `youju rewards-reconcile`（`deploy/crontab`；开关关闭时直接返回）。
-`youju rewards-reconcile` 补发仍在库中的用户：读取首次完成标记，也兼容升级前保留的成功任务，
-跳过已有流水（包括零天），两种奖分别补发，另补发已采纳线索中最早提交者尚未收到的奖励。补发按补发当天所属月份计算限制，使用期从补发时起。
-升级前成功任务已删除且没有首次完成标记的，无法凭空还原，不发奖。
-所有发奖先锁用户再写流水和使用期；同时涉及引荐双方时按用户编号排序锁行。
-备份恢复的自关联外键核验与表锁已适配引荐关系，备份包含奖励流水和使用期。
+2026-10-18 起批量任务完成不再发首次批量、引荐奖励，也不再写首次完成标记。
+admin 服务的定时任务每小时运行一次 `youju rewards-reconcile`（`deploy/crontab`；开关关闭时直接返回），
+只补发已采纳线索中最早提交者尚未收到的奖励，跳过已有流水（包括零天）。补发按补发当天所属月份计算限制，使用期从补发时起。
+所有发奖先锁用户再写流水和使用期。
+备份恢复的自关联外键核验与表锁已适配引荐关系（列还在），备份包含奖励流水和使用期。
 
 退款资格只检查订单自己的段；奖励段上的任务不计入该订单的 paid_usage。
 订单接口只查订单，不把奖励段伪装成订单。退款收回订单段时，后续奖励段也按未用时长往前挪。
-注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除引荐关系两边的关联与时间，
-清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。
+注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除以前留下的引荐关系两边的关联与时间，
+清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。不写任何防重复领取的凭据（注销即删）。
 批量任务收尾用 no_autoflush 先锁用户，再刷新任务，避免引擎已修改结果引用时提前写任务造成与注销互锁。
 受限账号测试按部署 SQL 的 GRANT 自动授权到测试库；可跳过“支付权限”之后的追加授权，
 仅创建随机密码的 youju_api_test@localhost，结束 DROP USER；root 无 CREATE USER 权限则自动跳过并报告。
@@ -339,3 +340,74 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   判不一致（推送核验、补单、退款都过不去）。沙箱联调时以真实返回为准再确认一次。
 - **锁顺序**：用户 → 订单 → 使用期 / 发票。自助退款读发票加锁，管理台开票先锁订单再锁发票，
   不会出现「退款查完发票、作废之前被标成已开」。
+
+## 开卖那批（D-070，2026-10-18，开关仍默认关闭）
+
+规则以 [付费套餐与营销活动方案](../docs/商业/付费套餐与营销活动方案_专家团_2026-10-17.md) 第二、三节为准。
+
+### 两档商品
+- `YOUJU_XPAY_PRODUCT_PASS`（默认 `workbench_30d`）+ `YOUJU_XPAY_PRICE_PASS`：批量工具 30 天；
+  `YOUJU_XPAY_PRODUCT_PASS_90`（默认 `workbench_90d`）+ `YOUJU_XPAY_PRICE_PASS_90`：批量工具 90 天。
+  价格单位分（29 元填 2900、79 元填 7900），没配价格的那一档不卖；两档商品编号相同服务不启动。
+  天数跟着档位走（`payments.products`），**下单时记在订单上**（`pay_orders.days`），开通按订单记的天数给。
+- `GET /api/v1/pay/products`：`items[]` 按天数从短到长，`name` 为"批量工具 30 天 / 90 天"；新增 `invoiceType`（见下）和 `renewBonus`
+  （续买多送开关关着为 null；开着为 `{days: 3, windowDays: 7, eligibleNow}`，认不出用户时 eligibleNow 为 false）。
+  看价格不要求登录。
+- 订单结构新增 `name, days, gifts[], refundAmount`；`gifts[]` 每次赠送一笔：`kind`（renewal / trial）、`name`、`days`、
+  `startsAt, endsAt, revoked`。`refundAmount` 是退了多少（分），没退款为 null。
+
+### 续买多送（`YOUJU_RENEW_BONUS_ENABLED`，默认关）
+- 规则一句："到期前后 7 天内续买，每次多送 3 天"。**下单时**开关开着才算数（`pay_orders.bonus_days` 记 3，否则 0），
+  资格**按付款时间**算（`payments.renewal_due`）：以前买过（有付款更早、没退款的订单使用期），且付款时间在这个用户现在
+  所有没收回的使用期里最晚的结束时间前后 7 天内（含两端）。提前好几次续买的，只有落在最后到期前后 7 天的那次送。
+- 每次赠送记一笔 `pass_rewards`（kind=renewal，ref_type=order_renewal，ref_id=订单编号）和一段使用期，接在这一笔后面。
+  不占奖励的每月上限（`rewards.monthly` 不算随订单送的）。
+
+### 使用期从什么时候起算（D-070 开卖前 Codex 审阅后改）
+- 新的一段从 max(付款时间, 确认开通时间, 这个用户没收回的使用期里最晚的结束时间) 开始。正常情况下确认就在付款那一刻；推送晚到、补单兜底时，确认之前用不了付费的量，这段时间不再算进使用期（原来从付款时间起算，会少用几分钟到几小时）。
+- 续买资格仍按付款时间算；7 天自助退款仍从付款时间算。
+
+### 体验期内购买（D-070 ③）
+- 付款确认时用户还在加量体验期内：使用期照常从付款时间起算（立即生效），体验到确认时结束（`boost_trials.ends_at`
+  改成确认时间），没用完的体验时间折成天数（不足一天按一天，最多 3 天）记一笔 `pass_rewards`（kind=trial，
+  ref_type=order_trial），接在这一笔（和续买多送）后面。确认时体验已经结束的不折。
+- 退款**不收回**体验折算的天数：那是用户自己没用完的体验时间，跟着往前挪。
+
+### 退款（统一口径，逐笔记账）
+- 自助全额退（不变，文字改了）：安卓、鸿蒙、电脑版微信付款，7 天内这一笔的使用期没用过付费的量（没超出每月免费次数、
+  没有一次超过 50 家）、没开过发票。每笔分开算：提前续买的那笔还没开始，7 天内可以单独退。
+- 退哪笔只收回那笔的使用期和**随它送的续买天数**（`rewards.revoke`，流水备注"已收回：随订单退款"），后面的段往前挪。
+  苹果手机的退款通知、平台退款同样处理。
+- 系统故障、停止服务按剩余天数退：负责人在 admin 服务运行
+  `youju pay-refund --order-id N --remaining --reason "原因"`（重复扣款、整段不能用的用 `--full`；停止服务用
+  `--all-active --remaining`），先加 `--dry-run` 看要退哪些、退多少。剩余天数 = 这一笔使用期剩下的时间，不足一天按一天，
+  还没开始的按整笔；金额 = 订单金额 × 剩余天数 ÷ 这一档天数，不足一分按一分。送的天数不算钱，一起收回。
+  只退安卓、鸿蒙、电脑版微信付款的；苹果手机付款的列出来、不退（请用户向 App Store 申请）；已开发票的先开红字发票，
+  再加 `--invoice-reversed` 单独退（批量模式跳过它们）。订单记 `refund_fee`、`refund_source`（self / staff）、`refund_note`。
+- 部分退款：微信 `refund_order` 支持 `refund_fee ∈ (0, left_fee]`（10/18 核对官方原文）。查单状态 5/8 且剩余金额
+  等于"订单金额 − 退款金额"时记为已退款；剩 0（全额）也按实际记；其他转人工。退款请求的原因和来源按官方枚举：
+  自助 `refund_reason=3`（意愿问题，用户主动退款）、`req_from=2`（用户自己发起）；负责人发起 `1`（产品问题）、`1`（人工客服）。
+  原来写的 `1`、`3` 对自助退款不对，一并改了。
+
+### 纠错被采纳送 1 天（`YOUJU_CORRECTION_REWARD_ENABLED`，默认关，可选）
+- 只看自己的开关（还要批量工具开关开着）；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会启用截止线索、
+  栏目接入这些归旧开关管的奖励（`rewards-reconcile` 仍只看旧开关；首次批量、引荐两项 10/18 已删）；旧开关开着也不会
+  打开纠错送天数（Codex 审阅后改）。
+- 管理台纠错列表的"采纳并送 1 天"一键发放：写 `pass_rewards`（kind=correction，ref_type=feedback）、标为已处理、
+  记操作日志；每人每月最多 3 天（`rewards.CORRECTION_MONTH_DAYS`），超出的记零天流水并备注。申请覆盖、支付问题不发。
+- `GET /api/v1/me` 新增 `correctionReward`（开着时 `{days: 1, monthLimit: 3, rule}`，纠错页公开写出采纳标准）。
+- `GET /api/v1/me/data` 新增 `passGifts`（最近 500 笔）和 `passGiftsTotal`：送的天数每次一笔（续买多送、体验折算、纠错被采纳等）。
+
+### 迁移 0032 与权限
+- `pay_orders` 加 `days`（已有订单回填 30）、`bonus_days`、`refund_fee`、`refund_source`、`refund_note`；
+  `pass_rewards.kind` 的 CHECK 加 `renewal`、`trial`。回退时删除这两种流水和对应使用期；还有没到期的赠送天数、
+  或按剩余天数退款没办完（退款中、转人工）的订单时，回退直接报错不执行（旧代码不认赠送、只会全额退），先人工处理。
+- `YOUJU_PAY_TERMS_VERSION` 填成草稿版本号（含 draft）服务不启动：现网只认定稿协议。
+- `YOUJU_PAY_INVOICE_TYPE`（能开哪种发票，付款前要看得到）：商品接口带回 `invoiceType`，购买页照它显示；**现网没填（或还是占位）
+  就不卖**（`payments.orderable`：商品列表空、下单 404、购买入口不出现），绕过购买页直接调下单接口也不行。沙箱联调不受影响。
+  协议正文第四节定稿时写同一句（Codex 第二轮审阅后从小程序改到服务端）。
+- `deploy/mysql_accounts.sql` 新增"批量工具两档开卖权限"三行（迁移 0032 后、打开收费前执行，"支付权限"四行要先执行）：
+  `pass_rewards` 的 INSERT（付款确认时记赠送）和 UPDATE（退款收回；奖励段也有）、`boost_trials` 只能改 `ends_at`
+  （体验期内买时结束体验）。`restricted_api_factory()` 按部署文件授权跑完体验期内买、续买多送、自助退款收回、注销；
+  去掉其中任一行，测试报权限不足（已验证）。
+- 测试：`tests/test_sale.py`。

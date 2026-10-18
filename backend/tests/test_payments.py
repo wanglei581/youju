@@ -128,7 +128,7 @@ def setup_pay(session_factory, monkeypatch):
         xpay_offer_id="offer-test",
         xpay_appkey_sandbox="12345",
         xpay_price_pass=100,
-        agreement_version="2026-10",
+        agreement_version="2026-11",
         xpay_bill_order_column="trade",
         xpay_bill_fee_column="fee",
         xpay_bill_hosts=["bill.example"],
@@ -147,7 +147,7 @@ def setup_pay(session_factory, monkeypatch):
     app_module.app.dependency_overrides[get_session] = override
     app_module.app.dependency_overrides[pay.wx_client] = lambda: fake.client
     with TestClient(app_module.app) as client:
-        client.post("/api/v1/me/agreement", headers=HEADERS, json={"version": "2026-10"})
+        client.post("/api/v1/me/agreement", headers=HEADERS, json={"version": "2026-11"})
         with session_factory() as session:
             user = session.scalar(select(User))
             user.advisor_agreement_version = advisor_tasks.ADVISOR_AGREEMENT_VERSION
@@ -159,7 +159,7 @@ def setup_pay(session_factory, monkeypatch):
 
 
 def create(setup_pay, **values):
-    client, _, _ = setup_pay
+    client, settings, _ = setup_pay
     return client.post(
         "/api/v1/pay/orders",
         headers=HEADERS,
@@ -167,6 +167,8 @@ def create(setup_pay, **values):
             "product_id": "workbench_30d",
             "code": "test-login",
             "terms_version": "pay-test",
+            # 购买页带上它显示的发票类型（现网要和配置一致，D-070）
+            "invoice_type": payments.invoice_type(settings),
             **values,
         },
     )
@@ -284,6 +286,7 @@ def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, 
     settings.xpay_env = env
     if env == 0:
         settings.pay_terms_version = "pay-test"
+        settings.pay_invoice_type = "电子普通发票（测试）"
         settings.xpay_appkey_prod = SecretStr("12345")
     row = order(session, create(setup_pay))
     fake.env_type = env_type
@@ -394,29 +397,41 @@ def test_products_lists_only_priced_items(setup_pay, session):
     client, settings, fake = setup_pay
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
         "items": [
-            {"productId": "workbench_30d", "name": "客户工作台 30 天", "price": 100, "days": 30}
+            {"productId": "workbench_30d", "name": "批量工具 30 天", "price": 100, "days": 30}
         ],
         # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
         "sandbox": True,
+        # 续买多送开关默认关：付款页不提
+        "renewBonus": None,
+        # 沙箱联调时发票类型可以还没填
+        "invoiceType": None,
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
+    closed = {"items": [], "sandbox": True, "renewBonus": None, "invoiceType": None}
     settings.xpay_price_pass = None
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
+    assert client.get("/api/v1/pay/products").json() == closed
     settings.xpay_price_pass = 100
     settings.xpay_offer_id = ""
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": True}
+    assert client.get("/api/v1/pay/products").json() == closed
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     # 现网（真扣钱）：没配律师定稿的协议版本时不展示价格、不下单；配了才卖
     settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
-    assert client.get("/api/v1/pay/products").json() == {"items": [], "sandbox": False}
+    assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     settings.pay_terms_version = "pay-2026-11"
+    # 现网还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
+    for invoice in ("", "【发票类型】", "待确认"):
+        settings.pay_invoice_type = invoice
+        assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
+        assert create(setup_pay).status_code == 404
+    settings.pay_invoice_type = "电子普通发票（测试）"
     listed = client.get("/api/v1/pay/products").json()
     assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
         "workbench_30d"
     ]
+    assert listed["invoiceType"] == "电子普通发票（测试）"
 
 
 def test_products_route_dependency_hides_when_closed(setup_pay):
@@ -590,7 +605,7 @@ def test_foreign_order_hidden(setup_pay):
     # 另一用户须已同意协议，才能验证归属 404。
     setup_pay[0].post(
         "/api/v1/me/agreement",
-        json={"version": "2026-10"},
+        json={"version": "2026-11"},
         headers={**HEADERS, "X-WX-OPENID": "other"},
     )
     result = setup_pay[0].get(
@@ -1285,9 +1300,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     else:
         assert ticket.revoked_at is None
         reason = result.json()["detail"]
-        assert {"old": "超过 7 天", "used": "已提交过超过 50 家", "ios": "App Store"}[
-            case
-        ] in reason
+        assert {"old": "超过 7 天", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
@@ -1380,6 +1393,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
             out_trade_no=f"list-{n}",
             product_id="workbench_30d",
             price=100,
+            days=30,
             env=1,
             terms_version="pay-test",
             created_at=NOW + timedelta(seconds=n),
@@ -1391,12 +1405,16 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
     assert len(result) == 20 and result[0]["orderId"] > result[-1]["orderId"]
     assert set(result[0]) == {
         "orderId",
+        "name",
+        "days",
         "status",
         "amount",
         "paidAt",
         "passStartsAt",
         "passEndsAt",
         "passRevokedAt",
+        "gifts",
+        "refundAmount",
         "canRefund",
         "refundUnavailableReason",
         "canInvoice",
@@ -1404,7 +1422,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
     }
     assert result[0]["canRefund"] is False and result[0]["refundUnavailableReason"]
     other = {**HEADERS, "X-WX-OPENID": "other"}
-    setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-10"})
+    setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-11"})
     assert setup_pay[0].get("/api/v1/pay/orders", headers=other).json() == {"items": []}
     # 还没有用户记录的人（没同意过协议）：也是空列表，不是 404（小程序会把 404 说成付费服务未开放）
     unknown = {**HEADERS, "X-WX-OPENID": "never-agreed"}
@@ -1435,7 +1453,7 @@ def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, sessio
             assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
             assert submit(setup_pay, count=51).status_code == 202
             locked = payments.lock_order(stale, row.id)
-            assert "已提交过" in payments.refund_reason(stale, locked, NOW, lock=True)
+            assert "已用过付费的量" in payments.refund_reason(stale, locked, NOW, lock=True)
 
 
 def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
@@ -1680,7 +1698,7 @@ def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, sessi
     # 第 4 次：免费次数用完，才用使用期
     assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
     session.expire_all()
-    assert "已提交过超过 50 家" in payments.refund_reason(session, row, NOW)
+    assert "已用过付费的量" in payments.refund_reason(session, row, NOW)
 
 
 def test_orders_and_refund_stay_available_after_sales_switched_off(setup_pay, session):
@@ -1710,7 +1728,7 @@ def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, sessi
     session.expire_all()
     a, b = payments.order_pass(session, first), payments.order_pass(session, second)
     assert a.revoked_at == NOW
-    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=payments.PASS_DAYS)
+    assert b.starts_at == NOW and b.ends_at == NOW + timedelta(days=30)
     status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
     assert status["pass"]["active"] is True
 
@@ -1718,8 +1736,8 @@ def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, sessi
 def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
     setup_pay, session, monkeypatch
 ):
-    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段仍接在旧段后面，
-    不能从付款时间算起和旧段重叠（否则少给天数）。"""
+    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段不能从付款时间算起和旧段重叠
+    （否则少给天数）；D-070 起也不早于确认开通的时间（确认之前用不了，不能算进使用期）。"""
     first = delivered(setup_pay, session)
     old = payments.order_pass(session, first)
     response = create(setup_pay)
@@ -1734,8 +1752,9 @@ def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
     assert push(setup_pay, data).json()["ErrCode"] == 0
     session.expire_all()
     new = payments.order_pass(session, session.get(PayOrder, row.id))
-    assert new.starts_at == old.ends_at
-    assert new.ends_at == old.ends_at + timedelta(days=payments.PASS_DAYS)
+    assert old.ends_at == NOW + timedelta(days=30)
+    assert new.starts_at == NOW + timedelta(days=31)
+    assert new.ends_at == new.starts_at + timedelta(days=30)
 
 
 def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):

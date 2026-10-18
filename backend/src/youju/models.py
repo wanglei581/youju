@@ -727,12 +727,13 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 下面四列是同行引荐、首次批量奖励用的（迁移 0027）：两项已删（D-061、D-070），程序不再写入；
+    # 注销时仍断开以前留下的引荐关系（rewards.anonymize）。删列另提迁移
     invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
     invited_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
     invited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    # 不依赖任务留存：删除任务后仍能去重、补发，后续完成不会自动补旧奖励。
     batch_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
@@ -955,6 +956,12 @@ class PayOrder(Base):
     out_trade_no: Mapped[str] = mapped_column(String(32))
     product_id: Mapped[str] = mapped_column(String(128))
     price: Mapped[int] = mapped_column(Integer)
+    # 这一档的天数（30 或 90，D-070）：下单快照，开通时按它给使用期，不按当时的配置
+    days: Mapped[int] = mapped_column(Integer)
+    # 续买多送的天数（D-070 ⑥）：下单时开关开着记 3，关着记 0；付款时间符合"到期前后 7 天"才真的送
+    bonus_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 下单时购买页写的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE 当时的值），日后改了配置也查得到
+    invoice_type: Mapped[str | None] = mapped_column(String(100))
     env: Mapped[int] = mapped_column(Integer)
     # 下单时用户勾选同意的《付费服务协议》版本
     terms_version: Mapped[str] = mapped_column(String(40))
@@ -965,6 +972,13 @@ class PayOrder(Base):
     platform: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
     refund_order_id: Mapped[str | None] = mapped_column(String(32), unique=True)
     refund_status: Mapped[str | None] = mapped_column(String(16))
+    # 这次退多少（分）：自助退款是全额；系统故障、停止服务按剩余天数退（payments.remaining_fee）。
+    # 旧订单为空，按全额处理
+    refund_fee: Mapped[int | None] = mapped_column(Integer)
+    # 谁发起的：self 用户自助；staff 负责人按规则人工发起（youju pay-refund）
+    refund_source: Mapped[str | None] = mapped_column(String(16))
+    # 人工退款的原因（负责人填写），自助退款为空
+    refund_note: Mapped[str | None] = mapped_column(String(200))
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -1039,9 +1053,11 @@ class DeadlineClue(Base):
 
 
 class RewardClaim(Base):
-    """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。
+    """以前跨注销防重复领取用的凭据（openid 的 HMAC，能重算，属于去标识化而不是匿名化）。
 
-    boost_trial：注销时还记着这个微信用过加量体验（boost.py），重新同意协议后不能再开始一次。"""
+    10/18 起程序不再写入：加量体验注销即删（D-071 第②条），首次批量、引荐两类奖励已删
+    （D-061、D-070）。表和约束先留着（旧数据和回退用），旧行由 youju cleanup 全部删掉；
+    删表另提迁移。"""
 
     __tablename__ = "reward_claims"
     __table_args__ = (
@@ -1057,14 +1073,19 @@ class RewardClaim(Base):
 
 
 class PassReward(Base):
-    """包括发放零天的奖励审计；注销保留流水并断开用户关联。"""
+    """赠送天数的流水，每次赠送一笔（D-070 逐笔记账）；包括发放零天的奖励审计；
+    注销保留流水并断开用户关联。
+
+    renewal（续买多送）、trial（加量体验折算）随订单发：ref_type 是 order_renewal / order_trial，
+    ref_id 是订单编号，见 payments.py；其余是奖励（rewards.py）。"""
 
     __tablename__ = "pass_rewards"
     __table_args__ = (
         UniqueConstraint("ref_type", "ref_id", name="uq_pass_rewards_ref"),
         Index("ix_pass_rewards_user_granted", "user_id", "granted_at"),
         CheckConstraint(
-            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue')",
+            "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue',"
+            " 'renewal', 'trial')",
             name="ck_pass_rewards_kind",
         ),
         CheckConstraint(
@@ -1087,7 +1108,7 @@ class BoostTrial(Base):
     """加量体验（D-070 ③）：用户自己点开始才建，一人一行，不是批量工具的使用天数。
 
     体验期内每次提交记在 advisor_usage 的 trial 账本上（按北京日期），不占每月免费次数。
-    注销随用户删除；用过的事实另记去标识凭据（reward_claims，kind=boost_trial）。"""
+    注销随用户删除，不另留凭据（D-071 第②条改为注销即删）。"""
 
     __tablename__ = "boost_trials"
     __table_args__ = (

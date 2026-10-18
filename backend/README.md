@@ -128,6 +128,10 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_ADVISOR_ENABLED` | `false` | R1.5 数据工具总开关；正式上线前保持关闭 |
 | `YOUJU_BOOST_TRIAL_ENABLED` | `false` | 加量体验开关（D-070 ③，见 `youju/boost.py`）；还要数据工具开关开着。打开前先执行 `deploy/mysql_accounts.sql` 的"加量体验权限"，隐私保护指引写明体验记录；关掉后已开始的体验照常用满 72 小时 |
 | `YOUJU_SEASON_BOOST_ENABLED`、`YOUJU_SEASON_BOOST_START`、`YOUJU_SEASON_BOOST_END` | `false`、空、空 | 申报季加量（D-070 ⑤）：起止日期（北京时间，含首尾，如 `2026-11-01`）内免费批量次数每月 5 次（每次仍 50 家）；开着就要填两个日期，开始不能晚于结束，配错不启动 |
+| `YOUJU_XPAY_PRICE_PASS`、`YOUJU_XPAY_PRICE_PASS_90` | 空、空 | 批量工具 30 天、90 天两档的价格（分，D-070）；没填的那一档不卖。商品编号 `YOUJU_XPAY_PRODUCT_PASS`、`YOUJU_XPAY_PRODUCT_PASS_90` 默认 `workbench_30d`、`workbench_90d`，两档相同不启动。见 `PAYMENTS.md` |
+| `YOUJU_PAY_INVOICE_TYPE` | 空 | 能开哪种发票（D-070：付款前要看得到），购买页照这句显示；现网（`YOUJU_XPAY_ENV=0`）没填不卖 |
+| `YOUJU_RENEW_BONUS_ENABLED` | `false` | 续买多送（D-070 ⑥）：到期前后 7 天内续买，每次多送 3 天；下单时开着才算数 |
+| `YOUJU_CORRECTION_REWARD_ENABLED` | `false` | 纠错被采纳送 1 天（D-070 ⑦，可选），每人每月最多 3 天；还要数据工具开关开着，和旧的 `YOUJU_REWARDS_ENABLED` 分开 |
 | `YOUJU_AI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 模型方 OpenAI 兼容接口地址 |
 | `YOUJU_AI_MODEL` | `qwen-flash` | 调用的模型标识 |
 | `YOUJU_AI_API_KEY` | 未配置 | 模型调用密钥，不记录、不输出 |
