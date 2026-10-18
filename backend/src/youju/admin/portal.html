@@ -87,6 +87,8 @@
     <button type="button" data-menu="sources">来源管理</button>
     <p>内容发布</p>
     <button type="button" data-menu="weekly">周报</button>
+    <p>推广</p>
+    <button type="button" data-menu="entry-stats">来源统计</button>
     <p>运维</p>
     <button type="button" data-menu="jobs">定时任务</button>
     <p>平台入口</p>
@@ -121,7 +123,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',invoices:'开票申请',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
+  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',invoices:'开票申请',sources:'来源管理','entry-stats':'来源统计',jobs:'定时任务',platforms:'外部平台' };
   const names = {round:'每轮抓取',backup:'备份','backup-verify':'备份校验','check-links':'原网页检查','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务','pay-run':'支付补单和退款','pay-reconcile':'支付对账'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
   let token = '', active = 'overview', next = null, sequence = 0, due = '7';

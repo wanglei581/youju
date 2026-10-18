@@ -123,6 +123,25 @@ function tryApiInstead(err) {
   return err.status >= 500 || (err.status === 404 && err.message === 'Not Found');
 }
 
+// 微信爬虫（搜一搜收录，场景值 1129，见官方《小程序搜索优化指南》）只看公开内容：这次打开里只问常驻的 admin，
+// 不发给按需启动的接口服务，admin 没答复也不改走它——叫醒一次要等一分钟以上，还按运行时长计费
+// （推广与获客方案"盯费用"）。通知详情的 AI 入口、提醒状态，首页的申报季加量，原来每次都会叫醒它。
+// 用户自己打开不会是这个场景值。
+const CRAWLER_SCENE = 1129;
+function crawlerVisit() {
+  try {
+    return Boolean(config.cloudEnv) && typeof wx.getEnterOptionsSync === 'function'
+      && Number(wx.getEnterOptionsSync().scene) === CRAWLER_SCENE;
+  } catch (e) {
+    return false;
+  }
+}
+function crawlerSkipped() {
+  const err = new Error('网络不太好，请稍后再试');
+  err.crawler = true;
+  return err;
+}
+
 // 接口服务最近一次答复的时间：收到它自己的任何答复都算（包括 404、422），网关的 502/503/504、调用失败、超时不算。
 // 它空闲约 25 分钟后缩到 0 个实例，所以 20 分钟内答复过就当它醒着。
 const WARM_FOR = 20 * 60 * 1000;
@@ -165,6 +184,7 @@ function apiAwake() {
 let waking = null;
 
 function wake(extend) {
+  if (crawlerVisit()) return Promise.reject(crawlerSkipped());
   if (apiAwake()) return Promise.resolve();
   if (waking) {
     if (extend) waking.budget.until = Math.max(waking.budget.until, Date.now() + MAX_WAIT);
@@ -227,6 +247,11 @@ function request(path, params, options) {
   const method = (options && options.method) || 'GET';
   const data = options && options.data;
   const header = Object.assign(method === 'GET' ? {} : { 'content-type': 'application/json' }, options && options.header);
+  // 微信爬虫：admin 能答的公开读取只问 admin，其余不发（见 crawlerVisit）
+  if (crawlerVisit()) {
+    if (!adminRead(url, method)) return Promise.reject(crawlerSkipped());
+    return requestOnce(url, method, data, header, ADMIN_SERVICE, ADMIN_TIMEOUT);
+  }
   if (method !== 'GET') return afterWake(() => requestOnce(url, method, data, header));
   if (!adminRead(url, method)) return withRetry(() => requestOnce(url, method, data, header), method);
   return new Promise((resolve, reject) => {
@@ -698,7 +723,8 @@ const SEASON_REUSE = 60000;
 let seasonMemo = null;
 function advisorSeason(options = {}) {
   if (seasonMemo && !options.refresh && Date.now() < seasonMemo.until) return seasonMemo.promise;
-  if (!isLive()) return Promise.resolve(null);
+  // 微信爬虫不问（只在接口服务上，见 crawlerVisit）：首页不显示申报季那一行
+  if (!isLive() || crawlerVisit()) return Promise.resolve(null);
   const memo = { until: Infinity };
   memo.promise = withRetry(() => requestOnce('/api/v1/advisor/status', 'GET', undefined, {}), 'GET', null, { quiet: true })
     .then((res) => (res && res.season) || null, () => null)
