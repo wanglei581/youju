@@ -50,6 +50,9 @@ test('像手机号、身份证号的行能认出来（只给行号）；统一�
   // Codex 审阅：分段写的、全角的手机号也认；校验位不对的号码后面还有真的身份证号也认；座机（单位总机）不提醒
   const more = ['电话 138 1234 5678', '电话 138-1234-5678', '电话 １３８１２３４５６７８', '110105199003078214、110105199003078211', '总机 0532-88886666', '合成样例丙公司 2026 年 3 月'].join('\n');
   assert.deepEqual(plain(logic.personalInfoLines(more)), [1, 2, 3, 4]);
+  // Codex 第 2 轮：编号、代码里的一段和金额不算手机号；句末的句号不影响
+  const notPhones = ['序号A13812345678Z', '金额13812345678.00', '9137AA13812345678X', '2026-11-18', '联系 13812345678。'].join('\n');
+  assert.deepEqual(plain(logic.personalInfoLines(notPhones)), [5]);
 });
 
 test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"才发，同一段内容不重复提醒', async () => {
@@ -71,7 +74,7 @@ test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"
 test('表单写明怎样把表格放进微信、每提交一次算 1 次；通知表的长说明默认收起', () => {
   const wxml = fs.readFileSync(path.join(root, 'pages/advisor-form/index.wxml'), 'utf8');
   assert.match(wxml, /文件传输助手/); assert.match(wxml, /每提交一次算 1 次/); assert.match(wxml, /临时解析行数，不保存/);
-  assert.match(wxml, /其他列（如联系人、电话）不读取/);
+  assert.match(wxml, /其他列（如联系人、电话）不使用、不保存，建议上传前删掉/);
   assert.match(wxml, /kind === 'track' && showFillHelp/);
 });
 
