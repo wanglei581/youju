@@ -1057,6 +1057,31 @@ def cleanup_advisor(
     # 文件删成以后整行删除；这次没删成的（result_file_id 还在）留到下次删成再删，免得丢了文件编号。
     # 付费核对看使用期上的 last_used_at 等最少记录，不靠任务行（用户本来也能随时删任务）
     session.flush()
+    expired_data = (
+        AdvisorTask.kind.not_in(AI_KINDS),
+        AdvisorTask.expires_at <= stamp,
+        AdvisorTask.result_file_id.is_(None),
+    )
+    # 批量工具关着时排队的不会再处理、处理中的也不会被放回队列：过了保存期先退回占用的次数
+    # （按原提交日退，账本已清掉的不退），标成已取消，和已结束的一起删。处理中的只动已经卡住的
+    # （开始超过 STALE_RUNNING），正被 worker 锁住的跳过，免得删掉正在跑的
+    for stale in session.scalars(
+        select(AdvisorTask)
+        .where(
+            *expired_data,
+            or_(
+                AdvisorTask.status == "queued",
+                and_(
+                    AdvisorTask.status == "running",
+                    AdvisorTask.started_at <= stamp - STALE_RUNNING,
+                ),
+            ),
+        )
+        .with_for_update(skip_locked=True)
+    ).all():
+        release_usage(session, stale)
+        stale.status = "cancelled"
+    session.flush()
     data_tasks = (
         session.execute(
             delete(AdvisorTask).where(
