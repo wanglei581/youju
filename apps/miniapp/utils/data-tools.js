@@ -73,8 +73,8 @@ function quotaView(status, kind, now) {
     : trial.trialActive ? boost.trialLine(trial)
       : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家`;
   return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, seasonLine: boost.seasonLine(status.season), ...trial,
-    trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial) : '',
-    quotaDay: boost.beijingDay(now) };
+    trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial, now) : '',
+    trialEnded: active ? '' : boost.trialEndedText(status.trial, now), quotaDay: boost.beijingDay(now) };
 }
 
 // 页面一直开着（电脑版微信常这样）跨过北京时间 0 点、或过了体验结束时间：页面上的额度可能已经变了，

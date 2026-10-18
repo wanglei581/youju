@@ -46,14 +46,34 @@ function trialLine(view) {
   return `加量体验中，到 ${view.trialEnd} 结束：每次最多 ${view.trialRows} 家，今天还能提交 ${view.trialLeft} 次（名单比对和通知表合计）；不占本月免费次数`;
 }
 
-// 体验当天次数用完时的提示（和服务端 TRIAL_DAILY_LIMIT 的说法一致）
-function trialCapText(view) {
-  return `今天的 ${view.trialDaily} 次加量体验已用完，明天 0 点恢复；本月免费次数不受影响，体验结束后照常可用`;
+// 下一个北京时间 0 点（毫秒）：体验每天的次数按它重新计数
+function nextMidnightMs(now) {
+  const [y, m, d] = beijingDay(now).split('-').map(Number);
+  return Date.UTC(y, m - 1, d + 1) - 8 * 3600 * 1000;
 }
 
-// 批量工具页上一直在的入口（有资格时）：写清楚是什么、多久、一次性
+// 体验当天次数用完时的提示。体验期间不改用每月免费次数（D-070 第二轮），直接说明，免得用户以为免费次数还能用；
+// 最后一天体验在明天 0 点之前就结束，不说"明天恢复"，说几点结束、之后回到免费版
+function trialCapText(view, now) {
+  if (view.trialEndsMs > 0 && view.trialEndsMs <= nextMidnightMs(now)) {
+    return `今天的 ${view.trialDaily} 次加量体验已用完；体验到 ${view.trialEnd} 结束，之后回到免费版`;
+  }
+  return `今天的 ${view.trialDaily} 次加量体验已用完，明天 0 点恢复；体验期间每月免费次数不扣、也不能改用`;
+}
+
+// 体验结束后 7 天内，批量工具页额度一行下面说一句已结束（回来的人知道每次 500 家为什么没了）
+const ENDED_NOTE_MS = 7 * 24 * 3600 * 1000;
+function trialEndedText(trial, now) {
+  if (!trial || typeof trial !== 'object' || trial.active === true || trial.reason !== 'used') return '';
+  const end = timeMs(trial.endsAt);
+  const at = (now || new Date()).getTime();
+  if (!end || end > at || at - end > ENDED_NOTE_MS) return '';
+  return `加量体验已于 ${format.clockText(trial.endsAt, now)} 结束，已回到免费版`;
+}
+
+// 批量工具页上一直在的入口（有资格时）：写清楚是什么、多久、一次性。页面上只有一项工具，"两项"要写出是哪两项
 function trialPitch(view) {
-  return `加量体验（免费，每个微信一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，两项合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
+  return `加量体验（免费，每个微信一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，名单比对和通知表合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
 }
 
 function nextDay(iso) {
@@ -71,7 +91,9 @@ function seasonLine(season) {
   const rows = count(season.maxRows);
   if (!limit || !normal || !rows) return '';
   const range = `${format.monthDay(season.start)}至${format.monthDay(season.end)}`;
-  const back = `${format.monthDay(nextDay(season.end))}起回到每月 ${normal} 次，本月已用的次数照算`;
+  // 月中结束时，当月已用的次数照算（用了 4 次的，回到 3 次后这个月不能再用）；在月底结束的下个月重新计数，不用说
+  const after = nextDay(season.end);
+  const back = `${format.monthDay(after)}起回到每月 ${normal} 次${after.slice(8) === '01' ? '' : '，当月已用的次数照算'}`;
   return season.active === true
     ? `申报季加量：${range}，免费次数每月 ${limit} 次（每次仍 ${rows} 家以内）；${back}`
     : `申报季加量将于${format.monthDay(season.start)}开始：${range}免费次数每月 ${limit} 次（每次仍 ${rows} 家以内）`;
@@ -92,14 +114,22 @@ function confirmItems(status, now) {
   const normal = count((quota.compare || {}).maxRows) || 50;
   const stamp = (now || new Date()).getTime() + view.trialHours * 3600 * 1000;
   const end = format.clockText(new Date(stamp).toISOString(), now);
-  const free = compare === null || track === null ? '本月剩余的免费次数'
-    : (compare + track === 0 ? '本月免费次数已经用完（体验另算，不受影响）'
-      : `本月免费还剩：名单比对 ${compare} 次、客户相关通知表 ${track} 次`);
+  // 体验期间只用体验的次数，每月免费次数不扣也不能改用（D-070 第二轮）。月底开始会跨月：
+  // 本月剩下的免费次数体验期间用不了、也不顺延，开始之前说清楚，不能写"体验结束后照常可用"
+  const crosses = beijingDay(new Date(stamp)).slice(0, 7) !== beijingDay(now).slice(0, 7);
+  let free;
+  if (compare === null || track === null) free = '体验期间只用体验的次数，每月免费次数不扣、也不能改用；体验结束后照常使用。';
+  else if (compare + track === 0) free = '本月免费次数已经用完；体验的次数另算，不受影响。';
+  else {
+    free = `现在本月免费还剩：名单比对 ${compare} 次、客户相关通知表 ${track} 次。体验期间只用体验的次数，这些不扣、也不能改用`;
+    free += crosses ? '。注意：现在开始的话体验会跨过月底，本月剩下的免费次数用不上（不顺延到下个月），想用的话先用完再开始。'
+      : '，体验结束后接着用。';
+  }
   return [
     { label: `连续 ${view.trialHours / 24} 天`, text: `从你点“开始体验”起连续 ${view.trialHours} 小时，中途不能暂停；现在开始的话，到 ${end}（北京时间）结束。` },
     { label: '每次多少家', text: `批量名单比对、客户相关通知表每次最多 ${view.trialRows} 家（平时每次 ${normal} 家）。` },
     { label: '每天几次', text: `两项合计每天最多 ${view.trialDaily} 次，北京时间 0 点重新计数。` },
-    { label: '不占免费次数', text: `${free}。体验期间不扣，体验结束后照常可用。` },
+    { label: '不占免费次数', text: free },
     { label: '不用付款', text: `不需要填写任何付款信息。体验结束后自动回到免费版：每次 ${normal} 家以内，每月免费次数照常。` },
     { label: '结果', text: '体验期间生成的结果保存 30 天，体验结束后照样能看、能导出。' },
     { label: '只能一次', text: '跟着微信号走：每个微信号只能体验一次，用同一个微信号的同事共用这一次。建议客户名单准备好再开始。' },
@@ -114,4 +144,4 @@ function unavailableText(view) {
   return '加量体验暂未开放。';
 }
 
-module.exports = { trialView, trialLine, trialCapText, trialPitch, seasonLine, confirmItems, unavailableText, timeMs, beijingDay };
+module.exports = { trialView, trialLine, trialCapText, trialEndedText, trialPitch, seasonLine, confirmItems, unavailableText, timeMs, beijingDay };

@@ -6,18 +6,20 @@
   <view wx:if="{{subtitle}}" class="advisor-text muted">{{subtitle}}</view>
   <block wx:if="{{active}}">
     <view class="advisor-text">{{activeLine}}</view>
-    <button class="advisor-button btn-primary" bindtap="back">去提交名单</button>
+    <view class="trial-actions"><button class="advisor-button btn-primary" bindtap="back">去提交名单</button></view>
   </block>
   <block wx:elif="{{available}}">
     <view class="advisor-text">开始之前请看完：</view>
     <view wx:for="{{items}}" wx:key="label" class="trial-item"><text class="trial-label">{{item.label}}</text><text class="trial-text">{{item.text}}</text></view>
     <view wx:if="{{error}}" class="advisor-error">{{error}}</view>
-    <button class="advisor-button btn-primary" bindtap="start" loading="{{starting}}" disabled="{{starting}}">{{startLabel}}</button>
-    <button class="advisor-button" bindtap="back" disabled="{{starting}}">暂不开始</button>
+    <view class="trial-actions">
+      <button class="advisor-button btn-primary" bindtap="start" loading="{{starting}}" disabled="{{starting}}">{{startLabel}}</button>
+      <button class="advisor-button" bindtap="back" disabled="{{starting}}">暂不开始</button>
+    </view>
   </block>
   <block wx:else>
     <view class="advisor-text">{{note}}</view>
-    <button class="advisor-button" bindtap="back">返回批量工具</button>
+    <view class="trial-actions"><button class="advisor-button" bindtap="back">返回批量工具</button></view>
   </block>
 </view>
 <view class="advisor-footer">第三方整理 · 非政府平台</view>

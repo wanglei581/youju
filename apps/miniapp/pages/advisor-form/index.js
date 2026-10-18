@@ -4,10 +4,10 @@ const { DATA_KINDS, dataKinds } = require('../../utils/advisor.js');
 const { pasteRows, toolConsent, quotaView, quotaStale } = require('../../utils/data-tools.js');
 const pay = require('../../utils/pay.js');
 
-// 超出免费量时的说明：有加量体验资格时先推荐体验（免费，D-070）；支付在售（offer 有值）时提示可以开通客户工作台，
-// 没开放时照旧写"不需要购买"（D-058、D-068）
+// 超出免费量时的说明：有加量体验资格时先推荐体验（免费，D-070；提示下面紧跟"了解加量体验"按钮）；
+// 支付在售（offer 有值）时提示可以开通客户工作台，没开放时照旧写"不需要购买"（D-058、D-068）
 function limitText(offer, trial) {
-  if (trial) return '本月免费次数已用完，下月 1 日恢复；也可以开始 3 天加量体验（免费，每次 500 家以内，见上方）';
+  if (trial) return '本月免费次数已用完，下月 1 日恢复；也可以开始 3 天加量体验（免费，每次 500 家以内）';
   return offer ? '本月免费次数已用完，下月 1 日恢复；也可以开通客户工作台 30 天（不限次数，每次 500 家以内）' : '本月免费次数已用完，下月可继续使用；不需要购买';
 }
 
@@ -15,7 +15,7 @@ Page({
   data: { kind: 'compare', title: DATA_KINDS.compare, loading: true, error: '', gate: '', enabled: false, agreed: false,
     mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
     // 加量体验、申报季加量（D-070，都以服务端 /advisor/status 为准，见 utils/boost.js）
-    trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', seasonLine: '',
+    trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', seasonLine: '',
     // 客户工作台 30 天（只有服务端在售时才有值）：{ price: '29', days: 30 }
     offer: null },
   onLoad(query) {
@@ -90,10 +90,14 @@ Page({
   },
   // 现在还能不能提交：使用期不限次数；体验期看体验当天还剩几次；其余看本月免费次数
   blocked() { return !this.data.passActive && (this.data.trialActive ? this.data.trialLeft <= 0 : this.data.remaining <= 0); },
-  limitMessage() { return this.data.trialActive ? this.data.trialCap : limitText(this.data.offer, this.data.trialAvailable); },
+  // 体验刚结束（7 天内，trialEnded 有值）的提示先说"加量体验已结束"，不然用户不知道每次 500 家为什么不行了
+  limitMessage() {
+    if (this.data.trialActive) return this.data.trialCap;
+    return `${this.data.trialEnded ? '加量体验已结束。' : ''}${limitText(this.data.offer, this.data.trialAvailable)}`;
+  },
   rowsMessage() {
-    const more = this.data.trialAvailable && !this.data.passActive ? '；或开始 3 天加量体验，每次最多 500 家（见上方）' : '';
-    return `每次最多 ${this.data.maxRows} 家，请减少行数${more}`;
+    const more = this.data.trialAvailable && !this.data.passActive ? '；或开始 3 天加量体验，每次最多 500 家' : '';
+    return `${this.data.trialEnded ? '加量体验已结束，' : ''}每次最多 ${this.data.maxRows} 家，请减少行数${more}`;
   },
   consent() { require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); }); },
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
@@ -205,16 +209,22 @@ Page({
         inputError: (!err.status || [502, 503, 504].includes(err.status)) ? `${err.message}。提交状态尚未确认；可重试同一内容，或到“我的记录”查看是否已受理。` : err.message };
       // 服务端按免费处理，说明使用期或加量体验刚好到期：先按服务端的说法改，再静默刷新额度那一行
       const ended = ['FREE_MONTHLY_LIMIT', 'FREE_ROW_LIMIT'].includes(err.code) && (this.data.passActive || this.data.trialActive);
+      // 加量体验刚到期：提示先说体验已结束（刷新额度后换成带结束时间的一句）
+      if (ended && this.data.trialActive) change.trialEnded = '加量体验已结束，已回到免费版';
       const free = ['FREE_MONTHLY_LIMIT', 'FREE_ROW_LIMIT'].includes(err.code) ? { passActive: false, trialActive: false } : {};
-      if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, free, { remaining: 0, inputError: limitText(this.data.offer, this.data.trialAvailable) });
+      if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, free, { remaining: 0 });
       if (err.code === 'TRIAL_DAILY_LIMIT') Object.assign(change, { trialLeft: 0 });
       if (['FREE_ROW_LIMIT', 'PASS_ROW_LIMIT', 'TRIAL_ROW_LIMIT'].includes(err.code)) {
         const limit = err.detail && err.detail.maxRows;
         Object.assign(change, free, { previewed: false, ...(Number.isInteger(limit) && limit > 0 ? { maxRows: limit } : {}) });
       }
       this.setData(change);
-      if (err.code === 'FREE_ROW_LIMIT' && this.data.trialAvailable) this.setData({ inputError: this.rowsMessage() });
-      if (ended) this.refreshQuota().catch(() => { /* 下次进入页面会重新读取 */ });
+      // 免费次数用完、当天体验次数用完、超过 50 家：换成本页的说法，说清为什么、接下来能做什么
+      if (err.code === 'FREE_MONTHLY_LIMIT') this.setData({ inputError: this.limitMessage() });
+      if (err.code === 'TRIAL_DAILY_LIMIT' && this.data.trialCap) this.setData({ inputError: this.data.trialCap });
+      if (err.code === 'FREE_ROW_LIMIT' && (this.data.trialAvailable || this.data.trialEnded)) this.setData({ inputError: this.rowsMessage() });
+      // 额度那一行跟着服务端改（不然上面还写着"今天还能提交 9 次"）
+      if (ended || err.code === 'TRIAL_DAILY_LIMIT') this.refreshQuota().catch(() => { /* 下次进入页面会重新读取 */ });
     });
   },
 });

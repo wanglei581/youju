@@ -6,7 +6,10 @@
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">{{statusLine}}</view>
+    <view wx:if="{{trialEnded}}" class="advisor-text muted">{{trialEnded}}</view>
     <view wx:if="{{seasonLine}}" class="advisor-text">{{seasonLine}}</view>
+    <!-- 体验中当天次数用完：和免费次数用完一样在上面说清楚，不只写"还能提交 0 次" -->
+    <view wx:if="{{trialActive && !passActive && !trialLeft}}" class="advisor-error">{{trialCap}}</view>
     <view wx:if="{{!passActive && !trialActive && !remaining}}" class="advisor-error">本月免费次数已用完，下月{{offer ? ' 1 日恢复' : '可继续使用。不需要购买'}}。{{trialAvailable ? '也可以先开始 3 天加量体验（见下方）。' : ''}}若上次提交状态未确认，可预览同一内容后重试。</view>
     <!-- 加量体验（D-070 ③）：有资格就一直有入口；本月免费次数用完、或这次超过 50 家时放显眼（推荐）。不提购买 -->
     <view wx:if="{{trialAvailable}}" class="advisor-trial {{!remaining || rowCount > maxRows ? 'advisor-trial-strong' : ''}}">
@@ -21,7 +24,8 @@
     <view class="advisor-actions"><button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{previewing || submitting}}">粘贴文本</button><button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{previewing || submitting}}">选择文件</button></view>
     <block wx:if="{{mode === 'paste'}}">
       <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或统一社会信用代码' : '一行一家：客户名称,省份,关键词,支持方式,城市,区县；后四项可留空；关键词、支持方式多项用分号分隔，城市只填一个，区县也只填一个，写在第 6 列；旧四列、五列格式仍有效'}}</view>
-      <textarea class="advisor-input" value="{{text}}" maxlength="30000" auto-height placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛,市南区'}}" bindinput="input" disabled="{{previewing || submitting}}" />
+      <!-- 固定高度、框内滚动：加量体验一次可贴 500 家，自动增高会把预览、提交按钮推到几千像素以下 -->
+      <textarea class="advisor-input advisor-paste" value="{{text}}" maxlength="30000" placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛,市南区'}}" bindinput="input" disabled="{{previewing || submitting}}" />
     </block>
     <block wx:else>
       <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}</view>
@@ -32,6 +36,8 @@
     <view class="advisor-text">输入 {{rowCount}} 行{{previewed ? '，服务器预览通过' : ''}}</view>
     <view class="advisor-text muted">预览会将内容发到服务器，但不创建任务、不占次数。请先确认有权提交；不要填写个人姓名、身份证号、手机号或银行账号。</view>
     <view wx:if="{{inputError}}" class="advisor-error">{{inputError}}</view>
+    <!-- 提示里推荐了加量体验（超过 50 家、本月免费次数用完）：按钮紧跟在提示下面，不用翻回页面上方找 -->
+    <button wx:if="{{inputError && trialAvailable && !passActive && (!remaining || rowCount > maxRows)}}" class="advisor-button" bindtap="openTrial">了解加量体验</button>
     <button class="advisor-button" bindtap="preview" loading="{{previewing}}" disabled="{{previewing || submitting}}">预览并核对行数</button>
   </view>
   <view class="card advisor-card">
