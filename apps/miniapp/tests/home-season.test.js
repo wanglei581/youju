@@ -14,7 +14,6 @@ const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = async () => { await new Promise(setImmediate); await new Promise(setImmediate); };
-const daywatch = { watchDay() {}, stopDay() {} };
 const noCache = { readCache: () => null, writeCache() {}, cachedLabel: () => '' };
 // 不提购买（D-070）；也不用容易误会成自动扣费的说法（同 boost-trial.test.js）
 const SALES = /购买|买一|开通|付费|价格|元|客户工作台|订阅|试用|扣钱|收费/;
@@ -35,18 +34,20 @@ const UPCOMING = '申报季加量将于10月20日开始：10月20日至10月31�
 const ACTIVE = '申报季加量：10月20日至10月31日，免费次数每月 5 次（每次仍 50 家以内）；11月1日起回到每月 3 次';
 const HOME = { stats: { week_total: 2, apply: 1, lists: 1, other: 0, provinces: 28, sources: 70, last_checked_at: null }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 0 };
 
-// season：每次取申报季时返回什么；不传表示接口模块里还没有 advisorSeason（就是改之前的首页）
-function homePage({ open = true, season, guideClosed = true } = {}) {
+// season：每次取申报季时返回什么；不传表示接口模块里还没有 advisorSeason（就是改之前的首页）。
+// asked 记下每次取申报季的参数；days 是跨过 0 点时的回调（watchDay），测试里直接调用
+function homePage({ open = true, season, guideClosed = true, home = () => Promise.resolve(plain(HOME)) } = {}) {
   const nav = [];
   const asked = [];
-  const api = { home: () => Promise.resolve(plain(HOME)) };
-  if (season) api.advisorSeason = () => { asked.push(1); return season(); };
+  const days = [];
+  const api = { home };
+  if (season) api.advisorSeason = (options) => { asked.push(plain(options)); return season(); };
   const wx = { navigateTo: ({ url }) => nav.push(url), getStorageSync: () => (guideClosed ? 1 : ''), setStorageSync() {} };
   const page = load('pages/home/index.js', {
-    '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/api.js': api, '../../utils/format.js': format, '../../utils/daywatch.js': { watchDay: (_, fn) => days.push(fn), stopDay() {} },
     '../../utils/cache.js': noCache, '../../utils/consent.js': { loginOpen: () => open }, '../../utils/boost.js': boost,
   }, { getApp: () => ({ globalData: {} }), wx });
-  return Object.assign(page, { nav, asked });
+  return Object.assign(page, { nav, asked, days });
 }
 const view = (page) => render('pages/home/index.wxml', page.data);
 const seasonOf = (page) => findAll(view(page), hasClass('season'));
@@ -101,11 +102,17 @@ test('首页：申报季加量进行中时写起止日期、每月 5 次和之�
   assert.doesNotMatch(css, /position|z-index|--red|--orange/);
 });
 
-test('首页不等申报季：它一直没回来时其余内容照常显示；先发的慢回来不盖住后发的；协议没定稿的版本不取也不显示', async () => {
+test('首页不等申报季：它一直没回来时其余内容照常显示；首页数据还在取时回到首页也照常再取；先发的慢回来不盖住后发的；协议没定稿的版本不取也不显示', async () => {
   const page = homePage({ season: () => new Promise(() => {}) });
   page.onLoad(); await flush();
   assert.equal(page.data.loaded, true); assert.equal(page.data.loading, false); assert.equal(page.data.stats.week_total, 2);
   assert.equal(page.data.seasonText, ''); assert.equal(seasonOf(page).length, 0);
+
+  // 接口服务冷启动、首页数据一直没回来时回到首页：申报季照常再取（共用和过期由 api.advisorSeason 管）
+  const slow = homePage({ season: () => Promise.resolve(SEASON(true)), home: () => new Promise(() => {}) });
+  slow.onLoad(); await flush();
+  slow.reload(); await flush();
+  assert.equal(slow.asked.length, 2); assert.equal(slow.data.seasonText, ACTIVE);
 
   const replies = [];
   const racing = homePage({ season: () => new Promise((resolve) => replies.push(resolve)) });
@@ -119,6 +126,21 @@ test('首页不等申报季：它一直没回来时其余内容照常显示；�
   const closed = homePage({ open: false, season: () => Promise.resolve(SEASON(true)) });
   closed.onLoad(); await flush();
   assert.equal(closed.asked.length, 0); assert.equal(closed.data.seasonText, ''); assert.equal(seasonOf(closed).length, 0);
+});
+
+test('首页停着跨过 0 点：重新取申报季（不用共用的），"将于…开始"变成进行中，过了结束日不再显示', async () => {
+  let reply = SEASON(false);
+  const page = homePage({ season: () => Promise.resolve(reply) });
+  page.onLoad(); page.onShow(); await flush();
+  assert.equal(page.data.seasonText, UPCOMING);
+  assert.deepEqual(page.asked, [{ refresh: false }]);
+  reply = SEASON(true);
+  page.days.at(-1)('2026-10-20'); await flush();
+  assert.equal(page.data.seasonText, ACTIVE);
+  assert.deepEqual(page.asked.at(-1), { refresh: true });
+  reply = null;
+  page.days.at(-1)('2026-11-01'); await flush();
+  assert.equal(page.data.seasonText, ''); assert.equal(seasonOf(page).length, 0);
 });
 
 // ---------- utils/api.js 的 advisorSeason ----------
@@ -137,26 +159,42 @@ function apiWith(reply, { live = true } = {}) {
   return { api, calls, clock };
 }
 
-test('api.advisorSeason：只要 /advisor/status 里的 season；10 分钟内共用一份；取不到当没有、1 分钟后再取；没连真实服务不取', async () => {
+test('api.advisorSeason：只要 /advisor/status 里的 season；正在取的和取到后 1 分钟内的共用一份，refresh 重新取；取不到当没有；没连真实服务不取', async () => {
   let reply = (o) => o.success({ statusCode: 200, data: { enabled: true, quota: {}, season: SEASON(false) } });
   const { api, calls, clock } = apiWith((o) => reply(o));
-  const first = await api.advisorSeason();
-  assert.deepEqual(plain(first), SEASON(false));
+  const [first, again] = await Promise.all([api.advisorSeason(), api.advisorSeason()]);
+  assert.deepEqual(plain(first), SEASON(false)); assert.equal(again, first);
+  clock.now += 59000;
   assert.equal(await api.advisorSeason(), first);
   assert.deepEqual(calls, [['GET', '/api/v1/advisor/status', 'api']]);
-  // 10 分钟后再取：开关关了（season 为 null）
-  clock.now += 10 * 60000; reply = (o) => o.success({ statusCode: 200, data: { enabled: true, season: null } });
+  // 过了 1 分钟再取：开关关了（season 为 null）
+  clock.now += 2000; reply = (o) => o.success({ statusCode: 200, data: { enabled: true, season: null } });
   assert.equal(await api.advisorSeason(), null);
   assert.equal(calls.length, 2);
+  // refresh（首页停着跨过 0 点）：不用共用的
+  reply = (o) => o.success({ statusCode: 200, data: { season: SEASON(true) } });
+  assert.deepEqual(plain(await api.advisorSeason({ refresh: true })), SEASON(true));
+  assert.equal(calls.length, 3);
   // 批量工具没开（404）：当没有；1 分钟内不再取，过了再取
-  clock.now += 10 * 60000; reply = (o) => o.success({ statusCode: 404, data: { detail: '没有找到接口' } });
+  clock.now += 61000; reply = (o) => o.success({ statusCode: 404, data: { detail: '没有找到接口' } });
   assert.equal(await api.advisorSeason(), null);
   clock.now += 59000;
   assert.equal(await api.advisorSeason(), null);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   clock.now += 2000; reply = (o) => o.success({ statusCode: 200, data: { season: SEASON(true) } });
   assert.deepEqual(plain(await api.advisorSeason()), SEASON(true));
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
+  // 冷启动时一次要等很久：还没回来时过了 1 分钟也共用这一个，不再发第二个
+  // （第一个请求先压着不回；先回了它再断言，免得断言失败时它在假时钟下一直重试）
+  clock.now += 61000;
+  let held = null;
+  reply = (o) => { if (held) o.success({ statusCode: 200, data: { season: null } }); else held = o; };
+  const slow = api.advisorSeason();
+  clock.now += 120000;
+  const slow2 = api.advisorSeason();
+  held.success({ statusCode: 200, data: { season: null } });
+  assert.equal(slow2, slow); assert.equal(calls.length, 6);
+  assert.equal(await slow, null);
   // 演示数据（没配云环境、也没有本机后端）：不发请求，当没有
   const demo = apiWith(() => assert.fail('不该发请求'), { live: false });
   assert.equal(await demo.api.advisorSeason(), null);

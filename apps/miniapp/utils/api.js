@@ -690,20 +690,21 @@ function advisorStatus() {
 }
 
 // 首页提前公布申报季加量的起止日期（D-070 ⑤）：日期只在 /advisor/status 的 season 里（开关关着或过了结束日为 null，
-// 批量工具没开时这个接口 404；不用先同意协议）。首页每次显示都刷新，这一项在一次打开里共用：取到的 10 分钟内不再取；
-// 取不到的（没连真实服务、网络出错、冷启动等太久）当作没有这项活动，1 分钟后再取。只返回 season 或 null，不报错；
+// 批量工具没开时这个接口 404；不用先同意协议）。首页每次显示都刷新，这一项正在取的、取到（或取不到）后 1 分钟内的都共用
+// 一份：开关改了、日期过了，首页最多晚 1 分钟跟上。options.refresh 不用共用的（首页停着跨过 0 点时）。
+// 取不到（没连真实服务、网络出错、冷启动等太久）当作没有这项活动。只返回 season 或 null，不报错；
 // 不显示"正在连接"：首页其余内容不等它，慢了只是这一行晚点出来
-const SEASON_REUSE = 10 * 60000;
-const SEASON_RETRY = 60000;
+const SEASON_REUSE = 60000;
 let seasonMemo = null;
-function advisorSeason() {
-  if (seasonMemo && Date.now() < seasonMemo.until) return seasonMemo.promise;
+function advisorSeason(options = {}) {
+  if (seasonMemo && !options.refresh && Date.now() < seasonMemo.until) return seasonMemo.promise;
   if (!isLive()) return Promise.resolve(null);
-  const memo = { until: Date.now() + SEASON_REUSE };
+  const memo = { until: Infinity };
   memo.promise = withRetry(() => requestOnce('/api/v1/advisor/status', 'GET', undefined, {}), 'GET', null, { quiet: true })
-    .then((res) => (res && res.season) || null, () => {
-      memo.until = Date.now() + SEASON_RETRY;
-      return null;
+    .then((res) => (res && res.season) || null, () => null)
+    .then((season) => {
+      memo.until = Date.now() + SEASON_REUSE;
+      return season;
     });
   seasonMemo = memo;
   return memo.promise;
