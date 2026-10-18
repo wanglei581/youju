@@ -842,10 +842,9 @@ def test_correction_switch_alone_turns_on_nothing_else(shop, session):
         i["id"]: i["kind"] for i in shop.client.get("/api/admin/feedback", headers=ADMIN).json()
     }
     assert kinds == {source.id: "申请覆盖", payment.id: "支付问题"}
-    user_id = session.scalar(select(User.id))
-    session.get(User, user_id).batch_completed_at = NOW
-    session.commit()
-    assert rewards.first_completion(session, user_id, NOW, settings=shop.settings) == {
+    # 第一次批量功能、引荐两项奖励已经删了（rewards.RETIRED_KINDS），补发也不会发
+    assert not hasattr(rewards, "first_completion")
+    assert rewards.reconcile(session, settings=shop.settings, stamp=NOW) == {
         "granted": 0,
         "failed": 0,
     }

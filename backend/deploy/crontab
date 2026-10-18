@@ -36,7 +36,7 @@
 * * * * * /app/backend/deploy/job.sh pay-run
 30 9 * * * /app/backend/deploy/job.sh pay-reconcile
 
-# 补发漏掉的奖励（首次批量功能、同行引荐、被采纳的截止线索）：发奖和任务完成、核对通过不在同一个事务里，
-# 发奖那一步出错时只记日志，靠这里补上；也给开关打开之前就用过批量功能的用户补"第一次用批量功能"的天数。
+# 补发漏掉的截止线索奖励：发奖和核对通过不在同一个事务里，发奖那一步出错时只记日志，靠这里补上
+# （首次批量功能、同行引荐两项奖励已删，D-061、D-070）。
 # 每小时一次；YOUJU_REWARDS_ENABLED=false 时命令直接返回，不写任何数据。
 20 * * * * /app/backend/deploy/job.sh rewards-reconcile
