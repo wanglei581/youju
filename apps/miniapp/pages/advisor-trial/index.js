@@ -1,5 +1,5 @@
 // 加量体验的确认页（D-070 ③）：点"开始体验"之前把规则写全（几天、不能暂停、每次多少家、每天几次、不用填付款信息、
-// 结束后回到免费版、本月还剩几次免费、结果结束后照样能看能导出、每个微信一次），用户点了才起算。
+// 结束后回到免费版、本月还剩几次免费、结果结束后照样能看能导出、每个账号一次），用户点了才起算。
 // 开卖之前这里不提购买；规则和数字都以服务端为准（utils/boost.js 只拼文字）。
 const api = require('../../utils/api.js');
 const boost = require('../../utils/boost.js');
@@ -44,6 +44,8 @@ Page({
       this.setData({ starting: false, error: (err && err.message) || '没能开始，请重试' });
       // 用过了、有使用期、开关关了：按服务端的最新状态重新显示
       if (err && (err.status === 404 || err.status === 409)) this.load();
+      // 协议已更新（只同意过写进体验记录之前的版本，后台 TOOLS_AGREEMENT_VERSION）：请他读新版全文并同意，回来重新读状态
+      if (err && err.status === 403) require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); });
     });
   },
   back() { wx.navigateBack({ fail: () => wx.redirectTo({ url: '/pages/advisor-form/index' }) }); },

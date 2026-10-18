@@ -11,12 +11,17 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from youju import advisor_tasks, boost, notify, rewards
+from youju import advisor_tasks, boost, rewards
+from youju.agreements import TOOLS_AGREEMENT_VERSION
 from youju.api import advisor, me, pay, v1
 from youju.api import app as app_module
 from youju.config import Settings
 from youju.db import get_session
 from youju.models import AdvisorTask, AdvisorUsage, BoostTrial, RewardClaim, User
+
+# 当前的用户协议版本：取后台默认值，升版本时不用改测试
+AGREEMENT = Settings.model_fields["agreement_version"].default
+
 
 BJ = ZoneInfo("Asia/Shanghai")
 # 星期二上午；体验 72 小时到 10 月 23 日 10:00 结束
@@ -65,7 +70,7 @@ def join(client, openid="trial-user", *, tools=True):
     identity = headers(openid)
     assert (
         client.post(
-            "/api/v1/me/agreement", headers=identity, json={"version": "2026-10"}
+            "/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT}
         ).status_code
         == 200
     )
@@ -164,6 +169,71 @@ def test_start_needs_agreement_runs_72_hours_and_only_once(ctx, session):
     assert after["quota"]["compare"]["maxRows"] == 50
     used = start(client, identity)
     assert used.status_code == 409 and used.json()["detail"]["code"] == "TRIAL_USED"
+
+
+def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
+    """协议升版过渡期（最早版本填 2026-10）：只同意过 2026-10 的照旧算登录，但那一版没写体验记录和
+    注销后的去标识编号，开始体验要先重新同意（403 后小程序清掉本机同意、请他重新同意）。"""
+    client = ctx.client
+    assert TOOLS_AGREEMENT_VERSION <= AGREEMENT
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    assert status(client, identity)["trial"]["available"] is True
+    response = start(client, identity)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(BoostTrial.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
+    assert new.status_code == 200
+    assert start(client, identity).status_code == 200
+
+
+def test_old_agreement_cannot_accept_the_new_tool_terms(ctx):
+    """批量工具的任务记录和次数从 2026-11 版指引起才写明（一·13）：过渡期只同意过旧版的，
+    先重新同意新版指引，才能同意工具使用说明和提交名单。"""
+    client = ctx.client
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent-tools")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    terms = {"scope": "advisor", "version": advisor_tasks.ADVISOR_AGREEMENT_VERSION}
+    refused = client.post("/api/v1/me/agreement", headers=identity, json=terms)
+    assert refused.status_code == 403 and refused.json()["detail"] == me.OUTDATED
+    assert submit(client, identity).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT}
+        ).status_code
+        == 200
+    )
+    assert client.post("/api/v1/me/agreement", headers=identity, json=terms).status_code == 200
+    assert submit(client, identity).status_code == 202
+
+
+def test_old_agreement_with_tool_terms_still_cannot_preview_or_submit(ctx, session):
+    """过渡期（当前 2026-11、最早 2026-10）只同意过 2026-10 的，即使记着同意过新版工具使用说明
+    （比如回退配置时留下的），预览、提交也拦下（付费下单走同一个 advisor._upload_consent）；
+    经接口重新同意新版指引后放行。"""
+    client = ctx.client
+    ctx.settings.agreement_min_version = "2026-10"
+    identity = headers("old-consent-preview")
+    old = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-10"})
+    assert old.status_code == 200 and old.json()["valid"] is True
+    user = session.scalar(select(User).where(User.openid == "old-consent-preview"))
+    user.advisor_agreement_version = advisor_tasks.ADVISOR_AGREEMENT_VERSION
+    user.advisor_agreement_at = NOW
+    session.commit()
+    body = {"kind": "compare", "rows": ["合成企业"]}
+    preview = client.post("/api/v1/advisor/preview", headers=identity, json=body)
+    assert preview.status_code == 403 and preview.json()["detail"] == me.OUTDATED
+    blocked = submit(client, identity)
+    assert blocked.status_code == 403 and blocked.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
+    assert new.status_code == 200
+    assert client.post("/api/v1/advisor/preview", headers=identity, json=body).status_code == 200
+    assert submit(client, identity).status_code == 202
 
 
 def test_double_tap_that_waited_for_the_lock_gets_the_same_trial(ctx, db_engine):
@@ -374,11 +444,12 @@ def test_switch_off_keeps_started_trials_but_allows_no_new_ones(ctx):
     assert start(client, newcomer).status_code == 404
 
 
-def test_one_trial_per_wechat_survives_account_deletion_for_180_days(ctx, session):
-    client, clock = ctx.client, ctx.clock
+def test_account_deletion_deletes_the_trial_and_keeps_no_credential(ctx, session):
+    """注销即删（D-071 第②条 10/18 改）：体验记录随账号删除，不留任何凭据；
+    同一个微信重新同意算新账号，可以再体验一次。没用过的注销同样什么也不留。"""
+    client = ctx.client
     plain = join(client, "never-tried")
     assert client.delete("/api/v1/me", headers=plain).status_code == 204
-    assert session.scalar(select(func.count()).select_from(RewardClaim)) == 0
 
     identity = join(client)
     assert start(client, identity).status_code == 200
@@ -389,25 +460,11 @@ def test_one_trial_per_wechat_survives_account_deletion_for_180_days(ctx, sessio
     assert client.delete("/api/v1/me", headers=identity).status_code == 204
     session.expire_all()
     assert session.scalar(select(func.count(BoostTrial.id))) == 0
-    claim = session.scalar(select(RewardClaim))
-    assert claim.kind == "boost_trial" and claim.pseudonym != "trial-user"
-    assert "trial-user" not in claim.pseudonym
-
-    # 同一个微信重新同意协议：仍算用过
-    clock.at = NOW + timedelta(days=1)
-    identity = join(client)
-    assert status(client, identity)["trial"]["reason"] == "used"
-    assert start(client, identity).json()["detail"]["code"] == "TRIAL_USED"
-    # 再注销一次，按这次注销重新起算 180 天
-    assert client.delete("/api/v1/me", headers=identity).status_code == 204
-    assert session.scalar(select(func.count()).select_from(RewardClaim)) == 2
-
-    notify.run_cleanup(session, stamp=NOW + timedelta(days=181))
-    session.commit()
     assert session.scalar(select(func.count()).select_from(RewardClaim)) == 0
-    clock.at = NOW + timedelta(days=181)
+
     identity = join(client)
     assert status(client, identity)["trial"]["available"] is True
+    assert start(client, identity).status_code == 200
 
 
 @pytest.fixture
@@ -507,8 +564,9 @@ def test_restricted_api_account_runs_the_trial(ctx, restricted_api_factory, monk
         assert status(client, identity)["trial"]["usedToday"] == 0
         assert client.get("/api/v1/me/data", headers=identity).status_code == 200
         assert client.delete("/api/v1/me", headers=identity).status_code == 204
+        # 注销即删：重新同意算新账号，受限账号也能再开始（不需要 reward_claims 权限）
         identity = join(client, "limited-trial")
-        assert start(client, identity).json()["detail"]["code"] == "TRIAL_USED"
+        assert start(client, identity).status_code == 200
 
 
 def test_restricted_api_without_trial_grants_while_switch_is_off(

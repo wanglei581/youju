@@ -128,7 +128,7 @@ def setup_pay(session_factory, monkeypatch):
         xpay_offer_id="offer-test",
         xpay_appkey_sandbox="12345",
         xpay_price_pass=100,
-        agreement_version="2026-10",
+        agreement_version="2026-11",
         xpay_bill_order_column="trade",
         xpay_bill_fee_column="fee",
         xpay_bill_hosts=["bill.example"],
@@ -147,7 +147,7 @@ def setup_pay(session_factory, monkeypatch):
     app_module.app.dependency_overrides[get_session] = override
     app_module.app.dependency_overrides[pay.wx_client] = lambda: fake.client
     with TestClient(app_module.app) as client:
-        client.post("/api/v1/me/agreement", headers=HEADERS, json={"version": "2026-10"})
+        client.post("/api/v1/me/agreement", headers=HEADERS, json={"version": "2026-11"})
         with session_factory() as session:
             user = session.scalar(select(User))
             user.advisor_agreement_version = advisor_tasks.ADVISOR_AGREEMENT_VERSION
@@ -590,7 +590,7 @@ def test_foreign_order_hidden(setup_pay):
     # 另一用户须已同意协议，才能验证归属 404。
     setup_pay[0].post(
         "/api/v1/me/agreement",
-        json={"version": "2026-10"},
+        json={"version": "2026-11"},
         headers={**HEADERS, "X-WX-OPENID": "other"},
     )
     result = setup_pay[0].get(
@@ -1404,7 +1404,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
     }
     assert result[0]["canRefund"] is False and result[0]["refundUnavailableReason"]
     other = {**HEADERS, "X-WX-OPENID": "other"}
-    setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-10"})
+    setup_pay[0].post("/api/v1/me/agreement", headers=other, json={"version": "2026-11"})
     assert setup_pay[0].get("/api/v1/pay/orders", headers=other).json() == {"items": []}
     # 还没有用户记录的人（没同意过协议）：也是空列表，不是 404（小程序会把 404 说成付费服务未开放）
     unknown = {**HEADERS, "X-WX-OPENID": "never-agreed"}

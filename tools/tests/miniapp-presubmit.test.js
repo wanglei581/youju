@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { inspect } = require('../miniapp_presubmit_check');
+const { inspect, SERVER_TOOL_TERMS_VERSION } = require('../miniapp_presubmit_check');
 const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
   legal:{final:true, operator:{icp:'测试备案号',email:'contact@example.test'}},
@@ -50,7 +50,7 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
 test('完整候选严格限定 24 页（含加量体验确认页、购买页、订单页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
  x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders'].map(p=>`pages/${p}/index`));
- x.toolTerms={version:'advisor-2026-09-v1',reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
+ x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-candidate',mode:'prepare'});
  assert.equal(r.ok,true);assert.equal(r.readyToSubmit,false);
  assert.equal(r.checks.find(c=>c.id==='tool-review').state,'warning');
@@ -130,4 +130,10 @@ test('已确认正式发布身份可以通过静态对照，环境变量不能�
     if (previousEnv === undefined) delete process.env.YOUJU_CLOUD_ENV;
     else process.env.YOUJU_CLOUD_ENV = previousEnv;
   }
+});
+
+test('小程序里的工具使用说明和后台是同一版本：后台改了版本小程序没改（或反过来），用户同意了也会被拒',()=>{
+ const terms=require('../../apps/miniapp/content/advisor-terms.js');
+ assert.match(SERVER_TOOL_TERMS_VERSION,/^advisor-\d{4}-\d{2}-v\d+$/);
+ assert.equal(terms.version,SERVER_TOOL_TERMS_VERSION);
 });

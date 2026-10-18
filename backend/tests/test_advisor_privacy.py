@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import delete, event
 
-from tests.test_ai_interpret import NOW, direct_task, run
+from tests.test_ai_interpret import NOW, direct_task, run, tools_ready
 from tests.test_ai_interpret import client as client
 from tests.test_ai_interpret import doc as doc
 from tests.test_ai_interpret import settings as settings
@@ -49,12 +49,13 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
     ["compare", "track", "interpret", "clause", "unknown", "omitted", 7, [], {}, True, None],
 )
 def test_creation_kind_response_groups(
-    client, settings, doc, data_enabled, ai_enabled, whitelisted, kind
+    client, settings, session, doc, data_enabled, ai_enabled, whitelisted, kind
 ):
     settings.advisor_enabled = data_enabled
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     if data_enabled and kind in ("compare", "track"):
+        tools_ready(session)
         assert (
             client.post(
                 "/api/v1/me/agreement",
