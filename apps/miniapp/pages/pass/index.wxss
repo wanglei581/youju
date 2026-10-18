@@ -10,7 +10,7 @@
 .pass-tier { flex: 1; min-width: 0; padding: 20rpx 24rpx 22rpx; border-radius: 18rpx; border: 2rpx solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); }
 .pass-tier--on { background: #FFFFFF; border-color: #FFFFFF; color: var(--brand); }
 .pass-tier-days { font-size: 28rpx; font-weight: 600; }
-.pass-tier-sub { font-size: 24rpx; line-height: 1.5; opacity: 0.9; }
+.pass-tier-sub { min-height: 36rpx; font-size: 24rpx; line-height: 1.5; opacity: 0.9; }
 .pass-price { margin-top: 2rpx; display: flex; align-items: baseline; gap: 6rpx; }
 .pass-num { font-size: 72rpx; font-weight: 700; line-height: 1.15; }
 .pass-unit { font-size: 28rpx; font-weight: 500; }

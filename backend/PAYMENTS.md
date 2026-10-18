@@ -364,6 +364,10 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 - 每次赠送记一笔 `pass_rewards`（kind=renewal，ref_type=order_renewal，ref_id=订单编号）和一段使用期，接在这一笔后面。
   不占奖励的每月上限（`rewards.monthly` 不算随订单送的）。
 
+### 使用期从什么时候起算（D-070 开卖前 Codex 审阅后改）
+- 新的一段从 max(付款时间, 确认开通时间, 这个用户没收回的使用期里最晚的结束时间) 开始。正常情况下确认就在付款那一刻；推送晚到、补单兜底时，确认之前用不了付费的量，这段时间不再算进使用期（原来从付款时间起算，会少用几分钟到几小时）。
+- 续买资格仍按付款时间算；7 天自助退款仍从付款时间算。
+
 ### 体验期内购买（D-070 ③）
 - 付款确认时用户还在加量体验期内：使用期照常从付款时间起算（立即生效），体验到确认时结束（`boost_trials.ends_at`
   改成确认时间），没用完的体验时间折成天数（不足一天按一天，最多 3 天）记一笔 `pass_rewards`（kind=trial，
@@ -387,16 +391,20 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   原来写的 `1`、`3` 对自助退款不对，一并改了。
 
 ### 纠错被采纳送 1 天（`YOUJU_CORRECTION_REWARD_ENABLED`，默认关，可选）
-- 单独开关，还要批量工具开关开着；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会连带首次批量、
-  引荐、补截止日期这些已不做的奖励（`rewards.first_completion`、`rewards-reconcile` 仍只看旧开关）。
+- 只看自己的开关（还要批量工具开关开着）；和旧的奖励总开关 `YOUJU_REWARDS_ENABLED` 分开：只开这一项，不会连带首次批量、
+  引荐、补截止日期这些已不做的奖励（`rewards.first_completion`、`rewards-reconcile` 仍只看旧开关）；旧开关开着也不会
+  打开纠错送天数（Codex 审阅后改）。
 - 管理台纠错列表的"采纳并送 1 天"一键发放：写 `pass_rewards`（kind=correction，ref_type=feedback）、标为已处理、
   记操作日志；每人每月最多 3 天（`rewards.CORRECTION_MONTH_DAYS`），超出的记零天流水并备注。申请覆盖、支付问题不发。
 - `GET /api/v1/me` 新增 `correctionReward`（开着时 `{days: 1, monthLimit: 3, rule}`，纠错页公开写出采纳标准）。
-- `GET /api/v1/me/data` 新增 `passGifts`：送的天数每次一笔（续买多送、体验折算、纠错被采纳等）。
+- `GET /api/v1/me/data` 新增 `passGifts`（最近 500 笔）和 `passGiftsTotal`：送的天数每次一笔（续买多送、体验折算、纠错被采纳等）。
 
 ### 迁移 0032 与权限
 - `pay_orders` 加 `days`（已有订单回填 30）、`bonus_days`、`refund_fee`、`refund_source`、`refund_note`；
-  `pass_rewards.kind` 的 CHECK 加 `renewal`、`trial`。回退时删除这两种流水和对应使用期。
+  `pass_rewards.kind` 的 CHECK 加 `renewal`、`trial`。回退时删除这两种流水和对应使用期；还有没到期的赠送天数、
+  或按剩余天数退款没办完（退款中、转人工）的订单时，回退直接报错不执行（旧代码不认赠送、只会全额退），先人工处理。
+- `YOUJU_PAY_TERMS_VERSION` 填成草稿版本号（含 draft）服务不启动：现网只认定稿协议，定稿的 `content/pay-terms.js` 必须写明
+  发票类型（小程序测试检查），这样绕过页面直接调下单接口也拿不到没写发票说明的版本。
 - `deploy/mysql_accounts.sql` 新增"批量工具两档开卖权限"三行（迁移 0032 后、打开收费前执行，"支付权限"四行要先执行）：
   `pass_rewards` 的 INSERT（付款确认时记赠送）和 UPDATE（退款收回；奖励段也有）、`boost_trials` 只能改 `ends_at`
   （体验期内买时结束体验）。`restricted_api_factory()` 按部署文件授权跑完体验期内买、续买多送、自助退款收回、注销；

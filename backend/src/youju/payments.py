@@ -471,7 +471,9 @@ def _append_gift(
 
 def _convert_trial(session: Session, order: PayOrder, stamp: datetime) -> None:
     """体验期内买了批量工具（D-070 ③）：使用期立即生效，体验就此结束；
-    没用完的体验时间折成天数（不足一天按一天）接在这一笔后面，不浪费。"""
+    没用完的体验时间折成天数（不足一天按一天）接在这一笔后面，不浪费。
+    看的是开通（确认）时体验还剩多少：使用期也从确认时起算，确认之前用户一直在用体验，不算浪费。
+    付款后、确认前才开始的体验同样处理——使用期和体验不同时进行。"""
     from youju import boost
 
     trial = boost.trial_of(session, order.user_id)
@@ -679,7 +681,10 @@ def accept_payment(
         .limit(1)
         .with_for_update()
     )
-    starts = max(paid_time, latest) if latest else paid_time
+    # 最早从确认开通时起算：推送晚到、补单兜底时，确认之前用不了付费的量，
+    # 不能让这段时间白白算进使用期（D-070 开卖前 Codex 审阅；正常情况下确认就在付款那一刻）。
+    # 体验折算也就只需看确认时还剩多少
+    starts = max(paid_time, stamp, latest) if latest else max(paid_time, stamp)
     # 续买资格要在这一笔的使用期建好之前判断（"到期"是以前那些使用期的到期）
     renewal = order.bonus_days > 0 and renewal_due(
         session, order.user_id, paid_time, order_id=order.id

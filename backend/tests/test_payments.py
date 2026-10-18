@@ -1724,8 +1724,8 @@ def test_refunding_first_of_two_passes_moves_the_second_forward(setup_pay, sessi
 def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
     setup_pay, session, monkeypatch
 ):
-    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段仍接在旧段后面，
-    不能从付款时间算起和旧段重叠（否则少给天数）。"""
+    """付款时旧的一段还没结束、确认却晚到（已过旧段的结束时间）：新的一段不能从付款时间算起和旧段重叠
+    （否则少给天数）；D-070 起也不早于确认开通的时间（确认之前用不了，不能算进使用期）。"""
     first = delivered(setup_pay, session)
     old = payments.order_pass(session, first)
     response = create(setup_pay)
@@ -1740,8 +1740,9 @@ def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
     assert push(setup_pay, data).json()["ErrCode"] == 0
     session.expire_all()
     new = payments.order_pass(session, session.get(PayOrder, row.id))
-    assert new.starts_at == old.ends_at
-    assert new.ends_at == old.ends_at + timedelta(days=30)
+    assert old.ends_at == NOW + timedelta(days=30)
+    assert new.starts_at == NOW + timedelta(days=31)
+    assert new.ends_at == new.starts_at + timedelta(days=30)
 
 
 def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):

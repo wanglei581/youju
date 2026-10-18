@@ -221,6 +221,16 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _final_pay_terms(self) -> "Settings":
+        """现网收费只认定稿的《付费服务协议》（payments.orderable）：填成草稿版本号，
+        还没写明发票类型的旧小程序也能下单，所以不启动（D-070 开卖前 Codex 审阅）。"""
+        if "draft" in self.pay_terms_version.lower():
+            raise ValueError(
+                "YOUJU_PAY_TERMS_VERSION 不能填草稿版本（如 pay-2026-10-draft），要填定稿的版本号"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _pass_products_distinct(self) -> "Settings":
         """两档用了同一个商品编号：付款推送分不清买的是哪一档，所以不启动。"""
         if (

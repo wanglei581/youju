@@ -39,8 +39,30 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 旧代码不认这两种赠送（CHECK 也不允许）：流水和对应的使用期一起删，使用期上的任务按外键断开。
-    # 90 天的使用期、已按剩余天数退的金额照旧保留在使用期和订单里，旧代码按已有记录处理
+    # 旧代码不认这两种赠送（CHECK 也不允许），也只会全额退款。有还没到期的赠送天数、或按剩余天数退款
+    # 还在办理中的订单时不能自动回退：删掉赠送会让用户少天数、后面的使用期留空档，旧代码会把部分退款
+    # 按全额再退一次（Codex 审阅）。先人工处理再回退
+    bind = op.get_bind()
+    active = bind.execute(
+        sa.text(
+            "SELECT COUNT(*) FROM pass_rewards r JOIN workbench_passes p ON p.reward_id = r.id"
+            " WHERE r.kind IN ('renewal', 'trial') AND p.revoked_at IS NULL"
+            " AND p.ends_at > UTC_TIMESTAMP(6)"
+        )
+    ).scalar()
+    partial = bind.execute(
+        sa.text(
+            "SELECT COUNT(*) FROM pay_orders WHERE refund_fee IS NOT NULL AND refund_fee <> price"
+            " AND status IN ('refunding', 'manual')"
+        )
+    ).scalar()
+    if active or partial:
+        raise RuntimeError(
+            f"不能自动回退 0032：还有 {active} 段没到期的赠送天数、{partial} 笔按剩余天数退款还没办完"
+            "（或转了人工）。先人工处理，再回退"
+        )
+    # 已收回或已过期的赠送：流水和对应的使用期一起删，使用期上的任务按外键断开。
+    # 90 天的使用期、已退完的部分退款金额照旧保留在使用期和订单里，旧代码按已有记录处理
     op.execute(
         "DELETE FROM workbench_passes WHERE reward_id IN "
         "(SELECT id FROM (SELECT id FROM pass_rewards WHERE kind IN ('renewal', 'trial')) AS gifts)"

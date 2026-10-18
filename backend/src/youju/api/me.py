@@ -716,6 +716,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "eventsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
+        "passGiftsTotal": 0,
         "retention": {
             "events": settings.retain_events_days,
             "feedback": settings.retain_feedback_days,
@@ -795,6 +796,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     from youju import rewards
     from youju.models import PassReward
 
+    result["passGiftsTotal"] = (
+        session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id == user.id)) or 0
+    )
     result["passGifts"] = [
         {
             "kind": row.kind,

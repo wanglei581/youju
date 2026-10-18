@@ -696,7 +696,7 @@ test('续买规则只有一句，和价格在同一屏；现在付款符合时�
 test('购买页写出现有使用期到哪天，3 天内到期改成到期提示，防止续买的人不知道还剩多久', async () => {
   const soon = new Date(Date.now() + 2 * 86400000).toISOString();
   const far = new Date(Date.now() + 20 * 86400000).toISOString();
-  for (const [expiresAt, pattern] of [[soon, /批量工具 \d{2}-\d{2} 到期，到期不再扣钱；需要可以再买一次/], [far, /你的批量工具到 \d{4}-\d{2}-\d{2}；再买一次，接着往后顺延/]]) {
+  for (const [expiresAt, pattern] of [[soon, /批量工具 \d{1,2}月\d{1,2}日到期，到期不再扣钱；需要可以再买一次/], [far, /你的批量工具到 \d{4}-\d{2}-\d{2}；再买一次，接着往后顺延/]]) {
     const status = { pass: { active: true, expiresAt } };
     const api = { payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => Promise.resolve(status) };
     const page = load('pages/pass/index.js', {
@@ -717,6 +717,7 @@ test('订单页按档位写名称，逐笔列出续买多送和体验折算，�
     orderRecord({ orderId: 52, name: '批量工具 30 天', days: 30, status: '已退款', refundAmount: 1934,
       gifts: [{ kind: 'renewal', name: '续买多送', days: 3, revoked: true }] }),
     orderRecord({ orderId: 53, status: '已退款', refundAmount: 2900 }),
+    orderRecord({ orderId: 54, status: '退款中', refundAmount: 1934 }),
   ]);
   await flush();
   const first = textOf(orderCard(h.page.data, 51));
@@ -727,9 +728,13 @@ test('订单页按档位写名称，逐笔列出续买多送和体验折算，�
   const second = textOf(orderCard(h.page.data, 52));
   assert.match(second, /批量工具 30 天/);
   assert.match(second, /续买多送 3 天（已收回）/);
-  assert.match(second, /退回 19\.34 元（按剩余天数）/);
-  // 全额退的不另写退回多少（金额就是订单金额）
+  assert.match(second, /已退回 19\.34 元（按剩余天数）/);
+  // 已退款的不再写"不能自助退款"
+  assert.doesNotMatch(second, /不能自助退款/);
+  // 全额退的不另写退回多少（金额就是订单金额）；还在办理的不说"已退回"
   assert.doesNotMatch(textOf(orderCard(h.page.data, 53)), /退回/);
+  assert.match(textOf(orderCard(h.page.data, 54)), /按剩余天数退 19\.34 元，处理中/);
+  assert.doesNotMatch(textOf(orderCard(h.page.data, 54)), /已退回/);
   h.page.refund({ currentTarget: { dataset: { id: 51 } } });
   assert.equal(h.modal().content, '退款后，这张订单对应的 90 天使用期和续买多送的 3 天取消，79.00 元原路退回。确定吗？');
   assert.doesNotMatch(shown('pages/orders/index.wxml', h.page.data), /客户工作台/);
@@ -763,7 +768,7 @@ test('工具表单在使用期 3 天内到期且在售时写到期提示、续�
   const soon = toolForm({ api: { advisorCapabilities: () => Promise.resolve(caps({ enabled: true })), advisorStatus: () => Promise.resolve(pass(2)), payProducts: products } });
   await flush();
   const text = shown('pages/advisor-form/index.wxml', soon.page.data);
-  assert.match(text, /批量工具 \d{2}-\d{2} 到期，到期不再扣钱；需要可以再买一次/);
+  assert.match(text, /批量工具 \d{1,2}月\d{1,2}日到期，到期不再扣钱；需要可以再买一次/);
   assert.match(text, /到期前后 7 天内续买，每次多送 3 天/);
   assert.match(text, /批量工具使用期内，每次最多 500 家，不限提交次数/);
   const renew = findAll(render('pages/advisor-form/index.wxml', soon.page.data), tapsTo('buyPass'));
@@ -811,4 +816,10 @@ test('小程序的页面和工具代码里不再有"客户工作台"，改叫"�
   const hits = files.filter((file) => /客户工作台|工作台使用期/.test(fs.readFileSync(path.join(root, file), 'utf8')));
   assert.deepEqual(hits, []);
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'pages/pass/index.json'), 'utf8')).navigationBarTitleText, '批量工具');
+});
+
+test('付费协议标了定稿就必须写明能开哪种发票：服务端只认定稿版本号，定稿的版本一定带发票说明，防止绕过页面直接下单时看不到发票类型', () => {
+  // 两者在同一个文件、同一次升版本（content/pay-terms.js）；没定稿时现网本来就不能付款
+  if (payTerms.final) assert.ok(pay.invoiceReady(payTerms), '定稿的 pay-terms.js 要填 invoice');
+  assert.ok(!/draft/i.test(payTerms.version) || payTerms.final === false, '草稿版本号不能标定稿');
 });

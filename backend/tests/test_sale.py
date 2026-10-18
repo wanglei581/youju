@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from tests.test_payments import FakeWechat
 from youju import advisor_tasks, boost, cli, payments, rewards
@@ -212,6 +212,13 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     assert create(shop, "workbench_90d").status_code == 404
 
 
+def test_draft_terms_version_cannot_be_used_for_live_sales():
+    """现网只认定稿协议：服务端填成草稿版本号就不启动（定稿的协议必须写明发票类型，小程序测试检查）。"""
+    with pytest.raises(ValidationError, match="不能填草稿版本"):
+        Settings(_env_file=None, pay_terms_version="pay-2026-10-draft")
+    assert Settings(_env_file=None, pay_terms_version="pay-2026-11").pay_terms_version
+
+
 def test_tier_without_price_is_not_sold_and_same_product_id_refuses_to_start():
     only_30 = Settings(_env_file=None, xpay_price_pass=2900)
     assert payments.products(only_30) == {"workbench_30d": (2900, 30)}
@@ -297,14 +304,25 @@ def test_buying_twice_early_only_the_one_near_expiry_gets_the_bonus(shop, sessio
 
 
 def test_eligibility_uses_payment_time_not_confirmation_time(shop, session):
-    """第 25 天付的款，推送第 40 天才到：仍按第 25 天算，送；新的一段接在旧段后面。"""
+    """第 25 天付的款，推送第 40 天才到：资格仍按第 25 天算，送；新的一段从确认开通时（第 40 天）起算，
+    确认之前用不了的那几天不算进使用期。"""
     buy(shop, session)
     late = buy(shop, session, at=NOW + 25 * DAY, confirmed=NOW + 40 * DAY)
     assert [(k, d) for k, d, _, _ in gifts(session, late)] == [("renewal", 3)]
     assert segments(session)[1:] == [
-        (True, NOW + 30 * DAY, NOW + 60 * DAY, False),
-        (False, NOW + 60 * DAY, NOW + 63 * DAY, False),
+        (True, NOW + 40 * DAY, NOW + 70 * DAY, False),
+        (False, NOW + 70 * DAY, NOW + 73 * DAY, False),
     ]
+
+
+def test_late_confirmation_of_a_first_purchase_starts_when_it_is_confirmed(shop, session):
+    """推送晚到两小时：使用期从确认开通时起算，30 天一天不少；7 天自助退款仍从付款时间算。"""
+    row = buy(shop, session, at=NOW, confirmed=NOW + timedelta(hours=2))
+    assert segments(session) == [
+        (True, NOW + timedelta(hours=2), NOW + timedelta(hours=2) + 30 * DAY, False)
+    ]
+    shop.clock.at = NOW + 7 * DAY + timedelta(hours=1)
+    assert refund(shop, row).json()["detail"] == "已超过 7 天"
 
 
 def test_bonus_follows_the_switch_at_order_time(shop, session):
@@ -474,6 +492,25 @@ def test_trial_days_stay_when_the_order_is_refunded(shop, session):
         (False, NOW + DAY, NOW + 4 * DAY, False),
     ]
     assert expiry(shop) == NOW + 4 * DAY
+
+
+def test_trial_started_after_paying_but_before_confirmation_also_ends(shop, session):
+    """付款后、确认前才开始的体验：开通时同样结束体验、剩下的折成天数（使用期和体验不同时进行）。"""
+    response = create(shop)
+    row = session.get(PayOrder, response.json()["orderId"])
+    shop.clock.at = NOW + timedelta(hours=1)
+    start_trial(shop)
+    shop.clock.at = NOW + timedelta(hours=5)
+    assert deliver(shop, row.out_trade_no, "workbench_30d", NOW).json()["ErrCode"] == 0
+    session.expire_all()
+    assert session.scalar(select(BoostTrial)).ends_at == NOW + timedelta(hours=5)
+    # 体验到 73 小时结束，确认时还剩 68 小时：折成 3 天
+    assert [(k, d) for k, d, _, _ in gifts(session, row)] == [("trial", 3)]
+    start = NOW + timedelta(hours=5)
+    assert segments(session) == [
+        (True, start, start + 30 * DAY, False),
+        (False, start + 30 * DAY, start + 33 * DAY, False),
+    ]
 
 
 def test_trial_that_already_ended_is_not_converted(shop, session):
@@ -740,6 +777,21 @@ def test_correction_reward_one_day_each_three_days_a_month(shop, session):
     ]
 
 
+def test_legacy_reward_switch_does_not_turn_on_correction_reward(shop, session):
+    """旧的奖励总开关开着、纠错送天数的开关关着：纠错不送天数（D-070 ⑦ 单独开关，Codex 审阅）。"""
+    shop.settings.rewards_enabled = True
+    row = feedback(session)
+    assert (
+        shop.client.post(
+            f"/api/admin/feedback/{row.id}/reward/correction", headers=ADMIN
+        ).status_code
+        == 404
+    )
+    item = shop.client.get("/api/admin/feedback", headers=ADMIN).json()[0]
+    assert item["correctionRewardEnabled"] is False and item["rewardsEnabled"] is True
+    assert shop.client.get("/api/v1/me", headers=HEADERS).json()["correctionReward"] is None
+
+
 def test_correction_switch_alone_turns_on_nothing_else(shop, session):
     """只开纠错送天数：提的栏目已接入、支付问题不发；第一次批量功能、引荐这些旧奖励不会跟着开。"""
     shop.settings.correction_reward_enabled = True
@@ -841,3 +893,51 @@ def test_boost_trial_has_no_effect_on_pass_when_nothing_bought(shop, session):
     shop.clock.at = NOW + timedelta(hours=73)
     assert boost.active_trial(session, session.scalar(select(User.id)), shop.clock.at) is None
     assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+
+
+# ---- 迁移 0032 回退 ----------------------------------------------------------------------
+
+
+def test_downgrade_refuses_while_gift_days_or_partial_refunds_are_open(shop, session, db_engine):
+    """还有没到期的赠送天数、或按剩余天数退款没办完：不能自动回退（旧代码不认赠送、只会全额退）；
+    都处理完了才回退，回退后再升级，结构恢复。"""
+    from alembic import command
+    from sqlalchemy import inspect
+
+    from youju.migrations import alembic_config
+
+    buy(shop, session)
+    renewal = buy(shop, session, at=NOW + 25 * DAY)
+    gift_pass = gifts(session, renewal)[0][3]
+    session.commit()
+    session.close()
+    config = alembic_config(db_engine.url.render_as_string(hide_password=False))
+    try:
+        with pytest.raises(RuntimeError, match="不能自动回退 0032"):
+            command.downgrade(config, "0031")
+        with db_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE workbench_passes SET revoked_at = :at WHERE id = :id"),
+                {"at": NOW, "id": gift_pass.id},
+            )
+            conn.execute(
+                text(
+                    "UPDATE pay_orders SET status = 'refunding', refund_fee = 1934 WHERE id = :id"
+                ),
+                {"id": renewal.id},
+            )
+        with pytest.raises(RuntimeError, match="1 笔按剩余天数退款"):
+            command.downgrade(config, "0031")
+        with db_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE pay_orders SET status = 'refunded' WHERE id = :id"), {"id": renewal.id}
+            )
+        command.downgrade(config, "0031")
+        columns = {c["name"] for c in inspect(db_engine).get_columns("pay_orders")}
+        assert not {"days", "bonus_days", "refund_fee"} & columns
+        with db_engine.connect() as conn:
+            assert conn.scalar(text("SELECT COUNT(*) FROM pass_rewards")) == 0
+    finally:
+        command.upgrade(config, "head")
+    with db_engine.connect() as conn:
+        assert conn.scalar(text("SELECT MIN(days) FROM pay_orders")) == 30

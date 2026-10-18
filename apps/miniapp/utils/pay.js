@@ -18,6 +18,11 @@ function date(value, short = false) {
   const stamp = value && Date.parse(value);
   return Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(short ? 5 : 0, 10) : '';
 }
+// 北京时间"10月20日"：句子里的到期日用这个，比 10-20 好读
+function monthDay(value) {
+  const day = date(value);
+  return day ? `${Number(day.slice(5, 7))}月${Number(day.slice(8, 10))}日` : '';
+}
 // 服务端在售的档位，按天数从短到长（30 天、90 天）；格式不对的丢掉
 function normalizeProducts(res) {
   return ((res && Array.isArray(res.items)) ? res.items : []).filter((item) => item
@@ -55,7 +60,7 @@ function expiryNotice(pass, now = Date.now()) {
   if (!pass || pass.active !== true) return '';
   const end = Date.parse(pass.expiresAt);
   if (!Number.isFinite(end) || end - now > 3 * 86400000) return '';
-  return `${NAME} ${date(pass.expiresAt, true)} 到期，到期不再扣钱；需要可以再买一次`;
+  return `${NAME} ${monthDay(pass.expiresAt)}到期，到期不再扣钱；需要可以再买一次`;
 }
 function toolStatus(res, kind, now = Date.now()) {
   const quota = res.quota[kind];
@@ -101,7 +106,8 @@ function orderView(order) {
   // 随这笔送的续买天数退款时一起收回；体验折算的是自己的体验时间，不收回（服务端 payments.revoke_pass）
   const bonus = (Array.isArray(order.gifts) ? order.gifts : []).filter((gift) => gift && gift.kind === 'renewal' && !gift.revoked && Number.isInteger(gift.days))
     .reduce((sum, gift) => sum + gift.days, 0);
-  const refunded = Number.isInteger(order.refundAmount) && order.refundAmount > 0 && order.refundAmount !== order.amount;
+  // 按剩余天数退的（系统故障、停止服务）：退完了写"已退回"，还在办理的写"处理中"，不让人以为钱已到账
+  const partial = Number.isInteger(order.refundAmount) && order.refundAmount > 0 && order.refundAmount !== order.amount;
   return Object.assign({}, order, {
     name,
     summary: `${name} · ${yuan(order.amount, true)} 元${order.paidAt ? ` · ${date(order.paidAt)} 付款` : ''} · ${status}${start && end ? ` · 使用期 ${start} 至 ${end}` : ''}`,
@@ -112,9 +118,10 @@ function orderView(order) {
     paidText: order.paidAt ? date(order.paidAt) : '',
     period: start && end ? `${start} 至 ${end}` : '',
     gifts: giftLines(order.gifts),
-    // 按剩余天数退的（系统故障、停止服务）：写明退了多少
-    refundText: refunded ? `退回 ${yuan(order.refundAmount, true)} 元（按剩余天数）` : '',
-    reason: order.canRefund ? '' : refundReason(order.refundUnavailableReason),
+    refundText: !partial ? '' : order.status === '已退款' ? `已退回 ${yuan(order.refundAmount, true)} 元（按剩余天数）`
+      : `按剩余天数退 ${yuan(order.refundAmount, true)} 元，处理中`,
+    // 已经退款或正在退款的不再写"不能自助退款"
+    reason: order.canRefund || /退款/.test(order.status || '') ? '' : refundReason(order.refundUnavailableReason),
     refundConfirm: `退款后，这张订单对应的 ${days} 天使用期${bonus ? `和续买多送的 ${bonus} 天` : ''}取消，${yuan(order.amount, true)} 元原路退回。确定吗？`,
     // 发票：已完成、没退款的订单可以申请；待开时可以改
     invoiceAction: !order.canInvoice ? '' : !order.invoice ? '申请发票' : order.invoice.canEdit ? '修改发票信息' : '',

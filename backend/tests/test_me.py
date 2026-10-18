@@ -466,6 +466,7 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "eventsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
+        "passGiftsTotal": 0,
         "retention": {
             "events": 90,
             "feedback": 180,

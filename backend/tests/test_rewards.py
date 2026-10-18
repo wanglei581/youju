@@ -47,6 +47,8 @@ def context(session_factory, monkeypatch):
         _env_file=None,
         rewards_enabled=True,
         referral_enabled=True,
+        # D-070 起纠错送天数只看自己的开关（rewards.correction_enabled）
+        correction_reward_enabled=True,
         advisor_enabled=True,
         trust_wx_headers=True,
         cloud_env="test-env",
@@ -731,6 +733,8 @@ def test_switch_disabled_api_registration_admin_auto_and_cli(context, session, s
     client, settings = context
     inviter = user(session, "inviter", invite_code="fixed-code")
     setattr(settings, switch, False)
+    # 纠错送天数有自己的开关（D-070 ⑦，开着时的情况在 test_sale.py）；这里测全部关掉
+    settings.correction_reward_enabled = False
     for path in ("/api/v1/me/rewards", "/api/v1/me/invite"):
         assert client.get(path).status_code == 404
         assert client.get(path, headers=headers(inviter.openid)).status_code == 404

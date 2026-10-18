@@ -101,9 +101,9 @@ def referral_enabled(settings) -> bool:
 
 
 def correction_enabled(settings) -> bool:
-    """纠错被采纳送天数（D-070 ⑦）：单独开关 correction_reward_enabled，或旧的奖励总开关；
-    都要批量工具开关开着（天数是批量工具的使用期）。"""
-    return enabled(settings) or bool(
+    """纠错被采纳送天数（D-070 ⑦）：只看单独开关 correction_reward_enabled
+    （旧的奖励总开关开着也不算，Codex 审阅），还要批量工具开关开着（天数是批量工具的使用期）。"""
+    return bool(
         getattr(settings, "correction_reward_enabled", False)
         and getattr(settings, "advisor_enabled", False)
     )
