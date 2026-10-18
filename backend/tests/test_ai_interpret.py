@@ -974,6 +974,23 @@ def test_cache_cross_user_body_change_and_down(session, settings, doc):
     assert hidden.result_json["refusal"]
 
 
+def test_cache_not_reused_after_redaction_change_or_without_doc_id(session, settings, doc):
+    """缓存键相同、但旧结果发给模型的脱敏后段落和现在不同（脱敏规则改了）：不复用，重新调用模型；
+    缓存任务的快照缺 doc_id 也不复用，不让新任务失败（D-073，Codex 第二轮）。"""
+    first = direct_task(session, doc)
+    run(session, first, settings)
+    first.snapshot = {**first.snapshot, "paragraphs": ["旧规则下没遮住的段落"]}
+    session.commit()
+    second = direct_task(session, doc, "second", "after-redaction")
+    assert len(run(session, second, settings).calls) == 1
+    assert second.status == "done" and second.result_json["items"]
+    second.snapshot = {k: v for k, v in second.snapshot.items() if k != "doc_id"}
+    session.commit()
+    third = direct_task(session, doc, key="no-doc-id")
+    assert len(run(session, third, settings).calls) == 1
+    assert third.status == "done"
+
+
 def test_cache_expires_after_thirty_days(session, settings, doc):
     first = direct_task(session, doc, stamp=NOW - timedelta(days=31))
     run(session, first, settings, stamp=NOW - timedelta(days=31))

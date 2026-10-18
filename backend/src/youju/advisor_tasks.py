@@ -506,12 +506,17 @@ def process_ai(
             # 模型拒答（逐字核对后一条不剩）只复用 1 天：挡住反复提交同一份触发模型调用，
             # 又不让一次偶然的拒答把这份通知锁 30 天（模型输出会波动，见 AI 评测第八节）。
             window = REFUSAL_CACHE if cached.result_json.get("refusal") else FILE_RETENTION
-            if generated > stamp - window and cached.snapshot:
+            cached_doc = (cached.snapshot or {}).get("doc_id")
+            if generated > stamp - window and cached_doc:
                 try:
                     _, _, cached_current_key = interpret.prepare(
-                        session, cached.snapshot["doc_id"], model, skill=skill
+                        session, cached_doc, model, skill=skill
                     )
-                    reusable = cached_current_key == key
+                    # 缓存键相同只说明原文和核对一样；发给模型的脱敏后段落也要一样才复用，
+                    # 免得脱敏规则改了以后旧摘录被新任务复制出来（D-073，Codex 第二轮）
+                    reusable = cached_current_key == key and not interpret.body_changed(
+                        cached.snapshot, snapshot, same_key=True
+                    )
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
