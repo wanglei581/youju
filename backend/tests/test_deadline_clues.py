@@ -480,11 +480,6 @@ def test_long_quote_build_and_corrected_approved_date(world, session):
     assert owner.id != matching.user_id
 
 
-def test_referred_switch_does_not_disable_clues(world):
-    world[1].referral_enabled = False
-    assert submit(world).status_code == 201
-
-
 @pytest.mark.parametrize("capacity", ["site", "user"])
 def test_concurrent_capacity(world, session, capacity):
     client, _, owner, _ = world
@@ -759,7 +754,6 @@ def test_restricted_api_all_grants_and_switches(
 
     client, settings, _, doc = world
     settings.pay_enabled = True
-    inviter = user(session, "limited-inviter", invite_code="limited-code")
     identity = headers("limited-on")
     with restricted_api_factory() as limited:
         monkeypatch.setattr(access_log, "get_engine", lambda: limited.kw["bind"])
@@ -773,16 +767,14 @@ def test_restricted_api_all_grants_and_switches(
             client.post(
                 "/api/v1/me/agreement",
                 headers=identity,
-                json={"version": settings.agreement_version, "invite_code": inviter.invite_code},
+                json={"version": settings.agreement_version},
             ).status_code
             == 200
         )
         owner = session.scalar(select(User).where(User.openid == "limited-on"))
-        assert owner.invited_by_user_id == inviter.id
-        # 模拟 admin 发奖，再用受限 API 验证只需 UPDATE 流水即可注销。
-        owner.batch_completed_at = NOW
+        # 模拟 admin 发奖，再用受限 API 验证只需 UPDATE 流水即可注销（不需要凭据表的权限）。
+        rewards.grant(session, owner.id, "source", 3, "feedback", 1, NOW)
         session.commit()
-        assert rewards.first_completion(session, owner.id, NOW, settings=settings)["granted"] == 2
         assert (
             client.post(
                 "/api/v1/me/agreement",
@@ -810,7 +802,7 @@ def test_restricted_api_all_grants_and_switches(
             client.post("/api/v1/me/deadline-clues", headers=identity, json=body(doc)).status_code
             == 201
         )
-        for path in ("/api/v1/me/rewards", "/api/v1/me/invite", "/api/v1/me", "/api/v1/me/data"):
+        for path in ("/api/v1/me/rewards", "/api/v1/me", "/api/v1/me/data"):
             result = client.get(path, headers=identity)
             assert result.status_code == 200, result.text
         assert client.delete("/api/v1/me", headers=identity).status_code == 204
