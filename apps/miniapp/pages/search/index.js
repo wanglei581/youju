@@ -491,7 +491,8 @@ Page({
     parts.push(tab ? tab.label : '全部');
     if (c.time && c.time !== '不限') parts.push(c.time);
     if (c.open) parts.push('只看未截止');
-    return parts.join(' · ').slice(0, 40);
+    // 按字截到 40 个：关键词里有表情等双字节字符时不截出半个（关注名称和转发卡片标题都用它）
+    return Array.from(parts.join(' · ')).slice(0, 40).join('');
   },
 
   // 关注这个搜索：保存当前条件，有新文件时在"关注"里标出；关注后可以订阅一次微信提醒

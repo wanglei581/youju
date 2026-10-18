@@ -199,6 +199,15 @@ test('搜索结果：条件再多也不删减，接收人看到的条件和转�
   assert.deepEqual(plain(got.at(-1)), plain(sent.at(-1)));
 });
 
+test('搜索结果：卡片标题按字截到 40 个，关键词里有表情时不截出半个字符', async () => {
+  const page = searchPage();
+  page.onLoad({ q: encodeURIComponent(`${'甲'.repeat(38)}😀乙乙`) }); await flush();
+  const { title } = shareOf(page);
+  assert.equal(title, `搜索结果：“${'甲'.repeat(38)}😀`);
+  assert.doesNotMatch(title, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  assert.doesNotThrow(() => encodeURIComponent(title));
+});
+
 test('搜索结果：网址参数编码坏了也能打开，不报错', async () => {
   const page = searchPage();
   assert.doesNotThrow(() => page.onLoad({ q: '%E4%B8', kind: '%E7', regions: '%', time: '%E8%BF%91%20' }));
