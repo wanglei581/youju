@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from tests.test_weekly import NOW, START, document, generate
+from tests.test_weekly import NOW, START, document, generate, source
 from tests.test_weekly import world as world  # noqa: F401 - 夹具
 from youju import weekly
 from youju.api import app as app_module
@@ -95,7 +95,7 @@ def test_published_weekly_lists_every_entry_grouped_like_article(client, session
         "lists",
         "policies",
     ]
-    assert (body["total"], body["truncated"], body["hidden"]) == (9, False, 0)
+    assert (body["total"], body["offset"], body["province"], body["hidden"]) == (9, 0, "", 0)
     first = body["items"][2]
     # 和小程序列表行同一格式：doc-row 直接用；截止只给核对通过的
     assert first["id"] == str(world["apply"].id)
@@ -118,10 +118,9 @@ def test_takedown_private_source_and_merge_after_publish(client, session, profil
     body = client.get(path).json()
     assert "项目申报通知" not in titles(body) and body["hidden"] == 1
     assert body["provinces"][1] == {"province": "浙江", "name": "浙江", "count": 7}
-    # 来源不再是一级来源：这一来源的条目都不返回
+    # 来源不再是一级来源：这一来源的条目立即不返回（缓存按来源公开级别失效）
     world["src"].rights_level = 2
     session.commit()
-    digest_api._CACHE.clear()  # 来源公开范围变化交给 60 秒缓存兜底
     body = client.get(path).json()
     assert titles(body) == ["国家项目申报通知"] and body["hidden"] == 8
     world["src"].rights_level = 1
@@ -135,7 +134,7 @@ def test_takedown_private_source_and_merge_after_publish(client, session, profil
         )
     )
     session.commit()
-    digest_api._CACHE.clear()
+    digest_api._CACHE.clear()  # 新增归并（不涉及下架）交给 60 秒缓存兜底
     body = client.get(path).json()
     assert "国家项目申报通知" not in titles(body) and "新的主文件" in titles(body)
     assert body["provinces"][0]["province"] == "浙江" and body["hidden"] == 0
@@ -223,12 +222,46 @@ def test_legacy_issue_without_items_uses_article_documents(client, session, prof
     assert {item["section"] for item in body["items"]} == {"applications"}
 
 
-def test_item_cap_and_truncated_flag(client, session, profile, world, monkeypatch):
-    monkeypatch.setattr(digest_api, "MAX_ITEMS", 3)
+def test_paged_and_filtered_by_province(client, session, profile, world):
     issue = published(session, profile)
-    body = client.get(f"/api/v1/digests/{issue.id}").json()
-    assert len(body["items"]) == 3 and body["total"] == 9 and body["truncated"] is True
-    assert sum(item["count"] for item in body["provinces"]) == 9
+    path = f"/api/v1/digests/{issue.id}"
+    first = client.get(path, params={"limit": 3}).json()
+    second = client.get(path, params={"limit": 3, "offset": 3}).json()
+    assert titles(first) + titles(second) == titles(client.get(path).json())[:6]
+    assert (first["total"], first["offset"], second["offset"]) == (9, 0, 3)
+    # 按省份筛：只给这一省的条目；省份列表照旧给全的，选别的省用
+    zhejiang = client.get(path, params={"province": "浙江", "limit": 200}).json()
+    assert zhejiang["total"] == 8 and {item["province"] for item in zhejiang["items"]} == {"浙江"}
+    assert [p["count"] for p in zhejiang["provinces"]] == [1, 8]
+    national = client.get(path, params={"province": "国家"}).json()
+    assert titles(national) == ["国家项目申报通知"]
+    assert client.get(path, params={"province": "没有的省"}).json()["items"] == []
+    for bad in ({"limit": 201}, {"limit": 0}, {"offset": -1}, {"province": "长" * 33}):
+        assert client.get(path, params=bad).status_code == 422, bad
+
+
+def test_merged_into_master_outside_profile_scope_is_hidden(client, session, world):
+    regional = DigestProfile(name="浙江版", provinces=["浙江"])
+    session.add(regional)
+    session.commit()
+    issue = weekly.generate(session, regional.id, START, NOW).issue
+    issue.status = "published"
+    session.commit()
+    path = f"/api/v1/digests/{issue.id}"
+    assert "项目申报通知" in titles(client.get(path).json())
+    # 发布后，清单里的浙江文件被归并到北京来源的主文件：不在方案的地区里，不列
+    beijing = source(session, "北京")
+    master = document(session, beijing, "北京的主文件", START)
+    session.add(
+        DocumentMerge(
+            duplicate_id=world["apply"].id, canonical_id=master.id, match_key="away", active=True
+        )
+    )
+    session.commit()
+    digest_api._CACHE.clear()
+    body = client.get(path).json()
+    assert "北京的主文件" not in titles(body) and "项目申报通知" not in titles(body)
+    assert body["hidden"] == 1
 
 
 def test_digests_readable_on_admin_through_cloud_calls_only(client, session, profile, world):

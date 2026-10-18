@@ -19,7 +19,14 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.api import v1
-from youju.classify import effective_kind, list_status
+from youju.classify import (
+    LIST_OFF_TOPIC,
+    PERSONAL_CONTEST,
+    PERSONAL_QUALIFICATIONS,
+    PERSONAL_WORDS,
+    effective_kind,
+    list_status,
+)
 from youju.crawler.detail import redact_sensitive
 from youju.dedup import canonical_ids, visible_documents
 from youju.fields import SUPPORT_LABELS
@@ -58,10 +65,19 @@ GUIDE = "使用说明：见本号《使用说明》，讲收录范围和截止�
 NATIONAL = "国家"
 PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
 # 公众号正文中的题录字段也可能夹带网址，展示时统一去掉；带链接版保留原题录。
-URL_IN_TEXT = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)[^\s<>\"'，。；、（）]+", re.IGNORECASE)
+# 不带协议头的裸域名（如 kjt.example.gov.cn/tzgg）也去掉：只认常见后缀，免得误伤"2.0 版"这类写法。
+URL_IN_TEXT = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*://|www\.)[^\s<>\"'，。；、（）]+"
+    r"|(?<![a-z0-9.@-])(?:[a-z0-9-]+\.)+(?:gov\.cn|com\.cn|org\.cn|net\.cn|edu\.cn|cn|com|net|org)"
+    r"(?![a-z0-9-])(?:[/?#][^\s<>\"'，。；、（）]*)?",
+    re.IGNORECASE,
+)
 PER_BLOCK = 5  # 周报每省（含国家部委）最多列几条
 POLICY_LIMIT = 10  # 全国性政策文件最多列几条
 REMINDER_LIMIT = 10  # 临期提醒最多列几项（方案第四节第 4 条）
+# 公众号文章标题上限（官方"新建草稿"接口：标题总长度不超过 32 个字，10/18 核对）。周报标题里的
+# 统计按这个长度能放几项放几项；名单速报照录原标题，超了由管理台提示人工删减，不自动截断。
+TITLE_LIMIT = 32
 # 一份文件只列在一个栏目：同时是本周新通知又在 30 天内截止的，列在截止里。
 SECTION_ORDER = ("deadlines", "applications", "lists", "policies")
 # 小程序页面路径（管理台显示，创始人在公众号编辑器里插入小程序链接时粘贴，不带开头的斜杠）。
@@ -261,11 +277,24 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
     if not ids:
         return {key: [] for key in COLUMNS}
     members = _public_members(session, ids)
-    mapping = canonical_ids(session, list(members))
+    # "已变更"看整个归并组（含非一级来源的副本，和小程序 v1._approved 一样）：副本上标了
+    # 已变更的截止，主文件上同一截止也不能再写；写进公众号的日期仍只取一级来源上核对通过的。
+    group = list(
+        session.scalars(
+            select(Document.id)
+            .outerjoin(
+                DocumentMerge,
+                (DocumentMerge.duplicate_id == Document.id) & DocumentMerge.active.is_(True),
+            )
+            .where(func.coalesce(DocumentMerge.canonical_id, Document.id).in_(ids))
+        )
+    )
+    public = set(members)
+    mapping = canonical_ids(session, group)
     deadlines = session.scalars(
         select(DocumentDeadline)
         .where(
-            DocumentDeadline.document_id.in_(members),
+            DocumentDeadline.document_id.in_(group),
             DocumentDeadline.status.in_(("approved", "changed")),
         )
         .order_by(DocumentDeadline.id)
@@ -279,7 +308,12 @@ def _items(session: Session, profile: DigestProfile, start: date, end: date, sta
     for d in deadlines:
         master = mapping.get(d.document_id, d.document_id)
         key = (master, d.kind, d.approved_date, d.approved_time)
-        if d.status == "approved" and d.approved_date and key not in changed:
+        if (
+            d.status == "approved"
+            and d.approved_date
+            and key not in changed
+            and d.document_id in public
+        ):
             by_due.setdefault(master, {})[key] = d
     support: dict[int, set[str]] = {}
     fields = session.scalars(
@@ -381,12 +415,11 @@ def _full_date(value: date) -> str:
 
 
 def _span(start: date, end: date) -> str:
-    """标题里的日期范围：同月写"10月13日—19日"，跨月写"9月28日—10月4日"（标题里不加空格）。"""
-    tail = (
-        f"{end.day}日"
-        if (start.year, start.month) == (end.year, end.month)
-        else (f"{end.month}月{end.day}日")
-    )
+    """标题里的日期范围：同月写"10月13日—19日"，跨月写"9月28日—10月4日"（标题里不加空格）；
+    跨年两头都写年份，免得在搜索结果、转发卡片里和往年同一周混淆。"""
+    if start.year != end.year:
+        return f"{start.year}年{start.month}月{start.day}日—{end.year}年{end.month}月{end.day}日"
+    tail = f"{end.day}日" if start.month == end.month else f"{end.month}月{end.day}日"
     return f"{start.month}月{start.day}日—{tail}"
 
 
@@ -512,6 +545,7 @@ def _weekly_entry(page: _Page, section: str, item: Item, dues: tuple):
         meta = [_deadline_text(dues), item.issuer, _published_text(item)]
         if item.support:
             meta.append(f"支持方式：{'、'.join(item.support)}")
+        meta.append(_new_versions(item))
     elif section == "applications":
         meta = ["新通知", item.issuer, _published_text(item), _deadline_text(item.deadlines)]
         if item.support:
@@ -525,9 +559,7 @@ def _weekly_entry(page: _Page, section: str, item: Item, dues: tuple):
     else:
         meta = ["政策文件", item.issuer, _published_text(item), f"文号：{item.number or '见原文'}"]
         meta.append(_new_versions(item))
-    issuer = item.issuer + (
-        f" · {_new_versions(item)}" if section != "deadlines" and item.versions else ""
-    )
+    issuer = item.issuer + (f" · {_new_versions(item)}" if item.versions else "")
     page.entry(
         item.title,
         meta,
@@ -594,17 +626,21 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
         return None
     area = scope(profile)
     summary = [
-        f"新通知 {counts['applications']} 条" if counts["applications"] else "",
-        f"30 天内截止 {counts['deadlines']} 项" if counts["deadlines"] else "",
+        f"新通知{counts['applications']}条" if counts["applications"] else "",
+        f"30天内截止{counts['deadlines']}项" if counts["deadlines"] else "",
     ]
     if not any(summary):
         summary = [
-            f"名单 {counts['lists']} 份" if counts["lists"] else "",
-            f"政策文件 {counts['policies']} 份" if counts["policies"] else "",
+            f"名单{counts['lists']}份" if counts["lists"] else "",
+            f"政策文件{counts['policies']}份" if counts["policies"] else "",
         ]
-    title = (
-        f"申报周报｜{_span(start, end)}（{area}）：{'，'.join(part for part in summary if part)}"
-    )
+    # 标题里数字两边不留空格；按顺序能放几项放几项（不超过 32 字），一项也放不下就只写日期和范围
+    title = f"申报周报｜{_span(start, end)}（{area}）"
+    for n, part in enumerate([value for value in summary if value]):
+        longer = f"{title}{'：' if n == 0 else '，'}{part}"
+        if len(longer) > TITLE_LIMIT:
+            break
+        title = longer
     page = _Page()
     page.paragraph(f"{HEAD}统计周：{_week_text(start, end)}（按发布日期）。")
     labels = {
@@ -617,7 +653,7 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
     numbers = "、".join(labels[key] for key in COLUMNS if counts[key])
     page.paragraph(
         f"本期{'全国' if area == '全国' else ''}{numbers}。"
-        "全部条目在小程序「本期清单」里，可以按省份看、点开原文。"
+        "全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
     )
     blocks, policies = _blocks(entries)
     shown = set()
@@ -713,7 +749,7 @@ def render_reminder(profile: DigestProfile, stamp: datetime, items: list[Item]) 
     tag = "已核对" if area == "全国" else f"{area}，已核对"
     span = _span(today, end)
     title = (
-        f"临期提醒｜{span}截止的 {len(items)} 个申报项目（{tag}）"
+        f"临期提醒｜{span}截止的{len(items)}个申报项目（{tag}）"
         if items
         else f"临期提醒｜{span}：没有已核对的截止项目" + ("" if area == "全国" else f"（{area}）")
     )
@@ -804,6 +840,11 @@ def _flash_items(session: Session, profile: DigestProfile, rows) -> list[Item]:
     ]
 
 
+# 列个人的或和企业申报无关的名单（招聘、职称、考试、专家、采购等）：人工改成了"名单"
+# 也不写速报（D-018）
+_FLASH_OFF = LIST_OFF_TOPIC + PERSONAL_WORDS + PERSONAL_QUALIFICATIONS + PERSONAL_CONTEST
+
+
 def flash_target(session: Session, profile: DigestProfile, document_id: int) -> Item:
     """名单速报写的那份名单（副本按归并主文件算）；不公开、不是名单或不在方案范围内的不写。"""
     master = canonical_ids(session, [document_id]).get(document_id, document_id)
@@ -812,6 +853,10 @@ def flash_target(session: Session, profile: DigestProfile, document_id: int) -> 
     if not items:
         raise ValueError(
             "这份名单不存在、不是名单、已下架、来源不公开，或不在方案的地区和关键词范围内"
+        )
+    if any(word in items[0].title for word in _FLASH_OFF):
+        raise ValueError(
+            "这份名单列的是个人，或和企业申报无关（招聘、职称、考试、专家等），不写速报"
         )
     return items[0]
 
@@ -827,6 +872,7 @@ def flash_candidates(
             published.desc(), Document.id.desc()
         )
     ).all()
+    rows = [row for row in rows if not any(word in row.title for word in _FLASH_OFF)]
     items = sorted(
         _flash_items(session, profile, rows),
         key=lambda item: (-item.entries, -(item.published or date.min).toordinal(), item.id),
@@ -865,7 +911,7 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
     """名单速报：名单标题、发文机关、公示期、条数、怎么在小程序里查一家。不列企业名称。"""
     status = list_status(item.title, "名单")
     title = f"名单速报｜{_public_text(item.title)}" + (
-        f"（共 {item.entries} 家）" if item.entries else ""
+        f"（共{item.entries}家）" if item.entries else ""
     )
     page = _Page()
     page.paragraph(HEAD)

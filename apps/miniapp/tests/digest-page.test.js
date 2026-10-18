@@ -166,18 +166,30 @@ test('首页扫码关注条：app.js 按配置算好，首页读 globalData；�
 function row(id, province, section, extra = {}) {
   return { id: String(id), kind: section === 'lists' ? '名单' : section === 'policies' ? '政策' : '申报通知', title: `第 ${id} 条`, issuer: `${province}科技厅`, region: province, province, date: '2026-09-28', url: `https://example.gov.cn/${id}`, deadline: null, deadline_state: 'none', section, ...extra };
 }
-const DIGEST = {
-  id: 12, title: '申报周报｜9月28日—10月4日（全国）：新通知 3 条，30 天内截止 1 项', weekStart: '2026-09-28', weekEnd: '2026-10-04',
-  dataAt: '2026-10-04T23:30:00+00:00', total: 6, truncated: false, hidden: 1,
-  items: [
-    row(1, '国家', 'applications'),
-    row(2, '浙江', 'deadlines', { deadline: { date: '2026-10-10', time: '', verified: true }, deadline_state: 'verified' }),
-    row(3, '浙江', 'applications'),
-    row(4, '浙江', 'lists'),
-    row(5, '浙江', 'policies'),
-    row(6, '江苏', 'applications'),
-  ],
-};
+const ITEMS = [
+  row(1, '国家', 'applications'),
+  row(2, '浙江', 'deadlines', { deadline: { date: '2026-10-10', time: '', verified: true }, deadline_state: 'verified' }),
+  row(3, '浙江', 'applications'),
+  row(4, '浙江', 'lists'),
+  row(5, '浙江', 'policies'),
+  row(6, '江苏', 'applications'),
+];
+// 和后端一样：按省份筛、按 offset/limit 分页；省份列表总是给全的
+function server(items, extra = {}) {
+  const provinces = [];
+  items.forEach((d) => {
+    const found = provinces.find((p) => p.province === d.province);
+    if (found) found.count += 1; else provinces.push({ province: d.province, count: 1 });
+  });
+  return (id, params = {}) => {
+    const chosen = params.province ? items.filter((d) => d.province === params.province) : items;
+    return {
+      id: Number(id), title: '申报周报｜9月28日—10月4日（全国）：新通知3条', weekStart: '2026-09-28', weekEnd: '2026-10-04',
+      dataAt: '2026-10-04T23:30:00+00:00', hidden: 1, provinces, province: params.province || '',
+      total: chosen.length, offset: params.offset, items: chosen.slice(params.offset, params.offset + params.limit), ...extra,
+    };
+  };
+}
 
 function digestPage(api, wx = {}) {
   return load('pages/digest/index.js', { '../../utils/api.js': api, '../../utils/format.js': format }, { wx });
@@ -185,21 +197,27 @@ function digestPage(api, wx = {}) {
 
 function apiStub(responses) {
   const calls = [];
-  const answer = (name, arg) => {
-    calls.push(arg === undefined ? name : `${name}:${arg}`);
-    const value = responses[name];
-    return value instanceof Error ? Promise.reject(value) : Promise.resolve(typeof value === 'function' ? value(arg) : value);
+  const answer = (name, label, value) => {
+    calls.push(label);
+    return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
   };
-  return { calls, digest: (id) => answer('digest', id), latestDigest: () => answer('latestDigest') };
+  return {
+    calls,
+    digest: (id, params) => {
+      const value = typeof responses.digest === 'function' ? responses.digest(id, params) : responses.digest;
+      return answer('digest', `digest:${id}:${params.province || '全部'}:${params.offset}+${params.limit}`, value);
+    },
+    latestDigest: () => answer('latestDigest', 'latestDigest', responses.latestDigest),
+  };
 }
 const notFound = (message) => Object.assign(new Error(message), { status: 404 });
 
 test('本期清单：带期号打开，按省份分组（顺序照接口），组内按栏目，写统计周、数据截至和已下架条数', async () => {
-  const api = apiStub({ digest: DIGEST });
+  const api = apiStub({ digest: server(ITEMS) });
   const page = digestPage(api);
   page.onLoad({ id: '12' });
   await flush();
-  assert.deepEqual(api.calls, ['digest:12']);
+  assert.deepEqual(api.calls, ['digest:12:全部:0+100']);
   assert.equal(page.data.loading, false);
   assert.equal(page.data.weekText, '9月28日—10月4日');
   assert.equal(page.data.dataText, '10月5日 07:30');
@@ -209,49 +227,96 @@ test('本期清单：带期号打开，按省份分组（顺序照接口），�
     ['浙江', 4, ['30 天内截止', '新申报通知', '名单', '政策文件']],
     ['江苏', 1, ['新申报通知']],
   ]);
+  assert.equal(page.data.rest, 0);
   const root = render('pages/digest/index.wxml', page.data);
   const text = textOf(root);
   assert.match(text, /9月28日—10月4日 申报周报/);
   assert.match(text, /共 6 条，按省份分好；点一条看详情和原文出处。/);
   assert.match(text, /第三方整理，非政府平台，以原文为准 · 数据截至 10月5日 07:30/);
   assert.match(text, /另有 1 条已下架或不再公开，这里不再列出。/);
-  assert.doesNotMatch(text, /只列出前/);
+  assert.doesNotMatch(text, /显示更多/);
   // 每条用列表行组件：点进详情看原文（doc-row 自己打开 /pages/detail/index?id=）
   assert.equal(findAll(root, (n) => n.tag === 'doc-row').length, 6);
   assert.match(read('components/doc-row/index.js'), /\/pages\/detail\/index\?id=\$\{this\.data\.doc\.id\}/);
 });
 
-test('本期清单：按省份筛选只看一个省；"全部地区"超过 80 条分批显示', async () => {
+test('本期清单：分页取，每次 100 条，"显示更多"接着取；按省份筛由服务端筛、从头取；组标题写整省条数', async () => {
   const items = [];
   for (let n = 1; n <= 130; n += 1) items.push(row(n, n <= 100 ? '浙江' : '江苏', 'applications'));
-  const page = digestPage(apiStub({ digest: { ...DIGEST, items, total: 130, hidden: 0 } }), { pageScrollTo() {} });
+  const api = apiStub({ digest: server(items, { hidden: 0 }) });
+  const page = digestPage(api, { pageScrollTo() {} });
   page.onLoad({ id: '12' });
   await flush();
   const count = () => page.data.groups.reduce((sum, g) => sum + g.sections.reduce((s, x) => s + x.items.length, 0), 0);
-  assert.equal(count(), 80);
-  assert.equal(page.data.rest, 50);
-  assert.match(textOf(render('pages/digest/index.wxml', page.data)), /显示更多（还有 50 条）/);
+  assert.equal(count(), 100);
+  assert.equal(page.data.rest, 30);
+  assert.deepEqual(page.data.groups.map((g) => [g.name, g.count]), [['浙江', 100]]);
+  assert.match(textOf(render('pages/digest/index.wxml', page.data)), /显示更多（还有 30 条）/);
   page.more();
+  assert.equal(page.data.moreLoading, true);
+  assert.match(textOf(render('pages/digest/index.wxml', page.data)), /正在加载…/);
+  page.more(); // 取的时候再点不重复取
+  await flush();
   assert.equal(count(), 130);
   assert.equal(page.data.rest, 0);
+  assert.deepEqual(page.data.groups.map((g) => [g.name, g.count]), [['浙江', 100], ['江苏', 30]]);
   page.pickProvince({ detail: { value: '2' } });
+  await flush();
   assert.deepEqual(page.data.groups.map((g) => g.name), ['江苏']);
   assert.equal(count(), 30);
-  page.pickProvince({ detail: { value: '1' } });
-  assert.equal(count(), 100); // 选了省份整省都列出
-  page.pickProvince({ detail: { value: '0' } });
-  assert.equal(count(), 80);
+  page.pickProvince({ detail: { value: '2' } }); // 选同一项不重取
   page.pickProvince({ detail: { value: '9' } }); // 不存在的选项不理会
-  assert.equal(page.data.index, 0);
+  assert.deepEqual(api.calls, ['digest:12:全部:0+100', 'digest:12:全部:100+100', 'digest:12:江苏:0+100']);
+  page.pickProvince({ detail: { value: '0' } });
+  await flush();
+  assert.equal(count(), 100);
+  assert.equal(page.data.labels[0], '全部地区（130 条）');
 });
 
-test('本期清单：从"我的"打开（不带期号）取最近一期；期号不合法当作不带', async () => {
-  const api = apiStub({ latestDigest: { id: 12, weekStart: '2026-09-28', weekEnd: '2026-10-04' }, digest: DIGEST });
-  const page = digestPage(api);
-  page.onLoad({ id: '12;drop' });
+test('本期清单："显示更多"没取到时提示、保留已显示的；换省份时取不到写明可重试', async () => {
+  let fail = false;
+  const items = [];
+  for (let n = 1; n <= 120; n += 1) items.push(row(n, '浙江', 'applications'));
+  const base = server(items);
+  const toasts = [];
+  const page = digestPage(apiStub({ digest: (id, params) => (fail ? new Error('网络连接失败，请检查网络后重试') : base(id, params)) }), { showToast: (o) => toasts.push(o.title), pageScrollTo() {} });
+  page.onLoad({ id: '12' });
   await flush();
-  assert.deepEqual(api.calls, ['latestDigest', 'digest:12']);
+  fail = true;
+  page.more();
+  await flush();
+  assert.deepEqual(toasts, ['没加载出来：网络连接失败，请检查网络后重试']);
+  assert.equal(page.data.moreLoading, false);
+  assert.equal(page.data.rest, 20);
+  page.pickProvince({ detail: { value: '1' } });
+  await flush();
+  assert.equal(page.data.error, '本期清单没有加载出来：网络连接失败，请检查网络后重试');
+  assert.equal(findAll(render('pages/digest/index.wxml', page.data), tapsTo('load')).length, 1);
+});
+
+test('本期清单：从"我的"打开（不带期号）取最近一期', async () => {
+  const api = apiStub({ latestDigest: { id: 12, weekStart: '2026-09-28', weekEnd: '2026-10-04' }, digest: server(ITEMS) });
+  const page = digestPage(api);
+  page.onLoad({});
+  await flush();
+  assert.deepEqual(api.calls, ['latestDigest', 'digest:12:全部:0+100']);
   assert.equal(page.data.groups.length, 3);
+});
+
+test('本期清单：带了期号但不完整时说"链接不完整"，不悄悄换成最近一期', async () => {
+  for (const id of ['12;drop', 'abc', '']) {
+    const api = apiStub({ latestDigest: { id: 3 }, digest: server(ITEMS) });
+    const page = digestPage(api);
+    page.onLoad({ id });
+    await flush();
+    if (id === '') {
+      assert.deepEqual(api.calls, ['latestDigest', 'digest:3:全部:0+100']); // 空参数按没带算
+      continue;
+    }
+    assert.deepEqual(api.calls, []);
+    assert.equal(page.data.missing, '这一期的链接不完整，打不开');
+    assert.match(textOf(render('pages/digest/index.wxml', page.data)), /这一期的链接不完整，打不开/);
+  }
 });
 
 test('本期清单：不存在或已撤回、还没有发布的、加载失败分别说明，给出路', async () => {
@@ -281,17 +346,14 @@ test('本期清单：不存在或已撤回、还没有发布的、加载失败�
   assert.deepEqual(urls, ['/pages/report/index?days=7', '/pages/home/index']);
 });
 
-test('本期清单：条目全下架时写明；条目太多被截断时写明只列了多少', async () => {
-  let page = digestPage(apiStub({ digest: { ...DIGEST, items: [], total: 0, hidden: 6 } }));
-  page.onLoad({ id: '12' });
-  await flush();
-  assert.match(textOf(render('pages/digest/index.wxml', page.data)), /这一期的条目都已下架或不再公开。/);
-  page = digestPage(apiStub({ digest: { ...DIGEST, total: 700, truncated: true } }));
+test('本期清单：条目全下架时写明；跨年的统计周两头写年份', async () => {
+  const page = digestPage(apiStub({ digest: () => ({ ...server([])(12, { offset: 0, limit: 100 }), hidden: 6, weekStart: '2025-12-29', weekEnd: '2026-01-04' }) }));
   page.onLoad({ id: '12' });
   await flush();
   const text = textOf(render('pages/digest/index.wxml', page.data));
-  assert.match(text, /共 700 条/);
-  assert.match(text, /这一期条目较多，这里只列出前 6 条，其余请在首页搜索。/);
+  assert.match(text, /这一期的条目都已下架或不再公开。/);
+  assert.match(text, /另有 6 条已下架或不再公开/);
+  assert.equal(page.data.weekText, '2025年12月29日—2026年1月4日');
 });
 
 test('本期清单页注册了、用默认导航栏（从公众号打开时微信给"回首页"），不能转发、不加奖励字样', () => {
@@ -353,8 +415,13 @@ function liveApi(config, answer) {
 test('接口：本期清单和最近一期先走常驻的 admin 服务（公众号文章点进来不等冷启动）', async () => {
   const { api, sent } = liveApi({ cloudEnv: 'prod-test', cloudService: 'api', devBaseUrl: '' }, (o) => o.success({ statusCode: 200, data: { id: 12, items: [] } }));
   await api.digest(12);
+  await api.digest(12, { province: '浙江', offset: 100, limit: 100 });
   await api.latestDigest();
-  assert.deepEqual(sent, [['/api/v1/digests/12', 'admin'], ['/api/v1/digests/latest', 'admin']]);
+  assert.deepEqual(sent, [
+    ['/api/v1/digests/12', 'admin'],
+    ['/api/v1/digests/12?province=%E6%B5%99%E6%B1%9F&offset=100&limit=100', 'admin'],
+    ['/api/v1/digests/latest', 'admin'],
+  ]);
   const routes = read('../../backend/src/youju/api/app.py');
   assert.match(routes, /"\/api\/v1\/digests\/latest"/);
   assert.match(routes, /\(\?:documents\|digests\)\/\\d\+/);
@@ -385,6 +452,11 @@ test('演示数据：用首页的几份文件拼一期，标"演示数据"；国
   const d = await api.digest(0);
   assert.equal(d.demo, true);
   assert.equal(d.items.length, mock.home.length);
+  assert.equal(d.total, mock.home.length);
+  assert.equal(d.provinces.reduce((sum, p) => sum + p.count, 0), mock.home.length);
+  const one = await api.digest(0, { province: d.provinces[1].province, offset: 0, limit: 100 });
+  assert.ok(one.items.length && one.items.every((item) => item.province === d.provinces[1].province));
+  assert.equal((await api.digest(0, { offset: 2, limit: 3 })).items.length, 3);
   assert.equal(d.items[0].province, '国家');
   const order = ['deadlines', 'applications', 'lists', 'policies'];
   for (let n = 1; n < d.items.length; n += 1) {

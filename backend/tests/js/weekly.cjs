@@ -19,7 +19,7 @@ let writes=[],plain=[],calls=[],blocked=false,selectionCount=0;
 const paths = [{label:'本期清单',path:'pages/digest/index?id=1',published_only:true},{label:'看截止',path:'pages/report/index',published_only:false}];
 const issue = { id:1,profile_id:1,title:'申报周报｜9月28日—10月4日（全国）：新通知 4 条',generated_at:'2026-10-05T00:00:00Z',status:'draft',counts:{lists:1},note:'',body_html:'<section><p>最新正文</p></section>',body_text:'最新正文',body_text_with_links:'题录｜机关｜2026-09-28｜截止时间见原文｜https://example.gov.cn/1',paths };
 const reminder = {...issue,id:2,kind:'reminder',title:'临期提醒',counts:{reminder:3}};
-const flashIssue = {...issue,id:3,kind:'list_flash',title:'名单速报',counts:{entries:12},subject_id:5};
+const flashIssue = {...issue,id:3,kind:'list_flash',title:'名单速报｜关于公示2026年第一批拟认定高新技术企业名单的通知（共12家）',counts:{entries:12},subject_id:5,paths:[]};
 const lists = [{id:5,title:'名单公示',issuer:'省科技厅',province:'浙江',published:'2026-10-09',entries:12,issue_id:3,issue_status:'draft'},{id:6,title:'名单',issuer:'省工信厅',province:'国家部委',published:'2026-10-08',entries:0,issue_id:null,issue_status:null}];
 const context = {
   URLSearchParams,Blob,
@@ -44,6 +44,7 @@ const context = {
     else if(path.includes('/lists?profile_id=1')) data={items:lists};
     else if(path.endsWith('/generate')) data={issue_id:1,outcome:'generated',reason:'草稿已生成'};
     else if(path.endsWith('/issues/1')) data=blocked?{detail:'内容已下架'}:issue;
+    else if(path.endsWith('/issues/3')) data=flashIssue;
     else throw new Error(path);
     return {ok:!blocked || !path.endsWith('/issues/1'),status:blocked?409:200,json:async()=>data};
   },
@@ -132,8 +133,18 @@ vm.runInNewContext(script,context);
   elements.get('flashList').value='5';
   elements.get('week').value='2026-09-28';
   elements.get('period').value=' 2026年10月9日至10月15日 ';
+  // 填了公示期没勾"已对照原文核对"：不提交
+  const before=generated().length;
   await elements.get('generate').onclick();
-  assert.deepEqual(generated().at(-1),{profile_id:1,week:null,kind:'list_flash',subject_id:5,period:'2026年10月9日至10月15日'});
+  assert.equal(generated().length,before);
+  assert(elements.get('message').textContent.includes('对照原文核对'));
+  elements.get('periodChecked').checked=true;
+  await elements.get('generate').onclick();
+  assert.deepEqual(generated().at(-1),{profile_id:1,week:null,kind:'list_flash',subject_id:5,period:'2026年10月9日至10月15日',period_confirmed:true});
+  // 名单速报照录原标题，超过 32 字（官方新建草稿接口的上限）时提示人工删减
+  await elements.get('issues').children[2].children[2].onclick();
+  assert(elements.get('issueMeta').textContent.includes('超过 32 字'));
+  assert.equal(elements.get('paths').children.length,0);
   elements.get('kind').value='weekly';
   elements.get('kind').onchange();
   assert.equal(elements.get('flashFields').hidden,true);

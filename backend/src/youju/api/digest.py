@@ -5,14 +5,15 @@
 发文机关、截止日期按现在的数据算，和小程序其他列表同一口径（v1._items）——日期后来改了
 显示新的，撤回核对的不再写日期。撤下或不再公开的条目不返回（v1._base 的 public_condition，
 加上周报本身的一级来源口径），只给条数。草稿、撤回的和临期提醒、名单速报一律 404。
+条目分页给（每页最多 200 条，可按省份筛），一期再多也不会超过云调用 1000 KB 的回包上限。
 """
 
 from __future__ import annotations
 
 import time as _time
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
 from youju import weekly
@@ -24,9 +25,10 @@ from youju.report_revision import publication_revision
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
 
-# 一期最多给多少条：每条约 0.7 KB，600 条约 420 KB，在云调用 1000 KB 的回包上限以内。
-MAX_ITEMS = 600
-# 公众号推送后短时间内很多人打开同一期：按期、日期和截止/下架版本缓存 60 秒。
+# 每页条数：每条约 0.7 KB（标题、网址特别长的也不到 4 KB），200 条在 1000 KB 的回包上限以内。
+PAGE_MAX = 200
+PAGE_DEFAULT = 100
+# 公众号推送后短时间内很多人打开同一期：按期、日期、截止/下架版本和来源公开级别缓存 60 秒。
 CACHE_TTL = 60
 CACHE_MAX = 50
 _CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
@@ -69,6 +71,20 @@ def latest_digest(session: v1.SessionDep) -> dict[str, Any]:
     }
 
 
+def _source_revision(session) -> tuple:
+    """来源公开级别的版本：一级来源改成只存题录或按授权后，缓存立即失效（来源表只有几百行）。"""
+    return tuple(
+        session.execute(
+            select(
+                func.count(),
+                func.coalesce(
+                    func.sum(func.crc32(func.concat_ws("|", Source.id, Source.rights_level))), 0
+                ),
+            )
+        ).one()
+    )
+
+
 def _entries(session, issue: DigestIssue) -> list[dict]:
     """快照里的条目；本功能上线前生成的期刊没有 items，按正文里出现的文件和现在的类型给栏目。"""
     if issue.items is not None:
@@ -86,20 +102,38 @@ def _entries(session, issue: DigestIssue) -> list[dict]:
     return entries
 
 
+def _in_scope(profile: DigestProfile | None, doc: Document, src: Source) -> bool:
+    """方案的地区和关键词（和生成周报时一样：国家部委始终包含，标题含任一关键词）。"""
+    if profile is None:
+        return False
+    if profile.provinces and src.province not in (weekly.NATIONAL, *profile.provinces):
+        return False
+    return not profile.keywords or any(word in doc.title for word in profile.keywords)
+
+
 def _payload(session, issue: DigestIssue) -> dict[str, Any]:
     entries = _entries(session, issue)
     mapping = canonical_ids(session, [int(entry["id"]) for entry in entries])
-    # 快照里的文件后来成了别的文件的副本：按现在的主文件列一次（详情页也是这样打开）。
+    # 快照里的文件后来成了别的文件的副本：按现在的主文件列一次（详情页也是这样打开），
+    # 但新的主文件要仍在方案的地区和关键词范围里，否则算不再公开、不列。
     snapshot: dict[int, dict] = {}
     for entry in entries:
-        snapshot.setdefault(mapping.get(int(entry["id"]), int(entry["id"])), entry)
+        original = int(entry["id"])
+        snapshot.setdefault(mapping.get(original, original), entry)
+    originals = {int(entry["id"]) for entry in entries}
+    moved = {master for master in snapshot if master not in originals}
     ids = list(snapshot)
     rows = (
         session.execute(v1._base().where(Document.id.in_(ids), Source.rights_level == 1)).all()
         if ids
         else []
     )
-    public = {doc.id: (doc, src) for doc, src in rows if weekly.safe_url(doc.url)}
+    profile = session.get(DigestProfile, issue.profile_id) if moved else None
+    public = {
+        doc.id: (doc, src)
+        for doc, src in rows
+        if weekly.safe_url(doc.url) and (doc.id not in moved or _in_scope(profile, doc, src))
+    }
     kept = [doc_id for doc_id in ids if doc_id in public]
     items = v1._items(session, [public[doc_id] for doc_id in kept])
     for doc_id, item in zip(kept, items, strict=True):
@@ -137,17 +171,23 @@ def _payload(session, issue: DigestIssue) -> dict[str, Any]:
             {"province": province, "name": v1._province_name(province), "count": counts[province]}
             for province in order
         ],
-        "items": items[:MAX_ITEMS],
-        "total": len(items),
-        "truncated": len(items) > MAX_ITEMS,
+        "items": items,
         # 已下架或不再公开、这里不列的条数（只给数字，不给标题和原因）
         "hidden": len(ids) - len(kept),
     }
 
 
 @router.get("/digests/{issue_id}")
-def digest(issue_id: int, session: v1.SessionDep) -> dict[str, Any]:
-    """本期清单：一期已发布周报的全部条目（按省份分组的顺序），每条和列表行同一格式。"""
+def digest(
+    issue_id: int,
+    session: v1.SessionDep,
+    province: Annotated[
+        str, Query(max_length=32, description="只看一个省（国家部委写'国家'）")
+    ] = "",
+    offset: Annotated[int, Query(ge=0, le=100000)] = 0,
+    limit: Annotated[int, Query(ge=1, le=PAGE_MAX)] = PAGE_DEFAULT,
+) -> dict[str, Any]:
+    """本期清单：一期已发布周报的全部条目（按省份分组的顺序），每条和列表行同一格式；分页给。"""
     issue = _published(session, issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="这一期周报不存在，或已撤回")
@@ -156,13 +196,24 @@ def digest(issue_id: int, session: v1.SessionDep) -> dict[str, Any]:
         issue.generated_at,
         v1.now().astimezone(v1._TZ).date(),
         publication_revision(session, "deadlines"),
+        _source_revision(session),
     )
     cached = _CACHE.get(key)
     current = _time.monotonic()
     if cached and current - cached[0] < CACHE_TTL:
-        return cached[1]
-    payload = _payload(session, issue)
-    if len(_CACHE) >= CACHE_MAX:
-        _CACHE.pop(next(iter(_CACHE)))
-    _CACHE[key] = (current, payload)
-    return payload
+        payload = cached[1]
+    else:
+        payload = _payload(session, issue)
+        if len(_CACHE) >= CACHE_MAX:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = (current, payload)
+    items = payload["items"]
+    if province:
+        items = [item for item in items if item["province"] == province]
+    return {
+        **{name: value for name, value in payload.items() if name != "items"},
+        "province": province,
+        "total": len(items),
+        "offset": offset,
+        "items": items[offset : offset + limit],
+    }

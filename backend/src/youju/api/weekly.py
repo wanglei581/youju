@@ -66,6 +66,8 @@ class GenerateIn(BaseModel):
     # 名单速报：写哪份名单（文件编号）；公示期由人照原文填写，系统里没有核对过的公示期字段
     subject_id: int = Field(default=0, ge=0)
     period: str = Field(default="", max_length=60)
+    # 填了公示期必须勾"已对照原文核对"：公示期是关键日期，未经核对不发布（AGENTS 合规红线）
+    period_confirmed: bool = False
 
     @field_validator("week")
     @classmethod
@@ -224,6 +226,7 @@ def router(require_admin, audit) -> APIRouter:
             week=week,
             kind=kind,
             subject_id=subject_id,
+            period=bool(period),
             outcome=result.outcome,
         )
         return {
@@ -234,6 +237,8 @@ def router(require_admin, audit) -> APIRouter:
 
     @routes.post("/generate")
     def generate(body: GenerateIn, session: SessionDep, request: Request):
+        if body.kind == "list_flash" and body.period.strip() and not body.period_confirmed:
+            raise HTTPException(422, "填了公示期：请先对照原文核对，再勾选“已对照原文核对公示期”")
         return run_generation(
             session,
             body.profile_id,

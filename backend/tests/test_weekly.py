@@ -220,7 +220,8 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     issue = result.issue
     assert result.outcome == "generated"
     assert issue.counts == {"applications": 4, "deadlines": 3, "lists": 2, "policies": 1}
-    assert issue.title == "申报周报｜9月28日—10月4日（全国）：新通知 4 条，30 天内截止 3 项"
+    # 标题不超过 32 字（官方新建草稿接口）：放不下"30天内截止3项"就只写新通知
+    assert issue.title == "申报周报｜9月28日—10月4日（全国）：新通知4条"
     text = issue.body_text
     lines = text.splitlines()
     # 本周新通知又在 30 天内截止的只列一次（列在截止里）
@@ -230,7 +231,7 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     )
     assert lines[1] == (
         "本期全国新通知 4 条、30 天内截止 3 项（已核对）、名单 2 份、政策文件 1 份。"
-        "全部条目在小程序「本期清单」里，可以按省份看、点开原文。"
+        "全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
     )
     assert text.index("国家部委（1 条）") < text.index("浙江（8 条）")
     assert lines[lines.index("项目申报通知") + 1] == (
@@ -426,7 +427,7 @@ def test_provinces_keywords_column_switches(session, profile, world):
     # 只开新通知一栏：导语只写这一栏，也不写"30 天内截止从哪天算起"
     assert issue.body_text.splitlines()[1].startswith("本期新通知 2 条。")
     assert "30 天内截止" not in issue.body_text
-    assert issue.title == "申报周报｜9月28日—10月4日（全国版）：新通知 2 条"
+    assert issue.title == "申报周报｜9月28日—10月4日（全国版）：新通知2条"
     profile.keywords = ["项目%"]  # 通配符按字面匹配
     session.commit()
     assert generate(session, profile).outcome == "empty"
@@ -473,7 +474,7 @@ def test_national_policies_listed_apart_with_cap(session, profile):
         "政策文件 · 国家科技部门 · 9 月 28 日发布 · 文号：见原文"
     )
     assert len(issue.items) == 12 and len(issue.document_ids) == 10
-    assert issue.title == "申报周报｜9月28日—10月4日（全国）：政策文件 12 份"
+    assert issue.title == "申报周报｜9月28日—10月4日（全国）：政策文件12份"
 
 
 def test_title_span_scope_and_cross_year_week(session, profile):
@@ -482,7 +483,8 @@ def test_title_span_scope_and_cross_year_week(session, profile):
         document(session, src, f"跨年通知{day.day}", day)
     session.commit()
     issue = weekly.generate(session, profile.id, date(2025, 12, 29), NOW).issue
-    assert issue.title == "申报周报｜12月29日—1月4日（全国）：新通知 2 条"
+    # 跨年两头写年份（放不下统计就只写日期和范围）
+    assert issue.title == "申报周报｜2025年12月29日—2026年1月4日（全国）"
     assert issue.body_text.splitlines()[0].endswith(
         "统计周：2025 年 12 月 29 日—2026 年 1 月 4 日（按发布日期）。"
     )
@@ -532,6 +534,78 @@ def test_draft_replace_published_protected_other_profile_separate(session, profi
     session.add(other)
     session.commit()
     assert generate(session, other).issue.id != issue_id
+
+
+def test_weekly_title_fits_wechat_limit_with_as_many_counts_as_fit(session, profile):
+    src = source(session)
+    document(session, src, "同月短区间通知", date(2026, 10, 14))
+    session.commit()
+    issue = weekly.generate(session, profile.id, date(2026, 10, 12), NOW).issue
+    assert issue.title == "申报周报｜10月12日—18日（全国）：新通知1条"
+    # 超长的方案名称一项也放不下时只写日期和范围（管理台提示人工删减）
+    profile.name, profile.provinces = "很长的方案名称" * 4, ["浙江"]
+    session.commit()
+    issue = weekly.generate(session, profile.id, date(2026, 10, 12), NOW).issue
+    assert issue.title == f"申报周报｜10月12日—18日（{profile.name}）"
+    profile.name, profile.provinces = "全国版", []
+    session.commit()
+    deadline(session, document(session, src, "截止通知", date(2026, 10, 13)), date(2026, 10, 20))
+    session.commit()
+    issue = weekly.generate(session, profile.id, date(2026, 10, 12), NOW).issue
+    assert issue.title == "申报周报｜10月12日—18日（全国）：新通知2条"
+    assert len(issue.title) <= weekly.TITLE_LIMIT
+    assert "30 天内截止 1 项（已核对）" in issue.body_text.splitlines()[1]
+
+
+def test_bare_domains_removed_from_article_kept_in_linked_version(session, profile):
+    src = source(session)
+    doc = document(
+        session, src, "关于 kjt.example.gov.cn/tzgg/1.html 公布的申报通知（ndrc.gov.cn）"
+    )
+    session.commit()
+    issue = generate(session, profile).issue
+    for body in (issue.body_text, issue.body_html):
+        assert "gov.cn" not in body and "example" not in body
+    assert "第三方整理" in issue.body_text and "2.0" not in issue.body_text
+    assert doc.title in issue.body_text_with_links  # 带链接版照录原题录
+
+
+def test_changed_on_private_twin_suppresses_master_deadline(session, profile):
+    src = source(session)
+    private = source(session, "浙江", 2)
+    master = document(session, src, "主文件申报通知", START - timedelta(days=30))
+    deadline(session, master, date(2026, 10, 10))
+    twin = document(session, private, "主文件申报通知", START - timedelta(days=30))
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, match_key="pt", active=True)
+    )
+    changed = deadline(
+        session,
+        twin,
+        date(2026, 10, 10),
+        status="changed",
+        change_reason="延期",
+        changed_to_document_id=master.id,
+    )
+    changed.changed_at = NOW
+    # 只在非一级来源副本上核对通过的日期：公众号不写（只取一级来源上的），小程序照它自己的口径
+    other = document(session, src, "副本才有截止的通知", START - timedelta(days=30))
+    deadline(session, other, date(2026, 10, 12))
+    other_twin = document(session, private, "副本才有截止的通知", START - timedelta(days=30))
+    session.add(
+        DocumentMerge(
+            duplicate_id=other_twin.id, canonical_id=other.id, match_key="pt2", active=True
+        )
+    )
+    deadline(session, other_twin, date(2026, 10, 14)).kind = "材料报送截止"
+    session.commit()
+    issue = generate(session, profile).issue
+    assert "主文件申报通知" not in issue.body_text  # 副本上已变更：主文件同一截止不再写
+    lines = issue.body_text.splitlines()
+    assert lines[lines.index("副本才有截止的通知") + 1].startswith(
+        "企业申报截止 10 月 12 日（10 月 5 日核对） · "
+    )
+    assert "10 月 14 日" not in issue.body_text
 
 
 def test_html_allowlist_injection_and_forbidden_terms(session, profile):
@@ -940,7 +1014,8 @@ def test_reminder_reviewed_within_seven_days_sorted_like_mini_program(
         THIS_WEEK,
         date(2026, 10, 11),
     )
-    assert issue.title == "临期提醒｜10月8日—15日截止的 6 个申报项目（已核对）"
+    assert issue.title == "临期提醒｜10月8日—15日截止的6个申报项目（已核对）"
+    assert len(issue.title) <= weekly.TITLE_LIMIT == 32
     assert issue.counts == {"reminder": 6}
     assert [row[0] for row in linked_rows(issue)] == REMINDER_ORDER
     assert issue.document_ids == sorted(due_world[title].id for title in REMINDER_ORDER)
@@ -1060,7 +1135,7 @@ def test_reminder_profile_filters_and_cap(session, profile, due_world):
     assert issue.body_text.splitlines()[1] == (
         "共 35 项，这里按截止日期先后只列前 10 项，完整清单在小程序「截止」页。"
     )
-    assert issue.title == "临期提醒｜10月8日—15日截止的 35 个申报项目（全国版，已核对）"
+    assert issue.title == "临期提醒｜10月8日—15日截止的35个申报项目（全国版，已核对）"
 
 
 def test_reminder_separate_from_weekly_draft_replaced_published_kept(session, profile, due_world):
@@ -1075,8 +1150,8 @@ def test_reminder_separate_from_weekly_draft_replaced_published_kept(session, pr
     sunday = THU + timedelta(days=3)
     again = reminder(session, profile, sunday, THIS_WEEK).issue
     assert again.id == issue.id and "改后的三天后截止" in again.body_text
-    assert again.title.startswith("临期提醒｜10月11日—18日截止的 ")
-    assert again.title.endswith(" 个申报项目（已核对）")
+    assert again.title.startswith("临期提醒｜10月11日—18日截止的")
+    assert again.title.endswith("个申报项目（已核对）")
     issue.status = "published"
     session.commit()
     frozen = issue.body_text
@@ -1322,7 +1397,7 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
     issue = result.issue
     assert result.outcome == "generated"
     assert (issue.kind, issue.subject_id, issue.week_start) == ("list_flash", big.id, START)
-    assert issue.title == f"名单速报｜{FLASH_TITLE}（共 4 家）"
+    assert issue.title == f"名单速报｜{FLASH_TITLE}（共4家）"
     assert issue.counts == {"entries": 4} and issue.document_ids == [big.id]
     assert issue.items == [{"id": big.id, "section": "lists", "province": "浙江", "period": PERIOD}]
     lines = issue.body_text.splitlines()
@@ -1354,7 +1429,7 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
     assert not weekly.FORBIDDEN.search(template_only)
     # 公布名单没有公示期；没填公示期的公示名单写"见原文"；条数取不到写"见原文"
     final = flash(session, profile, lists_world["final"]).issue
-    assert final.title == "名单速报｜2026年专精特新中小企业名单（共 1 家）"
+    assert final.title == "名单速报｜2026年专精特新中小企业名单（共1家）"
     assert "公示期" not in final.body_text
     assert "北京科技部门 · 9 月 29 日" in final.body_text.splitlines()
     bare = document(session, session.get(Source, big.source_id), "又一份名单公示", START, "名单")
@@ -1403,6 +1478,18 @@ def test_list_flash_rejects_unlisted_documents_and_cleans_period(session, profil
     for key in ("notice", "hidden", "denied"):
         with pytest.raises(ValueError, match="不是名单、已下架、来源不公开"):
             flash(session, profile, lists_world[key])
+    # 列个人的名单：人工改成了"名单"也不写速报，也不进候选
+    person = document(
+        session,
+        session.get(Source, lists_world["big"].source_id),
+        "2026年职称评审结果公示",
+        START,
+        "名单",
+    )
+    session.commit()
+    with pytest.raises(ValueError, match="列的是个人"):
+        flash(session, profile, person)
+    assert person.id not in [item["id"] for item in weekly.flash_candidates(session, profile, NOW)]
     profile.provinces = ["北京"]
     session.commit()
     with pytest.raises(ValueError, match="地区和关键词"):
@@ -1449,13 +1536,12 @@ def test_api_list_flash_lists_generate_paths_and_period(
     base = {"profile_id": profile.id, "kind": "list_flash"}
     missing = post("/generate", base)
     assert missing.status_code == 422 and "请选择" in missing.json()["detail"]
-    assert (
-        post(
-            "/generate", base | {"subject_id": lists_world["big"].id, "period": "长" * 61}
-        ).status_code
-        == 422
-    )
-    created = post("/generate", base | {"subject_id": lists_world["big"].id, "period": PERIOD})
+    big = {"subject_id": lists_world["big"].id}
+    assert post("/generate", base | big | {"period": "长" * 61}).status_code == 422
+    # 填了公示期要勾"已对照原文核对"
+    unchecked = post("/generate", base | big | {"period": PERIOD})
+    assert unchecked.status_code == 422 and "对照原文核对" in unchecked.json()["detail"]
+    created = post("/generate", base | big | {"period": PERIOD, "period_confirmed": True})
     assert created.status_code == 200 and created.json()["outcome"] == "generated"
     fid = created.json()["issue_id"]
     body = client.get(f"{prefix}/issues/{fid}", headers=HEADERS).json()
@@ -1498,7 +1584,9 @@ def test_api_list_flash_lists_generate_paths_and_period(
     assert weekly_body["period"] == ""
     assert any("weekly_lists" in record for record in seen)
     big_id = lists_world["big"].id
-    assert any(f'"subject_id": {big_id}' in record for record in seen)
+    assert any(
+        f'"subject_id": {big_id}' in record and '"period": true' in record for record in seen
+    )
 
 
 def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile, lists_world):
