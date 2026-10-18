@@ -163,7 +163,8 @@ def _orphans(conn: Connection, tables: dict[str, Table]) -> list[str]:
             child, parent = fk.parent, fk.column
             parent_table = parent.table
             if parent_table is table:
-                # 引荐关系是 users 的自关联；父端须单独别名，并在恢复时一并声明表锁。
+                # 自关联外键（以前 users 的引荐关系就是，迁移 0035 已删，现在没有）：
+                # 父端须单独别名，并在恢复时一并声明表锁。
                 parent_table = table.alias(f"{table.name}_{child.name}_parent")
                 parent = parent_table.c[parent.name]
             joined = table.outerjoin(parent_table, child == parent)
