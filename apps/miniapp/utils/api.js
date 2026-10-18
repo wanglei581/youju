@@ -689,6 +689,26 @@ function advisorStatus() {
   return isLive() ? request('/api/v1/advisor/status') : Promise.reject(new Error('连接真实服务后才能使用工具'));
 }
 
+// 首页提前公布申报季加量的起止日期（D-070 ⑤）：日期只在 /advisor/status 的 season 里（开关关着或过了结束日为 null，
+// 批量工具没开时这个接口 404；不用先同意协议）。首页每次显示都刷新，这一项在一次打开里共用：取到的 10 分钟内不再取；
+// 取不到的（没连真实服务、网络出错、冷启动等太久）当作没有这项活动，1 分钟后再取。只返回 season 或 null，不报错；
+// 不显示"正在连接"：首页其余内容不等它，慢了只是这一行晚点出来
+const SEASON_REUSE = 10 * 60000;
+const SEASON_RETRY = 60000;
+let seasonMemo = null;
+function advisorSeason() {
+  if (seasonMemo && Date.now() < seasonMemo.until) return seasonMemo.promise;
+  if (!isLive()) return Promise.resolve(null);
+  const memo = { until: Date.now() + SEASON_REUSE };
+  memo.promise = withRetry(() => requestOnce('/api/v1/advisor/status', 'GET', undefined, {}), 'GET', null, { quiet: true })
+    .then((res) => (res && res.season) || null, () => {
+      memo.until = Date.now() + SEASON_RETRY;
+      return null;
+    });
+  seasonMemo = memo;
+  return memo.promise;
+}
+
 // 开始加量体验（D-070 ③）：只在确认页点"开始体验"时调用。服务端重复调用返回同一段体验，不会重新起算
 function startBoostTrial() {
   if (!isLive()) return Promise.reject(new Error('连接真实服务后才能开始体验'));
@@ -797,6 +817,6 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, advisorStatus, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  advisorCapabilities, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
 };

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
+const boost = require('../utils/boost.js');
 const conditions = require('../utils/conditions.js');
 const regions = require('../utils/regions.js');
 const { render, textOf, findAll, hasClass, tapsTo } = require('./wxml-render.js');
@@ -383,6 +384,7 @@ function homePage({ open: loginOpen = true, stored = {}, readFails = false, writ
     navigateTo: ({ url }) => nav.push(url),
   };
   const page = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': { home: () => new Promise(() => {}) }, '../../utils/format.js': format,
     '../../utils/daywatch.js': daywatch, '../../utils/cache.js': noCache, '../../utils/consent.js': { loginOpen: () => loginOpen },
   }, { getApp: () => ({ globalData: {} }), wx });

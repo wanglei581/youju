@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
+const boost = require('../utils/boost.js');
 const conditions = require('../utils/conditions.js');
 
 // UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签。
@@ -27,6 +28,7 @@ const FORBIDDEN = ['AI', '智能', '大模型'];
 
 function homePage(stats) {
   return load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => Promise.resolve({ stats, items: [] }) },

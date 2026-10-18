@@ -3,6 +3,7 @@ const { todayISO, clockText, dueView, monthDay, weekday, reviewStaleNote } = req
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
+const boost = require('../../utils/boost.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -74,6 +75,8 @@ Page({
     // 新手引导"三步上手"：没点过"不再显示"时显示
     guide: false,
     guideSteps: [],
+    // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页同一句；没有这项活动或取不到时为空，不显示
+    seasonText: '',
   },
 
   onLoad() {
@@ -103,6 +106,7 @@ Page({
   reload() {
     if (this.refreshing) return;
     this.refreshing = true;
+    this.loadSeason();
     const seq = this.homeSeq = (this.homeSeq || 0) + 1;
     let live = false;
     let fresh = false;
@@ -135,6 +139,15 @@ Page({
         else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, reviewNote: '', error: `数据未更新：${err.message}` });
       })
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
+  },
+
+  // 申报季加量一行：和首页数据分开取，首页不等它；取不到、批量工具没开就不显示，不报错。
+  // 协议没定稿的版本没有工具中心入口（批量工具要先同意协议），不取也不显示
+  loadSeason() {
+    if (!this.data.loginOpen || !api.advisorSeason) return;
+    const seq = this.seasonSeq = (this.seasonSeq || 0) + 1;
+    const show = (season) => { if (seq === this.seasonSeq) this.setData({ seasonText: boost.seasonLine(season) }); };
+    api.advisorSeason().then(show, () => show(null));
   },
 
   show({ stats, items, dueSoon, dueSoonUnverifiedTotal }, cachedText) {

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
+const boost = require('../utils/boost.js');
 const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 
 // 首发版（D-061）的截止显示：已核对 / 机器摘录（8 天以后、带原句）/ 截止未核对。依赖都用替身。
@@ -206,6 +207,7 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
     dueSoonUnverifiedTotal: 4,
   };
   const page = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => false },
@@ -328,6 +330,7 @@ test('首页先显示上次存在本机的数据（10/12 冷启动诊断）：�
     return module.exports;
   };
   const homePage = () => load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': { home: () => new Promise((resolve, reject) => { next = { resolve, reject }; }) },
     '../../utils/cache.js': cacheModule(),
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
@@ -461,6 +464,7 @@ test('首屏快照：首页、截止页、查名单在实时数据回来前先�
   // 首页
   let live = deferred();
   const home = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': { home: () => live.p, snapshotOnce: () => Promise.resolve(plain(snap)) },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
     '../../utils/cache.js': realCache(wx),
@@ -507,6 +511,7 @@ test('截止核对断档（定稿方案第八节）：3 个及以上工作日没
   // 首页：后端给了这个字段才显示；一份都没核对时和"有几份日期还没核对"一起显示
   let res = { stats: { week_total: 1, provinces: 28, sources: 70, deadline_reviewed_at: null }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
   const page = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => false },

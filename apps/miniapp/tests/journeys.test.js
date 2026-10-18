@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const format = require('../utils/format.js');
+const boost = require('../utils/boost.js');
 const conditions = require('../utils/conditions.js');
 
 // 仅加载被测代码；所有依赖都用替身，不访问 legal.js 或本机配置。
@@ -56,6 +57,7 @@ test('J-05 首页返回刷新，合并在途请求并节流；J-12 带搜索类�
   let resolve;
   let url;
   const page = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/api.js': { home: () => { calls += 1; return new Promise((done) => { resolve = done; }); } },
@@ -267,6 +269,7 @@ test('关注范围暂不可查询：保留条件卡和删除，点卡回搜索�
   assert.equal(page.data.newTotal, 1); assert.match(textOf(shown()), /上次查看之后，你关注的条件有\s*1 份新文件/);
 
   const home = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
     '../../utils/api.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' }, '../../utils/consent.js': { loginOpen: () => true },
   }, app);
