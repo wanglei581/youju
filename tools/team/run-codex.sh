@@ -37,7 +37,7 @@ for round in 1 2 3 4 5; do
       continue
     fi
     if grep -qiE "reconnecting|stream disconnected|error sending request|routing discovery failed|timed out" "$R/log.txt"; then
-      echo "网络中断（模型 $m），60 秒后重试"
+      echo "网络中断（模型 ${m}），60 秒后重试"
       break
     fi
     echo "failed (model $m)"

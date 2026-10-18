@@ -9,4 +9,4 @@ TMP=$(mktemp -d)
 code=$?
 rmdir "$TMP" 2>/dev/null
 [ -s "$R/out.md" ] && { echo "exit ok (agy)"; cat "$R/out.md"; exit 0; }
-echo "agy 没有输出（exit $code）"; tail -3 "$R/err.txt"; exit 1
+echo "agy 没有输出（exit ${code}）"; tail -3 "$R/err.txt"; exit 1
