@@ -9,8 +9,9 @@ module.exports = {
   // 一次性订阅消息模板 ID：newDocs 关注条件有新文件；deadline 申报截止前提醒（#22 申请后填写）
   templates: { newDocs: '', deadline: '' },
   // 公众号（公众号方案 PR #287）：username 填公众号的原始 ID（gh_ 开头，公众号后台"设置与开发 → 公众号设置"里），
-  // name 填公众号名称。username 没填时，截止页、我的、关于的"关注公众号"和首页的扫码关注条都不显示
-  officialAccount: { username: '', name: '' },
+  // name 是公众号名称（10/18 创始人定：和小程序同名）。username 没填时，截止页、我的、关于的"关注公众号"
+  // 和首页的扫码关注条都不显示
+  officialAccount: { username: '', name: '有据申报与行业助手' },
   // AI 内测包（D-062）：true 时协议还是草案也开放登录和同意，AI 页面标题和顶部标注写"内部测试"，给白名单成员试用；
   // AI 正式版（D-066，上线即对所有用户开放）改成 false：登录和同意只看 legal.final，标注只写"AI 生成"
   aiInternal: true,
