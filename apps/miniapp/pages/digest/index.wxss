@@ -1,8 +1,9 @@
-.head { padding: 28rpx 32rpx; }
-.head-week { font-size: 34rpx; font-weight: 600; display: flex; align-items: center; gap: 12rpx; }
+/* 不用 .head：列表行组件 doc-row 共享页面样式（apply-shared），它自己也有 .head */
+.digest-head { padding: 28rpx 32rpx; }
+.digest-week { font-size: 34rpx; font-weight: 600; display: flex; align-items: center; gap: 12rpx; }
 .demo { padding: 0 12rpx; line-height: 36rpx; border-radius: 8rpx; background: var(--fill); color: var(--t2); font-size: 22rpx; font-weight: 400; }
-.head-sum { margin-top: 10rpx; font-size: 26rpx; color: var(--t2); line-height: 1.6; }
-.head-note { margin-top: 8rpx; font-size: 24rpx; line-height: 1.6; }
+.digest-sum { margin-top: 10rpx; font-size: 26rpx; color: var(--t2); line-height: 1.6; }
+.digest-note { margin-top: 8rpx; font-size: 24rpx; line-height: 1.6; }
 .filters { margin: 18rpx 24rpx 0; display: flex; }
 .filters picker { flex: 1; min-width: 0; }
 .filter { padding: 20rpx 18rpx; display: flex; align-items: center; justify-content: space-between; background: var(--card); border-radius: 16rpx; color: var(--t1); font-size: 26rpx; line-height: 1.5; }

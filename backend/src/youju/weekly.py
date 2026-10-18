@@ -68,6 +68,7 @@ LOCAL_EARLIER = (
     "地市、区县组织初审或推荐的，报送时间可能早于文件写的截止，以属地主管部门的要求为准。"
 )
 NATIONAL = "国家"
+MINI_NAME = "有据申报与行业助手"
 PROVINCE_ORDER = {province: n for n, province in enumerate(PROVINCES)}
 # 公众号正文中的题录字段也可能夹带网址，展示时统一去掉；带链接版保留原题录。
 # 不带协议头的裸域名（如 kjt.example.gov.cn/tzgg）也去掉：只认常见后缀，免得误伤"2.0 版"这类写法。
@@ -570,10 +571,12 @@ def _list_states(item: Item) -> str:
     return "/".join(state for state in ("公示", "公布") if state in item.title)
 
 
-def _weekly_entry(page: _Page, section: str, item: Item, dues: tuple):
+def _weekly_entry(page: _Page, section: str, item: Item, dues: tuple, week: tuple[date, date]):
     """周报一条：加粗原标题，下一行小字写类别、发文机关、日期和已核对的截止。"""
     if section == "deadlines":
-        meta = [_deadline_text(dues), item.issuer, _published_text(item)]
+        # 本周新发布、又在 30 天内截止的列在截止里，也标"新通知"（和标题里的条数对得上）
+        new = item.published is not None and week[0] <= item.published <= week[1]
+        meta = ["新通知" if new else "", _deadline_text(dues), item.issuer, _published_text(item)]
         if item.support:
             meta.append(f"支持方式：{'、'.join(item.support)}")
         meta.append(_new_versions(item))
@@ -684,7 +687,8 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
     numbers = "、".join(labels[key] for key in COLUMNS if counts[key])
     page.paragraph(
         f"本期{'全国' if area == '全国' else ''}{numbers}。"
-        "全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
+        f"正文每省列 {PER_BLOCK} 条，全部条目在小程序「本期清单」里，可以按省份看，"
+        "点进详情复制原文链接。"
     )
     blocks, policies = _blocks(entries)
     shown = set()
@@ -696,7 +700,7 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
         page.heading(name)
         for section, item, dues in values[:PER_BLOCK]:
             shown.add(item.id)
-            _weekly_entry(page, section, item, dues)
+            _weekly_entry(page, section, item, dues, (start, end))
         if len(values) > PER_BLOCK:
             page.paragraph(f"{name}还有 {len(values) - PER_BLOCK} 条，在本期清单里看。", _NOTE)
     if policies:
@@ -704,10 +708,14 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
         page.heading("全国性政策文件")
         for section, item, dues in policies[:POLICY_LIMIT]:
             shown.add(item.id)
-            _weekly_entry(page, section, item, dues)
+            _weekly_entry(page, section, item, dues, (start, end))
         if len(policies) > POLICY_LIMIT:
             page.paragraph(f"还有 {len(policies) - POLICY_LIMIT} 份，在本期清单里看。", _NOTE)
-    notes = ["本期全部条目：小程序「本期清单」。", "看截止、查名单、搜通知：小程序「有据」。"]
+    # 写小程序全称：微信里搜"有据"两个字可能搜到别的（agy 第二轮）
+    notes = [
+        "本期全部条目：小程序「本期清单」。",
+        f"看截止、查名单、搜通知：微信小程序「{MINI_NAME}」。",
+    ]
     if profile.columns.get("deadlines", False):
         today = stamp.astimezone(BEIJING).date()
         notes.append(f"30 天内截止从 {_month_day(today)}算起，只收人工核对过的日期。")
@@ -999,7 +1007,9 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
     page.paragraph(
         "打开小程序「查名单」，输入企业全称或统一社会信用代码，能看到它上过哪些公示、公布名单。"
     )
-    page.paragraph("看这份名单的原文：在小程序里打开这份名单，点「复制原文链接」，用浏览器打开。")
+    page.paragraph(
+        f"看原文：到{item.issuer}网站查看，或在小程序里打开这份名单，点「复制原文链接」后用浏览器打开。"
+    )
     page.footer(stamp, [], deadlines=False)
     body_html, body_text, linked = page.done()
     return Rendered(

@@ -357,6 +357,14 @@ test('本期清单：条目全下架时写明；跨年的统计周两头写年�
   assert.equal(page.data.weekText, '2025年12月29日—2026年1月4日');
 });
 
+test('本期清单页的样式类名不和列表行组件 doc-row 撞名（doc-row 共享页面样式，撞了会把每条的排版带歪）', () => {
+  const wxss = read('pages/digest/index.wxss').replace(/\/\*[\s\S]*?\*\//g, '');
+  const pageClasses = new Set([...wxss.matchAll(/\.([a-z][\w-]*)/g)].map((m) => m[1]));
+  const rowClasses = new Set([...read('components/doc-row/index.wxml').matchAll(/class="([^"]+)"/g)]
+    .flatMap((m) => m[1].replace(/\{\{[^}]*\}\}/g, ' ').split(/\s+/)).filter(Boolean));
+  assert.deepEqual([...pageClasses].filter((name) => rowClasses.has(name)), []);
+});
+
 test('本期清单页注册了、用默认导航栏（从公众号打开时微信给"回首页"），不能转发、不加奖励字样', () => {
   const app = JSON.parse(read('app.json'));
   assert.ok(app.pages.includes('pages/digest/index'));

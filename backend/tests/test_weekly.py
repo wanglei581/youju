@@ -231,14 +231,17 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     )
     assert lines[1] == (
         "本期全国新通知 4 条、30 天内截止 3 项（已核对）、名单 2 份、政策文件 1 份。"
-        "全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
+        "正文每省列 5 条，全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
     )
     # 块标题不写条数（免得和标题的"新通知4条"被看成对不上）；国家部委在前
     assert lines.index("国家部委") < lines.index("浙江")
+    # 本周新发布、又在 30 天内截止的列在截止里，也标"新通知"
     assert lines[lines.index("项目申报通知") + 1] == (
-        "企业申报截止 10 月 10 日（10 月 5 日核对） · 浙江科技部门 · 9 月 28 日发布 · "
+        "新通知 · 企业申报截止 10 月 10 日（10 月 5 日核对） · 浙江科技部门 · 9 月 28 日发布 · "
         "支持方式：资金支持"
     )
+    assert lines[lines.index("历史项目申报通知") + 1].startswith("企业申报截止 ")
+    assert "看截止、查名单、搜通知：微信小程序「有据申报与行业助手」。" in lines
     assert "10 月 11 日" not in text  # 候选日期不能输出
     assert "企业申报截止 10 月 6 日 17:00（10 月 5 日核对）" in text
     assert "企业申报截止 11 月 4 日（10 月 5 日核对）" in text
@@ -332,7 +335,7 @@ def test_province_blocks_national_first_then_by_count_policies_apart(session, pr
     # 块内顺序：30 天内截止 → 新申报通知 → 名单 → 政策文件
     block = lines[lines.index("安徽") + 1 : lines.index("北京") - 1]
     assert block[0::2] == ["安徽申报通知2", "安徽名单1", "安徽政策0"]
-    assert block[1].startswith("企业申报截止 ")
+    assert block[1].startswith("新通知 · 企业申报截止 ")
     assert lines.index("全国性政策文件") > lines.index("江苏")
     titles = {doc.id: doc.title for doc in session.scalars(select(Document))}
     assert [(titles[item["id"]], item["province"]) for item in issue.items] == [
@@ -372,7 +375,7 @@ def test_compact_multiple_deadlines_and_no_embedded_urls(session, profile):
     issue = generate(session, profile).issue
     # 窗口内的已核对截止都写（企业申报截止在前），本周新通知和截止只列一次
     assert issue.body_text.splitlines()[issue.body_text.splitlines().index("申报 通知") + 1] == (
-        "企业申报截止 10 月 10 日 17:00（10 月 5 日核对）；材料报送截止 10 月 12 日（10 月 5 日核对）"
+        "新通知 · 企业申报截止 10 月 10 日 17:00（10 月 5 日核对）；材料报送截止 10 月 12 日（10 月 5 日核对）"
         " · 科技厅 · 9 月 28 日发布"
     )
     assert "https://" not in issue.body_text + issue.body_html
