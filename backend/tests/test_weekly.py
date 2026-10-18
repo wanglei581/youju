@@ -1630,6 +1630,11 @@ def test_api_list_flash_lists_generate_paths_and_period(
 def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile, lists_world):
     assert db_engine.url.database.startswith("youju_test")
     weekly_issue = generate(session, profile).issue
+    # 已有数据里限了地区却叫"全国"的方案：回填时不能算全国版
+    odd = DigestProfile(name="全国", provinces=["浙江"])
+    session.add(odd)
+    session.commit()
+    odd_issue = weekly.generate(session, odd.id, START, NOW).issue
     flash(session, profile, lists_world["big"], PERIOD)
     cfg = alembic_config(db_engine.url.render_as_string(hide_password=False))
 
@@ -1647,9 +1652,10 @@ def test_migration_0032_list_flash_upgrade_downgrade(db_engine, session, profile
         command.upgrade(cfg, "head")
     session.expire_all()
     # 回退只删名单速报，周报保留；升级后旧期刊没有 items（本期清单按正文里的文件给）
-    [kept] = session.scalars(select(DigestIssue)).all()
+    kept, odd_kept = session.scalars(select(DigestIssue).order_by(DigestIssue.id)).all()
     assert (kept.id, kept.kind, kept.subject_id, kept.items) == (weekly_issue.id, "weekly", 0, None)
-    # 升级时按方案回填范围：升级前发布的全国版周报，"本周周报"也找得到
+    # 升级时按方案回填范围：升级前发布的全国版周报，"本周周报"也找得到；叫"全国"的地区版不算
     assert kept.scope == "全国"
+    assert (odd_kept.id, odd_kept.scope) == (odd_issue.id, "全国·限定范围")
     columns, uniques = shape()
     assert {"subject_id", "items", "scope"} <= columns and uniques == {"uq_digest_issue_subject"}
