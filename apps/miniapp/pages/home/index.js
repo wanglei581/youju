@@ -13,6 +13,23 @@ const SCOPES = [
 // 首页先显示上次存在本机的数据（见 utils/cache.js）；取新的失败就留着上次的，写明"数据未更新"
 const HOME_CACHE = 'youjuHomeCacheV1';
 
+// 新手引导（D-070 ④）："三步上手"卡片。点"不再显示"后在本机记一个标记，以后不再出现；没关之前每次打开都显示。
+// 不判断是不是老用户；没有奖励、打勾和红点。第三步去工具中心（批量名单比对、客户相关通知表，要先同意协议）；
+// 协议没定稿的版本没有工具中心入口，改去不用登录的"我的客户"
+const GUIDE_KEY = 'youjuGuideClosedV1';
+const GUIDE_FIRST = [
+  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知、名单和政策' },
+  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以复制政府网站的原文链接，以原文为准', url: '/pages/report/index' },
+];
+const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，查上过哪些名单、整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
+const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
+const guideSteps = (open) => GUIDE_FIRST.concat(open ? GUIDE_TOOLS : GUIDE_CLIENTS);
+
+// 本机读不到标记（读取出错）时照常显示，宁可多显示一次
+function guideClosed() {
+  try { return Boolean(wx.getStorageSync(GUIDE_KEY)); } catch (e) { return false; }
+}
+
 // "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
 // 后端没给这个字段（老版本或本机演示数据）时不写，免得误报"今日未更新"
 function reviewNoteOf(stats) {
@@ -54,14 +71,31 @@ Page({
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
     loginOpen: loginOpen(),
+    // 新手引导"三步上手"：没点过"不再显示"时显示
+    guide: false,
+    guideSteps: [],
   },
 
   onLoad() {
     if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
-    this.setData({ statusBarHeight, navHeight, menuWidth });
+    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.loginOpen) });
     this.lastShow = Date.now();
     this.reload();
+  },
+
+  // "三步上手"的一步：搜通知按当前的搜索范围去搜索页，另两步去对应的页面
+  goGuide(e) {
+    const step = this.data.guideSteps.find((s) => s.key === e.currentTarget.dataset.key);
+    if (!step) return;
+    if (step.url) wx.navigateTo({ url: step.url });
+    else this.goSearch();
+  },
+
+  // "不再显示"：这次先关掉；本机存不下标记时下次打开可能再出现，不报错
+  closeGuide() {
+    this.setData({ guide: false });
+    try { wx.setStorageSync(GUIDE_KEY, 1); } catch (e) { /* 存不下就算了 */ }
   },
 
   // 取数据：先显示本机存的上次数据；同时向常驻的 admin 要首屏快照（不等接口服务冷启动），

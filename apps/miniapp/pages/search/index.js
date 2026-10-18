@@ -10,8 +10,14 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
-  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
 } = require('../../utils/conditions.js');
+
+// 转发（D-070）：路径带上当前的全部检索条件（和"关注"打开搜索同一套参数），接收人打开是同样的条件，结果按打开时的数据。
+// 条件不删减：删了接收人看到的就和转发人不一样。微信没写转发路径的长度上限，条件很多时由真机验证
+// 网址参数解码：微信把路径里的参数原样（没解码）交给 onLoad（开发者工具实测，navigateTo 和从聊天卡片打开都是），
+// 这里解码一次；坏的编码（如被截断的 %E4）不报错，原样当作文字
+const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 
 const KIND_TABS = [
   { key: 'all', label: '全部' },
@@ -126,12 +132,12 @@ Page({
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
-    const kind = decodeURIComponent(query.kind || '');
-    const time = decodeURIComponent(query.time || '');
+    const kind = decode(query.kind);
+    const time = decode(query.time);
     const picked = Object.assign({}, DEFAULT_PICKED);
     if (['近 7 天', '近 30 天', '近 90 天', '今年', '不限'].includes(time)) picked.time = [time];
     [['regions', 'region'], ['cities', 'city'], ['districts', 'district'], ['levels', 'level'], ['types', 'type'], ['categories', 'category'], ['supports', 'support'], ['industries', 'industry'], ['status', 'status'], ['depts', 'dept']].forEach(([param, group]) => {
-      if (query[param]) picked[group] = decodeURIComponent(query[param]).split(',');
+      if (query[param]) picked[group] = decode(query[param]).split(',');
     });
     if (String(query.open) === '1') picked.open = ['只看未截止'];
     // 旧条件地区里的"国家部委"：结果相同时换成层级
@@ -145,7 +151,7 @@ Page({
     }
     this.setData({ picked });
     this.setData({
-      q: decodeURIComponent(query.q || ''),
+      q: decode(query.q),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
     this.refreshChips();
@@ -485,7 +491,8 @@ Page({
     parts.push(tab ? tab.label : '全部');
     if (c.time && c.time !== '不限') parts.push(c.time);
     if (c.open) parts.push('只看未截止');
-    return parts.join(' · ').slice(0, 40);
+    // 按字截到 40 个：关键词里有表情等双字节字符时不截出半个（关注名称和转发卡片标题都用它）
+    return Array.from(parts.join(' · ')).slice(0, 40).join('');
   },
 
   // 关注这个搜索：保存当前条件，有新文件时在"关注"里标出；关注后可以订阅一次微信提醒
@@ -531,6 +538,11 @@ Page({
         },
       });
     });
+  },
+
+  // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
+  onShareAppMessage() {
+    return { title: `搜索结果：${this.followName()}`, path: searchUrl(this.conditions()) };
   },
 
   // 进入或退出选择模式；退出时清空勾选

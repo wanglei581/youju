@@ -1,6 +1,7 @@
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="nav" style="height: {{navHeight}}px">
-    <view class="nav-back" bindtap="back" aria-role="button" aria-label="返回"><t-icon name="chevron-left" size="48rpx" color="#FFFFFF" /></view>
+    <!-- 从转发卡片打开（页面栈只有这一页）时左上角是"首页"，点了回首页 -->
+    <view class="nav-back" bindtap="back" aria-role="button" aria-label="{{firstPage ? '回首页' : '返回'}}"><t-icon name="{{firstPage ? 'home' : 'chevron-left'}}" size="{{firstPage ? '40rpx' : '48rpx'}}" color="#FFFFFF" /></view>
     <text class="nav-title">查名单</text>
   </view>
   <view class="h1">查企业上过哪些名单</view>
