@@ -89,7 +89,7 @@ class TextTests(unittest.TestCase):
 class MainTests(unittest.TestCase):
     """main() 的筛选：用替身代替开发者工具，不连线上。"""
 
-    def run_main(self, a_items, b_items, soon, soon_total=None, argv=("山东",), pages=None, no_url=()):
+    def run_main(self, a_items, b_items, soon, soon_total=None, argv=("山东",), pages=None, no_url=(), total=None):
         results = {
             "cov": COVERAGE,
             "a0": {"status": 200, "items": a_items},
@@ -97,7 +97,7 @@ class MainTests(unittest.TestCase):
                    "soonTotal": len(soon) if soon_total is None else soon_total},
         }
         for key, extra in (pages or {}).items():  # 后面几页：{"a0p2": [...]}，第一页写明 total
-            results[key[:2]]["total"] = len(results[key[:2]]["items"]) + len(extra)
+            results[key[:2]]["total"] = total or len(results[key[:2]]["items"]) + len(extra)
 
         def fake_run(jobs, label):
             if label == "取原文链接":
@@ -152,6 +152,16 @@ class MainTests(unittest.TestCase):
         with mock.patch.object(MODULE, "PAGE_SIZE", 1):
             code, files = self.run_main([entry(1, "2026-10-23")], [], [], pages={"a0p2": [entry(1, "2026-10-23")]})
         self.assertEqual((code, files), (1, {}))
+
+    def test_overlapping_pages_are_deduplicated(self):
+        # 第一页 [1]，第二页 [1, 7]，总数 2：合并后去重，第 1 项只列一次
+        with mock.patch.object(MODULE, "PAGE_SIZE", 1):
+            code, files = self.run_main([entry(1, "2026-10-23")], [], [], total=2,
+                                        pages={"a0p2": [entry(1, "2026-10-23"), entry(7, "2026-10-24")]})
+        self.assertEqual(code, 0)
+        shareable = next(t for n, t in files.items() if "可转发" in n)
+        self.assertEqual(shareable.count("关于申报第1项的通知"), 1)
+        self.assertIn("第7项", shareable)
 
     def test_missing_link_returns_error(self):
         code, _ = self.run_main([entry(1, "2026-10-23")], [], [], no_url=("1",))
