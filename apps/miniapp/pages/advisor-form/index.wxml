@@ -18,8 +18,14 @@
     </view>
     <!-- 只在超出免费量、且服务端在售时出现；查信息的过程中不出现付费提示（D-058 第六节） -->
     <view wx:if="{{offer && !passActive && !trialActive && (!remaining || rowCount > maxRows)}}" class="advisor-offer">
-      <view class="advisor-text">客户工作台 30 天（{{offer.price}} 元）：不限次数，每次 500 家以内。买一次用 {{offer.days}} 天，到期不再扣钱。</view>
-      <button class="advisor-button" bindtap="buyPass">了解客户工作台</button>
+      <view class="advisor-text">批量工具：{{offer.line}}，不限次数，每次 500 家以内。一次付清，到期不再扣钱。</view>
+      <button class="advisor-button" bindtap="buyPass">了解批量工具</button>
+    </view>
+    <!-- 使用期 3 天内到期（在售时）：续买的规则只在这里和"我的 → 批量工具"出现，不发消息催买（D-070 ⑥） -->
+    <view wx:if="{{offer && passActive && passNotice}}" class="advisor-offer">
+      <view class="advisor-text">{{passNotice}}</view>
+      <view wx:if="{{offer.renew}}" class="advisor-text">{{offer.renew.text}}</view>
+      <button class="advisor-button" bindtap="buyPass">续买批量工具</button>
     </view>
     <view class="advisor-actions"><button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{previewing || submitting}}">粘贴文本</button><button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{previewing || submitting}}">选择文件</button></view>
     <block wx:if="{{mode === 'paste'}}">
