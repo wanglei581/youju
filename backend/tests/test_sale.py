@@ -213,6 +213,20 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     assert create(shop, "workbench_90d").status_code == 404
 
 
+def test_order_keeps_the_invoice_type_shown_when_it_was_placed(shop, session):
+    """订单记下下单时购买页写的发票类型：日后改了配置，历史订单仍查得到当时写的是什么（Codex 第三轮）。"""
+    shop.settings.pay_invoice_type = "电子普通发票（测试）"
+    row = buy(shop, session)
+    shop.settings.pay_invoice_type = "另一种发票（测试）"
+    session.expire_all()
+    assert session.get(PayOrder, row.id).invoice_type == "电子普通发票（测试）"
+    # 沙箱联调时可以还没填：记空
+    shop.settings.pay_invoice_type = ""
+    assert buy(shop, session, at=NOW + DAY).invoice_type is None
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, pay_invoice_type="字" * 101)
+
+
 def test_draft_terms_version_cannot_be_used_for_live_sales():
     """现网只认定稿协议：服务端填成草稿版本号就不启动（定稿的协议必须写明发票类型，小程序测试检查）。"""
     with pytest.raises(ValidationError, match="不能填草稿版本"):

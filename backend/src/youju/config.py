@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     # 能开哪种发票（D-070：付款前要看得到），创始人确认后填一句，
     # 如"增值税电子普通发票，个人或单位抬头"。购买页照这句显示；
     # 现网（真扣钱）没填就不卖（payments.orderable），沙箱联调不受影响
-    pay_invoice_type: str = ""
+    pay_invoice_type: str = Field(default="", max_length=100)
     xpay_offer_id: str = ""
     xpay_env: Literal[0, 1] = 1
     xpay_appkey_prod: SecretStr | None = None

@@ -959,6 +959,8 @@ class PayOrder(Base):
     days: Mapped[int] = mapped_column(Integer)
     # 续买多送的天数（D-070 ⑥）：下单时开关开着记 3，关着记 0；付款时间符合"到期前后 7 天"才真的送
     bonus_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 下单时购买页写的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE 当时的值），日后改了配置也查得到
+    invoice_type: Mapped[str | None] = mapped_column(String(100))
     env: Mapped[int] = mapped_column(Integer)
     # 下单时用户勾选同意的《付费服务协议》版本
     terms_version: Mapped[str] = mapped_column(String(40))

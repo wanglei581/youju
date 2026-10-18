@@ -646,8 +646,10 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /到期后，已经生成的结果仍可查看、导出/);
   assert.match(text, /按剩余天数退款/);
   assert.match(text, /停止服务（会提前至少 30 天公告）/);
-  assert.match(text, /体验没用完的时间折成天数加在后面/);
-  assert.match(text, /使用期从开通时起算（付款成功后马上开通）/);
+  assert.match(text, /没用完的体验时间折成天数加在后面/);
+  assert.match(text, /使用期从开通时起算（一般付款后几秒内就开通）/);
+  assert.match(text, /开通时体验结束/);
+  assert.doesNotMatch(text, /马上开通|马上生效/);
   // 第一句在价格前面
   assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
   const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));

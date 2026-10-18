@@ -201,6 +201,8 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         days=days,
         # 下单时续买多送开着才算数（付款页这时写着这条规则）；付款时间符合才真的送
         bonus_days=payments.RENEW_BONUS_DAYS if payments.renew_bonus_enabled(settings) else 0,
+        # 购买页当时写的发票类型（沙箱联调时可能还没填）
+        invoice_type=payments.invoice_type(settings)[:100] or None,
         env=settings.xpay_env,
         terms_version=body.terms_version,
         created_at=stamp,

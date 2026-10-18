@@ -2,6 +2,7 @@
 
 - pay_orders.days：这一档的天数（30 或 90），下单快照；已有订单都是 30 天那一档（D-058 只卖过这一个）。
 - pay_orders.bonus_days：下单时"续买多送"开关开着记 3，否则 0。
+- pay_orders.invoice_type：下单时购买页写的"能开哪种发票"（YOUJU_PAY_INVOICE_TYPE 当时的值）。
 - pay_orders.refund_fee / refund_source / refund_note：退多少（分，空按全额）、谁发起（self 自助、
   staff 负责人按规则发起）、人工退款的原因。
 - pass_rewards.kind 加 renewal（续买多送）、trial（加量体验折算）：随订单发的赠送，每次一笔。
@@ -29,6 +30,7 @@ def upgrade() -> None:
     op.add_column(
         "pay_orders", sa.Column("bonus_days", sa.Integer(), nullable=False, server_default="0")
     )
+    op.add_column("pay_orders", sa.Column("invoice_type", sa.String(100), nullable=True))
     op.add_column("pay_orders", sa.Column("refund_fee", sa.Integer(), nullable=True))
     op.add_column("pay_orders", sa.Column("refund_source", sa.String(16), nullable=True))
     op.add_column("pay_orders", sa.Column("refund_note", sa.String(200), nullable=True))
@@ -73,5 +75,6 @@ def downgrade() -> None:
     op.drop_column("pay_orders", "refund_note")
     op.drop_column("pay_orders", "refund_source")
     op.drop_column("pay_orders", "refund_fee")
+    op.drop_column("pay_orders", "invoice_type")
     op.drop_column("pay_orders", "bonus_days")
     op.drop_column("pay_orders", "days")
