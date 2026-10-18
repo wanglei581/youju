@@ -18,6 +18,10 @@ from youju.config import Settings
 from youju.db import get_session
 from youju.models import AdvisorTask, AdvisorUsage, BoostTrial, RewardClaim, User
 
+# 当前的用户协议版本：取后台默认值，升版本时不用改测试
+AGREEMENT = Settings.model_fields["agreement_version"].default
+
+
 BJ = ZoneInfo("Asia/Shanghai")
 # 星期二上午；体验 72 小时到 10 月 23 日 10:00 结束
 NOW = datetime(2026, 10, 20, 10, 0, tzinfo=BJ)
@@ -65,7 +69,7 @@ def join(client, openid="trial-user", *, tools=True):
     identity = headers(openid)
     assert (
         client.post(
-            "/api/v1/me/agreement", headers=identity, json={"version": "2026-10"}
+            "/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT}
         ).status_code
         == 200
     )
