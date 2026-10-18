@@ -1,4 +1,4 @@
-<!-- 首页（D-061）：品牌蓝顶部（字标、第三方整理角标、搜索范围、搜索框、热词）→ 3 个入口 → 本周新增 → 7 天内截止 → 最新申报通知 -->
+<!-- 首页（D-061）：品牌蓝顶部（字标、第三方整理角标、搜索范围、搜索框、热词）→ 3 个入口 →（没关掉时）三步上手 → 本周新增 → 7 天内截止 → 最新申报通知 -->
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="brand-row" style="height: {{navHeight}}px; padding-right: {{menuWidth}}px">
     <text class="brand">有据</text>
@@ -37,6 +37,22 @@
   <view wx:if="{{loginOpen}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
     <view class="tile tile--blue"><t-icon name="app" size="44rpx" color="#FFFFFF" /></view>
     <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
+  </view>
+</view>
+
+<!-- 新手引导（D-070 ④）"三步上手"：普通卡片，不弹窗、不遮挡下面的内容，没有奖励；点"不再显示"后本机记住、不再出现 -->
+<view wx:if="{{guide}}" class="card guide">
+  <view class="guide-head">
+    <text class="guide-title">三步上手</text>
+    <view class="guide-close" bindtap="closeGuide" aria-role="button" aria-label="关闭三步上手，以后不再显示"><text>不再显示</text><t-icon name="close" size="24rpx" /></view>
+  </view>
+  <view wx:for="{{guideSteps}}" wx:key="key" class="guide-step" hover-class="guide-step--pressed" data-key="{{item.key}}" bindtap="goGuide" aria-role="button" aria-label="第{{index + 1}}步，{{item.name}}：{{item.text}}">
+    <text class="guide-no">{{index + 1}}</text>
+    <view class="guide-body">
+      <view class="guide-name">{{item.name}}</view>
+      <view class="guide-text">{{item.text}}</view>
+    </view>
+    <t-icon name="chevron-right" size="28rpx" color="#B4BAC6" />
   </view>
 </view>
 

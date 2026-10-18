@@ -76,3 +76,14 @@
 
 .entries--tools { grid-template-columns: repeat(4, 1fr); }
 .entries--tools .entry-sub { font-size: 22rpx; }
+
+/* 新手引导"三步上手"（D-070 ④）：和其他卡片同样的白底圆角，序号圆点同"文件"页的导出步骤 */
+.guide-head { min-height: 88rpx; display: flex; align-items: center; justify-content: space-between; }
+.guide-title { font-size: 30rpx; font-weight: 600; }
+.guide-close { min-height: 72rpx; padding-left: 24rpx; display: flex; align-items: center; gap: 6rpx; font-size: 24rpx; color: var(--t3); }
+.guide-step { padding: 22rpx 0; display: flex; align-items: center; gap: 20rpx; border-top: 2rpx solid var(--line); }
+.guide-step--pressed { opacity: 0.6; }
+.guide-no { width: 40rpx; height: 40rpx; flex-shrink: 0; align-self: flex-start; margin-top: 2rpx; border-radius: 50%; background: var(--brand-tint); color: var(--brand); font-size: 24rpx; font-weight: 600; line-height: 40rpx; text-align: center; }
+.guide-body { flex: 1; min-width: 0; }
+.guide-name { font-size: 28rpx; font-weight: 600; line-height: 44rpx; }
+.guide-text { margin-top: 2rpx; font-size: 24rpx; line-height: 1.5; color: var(--t2); }
