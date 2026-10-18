@@ -13,6 +13,7 @@ jobs:
   miniapp:
     name: 小程序与发布工具（测试 + 体验准备）
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
@@ -34,6 +35,8 @@ jobs:
   backend:
     name: 后端（代码检查 + 测试）
     runs-on: ubuntu-latest
+    # 平时 10–19 分钟；卡住时不按 GitHub 默认跑满 6 小时
+    timeout-minutes: 40
     services:
       # 线上用微信云托管自带的 MySQL 8.0
       mysql:

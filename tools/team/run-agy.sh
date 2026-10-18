@@ -8,5 +8,5 @@ TMP=$(mktemp -d)
   --print-timeout 20m -p "$(cat "$R/prompt.txt")" > "$R/out.md" 2> "$R/err.txt")
 code=$?
 rmdir "$TMP" 2>/dev/null
-[ -s "$R/out.md" ] && { echo "exit ok (agy)"; cat "$R/out.md"; exit 0; }
-echo "agy 没有输出（exit $code）"; tail -3 "$R/err.txt"; exit 1
+[ -s "$R/out.md" ] && { echo "exit ok (agy)"; cat "$R/out.md"; [ -n "$(tail -c1 "$R/out.md")" ] && echo; exit 0; }
+echo "agy 没有输出（exit ${code}）"; tail -3 "$R/err.txt"; exit 1
