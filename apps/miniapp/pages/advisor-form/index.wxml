@@ -53,7 +53,7 @@
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '提交前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
     <view wx:if="{{!passActive}}" class="advisor-text muted">每提交一次算 1 次，不论几家；排队中取消、或处理失败没出结果的，不算次数。</view>
-    <view class="advisor-text muted">原文件不保存；提交的名单 7 天后清空，结果 30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
+    <view class="advisor-text muted">原文件不保存；任务里的名单 7 天后清空，结果文件（含提交的名单）30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !previewed}}">提交任务</button>
     <button class="advisor-button" bindtap="tasks" disabled="{{submitting}}">查看已有任务</button>
   </view>

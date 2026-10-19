@@ -145,7 +145,7 @@ test('我的数据·保存多久和隐私保护指引一致；AI 一行只给用
     }, { wx: { setClipboardData() {}, showToast() {}, showModal() {} } });
     page.load(); await flush();
     const text = render(wxml('my-data'), page.data);
-    assert.match(text, /批量工具：解析出的名单 7 天后清空，任务记录和结果文件 30 天后删除/);
+    assert.match(text, /批量工具：任务里解析出的名单 7 天后清空，任务记录和结果文件（含提交的名单内容）30 天后删除/);
     assert.match(text, /加量体验记录：开始和结束时间保存到你注销/); assert.match(text, /按天的使用次数：保留本月和上个月的/);
     assert.match(text, /数据库备份：每天备份一次，保留 30 天/);
     assert.equal(/AI 解读和条款对照：任务输入 7 天后删除，任务和结果 30 天后删除/.test(text), tasks[0].kind === 'interpret');
