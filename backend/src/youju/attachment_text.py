@@ -217,13 +217,15 @@ _SPACED_CONTACT = re.compile(r"(联\s*系\s*人\s*[:：]\s*)[\u4e00-\u9fff·]{2,
 _DECIMAL = re.compile(r"((?<![\d.])\d+\.\d+(?![\d.]))")
 
 
-def _account_cell(text: str) -> bool:
-    return bool(_ACCOUNT_CELL.match(text)) and not _ACCOUNT_TYPE.search(text)
+def _account_cell(text: str, *, types: bool = False) -> bool:
+    """这一格是不是账号标签。"基本存款账户"这类账户类型的词：types=True（表头行和表头上面几行，
+    列名常这样写）当标签；表头下面的数据格里是账户类型的值，不当标签。"""
+    return bool(_ACCOUNT_CELL.match(text)) and (types or not _ACCOUNT_TYPE.search(text))
 
 
-def _cell_label(text: str) -> str | None:
+def _cell_label(text: str, *, types: bool = False) -> str | None:
     """表格里这一格是不是标签：账号（_account_cell）、身份证号、手机（_ID_CELL、_PHONE_CELL）。"""
-    if _account_cell(text):
+    if _account_cell(text, types=types):
         return "account"
     if _ID_CELL.match(text):
         return "id"
@@ -647,7 +649,8 @@ class _Builder:
         label_from = {col: (-1, kind) for col, kind in (columns or {}).items()}
         for index, row in enumerate(rows):
             for cell in row.cells:
-                kind = _cell_label(clean(cell.text)) if cell.span < 3 else None
+                text = clean(cell.text)
+                kind = _cell_label(text, types=index < first) if cell.span < 3 else None
                 for col in range(cell.col, cell.col + max(cell.span, 1)) if kind else ():
                     label_from.setdefault(col, (index, kind))
         head_text = ""
@@ -659,7 +662,9 @@ class _Builder:
                     continue
                 header = headers.get(cell.col) if i >= first else None
                 since, kind = label_from.get(cell.col, (len(rows), None))
-                masked = mask(text, column=kind if i > since else _cell_label(left))
+                masked = mask(
+                    text, column=kind if i > since else _cell_label(left, types=i < first)
+                )
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
                 if header:
