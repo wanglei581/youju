@@ -25,10 +25,12 @@ Page({
     profileError: '',
     followCount: 0,
     reminderCount: 0,
-    // "我的订单"：支付在售、或有过订单时才显示（服务端 /me 的 pay；没开放支付时不放空入口，D-068）
+    // "我的订单"：有过订单才显示（服务端 /me 的 pay；停卖后已付款的人照样能看订单、退款、开票）
     ordersEntry: false,
-    // "批量工具"：给买过的人续买（D-070），在售并且有过订单才显示；停卖后只剩"我的订单"
-    renewEntry: false,
+    // "批量工具"：在售时所有人都显示（D-076，原来只给买过的人续买）；没在售时不显示，正式版开卖前看不到
+    // passHint：没买过写最便宜一档的价格（"30 天 29 元起"），买过写到期日；取不到就不写
+    passEntry: false,
+    passHint: '',
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
     stats: null,
     notCovered: '',
@@ -64,7 +66,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, renewEntry: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passHint: '' });
       return;
     }
     const started = consentEpoch();
@@ -85,14 +87,34 @@ Page({
           outdated: !!res.agreed && !current,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
-          ordersEntry: !!(res.pay && (res.pay.enabled || res.pay.hasOrders)),
-          renewEntry: !!(res.pay && res.pay.enabled === true && res.pay.hasOrders === true),
+          ordersEntry: !!(res.pay && res.pay.hasOrders === true),
+          passEntry: !!(res.pay && res.pay.enabled === true),
+          passHint: '',
         });
+        if (res.pay && res.pay.enabled === true) this.loadPassHint(seq, res.pay.hasOrders === true);
       })
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
         this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}` });
       });
+  },
+
+  // "批量工具"那一行的小字：买过的人写到期日（读 /advisor/status），没买过的写最便宜一档（读商品接口）；
+  // 都是在售时才调用，取不到就不写，不影响点进去
+  loadPassHint(seq, bought) {
+    const pay = require('../../utils/pay.js');
+    const done = (hint) => { if (seq === this.profileSeq && this.data.passEntry) this.setData({ passHint: hint }); };
+    if (bought) {
+      Promise.resolve().then(() => api.advisorStatus()).then((status) => {
+        const pass = status && status.pass;
+        done(pass && pass.active && pay.monthDay(pass.expiresAt) ? `到 ${pay.monthDay(pass.expiresAt)}` : '已到期，可再买一次');
+      }).catch(() => done('到期日、续买'));
+      return;
+    }
+    Promise.resolve().then(() => api.payProducts()).then((res) => {
+      const cheapest = pay.normalizeProducts(res)[0];
+      done(cheapest ? `${cheapest.days} 天 ${pay.yuan(cheapest.price)} 元起` : '');
+    }).catch(() => done(''));
   },
 
   // 登录前必须主动勾选同意协议（agy 合规意见；微信隐私协议开发指南要求用户明确同意）
