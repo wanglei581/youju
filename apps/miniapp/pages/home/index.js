@@ -19,7 +19,8 @@ const HOME_CACHE = 'youjuHomeCacheV1';
 // 协议没定稿的版本没有工具中心入口，改去不用登录的"我的客户"
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
-  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知、名单和政策' },
+  // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明查企业上过哪些名单要先点"查名单"
+  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业上过哪些名单，先点搜索框上面的“查名单”' },
   { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以复制政府网站的原文链接，以原文为准', url: '/pages/report/index' },
 ];
 const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，查上过哪些名单、整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
@@ -126,6 +127,8 @@ Page({
         if (!snap || live || seq !== this.homeSeq) return;
         fresh = true;
         this.show(snap.home, '');
+        // 实时请求可能已经先失败、写了"数据未更新"：快照到了就清掉（10/18 验收，Codex 指出）
+        this.setData({ error: '' });
         save(snap.home);
       });
     }

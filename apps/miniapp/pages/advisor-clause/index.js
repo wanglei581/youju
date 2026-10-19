@@ -2,12 +2,12 @@
 const api = require('../../utils/api.js');
 const { regionSelection, regionValue } = require('../../utils/regions.js');
 const clause = require('../../utils/ai-clause.js');
-const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
+  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
     checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false, showTerms: false, showMore: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
     qualificationOptions: [], today: '', cityRegion: [] },
@@ -32,7 +32,7 @@ Page({
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('clause');
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
       const gate = aiEnabled ? '' : gateState(res);
-      this.setData({ loading: false, aiEnabled, gate, gateText: GATE_TEXT[gate] || '', aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
+      this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
       if (aiEnabled && this.session) this.session.show();
     }).catch(() => {
       if (this.visible && epoch === this.epoch) this.setData({ loading: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT });
@@ -92,7 +92,7 @@ Page({
   },
   check(e) { if (this.session) this.session.check((e.detail.value || []).includes('agree')); },
   agree() { if (this.data.aiEnabled && this.session) this.session.agree(); },
-  // 使用须知只有一个"我知道了，开始对照"按钮（10/17）
+  // 使用须知只有一个"我知道了，开始对照"按钮（10/17）；打开已有任务时写"我知道了，查看结果"
   start() { if (this.data.aiEnabled && this.session) this.session.start(); },
   toggleTerms() { this.setData({ showTerms: !this.data.showTerms }); },
   // 研发费用、已有资质默认收起；已经填了的不收起，免得看不到

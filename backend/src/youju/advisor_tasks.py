@@ -506,12 +506,18 @@ def process_ai(
             # 模型拒答（逐字核对后一条不剩）只复用 1 天：挡住反复提交同一份触发模型调用，
             # 又不让一次偶然的拒答把这份通知锁 30 天（模型输出会波动，见 AI 评测第八节）。
             window = REFUSAL_CACHE if cached.result_json.get("refusal") else FILE_RETENTION
-            if generated > stamp - window and cached.snapshot:
+            cached_doc = (cached.snapshot or {}).get("doc_id")
+            if generated > stamp - window and cached_doc:
                 try:
                     _, _, cached_current_key = interpret.prepare(
-                        session, cached.snapshot["doc_id"], model, skill=skill
+                        session, cached_doc, model, skill=skill
                     )
-                    reusable = cached_current_key == key
+                    # 缓存键相同只说明原文和核对一样；发给模型的脱敏后段落也要一样才复用，
+                    # 免得脱敏规则改了以后旧摘录被新任务复制出来；旧缓存缺正文指纹或段落的不复用，
+                    # 重新调用模型（D-073，Codex 第二、三轮）
+                    reusable = cached_current_key == key and not interpret.body_changed(
+                        cached.snapshot, snapshot
+                    )
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
@@ -554,14 +560,20 @@ def process_ai(
                 model_disclosure=interpret.disclosure(settings),
                 skill=skill,
             )
-            # 调用期间原文或核对状态可能变更；刷新后重新校验，不发布旧快照。
+            # 调用期间原文或核对状态可能变更；刷新后重新校验。D-073：正文变了不发布；
+            # 只是核对或附件变了照常发布，"已核对"和附件提醒换成现在的
             session.flush()
             session.expire_all()
-            _, _, current_key = interpret.prepare(
+            current, current_verified, current_key = interpret.prepare(
                 session, task.input_json["doc_id"], model, skill=skill
             )
             if key != current_key:
-                raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
+                if interpret.body_changed(snapshot, current):
+                    raise interpret.InterpretRefusal(interpret.BODY_CHANGED)
+                result = interpret.refresh_verification(
+                    result, current_verified, current["attachments"]
+                )
+                task.snapshot, task.cache_key = current, current_key
         task.result_json = result
         task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
@@ -711,7 +723,7 @@ def process_task(
             uploaded_file_id = file_id
         if monotonic_clock.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
-        # 发奖与提交任务统一先锁用户；首次完成标记和任务完成同事务落库。
+        # 和提交任务、注销一样先锁用户，再写任务完成（首次批量奖励已删，D-061、D-070）。
         # 引擎已修改任务的结果引用；自动刷新会先写任务再等待用户，和注销互锁。
         with session.no_autoflush:
             user = session.scalar(
@@ -722,22 +734,6 @@ def process_task(
             )
         if user is None:
             raise CompareInputError("用户不存在，任务无法处理")
-        previous = None
-        if user.batch_completed_at is None:
-            previous = session.scalar(
-                select(AdvisorTask)
-                .where(
-                    AdvisorTask.user_id == user.id,
-                    AdvisorTask.kind.in_(("compare", "track")),
-                    AdvisorTask.status == "done",
-                    AdvisorTask.id != task.id,
-                )
-                .order_by(AdvisorTask.finished_at, AdvisorTask.id)
-                .limit(1)
-            )
-        first_batch = user.batch_completed_at is None and previous is None
-        if user.batch_completed_at is None:
-            user.batch_completed_at = (previous.finished_at if previous else None) or stamp
         task.status = "done"
         task.result_file_id = file_id
         task.result_rows = rows
@@ -745,14 +741,6 @@ def process_task(
         task.error = None
         record_pass_completion(session, task)
         session.commit()
-        if first_batch:
-            from youju import rewards
-
-            try:
-                rewards.first_completion(session, user.id, stamp, settings=settings)
-            except Exception:
-                session.rollback()
-                log.warning("首次批量任务奖励未发出，请运行 rewards-reconcile")
         return True
     except Exception as exc:  # noqa: BLE001 - 用户只需看到稳定的中文原因
         session.rollback()

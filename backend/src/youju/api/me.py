@@ -118,13 +118,6 @@ class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
     scope: Literal["general", "advisor"] = "general"
-    invite_code: str | None = None
-
-    @field_validator("invite_code", mode="before")
-    @classmethod
-    def valid_invite_code(cls, value):
-        # 无效码不能妨碍同意协议；只把可能匹配固定码的短字符串送进查询。
-        return value if isinstance(value, str) and 0 < len(value) <= 16 else None
 
 
 class Conditions(BaseModel):
@@ -544,36 +537,6 @@ def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) 
     session.commit()
 
 
-def _require_referral() -> None:
-    from youju import rewards
-
-    if not rewards.referral_enabled(get_settings()):
-        raise HTTPException(status_code=404, detail="没有找到接口")
-
-
-@router.get("/me/invite", dependencies=[Depends(_require_referral)])
-def invite_status(session: SessionDep, user: UserDep) -> dict:
-    from youju import rewards
-
-    code = rewards.invite_code(session, user.id)
-    count = sum(
-        row.kind == "referral" and row.granted_days > 0
-        for row in session.scalars(rewards.monthly(session, user.id, v1.now()))
-    )
-    session.commit()
-    return {
-        "inviteCode": code,
-        "monthCount": count,
-        "monthLimit": 4,
-        "rules": [
-            "新用户第一次完成批量对照或客户跟踪后，请来他的同行得 7 天批量工具使用期。",
-            "每月最多计入 4 位，各项奖励合计每月最多 30 天，超出部分不给、不顺延。",
-            "新用户不会因使用引荐码多得天数；只计算直接请来的同行。",
-            "使用天数不能转让、不能折现，注销账号时作废。",
-        ],
-    }
-
-
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。接受仍认的最早版本到当前版本之间的版本
@@ -598,21 +561,6 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     if not oldest <= body.version <= current:
         raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
-    from youju import rewards
-
-    inviter = None
-    if (
-        rewards.referral_enabled(get_settings())
-        and body.invite_code
-        and session.scalar(select(User.id).where(User.openid == request_openid(request))) is None
-    ):
-        inviter = session.scalar(
-            select(User.id).where(User.invite_code == body.invite_code).with_for_update()
-        )
-    if inviter is not None and not rewards.record_claim(
-        session, request_openid(request), "referred", stamp
-    ):
-        inviter = None
     # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
     newer = and_(
         User.agreement_version.regexp_match("^[0-9]{4}-[0-9]{2}"),
@@ -623,8 +571,6 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         insert(User)
         .values(
             openid=request_openid(request),
-            invited_by_user_id=inviter,
-            invited_at=stamp if inviter is not None else None,
             last_visited_at=stamp,
             agreement_version=body.version,
             agreement_at=stamp,
@@ -658,8 +604,9 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
         from youju.payments import anonymize
 
         # 两套审计同在注销事务中；即使开关已关闭也作废奖励段。
-        # 加量体验的记录随用户删除（外键级联），不另留凭据（D-071 第②条改为注销即删）
-        rewards.anonymize(session, user, v1.now(), settings=get_settings())
+        # 加量体验的记录随用户删除（外键级联）；奖励和体验都不另留防重复领取的凭据（注销即删，
+        # D-071 第②条）
+        rewards.anonymize(session, user, v1.now())
         anonymize(session, user)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
@@ -726,6 +673,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "feedback": settings.retain_feedback_days,
             "usedSubscriptions": settings.retain_used_subscriptions_days,
             "unusedSubscriptions": settings.retain_unused_subscriptions_days,
+            # 批量工具和 AI：解析出的名单 / 任务输入 7 天，任务记录和结果 30 天
+            # （隐私保护指引第三节第 2 条"保存期限"）
+            "toolInput": advisor_service.INPUT_RETENTION.days,
+            "toolTasks": advisor_service.FILE_RETENTION.days,
         },
         "exportedAt": _iso(v1.now()),
     }

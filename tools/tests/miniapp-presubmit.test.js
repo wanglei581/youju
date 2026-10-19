@@ -66,6 +66,28 @@ test('完整候选严格限定 25 页（含加量体验确认页、购买页、�
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
 });
+test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
+ const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','digest'].map(p=>`pages/${p}/index`));
+ x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
+ const r=inspect({...x,profile:'complete-release',mode:'submit'});
+ // 备案号、邮箱、协议都齐：静态提审检查可以通过（工具说明复核、付费协议、模板只提示）；静态结果仍不授予提交权限
+ assert.equal(r.ok,true); assert.equal(r.readyToSubmit,false);
+ assert.equal(r.checks.find(c=>c.id==='internal-submit').state,'pass');
+ assert.equal(r.checks.find(c=>c.id==='ai-terms').state,'pass');
+ assert.equal(r.checks.find(c=>c.id==='tool-review').state,'warning');
+ // 缺备案号：提审不过，体验准备只提示
+ const noIcp=JSON.parse(JSON.stringify(x)); noIcp.legal.operator.icp='';
+ assert.equal(inspect({...noIcp,profile:'complete-release',mode:'submit'}).ok,false);
+ assert.equal(inspect({...noIcp,profile:'complete-release',mode:'prepare'}).ok,true);
+ // 开着 AI 内测、协议还是旧版本、页面不对、工具说明版本不对：都不过
+ for(const change of [y=>y.config.aiInternal=true,y=>y.legal.version='2026-10',y=>y.app.pages.pop(),y=>y.app.pages.push('pages/rewards/index'),
+   y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
+   const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).ok,false);
+ }
+ // 完整候选仍要求开着内测、且永远不能提交
+ assert.equal(inspect({...x,profile:'complete-candidate',mode:'prepare'}).ok,false);
+});
 function assertNoIdentityValues(result) {
   const text = identityText(result);
   for (const value of [releaseIdentity.appid, releaseIdentity.cloudEnv, releaseIdentity.cloudService, 'wx3251e7a7b42bc59d', 'other-env', 'other-service']) {

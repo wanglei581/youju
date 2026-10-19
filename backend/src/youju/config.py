@@ -97,7 +97,6 @@ class Settings(BaseSettings):
     cloud_env: str | None = None
     # R1.5 顾问技能包总开关；上线前保持关闭。
     rewards_enabled: bool = False
-    referral_enabled: bool = False
     advisor_enabled: bool = False
     ai_advisor_enabled: bool = False
     ai_advisor_openids: str = ""

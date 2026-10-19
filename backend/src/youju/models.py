@@ -737,12 +737,13 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 下面四列是同行引荐、首次批量奖励用的（迁移 0027）：两项已删（D-061、D-070），程序不再写入；
+    # 注销时仍断开以前留下的引荐关系（rewards.anonymize）。删列另提迁移
     invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
     invited_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
     invited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    # 不依赖任务留存：删除任务后仍能去重、补发，后续完成不会自动补旧奖励。
     batch_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
@@ -1062,10 +1063,11 @@ class DeadlineClue(Base):
 
 
 class RewardClaim(Base):
-    """跨注销的新用户奖励凭据；不存身份或用户外键，180 天后清理。
+    """以前跨注销防重复领取用的凭据（openid 的 HMAC，能重算，属于去标识化而不是匿名化）。
 
-    boost_trial：迁移 0031 加的类型；10/18 起加量体验注销即删，不再写这种凭据
-    （约束留着，旧数据和回退用）。"""
+    10/18 起程序不再写入：加量体验注销即删（D-071 第②条），首次批量、引荐两类奖励已删
+    （D-061、D-070）。表和约束先留着（旧数据和回退用），旧行由 youju cleanup 全部删掉；
+    删表另提迁移。"""
 
     __tablename__ = "reward_claims"
     __table_args__ = (

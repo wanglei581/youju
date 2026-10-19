@@ -106,7 +106,8 @@ Page({
     let fresh = false;
     const showLists = (res, cachedText) => {
       this.listsShown = true;
-      this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items, cachedText, staleError: false });
+      // 实时请求先失败、快照随后到达时，也清掉先写上的错误提示（10/18 验收，Codex 指出）
+      this.setData({ loading: false, weekTotal: res.week_total, total: res.total, items: res.items, cachedText, staleError: false, error: '' });
       this.filterItems();
       writeCache(LISTS_CACHE, { week_total: res.week_total, total: res.total, items: res.items });
     };

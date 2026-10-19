@@ -11,7 +11,8 @@ from youju.config import get_settings
 
 DISCLAIMER = "第三方按公开发布的信息整理，仅供参考，以发文机关原文为准。"
 DEADLINE_HEADER = "截止日期（以原文为准）"
-SEARCH_NOTICE = "在微信里搜索小程序「有据」可以查看原文和更新。"
+# 小程序全称"有据申报与行业助手"（10/18 验收：只搜"有据"不一定找得到）
+SEARCH_NOTICE = "在微信里搜索小程序「有据申报与行业助手」可以查看原文和更新。"
 SCAN_NOTICE = "微信扫码查看原文和更新"
 MINI_CODE_PATH = Path(__file__).parent / "assets" / "mini-code.png"
 # 名称里只留中文、字母、数字和常见标点，别的（如换行、引号、网址符号）不进导出文件。

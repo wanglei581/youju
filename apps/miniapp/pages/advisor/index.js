@@ -1,6 +1,6 @@
 // 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
-const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
 
@@ -15,7 +15,7 @@ Page({
   toggleScope() { this.setData({ showScope: !this.data.showScope }); },
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
-    wx.setNavigationBarTitle({ title: '工具' });
+    wx.setNavigationBarTitle({ title: '工具中心' });
     this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '' });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -25,10 +25,9 @@ Page({
       const data = dataKinds(res.data_tools);
       const toolsEnabled = aiEnabled || data.length > 0;
       const disclosure = ai.disclosure || {};
-      if (aiEnabled && !data.length) wx.setNavigationBarTitle({ title: aiTitle('AI 工具') });
       const aiGate = aiEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
       const gate = toolsEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
-      this.setData({ loading: false, aiGate, aiGateText: GATE_TEXT[aiGate] || '', toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: GATE_TEXT[gate] || '',
+      this.setData({ loading: false, aiGate, aiGateText: gateText(aiGate, res), toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: gateText(gate, res),
         interpretEnabled: aiEnabled && kinds.includes('interpret'),
         clauseEnabled: aiEnabled && kinds.includes('clause'),
         remaining: (ai.remaining || {}).interpret || 0,

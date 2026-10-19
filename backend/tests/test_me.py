@@ -472,6 +472,8 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
             "feedback": 180,
             "usedSubscriptions": 30,
             "unusedSubscriptions": 365,
+            "toolInput": 7,
+            "toolTasks": 30,
         },
         "exportedAt": NOW.isoformat(),
     }

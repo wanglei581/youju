@@ -20,6 +20,8 @@ const RECORDS_TEXT = '我的记录';
 const OFF_TEXT = AI_INTERNAL ? '暂时没有可用工具' : 'AI 功能暂时不可用，请稍后再试';
 const GATE_TEXT = {
   consent: '使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》。',
+  // 同意过旧版本、协议更新后还没同意新版（服务端 403 说"已更新"）：卡片上直接说，不用点进去才知道（10/18 验收）
+  updated: '《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用工具。',
   offline: '暂时连不上服务器，请稍后重试。',
   off: OFF_TEXT,
 };
@@ -51,6 +53,11 @@ function gateState(res) {
 }
 
 // 开放 AI 后的页面标题：内测包后面加"内部测试"
+// 用不了时卡片上的说明：没同意协议的分"第一次"和"协议已更新"
+function gateText(gate, caps) {
+  return GATE_TEXT[gate === 'consent' && caps && caps.consentUpdated === true ? 'updated' : gate] || '';
+}
+
 function aiTitle(name) {
   return AI_INTERNAL ? `${name} · 内部测试` : name;
 }
@@ -97,7 +104,9 @@ function taskView(task) {
     downloadable: dataTask && task.status === 'done' && task.hasFile === true && !expired && !unavailable,
     resultNote: unavailable ? blocked.message : dataTask && task.status === 'done' && (!task.hasFile || expired) ? '结果已过期或已删除，请重新提交' : '',
     expiresText: task.expiresAt ? String(task.expiresAt).slice(0, 10) : '',
+    // 失败、取消的已经退回占用的次数（服务端 release_usage）；卡片上写明，免得用户以为白用了一次（10/18 验收）
+    refundNote: task.status === 'failed' || task.status === 'cancelled' ? '这次不算次数' : '',
   });
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };

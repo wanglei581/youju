@@ -16,7 +16,7 @@ from youju.track import CustomerProfile, CustomerTrack, TrackReport, export_trac
 
 STAMP = datetime(2026, 10, 10, tzinfo=UTC)
 DISCLAIMER = "第三方按公开发布的信息整理，仅供参考，以发文机关原文为准。"
-SEARCH_NOTICE = "在微信里搜索小程序「有据」可以查看原文和更新。"
+SEARCH_NOTICE = "在微信里搜索小程序「有据申报与行业助手」可以查看原文和更新。"
 SCAN_NOTICE = "微信扫码查看原文和更新"
 
 

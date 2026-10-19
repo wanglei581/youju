@@ -693,7 +693,9 @@ function advisorCapabilities(options = {}) {
   }).catch((err) => {
     const status = err && err.status;
     const reason = status === 403 ? 'consent' : (status && status < 500 && status !== 429 ? 'off' : 'offline');
-    return { data_tools: Object.assign({}, DATA_DISABLED), pay: payEntry(null), ai_advisor: Object.assign({}, AI_DISABLED), reason };
+    // 403 说"协议已更新"（同意过旧版本）时带上 consentUpdated，工具中心卡片直接写"已更新"（10/18 验收）
+    const consentUpdated = reason === 'consent' && /已更新/.test((err && err.message) || '');
+    return { data_tools: Object.assign({}, DATA_DISABLED), pay: payEntry(null), ai_advisor: Object.assign({}, AI_DISABLED), reason, consentUpdated };
   });
   capabilitiesPromise = result;
   capabilitiesPending = result;
