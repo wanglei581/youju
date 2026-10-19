@@ -399,7 +399,11 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
     refunds = monthly_self_refunds(session, order.user_id, stamp, exclude=order.id)
     if refunds >= SELF_REFUNDS_PER_MONTH:
-        return MONTHLY_REFUND_REASON
+        # 这笔的 24 小时到下月 1 日还没过，才说"下月 1 日起可以再申请"；
+        # 多数订单 24 小时在月内就过了，直接说这笔不能再无理由退款，不让用户白等（审阅意见，10/20）
+        if order.paid_time + SELF_REFUND_WINDOW >= next_month_start(stamp):
+            return MONTHLY_REFUND_REASON
+        return MONTHLY_REFUND_FINAL
     return None
 
 
@@ -409,6 +413,10 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 # 注销后重新同意协议算新账号（D-071 注销即删，不留认得出同一个人的记录）
 SELF_REFUNDS_PER_MONTH = 1
 MONTHLY_REFUND_REASON = "每个账号每月只能申请 1 次无理由退款，本月已经申请过；下月 1 日起可以再申请"
+MONTHLY_REFUND_FINAL = (
+    "每个账号每月只能申请 1 次无理由退款，本月已经申请过，这笔不能再无理由退款；"
+    "有问题可点“遇到问题”告诉我们"
+)
 
 
 def month_start(stamp: datetime) -> datetime:
@@ -416,6 +424,11 @@ def month_start(stamp: datetime) -> datetime:
     first = advisor_tasks.usage_day(stamp).replace(day=1)
     local = datetime.combine(first, datetime.min.time(), tzinfo=advisor_tasks.BEIJING)
     return local.astimezone(UTC)
+
+
+def next_month_start(stamp: datetime) -> datetime:
+    """stamp 所在北京时间自然月的下个月 1 日 0 点（UTC）。"""
+    return month_start(month_start(stamp) + timedelta(days=32))
 
 
 def monthly_self_refunds(

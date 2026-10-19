@@ -603,15 +603,19 @@ def test_second_no_reason_refund_in_a_month_is_refused(setup_pay, session, monke
     at(monkeypatch, NOW + timedelta(hours=2))
     response = pay_refund(setup_pay, second)
     assert response.status_code == 422
-    assert response.json()["detail"] == payments.MONTHLY_REFUND_REASON
+    # 这笔的 24 小时在 10 月里就过了：直接说这笔不能再无理由退款，不说"下月 1 日起可以再申请"
+    assert response.json()["detail"] == payments.MONTHLY_REFUND_FINAL
     listed = setup_pay[0].get(f"/api/v1/pay/orders/{second.id}", headers=HEADERS).json()
     assert listed["canRefund"] is False
-    assert listed["refundUnavailableReason"] == payments.MONTHLY_REFUND_REASON
-    # 北京时间 10 月 31 日 23:59 还是 10 月；11 月 1 日 0 点起是新的一个月
+    assert listed["refundUnavailableReason"] == payments.MONTHLY_REFUND_FINAL
+    # 北京时间 10 月 31 日 23:59 还是 10 月；11 月 1 日 0 点起是新的一个月。
+    # 这笔 10/31 22:59 付款，24 小时到 11/1 还没过：说"下月 1 日起可以再申请"
     end_of_month = datetime(2026, 10, 31, 15, 59, tzinfo=UTC)
     third = bought(setup_pay, session, end_of_month - timedelta(hours=1))
     at(monkeypatch, end_of_month)
-    assert pay_refund(setup_pay, third).status_code == 422
+    response = pay_refund(setup_pay, third)
+    assert response.status_code == 422
+    assert response.json()["detail"] == payments.MONTHLY_REFUND_REASON
     at(monkeypatch, datetime(2026, 10, 31, 16, 0, tzinfo=UTC))
     assert pay_refund(setup_pay, third).status_code == 200
     assert len(calls(setup_pay, "/xpay/refund_order")) == 2
