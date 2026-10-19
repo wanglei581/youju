@@ -122,36 +122,50 @@ class Extraction:
 _HALF = body_rules._HALF_WIDTH
 # 一串数字：组和组之间一个空格、一条横线（破折号也算）或一个换行（clean 已把连续空白收成一个）
 _SEP = "[ \n\\-\u2010-\u2015\u2212]"
-_RUN = re.compile(rf"(?<![\dA-Za-z])\d+(?:{_SEP}\d+)*[Xx]?(?![\dA-Za-z])")
+# 小数（"13812345678.50 元"）、点号隔开的版本号和日期不当号码，也不和前面的数连成一串
+# （"1 138 1234 5678 9.5"里的 9.5 是另一个数）。每组的数字不回退（++），免得把"4500.5"切成"450"
+_RUN = re.compile(
+    rf"(?<![\dA-Za-z])(?<!\d\.)\d++(?!\.\d)(?:{_SEP}\d++(?!\.\d))*[Xx]?(?![\dA-Za-z])"
+)
 _GROUP = re.compile(r"\d+[Xx]?")
 # 跟着这些字的一组数字是日期、金额，不算进前面的号码（"账号：1234567890 2025年11月5日前"）
 _UNITS = "年月日元万亿号个次%时分秒"
-# 号码前面的标签（紧挨着，中间只隔冒号、空格）：有标签的从第一组起怎么分组都认
+# 号码前面的标签：紧挨着，中间只隔冒号、空格、"为""是"；账号标签和号码中间还可以隔着开户行
+# （"开户行及账号：中国工商银行杭州分行 1202…"）。有标签的怎么分组都认
 _ACCOUNT_WORDS = (
-    "银行卡号", "银行账号", "银行帐号", "开户账号", "开户帐号", "账户号", "帐户号",
-    "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
+    "银行卡号", "银行账号", "银行帐号", "开户账号", "开户帐号", "账户号码", "帐户号码", "账户号",
+    "帐户号", "账号码", "帐号码", "卡号码", "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
 )  # fmt: skip
 _ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
+_LABEL_END = r"[\s:：]*(?:[为是][\s:：]*)?"
+_BANK = r"(?:[\u4e00-\u9fff（）()]{2,30}?(?:银行|支行|分行|营业部|信用社|储蓄所)[\s,，]*)?"
 _LABELS = {
-    "account": re.compile(_ACCOUNT_LABEL + r"[\s:：]*$"),
+    "account": re.compile(_ACCOUNT_LABEL + _LABEL_END + _BANK + "$"),
     "phone": re.compile(
-        r"(?:手\s*机(?:\s*号\s*码?)?|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[\s:：.]*$", re.I
+        r"(?:手\s*机(?:\s*号\s*码?)?|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[\s:：.]*"
+        r"(?:[为是][\s:：]*)?$",
+        re.I,
     ),
-    "id": re.compile(r"(?:身\s*份\s*证(?:\s*号\s*码?)?|证\s*件\s*号\s*码?)[\s:：]*$"),
+    "id": re.compile(r"(?:身\s*份\s*证(?:\s*号\s*码?)?|证\s*件\s*号\s*码?)" + _LABEL_END + "$"),
 }
-# 表格里当"账号"标签的格：整格是"……账号""……卡号""……账户号""……账户"（前面最多 8 个字，如
-# "开户银行及账号""收款单位开户账号""银行账户"），后面可以带"/卡号"、括号说明（"（基本户）"
-# "（必填）"）、星号、冒号。"账户名称""账户类型""各单位银行账户信息表"这类后面还有别的字的不算，
-# "基本账户""零余额账户"这类账户类型的值也不算
-_ACCOUNT_CORE = r"(?:账\s*号|帐\s*号|卡\s*号|账\s*户\s*号|帐\s*户\s*号|账\s*户|帐\s*户)"
+_BEFORE = 48  # 往前看多少个字找标签、金额词（标签后面隔着开户行时要看得远一点）
+# 表格里当"账号"标签的格：整格是"……账号""……卡号""……账户号（码）""……账户"（前面最多 8 个字，
+# 如"开户银行及账号""收款单位开户账号""银行账户"，字间可以有空格），后面可以带"/卡号"、括号说明
+# （"（基本户）""（必填）"）、星号、冒号。"账户名称""账户类型""各单位银行账户信息表"这类后面还有
+# 别的字的不算，"基本账户""零余额账户"这类账户类型的值也不算
+_ACCOUNT_CORE = r"(?:[账帐]\s*(?:户\s*)?号(?:\s*码)?|卡\s*号(?:\s*码)?|[账帐]\s*户)"
 _ACCOUNT_CELL = re.compile(
-    r"^[*＊]?\s*[\u4e00-\u9fff]{0,8}"
+    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,8}"
     + _ACCOUNT_CORE
     + r"(?:\s*[/／、]\s*"
     + _ACCOUNT_CORE
     + r")?(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
-_ACCOUNT_TYPE = re.compile(r"(?:基本|一般|专用|临时|零余额)\s*[账帐]\s*户[\s*＊:：]*$")
+_ACCOUNT_TYPE = re.compile(
+    "(?:"
+    + "|".join(r"\s*".join(w) for w in ("基本", "一般", "专用", "临时", "零余额"))
+    + r")\s*[账帐]\s*户[\s*＊:：]*$"
+)
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
 # 卡号，或者序号（1–3 位）、日期（"2025 10 10""20251010"）、座机号码（"0571 87654321"），才遮
 # 号码那几段（"1 138 1234 5678"、身份证号和手机号两列挨着）；分不完的整串不遮，免得把金额、编号
@@ -173,6 +187,8 @@ _AMOUNT_BEFORE = re.compile(
 _EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # "联 系 人：张三"：PDF、表格里常把标签字隔开写，正文规则（"联系人："）认不出
 _SPACED_CONTACT = re.compile(r"(联\s*系\s*人\s*[:：]\s*)[\u4e00-\u9fff·]{2,8}")
+# 小数："13812345678.50""0.5"（前后都不是数字、小数点）
+_DECIMAL = re.compile(r"((?<![\d.])\d+\.\d+(?![\d.]))")
 
 
 def _account_cell(text: str) -> bool:
@@ -208,6 +224,13 @@ def _plain_label(values: list[str], amount: bool) -> str | None:
     return None
 
 
+def _ymd(year: str, month: str, day: str) -> bool:
+    """ "2025 10 10""2025-1-5"这样分成年、月、日三组写的日期。"""
+    if not (len(year) == 4 and len(month) <= 2 and len(day) <= 2):
+        return False
+    return bool(_DATE.fullmatch(f"{year}{int(month):02d}{int(day):02d}"))
+
+
 def _filler(values: list[str]) -> bool:
     """可以夹在号码前后、不用遮的一段：序号（1–3 位）、日期（"2025 10 10""20251010"）、
     座机号码（"0571 87654321"）。"""
@@ -216,15 +239,15 @@ def _filler(values: list[str]) -> bool:
     sizes = tuple(len(v) for v in values)
     if sizes in ((1,), (2,), (3,)):
         return True
-    if len(values) == 3 and sizes[0] == 4 and sizes[1] <= 2 and sizes[2] <= 2:
-        return bool(_DATE.fullmatch(f"{values[0]}{int(values[1]):02d}{int(values[2]):02d}"))
+    if len(values) == 3:
+        return _ymd(*values)
     if sizes == (8,):
         return bool(_DATE.fullmatch(values[0]))
     return len(values) == 2 and values[0][0] == "0" and sizes[0] in (3, 4) and sizes[1] in (7, 8)
 
 
 def _labeled_label(values: list[str], label: str) -> str | None:
-    """前面写了标签的：从第一组起的这几组，怎么分组都认。"""
+    """前面写了标签的：这几组怎么分组都认。"""
     digits = "".join(values).upper()
     if label == "id":
         ok = len(digits) in (15, 18) and body_rules._ID_CARD.fullmatch(digits)
@@ -238,35 +261,37 @@ def _labeled_label(values: list[str], label: str) -> str | None:
 
 
 def _labeled(
-    plain: str, groups: list[tuple[int, int]], values: list[str], label: str
+    plain: str, groups: list[tuple[int, int]], values: list[str], label: str, start: int
 ) -> list[tuple[int, str]]:
-    """写了标签的：从第一组起到第几组能认成号码（_labeled_label），[(组数, 遮成什么)]，从短到长。
-    后面紧跟"年、月、元"等的一组不算进去（"账号：1234567890 2025年11月5日前"）。"""
+    """写了标签的：从第 start 组起到第几组能认成号码（_labeled_label），[(到第几组前, 遮成什么)]，
+    从短到长。后面紧跟"年、月、元"等的一组不算进去（"账号：1234567890 2025年11月5日前"）。"""
     out = []
-    for j, (_start, end) in enumerate(groups):
-        if sum(len(v) for v in values[: j + 1]) > 30:
+    for j in range(start, len(groups)):
+        if sum(len(v) for v in values[start : j + 1]) > 30:
             break
-        after = plain[end : end + 3].lstrip(" ")[:1]
-        if j > 0 and after and after in _UNITS:
+        after = plain[groups[j][1] : groups[j][1] + 3].lstrip(" ")[:1]
+        if j > start and after and after in _UNITS:
             break
-        found = _labeled_label(values[: j + 1], label)
+        found = _labeled_label(values[start : j + 1], label)
         if found:
             out.append((j + 1, found))
     return out
 
 
 def _split(
-    values: list[str], labeled: list[tuple[int, str]], amount: bool
+    plain: str, groups: list[tuple[int, int]], values: list[str], label: str | None, amount: bool
 ) -> list[tuple[int, int, str]]:
-    """把一整串分成几段：写了标签的开头一段（labeled）、号码（_plain_label）、序号日期座机
-    （_filler）。能整个分完的，取遮住的数字最多、段数最少的分法；分不完的，只遮写了标签的开头
-    最长的一段。返回 [(第几组起, 到第几组前, 遮成什么)]。"""
+    """把一整串分成几段：号码（写了标签的按标签认，_labeled；没写的 _plain_label）、序号日期座机
+    （_filler）。能整个分完的，取遮住的数字最多、段数最少的分法。分不完的：没写标签的整串不遮；
+    写了标签的从左往右，能按标签认成号码的取最长一段，认不出的组跳过（账号列一格写了两个账号，
+    中间夹着"2025"这样认不出的组也照样遮）。返回 [(第几组起, 到第几组前, 遮成什么)]。"""
     n = len(values)
+    labeled = [_labeled(plain, groups, values, label, i) if label else [] for i in range(n)]
     # best[i]：从第 i 组到最后的最好分法 (遮住几个数字, -段数, 要遮的段)
     best: list[tuple[int, int, list] | None] = [None] * (n + 1)
     best[n] = (0, 0, [])
     for i in range(n - 1, -1, -1):
-        options = list(labeled) if i == 0 else []
+        options = list(labeled[i])
         for j in range(i + 1, min(n, i + _PARTS) + 1):
             found = _plain_label(values[i:j], amount)
             if found or _filler(values[i:j]):
@@ -282,41 +307,51 @@ def _split(
                 best[i] = (masked, count - 1, parts)
     if best[0] is not None:
         return best[0][2]
-    return [(0, *labeled[-1])] if labeled else []
+    parts, i = [], 0
+    while i < n:
+        if labeled[i]:
+            end, found = labeled[i][-1]
+            parts.append((i, end, found))
+            i = end
+        else:
+            i += 1
+    return parts
 
 
-def _date_chunks(values: list[str]) -> list[str]:
-    """把"2018 05 20 2026 10 09"这样的组按年、月、日三组一段拼起来；拼不成的给一个对不上的值。"""
-    if len(values) % 3:
-        return [""]
-    return ["".join(values[i : i + 3]) for i in range(0, len(values), 3)]
+def _only_dates(values: list[str]) -> bool:
+    """整串是日期："20180520-20261009"（每组 8 位），或"2018 05 20 2026 10 09"（年、月、日
+    三组一段）。"""
+    if not all(v.isdigit() for v in values):
+        return False
+    if all(len(v) == 8 and _DATE.fullmatch(v) for v in values):
+        return True
+    return len(values) % 3 == 0 and all(_ymd(*values[i : i + 3]) for i in range(0, len(values), 3))
 
 
 def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
     """plain 里要遮的号码：[(开始, 结束, 遮成什么)]。一串一串地看（组和组之间只隔一个空格、横线或
     换行）：
-    - 前面紧挨着写了"账号""手机""身份证"这类标签（或 account=True：表格里左边那格、这一列上面
-      写着"账号"）：从第一组起的几组怎么分组都认（_labeled），剩下的组按没写标签的分；
+    - 前面写了"账号""手机""身份证"这类标签（_LABELS），或 account=True（表格里这一列上面、左边
+      那格写着"账号"）：按标签认，怎么分组都行（_labeled）；
     - 没写标签的：整串能分成号码和序号、日期、座机（_split）才遮号码那几段；前面紧挨着"合计、
       预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号；
-    - 整串是日期（"2018-05-20—2026-10-09"）的，哪一段都不当号码。"""
+    - 整串是日期（"2018-05-20—2026-10-09""20180520-20261009"）的，哪一段都不当号码。"""
     spans = []
     for run in _RUN.finditer(plain):
         groups = [
             (run.start() + g.start(), run.start() + g.end()) for g in _GROUP.finditer(run.group())
         ]
         values = [plain[a:b] for a, b in groups]
-        if all(_DATE.fullmatch(v) for v in _date_chunks(values)):
+        if _only_dates(values):
             continue
-        before = plain[max(0, run.start() - 16) : run.start()]
+        before = plain[max(0, run.start() - _BEFORE) : run.start()]
         label = "account" if account else None
         label = label or next((k for k, p in _LABELS.items() if p.search(before)), None)
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
         amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
-        labeled = _labeled(plain, groups, values, label) if label else []
         spans += [
             (groups[i][0], groups[j - 1][1], found)
-            for i, j, found in _split(values, labeled, amount)
+            for i, j, found in _split(plain, groups, values, label, amount)
         ]
     return spans
 
@@ -336,16 +371,17 @@ def mask(text: str, *, account: bool = False) -> str:
     """遮掉身份证号、手机号、银行账号（还有正文规则一并遮的联系人、邮箱、座机）。
 
     1. 先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉）；
-    2. 再遮号码（_number_spans）：前面写了"账号""手机""身份证"的怎么分组都认（10–30 位的账号、
-       11 位的手机号、15/18 位的身份证号）；没写的只认整串、常见分法的身份证号、手机号、卡号
-       （任取几组拼起来像号码的不算，免得把金额、编号遮掉）；account=True（表格里左边那格或
-       这一列上面写着"账号"）时这一格的长数字都当账号；
-    3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；
+    2. 再遮分开写的号码（_number_spans）：写了"账号""手机""身份证"这类标签的（account=True：
+       表格里这一列上面、左边那格写着"账号"）怎么分组都认；没写的整串能分成常见分法的号码和
+       序号、日期、座机才遮（免得把一串金额、编号拼成号码）；
+    3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；小数原样
+       留着，不交给它（"13812345678.50 元"小数点前面的 11 位会被它当成手机号）；
     4. 再遮标签字隔开写的"联 系 人："。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
     text = _EMAIL.sub("[邮箱已脱敏]", text)
     text = _replace(text, _number_spans(text.translate(_HALF), account))
-    text = body_rules.redact_sensitive(text)
+    parts = _DECIMAL.split(text)  # 单数位是小数
+    text = "".join(p if i % 2 else body_rules.redact_sensitive(p) for i, p in enumerate(parts))
     return _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
 
 
