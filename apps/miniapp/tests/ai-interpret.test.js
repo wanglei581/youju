@@ -240,6 +240,25 @@ test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文
   }
 });
 
+test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；没标、失败时都不显示说明', async () => {
+  const done = (outdated) => (id) => Promise.resolve(Object.assign({ id, status: 'done', result: { items: [] } }, outdated ? { outdated: true } : {}));
+  const marked = sessionHarness({ session: { taskId: 9 }, api: { advisorTask: done(true) } });
+  marked.session.show(); await flush();
+  assert.equal(marked.state.phase, 'done'); assert.equal(marked.state.outdated, true); marked.session.hide();
+  const plainDone = sessionHarness({ session: { taskId: 10 }, api: { advisorTask: done(false) } });
+  plainDone.session.show(); await flush(); assert.equal(plainDone.state.outdated, false); plainDone.session.hide();
+  const failed = sessionHarness({ session: { taskId: 11 }, api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '通知正文已变化，请重新解读' }) } });
+  failed.session.show(); await flush();
+  assert.equal(failed.state.outdated, false); assert.equal(failed.state.error, '通知正文已变化，请重新解读'); failed.session.hide();
+  // 两个结果页都把这句说明放在附件提醒前面
+  for (const page of ['advisor-interpret', 'advisor-clause']) {
+    const wxml = read(`pages/${page}/index.wxml`);
+    const at = wxml.indexOf('wx:if="{{outdated}}"');
+    assert.ok(at > -1 && at < wxml.indexOf('result.attachmentNotice'), page);
+    assert.match(wxml, /正文没变/);
+  }
+});
+
 test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据工具开关不影响', async () => {
   for (const [dataEnabled, aiEnabled] of [[false, false], [true, false], [false, true], [true, true]]) {
     let navigationTitle; const capabilities = caps(dataEnabled, aiEnabled);
