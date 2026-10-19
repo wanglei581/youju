@@ -34,11 +34,14 @@ Page({
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具' });
     // 今天的次数用完、全站满了时停在这一页跨过零点：不自己重新开始（会直接提交、用掉次数），
-    // 改写"可以重新开始了"，点了再问（第 18 轮）
-    this.setData({ dayTurned: false });
+    // 改写"可以重新开始了"，点了再问（第 18 轮）。跨零点时还在等能力接口回话：丢掉旧的、重新问（第 22 轮）
     watchDay(this, () => {
-      if (this.visible && (this.data.gate === 'used' || this.data.gate === 'full')) this.setData({ dayTurned: true, gateText: DAY_TURNED });
+      if (!this.visible) return;
+      if (this.data.loading) { this.onShow(); return; }
+      if (this.data.gate === 'used' || this.data.gate === 'full') this.setData({ gate: 'restart', gateText: DAY_TURNED });
     });
+    // 每次显示都重新问：在途的、缓存的能力答复都不用（可能是锁屏以前、0 点以前问的，第 21、22 轮）
+    if (api.forgetCapabilities) api.forgetCapabilities();
     this.setData({ loading: true, aiEnabled: false, today: todayISO() });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -64,7 +67,7 @@ Page({
           }[gate] });
         return;
       }
-      if (aiEnabled && this.wasBlocked) { this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: CAN_RESTART }); return; }
+      if (aiEnabled && this.wasBlocked) { this.setData({ loading: false, aiEnabled: false, gate: 'restart', gateText: CAN_RESTART }); return; }
       const gate = aiEnabled ? '' : gateState(res);
       // AI 对这个人没开着（关闭、不在白名单；旧链接、旧记录打开）：正式版回首页，不留一页"不可用"（D-075）；
       // 内测包照旧只写"暂时没有可用工具"
@@ -86,12 +89,9 @@ Page({
   },
   // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
   reload() {
-    if (this.data.gate !== 'offline' && this.data.gate !== 'paused' && !this.data.dayTurned) return;
-    // 点了"重新开始"：以后照常；能力接口在途的、缓存的答复都不用（可能是 0 点以前问的，第 21 轮）
-    if (this.data.dayTurned) {
-      this.wasBlocked = false;
-      if (api.forgetCapabilities) api.forgetCapabilities();
-    }
+    if (this.data.gate !== 'offline' && this.data.gate !== 'paused' && this.data.gate !== 'restart') return;
+    // 点了"重新开始"：以后照常（onShow 里会丢掉在途的、缓存的能力答复）
+    if (this.data.gate === 'restart') this.wasBlocked = false;
     this.onShow();
   },
   // 今天的次数用完了：去看以前的结果
