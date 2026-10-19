@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>补详情失败 · 有据</title>
+<style>
+:root{--brand:#2A5CE0;--bg:#F2F4F8;--t1:#1D2129;--t2:#4E5969;--line:#E5E6EB;--red:#E5484D}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t1);font:15px/1.6 "PingFang SC","Noto Sans SC",sans-serif}
+header{background:#fff;border-bottom:1px solid var(--line)}.bar{max-width:880px;margin:auto;padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+h1{margin:0;font-size:18px}.auth{margin-left:auto;display:flex;gap:8px}main{max-width:880px;margin:auto;padding:16px}
+input,button{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--t1)}
+button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px}.meta,.hint{color:var(--t2);font-size:14px}.title{font-weight:600;margin:0}
+a{color:var(--brand);overflow-wrap:anywhere}.msg{color:var(--red)}[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header><div class="bar"><h1>补详情失败</h1><span id="count" class="meta"></span><div class="auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><button id="load" class="primary">载入</button></div></div></header>
+<main>
+<p class="hint">补详情（抓文件正文、附件）遇到临时问题——网络中断、robots.txt 暂时取不到、网站返回 5xx——会在 6 小时、24 小时后各再试一次；连续 <span id="attempts">3</span> 次都失败就不再自动重试，列在这里。小程序里这些文件照常显示标题和原文链接，只是没有正文、截止日期和附件。</p>
+<p class="hint">怎么处理：点"查看原文"在浏览器里打开。打不开、要求验证或拒绝访问的，按规矩不绕过，不用处理；浏览器里能正常打开的，告诉团队查原因。</p>
+<p id="message" role="status" class="msg"></p><p id="hosts" class="meta"></p><div id="list"></div><button id="more" hidden>再载入 20 份</button>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(() => {
+  const $=id=>document.getElementById(id);let offset=0,sequence=0;
+  const labels={network_error:'网络中断或超时',robots_error:'robots.txt 暂时取不到'};
+  function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
+  function stamp(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
+  async function api(path){const r=await fetch(path,{cache:'no-store',headers:{'X-Admin-Token':youjuAdminToken()}});if(r.status===401)throw new Error('管理口令不正确或尚未配置');if(!r.ok)throw new Error(`载入失败（${r.status}），请刷新重试`);return r.json();}
+  function card(item){
+    const e=node('article','','card');
+    const problem=item.status==='http_error'?`网站返回 HTTP ${item.http_status}`:(labels[item.status]||item.status);
+    e.append(node('p',`#${item.document_id} · ${item.title}`,'title'),node('p',`${item.source} · 发布日期 ${item.publish_date||'未提供'}`,'meta'),node('p',`${problem} · 已试 ${item.attempts} 次 · 最后一次 ${stamp(item.last_attempt_at)}`,'meta'));
+    if(item.failure_reason && item.failure_reason!==`HTTP ${item.http_status}`)e.append(node('p',item.failure_reason,'meta'));
+    try{const u=new URL(item.url);if(['https:','http:'].includes(u.protocol)){const a=node('a','查看原文');a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';e.append(a);}}catch(_){}
+    return e;
+  }
+  async function load(reset=true){
+    const seq=++sequence;if(reset){offset=0;$('list').replaceChildren();$('hosts').textContent='';}$('message').textContent='';$('more').disabled=true;
+    try{
+      const d=await api(`/api/admin/detail-failures?limit=20&offset=${offset}`);if(seq!==sequence)return;
+      $('attempts').textContent=String(d.max_attempts);
+      d.items.forEach(i=>$('list').append(card(i)));offset+=d.items.length;
+      $('count').textContent=`停止重试 ${d.total} 份`;$('more').hidden=offset>=d.total;
+      if(d.hosts.length)$('hosts').textContent='按网站：'+d.hosts.map(h=>`${h.host} ${h.count} 份`).join('，');
+      if(!d.total)$('list').append(node('p','没有停止重试的文件。','hint'));
+    }catch(err){if(seq===sequence)$('message').textContent=err.message;}finally{if(seq===sequence)$('more').disabled=false;}
+  }
+  $('load').onclick=()=>load();$('more').onclick=()=>load(false);
+})();
+</script>
+</body>
+</html>

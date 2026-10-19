@@ -33,6 +33,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import conditions as conditions_api
+from youju.api import details as details_api
 from youju.api import repost as repost_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
@@ -957,6 +958,10 @@ app.include_router(repost_api.router(_require_admin, _audit))
 app.add_api_route(
     "/admin/repost", repost_api.console, response_class=HTMLResponse, include_in_schema=False
 )
+app.include_router(details_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/details", details_api.console, response_class=HTMLResponse, include_in_schema=False
+)
 
 
 class RestoreIn(BaseModel):
@@ -1210,6 +1215,7 @@ def admin_overview(session: SessionDep, _admin: AdminDep, request: Request) -> J
             "audit": audit_flagged_count(session, None)["flagged"],
             "feedback": feedback_pending_count(session, None)["pending"],
             "sources": len(check_sources(session).failures),
+            "detail_failures": details_api.stopped_count(session),
             "takedown": count(
                 visible_documents(select(func.count(Document.id))).where(~available_condition())
             ),
