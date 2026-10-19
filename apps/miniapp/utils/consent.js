@@ -84,6 +84,7 @@ function consentEpoch() {
 // startedAt 是发出查询时的 consentEpoch()：之后本机又同意或注销过，这个结果已过时，不改状态
 function applyServer(agreed, startedAt) {
   if (startedAt !== epoch) return agreedHere();
+  const before = agreedHere();
   // valid 为假：服务端已不认这份同意（仍认的最早版本调高了）——即使版本号和本机的一样也要重新同意，
   // 太旧的小程序同意时会看到"需要更新小程序"（Codex 审查）。旧后台不带 valid 时只看版本号
   const ok = !!agreed && agreed.valid !== false && covers(agreed.version);
@@ -91,6 +92,8 @@ function applyServer(agreed, startedAt) {
   else forget();
   outdated = !!agreed && !ok;
   notAgreed = !ok;
+  // 和本机记的不一样了（在别的手机同意过、同意已失效、在别处注销）：AI 板块马上重新问（D-075，第 11 轮）
+  if (ok !== before) aiAccess.recheck();
   return ok;
 }
 
@@ -172,6 +175,8 @@ function markAgreed() {
   outdated = false;
   notAgreed = false;
   epoch += 1;
+  // 白名单阶段同意以后才看得到 AI 板块：马上重新问，不等下一次（D-075，第 11 轮）
+  aiAccess.recheck();
 }
 
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
@@ -191,8 +196,10 @@ function withdraw() {
             try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
             try { wx.removeStorageSync('youjuDataTaskKeysV1'); } catch (e) { /* 下方清空存储再次清理 */ }
             try { wx.clearStorageSync(); } catch (e) { forget(); }
-            // AI 板块记的结果（本机和这次打开里的）一并擦掉，底栏第 5 格随即收起（D-075）
+            // AI 板块记的结果（本机和这次打开里的）一并擦掉，底栏第 5 格随即收起（D-075）；
+            // 再马上问一次：对所有人开放时，没同意的人也看得到板块（第 11 轮）
             aiAccess.clear();
+            aiAccess.refresh();
             outdated = false;
             notAgreed = true;
             epoch += 1;

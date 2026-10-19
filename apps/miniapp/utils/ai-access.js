@@ -14,8 +14,10 @@ const CACHE_FOR = 24 * 3600 * 1000;
 const LAST_DOC_KEY = 'youjuAiLastDocV1';
 const LAST_DOC_FOR = 7 * 24 * 3600 * 1000;
 // 同一次打开里，页面显示时最多每 10 分钟再问一次后台；后台说暂时处理不了时 15 秒后就再问；
-// 没问到（连不上）时 15 秒内不重复问
+// AI 对这个人没开着时 2 分钟问一次（后台打开以后，正在用的人 2 分钟内看到第 5 格；首发版所有人都是这个状态，
+// 不每切一次页面都发请求）；没问到（连不上）时 15 秒内不重复问
 const RECHECK = 10 * 60 * 1000;
+const CLOSED_RECHECK = 2 * 60 * 1000;
 const RETRY_AFTER = 15000;
 
 const listeners = new Set();
@@ -112,13 +114,33 @@ function refresh() {
 }
 
 // 页面显示时调用：这次打开还没问过、或问过超过 10 分钟才再问。
-// 后台说暂时处理不了时问过超过 15 秒就再问：恢复以后列表上的按钮、AI 首页不用等 10 分钟（Codex 小程序第 9 轮）。
-// 刚才没问到（连不上）：不管以前问到过没有，15 秒内都不重复问
+// 后台说暂时处理不了时问过超过 15 秒就再问：恢复以后列表上的按钮、AI 首页不用等 10 分钟（Codex 小程序第 9 轮）；
+// 没开着时问过超过 2 分钟就再问（第 11 轮）。刚才没问到（连不上）：不管以前问到过没有，15 秒内都不重复问
 function ensure() {
   const now = current();
-  const every = now.visible && now.available === false ? RETRY_AFTER : RECHECK;
+  const every = !now.visible ? CLOSED_RECHECK : now.available === false ? RETRY_AFTER : RECHECK;
   if (now.confirmed && Date.now() - checkedAt < every) return Promise.resolve(now);
   if (failedAt && Date.now() - failedAt < RETRY_AFTER) return Promise.resolve(now);
+  return refresh();
+}
+
+// 页面自己问到的能力接口（AI 首页、解读页、对照页）和这里记的对不上：马上重新问一次，各页面跟着变（Codex 小程序第 11 轮）。
+// 只按说得准的一种比：能力接口说这个人能用（enabled），就该显示，能不能处理照它的 available。
+// 说用不了（关了、不在白名单、没同意协议）时不在这里下结论：对所有人开放时没同意的人也显示，交给开放状态接口
+function reconcile(caps) {
+  const ai = (caps && caps.ai_advisor) || {};
+  if (ai.enabled !== true) return;
+  const now = current();
+  if (now.confirmed && now.visible && (now.available !== false) === (ai.available !== false)) return;
+  refresh();
+}
+
+// 协议同意状态变了（刚同意、发现已失效或在别处注销）：在途的查询作废、能力接口的缓存不用，马上重新问；
+// 不先收起，问到了再按结果变（白名单里的人刚同意，第 5 格马上出来，第 11 轮）
+function recheck() {
+  generation += 1;
+  pending = null;
+  api.forgetCapabilities();
   return refresh();
 }
 
@@ -167,4 +189,7 @@ function clear() {
   set({ visible: false, confirmed: false, available: false });
 }
 
-module.exports = { CACHE_KEY, CACHE_FOR, RECHECK, RETRY_AFTER, LAST_DOC_KEY, LAST_DOC_FOR, current, subscribe, ensure, refresh, canOpen, clear, rememberDoc, forgetDoc, lastDoc };
+module.exports = {
+  CACHE_KEY, CACHE_FOR, RECHECK, CLOSED_RECHECK, RETRY_AFTER, LAST_DOC_KEY, LAST_DOC_FOR,
+  current, subscribe, ensure, refresh, reconcile, recheck, canOpen, clear, rememberDoc, forgetDoc, lastDoc,
+};

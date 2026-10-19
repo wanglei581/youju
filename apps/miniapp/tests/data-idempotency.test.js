@@ -17,7 +17,7 @@ const raw = s => s.map.get(KEY);
 function withdraw(s, { confirm = true, deleteFails = false, clearFails = false } = {}) {
   const module = { exports: {} };
   const deps = { '../content/legal.js': { final: true, version: '2026-10' }, './config.js': { templates: {} }, './exports.js': { clear() {} }, './exporter.js': { removeFiles: () => 0 },
-    './ai-access.js': { clear() { s.aiCleared = (s.aiCleared || 0) + 1; } },
+    './ai-access.js': { clear() { s.aiCleared = (s.aiCleared || 0) + 1; }, refresh() { s.aiAsked = (s.aiAsked || 0) + 1; }, recheck() { s.aiRechecked = (s.aiRechecked || 0) + 1; } },
     './api.js': { AGREED_KEY: 'youjuAgreedVersion', forgetAgreed: () => s.removeStorageSync('youjuAgreedVersion'), deleteMe: () => deleteFails ? Promise.reject(new Error('网络故障')) : Promise.resolve() } };
   const wx = { ...s, clearStorageSync: clearFails ? () => { throw new Error('clearStorageSync:fail'); } : s.clearStorageSync, showModal: o => o.success({ confirm }), showToast() {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../utils/consent.js'), 'utf8'), { module, wx, Promise, require: k => { assert.ok(Object.hasOwn(deps, k), k); return deps[k]; } });

@@ -162,10 +162,9 @@ Page({
       // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
       const now = access.current();
       this.setData({ aiOnly: now.confirmed === true && now.visible === true });
-      // 跟着后台的确认走：确认开着就加上这一项、确认没开着就去掉，都重新查；页面上不留相关字样
+      // 跟着后台的确认走：确认开着就加上这一项；没开着、注销后被擦掉（还没重新问到）就去掉，都重新查；页面上不留相关字样
       this.unsubscribeAi = access.subscribe((state) => {
-        if (!state.confirmed) return;
-        const on = state.visible === true;
+        const on = state.confirmed === true && state.visible === true;
         if (on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
       });
       access.ensure();
@@ -220,6 +219,8 @@ Page({
 
   onShow() {
     if (api.watchStartup) api.watchStartup(this);
+    // 带 ai=1 进来的：回到前台时再问一次板块状态（多久真问一次由 ensure 管，第 11 轮）
+    if (this.unsubscribeAi) access.ensure();
     this.setData({ today: todayISO() });
     // 页面在后台跨过零点后再显示，时间筛选要按今天重新查
     if (this.loaded) this.apply(true);

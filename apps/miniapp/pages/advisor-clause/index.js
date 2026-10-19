@@ -32,6 +32,8 @@ Page({
     this.setData({ loading: true, aiEnabled: false, today: todayISO() });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
+      // 能力接口说的能不能处理和 AI 板块记的对不上：让板块马上重新问，列表上的按钮跟着变（第 11 轮）
+      access.reconcile(res);
       const ai = res.ai_advisor || {};
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('clause');
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
@@ -68,7 +70,8 @@ Page({
     if (this.data.gate !== 'consent') return;
     require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.onShow(); });
   },
-  reload() { if (this.data.gate === 'offline') this.onShow(); },
+  // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
+  reload() { if (this.data.gate === 'offline' || this.data.gate === 'paused') this.onShow(); },
   // 今天的次数用完了：去看以前的结果
   records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; if (this.session) this.session.hide(); },

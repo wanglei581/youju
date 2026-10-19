@@ -92,7 +92,7 @@ function accessWith(options = {}) {
 function control(initial) {
   let state = Object.assign({}, initial);
   const listeners = new Set();
-  const asks = { ensure: 0, refresh: 0 };
+  const asks = { ensure: 0, refresh: 0, reconcile: 0, recheck: 0 };
   const stored = { doc: null };
   return {
     asks, stored, listeners,
@@ -100,6 +100,8 @@ function control(initial) {
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     ensure: () => { asks.ensure += 1; return Promise.resolve(Object.assign({}, state)); },
     refresh: () => { asks.refresh += 1; return Promise.resolve(Object.assign({}, state)); },
+    recheck: () => { asks.recheck += 1; return Promise.resolve(Object.assign({}, state)); },
+    reconcile() { asks.reconcile += 1; },
     canOpen: (value = state) => value.visible === true && value.confirmed === true && value.available !== false,
     clear() {}, rememberDoc(doc) { stored.doc = doc; }, lastDoc: () => stored.last || null,
     forgetDoc() { stored.last = null; stored.forgot = (stored.forgot || 0) + 1; },
@@ -1199,11 +1201,11 @@ test('Codex 第 9 轮：后台说暂时处理不了时，页面显示过了 15 �
   answer = { open: true, available: true };
   h.clock.now += h.access.RETRY_AFTER; await h.access.ensure(); assert.equal(h.calls.mode, 4);
   await h.access.refresh(); assert.equal(h.calls.mode, 5, '"重试"马上再问');
-  // AI 关着（首发版，所有人都是这样）：照旧 10 分钟问一次，不因为"处理不了"每 15 秒问
+  // AI 关着（首发版，所有人都是这样）：2 分钟问一次，不因为"处理不了"每 15 秒问
   const off = accessWith({ mode: { open: false, available: false }, caps: OFF() });
   assert.deepEqual(await off.access.ensure(), CLOSED); assert.deepEqual([off.calls.mode, off.calls.caps], [1, 1]);
   off.clock.now += off.access.RETRY_AFTER * 4; await off.access.ensure();
-  assert.deepEqual([off.calls.mode, off.calls.caps], [1, 1], '关着时 10 分钟内不再问');
+  assert.deepEqual([off.calls.mode, off.calls.caps], [1, 1], '关着时 2 分钟内不再问');
 });
 
 test('Codex 第 9 轮：AI 首页用真的 ai-access——恢复以后离开再回来、15 秒内回来、停在页面上点"重试"，按钮都能出来；还没恢复时不乱问', async () => {
@@ -1274,4 +1276,157 @@ test('Codex 第 10 轮：对所有人开放、还没同意协议时，"我的 AI
   const s = hubPage({ tasks: () => Promise.reject(Object.assign(new Error('服务出错'), { status: 500 })) });
   s.page.onShow(); await settle();
   assert.equal(s.page.data.recordsError, '我的 AI 记录没有加载出来', '服务出错也写没加载出来');
+});
+
+// 真的 utils/consent.js，接上真的 ai-access（accessWith 建的 raw）
+function consentWith(aiAccess, extraApi = {}) {
+  const stored = {}; const toasts = []; const modals = [];
+  const wx = {
+    getStorageSync: (k) => stored[k] || '', setStorageSync: (k, v) => { stored[k] = v; }, removeStorageSync: (k) => { delete stored[k]; },
+    clearStorageSync: () => { Object.keys(stored).forEach((k) => delete stored[k]); }, showToast: (o) => toasts.push(o.title), showModal: (o) => modals.push(o),
+  };
+  const mod = load('utils/consent.js', {
+    '../content/legal.js': { final: true, version: '2026-10' }, './config.js': { templates: {} },
+    './api.js': { isLive: () => true, AGREED_KEY: 'agreed', forgetAgreed() { delete stored.agreed; }, ...extraApi },
+    './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} }, './ai-access.js': aiAccess,
+  }, { wx });
+  return { mod, stored, modals, toasts };
+}
+
+test('Codex 第 11 轮：协议同意状态变了，AI 板块马上重新问——白名单里的人刚同意第 5 格马上出来、同意以前发出的旧答复不用；/me 发现失效也重问，没变不问；注销以后再问一次', async () => {
+  // 白名单阶段：没同意时能力接口说没开着
+  let agreed = false; let release = null; let hold = false;
+  const h = accessWith({ mode: { open: false, available: false }, caps: () => {
+    if (hold) return new Promise((done) => { release = () => done(OFF('consent')); });
+    return Promise.resolve(agreed ? ON() : OFF('consent'));
+  } });
+  const c = consentWith(h.access.raw);
+  assert.deepEqual(await h.access.ensure(), CLOSED);
+  let asked = h.calls.caps;
+  // 同意以前发出去、同意以后才回来的答复不用
+  hold = true; h.access.raw.refresh(); await settle(); assert.equal(h.calls.caps, asked + 1);
+  hold = false; agreed = true; c.mod.markAgreed(); await settle();
+  assert.equal(h.calls.caps, asked + 2, '刚同意马上重问'); assert.ok(h.calls.forgot >= 1, '能力接口的缓存不用');
+  assert.deepEqual(h.access.current(), OPEN, '第 5 格马上出来');
+  release(); await settle();
+  assert.deepEqual(h.access.current(), OPEN, '旧答复不用');
+  // /me 发现同意已失效（在别处注销、仍认的最早版本调高了）：AI 板块重问，白名单阶段随即收起
+  agreed = false; asked = h.calls.caps;
+  assert.equal(c.mod.agreedHere(), true);
+  assert.equal(c.mod.applyServer(null, c.mod.consentEpoch()), false); await settle();
+  assert.equal(h.calls.caps, asked + 1); assert.deepEqual(h.access.current(), CLOSED);
+  // 和本机记的一样：不重问
+  asked = h.calls.caps;
+  c.mod.applyServer(null, c.mod.consentEpoch()); await settle();
+  assert.equal(h.calls.caps, asked, '没变不问');
+  // 在别的手机同意过：本机补上记录，AI 板块重问
+  agreed = true;
+  assert.equal(c.mod.applyServer({ version: '2026-10', valid: true }, c.mod.consentEpoch()), true); await settle();
+  assert.equal(h.calls.caps, asked + 1); assert.deepEqual(h.access.current(), OPEN);
+  // 注销：擦掉以后马上再问一次；对所有人开放时，没同意的人照样看得到板块
+  const o = accessWith({ mode: { open: true, available: true } });
+  const w = consentWith(o.access.raw, { deleteMe: () => Promise.resolve({}) });
+  assert.deepEqual(await o.access.ensure(), OPEN);
+  const modes = o.calls.mode;
+  const done = w.mod.withdraw(); w.modals[0].success({ confirm: true });
+  assert.equal(await done, true); await settle();
+  assert.equal(o.calls.mode, modes + 1, '注销以后再问一次'); assert.deepEqual(o.access.current(), OPEN);
+});
+
+test('Codex 第 11 轮：AI 关着时 2 分钟问一次——后台打开以后，正在用的人 2 分钟内看到第 5 格', async () => {
+  let answer = { open: false, available: false };
+  const h = accessWith({ mode: () => Promise.resolve(answer), caps: OFF() });
+  assert.deepEqual(await h.access.ensure(), CLOSED);
+  answer = { open: true, available: true };
+  h.clock.now += h.access.RETRY_AFTER; await h.access.ensure();
+  assert.equal(h.calls.mode, 1, '15 秒后不问');
+  h.clock.now += h.access.CLOSED_RECHECK - h.access.RETRY_AFTER; assert.deepEqual(await h.access.ensure(), OPEN);
+  assert.equal(h.calls.mode, 2, '2 分钟后再问，开了');
+  assert.ok(h.access.CLOSED_RECHECK < h.access.RECHECK);
+});
+
+test('Codex 第 11 轮：搜索页带 ai=1 时，注销后被擦掉（还没重新问到）也去掉这一项重查；搜索页、帮助页回到前台时再问一次', async () => {
+  const query = { kind: encodeURIComponent('申报通知'), time: encodeURIComponent('近 7 天'), ai: '1' };
+  const s = searchPage(OPEN);
+  s.page.onLoad(query); await settle();
+  assert.equal(s.page.data.aiOnly, true);
+  const before = s.calls.length;
+  s.access.set({ visible: false, confirmed: false, available: false }); await settle();
+  assert.equal(s.page.data.aiOnly, false); assert.ok(s.calls.length > before, '重查'); assert.equal(s.calls.at(-1).ai, undefined);
+  const ensured = s.access.asks.ensure;
+  s.page.onShow(); assert.equal(s.access.asks.ensure, ensured + 1, '回到前台再问');
+  // 重新问到开着：照旧加回去
+  s.access.set(OPEN); await settle();
+  assert.equal(s.page.data.aiOnly, true); assert.equal(s.calls.at(-1).ai, 1);
+  // 没带 ai=1 的搜索页不问
+  const plainSearch = searchPage(OPEN); plainSearch.page.onLoad({}); await settle();
+  const n = plainSearch.access.asks.ensure; plainSearch.page.onShow(); assert.equal(plainSearch.access.asks.ensure, n);
+  // 帮助页
+  const help = require('../content/help.js');
+  const access = control(OPEN);
+  const p = load('pages/help/index.js', { '../../content/help.js': help, '../../utils/ai-access.js': access, '../../utils/consent.js': { loginOpen: () => true } },
+    { wx: { setNavigationBarTitle() {}, navigateTo() {} } });
+  p.onLoad(); const m = access.asks.ensure; p.onShow(); assert.equal(access.asks.ensure, m + 1);
+  access.set({ visible: false, confirmed: false, available: false });
+  assert.doesNotMatch(textOf(render('pages/help/index.wxml', p.data)), /\bAI\b/, '擦掉以后帮助页没有 AI 字样');
+});
+
+test('Codex 第 11 轮：解读页、对照页、AI 首页的能力接口说的和 AI 板块记的对不上时，板块马上重问，列表上的按钮跟着收起或放出', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause'], ['ai', 'hub']]) {
+    let avail = true;
+    const real = accessWith({ mode: () => Promise.resolve({ open: true, available: avail }) });
+    assert.deepEqual(await real.access.ensure(), OPEN);
+    const btn = load('components/ai-button/index.js', { '../../utils/ai-access.js': real.access, '../../utils/tool-context.js': context }, { wx: { navigateTo() {} } });
+    Object.assign(btn.properties, { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } });
+    btn.triggerEvent = () => {}; btn.lifetimes.attached.call(btn); await settle();
+    assert.equal(btn.data.shown, true, `${page} 列表按钮先显示`);
+    // 后台刚变成处理不了：这一页自己的能力接口先知道
+    avail = false;
+    let p;
+    if (kind === 'hub') {
+      p = hubPage({ realAccess: real.access, caps: () => Promise.resolve(ON({ available: avail })) }).page;
+      p.onShow();
+    } else {
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ available: avail })), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': real.access,
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, switchTab() {}, getStorageSync: () => '', setStorageSync() {} } });
+      p.onLoad({ docId: '42', title: '通知' }); p.onShow();
+    }
+    await settle();
+    assert.equal(p.data.gate, 'paused', `${page} 写暂时不可用`);
+    assert.equal(real.calls.mode, 2, `${page} 板块马上重问`);
+    assert.equal(btn.data.shown, false, `${page} 列表按钮跟着收起`);
+    // 恢复了：这一页的能力接口说能处理、板块记的是处理不了，也重问，按钮放出来
+    avail = true;
+    if (kind === 'hub') { p.onHide(); p.onShow(); } else { p.reload(); }
+    await settle();
+    assert.equal(real.calls.mode, 3, `${page} 恢复了也重问`); assert.equal(btn.data.shown, true, `${page} 按钮放出来`);
+    if (p.onHide) p.onHide();
+    btn.lifetimes.detached.call(btn);
+  }
+});
+
+test('Codex 第 11 轮：解读页、对照页停在"暂时不可用"时有"重试"，后台恢复后点一下就能用', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let up = false;
+    const deps = {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(up ? ON() : ON({ available: false })), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: () => '', setStorageSync() {} } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    assert.equal(p.data.gate, 'paused');
+    const root = render(`pages/${page}/index.wxml`, p.data);
+    assert.equal(findAll(root, tapsTo('reload')).length, 1, `${page} 有重试`);
+    assert.ok(textOf(root).includes('重试'));
+    up = true; p.reload(); await settle();
+    assert.equal(p.data.aiEnabled, true, `${page} 恢复后能用`); assert.equal(p.data.gate, '');
+    // 别的情况（满了、用完了）不给重试：重试也没用
+    p.setData({ aiEnabled: false, gate: 'full' }); p.reload(); assert.equal(p.data.gate, 'full');
+    p.onHide();
+  }
 });

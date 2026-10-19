@@ -6,6 +6,8 @@ module.exports = {
   subscribe: () => () => {},
   ensure: () => Promise.resolve(Object.assign({}, OFF)),
   refresh: () => Promise.resolve(Object.assign({}, OFF)),
+  recheck: () => Promise.resolve(Object.assign({}, OFF)),
+  reconcile() {},
   canOpen: () => false,
   clear() {},
   rememberDoc() {},

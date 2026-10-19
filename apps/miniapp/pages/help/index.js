@@ -18,6 +18,10 @@ Page({
     this.unsubscribe = access.subscribe((state) => this.setData({ items: itemsFor(state) }));
     access.ensure();
   },
+  // 回到前台时再问一次 AI 板块的状态（多久真问一次由 ensure 管，第 11 轮）
+  onShow() {
+    access.ensure();
+  },
   onUnload() {
     if (this.unsubscribe) this.unsubscribe();
   },
