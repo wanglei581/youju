@@ -399,21 +399,24 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
 def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> int:
     """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。
 
-    admin 这边没开 AI（或白名单是空的）时，用户看到"AI 暂时不可用"，个数和退回在同一个事务里记进
-    心跳，给运维提醒（D-075）；只是这个人不在白名单里了（被移出），写"功能未开放"，不提醒。"""
-    paused = not interpret.worker_enabled(settings)
+    admin 这边处理不了 AI 任务（开关关着、白名单是空的，或对外 AI 的密钥没配；和心跳用同一个
+    判断 heartbeat.worker_capable）时，排队的 AI 任务全部退回，用户看到"AI 暂时不可用"，个数和
+    退回在同一个事务里记进心跳，给运维提醒（D-075）；只是这个人不在白名单里了（被移出），
+    写"功能未开放"，不提醒。"""
+    paused = not heartbeat.worker_capable(settings)
+    condition = AdvisorTask.kind.in_(AI_KINDS) & (
+        (AdvisorTask.status == "queued")
+        | (
+            (AdvisorTask.status == "running")
+            & AdvisorTask.started_at.is_not(None)
+            & (AdvisorTask.started_at < stamp - STALE_RUNNING)
+        )
+    )
+    if not paused:
+        condition = condition & AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings))
     tasks = session.scalars(
         select(AdvisorTask)
-        .where(
-            AdvisorTask.kind.in_(AI_KINDS),
-            AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings)),
-            (AdvisorTask.status == "queued")
-            | (
-                (AdvisorTask.status == "running")
-                & AdvisorTask.started_at.is_not(None)
-                & (AdvisorTask.started_at < stamp - STALE_RUNNING)
-            ),
-        )
+        .where(condition)
         .order_by(AdvisorTask.id)
         .with_for_update(skip_locked=True)
     ).all()
@@ -806,7 +809,8 @@ def run_advisor_tasks(
     stamp = _utc(stamp or datetime.now(UTC))
     revoked = _fail_revoked_interpret(session, settings, stamp)
     data_enabled = getattr(settings, "advisor_enabled", False)
-    ai_enabled = interpret.worker_enabled(settings)
+    # 和心跳、上面的退回同一个判断：缺对外 AI 密钥时也不领 AI 任务（排队的已经退回）
+    ai_enabled = heartbeat.worker_capable(settings)
     data_allowed = AdvisorTask.kind.in_(("compare", "track"))
     ai_allowed = AdvisorTask.kind.in_(AI_KINDS) & AdvisorTask.user_id.in_(
         interpret.worker_user_ids(settings)

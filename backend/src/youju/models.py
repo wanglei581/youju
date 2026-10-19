@@ -630,8 +630,8 @@ class AIHeartbeat(Base):
     fingerprint 是总开关、开放范围、白名单、全站每天上限的哈希，不存白名单明文
     （youju/ai/heartbeat.py）。admin 那一行另记：alerted_at 上次为设置不一致、admin 处理不了、
     退回任务发提醒的时间（每小时最多一次）；notice_at 上次提醒"api 心跳没来"的时间（每天最多
-    一次）；refunds_pending 因为 admin 没开 AI 退回、还没报出去的任务个数（advisor-run 加，
-    提醒发出去后减）。"""
+    一次）；refunds_pending 因为 admin 处理不了（没开 AI 或缺密钥）退回、还没报出去的任务个数
+    （advisor-run 加，提醒发出去后减）。"""
 
     __tablename__ = "ai_heartbeat"
     __table_args__ = (

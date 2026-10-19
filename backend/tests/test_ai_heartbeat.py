@@ -337,7 +337,7 @@ def test_alerts_for_mismatch_and_refunds_at_most_hourly(session, monkeypatch):
     heartbeat.add_refunds(session, 2, later)
     session.commit()
     text = heartbeat.check_and_alert(session, off, later)
-    assert "设置不一致" in text and "admin 服务没开 AI，退回了 2 个" in text
+    assert "设置不一致" in text and "admin 服务处理不了 AI 任务" in text and "退回了 2 个" in text
     assert pending(session) == 0
     assert len(sent) == 2
 
@@ -403,6 +403,25 @@ def test_refunds_after_whitelist_removal_are_not_counted(session, doc, monkeypat
     assert service.task_dict(task)["errorCode"] == "AI_UNAVAILABLE"
     assert "退回了 1 个" in heartbeat.check_and_alert(session, off, later + timedelta(minutes=1))
     assert len(sent) == 1
+
+
+def test_queued_tasks_are_refunded_when_admin_loses_its_key(session, doc, monkeypatch):
+    """任务排上队以后 admin 的对外 AI 密钥被撤掉：不领任务、不调用模型，按"AI 暂时不可用"退回并记个数。"""
+    queue(session, add_user(session), doc)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("缺密钥时不得调用模型")
+
+    monkeypatch.setattr(service, "ChatClient", forbidden)
+    keyless = make_settings(role="admin", ai_api_key=None)
+    result = service.run_advisor_tasks(session, settings=keyless, stamp=NOW)
+    session.expire_all()
+    task = session.scalar(select(AdvisorTask))
+    assert result["revoked"] == 1 and task.status == "failed"
+    assert task.error == heartbeat.UNAVAILABLE
+    assert service.task_dict(task)["errorCode"] == "AI_UNAVAILABLE"
+    assert session.scalar(select(AdvisorUsage.used_count)) == 0  # 次数已退
+    assert pending(session) == 1
 
 
 def test_alert_when_api_on_but_admin_cannot_work(session, monkeypatch):

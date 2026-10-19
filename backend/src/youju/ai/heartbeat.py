@@ -16,9 +16,9 @@ AI 的开关、开放范围、白名单、全站每天上限都是环境变量�
 - 两个服务的设置对不上；
 - 设置一样、api 开着 AI，admin 却处理不了（多半是 admin 的对外 AI 密钥没配）：这时 api 一直
   不收任务；
-- admin 没开 AI、退回了排队的任务。退回了几个不靠时间推算：advisor-run 退回时在同一个事务里把个数
-  加进 admin 那一行（refunds_pending），提醒发出去以后才减掉这次报了的，没发出去下一分钟照样在。
-  用户被移出白名单时的退回（admin 开着 AI）不加。
+- admin 处理不了（没开 AI 或缺密钥）、退回了排队的任务。退回了几个不靠时间推算：advisor-run 退回时
+  在同一个事务里把个数加进 admin 那一行（refunds_pending），提醒发出去以后才减掉这次报了的，没发出去
+  下一分钟照样在。用户被移出白名单时的退回（admin 能处理）不加。
 另外，admin 能处理 AI 任务、api 的心跳却超过 30 分钟没来：多半是 mysql_accounts.sql 的"AI 设置心跳
 权限"没执行，这时设置对不上也发现不了，每天最多提醒一次（notice_at）。
 发送失败或没配提醒机器人时不记时间，下一次照常再试。
@@ -130,7 +130,7 @@ def _send(text: str) -> bool:
 
 
 def add_refunds(session: Session, count: int, stamp: datetime) -> None:
-    """advisor-run 因为 admin 没开 AI 退回了 count 个排队的 AI 任务：和退回放在同一个事务里，
+    """advisor-run 因为 admin 处理不了退回了 count 个排队的 AI 任务：和退回放在同一个事务里，
     把个数加进 admin 那一行（由调用方提交）。admin 那一行还没有时先占一行"处理不了"，
     下一分钟的心跳会写全。"""
     if count <= 0:
@@ -165,8 +165,9 @@ def check_and_alert(session: Session, settings, stamp: datetime) -> str | None:
     pending = admin.refunds_pending or 0
     if pending:
         problems.append(
-            f"admin 服务没开 AI，退回了 {pending} 个排队的 AI 任务（用户看到的是 AI 暂时不可用，"
-            "次数已退）。请检查 admin 服务的 YOUJU_AI_ADVISOR_ENABLED 等设置是否和 api 一样"
+            f"admin 服务处理不了 AI 任务（没开 AI 或对外 AI 密钥没配），退回了 {pending} 个"
+            "排队的 AI 任务（用户看到的是 AI 暂时不可用，次数已退）。"
+            "请检查 admin 服务的环境变量是否和 api 一样"
         )
     if problems:
         if admin.alerted_at is not None and stamp - admin.alerted_at < ALERT_EVERY:
