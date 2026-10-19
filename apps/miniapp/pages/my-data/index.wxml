@@ -20,8 +20,8 @@
     <view class="card">
       <view class="section-title">账号</view>
       <view class="kv"><text class="kv-k">微信用户标识</text><text class="kv-v">{{user.id}}</text></view>
-      <!-- 内部包（D-062）：给自己开 AI 内测时，把完整标识填到云托管的 YOUJU_AI_ADVISOR_OPENIDS -->
-      <view class="kv"><text class="kv-k">内测白名单</text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制完整标识</text></view>
+      <!-- 完整标识：排查问题、把测试人员加进测试名单时用（复制后发给我们）。不写"内测"之类的字样（D-074 ⑧） -->
+      <view class="kv"><text class="kv-k">完整标识</text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制</text></view>
       <view class="kv"><text class="kv-k">同意的协议版本</text><text class="kv-v">{{user.agreedVersion || '未同意'}}</text></view>
       <view wx:if="{{user.agreedAt}}" class="kv"><text class="kv-k">同意时间</text><text class="kv-v">{{user.agreedAt}}</text></view>
       <view class="kv kv--last"><text class="kv-k">最近使用</text><text class="kv-v">{{user.visited || user.created}}</text></view>
