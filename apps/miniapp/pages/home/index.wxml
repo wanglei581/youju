@@ -28,7 +28,7 @@
   </view>
   <view class="entry" data-url="/pages/clients/index" bindtap="goEntry">
     <view class="tile tile--blue"><t-icon name="user" size="44rpx" color="#FFFFFF" /></view>
-    <text class="entry-name">我的客户</text><text class="entry-sub">本机最多 20 家</text>
+    <text class="entry-name">我的客户</text><text class="entry-sub">按客户看通知</text>
   </view>
   <view class="entry" data-url="/pages/lists/index" bindtap="goEntry">
     <view class="tile tile--orange"><t-icon name="bulletpoint" size="44rpx" color="#FFFFFF" /></view>

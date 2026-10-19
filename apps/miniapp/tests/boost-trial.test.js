@@ -66,7 +66,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   for (const must of [/连续 3 天/, /连续 72 小时/, /中途不能暂停/, /到 10月23日 10:00（北京时间）结束/, /每次最多 500 家（平时每次 50 家）/,
     /两项合计每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
     /体验期间只用体验的次数，这些不扣、也不能改用，体验结束后接着用/,
-    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次：账号跟着微信号走/, /同事共用这一次/, /名单准备好再开始/]) {
+    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次，只限本人使用，不能几个人共用/, /名单准备好再开始/]) {
     assert.match(text, must);
   }
   assert.doesNotMatch(text, SALES);
@@ -199,16 +199,16 @@ test('体验中：免费次数用满也能提交 500 家以内；额度一行写
   assert.match(server.page.data.statusLine, /今天还能提交 0 次/); server.page.onUnload();
 });
 
-// "昨天"按北京时间现算：原来写死 '2026-10-19'，到了 10/19 当天这份额度就不再是"昨天读的"，测试失效
-const yesterday = require('../utils/boost.js').beijingDay(new Date(Date.now() - 86400000));
+const STALE_DAY = '2000-01-01';
 test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一天能接着提交；重读只做一次、读不到就提示', async () => {
   let current = status({ maxRows: 500, trial: trialActive(10) });
   let reads = 0;
   const h = form({ api: { advisorStatus: () => { reads += 1; return Promise.resolve(current); } } });
   await flush();
   h.page.input({ detail: { value: '合成企业甲' } }); h.page.preview(); await flush();
-  // 模拟这份额度是昨天读的；服务端今天的体验次数已经重新计数
-  h.page.setData({ quotaDay: yesterday });
+  // 模拟这份额度是以前某天读的；服务端今天的体验次数已经重新计数。
+  // 用一个不可能是今天的日期（原来写死 2026-10-19，到了 10/19 当天这条就失败了）
+  h.page.setData({ quotaDay: STALE_DAY });
   current = status({ maxRows: 500, trial: trialActive(0) });
   const before = reads;
   h.page.submit(); await flush(); await flush();
@@ -223,7 +223,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   still.page.setData({ trialActive: true, trialLeft: 0, trialEndsMs: 1, trialCap: '今天的 10 次加量体验已用完' });
   still.page.input({ detail: { value: '合成企业甲' } }); still.page.preview(); await flush();
   const seen = count;
-  still.page.setData({ quotaDay: yesterday });
+  still.page.setData({ quotaDay: STALE_DAY });
   still.page.submit(); await flush(); await flush();
   assert.ok(count - seen <= 1, `重读了 ${count - seen} 次`);
   assert.equal(still.calls.filter((c) => c[0] === 'create').length, 0);
@@ -234,7 +234,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   const broken = form({ api: { advisorStatus: () => (fail ? Promise.reject(new Error('网络连接失败')) : Promise.resolve(status({ maxRows: 500, trial: trialActive(10) }))) } });
   await flush();
   broken.page.input({ detail: { value: '合成企业甲' } }); broken.page.preview(); await flush();
-  fail = true; broken.page.setData({ quotaDay: yesterday });
+  fail = true; broken.page.setData({ quotaDay: STALE_DAY });
   broken.page.submit(); await flush(); await flush();
   assert.match(broken.page.data.inputError, /未能读取工具额度：网络连接失败/);
   assert.equal(broken.calls.filter((c) => c[0] === 'create').length, 0);
@@ -385,9 +385,9 @@ test('确认页已注册、标题写明；页面不出现购买字样', () => {
   }
 });
 
-test('我的数据页不出现"内测"之类的字样：完整标识一行只写"完整标识 / 复制"（D-074 ⑧：不给用户看半成品）', () => {
+test('我的数据页不出现"内测"之类的字样：完整标识一行写"完整标识 / 复制（联系客服时用）"（D-074 ⑧：不给用户看半成品）', () => {
   const text = fs.readFileSync(path.join(root, 'pages/my-data/index.wxml'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
   assert.doesNotMatch(text, /内测|测试版|体验版/);
-  assert.match(text, /完整标识<\/text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制<\/text>/);
+  assert.match(text, /完整标识<\/text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制（联系客服时用）<\/text>/);
 });
 

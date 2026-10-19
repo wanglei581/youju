@@ -46,7 +46,7 @@
 
   <!-- 客户卡片 -->
   <block wx:else>
-    <view class="intro">保存客户的地区和产业方向，最多 20 家。</view>
+    <view class="intro">保存客户的地区和产业方向，最多 20 家。客户更多时，用工具中心的“客户相关通知表”上传名单一次处理。</view>
     <view class="add btn-primary" bindtap="edit" aria-role="button">新增客户</view>
     <view wx:for="{{clients}}" wx:key="id" class="card client-card">
       <view class="section-title">{{item.displayName}}</view>
