@@ -403,7 +403,8 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         if _only_dates(values):
             continue
         before = plain[max(0, run.start() - _BEFORE) : run.start()]
-        label = column or next((k for k, p in _LABELS.items() if p.search(before)), None)
+        # 格子里自己写了标签的按格子里的认（手机号那一列里写着"开户行：…… 1202…"），没写的用列标签
+        label = next((k for k, p in _LABELS.items() if p.search(before)), None) or column
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
         amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
         spans += [

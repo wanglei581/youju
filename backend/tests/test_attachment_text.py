@@ -1174,6 +1174,13 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
             _row("张三", "1101011990030 71234", "1381234 5678"),
         ]
     )
+    builder.table(  # 格子里自己写了标签的按格子里的认
+        [
+            _row("姓名", "手机号码", "身份证号"),
+            _row("甲", "开户行：中国工商银行杭州分行 1202021309001234568", "手机：1381 234 5678"),
+            _row("乙", "身份证号：110101 1990 03 07 1234", "无"),
+        ]
+    )
     builder.table(  # 名目加内容的两列表：标签在左边那格
         [
             _row("姓名", "张三"),
@@ -1183,6 +1190,9 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
     )
     assert [x.text for x in builder.segments[1:]] == [
         "张三 | [身份证号已脱敏] | [手机号已脱敏]",
+        "姓名 | 手机号码 | 身份证号",
+        "甲 | 开户行：中国工商银行杭州分行 [银行账号已脱敏] | 手机：[手机号已脱敏]",
+        "乙 | 身份证号：[身份证号已脱敏] | 无",
         "姓名 | 张三",
         "身份证号 | [身份证号已脱敏]",
         "手机 | [手机号已脱敏]",
