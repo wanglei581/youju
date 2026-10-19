@@ -119,8 +119,10 @@ function openPrivacy() {
   wx.openPrivacyContract({ fail });
 }
 
-// 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底
-function ensureConsent() {
+// 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底。
+// purpose 为 'ai'：从 AI 板块来的（AI 首页、解读页、对照页），见 askConsent
+function ensureConsent(options) {
+  const purpose = options && options.purpose;
   if (!loginOpen()) {
     wx.showToast({ title: '这个功能暂未开放', icon: 'none' });
     return Promise.resolve(false);
@@ -130,21 +132,28 @@ function ensureConsent() {
     return Promise.resolve(false);
   }
   if (agreedHere()) return Promise.resolve(true);
-  return syncConsent().then((synced) => (synced ? true : askConsent()));
+  return syncConsent().then((synced) => (synced ? true : askConsent(purpose)));
 }
 
 // 读全文并同意的页面：依次显示两份文件全文，同意按钮在最后
 const CONSENT_PAGE = '/pages/agreement/index?consent=1';
+// 从 AI 板块来的：同意以后的提示不写"关注和纠错"
+const AI_CONSENT_PAGE = `${CONSENT_PAGE}&for=ai`;
 
-function askConsent() {
-  // 协议更新后：只能先读更新后的全文，在全文最后同意
-  if (outdated) {
+function askConsent(purpose) {
+  const ai = purpose === 'ai';
+  // 协议更新后、或从 AI 板块来（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
+  // 弹窗写明是为了用什么（Codex 小程序第 13 轮）
+  if (outdated || ai) {
+    const what = ai ? 'AI 解读和条款对照' : featureNames();
     wx.showModal({
-      title: '协议已更新',
-      content: `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${featureNames()}。`,
+      title: outdated ? '协议已更新' : '请先阅读并同意',
+      content: outdated
+        ? `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${what}。`
+        : `使用${what}前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。`,
       confirmText: '阅读全文',
       cancelText: '暂不',
-      success: (res) => { if (res.confirm) wx.navigateTo({ url: CONSENT_PAGE }); },
+      success: (res) => { if (res.confirm) wx.navigateTo({ url: ai ? AI_CONSENT_PAGE : CONSENT_PAGE }); },
     });
     return Promise.resolve(false);
   }
@@ -217,6 +226,6 @@ function withdraw() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
   covers, agreeFailed, remindAny, featureNames,
 };

@@ -422,7 +422,7 @@ function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ i
       detail: (id) => { calls.detail = (calls.detail || 0) + 1; return detail(id); },
     },
     '../../utils/ai-access.js': access, '../../utils/advisor.js': advisor, '../../utils/ai-interpret.js': interpret, '../../utils/tool-context.js': context,
-    '../../utils/consent.js': { ensureConsent: () => { calls.consent += 1; return Promise.resolve(consentOk); } }, '../../utils/format.js': format,
+    '../../utils/consent.js': { ensureConsent: (opts) => { calls.consent += 1; calls.consentOpts = opts; return Promise.resolve(consentOk); } }, '../../utils/format.js': format,
   }, { wx: { switchTab: (o) => { switched.push(o.url); if (o.complete) o.complete(); }, navigateTo: (o) => navigations.push(o.url) } });
   page.getTabBar = () => ({ setData: (v) => { selected = v.selected; } });
   page.onLoad();
@@ -1280,17 +1280,18 @@ test('Codex 第 10 轮：对所有人开放、还没同意协议时，"我的 AI
 
 // 真的 utils/consent.js，接上真的 ai-access（accessWith 建的 raw）
 function consentWith(aiAccess, extraApi = {}) {
-  const stored = {}; const toasts = []; const modals = [];
+  const stored = {}; const toasts = []; const modals = []; const navigations = [];
   const wx = {
     getStorageSync: (k) => stored[k] || '', setStorageSync: (k, v) => { stored[k] = v; }, removeStorageSync: (k) => { delete stored[k]; },
     clearStorageSync: () => { Object.keys(stored).forEach((k) => delete stored[k]); }, showToast: (o) => toasts.push(o.title), showModal: (o) => modals.push(o),
+    navigateTo: (o) => navigations.push(o.url),
   };
   const mod = load('utils/consent.js', {
     '../content/legal.js': { final: true, version: '2026-10' }, './config.js': { templates: {} },
     './api.js': { isLive: () => true, AGREED_KEY: 'agreed', forgetAgreed() { delete stored.agreed; }, ...extraApi },
     './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} }, './ai-access.js': aiAccess,
   }, { wx });
-  return { mod, stored, modals, toasts };
+  return { mod, stored, modals, toasts, navigations };
 }
 
 test('Codex 第 11 轮：协议同意状态变了，AI 板块马上重新问——白名单里的人刚同意第 5 格马上出来、同意以前发出的旧答复不用；/me 发现失效也重问，没变不问；注销以后再问一次', async () => {
@@ -1489,4 +1490,63 @@ test('Codex 第 12 轮：发现对不上时在途的旧查询作废——旧的�
   const z = accessWith({ mode: () => new Promise((done) => { release = done; }) });
   const asked = z.access.raw.ensure(); z.access.clear(); release({ open: true, available: true });
   assert.deepEqual(plain(await asked), { visible: false, confirmed: false, available: false });
+});
+
+test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是为了用 AI 解读和条款对照、只能去读两份全文在最后同意；别的入口照旧；同意后的提示不写"关注和纠错"', async () => {
+  // 真的 consent.js：服务端说没同意
+  const ask = (agreed = null) => {
+    const c = consentWith(control(OPEN), { me: () => Promise.resolve({ agreed }) });
+    return { c, wxModals: c.modals };
+  };
+  const a = ask();
+  const answer = a.c.mod.ensureConsent({ purpose: 'ai' });
+  await settle();
+  assert.equal(a.wxModals.length, 1);
+  const modal = a.wxModals[0];
+  assert.equal(modal.title, '请先阅读并同意');
+  assert.match(modal.content, /使用AI 解读和条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意/);
+  assert.equal(modal.confirmText, '阅读全文', '不能直接点同意'); assert.equal(modal.cancelText, '暂不');
+  assert.doesNotMatch(modal.content, /关注和纠错/);
+  assert.equal(await answer, false);
+  modal.success({ confirm: true });
+  assert.deepEqual(a.c.navigations, ['/pages/agreement/index?consent=1&for=ai'], '点"阅读全文"去两份全文，带上 for=ai');
+  // 别的入口（关注、纠错）照旧：写"关注和纠错"，可以直接同意
+  const d = ask();
+  d.c.mod.ensureConsent(); await settle();
+  assert.equal(d.wxModals[0].confirmText, '同意'); assert.match(d.wxModals[0].content, /使用关注和纠错前/);
+  // 协议更新过、从 AI 板块来：标题写已更新，用途写 AI 解读和条款对照
+  const u = ask({ version: '2026-09', valid: true });
+  u.c.mod.ensureConsent({ purpose: 'ai' }); await settle();
+  assert.equal(u.wxModals[0].title, '协议已更新'); assert.match(u.wxModals[0].content, /再使用AI 解读和条款对照/);
+  u.wxModals[0].success({ confirm: true }); assert.deepEqual(u.c.navigations, ['/pages/agreement/index?consent=1&for=ai']);
+  // 别的入口点"先看协议"：去两份全文，不带 for=ai
+  d.wxModals[0].success({ confirm: false }); assert.deepEqual(d.c.navigations, ['/pages/agreement/index?consent=1']);
+  // AI 首页、解读页、对照页都带上 purpose
+  const h = hubPage({ caps: OFF('consent') }); h.page.onShow(); await settle();
+  h.page.consent(); assert.deepEqual(plain(h.calls.consentOpts), { purpose: 'ai' });
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let opts = null;
+    const deps = {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(OFF('consent')) },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      '../../utils/consent.js': { ensureConsent: (o) => { opts = o; return Promise.resolve(false); } },
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: () => '', setStorageSync() {} } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    assert.equal(p.data.gate, 'consent'); p.consent(); assert.deepEqual(plain(opts), { purpose: 'ai' }, page);
+    p.onHide();
+  }
+  // 协议全文页：从 AI 板块来的（for=ai）同意以后提示"可以继续使用了"，不写"关注和纠错可以用了"
+  for (const [query, toast] of [[{ consent: '1', for: 'ai' }, '已同意，可以继续使用了'], [{ consent: '1' }, '已同意，关注和纠错可以用了']]) {
+    const toasts = []; let marked = 0;
+    const page = load('pages/agreement/index.js', {
+      '../../content/legal.js': { final: true, version: '2026-10', status: '', disclaimer: '', user: { title: '用户协议', sections: [] }, privacy: { title: '隐私保护指引', sections: [] } },
+      '../../content/pay-terms.js': { title: '', text: '' },
+      '../../utils/api.js': { agree: () => Promise.resolve({}) },
+      '../../utils/consent.js': { consentOpen: () => true, markAgreed: () => { marked += 1; }, loginOpen: () => true, agreeFailed() {}, featureNames: () => '关注和纠错' },
+    }, { wx: { setNavigationBarTitle() {}, showToast: (o) => toasts.push(o.title), navigateBack() {} }, setTimeout: () => {} });
+    page.onLoad(query); page.agree(); await settle();
+    assert.equal(marked, 1); assert.deepEqual(toasts, [toast]);
+  }
 });

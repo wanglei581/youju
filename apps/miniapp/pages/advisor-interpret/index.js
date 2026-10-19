@@ -63,7 +63,7 @@ Page({
   // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
   consent() {
     if (this.data.gate !== 'consent') return;
-    require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.onShow(); });
+    require('../../utils/consent.js').ensureConsent({ purpose: 'ai' }).then((ok) => { if (ok && this.visible) this.onShow(); });
   },
   // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
   reload() { if (this.data.gate === 'offline' || this.data.gate === 'paused') this.onShow(); },

@@ -266,7 +266,7 @@ Page({
   // 没同意协议：走同意流程，同意后回到这一页刷新
   consent() {
     if (this.data.gate !== 'consent') return;
-    ensureConsent().then((ok) => { if (ok && this.shown) this.onShow(); });
+    ensureConsent({ purpose: 'ai' }).then((ok) => { if (ok && this.shown) this.onShow(); });
   },
 
   findDoc() {
