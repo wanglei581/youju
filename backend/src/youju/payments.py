@@ -894,10 +894,13 @@ def mark_refunded(
 STUCK_REFUND_ERROR = "退款超过 24 小时还没到用户那边（查单状态 5：商户侧扣款完成），需人工核对"
 
 
+# 发起退款后最多等多久：满 24 小时还没退完（没到查单 8、也没收到退款成功推送）就转人工
+REFUND_WAIT = timedelta(hours=24)
+
+
 def refund_exhausted(order: PayOrder, stamp: datetime) -> bool:
     return order.refund_attempts >= 6 or (
-        order.refund_started_at is not None
-        and order.refund_started_at <= stamp - timedelta(hours=24)
+        order.refund_started_at is not None and order.refund_started_at <= stamp - REFUND_WAIT
     )
 
 
@@ -1244,26 +1247,33 @@ def check_order(
     except XPayError:
         session.commit()  # 查单记录（若有）照常保存；订单不动，交给补单
         return "unavailable"
+    result = settle_pending(session, order, data, settings, stamp)
+    # 先持久化使用期再通知发货；通知失败由每分钟的补单补发（和补单同一顺序）
+    session.commit()
+    if result == "paid" and not order.goods_notified:
+        provide_goods(session, order, client)
+    return result
+
+
+def settle_pending(
+    session: Session, order: PayOrder, data: dict, settings: Settings, stamp: datetime
+) -> str:
+    """按查单结果处理一张待确认的订单（不提交、不通知发货）：主动核对和下新单前查上一笔共用。
+    返回 paid 已开通；unpaid 微信还没有这笔付款（0/1）；closed 微信已关单（6）；
+    refunded 已退完（8）；manual 转了人工（金额等核验不过、5/7/9/10 等少见状态）；
+    unavailable 这次处理不了（返回格式不对）。"""
     if mark_refunded(session, order, data, stamp):
-        session.commit()
         return "refunded" if order.status == "refunded" else "manual"
     status = data.get("status")
     if status == 6:
         order.status, order.updated_at = "closed", stamp
-        session.commit()
         return "closed"
     if status in (0, 1):
-        session.commit()
         return "unpaid"
     if flag_odd_pending(order, data, stamp):
-        session.commit()
         return "manual"
     accept_payment(session, order, data, settings, stamp)
-    # 先持久化使用期再通知发货；通知失败由每分钟的补单补发（和补单同一顺序）
-    session.commit()
     if order.status == "completed":
-        if not order.goods_notified:
-            provide_goods(session, order, client)
         return "paid"
     return "manual" if order.status == "manual" else "unavailable"
 
@@ -1330,19 +1340,28 @@ def run_payments(
                 elif refund_exhausted(order, stamp):
                     # 最后核验已成功的退款；查单也失败则人工接手，不能无限重试。
                     # 24 小时从发起退款（refund_started_at）算：停在 5（钱从我们这边扣走了、
-                    # 还没到用户那边）满 24 小时也转人工，告警只发一次（alerted_at）
-                    confirmed, status = False, None
-                    with contextlib.suppress(XPayError):
-                        data = query(session, order, client)
-                        status = data.get("status")
-                        confirmed = mark_refunded(session, order, data, stamp)
-                    if not confirmed:
-                        order.status, order.alerted_at = "manual", None
-                        order.error = (
-                            STUCK_REFUND_ERROR
-                            if status == 5
-                            else "退款尝试达到上限或超过24小时，需人工核对"
-                        )
+                    # 还没到用户那边）满 24 小时也转人工，告警只发一次（alerted_at）。
+                    # 发起次数先到上限、还没满 24 小时就查到 5 的（几次请求超时、其实微信受理了）：
+                    # 不再发起，按 10 分钟一次接着等，满 24 小时再定（Codex 复核）
+                    waiting = order.refund_started_at > stamp - REFUND_WAIT
+                    if not (waiting and order.refund_retry_at and order.refund_retry_at > stamp):
+                        confirmed, status = False, None
+                        with contextlib.suppress(XPayError):
+                            data = query(session, order, client)
+                            status = data.get("status")
+                            confirmed = mark_refunded(session, order, data, stamp)
+                        if confirmed:
+                            pass
+                        elif status == 5 and waiting:
+                            order.refund_status, order.error = "pending", None
+                            order.refund_retry_at = stamp + timedelta(minutes=10)
+                        else:
+                            order.status, order.alerted_at = "manual", None
+                            order.error = (
+                                STUCK_REFUND_ERROR
+                                if status == 5
+                                else "退款尝试达到上限或超过24小时，需人工核对"
+                            )
                 elif order.refund_status == "pending":
                     if order.refund_retry_at is None or order.refund_retry_at <= stamp:
                         order.refund_retry_at = stamp + timedelta(minutes=10)

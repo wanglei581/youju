@@ -462,3 +462,64 @@ def test_retry_that_finds_the_refund_already_accepted_does_not_refund_twice(setu
     row = session.get(PayOrder, row.id)
     assert row.status == "refunding" and row.refund_status == "pending"
     assert len(calls(setup_pay, "/xpay/refund_order")) == 1
+
+
+def test_attempts_used_up_before_24_hours_keep_waiting_at_merchant_side(setup_pay, session):  # noqa: F811
+    """几次发起退款的请求都失败（其实微信受理了，查单 5）、次数先到上限：不转人工、不再发起，
+    按 10 分钟一次接着查，从发起退款满 24 小时还是 5 才转人工（Codex 复核）。"""
+    row = delivered(setup_pay, session)
+    fake = setup_pay[2]
+    fake.fail_refund = True
+    pay_refund(setup_pay, row)
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    row.refund_attempts = 6
+    session.commit()
+    fake.fail_refund = False
+    fake.status, fake.left_fee = 5, 0
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=5)) == []
+    row = session.get(PayOrder, row.id)
+    assert row.status == "refunding" and row.refund_status == "pending"
+    queried = len(calls(setup_pay, "/xpay/query_order"))
+    # 10 分钟内不再查
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=10)) == []
+    assert len(calls(setup_pay, "/xpay/query_order")) == queried
+    alerts = sweep(setup_pay, session, NOW + timedelta(hours=24, minutes=1))
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.STUCK_REFUND_ERROR
+    assert len(alerts) == 1
+    assert len(calls(setup_pay, "/xpay/refund_order")) == 1
+
+
+@pytest.mark.parametrize("state", ["refunded", "completed"])
+def test_late_failure_push_does_not_move_a_settled_order(setup_pay, session, state):  # noqa: F811
+    """迟到的、别的退款的失败推送：订单不在退款中（已退完、已完成）时只记下来、应答成功，
+    订单不倒退、不告警（Codex 复核）。"""
+    row = delivered(setup_pay, session)
+    if state == "refunded":
+        pay_refund(setup_pay, row)
+        setup_pay[2].status, setup_pay[2].left_fee = 8, 0
+        sweep(setup_pay, session, NOW + timedelta(minutes=10))
+        assert session.get(PayOrder, row.id).status == "refunded"
+    assert refund_push(setup_pay, row, RetCode=1)["ErrCode"] == 0
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=20)) == []
+    row = session.get(PayOrder, row.id)
+    assert row.status == state
+
+
+@pytest.mark.parametrize(
+    "status,code,old_state", [(8, 201, "refunded"), (7, 409, "manual"), (5, 409, "manual")]
+)
+def test_new_order_settles_previous(setup_pay, session, status, code, old_state):  # noqa: F811
+    """下新单前查上一笔，和主动核对同一套处理：已退完的不挡新单；退款进行中、退款失败这类少见状态
+    转人工并返回 409（Codex 复核：原来只认付款和关单，其余留在待确认）。"""
+    fake = setup_pay[2]
+    fake.status = 1
+    first = order(session, create(setup_pay))
+    fake.status, fake.left_fee = status, 0
+    response = create(setup_pay)
+    assert response.status_code == code
+    if code == 409:
+        assert "人工核对" in response.json()["detail"]
+    session.expire_all()
+    assert session.get(PayOrder, first.id).status == old_state

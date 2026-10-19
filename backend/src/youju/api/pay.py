@@ -167,16 +167,15 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
             data = payments.query(session, old, client)
         except XPayError:
             continue
-        if data.get("status") == 6:
-            old.status, old.updated_at = "closed", stamp
-            continue
-        payments.accept_payment(session, old, data, settings, stamp)
-        if old.status != "pending":
+        # 和主动核对同一套处理（payments.settle_pending）：已关单、已退完的不挡新单；
+        # 付了款的开通、转人工的（金额不符、5/7 等少见状态）都返回 409，不再下新单
+        result = payments.settle_pending(session, old, data, settings, stamp)
+        if result in ("paid", "manual"):
             session.commit()
             raise HTTPException(
                 status_code=409,
                 detail="上一笔已经付款，正在为你开通，可到“我的订单”查看"
-                if old.status == "completed"
+                if result == "paid"
                 else "上一笔付款需要人工核对，请点“遇到问题”告诉我们",
             )
     count = session.scalar(
@@ -574,10 +573,18 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         # 退款推送的 RetCode：0 退款成功，非 0 失败（官方字段说明）。失败的转人工、告警一次
         # （alerted_at 清空后补单发；已经是人工的不再清，微信重推也不会重复告警），应答成功，
         # 免得微信重推 15 次；原来回失败、订单不动，没人知道退款失败了
+        # 只在订单正等着这次退款（退款中）时转人工；已退完、已完成等其他状态的（迟到的、
+        # 别的退款的失败推送）只记日志和事件，不让订单倒退、不重复告警（Codex 复核）
         ret = data.get("RetCode")
         if kind == "xpay_refund_notify" and ret is not None and str(ret) != "0":
-            logger.warning("%s 订单 #%s 微信说退款失败：RetCode=%s", kind, order_id, ret)
-            if order.status != "manual":
+            logger.warning(
+                "%s 订单 #%s 微信说退款失败：RetCode=%s，订单状态 %s",
+                kind,
+                order_id,
+                str(ret)[:16],
+                order.status,
+            )
+            if order.status == "refunding":
                 order.status, order.alerted_at = "manual", None
                 order.error = f"微信退款失败（RetCode {str(ret)[:16]}），需人工处理"
             session.commit()
