@@ -570,32 +570,31 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
             session.commit()
             return reply(xml)
-        # 退款推送的 RetCode：0 退款成功，非 0 失败（官方字段说明）。失败的转人工、告警一次
-        # （alerted_at 清空后补单发；已经是人工的不再清，微信重推也不会重复告警），应答成功，
-        # 免得微信重推 15 次；原来回失败、订单不动，没人知道退款失败了
-        # 只在订单正等着这次退款（退款中）时处理；已退完、已完成等其他状态的（迟到的、
-        # 别的退款的失败推送）只记日志和事件，不让订单倒退、不重复告警（Codex 复核）。
-        # 退款中的先查单再定：推送可能是同一退款单号上一次失败的、迟到了，这次重试其实已经
-        # 受理——查到 8 记退完，查到 5（商户侧扣款完成）接着等，查单也确认没退成才转人工。
-        # 查不了单（XPayError）走下面的 except：应答失败让微信重推，订单仍是退款中、补单接着查
+        # 退款推送和发货推送一样只是"去查单"的信号，按查单结果走和每分钟补单同一套处理
+        # （Codex 复核：迟到的、别的退款的推送，按推送本身改订单都会改错）：
+        # - RetCode 0（退款成功）且退款单号是我们这次发起的：查单停在 5 也算退完；
+        # - RetCode 非 0（失败）：只记下来；订单在退款中时，查单 8 记退完、7 照补单的做法重新发起
+        #   （同一退款单号），5 和没变化的接着等；一直退不成的，从发起退款满 24 小时转人工、
+        #   告警一次（run_payments）。推送不直接把订单改成人工，已退完、已完成的订单不会倒退。
         ret = data.get("RetCode")
-        if kind == "xpay_refund_notify" and ret is not None and str(ret) != "0":
+        refund_id = data.get("MchRefundId")
+        ours = not refund_id or not order.refund_order_id or refund_id == order.refund_order_id
+        failed = kind == "xpay_refund_notify" and ret is not None and str(ret) != "0"
+        if failed:
             logger.warning(
-                "%s 订单 #%s 微信说退款失败：RetCode=%s，订单状态 %s",
+                "%s 订单 #%s 微信说退款失败：RetCode=%s，订单状态 %s%s",
                 kind,
                 order_id,
                 str(ret)[:16],
                 order.status,
+                "" if ours else "，不是这笔订单正在办的退款单",
             )
-            if order.status == "refunding":
+            if order.status == "refunding" and ours:
                 checked = payments.query(session, order, client, transient_openid=data["OpenId"])
-                if payments.mark_refunded(session, order, checked, _stamp()):
-                    pass
-                elif checked.get("status") == 5:
-                    order.refund_status, order.error = "pending", None
-                else:
-                    order.status, order.alerted_at = "manual", None
-                    order.error = f"微信退款失败（RetCode {str(ret)[:16]}），需人工处理"
+                if not payments.mark_refunded(session, order, checked, _stamp()) and (
+                    checked.get("status") == 7
+                ):
+                    order.refund_status = "retry"
             session.commit()
             return reply(xml)
         checked = payments.query(session, order, client, transient_openid=data["OpenId"])
@@ -604,9 +603,13 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
                 session, order, checked, get_settings(), _stamp(), data
             )
         else:
-            # 推送说退款成功（RetCode 0）时，查单停在 5（商户侧扣款完成）也算退完
+            # 推送说我们这次发起的退款成功（RetCode 0）时，查单停在 5（商户侧扣款完成）也算退完
             accepted = payments.mark_refunded(
-                session, order, checked, _stamp(), confirmed=ret is not None and str(ret) == "0"
+                session,
+                order,
+                checked,
+                _stamp(),
+                confirmed=ours and ret is not None and str(ret) == "0",
             )
         session.commit()
         if (

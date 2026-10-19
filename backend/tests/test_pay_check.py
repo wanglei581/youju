@@ -431,20 +431,59 @@ def test_refund_push_decides_at_merchant_side(setup_pay, session):  # noqa: F811
     assert session.get(PayOrder, row.id).status == "refunded"
 
 
-def test_failed_refund_push_goes_to_staff_and_alerts_once(setup_pay, session):  # noqa: F811
-    """推送说退款失败（RetCode 非 0）：转人工、应答成功（不让微信重推 15 次）；微信重推也只告警一次。"""
+@pytest.mark.parametrize(
+    "status,state,retry", [(2, "refunding", False), (5, "refunding", False), (7, "refunding", True)]
+)
+def test_failure_push_only_signals_a_query(setup_pay, session, status, state, retry):  # noqa: F811
+    """退款失败推送（RetCode 非 0）只是"去查单"的信号，按查单结果走补单那一套：7（退款失败）照补单的
+    做法重新发起（同一退款单号），5 和没变化（2）的接着等；推送本身不把订单改成人工、不告警，
+    应答成功免得微信重推 15 次；微信重推也一样（Codex 复核：迟到的推送按推送改订单会改错）。"""
     row = delivered(setup_pay, session)
     pay_refund(setup_pay, row)
-    assert refund_push(setup_pay, row, RetCode=268490001)["ErrCode"] == 0
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = status, 0 if status == 5 else 100
+    for _ in range(2):
+        assert refund_push(setup_pay, row, RetCode=268490001)["ErrCode"] == 0
+        session.expire_all()
+        row = session.get(PayOrder, row.id)
+        assert row.status == state and row.alerted_at is None
+        assert row.refund_status == ("retry" if retry else "pending")
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=5)) == []
+    # 7：补单按退款单号原样再发起一次
+    assert len(calls(setup_pay, "/xpay/refund_order")) == (2 if retry else 1)
+    sent = calls(setup_pay, "/xpay/refund_order")
+    assert len({body["refund_order_id"] for _, body, _ in sent}) == 1
+
+
+def test_failure_push_after_the_refund_completed_records_it(setup_pay, session):  # noqa: F811
+    """失败推送到的时候查单已经是 8：记退完（以查单为准）。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    setup_pay[2].status, setup_pay[2].left_fee = 8, 0
+    assert refund_push(setup_pay, row, RetCode=1)["ErrCode"] == 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunded"
+
+
+def test_refund_push_for_another_refund_id_is_only_logged(setup_pay, session):  # noqa: F811
+    """推送的商户退款单号不是这笔订单正在办的那张：成功的不算退完（等查单 8），失败的只记下来。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = 5, 0
+    assert refund_push(setup_pay, row, RetCode=0, MchRefundId="someone-else")["ErrCode"] != 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunding"
+    fake.status, fake.left_fee = 7, 100
+    assert refund_push(setup_pay, row, RetCode=1, MchRefundId="someone-else")["ErrCode"] == 0
     session.expire_all()
     row = session.get(PayOrder, row.id)
-    assert row.status == "manual" and "微信退款失败（RetCode 268490001）" in row.error
-    assert row.alerted_at is None
-    assert len(sweep(setup_pay, session, NOW + timedelta(minutes=5))) == 1
-    assert refund_push(setup_pay, row, RetCode=268490001)["ErrCode"] == 0
-    assert sweep(setup_pay, session, NOW + timedelta(minutes=10)) == []
-    row = session.get(PayOrder, row.id)
-    assert row.status == "manual" and row.alerted_at is not None
+    assert row.status == "refunding" and row.refund_status == "pending"
+    # 是我们这张的成功推送：5 也算退完
+    fake.status, fake.left_fee = 5, 0
+    assert refund_push(setup_pay, row, RetCode=0, MchRefundId=row.refund_order_id)["ErrCode"] == 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunded"
 
 
 def test_retry_that_finds_the_refund_already_accepted_does_not_refund_twice(setup_pay, session):  # noqa: F811
@@ -523,27 +562,6 @@ def test_new_order_settles_previous(setup_pay, session, status, code, old_state)
         assert "人工核对" in response.json()["detail"]
     session.expire_all()
     assert session.get(PayOrder, first.id).status == old_state
-
-
-@pytest.mark.parametrize("status,state", [(5, "refunding"), (8, "refunded"), (7, "manual")])
-def test_failure_push_is_checked_against_the_order_first(setup_pay, session, status, state):  # noqa: F811
-    """失败推送可能是同一退款单号上一次的、迟到了：先查单，8 记退完、5 接着等，
-    查单也确认没退成（7）才转人工（Codex 复核）。"""
-    row = delivered(setup_pay, session)
-    pay_refund(setup_pay, row)
-    fake = setup_pay[2]
-    fake.status, fake.left_fee = status, 0 if status in (5, 8) else 100
-    assert refund_push(setup_pay, row, RetCode=1)["ErrCode"] == 0
-    session.expire_all()
-    row = session.get(PayOrder, row.id)
-    assert row.status == state
-    alerts = sweep(setup_pay, session, NOW + timedelta(minutes=5))
-    assert len(alerts) == (1 if state == "manual" else 0)
-    if status == 5:
-        # 接着等：到了用户那边（8）照常记退完
-        fake.status = 8
-        sweep(setup_pay, session, NOW + timedelta(minutes=20))
-        assert session.get(PayOrder, row.id).status == "refunded"
 
 
 def test_failure_push_when_query_fails_is_retried_not_settled(setup_pay, session):  # noqa: F811
