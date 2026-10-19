@@ -214,8 +214,9 @@ Page({
       if (seq !== this.seq) return;
       const ai = (caps && caps.ai_advisor) || {};
       const gate = gateOf(caps);
-      // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页
-      if (gate === 'off') access.refresh();
+      // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页。
+      // 能力接口说后台能处理、AI 板块记的却是"暂时不可用"（之前问的）：也马上再问一次，问到了按钮跟着放出来（第 9 轮）
+      if (gate === 'off' || (ai.enabled === true && ai.available !== false && !access.canOpen())) access.refresh();
       const kinds = ai.enabled === true ? kindRows(ai) : [];
       const open = (kind) => { const row = kinds.find((item) => item.kind === kind); return !gate && !!row && !row.out; };
       // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。

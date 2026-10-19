@@ -13,7 +13,8 @@ const CACHE_FOR = 24 * 3600 * 1000;
 // AI 首页"刚才看的通知"：本机只记最近 1 份能解读的通知（编号、标题、发文机关、日期），7 天后不再显示
 const LAST_DOC_KEY = 'youjuAiLastDocV1';
 const LAST_DOC_FOR = 7 * 24 * 3600 * 1000;
-// 同一次打开里，页面显示时最多每 10 分钟再问一次后台；没问到（连不上）时 15 秒内不重复问
+// 同一次打开里，页面显示时最多每 10 分钟再问一次后台；后台说暂时处理不了时 15 秒后就再问；
+// 没问到（连不上）时 15 秒内不重复问
 const RECHECK = 10 * 60 * 1000;
 const RETRY_AFTER = 15000;
 
@@ -110,11 +111,14 @@ function refresh() {
   return pending;
 }
 
-// 页面显示时调用：这次打开还没问过、或问过超过 10 分钟才再问
+// 页面显示时调用：这次打开还没问过、或问过超过 10 分钟才再问。
+// 后台说暂时处理不了时问过超过 15 秒就再问：恢复以后列表上的按钮、AI 首页不用等 10 分钟（Codex 小程序第 9 轮）。
+// 刚才没问到（连不上）：不管以前问到过没有，15 秒内都不重复问
 function ensure() {
   const now = current();
-  if (now.confirmed && Date.now() - checkedAt < RECHECK) return Promise.resolve(now);
-  if (!now.confirmed && failedAt && Date.now() - failedAt < RETRY_AFTER) return Promise.resolve(now);
+  const every = now.visible && now.available === false ? RETRY_AFTER : RECHECK;
+  if (now.confirmed && Date.now() - checkedAt < every) return Promise.resolve(now);
+  if (failedAt && Date.now() - failedAt < RETRY_AFTER) return Promise.resolve(now);
   return refresh();
 }
 

@@ -407,8 +407,9 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
 });
 
 function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ items: [] }), tasks = () => Promise.resolve({ items: [] }), last = null, consentOk = true,
-  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }) } = {}) {
-  const access = control(state); access.stored.last = last;
+  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }), realAccess = null } = {}) {
+  // realAccess：用真的 utils/ai-access.js（accessWith 建的），看缓存多久再问
+  const access = realAccess || control(state); if (!realAccess) access.stored.last = last;
   const calls = { search: [], caps: 0, consent: 0 };
   const switched = []; const navigations = []; let selected = null;
   const page = load('pages/ai/index.js', {
@@ -1182,4 +1183,55 @@ test('Codex 第 8 轮：AI 首页第一次问到的就是"暂时不可用"，停
   assert.equal(b.calls.caps, 1, '不在前面不问');
   b.page.onShow(); await settle();
   assert.equal(b.calls.caps, 2); assert.equal(b.page.data.gate, ''); assert.equal(b.page.data.interpretOpen, true);
+});
+
+test('Codex 第 9 轮：后台说暂时处理不了时，页面显示过了 15 秒就再问（不等 10 分钟）；连不上时不管以前问到过没有，15 秒内都不重复问', async () => {
+  let answer = { open: true, available: false };
+  const h = accessWith({ mode: () => (answer ? Promise.resolve(answer) : NETWORK()) });
+  assert.deepEqual(await h.access.ensure(), { visible: true, confirmed: true, available: false }); assert.equal(h.calls.mode, 1);
+  await h.access.ensure(); assert.equal(h.calls.mode, 1, '15 秒内不再问');
+  answer = { open: true, available: true };
+  h.clock.now += h.access.RETRY_AFTER; assert.deepEqual(await h.access.ensure(), OPEN); assert.equal(h.calls.mode, 2, '15 秒后再问，恢复了');
+  h.clock.now += h.access.RETRY_AFTER; await h.access.ensure(); assert.equal(h.calls.mode, 2, '能处理时照旧 10 分钟问一次');
+  // 问过超过 10 分钟、这次连不上：照旧当作开着，15 秒内不再问
+  answer = null; h.clock.now += h.access.RECHECK; assert.deepEqual(await h.access.ensure(), OPEN); assert.equal(h.calls.mode, 3);
+  await h.access.ensure(); assert.equal(h.calls.mode, 3, '连不上后 15 秒内不重复问');
+  answer = { open: true, available: true };
+  h.clock.now += h.access.RETRY_AFTER; await h.access.ensure(); assert.equal(h.calls.mode, 4);
+  await h.access.refresh(); assert.equal(h.calls.mode, 5, '"重试"马上再问');
+  // AI 关着（首发版，所有人都是这样）：照旧 10 分钟问一次，不因为"处理不了"每 15 秒问
+  const off = accessWith({ mode: { open: false, available: false }, caps: OFF() });
+  assert.deepEqual(await off.access.ensure(), CLOSED); assert.deepEqual([off.calls.mode, off.calls.caps], [1, 1]);
+  off.clock.now += off.access.RETRY_AFTER * 4; await off.access.ensure();
+  assert.deepEqual([off.calls.mode, off.calls.caps], [1, 1], '关着时 10 分钟内不再问');
+});
+
+test('Codex 第 9 轮：AI 首页用真的 ai-access——恢复以后离开再回来、15 秒内回来、停在页面上点"重试"，按钮都能出来；还没恢复时不乱问', async () => {
+  let up = false;
+  const make = () => {
+    const real = accessWith({ mode: () => Promise.resolve({ open: true, available: up }) });
+    const h = hubPage({ realAccess: real.access, caps: () => Promise.resolve(up ? ON() : ON({ available: false })) });
+    return { real, h };
+  };
+  // 离开 15 秒以后再回来：重新问开放状态，按钮出来
+  let { real, h } = make();
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.gate, 'paused'); assert.equal(h.page.data.interpretOpen, false); assert.equal(real.calls.mode, 1, '还没恢复时只问一次');
+  up = true; h.page.onHide(); real.clock.now += real.access.RETRY_AFTER; h.page.onShow(); await settle();
+  assert.equal(real.calls.mode, 2); assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true);
+  // 15 秒内就回来、能力接口说能处理：马上再问一次开放状态，按钮出来
+  up = false; ({ real, h } = make());
+  h.page.onShow(); await settle(); assert.equal(h.page.data.gate, 'paused');
+  up = true; h.page.onHide(); real.clock.now += 5000; h.page.onShow(); await settle();
+  assert.equal(real.calls.mode, 2); assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
+  // 停在页面上：暂时不可用那里有"重试"，点了马上再问，恢复了按钮出来
+  up = false; ({ real, h } = make());
+  h.page.onShow(); await settle();
+  const gate = findAll(render('pages/ai/index.wxml', h.page.data), hasClass('gate'))[0];
+  assert.ok(gate && textOf(gate).includes('AI 暂时不可用，请稍后再试。'));
+  assert.equal(findAll(gate, tapsTo('retry')).length, 1, '暂时不可用时有重试');
+  assert.equal(findAll(gate, (n) => n.tag === 'contact-button').length, 1, '也能联系客服');
+  up = true; h.page.retry(); await settle();
+  assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /今天还剩 5 次/);
 });

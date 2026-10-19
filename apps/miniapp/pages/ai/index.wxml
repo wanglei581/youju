@@ -49,7 +49,11 @@
         <view class="gate-text">{{gateText}}</view>
         <view wx:if="{{gate === 'consent'}}" class="btn-primary gate-btn" bindtap="consent" aria-role="button">阅读并同意</view>
         <view wx:elif="{{gate === 'offline'}}" class="link gate-link" bindtap="retry" aria-role="button">重试</view>
-        <view wx:elif="{{gate === 'paused'}}" class="gate-contact"><contact-button from="ai_home" reason="paused" /></view>
+        <!-- 暂时不可用：可以点"重试"马上再问（恢复了按钮就出来），也可以联系客服 -->
+        <block wx:elif="{{gate === 'paused'}}">
+          <view class="link gate-link" bindtap="retry" aria-role="button">重试</view>
+          <view class="gate-contact"><contact-button from="ai_home" reason="paused" /></view>
+        </block>
       </view>
     </block>
     <view class="find" bindtap="findDoc" aria-role="button">去找一份通知</view>
