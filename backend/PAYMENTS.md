@@ -224,6 +224,7 @@ ruff format --check、ruff check、核对台脚本语法、git diff --check 通�
 ## 退款与苹果问询
 
 普通支付仅付款后 24 小时内（含恰好 24 小时；D-081，原为 7 天）、未用过这张票的付费量且已开通时允许自助全额原路退。
+每个账号每个自然月（北京时间）只能无理由退款 1 次（2026-10-20 创始人定，`payments.monthly_self_refunds`）：本月已经发起过一次（不论退成没退成）就不能再申请；付了款没开通的自助退款、人工退款、苹果退款不受限也不占次数。
 付了款却没开通、转了人工的订单（安卓、实付等于订单金额、从没开通过使用期、没有投诉）另可自助全额原路退，不受时限（2026-10-19）。
 受理时立即收回该段，并在外部请求前持久化退款单号。重复申请返回原退款状态，不重复建单。
 外部退款请求返回后重新锁定读取订单，退款推送先到时不会把完成状态写回待确认。
@@ -322,7 +323,7 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   `YOUJU_PAY_OPENIDS`（逗号分隔 openid）里的人能看到商品、下单；对全体收费要改成 `all`（创始人另行批准）。
   补单、退款、对账等定时任务只看总开关，已有订单照常处理。判断函数：`payments.selling_to`。
 - **沙箱标记**：`GET /api/v1/pay/products` 返回 `sandbox`（`YOUJU_XPAY_ENV=1` 时为 true）。小程序在沙箱下
-  对测试名单放开付款按钮（页面写明不扣真钱），现网仍须《付费服务协议》定稿（`content/pay-terms.js` final）。
+  对测试名单放开付款按钮（页面写明沙箱真机付款会真实扣款，10/20 创始人实测），现网仍须《付费服务协议》定稿（`content/pay-terms.js` final）。
   服务端同样把关：现网（`YOUJU_XPAY_ENV=0`）没配 `YOUJU_PAY_TERMS_VERSION`（定稿版本，D-065 起不请律师）时不展示商品、
   不下单、不算在售（`payments.orderable`，商品列表、下单、购买入口共用），不出现看得到价格却付不了款的入口。
 - **支付入口**：`GET /api/v1/advisor/capabilities` 和 `GET /api/v1/me` 带 `pay: {enabled, hasOrders}`。
@@ -426,7 +427,7 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 ### 卖给谁（`payments.selling_to(settings, openid, client)`，商品、下单、能力、我的、提交任务、中间件共用）
 | 阶段 | 配置 | 谁看得到 |
 |---|---|---|
-| 沙箱联调 | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱付款不扣真钱：就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
+| 沙箱联调 | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱真机付款也会真实扣钱（10/20 创始人实测），就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
 | 受控真实付款 | `YOUJU_XPAY_ENV=0` + `whitelist` | 测试名单里的人 + 开发版、体验版 + 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` |
 | 开卖 | `YOUJU_XPAY_ENV=0` + `all` | 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` 的小程序（不看是谁、不看环境，看价格不要求登录）；老版本永远看不到 |
 - 还要满足原来的条件：总开关、能下单（`payments.orderable`：offerId、价格；现网还要协议版本号和发票那一句）。

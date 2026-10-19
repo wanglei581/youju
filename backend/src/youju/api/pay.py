@@ -108,7 +108,8 @@ def list_products(request: Request, session: SessionDep) -> dict:
             }
             for product, (price, days) in payments.products(settings).items()
         ],
-        # 沙箱（不扣真钱、只有测试名单看得到）：小程序在《付费服务协议》定稿前也放开付款按钮供联调
+        # 沙箱（只有测试名单看得到；真机付款也会真实扣钱，10/20 创始人实测）：
+        # 小程序在《付费服务协议》定稿前也放开付款按钮供联调
         "sandbox": settings.xpay_env == 1,
         "renewBonus": payments.renew_offer(session, settings, user, _stamp()),
         # 能开哪种发票（付款前要看得到）；沙箱联调时可以还没填（None），现网没填就不卖

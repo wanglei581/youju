@@ -1,7 +1,7 @@
 """付款后主动核对订单（10/19 沙箱实测：付了款一直显示"待支付"）、付了款没开通的订单自助退款、
 我的页的批量工具标识。微信接口全部用 test_payments 的 FakeWechat（MockTransport），不访问真实微信。"""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -573,3 +573,65 @@ def test_failure_push_when_query_fails_is_retried_not_settled(setup_pay, session
     session.expire_all()
     row = session.get(PayOrder, row.id)
     assert row.status == "refunding" and row.alerted_at is None
+
+
+# ---- 无理由退款每个账号每月 1 次（创始人 10/20："加一个限制，每个号一个月只能退款一次"）----
+
+
+def at(monkeypatch, stamp):  # noqa: F811
+    from youju.api import v1
+
+    monkeypatch.setattr(v1, "now", lambda: stamp)
+
+
+def bought(setup_pay, session, paid):  # noqa: F811
+    """在 paid 这个时间下单、付款、开通。"""
+    setup_pay[2].paid_time = int(paid.timestamp())
+    row = delivered(setup_pay, session)
+    session.expire_all()
+    return session.get(PayOrder, row.id)
+
+
+def test_second_no_reason_refund_in_a_month_is_refused(setup_pay, session, monkeypatch):  # noqa: F811
+    """同一个自然月（北京时间）里第二次无理由退款不行，下月 1 日 0 点起可以再退；第一次不论退成没退成都算。"""
+    first = bought(setup_pay, session, NOW)
+    setup_pay[2].fail_refund = True  # 第一次退款请求失败（还在重试）：也算这个月用过了
+    assert pay_refund(setup_pay, first).status_code == 200
+    setup_pay[2].fail_refund = False
+    setup_pay[2].status = 2
+    second = bought(setup_pay, session, NOW + timedelta(hours=1))
+    at(monkeypatch, NOW + timedelta(hours=2))
+    response = pay_refund(setup_pay, second)
+    assert response.status_code == 422
+    assert response.json()["detail"] == payments.MONTHLY_REFUND_REASON
+    listed = setup_pay[0].get(f"/api/v1/pay/orders/{second.id}", headers=HEADERS).json()
+    assert listed["canRefund"] is False
+    assert listed["refundUnavailableReason"] == payments.MONTHLY_REFUND_REASON
+    # 北京时间 10 月 31 日 23:59 还是 10 月；11 月 1 日 0 点起是新的一个月
+    end_of_month = datetime(2026, 10, 31, 15, 59, tzinfo=UTC)
+    third = bought(setup_pay, session, end_of_month - timedelta(hours=1))
+    at(monkeypatch, end_of_month)
+    assert pay_refund(setup_pay, third).status_code == 422
+    at(monkeypatch, datetime(2026, 10, 31, 16, 0, tzinfo=UTC))
+    assert pay_refund(setup_pay, third).status_code == 200
+    assert len(calls(setup_pay, "/xpay/refund_order")) == 2
+    # 重复点同一笔：返回同一笔退款，不算第二次、不报"本月已经申请过"
+    assert pay_refund(setup_pay, third).status_code == 200
+
+
+def test_refunds_that_are_our_fault_do_not_count(setup_pay, session, monkeypatch):  # noqa: F811
+    """付了款没开通的自助退款、系统故障的人工退款都不占"每月 1 次"，本月仍能无理由退款一次。"""
+    row = undelivered(setup_pay, session)
+    assert pay_refund(setup_pay, row).status_code == 200
+    fake = setup_pay[2]
+    fake.status, fake.paid_time = 2, int(NOW.timestamp())
+    staff = bought(setup_pay, session, NOW)
+    locked = payments.lock_order(session, staff.id)
+    payments.begin_refund(
+        session, locked, NOW, fee=locked.price, source=payments.STAFF_REFUND, note="系统故障"
+    )
+    payments.start_refund(session, locked, fake.client, NOW)
+    mine = bought(setup_pay, session, NOW + timedelta(hours=1))
+    at(monkeypatch, NOW + timedelta(hours=2))
+    assert pay_refund(setup_pay, mine).status_code == 200
+    assert payments.monthly_self_refunds(session, mine.user_id, NOW + timedelta(hours=2)) == 1
