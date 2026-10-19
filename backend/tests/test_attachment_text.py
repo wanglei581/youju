@@ -682,6 +682,46 @@ def test_pdf_continued_tables_dedupe_body_numbers_and_outlined_text() -> None:
     assert robot.cells[0] == {"c": 0, "t": "Robot", "h": "Item"}
 
 
+def test_pdf_repeated_header_rows_and_a_new_table_at_the_top_of_a_page() -> None:
+    def ruled(top: float, rows: int) -> list:
+        bottom = top - 20 * rows
+        lines = [(40, top - 20 * i, 260, top - 20 * i) for i in range(rows + 1)]
+        return lines + [(x, top, x, bottom) for x in (40, 120, 190, 260)]
+
+    def row(y: float, *cells: str) -> list:
+        return [(x, y, text) for x, text in zip((45, 125, 195), cells, strict=True)]
+
+    data = pdf_pages(
+        [
+            {
+                "text": row(85, "Item", "Amount", "Deadline") + row(65, "AI", "500", "Nov 5"),
+                "lines": ruled(100, 2),
+            },
+            # Word"标题行重复"导出：每页开头重复表头
+            {
+                "text": row(385, "Item", "Amount", "Deadline") + row(365, "Robot", "300", "Nov 9"),
+                "lines": ruled(400, 2),
+            },
+            # 开头是另一张表（表头不一样）：不当续表
+            {
+                "text": row(385, "Name", "Score", "Note") + row(365, "Ann", "90", "fine"),
+                "lines": ruled(400, 2),
+            },
+        ]
+    )
+    result = at.extract(data)
+    kinds = [(x.kind, x.text, x.loc["table"], x.loc["row"]) for x in result.segments]
+    assert kinds == [
+        ("head", "Item | Amount | Deadline", 1, 1),
+        ("row", "AI | 500 | Nov 5", 1, 2),
+        ("head", "Item | Amount | Deadline", 1, 3),
+        ("row", "Robot | 300 | Nov 9", 1, 4),
+        ("head", "Name | Score | Note", 2, 1),
+        ("row", "Ann | 90 | fine", 2, 2),
+    ]
+    assert result.segments[3].cells[0] == {"c": 0, "t": "Robot", "h": "Item"}
+
+
 def test_few_characters_with_big_pictures_count_as_scans(monkeypatch) -> None:
     from docx import Document as WordDocument
 
@@ -693,9 +733,9 @@ def test_few_characters_with_big_pictures_count_as_scans(monkeypatch) -> None:
     result = at.extract(out.getvalue())
     assert (result.reason, result.segments) == ("scan", [])
     assert "只有 3 个字" in result.detail
-    # 字多的照样能读（公章、徽标再大也不算扫描件）
+    # 字多的照样能读（公章、徽标再大也不算扫描件）：几十个字的延期说明加一枚大公章
     doc = WordDocument()
-    doc.add_paragraph("申报指南" * 30)
+    doc.add_paragraph("关于延长申报时间的说明：受理截止时间延长至2026年11月20日17:00。")
     doc.add_picture(io.BytesIO(make_png(300)))
     out = io.BytesIO()
     doc.save(out)
@@ -779,6 +819,13 @@ def test_header_rules() -> None:
         _row("截止", "11月5日"),
     ]
     assert at._header_rows(pairs) == set()
+    # 三列表的备注大多空着，照样认表头；表头前有好几行说明（前 6 行里找）；年份格可以是表头
+    remarks = [_row("序号", "材料名称", "备注"), _row("1", "申报书", ""), _row("2", "营业执照", "")]
+    assert at._header_rows(remarks) == {0}
+    lead = [_row("附件2"), _row("申报材料清单"), _row("填报单位：", "", ""), _row("单位：份")]
+    assert at._header_rows([*lead, *remarks]) == {4}
+    years = [_row("项目", "2023", "2024", "2025"), _row("收入", "100", "200", "300")]
+    assert at._header_rows(years) == {0}
 
 
 def test_mask_uses_body_rules_then_spaced_forms() -> None:
@@ -798,9 +845,22 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
         assert at.mask(raw) == masked, raw
     # 正文规则本身会吞字（见 attachment_text._EMAIL）：附件不能照搬
     assert body_rules.redact_sensitive("于7月2日前发送至a@b.com") == "[邮箱已脱敏]"
-    # 写了"账号"的：对公账号过不了 Luhn、可能超过 19 位，也不留尾巴
+    # 写了"账号"的：对公账号过不了 Luhn、可能超过 19 位，也不留尾巴；后面跟着的年份不算进去
     assert at.mask("开户账号：33050161613500000123") == "开户账号：[银行账号已脱敏]"
     assert at.mask("账号：3305 0161 6135 0000 0123") == "账号：[银行账号已脱敏]"
+    assert at.mask("账号：1234567890 2025年11月5日前") == "账号：[银行账号已脱敏] 2025年11月5日前"
+    # 身份证号怎么分组都认（靠出生日期校验）；写了"手机"的手机号怎么分组都认，没写的每组至少 3 位
+    for raw, masked in {
+        "身份证号：110101 1990 0307 1234": "身份证号：[身份证号已脱敏]",
+        "1101 0119 9003 0712 34": "[身份证号已脱敏]",
+        "手机：1381 234 5678": "手机：[手机号已脱敏]",
+        "13812 345678": "[手机号已脱敏]",
+        "+86 138 1234 5678": "+86 [手机号已脱敏]",
+        "4111111111111111": "[银行账号已脱敏]",
+        # 跨行写的：兜底按附件副本那套更严的检查遮
+        "138\n1234\n5678": "[号码已脱敏]",
+    }.items():
+        assert at.mask(raw) == masked, raw
     for keep in (
         "请于2026年10月20日前提交，支持金额 1,000,000 元",
         "统一社会信用代码 91110113071669887D",
@@ -811,6 +871,12 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
         "2025-10-13-2025-11-12",
         "合计 1099 800 450 300 200",
         "2025年 1 2 3 4 5 6 7 8 9 10 11 12 月",
+        # 四组年份、整数：不当卡号；"13 800 000 000 元"是金额，不当手机号
+        "年度 2023 2024 2025 2026",
+        "补助标准（元） 1000 1500 2000 8000",
+        "5000 6000 7000 8000",
+        "13 800 000 000 元",
+        "2026110100001234",
     ):
         assert at.mask(keep) == keep, keep
     builder = at._Builder()
@@ -835,6 +901,28 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     builder.table([top, labels, _row("甲", "33050161613500000123", "10")])
     assert builder.segments[1].text == "甲 | [银行账号已脱敏] | 10"
     assert builder.segments[4].text == "甲 | [银行账号已脱敏] | 10"
+    # 认不出表头也遮：表头前有三行说明、三列表的备注大多空着
+    builder = at._Builder()
+    builder.table(
+        [
+            _row("2026年度补助资金拨付表"),
+            _row("填报单位：", "", "", "", ""),
+            _row("单位：万元"),
+            _row("序号", "单位", "开户行", "银行账号", "金额"),
+            _row("1", "某某科技有限公司", "工行杭州分行", "1202021309001234568", "100"),
+        ]
+    )
+    builder.table(
+        [
+            _row("单位名称", "银行账号", "备注"),
+            _row("某某公司", "1202021309001234568", ""),
+            _row("另一公司", "1202021309001234569", ""),
+        ]
+    )
+    texts_now = [x.text for x in builder.segments]
+    assert "1 | 某某科技有限公司 | 工行杭州分行 | [银行账号已脱敏] | 100" in texts_now
+    assert "某某公司 | [银行账号已脱敏]" in texts_now and "另一公司 | [银行账号已脱敏]" in texts_now
+    assert [x.kind for x in builder.segments[-3:]] == ["head", "row", "row"]
     assert at.mask("账 号：3305 0161 6135 0000 0123") == "账 号：[银行账号已脱敏]"
     # 存成数字的长号码不写成科学计数法（写成科学计数法就遮不到了）
     epoch = datetime(1899, 12, 30)
@@ -991,6 +1079,13 @@ def test_interrupted_extraction_is_not_retried_and_shared_links_follow(
     row = _url_rows(session)[BASE + "a.docx"]
     version = session.get(AttachmentTextVersion, row.version_id)
     assert row.status == "pending" and version.detail == at._IN_PROGRESS
+
+    # 中断不一定是文件的问题（部署重启也会）：再取一次；第二次也没取完，才按损坏记
+    with pytest.raises(RuntimeError):
+        at.record(session, BASE + "a.docx", "docx", NOW, report, content=content)
+    session.rollback()
+    version = session.get(AttachmentTextVersion, _url_rows(session)[BASE + "a.docx"].version_id)
+    assert version.detail == at._IN_PROGRESS_AGAIN
 
     def never(_data):
         raise AssertionError("不该再取")

@@ -120,77 +120,150 @@ class Extraction:
 # ---- 遮号码 ----
 
 _HALF = body_rules._HALF_WIDTH
-# 分开写的号码，组和组之间只认一个空格或一个横线（"138 1234 5678"、"6222-0212-3456-7890"）。
-# 破折号、制表符不算分隔：日期区间"2025-10-10—2025-10-24"、表格里一串数字不会被拼成号码。
-# （clean 已把连续空白收成一个空格）
-_SPACED_MOBILE = re.compile(r"(?<!\d)(?:\+?86[ -]?)?1[3-9]\d[ -]?\d{4}[ -]?\d{4}(?![\d])")
-_SPACED_ID = re.compile(r"(?<!\d)[1-9]\d{5}[ -]?\d{8}[ -]?\d{3}[\dXx](?![\dXx])")
-_SPACED_OLD_ID = re.compile(r"(?<!\d)[1-9]\d{5}[ -]?\d{6}[ -]?\d{3}(?![\dXx])")
-# 没写"账号"的卡号：连写的 16–19 位，或四位一组（最后一组 1–3 位），都要过 Luhn 校验
-_CARD = re.compile(r"(?<!\d)(?:\d{16,19}|\d{4}(?:[ -]\d{4}){3}(?:[ -]\d{1,3})?)(?![\d])")
-# 写了"账号"的：后面 10–30 位数字（对公账号过不了 Luhn，也可能超过 19 位），组间一个空格或横线；
-# 后面紧跟字母的（统一社会信用代码当登录账号）不算
+# 一串数字：组和组之间一个空格或一条横线（clean 已把连续空白收成一个空格；破折号也算横线）。
+# 号码怎么分组都在组上判断（_number_label），不靠一种写法一个正则
+_SEP = "[ \\-\u2010-\u2015\u2212]"
+_RUN = re.compile(rf"(?<![\dA-Za-z])\d+(?:{_SEP}\d+)*[Xx]?(?![\dA-Za-z])")
+_GROUP = re.compile(r"\d+[Xx]?")
+# 跟着这些字的一组数字是日期、金额，不算进前面的号码（"账号：1234567890 2025年11月5日前"）
+_UNITS = "年月日元万亿号个次%时分秒"
+# 写了"账号"的：后面 10–30 位数字（对公账号过不了 Luhn，也可能超过 19 位）；
+# 字之间可以有空格（表格里分散对齐的"账  号"）
 _ACCOUNT_WORDS = (
     "银行卡号", "银行账号", "银行帐号", "开户账号", "开户帐号", "账户号", "帐户号",
     "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
 )  # fmt: skip
-# 字之间可以有空格（表格里分散对齐的"账  号"）
 _ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
-_ACCOUNT = re.compile(rf"({_ACCOUNT_LABEL}\s*[:：]?\s*)\d(?:[ -]?\d){{9,29}}(?![\dA-Za-z])")
-_ACCOUNT_DIGITS = re.compile(r"(?<![\dA-Za-z])\d(?:[ -]?\d){9,29}(?![\dA-Za-z])")
 _ACCOUNT_LABEL_RE = re.compile(_ACCOUNT_LABEL)
+_ACCOUNT_BEFORE = re.compile(_ACCOUNT_LABEL + r"[\s:：]*$")
+# 写了"手机""电话"的：后面的手机号怎么分组都认
+_PHONE_BEFORE = re.compile(
+    r"(?:手\s*机|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[^\d\n]{0,4}$", re.I
+)
+_MOBILE = re.compile(r"(?:86)?1[3-9]\d{9}")
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址，先遮掉：正文规则（redact_sensitive）的写法会把
 # 邮箱前面连着的中文一起遮掉（\w 也算汉字，"于7月2日前发送至abc@163.com"整段变成"[邮箱已脱敏]"，
 # 截止日期就没了）。先遮掉以后正文规则找不到 @，不会再吞字
 _EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # "联 系 人：张三"：PDF、表格里常把标签字隔开写，正文规则（"联系人："）认不出
 _SPACED_CONTACT = re.compile(r"(联\s*系\s*人\s*[:：]\s*)[\u4e00-\u9fff·]{2,8}")
+# 兜底：组间隔着换行的身份证号、手机号
+_LOOSE_RUN = re.compile(r"\d(?:[\s\-\u2010-\u2015\u2212]{0,3}\d)+[Xx]?")
 
 
 def _digits(text: str) -> str:
     return re.sub(r"[^\dXx]", "", text)
 
 
-def mask(text: str, *, account: bool = False) -> str:
-    """遮掉身份证号、手机号、银行账号（还有正文规则一并遮的联系人、邮箱、座机）。
+def _number_label(groups: list[str], *, account: bool, phone: bool) -> str | None:
+    """连着的几组数字是哪种号码（遮成什么），不是号码给 None。
+    - 身份证号：15 或 18 位、出生日期对得上，怎么分组都算；
+    - 手机号：11 位、1[3-9] 开头（可带 86）；写了"手机""电话"的怎么分组都算，没写的每组至少 3 位；
+    - 写了"账号"（或在账号那一列）的：10–30 位；
+    - 没写"账号"的卡号：16–19 位，开头像卡号（3、4、5、6、8、9），过 Luhn；分组的要四位一组，
+      全是年份（2023 2024 2025 2026）或整数（5000 6000 7000 8000）的不算。"""
+    digits = "".join(groups)
+    if len(digits) in (15, 18) and body_rules._ID_CARD.fullmatch(digits):
+        return "[身份证号已脱敏]"
+    if "X" in digits.upper():
+        return None
+    sizes = [len(g) for g in groups]
+    if _MOBILE.fullmatch(digits) and (phone or len(groups) == 1 or min(sizes) >= 3):
+        return "[手机号已脱敏]"
+    if account and 10 <= len(digits) <= 30:
+        return "[银行账号已脱敏]"
+    if not 16 <= len(digits) <= 19 or digits[0] not in "345689" or not body_rules._luhn(digits):
+        return None
+    if len(groups) == 1:
+        return "[银行账号已脱敏]"
+    if any(size != 4 for size in sizes[:4]) or len(groups) > 5 or sizes[4:] and sizes[4] > 3:
+        return None
+    if all(g[:2] in ("19", "20") for g in groups[:4]) or all(g.endswith("00") for g in groups[:4]):
+        return None
+    return "[银行账号已脱敏]"
 
-    1. 先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉）；
-    2. 再遮"账号："后面的号码（_ACCOUNT，10–30 位：正文规则只认 12–19 位，长的会留下尾巴）；
-       account=True（表格里左边那格或这一列的表头写着"账号"）时，这一格里 10 位以上的数字都遮；
-    3. 用正文的规则（redact_sensitive）；
-    4. 最后遮正文规则漏掉的分开写法：一个空格或横线隔开的手机号（3-4-4）、身份证号（6-8-4）、
-       没写"账号"的卡号（连写 16–19 位或四位一组，过 Luhn 校验），标签字隔开写的"联 系 人："。
-    全角数字先按半角找（一个字换一个字，位置不变）。"""
-    text = _EMAIL.sub("[邮箱已脱敏]", text)
-    text = _ACCOUNT.sub(r"\1[银行账号已脱敏]", text)
-    if account:
-        text = _ACCOUNT_DIGITS.sub("[银行账号已脱敏]", text)
-    text = body_rules.redact_sensitive(text)
-    text = _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
-    plain = text.translate(_HALF)
-    spans: list[tuple[int, int, str]] = []
-    for m in _ACCOUNT.finditer(plain):  # 全角数字写的
-        spans.append((m.start() + len(m.group(1)), m.end(), "[银行账号已脱敏]"))
-    for m in _SPACED_MOBILE.finditer(plain):
-        spans.append((m.start(), m.end(), "[手机号已脱敏]"))
-    for pattern in (_SPACED_ID, _SPACED_OLD_ID):
-        for m in pattern.finditer(plain):
-            if body_rules._ID_CARD.fullmatch(_digits(m.group())):
-                spans.append((m.start(), m.end(), "[身份证号已脱敏]"))
-    for m in _CARD.finditer(plain):
-        if body_rules._luhn(_digits(m.group())):
-            spans.append((m.start(), m.end(), "[银行账号已脱敏]"))
-    if not spans:
-        return text
+
+def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
+    """plain 里要遮的号码：[(开始, 结束, 遮成什么)]。每串数字从每一组开始往后试，取最长的一段；
+    后面紧跟"年、月、元"等的一组不算进去。"""
+    spans = []
+    for run in _RUN.finditer(plain):
+        groups = [
+            (run.start() + g.start(), run.start() + g.end()) for g in _GROUP.finditer(run.group())
+        ]
+        before = plain[max(0, run.start() - 16) : run.start()]
+        labeled = account or bool(_ACCOUNT_BEFORE.search(before))
+        phone = bool(_PHONE_BEFORE.search(before))
+        i = 0
+        while i < len(groups):
+            best = None
+            for j in range(i, len(groups)):
+                texts = [plain[a:b] for a, b in groups[i : j + 1]]
+                if sum(len(t) for t in texts) > 30:
+                    break
+                after = plain[groups[j][1] : groups[j][1] + 1]
+                if j > i and after and after in _UNITS:
+                    break
+                label = _number_label(texts, account=labeled and i == 0, phone=phone and i == 0)
+                if label:
+                    best = (j, label)
+            if best is None:
+                i += 1
+                continue
+            j, label = best
+            spans.append((groups[i][0], groups[j][1], label))
+            i = j + 1
+    return spans
+
+
+def _has_id_or_mobile(plain: str) -> bool:
+    """附件副本那套更严的检查里的身份证号、手机号两项（数字间的空白、横线去掉再查）。"""
+    joined = body_rules._DIGIT_GAP.sub("", plain)
+    return any(
+        p.search(v)
+        for v in (plain, joined)
+        for p in (body_rules._ID_CARD, body_rules._MOBILE_JOINED)
+    ) or bool(body_rules._MOBILE_GROUPED.search(plain))
+
+
+def _replace(text: str, spans: list[tuple[int, int, str]]) -> str:
     out, at = [], 0
     for start, end, label in sorted(spans):
         if start < at:  # 和前一个重叠：前一个已经遮了
             continue
-        out.append(text[at:start])
-        out.append(label)
+        out += [text[at:start], label]
         at = end
     out.append(text[at:])
     return "".join(out)
+
+
+def mask(text: str, *, account: bool = False) -> str:
+    """遮掉身份证号、手机号、银行账号（还有正文规则一并遮的联系人、邮箱、座机）。
+
+    1. 先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉）；
+    2. 再遮号码（_number_spans）：身份证号、手机号、写了"账号"的账号、没写"账号"的卡号，
+       组间一个空格或横线的分组写法都认；account=True（表格里左边那格或这一列上面写着"账号"）
+       时这一格的长数字都当账号；
+    3. 用正文的规则（redact_sensitive）；再遮标签字隔开写的"联 系 人："；
+    4. 兜底：用附件副本那套更严的检查再查身份证号、手机号，跨行写的（组间隔着换行）查出来
+       就把那串数字遮掉。
+    全角数字先按半角找（一个字换一个字，位置不变）。"""
+    text = _EMAIL.sub("[邮箱已脱敏]", text)
+    text = _replace(text, _number_spans(text.translate(_HALF), account))
+    text = body_rules.redact_sensitive(text)
+    text = _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
+    plain = text.translate(_HALF)
+    if not _has_id_or_mobile(plain):
+        return text
+    spans = []
+    for m in _LOOSE_RUN.finditer(plain):
+        # 同一行里的分组写法上面已经按组判断过（"13 800 000 000 元"是金额，不遮），这里只管跨行的
+        if "\n" not in m.group():
+            continue
+        digits = _digits(m.group())
+        if body_rules._ID_CARD.search(digits) or body_rules._MOBILE_JOINED.search(digits):
+            spans.append((m.start(), m.end(), "[号码已脱敏]"))
+    return _replace(text, spans)
 
 
 # ---- 认格式（wps、et 要按文件头认出实际格式） ----
@@ -360,16 +433,21 @@ class _Builder:
         for part in _split_long(masked):
             self._add("p", part, loc, None)
 
-    def table(self, rows: list[_Row], *, headers: dict[int, str] | None = None) -> dict[int, str]:
+    def table(
+        self, rows: list[_Row], *, headers: dict[int, str] | None = None, repeated: bool = False
+    ) -> tuple[dict[int, str], str]:
         """一张表：先认表头行（_header_rows），表头行记成 head，表头下面各行的每一格记下所在列的
-        表头（表头上面的表名、填写行不记）。headers 给了（PDF 跨页的续表），就不再认表头，每一行
-        都按它记。返回这张表的表头（列号 → 表头文字），续表接着用。"""
+        表头（表头上面的表名、填写行不记）。headers 给了（PDF 跨页的续表），就不再认表头，按它记；
+        repeated：续表第一行是每页重复的表头，记成 head。返回 (表头, 表头行的文字)，续表接着用。
+
+        账号列不靠认出表头：哪一行有一格不超过 12 字、写着"账号"之类，这一列以下各行的长数字都当
+        账号遮；同一行左边那格写着"账号"的也一样。"""
         rows = [r for r in rows if any(clean(c.text) for c in r.cells)]
         if not rows:
-            return headers or {}
+            return headers or {}, ""
         if headers is not None:
-            head: set[int] = set()
-            first = 0  # 续表：从第一行起都记表头
+            head = {0} if repeated else set()
+            first = len(head)  # 续表：表头行（重复的那一行）以下都记表头
         else:
             head = _header_rows(rows)
             headers = {}
@@ -381,6 +459,14 @@ class _Builder:
                     for col in range(cell.col, cell.col + max(cell.span, 1)):
                         headers[col] = f"{headers[col]}/{text}" if col in headers else text
             first = max(head) + 1 if head else len(rows)
+        account_from: dict[int, int] = {}
+        for index, row in enumerate(rows):
+            for cell in row.cells:
+                label = clean(cell.text)
+                if label and len(label) <= 12 and _ACCOUNT_LABEL_RE.search(label):
+                    for col in range(cell.col, cell.col + max(cell.span, 1)):
+                        account_from.setdefault(col, index)
+        head_text = ""
         for i, row in enumerate(rows):
             cells, changed, left = [], False, ""
             for cell in row.cells:
@@ -388,11 +474,8 @@ class _Builder:
                 if not text:
                     continue
                 header = headers.get(cell.col) if i >= first else None
-                # 左边那格或这一列的表头写着"账号"：这一格里 10 位以上的数字都当账号遮
-                # （多级表头"基本信息/银行账号"看最后一级）
-                account = any(
-                    label and len(label) <= 12 and _ACCOUNT_LABEL_RE.search(label)
-                    for label in (left, (header or "").rsplit("/", 1)[-1])
+                account = i > account_from.get(cell.col, len(rows)) or bool(
+                    left and len(left) <= 12 and _ACCOUNT_LABEL_RE.search(left)
                 )
                 masked = mask(text, account=account)
                 changed |= masked != text
@@ -403,39 +486,41 @@ class _Builder:
                 left = text
             if changed:
                 self.masked += 1
-            self._add(
-                "head" if i in head else "row", " | ".join(c["t"] for c in cells), row.loc, cells
-            )
-        return headers
+            row_text = " | ".join(c["t"] for c in cells)
+            if i in head:
+                head_text = row_text
+            self._add("head" if i in head else "row", row_text, row.loc, cells)
+        return headers, head_text
 
 
 _NUMBER = re.compile(r"[\d.,%\s\-]+")
+_YEAR = re.compile(r"(?:19|20)\d{2}")
 
 
 def _header_rows(rows: list[_Row]) -> set[int]:
-    """哪几行是表头。文件自己标了（Word 的"标题行重复"）就用标的；没标的，在前 3 行里找第一个
-    像表头的行：两格以上有字、中间没有空格、每格不超过 30 字、没有一格只是数字、右边到了下面
-    各行（取中位数）九成以上的宽度、后面还有行。不像的跳过：表名（只有一格有字）、
+    """哪几行是表头。文件自己标了（Word 的"标题行重复"）就用标的；没标的，在前 6 行里找第一个
+    像表头的行：两格以上有字、中间没有空格、每格不超过 30 字、没有一格只是数字（年份除外）、
+    右边到了下面各行（取中位数）九成以上的宽度、后面还有行。不像的跳过：表名（只有一格有字）、
     "项目名称 □ 申报单位 □"这种中间有空格的填写行、长的说明文字、"1 | 甲公司"这种数据行、
     "填报单位 | 填报日期"这种只占一部分列的行。都不像就没有表头（填写表、数据表常常这样）。
-    只有两列的表（"项目名称 | 某某项目"这种名目加内容）不认列表头。"""
+    整张表只有两列的（"项目名称 | 某某项目"这种名目加内容）不认列表头。"""
     marked = {i for i, r in enumerate(rows) if r.header}
     if marked:
         return marked
     widths = [
         max((c.col + max(c.span, 1) for c in r.cells if clean(c.text)), default=0) for r in rows
     ]
-    if sorted(widths)[len(widths) // 2] <= 2:
+    if max(widths) <= 2:
         return set()  # 两列的表多半是"名目 | 内容"，第一行也是内容，不认列表头
-    for i, row in enumerate(rows[:3]):
+    for i, row in enumerate(rows[:6]):
         if i == len(rows) - 1:
             break
         filled = [(c, clean(c.text)) for c in row.cells if clean(c.text)]
         covered = {col for c, _ in filled for col in range(c.col, c.col + max(c.span, 1))}
         if len(filled) < 2 or covered != set(range(min(covered), max(covered) + 1)):
             continue
-        if any(len(t) > 30 or _NUMBER.fullmatch(t) for _, t in filled):
-            continue
+        if any(len(t) > 30 or (_NUMBER.fullmatch(t) and not _YEAR.fullmatch(t)) for _, t in filled):
+            continue  # 说明文字、"1 | 甲公司"这种数据行（年份格"2025"可以是表头）
         below = sorted(widths[i + 1 :])
         if max(covered) + 1 < 0.9 * below[len(below) // 2]:
             continue  # 右边没到下面各行的宽度（左上角空着的表头照样算）
@@ -1100,9 +1185,16 @@ def _pdf(data: bytes) -> list:
                 and items[index - 1][2] == number - 1
                 and last["cols"] == cols
             )
+            repeated = False
+            if follows:
+                first_row = " | ".join(t for c in value[0].cells if (t := clean(c.text)))
+                if last["head_text"] and mask(first_row) == last["head_text"]:
+                    repeated = True  # Word"标题行重复"导出的 PDF：每页开头重复的表头
+                elif _header_rows(value) == {0}:
+                    follows = False  # 这一页开头像表头、和上一页的不一样：是另一张表
             if not follows:
                 tables += 1
-                last = {"cols": cols, "number": tables, "rows": 0, "headers": None}
+                last = {"cols": cols, "number": tables, "rows": 0, "headers": None, "head_text": ""}
             for row in value:
                 row.loc = {
                     "page": number,
@@ -1110,7 +1202,11 @@ def _pdf(data: bytes) -> list:
                     "row": last["rows"] + row.loc["row"],
                 }
             last["rows"] += len(value)
-            last["headers"] = builder.table(value, headers=last["headers"] if follows else None)
+            headers, head_text = builder.table(
+                value, headers=last["headers"] if follows else None, repeated=repeated
+            )
+            last["headers"] = headers
+            last["head_text"] = last["head_text"] or head_text
             continue
         if current and layout_wrapped(physical, value, width):
             current = current.rstrip() + value.lstrip()
@@ -1737,7 +1833,7 @@ def _time_limit(seconds: int) -> Iterator[None]:
 
 
 # 字很少、图很大的：多半是扫描件加了个标题（"附件2"加一整页扫描图），也按扫描件记
-_FEW_CHARS = 100
+_FEW_CHARS = 20
 _BIG_PICTURES = 150 * 1024
 
 
@@ -1908,8 +2004,10 @@ def record(
 
 
 # 正在取文字的内容版本：取之前先把这句记进版本、提交。进程在取的时候没了（内存不足被杀、超时
-# 被停），下次看到它就不再取，按损坏记，附件任务不会每轮都卡在同一个文件上
-_IN_PROGRESS = "正在取文字（上次取到一半进程中断的话，下次按损坏记）"
+# 被停，也可能是部署重启），下次再取一次；连着两次都没取完，就不再取、按损坏记，附件任务不会
+# 每轮都卡在同一个文件上
+_IN_PROGRESS = "正在取文字（第 1 次）"
+_IN_PROGRESS_AGAIN = "正在取文字（第 2 次，上次取到一半进程中断）"
 
 
 def _version(
@@ -1923,11 +2021,11 @@ def _version(
     )
     if version is not None and version.extractor == EXTRACTOR_VERSION:
         return version, False
-    if version is not None and version.detail == _IN_PROGRESS:
+    if version is not None and version.detail == _IN_PROGRESS_AGAIN:
         result = Extraction(
             version.file_type,
             reason="broken",
-            detail="上次取文字时进程中断（可能太大或太复杂），按损坏处理，内容变了再取",
+            detail="连着两次取文字时进程中断（可能太大或太复杂），按损坏处理，内容变了再取",
         )
     else:
         if version is None:
@@ -1935,7 +2033,7 @@ def _version(
                 sha256=digest, size=len(content), status="failed", extractor=0, extracted_at=now
             )
             session.add(version)
-        version.detail = _IN_PROGRESS
+        version.detail = _IN_PROGRESS_AGAIN if version.detail == _IN_PROGRESS else _IN_PROGRESS
         session.flush()
         # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉
         row.version_id, row.status, row.reason = version.id, "pending", None
