@@ -10,7 +10,7 @@ import logging
 import re
 import threading
 import time as clock
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import UTC, date, datetime, time, timedelta
 from hmac import compare_digest
 from pathlib import Path
@@ -131,6 +131,63 @@ def _note_server_error(sample: str) -> None:
     _send_in_background(f"接口出错（{role} 服务，上次提醒以来 {count} 次）：{sample}")
 
 
+# 接口主动返回的 5xx（附件、导出、内容安全、对象存储、支付暂不可用等，都是 HTTPException，
+# 不经过上面的异常提醒）和超过 15 秒才开始答复的请求（小程序等 15 秒就放弃，用户那边已经失败；
+# 和访问日志的耗时同一口径，按开始答复算——大附件下载慢多半是网速，不算失败）：
+# 同一实例 10 分钟内满 3 次就提醒一条，之后 1 小时内不再提醒。偶尔一次"人多请稍后"不打扰人，
+# 成批失败才提醒。提醒里只写匹配到的路由模板（如 /api/v1/documents/{doc_id}），
+# 不写实际路径、查询参数和用户信息；没匹配到路由的写固定的"其他路径"。
+_FAILED_WINDOW = 600
+_FAILED_THRESHOLD = 3
+_FAILED_QUIET = 3600
+# 提醒没发出去（机器人报错、网络不通）时，过这么久就允许再发，不白等 1 小时
+_FAILED_RETRY = 300
+_SLOW_MS = 15_000
+_failed_lock = threading.Lock()
+_failed_state: dict = {"recent": deque(), "last_alert": None}
+
+
+def _start_background(target, *args) -> None:
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _deliver_failed_alert(message: str, stamp: float) -> None:
+    """在后台线程里发成批失败提醒；没发出去就把静默期缩到 5 分钟。没配告警地址（None）不重试。"""
+    if send_alert(message) is not False:
+        return
+    with _failed_lock:
+        # 期间又提醒过一次（stamp 变了）就不动它
+        if _failed_state["last_alert"] == stamp:
+            _failed_state["last_alert"] = stamp - _FAILED_QUIET + _FAILED_RETRY
+
+
+def _note_failed_response(route: str | None, status: int, ms: int) -> None:
+    if status < 500 and ms < _SLOW_MS:
+        return
+    now = clock.monotonic()
+    key = route[:80] if route else "其他路径"
+    with _failed_lock:
+        recent: deque = _failed_state["recent"]
+        recent.append((now, key, status >= 500))
+        while recent and now - recent[0][0] > _FAILED_WINDOW:
+            recent.popleft()
+        last = _failed_state["last_alert"]
+        if len(recent) < _FAILED_THRESHOLD or (last is not None and now - last < _FAILED_QUIET):
+            return
+        _failed_state["last_alert"] = now
+        events = list(recent)
+    errors = sum(is_error for _, _, is_error in events)
+    paths = Counter(key for _, key, _ in events).most_common(3)
+    role = getattr(get_settings(), "role", "all")
+    message = (
+        f"接口成批失败（{role} 服务，10 分钟内 {len(events)} 次：返回 5xx {errors} 次、"
+        f"其他请求超过 15 秒 {len(events) - errors} 次）："
+        + "；".join(f"{key} {count} 次" for key, count in paths)
+        + "。1 小时内不再重复提醒，详情看云托管日志里的 access 记录"
+    )
+    _start_background(_deliver_failed_alert, message, now)
+
+
 def _printable(text: str, limit: int) -> str:
     """不可见字符（如换行）换成 ?，再截断：路径来自请求，不能用来伪造日志行或挤掉后面的内容。"""
     cleaned = "".join(ch if ch.isprintable() else "?" for ch in text)
@@ -150,12 +207,14 @@ async def _validation_error(request: Request, exc: RequestValidationError) -> JS
 @app.exception_handler(Exception)
 async def _server_error(request: Request, exc: Exception) -> JSONResponse:
     """没被处理的异常：返回 500，并提醒到群里（完整堆栈由 uvicorn 记录，这里只记一行）。
-    提醒只写异常类型、请求方法和路径，不带查询参数、请求内容和异常详情（可能含用户输入）。
-    记录和提醒本身出错也不影响返回固定的 500。"""
+    提醒只写异常类型、请求方法和匹配到的路由模板（如 /api/v1/documents/{doc_id}），
+    不写实际路径、查询参数、请求内容和异常详情（可能含用户输入）；容器日志里照旧记实际路径，
+    方便对上访问日志。记录和提醒本身出错也不影响返回固定的 500。"""
     try:
         where = f"{request.method} {_printable(request.url.path, 200)}"
         error_log.error("接口出错：%s（%s）", where, type(exc).__name__)
-        _note_server_error(f"{type(exc).__name__}，{where}")
+        route = getattr(request.scope.get("route"), "path", None)
+        _note_server_error(f"{type(exc).__name__}，{request.method} {route or '其他路径'}")
     except Exception:  # noqa: BLE001 - 提醒失败不能让用户拿不到 500
         # 连日志都写不了时也照样返回 500
         with contextlib.suppress(Exception):
@@ -264,6 +323,12 @@ async def _access_log(request: Request, call_next):
         raise
     entry.update(status=response.status_code, ms=int((clock.monotonic() - started) * 1000))
     entry["detail"] = getattr(request.state, "audit", None)
+    # 没被处理的异常走上面那条路，由异常处理提醒；这里只数接口主动返回的 5xx 和太慢的请求
+    try:
+        route = getattr(request.scope.get("route"), "path", None)
+        _note_failed_response(route, entry["status"], entry["ms"])
+    except Exception as exc:  # noqa: BLE001 - 计数和提醒出错不能影响响应；只记类型
+        error_log.warning("成批失败计数出错：%s", type(exc).__name__)
     # call_next 返回的响应本身不带后台任务（接口自己的后台任务在里层已经跑过）
     response.background = BackgroundTask(access_log.write, entry)
     return response
@@ -1322,11 +1387,12 @@ DueQuery = Annotated[
 ]
 
 
-def _due_condition(due: DueFilter):
-    """按候选截止日期筛选（北京时间的今天算未过期）。同一通知的相同候选日期一样，不影响只列一条的规则。"""
+def _due_condition(due: DueFilter, today: date | None = None):
+    """按候选截止日期筛选（北京时间的今天算未过期）。同一通知的相同候选日期一样，不影响只列一条的规则。
+    today：调用方已经定好的"今天"（运维日报用它自己的日期，跨零点时口径不乱）；不给就取现在。"""
     if due == "all":
         return None
-    today = v1_api.now().date()
+    today = today or v1_api.now().date()
     if due in ("7", "30"):
         return DocumentDeadline.candidate_date.between(today, today + timedelta(days=int(due)))
     return DocumentDeadline.candidate_date >= today
@@ -1341,16 +1407,21 @@ def _queue_kind():
 @app.get("/api/admin/deadlines/count")
 def pending_count(session: SessionDep, _admin: AdminDep, due: DueQuery = "all") -> dict[str, int]:
     """待核对条数，与列表同一规则：归并组里相同的候选只算一条。"""
+    return {"pending": pending_due_count(session, due)}
+
+
+def pending_due_count(session: Session, due: DueFilter, today: date | None = None) -> int:
+    """管理台待核对计数的规则本身；运维日报传它自己的"今天"，和管理台看到的是同一个数。"""
     stmt = (
         select(DocumentDeadline)
         .join(Document, DocumentDeadline.document_id == Document.id)
         .where(DocumentDeadline.status == "pending", _queue_kind())
     )
-    condition = _due_condition(due)
+    condition = _due_condition(due, today)
     if condition is not None:
         stmt = stmt.where(condition)
     pending = session.scalars(stmt).all()
-    return {"pending": len(_pending_shown_ids(session, pending))}
+    return len(_pending_shown_ids(session, pending))
 
 
 def _pending_shown_ids(session: Session, deadlines: list[DocumentDeadline]) -> dict[int, int]:

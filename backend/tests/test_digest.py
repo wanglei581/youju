@@ -198,15 +198,22 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
     assert (d.details_ok, d.details_failed, d.new_candidates) == (1, 1, 2)
     assert (d.approved, d.rejected) == (1, 1)
     assert (d.pending, d.pending_30, d.nearest_due) == (3, 1, date(2026, 10, 10))
+    # 7 天内到期的待核对和管理台"截止日期 · 7 天内"同一个数；最近一次核对是今天（北京时间）
+    assert d.pending_7 == 0 and d.last_reviewed == date(2026, 9, 29)
     assert (d.kinds_pending, d.audit_flagged, d.feedback_pending) == (1, 1, 1)
     assert (d.new_users, d.active_users, d.total_users, d.new_follows) == (1, 1, 2, 1)
     assert (d.reminders_sent, d.reminders_failed) == (1, 1)
     assert d.usage.day == date(2026, 9, 28) and d.usage.calls == 12
 
     text = digest_text(d, [])
+    assert text.splitlines()[1] == (
+        "今天先核：7 天内到期的截止待核对 0 条（管理台“截止日期 · 7 天内”）；上次核对 9月29日"
+    )
     for fragment in (
         "运维日报 9月29日",
         "启用栏目 2 个，今天检查成功 1 个（50.0%）；异常 1 个：山东省科学技术厅2",
+        # 异常栏目带上次成功的日期：从没成功过的写从哪天起
+        "山东省科学技术厅2 · 通知公告 · http_error（从没成功过，9月29日起）",
         "24 小时新发现 2 份",
         "补详情成功 1、失败 1；新截止候选 2 条",
         "24 小时通过 1、驳回 1；待核对 3 条（30 天内截止 1 条，最近 10月10日）",
@@ -218,6 +225,64 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
         assert fragment in text, fragment
     # 群里只报总数，不出现任何用户标识
     assert "o-fresh" not in text and "AI 建议" not in text
+
+
+def test_first_line_counts_the_seven_day_queue_and_days_since_review(session, world) -> None:
+    """日报第一行：今天要核几条（和管理台同一个计数），上次核对是几号、几天前。"""
+    from youju.api import app as admin
+
+    # 两天后截止的待核对候选：进 7 天队列
+    add_deadline(session, world["apply"], date(2026, 10, 1), created=NOW - timedelta(hours=1), n=7)
+    # 把核对时间改到 4 天前：日报要写"4 天前"
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        row.reviewed_at = NOW - timedelta(days=4)
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert d.pending_7 == admin.pending_count(session, None, "7")["pending"] == 1
+    # 日报按它自己的"今天"算：同一时刻换一天（7 天窗口外）就不算
+    assert admin.pending_due_count(session, "7", date(2026, 10, 2)) == 0
+    assert d.last_reviewed == date(2026, 9, 25)
+    line = digest_text(d, []).splitlines()[1]
+    assert line == (
+        "今天先核：7 天内到期的截止待核对 1 条（管理台“截止日期 · 7 天内”）；上次核对 9月25日（4 天前）"
+    )
+    # 已通过的截止今天标为"已变更"（延期）：上次核对是今天，不是原来通过的那天
+    changed = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status == "approved")
+    ).first()
+    changed.status, changed.changed_at = "changed", NOW - timedelta(hours=1)
+    changed.change_reason = "延期"
+    changed.changed_to_document_id = world["apply"].id
+    session.commit()
+    assert build_digest(session, now=NOW).last_reviewed == date(2026, 9, 29)
+    # 一条都没核对过
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        session.delete(row)
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert d.last_reviewed is None
+    assert digest_text(d, []).splitlines()[1].endswith("；还没核对过一条")
+
+
+def test_longest_failing_sources_come_first(session, world) -> None:
+    """日报只列前 3 个异常栏目：坏得最久的排前面，不会被新坏的挤掉。"""
+    old_failure = add_source(session, 7, status="parse_empty")
+    old_failure.last_success_at = NOW - timedelta(days=9)
+    recent_failure = add_source(session, 8, status="network_error")
+    # 第 2 天；夹具里的山东省科学技术厅2 从没成功过、今天第一次失败，是第 1 天
+    recent_failure.last_success_at = NOW - timedelta(days=2)
+    session.commit()
+    failures = build_digest(session, now=NOW).source_failures
+    assert failures[0] == "山东省科学技术厅7 · 通知公告 · parse_empty（上次成功 9月20日）"
+    assert [f.split(" · ")[0] for f in failures] == [
+        "山东省科学技术厅7",
+        "山东省科学技术厅8",
+        "山东省科学技术厅2",
+    ]
 
 
 def fake_ai(reply):
