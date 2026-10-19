@@ -136,6 +136,8 @@ Page({
     this.setData({
       today: todayISO(), capsLoading: true, kinds: [], gate: '', gateText: '', interpretOpen: false, clauseOpen: false,
       recent: [], recentLoading: true, recentError: '', records: [], recordsError: '', lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
+      // 上次没连上：这次重新问的时候写"正在连接"，不留"连不上"（第 17 轮）。上次连上了就不动，免得切回来时闪一下
+      ...(this.data.offline ? { waiting: true, offline: false } : {}),
     });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;

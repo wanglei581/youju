@@ -1661,3 +1661,20 @@ test('Codex 第 16 轮：直接打开工具中心、我的记录（还没问过 
     }
   }
 });
+
+test('Codex 第 17 轮：上次没连上，离开再回来、后台还没答复时写"正在连接"，不留"连不上"；上次连上了，切回来不闪加载中', async () => {
+  const h = hubPage({ state: { visible: true, confirmed: false, available: true } });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.offline, true);
+  h.page.onHide();
+  h.access.ensure = () => new Promise(() => {});
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.waiting, true); assert.equal(h.page.data.offline, false);
+  const out = textOf(render('pages/ai/index.wxml', h.page.data));
+  assert.match(out, /正在连接…/); assert.doesNotMatch(out, /连不上/);
+  // 上次连上了：切回来时不回到"正在连接"那一页（能力区自己写加载中）
+  const g = hubPage(); g.page.onShow(); await settle();
+  assert.equal(g.page.data.ready, true);
+  g.page.onHide(); g.access.ensure = () => new Promise(() => {}); g.page.onShow(); await settle();
+  assert.equal(g.page.data.waiting, false); assert.equal(g.page.data.capsLoading, true);
+});
