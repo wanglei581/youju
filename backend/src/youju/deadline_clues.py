@@ -17,8 +17,8 @@ STATUSES = {"pending": "待核对", "accepted": "已采纳", "rejected": "未采
 
 
 def lock_queue(session: Session) -> None:
-    # 线索队列的写入先抢同一个跨进程行锁，互相串行。用户提交线索的接口已删（影响评估第六节（二）
-    # 第 13 条），现在只有核对台处理以前留下的线索时写。
+    # 核对台处理线索时先抢同一个跨进程行锁，互相串行。用户提交线索的接口已删（影响评估第六节（二）
+    # 第 13 条）；用户删除自己待核对的线索、注销时清理线索不经过这把锁。
     stmt = insert(AppKey).values(name="deadline_clue_queue", value="1")
     session.execute(stmt.on_duplicate_key_update(name=stmt.inserted.name))
 
