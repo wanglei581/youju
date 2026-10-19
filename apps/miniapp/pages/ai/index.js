@@ -120,11 +120,14 @@ Page({
 
   onUnload() {
     if (this.unsubscribe) this.unsubscribe();
+    if (api.stopStartup) api.stopStartup(this);
   },
 
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 4 });
     this.shown = true;
+    // 连接慢（接口服务在重试）时和其他页面一样写"正在连接，比平时慢一点，请稍等…"（方案第四节，第 15 轮）
+    if (api.watchStartup) api.watchStartup(this);
     // 刚才看的那份先不给按钮：后台再核一次还能不能解读（可能下架了、失去了资格），核过再给
     const last = access.lastDoc();
     // 上次进来时的能力、次数和拦下原因都先清掉，显示加载中；能力接口回来之前不给"AI 解读""条款对照"
@@ -147,6 +150,7 @@ Page({
 
   onHide() {
     this.shown = false;
+    if (api.stopStartup) api.stopStartup(this);
     // 离开以后回来的旧结果不再写页面
     this.seq = (this.seq || 0) + 1;
   },

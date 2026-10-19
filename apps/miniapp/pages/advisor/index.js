@@ -1,5 +1,6 @@
 // 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
+const access = require('../../utils/ai-access.js');
 const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
@@ -66,7 +67,10 @@ Page({
   // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
   consent() {
     if (this.data.gate !== 'consent' && this.data.aiGate !== 'consent') return;
-    require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.load(); });
+    // AI 对这个人开着（后台确认过）：同意以后 AI 也能用，弹窗写明、只能读完两份全文再同意（第 15 轮）；关着时照旧
+    const state = access.current();
+    const options = state.visible === true && state.confirmed === true ? { purpose: 'tools' } : undefined;
+    require('../../utils/consent.js').ensureConsent(options).then((ok) => { if (ok && this.visible) this.load(); });
   },
   reload() { if (this.data.gate === 'offline') this.load(); },
   search() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/search/index' }); },

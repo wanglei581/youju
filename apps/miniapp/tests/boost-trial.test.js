@@ -1,5 +1,6 @@
 // 加量体验（D-070 ③）和申报季加量（⑤）：文字工具、批量工具页的入口和提交判断、确认页、工具中心。
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,7 +24,7 @@ function load(file, deps, globals = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(key) { assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

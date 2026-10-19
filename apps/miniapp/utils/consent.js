@@ -120,7 +120,7 @@ function openPrivacy() {
 }
 
 // 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底。
-// purpose 为 'ai'：从 AI 板块来的（AI 首页、解读页、对照页），见 askConsent
+// purpose 为 'ai' 或 'tools'：同意以后能用上 AI 的入口，见 askConsent
 function ensureConsent(options) {
   const purpose = options && options.purpose;
   if (!loginOpen()) {
@@ -137,15 +137,17 @@ function ensureConsent(options) {
 
 // 读全文并同意的页面：依次显示两份文件全文，同意按钮在最后
 const CONSENT_PAGE = '/pages/agreement/index?consent=1';
-// 从 AI 板块来的：同意以后的提示不写"关注和纠错"
+// 从 AI 板块、工具中心来的：同意以后的提示不写"关注和纠错"
 const AI_CONSENT_PAGE = `${CONSENT_PAGE}&for=ai`;
+// 同意以后能用上 AI 的入口写明用途：ai 是 AI 首页、解读页、对照页；tools 是 AI 对这个人开着时的工具中心、我的记录
+const PURPOSES = { ai: 'AI 解读和条款对照', tools: '工具（含 AI 解读和条款对照）' };
 
 function askConsent(purpose) {
-  const ai = purpose === 'ai';
-  // 协议更新后、或从 AI 板块来（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
-  // 弹窗写明是为了用什么（Codex 小程序第 13 轮）
+  const ai = Object.prototype.hasOwnProperty.call(PURPOSES, purpose);
+  // 协议更新后、或同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
+  // 弹窗写明是为了用什么（Codex 小程序第 13、15 轮）
   if (outdated || ai) {
-    const what = ai ? 'AI 解读和条款对照' : featureNames();
+    const what = ai ? PURPOSES[purpose] : featureNames();
     wx.showModal({
       title: outdated ? '协议已更新' : '请先阅读并同意',
       content: outdated

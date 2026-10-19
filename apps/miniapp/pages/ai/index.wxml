@@ -22,16 +22,22 @@
   </view>
 </view>
 
+<!-- 等后台回话时写"正在连接"（没有 AI 字样）；没连上（重试 90 秒以后）给"重试"和"联系客服"（方案第四节） -->
 <view wx:if="{{waiting}}" class="card abilities abilities--first" aria-label="正在加载">
   <view class="sk sk-line"></view>
   <view class="sk sk-line sk-line--short"></view>
+  <view class="connect-note">{{serviceStarting ? '正在连接，比平时慢一点，请稍等…' : '正在连接…'}}</view>
 </view>
-<view wx:elif="{{offline}}" class="card load-error abilities--first"><text>暂时连不上服务器，请稍后重试。</text><text class="link retry" bindtap="retry">重试</text></view>
+<view wx:elif="{{offline}}" class="card abilities abilities--first">
+  <view class="load-error"><text>暂时连不上服务器，请稍后重试。</text><text class="link retry" bindtap="retry">重试</text></view>
+  <view class="gate-contact"><contact-button from="ai_home" reason="offline" /></view>
+</view>
 <block wx:else>
   <view class="card abilities">
     <view wx:if="{{capsLoading}}" aria-label="正在加载">
       <view class="sk sk-line"></view>
       <view class="sk sk-line sk-line--short"></view>
+      <view class="connect-note">{{serviceStarting ? '正在连接，比平时慢一点，请稍等…' : '正在连接…'}}</view>
     </view>
     <block wx:else>
       <!-- 两项能力一直各占一行（D-075 第四节）：全站满了、后台处理不了时置灰，右边写状态，下面统一写原因 -->
@@ -48,7 +54,10 @@
       <view wx:if="{{gate}}" class="gate">
         <view class="gate-text">{{gateText}}</view>
         <view wx:if="{{gate === 'consent'}}" class="btn-primary gate-btn" bindtap="consent" aria-role="button">阅读并同意</view>
-        <view wx:elif="{{gate === 'offline'}}" class="link gate-link" bindtap="retry" aria-role="button">重试</view>
+        <block wx:elif="{{gate === 'offline'}}">
+          <view class="link gate-link" bindtap="retry" aria-role="button">重试</view>
+          <view class="gate-contact"><contact-button from="ai_home" reason="offline" /></view>
+        </block>
         <!-- 暂时不可用：可以点"重试"马上再问（恢复了按钮就出来），也可以联系客服 -->
         <block wx:elif="{{gate === 'paused'}}">
           <view class="link gate-link" bindtap="retry" aria-role="button">重试</view>

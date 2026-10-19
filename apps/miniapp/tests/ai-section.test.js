@@ -409,7 +409,7 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
 });
 
 function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ items: [] }), tasks = () => Promise.resolve({ items: [] }), last = null, consentOk = true,
-  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }), realAccess = null } = {}) {
+  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }), realAccess = null, extraApi = {} } = {}) {
   // realAccess：用真的 utils/ai-access.js（accessWith 建的），看缓存多久再问
   const access = realAccess || control(state); if (!realAccess) access.stored.last = last;
   const calls = { search: [], caps: 0, consent: 0 };
@@ -420,6 +420,7 @@ function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ i
       search: (p) => { calls.search.push(p); return search(p); },
       advisorTasks: tasks,
       detail: (id) => { calls.detail = (calls.detail || 0) + 1; return detail(id); },
+      ...extraApi,
     },
     '../../utils/ai-access.js': access, '../../utils/advisor.js': advisor, '../../utils/ai-interpret.js': interpret, '../../utils/tool-context.js': context,
     '../../utils/consent.js': { ensureConsent: (opts) => { calls.consent += 1; calls.consentOpts = opts; return Promise.resolve(consentOk); } }, '../../utils/format.js': format,
@@ -702,7 +703,7 @@ test('Codex 第 1 轮：工具中心在后台处理不了、全站满了时不�
   for (const [extra, text] of [[{ available: false }, 'AI 暂时不可用，请稍后再试。'], [{ siteFull: true }, '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'], [{}, '']]) {
     const page = load('pages/advisor/index.js', {
       '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), advisorTasks: () => Promise.resolve({ items: [] }) },
-      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'),
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
     }, { wx: { setNavigationBarTitle() {} } });
     page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await settle();
     const root = render('pages/advisor/index.wxml', page.data);
@@ -1549,4 +1550,71 @@ test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是�
     page.onLoad(query); page.agree(); await settle();
     assert.equal(marked, 1); assert.deepEqual(toasts, [toast]);
   }
+});
+
+test('Codex 第 15 轮：AI 对这个人开着时，工具中心、我的记录的"阅读并同意"也写明能用上 AI、只能读完两份全文再同意；AI 关着时照旧不提 AI', async () => {
+  const gated = () => Promise.resolve(OFF('consent'));
+  for (const name of ['advisor', 'advisor-tasks']) {
+    for (const [state, expected] of [[OPEN, { purpose: 'tools' }], [{ visible: true, confirmed: false, available: true }, undefined], [CLOSED, undefined]]) {
+      let opts = 'not called';
+      const page = load(`pages/${name}/index.js`, {
+        '../../utils/api.js': { advisorCapabilities: gated, advisorTasks: () => Promise.resolve({ items: [] }) },
+        '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(state),
+        '../../utils/consent.js': { ensureConsent: (o) => { opts = o === undefined ? undefined : plain(o); return Promise.resolve(false); } },
+      }, { wx: { setNavigationBarTitle() {} } });
+      if (page.onLoad) page.onLoad({});
+      page.onShow(); await settle();
+      page.consent(); await settle();
+      assert.deepEqual(opts, expected, `${name} ${JSON.stringify(state)}`);
+      if (page.onUnload) page.onUnload();
+    }
+  }
+  // 真的 consent.js：tools 写"使用工具（含 AI 解读和条款对照）前"，只能去读全文
+  const c = consentWith(control(OPEN), { me: () => Promise.resolve({ agreed: null }) });
+  c.mod.ensureConsent({ purpose: 'tools' }); await settle();
+  assert.match(c.modals[0].content, /^使用工具（含 AI 解读和条款对照）前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。$/);
+  assert.equal(c.modals[0].confirmText, '阅读全文');
+  c.modals[0].success({ confirm: true }); assert.deepEqual(c.navigations, ['/pages/agreement/index?consent=1&for=ai']);
+  // 不认的用途：照旧通用弹窗
+  const g = consentWith(control(OPEN), { me: () => Promise.resolve({ agreed: null }) });
+  g.mod.ensureConsent({ purpose: 'toString' }); await settle();
+  assert.equal(g.modals[0].confirmText, '同意');
+});
+
+test('Codex 第 15 轮：AI 首页等后台回话时写"正在连接"（连接慢时写"比平时慢一点"），没连上给"重试"和"联系客服"；都没有 AI 字样', async () => {
+  const watched = []; const stopped = [];
+  const extraApi = { watchStartup: (page) => watched.push(page), stopStartup: (page) => stopped.push(page) };
+  // 后台一直没回话
+  const h = hubPage({ extraApi });
+  h.access.ensure = () => new Promise(() => {});
+  h.page.onShow(); await settle();
+  assert.equal(watched.length, 1, '显示时跟着"正在连接"提示');
+  let root = render('pages/ai/index.wxml', h.page.data);
+  assert.match(textOf(root), /正在连接…/); assert.doesNotMatch(textOf(root), /\bAI\b/);
+  h.page.setData({ serviceStarting: true });
+  root = render('pages/ai/index.wxml', h.page.data);
+  assert.match(textOf(root), /正在连接，比平时慢一点，请稍等…/); assert.doesNotMatch(textOf(root), /\bAI\b/);
+  h.page.onHide(); assert.equal(stopped.length, 1, '离开时停掉');
+  // 没连上：重试和联系客服
+  const o = hubPage({ state: { visible: true, confirmed: false, available: true } });
+  o.page.onShow(); await settle();
+  assert.equal(o.page.data.offline, true);
+  root = render('pages/ai/index.wxml', o.page.data);
+  assert.match(textOf(root), /暂时连不上服务器，请稍后重试。/); assert.doesNotMatch(textOf(root), /\bAI\b/);
+  assert.equal(findAll(root, tapsTo('retry')).length, 1);
+  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['offline']);
+  // 能力接口那一步没连上（gate 为 offline）：同样给重试和联系客服
+  const c = hubPage({ caps: OFF('offline') });
+  c.page.onShow(); await settle();
+  assert.equal(c.page.data.gate, 'offline');
+  const gate = findAll(render('pages/ai/index.wxml', c.page.data), hasClass('gate'))[0];
+  assert.equal(findAll(gate, tapsTo('retry')).length, 1);
+  assert.deepEqual(findAll(gate, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['offline']);
+  // 能力接口还在问：能力区也写"正在连接"
+  const w = hubPage({ caps: () => new Promise(() => {}) });
+  w.page.onShow(); await settle();
+  assert.equal(w.page.data.capsLoading, true);
+  const abilities = findAll(render('pages/ai/index.wxml', w.page.data), hasClass('abilities'))[0];
+  assert.match(textOf(abilities), /正在连接…/);
+  w.page.onUnload && w.page.onUnload();
 });

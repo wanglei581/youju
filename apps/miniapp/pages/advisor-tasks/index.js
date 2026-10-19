@@ -1,4 +1,5 @@
 const api = require('../../utils/api.js');
+const access = require('../../utils/ai-access.js');
 const { taskViews, blockDownload, internalNotice, allowedKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 
 Page({
@@ -36,7 +37,10 @@ Page({
   // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
   consent() {
     if (this.data.gate !== 'consent') return;
-    require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.load(); });
+    // AI 对这个人开着（后台确认过）：同意以后 AI 也能用，弹窗写明、只能读完两份全文再同意（第 15 轮）；关着时照旧
+    const state = access.current();
+    const options = state.visible === true && state.confirmed === true ? { purpose: 'tools' } : undefined;
+    require('../../utils/consent.js').ensureConsent(options).then((ok) => { if (ok && this.visible) this.load(); });
   },
   reload() { if (this.data.gate === 'offline') this.load(); },
   search() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/search/index' }); },

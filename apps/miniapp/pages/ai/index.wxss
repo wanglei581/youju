@@ -28,6 +28,7 @@
 .gate-btn { margin-top: 24rpx; }
 .gate-link { margin-top: 16rpx; padding: 8rpx 0; font-size: 28rpx; }
 .gate-contact { margin-top: 24rpx; }
+.connect-note { margin-top: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .find { margin-top: 28rpx; min-height: 80rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--brand); border-radius: 40rpx; background: var(--brand-tint); color: var(--brand); font-size: 28rpx; font-weight: 500; }
 
 .card-head { min-height: 88rpx; display: flex; align-items: center; justify-content: space-between; border-bottom: 2rpx solid var(--line); }
