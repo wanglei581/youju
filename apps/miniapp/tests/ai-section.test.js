@@ -1120,3 +1120,66 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
   r.page.onHide(); r.page.onShow(); await settle();
   assert.equal(r.page.data.recordsError, '');
 });
+
+test('Codex 第 8 轮：出了结果吸顶条就一直有——后端没给提示、只有空白或只有"AI 生成"时，用页面自己的说明；上面那条普通提示不再重复', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const notice of [undefined, '', '   ', 'AI 生成', ' AI 生成： ']) {
+      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const result = kind === 'clause'
+        ? { rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
+        : { items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
+      if (notice !== undefined) result.notice = notice;
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTask: (id) => Promise.resolve({ id, docId: 42, docTitle: '通知', status: 'done', result }) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      p.onLoad({ taskId: '7' }); p.onShow(); await settle();
+      assert.equal(p.data.phase, 'done', `${page} 出了结果`);
+      const root = render(`pages/${page}/index.wxml`, p.data);
+      const bars = findAll(root, hasClass('interpret-notice'));
+      assert.equal(bars.length, 1, `${page} ${JSON.stringify(notice)} 有吸顶条`);
+      assert.equal(textOf(bars[0]).trim(), `AI 生成：${p.data.aiNotice}`, `${page} ${JSON.stringify(notice)}`);
+      assert.ok(p.data.aiNotice.length > 0);
+      assert.equal(findAll(root, hasClass('ai-internal')).length, 0, `${page} 出结果后不再有上面那条`);
+      p.onHide();
+    }
+  }
+});
+
+test('Codex 第 8 轮：AI 首页第一次问到的就是"暂时不可用"，停在页面上时后台恢复了：再问一次能力接口，照新的次数放出按钮；页面不在前面时不问，又说处理不了时不反复问', async () => {
+  const paused = { visible: true, confirmed: true, available: false };
+  let answers = [ON({ available: false }), ON({ remaining: { interpret: 3, clause: 4 } })];
+  const h = hubPage({ state: paused, caps: () => Promise.resolve(answers.shift() || ON({ available: false })) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.gate, 'paused'); assert.equal(h.page.data.interpretOpen, false); assert.equal(h.calls.caps, 1);
+  h.access.set({ available: true }); await settle();
+  assert.equal(h.calls.caps, 2, '恢复了再问一次'); assert.equal(h.calls.refresh, true);
+  assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /今天还剩 3 次/);
+  // 又说处理不了：照旧收起，不再问能力接口
+  h.access.set({ available: false }); await settle();
+  assert.equal(h.calls.caps, 2); assert.equal(h.page.data.gate, 'paused');
+  // 能力接口再问一次还是"处理不了"：停在暂时不可用，只问这一次
+  answers = [ON({ available: false })];
+  const g = hubPage({ state: paused, caps: () => Promise.resolve(answers.shift() || ON({ available: false })) });
+  g.page.onShow(); await settle();
+  g.access.set({ available: true }); await settle();
+  assert.equal(g.calls.caps, 2); assert.equal(g.page.data.gate, 'paused'); assert.equal(g.page.data.interpretOpen, false);
+  // 能力接口说处理不了、公开状态接口又说处理不了（还没恢复）：不问
+  answers = [ON({ available: false })];
+  const n = hubPage({ caps: () => Promise.resolve(answers.shift() || ON()) });
+  n.page.onShow(); await settle();
+  assert.equal(n.page.data.gate, 'paused');
+  n.access.set({ available: false }); await settle();
+  assert.equal(n.calls.caps, 1, '没恢复不问');
+  // 页面不在前面时恢复了：不问，回来时 onShow 照常重新问
+  answers = [ON({ available: false }), ON()];
+  const b = hubPage({ state: paused, caps: () => Promise.resolve(answers.shift() || ON()) });
+  b.page.onShow(); await settle(); b.page.onHide();
+  b.access.set({ available: true }); await settle();
+  assert.equal(b.calls.caps, 1, '不在前面不问');
+  b.page.onShow(); await settle();
+  assert.equal(b.calls.caps, 2); assert.equal(b.page.data.gate, ''); assert.equal(b.page.data.interpretOpen, true);
+});

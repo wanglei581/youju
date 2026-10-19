@@ -18,10 +18,11 @@ function disclosureLine(value = {}) {
 }
 
 // 结果顶部的吸顶条由页面固定写"AI 生成："（标识办法第四条），不靠后端提示里有没有这几个字；
-// 后端提示本身以"AI 生成"开头时去掉开头这几个字，免得一行里写两遍（Codex 小程序第 7 轮）
+// 后端提示本身以"AI 生成"开头时去掉开头这几个字，免得一行里写两遍（Codex 小程序第 7 轮）。
+// 没有提示、只有空白或只有"AI 生成"时给空串，页面换成自己的说明（第 8 轮）
 const LABEL_HEAD = /^AI\s*生成\s*[，,：:、·]?\s*/;
 function noticeText(notice) {
-  return String(notice || '').replace(LABEL_HEAD, '');
+  return String(notice || '').trim().replace(LABEL_HEAD, '');
 }
 
 // 结果页（10/17 创始人试用后精简）：同一句原文只出现一次，标出它同时属于哪几类；

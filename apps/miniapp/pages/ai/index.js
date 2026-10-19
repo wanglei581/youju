@@ -111,7 +111,10 @@ Page({
     this.unsubscribe = access.subscribe((state) => {
       if (!state.visible) this.reset();
       if (this.shown && state.confirmed && !state.visible) this.leave();
-      if (state.visible) this.applyCaps();
+      if (!state.visible) return;
+      // 能力接口上次说后台处理不了、现在恢复了：再问一次能力接口，次数、全站满没满照新的来（第 8 轮）
+      if (this.shown && this.capsResult && this.capsResult.gate === 'paused' && access.canOpen()) this.loadCaps(this.seq);
+      else this.applyCaps();
     });
   },
 
@@ -167,22 +170,7 @@ Page({
   },
 
   load(seq) {
-    this.setData({ capsLoading: true });
-    api.advisorCapabilities({ refresh: true }).then((caps) => {
-      if (seq !== this.seq) return;
-      const ai = (caps && caps.ai_advisor) || {};
-      const gate = gateOf(caps);
-      // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页
-      if (gate === 'off') access.refresh();
-      const kinds = ai.enabled === true ? kindRows(ai) : [];
-      const open = (kind) => { const row = kinds.find((item) => item.kind === kind); return !gate && !!row && !row.out; };
-      // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
-      // 没同意协议（consent）时也给（点了进解读页、对照页，先走同意，D-075 第四节）。
-      // 这里只记这次能力接口怎么说；再和"后台现在能不能处理"合起来才定按钮和拦下原因（applyCaps）
-      this.capsResult = { gate, gateText: gateTextOf(gate, caps), interpret: gate === 'consent' || open('interpret'), clause: gate === 'consent' || open('clause') };
-      this.setData({ capsLoading: false, kinds, disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '' });
-      this.applyCaps();
-    });
+    this.loadCaps(seq);
     const last = this.data.lastDoc;
     if (last) {
       api.detail(last.id).then((doc) => {
@@ -216,6 +204,26 @@ Page({
     }).catch(() => {
       // 没加载出来不当成没有记录：卡片照样留着，写明没加载出来、给重试，"全部"照样能点进去（Codex 小程序第 7 轮）
       if (seq === this.seq) this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
+    });
+  },
+
+  // 两项能力、今天还剩几次、拦下原因：问能力接口（每次都不用缓存）
+  loadCaps(seq) {
+    this.setData({ capsLoading: true });
+    api.advisorCapabilities({ refresh: true }).then((caps) => {
+      if (seq !== this.seq) return;
+      const ai = (caps && caps.ai_advisor) || {};
+      const gate = gateOf(caps);
+      // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页
+      if (gate === 'off') access.refresh();
+      const kinds = ai.enabled === true ? kindRows(ai) : [];
+      const open = (kind) => { const row = kinds.find((item) => item.kind === kind); return !gate && !!row && !row.out; };
+      // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
+      // 没同意协议（consent）时也给（点了进解读页、对照页，先走同意，D-075 第四节）。
+      // 这里只记这次能力接口怎么说；再和"后台现在能不能处理"合起来才定按钮和拦下原因（applyCaps）
+      this.capsResult = { gate, gateText: gateTextOf(gate, caps), interpret: gate === 'consent' || open('interpret'), clause: gate === 'consent' || open('clause') };
+      this.setData({ capsLoading: false, kinds, disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '' });
+      this.applyCaps();
     });
   },
 
