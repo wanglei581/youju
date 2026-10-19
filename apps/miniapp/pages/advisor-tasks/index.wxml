@@ -15,6 +15,7 @@
       <view wx:if="{{item.downloadable && item.expiresText}}" class="advisor-text muted">结果保存至 {{item.expiresText}}，请及时下载</view>
       <view wx:if="{{item.resultNote}}" class="advisor-text muted">{{item.resultNote}}</view>
       <view wx:if="{{item.error}}" class="advisor-text muted">{{item.error}}</view>
+      <view wx:if="{{item.refundNote}}" class="advisor-text muted">{{item.refundNote}}</view>
       <view class="advisor-actions">
         <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="download" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">下载 Excel</button>
         <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写</button>

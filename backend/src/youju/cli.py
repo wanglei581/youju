@@ -46,10 +46,35 @@ def _finish_ai(client, task: str) -> bool:
 
 
 def _cmd_db_upgrade(_: argparse.Namespace) -> int:
+    from youju.alerts import send_alert
     from youju.migrations import upgrade
 
-    upgrade()
-    print("数据库已迁移到最新结构")
+    ahead = upgrade()
+    if ahead is None:
+        print("数据库已迁移到最新结构")
+        return 0
+    # 库比代码新：不迁移、照常启动（回退的 admin 不能因此起不来），提醒一声；提醒本身出任何错
+    # 都不能让这条命令失败（启动脚本 set -e，失败就起不来了）
+    message = (
+        f"启动时发现库里的迁移版本 {'、'.join(ahead.unknown)} 比这版代码新"
+        f"（这版代码最新是 {'、'.join(ahead.code_heads) or '无'}），没有迁移，照常启动。"
+        "刚回退过就不用管；当时不是在回退，就是发错了版本，要立即停下来查。"
+        + (
+            f"库里另有这版代码认识的迁移版本 {'、'.join(ahead.known)}，也没有补迁移。"
+            if ahead.known
+            else ""
+        )
+        + "删表删列的迁移回退前要先降库，见《发版与回退》"
+    )
+    log.warning("%s", message)
+    try:
+        sent = send_alert(message)
+    except Exception as exc:  # noqa: BLE001 - 提醒发不出去不能拦住启动；只记类型
+        log.warning("库比代码新的提醒没发出去：%s", type(exc).__name__)
+    else:
+        if sent is False:
+            log.warning("库比代码新的提醒没发出去")
+    print(f"数据库比代码新（{'、'.join(ahead.unknown)}），没有迁移")
     return 0
 
 
@@ -1177,19 +1202,57 @@ def _cmd_alert_probe(args: argparse.Namespace) -> int:
 
 
 def _cmd_check_sources(args: argparse.Namespace) -> int:
-    from youju.alerts import send_alert
-    from youju.source_health import check_sources
+    from youju.alerts import MAX_ALERT_BYTES, send_alert
+    from youju.source_health import check_sources, failing_sources, is_streak_milestone
 
     with session_factory()() as session:
         health = check_sources(session)
+        # 成功率按比例算，75 个栏目坏 3 个也达标：单个栏目一直坏着从来不提醒（湖南工信厅两个栏目
+        # 10/10 起天天识别不到条目，没人发现）。早上那一轮（--streaks）另外看哪些栏目今天正好
+        # 连续没抓到第 3、7、14、30 天（之后每满 30 天），各提醒一次；日报每天写"上次成功几号"。
+        streaks = (
+            [item for item in failing_sources(session) if is_streak_milestone(item.days)]
+            if args.streaks
+            else []
+        )
+    # 连续天数单独发：和成功率提醒拼在一起时，失败栏目多了会被群消息的字节上限截掉；
+    # 一条放不下就分几条，每个到节点的栏目都列出来（不写"另有几个"，免得后面的永远轮不到）
+    streak_sent = None
+    if streaks:
+        for text in _streak_messages(streaks, MAX_ALERT_BYTES - len("【有据】".encode())):
+            log.warning("%s", text)
+            result = send_alert(text)
+            # 有一条没发出去就算没发出去；都没配告警地址时是 None
+            streak_sent = False if result is False or streak_sent is False else result
     if health.passed:
         log.info("今天栏目检查达标：%s/%s（%.1f%%）", health.successful, health.total, health.rate)
-        return 0
+        # 发送失败（没配告警地址不算）记为任务失败：每个节点只提醒这一次，
+        # 没发出去要在任务记录里看得到
+        return 1 if streak_sent is False else 0
     message = health.alert_text()
     log.warning("%s", message)
     sent = send_alert(message)
-    # cron 包装器用专用码识别“详细提醒已发”，避免再发一条泛化的任务失败提醒。
-    return 20 if args.job and sent is True else 1
+    # cron 包装器用专用码识别“详细提醒已发”，避免再发一条泛化的任务失败提醒；
+    # 连续天数那条没发出去就不算"都发了"
+    return 20 if args.job and sent is True and streak_sent is not False else 1
+
+
+def _streak_messages(streaks: list, budget: int) -> list[str]:
+    """按群消息的字节上限把到节点的栏目分成几条，每条都带开头那句；单个栏目太长时截断它自己。"""
+    head = "这些栏目连续好几天没抓到，请到管理台“来源管理”看看网站是不是改版了："
+    messages: list[str] = []
+    lines = [head]
+    for item in streaks:
+        line = f"第 {item.days} 天：{item.text()}"
+        room = budget - len(head.encode()) - 1
+        if len(line.encode()) > room:
+            line = line.encode()[: room - len("…".encode())].decode("utf-8", "ignore") + "…"
+        if len("\n".join([*lines, line]).encode()) > budget:
+            messages.append("\n".join(lines))
+            lines = [head]
+        lines.append(line)
+    messages.append("\n".join(lines))
+    return messages
 
 
 def _cmd_job_start(args: argparse.Namespace) -> int:
@@ -1564,6 +1627,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("check-sources", help="检查今天（北京时间零点起）全部启用栏目的成功率")
     p.add_argument("--job", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument(
+        "--streaks",
+        action="store_true",
+        help="另外提醒今天正好连续没抓到第 3、7、14、30 天（之后每满 30 天）的栏目（只给早轮用）",
+    )
     p.set_defaults(func=_cmd_check_sources)
 
     p = sub.add_parser("serve", help="启动 API 服务")

@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { taskViews, blockDownload, internalNotice, allowedKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT } = require('../../utils/advisor.js');
+const { taskViews, blockDownload, internalNotice, allowedKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 
 Page({
   data: { toolsEnabled: false, downloadingId: null, aiLabel: AI_LABEL, fabText: FAB_TEXT, gate: 'off', gateText: OFF_TEXT, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
@@ -21,7 +21,7 @@ Page({
       wx.setNavigationBarTitle({ title: '我的记录' });
       // 权限关闭时先清空已有列表，避免请求失败后仍显示此前的 AI 任务。
       const gate = toolsEnabled ? '' : (caps.reason === 'consent' || caps.reason === 'offline' ? caps.reason : gateState(caps));
-      this.setData({ toolsEnabled, aiEnabled, kinds, gate, gateText: GATE_TEXT[gate] || '', aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });
+      this.setData({ toolsEnabled, aiEnabled, kinds, gate, gateText: gateText(gate, caps), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', items: this.allowed(this.data.items, kinds) });
       if (!toolsEnabled) { this.setData({ loading: false, items: [] }); return null; }
       return api.advisorTasks().then((res) => {
         if (!this.visible || epoch !== this.epoch) return;

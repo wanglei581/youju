@@ -23,6 +23,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import (
+    FEEDBACK_OUTCOMES,
     DeadlineClue,
     Document,
     Event,
@@ -673,6 +674,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "feedback": settings.retain_feedback_days,
             "usedSubscriptions": settings.retain_used_subscriptions_days,
             "unusedSubscriptions": settings.retain_unused_subscriptions_days,
+            # 批量工具和 AI：解析出的名单 / 任务输入 7 天，任务记录和结果 30 天
+            # （隐私保护指引第三节第 2 条"保存期限"）
+            "toolInput": advisor_service.INPUT_RETENTION.days,
+            "toolTasks": advisor_service.FILE_RETENTION.days,
         },
         "exportedAt": _iso(v1.now()),
     }
@@ -844,6 +849,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "checkResult": row.check_result,
             "handled": row.handled_at is not None,
             "handledAt": _iso(row.handled_at),
+            # 处理结果和处理人写的说明（差距清单 C1）；之前标记处理的旧记录没有，是 null
+            "outcome": row.outcome,
+            "outcomeLabel": FEEDBACK_OUTCOMES.get(row.outcome) if row.outcome else None,
+            "reply": row.reply,
             "createdAt": _iso(row.created_at),
         }
         for row in feedback

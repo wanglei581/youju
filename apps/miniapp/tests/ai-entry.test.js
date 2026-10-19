@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+require('./helpers/internal-build.js'); // 本文件按 AI 内测包测，见该文件说明
 const context = require('../utils/tool-context.js');
 const helpers = require('../utils/advisor.js');
 const { render, assertAiGuarded } = require('./helpers/wxml.js');
@@ -191,7 +192,9 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
       if (enabled) {
         // 标注在页面最上方（notice-bar 之后、其他内容之前）
         assert.ok(output.startsWith(NOTICE), name);
+        // 工具中心只有 AI 时标题也叫"工具中心"（10/18 Codex 审阅：和入口同名）；页面最上方仍有内部测试标注
         if (name === 'advisor-tasks') assert.equal(titles.at(-1), '我的记录');
+        else if (name === 'advisor') assert.equal(titles.at(-1), '工具中心');
         else assert.match(titles.at(-1), /内部测试/, name);
       } else {
         assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/, name);
@@ -343,6 +346,7 @@ test('卡片在做不了的文件上写明原因、不给按钮（10/17 创始�
 test('capabilities 用不了的原因：403 没同意协议、503 和网络失败是连不上（重试完仍失败）、404 和关着是 off', async () => {
   const cases = [
     [{ statusCode: 403, data: { detail: '请先阅读并同意用户协议和隐私保护指引' } }, 'consent'],
+    [{ statusCode: 403, data: { detail: '用户协议或隐私保护指引已更新，请重新阅读并同意' } }, 'consent', true],
     [{ statusCode: 503 }, 'offline'],
     ['fail', 'offline'],
     [{ statusCode: 404, data: { detail: '没有找到接口' } }, 'off'],
@@ -350,7 +354,7 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
     [{ statusCode: 200, data: { ai_advisor: { enabled: false, reason: 'consent' } } }, 'consent'],
     [{ statusCode: 200, data: caps(true) }, ''],
   ];
-  for (const [response, reason] of cases) {
+  for (const [response, reason, updated = false] of cases) {
     // 假定时器：自动重试的等待立即执行，重试完才给结果
     const timers = []; const pending = []; const cancelled = new Set(); let clock = 0; let timerId = 0;
     const api = load('utils/api.js', { './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {} },
@@ -368,6 +372,7 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
     }
     assert.notEqual(result, undefined, JSON.stringify(response));
     assert.equal(result.reason, reason, JSON.stringify(response));
+    assert.equal(result.consentUpdated === true, updated, JSON.stringify(response));
   }
 });
 
