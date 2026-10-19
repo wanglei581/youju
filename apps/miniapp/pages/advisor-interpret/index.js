@@ -5,7 +5,7 @@ const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, GA
 const context = require('../../utils/tool-context.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false },
+  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     this.session = createSession({ api, storage: wx, docId: doc.docId, title: doc.title, taskId: query.taskId,

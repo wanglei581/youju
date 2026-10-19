@@ -36,6 +36,7 @@
       <view wx:else class="interpret-ops"><button class="interpret-link" bindtap="original">看原文</button></view>
     </view>
     <!-- 附件提醒放在前面：材料清单可能不全，先告诉用户（10/17） -->
+    <view wx:if="{{outdated}}" class="card advisor-card">解读之后，这份通知的核对信息或附件有更新；正文没变，下面的原文摘录仍然有效，“已核对”一栏已换成现在的核对结果。</view>
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>

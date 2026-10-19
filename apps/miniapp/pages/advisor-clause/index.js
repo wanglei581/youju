@@ -7,7 +7,7 @@ const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
+  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
     checked: false, needsConsent: false, terms: [], result: null, canRetry: false, resumable: false, showTerms: false, showMore: false,
     form: clause.emptyForm(), errors: {}, provinceIndex: 0, provinces: ['暂不填写'].concat(clause.PROVINCES),
     qualificationOptions: [], today: '', cityRegion: [] },
