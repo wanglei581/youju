@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
@@ -102,7 +102,7 @@ STALE_AGREEMENT = "协议已更新，请关闭小程序后重新打开，更新�
 
 
 def current_user(user: Annotated[User | None, Depends(known_user)]) -> User:
-    """关注、订阅、纠错、埋点：必须已同意仍认的版本（默认就是当前版本）的用户协议和隐私保护指引。"""
+    """关注、订阅、纠错：必须已同意仍认的版本（默认就是当前版本）的用户协议和隐私保护指引。"""
     if user is None or user.agreement_at is None:
         raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
     if not agreement_valid(user.agreement_version, get_settings()):
@@ -161,14 +161,6 @@ class FeedbackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     docId: int | None = Field(default=None, gt=0)
     content: str = Field(min_length=1, max_length=500)
-
-
-class EventIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: Literal[
-        "search", "open_detail", "copy_link", "export", "lookup", "follow", "subscribe", "feedback"
-    ]
-    props: dict = Field(default_factory=dict)
 
 
 def _conditions_stmt(session: Session, conditions: dict):
@@ -386,125 +378,9 @@ def reward_history(session: SessionDep, user: UserDep) -> dict:
     }
 
 
-class DeadlineClueIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    document_id: int = Field(gt=0, strict=True)
-    kind: Literal["企业申报截止", "推荐或审核截止", "材料报送截止", "其他"]
-    deadline_date: date = Field(alias="date")
-    deadline_time: str | None = Field(default=None, alias="time")
-    quote: str
-
-    @field_validator("deadline_date", mode="before")
-    @classmethod
-    def valid_date(cls, value):
-        if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None:
-            raise ValueError("日期格式应为 YYYY-MM-DD")
-        return value
-
-    @field_validator("quote")
-    @classmethod
-    def valid_quote(cls, value):
-        value = value.strip()
-        if not 6 <= len(value) <= 200:
-            raise ValueError("原文句子须为 6–200 字")
-        return value
-
-    @field_validator("deadline_time")
-    @classmethod
-    def valid_time(cls, value):
-        if value is not None and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
-            raise ValueError("时间格式应为 HH:MM")
-        return value
-
-
-def _validate_clue_document(session: Session, document_id: int, day: date) -> None:
-    from youju.classify import effective_kind
-
-    stmt = (
-        v1._base()
-        .where(Document.id == document_id)
-        .with_only_columns(Document)
-        .execution_options(populate_existing=True)
-    )
-    doc = session.scalar(stmt)
-    if doc is None or effective_kind(doc.title, doc.kind_override) != "申报通知":
-        raise HTTPException(status_code=422, detail="只接受公开申报通知的截止线索")
-    if doc.publish_date is None:
-        raise HTTPException(status_code=422, detail="这份通知的发布日期尚不明确")
-    # 按日历周年计算，闰日的第三年以二月末为界。
-    upper = (
-        doc.publish_date.replace(year=doc.publish_date.year + 3, day=28)
-        if doc.publish_date.month == 2 and doc.publish_date.day == 29
-        else doc.publish_date.replace(year=doc.publish_date.year + 3)
-    )
-    if not doc.publish_date <= day <= upper:
-        raise HTTPException(status_code=422, detail="日期须在通知发布日至发布后三年之间")
-
-
-@router.post("/me/deadline-clues", status_code=201, dependencies=[Depends(_require_rewards)])
-def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDep) -> dict:
-    from datetime import time
-
-    from youju import deadline_clues as clues
-
-    document_id = canonical_ids(session, [body.document_id]).get(body.document_id, body.document_id)
-    _validate_clue_document(session, document_id, body.deadline_date)
-    quote = v1.redact_sensitive(_mask_feedback(body.quote))
-    if not 6 <= len(quote) <= 200:
-        raise HTTPException(status_code=422, detail="原文句子脱敏后须为 6–200 字，请缩短后再提交")
-    try:
-        passed = check_feedback(user.openid, quote)
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise HTTPException(status_code=503, detail="内容安全校验暂不可用") from exc
-    if not passed:
-        raise HTTPException(status_code=422, detail="内容可能不合规，请修改后再提交")
-    # 校验网络请求不持行锁；之后串行检查容量与最新核对结果。
-    user_id = user.id
-    session.rollback()
-    clues.lock_queue(session)
-    locked_user = session.scalar(
-        select(User)
-        .where(User.id == user_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if locked_user is None:
-        raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
-    current_user(locked_user)
-    _validate_clue_document(session, document_id, body.deadline_date)
-    if any(d.kind == body.kind for d in v1._approved(session, [document_id]).get(document_id, [])):
-        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
-    if clues.pending_count(session) >= 50:
-        raise HTTPException(status_code=409, detail="线索暂时收满了，过几天再来")
-    if (
-        session.scalar(
-            select(DeadlineClue.id).where(
-                DeadlineClue.user_id == user.id,
-                DeadlineClue.document_id == document_id,
-                DeadlineClue.kind == body.kind,
-                DeadlineClue.status == "pending",
-            )
-        )
-        is not None
-    ):
-        raise HTTPException(status_code=409, detail="你已经提交过这项线索，请等核对结果")
-    if clues.pending_count(session, user.id) >= 20:
-        raise HTTPException(status_code=409, detail="你已有 20 条待核对线索，请等核对结果")
-    row = DeadlineClue(
-        user_id=user.id,
-        document_id=document_id,
-        kind=body.kind,
-        date=body.deadline_date,
-        time=time.fromisoformat(body.deadline_time) if body.deadline_time else None,
-        quote=quote,
-        status="pending",
-        submitted_at=v1.now(),
-    )
-    session.add(row)
-    session.commit()
-    return clues.out(row)
-
-
+# 提交截止线索的接口已删：D-061 删了"补截止日期"页面，小程序不调用，隐私保护指引也没写
+# （个人信息保护影响评估第六节（二）第 13 条）。以前留下的线索照常能查看、删除待核对的、
+# 在"我的数据"里导出；注销时待核对的删掉、处理过的断开用户（rewards.anonymize）。
 @router.get("/me/deadline-clues")
 def my_deadline_clues(session: SessionDep, user: UserDep) -> dict:
     from youju import deadline_clues as clues
@@ -853,6 +729,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         for row in feedback
     ]
 
+    # 写使用记录（埋点）的接口已删：小程序不调用，隐私保护指引没写，按"不收集"处理
+    # （个人信息保护影响评估第六节（二）第 13 条）。这里只导出以前留下的，
+    # 到期由 youju cleanup 删除，注销时随用户删除
     result["eventsTotal"] = (
         session.scalar(select(func.count(Event.id)).where(Event.user_id == user.id)) or 0
     )
@@ -1133,37 +1012,3 @@ def delete_feedback(feedback_id: int, session: SessionDep, user: KnownUserDep) -
         raise HTTPException(status_code=404, detail="没有找到纠错")
     session.delete(row)
     session.commit()
-
-
-_KINDS = {"all", "申报通知", "名单", "政策", "其他", "newDocs", "deadline"}
-_FORMATS = {"xlsx", "docx", "pptx"}
-
-
-@router.post("/events", status_code=202)
-def create_event(body: EventIn, session: SessionDep, user: UserDep) -> dict:
-    props = body.props
-    if set(props) - {"kind", "count", "format"}:
-        raise HTTPException(status_code=422, detail="埋点参数不支持")
-    if "kind" in props and (not isinstance(props["kind"], str) or props["kind"] not in _KINDS):
-        raise HTTPException(status_code=422, detail="埋点类型不支持")
-    if "format" in props and (
-        not isinstance(props["format"], str) or props["format"] not in _FORMATS
-    ):
-        raise HTTPException(status_code=422, detail="埋点格式不支持")
-    if "count" in props and (type(props["count"]) is not int or not 0 <= props["count"] <= 10000):
-        raise HTTPException(status_code=422, detail="埋点数量不支持")
-    session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
-    stamp = v1.now()
-    count = (
-        session.scalar(
-            select(func.count(Event.id)).where(
-                Event.user_id == user.id, Event.created_at > stamp - timedelta(minutes=1)
-            )
-        )
-        or 0
-    )
-    if count >= 60:
-        return {"accepted": False}
-    session.add(Event(user_id=user.id, name=body.name, props=props, created_at=stamp))
-    session.commit()
-    return {"accepted": True}

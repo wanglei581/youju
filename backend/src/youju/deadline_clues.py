@@ -4,7 +4,7 @@ import hashlib
 import logging
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
@@ -17,16 +17,10 @@ STATUSES = {"pending": "待核对", "accepted": "已采纳", "rejected": "未采
 
 
 def lock_queue(session: Session) -> None:
-    # 所有队列写入先抢同一个跨进程行锁，再计数，防止并发突破全站 50 条。
+    # 线索队列的写入先抢同一个跨进程行锁，互相串行。用户提交线索的接口已删（影响评估第六节（二）
+    # 第 13 条），现在只有核对台处理以前留下的线索时写。
     stmt = insert(AppKey).values(name="deadline_clue_queue", value="1")
     session.execute(stmt.on_duplicate_key_update(name=stmt.inserted.name))
-
-
-def pending_count(session: Session, user_id: int | None = None) -> int:
-    stmt = select(func.count(DeadlineClue.id)).where(DeadlineClue.status == "pending")
-    if user_id is not None:
-        stmt = stmt.where(DeadlineClue.user_id == user_id)
-    return session.scalar(stmt) or 0
 
 
 def out(row: DeadlineClue) -> dict:

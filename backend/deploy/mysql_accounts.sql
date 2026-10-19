@@ -21,7 +21,9 @@ GRANT INSERT, UPDATE, DELETE ON youju.users TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.follows TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.subscriptions TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.feedback TO 'youju_api'@'%';
-GRANT INSERT, UPDATE, DELETE ON youju.events TO 'youju_api'@'%';
+-- 使用记录（events）：写入接口已删（个人信息保护影响评估第六节（二）第 13 条），API 不再写这张表。
+-- 以前的记录注销时随用户行级联删除（MySQL 外键级联不另查子表权限），到期删除由 admin 服务做。
+-- 以前执行过旧版这里的授权的，新版 api 部署后可以收回：REVOKE INSERT, UPDATE, DELETE ON youju.events FROM 'youju_api'@'%';
 -- 顾问任务权限：迁移 0010 建表后，由创始人在正式库手工执行本行一次。
 GRANT INSERT, UPDATE, DELETE ON youju.advisor_tasks TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.advisor_usage TO 'youju_api'@'%';
@@ -40,13 +42,17 @@ GRANT INSERT, UPDATE ON youju.invoice_requests TO 'youju_api'@'%';
 
 -- 奖励权限：迁移 0027 完成后、打开奖励开关（YOUJU_REWARDS_ENABLED）之前，由创始人执行。
 -- 要和上面 workbench_passes 那一行一起执行：有奖励使用期的用户提交任务、注销时要改这张表。
--- 线索队列靠"把名称更新成原值"占用行锁来排队；密钥的值仍然不能改。
-GRANT UPDATE (name) ON youju.app_keys TO 'youju_api'@'%';
+-- 截止线索队列的行锁（"把名称更新成原值"）现在只有核对台（admin 服务）用：用户提交线索的接口已删，
+-- API 不再需要 app_keys 的 UPDATE。以前执行过旧版这里的授权的，新版 api 部署后可以收回：
+-- REVOKE UPDATE (name) ON youju.app_keys FROM 'youju_api'@'%';
 -- API 只在注销时断开流水关联；发奖 INSERT 由 admin 定时任务/核对台执行。
 GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
 -- 防重复领取的凭据（reward_claims）10/18 起不再写入（注销即删），API 不需要这张表的任何权限。
 -- 以前执行过旧版这里的 INSERT 授权的，可以收回：REVOKE INSERT ON youju.reward_claims FROM 'youju_api'@'%';
-GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
+-- 截止线索：用户提交的接口已删，API 不再新增；用户删除自己待核对的线索、注销时删掉待核对的和断开处理过的，
+-- 要 UPDATE、DELETE。以前执行过旧版这里的授权的，新版 api 部署后可以收回新增：
+-- REVOKE INSERT ON youju.deadline_clues FROM 'youju_api'@'%';
+GRANT UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
 
 -- 加量体验权限（D-070 ③）：迁移 0031 完成后、打开体验开关（YOUJU_BOOST_TRIAL_ENABLED）之前，由创始人执行。
 -- 用户点"开始体验"时新增一行；注销时随用户行级联删除（MySQL 外键级联不另查子表权限），API 不改也不删。

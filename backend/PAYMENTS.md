@@ -147,7 +147,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   零天没有对应段，不增加循环外键。
 - `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
   `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。2026-10-18 起四列都不再写入。
-- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 UPDATE/DELETE（2026-10-19 提交接口删除后不再要 INSERT），
   pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）；reward_claims 10/18 起不用授权。
   workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
   注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
@@ -156,11 +156,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 | 接口 | 最终字段 / 行为 |
 |---|---|
 | `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note,revoked`，不返回关联人或对象编号 |
-| `POST /api/v1/me/deadline-clues` | `{document_id,kind,date,time?,quote}`；201 返回下述线索字段；关闭奖励时 404 |
+| `POST /api/v1/me/deadline-clues` | 2026-10-19 删除（D-061 删了页面，小程序不调用；个人信息保护影响评估第六节（二）第 13 条）；以前留下的线索照常查看、删除、导出 |
 | `GET /api/v1/me/deadline-clues` | 本人最近 50 条 `items[]`，按提交时间、编号倒序；开关关闭仍可查看 |
 | `DELETE /api/v1/me/deadline-clues/{id}` | 仅本人待核对线索，204；已处理 409；开关关闭、协议更新后仍可删除 |
 | `GET /api/v1/me/data` | 加 `deadlineClues,deadlineCluesTotal`，最多 500 条线索元数据及总数 |
-| `GET /api/v1/documents/{id}` | 加 `can_submit_deadline_clue` 布尔值，不含他人线索 |
+| `GET /api/v1/documents/{id}` | 2026-10-19 起不再返回 `can_submit_deadline_clue`（提交接口已删）；从不含他人线索 |
 | `GET /api/admin/deadlines` | 候选加 `deadline_clues[]`，只含待核对线索，不含提交人；关闭奖励时为空 |
 | `GET /api/admin/deadline-clues` | `enabled,items[]`；线索字段加 `title,url,can_build_candidate`；关闭时 false/空数组 |
 | `POST /api/admin/deadline-clues/{id}/candidate` | 无业务请求体，返回 `deadline_id,status=pending`；只在整份通知无任何候选时建候选 |
@@ -172,6 +172,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 
 线索返回字段：`id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`，
 status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，日期 YYYY-MM-DD，time 为 HH:MM 或 null。
+提交接口 2026-10-19 已删：下面讲提交的规则（到“超长返回中文 422”为止）留作记录；API 账号不再需要 app_keys 的 UPDATE 和 deadline_clues 的 INSERT。
 提交须登录并同意当前协议，文件须公开可见且属于申报通知；缺发布日期不接收。
 日期含发布当天至三周年当天（闰日三周年取二月末）；原句去首尾空白后 6–200 字，
 复用纠错的微信内容安全检查并脱敏，所有环境均检查，检查不通过或服务出错均不写库。

@@ -2097,18 +2097,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    from youju import deadline_clues as clues
-    from youju import rewards
-
-    can_submit_clue = (
-        rewards.enabled(get_settings())
-        and kind == "申报通知"
-        and not approved
-        and clues.pending_count(session) < 50
-    )
     payload = {
         "ai": {"open": ai_open, "interpret": ai_eligible, "clause": ai_eligible},
-        "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],

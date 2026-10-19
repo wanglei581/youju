@@ -1,15 +1,15 @@
-"""用户线索只进私有队列，人工核对后才公开日期与发奖。"""
+"""截止线索：提交接口已删（个人信息保护影响评估第六节（二）第 13 条），这里的线索都直接写库，
+模拟以前留下的。线索只在私有队列，人工核对后才公开日期与发奖；本人能查看、删除待核对的、导出。"""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
-import httpx
 import pytest
 from sqlalchemy import func, select
 
 from youju import deadline_clues, rewards
-from youju.api import me, v1
-from youju.models import DeadlineClue, DocumentDeadline, DocumentMerge, PassReward
+from youju.api import v1
+from youju.models import DeadlineClue, DocumentDeadline, DocumentMerge, Event, PassReward
 
 from .test_ai_pipeline import add_doc
 from .test_rewards import ADMIN, NOW, headers, user
@@ -20,7 +20,6 @@ from .test_rewards import context as context
 def world(context, session, monkeypatch):
     client, settings = context
     monkeypatch.setattr(v1, "get_settings", lambda: settings)
-    monkeypatch.setattr(me, "check_feedback", lambda *_: True)
     owner = user(session, "owner")
     doc = add_doc(session)
     return client, settings, owner, doc
@@ -37,22 +36,25 @@ def body(doc, **changes):
     }
 
 
-def submit(world, **changes):
-    client, _, owner, doc = world
-    return client.post(
-        "/api/v1/me/deadline-clues", headers=headers(owner.openid), json=body(doc, **changes)
-    )
-
-
 def clue(
-    session, owner, doc, *, day=date(2026, 10, 20), kind="企业申报截止", stamp=NOW, status="pending"
+    session,
+    owner,
+    doc,
+    *,
+    day=date(2026, 10, 20),
+    kind="企业申报截止",
+    stamp=NOW,
+    status="pending",
+    quote="请于2026年10月20日前提交材料。",
+    deadline_time=None,
 ):
     row = DeadlineClue(
         user_id=owner.id,
         document_id=doc.id,
         kind=kind,
         date=day,
-        quote="请于2026年10月20日前提交材料。",
+        time=deadline_time,
+        quote=quote,
         submitted_at=stamp,
         status=status,
     )
@@ -85,11 +87,11 @@ def approve(client, row, **changes):
     )
 
 
-def test_submit_private_listing_export_and_delete(world, session):
+def test_old_clues_private_listing_export_and_delete(world, session):
+    """以前留下的线索：本人能查看、导出、删除待核对的；别人看不到也删不了；公开详情不带线索。"""
     client, _, owner, doc = world
-    res = submit(world)
-    assert res.status_code == 201, res.text
-    item = res.json()
+    row = clue(session, owner, doc, deadline_time=time(17, 0))
+    [item] = client.get("/api/v1/me/deadline-clues", headers=headers(owner.openid)).json()["items"]
     assert set(item) == {
         "id",
         "document_id",
@@ -102,17 +104,19 @@ def test_submit_private_listing_export_and_delete(world, session):
         "processed_at",
         "deadline_id",
     }
-    assert item["quote"] == body(doc)["quote"].strip() and item["status"] == "待核对"
-    assert client.get("/api/v1/me/deadline-clues", headers=headers(owner.openid)).json()[
-        "items"
-    ] == [item]
+    assert (item["id"], item["quote"], item["time"], item["status"]) == (
+        row.id,
+        row.quote,
+        "17:00",
+        "待核对",
+    )
     other = user(session, "other")
     assert (
         client.get("/api/v1/me/deadline-clues", headers=headers(other.openid)).json()["items"] == []
     )
     detail = client.get(f"/api/v1/documents/{doc.id}").json()
-    assert detail["deadline"] is None and detail["can_submit_deadline_clue"] is True
-    assert item["quote"] not in str(detail) and "deadline_clues" not in detail
+    assert detail["deadline"] is None and item["quote"] not in str(detail)
+    assert "deadline_clues" not in detail and "can_submit_deadline_clue" not in detail
     exported = client.get("/api/v1/me/data", headers=headers(owner.openid)).json()
     assert exported["deadlineClues"] == [item] and exported["deadlineCluesTotal"] == 1
     url = f"/api/v1/me/deadline-clues/{item['id']}"
@@ -121,137 +125,15 @@ def test_submit_private_listing_export_and_delete(world, session):
     assert session.scalar(select(func.count(DeadlineClue.id))) == 0
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"document_id": 0},
-        {"document_id": "1"},
-        {"document_id": 999999},
-        {"kind": "未知性质"},
-        {"date": "2026-02-30"},
-        {"date": "20261020"},
-        {"date": 1792454400},
-        {"date": "2026-09-19"},
-        {"date": "2029-09-21"},
-        {"time": "24:00"},
-        {"time": "17:60"},
-        {"time": "1:00"},
-        {"time": "17:00:00"},
-        {"quote": "   短句   "},
-        {"quote": "字" * 201},
-        {"quote": 123},
-        {"extra": True},
-    ],
-)
-def test_input_validation(world, session, change):
-    assert submit(world, **change).status_code == 422
+def test_submission_endpoint_is_gone(world, session):
+    """提交线索的接口已删：奖励和批量工具开关都开着、请求合法也写不进去，这个地址只剩查看。"""
+    client, settings, owner, doc = world
+    assert settings.rewards_enabled and settings.advisor_enabled
+    url = "/api/v1/me/deadline-clues"
+    response = client.post(url, headers=headers(owner.openid), json=body(doc))
+    assert response.status_code == 405 and response.headers["allow"] == "GET"
+    assert client.post(url, headers=headers(owner.openid), content=b"bad-json").status_code == 405
     assert session.scalar(select(func.count(DeadlineClue.id))) == 0
-
-
-@pytest.mark.parametrize("mutation", ["kind", "hidden", "rights", "missing_date"])
-def test_document_validation(world, session, mutation):
-    _, _, _, doc = world
-    if mutation == "kind":
-        doc.kind_override = "政策"
-    elif mutation == "hidden":
-        doc.taken_down_at = NOW
-    elif mutation == "rights":
-        doc.source.rights_level = 2
-    else:
-        doc.publish_date = None
-    session.commit()
-    assert submit(world).status_code == 422
-
-
-@pytest.mark.parametrize("day,quote", [("2026-09-20", "字" * 6), ("2029-09-20", "字" * 200)])
-def test_date_quote_boundaries_and_optional_time(world, day, quote):
-    assert submit(world, date=day, time=None, quote=quote).status_code == 201
-
-
-def test_leap_year_boundaries(world, session):
-    doc = world[3]
-    doc.publish_date = date(2024, 2, 29)
-    session.commit()
-    assert submit(world, date="2027-03-01").status_code == 422
-    assert submit(world, date="2027-02-28").status_code == 201
-
-
-@pytest.mark.parametrize("identity", ["anonymous", "unknown", "unagreed", "outdated"])
-def test_login_and_agreement(world, session, identity):
-    client, _, owner, doc = world
-    request_headers = headers(owner.openid)
-    if identity == "anonymous":
-        request_headers = {}
-    elif identity == "unknown":
-        request_headers = headers("unknown")
-    elif identity == "unagreed":
-        owner.agreement_at = None
-    else:
-        owner.agreement_version = "old"
-    session.commit()
-    assert client.post(
-        "/api/v1/me/deadline-clues", headers=request_headers, json=body(doc)
-    ).status_code == (401 if identity == "anonymous" else 403)
-
-
-@pytest.mark.parametrize("result", [False, "error", "http"])
-def test_safety_fail_closed(world, session, monkeypatch, result):
-    def check(*_):
-        if result == "error":
-            raise ValueError("private-content")
-        if result == "http":
-            raise httpx.ConnectError("private-content")
-        return False
-
-    monkeypatch.setattr(me, "check_feedback", check)
-    response = submit(world)
-    assert response.status_code == (422 if result is False else 503)
-    assert "private-content" not in response.text
-    assert session.scalar(select(func.count(DeadlineClue.id))) == 0
-
-
-def test_safety_called_and_sensitive_quote_masked(world, session, monkeypatch):
-    seen = []
-    monkeypatch.setattr(me, "check_feedback", lambda uid, text: seen.append((uid, text)) or True)
-    res = submit(world, quote="请于10月20日前联系13812345678提交材料。")
-    assert res.status_code == 201
-    assert seen == [(world[2].openid, res.json()["quote"])]
-    assert "13812345678" not in res.text
-
-
-@pytest.mark.parametrize("limit", ["duplicate", "user", "site", "approved"])
-def test_conflicts(world, session, limit):
-    client, _, owner, doc = world
-    if limit == "duplicate":
-        clue(session, owner, doc)
-        message = "你已经提交过这项线索，请等核对结果"
-    elif limit == "approved":
-        candidate(session, doc, status="approved")
-        message = "这份通知的截止日期已经核对过了"
-    else:
-        for i in range(20 if limit == "user" else 50):
-            other_doc = add_doc(session, number=100 + i)
-            other_owner = owner if limit == "user" else user(session, f"other-{i}")
-            clue(session, other_owner, other_doc)
-        message = (
-            "你已有 20 条待核对线索，请等核对结果"
-            if limit == "user"
-            else "线索暂时收满了，过几天再来"
-        )
-    response = submit(world)
-    assert response.status_code == 409 and response.json()["detail"] == message
-    can_submit = client.get(f"/api/v1/documents/{doc.id}").json()["can_submit_deadline_clue"]
-    assert can_submit == (limit in ("duplicate", "user"))
-
-
-def test_can_submit_kind_and_rewards(world, session):
-    client, settings, _, doc = world
-    settings.rewards_enabled = False
-    assert client.get(f"/api/v1/documents/{doc.id}").json()["can_submit_deadline_clue"] is False
-    settings.rewards_enabled = True
-    doc.kind_override = "政策"
-    session.commit()
-    assert client.get(f"/api/v1/documents/{doc.id}").json()["can_submit_deadline_clue"] is False
 
 
 def test_admin_build_pending_only_and_list(world, session):
@@ -375,13 +257,11 @@ def test_monthly_ten_and_kind_specific_reference(world, session):
 
 
 @pytest.mark.parametrize("switch", ["rewards_enabled", "advisor_enabled"])
-def test_disabled_submit_admin_review_keeps_clues(world, session, switch):
+def test_disabled_admin_review_keeps_clues(world, session, switch):
     client, settings, owner, doc = world
     submitted = clue(session, owner, doc)
     row = candidate(session, doc)
     setattr(settings, switch, False)
-    assert submit(world).status_code == 404
-    assert client.post("/api/v1/me/deadline-clues", content=b"bad-json").status_code == 404
     assert client.get("/api/admin/deadline-clues", headers=ADMIN).json() == {
         "enabled": False,
         "items": [],
@@ -434,72 +314,21 @@ def test_latest_fifty_and_delete_without_current_agreement(world, session):
     )
 
 
-def test_merged_document_no_duplicate_submission(world, session):
-    client, _, _, doc = world
-    duplicate = add_doc(session, number=2)
-    session.add(
-        DocumentMerge(duplicate_id=duplicate.id, canonical_id=doc.id, active=True, match_key="test")
-    )
-    session.commit()
-    assert submit(world, document_id=duplicate.id).json()["document_id"] == doc.id
-    assert submit(world).status_code == 409
-    candidate(session, duplicate, status="approved")
-    assert submit(world, kind="企业申报截止").json()["detail"] == "这份通知的截止日期已经核对过了"
-    assert (
-        client.get(f"/api/v1/documents/{duplicate.id}").json()["can_submit_deadline_clue"] is False
-    )
-
-
-def test_concurrent_submission_unique(world, session):
-    client, _, owner, doc = world
-
-    def send(_):
-        return client.post(
-            "/api/v1/me/deadline-clues", headers=headers(owner.openid), json=body(doc)
-        ).status_code
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        codes = list(pool.map(send, range(3)))
-    assert sorted(codes) == [201, 409, 409]
-    assert session.scalar(select(func.count(DeadlineClue.id))) == 1
-
-
 def test_long_quote_build_and_corrected_approved_date(world, session):
     client, _, owner, doc = world
     quote = "请于2026年10月21日前提交材料。" + "句" * (200 - len("请于2026年10月21日前提交材料。"))
-    first = submit(world, quote=quote).json()
+    first_id = clue(session, owner, doc, quote=quote, deadline_time=time(17, 0)).id
     matching = clue(session, user(session, "match"), doc, day=date(2026, 10, 21))
-    built = client.post(f"/api/admin/deadline-clues/{first['id']}/candidate", headers=ADMIN).json()
+    matching_id, matching_user = matching.id, matching.user_id
+    built = client.post(f"/api/admin/deadline-clues/{first_id}/candidate", headers=ADMIN).json()
     row = session.get(DocumentDeadline, built["deadline_id"])
     assert row.evidence == quote and len(row.evidence) == 200
     assert approve(client, row, date="2026-10-21").status_code == 200
     session.expire_all()
-    assert session.get(DeadlineClue, first["id"]).status == "rejected"
-    assert session.get(DeadlineClue, matching.id).status == "accepted"
-    assert session.scalar(select(PassReward.user_id)) == matching.user_id
-    assert owner.id != matching.user_id
-
-
-@pytest.mark.parametrize("capacity", ["site", "user"])
-def test_concurrent_capacity(world, session, capacity):
-    client, _, owner, _ = world
-    for i in range(49 if capacity == "site" else 19):
-        doc = add_doc(session, number=100 + i)
-        clue_owner = user(session, f"owner-{i}") if capacity == "site" else owner
-        clue(session, clue_owner, doc)
-    docs = [add_doc(session, number=300 + i) for i in range(3)]
-
-    def send(doc):
-        return client.post(
-            "/api/v1/me/deadline-clues", headers=headers(owner.openid), json=body(doc)
-        ).status_code
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        codes = list(pool.map(send, docs))
-    assert sorted(codes) == [201, 409, 409]
-    assert deadline_clues.pending_count(session, None if capacity == "site" else owner.id) == (
-        50 if capacity == "site" else 20
-    )
+    assert session.get(DeadlineClue, first_id).status == "rejected"
+    assert session.get(DeadlineClue, matching_id).status == "accepted"
+    assert session.scalar(select(PassReward.user_id)) == matching_user
+    assert owner.id != matching_user
 
 
 def test_concurrent_approvals_one_award(world, session):
@@ -547,10 +376,10 @@ def test_migration_user_candidate_down_up(world, session, db_engine):
 
     from youju.migrations import alembic_config
 
-    client, _, _, _ = world
-    submitted = submit(world).json()
+    client, _, owner, doc = world
+    submitted = clue(session, owner, doc)
     response = client.post(
-        f"/api/admin/deadline-clues/{submitted['id']}/candidate", headers=ADMIN
+        f"/api/admin/deadline-clues/{submitted.id}/candidate", headers=ADMIN
     ).json()
     deadline_id = response["deadline_id"]
     config = alembic_config(db_engine.url.render_as_string(hide_password=False))
@@ -567,13 +396,11 @@ def test_migration_user_candidate_down_up(world, session, db_engine):
 def test_rule_reextract_preserves_user_candidate(world, session):
     from youju.extract.service import extract_existing
 
-    client, _, _, _ = world
-    submitted = submit(
-        world, kind="材料报送截止", time=None, quote="纸质材料于2026年10月20日前报送至科技厅"
-    ).json()
-    built = client.post(
-        f"/api/admin/deadline-clues/{submitted['id']}/candidate", headers=ADMIN
-    ).json()
+    client, _, owner, doc = world
+    submitted = clue(
+        session, owner, doc, kind="材料报送截止", quote="纸质材料于2026年10月20日前报送至科技厅"
+    )
+    built = client.post(f"/api/admin/deadline-clues/{submitted.id}/candidate", headers=ADMIN).json()
     row = session.get(DocumentDeadline, built["deadline_id"])
     fingerprint, evidence = row.fingerprint, row.evidence
     extract_existing(session)
@@ -619,42 +446,6 @@ def test_merge_after_award_does_not_reaward(world, session):
     assert session.scalar(select(func.count(PassReward.id))) == 1
 
 
-@pytest.mark.parametrize("mutation", ["date", "hidden"])
-def test_document_changed_during_safety_check(world, session, monkeypatch, mutation):
-    doc = world[3]
-
-    def check(*_):
-        if mutation == "date":
-            doc.publish_date = date(2026, 10, 21)
-        else:
-            doc.taken_down_at = NOW
-        session.commit()
-        return True
-
-    monkeypatch.setattr(me, "check_feedback", check)
-    assert submit(world).status_code == 422
-    assert session.scalar(select(func.count(DeadlineClue.id))) == 0
-
-
-def test_api_submission_only_locks_writable_tables(world, db_engine):
-    from sqlalchemy import event
-
-    statements = []
-
-    def capture(conn, cursor, statement, params, ctx, many):
-        statements.append(statement.lower())
-
-    event.listen(db_engine, "before_cursor_execute", capture)
-    try:
-        assert submit(world).status_code == 201
-    finally:
-        event.remove(db_engine, "before_cursor_execute", capture)
-    assert any("app_keys" in sql and sql.startswith("insert") for sql in statements)
-    assert not any(
-        ("documents" in sql or "sources" in sql) and "for update" in sql for sql in statements
-    )
-
-
 @pytest.mark.parametrize(
     "state,kind,can_build",
     [
@@ -679,7 +470,8 @@ def test_candidate_blocking_is_kind_and_status_specific(world, session, state, k
         client.post(f"/api/admin/deadline-clues/{submitted.id}/reject", headers=ADMIN).status_code
         == 200
     )
-    assert deadline_clues.pending_count(session) == 0
+    pending = select(func.count(DeadlineClue.id)).where(DeadlineClue.status == "pending")
+    assert session.scalar(pending) == 0
 
 
 @pytest.mark.parametrize("status", ["approved", "rejected"])
@@ -734,19 +526,12 @@ def test_import_settles_clues_like_single_review(world, session, monkeypatch, st
         )
 
 
-def test_quote_expanded_by_redaction_returns_422(world, session):
-    segment = "，联系人：张三。"
-    quote = "字" * (200 - len(segment)) + segment
-    assert len(quote) == 200
-    assert len(v1.redact_sensitive(me._mask_feedback(quote))) > 200
-    response = submit(world, quote=quote)
-    assert response.status_code == 422 and "脱敏后" in response.json()["detail"]
-    assert session.scalar(select(func.count(DeadlineClue.id))) == 0
-
-
 def test_restricted_api_all_grants_and_switches(
     world, session, restricted_api_factory, monkeypatch
 ):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
     from youju import access_log, advisor_tasks
     from youju.api import app as app_module
     from youju.db import get_session
@@ -783,42 +568,59 @@ def test_restricted_api_all_grants_and_switches(
             ).status_code
             == 200
         )
-        submitted = client.post("/api/v1/me/deadline-clues", headers=identity, json=body(doc))
-        assert submitted.status_code == 201, submitted.text
+        # 以前留下的线索和使用记录（提交、埋点的接口已删，直接写库模拟）：受限账号照样能查看、删除、
+        # 导出和注销
+        pending = clue(session, owner, doc)
+        processed = clue(session, owner, doc, kind="材料报送截止", status="accepted")
+        session.add(Event(user_id=owner.id, name="search", props={}))
+        session.commit()
         items = client.get("/api/v1/me/deadline-clues", headers=identity)
-        assert items.status_code == 200 and items.json()["items"][0]["id"] == submitted.json()["id"]
-        clue_id = submitted.json()["id"]
-        assert (
-            client.delete(
-                f"/api/v1/me/deadline-clues/{clue_id}", headers=headers("owner")
-            ).status_code
-            == 404
-        )
-        assert (
-            client.delete(f"/api/v1/me/deadline-clues/{clue_id}", headers=identity).status_code
-            == 204
-        )
-        assert (
-            client.post("/api/v1/me/deadline-clues", headers=identity, json=body(doc)).status_code
-            == 201
-        )
+        assert items.status_code == 200
+        assert {row["id"] for row in items.json()["items"]} == {pending.id, processed.id}
+        url = f"/api/v1/me/deadline-clues/{pending.id}"
+        assert client.delete(url, headers=headers("owner")).status_code == 404
+        assert client.delete(url, headers=identity).status_code == 204
+        clue(session, owner, doc, kind="其他")
         for path in ("/api/v1/me/rewards", "/api/v1/me", "/api/v1/me/data"):
             result = client.get(path, headers=identity)
             assert result.status_code == 200, result.text
+        exported = client.get("/api/v1/me/data", headers=identity).json()
+        assert (exported["deadlineCluesTotal"], exported["eventsTotal"]) == (2, 1)
+        # 部署文件不再给 API 账号这几项权限：写使用记录、新增线索、占线索队列的锁都会被拒
+        writes = (
+            insert(Event).values(user_id=owner.id, name="search", props={}),
+            insert(DeadlineClue).values(
+                user_id=owner.id,
+                document_id=doc.id,
+                kind="其他",
+                date=date(2026, 10, 20),
+                quote="请于2026年10月20日前提交材料。",
+                status="pending",
+                submitted_at=NOW,
+            ),
+        )
+        for statement in writes:
+            with limited() as s, pytest.raises(DBAPIError):
+                s.execute(statement)
+        with limited() as s, pytest.raises(DBAPIError):
+            deadline_clues.lock_queue(s)
         assert client.delete("/api/v1/me", headers=identity).status_code == 204
         session.expire_all()
         assert session.scalar(select(User.id).where(User.openid == "limited-on")) is None
-        assert session.scalar(select(func.count(DeadlineClue.id))) == 0
+        # 待核对的删掉，处理过的保留、断开用户；使用记录随用户删除
+        assert session.scalars(select(DeadlineClue.id)).all() == [processed.id]
+        assert session.get(DeadlineClue, processed.id).user_id is None
+        assert session.scalar(select(func.count(Event.id))) == 0
         assert (
             session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id.is_(None)))
             == 1
         )
 
 
-def test_rebuild_rejected_user_candidate_reuses_fingerprint(world):
-    client = world[0]
-    submitted = submit(world).json()
-    url = f"/api/admin/deadline-clues/{submitted['id']}/candidate"
+def test_rebuild_rejected_user_candidate_reuses_fingerprint(world, session):
+    client, _, owner, doc = world
+    submitted = clue(session, owner, doc)
+    url = f"/api/admin/deadline-clues/{submitted.id}/candidate"
     first = client.post(url, headers=ADMIN).json()["deadline_id"]
     assert (
         client.post(
