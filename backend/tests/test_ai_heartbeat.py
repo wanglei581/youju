@@ -173,6 +173,37 @@ def test_api_refuses_ai_tasks_until_admin_is_ready(client, session, settings, do
     assert len(session.scalars(select(AdvisorTask)).all()) == 1
 
 
+def test_submission_refuses_ineligible_document_without_charging(client, session, doc):
+    doc.kind_override = "名单"
+    session.commit()
+    refused = submit(client, doc.id)
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "AI_NOT_ELIGIBLE"
+    assert refused.json()["detail"]["reason"] == "list"
+    assert session.scalar(select(AdvisorTask)) is None
+    assert session.scalar(select(AdvisorUsage.used_count)) is None
+
+
+def test_task_list_carries_error_code(client, session, doc):
+    user = session.scalar(select(User).where(User.openid == "internal"))
+    session.add(
+        AdvisorTask(
+            user_id=user.id,
+            kind="interpret",
+            status="failed",
+            input_json={"doc_id": doc.id},
+            row_count=0,
+            idempotency_key="k",
+            created_at=NOW,
+            error=service.AI_CAP_MESSAGE,
+            expires_at=NOW + timedelta(days=30),
+        )
+    )
+    session.commit()
+    items = client.get("/api/v1/advisor/tasks").json()["items"]
+    assert items[0]["errorCode"] == "AI_DAILY_CAP"
+
+
 def test_local_role_does_not_need_heartbeat(client, settings, doc):
     assert submit(client, doc.id).status_code == 202
     assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["available"] is True
@@ -265,8 +296,6 @@ def test_alerts_for_mismatch_and_refunds_at_most_hourly(session, monkeypatch):
     assert "设置不一致" in heartbeat.check_and_alert(session, admin, NOW)
     assert heartbeat.check_and_alert(session, admin, NOW + timedelta(minutes=30)) is None
     later = NOW + heartbeat.ALERT_EVERY
-    # api 的心跳太旧（超过 10 分钟）就不再拿来比
-    assert heartbeat.check_and_alert(session, admin, later) is None
     heartbeat.beat(session, make_settings(role="api"), "api", later)
     assert heartbeat.check_and_alert(session, admin, later, refunded=2).startswith(
         "admin 服务没开 AI，退回了 2 个"
@@ -274,12 +303,61 @@ def test_alerts_for_mismatch_and_refunds_at_most_hourly(session, monkeypatch):
     assert len(sent) == 2
 
 
-def test_advisor_run_writes_admin_heartbeat_and_alerts_refunds(
-    session, session_factory, settings, doc, monkeypatch
+def test_failed_send_is_retried_next_time(session, monkeypatch):
+    results = [None, False, True]
+    sent = []
+    monkeypatch.setattr(
+        "youju.alerts.send_alert", lambda text: sent.append(text) or results[len(sent) - 1]
+    )
+    admin = make_settings(role="admin")
+    heartbeat.beat(session, admin, "admin", NOW)
+    heartbeat.beat(session, make_settings(role="api", ai_advisor_daily_cap=300), "api", NOW)
+    # 没配机器人（None）、发送失败（False）都不记时间，下一分钟再试；发出去以后才开始算一小时
+    assert heartbeat.check_and_alert(session, admin, NOW) is None
+    assert heartbeat.check_and_alert(session, admin, NOW + timedelta(minutes=1)) is None
+    assert heartbeat.check_and_alert(session, admin, NOW + timedelta(minutes=2))
+    assert session.get(AIHeartbeat, "admin").alerted_at == NOW + timedelta(minutes=2)
+    assert len(sent) == 3
+
+
+def test_notice_when_api_heartbeat_missing_at_most_daily(session, monkeypatch):
+    sent = []
+    monkeypatch.setattr("youju.alerts.send_alert", lambda text: sent.append(text) or True)
+    # admin 不能处理 AI 任务时不提醒（首发版两边都关着）
+    heartbeat.beat(session, make_settings(role="admin", ai_advisor_enabled=False), "admin", NOW)
+    assert heartbeat.check_and_alert(session, make_settings(role="admin"), NOW) is None
+    admin = make_settings(role="admin")
+    heartbeat.beat(session, admin, "admin", NOW)
+    assert "AI 设置心跳权限" in heartbeat.check_and_alert(session, admin, NOW)
+    assert heartbeat.check_and_alert(session, admin, NOW + timedelta(hours=23)) is None
+    # api 心跳来了、而且新鲜：不再提醒
+    heartbeat.beat(session, make_settings(role="api"), "api", NOW + timedelta(days=1))
+    assert heartbeat.check_and_alert(session, admin, NOW + timedelta(days=1)) is None
+    # 超过 30 分钟没来，又过了一天：再提醒一次
+    assert "AI 设置心跳权限" in heartbeat.check_and_alert(
+        session, admin, NOW + timedelta(days=1, minutes=31)
+    )
+    assert len(sent) == 2
+
+
+def test_admin_without_ai_key_is_not_ready(session):
+    remote = make_settings(role="api")
+    heartbeat.beat(session, make_settings(role="admin", ai_api_key=None), "admin", NOW)
+    assert session.get(AIHeartbeat, "admin").ai_enabled is False
+    assert heartbeat.worker_ready(session, remote, NOW) is False
+
+
+def test_heartbeat_command_and_advisor_run_refund_alert(
+    session, session_factory, settings, doc, monkeypatch, capsys
 ):
     sent = []
     monkeypatch.setattr("youju.alerts.send_alert", lambda text: sent.append(text) or True)
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    settings.ai_advisor_enabled = False
+    assert cli.main(["ai-heartbeat"]) == 0
+    assert "admin 不能处理 AI 任务" in capsys.readouterr().out
+    session.expire_all()
+    assert session.get(AIHeartbeat, "admin").ai_enabled is False
     user = User(openid="internal", agreement_version="2026-10", agreement_at=NOW)
     session.add(user)
     session.flush()
@@ -297,11 +375,8 @@ def test_advisor_run_writes_admin_heartbeat_and_alerts_refunds(
         )
     )
     session.commit()
-    settings.ai_advisor_enabled = False
     assert cli.main(["advisor-run"]) == 0
     session.expire_all()
-    row = session.get(AIHeartbeat, "admin")
-    assert row is not None and row.ai_enabled is False
     task = session.scalar(select(AdvisorTask))
     assert task.status == "failed" and task.error == service.AI_OFF_MESSAGE
     assert len(sent) == 1 and "退回了 1 个" in sent[0]

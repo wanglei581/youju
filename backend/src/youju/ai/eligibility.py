@@ -13,10 +13,13 @@
   因为主条目没有自己的正文时用组里最长的那份（v1._reading_body）；
 - 还没算过的文件。
 
-不靠时间就发现不了的变化，由每天夜里的全量重算（refresh_all）兜底：
-- 来源的公开级别：应用里没有修改入口，只能直接改数据库，改完要跑一次
-  `youju ai-eligibility-rebuild`；
-- 合并关系被停用（active 改成 false，没有时间戳）。
+没有时间戳、靠上面发现不了的变化：
+- 撤回人工定的类型（kind_decided_at 被清空）；
+- 合并关系改了主条目或被删掉（reconcile_documents 不留时间）；
+- 来源的公开级别（应用里没有修改入口，只能直接改数据库，改完最好跑一次
+  `youju ai-eligibility-rebuild`）。
+这些靠"轮转"补上：每次另外重算计算时间最早的 ROLLING 份，6 万份大约 10 小时轮一遍；
+每天夜里再全量重算一次（refresh_all）。本机实测每份约 3 毫秒、2 次查询，6 万份约 3 分钟。
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ RECENT = timedelta(minutes=30)
 BATCH = 500
 # 一次最多补算这么多份还没算过的，免得刚上线第一次跑太久；剩下的下一次接着补，夜里全量也会算到
 MISSING_LIMIT = 2000
+# 每次另外重算计算时间最早的这么多份（见模块说明）
+ROLLING = 1000
 
 
 def compute(session: Session, doc_id: int) -> str | None:
@@ -114,8 +119,9 @@ def changed_since(session: Session, since: datetime) -> set[int]:
     return ids
 
 
-def missing(session: Session, limit: int = MISSING_LIMIT) -> list[int]:
-    """还没算过的文件，按编号从小到大，最多 limit 份。"""
+def missing(session: Session, limit: int | None = None) -> list[int]:
+    """还没算过的文件，按编号从小到大，最多 limit 份（默认 MISSING_LIMIT）。"""
+    limit = MISSING_LIMIT if limit is None else limit
     return list(
         session.scalars(
             select(Document.id)
@@ -126,9 +132,21 @@ def missing(session: Session, limit: int = MISSING_LIMIT) -> list[int]:
     )
 
 
+def oldest(session: Session, limit: int | None = None) -> list[int]:
+    """计算时间最早的 limit 份（轮转重算用，默认 ROLLING）。"""
+    limit = ROLLING if limit is None else limit
+    return list(
+        session.scalars(
+            select(AIEligibility.document_id)
+            .order_by(AIEligibility.computed_at, AIEligibility.document_id)
+            .limit(limit)
+        )
+    )
+
+
 def refresh_changed(session: Session, stamp: datetime) -> dict[str, int]:
     ids = changed_since(session, stamp - RECENT)
-    todo = ids | set(missing(session))
+    todo = ids | set(missing(session)) | set(oldest(session))
     return {"checked": len(todo), "changed": refresh(session, todo, stamp)}
 
 

@@ -965,6 +965,20 @@ def _cmd_ai_eligibility(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
+    """AI 设置心跳（D-075）：admin 每分钟写一行，api 只在这里说能处理、两边设置一致时才收 AI 任务；
+    两边设置对不上、api 心跳没来时提醒。单独一条定时任务，不和 advisor-run 抢锁。"""
+    from youju.ai import heartbeat
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        row = heartbeat.beat(session, settings, "admin", stamp)
+        heartbeat.check_and_alert(session, settings, stamp)
+        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+    return 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
     from youju.ai import heartbeat, interpret
@@ -972,12 +986,10 @@ def _cmd_advisor_run(_: argparse.Namespace) -> int:
     settings = get_settings()
     with session_factory()() as session:
         report = run_advisor_tasks(session)
-        # AI 设置心跳（D-075）：api 只在这里说能处理、两边设置一致时才收 AI 任务；
-        # 因为自己没开 AI 退回了任务、或两边设置对不上时提醒（每小时最多一次）
-        stamp = datetime.now(UTC)
-        heartbeat.beat(session, settings, "admin", stamp)
+        # 因为 admin 自己没开 AI 退回了排队的 AI 任务（用户看到失败）：提醒，每小时最多一次（D-075）
         refunded = 0 if interpret.worker_enabled(settings) else report.get("revoked", 0)
-        heartbeat.check_and_alert(session, settings, stamp, refunded=refunded)
+        if refunded:
+            heartbeat.check_and_alert(session, settings, datetime.now(UTC), refunded=refunded)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 
@@ -1541,6 +1553,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )
+    sub.add_parser(
+        "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
+    ).set_defaults(func=_cmd_ai_heartbeat)
     sub.add_parser(
         "ai-eligibility",
         help="重算最近 30 分钟有变化的文件能不能做 AI 解读（D-075，列表行的按钮用）",

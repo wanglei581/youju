@@ -196,6 +196,8 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
+        # D-075：AI 任务失败原因的代码（全站上限、AI 关了），小程序按代码写原因，不靠比对文字
+        "errorCode": ERROR_CODES.get(task.error) if task.kind in AI_KINDS and task.error else None,
         "usageSource": task.usage_source,
     }
     if include_result:

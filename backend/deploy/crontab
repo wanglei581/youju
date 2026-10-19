@@ -3,6 +3,8 @@
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
 # 顾问持久队列（YOUJU_ADVISOR_ENABLED=false 时命令直接跳过）
 * * * * *  /app/backend/deploy/job.sh advisor-run
+# AI 设置心跳（D-075）：api 只在 admin 能处理、两边设置一致时才收 AI 任务。单独一条，一批任务处理得久也不断
+* * * * *  /app/backend/deploy/job.sh ai-heartbeat
 # 每份文件能不能做 AI 解读（D-075，列表行的"AI 解读"按钮用）：每 10 分钟重算最近 30 分钟有变化的，
 # 每天夜里全部重算一次兜底（来源级别等没有时间戳的变化靠它）。和 AI 开没开无关，开关关着也照算
 */10 * * * *  /app/backend/deploy/job.sh ai-eligibility

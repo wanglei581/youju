@@ -178,21 +178,20 @@ def test_changed_since_covers_each_trigger(session, source):
     } <= changed
 
 
-def test_refresh_changed_fills_missing_then_only_recent(session, source, monkeypatch):
+def test_refresh_changed_fills_missing_recent_and_rolling(session, source, monkeypatch):
     first = make(session, source, 1)
     second = make(session, source, 2)
-    report = eligibility.refresh_changed(session, NOW)
-    assert report == {"checked": 2, "changed": 2}
-    # 再跑一次：没有新变化、也没有漏算的
+    assert eligibility.refresh_changed(session, NOW) == {"checked": 2, "changed": 2}
+    # 再跑一次：没有新变化，只有轮转重算（计算时间最早的 ROLLING 份），结果不变
     assert eligibility.refresh_changed(session, NOW + timedelta(minutes=10)) == {
-        "checked": 0,
+        "checked": 2,
         "changed": 0,
     }
     second.detail.fetched_at = NOW + timedelta(minutes=15)
     second.detail.body_text = "申报材料。" * 5000
     session.commit()
     report = eligibility.refresh_changed(session, NOW + timedelta(minutes=20))
-    assert report == {"checked": 1, "changed": 1}
+    assert report == {"checked": 2, "changed": 1}
     assert reasons(session) == {first.id: None, second.id: "too_long"}
     # 一次最多补算 MISSING_LIMIT 份没算过的
     monkeypatch.setattr(eligibility, "MISSING_LIMIT", 1)
@@ -202,13 +201,33 @@ def test_refresh_changed_fills_missing_then_only_recent(session, source, monkeyp
     assert fourth.id not in eligibility.missing(session, 1)
 
 
+def test_rolling_catches_changes_without_timestamps(session, source, monkeypatch):
+    """撤回人工类型会清空 kind_decided_at、合并关系被删不留时间：靠轮转补上（最早算的先重算）。"""
+    monkeypatch.setattr(eligibility, "ROLLING", 1)
+    undone = make(session, source, 1, kind="名单")
+    other = make(session, source, 2)
+    eligibility.refresh(session, [undone.id], NOW - timedelta(hours=3))
+    eligibility.refresh(session, [other.id], NOW - timedelta(hours=1))
+    assert reasons(session)[undone.id] == "list"
+    undone.kind_override = None  # 撤回：回到按标题判断（标题是申报通知）
+    undone.kind_decided_at = None
+    session.commit()
+    assert undone.id not in eligibility.changed_since(session, NOW - eligibility.RECENT)
+    assert eligibility.oldest(session) == [undone.id]
+    report = eligibility.refresh_changed(session, NOW)
+    assert report == {"checked": 1, "changed": 1}
+    assert reasons(session)[undone.id] is None
+    # 下一次轮到的是另一份
+    assert eligibility.oldest(session) == [other.id]
+
+
 def test_refresh_all_recomputes_everything(session, source):
     docs = [make(session, source, n) for n in range(1, 4)]
     assert eligibility.refresh_all(session, NOW) == {"checked": 3, "changed": 3}
-    # 来源级别只能直接改库，没有时间戳：全量重算才发现
+    # 来源级别只能直接改库，没有时间戳：按时间找不到，全量重算（和轮转）能发现
     session.get(Source, source.id).rights_level = 2
     session.commit()
-    assert eligibility.refresh_changed(session, NOW + timedelta(hours=1))["changed"] == 0
+    assert not eligibility.changed_since(session, NOW + timedelta(hours=1) - eligibility.RECENT)
     assert eligibility.refresh_all(session, NOW + timedelta(hours=1))["changed"] == 3
     assert set(reasons(session).values()) == {"source"}
     assert len(docs) == 3
@@ -304,11 +323,11 @@ def test_report_and_calendar_rows_carry_ai(client, session, source):
     assert report["unverifiedSoon"]["items"][0]["ai"]["interpret"] is True
     calendar = client.get("/api/v1/calendar", params={"limit": 200}).json()
     assert calendar["items"] and all(item["ai"]["interpret"] for item in calendar["items"])
-    # 已截止的不放按钮，不带 ai
-    assert calendar["past"] and all("ai" not in item for item in calendar["past"])
+    # 已截止的也带 ai（能不能解读不随截止变）；按钮放不放由小程序定
+    assert calendar["past"] and all(item["ai"]["interpret"] for item in calendar["past"])
     calendar = client.get("/api/v1/calendar", params={"limit": 200, "excerpts": 1}).json()
     assert all(item["ai"]["interpret"] for item in calendar["items"])
     assert calendar["unverifiedSoon"]["items"][0]["ai"]["interpret"] is True
-    assert all("ai" not in item for item in calendar["past"])
+    assert calendar["past"] and all(item["ai"]["interpret"] for item in calendar["past"])
     home = client.get("/api/v1/home", params={"excerpts": 1}).json()
     assert all(item["ai"]["interpret"] for item in home["dueSoon"])

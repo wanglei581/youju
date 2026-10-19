@@ -610,6 +610,8 @@ class AIEligibility(Base):
             "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_REASONS) + ")",
             name="ck_ai_eligibility_reason",
         ),
+        # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）
+        Index("ix_ai_eligibility_computed_at", "computed_at"),
     )
 
     document_id: Mapped[int] = mapped_column(
@@ -626,7 +628,8 @@ class AIHeartbeat(Base):
     - service=api：api 服务最多每 5 分钟写一次自己的设置指纹，给 admin 比对、发提醒。
 
     fingerprint 是总开关、开放范围、白名单、全站每天上限的哈希，不存白名单明文
-    （youju/ai/heartbeat.py）。alerted_at 是 admin 上次为设置问题发提醒的时间，每小时最多一次。"""
+    （youju/ai/heartbeat.py）。admin 那一行另记：alerted_at 上次为设置不一致、退回任务发提醒的时间
+    （每小时最多一次），notice_at 上次提醒"api 心跳没来"的时间（每天最多一次）。"""
 
     __tablename__ = "ai_heartbeat"
     __table_args__ = (
@@ -638,6 +641,7 @@ class AIHeartbeat(Base):
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     fingerprint: Mapped[str] = mapped_column(String(64))
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序

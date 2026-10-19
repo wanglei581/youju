@@ -2361,7 +2361,7 @@ def calendar(
         "total": len(upcoming),
         "items": _shown_with_ai(session, items(upcoming)[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        "past": items(past)[offset : offset + limit],
+        "past": _shown_with_ai(session, items(past)[offset : offset + limit], key="docId"),
         # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
         "verifiedTotal": verified_total(session),
     }
@@ -2479,8 +2479,8 @@ def _calendar_payload_excerpts(
         "total": len(upcoming),
         "items": _shown_with_ai(session, upcoming[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        # 已截止的不放"AI 解读"按钮（D-075），不加 ai
-        "past": past[offset : offset + limit],
+        # 已截止的也带 ai（能不能解读不随截止变）；按钮放不放由小程序定（D-075：已截止的不放）
+        "past": _shown_with_ai(session, past[offset : offset + limit], key="docId"),
         "verifiedTotal": verified_total(session),
         "unverifiedSoon": {
             "total": len(unverified),

@@ -311,8 +311,6 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     if task.kind in AI_KINDS:
         doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
         result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
-        # D-075：失败原因的代码，小程序按代码写原因（全站上限、AI 关了），不靠比对文字
-        result["errorCode"] = service.ERROR_CODES.get(task.error) if task.error else None
         if task.status == "queued":
             result.update(
                 service.queue_info(
@@ -484,6 +482,19 @@ def create_task(
         _upload_consent(user)
     stamp = _stamp()
     settings = get_settings()
+    if body.kind in AI_KINDS:
+        # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
+        try:
+            interpret.eligible_body(session, body.doc_id)
+        except interpret.InterpretRefusal as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "AI_NOT_ELIGIBLE",
+                    "reason": exc.code or "unavailable",
+                    "message": str(exc),
+                },
+            ) from None
     if body.kind in AI_KINDS and not heartbeat.worker_ready(session, settings, stamp):
         # D-075：admin 现在处理不了（AI 关着、心跳没来、两边设置对不上），不收任务、不扣次数
         raise HTTPException(

@@ -2,8 +2,8 @@
 
 - ai_eligibility：列表行上的"AI 解读"按钮读这张表，admin 的定时任务算好写入
   （youju ai-eligibility 每 10 分钟重算有变化的，ai-eligibility-rebuild 每天夜里全部重算）。
-- ai_heartbeat：admin 的后台任务每分钟写一行（service=admin），api 服务最多每 5 分钟写一行
-  （service=api）；指纹对不上时 api 不收 AI 任务，admin 发提醒。
+- ai_heartbeat：admin 每分钟跑 youju ai-heartbeat 写一行（service=admin），api 服务最多每 5 分钟写
+  一行（service=api）；指纹对不上时 api 不收 AI 任务，admin 发提醒。
 - document_details.fetched_at 加索引：每 10 分钟按它找最近重新抓过的正文。
 
 api 账号已有整个库的读权限，读这两张表不用另加授权。api 写自己那行心跳要执行
@@ -44,6 +44,7 @@ def upgrade() -> None:
         ),
         **OPTIONS,
     )
+    op.create_index("ix_ai_eligibility_computed_at", "ai_eligibility", ["computed_at"])
     op.create_table(
         "ai_heartbeat",
         sa.Column("service", sa.String(16), nullable=False),
@@ -51,6 +52,7 @@ def upgrade() -> None:
         sa.Column("ai_enabled", sa.Boolean(), nullable=False),
         sa.Column("fingerprint", sa.String(64), nullable=False),
         sa.Column("alerted_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("notice_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.PrimaryKeyConstraint("service"),
         sa.CheckConstraint("service IN ('admin', 'api')", name="ck_ai_heartbeat_service"),
         **OPTIONS,
