@@ -25,6 +25,11 @@ function saveUnsettled(orderId) {
 function clearUnsettled() {
   try { wx.removeStorageSync(UNSETTLED_KEY); } catch (e) { /* 忽略 */ }
 }
+// 没在卖（商品接口 404 或没有档位）时直接回首页，页面上不出现"暂未开放"之类的字样（D-074）：
+// 首发包带着这一页，从旧链接或分享直接打开时，审核人员和用户都只会回到首页
+function goHome() {
+  wx.switchTab({ url: '/pages/home/index' });
+}
 
 Page({
   // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
@@ -54,6 +59,7 @@ Page({
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const tiers = pay.normalizeProducts(res).map(pay.tierView);
+      if (!tiers.length) { this.setData({ loading: true, tiers: [], product: null, price: '' }); goHome(); return; }
       // 重新载入时保留用户选的那一档（按天数认），没有了就回到第一档
       const keep = this.data.product ? tiers.findIndex((tier) => tier.days === this.data.product.days) : -1;
       const selected = keep >= 0 ? keep : 0;
@@ -66,7 +72,8 @@ Page({
       }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
-      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.status === 404 ? '' : err.message });
+      if (err.status === 404) { this.setData({ loading: true, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: '' }); goHome(); return; }
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.message });
     });
   },
   // 选一档：付款中、已开通时不能换
