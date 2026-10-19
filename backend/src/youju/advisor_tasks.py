@@ -60,6 +60,10 @@ REFUSAL_CACHE = timedelta(days=1)
 AI_CAP_LOCK = "youju_ai_advisor_daily_cap"
 AI_CAP_LOCAL_LOCK = Lock()
 AI_CAP_MESSAGE = "今天的 AI 使用次数已满，请明天再试"
+# 任务排队时失去授权（AI 关了、移出白名单）退回次数时记的原因；接口据此给错误代码 AI_OFF
+AI_OFF_MESSAGE = "功能未开放"
+# 任务结果里的错误代码（D-075）：小程序按代码写原因，不靠比对文字
+ERROR_CODES = {AI_CAP_MESSAGE: "AI_DAILY_CAP", AI_OFF_MESSAGE: "AI_OFF"}
 
 
 class AdvisorBusy(Exception):
@@ -386,8 +390,8 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
     return count or 0
 
 
-def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> None:
-    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。"""
+def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> int:
+    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。"""
     tasks = session.scalars(
         select(AdvisorTask)
         .where(
@@ -404,9 +408,10 @@ def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetim
         .with_for_update(skip_locked=True)
     ).all()
     for task in tasks:
-        task.status, task.error, task.finished_at = "failed", "功能未开放", stamp
+        task.status, task.error, task.finished_at = "failed", AI_OFF_MESSAGE, stamp
         release_usage(session, task)
     session.commit()
+    return len(tasks)
 
 
 def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
@@ -786,7 +791,7 @@ def run_advisor_tasks(
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
-    _fail_revoked_interpret(session, settings, stamp)
+    revoked = _fail_revoked_interpret(session, settings, stamp)
     data_enabled = getattr(settings, "advisor_enabled", False)
     ai_enabled = interpret.worker_enabled(settings)
     data_allowed = AdvisorTask.kind.in_(("compare", "track"))
@@ -794,12 +799,12 @@ def run_advisor_tasks(
         interpret.worker_user_ids(settings)
     )
     if not data_enabled and not ai_enabled:
-        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
+        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "revoked": revoked}
     allowed = data_allowed if data_enabled else ai_allowed
     if data_enabled and ai_enabled:
         allowed = data_allowed | ai_allowed
     requeued = recover_stale(session, stamp, allowed)
-    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
+    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued, "revoked": revoked}
     claimed: set[int] = set()
     claim_lock = Lock()
 

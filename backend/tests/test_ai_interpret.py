@@ -802,7 +802,7 @@ def test_ai_workers_claim_once_and_isolate_failure(session, settings, doc, monke
     monkeypatch.setattr(service, "process_task", process)
     result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
     assert set(seen) == ids and len(seen) == 2
-    assert result == {"processed": 2, "done": 1, "failed": 1, "requeued": 0}
+    assert result == {"processed": 2, "done": 1, "failed": 1, "requeued": 0, "revoked": 0}
     assert {session.get(AdvisorTask, task_id).status for task_id in ids} == {"done", "failed"}
 
 
@@ -818,32 +818,42 @@ def test_live_worker_records_duration_and_call_day(session, settings, doc):
 
 def test_public_document_ai_flags_share_prepare_checks(client, session, settings, doc):
     url = f"/api/v1/documents/{doc.id}"
+    ok = {"interpret": True, "clause": True, "reason": None}
     # 白名单内测：不对所有人开放，但文件能不能做照样给（内测成员的入口靠它）
     settings.ai_advisor_audience = "whitelist"
-    assert client.get(url).json()["ai"] == {"open": False, "interpret": True, "clause": True}
+    assert client.get(url).json()["ai"] == {"open": False, **ok}
     settings.ai_advisor_audience = "all"
-    assert client.get(url).json()["ai"] == {"open": True, "interpret": True, "clause": True}
+    assert client.get(url).json()["ai"] == {"open": True, **ok}
     settings.role = "admin"
-    assert client.get(url, headers={"X-WX-SOURCE": "miniapp"}).json()["ai"] == {
-        "open": True,
-        "interpret": True,
-        "clause": True,
-    }
+    assert client.get(url, headers={"X-WX-SOURCE": "miniapp"}).json()["ai"] == {"open": True, **ok}
     settings.role = "api"
     assert client.get(url).json()["ai"]["interpret"] is True
     settings.role = "all"
     doc.kind_override = "名单"
     session.commit()
-    assert client.get(url).json()["ai"] == {"open": True, "interpret": False, "clause": False}
+    assert client.get(url).json()["ai"] == {
+        "open": True,
+        "interpret": False,
+        "clause": False,
+        "reason": "list",
+    }
+    doc.kind_override = "其他"
+    session.commit()
+    assert client.get(url).json()["ai"]["reason"] == "kind"
     doc.kind_override = "申报通知"
     doc.detail.body_text = " "
     session.commit()
     assert client.get(url).json()["ai"]["interpret"] is False
+    assert client.get(url).json()["ai"]["reason"] == "no_body"
     doc.detail.body_text = "申报材料。" * 5000
     session.commit()
     assert client.get(url).json()["ai"]["clause"] is False
+    assert client.get(url).json()["ai"]["reason"] == "too_long"
+    doc.detail.body_text = BODY
+    session.commit()
+    # D-075：能不能解读是文件本身的属性，总开关关着也照样给；给不给人用由能力接口另判
     settings.ai_advisor_enabled = False
-    assert client.get(url).json()["ai"] == {"open": False, "interpret": False, "clause": False}
+    assert client.get(url).json()["ai"] == {"open": False, **ok}
 
 
 def test_quota_idempotency_rollover_and_refunds(client, settings, session, doc, monkeypatch):

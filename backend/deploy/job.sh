@@ -8,7 +8,8 @@ log() { echo "[$(date '+%F %T')] $*" >> /proc/1/fd/1; }
 # 记账有独立超时；数据库不可用不延误任务，不把命令参数或输出写入摘要。
 # advisor-run、pay-run 每分钟一次，不记运行记录（情况看工具任务表、支付订单和管理台支付待办），
 # 免得每分钟多起两次程序、每天多 1440 行；失败仍照常提醒。pay-reconcile 每天一次，照常记账。
-if [ "$name" = "advisor-run" ] || [ "$name" = "pay-run" ]; then
+# ai-eligibility 每 10 分钟一次，同样不记；夜里的 ai-eligibility-rebuild 照常记账。
+if [ "$name" = "advisor-run" ] || [ "$name" = "pay-run" ] || [ "$name" = "ai-eligibility" ]; then
   run_id=""
 else
   run_id=$(timeout 20s youju job-start "$name" 2>> /proc/1/fd/1) || run_id=""
