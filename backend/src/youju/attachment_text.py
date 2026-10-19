@@ -139,11 +139,13 @@ _ACCOUNT_WORDS = (
 )  # fmt: skip
 _ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
 _LABEL_END = r"[\s:：]*(?:[为是][\s:：]*)?"
-# 开户行的名字：2–30 个字（可以有英文字母，如"ICBC杭州分行"），以银行、支行、农商行、信用联社……
-# 结尾，后面可以带括号（"（营业部）"）、冒号、"为/是"（"……杭州分行：1202…"）
+# 开户行的名字：以银行、支行、农商行、信用联社……结尾（前面最多 30 个字，可以有英文字母，如
+# "ICBC杭州分行"），或者是"工行、建行"这样的简称；后面可以带括号（"（营业部）"）、冒号、"为/是"
+# （"……杭州分行：1202…"）
 _BANK = (
-    r"[\u4e00-\u9fffA-Za-z（）()]{2,30}?"
+    r"(?:[\u4e00-\u9fffA-Za-z（）()]{0,30}?"
     r"(?:银行|支行|分行|营业部|信用社|合作社|农商行|农信社|联社|储蓄所)"
+    r"|[\u4e00-\u9fffA-Za-z]{0,20}?(?:工行|农行|中行|建行|交行|招行|邮储))"
     r"(?:[(（][^()（）]{1,12}[)）])?[\s,，:：]*(?:[为是][\s:：]*)?"
 )
 _NOTE = r"(?:\s*[(（][^()（）]{1,20}[)）])?"  # 标签后面括号里的说明
@@ -177,6 +179,19 @@ _ACCOUNT_TYPE = re.compile(
     + "|".join(r"\s*".join(w) for w in ("基本", "一般", "专用", "临时", "零余额"))
     + r")\s*[账帐]\s*户(?:\s*[(（][^()（）]{1,12}[)）])?[\s*＊:：]*$"
 )
+# 表格里当"身份证号""手机"标签的格（前面最多 6 个字，如"法人身份证号""联系人电话"；后面可以带
+# 括号说明、星号、冒号）：这一列往下、同一行右边那格按身份证号、手机号的标签认（PDF 窄列折行写成
+# "1101011990030 71234"也能认）
+_ID_CELL = re.compile(
+    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
+    r"(?:身\s*份\s*证(?:\s*号(?:\s*码)?)?|证\s*件\s*号(?:\s*码)?)"
+    r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
+)
+_PHONE_CELL = re.compile(
+    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
+    r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号\s*码)?|联\s*系\s*方\s*式)"
+    r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
+)
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
 # 卡号，或者序号（1–3 位）、日期（"2025 10 10""20251010"）、座机号码（"0571 87654321"），才遮
 # 号码那几段（"1 138 1234 5678"、身份证号和手机号两列挨着）；分不完的整串不遮，免得把金额、编号
@@ -204,6 +219,15 @@ _DECIMAL = re.compile(r"((?<![\d.])\d+\.\d+(?![\d.]))")
 
 def _account_cell(text: str) -> bool:
     return bool(_ACCOUNT_CELL.match(text)) and not _ACCOUNT_TYPE.search(text)
+
+
+def _cell_label(text: str) -> str | None:
+    """表格里这一格是不是标签：账号（_account_cell）、身份证号、手机（_ID_CELL、_PHONE_CELL）。"""
+    if _account_cell(text):
+        return "account"
+    if _ID_CELL.match(text):
+        return "id"
+    return "phone" if _PHONE_CELL.match(text) else None
 
 
 def _is_card(values: list[str]) -> bool:
@@ -283,14 +307,19 @@ def _labeled(
     plain: str, groups: list[tuple[int, int]], values: list[str], label: str, start: int
 ) -> list[tuple[int, str]]:
     """写了标签的：从第 start 组起到第几组能认成号码（_labeled_label），[(到第几组前, 遮成什么)]，
-    从短到长。不往后接的：后面紧跟"年、月、元"等的一组（"账号：1234567890 2025年11月5日前"）、
-    日期（"账号：1202… 2025-10-10"）；第一组连写已经 12 位以上的，后面的组都不接
-    （"1202… 1500"）。"""
+    从短到长。后面紧跟"年、月、元"等的一组不接（"账号：1234567890 2025年11月5日前"）。账号还不接：
+    日期（"账号：1202… 2025-10-10"）；第一组连写已经 12 位以上、接上以后超过 22 位的（"1202…568
+    1500"；PDF 格子里折成两行的"1202021309001 234568"照样接上）。"""
     out = []
     for j in range(start, len(groups)):
-        if j > start and (len(values[start]) >= 12 or _date_at(values, j)):
+        total = sum(len(v) for v in values[start : j + 1])
+        if total > 30:
             break
-        if sum(len(v) for v in values[start : j + 1]) > 30:
+        if (
+            j > start
+            and label == "account"
+            and (_date_at(values, j) or (len(values[start]) >= 12 and total > 22))
+        ):
             break
         after = plain[groups[j][1] : groups[j][1] + 3].lstrip(" ")[:1]
         if j > start and after and after in _UNITS:
@@ -357,11 +386,11 @@ def _only_dates(values: list[str]) -> bool:
     return len(values) % 3 == 0 and all(_ymd(*values[i : i + 3]) for i in range(0, len(values), 3))
 
 
-def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
+def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
     """plain 里要遮的号码：[(开始, 结束, 遮成什么)]。一串一串地看（组和组之间只隔一个空格、横线或
     换行）：
-    - 前面写了"账号""手机""身份证"这类标签（_LABELS），或 account=True（表格里这一列上面、左边
-      那格写着"账号"）：按标签认，怎么分组都行（_labeled）；
+    - 前面写了"账号""手机""身份证"这类标签（_LABELS），或 column 给了（表格里这一列上面、左边那格
+      写着"账号""身份证号""手机"）：按标签认，怎么分组都行（_labeled）；
     - 没写标签的：整串能分成号码和序号、日期、座机（_split）才遮号码那几段；前面紧挨着"合计、
       预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号；
     - 整串是日期（"2018-05-20—2026-10-09""20180520-20261009"）的，哪一段都不当号码。"""
@@ -374,8 +403,7 @@ def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
         if _only_dates(values):
             continue
         before = plain[max(0, run.start() - _BEFORE) : run.start()]
-        label = "account" if account else None
-        label = label or next((k for k, p in _LABELS.items() if p.search(before)), None)
+        label = column or next((k for k, p in _LABELS.items() if p.search(before)), None)
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
         amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
         spans += [
@@ -396,19 +424,19 @@ def _replace(text: str, spans: list[tuple[int, int, str]]) -> str:
     return "".join(out)
 
 
-def mask(text: str, *, account: bool = False) -> str:
+def mask(text: str, *, column: str | None = None) -> str:
     """遮掉身份证号、手机号、银行账号（还有正文规则一并遮的联系人、邮箱、座机）。
 
     1. 先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉）；
-    2. 再遮分开写的号码（_number_spans）：写了"账号""手机""身份证"这类标签的（account=True：
-       表格里这一列上面、左边那格写着"账号"）怎么分组都认；没写的整串能分成常见分法的号码和
+    2. 再遮分开写的号码（_number_spans）：写了"账号""手机""身份证"这类标签的（column：表格里
+       这一列上面、左边那格写着的标签，"account""id""phone"）怎么分组都认；没写的整串能分成常见分法的号码和
        序号、日期、座机才遮（免得把一串金额、编号拼成号码）；
     3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；小数原样
        留着，不交给它（"13812345678.50 元"小数点前面的 11 位会被它当成手机号）；
     4. 再遮标签字隔开写的"联 系 人："。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
     text = _EMAIL.sub("[邮箱已脱敏]", text)
-    text = _replace(text, _number_spans(text.translate(_HALF), account))
+    text = _replace(text, _number_spans(text.translate(_HALF), column))
     parts = _DECIMAL.split(text)  # 单数位是小数
     text = "".join(p if i % 2 else body_rules.redact_sensitive(p) for i, p in enumerate(parts))
     return _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
@@ -587,19 +615,19 @@ class _Builder:
         *,
         headers: dict[int, str] | None = None,
         repeated: bool = False,
-        accounts: frozenset[int] = frozenset(),
-    ) -> tuple[dict[int, str], str, frozenset[int]]:
+        columns: dict[int, str] | None = None,
+    ) -> tuple[dict[int, str], str, dict[int, str]]:
         """一张表：先认表头行（_header_rows），表头行记成 head，表头下面各行的每一格记下所在列的
         表头（表头上面的表名、填写行不记）。PDF 跨页的续表：headers 给了就不再认表头，按它记；
-        repeated：续表第一行是每页重复的表头，记成 head；accounts：上一页认出的账号列。
-        返回 (表头, 表头行的文字, 账号列)，续表接着用。
+        repeated：续表第一行是每页重复的表头，记成 head；columns：上一页认出的标签列。
+        返回 (表头, 表头行的文字, 标签列)，续表接着用。
 
-        账号列不靠认出表头：哪一行有一格是"账号""开户银行及账号""银行账户"这类标签
-        （_account_cell；跨三列以上的表名不算），这一列以下各行的长数字都当账号遮；同一行左边那格
-        是这类标签的也一样。"""
+        标签列不靠认出表头：哪一行有一格是"账号""开户银行及账号""身份证号""联系电话"这类标签
+        （_cell_label；跨三列以上的表名不算），这一列以下各格的号码都按这个标签认（账号不过 Luhn、
+        折行写开的号码也遮）；同一行左边那格是这类标签的也一样。"""
         rows = [r for r in rows if any(clean(c.text) for c in r.cells)]
         if not rows:
-            return headers or {}, "", accounts
+            return headers or {}, "", columns or {}
         if headers is not None:
             head = {0} if repeated else set()
             first = len(head)  # 续表：表头行（重复的那一行）以下都记表头
@@ -614,12 +642,13 @@ class _Builder:
                     for col in range(cell.col, cell.col + max(cell.span, 1)):
                         headers[col] = f"{headers[col]}/{text}" if col in headers else text
             first = max(head) + 1 if head else len(rows)
-        account_from = dict.fromkeys(accounts, -1)  # 这一列从第几行以下是账号
+        # 这一列从第几行以下按什么标签认
+        label_from = {col: (-1, kind) for col, kind in (columns or {}).items()}
         for index, row in enumerate(rows):
             for cell in row.cells:
-                if cell.span < 3 and _account_cell(clean(cell.text)):
-                    for col in range(cell.col, cell.col + max(cell.span, 1)):
-                        account_from.setdefault(col, index)
+                kind = _cell_label(clean(cell.text)) if cell.span < 3 else None
+                for col in range(cell.col, cell.col + max(cell.span, 1)) if kind else ():
+                    label_from.setdefault(col, (index, kind))
         head_text = ""
         for i, row in enumerate(rows):
             cells, changed, left = [], False, ""
@@ -628,8 +657,8 @@ class _Builder:
                 if not text:
                     continue
                 header = headers.get(cell.col) if i >= first else None
-                account = i > account_from.get(cell.col, len(rows)) or _account_cell(left)
-                masked = mask(text, account=account)
+                since, kind = label_from.get(cell.col, (len(rows), None))
+                masked = mask(text, column=kind if i > since else _cell_label(left))
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
                 if header:
@@ -642,7 +671,7 @@ class _Builder:
             if i in head:
                 head_text = row_text
             self._add("head" if i in head else "row", row_text, row.loc, cells)
-        return headers, head_text, frozenset(account_from)
+        return headers, head_text, {col: kind for col, (_since, kind) in label_from.items()}
 
 
 _NUMBER = re.compile(r"[\d.,%\s\-]+")
@@ -1321,7 +1350,7 @@ def _pdf(data: bytes) -> list:
     texts = [value for kind, value, _ in items if kind == "line"]
     width = line_width("\n".join(texts))
     tables = 0
-    last: dict | None = None  # 上一张表：竖线位置、表号、行数、表头、账号列
+    last: dict | None = None  # 上一张表：竖线位置、表号、行数、表头、标签列
     current, current_page, physical = "", None, ""
     for index, (kind, value, number) in enumerate(items):
         if kind == "table":
@@ -1350,7 +1379,7 @@ def _pdf(data: bytes) -> list:
                     "rows": 0,
                     "headers": None,
                     "head_text": "",
-                    "accounts": frozenset(),
+                    "columns": {},
                 }
             for row in value:
                 row.loc = {
@@ -1359,13 +1388,13 @@ def _pdf(data: bytes) -> list:
                     "row": last["rows"] + row.loc["row"],
                 }
             last["rows"] += len(value)
-            headers, head_text, accounts = builder.table(
+            headers, head_text, columns = builder.table(
                 value,
                 headers=last["headers"] if follows else None,
                 repeated=repeated,
-                accounts=last["accounts"],
+                columns=last["columns"],
             )
-            last["headers"], last["accounts"] = headers, accounts
+            last["headers"], last["columns"] = headers, columns
             last["head_text"] = last["head_text"] or head_text
             continue
         if current and layout_wrapped(physical, value, width):

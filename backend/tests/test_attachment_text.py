@@ -1142,7 +1142,51 @@ def test_mask_bank_names_and_labels_do_not_swallow_neighbours() -> None:
         f"{account} 1500 3000": "[银行账号已脱敏] 1500 3000",
         "3305 0161 6135 0000 0123": "[银行账号已脱敏]",  # 四位一组的照样接起来
     }.items():
-        assert at.mask(raw, account=True) == masked, raw
+        assert at.mask(raw, column="account") == masked, raw
+
+
+def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
+    # PDF 格子里折成两行的账号（两行用空格接起来）照样接上；写了"身份证号"的怎么分组都认
+    for raw in ("1202021309001 234568", "120202130900 1234568"):
+        assert at.mask(raw, column="account") == "[银行账号已脱敏]", raw
+    for raw in (
+        "身份证号：110101 1990 03 07 1234",
+        "身份证号：110101-1990-03-07-1234",
+        "身份证号：1101 01 19900307 1234",
+        "身份证号：11010119900307 1234",
+    ):
+        assert at.mask(raw) == "身份证号：[身份证号已脱敏]", raw
+    # 开户行写简称
+    for raw in (
+        "开户行：建行 33050161613500000123",
+        "开户行及账号：工行 1202021309001234568",
+        "账号：中行 1202021309001234568",
+    ):
+        assert at.mask(raw).endswith(" [银行账号已脱敏]"), raw
+    # 表格里身份证号、手机号的列（窄列折行写开）和左边那格写着"身份证号"的
+    for label, kind in (("法人身份证号", "id"), ("证件号码", "id"), ("联系人电话", "phone")):
+        assert at._cell_label(label) == kind, label
+    assert at._cell_label("证件类型") is None
+    builder = at._Builder()
+    builder.table(
+        [
+            _row("姓名", "身份证号", "手机号码"),
+            _row("张三", "1101011990030 71234", "1381234 5678"),
+        ]
+    )
+    builder.table(  # 名目加内容的两列表：标签在左边那格
+        [
+            _row("姓名", "张三"),
+            _row("身份证号", "1101011990030 71234"),
+            _row("手机", "1381234 5678"),
+        ]
+    )
+    assert [x.text for x in builder.segments[1:]] == [
+        "张三 | [身份证号已脱敏] | [手机号已脱敏]",
+        "姓名 | 张三",
+        "身份证号 | [身份证号已脱敏]",
+        "手机 | [手机号已脱敏]",
+    ]
 
 
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
