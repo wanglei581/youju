@@ -46,10 +46,35 @@ def _finish_ai(client, task: str) -> bool:
 
 
 def _cmd_db_upgrade(_: argparse.Namespace) -> int:
+    from youju.alerts import send_alert
     from youju.migrations import upgrade
 
-    upgrade()
-    print("数据库已迁移到最新结构")
+    ahead = upgrade()
+    if ahead is None:
+        print("数据库已迁移到最新结构")
+        return 0
+    # 库比代码新：不迁移、照常启动（回退的 admin 不能因此起不来），提醒一声；提醒本身出任何错
+    # 都不能让这条命令失败（启动脚本 set -e，失败就起不来了）
+    message = (
+        f"启动时发现库里的迁移版本 {'、'.join(ahead.unknown)} 比这版代码新"
+        f"（这版代码最新是 {'、'.join(ahead.code_heads) or '无'}），没有迁移，照常启动。"
+        "刚回退过就不用管；当时不是在回退，就是发错了版本，要立即停下来查。"
+        + (
+            f"库里另有这版代码认识的迁移版本 {'、'.join(ahead.known)}，也没有补迁移。"
+            if ahead.known
+            else ""
+        )
+        + "删表删列的迁移回退前要先降库，见《发版与回退》"
+    )
+    log.warning("%s", message)
+    try:
+        sent = send_alert(message)
+    except Exception as exc:  # noqa: BLE001 - 提醒发不出去不能拦住启动；只记类型
+        log.warning("库比代码新的提醒没发出去：%s", type(exc).__name__)
+    else:
+        if sent is False:
+            log.warning("库比代码新的提醒没发出去")
+    print(f"数据库比代码新（{'、'.join(ahead.unknown)}），没有迁移")
     return 0
 
 
