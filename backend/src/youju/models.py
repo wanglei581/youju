@@ -362,6 +362,8 @@ class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 
     __tablename__ = "document_details"
+    # AI 解读可用性每 10 分钟按抓取时间找最近有变化的正文（D-075，youju/ai/eligibility.py）
+    __table_args__ = (Index("ix_document_details_fetched_at", "fetched_at"),)
 
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
@@ -589,6 +591,60 @@ class AIUsage(Base):
     errors: Mapped[int] = mapped_column(Integer, default=0)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py
+AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long")
+
+
+class AIEligibility(Base):
+    """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
+
+    reason 为空表示能解读，否则是 AI_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。
+    能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
+
+    __tablename__ = "ai_eligibility"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_REASONS) + ")",
+            name="ck_ai_eligibility_reason",
+        ),
+        # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）
+        Index("ix_ai_eligibility_computed_at", "computed_at"),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(16))
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIHeartbeat(Base):
+    """AI 设置心跳（D-075）：两个服务各一行。
+
+    - service=admin：admin 的后台任务每分钟写一次，写明它这边能不能处理 AI 任务；
+    - service=api：api 服务最多每 5 分钟写一次自己的设置指纹，给 admin 比对、发提醒。
+
+    fingerprint 是总开关、开放范围、白名单、全站每天上限的哈希，不存白名单明文
+    （youju/ai/heartbeat.py）。admin 那一行另记：alerted_at 上次为设置不一致、admin 处理不了、
+    退回任务发提醒的时间（每小时最多一次）；notice_at 上次提醒"api 心跳没来"的时间（每天最多
+    一次）；refunds_pending 因为 admin 处理不了（没开 AI 或缺密钥）退回、还没报出去的任务个数
+    （advisor-run 加，提醒发出去后减）。"""
+
+    __tablename__ = "ai_heartbeat"
+    __table_args__ = (
+        CheckConstraint("service IN ('admin', 'api')", name="ck_ai_heartbeat_service"),
+    )
+
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    beat_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序

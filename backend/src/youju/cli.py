@@ -974,9 +974,49 @@ def _cmd_advisor_orphans(args: argparse.Namespace) -> int:
     return 1 if report.failed or report.blocked else 0
 
 
+def _cmd_ai_eligibility(args: argparse.Namespace) -> int:
+    """每份文件能不能做 AI 解读（D-075），存进 ai_eligibility 给列表行用。默认只重算最近 30 分钟
+    有变化的和还没算过的（admin 每 10 分钟跑）；--all（命令 ai-eligibility-rebuild）全部重算
+    （每天夜里跑；手动改过来源级别后也跑一次）。和 AI 开没开无关，开关关着也照算。"""
+    from youju.ai import eligibility
+
+    full = getattr(args, "all", False)
+    wait = eligibility.FULL_WAIT if full else 0
+    # 同一时间只让一个重算写：增量碰上就跳过这次；全量等不到算失败，job.sh 会提醒
+    with session_factory()() as session, eligibility.writer_lock(session, wait) as got:
+        if not got:
+            if full:
+                print("AI 解读可用性：另一个重算一直没跑完，这次全量没算")
+                return 1
+            print("AI 解读可用性：另一个重算还在跑，这次跳过")
+            return 0
+        stamp = datetime.now(UTC)
+        if full:
+            report = eligibility.refresh_all(session, stamp)
+        else:
+            report = eligibility.refresh_changed(session, stamp)
+    print(f"AI 解读可用性：重算 {report['checked']} 份，结果变了 {report['changed']} 份")
+    return 0
+
+
+def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
+    """AI 设置心跳（D-075）：admin 每分钟写一行，api 只在这里说能处理、两边设置一致时才收 AI 任务；
+    两边设置对不上、api 心跳没来时提醒。单独一条定时任务，不和 advisor-run 抢锁。"""
+    from youju.ai import heartbeat
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        row = heartbeat.beat(session, settings, "admin", stamp)
+        heartbeat.check_and_alert(session, settings, stamp)
+        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+    return 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
     with session_factory()() as session:
         report = run_advisor_tasks(session)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
@@ -1580,6 +1620,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )
+    sub.add_parser(
+        "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
+    ).set_defaults(func=_cmd_ai_heartbeat)
+    sub.add_parser(
+        "ai-eligibility",
+        help="重算最近 30 分钟有变化的文件能不能做 AI 解读（D-075，列表行的按钮用）",
+    ).set_defaults(func=_cmd_ai_eligibility, all=False)
+    sub.add_parser(
+        "ai-eligibility-rebuild",
+        help="全部文件重算能不能做 AI 解读（每天夜里；手动改过来源级别后也跑一次）",
+    ).set_defaults(func=_cmd_ai_eligibility, all=True)
     p = sub.add_parser(
         "cache-attachments",
         help="下载申报通知近 180 天、政策近 90 天的附件存到对象存储，供小程序直接打开；"

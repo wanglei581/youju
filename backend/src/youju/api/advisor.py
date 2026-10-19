@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, defer
 from youju import advisor_tasks as service
 from youju import boost, payments
 from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
-from youju.ai import interpret
+from youju.ai import heartbeat, interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
@@ -370,6 +370,27 @@ def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) ->
     return task
 
 
+def _site_full(session: Session, settings, day) -> bool:
+    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径。"""
+    used = max(service.global_ai_usage(session, day), service.global_ai_calls(session, day))
+    return used >= settings.ai_advisor_daily_cap
+
+
+@router.get("/mode")
+def mode(session: SessionDep) -> dict:
+    """AI 现在对不对所有人开放（D-075，不需要身份）：底栏第 5 格、列表上的"AI 解读"按钮据此决定
+    给不给所有人看。open 只在总开关开、开放范围是全员时为真；白名单阶段为假，白名单里的人由
+    能力接口另外判断。available 是后台现在能不能处理（api 上看 admin 的心跳）。"""
+    settings = get_settings()
+    stamp = _stamp()
+    heartbeat.note_api(session, settings, stamp)
+    is_open = bool(settings.ai_advisor_enabled) and settings.ai_advisor_audience == "all"
+    return {
+        "open": is_open,
+        "available": is_open and heartbeat.worker_ready(session, settings, stamp),
+    }
+
+
 @router.get("/capabilities")
 def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
@@ -377,6 +398,8 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     counts = service.usage_counts(session, user.id, day)
     data_enabled = settings.advisor_enabled
     ai_enabled = interpret.enabled(settings, user)
+    stamp = _stamp()
+    heartbeat.note_api(session, settings, stamp)
     return {
         "data_tools": {
             "enabled": data_enabled,
@@ -393,6 +416,10 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
             "features": list(AI_KINDS),
             "disclosure": interpret.disclosure(settings),
             "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
+            # D-075：后台能不能处理（api 上看 admin 的心跳和设置指纹）、全站今天还能不能用。
+            # 两项为假时小程序把按钮变灰、写原因，不收任务
+            "available": heartbeat.worker_ready(session, settings, stamp),
+            "siteFull": _site_full(session, settings, day),
         }
         if ai_enabled
         else {
@@ -455,6 +482,25 @@ def create_task(
         _upload_consent(user)
     stamp = _stamp()
     settings = get_settings()
+    if body.kind in AI_KINDS:
+        # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
+        try:
+            interpret.eligible_body(session, body.doc_id)
+        except interpret.InterpretRefusal as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "AI_NOT_ELIGIBLE",
+                    "reason": exc.code or "unavailable",
+                    "message": str(exc),
+                },
+            ) from None
+    if body.kind in AI_KINDS and not heartbeat.worker_ready(session, settings, stamp):
+        # D-075：admin 现在处理不了（AI 关着、心跳没来、两边设置对不上），不收任务、不扣次数
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "AI_UNAVAILABLE", "message": heartbeat.UNAVAILABLE},
+        )
     day = service.usage_day(stamp)
     data_kind = body.kind not in AI_KINDS
     ticket = payments.current_pass(session, user.id, stamp, lock=True) if data_kind else None
