@@ -261,7 +261,7 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
     [{ ...eligible, ai: null }, OPEN],
     [{ ...eligible, ai: { interpret: false, clause: false, reason: 'list' } }, OPEN],
     [{ ...eligible, ai: { interpret: 'true' } }, OPEN],
-    [{ ...eligible, hidden: true }, OPEN],
+    [{ ...eligible, selecting: true }, OPEN],
     [{ ...eligible, docId: '' }, OPEN],
     [eligible, { visible: true, confirmed: false, available: true }],
     [eligible, { visible: true, confirmed: true, available: false }],
@@ -274,7 +274,7 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
   }
   // 列表行：按钮放在"复制原文链接"后面；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
   const rowWxml = read('components/doc-row/index.wxml');
-  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" hidden="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
+  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
   assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('复制原文链接'));
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': { copyLink() {} }, '../../utils/repost.js': require('../utils/repost.js') });
   row.data.doc = { id: '42', title: '通知', kind: '申报通知', issuer: '山东省科学技术厅', date: '2026-10-16', ai: { interpret: true } };
@@ -372,7 +372,8 @@ test('搜索"只看能 AI 解读的"：从 AI 首页带 ai=1 进来只管这一�
 function hint(doc, state) {
   const access = control(state); const events = [];
   const view = load('components/ai-hint/index.js', { '../../utils/ai-access.js': access });
-  view.properties.doc = doc; view.triggerEvent = (name) => events.push(name);
+  if (doc) Object.assign(view.properties, { docId: doc.id, docTitle: doc.title, issuer: doc.issuer, date: doc.date, ai: doc.ai });
+  view.triggerEvent = (name) => events.push(name);
   view.lifetimes.attached.call(view);
   return { view, access, events, text: () => textOf(render('components/ai-hint/index.wxml', view.data)).trim() };
 }
@@ -381,7 +382,7 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
   const doc = { id: '42', title: '通知', issuer: '科技厅', date: '2026-10-16', ai: { interpret: true, clause: true, reason: null } };
   const shown = hint(doc, OPEN);
   assert.equal(shown.text(), '这份通知可以 AI 解读 ↓');
-  assert.equal(shown.access.stored.doc.id, '42');
+  assert.deepEqual(plain(shown.access.stored.doc), { id: '42', title: '通知', issuer: '科技厅', date: '2026-10-16' }, '只记这几项');
   shown.view.jump(); assert.deepEqual(shown.events, ['jump']);
   shown.access.set(CLOSED); assert.equal(shown.text(), '');
   for (const [value, state] of [[{ ...doc, ai: { interpret: false, reason: 'list' } }, OPEN], [{ ...doc, ai: null }, OPEN], [doc, { visible: true, confirmed: false, available: true }], [doc, CLOSED], [null, OPEN]]) {
@@ -390,7 +391,7 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
     other.view.jump(); assert.deepEqual(other.events, []);
   }
   const wxml = read('pages/detail/index.wxml');
-  assert.match(wxml, /<view class="pub">[^\n]*<\/view>\n[^\n]*\n\s*<ai-hint doc="\{\{doc\}\}" bind:jump="toAi" \/>/);
+  assert.match(wxml, /<view class="pub">[^\n]*<\/view>\n[^\n]*\n\s*<ai-hint doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" issuer="\{\{doc\.issuer\}\}" date="\{\{doc\.date\}\}" ai="\{\{doc\.ai\}\}" bind:jump="toAi" \/>/);
   assert.match(wxml, /<view id="ai-entry"><ai-entry /); assert.match(wxml, /id="attachments" class="card"/);
   assert.ok(wxml.indexOf('<view id="ai-entry">') > wxml.indexOf('要点'), '卡片仍在"要点"下面');
   const scrolls = [];

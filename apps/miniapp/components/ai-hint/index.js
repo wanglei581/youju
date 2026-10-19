@@ -5,12 +5,17 @@ const access = require('../../utils/ai-access.js');
 
 Component({
   options: { styleIsolation: 'apply-shared' },
+  // 只要这几项，不把整份详情（含正文）传进组件
   properties: {
-    doc: { type: null, value: null },
+    docId: { type: null, value: '' },
+    docTitle: { type: String, value: '' },
+    issuer: { type: String, value: '' },
+    date: { type: String, value: '' },
+    ai: { type: null, value: null },
   },
   data: { shown: false },
   observers: {
-    doc() { this.sync(); },
+    'docId, ai': function () { this.sync(); },
   },
   lifetimes: {
     attached() {
@@ -27,10 +32,10 @@ Component({
   methods: {
     sync() {
       if (!this.alive) return;
-      const doc = this.properties.doc;
-      const shown = !!doc && !!doc.ai && doc.ai.interpret === true && access.canOpen();
+      const { docId, docTitle, issuer, date, ai } = this.properties;
+      const shown = !!docId && !!ai && ai.interpret === true && access.canOpen();
       if (shown !== this.data.shown) this.setData({ shown });
-      if (shown) access.rememberDoc(doc);
+      if (shown) access.rememberDoc({ id: docId, title: docTitle, issuer, date });
     },
     jump() {
       if (this.data.shown) this.triggerEvent('jump');

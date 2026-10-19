@@ -11,12 +11,12 @@ Component({
     docId: { type: null, value: '' },
     docTitle: { type: String, value: '' },
     ai: { type: null, value: null },
-    // 勾选导出时不显示，免得勾选时误点进去用掉次数
-    hidden: { type: Boolean, value: false },
+    // 勾选导出时不显示，免得勾选时误点进去用掉次数（不叫 hidden：那是所有组件都有的通用属性）
+    selecting: { type: Boolean, value: false },
   },
   data: { shown: false },
   observers: {
-    'ai, hidden, docId': function () { this.sync(); },
+    'ai, selecting, docId': function () { this.sync(); },
   },
   lifetimes: {
     attached() {
@@ -33,8 +33,8 @@ Component({
   methods: {
     sync() {
       if (!this.alive) return;
-      const { ai, hidden, docId } = this.properties;
-      const shown = !hidden && !!docId && !!ai && ai.interpret === true && access.canOpen();
+      const { ai, selecting, docId } = this.properties;
+      const shown = !selecting && !!docId && !!ai && ai.interpret === true && access.canOpen();
       if (shown === this.data.shown) return;
       this.setData({ shown });
       this.triggerEvent('toggle', { shown });
