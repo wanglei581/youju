@@ -47,7 +47,9 @@ Page({
       // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
       // 自己今天的次数用完了也先拦下，不发注定被拒的任务
       const used = aiEnabled && remainingOf(ai, 'interpret') === 0;
-      const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
+      // 打开已有的结果、这一页已经提交过（比如第 5 次提交后离开再回来）都不拦，接着显示这次任务（第 27 轮）
+      const ownTask = !!(this.session && this.session.hasTask && this.session.hasTask());
+      const blocked = aiEnabled && !this.data.viewing && !ownTask && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
         const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';
         // 这一页被"今天次数用完""全站满了"拦下过：以后不管什么时候、因为什么又能用了（过了 0 点、额度调高、

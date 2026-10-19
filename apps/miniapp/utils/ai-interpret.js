@@ -246,6 +246,8 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     creation.then((task) => accept(task, version)).catch((err) => fail(err, version));
   }
   return {
+    // 这一页已经有任务了（已建好或正在建）：再回来时接着显示进度和结果，不再按"新任务"看次数拦下（第 27 轮）
+    hasTask() { return !!taskId || !!creation; },
     show() {
       visible = true; emit({ terms: TERMS, checked, needsConsent: !agreed });
       if (!agreed) { emit({ phase: 'consent' }); return; }

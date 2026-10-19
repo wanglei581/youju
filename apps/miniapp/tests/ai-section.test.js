@@ -2161,3 +2161,43 @@ test('Codex 第 25、26 轮：次数用完的提示只写明天恢复，不管�
     t.onHide();
   }
 });
+
+test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0），解读页、对照页接着显示这次任务的进度和结果，不写"用完了"', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let left = 1; let created = 0; let status = 'queued';
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const result = kind === 'clause'
+      ? { notice: 'AI 生成，仅供参考', rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
+      : { notice: 'AI 生成，仅供参考', items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
+    const deps = {
+      '../../utils/api.js': {
+        advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: left, clause: left } })),
+        createAdvisorTask: () => { created += 1; left = 0; return Promise.resolve({ id: 9, status: 'queued' }); },
+        advisorTask: (id) => Promise.resolve(status === 'done' ? { id, status: 'done', docId: 42, docTitle: '通知', result } : { id, status: 'queued' }),
+      },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    try {
+      if (kind === 'clause') { p.submit(); await settle(); }
+      assert.equal(created, 1, `${page} 第 5 次提交了`);
+      // 离开（锁屏、切走），回来时次数已经是 0，任务也处理完了
+      p.onHide(); status = 'done';
+      p.onShow(); await settle();
+      assert.notEqual(p.data.gate, 'used', `${page} 不按新任务拦下`); assert.equal(p.data.aiEnabled, true);
+      assert.equal(p.data.phase, 'done', `${page} 接着显示结果`); assert.equal(created, 1, '不再提交');
+      assert.doesNotMatch(textOf(render(`pages/${page}/index.wxml`, p.data)), /用完了/);
+    } finally {
+      p.onHide();
+    }
+  }
+  // 没提交过的新页面：次数是 0 照旧拦下
+  const p = load('pages/advisor-interpret/index.js', {
+    '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: 0 } })), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
+    '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+  }, { wx: { setNavigationBarTitle() {}, getStorageSync: () => true, setStorageSync() {} } });
+  p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+  assert.equal(p.data.gate, 'used'); p.onHide();
+});
