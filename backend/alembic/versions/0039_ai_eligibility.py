@@ -53,6 +53,7 @@ def upgrade() -> None:
         sa.Column("fingerprint", sa.String(64), nullable=False),
         sa.Column("alerted_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("notice_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("refunds_pending", sa.Integer(), server_default="0", nullable=False),
         sa.PrimaryKeyConstraint("service"),
         sa.CheckConstraint("service IN ('admin', 'api')", name="ck_ai_heartbeat_service"),
         **OPTIONS,

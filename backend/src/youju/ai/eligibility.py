@@ -20,16 +20,20 @@
   `youju ai-eligibility-rebuild`）。
 这些靠"轮转"补上：每次另外重算计算时间最早的 ROLLING 份，6 万份大约 10 小时轮一遍；
 每天夜里再全量重算一次（refresh_all，02:25，和每 10 分钟的增量错开）。本机实测每份约 3 毫秒、
-2 次查询，6 万份约 3 分钟。增量和全量碰巧同时补算同一份时，写入是"有就更新、没有就插入"，
-不会撞主键。
+2 次查询，6 万份约 3 分钟。
+
+同一时间只让一个重算在写（writer_lock，MySQL 命名锁）：增量和全量、包括手工跑的全量，同时写时
+先算、后写的旧结果会盖掉新结果。增量碰上锁就跳过这次（下次还看最近 30 分钟），全量最多等 10 分钟。
+写入是"有就更新、没有就插入"。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -43,6 +47,8 @@ BATCH = 500
 MISSING_LIMIT = 2000
 # 每次另外重算计算时间最早的这么多份（见模块说明）
 ROLLING = 1000
+# 全量拿锁最多等这么多秒（增量一般几秒就跑完）
+FULL_WAIT = 600
 
 
 def compute(session: Session, doc_id: int) -> str | None:
@@ -52,6 +58,21 @@ def compute(session: Session, doc_id: int) -> str | None:
     except interpret.InterpretRefusal as exc:
         return exc.code or "unavailable"
     return None
+
+
+@contextmanager
+def writer_lock(session: Session, wait: int) -> Iterator[bool]:
+    """拿"重算 AI 解读可用性"的锁：拿到给 True，wait 秒内没拿到给 False。MySQL 命名锁（按库名区分，
+    同一台数据库上的测试库互不影响），用单独的连接拿，进程退出、连接断开时自动放开。"""
+    with session.get_bind().connect() as conn:
+        name = f"youju_ai_eligibility:{conn.scalar(text('SELECT DATABASE()'))}"[:64]
+        got = conn.scalar(text("SELECT GET_LOCK(:name, :wait)"), {"name": name, "wait": wait}) == 1
+        conn.commit()  # 锁跟着连接、不跟事务：不留一个长事务挂着
+        try:
+            yield got
+        finally:
+            if got:
+                conn.scalar(text("SELECT RELEASE_LOCK(:name)"), {"name": name})
 
 
 def _write(session: Session, rows: list[dict]) -> None:

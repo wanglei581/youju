@@ -26,7 +26,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from youju import access_log
-from youju.ai import advisor_endpoint, clause, interpret
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -63,7 +63,11 @@ AI_CAP_MESSAGE = "今天的 AI 使用次数已满，请明天再试"
 # 任务排队时失去授权（AI 关了、移出白名单）退回次数时记的原因；接口据此给错误代码 AI_OFF
 AI_OFF_MESSAGE = "功能未开放"
 # 任务结果里的错误代码（D-075）：小程序按代码写原因，不靠比对文字
-ERROR_CODES = {AI_CAP_MESSAGE: "AI_DAILY_CAP", AI_OFF_MESSAGE: "AI_OFF"}
+ERROR_CODES = {
+    AI_CAP_MESSAGE: "AI_DAILY_CAP",
+    AI_OFF_MESSAGE: "AI_OFF",
+    heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+}
 
 
 class AdvisorBusy(Exception):
@@ -393,7 +397,11 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
 
 
 def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> int:
-    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。"""
+    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。
+
+    admin 这边没开 AI（或白名单是空的）时，用户看到"AI 暂时不可用"，个数和退回在同一个事务里记进
+    心跳，给运维提醒（D-075）；只是这个人不在白名单里了（被移出），写"功能未开放"，不提醒。"""
+    paused = not interpret.worker_enabled(settings)
     tasks = session.scalars(
         select(AdvisorTask)
         .where(
@@ -410,8 +418,11 @@ def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetim
         .with_for_update(skip_locked=True)
     ).all()
     for task in tasks:
-        task.status, task.error, task.finished_at = "failed", AI_OFF_MESSAGE, stamp
+        task.status, task.finished_at = "failed", stamp
+        task.error = heartbeat.UNAVAILABLE if paused else AI_OFF_MESSAGE
         release_usage(session, task)
+    if paused:
+        heartbeat.add_refunds(session, len(tasks), stamp)
     session.commit()
     return len(tasks)
 

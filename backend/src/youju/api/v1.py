@@ -2042,12 +2042,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, src = row
-    # AI 入口用（不需要身份）：open 是对所有用户开放（D-066）；interpret、clause 是这份
-    # 文件能不能做，reason 是不能做的原因代码（D-075）。能不能做是文件本身的属性、按原文实时判断，
-    # 和 AI 开没开无关，admin、api 两个服务算出来一样；这个人能不能用 AI 由小程序另问 api。
-    settings = get_settings()
-    ai_enabled = bool(getattr(settings, "ai_advisor_enabled", False))
-    ai_open = ai_enabled and getattr(settings, "ai_advisor_audience", None) == "all"
+    # AI 入口用（不需要身份）：interpret、clause 是这份文件能不能做，reason 是不能做的原因代码
+    # （D-075）。只说文件本身的属性、按原文实时判断，和 AI 开没开无关，admin、api 两个服务算出来
+    # 一样。AI 开没开、这个人能不能用只问 api（/advisor/mode、能力接口）：详情多半由 admin 回，
+    # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
     ai_reason: str | None = None
     try:
         interpret.eligible_body(session, doc.id)
@@ -2141,7 +2139,6 @@ def document(doc_id: int, session: SessionDep) -> dict:
     )
     payload = {
         "ai": {
-            "open": ai_open,
             "interpret": ai_eligible,
             "clause": ai_eligible,
             "reason": ai_reason,

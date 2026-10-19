@@ -172,6 +172,26 @@ def test_refresh_skips_document_deleted_while_computing(
     assert reasons(session) == {keep.id: None}
 
 
+def test_only_one_refresh_writes_at_a_time(session_factory, session, source, monkeypatch, capsys):
+    """增量、全量（包括手工跑的）同一时间只让一个写：先算后写的旧结果不会盖掉新结果。"""
+    doc = make(session, source, 1)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(eligibility, "FULL_WAIT", 1)
+    with session_factory() as holder, eligibility.writer_lock(holder, 0) as got:
+        assert got
+        with session_factory() as other, eligibility.writer_lock(other, 0) as second:
+            assert second is False
+        # 另一个重算在写：增量跳过这次、不算失败；全量等不到算失败（job.sh 提醒）
+        assert cli.main(["ai-eligibility"]) == 0
+        assert "这次跳过" in capsys.readouterr().out
+        assert cli.main(["ai-eligibility-rebuild"]) == 1
+        assert "这次全量没算" in capsys.readouterr().out
+        assert reasons(session) == {}
+    # 锁放开以后照常算
+    assert cli.main(["ai-eligibility"]) == 0
+    assert reasons(session) == {doc.id: None}
+
+
 def test_changed_since_covers_each_trigger(session, source):
     since = NOW - eligibility.RECENT
     untouched = make(session, source, 1)

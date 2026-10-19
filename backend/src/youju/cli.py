@@ -955,9 +955,18 @@ def _cmd_ai_eligibility(args: argparse.Namespace) -> int:
     （每天夜里跑；手动改过来源级别后也跑一次）。和 AI 开没开无关，开关关着也照算。"""
     from youju.ai import eligibility
 
-    stamp = datetime.now(UTC)
-    with session_factory()() as session:
-        if getattr(args, "all", False):
+    full = getattr(args, "all", False)
+    wait = eligibility.FULL_WAIT if full else 0
+    # 同一时间只让一个重算写：增量碰上就跳过这次；全量等不到算失败，job.sh 会提醒
+    with session_factory()() as session, eligibility.writer_lock(session, wait) as got:
+        if not got:
+            if full:
+                print("AI 解读可用性：另一个重算一直没跑完，这次全量没算")
+                return 1
+            print("AI 解读可用性：另一个重算还在跑，这次跳过")
+            return 0
+        stamp = datetime.now(UTC)
+        if full:
             report = eligibility.refresh_all(session, stamp)
         else:
             report = eligibility.refresh_changed(session, stamp)
