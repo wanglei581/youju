@@ -584,8 +584,9 @@ test('反馈页支付问题带上纯数字订单号，订单号不纯时不加�
   assert.equal(plainId.page.data.max, 500 - '支付问题：'.length);
   assert.equal(plainId.sent[0], '支付问题：还没开通');
   assert.equal(plainId.sent[0].includes('订单'), false);
-  // 提示只在真的带上了订单号时说"已自动带上"；没带上时请用户自己写（隐私保护指引一·6 的说法，Codex 10/19）
-  assert.match(shown('pages/feedback/index.wxml', numbered.page.data), /订单号已自动带上/);
+  // 提示只在真的带上了订单号时说"已自动带上"，并写出是哪一笔（订单页记的可能是之前操作过的那一笔）；
+  // 没带上时请用户自己写（隐私保护指引一·6 的说法，Codex 10/19）
+  assert.match(shown('pages/feedback/index.wxml', numbered.page.data), /已自动带上订单号 41，问的不是这一笔的，请在内容里写明/);
   const untagged = shown('pages/feedback/index.wxml', plainId.page.data);
   assert.doesNotMatch(untagged, /已自动带上/);
   assert.match(untagged, /请写上订单号（在“我的订单”里能看到）/);
