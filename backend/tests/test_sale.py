@@ -268,8 +268,8 @@ def test_tier_without_price_is_not_sold_and_same_product_id_refuses_to_start():
     assert not defaults.renew_bonus_enabled and not defaults.correction_reward_enabled
 
 
-def test_push_for_the_other_tier_is_rejected(shop, session):
-    """推送里的商品和订单不一致（买的是 30 天，推送说 90 天）：不发货。"""
+def test_push_naming_the_other_tier_opens_what_was_paid(shop, session):
+    """推送里的商品和订单不一致（买的是 30 天，推送说 90 天）：以订单和查单为准，开通 30 天。"""
     response = create(shop, "workbench_30d")
     row = session.get(PayOrder, response.json()["orderId"])
     shop.fake.status, shop.fake.fee = 2, 2900
@@ -286,8 +286,9 @@ def test_push_for_the_other_tier_is_rejected(shop, session):
             "Attach": row.out_trade_no,
         },
     }
-    assert shop.client.post("/api/wx/push", headers=HEADERS, json=data).json()["ErrCode"] == 1
-    assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+    assert shop.client.post("/api/wx/push", headers=HEADERS, json=data).json()["ErrCode"] == 0
+    ticket = session.scalar(select(WorkbenchPass))
+    assert ticket.ends_at - ticket.starts_at == timedelta(days=30)
 
 
 # ---- 续买多送 ---------------------------------------------------------------------------

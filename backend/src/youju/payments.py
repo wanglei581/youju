@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,6 +38,8 @@ from youju.models import (
     WorkbenchPass,
 )
 from youju.xpay import XPayClient, XPayError, wx_http
+
+logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {
     "pending": "待支付",
@@ -659,6 +662,52 @@ def _paid_time(value) -> datetime | None:
         return None
 
 
+def _blank(value) -> bool:
+    return value is None or value == "" or value == 0
+
+
+def _same(got, want) -> bool:
+    # 推送里的数字可能写成文字（"1"）：数字按数值比，文字原样比
+    if isinstance(want, int) and not isinstance(want, bool):
+        try:
+            return int(got) == want
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return got == want
+
+
+def push_mismatch(order: PayOrder, data: dict, push: dict) -> list[str]:
+    """发货推送里和订单、查单对不上的字段：只给字段名和哪边是空的，不给单号和金额。"""
+    goods = push.get("GoodsInfo")
+    goods = goods if isinstance(goods, dict) else {}
+    wx = push.get("WeChatPayInfo")
+    wx = wx if isinstance(wx, dict) else {}
+    out = [] if goods else ["GoodsInfo（推送里没有）"]
+    pairs = (
+        [
+            ("GoodsInfo.ProductId", goods.get("ProductId"), order.product_id),
+            ("GoodsInfo.Quantity", goods.get("Quantity"), 1),
+            ("GoodsInfo.OrigPrice", goods.get("OrigPrice"), order.price),
+            ("GoodsInfo.ActualPrice", goods.get("ActualPrice"), order.price),
+            ("GoodsInfo.Attach", goods.get("Attach"), order.out_trade_no),
+        ]
+        if goods
+        else []
+    )
+    # 官方文档：非微信支付渠道可能没有 WeChatPayInfo
+    if wx:
+        pairs += [
+            ("WeChatPayInfo.MchOrderNo", wx.get("MchOrderNo"), data.get("channel_order_id")),
+            ("WeChatPayInfo.TransactionId", wx.get("TransactionId"), data.get("wxpay_order_id")),
+            ("WeChatPayInfo.PaidTime", wx.get("PaidTime"), data.get("paid_time")),
+        ]
+    for name, got, want in pairs:
+        if not _same(got, want):
+            side = "推送里是空的" if _blank(got) else "查单里是空的" if _blank(want) else "值不同"
+            out.append(f"{name}（{side}）")
+    return out
+
+
 def accept_payment(
     session: Session,
     order: PayOrder,
@@ -695,25 +744,16 @@ def accept_payment(
             order.error = f"微信已确认付款，但{problem}，未发货，需人工核对"
         return False
     if push is not None:
-        goods = push.get("GoodsInfo", {})
-        wx = push.get("WeChatPayInfo", {})
-        if (
-            goods.get("ProductId") != order.product_id
-            or int(goods.get("Quantity", -1)) != 1
-            or int(goods.get("ActualPrice", -1)) != order.price
-            or int(goods.get("OrigPrice", -1)) != order.price
-            or goods.get("Attach") != order.out_trade_no
-            or (
-                wx
-                and (
-                    wx.get("MchOrderNo") != data.get("channel_order_id")
-                    or wx.get("TransactionId") != data.get("wxpay_order_id")
-                    or int(wx.get("PaidTime", -1)) != data.get("paid_time")
-                )
+        # 推送只是"去查单"的信号，开不开通以查单为准（定时补单本来就只看查单）。
+        # 原来推送字段和查单对不上就拒收：10/19 沙箱实测被拒、微信连推 6 次，
+        # 2 分钟后补单照样开通了，拒收只让用户多等。现在对不上只记字段名，不记单号和金额。
+        mismatch = push_mismatch(order, data, push)
+        if mismatch:
+            logger.warning(
+                "xpay_goods_deliver_notify 订单 #%s 推送和查单对不上（以查单为准）：%s",
+                order.id,
+                "、".join(mismatch),
             )
-        ):
-            order.error = "推送与查单不一致，未发货"
-            return False
     if accepted:
         return True
     order.wx_order_id = data.get("wx_order_id")

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import re
 from datetime import timedelta
 from typing import Annotated, Literal
@@ -22,6 +23,8 @@ from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
 from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature, wx_http
+
+logger = logging.getLogger(__name__)
 
 
 def require_enabled(request: Request) -> None:
@@ -488,6 +491,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         payments.event(session, kind, data, None)
         session.commit()
         return reply(xml)
+    # 推送没处理成的原因记进日志（微信会重推，补单兜底）：只记事件名、订单号和状态码，
+    # 不记 openid、单号和金额；事件名是英文，云托管日志能按它搜
+    order_id = order.id
     try:
         user = session.get(User, order.user_id) if order.user_id else None
         if (
@@ -497,6 +503,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             or (kind == "xpay_goods_deliver_notify" and int(data.get("Env", -1)) != order.env)
             or (kind != "xpay_goods_deliver_notify" and data.get("WxOrderId") != order.wx_order_id)
         ):
+            logger.warning(
+                "%s 订单 #%s 推送的用户、环境或微信单号和订单对不上，没处理", kind, order_id
+            )
             return reply(xml, 1)
         payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
@@ -518,8 +527,15 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             and not order.goods_notified
         ):
             payments.provide_goods(session, order, client)
+        if not accepted:
+            logger.warning(
+                "%s 订单 #%s 这次没处理：查单状态 %s", kind, order_id, checked.get("status")
+            )
         return reply(xml, 0 if accepted else 1)
-    except (XPayError, ValueError, TypeError, AttributeError, OverflowError):
+    except (XPayError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+        code = exc.code if isinstance(exc, XPayError) else None
+        reason = f"errcode={code}" if code is not None else type(exc).__name__
+        logger.warning("%s 订单 #%s 核验失败：%s", kind, order_id, reason)
         order.error = "推送暂未核验，将通过查单重试"
         session.commit()
         return reply(xml, 1)
