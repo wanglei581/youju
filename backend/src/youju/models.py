@@ -362,6 +362,8 @@ class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 
     __tablename__ = "document_details"
+    # AI 解读可用性每 10 分钟按抓取时间找最近有变化的正文（D-075，youju/ai/eligibility.py）
+    __table_args__ = (Index("ix_document_details_fetched_at", "fetched_at"),)
 
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True

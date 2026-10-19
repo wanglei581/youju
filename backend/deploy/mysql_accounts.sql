@@ -63,7 +63,7 @@ GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
 -- 体验期内买了批量工具：体验到付款确认时结束，没用完的折成天数。只能改结束时间。
 GRANT UPDATE (ends_at) ON youju.boost_trials TO 'youju_api'@'%';
 
--- AI 设置心跳权限（D-075）：迁移 0037 完成后由创始人执行。api 最多每 5 分钟写一次自己的 AI 设置指纹
+-- AI 设置心跳权限（D-075）：迁移 0039 完成后由创始人执行。api 最多每 5 分钟写一次自己的 AI 设置指纹
 -- （ai_heartbeat 里 service=api 那一行），admin 拿来和自己的比，两个服务设置不一致时往运维群提醒。
 -- 不执行也不影响 AI 能不能用（api 只读 admin 那一行就能判断），只是收不到这条提醒。
 GRANT INSERT, UPDATE ON youju.ai_heartbeat TO 'youju_api'@'%';

@@ -4,15 +4,16 @@
   （youju ai-eligibility 每 10 分钟重算有变化的，ai-eligibility-rebuild 每天夜里全部重算）。
 - ai_heartbeat：admin 的后台任务每分钟写一行（service=admin），api 服务最多每 5 分钟写一行
   （service=api）；指纹对不上时 api 不收 AI 任务，admin 发提醒。
+- document_details.fetched_at 加索引：每 10 分钟按它找最近重新抓过的正文。
 
 api 账号已有整个库的读权限，读这两张表不用另加授权。api 写自己那行心跳要执行
 deploy/mysql_accounts.sql 的"AI 设置心跳权限"一行；没执行时 api 照常工作，只是收不到"两个服务
 设置不一致"的提醒。
 
-编号：0033–0036 已被 #290、#297、#296、#304 占用；按约定 down_revision 先接 main 上的 0032，
-后合并的一方改 down_revision。
+编号：0033–0038 已被占用（0033 #290、0034 #297、0035 #296、0036 #304、0037 和 0038 成熟度会话），
+按约定 down_revision 先接 main 上的 0032，后合并的一方改 down_revision。
 
-Revision ID: 0037
+Revision ID: 0039
 Revises: 0032
 """
 
@@ -20,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import mysql
 
-revision = "0037"
+revision = "0039"
 down_revision = "0032"
 branch_labels = None
 depends_on = None
@@ -29,6 +30,8 @@ REASONS = "'unavailable', 'list', 'kind', 'source', 'no_body', 'too_long'"
 
 
 def upgrade() -> None:
+    # 每 10 分钟按抓取时间找最近重新抓过的正文，没有索引就要扫整张正文表
+    op.create_index("ix_document_details_fetched_at", "document_details", ["fetched_at"])
     op.create_table(
         "ai_eligibility",
         sa.Column("document_id", sa.Integer(), nullable=False),
@@ -58,3 +61,4 @@ def downgrade() -> None:
     # 两张表都是算出来的，回退后旧代码不读它们；重新升级时由定时任务重算、重写
     op.drop_table("ai_heartbeat")
     op.drop_table("ai_eligibility")
+    op.drop_index("ix_document_details_fetched_at", table_name="document_details")
