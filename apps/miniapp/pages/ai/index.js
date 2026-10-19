@@ -99,16 +99,19 @@ Page({
     recentLoading: true,
     recentError: '',
     records: [],
+    recordsError: '',
     today: '',
   },
 
   onLoad() {
     const { statusBarHeight, navHeight } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight });
-    // 用着用着后台说 AI 关了、或不在白名单了：回首页。注销（状态被擦掉）时在途的结果作废、清掉页面上的通知和记录
+    // 用着用着后台说 AI 关了、或不在白名单了：回首页。注销（状态被擦掉）时在途的结果作废、清掉页面上的通知和记录。
+    // 后台能不能处理变了（admin 心跳停了、又恢复了）：按钮和"暂时不可用"马上跟着变，不用等下次进来（Codex 小程序第 7 轮）
     this.unsubscribe = access.subscribe((state) => {
       if (!state.visible) this.reset();
       if (this.shown && state.confirmed && !state.visible) this.leave();
+      if (state.visible) this.applyCaps();
     });
   },
 
@@ -123,9 +126,10 @@ Page({
     const last = access.lastDoc();
     // 上次进来时的能力、次数和拦下原因都先清掉，显示加载中；能力接口回来之前不给"AI 解读""条款对照"
     this.recentItems = [];
+    this.capsResult = null;
     this.setData({
       today: todayISO(), capsLoading: true, kinds: [], gate: '', gateText: '', interpretOpen: false, clauseOpen: false,
-      recent: [], recentLoading: true, recentError: '', records: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
+      recent: [], recentLoading: true, recentError: '', records: [], recordsError: '', lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
     });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
@@ -148,10 +152,11 @@ Page({
   reset() {
     this.seq = (this.seq || 0) + 1;
     this.recentItems = [];
+    this.capsResult = null;
     // 页头、说明也收起，回到"还没问到"的样子：注销以后到重新确认之前不出现 AI 字样
     this.setData({
       ready: false, waiting: true, offline: false,
-      records: [], recent: [], recentLoading: true, recentError: '', lastDoc: null, kinds: [], gate: '', interpretOpen: false, clauseOpen: false, capsLoading: true,
+      records: [], recordsError: '', recent: [], recentLoading: true, recentError: '', lastDoc: null, kinds: [], gate: '', interpretOpen: false, clauseOpen: false, capsLoading: true,
     });
   },
 
@@ -171,18 +176,12 @@ Page({
       if (gate === 'off') access.refresh();
       const kinds = ai.enabled === true ? kindRows(ai) : [];
       const open = (kind) => { const row = kinds.find((item) => item.kind === kind); return !gate && !!row && !row.out; };
-      this.setData({
-        capsLoading: false,
-        gate,
-        gateText: gateTextOf(gate, caps),
-        kinds,
-        // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
-        // 没同意协议（consent）时也给（点了进解读页、对照页，先走同意，D-075 第四节），但要后台现在能处理
-        interpretOpen: (gate === 'consent' && access.canOpen()) || open('interpret'),
-        clauseOpen: (gate === 'consent' && access.canOpen()) || open('clause'),
-        disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
-      });
-      this.showRecent();
+      // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
+      // 没同意协议（consent）时也给（点了进解读页、对照页，先走同意，D-075 第四节）。
+      // 这里只记这次能力接口怎么说；再和"后台现在能不能处理"合起来才定按钮和拦下原因（applyCaps）
+      this.capsResult = { gate, gateText: gateTextOf(gate, caps), interpret: gate === 'consent' || open('interpret'), clause: gate === 'consent' || open('clause') };
+      this.setData({ capsLoading: false, kinds, disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '' });
+      this.applyCaps();
     });
     const last = this.data.lastDoc;
     if (last) {
@@ -209,14 +208,31 @@ Page({
       if (seq !== this.seq) return;
       this.setData({ recent: [], recentLoading: false, recentError: '近 7 天的通知没有加载出来' });
     });
-    // 我的 AI 记录：和"我的 → 我的记录"是同一份，这里列最近 3 条 AI 的
+    // 我的 AI 记录：和"我的 → 我的记录"是同一份，这里列最近 3 条 AI 的；一条都没有时不占地方
     api.advisorTasks().then((res) => {
       if (seq !== this.seq) return;
       const items = ((res && res.items) || []).filter((task) => task.kind === 'interpret' || task.kind === 'clause');
       this.setData({ records: items.slice(0, RECORDS).map(recordRow) });
     }).catch(() => {
-      if (seq === this.seq) this.setData({ records: [] });
+      // 没加载出来不当成没有记录：卡片照样留着，写明没加载出来、给重试，"全部"照样能点进去（Codex 小程序第 7 轮）
+      if (seq === this.seq) this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
     });
+  },
+
+  // 按钮和拦下原因 = 这次能力接口的结果 + utils/ai-access.js 现在说后台能不能处理，两样谁后变都按最新的算：
+  // 后台处理不了时"AI 解读""条款对照"都收起，能用、全站满了的情况都改写"暂时不可用"；恢复了照能力接口的结果放出来
+  applyCaps() {
+    const caps = this.capsResult;
+    if (!caps) return;
+    const can = access.canOpen();
+    const paused = !can && (caps.gate === '' || caps.gate === 'full');
+    this.setData({
+      gate: paused ? 'paused' : caps.gate,
+      gateText: paused ? GATE_TEXT.paused : caps.gateText,
+      interpretOpen: can && caps.interpret,
+      clauseOpen: can && caps.clause,
+    });
+    this.showRecent();
   },
 
   // 重试：不管刚才是不是没连上，马上再问一次
@@ -254,7 +270,7 @@ Page({
 
   clauseLast() {
     const doc = this.data.lastDoc;
-    if (doc && doc.ai && doc.ai.clause === true && this.data.clauseOpen) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
+    if (doc && doc.ai && doc.ai.clause === true && this.data.clauseOpen && access.canOpen()) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
   },
 
   openRecord(e) {

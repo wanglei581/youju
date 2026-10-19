@@ -1013,3 +1013,110 @@ test('Codex 第 6 轮：没同意协议、后台又暂时处理不了时不给�
   assert.equal(r.page.data.recentLoading, true); assert.equal(r.page.data.recentError, '');
   assert.doesNotMatch(textOf(render('pages/ai/index.wxml', r.page.data)), /没有加载出来|近 7 天还没有能解读的申报通知/);
 });
+
+test('Codex 第 7 轮：结果页吸顶条开头固定写"AI 生成："（后端提示里没有这几个字也写，有的不写两遍）', async () => {
+  const backendNotice = 'AI 生成，仅供参考，以原文和主管部门解释为准';
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const [notice, expected] of [['固定原文提示', 'AI 生成：固定原文提示'], [backendNotice, 'AI 生成：仅供参考，以原文和主管部门解释为准']]) {
+      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const result = kind === 'clause'
+        ? { notice, rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
+        : { notice, items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTask: (id) => Promise.resolve({ id, docId: 42, docTitle: '通知', status: 'done', result }) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      p.onLoad({ taskId: '7' }); p.onShow(); await settle();
+      assert.equal(p.data.phase, 'done', `${page} 出了结果`);
+      const bars = findAll(render(`pages/${page}/index.wxml`, p.data), hasClass('interpret-notice'));
+      assert.equal(bars.length, 1, `${page} 有吸顶条`);
+      assert.equal(textOf(bars[0]).trim(), expected, `${page} ${notice}`);
+      p.onHide();
+    }
+  }
+});
+
+test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"AI 解读""条款对照"、能力行写暂时不可用，点了也不进；恢复了照这次的额度放出来', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  const doc = { id: '1', title: '通知1', kind: '申报通知', ai: { interpret: true, clause: true, reason: null } };
+  const h = hubPage({ last, search: () => Promise.resolve({ items: [doc] }) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), tapsTo('clauseLast')).length, 1);
+  // 后台说处理不了（另一个页面重新问到的）：不用离开再进来，马上收起
+  h.access.set({ available: false });
+  assert.equal(h.page.data.gate, 'paused'); assert.equal(h.page.data.interpretOpen, false); assert.equal(h.page.data.clauseOpen, false);
+  let root = render('pages/ai/index.wxml', h.page.data);
+  let out = textOf(root);
+  assert.equal(findAll(root, tapsTo('clauseLast')).length, 0, '不给条款对照');
+  assert.doesNotMatch(out, /点“AI 解读”直接开始|今天还剩/);
+  assert.equal((out.match(/暂时不可用/g) || []).length >= 2, true, '两项能力都写暂时不可用');
+  assert.ok(out.includes('AI 暂时不可用，请稍后再试。'));
+  assert.deepEqual(h.page.data.recent.map((item) => item.ai), [null], '近 7 天那几份上不放按钮');
+  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused', undefined]);
+  // 页面上还是旧的样子时点了，也不进对照页
+  h.page.setData({ clauseOpen: true }); h.page.clauseLast();
+  assert.deepEqual(h.navigations, []);
+  // 恢复了：照这次能力接口的结果（今天还剩几次）放出来
+  h.access.set({ available: true });
+  assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
+  out = textOf(render('pages/ai/index.wxml', h.page.data));
+  assert.match(out, /今天还剩 5 次/); assert.match(out, /点“AI 解读”直接开始/);
+  h.page.clauseLast(); assert.equal(h.navigations.length, 1);
+  // 全站满了的时候后台又处理不了：改写暂时不可用；恢复了回到"今天满了"
+  const f = hubPage({ caps: ON({ siteFull: true }) }); f.page.onShow(); await settle();
+  assert.equal(f.page.data.gate, 'full');
+  f.access.set({ available: false }); assert.equal(f.page.data.gate, 'paused'); assert.equal(f.page.data.gateText, 'AI 暂时不可用，请稍后再试。');
+  f.access.set({ available: true }); assert.equal(f.page.data.gate, 'full'); assert.equal(f.page.data.interpretOpen, false);
+  // 没同意协议：照样是同意入口，只是按钮收起
+  const c = hubPage({ caps: OFF('consent'), search: () => Promise.resolve({ items: [doc] }) }); c.page.onShow(); await settle();
+  assert.equal(c.page.data.interpretOpen, true);
+  c.access.set({ available: false });
+  assert.equal(c.page.data.gate, 'consent'); assert.equal(c.page.data.interpretOpen, false); assert.equal(c.page.data.clauseOpen, false);
+  // 能力接口还没回来时后台的状态先变了：回来以后照最新的状态算
+  let answer;
+  const s = hubPage({ caps: () => new Promise((done) => { answer = done; }) }); s.page.onShow(); await settle();
+  s.access.set({ available: false }); answer(ON()); await settle();
+  assert.equal(s.page.data.gate, 'paused'); assert.equal(s.page.data.interpretOpen, false);
+  // 再次进来、这次的能力接口还没回来时后台状态变了：不拿上次的结果放出按钮
+  let hang = false;
+  const a = hubPage({ caps: () => (hang ? new Promise(() => {}) : Promise.resolve(ON())) }); a.page.onShow(); await settle();
+  assert.equal(a.page.data.interpretOpen, true);
+  a.page.onHide(); hang = true; a.page.onShow(); await settle();
+  a.access.set({ available: false }); a.access.set({ available: true });
+  assert.equal(a.page.data.interpretOpen, false); assert.equal(a.page.data.clauseOpen, false); assert.equal(a.page.data.gate, '');
+  // 注销以后又显示了（换了账号）：重新问到之前不拿注销以前的结果
+  const o = hubPage(); o.page.onShow(); await settle();
+  o.access.set({ visible: false, confirmed: false, available: false });
+  o.access.set({ visible: true, confirmed: true, available: true });
+  assert.equal(o.page.data.interpretOpen, false); assert.equal(o.page.data.gate, '');
+});
+
+test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，写明没加载出来、给重试，"全部"照样能点；一条都没有时不占地方', async () => {
+  let tasksOk = false;
+  const record = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', createdAt: '2026-10-19T09:00:00+08:00' };
+  const h = hubPage({ tasks: () => (tasksOk ? Promise.resolve({ items: [record] }) : Promise.reject(new Error('网络'))) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.recordsError, '我的 AI 记录没有加载出来');
+  const root = render('pages/ai/index.wxml', h.page.data);
+  const card = findAll(root, hasClass('card')).find((node) => textOf(node).includes('我的 AI 记录'));
+  assert.ok(card, '卡片还在');
+  assert.match(textOf(card), /我的 AI 记录没有加载出来/);
+  assert.equal(findAll(card, tapsTo('retry')).length, 1, '有重试');
+  assert.equal(findAll(card, tapsTo('allRecords')).length, 1, '有"全部"');
+  h.page.allRecords(); assert.equal(h.navigations.at(-1), '/pages/advisor-tasks/index');
+  // 点重试、这次加载出来了：错误去掉、列出记录
+  tasksOk = true; h.page.retry(); await settle();
+  assert.equal(h.page.data.recordsError, '');
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*通知3/);
+  // 没有记录：不显示这张卡
+  const e = hubPage(); e.page.onShow(); await settle();
+  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', e.page.data)), /我的 AI 记录/);
+  // 再次进来：上次的错误先清掉
+  const r = hubPage({ tasks: () => Promise.reject(new Error('网络')) }); r.page.onShow(); await settle();
+  r.access.ensure = () => new Promise(() => {});
+  r.page.onHide(); r.page.onShow(); await settle();
+  assert.equal(r.page.data.recordsError, '');
+});

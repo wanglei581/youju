@@ -84,8 +84,9 @@
     </block>
   </view>
 
-  <view wx:if="{{records.length}}" class="card">
+  <view wx:if="{{records.length || recordsError}}" class="card">
     <view class="card-head" bindtap="allRecords" aria-role="link"><text class="card-title">我的 AI 记录</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
+    <view wx:if="{{recordsError}}" class="list-tip">{{recordsError}}<text class="link" bindtap="retry">　重试</text></view>
     <view wx:for="{{records}}" wx:key="id" class="record {{index === records.length - 1 ? 'record--last' : ''}}" data-id="{{item.id}}" data-kind="{{item.kind}}" bindtap="openRecord" aria-role="link">
       <view class="record-main">
         <view class="record-title">{{item.kindLabel}}<text wx:if="{{item.title}}"> · {{item.title}}</text></view>

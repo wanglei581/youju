@@ -9,7 +9,7 @@
   <view wx:if="{{gate === 'paused' || gate === 'offline'}}" class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{gate}}" /></view>
 </view>
 <block wx:elif="{{aiEnabled}}">
-  <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17） -->
+  <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17）；吸顶条开头的"AI 生成："由页面固定写，不靠后端提示（Codex 小程序第 7 轮） -->
   <view wx:if="{{!(phase === 'done' && result.notice)}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{phase === 'form'}}" class="card advisor-card">
     <view class="advisor-title">条款对照</view>
@@ -83,7 +83,7 @@
     <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">打开我的记录</button>
   </view>
   <block wx:elif="{{phase === 'done'}}">
-    <view wx:if="{{result.notice}}" class="interpret-notice">{{result.notice}}</view>
+    <view wx:if="{{result.notice}}" class="interpret-notice"><text class="ai-internal-tag">{{aiLabel}}</text>{{result.noticeText || aiNotice}}</view>
     <view class="card advisor-card">
       <view class="advisor-title">{{title || '通知'}}</view>
       <view wx:if="{{!docId}}" class="interpret-meta">这条记录没有关联到通知原文，请从通知详情页重新打开。</view>

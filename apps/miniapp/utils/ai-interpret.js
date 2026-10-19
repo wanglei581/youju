@@ -17,6 +17,13 @@ function disclosureLine(value = {}) {
   return value && value.modelLabel && value.filingNo ? `模型：${value.modelLabel}｜备案号：${value.filingNo}` : '';
 }
 
+// 结果顶部的吸顶条由页面固定写"AI 生成："（标识办法第四条），不靠后端提示里有没有这几个字；
+// 后端提示本身以"AI 生成"开头时去掉开头这几个字，免得一行里写两遍（Codex 小程序第 7 轮）
+const LABEL_HEAD = /^AI\s*生成\s*[，,：:、·]?\s*/;
+function noticeText(notice) {
+  return String(notice || '').replace(LABEL_HEAD, '');
+}
+
 // 结果页（10/17 创始人试用后精简）：同一句原文只出现一次，标出它同时属于哪几类；
 // 只剩重复句的类别写"和「X」是同一句原文"；没摘到的类别合成一行（missingText），不再各占一张卡
 function resultView(result = {}) {
@@ -51,7 +58,7 @@ function resultView(result = {}) {
   });
   sections.forEach((section) => section.items.forEach((item) => { item.alsoInText = item.alsoIn.join('、'); }));
   return {
-    notice: result.notice || '', refusal: result.refusal || '', warning: result.warning || '',
+    notice: result.notice || '', noticeText: noticeText(result.notice), refusal: result.refusal || '', warning: result.warning || '',
     attachmentNotice: result.attachment_notice || '', disclosure: disclosureLine(result.disclosure),
     verified: (result.verified || []).map((item, index) => Object.assign({}, item, {
       key: index, displayValue: [item.kind, item.value, item.time].filter(Boolean).join(' '),
