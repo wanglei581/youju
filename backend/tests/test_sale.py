@@ -34,7 +34,13 @@ AGREEMENT = Settings.model_fields["agreement_version"].default
 # 北京时间 11 月 2 日 10:00
 NOW = datetime(2026, 11, 2, 2, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
-HEADERS = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "pay-user"}
+# 测试人员在体验版里（D-074），代码包里的付费协议版本号是 pay-test
+HEADERS = {
+    "X-WX-SOURCE": "test-cloud",
+    "X-WX-OPENID": "pay-user",
+    "X-Youju-Env": "trial",
+    "X-Youju-Pay-Terms": "pay-test",
+}
 ADMIN = {"X-Admin-Token": "test-admin"}
 PRICES = {"workbench_30d": 2900, "workbench_90d": 7900}
 
@@ -53,6 +59,8 @@ def shop(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         pay_audience="all",
+        # 沙箱只给测试名单（D-074）
+        pay_openids="pay-user",
         advisor_enabled=True,
         boost_trial_enabled=True,
         renew_bonus_enabled=True,
@@ -213,7 +221,8 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     assert out["name"] == "批量工具 90 天" and out["days"] == 90 and out["gifts"] == []
     # 配置改了也不影响已下的单：天数按订单快照
     shop.settings.xpay_price_pass_90 = None
-    assert [i["days"] for i in shop.client.get("/api/v1/pay/products").json()["items"]] == [30]
+    listed = shop.client.get("/api/v1/pay/products", headers=HEADERS).json()["items"]
+    assert [i["days"] for i in listed] == [30]
     assert create(shop, "workbench_90d").status_code == 404
 
 
@@ -374,9 +383,13 @@ def test_products_say_whether_renewing_now_gets_the_bonus(shop, session):
         shop.clock.at = at
         offer = shop.client.get("/api/v1/pay/products", headers=HEADERS).json()["renewBonus"]
         assert offer["eligibleNow"] is eligible
-    # 看价格不要求登录：认不出是谁就是 False
+    # 现网对所有人开卖后，看价格不要求登录：认不出是谁就是 False（沙箱只给测试名单，所以这里切到现网）
     shop.clock.at = NOW + 24 * DAY
-    assert shop.client.get("/api/v1/pay/products").json()["renewBonus"]["eligibleNow"] is False
+    shop.settings.xpay_env, shop.settings.pay_terms_version = 0, "pay-test"
+    shop.settings.pay_invoice_type = "电子普通发票（测试）"
+    anonymous = {"X-Youju-Env": "release", "X-Youju-Pay-Terms": "pay-test"}
+    offer = shop.client.get("/api/v1/pay/products", headers=anonymous).json()["renewBonus"]
+    assert offer["eligibleNow"] is False
 
 
 def test_renewal_bonus_does_not_count_toward_reward_limits(shop, session):
@@ -679,10 +692,16 @@ def test_full_refund_and_cases_that_are_not_refunded(shop, session, run_cli, cap
     )
     session.commit()
     full = ["--order-id", str(row.id), "--full", "--reason", "重复扣款，全额退回"]
+    # 退款不等冲红（D-074）：已开过发票的照常退，只提醒退完按退款金额开红字发票
     assert run_cli(*full) == 0
-    assert "先按退款金额开红字发票" in capsys.readouterr().out and not refunds(shop)
-    assert run_cli(*full, "--invoice-reversed") == 0
+    assert "退款后请按退款金额开红字发票" in capsys.readouterr().out
     assert refunds(shop)[0]["refund_fee"] == 2900
+    # 管理台开票页"要冲红"列出它；"待开"里没有
+    reverse = shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json()
+    assert [(i["orderId"], i["needsReversal"]) for i in reverse] == [(row.id, True)]
+    assert shop.client.get("/api/admin/invoices", headers=ADMIN).json() == []
+    with pytest.raises(SystemExit):
+        run_cli(*full, "--invoice-reversed")
     # 苹果手机付款的不主动退
     shop.fake.order_type = 7
     apple = buy(shop, session, at=NOW + DAY)

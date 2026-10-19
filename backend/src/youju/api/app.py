@@ -206,13 +206,13 @@ async def _role_guard(request: Request, call_next):
         path == "/api/v1/pay/orders" and request.method == "POST"
     ):
         from youju.api.me import request_openid
-        from youju.payments import selling_to
+        from youju.payments import client_of, selling_to
 
         try:
             openid = request_openid(request)
         except HTTPException:
             openid = None
-        if not selling_to(get_settings(), openid):
+        if not selling_to(get_settings(), openid, client_of(request.headers)):
             return JSONResponse(status_code=404, content={"detail": "没有找到接口"})
     admin_path = path == "/admin" or path.startswith(("/admin/", "/api/admin/"))
     mini_path = path.startswith("/api/v1/") or path == getattr(
@@ -2551,6 +2551,8 @@ class InvoiceAdminOut(BaseModel):
     note: str | None
     createdAt: datetime
     issuedAt: datetime | None
+    # 已开的发票、订单已经退款（或正在退）：要按退款金额开红字发票（退款不等冲红，D-074）
+    needsReversal: bool
 
 
 class InvoiceDecisionIn(BaseModel):
@@ -2576,6 +2578,7 @@ def _invoice_admin_out(invoice, order) -> InvoiceAdminOut:
         note=invoice.note,
         createdAt=invoice.created_at,
         issuedAt=invoice.issued_at,
+        needsReversal=invoice.status == "issued" and order.refund_status is not None,
     )
 
 
@@ -2583,7 +2586,7 @@ def _invoice_admin_out(invoice, order) -> InvoiceAdminOut:
 def admin_invoices(
     session: SessionDep,
     _admin: AdminDep,
-    status: Literal["pending", "all"] = "pending",
+    status: Literal["pending", "reverse", "all"] = "pending",
     before_id: Annotated[int | None, Query(ge=1, description="翻页游标：只取编号更小的")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> list[InvoiceAdminOut]:
@@ -2592,6 +2595,9 @@ def admin_invoices(
     stmt = select(InvoiceRequest, PayOrder).join(PayOrder, PayOrder.id == InvoiceRequest.order_id)
     if status == "pending":
         stmt = stmt.where(InvoiceRequest.status == "pending")
+    elif status == "reverse":
+        # 要冲红：已开的发票，订单已经退款或正在退（先退款、再冲红）
+        stmt = stmt.where(InvoiceRequest.status == "issued", PayOrder.refund_status.is_not(None))
     if before_id is not None:
         stmt = stmt.where(InvoiceRequest.id < before_id)
     rows = session.execute(stmt.order_by(InvoiceRequest.id.desc()).limit(limit)).all()

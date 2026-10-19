@@ -38,7 +38,13 @@ from youju.models import (
 from youju.xpay import XPayClient, XPayError, pay_signature, signature
 
 NOW = datetime(2026, 10, 4, 4, 0, tzinfo=UTC)
-HEADERS = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "pay-user"}
+# 测试人员在体验版里（D-074：沙箱、测试名单只在开发版、体验版），代码包里的付费协议版本号是 pay-test
+HEADERS = {
+    "X-WX-SOURCE": "test-cloud",
+    "X-WX-OPENID": "pay-user",
+    "X-Youju-Env": "trial",
+    "X-Youju-Pay-Terms": "pay-test",
+}
 
 
 class FakeWechat:
@@ -121,8 +127,10 @@ def setup_pay(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         pay_enabled=True,
-        # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices
+        # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices。
+        # 沙箱不扣真钱，配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
         pay_audience="all",
+        pay_openids="pay-user",
         advisor_enabled=True,
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
@@ -409,25 +417,28 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert session.scalar(select(func.count(PayOrder.id))) == 0
     closed = {"items": [], "sandbox": True, "renewBonus": None, "invoiceType": None}
     settings.xpay_price_pass = None
-    assert client.get("/api/v1/pay/products").json() == closed
+    assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     settings.xpay_price_pass = 100
     settings.xpay_offer_id = ""
-    assert client.get("/api/v1/pay/products").json() == closed
+    assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     assert create(setup_pay).status_code == 404
     assert not fake.calls
-    # 现网（真扣钱）：没配律师定稿的协议版本时不展示价格、不下单；配了才卖
+    # 现网（真扣钱）：没配定稿的协议版本时谁也不卖（D-074 只对带定稿协议版本号的包开放）
     settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
-    assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
+    assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
     assert create(setup_pay).status_code == 404
     assert not fake.calls
-    settings.pay_terms_version = "pay-2026-11"
+    settings.pay_terms_version = "pay-test"
     # 现网还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
     for invoice in ("", "【发票类型】", "待确认"):
         settings.pay_invoice_type = invoice
-        assert client.get("/api/v1/pay/products").json() == {**closed, "sandbox": False}
+        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
+            **closed,
+            "sandbox": False,
+        }
         assert create(setup_pay).status_code == 404
     settings.pay_invoice_type = "电子普通发票（测试）"
-    listed = client.get("/api/v1/pay/products").json()
+    listed = client.get("/api/v1/pay/products", headers=HEADERS).json()
     assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
         "workbench_30d"
     ]

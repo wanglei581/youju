@@ -360,7 +360,7 @@ def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) ->
 
 
 @router.get("/capabilities")
-def capabilities(session: SessionDep, user: UserDep) -> dict:
+def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     settings = get_settings()
     day = service.usage_day(_stamp())
     counts = service.usage_counts(session, user.id, day)
@@ -396,7 +396,7 @@ def capabilities(session: SessionDep, user: UserDep) -> dict:
             ),
         },
         # 超出免费量时要不要提示买批量工具（D-058、D-070）；没开放支付时不出现任何购买字样
-        "pay": payments.entry(session, settings, user),
+        "pay": payments.entry(session, settings, user, payments.client_of(request.headers)),
     }
 
 
@@ -517,9 +517,9 @@ def create_task(
             if ticket is None and not reserved:
                 if data_kind:
                     # 不在售（开关关着、不对这个用户开放、下不了单）时不提购买（D-058、D-068）
-                    selling = payments.selling_to(settings, user.openid) and payments.orderable(
-                        settings
-                    )
+                    selling = payments.selling_to(
+                        settings, user.openid, payments.client_of(request.headers)
+                    ) and payments.orderable(settings)
                     raise HTTPException(
                         status_code=429,
                         detail={

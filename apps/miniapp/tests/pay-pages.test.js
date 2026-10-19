@@ -227,6 +227,40 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
   assert.deepEqual(plain((await capabilities({ statusCode: 403, data: { detail: '请先同意' } })).pay), { enabled: false, hasOrders: false });
 });
 
+test('商品、下单、能力、我的、提交任务这几个请求带上代码包里的付费协议版本号和小程序环境；读不到环境就不带，防止服务端认不出新版本或把正式版当体验版（D-074）', async () => {
+  function api(envVersion) {
+    const seen = [];
+    const request = (options) => {
+      seen.push({ url: options.url, header: plain(options.header || {}) });
+      Promise.resolve().then(() => options.success({ statusCode: 200, data: options.url.includes('/pay/orders') ? { orderId: 1 } : { items: [] } }));
+    };
+    const wx = { request, removeStorageSync() {}, getStorageSync() {}, setStorageSync() {} };
+    if (envVersion) wx.getAccountInfoSync = () => ({ miniProgram: { envVersion } });
+    const module = load('utils/api.js', {
+      './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {},
+      '../content/pay-terms.js': { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' },
+    }, { wx, setTimeout: () => 0, clearTimeout() {} });
+    return { module, seen };
+  }
+  const trial = api('trial');
+  await trial.module.payProducts();
+  await trial.module.createPayOrder({ product_id: 'workbench_30d', code: 'c', terms_version: 'pay-2026-11' });
+  await trial.module.advisorCapabilities({ refresh: true });
+  await trial.module.me();
+  await trial.module.createAdvisorTask({ kind: 'compare', text: '合成企业甲' }, 'key-1').catch(() => {});
+  const byPath = (part) => trial.seen.find((item) => item.url.includes(part));
+  for (const part of ['/api/v1/pay/products', '/api/v1/pay/orders', '/api/v1/advisor/capabilities', '/api/v1/me', '/api/v1/advisor/tasks']) {
+    const item = byPath(part);
+    assert.ok(item, part);
+    assert.equal(item.header['X-Youju-Pay-Terms'], 'pay-2026-11', part);
+    assert.equal(item.header['X-Youju-Env'], 'trial', part);
+  }
+  assert.equal(byPath('/api/v1/advisor/tasks').header['Idempotency-Key'], 'key-1');
+  const unknown = api(null);
+  await unknown.module.payProducts();
+  assert.deepEqual(unknown.seen[0].header, { 'X-Youju-Pay-Terms': 'pay-2026-11' });
+});
+
 test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
   for (const payProducts of [
     () => Promise.reject(Object.assign(new Error('开关关闭'), { status: 404 })),
@@ -904,6 +938,22 @@ test('纠错页在开关开着时写出纠错送天数的采纳标准，申请�
   for (const me of [() => Promise.resolve({ correctionReward: null }), () => Promise.reject(new Error('离线')), () => Promise.resolve({ correctionReward: { days: '1', monthLimit: 3, rule } })]) {
     assert.doesNotMatch(await open({}, me), /纠错被采纳送/);
   }
+});
+
+test('购买页写清怎么算次数和苹果手机的付款条件；工具页免费和体验时写"交一份名单算一次"，使用期内不写，防止顾问算不清次数、苹果手机付到一半才知道付不了（D-074）', async () => {
+  const h = passPage();
+  await flush();
+  const text = shown('pages/pass/index.wxml', h.page.data);
+  assert.match(text, /交一份名单算一次，系统出错、没出结果的不算/);
+  assert.match(text, /iOS 15 以上、微信 8\.0\.68 以上，并且用中国大陆的 App Store 账户/);
+  const free = toolForm();
+  await flush();
+  assert.equal(free.page.data.countRule, '交一份名单算一次，系统出错、没出结果的不算');
+  assert.match(shown('pages/advisor-form/index.wxml', free.page.data), /交一份名单算一次/);
+  const paid = toolForm({ api: { advisorStatus: () => Promise.resolve({ ...quota(0), pass: { active: true, expiresAt: '2026-12-01T00:00:00.000Z' } }) } });
+  await flush();
+  assert.equal(paid.page.data.countRule, '');
+  assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
 });
 
 test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {
