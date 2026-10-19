@@ -20,8 +20,9 @@
     <view class="card">
       <view class="section-title">账号</view>
       <view class="kv"><text class="kv-k">微信用户标识</text><text class="kv-v">{{user.id}}</text></view>
-      <!-- 内部包（D-062）：给自己开 AI 内测时，把完整标识填到云托管的 YOUJU_AI_ADVISOR_OPENIDS -->
-      <view class="kv"><text class="kv-k">内测白名单</text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制完整标识</text></view>
+      <!-- 完整标识：联系客服排查问题时用；创始人给自己开 AI 白名单时也从这里复制，填到云托管的 YOUJU_AI_ADVISOR_OPENIDS。
+           10/18 验收：正式包不再写"内测白名单"（所有人都看得到这一行） -->
+      <view class="kv"><text class="kv-k">完整标识</text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制（联系客服时用）</text></view>
       <view class="kv"><text class="kv-k">同意的协议版本</text><text class="kv-v">{{user.agreedVersion || '未同意'}}</text></view>
       <view wx:if="{{user.agreedAt}}" class="kv"><text class="kv-k">同意时间</text><text class="kv-v">{{user.agreedAt}}</text></view>
       <view class="kv kv--last"><text class="kv-k">最近使用</text><text class="kv-v">{{user.visited || user.created}}</text></view>
@@ -83,9 +84,15 @@
       <view class="muted plain">
         <view>· 账号、同意记录、关注：保存到你注销</view>
         <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
+        <!-- 10/18 验收：和隐私保护指引（2026-11）第三节第 2 条"保存期限"一致，补上批量工具、AI、加量体验和按天次数 -->
+        <view wx:if="{{retention.toolTasks}}">· 批量工具：解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件 {{retention.toolTasks}} 天后删除；在“我的记录”里可以提前删除</view>
+        <view wx:if="{{aiRetention}}">{{aiRetention}}</view>
+        <view>· 加量体验记录：开始和结束时间保存到你注销，注销时一并删除</view>
+        <view>· 按天的使用次数：保留本月和上个月的</view>
         <view wx:if="{{remindOpen || subs.length}}">· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
         <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
         <view>· 访问日志：保存 190 天（法律要求不少于 6 个月），不在这里显示</view>
+        <view>· 数据库备份：每天备份一次，保留 30 天，只用于数据丢失时恢复；注销后的数据随备份到期清除</view>
       </view>
     </view>
 

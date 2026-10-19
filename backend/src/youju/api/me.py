@@ -673,6 +673,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "feedback": settings.retain_feedback_days,
             "usedSubscriptions": settings.retain_used_subscriptions_days,
             "unusedSubscriptions": settings.retain_unused_subscriptions_days,
+            # 批量工具和 AI：解析出的名单 / 任务输入 7 天，任务记录和结果 30 天
+            # （隐私保护指引第三节第 2 条"保存期限"）
+            "toolInput": advisor_service.INPUT_RETENTION.days,
+            "toolTasks": advisor_service.FILE_RETENTION.days,
         },
         "exportedAt": _iso(v1.now()),
     }
