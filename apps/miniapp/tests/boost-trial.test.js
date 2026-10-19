@@ -199,14 +199,16 @@ test('体验中：免费次数用满也能提交 500 家以内；额度一行写
   assert.match(server.page.data.statusLine, /今天还能提交 0 次/); server.page.onUnload();
 });
 
+const STALE_DAY = '2000-01-01';
 test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一天能接着提交；重读只做一次、读不到就提示', async () => {
   let current = status({ maxRows: 500, trial: trialActive(10) });
   let reads = 0;
   const h = form({ api: { advisorStatus: () => { reads += 1; return Promise.resolve(current); } } });
   await flush();
   h.page.input({ detail: { value: '合成企业甲' } }); h.page.preview(); await flush();
-  // 模拟这份额度是昨天读的；服务端今天的体验次数已经重新计数
-  h.page.setData({ quotaDay: '2026-10-19' });
+  // 模拟这份额度是以前某天读的；服务端今天的体验次数已经重新计数。
+  // 用一个不可能是今天的日期（原来写死 2026-10-19，到了 10/19 当天这条就失败了）
+  h.page.setData({ quotaDay: STALE_DAY });
   current = status({ maxRows: 500, trial: trialActive(0) });
   const before = reads;
   h.page.submit(); await flush(); await flush();
@@ -221,7 +223,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   still.page.setData({ trialActive: true, trialLeft: 0, trialEndsMs: 1, trialCap: '今天的 10 次加量体验已用完' });
   still.page.input({ detail: { value: '合成企业甲' } }); still.page.preview(); await flush();
   const seen = count;
-  still.page.setData({ quotaDay: '2026-10-19' });
+  still.page.setData({ quotaDay: STALE_DAY });
   still.page.submit(); await flush(); await flush();
   assert.ok(count - seen <= 1, `重读了 ${count - seen} 次`);
   assert.equal(still.calls.filter((c) => c[0] === 'create').length, 0);
@@ -232,7 +234,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   const broken = form({ api: { advisorStatus: () => (fail ? Promise.reject(new Error('网络连接失败')) : Promise.resolve(status({ maxRows: 500, trial: trialActive(10) }))) } });
   await flush();
   broken.page.input({ detail: { value: '合成企业甲' } }); broken.page.preview(); await flush();
-  fail = true; broken.page.setData({ quotaDay: '2026-10-19' });
+  fail = true; broken.page.setData({ quotaDay: STALE_DAY });
   broken.page.submit(); await flush(); await flush();
   assert.match(broken.page.data.inputError, /未能读取工具额度：网络连接失败/);
   assert.equal(broken.calls.filter((c) => c[0] === 'create').length, 0);
