@@ -1,0 +1,108 @@
+<!-- AI 首页（D-075 第四节）：品牌蓝页头 → 固定的"AI 生成"说明条 → 两项能力 → 刚才看的通知 → 近 7 天能解读的申报通知
+     → 我的 AI 记录 → 用的时候遇到问题 → 模型和备案号。不放空白提问框，不用徽章和促销横幅 -->
+<view class="top" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav" style="height: {{navHeight}}px"><text class="nav-title">AI</text></view>
+  <notice-bar onBlue="{{true}}" />
+  <view class="hero">
+    <view class="hero-sub">找出通知里的对象、条件、时间、材料原句，每句都能回原文核对；不判断能不能申报。</view>
+    <text class="badge">第三方整理 · 非政府平台</text>
+  </view>
+</view>
+
+<!-- 固定一条，不能关：显式标明 AI 生成（标识办法第四条）；"说明"展开适用人群、场合、用途、不适用、保存多久 -->
+<view class="strip">
+  <view class="strip-row" bindtap="toggleScope" aria-role="button" aria-expanded="{{scopeOpen}}">
+    <text class="strip-tag">AI 生成 · 以原文为准</text>
+    <text class="link strip-more">{{scopeOpen ? '收起' : '说明'}} <t-icon name="{{scopeOpen ? 'chevron-up' : 'chevron-down'}}" size="24rpx" color="#2A5CE0" /></text>
+  </view>
+  <view wx:if="{{scopeOpen}}" class="strip-body">
+    <view wx:for="{{scope}}" wx:key="*this" class="strip-line">{{item}}</view>
+    <view class="strip-line">{{keep}}</view>
+  </view>
+</view>
+
+<view wx:if="{{waiting}}" class="card abilities" aria-label="正在加载">
+  <view class="sk sk-line"></view>
+  <view class="sk sk-line sk-line--short"></view>
+</view>
+<view wx:elif="{{offline}}" class="card load-error"><text>暂时连不上服务器，请稍后重试。</text><text class="link retry" bindtap="retry">重试</text></view>
+<block wx:else>
+  <view class="card abilities">
+    <view wx:if="{{capsLoading}}" aria-label="正在加载">
+      <view class="sk sk-line"></view>
+      <view class="sk sk-line sk-line--short"></view>
+    </view>
+    <view wx:elif="{{gate}}" class="gate">
+      <view class="gate-text">{{gateText}}</view>
+      <view wx:if="{{gate === 'consent'}}" class="btn-primary gate-btn" bindtap="consent" aria-role="button">阅读并同意</view>
+      <view wx:elif="{{gate === 'offline'}}" class="link gate-link" bindtap="retry" aria-role="button">重试</view>
+      <view wx:elif="{{gate === 'paused'}}" class="gate-contact"><contact-button from="ai_home" reason="paused" /></view>
+    </view>
+    <view wx:else>
+      <view wx:for="{{kinds}}" wx:key="kind" class="ability {{item.out ? 'ability--out' : ''}}">
+        <view class="ability-main">
+          <text class="ability-name">{{item.name}}</text>
+          <text class="ability-desc">{{item.desc}}</text>
+        </view>
+        <text wx:if="{{!item.out && item.remaining !== null}}" class="ability-left">今天还剩 <text class="ability-num">{{item.remaining}}</text> 次</text>
+        <view wx:if="{{item.out}}" class="ability-out">{{item.outText}}</view>
+      </view>
+    </view>
+    <view class="find" bindtap="findDoc" aria-role="button">去找一份通知</view>
+  </view>
+
+  <view wx:if="{{lastDoc}}" class="card">
+    <view class="card-head"><text class="card-title">刚才看的通知</text></view>
+    <view class="last" data-id="{{lastDoc.id}}" bindtap="openDoc">
+      <view class="last-title">{{lastDoc.title}}</view>
+      <view class="last-meta">{{lastDoc.issuer}}<text wx:if="{{lastDoc.issuer && lastDoc.date}}"> · </text>{{lastDoc.date}}</view>
+    </view>
+    <view class="last-ops">
+      <ai-button doc-id="{{lastDoc.id}}" doc-title="{{lastDoc.title}}" ai="{{lastDoc.ai}}" />
+      <text wx:if="{{!gate && kinds.length > 1}}" class="link last-clause" bindtap="clauseLast" aria-role="button">条款对照 ›</text>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-head" bindtap="allRecent" aria-role="link"><text class="card-title">近 7 天能解读的申报通知</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
+    <view class="list-note">点标题看通知全文，点“AI 解读”直接开始</view>
+    <view wx:if="{{recentLoading}}" aria-label="正在加载">
+      <view wx:for="{{[1, 2]}}" wx:key="*this" class="sk-row">
+        <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
+        <view class="sk sk-line"></view>
+        <view class="sk sk-meta"></view>
+      </view>
+    </view>
+    <view wx:elif="{{recentError}}" class="list-tip">{{recentError}}<text class="link" bindtap="retry">　重试</text></view>
+    <block wx:else>
+      <doc-row wx:for="{{recent}}" wx:key="id" doc="{{item}}" today="{{today}}" last="{{index === recent.length - 1}}" />
+      <view wx:if="{{!recent.length}}" class="list-tip">近 7 天还没有能解读的申报通知，可以点上面的“去找一份通知”</view>
+    </block>
+  </view>
+
+  <view wx:if="{{records.length}}" class="card">
+    <view class="card-head" bindtap="allRecords" aria-role="link"><text class="card-title">我的 AI 记录</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
+    <view wx:for="{{records}}" wx:key="id" class="record {{index === records.length - 1 ? 'record--last' : ''}}" data-id="{{item.id}}" data-kind="{{item.kind}}" bindtap="openRecord" aria-role="link">
+      <view class="record-main">
+        <view class="record-title">{{item.kindLabel}}<text wx:if="{{item.title}}"> · {{item.title}}</text></view>
+        <view class="record-meta">{{item.time}}<text wx:if="{{item.time}}"> · </text>{{item.stateLabel}}</view>
+      </view>
+      <t-icon name="chevron-right" size="32rpx" color="#86909C" />
+    </view>
+  </view>
+
+  <view class="card help">
+    <view class="card-head"><text class="card-title">用的时候遇到问题？</text></view>
+    <view class="help-contact"><contact-button from="ai_home" /></view>
+    <view class="help-links">
+      <text class="link" bindtap="help" aria-role="link">使用帮助 ›</text>
+      <text class="link" bindtap="report" aria-role="link">投诉举报 ›</text>
+    </view>
+  </view>
+
+  <view class="foot">
+    <view wx:if="{{disclosure}}">{{disclosure}}</view>
+    <view>有据 · 第三方整理 · 每条都有出处</view>
+  </view>
+</block>
+<view class="tab-page-bottom"></view>

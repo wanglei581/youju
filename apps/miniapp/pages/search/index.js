@@ -129,8 +129,8 @@ Page({
     folded: 0,
     guides: 0,
     fold: { text: '', link: '' },
-    // 只看能 AI 解读的（D-075，AI 首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
-    // 不算筛选条件，不进关注、不进转发路径；AI 对这个人没开着时不生效、也不显示
+    // 只看能解读的（D-075，板块首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
+    // 不算筛选条件，不进关注、不进转发路径；板块对这个人没开着时不生效、也不显示
     aiOnly: false,
   },
 
@@ -160,7 +160,7 @@ Page({
     });
     if (String(query.ai) === '1') {
       this.setData({ aiOnly: access.current().visible === true });
-      // 后台确认 AI 没对这个人开着：去掉这一项重新查，页面上不留 AI 字样
+      // 后台确认板块没对这个人开着：去掉这一项重新查，页面上不留相关字样
       this.unsubscribeAi = access.subscribe((state) => {
         if (this.data.aiOnly && state.confirmed && !state.visible) { this.setData({ aiOnly: false }); this.apply(true); }
       });

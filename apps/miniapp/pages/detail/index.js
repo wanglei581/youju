@@ -8,7 +8,6 @@ const { exportDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
-const access = require('../../utils/ai-access.js');
 
 // 正文默认显示的字数：在这个长度附近的换行处截断，读起来不断在半句
 const BODY_PREVIEW = 600;
@@ -76,7 +75,7 @@ function deadlineRows(deadlines) {
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '', aiHint: false },
+    atts: [], attNote: '', versions: [], upstream: '' },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -84,21 +83,10 @@ Page({
     this.setData({ loginOpen: loginOpen(), remindOpen: remindOpen('deadline') });
     this.docId = query.id;
     this.lastShow = Date.now();
-    // AI 开没开、能不能用只听 api（D-075）：标题卡里的那行提示跟着变
-    this.unsubscribeAi = access.subscribe(() => this.syncAi());
-    access.ensure();
     this.load();
   },
 
-  // 标题卡里的"这份通知可以 AI 解读 ↓"：这份能解读、AI 对这个人开着、后台确认过且能处理时才显示；
-  // 显示时把这份记下来，AI 首页"刚才看的通知"用
-  syncAi() {
-    const { doc } = this.data;
-    const aiHint = !!doc && !!doc.ai && doc.ai.interpret === true && access.canOpen();
-    if (aiHint !== this.data.aiHint) this.setData({ aiHint });
-    if (aiHint) access.rememberDoc(doc);
-  },
-
+  // 标题卡里那行提示（D-075）：滚到"要点"下面的卡片
   toAi() {
     wx.pageScrollTo({ selector: '#ai-entry', duration: 300 });
   },
@@ -163,10 +151,9 @@ Page({
         allowShare(true);
         this.setData({ shareReady: true });
         this.syncReminded();
-        this.syncAi();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '', aiHint: false,
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -215,7 +202,6 @@ Page({
   onUnload() {
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
-    if (this.unsubscribeAi) this.unsubscribeAi();
   },
 
   goBack() {

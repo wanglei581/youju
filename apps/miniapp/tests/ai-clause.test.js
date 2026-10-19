@@ -10,6 +10,7 @@ const context = require('../utils/tool-context.js');
 const format = require('../utils/format.js');
 const advisor = require('../utils/advisor.js');
 const { render, parse } = require('./helpers/wxml.js');
+const AI_OFF = require('./helpers/ai-off.js'); // 页面要的 AI 板块状态：这里只测页面本身，当作关着
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -27,7 +28,7 @@ function load(file, api, wx = {}, extra = {}) {
   let definition; const module = { exports: {} };
   const dependencies = { '../../utils/regions.js': require('../utils/regions.js'), '../../utils/api.js': api, '../../utils/ai-clause.js': clause,
     '../../utils/tool-context.js': context, '../../utils/format.js': format, '../../utils/advisor.js': advisor,
-    '../../utils/boost.js': require('../utils/boost.js'), ...extra };
+    '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': AI_OFF, ...extra };
   vm.runInNewContext(read(file), { module, Date, Math, Promise, setTimeout, clearTimeout,
     require: (key) => { assert.ok(Object.hasOwn(dependencies, key), key); return dependencies[key]; },
     Page: (value) => { definition = value; }, wx: { setNavigationBarTitle() {}, ...wx },
@@ -148,7 +149,8 @@ test('失败、422、429、404 与结果失效的处理复用解读规则', asyn
   for (const status of [422, 429, 404]) {
     const h = harness({ api: { createAdvisorTask: () => Promise.reject(Object.assign(new Error('后端 detail'), { status })) } });
     h.session.show(); await flush(); assert.equal(h.state.phase, 'failed');
-    assert.equal(h.state.error, status === 404 ? '暂时没有可用工具' : '后端 detail'); assert.equal(h.state.canRetry, status === 422); h.session.hide();
+    // 404（接口说没开）写"AI 暂时不可用"（D-075，不写"工具"、不写"未开放"）；条款对照填的情况不合要求的 422 能回去改
+    assert.equal(h.state.error, status === 404 ? 'AI 暂时不可用，请稍后再试。' : '后端 detail'); assert.equal(h.state.canRetry, status === 422); h.session.hide();
   }
   for (const status of ['failed', 'cancelled', 'done']) {
     const h = harness({ session: { taskId: 7 }, api: { advisorTask: () => Promise.resolve({ id: 7, docId: 42, status, result: null, error: '结果已失效' }) } });

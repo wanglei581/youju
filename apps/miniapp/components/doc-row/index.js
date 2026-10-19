@@ -18,7 +18,7 @@ Component({
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
     groupText: '', groupOpen: false, regionText: '', aiShown: false },
   observers: {
-    'doc, q, today, aiShown': function (doc, q) {
+    'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
       const status = doc.status;
       const appStatus = doc.app_status;
@@ -50,6 +50,12 @@ Component({
         // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
         groupText: groupLine(doc.group),
       });
+    },
+    // 行上的"AI 解读"按钮出现或收起时，重排发文机关那一行
+    aiShown(aiShown) {
+      const doc = this.data.doc;
+      if (!doc || !doc.title) return;
+      this.setData({ issuerLong: (doc.issuer || '').length > (aiShown ? 0 : ISSUER_WRAP) });
     },
     // 换了一条（翻页、重新搜索）时收起
     'doc.id': function () {

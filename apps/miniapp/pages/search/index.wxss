@@ -78,4 +78,3 @@
 .empty-cond-label { color: var(--t1); }
 .empty-cond-off { padding: 16rpx 0 16rpx 24rpx; }
 .empty-clear { margin: 28rpx auto 0; width: 240rpx; height: 68rpx; display: flex; align-items: center; justify-content: center; border: 2rpx solid var(--line2); border-radius: 34rpx; color: var(--t1); }
-.ai-only { margin: 16rpx 32rpx 0; padding: 16rpx 24rpx; display: flex; align-items: center; justify-content: space-between; gap: 24rpx; border-radius: 12rpx; background: var(--brand-tint); font-size: 26rpx; color: var(--t1); }

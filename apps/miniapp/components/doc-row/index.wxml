@@ -18,7 +18,7 @@
       <t-icon name="copy" size="28rpx" />
       <text>复制原文链接</text>
     </view>
-    <!-- AI 解读（D-075）：只在能解读、AI 对这个人开着时出现；勾选导出时不出现 -->
+    <!-- 解读按钮（D-075，组件里判断）：只在能解读、对这个人开着时出现；勾选导出时不出现 -->
     <ai-button doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" hidden="{{selecting}}" bind:toggle="aiToggle" />
   </view>
   <!-- 转发版本：同一份部里通知的其他地方版本，各自的截止和原文在各自的详情里 -->

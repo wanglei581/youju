@@ -106,9 +106,9 @@ function errorText(error) {
   if (error.code === 'AI_DAILY_CAP') return '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。';
   return error.message || '处理失败，请稍后重试';
 }
-// 这几种重试也没用：不能解读、暂时不可用、次数满了
+// 这几种重试也没用：这份不能解读、暂时不可用、次数满了。别的 422（条款对照填的情况不合要求）照旧能回去改
 function retryable(error) {
-  return error.status !== 404 && error.status !== 422 && error.status !== 429;
+  return error.status !== 404 && error.status !== 429 && error.code !== 'AI_NOT_ELIGIBLE';
 }
 function idempotencyKey() {
   return `interpret-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
