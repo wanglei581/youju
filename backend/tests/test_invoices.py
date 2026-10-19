@@ -240,7 +240,8 @@ def test_pay_entry_flags_in_capabilities_and_me(pay, session):
     # 现网（真扣钱）没配定稿协议版本时不算在售，不出现付不了款的入口；沙箱可以
     settings.xpay_price_pass, settings.xpay_env = 100, 0
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
-    settings.pay_terms_version = "pay-2026-11"
+    # 定稿协议版本号要和小程序代码包里的一致（HEADERS 带的是 pay-test，D-074）
+    settings.pay_terms_version = "pay-test"
     # 还要写明能开哪种发票（D-070）
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
     settings.pay_invoice_type = "电子普通发票（测试）"
@@ -268,11 +269,16 @@ def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
     # 定时任务只看总开关：名单之外不影响已有订单的补单、对账
     assert payments.has_work(session, settings) is True
-    assert payments.selling_to(settings, None) is False
+    trial = payments.Client(terms="pay-test", env="trial")
+    assert payments.selling_to(settings, None, trial) is False
+    # 正式版里不出现白名单购买（D-074，运营规范 5.19）：同一个测试人员换到正式版就看不到
+    assert payments.selling_to(settings, "pay-user", payments.Client(terms="pay-test")) is False
     settings.pay_audience = "all"
-    assert payments.selling_to(settings, "anyone") is True
+    # 沙箱付款不扣真钱：配成 all 也只给测试名单（D-074）
+    assert payments.selling_to(settings, "anyone", trial) is False
+    assert payments.selling_to(settings, "pay-user", trial) is True
     settings.pay_enabled = False
-    assert payments.selling_to(settings, "pay-user") is False
+    assert payments.selling_to(settings, "pay-user", trial) is False
 
 
 def test_refund_and_admin_issue_lock_order_before_invoice(pay, session):

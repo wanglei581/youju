@@ -27,7 +27,7 @@
       <input class="invoice-input" value="{{form.title}}" maxlength="100" placeholder="{{form.titleType === 'company' ? '单位全称' : '个人姓名'}}" data-field="title" bindinput="field" disabled="{{sending}}" />
       <input wx:if="{{form.titleType === 'company'}}" class="invoice-input" value="{{form.taxId}}" maxlength="20" placeholder="税号（统一社会信用代码）" data-field="taxId" bindinput="field" disabled="{{sending}}" />
       <input class="invoice-input" value="{{form.email}}" maxlength="254" placeholder="接收发票的邮箱" data-field="email" bindinput="field" disabled="{{sending}}" />
-      <view class="muted invoice-hint">每月统一开具一次电子发票，发到上面的邮箱。开出前可以修改。</view>
+      <view class="muted invoice-hint">申请当月开出电子发票，发到上面的邮箱。开出前可以修改。</view>
       <view wx:if="{{formError}}" class="advisor-error">{{formError}}</view>
       <view class="order-actions">
         <button class="order-btn btn-primary" bindtap="sendInvoice" loading="{{sending}}" disabled="{{sending}}">提交</button>
