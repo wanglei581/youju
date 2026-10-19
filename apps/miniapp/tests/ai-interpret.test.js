@@ -22,7 +22,7 @@ function load(file, deps, globals = {}) {
   let definition; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; }, ...globals,
   }, { filename: file });
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;

@@ -30,6 +30,7 @@ function load(file, deps = {}, globals = {}) {
     module, Math, Promise, Set, Map, setTimeout, clearTimeout, console,
     require(name) {
       if (name === '../../utils/regions.js') return regions;
+      if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js');
       assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`);
       return deps[name];
     },
@@ -409,10 +410,13 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
 });
 
 function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ items: [] }), tasks = () => Promise.resolve({ items: [] }), last = null, consentOk = true,
-  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }), realAccess = null, extraApi = {} } = {}) {
+  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }), realAccess = null, extraApi = {}, daywatch = null, now = null } = {}) {
   // realAccess：用真的 utils/ai-access.js（accessWith 建的），看缓存多久再问
   const access = realAccess || control(state); if (!realAccess) access.stored.last = last;
   const calls = { search: [], caps: 0, consent: 0 };
+  // 页面里的定时器（我的 AI 记录过一会儿再问）不真的等：记下来，测试自己调 runTimers()
+  const timers = new Map(); let timerSeq = 0;
+  const runTimers = () => { const due = [...timers.values()]; timers.clear(); due.forEach((t) => t.fn()); return due.map((t) => t.ms); };
   const switched = []; const navigations = []; let selected = null;
   const page = load('pages/ai/index.js', {
     '../../utils/api.js': {
@@ -424,10 +428,13 @@ function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ i
     },
     '../../utils/ai-access.js': access, '../../utils/advisor.js': advisor, '../../utils/ai-interpret.js': interpret, '../../utils/tool-context.js': context,
     '../../utils/consent.js': { ensureConsent: (opts) => { calls.consent += 1; calls.consentOpts = opts; return Promise.resolve(consentOk); } }, '../../utils/format.js': format,
-  }, { wx: { switchTab: (o) => { switched.push(o.url); if (o.complete) o.complete(); }, navigateTo: (o) => navigations.push(o.url) } });
+    '../../utils/daywatch.js': daywatch || require('./helpers/day-off.js'),
+  }, { wx: { switchTab: (o) => { switched.push(o.url); if (o.complete) o.complete(); }, navigateTo: (o) => navigations.push(o.url) },
+    setTimeout: (fn, ms) => { timerSeq += 1; timers.set(timerSeq, { fn, ms }); return timerSeq; }, clearTimeout: (id) => { timers.delete(id); },
+    ...(now ? { Date: { now } } : {}) });
   page.getTabBar = () => ({ setData: (v) => { selected = v.selected; } });
   page.onLoad();
-  return { page, access, calls, switched, navigations, selected: () => selected, text: () => textOf(render('pages/ai/index.wxml', page.data)) };
+  return { page, access, calls, switched, navigations, timers, runTimers, selected: () => selected, text: () => textOf(render('pages/ai/index.wxml', page.data)) };
 }
 
 test('AI 首页：两项能力各写今天还剩几次，下面是刚才看的通知、近 7 天能解读的申报通知（后台筛、最多 5 条）、我的 AI 记录（最近 3 条）和联系客服；不放空白提问框', async () => {
@@ -1677,4 +1684,98 @@ test('Codex 第 17 轮：上次没连上，离开再回来、后台还没答复�
   assert.equal(g.page.data.ready, true);
   g.page.onHide(); g.access.ensure = () => new Promise(() => {}); g.page.onShow(); await settle();
   assert.equal(g.page.data.waiting, false); assert.equal(g.page.data.capsLoading, true);
+});
+
+// 跨过零点的替身：记下回调，测试自己调
+function dayStub() {
+  const watched = []; let stopped = 0;
+  return { watched, stopped: () => stopped, watchDay: (page, fn) => watched.push(fn), stopDay: () => { stopped += 1; }, turn: () => watched.at(-1)('2026-10-20') };
+}
+
+test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页时过一会儿再问（5、10、15 秒，之后每 15 秒，最多 15 分钟），处理完显示已完成；离开就停', async () => {
+  const running = { id: 3, kind: 'interpret', status: 'running', docTitle: '通知3', createdAt: '2026-10-19T09:00:00+08:00' };
+  let answer = [running];
+  const clock = { now: 1000 * HOUR };
+  const h = hubPage({ tasks: () => Promise.resolve({ items: answer.map((t) => ({ ...t })) }), now: () => clock.now });
+  h.page.onShow(); await settle();
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*处理中/);
+  assert.deepEqual([...h.timers.values()].map((t) => t.ms), [5000]);
+  // 还在处理：间隔变长
+  assert.deepEqual(h.runTimers(), [5000]); await settle();
+  assert.deepEqual(h.runTimers(), [10000]); await settle();
+  assert.deepEqual(h.runTimers(), [15000]); await settle();
+  assert.deepEqual([...h.timers.values()].map((t) => t.ms), [15000], '之后每 15 秒');
+  // 处理完：显示已完成，不再问
+  answer = [{ ...running, status: 'done', hasResult: true }];
+  h.runTimers(); await settle();
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*已完成/);
+  assert.equal(h.timers.size, 0, '都处理完了就停');
+  // 离开就停
+  answer = [running];
+  const g = hubPage({ tasks: () => Promise.resolve({ items: answer.map((t) => ({ ...t })) }), now: () => clock.now });
+  g.page.onShow(); await settle(); assert.equal(g.timers.size, 1);
+  g.page.onHide(); assert.equal(g.timers.size, 0, '离开就停');
+  // 最多问 15 分钟
+  const k = hubPage({ tasks: () => Promise.resolve({ items: [{ ...running }] }), now: () => clock.now });
+  k.page.onShow(); await settle(); assert.equal(k.timers.size, 1);
+  clock.now += 15 * 60 * 1000 + 1; k.runTimers(); await settle();
+  assert.equal(k.timers.size, 0, '超过 15 分钟不再问');
+});
+
+test('Codex 第 18 轮：停在 AI 首页跨过零点，今天还剩几次重新问；解读页、对照页次数用完或全站满了时跨过零点不自己重新开始，写"可以重新开始了"，点了再问', async () => {
+  // AI 首页
+  let used = true;
+  const day = dayStub();
+  const h = hubPage({ caps: () => Promise.resolve(used ? ON({ remaining: { interpret: 0, clause: 0 } }) : ON()), daywatch: day });
+  h.page.onShow(); await settle();
+  assert.match(h.text(), /5 次用完了/);
+  used = false; day.turn(); await settle();
+  assert.match(h.text(), /今天还剩 5 次/); assert.doesNotMatch(h.text(), /用完了/);
+  h.page.onHide(); assert.ok(day.stopped() >= 1, '离开时停掉');
+  // 解读页、对照页
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full']]) {
+      let blocked = true; let capsCalls = 0; let created = 0;
+      const d = dayStub();
+      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const deps = {
+        '../../utils/api.js': {
+          advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
+          createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 9, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'queued' }),
+        },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+        '../../utils/daywatch.js': d,
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) }, setTimeout: () => 0, clearTimeout() {} });
+      p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+      // 断言失败时也要停掉解读的轮询（它用真的定时器），不然测试进程退不出去
+      try {
+        assert.equal(p.data.gate, gate);
+        blocked = false; const before = capsCalls;
+        d.turn(); await settle();
+        assert.equal(capsCalls, before, `${page} ${gate} 跨过零点不自己重新问`); assert.equal(created, 0, '不自己提交');
+        const root = render(`pages/${page}/index.wxml`, p.data);
+        assert.match(textOf(root), /已经过了 0 点，可以重新开始了。/);
+        assert.equal(findAll(root, (n) => n.tag === 'button' && textOf(n).trim() === '重新开始').length, 1);
+        assert.equal(findAll(root, tapsTo('records')).length, 0, '不再说"看我的记录"');
+        p.reload(); await settle();
+        assert.equal(capsCalls, before + 1, '点了再问'); assert.equal(p.data.aiEnabled, true, `${page} ${gate} 可以用了`);
+      } finally {
+        p.onHide();
+      }
+    }
+    // 别的情况（暂时不可用）跨过零点不变
+    const d = dayStub();
+    const deps = {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ available: false })) },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      '../../utils/daywatch.js': d,
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: () => '', setStorageSync() {} } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    d.turn(); assert.equal(p.data.dayTurned, false); assert.equal(p.data.gateText, 'AI 暂时不可用，请稍后再试。');
+    p.onHide();
+  }
 });

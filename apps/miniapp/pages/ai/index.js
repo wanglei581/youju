@@ -10,6 +10,7 @@ const { disclosureLine } = require('../../utils/ai-interpret.js');
 const context = require('../../utils/tool-context.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { todayISO } = require('../../utils/format.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const KIND_ROWS = [
   { kind: 'interpret', name: 'AI 解读', desc: '把一份通知的原句分好类，约半分钟' },
@@ -19,6 +20,9 @@ const KIND_ROWS = [
 const RECENT = { kind: '申报通知', time: '近 7 天', ai: 1, limit: 5, offset: 0, fold: 1 };
 const RECENT_ALL = `/pages/search/index?kind=${encodeURIComponent('申报通知')}&time=${encodeURIComponent('近 7 天')}&ai=1`;
 const RECORDS = 3;
+// 我的 AI 记录里有排队中、处理中的：停在这一页时过 5、10、15 秒再问，之后每 15 秒一次，最多问 15 分钟（第 18 轮）
+const RECORD_POLL = [5000, 10000, 15000];
+const RECORD_POLL_FOR = 15 * 60 * 1000;
 const KEEP = '你填的企业情况保存 7 天，任务和结果保存 30 天。';
 
 const GATE_TEXT = {
@@ -121,6 +125,7 @@ Page({
   onUnload() {
     if (this.unsubscribe) this.unsubscribe();
     if (api.stopStartup) api.stopStartup(this);
+    this.stopTimers();
   },
 
   onShow() {
@@ -128,6 +133,11 @@ Page({
     this.shown = true;
     // 连接慢（接口服务在重试）时和其他页面一样写"正在连接，比平时慢一点，请稍等…"（方案第四节，第 15 轮）
     if (api.watchStartup) api.watchStartup(this);
+    // 停在这一页跨过零点：今天还剩几次、全站满没满、近 7 天的通知都重新问（第 18 轮）
+    watchDay(this, () => { if (this.shown) this.onShow(); });
+    clearTimeout(this.recordTimer);
+    this.recordPolls = 0;
+    this.recordSince = Date.now();
     // 刚才看的那份先不给按钮：后台再核一次还能不能解读（可能下架了、失去了资格），核过再给
     const last = access.lastDoc();
     // 上次进来时的能力、次数和拦下原因都先清掉，显示加载中；能力接口回来之前不给"AI 解读""条款对照"
@@ -153,6 +163,7 @@ Page({
   onHide() {
     this.shown = false;
     if (api.stopStartup) api.stopStartup(this);
+    this.stopTimers();
     // 离开以后回来的旧结果不再写页面
     this.seq = (this.seq || 0) + 1;
   },
@@ -160,6 +171,7 @@ Page({
   // 作废在途的结果，清掉页面上和账号有关的东西（我的 AI 记录、刚才看的那份）
   reset() {
     this.seq = (this.seq || 0) + 1;
+    clearTimeout(this.recordTimer);
     this.recentItems = [];
     this.capsResult = null;
     // 页头、说明也收起，回到"还没问到"的样子：注销以后到重新确认之前不出现 AI 字样
@@ -202,11 +214,16 @@ Page({
       if (seq !== this.seq) return;
       this.setData({ recent: [], recentLoading: false, recentError: '近 7 天的通知没有加载出来' });
     });
-    // 我的 AI 记录：和"我的 → 我的记录"是同一份，这里列最近 3 条 AI 的；一条都没有时不占地方
+    this.loadRecords(seq);
+  },
+
+  // 我的 AI 记录：和"我的 → 我的记录"是同一份，这里列最近 3 条 AI 的；一条都没有时不占地方
+  loadRecords(seq) {
     api.advisorTasks().then((res) => {
       if (seq !== this.seq) return;
-      const items = ((res && res.items) || []).filter((task) => task.kind === 'interpret' || task.kind === 'clause');
-      this.setData({ records: items.slice(0, RECORDS).map(recordRow) });
+      const items = ((res && res.items) || []).filter((task) => task.kind === 'interpret' || task.kind === 'clause').slice(0, RECORDS);
+      this.setData({ records: items.map(recordRow) });
+      if (items.some((task) => task.status === 'queued' || task.status === 'running')) this.pollRecords(seq);
     }).catch((err) => {
       if (seq !== this.seq) return;
       // 还没同意协议、没开着（401、403、404）：本来就没有能看的记录，不写"没加载出来"、不给重试（同"我的记录"页，第 10 轮）
@@ -214,6 +231,21 @@ Page({
       // 没加载出来不当成没有记录：卡片照样留着，写明没加载出来、给重试，"全部"照样能点进去（Codex 小程序第 7 轮）
       this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
     });
+  },
+
+  // 还有没处理完的：过一会儿再问一次记录，处理完就显示"已完成"；页面不在前面、换了一次加载就停
+  pollRecords(seq) {
+    clearTimeout(this.recordTimer);
+    if (Date.now() - (this.recordSince || 0) > RECORD_POLL_FOR) return;
+    const delay = RECORD_POLL[Math.min(this.recordPolls || 0, RECORD_POLL.length - 1)];
+    this.recordPolls = (this.recordPolls || 0) + 1;
+    this.recordTimer = setTimeout(() => { if (this.shown && seq === this.seq) this.loadRecords(seq); }, delay);
+  },
+
+  stopTimers() {
+    clearTimeout(this.recordTimer);
+    this.recordTimer = null;
+    stopDay(this);
   },
 
   // 两项能力、今天还剩几次、拦下原因：问能力接口（每次都不用缓存）

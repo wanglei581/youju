@@ -6,6 +6,9 @@ const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL,
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 const access = require('../../utils/ai-access.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
+
+const DAY_TURNED = '已经过了 0 点，可以重新开始了。';
 
 Page({
   data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
@@ -29,6 +32,12 @@ Page({
     this.visible = true;
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具' });
+    // 今天的次数用完、全站满了时停在这一页跨过零点：不自己重新开始（会直接提交、用掉次数），
+    // 改写"可以重新开始了"，点了再问（第 18 轮）
+    this.setData({ dayTurned: false });
+    watchDay(this, () => {
+      if (this.visible && (this.data.gate === 'used' || this.data.gate === 'full')) this.setData({ dayTurned: true, gateText: DAY_TURNED });
+    });
     this.setData({ loading: true, aiEnabled: false, today: todayISO() });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -71,10 +80,10 @@ Page({
     require('../../utils/consent.js').ensureConsent({ purpose: 'ai' }).then((ok) => { if (ok && this.visible) this.onShow(); });
   },
   // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
-  reload() { if (this.data.gate === 'offline' || this.data.gate === 'paused') this.onShow(); },
+  reload() { if (this.data.gate === 'offline' || this.data.gate === 'paused' || this.data.dayTurned) this.onShow(); },
   // 今天的次数用完了：去看以前的结果
   records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
-  onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; if (this.session) this.session.hide(); },
+  onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); if (this.session) this.session.hide(); },
   onUnload() { this.onHide(); },
   input(e) {
     const field = e.currentTarget.dataset.field;
