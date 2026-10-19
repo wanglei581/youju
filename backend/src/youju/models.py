@@ -452,6 +452,121 @@ class AttachmentCopy(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+# 附件文字取不出、下载不了的原因（youju/attachment_text.py 的 REASONS 写了每个的意思）
+ATTACHMENT_TEXT_REASONS = (
+    "scan",
+    "empty",
+    "broken",
+    "format",
+    "too_large",
+    "webpage",
+    "gone",
+    "unavailable",
+)
+_TEXT_REASON_SQL = ", ".join(f"'{r}'" for r in ATTACHMENT_TEXT_REASONS)
+
+
+class AttachmentTextUrl(Base):
+    """给 AI 用的附件文字，第一层"附件（原网站链接）"（youju/attachment_text.py）：按原站链接一条，
+    指向这个链接现在的内容版本。附件副本的定时任务下载时顺带取文字、更新这一行；原网站删了、
+    内容变了，这一行改指新版本或清空（撤下旧文字）。超出范围（申报通知 180 天、政策 90 天、
+    下架、名单类）的整行删掉。"""
+
+    __tablename__ = "attachment_text_urls"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_attachment_text_urls_url"),
+        Index("ix_attachment_text_urls_changed_at", "changed_at"),
+        CheckConstraint(
+            "status IN ('pending', 'ok', 'failed')", name="ck_attachment_text_urls_status"
+        ),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_urls_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # 附件题录里的扩展名（统计"每种格式能读多少"按它分）
+    declared_type: Mapped[str] = mapped_column(String(8))
+    # pending：还没取；ok：有文字（version_id）；failed：取不出或下载不了（reason）
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    # 现在的内容版本：下载到了文件就有（取不出文字的版本也记，原因在版本上）；原网站删了、
+    # 下载到的是网页、超过 20MB 等就清空
+    version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="SET NULL")
+    )
+    # 按哪一版取文字规则处理过（attachment_text.EXTRACTOR_VERSION）：0 是还没处理过；不是当前
+    # 版本的要重新下载、重取。网络等临时问题不改它，到 retry_at 再试
+    extractor: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 指向的版本、状态或原因变了的时间（第 2 步按它找要重算"能不能解读"的通知）
+    changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class AttachmentTextVersion(Base):
+    """附件文字第二层"内容版本"：按文件内容的 SHA-256 一条，内容相同的几个链接共用。记下这份内容
+    能不能取出文字、取了多少；文字本身在 AttachmentTextSegment。没有链接指向的版本连同文字删掉。"""
+
+    __tablename__ = "attachment_text_versions"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_attachment_text_versions_sha256"),
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_attachment_text_versions_status"),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_versions_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    # 按文件头判断的实际格式（wps 多半是 doc、et 多半是 xls）；认不出时为空
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    size: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    extractor: Mapped[int] = mapped_column(Integer)
+    # 取出的段数、字数（遮过号码以后的；表格行按"格 | 格"连起来算）
+    segments: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    chars: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # PDF 的页数，以及其中像扫描件（几乎没有文字、只有图片）的页数：这些页的字没取到
+    pages: Mapped[int | None] = mapped_column(Integer)
+    scanned_pages: Mapped[int | None] = mapped_column(Integer)
+    # 遮过号码的段数
+    masked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    extracted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AttachmentTextSegment(Base):
+    """附件文字第三层：按阅读顺序一段一行（段落一行、表格一行一行），身份证号、手机号、银行账号
+    入库前已遮掉。loc 记出处：PDF 第几页、工作表名和行号、第几个表格的第几行、第几张幻灯片；
+    表格行的 cells 记每一格的列号、所在列的表头和文字。"""
+
+    __tablename__ = "attachment_text_segments"
+    __table_args__ = (
+        UniqueConstraint("version_id", "n", name="uq_attachment_text_segments_n"),
+        CheckConstraint("kind IN ('p', 'head', 'row')", name="ck_attachment_text_segments_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="CASCADE")
+    )
+    # 第几段（从 1 起，段落和表格行一起按阅读顺序编）
+    n: Mapped[int] = mapped_column(Integer)
+    # p：段落；head：表头行；row：表格的其他行
+    kind: Mapped[str] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(LongText)
+    loc: Mapped[dict | None] = mapped_column(JSONType)
+    cells: Mapped[list | None] = mapped_column(JSONType)
+
+
 class DocumentField(Base):
     """申报通知的结构化字段候选；公开端只读取人工通过的记录。"""
 

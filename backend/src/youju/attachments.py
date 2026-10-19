@@ -47,11 +47,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from youju import attachment_text
 from youju.backup import _BUSY_CODES, BEIJING, BackupError, _open_api, _retrying, upload
 from youju.classify import effective_kind
 from youju.config import get_settings
@@ -67,6 +69,9 @@ log = logging.getLogger("youju.attachments")
 
 # wx.openDocument 的 fileType 合法值（官方文档）
 PREVIEW_TYPES = ("doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf")
+# 要下载的：能存副本的 7 种，加上只取文字给 AI 用的 wps、et（小程序打不开，不存副本；
+# 附件读入方案第三节第 1 条）
+DOWNLOAD_TYPES = PREVIEW_TYPES + attachment_text.TEXT_ONLY_TYPES
 # 文件头判断出的格式和扩展名要是同一类（.doc 实际是 docx 这类常见的情况照样能打开）
 _FAMILY = {
     "doc": "word",
@@ -846,6 +851,10 @@ class CacheReport:
     recheck: RecheckReport | None = None
     # 另一个附件任务（上一轮还没跑完，或有人在手动重查）正在跑，本轮跳过
     skipped: bool = False
+    # 只取文字、不存副本的 wps、et 下载了几个
+    text_only: int = 0
+    # 给 AI 用的附件文字（attachment_text）：这轮取了多少、撤下多少
+    texts: attachment_text.TextReport = field(default_factory=attachment_text.TextReport)
 
 
 def _since(now: datetime, days: int = WINDOW_DAYS) -> tuple[date, datetime]:
@@ -861,7 +870,8 @@ def _recent(since: date, since_at: datetime):
 
 
 def candidates(session: Session, now: datetime) -> dict[str, str]:
-    """要有副本的附件：原站链接 → 题录里的扩展名，按文件发布日期从新到旧。"""
+    """要下载的附件（存副本，wps、et 只取文字）：原站链接 → 题录里的扩展名，按文件发布日期
+    从新到旧。"""
     since, since_at = _since(now)
     apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
     kind = func.coalesce(Document.kind_override, Document.rule_kind)
@@ -883,7 +893,7 @@ def candidates(session: Session, now: datetime) -> dict[str, str]:
     found: dict[str, str] = {}
     for url, extension in rows:
         ext = (extension or "").lower()
-        if ext in PREVIEW_TYPES and _government_url(url) and url not in found:
+        if ext in DOWNLOAD_TYPES and _government_url(url) and url not in found:
             found[url] = ext
     return found
 
@@ -909,6 +919,20 @@ def _record_failure(row: AttachmentCopy, failure: Failure, now: datetime) -> Non
     row.size = None
 
 
+def _download(row, fetcher, report) -> tuple[bytes | None, Failure | None]:
+    """下载一个附件：(内容, None) 或 (None, 下载失败的原因)。"""
+    result = fetcher.fetch(row.url)
+    report.checked += 1
+    if result.status != "ok":
+        return None, fetch_failure(result)
+    if not _government_url(result.final_url or row.url):
+        return None, Failure("host", "跳转到了非政府网站")
+    if len(result.content) > MAX_BYTES:
+        return None, Failure("too_large", "附件超过 20MB")
+    report.bytes += len(result.content)
+    return result.content, None
+
+
 def _check_one(
     session: Session,
     row: AttachmentCopy,
@@ -919,23 +943,57 @@ def _check_one(
     report: CacheReport,
     sleep: Callable[[float], None],
 ) -> None:
-    result = fetcher.fetch(row.url)
-    report.checked += 1
-    if result.status != "ok":
-        outcome: Failure | str = fetch_failure(result)
-    elif not _government_url(result.final_url or row.url):
-        outcome = Failure("host", "跳转到了非政府网站")
-    elif len(result.content) > MAX_BYTES:
-        outcome = Failure("too_large", "附件超过 20MB")
+    content, failure = _download(row, fetcher, report)
+    # 先按原来的规则处理副本（上传失败抛 BackupError，由调用方停下这一轮，这一条下轮再来）
+    _store_one(session, row, content, failure, client, env, now, report, sleep)
+    _text_one(session, row, content, failure, now, report)
+
+
+def _text_one(session, row, content, failure, now, report) -> None:
+    """顺带取给 AI 用的文字（attachment_text）。出错只记数、回滚这一条，不影响副本。"""
+    try:
+        attachment_text.record(
+            session,
+            row.url,
+            row.declared_type,
+            now,
+            report.texts,
+            content=content,
+            failure=failure,
+        )
+    except Exception:  # noqa: BLE001 - 取文字是附带的，任何错误都不能让副本任务停下
+        session.rollback()
+        report.texts.errors += 1
+        log.exception("附件文字没记上：%s", row.url_hash)
+
+
+def _store_one(
+    session: Session,
+    row: AttachmentCopy,
+    content: bytes | None,
+    failure: Failure | None,
+    client: httpx.Client,
+    env: str,
+    now: datetime,
+    report: CacheReport,
+    sleep: Callable[[float], None],
+) -> None:
+    if failure is not None:
+        outcome: Failure | str = failure
+    elif row.declared_type not in PREVIEW_TYPES:
+        # wps、et：小程序打不开，不存副本，只取文字（能不能打开副本的规则不变）
+        outcome = Failure("format", "小程序打不开这种格式，不存副本（只取文字给 AI 用）")
     else:
-        report.bytes += len(result.content)
-        outcome = check_content(result.content, row.declared_type)
+        outcome = check_content(content, row.declared_type)
     if isinstance(outcome, Failure):
         _record_failure(row, outcome, now)
-        report.failed[outcome.code] += 1
+        if row.declared_type in PREVIEW_TYPES or failure is not None:
+            report.failed[outcome.code] += 1
+        else:
+            report.text_only += 1
         session.commit()
         return
-    file_type, data = outcome, result.content
+    file_type, data = outcome, content
     digest = sha256(data).hexdigest()
     if not (row.status == "ready" and row.sha256 == digest and row.file_id):
         # 内容相同的副本已经存过（别的链接）就共用，不重复上传
@@ -1139,6 +1197,8 @@ def _cache_run(
             session.add(rows[key])
             report.added += 1
     session.commit()
+    # 还没取过给 AI 用的文字（或按旧规则取的）的也要下载：上线后第一轮把已有副本的文字补上
+    text_due = attachment_text.due(session, order, now)
     rank = {"pending": 0, "failed": 1, "ready": 2}
     due = sorted(
         (
@@ -1149,6 +1209,7 @@ def _cache_run(
                 r.next_check_at is None
                 or r.next_check_at <= now
                 or (retry_failed and r.status == "failed")
+                or r.url_hash in text_due
             )
         ),
         key=lambda r: (rank[r.status], order[r.url_hash]),
@@ -1189,12 +1250,81 @@ def _cache_run(
             report.storage_error = (
                 f"{report.storage_error}；{failure}" if report.storage_error else failure
             )
+        _text_cleanup(session, set(order), report.texts, now)
     finally:
         if owns_client:
             client.close()
         if owns_fetcher:
             fetcher.close()
     return report
+
+
+def _text_cleanup(
+    session: Session, live: set[str], texts: attachment_text.TextReport, now: datetime
+) -> None:
+    """附件文字：删掉超出范围的链接和没有链接指向的内容版本，数一下还没取的（含临时问题等着
+    重试的）。出错不影响副本。"""
+    try:
+        attachment_text.cleanup(session, live, texts)
+        texts.due = len(attachment_text.due(session, live, now, retry_now=True))
+    except Exception:  # noqa: BLE001 - 取文字是附带的，任何错误都不能让副本任务失败
+        session.rollback()
+        texts.errors += 1
+        log.exception("清理附件文字出错")
+
+
+# ---- 只取文字（不存副本）：本机实测、上线后补齐用（youju attachment-texts） ----
+
+
+def extract_texts(
+    session: Session,
+    *,
+    fetcher=None,
+    now: datetime | None = None,
+    limit: int = 200,
+    max_bytes: int = RUN_BYTES,
+    retry_pending: bool = False,
+) -> CacheReport:
+    """给还没取过文字（或按旧规则取的）的附件下载、取文字，不碰副本和对象存储；最后清理超出范围的。
+    retry_pending：上次网络等临时问题没取到的不等 retry_at，这次就重试。
+    和附件定时任务共用一把锁。"""
+    if not 1 <= limit <= 2000:
+        raise ValueError("每轮下载个数要在 1 到 2000 之间")
+    now = now or datetime.now(UTC)
+    with _exclusive(session) as got:
+        if not got:
+            return CacheReport(skipped=True)
+        report = CacheReport()
+        wanted = candidates(session, now)
+        order = {url_hash(url): url for url in wanted}
+        todo = attachment_text.due(session, order, now, retry_now=retry_pending)
+        picked = [key for key in order if key in todo]
+        owns_fetcher = fetcher is None
+        if fetcher is None:
+            settings = get_settings()
+            fetcher = PoliteFetcher(
+                settings.user_agent,
+                settings.request_timeout,
+                settings.per_host_interval,
+                url_allowed=_government_url,
+                decode_text=False,
+            )
+        try:
+            processed = 0
+            for key in picked[:limit]:
+                if report.bytes >= max_bytes:
+                    break
+                url = order[key]
+                row = SimpleNamespace(url=url, url_hash=key, declared_type=wanted[url])
+                content, failure = _download(row, fetcher, report)
+                _text_one(session, row, content, failure, now, report)
+                processed += 1
+            report.deferred = len(picked) - processed
+            _text_cleanup(session, set(order), report.texts, now)
+        finally:
+            if owns_fetcher:
+                fetcher.close()
+        return report
 
 
 # ---- 按现在的规则重新检查已存的副本（规则收紧后跑一次：youju recheck-attachments） ----
