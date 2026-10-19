@@ -23,6 +23,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import (
+    FEEDBACK_OUTCOMES,
     DeadlineClue,
     Document,
     Event,
@@ -848,6 +849,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "checkResult": row.check_result,
             "handled": row.handled_at is not None,
             "handledAt": _iso(row.handled_at),
+            # 处理结果和处理人写的说明（差距清单 C1）；之前标记处理的旧记录没有，是 null
+            "outcome": row.outcome,
+            "outcomeLabel": FEEDBACK_OUTCOMES.get(row.outcome) if row.outcome else None,
+            "reply": row.reply,
             "createdAt": _iso(row.created_at),
         }
         for row in feedback

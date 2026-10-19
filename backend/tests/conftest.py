@@ -96,6 +96,9 @@ def _reset_admin_throttle():
     # 规则列算完没有：测试里每次都重新查，中途把列改成 NULL（模拟刚升级）马上生效
     v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 0.0
     app_module._admin_fails.clear()
+    # 成批失败的计数在进程内：上一个测试故意制造的 5xx 不能算到下一个测试头上
+    app_module._failed_state["recent"].clear()
+    app_module._failed_state["last_alert"] = None
     exports._export_times.clear()
     exports._instance_times.clear()
     # 每个测试清空了表，访问日志的密钥也要重新从库里取

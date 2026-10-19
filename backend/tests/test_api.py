@@ -564,14 +564,13 @@ def test_feedback_admin_listing_and_actions(client, seeded, session, monkeypatch
     audit_log.addHandler(caplog.handler)
     try:
         with caplog.at_level(logging.INFO, logger="youju.audit"):
-            assert client.post(url + "/handle", headers=headers).json() == {
-                "handled": True,
-                "changed": True,
-            }
-            assert client.post(url + "/handle", headers=headers).json() == {
-                "handled": True,
-                "changed": False,
-            }
+            fixed = {"outcome": "fixed", "outcomeLabel": "已更正", "reply": None}
+            assert client.post(
+                url + "/handle", headers=headers, json={"outcome": "fixed"}
+            ).json() == {"handled": True, "changed": True, **fixed}
+            assert client.post(
+                url + "/handle", headers=headers, json={"outcome": "fixed"}
+            ).json() == {"handled": True, "changed": False, **fixed}
     finally:
         audit_log.removeHandler(caplog.handler)
     assert "feedback_handle" in caplog.text
@@ -595,7 +594,10 @@ def test_feedback_admin_listing_and_actions(client, seeded, session, monkeypatch
         "changed": False,
     }
     assert client.get(base + "/count", headers=headers).json() == {"pending": 3}
-    assert client.post(f"{base}/99999/handle", headers=headers).status_code == 404
+    assert (
+        client.post(f"{base}/99999/handle", headers=headers, json={"outcome": "fixed"}).status_code
+        == 404
+    )
     assert client.post(f"{base}/99999/unhandle", headers=headers).status_code == 404
 
 
