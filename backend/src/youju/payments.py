@@ -107,7 +107,7 @@ TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
 # 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
 COMPLAINT_ERROR = "收到用户投诉"
-# 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-079）；
+# 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-081）；
 # staff 负责人按规则发起（系统故障、停止服务）
 SELF_REFUND_WINDOW = timedelta(hours=24)
 SELF_REFUND, STAFF_REFUND = "self", "staff"
@@ -369,7 +369,7 @@ def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
 
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
-    """自助全额退款（无理由退款）的条件（D-070 统一退款口径；时限 D-079 由 7 天改为 24 小时，
+    """自助全额退款（无理由退款）的条件（D-070 统一退款口径；时限 D-081 由 7 天改为 24 小时，
     创始人 10/19："24 小时内没用过付费的量才能退，用过就不能退"）：安卓、鸿蒙、电脑版微信付款
     （微信的普通支付），付款 24 小时内（含恰好 24 小时），这一笔的使用期没用过付费的量（没超出
     每月免费次数、没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，
@@ -992,7 +992,7 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
 
 
 def ios_decision(session: Session, order: PayOrder | None, stamp: datetime) -> dict:
-    """苹果退款问询的答复（D-079，和安卓的无理由退款同一口径）：用过付费的量拒绝；没用过的，
+    """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径）：用过付费的量拒绝；没用过的，
     付款 24 小时内（含恰好 24 小时）建议退款、超过 24 小时拒绝。凭据只写"付款后 24 小时内 /
     付款后已超过 24 小时"和"用过付费的量 / 没有用过付费的量"，不带任务编号和具体时间（付费服务
     协议"开卖那一版要一起做的"第 8 项、隐私指引）。查不到订单的答建议退款（_ios_reply）。"""

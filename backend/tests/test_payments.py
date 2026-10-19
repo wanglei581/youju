@@ -1424,7 +1424,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     if case == "old":
-        # 付款后 24 小时多一点：已超过无理由退款时限（D-079，原为 7 天）
+        # 付款后 24 小时多一点：已超过无理由退款时限（D-081，原为 7 天）
         monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, microseconds=1))
     if case == "used":
         assert submit(setup_pay, count=51).status_code == 202
@@ -1471,14 +1471,14 @@ def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session
     setup_pay[2].calls.clear()
     result = inquiry(setup_pay, row)
     assert result["result_code"] == 1 and result["result_info"] == "已使用"
-    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-079）
+    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-081）
     assert result["evidence"] == "付款后 24 小时内；用过付费的量"
     assert str(task_id) not in result["evidence"]
     assert not setup_pay[2].calls
 
 
 def test_ios_inquiry_after_24_hours_declines_without_payment_time(setup_pay, session, monkeypatch):
-    """苹果退款问询（D-079）：没用过、付款 24 小时内建议退款（含恰好 24 小时）；超过 24 小时拒绝，
+    """苹果退款问询（D-081）：没用过、付款 24 小时内建议退款（含恰好 24 小时）；超过 24 小时拒绝，
     凭据只说超过 24 小时、没用过，不写付款时间。"""
     setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
