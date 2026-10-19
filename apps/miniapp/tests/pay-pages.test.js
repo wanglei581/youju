@@ -983,6 +983,9 @@ function toolCenter(api) {
     '../../utils/advisor.js': require('../utils/advisor.js'),
     '../../utils/tool-context.js': require('../utils/tool-context.js'),
     '../../utils/boost.js': require('../utils/boost.js'),
+    // AI 板块（#317）加的两个依赖：这里只测批量工具卡片，AI 当作关着、不盯跨零点
+    '../../utils/ai-access.js': require('./helpers/ai-off.js'),
+    '../../utils/daywatch.js': require('./helpers/day-off.js'),
   }, { wx: { setNavigationBarTitle() {}, navigateTo: ({ url }) => urls.push(url) } });
   page.onLoad({}); page.onShow();
   return { page, urls, products: () => products };

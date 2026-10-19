@@ -28,6 +28,9 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
 // 收费第一期（D-058，10/16 创始人决定接进完整版）：购买页、订单页随包，入口只在服务端在售或有订单时出现
 const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
+// AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
+// 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
+const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -55,13 +58,15 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES) : []);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整版24页（含加量体验确认页、购买页、订单页）；奖励及子包不属于本次范围');
+  '核对历史首发14页、AI版19页或完整版26页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
-  add('tabs', '底栏为首页、关注、文件、我的', JSON.stringify(tabs) === JSON.stringify(FIRST_PAGES.slice(0, 4)), '按 D-067 使用四栏');
+  const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
+  add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',
+    JSON.stringify(tabs) === JSON.stringify(expectedTabs), complete ? '按 D-067 使用四栏，D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
   else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
   if (profile === 'ai-release' || profile === 'complete-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');

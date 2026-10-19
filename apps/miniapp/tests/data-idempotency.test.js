@@ -17,6 +17,7 @@ const raw = s => s.map.get(KEY);
 function withdraw(s, { confirm = true, deleteFails = false, clearFails = false } = {}) {
   const module = { exports: {} };
   const deps = { '../content/legal.js': { final: true, version: '2026-10' }, './config.js': { templates: {} }, './exports.js': { clear() {} }, './exporter.js': { removeFiles: () => 0 },
+    './ai-access.js': { clear() { s.aiCleared = (s.aiCleared || 0) + 1; }, refresh() { s.aiAsked = (s.aiAsked || 0) + 1; }, recheck() { s.aiRechecked = (s.aiRechecked || 0) + 1; } },
     './api.js': { AGREED_KEY: 'youjuAgreedVersion', forgetAgreed: () => s.removeStorageSync('youjuAgreedVersion'), deleteMe: () => deleteFails ? Promise.reject(new Error('网络故障')) : Promise.resolve() } };
   const wx = { ...s, clearStorageSync: clearFails ? () => { throw new Error('clearStorageSync:fail'); } : s.clearStorageSync, showModal: o => o.success({ confirm }), showToast() {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../utils/consent.js'), 'utf8'), { module, wx, Promise, require: k => { assert.ok(Object.hasOwn(deps, k), k); return deps[k]; } });
@@ -92,12 +93,14 @@ test('真实注销成功删除全部账号分区，清空存储失败也删掉�
     const { s, a, b } = setup();
     assert.equal(await withdraw(s, { clearFails }), true);
     assert.equal(s.map.has(KEY), false); assert.equal(s.map.has('personalCache'), clearFails);
+    assert.equal(s.aiCleared, 1); // AI 板块记的结果一并擦掉（D-075），清空存储失败时也擦
     keys.confirm(s, a); keys.confirm(s, b); assert.equal(s.map.has(KEY), false);
     assert.throws(() => keys.claim(s, B, { n: 1 }), /账号状态/);
   }
   for (const options of [{ confirm: false }, { deleteFails: true }]) {
     const { s } = setup(); const before = JSON.stringify(raw(s));
     assert.equal(await withdraw(s, options), false); assert.equal(JSON.stringify(raw(s)), before);
+    assert.equal(s.aiCleared, undefined);
   }
 });
 test('容量：每账号20条、全机合计40条；到上限只停止新建，原内容仍用原键，未确认键一个不丢', () => {
