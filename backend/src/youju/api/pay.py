@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from youju import payments
 from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
+from youju.api.contact import transfer_to_kf
 from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
@@ -446,9 +447,10 @@ async def push(
 ) -> Response:
     data, xml = payload
     kind = data.get("Event", "")
-    # 配置检测（action=CheckContainerPath）和非支付消息一律应答成功，避免微信重推。
+    # 用户在客服会话里发的消息回"转客服"，客服人员才收得到（contact.py）；
+    # 配置检测（action=CheckContainerPath）和其他非支付事件一律应答成功，避免微信重推。
     if kind not in PAY_EVENTS:
-        return reply(xml)
+        return transfer_to_kf(data, xml) or reply(xml)
     # 支付开关只停新下单：关闭后已有订单的推送照常处理（投诉、退款、晚到的付款）；
     # 本地没有的订单只记摘要并应答成功，不查单、不访问微信。
     if kind == "xpay_subscribe_ios_refund_query_notify":
