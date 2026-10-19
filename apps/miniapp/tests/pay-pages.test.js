@@ -102,6 +102,8 @@ function passPage(options = {}) {
     setStorageSync: (key, value) => storage.set(key, plain(value)),
     removeStorageSync: (key) => storage.delete(key),
     navigateTo: ({ url }) => urls.push(url),
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`),
     showToast: (toast) => toasts.push(toast),
     login: (payload) => payload.success({ code: 'wx-code-1' }),
     requestVirtualPayment(payload) {
@@ -115,6 +117,7 @@ function passPage(options = {}) {
     '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(options.agreed !== false) },
     '../../content/pay-terms.js': options.terms || FINAL_TERMS,
   }, { wx, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  if (options.before) options.before({ page, storage });
   page.onShow();
   return { page, calls, urls, toasts, storage, clock };
 }
@@ -129,9 +132,10 @@ function orderCard(data, id) {
 }
 
 function ordersPage(items, options = {}) {
-  const calls = []; let modal = null;
+  const calls = []; const urls = []; let modal = null;
   const api = {
-    payOrders: () => { calls.push(['list']); return Promise.resolve({ items }); },
+    payOrders: () => { calls.push(['list']); return options.payOrders ? options.payOrders() : Promise.resolve({ items }); },
+    payProducts: () => { calls.push(['products']); return options.payProducts ? options.payProducts() : Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })); },
     refundPayOrder: (id) => { calls.push(['refund', id]); return Promise.resolve({}); },
     requestInvoice: (id, body) => {
       calls.push(['invoice', id, plain(body)]);
@@ -145,9 +149,11 @@ function ordersPage(items, options = {}) {
   const page = load('pages/orders/index.js', {
     '../../utils/api.js': api,
     '../../utils/consent.js': { loginOpen: () => true },
-  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {} } }, { byReference: options.byReference });
+  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {},
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`) } }, { byReference: options.byReference });
   page.onShow();
-  return { page, calls, modal: () => modal };
+  return { page, calls, urls, modal: () => modal };
 }
 
 function dataLogic(api) {
@@ -221,22 +227,110 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
   assert.deepEqual(plain((await capabilities({ statusCode: 403, data: { detail: '请先同意' } })).pay), { enabled: false, hasOrders: false });
 });
 
-test('购买页在商品 404 或空列表时只显示未开放、没有付款按钮，防止关掉售卖后还能付款', async () => {
+test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
   for (const payProducts of [
     () => Promise.reject(Object.assign(new Error('开关关闭'), { status: 404 })),
     () => Promise.resolve({ items: [] }),
   ]) {
     const h = passPage({ payProducts });
     await flush();
-    assert.equal(h.page.data.loading, false);
+    assert.deepEqual(h.urls, ['tab:/pages/home/index']);
     assert.equal(h.page.data.product, null);
     assert.equal(h.page.data.error, '');
     const text = shown('pages/pass/index.wxml', h.page.data);
-    assert.match(text, /付费服务暂未开放/);
-    assert.doesNotMatch(text, /开关关闭/);
+    assert.doesNotMatch(text, /暂未开放|开关关闭|批量工具/);
     assert.equal(payButtons(h.page.data).length, 0);
     assert.equal(h.calls.length, 0);
   }
+});
+
+test('购买页商品接口出错（不是 404）时留在本页显示错误和重试，不回首页，防止网络一抖就把正要付款的人送走', async () => {
+  const h = passPage({ payProducts: () => Promise.reject(Object.assign(new Error('服务暂时出错（500），请稍后重试'), { status: 500 })) });
+  await flush();
+  assert.deepEqual(h.urls, []);
+  assert.equal(h.page.data.loading, false);
+  assert.equal(h.page.data.error, '服务暂时出错（500），请稍后重试');
+  assert.match(shown('pages/pass/index.wxml', h.page.data), /重试/);
+  assert.equal(payButtons(h.page.data).length, 0);
+});
+
+test('订单页没有订单又不在售时回首页、不写"暂未开放"；在售时写"还没有订单"；接口 404 也回首页，防止首发包里的订单页被直接打开时像没做完（D-074）', async () => {
+  const closed = ordersPage([]);
+  await flush();
+  assert.deepEqual(closed.urls, ['tab:/pages/home/index']);
+  assert.doesNotMatch(shown('pages/orders/index.wxml', closed.page.data), /暂未开放/);
+
+  const selling = ordersPage([], { payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE }) });
+  await flush();
+  assert.deepEqual(selling.urls, []);
+  assert.equal(selling.page.data.loading, false);
+  assert.match(shown('pages/orders/index.wxml', selling.page.data), /还没有订单/);
+
+  const gone = ordersPage([], { payOrders: () => Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })) });
+  const empty = ordersPage([], { payProducts: () => Promise.resolve({ items: [] }) });
+  await flush();
+  assert.deepEqual(empty.urls, ['tab:/pages/home/index']);
+  await flush();
+  assert.deepEqual(gone.urls, ['tab:/pages/home/index']);
+  assert.doesNotMatch(shown('pages/orders/index.wxml', gone.page.data), /暂未开放|没有找到接口/);
+});
+
+test('购买页停卖时：刚开通的照旧显示开通结果、还有待确认的一笔时写去订单页看，都不送回首页；页面已隐藏也不跳，防止刚付款的人被送走（Codex 审阅）', async () => {
+  let selling = true;
+  const confirmed = passPage({ payProducts: () => Promise.resolve(selling ? { items: [PRODUCT], invoiceType: INVOICE } : { items: [] }) });
+  await flush();
+  confirmed.page.setData({ confirmed: true, message: '已开通，使用期到 2026-11-18' });
+  selling = false;
+  confirmed.page.onShow(); await flush();
+  assert.deepEqual(confirmed.urls, []);
+  assert.equal(confirmed.page.data.confirmed, true);
+  assert.equal(confirmed.page.data.loading, false);
+  assert.match(shown('pages/pass/index.wxml', confirmed.page.data), /去用工具/);
+
+  const pending = passPage({ payProducts: () => Promise.resolve({ items: [] }),
+    before: ({ storage }) => storage.set('pay.unsettled', { orderId: 41, at: Date.now() }) });
+  await flush();
+  assert.deepEqual(pending.urls, []);
+  assert.match(shown('pages/pass/index.wxml', pending.page.data), /我的 → 我的订单/);
+  assert.equal(payButtons(pending.page.data).length, 0);
+
+  let release;
+  const hidden = passPage({ payProducts: () => new Promise((resolve) => { release = resolve; }) });
+  hidden.page.onHide();
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, []);
+  hidden.page.onShow(); await flush();
+  assert.deepEqual(hidden.urls, []);
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, ['tab:/pages/home/index']);
+});
+
+test('回首页时 switchTab 失败就 reLaunch 首页，购买页和订单页都不会一直停在加载中（Codex 审阅）', async () => {
+  const pass = passPage({ payProducts: () => Promise.resolve({ items: [] }), switchFail: true });
+  await flush();
+  assert.deepEqual(pass.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+  const orders = ordersPage([], { switchFail: true });
+  await flush();
+  assert.deepEqual(orders.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+});
+
+test('订单页没有订单时直接问商品接口（不用能力接口的缓存）；没连上或服务端出错时留在本页给重试，不当成停卖回首页（Codex 审阅）', async () => {
+  for (const err of [Object.assign(new Error('网络连接失败，请检查网络后重试'), { status: 0 }), Object.assign(new Error('服务暂时出错（502），请稍后重试'), { status: 502 })]) {
+    const h = ordersPage([], { payProducts: () => Promise.reject(err) });
+    await flush();
+    assert.deepEqual(h.urls, []);
+    assert.deepEqual(h.calls, [['list'], ['products']]);
+    assert.equal(h.page.data.error, err.message);
+    assert.match(shown('pages/orders/index.wxml', h.page.data), /重试/);
+  }
+});
+
+test('订单页有订单时照常列出，不查能力接口也不回首页（停卖以后已付款的人照样看订单、退款、开票）', async () => {
+  const h = ordersPage([orderRecord({ orderId: 7 })]);
+  await flush();
+  assert.deepEqual(h.urls, []);
+  assert.deepEqual(h.calls, [['list']]);
+  assert.ok(orderCard(h.page.data, 7));
 });
 
 test('购买页协议未定稿时没有付款按钮，调用 buy 也不下单，防止用未定稿协议收款', async () => {

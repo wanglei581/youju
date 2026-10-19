@@ -25,6 +25,13 @@ function saveUnsettled(orderId) {
 function clearUnsettled() {
   try { wx.removeStorageSync(UNSETTLED_KEY); } catch (e) { /* 忽略 */ }
 }
+// 没在卖（商品接口 404 或没有档位）时直接回首页，页面上不出现"暂未开放"之类的字样（D-074）：
+// 首发包带着这一页，从旧链接或分享直接打开时，审核人员和用户都只会回到首页
+function goHome() {
+  wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
+}
+// 停卖时还留在本页的情形：刚付过款、或还有一笔待确认——不送回首页，告诉他去订单页看
+const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在"我的 → 我的订单"查看。';
 
 Page({
   // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
@@ -33,7 +40,7 @@ Page({
   // invoiceText：能开哪种发票（服务端商品接口带回）；没有时现网不能付款，服务端也不卖
   data: { loginOpen: loginOpen(), loading: true, error: '', tiers: [], selected: 0, product: null, price: '', renew: null, expires: '', soon: '',
     termsFinal: pay.termsFinal(payTerms), invoiceText: '',
-    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false },
+    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '' },
   onShow() {
     this.visible = true;
     if (this.payResume && this.poller) {
@@ -50,10 +57,11 @@ Page({
   onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; },
   load() {
     const serial = this.loadSerial = (this.loadSerial || 0) + 1;
-    this.setData({ loading: true, error: '' });
+    this.setData({ loading: true, error: '', closedNote: '' });
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const tiers = pay.normalizeProducts(res).map(pay.tierView);
+      if (!tiers.length) { this.closed(); return; }
       // 重新载入时保留用户选的那一档（按天数认），没有了就回到第一档
       const keep = this.data.product ? tiers.findIndex((tier) => tier.days === this.data.product.days) : -1;
       const selected = keep >= 0 ? keep : 0;
@@ -66,8 +74,20 @@ Page({
       }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
-      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.status === 404 ? '' : err.message });
+      if (err.status === 404) { this.closed(); return; }
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.message });
     });
+  },
+  // 没在卖：刚开通的照旧显示开通结果；还有待确认的一笔时写去订单页看；页面已隐藏就不跳（回来时 onShow 会重新载入）；
+  // 其余直接回首页（Codex 审阅）
+  closed() {
+    if (this.data.confirmed) { this.setData({ loading: false }); return; }
+    if (this.unsettledId || readUnsettled()) {
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: '', closedNote: CLOSED_NOTE });
+      return;
+    }
+    this.setData({ loading: true, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: '' });
+    if (this.visible) goHome();
   },
   // 选一档：付款中、已开通时不能换
   pick(e) {
