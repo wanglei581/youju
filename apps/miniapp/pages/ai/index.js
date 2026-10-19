@@ -133,8 +133,14 @@ Page({
     this.shown = true;
     // 连接慢（接口服务在重试）时和其他页面一样写"正在连接，比平时慢一点，请稍等…"（方案第四节，第 15 轮）
     if (api.watchStartup) api.watchStartup(this);
-    // 停在这一页跨过零点：今天还剩几次、全站满没满、近 7 天的通知都重新问（第 18 轮）
-    watchDay(this, () => { if (this.shown) this.onShow(); });
+    // 停在这一页跨过零点：今天还剩几次、全站满没满、近 7 天的通知都重新问（第 18 轮）；
+    // 我的 AI 记录照旧从进来那一刻算 15 分钟，不因为跨零点重新算起（第 19 轮）
+    watchDay(this, () => {
+      if (!this.shown) return;
+      const since = this.recordSince;
+      this.onShow();
+      this.recordSince = since;
+    });
     clearTimeout(this.recordTimer);
     this.recordPolls = 0;
     this.recordSince = Date.now();
@@ -236,8 +242,9 @@ Page({
   // 还有没处理完的：过一会儿再问一次记录，处理完就显示"已完成"；页面不在前面、换了一次加载就停
   pollRecords(seq) {
     clearTimeout(this.recordTimer);
-    if (Date.now() - (this.recordSince || 0) > RECORD_POLL_FOR) return;
     const delay = RECORD_POLL[Math.min(this.recordPolls || 0, RECORD_POLL.length - 1)];
+    // 下一次要落在 15 分钟以内才安排（第 19 轮）
+    if (Date.now() + delay - (this.recordSince || 0) > RECORD_POLL_FOR) return;
     this.recordPolls = (this.recordPolls || 0) + 1;
     this.recordTimer = setTimeout(() => { if (this.shown && seq === this.seq) this.loadRecords(seq); }, delay);
   },

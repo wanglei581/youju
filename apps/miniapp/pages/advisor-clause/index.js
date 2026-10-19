@@ -6,7 +6,7 @@ const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL,
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 const access = require('../../utils/ai-access.js');
-const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const { watchDay, stopDay, today } = require('../../utils/daywatch.js');
 
 const DAY_TURNED = '已经过了 0 点，可以重新开始了。';
 
@@ -38,6 +38,11 @@ Page({
     watchDay(this, () => {
       if (this.visible && (this.data.gate === 'used' || this.data.gate === 'full')) this.setData({ dayTurned: true, gateText: DAY_TURNED });
     });
+    // 用完、满了以后离开（锁屏、切走），第二天回来：先写"可以重新开始了"，不问也不提交，点了才开始（第 19 轮）
+    if (this.blockedDay && this.blockedDay !== today()) {
+      this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: DAY_TURNED });
+      return;
+    }
     this.setData({ loading: true, aiEnabled: false, today: todayISO() });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -52,6 +57,8 @@ Page({
       const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
         const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';
+        // 记下哪天被拦下的：第二天回来先写"可以重新开始了"（暂时不可用和日期无关，不记）
+        this.blockedDay = gate === 'paused' ? null : today();
         this.setData({ loading: false, aiEnabled: false, gate,
           gateText: {
             paused: 'AI 暂时不可用，请稍后再试。',
@@ -80,7 +87,11 @@ Page({
     require('../../utils/consent.js').ensureConsent({ purpose: 'ai' }).then((ok) => { if (ok && this.visible) this.onShow(); });
   },
   // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
-  reload() { if (this.data.gate === 'offline' || this.data.gate === 'paused' || this.data.dayTurned) this.onShow(); },
+  reload() {
+    if (this.data.gate !== 'offline' && this.data.gate !== 'paused' && !this.data.dayTurned) return;
+    this.blockedDay = null;
+    this.onShow();
+  },
   // 今天的次数用完了：去看以前的结果
   records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); if (this.session) this.session.hide(); },

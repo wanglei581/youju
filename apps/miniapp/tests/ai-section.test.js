@@ -1688,8 +1688,14 @@ test('Codex 第 17 轮：上次没连上，离开再回来、后台还没答复�
 
 // 跨过零点的替身：记下回调，测试自己调
 function dayStub() {
-  const watched = []; let stopped = 0;
-  return { watched, stopped: () => stopped, watchDay: (page, fn) => watched.push(fn), stopDay: () => { stopped += 1; }, turn: () => watched.at(-1)('2026-10-20') };
+  const watched = []; let stopped = 0; let day = '2026-10-19';
+  return {
+    watched, stopped: () => stopped, today: () => day, watchDay: (page, fn) => watched.push(fn), stopDay: () => { stopped += 1; },
+    // 停在页面上跨过零点：日期变了，回调
+    turn: () => { day = '2026-10-20'; watched.at(-1)(day); },
+    // 页面不在前面时过了零点：只改日期
+    nextDay: () => { day = '2026-10-20'; },
+  };
 }
 
 test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页时过一会儿再问（5、10、15 秒，之后每 15 秒，最多 15 分钟），处理完显示已完成；离开就停', async () => {
@@ -1778,4 +1784,71 @@ test('Codex 第 18 轮：停在 AI 首页跨过零点，今天还剩几次重新
     d.turn(); assert.equal(p.data.dayTurned, false); assert.equal(p.data.gateText, 'AI 暂时不可用，请稍后再试。');
     p.onHide();
   }
+});
+
+test('Codex 第 19 轮：解读页、对照页次数用完或全站满了以后离开（锁屏），第二天回来先写"可以重新开始了"，不问也不提交，点了才开始；当天回来、暂时不可用照常', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full'], [{ available: false }, 'paused']]) {
+      let blocked = true; let capsCalls = 0; let created = 0;
+      const d = dayStub();
+      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const deps = {
+        '../../utils/api.js': {
+          advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
+          createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 9, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'queued' }),
+        },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+        '../../utils/daywatch.js': d,
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+      try {
+        assert.equal(p.data.gate, gate);
+        // 当天回来：照常再问，还是拦着
+        p.onHide(); p.onShow(); await settle();
+        assert.equal(capsCalls, 2, `${page} ${gate} 当天回来照常再问`); assert.equal(p.data.gate, gate);
+        // 锁屏过了一夜再回来
+        p.onHide(); d.nextDay(); blocked = false;
+        p.onShow(); await settle();
+        if (gate === 'paused') {
+          assert.equal(capsCalls, 3, `${page} 暂时不可用照常再问`); assert.equal(p.data.dayTurned, false);
+          continue;
+        }
+        assert.equal(capsCalls, 2, `${page} ${gate} 第二天回来先不问`); assert.equal(created, 0, '不提交');
+        assert.equal(p.data.dayTurned, true);
+        const root = render(`pages/${page}/index.wxml`, p.data);
+        assert.match(textOf(root), /已经过了 0 点，可以重新开始了。/);
+        assert.equal(findAll(root, (n) => n.tag === 'button' && textOf(n).trim() === '重新开始').length, 1);
+        // 点了才问、才开始
+        p.reload(); await settle();
+        assert.equal(capsCalls, 3); assert.equal(p.data.aiEnabled, true, `${page} ${gate} 点了能用`);
+        // 再离开回来：不再拦（已经点过了）
+        p.onHide(); p.onShow(); await settle();
+        assert.equal(p.data.dayTurned, false); assert.equal(capsCalls, 4);
+      } finally {
+        p.onHide();
+      }
+    }
+  }
+});
+
+test('Codex 第 19 轮：AI 首页"我的 AI 记录"从进来那一刻算最多问 15 分钟——跨零点重新加载不重新算起，落在 15 分钟以外的不再安排', async () => {
+  const running = { id: 3, kind: 'interpret', status: 'running', docTitle: '通知3' };
+  const clock = { now: 1000 * HOUR };
+  const start = clock.now;
+  // 快到 15 分钟时：下一次会落在 15 分钟以外，不再安排
+  const k = hubPage({ tasks: () => Promise.resolve({ items: [{ ...running }] }), now: () => clock.now });
+  k.page.onShow(); await settle(); assert.equal(k.timers.size, 1);
+  clock.now = start + 15 * 60 * 1000 - 2000; k.runTimers(); await settle();
+  assert.equal(k.timers.size, 0, '下一次落在 15 分钟以外就不安排');
+  // 跨零点：重新加载，但照旧从进来那一刻算
+  clock.now = start;
+  const day = dayStub();
+  const h = hubPage({ tasks: () => Promise.resolve({ items: [{ ...running }] }), now: () => clock.now, daywatch: day });
+  h.page.onShow(); await settle(); assert.equal(h.timers.size, 1);
+  clock.now = start + 10 * 60 * 1000; day.turn(); await settle();
+  assert.equal(h.timers.size, 1, '跨零点后照旧问');
+  clock.now = start + 15 * 60 * 1000 - 1000; h.runTimers(); await settle();
+  assert.equal(h.timers.size, 0, '到 15 分钟就停，不因为跨零点重新算');
 });
