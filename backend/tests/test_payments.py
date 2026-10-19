@@ -634,7 +634,11 @@ def test_refund_failure_retry_same_id_and_completion(setup_pay, session):
     fake.status = 2
     run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.refund_order_id == refund_id
+    # 查单状态 5（商户侧扣款完成）：钱还没到用户那边，订单仍是退款中；8（用户侧收款完成）才算退完
     fake.status, fake.left_fee = 5, 0
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.status == "refunding" and row.refund_status == "pending"
+    fake.status = 8
     run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.status == "refunded"
 
@@ -1420,7 +1424,8 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     if case == "old":
-        monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=7, microseconds=1))
+        # 付款后 24 小时多一点：已超过无理由退款时限（D-081，原为 7 天）
+        monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, microseconds=1))
     if case == "used":
         assert submit(setup_pay, count=51).status_code == 202
     result = self_refund(setup_pay, row)
@@ -1441,7 +1446,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     else:
         assert ticket.revoked_at is None
         reason = result.json()["detail"]
-        assert {"old": "超过 7 天", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
+        assert {"old": "超过 24 小时", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
@@ -1466,10 +1471,25 @@ def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session
     setup_pay[2].calls.clear()
     result = inquiry(setup_pay, row)
     assert result["result_code"] == 1 and result["result_info"] == "已使用"
-    assert str(task_id) in result["evidence"]
-    if state not in ("queued", "deleted"):
-        assert (NOW + timedelta(minutes=1)).isoformat() in result["evidence"]
+    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-081）
+    assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    assert str(task_id) not in result["evidence"]
     assert not setup_pay[2].calls
+
+
+def test_ios_inquiry_after_24_hours_declines_without_payment_time(setup_pay, session, monkeypatch):
+    """苹果退款问询（D-081）：没用过、付款 24 小时内建议退款（含恰好 24 小时）；超过 24 小时拒绝，
+    凭据只说超过 24 小时、没用过，不写付款时间。"""
+    setup_pay[2].order_type = 7
+    row = delivered(setup_pay, session)
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24))
+    within = inquiry(setup_pay, row)
+    assert within["result_code"] == 0 and within["result_info"] == "未使用"
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, seconds=1))
+    result = inquiry(setup_pay, row)
+    assert result["result_code"] == 1 and result["result_info"] == "付款已超过 24 小时"
+    assert result["evidence"] == "付款后已超过 24 小时；没有用过付费的量"
+    assert within["evidence"] == "付款后 24 小时内；没有用过付费的量"
 
 
 def test_ios_refund_notification_revokes_only_its_pass(setup_pay, session):
@@ -1550,7 +1570,9 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "days",
         "status",
         "amount",
+        "createdAt",
         "paidAt",
+        "paidAmount",
         "passStartsAt",
         "passEndsAt",
         "passRevokedAt",
@@ -1577,7 +1599,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
 def test_refund_partial_success_is_manual(setup_pay, session):
     row = delivered(setup_pay, session)
     assert self_refund(setup_pay, row).status_code == 200
-    setup_pay[2].status, setup_pay[2].left_fee = 5, 50
+    setup_pay[2].status, setup_pay[2].left_fee = 8, 50
     run(session, setup_pay, NOW + timedelta(minutes=10))
     session.expire_all()
     assert row.status == "manual" and row.refund_status == "partial"
@@ -1686,6 +1708,7 @@ def test_refund_notification_before_network_response_keeps_terminal_status(
         nonlocal notified
         notified = True
         fake.status, fake.left_fee = 5, 0
+        # 推送说退款成功（RetCode 0）：查单停在 5 也算退完
         result = push(
             setup_pay,
             {
@@ -1693,6 +1716,7 @@ def test_refund_notification_before_network_response_keeps_terminal_status(
                 "OpenId": "pay-user",
                 "MchOrderId": row.out_trade_no,
                 "WxOrderId": row.wx_order_id,
+                "RetCode": 0,
             },
         )
         assert result.json()["ErrCode"] == 0
@@ -1769,6 +1793,7 @@ def test_provide_response_does_not_overwrite_refund_notification(setup_pay, sess
                     "OpenId": "pay-user",
                     "MchOrderId": row.out_trade_no,
                     "WxOrderId": row.wx_order_id,
+                    "RetCode": 0,
                 },
             ).json()["ErrCode"]
             == 0
