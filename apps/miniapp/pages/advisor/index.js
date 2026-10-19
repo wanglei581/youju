@@ -71,8 +71,8 @@ Page({
     }).catch((err) => {
       if (!current()) return;
       this.setData({ dataError: `额度未能更新：${err.message}` });
-      // 读不到额度时卡片只写价格，不写免费次数
-      this.quotaDone = true; this.renderPayCard();
+      // 读不到额度时卡片只写价格，不写免费次数；刷新失败也丢掉上一次的额度和使用期，不显示过时的次数（Codex 第二轮）
+      this.quota = null; this.quotaDone = true; this.renderPayCard();
     });
   },
   // 在售时取一次两档价格；取不到就不显示卡片（不写"暂未开放"之类，D-074）
@@ -95,7 +95,8 @@ Page({
     if (quota && quota.pass) {
       const day = pay.monthDay(quota.pass.expiresAt);
       this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：批量名单比对、客户相关通知表不限次数，每次最多 500 家`,
-        offerLine: this.offer ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: '续买批量工具' } });
+        // 取不到价格时只写到期日，不放买不了的"续买"按钮（Codex 第二轮）
+        offerLine: this.offer ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: this.offer ? '续买批量工具' : '' } });
       return;
     }
     if (!this.offer) { this.setData({ payCard: null }); return; }
@@ -107,7 +108,7 @@ Page({
         : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，每次 ${quota.maxRows} 家以内`;
     this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
-  buyPass() { if (this.data.payCard) wx.navigateTo({ url: '/pages/pass/index' }); },
+  buyPass() { if (this.data.payCard && this.data.payCard.button) wx.navigateTo({ url: '/pages/pass/index' }); },
   refreshQuota() { this.loadQuota(); },
   dataTool(e) {
     const kind = e.currentTarget.dataset.kind;

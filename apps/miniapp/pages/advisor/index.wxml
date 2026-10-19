@@ -6,7 +6,7 @@
     <view class="advisor-title">批量工具</view>
     <view wx:if="{{payCard.quotaLine}}" class="{{payCard.usedUp ? 'advisor-error' : 'advisor-text'}}">{{payCard.quotaLine}}</view>
     <view wx:if="{{payCard.offerLine}}" class="advisor-text">{{payCard.offerLine}}</view>
-    <button class="advisor-button btn-primary" bindtap="buyPass">{{payCard.button}}</button>
+    <button wx:if="{{payCard.button}}" class="advisor-button btn-primary" bindtap="buyPass">{{payCard.button}}</button>
   </view>
   <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{!aiEnabled && aiGate === 'consent'}}" class="card advisor-card">

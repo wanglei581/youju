@@ -1055,6 +1055,27 @@ test('工具中心额度有了结果才画批量工具卡片；"刷新额度"后
   assert.match(shown('pages/advisor/index.wxml', broken.page.data), /额度未能更新/);
 });
 
+test('工具中心刷新额度失败时丢掉上一次的免费次数；有使用期但取不到价格时不放"续买"按钮（Codex 第二轮）', async () => {
+  let fail = false;
+  const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }),
+    advisorStatus: () => (fail ? Promise.reject(new Error('网络不稳定')) : centerStatus({ used: 1 })) });
+  await flush(); await flush();
+  assert.match(h.page.data.payCard.quotaLine, /还剩 2 次/);
+  fail = true;
+  h.page.refreshQuota();
+  await flush(); await flush();
+  assert.equal(h.page.data.payCard.quotaLine, '');
+  assert.doesNotMatch(shown('pages/advisor/index.wxml', h.page.data), /还剩 2 次/);
+  const pass = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: true }),
+    advisorStatus: () => centerStatus({ used: 0, pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } }),
+    payProducts: () => Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })) });
+  await flush(); await flush();
+  assert.match(shown('pages/advisor/index.wxml', pass.page.data), /批量工具使用期到 11月18日/);
+  assert.equal(findAll(render('pages/advisor/index.wxml', pass.page.data), tapsTo('buyPass')).length, 0);
+  pass.page.buyPass();
+  assert.deepEqual(pass.urls, []);
+});
+
 test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: true }), advisorStatus: () => centerStatus({ used: 0, pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } }) });
   await flush(); await flush();
