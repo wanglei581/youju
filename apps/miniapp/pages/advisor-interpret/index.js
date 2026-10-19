@@ -3,16 +3,20 @@ const api = require('../../utils/api.js');
 const { createSession } = require('../../utils/ai-interpret.js');
 const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
+const access = require('../../utils/ai-access.js');
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false },
+  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建。
     // viewing 不写进上面的 data：和 D-073 的 PR 改的是同一行，免得合并冲突
     this.setData({ viewing: !!query.taskId });
     this.session = createSession({ api, storage: wx, docId: doc.docId, title: doc.title, taskId: query.taskId,
-      update: (value) => { if (this.visible && this.data.aiEnabled) this.setData(value); } });
+      update: (value) => {
+        if (value.unavailable) access.refresh();
+        if (this.visible && this.data.aiEnabled) this.setData(value);
+      } });
   },
   onShow() {
     this.visible = true;
@@ -24,6 +28,14 @@ Page({
       const ai = res.ai_advisor || {};
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('interpret');
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 解读') });
+      // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
+      const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true);
+      if (blocked) {
+        this.setData({ loading: false, aiEnabled: false, gate: ai.available === false ? 'paused' : 'full',
+          gateText: ai.available === false ? 'AI 暂时不可用，请稍后再试。' : '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。' });
+        return;
+      }
+
       const gate = aiEnabled ? '' : gateState(res);
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         clauseEnabled: aiEnabled && allowedKinds(ai).includes('clause') });

@@ -1,3 +1,5 @@
+const { reasonView } = require('./ai-reasons.js');
+
 const SECTIONS = [
   ['对象', '申报对象'], ['支持', '支持方式'], ['条件', '申报条件'],
   ['时间', '申报时间'], ['方式', '申报方式'], ['材料', '材料清单'],
@@ -85,8 +87,28 @@ function taskContext(storage, id, value) {
     return value || saved[id] || {};
   } catch (e) { return value || {}; }
 }
+// 任务失败按后台给的错误代码写（D-075），不再比对文字：排队后才撞上全站上限、admin 处理不了时退回的，
+// 都已退回次数。被移出白名单（AI_OFF）也写"暂时不可用"，不写"未开放"
+const FAILED_TEXT = {
+  AI_DAILY_CAP: '今天 AI 的总用量满了，明天 0 点恢复；这次没有扣你的次数。',
+  AI_UNAVAILABLE: 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。',
+  AI_OFF: 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。',
+};
+const UNAVAILABLE_TEXT = 'AI 暂时不可用，请稍后再试。';
+function failedText(task) {
+  return FAILED_TEXT[task && task.errorCode] || (task && task.error) || '结果已失效，请重新提交';
+}
+// 提交被拒：这份不能解读（422 带原因代码）写原因；后台处理不了（429 AI_UNAVAILABLE）、接口说没开（404）写暂时不可用；
+// 提交时撞上全站上限写总用量满了
 function errorText(error) {
-  return error.status === 404 ? '暂时没有可用工具' : error.message || '处理失败，请稍后重试';
+  if (error.code === 'AI_NOT_ELIGIBLE') return reasonView(error.reason, false).text;
+  if (error.code === 'AI_UNAVAILABLE' || error.status === 404) return UNAVAILABLE_TEXT;
+  if (error.code === 'AI_DAILY_CAP') return '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。';
+  return error.message || '处理失败，请稍后重试';
+}
+// 这几种重试也没用：不能解读、暂时不可用、次数满了
+function retryable(error) {
+  return error.status !== 404 && error.status !== 422 && error.status !== 429;
 }
 function idempotencyKey() {
   return `interpret-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
@@ -167,7 +189,7 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
         // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
         failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
       } else {
-        failure = 'task'; emit({ phase: 'failed', outdated: false, error: task.error || '结果已失效，请重新提交', canRetry: !!docId, resumable: false, progress: '' });
+        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId, resumable: false, progress: '', errorCode: task.errorCode || '' });
       }
       return;
     }
@@ -186,7 +208,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
     failure = transient(error) ? 'request' : 'task';
     emit({ phase: 'failed', outdated: false, error: errorText(error), progress: '', resumable: failure === 'request',
-      canRetry: error.status !== 404 && error.status !== 429 && !!docId });
+      canRetry: retryable(error) && !!docId, errorCode: error.code || '',
+      // 后台说处理不了、或接口说没开：让页面重新问一次 AI 开没开（入口随即收起或变灰）
+      unavailable: error.code === 'AI_UNAVAILABLE' || error.status === 404 });
   }
   function poll(version) {
     if (!active(version)) return;
@@ -246,4 +270,4 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };

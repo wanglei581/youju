@@ -5,6 +5,7 @@ const config = require('./config.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
 const { removeFiles } = require('./exporter.js');
+const aiAccess = require('./ai-access.js');
 
 // AI 内测包（config.aiInternal 为 true，只上传体验版、给白名单内测，D-062）：协议还是草案也开放同意和登录，
 // 好让内测成员同意后试用 AI 页面。首发版和 AI 正式版都是 false，只看 legal.final（D-056、D-066）。
@@ -190,6 +191,8 @@ function withdraw() {
             try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
             try { wx.removeStorageSync('youjuDataTaskKeysV1'); } catch (e) { /* 下方清空存储再次清理 */ }
             try { wx.clearStorageSync(); } catch (e) { forget(); }
+            // AI 板块记的结果（本机和这次打开里的）一并擦掉，底栏第 5 格随即收起（D-075）
+            aiAccess.clear();
             outdated = false;
             notAgreed = true;
             epoch += 1;

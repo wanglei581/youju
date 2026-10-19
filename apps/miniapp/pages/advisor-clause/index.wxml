@@ -4,12 +4,13 @@
   <view>{{gateText}}</view>
   <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
   <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+  <view wx:if="{{gate === 'paused' || gate === 'offline'}}" class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{gate}}" /></view>
 </view>
 <block wx:elif="{{aiEnabled}}">
   <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17） -->
   <view wx:if="{{!(phase === 'done' && result.notice)}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{phase === 'form'}}" class="card advisor-card">
-    <view class="advisor-title">条款对照：和我的企业对一下</view>
+    <view class="advisor-title">条款对照</view>
     <view class="advisor-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。只填想对照的项就行。</view>
     <view class="advisor-text muted">你填的情况只用于并排显示，不发给 AI 模型，7 天后自动清除。</view>
     <view class="clause-label">成立日期</view>
@@ -116,5 +117,10 @@
     <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
     <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
   </block>
+  <!-- 联系客服（D-075 第七节）：结果页底部和出错时 -->
+  <view wx:if="{{phase === 'done' || phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
+    <view class="advisor-title">用的时候遇到问题？</view>
+    <view class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{errorCode}}" /></view>
+  </view>
   <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
 </block>

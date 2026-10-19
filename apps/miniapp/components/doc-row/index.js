@@ -16,9 +16,9 @@ Component({
     selecting: { type: Boolean, value: false },
   },
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
-    groupText: '', groupOpen: false, regionText: '' },
+    groupText: '', groupOpen: false, regionText: '', aiShown: false },
   observers: {
-    'doc, q, today': function (doc, q) {
+    'doc, q, today, aiShown': function (doc, q) {
       if (!doc || !doc.title) return;
       const status = doc.status;
       const appStatus = doc.app_status;
@@ -43,7 +43,8 @@ Component({
         kindCls: kindClass(doc.kind),
         statusCls,
         statusText,
-        issuerLong: (doc.issuer || '').length > ISSUER_WRAP,
+        // 行上有"AI 解读"按钮时，发文机关另起一行，给日期、复制链接和按钮腾地方
+        issuerLong: (doc.issuer || '').length > (this.data.aiShown ? 0 : ISSUER_WRAP),
         // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
         regionText: regionText(doc),
         // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
@@ -62,6 +63,9 @@ Component({
     },
     copy() {
       copyLink(this.data.doc.url);
+    },
+    aiToggle(e) {
+      this.setData({ aiShown: !!(e.detail && e.detail.shown) });
     },
     toggleGroup() {
       if (this.data.selecting) return;

@@ -1,0 +1,39 @@
+/* 微信 style v2 的 button 不认 class 里的宽度和外边距，要加 !important */
+.contact-btn {
+  margin: 0 !important;
+  width: 100% !important;
+  min-height: 88rpx;
+  padding: 18rpx 28rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: var(--card);
+  border: 2rpx solid var(--line2);
+  color: var(--brand);
+  font-size: 30rpx;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.contact-btn::after { border: 0; }
+.contact-note { margin-top: 12rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); text-align: center; }
+.contact-note--alt { margin-top: 0; font-size: 26rpx; color: var(--t1); text-align: left; }
+/* "我的"页列表里的一行：和旁边的行一样高、一样的字号 */
+.contact-row {
+  margin: 0 !important;
+  width: 100% !important;
+  padding: 28rpx 0 !important;
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  box-sizing: border-box;
+  border-radius: 0;
+  border-bottom: 2rpx solid var(--line);
+  background: transparent;
+  color: var(--t1);
+  font-size: 30rpx;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+}
+.contact-row::after { border: 0; }
+.contact-row-text { flex: 1; }
+.contact-row-hint { font-size: 26rpx; color: var(--t3); }
