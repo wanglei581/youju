@@ -20,7 +20,7 @@ Page({
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具中心' });
     this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '', payCard: null });
-    this.payOn = false; this.offer = null; this.quota = null;
+    this.payOn = false; this.offer = null; this.quota = null; this.quotaDone = false;
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
       const ai = res.ai_advisor || {};
@@ -49,9 +49,12 @@ Page({
     });
   },
   loadQuota(epoch = this.epoch) {
+    // 额度请求单独编号：点"刷新额度"后旧请求晚到，不覆盖新的额度和使用期（Codex 审阅）
+    const serial = this.quotaSerial = (this.quotaSerial || 0) + 1;
+    const current = () => this.visible && epoch === this.epoch && serial === this.quotaSerial;
     this.setData({ dataError: '' });
     api.advisorStatus().then((res) => {
-      if (!this.visible || epoch !== this.epoch) return;
+      if (!current()) return;
       const quota = res.quota || {};
       if (!res.enabled || !['compare', 'track'].every((kind) => quota[kind] && Number.isFinite(quota[kind].limit) && Number.isFinite(quota[kind].used) && Number.isFinite(quota[kind].maxRows))) throw new Error('额度信息不完整，请重试');
       const remaining = (kind) => Math.max(0, ((quota[kind] || {}).limit || 0) - ((quota[kind] || {}).used || 0));
@@ -63,8 +66,14 @@ Page({
       this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数`
         : trial.trialActive ? boost.trialLine(trial)
           : this.payOn ? free : `${free}。免费额度不需要购买` });
+      this.quotaDone = true;
       this.renderPayCard();
-    }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ dataError: `额度未能更新：${err.message}` }); });
+    }).catch((err) => {
+      if (!current()) return;
+      this.setData({ dataError: `额度未能更新：${err.message}` });
+      // 读不到额度时卡片只写价格，不写免费次数
+      this.quotaDone = true; this.renderPayCard();
+    });
   },
   // 在售时取一次两档价格；取不到就不显示卡片（不写"暂未开放"之类，D-074）
   loadOffer(epoch = this.epoch) {
@@ -76,9 +85,11 @@ Page({
       this.renderPayCard();
     }).catch(() => { if (this.visible && epoch === this.epoch) { this.offer = null; this.renderPayCard(); } });
   },
-  // 价格和额度谁先回来都先画；使用期内写到期日和续买，免费次数用完时第一句写"已用完"
+  // 额度有了结果（读到或读不到）才画，免得卡片先没有免费次数、再补上；使用期内写到期日和续买，
+  // 免费次数用完时第一句写"已用完"
   renderPayCard() {
     if (!this.payOn) { this.setData({ payCard: null }); return; }
+    if (!this.quotaDone) return;
     const pay = require('../../utils/pay.js');
     const quota = this.quota;
     if (quota && quota.pass) {
@@ -89,9 +100,11 @@ Page({
     }
     if (!this.offer) { this.setData({ payCard: null }); return; }
     const usedUp = !!quota && !quota.trial.trialActive && quota.compare === 0 && quota.track === 0;
+    // 只用完一项时那一项写"已用完"，不写"还剩 0 次"
+    const left = (name, count) => (count === 0 ? `${name}已用完` : `${name}还剩 ${count} 次`);
     const quotaLine = !quota ? '' : quota.trial.trialActive ? boost.trialLine(quota.trial)
       : usedUp ? '本月免费次数已用完，下月 1 日恢复'
-        : `本月免费：比对还剩 ${quota.compare} 次、通知表还剩 ${quota.track} 次，每次 ${quota.maxRows} 家以内`;
+        : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，每次 ${quota.maxRows} 家以内`;
     this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
   buyPass() { if (this.data.payCard) wx.navigateTo({ url: '/pages/pass/index' }); },

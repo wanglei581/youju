@@ -95,7 +95,8 @@ Page({
       })
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
-        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}` });
+        // 确认不了还在不在卖：先收起"批量工具"，不在可能已停卖时留着购买入口（D-074，Codex 审阅）
+        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}`, passEntry: false, passHint: '' });
       });
   },
 
@@ -108,7 +109,7 @@ Page({
       Promise.resolve().then(() => api.advisorStatus()).then((status) => {
         const pass = status && status.pass;
         done(pass && pass.active && pay.monthDay(pass.expiresAt) ? `到 ${pay.monthDay(pass.expiresAt)}` : '已到期，可再买一次');
-      }).catch(() => done('到期日、续买'));
+      }).catch(() => done(''));
       return;
     }
     Promise.resolve().then(() => api.payProducts()).then((res) => {

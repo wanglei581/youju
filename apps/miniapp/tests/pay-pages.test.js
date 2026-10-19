@@ -945,13 +945,33 @@ test('我的页在售时所有人都显示"批量工具"一行：没买过写最
   assert.equal(page.data.passHint, '已到期，可再买一次');
   status = () => Promise.reject(new Error('读不到'));
   await show(true, true);
-  assert.equal(page.data.passHint, '到期日、续买');
+  assert.equal(page.data.passHint, '');
+  assert.equal(row().length, 1);
   await show(false, true);
   assert.equal(row().length, 0);
   assert.equal(page.data.passHint, '');
   await show(true, false);
   page.go({ currentTarget: { dataset: { url: row()[0].attrs['data-url'] } } });
   assert.deepEqual(urls, ['/pages/pass/index']);
+});
+
+test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖时留着购买入口（D-074）', async () => {
+  let fail = false;
+  const page = load('pages/me/index.js', {
+    '../../content/legal.js': { final: true, version: '2026-10' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/subscribe.js': { remindOpen: () => false },
+    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
+    '../../utils/api.js': { isLive: () => true, me: () => (fail ? Promise.reject(new Error('网络不稳定')) : Promise.resolve({ pay: { enabled: true, hasOrders: false }, follows: 0, subscriptions: {} })),
+      payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => Promise.reject(new Error('x')) },
+  }, { wx: { navigateTo() {}, switchTab() {}, showToast() {} } });
+  page.refresh(); await flush(); await flush();
+  assert.equal(page.data.passEntry, true);
+  fail = true;
+  page.refresh(); await flush(); await flush();
+  assert.equal(page.data.passEntry, false);
+  assert.equal(page.data.passHint, '');
+  assert.doesNotMatch(shown('pages/me/index.wxml', page.data), /批量工具|元起/);
 });
 
 const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
@@ -1000,6 +1020,39 @@ test('工具中心不在售时没有批量工具卡片、不取价格，照旧�
   await flush(); await flush();
   assert.equal(broken.page.data.payCard, null);
   assert.doesNotMatch(shown('pages/advisor/index.wxml', broken.page.data), /暂未开放|了解批量工具/);
+});
+
+test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 次"', async () => {
+  const quota = { enabled: true, quota: { compare: { used: 3, limit: 3, maxRows: 50 }, track: { used: 1, limit: 3, maxRows: 50 } }, pass: null, trial: null, season: null };
+  const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.resolve(quota) });
+  await flush(); await flush();
+  const text = shown('pages/advisor/index.wxml', h.page.data);
+  assert.match(text, /本月免费：比对已用完、通知表还剩 2 次，每次 50 家以内/);
+  assert.doesNotMatch(text, /还剩 0 次/);
+  assert.equal(h.page.data.payCard.usedUp, false);
+});
+
+test('工具中心额度有了结果才画批量工具卡片；"刷新额度"后旧请求晚到不覆盖新额度；读不到额度时卡片只写价格（Codex 审阅）', async () => {
+  const pending = [];
+  const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }),
+    advisorStatus: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  await flush(); await flush();
+  // 价格已到、额度还没回来：先不画
+  assert.equal(h.page.data.payCard, null);
+  // 点"刷新额度"：第二个请求先回来（已用完），第一个晚到（还剩 3 次）不能盖掉
+  h.page.refreshQuota();
+  pending[1].resolve({ enabled: true, quota: { compare: { used: 3, limit: 3, maxRows: 50 }, track: { used: 3, limit: 3, maxRows: 50 } }, pass: null, trial: null, season: null });
+  await flush(); await flush();
+  pending[0].resolve({ enabled: true, quota: { compare: { used: 0, limit: 3, maxRows: 50 }, track: { used: 0, limit: 3, maxRows: 50 } }, pass: null, trial: null, season: null });
+  await flush(); await flush();
+  assert.equal(h.page.data.payCard.usedUp, true);
+  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费次数已用完/);
+  // 读不到额度：卡片只写价格，不写免费次数
+  const broken = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.reject(new Error('网络不稳定')) });
+  await flush(); await flush();
+  assert.equal(broken.page.data.payCard.quotaLine, '');
+  assert.match(shown('pages/advisor/index.wxml', broken.page.data), /要一次处理更多家：30 天 29 元、90 天 79 元/);
+  assert.match(shown('pages/advisor/index.wxml', broken.page.data), /额度未能更新/);
 });
 
 test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
