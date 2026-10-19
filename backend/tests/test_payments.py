@@ -64,6 +64,8 @@ class FakeWechat:
         self.fail_provide = False
         self.bill_broken = None
         self.env_type = None
+        # 查单返回的商户单号、交易单号（沙箱可能是空的）
+        self.channel_ids = ("mch-test", "tx-test")
         self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
         self.client = XPayClient(settings, self.http)
 
@@ -101,8 +103,8 @@ class FakeWechat:
                         "paid_time": self.paid_time,
                         "wx_order_id": "wx-" + body["order_id"],
                         "order_type": self.order_type,
-                        "channel_order_id": "mch-test",
-                        "wxpay_order_id": "tx-test",
+                        "channel_order_id": self.channel_ids[0],
+                        "wxpay_order_id": self.channel_ids[1],
                     },
                 },
             )
@@ -476,9 +478,7 @@ def test_push_15_times_one_pass_no_task_or_quota(setup_pay, session):
     assert row.status == "completed" and row.goods_notified
 
 
-@pytest.mark.parametrize(
-    "mismatch", ["price", "product", "owner", "env", "trade", "wx", "quantity", "unpaid"]
-)
+@pytest.mark.parametrize("mismatch", ["price", "owner", "env", "trade", "unpaid"])
 def test_push_requires_matching_query(setup_pay, session, mismatch):
     row = order(session, create(setup_pay))
     fake = setup_pay[2]
@@ -486,22 +486,95 @@ def test_push_requires_matching_query(setup_pay, session, mismatch):
     data = payload(row)
     if mismatch == "price":
         fake.fee = 101
-    elif mismatch == "product":
-        data["GoodsInfo"]["ProductId"] = "wrong"
     elif mismatch == "owner":
         data["OpenId"] = "wrong"
     elif mismatch == "env":
         data["Env"] = 0
     elif mismatch == "trade":
         fake.bad_order = True
-    elif mismatch == "wx":
-        data["WeChatPayInfo"]["TransactionId"] = "wrong"
-    elif mismatch == "quantity":
-        data["GoodsInfo"]["Quantity"] = 2
     elif mismatch == "unpaid":
         fake.status = 1
     assert push(setup_pay, data).json()["ErrCode"] != 0
     assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+
+
+def pay_logs(caplog):
+    return "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("youju"))
+
+
+@pytest.mark.parametrize(
+    "change,field",
+    [
+        ("product", "GoodsInfo.ProductId（值不同）"),
+        ("quantity", "GoodsInfo.Quantity（值不同）"),
+        ("attach", "GoodsInfo.Attach（推送里是空的）"),
+        ("no_goods", "GoodsInfo（推送里没有）"),
+        ("wx", "WeChatPayInfo.TransactionId（值不同）"),
+        ("sandbox", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
+    ],
+)
+def test_push_fields_unlike_query_still_open_what_was_paid(
+    setup_pay, session, caplog, change, field
+):
+    """开不开通以查单为准：推送里的道具、单号字段和查单对不上也不拒收——拒收只让微信重推，
+    2 分钟后补单照样开通（10/19 沙箱实测）。照订单开通，只把对不上的字段名记进日志。"""
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status = 2
+    data = payload(row)
+    if change == "product":
+        data["GoodsInfo"]["ProductId"] = "workbench_90d"
+    elif change == "quantity":
+        data["GoodsInfo"]["Quantity"] = 2
+    elif change == "attach":
+        data["GoodsInfo"]["Attach"] = ""
+    elif change == "no_goods":
+        del data["GoodsInfo"]
+    elif change == "wx":
+        data["WeChatPayInfo"]["TransactionId"] = "wrong"
+    elif change == "sandbox":
+        fake.channel_ids = ("", "")
+    caplog.set_level(logging.WARNING, logger="youju")
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    ticket = payments.order_pass(session, row)
+    assert row.status == "completed" and row.goods_notified and row.error is None
+    assert ticket.ends_at - ticket.starts_at == timedelta(days=30)
+    text = pay_logs(caplog)
+    assert f"订单 #{row.id} 推送和查单对不上（以查单为准）" in text and field in text
+    for value in (row.out_trade_no, "workbench_90d", "wrong", "mch-test", "tx-test", "pay-user"):
+        assert value not in text
+    # 同一笔重推：照样应答成功，不重复开通
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 1
+
+
+def test_push_matching_query_logs_nothing(setup_pay, session, caplog):
+    caplog.set_level(logging.WARNING, logger="youju")
+    delivered(setup_pay, session)
+    assert pay_logs(caplog) == ""
+
+
+def test_push_not_handled_logs_reason_without_ids(setup_pay, session, caplog):
+    """推送没处理成，原因记进日志：事件名、订单号、状态码，不记 openid、单号和金额。"""
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    data = payload(row)
+    caplog.set_level(logging.WARNING, logger="youju")
+    assert push(setup_pay, data).json()["ErrCode"] == 1  # 还没付款
+    fake.status, fake.bad_order = 2, True
+    assert push(setup_pay, data).json()["ErrCode"] == 1  # 查单返回的单号对不上
+    fake.bad_order = False
+    assert push(setup_pay, {**data, "OpenId": "someone-else"}).json()["ErrCode"] == 1
+    text = pay_logs(caplog)
+    tag = f"xpay_goods_deliver_notify 订单 #{row.id}"
+    assert f"{tag} 这次没处理：查单状态 1" in text
+    assert f"{tag} 核验失败：XPayError" in text
+    assert f"{tag} 推送的用户、环境或微信单号和订单对不上，没处理" in text
+    for value in (row.out_trade_no, "pay-user", "someone-else", "mch-test", "tx-test"):
+        assert value not in text
 
 
 def test_push_source_xml_and_role_gate(setup_pay, session):
