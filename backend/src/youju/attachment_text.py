@@ -130,7 +130,12 @@ _SPACED_OLD_ID = re.compile(r"(?<!\d)[1-9]\d{5}[ -]?\d{6}[ -]?\d{3}(?![\dXx])")
 _CARD = re.compile(r"(?<!\d)(?:\d{16,19}|\d{4}(?:[ -]\d{4}){3}(?:[ -]\d{1,3})?)(?![\d])")
 # 写了"账号"的：后面 10–30 位数字（对公账号过不了 Luhn，也可能超过 19 位），组间一个空格或横线；
 # 后面紧跟字母的（统一社会信用代码当登录账号）不算
-_ACCOUNT_LABEL = r"(?:银行卡号?|银行账号|银行帐号|开户账号|开户帐号|账户号?|帐户号?|账号|帐号|卡号)"
+_ACCOUNT_WORDS = (
+    "银行卡号", "银行账号", "银行帐号", "开户账号", "开户帐号", "账户号", "帐户号",
+    "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
+)  # fmt: skip
+# 字之间可以有空格（表格里分散对齐的"账  号"）
+_ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
 _ACCOUNT = re.compile(rf"({_ACCOUNT_LABEL}\s*[:：]?\s*)\d(?:[ -]?\d){{9,29}}(?![\dA-Za-z])")
 _ACCOUNT_DIGITS = re.compile(r"(?<![\dA-Za-z])\d(?:[ -]?\d){9,29}(?![\dA-Za-z])")
 _ACCOUNT_LABEL_RE = re.compile(_ACCOUNT_LABEL)
@@ -384,9 +389,10 @@ class _Builder:
                     continue
                 header = headers.get(cell.col) if i >= first else None
                 # 左边那格或这一列的表头写着"账号"：这一格里 10 位以上的数字都当账号遮
+                # （多级表头"基本信息/银行账号"看最后一级）
                 account = any(
                     label and len(label) <= 12 and _ACCOUNT_LABEL_RE.search(label)
-                    for label in (left, header)
+                    for label in (left, (header or "").rsplit("/", 1)[-1])
                 )
                 masked = mask(text, account=account)
                 changed |= masked != text
@@ -791,8 +797,9 @@ def _sheet_number(value: str, date_style: bool, percent: bool, epoch: datetime) 
         return moment.strftime("%Y-%m-%d")
     if percent:
         return f"{number * 100:.10g}%"
-    if number.is_integer() and abs(number) < 1e15:
-        return str(int(number))
+    if number.is_integer():
+        # 整数一律原样写出：存成数字的卡号、身份证号写成科学计数法，遮号码就认不出了
+        return f"{number:.0f}"
     return f"{number:.10g}"
 
 
@@ -1976,6 +1983,7 @@ def _version(
         )
     ):
         other.status, other.reason, other.detail = status, version.reason, version.detail
+        other.extractor, other.retry_at = EXTRACTOR_VERSION, None  # 不用再为它重新下载
         other.changed_at = now
     return version, True
 

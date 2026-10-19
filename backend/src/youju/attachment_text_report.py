@@ -332,9 +332,9 @@ def render(report: Report) -> str:
                 "却不是（AI 解读按它）：要重新跑一次类型"
             )
         lines.append(
-            f"  正文加能读的附件合计超过 2.4 万字 {kr.over_limit} 份：正文本身就超过的 "
-            f"{kr.body_too_long} 份（照旧整份不解读），正文不超、加上附件才超的 "
-            f"{kr.over_only_with_attachments} 份"
+            f"  正文加能读的附件合计超过 2.4 万字 {kr.over_limit} 份（所有通知里）："
+            f"正文本身就超过的 {kr.body_too_long} 份（不论有没有附件，照旧整份不解读），"
+            f"正文不超、加上附件才超的 {kr.over_only_with_attachments} 份"
         )
         if kr.total_chars:
             order = ("6000 字以内", "6001–12000", "12001–24000", "24000 字以上")

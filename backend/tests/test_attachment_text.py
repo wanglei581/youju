@@ -827,6 +827,20 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     builder.table([_row("单位", "账号", "金额"), _row("甲", "33050161613500000123", "100")])
     assert builder.segments[0].text == "开户银行 | 工商银行 | 银行账号 | [银行账号已脱敏]"
     assert builder.segments[3].text == "甲 | [银行账号已脱敏] | 100"
+    # 分散对齐的"账  号"、多级表头的最后一级是"银行账号"
+    builder = at._Builder()
+    builder.table([_row("单位", "账  号", "金额"), _row("甲", "33050161613500000123", "10")])
+    top = at._Row([at._Cell(0, "基本信息", 3)], {}, True)
+    labels = at._Row([at._Cell(0, "单位"), at._Cell(1, "银行账号"), at._Cell(2, "金额")], {}, True)
+    builder.table([top, labels, _row("甲", "33050161613500000123", "10")])
+    assert builder.segments[1].text == "甲 | [银行账号已脱敏] | 10"
+    assert builder.segments[4].text == "甲 | [银行账号已脱敏] | 10"
+    assert at.mask("账 号：3305 0161 6135 0000 0123") == "账 号：[银行账号已脱敏]"
+    # 存成数字的长号码不写成科学计数法（写成科学计数法就遮不到了）
+    epoch = datetime(1899, 12, 30)
+    assert at._sheet_number("6222021234567890", False, False, epoch) == "6222021234567890"
+    assert at._sheet_number("4.111111111111111e+15", False, False, epoch) == "4111111111111111"
+    assert at.mask(at._sheet_number("4111111111111111", False, False, epoch)) == "[银行账号已脱敏]"
 
 
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
@@ -1001,6 +1015,8 @@ def test_interrupted_extraction_is_not_retried_and_shared_links_follow(
     rows = _url_rows(session)
     assert (rows[BASE + "d.docx"].status, rows[BASE + "d.docx"].reason) == ("failed", "empty")
     assert rows[BASE + "d.docx"].changed_at == later
+    # 共用的内容已按新规则取过：另一个链接不用再为它重新下载
+    assert at.due(session, {at.url_key(BASE + "d.docx")}, later) == set()
 
 
 def test_cleanup_drops_out_of_scope_links_and_orphan_texts(session) -> None:
