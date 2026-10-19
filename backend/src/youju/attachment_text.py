@@ -189,7 +189,7 @@ _ID_CELL = re.compile(
 )
 _PHONE_CELL = re.compile(
     r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
-    r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号\s*码)?|联\s*系\s*方\s*式)"
+    r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号(?:\s*码)?)?|联\s*系\s*方\s*式)"
     r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
@@ -663,10 +663,11 @@ class _Builder:
                     continue
                 header = headers.get(cell.col) if i >= first else None
                 since, kind = label_from.get(cell.col, (len(rows), None))
-                # 左边那格：有表头的列里的账户类型词是值（"账户类型"列里的"基本账户"），右边那格
-                # （项目编号）不按账号认；"名目 | 内容"的表（没有列表头）里是标签
+                # 左边那格写着标签的先按它认（比列标签离得近）。有表头的列里的账户类型词是值
+                # （"账户类型"列里的"基本账户"），右边那格（项目编号）不按账号认；"名目 | 内容"的
+                # 表（没有列表头）里是标签
                 left_kind = _cell_label(left, types=left_col not in headers)
-                masked = mask(text, column=kind if i > since else left_kind)
+                masked = mask(text, column=left_kind or (kind if i > since else None))
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
                 if header:

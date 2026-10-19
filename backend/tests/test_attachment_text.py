@@ -1165,7 +1165,12 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
     ):
         assert at.mask(raw).endswith(" [银行账号已脱敏]"), raw
     # 表格里身份证号、手机号的列（窄列折行写开）和左边那格写着"身份证号"的
-    for label, kind in (("法人身份证号", "id"), ("证件号码", "id"), ("联系人电话", "phone")):
+    for label, kind in (
+        ("法人身份证号", "id"),
+        ("证件号码", "id"),
+        ("联系人电话", "phone"),
+        ("联系电话号", "phone"),
+    ):
         assert at._cell_label(label) == kind, label
     assert at._cell_label("证件类型") is None
     builder = at._Builder()
@@ -1201,6 +1206,7 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
             _row("身份证号", "1101011990030 71234"),
             _row("手机", "1381234 5678"),
             _row("基本存款账户", "1202021309001234568"),
+            _row("身份证号", "11010119900307 1234"),  # 这一列已按账号认：左边那格的标签优先
         ]
     )
     assert [x.text for x in builder.segments[1:]] == [
@@ -1217,6 +1223,7 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
         "身份证号 | [身份证号已脱敏]",
         "手机 | [手机号已脱敏]",
         "基本存款账户 | [银行账号已脱敏]",
+        "身份证号 | [身份证号已脱敏]",
     ]
 
 
