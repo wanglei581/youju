@@ -104,8 +104,9 @@
     const meta = el('div', 'meta');
     const state = el('span', TONE[item.status] || 'tag', item.status);
     meta.append(state);
-    if (item.reversedAt) meta.append(el('span', 'tag', '已冲红'));
-    else if (item.refundState) meta.append(el('span', 'tag rejected', item.refundState));
+    // 退款进度标签：标完已冲红时原地换成"已冲红"，不留两个互相矛盾的标签
+    const refundTag = item.reversedAt ? el('span', 'tag', '已冲红') : item.refundState ? el('span', 'tag rejected', item.refundState) : null;
+    if (refundTag) meta.append(refundTag);
     meta.append(el('span', '', `订单 ${item.orderId}`), el('span', '', `申请于 ${when(item.createdAt)}`));
     const dl = el('dl');
     field(dl, '抬头类型', item.titleType === 'company' ? '单位' : '个人');
@@ -132,7 +133,9 @@
           if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
           // 在"要冲红"列表里标完就拿掉这张；在"全部"里改成已冲红
           if ($('status').value === 'reverse') { card.remove(); return; }
-          done.remove(); meta.append(el('span', 'tag', '已冲红')); msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
+          done.remove();
+          if (refundTag) { refundTag.className = 'tag'; refundTag.textContent = '已冲红'; } else meta.append(el('span', 'tag', '已冲红'));
+          msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
         } catch (err) { msg.className = 'msg'; msg.textContent = err.message; done.disabled = false; }
       };
       row.append(done);
