@@ -2262,3 +2262,59 @@ test('Codex 第 28 轮：建任务被明确拒绝不算"这一页有任务"，�
     }
   }
 });
+
+test('Codex 第 29 轮：失败卡片上的重试因为次数用完收起后，停在页面上过了 0 点重新问、按钮回来，不自己提交；对照页从记录打开失败任务"重新填写"后，离开再回来照现在的次数拦下，提交前也拦', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let left = 1; let created = 0;
+    const d = dayStub();
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const failedTask = { id: 9, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' };
+    const deps = {
+      '../../utils/api.js': {
+        advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: left, clause: left } })),
+        createAdvisorTask: () => { created += 1; return Promise.resolve({ ...failedTask }); },
+        advisorTask: () => Promise.resolve({ ...failedTask }),
+      },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      '../../utils/daywatch.js': d,
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    try {
+      if (kind === 'clause') { p.submit(); await settle(); }
+      assert.equal(p.data.phase, 'failed'); assert.equal(created, 1);
+      p.onHide(); left = 0; p.onShow(); await settle();
+      assert.equal(p.data.newGate, 'used'); assert.equal(findAll(render(`pages/${page}/index.wxml`, p.data), tapsTo('retry')).length, 0);
+      // 停在页面上过了 0 点：重新问，按钮回来，不自己提交
+      left = 5; d.turn(); await settle();
+      assert.equal(p.data.newGate, '', `${page} 过了 0 点重新问`); assert.equal(created, 1, '不自己提交');
+      assert.equal(findAll(render(`pages/${page}/index.wxml`, p.data), tapsTo('retry')).length, 1, `${page} 重试回来了`);
+    } finally { p.onHide(); }
+  }
+  // 对照页：从"我的记录"打开失败任务，点"重新填写"回到表单以后，离开再回来照现在的次数拦下
+  let left = 5; let created = 0;
+  const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const deps = {
+    '../../utils/api.js': {
+      advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: left, clause: left } })),
+      createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 10, status: 'queued' }); },
+      advisorTask: (id) => Promise.resolve({ id, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' }),
+    },
+    '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+    '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format,
+  };
+  const p = load('pages/advisor-clause/index.js', deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+  p.onLoad({ taskId: '7' }); p.onShow(); await settle();
+  try {
+    assert.equal(p.data.viewing, true); assert.equal(p.data.phase, 'failed'); assert.equal(p.data.canRetry, true);
+    p.retry(); await settle();
+    assert.equal(p.data.phase, 'form'); assert.equal(p.data.viewing, false, '回到表单就不算打开已有结果');
+    p.onHide(); left = 0; p.onShow(); await settle();
+    assert.equal(p.data.gate, 'used', '离开再回来照现在的次数拦下'); assert.equal(p.data.aiEnabled, false);
+    // 万一表单还在、这时提交会被拦下：不提交，写明原因
+    p.setData({ aiEnabled: true, phase: 'form', gate: '', newGate: 'full' });
+    p.submit(); await settle();
+    assert.equal(created, 0, '不提交'); assert.equal(p.data.gate, 'full'); assert.equal(p.data.aiEnabled, false);
+  } finally { p.onHide(); }
+});
