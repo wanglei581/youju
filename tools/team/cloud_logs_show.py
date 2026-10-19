@@ -8,8 +8,9 @@
 - 文件编号：cloud://… 整段遮掉。
 - 访问日志的 ip、uid 字段（JSON、转义成字符串的 JSON、Python 字典写法都认）：ip 是 IP 的按下一条遮，
   不是 IP 的整个换成 *；uid 留前 4 位（ab12*）。
-- 来源 IP，出现在任何文字里的都遮：IPv4 留前两段（203.0.*.*），IPv6 留前两组（2408:8207:*）；
-  IPv4 映射成的 IPv6（::ffff:203.0.113.9）按 IPv4 留前两段（::ffff:203.0.*.*）。
+- 来源 IP，出现在任何文字里的都遮：IPv4 留前两段（203.0.*.*），IPv6 留前两组（2408:8207:*；紧贴在
+  IPv6:、ip6: 这类英文标签后面的也认）；IPv4 映射成的 IPv6（::ffff:203.0.113.9）按 IPv4 留前两段
+  （::ffff:203.0.*.*）。
 - 单独出现的 16 位十六进制串（用户编号的格式，如批量工具结果文件路径 advisor/out/<编号>/）留前 4 位。
 - 以 o 开头的 28 位微信用户标识（openid、unionid 的格式，比如数据库报错里带出来的）留前 4 位。
 时间、容器名、开头的统计行也一样过一遍。留下的几位够判断是不是同一来源。
@@ -63,22 +64,39 @@ def _field(m):
     return f"{m.group('kq')}{m.group('key')}{m.group('kq')}{m.group('sep')}{m.group('vq')}{val}{m.group('vq')}"
 
 
-def _v6(m):
-    run = m.group(0)
-    if run.count(":") < 2:
-        return run
-    body = run.rstrip(".")
-    head, tail = "", run[len(body) :]
-    # 粘在地址前后的单个冒号（"addr:2408:…"、"…::1:"）不算地址；"::" 是地址的一部分
+def _v6_addr(text):
+    """text 是 IPv6 地址（前后可以粘着句末的点、单个冒号）就返回遮蔽后的写法，不是就返回 None。"""
+    body = text.rstrip(".")
+    head, tail = "", text[len(body) :]
+    # 粘在地址前后的单个冒号（"…::1:"）不算地址；"::" 是地址的一部分
     if body.startswith(":") and not body.startswith("::"):
         head, body = ":", body[1:]
     if body.endswith(":") and not body.endswith("::"):
         body, tail = body[:-1], ":" + tail
+    if not body.strip(":"):
+        return None  # 光是 "::"（未指定地址，如 http://[::]:80）不是谁的地址
     try:
-        addr = ipaddress.IPv6Address(body)
+        return head + _ip_prefix(ipaddress.IPv6Address(body)) + tail
     except ValueError:
+        return None
+
+
+def _v6(m):
+    run = m.group(0)
+    if run.count(":") < 2:
         return run
-    return head + _ip_prefix(addr) + tail
+    k = run.index(":")
+    before = m.string[m.start() - 1 : m.start()]
+    # 紧贴在英文字母、数字或下划线后面、第一个冒号前不到 4 位的（"IPv6:2001:…"、"ip6:…"、"addr:…"），
+    # 算前面那个标签的一部分，地址从这个冒号后面开始（"IPv6::1" 这样共用冒号的也认）。
+    # 用户的公网 IPv6 第一组都是 4 位，不会被这样切掉而多露一组；4 位的按整串算
+    if before.isascii() and (before.isalnum() or before == "_") and k < 4:
+        for body in (run[k + 1 :], run[k:]):
+            masked = _v6_addr(body)
+            if masked is not None:
+                return run[: k + 1] + masked
+    masked = _v6_addr(run)
+    return run if masked is None else masked
 
 
 def mask(text):

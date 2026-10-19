@@ -61,13 +61,20 @@ TEXT_CASES = {
     'nat64 64:ff9b::203.0.113.9 ok': 'nat64 64:ff9b:* ok',
     'embedded 2001:db8::203.0.113.9': 'embedded 2001:db8:*',
     'time=10:20:203.0.113.77': 'time=10:20:203.0.*.*',
+    # 紧贴英文标签的 IPv6：标签照旧，地址留前两组；第一个冒号前有 4 位的按整串算，最多露两组
+    'IPv6:2001:db8::1': 'IPv6:2001:db8:*',
+    'ip6:2001:db8:85a3::1.': 'ip6:2001:db8:*.',
+    'IPv6::1': 'IPv6:0:0:*',
+    'IP2001:db8:85a3:1::1': 'IP2001:db8:*',
+    'mycafe:2001:db8::1': 'mycafe:2001:*',
     f'删除 advisor/out/{UID}/12.xlsx 失败': '删除 advisor/out/9f3a*/12.xlsx 失败',
     f'youju log-uid -> {UID}': 'youju log-uid -> 9f3a*',
     f'cloud://prod-env.7072-prod-env-1300000000/advisor/out/{UID}/12.xlsx done': 'cloud://… done',
     f"Duplicate entry '{OPENID}' for key 'users.openid'": "Duplicate entry 'oTES*' for key 'users.openid'",
 }
 UNTOUCHED = [f'rid {RID}', 'sha256 ' + 'ab' * 32, 'Python 3.12.4', '2026-10-19T03:00:00.123456+00:00',
-             'elapsed 12:34:56', 'GET /api/v1/notices/123 200 35ms', '工具任务：processed 3']
+             'elapsed 12:34:56', 'GET /api/v1/notices/123 200 35ms', '工具任务：processed 3',
+             'Uvicorn running on http://[::]:80', 'mac aa:bb:cc:dd:ee:ff']
 ACCESS_IPS = [(IP4, '203.0.*.*'), (IP6, '2001:db8:*'), ('::ffff:203.0.113.9', '::ffff:203.0.*.*'),
               ('testclient', '*'), ('', '')]
 
