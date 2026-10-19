@@ -26,6 +26,36 @@ function csvRows(text, keepBlank = false) {
   return keepBlank ? rows : rows.filter((cells) => cells.some(Boolean));
 }
 
+// 粘贴的名单里像手机号、身份证号的行（从 1 开始的行号）：只提醒，不拦，不回显内容（10/18 验收，agy 提出）。
+// 手机号认连写和 3-4-4 分段（空格或横线），全角数字先换成半角；两边紧挨字母、数字的（代码、编号里的一段）
+// 和后面跟小数的（金额）不算；座机多是单位总机，不提醒。
+// 统一社会信用代码也是 18 位，身份证号再按出生日期和校验位确认一次（一行里每个候选都看），误报很少。
+const MOBILE = /(^|[^0-9A-Za-z])1[3-9]\d(?:[ -]?\d{4}){2}(?![0-9A-Za-z]|\.\d)/;
+const ID_CARD = /(?:^|[^0-9A-Za-z])([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx])(?![0-9A-Za-z])/g;
+function halfWidth(text) {
+  return String(text || '')
+    .replace(/[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/\uFF0D/g, '-').replace(/\u3000/g, ' ');
+}
+function idChecksumOk(id) {
+  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  let sum = 0;
+  for (let i = 0; i < 17; i += 1) sum += Number(id[i]) * weights[i];
+  return '10X98765432'[sum % 11] === id[17].toUpperCase();
+}
+function hasIdNumber(line) {
+  ID_CARD.lastIndex = 0;
+  for (let m = ID_CARD.exec(line); m; m = ID_CARD.exec(line)) if (idChecksumOk(m[1])) return true;
+  return false;
+}
+function personalInfoLines(text) {
+  const hits = [];
+  halfWidth(text).split(/\r?\n/).forEach((line, index) => {
+    if (MOBILE.test(line) || hasIdNumber(line)) hits.push(index + 1);
+  });
+  return hits;
+}
+
 // 列顺序：客户名称,省份,关键词,支持方式,城市,区县（旧四列、五列位置不变）。城市、区县规则与服务端 track.CustomerProfile 一致：
 // 各只填一个、不超过 32 字、不含 / \ , ， ; ； 、 | 和制表换行；国家部委不带城市和区县。直辖市城市填本市：没填区县按省级，
 // 填了区县时城市记本市简称（北京,北京,朝阳区）；区县必须同时填所属城市，区县名照录，不去掉"区""县"。
@@ -127,4 +157,4 @@ function openResult(id, options = {}) {
     });
   });
 }
-module.exports = { pasteRows, csvRows, toolConsent, quotaView, quotaStale, openResult, MAX_RESULT_BYTES, PART_BYTES };
+module.exports = { pasteRows, csvRows, personalInfoLines, toolConsent, quotaView, quotaStale, openResult, MAX_RESULT_BYTES, PART_BYTES };

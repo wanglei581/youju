@@ -406,7 +406,7 @@ def test_column_cap_has_total_count(session, profile, column, kind):
     issue = generate(session, profile).issue
     assert issue.counts[column] == 35
     assert issue.body_text.count("题录 ") == 30
-    assert "共 35 条，其余在「有据」小程序里查看" in issue.body_text
+    assert "共 35 条，其余在小程序里查看" in issue.body_text
 
 
 def test_empty_no_issue_with_reason_and_old_draft_removed(session, profile, caplog):
@@ -960,7 +960,7 @@ def test_reminder_profile_filters_and_cap(session, profile, due_world):
     issue = reminder(session, profile).issue
     assert issue.counts == {"reminder": 35} and len(issue.document_ids) == 30
     assert issue.body_text.count("题录 ") == 30
-    assert "共 35 条，其余在「有据」小程序里查看" in issue.body_text
+    assert "共 35 条，其余在小程序里查看" in issue.body_text
 
 
 def test_reminder_separate_from_weekly_draft_replaced_published_kept(session, profile, due_world):

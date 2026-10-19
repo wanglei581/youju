@@ -1,7 +1,7 @@
 const api = require('../../utils/api.js');
 const idempotency = require('../../utils/data-idempotency.js');
 const { DATA_KINDS, dataKinds } = require('../../utils/advisor.js');
-const { pasteRows, toolConsent, quotaView, quotaStale } = require('../../utils/data-tools.js');
+const { pasteRows, personalInfoLines, toolConsent, quotaView, quotaStale } = require('../../utils/data-tools.js');
 const pay = require('../../utils/pay.js');
 
 // 超出免费量时的说明：有加量体验资格时先推荐体验（免费，D-070；提示下面紧跟"了解加量体验"按钮）；
@@ -13,7 +13,7 @@ function limitText(offer, trial) {
 
 Page({
   data: { kind: 'compare', title: DATA_KINDS.compare, loading: true, error: '', gate: '', enabled: false, agreed: false,
-    mode: 'paste', text: '', fileName: '', rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
+    mode: 'paste', text: '', fileName: '', showFillHelp: false, rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
     // 加量体验、申报季加量（D-070，都以服务端 /advisor/status 为准，见 utils/boost.js）
     trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', trialHint: '', seasonLine: '',
     // 批量工具（只有服务端在售时才有值）：{ line: '30 天 29 元、90 天 79 元', renew: 续买规则或 null }
@@ -114,6 +114,7 @@ Page({
   hint(message) { this.setData({ trialHint: message }); return message; },
   consent() { require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); }); },
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
+  toggleFillHelp() { this.setData({ showFillHelp: !this.data.showFillHelp }); },
   tasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },
   refreshKey() {
     this.key = `data-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -178,6 +179,21 @@ Page({
   preview() {
     if (this.data.previewing || this.data.submitting || this.data.accepted || !this.data.enabled) return;
     if (!this.data.agreed) { this.terms(); return; }
+    // 粘贴的内容里像手机号、身份证号：先提醒一次（同一段内容只提醒一次），用户选"仍要预览"才继续
+    if (this.data.mode === 'paste' && this.personalChecked !== this.data.text) {
+      const hits = personalInfoLines(this.data.text);
+      if (hits.length) {
+        const text = this.data.text;
+        wx.showModal({
+          title: '请确认没有个人信息',
+          content: `第 ${hits.slice(0, 5).join('、')} 行像是手机号或身份证号。名单里只填企业信息，不要填写个人姓名、身份证号、手机号或银行账号。`,
+          confirmText: '返回修改',
+          cancelText: '仍要预览',
+          success: (res) => { if (res.cancel && !this.dead && this.data.text === text) { this.personalChecked = text; this.preview(); } },
+        });
+        return;
+      }
+    }
     let body;
     try { body = this.body(); } catch (err) { this.setData({ inputError: err.message }); return; }
     const serial = this.serial;
