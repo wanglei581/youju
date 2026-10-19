@@ -87,6 +87,8 @@ Page({
     ready: false,
     offline: false,
     capsLoading: true,
+    // 这次能力接口回来、能开始新的解读（没有拦下、今天还有次数）才给"AI 解读"按钮；条款对照同理
+    interpretOpen: false,
     clauseOpen: false,
     gate: '',
     gateText: '',
@@ -118,8 +120,12 @@ Page({
     this.shown = true;
     // 刚才看的那份先不给按钮：后台再核一次还能不能解读（可能下架了、失去了资格），核过再给
     const last = access.lastDoc();
-    // 能力接口回来之前不给"条款对照 ›"（上次进来时的状态可能已经变了）
-    this.setData({ today: todayISO(), clauseOpen: false, lastDoc: last ? Object.assign({}, last, { ai: null }) : null });
+    // 上次进来时的能力、次数和拦下原因都先清掉，显示加载中；能力接口回来之前不给"AI 解读""条款对照"
+    this.recentItems = [];
+    this.setData({
+      today: todayISO(), capsLoading: true, kinds: [], gate: '', gateText: '', interpretOpen: false, clauseOpen: false,
+      recent: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
+    });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     access.ensure().then((state) => {
@@ -150,16 +156,18 @@ Page({
       // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页
       if (gate === 'off') access.refresh();
       const kinds = ai.enabled === true ? kindRows(ai) : [];
-      const clause = kinds.find((row) => row.kind === 'clause');
+      const open = (kind) => { const row = kinds.find((item) => item.kind === kind); return !gate && !!row && !row.out; };
       this.setData({
         capsLoading: false,
         gate,
         gateText: gateTextOf(gate, caps),
         kinds,
-        // 刚才看的那份能不能直接去条款对照：账号能用、今天还有次数、后台能处理
-        clauseOpen: !gate && !!clause && !clause.out,
+        // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满
+        interpretOpen: open('interpret'),
+        clauseOpen: open('clause'),
         disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
       });
+      this.showRecent();
     });
     const last = this.data.lastDoc;
     if (last) {
@@ -179,7 +187,9 @@ Page({
     this.setData({ recentLoading: true, recentError: '' });
     api.search(RECENT).then((res) => {
       if (seq !== this.seq) return;
-      this.setData({ recent: ((res && res.items) || []).slice(0, RECENT.limit), recentLoading: false });
+      this.recentItems = ((res && res.items) || []).slice(0, RECENT.limit);
+      this.setData({ recentLoading: false });
+      this.showRecent();
     }).catch(() => {
       if (seq !== this.seq) return;
       this.setData({ recent: [], recentLoading: false, recentError: '近 7 天的通知没有加载出来' });
@@ -195,6 +205,12 @@ Page({
   },
 
   // 重试：不管刚才是不是没连上，马上再问一次
+  // 近 7 天那几份：这次不能开始新的解读时（还没问到、拦下了、用完了）行上不放"AI 解读"，点标题照样看通知
+  showRecent() {
+    const open = this.data.interpretOpen;
+    this.setData({ recent: (this.recentItems || []).map((doc) => (open ? doc : Object.assign({}, doc, { ai: null }))) });
+  },
+
   retry() {
     access.refresh().then(() => { if (this.shown) this.onShow(); });
   },

@@ -882,3 +882,52 @@ test('Codex 第 3 轮：解读页、对照页被拦下时（满了、用完了�
     }
   }
 });
+
+test('Codex 第 4 轮：再次进 AI 首页时先清掉上次的能力和次数、显示加载中；首页里的"AI 解读"按钮看这次的额度（没问到、满了、用完了都不给）', async () => {
+  const doc = (id) => ({ id: String(id), title: `通知${id}`, kind: '申报通知', ai: { interpret: true, clause: true, reason: null } });
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  // 第二次进来、开放状态复核很慢：先显示加载中，不留上次的"今天还剩"
+  const access = control(OPEN);
+  let slow = false;
+  access.ensure = () => (slow ? new Promise(() => {}) : Promise.resolve(Object.assign({}, OPEN)));
+  const real = load('pages/ai/index.js', {
+    '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), search: () => Promise.resolve({ items: [doc(1), doc(2)] }), advisorTasks: () => Promise.resolve({ items: [] }),
+      detail: (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }) },
+    '../../utils/ai-access.js': Object.assign(access, { lastDoc: () => last }), '../../utils/advisor.js': advisor, '../../utils/ai-interpret.js': interpret, '../../utils/tool-context.js': context,
+    '../../utils/consent.js': { ensureConsent: () => Promise.resolve(true) }, '../../utils/format.js': format,
+  }, { wx: { switchTab() {}, navigateTo() {} } });
+  real.getTabBar = () => ({ setData() {} });
+  real.onLoad(); real.onShow(); await settle();
+  assert.match(textOf(render('pages/ai/index.wxml', real.data)), /今天还剩 5 次/);
+  assert.equal(findAll(render('pages/ai/index.wxml', real.data), (n) => n.tag === 'ai-button').length, 1);
+  real.onHide(); slow = true; real.onShow(); await settle();
+  assert.equal(real.data.capsLoading, true); assert.deepEqual(plain(real.data.kinds), []);
+  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', real.data)), /今天还剩/);
+  assert.equal(findAll(render('pages/ai/index.wxml', real.data), (n) => n.tag === 'ai-button').length, 0, '还没问到时不给按钮');
+  // 满了、解读用完了：刚才看的那份和近 7 天那几份都不给"AI 解读"；条款对照还有次数时照样给条款对照
+  for (const [caps, clauseShown] of [[ON({ siteFull: true }), false], [ON({ remaining: { interpret: 0, clause: 3 } }), true], [ON(), true]]) {
+    const g = hubPage({ last, caps, search: () => Promise.resolve({ items: [doc(1), doc(2)] }) });
+    g.page.onShow(); await settle();
+    const ok = caps.ai_advisor.siteFull !== true && caps.ai_advisor.remaining.interpret !== 0;
+    const root = render('pages/ai/index.wxml', g.page.data);
+    assert.equal(findAll(root, (n) => n.tag === 'ai-button').length, ok ? 1 : 0, JSON.stringify(caps.ai_advisor));
+    assert.deepEqual(g.page.data.recent.map((d) => !!d.ai), [ok, ok]);
+    assert.equal(findAll(root, tapsTo('clauseLast')).length, clauseShown ? 1 : 0);
+  }
+});
+
+test('Codex 第 4 轮：解读页、对照页发现 AI 对这个人没开着（off）时，回首页前让入口重新问一次；列表行放不下时操作换行', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    const access = control(OPEN); const switched = [];
+    const deps = {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(OFF('off')) },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, switchTab: (o) => switched.push(o.url), getStorageSync: () => undefined, setStorageSync() {} } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    assert.deepEqual(switched, ['/pages/home/index']); assert.equal(access.asks.refresh, 1, page);
+  }
+  assert.match(read('components/doc-row/index.wxss'), /\.meta \{[^}]*flex-wrap: wrap;/);
+  assert.match(read('components/doc-row/index.wxss'), /\.meta-date \{ white-space: nowrap; \}/);
+});

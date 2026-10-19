@@ -61,8 +61,8 @@
       <view class="last-title">{{lastDoc.title}}</view>
       <view class="last-meta">{{lastDoc.issuer}}<text wx:if="{{lastDoc.issuer && lastDoc.date}}"> · </text>{{lastDoc.date}}</view>
     </view>
-    <view wx:if="{{lastDoc.ai}}" class="last-ops">
-      <ai-button doc-id="{{lastDoc.id}}" doc-title="{{lastDoc.title}}" ai="{{lastDoc.ai}}" />
+    <view wx:if="{{lastDoc.ai && (interpretOpen || (clauseOpen && lastDoc.ai.clause))}}" class="last-ops">
+      <ai-button wx:if="{{interpretOpen}}" doc-id="{{lastDoc.id}}" doc-title="{{lastDoc.title}}" ai="{{lastDoc.ai}}" />
       <text wx:if="{{clauseOpen && lastDoc.ai.clause}}" class="link last-clause" bindtap="clauseLast" aria-role="button">条款对照 ›</text>
     </view>
   </view>

@@ -46,7 +46,11 @@ Page({
       const gate = aiEnabled ? '' : gateState(res);
       // AI 对这个人没开着（关闭、不在白名单；旧链接、旧记录打开）：正式版回首页，不留一页"不可用"（D-075）；
       // 内测包照旧只写"暂时没有可用工具"
-      if (gate === 'off' && !AI_INTERNAL) { this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return; }
+      if (gate === 'off' && !AI_INTERNAL) {
+        // 底栏、列表上的入口也跟着重新问一次（关了或被移出白名单时随即收起）
+        access.refresh();
+        this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return;
+      }
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         clauseEnabled: aiEnabled && allowedKinds(ai).includes('clause') });
       if (aiEnabled) this.session.show();
