@@ -4,7 +4,8 @@ const { taskViews, blockDownload, internalNotice, allowedKinds, allKinds, aiTitl
 
 Page({
   data: { toolsEnabled: false, downloadingId: null, aiLabel: AI_LABEL, fabText: FAB_TEXT, gate: 'off', gateText: OFF_TEXT, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
-  onShow() { this.dead = false; this.visible = true; this.delay = 3000; this.load(); },
+  // 每次显示都重新问能力接口：在途的、缓存的答复都不用（第 23 轮）
+  onShow() { this.dead = false; this.visible = true; this.delay = 3000; if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); },
   onHide() { this.stop(); },
   onUnload() { this.dead = true; this.stop(); },
   stop() { this.visible = false; this.epoch = (this.epoch || 0) + 1; clearTimeout(this.timer); },

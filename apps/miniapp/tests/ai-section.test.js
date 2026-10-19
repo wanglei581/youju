@@ -2026,3 +2026,17 @@ test('Codex 第 23 轮：AI 首页每次显示都不用在途的、缓存的能�
   assert.equal(h.page.data.gate, '', '旧回话不用');
   assert.match(h.text(), /今天还剩 5 次/); assert.doesNotMatch(h.text(), /用完了|今天满了/);
 });
+
+test('Codex 第 23 轮：工具中心、我的记录也是每次显示都不用在途的、缓存的能力答复', async () => {
+  for (const name of ['advisor', 'advisor-tasks']) {
+    let forgot = 0;
+    const page = load(`pages/${name}/index.js`, {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTasks: () => Promise.resolve({ items: [] }), advisorStatus: () => Promise.resolve({}), forgetCapabilities: () => { forgot += 1; } },
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+    }, { wx: { setNavigationBarTitle() {} }, setTimeout: () => 0, clearTimeout() {} });
+    if (page.onLoad) page.onLoad({});
+    page.onShow(); await settle(); assert.equal(forgot, 1, name);
+    page.onHide(); page.onShow(); await settle(); assert.equal(forgot, 2, `${name} 回来再问`);
+    if (page.onUnload) page.onUnload();
+  }
+});

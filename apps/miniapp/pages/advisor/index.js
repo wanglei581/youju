@@ -9,7 +9,8 @@ Page({
   data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: 0, clauseRemaining: 0,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false },
   onLoad(query) { this.setData({ context: context.read(query) }); },
-  onShow() { this.visible = true; this.load(); },
+  // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，AI 暂时不可用、满了跟着变，第 23 轮）
+  onShow() { this.visible = true; if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
   onUnload() { this.onHide(); },
   clearContext() { this.setData({ context: null }); },
