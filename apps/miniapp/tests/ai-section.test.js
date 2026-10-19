@@ -1964,9 +1964,9 @@ test('Codex 第 21 轮：0 点以前的"用完了""满了"答复 0 点以后才�
   const day = dayStub();
   const h = hubPage({ daywatch: day, extraApi: { forgetCapabilities: () => { forgot += 1; } } });
   h.page.onShow(); await settle();
-  const asked = h.calls.caps;
+  const asked = h.calls.caps; const forgotBefore = forgot;
   day.turn(); await settle();
-  assert.equal(forgot, 1, 'AI 首页跨零点不用旧答复'); assert.equal(h.calls.caps, asked + 1);
+  assert.equal(forgot, forgotBefore + 1, 'AI 首页跨零点不用旧答复'); assert.equal(h.calls.caps, asked + 1);
 });
 
 test('Codex 第 22 轮：跨零点时还在等能力接口回话就丢掉旧的重新问；每次显示都不用在途的旧答复；"可以重新开始了"那一页只有"重新开始"', async () => {
@@ -2011,4 +2011,18 @@ test('Codex 第 22 轮：跨零点时还在等能力接口回话就丢掉旧的�
       p.onHide();
     }
   }
+});
+
+test('Codex 第 23 轮：AI 首页每次显示都不用在途的、缓存的能力答复——请求在途时离开、过了 0 点回来，按新问的显示', async () => {
+  let forgot = 0; const holds = [];
+  const h = hubPage({ caps: () => new Promise((done) => holds.push(done)), extraApi: { forgetCapabilities: () => { forgot += 1; } } });
+  h.page.onShow(); await settle();
+  assert.equal(forgot, 1); assert.equal(holds.length, 1);
+  // 请求在途时离开，回来：不用旧的，重新问
+  h.page.onHide(); h.page.onShow(); await settle();
+  assert.equal(forgot, 2, '每次显示都不用旧答复'); assert.equal(holds.length, 2);
+  holds[1](ON()); await settle();
+  holds[0](ON({ remaining: { interpret: 0, clause: 0 }, siteFull: true })); await settle();
+  assert.equal(h.page.data.gate, '', '旧回话不用');
+  assert.match(h.text(), /今天还剩 5 次/); assert.doesNotMatch(h.text(), /用完了|今天满了/);
 });

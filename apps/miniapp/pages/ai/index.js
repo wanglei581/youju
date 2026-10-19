@@ -138,11 +138,11 @@ Page({
     watchDay(this, () => {
       if (!this.shown) return;
       const since = this.recordSince;
-      // 能力接口 0 点以前在途的、缓存的答复都不用，重新问（第 21 轮）
-      if (api.forgetCapabilities) api.forgetCapabilities();
       this.onShow();
       this.recordSince = since;
     });
+    // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，第 21、23 轮）
+    if (api.forgetCapabilities) api.forgetCapabilities();
     clearTimeout(this.recordTimer);
     this.recordPolls = 0;
     this.recordSince = Date.now();
