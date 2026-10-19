@@ -1,10 +1,14 @@
 <view wx:if="{{aiEnabled}}" class="card ai-entry">
   <view class="section-title">AI 解读</view>
-  <block wx:if="{{available}}">
+  <view wx:if="{{paused}}" class="ai-entry-text ai-entry-reason">AI 暂时不可用，请稍后再试。</view>
+  <block wx:elif="{{available}}">
     <view wx:if="{{interpretAvailable}}" class="ai-entry-text">约半分钟把这份通知的申报对象、条件、时间、材料等原文原句摘出来分好类，每条都能回原文核对。</view>
-    <view wx:else class="ai-entry-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
-    <view class="btn-primary ai-entry-btn" bindtap="open" aria-role="button">{{interpretAvailable ? '开始解读' : '和我的企业对一下'}}</view>
-    <view wx:if="{{interpretAvailable && clauseAvailable}}" class="link ai-entry-link" bindtap="openClause" aria-role="button">也可以直接和我的企业对一下</view>
+    <view wx:else class="ai-entry-text">条款对照：把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
+    <view class="btn-primary ai-entry-btn" bindtap="open" aria-role="button">{{interpretAvailable ? '开始解读' : '开始对照'}}</view>
+    <view wx:if="{{interpretAvailable && clauseAvailable}}" class="link ai-entry-link" bindtap="openClause" aria-role="button">也可以做条款对照</view>
   </block>
-  <view wx:else class="ai-entry-text ai-entry-reason">{{reason}}</view>
+  <block wx:else>
+    <view class="ai-entry-text ai-entry-reason">{{reason}}</view>
+    <view wx:if="{{nextText}}" class="link ai-entry-link" bindtap="nextStep" aria-role="button">{{nextText}}</view>
+  </block>
 </view>

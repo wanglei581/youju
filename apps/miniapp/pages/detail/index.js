@@ -86,6 +86,16 @@ Page({
     this.load();
   },
 
+  // 标题卡里那行提示（D-075）：滚到"要点"下面的卡片
+  toAi() {
+    wx.pageScrollTo({ selector: '#ai-entry', duration: 300 });
+  },
+
+  // 卡片上"看附件"：滚到附件那一块
+  toAttachments() {
+    wx.pageScrollTo({ selector: '#attachments', duration: 300 });
+  },
+
   // 转发给好友和群（D-070）：接收人不用登录也能打开同一份文件；不带任何奖励
   onShareAppMessage() {
     const { doc } = this.data;

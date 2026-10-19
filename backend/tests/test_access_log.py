@@ -23,7 +23,7 @@ from youju.api import me
 from youju.api.app import app
 from youju.backup import BackupError, dump, restore
 from youju.db import create_mysql_engine, get_session
-from youju.models import AccessLog, AppKey
+from youju.models import AccessDaily, AccessLog, AppKey
 
 from .conftest import TEST_DB_URL
 from .test_backup import clear_restore_target, fake_cloud
@@ -381,3 +381,71 @@ def test_api_account_with_insert_only_grant_can_write(session, db_engine, monkey
         restricted.dispose()
         with db_engine.begin() as conn:
             conn.execute(text(f"DROP USER IF EXISTS '{name}'@'%'"))
+
+
+def add_request(session, at, *, service="api", path="/api/v1/home", status=200, ms=5):
+    session.add(
+        AccessLog(
+            at=at,
+            logged_at=at,
+            rid=secrets.token_hex(16),
+            service=service,
+            method="GET",
+            path=path,
+            status=status,
+            ms=ms,
+            ip=None,
+            uid=None,
+        )
+    )
+    session.commit()
+
+
+def daily(session) -> dict:
+    session.expire_all()
+    return {
+        (r.day, r.service): (r.requests, r.errors, r.slow)
+        for r in session.scalars(select(AccessDaily))
+    }
+
+
+def test_archive_saves_daily_counts_before_deleting(session, db_engine, tmp_path):
+    """归档前按天汇总小程序接口（M3）：只算 /api/v1/，5xx 和"没返回 5xx 但超过 3 秒"分开数；
+    暂存记录归档后删掉，汇总留给早上的日报；400 天以前的汇总删掉。"""
+    day = NOW - timedelta(hours=1)  # 北京时间 9 月 28 日 23:30
+    add_request(session, day)  # 正常
+    add_request(session, day, path="/api/v1/search", ms=3000)  # 正好 3 秒：算慢
+    add_request(session, day, path="/api/v1/documents/7", status=503)  # 5xx
+    add_request(session, day, path="/api/v1/home", status=500, ms=20000)  # 5xx，不再算慢
+    add_request(session, day, path="/api/v1/home", status=429, ms=2999)  # 4xx 不算失败、不慢
+    add_request(session, day, path="/api/admin/overview", status=500)  # 管理台接口：不算
+    add_request(session, day, path="/admin/review", status=500)  # 管理台页面：不算
+    add_request(session, day, path="/__tcb_probe__", status=404)  # 平台探测：不算
+    add_request(session, day, service="admin", path="/api/v1/snapshot", ms=4000)
+    add_request(session, NOW - timedelta(minutes=10))  # 今天（9/29 0:20）的：还不归档
+    session.add(AccessDaily(day=date(2025, 8, 24), service="api", requests=1, errors=0, slow=0))
+    session.add(AccessDaily(day=date(2025, 8, 25), service="api", requests=2, errors=0, slow=0))
+    session.commit()
+    run_archive(db_engine, None, output=tmp_path, now=NOW)
+    expected = {
+        (date(2026, 9, 28), "admin"): (1, 0, 1),
+        (date(2026, 9, 28), "api"): (5, 2, 1),
+        # 9/29 往前 400 天是 2025/8/25：那天留着，更早的删掉
+        (date(2025, 8, 25), "api"): (2, 0, 0),
+    }
+    assert daily(session) == expected
+    # 暂存记录已归档删掉；再跑一次没有要归档的，汇总不变
+    assert run_archive(db_engine, None, output=tmp_path, now=NOW).days == {}
+    assert daily(session) == expected
+
+
+def test_failed_upload_still_saves_counts_and_recounting_is_the_same(session, db_engine):
+    """上传失败：暂存记录留着，汇总已经写了；下次归档重算同一天，结果一样（覆盖写）。"""
+    add_request(session, NOW - timedelta(hours=1), status=503)
+    client, _, _ = fake_cloud(cos_status=403)
+    with pytest.raises(BackupError, match="上传访问日志归档失败"):
+        run_archive(db_engine, "prod-1", client=client, now=NOW)
+    assert daily(session) == {(date(2026, 9, 28), "api"): (1, 1, 0)}
+    client, _, _ = fake_cloud()
+    run_archive(db_engine, "prod-1", client=client, now=NOW)
+    assert daily(session) == {(date(2026, 9, 28), "api"): (1, 1, 0)}

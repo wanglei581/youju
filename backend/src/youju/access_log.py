@@ -44,7 +44,7 @@ from youju.alerts import send_alert
 from youju.backup import BEIJING, BackupError, _open_api, _retrying, delete_files, upload
 from youju.config import get_settings
 from youju.db import get_engine
-from youju.models import AccessLog, AppKey
+from youju.models import AccessDaily, AccessLog, AppKey
 
 FORMAT = "youju-access-log"
 VERSION = 1
@@ -58,6 +58,11 @@ _SETTLE = timedelta(minutes=10)
 _PENDING_MAX = 5000
 _FIELDS = ("service", "method", "path", "status", "ms", "ip", "detail")
 KEY_NAME = "access_log"
+# 每天汇总（AccessDaily）保留多久：只有计数，留一年多，够看同比
+DAILY_KEEP_DAYS = 400
+# 汇总只算小程序接口；超过这么久才答复算慢（D-061：99% 请求 3 秒内成功）
+DAILY_PATH_PREFIX = "/api/v1/"
+DAILY_SLOW_MS = 3000
 _ALERT_INTERVAL = 600
 _BATCH = 1000
 
@@ -204,9 +209,12 @@ def _encode(value: Any) -> Any:
     raise TypeError(f"不支持的类型：{type(value).__name__}")
 
 
-def export_day(engine: Engine, day: date, out: IO[bytes]) -> tuple[int, int | None]:
+def export_day(
+    engine: Engine, day: date, out: IO[bytes], counts: dict[str, list[int]] | None = None
+) -> tuple[int, int | None]:
     """把这一天（北京时间）写进库的暂存记录按编号顺序写成 gzip JSON Lines，
-    返回（条数，最大编号）。"""
+    返回（条数，最大编号）。给了 counts 时，同一遍里按服务数小程序接口的请求、5xx、慢请求
+    （{服务: [请求数, 5xx, 慢]}，见 count_request），和写进归档文件的记录逐条一致。"""
     start, end = _day_bounds(day)
     header = {"format": FORMAT, "version": VERSION, "day": day.isoformat(), "tz": "Asia/Shanghai"}
     digest = hashlib.sha256()
@@ -228,10 +236,47 @@ def export_day(engine: Engine, day: date, out: IO[bytes]) -> tuple[int, int | No
             gz.write(line)
             count += 1
             last_id = row["id"]
+            if counts is not None:
+                count_request(counts, row["service"], row["path"], row["status"], row["ms"])
         gz.write(
             (json.dumps({"end": True, "rows": count, "sha256": digest.hexdigest()}) + "\n").encode()
         )
     return count, last_id
+
+
+def count_request(
+    counts: dict[str, list[int]], service: str | None, path: str | None, status: int, ms: int
+) -> None:
+    """按天汇总的口径：只算小程序接口（/api/v1/）；5xx 算失败；
+    没返回 5xx、但 3 秒及以上才答复的算慢。"""
+    if not (path or "").startswith(DAILY_PATH_PREFIX):
+        return
+    item = counts.setdefault(service or "", [0, 0, 0])
+    item[0] += 1
+    if (status or 0) >= 500:
+        item[1] += 1
+    elif (ms or 0) >= DAILY_SLOW_MS:
+        item[2] += 1
+
+
+def save_daily(engine: Engine, day: date, counts: dict[str, list[int]]) -> int:
+    """把这一天按服务的汇总写进 access_daily（同一天重算覆盖），返回写了几行。
+    在上传归档之前写：上传失败暂存记录留着，下次归档重新数，结果一样。"""
+    values = [
+        {"day": day, "service": service, "requests": n, "errors": errors, "slow": slow}
+        for service, (n, errors, slow) in sorted(counts.items())
+    ]
+    if values:
+        stmt = mysql_insert(AccessDaily).values(values)
+        with engine.begin() as conn:
+            conn.execute(
+                stmt.on_duplicate_key_update(
+                    requests=stmt.inserted.requests,
+                    errors=stmt.inserted.errors,
+                    slow=stmt.inserted.slow,
+                )
+            )
+    return len(values)
 
 
 def _pending_days(engine: Engine, now: datetime) -> list[date]:
@@ -283,6 +328,11 @@ def run_archive(
         report.expired = conn.execute(
             delete(AccessLog).where(AccessLog.logged_at < now - timedelta(days=KEEP_DAYS))
         ).rowcount
+        conn.execute(
+            delete(AccessDaily).where(
+                AccessDaily.day < now.astimezone(BEIJING).date() - timedelta(days=DAILY_KEEP_DAYS)
+            )
+        )
     own = client is None and output is None
     if own:
         client = httpx.Client(trust_env=False)
@@ -291,10 +341,14 @@ def run_archive(
             path = object_path(day)
             with tempfile.TemporaryDirectory() as tmp:
                 local = Path(tmp) / Path(path).name
+                counts: dict[str, list[int]] = {}
                 with local.open("wb") as fh:
-                    rows, last_id = export_day(engine, day, fh)
+                    rows, last_id = export_day(engine, day, fh, counts)
                 if not rows:
                     continue
+                # 归档前先按天汇总（M3）：暂存记录归档成功就删，早上的日报只能从汇总里读。
+                # 计数和写进归档文件的是同一遍读出来的同一批记录
+                save_daily(engine, day, counts)
                 size = local.stat().st_size
                 if output is not None:
                     shutil.copyfile(local, output / local.name)

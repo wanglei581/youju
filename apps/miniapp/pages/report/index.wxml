@@ -64,7 +64,7 @@
     </view>
     <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
     <view wx:if="{{item.quote}}" class="quote">原文：{{item.quote}}</view>
-    <view class="footline"><text>{{item.fileNumber}}</text><text class="export" data-id="{{item.docId}}" catchtap="exportOne">导出</text></view>
+    <view class="footline"><text>{{item.fileNumber}}</text><view class="foot-ops"><text class="export" data-id="{{item.docId}}" catchtap="exportOne">导出</text><ai-button wx:if="{{item.days === null || item.days >= 0}}" doc-id="{{item.docId}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
   </view>
   <view wx:if="{{tab && rows.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>
@@ -92,7 +92,7 @@
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>
     <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text><text wx:if="{{item.city}}"> · {{item.city}}</text><text wx:if="{{item.district}}"> · {{item.district}}</text></view>
-    <view class="soon-due">截止未核对，请以原文为准</view>
+    <view class="soon-due"><text>截止未核对，请以原文为准</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
   </view>
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
 </view>

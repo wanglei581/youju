@@ -102,6 +102,8 @@ function passPage(options = {}) {
     setStorageSync: (key, value) => storage.set(key, plain(value)),
     removeStorageSync: (key) => storage.delete(key),
     navigateTo: ({ url }) => urls.push(url),
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`),
     showToast: (toast) => toasts.push(toast),
     login: (payload) => payload.success({ code: 'wx-code-1' }),
     requestVirtualPayment(payload) {
@@ -115,6 +117,7 @@ function passPage(options = {}) {
     '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(options.agreed !== false) },
     '../../content/pay-terms.js': options.terms || FINAL_TERMS,
   }, { wx, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  if (options.before) options.before({ page, storage });
   page.onShow();
   return { page, calls, urls, toasts, storage, clock };
 }
@@ -129,9 +132,10 @@ function orderCard(data, id) {
 }
 
 function ordersPage(items, options = {}) {
-  const calls = []; let modal = null;
+  const calls = []; const urls = []; let modal = null;
   const api = {
-    payOrders: () => { calls.push(['list']); return Promise.resolve({ items }); },
+    payOrders: () => { calls.push(['list']); return options.payOrders ? options.payOrders() : Promise.resolve({ items }); },
+    payProducts: () => { calls.push(['products']); return options.payProducts ? options.payProducts() : Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })); },
     refundPayOrder: (id) => { calls.push(['refund', id]); return Promise.resolve({}); },
     requestInvoice: (id, body) => {
       calls.push(['invoice', id, plain(body)]);
@@ -145,9 +149,11 @@ function ordersPage(items, options = {}) {
   const page = load('pages/orders/index.js', {
     '../../utils/api.js': api,
     '../../utils/consent.js': { loginOpen: () => true },
-  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {} } }, { byReference: options.byReference });
+  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {},
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`) } }, { byReference: options.byReference });
   page.onShow();
-  return { page, calls, modal: () => modal };
+  return { page, calls, urls, modal: () => modal };
 }
 
 function dataLogic(api) {
@@ -221,22 +227,144 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
   assert.deepEqual(plain((await capabilities({ statusCode: 403, data: { detail: '请先同意' } })).pay), { enabled: false, hasOrders: false });
 });
 
-test('购买页在商品 404 或空列表时只显示未开放、没有付款按钮，防止关掉售卖后还能付款', async () => {
+test('商品、下单、能力、我的、提交任务这几个请求带上代码包里的付费协议版本号和小程序环境；读不到环境就不带，防止服务端认不出新版本或把正式版当体验版（D-074）', async () => {
+  function api(envVersion) {
+    const seen = [];
+    const request = (options) => {
+      seen.push({ url: options.url, header: plain(options.header || {}) });
+      Promise.resolve().then(() => options.success({ statusCode: 200, data: options.url.includes('/pay/orders') ? { orderId: 1 } : { items: [] } }));
+    };
+    const wx = { request, removeStorageSync() {}, getStorageSync() {}, setStorageSync() {} };
+    if (envVersion) wx.getAccountInfoSync = () => ({ miniProgram: { envVersion } });
+    const module = load('utils/api.js', {
+      './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {},
+      '../content/pay-terms.js': { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' },
+    }, { wx, setTimeout: () => 0, clearTimeout() {} });
+    return { module, seen };
+  }
+  const trial = api('trial');
+  await trial.module.payProducts();
+  await trial.module.createPayOrder({ product_id: 'workbench_30d', code: 'c', terms_version: 'pay-2026-11' });
+  await trial.module.advisorCapabilities({ refresh: true });
+  await trial.module.me();
+  await trial.module.createAdvisorTask({ kind: 'compare', text: '合成企业甲' }, 'key-1').catch(() => {});
+  const byPath = (part) => trial.seen.find((item) => item.url.includes(part));
+  for (const part of ['/api/v1/pay/products', '/api/v1/pay/orders', '/api/v1/advisor/capabilities', '/api/v1/me', '/api/v1/advisor/tasks']) {
+    const item = byPath(part);
+    assert.ok(item, part);
+    assert.equal(item.header['X-Youju-Pay-Terms'], 'pay-2026-11', part);
+    assert.equal(item.header['X-Youju-Env'], 'trial', part);
+  }
+  assert.equal(byPath('/api/v1/advisor/tasks').header['Idempotency-Key'], 'key-1');
+  const unknown = api(null);
+  await unknown.module.payProducts();
+  assert.deepEqual(unknown.seen[0].header, { 'X-Youju-Pay-Terms': 'pay-2026-11' });
+});
+
+test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
   for (const payProducts of [
     () => Promise.reject(Object.assign(new Error('开关关闭'), { status: 404 })),
     () => Promise.resolve({ items: [] }),
   ]) {
     const h = passPage({ payProducts });
     await flush();
-    assert.equal(h.page.data.loading, false);
+    assert.deepEqual(h.urls, ['tab:/pages/home/index']);
     assert.equal(h.page.data.product, null);
     assert.equal(h.page.data.error, '');
     const text = shown('pages/pass/index.wxml', h.page.data);
-    assert.match(text, /付费服务暂未开放/);
-    assert.doesNotMatch(text, /开关关闭/);
+    assert.doesNotMatch(text, /暂未开放|开关关闭|批量工具/);
     assert.equal(payButtons(h.page.data).length, 0);
     assert.equal(h.calls.length, 0);
   }
+});
+
+test('购买页商品接口出错（不是 404）时留在本页显示错误和重试，不回首页，防止网络一抖就把正要付款的人送走', async () => {
+  const h = passPage({ payProducts: () => Promise.reject(Object.assign(new Error('服务暂时出错（500），请稍后重试'), { status: 500 })) });
+  await flush();
+  assert.deepEqual(h.urls, []);
+  assert.equal(h.page.data.loading, false);
+  assert.equal(h.page.data.error, '服务暂时出错（500），请稍后重试');
+  assert.match(shown('pages/pass/index.wxml', h.page.data), /重试/);
+  assert.equal(payButtons(h.page.data).length, 0);
+});
+
+test('订单页没有订单又不在售时回首页、不写"暂未开放"；在售时写"还没有订单"；接口 404 也回首页，防止首发包里的订单页被直接打开时像没做完（D-074）', async () => {
+  const closed = ordersPage([]);
+  await flush();
+  assert.deepEqual(closed.urls, ['tab:/pages/home/index']);
+  assert.doesNotMatch(shown('pages/orders/index.wxml', closed.page.data), /暂未开放/);
+
+  const selling = ordersPage([], { payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE }) });
+  await flush();
+  assert.deepEqual(selling.urls, []);
+  assert.equal(selling.page.data.loading, false);
+  assert.match(shown('pages/orders/index.wxml', selling.page.data), /还没有订单/);
+
+  const gone = ordersPage([], { payOrders: () => Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })) });
+  const empty = ordersPage([], { payProducts: () => Promise.resolve({ items: [] }) });
+  await flush();
+  assert.deepEqual(empty.urls, ['tab:/pages/home/index']);
+  await flush();
+  assert.deepEqual(gone.urls, ['tab:/pages/home/index']);
+  assert.doesNotMatch(shown('pages/orders/index.wxml', gone.page.data), /暂未开放|没有找到接口/);
+});
+
+test('购买页停卖时：刚开通的照旧显示开通结果、还有待确认的一笔时写去订单页看，都不送回首页；页面已隐藏也不跳，防止刚付款的人被送走（Codex 审阅）', async () => {
+  let selling = true;
+  const confirmed = passPage({ payProducts: () => Promise.resolve(selling ? { items: [PRODUCT], invoiceType: INVOICE } : { items: [] }) });
+  await flush();
+  confirmed.page.setData({ confirmed: true, message: '已开通，使用期到 2026-11-18' });
+  selling = false;
+  confirmed.page.onShow(); await flush();
+  assert.deepEqual(confirmed.urls, []);
+  assert.equal(confirmed.page.data.confirmed, true);
+  assert.equal(confirmed.page.data.loading, false);
+  assert.match(shown('pages/pass/index.wxml', confirmed.page.data), /去用工具/);
+
+  const pending = passPage({ payProducts: () => Promise.resolve({ items: [] }),
+    before: ({ storage }) => storage.set('pay.unsettled', { orderId: 41, at: Date.now() }) });
+  await flush();
+  assert.deepEqual(pending.urls, []);
+  assert.match(shown('pages/pass/index.wxml', pending.page.data), /我的 → 我的订单/);
+  assert.equal(payButtons(pending.page.data).length, 0);
+
+  let release;
+  const hidden = passPage({ payProducts: () => new Promise((resolve) => { release = resolve; }) });
+  hidden.page.onHide();
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, []);
+  hidden.page.onShow(); await flush();
+  assert.deepEqual(hidden.urls, []);
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, ['tab:/pages/home/index']);
+});
+
+test('回首页时 switchTab 失败就 reLaunch 首页，购买页和订单页都不会一直停在加载中（Codex 审阅）', async () => {
+  const pass = passPage({ payProducts: () => Promise.resolve({ items: [] }), switchFail: true });
+  await flush();
+  assert.deepEqual(pass.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+  const orders = ordersPage([], { switchFail: true });
+  await flush();
+  assert.deepEqual(orders.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+});
+
+test('订单页没有订单时直接问商品接口（不用能力接口的缓存）；没连上或服务端出错时留在本页给重试，不当成停卖回首页（Codex 审阅）', async () => {
+  for (const err of [Object.assign(new Error('网络连接失败，请检查网络后重试'), { status: 0 }), Object.assign(new Error('服务暂时出错（502），请稍后重试'), { status: 502 })]) {
+    const h = ordersPage([], { payProducts: () => Promise.reject(err) });
+    await flush();
+    assert.deepEqual(h.urls, []);
+    assert.deepEqual(h.calls, [['list'], ['products']]);
+    assert.equal(h.page.data.error, err.message);
+    assert.match(shown('pages/orders/index.wxml', h.page.data), /重试/);
+  }
+});
+
+test('订单页有订单时照常列出，不查能力接口也不回首页（停卖以后已付款的人照样看订单、退款、开票）', async () => {
+  const h = ordersPage([orderRecord({ orderId: 7 })]);
+  await flush();
+  assert.deepEqual(h.urls, []);
+  assert.deepEqual(h.calls, [['list']]);
+  assert.ok(orderCard(h.page.data, 7));
 });
 
 test('购买页协议未定稿时没有付款按钮，调用 buy 也不下单，防止用未定稿协议收款', async () => {
@@ -530,6 +658,50 @@ test('工具表单在售时给出两档价格卡片并可进入购买页，商�
   assert.equal(failed.page.data.previewed, true);
 });
 
+test('提交时服务端说免费次数用完、现在买不了（canBuy=false）：丢掉页面缓存的价格，提示里不再提批量工具，防止刚停卖还引导购买（Codex 审阅，D-074）', async () => {
+  const limit = Object.assign(new Error('本月免费次数已用完，下月 1 日恢复'), {
+    status: 429, code: 'FREE_MONTHLY_LIMIT', detail: { code: 'FREE_MONTHLY_LIMIT', canBuy: false, message: '本月免费次数已用完，下月 1 日恢复' },
+  });
+  const h = toolForm({ api: {
+    advisorCapabilities: () => Promise.resolve(caps({ enabled: true })),
+    advisorStatus: () => Promise.resolve(quota(2)),
+    payProducts: () => Promise.resolve({ items: [{ productId: 'workbench_30d', price: 2900, days: 30 }] }),
+    createAdvisorTask: () => Promise.reject(limit),
+  } });
+  await flush();
+  assert.ok(h.page.data.offer, '在售时页面先缓存了价格');
+  h.page.input({ detail: { value: '合成企业甲' } });
+  h.page.preview(); await flush();
+  h.page.submit(); await flush(); await flush();
+  assert.equal(h.page.data.offer, null);
+  assert.match(h.page.data.inputError, /本月免费次数已用完/);
+  assert.doesNotMatch(h.page.data.inputError, /批量工具/);
+});
+
+test('价格请求比"现在买不了"的 429 晚回来：不再把价格写回去，防止刚停卖时价格又冒出来（Codex 审阅）', async () => {
+  const limit = Object.assign(new Error('本月免费次数已用完，下月 1 日恢复'), {
+    status: 429, code: 'FREE_MONTHLY_LIMIT', detail: { code: 'FREE_MONTHLY_LIMIT', canBuy: false, message: '本月免费次数已用完，下月 1 日恢复' },
+  });
+  let release;
+  let calls = 0;
+  const h = toolForm({ api: {
+    advisorCapabilities: () => Promise.resolve(caps({ enabled: true })),
+    advisorStatus: () => Promise.resolve(quota(2)),
+    payProducts: () => { calls += 1; return calls === 1 ? Promise.resolve({ items: [{ productId: 'workbench_30d', price: 2900, days: 30 }] }) : new Promise((resolve) => { release = resolve; }); },
+    createAdvisorTask: () => Promise.reject(limit),
+  } });
+  await flush();
+  assert.ok(h.page.data.offer);
+  // 页面回到前台重新载入时又发了一次价格请求，还没回来就提交、收到 canBuy=false
+  h.page.onShow(); await flush();
+  h.page.input({ detail: { value: '合成企业甲' } });
+  h.page.preview(); await flush();
+  h.page.submit(); await flush(); await flush();
+  assert.equal(h.page.data.offer, null);
+  if (release) { release({ items: [{ productId: 'workbench_30d', price: 2900, days: 30 }] }); await flush(); }
+  assert.equal(h.page.data.offer, null);
+});
+
 test('我的页只在支付开放或已有订单时显示我的订单并进入订单页，防止没有订单时放一个空入口', async () => {
   const urls = []; const pay = { enabled: false, hasOrders: false }; let meCalls = 0;
   const page = load('pages/me/index.js', {
@@ -810,6 +982,22 @@ test('纠错页在开关开着时写出纠错送天数的采纳标准，申请�
   for (const me of [() => Promise.resolve({ correctionReward: null }), () => Promise.reject(new Error('离线')), () => Promise.resolve({ correctionReward: { days: '1', monthLimit: 3, rule } })]) {
     assert.doesNotMatch(await open({}, me), /纠错被采纳送/);
   }
+});
+
+test('购买页写清怎么算次数和苹果手机的付款条件；工具页免费和体验时写"交一份名单算一次"，使用期内不写，防止顾问算不清次数、苹果手机付到一半才知道付不了（D-074）', async () => {
+  const h = passPage();
+  await flush();
+  const text = shown('pages/pass/index.wxml', h.page.data);
+  assert.match(text, /交一份名单算一次，系统出错、没出结果的不算/);
+  assert.match(text, /iOS 15 以上、微信 8\.0\.68 以上，并且用中国大陆的 App Store 账户/);
+  const free = toolForm();
+  await flush();
+  assert.equal(free.page.data.countRule, '交一份名单算一次，系统出错、没出结果的不算');
+  assert.match(shown('pages/advisor-form/index.wxml', free.page.data), /交一份名单算一次/);
+  const paid = toolForm({ api: { advisorStatus: () => Promise.resolve({ ...quota(0), pass: { active: true, expiresAt: '2026-12-01T00:00:00.000Z' } }) } });
+  await flush();
+  assert.equal(paid.page.data.countRule, '');
+  assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
 });
 
 test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {

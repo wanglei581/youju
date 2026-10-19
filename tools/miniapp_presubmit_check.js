@@ -28,6 +28,9 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
 // 收费第一期（D-058，10/16 创始人决定接进完整版）：购买页、订单页随包，入口只在服务端在售或有订单时出现
 const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
+// AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
+// 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
+const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
 // 公众号"本期清单"页（公众号方案 PR #287 第 3 件事，10/18 创始人同意）：从公众号周报和"我的 → 本周周报"进入
 const GZH_PAGES = ['digest'].map(p => `pages/${p}/index`);
 
@@ -57,13 +60,15 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, GZH_PAGES) : []);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES, GZH_PAGES) : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整版25页（含加量体验确认页、购买页、订单页、本期清单页）；奖励及子包不属于本次范围');
+  '核对历史首发14页、AI版19页或完整版27页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助、本期清单页）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
-  add('tabs', '底栏为首页、关注、文件、我的', JSON.stringify(tabs) === JSON.stringify(FIRST_PAGES.slice(0, 4)), '按 D-067 使用四栏');
+  const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
+  add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',
+    JSON.stringify(tabs) === JSON.stringify(expectedTabs), complete ? '按 D-067 使用四栏，D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
   else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
   if (profile === 'ai-release' || profile === 'complete-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
@@ -75,7 +80,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     add('tool-review', '工具说明公开发布复核', !!toolTerms && toolTerms.reviewedForRelease === true, '可体验；公开发布复核及实际准入证据仍须单独完成，提审前由创始人确认', true);
     // 付费协议没定稿时购买页的付款按钮不可用（pages/pass 用 utils/pay.js termsFinal 判断），这里只提示
     const payFinal = !!payTerms && payTerms.final === true && nonempty(payTerms.text) && !/待.*定稿|占位/.test(payTerms.text) && !hasPlaceholder(payTerms);
-    add('pay-terms', '付费服务协议已定稿', payFinal, '律师定稿前购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
+    add('pay-terms', '付费服务协议已定稿', payFinal, '协议定稿前（D-065：Codex、Grok 审阅，Claude 核对）购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
   }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {
     add(`template-${id}`, `${name}提醒模板`, nonempty((config.templates || {})[id]), `该提醒模板未配置，对应入口保持隐藏`, true);

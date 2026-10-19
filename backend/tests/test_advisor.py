@@ -595,7 +595,7 @@ def test_data_tool_worker_stays_serial(session, advisor_settings, monkeypatch):
     monkeypatch.setattr(service, "process_task", process)
     report = service.run_advisor_tasks(session, settings=advisor_settings, stamp=NOW)
     assert seen == [row.id for row in tasks]
-    assert report == {"processed": 2, "done": 2, "failed": 0, "requeued": 0}
+    assert report == {"processed": 2, "done": 2, "failed": 0, "requeued": 0, "revoked": 0}
 
 
 def test_fake_object_store_upload_download_and_expiry(session, advisor_settings, monkeypatch):

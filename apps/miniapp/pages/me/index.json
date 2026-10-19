@@ -1,6 +1,7 @@
 {
   "navigationStyle": "custom",
   "usingComponents": {
-    "follow-account": "/components/follow-account/index"
+    "follow-account": "/components/follow-account/index",
+    "contact-button": "/components/contact-button/index"
   }
 }

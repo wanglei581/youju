@@ -164,6 +164,15 @@ class Settings(BaseSettings):
     def _empty_pass_price(cls, value):
         return None if value == "" else value
 
+    @field_validator("xpay_env", mode="before")
+    @classmethod
+    def _xpay_env_from_text(cls, value):
+        # 环境变量读进来是文字 "0"/"1"，Literal[0, 1] 不会把文字转成数字：
+        # 不转的话填了 YOUJU_XPAY_ENV 服务就起不来（10/19 api-059 启动失败）
+        if isinstance(value, str) and value.strip() in ("0", "1"):
+            return int(value.strip())
+        return value
+
     @field_validator("season_boost_start", "season_boost_end", mode="before")
     @classmethod
     def _empty_season_date(cls, value):
