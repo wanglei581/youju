@@ -159,7 +159,7 @@ Page({
     });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
-    access.ensure().then((state) => {
+    access.ensure({ fresh: true }).then((state) => {
       if (!this.shown || seq !== this.seq) return;
       if (!state.confirmed) { this.setData({ waiting: false, offline: true, ready: false }); return; }
       if (!state.visible) { this.leave(); return; }

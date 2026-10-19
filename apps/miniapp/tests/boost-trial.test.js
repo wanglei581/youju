@@ -24,7 +24,7 @@ function load(file, deps, globals = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /daywatch\.js$/.test(key)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

@@ -81,8 +81,8 @@ function accessWith(options = {}) {
   const access = Object.assign({}, raw, {
     raw,
     current: () => plain(raw.current()),
-    ensure: () => raw.ensure().then(plain),
-    refresh: () => raw.refresh().then(plain),
+    ensure: (...args) => raw.ensure(...args).then(plain),
+    refresh: (...args) => raw.refresh(...args).then(plain),
     lastDoc: () => { const value = raw.lastDoc(); return value ? plain(value) : value; },
     subscribe: (fn) => raw.subscribe((state) => fn(plain(state))),
   });
@@ -1466,7 +1466,9 @@ test('Codex 第 12 轮：能力接口先发现没同意协议时也让板块重�
   const h = hubPage({ realAccess: o.access, caps: OFF('consent') });
   h.page.onShow(); await settle();
   assert.equal(h.page.data.gate, 'consent'); assert.deepEqual(o.access.current(), OPEN, '照样显示');
-  assert.equal(o.calls.mode, modes + 1, '只重问一次');
+  // 显示时重新问一次（第 24 轮），能力接口说没同意再问一次；之后不再问（不会一直问下去）
+  assert.equal(o.calls.mode, modes + 2);
+  await settle(); assert.equal(o.calls.mode, modes + 2, '不反复问');
   // 板块本来就没显示（AI 关着）：能力接口说没同意也不问
   const c = accessWith({ mode: { open: false, available: false }, caps: OFF('consent') });
   assert.deepEqual(await c.access.ensure(), CLOSED);
@@ -2039,4 +2041,69 @@ test('Codex 第 23 轮：工具中心、我的记录也是每次显示都不用�
     page.onHide(); page.onShow(); await settle(); assert.equal(forgot, 2, `${name} 回来再问`);
     if (page.onUnload) page.onUnload();
   }
+});
+
+test('Codex 第 24 轮：AI 首页每次显示都作废在途的开放状态答复、重新问——旧答复说"没开着"也不会把人送回首页', async () => {
+  const holds = []; let answer = { open: true, available: true };
+  const real = accessWith({ mode: () => new Promise((done) => holds.push(done)) });
+  const first = real.access.raw.ensure(); holds.shift()(answer); await first;
+  assert.deepEqual(real.access.current(), OPEN);
+  // 在途一个旧查询（会答"没开着"），这时打开 AI 首页
+  real.clock.now += real.access.RECHECK; real.access.raw.ensure(); await settle();
+  assert.equal(holds.length, 1);
+  const h = hubPage({ realAccess: real.access });
+  h.page.onShow(); await settle();
+  assert.equal(holds.length, 2, '显示时重新问');
+  const [stale, fresh] = holds;
+  fresh({ open: true, available: true }); await settle();
+  stale({ open: false, available: false }); await settle();
+  assert.deepEqual(h.switched, [], '旧答复不把人送回首页');
+  assert.equal(h.page.data.ready, true); assert.ok(h.calls.caps >= 1, '能力接口照常问');
+  assert.deepEqual(real.access.current(), OPEN);
+});
+
+test('Codex 第 24 轮：工具中心停在页面上跨过零点重新问；某一项今天用完了写明天恢复、不给开始的按钮，另一项照常；后台没给次数时不写"0 次"', async () => {
+  const page = (caps, day = null) => {
+    const p = load('pages/advisor/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(typeof caps === 'function' ? caps() : caps), advisorTasks: () => Promise.resolve({ items: [] }), forgetCapabilities: () => { p.forgot = (p.forgot || 0) + 1; } },
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+      ...(day ? { '../../utils/daywatch.js': day } : {}),
+    }, { wx: { setNavigationBarTitle() {}, navigateTo: (o) => { p.urls = (p.urls || []).concat(o.url); } } });
+    return p;
+  };
+  // 解读用完了、对照还有 3 次（从通知进来，带着通知编号）
+  const p = page(ON({ remaining: { interpret: 0, clause: 3 } }));
+  p.onLoad({ docId: '42', title: '通知' }); p.setData({ context: { docId: '42', title: '通知', label: '通知' } });
+  p.onShow(); await settle();
+  let root = render('pages/advisor/index.wxml', p.data);
+  let out = textOf(root);
+  const buttons = (r) => findAll(r, (n) => n.tag === 'button').map((n) => textOf(n).trim());
+  assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复/); assert.doesNotMatch(out, /今天还能用 0 次/);
+  assert.ok(!buttons(root).includes('开始解读') && !buttons(root).includes('去找通知'), '用完了不给开始的按钮');
+  assert.match(out, /今天还能用 3 次/); assert.ok(buttons(root).includes('开始对照'));
+  p.interpret(); assert.equal(p.urls, undefined, '用完了点不进去');
+  p.clause(); assert.equal(p.urls.length, 1);
+  // 反过来：对照用完了、解读还有 2 次
+  const q = page(ON({ remaining: { interpret: 2, clause: 0 } }));
+  q.onLoad({ docId: '42', title: '通知' }); q.setData({ context: { docId: '42', title: '通知', label: '通知' } });
+  q.onShow(); await settle();
+  root = render('pages/advisor/index.wxml', q.data); out = textOf(root);
+  assert.match(out, /今天的条款对照 5 次用完了，明天 0 点恢复/); assert.ok(!buttons(root).includes('开始对照'), '对照用完了不给开始对照');
+  assert.match(out, /今天还能用 2 次/); assert.ok(buttons(root).includes('开始解读'));
+  q.clause(); assert.equal(q.urls, undefined, '用完了点不进去');
+  // 后台没给次数：不写"今天还能用 0 次"，按钮照常
+  const u = page(ON({ remaining: {} }));
+  u.onLoad({}); u.onShow(); await settle();
+  root = render('pages/advisor/index.wxml', u.data); out = textOf(root);
+  assert.doesNotMatch(out, /今天还能用|用完了/); assert.ok(buttons(root).includes('去找通知'));
+  // 停在页面上跨过零点：丢掉旧答复、重新问，满了的提示跟着变
+  let full = true; const day = dayStub();
+  const z = page(() => (full ? ON({ siteFull: true }) : ON()), day);
+  z.onLoad({}); z.onShow(); await settle();
+  assert.match(textOf(render('pages/advisor/index.wxml', z.data)), /今天 AI 的总用量满了/);
+  const forgotBefore = z.forgot;
+  full = false; day.turn(); await settle();
+  assert.equal(z.forgot, forgotBefore + 1);
+  assert.doesNotMatch(textOf(render('pages/advisor/index.wxml', z.data)), /总用量满了/);
+  z.onHide(); assert.ok(day.stopped() >= 1, '离开时停掉');
 });

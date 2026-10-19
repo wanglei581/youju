@@ -15,15 +15,19 @@
   <view wx:if="{{aiEnabled && interpretEnabled && !aiPaused && !aiFull}}" class="card advisor-card">
     <view class="advisor-title">AI 解读</view>
     <view class="advisor-text">打开一份申报通知，在“要点”下面的“{{fabText}}”卡片里点“开始解读”：约半分钟把申报对象、条件、时间、材料等原文原句分好类，每条都能回原文核对。</view>
-    <view class="advisor-text muted">今天还能用 {{remaining}} 次（失败、拒答不扣次数）</view>
-    <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">开始解读</button>
-    <button wx:else class="advisor-button btn-primary" bindtap="search">去找通知</button>
+    <view wx:if="{{interpretOut}}" class="advisor-text muted">今天的AI 解读 5 次用完了，明天 0 点恢复；以前的结果在下面“我的记录”里照样能看。</view>
+    <view wx:elif="{{remaining !== null}}" class="advisor-text muted">今天还能用 {{remaining}} 次（失败、拒答不扣次数）</view>
+    <block wx:if="{{!interpretOut}}">
+      <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">开始解读</button>
+      <button wx:else class="advisor-button btn-primary" bindtap="search">去找通知</button>
+    </block>
   </view>
   <view wx:if="{{aiEnabled && clauseEnabled && !aiPaused && !aiFull}}" class="card advisor-card">
     <view class="advisor-title">条款对照</view>
     <view class="advisor-text">解读出结果以后，在下面的“条款对照”里填上企业情况：把通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
-    <view class="advisor-text muted">今天还能用 {{clauseRemaining}} 次（失败、拒答不扣次数）</view>
-    <button wx:if="{{context && context.docId}}" class="advisor-button" bindtap="clause">开始对照</button>
+    <view wx:if="{{clauseOut}}" class="advisor-text muted">今天的条款对照 5 次用完了，明天 0 点恢复；以前的结果在下面“我的记录”里照样能看。</view>
+    <view wx:elif="{{clauseRemaining !== null}}" class="advisor-text muted">今天还能用 {{clauseRemaining}} 次（失败、拒答不扣次数）</view>
+    <button wx:if="{{!clauseOut && context && context.docId}}" class="advisor-button" bindtap="clause">开始对照</button>
   </view>
   <view class="card advisor-card">
     <view class="advisor-title">我的记录</view>

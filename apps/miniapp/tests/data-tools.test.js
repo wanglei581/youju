@@ -19,7 +19,7 @@ function load(file, deps, globals = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
     // 纯函数模块（支付文案和格式化）直接用真的，其他依赖必须由测试给出
-    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /daywatch\.js$/.test(key)) return require('./helpers/day-off.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

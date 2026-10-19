@@ -4,14 +4,27 @@ const access = require('../../utils/ai-access.js');
 const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
+
+// 今天还剩几次：后台给的是数就取整（不小于 0），没给就是 null
+function left(ai, kind) {
+  const value = Number((ai.remaining || {})[kind]);
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
 
 Page({
-  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: 0, clauseRemaining: 0,
+  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: null, clauseRemaining: null, interpretOut: false, clauseOut: false,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，AI 暂时不可用、满了跟着变，第 23 轮）
-  onShow() { this.visible = true; if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); },
-  onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; },
+  onShow() {
+    this.visible = true;
+    if (api.forgetCapabilities) api.forgetCapabilities();
+    // 停在这一页跨过零点：今天还剩几次、全站满没满重新问（工具中心不会自己开始任务，第 24 轮）
+    watchDay(this, () => { if (this.visible) { if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); } });
+    this.load();
+  },
+  onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); },
   onUnload() { this.onHide(); },
   clearContext() { this.setData({ context: null }); },
   toggleScope() { this.setData({ showScope: !this.data.showScope }); },
@@ -35,8 +48,11 @@ Page({
         // D-075：后台处理不了、全站今天满了时不给开始的按钮，写明原因
         aiPaused: aiEnabled && ai.available === false,
         aiFull: aiEnabled && ai.siteFull === true,
-        remaining: (ai.remaining || {}).interpret || 0,
-        clauseRemaining: (ai.remaining || {}).clause || 0,
+        // 今天还剩几次：后台没给就不写；用完了写明天恢复、不给开始的按钮（第 24 轮）
+        remaining: left(ai, 'interpret'),
+        clauseRemaining: left(ai, 'clause'),
+        interpretOut: left(ai, 'interpret') === 0,
+        clauseOut: left(ai, 'clause') === 0,
         aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         disclosure: aiEnabled && disclosure.modelLabel && disclosure.filingNo ? `模型：${disclosure.modelLabel}｜备案号：${disclosure.filingNo}` : '' });
       this.kinds = allKinds(res);
@@ -95,12 +111,12 @@ Page({
   },
   retryRecent() { this.loadRecent(); },
   interpret() {
-    if (!this.data.interpretEnabled || !this.data.context || !this.data.context.docId) return;
+    if (!this.data.interpretEnabled || this.data.interpretOut || !this.data.context || !this.data.context.docId) return;
     const { docId, title } = this.data.context;
     wx.navigateTo({ url: `/pages/advisor-interpret/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
   },
   clause() {
-    if (!this.data.clauseEnabled || !this.data.context || !this.data.context.docId) return;
+    if (!this.data.clauseEnabled || this.data.clauseOut || !this.data.context || !this.data.context.docId) return;
     const { docId, title } = this.data.context;
     wx.navigateTo({ url: `/pages/advisor-clause/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
   },

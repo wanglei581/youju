@@ -118,7 +118,9 @@ function refresh(fresh) {
 // 页面显示时调用：这次打开还没问过、或问过超过 10 分钟才再问。
 // 后台说暂时处理不了时问过超过 15 秒就再问：恢复以后列表上的按钮、AI 首页不用等 10 分钟（Codex 小程序第 9 轮）；
 // 没开着时问过超过 2 分钟就再问（第 11 轮）。刚才没问到（连不上）：不管以前问到过没有，15 秒内都不重复问
-function ensure() {
+function ensure(options) {
+  // fresh：在途的答复作废、重新问（AI 首页每次显示用：旧答复说"没开着"会把人送回首页，第 24 轮）
+  if (options && options.fresh === true) return refresh(true);
   const now = current();
   const every = !now.visible ? CLOSED_RECHECK : now.available === false ? RETRY_AFTER : RECHECK;
   if (now.confirmed && Date.now() - checkedAt < every) return Promise.resolve(now);
