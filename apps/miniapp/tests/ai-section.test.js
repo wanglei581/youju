@@ -945,3 +945,46 @@ test('没同意协议时 AI 首页的列表照样给"AI 解读"（点了先走�
   assert.equal(findAll(root, tapsTo('clauseLast')).length, 1);
   assert.match(textOf(root), /使用 AI 前，请先阅读并同意/);
 });
+
+test('Codex 第 5 轮：AI 首页再次进来先清掉"我的 AI 记录"，离开后回来的旧结果不写页面；注销（状态被擦掉）时清掉记录和刚才看的那份', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  const tasks = [{ id: 1, kind: 'interpret', status: 'done', docTitle: '旧账号的通知', createdAt: '2026-10-18T02:00:00Z' }];
+  let held = null;
+  const h = hubPage({ last, tasks: () => (held ? new Promise((done) => { held.push(done); }) : Promise.resolve({ items: tasks })) });
+  h.page.onShow(); await settle();
+  assert.deepEqual(h.page.data.records.map((r) => r.title), ['旧账号的通知']);
+  // 再次进来：先清掉，记录接口晚到
+  held = [];
+  h.page.onHide(); h.page.onShow();
+  assert.deepEqual(plain(h.page.data.records), [], '进来时先清掉');
+  await settle();
+  // 离开以后旧请求才回来：不写页面
+  h.page.onHide();
+  held.forEach((done) => done({ items: tasks })); await settle();
+  assert.deepEqual(plain(h.page.data.records), []);
+  // 注销：状态被擦掉，页面上的记录和刚才看的那份都清掉
+  held = null; h.page.onShow(); await settle();
+  assert.equal(h.page.data.records.length, 1);
+  h.access.set({ visible: false, confirmed: false, available: false });
+  assert.deepEqual(plain(h.page.data.records), []); assert.equal(h.page.data.lastDoc, null);
+});
+
+test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表提示只在有按钮时说"点 AI 解读"', async () => {
+  for (const [errorCode, canRetry] of [['AI_DAILY_CAP', false], ['AI_UNAVAILABLE', false], ['AI_OFF', false], [null, true]]) {
+    const states = [];
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const session = interpret.createSession({
+      api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '后台的话', errorCode, docId: '42', docTitle: '通知' }) },
+      storage: { getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) },
+      update: (value) => states.push(value), docId: '42', title: '通知', taskId: '9',
+    });
+    session.show(); await settle();
+    const lastState = Object.assign({}, ...states);
+    assert.equal(lastState.phase, 'failed'); assert.equal(lastState.canRetry, canRetry, String(errorCode));
+    session.hide();
+  }
+  for (const [caps, mentions] of [[ON(), true], [ON({ siteFull: true }), false], [ON({ remaining: { interpret: 0, clause: 5 } }), false]]) {
+    const h = hubPage({ caps }); h.page.onShow(); await settle();
+    assert.equal(/点“AI 解读”直接开始/.test(textOf(render('pages/ai/index.wxml', h.page.data))), mentions, JSON.stringify(caps.ai_advisor));
+  }
+});

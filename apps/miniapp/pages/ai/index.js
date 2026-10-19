@@ -105,8 +105,9 @@ Page({
   onLoad() {
     const { statusBarHeight, navHeight } = getApp().globalData;
     this.setData({ statusBarHeight, navHeight });
-    // 用着用着后台说 AI 关了、或不在白名单了：回首页
+    // 用着用着后台说 AI 关了、或不在白名单了：回首页。注销（状态被擦掉）时在途的结果作废、清掉页面上的通知和记录
     this.unsubscribe = access.subscribe((state) => {
+      if (!state.visible) this.reset();
       if (this.shown && state.confirmed && !state.visible) this.leave();
     });
   },
@@ -124,7 +125,7 @@ Page({
     this.recentItems = [];
     this.setData({
       today: todayISO(), capsLoading: true, kinds: [], gate: '', gateText: '', interpretOpen: false, clauseOpen: false,
-      recent: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
+      recent: [], records: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
     });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
@@ -139,6 +140,15 @@ Page({
 
   onHide() {
     this.shown = false;
+    // 离开以后回来的旧结果不再写页面
+    this.seq = (this.seq || 0) + 1;
+  },
+
+  // 作废在途的结果，清掉页面上和账号有关的东西（我的 AI 记录、刚才看的那份）
+  reset() {
+    this.seq = (this.seq || 0) + 1;
+    this.recentItems = [];
+    this.setData({ records: [], recent: [], lastDoc: null, kinds: [], gate: '', interpretOpen: false, clauseOpen: false, capsLoading: true });
   },
 
   leave() {

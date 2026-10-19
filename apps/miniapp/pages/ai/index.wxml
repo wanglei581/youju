@@ -69,7 +69,7 @@
 
   <view class="card">
     <view class="card-head" bindtap="allRecent" aria-role="link"><text class="card-title">近 7 天能解读的申报通知</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
-    <view class="list-note">点标题看通知全文，点“AI 解读”直接开始</view>
+    <view class="list-note">点标题看通知全文<text wx:if="{{interpretOpen}}">，点“AI 解读”直接开始</text></view>
     <view wx:if="{{recentLoading}}" aria-label="正在加载">
       <view wx:for="{{[1, 2]}}" wx:key="*this" class="sk-row">
         <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>

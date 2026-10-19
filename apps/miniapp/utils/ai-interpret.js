@@ -90,6 +90,7 @@ function taskContext(storage, id, value) {
 // 任务失败的说法见 utils/ai-reasons.js（按错误代码写，都写明没扣次数）
 const FAILED_TEXT = Object.keys(FAILED).reduce((texts, code) => Object.assign(texts, { [code]: failedText({ errorCode: code }) }), {});
 const UNAVAILABLE_TEXT = 'AI 暂时不可用，请稍后再试。';
+const NO_RETRY_CODES = ['AI_DAILY_CAP', 'AI_UNAVAILABLE', 'AI_OFF'];
 // 提交被拒：这份不能解读（422 带原因代码）写原因；后台处理不了（429 AI_UNAVAILABLE）、接口说没开（404）写暂时不可用；
 // 提交时撞上全站上限写总用量满了
 function errorText(error) {
@@ -181,7 +182,8 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
         // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
         failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
       } else {
-        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId, resumable: false, progress: '', errorCode: task.errorCode || '',
+        // 全站满了、暂时不可用、被移出白名单：重新提交今天也做不成，不给"重试"
+        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId && !NO_RETRY_CODES.includes(task.errorCode), resumable: false, progress: '', errorCode: task.errorCode || '',
           unavailable: revokedCode(task.errorCode) });
       }
       return;
