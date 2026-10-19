@@ -105,6 +105,8 @@ RENEW_WINDOW = timedelta(days=7)
 RENEWAL_REF = "order_renewal"
 TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
+# 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
+COMPLAINT_ERROR = "收到用户投诉"
 # 退款发起方：self 用户自助（7 天内没用过付费的量）；staff 负责人按规则发起（系统故障、停止服务）
 SELF_REFUND, STAFF_REFUND = "self", "staff"
 
@@ -402,13 +404,19 @@ def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) 
         return "这笔付款需要人工核对，可点“遇到问题”告诉我们"
     if order_pass(session, order, lock=lock) is not None:
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
-    # 用户向微信支付投诉过这笔：投诉要负责人按流程回复处理，不能绕过去自助退（Codex 复核，10/19）
-    complained = session.scalar(
-        select(PayEvent.id)
-        .where(PayEvent.order_id == order.id, PayEvent.kind == "xpay_complaint_notify")
-        .limit(1)
+    # 用户向微信支付投诉过这笔：投诉要负责人按流程回复处理，不能绕过去自助退（Codex 复核，10/19）。
+    # 投诉推送把订单的 error 写成"收到用户投诉……"（人工单之后不会被别的流程改掉）；
+    # 事件表只留 180 天，两处都看
+    complained = (
+        COMPLAINT_ERROR in (order.error or "")
+        or session.scalar(
+            select(PayEvent.id)
+            .where(PayEvent.order_id == order.id, PayEvent.kind == "xpay_complaint_notify")
+            .limit(1)
+        )
+        is not None
     )
-    if complained is not None:
+    if complained:
         return "这笔订单的投诉正在处理，可点“遇到问题”告诉我们"
     return None
 

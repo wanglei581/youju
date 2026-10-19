@@ -248,6 +248,9 @@ def order_out(session: Session, order: PayOrder) -> dict:
         # 下单时间：待确认的订单写"几点下的单"，用户好对上自己是哪一次付的
         "createdAt": order.created_at,
         "paidAt": order.paid_time,
+        # 微信确认的实付金额（分）：有它才算"付款已收到"；人工核对中的订单据此写说明
+        # （没核实付款的不写"收到"）
+        "paidAmount": order.paid_fee,
         "passStartsAt": ticket.starts_at if ticket else None,
         "passEndsAt": ticket.ends_at if ticket else None,
         "passRevokedAt": ticket.revoked_at if ticket else None,
@@ -565,7 +568,7 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             return reply(xml, 1)
         payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
-            order.status, order.error = "manual", "收到用户投诉，需人工处理"
+            order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
             session.commit()
             return reply(xml)
         checked = payments.query(session, order, client, transient_openid=data["OpenId"])

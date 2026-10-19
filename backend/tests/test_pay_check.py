@@ -4,7 +4,7 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from tests.test_payments import (  # noqa: F401
     HEADERS,
@@ -174,7 +174,8 @@ def undelivered(setup_pay, session):  # noqa: F811
     fake.status, fake.paid_time = 2, 0
     body = check(setup_pay, row).json()
     assert body["check"] == "manual" and body["status"] == "需人工处理"
-    assert body["passStartsAt"] is None
+    # 微信确认收了全款：实付金额有了（小程序据此写"付款已收到"）
+    assert body["passStartsAt"] is None and body["paidAmount"] == 100
     session.expire_all()
     return session.get(PayOrder, row.id)
 
@@ -295,6 +296,11 @@ def test_complained_order_is_left_to_staff(setup_pay, session):  # noqa: F811
     assert body["refundUnavailableReason"] == "这笔订单的投诉正在处理，可点“遇到问题”告诉我们"
     assert pay_refund(setup_pay, row).status_code == 422
     assert not calls(setup_pay, "/xpay/refund_order")
+    # 事件只留 180 天：清掉以后仍认得出投诉中的订单（看订单上的说明）
+    session.execute(delete(PayEvent))
+    session.commit()
+    body = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).json()
+    assert body["canRefund"] is False and "投诉" in body["refundUnavailableReason"]
 
 
 @pytest.mark.parametrize("status", [7, 9, 10, 11])
@@ -307,6 +313,8 @@ def test_odd_wechat_status_goes_to_staff(setup_pay, session, status):  # noqa: F
     body = check(setup_pay, first).json()
     assert body["check"] == "manual" and body["status"] == "需人工处理"
     assert body["canRefund"] is False and body["passStartsAt"] is None
+    # 没核实付款：没有实付金额，小程序不写"付款已收到"
+    assert body["paidAmount"] is None
     session.expire_all()
     first = session.get(PayOrder, first.id)
     assert first.alerted_at is None and f"微信查单状态 {status}" in first.error

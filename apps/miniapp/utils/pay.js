@@ -125,8 +125,14 @@ const PENDING_DEFAULT = '正在确认付款结果：已扣款的会自动开通�
 function stateNote(order) {
   if (order.status === '待确认' || order.status === '待支付') return PENDING_NOTE[order.check] || PENDING_DEFAULT;
   if (order.status === '需人工处理') {
-    if (Number.isInteger(order.refundAmount)) return '';
+    // 退款办到一半转了人工：按剩余天数退的那一行（refundText）已经写了"正在人工核对"，全额退的写在这里
+    if (Number.isInteger(order.refundAmount)) {
+      return order.refundAmount > 0 && order.refundAmount !== order.amount ? ''
+        : '已申请退款，退款需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
+    }
     if (order.passStartsAt) return '这笔订单需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
+    // 微信没确认收到付款的（查单状态少见、投诉、对账发现的）：不写"付款已收到"（Codex 复核）
+    if (!Number.isInteger(order.paidAmount)) return '这笔订单的付款情况需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
     return order.canRefund ? '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。'
       : '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。';
   }
@@ -155,7 +161,8 @@ function orderView(order) {
     canCheck: status === '待确认',
     // 待确认、人工核对中、已关闭的订单上放"遇到问题"（带上这张订单号）：付了款却没开通、被关单的，反馈对得上订单
     canReport: ['待确认', '人工核对中', '已关闭'].includes(status),
-    orderedText: status === '待确认' ? clock(order.createdAt) : '',
+    // 没有付款时间的（待确认、已关闭）写几点下的单
+    orderedText: !order.paidAt && ['待确认', '已关闭'].includes(status) ? clock(order.createdAt) : '',
     amountText: yuan(order.amount, true),
     paidText: order.paidAt ? date(order.paidAt) : '',
     period: start && end ? `${start} 至 ${end}` : '',

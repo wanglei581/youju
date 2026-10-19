@@ -1224,9 +1224,11 @@ test('购买页付款后核对到"需人工处理"：按这张订单的实际情
     assert.equal(h.page.data.ordersLink, true);
     return h.page.data.message;
   };
-  assert.equal(await said({ canRefund: true }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。');
+  assert.equal(await said({ canRefund: true, paidAmount: 2900 }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。');
   // 金额要人工核对、投诉中这类不能自助退的：不说可以退
-  assert.equal(await said({ canRefund: false }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。');
+  assert.equal(await said({ canRefund: false, paidAmount: 2900 }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。');
+  // 微信没确认收到付款（查单状态少见等）：不写"付款已收到"（Codex 复核）
+  assert.equal(await said({ canRefund: false, paidAmount: null }), '这笔订单的付款情况需要人工核对，我们 1 个工作日内处理，结果会显示在这里。');
   // 开通过的：不说"还没开通"
   assert.equal(await said({ canRefund: false, ...PERIOD }), '这笔订单需要人工核对，我们 1 个工作日内处理，结果会显示在这里。');
   const manual = passPage({
@@ -1349,10 +1351,14 @@ test('订单页"重新核对"：结果写在这张订单上，另给一句提示
 
 test('订单页"人工核对中"：付了款没开通、能自助退的写可以直接申请退款，确认框写全额原路退回（没有使用期可取消）；开通过的、金额要人工核对的不能自助退，只写多久处理', async () => {
   const h = ordersPage([
-    { ...PENDING, orderId: 61, status: '需人工处理', canRefund: true, refundUnavailableReason: null, paidAt: '2026-10-19T14:58:06Z' },
+    { ...PENDING, orderId: 61, status: '需人工处理', canRefund: true, refundUnavailableReason: null, paidAt: '2026-10-19T14:58:06Z', paidAmount: 2900 },
     orderRecord({ orderId: 62, status: '需人工处理', refundUnavailableReason: '订单当前状态不能自助退款，可点“遇到问题”告诉我们' }),
-    { ...PENDING, orderId: 63, status: '需人工处理', refundUnavailableReason: '这笔付款需要人工核对，可点“遇到问题”告诉我们' },
+    { ...PENDING, orderId: 63, status: '需人工处理', refundUnavailableReason: '这笔付款需要人工核对，可点“遇到问题”告诉我们', paidAmount: 3000 },
     { ...PENDING, orderId: 64, status: '已关闭' },
+    // 申请了全额退款、退款转回人工：写已申请退款、要人工核对（Codex 复核）
+    { ...PENDING, orderId: 66, status: '需人工处理', paidAmount: 2900, refundAmount: 2900 },
+    // 微信没确认收到付款就转了人工：不写"付款已收到"
+    { ...PENDING, orderId: 67, status: '需人工处理', paidAmount: null },
   ]);
   await flush();
   assert.equal(h.calls.filter((call) => call[0] === 'check').length, 0);
@@ -1372,6 +1378,10 @@ test('订单页"人工核对中"：付了款没开通、能自助退的写可以
   const staff = textOf(orderCard(h.page.data, 63));
   assert.match(staff, /付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里/);
   assert.doesNotMatch(staff, /申请退款/);
+  assert.match(textOf(orderCard(h.page.data, 66)), /已申请退款，退款需要人工核对，我们 1 个工作日内处理/);
+  const unverified = textOf(orderCard(h.page.data, 67));
+  assert.match(unverified, /这笔订单的付款情况需要人工核对/);
+  assert.doesNotMatch(unverified, /付款已收到/);
   const closed = textOf(orderCard(h.page.data, 64));
   assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们/);
   assert.equal(findAll(orderCard(h.page.data, 64), tapsTo('recheck')).length, 0);
