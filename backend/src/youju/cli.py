@@ -981,15 +981,10 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
 
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
-    from youju.ai import heartbeat, interpret
 
-    settings = get_settings()
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
     with session_factory()() as session:
         report = run_advisor_tasks(session)
-        # 因为 admin 自己没开 AI 退回了排队的 AI 任务（用户看到失败）：提醒，每小时最多一次（D-075）
-        refunded = 0 if interpret.worker_enabled(settings) else report.get("revoked", 0)
-        if refunded:
-            heartbeat.check_and_alert(session, settings, datetime.now(UTC), refunded=refunded)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 

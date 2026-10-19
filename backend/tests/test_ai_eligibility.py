@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from youju import cli
 from youju.ai import eligibility
@@ -127,6 +127,49 @@ def test_refresh_inserts_updates_and_counts_changes(session, source):
     # 已删除的文件不插新行
     assert eligibility.refresh(session, [999_999], later) == 0
     assert 999_999 not in reasons(session)
+
+
+def test_concurrent_refresh_of_same_missing_document(session_factory, session, source, monkeypatch):
+    """每 10 分钟的增量和夜里的全量同时补算同一份还没算过的文件：后写的一方改成更新，不撞主键。"""
+    doc = make(session, source, 1)
+    real = eligibility.compute
+    raced = []
+
+    def racing(work_session, doc_id):
+        if not raced:  # 这一方算到一半，另一个任务把同一份写了进去
+            raced.append(doc_id)
+            with session_factory() as other:
+                assert eligibility.refresh(other, [doc_id], NOW) == 1
+        return real(work_session, doc_id)
+
+    monkeypatch.setattr(eligibility, "compute", racing)
+    with session_factory() as late:
+        assert eligibility.refresh(late, [doc.id], NOW + timedelta(minutes=1)) == 1
+    session.expire_all()
+    row = session.get(AIEligibility, doc.id)
+    assert raced == [doc.id]
+    assert row.reason is None and row.computed_at == NOW + timedelta(minutes=1)
+
+
+def test_refresh_skips_document_deleted_while_computing(
+    session_factory, session, source, monkeypatch
+):
+    keep = make(session, source, 1)
+    gone = make(session, source, 2)
+    real = eligibility.compute
+
+    def deleting(work_session, doc_id):
+        if doc_id == gone.id:
+            with session_factory() as other:
+                other.execute(delete(Document).where(Document.id == gone.id))
+                other.commit()
+        return real(work_session, doc_id)
+
+    monkeypatch.setattr(eligibility, "compute", deleting)
+    with session_factory() as work:
+        eligibility.refresh(work, [keep.id, gone.id], NOW)
+    session.expire_all()
+    assert reasons(session) == {keep.id: None}
 
 
 def test_changed_since_covers_each_trigger(session, source):

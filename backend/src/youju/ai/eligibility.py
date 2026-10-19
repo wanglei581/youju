@@ -19,7 +19,9 @@
 - 来源的公开级别（应用里没有修改入口，只能直接改数据库，改完最好跑一次
   `youju ai-eligibility-rebuild`）。
 这些靠"轮转"补上：每次另外重算计算时间最早的 ROLLING 份，6 万份大约 10 小时轮一遍；
-每天夜里再全量重算一次（refresh_all）。本机实测每份约 3 毫秒、2 次查询，6 万份约 3 分钟。
+每天夜里再全量重算一次（refresh_all，02:25，和每 10 分钟的增量错开）。本机实测每份约 3 毫秒、
+2 次查询，6 万份约 3 分钟。增量和全量碰巧同时补算同一份时，写入是"有就更新、没有就插入"，
+不会撞主键。
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju.ai import interpret
@@ -50,6 +54,19 @@ def compute(session: Session, doc_id: int) -> str | None:
     return None
 
 
+def _write(session: Session, rows: list[dict]) -> None:
+    """有就更新、没有就插入（MySQL INSERT … ON DUPLICATE KEY UPDATE）：每 10 分钟的增量和夜里的
+    全量可能同时补算同一份，按行插入会撞主键、整批回滚。"""
+    if not rows:
+        return
+    stmt = mysql_insert(AIEligibility.__table__).values(rows)
+    session.execute(
+        stmt.on_duplicate_key_update(
+            reason=stmt.inserted.reason, computed_at=stmt.inserted.computed_at
+        )
+    )
+
+
 def refresh(
     session: Session, doc_ids: Iterable[int], stamp: datetime, *, release: bool = False
 ) -> int:
@@ -59,26 +76,31 @@ def refresh(
     changed = 0
     for start in range(0, len(ids), BATCH):
         chunk = ids[start : start + BATCH]
-        existing = {
-            row.document_id: row
-            for row in session.scalars(
-                select(AIEligibility).where(AIEligibility.document_id.in_(chunk))
-            )
-        }
+        existing = dict(
+            session.execute(
+                select(AIEligibility.document_id, AIEligibility.reason).where(
+                    AIEligibility.document_id.in_(chunk)
+                )
+            ).all()
+        )
         present = set(session.scalars(select(Document.id).where(Document.id.in_(chunk))))
+        rows = []
         for doc_id in chunk:
             if doc_id not in present:
                 continue  # 文件已删除：外键级联会删掉旧结果，这里不插新行
             reason = compute(session, doc_id)
-            row = existing.get(doc_id)
-            if row is None:
-                session.add(AIEligibility(document_id=doc_id, reason=reason, computed_at=stamp))
+            if doc_id not in existing or existing[doc_id] != reason:
                 changed += 1
-            else:
-                if row.reason != reason:
-                    changed += 1
-                row.reason, row.computed_at = reason, stamp
-        session.commit()
+            rows.append({"document_id": doc_id, "reason": reason, "computed_at": stamp})
+        try:
+            _write(session, rows)
+            session.commit()
+        except IntegrityError:
+            # 算的途中有文件被删了（外键失败）：重新看哪些还在，只写还在的
+            session.rollback()
+            still = set(session.scalars(select(Document.id).where(Document.id.in_(chunk))))
+            _write(session, [row for row in rows if row["document_id"] in still])
+            session.commit()
         if release:
             session.expunge_all()
     return changed

@@ -286,6 +286,32 @@ def test_note_api_throttles_and_tolerates_missing_permission(session, monkeypatc
     assert heartbeat._api_denied_logged is True
 
 
+def add_user(session, openid="internal"):
+    user = User(openid=openid, agreement_version="2026-10", agreement_at=NOW)
+    session.add(user)
+    session.commit()
+    return user
+
+
+def add_refunded(session, user, finished_at):
+    """一个以"功能未开放"失败的 AI 任务（admin 退回的，次数已退）。"""
+    session.add(
+        AdvisorTask(
+            user_id=user.id,
+            kind="interpret",
+            status="failed",
+            error=service.AI_OFF_MESSAGE,
+            input_json={"doc_id": 1},
+            row_count=0,
+            idempotency_key=f"r{finished_at.timestamp()}",
+            created_at=finished_at,
+            finished_at=finished_at,
+            expires_at=finished_at + timedelta(days=30),
+        )
+    )
+    session.commit()
+
+
 def test_alerts_for_mismatch_and_refunds_at_most_hourly(session, monkeypatch):
     sent = []
     monkeypatch.setattr("youju.alerts.send_alert", lambda text: sent.append(text) or True)
@@ -295,12 +321,51 @@ def test_alerts_for_mismatch_and_refunds_at_most_hourly(session, monkeypatch):
     heartbeat.beat(session, make_settings(role="api", ai_advisor_daily_cap=300), "api", NOW)
     assert "设置不一致" in heartbeat.check_and_alert(session, admin, NOW)
     assert heartbeat.check_and_alert(session, admin, NOW + timedelta(minutes=30)) is None
+    # admin 开着 AI 时以"功能未开放"失败的是用户被移出白名单，不算退回、不提醒
+    add_refunded(session, add_user(session), NOW + timedelta(minutes=40))
     later = NOW + heartbeat.ALERT_EVERY
     heartbeat.beat(session, make_settings(role="api"), "api", later)
-    assert heartbeat.check_and_alert(session, admin, later, refunded=2).startswith(
-        "admin 服务没开 AI，退回了 2 个"
-    )
+    assert heartbeat.check_and_alert(session, admin, later) is None
+    # admin 关了 AI：两边对不上，退回了几个写在同一条里
+    off = make_settings(role="admin", ai_advisor_enabled=False)
+    heartbeat.beat(session, off, "admin", later)
+    text = heartbeat.check_and_alert(session, off, later)
+    assert "设置不一致" in text and "admin 服务没开 AI，退回了 1 个" in text
     assert len(sent) == 2
+
+
+def test_refund_alert_counts_from_tasks_and_survives_failed_send(session, monkeypatch):
+    results = [False, True, True]
+    sent = []
+    monkeypatch.setattr(
+        "youju.alerts.send_alert", lambda text: sent.append(text) or results[len(sent) - 1]
+    )
+    # api 的心跳没来（比如授权还没执行）：看不出两边对不上，只能靠退回的任务发现 admin 没开 AI
+    off = make_settings(role="admin", ai_advisor_enabled=False)
+    heartbeat.beat(session, off, "admin", NOW)
+    user = add_user(session)
+    add_refunded(session, user, NOW)
+    add_refunded(session, user, NOW + timedelta(seconds=30))
+    # 不到一分钟的先不数：同一分钟 advisor-run 可能还在退回、没提交
+    assert heartbeat.check_and_alert(session, off, NOW + timedelta(seconds=50)) is None
+    assert sent == []
+    # 第一次没发出去：不记时间；下一分钟没有新的退回，照样数到 2 个、再发
+    assert heartbeat.check_and_alert(session, off, NOW + timedelta(minutes=2)) is None
+    assert session.get(AIHeartbeat, "admin").alerted_at is None
+    first = heartbeat.check_and_alert(session, off, NOW + timedelta(minutes=3))
+    assert "退回了 2 个" in first
+    # 发出去以后一小时内不再发；之后只数上次没数到的：上次只数到一分钟以前（2:30 那个留到这次），
+    # 已经数过的两个不再算
+    add_refunded(session, user, NOW + timedelta(minutes=2, seconds=30))
+    add_refunded(session, user, NOW + timedelta(minutes=10))
+    assert heartbeat.check_and_alert(session, off, NOW + timedelta(minutes=30)) is None
+    second = heartbeat.check_and_alert(
+        session, off, NOW + timedelta(minutes=3) + heartbeat.ALERT_EVERY
+    )
+    assert "退回了 2 个" in second
+    # 没有新的退回：不再提醒
+    assert heartbeat.check_and_alert(session, off, NOW + 3 * heartbeat.ALERT_EVERY) is None
+    assert len(sent) == 3
 
 
 def test_failed_send_is_retried_next_time(session, monkeypatch):
@@ -347,20 +412,19 @@ def test_admin_without_ai_key_is_not_ready(session):
     assert heartbeat.worker_ready(session, remote, NOW) is False
 
 
-def test_heartbeat_command_and_advisor_run_refund_alert(
+def test_heartbeat_command_alerts_refunds_from_advisor_run(
     session, session_factory, settings, doc, monkeypatch, capsys
 ):
     sent = []
     monkeypatch.setattr("youju.alerts.send_alert", lambda text: sent.append(text) or True)
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(heartbeat, "REFUND_SETTLE", timedelta(0))
     settings.ai_advisor_enabled = False
     assert cli.main(["ai-heartbeat"]) == 0
     assert "admin 不能处理 AI 任务" in capsys.readouterr().out
     session.expire_all()
     assert session.get(AIHeartbeat, "admin").ai_enabled is False
-    user = User(openid="internal", agreement_version="2026-10", agreement_at=NOW)
-    session.add(user)
-    session.flush()
+    user = add_user(session)
     assert service.reserve_usage(session, user.id, "interpret", service.usage_day(NOW))
     session.add(
         AdvisorTask(
@@ -379,4 +443,6 @@ def test_heartbeat_command_and_advisor_run_refund_alert(
     session.expire_all()
     task = session.scalar(select(AdvisorTask))
     assert task.status == "failed" and task.error == service.AI_OFF_MESSAGE
+    assert sent == []  # advisor-run 自己不发，下一次心跳按任务表数
+    assert cli.main(["ai-heartbeat"]) == 0
     assert len(sent) == 1 and "退回了 1 个" in sent[0]
