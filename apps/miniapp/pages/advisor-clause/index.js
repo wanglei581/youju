@@ -2,7 +2,7 @@
 const api = require('../../utils/api.js');
 const { regionSelection, regionValue } = require('../../utils/regions.js');
 const clause = require('../../utils/ai-clause.js');
-const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, remainingOf, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 const access = require('../../utils/ai-access.js');
@@ -52,7 +52,7 @@ Page({
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
       // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
       // 自己今天的次数用完了也先拦下，不发注定被拒的任务
-      const used = aiEnabled && Number((ai.remaining || {}).clause) === 0;
+      const used = aiEnabled && remainingOf(ai, 'clause') === 0;
       const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
         const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';

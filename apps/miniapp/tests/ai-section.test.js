@@ -2107,3 +2107,60 @@ test('Codex 第 24 轮：工具中心停在页面上跨过零点重新问；某�
   assert.doesNotMatch(textOf(render('pages/advisor/index.wxml', z.data)), /总用量满了/);
   z.onHide(); assert.ok(day.stopped() >= 1, '离开时停掉');
 });
+
+test('Codex 第 25 轮：后台给的次数是 null、空串、true/false、字符串时当"不知道"，不当 0——四个页面都不写"用完了"、不拦下', async () => {
+  assert.equal(advisor.remainingOf({ remaining: { interpret: 3.7 } }, 'interpret'), 3);
+  assert.equal(advisor.remainingOf({ remaining: { interpret: -1 } }, 'interpret'), 0);
+  for (const odd of [null, '', false, true, '3', undefined, NaN]) {
+    const caps = ON({ remaining: { interpret: odd, clause: odd } });
+    assert.equal(advisor.remainingOf(caps.ai_advisor, 'interpret'), null, String(odd));
+    // AI 首页
+    const h = hubPage({ caps });
+    h.page.onShow(); await settle();
+    assert.equal(h.page.data.kinds.some((k) => k.out), false, `首页 ${String(odd)}`); assert.equal(h.page.data.interpretOpen, true);
+    assert.doesNotMatch(h.text(), /用完了|今天还剩/);
+    // 工具中心
+    const t = load('pages/advisor/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps), advisorTasks: () => Promise.resolve({ items: [] }) },
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+    }, { wx: { setNavigationBarTitle() {} } });
+    t.onLoad({}); t.onShow(); await settle();
+    assert.equal(t.data.interpretOut, false, `工具中心 ${String(odd)}`); assert.doesNotMatch(textOf(render('pages/advisor/index.wxml', t.data)), /用完了|今天还能用/);
+    t.onHide();
+    // 解读页、对照页：不拦下
+    for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps), createAdvisorTask: () => Promise.resolve({ id: 9, status: 'queued' }), advisorTask: (id) => Promise.resolve({ id, status: 'queued' }) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, getStorageSync: () => '', setStorageSync() {} } });
+      p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+      try { assert.notEqual(p.data.gate, 'used', `${page} ${String(odd)}`); assert.equal(p.data.aiEnabled, true); } finally { p.onHide(); }
+    }
+  }
+});
+
+test('Codex 第 25 轮：次数用完的提示只在有记录时才说"以前的结果在下面"；没有记录时据实写明天恢复', async () => {
+  const usedUp = ON({ remaining: { interpret: 0, clause: 3 } });
+  const record = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', hasResult: true };
+  const none = hubPage({ caps: usedUp });
+  none.page.onShow(); await settle();
+  assert.match(none.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(none.text(), /以前的结果/);
+  const some = hubPage({ caps: usedUp, tasks: () => Promise.resolve({ items: [record] }) });
+  some.page.onShow(); await settle();
+  assert.match(some.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复；以前的结果在下面“我的 AI 记录”里照样能看。/);
+  assert.match(some.text(), /我的 AI 记录.*通知3/);
+  // 工具中心同样
+  for (const [items, has] of [[[], false], [[record], true]]) {
+    const t = load('pages/advisor/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(usedUp), advisorTasks: () => Promise.resolve({ items }) },
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+    }, { wx: { setNavigationBarTitle() {} } });
+    t.onLoad({}); t.onShow(); await settle();
+    const out = textOf(render('pages/advisor/index.wxml', t.data));
+    assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复/);
+    assert.equal(/以前的结果在下面“我的记录”里照样能看/.test(out), has, `工具中心 ${has ? '有' : '没有'}记录`);
+    t.onHide();
+  }
+});

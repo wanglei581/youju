@@ -1,7 +1,7 @@
 // AI 解读（政策解读与材料清单）。直达也要 capabilities 开放才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
 const { createSession } = require('../../utils/ai-interpret.js');
-const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, remainingOf, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const access = require('../../utils/ai-access.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -46,7 +46,7 @@ Page({
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 解读') });
       // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
       // 自己今天的次数用完了也先拦下，不发注定被拒的任务
-      const used = aiEnabled && Number((ai.remaining || {}).interpret) === 0;
+      const used = aiEnabled && remainingOf(ai, 'interpret') === 0;
       const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
         const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';

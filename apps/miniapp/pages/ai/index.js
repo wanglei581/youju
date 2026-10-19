@@ -5,7 +5,7 @@
 // 不自动替用户解读任何一份，都由用户自己点（每天次数有限）。
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
-const { taskView, allowedKinds, AI_LABEL, SCOPE } = require('../../utils/advisor.js');
+const { taskView, allowedKinds, remainingOf, AI_LABEL, SCOPE } = require('../../utils/advisor.js');
 const { disclosureLine } = require('../../utils/ai-interpret.js');
 const context = require('../../utils/tool-context.js');
 const { ensureConsent } = require('../../utils/consent.js');
@@ -50,17 +50,16 @@ function gateTextOf(gate, caps) {
   return GATE_TEXT[gate] || '';
 }
 
-// 两项能力：各写各的剩几次；用完的那一项写明天恢复、以前的结果还在
+// 两项能力：各写各的剩几次；用完的那一项写明天恢复（有记录时页面再补一句以前的结果在下面，第 25 轮）
 function kindRows(ai) {
   const features = allowedKinds(ai);
   return KIND_ROWS.filter((row) => features.includes(row.kind)).map((row) => {
-    const value = Number(ai.remaining && ai.remaining[row.kind]);
-    const remaining = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+    const remaining = remainingOf(ai, row.kind);
     const out = remaining === 0;
     return Object.assign({}, row, {
       remaining,
       out,
-      outText: out ? `今天的${row.name} 5 次用完了，明天 0 点恢复；以前的结果在下面“我的 AI 记录”里照样能看。` : '',
+      outText: out ? `今天的${row.name} 5 次用完了，明天 0 点恢复` : '',
     });
   });
 }

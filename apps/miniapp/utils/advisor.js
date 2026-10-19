@@ -113,4 +113,11 @@ function taskView(task) {
   });
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };
+// 今天还剩几次（AI 首页、工具中心、解读页、对照页共用）：后台给的是数才算（取整、不小于 0）；
+// 没给、给的是 null、空串、true/false 都当不知道（null），不当 0，免得误写"用完了"、拦下还能用的（第 25 轮）
+function remainingOf(ai, kind) {
+  const value = ai && ai.remaining ? ai.remaining[kind] : undefined;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
+
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload, remainingOf };

@@ -1,16 +1,10 @@
 // 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
-const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
+const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, remainingOf, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
-
-// 今天还剩几次：后台给的是数就取整（不小于 0），没给就是 null
-function left(ai, kind) {
-  const value = Number((ai.remaining || {})[kind]);
-  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
-}
 
 Page({
   data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: null, clauseRemaining: null, interpretOut: false, clauseOut: false,
@@ -49,10 +43,10 @@ Page({
         aiPaused: aiEnabled && ai.available === false,
         aiFull: aiEnabled && ai.siteFull === true,
         // 今天还剩几次：后台没给就不写；用完了写明天恢复、不给开始的按钮（第 24 轮）
-        remaining: left(ai, 'interpret'),
-        clauseRemaining: left(ai, 'clause'),
-        interpretOut: left(ai, 'interpret') === 0,
-        clauseOut: left(ai, 'clause') === 0,
+        remaining: remainingOf(ai, 'interpret'),
+        clauseRemaining: remainingOf(ai, 'clause'),
+        interpretOut: remainingOf(ai, 'interpret') === 0,
+        clauseOut: remainingOf(ai, 'clause') === 0,
         aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         disclosure: aiEnabled && disclosure.modelLabel && disclosure.filingNo ? `模型：${disclosure.modelLabel}｜备案号：${disclosure.filingNo}` : '' });
       this.kinds = allKinds(res);
