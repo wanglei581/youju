@@ -162,9 +162,10 @@ Page({
         gate,
         gateText: gateTextOf(gate, caps),
         kinds,
-        // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满
-        interpretOpen: open('interpret'),
-        clauseOpen: open('clause'),
+        // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
+        // 没同意协议（consent）时照样给：点了进解读页、对照页，先走同意（D-075 第四节）
+        interpretOpen: gate === 'consent' || open('interpret'),
+        clauseOpen: gate === 'consent' || open('clause'),
         disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
       });
       this.showRecent();

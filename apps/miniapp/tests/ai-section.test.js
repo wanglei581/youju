@@ -931,3 +931,17 @@ test('Codex 第 4 轮：解读页、对照页发现 AI 对这个人没开着（o
   assert.match(read('components/doc-row/index.wxss'), /\.meta \{[^}]*flex-wrap: wrap;/);
   assert.match(read('components/doc-row/index.wxss'), /\.meta-date \{ white-space: nowrap; \}/);
 });
+
+test('没同意协议时 AI 首页的列表照样给"AI 解读"（点了先走同意），两项能力换成同意入口', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  const doc = { id: '1', title: '通知1', kind: '申报通知', ai: { interpret: true, clause: true, reason: null } };
+  const h = hubPage({ last, caps: OFF('consent'), search: () => Promise.resolve({ items: [doc] }) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.gate, 'consent');
+  assert.equal(h.page.data.interpretOpen, true);
+  assert.deepEqual(h.page.data.recent.map((d) => !!d.ai), [true]);
+  const root = render('pages/ai/index.wxml', h.page.data);
+  assert.equal(findAll(root, (n) => n.tag === 'ai-button').length, 1);
+  assert.equal(findAll(root, tapsTo('clauseLast')).length, 1);
+  assert.match(textOf(root), /使用 AI 前，请先阅读并同意/);
+});
