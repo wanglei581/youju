@@ -975,7 +975,7 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
 });
 
 const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
-const centerStatus = ({ used = 3, pass = null } = {}) => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: 50 }, track: { used, limit: 3, maxRows: 50 } }, pass, trial: null, season: null });
+const centerStatus = ({ used = 3, pass = null, rows = pass ? 500 : 50, trackRows = rows } = {}) => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: rows }, track: { used, limit: 3, maxRows: trackRows } }, pass, trial: null, season: null });
 function toolCenter(api) {
   const urls = []; let products = 0;
   const page = load('pages/advisor/index.js', {
@@ -1005,7 +1005,7 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   const some = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1 }) });
   await flush(); await flush();
   assert.equal(some.page.data.payCard.usedUp, false);
-  assert.match(shown('pages/advisor/index.wxml', some.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，每次 50 家以内/);
+  assert.match(shown('pages/advisor/index.wxml', some.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
 });
 
 test('工具中心不在售时没有批量工具卡片、不取价格，照旧写"免费额度不需要购买"；取不到价格时也不显示卡片', async () => {
@@ -1027,7 +1027,7 @@ test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 �
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.resolve(quota) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
-  assert.match(text, /本月免费：比对已用完、通知表还剩 2 次，每次 50 家以内/);
+  assert.match(text, /本月免费：比对已用完、通知表还剩 2 次，每次最多 50 家/);
   assert.doesNotMatch(text, /还剩 0 次/);
   assert.equal(h.page.data.payCard.usedUp, false);
 });
@@ -1074,6 +1074,12 @@ test('工具中心刷新额度失败时丢掉上一次的免费次数；有使�
   assert.equal(findAll(render('pages/advisor/index.wxml', pass.page.data), tapsTo('buyPass')).length, 0);
   pass.page.buyPass();
   assert.deepEqual(pass.urls, []);
+});
+
+test('工具中心两项每次上限不同时分别写，按额度接口的数字，不写死（Codex 第三轮）', async () => {
+  const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1, rows: 50, trackRows: 30 }) });
+  await flush(); await flush();
+  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，比对每次最多 50 家、通知表每次最多 30 家/);
 });
 
 test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {

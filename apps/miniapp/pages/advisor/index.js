@@ -61,7 +61,8 @@ Page({
       // 加量体验中（D-070 ③）显示体验的每天次数；申报季加量的起止日期另起一行
       const trial = boost.trialView(res.trial);
       const free = `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家`;
-      this.quota = { compare: remaining('compare'), track: remaining('track'), maxRows: quota.compare.maxRows, pass: res.pass && res.pass.active ? res.pass : null, trial };
+      this.quota = { compare: remaining('compare'), track: remaining('track'), rows: { compare: quota.compare.maxRows, track: quota.track.maxRows },
+        pass: res.pass && res.pass.active ? res.pass : null, trial };
       // 在售时不再写"不需要购买"（买得到却说不用买，会让人以为没有付费功能）；没在售时照旧
       this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数`
         : trial.trialActive ? boost.trialLine(trial)
@@ -92,9 +93,12 @@ Page({
     if (!this.quotaDone) return;
     const pay = require('../../utils/pay.js');
     const quota = this.quota;
+    // 每次多少家按额度接口里两项各自的上限写，两项一样时只写一次（Codex 第三轮：不写死、不只看比对）
+    const rows = quota && (quota.rows.compare === quota.rows.track ? `每次最多 ${quota.rows.compare} 家`
+      : `比对每次最多 ${quota.rows.compare} 家、通知表每次最多 ${quota.rows.track} 家`);
     if (quota && quota.pass) {
       const day = pay.monthDay(quota.pass.expiresAt);
-      this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：批量名单比对、客户相关通知表不限次数，每次最多 500 家`,
+      this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：批量名单比对、客户相关通知表不限次数，${rows}`,
         // 取不到价格时只写到期日，不放买不了的"续买"按钮（Codex 第二轮）
         offerLine: this.offer ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: this.offer ? '续买批量工具' : '' } });
       return;
@@ -105,7 +109,7 @@ Page({
     const left = (name, count) => (count === 0 ? `${name}已用完` : `${name}还剩 ${count} 次`);
     const quotaLine = !quota ? '' : quota.trial.trialActive ? boost.trialLine(quota.trial)
       : usedUp ? '本月免费次数已用完，下月 1 日恢复'
-        : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，每次 ${quota.maxRows} 家以内`;
+        : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，${rows}`;
     this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
   buyPass() { if (this.data.payCard && this.data.payCard.button) wx.navigateTo({ url: '/pages/pass/index' }); },
