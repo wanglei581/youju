@@ -157,8 +157,9 @@ def test_platform_refund_completion_voids_pending_invoice(pay, session):
     ask(pay, row)
     session.expire_all()
     row = session.get(type(row), row.id)
-    # 苹果手机等由平台完成的退款：查单结果显示已退款
-    assert payments.mark_refunded(session, row, {"status": 5, "left_fee": 0}, NOW)
+    # 苹果手机等由平台完成的退款：查单结果显示已退款（8 用户侧收款完成；5 只是商户侧扣款完成，不算）
+    assert not payments.mark_refunded(session, row, {"status": 5, "left_fee": 0}, NOW)
+    assert payments.mark_refunded(session, row, {"status": 8, "left_fee": 0}, NOW)
     session.commit()
     invoice = session.scalar(select(InvoiceRequest))
     assert invoice.status == "rejected" and invoice.note == payments.INVOICE_VOID_NOTE

@@ -11,8 +11,23 @@ function goHome() {
   wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
 }
 
+// 打开订单页时最多替几张待确认的订单向微信核对（服务端也只核对每人最近 3 张）
+const AUTO_CHECK = 3;
+// "重新核对"的结果写成一句提示（服务端核对接口的 check；null 是刚核对过、这次没再问微信）
+const CHECK_TOAST = {
+  paid: '已核对到付款，已开通', unpaid: '还没查到这笔付款', closed: '没有确认到付款，订单已关闭',
+  refunded: '这笔付款已经退回', manual: '需要人工核对，结果会显示在这里', unavailable: '暂时没能核对，请稍后再试',
+};
+// 转人工的那一次：微信确认收到付款（有实付金额）才说"付款已收到"（Codex 复核）
+function checkToast(result) {
+  if (result && result.status === '已完成') return CHECK_TOAST.paid;
+  if (result && result.check === 'manual' && Number.isInteger(result.paidAmount)) return '付款已收到，正在人工核对';
+  return CHECK_TOAST[result && result.check] || '正在核对，请过几秒再看';
+}
+
 Page({
-  data: { loginOpen: loginOpen(), loading: true, error: '', items: [], refunding: null, message: '',
+  // checking：正在"重新核对"的订单号
+  data: { loginOpen: loginOpen(), loading: true, error: '', items: [], refunding: null, checking: null, message: '',
     invoiceFor: null, form: emptyForm(), formError: '', sending: false },
   onShow() { this.visible = true; this.load(); },
   onHide() { this.visible = false; this.serial = (this.serial || 0) + 1; },
@@ -20,11 +35,12 @@ Page({
   load() {
     if (!this.data.loginOpen) { this.setData({ loading: false }); return; }
     const serial = this.serial = (this.serial || 0) + 1;
-    this.setData({ loading: true, error: '' });
+    // 切走时还在"重新核对"的那一张：结果不再写回，按钮要放开
+    this.setData({ loading: true, error: '', checking: null });
     api.payOrders().then((res) => {
       if (serial !== this.serial) return null;
       const items = res.items.map(pay.orderView);
-      if (items.length) { this.setData({ loading: false, items }); return null; }
+      if (items.length) { this.setData({ loading: false, items }); this.autoCheck(serial); return null; }
       // 没有订单：直接问商品接口（不走能力接口的缓存，Codex 审阅）——有在售的档位写"还没有订单"；
       // 404 或没有档位才回首页；出错（没连上、服务端出错）留在本页给重试，不当成停卖
       return api.payProducts().then((res) => {
@@ -41,6 +57,44 @@ Page({
       if (err.status === 404) { goHome(); return; }
       this.setData({ loading: false, error: err.message });
     });
+  },
+  // 打开订单页时，替待确认的订单向微信核对一次：付了款的当场开通，没付的写"还没查到这笔付款"。
+  // 一张一张查，结果回来就换掉那一张；页面切走或重新载入后，旧的结果不再写回
+  autoCheck(serial) {
+    const ids = this.data.items.filter((item) => item.canCheck).slice(0, AUTO_CHECK).map((item) => item.orderId);
+    ids.reduce((chain, id) => chain.then(() => {
+      if (serial !== this.serial) return null;
+      return api.checkPayOrder(id).then((order) => { if (serial === this.serial) this.replace(order); }, () => {});
+    }), Promise.resolve()).catch(() => {});
+  },
+  replace(order) {
+    if (!order || order.orderId === undefined) return;
+    const view = pay.orderView(order);
+    this.setData({ items: this.data.items.map((item) => (String(item.orderId) === String(order.orderId) ? view : item)) });
+  },
+  // "重新核对"：用户说自己付过款、页面还是待确认时点；结果写在这张订单上，另给一句提示
+  recheck(e) {
+    if (this.data.checking !== null) return;
+    const order = this.data.items.find((item) => String(item.orderId) === String(e.currentTarget.dataset.id));
+    if (!order || !order.canCheck) return;
+    this.orderId = order.orderId;
+    const serial = this.serial;
+    this.setData({ checking: order.orderId });
+    api.checkPayOrder(order.orderId).then((result) => {
+      if (serial !== this.serial) return;
+      this.setData({ checking: null });
+      this.replace(result);
+      wx.showToast({ title: checkToast(result), icon: 'none' });
+    }).catch((err) => {
+      if (serial !== this.serial) return;
+      this.setData({ checking: null });
+      wx.showToast({ title: (err && err.message) || CHECK_TOAST.unavailable, icon: 'none' });
+    });
+  },
+  // 待确认、人工核对中、已关闭的订单上的"遇到问题"：带上这张订单的编号
+  problem(e) {
+    this.orderId = e.currentTarget.dataset.id;
+    this.feedback();
   },
   refund(e) {
     if (this.data.refunding !== null) return;
