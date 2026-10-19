@@ -107,7 +107,9 @@ TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
 # 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
 COMPLAINT_ERROR = "收到用户投诉"
-# 退款发起方：self 用户自助（7 天内没用过付费的量）；staff 负责人按规则发起（系统故障、停止服务）
+# 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-079）；
+# staff 负责人按规则发起（系统故障、停止服务）
+SELF_REFUND_WINDOW = timedelta(hours=24)
 SELF_REFUND, STAFF_REFUND = "self", "staff"
 
 
@@ -367,9 +369,11 @@ def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
 
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
-    """自助全额退款的条件（D-070 统一退款口径）：安卓、鸿蒙、电脑版微信付款（微信的普通支付），
-    付款 7 天内（含恰好 7 天），这一笔的使用期没用过付费的量（没超出每月免费次数、
-    没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，每笔分开算。"""
+    """自助全额退款（无理由退款）的条件（D-070 统一退款口径；时限 D-079 由 7 天改为 24 小时，
+    创始人 10/19："24 小时内没用过付费的量才能退，用过就不能退"）：安卓、鸿蒙、电脑版微信付款
+    （微信的普通支付），付款 24 小时内（含恰好 24 小时），这一笔的使用期没用过付费的量（没超出
+    每月免费次数、没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，
+    每笔分开算。付了款却没开通的人工单另走 undelivered_refund_reason，不受这个时限。"""
     if order.platform == "ios":
         return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
@@ -378,8 +382,8 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return undelivered_refund_reason(session, order, lock=lock)
     if order.status != "completed" or order.refund_status is not None:
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
-    if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
-        return "已超过 7 天"
+    if order.paid_time is None or stamp > order.paid_time + SELF_REFUND_WINDOW:
+        return "已超过 24 小时"
     # 退款时加锁读发票（锁顺序：用户 → 订单 → 发票，和管理台开票一致）：否则查完发票、
     # 作废之前，管理台可能刚把它标成已开，已开发票的订单就被退了款（Grok 红队，10/16）
     invoice = order_invoice(session, order, lock=lock)
@@ -396,7 +400,7 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 
 def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) -> str | None:
     """付了款却没开通的订单（微信确认收到全款，开通前的核验没过、转了人工）：用户什么都没用上，
-    不用等人工，随时可以自助申请全额原路退回，不受 7 天限制（创始人 10/19："扣款成功但订单
+    不用等人工，随时可以自助申请全额原路退回，不受 24 小时限制（创始人 10/19："扣款成功但订单
     没同步过来，可以对这笔订单申请自助退款"）。只认能核对清楚的：安卓等普通支付、付款金额等于
     订单金额、这笔从没开通过使用期；其余的（金额对不上、开通过又出问题的、投诉中的）仍由人工处理。
     调用方已按 用户 → 订单 加锁（lock=True 时）。发起退款前 start_refund 还会再向微信查一次单。"""
@@ -855,8 +859,17 @@ def accept_payment(
     return True
 
 
-def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime) -> bool:
-    if data.get("status") not in (5, 8):
+def mark_refunded(
+    session: Session, order: PayOrder, data: dict, stamp: datetime, *, confirmed: bool = False
+) -> bool:
+    """查单显示退款已经完成就记成已退款（收回使用期、作废没开的发票），返回 True。
+    官方 query_order：5"订单退款：商户侧扣款完成"、8"订单退款：用户侧收款完成"、7"订单退款失败"；
+    refund_order："启动后需要调用query_order接口来查询退款单状态，等状态变成退款完成后即为最终成功"。
+    所以查单时 8 才算退完，5 只是钱从我们这边扣走了、还没到用户那边，继续查（Codex 复核，10/19；
+    原来 5 也算完成，之后要是退款失败就没人知道了）。confirmed：退款推送（"退款完成后"发）说
+    退款成功（RetCode 0），这时 5 也算完成。"""
+    status = data.get("status")
+    if not (status == 8 or (status == 5 and confirmed)):
         return False
     left = data.get("left_fee")
     # 按剩余天数退的（refund_fee 小于订单金额），退完还剩"订单金额 − 退款金额"；
@@ -875,6 +888,10 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
     revoke_pass(session, order, stamp)
     void_invoice(session, order, stamp)
     return True
+
+
+# 发起退款满 24 小时、查单还停在 5（钱从我们这边扣走了、还没到用户那边）：转人工时写的说明
+STUCK_REFUND_ERROR = "退款超过 24 小时还没到用户那边（查单状态 5：商户侧扣款完成），需人工核对"
 
 
 def refund_exhausted(order: PayOrder, stamp: datetime) -> bool:
@@ -914,6 +931,12 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
             session.commit()
             return
         if mark_refunded(session, order, data, stamp):
+            session.commit()
+            return
+        if data.get("status") == 5:
+            # 上一次发起的退款其实已经受理（商户侧扣款完成，比如请求超时但微信那边办了）：
+            # 不再发起，等它到用户那边（查单变 8 或收到退款推送）
+            order.refund_status, order.error, order.updated_at = "pending", None, stamp
             session.commit()
             return
         if (
@@ -965,20 +988,23 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
     session.commit()
 
 
-def ios_decision(session: Session, order: PayOrder | None) -> dict:
+def ios_decision(session: Session, order: PayOrder | None, stamp: datetime) -> dict:
+    """苹果退款问询的答复（D-079，和安卓的无理由退款同一口径）：用过付费的量拒绝；没用过的，
+    付款 24 小时内（含恰好 24 小时）建议退款、超过 24 小时拒绝。凭据只写"付款后 24 小时内 /
+    付款后已超过 24 小时"和"用过付费的量 / 没有用过付费的量"，不带任务编号和具体时间（付费服务
+    协议"开卖那一版要一起做的"第 8 项、隐私指引）。查不到订单的答建议退款（_ios_reply）。"""
     ticket = order_pass(session, order) if order else None
-    if paid_usage(session, ticket):
-        completed = ticket.last_task_completed_at
-        return {
-            "result_code": 1,
-            "result_info": "已使用",
-            "evidence": (
-                f"任务 {ticket.last_task_id}，完成时间 "
-                f"{completed.isoformat() if completed else '尚未完成'}，提交时间 "
-                f"{ticket.last_used_at.isoformat() if ticket.last_used_at else '待核对'}"
-            ),
-        }
-    return {"result_code": 0, "result_info": "未使用", "evidence": "没有使用付费的量"}
+    used = paid_usage(session, ticket)
+    paid = order.paid_time if order is not None else None
+    late = paid is not None and stamp > paid + SELF_REFUND_WINDOW
+    timing = "付款后已超过 24 小时" if late else "付款后 24 小时内" if paid is not None else ""
+    usage = "用过付费的量" if used else "没有用过付费的量"
+    evidence = f"{timing}；{usage}" if timing else usage
+    if used:
+        return {"result_code": 1, "result_info": "已使用", "evidence": evidence}
+    if late:
+        return {"result_code": 1, "result_info": "付款已超过 24 小时", "evidence": evidence}
+    return {"result_code": 0, "result_info": "未使用", "evidence": evidence}
 
 
 def _local_orders(session: Session, day: date) -> dict[str, int]:
@@ -1179,12 +1205,17 @@ def checkable(session: Session, order: PayOrder, stamp: datetime) -> bool:
     return order.id in recent
 
 
-# 查单状态里待确认订单"能自己处理"的：0/1 没付、2/3/4 付了、5/8 退了、6 关了。
-# 其余（7 退款失败、9 回收广告金完成、10 分账回退完成，以及以后新加的）说明钱在微信那边
-# 走过别的流程，既不能当没付款关单、也不能照常开通，转人工核对并告警；原来补单会一直把它
-# 当待支付查下去（Codex 复核，10/19）
-HANDLED_STATUSES = frozenset({0, 1, 2, 3, 4, 5, 6, 8})
-ODD_STATUS_NAMES = {7: "退款失败", 9: "回收广告金完成", 10: "分账回退完成"}
+# 查单状态里待确认订单"能自己处理"的：0/1 没付、2/3/4 付了、8 退完了、6 关了。
+# 其余（5 退款还在进行、7 退款失败、9 回收广告金完成、10 分账回退完成，以及以后新加的）说明钱
+# 在微信那边走过别的流程，既不能当没付款关单、也不能照常开通，转人工核对并告警；原来补单会
+# 一直把它当待支付查下去（Codex 复核，10/19）
+HANDLED_STATUSES = frozenset({0, 1, 2, 3, 4, 6, 8})
+ODD_STATUS_NAMES = {
+    5: "退款中：商户侧扣款完成",
+    7: "退款失败",
+    9: "回收广告金完成",
+    10: "分账回退完成",
+}
 
 
 def flag_odd_pending(order: PayOrder, data: dict, stamp: datetime) -> bool:
@@ -1298,16 +1329,19 @@ def run_payments(
                     order.status, order.error = "manual", "用户已注销，退款需人工处理"
                 elif refund_exhausted(order, stamp):
                     # 最后核验已成功的退款；查单也失败则人工接手，不能无限重试。
-                    confirmed = False
+                    # 24 小时从发起退款（refund_started_at）算：停在 5（钱从我们这边扣走了、
+                    # 还没到用户那边）满 24 小时也转人工，告警只发一次（alerted_at）
+                    confirmed, status = False, None
                     with contextlib.suppress(XPayError):
-                        confirmed = mark_refunded(
-                            session, order, query(session, order, client), stamp
-                        )
+                        data = query(session, order, client)
+                        status = data.get("status")
+                        confirmed = mark_refunded(session, order, data, stamp)
                     if not confirmed:
-                        order.status, order.error, order.alerted_at = (
-                            "manual",
-                            "退款尝试达到上限或超过24小时，需人工核对",
-                            None,
+                        order.status, order.alerted_at = "manual", None
+                        order.error = (
+                            STUCK_REFUND_ERROR
+                            if status == 5
+                            else "退款尝试达到上限或超过24小时，需人工核对"
                         )
                 elif order.refund_status == "pending":
                     if order.refund_retry_at is None or order.refund_retry_at <= stamp:

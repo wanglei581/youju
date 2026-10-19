@@ -547,14 +547,14 @@ test('订单页换一张订单开票时表单是空的，不带上一张没提�
 test('订单页展示金额、使用期和订单号；可退款要确认后才退并刷新，不能退时写明原因，防止误退和没有原因', async () => {
   const h = ordersPage([
     orderRecord({ orderId: 41, canRefund: true }),
-    orderRecord({ orderId: 42, refundUnavailableReason: '已超过 7 天' }),
+    orderRecord({ orderId: 42, refundUnavailableReason: '已超过 24 小时' }),
   ]);
   await flush();
   const text = shown('pages/orders/index.wxml', h.page.data);
   assert.match(text, /29\.00 元/);
   assert.match(text, /使用期 10-01 至 10-31/);
   assert.match(text, /订单号 41/);
-  assert.match(textOf(orderCard(h.page.data, 42)), /不能自助退款：已超过 7 天/);
+  assert.match(textOf(orderCard(h.page.data, 42)), /不能自助退款：已超过 24 小时/);
   const refunds = findAll(render('pages/orders/index.wxml', h.page.data), tapsTo('refund'));
   assert.equal(refunds.length, 1);
   assert.equal(String(refunds[0].attrs['data-id']), '41');
@@ -824,7 +824,12 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const text = shown('pages/pass/index.wxml', h.page.data);
   assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
   assert.match(text, /只限本人的微信使用/);
-  assert.match(text, /苹果手机付款的，只能向 App Store 申请退款/);
+  // 苹果退款：由苹果公司通过 App Store 处理，小程序里也能提交、我们协助（协议第二条第 7 项、运营规范 14.6）
+  assert.match(text, /苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理/);
+  assert.doesNotMatch(text, /只能向 App Store 申请退款/);
+  // 无理由退款：付款后 24 小时内、没用过付费的量（D-079，原为 7 天）
+  assert.match(text, /付款后 24 小时内没用过付费的量（没超出每月免费次数、没有一次超过 50 家）、也没开过发票，可在“我的 → 我的订单”申请无理由退款，全额原路退回；超过 24 小时或者已经用过的，不能无理由退款/);
+  assert.doesNotMatch(text, /付款 7 天内/);
   assert.match(text, /发票：可开电子普通发票（测试文字）/);
   assert.match(text, /到期后，已经生成的结果仍可查看、导出/);
   assert.match(text, /按剩余天数退款/);
@@ -1269,7 +1274,7 @@ test('购买页付款后核对到"需人工处理"：按这张订单的实际情
   assert.equal(cancelled.page.data.ordersLink, false);
 });
 
-const PENDING = { orderId: 51, status: '待确认', amount: 2900, canRefund: false, canInvoice: false,
+const PENDING = { orderId: 51, name: '批量工具 30 天', days: 30, status: '待确认', amount: 2900, canRefund: false, canInvoice: false,
   refundUnavailableReason: '支付方式还没确认，可点“遇到问题”告诉我们', createdAt: '2026-10-19T14:57:48Z', paidAt: null, passStartsAt: null, passEndsAt: null };
 
 test('订单页的待确认订单：写"待确认"（老服务端的"待支付"也写成待确认）、几点下的单和说明，不写"不能自助退款"，有"重新核对"和"遇到问题"，防止付了款看到"待支付"以为钱白扣了', async () => {
@@ -1327,6 +1332,9 @@ test('订单页"重新核对"：结果写在这张订单上，另给一句提示
     [{ ...PENDING, check: 'unpaid' }, '还没查到这笔付款'],
     [{ ...PENDING, check: 'unavailable' }, '暂时没能核对，请稍后再试'],
     [{ ...PENDING, check: null }, '正在核对，请过几秒再看'],
+    // 转人工：微信确认收到付款的才说"付款已收到"（Codex 复核）
+    [{ ...PENDING, status: '需人工处理', check: 'manual', paidAmount: 2900 }, '付款已收到，正在人工核对'],
+    [{ ...PENDING, status: '需人工处理', check: 'manual', paidAmount: null }, '需要人工核对，结果会显示在这里'],
     [{ ...PENDING, status: '已关闭', check: 'closed' }, '没有确认到付款，订单已关闭'],
   ]) {
     h.page.setData({ items: [pay.orderView(PENDING)] });
@@ -1427,6 +1435,12 @@ test('我的页头：批量工具使用期内名字后面有"批量工具 · 到
   assert.match(textOf(badge()[0]), /^批量工具 · \d+月\d+日到期$/);
   h.page.openPass();
   assert.deepEqual(h.urls, ['/pages/pass/index', '/pages/orders/index']);
+  // 只有送的使用期、没有订单、又没在卖：去工具中心，不会点了没反应（Codex 复核）
+  me = { pay: { enabled: false, hasOrders: false }, pass: { active: true, expiresAt: far, expired: false } };
+  h.page.refresh(); await flush(); await flush();
+  assert.equal(badge().length, 1);
+  h.page.openPass();
+  assert.deepEqual(h.urls, ['/pages/pass/index', '/pages/orders/index', '/pages/advisor/index']);
   me = { pay: { enabled: true, hasOrders: true }, pass: { active: false, expiresAt: null, expired: true } };
   h.page.refresh(); await flush(); await flush();
   assert.equal(badge().length, 0);

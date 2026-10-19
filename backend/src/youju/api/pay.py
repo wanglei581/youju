@@ -489,7 +489,7 @@ def _ios_reply(bind, trade: str | None) -> dict:
                 if trade
                 else None
             )
-            decision = payments.ios_decision(session, order)
+            decision = payments.ios_decision(session, order, _stamp())
             payments.event(
                 session,
                 "xpay_subscribe_ios_refund_query_notify",
@@ -571,13 +571,27 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
             session.commit()
             return reply(xml)
+        # 退款推送的 RetCode：0 退款成功，非 0 失败（官方字段说明）。失败的转人工、告警一次
+        # （alerted_at 清空后补单发；已经是人工的不再清，微信重推也不会重复告警），应答成功，
+        # 免得微信重推 15 次；原来回失败、订单不动，没人知道退款失败了
+        ret = data.get("RetCode")
+        if kind == "xpay_refund_notify" and ret is not None and str(ret) != "0":
+            logger.warning("%s 订单 #%s 微信说退款失败：RetCode=%s", kind, order_id, ret)
+            if order.status != "manual":
+                order.status, order.alerted_at = "manual", None
+                order.error = f"微信退款失败（RetCode {str(ret)[:16]}），需人工处理"
+            session.commit()
+            return reply(xml)
         checked = payments.query(session, order, client, transient_openid=data["OpenId"])
         if kind == "xpay_goods_deliver_notify":
             accepted = payments.accept_payment(
                 session, order, checked, get_settings(), _stamp(), data
             )
         else:
-            accepted = payments.mark_refunded(session, order, checked, _stamp())
+            # 推送说退款成功（RetCode 0）时，查单停在 5（商户侧扣款完成）也算退完
+            accepted = payments.mark_refunded(
+                session, order, checked, _stamp(), confirmed=ret is not None and str(ret) == "0"
+            )
         session.commit()
         if (
             accepted

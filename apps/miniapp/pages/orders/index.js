@@ -16,8 +16,14 @@ const AUTO_CHECK = 3;
 // "重新核对"的结果写成一句提示（服务端核对接口的 check；null 是刚核对过、这次没再问微信）
 const CHECK_TOAST = {
   paid: '已核对到付款，已开通', unpaid: '还没查到这笔付款', closed: '没有确认到付款，订单已关闭',
-  refunded: '这笔付款已经退回', manual: '付款已收到，正在人工核对', unavailable: '暂时没能核对，请稍后再试',
+  refunded: '这笔付款已经退回', manual: '需要人工核对，结果会显示在这里', unavailable: '暂时没能核对，请稍后再试',
 };
+// 转人工的那一次：微信确认收到付款（有实付金额）才说"付款已收到"（Codex 复核）
+function checkToast(result) {
+  if (result && result.status === '已完成') return CHECK_TOAST.paid;
+  if (result && result.check === 'manual' && Number.isInteger(result.paidAmount)) return '付款已收到，正在人工核对';
+  return CHECK_TOAST[result && result.check] || '正在核对，请过几秒再看';
+}
 
 Page({
   // checking：正在"重新核对"的订单号
@@ -78,8 +84,7 @@ Page({
       if (serial !== this.serial) return;
       this.setData({ checking: null });
       this.replace(result);
-      const opened = result && result.status === '已完成';
-      wx.showToast({ title: opened ? CHECK_TOAST.paid : CHECK_TOAST[result && result.check] || '正在核对，请过几秒再看', icon: 'none' });
+      wx.showToast({ title: checkToast(result), icon: 'none' });
     }).catch((err) => {
       if (serial !== this.serial) return;
       this.setData({ checking: null });

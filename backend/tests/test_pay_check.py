@@ -17,7 +17,7 @@ from tests.test_payments import (  # noqa: F401
     run,
     setup_pay,
 )
-from youju import payments
+from youju import advisor_tasks, payments
 from youju.api import app as app_module
 from youju.api import pay
 from youju.db import get_session
@@ -181,10 +181,10 @@ def undelivered(setup_pay, session):  # noqa: F811
 
 
 def test_paid_but_not_opened_order_can_refund_itself(setup_pay, session):  # noqa: F811
-    """付了款没开通（转了人工）：不用等人工，用户自己申请全额原路退回，不受 7 天限制。"""
+    """付了款没开通（转了人工）：不用等人工，用户自己申请全额原路退回，不受 24 小时限制。"""
     row = undelivered(setup_pay, session)
     row.alerted_at = NOW  # 负责人已收到过这张单的告警
-    # 付款早在 7 天以前也能退：什么都没用上
+    # 付款早在 24 小时以前也能退：什么都没用上
     row.paid_time = NOW - timedelta(days=30)
     session.commit()
     listed = setup_pay[0].get("/api/v1/pay/orders", headers=HEADERS).json()["items"][0]
@@ -303,10 +303,10 @@ def test_complained_order_is_left_to_staff(setup_pay, session):  # noqa: F811
     assert body["canRefund"] is False and "投诉" in body["refundUnavailableReason"]
 
 
-@pytest.mark.parametrize("status", [7, 9, 10, 11])
+@pytest.mark.parametrize("status", [5, 7, 9, 10, 11])
 def test_odd_wechat_status_goes_to_staff(setup_pay, session, status):  # noqa: F811
-    """待确认的订单查到退款失败、广告金/分账回退或不认识的状态：不当没付关单，也不开通；转人工并告警，
-    补单不再把它当待支付一直查（Codex 复核）。"""
+    """待确认的订单查到退款进行中（5）、退款失败、广告金/分账回退或不认识的状态：不当没付关单，
+    也不开通；转人工并告警，补单不再把它当待支付一直查（Codex 复核）。"""
     first = order(session, create(setup_pay))
     fake = setup_pay[2]
     fake.status = status
@@ -354,3 +354,111 @@ def test_check_rate_per_process(setup_pay, session, monkeypatch):  # noqa: F811
     assert len(calls(setup_pay, "/xpay/query_order")) == 1
     pay._recent.clear()
     assert check(setup_pay, second).json()["check"] == "unpaid"
+
+
+# ---- 退款完成的判定：查单 8 才算退完，5 是钱还没到用户那边（Codex 复核，10/19）----
+
+
+def refund_push(setup_pay, row, **extra):  # noqa: F811
+    data = {
+        "Event": "xpay_refund_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+        **extra,
+    }
+    return push(setup_pay, data).json()
+
+
+def sweep(setup_pay, session, stamp):  # noqa: F811
+    alerts = []
+    payments.run_payments(
+        session,
+        settings=setup_pay[1],
+        client=setup_pay[2].client,
+        stamp=stamp,
+        alert=lambda text: alerts.append(text) or True,
+    )
+    session.expire_all()
+    return alerts
+
+
+def test_refund_stuck_at_merchant_side_goes_to_staff_after_24_hours(setup_pay, session):  # noqa: F811
+    """查单停在 5（商户侧扣款完成）：不到 24 小时订单仍是退款中、不告警；从发起退款满 24 小时转人工，
+    只告警一次。"""
+    row = delivered(setup_pay, session)
+    assert pay_refund(setup_pay, row).json()["status"] == "退款中"
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = 5, 0
+    for later in (timedelta(minutes=10), timedelta(hours=23, minutes=59)):
+        assert sweep(setup_pay, session, NOW + later) == []
+        row = session.get(PayOrder, row.id)
+        assert row.status == "refunding" and row.refund_status == "pending"
+        assert payments.order_pass(session, row).revoked_at is not None
+    alerts = sweep(setup_pay, session, NOW + timedelta(hours=24, minutes=1))
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.STUCK_REFUND_ERROR
+    assert len(alerts) == 1 and f"#{row.id}" in alerts[0]
+    assert sweep(setup_pay, session, NOW + timedelta(hours=25)) == []
+    assert len(calls(setup_pay, "/xpay/refund_order")) == 1
+
+
+def test_refund_reaching_user_side_completes(setup_pay, session):  # noqa: F811
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = 5, 0
+    sweep(setup_pay, session, NOW + timedelta(minutes=10))
+    assert session.get(PayOrder, row.id).status == "refunding"
+    fake.status = 8
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=30)) == []
+    row = session.get(PayOrder, row.id)
+    assert row.status == "refunded" and row.refund_status == "completed"
+
+
+def test_refund_push_decides_at_merchant_side(setup_pay, session):  # noqa: F811
+    """退款推送在"退款完成后"发：RetCode 0（JSON 是数字，XML 是文字）时查单停在 5 也算退完；
+    没带 RetCode 的推送不算，等查单变 8。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = 5, 0
+    assert refund_push(setup_pay, row)["ErrCode"] != 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunding"
+    assert refund_push(setup_pay, row, RetCode="0")["ErrCode"] == 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunded"
+
+
+def test_failed_refund_push_goes_to_staff_and_alerts_once(setup_pay, session):  # noqa: F811
+    """推送说退款失败（RetCode 非 0）：转人工、应答成功（不让微信重推 15 次）；微信重推也只告警一次。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    assert refund_push(setup_pay, row, RetCode=268490001)["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and "微信退款失败（RetCode 268490001）" in row.error
+    assert row.alerted_at is None
+    assert len(sweep(setup_pay, session, NOW + timedelta(minutes=5))) == 1
+    assert refund_push(setup_pay, row, RetCode=268490001)["ErrCode"] == 0
+    assert sweep(setup_pay, session, NOW + timedelta(minutes=10)) == []
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.alerted_at is not None
+
+
+def test_retry_that_finds_the_refund_already_accepted_does_not_refund_twice(setup_pay, session):  # noqa: F811
+    """上一次发起退款的请求失败了、其实微信已经受理（查单 5）：重试时不再发起，等它到用户那边。"""
+    row = delivered(setup_pay, session)
+    fake = setup_pay[2]
+    fake.fail_refund = True
+    pay_refund(setup_pay, row)
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.refund_status == "retry"
+    fake.fail_refund = False
+    fake.status, fake.left_fee = 5, 0
+    sweep(setup_pay, session, advisor_tasks._utc(row.refund_retry_at))
+    row = session.get(PayOrder, row.id)
+    assert row.status == "refunding" and row.refund_status == "pending"
+    assert len(calls(setup_pay, "/xpay/refund_order")) == 1

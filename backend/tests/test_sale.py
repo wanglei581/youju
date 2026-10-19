@@ -318,8 +318,8 @@ def test_renewal_window_is_seven_days_either_side_of_expiry(shop, session, paid_
 def test_first_purchase_and_refunded_purchase_are_not_renewals(shop, session):
     first = buy(shop, session)
     assert gifts(session, first) == []
-    # 第一笔 7 天内退了：再买不算续买（以前买过的那笔已经收回）
-    shop.clock.at = NOW + 2 * DAY
+    # 第一笔 24 小时内退了：再买不算续买（以前买过的那笔已经收回）
+    shop.clock.at = NOW + timedelta(hours=12)
     assert refund(shop, first).status_code == 200
     again = buy(shop, session, at=NOW + 3 * DAY)
     assert gifts(session, again) == []
@@ -349,13 +349,14 @@ def test_eligibility_uses_payment_time_not_confirmation_time(shop, session):
 
 
 def test_late_confirmation_of_a_first_purchase_starts_when_it_is_confirmed(shop, session):
-    """推送晚到两小时：使用期从确认开通时起算，30 天一天不少；7 天自助退款仍从付款时间算。"""
+    """推送晚到两小时：使用期从确认开通时起算，30 天一天不少；24 小时无理由退款仍从付款时间算
+    （付款后 25 小时、开通后 23 小时：已超过 24 小时）。"""
     row = buy(shop, session, at=NOW, confirmed=NOW + timedelta(hours=2))
     assert segments(session) == [
         (True, NOW + timedelta(hours=2), NOW + timedelta(hours=2) + 30 * DAY, False)
     ]
-    shop.clock.at = NOW + 7 * DAY + timedelta(hours=1)
-    assert refund(shop, row).json()["detail"] == "已超过 7 天"
+    shop.clock.at = NOW + timedelta(hours=25)
+    assert refund(shop, row).json()["detail"] == "已超过 24 小时"
 
 
 def test_bonus_follows_the_switch_at_order_time(shop, session):
@@ -406,14 +407,14 @@ def test_renewal_bonus_does_not_count_toward_reward_limits(shop, session):
 
 
 def test_early_renewal_refund_takes_back_only_that_order_and_its_bonus(shop, session):
-    """提前续买的那笔（还没开始）7 天内没用过：可以自助全额退，只收回它自己和随它送的 3 天。"""
+    """提前续买的那笔（还没开始）付款 24 小时内没用过：可以自助全额退，只收回它自己和随它送的 3 天。"""
     first = buy(shop, session)
     renewal = buy(shop, session, at=NOW + 25 * DAY)
     shop.clock.at = NOW + 26 * DAY
     # 这期间用的是第一笔（一次 51 家，记在第一笔的使用期上）；第二笔还没开始，没用过
     assert submit(shop, 51, "big").json()["usageSource"] == "pass"
     session.expire_all()
-    assert refund(shop, first).json()["detail"] == "已超过 7 天"
+    assert refund(shop, first).json()["detail"] == "已超过 24 小时"
     response = refund(shop, renewal)
     assert response.status_code == 200 and response.json()["status"] == "退款中"
     assert [(b["refund_fee"], b["refund_reason"], b["req_from"]) for b in refunds(shop)] == [
@@ -439,17 +440,18 @@ def test_early_renewal_refund_takes_back_only_that_order_and_its_bonus(shop, ses
 def test_refunding_the_current_order_moves_the_later_order_and_its_bonus_forward(shop, session):
     """一笔正在用（没用过付费的量）、一笔排在后面：退掉正在用的那笔，后面那笔整段往前挪到现在。"""
     first = buy(shop, session, at=NOW)
-    # 7 天内续买：到期是第 30 天，第 5 天付款不在窗口里，不送
-    second = buy(shop, session, at=NOW + 5 * DAY)
+    # 付款后 1 小时又买一笔：到期是第 30 天，不在"到期前后 7 天"的续买窗口里，不送
+    second = buy(shop, session, at=NOW + timedelta(hours=1))
     assert gifts(session, second) == []
-    shop.clock.at = NOW + 6 * DAY
+    # 第一笔付款后 20 小时（24 小时内、没用过）退掉
+    shop.clock.at = NOW + timedelta(hours=20)
     assert refund(shop, first).status_code == 200
     session.expire_all()
     assert segments(session) == [
         (True, NOW, NOW + 30 * DAY, True),
-        (True, NOW + 6 * DAY, NOW + 36 * DAY, False),
+        (True, NOW + timedelta(hours=20), NOW + timedelta(hours=20) + 30 * DAY, False),
     ]
-    assert expiry(shop) == NOW + 36 * DAY
+    assert expiry(shop) == NOW + timedelta(hours=20) + 30 * DAY
 
 
 def test_ios_refund_notification_also_takes_back_the_bonus(shop, session):
@@ -580,8 +582,8 @@ def run_cli(shop, session_factory, monkeypatch):
 
 
 def complete_refund(shop, session, row, left):
-    """微信那边退款完成：状态 5，剩余 left 分；下一轮补单查单后写成已退款。"""
-    shop.fake.status, shop.fake.left_fee = 5, left
+    """微信那边退款完成：状态 8（用户侧收款完成），剩余 left 分；下一轮补单查单后写成已退款。"""
+    shop.fake.status, shop.fake.left_fee = 8, left
     payments.run_payments(
         session,
         settings=shop.settings,

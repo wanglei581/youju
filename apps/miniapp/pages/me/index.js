@@ -175,10 +175,12 @@ Page({
     openPrivacy();
   },
 
-  // 页头"批量工具"标识：在售时去购买页（看到期日、续买），不在售时去订单页
+  // 页头"批量工具"标识：在售时去购买页（看到期日、续买），不在售时去订单页；
+  // 只有送的使用期、又没在卖的（没有订单）去工具中心用工具（Codex 复核：不能点了没反应）
   openPass() {
     if (this.data.passEntry) wx.navigateTo({ url: '/pages/pass/index' });
     else if (this.data.ordersEntry) wx.navigateTo({ url: '/pages/orders/index' });
+    else wx.navigateTo({ url: '/pages/advisor/index' });
   },
 
   go(e) {
