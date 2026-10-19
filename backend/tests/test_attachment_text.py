@@ -656,12 +656,13 @@ def test_pdf_continued_tables_dedupe_body_numbers_and_outlined_text() -> None:
                 + [(150, 200, "2025"), (150, 20, "1")],  # 正文里单独一行的数字留着，页脚页码删
                 "lines": ruled(100, 2),
             },
-            # 续表：这一页一开始就是表、列数一样，第一行是数据不是表头
+            # 续表：这一页一开始就是表、竖线位置一样；第一行是没有数字的数据，也不当表头
             {
-                "text": row(385, "Robot", "300", "Nov 9")
-                + row(365, "Chip", "200", "Nov 9")
+                "text": row(385, "Biotech", "up to two", "Dec first")
+                + row(365, "Robot", "300", "Nov 9")
+                + row(345, "Chip", "200", "Nov 9")
                 + [(40, 300, "Bold title"), (40.3, 300, "Bold title")],  # 为了加粗重画一遍
-                "lines": ruled(400, 2),
+                "lines": ruled(400, 3),
             },
             {"curves": 150},  # 字被转成线条：算扫描页
         ]
@@ -673,23 +674,24 @@ def test_pdf_continued_tables_dedupe_body_numbers_and_outlined_text() -> None:
         "2025",
         "Item | Amount | Deadline",
         "AI | 500 | Nov 5",
+        "Biotech | up to two | Dec first",
         "Robot | 300 | Nov 9",
         "Chip | 200 | Nov 9",
         "Bold title",
     ]
-    robot = result.segments[4]
-    assert (robot.kind, robot.loc) == ("row", {"page": 2, "table": 1, "row": 3})
-    assert robot.cells[0] == {"c": 0, "t": "Robot", "h": "Item"}
+    biotech = result.segments[4]
+    assert (biotech.kind, biotech.loc) == ("row", {"page": 2, "table": 1, "row": 3})
+    assert biotech.cells[0] == {"c": 0, "t": "Biotech", "h": "Item"}
 
 
 def test_pdf_repeated_header_rows_and_a_new_table_at_the_top_of_a_page() -> None:
-    def ruled(top: float, rows: int) -> list:
+    def ruled(top: float, rows: int, xs=(40, 120, 190, 260)) -> list:
         bottom = top - 20 * rows
-        lines = [(40, top - 20 * i, 260, top - 20 * i) for i in range(rows + 1)]
-        return lines + [(x, top, x, bottom) for x in (40, 120, 190, 260)]
+        lines = [(xs[0], top - 20 * i, xs[-1], top - 20 * i) for i in range(rows + 1)]
+        return lines + [(x, top, x, bottom) for x in xs]
 
-    def row(y: float, *cells: str) -> list:
-        return [(x, y, text) for x, text in zip((45, 125, 195), cells, strict=True)]
+    def row(y: float, *cells: str, xs=(45, 125, 195)) -> list:
+        return [(x, y, text) for x, text in zip(xs, cells, strict=True)]
 
     data = pdf_pages(
         [
@@ -702,10 +704,11 @@ def test_pdf_repeated_header_rows_and_a_new_table_at_the_top_of_a_page() -> None
                 "text": row(385, "Item", "Amount", "Deadline") + row(365, "Robot", "300", "Nov 9"),
                 "lines": ruled(400, 2),
             },
-            # 开头是另一张表（表头不一样）：不当续表
+            # 开头是另一张表（竖线位置不一样）：不当续表
             {
-                "text": row(385, "Name", "Score", "Note") + row(365, "Ann", "90", "fine"),
-                "lines": ruled(400, 2),
+                "text": row(385, "Name", "Score", "Note", xs=(45, 105, 225))
+                + row(365, "Ann", "90", "fine", xs=(45, 105, 225)),
+                "lines": ruled(400, 2, xs=(40, 100, 220, 260)),
             },
         ]
     )
@@ -849,17 +852,19 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     assert at.mask("开户账号：33050161613500000123") == "开户账号：[银行账号已脱敏]"
     assert at.mask("账号：3305 0161 6135 0000 0123") == "账号：[银行账号已脱敏]"
     assert at.mask("账号：1234567890 2025年11月5日前") == "账号：[银行账号已脱敏] 2025年11月5日前"
-    # 身份证号怎么分组都认（靠出生日期校验）；写了"手机"的手机号怎么分组都认，没写的每组至少 3 位
+    # 写了"身份证""手机"的怎么分组都认；没写的只认整串、常见分法（6-8-4、6-4-4-4、4-4-4-4-2、
+    # 3-4-4、连写），跨行写的也一样
     for raw, masked in {
         "身份证号：110101 1990 0307 1234": "身份证号：[身份证号已脱敏]",
+        "身份证：11010 11990 03071 234": "身份证：[身份证号已脱敏]",
         "1101 0119 9003 0712 34": "[身份证号已脱敏]",
         "手机：1381 234 5678": "手机：[手机号已脱敏]",
-        "手机：13 8123 45678": "手机：[手机号已脱敏]",  # 写了"手机"，每组几位都认
-        "13812 345678": "[手机号已脱敏]",
-        "+86 138 1234 5678": "+86 [手机号已脱敏]",
+        "手机：13 8123 45678": "手机：[手机号已脱敏]",
+        "138 1234 5678": "[手机号已脱敏]",
+        "+86 138 1234 5678": "+[手机号已脱敏]",
         "4111111111111111": "[银行账号已脱敏]",
-        # 跨行写的：兜底按附件副本那套更严的检查遮
-        "138\n1234\n5678": "[号码已脱敏]",
+        "4111 1111 1111 1111": "[银行账号已脱敏]",
+        "138\n1234\n5678": "[手机号已脱敏]",
     }.items():
         assert at.mask(raw) == masked, raw
     for keep in (
@@ -877,9 +882,17 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
         "补助标准（元） 1000 1500 2000 8000",
         "5000 6000 7000 8000",
         "13 800 000 000 元",
-        "13 8123 45678",  # 没写"手机"、有一组只有两位：不当手机号
+        "13 8123 45678",  # 没写"手机"、不是常见分法：不当手机号
+        "13812 345678",
         "2026110100000002",  # 过得了 Luhn，但 2 开头不像卡号（编号、年份多半这样）
         "4100 4100 4100 4500",  # 过得了 Luhn，但每组都是整百：金额
+        # 一串金额里任取几组拼起来像号码的，不遮（上一版有 4%–21% 的金额行被误遮）
+        "合计 1350 820 4500",
+        "经费 1600 300 5000 万元",
+        "预算 159 7000 7400",
+        "138 1234 5678 元",
+        "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15",
+        "1350\n820\n4500",
     ):
         assert at.mask(keep) == keep, keep
     builder = at._Builder()
@@ -926,6 +939,18 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     assert "1 | 某某科技有限公司 | 工行杭州分行 | [银行账号已脱敏] | 100" in texts_now
     assert "某某公司 | [银行账号已脱敏]" in texts_now and "另一公司 | [银行账号已脱敏]" in texts_now
     assert [x.kind for x in builder.segments[-3:]] == ["head", "row", "row"]
+    # 只认像标签的格：跨整行的表名、"基本账户"这类数据不把别的列当账号列；账号列里的日期不遮
+    builder = at._Builder()
+    builder.table(
+        [
+            at._Row([at._Cell(0, "各单位银行账户信息表", 4)], {}),
+            _row("单位", "账户类型", "项目编号", "有效期"),
+            _row("甲", "基本账户", "2025330106000123", "2018-05-20—2026-10-09"),
+        ]
+    )
+    builder.table([_row("单位", "银行账号", "备注"), _row("甲", "2018-05-20—2026-10-09", "无")])
+    assert builder.segments[2].text == "甲 | 基本账户 | 2025330106000123 | 2018-05-20—2026-10-09"
+    assert builder.segments[4].text == "甲 | 2018-05-20—2026-10-09 | 无"
     assert at.mask("账 号：3305 0161 6135 0000 0123") == "账 号：[银行账号已脱敏]"
     # 存成数字的长号码不写成科学计数法（写成科学计数法就遮不到了）
     epoch = datetime(1899, 12, 30)
