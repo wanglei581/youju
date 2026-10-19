@@ -44,7 +44,10 @@ Page({
     watchDay(this, () => {
       if (!this.visible) return;
       if (this.data.loading) { this.onShow(); return; }
-      if (this.data.gate === 'used' || this.data.gate === 'full') this.setData({ gate: 'restart', gateText: DAY_TURNED });
+      if (this.data.gate === 'used' || this.data.gate === 'full') { this.setData({ gate: 'restart', gateText: DAY_TURNED }); return; }
+      // 看着已有的任务、失败卡片上的"重试"因为次数用完或满了收起：过了 0 点重新问，按钮跟着回来。
+      // 这时会话已经有任务，重新显示只接着查这个任务，不会自己提交（第 29 轮）
+      if (this.data.aiEnabled && (this.data.newGate === 'used' || this.data.newGate === 'full')) this.onShow();
     });
     // 每次显示都重新问：在途的、缓存的能力答复都不用（可能是锁屏以前、0 点以前问的，第 21、22 轮）
     if (api.forgetCapabilities) api.forgetCapabilities();
@@ -141,6 +144,8 @@ Page({
   clearValidity(e) { this.validity({ currentTarget: e.currentTarget, detail: { value: '' } }); },
   submit() {
     if (!this.data.aiEnabled || this.data.phase !== 'form' || !this.visible) return;
+    // 这时提交新任务会被拦下（次数用完、满了、暂时不可用）：不提交，写明原因（第 29 轮）
+    if (this.data.newGate) { this.setData({ aiEnabled: false, gate: this.data.newGate, gateText: NEW_GATE_TEXT[this.data.newGate] }); return; }
     const today = todayISO(); const errors = clause.validateForm(this.data.form, today);
     this.setData({ errors, today });
     if (Object.keys(errors).length) return;
@@ -165,7 +170,8 @@ Page({
     // 重新填写以后会建新任务：这时提交会被拦下（用完了、满了、暂时不可用）就不回表单（第 28 轮）
     if (this.data.newGate) return;
     this.session.hide(); this.session = null;
-    this.setData({ phase: 'form', needsConsent: false, taskId: '', error: '', canRetry: false, result: null });
+    // 回到表单就是要建新任务了：不再算"打开已有结果"，离开再回来照现在的次数拦下（第 29 轮）
+    this.setData({ phase: 'form', needsConsent: false, taskId: '', error: '', canRetry: false, result: null, viewing: false });
   },
   // 看原文：只是打开通知详情，被拦下时也能看
   original() { if (this.data.docId) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.data.docId)}` }); },

@@ -38,7 +38,10 @@ Page({
     watchDay(this, () => {
       if (!this.visible) return;
       if (this.data.loading) { this.onShow(); return; }
-      if (this.data.gate === 'used' || this.data.gate === 'full') this.setData({ gate: 'restart', gateText: DAY_TURNED });
+      if (this.data.gate === 'used' || this.data.gate === 'full') { this.setData({ gate: 'restart', gateText: DAY_TURNED }); return; }
+      // 看着已有的任务、失败卡片上的"重试"因为次数用完或满了收起：过了 0 点重新问，按钮跟着回来。
+      // 这时会话已经有任务，重新显示只接着查这个任务，不会自己提交（第 29 轮）
+      if (this.data.aiEnabled && (this.data.newGate === 'used' || this.data.newGate === 'full')) this.onShow();
     });
     // 每次显示都重新问：在途的、缓存的能力答复都不用（可能是锁屏以前、0 点以前问的，第 21、22 轮）
     if (api.forgetCapabilities) api.forgetCapabilities();
