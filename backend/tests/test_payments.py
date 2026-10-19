@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+import ssl
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from pydantic import SecretStr
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
 
-from youju import advisor_tasks, payments
+from youju import advisor_tasks, payments, xpay
 from youju.api import advisor, me, pay, v1
 from youju.api import app as app_module
 from youju.cli import main
@@ -35,7 +36,7 @@ from youju.models import (
     User,
     WorkbenchPass,
 )
-from youju.xpay import XPayClient, XPayError, pay_signature, signature
+from youju.xpay import XPayClient, XPayError, pay_signature, signature, wx_http
 
 NOW = datetime(2026, 10, 4, 4, 0, tzinfo=UTC)
 # 测试人员在体验版里（D-074：沙箱、测试名单只在开发版、体验版），代码包里的付费协议版本号是 pay-test
@@ -643,6 +644,62 @@ def test_http_errors_do_not_expose_secrets(caplog):
             with pytest.raises(XPayError):
                 client.query("test-user", "test-trade", 1)
         assert "test-secret" not in caplog.text and "pay_sig=" not in caplog.text
+
+
+def test_wx_http_verifies_with_system_trust_store(monkeypatch):
+    # 云托管开放接口服务接管 api.weixin.qq.com 用的是系统证书库里的平台证书，httpx 默认那份
+    # 不认（10/19 实测 self-signed certificate）；改用系统证书库，但证书和域名照样校验
+    made = []
+    real = ssl.create_default_context
+
+    def record(*args, **kwargs):
+        made.append(real(*args, **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(xpay.ssl, "create_default_context", record)
+    with wx_http() as http:
+        assert http.trust_env is False
+    assert len(made) == 1
+    assert made[0].verify_mode == ssl.CERT_REQUIRED and made[0].check_hostname
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        ({"errcode": 40029, "errmsg": "invalid code"}, "errcode=40029"),
+        ({"openid": "someone-else", "session_key": "x"}, "openid 对不上"),
+        ({"openid": "test-user"}, "没有会话密钥"),
+        (["not", "a", "dict"], "返回格式不对"),
+    ],
+)
+def test_session_key_failure_reason_logged_without_secrets(caplog, body, reason):
+    # 失败原因要能在日志里看到（10/19 查了三轮终端才知道原因），但不能带密钥和登录凭证
+    config = Settings(_env_file=None, wx_appsecret="test-secret", wx_appid="test-app")
+    handler = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    with (
+        httpx.Client(transport=handler) as http,
+        caplog.at_level(logging.WARNING, logger="youju.xpay"),
+        pytest.raises(XPayError),
+    ):
+        XPayClient(config, http).session_key("test-code", "test-user")
+    assert f"换会话密钥失败：{reason}" in caplog.text
+    assert "test-secret" not in caplog.text and "test-code" not in caplog.text
+
+
+def test_session_key_transport_error_logs_only_the_type(caplog):
+    config = Settings(_env_file=None, wx_appsecret="test-secret", wx_appid="test-app")
+
+    def handler(request):
+        raise httpx.ConnectError(f"certificate verify failed for {request.url}")
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as http,
+        caplog.at_level(logging.WARNING, logger="youju.xpay"),
+        pytest.raises(XPayError),
+    ):
+        XPayClient(config, http).session_key("test-code", "test-user")
+    assert "换会话密钥失败：ConnectError" in caplog.text
+    assert "test-secret" not in caplog.text and "test-code" not in caplog.text
 
 
 @pytest.mark.parametrize("kind", ["xpay_refund_notify", "xpay_complaint_notify"])

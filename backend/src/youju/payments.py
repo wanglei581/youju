@@ -20,7 +20,6 @@ from io import StringIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-import httpx
 from sqlalchemy import case, delete, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
@@ -37,7 +36,7 @@ from youju.models import (
     User,
     WorkbenchPass,
 )
-from youju.xpay import XPayClient, XPayError
+from youju.xpay import XPayClient, XPayError, wx_http
 
 STATUS_LABELS = {
     "pending": "待支付",
@@ -1076,7 +1075,7 @@ def run_payments(
     open_shop = enabled(settings)
     stamp = advisor_tasks._utc(stamp or datetime.now(UTC))
     if client is None:
-        with httpx.Client(trust_env=False) as http:
+        with wx_http() as http:
             return run_payments(
                 session,
                 settings=settings,
