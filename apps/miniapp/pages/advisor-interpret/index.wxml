@@ -31,7 +31,9 @@
   <view wx:elif="{{phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
     <view>{{error}}</view>
     <view wx:if="{{phase === 'timeout' && progress}}" class="advisor-text muted">{{progress}}</view>
-    <button wx:if="{{canRetry}}" class="advisor-button" bindtap="retry">重试</button>
+    <!-- 会建新任务的重试：这时提交会被拦下就不给，写明原因；没连上的接着用原来的请求，照常给（第 28 轮） -->
+    <button wx:if="{{canRetry && (resumable || !newGate)}}" class="advisor-button" bindtap="retry">重试</button>
+    <view wx:if="{{canRetry && !resumable && newGate}}" class="advisor-text muted">{{newGateText}}</view>
     <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">打开我的记录</button>
     <button wx:if="{{!canRetry && phase === 'failed' && docId}}" class="advisor-button" bindtap="original">看原文</button>
   </view>

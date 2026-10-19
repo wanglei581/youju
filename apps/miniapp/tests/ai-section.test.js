@@ -2201,3 +2201,64 @@ test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0�
   p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
   assert.equal(p.data.gate, 'used'); p.onHide();
 });
+
+test('Codex 第 28 轮：建任务被明确拒绝不算"这一页有任务"，回来照最新的次数拦下；任务失败后次数变 0，不给会建新任务的"重试""重新填写"，写明原因；没连上的照常能接着试', async () => {
+  const make = (page, kind, { create, poll, left }) => {
+    const state = { left, created: 0 };
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const deps = {
+      '../../utils/api.js': {
+        advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: state.left, clause: state.left } })),
+        createAdvisorTask: () => { state.created += 1; return create(state); },
+        advisorTask: (id) => poll(id, state),
+      },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    return { p, state };
+  };
+  const start = async (p, kind) => { p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle(); if (kind === 'clause') { p.submit(); await settle(); } };
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    // 1. 建任务被明确拒绝（后台说暂时处理不了），离开再回来时次数已经是 0：照最新的拦下，不显示上次的失败
+    {
+      const { p, state } = make(page, kind, { left: 1, create: () => Promise.reject(Object.assign(new Error('AI 暂时不可用，请稍后再试'), { status: 429, code: 'AI_UNAVAILABLE' })), poll: () => Promise.reject(new Error('不该查')) });
+      await start(p, kind);
+      try {
+        assert.equal(p.data.phase, 'failed', `${page} 被拒`);
+        p.onHide(); state.left = 0; p.onShow(); await settle();
+        assert.equal(p.data.gate, 'used', `${page} 明确被拒不算有任务，照最新的拦下`);
+      } finally { p.onHide(); }
+    }
+    // 2. 任务本身失败，回来时次数是 0：看得到失败，但不给会建新任务的重试，写明原因
+    {
+      const { p, state } = make(page, kind, { left: 1, create: () => Promise.resolve({ id: 9, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' }), poll: (id) => Promise.resolve({ id, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' }) });
+      await start(p, kind);
+      try {
+        assert.equal(p.data.phase, 'failed', `${page} 失败了`); assert.equal(p.data.canRetry, true, `${page} 能重试 ${JSON.stringify({ error: p.data.error, errorCode: p.data.errorCode })}`);
+        p.onHide(); state.left = 0; p.onShow(); await settle();
+        assert.equal(p.data.phase, 'failed', `${page} 照样看得到这次的失败`); assert.equal(p.data.newGate, 'used');
+        const root = render(`pages/${page}/index.wxml`, p.data);
+        assert.equal(findAll(root, tapsTo('retry')).length, 0, `${page} 不给会建新任务的重试`);
+        assert.match(textOf(root), /5 次用完了，明天 0 点恢复。/);
+        p.retry(); await settle();
+        assert.equal(state.created, 1, `${page} 点了也不提交`); assert.equal(p.data.phase, 'failed');
+      } finally { p.onHide(); }
+    }
+    // 3. 没连上（服务端可能已经收下），回来时次数是 0：照常给"重试"，接着用原来的请求编号
+    {
+      let attempt = 0;
+      const finished = { id: 9, status: 'done', docId: 42, docTitle: '通知', result: kind === 'clause' ? { rows: [] } : { items: [] } };
+      const { p, state } = make(page, kind, { left: 1, create: () => { attempt += 1; return attempt === 1 ? Promise.reject(Object.assign(new Error('网络不太好'), { retryable: true })) : Promise.resolve({ ...finished }); }, poll: () => Promise.resolve({ ...finished }) });
+      await start(p, kind);
+      try {
+        assert.equal(p.data.phase, 'failed'); assert.equal(p.data.resumable, true);
+        p.onHide(); state.left = 0; p.onShow(); await settle();
+        assert.notEqual(p.data.gate, 'used', `${page} 没连上算有任务`);
+        assert.equal(findAll(render(`pages/${page}/index.wxml`, p.data), tapsTo('retry')).length, 1, `${page} 接着试的重试照常给`);
+        p.retry(); await settle();
+        assert.equal(p.data.phase, 'done', `${page} 接着试成功`);
+      } finally { p.onHide(); }
+    }
+  }
+});

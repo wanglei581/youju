@@ -246,8 +246,13 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     creation.then((task) => accept(task, version)).catch((err) => fail(err, version));
   }
   return {
-    // 这一页已经有任务了（已建好或正在建）：再回来时接着显示进度和结果，不再按"新任务"看次数拦下（第 27 轮）
-    hasTask() { return !!taskId || !!creation; },
+    // 这一页已经有任务了：再回来时接着显示进度和结果，不再按"新任务"看次数拦下（第 27 轮）。
+    // 已建好、建任务的请求还在途、或没连上（服务端可能已经收下，重试用同一个请求编号）都算；明确被拒不算（第 28 轮）
+    hasTask() {
+      if (taskId) return true;
+      if (!creation) return false;
+      return !creationError || transient(creationError);
+    },
     show() {
       visible = true; emit({ terms: TERMS, checked, needsConsent: !agreed });
       if (!agreed) { emit({ phase: 'consent' }); return; }

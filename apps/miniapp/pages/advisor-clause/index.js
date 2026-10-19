@@ -10,6 +10,12 @@ const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const DAY_TURNED = '已经过了 0 点，可以重新开始了。';
 const CAN_RESTART = '现在可以重新开始了。';
+// 提交新任务被拦下时的说法。次数用完只写明天恢复，不说"以前的结果照样能看"（有没有能看的结果说不准，第 26 轮）
+const NEW_GATE_TEXT = {
+  paused: 'AI 暂时不可用，请稍后再试。',
+  full: '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。',
+  used: '今天的条款对照 5 次用完了，明天 0 点恢复。',
+};
 
 Page({
   data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: 'form', progress: '', error: '', title: '', docId: '', taskId: '',
@@ -52,22 +58,18 @@ Page({
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('条款对照') });
       // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
       // 自己今天的次数用完了也先拦下，不发注定被拒的任务
-      const used = aiEnabled && remainingOf(ai, 'clause') === 0;
-      // 打开已有的结果、这一页已经提交过（比如第 5 次提交后离开再回来）都不拦，接着显示这次任务（第 27 轮）
+      // 这时提交新任务会不会被拦下、为什么：暂时不可用、全站满了、自己今天用完了
+      const newGate = !aiEnabled ? '' : ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : remainingOf(ai, 'clause') === 0 ? 'used' : '';
+      // 打开已有的结果、这一页已经提交过（比如第 5 次提交后离开再回来）都不拦，接着显示这次任务（第 27 轮）；
+      // 但记下拦下的原因：失败以后要"重试""重新填写"（会建新任务）时照它拦（第 28 轮）
       const ownTask = !!(this.session && this.session.hasTask && this.session.hasTask());
-      const blocked = aiEnabled && !this.data.viewing && !ownTask && (ai.available === false || ai.siteFull === true || used);
-      if (blocked) {
-        const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';
+      this.setData({ newGate, newGateText: NEW_GATE_TEXT[newGate] || '' });
+      if (newGate && !this.data.viewing && !ownTask) {
+        const gate = newGate;
         // 这一页被"今天次数用完""全站满了"拦下过：以后不管什么时候、因为什么又能用了（过了 0 点、额度调高、
         // 晚到的回话），都先写"可以重新开始了"，点了才开始，不自己提交、用掉次数（第 19–21 轮）。暂时不可用和次数无关，不记
         if (gate !== 'paused') this.wasBlocked = true;
-        this.setData({ loading: false, aiEnabled: false, gate,
-          gateText: {
-            paused: 'AI 暂时不可用，请稍后再试。',
-            full: '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。',
-            // 只写明天恢复，不说"以前的结果照样能看"（有没有能看的结果说不准）；"看我的记录"按钮照旧（第 26 轮）
-            used: '今天的条款对照 5 次用完了，明天 0 点恢复。',
-          }[gate] });
+        this.setData({ loading: false, aiEnabled: false, gate, gateText: NEW_GATE_TEXT[gate] });
         return;
       }
       if (aiEnabled && this.wasBlocked) { this.setData({ loading: false, aiEnabled: false, gate: 'restart', gateText: CAN_RESTART }); return; }
@@ -160,6 +162,8 @@ Page({
     if (!this.data.aiEnabled || !this.data.canRetry) return;
     // 上次是没连上：接着用原来的任务或请求编号，不用重新填写，也不会重复扣次数
     if (this.session && this.session.resumable()) { this.session.retry(); return; }
+    // 重新填写以后会建新任务：这时提交会被拦下（用完了、满了、暂时不可用）就不回表单（第 28 轮）
+    if (this.data.newGate) return;
     this.session.hide(); this.session = null;
     this.setData({ phase: 'form', needsConsent: false, taskId: '', error: '', canRetry: false, result: null });
   },
