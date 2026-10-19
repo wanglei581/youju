@@ -61,13 +61,17 @@ Page({
     return { ...quotaView(status, this.data.kind), passNotice: pay.expiryNotice(status.pass) };
   },
   // 在售时取一次价格；取不到就当没在售，不影响免费使用
+  // offerSerial：价格请求自己的编号。服务端说现在买不了（canBuy=false）时作废还没回来的价格请求，
+  // 不让它晚到以后又把价格写回去（Codex 审阅）
   loadOffer(entry, serial) {
+    const offerSerial = this.offerSerial = (this.offerSerial || 0) + 1;
     if (!(entry && entry.enabled)) { this.setData({ offer: null }); return; }
+    const current = () => !this.dead && serial === this.serial && offerSerial === this.offerSerial;
     api.payProducts().then((res) => {
-      if (this.dead || serial !== this.serial) return;
+      if (!current()) return;
       const products = pay.normalizeProducts(res);
       this.setData({ offer: products.length ? { line: pay.tiersLine(products), renew: pay.renewRule(res) } : null });
-    }).catch(() => { if (!this.dead && serial === this.serial) this.setData({ offer: null }); });
+    }).catch(() => { if (current()) this.setData({ offer: null }); });
   },
   buyPass() { wx.navigateTo({ url: '/pages/pass/index' }); },
   // 加量体验的确认页：规则写全，用户点"开始体验"才起算；回到本页时 onShow 重新读额度
@@ -223,7 +227,10 @@ Page({
       const free = ['FREE_MONTHLY_LIMIT', 'FREE_ROW_LIMIT'].includes(err.code) ? { passActive: false, trialActive: false } : {};
       if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, free, { remaining: 0 });
       // 服务端说现在买不了（停卖、或这个包不在售，D-074）：丢掉之前缓存的价格，提示里不再提购买（Codex 审阅）
-      if (err.code === 'FREE_MONTHLY_LIMIT' && err.detail && err.detail.canBuy === false) change.offer = null;
+      if (err.code === 'FREE_MONTHLY_LIMIT' && err.detail && err.detail.canBuy === false) {
+        this.offerSerial = (this.offerSerial || 0) + 1;
+        change.offer = null;
+      }
       if (err.code === 'TRIAL_DAILY_LIMIT') Object.assign(change, { trialLeft: 0 });
       if (['FREE_ROW_LIMIT', 'PASS_ROW_LIMIT', 'TRIAL_ROW_LIMIT'].includes(err.code)) {
         const limit = err.detail && err.detail.maxRows;

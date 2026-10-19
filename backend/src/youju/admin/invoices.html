@@ -130,7 +130,9 @@
         try {
           const res = await fetch(`/api/admin/invoices/${item.id}/reversed`, { method: 'POST', headers: headers() });
           if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
-          done.remove(); msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
+          // 在"要冲红"列表里标完就拿掉这张；在"全部"里改成已冲红
+          if ($('status').value === 'reverse') { card.remove(); return; }
+          done.remove(); meta.append(el('span', 'tag', '已冲红')); msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
         } catch (err) { msg.className = 'msg'; msg.textContent = err.message; done.disabled = false; }
       };
       row.append(done);
