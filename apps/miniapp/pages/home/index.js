@@ -44,6 +44,8 @@ function soonRows(list) {
     if (!view || view.source !== 'verified' || view.days < 0) return null;
     return {
       id: String(d.id), title: d.title, kindText: d.label || '申报截止', days: view.days, tone: view.tone || 'normal',
+      // 能不能解读（D-075，接口每行带）：行上的解读按钮据此显示
+      ai: d.ai || null,
       dateText: monthDay(d.date), week: `${weekday(d.date)}${d.time ? ` ${d.time}` : ''}`,
     };
   }).filter(Boolean).slice(0, 5);

@@ -3,13 +3,19 @@
 <view wx:elif="{{!aiEnabled}}" class="card advisor-card muted">
   <view>{{gateText}}</view>
   <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
-  <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+  <!-- 可以重新开始了（gate 为 restart）：只有这一个按钮，点了才开始（第 18–22 轮） -->
+  <button wx:if="{{gate === 'restart'}}" class="advisor-button btn-primary" bindtap="reload">重新开始</button>
+  <button wx:elif="{{gate === 'offline' || gate === 'paused'}}" class="advisor-button" bindtap="reload">重试</button>
+  <button wx:if="{{docId && (gate === 'full' || gate === 'used' || gate === 'paused')}}" class="advisor-button" bindtap="original">看原文</button>
+  <button wx:if="{{gate === 'used'}}" class="advisor-button" bindtap="records">看我的记录</button>
+  <view wx:if="{{gate === 'paused' || gate === 'offline'}}" class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{gate}}" /></view>
 </view>
 <block wx:elif="{{aiEnabled}}">
-  <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17） -->
-  <view wx:if="{{!(phase === 'done' && result.notice)}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
+  <!-- 免责只说一次：出结果后由吸顶的"AI 生成"提示代替这条（10/17）。吸顶条出了结果就一直有，开头的"AI 生成："由页面固定写，
+       不靠后端提示；后端没给提示时用页面自己的说明（Codex 小程序第 7、8 轮） -->
+  <view wx:if="{{phase !== 'done'}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{phase === 'form'}}" class="card advisor-card">
-    <view class="advisor-title">条款对照：和我的企业对一下</view>
+    <view class="advisor-title">条款对照</view>
     <view class="advisor-text">把这份通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。只填想对照的项就行。</view>
     <view class="advisor-text muted">你填的情况只用于并排显示，不发给 AI 模型，7 天后自动清除。</view>
     <view class="clause-label">成立日期</view>
@@ -76,11 +82,13 @@
   <view wx:elif="{{phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
     <view>{{error}}</view>
     <view wx:if="{{phase === 'timeout' && progress}}" class="advisor-text muted">{{progress}}</view>
-    <button wx:if="{{canRetry}}" class="advisor-button" bindtap="retry">{{resumable ? '重试' : '重新填写'}}</button>
+    <!-- 会建新任务的重试：这时提交会被拦下就不给，写明原因；没连上的接着用原来的请求，照常给（第 28 轮） -->
+    <button wx:if="{{canRetry && (resumable || !newGate)}}" class="advisor-button" bindtap="retry">{{resumable ? '重试' : '重新填写'}}</button>
+    <view wx:if="{{canRetry && !resumable && newGate}}" class="advisor-text muted">{{newGateText}}</view>
     <button wx:if="{{phase === 'timeout'}}" class="advisor-button" bindtap="tasks">打开我的记录</button>
   </view>
   <block wx:elif="{{phase === 'done'}}">
-    <view wx:if="{{result.notice}}" class="interpret-notice">{{result.notice}}</view>
+    <view class="interpret-notice"><text class="ai-internal-tag">{{aiLabel}}</text>{{result.noticeText || aiNotice}}</view>
     <view class="card advisor-card">
       <view class="advisor-title">{{title || '通知'}}</view>
       <view wx:if="{{!docId}}" class="interpret-meta">这条记录没有关联到通知原文，请从通知详情页重新打开。</view>
@@ -116,5 +124,10 @@
     <view wx:if="{{result.warning}}" class="card advisor-card">{{result.warning}}</view>
     <view wx:if="{{result.disclosure}}" class="advisor-footer">{{result.disclosure}}</view>
   </block>
+  <!-- 联系客服（D-075 第七节）：结果页底部和出错时 -->
+  <view wx:if="{{phase === 'done' || phase === 'failed' || phase === 'timeout'}}" class="card advisor-card">
+    <view class="advisor-title">用的时候遇到问题？</view>
+    <view class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{errorCode}}" /></view>
+  </view>
   <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
 </block>

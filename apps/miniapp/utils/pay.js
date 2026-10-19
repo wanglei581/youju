@@ -11,7 +11,7 @@ const TEXT = {
   orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',
   termsRequired: '请先阅读并同意《付费服务协议》',
   refund: '已申请退款，按原支付方式退回，到账时间以微信支付为准',
-  invoiceSent: '已提交开票申请：每月统一开具一次电子发票，发到你填的邮箱',
+  invoiceSent: '已提交开票申请：当月开出电子发票，发到你填的邮箱',
 };
 function yuan(fen, fixed = false) { return fixed ? (fen / 100).toFixed(2) : String(Number((fen / 100).toFixed(2))); }
 function date(value, short = false) {

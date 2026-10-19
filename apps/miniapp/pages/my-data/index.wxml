@@ -64,7 +64,9 @@
         <view class="item-sub">{{item.title}}</view>
         <view class="item-main">{{item.content}}</view>
         <view class="item-sub">提交于 {{item.created}} · 内容安全：{{item.check}}</view>
-        <view class="item-sub">处理状态：{{item.handling}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:if="{{item.outcome}}" class="item-sub">处理结果：{{item.outcome}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:else class="item-sub">处理状态：{{item.handling}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:if="{{item.reply}}" class="item-sub">处理说明：{{item.reply}}</view>
         <view class="item-ops">
           <text class="op" data-kind="feedback" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
           <text class="op op--danger" data-kind="feedback" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>

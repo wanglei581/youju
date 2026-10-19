@@ -1,1 +1,1 @@
-{ "navigationBarTitleText": "文件详情", "usingComponents": { "ai-entry": "/components/ai-entry/index" } }
+{ "navigationBarTitleText": "文件详情", "usingComponents": { "ai-entry": "/components/ai-entry/index", "ai-hint": "/components/ai-hint/index" } }

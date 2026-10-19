@@ -3,6 +3,13 @@
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
 # 顾问持久队列（YOUJU_ADVISOR_ENABLED=false 时命令直接跳过）
 * * * * *  /app/backend/deploy/job.sh advisor-run
+# AI 设置心跳（D-075）：api 只在 admin 能处理、两边设置一致时才收 AI 任务。单独一条，一批任务处理得久也不断
+* * * * *  /app/backend/deploy/job.sh ai-heartbeat
+# 每份文件能不能做 AI 解读（D-075，列表行的"AI 解读"按钮用）：每 10 分钟重算最近 30 分钟有变化的、
+# 还没算过的，外加最早算的 1000 份轮转；每天夜里全部重算一次兜底（来源级别等没有时间戳的变化靠它），
+# 放在 02:25 和增量错开。和 AI 开没开无关，开关关着也照算
+*/10 * * * *  /app/backend/deploy/job.sh ai-eligibility
+25 2 * * *  /app/backend/deploy/job.sh ai-eligibility-rebuild
 # 每天 2 轮（D-039）：抓取 → 核对栏目 → 补详情 → 抽截止 → 抽字段 → 解析名单（按顺序，见 round.sh）。
 # 早上 6:30 抓前一天白天到夜里新发布的，做完发微信提醒（每天一次）；晚上 20:30 抓当天发布的。
 # 每个栏目每天只访问 2 次列表页，每站间隔 3 秒

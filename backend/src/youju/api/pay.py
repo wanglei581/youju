@@ -8,7 +8,6 @@ from typing import Annotated, Literal
 from uuid import uuid4
 from xml.etree import ElementTree
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,7 +20,7 @@ from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
 from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
-from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature
+from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature, wx_http
 
 
 def require_enabled(request: Request) -> None:
@@ -30,7 +29,7 @@ def require_enabled(request: Request) -> None:
         openid = request_openid(request)
     except HTTPException:
         openid = None
-    if not payments.selling_to(get_settings(), openid):
+    if not payments.selling_to(get_settings(), openid, payments.client_of(request.headers)):
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -55,7 +54,7 @@ PAY_EVENTS = {
 
 
 def wx_client():
-    with httpx.Client(trust_env=False) as http:
+    with wx_http() as http:
         yield XPayClient(get_settings(), http)
 
 

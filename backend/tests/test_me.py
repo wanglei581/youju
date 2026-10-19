@@ -577,6 +577,9 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
             "checkResult": "pass",
             "handled": False,
             "handledAt": None,
+            "outcome": None,
+            "outcomeLabel": None,
+            "reply": None,
             "createdAt": NOW.isoformat(),
         }
     ]

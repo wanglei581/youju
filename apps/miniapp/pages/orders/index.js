@@ -5,6 +5,11 @@ const { loginOpen } = require('../../utils/consent.js');
 // 每次打开都给一份新的空表单：表单按 form.title 这样的路径改字段，共用一个对象会把上一张订单
 // 没提交的内容带到下一张（agy 审阅，10/16）
 function emptyForm() { return { titleType: 'personal', title: '', taxId: '', email: '' }; }
+// 没有订单、也没在卖时直接回首页，不显示"暂未开放"之类的字样（D-074）：首发包带着这一页，
+// 从旧链接直接打开时只会回到首页。有订单的人（停卖以后）照常看订单、退款、开票
+function goHome() {
+  wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
+}
 
 Page({
   data: { loginOpen: loginOpen(), loading: true, error: '', items: [], refunding: null, message: '',
@@ -17,8 +22,25 @@ Page({
     const serial = this.serial = (this.serial || 0) + 1;
     this.setData({ loading: true, error: '' });
     api.payOrders().then((res) => {
-      if (serial === this.serial) this.setData({ loading: false, items: res.items.map(pay.orderView) });
-    }).catch((err) => { if (serial === this.serial) this.setData({ loading: false, error: err.status === 404 ? '付费服务暂未开放' : err.message }); });
+      if (serial !== this.serial) return null;
+      const items = res.items.map(pay.orderView);
+      if (items.length) { this.setData({ loading: false, items }); return null; }
+      // 没有订单：直接问商品接口（不走能力接口的缓存，Codex 审阅）——有在售的档位写"还没有订单"；
+      // 404 或没有档位才回首页；出错（没连上、服务端出错）留在本页给重试，不当成停卖
+      return api.payProducts().then((res) => {
+        if (serial !== this.serial) return;
+        if (pay.normalizeProducts(res).length) this.setData({ loading: false, items: [] });
+        else goHome();
+      }, (err) => {
+        if (serial !== this.serial) return;
+        if (err && err.status === 404) goHome();
+        else this.setData({ loading: false, error: (err && err.message) || '网络连接失败，请检查网络后重试' });
+      });
+    }).catch((err) => {
+      if (serial !== this.serial) return;
+      if (err.status === 404) { goHome(); return; }
+      this.setData({ loading: false, error: err.message });
+    });
   },
   refund(e) {
     if (this.data.refunding !== null) return;
