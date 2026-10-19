@@ -191,7 +191,11 @@ class Client:
 
 
 def client_of(headers: Mapping[str, str]) -> Client:
-    """从请求头读出小程序包；认不出的环境一律按正式版算（宁可看不到，不能多放）。"""
+    """从请求头读出小程序包；认不出的环境一律按正式版算（宁可看不到，不能多放）。
+
+    这两个头由小程序自己填，只用来决定"谁看得到购买入口"（审核和合规上的展示），不是安全边界：
+    改了头也绕不过钱相关的检查——沙箱只给测试名单（openid 由微信云托管注入，伪造不了），
+    下单时还核对请求体里用户同意的协议版本（老版本带的是草稿号，409），老版本的付款按钮本来就不可用。"""
     env = (headers.get(CLIENT_ENV_HEADER) or "").strip().lower()
     terms = (headers.get(PAY_TERMS_HEADER) or "").strip()[:40]
     return Client(terms=terms, env=env if env in TEST_BUILDS else "release")

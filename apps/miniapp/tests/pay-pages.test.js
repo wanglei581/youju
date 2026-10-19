@@ -658,6 +658,26 @@ test('工具表单在售时给出两档价格卡片并可进入购买页，商�
   assert.equal(failed.page.data.previewed, true);
 });
 
+test('提交时服务端说免费次数用完、现在买不了（canBuy=false）：丢掉页面缓存的价格，提示里不再提批量工具，防止刚停卖还引导购买（Codex 审阅，D-074）', async () => {
+  const limit = Object.assign(new Error('本月免费次数已用完，下月 1 日恢复'), {
+    status: 429, code: 'FREE_MONTHLY_LIMIT', detail: { code: 'FREE_MONTHLY_LIMIT', canBuy: false, message: '本月免费次数已用完，下月 1 日恢复' },
+  });
+  const h = toolForm({ api: {
+    advisorCapabilities: () => Promise.resolve(caps({ enabled: true })),
+    advisorStatus: () => Promise.resolve(quota(2)),
+    payProducts: () => Promise.resolve({ items: [{ productId: 'workbench_30d', price: 2900, days: 30 }] }),
+    createAdvisorTask: () => Promise.reject(limit),
+  } });
+  await flush();
+  assert.ok(h.page.data.offer, '在售时页面先缓存了价格');
+  h.page.input({ detail: { value: '合成企业甲' } });
+  h.page.preview(); await flush();
+  h.page.submit(); await flush(); await flush();
+  assert.equal(h.page.data.offer, null);
+  assert.match(h.page.data.inputError, /本月免费次数已用完/);
+  assert.doesNotMatch(h.page.data.inputError, /批量工具/);
+});
+
 test('我的页只在支付开放或已有订单时显示我的订单并进入订单页，防止没有订单时放一个空入口', async () => {
   const urls = []; const pay = { enabled: false, hasOrders: false }; let meCalls = 0;
   const page = load('pages/me/index.js', {
