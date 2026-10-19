@@ -139,27 +139,44 @@ _LABELS = {
     ),
     "id": re.compile(r"(?:身\s*份\s*证(?:\s*号\s*码?)?|证\s*件\s*号\s*码?)[\s:：]*$"),
 }
-# 表格里当"账号"标签的格：整格就是"账号""银行账号""卡号""账户""银行账户"这类词（可带冒号），
-# "基本账户"这类数据、"各单位银行账户信息表"这类表名不算
+# 表格里当"账号"标签的格：整格是"……账号""……卡号""……账户号""……账户"（前面最多 8 个字，如
+# "开户银行及账号""收款单位开户账号""银行账户"），后面可以带"/卡号"、括号说明（"（基本户）"
+# "（必填）"）、星号、冒号。"账户名称""账户类型""各单位银行账户信息表"这类后面还有别的字的不算，
+# "基本账户""零余额账户"这类账户类型的值也不算
+_ACCOUNT_CORE = r"(?:账\s*号|帐\s*号|卡\s*号|账\s*户\s*号|帐\s*户\s*号|账\s*户|帐\s*户)"
 _ACCOUNT_CELL = re.compile(
-    r"^(?:[一-鿿]{0,4}(?:账\s*号|帐\s*号|卡\s*号|账\s*户\s*号|帐\s*户\s*号)"
-    r"|(?:银\s*行\s*)?(?:账\s*户|帐\s*户))[\s:：]*$"
+    r"^[*＊]?\s*[\u4e00-\u9fff]{0,8}"
+    + _ACCOUNT_CORE
+    + r"(?:\s*[/／、]\s*"
+    + _ACCOUNT_CORE
+    + r")?(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
-# 没写标签的号码只认整串、常见的分法（任取几组拼起来像号码的不算："合计 1350 820 4500"是金额）
+_ACCOUNT_TYPE = re.compile(r"(?:基本|一般|专用|临时|零余额)\s*[账帐]\s*户[\s*＊:：]*$")
+# 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
+# 卡号，或者序号（1–3 位）、日期（"2025 10 10""20251010"）、座机号码（"0571 87654321"），才遮
+# 号码那几段（"1 138 1234 5678"、身份证号和手机号两列挨着）；分不完的整串不遮，免得把金额、编号
+# 拼成号码（"合计 1350 820 4500"）
 _PLAIN_ID = {(18,), (6, 8, 4), (6, 4, 4, 4), (4, 4, 4, 4, 2), (15,), (6, 6, 3)}
 _PLAIN_MOBILE = {(11,), (3, 4, 4), (13,), (2, 11), (2, 3, 4, 4)}
+_PARTS = 5  # 一段最多几组（4-4-4-4-2 的身份证号、带尾巴的卡号）
 _MOBILE = re.compile(r"(?:86)?1[3-9]\d{9}")
 _DATE = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
-# 金额：前面紧挨着这些词、或后面跟着"元、万、亿"的一整串数字，没写标签时不当号码
+# 金额：前面紧挨着这些词（中间只能有"（万元）"这样的括号、"为""约"、冒号、空格）、或后面跟着
+# "元、万、亿"的一整串数字，没写标签时只遮身份证号（"补助对象：张三 138 1234 5678"不算金额）
 _AMOUNT_BEFORE = re.compile(
-    r"(?:元|金额|合计|预算|经费|资金|标准|补助|奖励|数量|共计|小计|总计|投资|收入)[^\d\n]{0,6}$"
+    r"(?:金额|合计|预算|经费|资金|标准|补助|奖励|数量|共计|小计|总计|投资|收入)"
+    r"\s*(?:[(（][^()（）\d]{0,6}[)）])?\s*(?:为|是|约|达|共)?[\s:：]*$"
 )
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址，先遮掉：正文规则（redact_sensitive）的写法会把
 # 邮箱前面连着的中文一起遮掉（\w 也算汉字，"于7月2日前发送至abc@163.com"整段变成"[邮箱已脱敏]"，
 # 截止日期就没了）。先遮掉以后正文规则找不到 @，不会再吞字
 _EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # "联 系 人：张三"：PDF、表格里常把标签字隔开写，正文规则（"联系人："）认不出
-_SPACED_CONTACT = re.compile(r"(联\s*系\s*人\s*[:：]\s*)[一-鿿·]{2,8}")
+_SPACED_CONTACT = re.compile(r"(联\s*系\s*人\s*[:：]\s*)[\u4e00-\u9fff·]{2,8}")
+
+
+def _account_cell(text: str) -> bool:
+    return bool(_ACCOUNT_CELL.match(text)) and not _ACCOUNT_TYPE.search(text)
 
 
 def _is_card(values: list[str]) -> bool:
@@ -176,19 +193,34 @@ def _is_card(values: list[str]) -> bool:
     return not all(v.endswith("00") for v in values[:4])
 
 
-def _plain_label(values: list[str]) -> str | None:
-    """前面没写标签的一整串数字（两边都不是数字）：是常见分法的身份证号、手机号、卡号才遮。"""
+def _plain_label(values: list[str], amount: bool) -> str | None:
+    """没写标签的一段：是常见分法的身份证号、手机号、卡号才遮；金额前后文里只认身份证号。"""
     digits = "".join(values).upper()
     sizes = tuple(len(v) for v in values)
     if sizes in _PLAIN_ID and body_rules._ID_CARD.fullmatch(digits):
         return "[身份证号已脱敏]"
-    if "X" in digits:
+    if "X" in digits or amount:
         return None
     if sizes in _PLAIN_MOBILE and _MOBILE.fullmatch(digits):
         return "[手机号已脱敏]"
     if _is_card(values):
         return "[银行账号已脱敏]"
     return None
+
+
+def _filler(values: list[str]) -> bool:
+    """可以夹在号码前后、不用遮的一段：序号（1–3 位）、日期（"2025 10 10""20251010"）、
+    座机号码（"0571 87654321"）。"""
+    if not all(v.isdigit() for v in values):
+        return False
+    sizes = tuple(len(v) for v in values)
+    if sizes in ((1,), (2,), (3,)):
+        return True
+    if len(values) == 3 and sizes[0] == 4 and sizes[1] <= 2 and sizes[2] <= 2:
+        return bool(_DATE.fullmatch(f"{values[0]}{int(values[1]):02d}{int(values[2]):02d}"))
+    if sizes == (8,):
+        return bool(_DATE.fullmatch(values[0]))
+    return len(values) == 2 and values[0][0] == "0" and sizes[0] in (3, 4) and sizes[1] in (7, 8)
 
 
 def _labeled_label(values: list[str], label: str) -> str | None:
@@ -205,6 +237,54 @@ def _labeled_label(values: list[str], label: str) -> str | None:
     return "[银行账号已脱敏]" if 10 <= len(digits) <= 30 else None
 
 
+def _labeled(
+    plain: str, groups: list[tuple[int, int]], values: list[str], label: str
+) -> list[tuple[int, str]]:
+    """写了标签的：从第一组起到第几组能认成号码（_labeled_label），[(组数, 遮成什么)]，从短到长。
+    后面紧跟"年、月、元"等的一组不算进去（"账号：1234567890 2025年11月5日前"）。"""
+    out = []
+    for j, (_start, end) in enumerate(groups):
+        if sum(len(v) for v in values[: j + 1]) > 30:
+            break
+        after = plain[end : end + 3].lstrip(" ")[:1]
+        if j > 0 and after and after in _UNITS:
+            break
+        found = _labeled_label(values[: j + 1], label)
+        if found:
+            out.append((j + 1, found))
+    return out
+
+
+def _split(
+    values: list[str], labeled: list[tuple[int, str]], amount: bool
+) -> list[tuple[int, int, str]]:
+    """把一整串分成几段：写了标签的开头一段（labeled）、号码（_plain_label）、序号日期座机
+    （_filler）。能整个分完的，取遮住的数字最多、段数最少的分法；分不完的，只遮写了标签的开头
+    最长的一段。返回 [(第几组起, 到第几组前, 遮成什么)]。"""
+    n = len(values)
+    # best[i]：从第 i 组到最后的最好分法 (遮住几个数字, -段数, 要遮的段)
+    best: list[tuple[int, int, list] | None] = [None] * (n + 1)
+    best[n] = (0, 0, [])
+    for i in range(n - 1, -1, -1):
+        options = list(labeled) if i == 0 else []
+        for j in range(i + 1, min(n, i + _PARTS) + 1):
+            found = _plain_label(values[i:j], amount)
+            if found or _filler(values[i:j]):
+                options.append((j, found))
+        for j, found in options:
+            if best[j] is None:
+                continue
+            masked, count, parts = best[j]
+            if found:
+                masked += sum(len(v) for v in values[i:j])
+                parts = [(i, j, found), *parts]
+            if best[i] is None or (masked, count - 1) > best[i][:2]:
+                best[i] = (masked, count - 1, parts)
+    if best[0] is not None:
+        return best[0][2]
+    return [(0, *labeled[-1])] if labeled else []
+
+
 def _date_chunks(values: list[str]) -> list[str]:
     """把"2018 05 20 2026 10 09"这样的组按年、月、日三组一段拼起来；拼不成的给一个对不上的值。"""
     if len(values) % 3:
@@ -213,12 +293,13 @@ def _date_chunks(values: list[str]) -> list[str]:
 
 
 def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
-    """plain 里要遮的号码：[(开始, 结束, 遮成什么)]。
+    """plain 里要遮的号码：[(开始, 结束, 遮成什么)]。一串一串地看（组和组之间只隔一个空格、横线或
+    换行）：
     - 前面紧挨着写了"账号""手机""身份证"这类标签（或 account=True：表格里左边那格、这一列上面
-      写着"账号"）：从第一组起，取能认成号码的最长一段，后面紧跟"年、月、元"等的一组不算进去；
-      剩下的组再按没写标签的认；
-    - 没写标签的：整串是常见分法的身份证号、手机号、卡号才遮（_plain_label）；前面紧挨着
-      "合计、预算、金额"之类、后面跟着"元、万、亿"的是金额，不遮。"""
+      写着"账号"）：从第一组起的几组怎么分组都认（_labeled），剩下的组按没写标签的分；
+    - 没写标签的：整串能分成号码和序号、日期、座机（_split）才遮号码那几段；前面紧挨着"合计、
+      预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号；
+    - 整串是日期（"2018-05-20—2026-10-09"）的，哪一段都不当号码。"""
     spans = []
     for run in _RUN.finditer(plain):
         groups = [
@@ -226,31 +307,17 @@ def _number_spans(plain: str, account: bool) -> list[tuple[int, int, str]]:
         ]
         values = [plain[a:b] for a, b in groups]
         if all(_DATE.fullmatch(v) for v in _date_chunks(values)):
-            continue  # 整串是日期（"2018-05-20—2026-10-09"），哪一段都不当号码
+            continue
         before = plain[max(0, run.start() - 16) : run.start()]
         label = "account" if account else None
         label = label or next((k for k, p in _LABELS.items() if p.search(before)), None)
-        rest = 0
-        if label:
-            best = None
-            for j in range(len(groups)):
-                if sum(len(v) for v in values[: j + 1]) > 30:
-                    break
-                after = plain[groups[j][1] : groups[j][1] + 1]
-                if j > 0 and after and after in _UNITS:
-                    break
-                found = _labeled_label(values[: j + 1], label)
-                if found:
-                    best = (j, found)
-            if best:
-                spans.append((groups[0][0], groups[best[0]][1], best[1]))
-                rest = best[0] + 1
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
-        amount = _AMOUNT_BEFORE.search(before) or unit in ("元", "万", "亿")
-        if rest < len(groups) and not (rest == 0 and amount):
-            found = _plain_label(values[rest:])
-            if found:
-                spans.append((groups[rest][0], groups[-1][1], found))
+        amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
+        labeled = _labeled(plain, groups, values, label) if label else []
+        spans += [
+            (groups[i][0], groups[j - 1][1], found)
+            for i, j, found in _split(values, labeled, amount)
+        ]
     return spans
 
 
@@ -450,17 +517,24 @@ class _Builder:
             self._add("p", part, loc, None)
 
     def table(
-        self, rows: list[_Row], *, headers: dict[int, str] | None = None, repeated: bool = False
-    ) -> tuple[dict[int, str], str]:
+        self,
+        rows: list[_Row],
+        *,
+        headers: dict[int, str] | None = None,
+        repeated: bool = False,
+        accounts: frozenset[int] = frozenset(),
+    ) -> tuple[dict[int, str], str, frozenset[int]]:
         """一张表：先认表头行（_header_rows），表头行记成 head，表头下面各行的每一格记下所在列的
-        表头（表头上面的表名、填写行不记）。headers 给了（PDF 跨页的续表），就不再认表头，按它记；
-        repeated：续表第一行是每页重复的表头，记成 head。返回 (表头, 表头行的文字)，续表接着用。
+        表头（表头上面的表名、填写行不记）。PDF 跨页的续表：headers 给了就不再认表头，按它记；
+        repeated：续表第一行是每页重复的表头，记成 head；accounts：上一页认出的账号列。
+        返回 (表头, 表头行的文字, 账号列)，续表接着用。
 
-        账号列不靠认出表头：哪一行有一格就是"账号""银行账号""卡号""账户"这类标签（跨三列以上的
-        表名不算），这一列以下各行的长数字都当账号遮；同一行左边那格是这类标签的也一样。"""
+        账号列不靠认出表头：哪一行有一格是"账号""开户银行及账号""银行账户"这类标签
+        （_account_cell；跨三列以上的表名不算），这一列以下各行的长数字都当账号遮；同一行左边那格
+        是这类标签的也一样。"""
         rows = [r for r in rows if any(clean(c.text) for c in r.cells)]
         if not rows:
-            return headers or {}, ""
+            return headers or {}, "", accounts
         if headers is not None:
             head = {0} if repeated else set()
             first = len(head)  # 续表：表头行（重复的那一行）以下都记表头
@@ -475,10 +549,10 @@ class _Builder:
                     for col in range(cell.col, cell.col + max(cell.span, 1)):
                         headers[col] = f"{headers[col]}/{text}" if col in headers else text
             first = max(head) + 1 if head else len(rows)
-        account_from: dict[int, int] = {}
+        account_from = dict.fromkeys(accounts, -1)  # 这一列从第几行以下是账号
         for index, row in enumerate(rows):
             for cell in row.cells:
-                if cell.span < 3 and _ACCOUNT_CELL.match(clean(cell.text)):
+                if cell.span < 3 and _account_cell(clean(cell.text)):
                     for col in range(cell.col, cell.col + max(cell.span, 1)):
                         account_from.setdefault(col, index)
         head_text = ""
@@ -489,9 +563,7 @@ class _Builder:
                 if not text:
                     continue
                 header = headers.get(cell.col) if i >= first else None
-                account = i > account_from.get(cell.col, len(rows)) or bool(
-                    _ACCOUNT_CELL.match(left)
-                )
+                account = i > account_from.get(cell.col, len(rows)) or _account_cell(left)
                 masked = mask(text, account=account)
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
@@ -505,7 +577,7 @@ class _Builder:
             if i in head:
                 head_text = row_text
             self._add("head" if i in head else "row", row_text, row.loc, cells)
-        return headers, head_text
+        return headers, head_text, frozenset(account_from)
 
 
 _NUMBER = re.compile(r"[\d.,%\s\-]+")
@@ -1184,7 +1256,7 @@ def _pdf(data: bytes) -> list:
     texts = [value for kind, value, _ in items if kind == "line"]
     width = line_width("\n".join(texts))
     tables = 0
-    last: dict | None = None  # 上一张表：列数、表号、行数、表头、在第几页
+    last: dict | None = None  # 上一张表：竖线位置、表号、行数、表头、账号列
     current, current_page, physical = "", None, ""
     for index, (kind, value, number) in enumerate(items):
         if kind == "table":
@@ -1207,7 +1279,14 @@ def _pdf(data: bytes) -> list:
             repeated = follows and bool(last["head_text"]) and mask(first_row) == last["head_text"]
             if not follows:
                 tables += 1
-                last = {"xs": xs, "number": tables, "rows": 0, "headers": None, "head_text": ""}
+                last = {
+                    "xs": xs,
+                    "number": tables,
+                    "rows": 0,
+                    "headers": None,
+                    "head_text": "",
+                    "accounts": frozenset(),
+                }
             for row in value:
                 row.loc = {
                     "page": number,
@@ -1215,10 +1294,13 @@ def _pdf(data: bytes) -> list:
                     "row": last["rows"] + row.loc["row"],
                 }
             last["rows"] += len(value)
-            headers, head_text = builder.table(
-                value, headers=last["headers"] if follows else None, repeated=repeated
+            headers, head_text, accounts = builder.table(
+                value,
+                headers=last["headers"] if follows else None,
+                repeated=repeated,
+                accounts=last["accounts"],
             )
-            last["headers"] = headers
+            last["headers"], last["accounts"] = headers, accounts
             last["head_text"] = last["head_text"] or head_text
             continue
         if current and layout_wrapped(physical, value, width):

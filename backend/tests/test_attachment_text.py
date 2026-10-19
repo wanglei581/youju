@@ -206,14 +206,17 @@ def make_ppt(slides: list[list[str]], boxes: list[list[str]] | None = None) -> b
 
 def pdf_pages(pages: list[dict]) -> bytes:
     """多页 PDF（300×400）：每页 {"text": [(x, y, 文字)], "lines": [(x1, y1, x2, y2)],
-    "images": [(x, y, 宽, 高)]}，文字只能是 ASCII（Helvetica）。"""
+    "images": [(x, y, 宽, 高)]}。ASCII 文字用 Helvetica；带中文的用宋体（STSong-Light，
+    UniGB-UCS2-H 编码，不嵌字体，每个字 10 宽），pdfplumber 照样取得到字。"""
     objs: list[bytes] = [b"", b""]  # 1 目录、2 页面树，最后补
     kids = []
     for page in pages:
         content = b""
         mode = "3 Tr " if page.get("ocr") else ""  # 识别层：文字设成看不见
         for x, y, text in page.get("text", []):
-            content += f"BT {mode}/F1 10 Tf {x} {y} Td ({text}) Tj ET\n".encode()
+            shown = f"({text})" if text.isascii() else f"<{text.encode('utf-16-be').hex()}>"
+            font = "F1" if text.isascii() else "F2"
+            content += f"BT {mode}/{font} 10 Tf {x} {y} Td {shown} Tj ET\n".encode()
         for x1, y1, x2, y2 in page.get("lines", []):
             content += f"{x1} {y1} m {x2} {y2} l S\n".encode()
         for i in range(page.get("curves", 0)):  # 文字转成的曲线
@@ -227,6 +230,19 @@ def pdf_pages(pages: list[dict]) -> bytes:
         kids.append((len(objs), content_id))
     objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
     font_id = len(objs)
+    objs.append(
+        b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 4 /FontBBox [0 -200 1000 900]"
+        b" /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 80 >>"
+    )
+    objs.append(
+        b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /FontDescriptor %d 0 R"
+        b" /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> >>" % (len(objs))
+    )
+    objs.append(
+        b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H"
+        b" /DescendantFonts [%d 0 R] >>" % len(objs)
+    )
+    cjk_id = len(objs)
     pixels = bytes([0, 128, 128, 255])
     objs.append(
         b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray"
@@ -236,8 +252,8 @@ def pdf_pages(pages: list[dict]) -> bytes:
     for page_id, content_id in kids:
         objs[page_id - 1] = (
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents %d 0 R"
-            b" /Resources << /Font << /F1 %d 0 R >> /XObject << /Im1 %d 0 R >> >> >>"
-            % (content_id, font_id, image_id)
+            b" /Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> /XObject << /Im1 %d 0 R >> >> >>"
+            % (content_id, font_id, cjk_id, image_id)
         )
     objs[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
     objs[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (
@@ -725,6 +741,44 @@ def test_pdf_repeated_header_rows_and_a_new_table_at_the_top_of_a_page() -> None
     assert result.segments[3].cells[0] == {"c": 0, "t": "Robot", "h": "Item"}
 
 
+def test_pdf_continued_table_keeps_account_columns() -> None:
+    xs = (20, 50, 110, 290)
+
+    def ruled(top: float, rows: int) -> list:
+        bottom = top - 20 * rows
+        lines = [(xs[0], top - 20 * i, xs[-1], top - 20 * i) for i in range(rows + 1)]
+        return lines + [(x, top, x, bottom) for x in xs]
+
+    def row(y: float, *cells: str) -> list:
+        return [(x + 5, y, text) for x, text in zip(xs[:-1], cells, strict=True)]
+
+    data = pdf_pages(
+        [
+            {
+                "text": row(85, "序号", "单位名称", "银行账号")
+                + row(65, "1", "甲公司", "110060149018001234567"),
+                "lines": ruled(100, 2),
+            },
+            # 续表：没有重复表头，这一页也没有"账号"两个字，15 位的对公账号照样遮
+            {
+                "text": row(385, "2", "乙公司", "123456789012345")
+                + row(365, "3", "丙公司", "待补"),
+                "lines": ruled(400, 2),
+            },
+        ]
+    )
+    result = at.extract(data)
+    assert texts(result) == [
+        "序号 | 单位名称 | 银行账号",
+        "1 | 甲公司 | [银行账号已脱敏]",
+        "2 | 乙公司 | [银行账号已脱敏]",
+        "3 | 丙公司 | 待补",
+    ]
+    assert result.segments[2].loc == {"page": 2, "table": 1, "row": 3}
+    assert result.segments[2].cells[2] == {"c": 2, "t": "[银行账号已脱敏]", "h": "银行账号"}
+    assert result.masked == 2
+
+
 def test_few_characters_with_big_pictures_count_as_scans(monkeypatch) -> None:
     from docx import Document as WordDocument
 
@@ -958,6 +1012,55 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     assert at._sheet_number("6222021234567890", False, False, epoch) == "6222021234567890"
     assert at._sheet_number("4.111111111111111e+15", False, False, epoch) == "4111111111111111"
     assert at.mask(at._sheet_number("4111111111111111", False, False, epoch)) == "[银行账号已脱敏]"
+
+
+def test_mask_numbers_next_to_other_numbers_and_wider_account_labels() -> None:
+    # 号码挨着别的数字（不带表格线的 PDF 里几列连成一行、一格里写了两个号码）：整串能分成号码和
+    # 序号、日期、座机的，分别遮
+    for raw, masked in {
+        "1 138 1234 5678": "1 [手机号已脱敏]",
+        "张三 110101 19900307 1234 138 1234 5678": "张三 [身份证号已脱敏] [手机号已脱敏]",
+        "138 1234 5678\n139 8765 4321": "[手机号已脱敏]\n[手机号已脱敏]",
+        "110101 19900307 1234\n110101 19900307 1235": "[身份证号已脱敏]\n[身份证号已脱敏]",
+        "2025-10-10 138 1234 5678": "2025-10-10 [手机号已脱敏]",
+        "20251010 138 1234 5678": "20251010 [手机号已脱敏]",
+        "电话：0571-87654321 138 1234 5678": "电话：[电话已脱敏] [手机号已脱敏]",
+        # 金额词后面隔着别的字的不算金额；身份证号前面紧挨着金额词也遮
+        "补助对象：张三 138 1234 5678": "补助对象：张三 [手机号已脱敏]",
+        "资金联系人李四 138 1234 5678": "资金联系人李四 [手机号已脱敏]",
+        "奖励对象张三 110101 19900307 1234": "奖励对象张三 [身份证号已脱敏]",
+        "合计 110101 19900307 1234": "合计 [身份证号已脱敏]",
+    }.items():
+        assert at.mask(raw) == masked, raw
+    for keep in (
+        "合计金额为 159 7000 7400",
+        "资金（万元）：159 7000 7400",
+        "12 1350 820 4500",  # 有一组既不是号码、也不是序号日期座机：整串不遮
+        "2025 138 1234 5678",  # 单独的年份不算可以夹着的一段
+    ):
+        assert at.mask(keep) == keep, keep
+    # 表格里的账号标签：前面最多 8 个字、后面可以带"/卡号"、括号说明、星号
+    for label in (
+        "开户银行及账号",
+        "银行账号（基本户）",
+        "账号（必填）",
+        "收款单位开户账号",
+        "账号/卡号",
+        "*银行账号",
+        "收款账户",
+        "账 户：",
+    ):
+        assert at._account_cell(label), label
+    for other in ("账户名称", "账户类型", "基本账户", "零余额账户", "账号信息表", "开户银行"):
+        assert not at._account_cell(other), other
+    builder = at._Builder()
+    builder.table(
+        [
+            _row("单位", "开户银行及账号", "金额"),
+            _row("甲", "工行杭州分行 1202021309001234568", "100"),
+        ]
+    )
+    assert builder.segments[1].text == "甲 | 工行杭州分行 [银行账号已脱敏] | 100"
 
 
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
