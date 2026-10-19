@@ -523,3 +523,35 @@ def test_new_order_settles_previous(setup_pay, session, status, code, old_state)
         assert "人工核对" in response.json()["detail"]
     session.expire_all()
     assert session.get(PayOrder, first.id).status == old_state
+
+
+@pytest.mark.parametrize("status,state", [(5, "refunding"), (8, "refunded"), (7, "manual")])
+def test_failure_push_is_checked_against_the_order_first(setup_pay, session, status, state):  # noqa: F811
+    """失败推送可能是同一退款单号上一次的、迟到了：先查单，8 记退完、5 接着等，
+    查单也确认没退成（7）才转人工（Codex 复核）。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    fake = setup_pay[2]
+    fake.status, fake.left_fee = status, 0 if status in (5, 8) else 100
+    assert refund_push(setup_pay, row, RetCode=1)["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == state
+    alerts = sweep(setup_pay, session, NOW + timedelta(minutes=5))
+    assert len(alerts) == (1 if state == "manual" else 0)
+    if status == 5:
+        # 接着等：到了用户那边（8）照常记退完
+        fake.status = 8
+        sweep(setup_pay, session, NOW + timedelta(minutes=20))
+        assert session.get(PayOrder, row.id).status == "refunded"
+
+
+def test_failure_push_when_query_fails_is_retried_not_settled(setup_pay, session):  # noqa: F811
+    """失败推送来了但这时查不了单：应答失败让微信重推，订单仍是退款中、补单接着查，不转人工。"""
+    row = delivered(setup_pay, session)
+    pay_refund(setup_pay, row)
+    setup_pay[2].bad_order = True
+    assert refund_push(setup_pay, row, RetCode=1)["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "refunding" and row.alerted_at is None
