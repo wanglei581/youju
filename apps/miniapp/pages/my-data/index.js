@@ -70,6 +70,9 @@ Page({
             content: f.content,
             check: CHECK[f.checkResult] || f.checkResult,
             handling: f.handled ? '已处理' : '待处理',
+            // 处理结果和处理人写的说明（差距清单 C1）；以前处理的没有结果，照旧只写"已处理"
+            outcome: f.handled && f.outcomeLabel ? f.outcomeLabel : '',
+            reply: f.handled && f.reply ? f.reply : '',
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),

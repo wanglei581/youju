@@ -867,9 +867,31 @@ class Subscription(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+# 纠错处理结果（差距清单 C1，《网络信息内容生态治理规定》第十六条"反馈处理结果"）：
+# 管理台标记已处理时选一项，用户在"我的数据"里看到这句话和处理人写的说明
+# 纠错、申请覆盖、支付问题的处理结果（差距清单 C1）：代码 → 用户在"我的数据"里看到的文字。
+# 每类反馈能选哪几个见 api/app.py 的 FEEDBACK_OUTCOME_CHOICES
+FEEDBACK_OUTCOMES = {
+    "fixed": "已更正",
+    "unchanged": "已核对，和原文一致，没有改",
+    "removed": "已下架这份文件",
+    "noted": "已收到，作为建议记下",
+    "added": "已接入这个栏目",
+    "declined": "暂不接入",
+    "resolved": "已处理",
+}
+
+
 class Feedback(Base):
     __tablename__ = "feedback"
-    __table_args__ = (Index("ix_feedback_user", "user_id"),)
+    __table_args__ = (
+        Index("ix_feedback_user", "user_id"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('fixed', 'unchanged', 'removed', 'noted', 'added', 'declined', 'resolved')",
+            name="ck_feedback_outcome",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
@@ -878,6 +900,10 @@ class Feedback(Base):
     check_result: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 处理结果（见 FEEDBACK_OUTCOMES）和处理人写给用户的一句说明，标记处理时填、撤回时一起清掉。
+    # 0038 之前标记处理的旧记录这两列是空的，小程序照旧只写"已处理"
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    reply: Mapped[str | None] = mapped_column(String(200))
     # 纠错分诊（D-023）：规则和 AI 复查对应文件已发布的截止日期的结果，给处理的人看；
     # 用户写的内容不发给 AI
     triage_note: Mapped[str | None] = mapped_column(String(300))
@@ -928,6 +954,23 @@ class AccessLog(Base):
     uid: Mapped[str | None] = mapped_column(String(16))
     # 核对台操作：做了什么、对哪条记录（操作人、编号、条数），见 api/app.py 的 _audit
     detail: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class AccessDaily(Base):
+    """每天（北京时间）每个服务的小程序接口请求汇总，访问日志归档前算好（差距清单 M3）：
+    运维日报据此报"接口 99% 在 3 秒内成功"（D-061 第七节）这个数。暂存表每天归档后就删，
+    到早上 8 点的日报已经算不到前一天，所以要先存下来。只有计数：不含 IP、用户编号和路径。
+    只算 /api/v1/ 下的接口（小程序用的）；管理台、平台探测不算。"""
+
+    __tablename__ = "access_daily"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer)
+    # 返回 5xx 的
+    errors: Mapped[int] = mapped_column(Integer)
+    # 没返回 5xx、但超过 3 秒才答复的
+    slow: Mapped[int] = mapped_column(Integer)
 
 
 class AppKey(Base):
