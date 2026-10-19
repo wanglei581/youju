@@ -131,7 +131,8 @@ Page({
     this.session.hide(); this.session = null;
     this.setData({ phase: 'form', needsConsent: false, taskId: '', error: '', canRetry: false, result: null });
   },
-  original() { if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.data.docId)}` }); },
+  // 看原文：只是打开通知详情，被拦下时也能看
+  original() { if (this.data.docId) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.data.docId)}` }); },
   feedback() {
     if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/feedback/index?id=${encodeURIComponent(this.data.docId)}&title=${encodeURIComponent(this.data.title)}` });
   },

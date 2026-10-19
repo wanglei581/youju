@@ -11,7 +11,7 @@
   <view wx:if="{{excerpt}}" class="excerpt" bindtap="open"><text class="excerpt-tag">{{excerpt.label}}</text><text class="excerpt-quote">原文：{{excerpt.quote}}</text></view>
   <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>
   <view class="meta">
-    <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}">{{doc.date}}</text></text>
+    <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}" class="meta-date">{{doc.date}}</text></text>
     <!-- 原网页已撤下或改了地址（后台每周检查，连续两次打不开才算，youju/link_check.py） -->
     <text wx:if="{{doc.link_gone}}" class="gone">原网页已失效</text>
     <view class="copy" catchtap="copy" aria-role="button" aria-label="复制原文链接">

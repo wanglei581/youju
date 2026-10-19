@@ -10,8 +10,9 @@ Page({
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建。
-    // viewing 不写进上面的 data：和 D-073 的 PR 改的是同一行，免得合并冲突
-    this.setData({ viewing: !!query.taskId });
+    // viewing 不写进上面的 data：和 D-073 的 PR 改的是同一行，免得合并冲突。
+    // 通知编号、标题一开始就放进页面数据：被拦下（没开始任务）时，"看原文"和联系客服也要用
+    this.setData({ viewing: !!query.taskId, docId: doc.docId || '', title: doc.title || '' });
     this.session = createSession({ api, storage: wx, docId: doc.docId, title: doc.title, taskId: query.taskId,
       update: (value) => {
         if (value.unavailable) access.refresh();
@@ -75,7 +76,8 @@ Page({
     }
   },
   retry() { if (this.data.aiEnabled && this.data.canRetry) this.session.retry(); },
-  original() { if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.data.docId)}` }); },
+  // 看原文：只是打开通知详情，被拦下时也能看
+  original() { if (this.data.docId) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.data.docId)}` }); },
   feedback() {
     if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/feedback/index?id=${encodeURIComponent(this.data.docId)}&title=${encodeURIComponent(this.data.title)}` });
   },

@@ -118,7 +118,8 @@ Page({
     this.shown = true;
     // 刚才看的那份先不给按钮：后台再核一次还能不能解读（可能下架了、失去了资格），核过再给
     const last = access.lastDoc();
-    this.setData({ today: todayISO(), lastDoc: last ? Object.assign({}, last, { ai: null }) : null });
+    // 能力接口回来之前不给"条款对照 ›"（上次进来时的状态可能已经变了）
+    this.setData({ today: todayISO(), clauseOpen: false, lastDoc: last ? Object.assign({}, last, { ai: null }) : null });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     access.ensure().then((state) => {

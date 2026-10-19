@@ -832,3 +832,53 @@ test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身
     }
   }
 });
+
+test('Codex 第 3 轮：第二次进 AI 首页、详情比能力接口先回来时，不按上次的状态给"条款对照"；全站满了、后台处理不了时两项能力照样各占一行、置灰写状态', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  let releaseCaps = null;
+  let capsAnswer = ON();
+  const h = hubPage({ last, caps: () => (releaseCaps ? new Promise((done) => { const go = releaseCaps; releaseCaps = null; go(done); }) : Promise.resolve(capsAnswer)) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.clauseOpen, true);
+  // 第二次进来：能力接口晚到（这次条款对照的次数用完了），详情先回来
+  let finish;
+  capsAnswer = ON({ remaining: { interpret: 5, clause: 0 } });
+  releaseCaps = (done) => { finish = () => done(capsAnswer); };
+  h.page.onHide(); h.page.onShow(); await settle();
+  assert.equal(h.page.data.clauseOpen, false, '能力接口回来之前不给');
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), tapsTo('clauseLast')).length, 0);
+  finish(); await settle();
+  assert.equal(h.page.data.clauseOpen, false, '今天条款对照用完了');
+  for (const [extra, status, text] of [[{ siteFull: true }, '今天满了', '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'], [{ available: false }, '暂时不可用', 'AI 暂时不可用，请稍后再试。']]) {
+    const g = hubPage({ caps: ON(extra) }); g.page.onShow(); await settle();
+    const root = render('pages/ai/index.wxml', g.page.data);
+    const rows = findAll(root, hasClass('ability'));
+    assert.deepEqual(rows.map((n) => textOf(n).trim().replace(/\s+/g, ' ')), [`AI 解读 把一份通知的原句分好类，约半分钟 ${status}`, `条款对照 申报条件和一家企业的情况并排列出 ${status}`]);
+    assert.ok(rows.every(hasClass('ability--out')), '置灰');
+    assert.ok(textOf(root).includes(text));
+  }
+});
+
+test('Codex 第 3 轮：解读页、对照页被拦下时（满了、用完了、暂时不可用）给"看原文"，联系客服带上这份通知的编号和标题', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const [extra, gate] of [[{ siteFull: true }, 'full'], [{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ available: false }, 'paused']]) {
+      const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo: (o) => urls.push(o.url), getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      p.onLoad({ docId: '42', title: encodeURIComponent('关于组织申报的通知') }); p.onShow(); await settle();
+      assert.equal(p.data.gate, gate, `${page} ${gate}`);
+      const root = render(`pages/${page}/index.wxml`, p.data);
+      const look = findAll(root, tapsTo('original'));
+      assert.equal(look.length, 1, `${page} ${gate} 有"看原文"`);
+      p.original(); assert.equal(urls.at(-1), '/pages/detail/index?id=42');
+      const contacts = findAll(root, (n) => n.tag === 'contact-button');
+      if (gate === 'paused') assert.deepEqual(contacts.map((n) => [n.attrs['doc-id'], n.attrs['doc-title']]), [['42', '关于组织申报的通知']]);
+      else assert.equal(contacts.length, 0);
+      p.onHide();
+    }
+  }
+});

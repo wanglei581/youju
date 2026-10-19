@@ -4,6 +4,7 @@
   <view>{{gateText}}</view>
   <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
   <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
+  <button wx:if="{{docId && (gate === 'full' || gate === 'used' || gate === 'paused')}}" class="advisor-button" bindtap="original">看原文</button>
   <button wx:if="{{gate === 'used'}}" class="advisor-button" bindtap="records">看我的记录</button>
   <view wx:if="{{gate === 'paused' || gate === 'offline'}}" class="advisor-contact"><contact-button from="ai_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{gate}}" /></view>
 </view>

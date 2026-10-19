@@ -1,3 +1,5 @@
+/* 组件外壳默认是行内的，不设成块的话按钮撑不满一行（10/19 开发者工具走查） */
+:host { display: block; }
 /* 微信 style v2 的 button 不认 class 里的宽度和外边距，要加 !important */
 .contact-btn {
   margin: 0 !important;
