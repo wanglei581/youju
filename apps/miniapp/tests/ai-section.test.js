@@ -1618,3 +1618,46 @@ test('Codex 第 15 轮：AI 首页等后台回话时写"正在连接"（连接�
   assert.match(textOf(abilities), /正在连接…/);
   w.page.onUnload && w.page.onUnload();
 });
+
+test('Codex 第 16 轮：AI 首页点"重试"马上回到"正在连接"、不留"连不上"，问到之前再点不重复问；问到了照常加载', async () => {
+  const h = hubPage({ state: { visible: true, confirmed: false, available: true } });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.offline, true);
+  let release; let asked = 0;
+  h.access.refresh = () => { asked += 1; return new Promise((done) => { release = done; }); };
+  h.page.retry();
+  assert.equal(h.page.data.waiting, true); assert.equal(h.page.data.offline, false);
+  const out = textOf(render('pages/ai/index.wxml', h.page.data));
+  assert.match(out, /正在连接…/); assert.doesNotMatch(out, /连不上/);
+  h.page.retry(); assert.equal(asked, 1, '问到之前再点不重复问');
+  // 问到了：照常加载
+  h.access.set(OPEN); h.access.refresh = () => Promise.resolve(OPEN);
+  release(OPEN); await settle();
+  assert.equal(h.page.data.ready, true); assert.equal(h.page.data.waiting, false);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /今天还剩 5 次/);
+  let again = 0; h.access.refresh = () => { again += 1; return Promise.resolve(OPEN); };
+  h.page.retry(); await settle(); assert.equal(again, 1, '问完以后又能点'); assert.equal(h.page.data.ready, true);
+});
+
+test('Codex 第 16 轮：直接打开工具中心、我的记录（还没问过 AI 开没开）时，点"阅读并同意"先问清楚再选弹窗；连点只弹一次', async () => {
+  const gated = () => Promise.resolve(OFF('consent'));
+  for (const name of ['advisor', 'advisor-tasks']) {
+    for (const [mode, expected] of [[{ open: true, available: true }, { purpose: 'tools' }], [{ open: false, available: false }, undefined], [NETWORK, undefined]]) {
+      const real = accessWith({ mode, caps: OFF('consent') });
+      assert.equal(real.access.current().confirmed, false, '还没问过');
+      let asked = 0; let opts = 'not called';
+      const page = load(`pages/${name}/index.js`, {
+        '../../utils/api.js': { advisorCapabilities: gated, advisorTasks: () => Promise.resolve({ items: [] }) },
+        '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': real.access,
+        '../../utils/consent.js': { ensureConsent: (o) => { asked += 1; opts = o === undefined ? undefined : plain(o); return Promise.resolve(false); } },
+      }, { wx: { setNavigationBarTitle() {} } });
+      if (page.onLoad) page.onLoad({});
+      page.onShow(); await settle();
+      page.consent(); page.consent(); await settle();
+      assert.equal(asked, 1, `${name} 连点只弹一次`);
+      assert.deepEqual(opts, expected, `${name} ${JSON.stringify(mode)}`);
+      page.consent(); await settle(); assert.equal(asked, 2, `${name} 弹完以后又能点`);
+      if (page.onUnload) page.onUnload();
+    }
+  }
+});

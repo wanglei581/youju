@@ -259,8 +259,15 @@ Page({
     this.setData({ recent: (this.recentItems || []).map((doc) => (open ? doc : Object.assign({}, doc, { ai: null }))) });
   },
 
+  // 点了马上回到"正在连接"，不留"连不上"；问到之前再点不重复问（第 16 轮）
   retry() {
-    access.refresh().then(() => { if (this.shown) this.onShow(); });
+    if (this.retrying) return;
+    this.retrying = true;
+    this.setData({ waiting: true, offline: false });
+    access.refresh().then(() => {
+      this.retrying = false;
+      if (this.shown) this.onShow();
+    });
   },
 
   toggleScope() {
