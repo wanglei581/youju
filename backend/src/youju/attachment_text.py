@@ -160,8 +160,8 @@ def _number_label(groups: list[str], *, account: bool, phone: bool) -> str | Non
     - 身份证号：15 或 18 位、出生日期对得上，怎么分组都算；
     - 手机号：11 位、1[3-9] 开头（可带 86）；写了"手机""电话"的怎么分组都算，没写的每组至少 3 位；
     - 写了"账号"（或在账号那一列）的：10–30 位；
-    - 没写"账号"的卡号：16–19 位，开头像卡号（3、4、5、6、8、9），过 Luhn；分组的要四位一组，
-      全是年份（2023 2024 2025 2026）或整数（5000 6000 7000 8000）的不算。"""
+    - 没写"账号"的卡号：16–19 位，开头像卡号（3、4、5、6、8、9；年份、编号多半是 1、2 开头），
+      过 Luhn；分组的要四位一组，每组都是整百整千（4100 4100 4100 4500）的不算。"""
     digits = "".join(groups)
     if len(digits) in (15, 18) and body_rules._ID_CARD.fullmatch(digits):
         return "[身份证号已脱敏]"
@@ -178,8 +178,8 @@ def _number_label(groups: list[str], *, account: bool, phone: bool) -> str | Non
         return "[银行账号已脱敏]"
     if any(size != 4 for size in sizes[:4]) or len(groups) > 5 or sizes[4:] and sizes[4] > 3:
         return None
-    if all(g[:2] in ("19", "20") for g in groups[:4]) or all(g.endswith("00") for g in groups[:4]):
-        return None
+    if all(g.endswith("00") for g in groups[:4]):
+        return None  # 整数（补助标准、金额一组组列出来的）
     return "[银行账号已脱敏]"
 
 
