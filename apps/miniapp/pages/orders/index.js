@@ -25,13 +25,16 @@ Page({
       if (serial !== this.serial) return null;
       const items = res.items.map(pay.orderView);
       if (items.length) { this.setData({ loading: false, items }); return null; }
-      // 没有订单：在售时写"还没有订单"，明确不在售才回首页；没连上（offline）留在本页给重试（Codex 审阅）。
-      // 强制重新查：能力接口的结果有缓存，售卖状态变了不能按旧结果跳
-      return api.advisorCapabilities({ refresh: true }).then((caps) => {
+      // 没有订单：直接问商品接口（不走能力接口的缓存，Codex 审阅）——有在售的档位写"还没有订单"；
+      // 404 或没有档位才回首页；出错（没连上、服务端出错）留在本页给重试，不当成停卖
+      return api.payProducts().then((res) => {
         if (serial !== this.serial) return;
-        if (caps && caps.pay && caps.pay.enabled === true) this.setData({ loading: false, items: [] });
-        else if (caps && caps.reason === 'offline') this.setData({ loading: false, error: '网络连接失败，请检查网络后重试' });
+        if (pay.normalizeProducts(res).length) this.setData({ loading: false, items: [] });
         else goHome();
+      }, (err) => {
+        if (serial !== this.serial) return;
+        if (err && err.status === 404) goHome();
+        else this.setData({ loading: false, error: (err && err.message) || '网络连接失败，请检查网络后重试' });
       });
     }).catch((err) => {
       if (serial !== this.serial) return;

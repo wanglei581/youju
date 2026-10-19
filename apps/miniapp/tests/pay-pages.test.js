@@ -135,7 +135,7 @@ function ordersPage(items, options = {}) {
   const calls = []; const urls = []; let modal = null;
   const api = {
     payOrders: () => { calls.push(['list']); return options.payOrders ? options.payOrders() : Promise.resolve({ items }); },
-    advisorCapabilities: (opts) => { calls.push(['caps', plain(opts || {})]); return Promise.resolve(options.caps || { pay: { enabled: false, hasOrders: false }, reason: 'off' }); },
+    payProducts: () => { calls.push(['products']); return options.payProducts ? options.payProducts() : Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })); },
     refundPayOrder: (id) => { calls.push(['refund', id]); return Promise.resolve({}); },
     requestInvoice: (id, body) => {
       calls.push(['invoice', id, plain(body)]);
@@ -260,13 +260,16 @@ test('订单页没有订单又不在售时回首页、不写"暂未开放"；在
   assert.deepEqual(closed.urls, ['tab:/pages/home/index']);
   assert.doesNotMatch(shown('pages/orders/index.wxml', closed.page.data), /暂未开放/);
 
-  const selling = ordersPage([], { caps: { pay: { enabled: true, hasOrders: false } } });
+  const selling = ordersPage([], { payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE }) });
   await flush();
   assert.deepEqual(selling.urls, []);
   assert.equal(selling.page.data.loading, false);
   assert.match(shown('pages/orders/index.wxml', selling.page.data), /还没有订单/);
 
   const gone = ordersPage([], { payOrders: () => Promise.reject(Object.assign(new Error('没有找到接口'), { status: 404 })) });
+  const empty = ordersPage([], { payProducts: () => Promise.resolve({ items: [] }) });
+  await flush();
+  assert.deepEqual(empty.urls, ['tab:/pages/home/index']);
   await flush();
   assert.deepEqual(gone.urls, ['tab:/pages/home/index']);
   assert.doesNotMatch(shown('pages/orders/index.wxml', gone.page.data), /暂未开放|没有找到接口/);
@@ -311,13 +314,15 @@ test('回首页时 switchTab 失败就 reLaunch 首页，购买页和订单页�
   assert.deepEqual(orders.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
 });
 
-test('订单页没有订单时强制重查能力接口；没连上（offline）留在本页给重试，不当成停卖回首页（Codex 审阅）', async () => {
-  const h = ordersPage([], { caps: { pay: { enabled: false, hasOrders: false }, reason: 'offline' } });
-  await flush();
-  assert.deepEqual(h.urls, []);
-  assert.deepEqual(h.calls, [['list'], ['caps', { refresh: true }]]);
-  assert.equal(h.page.data.error, '网络连接失败，请检查网络后重试');
-  assert.match(shown('pages/orders/index.wxml', h.page.data), /重试/);
+test('订单页没有订单时直接问商品接口（不用能力接口的缓存）；没连上或服务端出错时留在本页给重试，不当成停卖回首页（Codex 审阅）', async () => {
+  for (const err of [Object.assign(new Error('网络连接失败，请检查网络后重试'), { status: 0 }), Object.assign(new Error('服务暂时出错（502），请稍后重试'), { status: 502 })]) {
+    const h = ordersPage([], { payProducts: () => Promise.reject(err) });
+    await flush();
+    assert.deepEqual(h.urls, []);
+    assert.deepEqual(h.calls, [['list'], ['products']]);
+    assert.equal(h.page.data.error, err.message);
+    assert.match(shown('pages/orders/index.wxml', h.page.data), /重试/);
+  }
 });
 
 test('订单页有订单时照常列出，不查能力接口也不回首页（停卖以后已付款的人照样看订单、退款、开票）', async () => {
