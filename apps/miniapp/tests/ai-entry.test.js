@@ -54,7 +54,7 @@ function apiHarness(config = { devBaseUrl: 'https://test.invalid' }) {
 const accessFor = new Map();
 function accessOf(api) {
   if (!accessFor.has(api)) {
-    const full = Object.assign({ isLive: () => true, advisorMode: () => Promise.reject(Object.assign(new Error('Not Found'), { status: 404 })) }, api);
+    const full = Object.assign({ isLive: () => true, advisorMode: () => Promise.reject(Object.assign(new Error('Not Found'), { status: 404 })), forgetCapabilities() {} }, api);
     const saved = new Map();
     accessFor.set(api, load('utils/ai-access.js', { './api.js': full },
       { wx: { getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value), removeStorageSync: (key) => saved.delete(key) } }));

@@ -159,7 +159,9 @@ Page({
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
     if (String(query.ai) === '1') {
-      this.setData({ aiOnly: access.current().visible === true });
+      // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
+      const now = access.current();
+      this.setData({ aiOnly: now.confirmed === true && now.visible === true });
       // 跟着后台的确认走：确认开着就加上这一项、确认没开着就去掉，都重新查；页面上不留相关字样
       this.unsubscribeAi = access.subscribe((state) => {
         if (!state.confirmed) return;

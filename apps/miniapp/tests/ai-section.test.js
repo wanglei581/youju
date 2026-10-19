@@ -71,6 +71,7 @@ function accessWith(options = {}) {
     isLive: () => options.live !== false,
     advisorMode: () => { calls.mode += 1; return answer(options.mode); },
     advisorCapabilities: (opts) => { calls.caps += 1; calls.refresh = opts && opts.refresh; return answer(options.caps); },
+    forgetCapabilities: () => { calls.forgot = (calls.forgot || 0) + 1; },
   };
   const wx = options.wx || memoryWx();
   const clock = options.clock || { now: 1000 * HOUR };
@@ -465,10 +466,10 @@ test('AI 首页：两项能力各写今天还剩几次，下面是刚才看的�
   h.page.findDoc(); h.page.allRecent(); h.page.clauseLast(); h.page.allRecords();
   h.page.openRecord({ currentTarget: { dataset: { id: '3', kind: 'clause' } } }); h.page.openRecord({ currentTarget: { dataset: { id: '1', kind: 'interpret' } } });
   h.page.openDoc({ currentTarget: { dataset: { id: '42' } } }); h.page.help(); h.page.report();
+  // 条款对照今天的次数用完了（remaining.clause 为 0）：刚才看的那份不给"条款对照"
   assert.deepEqual(h.navigations, [
     '/pages/search/index?ai=1',
     `/pages/search/index?kind=${encodeURIComponent('申报通知')}&time=${encodeURIComponent('近 7 天')}&ai=1`,
-    `/pages/advisor-clause/index?docId=42&title=${encodeURIComponent('刚才看的那份')}`,
     '/pages/advisor-tasks/index',
     '/pages/advisor-clause/index?taskId=3', '/pages/advisor-interpret/index?taskId=1',
     '/pages/detail/index?id=42', '/pages/help/index', '/pages/complaint/index',
@@ -679,7 +680,7 @@ test('Codex 第 1 轮：AI 首页确认开着之前页头没有 AI 字样；刚�
   h.page.onShow();
   assert.equal(h.page.data.lastDoc.ai, null, '核对之前不给按钮');
   await settle();
-  assert.deepEqual(plain(h.page.data.lastDoc.ai), { interpret: true }); assert.equal(h.calls.detail, 1);
+  assert.deepEqual(plain(h.page.data.lastDoc.ai), { interpret: true, clause: true }); assert.equal(h.calls.detail, 1);
   // 不能解读了、下架了：不显示，也不再记着
   for (const detail of [() => Promise.resolve({ id: '42', title: 'x', ai: { interpret: false, clause: false, reason: 'no_body' } }),
     () => Promise.reject(Object.assign(new Error('该文件已下架'), { status: 404 }))]) {
@@ -767,5 +768,67 @@ test('Codex 第 1 轮：从真实的接口回包到页面文字——422 不能�
     assert.equal(interpret.errorText(err), text, JSON.stringify(detail));
     if (detail.code) assert.equal(err.code, detail.code);
     if (detail.reason) assert.equal(err.reason, detail.reason);
+  }
+});
+
+test('Codex 第 2 轮：搜索带 ai=1 时，本机记的"上次是显示的"不算，后台确认开着才加筛选；确认关着就不加', async () => {
+  const query = { ai: '1' };
+  const cached = { visible: true, confirmed: false, available: true };
+  let h = searchPage(cached);
+  h.page.onLoad(query); await settle();
+  assert.equal(h.page.data.aiOnly, false); assert.equal(h.calls.at(-1).ai, undefined);
+  h.access.set(CLOSED); await settle();
+  assert.equal(h.page.data.aiOnly, false); assert.equal(findAll(render('pages/search/index.wxml', h.page.data), (n) => n.tag === 'ai-only').length, 0);
+  h = searchPage(cached); h.page.onLoad(query); await settle();
+  h.access.set(OPEN); await settle();
+  assert.equal(h.page.data.aiOnly, true); assert.equal(h.calls.at(-1).ai, 1);
+});
+
+test('Codex 第 2 轮：注销时能力接口在途的、缓存的答复也作废；注销以后再问，不会拿到注销以前的白名单权限', async () => {
+  const pending = [];
+  const api = load('utils/api.js', { './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {} },
+    { wx: { request(options) { pending.push(options); }, removeStorageSync() {} } });
+  const raw = load('utils/ai-access.js', { './api.js': api }, { wx: memoryWx() });
+  const first = raw.ensure(); await settle();
+  pending.shift().success({ statusCode: 404, data: { detail: 'Not Found' } }); await settle(); // 开放状态（旧后台）
+  const oldCaps = pending.shift(); // 能力接口还在途
+  assert.equal(oldCaps.url, 'https://test.invalid/api/v1/advisor/capabilities');
+  raw.clear();
+  const second = raw.ensure(); await settle();
+  pending.shift().success({ statusCode: 404, data: { detail: 'Not Found' } }); await settle();
+  const newCaps = pending.shift();
+  assert.ok(newCaps, '注销以后重新发能力请求，不复用在途的那个');
+  oldCaps.success({ statusCode: 200, data: ON() }); await settle(); // 注销以前的答复晚到
+  newCaps.success({ statusCode: 403, data: { detail: '请先阅读并同意用户协议和隐私保护指引' } }); await settle();
+  await first; await second;
+  assert.deepEqual(plain(raw.current()), CLOSED);
+});
+
+test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身能不能做；解读页、对照页在自己今天次数用完时先拦下、不提交', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  for (const [clause, caps, shown] of [[true, ON(), true], [false, ON(), false], [true, ON({ remaining: { interpret: 5, clause: 0 } }), false], [true, ON({ available: false }), false]]) {
+    const h = hubPage({ last, caps, detail: (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause, reason: null } }) });
+    h.page.onShow(); await settle();
+    const root = render('pages/ai/index.wxml', h.page.data);
+    assert.equal(findAll(root, tapsTo('clauseLast')).length, shown ? 1 : 0, JSON.stringify([clause, caps.ai_advisor.remaining, caps.ai_advisor.available]));
+    h.page.clauseLast(); assert.equal(h.navigations.length, shown ? 1 : 0);
+  }
+  for (const [page, kind, name] of [['advisor-interpret', 'interpret', 'AI 解读'], ['advisor-clause', 'clause', '条款对照']]) {
+    for (const taskId of ['', '7']) {
+      let created = 0; const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      const deps = {
+        '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: 5, clause: 5, [kind]: 0 } })), createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 1, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo: (o) => urls.push(o.url), getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      p.onLoad(taskId ? { taskId } : { docId: '42', title: '通知' }); p.onShow(); await settle();
+      if (taskId) { assert.equal(p.data.aiEnabled, true, `${page} 打开已有结果不拦`); p.onHide(); continue; }
+      assert.equal(p.data.gate, 'used'); assert.equal(created, 0);
+      const out = textOf(render(`pages/${page}/index.wxml`, p.data));
+      assert.ok(out.includes(`今天的${name} 5 次用完了，明天 0 点恢复；以前的结果在“我的记录”里照样能看。`), out);
+      p.records(); assert.deepEqual(urls, ['/pages/advisor-tasks/index']);
+      p.onHide();
+    }
   }
 });

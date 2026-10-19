@@ -29,10 +29,17 @@ Page({
       const aiEnabled = ai.enabled === true && allowedKinds(ai).includes('interpret');
       if (aiEnabled) wx.setNavigationBarTitle({ title: aiTitle('AI 解读') });
       // D-075：新提交前先看后台能不能处理、全站今天满了没有（打开已有的结果不拦）
-      const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true);
+      // 自己今天的次数用完了也先拦下，不发注定被拒的任务
+      const used = aiEnabled && Number((ai.remaining || {}).interpret) === 0;
+      const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
-        this.setData({ loading: false, aiEnabled: false, gate: ai.available === false ? 'paused' : 'full',
-          gateText: ai.available === false ? 'AI 暂时不可用，请稍后再试。' : '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。' });
+        const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';
+        this.setData({ loading: false, aiEnabled: false, gate,
+          gateText: {
+            paused: 'AI 暂时不可用，请稍后再试。',
+            full: '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。',
+            used: '今天的AI 解读 5 次用完了，明天 0 点恢复；以前的结果在“我的记录”里照样能看。',
+          }[gate] });
         return;
       }
       const gate = aiEnabled ? '' : gateState(res);
@@ -52,6 +59,8 @@ Page({
     require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && this.visible) this.onShow(); });
   },
   reload() { if (this.data.gate === 'offline') this.onShow(); },
+  // 今天的次数用完了：去看以前的结果
+  records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; this.session.hide(); },
   onUnload() { this.onHide(); },
   check(e) { this.session.check((e.detail.value || []).includes('agree')); },

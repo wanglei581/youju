@@ -154,6 +154,7 @@ function lastDoc() {
 function clear() {
   generation += 1;
   pending = null;
+  api.forgetCapabilities();
   remember(false);
   const store = storage();
   if (store) { try { store.removeStorageSync(LAST_DOC_KEY); } catch (e) { /* 注销时整个存储也会清空 */ } }

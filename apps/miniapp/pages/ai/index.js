@@ -12,7 +12,7 @@ const { ensureConsent } = require('../../utils/consent.js');
 const { todayISO } = require('../../utils/format.js');
 
 const KIND_ROWS = [
-  { kind: 'interpret', name: 'AI 解读', desc: '摘出通知里的对象、条件、时间、材料原句，约半分钟' },
+  { kind: 'interpret', name: 'AI 解读', desc: '把一份通知的原句分好类，约半分钟' },
   { kind: 'clause', name: '条款对照', desc: '申报条件和一家企业的情况并排列出' },
 ];
 // 近 7 天能解读的申报通知：由后台筛（ai=1），不在本机从一页里挑（首页那 8 条什么类型都有，挑完可能一条不剩）
@@ -87,6 +87,7 @@ Page({
     ready: false,
     offline: false,
     capsLoading: true,
+    clauseOpen: false,
     gate: '',
     gateText: '',
     kinds: [],
@@ -147,11 +148,15 @@ Page({
       const gate = gateOf(caps);
       // 能力接口说这个人用不了（刚关了 AI、被移出白名单）：再问一次，确认没开着就回首页
       if (gate === 'off') access.refresh();
+      const kinds = ai.enabled === true ? kindRows(ai) : [];
+      const clause = kinds.find((row) => row.kind === 'clause');
       this.setData({
         capsLoading: false,
         gate,
         gateText: gateTextOf(gate, caps),
-        kinds: ai.enabled === true ? kindRows(ai) : [],
+        kinds,
+        // 刚才看的那份能不能直接去条款对照：账号能用、今天还有次数、后台能处理
+        clauseOpen: !gate && !!clause && !clause.out,
         disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
       });
     });
@@ -160,7 +165,8 @@ Page({
       api.detail(last.id).then((doc) => {
         if (seq !== this.seq) return;
         if (doc && doc.ai && doc.ai.interpret === true) {
-          this.setData({ lastDoc: Object.assign({}, last, { title: doc.title || last.title, ai: { interpret: true } }) });
+          // 文件本身能不能做条款对照也照详情的来
+          this.setData({ lastDoc: Object.assign({}, last, { title: doc.title || last.title, ai: { interpret: true, clause: doc.ai.clause === true } }) });
         } else {
           access.forgetDoc(); this.setData({ lastDoc: null });
         }
@@ -216,7 +222,7 @@ Page({
 
   clauseLast() {
     const doc = this.data.lastDoc;
-    if (doc && doc.ai) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
+    if (doc && doc.ai && doc.ai.clause === true && this.data.clauseOpen) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
   },
 
   openRecord(e) {

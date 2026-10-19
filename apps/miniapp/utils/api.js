@@ -671,6 +671,12 @@ function advisorCapabilities(options = {}) {
   return result;
 }
 
+// 注销以后：在途的和缓存的能力答复都不再用（是注销以前的权限），下次重新问
+function forgetCapabilities() {
+  capabilitiesPromise = null;
+  capabilitiesPending = null;
+}
+
 // 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
 function createAdvisorTask(data, key) {
   if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
@@ -834,6 +840,6 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
 };

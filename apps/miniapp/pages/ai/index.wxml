@@ -5,7 +5,7 @@
   <view class="nav" style="height: {{navHeight}}px"><text wx:if="{{ready}}" class="nav-title">AI</text></view>
   <notice-bar onBlue="{{true}}" />
   <view wx:if="{{ready}}" class="hero">
-    <view class="hero-sub">找出通知里的对象、条件、时间、材料原句，每句都能回原文核对；不判断能不能申报。</view>
+    <view class="hero-sub">在通知原文里找出申报对象、条件、时间和材料，每句都能回原文核对；不判断能不能申报。</view>
     <text class="badge">第三方整理 · 非政府平台</text>
   </view>
 </view>
@@ -60,7 +60,7 @@
     </view>
     <view wx:if="{{lastDoc.ai}}" class="last-ops">
       <ai-button doc-id="{{lastDoc.id}}" doc-title="{{lastDoc.title}}" ai="{{lastDoc.ai}}" />
-      <text wx:if="{{!gate && kinds.length > 1}}" class="link last-clause" bindtap="clauseLast" aria-role="button">条款对照 ›</text>
+      <text wx:if="{{clauseOpen && lastDoc.ai.clause}}" class="link last-clause" bindtap="clauseLast" aria-role="button">条款对照 ›</text>
     </view>
   </view>
 
