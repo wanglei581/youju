@@ -10,11 +10,11 @@ api 账号已有整个库的读权限，读这两张表不用另加授权。api 
 deploy/mysql_accounts.sql 的"AI 设置心跳权限"一行；没执行时 api 照常工作，只是收不到"两个服务
 设置不一致"的提醒。
 
-编号：0033–0036 已被还没合并的 PR 预约（0033 #290、0034 #297、0035 #296、0036 #304），0037、0038 是成熟度
-会话的、已在 main 上。down_revision 接 main 上当时最新的 0038（10/19）；后合并的一方改 down_revision 串起来。
+编号：0033–0035 已被还没合并的 PR 预约（0033 #290、0034 #297、0035 #296）。main 上现在是
+0032 → 0037 → 0038 → 0036（#304，10/19 合并），down_revision 接 main 上最新的 0036；后合并的一方改 down_revision 串起来。
 
 Revision ID: 0039
-Revises: 0038
+Revises: 0036
 """
 
 import sqlalchemy as sa
@@ -22,7 +22,7 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision = "0039"
-down_revision = "0038"
+down_revision = "0036"
 branch_labels = None
 depends_on = None
 OPTIONS = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_bin"}
