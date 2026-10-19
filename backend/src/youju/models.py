@@ -1172,3 +1172,21 @@ class PayReconciliation(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class EntryStat(Base):
+    """来源统计（youju/entry_stats.py）：每天各种打开方式的次数。不存任何用户编号、查询参数和时间，
+    保存 400 天。只有 admin 服务写。"""
+
+    __tablename__ = "entry_stats"
+    __table_args__ = (UniqueConstraint("day", "scene", "code", "page", name="uq_entry_stats_key"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 北京时间的日期
+    day: Mapped[date] = mapped_column(Date)
+    # 微信场景值；0 表示没带或不认得
+    scene: Mapped[int] = mapped_column(Integer)
+    # 来源编号（链接或小程序码里的 from），没带为空
+    code: Mapped[str] = mapped_column(String(24), default="", server_default="")
+    # 第一个打开的页面（pages/xxx/index，不含参数），不认得为空
+    page: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    opens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

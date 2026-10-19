@@ -293,5 +293,9 @@ def run_cleanup(
 
     result.update(cleanup_advisor(session, settings=settings, stamp=stamp))
     result.update(cleanup_payments(session, settings, stamp))
+    # 来源统计只是按天的次数、不是个人信息，也按保存期限（400 天）删除
+    from youju.entry_stats import prune as prune_entry_stats
+
+    result.update(prune_entry_stats(session, stamp))
     session.commit()
     return result

@@ -6,9 +6,11 @@ App({
     menuWidth: 96,
   },
 
-  onLaunch() {
+  onLaunch(options) {
     const config = require('./utils/config.js');
     if (config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });
+    // 来源统计：这里只在手机上记下这次是怎么打开的，首屏出来以后才发（utils/entry-stats.js）
+    try { require('./utils/entry-stats.js').capture(options); } catch (e) { /* 统计出错不影响使用 */ }
     try {
       // 尺寸怎么算、电脑版怎么兜底见 utils/nav.js
       Object.assign(this.globalData, require('./utils/nav.js').navMetrics(wx.getWindowInfo(), wx.getMenuButtonBoundingClientRect()));
@@ -22,6 +24,11 @@ App({
   // （走常驻的 admin），等点同意、关注、纠错时它已经醒了。20 分钟内答复过就不再叫，见 utils/api.js 的 wake
   onShow() {
     try { require('./utils/api.js').prewarm(); } catch (e) { /* 叫不醒不影响使用：提交时会再叫 */ }
+  },
+
+  // 切到后台：来源统计还没发的（首屏刚出来就走的）现在发（之后小程序可能被挂起、销毁）
+  onHide() {
+    try { require('./utils/entry-stats.js').flush(); } catch (e) { /* 忽略 */ }
   },
 
   // 有新版本时提示重启：微信打开小程序时在后台下载新版本，下载好了问用户；选"稍后"就下次打开时用新版本

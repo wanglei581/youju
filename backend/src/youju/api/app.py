@@ -33,6 +33,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import conditions as conditions_api
+from youju.api import entry_stats as entry_stats_api
 from youju.api import repost as repost_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
@@ -94,6 +95,8 @@ app.include_router(attachments_router)
 
 app.include_router(pay_router)
 app.include_router(push_router)
+# 来源统计的上报：只在 admin 上开放（见 _role_guard 和 youju/entry_stats.py）
+app.include_router(entry_stats_api.public_router)
 
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
@@ -192,6 +195,16 @@ def _admin_read(request: Request, path: str) -> bool:
     )
 
 
+def _admin_write(request: Request, path: str) -> bool:
+    """admin 上唯一收的小程序写入：来源统计的上报（只按天计数、不读身份，见 youju/entry_stats.py）。
+    放在 admin 是为了这次请求的访问日志里没有用户编号，也不为统计去叫醒接口服务；api 上一律 404。"""
+    return (
+        path == entry_stats_api.PATH
+        and request.method == "POST"
+        and bool(request.headers.get("X-WX-SOURCE"))
+    )
+
+
 @app.middleware("http")
 async def _role_guard(request: Request, call_next):
     """按部署角色开放路径（白名单）：api 服务只开放小程序接口（/api/v1/）和健康检查，
@@ -218,8 +231,16 @@ async def _role_guard(request: Request, call_next):
     mini_path = path.startswith("/api/v1/") or path == getattr(
         get_settings(), "wx_push_path", "/api/wx/push"
     )
-    blocked = (role == "api" and not (mini_path or path == "/health")) or (
-        role == "admin" and not (admin_path or path == "/health" or _admin_read(request, path))
+    blocked = (
+        role == "api" and (not (mini_path or path == "/health") or path == entry_stats_api.PATH)
+    ) or (
+        role == "admin"
+        and not (
+            admin_path
+            or path == "/health"
+            or _admin_read(request, path)
+            or _admin_write(request, path)
+        )
     )
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
@@ -956,6 +977,14 @@ app.add_api_route(
 app.include_router(repost_api.router(_require_admin, _audit))
 app.add_api_route(
     "/admin/repost", repost_api.console, response_class=HTMLResponse, include_in_schema=False
+)
+# 来源统计的每周汇总（只读）
+app.include_router(entry_stats_api.admin_router(_require_admin))
+app.add_api_route(
+    "/admin/entry-stats",
+    entry_stats_api.console,
+    response_class=HTMLResponse,
+    include_in_schema=False,
 )
 
 

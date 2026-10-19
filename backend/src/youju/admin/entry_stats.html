@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>来源统计 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --red: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1080px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  h2 { margin: 0 0 8px; font-size: 16px; }
+  .count, .hint, .muted { color: var(--t2); font-size: 14px; }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  main { max-width: 1080px; margin: 0 auto; padding: 16px; }
+  .hint { margin: 0 0 12px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 160px; }
+  thead th { color: var(--t2); font-weight: 500; }
+  tr.sum td { font-weight: 600; }
+  tr.aside td { color: var(--t3); }
+  td.zero { color: var(--t3); }
+  .sub { display: block; color: var(--t3); font-size: 12px; }
+  details summary { cursor: pointer; font-weight: 600; }
+  .msg { color: var(--red); }
+  .empty { text-align: center; color: var(--t2); padding: 32px 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>来源统计</h1>
+    <span class="count" id="count"></span>
+    <div class="auth">
+      <label for="weeks">看</label>
+      <select id="weeks"><option value="4">近 4 周</option><option value="8" selected>近 8 周</option><option value="13">近 13 周</option><option value="26">近 26 周</option></select>
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button class="primary" id="load">载入</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">小程序每次重新打开（冷启动；从后台切回来不算）记一次，按天累加：只是次数，不是人数，一个人打开三次算三次。只统计正式版，开发版和体验版不计。来源编号是链接、小程序码里带的 from，按渠道或活动编，不给个人编。微信爬虫（场景值 1129）单列，不算进合计和下面各表。数据保存 <span id="keep">400</span> 天。</p>
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+  <div id="out"></div>
+</main>
+<script src="/admin/embed.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  function el(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+  function errorFor(res) {
+    if (res.status === 401 || res.status === 429) return '口令不对、未配置，或输错次数过多';
+    return `请求失败（${res.status}）`;
+  }
+  const md = (iso) => { const [, m, d] = iso.split('-'); return `${Number(m)}/${Number(d)}`; };
+  const sum = (counts) => counts.reduce((a, b) => a + b, 0);
+
+  // 一张表：第一列名称（可带一行小字），后面每周一列，最近的一周在最左边（窗口窄时不用往右翻就能看到本周），最后是合计
+  function table(weeks, rows) {
+    const wrap = el('div', 'tablewrap');
+    const t = el('table');
+    const head = el('tr');
+    head.append(el('th', '', ''));
+    const order = weeks.map((_, i) => i).reverse();
+    order.forEach((i) => {
+      const w = weeks[i];
+      const th = el('th', '', `${md(w.start)}–${md(w.end)}`);
+      if (w.current) th.append(el('span', 'sub', '本周至今'));
+      head.append(th);
+    });
+    head.append(el('th', '', '合计'));
+    const thead = el('thead'); thead.append(head);
+    const body = el('tbody');
+    rows.forEach((row) => {
+      const tr = el('tr', row.cls || '');
+      const name = el('td', '', row.name);
+      if (row.sub) name.append(el('span', 'sub', row.sub));
+      tr.append(name);
+      order.forEach((i) => tr.append(el('td', row.counts[i] ? '' : 'zero', String(row.counts[i]))));
+      tr.append(el('td', '', String(sum(row.counts))));
+      body.append(tr);
+    });
+    t.append(thead, body);
+    wrap.append(t);
+    return wrap;
+  }
+  function card(title, note, content) {
+    const box = el('section', 'card');
+    box.append(el('h2', '', title));
+    if (note) box.append(el('p', 'muted', note));
+    box.append(content);
+    return box;
+  }
+
+  function render(d) {
+    const out = $('out');
+    out.textContent = '';
+    $('keep').textContent = String(d.keep_days);
+    const total = sum(d.total);
+    $('count').textContent = `共 ${total} 次（不含爬虫）`;
+    if (!total && !sum(d.crawler)) {
+      out.append(el('div', 'card empty', '这段时间还没有记录。上线后，正式版里打开小程序才会有。'));
+      return;
+    }
+    const channelRows = [{ name: '合计', counts: d.total, cls: 'sum' }]
+      .concat(d.channels.map((c) => ({ name: c.name, sub: c.scenes.length ? `场景值 ${c.scenes.join('、')}` : '上面没列的场景值，见最下面的明细', counts: c.counts })))
+      .concat([{ name: '微信爬虫（不算用户）', sub: '场景值 1129，搜一搜收录时会出现', counts: d.crawler, cls: 'aside' }]);
+    out.append(card('按入口', '同一个人第二次多半从"最近使用"进来，不会再算到原来的渠道上。', table(d.weeks, channelRows)));
+    if (d.codes.length) {
+      const rows = d.codes.map((c) => ({
+        name: c.overflow ? '当天组合超过上限' : (c.code || '没带编号'),
+        sub: c.overflow ? '当天不同组合超过 500 种以后，新出现的都记在这里' : '',
+        counts: c.counts,
+      }));
+      out.append(card('按来源编号', '链接、小程序码里的 from。没带编号的包括转发卡片、搜索、最近使用等。', table(d.weeks, rows)));
+    }
+    if (d.pages.length) {
+      const rows = d.pages.map((p) => ({ name: p.name || p.page || '没认出的页面', sub: p.name ? p.page : '', counts: p.counts }));
+      out.append(card('按第一个打开的页面', '只有页面，不含参数（看不出是哪份通知、查的是哪家企业）。', table(d.weeks, rows)));
+    }
+    if (d.scenes.length) {
+      const details = el('details');
+      details.append(el('summary', '', '场景值明细'));
+      const rows = d.scenes.map((s) => ({ name: s.scene ? `${s.scene} ${s.name || ''}`.trim() : '0 没带或不认得', sub: s.channel, counts: s.counts }));
+      details.append(table(d.weeks, rows));
+      const box = el('section', 'card'); box.append(details);
+      out.append(box);
+    }
+  }
+
+  async function load() {
+    $('msg').textContent = '';
+    try {
+      const res = await fetch(`/api/admin/entry-stats?weeks=${$('weeks').value}`, { headers: { 'X-Admin-Token': youjuAdminToken() }, cache: 'no-store' });
+      if (!res.ok) throw new Error(errorFor(res));
+      render(await res.json());
+    } catch (err) {
+      $('out').textContent = '';
+      $('count').textContent = '';
+      $('msg').textContent = err.message;
+    }
+  }
+  $('load').onclick = load;
+  $('weeks').onchange = load;
+})();
+</script>
+</body>
+</html>
