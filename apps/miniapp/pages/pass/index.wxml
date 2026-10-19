@@ -1,7 +1,7 @@
 <notice-bar />
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
-<view wx:elif="{{!product}}" class="card advisor-card">付费服务暂未开放</view>
+<view wx:elif="{{!product}}" class="card advisor-card muted">{{closedNote || '正在加载…'}}</view>
 <block wx:else>
   <view wx:if="{{sandbox}}" class="card pass-sandbox">沙箱测试：只对测试人员开放，付款不扣真钱，开通的使用期仅供测试。正式收费前《付费服务协议》会定稿。</view>
   <!-- 最上面一眼看到：给谁用、两档多少钱、会不会再扣钱；续买的规则和价格在同一屏（D-070） -->
