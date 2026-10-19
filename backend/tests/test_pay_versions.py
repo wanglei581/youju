@@ -134,6 +134,7 @@ def test_free_limit_message_offers_the_pass_only_to_builds_that_can_buy(setup_pa
         assert submit(setup_pay, key=f"free-{index}").status_code == 202
     trial = submit(setup_pay, key="over-trial")
     assert trial.status_code == 429 and "也可以买批量工具" in trial.json()["detail"]["message"]
+    assert trial.json()["detail"]["canBuy"] is True
     release = client.post(
         "/api/v1/advisor/tasks",
         headers={**RELEASE, "Idempotency-Key": "over-release"},
@@ -142,3 +143,5 @@ def test_free_limit_message_offers_the_pass_only_to_builds_that_can_buy(setup_pa
     assert release.status_code == 429
     assert release.json()["detail"]["code"] == "FREE_MONTHLY_LIMIT"
     assert "批量工具" not in release.json()["detail"]["message"]
+    # 小程序据此丢掉之前缓存的价格（Codex 审阅）
+    assert release.json()["detail"]["canBuy"] is False

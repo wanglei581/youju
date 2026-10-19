@@ -696,10 +696,32 @@ def test_full_refund_and_cases_that_are_not_refunded(shop, session, run_cli, cap
     assert run_cli(*full) == 0
     assert "退款后请按退款金额开红字发票" in capsys.readouterr().out
     assert refunds(shop)[0]["refund_fee"] == 2900
-    # 管理台开票页"要冲红"列出它；"待开"里没有
+    # 管理台开票页"要冲红"列出它（带退款金额和进度）；"待开"里没有
     reverse = shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json()
-    assert [(i["orderId"], i["needsReversal"]) for i in reverse] == [(row.id, True)]
+    assert [(i["orderId"], i["needsReversal"], i["refundFee"]) for i in reverse] == [
+        (row.id, True, 2900)
+    ]
+    assert reverse[0]["refundState"] == "退款处理中，确认退款后再冲红"
+    assert reverse[0]["canMarkReversed"] is False
     assert shop.client.get("/api/admin/invoices", headers=ADMIN).json() == []
+    invoice_id = reverse[0]["id"]
+    # 退款还没确认：不能标已冲红
+    early = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert early.status_code == 409
+    assert complete_refund(shop, session, row, 0).status == "refunded"
+    reverse = shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json()
+    assert reverse[0]["refundState"] == "已退款，按退款金额开红字发票"
+    assert reverse[0]["canMarkReversed"] is True
+    done = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert done.status_code == 200
+    again = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert again.status_code == 409
+    # 标过以后"要冲红"里不再列出；"全部"里写已冲红；用户订单页的发票写"已冲红"
+    assert shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json() == []
+    everything = shop.client.get("/api/admin/invoices?status=all", headers=ADMIN).json()
+    assert everything[0]["reversedAt"] and everything[0]["needsReversal"] is False
+    mine = shop.client.get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).json()
+    assert mine["invoice"]["status"] == "已冲红"
     with pytest.raises(SystemExit):
         run_cli(*full, "--invoice-reversed")
     # 苹果手机付款的不主动退
@@ -881,11 +903,13 @@ def test_free_limit_message_only_mentions_buying_while_on_sale(shop, session):
     detail = submit(shop, 1, "fourth").json()["detail"]
     assert detail == {
         "code": "FREE_MONTHLY_LIMIT",
+        "canBuy": True,
         "message": "本月免费次数已用完，下月 1 日恢复；也可以买批量工具，不限次数、每次 500 家以内，到期不扣钱",
     }
     shop.settings.pay_enabled = False
     detail = submit(shop, 1, "fifth").json()["detail"]
     assert detail["message"] == "本月免费次数已用完，下月 1 日恢复"
+    assert detail["canBuy"] is False
     assert "客户工作台" not in json.dumps(detail, ensure_ascii=False)
 
 

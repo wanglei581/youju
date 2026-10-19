@@ -222,6 +222,8 @@ Page({
       if (ended && this.data.trialActive) change.trialEnded = '加量体验已结束，已回到免费版';
       const free = ['FREE_MONTHLY_LIMIT', 'FREE_ROW_LIMIT'].includes(err.code) ? { passActive: false, trialActive: false } : {};
       if (err.code === 'FREE_MONTHLY_LIMIT') Object.assign(change, free, { remaining: 0 });
+      // 服务端说现在买不了（停卖、或这个包不在售，D-074）：丢掉之前缓存的价格，提示里不再提购买（Codex 审阅）
+      if (err.code === 'FREE_MONTHLY_LIMIT' && err.detail && err.detail.canBuy === false) change.offer = null;
       if (err.code === 'TRIAL_DAILY_LIMIT') Object.assign(change, { trialLeft: 0 });
       if (['FREE_ROW_LIMIT', 'PASS_ROW_LIMIT', 'TRIAL_ROW_LIMIT'].includes(err.code)) {
         const limit = err.detail && err.detail.maxRows;

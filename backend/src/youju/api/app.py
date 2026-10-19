@@ -2551,8 +2551,15 @@ class InvoiceAdminOut(BaseModel):
     note: str | None
     createdAt: datetime
     issuedAt: datetime | None
-    # 已开的发票、订单已经退款（或正在退）：要按退款金额开红字发票（退款不等冲红，D-074）
+    # 退款不等冲红（D-074）：已开的发票、订单已经退款或正在退，要按退款金额开红字发票；
+    # refundFee 是退了多少（部分退款按剩余天数退），refundState 是退款走到哪一步，
+    # 确认退款后才标"已冲红"
     needsReversal: bool
+    # 订单已确认退款、还没标已冲红：管理台给"已冲红"按钮
+    canMarkReversed: bool
+    refundFee: int | None
+    refundState: str | None
+    reversedAt: datetime | None
 
 
 class InvoiceDecisionIn(BaseModel):
@@ -2578,7 +2585,23 @@ def _invoice_admin_out(invoice, order) -> InvoiceAdminOut:
         note=invoice.note,
         createdAt=invoice.created_at,
         issuedAt=invoice.issued_at,
-        needsReversal=invoice.status == "issued" and order.refund_status is not None,
+        needsReversal=invoice.status == "issued"
+        and order.refund_status is not None
+        and invoice.reversed_at is None,
+        canMarkReversed=invoice.status == "issued"
+        and order.status == "refunded"
+        and invoice.reversed_at is None,
+        refundFee=order.refund_fee,
+        refundState=(
+            None
+            if order.refund_status is None
+            else "已退款，按退款金额开红字发票"
+            if order.status == "refunded"
+            else "退款需人工核对，核对完再冲红"
+            if order.status == "manual"
+            else "退款处理中，确认退款后再冲红"
+        ),
+        reversedAt=invoice.reversed_at,
     )
 
 
@@ -2596,8 +2619,12 @@ def admin_invoices(
     if status == "pending":
         stmt = stmt.where(InvoiceRequest.status == "pending")
     elif status == "reverse":
-        # 要冲红：已开的发票，订单已经退款或正在退（先退款、再冲红）
-        stmt = stmt.where(InvoiceRequest.status == "issued", PayOrder.refund_status.is_not(None))
+        # 要冲红：已开的发票，订单已经退款或正在退（先退款、再冲红），还没标已冲红
+        stmt = stmt.where(
+            InvoiceRequest.status == "issued",
+            PayOrder.refund_status.is_not(None),
+            InvoiceRequest.reversed_at.is_(None),
+        )
     if before_id is not None:
         stmt = stmt.where(InvoiceRequest.id < before_id)
     rows = session.execute(stmt.order_by(InvoiceRequest.id.desc()).limit(limit)).all()
@@ -2640,6 +2667,38 @@ def issue_invoice(invoice_id: int, session: SessionDep, _admin: AdminDep, reques
     result = _decide_invoice(session, invoice_id, True, None)
     _audit(request, "invoice_issue", invoice_id=invoice_id)
     return result
+
+
+@app.post("/api/admin/invoices/{invoice_id}/reversed")
+def reversed_invoice(
+    invoice_id: int, session: SessionDep, _admin: AdminDep, request: Request
+) -> dict:
+    """标记已按退款金额开了红字发票（D-074 退款不等冲红）。只对已开、订单已确认退款、还没标过的；
+    锁顺序同退款：用户 → 订单 → 发票。"""
+    from youju.models import InvoiceRequest
+    from youju.payments import lock_order
+
+    order_id = session.scalar(
+        select(InvoiceRequest.order_id).where(InvoiceRequest.id == invoice_id)
+    )
+    order = lock_order(session, order_id) if order_id is not None else None
+    invoice = session.scalar(
+        select(InvoiceRequest)
+        .where(InvoiceRequest.id == invoice_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="没有这条开票申请")
+    if invoice.status != "issued" or invoice.reversed_at is not None:
+        raise HTTPException(status_code=409, detail="这张发票没开过，或已经标过已冲红")
+    if order is None or order.status != "refunded":
+        raise HTTPException(status_code=409, detail="订单还没确认退款，确认退款后再冲红")
+    stamp = datetime.now(UTC)
+    invoice.reversed_at = invoice.updated_at = stamp
+    session.commit()
+    _audit(request, "invoice_reversed", invoice_id=invoice_id)
+    return {"status": "reversed"}
 
 
 @app.post("/api/admin/invoices/{invoice_id}/reject")

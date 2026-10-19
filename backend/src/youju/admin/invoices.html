@@ -104,7 +104,8 @@
     const meta = el('div', 'meta');
     const state = el('span', TONE[item.status] || 'tag', item.status);
     meta.append(state);
-    if (item.needsReversal) meta.append(el('span', 'tag rejected', '订单已退款，要开红字发票'));
+    if (item.reversedAt) meta.append(el('span', 'tag', '已冲红'));
+    else if (item.refundState) meta.append(el('span', 'tag rejected', item.refundState));
     meta.append(el('span', '', `订单 ${item.orderId}`), el('span', '', `申请于 ${when(item.createdAt)}`));
     const dl = el('dl');
     field(dl, '抬头类型', item.titleType === 'company' ? '单位' : '个人');
@@ -117,8 +118,23 @@
     field(dl, '订单状态', item.orderStatus);
     if (item.note) field(dl, '说明', item.note);
     if (item.issuedAt) field(dl, '开具时间', when(item.issuedAt));
+    if (item.refundState) field(dl, '退款金额（冲红按这个开）', yuan(item.refundFee));
+    if (item.reversedAt) field(dl, '冲红时间', when(item.reversedAt));
     const row = el('div', 'row');
     const msg = el('span', 'msg');
+    if (item.canMarkReversed) {
+      // 退款不等冲红（D-074）：订单确认退款后，按上面的退款金额开好红字发票，再点这里
+      const done = el('button', 'primary', '已冲红');
+      done.onclick = async () => {
+        done.disabled = true; msg.textContent = '';
+        try {
+          const res = await fetch(`/api/admin/invoices/${item.id}/reversed`, { method: 'POST', headers: headers() });
+          if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
+          done.remove(); msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
+        } catch (err) { msg.className = 'msg'; msg.textContent = err.message; done.disabled = false; }
+      };
+      row.append(done);
+    }
     if (item.status === '待开') {
       const issue = el('button', 'primary', '已开');
       const note = el('input', 'note');

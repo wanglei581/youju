@@ -524,6 +524,9 @@ def create_task(
                         status_code=429,
                         detail={
                             "code": "FREE_MONTHLY_LIMIT",
+                            # 这个小程序包现在能不能买（D-074）：
+                            # 页面据此丢掉之前缓存的价格，不再提购买
+                            "canBuy": selling,
                             "message": "本月免费次数已用完，下月 1 日恢复"
                             + (
                                 "；也可以买批量工具，不限次数、每次 500 家以内，到期不扣钱"

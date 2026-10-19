@@ -437,7 +437,8 @@ def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
     if invoice is None:
         return None
     return {
-        "status": INVOICE_LABELS[invoice.status],
+        # 订单退款后已按退款金额开了红字发票的，写"已冲红"（D-074）
+        "status": "已冲红" if invoice.reversed_at is not None else INVOICE_LABELS[invoice.status],
         "titleType": invoice.title_type,
         "title": invoice.title,
         "taxId": invoice.tax_id,
