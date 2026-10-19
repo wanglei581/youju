@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time as _time
 from collections import OrderedDict, deque
@@ -16,7 +17,7 @@ from typing import Annotated, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
@@ -68,12 +69,13 @@ from youju.regions import (
     resolve_city,
     resolve_district,
 )
-from youju.report_revision import publication_revision
+from youju.report_revision import list_count_revision, publication_revision
 from youju.repost import confirmed_members, grouped_documents, labels_for
-from youju.takedown import available_condition, is_taken_down
+from youju.takedown import available_condition, cache_revision, is_taken_down
 from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
+log = logging.getLogger("youju.api.v1")
 
 
 def _request_session(session: Annotated[Session, Depends(get_session)]) -> Session:
@@ -1041,7 +1043,69 @@ def _keyword_ids(session: Session, kw: str) -> Select:
     return by_title.union(by_number)
 
 
-@router.get("/search")
+# 搜索频率上限（S3，10/19）：每个用户每分钟最多 60 次，同一来源地址每分钟合计最多 300 次，
+# 超了返回 429。用户按 openid 算：admin 不认身份请求头（config 不许它信任），
+# 但经小程序云调用来的请求带平台写的 X-WX-OPENID，这里只拿来分开计数、不当身份用——
+# 就算被伪造，也只是给自己多分几份计数，来源地址的合计上限照样拦着；没有 openid 的
+# 按来源地址算一个用户。依据：线上 10/12–10/18 同一来源一分钟最多搜了 24 次，平常 1–5 次；
+# "我的客户"打开一次最多查 20 组（每家客户一组），30 次就会让连开两次时有几组加载失败。
+# 脚本刷接口每秒能发几十次，一个用户限到每秒 1 次；300 次够一个办公室五个人共用一个公网出口
+# 同时满速用。计数在进程内存里，键数有上限（淘汰最久没搜的）。快照里取最新 8 份不经过这里。
+SEARCH_PER_MINUTE = 60
+SEARCH_PER_ADDRESS = 300
+_SEARCH_KEYS_MAX = 10000
+_SEARCH_TIMES: OrderedDict[str, deque[float]] = OrderedDict()
+_SEARCH_LOCK = Lock()
+
+
+def _search_keys(request: Request) -> tuple[str, str]:
+    """(按用户计数的键, 按来源地址合计的键)。"""
+    from youju.api.app import client_ip
+    from youju.api.me import request_openid
+
+    address = client_ip(request)[:64]  # 和访问日志一样截断，计数键不会过长
+    try:
+        return "u:" + request_openid(request), "ip:" + address
+    except HTTPException:
+        pass
+    openid = (
+        (request.headers.get("X-WX-OPENID") or request.headers.get("X-WX-FROM-OPENID"))
+        if "X-WX-SOURCE" in request.headers
+        else None
+    )
+    if openid and openid.strip() and len(openid) <= 128:
+        return "u:" + openid, "ip:" + address
+    return "a:" + address, "ip:" + address
+
+
+def _allow_search(user: str, address: str, now: float) -> bool:
+    """这次搜索没超上限就记一次、返回 True；超了返回 False，不记，也不更新先后顺序
+    （免得借此把别人的记录挤出去）。"""
+    with _SEARCH_LOCK:
+        counted = []
+        for key, limit in ((user, SEARCH_PER_MINUTE), (address, SEARCH_PER_ADDRESS)):
+            times = _SEARCH_TIMES.get(key) or deque()
+            while times and times[0] <= now - 60:
+                times.popleft()
+            if len(times) >= limit:
+                return False
+            counted.append((key, times))
+        for key, times in counted:
+            times.append(now)
+            _SEARCH_TIMES[key] = times
+            _SEARCH_TIMES.move_to_end(key)
+        while len(_SEARCH_TIMES) > _SEARCH_KEYS_MAX:
+            _SEARCH_TIMES.popitem(last=False)
+        return True
+
+
+def _limit_search(request: Request) -> None:
+    if not _allow_search(*_search_keys(request), _time.monotonic()):
+        raise HTTPException(status_code=429, detail="搜索太频繁，请稍后再试")
+
+
+# 限流写在路由上（先于取数据库会话和校验参数）：快照等内部直接调 search() 的不计次
+@router.get("/search", dependencies=[Depends(_limit_search)])
 def search(
     session: SessionDep,
     excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
@@ -1762,12 +1826,62 @@ def _list_board_stats_item(field: str, key: Any, lists: int, entries: int) -> di
     }
 
 
+# 名单看板每份名单的企业数（S2，10/19）：以前每次都把全部名单条目（线上约 27.8 万行）读进程序
+# 去重，名单没变也每 5 分钟整批重算（快照在 admin 上缓存失效时要 3.9–4.7 秒）。现在在数据库里
+# 按归并组去重计数，结果按它用到的全部数据的版本缓存（publication_revision 的名单部分加
+# list_count_revision），版本不变就不重算；另设 1 小时兜底，万一有版本没覆盖到的改动（如直接改库
+# 改企业名），最晚 1 小时后也会算进去。值为 (版本, 写入时刻, {归并组主文件编号: 企业数})。
+LIST_COUNTS_TTL = 3600
+_LIST_COUNTS: dict[str, tuple[tuple, float, dict[int, int]]] = {}
+_LIST_COUNTS_LOCK = Lock()
+
+
+def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int]:
+    """{归并组主文件编号: 去重后的企业名称数}，只含至少读到一个名称的组。
+
+    口径和改前在程序里逐条去重时完全一样：只算和查名单同一公开来源条件（只取一级来源，或与一级
+    来源归并的同一通知）、人工没改成别的类型的文件的条目；主文件和它当前生效的副本算一组
+    （副本只能挂在一个主文件下：document_merges 以副本编号为主键）；同一组里同一个规范化名称只算
+    一次，空名称不算。名称列的排序规则是 utf8mb4_0900_bin（迁移 0001），数据库去重和程序里比较
+    字符串一样：区分大小写、不忽略尾部空格。"""
+    # 先取版本再汇总：汇总期间有新写入时，存下的版本只会比数据旧，下次就重算，不会反过来
+    revision = (lists_revision, list_count_revision(session))
+    with _LIST_COUNTS_LOCK:  # 同一时间只算一份，并发的请求等它算完直接用
+        cached = _LIST_COUNTS.get("all")
+        stamp = _time.monotonic()
+        if cached and cached[0] == revision and stamp - cached[1] < LIST_COUNTS_TTL:
+            return cached[2]
+        # 归并表起别名：公开来源条件的子查询里也用到 document_merges，两层不混
+        merge = aliased(DocumentMerge)
+        master = func.coalesce(merge.canonical_id, ListEntry.document_id)
+        rows = session.execute(
+            select(master, func.count(func.distinct(ListEntry.normalized_name)))
+            .select_from(ListEntry)
+            .join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .outerjoin(
+                merge,
+                and_(merge.duplicate_id == ListEntry.document_id, merge.active.is_(True)),
+            )
+            .where(
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                func.char_length(ListEntry.normalized_name) > 0,
+            )
+            .group_by(master)
+        ).all()
+        counts = {int(group): int(names) for group, names in rows}
+        _LIST_COUNTS["all"] = (revision, stamp, counts)
+        return counts
+
+
 def _list_board_payload(
     session: Session,
     days: int,
     year: int | None,
     province: str,
     list_type: str,
+    lists_revision: tuple | None = None,
 ) -> dict[str, Any]:
     """生成筛选后的完整名单和统计，调用方负责分页。"""
     rows = session.execute(_base().where(_kind_is(["名单"]))).all()
@@ -1775,28 +1889,11 @@ def _list_board_payload(
         return {"records": [], "stats": {"by_year": [], "by_province": [], "by_type": []}}
 
     masters = [doc.id for doc, _ in rows]
-    members_by_master = groups_for(session, masters)
-    owner = {member: master for master, members in members_by_master.items() for member in members}
-    member_ids = list(owner)
     details = _details(session, masters)
-    # 和查名单完全同一公开来源条件：只取一级来源，或与一级来源归并的同一通知。
-    entry_rows = session.execute(
-        select(ListEntry.document_id, ListEntry.normalized_name)
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(
-            ListEntry.document_id.in_(member_ids),
-            public_condition(),
-            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
-        )
-    ).all()
-    names_by_master: dict[int, set[str]] = {master: set() for master in masters}
-    parsed_masters: set[int] = set()
-    for document_id, normalized_name in entry_rows:
-        master = owner.get(document_id)
-        if master is not None and normalized_name:
-            parsed_masters.add(master)
-            names_by_master[master].add(normalized_name)
+    if lists_revision is None:
+        lists_revision = publication_revision(session, "lists")
+    # 主文件都是可见文件（不是任何生效归并的副本），所以按主文件编号取到的就是它这一组的数
+    counts = _list_entry_counts(session, lists_revision)
 
     records: list[dict[str, Any]] = []
     for doc, src in rows:
@@ -1811,7 +1908,7 @@ def _list_board_payload(
         if list_type and item_type != list_type:
             continue
         wording = _list_board_wording(doc.title)
-        count = len(names_by_master[doc.id]) if doc.id in parsed_masters else None
+        count = counts.get(doc.id)  # 一个企业名称也没读到的名单为 None
         records.append(
             {
                 "id": str(doc.id),
@@ -1907,7 +2004,7 @@ def list_board_report(
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         result = cached[1]
     else:
-        result = _list_board_payload(session, days, year_value, province, list_type)
+        result = _list_board_payload(session, days, year_value, province, list_type, revision)
         if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
             _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
         _REPORT_CACHE[key] = (current, result)
@@ -2608,22 +2705,60 @@ def lookup_lists(
 # （带 X-WX-SOURCE，见 app._role_guard），公网直接访问是 404，不对外开放数据接口（D-050）。
 # 只有公开数据、不按用户区分：调首页时用一个不带请求头的空请求，认不出用户
 # （不带"你关注的条件"那一栏）。
-# 按北京时间日期缓存 60 秒。
+# 按北京时间日期缓存 60 秒，60 秒内直接给、不查数据库。
+# S2（10/19）：同一时间只算一份。以前缓存一到期，同时来的请求各算一遍（线上 10/17 18:03 同一秒
+# 3 个请求各算了 3.9–4.7 秒）；现在当场算的和后台刷新的共用一把锁，后来的等这一份算完直接用。
+# 到期后 5 分钟内先给旧的、同时安排后台刷新一份（响应发出后才算，不拖慢这次请求）；给旧的之前
+# 先核对下架版本，算好以后有文件下架或恢复就不给旧的。没有可用的旧的（刚启动、跨天、有下架或恢复、
+# 旧的超过 5 分钟）才当场算。admin 固定 1 个实例，进程内的锁就够；接口服务上各实例各算各的。
+# 值为 ((日期, 下架版本), 开始算的时刻, 快照)。快照不走 SessionDep（它会先查一次规则列）：
+# 没有可用的旧的时，占到名额、拿到锁、真要算了才查。
+# 当场算的时候同时等的请求最多 8 个（含正在算的），每个最多等 10 秒，多了或等久了回 503：等着的请求
+# 占着线程池（同步接口共用默认 40 个），不能让首屏把管理台和其他接口挤住；名额在查数据库之前就占，
+# 数据库慢的时候多出来的请求也不去查。小程序取快照只试一次，取不到就直接等实时数据，不提示。
 _SNAPSHOT_CACHE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
 SNAPSHOT_TTL = 60
+SNAPSHOT_STALE = 300
+SNAPSHOT_WAITERS = 8
+SNAPSHOT_WAIT = 10.0
+_SNAPSHOT_BUILD = Lock()  # 当场算和后台刷新共用：同一时间只算一份
+_SNAPSHOT_STATE = Lock()
+_snapshot_waiters = 0  # 当场算的和等着它的请求数（受 _SNAPSHOT_STATE 保护）
+# 已安排、还没做完的后台刷新是什么时候安排的（monotonic）；没有为 None。
+# 安排了超过 SNAPSHOT_STALE 秒还没做完的当作丢了（如响应没发出去），可以重新安排
+_snapshot_refresh_at: float | None = None
 
 
-@router.get("/snapshot")
-def snapshot(session: SessionDep) -> dict[str, Any]:
-    """首屏快照：home（同 /home?group=1&excerpts=1，列表换成最新 8 份申报通知，不带机器摘录）、
-    deadlines（同 /reports/deadlines?days=7&excerpts=1）、lists（同 /lists/recent?group=1）、
-    scope（同 /reports/lists 的 stats）。"""
-    current = now()
-    key = (current.astimezone(_TZ).date(),)
-    stamp = _time.monotonic()
+def _snapshot_revision(session: Session) -> tuple:
+    """快照的下架版本：下架、恢复的历史和归并（cache_revision），加上现在下架着的文件的条数和
+    编号校验和（下架时间列有索引，只读下架着的几行）——不经管理台直接改库下架、恢复也能发现。"""
+    hidden = session.execute(
+        select(func.count(), func.coalesce(func.sum(func.crc32(Document.id)), 0)).where(
+            Document.taken_down_at.is_not(None)
+        )
+    ).one()
+    return (cache_revision(session), tuple(hidden))
+
+
+def _cached_snapshot(max_age: float) -> tuple[tuple, float, dict[str, Any]] | None:
+    """今天算的、不超过 max_age 秒的那份，没有返回 None。只看日期和时间，不查数据库。"""
     cached = _SNAPSHOT_CACHE.get("first")
-    if cached and cached[0] == key and stamp - cached[1] < SNAPSHOT_TTL:
-        return cached[2]
+    if (
+        cached
+        and cached[0][0] == now().astimezone(_TZ).date()
+        and _time.monotonic() - cached[1] < max_age
+    ):
+        return cached
+    return None
+
+
+def _build_snapshot(session: Session) -> dict[str, Any]:
+    """算一份快照存进缓存。调用方持有 _SNAPSHOT_BUILD。"""
+    current = now()
+    stamp = _time.monotonic()
+    # 先取下架版本再算：算的时候有新下架，存下的键只会比数据旧，下次请求就重算
+    key = (current.astimezone(_TZ).date(), _snapshot_revision(session))
+    note_rules_complete(session)
     anonymous = Request(
         {
             "type": "http",
@@ -2646,3 +2781,75 @@ def snapshot(session: SessionDep) -> dict[str, Any]:
     }
     _SNAPSHOT_CACHE["first"] = (key, stamp, payload)
     return payload
+
+
+def _claim_snapshot_refresh() -> bool:
+    """还没有在做的后台刷新时安排一个，返回 True；已经安排了返回 False。"""
+    global _snapshot_refresh_at
+    stamp = _time.monotonic()
+    with _SNAPSHOT_STATE:
+        if _snapshot_refresh_at is not None and stamp - _snapshot_refresh_at < SNAPSHOT_STALE:
+            return False
+        _snapshot_refresh_at = stamp
+        return True
+
+
+def _snapshot_wait(delta: int) -> bool:
+    """当场算或等着的请求数加减 1；加的时候已经满了返回 False（不加）。"""
+    global _snapshot_waiters
+    with _SNAPSHOT_STATE:
+        if delta > 0 and _snapshot_waiters >= SNAPSHOT_WAITERS:
+            return False
+        _snapshot_waiters += delta
+        return True
+
+
+def _refresh_snapshot(bind) -> None:
+    """后台刷新：响应发出后在线程池里跑，用自己的数据库会话（请求的会话那时已经关了）。"""
+    global _snapshot_refresh_at
+    try:
+        with Session(bind=bind, expire_on_commit=False) as session, _SNAPSHOT_BUILD:
+            # 等锁的时候可能已经有请求当场算好了
+            if _cached_snapshot(SNAPSHOT_TTL) is None:
+                _build_snapshot(session)
+    except Exception:
+        # 刷新失败：旧的照样给到 5 分钟，之后的请求当场算，出错照常报错
+        log.exception("首屏快照后台刷新失败")
+    finally:
+        with _SNAPSHOT_STATE:
+            _snapshot_refresh_at = None
+
+
+@router.get("/snapshot")
+def snapshot(
+    session: Annotated[Session, Depends(get_session)], background: BackgroundTasks
+) -> dict[str, Any]:
+    """首屏快照：home（同 /home?group=1&excerpts=1，列表换成最新 8 份申报通知，不带机器摘录）、
+    deadlines（同 /reports/deadlines?days=7&excerpts=1）、lists（同 /lists/recent?group=1）、
+    scope（同 /reports/lists 的 stats）。"""
+    fresh = _cached_snapshot(SNAPSHOT_TTL)
+    if fresh is not None:
+        return fresh[2]
+    stale = _cached_snapshot(SNAPSHOT_STALE)
+    if stale is not None and stale[0][1] == _snapshot_revision(session):
+        if _claim_snapshot_refresh():
+            background.add_task(_refresh_snapshot, session.get_bind())
+        return stale[2]
+    # 等锁前先结束只读事务、把连接还给连接池：同时等的请求多时不把连接池占满
+    session.rollback()
+    busy = HTTPException(status_code=503, detail="首屏数据正在生成，请稍后再试")
+    if not _snapshot_wait(1):
+        raise busy
+    try:
+        if not _SNAPSHOT_BUILD.acquire(timeout=SNAPSHOT_WAIT):
+            raise busy
+        try:
+            # 等锁的时候别的请求或后台刷新可能已经算好了，直接用
+            fresh = _cached_snapshot(SNAPSHOT_TTL)
+            if fresh is not None:
+                return fresh[2]
+            return _build_snapshot(session)
+        finally:
+            _SNAPSHOT_BUILD.release()
+    finally:
+        _snapshot_wait(-1)
