@@ -218,8 +218,9 @@ _DECIMAL = re.compile(r"((?<![\d.])\d+\.\d+(?![\d.]))")
 
 
 def _account_cell(text: str, *, types: bool = False) -> bool:
-    """这一格是不是账号标签。"基本存款账户"这类账户类型的词：types=True（表头行和表头上面几行，
-    列名常这样写）当标签；表头下面的数据格里是账户类型的值，不当标签。"""
+    """这一格是不是账号标签。"基本存款账户"这类账户类型的词，types=True 时也当标签：表格里这一列
+    往下按账号认（列名常这样写，两层表头的第二层也是；"账户类型"列下面只有账户类型的值，多认了也
+    不会遮错）；"名目 | 内容"的表里左边那格。"""
     return bool(_ACCOUNT_CELL.match(text)) and (types or not _ACCOUNT_TYPE.search(text))
 
 
@@ -650,27 +651,28 @@ class _Builder:
         for index, row in enumerate(rows):
             for cell in row.cells:
                 text = clean(cell.text)
-                kind = _cell_label(text, types=index < first) if cell.span < 3 else None
+                kind = _cell_label(text, types=True) if cell.span < 3 else None
                 for col in range(cell.col, cell.col + max(cell.span, 1)) if kind else ():
                     label_from.setdefault(col, (index, kind))
         head_text = ""
         for i, row in enumerate(rows):
-            cells, changed, left = [], False, ""
+            cells, changed, left, left_col = [], False, "", -1
             for cell in row.cells:
                 text = clean(cell.text)
                 if not text:
                     continue
                 header = headers.get(cell.col) if i >= first else None
                 since, kind = label_from.get(cell.col, (len(rows), None))
-                masked = mask(
-                    text, column=kind if i > since else _cell_label(left, types=i < first)
-                )
+                # 左边那格：有表头的列里的账户类型词是值（"账户类型"列里的"基本账户"），右边那格
+                # （项目编号）不按账号认；"名目 | 内容"的表（没有列表头）里是标签
+                left_kind = _cell_label(left, types=left_col not in headers)
+                masked = mask(text, column=kind if i > since else left_kind)
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
                 if header:
                     item["h"] = header
                 cells.append(item)
-                left = text
+                left, left_col = text, cell.col
             if changed:
                 self.masked += 1
             row_text = " | ".join(c["t"] for c in cells)
