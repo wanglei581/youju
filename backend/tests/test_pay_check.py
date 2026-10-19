@@ -232,15 +232,25 @@ def test_manual_order_that_was_opened_still_needs_staff(setup_pay, session):  # 
 def test_me_carries_the_pass_for_the_badge(setup_pay, session):  # noqa: F811
     """我的页头的批量工具标识：/me 带上使用期（买的、送的都算，不看在不在卖）。"""
     client, settings, _ = setup_pay
+    # 从没开通过（比如只有一张待确认的订单）：不算"已到期"
+    order(session, create(setup_pay))
     assert client.get("/api/v1/me", headers=HEADERS).json()["pass"] == {
         "active": False,
         "expiresAt": None,
+        "expired": False,
     }
-    delivered(setup_pay, session)
+    pay._checked.clear()
+    row = delivered(setup_pay, session)
     settings.pay_enabled = False  # 停卖了，已买的使用期照样显示
     body = client.get("/api/v1/me", headers=HEADERS).json()
-    assert body["pass"]["active"] is True
+    assert body["pass"]["active"] is True and body["pass"]["expired"] is False
     assert body["pass"]["expiresAt"].startswith("2026-11-03")
+    # 用完了：已到期
+    ticket = payments.order_pass(session, row)
+    ticket.starts_at, ticket.ends_at = NOW - timedelta(days=40), NOW - timedelta(days=10)
+    session.commit()
+    body = client.get("/api/v1/me", headers=HEADERS).json()
+    assert body["pass"] == {"active": False, "expiresAt": None, "expired": True}
     # 还没有用户记录的人：没有使用期
     assert (
         client.get("/api/v1/me", headers={**HEADERS, "X-WX-OPENID": "new"}).json()["pass"] is None

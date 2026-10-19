@@ -348,7 +348,7 @@ def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
         "pay": payments.entry(session, get_settings(), user, payments.client_of(request.headers)),
         # 批量工具使用期（买的、送的都算）：我的页头据此显示"批量工具 · 到某日"的标识；
         # 不看在不在卖——停卖前买的使用期照样显示
-        "pass": payments.pass_status(session, user.id, v1.now()),
+        "pass": payments.pass_summary(session, user.id, v1.now()),
         # 纠错被采纳送天数（D-070 ⑦）开着时，纠错页公开写出规则和采纳标准；关着为 None
         "correctionReward": rewards.correction_info(get_settings()),
     }

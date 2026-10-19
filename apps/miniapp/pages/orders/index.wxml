@@ -8,7 +8,9 @@
   <block wx:else>
   <view wx:for="{{items}}" wx:key="orderId" class="card order">
     <view class="order-head"><text class="order-name">{{item.name}}</text><text class="order-status order-status--{{item.statusTone}}">{{item.statusText}}</text></view>
-    <view class="order-line"><text class="order-amount">{{item.amountText}} 元</text><text wx:if="{{item.paidText}}" class="muted"> · {{item.paidText}} 付款</text></view>
+    <view class="order-line"><text class="order-amount">{{item.amountText}} 元</text><text wx:if="{{item.paidText}}" class="muted"> · {{item.paidText}} 付款</text><text wx:elif="{{item.orderedText}}" class="muted"> · {{item.orderedText}} 下单</text></view>
+    <!-- 待确认、人工核对中、已关闭：说一句现在是什么情况、接下来会怎样 -->
+    <view wx:if="{{item.note}}" class="order-note">{{item.note}}</view>
     <view wx:if="{{item.refundText}}" class="order-line muted">{{item.refundText}}</view>
     <view wx:if="{{item.period}}" class="order-line muted">使用期 {{item.period}}</view>
     <!-- 随这笔送的天数，每次一行（续买多送、加量体验折算） -->
@@ -34,7 +36,9 @@
         <button class="order-btn" bindtap="cancelInvoice" disabled="{{sending}}">取消</button>
       </view>
     </view>
-    <view wx:elif="{{item.canRefund || item.invoiceAction}}" class="order-actions">
+    <view wx:elif="{{item.canRefund || item.invoiceAction || item.canCheck || item.statusTone === 'warn'}}" class="order-actions">
+      <button wx:if="{{item.canCheck || item.statusTone === 'warn'}}" class="order-btn" data-id="{{item.orderId}}" bindtap="problem">遇到问题</button>
+      <button wx:if="{{item.canCheck}}" class="order-btn order-btn--main" data-id="{{item.orderId}}" bindtap="recheck" disabled="{{checking !== null}}" loading="{{checking === item.orderId}}">重新核对</button>
       <button wx:if="{{item.canRefund}}" class="order-btn" data-id="{{item.orderId}}" bindtap="refund" disabled="{{refunding !== null}}" loading="{{refunding === item.orderId}}">申请退款</button>
       <button wx:if="{{item.invoiceAction}}" class="order-btn" data-id="{{item.orderId}}" bindtap="invoice">{{item.invoiceAction}}</button>
     </view>

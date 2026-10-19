@@ -329,6 +329,26 @@ def pass_status(session: Session, user_id: int, stamp: datetime) -> dict:
     return {"active": True, "expiresAt": expiry}
 
 
+def pass_summary(session: Session, user_id: int, stamp: datetime) -> dict:
+    """我的页用的使用期：现在有没有、到哪天（pass_status），没有时再说以前有没有过、已经到期
+    （退款收回的不算）。我的页头的"批量工具"标识只看 active；"批量工具"一行的小字，到期了的写
+    "已到期，可再买一次"，从没开通过的（比如只有一张待确认的订单）写价格，不写"已到期"。"""
+    status = pass_status(session, user_id, stamp)
+    status["expired"] = not status["active"] and (
+        session.scalar(
+            select(WorkbenchPass.id)
+            .where(
+                WorkbenchPass.user_id == user_id,
+                WorkbenchPass.revoked_at.is_(None),
+                WorkbenchPass.ends_at <= stamp,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    return status
+
+
 def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
     # last_used_at 是任务提交时的最少审计记录，删除、失败、取消均不抹去使用事实。
     if ticket is None or ticket.order_id is None:
