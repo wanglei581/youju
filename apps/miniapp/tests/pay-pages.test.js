@@ -102,7 +102,8 @@ function passPage(options = {}) {
     setStorageSync: (key, value) => storage.set(key, plain(value)),
     removeStorageSync: (key) => storage.delete(key),
     navigateTo: ({ url }) => urls.push(url),
-    switchTab: ({ url }) => urls.push(`tab:${url}`),
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`),
     showToast: (toast) => toasts.push(toast),
     login: (payload) => payload.success({ code: 'wx-code-1' }),
     requestVirtualPayment(payload) {
@@ -116,6 +117,7 @@ function passPage(options = {}) {
     '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(options.agreed !== false) },
     '../../content/pay-terms.js': options.terms || FINAL_TERMS,
   }, { wx, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  if (options.before) options.before({ page, storage });
   page.onShow();
   return { page, calls, urls, toasts, storage, clock };
 }
@@ -133,7 +135,7 @@ function ordersPage(items, options = {}) {
   const calls = []; const urls = []; let modal = null;
   const api = {
     payOrders: () => { calls.push(['list']); return options.payOrders ? options.payOrders() : Promise.resolve({ items }); },
-    advisorCapabilities: () => { calls.push(['caps']); return Promise.resolve(options.caps || { pay: { enabled: false, hasOrders: false } }); },
+    advisorCapabilities: (opts) => { calls.push(['caps', plain(opts || {})]); return Promise.resolve(options.caps || { pay: { enabled: false, hasOrders: false }, reason: 'off' }); },
     refundPayOrder: (id) => { calls.push(['refund', id]); return Promise.resolve({}); },
     requestInvoice: (id, body) => {
       calls.push(['invoice', id, plain(body)]);
@@ -147,7 +149,9 @@ function ordersPage(items, options = {}) {
   const page = load('pages/orders/index.js', {
     '../../utils/api.js': api,
     '../../utils/consent.js': { loginOpen: () => true },
-  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {}, switchTab: ({ url }) => urls.push(`tab:${url}`) } }, { byReference: options.byReference });
+  }, { wx: { showModal: (payload) => { modal = payload; }, navigateTo() {}, showToast() {},
+    switchTab: (payload) => { urls.push(`tab:${payload.url}`); if (options.switchFail && payload.fail) payload.fail({ errMsg: 'switchTab:fail' }); },
+    reLaunch: ({ url }) => urls.push(`relaunch:${url}`) } }, { byReference: options.byReference });
   page.onShow();
   return { page, calls, urls, modal: () => modal };
 }
@@ -266,6 +270,54 @@ test('订单页没有订单又不在售时回首页、不写"暂未开放"；在
   await flush();
   assert.deepEqual(gone.urls, ['tab:/pages/home/index']);
   assert.doesNotMatch(shown('pages/orders/index.wxml', gone.page.data), /暂未开放|没有找到接口/);
+});
+
+test('购买页停卖时：刚开通的照旧显示开通结果、还有待确认的一笔时写去订单页看，都不送回首页；页面已隐藏也不跳，防止刚付款的人被送走（Codex 审阅）', async () => {
+  let selling = true;
+  const confirmed = passPage({ payProducts: () => Promise.resolve(selling ? { items: [PRODUCT], invoiceType: INVOICE } : { items: [] }) });
+  await flush();
+  confirmed.page.setData({ confirmed: true, message: '已开通，使用期到 2026-11-18' });
+  selling = false;
+  confirmed.page.onShow(); await flush();
+  assert.deepEqual(confirmed.urls, []);
+  assert.equal(confirmed.page.data.confirmed, true);
+  assert.equal(confirmed.page.data.loading, false);
+  assert.match(shown('pages/pass/index.wxml', confirmed.page.data), /去用工具/);
+
+  const pending = passPage({ payProducts: () => Promise.resolve({ items: [] }),
+    before: ({ storage }) => storage.set('pay.unsettled', { orderId: 41, at: Date.now() }) });
+  await flush();
+  assert.deepEqual(pending.urls, []);
+  assert.match(shown('pages/pass/index.wxml', pending.page.data), /我的 → 我的订单/);
+  assert.equal(payButtons(pending.page.data).length, 0);
+
+  let release;
+  const hidden = passPage({ payProducts: () => new Promise((resolve) => { release = resolve; }) });
+  hidden.page.onHide();
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, []);
+  hidden.page.onShow(); await flush();
+  assert.deepEqual(hidden.urls, []);
+  release({ items: [] }); await flush();
+  assert.deepEqual(hidden.urls, ['tab:/pages/home/index']);
+});
+
+test('回首页时 switchTab 失败就 reLaunch 首页，购买页和订单页都不会一直停在加载中（Codex 审阅）', async () => {
+  const pass = passPage({ payProducts: () => Promise.resolve({ items: [] }), switchFail: true });
+  await flush();
+  assert.deepEqual(pass.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+  const orders = ordersPage([], { switchFail: true });
+  await flush();
+  assert.deepEqual(orders.urls, ['tab:/pages/home/index', 'relaunch:/pages/home/index']);
+});
+
+test('订单页没有订单时强制重查能力接口；没连上（offline）留在本页给重试，不当成停卖回首页（Codex 审阅）', async () => {
+  const h = ordersPage([], { caps: { pay: { enabled: false, hasOrders: false }, reason: 'offline' } });
+  await flush();
+  assert.deepEqual(h.urls, []);
+  assert.deepEqual(h.calls, [['list'], ['caps', { refresh: true }]]);
+  assert.equal(h.page.data.error, '网络连接失败，请检查网络后重试');
+  assert.match(shown('pages/orders/index.wxml', h.page.data), /重试/);
 });
 
 test('订单页有订单时照常列出，不查能力接口也不回首页（停卖以后已付款的人照样看订单、退款、开票）', async () => {

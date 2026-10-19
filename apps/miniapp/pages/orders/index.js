@@ -8,7 +8,7 @@ function emptyForm() { return { titleType: 'personal', title: '', taxId: '', ema
 // 没有订单、也没在卖时直接回首页，不显示"暂未开放"之类的字样（D-074）：首发包带着这一页，
 // 从旧链接直接打开时只会回到首页。有订单的人（停卖以后）照常看订单、退款、开票
 function goHome() {
-  wx.switchTab({ url: '/pages/home/index' });
+  wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
 }
 
 Page({
@@ -25,10 +25,12 @@ Page({
       if (serial !== this.serial) return null;
       const items = res.items.map(pay.orderView);
       if (items.length) { this.setData({ loading: false, items }); return null; }
-      // 没有订单：在售时写"还没有订单"，不在售就回首页（能力接口失败也按不在售处理）
-      return api.advisorCapabilities().then((caps) => {
+      // 没有订单：在售时写"还没有订单"，明确不在售才回首页；没连上（offline）留在本页给重试（Codex 审阅）。
+      // 强制重新查：能力接口的结果有缓存，售卖状态变了不能按旧结果跳
+      return api.advisorCapabilities({ refresh: true }).then((caps) => {
         if (serial !== this.serial) return;
         if (caps && caps.pay && caps.pay.enabled === true) this.setData({ loading: false, items: [] });
+        else if (caps && caps.reason === 'offline') this.setData({ loading: false, error: '网络连接失败，请检查网络后重试' });
         else goHome();
       });
     }).catch((err) => {
