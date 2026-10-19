@@ -13,14 +13,18 @@ from youju.ai.client import ChatClient
 from youju.api import v1
 from youju.digest import build_digest, digest_text, pick_for_review
 from youju.models import (
+    AccessDaily,
+    AdvisorTask,
     AICheck,
     AIUsage,
+    AttachmentCopy,
     Document,
     DocumentDeadline,
     DocumentDetail,
     DocumentMerge,
     Feedback,
     Follow,
+    ListEntry,
     Source,
     SourceCheck,
     Subscription,
@@ -186,7 +190,7 @@ def world(session, monkeypatch):
         ]
     )
     session.commit()
-    return {"apply": apply_doc, "list": list_doc, "old": old}
+    return {"apply": apply_doc, "list": list_doc, "old": old, "twin": twin}
 
 
 def test_digest_numbers_match_the_consoles(session, world) -> None:
@@ -198,15 +202,22 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
     assert (d.details_ok, d.details_failed, d.new_candidates) == (1, 1, 2)
     assert (d.approved, d.rejected) == (1, 1)
     assert (d.pending, d.pending_30, d.nearest_due) == (3, 1, date(2026, 10, 10))
+    # 7 天内到期的待核对和管理台"截止日期 · 7 天内"同一个数；最近一次核对是今天（北京时间）
+    assert d.pending_7 == 0 and d.last_reviewed == date(2026, 9, 29)
     assert (d.kinds_pending, d.audit_flagged, d.feedback_pending) == (1, 1, 1)
     assert (d.new_users, d.active_users, d.total_users, d.new_follows) == (1, 1, 2, 1)
     assert (d.reminders_sent, d.reminders_failed) == (1, 1)
     assert d.usage.day == date(2026, 9, 28) and d.usage.calls == 12
 
     text = digest_text(d, [])
+    assert text.splitlines()[1] == (
+        "今天先核：7 天内到期的截止待核对 0 条（管理台“截止日期 · 7 天内”）；上次核对 9月29日"
+    )
     for fragment in (
         "运维日报 9月29日",
         "启用栏目 2 个，今天检查成功 1 个（50.0%）；异常 1 个：山东省科学技术厅2",
+        # 异常栏目带上次成功的日期：从没成功过的写从哪天起
+        "山东省科学技术厅2 · 通知公告 · http_error（从没成功过，9月29日起）",
         "24 小时新发现 2 份",
         "补详情成功 1、失败 1；新截止候选 2 条",
         "24 小时通过 1、驳回 1；待核对 3 条（30 天内截止 1 条，最近 10月10日）",
@@ -218,6 +229,64 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
         assert fragment in text, fragment
     # 群里只报总数，不出现任何用户标识
     assert "o-fresh" not in text and "AI 建议" not in text
+
+
+def test_first_line_counts_the_seven_day_queue_and_days_since_review(session, world) -> None:
+    """日报第一行：今天要核几条（和管理台同一个计数），上次核对是几号、几天前。"""
+    from youju.api import app as admin
+
+    # 两天后截止的待核对候选：进 7 天队列
+    add_deadline(session, world["apply"], date(2026, 10, 1), created=NOW - timedelta(hours=1), n=7)
+    # 把核对时间改到 4 天前：日报要写"4 天前"
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        row.reviewed_at = NOW - timedelta(days=4)
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert d.pending_7 == admin.pending_count(session, None, "7")["pending"] == 1
+    # 日报按它自己的"今天"算：同一时刻换一天（7 天窗口外）就不算
+    assert admin.pending_due_count(session, "7", date(2026, 10, 2)) == 0
+    assert d.last_reviewed == date(2026, 9, 25)
+    line = digest_text(d, []).splitlines()[1]
+    assert line == (
+        "今天先核：7 天内到期的截止待核对 1 条（管理台“截止日期 · 7 天内”）；上次核对 9月25日（4 天前）"
+    )
+    # 已通过的截止今天标为"已变更"（延期）：上次核对是今天，不是原来通过的那天
+    changed = session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status == "approved")
+    ).first()
+    changed.status, changed.changed_at = "changed", NOW - timedelta(hours=1)
+    changed.change_reason = "延期"
+    changed.changed_to_document_id = world["apply"].id
+    session.commit()
+    assert build_digest(session, now=NOW).last_reviewed == date(2026, 9, 29)
+    # 一条都没核对过
+    for row in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.status != "pending")
+    ):
+        session.delete(row)
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert d.last_reviewed is None
+    assert digest_text(d, []).splitlines()[1].endswith("；还没核对过一条")
+
+
+def test_longest_failing_sources_come_first(session, world) -> None:
+    """日报只列前 3 个异常栏目：坏得最久的排前面，不会被新坏的挤掉。"""
+    old_failure = add_source(session, 7, status="parse_empty")
+    old_failure.last_success_at = NOW - timedelta(days=9)
+    recent_failure = add_source(session, 8, status="network_error")
+    # 第 2 天；夹具里的山东省科学技术厅2 从没成功过、今天第一次失败，是第 1 天
+    recent_failure.last_success_at = NOW - timedelta(days=2)
+    session.commit()
+    failures = build_digest(session, now=NOW).source_failures
+    assert failures[0] == "山东省科学技术厅7 · 通知公告 · parse_empty（上次成功 9月20日）"
+    assert [f.split(" · ")[0] for f in failures] == [
+        "山东省科学技术厅7",
+        "山东省科学技术厅8",
+        "山东省科学技术厅2",
+    ]
 
 
 def fake_ai(reply):
@@ -362,3 +431,148 @@ def test_usage_that_cannot_be_recorded_fails_the_command(
     assert cli.main(["daily-report", "--dry-run"]) == 1 and len(tries) == 2  # 重试一次
     out = capsys.readouterr().out
     assert "AI 用量没记进台账（report）：调用 1 次" in out and "输入 50" in out
+
+
+def test_access_quality_and_usage_lines(session, world) -> None:
+    """日报加三行：接口（昨天）、数据（近 30 天发布）、用量。"""
+    before = build_digest(session, now=NOW)
+    assert before.access == ()
+    assert digest_text(before, []).count("接口（9月28日）：没有汇总") == 1
+    # 昨天（北京时间 9/28）各服务的汇总；前天的不算
+    session.add_all(
+        [
+            AccessDaily(day=date(2026, 9, 28), service="api", requests=1000, errors=1, slow=2),
+            AccessDaily(day=date(2026, 9, 28), service="admin", requests=3000, errors=0, slow=1),
+            AccessDaily(day=date(2026, 9, 27), service="api", requests=5, errors=5, slow=0),
+        ]
+    )
+    # 申报通知有了足够长的正文（200 字）；名单解析出企业
+    detail = session.scalars(
+        select(DocumentDetail).where(DocumentDetail.document_id == world["apply"].id)
+    ).one()
+    detail.body_text = "正" * 200
+    session.add(
+        ListEntry(
+            document_id=world["list"].id,
+            source_url=world["list"].url,
+            name="合成样例甲科技有限公司",
+            normalized_name="合成样例甲科技有限公司",
+            category="其他",
+        )
+    )
+    # 附件副本：两个原站链接内容相同、共用一个对象（只算一次，3 MB）；没下载好的不算
+    for n, status, size, file_id in (
+        (1, "ready", 3 * 1024 * 1024, "cloud://env.bucket/attachments/a.pdf"),
+        (2, "ready", 3 * 1024 * 1024, "cloud://env.bucket/attachments/a.pdf"),
+        (3, "pending", None, None),
+    ):
+        session.add(
+            AttachmentCopy(
+                url_hash=f"{n}".ljust(64, "0"),
+                url=f"https://kjt.shandong.gov.cn/att/{n}.pdf",
+                declared_type="pdf",
+                status=status,
+                size=size,
+                file_id=file_id,
+            )
+        )
+    user = session.scalars(select(User).where(User.openid == "o-fresh")).one()
+    for n, file_id in ((1, "cloud://env.bucket/advisor/1.xlsx"), (2, None)):
+        session.add(
+            AdvisorTask(
+                user_id=user.id,
+                kind="compare",
+                status="done",
+                row_count=1,
+                idempotency_key=f"k{n}",
+                result_file_id=file_id,
+            )
+        )
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert d.access == (("admin", 3000, 0, 1), ("api", 1000, 1, 2))
+    assert d.notices_with_body == before.notices_with_body + 1
+    assert d.notices_30 == before.notices_30 and d.notices_with_candidates >= 1
+    assert d.lists_parsed == before.lists_parsed + 1 and d.lists_30 >= 1
+    assert d.attachment_copies == before.attachment_copies + 1
+    assert d.attachment_bytes == before.attachment_bytes + 3 * 1024 * 1024
+    assert d.result_files == before.result_files + 1
+    assert d.db_bytes is not None and d.db_bytes > 0
+    text = digest_text(d, [])
+    # 向下取一位小数：2999/3000 写 99.9%，不会写成 100%
+    assert (
+        "接口（9月28日，小程序接口）：admin 3000 次，5xx 0 次、其他请求 3 秒及以上 1 次，3 秒内成功 99.9%；"
+        "api 1000 次，5xx 1 次、其他请求 3 秒及以上 2 次，3 秒内成功 99.7%"
+    ) in text
+    assert "数据（近 30 天发布）：申报通知 " in text and "解析出企业名单 " in text
+    assert "；附件副本 1 个，约 3 MB；批量工具结果文件 1 个" in text
+
+
+def test_quality_line_wording() -> None:
+    d = digest_module.Digest(
+        day=date(2026, 10, 19),
+        notices_30=207,
+        notices_with_body=190,
+        notices_with_candidates=150,
+        lists_30=40,
+        lists_parsed=28,
+        db_bytes=None,
+    )
+    text = digest_text(d, [])
+    # 百分比向下取整；数据库大小取不到时照写
+    assert (
+        "数据（近 30 天发布）：申报通知 207 份，有正文 91%、有截止候选 72%；"
+        "名单 40 份，解析出企业名单 70%"
+    ) in text
+    assert "用量：数据库大小取不到；附件副本 0 个，不到 1 MB；批量工具结果文件 0 个" in text
+    empty = digest_text(digest_module.Digest(day=date(2026, 10, 19)), [])
+    assert "申报通知 0 份，有正文 —、有截止候选 —；名单 0 份，解析出企业名单 —" in empty
+
+
+def test_a_failing_metric_only_blanks_its_own_line(session, world, monkeypatch) -> None:
+    """新加的统计哪一项出错（例如查一张没有的表），只把那一项写成取不到：这一项回滚到保存点，
+    后面几项照常查，日报其他部分照发。"""
+    from sqlalchemy import text
+
+    def broken_quality(session, digest, today):
+        session.execute(text("SELECT * FROM no_such_table_for_test"))
+
+    monkeypatch.setattr(digest_module, "_quality", broken_quality)
+    session.add(AccessDaily(day=date(2026, 9, 28), service="api", requests=10, errors=0, slow=0))
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert (d.access_ok, d.quality_ok, d.usage_ok) == (True, False, True)
+    assert d.access == (("api", 10, 0, 0),) and d.db_bytes
+    text_ = digest_text(d, [])
+    assert "数据（近 30 天发布）：取不到（统计出错，看容器日志）" in text_
+    assert "接口（9月28日，小程序接口）：api 10 次" in text_ and "用量：数据库约" in text_
+    # 前面算好的数不受影响
+    assert "今天先核：" in text_ and "待核对 3 条" in text_
+
+
+def test_quality_counts_content_on_other_urls_of_the_same_notice(session, world) -> None:
+    """正文、截止候选在同一通知的另一个网址上（归并组），小程序会用，日报也要算上。"""
+    apply_doc, twin = world["apply"], world["twin"]
+    before = build_digest(session, now=NOW)
+    # 主文件自己没有正文（只有两个字，按详情页规则用自己的），先换成空的；另一个网址上有 300 字
+    detail = session.scalars(
+        select(DocumentDetail).where(DocumentDetail.document_id == apply_doc.id)
+    ).one()
+    detail.body_text = ""
+    session.add(
+        DocumentDetail(document_id=twin.id, body_text="正" * 300, fetched_at=NOW, status="ok")
+    )
+    session.commit()
+    after = build_digest(session, now=NOW)
+    assert after.notices_with_body == before.notices_with_body + 1
+    # 主文件自己有正文（哪怕短）就用自己的：和详情页一致，不够 200 字不算
+    detail.body_text = "正" * 50
+    session.commit()
+    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
+    # 和详情页同一个清理：原文 205 字，去掉网页上的"【关闭窗口】"后只剩 199 字，不算
+    detail.body_text = "正" * 199 + "【关闭窗口】"
+    session.commit()
+    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
+    detail.body_text = "正" * 200 + "【关闭窗口】"
+    session.commit()
+    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body + 1
