@@ -61,6 +61,12 @@ Page({
           }[gate] });
         return;
       }
+      // 这次不拦了：被拦下的那天已经过去（比如 23:59 进来、过了 0 点才回话）就先写"可以重新开始了"，点了才开始；
+      // 还是同一天（比如额度调高了）就不再记，第二天回来不会被旧记录挡住（第 20 轮）
+      if (aiEnabled && this.blockedDay) {
+        if (this.blockedDay !== today()) { this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: DAY_TURNED }); return; }
+        this.blockedDay = null;
+      }
       const gate = aiEnabled ? '' : gateState(res);
       // AI 对这个人没开着（关闭、不在白名单；旧链接、旧记录打开）：正式版回首页，不留一页"不可用"（D-075）；
       // 内测包照旧只写"暂时没有可用工具"

@@ -1852,3 +1852,67 @@ test('Codex 第 19 轮：AI 首页"我的 AI 记录"从进来那一刻算最多�
   clock.now = start + 15 * 60 * 1000 - 1000; h.runTimers(); await settle();
   assert.equal(h.timers.size, 0, '到 15 分钟就停，不因为跨零点重新算');
 });
+
+test('Codex 第 20 轮：当天被拦下、23:59 再进来、过了 0 点能力接口才回话：先写"可以重新开始了"不开始；当天又能用了就不再记，第二天回来照常', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let blocked = true; let capsCalls = 0; let created = 0; let hold = null;
+    const d = dayStub();
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const deps = {
+      '../../utils/api.js': {
+        advisorCapabilities: () => {
+          capsCalls += 1;
+          // 回话的内容按回话那一刻算（过了 0 点才回话时已经能用了）
+          const value = () => (blocked ? ON({ remaining: { interpret: 0, clause: 0 } }) : ON());
+          if (hold) { const wait = hold; hold = null; return wait.then(value); }
+          return Promise.resolve(value());
+        },
+        createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 9, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'queued' }),
+      },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      '../../utils/daywatch.js': d,
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    try {
+      assert.equal(p.data.gate, 'used');
+      // 23:59 再进来，回话时已经过了 0 点（这时已经能用了）
+      p.onHide();
+      let release; hold = new Promise((done) => { release = done; });
+      p.onShow(); await settle();
+      blocked = false; d.nextDay(); release(); await settle();
+      assert.equal(p.data.dayTurned, true, `${page} 先写可以重新开始了`); assert.equal(p.data.aiEnabled, false); assert.equal(created, 0, '不提交');
+      p.reload(); await settle(); assert.equal(p.data.aiEnabled, true, `${page} 点了才开始`);
+    } finally {
+      p.onHide();
+    }
+  }
+  // 当天又能用了（比如额度调高）：不再记，第二天回来照常
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    let blocked = true; let capsCalls = 0;
+    const d = dayStub();
+    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const deps = {
+      '../../utils/api.js': {
+        advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON({ remaining: { interpret: 0, clause: 0 } }) : ON()); },
+        createAdvisorTask: () => Promise.resolve({ id: 9, status: 'queued' }), advisorTask: (id) => Promise.resolve({ id, status: 'queued' }),
+      },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+      '../../utils/daywatch.js': d,
+    };
+    if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+    const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+    try {
+      assert.equal(p.data.gate, 'used');
+      blocked = false; p.onHide(); p.onShow(); await settle();
+      assert.equal(p.data.aiEnabled, true, `${page} 当天又能用了`);
+      p.onHide(); d.nextDay(); const before = capsCalls;
+      p.onShow(); await settle();
+      assert.equal(p.data.dayTurned, false, `${page} 第二天回来不被旧记录挡住`); assert.equal(capsCalls, before + 1); assert.equal(p.data.aiEnabled, true);
+    } finally {
+      p.onHide();
+    }
+  }
+});
