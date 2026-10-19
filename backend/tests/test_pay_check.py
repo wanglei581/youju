@@ -276,3 +276,73 @@ def test_restricted_api_account_can_check_and_open(setup_pay, restricted_api_fac
             session.expire_all()
             assert session.get(PayOrder, row.id).goods_notified
             assert session.scalar(select(func.count(PayEvent.id))) >= 1
+
+
+def test_complained_order_is_left_to_staff(setup_pay, session):  # noqa: F811
+    """付了款没开通、用户又向微信支付投诉了：投诉要负责人按流程处理，不能自助退（Codex 复核）。"""
+    row = undelivered(setup_pay, session)
+    complaint = {
+        "Event": "xpay_complaint_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+        "ComplaintId": "complaint-1",
+        "ComplaintTime": int(NOW.timestamp()),
+    }
+    assert push(setup_pay, complaint).json()["ErrCode"] == 0
+    body = setup_pay[0].get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).json()
+    assert body["canRefund"] is False
+    assert body["refundUnavailableReason"] == "这笔订单的投诉正在处理，可点“遇到问题”告诉我们"
+    assert pay_refund(setup_pay, row).status_code == 422
+    assert not calls(setup_pay, "/xpay/refund_order")
+
+
+@pytest.mark.parametrize("status", [7, 9, 10, 11])
+def test_odd_wechat_status_goes_to_staff(setup_pay, session, status):  # noqa: F811
+    """待确认的订单查到退款失败、广告金/分账回退或不认识的状态：不当没付关单，也不开通；转人工并告警，
+    补单不再把它当待支付一直查（Codex 复核）。"""
+    first = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status = status
+    body = check(setup_pay, first).json()
+    assert body["check"] == "manual" and body["status"] == "需人工处理"
+    assert body["canRefund"] is False and body["passStartsAt"] is None
+    session.expire_all()
+    first = session.get(PayOrder, first.id)
+    assert first.alerted_at is None and f"微信查单状态 {status}" in first.error
+    # 补单碰到同样的状态：同样转人工、告警
+    fake.status = 1
+    second = order(session, create(setup_pay))
+    fake.status = status
+    alerts = []
+    payments.run_payments(
+        session,
+        settings=setup_pay[1],
+        client=fake.client,
+        stamp=NOW + timedelta(minutes=3),
+        alert=lambda text: alerts.append(text) or True,
+    )
+    session.expire_all()
+    assert session.get(PayOrder, second.id).status == "manual"
+    assert sorted(a.split("：")[0] for a in alerts) == [
+        f"支付订单 #{first.id} 需人工处理",
+        f"支付订单 #{second.id} 需人工处理",
+    ]
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+
+
+def test_check_rate_per_process(setup_pay, session, monkeypatch):  # noqa: F811
+    """一个服务实例每秒替用户问微信有上限：超出的这次不查，原样返回订单（小程序 2 秒后再核对）。"""
+    monkeypatch.setattr(pay, "CHECK_RATE", 1)
+    fake = setup_pay[2]
+    fake.status = 1
+    first = order(session, create(setup_pay))
+    first.created_at = NOW - timedelta(minutes=11)
+    session.commit()
+    second = order(session, create(setup_pay))
+    assert check(setup_pay, first).json()["check"] == "unpaid"
+    body = check(setup_pay, second).json()
+    assert body["check"] is None and body["status"] == "待确认"
+    assert len(calls(setup_pay, "/xpay/query_order")) == 1
+    pay._recent.clear()
+    assert check(setup_pay, second).json()["check"] == "unpaid"

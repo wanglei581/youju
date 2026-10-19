@@ -36,8 +36,8 @@
         <button class="order-btn" bindtap="cancelInvoice" disabled="{{sending}}">取消</button>
       </view>
     </view>
-    <view wx:elif="{{item.canRefund || item.invoiceAction || item.canCheck || item.statusTone === 'warn'}}" class="order-actions">
-      <button wx:if="{{item.canCheck || item.statusTone === 'warn'}}" class="order-btn" data-id="{{item.orderId}}" bindtap="problem">遇到问题</button>
+    <view wx:elif="{{item.canRefund || item.invoiceAction || item.canCheck || item.canReport}}" class="order-actions">
+      <button wx:if="{{item.canReport}}" class="order-btn" data-id="{{item.orderId}}" bindtap="problem">遇到问题</button>
       <button wx:if="{{item.canCheck}}" class="order-btn order-btn--main" data-id="{{item.orderId}}" bindtap="recheck" disabled="{{checking !== null}}" loading="{{checking === item.orderId}}">重新核对</button>
       <button wx:if="{{item.canRefund}}" class="order-btn" data-id="{{item.orderId}}" bindtap="refund" disabled="{{refunding !== null}}" loading="{{refunding === item.orderId}}">申请退款</button>
       <button wx:if="{{item.invoiceAction}}" class="order-btn" data-id="{{item.orderId}}" bindtap="invoice">{{item.invoiceAction}}</button>

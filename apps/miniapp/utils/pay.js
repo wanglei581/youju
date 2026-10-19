@@ -8,8 +8,6 @@ const TEXT = {
   unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到"我的 → 我的订单"查看。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
   login: '微信登录没有完成，请重试', unsupported: '当前微信版本不支持这项支付，请升级微信后重试',
   timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到"我的 → 我的订单"查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
-  // 微信确认收到了付款，但开通前核对没通过、转了人工（付款后的确认结果，订单页同一说法）
-  manual: '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；也可以到"我的 → 我的订单"申请退款，全额原路退回。',
   refunded: '这笔付款已经退回，按原支付方式到账，到账时间以微信支付为准',
   orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',
   termsRequired: '请先阅读并同意《付费服务协议》',
@@ -132,7 +130,7 @@ function stateNote(order) {
     return order.canRefund ? '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。'
       : '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。';
   }
-  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，请点下方"遇到问题"告诉我们。';
+  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们。';
   return '';
 }
 function orderView(order) {
@@ -155,6 +153,8 @@ function orderView(order) {
     // 待确认、人工核对中、已关闭的订单说明一句；待确认的可以"重新核对"
     note: stateNote(order),
     canCheck: status === '待确认',
+    // 待确认、人工核对中、已关闭的订单上放"遇到问题"（带上这张订单号）：付了款却没开通、被关单的，反馈对得上订单
+    canReport: ['待确认', '人工核对中', '已关闭'].includes(status),
     orderedText: status === '待确认' ? clock(order.createdAt) : '',
     amountText: yuan(order.amount, true),
     paidText: order.paidAt ? date(order.paidAt) : '',

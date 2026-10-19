@@ -402,6 +402,14 @@ def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) 
         return "这笔付款需要人工核对，可点“遇到问题”告诉我们"
     if order_pass(session, order, lock=lock) is not None:
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
+    # 用户向微信支付投诉过这笔：投诉要负责人按流程回复处理，不能绕过去自助退（Codex 复核，10/19）
+    complained = session.scalar(
+        select(PayEvent.id)
+        .where(PayEvent.order_id == order.id, PayEvent.kind == "xpay_complaint_notify")
+        .limit(1)
+    )
+    if complained is not None:
+        return "这笔订单的投诉正在处理，可点“遇到问题”告诉我们"
     return None
 
 
@@ -1163,6 +1171,26 @@ def checkable(session: Session, order: PayOrder, stamp: datetime) -> bool:
     return order.id in recent
 
 
+# 查单状态里待确认订单"能自己处理"的：0/1 没付、2/3/4 付了、5/8 退了、6 关了。
+# 其余（7 退款失败、9 回收广告金完成、10 分账回退完成，以及以后新加的）说明钱在微信那边
+# 走过别的流程，既不能当没付款关单、也不能照常开通，转人工核对并告警；原来补单会一直把它
+# 当待支付查下去（Codex 复核，10/19）
+HANDLED_STATUSES = frozenset({0, 1, 2, 3, 4, 5, 6, 8})
+ODD_STATUS_NAMES = {7: "退款失败", 9: "回收广告金完成", 10: "分账回退完成"}
+
+
+def flag_odd_pending(order: PayOrder, data: dict, stamp: datetime) -> bool:
+    """待确认的订单查到上面说的少见状态：转人工（每分钟的补单会发告警），返回 True。
+    状态不是整数（返回格式不对）的不算，留给下一次查单。"""
+    status = data.get("status")
+    if type(status) is not int or status in HANDLED_STATUSES:
+        return False
+    name = ODD_STATUS_NAMES.get(status, "未知状态")
+    order.status, order.alerted_at, order.updated_at = "manual", None, stamp
+    order.error = f"微信查单状态 {status}（{name}），待确认的订单不能自动处理，需人工核对"
+    return True
+
+
 def check_order(
     session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
 ) -> str:
@@ -1188,6 +1216,9 @@ def check_order(
     if status in (0, 1):
         session.commit()
         return "unpaid"
+    if flag_odd_pending(order, data, stamp):
+        session.commit()
+        return "manual"
     accept_payment(session, order, data, settings, stamp)
     # 先持久化使用期再通知发货；通知失败由每分钟的补单补发（和补单同一顺序）
     session.commit()
@@ -1297,7 +1328,7 @@ def run_payments(
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"
-                    else:
+                    elif not flag_odd_pending(order, data, stamp):
                         accept_payment(session, order, data, settings, stamp)
                 session.commit()  # 先持久化使用期再发通知；通知失败由下一次补发。
             if order.status == "completed" and not order.goods_notified:

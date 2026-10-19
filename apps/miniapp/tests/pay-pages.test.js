@@ -1213,19 +1213,30 @@ test('付款后的确认每次都请服务端当场向微信核对（核对接�
   await assert.rejects(gone.module.checkPayOrder(7), (err) => err.status === 404);
 });
 
-test('购买页付款后核对到"需人工处理"：写清付款已收到、多久处理、可以申请退款，并给"查看我的订单"；确认超时也给这个入口，自己取消的不给', async () => {
+test('购买页付款后核对到"需人工处理"：按这张订单的实际情况写（能自助退的才说可以申请退款），并给"查看我的订单"；确认超时也给这个入口，自己取消的不给', async () => {
+  const said = async (order) => {
+    const h = passPage({ onPay: (payload) => payload.success(), order: () => Promise.resolve({ orderId: 41, status: '需人工处理', amount: 2900, check: 'manual', ...order }) });
+    await flush();
+    h.page.check({ detail: { value: ['agree'] } });
+    h.page.buy();
+    await flush();
+    assert.equal(h.page.data.busy, false);
+    assert.equal(h.page.data.ordersLink, true);
+    return h.page.data.message;
+  };
+  assert.equal(await said({ canRefund: true }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。');
+  // 金额要人工核对、投诉中这类不能自助退的：不说可以退
+  assert.equal(await said({ canRefund: false }), '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。');
+  // 开通过的：不说"还没开通"
+  assert.equal(await said({ canRefund: false, ...PERIOD }), '这笔订单需要人工核对，我们 1 个工作日内处理，结果会显示在这里。');
   const manual = passPage({
     onPay: (payload) => payload.success(),
-    order: () => Promise.resolve({ orderId: 41, status: '需人工处理', amount: 2900, check: 'manual' }),
+    order: () => Promise.resolve({ orderId: 41, status: '需人工处理', amount: 2900, check: 'manual', canRefund: true }),
   });
   await flush();
   manual.page.check({ detail: { value: ['agree'] } });
   manual.page.buy();
   await flush();
-  assert.equal(manual.page.data.busy, false);
-  assert.match(manual.page.data.message, /付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理/);
-  assert.match(manual.page.data.message, /申请退款，全额原路退回/);
-  assert.equal(manual.page.data.ordersLink, true);
   const links = findAll(render('pages/pass/index.wxml', manual.page.data), tapsTo('orders'));
   assert.equal(links.length, 1);
   assert.match(textOf(links[0]), /查看我的订单/);
@@ -1362,9 +1373,15 @@ test('订单页"人工核对中"：付了款没开通、能自助退的写可以
   assert.match(staff, /付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里/);
   assert.doesNotMatch(staff, /申请退款/);
   const closed = textOf(orderCard(h.page.data, 64));
-  assert.match(closed, /没有确认到付款，订单已关闭/);
+  assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们/);
   assert.equal(findAll(orderCard(h.page.data, 64), tapsTo('recheck')).length, 0);
-  assert.equal(findAll(orderCard(h.page.data, 64), tapsTo('problem')).length, 0);
+  // 已关闭的也有带订单号的"遇到问题"：被关单的那笔其实扣了款时，反馈对得上订单（Codex 复核）
+  const report = findAll(orderCard(h.page.data, 64), tapsTo('problem'));
+  assert.equal(report.length, 1);
+  h.page.problem({ currentTarget: { dataset: { id: report[0].attrs['data-id'] } } });
+  assert.deepEqual(h.opened, ['/pages/feedback/index?type=pay&orderId=64']);
+  // 已开通、已退款的没有
+  assert.equal(findAll(render('pages/orders/index.wxml', { ...h.page.data, items: [pay.orderView(orderRecord({ orderId: 65 }))] }), tapsTo('problem')).length, 0);
 });
 
 function mePage(me, extra = {}) {

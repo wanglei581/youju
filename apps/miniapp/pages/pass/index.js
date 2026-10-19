@@ -189,8 +189,8 @@ Page({
     } else {
       const status = result.order.status;
       const closed = status === '已关闭';
-      // 微信确认收了款但开通前核对没通过（转人工）：说清楚钱收到了、多久处理、可以申请退款
-      const message = closed ? pay.TEXT.closed : status === '需人工处理' ? pay.TEXT.manual : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
+      // 转了人工：和订单页同一句说明（钱收到了没有、多久处理、能不能直接申请退款，按这张订单的实际情况写）
+      const message = closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
       this.setData({ busy: false, message, payError: !closed, ordersLink: !closed });
     }
   },

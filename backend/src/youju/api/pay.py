@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from datetime import timedelta
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -384,10 +385,14 @@ def refund_order(order_id: int, session: SessionDep, user: KnownUserDep, client:
     return order_out(session, order)
 
 
-# 主动核对的频率：同一张订单在一个服务实例里 2 秒内只问一次微信。小程序付款后每 2 秒核对一次，
-# 订单页一次最多核对 3 张；连点、脚本刷不会把查单接口的频率打满（官方有频率限制错误码 268490015）
+# 主动核对的频率：同一张订单在一个服务实例里 2 秒内只问一次微信；一个实例每秒最多替用户问 10 次
+# （超出的这次不查，原样返回订单，小程序 2 秒后再核对）。小程序付款后每 2 秒核对一次，订单页一次
+# 最多核对 3 张；连点、脚本刷不会把查单接口的频率打满（官方有频率限制错误码 268490015）。
+# 补单、推送不走这里，不受影响
 CHECK_GAP = 2.0
+CHECK_RATE = 10
 _checked: dict[int, float] = {}
+_recent: deque[float] = deque()
 _checked_lock = threading.Lock()
 
 
@@ -397,6 +402,11 @@ def _check_due(order_id: int) -> bool:
         last = _checked.get(order_id)
         if last is not None and now - last < CHECK_GAP:
             return False
+        while _recent and now - _recent[0] >= 1.0:
+            _recent.popleft()
+        if len(_recent) >= CHECK_RATE:
+            return False
+        _recent.append(now)
         if len(_checked) >= 1000:
             for key in [key for key, at in _checked.items() if now - at >= CHECK_GAP]:
                 del _checked[key]

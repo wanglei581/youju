@@ -86,7 +86,7 @@ Page({
       wx.showToast({ title: (err && err.message) || CHECK_TOAST.unavailable, icon: 'none' });
     });
   },
-  // 待确认、人工核对中的订单上的"遇到问题"：带上这张订单的编号
+  // 待确认、人工核对中、已关闭的订单上的"遇到问题"：带上这张订单的编号
   problem(e) {
     this.orderId = e.currentTarget.dataset.id;
     this.feedback();

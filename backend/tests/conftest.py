@@ -93,6 +93,7 @@ def _reset_admin_throttle():
 
     # 订单主动核对的频率（同一张 2 秒内只问一次微信）也在进程内存里；订单编号每个测试从 1 重新数
     pay._checked.clear()
+    pay._recent.clear()
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
     # 规则列算完没有：测试里每次都重新查，中途把列改成 NULL（模拟刚升级）马上生效
