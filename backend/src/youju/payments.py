@@ -42,7 +42,9 @@ from youju.xpay import XPayClient, XPayError, wx_http
 logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {
-    "pending": "待支付",
+    # 还没确认付款结果：付了款的会自动开通，没付的不扣钱、稍后关单。原来写"待支付"，
+    # 付了款、推送和补单还没到的那一两分钟里，用户看到的是"待支付"，以为钱白扣了（10/19 沙箱实测）
+    "pending": "待确认",
     "completed": "已完成",
     "refunding": "退款中",
     "refunded": "已退款",
@@ -350,6 +352,8 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
         return "支付方式还没确认，可点“遇到问题”告诉我们"
+    if order.status == "manual" and order.refund_status is None:
+        return undelivered_refund_reason(session, order, lock=lock)
     if order.status != "completed" or order.refund_status is not None:
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
@@ -365,6 +369,19 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
         return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
+    return None
+
+
+def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) -> str | None:
+    """付了款却没开通的订单（微信确认收到全款，开通前的核验没过、转了人工）：用户什么都没用上，
+    不用等人工，随时可以自助申请全额原路退回，不受 7 天限制（创始人 10/19："扣款成功但订单
+    没同步过来，可以对这笔订单申请自助退款"）。只认能核对清楚的：安卓等普通支付、付款金额等于
+    订单金额、这笔从没开通过使用期；其余的（金额对不上、开通过又出问题的、投诉中的）仍由人工处理。
+    调用方已按 用户 → 订单 加锁（lock=True 时）。发起退款前 start_refund 还会再向微信查一次单。"""
+    if order.paid_fee != order.price or not order.wx_order_id:
+        return "这笔付款需要人工核对，可点“遇到问题”告诉我们"
+    if order_pass(session, order, lock=lock) is not None:
+        return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
     return None
 
 
@@ -1098,6 +1115,67 @@ def provide_goods(session: Session, order: PayOrder, client: XPayClient) -> None
             else:
                 order.error = "通知发货暂不可用，将重试"
     session.commit()
+
+
+# 用户主动核对（付款后、打开订单页）：只核对 48 小时内下的待确认订单（更早的交给每分钟的补单，
+# 超过 48 小时还确认不了会关单），并且只核对这个用户最近的 3 张待确认订单
+# （下单限制同样是 10 分钟内 3 张）
+CHECK_WINDOW = timedelta(hours=48)
+CHECK_RECENT = 3
+
+
+def checkable(session: Session, order: PayOrder, stamp: datetime) -> bool:
+    """这张订单能不能由用户主动核对：待确认、48 小时内下的、这个用户最近的 3 张待确认订单之一。"""
+    if order.status != "pending" or order.user_id is None:
+        return False
+    if order.created_at <= stamp - CHECK_WINDOW:
+        return False
+    recent = session.scalars(
+        select(PayOrder.id)
+        .where(
+            PayOrder.user_id == order.user_id,
+            PayOrder.status == "pending",
+            PayOrder.created_at > stamp - CHECK_WINDOW,
+        )
+        .order_by(PayOrder.created_at.desc(), PayOrder.id.desc())
+        .limit(CHECK_RECENT)
+    ).all()
+    return order.id in recent
+
+
+def check_order(
+    session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
+) -> str:
+    """用户付款后、打开订单页时主动核对一张待确认的订单：向微信查单，付了款就当场开通、通知发货，
+    不等推送和每分钟的补单（10/19 沙箱实测：推送没处理成，补单 2 分钟后才开通，小程序只等了
+    1 分钟，用户一直看到"待支付"）。核验规则和补单完全一样（accept_payment）。
+    调用方已按 用户 → 订单 加锁，订单是待确认（checkable）。返回这次核对的结果：
+    paid 已开通；unpaid 微信还没有这笔付款；closed 微信已关单；refunded 微信那边已经退款；
+    manual 微信确认收到付款，但核验不过、已转人工；unavailable 这次没查成（交给每分钟的补单）。"""
+    try:
+        data = query(session, order, client)
+    except XPayError:
+        session.commit()  # 查单记录（若有）照常保存；订单不动，交给补单
+        return "unavailable"
+    if mark_refunded(session, order, data, stamp):
+        session.commit()
+        return "refunded" if order.status == "refunded" else "manual"
+    status = data.get("status")
+    if status == 6:
+        order.status, order.updated_at = "closed", stamp
+        session.commit()
+        return "closed"
+    if status in (0, 1):
+        session.commit()
+        return "unpaid"
+    accept_payment(session, order, data, settings, stamp)
+    # 先持久化使用期再通知发货；通知失败由每分钟的补单补发（和补单同一顺序）
+    session.commit()
+    if order.status == "completed":
+        if not order.goods_notified:
+            provide_goods(session, order, client)
+        return "paid"
+    return "manual" if order.status == "manual" else "unavailable"
 
 
 def run_payments(

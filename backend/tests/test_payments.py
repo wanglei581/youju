@@ -1550,6 +1550,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "days",
         "status",
         "amount",
+        "createdAt",
         "paidAt",
         "passStartsAt",
         "passEndsAt",
