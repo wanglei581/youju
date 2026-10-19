@@ -460,7 +460,7 @@ test('AI 首页：两项能力各写今天还剩几次，下面是刚才看的�
   const text = h.text();
   assert.match(text, /AI 生成 · 以原文为准/);
   assert.match(text, /AI 解读[^]*今天还剩 3 次/);
-  assert.match(text, /今天的条款对照 5 次用完了，明天 0 点恢复；以前的结果在下面“我的 AI 记录”里照样能看。/);
+  assert.match(text, /今天的条款对照 5 次用完了，明天 0 点恢复。/);
   assert.match(text, /去找一份通知/);
   assert.match(text, /刚才看的通知 刚才看的那份 科技厅 · 2026-10-16/);
   assert.match(text, /近 7 天能解读的申报通知/);
@@ -837,7 +837,7 @@ test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身
       if (taskId) { assert.equal(p.data.aiEnabled, true, `${page} 打开已有结果不拦`); p.onHide(); continue; }
       assert.equal(p.data.gate, 'used'); assert.equal(created, 0);
       const out = textOf(render(`pages/${page}/index.wxml`, p.data));
-      assert.ok(out.includes(`今天的${name} 5 次用完了，明天 0 点恢复；以前的结果在“我的记录”里照样能看。`), out);
+      assert.ok(out.includes(`今天的${name} 5 次用完了，明天 0 点恢复。`), out); assert.doesNotMatch(out, /以前的结果/);
       p.records(); assert.deepEqual(urls, ['/pages/advisor-tasks/index']);
       p.onHide();
     }
@@ -2141,26 +2141,23 @@ test('Codex 第 25 轮：后台给的次数是 null、空串、true/false、字�
   }
 });
 
-test('Codex 第 25 轮：次数用完的提示只在有记录时才说"以前的结果在下面"；没有记录时据实写明天恢复', async () => {
+test('Codex 第 25、26 轮：次数用完的提示只写明天恢复，不管有没有记录都不说"以前的结果照样能看"（有没有能看的结果说不准）', async () => {
   const usedUp = ON({ remaining: { interpret: 0, clause: 3 } });
-  const record = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', hasResult: true };
-  const none = hubPage({ caps: usedUp });
-  none.page.onShow(); await settle();
-  assert.match(none.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(none.text(), /以前的结果/);
-  const some = hubPage({ caps: usedUp, tasks: () => Promise.resolve({ items: [record] }) });
-  some.page.onShow(); await settle();
-  assert.match(some.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复；以前的结果在下面“我的 AI 记录”里照样能看。/);
-  assert.match(some.text(), /我的 AI 记录.*通知3/);
-  // 工具中心同样
-  for (const [items, has] of [[[], false], [[record], true]]) {
+  const done = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', hasResult: true };
+  const queued = { id: 4, kind: 'interpret', status: 'queued', docTitle: '通知4' };
+  const failed = { id: 5, kind: 'clause', status: 'failed', docTitle: '通知5' };
+  const batch = { id: 6, kind: 'compare', status: 'done', rowCount: 2, hasFile: true };
+  for (const items of [[], [done], [queued, failed], [batch]]) {
+    const h = hubPage({ caps: usedUp, tasks: () => Promise.resolve({ items }) });
+    h.page.onShow(); await settle();
+    assert.match(h.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(h.text(), /以前的结果/);
     const t = load('pages/advisor/index.js', {
       '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(usedUp), advisorTasks: () => Promise.resolve({ items }) },
       '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
     }, { wx: { setNavigationBarTitle() {} } });
     t.onLoad({}); t.onShow(); await settle();
     const out = textOf(render('pages/advisor/index.wxml', t.data));
-    assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复/);
-    assert.equal(/以前的结果在下面“我的记录”里照样能看/.test(out), has, `工具中心 ${has ? '有' : '没有'}记录`);
+    assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(out, /以前的结果/);
     t.onHide();
   }
 });

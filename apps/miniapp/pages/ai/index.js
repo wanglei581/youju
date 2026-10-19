@@ -50,7 +50,7 @@ function gateTextOf(gate, caps) {
   return GATE_TEXT[gate] || '';
 }
 
-// 两项能力：各写各的剩几次；用完的那一项写明天恢复（有记录时页面再补一句以前的结果在下面，第 25 轮）
+// 两项能力：各写各的剩几次；用完的那一项只写明天恢复，不说"以前的结果在哪里"（有没有能看的结果说不准，第 25、26 轮）
 function kindRows(ai) {
   const features = allowedKinds(ai);
   return KIND_ROWS.filter((row) => features.includes(row.kind)).map((row) => {

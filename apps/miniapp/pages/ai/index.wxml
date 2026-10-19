@@ -49,7 +49,7 @@
         <text wx:if="{{gate === 'full'}}" class="ability-left">今天满了</text>
         <text wx:elif="{{gate === 'paused'}}" class="ability-left">暂时不可用</text>
         <text wx:elif="{{!item.out && item.remaining !== null}}" class="ability-left">今天还剩 <text class="ability-num">{{item.remaining}}</text> 次</text>
-        <view wx:if="{{!gate && item.out}}" class="ability-out">{{item.outText}}<text wx:if="{{records.length}}">；以前的结果在下面“我的 AI 记录”里照样能看</text>。</view>
+        <view wx:if="{{!gate && item.out}}" class="ability-out">{{item.outText}}。</view>
       </view>
       <view wx:if="{{gate}}" class="gate">
         <view class="gate-text">{{gateText}}</view>
