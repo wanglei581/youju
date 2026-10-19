@@ -86,6 +86,7 @@
       <view wx:if="{{!docId}}" class="interpret-meta">这条记录没有关联到通知原文，请从通知详情页重新打开。</view>
       <view wx:else class="interpret-ops"><button class="interpret-link" bindtap="original">看原文</button></view>
     </view>
+    <view wx:if="{{outdated}}" class="card advisor-card">对照之后，这份通知的核对信息或附件有更新；正文没变，下面的条件原文仍然有效，“已核对”一栏已换成现在的核对结果。</view>
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>

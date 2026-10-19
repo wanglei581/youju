@@ -236,9 +236,116 @@ def test_refusal_with_verified_values_is_revalidated(client, session, settings, 
     session.commit()
     response = client.get(path)
     assert response.status_code == 200
-    assert response.json()["result"] is None
-    assert response.json()["error"]
-    assert "贷款贴息" not in response.text and "2026-10-08" not in response.text
+    body = response.json()
+    if change in ("takedown", "body"):
+        # 下架或正文变了：旧结果作废，撤回前的核对值也不再返回
+        assert body["result"] is None
+        assert body["error"]
+        assert "贷款贴息" not in response.text and "2026-10-08" not in response.text
+    else:
+        # D-073：正文没变、只是撤回了一项核对：结果照常返回并标出有更新，
+        # "已核对"换成现在的，撤回的那一项不再返回
+        revoked, kept = (
+            ("贷款贴息", "2026-10-08") if change == "field_revoked" else ("2026-10-08", "贷款贴息")
+        )
+        assert body["outdated"] is True
+        assert body["result"]["refusal"]
+        assert {v["value"] for v in body["result"]["verified"]} == {kept}
+        assert revoked not in response.text
+
+
+def later_deadline(doc, fingerprint):
+    return DocumentDeadline(
+        document_id=doc.id,
+        fingerprint=fingerprint,
+        kind="企业申报截止",
+        candidate_date=date(2026, 10, 9),
+        approved_date=date(2026, 10, 9),
+        evidence="请提交申请书及附件。",
+        confidence="high",
+        status="approved",
+        reviewed_at=NOW,
+    )
+
+
+def test_review_after_result_keeps_excerpts_and_marks_update(client, session, settings, doc):
+    """D-073：解读之后才核对了截止日期：原文摘录照常显示，"已核对"加上新的，标出有更新。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    path = f"/api/v1/advisor/tasks/{task.id}"
+    first = client.get(path).json()
+    assert first["result"]["items"] and not first.get("outdated")
+    session.add(later_deadline(doc, "later-checked"))
+    session.commit()
+    later = client.get(path).json()
+    assert later["outdated"] is True
+    assert later["result"]["items"] == first["result"]["items"]
+    assert {v["value"] for v in later["result"]["verified"]} == {"2026-10-09"}
+
+
+def test_prompt_or_model_change_keeps_result_without_update_notice(client, session, settings, doc):
+    """只是提示词版本或模型变了（缓存键不同，正文和核对都没变）：结果照常显示，不提示有更新。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.cache_key = "built-with-an-older-prompt"
+    session.commit()
+    body = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert body["result"]["items"]
+    assert body["outdated"] is False
+
+
+def test_redaction_change_with_same_original_invalidates(client, session, settings, doc):
+    """原文没变、发给模型的脱敏后段落变了（例如脱敏规则改了），缓存键一样也作废（Codex 审阅）。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.snapshot = {**task.snapshot, "paragraphs": ["旧规则下没遮住的段落"]}
+    session.commit()
+    body = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert body["result"] is None and body["error"] == interpret.BODY_CHANGED
+
+
+@pytest.mark.parametrize("same_key", [True, False])
+def test_old_snapshot_without_body_fields(client, session, settings, doc, same_key):
+    """很老的任务快照缺正文指纹和段落、甚至缺 doc_id：键一样照常显示，键不一样无法确认按作废；都不报错。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.snapshot = {
+        k: v for k, v in task.snapshot.items() if k not in ("doc_id", "body_hash", "paragraphs")
+    }
+    if not same_key:
+        task.cache_key = "built-with-an-older-prompt"
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task.id}")
+    assert response.status_code == 200
+    if same_key:
+        assert response.json()["result"]["items"]
+    else:
+        assert response.json()["result"] is None
+
+
+def test_refresh_verification_fills_missing_verified_and_attachments():
+    refreshed = interpret.refresh_verification({"items": [], "attachments": 0}, [], 2)
+    assert refreshed["verified"] == [] and refreshed["attachments"] == 2
+    assert refreshed["attachment_notice"].startswith("本通知有 2 个附件")
+
+
+def test_review_during_model_call_still_publishes(session, settings, doc):
+    """D-073：调用模型期间只是核对了截止（正文没变）：照常发布，"已核对"带上新的，次数照常扣。"""
+    task = direct_task(session, doc)
+
+    class ReviewingChat(FakeChat):
+        def complete_json(self, *args, **kwargs):
+            result = super().complete_json(*args, **kwargs)
+            session.add(later_deadline(doc, "during-call"))
+            session.flush()
+            return result
+
+    run(session, task, settings, ReviewingChat())
+    assert task.status == "done" and task.result_json["items"] and not task.result_json["refusal"]
+    assert {v["value"] for v in task.result_json["verified"]} == {"2026-10-09"}
+    assert session.scalar(select(AdvisorUsage.used_count)) == 1
+    _, _, key = interpret.prepare(session, doc.id, task.model)
+    assert task.cache_key == key
 
 
 @pytest.mark.parametrize("data_enabled", [False, True])
@@ -867,6 +974,30 @@ def test_cache_cross_user_body_change_and_down(session, settings, doc):
     assert hidden.result_json["refusal"]
 
 
+def test_cache_not_reused_after_redaction_change_or_without_doc_id(session, settings, doc):
+    """缓存键相同、但旧结果发给模型的脱敏后段落和现在不同（脱敏规则改了）：不复用，重新调用模型；
+    缓存任务的快照缺 doc_id 也不复用，不让新任务失败（D-073，Codex 第二轮）。"""
+    first = direct_task(session, doc)
+    run(session, first, settings)
+    first.snapshot = {**first.snapshot, "paragraphs": ["旧规则下没遮住的段落"]}
+    session.commit()
+    second = direct_task(session, doc, "second", "after-redaction")
+    assert len(run(session, second, settings).calls) == 1
+    assert second.status == "done" and second.result_json["items"]
+    second.snapshot = {k: v for k, v in second.snapshot.items() if k != "doc_id"}
+    session.commit()
+    third = direct_task(session, doc, key="no-doc-id")
+    assert len(run(session, third, settings).calls) == 1
+    assert third.status == "done"
+    # 很老的缓存缺正文指纹和段落：无法确认脱敏前后一致，不复用（Codex 第三轮）
+    third.snapshot = {
+        k: v for k, v in third.snapshot.items() if k not in ("body_hash", "paragraphs")
+    }
+    session.commit()
+    fourth = direct_task(session, doc, "second", "old-cache-without-body-fields")
+    assert len(run(session, fourth, settings).calls) == 1
+
+
 def test_cache_expires_after_thirty_days(session, settings, doc):
     first = direct_task(session, doc, stamp=NOW - timedelta(days=31))
     run(session, first, settings, stamp=NOW - timedelta(days=31))
@@ -1456,7 +1587,11 @@ def test_attachment_revision_notice_and_group_count(client, session, settings, d
     session.commit()
     snapshot, _, after = interpret.prepare(session, doc.id, settings.ai_model)
     assert snapshot["attachments"] == 1 and before != after
-    assert client.get(f"/api/v1/advisor/tasks/{first.id}").json()["result"] is None
+    # D-073：正文没变、只是附件数变了：旧结果照常显示，附件提醒换成现在的，标出有更新
+    viewed = client.get(f"/api/v1/advisor/tasks/{first.id}").json()
+    assert viewed["outdated"] is True
+    assert viewed["result"]["attachments"] == 1 and viewed["result"]["attachment_notice"]
+    # 新提交的不复用旧结果（缓存键不同），重新调用模型
     second = direct_task(session, doc, key="attachment-changed")
     assert len(run(session, second, settings).calls) == 1
     assert second.result_json["attachments"] == 1
