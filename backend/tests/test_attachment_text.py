@@ -95,17 +95,20 @@ def tr(*cells: str, props: str = "") -> str:
     return f"<w:tr>{f'<w:trPr>{props}</w:trPr>' if props else ''}{''.join(cells)}</w:tr>"
 
 
-def make_word97(paras, *, encrypted=False, nfib=0x00C1) -> bytes:
+def make_word97(paras, *, encrypted=False, nfib=0x00C1, deleted=()) -> bytes:
     """最小的 Word 97 二进制文件（WordDocument + 1Table 两个数据流，[MS-DOC]）。paras 每项是
     (文字, 结尾标记 0x0D 或 0x07, 段落属性 {in_table, ttp, itap, inner_cell, inner_ttp})：
-    文字按 UTF-16LE 放在 0x400，段落属性写进一页 FKP，Table 流里放 PlcBtePapx 和 Clx（一个分块）。"""
+    文字按 UTF-16LE 放在 0x400（位置、字数都按 UTF-16 码元算，扩展区的字占两个），段落属性写进
+    一页 FKP；deleted 里的几段字在字符属性里标成"修订删除"。Table 流里放 PlcBteChpx、PlcBtePapx
+    和 Clx（一个分块）。"""
     text = "".join(t + m for t, m, _ in paras)
     text_fc = 0x400
     raw = text.encode("utf-16-le")
-    fkp_at = ((text_fc + len(raw)) // 512 + 1) * 512
+    papx_at = ((text_fc + len(raw)) // 512 + 1) * 512
+    chpx_at = papx_at + 512
     fcs = [text_fc]
     for t, m, _ in paras:
-        fcs.append(fcs[-1] + 2 * (len(t) + len(m)))
+        fcs.append(fcs[-1] + len((t + m).encode("utf-16-le")))
     crun = len(paras)
     page = bytearray(512)
     struct.pack_into(f"<{crun + 1}I", page, 0, *fcs)
@@ -134,21 +137,48 @@ def make_word97(paras, *, encrypted=False, nfib=0x00C1) -> bytes:
         free = start
         page[4 * (crun + 1) + 13 * i] = start // 2
     page[511] = crun
-    word = bytearray(fkp_at + 512)
+    # 字符属性：删掉的几段一段一条（标 sprmCFRMarkDel），其余的一条不带属性
+    marks = sorted(
+        (text_fc + len(text[: text.index(d)].encode("utf-16-le")), len(d.encode("utf-16-le")))
+        for d in deleted
+    )
+    bounds, flags, at = [text_fc], [], text_fc
+    for begin, size in marks:
+        if begin > at:
+            bounds.append(begin)
+            flags.append(False)
+        bounds.append(begin + size)
+        flags.append(True)
+        at = begin + size
+    if at < fcs[-1]:
+        bounds.append(fcs[-1])
+        flags.append(False)
+    chpx = bytearray(512)
+    struct.pack_into(f"<{len(flags) + 1}I", chpx, 0, *bounds)
+    chpx_body = bytes([3]) + struct.pack("<HB", 0x0800, 1)
+    chpx[500 : 500 + len(chpx_body)] = chpx_body
+    for i, flag in enumerate(flags):
+        chpx[4 * (len(flags) + 1) + i] = 250 if flag else 0
+    chpx[511] = len(flags)
+    word = bytearray(chpx_at + 512)
     struct.pack_into("<HH", word, 0, 0xA5EC, nfib)
     struct.pack_into("<H", word, 0x0A, 0x0200 | (0x0100 if encrypted else 0))
     struct.pack_into("<H", word, 0x20, 14)  # csw
     struct.pack_into("<H", word, 0x3E, 22)  # cslw
-    struct.pack_into("<i", word, 0x40 + 12, len(text))  # ccpText
+    struct.pack_into("<i", word, 0x40 + 12, len(raw) // 2)  # ccpText（码元个数）
     struct.pack_into("<H", word, 0x98, 0x5D)  # cbRgFcLcb
     word[text_fc : text_fc + len(raw)] = raw
-    word[fkp_at : fkp_at + 512] = page
-    plc_papx = struct.pack("<3I", text_fc, fcs[-1], fkp_at // 512)
-    plc_pcd = struct.pack("<2i", 0, len(text)) + struct.pack("<HIH", 0, text_fc, 0)
+    word[papx_at : papx_at + 512] = page
+    word[chpx_at : chpx_at + 512] = chpx
+    plc_papx = struct.pack("<3I", text_fc, fcs[-1], papx_at // 512)
+    plc_chpx = struct.pack("<3I", text_fc, fcs[-1], chpx_at // 512)
+    plc_pcd = struct.pack("<2i", 0, len(raw) // 2) + struct.pack("<HIH", 0, text_fc, 0)
     clx = b"\x02" + struct.pack("<I", len(plc_pcd)) + plc_pcd
+    table = plc_papx + plc_chpx + clx
+    struct.pack_into("<II", word, 0x9A + 12 * 8, len(plc_papx), len(plc_chpx))
     struct.pack_into("<II", word, 0x9A + 13 * 8, 0, len(plc_papx))
-    struct.pack_into("<II", word, 0x9A + 33 * 8, len(plc_papx), len(clx))
-    return make_cfb({"WordDocument": bytes(word), "1Table": plc_papx + clx})
+    struct.pack_into("<II", word, 0x9A + 33 * 8, len(plc_papx) + len(plc_chpx), len(clx))
+    return make_cfb({"WordDocument": bytes(word), "1Table": table})
 
 
 def make_ppt(slides: list[list[str]], boxes: list[list[str]] | None = None) -> bytes:
@@ -186,6 +216,9 @@ def pdf_pages(pages: list[dict]) -> bytes:
             content += f"BT {mode}/F1 10 Tf {x} {y} Td ({text}) Tj ET\n".encode()
         for x1, y1, x2, y2 in page.get("lines", []):
             content += f"{x1} {y1} m {x2} {y2} l S\n".encode()
+        for i in range(page.get("curves", 0)):  # 文字转成的曲线
+            x, y = 20 + (i % 20) * 12, 380 - (i // 20) * 12
+            content += f"{x} {y} m {x + 3} {y + 8} {x + 6} {y + 8} {x + 9} {y} c f\n".encode()
         for x, y, w, h in page.get("images", []):
             content += f"q {w} 0 0 {h} {x} {y} cm /Im1 Do Q\n".encode()
         objs.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
@@ -412,12 +445,14 @@ def test_pptx_slides_in_order_and_hidden_slides_skipped() -> None:
         "<p:sp><p:txBody><a:p><a:r><a:t>申报</a:t></a:r><a:r><a:t>指南</a:t></a:r></a:p>"
         "<a:p><a:r><a:t>第二段</a:t></a:r></a:p></p:txBody></p:sp>"
     )
+
+    def cell(text: str) -> str:
+        return f"<a:tc><a:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody></a:tc>"
+
     table = (
         "<p:graphicFrame><a:graphic><a:graphicData><a:tbl>"
-        "<a:tr><a:tc><a:txBody><a:p><a:r><a:t>指标</a:t></a:r></a:p></a:txBody></a:tc>"
-        "<a:tc><a:txBody><a:p><a:r><a:t>分值</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"
-        "<a:tr><a:tc><a:txBody><a:p><a:r><a:t>创新性</a:t></a:r></a:p></a:txBody></a:tc>"
-        "<a:tc><a:txBody><a:p><a:r><a:t>30</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"
+        f"<a:tr>{cell('指标')}{cell('分值')}{cell('说明')}</a:tr>"
+        f"<a:tr>{cell('创新性')}{cell('30')}{cell('看核心技术')}</a:tr>"
         "</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"
     )
     out = io.BytesIO()
@@ -439,7 +474,7 @@ def test_pptx_slides_in_order_and_hidden_slides_skipped() -> None:
         zf.writestr("ppt/slides/slide2.xml", slide(shape))
         zf.writestr("ppt/slides/slide3.xml", slide(shape, ' show="0"'))
     result = at.extract(out.getvalue())
-    assert texts(result) == ["申报指南", "第二段", "指标 | 分值", "创新性 | 30"]
+    assert texts(result) == ["申报指南", "第二段", "指标 | 分值 | 说明", "创新性 | 30 | 看核心技术"]
     assert [s.loc for s in result.segments] == [
         {"slide": 1},
         {"slide": 1},
@@ -453,7 +488,8 @@ def test_pdf_lines_tables_page_numbers_and_scanned_pages() -> None:
     long1 = "Applicants must be registered in the province and must hav"
     long2 = "e at least three years of operating history before the dea"
     table_lines = [(40, 300, 260, 300), (40, 280, 260, 280), (40, 260, 260, 260)]
-    table_lines += [(40, 300, 40, 260), (150, 300, 150, 260), (260, 300, 260, 260)]
+    table_lines += [(40, 300, 40, 260), (120, 300, 120, 260), (190, 300, 190, 260)]
+    table_lines += [(260, 300, 260, 260)]
     data = pdf_pages(
         [
             {
@@ -463,9 +499,11 @@ def test_pdf_lines_tables_page_numbers_and_scanned_pages() -> None:
                     (40, 340, "dline."),
                     (40, 325, "Materials: application form and licence copy, all signed."),
                     (45, 285, "Item"),
-                    (155, 285, "Score"),
+                    (125, 285, "Score"),
+                    (195, 285, "Note"),
                     (45, 265, "Innovation"),
-                    (155, 265, "30"),
+                    (125, 265, "30"),
+                    (195, 265, "Core"),
                     (140, 20, "- 1 -"),
                 ],
                 "lines": table_lines,
@@ -484,8 +522,8 @@ def test_pdf_lines_tables_page_numbers_and_scanned_pages() -> None:
     assert texts(result) == [
         long1 + long2 + "dline.",
         "Materials: application form and licence copy, all signed.",
-        "Item | Score",
-        "Innovation | 30",
+        "Item | Score | Note",
+        "Innovation | 30 | Core",
         "Page four keeps going.",
         "Slide text over a background",
         "Seal.",
@@ -495,6 +533,7 @@ def test_pdf_lines_tables_page_numbers_and_scanned_pages() -> None:
     assert result.segments[3].cells == [
         {"c": 0, "t": "Innovation", "h": "Item"},
         {"c": 1, "t": "30", "h": "Score"},
+        {"c": 2, "t": "Core", "h": "Note"},
     ]
     assert result.segments[4].loc == {"page": 4}
     # 每页都是扫描页：取不出
@@ -506,32 +545,45 @@ def test_pdf_lines_tables_page_numbers_and_scanned_pages() -> None:
 
 def test_word97_and_wps_paragraphs_tables_and_fields() -> None:
     cell = {"in_table": 1}
+    end = {"in_table": 1, "ttp": 1}
+    astral = chr(0x2B404)  # 扩展区的字（UTF-16 两个码元），后面的位置不能错开
     data = make_word97(
         [
             ("附件1", "\r", {}),
             ('申报条件：注册满一年。详见\x13 HYPERLINK "http://x" \x14申报系统\x15', "\r", {}),
+            ("修订：已删掉的字留下的字", "\r", {}),
             ("序号", "\x07", cell),
+            ("姓名", "\x07", cell),
             ("要求", "\x07", cell),
-            ("", "\x07", {"in_table": 1, "ttp": 1}),
+            ("", "\x07", end),
             ("1", "\x07", cell),
+            ("王" + astral, "\x07", cell),
             ("第一行\r第二行", "\x07", cell),
-            ("", "\x07", {"in_table": 1, "ttp": 1}),
+            ("", "\x07", end),
+            ("2", "\x07", cell),
+            ("李四", "\x07", cell),
+            ("无", "\x07", cell),
+            ("", "\x07", end),
             ("表后\x0b换行\x01", "\r", {}),
-        ]
+        ],
+        deleted=("已删掉的字",),
     )
     result = at.extract(data)
     assert result.ok and result.file_type == "doc"
     assert texts(result) == [
         "附件1",
         "申报条件：注册满一年。详见申报系统",
-        "序号 | 要求",
-        "1 | 第一行\n第二行",
+        "修订：留下的字",
+        "序号 | 姓名 | 要求",
+        f"1 | 王{astral} | 第一行\n第二行",
+        "2 | 李四 | 无",
         "表后\n换行",
     ]
-    assert result.segments[3].loc == {"table": 1, "row": 2}
-    assert result.segments[3].cells == [
+    assert result.segments[4].loc == {"table": 1, "row": 2}
+    assert result.segments[4].cells == [
         {"c": 0, "t": "1", "h": "序号"},
-        {"c": 1, "t": "第一行\n第二行", "h": "要求"},
+        {"c": 1, "t": "王" + astral, "h": "姓名"},
+        {"c": 2, "t": "第一行\n第二行", "h": "要求"},
     ]
     # 表格里套的表格：内层的格、行接成一句放进外面那一格
     outer = {"in_table": 1, "itap": 1}
@@ -585,6 +637,97 @@ def test_pictures_only_is_scan_and_no_text_is_empty() -> None:
     assert texts(at.extract(seal.getvalue())) == ["盖章页：申报单位（公章）"]
 
 
+def test_pdf_continued_tables_dedupe_body_numbers_and_outlined_text() -> None:
+    def ruled(top: float, rows: int) -> list:
+        """三列的表格线：从 top 往下 rows 行，每行 20 高。"""
+        bottom = top - 20 * rows
+        lines = [(40, top - 20 * i, 260, top - 20 * i) for i in range(rows + 1)]
+        return lines + [(x, top, x, bottom) for x in (40, 120, 190, 260)]
+
+    def row(y: float, *cells: str) -> list:
+        return [(x, y, text) for x, text in zip((45, 125, 195), cells, strict=True)]
+
+    data = pdf_pages(
+        [
+            {
+                "text": [(40, 370, "Annex 1: application guide for provincial key projects 2026.")]
+                + row(85, "Item", "Amount", "Deadline")
+                + row(65, "AI", "500", "Nov 5")
+                + [(150, 200, "2025"), (150, 20, "1")],  # 正文里单独一行的数字留着，页脚页码删
+                "lines": ruled(100, 2),
+            },
+            # 续表：这一页一开始就是表、列数一样，第一行是数据不是表头
+            {
+                "text": row(385, "Robot", "300", "Nov 9")
+                + row(365, "Chip", "200", "Nov 9")
+                + [(40, 300, "Bold title"), (40.3, 300, "Bold title")],  # 为了加粗重画一遍
+                "lines": ruled(400, 2),
+            },
+            {"curves": 150},  # 字被转成线条：算扫描页
+        ]
+    )
+    result = at.extract(data)
+    assert result.ok and (result.pages, result.scanned_pages) == (3, 1)
+    assert texts(result) == [
+        "Annex 1: application guide for provincial key projects 2026.",
+        "2025",
+        "Item | Amount | Deadline",
+        "AI | 500 | Nov 5",
+        "Robot | 300 | Nov 9",
+        "Chip | 200 | Nov 9",
+        "Bold title",
+    ]
+    robot = result.segments[4]
+    assert (robot.kind, robot.loc) == ("row", {"page": 2, "table": 1, "row": 3})
+    assert robot.cells[0] == {"c": 0, "t": "Robot", "h": "Item"}
+
+
+def test_few_characters_with_big_pictures_count_as_scans(monkeypatch) -> None:
+    from docx import Document as WordDocument
+
+    doc = WordDocument()
+    doc.add_paragraph("附件2")
+    doc.add_picture(io.BytesIO(make_png(300)))  # 约 270KB：一整页扫描图
+    out = io.BytesIO()
+    doc.save(out)
+    result = at.extract(out.getvalue())
+    assert (result.reason, result.segments) == ("scan", [])
+    assert "只有 3 个字" in result.detail
+    # 字多的照样能读（公章、徽标再大也不算扫描件）
+    doc = WordDocument()
+    doc.add_paragraph("申报指南" * 30)
+    doc.add_picture(io.BytesIO(make_png(300)))
+    out = io.BytesIO()
+    doc.save(out)
+    assert at.extract(out.getvalue()).ok
+
+
+def test_xlsx_escapes_time_limit_and_part_size_limit(monkeypatch) -> None:
+    book = openpyxl.Workbook()
+    book.active.append(["材料清单", "备注", "份数"])
+    book.active.append(["营业执照_x000D_\n申报书", "原件", "1"])
+    out = io.BytesIO()
+    book.save(out)
+    raw = out.getvalue()
+    assert texts(at.extract(raw))[1] == "营业执照\n申报书 | 原件 | 1"
+    # 单个部件太大：不整份载入内存，按太大记
+    monkeypatch.setattr(at, "_TREE_MAX", 100)
+    assert at.extract(make_docx("申报指南")).reason == "too_large"
+    monkeypatch.undo()
+    # 一份文件取太久：按太大记，附件任务不卡住
+    import time
+
+    def slow(_data):
+        time.sleep(5)
+
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    monkeypatch.setitem(at._EXTRACTORS, "docx", slow)
+    started = time.monotonic()
+    result = at.extract(make_docx("申报指南"))
+    assert (result.reason, result.detail) == ("too_large", "取文字超过 1 秒")
+    assert time.monotonic() - started < 3
+
+
 # ---- 分段、表头、上限、遮号码 ----
 
 
@@ -604,15 +747,14 @@ def _row(*texts: str, header: bool = False) -> at._Row:
 
 
 def test_header_rules() -> None:
-    rows = [_row("汇总表"), _row("序号", "名称"), _row("1", "甲")]
+    rows = [_row("汇总表"), _row("序号", "名称", "金额"), _row("1", "甲", "10")]
     assert at._header_rows(rows) == {1}
     # 填写行跳过，下一行是表头
-    assert at._header_rows(
-        [_row("名称", "", "日期", ""), _row("类别", "说明"), _row("a", "b")]
-    ) == {1}
-    assert at._header_rows([_row("1", "2"), _row("3", "4")]) == set()  # 全是数字
-    assert at._header_rows([_row("序号", "名称")]) == set()  # 只有一行
-    assert at._header_rows([_row("x" * 31, "名称"), _row("1", "2")]) == set()  # 太长
+    form = [_row("名称", "", "日期", ""), _row("类别", "说明", "备注"), _row("a", "b", "c")]
+    assert at._header_rows(form) == {1}
+    assert at._header_rows([_row("1", "2", "3"), _row("4", "5", "6")]) == set()  # 全是数字
+    assert at._header_rows([_row("序号", "名称", "金额")]) == set()  # 只有一行
+    assert at._header_rows([_row("x" * 31, "名称", "金额"), _row("1", "2", "3")]) == set()
     marked = [_row("a", "b", header=True), _row("c", "d", header=True), _row("1", "2")]
     assert at._header_rows(marked) == {0, 1}
     # 长的说明行、只占一部分列的"填报单位 | 填报日期"跳过，下一行才是表头
@@ -627,9 +769,16 @@ def test_header_rules() -> None:
     wide = _row("序号", "单位", "项目", "金额", "备注")
     assert at._header_rows([meta, wide, _row("1", "甲", "乙", "10", "无")]) == {1}
     # 数据行（有一格只是数字）不当表头；左上角空着的表头照样算
-    assert at._header_rows([_row("1", "甲公司"), _row("2", "乙公司")]) == set()
+    assert at._header_rows([_row("1", "甲公司", "乙"), _row("2", "乙公司", "丙")]) == set()
     corner = at._Row([at._Cell(1, "2024年"), at._Cell(2, "2025年")], {})
     assert at._header_rows([corner, _row("收入", "100", "200")]) == {0}
+    # 两列的表（名目 | 内容）不认列表头：第一行也是内容
+    pairs = [
+        _row("申报主体", "省内注册企业"),
+        _row("支持方式", "无偿资助"),
+        _row("截止", "11月5日"),
+    ]
+    assert at._header_rows(pairs) == set()
 
 
 def test_mask_uses_body_rules_then_spaced_forms() -> None:
@@ -649,19 +798,43 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
         assert at.mask(raw) == masked, raw
     # 正文规则本身会吞字（见 attachment_text._EMAIL）：附件不能照搬
     assert body_rules.redact_sensitive("于7月2日前发送至a@b.com") == "[邮箱已脱敏]"
+    # 写了"账号"的：对公账号过不了 Luhn、可能超过 19 位，也不留尾巴
+    assert at.mask("开户账号：33050161613500000123") == "开户账号：[银行账号已脱敏]"
+    assert at.mask("账号：3305 0161 6135 0000 0123") == "账号：[银行账号已脱敏]"
     for keep in (
         "请于2026年10月20日前提交，支持金额 1,000,000 元",
         "统一社会信用代码 91110113071669887D",
         "项目编号 2026-1234-5678",
         "第 1 | 13812345 | 678 行",  # 不同格子的数字不连起来
+        # 日期区间、表格里空格隔开的一串数字：不拼成卡号（以前约一成会被当成卡号遮掉）
+        "申报时间：2025-10-10—2025-10-24",
+        "2025-10-13-2025-11-12",
+        "合计 1099 800 450 300 200",
+        "2025年 1 2 3 4 5 6 7 8 9 10 11 12 月",
     ):
-        assert at.mask(keep) == keep
+        assert at.mask(keep) == keep, keep
     builder = at._Builder()
     builder.para("联系电话：138 1234 5678")
-    builder.table([_row("姓名", "手机"), _row("张三", "13912345678")])
+    builder.table([_row("姓名", "手机", "备注"), _row("张三", "13912345678", "无")])
     assert builder.masked == 2
     assert builder.segments[0].text == "联系电话：[手机号已脱敏]"
     assert builder.segments[2].cells[1] == {"c": 1, "t": "[手机号已脱敏]", "h": "手机"}
+    # 表格里"账号"写在左边那格或列表头：这一格的长数字也遮（对公账号过不了 Luhn）
+    builder = at._Builder()
+    builder.table(
+        [_row("开户银行", "工商银行", "银行账号", "1202021309001234568"), _row("备注", "无")]
+    )
+    builder.table([_row("单位", "账号", "金额"), _row("甲", "33050161613500000123", "100")])
+    assert builder.segments[0].text == "开户银行 | 工商银行 | 银行账号 | [银行账号已脱敏]"
+    assert builder.segments[3].text == "甲 | [银行账号已脱敏] | 100"
+
+
+def test_clean_is_linear_on_long_runs_of_spaces() -> None:
+    import time
+
+    started = time.monotonic()
+    assert at.clean("甲" + chr(0x3000) * 40000 + "乙") == "甲 乙"  # 以前要 5 秒
+    assert time.monotonic() - started < 0.5
 
 
 def test_clean_joins_vertical_text_and_maps_symbol_fonts() -> None:
@@ -788,6 +961,48 @@ def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypa
     assert report.extracted == 2
 
 
+def test_interrupted_extraction_is_not_retried_and_shared_links_follow(
+    session, monkeypatch
+) -> None:
+    report = at.TextReport()
+    content = make_docx("会让进程中断的文件")
+
+    def crash(_data):
+        raise RuntimeError("进程被杀")  # 代替内存不足被杀、超时被停
+
+    monkeypatch.setattr(at, "extract", crash)
+    with pytest.raises(RuntimeError):
+        at.record(session, BASE + "a.docx", "docx", NOW, report, content=content)
+    session.rollback()
+    row = _url_rows(session)[BASE + "a.docx"]
+    version = session.get(AttachmentTextVersion, row.version_id)
+    assert row.status == "pending" and version.detail == at._IN_PROGRESS
+
+    def never(_data):
+        raise AssertionError("不该再取")
+
+    monkeypatch.setattr(at, "extract", never)
+    later = NOW + at.TEXT_RETRY
+    at.record(session, BASE + "a.docx", "docx", later, report, content=content)
+    at.record(session, BASE + "b.docx", "docx", later, report, content=content)  # 同样的内容
+    rows = _url_rows(session)
+    for url in (BASE + "a.docx", BASE + "b.docx"):
+        assert (rows[url].status, rows[url].reason) == ("failed", "broken")
+    # 按新规则重取共用的内容：其他链接的状态跟着改，不会还写"能读、0 字"
+    monkeypatch.undo()
+    shared = make_docx("共用的内容")
+    at.record(session, BASE + "c.docx", "docx", NOW, report, content=shared)
+    at.record(session, BASE + "d.docx", "docx", NOW, report, content=shared)
+    monkeypatch.setattr(at, "EXTRACTOR_VERSION", at.EXTRACTOR_VERSION + 1)
+    monkeypatch.setattr(
+        at, "extract", lambda _data: at.Extraction("docx", reason="empty", detail="空")
+    )
+    at.record(session, BASE + "c.docx", "docx", later, report, content=shared)
+    rows = _url_rows(session)
+    assert (rows[BASE + "d.docx"].status, rows[BASE + "d.docx"].reason) == ("failed", "empty")
+    assert rows[BASE + "d.docx"].changed_at == later
+
+
 def test_cleanup_drops_out_of_scope_links_and_orphan_texts(session) -> None:
     report = at.TextReport()
     at.record(session, BASE + "keep.docx", "docx", NOW, report, content=make_docx("留下"))
@@ -885,6 +1100,36 @@ def test_existing_copies_get_their_text_on_the_next_run(session) -> None:
     fetcher.calls.clear()
     run(session, fetcher, cloud)
     assert fetcher.calls == []
+
+
+def test_text_only_rows_wait_behind_copy_rechecks_and_copyable_extensions_win(session) -> None:
+    # 新通知：副本没到期，只为补文字；旧通知：副本到期了。每轮只下 1 个时先复查副本
+    add_doc(session, 1, APPLY, date(2026, 10, 2), [("新", BASE + "new.pdf", "pdf")])
+    add_doc(session, 2, APPLY, date(2026, 9, 1), [("旧", BASE + "old.pdf", "pdf")])
+    pdf = make_pdf("Guide")
+    for url, next_check in ((BASE + "new.pdf", NOW + timedelta(days=5)), (BASE + "old.pdf", NOW)):
+        session.add(
+            AttachmentCopy(
+                url_hash=copies.url_hash(url),
+                url=url,
+                declared_type="pdf",
+                status="ready",
+                file_type="pdf",
+                size=len(pdf),
+                sha256=copies.sha256(pdf).hexdigest(),
+                file_id=PREFIX + obj(pdf, "pdf"),
+                rules_version=copies.RULES_VERSION,
+                next_check_at=next_check,
+            )
+        )
+    session.commit()
+    fetcher = FakeFetcher({BASE + "new.pdf": pdf, BASE + "old.pdf": pdf})
+    run(session, fetcher, FakeCloud(), limit=1)
+    assert fetcher.calls == [BASE + "old.pdf"]
+    # 同一链接在新通知里写成 wps、老通知里是 doc：按 doc 算（能存副本），老通知那个附件照样能打开
+    add_doc(session, 3, APPLY, date(2026, 10, 3), [("新写法", BASE + "same", "wps")])
+    add_doc(session, 4, APPLY, date(2026, 9, 3), [("老写法", BASE + "same", "doc")])
+    assert copies.candidates(session, NOW)[BASE + "same"] == "doc"
 
 
 def test_text_step_errors_never_stop_copies(session, monkeypatch, caplog) -> None:

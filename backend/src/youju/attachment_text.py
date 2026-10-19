@@ -28,6 +28,7 @@ import struct
 import zipfile
 from collections import Counter
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -51,14 +52,20 @@ MAX_CHARS = 300_000
 # 一段最长这么多字，更长的在句末切开（和正文分段 interpret.split_paragraphs 一样）
 SEGMENT_MAX = 1000
 _PDF_PAGES = 300
-# 解压后的 XML 合计上限（防压缩炸弹），和附件副本的检查一样
+# 解压后的 XML 合计上限（防压缩炸弹），和附件副本的检查一样；要整份载入内存解析的单个部件
+# 上限（20MB 的正文 XML 解析后要占几百 MB 内存，字数也早超过 MAX_CHARS 了）
 _XML_MAX = 100 * 1024 * 1024
+_TREE_MAX = 20 * 1024 * 1024
 # 扫描页（见 _pdf_page）：不到这么多字、图片占了这么大比例的页面；或者图片盖住了几乎整页、
 # 字是识别层
 _SCAN_PAGE_CHARS = 10
 _SCAN_PAGE_SOME_COVER = 0.3
 _SCAN_PAGE_COVER = 0.9
 _PDF_MAX_EDGES = 5000
+# 没有字、曲线却有这么多的页：字被转成了线条，按扫描页算
+_OUTLINED_CURVES = 100
+# 页码只在页面上下这么宽的边上认
+_MARGIN = 0.1
 
 # 取不出、下载不了的原因（models.ATTACHMENT_TEXT_REASONS），统计和以后的结果说明按这里写
 REASONS = {
@@ -113,17 +120,20 @@ class Extraction:
 # ---- 遮号码 ----
 
 _HALF = body_rules._HALF_WIDTH
-# 号码中间同一行里最多隔两个空格或横线（换行、表格的格之间不连）
-_GAP = r"[ \t\u00a0\u3000\-\u2010-\u2015\u2212]{0,2}"
-_SPACED_MOBILE = re.compile(rf"(?<![\d])(?:\+?86{_GAP})?1{_GAP}[3-9](?:{_GAP}\d){{9}}(?!{_GAP}\d)")
-_SPACED_ID = re.compile(rf"(?<![\d])[1-9](?:{_GAP}\d){{16}}{_GAP}[\dXx](?![\dXx])")
-_SPACED_OLD_ID = re.compile(rf"(?<![\d])[1-9](?:{_GAP}\d){{14}}(?!{_GAP}\d)")
-_SPACED_CARD = re.compile(rf"(?<![\d])\d(?:{_GAP}\d){{15,18}}(?!{_GAP}\d)")
-_ACCOUNT = re.compile(
-    rf"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*[:：]?\s*)\d(?:{_GAP}\d){{11,18}}(?!{_GAP}\d)"
-)
-
-
+# 分开写的号码，组和组之间只认一个空格或一个横线（"138 1234 5678"、"6222-0212-3456-7890"）。
+# 破折号、制表符不算分隔：日期区间"2025-10-10—2025-10-24"、表格里一串数字不会被拼成号码。
+# （clean 已把连续空白收成一个空格）
+_SPACED_MOBILE = re.compile(r"(?<!\d)(?:\+?86[ -]?)?1[3-9]\d[ -]?\d{4}[ -]?\d{4}(?![\d])")
+_SPACED_ID = re.compile(r"(?<!\d)[1-9]\d{5}[ -]?\d{8}[ -]?\d{3}[\dXx](?![\dXx])")
+_SPACED_OLD_ID = re.compile(r"(?<!\d)[1-9]\d{5}[ -]?\d{6}[ -]?\d{3}(?![\dXx])")
+# 没写"账号"的卡号：连写的 16–19 位，或四位一组（最后一组 1–3 位），都要过 Luhn 校验
+_CARD = re.compile(r"(?<!\d)(?:\d{16,19}|\d{4}(?:[ -]\d{4}){3}(?:[ -]\d{1,3})?)(?![\d])")
+# 写了"账号"的：后面 10–30 位数字（对公账号过不了 Luhn，也可能超过 19 位），组间一个空格或横线；
+# 后面紧跟字母的（统一社会信用代码当登录账号）不算
+_ACCOUNT_LABEL = r"(?:银行卡号?|银行账号|银行帐号|开户账号|开户帐号|账户号?|帐户号?|账号|帐号|卡号)"
+_ACCOUNT = re.compile(rf"({_ACCOUNT_LABEL}\s*[:：]?\s*)\d(?:[ -]?\d){{9,29}}(?![\dA-Za-z])")
+_ACCOUNT_DIGITS = re.compile(r"(?<![\dA-Za-z])\d(?:[ -]?\d){9,29}(?![\dA-Za-z])")
+_ACCOUNT_LABEL_RE = re.compile(_ACCOUNT_LABEL)
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址，先遮掉：正文规则（redact_sensitive）的写法会把
 # 邮箱前面连着的中文一起遮掉（\w 也算汉字，"于7月2日前发送至abc@163.com"整段变成"[邮箱已脱敏]"，
 # 截止日期就没了）。先遮掉以后正文规则找不到 @，不会再吞字
@@ -136,18 +146,25 @@ def _digits(text: str) -> str:
     return re.sub(r"[^\dXx]", "", text)
 
 
-def mask(text: str) -> str:
+def mask(text: str, *, account: bool = False) -> str:
     """遮掉身份证号、手机号、银行账号（还有正文规则一并遮的联系人、邮箱、座机）。
 
-    先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉），再用正文的规则
-    （redact_sensitive），最后遮正文规则漏掉的分开写法：空格、横线隔开的手机号、身份证号、
-    银行卡号（卡号要通过 Luhn 校验），"账号："后面隔开写的数字，标签字隔开写的"联 系 人："。
-    附件里的表格、名单常这样写。全角数字先按半角找（一个字换一个字，位置不变）。"""
-    text = body_rules.redact_sensitive(_EMAIL.sub("[邮箱已脱敏]", text))
+    1. 先只遮邮箱地址本身（_EMAIL，免得正文规则把邮箱前面的中文一起遮掉）；
+    2. 再遮"账号："后面的号码（_ACCOUNT，10–30 位：正文规则只认 12–19 位，长的会留下尾巴）；
+       account=True（表格里左边那格或这一列的表头写着"账号"）时，这一格里 10 位以上的数字都遮；
+    3. 用正文的规则（redact_sensitive）；
+    4. 最后遮正文规则漏掉的分开写法：一个空格或横线隔开的手机号（3-4-4）、身份证号（6-8-4）、
+       没写"账号"的卡号（连写 16–19 位或四位一组，过 Luhn 校验），标签字隔开写的"联 系 人："。
+    全角数字先按半角找（一个字换一个字，位置不变）。"""
+    text = _EMAIL.sub("[邮箱已脱敏]", text)
+    text = _ACCOUNT.sub(r"\1[银行账号已脱敏]", text)
+    if account:
+        text = _ACCOUNT_DIGITS.sub("[银行账号已脱敏]", text)
+    text = body_rules.redact_sensitive(text)
     text = _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
     plain = text.translate(_HALF)
     spans: list[tuple[int, int, str]] = []
-    for m in _ACCOUNT.finditer(plain):
+    for m in _ACCOUNT.finditer(plain):  # 全角数字写的
         spans.append((m.start() + len(m.group(1)), m.end(), "[银行账号已脱敏]"))
     for m in _SPACED_MOBILE.finditer(plain):
         spans.append((m.start(), m.end(), "[手机号已脱敏]"))
@@ -155,7 +172,7 @@ def mask(text: str) -> str:
         for m in pattern.finditer(plain):
             if body_rules._ID_CARD.fullmatch(_digits(m.group())):
                 spans.append((m.start(), m.end(), "[身份证号已脱敏]"))
-    for m in _SPACED_CARD.finditer(plain):
+    for m in _CARD.finditer(plain):
         if body_rules._luhn(_digits(m.group())):
             spans.append((m.start(), m.end(), "[银行账号已脱敏]"))
     if not spans:
@@ -228,10 +245,12 @@ def sniff(data: bytes) -> str:
 
 # ---- 分段 ----
 
-_SPACES = re.compile(r"[ \t\u00a0\u2000-\u200b\u202f\u205f\ufeff]+")
-_NEWLINES = re.compile(r"\s*\n\s*")
+# 换行以外的空白（含制表符、全角空格、不换行空格）都收成一个空格；零宽字符去掉
+_SPACES = re.compile(r"[^\S\n]+")
+_ZERO_WIDTH = re.compile(r"[\u200b-\u200d\u2060\ufeff]")
+_NEWLINES = re.compile(r" ?\n[ \n]*")
 _SENTENCE_END = re.compile(r"[。！？!?；;]")
-# PDF 页眉页脚里的页码
+# PDF 页眉页脚里的页码（只在页面上下边上的才删，见 _pdf_page）
 _PAGE_NUMBER = re.compile(
     r"^(?:[-\u2012-\u2015\uff0d\s]*\d{1,4}[-\u2012-\u2015\uff0d\s]*|第\s*\d+\s*页(?:\s*[,，/、]?\s*共\s*\d+\s*页)?|\d+\s*/\s*\d+)$"
 )
@@ -262,10 +281,11 @@ def _symbol(match: re.Match) -> str:
 
 
 def clean(text: str) -> str:
-    """看得见的样子：空白收成一个空格，段内换行保留一个，首尾的空白（含全角空格缩进）去掉。
+    """看得见的样子：换行以外的空白（含全角空格）收成一个空格，段内换行保留一个，首尾的空白
+    （含全角空格缩进）去掉；都是线性时间（一长串全角空格也不会慢）。
     一行一个字的竖排（表格里常见的"资、格、审、核"各占一行）接成一行。"""
-    text = _SPACES.sub(" ", _PUA.sub(_symbol, text).replace("\r", "\n"))
-    text = _NEWLINES.sub("\n", text).strip(" \n\u3000")
+    text = _PUA.sub(_symbol, _ZERO_WIDTH.sub("", text)).replace("\r", "\n")
+    text = _NEWLINES.sub("\n", _SPACES.sub(" ", text)).strip(" \n")
     lines = text.split("\n")
     if len(lines) > 1 and all(len(line) == 1 and _CJK.match(line) for line in lines):
         return "".join(lines)
@@ -335,38 +355,52 @@ class _Builder:
         for part in _split_long(masked):
             self._add("p", part, loc, None)
 
-    def table(self, rows: list[_Row]) -> None:
+    def table(self, rows: list[_Row], *, headers: dict[int, str] | None = None) -> dict[int, str]:
         """一张表：先认表头行（_header_rows），表头行记成 head，表头下面各行的每一格记下所在列的
-        表头（表头上面的表名、填写行不记）。"""
+        表头（表头上面的表名、填写行不记）。headers 给了（PDF 跨页的续表），就不再认表头，每一行
+        都按它记。返回这张表的表头（列号 → 表头文字），续表接着用。"""
         rows = [r for r in rows if any(clean(c.text) for c in r.cells)]
         if not rows:
-            return
-        head = _header_rows(rows)
-        headers: dict[int, str] = {}
-        for i in head:
-            for cell in rows[i].cells:
-                text = mask(clean(cell.text))
-                if not text:
-                    continue
-                for col in range(cell.col, cell.col + max(cell.span, 1)):
-                    headers[col] = f"{headers[col]}/{text}" if col in headers else text
+            return headers or {}
+        if headers is not None:
+            head: set[int] = set()
+            first = 0  # 续表：从第一行起都记表头
+        else:
+            head = _header_rows(rows)
+            headers = {}
+            for i in head:
+                for cell in rows[i].cells:
+                    text = mask(clean(cell.text))
+                    if not text:
+                        continue
+                    for col in range(cell.col, cell.col + max(cell.span, 1)):
+                        headers[col] = f"{headers[col]}/{text}" if col in headers else text
+            first = max(head) + 1 if head else len(rows)
         for i, row in enumerate(rows):
-            cells, changed = [], False
+            cells, changed, left = [], False, ""
             for cell in row.cells:
                 text = clean(cell.text)
                 if not text:
                     continue
-                masked = mask(text)
+                header = headers.get(cell.col) if i >= first else None
+                # 左边那格或这一列的表头写着"账号"：这一格里 10 位以上的数字都当账号遮
+                account = any(
+                    label and len(label) <= 12 and _ACCOUNT_LABEL_RE.search(label)
+                    for label in (left, header)
+                )
+                masked = mask(text, account=account)
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
-                if i > max(head, default=len(rows)) and headers.get(cell.col):
-                    item["h"] = headers[cell.col]
+                if header:
+                    item["h"] = header
                 cells.append(item)
+                left = text
             if changed:
                 self.masked += 1
             self._add(
                 "head" if i in head else "row", " | ".join(c["t"] for c in cells), row.loc, cells
             )
+        return headers
 
 
 _NUMBER = re.compile(r"[\d.,%\s\-]+")
@@ -377,13 +411,16 @@ def _header_rows(rows: list[_Row]) -> set[int]:
     像表头的行：两格以上有字、中间没有空格、每格不超过 30 字、没有一格只是数字、右边到了下面
     各行（取中位数）九成以上的宽度、后面还有行。不像的跳过：表名（只有一格有字）、
     "项目名称 □ 申报单位 □"这种中间有空格的填写行、长的说明文字、"1 | 甲公司"这种数据行、
-    "填报单位 | 填报日期"这种只占一部分列的行。都不像就没有表头（填写表、数据表常常这样）。"""
+    "填报单位 | 填报日期"这种只占一部分列的行。都不像就没有表头（填写表、数据表常常这样）。
+    只有两列的表（"项目名称 | 某某项目"这种名目加内容）不认列表头。"""
     marked = {i for i, r in enumerate(rows) if r.header}
     if marked:
         return marked
     widths = [
         max((c.col + max(c.span, 1) for c in r.cells if clean(c.text)), default=0) for r in rows
     ]
+    if sorted(widths)[len(widths) // 2] <= 2:
+        return set()  # 两列的表多半是"名目 | 内容"，第一行也是内容，不认列表头
     for i, row in enumerate(rows[:3]):
         if i == len(rows) - 1:
             break
@@ -398,6 +435,17 @@ def _header_rows(rows: list[_Row]) -> set[int]:
             continue  # 右边没到下面各行的宽度（左上角空着的表头照样算）
         return {i}
     return set()
+
+
+@dataclass
+class _Found:
+    """一种格式取完的结果：段落，加上判断"是不是扫描件"要用的图片个数、大小和 PDF 页数。"""
+
+    builder: _Builder
+    pictures: int = 0
+    picture_bytes: int = 0
+    pages: int | None = None
+    scanned: int | None = None
 
 
 # ---- 新版 Office（docx、xlsx、pptx） ----
@@ -460,26 +508,46 @@ def _choice(el):
 
 
 class _Zip:
-    """读 Office 文件里的部件：解压后的合计大小有上限（防压缩炸弹）。"""
+    """读 Office 文件里的部件：解压后的合计大小有上限（防压缩炸弹）；要整份载入内存解析的部件
+    （正文、工作簿、幻灯片等）每个不超过 _TREE_MAX，工作表、共享字符串边读边解析。"""
 
     def __init__(self, data: bytes) -> None:
         self.zf = zipfile.ZipFile(io.BytesIO(data))
         self.names = set(self.zf.namelist())
         self.total = 0
 
+    def count(self, size: int) -> None:
+        self.total += size
+        if self.total > _XML_MAX:
+            raise Unreadable("too_large", "解压后超过 100MB")
+
     def read(self, name: str) -> bytes | None:
         if name not in self.names:
             return None
         with self.zf.open(name) as fh:
-            raw = fh.read(_XML_MAX - self.total + 1)
-        self.total += len(raw)
-        if self.total > _XML_MAX:
-            raise Unreadable("too_large", "解压后超过 100MB")
+            raw = fh.read(_TREE_MAX + 1)
+        if len(raw) > _TREE_MAX:
+            raise Unreadable("too_large", f"文件里的一个部件解压后超过 {_TREE_MAX // 2**20}MB")
+        self.count(len(raw))
         return raw
 
     def xml(self, name: str):
         raw = self.read(name)
         return None if raw is None else etree.fromstring(raw, _PARSER)
+
+    def iterparse(self, name: str) -> Iterator:
+        """边读边解析（工作表、共享字符串可能很大），读到的字节照样计入合计上限。"""
+        if name not in self.names:
+            return
+        with self.zf.open(name) as fh:
+            yield from etree.iterparse(
+                _Counted(fh, self), events=("end",), resolve_entities=False, huge_tree=False
+            )
+
+    def media(self) -> tuple[int, int]:
+        """包里的图片个数和合计大小（字很少、图很大时算扫描件）。"""
+        infos = [i for i in self.zf.infolist() if "/media/" in f"/{i.filename}"]
+        return len(infos), sum(i.file_size for i in infos)
 
     def rels(self, part: str) -> dict[str, str]:
         """部件的关系：编号 → 目标部件的完整路径。"""
@@ -505,6 +573,18 @@ class _Zip:
         return default
 
 
+class _Counted:
+    """给 iterparse 读的文件：读到的字节计入 _Zip 的合计上限。"""
+
+    def __init__(self, fh, owner: _Zip) -> None:
+        self.fh, self.owner = fh, owner
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self.fh.read(size if size and size > 0 else 1 << 16)
+        self.owner.count(len(chunk))
+        return chunk
+
+
 def _join(folder: str, target: str) -> str:
     parts = [p for p in folder.split("/") if p] if folder else []
     for piece in target.split("/"):
@@ -525,7 +605,6 @@ def _docx(data: bytes) -> list:
     body = next((el for el in root if _is_w(el, "body")), None)
     builder = _Builder()
     tables = [0]
-    pictures = _media(zf)
     for item in _docx_blocks(body if body is not None else root):
         if isinstance(item, str):
             builder.para(item)
@@ -534,7 +613,7 @@ def _docx(data: bytes) -> list:
             for row in item:
                 row.loc = {"table": tables[0], **row.loc}
             builder.table(item)
-    return [builder, pictures]
+    return _Found(builder, *zf.media())
 
 
 def _docx_blocks(parent) -> Iterator[str | list[_Row]]:
@@ -754,12 +833,15 @@ def _xlsx(data: bytes) -> list:
         for row in rows:
             row.loc = {"sheet": name, **row.loc}
         builder.table(rows)
-    return [builder, _media(zf)]
+    return _Found(builder, *zf.media())
 
 
-def _media(zf: _Zip) -> int:
-    """包里的图片个数（只有图片没有字时算扫描件）。"""
-    return sum(1 for n in zf.names if "/media/" in f"/{n}")
+# Excel 把 XML 里不能写的字写成 _xHHHH_（回车是 _x000D_，"_x" 本身写成 _x005F_x）
+_XLSX_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _unescape(text: str) -> str:
+    return _XLSX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text) if "_x" in text else text
 
 
 def _si_text(si) -> str:
@@ -768,15 +850,23 @@ def _si_text(si) -> str:
     for el in si.iter():
         if _local(el) == "t" and _local(el.getparent()) != "rPh":
             out.append(el.text or "")
-    return "".join(out)
+    return _unescape("".join(out))
 
 
 def _shared_strings(zf: _Zip, rels: dict[str, str]) -> list[str]:
+    """共享字符串（边读边解析）。合计超过 MAX_CHARS 的两倍就不往下读了：表格本身也一定超。"""
     target = next((t for t in rels.values() if t.endswith("sharedStrings.xml")), None)
-    root = zf.xml(target) if target else None
-    if root is None:
-        return []
-    return [_si_text(si) for si in root if _local(si) == "si"]
+    out: list[str] = []
+    chars = 0
+    for _event, el in zf.iterparse(target) if target else ():
+        if _local(el) == "si":
+            text = _si_text(el)
+            out.append(text)
+            chars += len(text)
+            if chars > 2 * MAX_CHARS:
+                raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
+            el.clear()
+    return out
 
 
 def _cell_styles(zf: _Zip, rels: dict[str, str]) -> list[tuple[bool, bool]]:
@@ -800,17 +890,12 @@ def _cell_styles(zf: _Zip, rels: dict[str, str]) -> list[tuple[bool, bool]]:
 
 
 def _xlsx_sheet(zf, target, shared, styles, epoch) -> list[_Row]:
-    raw = zf.read(target)
-    if raw is None:
-        return []
     hidden_cols: set[int] = set()
     rows: list[_Row] = []
     merges: list[tuple[int, int, int, int]] = []
     chars = 0
     number = 0  # 行号：有 r 属性按它，没有的接着上一行数（单元格的列同理）
-    for _event, el in etree.iterparse(
-        io.BytesIO(raw), events=("end",), resolve_entities=False, huge_tree=False
-    ):
+    for _event, el in zf.iterparse(target):
         name = _local(el)
         if name == "col" and el.get("hidden") in ("1", "true"):
             for col in range(_int(el.get("min"), 1), _int(el.get("max"), 0) + 1):
@@ -873,7 +958,7 @@ def _xlsx_value(c, shared, styles, epoch) -> str:
     if kind == "b":
         return "TRUE" if value == "1" else "FALSE"
     if kind in ("str", "e"):
-        return value
+        return _unescape(value)
     if kind == "d":  # ISO 日期
         return value.removesuffix("T00:00:00").replace("T", " ")[:16]
     style = _int(c.get("s"), 0)
@@ -905,7 +990,7 @@ def _pptx(data: bytes) -> list:
                 for row in item:
                     row.loc = {"slide": number, "table": tables, **row.loc}
                 builder.table(item)
-    return [builder, _media(zf)]
+    return _Found(builder, *zf.media())
 
 
 def _a_para(p) -> str:
@@ -992,16 +1077,33 @@ def _pdf(data: bytes) -> list:
     texts = [value for kind, value, _ in items if kind == "line"]
     width = line_width("\n".join(texts))
     tables = 0
+    last: dict | None = None  # 上一张表：列数、表号、行数、表头、在第几页
     current, current_page, physical = "", None, ""
-    for kind, value, number in items:
+    for index, (kind, value, number) in enumerate(items):
         if kind == "table":
             if current:
                 builder.para(current, {"page": current_page})
                 current, physical = "", ""
-            tables += 1
+            cols = max((c.col + max(c.span, 1) for r in value for c in r.cells), default=0)
+            # 跨页的续表：上一页最后是一张表、这一页一开始就是表、列数一样
+            follows = (
+                last is not None
+                and index > 0
+                and items[index - 1][0] == "table"
+                and items[index - 1][2] == number - 1
+                and last["cols"] == cols
+            )
+            if not follows:
+                tables += 1
+                last = {"cols": cols, "number": tables, "rows": 0, "headers": None}
             for row in value:
-                row.loc = {"page": number, "table": tables, **row.loc}
-            builder.table(value)
+                row.loc = {
+                    "page": number,
+                    "table": last["number"],
+                    "row": last["rows"] + row.loc["row"],
+                }
+            last["rows"] += len(value)
+            last["headers"] = builder.table(value, headers=last["headers"] if follows else None)
             continue
         if current and layout_wrapped(physical, value, width):
             current = current.rstrip() + value.lstrip()
@@ -1012,7 +1114,7 @@ def _pdf(data: bytes) -> list:
         physical = value
     if current:
         builder.para(current, {"page": current_page})
-    return [builder, 0, pages, scanned]
+    return _Found(builder, pages=pages, scanned=scanned)
 
 
 _OCR_FONT = re.compile(r"OCR|GlyphLess", re.I)
@@ -1054,6 +1156,9 @@ def _pdf_page(page) -> tuple[list, list, bool]:
             return [], [], True
         if cover >= area * _SCAN_PAGE_COVER and _ocr_layer(page):
             return [], [], True
+    if not page.chars and len(page.curves) >= _OUTLINED_CURVES:
+        return [], [], True  # 字被转成了线条（导出时"文字转曲"），取不出
+    page = page.dedupe_chars()  # 为了加粗把同一个字重画一遍的，只留一个
     try:
         # 线条特别多的页（图纸、图表）找表格可能很慢：不找，只取文字行（9/28 数据里最多 1200 条）
         found = page.find_tables() if len(page.edges) <= _PDF_MAX_EDGES else []
@@ -1070,10 +1175,15 @@ def _pdf_page(page) -> tuple[list, list, bool]:
 
     rest = page.filter(outside) if boxes else page
     lines = []
+    top_margin, bottom_margin = page.height * _MARGIN, page.height * (1 - _MARGIN)
     for line in rest.extract_text_lines(layout=False, strip=True, return_chars=False):
-        text = line.get("text") or ""
-        if text.strip() and not _PAGE_NUMBER.fullmatch(text.strip()):
-            lines.append((line["top"], text))
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        in_margin = line["top"] < top_margin or line["bottom"] > bottom_margin
+        if in_margin and _PAGE_NUMBER.fullmatch(text):
+            continue  # 页眉页脚里的页码；正文里单独一行的数字（"2025"）照留
+        lines.append((line["top"], text))
     tables = []
     for table in found:
         rows = []
@@ -1111,6 +1221,8 @@ def _doc(data: bytes) -> list:
         if not ole.exists(table_name):
             raise Unreadable("broken", "缺少 Table 数据流")
         table = ole.openstream(table_name).read()
+        # 图片存在 Data 流里：它的大小当作图片合计大小
+        picture_bytes = ole.get_size("Data") if ole.exists("Data") else 0
     fib = _Fib(word)
     builder = _Builder()
     table_rows = _DocTable(builder)
@@ -1122,7 +1234,7 @@ def _doc(data: bytes) -> list:
             table_rows.close()
             builder.para(text)
     table_rows.close()
-    return [builder, pictures]
+    return _Found(builder, pictures, picture_bytes)
 
 
 class _DocTable:
@@ -1188,7 +1300,8 @@ class _DocTable:
 
 
 class _Fib:
-    """FIB 里要用的几项：正文字数（ccpText）、Clx 和段落属性表（PlcBtePapx）在 Table 流里的位置。"""
+    """FIB 里要用的几项：正文字数（ccpText），Clx、字符属性表（PlcBteChpx）和段落属性表
+    （PlcBtePapx）在 Table 流里的位置。"""
 
     def __init__(self, word: bytes) -> None:
         pos = 0x20
@@ -1207,6 +1320,7 @@ class _Fib:
             return struct.unpack_from("<II", word, blob + index * 8)
 
         self.fc_clx, self.lcb_clx = pair(33)
+        self.fc_chpx, self.lcb_chpx = pair(12)
         self.fc_papx, self.lcb_papx = pair(13)
 
 
@@ -1242,21 +1356,25 @@ def _pieces(table: bytes, fib: _Fib) -> list[_Piece]:
     return pieces
 
 
-def _papx_runs(word: bytes, table: bytes, fib: _Fib) -> list[tuple[int, int, dict]]:
-    """段落属性：[(起始字节, 结束字节, {in_table, ttp, itap, inner_cell, inner_ttp})]，
-    按起始字节排好（PlcBtePapx 指向的一页页 FKP）。"""
-    plc = table[fib.fc_papx : fib.fc_papx + fib.lcb_papx]
+def _fkp_pages(word: bytes, plc: bytes):
+    """PlcBteChpx / PlcBtePapx 指向的一页页 FKP（每页 512 字节，最后一个字节是条数）：
+    逐页给 (这一页, 条数, 各条的起止字节位置)。"""
     n = (len(plc) - 4) // 8
     if n <= 0:
-        return []
-    pns = struct.unpack_from(f"<{n}I", plc, 4 * (n + 1))
-    runs = []
-    for pn in pns:
+        return
+    for pn in struct.unpack_from(f"<{n}I", plc, 4 * (n + 1)):
         page = word[(pn & 0x3FFFFF) * 512 : (pn & 0x3FFFFF) * 512 + 512]
         if len(page) < 512:
             continue
         crun = page[511]
-        fcs = struct.unpack_from(f"<{crun + 1}I", page, 0)
+        yield page, crun, struct.unpack_from(f"<{crun + 1}I", page, 0)
+
+
+def _papx_runs(word: bytes, table: bytes, fib: _Fib) -> list[tuple[int, int, dict]]:
+    """段落属性：[(起始字节, 结束字节, {in_table, ttp, itap, inner_cell, inner_ttp})]，
+    按起始字节排好。"""
+    runs = []
+    for page, crun, fcs in _fkp_pages(word, table[fib.fc_papx : fib.fc_papx + fib.lcb_papx]):
         for i in range(crun):
             offset = page[4 * (crun + 1) + 13 * i] * 2
             props: dict = {}
@@ -1266,18 +1384,52 @@ def _papx_runs(word: bytes, table: bytes, fib: _Fib) -> list[tuple[int, int, dic
                     grp = page[offset + 1 : offset + 1 + 2 * cb - 1]
                 else:
                     grp = page[offset + 2 : offset + 2 + 2 * page[offset + 1]]
-                _sprms(grp[2:], props)
+                for sprm, operand in _sprm_items(grp[2:]):  # 前两个字节是样式编号
+                    if sprm in _PARA_SPRMS and operand:
+                        props[_PARA_SPRMS[sprm]] = (
+                            struct.unpack("<i", operand)[0] if sprm == _SPRM_ITAP else operand[0]
+                        )
             runs.append((fcs[i], fcs[i + 1], props))
     runs.sort(key=lambda r: r[0])
     return runs
 
 
+def _hidden_runs(word: bytes, table: bytes, fib: _Fib) -> list[tuple[int, int]]:
+    """看不见的字：字符属性里标了修订删除（sprmCFRMarkDel）或隐藏（sprmCFVanish、
+    sprmCFSpecVanish）的 [(起始字节, 结束字节)]，按起始字节排好。样式里定的隐藏不看。"""
+    runs = []
+    for page, crun, fcs in _fkp_pages(word, table[fib.fc_chpx : fib.fc_chpx + fib.lcb_chpx]):
+        for i in range(crun):
+            offset = page[4 * (crun + 1) + i] * 2
+            if not offset:
+                continue
+            grp = page[offset + 1 : offset + 1 + page[offset]]
+            if any(
+                sprm in _HIDDEN_SPRMS and operand and operand[0] in (0x01, 0x81)
+                for sprm, operand in _sprm_items(grp)
+            ):
+                runs.append((fcs[i], fcs[i + 1]))
+    runs.sort()
+    return runs
+
+
 # 段落属性里要用的几个（[MS-DOC] 2.6.2）
-_SPRM_IN_TABLE, _SPRM_TTP, _SPRM_ITAP = 0x2416, 0x2417, 0x6649
-_SPRM_INNER_CELL, _SPRM_INNER_TTP = 0x244B, 0x244C
+_SPRM_ITAP = 0x6649
+_PARA_SPRMS = {
+    0x2416: "in_table",
+    0x2417: "ttp",
+    _SPRM_ITAP: "itap",
+    0x244B: "inner_cell",
+    0x244C: "inner_ttp",
+}
+# 字符属性：修订删除、隐藏、特殊隐藏（[MS-DOC] 2.6.1；操作数 1 是开，0x81 是"和样式相反"，
+# 样式一般不隐藏，也按开算）
+_HIDDEN_SPRMS = (0x0800, 0x083C, 0x0818)
 
 
-def _sprms(grp: bytes, props: dict) -> None:
+def _sprm_items(grp: bytes):
+    """属性修改列表（grpprl）里逐个给 (sprm, 操作数)。操作数长度按 sprm 的 spra 位算
+    （[MS-DOC] 2.2.5.1）。"""
     pos = 0
     while pos + 2 <= len(grp):
         sprm = struct.unpack_from("<H", grp, pos)[0]
@@ -1303,35 +1455,38 @@ def _sprms(grp: bytes, props: dict) -> None:
             return
         operand = grp[pos : pos + size]
         pos += size
-        if not operand:
+        if len(operand) < size:
             return
-        if sprm == _SPRM_IN_TABLE:
-            props["in_table"] = operand[0]
-        elif sprm == _SPRM_TTP:
-            props["ttp"] = operand[0]
-        elif sprm == _SPRM_INNER_CELL:
-            props["inner_cell"] = operand[0]
-        elif sprm == _SPRM_INNER_TTP:
-            props["inner_ttp"] = operand[0]
-        elif sprm == _SPRM_ITAP and len(operand) == 4:
-            props["itap"] = struct.unpack("<i", operand)[0]
+        yield sprm, operand
 
 
 def _doc_paragraphs(word, table, fib, pieces) -> tuple[list[tuple[str, str, dict | None]], int]:
     """正文按段落标记切开：([(段落文字, 结尾标记, 段落属性)], 图片个数)。结尾标记是 0x0D（段落）、
-    0x07（单元格或行尾）或 0x0C（分页、分节）。域只留结果；图片（0x01、0x08 占位）去掉、只计数
-    （只有图片没有字时算扫描件）。"""
+    0x07（单元格或行尾）或 0x0C（分页、分节）。域只留结果；修订删除、隐藏的字不取；图片（0x01、
+    0x08 占位）去掉、只计数（只有图片没有字时算扫描件）。
+
+    字的位置按 UTF-16 码元算：扩展区汉字（如"𫐄"）占两个码元、4 个字节，按解码后的字数算
+    会让后面的段落标记对不上段落属性。"""
     try:
         runs = _papx_runs(word, table, fib)
     except (struct.error, IndexError):
         runs = []
+    try:
+        hidden = _hidden_runs(word, table, fib)
+    except (struct.error, IndexError):
+        hidden = []
     starts = [r[0] for r in runs]
+    hidden_starts = [r[0] for r in hidden]
 
     def props_at(fc: int) -> dict | None:
         i = bisect.bisect_right(starts, fc) - 1
         if i >= 0 and runs[i][0] <= fc < runs[i][1]:
             return runs[i][2]
         return None
+
+    def is_hidden(fc: int) -> bool:
+        i = bisect.bisect_right(hidden_starts, fc) - 1
+        return i >= 0 and hidden[i][0] <= fc < hidden[i][1]
 
     out: list[tuple[str, str, dict | None]] = []
     buf: list[str] = []
@@ -1344,14 +1499,7 @@ def _doc_paragraphs(word, table, fib, pieces) -> tuple[list[tuple[str, str, dict
         count = min(piece.cp_end, limit) - piece.cp_start
         if count <= 0:
             continue
-        width = 1 if piece.compressed else 2
-        raw = word[piece.offset : piece.offset + count * width]
-        text = (
-            raw.decode("cp1252", "replace")
-            if piece.compressed
-            else raw.decode("utf-16-le", "replace")
-        )
-        for i, ch in enumerate(text):
+        for fc, ch in _piece_chars(word, piece, count):
             if ch == "\x13":
                 fields.append(False)
                 continue
@@ -1366,11 +1514,13 @@ def _doc_paragraphs(word, table, fib, pieces) -> tuple[list[tuple[str, str, dict
             if fields and not all(fields):
                 continue  # 域代码，不是看得见的字
             if ch in "\r\x07\x0c":
-                props = props_at(piece.offset + i * width) if runs else None
+                props = props_at(fc) if runs else None
                 if runs and ch == "\x07" and props is None:
                     props = {"in_table": 1}
                 out.append(("".join(buf), ch, props))
                 buf = []
+            elif hidden and is_hidden(fc):
+                continue  # 修订删除、隐藏的字
             elif ch in "\x0b\x0e":
                 buf.append("\n")
             elif ch == "\x1e":
@@ -1387,6 +1537,30 @@ def _doc_paragraphs(word, table, fib, pieces) -> tuple[list[tuple[str, str, dict
         # 段落属性表读不出：表格结构没法分，单元格当段落
         out = [(text, "\r", None) for text, _mark, _props in out]
     return out, pictures
+
+
+def _piece_chars(word: bytes, piece: _Piece, count: int) -> Iterator[tuple[int, str]]:
+    """一个分块里的字：(在 WordDocument 流里的字节位置, 字)。压缩的分块一个字一个字节（cp1252），
+    其余按 UTF-16LE 一个码元两个字节，代理对（扩展区的字）合成一个字、位置按第一个码元。"""
+    if piece.compressed:
+        raw = word[piece.offset : piece.offset + count]
+        for i, ch in enumerate(raw.decode("cp1252", "replace")):
+            yield piece.offset + i, ch
+        return
+    raw = word[piece.offset : piece.offset + 2 * count]
+    units = struct.unpack(f"<{len(raw) // 2}H", raw[: len(raw) // 2 * 2])
+    i = 0
+    while i < len(units):
+        unit = units[i]
+        if 0xD800 <= unit <= 0xDBFF and i + 1 < len(units) and 0xDC00 <= units[i + 1] <= 0xDFFF:
+            yield (
+                piece.offset + 2 * i,
+                chr(0x10000 + ((unit - 0xD800) << 10) + units[i + 1] - 0xDC00),
+            )
+            i += 2
+        else:
+            yield piece.offset + 2 * i, chr(unit) if not 0xD800 <= unit <= 0xDFFF else "\ufffd"
+            i += 1
 
 
 # ---- 旧版 Excel、WPS 表格（xlrd） ----
@@ -1431,7 +1605,7 @@ def _xls(data: bytes) -> list:
                 raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
         builder.table(rows)
         book.unload_sheet(index)
-    return [builder, 0]
+    return _Found(builder)
 
 
 def _xls_value(book, cell) -> str:
@@ -1473,7 +1647,7 @@ def _ppt(data: bytes) -> list:
 
     with olefile.OleFileIO(data) as ole:
         stream = ole.openstream("PowerPoint Document").read()
-        pictures = int(ole.exists("Pictures") and ole.get_size("Pictures") > 0)
+        picture_bytes = ole.get_size("Pictures") if ole.exists("Pictures") else 0
     slides: list[list[str]] = []
     boxes: list[list[str]] = []
 
@@ -1513,7 +1687,7 @@ def _ppt(data: bytes) -> list:
         )
         for text in texts:
             builder.para(text, {"slide": number})
-    return [builder, pictures]
+    return _Found(builder, int(picture_bytes > 0), picture_bytes)
 
 
 _EXTRACTORS = {
@@ -1527,6 +1701,39 @@ _EXTRACTORS = {
 }
 
 
+# 取一份文件最多用这么多秒（极端的 PDF 可能解析很久）：到了按"太大"记，附件任务不至于卡住
+EXTRACT_SECONDS = 180
+
+
+@contextmanager
+def _time_limit(seconds: int) -> Iterator[None]:
+    """限时（SIGALRM）：只在主线程里限，admin 的定时任务和命令行都在主线程；别的线程里不限。
+    到时在解析代码里抛 Unreadable；一次跑很久的 C 代码（lxml 解析一整个部件）要等它返回才停，
+    所以部件大小另有上限（_TREE_MAX）。"""
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def stop(_signum, _frame):
+        raise Unreadable("too_large", f"取文字超过 {seconds} 秒")
+
+    previous = signal.signal(signal.SIGALRM, stop)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+# 字很少、图很大的：多半是扫描件加了个标题（"附件2"加一整页扫描图），也按扫描件记
+_FEW_CHARS = 100
+_BIG_PICTURES = 150 * 1024
+
+
 def extract(data: bytes) -> Extraction:
     """取出给 AI 用的文字。取不出时 Extraction.reason 写原因（不抛异常）。"""
     try:
@@ -1534,7 +1741,8 @@ def extract(data: bytes) -> Extraction:
     except Unreadable as exc:
         return Extraction(None, reason=exc.reason, detail=exc.detail)
     try:
-        found = _EXTRACTORS[file_type](data)
+        with _time_limit(EXTRACT_SECONDS):
+            found = _EXTRACTORS[file_type](data)
     except Unreadable as exc:
         return Extraction(file_type, reason=exc.reason, detail=exc.detail)
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
@@ -1542,18 +1750,27 @@ def extract(data: bytes) -> Extraction:
         return Extraction(
             file_type, reason="broken", detail=f"文件解析出错（{exc.__class__.__name__}）"
         )
-    builder, pictures = found[0], found[1]
-    pages = found[2] if len(found) > 2 else None
-    scanned = found[3] if len(found) > 3 else None
+    builder = found.builder
     result = Extraction(
-        file_type, builder.segments, pages=pages, scanned_pages=scanned, masked=builder.masked
+        file_type,
+        builder.segments,
+        pages=found.pages,
+        scanned_pages=found.scanned,
+        masked=builder.masked,
     )
+    pictures = found.pictures or found.scanned
     if not result.segments:
-        if (pages and scanned) or pictures:
+        if pictures:
             result.reason, result.detail = "scan", "只有图片，取不出文字（多半是扫描件）"
         else:
             result.reason, result.detail = "empty", "文件里没有文字"
-        result.segments = []
+    elif result.chars < _FEW_CHARS and (
+        found.picture_bytes >= _BIG_PICTURES or (found.scanned or 0) > 0
+    ):
+        result.reason = "scan"
+        result.detail = f"只有 {result.chars} 个字，其余是图片（多半是扫描件）"
+    if result.reason:
+        result.segments, result.masked = [], 0
     return result
 
 
@@ -1647,6 +1864,7 @@ def record(
         session.add(row)
     row.declared_type = declared
     before = (row.version_id, row.status, row.reason)
+    fresh = False
     if content is None:
         if failure is None or failure.transient:
             # 临时问题：有文字的保留，规则版本也不改（没取过的仍是待取，按旧规则取的仍要重取），
@@ -1659,10 +1877,10 @@ def record(
         row.status, row.reason = "failed", _FETCH_REASONS.get(failure.code, "unavailable")
         row.detail = (failure.detail or "")[:300] or None
     else:
-        version, fresh = _version(session, content, now)
+        version, fresh = _version(session, content, now, row)
         if fresh:
             report.extracted += 1
-        elif row.version_id == version.id:
+        elif before[0] == version.id:
             report.unchanged += 1
         else:
             report.reused += 1
@@ -1670,8 +1888,8 @@ def record(
         row.status = "ok" if version.status == "ok" else "failed"
         row.reason, row.detail = version.reason, version.detail
     after = (row.version_id, row.status, row.reason)
-    if after != before:
-        row.changed_at = now
+    if after != before or (content is not None and fresh):
+        row.changed_at = now  # 指向的版本、状态变了，或者同一份内容按新规则重取了
         if before[0] is not None and after[0] != before[0]:
             report.retracted += 1
     if row.status == "failed":
@@ -1682,28 +1900,43 @@ def record(
     session.commit()
 
 
-def _version(session: Session, content: bytes, now: datetime) -> tuple[AttachmentTextVersion, bool]:
+# 正在取文字的内容版本：取之前先把这句记进版本、提交。进程在取的时候没了（内存不足被杀、超时
+# 被停），下次看到它就不再取，按损坏记，附件任务不会每轮都卡在同一个文件上
+_IN_PROGRESS = "正在取文字（上次取到一半进程中断的话，下次按损坏记）"
+
+
+def _version(
+    session: Session, content: bytes, now: datetime, row: AttachmentTextUrl
+) -> tuple[AttachmentTextVersion, bool]:
     """这份内容的版本：取过（按现在的规则）就直接用；没取过或按旧规则取的，取文字、存段落
-    （第二个值为 True）。"""
+    （第二个值为 True），指向它的链接状态跟着改。"""
     digest = sha256(content).hexdigest()
     version = session.scalar(
         select(AttachmentTextVersion).where(AttachmentTextVersion.sha256 == digest)
     )
     if version is not None and version.extractor == EXTRACTOR_VERSION:
         return version, False
-    result = extract(content)
-    if version is None:
-        version = AttachmentTextVersion(sha256=digest)
-        session.add(version)
-    else:
-        # 按新规则重取：段落整份换掉，指向它的链接都记一次变化
-        session.execute(
-            delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    if version is not None and version.detail == _IN_PROGRESS:
+        result = Extraction(
+            version.file_type,
+            reason="broken",
+            detail="上次取文字时进程中断（可能太大或太复杂），按损坏处理，内容变了再取",
         )
-        for other in session.scalars(
-            select(AttachmentTextUrl).where(AttachmentTextUrl.version_id == version.id)
-        ):
-            other.changed_at = now
+    else:
+        if version is None:
+            version = AttachmentTextVersion(
+                sha256=digest, size=len(content), status="failed", extractor=0, extracted_at=now
+            )
+            session.add(version)
+        version.detail = _IN_PROGRESS
+        session.flush()
+        # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉
+        row.version_id, row.status, row.reason = version.id, "pending", None
+        session.commit()
+        result = extract(content)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
     version.file_type = result.file_type
     version.size = len(content)
     version.status = "ok" if result.ok else "failed"
@@ -1735,6 +1968,15 @@ def _version(session: Session, content: bytes, now: datetime) -> tuple[Attachmen
                 for s in result.segments
             ],
         )
+    # 共用这份内容的其他链接：状态、原因跟着新结果改，记一次变化（第 2 步按它重算）
+    status = "ok" if result.ok else "failed"
+    for other in session.scalars(
+        select(AttachmentTextUrl).where(
+            AttachmentTextUrl.version_id == version.id, AttachmentTextUrl.id != row.id
+        )
+    ):
+        other.status, other.reason, other.detail = status, version.reason, version.detail
+        other.changed_at = now
     return version, True
 
 

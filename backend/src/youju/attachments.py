@@ -893,7 +893,11 @@ def candidates(session: Session, now: datetime) -> dict[str, str]:
     found: dict[str, str] = {}
     for url, extension in rows:
         ext = (extension or "").lower()
-        if ext in DOWNLOAD_TYPES and _government_url(url) and url not in found:
+        if ext not in DOWNLOAD_TYPES or not _government_url(url):
+            continue
+        # 同一链接在几份通知里扩展名不同（链接本身没有扩展名时常见）：能存副本的优先，
+        # 免得新通知写成 wps，老通知那个原本能打开的附件变成打不开
+        if url not in found or (found[url] not in PREVIEW_TYPES and ext in PREVIEW_TYPES):
             found[url] = ext
     return found
 
@@ -1197,22 +1201,25 @@ def _cache_run(
             session.add(rows[key])
             report.added += 1
     session.commit()
-    # 还没取过给 AI 用的文字（或按旧规则取的）的也要下载：上线后第一轮把已有副本的文字补上
+    # 还没取过给 AI 用的文字（或按旧规则取的）的也要下载：上线后第一轮把已有副本的文字补上。
+    # 只为补文字的排在副本本身到期的后面，例行复查不会被挤后
     text_due = attachment_text.due(session, order, now)
     rank = {"pending": 0, "failed": 1, "ready": 2}
+
+    def copy_due(r: AttachmentCopy) -> bool:
+        return (
+            r.next_check_at is None
+            or r.next_check_at <= now
+            or (retry_failed and r.status == "failed")
+        )
+
     due = sorted(
         (
             r
             for r in rows.values()
-            if r.url_hash in order
-            and (
-                r.next_check_at is None
-                or r.next_check_at <= now
-                or (retry_failed and r.status == "failed")
-                or r.url_hash in text_due
-            )
+            if r.url_hash in order and (copy_due(r) or r.url_hash in text_due)
         ),
-        key=lambda r: (rank[r.status], order[r.url_hash]),
+        key=lambda r: (not copy_due(r), rank[r.status], order[r.url_hash]),
     )
     owns_client, owns_fetcher = client is None, fetcher is None
     client = client or httpx.Client(trust_env=False)
