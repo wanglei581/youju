@@ -26,6 +26,7 @@ IP6 = '2001:db8:85a3::8a2e:370:7334'
 UID = '9f3a1c0b7d2e4a68'
 OPENID = 'oTEST' + 'x' * 23
 RID = '0f' * 16
+PERSONAL = (IP4, IP6, UID, OPENID, '113.77', '8a2e')
 
 
 def access_line(ip=IP4, uid=UID):
@@ -39,57 +40,65 @@ def result(content, container='youju-api-054'):
             'Content': json.dumps({'__CONTENT__': content, '__TAG__': {'container_name': container}}, ensure_ascii=False)}
 
 
+FIELD_CASES = {
+    f'{{"ip":"{IP4}","uid":"{UID}"}}': '{"ip":"203.0.*.*","uid":"9f3a*"}',
+    f'{{\\"ip\\": \\"{IP4}\\", \\"uid\\": \\"{UID}\\"}}': '{\\"ip\\": \\"203.0.*.*\\", \\"uid\\": \\"9f3a*\\"}',
+    f"{{'ip': '{IP6}', 'uid': '{UID}', 'saved': False}}": "{'ip': '2001:db8:*', 'uid': '9f3a*', 'saved': False}",
+    '{"uid": "abc", "ip": null}': '{"uid": "*", "ip": null}',
+    '{"ip": "203.0.113.77*x"}': '{"ip": "*"}',
+}
+TEXT_CASES = {
+    'connect from 198.51.100.23:51234': 'connect from 198.51.*.*:51234',
+    'client 192.0.2.1.': 'client 192.0.*.*.',
+    '客户端 192.0.2.1。': '客户端 192.0.*.*。',
+    'X-Original-Forwarded-For: 198.51.100.7, 203.0.113.9': 'X-Original-Forwarded-For: 198.51.*.*, 203.0.*.*',
+    f'[{IP6}]:443': '[2001:db8:*]:443',
+    'addr:2001:db8::1': 'addr:2001:db8:*',
+    'peer 2001:DB8:0:1::1.': 'peer 2001:db8:*.',
+    'IPv6 2001:db8:85a3:8d3:1319:8a2e:370:7348 end': 'IPv6 2001:db8:* end',
+    # IPv4 映射成的 IPv6 按 IPv4 遮；其他嵌着 IPv4 的 IPv6 按 IPv6 遮
+    'via ::ffff:203.0.113.9 ok': 'via ::ffff:203.0.*.* ok',
+    'nat64 64:ff9b::203.0.113.9 ok': 'nat64 64:ff9b:* ok',
+    'embedded 2001:db8::203.0.113.9': 'embedded 2001:db8:*',
+    'time=10:20:203.0.113.77': 'time=10:20:203.0.*.*',
+    f'删除 advisor/out/{UID}/12.xlsx 失败': '删除 advisor/out/9f3a*/12.xlsx 失败',
+    f'youju log-uid -> {UID}': 'youju log-uid -> 9f3a*',
+    f'cloud://prod-env.7072-prod-env-1300000000/advisor/out/{UID}/12.xlsx done': 'cloud://… done',
+    f"Duplicate entry '{OPENID}' for key 'users.openid'": "Duplicate entry 'oTES*' for key 'users.openid'",
+}
+UNTOUCHED = [f'rid {RID}', 'sha256 ' + 'ab' * 32, 'Python 3.12.4', '2026-10-19T03:00:00.123456+00:00',
+             'elapsed 12:34:56', 'GET /api/v1/notices/123 200 35ms', '工具任务：processed 3']
+ACCESS_IPS = [(IP4, '203.0.*.*'), (IP6, '2001:db8:*'), ('::ffff:203.0.113.9', '::ffff:203.0.*.*'),
+              ('testclient', '*'), ('', '')]
+
+
 class MaskTests(unittest.TestCase):
     def test_access_line_keeps_json_and_masks_ip_and_uid(self):
-        for ip, shown in [(IP4, '203.0.*.*'), (IP6, '2001:db8:*'), ('::ffff:203.0.113.9', '0:0:*'),
-                          ('testclient', '*'), ('', '')]:
+        for ip, shown in ACCESS_IPS:
             with self.subTest(ip=ip):
                 masked = json.loads(SHOW.mask(access_line(ip)))
                 self.assertEqual(masked, {**json.loads(access_line(ip)), 'ip': shown, 'uid': '9f3a*'})
 
     def test_field_variants(self):
-        cases = {
-            f'{{"ip":"{IP4}","uid":"{UID}"}}': '{"ip":"203.0.*.*","uid":"9f3a*"}',
-            f'{{\\"ip\\": \\"{IP4}\\", \\"uid\\": \\"{UID}\\"}}': '{\\"ip\\": \\"203.0.*.*\\", \\"uid\\": \\"9f3a*\\"}',
-            f"{{'ip': '{IP6}', 'uid': '{UID}', 'saved': False}}": "{'ip': '2001:db8:*', 'uid': '9f3a*', 'saved': False}",
-            '{"uid": "abc", "ip": null}': '{"uid": "*", "ip": null}',
-        }
-        for raw, want in cases.items():
+        for raw, want in FIELD_CASES.items():
             with self.subTest(raw=raw):
                 self.assertEqual(SHOW.mask(raw), want)
 
-    def test_ips_anywhere_in_text(self):
-        cases = {
-            'connect from 198.51.100.23:51234': 'connect from 198.51.*.*:51234',
-            'client 192.0.2.1.': 'client 192.0.*.*.',
-            '客户端 192.0.2.1。': '客户端 192.0.*.*。',
-            'X-Original-Forwarded-For: 198.51.100.7, 203.0.113.9': 'X-Original-Forwarded-For: 198.51.*.*, 203.0.*.*',
-            f'[{IP6}]:443': '[2001:db8:*]:443',
-            'addr:2001:db8::1': 'addr:2001:db8:*',
-            'peer 2001:DB8:0:1::1.': 'peer 2001:db8:*.',
-            'via ::ffff:203.0.113.9 ok': 'via ::ffff:203.0.*.* ok',
-            'IPv6 2001:db8:85a3:8d3:1319:8a2e:370:7348 end': 'IPv6 2001:db8:* end',
-        }
-        for raw, want in cases.items():
-            with self.subTest(raw=raw):
-                self.assertEqual(SHOW.mask(raw), want)
-
-    def test_user_ids_and_file_ids(self):
-        cases = {
-            f'删除 advisor/out/{UID}/12.xlsx 失败': '删除 advisor/out/9f3a*/12.xlsx 失败',
-            f'youju log-uid -> {UID}': 'youju log-uid -> 9f3a*',
-            f'cloud://prod-env.7072-prod-env-1300000000/advisor/out/{UID}/12.xlsx done': 'cloud://… done',
-            f"Duplicate entry '{OPENID}' for key 'users.openid'": "Duplicate entry 'oTES*' for key 'users.openid'",
-        }
-        for raw, want in cases.items():
+    def test_ips_user_ids_and_file_ids_in_text(self):
+        for raw, want in TEXT_CASES.items():
             with self.subTest(raw=raw):
                 self.assertEqual(SHOW.mask(raw), want)
 
     def test_ordinary_content_is_untouched(self):
-        for raw in [f'rid {RID}', 'sha256 ' + 'ab' * 32, 'Python 3.12.4', '2026-10-19T03:00:00.123456+00:00',
-                    'elapsed 12:34:56', 'GET /api/v1/notices/123 200 35ms', '工具任务：processed 3']:
+        for raw in UNTOUCHED:
             with self.subTest(raw=raw):
                 self.assertEqual(SHOW.mask(raw), raw)
+
+    def test_masking_twice_changes_nothing(self):
+        for raw in [*FIELD_CASES, *TEXT_CASES, *UNTOUCHED, *(access_line(ip) for ip, _ in ACCESS_IPS)]:
+            with self.subTest(raw=raw):
+                once = SHOW.mask(raw)
+                self.assertEqual(SHOW.mask(once), once)
 
     def test_long_runs_stay_fast(self):
         # 很长的十六进制串（比如日志里打了一段十六进制数据）不能让匹配来回试：20 万字也要瞬间完成
@@ -100,38 +109,58 @@ class MaskTests(unittest.TestCase):
 
     def test_lines_mask_before_truncating_and_filter_on_masked_text(self):
         data = {'results': [result(access_line()), result('x' * 290 + f' {IP4} tail'), result(f'删除 advisor/out/{UID}/1.xlsx 失败'),
-                            {'Timestamp': 't', 'Content': f'not json {IP4}'}]}
+                            {'Timestamp': 't', 'Content': f'not json {IP4}'},
+                            {'Timestamp': f'{IP4} uid={UID}', 'Content': json.dumps({'__CONTENT__': 'hello', '__TAG__': {'container_name': IP6}})}]}
         shown = list(SHOW.lines(data))
-        self.assertEqual(len(shown), 4)
+        self.assertEqual(len(shown), 5)
         for line in shown:
-            self.assertNotIn('113', line)
-            self.assertNotIn(UID, line)
+            for value in [*PERSONAL, '113']:
+                self.assertNotIn(value, line)
         self.assertTrue(shown[0].startswith('2026-10-19 11:00:00.000 youju-api-054 {"event": "access"'))
         self.assertTrue(shown[1].endswith(' 203.0.*.*'))
         self.assertEqual(shown[3], 't ? not json 203.0.*.*')
+        self.assertEqual(shown[4], '203.0.*.* uid=9f3a* 2001:db8:* hello')
         # 拿完整的 IP、编号当关键词逐个试，试不出来；中文关键词和遮蔽后的前缀照常能用
         self.assertEqual(list(SHOW.lines(data, [IP4, UID, IP6])), [])
         self.assertEqual(len(list(SHOW.lines(data, ['失败']))), 1)
         self.assertEqual(len(list(SHOW.lines(data, ['203.0.']))), 3)
 
+    def test_main_masks_summary_and_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'logs.json'
+            for data, code in [({'count': IP4, 'listOver': UID, 'pages': 1, 'results': [result(access_line())]}, 0),
+                               ({'error': 'api', 'code': IP4, 'message': f'bad request from {IP6} uid {UID}'}, 1)]:
+                with self.subTest(data=data):
+                    path.write_text(json.dumps(data))
+                    run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), str(path)], capture_output=True, text=True)
+                    self.assertEqual(run.returncode, code, run.stderr)
+                    for value in PERSONAL:
+                        self.assertNotIn(value, run.stdout)
+                    self.assertIn('203.0.*.*', run.stdout)
+
 
 @unittest.skipUnless(shutil.which('node'), '需要 node')
 class CloudLogsTests(unittest.TestCase):
+    WINDOW = ['env-test', '2026-10-19 11:00:00', '2026-10-19 12:00:00', '*']
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         (self.tmp / 'lib/api').mkdir(parents=True)
-        # 假的 wxcloud 接口代理：按顺序返回 pages.json 里的回应，最后一页一直重复；每次调用记一行
+        (self.tmp / 'out').mkdir()
+        # 假的 wxcloud 接口代理：按顺序返回 pages.json 里的回应，最后一页一直重复；{"throw": …} 表示抛异常；每次调用记一行
         (self.tmp / 'lib/api/base.js').write_text(
             "const fs = require('fs');\n"
             "const pages = JSON.parse(fs.readFileSync(process.env.FAKE_PAGES, 'utf8'));\n"
             "let i = 0;\n"
             "exports.fetchApi = async (url, body) => {\n"
             "  fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify(body) + '\\n');\n"
-            "  return pages[Math.min(i++, pages.length - 1)];\n"
+            "  const page = pages[Math.min(i++, pages.length - 1)];\n"
+            "  if (page.throw) throw Object.assign(new Error(page.throw.message), { code: page.throw.code });\n"
+            "  return page;\n"
             "};\n")
-        self.out = self.tmp / 'logs.json'
+        self.out = self.tmp / 'out/logs.json'
 
     def run_logs(self, pages, *args):
         (self.tmp / 'pages.json').write_text(json.dumps(pages))
@@ -147,8 +176,14 @@ class CloudLogsTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), str(self.out), *keys], capture_output=True, text=True)
 
     def assert_nothing_personal(self, text):
-        for value in (IP4, IP6, UID, OPENID, '113.77'):
+        for value in PERSONAL:
             self.assertNotIn(value, text)
+
+    def assert_saved_privately(self):
+        self.assertFalse(self.out.is_symlink())
+        self.assertEqual(os.stat(self.out).st_mode & 0o777, 0o600)
+        # 临时文件都换上去或删掉了
+        self.assertEqual(sorted(p.name for p in self.out.parent.iterdir()), [self.out.name])
 
     @staticmethod
     def page(results, context=None, list_over=False):
@@ -158,7 +193,10 @@ class CloudLogsTests(unittest.TestCase):
     def test_results_go_only_to_the_file(self):
         pages = [self.page([result(access_line())], 'c1'),
                  self.page([result(access_line(IP6)), result(f"Duplicate entry '{OPENID}'")], None, True)]
-        run = self.run_logs(pages, 'env-test', '2026-10-19 11:00:00', '2026-10-19 12:00:00', '*', '--out', str(self.out))
+        # 原来就有一个别人也能读的旧文件：换成只有本人可读的新文件
+        self.out.write_text('old')
+        os.chmod(self.out, 0o644)
+        run = self.run_logs(pages, *self.WINDOW, '--out', str(self.out))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assert_nothing_personal(run.stdout + run.stderr)
         summary = json.loads(run.stdout.splitlines()[0])
@@ -168,7 +206,7 @@ class CloudLogsTests(unittest.TestCase):
         saved = json.loads(self.out.read_text())
         self.assertEqual((saved['count'], saved['pages'], len(saved['results'])), (3, 2, 3))
         self.assertIn(IP4, saved['results'][0]['Content'])
-        self.assertEqual(os.stat(self.out).st_mode & 0o777, 0o600)
+        self.assert_saved_privately()
         show = self.run_show()
         self.assertEqual(show.returncode, 0, show.stderr)
         self.assert_nothing_personal(show.stdout)
@@ -177,8 +215,18 @@ class CloudLogsTests(unittest.TestCase):
         self.assertIn('"uid": "9f3a*"', show.stdout)
         self.assertIn("Duplicate entry 'oTES*'", show.stdout)
 
+    def test_symlink_target_is_not_written(self):
+        target = self.tmp / 'target.json'
+        target.write_text('do not touch')
+        self.out.symlink_to(target)
+        run = self.run_logs([self.page([result(access_line())], None, True)], '--out', str(self.out), *self.WINDOW)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(target.read_text(), 'do not touch')
+        self.assertEqual(json.loads(self.out.read_text())['count'], 1)
+        self.assert_saved_privately()
+
     def test_usage_errors_do_not_query(self):
-        window = ['env-test', '2026-10-19 11:00:00', '2026-10-19 12:00:00', '*']
+        window = self.WINDOW
         for args in [window, [*window, '100'], ['--out', str(self.out), *window[:3]],
                      ['--out', str(self.tmp / 'missing/logs.json'), *window],
                      ['--out', str(REPO / 'tools/tests/cloud-logs-should-not-exist.json'), *window],
@@ -192,28 +240,40 @@ class CloudLogsTests(unittest.TestCase):
         self.assertFalse((REPO / 'cloud-logs-should-not-exist.json').exists())
 
     def test_errors_go_to_the_file_and_replace_old_results(self):
-        bad_json = {'base_resp': {'ret': 0}, 'content': f'not json {IP4}'}
-        api_error = {'base_resp': {'ret': 0}, 'content': json.dumps(
-            {'Response': {'Error': {'Code': 'InvalidParameter', 'Message': f'bad request from {IP4}'}}})}
-        for pages, summary in [([api_error], {'error': 'InvalidParameter'}),
-                               ([{'base_resp': {'ret': -1}}], {'error': 'agent', 'ret': -1}),
-                               ([bad_json], {'error': 'exception', 'code': 'SyntaxError'})]:
-            with self.subTest(summary=summary):
+        def api_error(code):
+            return {'base_resp': {'ret': 0}, 'content': json.dumps(
+                {'Response': {'Error': {'Code': code, 'Message': f'bad request from {IP4} uid {UID}'}}})}
+        cases = [([api_error('InvalidParameter')], 'api', {'code': 'InvalidParameter'}),
+                 ([api_error(IP4)], 'api', {'code': IP4}),
+                 ([{'base_resp': {'ret': -1}}], 'agent', {'ret': -1}),
+                 ([{'base_resp': {'ret': IP6}}], 'agent', {'ret': IP6}),
+                 ([{'base_resp': {'ret': 0}, 'content': f'not json {IP4}'}], 'exception', {'name': 'SyntaxError'}),
+                 ([{'throw': {'message': f'connect to {IP4} failed', 'code': UID}}], 'exception', {'code': UID})]
+        for pages, kind, detail in cases:
+            with self.subTest(kind=kind, detail=detail):
                 self.out.write_text(json.dumps({'count': 1, 'results': [result(access_line())]}))
-                run = self.run_logs(pages, '--out', str(self.out), 'env-test', '2026-10-19 11:00:00', '2026-10-19 12:00:00', '*')
+                run = self.run_logs(pages, '--out', str(self.out), *self.WINDOW)
                 self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
                 self.assert_nothing_personal(run.stdout + run.stderr)
-                self.assertEqual(json.loads(run.stdout.splitlines()[0]), {**summary, 'out': str(self.out.resolve())})
+                self.assertEqual(json.loads(run.stdout.splitlines()[0]), {'error': kind, 'out': str(self.out.resolve())})
                 saved = json.loads(self.out.read_text())
-                self.assertEqual(saved['error'], summary['error'])
+                self.assertEqual(saved['error'], kind)
+                self.assertEqual({k: saved.get(k) for k in detail}, detail)
                 self.assertNotIn('results', saved)
+                self.assert_saved_privately()
                 show = self.run_show()
                 self.assertEqual(show.returncode, 1)
                 self.assert_nothing_personal(show.stdout)
 
+    def test_write_failure_prints_only_the_error_name(self):
+        self.out.mkdir()
+        run = self.run_logs([self.page([result(access_line())], None, True)], '--out', str(self.out), *self.WINDOW)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout.splitlines()[0]), {'error': 'exception', 'write': 'EISDIR'})
+        self.assertEqual(sorted(p.name for p in self.out.parent.iterdir()), [self.out.name])
+
     def test_stops_after_20_pages(self):
-        run = self.run_logs([self.page([result(access_line())], 'more')], '--out', str(self.out),
-                            'env-test', '2026-10-19 11:00:00', '2026-10-19 12:00:00', '*', '10')
+        run = self.run_logs([self.page([result(access_line())], 'more')], '--out', str(self.out), *self.WINDOW, '10')
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout.splitlines()[0]),
                          {'count': 20, 'pages': 20, 'listOver': False, 'truncated': True, 'out': str(self.out.resolve())})

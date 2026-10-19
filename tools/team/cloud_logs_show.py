@@ -8,10 +8,12 @@
 - 文件编号：cloud://… 整段遮掉。
 - 访问日志的 ip、uid 字段（JSON、转义成字符串的 JSON、Python 字典写法都认）：ip 是 IP 的按下一条遮，
   不是 IP 的整个换成 *；uid 留前 4 位（ab12*）。
-- 来源 IP，出现在任何文字里的都遮：IPv4 留前两段（203.0.*.*），IPv6 留前两组（2408:8207:*）。
+- 来源 IP，出现在任何文字里的都遮：IPv4 留前两段（203.0.*.*），IPv6 留前两组（2408:8207:*）；
+  IPv4 映射成的 IPv6（::ffff:203.0.113.9）按 IPv4 留前两段（::ffff:203.0.*.*）。
 - 单独出现的 16 位十六进制串（用户编号的格式，如批量工具结果文件路径 advisor/out/<编号>/）留前 4 位。
 - 以 o 开头的 28 位微信用户标识（openid、unionid 的格式，比如数据库报错里带出来的）留前 4 位。
-留下的几位够判断是不是同一来源。关键词在遮蔽后的内容里找：拿完整的 IP 或编号当关键词逐个试，试不出来。
+时间、容器名、开头的统计行也一样过一遍。留下的几位够判断是不是同一来源。
+关键词在遮蔽后的内容里找：拿完整的 IP 或编号当关键词逐个试，试不出来。
 没有不遮蔽的显示方式。要看完整的 IP、按某个用户查，由创始人在云托管控制台的日志页自己查。
 """
 
@@ -31,9 +33,13 @@ _HEX16 = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{16}(?![0-9A-Za-z])")
 _IPV4 = re.compile(r"(?<!\d)(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}(?!\d)")
 # 一整串十六进制、冒号和点（整串一次匹配，长串也不回溯）；是不是 IPv6 由 ipaddress 判断
 _V6_RUN = re.compile(r"[0-9A-Fa-f:.]+")
+# 已经遮过的 ip 值：再遮一遍保持原样
+_MASKED_IP = re.compile(r"(?:::ffff:)?\d{1,3}\.\d{1,3}\.\*\.\*|[0-9a-f]{1,4}:[0-9a-f]{1,4}:\*|\*")
 
 
 def _ip_prefix(addr):
+    if addr.version == 6 and addr.ipv4_mapped:
+        return "::ffff:" + _ip_prefix(addr.ipv4_mapped)
     if addr.version == 4:
         a, b = str(addr).split(".")[:2]
         return f"{a}.{b}.*.*"
@@ -49,7 +55,7 @@ def _field(m):
     val = m.group("val")
     if m.group("key").lower() == "uid":
         val = _keep4(val) if val else val
-    elif val:
+    elif val and not _MASKED_IP.fullmatch(val):
         try:
             val = _ip_prefix(ipaddress.ip_address(val))
         except ValueError:
@@ -80,8 +86,9 @@ def mask(text):
     text = _FIELD.sub(_field, text)
     text = _OPENID.sub(lambda m: _keep4(m.group(0)), text)
     text = _HEX16.sub(lambda m: _keep4(m.group(0)), text)
-    text = _IPV4.sub(r"\1.\2.*.*", text)
-    return _V6_RUN.sub(_v6, text)
+    # 先 IPv6 后 IPv4：嵌在 IPv6 里的 IPv4（2001:db8::203.0.113.9）随 IPv6 一起遮
+    text = _V6_RUN.sub(_v6, text)
+    return _IPV4.sub(r"\1.\2.*.*", text)
 
 
 def lines(data, keys=()):
@@ -100,7 +107,7 @@ def lines(data, keys=()):
         if keys and not any(k in msg for k in keys):
             continue
         # 先遮再截：截断处正好落在 IP 中间时，残缺的 IP 认不出来
-        yield f"{r.get('Timestamp')} {mask(str(container))} {msg[:300]}"
+        yield f"{mask(str(r.get('Timestamp')))} {mask(str(container))} {msg[:300]}"
 
 
 def main(argv):
@@ -113,8 +120,10 @@ def main(argv):
         print(mask(json.dumps(data, ensure_ascii=False)))
         return 1
     print(
-        f"# 共 {data.get('count')} 行，listOver={data.get('listOver')}，pages={data.get('pages')}"
-        f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、文件编号已遮蔽"
+        mask(
+            f"# 共 {data.get('count')} 行，listOver={data.get('listOver')}，pages={data.get('pages')}"
+            f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、文件编号已遮蔽"
+        )
     )
     for line in lines(data, argv[2:]):
         print(line)
