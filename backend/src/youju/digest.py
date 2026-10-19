@@ -30,7 +30,7 @@ from youju.models import (
     User,
 )
 from youju.repost import grouped_documents
-from youju.source_health import check_sources
+from youju.source_health import check_sources, failing_sources
 
 # AI 挑选时最多给它看多少份待核对通知、挑几份
 _PICK_FROM = 30
@@ -56,7 +56,10 @@ class Digest:
     approved: int = 0
     rejected: int = 0
     pending: int = 0
+    pending_7: int = 0
     pending_30: int = 0
+    # 最近一次核对截止（通过、驳回、改期）的日期，北京时间；从没核对过是 None
+    last_reviewed: date | None = None
     nearest_due: date | None = None
     kinds_pending: int = 0
     audit_flagged: int = 0
@@ -110,7 +113,13 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
 
     health = check_sources(session, now=now)
     digest.sources_total, digest.sources_ok = health.total, health.successful
-    digest.source_failures = health.failures
+    # 每个异常栏目带上"上次成功几号"：日报天天列同样几个异常时，分得清是新坏的还是坏了很久的。
+    # 坏得最久的排前面（日报只列前 3 个）；从没检查过的最反常，排最前
+    failing = sorted(
+        failing_sources(session, now=now),
+        key=lambda item: (item.days is not None, -(item.days or 0)),
+    )
+    digest.source_failures = tuple(item.text(short=True) for item in failing)
 
     # 新文件：同一通知的多个网址只算一份
     titles = session.execute(
@@ -156,6 +165,24 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
     digest.pending = len(shown)
     digest.pending_30 = sum(due <= today + timedelta(days=30) for due in upcoming)
     digest.nearest_due = min(upcoming, default=None)
+    # 每天第一件事（D-061）：和管理台"截止日期 · 7 天内"同一个计数规则，按这份日报的"今天"算
+    digest.pending_7 = admin.pending_due_count(session, "7", today)
+    # 最近一次核对：通过、驳回记在 reviewed_at，标"已变更"（延期、调整、撤销）记在 changed_at
+    stamps = [
+        session.scalar(
+            select(func.max(DocumentDeadline.reviewed_at)).where(
+                DocumentDeadline.status != "pending"
+            )
+        ),
+        session.scalar(
+            select(func.max(DocumentDeadline.changed_at)).where(
+                DocumentDeadline.status == "changed"
+            )
+        ),
+    ]
+    stamps = [s if s.tzinfo is not None else s.replace(tzinfo=UTC) for s in stamps if s]
+    if stamps:
+        digest.last_reviewed = max(stamps).astimezone(BEIJING).date()
     digest.kinds_pending = admin.kinds_pending_count(session, None)["pending"]
     digest.audit_flagged = admin.audit_flagged_count(session, None)["flagged"]
     digest.feedback_pending = admin.feedback_pending_count(session, None)["pending"]
@@ -237,14 +264,23 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
     """群提醒正文：数字部分完整保留，超出字节上限时少列 AI 建议。"""
     failures = ""
     if digest.source_failures:
-        shown = "；".join(item[:30] for item in digest.source_failures[:2])
-        more = "等" if len(digest.source_failures) > 2 else ""
+        shown = "；".join(digest.source_failures[:3])
+        more = "等" if len(digest.source_failures) > 3 else ""
         failures = f"；异常 {len(digest.source_failures)} 个：{shown}{more}"
     rate = 100 * digest.sources_ok / digest.sources_total if digest.sources_total else 0.0
     kinds = "、".join(f"{kind} {count}" for kind, count in digest.new_by_kind.items())
     nearest = f"，最近 {_md(digest.nearest_due)}" if digest.nearest_due else ""
+    if digest.last_reviewed is None:
+        reviewed = "还没核对过一条"
+    else:
+        days = (digest.day - digest.last_reviewed).days
+        reviewed = f"上次核对 {_md(digest.last_reviewed)}" + (
+            f"（{days} 天前）" if days > 0 else ""
+        )
+    todo = f"今天先核：7 天内到期的截止待核对 {digest.pending_7} 条（管理台“截止日期 · 7 天内”）"
     lines = [
         f"运维日报 {_md(digest.day)}",
+        f"{todo}；{reviewed}",
         f"抓取：启用栏目 {digest.sources_total} 个，今天检查成功 {digest.sources_ok} 个"
         f"（{rate:.1f}%）{failures}",
         f"新文件：24 小时新发现 {digest.new_documents} 份"
