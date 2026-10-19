@@ -1094,6 +1094,7 @@ def test_mask_label_wording_bank_names_decimals_and_account_cells() -> None:
         assert at._account_cell(label), label
     assert not at._account_cell("基 本 账 户")
     assert not at._account_cell("基本账户（人民币）")
+    assert not at._account_cell("基本存款账户（人民币）")
     # 账号列：一格写了两个账号都遮；中间夹着认不出的组也遮；8 位连写的日期区间不遮
     builder = at._Builder()
     builder.table(
