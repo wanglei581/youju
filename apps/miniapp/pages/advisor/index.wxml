@@ -56,5 +56,12 @@
     <button wx:if="{{gate === 'consent'}}" class="advisor-button btn-primary" bindtap="consent">阅读并同意</button>
     <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
   </view>
+  <!-- 10/18 验收：没同意协议前也先说明这里有什么、免费怎么算，第一次来的人知道为什么要同意 -->
+  <view wx:if="{{gate === 'consent'}}" class="card advisor-card">
+    <view class="advisor-title">工具中心有什么</view>
+    <view class="advisor-text">批量名单比对：一次粘贴或上传多家企业的名称或统一社会信用代码，查上过哪些已收录的名单。</view>
+    <view class="advisor-text">客户相关通知表：按客户的省份、城市等整理近 90 天的申报通知，可以下载 Excel。</view>
+    <view class="advisor-text muted">每月有免费次数，不需要购买。登录只用微信身份，不要手机号。</view>
+  </view>
   <view class="advisor-footer">第三方整理 · 非政府平台</view>
 </block>

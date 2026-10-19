@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+require('./helpers/internal-build.js'); // 本文件按 AI 内测包测，见该文件说明
 const clause = require('../utils/ai-clause.js');
 const interpret = require('../utils/ai-interpret.js');
 const context = require('../utils/tool-context.js');
@@ -166,6 +167,14 @@ test('taskId 回看按任务 docId 和 docTitle 覆盖旧缓存，空编号禁�
     page.original(); page.feedback(); assert.equal(urls.length, docId ? 2 : 0);
     if (docId) assert.equal(urls[0], '/pages/detail/index?id=55'); page.onUnload();
   }
+});
+
+test('换了手机打开已有对照：须知按钮写"查看结果"，不像要新建', async () => {
+  const page = load('pages/advisor-clause/index.js', { advisorCapabilities: () => Promise.resolve(caps()),
+    advisorTask: () => Promise.resolve({ id: 7, docId: 55, docTitle: '通知', status: 'done', result: {} }) }, storage(false));
+  page.onLoad({ taskId: 7 }); page.onShow(); await flush();
+  const output = render(read('pages/advisor-clause/index.wxml'), page.data);
+  assert.match(output, /使用须知/); assert.match(output, /我知道了，查看结果/); assert.doesNotMatch(output, /开始对照/); page.onUnload();
 });
 
 test('表单先显示且不自动提交；错误就近显示，全空提交，422 可回表单修改', async () => {

@@ -29,8 +29,8 @@ jobs:
           node --test tools/tests/*.test.js
           python3 -m unittest discover -s tools/tests -p 'test_*.py'
       # 备案办理中可准备体验版；正式提审仍必须运行默认的严格检查。
-      - name: 完整候选体验准备检查
-        run: node tools/miniapp_presubmit_check.js --profile complete-candidate --mode prepare
+      - name: 完整正式包体验准备检查
+        run: node tools/miniapp_presubmit_check.js --profile complete-release --mode prepare
 
   backend:
     name: 后端（代码检查 + 测试）

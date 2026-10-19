@@ -164,9 +164,10 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
       clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
       if (task.status === 'done' && task.result) {
-        failure = ''; emit({ phase: 'done', result: viewResult(task.result), error: '', progress: '' });
+        // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
+        failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
       } else {
-        failure = 'task'; emit({ phase: 'failed', error: task.error || '结果已失效，请重新提交', canRetry: !!docId, resumable: false, progress: '' });
+        failure = 'task'; emit({ phase: 'failed', outdated: false, error: task.error || '结果已失效，请重新提交', canRetry: !!docId, resumable: false, progress: '' });
       }
       return;
     }
@@ -184,7 +185,7 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     if (slow && taskId && transient(error)) { later(version); return; } // 慢慢等的时候偶尔没连上，下次再查
     clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
     failure = transient(error) ? 'request' : 'task';
-    emit({ phase: 'failed', error: errorText(error), progress: '', resumable: failure === 'request',
+    emit({ phase: 'failed', outdated: false, error: errorText(error), progress: '', resumable: failure === 'request',
       canRetry: error.status !== 404 && error.status !== 429 && !!docId });
   }
   function poll(version) {
@@ -202,7 +203,7 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     if (!taskId && !docId) { emit({ phase: 'failed', error: '缺少通知编号，请从通知详情页进入', canRetry: false }); return; }
     busy = true; slow = false; failure = ''; const version = ++epoch;
     deadline = now() + FAST_WINDOW; giveUpAt = now() + SLOW_WINDOW;
-    emit({ phase: 'processing', error: '', canRetry: false, resumable: false, progress: '' });
+    emit({ phase: 'processing', outdated: false, error: '', canRetry: false, resumable: false, progress: '' });
     deadlineTimer = setTimer(() => timeout(version), FAST_WINDOW);
     if (taskId) { poll(version); return; }
     // 隐藏期间创建请求仍可能完成，保留任务编号；重新显示时复用同一在途请求。
