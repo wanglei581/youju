@@ -956,7 +956,8 @@ def _cmd_attachment_text_report(args: argparse.Namespace) -> int:
         print(atr.render(report))
     if args.worksheet:
         args.worksheet.write_text(atr.worksheet(report), encoding="utf-8")
-        print(f"抽样核对表写到 {args.worksheet}")
+        # 写到标准错误：--json 时标准输出只有一份 JSON
+        print(f"抽样核对表写到 {args.worksheet}", file=sys.stderr)
     return 0
 
 

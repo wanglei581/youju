@@ -23,6 +23,8 @@ from youju.models import (
     AttachmentTextSegment,
     AttachmentTextUrl,
     AttachmentTextVersion,
+    Document,
+    DocumentAttachment,
     DocumentDetail,
     DocumentMerge,
 )
@@ -1004,6 +1006,13 @@ def test_report_counts_formats_reasons_limits_and_sample(session, monkeypatch) -
     b = add_doc(session, 2, APPLY, RECENT, [("附件1 申报书", BASE + "b.wps", "wps")])
     session.get(DocumentDetail, b.id).body_text = ""
     add_doc(session, 3, APPLY, RECENT, [("附件1 打包", BASE + "c.zip", "zip")])
+    # 库里存的类型是旧规则算的申报通知，按现在的标题规则是"资讯与指南"：在下载范围里，不进抽样
+    stale = add_doc(session, 5, "关于举办2026年度政策宣讲培训班的通知", RECENT, [])
+    session.get(Document, stale.id).rule_kind = "申报通知"
+    stale_detail = session.get(DocumentDetail, stale.id)
+    stale_detail.attachments.append(
+        DocumentAttachment(position=0, name="回执", url=BASE + "d.docx", extension="docx")
+    )
     session.commit()
     report = at.TextReport()
     guide = make_docx(*["评分标准：创新性30分。截止时间2026年11月5日前。"] * 100)
@@ -1017,24 +1026,28 @@ def test_report_counts_formats_reasons_limits_and_sample(session, monkeypatch) -
         report,
         content=make_word97([("申报材料清单", "\r", {})]),
     )
+    at.record(session, BASE + "d.docx", "docx", NOW, report, content=make_docx("回执"))
     result = atr.build(session, NOW, sample=5, seed=1)
     notice = result.kinds[0]
     assert notice.kind == "申报通知"
     assert notice.attachments == {
-        "docx": {"ok": 1},
+        "docx": {"ok": 2},
         "pdf": {"scan": 1},
         "wps": {"ok": 1},
         "zip": {"format": 1},
     }
     assert notice.actual_types == {"wps→doc": 1}
-    assert (notice.notices, notice.with_attachments, notice.with_readable) == (3, 3, 2)
-    assert (notice.with_body, notice.no_body_but_readable) == (2, 1)
+    assert (notice.notices, notice.with_attachments, notice.with_readable) == (4, 4, 3)
+    assert notice.stale_kind == 1
+    assert (notice.with_body, notice.no_body_but_readable) == (3, 1)
     assert (notice.over_limit, notice.over_only_with_attachments, notice.body_too_long) == (1, 1, 0)
-    assert len(result.sample) == 2 and result.sample_from == 2
+    assert len(result.sample) == 2 and result.sample_from == 2  # 类型过期的那份不进抽样
+    assert stale.id not in {x.doc_id for x in result.sample}
     item = next(x for x in result.sample if x.doc_id == a.id)
     assert item.verdicts["评分"] == "only_attachments" and item.verdicts["条件"] == "body_only"
     text = atr.render(result)
-    assert "能读 2 个（50%）" in text and "加上附件才超的 1 份" in text
+    assert "能读 3 个（60%）" in text and "加上附件才超的 1 份" in text
+    assert "其中 1 份库里存的类型是申报通知" in text
     assert "评分：只在附件里 1" in text
     sheet = atr.worksheet(result)
     assert "附件1 第1段" in sheet and "粗判 只在附件里" in sheet

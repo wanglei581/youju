@@ -6,9 +6,10 @@
 - 附件：每种格式（按题录里的扩展名）能读的比例，取不出、下载不了的原因分布；
 - 通知（合并转载的只算主条目）：有附件的、至少一个附件能读的、没有正文但附件能读的，
   正文加能读的附件超过 2.4 万字的（其中正文本身不超、加上附件才超的）；
-- 抽样（默认 30 份申报通知，从至少一个附件能读的里随机抽，种子固定可复现）：截止、条件、材料、
-  评分四项按关键词粗判是只写在附件里、正文里也有、只在正文里还是都没有；--worksheet 写出每份的
-  命中原句，供人逐份核对（粗判只是起点，结论以人看过的为准）。
+- 抽样（默认 30 份申报通知，从至少一个附件能读、按现在的标题规则也是申报通知（AI 会解读）的里
+  随机抽，种子固定可复现）：截止、条件、材料、评分四项按关键词粗判是只写在附件里、正文里也有、
+  只在正文里还是都没有；--worksheet 写出每份的命中原句，供人逐份核对（粗判只是起点，结论以人
+  看过的为准）。
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from youju.attachments import (
     _recent,
     _since,
 )
+from youju.classify import effective_kind
 from youju.dedup import canonical_ids
 from youju.models import (
     AttachmentTextUrl,
@@ -78,6 +80,8 @@ class KindReport:
     body_too_long: int = 0
     over_limit: int = 0
     over_only_with_attachments: int = 0
+    # 库里存的类型（下载范围按它）是这一类、按现在的标题规则（AI 解读按它）却不是的份数
+    stale_kind: int = 0
     # 正文加能读的附件合计字数的分布（份数）
     total_chars: dict = field(default_factory=dict)
 
@@ -183,7 +187,7 @@ def build(session: Session, now: datetime, *, sample: int = 30, seed: int = 2026
 
     # 通知：只算主条目（合并转载的副本不重复算）
     docs = session.execute(
-        select(Document.id, kind_col, Document.title, Document.url)
+        select(Document.id, kind_col, Document.title, Document.url, Document.kind_override)
         .join(Source, Source.id == Document.source_id)
         .where(condition)
         .order_by(Document.id)
@@ -191,11 +195,13 @@ def build(session: Session, now: datetime, *, sample: int = 30, seed: int = 2026
     merged = canonical_ids(session, [d.id for d in docs])
     sampled_from: list[tuple] = []
     totals: dict[str, Counter] = {k: Counter() for k in KINDS}
-    for doc_id, kind, title, url in docs:
+    for doc_id, kind, title, url, override in docs:
         if doc_id in merged:
             continue
         report = reports[kind]
         report.notices += 1
+        current = effective_kind(title, override)
+        report.stale_kind += current != kind
         body = redact_sensitive(v1._reading_body(session, doc_id) or "")
         has_body = bool(body.strip())
         report.with_body += has_body
@@ -214,7 +220,8 @@ def build(session: Session, now: datetime, *, sample: int = 30, seed: int = 2026
             report.over_limit += 1
             if len(body) <= interpret.MAX_BODY:
                 report.over_only_with_attachments += 1
-        if kind == "申报通知" and readable:
+        # 抽样只从 AI 会解读的申报通知里抽（按现在的标题规则算的类型）
+        if current == "申报通知" and readable:
             sampled_from.append((doc_id, title, url, body, items))
     for kind in KINDS:
         reports[kind].total_chars = dict(totals[kind])
@@ -319,6 +326,11 @@ def render(report: Report) -> str:
             f"至少一个附件能读 {kr.with_readable}，有正文 {kr.with_body}，"
             f"没有正文但附件能读 {kr.no_body_but_readable}"
         )
+        if kr.stale_kind:
+            lines.append(
+                f"  其中 {kr.stale_kind} 份库里存的类型是{kr.kind}（下载按它），按现在的标题规则"
+                "却不是（AI 解读按它）：要重新跑一次类型"
+            )
         lines.append(
             f"  正文加能读的附件合计超过 2.4 万字 {kr.over_limit} 份：正文本身就超过的 "
             f"{kr.body_too_long} 份（照旧整份不解读），正文不超、加上附件才超的 "
@@ -333,8 +345,8 @@ def render(report: Report) -> str:
     if report.sample:
         lines.append("")
         lines.append(
-            f"【抽样】从 {report.sample_from} 份至少一个附件能读的申报通知里随机抽 "
-            f"{len(report.sample)} 份（种子 {report.seed}），按关键词粗判（要逐份核对）："
+            f"【抽样】从 {report.sample_from} 份至少一个附件能读的申报通知（按现在的标题规则）里"
+            f"随机抽 {len(report.sample)} 份（种子 {report.seed}），按关键词粗判（要逐份核对）："
         )
         for aspect in ASPECTS:
             tally = Counter(item.verdicts[aspect] for item in report.sample)
