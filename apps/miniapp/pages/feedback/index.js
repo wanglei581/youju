@@ -4,13 +4,14 @@ const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const MAX = 500;
 const COVERAGE_PREFIX = '申请覆盖：';
 // type=pay：从购买页、订单页点"遇到问题"进来；带上订单号，核对台据此找到订单
-function payPrefix(orderId) { return /^\d{1,12}$/.test(orderId || '') ? `支付问题（订单 ${orderId}）：` : '支付问题：'; }
+const ORDER_ID = /^\d{1,12}$/;
+function payPrefix(orderId) { return ORDER_ID.test(orderId || '') ? `支付问题（订单 ${orderId}）：` : '支付问题：'; }
 
 // 纠错与建议：只收文字和对应的文件，不收姓名、电话等联系方式。
 // 提交前要同意协议；协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"
 Page({
   // reward：纠错被采纳送天数的规则（D-070 ⑦，服务端开关开着时 /me 带回；只在纠错时显示）
-  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, pay: false, prefix: '', loginOpen: loginOpen(), reward: '' },
+  data: { docId: '', title: '', content: '', count: 0, max: MAX, sending: false, coverage: false, pay: false, orderTagged: false, prefix: '', loginOpen: loginOpen(), reward: '' },
 
   onLoad(query) {
     if (!this.data.loginOpen) return;
@@ -23,6 +24,8 @@ Page({
       title: !coverage && !pay && query.title ? decodeURIComponent(query.title) : '',
       coverage,
       pay,
+      // 页面知道是哪一笔订单（前缀里有订单号）才说"订单号已自动带上"；不知道时请用户自己写上（Codex 10/19）
+      orderTagged: pay && ORDER_ID.test(query.orderId || ''),
       prefix,
       max: MAX - prefix.length,
     });
