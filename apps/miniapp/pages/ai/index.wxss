@@ -14,6 +14,8 @@
 .strip-line { margin-top: 16rpx; font-size: 25rpx; line-height: 1.7; color: var(--t2); }
 
 .abilities { padding-top: 12rpx; padding-bottom: 28rpx; }
+/* 还没确认、没有说明条压着页头时，卡片照样压住页头下沿 */
+.abilities--first { position: relative; margin-top: -40rpx; }
 .ability { padding: 24rpx 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12rpx 24rpx; border-bottom: 2rpx solid var(--line); }
 .ability-main { flex: 1; min-width: 360rpx; display: flex; flex-direction: column; gap: 6rpx; }
 .ability-name { font-size: 32rpx; font-weight: 600; color: var(--t1); }

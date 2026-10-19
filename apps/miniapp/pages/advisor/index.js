@@ -5,7 +5,7 @@ const context = require('../../utils/tool-context.js');
 const boost = require('../../utils/boost.js');
 
 Page({
-  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, remaining: 0, clauseRemaining: 0,
+  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: 0, clauseRemaining: 0,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   onShow() { this.visible = true; this.load(); },
@@ -30,6 +30,9 @@ Page({
       this.setData({ loading: false, aiGate, aiGateText: gateText(aiGate, res), toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: gateText(gate, res),
         interpretEnabled: aiEnabled && kinds.includes('interpret'),
         clauseEnabled: aiEnabled && kinds.includes('clause'),
+        // D-075：后台处理不了、全站今天满了时不给开始的按钮，写明原因
+        aiPaused: aiEnabled && ai.available === false,
+        aiFull: aiEnabled && ai.siteFull === true,
         remaining: (ai.remaining || {}).interpret || 0,
         clauseRemaining: (ai.remaining || {}).clause || 0,
         aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',

@@ -1,4 +1,4 @@
-const { reasonView } = require('./ai-reasons.js');
+const { reasonView, failedText, revokedCode, FAILED } = require('./ai-reasons.js');
 
 const SECTIONS = [
   ['对象', '申报对象'], ['支持', '支持方式'], ['条件', '申报条件'],
@@ -87,17 +87,9 @@ function taskContext(storage, id, value) {
     return value || saved[id] || {};
   } catch (e) { return value || {}; }
 }
-// 任务失败按后台给的错误代码写（D-075），不再比对文字：排队后才撞上全站上限、admin 处理不了时退回的，
-// 都已退回次数。被移出白名单（AI_OFF）也写"暂时不可用"，不写"未开放"
-const FAILED_TEXT = {
-  AI_DAILY_CAP: '今天 AI 的总用量满了，明天 0 点恢复；这次没有扣你的次数。',
-  AI_UNAVAILABLE: 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。',
-  AI_OFF: 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。',
-};
+// 任务失败的说法见 utils/ai-reasons.js（按错误代码写，都写明没扣次数）
+const FAILED_TEXT = Object.keys(FAILED).reduce((texts, code) => Object.assign(texts, { [code]: failedText({ errorCode: code }) }), {});
 const UNAVAILABLE_TEXT = 'AI 暂时不可用，请稍后再试。';
-function failedText(task) {
-  return FAILED_TEXT[task && task.errorCode] || (task && task.error) || '结果已失效，请重新提交';
-}
 // 提交被拒：这份不能解读（422 带原因代码）写原因；后台处理不了（429 AI_UNAVAILABLE）、接口说没开（404）写暂时不可用；
 // 提交时撞上全站上限写总用量满了
 function errorText(error) {
@@ -189,7 +181,8 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
         // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
         failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
       } else {
-        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId, resumable: false, progress: '', errorCode: task.errorCode || '' });
+        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId, resumable: false, progress: '', errorCode: task.errorCode || '',
+          unavailable: revokedCode(task.errorCode) });
       }
       return;
     }

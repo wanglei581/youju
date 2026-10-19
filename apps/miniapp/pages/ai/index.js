@@ -81,8 +81,10 @@ Page({
     scope: SCOPE,
     keep: KEEP,
     scopeOpen: false,
-    // waiting：还没问到后台 AI 开没开；offline：没问到（连不上）
+    // waiting：还没问到后台 AI 开没开；offline：没问到（连不上）；ready：后台确认开着。
+    // 确认之前页面上不出现 AI 字样（旧链接直接打开时，可能其实是关着的）
     waiting: true,
+    ready: false,
     offline: false,
     capsLoading: true,
     gate: '',
@@ -113,16 +115,16 @@ Page({
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 4 });
     this.shown = true;
-    // 只记能解读的那份（详情页显示了"可以 AI 解读"才记），按钮直接给
+    // 刚才看的那份先不给按钮：后台再核一次还能不能解读（可能下架了、失去了资格），核过再给
     const last = access.lastDoc();
-    this.setData({ today: todayISO(), lastDoc: last ? Object.assign({}, last, { ai: { interpret: true } }) : null });
+    this.setData({ today: todayISO(), lastDoc: last ? Object.assign({}, last, { ai: null }) : null });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     access.ensure().then((state) => {
       if (!this.shown || seq !== this.seq) return;
-      if (!state.confirmed) { this.setData({ waiting: false, offline: true }); return; }
+      if (!state.confirmed) { this.setData({ waiting: false, offline: true, ready: false }); return; }
       if (!state.visible) { this.leave(); return; }
-      this.setData({ waiting: false, offline: false });
+      this.setData({ waiting: false, offline: false, ready: true });
       this.load(seq);
     });
   },
@@ -153,6 +155,20 @@ Page({
         disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
       });
     });
+    const last = this.data.lastDoc;
+    if (last) {
+      api.detail(last.id).then((doc) => {
+        if (seq !== this.seq) return;
+        if (doc && doc.ai && doc.ai.interpret === true) {
+          this.setData({ lastDoc: Object.assign({}, last, { title: doc.title || last.title, ai: { interpret: true } }) });
+        } else {
+          access.forgetDoc(); this.setData({ lastDoc: null });
+        }
+      }).catch((err) => {
+        // 下架或没了（404）：不再显示；连不上：照样列出、不给按钮
+        if (seq === this.seq && err && err.status === 404) { access.forgetDoc(); this.setData({ lastDoc: null }); }
+      });
+    }
     this.setData({ recentLoading: true, recentError: '' });
     api.search(RECENT).then((res) => {
       if (seq !== this.seq) return;
@@ -200,7 +216,7 @@ Page({
 
   clauseLast() {
     const doc = this.data.lastDoc;
-    if (doc) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
+    if (doc && doc.ai) wx.navigateTo({ url: context.clauseUrl({ docId: doc.id, docTitle: doc.title }) });
   },
 
   openRecord(e) {

@@ -160,9 +160,11 @@ Page({
     });
     if (String(query.ai) === '1') {
       this.setData({ aiOnly: access.current().visible === true });
-      // 后台确认板块没对这个人开着：去掉这一项重新查，页面上不留相关字样
+      // 跟着后台的确认走：确认开着就加上这一项、确认没开着就去掉，都重新查；页面上不留相关字样
       this.unsubscribeAi = access.subscribe((state) => {
-        if (this.data.aiOnly && state.confirmed && !state.visible) { this.setData({ aiOnly: false }); this.apply(true); }
+        if (!state.confirmed) return;
+        const on = state.visible === true;
+        if (on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
       });
       access.ensure();
     }

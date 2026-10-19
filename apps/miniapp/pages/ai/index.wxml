@@ -1,16 +1,17 @@
 <!-- AI 首页（D-075 第四节）：品牌蓝页头 → 固定的"AI 生成"说明条 → 两项能力 → 刚才看的通知 → 近 7 天能解读的申报通知
      → 我的 AI 记录 → 用的时候遇到问题 → 模型和备案号。不放空白提问框，不用徽章和促销横幅 -->
+<!-- 后台确认开着之前（ready 为假）页头只留蓝底，不出现 AI 字样：旧链接直接打开时可能其实是关着的 -->
 <view class="top" style="padding-top: {{statusBarHeight}}px">
-  <view class="nav" style="height: {{navHeight}}px"><text class="nav-title">AI</text></view>
+  <view class="nav" style="height: {{navHeight}}px"><text wx:if="{{ready}}" class="nav-title">AI</text></view>
   <notice-bar onBlue="{{true}}" />
-  <view class="hero">
+  <view wx:if="{{ready}}" class="hero">
     <view class="hero-sub">找出通知里的对象、条件、时间、材料原句，每句都能回原文核对；不判断能不能申报。</view>
     <text class="badge">第三方整理 · 非政府平台</text>
   </view>
 </view>
 
 <!-- 固定一条，不能关：显式标明 AI 生成（标识办法第四条）；"说明"展开适用人群、场合、用途、不适用、保存多久 -->
-<view class="strip">
+<view wx:if="{{ready}}" class="strip">
   <view class="strip-row" bindtap="toggleScope" aria-role="button" aria-expanded="{{scopeOpen}}">
     <text class="strip-tag">AI 生成 · 以原文为准</text>
     <text class="link strip-more">{{scopeOpen ? '收起' : '说明'}} <t-icon name="{{scopeOpen ? 'chevron-up' : 'chevron-down'}}" size="24rpx" color="#2A5CE0" /></text>
@@ -21,11 +22,11 @@
   </view>
 </view>
 
-<view wx:if="{{waiting}}" class="card abilities" aria-label="正在加载">
+<view wx:if="{{waiting}}" class="card abilities abilities--first" aria-label="正在加载">
   <view class="sk sk-line"></view>
   <view class="sk sk-line sk-line--short"></view>
 </view>
-<view wx:elif="{{offline}}" class="card load-error"><text>暂时连不上服务器，请稍后重试。</text><text class="link retry" bindtap="retry">重试</text></view>
+<view wx:elif="{{offline}}" class="card load-error abilities--first"><text>暂时连不上服务器，请稍后重试。</text><text class="link retry" bindtap="retry">重试</text></view>
 <block wx:else>
   <view class="card abilities">
     <view wx:if="{{capsLoading}}" aria-label="正在加载">
@@ -57,7 +58,7 @@
       <view class="last-title">{{lastDoc.title}}</view>
       <view class="last-meta">{{lastDoc.issuer}}<text wx:if="{{lastDoc.issuer && lastDoc.date}}"> · </text>{{lastDoc.date}}</view>
     </view>
-    <view class="last-ops">
+    <view wx:if="{{lastDoc.ai}}" class="last-ops">
       <ai-button doc-id="{{lastDoc.id}}" doc-title="{{lastDoc.title}}" ai="{{lastDoc.ai}}" />
       <text wx:if="{{!gate && kinds.length > 1}}" class="link last-clause" bindtap="clauseLast" aria-role="button">条款对照 ›</text>
     </view>

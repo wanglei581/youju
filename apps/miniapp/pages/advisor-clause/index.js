@@ -2,7 +2,7 @@
 const api = require('../../utils/api.js');
 const { regionSelection, regionValue } = require('../../utils/regions.js');
 const clause = require('../../utils/ai-clause.js');
-const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const { todayISO } = require('../../utils/format.js');
 const access = require('../../utils/ai-access.js');
@@ -42,8 +42,10 @@ Page({
           gateText: ai.available === false ? 'AI 暂时不可用，请稍后再试。' : '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。' });
         return;
       }
-
       const gate = aiEnabled ? '' : gateState(res);
+      // AI 对这个人没开着（关闭、不在白名单；旧链接、旧记录打开）：正式版回首页，不留一页"不可用"（D-075）；
+      // 内测包照旧只写"暂时没有可用工具"
+      if (gate === 'off' && !AI_INTERNAL) { this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return; }
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
       if (aiEnabled && this.session) this.session.show();
     }).catch(() => {

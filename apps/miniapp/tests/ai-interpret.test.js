@@ -295,6 +295,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     const fab = load('components/ai-entry/index.js', { '../../utils/ai-access.js': access, '../../utils/tool-context.js': advisor,
       '../../utils/ai-reasons.js': require('../utils/ai-reasons.js'), '../../utils/copy.js': { copyLink() {} } });
     fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
+    fab.properties.ai = { interpret: true, clause: true, reason: null };
     Object.assign(fab, fab.methods); fab.lifetimes.attached.call(fab); await flush();
     const text = render(read('components/ai-entry/index.wxml'), { ...fab.data, blocked: false });
     assert.equal(text.startsWith('AI 解读') && text.includes('开始解读'), aiEnabled); if (!aiEnabled) assert.equal(text, '');

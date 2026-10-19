@@ -22,6 +22,8 @@ let state = null;
 let pending = null;
 let checkedAt = 0;
 let failedAt = 0;
+// clear() 一次加 1：注销以前发出去、注销以后才回来的答复不用（不能把旧账号的结果画回去）
+let generation = 0;
 
 function storage() {
   return typeof wx === 'undefined' ? null : wx;
@@ -91,7 +93,9 @@ function check() {
 // 问一次后台；同时只有一个在途的请求
 function refresh() {
   if (pending) return pending;
+  const asked = generation;
   pending = check().then((answer) => {
+    if (asked !== generation) return current();
     pending = null;
     if (answer) {
       checkedAt = Date.now();
@@ -129,6 +133,12 @@ function rememberDoc(doc) {
   } catch (e) { /* 记不下来就不显示"刚才看的通知" */ }
 }
 
+// 刚才看的那份不能解读了（下架、失去资格）：不再显示
+function forgetDoc() {
+  const store = storage();
+  if (store) { try { store.removeStorageSync(LAST_DOC_KEY); } catch (e) { /* 下次照样会重新核对 */ } }
+}
+
 function lastDoc() {
   const store = storage();
   if (!store) return null;
@@ -140,8 +150,10 @@ function lastDoc() {
   } catch (e) { return null; }
 }
 
-// 注销、撤回同意以后：擦掉本机记录，各页面收起 AI
+// 注销、撤回同意以后：擦掉本机记录，各页面收起 AI；在途的查询作废
 function clear() {
+  generation += 1;
+  pending = null;
   remember(false);
   const store = storage();
   if (store) { try { store.removeStorageSync(LAST_DOC_KEY); } catch (e) { /* 注销时整个存储也会清空 */ } }
@@ -150,4 +162,4 @@ function clear() {
   set({ visible: false, confirmed: false, available: false });
 }
 
-module.exports = { CACHE_KEY, CACHE_FOR, RECHECK, RETRY_AFTER, LAST_DOC_KEY, LAST_DOC_FOR, current, subscribe, ensure, refresh, canOpen, clear, rememberDoc, lastDoc };
+module.exports = { CACHE_KEY, CACHE_FOR, RECHECK, RETRY_AFTER, LAST_DOC_KEY, LAST_DOC_FOR, current, subscribe, ensure, refresh, canOpen, clear, rememberDoc, forgetDoc, lastDoc };

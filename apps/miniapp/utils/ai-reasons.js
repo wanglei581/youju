@@ -21,4 +21,22 @@ function reasonView(code, hasAttachments) {
   return { text: reason ? reason.text : FALLBACK, next, nextText: NEXT_TEXT[next] || '' };
 }
 
-module.exports = { REASONS, FALLBACK, NEXT_TEXT, reasonView };
+// 任务失败按后台给的错误代码写（D-075），不比对文字：排队后才撞上全站上限、admin 处理不了时退回、
+// 被移出白名单，都已退回次数。被移出白名单也写"暂时不可用"，不写"未开放"。
+// refund 为假时不带"没有扣你的次数"（任务列表另有一行"这次不算次数"）
+const FAILED = {
+  AI_DAILY_CAP: '今天 AI 的总用量满了，明天 0 点恢复',
+  AI_UNAVAILABLE: 'AI 暂时不可用，请稍后再试',
+  AI_OFF: 'AI 暂时不可用，请稍后再试',
+};
+function failedText(task, options = {}) {
+  const base = FAILED[task && task.errorCode];
+  if (!base) return (task && task.error) || '结果已失效，请重新提交';
+  return options.refund === false ? `${base}。` : `${base}；这次没有扣你的次数。`;
+}
+// 这两种失败说明 AI 对这个人已经不能用了：页面要让 AI 板块重新问一次开没开
+function revokedCode(code) {
+  return code === 'AI_OFF' || code === 'AI_UNAVAILABLE';
+}
+
+module.exports = { REASONS, FALLBACK, NEXT_TEXT, FAILED, reasonView, failedText, revokedCode };

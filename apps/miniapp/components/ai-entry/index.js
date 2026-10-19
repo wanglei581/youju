@@ -3,8 +3,8 @@
 // 显不显示只听 api（D-075，utils/ai-access.js）：AI 对这个人开着、后台确认过才渲染；其余情况（关闭、
 // 不在白名单、请求失败）什么都不渲染，页面和原来一样。后台暂时处理不了时卡片写"AI 暂时不可用"、不给按钮。
 // 这份文件能做（详情接口的 ai.interpret / ai.clause，是文件本身的属性）就给"开始解读"；做不了也显示卡片，
-// 按后台给的原因代码写明原因和下一步（utils/ai-reasons.js）。旧后台的详情没有 ai 字段时按能做处理，
-// 进页面后后端会再判一次；旧后台有 ai 没有原因代码时按页面已有的正文信息判断。
+// 按后台给的原因代码写明原因和下一步（utils/ai-reasons.js）。详情没有 ai 字段（还不知道能不能做）时
+// 不渲染，不把不知道当成能做；有 ai 没有原因代码（旧后台）时按页面已有的正文信息判断。
 const access = require('../../utils/ai-access.js');
 const context = require('../../utils/tool-context.js');
 const { reasonView } = require('../../utils/ai-reasons.js');
@@ -59,13 +59,13 @@ Component({
       const state = access.current();
       const ai = this.properties.ai;
       const known = !!ai && typeof ai === 'object';
-      const interpretAvailable = !known || ai.interpret === true;
+      const interpretAvailable = known && ai.interpret === true;
       const clauseAvailable = known && ai.clause === true;
       const available = interpretAvailable || clauseAvailable;
       const code = known && typeof ai.reason === 'string' && ai.reason ? ai.reason : legacyReason(this.properties.bodyStatus, this.properties.bodyTotal);
       const view = available ? { text: '', next: '', nextText: '' } : reasonView(code, this.properties.hasAttachments);
       this.setData({
-        aiEnabled: !this.properties.blocked && state.visible === true && state.confirmed === true,
+        aiEnabled: !this.properties.blocked && known && state.visible === true && state.confirmed === true,
         paused: state.available === false,
         available, interpretAvailable, clauseAvailable,
         reason: view.text, next: view.next, nextText: view.nextText,

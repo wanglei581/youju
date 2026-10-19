@@ -101,6 +101,7 @@ function control(initial) {
     refresh: () => { asks.refresh += 1; return Promise.resolve(Object.assign({}, state)); },
     canOpen: (value = state) => value.visible === true && value.confirmed === true && value.available !== false,
     clear() {}, rememberDoc(doc) { stored.doc = doc; }, lastDoc: () => stored.last || null,
+    forgetDoc() { stored.last = null; stored.forgot = (stored.forgot || 0) + 1; },
     set(next) { state = Object.assign({}, state, next); listeners.forEach((fn) => fn(Object.assign({}, state))); },
   };
 }
@@ -404,7 +405,8 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
   assert.deepEqual(scrolls, ['#ai-entry', '#attachments']);
 });
 
-function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ items: [] }), tasks = () => Promise.resolve({ items: [] }), last = null, consentOk = true } = {}) {
+function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ items: [] }), tasks = () => Promise.resolve({ items: [] }), last = null, consentOk = true,
+  detail = (id) => Promise.resolve({ id, title: '刚才看的那份', ai: { interpret: true, clause: true, reason: null } }) } = {}) {
   const access = control(state); access.stored.last = last;
   const calls = { search: [], caps: 0, consent: 0 };
   const switched = []; const navigations = []; let selected = null;
@@ -413,6 +415,7 @@ function hubPage({ state = OPEN, caps = ON(), search = () => Promise.resolve({ i
       advisorCapabilities: (opts) => { calls.caps += 1; calls.refresh = opts && opts.refresh; return typeof caps === 'function' ? caps() : Promise.resolve(caps); },
       search: (p) => { calls.search.push(p); return search(p); },
       advisorTasks: tasks,
+      detail: (id) => { calls.detail = (calls.detail || 0) + 1; return detail(id); },
     },
     '../../utils/ai-access.js': access, '../../utils/advisor.js': advisor, '../../utils/ai-interpret.js': interpret, '../../utils/tool-context.js': context,
     '../../utils/consent.js': { ensureConsent: () => { calls.consent += 1; return Promise.resolve(consentOk); } }, '../../utils/format.js': format,
@@ -638,4 +641,131 @@ test('解读页、对照页：新提交前后台处理不了或全站满了先�
   const out = render('pages/advisor-interpret/index.wxml', p.data);
   assert.deepEqual(findAll(out, (n) => n.tag === 'contact-button').map((n) => [n.attrs.from, n.attrs['doc-id'], n.attrs.reason]), [['ai_result', '42', 'AI_UNAVAILABLE']]);
   assert.ok(findAll(out, tapsTo('original')).length >= 1, '不能重试时给"看原文"');
+});
+
+test('Codex 第 1 轮：注销以前发出去、注销以后才回来的答复不用；擦掉以后再问是新的一次', async () => {
+  let release;
+  const h = accessWith({ mode: () => new Promise((done) => { release = done; }) });
+  const asked = h.access.raw.ensure();
+  h.access.clear();
+  release({ open: true, available: true }); await asked; await settle();
+  assert.deepEqual(h.access.current(), { visible: false, confirmed: false, available: false }, '旧账号的结果不画回去');
+  assert.equal(h.wx.saved.has(h.access.CACHE_KEY), false);
+  const again = accessWith({ mode: { open: true, available: true } });
+  again.access.clear(); assert.deepEqual(await again.access.ensure(), OPEN);
+});
+
+test('Codex 第 1 轮：搜索带 ai=1 打开时还没问到后台，确认开着以后再加上这一项重查；用户去掉以后不再加回来', async () => {
+  const query = { kind: encodeURIComponent('申报通知'), ai: '1' };
+  const { page, calls, access } = searchPage({ visible: false, confirmed: false, available: false });
+  page.onLoad(query); await settle();
+  assert.equal(page.data.aiOnly, false); assert.equal(calls.at(-1).ai, undefined);
+  access.set(OPEN); await settle();
+  assert.equal(page.data.aiOnly, true); assert.equal(calls.at(-1).ai, 1);
+  page.removeAi(); await settle();
+  access.set(Object.assign({}, OPEN)); access.set(CLOSED); access.set(OPEN); await settle();
+  assert.equal(page.data.aiOnly, false); assert.equal(calls.at(-1).ai, undefined);
+});
+
+test('Codex 第 1 轮：AI 首页确认开着之前页头没有 AI 字样；刚才看的那份先核对还能不能解读，不能了就不显示', async () => {
+  // 还没问到（旧链接直接打开、连不上）：页头只有蓝底
+  const waiting = hubPage({ state: { visible: false, confirmed: false, available: false } });
+  assert.doesNotMatch(waiting.text(), /AI/);
+  waiting.page.onShow(); await settle();
+  assert.equal(waiting.page.data.offline, true); assert.doesNotMatch(waiting.text(), /AI/);
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  // 还能解读：给按钮（核对之前不给）
+  let h = hubPage({ last });
+  h.page.onShow();
+  assert.equal(h.page.data.lastDoc.ai, null, '核对之前不给按钮');
+  await settle();
+  assert.deepEqual(plain(h.page.data.lastDoc.ai), { interpret: true }); assert.equal(h.calls.detail, 1);
+  // 不能解读了、下架了：不显示，也不再记着
+  for (const detail of [() => Promise.resolve({ id: '42', title: 'x', ai: { interpret: false, clause: false, reason: 'no_body' } }),
+    () => Promise.reject(Object.assign(new Error('该文件已下架'), { status: 404 }))]) {
+    h = hubPage({ last, detail }); h.page.onShow(); await settle();
+    assert.equal(h.page.data.lastDoc, null); assert.equal(h.access.stored.forgot, 1);
+    assert.doesNotMatch(h.text(), /刚才看的通知/);
+  }
+  // 连不上：照样列出、点标题能看，但不给按钮
+  h = hubPage({ last, detail: () => Promise.reject(Object.assign(new Error('网络'), { retryable: true })) }); h.page.onShow(); await settle();
+  assert.match(h.text(), /刚才看的通知 刚才看的那份/);
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'ai-button').length, 0);
+  h.page.clauseLast(); assert.deepEqual(h.navigations, []);
+});
+
+test('Codex 第 1 轮：工具中心在后台处理不了、全站满了时不给开始的按钮、写明原因；"和我的企业对一下"统一叫"条款对照"', async () => {
+  for (const [extra, text] of [[{ available: false }, 'AI 暂时不可用，请稍后再试。'], [{ siteFull: true }, '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'], [{}, '']]) {
+    const page = load('pages/advisor/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), advisorTasks: () => Promise.resolve({ items: [] }) },
+      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'),
+    }, { wx: { setNavigationBarTitle() {} } });
+    page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await settle();
+    const root = render('pages/advisor/index.wxml', page.data);
+    const out = textOf(root);
+    if (text) {
+      assert.ok(out.includes(text), text);
+      assert.equal(findAll(root, (n) => n.tag === 'button' && /开始解读|开始对照|去找通知/.test(textOf(n))).length, 0);
+      assert.doesNotMatch(out, /今天还能用/);
+    } else {
+      assert.match(out, /开始解读/); assert.match(out, /今天还能用 5 次/);
+    }
+    page.onHide();
+  }
+  for (const file of ['pages/advisor/index.wxml', 'pages/advisor-interpret/index.wxml', 'pages/advisor-clause/index.wxml', 'components/ai-entry/index.wxml']) {
+    assert.doesNotMatch(read(file), /和我的企业对一下/, file);
+  }
+});
+
+test('Codex 第 1 轮：任务列表按错误代码写失败原因（不重复"没扣次数"，下面另有一行"这次不算次数"）；排队后被移出白名单的让 AI 板块重新问', async () => {
+  const views = advisor.taskViews([
+    { id: 1, kind: 'interpret', status: 'failed', error: '今天的 AI 使用次数已满，请明天再试', errorCode: 'AI_DAILY_CAP' },
+    { id: 2, kind: 'clause', status: 'failed', error: 'AI 暂时不可用，请稍后再试', errorCode: 'AI_UNAVAILABLE' },
+    { id: 3, kind: 'interpret', status: 'failed', error: '功能未开放', errorCode: 'AI_OFF' },
+    { id: 4, kind: 'interpret', status: 'failed', error: '通知正文已变化，请重新解读', errorCode: null },
+    { id: 5, kind: 'compare', status: 'failed', error: '名单文件读不出来' },
+    { id: 6, kind: 'interpret', status: 'done', error: null },
+  ]);
+  assert.deepEqual(views.map((v) => v.errorText), [
+    '今天 AI 的总用量满了，明天 0 点恢复。', 'AI 暂时不可用，请稍后再试。', 'AI 暂时不可用，请稍后再试。', '通知正文已变化，请重新解读', '名单文件读不出来', '',
+  ]);
+  assert.deepEqual(views.map((v) => v.refundNote), ['这次不算次数', '这次不算次数', '这次不算次数', '这次不算次数', '这次不算次数', '']);
+  const list = textOf(render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, aiEnabled: true, items: plain(views), busyId: null }));
+  assert.doesNotMatch(list, /功能未开放|今天的 AI 使用次数已满/);
+  assert.match(list, /今天 AI 的总用量满了，明天 0 点恢复。 这次不算次数/);
+  // 解读页看到排队后被移出白名单（AI_OFF）的结果：让 AI 板块重新问一次
+  for (const errorCode of ['AI_OFF', 'AI_UNAVAILABLE', 'AI_DAILY_CAP']) {
+    const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const p = load('pages/advisor-interpret/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: 'x', errorCode }) },
+      '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
+    }, { wx: { setNavigationBarTitle() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+    p.onLoad({ taskId: '9' }); p.onShow(); await settle();
+    assert.equal(p.data.phase, 'failed');
+    assert.equal(access.asks.refresh, errorCode === 'AI_DAILY_CAP' ? 0 : 1, errorCode);
+  }
+});
+
+test('Codex 第 1 轮：从真实的接口回包到页面文字——422 不能解读带原因、429 暂时不可用、429 全站满了（后台按 {detail: {code, reason, message}} 回）', async () => {
+  const pending = [];
+  const api = load('utils/api.js', { './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {} },
+    { wx: { request(options) { pending.push(options); }, removeStorageSync() {} } });
+  const cases = [
+    [422, { code: 'AI_NOT_ELIGIBLE', reason: 'list', message: '文件属于名单类，无法解读' }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。'],
+    [422, { code: 'AI_NOT_ELIGIBLE', reason: 'source', message: '文件不是一级公开来源，无法解读' }, '这个来源暂不用于 AI 解读。'],
+    [429, { code: 'AI_UNAVAILABLE', message: 'AI 暂时不可用，请稍后再试' }, 'AI 暂时不可用，请稍后再试。'],
+    [429, { code: 'AI_DAILY_CAP', message: '今天的 AI 使用次数已满，请明天再试' }, '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'],
+    // 输入不合要求的 422（没有 code）：照旧把逐项说明拼起来
+    [422, [{ msg: '注册地不在列表里' }], '注册地不在列表里'],
+  ];
+  for (const [status, detail, text] of cases) {
+    const result = api.createAdvisorTask({ kind: 'interpret', doc_id: 42 }, 'k').then(() => null, (err) => err);
+    await settle();
+    pending.pop().success({ statusCode: status, data: { detail } });
+    const err = await result;
+    assert.equal(err.status, status);
+    assert.equal(interpret.errorText(err), text, JSON.stringify(detail));
+    if (detail.code) assert.equal(err.code, detail.code);
+    if (detail.reason) assert.equal(err.reason, detail.reason);
+  }
 });

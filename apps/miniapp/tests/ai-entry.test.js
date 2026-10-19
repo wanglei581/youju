@@ -63,7 +63,10 @@ function accessOf(api) {
 }
 const reasons = require('../utils/ai-reasons.js');
 
+// 详情接口带的 ai：没写就当这份能做（详情接口总带 ai；要测"没有 ai"时显式传 ai: null）
+const ELIGIBLE = { interpret: true, clause: true, reason: null };
 function fab(api, properties = {}) {
+  properties = Object.assign({ ai: ELIGIBLE }, properties);
   const navigations = []; const copied = []; const events = []; const back = [];
   const view = load('components/ai-entry/index.js', {
     '../../utils/ai-access.js': accessOf(api), '../../utils/tool-context.js': context, '../../utils/ai-reasons.js': reasons,
@@ -242,11 +245,11 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
 });
 
 test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI 生成"，标题不带"内部测试"；登录和同意只看协议是否定稿', async () => {
-  const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+  const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
   assert.equal(release.AI_LABEL, 'AI 生成：');
   assert.equal(release.aiTitle('政策解读'), '政策解读');
   assert.equal(release.AI_INTERNAL, false);
-  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true } });
+  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true }, './ai-reasons.js': reasons });
   assert.equal(internal.AI_LABEL, 'AI 生成 · 内部测试：');
   assert.equal(internal.aiTitle('政策解读'), '政策解读 · 内部测试');
   // 正式版的四个页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
@@ -318,17 +321,8 @@ test('任务页取消、删除走线上接口并刷新；进行中的任务轮�
 });
 
 // ---------- AI 正式版（config.aiInternal 为 false，D-066）：上线即对所有用户开放 ----------
-const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
 
-function releaseFab(api, properties = {}) {
-  const navigations = [];
-  const view = load('components/ai-entry/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context, '../../utils/advisor.js': release },
-    { wx: { navigateTo(options) { navigations.push(options); } } });
-  view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
-  Object.assign(view.properties, properties); Object.assign(view, view.methods);
-  view.lifetimes.attached.call(view);
-  return { view, navigations, text: () => render(read('components/ai-entry/index.wxml'), { ...view.data, ...view.properties }) };
-}
 
 test('对所有人开放（开放状态 open）：没同意协议的人也看得到卡片，点了进解读页（解读页先走同意）；没对所有人开放时只看白名单；后台处理不了时写暂时不可用', async () => {
   const forAll = (available = true) => ({
@@ -351,9 +345,9 @@ test('对所有人开放（开放状态 open）：没同意协议的人也看得
   const whitelisted = fab({ advisorMode: () => Promise.resolve({ open: false, available: false }), advisorCapabilities: () => Promise.resolve(caps(true)) },
     { docId: '42', docTitle: '通知', ai: { interpret: true, clause: false, reason: null } }); await flush(); await flush();
   assert.ok(ENTRY_OPEN(whitelisted.text())); assert.doesNotMatch(whitelisted.text(), /条款对照/);
-  // 旧后台的详情没有 ai 字段：按能做处理（提交时后台再判一次）
-  const legacy = fab(api, { docId: '42', docTitle: '通知' }); await flush();
-  assert.ok(ENTRY_OPEN(legacy.text()));
+  // 详情没有 ai 字段（还不知道能不能做）：不渲染，不把不知道当成能做
+  const unknown = fab(api, { docId: '42', docTitle: '通知', ai: null }); await flush();
+  assert.equal(unknown.text(), '');
   // 详情还没加载完（blocked）时不显示；加载完重新判断
   const late = fab(api, { blocked: true, docId: '42', docTitle: '通知', ai: null }); await flush();
   assert.equal(late.text(), '');
@@ -437,19 +431,28 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
   }
 });
 
-test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试，关着时写"AI 功能暂时不可用"', async () => {
-  for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', 'AI 功能暂时不可用，请稍后再试', '']]) {
+test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试；关着时工具中心、我的记录只写"暂时没有可用工具"，解读页、对照页回首页（D-075：不写 AI、不留"不可用"页）', async () => {
+  for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', '暂时没有可用工具', '']]) {
     for (const name of AI_PAGES) {
+      const switched = [];
       let consentCalls = 0; let capabilityCalls = 0;
       const api = { advisorCapabilities: () => { capabilityCalls += 1; return Promise.resolve({ ai_advisor: { enabled: false, features: [], remaining: {} }, reason }); }, advisorTasks: () => Promise.resolve({ items: [] }) };
       const storage = new Map();
-      const wx = { setNavigationBarTitle() {}, getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) };
+      const wx = { setNavigationBarTitle() {}, getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value), switchTab: (o) => switched.push(o.url) };
       const page = load(`pages/${name}/index.js`, { '../../utils/api.js': api, '../../utils/advisor.js': release, '../../utils/tool-context.js': context,
         '../../utils/ai-interpret.js': require('../utils/ai-interpret.js'), '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': require('../utils/format.js'),
         '../../utils/consent.js': { ensureConsent: () => { consentCalls += 1; return Promise.resolve(true); } } }, { wx });
       if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
       page.onShow(); await flush(); await flush();
       const output = render(read(`pages/${name}/index.wxml`), page.data);
+      if (reason === 'off' && ['advisor-interpret', 'advisor-clause'].includes(name)) {
+        assert.deepEqual(switched, ['/pages/home/index'], name);
+        assert.doesNotMatch(output, /AI|不可用|暂未开放/, name);
+        page.onUnload ? page.onUnload() : page.onHide();
+        continue;
+      }
+      assert.deepEqual(switched, [], name);
+      if (reason === 'off') assert.doesNotMatch(output, /AI/, name);
       assert.match(output, new RegExp(text), `${name} ${reason}`);
       if (button) assert.match(output, new RegExp(button), `${name} ${reason}`);
       else assert.doesNotMatch(output, /阅读并同意|重试/, `${name} ${reason}`);
