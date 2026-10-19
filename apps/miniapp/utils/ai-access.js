@@ -13,9 +13,9 @@ const CACHE_FOR = 24 * 3600 * 1000;
 // AI 首页"刚才看的通知"：本机只记最近 1 份能解读的通知（编号、标题、发文机关、日期），7 天后不再显示
 const LAST_DOC_KEY = 'youjuAiLastDocV1';
 const LAST_DOC_FOR = 7 * 24 * 3600 * 1000;
-// 同一次打开里，页面显示时最多每 10 分钟再问一次后台；后台说暂时处理不了时 15 秒后就再问；
-// AI 对这个人没开着时 2 分钟问一次（后台打开以后，正在用的人 2 分钟内看到第 5 格；首发版所有人都是这个状态，
-// 不每切一次页面都发请求）；没问到（连不上）时 15 秒内不重复问
+// 同一次打开里，页面显示（切页面、回到前台）时最多每 10 分钟再问一次后台；后台说暂时处理不了时 15 秒后就再问；
+// AI 对这个人没开着时 2 分钟（后台打开以后，正在用的人下一次切页面或回到前台时看到第 5 格，重新打开马上看到；
+// 首发版所有人都是这个状态，不定时去问、也不每切一次页面都发请求）；没问到（连不上）时 15 秒内不重复问
 const RECHECK = 10 * 60 * 1000;
 const CLOSED_RECHECK = 2 * 60 * 1000;
 const RETRY_AFTER = 15000;
@@ -93,12 +93,14 @@ function check() {
     .catch(() => null);
 }
 
-// 问一次后台；同时只有一个在途的请求
-function refresh() {
+// 问一次后台；同时只有一个在途的请求。fresh 为真时在途的那个作废、重新发一个：发现对不上、同意状态变了时，
+// 在途的可能是变以前问的（第 12 轮）。作废的那个回来时不用它的答复，等它的页面拿到新发的那个的结果
+function refresh(fresh) {
+  if (fresh === true) { generation += 1; pending = null; }
   if (pending) return pending;
   const asked = generation;
   pending = check().then((answer) => {
-    if (asked !== generation) return current();
+    if (asked !== generation) return pending || current();
     pending = null;
     if (answer) {
       checkedAt = Date.now();
@@ -124,24 +126,27 @@ function ensure() {
   return refresh();
 }
 
-// 页面自己问到的能力接口（AI 首页、解读页、对照页）和这里记的对不上：马上重新问一次，各页面跟着变（Codex 小程序第 11 轮）。
-// 只按说得准的一种比：能力接口说这个人能用（enabled），就该显示，能不能处理照它的 available。
-// 说用不了（关了、不在白名单、没同意协议）时不在这里下结论：对所有人开放时没同意的人也显示，交给开放状态接口
+// 页面自己问到的能力接口（AI 首页、解读页、对照页）和这里记的对不上：在途的作废，马上重新问，各页面跟着变（第 11、12 轮）。
+// - 能力接口说这个人能用（enabled）：就该显示，能不能处理照它的 available，对不上就重问；
+// - 说没同意协议（可能刚失效、在别处注销）而这里还显示着：重问，由开放状态接口决定收不收——
+//   对所有人开放时没同意的人照样显示，白名单阶段收起；
+// - 关了、不在白名单（off）由页面自己重问；连不上（offline）不下结论
 function reconcile(caps) {
   const ai = (caps && caps.ai_advisor) || {};
-  if (ai.enabled !== true) return;
   const now = current();
-  if (now.confirmed && now.visible && (now.available !== false) === (ai.available !== false)) return;
-  refresh();
+  if (ai.enabled === true) {
+    if (now.confirmed && now.visible && (now.available !== false) === (ai.available !== false)) return;
+    refresh(true);
+    return;
+  }
+  if (caps && caps.reason === 'consent' && now.visible) refresh(true);
 }
 
 // 协议同意状态变了（刚同意、发现已失效或在别处注销）：在途的查询作废、能力接口的缓存不用，马上重新问；
 // 不先收起，问到了再按结果变（白名单里的人刚同意，第 5 格马上出来，第 11 轮）
 function recheck() {
-  generation += 1;
-  pending = null;
   api.forgetCapabilities();
-  return refresh();
+  return refresh(true);
 }
 
 // 列表行、详情页上的"AI 解读"按钮能不能显示：后台确认过、显示板块、后台能处理

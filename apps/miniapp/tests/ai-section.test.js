@@ -1333,7 +1333,7 @@ test('Codex 第 11 轮：协议同意状态变了，AI 板块马上重新问—�
   assert.equal(o.calls.mode, modes + 1, '注销以后再问一次'); assert.deepEqual(o.access.current(), OPEN);
 });
 
-test('Codex 第 11 轮：AI 关着时 2 分钟问一次——后台打开以后，正在用的人 2 分钟内看到第 5 格', async () => {
+test('Codex 第 11 轮：AI 关着时 2 分钟问一次——后台打开以后，正在用的人下一次切页面或回到前台（距上次问过 2 分钟以上）时看到第 5 格', async () => {
   let answer = { open: false, available: false };
   const h = accessWith({ mode: () => Promise.resolve(answer), caps: OFF() });
   assert.deepEqual(await h.access.ensure(), CLOSED);
@@ -1429,4 +1429,64 @@ test('Codex 第 11 轮：解读页、对照页停在"暂时不可用"时有"重�
     p.setData({ aiEnabled: false, gate: 'full' }); p.reload(); assert.equal(p.data.gate, 'full');
     p.onHide();
   }
+});
+
+test('Codex 第 12 轮：能力接口先发现没同意协议时也让板块重问——白名单阶段随即收起，对所有人开放时照样显示、只问一次', async () => {
+  // 白名单阶段：板块记的是开着（以前同意过），解读页的能力接口先发现同意失效了
+  let lapsed = false;
+  const w = accessWith({ mode: { open: false, available: false }, caps: () => Promise.resolve(lapsed ? OFF('consent') : ON()) });
+  assert.deepEqual(await w.access.ensure(), OPEN);
+  const btn = load('components/ai-button/index.js', { '../../utils/ai-access.js': w.access, '../../utils/tool-context.js': context }, { wx: { navigateTo() {} } });
+  Object.assign(btn.properties, { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } });
+  btn.triggerEvent = () => {}; btn.lifetimes.attached.call(btn); await settle();
+  assert.equal(btn.data.shown, true);
+  lapsed = true;
+  const deps = {
+    '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(OFF('consent')), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
+    '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': w.access,
+  };
+  const p = load('pages/advisor-interpret/index.js', deps, { wx: { setNavigationBarTitle() {}, switchTab() {}, getStorageSync: () => '', setStorageSync() {} } });
+  p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+  assert.equal(p.data.gate, 'consent', '页面引导同意');
+  assert.deepEqual(w.access.current(), CLOSED, '白名单阶段板块收起'); assert.equal(btn.data.shown, false, '列表按钮收起');
+  p.onHide(); btn.lifetimes.detached.call(btn);
+  // 对所有人开放、没同意协议：重问一次开放状态，照样显示，不反复问
+  const o = accessWith({ mode: { open: true, available: true } });
+  assert.deepEqual(await o.access.ensure(), OPEN);
+  const modes = o.calls.mode;
+  const h = hubPage({ realAccess: o.access, caps: OFF('consent') });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.gate, 'consent'); assert.deepEqual(o.access.current(), OPEN, '照样显示');
+  assert.equal(o.calls.mode, modes + 1, '只重问一次');
+  // 板块本来就没显示（AI 关着）：能力接口说没同意也不问
+  const c = accessWith({ mode: { open: false, available: false }, caps: OFF('consent') });
+  assert.deepEqual(await c.access.ensure(), CLOSED);
+  const calls = [c.calls.mode, c.calls.caps];
+  c.access.raw.reconcile(OFF('consent')); await settle();
+  assert.deepEqual([c.calls.mode, c.calls.caps], calls);
+});
+
+test('Codex 第 12 轮：发现对不上时在途的旧查询作废——旧的先回来、后回来都不用它的答复，等它的页面拿到新发的那个的结果', async () => {
+  for (const order of ['old-first', 'new-first']) {
+    const answers = [];
+    const h = accessWith({ mode: () => new Promise((done) => answers.push(done)) });
+    const first = h.access.raw.ensure(); answers.shift()({ open: true, available: true }); assert.deepEqual(plain(await first), OPEN);
+    // 在途一个（变以前发的），这时解读页的能力接口说后台处理不了
+    h.clock.now += h.access.RECHECK;
+    const stale = h.access.raw.ensure(); await settle();
+    assert.equal(answers.length, 1, '旧查询在途');
+    h.access.raw.reconcile(ON({ available: false })); await settle();
+    assert.equal(answers.length, 2, '对不上：新发一个，不复用在途的');
+    const [oldDone, newDone] = answers;
+    if (order === 'old-first') { oldDone({ open: true, available: true }); await settle(); newDone({ open: true, available: false }); }
+    else { newDone({ open: true, available: false }); await settle(); oldDone({ open: true, available: true }); }
+    await settle();
+    assert.deepEqual(h.access.current(), { visible: true, confirmed: true, available: false }, `${order} 按新的`);
+    assert.deepEqual(plain(await stale), { visible: true, confirmed: true, available: false }, `${order} 等旧查询的页面拿到新的结果`);
+  }
+  // 注销以后：在途的作废，没有新发的就是擦掉以后的样子（原来的规矩不变）
+  let release;
+  const z = accessWith({ mode: () => new Promise((done) => { release = done; }) });
+  const asked = z.access.raw.ensure(); z.access.clear(); release({ open: true, available: true });
+  assert.deepEqual(plain(await asked), { visible: false, confirmed: false, available: false });
 });
