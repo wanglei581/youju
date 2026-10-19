@@ -53,7 +53,7 @@
 
 <view class="card">
   <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <view wx:if="{{loginOpen && renewEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text class="row-hint">到期日、续买</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{loginOpen && passEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text wx:if="{{passHint}}" class="row-hint">{{passHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <!-- 使用帮助和联系客服（D-075 第七节）：首发版也在，客服每天有人看、周末也看 -->

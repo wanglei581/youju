@@ -1,6 +1,13 @@
 <notice-bar />
 <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
 <block wx:elif="{{toolsEnabled}}">
+  <!-- 批量工具（D-076）：在售时放在最上面，写明免费还剩几次、两档价格；没在售时不显示 -->
+  <view wx:if="{{payCard}}" class="card advisor-card">
+    <view class="advisor-title">批量工具</view>
+    <view wx:if="{{payCard.quotaLine}}" class="{{payCard.usedUp ? 'advisor-error' : 'advisor-text'}}">{{payCard.quotaLine}}</view>
+    <view wx:if="{{payCard.offerLine}}" class="advisor-text">{{payCard.offerLine}}</view>
+    <button wx:if="{{payCard.button}}" class="advisor-button btn-primary" bindtap="buyPass">{{payCard.button}}</button>
+  </view>
   <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{!aiEnabled && aiGate === 'consent'}}" class="card advisor-card">
     <view>{{aiGateText}}</view><button class="advisor-button" bindtap="consent">阅读并同意后查看其他工具</button>
