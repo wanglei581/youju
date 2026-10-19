@@ -54,10 +54,10 @@
   </div>
 </header>
 <main>
-  <p class="hint">每月统一开一次电子发票：按抬头、税号开具，发到申请里的邮箱，再点"已开"。不能开的写明原因再点"不开"，用户在订单页能看到原因。订单退款后，没开的申请会自动作废；已开的要先冲红再退款。</p>
+  <p class="hint">申请当月开出电子发票（创始人 10/19：可以当月开）：按抬头、税号开具，发到申请里的邮箱，再点"已开"。不能开的写明原因再点"不开"，用户在订单页能看到原因。订单退款后，没开的申请会自动作废；已开的照常先退款，再到"要冲红"里按退款金额开红字发票。</p>
   <div class="row filters">
     <label for="status">显示</label>
-    <select id="status"><option value="pending">待开</option><option value="all">全部</option></select>
+    <select id="status"><option value="pending">待开</option><option value="reverse">要冲红</option><option value="all">全部</option></select>
   </div>
   <div id="list"></div>
   <button class="more" id="more" hidden>再载入 20 条</button>
@@ -103,7 +103,11 @@
     const card = el('section', 'card');
     const meta = el('div', 'meta');
     const state = el('span', TONE[item.status] || 'tag', item.status);
-    meta.append(state, el('span', '', `订单 ${item.orderId}`), el('span', '', `申请于 ${when(item.createdAt)}`));
+    meta.append(state);
+    // 退款进度标签：标完已冲红时原地换成"已冲红"，不留两个互相矛盾的标签
+    const refundTag = item.reversedAt ? el('span', 'tag', '已冲红') : item.refundState ? el('span', 'tag rejected', item.refundState) : null;
+    if (refundTag) meta.append(refundTag);
+    meta.append(el('span', '', `订单 ${item.orderId}`), el('span', '', `申请于 ${when(item.createdAt)}`));
     const dl = el('dl');
     field(dl, '抬头类型', item.titleType === 'company' ? '单位' : '个人');
     field(dl, '发票抬头', item.title, true);
@@ -115,8 +119,27 @@
     field(dl, '订单状态', item.orderStatus);
     if (item.note) field(dl, '说明', item.note);
     if (item.issuedAt) field(dl, '开具时间', when(item.issuedAt));
+    if (item.refundState) field(dl, '退款金额（冲红按这个开）', yuan(item.refundFee));
+    if (item.reversedAt) field(dl, '冲红时间', when(item.reversedAt));
     const row = el('div', 'row');
     const msg = el('span', 'msg');
+    if (item.canMarkReversed) {
+      // 退款不等冲红（D-074）：订单确认退款后，按上面的退款金额开好红字发票，再点这里
+      const done = el('button', 'primary', '已冲红');
+      done.onclick = async () => {
+        done.disabled = true; msg.textContent = '';
+        try {
+          const res = await fetch(`/api/admin/invoices/${item.id}/reversed`, { method: 'POST', headers: headers() });
+          if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || errorFor(res)); }
+          // 在"要冲红"列表里标完就拿掉这张；在"全部"里改成已冲红
+          if ($('status').value === 'reverse') { card.remove(); return; }
+          done.remove();
+          if (refundTag) { refundTag.className = 'tag'; refundTag.textContent = '已冲红'; } else meta.append(el('span', 'tag', '已冲红'));
+          msg.className = 'msg ok'; msg.textContent = '已标记为已冲红';
+        } catch (err) { msg.className = 'msg'; msg.textContent = err.message; done.disabled = false; }
+      };
+      row.append(done);
+    }
     if (item.status === '待开') {
       const issue = el('button', 'primary', '已开');
       const note = el('input', 'note');

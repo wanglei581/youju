@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import func, select
 
 from youju import deadline_clues, rewards
-from youju.api import v1
 from youju.models import DeadlineClue, DocumentDeadline, DocumentMerge, Event, PassReward
 
 from .test_ai_pipeline import add_doc
@@ -17,9 +16,8 @@ from .test_rewards import context as context
 
 
 @pytest.fixture
-def world(context, session, monkeypatch):
+def world(context, session):
     client, settings = context
-    monkeypatch.setattr(v1, "get_settings", lambda: settings)
     owner = user(session, "owner")
     doc = add_doc(session)
     return client, settings, owner, doc

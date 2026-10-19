@@ -586,7 +586,7 @@ function feedback(docId, content) {
 // ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
 
 function me() {
-  return request('/api/v1/me');
+  return request('/api/v1/me', null, { header: payHeader() });
 }
 
 function agree(version, scope) {
@@ -619,6 +619,22 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
+// 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
+// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
+// 现网只对带定稿协议版本号的包——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+function payHeader() {
+  const header = {};
+  try {
+    const terms = require('../content/pay-terms.js');
+    if (terms && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
+  } catch (e) { /* 读不到就不带 */ }
+  try {
+    const env = wx.getAccountInfoSync().miniProgram.envVersion;
+    if (typeof env === 'string' && env) header['X-Youju-Env'] = env;
+  } catch (e) { /* 读不到就不带，按正式版算 */ }
+  return header;
+}
+
 // 工具能力分别授权：数据工具不依赖 AI 或支付开关，AI 仍按其独立准入条件开放。
 
 const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
@@ -634,7 +650,7 @@ function advisorCapabilities(options = {}) {
   // 本次启动内共用一个请求；开启的结果一直缓存，关闭或失败的结果只缓存 15 秒；AI 页面进入时 refresh 重新取额度。
   if (capabilitiesPending) return capabilitiesPending;
   if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
-  const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
+  const source = isLive() ? request('/api/v1/advisor/capabilities', null, { header: payHeader() }) : Promise.resolve({});
   // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
@@ -678,7 +694,7 @@ function createAdvisorTask(data, key) {
     : data.kind === 'clause'
     ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
     : { kind: 'interpret', doc_id: Number(data.doc_id) };
-  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: { 'Idempotency-Key': key } }).catch((err) => {
+  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
     if (err.status === 422 && err.detail != null && typeof err.detail !== 'string') {
       err.message = Array.isArray(err.detail)
         ? err.detail.map((item) => (item && item.msg) || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
@@ -790,12 +806,12 @@ function saveSubscription(kind, target) {
 
 // ---- 批量工具 30 天、90 天（D-058、D-070；服务端开关关着时商品接口返回 404，小程序不显示购买入口） ----
 function payProducts() {
-  return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
+  return isLive() ? request('/api/v1/pay/products', null, { header: payHeader() }) : Promise.resolve({ items: [] });
 }
 // 下单是写操作：不自动重试（重复下单由服务端"10 分钟内待支付最多 3 单"兜住，页面也会先查上一笔）
 function createPayOrder(data) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
-  return request('/api/v1/pay/orders', null, { method: 'POST', data });
+  return request('/api/v1/pay/orders', null, { method: 'POST', data, header: payHeader() });
 }
 function payOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
@@ -821,5 +837,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorCapabilities, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
-  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
+  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice, payHeader,
 };

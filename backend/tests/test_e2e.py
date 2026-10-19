@@ -360,8 +360,16 @@ def test_offline_ingest_to_miniapp_e2e(session_factory, session, tmp_path, monke
         row = next(item for item in admin_feedback.json() if item["id"] == feedback_id)
         assert "13812345678" not in row["content"] and "［已隐去］" in row["content"]
         assert client.post(
-            f"/api/admin/feedback/{feedback_id}/handle", headers=ADMIN_HEADERS
-        ).json() == {"handled": True, "changed": True}
+            f"/api/admin/feedback/{feedback_id}/handle",
+            headers=ADMIN_HEADERS,
+            json={"outcome": "fixed"},
+        ).json() == {
+            "handled": True,
+            "changed": True,
+            "outcome": "fixed",
+            "outcomeLabel": "已更正",
+            "reply": None,
+        }
 
         notify_settings = SimpleNamespace(
             send_wx_messages=True,

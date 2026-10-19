@@ -362,6 +362,8 @@ class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 
     __tablename__ = "document_details"
+    # AI 解读可用性每 10 分钟按抓取时间找最近有变化的正文（D-075，youju/ai/eligibility.py）
+    __table_args__ = (Index("ix_document_details_fetched_at", "fetched_at"),)
 
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
@@ -589,6 +591,60 @@ class AIUsage(Base):
     errors: Mapped[int] = mapped_column(Integer, default=0)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py
+AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long")
+
+
+class AIEligibility(Base):
+    """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
+
+    reason 为空表示能解读，否则是 AI_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。
+    能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
+
+    __tablename__ = "ai_eligibility"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_REASONS) + ")",
+            name="ck_ai_eligibility_reason",
+        ),
+        # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）
+        Index("ix_ai_eligibility_computed_at", "computed_at"),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(16))
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIHeartbeat(Base):
+    """AI 设置心跳（D-075）：两个服务各一行。
+
+    - service=admin：admin 的后台任务每分钟写一次，写明它这边能不能处理 AI 任务；
+    - service=api：api 服务最多每 5 分钟写一次自己的设置指纹，给 admin 比对、发提醒。
+
+    fingerprint 是总开关、开放范围、白名单、全站每天上限的哈希，不存白名单明文
+    （youju/ai/heartbeat.py）。admin 那一行另记：alerted_at 上次为设置不一致、admin 处理不了、
+    退回任务发提醒的时间（每小时最多一次）；notice_at 上次提醒"api 心跳没来"的时间（每天最多
+    一次）；refunds_pending 因为 admin 处理不了（没开 AI 或缺密钥）退回、还没报出去的任务个数
+    （advisor-run 加，提醒发出去后减）。"""
+
+    __tablename__ = "ai_heartbeat"
+    __table_args__ = (
+        CheckConstraint("service IN ('admin', 'api')", name="ck_ai_heartbeat_service"),
+    )
+
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    beat_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
@@ -867,9 +923,31 @@ class Subscription(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+# 纠错处理结果（差距清单 C1，《网络信息内容生态治理规定》第十六条"反馈处理结果"）：
+# 管理台标记已处理时选一项，用户在"我的数据"里看到这句话和处理人写的说明
+# 纠错、申请覆盖、支付问题的处理结果（差距清单 C1）：代码 → 用户在"我的数据"里看到的文字。
+# 每类反馈能选哪几个见 api/app.py 的 FEEDBACK_OUTCOME_CHOICES
+FEEDBACK_OUTCOMES = {
+    "fixed": "已更正",
+    "unchanged": "已核对，和原文一致，没有改",
+    "removed": "已下架这份文件",
+    "noted": "已收到，作为建议记下",
+    "added": "已接入这个栏目",
+    "declined": "暂不接入",
+    "resolved": "已处理",
+}
+
+
 class Feedback(Base):
     __tablename__ = "feedback"
-    __table_args__ = (Index("ix_feedback_user", "user_id"),)
+    __table_args__ = (
+        Index("ix_feedback_user", "user_id"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('fixed', 'unchanged', 'removed', 'noted', 'added', 'declined', 'resolved')",
+            name="ck_feedback_outcome",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
@@ -878,6 +956,10 @@ class Feedback(Base):
     check_result: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 处理结果（见 FEEDBACK_OUTCOMES）和处理人写给用户的一句说明，标记处理时填、撤回时一起清掉。
+    # 0038 之前标记处理的旧记录这两列是空的，小程序照旧只写"已处理"
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    reply: Mapped[str | None] = mapped_column(String(200))
     # 纠错分诊（D-023）：规则和 AI 复查对应文件已发布的截止日期的结果，给处理的人看；
     # 用户写的内容不发给 AI
     triage_note: Mapped[str | None] = mapped_column(String(300))
@@ -928,6 +1010,23 @@ class AccessLog(Base):
     uid: Mapped[str | None] = mapped_column(String(16))
     # 核对台操作：做了什么、对哪条记录（操作人、编号、条数），见 api/app.py 的 _audit
     detail: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class AccessDaily(Base):
+    """每天（北京时间）每个服务的小程序接口请求汇总，访问日志归档前算好（差距清单 M3）：
+    运维日报据此报"接口 99% 在 3 秒内成功"（D-061 第七节）这个数。暂存表每天归档后就删，
+    到早上 8 点的日报已经算不到前一天，所以要先存下来。只有计数：不含 IP、用户编号和路径。
+    只算 /api/v1/ 下的接口（小程序用的）；管理台、平台探测不算。"""
+
+    __tablename__ = "access_daily"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer)
+    # 返回 5xx 的
+    errors: Mapped[int] = mapped_column(Integer)
+    # 没返回 5xx、但超过 3 秒才答复的
+    slow: Mapped[int] = mapped_column(Integer)
 
 
 class AppKey(Base):
@@ -993,7 +1092,7 @@ class PayOrder(Base):
 
 
 class InvoiceRequest(Base):
-    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人每月统一开具后在管理台标记。
+    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人当月开出后在管理台标记。
     属于订单的会计凭证：注销时只断开用户，不删除；订单按保存期清理时一并删除。"""
 
     __tablename__ = "invoice_requests"
@@ -1017,6 +1116,8 @@ class InvoiceRequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     note: Mapped[str | None] = mapped_column(String(300))
     issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 已开的发票、订单退款后，负责人按退款金额开了红字发票的时间（迁移 0036；退款不等冲红，D-074）
+    reversed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 

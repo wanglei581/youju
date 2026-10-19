@@ -23,6 +23,7 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.dedup import canonical_ids
 from youju.models import (
+    FEEDBACK_OUTCOMES,
     DeadlineClue,
     Document,
     Event,
@@ -282,7 +283,7 @@ def _available_subscription():
 
 
 @router.get("/me")
-def profile(session: SessionDep, user: KnownUserDep) -> dict:
+def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
     from youju import payments, rewards
 
     if user is None:
@@ -290,7 +291,9 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
             "agreed": None,
             "follows": 0,
             "subscriptions": {"newDocs": 0, "deadline": 0},
-            "pay": payments.entry(session, get_settings(), None),
+            "pay": payments.entry(
+                session, get_settings(), None, payments.client_of(request.headers)
+            ),
             "correctionReward": rewards.correction_info(get_settings()),
         }
     counts = dict(
@@ -333,7 +336,7 @@ def profile(session: SessionDep, user: KnownUserDep) -> dict:
             "deadline": counts.get("deadline", 0),
         },
         # 购买入口和"我的订单"显示与否（小程序没开放支付时两个都是 False，不放空入口）
-        "pay": payments.entry(session, get_settings(), user),
+        "pay": payments.entry(session, get_settings(), user, payments.client_of(request.headers)),
         # 纠错被采纳送天数（D-070 ⑦）开着时，纠错页公开写出规则和采纳标准；关着为 None
         "correctionReward": rewards.correction_info(get_settings()),
     }
@@ -724,6 +727,10 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             "checkResult": row.check_result,
             "handled": row.handled_at is not None,
             "handledAt": _iso(row.handled_at),
+            # 处理结果和处理人写的说明（差距清单 C1）；之前标记处理的旧记录没有，是 null
+            "outcome": row.outcome,
+            "outcomeLabel": FEEDBACK_OUTCOMES.get(row.outcome) if row.outcome else None,
+            "reply": row.reply,
             "createdAt": _iso(row.created_at),
         }
         for row in feedback

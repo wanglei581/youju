@@ -4,11 +4,17 @@
 const api = require('../../utils/api.js');
 const boost = require('../../utils/boost.js');
 
+// 加量体验没开放（开关关着，不是"用过了""使用期内"）时直接回首页，不写"暂未开放"（D-074 ⑧：不给用户看半成品）
+function goHome() {
+  wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
+}
+
 Page({
   data: { loading: true, loadError: '', error: '', available: false, active: false, starting: false,
     items: [], subtitle: '', startLabel: '', activeLine: '', note: '' },
-  onShow() { this.dead = false; if (!this.data.starting) this.load(); },
-  onUnload() { this.dead = true; },
+  onShow() { this.dead = false; this.visible = true; if (!this.data.starting) this.load(); },
+  onHide() { this.visible = false; },
+  onUnload() { this.dead = true; this.visible = false; },
   load() {
     const serial = this.serial = (this.serial || 0) + 1;
     this.setData({ loading: true, loadError: '', error: '' });
@@ -23,6 +29,12 @@ Page({
   show(trial, items) {
     const view = boost.trialView(trial);
     const available = view.trialAvailable && items.length > 0;
+    // 没开放：回首页（页面在后台时不跳，回来 onShow 重新读状态时再判断）
+    if (!available && !view.trialActive && !boost.unavailableText(view)) {
+      this.setData({ loading: true, available: false, items: [], note: '' });
+      if (this.visible) goHome();
+      return;
+    }
     this.setData({ loading: false, available, active: view.trialActive, items: available ? items : [],
       subtitle: view.trialHours ? `${view.trialHours / 24} 天内每次最多 ${view.trialRows} 家（免费）` : '',
       startLabel: `开始体验（立即起算 ${view.trialHours} 小时）`,

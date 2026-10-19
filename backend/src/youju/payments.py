@@ -12,6 +12,8 @@ from __future__ import annotations
 import contextlib
 import csv
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
@@ -171,15 +173,58 @@ def renew_offer(session: Session, settings, user: User | None, stamp: datetime) 
     }
 
 
-def selling_to(settings, openid: str | None) -> bool:
-    """这个用户能不能看到购买入口、下新单：总开关开着，并且对全体开放或在测试名单里。
+# 开卖按小程序版本放开（D-074）：小程序在商品、下单、能力、我的、提交任务这几个请求的头里带上
+# 代码包里的付费协议版本号和小程序环境（开发版、体验版、正式版）。
+PAY_TERMS_HEADER = "X-Youju-Pay-Terms"
+CLIENT_ENV_HEADER = "X-Youju-Env"
+TEST_BUILDS = frozenset({"develop", "trial"})
+
+
+@dataclass(frozen=True)
+class Client:
+    """请求来自哪个小程序包。terms：代码包里《付费服务协议》的版本号；
+    env：develop 开发版 / trial 体验版 / release 正式版。
+    老版本不带这两个头：terms 为空，env 按正式版（release）算——老版本永远看不到购买入口。"""
+
+    terms: str = ""
+    env: str = "release"
+
+
+def client_of(headers: Mapping[str, str]) -> Client:
+    """从请求头读出小程序包；认不出的环境一律按正式版算（宁可看不到，不能多放）。
+
+    这两个头由小程序自己填，只用来决定"谁看得到购买入口"（审核和合规上的展示），不是安全边界：
+    改了头也绕不过钱相关的检查——沙箱只给测试名单（openid 由微信云托管注入，伪造不了），
+    下单时还核对请求体里用户同意的协议版本（老版本带的是草稿号，409），老版本的付款按钮本来就不可用。"""
+    env = (headers.get(CLIENT_ENV_HEADER) or "").strip().lower()
+    terms = (headers.get(PAY_TERMS_HEADER) or "").strip()[:40]
+    return Client(terms=terms, env=env if env in TEST_BUILDS else "release")
+
+
+def testers(settings) -> set[str]:
+    return {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
+
+
+def selling_to(settings, openid: str | None, client: Client) -> bool:
+    """这个用户、这个小程序包能不能看到购买入口、下新单（D-058、D-074）：
+
+    - 总开关开着；
+    - 测试阶段（沙箱，或 YOUJU_PAY_AUDIENCE 还是 whitelist）：只给测试名单里的人，
+      并且只在开发版、体验版——正式版不出现沙箱和白名单购买（运营规范 5.19 人群对抗）；
+      沙箱付款不扣真钱，所以沙箱即使配成 all 也只给测试名单；
+    - 现网（真扣钱）：只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
+      开卖要单独提审一版，老版本永远看不到价格。
     补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
     if not enabled(settings):
         return False
-    if getattr(settings, "pay_audience", "whitelist") == "all":
-        return True
-    testers = {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
-    return bool(openid) and openid in testers
+    testing = settings.xpay_env == 1 or getattr(settings, "pay_audience", "whitelist") != "all"
+    tester = bool(openid) and openid in testers(settings) and client.env in TEST_BUILDS
+    if testing and not tester:
+        return False
+    if settings.xpay_env == 0:
+        terms = getattr(settings, "pay_terms_version", "")
+        return bool(terms) and client.terms == terms
+    return True
 
 
 def invoice_type(settings) -> str:
@@ -200,10 +245,10 @@ def orderable(settings) -> bool:
     )
 
 
-def entry(session: Session, settings, user: User | None) -> dict:
-    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户开放、能下单），
+def entry(session: Session, settings, user: User | None, client: Client) -> dict:
+    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户和这个小程序包开放、能下单），
     或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
-    selling = selling_to(settings, user.openid if user else None) and orderable(settings)
+    selling = selling_to(settings, user.openid if user else None, client) and orderable(settings)
     has_orders = (
         user is not None
         and session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1))
@@ -339,10 +384,9 @@ def remaining_fee(
     return -(-order.price * remaining_days(order, ticket, stamp, extra_days) // order.days)
 
 
-def staff_refund_problem(
-    session: Session, order: PayOrder, *, invoice_reversed: bool = False
-) -> str | None:
+def staff_refund_problem(session: Session, order: PayOrder) -> str | None:
     """负责人按规则发起退款（系统故障、停止服务，youju pay-refund）之前的检查；None 表示可以退。
+    已开过发票的照常退：退款不等冲红（D-074），退完再按退款金额开红字发票（invoice_issued 提醒）。
     调用方已按 用户 → 订单 的顺序加锁。"""
     if order.platform == "ios":
         return "苹果手机付款的订单只能由用户在 App Store 申请退款，是否退款由苹果公司决定"
@@ -352,10 +396,13 @@ def staff_refund_problem(
         return f"订单当前状态（{STATUS_LABELS[order.status]}）不能退款"
     if order.user_id is None:
         return "用户已注销，退款需要人工核对"
-    invoice = order_invoice(session, order, lock=True)
-    if invoice is not None and invoice.status == "issued" and not invoice_reversed:
-        return "这笔已开过发票：先按退款金额开红字发票，再加 --invoice-reversed 重新运行"
     return None
+
+
+def invoice_issued(session: Session, order: PayOrder) -> bool:
+    """这笔订单的发票是不是已经开了：退款后要按退款金额开红字发票（管理台开票页"要冲红"里列出）。"""
+    invoice = order_invoice(session, order, lock=True)
+    return invoice is not None and invoice.status == "issued"
 
 
 def begin_refund(
@@ -383,7 +430,8 @@ def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRe
 
 
 def void_invoice(session: Session, order: PayOrder, stamp: datetime) -> None:
-    """退款时还没开的发票作废；已开的留着，由创始人按退款冲红（不能自助退款，见 refund_reason）。"""
+    """退款时还没开的发票作废；已开的留着，退款后由创始人按退款金额开红字发票（管理台"要冲红"）。
+    已开过发票的不能自助退款（见 refund_reason），由负责人核实后先退款、再冲红（D-074）。"""
     invoice = order_invoice(session, order, lock=True)
     if invoice is not None and invoice.status == "pending":
         invoice.status, invoice.note, invoice.updated_at = "rejected", INVOICE_VOID_NOTE, stamp
@@ -393,7 +441,8 @@ def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
     if invoice is None:
         return None
     return {
-        "status": INVOICE_LABELS[invoice.status],
+        # 订单退款后已按退款金额开了红字发票的，写"已冲红"（D-074）
+        "status": "已冲红" if invoice.reversed_at is not None else INVOICE_LABELS[invoice.status],
         "titleType": invoice.title_type,
         "title": invoice.title,
         "taxId": invoice.tax_id,

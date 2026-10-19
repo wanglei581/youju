@@ -30,8 +30,13 @@ if ! flock -n 9; then
   [ "$1" = "--notify" ] && "$D/job.sh" notify
   exit 0
 fi
-# 抓取成功后才核对栏目：抓取没跑完或失败时核对，会把还没检查到的栏目误报成漏检
-run crawl && run check-sources
+# 抓取成功后才核对栏目：抓取没跑完或失败时核对，会把还没检查到的栏目误报成漏检。
+# 早上那一轮另外提醒今天正好连续 3 天没抓到的栏目（每个栏目只提醒这一次，晚上那轮不重复）
+if [ "$1" = "--notify" ]; then
+  run crawl && run check-sources --streaks
+else
+  run crawl && run check-sources
+fi
 # 每天 2 轮，每轮 600 份，每天补详情总量和原来 4 轮 × 300 份一样
 run fetch-details --limit 600 --workers 4
 # 转发归组（D-055）：补完详情（有正文才看得到引用的部里文号）后，把同一份部里通知的各地版本归组，
