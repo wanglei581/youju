@@ -125,7 +125,7 @@ Page({
     this.recentItems = [];
     this.setData({
       today: todayISO(), capsLoading: true, kinds: [], gate: '', gateText: '', interpretOpen: false, clauseOpen: false,
-      recent: [], records: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
+      recent: [], recentLoading: true, recentError: '', records: [], lastDoc: last ? Object.assign({}, last, { ai: null }) : null,
     });
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
@@ -148,7 +148,11 @@ Page({
   reset() {
     this.seq = (this.seq || 0) + 1;
     this.recentItems = [];
-    this.setData({ records: [], recent: [], lastDoc: null, kinds: [], gate: '', interpretOpen: false, clauseOpen: false, capsLoading: true });
+    // 页头、说明也收起，回到"还没问到"的样子：注销以后到重新确认之前不出现 AI 字样
+    this.setData({
+      ready: false, waiting: true, offline: false,
+      records: [], recent: [], recentLoading: true, recentError: '', lastDoc: null, kinds: [], gate: '', interpretOpen: false, clauseOpen: false, capsLoading: true,
+    });
   },
 
   leave() {
@@ -173,9 +177,9 @@ Page({
         gateText: gateTextOf(gate, caps),
         kinds,
         // 刚才看的那份、近 7 天那几份上的按钮：账号能用、今天还有次数、后台能处理、全站没满。
-        // 没同意协议（consent）时照样给：点了进解读页、对照页，先走同意（D-075 第四节）
-        interpretOpen: gate === 'consent' || open('interpret'),
-        clauseOpen: gate === 'consent' || open('clause'),
+        // 没同意协议（consent）时也给（点了进解读页、对照页，先走同意，D-075 第四节），但要后台现在能处理
+        interpretOpen: (gate === 'consent' && access.canOpen()) || open('interpret'),
+        clauseOpen: (gate === 'consent' && access.canOpen()) || open('clause'),
         disclosure: ai.enabled === true ? disclosureLine(ai.disclosure) : '',
       });
       this.showRecent();

@@ -988,3 +988,28 @@ test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白�
     assert.equal(/点“AI 解读”直接开始/.test(textOf(render('pages/ai/index.wxml', h.page.data))), mentions, JSON.stringify(caps.ai_advisor));
   }
 });
+
+test('Codex 第 6 轮：没同意协议、后台又暂时处理不了时不给按钮也不说"点 AI 解读"；注销后马上收起页头回到加载中；再次进来列表回到加载中、不留上次的错误', async () => {
+  const last = { id: '42', title: '刚才看的那份', issuer: '科技厅', date: '2026-10-16' };
+  const doc = { id: '1', title: '通知1', kind: '申报通知', ai: { interpret: true, clause: true, reason: null } };
+  const h = hubPage({ state: { visible: true, confirmed: true, available: false }, last, caps: OFF('consent'), search: () => Promise.resolve({ items: [doc] }) });
+  h.page.onShow(); await settle();
+  assert.equal(h.page.data.interpretOpen, false); assert.equal(h.page.data.clauseOpen, false);
+  let root = render('pages/ai/index.wxml', h.page.data);
+  assert.doesNotMatch(textOf(root), /点“AI 解读”直接开始/);
+  assert.equal(findAll(root, tapsTo('clauseLast')).length, 0);
+  // 注销：页头、说明马上收起
+  const g = hubPage(); g.page.onShow(); await settle();
+  assert.match(textOf(render('pages/ai/index.wxml', g.page.data)), /AI 生成 · 以原文为准/);
+  g.access.set({ visible: false, confirmed: false, available: false });
+  root = render('pages/ai/index.wxml', g.page.data);
+  assert.equal(g.page.data.ready, false); assert.doesNotMatch(textOf(root), /AI/);
+  // 再次进来、后台重新确认很慢（还没开始查列表）：近 7 天的列表先回到加载中，不留上次的错误、不写"没有通知"
+  const r = hubPage({ search: () => Promise.reject(new Error('网络')) });
+  r.page.onShow(); await settle();
+  assert.equal(r.page.data.recentError, '近 7 天的通知没有加载出来');
+  r.access.ensure = () => new Promise(() => {});
+  r.page.onHide(); r.page.onShow(); await settle();
+  assert.equal(r.page.data.recentLoading, true); assert.equal(r.page.data.recentError, '');
+  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', r.page.data)), /没有加载出来|近 7 天还没有能解读的申报通知/);
+});
