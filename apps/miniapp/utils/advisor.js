@@ -1,5 +1,6 @@
 // 共同任务的显示与 AI 独立授权；数据工具开关不能扩大 AI 权限。
 const config = require('./config.js');
+const { failedText } = require('./ai-reasons.js');
 
 const KINDS = { interpret: 'AI 解读', clause: '条款对照' };
 const DATA_KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
@@ -14,10 +15,11 @@ const INTERNAL_PREFIX = '内部测试：';
 const FAB_TEXT = 'AI 解读';
 // 任务列表（原"任务中心""我的任务""全部任务""最近任务"）统一叫这个，入口在"我的"页
 const RECORDS_TEXT = '我的记录';
-// 用不了时的提示。内测包对不在白名单的人只写"暂时没有可用工具"，不提 AI；
-// 正式版分三种：没同意协议（引导同意）、连不上服务器（给重试）、功能关着。
+// 用不了时的提示。分三种：没同意协议（引导同意）、连不上服务器（给重试）、功能关着。
+// 功能关着时内测包、正式版都只写"暂时没有可用工具"，不提 AI（D-075：AI 关着时任何页面没有 AI 字样；
+// 从旧链接打开解读页、对照页时直接回首页）。
 // 没同意通用协议时数据工具和 AI 一起不可用（capabilities 403），工具中心、任务中心共用这句，不写 AI。
-const OFF_TEXT = AI_INTERNAL ? '暂时没有可用工具' : 'AI 功能暂时不可用，请稍后再试';
+const OFF_TEXT = '暂时没有可用工具';
 const GATE_TEXT = {
   consent: '使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》。',
   // 同意过旧版本、协议更新后还没同意新版（服务端 403 说"已更新"）：卡片上直接说，不用点进去才知道（10/18 验收）
@@ -106,7 +108,16 @@ function taskView(task) {
     expiresText: task.expiresAt ? String(task.expiresAt).slice(0, 10) : '',
     // 失败、取消的已经退回占用的次数（服务端 release_usage）；卡片上写明，免得用户以为白用了一次（10/18 验收）
     refundNote: task.status === 'failed' || task.status === 'cancelled' ? '这次不算次数' : '',
+    // AI 任务失败按后台的错误代码写（D-075），和结果页一样；数据工具照旧用后台的文字
+    errorText: task.status === 'failed' && Object.prototype.hasOwnProperty.call(KINDS, task.kind) ? failedText(task, { refund: false }) : (task.error || ''),
   });
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload };
+// 今天还剩几次（AI 首页、工具中心、解读页、对照页共用）：后台给的是数才算（取整、不小于 0）；
+// 没给、给的是 null、空串、true/false 都当不知道（null），不当 0，免得误写"用完了"、拦下还能用的（第 25 轮）
+function remainingOf(ai, kind) {
+  const value = ai && ai.remaining ? ai.remaining[kind] : undefined;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
+
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload, remainingOf };

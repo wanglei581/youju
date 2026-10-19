@@ -7,7 +7,7 @@
   padding-bottom: env(safe-area-inset-bottom);
   box-sizing: border-box;
   display: grid;
-  /* 列数随项数（3 或 4 项）写在 index.wxml 的 style 里 */
+  /* 列数随项数（3 到 5 项）写在 index.wxml 的 style 里 */
   background: #FFFFFF;
   border-top: 2rpx solid #EEF0F3;
   z-index: 100;
@@ -22,3 +22,25 @@
 }
 .item--on { color: #2A5CE0; font-weight: 600; }
 .label { font-size: 22rpx; line-height: 1.2; }
+/* AI 那一格的四角星：外层是当前文字颜色的星，里层挖空（未选中）；选中时不挖空 */
+/* 外框 44rpx（和 48rpx 的字体图标看起来一样大），里层 22rpx：线宽约 3rpx，和线性图标接近 */
+.spark {
+  position: relative;
+  width: 44rpx;
+  height: 44rpx;
+  margin: 2rpx;
+}
+.spark, .spark-in {
+  -webkit-clip-path: polygon(50% 4%, 61% 39%, 96% 50%, 61% 61%, 50% 96%, 39% 61%, 4% 50%, 39% 39%);
+  clip-path: polygon(50% 4%, 61% 39%, 96% 50%, 61% 61%, 50% 96%, 39% 61%, 4% 50%, 39% 39%);
+}
+.spark { background: currentColor; }
+.spark-in {
+  position: absolute;
+  left: 11rpx;
+  top: 11rpx;
+  width: 22rpx;
+  height: 22rpx;
+  background: #FFFFFF;
+}
+.spark--on .spark-in { display: none; }
