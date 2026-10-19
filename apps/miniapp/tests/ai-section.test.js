@@ -1235,3 +1235,43 @@ test('Codex 第 9 轮：AI 首页用真的 ai-access——恢复以后离开再�
   assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true);
   assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /今天还剩 5 次/);
 });
+
+test('Codex 第 10 轮：列表行按钮、详情那一行提示在页面回到前台时再问一次（用真的 ai-access）：后台恢复了、过了 15 秒，按钮和提示出来', async () => {
+  for (const [file, props, deps] of [
+    ['components/ai-button/index.js', { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } }, { '../../utils/tool-context.js': context }],
+    ['components/ai-hint/index.js', { docId: '42', docTitle: '通知', issuer: '科技厅', date: '2026-10-16', ai: { interpret: true, clause: true, reason: null } }, {}],
+  ]) {
+    let up = false;
+    const real = accessWith({ mode: () => Promise.resolve({ open: true, available: up }) });
+    const view = load(file, { '../../utils/ai-access.js': real.access, ...deps }, { wx: { navigateTo() {} } });
+    Object.assign(view.properties, props);
+    view.triggerEvent = () => {};
+    view.lifetimes.attached.call(view); await settle();
+    assert.equal(view.data.shown, false, `${file} 暂时不可用时不显示`); assert.equal(real.calls.mode, 1);
+    // 后台恢复了；页面不在前台时没人问
+    up = true; real.clock.now += real.access.RETRY_AFTER;
+    assert.equal(typeof view.pageLifetimes.show, 'function', `${file} 有页面显示时的处理`);
+    view.pageLifetimes.show.call(view); await settle();
+    assert.equal(real.calls.mode, 2, `${file} 回到前台再问`); assert.equal(view.data.shown, true, `${file} 恢复后显示`);
+    // 能处理时回到前台：10 分钟内不再问
+    view.pageLifetimes.show.call(view); await settle(); assert.equal(real.calls.mode, 2);
+    view.lifetimes.detached.call(view);
+  }
+});
+
+test('Codex 第 10 轮：对所有人开放、还没同意协议时，"我的 AI 记录"接口拒绝（401、403、404）不算没加载出来：不显示这张卡、不给重试；连不上照旧写没加载出来', async () => {
+  for (const status of [401, 403, 404]) {
+    const h = hubPage({ caps: OFF('consent'), tasks: () => Promise.reject(Object.assign(new Error('请先同意'), { status })) });
+    h.page.onShow(); await settle();
+    assert.equal(h.page.data.gate, 'consent'); assert.equal(h.page.data.recordsError, '', String(status));
+    const out = textOf(render('pages/ai/index.wxml', h.page.data));
+    assert.doesNotMatch(out, /我的 AI 记录|没有加载出来/, String(status));
+    assert.match(out, /阅读并同意/);
+  }
+  const n = hubPage({ caps: OFF('consent'), tasks: () => Promise.reject(Object.assign(new Error('网络不太好'), { retryable: true })) });
+  n.page.onShow(); await settle();
+  assert.equal(n.page.data.recordsError, '我的 AI 记录没有加载出来');
+  const s = hubPage({ tasks: () => Promise.reject(Object.assign(new Error('服务出错'), { status: 500 })) });
+  s.page.onShow(); await settle();
+  assert.equal(s.page.data.recordsError, '我的 AI 记录没有加载出来', '服务出错也写没加载出来');
+});

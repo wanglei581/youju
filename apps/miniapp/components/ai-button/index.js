@@ -30,6 +30,11 @@ Component({
       if (this.unsubscribe) this.unsubscribe();
     },
   },
+  // 页面回到前台（从别的页面返回、切回来）：再问一次 AI 板块的状态，后台恢复了按钮能出来；
+  // 多久真问一次由 utils/ai-access.js 的 ensure 管（Codex 小程序第 10 轮）
+  pageLifetimes: {
+    show() { access.ensure(); },
+  },
   methods: {
     sync() {
       if (!this.alive) return;

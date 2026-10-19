@@ -29,6 +29,10 @@ Component({
       if (this.unsubscribe) this.unsubscribe();
     },
   },
+  // 页面回到前台时再问一次 AI 板块的状态（同 ai-button；多久真问一次由 ensure 管）
+  pageLifetimes: {
+    show() { access.ensure(); },
+  },
   methods: {
     sync() {
       if (!this.alive) return;

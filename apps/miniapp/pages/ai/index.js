@@ -201,9 +201,12 @@ Page({
       if (seq !== this.seq) return;
       const items = ((res && res.items) || []).filter((task) => task.kind === 'interpret' || task.kind === 'clause');
       this.setData({ records: items.slice(0, RECORDS).map(recordRow) });
-    }).catch(() => {
+    }).catch((err) => {
+      if (seq !== this.seq) return;
+      // 还没同意协议、没开着（401、403、404）：本来就没有能看的记录，不写"没加载出来"、不给重试（同"我的记录"页，第 10 轮）
+      if (err && [401, 403, 404].includes(err.status)) { this.setData({ records: [] }); return; }
       // 没加载出来不当成没有记录：卡片照样留着，写明没加载出来、给重试，"全部"照样能点进去（Codex 小程序第 7 轮）
-      if (seq === this.seq) this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
+      this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
     });
   },
 
