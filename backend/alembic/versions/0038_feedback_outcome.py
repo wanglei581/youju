@@ -4,18 +4,18 @@
 "我的数据"里只看得到"已处理"，看不到怎么处理的。旧记录两列都是空的，小程序照旧只写"已处理"。
 api 账号对 feedback 本来就有 SELECT、INSERT、UPDATE、DELETE，不用改 mysql_accounts.sql。
 
-编号说明：0033（#290）、0034（#297）、0035（#296）、0036（#304）、0037（第 4 批 access_daily）已被别的
-PR 占用，都还没合并；这里先接在 main 的 0032 后面，谁后合并谁把 down_revision 接到前一个上。
+编号说明：0037（#308 运维日报 access_daily）已合并，这里接在它后面。0033（#290）、0034（#297）、
+0035（#296）、0036（#304）已被别的 PR 占用、还没合并，谁后合并谁把 down_revision 接到当时最新的迁移上。
 
 Revision ID: 0038
-Revises: 0032
+Revises: 0037
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0038"
-down_revision = "0032"
+down_revision = "0037"
 branch_labels = None
 depends_on = None
 
