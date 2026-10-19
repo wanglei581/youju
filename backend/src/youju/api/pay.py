@@ -30,7 +30,7 @@ def require_enabled(request: Request) -> None:
         openid = request_openid(request)
     except HTTPException:
         openid = None
-    if not payments.selling_to(get_settings(), openid):
+    if not payments.selling_to(get_settings(), openid, payments.client_of(request.headers)):
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 

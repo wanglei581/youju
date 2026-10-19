@@ -1036,7 +1036,7 @@ class PayOrder(Base):
 
 
 class InvoiceRequest(Base):
-    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人每月统一开具后在管理台标记。
+    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人当月开出后在管理台标记。
     属于订单的会计凭证：注销时只断开用户，不删除；订单按保存期清理时一并删除。"""
 
     __tablename__ = "invoice_requests"
@@ -1060,6 +1060,8 @@ class InvoiceRequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     note: Mapped[str | None] = mapped_column(String(300))
     issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 已开的发票、订单退款后，负责人按退款金额开了红字发票的时间（迁移 0036；退款不等冲红，D-074）
+    reversed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 

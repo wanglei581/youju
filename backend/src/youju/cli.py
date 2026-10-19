@@ -1049,7 +1049,7 @@ def _refund_one(session, order_id: int, args, stamp, client) -> str:
         session.rollback()
         print(f"订单 #{order_id}：没有找到")
         return "missing"
-    problem = payments.staff_refund_problem(session, order, invoice_reversed=args.invoice_reversed)
+    problem = payments.staff_refund_problem(session, order)
     ticket = payments.order_pass(session, order, lock=True)
     extra = args.extra_days or 0
     fee = order.price if args.full else payments.remaining_fee(order, ticket, stamp, extra)
@@ -1081,6 +1081,10 @@ def _refund_one(session, order_id: int, args, stamp, client) -> str:
         + "；"
         f"收回这一笔的使用期{'和随它送的续买 ' + '、'.join(gifts) if gifts else ''}"
     )
+    # 退款不等冲红（D-074）：已开过发票的照常退，退完再按退款金额开红字发票
+    reverse = payments.invoice_issued(session, order)
+    if reverse:
+        print("  这笔已开过发票：退款后请按退款金额开红字发票（管理台开票页选“要冲红”能看到）")
     if args.dry_run:
         session.rollback()
         return "refunded"
@@ -1107,9 +1111,10 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     from youju.models import PayOrder, WorkbenchPass
     from youju.xpay import XPayClient
 
-    if args.all_active and (args.full or args.invoice_reversed or args.extra_days):
-        # 停止服务按剩余天数退；已开发票的要一笔一笔先冲红，再用 --order-id 单独退
-        print("--all-active 只能和 --remaining 一起用，不能加 --invoice-reversed、--extra-days")
+    if args.all_active and (args.full or args.extra_days):
+        # 停止服务按剩余天数退（已开过发票的照样退，退完再冲红）；
+        # 另算天数的要一笔一笔用 --order-id 退
+        print("--all-active 只能和 --remaining 一起用，不能加 --extra-days")
         return 2
     if args.full and args.extra_days:
         print("--extra-days 只能和 --remaining 一起用（全额退不用另算天数）")
@@ -1569,11 +1574,6 @@ def main(argv: list[str] | None = None) -> int:
         metavar="0-90",
         help="此前因系统故障不能用、又没有延长补上的天数，核实后加进去一起退"
         "（只对 --order-id --remaining 有用）",
-    )
-    p.add_argument(
-        "--invoice-reversed",
-        action="store_true",
-        help="这笔已开的发票已按退款金额开了红字发票（只对 --order-id 有用）",
     )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
