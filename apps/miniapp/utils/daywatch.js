@@ -20,5 +20,4 @@ function stopDay(page) {
   }
 }
 
-// 今天的日期（页面记"哪天被拦下的"用；测试里可以换成替身）
-module.exports = { watchDay, stopDay, today: todayISO };
+module.exports = { watchDay, stopDay };

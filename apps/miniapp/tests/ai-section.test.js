@@ -1786,7 +1786,7 @@ test('Codex 第 18 轮：停在 AI 首页跨过零点，今天还剩几次重新
   }
 });
 
-test('Codex 第 19 轮：解读页、对照页次数用完或全站满了以后离开（锁屏），第二天回来先写"可以重新开始了"，不问也不提交，点了才开始；当天回来、暂时不可用照常', async () => {
+test('Codex 第 19、21 轮：解读页、对照页次数用完或全站满了以后离开（锁屏），第二天回来先写"现在可以重新开始了"，不开始也不提交，点了才开始；当天回来、暂时不可用照常', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full'], [{ available: false }, 'paused']]) {
       let blocked = true; let capsCalls = 0; let created = 0;
@@ -1815,17 +1815,17 @@ test('Codex 第 19 轮：解读页、对照页次数用完或全站满了以后�
           assert.equal(capsCalls, 3, `${page} 暂时不可用照常再问`); assert.equal(p.data.dayTurned, false);
           continue;
         }
-        assert.equal(capsCalls, 2, `${page} ${gate} 第二天回来先不问`); assert.equal(created, 0, '不提交');
-        assert.equal(p.data.dayTurned, true);
+        assert.equal(capsCalls, 3, `${page} ${gate} 第二天回来照常问`); assert.equal(created, 0, '不提交');
+        assert.equal(p.data.dayTurned, true); assert.equal(p.data.aiEnabled, false, '不开始');
         const root = render(`pages/${page}/index.wxml`, p.data);
-        assert.match(textOf(root), /已经过了 0 点，可以重新开始了。/);
+        assert.match(textOf(root), /现在可以重新开始了。/);
         assert.equal(findAll(root, (n) => n.tag === 'button' && textOf(n).trim() === '重新开始').length, 1);
-        // 点了才问、才开始
+        // 点了才开始
         p.reload(); await settle();
-        assert.equal(capsCalls, 3); assert.equal(p.data.aiEnabled, true, `${page} ${gate} 点了能用`);
+        assert.equal(capsCalls, 4); assert.equal(p.data.aiEnabled, true, `${page} ${gate} 点了能用`);
         // 再离开回来：不再拦（已经点过了）
         p.onHide(); p.onShow(); await settle();
-        assert.equal(p.data.dayTurned, false); assert.equal(capsCalls, 4);
+        assert.equal(p.data.dayTurned, false); assert.equal(capsCalls, 5); assert.equal(p.data.aiEnabled, true);
       } finally {
         p.onHide();
       }
@@ -1853,7 +1853,7 @@ test('Codex 第 19 轮：AI 首页"我的 AI 记录"从进来那一刻算最多�
   assert.equal(h.timers.size, 0, '到 15 分钟就停，不因为跨零点重新算');
 });
 
-test('Codex 第 20 轮：当天被拦下、23:59 再进来、过了 0 点能力接口才回话：先写"可以重新开始了"不开始；当天又能用了就不再记，第二天回来照常', async () => {
+test('Codex 第 20、21 轮：被拦下以后，过了 0 点才回话、当天额度调高了，都先写"现在可以重新开始了"不开始；点了以后照常，第二天回来也照常', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0; let created = 0; let hold = null;
     const d = dayStub();
@@ -1888,7 +1888,7 @@ test('Codex 第 20 轮：当天被拦下、23:59 再进来、过了 0 点能力�
       p.onHide();
     }
   }
-  // 当天又能用了（比如额度调高）：不再记，第二天回来照常
+  // 当天又能用了（比如额度调高）：也先写可以重新开始了；点了以后照常，第二天回来照常
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0;
     const d = dayStub();
@@ -1907,7 +1907,9 @@ test('Codex 第 20 轮：当天被拦下、23:59 再进来、过了 0 点能力�
     try {
       assert.equal(p.data.gate, 'used');
       blocked = false; p.onHide(); p.onShow(); await settle();
-      assert.equal(p.data.aiEnabled, true, `${page} 当天又能用了`);
+      assert.equal(p.data.dayTurned, true, `${page} 当天又能用了也先写可以重新开始了`); assert.equal(p.data.aiEnabled, false);
+      assert.match(textOf(render(`pages/${page}/index.wxml`, p.data)), /现在可以重新开始了。/);
+      p.reload(); await settle(); assert.equal(p.data.aiEnabled, true, `${page} 点了能用`);
       p.onHide(); d.nextDay(); const before = capsCalls;
       p.onShow(); await settle();
       assert.equal(p.data.dayTurned, false, `${page} 第二天回来不被旧记录挡住`); assert.equal(capsCalls, before + 1); assert.equal(p.data.aiEnabled, true);
@@ -1915,4 +1917,53 @@ test('Codex 第 20 轮：当天被拦下、23:59 再进来、过了 0 点能力�
       p.onHide();
     }
   }
+});
+
+test('Codex 第 21 轮：0 点以前的"用完了""满了"答复 0 点以后才到，之后再进来能用了也先写"可以重新开始了"；跨零点重新开始、AI 首页跨零点都不用在途的旧答复', async () => {
+  for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
+    for (const extra of [{ remaining: { interpret: 0, clause: 0 } }, { siteFull: true }]) {
+      let blocked = true; let created = 0; let forgot = 0; let hold = null;
+      const d = dayStub();
+      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const deps = {
+        '../../utils/api.js': {
+          advisorCapabilities: () => {
+            // 答复的内容在发出时就定了（0 点以前生成），可能晚到
+            const value = blocked ? ON(extra) : ON();
+            if (hold) { const wait = hold; hold = null; return wait.then(() => value); }
+            return Promise.resolve(value);
+          },
+          forgetCapabilities: () => { forgot += 1; },
+          createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 9, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'queued' }),
+        },
+        '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
+        '../../utils/daywatch.js': d,
+      };
+      if (kind === 'clause') Object.assign(deps, { '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': format });
+      const p = load(`pages/${page}/index.js`, deps, { wx: { setNavigationBarTitle() {}, navigateTo() {}, getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) } });
+      // 23:59 打开，答复（用完了）0 点以后才到
+      let release; hold = new Promise((done) => { release = done; });
+      p.onLoad({ docId: '42', title: '通知' }); p.onShow(); await settle();
+      try {
+        d.nextDay(); release(); await settle();
+        assert.equal(p.data.aiEnabled, false);
+        // 当天再进来，已经能用了：先写可以重新开始了，不自己开始
+        blocked = false; p.onHide(); p.onShow(); await settle();
+        assert.equal(p.data.dayTurned, true, `${page} 晚到的旧答复以后也先写可以重新开始了`); assert.equal(created, 0, '不提交');
+        // 点"重新开始"：在途的、缓存的能力答复都不用
+        p.reload(); await settle();
+        assert.equal(forgot, 1, `${page} 重新开始时不用旧答复`); assert.equal(p.data.aiEnabled, true);
+      } finally {
+        p.onHide();
+      }
+    }
+  }
+  // AI 首页跨零点：先丢掉能力接口在途的、缓存的答复，再重新问
+  let forgot = 0;
+  const day = dayStub();
+  const h = hubPage({ daywatch: day, extraApi: { forgetCapabilities: () => { forgot += 1; } } });
+  h.page.onShow(); await settle();
+  const asked = h.calls.caps;
+  day.turn(); await settle();
+  assert.equal(forgot, 1, 'AI 首页跨零点不用旧答复'); assert.equal(h.calls.caps, asked + 1);
 });

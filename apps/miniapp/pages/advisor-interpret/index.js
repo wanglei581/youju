@@ -4,9 +4,10 @@ const { createSession } = require('../../utils/ai-interpret.js');
 const { internalNotice, allowedKinds, aiTitle, gateState, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const access = require('../../utils/ai-access.js');
-const { watchDay, stopDay, today } = require('../../utils/daywatch.js');
+const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 const DAY_TURNED = '已经过了 0 点，可以重新开始了。';
+const CAN_RESTART = '现在可以重新开始了。';
 
 Page({
   data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
@@ -32,11 +33,6 @@ Page({
     watchDay(this, () => {
       if (this.visible && (this.data.gate === 'used' || this.data.gate === 'full')) this.setData({ dayTurned: true, gateText: DAY_TURNED });
     });
-    // 用完、满了以后离开（锁屏、切走），第二天回来：先写"可以重新开始了"，不问也不提交，点了才开始（第 19 轮）
-    if (this.blockedDay && this.blockedDay !== today()) {
-      this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: DAY_TURNED });
-      return;
-    }
     this.setData({ loading: true, aiEnabled: false });
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -51,8 +47,9 @@ Page({
       const blocked = aiEnabled && !this.data.viewing && (ai.available === false || ai.siteFull === true || used);
       if (blocked) {
         const gate = ai.available === false ? 'paused' : ai.siteFull === true ? 'full' : 'used';
-        // 记下哪天被拦下的：第二天回来先写"可以重新开始了"（暂时不可用和日期无关，不记）
-        this.blockedDay = gate === 'paused' ? null : today();
+        // 这一页被"今天次数用完""全站满了"拦下过：以后不管什么时候、因为什么又能用了（过了 0 点、额度调高、
+        // 晚到的回话），都先写"可以重新开始了"，点了才开始，不自己提交、用掉次数（第 19–21 轮）。暂时不可用和次数无关，不记
+        if (gate !== 'paused') this.wasBlocked = true;
         this.setData({ loading: false, aiEnabled: false, gate,
           gateText: {
             paused: 'AI 暂时不可用，请稍后再试。',
@@ -61,12 +58,7 @@ Page({
           }[gate] });
         return;
       }
-      // 这次不拦了：被拦下的那天已经过去（比如 23:59 进来、过了 0 点才回话）就先写"可以重新开始了"，点了才开始；
-      // 还是同一天（比如额度调高了）就不再记，第二天回来不会被旧记录挡住（第 20 轮）
-      if (aiEnabled && this.blockedDay) {
-        if (this.blockedDay !== today()) { this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: DAY_TURNED }); return; }
-        this.blockedDay = null;
-      }
+      if (aiEnabled && this.wasBlocked) { this.setData({ loading: false, aiEnabled: false, dayTurned: true, gateText: CAN_RESTART }); return; }
       const gate = aiEnabled ? '' : gateState(res);
       // AI 对这个人没开着（关闭、不在白名单；旧链接、旧记录打开）：正式版回首页，不留一页"不可用"（D-075）；
       // 内测包照旧只写"暂时没有可用工具"
@@ -90,7 +82,11 @@ Page({
   // 连不上、暂时不可用：重试就重新问能力接口（停在这一页时后台恢复了，点一下就能用，第 11 轮）
   reload() {
     if (this.data.gate !== 'offline' && this.data.gate !== 'paused' && !this.data.dayTurned) return;
-    this.blockedDay = null;
+    // 点了"重新开始"：以后照常；能力接口在途的、缓存的答复都不用（可能是 0 点以前问的，第 21 轮）
+    if (this.data.dayTurned) {
+      this.wasBlocked = false;
+      if (api.forgetCapabilities) api.forgetCapabilities();
+    }
     this.onShow();
   },
   // 今天的次数用完了：去看以前的结果
