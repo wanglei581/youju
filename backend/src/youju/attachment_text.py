@@ -130,17 +130,28 @@ _RUN = re.compile(
 _GROUP = re.compile(r"\d+[Xx]?")
 # 跟着这些字的一组数字是日期、金额，不算进前面的号码（"账号：1234567890 2025年11月5日前"）
 _UNITS = "年月日元万亿号个次%时分秒"
-# 号码前面的标签：紧挨着，中间只隔冒号、空格、"为""是"；账号标签和号码中间还可以隔着开户行
-# （"开户行及账号：中国工商银行杭州分行 1202…"）。有标签的怎么分组都认
+# 号码前面的标签：紧挨着，中间只隔冒号、空格、"为""是"。账号标签后面可以带括号说明（"账号（工商
+# 银行杭州分行）："），和号码中间还可以隔着开户行（"开户行及账号：中国工商银行杭州分行 1202…"）；
+# 只写"开户行""开户银行"、后面是行名再是号码的也算账号标签。有标签的怎么分组都认
 _ACCOUNT_WORDS = (
     "银行卡号", "银行账号", "银行帐号", "开户账号", "开户帐号", "账户号码", "帐户号码", "账户号",
     "帐户号", "账号码", "帐号码", "卡号码", "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
 )  # fmt: skip
 _ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
 _LABEL_END = r"[\s:：]*(?:[为是][\s:：]*)?"
-_BANK = r"(?:[\u4e00-\u9fff（）()]{2,30}?(?:银行|支行|分行|营业部|信用社|储蓄所)[\s,，]*)?"
+# 开户行的名字：2–30 个字（可以有英文字母，如"ICBC杭州分行"），以银行、支行、农商行、信用联社……
+# 结尾，后面可以带括号（"（营业部）"）、冒号、"为/是"（"……杭州分行：1202…"）
+_BANK = (
+    r"[\u4e00-\u9fffA-Za-z（）()]{2,30}?"
+    r"(?:银行|支行|分行|营业部|信用社|合作社|农商行|农信社|联社|储蓄所)"
+    r"(?:[(（][^()（）]{1,12}[)）])?[\s,，:：]*(?:[为是][\s:：]*)?"
+)
+_NOTE = r"(?:\s*[(（][^()（）]{1,20}[)）])?"  # 标签后面括号里的说明
+_OPEN_BANK = r"开\s*户\s*(?:银\s*)?行"
 _LABELS = {
-    "account": re.compile(_ACCOUNT_LABEL + _LABEL_END + _BANK + "$"),
+    "account": re.compile(
+        f"(?:{_ACCOUNT_LABEL}{_NOTE}{_LABEL_END}(?:{_BANK})?|{_OPEN_BANK}{_LABEL_END}{_BANK})$"
+    ),
     "phone": re.compile(
         r"(?:手\s*机(?:\s*号\s*码?)?|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[\s:：.]*"
         r"(?:[为是][\s:：]*)?$",
@@ -152,7 +163,7 @@ _BEFORE = 48  # 往前看多少个字找标签、金额词（标签后面隔着�
 # 表格里当"账号"标签的格：整格是"……账号""……卡号""……账户号（码）""……账户"（前面最多 8 个字，
 # 如"开户银行及账号""收款单位开户账号""银行账户"，字间可以有空格），后面可以带"/卡号"、括号说明
 # （"（基本户）""（必填）"）、星号、冒号。"账户名称""账户类型""各单位银行账户信息表"这类后面还有
-# 别的字的不算，"基本账户""零余额账户"这类账户类型的值也不算
+# 别的字的不算，"基本账户""零余额账户（人民币）"这类账户类型的值也不算
 _ACCOUNT_CORE = r"(?:[账帐]\s*(?:户\s*)?号(?:\s*码)?|卡\s*号(?:\s*码)?|[账帐]\s*户)"
 _ACCOUNT_CELL = re.compile(
     r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,8}"
@@ -164,7 +175,7 @@ _ACCOUNT_CELL = re.compile(
 _ACCOUNT_TYPE = re.compile(
     "(?:"
     + "|".join(r"\s*".join(w) for w in ("基本", "一般", "专用", "临时", "零余额"))
-    + r")\s*[账帐]\s*户[\s*＊:：]*$"
+    + r")\s*[账帐]\s*户(?:\s*[(（][^()（）]{1,12}[)）])?[\s*＊:：]*$"
 )
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
 # 卡号，或者序号（1–3 位）、日期（"2025 10 10""20251010"）、座机号码（"0571 87654321"），才遮
@@ -260,13 +271,25 @@ def _labeled_label(values: list[str], label: str) -> str | None:
     return "[银行账号已脱敏]" if 10 <= len(digits) <= 30 else None
 
 
+def _date_at(values: list[str], j: int) -> bool:
+    """第 j 组起是一个日期（"2025 10 10""20251010"）。"""
+    if len(values[j]) == 8 and values[j].isdigit() and _DATE.fullmatch(values[j]):
+        return True
+    three = values[j : j + 3]
+    return len(three) == 3 and all(v.isdigit() for v in three) and _ymd(*three)
+
+
 def _labeled(
     plain: str, groups: list[tuple[int, int]], values: list[str], label: str, start: int
 ) -> list[tuple[int, str]]:
     """写了标签的：从第 start 组起到第几组能认成号码（_labeled_label），[(到第几组前, 遮成什么)]，
-    从短到长。后面紧跟"年、月、元"等的一组不算进去（"账号：1234567890 2025年11月5日前"）。"""
+    从短到长。不往后接的：后面紧跟"年、月、元"等的一组（"账号：1234567890 2025年11月5日前"）、
+    日期（"账号：1202… 2025-10-10"）；第一组连写已经 12 位以上的，后面的组都不接
+    （"1202… 1500"）。"""
     out = []
     for j in range(start, len(groups)):
+        if j > start and (len(values[start]) >= 12 or _date_at(values, j)):
+            break
         if sum(len(v) for v in values[start : j + 1]) > 30:
             break
         after = plain[groups[j][1] : groups[j][1] + 3].lstrip(" ")[:1]
@@ -282,11 +305,17 @@ def _split(
     plain: str, groups: list[tuple[int, int]], values: list[str], label: str | None, amount: bool
 ) -> list[tuple[int, int, str]]:
     """把一整串分成几段：号码（写了标签的按标签认，_labeled；没写的 _plain_label）、序号日期座机
-    （_filler）。能整个分完的，取遮住的数字最多、段数最少的分法。分不完的：没写标签的整串不遮；
-    写了标签的从左往右，能按标签认成号码的取最长一段，认不出的组跳过（账号列一格写了两个账号，
-    中间夹着"2025"这样认不出的组也照样遮）。返回 [(第几组起, 到第几组前, 遮成什么)]。"""
+    （_filler）。手机、身份证标签只管第一段，账号标签每一段都管（账号列一格写了两个账号）。能整个
+    分完的，取遮住的数字最多、段数最少的分法。分不完的：没写标签的整串不遮；写了标签的从左往右，
+    能按标签认成号码的取最长一段，认不出的组跳过（"1202… 2025年起"）。
+    返回 [(第几组起, 到第几组前, 遮成什么)]。"""
     n = len(values)
-    labeled = [_labeled(plain, groups, values, label, i) if label else [] for i in range(n)]
+    labeled = [
+        _labeled(plain, groups, values, label, i)
+        if label and (i == 0 or label == "account")
+        else []
+        for i in range(n)
+    ]
     # best[i]：从第 i 组到最后的最好分法 (遮住几个数字, -段数, 要遮的段)
     best: list[tuple[int, int, list] | None] = [None] * (n + 1)
     best[n] = (0, 0, [])

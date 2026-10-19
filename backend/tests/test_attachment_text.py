@@ -1093,6 +1093,7 @@ def test_mask_label_wording_bank_names_decimals_and_account_cells() -> None:
     for label in ("银 行 账 号", "收 款 账 户", "账户号码", "银行卡号码"):
         assert at._account_cell(label), label
     assert not at._account_cell("基 本 账 户")
+    assert not at._account_cell("基本账户（人民币）")
     # 账号列：一格写了两个账号都遮；中间夹着认不出的组也遮；8 位连写的日期区间不遮
     builder = at._Builder()
     builder.table(
@@ -1108,6 +1109,40 @@ def test_mask_label_wording_bank_names_decimals_and_account_cells() -> None:
         "乙 | [银行账号已脱敏] 2025年起 | 无",
         "丙 | 20180520-20261009 | 无",
     ]
+
+
+def test_mask_bank_names_and_labels_do_not_swallow_neighbours() -> None:
+    account = "1202021309001234568"
+    # 开户行：农商行、信用联社、合作社、带英文字母、结尾带括号；"账号（开户行）："；只写"开户行："
+    for raw in (
+        f"开户行及账号：杭州联合农商行 {account}",
+        f"账号：某某县农村信用合作社 {account}",
+        f"账号：某某县信用联社 {account}",
+        f"账号：ICBC杭州分行 {account}",
+        f"账号：中国工商银行杭州分行（营业部） {account}",
+        f"账号（工商银行杭州分行）：{account}",
+        f"开户行：中国工商银行杭州分行 {account}",
+        f"开户行及账号：中国工商银行杭州分行：{account}",  # 行名后面跟冒号、"为"
+        f"账号（工商银行杭州分行）为 {account}",
+    ):
+        assert at.mask(raw) == raw.replace(account, "[银行账号已脱敏]"), raw
+    # 没写"账号""开户行"、只有行名的不遮（设计分歧，写进 PR 请创始人定）
+    assert at.mask(f"中国工商银行杭州分行 {account}") == f"中国工商银行杭州分行 {account}"
+    # 写了标签的不把后面挨着的日期、金额一起遮：手机、身份证标签只管第一段；账号第一组连写
+    # 12 位以上的不往后接，也不接日期
+    for raw, masked in {
+        f"账号：{account} 2025-10-10": "账号：[银行账号已脱敏] 2025-10-10",
+        "账号：3305 0161 6135 0000 0123 2025-10-10": "账号：[银行账号已脱敏] 2025-10-10",
+        "联系电话：0571-87654321 1350 820 4500": "联系电话：[电话已脱敏] 1350 820 4500",
+        "手机：138 1234 5678 139 8765 4321": "手机：[手机号已脱敏] [手机号已脱敏]",
+    }.items():
+        assert at.mask(raw) == masked, raw
+    for raw, masked in {
+        f"{account}\n2018-05-20": "[银行账号已脱敏]\n2018-05-20",
+        f"{account} 1500 3000": "[银行账号已脱敏] 1500 3000",
+        "3305 0161 6135 0000 0123": "[银行账号已脱敏]",  # 四位一组的照样接起来
+    }.items():
+        assert at.mask(raw, account=True) == masked, raw
 
 
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
