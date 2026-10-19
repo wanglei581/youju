@@ -8,29 +8,37 @@ AI 从待核对的通知里挑几份建议先核对。
 - 群机器人一条消息有字节上限：放不下时先少列 AI 建议，数字部分不截。
 """
 
+import logging
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
 from youju.ai.usage import BEIJING, FREE_QUOTA, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
-from youju.dedup import canonical_ids, visible_documents
+from youju.dedup import canonical_ids, groups_for, visible_documents
 from youju.models import (
+    AccessDaily,
+    AdvisorTask,
+    AttachmentCopy,
     Document,
     DocumentDeadline,
     DocumentDetail,
     Follow,
+    ListEntry,
     Source,
     Subscription,
     User,
 )
 from youju.repost import grouped_documents
 from youju.source_health import check_sources, failing_sources
+
+log = logging.getLogger("youju.digest")
 
 # AI 挑选时最多给它看多少份待核对通知、挑几份
 _PICK_FROM = 30
@@ -71,6 +79,24 @@ class Digest:
     reminders_sent: int = 0
     reminders_failed: int = 0
     usage: UsageSummary | None = None
+    # 下面三项是新加的统计，各自单独查：哪一项出错只把那一项写成"取不到"（False），
+    # 不让整条日报发不出去
+    # 接口（M3）：昨天（北京时间）各服务的小程序接口汇总：（服务，请求数，5xx，3 秒及以上）
+    access: tuple[tuple[str, int, int, int], ...] = ()
+    access_ok: bool = True
+    # 数据质量（D6）：近 30 天发布、能公开的申报通知和名单
+    notices_30: int = 0
+    notices_with_body: int = 0
+    notices_with_candidates: int = 0
+    lists_30: int = 0
+    lists_parsed: int = 0
+    quality_ok: bool = True
+    # 用量（M5）：数据库大小取不到时是 None
+    db_bytes: int | None = None
+    attachment_copies: int = 0
+    attachment_bytes: int = 0
+    result_files: int = 0
+    usage_ok: bool = True
 
 
 @dataclass
@@ -197,7 +223,152 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
     digest.reminders_sent, digest.reminders_failed = sent["sent"], sent["failed"]
 
     digest.usage = usage_summary(session, today - timedelta(days=1))
+    _quality_and_usage(session, digest, today)
     return digest
+
+
+def _quality_and_usage(session: Session, digest: Digest, today: date) -> None:
+    """接口（昨天）、数据质量（近 30 天发布）、用量：都是查库算的总数，不含任何用户信息。
+    每一项放在一个保存点里查：出错只回滚这一项、标成取不到，前面算好的数和后面几项照常。"""
+    for step, flag in ((_access, "access_ok"), (_quality, "quality_ok"), (_usage, "usage_ok")):
+        try:
+            with session.begin_nested():
+                step(session, digest, today)
+        except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
+            log.warning("日报的%s统计出错：%s", flag, type(exc).__name__)
+            setattr(digest, flag, False)
+
+
+def _access(session: Session, digest: Digest, today: date) -> None:
+    digest.access = tuple(
+        (service, requests, errors, slow)
+        for service, requests, errors, slow in session.execute(
+            select(AccessDaily.service, AccessDaily.requests, AccessDaily.errors, AccessDaily.slow)
+            .where(AccessDaily.day == today - timedelta(days=1))
+            .order_by(AccessDaily.service)
+        )
+    )
+
+
+def _quality(session: Session, digest: Digest, today: date) -> None:
+    from youju.api import v1
+    from youju.takedown import available_condition
+
+    since = today - timedelta(days=29)
+
+    def recent(kind: str) -> list[int]:
+        # 和小程序同一口径：能公开的、不是归并掉的副本、按类型规则（人工改过的按人工）
+        return list(
+            session.scalars(
+                visible_documents(
+                    select(Document.id)
+                    .join(Source, Source.id == Document.source_id)
+                    .where(
+                        v1.public_condition(),
+                        v1._kind_is([kind]),
+                        Document.publish_date >= since,
+                        Document.publish_date <= today,
+                    )
+                )
+            )
+        )
+
+    def owners(ids: list[int]) -> dict[int, int]:
+        # 归并组里各网址 → 主文件：正文、截止候选、名单条目可能在同组的其他网址上，小程序也会用
+        return {
+            member: master for master, group in groups_for(session, ids).items() for member in group
+        }
+
+    notices = recent("申报通知")
+    owner = owners(notices)
+    digest.notices_30 = len(notices)
+    # 有正文：和详情页取正文同一规则（v1._reading_body）——只取一级来源、抓取成功的；这份文件
+    # 自己有就用自己的，没有再用同组最长的；够 200 字才算
+    lengths: dict[int, dict[int, int]] = {master: {} for master in notices}
+    for doc_id, length in session.execute(
+        select(DocumentDetail.document_id, func.char_length(DocumentDetail.body_text))
+        .join(Document, Document.id == DocumentDetail.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            DocumentDetail.document_id.in_(list(owner)),
+            DocumentDetail.status == "ok",
+            Source.rights_level == 1,
+            available_condition(),
+        )
+    ):
+        if length:
+            lengths[owner[doc_id]][doc_id] = length
+    # 选出详情页会用的那一份（自己的，或同组最长的），再用详情页同一个函数清理后判断够不够字数：
+    # 详情页先脱敏、去掉网页固定文字和多余空行，不到 200 字就不显示正文
+    chosen: dict[int, int] = {}
+    for master, by_doc in lengths.items():
+        if master in by_doc:
+            chosen[master] = master
+        elif by_doc:
+            chosen[master] = max(by_doc, key=lambda doc_id: (by_doc[doc_id], -doc_id))
+    shown = 0
+    picked = list(chosen.values())
+    for start in range(0, len(picked), 100):
+        for (body,) in session.execute(
+            select(DocumentDetail.body_text).where(
+                DocumentDetail.document_id.in_(picked[start : start + 100])
+            )
+        ):
+            shown += v1.body_for_reading(body, "申报通知")["status"] == "ok"
+    digest.notices_with_body = shown
+    candidates = session.scalars(
+        select(DocumentDeadline.document_id)
+        .where(DocumentDeadline.document_id.in_(list(owner)))
+        .distinct()
+    )
+    digest.notices_with_candidates = len({owner[doc_id] for doc_id in candidates})
+
+    lists = recent("名单")
+    list_owner = owners(lists)
+    digest.lists_30 = len(lists)
+    # 解析出企业名单：和名单看板同一口径（v1._list_board_payload），同组任一网址有企业条目就算
+    parsed = session.scalars(
+        select(ListEntry.document_id)
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            ListEntry.document_id.in_(list(list_owner)),
+            ListEntry.normalized_name != "",
+            v1.public_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+        )
+        .distinct()
+    )
+    digest.lists_parsed = len({list_owner[doc_id] for doc_id in parsed})
+
+
+def _usage(session: Session, digest: Digest, today: date) -> None:
+    size = session.scalar(
+        text(
+            "SELECT SUM(data_length + index_length) FROM information_schema.tables "
+            "WHERE table_schema = DATABASE()"
+        )
+    )
+    digest.db_bytes = int(size) if size is not None else None
+    # 多个原站链接内容相同时共用同一个存储对象（对象名是内容的 SHA-256）：按对象去重
+    objects = (
+        select(AttachmentCopy.file_id, func.max(AttachmentCopy.size).label("size"))
+        .where(AttachmentCopy.status == "ready", AttachmentCopy.file_id.is_not(None))
+        .group_by(AttachmentCopy.file_id)
+        .subquery()
+    )
+    count, total = session.execute(
+        select(func.count(), func.coalesce(func.sum(objects.c.size), 0)).select_from(objects)
+    ).one()
+    digest.attachment_copies, digest.attachment_bytes = int(count), int(total)
+    digest.result_files = (
+        session.scalar(
+            select(func.count())
+            .select_from(AdvisorTask)
+            .where(AdvisorTask.result_file_id.is_not(None))
+        )
+        or 0
+    )
 
 
 def pick_for_review(
@@ -260,6 +431,53 @@ def _md(value: date) -> str:
     return f"{value.month}月{value.day}日"
 
 
+def _mb(value: int) -> str:
+    return "不到 1 MB" if value < 1024 * 1024 else f"约 {value / 1024 / 1024:.0f} MB"
+
+
+def _pct(part: int, whole: int) -> str:
+    # 向下取整：有一次失败就不会写成 100%
+    return f"{math.floor(100 * part / whole)}%" if whole else "—"
+
+
+def _quality_line(digest: Digest) -> str:
+    if not digest.quality_ok:
+        return "数据（近 30 天发布）：取不到（统计出错，看容器日志）"
+    return (
+        f"数据（近 30 天发布）：申报通知 {digest.notices_30} 份，"
+        f"有正文 {_pct(digest.notices_with_body, digest.notices_30)}、"
+        f"有截止候选 {_pct(digest.notices_with_candidates, digest.notices_30)}；"
+        f"名单 {digest.lists_30} 份，解析出企业名单 {_pct(digest.lists_parsed, digest.lists_30)}"
+    )
+
+
+def _usage_line(digest: Digest) -> str:
+    if not digest.usage_ok:
+        return "用量：取不到（统计出错，看容器日志）"
+    db = f"数据库{_mb(digest.db_bytes)}" if digest.db_bytes is not None else "数据库大小取不到"
+    return (
+        f"用量：{db}；附件副本 {digest.attachment_copies} 个，{_mb(digest.attachment_bytes)}；"
+        f"批量工具结果文件 {digest.result_files} 个"
+    )
+
+
+def _access_line(digest: Digest) -> str:
+    yesterday = _md(digest.day - timedelta(days=1))
+    if not digest.access_ok:
+        return f"接口（{yesterday}）：取不到（统计出错，看容器日志）"
+    if not digest.access:
+        return f"接口（{yesterday}）：没有汇总（访问日志归档没跑成，或当天没有小程序请求）"
+    parts = []
+    for service, requests, errors, slow in digest.access:
+        fast = requests - errors - slow
+        rate = math.floor(1000 * fast / requests) / 10 if requests else 100.0
+        parts.append(
+            f"{service} {requests} 次，5xx {errors} 次、其他请求 3 秒及以上 {slow} 次，"
+            f"3 秒内成功 {rate:.1f}%"
+        )
+    return f"接口（{yesterday}，小程序接口）：" + "；".join(parts)
+
+
 def digest_text(digest: Digest, picks: list[Pick]) -> str:
     """群提醒正文：数字部分完整保留，超出字节上限时少列 AI 建议。"""
     failures = ""
@@ -294,6 +512,9 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         f"用户：新增 {digest.new_users}、24 小时活跃 {digest.active_users}、"
         f"累计 {digest.total_users}；新关注 {digest.new_follows}；"
         f"提醒发出 {digest.reminders_sent}、失败 {digest.reminders_failed}",
+        _access_line(digest),
+        _quality_line(digest),
+        _usage_line(digest),
     ]
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):

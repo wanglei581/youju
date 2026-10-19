@@ -930,6 +930,23 @@ class AccessLog(Base):
     detail: Mapped[dict | None] = mapped_column(JSONType)
 
 
+class AccessDaily(Base):
+    """每天（北京时间）每个服务的小程序接口请求汇总，访问日志归档前算好（差距清单 M3）：
+    运维日报据此报"接口 99% 在 3 秒内成功"（D-061 第七节）这个数。暂存表每天归档后就删，
+    到早上 8 点的日报已经算不到前一天，所以要先存下来。只有计数：不含 IP、用户编号和路径。
+    只算 /api/v1/ 下的接口（小程序用的）；管理台、平台探测不算。"""
+
+    __tablename__ = "access_daily"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer)
+    # 返回 5xx 的
+    errors: Mapped[int] = mapped_column(Integer)
+    # 没返回 5xx、但超过 3 秒才答复的
+    slow: Mapped[int] = mapped_column(Integer)
+
+
 class AppKey(Base):
     """程序自己生成、自己用的密钥（如访问日志里用户编号的去标识化密钥）：第一次用到时随机生成，
     随数据库备份。不用人配置，也不出现在日志里。"""
