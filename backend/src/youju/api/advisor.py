@@ -325,11 +325,22 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
             result["error"] = "结果已过期，请重新提交"
         elif task.cache_key:
             try:
-                _, _, key = interpret.prepare(
-                    session, task.snapshot["doc_id"], task.model, skill=get_skill(task.kind)
+                if not doc_id:
+                    raise interpret.InterpretRefusal("结果已失效，请重新提交")
+                current, verified, key = interpret.prepare(
+                    session, doc_id, task.model, skill=get_skill(task.kind)
                 )
-                if key != task.cache_key:
-                    raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
+                same_key = key == task.cache_key
+                # D-073：只在正文变了时作废（原文或发给模型的脱敏后段落变了都算）
+                if interpret.body_changed(task.snapshot, current, same_key=same_key):
+                    raise interpret.InterpretRefusal(interpret.BODY_CHANGED)
+                if not same_key:
+                    # 核对、附件、模型或提示词版本变了：照常显示，"已核对"和附件提醒换成现在的
+                    # （撤回的不再显示）；核对或附件变了才告诉用户解读之后有更新
+                    result["result"] = interpret.refresh_verification(
+                        result["result"], verified, current["attachments"]
+                    )
+                    result["outdated"] = interpret.verification_changed(task.snapshot, current)
             except interpret.InterpretRefusal as exc:
                 result["result"] = None
                 result["error"] = str(exc)
