@@ -235,6 +235,67 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
+    """一次性：重抓被旧的正文脱敏规则吞了字的文件详情；默认只预览，加 --apply 才写入。"""
+    from youju.refetch_redacted import refetch_redacted
+
+    with session_factory()() as session:
+        report = refetch_redacted(
+            session,
+            apply=args.apply,
+            limit=args.limit,
+            after_id=args.after_id,
+            max_workers=args.workers,
+        )
+    results = report.results
+    by_result = Counter(r.result for r in results)
+    names = {
+        "fixed": "已换成新正文" if args.apply else "可以换成新正文",
+        "same": "不用改",
+        "changed": "原网页变了，没改",
+        "unavailable": "没打开，没改",
+        "missing": "已删除",
+    }
+    for r in results:
+        title = r.title[:40]
+        if r.result == "fixed":
+            print(f"  #{r.document_id} {names['fixed']}：{title}")
+            for piece in r.restored:
+                print(f"      + {piece}")
+        elif r.result == "changed":
+            similar = f"（相似度 {r.similarity}）" if r.similarity is not None else ""
+            print(f"  #{r.document_id} {r.reason or names['changed']}{similar}：{title}")
+        elif r.result != "same":
+            print(f"  #{r.document_id} {names[r.result]}（{r.reason or ''}）：{title}")
+    verb = "已写入" if args.apply else "预览（未写入）"
+    print(
+        f"{verb}：检查 {len(results)} 份，{names['fixed']} {by_result['fixed']} 份，"
+        f"不用改 {by_result['same']} 份，原网页变了 {by_result['changed']} 份，"
+        f"没打开 {by_result['unavailable']} 份"
+    )
+    if by_result["fixed"]:
+        print(
+            f"这些文件里：已核对的字段 {report.approved_fields} 份、确认过的申报条件"
+            f" {report.confirmed_conditions} 份要重新核对，AI 截止检查 {report.ai_checks} 份"
+            + ("已清掉、下一轮重查" if args.apply else "会清掉、下一轮重查")
+        )
+    if args.apply and by_result["fixed"]:
+        refreshed = "已重算" if report.eligibility_refreshed else "没拿到写锁，夜里全量重算会补上"
+        print(f"新增待核对截止候选 {report.new_candidates} 条；能不能 AI 解读：{refreshed}")
+    last = results[-1].document_id if results else (args.after_id or 0)
+    if len(results) == args.limit:
+        print(f"已到 --limit {args.limit} 份，后面可能还有：加 --after-id {last} 接着处理")
+    if not args.apply and by_result["fixed"]:
+        print("确认无误后加 --apply 写入；写入时会再打开一次页面、按当时库里的正文再核对一次")
+    # 只用 ASCII 的一行，贴回来乱码也能看清（容器终端粘贴中文会掉字）
+    print(
+        f"refetch_redacted mode={'apply' if args.apply else 'preview'} checked={len(results)} "
+        + " ".join(f"{k}={by_result[k]}" for k in names)
+        + f" last_id={last}"
+    )
+    return 0
+
+
 def _cmd_backfill_titles(args: argparse.Namespace) -> int:
     """一次性补全列表页截断的历史标题；默认只预览，加 --apply 才写入。"""
     from youju.classify import doc_kind
@@ -1413,6 +1474,17 @@ def main(argv: list[str] | None = None) -> int:
         help="只查这些网站后缀（如 .henan.gov.cn，可重复）；默认是附件文件服务器服务的省份",
     )
     p.set_defaults(func=_cmd_rescan_list_details)
+
+    p = sub.add_parser(
+        "refetch-redacted",
+        help="一次性：重抓被旧的正文脱敏规则吞了字（邮箱、座机前面的截止日期、单位名）的文件详情"
+        "（默认只预览，加 --apply 才写入）",
+    )
+    p.add_argument("--apply", action="store_true", help="写入（只改正文）；不加只预览")
+    p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
+    p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
+    p.add_argument("--workers", type=int, help="同时抓取的网站数")
+    p.set_defaults(func=_cmd_refetch_redacted)
 
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")
