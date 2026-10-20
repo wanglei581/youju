@@ -106,19 +106,48 @@ class RefetchReport:
     eligibility_refreshed: bool = False
 
 
+def _has(marker: str):
+    return DocumentDetail.body_text.contains(marker, autoescape=True)
+
+
+def _scope(stmt):
+    """只看一级公开来源、详情抓成功的（补详情也只抓一级来源）。"""
+    return (
+        stmt.select_from(DocumentDetail)
+        .join(Document, Document.id == DocumentDetail.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1, DocumentDetail.status == "ok")
+    )
+
+
+def count_affected(session: Session) -> dict[str, int | None]:
+    """只读统计，不打开网页：有正文的份数，含"[邮箱已脱敏]"的、含"[姓名已脱敏][电话已脱敏]"的、
+    含"[姓名已脱敏]"的，要重抓的（含前两种标记之一）和它们的编号范围。"""
+    count = select(func.count())
+    either = or_(*(_has(m) for m in MARKERS))
+    first, last = session.execute(
+        _scope(
+            select(func.min(DocumentDetail.document_id), func.max(DocumentDetail.document_id))
+        ).where(either)
+    ).one()
+    return {
+        "bodies": session.scalar(_scope(count).where(DocumentDetail.body_text != "")),
+        "email": session.scalar(_scope(count).where(_has("[邮箱已脱敏]"))),
+        "name_phone": session.scalar(_scope(count).where(_has("[姓名已脱敏][电话已脱敏]"))),
+        "name": session.scalar(_scope(count).where(_has("[姓名已脱敏]"))),
+        "candidates": session.scalar(_scope(count).where(either)),
+        "first_id": first,
+        "last_id": last,
+    }
+
+
 def _candidates(
     session: Session, limit: int, after_id: int | None
 ) -> list[tuple[int, str, str, str]]:
-    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。只看一级公开来源、详情抓成功的。"""
+    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。"""
     stmt = (
-        select(Document.id, Document.url, Document.title, DocumentDetail.body_text)
-        .join(Source, Source.id == Document.source_id)
-        .join(DocumentDetail, DocumentDetail.document_id == Document.id)
-        .where(
-            Source.rights_level == 1,
-            DocumentDetail.status == "ok",
-            or_(*(DocumentDetail.body_text.contains(m, autoescape=True) for m in MARKERS)),
-        )
+        _scope(select(Document.id, Document.url, Document.title, DocumentDetail.body_text))
+        .where(or_(*(_has(m) for m in MARKERS)))
         .order_by(Document.id)
         .limit(limit)
     )

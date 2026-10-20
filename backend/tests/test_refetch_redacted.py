@@ -290,6 +290,16 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
             return False
 
     monkeypatch.setattr(detail_service, "_polite_fetcher", Polite)
+    # 只统计，不打开网页
+    assert cli.main(["refetch-redacted", "--count"]) == 0
+    out = capsys.readouterr().out
+    assert "要重新打开看的（含[邮箱已脱敏]或[姓名已脱敏]）4 份" in out
+    assert (
+        "refetch_redacted_count bodies=5 email=3 name_phone=3 name=4 candidates=4 "
+        f"first_id={docs['swallowed'].id} last_id={docs['gone'].id}"
+    ) in out
+    assert fake.calls == []
+
     assert cli.main(["refetch-redacted"]) == 0
     out = capsys.readouterr().out
     assert f"#{docs['swallowed'].id} 可以换成新正文" in out

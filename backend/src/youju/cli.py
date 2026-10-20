@@ -237,8 +237,22 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
 
 def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     """一次性：重抓被旧的正文脱敏规则吞了字的文件详情；默认只预览，加 --apply 才写入。"""
-    from youju.refetch_redacted import refetch_redacted
+    from youju.refetch_redacted import count_affected, refetch_redacted
 
+    if args.count:
+        with session_factory()() as session:
+            n = count_affected(session)
+        print(
+            f"有正文的 {n['bodies']} 份：含[邮箱已脱敏] {n['email']} 份，"
+            f"含[姓名已脱敏][电话已脱敏] {n['name_phone']} 份，含[姓名已脱敏] {n['name']} 份；"
+            f"要重新打开看的（含[邮箱已脱敏]或[姓名已脱敏]）{n['candidates']} 份"
+            + (f"，编号 {n['first_id']}–{n['last_id']}" if n["candidates"] else "")
+        )
+        print(
+            "refetch_redacted_count "
+            + " ".join(f"{k}={v if v is not None else 0}" for k, v in n.items())
+        )
+        return 0
     with session_factory()() as session:
         report = refetch_redacted(
             session,
@@ -1481,6 +1495,9 @@ def main(argv: list[str] | None = None) -> int:
         "（默认只预览，加 --apply 才写入）",
     )
     p.add_argument("--apply", action="store_true", help="写入（只改正文）；不加只预览")
+    p.add_argument(
+        "--count", action="store_true", help="只统计有多少份要重新打开看（只读，不打开网页）"
+    )
     p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
     p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
