@@ -140,10 +140,11 @@ def _account(match: re.Match) -> str:
     label, run = match.group(1), match.group(2)
     groups = list(_DIGITS.finditer(run))
     values = [group.group() for group in groups]
-    tail = match.string[match.end() : match.end() + 3]
+    tail = match.string[match.end() : match.end() + 10]
     total = taken = 0
     for i, group in enumerate(groups):
-        following = (run[group.end() :] + tail).lstrip(" -")[:1]
+        # 这组后面隔着空白、横线的第一个字（PDF 里数字和"元"中间可能有好几个空格）
+        following = (run[group.end() :] + tail).lstrip(" -\t\u3000")[:1]
         size = len(values[i])
         if following and following in _UNITS:
             break
@@ -253,7 +254,8 @@ def _name_like(word: str, *, after_label: bool = False) -> bool:
 def _glued_name(run: str) -> int | None:
     """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"）：前面一截以单位的字
     结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的返回 None。"""
-    for size in (2, 3, 4):
+    # 长的优先：复姓"司马"的"司"也是单位的字（"省科技厅司马小明"不能切成"省科技厅司|马小明"）
+    for size in (4, 3, 2):
         cut = len(run) - size
         if cut >= 2 and run[:cut].endswith(_UNIT_ENDS) and _name_like(run[cut:]):
             return cut
