@@ -466,3 +466,14 @@ def test_attachment_rule_counterexamples() -> None:
     ]
     # 页面主机名只是以"henan.gov.cn"结尾、前面不是"."的，不算河南的网站
     assert parse_detail(upper, "https://www.zhenan.gov.cn/a/1.html").attachments == []
+
+
+@pytest.mark.parametrize("label", ["账号", "联系人", "联系人：", "开户行："])
+def test_long_whitespace_after_labels_does_not_hang(label: str) -> None:
+    """PDF 里标签后面可能跟着一长串空格：正则不能回退到卡住（普通的 \\s*[:：]?\\s* 几万个空格就要几十秒）。"""
+    import time
+
+    text = label + " " * 100_000 + "x"
+    started = time.perf_counter()
+    assert redact_sensitive(text) == text
+    assert time.perf_counter() - started < 2

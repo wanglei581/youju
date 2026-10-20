@@ -51,7 +51,8 @@ from youju.models import (
 # 正文里有这两种标记的才可能被吞过字（旧规则只在遮邮箱、遮姓名时连带遮掉旁边的字）
 MARKERS = ("[邮箱已脱敏]", "[姓名已脱敏]")
 
-# ---- 9/27–10/20 的旧规则（只用来核对原网页变没变，原样照抄 #35 的写法） ----
+# ---- 9/27–10/20 的旧规则（只用来核对原网页变没变，照抄 #35 的写法；空白改用占有量词，结果一样，
+# 遇到一长串空格不会卡住） ----
 _OLD_HAN = f"{chr(0x4E00)}-{chr(0x9FFF)}"
 _OLD_MOBILE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _OLD_ID_CARD = re.compile(
@@ -60,10 +61,10 @@ _OLD_ID_CARD = re.compile(
     r"(?:0[1-9]|[12]\d|3[01])\d{3})(?!\d)"
 )
 _OLD_BANK = re.compile(
-    r"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*[:：]?\s*)(?:\d[ -]?){11,18}\d(?!\d)"
+    r"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*+[:：]?+\s*+)(?:\d[ -]?){11,18}\d(?!\d)"
 )
 _OLD_EMAIL = re.compile(r"(?<![\w.])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
-_OLD_CONTACT = re.compile(rf"(联系人\s*[:：]\s*)[{_OLD_HAN}·]{{2,8}}")
+_OLD_CONTACT = re.compile(rf"(联系人\s*+[:：]\s*+)[{_OLD_HAN}·]{{2,8}}")
 _OLD_NAME_PHONE = re.compile(rf"(?:[{_OLD_HAN}·]\s*){{2,4}}(?=0\d{{2,3}}[-－]\d{{7,8}})")
 _OLD_NAME_MASKED_PHONE = re.compile(rf"(?:[{_OLD_HAN}·]\s*){{2,4}}(?=\[电话已脱敏\])")
 _OLD_PHONE = re.compile(r"(?<!\d)0\d{2,3}[-－]\d{7,8}(?!\d)")

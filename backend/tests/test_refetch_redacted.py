@@ -358,3 +358,12 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert cli.main(["refetch-redacted", "--limit", "1"]) == 0
     out = capsys.readouterr().out
     assert f"已到 --limit 1 份，后面可能还有：加 --after-id {docs['swallowed'].id}" in out
+
+
+def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
+    import time
+
+    started = time.perf_counter()
+    for label in ("账号", "联系人"):
+        old_redact(label + " " * 100_000 + "x")
+    assert time.perf_counter() - started < 2
