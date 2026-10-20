@@ -113,6 +113,19 @@ def test_old_rules_swallowed_the_deadline(world, session) -> None:
     assert "联系人：省工信厅中小企业处 [姓名已脱敏] [电话已脱敏]" in fresh
 
 
+def test_old_rules_copy_matches_what_was_stored() -> None:
+    """模块里照抄的旧规则：和 9/27–10/20 入库时一样会吞字（拿它核对原网页变没变）。"""
+    assert (
+        old_redact("加盖公章，PDF电子版于7月2日前发送至abc@163.com邮箱")
+        == "加盖公章，[邮箱已脱敏]邮箱"
+    )
+    assert old_redact("材料请于11月20日前寄至0571-87654321") == (
+        "材料请于11月20[姓名已脱敏][电话已脱敏]"
+    )
+    assert old_redact("联系人：省工信厅汽车工业处 张三") == "联系人：[姓名已脱敏]处 张三"
+    assert old_redact("账号：33050161613500000123") == "账号：33050161613500000123"
+
+
 def test_preview_does_not_write(world, session) -> None:
     docs, fake = world
     before = {name: body_of(session, doc.id) for name, doc in docs.items()}
@@ -222,6 +235,28 @@ def test_pdf_bodies_are_checked_the_same_way(session, monkeypatch) -> None:
         content_type="application/pdf",
     )
     report = refetch_redacted(session, apply=True, limit=50, fetcher=FakeFetcher({doc.url: pdf}))
+    assert [r.result for r in report.results] == ["fixed"]
+    assert body_of(session, doc.id) == redact_sensitive(raw)
+
+
+def test_page_with_only_a_pdf(session, monkeypatch) -> None:
+    """页面没有正文、只有一个 PDF 附件的（补详情另抓这个 PDF 当正文）：同样拿 PDF 原文核对。"""
+    raw = "各有关单位：请于2026年11月20日前将申报材料电子版发送至sbc_test@163.com邮箱。"
+    monkeypatch.setattr(detail_service, "extract_pdf_text", lambda content: (raw, None))
+    doc = add_document(session, 9, title=TITLE)
+    add_detail(session, doc, old_redact(raw))
+    pdf_url = "https://gxt.ln.gov.cn/files/notice.pdf"
+    html = f"<html><body><div id='zoom'><p><a href='{pdf_url}'>通知全文.pdf</a></p></div></body></html>"
+    pdf = FetchResult(
+        pdf_url,
+        "ok",
+        final_url=pdf_url,
+        http_status=200,
+        content=b"%PDF-1.4",
+        content_type="application/pdf",
+    )
+    fake = FakeFetcher({doc.url: page(doc.url, html), pdf_url: pdf})
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
     assert [r.result for r in report.results] == ["fixed"]
     assert body_of(session, doc.id) == redact_sensitive(raw)
 
