@@ -45,6 +45,7 @@ from youju.models import (
     Document,
     DocumentDetail,
     DocumentField,
+    DocumentMerge,
     Source,
 )
 
@@ -216,10 +217,18 @@ def _recompute(session: Session, written: list[int], report: RefetchReport) -> N
         delete(AICheck).where(AICheck.document_id.in_(written), AICheck.task == "deadlines")
     )
     session.commit()
+    # 合并转载的主条目没有自己的正文时用组里最长的那份（同 eligibility.changed_since），一起重算
+    masters = set(
+        session.scalars(
+            select(DocumentMerge.canonical_id).where(
+                DocumentMerge.duplicate_id.in_(written), DocumentMerge.active.is_(True)
+            )
+        )
+    )
     # 和 admin 每 10 分钟的增量重算错开：拿不到写锁就跳过，夜里的全量重算会补上
     with eligibility.writer_lock(session, 60) as got:
         if got:
-            eligibility.refresh(session, written, datetime.now(UTC))
+            eligibility.refresh(session, set(written) | masters, datetime.now(UTC))
             report.eligibility_refreshed = True
 
 

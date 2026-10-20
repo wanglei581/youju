@@ -22,6 +22,7 @@ from youju.models import (
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
+    DocumentMerge,
 )
 from youju.refetch_redacted import old_redact, refetch_redacted
 
@@ -184,6 +185,23 @@ def test_apply_replaces_body_and_recomputes(world, session) -> None:
     # 再跑一遍：换过的这份已经是新规则遮的，不用改
     again = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
     assert {r.document_id: r.result for r in again.results}[swallowed.id] == "same"
+
+
+def test_apply_recomputes_eligibility_of_merge_master(world, session) -> None:
+    """合并转载：主条目没有自己的正文时用组里的正文，副本换了正文，主条目的"能不能 AI 解读"也重算。"""
+    docs, fake = world
+    master = add_document(session, 10, source_id=docs["swallowed"].source_id, title=TITLE)
+    session.add(
+        DocumentMerge(
+            duplicate_id=docs["swallowed"].id, canonical_id=master.id, match_key="k", active=True
+        )
+    )
+    session.commit()
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert report.eligibility_refreshed
+    assert session.get(AIEligibility, master.id) is not None
+    # 别的没换正文的文件不在这次重算里
+    assert session.get(AIEligibility, docs["right"].id) is None
 
 
 def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
