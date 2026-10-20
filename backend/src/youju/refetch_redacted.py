@@ -17,8 +17,9 @@
 一改，名单补抓附件那一步会以为这份已经重抓过）。写完当场：
 - 重算这些文件的规则截止候选（extract.service.extract_existing，和每轮 extract-deadlines 一样，
   核对过的不动）；
-- 清掉这些文件的 AI 截止检查结果（ai_checks 里 deadlines 那一项），下一轮 ai-check 按新正文重查，
-  免得新找回的截止日期被标成"AI 没找到"；
+- 找回的字里有日期、时刻（数字或"年月日时"）的，清掉它的 AI 截止检查结果（ai_checks 里 deadlines
+  那一项），下一轮 ai-check 按新正文重查，免得新找回的截止日期被标成"AI 没找到"；只找回单位名、
+  标签的不清（AI 找截止不看这些，省用量）；
 - 重算"能不能 AI 解读"（ai.eligibility，拿不到写锁就跳过，admin 每 10 分钟的增量和夜里的全量
   会补上——增量只看抓取时间，这里没改抓取时间，所以要等夜里全量或手工跑 ai-eligibility-rebuild）。
 正文变了，已核对的字段（document_fields 的 approved）会在下一轮 extract-fields 变成待重新核对，
@@ -92,6 +93,8 @@ class RefetchResult:
     reason: str | None = None
     # fixed：按新规则找回的字（前几处，每处最多 40 个字），预览时给人看
     restored: list[str] = field(default_factory=list)
+    # fixed：找回的字里有日期、时刻（数字或"年月日时"），AI 截止检查要按新正文重查
+    recheck_ai: bool = False
     # changed：新旧两版正文的相似度（0–1）
     similarity: float | None = None
 
@@ -99,7 +102,8 @@ class RefetchResult:
 @dataclass
 class RefetchReport:
     results: list[RefetchResult] = field(default_factory=list)
-    # fixed 的文件里：已核对的字段、确认过且是当前正文的申报条件清单、AI 截止检查结果各有几份
+    # fixed 的文件里：已核对的字段、确认过且是当前正文的申报条件清单各有几份；要清掉重查的 AI
+    # 截止检查有几份（只算找回的字里有日期、时刻的）
     approved_fields: int = 0
     confirmed_conditions: int = 0
     ai_checks: int = 0
@@ -158,19 +162,22 @@ def _candidates(
     return [(int(i), url, title, body) for i, url, title, body in session.execute(stmt).all()]
 
 
-def _restored(old: str, new: str, limit: int = 3) -> list[str]:
-    """新正文比旧正文多出来的字（按新规则找回的），前 limit 处，每处最多 40 个字。"""
-    pieces = []
+_TIME_CHARS = set("年月日时")
+
+
+def _restored(old: str, new: str) -> list[str]:
+    """新正文比旧正文多出来的字（按新规则找回的，也包括新遮的"[姓名已脱敏]"），每处去掉多余空白。"""
     matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
-    for tag, _, _, j1, j2 in matcher.get_opcodes():
-        if tag in ("replace", "insert") and (piece := new[j1:j2].strip()):
-            pieces.append(" ".join(piece.split())[:40])
-            if len(pieces) >= limit:
-                break
-    return pieces
+    return [
+        " ".join(piece.split())
+        for tag, _, _, j1, j2 in matcher.get_opcodes()
+        if tag in ("replace", "insert") and (piece := new[j1:j2].strip())
+    ]
 
 
-def _impact(session: Session, fixed: dict[int, str], report: RefetchReport) -> None:
+def _impact(
+    session: Session, fixed: dict[int, str], recheck: set[int], report: RefetchReport
+) -> None:
     """正文换了以后要重新核对的：已核对的字段、确认过的申报条件清单；会重查的 AI 截止检查。"""
     if not fixed:
         return
@@ -198,24 +205,32 @@ def _impact(session: Session, fixed: dict[int, str], report: RefetchReport) -> N
             if hashes.get(doc_id) == body_hash
         }
     )
-    report.ai_checks = session.scalar(
-        select(func.count(AICheck.id)).where(
-            AICheck.document_id.in_(ids), AICheck.task == "deadlines"
+    report.ai_checks = (
+        session.scalar(
+            select(func.count(AICheck.id)).where(
+                AICheck.document_id.in_(recheck), AICheck.task == "deadlines"
+            )
         )
+        if recheck
+        else 0
     )
 
 
-def _recompute(session: Session, written: list[int], report: RefetchReport) -> None:
-    """写入以后：重算规则截止候选，清掉 AI 截止检查结果，重算"能不能 AI 解读"。"""
+def _recompute(
+    session: Session, written: list[int], recheck: set[int], report: RefetchReport
+) -> None:
+    """写入以后：重算规则截止候选，清掉找回了日期、时刻的那几份的 AI 截止检查结果（下一轮
+    ai-check 按新正文重查；只找回单位名、标签的不用重查，省 AI 用量），重算"能不能 AI 解读"。"""
     from youju.ai import eligibility
     from youju.extract.service import extract_existing
 
     if not written:
         return
     _, report.new_candidates = extract_existing(session, document_ids=written)
-    session.execute(
-        delete(AICheck).where(AICheck.document_id.in_(written), AICheck.task == "deadlines")
-    )
+    if again := recheck & set(written):
+        session.execute(
+            delete(AICheck).where(AICheck.document_id.in_(again), AICheck.task == "deadlines")
+        )
     session.commit()
     # 合并转载的主条目没有自己的正文时用组里最长的那份（同 eligibility.changed_since），一起重算
     masters = set(
@@ -277,11 +292,19 @@ def refetch_redacted(
             similarity = round(difflib.SequenceMatcher(None, stored, before).ratio(), 3)
             report.results.append(RefetchResult(doc_id, title, "changed", similarity=similarity))
             continue
-        result = RefetchResult(doc_id, title, "fixed", restored=_restored(stored, after))
+        pieces = _restored(stored, after)
+        result = RefetchResult(
+            doc_id,
+            title,
+            "fixed",
+            restored=[piece[:40] for piece in pieces[:3]],
+            recheck_ai=any(c.isdigit() or c in _TIME_CHARS for piece in pieces for c in piece),
+        )
         report.results.append(result)
         fixed[doc_id] = stored
         pending.append((result, stored, after))
-    _impact(session, fixed, report)
+    recheck = {r.document_id for r, _, _ in pending if r.recheck_ai}
+    _impact(session, fixed, recheck, report)
     if not apply:
         return report
     written = []
@@ -296,5 +319,5 @@ def refetch_redacted(
             detail.body_text = after
             written.append(result.document_id)
         session.commit()
-    _recompute(session, written, report)
+    _recompute(session, written, recheck, report)
     return report

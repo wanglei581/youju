@@ -135,6 +135,7 @@ def test_preview_does_not_write(world, session) -> None:
     assert [r.document_id for r in report.results] == [doc.id for doc in docs.values()]
     assert results[docs["swallowed"].id].result == "fixed"
     assert any("11月20日前" in piece for piece in results[docs["swallowed"].id].restored)
+    assert results[docs["swallowed"].id].recheck_ai
     assert results[docs["right"].id].result == "same"
     changed = results[docs["changed"].id]
     assert changed.result == "changed" and 0.9 < changed.similarity < 1
@@ -202,6 +203,38 @@ def test_apply_recomputes_eligibility_of_merge_master(world, session) -> None:
     assert session.get(AIEligibility, master.id) is not None
     # 别的没换正文的文件不在这次重算里
     assert session.get(AIEligibility, docs["right"].id) is None
+
+
+def test_ai_check_kept_when_only_unit_names_come_back(session) -> None:
+    """只找回单位名、标签（没有日期、时刻）的：AI 截止检查不用重查，留着。"""
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>业务咨询：省工信厅中小企业处 张三 0571-87654321</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 11, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+    preview = refetch_redacted(session, limit=50, fetcher=fake)
+    assert [(r.result, r.recheck_ai) for r in preview.results] == [("fixed", False)]
+    assert preview.ai_checks == 0
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert [r.result for r in report.results] == ["fixed"]
+    assert "中小企业处" in body_of(session, doc.id)
+    assert session.scalars(select(AICheck.task).where(AICheck.document_id == doc.id)).all() == [
+        "deadlines"
+    ]
 
 
 def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:

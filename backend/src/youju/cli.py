@@ -290,7 +290,8 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     if by_result["fixed"]:
         print(
             f"这些文件里：已核对的字段 {report.approved_fields} 份、确认过的申报条件"
-            f" {report.confirmed_conditions} 份要重新核对，AI 截止检查 {report.ai_checks} 份"
+            f" {report.confirmed_conditions} 份要重新核对；找回了日期、时刻的 AI 截止检查"
+            f" {report.ai_checks} 份"
             + ("已清掉、下一轮重查" if args.apply else "会清掉、下一轮重查")
         )
     if args.apply and by_result["fixed"]:
