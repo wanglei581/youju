@@ -17,6 +17,7 @@ from youju.backup import dump, restore
 from youju.config import Settings
 from youju.db import get_session
 from youju.models import (
+    FEEDBACK_OUTCOMES,
     AdvisorTask,
     Base,
     Feedback,
@@ -768,7 +769,17 @@ def test_admin_buttons_authorization_repeat_state_and_audit(
         response = client.post(url, headers=ADMIN)
         assert response.status_code == 200 and response.json()["days"] == days
         duplicate = client.post(url, headers=ADMIN).json()
-        assert duplicate == {"alreadyGranted": True, "days": days, "message": "已经发过"}
+        outcome = {"correction": "fixed", "source": "added"}[kind]
+        assert duplicate == {
+            "alreadyGranted": True,
+            "days": days,
+            "message": "已经发过",
+            "note": None,
+            # 发奖同时记下处理结果（差距清单 C1）：采纳纠错 = 已更正，接入栏目 = 已接入
+            "outcome": outcome,
+            "outcomeLabel": FEEDBACK_OUTCOMES[outcome],
+            "reply": None,
+        }
     finally:
         app_module.audit_log.removeHandler(caplog.handler)
     assert "feedback_reward" in caplog.text

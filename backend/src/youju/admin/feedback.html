@@ -57,7 +57,7 @@
   </div>
 </header>
 <main>
-  <p class="hint">核对内容和原文后标记已处理。管理口令只保存在当前页面，刷新后需重新输入。</p>
+  <p class="hint">核对内容和原文后，选处理结果、需要时写一句给用户的说明，再标记已处理：提交的人在小程序“我的 → 我的数据”里能看到结果和说明。管理口令只保存在当前页面，刷新后需重新输入。</p>
   <div class="row filters">
     <label for="status">显示</label>
     <select id="status"><option value="pending">待处理</option><option value="all">全部</option></select>
@@ -71,6 +71,12 @@
   const $ = (id) => document.getElementById(id);
   const shown = new Set();
   let cursor = null;
+  // 正在提交的操作数：有操作没回来时不能重新载入、切换筛选、翻页，免得卡片被换掉后又能重复提交
+  let pending = 0;
+  function listBusy(delta) {
+    pending += delta;
+    for (const id of ['load', 'status', 'more']) $(id).disabled = pending > 0;
+  }
 
   function headers() { return { 'X-Admin-Token': youjuAdminToken() }; }
   function el(tag, cls, value) {
@@ -94,7 +100,22 @@
       return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
     } catch (e) { return null; }
   }
-  function render(item) {
+  async function post(path, body) {
+    const init = { method: 'POST', headers: headers() };
+    if (body) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, init);
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* 出错时可能不是 JSON */ }
+    if (!res.ok) throw new Error((data && typeof data.detail === 'string' && data.detail) || errorFor(res));
+    return data;
+  }
+  // 每次操作完（成功或失败）整张卡片按这条记录的状态重画，在按钮旁写一句结果；
+  // 操作进行时整张卡片的按钮和输入框都锁住，同一条不会有两个请求同时在走
+  // draft：提交失败时带回下拉框和说明框里当时的内容，重画后不用重填
+  function render(item, note, failed, draft) {
     const card = el('section', 'card');
     const meta = el('div', 'meta');
     const state = el('span', item.handledAt ? 'tag handled' : 'tag', item.handledAt ? '已处理' : '待处理');
@@ -118,32 +139,75 @@
     else triage.hidden = true;
     const CHECK = { pass: '通过', unchecked: '未检查（开发环境不调用微信接口）' };
     const check = el('div', 'meta', `内容安全检查：${CHECK[item.checkResult] || item.checkResult}`);
+    // 处理结果（差距清单 C1）：提交的人在“我的数据”里看到的就是这里的结果和说明
+    const outcome = el('div', 'meta');
+    if (!item.handledAt) outcome.hidden = true;
+    else if (item.outcomeLabel) outcome.textContent = `处理结果：${item.outcomeLabel}${item.reply ? `；给用户的说明：${item.reply}` : ''}`;
+    else outcome.textContent = '处理结果：没有记录（以前标记的，用户那边只显示“已处理”；要补就选好结果再保存）';
+    const form = el('div', 'row');
+    const select = el('select');
+    select.setAttribute('aria-label', '处理结果');
+    select.append(new Option('选择处理结果', ''));
+    for (const choice of item.outcomeChoices || []) select.append(new Option(choice.label, choice.value));
+    select.value = draft ? draft.outcome : item.outcome || '';
+    const reply = el('input');
+    reply.type = 'text';
+    reply.maxLength = 200;
+    reply.size = 34;
+    reply.placeholder = item.kind === '支付问题' ? '写一句怎么解决的（必填，最多 200 字）' : '给用户的说明（可不填，最多 200 字）';
+    reply.setAttribute('aria-label', '给用户的说明');
+    reply.value = draft ? draft.reply : item.reply || '';
+    const save = el('button', item.handledAt ? '' : 'primary', item.handledAt ? '保存修改' : '标记已处理');
+    form.append(select, reply, save);
     const row = el('div', 'row');
-    const action = el('button', item.handledAt ? '' : 'primary', item.handledAt ? '撤回' : '标记已处理');
-    const msg = el('span', 'msg');
-    action.onclick = async () => {
-      action.disabled = true;
-      msg.textContent = '';
-      try {
-        const mode = item.handledAt ? 'unhandle' : 'handle';
-        const res = await fetch(`/api/admin/feedback/${item.id}/${mode}`, { method: 'POST', headers: headers() });
-        if (!res.ok) throw new Error(errorFor(res));
-        item.handledAt = mode === 'handle' ? new Date().toISOString() : null;
-        state.className = item.handledAt ? 'tag handled' : 'tag';
-        state.textContent = item.handledAt ? '已处理' : '待处理';
-        action.className = item.handledAt ? '' : 'primary';
-        action.textContent = item.handledAt ? '撤回' : '标记已处理';
-        msg.className = 'msg ok';
-        msg.textContent = item.handledAt ? '已处理，可撤回' : '已撤回';
-        try { await refreshCount(); } catch (e) { /* 状态已保存，计数稍后重新载入 */ }
-      } catch (err) {
+    const msg = el('span', note && !failed ? 'msg ok' : 'msg', note || '');
+    function lock() {
+      card.querySelectorAll('button, select, input').forEach((node) => { node.disabled = true; });
+      msg.className = 'msg';
+      msg.textContent = '正在提交…';
+      listBusy(1);
+    }
+    function done(text) {
+      card.replaceWith(render(item, text));
+      listBusy(-1);
+      refreshCount().catch(() => { /* 状态已保存，计数下次载入时更新 */ });
+    }
+    function fail(err) {
+      card.replaceWith(render(item, err.message, true, { outcome: select.value, reply: reply.value }));
+      listBusy(-1);
+    }
+    save.onclick = async () => {
+      const hint = !select.value ? '先选处理结果'
+        : select.value === 'resolved' && !reply.value.trim() ? '选“已处理”时要写一句给用户的说明' : '';
+      if (hint) {
         msg.className = 'msg';
-        msg.textContent = err.message;
-      } finally { action.disabled = false; }
+        msg.textContent = hint;
+        return;
+      }
+      lock();
+      try {
+        const data = await post(`/api/admin/feedback/${item.id}/handle`, { outcome: select.value, reply: reply.value });
+        const first = !item.handledAt;
+        item.handledAt = item.handledAt || new Date().toISOString();
+        Object.assign(item, { outcome: data.outcome, outcomeLabel: data.outcomeLabel, reply: data.reply });
+        done(first ? '已处理，用户在“我的数据”里能看到结果' : data.changed ? '已保存修改' : '没有改动');
+      } catch (err) { fail(err); }
     };
-    const rewardText = (days, note) => `已发奖 ${days} 天${note ? `（${note}）` : ''}`;
+    // 送过天数的不能撤回（天数不收回）；要改结果直接选采纳类的结果保存
+    const undo = el('button', '', '撤回');
+    undo.hidden = !item.handledAt || Boolean(item.rewardKind);
+    undo.onclick = async () => {
+      lock();
+      try {
+        await post(`/api/admin/feedback/${item.id}/unhandle`);
+        Object.assign(item, { handledAt: null, outcome: null, outcomeLabel: null, reply: null });
+        done('已撤回，处理结果和说明已清掉');
+      } catch (err) { fail(err); }
+    };
+    const rewardText = (days, rewardNote) => `已发奖 ${days} 天${rewardNote ? `（${rewardNote}）` : ''}`;
     const rewardState = el('span', 'meta', item.rewardKind ? rewardText(item.rewardDays, item.rewardNote) : '尚未发奖');
-    // 纠错送 1 天有单独开关（D-070 ⑦）；"已接入并送 3 天"只跟旧的奖励总开关。支付问题不发奖
+    // 纠错送 1 天有单独开关（D-070 ⑦）；"已接入并送 3 天"只跟旧的奖励总开关。支付问题不发奖。
+    // 发奖同时标记已处理，结果按表单里选的记（只能是采纳类的），没选时记成“已更正”“已接入”
     const choices = [
       ...(item.correctionRewardEnabled && item.kind === '纠错' ? [['correction', '采纳并送 1 天']] : []),
       ...(item.rewardsEnabled && item.kind === '申请覆盖' ? [['source', '已接入并送 3 天']] : []),
@@ -151,40 +215,30 @@
     // 采纳标准和小程序纠错页公开的一致：每人每月最多 3 天，超过的记零天
     const criteria = el('div', 'meta', '采纳标准：第一个指出、经核对属实的事实错误（日期、链接、名单状态等）；重复的、核对不了的不算。每人每月最多 3 天。');
     criteria.hidden = !choices.some(([kind]) => kind === 'correction');
-    if (choices.length) {
-      for (const [kind, label] of choices) {
-        const button = el('button', '', label);
-        button.disabled = Boolean(item.rewardKind);
-        button.onclick = async () => {
-          button.disabled = true;
-          try {
-            const res = await fetch(`/api/admin/feedback/${item.id}/reward/${kind}`, { method: 'POST', headers: headers() });
-            const body = await res.json();
-            if (!res.ok) throw new Error(body.detail || errorFor(res));
-            item.rewardKind = kind;
-            item.rewardDays = body.days;
-            rewardState.textContent = rewardText(body.days, body.note);
-            msg.className = 'msg ok';
-            msg.textContent = body.message + (body.note ? `；${body.note}` : '');
-            state.className = 'tag handled';
-            state.textContent = '已处理';
-            item.handledAt = item.handledAt || new Date().toISOString();
-            action.textContent = '撤回';
-            action.className = '';
-            row.querySelectorAll('[data-reward]').forEach((b) => { b.disabled = true; });
-            try { await refreshCount(); } catch (e) { /* 下次载入更新计数 */ }
-          } catch (err) {
-            msg.className = 'msg';
-            msg.textContent = err.message;
-            button.disabled = false;
-          }
-        };
-        button.dataset.reward = kind;
-        row.append(button);
-      }
+    for (const [kind, label] of choices) {
+      const button = el('button', '', label);
+      button.disabled = Boolean(item.rewardKind);
+      button.onclick = async () => {
+        lock();
+        try {
+          // 表单里当时选的结果和写的说明和发奖一起存；没选结果时按"已更正""已接入"记
+          const body = await post(`/api/admin/feedback/${item.id}/reward/${kind}`, { outcome: select.value || null, reply: reply.value });
+          Object.assign(item, {
+            rewardKind: kind,
+            rewardDays: body.days,
+            rewardNote: body.note,
+            handledAt: item.handledAt || new Date().toISOString(),
+            outcome: body.outcome,
+            outcomeLabel: body.outcomeLabel,
+            reply: body.reply,
+          });
+          done(body.message + (body.note ? `；${body.note}` : ''));
+        } catch (err) { fail(err); }
+      };
+      row.append(button);
     }
-    row.append(action, rewardState, msg);
-    card.append(meta, content, docLine, triage, check, criteria, row);
+    row.append(undo, rewardState, msg);
+    card.append(meta, content, docLine, triage, check, outcome, form, criteria, row);
     return card;
   }
   async function load(reset) {

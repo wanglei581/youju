@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -132,6 +133,25 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   const template = wxml('my-data');
   assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 3);
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
+});
+
+test('我的数据·保存多久和隐私保护指引一致；AI 一行只给用过 AI 的人看；不再写"内测白名单"（10/18 验收）', async () => {
+  const { render } = require('./helpers/wxml.js');
+  for (const tasks of [[{ id: 8, kind: 'compare', status: 'done' }], [{ id: 9, kind: 'interpret', status: 'done' }]]) {
+    const raw = { user: { openid: 'synthetic', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: tasks,
+      retention: { feedback: 180, events: 90, usedSubscriptions: 30, unusedSubscriptions: 365, toolInput: 7, toolTasks: 30 } };
+    const page = load('pages/my-data/index.js', {
+      '../../utils/api.js': { myData: () => Promise.resolve(raw) },
+      '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false },
+    }, { wx: { setClipboardData() {}, showToast() {}, showModal() {} } });
+    page.load(); await flush();
+    const text = render(wxml('my-data'), page.data);
+    assert.match(text, /批量工具：解析出的名单 7 天后清空，任务记录和结果文件 30 天后删除/);
+    assert.match(text, /加量体验记录：开始和结束时间保存到你注销/); assert.match(text, /按天的使用次数：保留本月和上个月的/);
+    assert.match(text, /数据库备份：每天备份一次，保留 30 天/);
+    assert.equal(/AI 解读和条款对照：任务输入 7 天后删除，任务和结果 30 天后删除/.test(text), tasks[0].kind === 'interpret');
+    assert.doesNotMatch(text, /内测/); assert.match(text, /完整标识.*复制（联系客服时用）/);
+  }
 });
 
 test('J-09 截止页保留完整省份选项，筛部门后仍能直接切省份', async () => {

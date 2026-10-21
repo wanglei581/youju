@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -31,7 +32,7 @@ function load(file, deps, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

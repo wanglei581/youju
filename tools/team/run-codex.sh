@@ -26,6 +26,8 @@ for round in 1 2 3 4 5; do
     if [ -s "$R/out.md" ]; then
       echo "exit ok (model $m, round $round)"
       cat "$R/out.md"
+      # 结果末尾没换行时补一个：外面追加的 exit= 才会单独成行（10/18 有个等 "^exit=" 的循环因此空转了 4 小时）
+      [ -n "$(tail -c1 "$R/out.md")" ] && echo
       exit 0
     fi
     if grep -q "401 Unauthorized" "$R/log.txt"; then
@@ -37,7 +39,7 @@ for round in 1 2 3 4 5; do
       continue
     fi
     if grep -qiE "reconnecting|stream disconnected|error sending request|routing discovery failed|timed out" "$R/log.txt"; then
-      echo "网络中断（模型 $m），60 秒后重试"
+      echo "网络中断（模型 ${m}），60 秒后重试"
       break
     fi
     echo "failed (model $m)"

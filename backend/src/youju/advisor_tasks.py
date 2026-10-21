@@ -26,7 +26,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from youju import access_log
-from youju.ai import advisor_endpoint, clause, interpret
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -60,6 +60,14 @@ REFUSAL_CACHE = timedelta(days=1)
 AI_CAP_LOCK = "youju_ai_advisor_daily_cap"
 AI_CAP_LOCAL_LOCK = Lock()
 AI_CAP_MESSAGE = "今天的 AI 使用次数已满，请明天再试"
+# 任务排队时失去授权（AI 关了、移出白名单）退回次数时记的原因；接口据此给错误代码 AI_OFF
+AI_OFF_MESSAGE = "功能未开放"
+# 任务结果里的错误代码（D-075）：小程序按代码写原因，不靠比对文字
+ERROR_CODES = {
+    AI_CAP_MESSAGE: "AI_DAILY_CAP",
+    AI_OFF_MESSAGE: "AI_OFF",
+    heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+}
 
 
 class AdvisorBusy(Exception):
@@ -192,6 +200,8 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
+        # D-075：AI 任务失败原因的代码（全站上限、AI 关了），小程序按代码写原因，不靠比对文字
+        "errorCode": ERROR_CODES.get(task.error) if task.kind in AI_KINDS and task.error else None,
         "usageSource": task.usage_source,
     }
     if include_result:
@@ -386,27 +396,38 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
     return count or 0
 
 
-def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> None:
-    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。"""
+def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> int:
+    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。
+
+    admin 这边处理不了 AI 任务（开关关着、白名单是空的，或对外 AI 的密钥没配；和心跳用同一个
+    判断 heartbeat.worker_capable）时，排队的 AI 任务全部退回，用户看到"AI 暂时不可用"，个数和
+    退回在同一个事务里记进心跳，给运维提醒（D-075）；只是这个人不在白名单里了（被移出），
+    写"功能未开放"，不提醒。"""
+    paused = not heartbeat.worker_capable(settings)
+    condition = AdvisorTask.kind.in_(AI_KINDS) & (
+        (AdvisorTask.status == "queued")
+        | (
+            (AdvisorTask.status == "running")
+            & AdvisorTask.started_at.is_not(None)
+            & (AdvisorTask.started_at < stamp - STALE_RUNNING)
+        )
+    )
+    if not paused:
+        condition = condition & AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings))
     tasks = session.scalars(
         select(AdvisorTask)
-        .where(
-            AdvisorTask.kind.in_(AI_KINDS),
-            AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings)),
-            (AdvisorTask.status == "queued")
-            | (
-                (AdvisorTask.status == "running")
-                & AdvisorTask.started_at.is_not(None)
-                & (AdvisorTask.started_at < stamp - STALE_RUNNING)
-            ),
-        )
+        .where(condition)
         .order_by(AdvisorTask.id)
         .with_for_update(skip_locked=True)
     ).all()
     for task in tasks:
-        task.status, task.error, task.finished_at = "failed", "功能未开放", stamp
+        task.status, task.finished_at = "failed", stamp
+        task.error = heartbeat.UNAVAILABLE if paused else AI_OFF_MESSAGE
         release_usage(session, task)
+    if paused:
+        heartbeat.add_refunds(session, len(tasks), stamp)
     session.commit()
+    return len(tasks)
 
 
 def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
@@ -506,12 +527,18 @@ def process_ai(
             # 模型拒答（逐字核对后一条不剩）只复用 1 天：挡住反复提交同一份触发模型调用，
             # 又不让一次偶然的拒答把这份通知锁 30 天（模型输出会波动，见 AI 评测第八节）。
             window = REFUSAL_CACHE if cached.result_json.get("refusal") else FILE_RETENTION
-            if generated > stamp - window and cached.snapshot:
+            cached_doc = (cached.snapshot or {}).get("doc_id")
+            if generated > stamp - window and cached_doc:
                 try:
                     _, _, cached_current_key = interpret.prepare(
-                        session, cached.snapshot["doc_id"], model, skill=skill
+                        session, cached_doc, model, skill=skill
                     )
-                    reusable = cached_current_key == key
+                    # 缓存键相同只说明原文和核对一样；发给模型的脱敏后段落也要一样才复用，
+                    # 免得脱敏规则改了以后旧摘录被新任务复制出来；旧缓存缺正文指纹或段落的不复用，
+                    # 重新调用模型（D-073，Codex 第二、三轮）
+                    reusable = cached_current_key == key and not interpret.body_changed(
+                        cached.snapshot, snapshot
+                    )
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
@@ -554,14 +581,20 @@ def process_ai(
                 model_disclosure=interpret.disclosure(settings),
                 skill=skill,
             )
-            # 调用期间原文或核对状态可能变更；刷新后重新校验，不发布旧快照。
+            # 调用期间原文或核对状态可能变更；刷新后重新校验。D-073：正文变了不发布；
+            # 只是核对或附件变了照常发布，"已核对"和附件提醒换成现在的
             session.flush()
             session.expire_all()
-            _, _, current_key = interpret.prepare(
+            current, current_verified, current_key = interpret.prepare(
                 session, task.input_json["doc_id"], model, skill=skill
             )
             if key != current_key:
-                raise interpret.InterpretRefusal("正文或核对内容已变化，请重新提交")
+                if interpret.body_changed(snapshot, current):
+                    raise interpret.InterpretRefusal(interpret.BODY_CHANGED)
+                result = interpret.refresh_verification(
+                    result, current_verified, current["attachments"]
+                )
+                task.snapshot, task.cache_key = current, current_key
         task.result_json = result
         task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
@@ -774,20 +807,21 @@ def run_advisor_tasks(
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
-    _fail_revoked_interpret(session, settings, stamp)
+    revoked = _fail_revoked_interpret(session, settings, stamp)
     data_enabled = getattr(settings, "advisor_enabled", False)
-    ai_enabled = interpret.worker_enabled(settings)
+    # 和心跳、上面的退回同一个判断：缺对外 AI 密钥时也不领 AI 任务（排队的已经退回）
+    ai_enabled = heartbeat.worker_capable(settings)
     data_allowed = AdvisorTask.kind.in_(("compare", "track"))
     ai_allowed = AdvisorTask.kind.in_(AI_KINDS) & AdvisorTask.user_id.in_(
         interpret.worker_user_ids(settings)
     )
     if not data_enabled and not ai_enabled:
-        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
+        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "revoked": revoked}
     allowed = data_allowed if data_enabled else ai_allowed
     if data_enabled and ai_enabled:
         allowed = data_allowed | ai_allowed
     requeued = recover_stale(session, stamp, allowed)
-    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
+    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued, "revoked": revoked}
     claimed: set[int] = set()
     claim_lock = Lock()
 

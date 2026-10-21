@@ -8,6 +8,7 @@ const { exportDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+const access = require('../../utils/ai-access.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
@@ -128,6 +129,9 @@ Page({
     folded: 0,
     guides: 0,
     fold: { text: '', link: '' },
+    // 只看能解读的（D-075，板块首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
+    // 不算筛选条件，不进关注、不进转发路径；板块对这个人没开着时不生效、也不显示
+    aiOnly: false,
   },
 
   onLoad(query) {
@@ -154,9 +158,26 @@ Page({
       q: decode(query.q),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
+    if (String(query.ai) === '1') {
+      // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
+      const now = access.current();
+      this.setData({ aiOnly: now.confirmed === true && now.visible === true });
+      // 跟着后台的确认走：确认开着就加上这一项；没开着、注销后被擦掉（还没重新问到）就去掉，都重新查；页面上不留相关字样
+      this.unsubscribeAi = access.subscribe((state) => {
+        const on = state.confirmed === true && state.visible === true;
+        if (on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
+      });
+      access.ensure();
+    }
     this.refreshChips();
     this.apply(true);
     this.loadCities();
+  },
+
+  removeAi() {
+    if (this.unsubscribeAi) { this.unsubscribeAi(); this.unsubscribeAi = null; }
+    this.setData({ aiOnly: false });
+    this.apply(true);
   },
 
   // 收录范围：this.coverage 为 undefined 是还在取，null 是没取到（loadCoverage 失败时返回 null）
@@ -193,10 +214,13 @@ Page({
   onUnload() {
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
+    if (this.unsubscribeAi) this.unsubscribeAi();
   },
 
   onShow() {
     if (api.watchStartup) api.watchStartup(this);
+    // 带 ai=1 进来的：回到前台时再问一次板块状态（多久真问一次由 ensure 管，第 11 轮）
+    if (this.unsubscribeAi) access.ensure();
     this.setData({ today: todayISO() });
     // 页面在后台跨过零点后再显示，时间筛选要按今天重新查
     if (this.loaded) this.apply(true);
@@ -259,6 +283,7 @@ Page({
     const { items } = this.data;
     // fold 不是筛选条件，不进关注：1 折叠资讯与指南（只给篇数），0 列出来
     const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length, fold: this.data.showGuides ? 0 : 1 });
+    if (this.data.aiOnly) params.ai = 1;
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空

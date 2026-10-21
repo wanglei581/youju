@@ -14,17 +14,17 @@ git -C "$MAIN" worktree prune
 for dir in "$ROOT"/*/; do
   name=$(basename "$dir")
   case " $KEEP " in *" $name "*) continue;; esac
-  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || { echo "跳过 $name：不是 git 工作区"; continue; }
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || { echo "跳过 ${name}：不是 git 工作区"; continue; }
   if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
-    echo "保留 $name：有未提交的改动或未跟踪的文件"; continue
+    echo "保留 ${name}：有未提交的改动或未跟踪的文件"; continue
   fi
   head=$(git -C "$dir" rev-parse HEAD)
   if [ -z "$(git -C "$MAIN" branch -r --contains "$head" 2>/dev/null)" ]; then
-    echo "保留 $name：有提交还没推到 GitHub"; continue
+    echo "保留 ${name}：有提交还没推到 GitHub"; continue
   fi
   size=$(du -sh "$dir" 2>/dev/null | cut -f1)
-  if [ $DRY = 1 ]; then echo "可删 $name（$size）"; continue; fi
-  if git -C "$MAIN" worktree remove --force "$dir" 2>/dev/null; then echo "已删 $name（$size）"; else echo "删除失败 $name"; fi
+  if [ $DRY = 1 ]; then echo "可删 ${name}（${size}）"; continue; fi
+  if git -C "$MAIN" worktree remove --force "$dir" 2>/dev/null; then echo "已删 ${name}（${size}）"; else echo "删除失败 $name"; fi
 done
 git -C "$MAIN" worktree prune
 du -sh "$ROOT" 2>/dev/null

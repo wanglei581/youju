@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,7 +12,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout, Promise,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -132,7 +133,7 @@ test('不能打开的附件：不下载，复制原文链接并说明原因', as
   const att = { id: '8', ext: 'WPS', name: '汇总表', preview: false, reason: 'format' };
   assert.equal(await s.mod.open(att, DOC_URL), false);
   assert.deepEqual(s.copied, [[DOC_URL, '该格式不能在小程序内打开，已复制原文链接']]);
-  for (const [reason, text] of [['pending', '附件副本还在准备'], ['personal', '附件含个人信息，请看原文'], ['failed', '附件副本没能从原网站取到']]) {
+  for (const [reason, text] of [['pending', '附件暂未缓存副本，请看原文'], ['personal', '附件含个人信息，请看原文'], ['failed', '附件副本没能从原网站取到']]) {
     await s.mod.open({ preview: false, reason }, DOC_URL);
     assert.deepEqual(s.copied.at(-1), [DOC_URL, `${text}，已复制原文链接`]);
   }
@@ -187,8 +188,11 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   const wxml = read('pages/detail/index.wxml');
   assert.match(wxml, /wx:for="{{atts}}"[^>]*bindtap="openAttachment"/);
   assert.match(wxml, /{{attNote}}/);
-  // 转发只来自 openDocument 自带的右上角菜单：页面不加分享按钮；正式版不出现 AI、智能
-  for (const source of [wxml, read('utils/attachments.js'), read('pages/detail/index.js')]) {
+  // 附件转发只来自 openDocument 自带的右上角菜单，附件区域不加分享按钮；正式版不出现 AI、智能。
+  // 10/18 创始人批准验收问题 9a：整份通知可以从底栏唯一的"转发"按钮转（class bar-share），不是附件的
+  const shareButtons = wxml.match(/<button[^>]*open-type="share"[^>]*>/g) || [];
+  assert.equal(shareButtons.length, 1); assert.match(shareButtons[0], /class="bar-item bar-share"/);
+  for (const source of [wxml.replace(shareButtons[0], ''), read('utils/attachments.js'), read('pages/detail/index.js')]) {
     assert.doesNotMatch(source, /open-type="share"|分享给|智能|\bAI\b/);
   }
 });

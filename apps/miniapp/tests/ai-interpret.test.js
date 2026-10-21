@@ -1,8 +1,10 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+require('./helpers/internal-build.js'); // 本文件按 AI 内测包测，见该文件说明
 const logic = require('../utils/ai-interpret.js');
 const advisor = require('../utils/tool-context.js');
 const { render, assertAiGuarded, parse } = require('./helpers/wxml.js');
@@ -20,7 +22,7 @@ function load(file, deps, globals = {}) {
   let definition; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; }, ...globals,
   }, { filename: file });
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;
@@ -227,7 +229,32 @@ test('429 保留后端 detail，404 使用固定提示；两者不重试消耗�
   for (const status of [429, 404]) {
     const h = sessionHarness({ api: { createAdvisorTask: () => Promise.reject(Object.assign(new Error('今天额度已用完'), { status })) } });
     h.session.show(); await flush(); assert.equal(h.state.phase, 'failed'); assert.equal(h.state.canRetry, false);
-    assert.equal(h.state.error, status === 404 ? '暂时没有可用工具' : '今天额度已用完'); h.session.hide();
+    assert.equal(h.state.error, status === 404 ? 'AI 暂时不可用，请稍后再试。' : '今天额度已用完'); h.session.hide();
+  }
+  // D-075：后台带代码的拒绝。这份不能解读写原因、不给重试；后台处理不了写暂时不可用，并让页面重新问 AI 开没开；
+  // 提交时撞上全站上限写总用量满了
+  const coded = [
+    [422, { code: 'AI_NOT_ELIGIBLE', reason: 'list' }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', false],
+    [422, { code: 'AI_NOT_ELIGIBLE', reason: 'too_long' }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', false],
+    [429, { code: 'AI_UNAVAILABLE' }, 'AI 暂时不可用，请稍后再试。', true],
+    [429, { code: 'AI_DAILY_CAP' }, '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。', false],
+  ];
+  for (const [status, extra, text, unavailable] of coded) {
+    const h = sessionHarness({ api: { createAdvisorTask: () => Promise.reject(Object.assign(new Error('后端的话'), { status }, extra)) } });
+    h.session.show(); await flush();
+    assert.equal(h.state.phase, 'failed'); assert.equal(h.state.error, text); assert.equal(h.state.canRetry, false);
+    assert.equal(h.state.errorCode, extra.code); assert.equal(h.state.unavailable, unavailable); h.session.hide();
+  }
+  // 任务失败按错误代码写，都写明没扣次数；没有代码的照旧用后台的文字
+  for (const [errorCode, text] of [
+    ['AI_DAILY_CAP', '今天 AI 的总用量满了，明天 0 点恢复；这次没有扣你的次数。'],
+    ['AI_UNAVAILABLE', 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。'],
+    ['AI_OFF', 'AI 暂时不可用，请稍后再试；这次没有扣你的次数。'],
+    [null, '后台写的原因'],
+  ]) {
+    const h = sessionHarness({ session: { taskId: 5 }, api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '后台写的原因', errorCode }) } });
+    h.session.show(); await flush();
+    assert.equal(h.state.error, text); assert.equal(h.state.errorCode, errorCode || ''); h.session.hide();
   }
 });
 
@@ -240,13 +267,36 @@ test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文
   }
 });
 
+test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；没标、失败时都不显示说明', async () => {
+  const done = (outdated) => (id) => Promise.resolve(Object.assign({ id, status: 'done', result: { items: [] } }, outdated ? { outdated: true } : {}));
+  const marked = sessionHarness({ session: { taskId: 9 }, api: { advisorTask: done(true) } });
+  marked.session.show(); await flush();
+  assert.equal(marked.state.phase, 'done'); assert.equal(marked.state.outdated, true); marked.session.hide();
+  const plainDone = sessionHarness({ session: { taskId: 10 }, api: { advisorTask: done(false) } });
+  plainDone.session.show(); await flush(); assert.equal(plainDone.state.outdated, false); plainDone.session.hide();
+  const failed = sessionHarness({ session: { taskId: 11 }, api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '通知正文已变化，请重新解读' }) } });
+  failed.session.show(); await flush();
+  assert.equal(failed.state.outdated, false); assert.equal(failed.state.error, '通知正文已变化，请重新解读'); failed.session.hide();
+  // 两个结果页都把这句说明放在附件提醒前面
+  for (const page of ['advisor-interpret', 'advisor-clause']) {
+    const wxml = read(`pages/${page}/index.wxml`);
+    const at = wxml.indexOf('wx:if="{{outdated}}"');
+    assert.ok(at > -1 && at < wxml.indexOf('result.attachmentNotice'), page);
+    assert.match(wxml, /正文没变/);
+  }
+});
+
 test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据工具开关不影响', async () => {
   for (const [dataEnabled, aiEnabled] of [[false, false], [true, false], [false, true], [true, true]]) {
     let navigationTitle; const capabilities = caps(dataEnabled, aiEnabled);
     const api = { advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 2, maxRows: 50 }, track: { limit: 3, used: 2, maxRows: 50 } } }), advisorCapabilities: () => Promise.resolve(capabilities), advisorTasks: () => Promise.resolve({ items: [{ id: 1, kind: 'interpret', status: 'done', docTitle: '通知' }, { id: 2, kind: 'compare', status: 'done' }] }) };
-    const fab = load('components/ai-entry/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers });
+    // 详情页的卡片显不显示只听 AI 板块状态（D-075，utils/ai-access.js）：这里直接给"开着/关着"
+    const access = Object.assign({}, AI_OFF, { current: () => ({ visible: aiEnabled, confirmed: true, available: aiEnabled }) });
+    const fab = load('components/ai-entry/index.js', { '../../utils/ai-access.js': access, '../../utils/tool-context.js': advisor,
+      '../../utils/ai-reasons.js': require('../utils/ai-reasons.js'), '../../utils/copy.js': { copyLink() {} } });
     fab.properties = Object.fromEntries(Object.entries(fab.properties).map(([key, value]) => [key, value.value]));
-    Object.assign(fab, fab.methods); fab.alive = true; fab.load(); await flush();
+    fab.properties.ai = { interpret: true, clause: true, reason: null };
+    Object.assign(fab, fab.methods); fab.lifetimes.attached.call(fab); await flush();
     const text = render(read('components/ai-entry/index.wxml'), { ...fab.data, blocked: false });
     assert.equal(text.startsWith('AI 解读') && text.includes('开始解读'), aiEnabled); if (!aiEnabled) assert.equal(text, '');
     const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers, '../../utils/boost.js': require('../utils/boost.js') },
@@ -261,7 +311,7 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
       assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, dataEnabled ? 1 : 0);
     }
     assert.equal(rendered.includes('批量名单比对'), dataEnabled);
-    assert.equal(navigationTitle, aiEnabled && !dataEnabled ? 'AI 工具 · 内部测试' : '工具');
+    assert.equal(navigationTitle, '工具中心');
     if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，在“要点”下面的“AI 解读”卡片里点“开始解读”/); assert.match(noContext, /去找通知/); }
     page.onHide();
   }
@@ -282,6 +332,20 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
     assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '工具');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
+  }
+});
+
+test('换了手机打开已有解读：须知按钮写"查看结果"；从通知进来写"开始解读"', async () => {
+  for (const taskId of ['', '7']) {
+    const local = storage();
+    const page = load('pages/advisor-interpret/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps(false, true)), advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
+      '../../utils/ai-interpret.js': logic, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers,
+    }, { wx: { ...local, setNavigationBarTitle() {} } });
+    page.onLoad(taskId ? { taskId } : { docId: '42', title: '通知' }); page.onShow(); await flush();
+    const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
+    assert.match(output, /使用须知/); assert.match(output, taskId ? /我知道了，查看结果/ : /我知道了，开始解读/);
+    assert.doesNotMatch(output, taskId ? /开始解读/ : /查看结果/); page.onUnload();
   }
 });
 
@@ -315,7 +379,8 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   // 解读结果下面可选"和我的企业对一下"：没开条款对照的不显示、点了也不跳；开了才带通知编号进条款对照
   assert.doesNotMatch(output, /和我的企业对一下/); const before = urls.length; page.clause(); assert.equal(urls.length, before);
   page.setData({ clauseEnabled: true });
-  assert.match(render(read('pages/advisor-interpret/index.wxml'), page.data), /和我的企业对一下（可选）/); page.clause();
+  // 同一件事只用一个名字（D-075）：结果下面的可选下一步叫"条款对照"，按钮写"开始对照"
+  assert.match(render(read('pages/advisor-interpret/index.wxml'), page.data), /条款对照（可选）.*开始对照/); page.clause();
   assert.equal(urls.at(-1), `/pages/advisor-clause/index?docId=42&title=${encodeURIComponent('通知 & 标题')}`);
   page.original(); assert.equal(urls.at(-1), '/pages/detail/index?id=42');
   page.feedback(); assert.equal(urls.at(-1), '/pages/feedback/index?id=42&title=' + encodeURIComponent('通知 & 标题'));

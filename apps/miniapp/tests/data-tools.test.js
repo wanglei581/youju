@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -18,7 +19,7 @@ function load(file, deps, globals = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
     // 纯函数模块（支付文案和格式化）直接用真的，其他依赖必须由测试给出
-    require(key) { if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /daywatch\.js$/.test(key)) return require('./helpers/day-off.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, key) && key === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
@@ -40,6 +41,54 @@ function form(options = {}) {
   page.onLoad({ kind: options.kind || 'compare' }); page.onShow();
   return { page, calls, urls, storage, picked: () => picked };
 }
+
+test('像手机号、身份证号的行能认出来（只给行号）；统一社会信用代码和普通企业名不误报（10/18 验收）', () => {
+  const logic = dataLogic();
+  const text = ['合成样例甲科技有限公司', '联系人 13812345678', '110105199003078211', '91370200MA3C9X7Y2K', '110105199003078214', '合成样例2026年度十佳企业'].join('\n');
+  // 第 3 行身份证号校验位正确；第 5 行校验位不对，不当成身份证号
+  assert.deepEqual(plain(logic.personalInfoLines(text)), [2, 3]);
+  assert.deepEqual(plain(logic.personalInfoLines('合成样例乙生物有限公司\n913702001234567890')), []);
+  // Codex 审阅：分段写的、全角的手机号也认；校验位不对的号码后面还有真的身份证号也认；座机（单位总机）不提醒
+  const more = ['电话 138 1234 5678', '电话 138-1234-5678', '电话 １３８１２３４５６７８', '110105199003078214、110105199003078211', '总机 0532-88886666', '合成样例丙公司 2026 年 3 月'].join('\n');
+  assert.deepEqual(plain(logic.personalInfoLines(more)), [1, 2, 3, 4]);
+  // Codex 第 2 轮：编号、代码里的一段和金额不算手机号；句末的句号不影响
+  const notPhones = ['序号A13812345678Z', '金额13812345678.00', '9137AA13812345678X', '2026-11-18', '联系 13812345678。'].join('\n');
+  assert.deepEqual(plain(logic.personalInfoLines(notPhones)), [5]);
+  // Codex 第 3 轮：常见的正常写法都要认出来（冒号、中文逗号、行首行尾、括号）
+  const phones = ['电话：13812345678', '13812345678，请回电', '联系人王某 13812345678', '（13812345678）', '13812345678'].join('\n');
+  assert.deepEqual(plain(logic.personalInfoLines(phones)), [1, 2, 3, 4, 5]);
+});
+
+test('粘贴内容像个人信息时先提醒、不发预览；选"仍要预览"才发，同一段内容不重复提醒', async () => {
+  const modals = [];
+  let answer = { cancel: false, confirm: true };
+  const h = form({ wx: { showModal: (o) => { modals.push(o); o.success(answer); } } });
+  await flush();
+  h.page.input({ detail: { value: '合成样例甲科技有限公司\n联系人 13812345678' } });
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 1); assert.match(modals[0].content, /第 2 行/); assert.doesNotMatch(modals[0].content, /13812345678/);
+  assert.equal(h.calls.filter((c) => c[0] === 'preview').length, 0);
+  answer = { cancel: true, confirm: false };
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 2); assert.equal(h.calls.filter((c) => c[0] === 'preview').length, 1);
+  h.page.preview(); await flush();
+  assert.equal(modals.length, 2);
+});
+
+test('表单写明怎样把表格放进微信、每提交一次算 1 次；通知表的长说明默认收起', () => {
+  const wxml = fs.readFileSync(path.join(root, 'pages/advisor-form/index.wxml'), 'utf8');
+  assert.match(wxml, /文件传输助手/); assert.match(wxml, /每提交一次算 1 次/); assert.match(wxml, /临时解析行数，不保存/);
+  assert.match(wxml, /其他列（如联系人、电话）不使用、不保存，建议上传前删掉/);
+  assert.match(wxml, /kind === 'track' && showFillHelp/);
+});
+
+test('我的记录：失败、取消的任务写明"这次不算次数"，完成的不写（10/18 验收）', () => {
+  assert.equal(helpers.taskView({ id: 1, kind: 'compare', status: 'failed' }).refundNote, '这次不算次数');
+  assert.equal(helpers.taskView({ id: 2, kind: 'track', status: 'cancelled' }).refundNote, '这次不算次数');
+  assert.equal(helpers.taskView({ id: 3, kind: 'compare', status: 'done' }).refundNote, '');
+  assert.equal(helpers.taskView({ id: 4, kind: 'compare', status: 'queued' }).refundNote, '');
+  assert.match(fs.readFileSync(path.join(root, 'pages/advisor-tasks/index.wxml'), 'utf8'), /item\.refundNote/);
+});
 
 test('CSV 引号与多条件保留，格式错误拒绝，不把名称里的逗号拆成新客户', () => {
   const logic = dataLogic();
@@ -202,8 +251,8 @@ test('独立说明须主动勾选，并先确认通用协议，再记录 advisor
 test('新增表单和独立说明均注册，模板完整；工具入口覆盖首页、我的、客户页', () => {
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
-  // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）
-  assert.equal(app.pages.length, 24);
+  // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）+ AI 板块首页和使用帮助（D-075）
+  assert.equal(app.pages.length, 26);
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }
@@ -436,6 +485,9 @@ test('客户通知表粘贴按服务端城市规则逐行报错：只填一个�
   const h = form({ kind: 'track' }); await flush();
   h.page.input({ detail: { value: '合成甲,山东,,,青岛;烟台' } }); assert.match(h.page.data.inputError, /第 1 行城市只填一个/); assert.equal(h.page.data.rowCount, 0);
   h.page.preview(); assert.equal(h.calls.length, 0);
+  // 10/18：省、市、区县的长说明默认收起，点开后才显示
+  assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', h.page.data)), /区县写完整名称/);
+  h.page.toggleFillHelp();
   const shown = textOf(render('pages/advisor-form/index.wxml', h.page.data));
   assert.match(shown, /关键词、支持方式多项用分号分隔，城市只填一个/); assert.match(shown, /国家部委不填城市/); assert.doesNotMatch(shown, /后三项可留空，多项用分号分隔/);
   h.page.onUnload();
@@ -471,6 +523,21 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
     assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    // 403 时不知道服务端开没开批量工具：介绍卡只说"有什么"，不承诺同意后一定能用（Codex 审阅）
+    if (name === 'advisor') { assert.match(shown, /工具中心有什么/); assert.doesNotMatch(shown, /同意后可以用/); }
+    page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
+  }
+});
+test('老用户协议更新后：工具中心和我的记录直接写"协议已更新"，按钮照旧走同意', async () => {
+  const gated = () => Promise.resolve({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent', consentUpdated: true });
+  for (const name of ['advisor', 'advisor-tasks']) {
+    let asked = 0;
+    const page = load(`pages/${name}/index.js`, { '../../utils/api.js': { advisorCapabilities: gated, advisorTasks: () => Promise.resolve({ items: [] }) }, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context,
+      '../../utils/consent.js': { ensureConsent: () => { asked += 1; return Promise.resolve(false); } } }, { wx: { setNavigationBarTitle() {} } });
+    if (page.onLoad) page.onLoad({});
+    page.onShow(); await flush();
+    const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
+    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用工具/, name); assert.doesNotMatch(shown, /使用工具前/, name);
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });

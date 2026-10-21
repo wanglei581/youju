@@ -1,5 +1,6 @@
 // 加量体验（D-070 ③）和申报季加量（⑤）：文字工具、批量工具页的入口和提交判断、确认页、工具中心。
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,7 +24,7 @@ function load(file, deps, globals = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(root, file), 'utf8'), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(key) { assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /daywatch\.js$/.test(key)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
@@ -66,7 +67,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   for (const must of [/连续 3 天/, /连续 72 小时/, /中途不能暂停/, /到 10月23日 10:00（北京时间）结束/, /每次最多 500 家（平时每次 50 家）/,
     /两项合计每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
     /体验期间只用体验的次数，这些不扣、也不能改用，体验结束后接着用/,
-    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次：账号跟着微信号走/, /同事共用这一次/, /名单准备好再开始/]) {
+    /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次，只限本人使用，不能几个人共用/, /名单准备好再开始/]) {
     assert.match(text, must);
   }
   assert.doesNotMatch(text, SALES);
@@ -199,14 +200,16 @@ test('体验中：免费次数用满也能提交 500 家以内；额度一行写
   assert.match(server.page.data.statusLine, /今天还能提交 0 次/); server.page.onUnload();
 });
 
+const STALE_DAY = '2000-01-01';
 test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一天能接着提交；重读只做一次、读不到就提示', async () => {
   let current = status({ maxRows: 500, trial: trialActive(10) });
   let reads = 0;
   const h = form({ api: { advisorStatus: () => { reads += 1; return Promise.resolve(current); } } });
   await flush();
   h.page.input({ detail: { value: '合成企业甲' } }); h.page.preview(); await flush();
-  // 模拟这份额度是昨天读的；服务端今天的体验次数已经重新计数
-  h.page.setData({ quotaDay: '2026-10-19' });
+  // 模拟这份额度是以前某天读的；服务端今天的体验次数已经重新计数。
+  // 用一个不可能是今天的日期（原来写死 2026-10-19，到了 10/19 当天这条就失败了）
+  h.page.setData({ quotaDay: STALE_DAY });
   current = status({ maxRows: 500, trial: trialActive(0) });
   const before = reads;
   h.page.submit(); await flush(); await flush();
@@ -221,7 +224,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   still.page.setData({ trialActive: true, trialLeft: 0, trialEndsMs: 1, trialCap: '今天的 10 次加量体验已用完' });
   still.page.input({ detail: { value: '合成企业甲' } }); still.page.preview(); await flush();
   const seen = count;
-  still.page.setData({ quotaDay: '2026-10-19' });
+  still.page.setData({ quotaDay: STALE_DAY });
   still.page.submit(); await flush(); await flush();
   assert.ok(count - seen <= 1, `重读了 ${count - seen} 次`);
   assert.equal(still.calls.filter((c) => c[0] === 'create').length, 0);
@@ -232,7 +235,7 @@ test('页面一直开着跨过 0 点：被挡住前先重读额度，新的一�
   const broken = form({ api: { advisorStatus: () => (fail ? Promise.reject(new Error('网络连接失败')) : Promise.resolve(status({ maxRows: 500, trial: trialActive(10) }))) } });
   await flush();
   broken.page.input({ detail: { value: '合成企业甲' } }); broken.page.preview(); await flush();
-  fail = true; broken.page.setData({ quotaDay: '2026-10-19' });
+  fail = true; broken.page.setData({ quotaDay: STALE_DAY });
   broken.page.submit(); await flush(); await flush();
   assert.match(broken.page.data.inputError, /未能读取工具额度：网络连接失败/);
   assert.equal(broken.calls.filter((c) => c[0] === 'create').length, 0);
@@ -284,7 +287,8 @@ function trialPage(options = {}) {
   let current = options.status || status({ used: 1, trial: trialAvailable() });
   const api = { advisorStatus: () => { calls.push('status'); return Promise.resolve(current); },
     startBoostTrial: () => { calls.push('start'); return options.start ? options.start() : Promise.resolve(trialActive()); } };
-  const wx = { navigateBack: (o) => { nav.push('back'); if (options.noBack && o && o.fail) o.fail(); }, redirectTo: ({ url }) => nav.push(url), showToast: ({ title }) => toasts.push(title) };
+  const wx = { navigateBack: (o) => { nav.push('back'); if (options.noBack && o && o.fail) o.fail(); }, redirectTo: ({ url }) => nav.push(url), showToast: ({ title }) => toasts.push(title),
+    switchTab: ({ url }) => nav.push(`tab:${url}`), reLaunch: ({ url }) => nav.push(`relaunch:${url}`) };
   const consent = options.consent || { ensureConsent: () => Promise.resolve(false) };
   const page = load('pages/advisor-trial/index.js', { '../../utils/api.js': api, '../../utils/boost.js': boost, '../../utils/consent.js': consent }, { wx });
   page.onShow();
@@ -330,14 +334,20 @@ test('确认页：开始之前写全规则，点一次才开始，重复点不�
   h.page.onUnload();
 });
 
-test('确认页：用过了、使用期内、没开放时说明原因，不给开始；开始失败按服务端最新状态重新显示', async () => {
+test('确认页：用过了、使用期内时说明原因，不给开始；没开放时直接回首页、不写"暂未开放"；开始失败按服务端最新状态重新显示', async () => {
   for (const [trial, note] of [[{ ...trialAvailable(), available: false, reason: 'used' }, /已经用过，每个账号只能体验一次/],
-    [{ ...trialAvailable(), available: false, reason: 'pass' }, /体验留到以后再用/], [null, /加量体验暂未开放/]]) {
+    [{ ...trialAvailable(), available: false, reason: 'pass' }, /体验留到以后再用/]]) {
     const h = trialPage({ status: status({ trial }) }); await flush();
     const tree = trialShown(h.page);
     assert.match(textOf(tree), note); assert.equal(findAll(tree, tapsTo('start')).length, 0);
     h.page.start(); assert.equal(h.calls.includes('start'), false); h.page.onUnload();
   }
+  // 没开放（开关关着，服务端不给体验信息）：回首页，页面上没有"暂未开放"（D-074 ⑧）
+  const closed = trialPage({ status: status({ trial: null }) }); await flush();
+  assert.deepEqual(closed.nav, ['tab:/pages/home/index']);
+  assert.doesNotMatch(textOf(trialShown(closed.page)), /暂未开放/);
+  assert.equal(findAll(trialShown(closed.page), tapsTo('start')).length, 0);
+  closed.page.onUnload();
   const conflict = trialPage({ start: () => Promise.reject(Object.assign(new Error('加量体验已经用过，每个账号只能体验一次'), { status: 409, code: 'TRIAL_USED' })) }); await flush();
   conflict.set(status({ trial: { ...trialAvailable(), available: false, reason: 'used' } }));
   conflict.page.start(); await flush(); await flush();
@@ -375,3 +385,10 @@ test('确认页已注册、标题写明；页面不出现购买字样', () => {
     assert.doesNotMatch(source, SALES, file);
   }
 });
+
+test('我的数据页不出现"内测"之类的字样：完整标识一行写"完整标识 / 复制（联系客服时用）"（D-074 ⑧：不给用户看半成品）', () => {
+  const text = fs.readFileSync(path.join(root, 'pages/my-data/index.wxml'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  assert.doesNotMatch(text, /内测|测试版|体验版/);
+  assert.match(text, /完整标识<\/text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制（联系客服时用）<\/text>/);
+});
+

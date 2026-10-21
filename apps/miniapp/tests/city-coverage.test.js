@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -14,7 +15,7 @@ const coverage = { ...stats, national: true, regions: [], notCovered: [], update
 function load(file, deps) {
   let page;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
-    require: (name) => { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require: (name) => { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page: (d) => { page = d; },
   });
   return { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(v) { Object.assign(this.data, v); } };

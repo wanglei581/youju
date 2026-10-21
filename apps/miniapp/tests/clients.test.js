@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,7 +25,7 @@ function load(file, deps, globals = {}) {
   let def;
   vm.runInNewContext(read(file), {
     Page(d) { def = d; },
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     ...globals,
   }, { filename: file });
   return { ...def, data: plain(def.data), setData(v) { Object.assign(this.data, v); } };
@@ -85,7 +86,7 @@ test('最多 20 个客户；旧版本存的关键词不再保存', () => {
   utils.saveClients(Array.from({ length: 20 }, (_, i) => ({ ...CLIENT, id: `c${i}`, keywords: ['高新技术企业'] })));
   assert.ok(local.stored.youjuLocalClientsV1.every((c) => !('keywords' in c)));
   const page = clientsPage(local); page.onShow(); page.edit(tap({})); assert.equal(page.data.editing, false);
-  assert.equal(local.calls.at(-1), '最多保存 20 个客户');
+  assert.equal(local.calls.at(-1), '最多 20 家，更多请用工具中心批量处理');
   assert.throws(() => utils.saveClients(Array.from({ length: 21 }, (_, i) => ({ ...CLIENT, id: `c${i}` }))), /20/);
 });
 
