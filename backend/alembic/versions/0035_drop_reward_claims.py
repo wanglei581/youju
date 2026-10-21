@@ -18,7 +18,7 @@ MySQL 的 DDL 不能和别的语句一起回滚：users 的改动合成一条 AL
 回退只重建空表、空列和约束，数据不恢复。
 
 Revision ID: 0035
-Revises: 0032
+Revises: 0039
 """
 
 import sqlalchemy as sa
@@ -26,7 +26,7 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision = "0035"
-down_revision = "0032"
+down_revision = "0039"
 branch_labels = None
 depends_on = None
 COLUMNS = {
