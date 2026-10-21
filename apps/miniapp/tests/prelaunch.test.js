@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,7 +13,7 @@ function load(file, dependencies, globals = {}) {
   const context = {
     module, setTimeout, clearTimeout,
     require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js');
-      assert.ok(Object.hasOwn(dependencies, name), `缺少测试依赖：${name}`);
+      if (!Object.hasOwn(dependencies, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(dependencies, name), `缺少测试依赖：${name}`);
       return dependencies[name];
     },
     Page(definition) { page = definition; },

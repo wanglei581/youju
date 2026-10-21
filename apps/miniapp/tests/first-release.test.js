@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,7 +25,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../content/pay-terms.js' && !Object.hasOwn(deps, name)) return require('../content/pay-terms.js'); if (name === '../../utils/pay.js' && !Object.hasOwn(deps, name)) return require('../utils/pay.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../content/pay-terms.js' && !Object.hasOwn(deps, name)) return require('../content/pay-terms.js'); if (name === '../../utils/pay.js' && !Object.hasOwn(deps, name)) return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -496,6 +497,37 @@ test('首屏快照：首页、截止页、查名单在实时数据回来前先�
   assert.equal(lists.data.shown[0].title, '快照名单'); assert.equal(lists.data.scope.lists, 5); assert.equal(lists.data.loading, false);
   live.d.reject(new Error('网络不太好，请稍后再试')); await flush();
   assert.ok(!lists.data.error); assert.equal(lists.data.staleError, false);
+});
+
+test('实时请求先失败、首屏快照后到：首页和查名单显示快照，并清掉先写上的错误提示（10/18 验收，Codex 指出）', async () => {
+  const snap = {
+    home: { stats: { week_total: 1, provinces: 28, sources: 70 }, items: [{ id: '1', kind: '申报通知', title: '快照里的' }], dueSoon: [], dueSoonUnverifiedTotal: 0 },
+    lists: { week_total: 2, total: 2, items: [{ id: '7', title: '快照名单' }] },
+    scope: { by_type: [{ type: '其他', lists: 5, entries: 9 }], by_province: [], by_year: [] },
+  };
+  const deferred = () => { let d; const p = new Promise((resolve, reject) => { d = { resolve, reject }; }); return { p, d }; };
+  const { stored, wx } = storageWx();
+  let late = deferred();
+  const home = load('pages/home/index.js', {
+    '../../utils/boost.js': boost,
+    '../../utils/api.js': { home: () => Promise.reject(new Error('网络不太好，请稍后再试')), snapshotOnce: () => late.p },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/consent.js': { loginOpen: () => false },
+    '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  home.onLoad(); await flush(); await flush();
+  assert.match(home.data.error, /数据未更新/);
+  late.d.resolve(plain(snap)); await flush();
+  assert.equal(home.data.error, ''); assert.equal(home.data.items[0].title, '快照里的');
+  late = deferred();
+  const lists = load('pages/lists/index.js', {
+    '../../utils/api.js': { lists: () => Promise.reject(new Error('网络不太好，请稍后再试')), listBoard: () => new Promise(() => {}), snapshotOnce: () => late.p },
+    '../../utils/format.js': format, '../../utils/daywatch.js': daywatch, '../../utils/cache.js': realCache(wx),
+  }, { getApp: () => ({ globalData: {} }), wx });
+  delete stored.youjuListsCacheV1; delete stored.youjuListScopeV1;
+  lists.reload(); await flush(); await flush();
+  assert.match(lists.data.error, /加载失败/);
+  late.d.resolve(plain(snap)); await flush();
+  assert.ok(!lists.data.error); assert.equal(lists.data.shown[0].title, '快照名单');
 });
 
 test('截止核对断档（定稿方案第八节）：3 个及以上工作日没人工核对，首页"7 天内截止"写"今日未更新"', async () => {

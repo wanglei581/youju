@@ -5,8 +5,11 @@
 .title { margin-top: 14rpx; font-size: 32rpx; font-weight: 600; line-height: 48rpx; color: var(--t1); }
 .hl { color: var(--brand); }
 .issuer { margin-top: 14rpx; font-size: 25rpx; line-height: 1.6; color: var(--t2); }
-.meta { margin-top: 14rpx; display: flex; align-items: center; gap: 24rpx; font-size: 25rpx; color: var(--t2); }
+/* 窄屏放不下（日期、"原网页已失效"、复制链接、AI 解读）时，后面的操作换到下一行 */
+.meta { margin-top: 14rpx; display: flex; flex-wrap: wrap; align-items: center; gap: 8rpx 24rpx; font-size: 25rpx; color: var(--t2); }
 .issuer + .meta { margin-top: 4rpx; }
+/* 日期整个换行，不在"2026-09-"后面断开（10/19 开发者工具走查） */
+.meta-date { white-space: nowrap; }
 .copy { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
 .gone { margin-left: auto; flex-shrink: 0; color: var(--orange); white-space: nowrap; }
 .gone + .copy { margin-left: 0; }

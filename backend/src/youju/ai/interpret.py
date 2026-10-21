@@ -55,6 +55,8 @@ SYSTEM_PROMPT = (
 NOTICE = "AI 生成，仅供参考，以原文和主管部门解释为准"
 # 正文变了，旧结果的原文摘录可能对不上，作废（D-073：只在正文变了时作废）
 BODY_CHANGED = "通知正文已变化，请重新解读"
+# 正文超过这么多字不解读（一次整理不完、容易漏句）；小程序 components/ai-entry 的 MAX_BODY 与此一致
+MAX_BODY = 24000
 TYPES = ("对象", "支持", "条件", "时间", "方式", "材料")
 
 
@@ -77,7 +79,14 @@ SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*
 
 
 class InterpretRefusal(ValueError):
-    """无法公开完整原文时，不调用模型。"""
+    """无法公开完整原文时，不调用模型。
+
+    code 是给小程序的原因代码（D-075，models.AI_REASONS），只有 eligible_body 的几种拒绝带；
+    其他拒绝（正文刚变、结果已过期等）为 None，小程序照常显示文字。"""
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 def openids(settings: Settings) -> set[str]:
@@ -180,19 +189,21 @@ def eligible_body(session: Session, doc_id: int) -> tuple[Document, str, str, st
 
     doc = session.scalar(select(Document).where(Document.id == doc_id, available_condition()))
     if doc is None:
-        raise InterpretRefusal("文件不存在或已下架，无法解读")
+        raise InterpretRefusal("文件不存在或已下架，无法解读", "unavailable")
     kind = effective_kind(doc.title, doc.kind_override)
     if kind not in v1.BODY_KINDS:
-        raise InterpretRefusal("名单类及其他非政策、非申报通知文件不提供解读")
+        raise InterpretRefusal(
+            "名单类及其他非政策、非申报通知文件不提供解读", "list" if kind == "名单" else "kind"
+        )
     if doc.source.rights_level != 1:
-        raise InterpretRefusal("文件不是一级公开来源，无法解读")
+        raise InterpretRefusal("文件不是一级公开来源，无法解读", "source")
     raw = v1._reading_body(session, doc.id)
     # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
     body = v1.redact_sensitive(raw or "")
     if not body.strip():
-        raise InterpretRefusal("没有可公开的完整正文，请查看官方原文")
-    if len(body) > 24000:
-        raise InterpretRefusal("正文超过 24000 字，请查看官方原文")
+        raise InterpretRefusal("没有可公开的完整正文，请查看官方原文", "no_body")
+    if len(body) > MAX_BODY:
+        raise InterpretRefusal("正文超过 24000 字，请查看官方原文", "too_long")
     return doc, kind, raw, body
 
 

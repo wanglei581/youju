@@ -6,5 +6,5 @@ module.exports = {
   version: 'pay-2026-10-draft',
   final: false,
   title: '付费服务协议',
-  text: '【付费服务协议：待律师定稿】',
+  text: '【付费服务协议：待定稿】',
 };

@@ -73,7 +73,7 @@ function deadlineRows(deadlines) {
 }
 
 Page({
-  data: { doc: null, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
+  data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], attNote: '', versions: [], upstream: '' },
 
@@ -84,6 +84,16 @@ Page({
     this.docId = query.id;
     this.lastShow = Date.now();
     this.load();
+  },
+
+  // 标题卡里那行提示（D-075）：滚到"要点"下面的卡片
+  toAi() {
+    wx.pageScrollTo({ selector: '#ai-entry', duration: 300 });
+  },
+
+  // 卡片上"看附件"：滚到附件那一块
+  toAttachments() {
+    wx.pageScrollTo({ selector: '#attachments', duration: 300 });
   },
 
   // 转发给好友和群（D-070）：接收人不用登录也能打开同一份文件；不带任何奖励
@@ -98,7 +108,8 @@ Page({
     if (this.refreshing) return;
     this.refreshing = true;
     allowShare(false);
-    this.setData({ loading: true, error: '', takenDown: false });
+    // 底栏"转发"按钮和右上角菜单同步：加载或刷新时不能点，加载成功才能点
+    this.setData({ loading: true, error: '', takenDown: false, shareReady: false });
     api.detail(this.docId)
       .then((doc) => {
         // 只有人工核对过的截止日期才显示（合规红线）
@@ -138,6 +149,7 @@ Page({
           })),
         });
         allowShare(true);
+        this.setData({ shareReady: true });
         this.syncReminded();
       })
       .catch((err) => this.setData({

@@ -89,13 +89,19 @@ def _reset_admin_throttle():
     """管理口令输错计数放在进程内存里，每个测试前清零，免得前面测试的错误次数触发限流。"""
     from youju import access_log
     from youju.api import app as app_module
-    from youju.api import exports, v1
+    from youju.api import exports, pay, v1
 
+    # 订单主动核对的频率（同一张 2 秒内只问一次微信）也在进程内存里；订单编号每个测试从 1 重新数
+    pay._checked.clear()
+    pay._recent.clear()
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
     # 规则列算完没有：测试里每次都重新查，中途把列改成 NULL（模拟刚升级）马上生效
     v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 0.0
     app_module._admin_fails.clear()
+    # 成批失败的计数在进程内：上一个测试故意制造的 5xx 不能算到下一个测试头上
+    app_module._failed_state["recent"].clear()
+    app_module._failed_state["last_alert"] = None
     exports._export_times.clear()
     exports._instance_times.clear()
     # 每个测试清空了表，访问日志的密钥也要重新从库里取

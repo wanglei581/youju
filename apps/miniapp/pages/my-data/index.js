@@ -20,7 +20,7 @@ function maskId(id) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -70,18 +70,25 @@ Page({
             content: f.content,
             check: CHECK[f.checkResult] || f.checkResult,
             handling: f.handled ? '已处理' : '待处理',
+            // 处理结果和处理人写的说明（差距清单 C1）；以前处理的没有结果，照旧只写"已处理"
+            outcome: f.handled && f.outcomeLabel ? f.outcomeLabel : '',
+            reply: f.handled && f.reply ? f.reply : '',
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal },
           retention: d.retention,
+          // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
+          // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
+          aiRetention: (d.advisorTasks || []).some((t) => t.kind === 'interpret' || t.kind === 'clause') && d.retention && d.retention.toolTasks
+            ? `· AI 解读和条款对照：任务输入 ${d.retention.toolInput} 天后删除，任务和结果 ${d.retention.toolTasks} 天后删除` : '',
         });
       })
       .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
   },
 
   // 复制全部：完整的 JSON，可以粘贴保存（剪贴板只写不读）
-  // 内部包（D-062）：复制完整的微信用户标识，填到云托管的 YOUJU_AI_ADVISOR_OPENIDS 里给自己开 AI 内测
+  // 复制完整的微信用户标识：联系客服排查问题时用；给自己开 AI 白名单时填到云托管的 YOUJU_AI_ADVISOR_OPENIDS
   copyOpenid() {
     const openid = this.raw && this.raw.user && this.raw.user.openid;
     if (!openid) return;

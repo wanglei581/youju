@@ -1,1 +1,1 @@
-{ "component": true, "usingComponents": { "t-icon": "/components/icon/index" } }
+{ "component": true, "usingComponents": { "t-icon": "/components/icon/index", "ai-button": "/components/ai-button/index" } }
