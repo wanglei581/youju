@@ -247,6 +247,8 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
             f"含[姓名已脱敏][电话已脱敏] {n['name_phone']} 份，含[姓名已脱敏] {n['name']} 份；"
             f"要重新打开看的（含[邮箱已脱敏]或[姓名已脱敏]）{n['candidates']} 份"
             + (f"，编号 {n['first_id']}–{n['last_id']}" if n["candidates"] else "")
+            + f"；库里的正文按新规则再过一遍会变的 {n['display_changes']} 份"
+            "（这些文件的 AI 解读旧结果会作废）"
         )
         print(
             "refetch_redacted_count "
@@ -1497,7 +1499,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--apply", action="store_true", help="写入（只改正文）；不加只预览")
     p.add_argument(
-        "--count", action="store_true", help="只统计有多少份要重新打开看（只读，不打开网页）"
+        "--count",
+        action="store_true",
+        help="只统计有多少份要重新打开看（只读，不打开网页；要把正文全过一遍，2 万份约 1 分钟）",
     )
     p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
     p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")

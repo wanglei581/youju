@@ -33,8 +33,10 @@ _BANK = re.compile(
     r"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*[:：]?\s*)(?:\d[ -]?){11,18}\d(?!\d)"
 )
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址（同 api/me.py、附件文字）：以前用 \w，汉字也算，
-# 从上一个标点起连着邮箱的整段中文都被遮掉（"PDF电子版于7月2日前发送至abc@163.com"整段没了）
-_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# 从上一个标点起连着邮箱的整段中文都被遮掉（"PDF电子版于7月2日前发送至abc@163.com"整段没了）。
+# 不往前看（两个邮箱用"-""_"连着写时，后一个第一遍就遮掉，遮过的再过一遍不变）；用户名最多 64 个字，
+# 一长串英文字母不会让查找变慢
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
 _LANDLINE = r"0\d{2,3}[-－]\d{7,8}"
 _PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)")
 _AGENCY = re.compile(
@@ -94,9 +96,10 @@ def redact_sensitive(text: str) -> str:
     text = _ID_CARD.sub("[身份证号已脱敏]", text)
     text = _MOBILE.sub("[手机号已脱敏]", text)
     text = _ACCOUNT.sub(_account, text)
-    text = _mask_names(text)
     text = _EMAIL.sub("[邮箱已脱敏]", text)
-    return _PHONE.sub("[电话已脱敏]", text)
+    text = _PHONE.sub("[电话已脱敏]", text)
+    # 姓名最后认：邮箱、座机先换成"[…已脱敏]"，姓名前后挨着的是"]"，第一遍和再过一遍看到的一样
+    return _mask_names(text)
 
 
 # ---- 银行账号 ----
@@ -120,8 +123,7 @@ _ACCOUNT = re.compile(
     r"(\d++(?:[ -]\d++)*+)"
 )
 _DIGITS = re.compile(r"\d+")
-# 跟着这些字的一组数字是日期、金额、编号，不算进账号（"账号：1202… 2025年11月5日前"）
-_UNITS = "年月日元万亿号个次%时分秒"
+_YEAR = re.compile(r"(?:19|20)\d{2}")
 _YMD = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 
 
@@ -136,30 +138,39 @@ def _date_from(values: list[str], i: int) -> bool:
 
 
 def _account(match: re.Match) -> str:
-    """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位；这几组
-    不接：后面紧跟"年、月、元"等字的、日期、第一组已经 12 位以上而接上就超过 22 位的（"1202…568
-    1500"）。接上的有 10–30 位才遮，没接上的原样留着。"""
+    """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位。第二组起
+    碰到这几种就不接：日期（"20251010""2025 10 10"）、紧跟着"年"的年份（"账号：1234567890
+    2025年11月5日前"）、紧跟着"月""日"的一两位数、第一组已经 12 位以上而接上就超过 22 位的
+    （"1202…568 1500"）。后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。
+    接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
+    红线上的号码不能比以前漏得多。"""
     label, run = match.group(1), match.group(2)
+    whole = match.group()
     groups = list(_DIGITS.finditer(run))
     values = [group.group() for group in groups]
-    tail = match.string[match.end() : match.end() + 10]
+    after_run = match.string[match.end() : match.end() + 1]
     total = taken = 0
     for i, group in enumerate(groups):
-        # 这组后面隔着空白、横线的第一个字（PDF 里数字和"元"中间可能有好几个空格）
-        following = (run[group.end() :] + tail).lstrip(" -\t\u3000")[:1]
         size = len(values[i])
-        if following and following in _UNITS:
-            break
-        if i and (_date_from(values, i) or (len(values[0]) >= 12 and total + size > 22)):
-            break
+        if i:
+            following = run[group.end() : group.end() + 1] or after_run
+            if (
+                _date_from(values, i)
+                or (following == "年" and _YEAR.fullmatch(values[i]))
+                or (following in ("月", "日") and size <= 2)
+                or (len(values[0]) >= 12 and total + size > 22)
+            ):
+                break
         if total + size > 30:
             break
         total += size
         taken = i + 1
-    if not 10 <= total <= 30:
-        return match.group()
-    cut = groups[taken - 1].end()
-    return f"{label}[银行账号已脱敏]{run[cut:]}"
+    if 10 <= total <= 30:
+        cut = groups[taken - 1].end()
+        return f"{label}[银行账号已脱敏]{run[cut:]}"
+    if old := _BANK.search(whole):
+        return f"{whole[: old.start()]}{old.group(1)}[银行账号已脱敏]{whole[old.end() :]}"
+    return whole
 
 
 # ---- 姓名 ----
@@ -191,9 +202,9 @@ _COMPOUND_SURNAMES = (
 )  # fmt: skip
 # 单位、地名常用的结尾（"高新处""服务中心""朝阳区"）：以这些结尾的词不当姓名
 _UNIT_ENDS = (
-    *"处科室局厅委办部所院站队组股会司馆社校市区县州镇乡村省署府团",
+    *"处科室局厅委办部所院站队组股会司馆社校市区县州镇乡村省署府团路街巷号楼厦",
     "中心", "银行", "支行", "分行", "公司", "集团", "基地", "园区", "协会", "学会", "商会",
-    "联盟", "平台",
+    "联盟", "平台", "大道",
 )  # fmt: skip
 # 含这些词的是标签、表头，不是姓名（"联系电话""技术支持""推荐单位"）
 _LABEL_WORDS = (
@@ -202,6 +213,13 @@ _LABEL_WORDS = (
 )  # fmt: skip
 # 光是称呼、前面没有姓的不是姓名（"Ryan LEE 先生"的"先生"）
 _TITLES = ("先生", "女士", "老师", "同志")
+# 以常见姓氏开头、常挨着电话写的普通词（"值班电话：白天 0571-…"）：不当姓名
+_COMMON_WORDS = frozenset(
+    (
+        "白天", "周末", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
+        "项目", "申报", "金融", "高新", "安全", "文化", "成果", "管理", "服务", "常年",
+    )
+)  # fmt: skip
 # 以常见姓氏开头、不带"省、市"的省份和地级市名（"石家庄 0311-…"这样按城市列的联系电话）：
 # 不当姓名。别的省市名不以这些姓氏开头，本来就不会被当成姓名；县、区名太多，不列
 _PLACE_NAMES = frozenset(
@@ -212,9 +230,11 @@ _PLACE_NAMES = frozenset(
         "安阳", "焦作", "濮阳", "许昌", "商丘", "周口", "武汉", "黄石", "荆门", "黄冈", "邵阳",
         "岳阳", "常德", "张家界", "娄底", "江门", "湛江", "揭阳", "桂林", "成都", "巴中",
         "安顺", "毕节", "曲靖", "林芝", "安康", "商洛", "金昌", "白银", "武威", "张掖",
-        "石嘴山", "吴忠", "伊犁",
+        "石嘴山", "吴忠", "伊犁", "甘孜", "楚雄", "文山", "甘南", "黄南",
     )
 )  # fmt: skip
+# "联系人张三 0571-…"这样标签后面没写冒号、紧贴着姓名的：标签后面那截当姓名看（同单位名）
+_PERSON_LABELS = ("联系人", "联络人", "经办人")
 _CONTACT_LABEL = re.compile(
     r"联\s*+系\s*+人(?:\s*+[及和与]?+\s*+(?:联\s*+系\s*+)?+(?:电\s*+话|方\s*+式))?+"
     r"\s*+[:：][^\S\n]*+\n?+[^\S\n]*+"
@@ -241,6 +261,7 @@ def _name_like(word: str, *, after_label: bool = False) -> bool:
     4 个）。以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。"""
     if (
         word in _TITLES
+        or word in _COMMON_WORDS
         or word in _PLACE_NAMES
         or word.endswith(_UNIT_ENDS)
         or any(label in word for label in _LABEL_WORDS)
@@ -254,12 +275,17 @@ def _name_like(word: str, *, after_label: bool = False) -> bool:
 
 
 def _glued_name(run: str) -> int | None:
-    """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"）：前面一截以单位的字
-    结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的返回 None。"""
+    """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"，还有没写冒号的"联系人张三"）：
+    前面一截以单位的字或"联系人"结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的
+    返回 None。"""
     # 长的优先：复姓"司马"的"司"也是单位的字（"省科技厅司马小明"不能切成"省科技厅司|马小明"）
     for size in (4, 3, 2):
         cut = len(run) - size
-        if cut >= 2 and run[:cut].endswith(_UNIT_ENDS) and _name_like(run[cut:]):
+        if (
+            cut >= 2
+            and run[:cut].endswith((*_UNIT_ENDS, *_PERSON_LABELS))
+            and _name_like(run[cut:])
+        ):
             return cut
     return None
 
@@ -288,11 +314,15 @@ def _contact_names(text: str) -> list[tuple[int, int]]:
     for label in _CONTACT_LABEL.finditer(text):
         stop = _NAME_STOP.search(text, label.end())
         end = stop.start() if stop else len(text)
-        # 冒号后面换了行才写的（表格的"联系人"一格，下一格才是内容，也可能是表头）：只看第一个词，
-        # 而且要以常见姓氏开头
+        # 冒号后面换了行才写的（表格的"联系人"一格，下一格才是内容，也可能是表头）：第一个词就要像
+        # 姓名、以常见姓氏开头，不跳过前面的词
         next_line = "\n" in label.group()
         named = False
         for a, b, word in _words(text, label.end(), end):
+            if text.startswith("[姓名已脱敏]", b):
+                # 紧贴着"[姓名已脱敏]"的是旧规则吞剩的半截（"联系人及电话：中小企[姓名已脱敏]"），
+                # 不是姓名：库里按旧规则遮过的正文再过一遍不能再吞
+                break
             if named:
                 # 第一个姓名后面只隔空格、顿号的，以常见姓氏开头的也遮（几个联系人）
                 if not (_NAME_GAP.fullmatch(text[spans[-1][1] : a]) and _name_like(word)):

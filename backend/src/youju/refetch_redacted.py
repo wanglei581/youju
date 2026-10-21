@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from youju.config import get_settings
@@ -126,9 +126,28 @@ def _scope(stmt):
     )
 
 
+def _display_changes(session: Session, batch: int = 500) -> int:
+    """库里的正文按新规则再过一遍（详情页、AI 解读、申报条件给出前都这样做）会变的份数：这些文件的
+    AI 解读旧结果会作废（D-073）。按编号分批读，不一次读进全部正文。"""
+    from youju.crawler.detail import redact_sensitive
+
+    changed, after = 0, 0
+    while True:
+        rows = session.execute(
+            _scope(select(DocumentDetail.document_id, DocumentDetail.body_text))
+            .where(DocumentDetail.document_id > after, DocumentDetail.body_text != "")
+            .order_by(DocumentDetail.document_id)
+            .limit(batch)
+        ).all()
+        if not rows:
+            return changed
+        changed += sum(redact_sensitive(body) != body for _, body in rows)
+        after = rows[-1][0]
+
+
 def count_affected(session: Session) -> dict[str, int | None]:
     """只读统计，不打开网页：有正文的份数，含"[邮箱已脱敏]"的、含"[姓名已脱敏][电话已脱敏]"的、
-    含"[姓名已脱敏]"的，要重抓的（含前两种标记之一）和它们的编号范围。"""
+    含"[姓名已脱敏]"的，要重抓的（含前两种标记之一）和它们的编号范围，按新规则再过一遍会变的份数。"""
     count = select(func.count())
     either = or_(*(_has(m) for m in MARKERS))
     first, last = session.execute(
@@ -144,6 +163,7 @@ def count_affected(session: Session) -> dict[str, int | None]:
         "candidates": session.scalar(_scope(count).where(either)),
         "first_id": first,
         "last_id": last,
+        "display_changes": _display_changes(session),
     }
 
 
@@ -216,22 +236,37 @@ def _impact(
     )
 
 
-def _recompute(
-    session: Session, written: list[int], recheck: set[int], report: RefetchReport
-) -> None:
-    """写入以后：重算规则截止候选，清掉找回了日期、时刻的那几份的 AI 截止检查结果（下一轮
-    ai-check 按新正文重查；只找回单位名、标签的不用重查，省 AI 用量），重算"能不能 AI 解读"。"""
+def _write(session: Session, doc_id: int, stored: str, after: str, recheck_ai: bool) -> bool:
+    """换一份正文：库里还是选中时那版（按指纹比，期间被别的任务重抓过的不改）才换；找回了日期、时刻的
+    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。换了返回 True。"""
+    changed = session.execute(
+        update(DocumentDetail)
+        .where(
+            DocumentDetail.document_id == doc_id,
+            DocumentDetail.status == "ok",
+            func.sha2(DocumentDetail.body_text, 256) == sha256(stored.encode()).hexdigest(),
+        )
+        .values(body_text=after)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if changed and recheck_ai:
+        session.execute(
+            delete(AICheck).where(AICheck.document_id == doc_id, AICheck.task == "deadlines")
+        )
+    session.commit()
+    return bool(changed)
+
+
+def _recompute(session: Session, written: list[int], report: RefetchReport) -> None:
+    """换完以后：重算这些文件的规则截止候选（AI 截止检查已经先清掉，新候选不会按旧结果标成
+    "AI 没找到"），重算"能不能 AI 解读"。这一步中途出错也不要紧：每轮的 extract-deadlines、
+    夜里的 ai-eligibility-rebuild 都会按库里的正文再算一遍。"""
     from youju.ai import eligibility
     from youju.extract.service import extract_existing
 
     if not written:
         return
     _, report.new_candidates = extract_existing(session, document_ids=written)
-    if again := recheck & set(written):
-        session.execute(
-            delete(AICheck).where(AICheck.document_id.in_(again), AICheck.task == "deadlines")
-        )
-    session.commit()
     # 合并转载的主条目没有自己的正文时用组里最长的那份（同 eligibility.changed_since），一起重算
     masters = set(
         session.scalars(
@@ -309,15 +344,12 @@ def refetch_redacted(
         return report
     written = []
     for result, stored, after in pending:
-        detail = session.get(DocumentDetail, result.document_id)
-        if detail is None:
+        if _write(session, result.document_id, stored, after, result.recheck_ai):
+            written.append(result.document_id)
+        elif session.get(DocumentDetail, result.document_id) is None:
             result.result, result.reason = "missing", "详情已删除"
-        elif detail.status != "ok" or detail.body_text != stored:
+        else:
             # 期间被别的任务重抓过（名单补抓附件等），按那次的结果为准，这里不再改
             result.result, result.reason = "changed", "期间正文已被别的任务更新，没改"
-        else:
-            detail.body_text = after
-            written.append(result.document_id)
-        session.commit()
-    _recompute(session, written, recheck, report)
+    _recompute(session, written, report)
     return report

@@ -177,6 +177,14 @@ def test_apply_replaces_body_and_recomputes(world, session) -> None:
         select(DocumentDeadline.candidate_date).where(DocumentDeadline.document_id == swallowed.id)
     ).all()
     assert date(2026, 11, 20) in due and report.new_candidates >= 1
+    # AI 截止检查先清掉再算候选：新候选是"AI 还没查"，不是"AI 没找到"
+    agrees = session.scalars(
+        select(DocumentDeadline.ai_agrees).where(
+            DocumentDeadline.document_id == swallowed.id,
+            DocumentDeadline.candidate_date == date(2026, 11, 20),
+        )
+    ).all()
+    assert agrees and all(a is None for a in agrees)
     # AI 截止检查清掉、下一轮重查；类型检查留着
     tasks = session.scalars(select(AICheck.task).where(AICheck.document_id == swallowed.id)).all()
     assert tasks == ["kind"]
