@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,7 +30,7 @@ function load(file, deps = {}, globals = {}) {
     module: { exports: {} }, setTimeout, clearTimeout, console,
     require(name) {
       if (name === '../../utils/regions.js') return regions;
-      assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`);
+      if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`);
       return deps[name];
     },
     Page(d) { def = d; },
@@ -50,13 +51,15 @@ function open(sharePath) {
   return { page, query };
 }
 
-test('只有通知详情、搜索结果、截止、查名单四页能转发；没有页面开朋友圈；页面上不加转发按钮', () => {
+test('只有通知详情、搜索结果、截止、查名单四页能转发；没有页面开朋友圈；转发按钮只在通知详情底栏', () => {
   const app = JSON.parse(read('app.json'));
   const sharing = app.pages.filter((p) => /onShareAppMessage\s*\(/.test(read(`${p}.js`)));
   assert.deepEqual(sharing.sort(), ['pages/detail/index', 'pages/lists/index', 'pages/report/index', 'pages/search/index']);
   for (const p of app.pages) {
     assert.doesNotMatch(read(`${p}.js`), /onShareTimeline|showShareMenu\([^)]*shareTimeline/, `${p} 开了朋友圈`);
-    assert.doesNotMatch(read(`${p}.wxml`), /open-type="share"/, `${p} 加了转发按钮`);
+    // 10/18 创始人批准验收问题 9a：只在通知详情底栏加一个"转发"按钮（不带任何引导语、不带奖励）；其他页仍只用右上角菜单
+    const buttons = (read(`${p}.wxml`).match(/open-type="share"/g) || []).length;
+    assert.equal(buttons, p === 'pages/detail/index' ? 1 : 0, `${p} 转发按钮数量不对`);
   }
   // 我的客户、我的数据、AI 相关页不转发（D-070）
   for (const p of app.pages.filter((x) => /\/(clients|my-data|advisor[\w-]*)\//.test(x))) {
@@ -96,6 +99,20 @@ test('通知详情：加载出来才能转发，标题"发文机关｜通知标�
   receiver.onLoad(query); await flush();
   assert.equal(receiver.data.doc.title, DOC.title);
   assert.deepEqual(asked, ['128', '128']);
+});
+
+test('通知详情底栏"转发"按钮：加载中、打不开时不能点，加载成功才能点；按钮文字不带引导语（10/18 验收 9a）', async () => {
+  const wxml = read('pages/detail/index.wxml');
+  assert.match(wxml, /<button class="bar-item bar-share" open-type="share" disabled="\{\{!shareReady\}\}"[^>]*><t-icon name="share"[^>]*\/><text>转发<\/text><\/button>/);
+  assert.doesNotMatch(wxml, /转发给同事|转发得|分享有礼/);
+  let reply = () => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 }));
+  const page = detailPage(() => reply(), { showShareMenu() {}, hideShareMenu() {} });
+  page.onLoad({ id: '999999' }); await flush();
+  assert.equal(page.data.shareReady, false);
+  reply = () => Promise.resolve(plain(DOC));
+  page.refreshing = false; page.load(); await flush();
+  assert.equal(page.data.shareReady, true);
+  assert.equal(page.onShareAppMessage({ from: 'button' }).path, '/pages/detail/index?id=128');
 });
 
 test('通知详情：标题里已有发文机关不重复；太长截到 60 字；没有发文机关只用标题', async () => {

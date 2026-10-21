@@ -1,0 +1,2 @@
+<view wx:if="{{variant === 'exit'}}" class="exit-btn exit-btn--main" bindtap="remove" aria-role="button">去掉“只看能 AI 解读的”</view>
+<view wx:else class="ai-only"><text>只看能 AI 解读的通知</text><text class="link" bindtap="remove" aria-role="button">去掉</text></view>

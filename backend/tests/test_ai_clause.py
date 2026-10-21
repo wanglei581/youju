@@ -527,6 +527,11 @@ def test_worker_list_metadata_invalidation_delete_and_logout(
     session.commit()
     assert client.get(f"/api/v1/advisor/tasks/{task_id}").json()["result"] is None
     assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code == 204
+    # D-075：已下架的提交时就拒绝，不建任务、不扣次数
+    refused = create(client, notice.id, COMPANY_A, key="down")
+    assert refused.status_code == 422 and refused.json()["detail"]["reason"] == "unavailable"
+    notice.taken_down_at = None
+    session.commit()
     second_id = create(client, notice.id, COMPANY_A, key="logout").json()["id"]
     assert client.delete("/api/v1/me").status_code == 204
     session.expire_all()

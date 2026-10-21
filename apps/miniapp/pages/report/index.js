@@ -113,6 +113,8 @@ function reportRow(d) {
   return row({
     key: `r${d.id}`, docId: String(d.id), hasDetail: true, title: d.title,
     meta: [d.issuer, d.province, d.city, d.district].filter(Boolean).join(' · '), fileNumber: d.file_number || '',
+    // 能不能解读（D-075，接口每行带）：行上的解读按钮据此显示；已截止的那组不放按钮
+    ai: d.ai || null,
   }, due);
 }
 
@@ -126,6 +128,7 @@ function calendarRow(d) {
   return row({
     key: d.id, docId: String(d.docId || d.id), hasDetail: d.hasDetail !== false, title: d.title,
     meta: d.district && !region.includes(d.district) ? [region, d.district].filter(Boolean).join(' · ') : region, fileNumber: '', iso,
+    ai: d.ai || null,
   }, { kind: d.what, source, date: iso, time: d.time, quote: d.quote });
 }
 

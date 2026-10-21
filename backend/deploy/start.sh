@@ -27,6 +27,10 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
   date +%s > /tmp/youju-cron-heartbeat
   cron
 fi
+# 告警地址有没有配，启动时打一行到容器日志（JSON 里只有 configured 是 true 还是 false，不带地址）：
+# 部署后用只读日志就能核对，不用开控制台。api 没配时接口出错、写日志失败的提醒都发不出去
+# （9/29–10/16 api 的访问日志一直写不进库，没有人收到过提醒）。没配时 alert-probe 退出 2，这里不拦启动
+youju alert-probe || :
 # 固定单进程：一个实例一个进程（接口出错提醒按进程计数、核对台口令限流也在进程内）。
 # 不写 --workers 时 uvicorn 会读环境变量 WEB_CONCURRENCY，可能起多个进程。
 # 关掉 uvicorn 自带的访问日志（它带查询参数，如检索词、企业名称）；访问日志由程序自己记，只记路径

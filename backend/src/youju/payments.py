@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import logging
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-import httpx
-from sqlalchemy import case, delete, func, or_, select, true, update
+from sqlalchemy import case, delete, exists, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -35,10 +37,14 @@ from youju.models import (
     User,
     WorkbenchPass,
 )
-from youju.xpay import XPayClient, XPayError
+from youju.xpay import XPayClient, XPayError, wx_http
+
+logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {
-    "pending": "待支付",
+    # 还没确认付款结果：付了款的会自动开通，没付的不扣钱、稍后关单。原来写"待支付"，
+    # 付了款、推送和补单还没到的那一两分钟里，用户看到的是"待支付"，以为钱白扣了（10/19 沙箱实测）
+    "pending": "待确认",
     "completed": "已完成",
     "refunding": "退款中",
     "refunded": "已退款",
@@ -99,7 +105,11 @@ RENEW_WINDOW = timedelta(days=7)
 RENEWAL_REF = "order_renewal"
 TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
-# 退款发起方：self 用户自助（7 天内没用过付费的量）；staff 负责人按规则发起（系统故障、停止服务）
+# 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
+COMPLAINT_ERROR = "收到用户投诉"
+# 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-081）；
+# staff 负责人按规则发起（系统故障、停止服务）
+SELF_REFUND_WINDOW = timedelta(hours=24)
 SELF_REFUND, STAFF_REFUND = "self", "staff"
 
 
@@ -171,15 +181,58 @@ def renew_offer(session: Session, settings, user: User | None, stamp: datetime) 
     }
 
 
-def selling_to(settings, openid: str | None) -> bool:
-    """这个用户能不能看到购买入口、下新单：总开关开着，并且对全体开放或在测试名单里。
+# 开卖按小程序版本放开（D-074）：小程序在商品、下单、能力、我的、提交任务这几个请求的头里带上
+# 代码包里的付费协议版本号和小程序环境（开发版、体验版、正式版）。
+PAY_TERMS_HEADER = "X-Youju-Pay-Terms"
+CLIENT_ENV_HEADER = "X-Youju-Env"
+TEST_BUILDS = frozenset({"develop", "trial"})
+
+
+@dataclass(frozen=True)
+class Client:
+    """请求来自哪个小程序包。terms：代码包里《付费服务协议》的版本号；
+    env：develop 开发版 / trial 体验版 / release 正式版。
+    老版本不带这两个头：terms 为空，env 按正式版（release）算——老版本永远看不到购买入口。"""
+
+    terms: str = ""
+    env: str = "release"
+
+
+def client_of(headers: Mapping[str, str]) -> Client:
+    """从请求头读出小程序包；认不出的环境一律按正式版算（宁可看不到，不能多放）。
+
+    这两个头由小程序自己填，只用来决定"谁看得到购买入口"（审核和合规上的展示），不是安全边界：
+    改了头也绕不过钱相关的检查——沙箱只给测试名单（openid 由微信云托管注入，伪造不了），
+    下单时还核对请求体里用户同意的协议版本（老版本带的是草稿号，409），老版本的付款按钮本来就不可用。"""
+    env = (headers.get(CLIENT_ENV_HEADER) or "").strip().lower()
+    terms = (headers.get(PAY_TERMS_HEADER) or "").strip()[:40]
+    return Client(terms=terms, env=env if env in TEST_BUILDS else "release")
+
+
+def testers(settings) -> set[str]:
+    return {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
+
+
+def selling_to(settings, openid: str | None, client: Client) -> bool:
+    """这个用户、这个小程序包能不能看到购买入口、下新单（D-058、D-074）：
+
+    - 总开关开着；
+    - 测试阶段（沙箱，或 YOUJU_PAY_AUDIENCE 还是 whitelist）：只给测试名单里的人，
+      并且只在开发版、体验版——正式版不出现沙箱和白名单购买（运营规范 5.19 人群对抗）；
+      沙箱真机付款也会真实扣钱（10/20 创始人实测），所以沙箱即使配成 all 也只给测试名单；
+    - 现网（真扣钱）：只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
+      开卖要单独提审一版，老版本永远看不到价格。
     补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
     if not enabled(settings):
         return False
-    if getattr(settings, "pay_audience", "whitelist") == "all":
-        return True
-    testers = {s.strip() for s in getattr(settings, "pay_openids", "").split(",") if s.strip()}
-    return bool(openid) and openid in testers
+    testing = settings.xpay_env == 1 or getattr(settings, "pay_audience", "whitelist") != "all"
+    tester = bool(openid) and openid in testers(settings) and client.env in TEST_BUILDS
+    if testing and not tester:
+        return False
+    if settings.xpay_env == 0:
+        terms = getattr(settings, "pay_terms_version", "")
+        return bool(terms) and client.terms == terms
+    return True
 
 
 def invoice_type(settings) -> str:
@@ -191,8 +244,9 @@ def invoice_type(settings) -> str:
 def orderable(settings) -> bool:
     """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了定稿的协议版本
     （YOUJU_PAY_TERMS_VERSION）和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
-    沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、购买入口都按这一条判断，
-    不出现看得到价格却付不了款的入口，也不能绕过购买页直接下单。"""
+    沙箱只给测试名单（真机付款也会真实扣钱，10/20 创始人实测），协议定稿前也能联调。
+    商品列表、下单、购买入口都按这一条判断，不出现看得到价格却付不了款的入口，
+    也不能绕过购买页直接下单。"""
     if not getattr(settings, "xpay_offer_id", "") or not products(settings):
         return False
     return settings.xpay_env == 1 or bool(
@@ -200,10 +254,10 @@ def orderable(settings) -> bool:
     )
 
 
-def entry(session: Session, settings, user: User | None) -> dict:
-    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户开放、能下单），
+def entry(session: Session, settings, user: User | None, client: Client) -> dict:
+    """小程序要不要显示购买入口和"我的订单"：正在售卖（开关开、对这个用户和这个小程序包开放、能下单），
     或这个用户有过订单（停卖后已付款的用户还要能看订单、退款、开票）。"""
-    selling = selling_to(settings, user.openid if user else None) and orderable(settings)
+    selling = selling_to(settings, user.openid if user else None, client) and orderable(settings)
     has_orders = (
         user is not None
         and session.scalar(select(PayOrder.id).where(PayOrder.user_id == user.id).limit(1))
@@ -280,6 +334,26 @@ def pass_status(session: Session, user_id: int, stamp: datetime) -> dict:
     return {"active": True, "expiresAt": expiry}
 
 
+def pass_summary(session: Session, user_id: int, stamp: datetime) -> dict:
+    """我的页用的使用期：现在有没有、到哪天（pass_status），没有时再说以前有没有过、已经到期
+    （退款收回的不算）。我的页头的"批量工具"标识只看 active；"批量工具"一行的小字，到期了的写
+    "已到期，可再买一次"，从没开通过的（比如只有一张待确认的订单）写价格，不写"已到期"。"""
+    status = pass_status(session, user_id, stamp)
+    status["expired"] = not status["active"] and (
+        session.scalar(
+            select(WorkbenchPass.id)
+            .where(
+                WorkbenchPass.user_id == user_id,
+                WorkbenchPass.revoked_at.is_(None),
+                WorkbenchPass.ends_at <= stamp,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    return status
+
+
 def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
     # last_used_at 是任务提交时的最少审计记录，删除、失败、取消均不抹去使用事实。
     if ticket is None or ticket.order_id is None:
@@ -296,17 +370,22 @@ def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
 
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
-    """自助全额退款的条件（D-070 统一退款口径）：安卓、鸿蒙、电脑版微信付款（微信的普通支付），
-    付款 7 天内（含恰好 7 天），这一笔的使用期没用过付费的量（没超出每月免费次数、
-    没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，每笔分开算。"""
+    """自助全额退款（无理由退款）的条件（D-070 统一退款口径；时限 D-081 由 7 天改为 24 小时，
+    创始人 10/19："24 小时内没用过付费的量才能退，用过就不能退"）：安卓、鸿蒙、电脑版微信付款
+    （微信的普通支付），付款 24 小时内（含恰好 24 小时），这一笔的使用期没用过付费的量（没超出
+    每月免费次数、没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，
+    每笔分开算；每个账号每个自然月只能申请 1 次（D-083，见 monthly_self_refunds）。
+    付了款却没开通的人工单另走 undelivered_refund_reason，不受这个时限和次数。"""
     if order.platform == "ios":
         return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
         return "支付方式还没确认，可点“遇到问题”告诉我们"
+    if order.status == "manual" and order.refund_status is None:
+        return undelivered_refund_reason(session, order, lock=lock)
     if order.status != "completed" or order.refund_status is not None:
         return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
-    if order.paid_time is None or stamp > order.paid_time + timedelta(days=7):
-        return "已超过 7 天"
+    if order.paid_time is None or stamp > order.paid_time + SELF_REFUND_WINDOW:
+        return "已超过 24 小时"
     # 退款时加锁读发票（锁顺序：用户 → 订单 → 发票，和管理台开票一致）：否则查完发票、
     # 作废之前，管理台可能刚把它标成已开，已开发票的订单就被退了款（Grok 红队，10/16）
     invoice = order_invoice(session, order, lock=lock)
@@ -318,6 +397,85 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
         return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
+    refunds = monthly_self_refunds(session, order.user_id, stamp, exclude=order.id)
+    if refunds >= SELF_REFUNDS_PER_MONTH:
+        # 这笔的 24 小时到下月 1 日还没过，才说"下月 1 日起可以再申请"；
+        # 多数订单 24 小时在月内就过了，直接说这笔不能再无理由退款，不让用户白等（审阅意见，10/20）
+        if order.paid_time + SELF_REFUND_WINDOW >= next_month_start(stamp):
+            return MONTHLY_REFUND_REASON
+        return MONTHLY_REFUND_FINAL
+    return None
+
+
+# 无理由退款每个账号每月 1 次（D-083，创始人 10/20："加一个限制，每个号一个月只能退款一次"）：
+# 按北京时间自然月算（每月 1 日 0 点起，和每月免费次数同一口径）。只限无理由退款；
+# 付了款没开通的自助退款、系统故障或停止服务的人工退款、苹果退款不受限，也不占次数。
+# 注销后订单只留由微信标识算出的编号，只用于对账和争议、不用来认人；重新同意协议后按新账号算
+# （D-083 ④）
+SELF_REFUNDS_PER_MONTH = 1
+MONTHLY_REFUND_REASON = "每个账号每月只能申请 1 次无理由退款，本月已经申请过；下月 1 日起可以再申请"
+MONTHLY_REFUND_FINAL = (
+    "每个账号每月只能申请 1 次无理由退款，本月已经申请过，这笔不能再无理由退款；"
+    "有问题可点“遇到问题”告诉我们"
+)
+
+
+def month_start(stamp: datetime) -> datetime:
+    """stamp 所在北京时间自然月的 1 日 0 点（UTC）。"""
+    first = advisor_tasks.usage_day(stamp).replace(day=1)
+    local = datetime.combine(first, datetime.min.time(), tzinfo=advisor_tasks.BEIJING)
+    return local.astimezone(UTC)
+
+
+def next_month_start(stamp: datetime) -> datetime:
+    """stamp 所在北京时间自然月的下个月 1 日 0 点（UTC）。"""
+    return month_start(month_start(stamp) + timedelta(days=32))
+
+
+def monthly_self_refunds(
+    session: Session, user_id: int | None, stamp: datetime, *, exclude: int | None = None
+) -> int:
+    """这个用户本月（北京时间自然月）发起过几次无理由退款：自助退款（refund_source=self）、
+    这笔开通过使用期（付了款没开通的自助退款是我们的原因，不算），不论退成没退成；
+    exclude 是正在看的这一笔（同一笔重复点不算第二次）。调用方退款时已锁用户行，
+    连接是 READ COMMITTED，读得到先申请的那一笔。"""
+    if user_id is None:
+        return 0
+    stmt = select(func.count(PayOrder.id)).where(
+        PayOrder.user_id == user_id,
+        PayOrder.refund_source == SELF_REFUND,
+        PayOrder.refund_started_at >= month_start(stamp),
+        exists().where(WorkbenchPass.order_id == PayOrder.id),
+    )
+    if exclude is not None:
+        stmt = stmt.where(PayOrder.id != exclude)
+    return session.scalar(stmt) or 0
+
+
+def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) -> str | None:
+    """付了款却没开通的订单（微信确认收到全款，开通前的核验没过、转了人工）：用户什么都没用上，
+    不用等人工，随时可以自助申请全额原路退回，不受 24 小时限制（创始人 10/19："扣款成功但订单
+    没同步过来，可以对这笔订单申请自助退款"）。只认能核对清楚的：安卓等普通支付、付款金额等于
+    订单金额、这笔从没开通过使用期；其余的（金额对不上、开通过又出问题的、投诉中的）仍由人工处理。
+    调用方已按 用户 → 订单 加锁（lock=True 时）。发起退款前 start_refund 还会再向微信查一次单。"""
+    if order.paid_fee != order.price or not order.wx_order_id:
+        return "这笔付款需要人工核对，可点“遇到问题”告诉我们"
+    if order_pass(session, order, lock=lock) is not None:
+        return "订单当前状态不能自助退款，可点“遇到问题”告诉我们"
+    # 用户向微信支付投诉过这笔：投诉要负责人按流程回复处理，不能绕过去自助退（Codex 复核，10/19）。
+    # 投诉推送把订单的 error 写成"收到用户投诉……"（人工单之后不会被别的流程改掉）；
+    # 事件表只留 180 天，两处都看
+    complained = (
+        COMPLAINT_ERROR in (order.error or "")
+        or session.scalar(
+            select(PayEvent.id)
+            .where(PayEvent.order_id == order.id, PayEvent.kind == "xpay_complaint_notify")
+            .limit(1)
+        )
+        is not None
+    )
+    if complained:
+        return "这笔订单的投诉正在处理，可点“遇到问题”告诉我们"
     return None
 
 
@@ -339,10 +497,9 @@ def remaining_fee(
     return -(-order.price * remaining_days(order, ticket, stamp, extra_days) // order.days)
 
 
-def staff_refund_problem(
-    session: Session, order: PayOrder, *, invoice_reversed: bool = False
-) -> str | None:
+def staff_refund_problem(session: Session, order: PayOrder) -> str | None:
     """负责人按规则发起退款（系统故障、停止服务，youju pay-refund）之前的检查；None 表示可以退。
+    已开过发票的照常退：退款不等冲红（D-074），退完再按退款金额开红字发票（invoice_issued 提醒）。
     调用方已按 用户 → 订单 的顺序加锁。"""
     if order.platform == "ios":
         return "苹果手机付款的订单只能由用户在 App Store 申请退款，是否退款由苹果公司决定"
@@ -352,10 +509,13 @@ def staff_refund_problem(
         return f"订单当前状态（{STATUS_LABELS[order.status]}）不能退款"
     if order.user_id is None:
         return "用户已注销，退款需要人工核对"
-    invoice = order_invoice(session, order, lock=True)
-    if invoice is not None and invoice.status == "issued" and not invoice_reversed:
-        return "这笔已开过发票：先按退款金额开红字发票，再加 --invoice-reversed 重新运行"
     return None
+
+
+def invoice_issued(session: Session, order: PayOrder) -> bool:
+    """这笔订单的发票是不是已经开了：退款后要按退款金额开红字发票（管理台开票页"要冲红"里列出）。"""
+    invoice = order_invoice(session, order, lock=True)
+    return invoice is not None and invoice.status == "issued"
 
 
 def begin_refund(
@@ -383,7 +543,8 @@ def order_invoice(session: Session, order: PayOrder, *, lock=False) -> InvoiceRe
 
 
 def void_invoice(session: Session, order: PayOrder, stamp: datetime) -> None:
-    """退款时还没开的发票作废；已开的留着，由创始人按退款冲红（不能自助退款，见 refund_reason）。"""
+    """退款时还没开的发票作废；已开的留着，退款后由创始人按退款金额开红字发票（管理台"要冲红"）。
+    已开过发票的不能自助退款（见 refund_reason），由负责人核实后先退款、再冲红（D-074）。"""
     invoice = order_invoice(session, order, lock=True)
     if invoice is not None and invoice.status == "pending":
         invoice.status, invoice.note, invoice.updated_at = "rejected", INVOICE_VOID_NOTE, stamp
@@ -393,7 +554,8 @@ def invoice_out(invoice: InvoiceRequest | None) -> dict | None:
     if invoice is None:
         return None
     return {
-        "status": INVOICE_LABELS[invoice.status],
+        # 订单退款后已按退款金额开了红字发票的，写"已冲红"（D-074）
+        "status": "已冲红" if invoice.reversed_at is not None else INVOICE_LABELS[invoice.status],
         "titleType": invoice.title_type,
         "title": invoice.title,
         "taxId": invoice.tax_id,
@@ -611,6 +773,52 @@ def _paid_time(value) -> datetime | None:
         return None
 
 
+def _blank(value) -> bool:
+    return value is None or value == "" or value == 0
+
+
+def _same(got, want) -> bool:
+    # 推送里的数字可能写成文字（"1"）：数字按数值比，文字原样比
+    if isinstance(want, int) and not isinstance(want, bool):
+        try:
+            return int(got) == want
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return got == want
+
+
+def push_mismatch(order: PayOrder, data: dict, push: dict) -> list[str]:
+    """发货推送里和订单、查单对不上的字段：只给字段名和哪边是空的，不给单号和金额。"""
+    goods = push.get("GoodsInfo")
+    goods = goods if isinstance(goods, dict) else {}
+    wx = push.get("WeChatPayInfo")
+    wx = wx if isinstance(wx, dict) else {}
+    out = [] if goods else ["GoodsInfo（推送里没有）"]
+    pairs = (
+        [
+            ("GoodsInfo.ProductId", goods.get("ProductId"), order.product_id),
+            ("GoodsInfo.Quantity", goods.get("Quantity"), 1),
+            ("GoodsInfo.OrigPrice", goods.get("OrigPrice"), order.price),
+            ("GoodsInfo.ActualPrice", goods.get("ActualPrice"), order.price),
+            ("GoodsInfo.Attach", goods.get("Attach"), order.out_trade_no),
+        ]
+        if goods
+        else []
+    )
+    # 官方文档：非微信支付渠道可能没有 WeChatPayInfo
+    if wx:
+        pairs += [
+            ("WeChatPayInfo.MchOrderNo", wx.get("MchOrderNo"), data.get("channel_order_id")),
+            ("WeChatPayInfo.TransactionId", wx.get("TransactionId"), data.get("wxpay_order_id")),
+            ("WeChatPayInfo.PaidTime", wx.get("PaidTime"), data.get("paid_time")),
+        ]
+    for name, got, want in pairs:
+        if not _same(got, want):
+            side = "推送里是空的" if _blank(got) else "查单里是空的" if _blank(want) else "值不同"
+            out.append(f"{name}（{side}）")
+    return out
+
+
 def accept_payment(
     session: Session,
     order: PayOrder,
@@ -647,25 +855,16 @@ def accept_payment(
             order.error = f"微信已确认付款，但{problem}，未发货，需人工核对"
         return False
     if push is not None:
-        goods = push.get("GoodsInfo", {})
-        wx = push.get("WeChatPayInfo", {})
-        if (
-            goods.get("ProductId") != order.product_id
-            or int(goods.get("Quantity", -1)) != 1
-            or int(goods.get("ActualPrice", -1)) != order.price
-            or int(goods.get("OrigPrice", -1)) != order.price
-            or goods.get("Attach") != order.out_trade_no
-            or (
-                wx
-                and (
-                    wx.get("MchOrderNo") != data.get("channel_order_id")
-                    or wx.get("TransactionId") != data.get("wxpay_order_id")
-                    or int(wx.get("PaidTime", -1)) != data.get("paid_time")
-                )
+        # 推送只是"去查单"的信号，开不开通以查单为准（定时补单本来就只看查单）。
+        # 原来推送字段和查单对不上就拒收：10/19 沙箱实测被拒、微信连推 6 次，
+        # 2 分钟后补单照样开通了，拒收只让用户多等。现在对不上只记字段名，不记单号和金额。
+        mismatch = push_mismatch(order, data, push)
+        if mismatch:
+            logger.warning(
+                "xpay_goods_deliver_notify 订单 #%s 推送和查单对不上（以查单为准）：%s",
+                order.id,
+                "、".join(mismatch),
             )
-        ):
-            order.error = "推送与查单不一致，未发货"
-            return False
     if accepted:
         return True
     order.wx_order_id = data.get("wx_order_id")
@@ -714,8 +913,17 @@ def accept_payment(
     return True
 
 
-def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime) -> bool:
-    if data.get("status") not in (5, 8):
+def mark_refunded(
+    session: Session, order: PayOrder, data: dict, stamp: datetime, *, confirmed: bool = False
+) -> bool:
+    """查单显示退款已经完成就记成已退款（收回使用期、作废没开的发票），返回 True。
+    官方 query_order：5"订单退款：商户侧扣款完成"、8"订单退款：用户侧收款完成"、7"订单退款失败"；
+    refund_order："启动后需要调用query_order接口来查询退款单状态，等状态变成退款完成后即为最终成功"。
+    所以查单时 8 才算退完，5 只是钱从我们这边扣走了、还没到用户那边，继续查（Codex 复核，10/19；
+    原来 5 也算完成，之后要是退款失败就没人知道了）。confirmed：退款推送（"退款完成后"发）说
+    退款成功（RetCode 0），这时 5 也算完成。"""
+    status = data.get("status")
+    if not (status == 8 or (status == 5 and confirmed)):
         return False
     left = data.get("left_fee")
     # 按剩余天数退的（refund_fee 小于订单金额），退完还剩"订单金额 − 退款金额"；
@@ -736,10 +944,17 @@ def mark_refunded(session: Session, order: PayOrder, data: dict, stamp: datetime
     return True
 
 
+# 发起退款满 24 小时、查单还停在 5（钱从我们这边扣走了、还没到用户那边）：转人工时写的说明
+STUCK_REFUND_ERROR = "退款超过 24 小时还没到用户那边（查单状态 5：商户侧扣款完成），需人工核对"
+
+
+# 发起退款后最多等多久：满 24 小时还没退完（没到查单 8、也没收到退款成功推送）就转人工
+REFUND_WAIT = timedelta(hours=24)
+
+
 def refund_exhausted(order: PayOrder, stamp: datetime) -> bool:
     return order.refund_attempts >= 6 or (
-        order.refund_started_at is not None
-        and order.refund_started_at <= stamp - timedelta(hours=24)
+        order.refund_started_at is not None and order.refund_started_at <= stamp - REFUND_WAIT
     )
 
 
@@ -773,6 +988,12 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
             session.commit()
             return
         if mark_refunded(session, order, data, stamp):
+            session.commit()
+            return
+        if data.get("status") == 5:
+            # 上一次发起的退款其实已经受理（商户侧扣款完成，比如请求超时但微信那边办了）：
+            # 不再发起，等它到用户那边（查单变 8 或收到退款推送）
+            order.refund_status, order.error, order.updated_at = "pending", None, stamp
             session.commit()
             return
         if (
@@ -824,20 +1045,23 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
     session.commit()
 
 
-def ios_decision(session: Session, order: PayOrder | None) -> dict:
+def ios_decision(session: Session, order: PayOrder | None, stamp: datetime) -> dict:
+    """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径）：用过付费的量拒绝；没用过的，
+    付款 24 小时内（含恰好 24 小时）建议退款、超过 24 小时拒绝。凭据只写"付款后 24 小时内 /
+    付款后已超过 24 小时"和"用过付费的量 / 没有用过付费的量"，不带任务编号和具体时间（付费服务
+    协议"开卖那一版要一起做的"第 8 项、隐私指引）。查不到订单的答建议退款（_ios_reply）。"""
     ticket = order_pass(session, order) if order else None
-    if paid_usage(session, ticket):
-        completed = ticket.last_task_completed_at
-        return {
-            "result_code": 1,
-            "result_info": "已使用",
-            "evidence": (
-                f"任务 {ticket.last_task_id}，完成时间 "
-                f"{completed.isoformat() if completed else '尚未完成'}，提交时间 "
-                f"{ticket.last_used_at.isoformat() if ticket.last_used_at else '待核对'}"
-            ),
-        }
-    return {"result_code": 0, "result_info": "未使用", "evidence": "没有使用付费的量"}
+    used = paid_usage(session, ticket)
+    paid = order.paid_time if order is not None else None
+    late = paid is not None and stamp > paid + SELF_REFUND_WINDOW
+    timing = "付款后已超过 24 小时" if late else "付款后 24 小时内" if paid is not None else ""
+    usage = "用过付费的量" if used else "没有用过付费的量"
+    evidence = f"{timing}；{usage}" if timing else usage
+    if used:
+        return {"result_code": 1, "result_info": "已使用", "evidence": evidence}
+    if late:
+        return {"result_code": 1, "result_info": "付款已超过 24 小时", "evidence": evidence}
+    return {"result_code": 0, "result_info": "未使用", "evidence": evidence}
 
 
 def _local_orders(session: Session, day: date) -> dict[str, int]:
@@ -1012,6 +1236,102 @@ def provide_goods(session: Session, order: PayOrder, client: XPayClient) -> None
     session.commit()
 
 
+# 用户主动核对（付款后、打开订单页）：只核对 48 小时内下的待确认订单（更早的交给每分钟的补单，
+# 超过 48 小时还确认不了会关单），并且只核对这个用户最近的 3 张待确认订单
+# （下单限制同样是 10 分钟内 3 张）
+CHECK_WINDOW = timedelta(hours=48)
+CHECK_RECENT = 3
+
+
+def checkable(session: Session, order: PayOrder, stamp: datetime) -> bool:
+    """这张订单能不能由用户主动核对：待确认、48 小时内下的、这个用户最近的 3 张待确认订单之一。"""
+    if order.status != "pending" or order.user_id is None:
+        return False
+    if order.created_at <= stamp - CHECK_WINDOW:
+        return False
+    recent = session.scalars(
+        select(PayOrder.id)
+        .where(
+            PayOrder.user_id == order.user_id,
+            PayOrder.status == "pending",
+            PayOrder.created_at > stamp - CHECK_WINDOW,
+        )
+        .order_by(PayOrder.created_at.desc(), PayOrder.id.desc())
+        .limit(CHECK_RECENT)
+    ).all()
+    return order.id in recent
+
+
+# 查单状态里待确认订单"能自己处理"的：0/1 没付、2/3/4 付了、8 退完了、6 关了。
+# 其余（5 退款还在进行、7 退款失败、9 回收广告金完成、10 分账回退完成，以及以后新加的）说明钱
+# 在微信那边走过别的流程，既不能当没付款关单、也不能照常开通，转人工核对并告警；原来补单会
+# 一直把它当待支付查下去（Codex 复核，10/19）
+HANDLED_STATUSES = frozenset({0, 1, 2, 3, 4, 6, 8})
+ODD_STATUS_NAMES = {
+    5: "退款中：商户侧扣款完成",
+    7: "退款失败",
+    9: "回收广告金完成",
+    10: "分账回退完成",
+}
+
+
+def flag_odd_pending(order: PayOrder, data: dict, stamp: datetime) -> bool:
+    """待确认的订单查到上面说的少见状态：转人工（每分钟的补单会发告警），返回 True。
+    状态不是整数（返回格式不对）的不算，留给下一次查单。"""
+    status = data.get("status")
+    if type(status) is not int or status in HANDLED_STATUSES:
+        return False
+    name = ODD_STATUS_NAMES.get(status, "未知状态")
+    order.status, order.alerted_at, order.updated_at = "manual", None, stamp
+    order.error = f"微信查单状态 {status}（{name}），待确认的订单不能自动处理，需人工核对"
+    return True
+
+
+def check_order(
+    session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
+) -> str:
+    """用户付款后、打开订单页时主动核对一张待确认的订单：向微信查单，付了款就当场开通、通知发货，
+    不等推送和每分钟的补单（10/19 沙箱实测：推送没处理成，补单 2 分钟后才开通，小程序只等了
+    1 分钟，用户一直看到"待支付"）。核验规则和补单完全一样（accept_payment）。
+    调用方已按 用户 → 订单 加锁，订单是待确认（checkable）。返回这次核对的结果：
+    paid 已开通；unpaid 微信还没有这笔付款；closed 微信已关单；refunded 微信那边已经退款；
+    manual 微信确认收到付款，但核验不过、已转人工；unavailable 这次没查成（交给每分钟的补单）。"""
+    try:
+        data = query(session, order, client)
+    except XPayError:
+        session.commit()  # 查单记录（若有）照常保存；订单不动，交给补单
+        return "unavailable"
+    result = settle_pending(session, order, data, settings, stamp)
+    # 先持久化使用期再通知发货；通知失败由每分钟的补单补发（和补单同一顺序）
+    session.commit()
+    if result == "paid" and not order.goods_notified:
+        provide_goods(session, order, client)
+    return result
+
+
+def settle_pending(
+    session: Session, order: PayOrder, data: dict, settings: Settings, stamp: datetime
+) -> str:
+    """按查单结果处理一张待确认的订单（不提交、不通知发货）：主动核对和下新单前查上一笔共用。
+    返回 paid 已开通；unpaid 微信还没有这笔付款（0/1）；closed 微信已关单（6）；
+    refunded 已退完（8）；manual 转了人工（金额等核验不过、5/7/9/10 等少见状态）；
+    unavailable 这次处理不了（返回格式不对）。"""
+    if mark_refunded(session, order, data, stamp):
+        return "refunded" if order.status == "refunded" else "manual"
+    status = data.get("status")
+    if status == 6:
+        order.status, order.updated_at = "closed", stamp
+        return "closed"
+    if status in (0, 1):
+        return "unpaid"
+    if flag_odd_pending(order, data, stamp):
+        return "manual"
+    accept_payment(session, order, data, settings, stamp)
+    if order.status == "completed":
+        return "paid"
+    return "manual" if order.status == "manual" else "unavailable"
+
+
 def run_payments(
     session: Session,
     *,
@@ -1027,7 +1347,7 @@ def run_payments(
     open_shop = enabled(settings)
     stamp = advisor_tasks._utc(stamp or datetime.now(UTC))
     if client is None:
-        with httpx.Client(trust_env=False) as http:
+        with wx_http() as http:
             return run_payments(
                 session,
                 settings=settings,
@@ -1073,17 +1393,29 @@ def run_payments(
                     order.status, order.error = "manual", "用户已注销，退款需人工处理"
                 elif refund_exhausted(order, stamp):
                     # 最后核验已成功的退款；查单也失败则人工接手，不能无限重试。
-                    confirmed = False
-                    with contextlib.suppress(XPayError):
-                        confirmed = mark_refunded(
-                            session, order, query(session, order, client), stamp
-                        )
-                    if not confirmed:
-                        order.status, order.error, order.alerted_at = (
-                            "manual",
-                            "退款尝试达到上限或超过24小时，需人工核对",
-                            None,
-                        )
+                    # 24 小时从发起退款（refund_started_at）算：停在 5（钱从我们这边扣走了、
+                    # 还没到用户那边）满 24 小时也转人工，告警只发一次（alerted_at）。
+                    # 发起次数先到上限、还没满 24 小时就查到 5 的（几次请求超时、其实微信受理了）：
+                    # 不再发起，按 10 分钟一次接着等，满 24 小时再定（Codex 复核）
+                    waiting = order.refund_started_at > stamp - REFUND_WAIT
+                    if not (waiting and order.refund_retry_at and order.refund_retry_at > stamp):
+                        confirmed, status = False, None
+                        with contextlib.suppress(XPayError):
+                            data = query(session, order, client)
+                            status = data.get("status")
+                            confirmed = mark_refunded(session, order, data, stamp)
+                        if confirmed:
+                            pass
+                        elif status == 5 and waiting:
+                            order.refund_status, order.error = "pending", None
+                            order.refund_retry_at = stamp + timedelta(minutes=10)
+                        else:
+                            order.status, order.alerted_at = "manual", None
+                            order.error = (
+                                STUCK_REFUND_ERROR
+                                if status == 5
+                                else "退款尝试达到上限或超过24小时，需人工核对"
+                            )
                 elif order.refund_status == "pending":
                     if order.refund_retry_at is None or order.refund_retry_at <= stamp:
                         order.refund_retry_at = stamp + timedelta(minutes=10)
@@ -1111,7 +1443,7 @@ def run_payments(
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"
-                    else:
+                    elif not flag_odd_pending(order, data, stamp):
                         accept_payment(session, order, data, settings, stamp)
                 session.commit()  # 先持久化使用期再发通知；通知失败由下一次补发。
             if order.status == "completed" and not order.goods_notified:
