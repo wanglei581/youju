@@ -789,8 +789,11 @@ def test_snapshot_matches_endpoints_without_user_data(client, seeded, monkeypatc
     snap = client.get("/api/v1/snapshot", headers=wx).json()
     assert seen == [{}]
     home = client.get("/api/v1/home", params={"group": 1, "excerpts": 1}).json()
+    # 和小程序首页的请求一样带 time=不限（utils/api.js）；不带就是默认"近 30 天"，
+    # 测试数据 9/20 发布，10/21 起就掉出 30 天、和快照对不上
     latest = client.get(
-        "/api/v1/search", params={"kind": "申报通知", "limit": 8, "offset": 0, "group": 1}
+        "/api/v1/search",
+        params={"kind": "申报通知", "time": "不限", "limit": 8, "offset": 0, "group": 1},
     ).json()
     assert snap["home"]["stats"] == home["stats"]
     assert snap["home"]["dueSoon"] == home["dueSoon"]
