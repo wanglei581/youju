@@ -236,9 +236,12 @@ def _impact(
     )
 
 
-def _write(session: Session, doc_id: int, stored: str, after: str, recheck_ai: bool) -> bool:
+def _write(
+    session: Session, doc_id: int, stored: str, after: str, recheck_ai: bool
+) -> tuple[bool, int]:
     """换一份正文：库里还是选中时那版（按指纹比，期间被别的任务重抓过的不改）才换；找回了日期、时刻的
-    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。换了返回 True。"""
+    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。
+    返回 (换了没有, 清掉几条)。"""
     changed = session.execute(
         update(DocumentDetail)
         .where(
@@ -249,12 +252,13 @@ def _write(session: Session, doc_id: int, stored: str, after: str, recheck_ai: b
         .values(body_text=after)
         .execution_options(synchronize_session=False)
     ).rowcount
+    cleared = 0
     if changed and recheck_ai:
-        session.execute(
+        cleared = session.execute(
             delete(AICheck).where(AICheck.document_id == doc_id, AICheck.task == "deadlines")
-        )
+        ).rowcount
     session.commit()
-    return bool(changed)
+    return bool(changed), cleared
 
 
 def _recompute(session: Session, written: list[int], report: RefetchReport) -> None:
@@ -343,8 +347,12 @@ def refetch_redacted(
     if not apply:
         return report
     written = []
+    # 写入时按实际清掉的条数报（期间被别的任务重抓过、没换的那几份不算）
+    report.ai_checks = 0
     for result, stored, after in pending:
-        if _write(session, result.document_id, stored, after, result.recheck_ai):
+        changed, cleared = _write(session, result.document_id, stored, after, result.recheck_ai)
+        report.ai_checks += cleared
+        if changed:
             written.append(result.document_id)
         elif session.get(DocumentDetail, result.document_id) is None:
             result.result, result.reason = "missing", "详情已删除"

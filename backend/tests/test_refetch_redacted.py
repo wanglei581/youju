@@ -185,7 +185,8 @@ def test_apply_replaces_body_and_recomputes(world, session) -> None:
         )
     ).all()
     assert agrees and all(a is None for a in agrees)
-    # AI 截止检查清掉、下一轮重查；类型检查留着
+    # AI 截止检查清掉、下一轮重查（报的是实际清掉的条数）；类型检查留着
+    assert report.ai_checks == 1
     tasks = session.scalars(select(AICheck.task).where(AICheck.document_id == swallowed.id)).all()
     assert tasks == ["kind"]
     # "能不能 AI 解读"当场重算
