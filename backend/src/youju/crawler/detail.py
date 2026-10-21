@@ -28,9 +28,11 @@ _ID_CARD = re.compile(
     r"(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|\d{2}(?:0[1-9]|1[0-2])"
     r"(?:0[1-9]|[12]\d|3[01])\d{3})(?!\d)"
 )
-# 附件副本的检查（has_personal_numbers）用：标签后面直接跟 12–19 位。正文用 _ACCOUNT（见下）
+# 旧的账号写法：标签后面直接跟 12–19 位。附件副本的检查（has_personal_numbers）用它；正文用 _ACCOUNT
+# （见下），_ACCOUNT 一位都没遮的才照它遮。空白、冒号用占有量词（结果和普通写法一样），"账号"后面
+# 一长串空白不会卡住
 _BANK = re.compile(
-    r"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*[:：]?\s*)(?:\d[ -]?){11,18}\d(?!\d)"
+    r"((?:银行卡|银行账号|银行帐号|账户|账号|帐号|卡号)\s*+[:：]?+\s*+)(?:\d[ -]?){11,18}\d(?!\d)"
 )
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址（同 api/me.py、附件文字）：以前用 \w，汉字也算，
 # 从上一个标点起连着邮箱的整段中文都被遮掉（"PDF电子版于7月2日前发送至abc@163.com"整段没了）。
@@ -139,25 +141,35 @@ def _date_from(values: list[str], i: int) -> bool:
 
 def _account(match: re.Match) -> str:
     """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位。第二组起
-    碰到这几种就不接：日期（"20251010""2025 10 10"）、紧跟着"年"的年份（"账号：1234567890
-    2025年11月5日前"）、紧跟着"月""日"的一两位数、第一组已经 12 位以上而接上就超过 22 位的
-    （"1202…568 1500"）。后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。
+    碰到这几种就不接：日期（"20251010""2025 10 10"）；年份（19xx、20xx）后面跟着"年"（中间可以
+    隔空格，"账号：1234567890 2025 年11月"），或跟着"."、"/"再跟数字（"2025.10.10"）；一两位数后面
+    紧跟"日"、或（可以隔空格）跟"月"；后面（可以隔空格）跟"元、万、亿"而接上就超过 19 位的（旧规则
+    最多遮 19 位，本来就接不到这一组）；第一组已经 12 位以上而接上就超过 22 位的
+    （"1202…568 1500"）。
+    后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。第一组不看后面跟的字。
     接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
     红线上的号码不能比以前漏得多。"""
     label, run = match.group(1), match.group(2)
     whole = match.group()
     groups = list(_DIGITS.finditer(run))
     values = [group.group() for group in groups]
-    after_run = match.string[match.end() : match.end() + 1]
+    tail = match.string[match.end() : match.end() + 4]
     total = taken = 0
     for i, group in enumerate(groups):
         size = len(values[i])
         if i:
-            following = run[group.end() : group.end() + 1] or after_run
+            rest = run[group.end() : group.end() + 4] if group.end() < len(run) else tail
+            following = rest[:1]
+            spaced = rest.lstrip(" \t\u3000")[:2]
+            year = bool(_YEAR.fullmatch(values[i]))
             if (
                 _date_from(values, i)
-                or (following == "年" and _YEAR.fullmatch(values[i]))
-                or (following in ("月", "日") and size <= 2)
+                or (
+                    year
+                    and (spaced[:1] == "年" or (following in (".", "/") and rest[1:2].isdigit()))
+                )
+                or (size <= 2 and (following == "日" or spaced[:1] == "月"))
+                or (spaced[:1] in ("元", "万", "亿") and total + size > 19)
                 or (len(values[0]) >= 12 and total + size > 22)
             ):
                 break
@@ -263,13 +275,17 @@ def _name_like(word: str, *, after_label: bool = False) -> bool:
         word in _TITLES
         or word in _COMMON_WORDS
         or word in _PLACE_NAMES
-        or word.endswith(_UNIT_ENDS)
         or any(label in word for label in _LABEL_WORDS)
     ):
         return False
+    surname = word[0] in _SURNAMES or word.startswith(_COMPOUND_SURNAMES)
+    if word.endswith(_UNIT_ENDS):
+        # "联系人："后面两个字、以常见姓氏开头的，以"路、镇、科"这类字结尾也是姓名
+        # （"联系人：王镇"）；别处以单位、地名的字结尾的不当姓名（"高新处""沙县"）
+        return after_label and len(word) == 2 and surname
     if after_label:
         return 2 <= len(word) <= 4 or ("·" in word and 3 <= len(word) <= 12)
-    if "·" in word or not (word[0] in _SURNAMES or word.startswith(_COMPOUND_SURNAMES)):
+    if "·" in word or not surname:
         return False
     return 2 <= len(word) <= 3 or (len(word) == 4 and word.startswith(_COMPOUND_SURNAMES))
 
