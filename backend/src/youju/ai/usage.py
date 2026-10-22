@@ -72,9 +72,9 @@ class UsageSummary:
     completion_tokens: int = 0
     # 有没列价格的模型时为 None
     cost: float | None = 0.0
-    # 当天用到的、列了价格的模型的核价日期范围（日报写"价格核于…"）；当天没用量时都为 None
-    priced_from: date | None = None
-    priced_to: date | None = None
+    # 当天用到的、列了价格的模型各自的核价日期，去重后按先后排（日报写"价格核于…"）；
+    # 当天没用量时为空
+    priced_on: tuple[date, ...] = ()
     # 各模型从开始记账起的累计 tokens（输入加输出）
     cumulative: dict[str, int] = field(default_factory=dict)
 
@@ -100,9 +100,7 @@ def usage_summary(session: Session, day: date) -> UsageSummary:
         cost = cost_yuan(model, int(prompt), int(completion))
         summary.cost = None if cost is None or summary.cost is None else summary.cost + cost
         if cost is not None:
-            checked = PRICES[model][2]
-            summary.priced_from = min(summary.priced_from or checked, checked)
-            summary.priced_to = max(summary.priced_to or checked, checked)
+            summary.priced_on = tuple(sorted({*summary.priced_on, PRICES[model][2]}))
     summary.cumulative = {
         model: int(tokens)
         for model, tokens in session.execute(
