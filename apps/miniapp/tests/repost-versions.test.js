@@ -168,14 +168,14 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
 
 test('首页、搜索：按组计数时写明另有几个转发版本未重复计', () => {
   assert.match(read('pages/home/index.wxml'), /wx:if="{{stats.week_reposts}}"[^>]*>另有 {{stats.week_reposts}} 个转发版本，未重复计算</);
-  assert.match(read('pages/search/index.wxml'), /wx:if="{{!loading && !error && reposts}}"[^>]*>已合并 {{reposts}} 个各地转发版本</);
+  assert.match(read('pages/search/index.wxml'), /wx:if="{{!loading && !error && reposts}}"[^>]*>已合并 {{reposts}} 个各地转发版本，不重复计数</);
 });
 
 test('新加的文字不出现禁用字样', () => {
   const texts = [
     read('utils/repost.js'),
     read('components/doc-row/index.wxml'),
-    /<!-- 转发版本（D-055）[\s\S]*?各版本的推荐截止[^<]*<\/view>/.exec(read('pages/detail/index.wxml'))[0],
+    /<!-- 转发版本（D-055）[\s\S]*?各版本的截止日期[^<]*<\/view>/.exec(read('pages/detail/index.wxml'))[0],
   ];
   for (const text of texts) for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} 出现在新文字里`);
 });

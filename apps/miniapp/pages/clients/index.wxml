@@ -1,6 +1,6 @@
 <notice-bar />
 <view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
-<view wx:if="{{!editing}}" class="card"><view class="message">需要批量处理或生成 Excel？工具中心支持名单比对和客户相关通知表。须另行确认上传，不会自动发送这里的客户卡片。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
+<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">
@@ -22,7 +22,7 @@
           <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
         </view>
       </scroll-view>
-      <view class="weak scope-note">近 90 天的相关申报通知，快截止的在前；不判断客户能不能申报。</view>
+      <view class="weak scope-note">近 90 天的相关申报通知，快截止的在前，已确认截止的不列；不判断客户能不能申报。</view>
       <view wx:if="{{loadError}}" class="card load-error"><text>{{loadError}}</text><text class="link retry" bindtap="reload">重试</text></view>
       <view class="card list">
         <view wx:if="{{loading}}" class="message weak">正在加载…</view>

@@ -47,7 +47,7 @@
 </view>
 <view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
 <!-- 同一份部里通知的各地转发版本合为一条（D-055），份数按合并后的算 -->
-<view wx:if="{{!loading && !error && reposts}}" class="fold-note">已合并 {{reposts}} 个各地转发版本</view>
+<view wx:if="{{!loading && !error && reposts}}" class="fold-note">已合并 {{reposts}} 个各地转发版本，不重复计数</view>
 
 <view class="card">
   <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -65,7 +65,7 @@
     <view wx:if="{{aiOnly}}" class="exits"><ai-only variant="exit" bind:remove="removeAi" /></view>
     <view wx:if="{{picked.open.length || (totalAll > 0 && chipTime !== '不限')}}" class="exits">
       <view wx:if="{{picked.open.length}}" class="exit-btn exit-btn--main" bindtap="removeOpen" aria-role="button">去掉“只看未截止”</view>
-      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含能看到截止日期、还没截止的通知，加上可能 7 天内截止、日期还没核对的</view>
+      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”含两类：写明了截止日期、还没到的；可能 7 天内截止、日期还没核对的</view>
       <view wx:if="{{totalAll > 0 && chipTime !== '不限'}}" class="exit-btn exit-btn--main" bindtap="allTime" aria-role="button">查看不限发布时间的 {{totalAll}} 份</view>
     </view>
     <view wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}</view>

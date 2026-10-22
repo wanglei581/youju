@@ -92,7 +92,7 @@
         <text class="ver-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</text>
       </view>
     </view>
-    <view class="weak ver-note">各版本的推荐截止、报送要求可能不同，以各自原文为准</view>
+    <view class="weak ver-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
   </view>
 
   <view class="card">
@@ -136,7 +136,7 @@
 
   <view wx:if="{{doc.body}}" class="card">
     <view class="section-title">正文</view>
-    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，以原文为准。</view>
+    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，以原文为准；截止日期看上面的"截止时间"。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>

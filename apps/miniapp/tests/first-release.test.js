@@ -236,7 +236,7 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
 test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）', () => {
   const wxml = read('pages/detail/index.wxml');
   assert.doesNotMatch(wxml, /核对过的日期/);
-  assert.match(wxml, /<view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，以原文为准。<\/view>/);
+  assert.match(wxml, /<view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，以原文为准；截止日期看上面的"截止时间"。<\/view>/);
 });
 
 test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {
