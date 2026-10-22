@@ -18,7 +18,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
-from youju.ai.usage import BEIJING, UsageSummary, usage_summary
+from youju.ai.usage import BEIJING, PRICES_CHECKED, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
 from youju.dedup import canonical_ids, groups_for, visible_documents
@@ -529,7 +529,8 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         cost = (
             "，费用未知（有未列价格的模型）"
             if usage.cost is None
-            else f"，当日模型调用费最多 {_cost_cap(usage.cost)} 元（按官网最高价估，实际通常更低）"
+            else f"，当日模型调用费最多 {_cost_cap(usage.cost)} 元"
+            f"（按 {_md(PRICES_CHECKED)}官网最高价估，实际可能更低）"
         )
         quota = "；".join(
             f"{model} 累计 {_tokens(tokens)} tokens"
