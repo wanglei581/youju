@@ -168,7 +168,7 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
 
 test('首页、搜索：按组计数时写明另有几个转发版本未重复计', () => {
   assert.match(read('pages/home/index.wxml'), /wx:if="{{stats.week_reposts}}"[^>]*>另有 {{stats.week_reposts}} 个转发版本，未重复计算</);
-  assert.match(read('pages/search/index.wxml'), /wx:if="{{!loading && !error && reposts}}"[^>]*>同一通知的各地转发版本合为一条，另有 {{reposts}} 个转发版本未重复计算</);
+  assert.match(read('pages/search/index.wxml'), /wx:if="{{!loading && !error && reposts}}"[^>]*>已合并 {{reposts}} 个各地转发版本</);
 });
 
 test('新加的文字不出现禁用字样', () => {

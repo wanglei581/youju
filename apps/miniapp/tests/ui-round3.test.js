@@ -127,17 +127,13 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
   assert.equal(filled.data.files[0].badge, 'XLSX');
 });
 
-test('文件页原有的说明保留：只存在这台手机上的那句在列表下方，带原文链接和数据说明的那句在页面底部', () => {
+test('文件页：只存在这台手机上的那句在列表下方、页面最后；"导出带数据说明"那句已去掉（10/17 创始人：去掉没用的提示）', () => {
   const template = wxml('files');
   const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可以重新导出。</view>';
-  const source = '<view class="tip">导出的表格和文档每份都带原文链接和数据说明（来源网站、核对日期、以原文为准）。</view>';
   const afterCards = template.slice(template.indexOf('<view wx:else class="card empty">'));
-  // 两句都在列表和空状态卡片之后，有没有记录都显示
   assert.ok(afterCards.indexOf(storage) > 0);
-  assert.ok(afterCards.indexOf(source) > afterCards.indexOf(storage));
+  assert.ok(!template.includes('数据说明（来源网站'));
   assert.match(template, /<\/view>\s*<view class="tip">导出记录只保存/);
-  assert.match(template, /以原文为准）。<\/view>\s*<view class="tab-page-bottom"><\/view>\s*$/);
-  // 顶部不再有一段说明，"第三方整理"照旧
   assert.ok(!/class="intro"/.test(template));
   assert.match(template, /^<notice-bar \/>/);
 });

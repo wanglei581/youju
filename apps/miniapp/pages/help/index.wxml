@@ -8,4 +8,4 @@
   <view class="help-contact"><contact-button from="help" /></view>
   <view class="help-report" bindtap="report" aria-role="link">内容有问题：投诉举报 ›</view>
 </view>
-<view class="help-foot">有据 · 第三方整理 · 每条都有出处</view>
+<view class="help-bottom"></view>
