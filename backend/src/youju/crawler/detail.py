@@ -142,7 +142,8 @@ def _date_from(values: list[str], i: int) -> bool:
 def _account(match: re.Match) -> str:
     """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位。第二组起
     碰到这几种就不接：日期（"20251010""2025 10 10"）；年份（19xx、20xx）后面跟着"年"（中间可以
-    隔空格，"账号：1234567890 2025 年11月"），或跟着"."、"/"再跟数字（"2025.10.10"）；一两位数后面
+    隔空格，"账号：1234567890 2025 年11月"），或跟着"."、"/"再跟数字（"2025.10.10"），或前面隔空格、
+    后面是横线和最后一组月份（"… 2025-10前"；整串都用横线分组的照样接）；一两位数后面
     紧跟"日"、或（可以隔空格）跟"月"；后面（可以隔空格）跟"元、万、亿"而接上就超过 19 位的（旧规则
     最多遮 19 位，本来就接不到这一组）；第一组已经 12 位以上而接上就超过 22 位的
     （"1202…568 1500"）。
@@ -166,7 +167,17 @@ def _account(match: re.Match) -> str:
                 _date_from(values, i)
                 or (
                     year
-                    and (spaced[:1] == "年" or (following in (".", "/") and rest[1:2].isdigit()))
+                    and (
+                        spaced[:1] == "年"
+                        or (following in (".", "/") and rest[1:2].isdigit())
+                        or (
+                            run[group.start() - 1] == " "
+                            and following == "-"
+                            and i + 2 == len(groups)
+                            and len(values[i + 1]) <= 2
+                            and 1 <= int(values[i + 1]) <= 12
+                        )
+                    )
                 )
                 or (size <= 2 and (following == "日" or spaced[:1] == "月"))
                 or (spaced[:1] in ("元", "万", "亿") and total + size > 19)
