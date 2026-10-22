@@ -10,6 +10,15 @@
 不判断"能不能报"，不打分，不推荐。产业方向只认小程序里那 8 项的原文，写别的一律按"不限产业方向"列，
 不替客户猜行业。
 
+D-086 加的三样（"直接给结果"第 1 阶段：先人工交付，记下客户的反应）：
+  - 每行有行号（通知 N1、N2……，名单 L1、L2……），每家客户有代号（A、B……）。顾问只说行号和代号，
+    就能告诉我们客户对哪几行有回应，不用说企业名称。
+  - 另出一份"反馈记录"表：只有行号、代号、省份、产业方向和公开通知的标题，不含企业名称、名单标题；
+    交付当天删掉结果表以后，这份可以留下来记反馈。
+  - 每家客户另出一个"给客户的短表"文件，只有这一家的通知和上榜情况，可以直接转给这家客户。
+  客户清单可以多一列"在办项目"（如高企、专精特新）：通知标题里带这几个字的排在这家的前面并标出来，
+  只按字找，没标的不代表无关。
+
 园区版（--park，推广与获客方案第五节的"园区企业上榜汇总"）：园区给入驻企业名单（只要企业全称），
 只查上榜、不查通知，出三页：说明（写给园区的）、按名单看（每份名单上有园区哪几家，年底统计时可以拿来
 查漏）、按企业看。
@@ -22,7 +31,8 @@
   /Users/wanglei/youju-worktrees/ai/backend/.venv/bin/python tools/team/concierge.py [--park] <清单.xlsx|.csv> [输出.xlsx]
 
 客户清单：第一行是表头，列名里带"企业""公司"或"名称"的是企业全称（必填）；带"地区"或"省"的是所在省份
-（可空）；带"产业"或"方向"的是产业方向（可空，多个用顿号或逗号隔开）。只有一列、没有表头也可以。
+（可空）；带"产业"或"方向"的是产业方向（可空，多个用顿号或逗号隔开）；带"在办"的是在办项目（可空，
+多个用顿号或逗号隔开）。只有一列、没有表头也可以。
 园区版只用企业全称这一列。
 **清单里不要有联系人、电话**；清单放在仓库以外的文件夹，不上传到服务器，交付当天由创始人删除本机文件
 （见 docs/商业/首批试用外联包_v2.md 第二节）。
@@ -72,11 +82,29 @@ STATEMENT = (
     "每条附政府原文链接，截止日期写明人工核对或机器摘录，以原文为准。"
 )
 # 名单怎么处理（和外联包 v2 第二节的保密说明一致：名称发去比对，但服务器不保存、不记录）
-HANDLING = "查的时候企业名称逐个发到查询接口比对，服务器不保存名单，也不记录查了哪些企业；交付当天删除本机文件。"
+HANDLING = (
+    "查的时候企业名称逐个发到查询接口比对，服务器不保存名单，也不记录查了哪些企业；"
+    "我们在交付当天删除本机上的名单和生成的文件（含微信里收发的副本）。"
+)
 # 10/18 试跑发现：名单解析目前不收"某某公司（某某工厂）"这类按工厂写的条目（后端 valid_org_name 不认），
 # 查不到要提醒对方看原文；后端改好以后删掉这句
 PLANT_NOTE = "名单里按工厂写的条目（如“某某公司（某某工厂）”）目前可能没有收录，查不到时请打开原文再看一眼。"
 _SPLIT = re.compile(r"[、,，;；/|\s]+")
+# 在办项目的简称：除了顾问写的字，标题里出现这个全称也算。只用来标出、排到前面，不推断有没有关系。
+# 不收"小巨人"一类的别名：各地还有"科技小巨人"等别的项目，会标错（D-086 代码审阅）
+PROJECT_WORDS = {
+    "高企": ("高新技术企业",),
+}
+# 给客户的短表开头的说明（D-086 合规审阅：不代表符合条件、不是代办）
+DISCLAIMER = (
+    "这份表只是按地区和产业方向，从政府公开发布的申报通知里整理的线索，不代表符合申报条件，"
+    "也不是代办申报服务；请以政府原文为准，自主核实、办理。"
+)
+DEADLINE_NOTE = (
+    "【截止日期】写“已人工核对”的，是对照原文核对过的；写“机器摘录·未经人工核对”的，是程序从原文里"
+    "摘出的日期（只给 8–30 天后到期的，附原句），可能有误；写“截止未核对”或“截止时间见原文”的，"
+    "请打开原文看。"
+)
 
 # 装进模拟器的小工具：排队逐个调接口（间隔由任务自己带），调完马上按任务的 slim 只留要用的字段，
 # 结果留在 getApp().__cg.done 里等 Python 来取（命令行一次传回的内容有限，正文和多余字段都不要）。
@@ -206,18 +234,17 @@ def read_clients(path: Path) -> list[dict]:
     header = rows[0]
 
     def column(*words: str) -> int | None:
-        return next(
-            (i for i, name in enumerate(header) if any(w in name for w in words)), None
-        )
+        return next((i for i, name in enumerate(header) if any(w in name for w in words)), None)
 
-    name_col, region_col, industry_col = (
+    name_col, region_col, industry_col, project_col = (
         column("企业", "公司", "名称"),
         column("地区", "省"),
         column("产业", "方向"),
+        column("在办"),
     )
     if name_col is None or not looks_like_header(header):
         # 没有表头：第一列就是企业名称（第一行"某某有限公司"也带"公司"二字，不能当表头）
-        name_col, region_col, industry_col, body = 0, None, None, rows
+        name_col, region_col, industry_col, project_col, body = 0, None, None, None, rows
         print(f"没有表头，第一行就是第一家：{rows[0][0]}")
     else:
         body = rows[1:]
@@ -227,13 +254,12 @@ def read_clients(path: Path) -> list[dict]:
         name = row[name_col] if name_col < len(row) else ""
         if not name:
             continue
-        region_text = (
-            row[region_col] if region_col is not None and region_col < len(row) else ""
-        )
+        region_text = row[region_col] if region_col is not None and region_col < len(row) else ""
         industry_text = (
-            row[industry_col]
-            if industry_col is not None and industry_col < len(row)
-            else ""
+            row[industry_col] if industry_col is not None and industry_col < len(row) else ""
+        )
+        project_text = (
+            row[project_col] if project_col is not None and project_col < len(row) else ""
         )
         provinces = [p for p in PROVINCES if p in region_text]
         wanted = [v for v in _SPLIT.split(industry_text) if v]
@@ -244,6 +270,7 @@ def read_clients(path: Path) -> list[dict]:
                 "provinces": [],
                 "industries": [],
                 "ignored": [],
+                "projects": [],
                 "region_text": region_text,
             }
             clients.append(client)
@@ -252,11 +279,35 @@ def read_clients(path: Path) -> list[dict]:
             ("provinces", provinces),
             ("industries", [v for v in wanted if v in INDUSTRIES]),
             ("ignored", [v for v in wanted if v not in INDUSTRIES]),
+            ("projects", [v for v in _SPLIT.split(project_text) if v]),
         ):
             client[key] += [v for v in values if v not in client[key]]
     if len(clients) > MAX_CLIENTS:
         raise SystemExit(f"清单有 {len(clients)} 家，一次最多 {MAX_CLIENTS} 家")
+    for index, client in enumerate(clients):
+        client["code"] = client_code(index)
     return clients
+
+
+def client_code(index: int) -> str:
+    """客户代号：A、B……Z、AA、AB……。反馈只说代号和行号，不说企业名称（D-072、D-086）。"""
+    code, index = "", index + 1
+    while index:
+        index, rest = divmod(index - 1, 26)
+        code = chr(ord("A") + rest) + code
+    return code
+
+
+def project_hits(title: str | None, projects: list[str]) -> list[str]:
+    """通知标题里实际出现的在办项目用词（顾问写的字，或 PROJECT_WORDS 里的全称），按清单顺序去重。
+    只按字找，不推断；表里写的就是标题里出现的字。"""
+    title, found = title or "", []
+    for project in projects:
+        for word in (project, *PROJECT_WORDS.get(project, ())):
+            if word in title and word not in found:
+                found.append(word)
+                break
+    return found
 
 
 # 第一行当不当表头：有一格是短列名（带这些词，12 个字以内），而且没有一格带"有限""股份"
@@ -564,84 +615,106 @@ def park_book(
     return book, hit, failed
 
 
+def region_of(client: dict) -> str:
+    return "、".join(client["provinces"]) + "（含国家部委）" if client["provinces"] else "全国"
+
+
+def industry_of(client: dict) -> str:
+    text = "、".join(client["industries"]) or "不限产业方向"
+    if client["ignored"]:
+        ignored = "、".join(client["ignored"])
+        text += f"（清单里写的“{ignored}”不在可筛选的 8 项里，没有用）"
+    return text
+
+
+def prepare(clients: list[dict]) -> None:
+    """测试和旧清单里的客户可能没有代号、在办项目：补上，后面几张表按同一套代号和行号。"""
+    for index, client in enumerate(clients):
+        client.setdefault("code", client_code(index))
+        client.setdefault("projects", [])
+
+
+def notice_entries(clients: list[dict], notices: dict[str, dict]) -> tuple[list[dict], int, int]:
+    """每家客户的相关通知，编好行号（N1、N2……）：和在办项目有关的排在这家的前面，其余按接口给的顺序。
+    没查成、没有通知、只列了一部分的，各占一行说明（不编行号）。返回行、没查成的家数、只列了一部分的家数。"""
+    prepare(clients)
+    entries, failed, cut, number = [], 0, 0, 0
+    for client in clients:
+        result = notices.get(notice_key(client)) or {}
+        items = result.get("items") or []
+        if result.get("status") != 200:
+            failed += 1
+            entries.append({"client": client, "note": "没查成，请重跑"})
+            continue
+        if not items:
+            entries.append({"client": client, "note": "近 90 天没有列出的通知"})
+        hits = [project_hits(item.get("title"), client["projects"]) for item in items]
+        for hit, item in sorted(zip(hits, items), key=lambda pair: not pair[0]):  # 稳定排序
+            number += 1
+            entries.append({"client": client, "no": f"N{number}", "item": item, "hits": hit})
+        if (result.get("total") or 0) > len(items) and items:
+            cut += 1
+            entries.append(
+                {
+                    "client": client,
+                    "note": f"（共 {result['total']} 条，这里只列最新的 {len(items)} 条）",
+                }
+            )
+    return entries, failed, cut
+
+
+def numbered_list_rows(clients: list[dict], lookups: dict[str, dict]) -> tuple[list[list], int]:
+    """上榜情况加行号（L1、L2……）和代号：[行号, 客户, 代号, 结果, 名单标题……备注]。"""
+    prepare(clients)
+    rows, failed, _ = lookup_rows(clients, lookups)
+    codes = {client["name"]: client["code"] for client in clients}
+    return [
+        [f"L{n}", row[0], codes.get(row[0], ""), *row[1:]] for n, row in enumerate(rows, start=1)
+    ], failed
+
+
 def advisor_book(
     clients: list[dict],
     lookups: dict[str, dict],
     notices: dict[str, dict],
     stamp: str,
+    now: datetime | None = None,
 ) -> tuple[Workbook, int, int, int]:
     """顾问版四页：说明、上榜情况、相关通知、按通知看。返回工作簿、查到的客户数、通知条数、没查成的个数。"""
     from openpyxl import Workbook
 
-    now = now_cn()
-    list_rows, failed, _ = lookup_rows(clients, lookups)
-    notice_rows, by_notice, cut_notices = [], {}, 0
-    for client in clients:
-        result = notices.get(notice_key(client)) or {}
-        region = (
-            "、".join(client["provinces"]) + "（含国家部委）"
-            if client["provinces"]
-            else "全国"
+    now = now or now_cn()
+    list_rows, failed = numbered_list_rows(clients, lookups)
+    entries, notice_failed, cut_notices = notice_entries(clients, notices)
+    failed += notice_failed
+    notice_rows, by_notice = [], {}
+    for entry in entries:
+        client, item = entry["client"], entry.get("item")
+        head = [client["name"], client["code"], region_of(client), industry_of(client)]
+        if item is None:
+            notice_rows.append(["", *head, entry["note"], "", "", "", "", "", ""])
+            continue
+        notice_rows.append(
+            [
+                entry["no"],
+                *head,
+                item.get("title"),
+                item.get("issuer"),
+                item.get("date"),
+                item.get("category") or "",
+                "、".join(entry["hits"]),
+                deadline_text(item, now),
+                item.get("url"),
+            ]
         )
-        industry = "、".join(client["industries"]) or "不限产业方向"
-        if client["ignored"]:
-            ignored = "、".join(client["ignored"])
-            industry += f"（清单里写的“{ignored}”不在可筛选的 8 项里，没有用）"
-        items = result.get("items") or []
-        if result.get("status") != 200:
-            failed += 1
-            notice_rows.append(
-                [client["name"], region, industry, "没查成，请重跑", "", "", "", "", ""]
-            )
-        elif not items:
-            notice_rows.append(
-                [
-                    client["name"],
-                    region,
-                    industry,
-                    "近 90 天没有列出的通知",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
-        for item in items:
-            notice_rows.append(
-                [
-                    client["name"],
-                    region,
-                    industry,
-                    item.get("title"),
-                    item.get("issuer"),
-                    item.get("date"),
-                    item.get("category") or "",
-                    deadline_text(item, now),
-                    item.get("url"),
-                ]
-            )
-            entry = by_notice.setdefault(item.get("url"), {"item": item, "clients": []})
-            entry["clients"].append(client["name"])
-        if items and (result.get("total") or 0) > len(items):
-            cut_notices += 1
-            notice_rows.append(
-                [
-                    client["name"],
-                    region,
-                    industry,
-                    f"（共 {result['total']} 条，这里只列最新的 {len(items)} 条）",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
+        by_notice.setdefault(item.get("url"), {"item": item, "clients": []})["clients"].append(
+            client["name"]
+        )
 
     book = Workbook()
-    hit = len({row[0] for row in list_rows if str(row[1]).startswith("上榜")})
+    hit = len({row[1] for row in list_rows if str(row[3]).startswith("上榜")})
     cut = truncated_count(clients, lookups)
+    with_projects = any(client["projects"] for client in clients)
     write_intro(
         book,
         [
@@ -655,16 +728,30 @@ def advisor_book(
             + coverage_text(lookups)
             + PLANT_NOTE,
             (
-                "【相关通知】按客户所在省份（加国家部委）和产业方向，列出近 90 天发布的申报通知，"
-                "只去掉截止日期已人工核对、确认已截止的。产业方向按通知标题归类，仅供检索参考，不是官方分类。"
+                "【相关通知】从我们目前已收录的国家部委和省级部门栏目里，按客户所在省份（加国家部委）和产业方向，"
+                "列出近 90 天发布的申报通知，只去掉截止日期已人工核对、确认已截止的；市、区县发的大多没有收录，"
+                "没列出的不代表没有。产业方向按通知标题归类，仅供检索参考，不是官方分类。"
             ),
             "列出来不代表客户符合申报条件，这里不作任何资格判断。",
-            (
-                "【截止日期】写“已人工核对”的，是对照原文核对过的；写“机器摘录·未经人工核对”的，是程序从原文里"
-                "摘出的日期（只给 8–30 天后到期的，附原句），可能有误；写“截止未核对”或“截止时间见原文”的，"
-                "请打开原文看。"
+            *(
+                [
+                    "【在办项目】清单里写了在办项目的（如高企、专精特新），通知标题里带这几个字的排在这家客户的前面，"
+                    "在“标题里有在办项目的字”一列标出；只按标题里的字找，不是资格判断，没标的不代表无关。"
+                ]
+                if with_projects
+                else []
             ),
+            DEADLINE_NOTE,
             "【按通知看】同一条通知和哪些客户有关，方便一次通知多家。",
+            "【行号和代号】每行有行号（通知 N1、N2……，名单 L1、L2……），每家客户有代号（A、B……）。",
+            (
+                "【请帮我们记反馈】客户对哪几行有回应、问了什么、你改了哪里，告诉我们行号和代号就行，"
+                "不用说企业名称、联系人。"
+            ),
+            (
+                "【给客户的短表】每家客户另有一个文件，里面只有这一家的通知和上榜情况；截止日期和名单请看过再转，"
+                "只发这家对应的那一个文件，不要发整个文件夹。这张总表里有你所有客户，请不要整张转给客户。"
+            ),
             f"【客户清单怎么处理】只用来做这一张表；{HANDLING}",
             *(
                 [
@@ -677,29 +764,40 @@ def advisor_book(
                 else []
             ),
             *(
-                [f"【注意】有 {cut} 家客户的上榜结果没取全（只列了最近的名单），“结果”或“备注”列里有标注，请在小程序里再查。"]
+                [
+                    f"【注意】有 {cut} 家客户的上榜结果没取全（只列了最近的名单），“结果”或“备注”列里有标注，请在小程序里再查。"
+                ]
                 if cut
                 else []
             ),
         ],
     )
-    write_sheet(book, "上榜情况", ["客户", *LIST_HEADER[1:]], list_rows, LIST_WIDTHS)
+    write_sheet(
+        book,
+        "上榜情况",
+        ["行号", "客户", "代号", *LIST_HEADER[1:]],
+        list_rows,
+        [7, LIST_WIDTHS[0], 6, *LIST_WIDTHS[1:]],
+    )
     write_sheet(
         book,
         "相关通知",
         [
+            "行号",
             "客户",
+            "代号",
             "地区",
             "产业方向",
             "通知标题",
             "发文机关",
             "发布日期",
             "项目类别",
+            "标题里有在办项目的字",
             "截止日期",
             "原文链接",
         ],
         notice_rows,
-        [30, 20, 22, 56, 22, 12, 16, 40, 40],
+        [7, 30, 6, 20, 22, 56, 22, 12, 16, 14, 40, 40],
     )
     write_sheet(
         book,
@@ -732,6 +830,201 @@ def advisor_book(
         [56, 22, 12, 40, 12, 60, 40],
     )
     return book, hit, len(by_notice), failed
+
+
+FEEDBACK_HEADER = [
+    "行号",
+    "客户代号",
+    "省份",
+    "产业方向",
+    "类型",
+    "内容",
+    "标题里有在办项目的字",
+    "截止日期",
+    "原文链接",
+    "客户有没有回应（回了 / 没回）",
+    "问的是什么（截止 / 材料 / 附件 / 条件 / 别的）",
+    "顾问改了哪里",
+    "备注",
+]
+
+
+def feedback_book(
+    clients: list[dict],
+    lookups: dict[str, dict],
+    notices: dict[str, dict],
+    stamp: str,
+    now: datetime | None = None,
+) -> Workbook:
+    """反馈记录（D-086 ②）：只有行号、代号、省份、产业方向、公开通知的标题和截止，不含企业名称。
+    名单行只写结果（如"上榜 2 份（公示）"），不写名单标题和链接：名单小、再加上省份，可能猜出是哪家。
+    在办项目只记标题里有没有（"是"），不记是哪一项：省份、产业再加在办项目，细分行业里可能认出是哪家。"""
+    from openpyxl import Workbook
+
+    now = now or now_cn()
+    entries, _, _ = notice_entries(clients, notices)
+    list_rows, _ = numbered_list_rows(clients, lookups)
+    by_code = {client["code"]: client for client in clients}
+
+    def where(client: dict) -> list[str]:
+        return ["、".join(client["provinces"]) or "全国", "、".join(client["industries"]) or "不限"]
+
+    rows = []
+    for entry in entries:
+        client = entry["client"]
+        if not entry.get("no"):  # 没查成、近 90 天没有、只列了一部分：照记，分得清"没查成"和"确实没有"
+            rows.append(["", client["code"], *where(client), "说明", entry["note"], *[""] * 7])
+            continue
+        item = entry["item"]
+        rows.append(
+            [
+                entry["no"],
+                client["code"],
+                *where(client),
+                "通知",
+                item.get("title") or "",
+                "是" if entry["hits"] else "",
+                deadline_text(item, now),
+                item.get("url"),
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+    for row in list_rows:
+        # [行号, 客户, 代号, 结果, 名单标题, 发文机关, 发布日期, 公示/公布, 名单里的写法……]：只取结果和公示/公布
+        client = by_code[row[2]]
+        status = f"（{row[7]}）" if row[7] else ""
+        rows.append(
+            [row[0], row[2], *where(client), "名单", f"{row[3]}{status}", "", "", "", "", "", "", ""]
+        )
+
+    book = Workbook()
+    write_intro(
+        book,
+        [
+            "样品表反馈记录（不含企业名称）",
+            f"生成时间：{stamp}；对应的结果表里有 {len(clients)} 家客户，这里用代号 A、B……代替企业名称。",
+            "",
+            "怎么用：顾问说客户对哪几行有回应、问了什么、自己改了哪里，按行号填后四列。",
+            "只记行为：不写企业名称、联系人、电话，不写企业的财务、技术数据（D-072、D-086）。",
+            "名单行只写结果，不写名单标题：名单小、再加上省份，可能猜出是哪家。",
+            "交付当天（我们这边）删除：顾问给的名单、结果表、给客户的短表文件夹、微信里收发的副本；这份记录表可以留着。",
+        ],
+    )
+    write_sheet(
+        book,
+        "反馈记录",
+        FEEDBACK_HEADER,
+        rows,
+        [7, 8, 14, 18, 6, 56, 10, 40, 40, 14, 22, 30, 30],
+    )
+    return book
+
+
+def client_books(
+    clients: list[dict],
+    lookups: dict[str, dict],
+    notices: dict[str, dict],
+    stamp: str,
+    now: datetime | None = None,
+) -> list[tuple[dict, Workbook]]:
+    """给客户的短表：一家一个工作簿，只有这一家的通知和上榜情况，顾问可以直接转给这家客户。
+    客户再多也一家一个文件：总表里有所有客户，不能转给客户（D-086 合规审阅）。"""
+    from openpyxl import Workbook
+
+    now = now or now_cn()
+    entries, _, _ = notice_entries(clients, notices)
+    list_rows, _ = numbered_list_rows(clients, lookups)
+    books = []
+    for client in clients:
+        mine = [e for e in entries if e["client"] is client]
+        rows = [
+            [
+                e["item"].get("title"),
+                e["item"].get("issuer"),
+                e["item"].get("date"),
+                deadline_text(e["item"], now),
+                "、".join(e["hits"]),
+                e["item"].get("url"),
+            ]
+            for e in mine
+            if e.get("item")
+        ]
+        rows += [[CLIENT_NOTES.get(e["note"], e["note"]), "", "", "", "", ""] for e in mine if not e.get("item")]
+        book = Workbook()
+        write_intro(
+            book,
+            [
+                f"申报线索 · {client['name']}",
+                f"生成时间：{stamp}；地区：{region_of(client)}；产业方向：{industry_of(client)}。",
+                "",
+                STATEMENT,
+                DISCLAIMER,
+                "",
+                (
+                    "【覆盖范围】只含我们目前已收录的国家部委和省级部门栏目里近 90 天发布的申报通知；"
+                    "市、区县发的大多没有收录，没列出的不代表没有。"
+                ),
+                "【标题里有在办项目的字】只按通知标题里的字找，不是资格判断；没标的不代表无关。",
+                DEADLINE_NOTE,
+                "【上榜情况】企业全称和名单原文完全相同才算查到；没查到不等于没上榜："
+                + coverage_text(lookups)
+                + PLANT_NOTE,
+            ],
+        )
+        write_sheet(
+            book,
+            "申报线索",
+            ["通知标题", "发文机关", "发布日期", "截止日期", "标题里有在办项目的字", "原文链接"],
+            rows,
+            [56, 22, 12, 40, 14, 40],
+        )
+        write_sheet(
+            book,
+            "上榜情况",
+            LIST_HEADER[1:],
+            client_list_rows([row for row in list_rows if row[2] == client["code"]]),
+            LIST_WIDTHS[1:],
+        )
+        books.append((client, book))
+    return books
+
+
+# 给客户看的说法：总表里的"请重跑"是写给我们和顾问的
+CLIENT_NOTES = {"没查成，请重跑": "本次没查出通知，请联系顾问再查"}
+AMBIGUOUS = "名单里有同名但信用代码不同的企业"
+
+
+def client_list_rows(rows: list[list]) -> list[list]:
+    """给客户的短表里的上榜情况（D-086 ③：名单同名没核对的不能给客户）：
+    同名没核对的整行换成一句"顾问核对后再告诉您"，没查成的换成对客户的说法；其余照总表。"""
+    out = []
+    for row in rows:
+        result, note = str(row[3]), str(row[11] or "")
+        if AMBIGUOUS in note:
+            row = ["名单里有同名的企业，顾问核对后再告诉您", *[""] * 8]
+        elif result.startswith("没查成"):
+            row = ["本次没查出，请联系顾问再查", *[""] * 8]
+        else:
+            row = row[3:]
+        if row not in out:  # 同名的企业上了几份名单：只说一次
+            out.append(row)
+    return out
+
+
+def save_client_files(folder: Path, books: list[tuple[dict, Workbook]]) -> None:
+    """一家一个文件。先清掉文件夹里上一次的短表：重跑或去掉一家以后，不留别的客户的文件。"""
+    folder.mkdir(exist_ok=True)
+    for old in folder.glob("*.xlsx"):
+        old.unlink()
+    for client, book in books:
+        book.save(folder / f"{client['code']}_{safe_file_name(client['name'])}.xlsx")
+
+
+def safe_file_name(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_")[:40] or "客户"
 
 
 def main() -> int:
@@ -788,10 +1081,18 @@ def main() -> int:
     book, hit, notice_count, failed = advisor_book(clients, lookups, notices, stamp)
     book.save(target)
     print(f"已生成：{target}")
+    feedback = target.with_name(target.stem + "_反馈记录.xlsx")
+    feedback_book(clients, lookups, notices, stamp).save(feedback)
+    print(f"反馈记录（不含企业名称，可以留着）：{feedback}")
+    folder = target.with_name(target.stem + "_给客户的短表")
+    books = client_books(clients, lookups, notices, stamp)
+    save_client_files(folder, books)
+    print(f"给客户的短表 {len(books)} 个：{folder}（只发对应的那一个文件，不要发整个文件夹）")
     print(
         f"上榜 {hit} 家；通知 {notice_count} 条；没查成 {failed} 项"
-        + ("（请重跑）" if failed else "")
+        + ("（请重跑；重跑之前不要发给客户的短表）" if failed else "")
     )
+    print("交付当天删除：顾问给的名单、结果表、给客户的短表文件夹、微信里收发的副本；反馈记录表可以留着。")
     return 1 if failed else 0
 
 
