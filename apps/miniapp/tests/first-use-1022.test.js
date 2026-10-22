@@ -224,7 +224,7 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   assert.equal(findAll(root, hasClass('ver-hint')).length, 0);
 });
 
-test('第 2 条附带（Grok 复走）：选文件那里写明旧版 .xls 要先另存为 .xlsx（选择器里本来就选不到 .xls）', () => {
+test('第 2 条附带：选文件那里写明旧版 .xls 要先另存为 .xlsx（选择器里本来就选不到 .xls）', () => {
   const text = textOf(render('pages/advisor-form/index.wxml', { ...FORM, mode: 'file' }));
   assert.match(text, /只支持 XLSX \/ CSV（旧版 \.xls 请先另存为 \.xlsx），文件不超过 60 KB。/);
   assert.match(read('pages/advisor-form/index.js'), /extension: \['xlsx', 'csv'\]/);
