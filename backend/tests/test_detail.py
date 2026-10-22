@@ -83,6 +83,209 @@ def test_real_detail_pages(fixture, url, opening, issuer, number, attachments, p
     assert "相关新闻" not in result.body_text
 
 
+# 网页上的导航、发布信息、工具栏、二维码、弹窗等字样：正文里不能有
+_PAGE_CHROME = (
+    "当前位置",
+    "欢迎关注",
+    "即将离开",
+    "扫一扫",
+    "【打印】",
+    "【关闭】",
+    "打印本页",
+    "字号",
+    "字体",
+    "阅读次数",
+    "浏览次数",
+    "上一篇",
+    "下一篇",
+    "相关文档",
+    "关联链接",
+    "分享：",
+    "[返回]",
+    "【市民留言】",
+)
+# 整行就是这几个字的（按钮、弹窗的关闭叉号）
+_CHROME_LINES = {"×", "打印", "关闭", "分享", "字体", "顶部", "返回顶部", "附件:"}
+
+
+@pytest.mark.parametrize(
+    ("fixture", "url", "first", "last", "issuer", "published", "attachments"),
+    [
+        (
+            "detail_hubei_kjt_70955",
+            "https://kjt.hubei.gov.cn/kjdt/tzgg/202610/t20261020_6035881.shtml",
+            "各市、州、直管市、神农架林区科技局，各扩权县（市、区）科技管理部门，东湖高新区科创局",
+            "2026年10月19日",
+            "湖北省科学技术厅",
+            date(2026, 10, 20),
+            0,
+        ),
+        (
+            "detail_hubei_kjt_67683",
+            "https://kjt.hubei.gov.cn/kjdt/tzgg/202610/t20261019_6035490.shtml",
+            "各市、州、直管市、神农架林区科技局：",
+            "2026年10月15日",
+            "湖北省科技厅",
+            date(2026, 10, 19),
+            1,
+        ),
+        (
+            "detail_hubei_jxt",
+            "http://jxt.hubei.gov.cn/fbjd/zc/qtzdgkwj/gwfb/202609/t20260922_6020215.shtml",
+            "各市、州、直管市、神农架林区人社局（职改办）、经信局，各企事业单位：",
+            "2026年9月21日",
+            "评审委员会办公室",
+            date(2026, 9, 21),
+            10,
+        ),
+        (
+            # 同一份正文另有手机版，两份一样，只取一份
+            "detail_stats_pc_mobile",
+            "https://www.stats.gov.cn/xw/tjxw/tzgg/202609/t20260921_1965384.html",
+            "经公示，《数智时代残疾人就业质量评价研究》等项目公示期满无异议",
+            "2026年9月21日",
+            "全国统计科学研究组织管理办公室",
+            date(2026, 9, 21),
+            1,
+        ),
+        (
+            "detail_shanghai_stcsm",
+            "https://stcsm.sh.gov.cn/zwgk/tzgs/gsgg/zhgsgg/20260924/47c0b4118e0540bfab43d7e9af025b14.html",
+            "各有关单位：",
+            "关于下达2026年度第一批科技金融保费补贴经费的通知.pdf",
+            "上海市科学技术委员会",
+            date(2026, 9, 24),
+            2,
+        ),
+        (
+            "detail_guangzhou_kjj",
+            "http://kjj.gz.gov.cn/xxgk/zwdt/tztg/wjgg/content/post_11058221.html",
+            "各有关单位：",
+            "2026年10月20日",
+            "广州市科学技术局",
+            date(2026, 10, 20),
+            0,
+        ),
+        (
+            "detail_anhui_kjt",
+            "https://kjt.ah.gov.cn/kjzx/tzgg/123510901.html",
+            "各有关单位：",
+            "2026年9月22日",
+            None,
+            date(2026, 9, 23),
+            1,
+        ),
+        (
+            "detail_sichuan_kjt",
+            "https://kjt.sc.gov.cn/kjt/gstz/2026/9/18/ae78e2444766482e91538646341f90c9.shtml",
+            "省级有关部门，各市（州）科技局，产学研机构等相关单位：",
+            "2026年9月18日",
+            "四川省科学技术厅",
+            date(2026, 9, 18),
+            0,
+        ),
+        (
+            "detail_jiangsu_gxt",
+            "https://gxt.jiangsu.gov.cn/art/2026/9/17/art_6281_11831217.html",
+            "苏工信新材〔2026〕262号",
+            "2026年9月17日",
+            "江苏省工业和信息化厅",
+            date(2026, 9, 17),
+            0,
+        ),
+        (
+            "detail_shandong_gxt",
+            "http://gxt.shandong.gov.cn/art/2026/9/28/art_15201_10366576.html",
+            "各市工业和信息化局：",
+            "（此件主动公开）",
+            "山东省工业和信息化厅",
+            date(2026, 9, 28),
+            1,
+        ),
+        (
+            "detail_henan_kjt",
+            "https://kjt.henan.gov.cn:443/2026/09-22/3431519.html",
+            "各省辖市科技局，济源示范区、航空港区管委会科技主管部门",
+            "2026年9月21日",
+            None,
+            date(2026, 9, 22),
+            0,
+        ),
+        (
+            "detail_shanghai_sheitc",
+            "https://sheitc.sh.gov.cn/gg/20260914/b3cb3b63a51b423c8d303b1725299e78.html",
+            "为全面落实第三轮中央生态环境保护督察",
+            "2026年9月14日",
+            "上海市经济和信息化委员会",
+            date(2026, 9, 14),
+            0,
+        ),
+        (
+            # 正文在页面自带脚本的 Vue 数据里，网页结构里没有
+            "detail_qinghai_gxt",
+            "https://gxt.qinghai.gov.cn/2100879587404161025.html",
+            "根据《青海省智能工厂认定管理办法》",
+            "2026年9月18日",
+            "青海省工业和信息化厅",
+            date(2026, 9, 18),
+            0,
+        ),
+    ],
+)
+def test_body_has_no_page_chrome(fixture, url, first, last, issuer, published, attachments) -> None:
+    """正文只取正文区：网页上的"当前位置"、标题和发布信息、字号和打印按钮、二维码、"相关文档"、
+    离站提示弹窗等都不算正文（10/22 湖北科技厅 70955、67683 正文开头是导航、结尾是公众号和弹窗；
+    同样问题的来源 10/22 抽样找出，见 PR 说明）。附件照旧从整页收。"""
+    result = parse_detail(read_fixture_html(fixture), url)
+    lines = result.body_text.splitlines()
+    assert lines[0].startswith(first)
+    assert lines[-1] == last
+    assert result.body_text.count(lines[0]) == 1
+    assert [c for c in _PAGE_CHROME if c in result.body_text] == []
+    assert _CHROME_LINES.isdisjoint(lines)
+    assert result.issuer == issuer
+    assert result.publish_date == published
+    assert len(result.attachments) == attachments
+
+
+def test_site_body_rules_only_for_listed_hosts() -> None:
+    """按网站写的正文区只对这个网站用；页面上找不到时（网站改版）照旧走通用规则。"""
+    page = (
+        "<html><body><div class='newsCon'><p>各有关单位：现将有关事项通知如下，请于11月10日前"
+        "按要求报送申报材料。</p></div><div id='zoom'><p>栏目导航：首页 通知公告 政策文件 办事服务"
+        " 互动交流 专题专栏 网站地图</p></div></body></html>"
+    )
+    sichuan = "https://kjt.sc.gov.cn/kjt/gstz/2026/9/18/a.shtml"
+    assert parse_detail(page, sichuan).body_text.startswith("各有关单位")
+    assert parse_detail(page, "https://kjt.example.gov.cn/a.html").body_text.startswith("栏目导航")
+    changed = page.replace("newsCon", "newsMain")
+    assert parse_detail(changed, sichuan).body_text.startswith("栏目导航")
+
+
+def test_body_written_in_page_script() -> None:
+    """正文写在页面自带脚本的 Vue 数据里（青海工信厅）：只对列出的网站取，不执行脚本；
+    要运行脚本才知道的内容（${…}）不取，照旧走通用规则。"""
+    page = (
+        "<html><body><div class='content'><div class='article'><p>当前位置：首页 - 新闻资讯 - 通知公告</p>"
+        "<div id='news-details'><div v-html='content'></div></div><p>上一篇：没有更多了</p></div>"
+        "</div><script>var app = new Vue({el: '#news-details', data: {form: {}, content: `"
+        "<p>各有关单位：现将有关事项通知如下，材料命名为“单位名\\`项目名”，请按要求报送。</p>"
+        "<p>青海省工业和信息化厅</p><p>2026年9月18日</p>`, other: {add: ''}}});</script>"
+        "</body></html>"
+    )
+    qinghai = "https://gxt.qinghai.gov.cn/2100879587404161025.html"
+    result = parse_detail(page, qinghai)
+    assert result.body_text.splitlines() == [
+        "各有关单位：现将有关事项通知如下，材料命名为“单位名`项目名”，请按要求报送。",
+        "青海省工业和信息化厅",
+        "2026年9月18日",
+    ]
+    assert result.issuer == "青海省工业和信息化厅"
+    assert "各有关单位" not in parse_detail(page, "https://gxt.example.gov.cn/1.html").body_text
+    dynamic = page.replace("请按要求报送", "${deadline}前报送")
+    assert "各有关单位" not in parse_detail(dynamic, qinghai).body_text
+
+
 def test_attachment_names_and_urls_are_absolute() -> None:
     result = parse_detail(
         read_fixture_html("detail_fujian_915"),

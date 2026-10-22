@@ -42,10 +42,17 @@ _AGENCY_END = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]+）)?$"
 )
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
+# qr_container：常见的"扫一扫在手机打开当前页"二维码块（四川科技厅、江苏工信厅放在正文区里）
 _JUNK_CLASS = re.compile(
-    r"(?:share|related|footer|breadcrumb|toolbar|copyright|qrcode|qr-code|print|pagination)", re.I
+    r"(?:share|related|footer|breadcrumb|toolbar|copyright|qrcode|qr-code|qr_container|print"
+    r"|pagination)",
+    re.I,
 )
 _BODY_SELECTORS = (
+    # TRS 编辑器写出的正文区，放在最前：#zoom、.content 等常把文章头的"当前位置"、发布信息、
+    # 工具栏和页尾的二维码、"相关文档"一起框进来（10/22 湖北科技厅等，见测试样例）。
+    # 同一份正文另有手机版的（国家统计局），两份一样，取一份
+    '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_UEDITOR ")]',
     '//*[@id="zoom"]',
     '//*[@id="UCAP-CONTENT" or @id="contentText"]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_Editor ")]',
@@ -57,8 +64,40 @@ _BODY_SELECTORS = (
     "//article",
     '//*[contains(concat(" ", normalize-space(@class), " "), " pages_content ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " article_area ")]',
+    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent）：
+    # 排在最后的 .content 前面，只在前面的规则都没匹配上时才用（.content 常是整页外框）
+    '//*[@id="ivs_content"]',
+    '//*[@id="zoomcon"]',
+    '//*[contains(concat(" ", normalize-space(@class), " "), " j-fontContent ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " content ")]',
 )
+# 个别网站的正文区用的是自家类名（别的网站同名元素未必是正文），只对这个网站用（主机名精确匹配），
+# 排在通用规则前面。通用规则在这些网站上会把整页外框、文章头的发布信息和工具栏、页尾的按钮当成正文
+# （10/22 抽样，见测试样例）。网站改版、页面上找不到这里写的元素时，照旧走通用规则。
+_SITE_BODY_SELECTORS = {
+    # 四川科技厅：通用规则选到整页外框（"当前位置"、发布机构、分享）
+    "kjt.sc.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " newsCon ")]',
+    # 江苏工信厅：文章头的"【字体：大 中 小】""打印"
+    "gxt.jiangsu.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " nscont ")]',
+    # 山东工信厅：文章头的浏览次数，页尾的"字体""分享""打印"
+    "gxt.shandong.gov.cn": (
+        '//*[contains(concat(" ", normalize-space(@class), " "), " news-body ")]'
+    ),
+    # 河南科技厅：文章头的阅读次数、"分享："
+    "kjt.henan.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " articl_u2 ")]',
+    # 上海经信委：文章头的"字号：小 中 大"
+    "sheitc.sh.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " text-main ")]',
+}
+# 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
+_SITE_JUNK = {
+    # 上海经信委：正文区末尾"[返回]"（history.back）和"【市民留言】"两个链接所在的块
+    "sheitc.sh.gov.cn": './/*[a[contains(@href, "history.back")]]',
+}
+# 正文不在页面结构里、写在页面自带脚本的 Vue 数据里（content: `<p>…</p>`），浏览器运行脚本后才显示到
+# <div v-html="content"> 的网站。10/22 青海工信厅（铭飞 MCMS 模板）收录的"正文"只有导航、标题和
+# "上一篇""下一篇"。只对列出的网站从脚本里取这段 HTML，不执行脚本。
+_SCRIPT_BODY_HOSTS = {"gxt.qinghai.gov.cn"}
+_VUE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 _BLOCK_TAGS = {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3", "h4", "br"}
 
 
@@ -142,11 +181,11 @@ def has_personal_numbers(text: str) -> bool:
     return any(_luhn(re.sub(r"\D", "", m.group())) for m in cards)
 
 
-def _plain_lines(node: etree._Element) -> list[str]:
+def _plain_lines(node: etree._Element, skip: frozenset = frozenset()) -> list[str]:
     parts: list[str] = []
 
     def visit(element: etree._Element) -> None:
-        if not isinstance(element.tag, str):
+        if not isinstance(element.tag, str) or element in skip:
             return
         if element.tag.lower() in {"script", "style", "noscript", "nav", "footer"}:
             return
@@ -168,13 +207,37 @@ def _plain_lines(node: etree._Element) -> list[str]:
     return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
-def _body_node(root: etree._Element) -> etree._Element | None:
-    for selector in _BODY_SELECTORS:
+def _body_node(root: etree._Element, host: str | None = None) -> etree._Element | None:
+    if host in _SCRIPT_BODY_HOSTS and (node := _script_body_node(root)) is not None:
+        return node
+    site = _SITE_BODY_SELECTORS.get(host or "")
+    for selector in (site, *_BODY_SELECTORS) if site else _BODY_SELECTORS:
         nodes = root.xpath(selector)
         candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
         if candidates:
             return max(candidates, key=lambda n: len(" ".join(_plain_lines(n))))
     return _density_body_node(root)
+
+
+def _script_body_node(root: etree._Element) -> etree._Element | None:
+    """<div v-html="名字"> 显示的 HTML：页面自带脚本里"名字: `…`"这段模板字符串
+    （见 _SCRIPT_BODY_HOSTS）。字符串里有 ${…}（要运行脚本才知道的内容）的不取；
+    转义只还原反斜杠、反引号和 $ 三种。"""
+    names = {name.strip() for name in root.xpath("//@v-html")}
+    for script in root.xpath("//script[not(@src)]"):
+        source = script.text or ""
+        for name in sorted(n for n in names if _VUE_NAME.fullmatch(n)):
+            match = re.search(rf"(?<![\w$]){re.escape(name)}\s*:\s*`((?:[^`\\]|\\.)*)`", source)
+            if not match or "${" in match.group(1):
+                continue
+            fragment = re.sub(r"\\([\\`$])", r"\1", match.group(1))
+            try:
+                node = html.fragment_fromstring(fragment, create_parent="div")
+            except (etree.ParserError, ValueError):
+                continue
+            if len(" ".join(_plain_lines(node))) >= 20:
+                return node
+    return None
 
 
 def _density_body_node(root: etree._Element) -> etree._Element | None:
@@ -382,7 +445,8 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         re.I,
     ):
         return DetailResult(failure_reason="防护页或验证码")
-    node = _body_node(root)
+    host = (urlsplit(url).hostname or "").lower()
+    node = _body_node(root, host)
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
@@ -393,7 +457,8 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
             failure_reason=None if attachments else "未识别到正文容器",
             page_titles=_page_titles(root),
         )
-    lines = _plain_lines(node)
+    junk = _SITE_JUNK.get(host)
+    lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
     raw_body = "\n".join(lines)
     prefix = (
         visible.split(lines[0], 1)[0][-700:] if lines and lines[0] in visible else visible[:700]

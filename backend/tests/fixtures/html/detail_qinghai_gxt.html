@@ -1,0 +1,717 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>
+        青海工业经济信息网
+    </title>
+<!--<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">-->
+<meta name="Keywords" content="" />
+<meta name="Description" content="" />
+<!--============ All CSS Links ===========-->
+<!--悬浮样式-->
+ <!--<link rel="stylesheet" href="/template/1/gxtWeb//css/stly.css"> -->
+<link rel="icon" href="/template/1/gxtWeb//images/logo.jpg" />
+<link rel="stylesheet" href="/template/1/gxtWeb//bootstrap/css/bootstrap.min.css">
+<link rel="stylesheet" href="/template/1/gxtWeb//css/font-awesome.min.css">
+<link rel="stylesheet" href="/template/1/gxtWeb//plugins/slick/slick.css">
+<link rel="stylesheet" href="/template/1/gxtWeb//plugins/slick/slick-theme.css">
+<!--悬浮样式-->
+ <!--<link rel="stylesheet" href="/template/1/gxtWeb//css/stly.css"> -->
+<link rel="stylesheet" href="/template/1/gxtWeb//css/common.css">
+<link rel="stylesheet" href="/template/1/gxtWeb//css/responsive.css">
+<script type="text/javascript" src="/template/1/gxtWeb//js/jquery-3.5.1.min.js"></script>
+<script type="text/javascript" src="/template/1/gxtWeb//js/jquery.SuperSlide.2.1.3.js"></script>
+<script type="text/javascript" src="/template/1/gxtWeb//bootstrap/js/bootstrap.min.js"></script>
+<!-- <script type="text/javascript" src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//js/popper.min.js"></script> -->
+<script type="text/javascript" src="/template/1/gxtWeb//plugins/slick/slick.min.js"></script>
+<script type="text/javascript" src="/template/1/gxtWeb//js/scrollbar.js"></script>
+<script type="text/javascript" src="/static/plugins/vue/2.6.9/vue.min.js"></script>
+
+<link rel="stylesheet" href="/static/plugins/animate/4.1.0/animate.min.css">
+<!-- 引入样式 -->
+<link rel="stylesheet" href="/static/plugins/element-ui/2.15.8/theme-chalk/index.min.css">
+<!-- 引入组件库 -->
+<script src="/static/plugins/element-ui/2.15.8/index.min.js"></script>
+<script src="/static/plugins/element-ui/2.15.8/local/en.min.js"></script>
+<script src="/static/plugins/element-ui/2.15.8/local/zh-CN.min.js"></script>
+<!--图片懒加载-->
+<script src="/static/plugins/vue.lazyload/1.2.6/vue-lazyload.js"></script>
+<!--网络请求框架-->
+<script src="/static/plugins/axios/0.18.0/axios.min.js"></script>
+<script src="/static/plugins/qs/6.6.0/qs.min.js"></script>
+<!--金额转换-->
+<script src="/static/plugins/accounting/0.4.1/accounting.js"></script>
+<!--时间转换-->
+<script src="/static/plugins/moment/2.24.0/moment.min.js"></script>
+<!--mf-->
+<script src="/static/plugins/ms/3.0/ms.umd.js"></script>
+<script src="/static/plugins/ms/3.0/ms-el-form.umd.js"></script>
+<script src="/static/plugins/vue-ueditor-wrap/vue-ueditor-wrap.min.js"></script>
+<!--<script src="/static/mdiy/index.js"></script>-->
+<script src="/static/mdiy/index.js"></script>
+
+<link rel="stylesheet" href="/static/plugins/hover/2.3.1/hover-min.css" />
+
+
+<!-- swiper.min.js -->
+<script src="/template/1/gxtWeb//swiper/swiper.min.js"></script>
+<link rel="stylesheet" href="/template/1/gxtWeb//swiper/swiper.min.css">
+
+<script>
+    ms.manager = "";
+    ms.base = '';
+    // ms.base = "";
+</script>
+    <style>
+        @font-face {
+            font-family: '仿宋_GB2312';
+            src: url('./仿宋_GB2312.ttf')
+        }
+    </style>
+</head>
+
+<body>
+    <!--head-->
+<!--=== navigation ===-->
+<!--<div id='assist-open' class="call">无障碍</div>-->
+<link rel="stylesheet" href="/template/1/gxtWeb//css/stly.css">
+<script type="text/javascript"
+        src="https://fastly.jsdelivr.net/gh/muzihuaner/assist@main/dist/assist-entry.js"></script>
+<header id="header" class="header bg">
+    <!-- menu -->
+    <div class="header-inner container-fluid">
+        <!-- logo -->
+        <a href="/" target="_blank">
+            <img class="logo fl" src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//images/gxt/logo.png"
+                 alt="青海工业经济信息网" title="青海工业经济信息网" />
+        </a>
+        <!-- 搜索框 -->
+        <div class="search fr br-5">
+            <div>
+                <form class="search-form" action="/mcms/search.do" method="post" target="_blank">
+                    <input type="hidden" name="style" value="gxtWeb">
+                    <input class="search-input" type="text" name="content_title" placeholder="请输入关键字" />
+                    <button type='submit' name='seach' id='search-btn'><img
+                            src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//images/gxt/search.png" /></button>
+                </form>
+
+            </div>
+            <!-- <form class="navbar-left nav-search" role="search" action="/search" method="post">
+                <div class="form-inline">
+                    <input class="form-control" placeholder="输入关键字进行搜索..." type="text" name="entity['keywords']">
+                    <i class="fa fa-search"></i>
+                </div>
+            </form> -->
+
+        </div>
+        <a class="call" id="assist-open">&nbsp;&nbsp;&nbsp;&nbsp;无障碍阅读</a>
+    </div>
+
+      <!--悬浮-->
+     <div class="side">
+        <ul>
+             <!--<li id="qqonline"><i class="bgs1"></i>QQ咨询</li>-->
+            <!--<li class="shangqiao">-->
+            <!--    <a href="javascript:;" rel="nofollow">-->
+            <!--        <div><i class="bgs2"></i>在线咨询</div>-->
+            <!--    </a>-->
+            <!--</li>-->
+            <li class="sideewm"><i class="bgs3"></i>政务微信
+                <div class="ewBox son"></div>
+            </li>
+            
+            <li class="sideetel"><i class="bgs4"></i>监督举报
+            <div class="telBox son" style="background:#3E7EC7;padding:10px">
+              <div style="font-weight:bold;text-align:center;margin-bottom:10px">廉政监督举报渠道</div>
+                   <div class=""><span>监督举报电话: </span>6109373</div>
+                  <div class=""><span>监督举报邮箱: </span>qhgxtjw@163.com</div>
+              <div class=""><span>来信来访地址: </span>西宁市城西区文景街32号国投广场A栋1139</div>
+               </div>
+            </li> 
+          
+             <li class="sideetel"><i class="bgs4"></i>监督举报
+            <div class="telBox son" style="background:#3E7EC7;padding:10px;height:300px">
+              <div style="font-weight:bold;text-align:center;margin-bottom:5px;line-height:20px">妨碍建设全国统一大市场问题监督举报</div>
+                   <div class=""><span>监督举报电话: <br /></span>0971-6118902;0971-6145073</div>
+                  <div class=""><span>监督举报邮箱: </span>zonghechu080@sina.com</div>
+              <div class=""><span>来信来访地址: </span>西宁市城西区文景街32号国投广场A栋1113室</div>
+               </div>
+            </li> 
+            
+           <!--<a href="https://www.baidu.com"> <li id="yuyueshow"><i class="bgs5"></i>互动交流</li></a>-->
+            <li class="sidetop" onClick="goTop()"><i class="bgs6"></i>返回顶部</li>
+        </ul>
+    </div>
+     <!--++++++++++++++++++++++++++++++-->
+</header>
+<!--<script type="text/javascript" src="http://gxt.qinghai.gov.cn:443/template/1/gxtWeb//js/jquery-1.11.0.min.js"></script>-->
+<script>
+// 	$(function(){
+// 	 new Swiper('.special-rotation-chart', {
+// 			autoplay: { delay: 3000, disableOnInteraction: false, },
+// 			loop: true,
+// 		});
+	 
+// 		new Swiper('.other-services', {
+// 			autoplay: { delay: 1000, disableOnInteraction: false, },
+// 			loop: true,
+// 			slidesPerView: 6,
+// 	    navigation: { nextEl: '.swiper-button-next', prevEl: '.swiper-button-prev', }
+//     });
+// 	})
+	function goTop() {
+		$('html,body').animate({
+			scrollTop: 0
+		}, 500)
+	}
+</script>        <!--head /-->
+        <div class="content  container-fluid br-5">
+<!-- 导航 Begin -->
+<nav class="navs bg br-5">
+ <ul class="navs-inner">
+  <li class="nav-item fl"><a href="http://gxt.qinghai.gov.cn:443//index.html" class="">首页</a>
+    <li class="nav-item fl">
+        <a target="_self" href="http://gxt.qinghai.gov.cn:443/xwzx.html" class="">新闻资讯</a>
+    </li>
+    <li class="nav-item fl">
+        <a target="_self" href="http://gxt.qinghai.gov.cn:443/lingdaozhichuang.html" class="">领导之窗</a>
+    </li>
+    <li class="nav-item fl">
+        <a target="_blank" href="https://www.qhzwfw.gov.cn/" class="">政务服务</a>
+    </li>
+    <li class="nav-item fl">
+        <a target="_self" href="http://gxt.qinghai.gov.cn:443/zhengfuxinxigongkai.html" class="">政府信息公开</a>
+    </li>
+    <li class="nav-item fl">
+        <a target="_self" href="http://gxt.qinghai.gov.cn:443/hudongjiaoliu.html" class="">互动交流</a>
+    </li>
+    <li class="nav-item fl">
+        <a target="_self" href="http://gxt.qinghai.gov.cn:443/zhuantizhuanlan.html" class="">专题专栏</a>
+    </li>
+ </ul>
+</nav>
+<!-- 导航 End -->
+                <div class="article">
+                    <!--        面包屑 -->
+                    <div class="his-link">
+                        <img src="http://gxt.qinghai.gov.cn:443/template/1/gxtWeb//images/gxt/gl_local_icon.png" />
+                        当前位置: <a href="http://gxt.qinghai.gov.cn:443//index.html">首页 </a>
+
+                        - <a href="http://gxt.qinghai.gov.cn:443/xwzx.html">新闻资讯</a>
+
+                        - <a href="http://gxt.qinghai.gov.cn:443/tongzhigonggao.html">通知公告</a>
+                    </div>
+                    <!-- 标题 -->
+                    <div class="article-tit">
+
+
+                        <h2>
+                            <pre class="pre-style">青海省工业和信息化厅
+关于青海省2026年度先进级智能工厂认定的公示</pre>
+                        </h2>
+                        <div class="article-msg">
+                            <span>发布时间：2026-09-18</span>
+                            <span>文章来源：消费品与装备工业处</span>
+
+                        </div>
+                    </div>
+                    <!-- 内容 -->
+                    <div class="article-details" id="content">
+
+
+<!-- 政策发文字段 -->
+
+                        <div id="news-details">
+                            <div ref="content">
+                                <div v-html="content"></div>
+                            </div>
+                        </div>
+
+
+                    </div>
+                    <!-- 上一篇/下一篇 -->
+
+                    <p class="prevnext">
+                        <span class="prevnext-label">上一篇：</span>
+
+                         没有更多了
+                    </p>
+                    <p class="prevnext"><span class="prevnext-label">下一篇：</span>
+                         没有更多了
+                    </p>
+
+
+                </div>
+<!--访问量统计-->
+<div style="display: none"><script type="text/javascript" src="/cms/content/2100879587404161025/hit.do"></script></div>
+        </div>
+        <!--当前位置 /-->
+
+<!--=== call to action 2 ===-->
+
+<!--=== footer ===-->
+<footer id="footer" class="footer bg" v-cloak>
+
+ <div class="footer-inner container-fluid">
+
+  <div class="fl txt">
+   <p><span> 单位地址：{{form.cAddress}}</span> <span> 邮政编码：{{form.cCode}}</span> <span> 邮箱：{{form.cEmail}}</span> </p>
+   <p>{{form.cCopyright}} 版权所有</p>
+   <p><span>联系电话：{{form.cPhone}}</span><span>政务公开：{{form.cZwgk}}</span><span>技术保障：{{form.cJsbz}}</span></p>
+   <p> <span> <a href="https://beian.miit.gov.cn/#/Integrated/index" target="_blank">ICP备案编号：{{form.cIcp}}</a>
+     </span>    <span>政府网站标识码：{{form.cSbm}}</span><img src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//images/gxt/beian.png" />
+    <span><a :href="'http://www.beian.gov.cn/portal/registerSystemInfo?recordcode='+form.cQgw" target="_blank">青公网安备{{form.cQgw}}号</a></span>
+
+
+
+   </p>
+  </div>
+  <div class="fr logo">
+   <a href="https://zfwzgl.www.gov.cn/exposure/jiucuo.html?site_code=6300000003&url=http%3A%2F%2Fgxgz.qinghai.gov.cn%2F"
+      target="_blank" ><img src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//images/gxt/zhaocuo.png" /></a>
+   <a href="http://bszs.conac.cn/sitename?method=show&id=06F2AC1F0EC60717E053012819AC431D" target="_blank"
+   ><img src="http://gxt.qinghai.gov.cn:443//template/1/gxtWeb//images/gxt/dangzheng.png" /></a>
+  </div>
+ </div>
+<script>
+    (function () {
+        ms.http.get(ms.base + "/statistics/accessStatistics/in.do?url="+window.location.href);
+
+    })()
+
+</script>
+</footer>
+<script>
+ var app = new Vue({
+  el: '#footer',
+  data: {
+   //当前页数
+   form:{}
+  },
+
+  methods: {
+   //获取当前网站配置
+   get:function(id) {
+    var that = this;
+    let sessionData = sessionStorage.getItem('GXT_FOOTER_XXPZ')
+    if(sessionData){
+     console.log('有缓存')
+     that.form = JSON.parse(sessionData)
+    } else  {
+     console.log('无缓存')
+     ms.http.get('/ms/mdiy/config/data/getPublic',{modelId:'1878634581395841026'}).then(function (res) {
+      if(res.result&&res.data){
+       that.form = res.data;
+       sessionStorage.setItem('GXT_FOOTER_XXPZ',JSON.stringify(that.form))
+      }
+     }).catch(function (err) {
+      console.log(err);
+     });
+    }
+
+    // ms.mdiy.config("信息配置",'',false).then(function (res){
+    //  console.log(res,'123123')
+    //
+    // })
+   },
+  },
+  created:function() {
+   this.get();
+  },
+ })
+</script></body>
+<script>
+    var textContent = document.querySelector('.pre-style').textContent;
+    document.querySelector('.pre-style').textContent = textContent;
+    console.log(textContent);
+</script>
+<script>
+    // 会影响样式 （后续处理）
+    window.onload = function () {
+        let d1 = new Date('2026-09-18');
+        let d2 = new Date('2024-03-01');
+        if (d1 < d2) {
+            var p = document.getElementsByTagName('p');
+            for (var i = 0; i < p.length; i++) {
+                var textIndent = p[i].style.getPropertyValue('text-indent')
+                if (textIndent != '') {
+                    p[i].style.textIndent = '2em';
+                }
+                var s = p[i].getElementsByTagName('span');
+                for (var j = 0; j < s.length; j++) {
+                    s[j].innerHTML = s[j].innerHTML.replace(/&nbsp;/g, '');
+                    // s[j].innerHTML = s[j].innerHTML.trim();
+                }
+                p[i].innerHTML = p[i].innerHTML.replace(/&nbsp;/g, '');
+                // p[i].innerHTML = p[i].innerHTML.trim();
+            }
+        }
+    };
+</script>
+<script>
+    var app = new Vue({
+        el: '#news-details',
+        data: {
+            //当前页数
+            form: {},
+            content: `<p style="text-indent: 32pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">根据《青海省智能工厂认定管理办法</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">》和</span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">《智能工厂梯度培育行动实施方案》，省工业和信息化厅</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">会同相关部门</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">组织开展了</span>202</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">6</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">年度青海省先进级智能工厂认定工作。现</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">将</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;">202</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">6</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">年度青海省先进级智能工厂</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">认定</span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">名单公示如下：</span></span></p><p style="margin: 0pt 0pt 0.0001pt 47.9pt; text-indent: -16pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">1.</span><span style="font-family: 仿宋_GB2312;">青海铜业有限责任公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">阴极铜生产一体化协同智能工厂</span></p><p style="text-indent: 32pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">2</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">.</span><span style="font-family: 仿宋_GB2312;">青海晶科能源有限公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">单晶硅棒智能制造工厂</span></p><p style="margin: 0pt 0pt 0.0001pt 47.9pt; text-indent: -16pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">3.</span><span style="font-family: 仿宋_GB2312;">海东红狮半导体有限公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">硅基材料全流程数字孪生智能工厂</span></p><p style="margin: 0pt 0pt 0.0001pt 47.9pt; text-indent: -16pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">4</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">.</span><span style="font-family: 仿宋_GB2312;">黄河鑫业有限公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">基于<span style="font-family: Times New Roman;">5G</span><span style="font-family: 仿宋_GB2312;">的绿色低碳电解铝智能厂</span></span></p><p style="text-indent: 32pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">5</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">.</span><span style="font-family: 仿宋_GB2312;">青海丽豪清能股份有限公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">高纯晶硅材料智能制造工厂</span></p><p style="margin: 0pt 0pt 0.0001pt 31.9pt; text-indent: 0pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">6</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">.</span><span style="font-family: 仿宋_GB2312;">青海云天化国际化肥有限公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">基于工业互联网的肥料全流程智能工厂</span></p><p style="margin: 0pt 0pt 0.0001pt 31.9pt; text-indent: 0pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">7</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">.</span><span style="font-family: 仿宋_GB2312;">青海宏扬水泥有限责任公司</span></span><span style="font-family: 宋体; font-size: 16.0000pt;">－</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">水泥磨窑全流程协同智能工</span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">厂</span></p><p style="text-indent: 32pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">公示期为</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">2026</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">年</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">9</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">月</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">18</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">日至</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">2026</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">年</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">9</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">月</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">24</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">日（</span>5<span style="font-family: 仿宋_GB2312;">个工作日）。公示期间，如有异议，请以书面</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">或电话</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">形式向省工业和信息化厅反映，并提供相关证明材料及联系方式，以便核实查证。</span></span></p><p style="margin: 0pt 0pt 0.0001pt 31.9pt; text-indent: 0pt; line-height: 28pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">联系电话：</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;">0971-6101232</span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><br /></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">联系地址：青海省工业和信息化厅（</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">西宁市城西区文景街</span>36</span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">号国投广场</span>A<span style="font-family: 仿宋_GB2312;">座</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">）</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><br /></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;">电子邮箱</span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">：</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;">qhsgxtxzc@163.com</span></p><p style="line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;">&nbsp;</span></p><p style="line-height: 28pt; margin: 0pt 0pt 0.0001pt; text-align: justify; font-family: Calibri; font-size: 10.5pt;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;">&nbsp;</span></p><p style="text-indent: 256pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; font-family: Calibri; font-size: 10.5pt; text-align: center;"><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">青海省工业和信息化厅</span> </span></p><p style="text-indent: 272pt; line-height: 28pt; margin: 0pt 0pt 0.0001pt; font-family: Calibri; font-size: 10.5pt; text-align: center;"><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">2026</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">年</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">9</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">月</span></span><span style="font-family: 仿宋_GB2312; font-size: 16.0000pt;"><span style="font-family: Times New Roman;">18</span></span><span style="font-family: 'Times New Roman'; font-size: 16.0000pt;"><span style="font-family: 仿宋_GB2312;">日</span></span></p>`,
+            other:{
+                add: ''
+            }
+        },
+
+        mounted: function () {
+            let d1 = new Date('2026-09-18');
+            let d2 = new Date('2024-03-01');
+
+            if (d1 < d2) {
+                this.content = this.content.replace(/&gt;/g, '>')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&amp;lt;/g, '<')
+                    .replace(/&amp;gt;/g, '>')
+                    .replace(/&amp;ldquo;/g, '“')
+                    .replace(/&amp;rdquo;/g, '”')
+                    .replace(/&amp;ensp;/g, '&ensp;')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&ensp;/g, " ")
+                    .replace(/&amp;nbsp;/g, "&nbsp;");
+            }
+        }
+    })
+</script>
+
+</html>
+<style>
+    @charset "utf-8";
+
+    /* CSS Document */
+    .pre-style {
+        margin: 0 auto 30px;
+        width: 850px;
+        text-align: center;
+        font-size: 33px;
+        font-weight: bold;
+        color: #4390e0;
+        letter-spacing: 1px;
+        line-height: 42px;
+    }
+
+    a {
+        text-decoration: none;
+        outline: none;
+    }
+
+    a img {
+        border: none;
+    }
+
+    body {
+        margin-left: 0px;
+        margin-top: 0px;
+        margin-right: 0px;
+        margin-bottom: 0px;
+    }
+
+    a:link {
+        text-decoration: none;
+    }
+
+    a:visited {
+        text-decoration: none;
+    }
+
+    a:hover {
+        text-decoration: none;
+    }
+
+    a:active {
+        text-decoration: none;
+    }
+
+    .yhbai18 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 18px;
+        color: #FFF;
+        letter-spacing: 2px;
+    }
+
+    .yhbai15 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 15px;
+        color: #FFF;
+        letter-spacing: 2px;
+        line-height: 30px;
+    }
+
+    .yhlan17 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 17px;
+        color: #4390E0;
+        letter-spacing: 2px;
+    }
+
+    .yhhei17 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 17px;
+        color: #000;
+        letter-spacing: 2px;
+
+    }
+
+    .yhhei14 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 15px;
+        color: #000;
+        letter-spacing: 3px;
+        line-height: 30px;
+    }
+
+    .yhhei15 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 21px;
+        color: #000;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .yhheib15 {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 15px;
+        font-weight: bold;
+        color: #000;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .xiantop {
+        border-top-width: 1px;
+        border-top-style: double;
+        border-top-color: #CCC;
+        padding-top: 10px;
+    }
+
+    .xianleft {
+        padding-left: 10px;
+        border-left-width: 1px;
+        border-left-style: double;
+        border-left-color: #CCC;
+    }
+
+    .xianright {
+        padding-right: 9px;
+        border-right-width: 1px;
+        border-right-style: double;
+        border-right-color: #CCC;
+    }
+
+    .xianbottom {
+        border-bottom-width: 1px;
+        border-bottom-style: double;
+        border-bottom-color: #CCC;
+        padding-bottom: 10px;
+    }
+
+    .tt_zi {
+        font-size: 20px;
+        font-weight: bold;
+        color: #d9230e;
+        letter-spacing: 5px;
+        text-align: center;
+    }
+
+    /*国土要闻样式*/
+    .gtyw {
+        font-size: 15px;
+        color: #000;
+        line-height: 35px;
+    }
+
+    /*重点领域信息*/
+    .z_dxxly {
+        font-size: 15px;
+        color: #00a7ff;
+        font-weight: bold;
+        letter-spacing: 2px;
+    }
+
+    /*机构介绍样式*/
+    .jgjs {
+        font-size: 16px;
+        color: #1369c0;
+        font-weight: bold;
+        letter-spacing: 2px;
+    }
+
+    /*国土资源样式*/
+    .gtzy {
+        font-size: 14px;
+        color: #05479b;
+        letter-spacing: 2px;
+        line-height: 30px;
+    }
+
+    .gtzy2 {
+        font-size: 14px;
+        color: #000;
+        letter-spacing: 2px;
+        line-height: 30px;
+    }
+
+    /*12的通用样式*/
+    .heizi {
+        font-size: 12px;
+        color: #000;
+        line-height: 25px;
+    }
+
+    .heizigh {
+        font-size: 12px;
+        color: #000;
+        line-height: 35px;
+    }
+
+    .huizi {
+        font-size: 12px;
+        color: #939292;
+        line-height: 35px;
+    }
+
+    .baizi {
+        font-size: 13px;
+        color: #fff;
+        line-height: 30px;
+    }
+
+    .zwgk_bai {
+        font-size: 14px;
+        color: #fff;
+        font-weight: bold;
+        line-height: 30px;
+    }
+
+    .zwgk_hong {
+        font-size: 14px;
+        color: #FF0000;
+        font-weight: bold;
+        line-height: 30px;
+    }
+
+    .lanzi {
+        font-size: 12px;
+        color: #05479b;
+    }
+
+    /*end样式*/
+    .end_style {
+        font-size: 12px;
+        color: #FFFFFF;
+    }
+
+    /*muen样式*/
+    .bt_18h {
+        font-family: "微软雅黑";
+        font-size: 18px;
+        color: #f7fa06;
+        letter-spacing: 2px;
+    }
+
+    .bt_18b {
+        font-family: "微软雅黑";
+        font-size: 18px;
+        color: #FFFFFF;
+        letter-spacing: 2px;
+    }
+
+    .new_16l {
+        font-family: "微软雅黑";
+        font-size: 16px;
+        color: #005294;
+        letter-spacing: 2px;
+        font-weight: bold;
+    }
+
+    .new_16hs {
+        font-family: "微软雅黑";
+        font-size: 16px;
+        color: #000;
+        letter-spacing: 2px;
+    }
+
+    .biank1 {
+        border: 1px solid #cccccc
+    }
+
+    .biankuang {
+        border: 1px solid #cccccc
+    }
+
+    .zdgk_bt {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 18px;
+        font-weight: 600;
+        color: #246ab0;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .zdgk_xlbt {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 21px;
+        font-weight: bold;
+        color: #4390e0;
+        letter-spacing: 1px;
+        line-height: 200%;
+    }
+
+    .zdgk_nrbtzi {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 19px;
+        font-weight: bold;
+        color: #4390e0;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .zdgk_xhbt {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 15px;
+        font-weight: bold;
+        color: #000;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .heizi12 {
+        font-family: "微软雅黑";
+        font-size: 12px;
+        color: #000;
+        line-height: 29px;
+    }
+
+    .new_zi {
+        font-family: "微软雅黑";
+        font-size: 17px;
+        color: #246ab0;
+        font-weight: bold;
+        letter-spacing: 2px;
+    }
+
+    .ldzc_xm {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 17px;
+        font-weight: bold;
+        color: #4390e0;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+
+    .ldzc_zw {
+        font-family: "Microsoft YaHei", "微软雅黑";
+        font-size: 14px;
+        color: #000;
+        letter-spacing: 1px;
+        line-height: 31px;
+    }
+</style>
