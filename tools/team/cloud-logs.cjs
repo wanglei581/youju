@@ -1,7 +1,7 @@
 // 只读：经 wxcloud CLI 的官方接口代理调用 tcbr SearchClsLog（2022-02-17），按时间窗和关键词读运行日志。
 // 用法：node tools/team/cloud-logs.cjs --out <结果文件> <envId> "<开始 YYYY-MM-DD HH:MM:SS>" "<结束>" "<查询串>" [条数]
 //       python3 tools/team/cloud_logs_show.py <结果文件> [中文关键词…]
-// 查到的日志原文只写进 <结果文件>，终端只打印条数、页数和文件路径。原文里有用户的来源 IP 和用户编号，
+// 查到的日志原文只写进 <结果文件>，终端只打印条数、页数、文件路径和一行查看提示。原文里有用户的来源 IP 和用户编号，
 // 读日志的是 AI 成员，打印出来的内容会发到境外的模型服务（个人信息保护影响评估第六节（二）第 6 条、
 // （三）第 7 条）。所以：结果文件放在调用方自己的临时目录（放进任何 git 仓库都会被拒绝，免得提交上去），
 // 文件只有本人可读（先建权限 600 的新文件再换上去：原来是符号链接的，不会写到它指向的地方）；
@@ -19,6 +19,8 @@ const path = require('path');
 // 终端输出只有这里一个出口。wxcloud 库在 NODE_ENV=DEBUG 时会把请求和回应原文（日志原文、登录密钥）
 // console.log 出来：去掉 NODE_ENV，再把 console 的输出都换成空函数，库就打印不出任何东西
 const say = (line) => process.stdout.write(`${line}\n`);
+// 终端提前关掉（如接了 | head -1）时写不出去就算了：不能让这个错误变成异常，把存好的结果盖掉
+process.stdout.on('error', () => {});
 delete process.env.NODE_ENV;
 for (const name of ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'dirxml', 'table']) console[name] = () => {};
 
@@ -53,7 +55,9 @@ for (let p = dir; ; p = path.dirname(p)) {
   if (path.dirname(p) === p) break;
 }
 out = path.join(dir, path.basename(out));
-const show = `python3 tools/team/cloud_logs_show.py '${out.replace(/'/g, "'\\''")}'`;
+const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+// 提示里写绝对路径：在仓库根目录以外照抄也能跑
+const show = `python3 ${quote(path.join(__dirname, 'cloud_logs_show.py'))} ${quote(out)}`;
 
 // 在同一目录先建一个权限 600 的新文件，写完再改名换上去：已有的宽权限文件不会在写入时被别人读到，
 // 目标是符号链接时换掉的是链接本身，不会写到它指向的地方
@@ -82,7 +86,12 @@ function fail(kind, detail) {
   }
   process.exit(1);
 }
-const exception = (e) => fail('exception', { name: e && e.name, code: e && e.code, message: String((e && e.message) || e) });
+// 查到的结果存好以后再出的异常（比如只剩打印提示时）只退出，不用出错信息去盖存好的结果
+let saved = false;
+const exception = (e) => {
+  if (saved) process.exit(0);
+  fail('exception', { name: e && e.name, code: e && e.code, message: String((e && e.message) || e) });
+};
 // 库里没被 await 接住的异常也走这里，免得 Node 把带原文的堆栈打到终端
 process.on('uncaughtException', exception);
 process.on('unhandledRejection', exception);
@@ -105,6 +114,7 @@ process.on('unhandledRejection', exception);
     for (const item of lr.Results || []) all.push(item);
     if (lr.ListOver || !lr.Context) {
       save({ count: all.length, listOver: !!lr.ListOver, pages: page + 1, results: all });
+      saved = true;
       say(JSON.stringify({ count: all.length, pages: page + 1, listOver: !!lr.ListOver, out }));
       say(`用 ${show} [关键词…] 看（遮掉了 IP、用户编号和文件编号）；结果文件不要直接打开或贴出来`);
       return;
@@ -112,6 +122,7 @@ process.on('unhandledRejection', exception);
     context = lr.Context;
   }
   save({ count: all.length, listOver: false, pages: 20, truncated: true, results: all });
+  saved = true;
   say(JSON.stringify({ count: all.length, pages: 20, listOver: false, truncated: true, out }));
   say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看`);
 })().catch(exception);

@@ -192,11 +192,14 @@ class CloudLogsTests(unittest.TestCase):
             "};\n")
         self.out = self.tmp / 'out/logs.json'
 
-    def run_logs(self, pages, *args, **extra_env):
+    def env(self, pages, **extra_env):
         (self.tmp / 'pages.json').write_text(json.dumps(pages))
-        env = {**os.environ, 'WXCLOUD_CLI_LIB': str(self.tmp / 'lib'), 'FAKE_PAGES': str(self.tmp / 'pages.json'),
-               'FAKE_CALLS': str(self.tmp / 'calls.txt'), **extra_env}
-        return subprocess.run(['node', str(TEAM / 'cloud-logs.cjs'), *args], capture_output=True, text=True, env=env)
+        return {**os.environ, 'WXCLOUD_CLI_LIB': str(self.tmp / 'lib'), 'FAKE_PAGES': str(self.tmp / 'pages.json'),
+                'FAKE_CALLS': str(self.tmp / 'calls.txt'), **extra_env}
+
+    def run_logs(self, pages, *args, **extra_env):
+        return subprocess.run(['node', str(TEAM / 'cloud-logs.cjs'), *args], capture_output=True, text=True,
+                              env=self.env(pages, **extra_env))
 
     def calls(self):
         path = self.tmp / 'calls.txt'
@@ -237,6 +240,8 @@ class CloudLogsTests(unittest.TestCase):
         self.assertEqual((saved['count'], saved['pages'], len(saved['results'])), (3, 2, 3))
         self.assertIn(IP4, saved['results'][0]['Content'])
         self.assert_saved_privately()
+        # 提示里是绝对路径，在仓库根目录以外照抄也能跑
+        self.assertIn(f"python3 '{TEAM / 'cloud_logs_show.py'}' '{self.out.resolve()}'", run.stdout)
         show = self.run_show()
         self.assertEqual(show.returncode, 0, show.stderr)
         self.assert_nothing_personal(show.stdout)
@@ -287,6 +292,21 @@ class CloudLogsTests(unittest.TestCase):
         self.assert_nothing_personal(run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout.splitlines()[0])['count'], 2)
         self.assertEqual(len(run.stdout.splitlines()), 2)
+
+    def test_closed_terminal_keeps_saved_results(self):
+        # 终端提前关掉（接了 | head -1）：写不出提示不能变成异常，把存好的结果盖成出错信息
+        env = self.env([self.page([result(access_line())], None, True)])
+        for _ in range(5):
+            proc = subprocess.Popen(['node', str(TEAM / 'cloud-logs.cjs'), '--out', str(self.out), *self.WINDOW],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            proc.stdout.close()
+            err = proc.stderr.read().decode()
+            proc.stderr.close()
+            self.assertEqual(proc.wait(), 0, err)
+            self.assert_nothing_personal(err)
+            saved = json.loads(self.out.read_text())
+            self.assertEqual((saved.get('count'), saved.get('error')), (1, None))
+            self.assert_saved_privately()
 
     def test_uncaught_exception_in_library(self):
         pages = [{'asyncThrow': {'message': f'socket {IP4} uid {UID}', 'code': UID}}]
