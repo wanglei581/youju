@@ -1,6 +1,6 @@
 """AI 用量台账（D-023）：每条命令结束时把 AI 客户端的累计用量记一笔。
 
-运维日报据此报用量、费用和免费额度。
+运维日报据此报用量和费用上限。
 """
 
 from dataclasses import dataclass, field
@@ -17,16 +17,18 @@ from youju.models import AIUsage
 BEIJING = ZoneInfo("Asia/Shanghai")
 # 每百万 tokens 的价格（元）：输入、输出。没列的模型不估费用
 # qwen-flash：2026-09-28 核实的百炼官方价（D-023）
-# deepseek-flash、deepseek-v4-pro：2026-10-22 核实的官网价
-# https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-# 高峰时段、输入按缓存未命中。台账不分缓存命中和时段，所以按最高价算上限
+# DeepSeek：2026-10-22 核实的官网价 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ ，
+# 取高峰时段、输入没命中缓存的价。台账不分缓存命中和时段，所以算出来是上限：
+# 命中缓存的输入只要 1/30 到 1/50，空闲时段（工作日 9—12 点、14—18 点以外和节假日）再减半，
+# 实际通常低得多
 PRICES = {
     "qwen-flash": (0.15, 1.5),
     "deepseek-flash": (2, 8),
     "deepseek-v4-pro": (9.0, 27.0),
+    # 旧模型名还能调用，由 Flash 模型应答、按 Flash 价计费（官网价格页注 1）
+    "deepseek-v4-flash": (2, 8),
+    "deepseek-v4-flash-vision-exp": (2, 8),
 }
-# 各模型的免费额度（tokens，90 天内有效，北京地域）。目前只有百炼新开通的 qwen-flash
-FREE_QUOTA = {"qwen-flash": 1_000_000}
 
 
 def record_usage(

@@ -113,3 +113,6 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
     assert cost_yuan("qwen-flash", 1_000_000, 0) == pytest.approx(0.15)
     assert cost_yuan("deepseek-flash", 1_000_000, 1_000_000) == pytest.approx(2 + 8)
     assert cost_yuan("deepseek-v4-pro", 1_000_000, 1_000_000) == pytest.approx(9.0 + 27.0)
+    # 旧模型名还能调用，按 Flash 价计费
+    assert cost_yuan("deepseek-v4-flash", 1_000_000, 1_000_000) == pytest.approx(2 + 8)
+    assert cost_yuan("deepseek-v4-flash-vision-exp", 1_000_000, 0) == pytest.approx(2)

@@ -223,8 +223,9 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
         "24 小时通过 1、驳回 1；待核对 3 条（30 天内截止 1 条，最近 10月10日）",
         "类型待定 1；质检存疑 1；纠错待处理 1",
         "用户：新增 1、24 小时活跃 1、累计 2；新关注 1；提醒发出 1、失败 1",
-        "AI（9月28日）：调用 12 次、出错 1 次，输入 2.1 万、输出 3200 tokens，费用最多约 0.01 元（按官网价上限估算）",
-        "qwen-flash 累计 12.9 万 tokens（免费额度 100 万）",
+        "AI（9月28日）：调用 12 次、出错 1 次，输入 2.1 万、输出 3200 tokens，"
+        "当日模型调用费最多 0.01 元（按官网最高价估，实际通常更低）",
+        "qwen-flash 累计 12.9 万 tokens",
     ):
         assert fragment in text, fragment
     # 群里只报总数，不出现任何用户标识
@@ -232,7 +233,7 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
 
 
 def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
-    """DeepSeek 按官网价上限估费用（高峰时段、输入都按没命中缓存）；赠送余额金额没公布，不写免费额度。"""
+    """DeepSeek 按官网最高价估费用上限（高峰时段、输入都按没命中缓存）；不写免费额度。"""
     session.add(
         AIUsage(
             day=date(2026, 9, 28),
@@ -247,10 +248,20 @@ def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
     session.commit()
     text = digest_text(build_digest(session, now=NOW), [])
     # deepseek-flash：0.5 × 2 + 0.1 × 8 = 1.80 元；加上 qwen-flash 那 12 次的约 0.008 元
-    assert "，费用最多约 1.81 元（按官网价上限估算）" in text
+    assert "，当日模型调用费最多 1.81 元（按官网最高价估，实际通常更低）" in text
     assert "deepseek-flash 累计 60 万 tokens" in text
-    assert "deepseek-flash 累计 60 万 tokens（" not in text
-    assert "qwen-flash 累计 12.9 万 tokens（免费额度 100 万）" in text
+    # 免费额度不再写：百炼已经不用，DeepSeek 的赠送余额金额没公布
+    assert "免费额度" not in text
+
+
+def test_cost_cap_rounds_up_to_the_cent() -> None:
+    """上限往上取到分，不会四舍五入成更小的数；浮点误差不多算一分。"""
+    assert digest_module._cost_cap(0.002) == "0.01"
+    assert digest_module._cost_cap(0.0049) == "0.01"
+    assert digest_module._cost_cap(0.0) == "0.00"
+    assert digest_module._cost_cap(1.8) == "1.80"
+    assert digest_module._cost_cap(0.1 + 0.2) == "0.30"  # 0.30000000000000004
+    assert digest_module._cost_cap(1.80795) == "1.81"
 
 
 def test_first_line_counts_the_seven_day_queue_and_days_since_review(session, world) -> None:
