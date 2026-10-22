@@ -519,10 +519,14 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
         cost = (
-            "，费用未知（有未列价格的模型）" if usage.cost is None else f"，约 {usage.cost:.2f} 元"
+            "，费用未知（有未列价格的模型）"
+            if usage.cost is None
+            else f"，费用最多约 {usage.cost:.2f} 元（按官网价上限估算）"
         )
         quota = "；".join(
-            f"{model} 累计 {_tokens(tokens)} tokens（免费额度 {_tokens(FREE_QUOTA)}）"
+            f"{model} 累计 {_tokens(tokens)} tokens（免费额度 {_tokens(FREE_QUOTA[model])}）"
+            if model in FREE_QUOTA
+            else f"{model} 累计 {_tokens(tokens)} tokens"
             for model, tokens in list(usage.cumulative.items())[:3]
         )
         lines.append(

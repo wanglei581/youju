@@ -15,10 +15,18 @@ from youju.ai.client import ChatClient
 from youju.models import AIUsage
 
 BEIJING = ZoneInfo("Asia/Shanghai")
-# 每百万 tokens 的价格（元）：输入、输出。2026-09-28 核实的百炼官方价（D-023）；没列的模型不估费用
-PRICES = {"qwen-flash": (0.15, 1.5)}
-# 百炼新开通时每个模型送的免费额度（tokens，90 天内有效，北京地域）
-FREE_QUOTA = 1_000_000
+# 每百万 tokens 的价格（元）：输入、输出。没列的模型不估费用
+# qwen-flash：2026-09-28 核实的百炼官方价（D-023）
+# deepseek-flash、deepseek-v4-pro：2026-10-22 核实的官网价
+# https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+# 高峰时段、输入按缓存未命中。台账不分缓存命中和时段，所以按最高价算上限
+PRICES = {
+    "qwen-flash": (0.15, 1.5),
+    "deepseek-flash": (2, 8),
+    "deepseek-v4-pro": (9.0, 27.0),
+}
+# 各模型的免费额度（tokens，90 天内有效，北京地域）。目前只有百炼新开通的 qwen-flash
+FREE_QUOTA = {"qwen-flash": 1_000_000}
 
 
 def record_usage(
