@@ -16,13 +16,12 @@ from youju.models import AIUsage
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 # 每百万 tokens 的价格（元）：输入、输出，以及照官网核对价格的日期。没列的模型不估费用
-# qwen-flash：百炼官方价（D-023）
+# （以前百炼的 qwen-flash 已经不用，价也没重新核，不再列：万一又用上，日报写"费用未知"）
 # DeepSeek：官网价 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ ，取高峰时段、输入没命中
 # 缓存的价。台账不分缓存命中和时段，所以算出来是上限：命中缓存的输入只要 1/30 到 1/50，空闲时段
 # （工作日 9—12 点、14—18 点以外和节假日）再减半，实际可能低得多。官网调价后要重新核对、改日期
 DEEPSEEK_CHECKED = date(2026, 10, 22)
 PRICES = {
-    "qwen-flash": (0.15, 1.5, date(2026, 9, 28)),
     "deepseek-flash": (2, 8, DEEPSEEK_CHECKED),
     "deepseek-v4-pro": (9.0, 27.0, DEEPSEEK_CHECKED),
     # 旧模型名还能调用，由 Flash 模型应答、按 Flash 价计费（官网价格页注 1）
