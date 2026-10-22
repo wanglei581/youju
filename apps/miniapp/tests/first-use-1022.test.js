@@ -117,6 +117,8 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
   assert.equal(flat(kids[at - 1]), '先点上面的“预览并核对行数”，核对通过后才能提交');
   // 提示里说的按钮确实在上面
   assert.equal(findAll(render('pages/advisor-form/index.wxml', FORM), (n) => n.attrs.bindtap === 'preview' && /预览并核对行数/.test(flat(n))).length, 1);
+  // 正在预览（按钮在转圈）时不催"先点预览"
+  assert.doesNotMatch(textOf(submitCard({ ...FORM, previewing: true })), /先点上面的/);
   card = submitCard({ ...FORM, previewed: true, rowCount: 3 });
   kids = elements(card);
   at = kids.findIndex(tapsTo('submit'));
