@@ -49,7 +49,7 @@
 <!-- 选了"只看未截止"、有结果时也写明口径（10/22 走查：原来只在没有结果时才说），和筛选面板里那句同一口径 -->
 <view wx:if="{{!loading && !error && total && picked.open.length}}" class="fold-note">“只看未截止”：{{openNote}}</view>
 <!-- 同一份部里通知的各地转发版本合为一条（D-055），份数按合并后的算 -->
-<view wx:if="{{!loading && !error && reposts}}" class="fold-note">同一通知的各地转发版本合为一条，另有 {{reposts}} 个转发版本未重复计算</view>
+<view wx:if="{{!loading && !error && reposts}}" class="fold-note">已合并 {{reposts}} 个各地转发版本，不重复计数</view>
 
 <view class="card">
   <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -125,7 +125,6 @@
               <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
               <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
-              <view class="group-note">选择器打不开时，请升级微信。</view>
             </block>
             <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">

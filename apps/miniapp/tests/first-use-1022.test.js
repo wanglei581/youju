@@ -87,9 +87,15 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const card = (r) => findAll(r, (n) => elements(n).some((c) => hasClass('section-title')(c) && /^正文/.test(flat(c))))[0];
   assert.equal(flat(elements(card(root))[0]), '正文（自动提取，未经人工逐字核对）');
-  assert.equal(flat(findAll(card(root), hasClass('body-note'))[0]), '从原网页或PDF提取，仅供阅读参考，以原文为准。');
-  // 政策文件上面没有截止，说明里不再指向"上面的截止时间"
+  // 政策文件上面没有截止卡片：说明里不指向"上面的截止时间"
+  assert.equal(flat(findAll(card(root), hasClass('body-note'))[0]), '从原网页或PDF提取，一切以原文为准。');
   assert.doesNotMatch(textOf(card(root)), /截止/);
+  // 申报通知上面有"截止时间"卡片时才写"截止日期可先看上面的'截止时间'"（#339 的措辞）
+  const notice = detailPage(() => ({ ...DOC, deadlines: [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }], body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
+  notice.onLoad({ id: '5' }); await flush();
+  const withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
+  assert.equal(findAll(withDue, hasClass('dls-head')).length, 1);
+  assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
   for (const status of ['list', 'original', 'failed']) {
     body = { status, total: 0 };
     page.refreshing = false; page.load(); await flush();
@@ -156,7 +162,6 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
     '直辖市例外：区县一栏选“全部”时按省级范围查询，也就是整个直辖市（各级来源都在内）。',
   ]);
   assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
-  assert.ok(notes(root).includes('选择器打不开时，请升级微信。'));
   assert.ok(notes(root).every((n) => !/点一下移除/.test(n)));
   // 原来挤在一段里的那句不在了
   assert.doesNotMatch(read('pages/search/index.wxml'), /已选城市、区县点一下移除。城市一栏选/);

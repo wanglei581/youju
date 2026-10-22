@@ -61,4 +61,3 @@
     <button class="advisor-button" bindtap="tasks" disabled="{{submitting}}">查看已有任务</button>
   </view>
 </block>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>

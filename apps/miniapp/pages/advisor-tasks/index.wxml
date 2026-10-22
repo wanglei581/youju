@@ -32,4 +32,3 @@
     <button wx:if="{{gate === 'offline'}}" class="advisor-button" bindtap="reload">重试</button>
   </view>
 </block>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>

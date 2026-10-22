@@ -26,7 +26,7 @@
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
     <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
-    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
+    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</view>
   </view>
 
   <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->
@@ -82,7 +82,7 @@
   <!-- 转发版本（D-055）：同一份部里通知的各地版本，截止按版本列出、各自核对，不同版本的日期不互相套用；
        点一行打开那一版自己的详情，原文链接也是那一版自己的 -->
   <view wx:if="{{versions.length}}" class="card ver-card">
-    <view class="section-title">各版本的截止<text class="weak excerpt-sec">按各版本原文分别核对</text></view>
+    <view class="section-title">各版本的截止</view>
     <view wx:if="{{upstream}}" class="ver-upstream">{{upstream}}</view>
     <view wx:for="{{versions}}" wx:key="id" class="ver" data-id="{{item.id}}" data-current="{{item.current}}" bindtap="openVersion" aria-role="{{item.current ? 'text' : 'link'}}" aria-label="{{item.label}}：{{item.deadline}}">
       <view class="ver-top">
@@ -96,7 +96,7 @@
         <text class="ver-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</text>
       </view>
     </view>
-    <view class="weak ver-note">各版本的推荐截止、报送要求可能不同，以各自原文为准</view>
+    <view class="weak ver-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
   </view>
 
   <view class="card">
@@ -142,7 +142,7 @@
        说明只在显示了提取的正文时出现（没提取到正文时下面只写去哪看原文） -->
   <view wx:if="{{doc.body}}" class="card">
     <view class="section-title">正文<text wx:if="{{doc.body.status === 'ok'}}">（自动提取，未经人工逐字核对）</text></view>
-    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取，仅供阅读参考，以原文为准。</view>
+    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dls && dls.length}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
@@ -178,7 +178,7 @@
       <view class="copy copy--big" bindtap="copy"><t-icon name="copy" size="30rpx" />复制原文链接</view>
     </view>
     <view wx:if="{{doc.link_gone}}" class="source-gone">原网页已撤下或改了地址（{{doc.link_gone}} 检查时打不开），复制的链接可能打不开；可以到发文机关网站按标题查找。</view>
-    <view class="source-note">原文网址 {{doc.host || ''}}。小程序内不能直接打开政府网站，复制链接后在浏览器打开。<text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理；有据是第三方整理的信息工具，不是政府平台，不提供填报入口。</view>
+    <view class="source-note">原文网址 {{doc.host || ''}}。小程序内不能直接打开政府网站，复制链接后在浏览器打开。<text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
   </view>
   <view style="height: 220rpx"></view>
 

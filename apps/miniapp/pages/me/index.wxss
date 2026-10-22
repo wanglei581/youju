@@ -36,6 +36,5 @@
 .row--last { border-bottom: 0; }
 .row-text { flex: 1; font-size: 30rpx; }
 .row-hint { font-size: 26rpx; color: var(--t3); }
-.foot { margin-top: 28rpx; text-align: center; font-size: 24rpx; color: var(--t3); }
 
 .danger { color: var(--red); }
