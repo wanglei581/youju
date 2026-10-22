@@ -128,7 +128,7 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
 
 test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"关注"），不再写"关注这个搜索"', () => {
   const gated = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'gated', loading: false, follows: [], changes: [] }));
-  assert.match(gated, /在搜索结果页点"关注"，把当时的关键词、地区、类型等条件存下来；有新文件时在这里标出。/);
+  assert.match(gated, /在搜索结果页点"关注"，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
   const empty = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'live', loading: false, error: '', follows: [], changes: [] }));
   assert.match(empty, /还没有关注。在搜索结果页点"关注"就能加上。/);
   for (const text of [gated, empty]) assert.doesNotMatch(text, /关注这个搜索/);
@@ -151,7 +151,7 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
   assert.deepEqual(kids.slice(1, picker).map(flat), [
     '城市一栏选“全部”：查全省（只查全省，也可以直接在“地区”里选省份）。',
     '区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。',
-    '直辖市不选区县：按省级范围查询。',
+    '直辖市例外：区县一栏选“全部”时，按省级范围查询。',
   ]);
   assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
   assert.ok(notes(root).includes('选择器打不开时，请升级微信。'));
@@ -190,8 +190,8 @@ test('第 1 条（只改顺序，主按钮不动）：工具中心里上传名�
   assert.doesNotMatch(findAll(root, (n) => n.attrs['data-kind'] === 'track')[0].attrs.class, /btn-primary/);
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], ...extra });
-const OPEN_LINE = '“只看未截止”含可能7天内截止、日期还没核对的，不含没写明截止日期的通知';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：核对过或机器摘录的截止日期还没到的，加上可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -212,7 +212,7 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const due = findAll(root, hasClass('due-card'))[0];
-  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '这是本页这一版（江西版）的截止；同一通知其他地方的版本，截止看下面“各版本的截止”');
+  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '上面的截止信息只对应本页这一版（江西版）；同一通知其他地方的版本，截止看下面“各版本的截止”');
   // 提示说的那一块就在截止卡片后面
   const cards = elements(root).filter((n) => /card/.test(n.attrs.class || ''));
   const at = cards.indexOf(due);

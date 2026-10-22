@@ -45,7 +45,7 @@
       <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
     </view>
     <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
-    <view wx:if="{{versions.length}}" class="weak ver-hint">这是本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}的截止；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面的截止信息只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{due && loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -61,7 +61,7 @@
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
     <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
-    <view wx:if="{{versions.length}}" class="weak ver-hint">这是本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}的截止；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面的截止信息只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>

@@ -107,6 +107,8 @@ Page({
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
     tagNote: TAG_NOTE,
+    // 选了"只看未截止"、有结果时结果上面那行口径，和筛选面板里同一句（agy 审阅：只写"含没核对的"读起来像只含没核对的）
+    openNote: OPEN_GROUP_NOTE,
     // 协议定稿前（D-056）不显示"关注"和"没找到想要的？告诉我们"（纠错要先同意协议），定稿后照旧
     loginOpen: loginOpen(),
     picked: DEFAULT_PICKED,
