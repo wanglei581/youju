@@ -224,7 +224,7 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
         "类型待定 1；质检存疑 1；纠错待处理 1",
         "用户：新增 1、24 小时活跃 1、累计 2；新关注 1；提醒发出 1、失败 1",
         "AI（9月28日）：调用 12 次、出错 1 次，输入 2.1 万、输出 3200 tokens，"
-        "当日模型调用费最多 0.01 元（按 9月28日官网最高价估，实际可能更低）",
+        "当日模型调用费最多 0.01 元（按官网最高价估，价格核于 9月28日，实际可能更低）",
         "qwen-flash 累计 12.9 万 tokens",
     ):
         assert fragment in text, fragment
@@ -248,7 +248,11 @@ def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
     session.commit()
     text = digest_text(build_digest(session, now=NOW), [])
     # deepseek-flash：0.5 × 2 + 0.1 × 8 = 1.80 元；加上 qwen-flash 那 12 次的约 0.008 元
-    assert "，当日模型调用费最多 1.81 元（按 9月28日官网最高价估，实际可能更低）" in text
+    # 混用核价日期不同的模型时写日期范围
+    assert (
+        "，当日模型调用费最多 1.81 元（按官网最高价估，价格核于 9月28日—10月22日，实际可能更低）"
+        in text
+    )
     assert "deepseek-flash 累计 60 万 tokens" in text
     # 免费额度不再写：百炼已经不用，DeepSeek 的赠送余额金额没公布
     assert "免费额度" not in text

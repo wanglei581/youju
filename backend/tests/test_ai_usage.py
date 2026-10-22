@@ -119,7 +119,7 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
 
 
 def test_usage_summary_reports_the_earliest_price_check_date(session) -> None:
-    """日报写"按哪天的官网价估"：取当天用到的、列了价格的模型里最早的核价日期。"""
+    """日报写"价格核于…"：当天用到的、列了价格的模型的核价日期范围。"""
     day = date(2026, 10, 21)
 
     def add(model: str) -> None:
@@ -136,8 +136,12 @@ def test_usage_summary_reports_the_earliest_price_check_date(session) -> None:
         )
         session.commit()
 
-    assert usage_summary(session, day).priced_on is None  # 当天没用量
+    def priced():
+        summary = usage_summary(session, day)
+        return summary.priced_from, summary.priced_to
+
+    assert priced() == (None, None)  # 当天没用量
     add("deepseek-flash")
-    assert usage_summary(session, day).priced_on == date(2026, 10, 22)
+    assert priced() == (date(2026, 10, 22), date(2026, 10, 22))
     add("qwen-flash")
-    assert usage_summary(session, day).priced_on == date(2026, 9, 28)
+    assert priced() == (date(2026, 9, 28), date(2026, 10, 22))

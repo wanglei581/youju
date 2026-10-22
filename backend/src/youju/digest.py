@@ -528,12 +528,15 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
     if usage is not None and (usage.calls or usage.cumulative):
         if usage.cost is None:
             cost = "，费用未知（有未列价格的模型）"
-        elif usage.priced_on is None:
+        elif usage.priced_from is None or usage.priced_to is None:
             cost = ""  # 当天没有用量，只报累计
         else:
+            checked = _md(usage.priced_from)
+            if usage.priced_to != usage.priced_from:
+                checked += f"—{_md(usage.priced_to)}"
             cost = (
                 f"，当日模型调用费最多 {_cost_cap(usage.cost)} 元"
-                f"（按 {_md(usage.priced_on)}官网最高价估，实际可能更低）"
+                f"（按官网最高价估，价格核于 {checked}，实际可能更低）"
             )
         quota = "；".join(
             f"{model} 累计 {_tokens(tokens)} tokens"
