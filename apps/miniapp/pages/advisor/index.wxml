@@ -36,6 +36,15 @@
     <view wx:elif="{{clauseRemaining !== null}}" class="advisor-text muted">今天还能用 {{clauseRemaining}} 次（失败、拒答不扣次数）</view>
     <button wx:if="{{!clauseOut && context && context.docId}}" class="advisor-button" bindtap="clause">开始对照</button>
   </view>
+  <!-- 10/22 走查：上传名单的两个工具放在"我的记录"前面——首发版 AI 关着，第一次来的人先看到的不该是一张空的记录卡 -->
+  <view wx:if="{{dataEnabled}}" class="card advisor-card">
+    <view class="advisor-title">批量处理客户名单（机构用）</view>
+    <view class="advisor-text muted">{{dataStatus || '正在读取额度…'}}</view>
+    <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
+    <view wx:if="{{dataError}}" class="advisor-error">{{dataError}}<button class="advisor-button" bindtap="refreshQuota">刷新额度</button></view>
+    <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能追溯官方原文。未查到不等于没有入选。</view><button class="advisor-button btn-primary" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
+    <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按省份和可选的关键词、支持方式、城市、区县整理近 90 天申报通知，不判断能否申报，可下载 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
+  </view>
   <view class="card advisor-card">
     <view class="advisor-title">我的记录</view>
     <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
@@ -45,14 +54,6 @@
       <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
     </button>
     <button class="advisor-button" bindtap="tasks">全部记录</button>
-  </view>
-  <view wx:if="{{dataEnabled}}" class="card advisor-card">
-    <view class="advisor-title">批量处理客户名单（机构用）</view>
-    <view class="advisor-text muted">{{dataStatus || '正在读取额度…'}}</view>
-    <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
-    <view wx:if="{{dataError}}" class="advisor-error">{{dataError}}<button class="advisor-button" bindtap="refreshQuota">刷新额度</button></view>
-    <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能追溯官方原文。未查到不等于没有入选。</view><button class="advisor-button btn-primary" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
-    <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按省份和可选的关键词、支持方式、城市、区县整理近 90 天申报通知，不判断能否申报，可下载 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
   </view>
   <!-- 适用范围（暂行办法第十条要求公开）收进"说明"，点开可见 -->
   <view wx:if="{{aiEnabled}}" class="card advisor-card">

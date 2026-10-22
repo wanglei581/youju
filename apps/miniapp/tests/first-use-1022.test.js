@@ -140,18 +140,18 @@ const sheet = (extra = {}) => render('pages/search/index.wxml', {
 });
 const notes = (root) => findAll(root, hasClass('group-note')).map(flat);
 
-test('第 5 条：城市区县的规则拆成短句，紧跟在选择器下面；"点一下移除"只在有已选的城市、区县时出现', () => {
+test('第 5 条：城市区县的规则拆成短句，放在选择器上面（先看规则再选）；"点一下移除"只在有已选的城市、区县时出现', () => {
   let root = sheet();
   const pane = findAll(root, hasClass('pane-inner'))[0];
   const kids = elements(pane);
   const picker = kids.findIndex((n) => n.tag === 'picker');
-  assert.ok(picker > 0);
-  assert.deepEqual(kids.slice(picker + 1, picker + 4).map(flat), [
-    '城市一栏选“全部”：查全省。',
+  assert.equal(flat(kids[0]), '城市区县省市区联动·可多选');
+  assert.deepEqual(kids.slice(1, picker).map(flat), [
+    '城市一栏选“全部”：查全省（只查全省，也可以直接在“地区”里选省份）。',
     '区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。',
     '直辖市不选区县：按省级范围查询。',
   ]);
-  assert.match(flat(kids[picker + 4]), /^当前仅有3个城市的部分来源/);
+  assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
   assert.ok(notes(root).includes('选择器打不开时，请升级微信。'));
   assert.ok(notes(root).every((n) => !/点一下移除/.test(n)));
   // 原来挤在一段里的那句不在了
@@ -161,4 +161,62 @@ test('第 5 条：城市区县的规则拆成短句，紧跟在选择器下面�
   assert.ok(notes(root).includes('已选的城市、区县，点一下移除。'));
   root = sheet({ districtOptions: [{ key: '山东/青岛/市南区', label: '山东·青岛·市南区' }] });
   assert.ok(notes(root).includes('已选的城市、区县，点一下移除。'));
+});
+
+test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"一样按全省（规则里说的另一条路确实走得通）', async () => {
+  const conditions = require('../utils/conditions.js');
+  const regions = require('../utils/regions.js');
+  // 城市一栏选"全部"得到的条件：只有省份
+  const choice = regions.regionSelection(['山东省', '全部', '全部'], { cities: [], districts: [] });
+  assert.deepEqual(plain(choice), { province: '山东', city: '', district: '', note: '' });
+  const viaPicker = regions.applyAreaChoice({ regions: ['不限地区'], cities: [], districts: [] }, choice);
+  assert.deepEqual(plain(viaPicker), { regions: ['山东'], cities: [], districts: [] });
+  // 在"地区"里点山东得到的地区条件也是 ['山东']，请求一样
+  assert.deepEqual(plain(conditions.requestScope(['山东'], [], [], [])), plain(conditions.requestScope(viaPicker.regions, [], viaPicker.cities, viaPicker.districts)));
+});
+
+test('第 1 条（只改顺序，主按钮不动）：工具中心里上传名单的两个工具排在"我的记录"前面；在售时"批量工具"卡片仍在最上面（D-076）', () => {
+  const base = { loading: false, toolsEnabled: true, dataEnabled: true, compareEnabled: true, trackEnabled: true, aiEnabled: false, aiGate: '', recent: [], recentLoading: false, dataStatus: '本月比对剩余 3/3 次', payCard: null };
+  const titles = (data) => findAll(render('pages/advisor/index.wxml', data), hasClass('advisor-title')).map(flat);
+  assert.deepEqual(titles(base), ['批量处理客户名单（机构用）', '我的记录']);
+  assert.deepEqual(titles({ ...base, payCard: { usedUp: false, quotaLine: '本月免费：比对还剩 3 次', offerLine: '要一次处理更多家', button: '了解批量工具' } }), ['批量工具', '批量处理客户名单（机构用）', '我的记录']);
+  // AI 开着时 AI 两项仍在最前面
+  assert.deepEqual(titles({ ...base, aiEnabled: true, interpretEnabled: true, clauseEnabled: true, aiPaused: false, aiFull: false, remaining: 5, clauseRemaining: 5 }), ['AI解读', '条款对照', '批量处理客户名单（机构用）', '我的记录']);
+  // 主按钮没动：比对仍是蓝色主按钮，通知表是次按钮（要不要对调由创始人定）
+  const root = render('pages/advisor/index.wxml', base);
+  assert.match(findAll(root, (n) => n.attrs['data-kind'] === 'compare')[0].attrs.class, /btn-primary/);
+  assert.doesNotMatch(findAll(root, (n) => n.attrs['data-kind'] === 'track')[0].attrs.class, /btn-primary/);
+});
+
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], ...extra });
+const OPEN_LINE = '“只看未截止”含可能7天内截止、日期还没核对的，不含没写明截止日期的通知';
+
+test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
+  const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
+  assert.ok(lines(results({ picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
+  assert.ok(!lines(results({})).includes(OPEN_LINE));
+  // 没有结果时由空状态里的"去掉只看未截止"和说明来讲，不重复
+  assert.ok(!lines(results({ total: 0, picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
+});
+
+test('第 7 条：转发合并的通知，截止卡片里写明上面的日期是本页这一版的，别的地方看"各版本的截止"；不是转发组的不写', async () => {
+  const repost = { versions: [
+    { id: '5', label: '江西版', current: true, issuer: '江西省科学技术厅', date: '2026-10-08', deadlines: [{ label: '企业申报截止', date: plus(9) }], url: 'https://a.example/5' },
+    { id: '6', label: '部委', current: false, issuer: '科学技术部', date: '2026-10-01', deadlines: [], deadline_state: 'unverified', url: 'https://a.example/6' },
+  ] };
+  const deadlines = [{ kind: '企业申报截止', source: 'verified', date: plus(9), time: null, remainingDays: 9, quote: null }];
+  let doc = { ...DOC, deadlines, repost };
+  const page = detailPage(() => doc);
+  page.onLoad({ id: '5' }); await flush();
+  let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  const due = findAll(root, hasClass('due-card'))[0];
+  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '这是本页这一版（江西版）的截止；同一通知其他地方的版本，截止看下面“各版本的截止”');
+  // 提示说的那一块就在截止卡片后面
+  const cards = elements(root).filter((n) => /card/.test(n.attrs.class || ''));
+  const at = cards.indexOf(due);
+  assert.match(flat(cards[at + 1]), /^各版本的截止/);
+  doc = { ...DOC, deadlines };
+  page.refreshing = false; page.load(); await flush();
+  root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(findAll(root, hasClass('ver-hint')).length, 0);
 });

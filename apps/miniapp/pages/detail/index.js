@@ -75,7 +75,7 @@ function deadlineRows(deadlines) {
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '' },
+    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '' },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -118,6 +118,7 @@ Page({
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
         // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
         const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+        const versions = versionRows(doc.repost);
         this.setData({
           doc,
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
@@ -131,7 +132,9 @@ Page({
           supportEvidence: '',
           conds: conditionRows(doc),
           // 转发版本（D-055）：同一份部里通知的各地版本，各自的截止按版本列出
-          versions: versionRows(doc.repost),
+          versions,
+          // 本页是哪一版（如"江西版"）：截止卡片里写明上面的日期只是这一版的（10/22 走查）
+          versionLabel: (versions.find((v) => v.current) || {}).label || '',
           upstream: upstreamLine(doc.repost),
           due,
           dls,
@@ -153,7 +156,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
