@@ -10,23 +10,24 @@
 - same：按新规则遮出来和库里一样（以前遮得没错，或者已经换过了），不用改；
 - fixed：原网页没变（新取到的原文按旧规则遮出来，和库里的正文一字不差），按新规则遮出来不一样：
   换成按新规则遮的正文；
-- changed：原网页变了，不改（这里只补旧规则吞掉的字，不顺带更新内容），列出来另行处理；
+- changed：原网页变了，不改（这里只补旧规则吞掉的字，不顺带更新内容），列出来另行处理；按新规则
+  正文超过长度上限的（换了会截掉文末）、写入时正文已被别的任务换过的也算这里；
 - unavailable：没打开、没取到正文，不改，写明原因；missing：题录或详情已删除。
 
 默认只预览，不写库；apply=True 才写，只改正文（body_text）：抓取时间、附件、状态都不动（抓取时间
-一改，名单补抓附件那一步会以为这份已经重抓过）。写完当场：
-- 重算这些文件的规则截止候选（extract.service.extract_existing，和每轮 extract-deadlines 一样，
-  核对过的不动）；
-- 找回的字里有日期、时刻（数字或"年月日时"）的，清掉它的 AI 截止检查结果（ai_checks 里 deadlines
-  那一项），下一轮 ai-check 按新正文重查，免得新找回的截止日期被标成"AI 没找到"；只找回单位名、
-  标签的不清（AI 找截止不看这些，省用量）；
-- 重算"能不能 AI 解读"（ai.eligibility，拿不到写锁就跳过，admin 每 10 分钟的增量和夜里的全量
-  会补上——增量只看抓取时间，这里没改抓取时间，所以要等夜里全量或手工跑 ai-eligibility-rebuild）。
-这一批里"不用改"的也一起重算候选和"能不能 AI 解读"：写到一半中断（正文已换、还没重算）再重跑时，
-这几份已经是"不用改"，这样也能补上。没打开的（unavailable）分批时会被 after_id 跳过，用 ids 单独
-重试。
-正文变了，已核对的字段（document_fields 的 approved）会在下一轮 extract-fields 变成待重新核对，
-确认过的申报条件清单不再对外显示、等重新抽取和核对，AI 解读的旧结果作废（D-073）：预览里列出份数。
+一改，名单补抓附件那一步会以为这份已经重抓过）。每换一份：
+- 同一个事务里，找回的字里有日期、时刻（数字或"年月日时周星点午"）的，清掉它的 AI 截止检查结果
+  （ai_checks 里 deadlines 那一项），下一轮 ai-check 按新正文重查，免得新找回的截止日期被标成
+  "AI 没找到"；只找回单位名、标签的不清（AI 找截止不看这些，省用量）；
+- 提交后当场重算它的规则截止候选（extract.service.extract_existing，和每轮 extract-deadlines 一样，
+  核对过的不动）：中途中断也不会留下换了正文、没重算的。
+一批写完：这一批"不用改"的也重算候选（中断后重跑，已换过、还带标记的是"不用改"）；换了正文的和
+"不用改"的重算"能不能 AI 解读"（ai.eligibility，拿不到写锁就跳过，夜里的全量会补上——每 10 分钟
+的增量只看抓取时间，这里没改抓取时间）。没打开的（unavailable）分批时会被 after_id 跳过，用 ids
+单独重试。
+正文一换，已核对的字段、确认过的申报条件清单读取时按正文指纹核对，马上不再对外显示（下一轮
+extract-fields 把字段标成待重新核对，条件清单等重新抽取和核对），AI 解读的旧结果作废（D-073）：
+预览里列出份数。
 """
 
 from __future__ import annotations
@@ -269,17 +270,22 @@ def _write(
     return bool(changed), cleared
 
 
-def _recompute(session: Session, doc_ids: list[int], report: RefetchReport) -> None:
-    """换完以后（这一批换了正文的和"不用改"的）：重算这些文件的规则截止候选（AI 截止检查已经先
-    清掉，新候选不会按旧结果标成"AI 没找到"），重算"能不能 AI 解读"。这一步中途出错也不要紧：
-    重跑这一批会补算，每轮的 extract-deadlines、夜里的 ai-eligibility-rebuild 也会按库里的正文
-    再算。"""
+def _recompute(
+    session: Session, written: list[int], same: list[int], report: RefetchReport
+) -> None:
+    """一批写完以后：这一批"不用改"的重算规则截止候选（中途中断后重跑，已换过、还带标记的几份是
+    "不用改"，这样补上；换了正文的已经在写入时逐份算过）；换了正文的和"不用改"的重算"能不能
+    AI 解读"（合并组主条目一起）。这一步出错也不要紧：每轮的 extract-deadlines、夜里的
+    ai-eligibility-rebuild 都是全量的，会按库里的正文再算。"""
     from youju.ai import eligibility
     from youju.extract.service import extract_existing
 
+    if same:
+        _, added = extract_existing(session, document_ids=same)
+        report.new_candidates += added
+    doc_ids = set(written) | set(same)
     if not doc_ids:
         return
-    _, report.new_candidates = extract_existing(session, document_ids=doc_ids)
     # 合并转载的主条目没有自己的正文时用组里最长的那份（同 eligibility.changed_since），一起重算
     masters = set(
         session.scalars(
@@ -291,7 +297,7 @@ def _recompute(session: Session, doc_ids: list[int], report: RefetchReport) -> N
     # 和 admin 每 10 分钟的增量重算错开：拿不到写锁就跳过，夜里的全量重算会补上
     with eligibility.writer_lock(session, 60) as got:
         if got:
-            eligibility.refresh(session, set(doc_ids) | masters, datetime.now(UTC))
+            eligibility.refresh(session, doc_ids | masters, datetime.now(UTC))
             report.eligibility_refreshed = True
 
 
@@ -354,6 +360,11 @@ def refetch_redacted(
             similarity = round(difflib.SequenceMatcher(None, stored, before).ratio(), 3)
             report.results.append(RefetchResult(doc_id, title, "changed", similarity=similarity))
             continue
+        if len(parsed.body_text) > BODY_TEXT_MAX_CHARS:
+            # 按新规则正文变长、超过长度上限：换了会截掉库里原有的文末，不换
+            reason = "按新规则正文超过长度上限，换了会截掉文末，没改"
+            report.results.append(RefetchResult(doc_id, title, "changed", reason))
+            continue
         pieces = _restored(stored, after)
         result = RefetchResult(
             doc_id,
@@ -370,6 +381,8 @@ def refetch_redacted(
     report.ai_checks = _ai_checks(session, recheck)
     if not apply:
         return report
+    from youju.extract.service import extract_existing
+
     written = []
     # 写入时按实际清掉的条数报（期间被别的任务重抓过、没换的那几份不算）
     report.ai_checks = 0
@@ -378,6 +391,10 @@ def refetch_redacted(
         report.ai_checks += cleared
         if changed:
             written.append(result.document_id)
+            # 换了正文当场重算它的规则截止候选：中途中断时（正文已换，正文里也可能没了标记、重跑
+            # 选不到）不会留下没重算的
+            _, added = extract_existing(session, document_ids=[result.document_id])
+            report.new_candidates += added
         elif session.get(DocumentDetail, result.document_id) is None:
             result.result, result.reason = "missing", "详情已删除"
         else:
@@ -387,6 +404,5 @@ def refetch_redacted(
     report.approved_fields, report.confirmed_conditions = _reviewed(
         session, {doc_id: fixed[doc_id] for doc_id in written}
     )
-    # 这一批"不用改"的一起重算：中途中断后重跑，已换过的几份是"不用改"，也要补算
-    _recompute(session, sorted(set(written) | same), report)
+    _recompute(session, written, sorted(same), report)
     return report

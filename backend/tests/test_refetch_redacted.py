@@ -326,6 +326,52 @@ def test_rerun_after_interruption_recomputes(world, session, monkeypatch) -> Non
     assert session.get(AIEligibility, swallowed.id) is not None
 
 
+def test_body_over_length_limit_is_not_replaced(world, session, monkeypatch) -> None:
+    """按新规则正文变长、超过长度上限的不换：换了会截掉库里原有的文末。"""
+    import youju.refetch_redacted as module
+
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    new = redact_sensitive(parse_detail(SWALLOWED, swallowed.url).raw_body)
+    assert len(stored) < len(new)
+    monkeypatch.setattr(module, "BODY_TEXT_MAX_CHARS", len(new) - 1)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "changed" and "长度上限" in result.reason
+    assert body_of(session, swallowed.id) == stored
+
+
+def test_written_bodies_get_candidates_even_if_interrupted(session, monkeypatch) -> None:
+    """换了正文当场逐份重算截止候选：最后一步出错中断，换过的那份（新正文里已经没有标记，重跑选不到）
+    候选也已经有了。"""
+    from youju.ai import eligibility
+
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>请于2026年11月20日前报送。联系电话0571-87654321</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 13, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    assert "[姓名已脱敏]" in body_of(session, doc.id)
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("中断")
+
+    monkeypatch.setattr(eligibility, "refresh", interrupted)
+    with pytest.raises(RuntimeError):
+        refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    body = body_of(session, doc.id)
+    assert "联系电话[电话已脱敏]" in body and "[姓名已脱敏]" not in body
+    due = session.scalars(
+        select(DocumentDeadline.candidate_date).where(DocumentDeadline.document_id == doc.id)
+    ).all()
+    assert date(2026, 11, 20) in due
+
+
 def test_details_deleted_while_fetching(world, session, monkeypatch) -> None:
     """抓取期间详情被删了的：预览也标成已删除，不说"可以换成新正文"。"""
     docs, fake = world
