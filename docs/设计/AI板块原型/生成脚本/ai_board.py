@@ -43,7 +43,9 @@ BTN_GREY = "#F2F2F2"   # 微信 style v2 默认按钮的底色（结果页"开�
 DATA = json.loads((HERE / "data_1022.json").read_text(encoding="utf-8"))
 RECENT = DATA["recent"]["items"]              # AI 首页"近 7 天能解读的申报通知"，共 DATA["recent"]["total"] 份
 FIND = DATA["find"]["items"]                  # 找通知例子：近 30 天、申报通知、标题里有 5G工厂
-DOC = DATA["doc74619"]                        # 主例子：宁夏技术交易补助（能解读、没有附件）
+# 主例子：湖北省科学技术厅《……企业自主研发和委托研发项目纳入省级科技计划项目的通知》（能解读、没有附件，企业申报截止 11/20）。
+# 原来选的宁夏《技术交易补助》那份 10/22 下午原网站撤稿了（data_1022.json 的 withdrawn），换成这份
+DOC = DATA["doc70955"]
 NO_BODY = DATA["doc71229"]                    # 不能解读：没有完整正文（重庆 5G 工厂）
 KIND_DOC = DATA["kind_example"]["items"][0]   # 不能解读：资讯与指南（广东研修班通知）
 LOOKUP = DATA["lookup"]                       # 查名单例子
@@ -59,21 +61,23 @@ def verbatim(text):
     return text
 
 
-# AI 解读结果（示意）：原句逐字取自正文；分到哪一类是按原文推断的，以实际解读结果为准
-Q_OBJ = verbatim("以技术转让、技术许可等方式在自治区内开展科技成果转移转化活动的科技成果受让方、输出方，居间促成科技成果转移转化的科技中介机构。")
-Q_SUP1 = verbatim("1.受让方以技术许可、技术转让的方式引进科技成果的，最高按照已支付技术交易额的30%给予补助。")
-Q_SUP2 = verbatim("3.同一企业每年度补助不超过500万元。")
-Q_SUP3 = verbatim("对居间促成技术交易的，最高按照技术交易额的2%给予奖补。")
-Q_C1 = verbatim("1.依法订立技术转让、技术许可合同并经过技术合同登记机构认定登记。")
-Q_C2 = verbatim("2.技术合同签订时间应不超过3 年，且技术交易支付进度达到90%（含）以上。")
-Q_C3 = verbatim("1.在自治区内注册、具有独立法人资格，申报前 1 年内未发生严重违法、失信行为。")
-Q_TIME = verbatim("技术交易补助实行常年受理、集中评审、分批下达。")
-Q_WAY = verbatim("登录宁夏科技管理信息系统（网址：https://gl.nxinfo.org.cn），在“技术创新引导计划类”栏目中的“技术交易类项目”模块"
-                 "进行网上填报《自治区技术交易补助申请表》，签订技术交易补助承诺并上传附件材料（所报材料均不能涉密）。")
-Q_M1 = verbatim("1.自治区技术交易补助申请表（系统填报）。")
-Q_M2 = verbatim("（1）技术合同及技术合同登记机构出具的技术合同认定登记证明。")
-Q_BUYER = verbatim("（二）科技成果受让方补助应同时具备以下条件。")
-Q_BUYER2 = verbatim("2.引进科技成果后自行或由其子公司在自治区内实施转化应用，申报前已实施转化或已制定切实可行的转化方案并具备相应的转化条件。")
+# AI 解读结果、问答回答（示意）：原句逐字取自收录的正文（按行取整句）；分到哪一类、摘哪几句是按原文推断的，以实际结果为准
+Q_OBJ1 = verbatim("湖北省内企业自筹资金、自行立项、自主实施（不是委托外部科研单位）的研发项目，且企业自主研发项目研发费用应达500万元（含）以上。")
+Q_OBJ2 = verbatim("湖北省内的高等学校、科研机构（含新型研发机构）、医疗卫生机构等单位（以下简称科研单位）承担我省企业委托的研发项目，"
+                  "且单个项目横向经费实际到账金额须达200万元（含）以上，农业领域项目实际到账金额须达100万元（含）以上。")
+Q_C0 = verbatim("1．企业自主研发项目纳入省级科技计划项目应同时满足以下全部条件：")
+Q_C1 = verbatim("（1）企业为研发项目的牵头实施单位，注册地在湖北省内。研发项目围绕解决企业或产业关键技术问题进行研究攻关，形成重大科技成果，且未获得国家和省级科技计划项目支持；")
+Q_C2 = verbatim("（2）单个研发项目企业自筹资金应达500万元（含）以上，项目研发费用管理应按照《研发费用加计扣除政策执行指引（2.0版）》执行，项目经费须单独建账、独立核算；")
+Q_C3 = verbatim("（3）申报项目立项时间为2023年1月1日以后，研发项目应在2026年度申报前已完成验收并合格，项目验收可由企业根据内部验收标准自行组织验收或委托第三方验收；")
+Q_C4 = verbatim("（4）企业没有逾期未验收的省级科技计划项目，项目负责人应为申报单位的在职人员，项目负责人、项目牵头单位和项目参与单位均未在科研违规失信惩戒期内。")
+Q_LIMIT = verbatim("1．每个项目负责人每年申报1项，每家企业每年申报不超过3项；")
+Q_T1 = verbatim("2026年度首轮集中评审，申报单位网上申报截止时间为2026年11月20日17时，逾期系统将自动关闭无法提交材料。")
+Q_T2 = verbatim("推荐单位网上审核推荐截止时间为2026年11月23日17时。")
+Q_PUB = verbatim("经省科技厅党组审议决策后，对拟纳入省级科技计划项目的进行公示，公示期为5个工作日，公示无异议的项目确定项目编号并发文公布。")
+Q_W1 = verbatim("企业自主研发项目由企业牵头申报，企业委托研发类项目限受托的科研单位申报，依托“湖北省科技计划项目管理平台”（https://kjt.hubei.gov.cn/jhgl）进行申报。")
+Q_W2 = verbatim("（二）征集工作全过程在湖北省科技计划项目管理信息系统内完成，无需提交纸质材料。")
+Q_M1 = verbatim("1．企业自主研发项目纳入省级科技计划申请书；")
+Q_M3 = verbatim("3．项目研发费用相关财务证明材料，如项目研发费用专项审计报告、税务部门核定的研发费用加计扣除相关证明材料、项目研发支出辅助账等；")
 
 TODAY = "2026-10-22"
 DISCLOSURE = "模型：[模型名称]｜备案号：[备案号]"
@@ -86,9 +90,9 @@ def phone(top, bottom="", min_h=844):
             f'{top}<div style="flex-grow: 1; min-height: 16px"></div>{bottom}</div>')
 
 
-def first_screen(top, bottom):
-    """只看手机第一屏（844 高）：下面的内容截掉，底部操作栏固定在最下面。"""
-    return (f'<div class="yj-phone" style="width: 390px; height: 844px; display: flex; flex-direction: column; background: {BG}; color: {T1}; '
+def first_screen(top, bottom, h=844):
+    """只看页面上面一段（默认手机第一屏 844 高）：下面的内容截掉，底部操作栏固定在最下面。"""
+    return (f'<div class="yj-phone" style="width: 390px; height: {h}px; display: flex; flex-direction: column; background: {BG}; color: {T1}; '
             f'font-family: {FONT}; font-size: 14px; line-height: 1.5; font-variant-numeric: tabular-nums; position: relative; overflow: hidden; text-align: left">'
             f'<div style="flex: 1; min-height: 0; overflow: hidden">{top}</div>{bottom}</div>')
 
@@ -338,10 +342,40 @@ def detail_head():
                 f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</div></div>')
 
 
+WEEK = "一二三四五六日"
+
+
+def cn_date(iso):
+    return f"{int(iso[:4])}年{int(iso[5:7])}月{int(iso[8:10])}日"
+
+
+def week_of(iso):
+    from datetime import date
+    return "周" + WEEK[date(int(iso[:4]), int(iso[5:7]), int(iso[8:10])).weekday()]
+
+
 def detail_due():
-    """这份通知没有截止候选（deadline_state=none）：写"截止时间见原文"。"""
-    return card(f'<div style="padding: 16px 0"><div style="font-size: 12px; color: {T2}">申报截止</div>'
-                f'<div style="margin-top: 4px; font-size: 15px">截止时间见原文</div></div>')
+    """截止时间卡片（D-061，同 pages/detail 的 deadlineRows）：每个类型一行；机器摘录的（8–30 天到期）写日期、
+    标"机器摘录·未经人工核对"并附原句；其余写"截止未核对，请以原文为准"。"""
+    rows = []
+    for i, d in enumerate(DOC["deadlines"]):
+        line = f"margin-top: 10px; border-top: 1px solid {LINE};" if i else ""
+        if d.get("source") == "excerpt" and d.get("date") and d.get("quote") and 8 <= d.get("remainingDays", 0) <= 30:
+            when = week_of(d["date"]) + (f" {d['time']}" if d.get("time") else "")
+            rows.append(f'<div style="padding-top: 10px; display: flex; flex-direction: column; gap: 5px; {line}">'
+                        f'<div style="display: flex; align-items: flex-end; justify-content: space-between"><div>'
+                        f'<div style="font-size: 12px; color: {T2}">{d["kind"]}</div>'
+                        f'<div style="margin-top: 2px; display: flex; align-items: baseline; gap: 8px"><span style="font-size: 24px; font-weight: 700; line-height: 1.25">{cn_date(d["date"])}</span>'
+                        f'<span style="font-size: 13px; color: {T2}">{when}</span></div></div>'
+                        f'<span style="height: 26px; padding: 0 10px; display: inline-flex; align-items: center; border-radius: 13px; background: {BLUE_TINT}; color: {BLUE}; '
+                        f'font-size: 13px; font-weight: 600">剩 {d["remainingDays"]} 天</span></div>'
+                        f'<span style="align-self: flex-start; padding: 2px 6px; border-radius: 4px; background: {FILL}; color: {T2}; font-size: 11px; font-weight: 600">机器摘录·未经人工核对</span>'
+                        f'<div style="padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{d["quote"]}</div></div>')
+        else:
+            rows.append(f'<div style="padding-top: 10px; {line}"><div style="font-size: 12px; color: {T2}">{d["kind"]}</div>'
+                        f'<div style="margin-top: 4px; font-size: 15px">截止未核对，请以原文为准</div></div>')
+    return card(f'<div style="padding: 16px 0"><div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px">'
+                f'<span style="font-size: 12px; color: {T2}">截止时间</span><span style="font-size: 12px; color: {T3}">以原文为准</span></div>{"".join(rows)}</div>')
 
 
 def detail_points():
@@ -388,7 +422,8 @@ def detail_bar():
 
 def detail(nextv):
     top = nav("文件详情") + notice_bar() + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body()
-    return first_screen(top, detail_bar())
+    # 画到 AI 卡片下面一点：这份通知有截止时间，手机第一屏只到截止时间那一块，卡片要往下滑才看到
+    return first_screen(top, detail_bar(), h=1160)
 
 
 # ---------- 卡片在不能解读时（当前版本） ----------
@@ -442,13 +477,17 @@ def result_section(title, items, same=""):
 
 
 SECTIONS = [
-    ("申报对象", [(Q_OBJ,)], ""),
-    ("支持方式", [(Q_SUP1,), (Q_SUP2,), (Q_SUP3,)], ""),
-    ("申报条件", [(Q_C1,), (Q_C2,), (Q_C3,)], ""),
-    ("申报时间", [(Q_TIME,)], ""),
-    ("申报方式", [(Q_WAY, "材料清单")], ""),
-    ("材料清单", [(Q_M1,), (Q_M2,)], "申报方式"),
+    ("申报对象", [(Q_OBJ1,), (Q_OBJ2,)], ""),
+    ("申报条件", [(Q_C1,), (Q_C3,), (Q_C4,), (Q_LIMIT,)], ""),
+    ("申报时间", [(Q_T1,), (Q_T2,)], ""),
+    ("申报方式", [(Q_W1,), (Q_W2, "材料清单")], ""),
+    ("材料清单", [(Q_M1,), (Q_M3,)], "申报方式"),
 ]
+MISSING = "支持方式"
+
+
+def missing_card():
+    return adv_card(f'<div style="color: {T2}">正文里没找到：{MISSING}。可能写在附件里，也可能原文没写，请查看原文。</div>')
 
 
 def clause_card():
@@ -472,13 +511,13 @@ def result_tail(nextv):
 def result_page():
     title = adv_card(f'<div style="font-size: 17px; font-weight: 600">{DOC["title"]}</div>{text_btn("看原文", 4)}')
     secs = "".join(result_section(*s) for s in SECTIONS)
-    return phone(nav("AI 解读") + notice_bar() + result_strip() + title + secs + result_tail(False))
+    return phone(nav("AI 解读") + notice_bar() + result_strip() + title + secs + missing_card() + result_tail(False))
 
 
 def result_bottom():
     """下一版：结果页滑到最下面（顶部的"AI 生成"一直吸顶）。"""
     last = result_section(*SECTIONS[-1])
-    return phone(nav("AI 解读") + result_strip() + last + result_tail(True))
+    return phone(nav("AI 解读") + result_strip() + last + missing_card() + result_tail(True))
 
 
 # ---------- 问一问对话页（下一版，#328 第十二节） ----------
@@ -637,18 +676,20 @@ def chat_find():
 
 
 # 走查后改的固定说法（比 #328 第十二节第 3 条多改了几处，见设计说明第四节）：
-# 开头写明可能没摘全；"看清是谁的时间"只在摘到的原句里有两个以上日期或审核、报送这类环节时才加
-# （这份只有"常年受理"一句，不加）；没有附件的写"这份通知没有附件"
+# 开头写明可能没摘全；"看清是谁的时间"只在摘到的原句里有两个以上日期，或有审核、报送、推荐、送达这类环节时才加；
+# 一个日期都没摘到时说一句；没有附件的写"这份通知没有附件"
 READ_BODY = "读了：正文（这份通知没有附件）。"
+TIME_NOTE = "企业申报、区县或市里审核报送、纸质材料送达可能不是同一天，请看清每句写的是谁的时间。"
+NO_DATE = "摘到的原句里没有写具体日期，请看原文。"
 
 
 def ask_answers():
-    a1 = (para("摘出了原文里和你问的有关的 1 句（可能没摘全，以原文为准）：") + quote(1, Q_TIME)
-          + para(READ_BODY, 13, T2, 10))
-    a2 = (para("我们不替你判断能不能报（以主管部门解释为准）。下面摘出了原文里和这个问题有关的 3 句（可能没摘全），请逐句对照你们的情况：")
-          + quote(1, Q_BUYER) + quote(2, Q_C3) + quote(3, Q_BUYER2) + para(READ_BODY, 13, T2, 10))
+    a1 = (para("摘出了原文里和你问的有关的 2 句（可能没摘全，以原文为准）：") + quote(1, Q_T1) + quote(2, Q_T2)
+          + para(TIME_NOTE, 13, T2, 10) + para(READ_BODY, 13, T2, 4))
+    a2 = (para("我们不替你判断能不能报（以主管部门解释为准）。下面摘出了原文里和这个问题有关的 5 句（可能没摘全），请逐句对照你们的情况：")
+          + quote(1, Q_C0) + quote(2, Q_C1) + quote(3, Q_C2) + quote(4, Q_C3) + quote(5, Q_C4) + para(READ_BODY, 13, T2, 10))
     return (user_msg("问这份通知", "企业申报截止是哪天？") + answer("ai", a1)
-            + user_msg("问这份通知", "我们是受让方，能报吗？") + answer("ai", a2))
+            + user_msg("问这份通知", "我们是企业自主研发的项目，能报吗？") + answer("ai", a2))
 
 
 def chat_ask():
@@ -695,23 +736,27 @@ def chat_states():
            + state_label('"问这份通知"用不了：按钮变灰，原因直接写在三个按钮下面（不用先点一下）')
            + off("没选通知：要先选一份通知：用“找通知”找到后，点那一行的“问这份通知”。")
            + off("5 次用完：问这份通知今天的 5 次用完了，明天 0 点恢复；找通知、查名单照常能用。")
-           + off("问满 20 句：今天已经问了 20 句（找没找到都算），问这份通知明天 0 点恢复；找通知、查名单照常能用。")
-           + off("后台处理不了：AI 暂时不可用，请稍后再试；找通知、查名单照常能用。", retry=True)
-           + off("这份不能做：这份文件已下架。")
+           + off("问满 20 句：今天已经问了 20 句（每天最多问 20 句，找没找到都算，和“还剩几次”分开算），问这份通知明天 0 点恢复；找通知、查名单照常能用。")
+           + off("后台处理不了：AI 暂时不可用，请稍后再试（点“重试”不算次数）；找通知、查名单照常能用。", retry=True)
+           + off("这份不能做：这份文件已下架，问这份通知用不了；可以点上面的“换一份通知”，或用“找通知”找别的。")
            + state_label("发送被拦下（不保存、不算次数，字留在输入框里）")
            + off("你输入的内容里像有手机号。这一项会把你打的字发给 AI 模型，请删掉后再发。这次不算次数。")
            + state_label("正在找")
            + answer("ai", para("正在原文里找相关的原句…一般 10–30 秒。可以先离开，之后在 AI 首页“我的 AI 记录”里打开这条对话接着看。", 14, T2), foot=False)
-           + state_label("没找到", "问：对成立时间有什么要求？")
-           + answer("ai", para("这份通知已读的内容里没有写。") + para(f"{READ_BODY}可以换个说法再问，或点“看原文”自己找。这次不算次数。", 13, T2, 4))
+           + state_label("问时间，摘到的原句里没有日期", "问：什么时候公布结果？")
+           + answer("ai", para("摘出了原文里和你问的有关的 1 句（可能没摘全，以原文为准）：", 14) + quote(1, Q_PUB)
+                    + para(NO_DATE, 13, T2, 10) + para(READ_BODY, 13, T2, 4))
+           + state_label("没找到", "问：能给多少补贴？")
+           + answer("ai", para("这份通知已读的内容里没有写。") + para(f"{READ_BODY}可以换个说法再问，或点“看原文”自己找。这次不算次数。", 13, T2, 4)
+                    + f'<div style="margin-top: 8px; font-size: 12.5px; color: {BLUE}">看原文 ›</div>')
            + state_label("查名单没查到", f"问：{NONE_LOOKUP['query']}（10/22 线上真实结果）")
            + answer("lists", para(f"按“{NONE_LOOKUP['query']}”查的。按这个名称，收录的名单里没查到。只代表我们没收录到，不代表没上过；改过名、分公司请分别查；以主管部门公布为准。")
                     + para(coverage_line(), 12.5, T2, 6))
            + state_label("范围外", "问：帮我写一份申报书")
            + answer("ai", para("这个问题不在“问这份通知”能答的范围里：这里只从这份通知的原文里找相关原句，不代写材料、不判断能不能申报，"
                                "也不答和这份通知无关的问题。想找别的通知，点“找通知”。这次不算次数。"), foot=False)
-           + state_label("要问清楚", "问：第 3 句是什么意思？（上一个回答只列了 1 句）")
-           + answer("ai", para("上一个回答里没有第 3 句（只列了 1 句）。你指的是哪一句？可以把那句的几个字打出来再问。这次不算次数。"), foot=False))
+           + state_label("要问清楚", "问：第 3 句是什么意思？（上一个回答只列了 2 句）")
+           + answer("ai", para("上一个回答里没有第 3 句（只列了 2 句）。你指的是哪一句？可以把那句的几个字打出来再问。这次不算次数。"), foot=False))
     return sheet(top)
 
 
@@ -721,9 +766,9 @@ NOW = [
      "底栏第 5 格「AI」（只对白名单里的你显示）。两项能力各一行、写今天还剩几次，下面是刚才看的通知、近 7 天能解读的申报通知、我的 AI 记录和联系客服。"
      "两项能力那两行现在点不了，只能点「去找一份通知」；模型和备案号还没配，页底不显示那一行。",
      ["底栏 5 格", "两行点不了", "近 7 天：线上 58 份里最新 5 份", "记录是示例"]),
-    ("当前2_通知详情", "当前 2", "通知详情（第一屏）", lambda: detail(False),
-     "标题卡里一行「这份通知可以 AI 解读 ↓」，点了滚到「要点」下面的卡片；卡片位置不动（你 10/17 在手机上看过定的）。下面的正文、原文出处没变。",
-     ["标题卡提示", "卡片在要点下面", "宁夏技术交易补助（10/21）"]),
+    ("当前2_通知详情", "当前 2", "通知详情（画到 AI 卡片）", lambda: detail(False),
+     "这份通知有截止时间，手机第一屏大约只到截止时间那一块，「要点」下面的卡片要往下滑才看到，所以标题卡里有一行「这份通知可以 AI 解读 ↓」，点了滚到卡片；卡片位置不动（你 10/17 在手机上看过定的）。下面的正文、原文出处没变。",
+     ["标题卡提示", "卡片在要点下面", "湖北科技厅（10/20）"]),
     ("当前3_卡片不能解读时", "当前 3", "卡片在不能解读时", card_states,
      "每份通知同一个位置都有这张卡片，做不了就写原因和下一步。前三种是线上真实的通知；「正文超过 2.4 万字」那种现在没有按钮。",
      ["写原因", "给下一步", "超长那种缺按钮"]),
