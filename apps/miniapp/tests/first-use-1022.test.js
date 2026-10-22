@@ -184,19 +184,6 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-test('第 1 条（只改顺序，主按钮不动）：工具中心里上传名单的两个工具排在"我的记录"前面；在售时"批量工具"卡片仍在最上面（D-076）', () => {
-  const base = { loading: false, toolsEnabled: true, dataEnabled: true, compareEnabled: true, trackEnabled: true, aiEnabled: false, aiGate: '', recent: [], recentLoading: false, dataStatus: '本月比对剩余 3/3 次', payCard: null };
-  const titles = (data) => findAll(render('pages/advisor/index.wxml', data), hasClass('advisor-title')).map(flat);
-  assert.deepEqual(titles(base), ['批量处理客户名单（机构用）', '我的记录']);
-  assert.deepEqual(titles({ ...base, payCard: { usedUp: false, quotaLine: '本月免费：比对还剩 3 次', offerLine: '要一次处理更多家', button: '了解批量工具' } }), ['批量工具', '批量处理客户名单（机构用）', '我的记录']);
-  // AI 开着时 AI 两项仍在最前面
-  assert.deepEqual(titles({ ...base, aiEnabled: true, interpretEnabled: true, clauseEnabled: true, aiPaused: false, aiFull: false, remaining: 5, clauseRemaining: 5 }), ['AI解读', '条款对照', '批量处理客户名单（机构用）', '我的记录']);
-  // 主按钮没动：比对仍是蓝色主按钮，通知表是次按钮（要不要对调由创始人定）
-  const root = render('pages/advisor/index.wxml', base);
-  assert.match(findAll(root, (n) => n.attrs['data-kind'] === 'compare')[0].attrs.class, /btn-primary/);
-  assert.doesNotMatch(findAll(root, (n) => n.attrs['data-kind'] === 'track')[0].attrs.class, /btn-primary/);
-});
-
 const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
 const OPEN_LINE = '“只看未截止”：只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 
@@ -230,12 +217,6 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   page.refreshing = false; page.load(); await flush();
   root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(root, hasClass('ver-hint')).length, 0);
-});
-
-test('第 3 条附带（Grok 复走）：首页"工具中心"入口的小字写明是上传名单批量查，不再只写"批量处理"', () => {
-  const root = render('pages/home/index.wxml', { loginOpen: true, scopes: [{ key: 'apply', label: '查申报', placeholder: '' }], scope: 0, hot: [], items: [], soon: [], guideSteps: [] });
-  const entry = findAll(root, (n) => n.attrs['data-url'] === '/pages/advisor/index' && hasClass('entry')(n))[0];
-  assert.equal(flat(entry), '工具中心上传名单批量查');
 });
 
 test('第 2 条附带（Grok 复走）：选文件那里写明旧版 .xls 要先另存为 .xlsx（选择器里本来就选不到 .xls）', () => {

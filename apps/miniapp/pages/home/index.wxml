@@ -36,7 +36,7 @@
   </view>
   <view wx:if="{{loginOpen}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
     <view class="tile tile--blue"><t-icon name="app" size="44rpx" color="#FFFFFF" /></view>
-    <text class="entry-name">工具中心</text><text class="entry-sub">上传名单批量查</text>
+    <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
   </view>
 </view>
 
