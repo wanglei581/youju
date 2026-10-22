@@ -55,6 +55,8 @@
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
     <view wx:if="{{!passActive}}" class="advisor-text muted">每提交一次算 1 次，不论几家；排队中取消、或处理失败没出结果的，不算次数。</view>
     <view class="advisor-text muted">原文件不保存；任务里的名单 7 天后清空，结果文件（含提交的名单内容）30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
+    <!-- 10/22 走查：没预览时提交按钮是灰的，紧挨着写明为什么、先做什么 -->
+    <view wx:if="{{!previewed}}" class="advisor-text">先点上面的“预览并核对行数”，核对通过后才能提交</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !previewed}}">提交任务</button>
     <button class="advisor-button" bindtap="tasks" disabled="{{submitting}}">查看已有任务</button>
   </view>

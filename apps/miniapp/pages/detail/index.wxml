@@ -39,7 +39,7 @@
           <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
           <view wx:else class="due-unverified">截止未核对，请以原文为准</view>
         </view>
-        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : '剩 ' + item.days + ' 天'}}</text>
+        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
       </view>
       <text wx:if="{{item.label}}" class="src src--{{item.source}}">{{item.label}}</text>
       <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
@@ -55,7 +55,7 @@
         <view class="due-label">{{doc.deadline.label}}</view>
         <view class="due-date-row"><text class="due-date">{{dueDate}}</text><text class="due-week">{{dueWeek}}</text></view>
       </view>
-      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
+      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : due.days === 0 ? '今天截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
     <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
