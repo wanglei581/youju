@@ -1537,7 +1537,7 @@ def main(argv: list[str] | None = None) -> int:
     batch.add_argument(
         "--ids",
         type=_id_list,
-        help="只处理这几份（逗号隔开的编号，不看 --limit）：重试没打开的，编号见输出最后一行",
+        help="只处理这几份（逗号隔开，不看 --limit）：重试没打开的，编号见输出的 retry 那一行",
     )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)
