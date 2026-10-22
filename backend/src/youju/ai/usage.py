@@ -15,21 +15,19 @@ from youju.ai.client import ChatClient
 from youju.models import AIUsage
 
 BEIJING = ZoneInfo("Asia/Shanghai")
-# 每百万 tokens 的价格（元）：输入、输出。没列的模型不估费用
-# qwen-flash：2026-09-28 核实的百炼官方价（D-023）
-# DeepSeek：2026-10-22 核实的官网价 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ ，
-# 取高峰时段、输入没命中缓存的价。台账不分缓存命中和时段，所以算出来是上限：
-# 命中缓存的输入只要 1/30 到 1/50，空闲时段（工作日 9—12 点、14—18 点以外和节假日）再减半，
-# 实际通常低得多
-# 价格表最近一次照官网核对的日期：日报写"按这天的官网价估"，官网调价后要重新核对、改这里
-PRICES_CHECKED = date(2026, 10, 22)
+# 每百万 tokens 的价格（元）：输入、输出，以及照官网核对价格的日期。没列的模型不估费用
+# qwen-flash：百炼官方价（D-023）
+# DeepSeek：官网价 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ ，取高峰时段、输入没命中
+# 缓存的价。台账不分缓存命中和时段，所以算出来是上限：命中缓存的输入只要 1/30 到 1/50，空闲时段
+# （工作日 9—12 点、14—18 点以外和节假日）再减半，实际可能低得多。官网调价后要重新核对、改日期
+DEEPSEEK_CHECKED = date(2026, 10, 22)
 PRICES = {
-    "qwen-flash": (0.15, 1.5),
-    "deepseek-flash": (2, 8),
-    "deepseek-v4-pro": (9.0, 27.0),
+    "qwen-flash": (0.15, 1.5, date(2026, 9, 28)),
+    "deepseek-flash": (2, 8, DEEPSEEK_CHECKED),
+    "deepseek-v4-pro": (9.0, 27.0, DEEPSEEK_CHECKED),
     # 旧模型名还能调用，由 Flash 模型应答、按 Flash 价计费（官网价格页注 1）
-    "deepseek-v4-flash": (2, 8),
-    "deepseek-v4-flash-vision-exp": (2, 8),
+    "deepseek-v4-flash": (2, 8, DEEPSEEK_CHECKED),
+    "deepseek-v4-flash-vision-exp": (2, 8, DEEPSEEK_CHECKED),
 }
 
 
@@ -74,6 +72,8 @@ class UsageSummary:
     completion_tokens: int = 0
     # 有没列价格的模型时为 None
     cost: float | None = 0.0
+    # 当天用到的、列了价格的模型里最早的核价日期（日报写"按这天的官网价估"）；当天没用量时为 None
+    priced_on: date | None = None
     # 各模型从开始记账起的累计 tokens（输入加输出）
     cumulative: dict[str, int] = field(default_factory=dict)
 
@@ -98,6 +98,9 @@ def usage_summary(session: Session, day: date) -> UsageSummary:
         summary.completion_tokens += int(completion)
         cost = cost_yuan(model, int(prompt), int(completion))
         summary.cost = None if cost is None or summary.cost is None else summary.cost + cost
+        if cost is not None:
+            checked = PRICES[model][2]
+            summary.priced_on = min(summary.priced_on or checked, checked)
     summary.cumulative = {
         model: int(tokens)
         for model, tokens in session.execute(

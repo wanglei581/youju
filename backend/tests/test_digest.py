@@ -224,7 +224,7 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
         "类型待定 1；质检存疑 1；纠错待处理 1",
         "用户：新增 1、24 小时活跃 1、累计 2；新关注 1；提醒发出 1、失败 1",
         "AI（9月28日）：调用 12 次、出错 1 次，输入 2.1 万、输出 3200 tokens，"
-        "当日模型调用费最多 0.01 元（按 10月22日官网最高价估，实际可能更低）",
+        "当日模型调用费最多 0.01 元（按 9月28日官网最高价估，实际可能更低）",
         "qwen-flash 累计 12.9 万 tokens",
     ):
         assert fragment in text, fragment
@@ -248,10 +248,18 @@ def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
     session.commit()
     text = digest_text(build_digest(session, now=NOW), [])
     # deepseek-flash：0.5 × 2 + 0.1 × 8 = 1.80 元；加上 qwen-flash 那 12 次的约 0.008 元
-    assert "，当日模型调用费最多 1.81 元（按 10月22日官网最高价估，实际可能更低）" in text
+    assert "，当日模型调用费最多 1.81 元（按 9月28日官网最高价估，实际可能更低）" in text
     assert "deepseek-flash 累计 60 万 tokens" in text
     # 免费额度不再写：百炼已经不用，DeepSeek 的赠送余额金额没公布
     assert "免费额度" not in text
+
+
+def test_digest_without_usage_that_day_reports_only_cumulative(session, world) -> None:
+    """前一天没有 AI 用量时只报累计，不写费用（也就没有核价日期）。"""
+    text = digest_text(build_digest(session, now=NOW + timedelta(days=1)), [])
+    line = next(row for row in text.splitlines() if row.startswith("AI（"))
+    assert line.startswith("AI（9月29日）：调用 0 次、出错 0 次")
+    assert "费用" not in line and "qwen-flash 累计 12.9 万 tokens" in line
 
 
 def test_cost_cap_rounds_up_to_the_cent() -> None:
