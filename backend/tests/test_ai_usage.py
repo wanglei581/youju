@@ -64,7 +64,7 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
             AIUsage(
                 day=date(2026, 9, 28),
                 task="check",
-                model="qwen-flash",
+                model="deepseek-flash",
                 calls=10,
                 errors=1,
                 prompt_tokens=20000,
@@ -73,7 +73,7 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
             AIUsage(
                 day=date(2026, 9, 28),
                 task="audit",
-                model="qwen-flash",
+                model="deepseek-flash",
                 calls=2,
                 errors=0,
                 prompt_tokens=1000,
@@ -82,7 +82,7 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
             AIUsage(
                 day=date(2026, 9, 20),
                 task="check",
-                model="qwen-flash",
+                model="deepseek-flash",
                 calls=50,
                 errors=0,
                 prompt_tokens=100000,
@@ -94,8 +94,8 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
     summary = usage_summary(session, date(2026, 9, 28))
     assert (summary.calls, summary.errors) == (12, 1)
     assert (summary.prompt_tokens, summary.completion_tokens) == (21000, 3200)
-    assert summary.cost == pytest.approx((21000 * 0.15 + 3200 * 1.5) / 1_000_000)
-    assert summary.cumulative == {"qwen-flash": 129200}
+    assert summary.cost == pytest.approx((21000 * 2 + 3200 * 8) / 1_000_000)
+    assert summary.cumulative == {"deepseek-flash": 129200}
 
     session.add(
         AIUsage(
@@ -110,4 +110,37 @@ def test_usage_summary_costs_and_cumulative_totals(session) -> None:
     )
     session.commit()
     assert usage_summary(session, date(2026, 9, 28)).cost is None  # 没列价格的模型不瞎估
-    assert cost_yuan("qwen-flash", 1_000_000, 0) == pytest.approx(0.15)
+    # 以前百炼的 qwen-flash 不再列价（不用了，价也没重新核）
+    assert cost_yuan("qwen-flash", 1_000_000, 0) is None
+    assert cost_yuan("deepseek-flash", 1_000_000, 1_000_000) == pytest.approx(2 + 8)
+    assert cost_yuan("deepseek-v4-pro", 1_000_000, 1_000_000) == pytest.approx(9.0 + 27.0)
+    # 旧模型名还能调用，按 Flash 价计费
+    assert cost_yuan("deepseek-v4-flash", 1_000_000, 1_000_000) == pytest.approx(2 + 8)
+    assert cost_yuan("deepseek-v4-flash-vision-exp", 1_000_000, 0) == pytest.approx(2)
+
+
+def test_usage_summary_reports_the_earliest_price_check_date(session) -> None:
+    """日报写"价格核于…"：当天用到的、列了价格的模型各自的核价日期，去重后按先后排。"""
+    day = date(2026, 10, 21)
+
+    def add(model: str) -> None:
+        session.add(
+            AIUsage(
+                day=day,
+                task="check",
+                model=model,
+                calls=1,
+                errors=0,
+                prompt_tokens=1000,
+                completion_tokens=100,
+            )
+        )
+        session.commit()
+
+    assert usage_summary(session, day).priced_on == ()  # 当天没用量
+    add("deepseek-flash")
+    add("deepseek-v4-pro")
+    assert usage_summary(session, day).priced_on == (date(2026, 10, 22),)
+    add("qwen-flash")  # 没列价的模型：当天费用不估，核价日期也不算它
+    summary = usage_summary(session, day)
+    assert summary.cost is None and summary.priced_on == (date(2026, 10, 22),)
