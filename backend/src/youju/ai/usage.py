@@ -1,6 +1,6 @@
 """AI 用量台账（D-023）：每条命令结束时把 AI 客户端的累计用量记一笔。
 
-运维日报据此报用量、费用和免费额度。
+运维日报据此报用量和费用上限。
 """
 
 from dataclasses import dataclass, field
@@ -15,10 +15,19 @@ from youju.ai.client import ChatClient
 from youju.models import AIUsage
 
 BEIJING = ZoneInfo("Asia/Shanghai")
-# 每百万 tokens 的价格（元）：输入、输出。2026-09-28 核实的百炼官方价（D-023）；没列的模型不估费用
-PRICES = {"qwen-flash": (0.15, 1.5)}
-# 百炼新开通时每个模型送的免费额度（tokens，90 天内有效，北京地域）
-FREE_QUOTA = 1_000_000
+# 每百万 tokens 的价格（元）：输入、输出，以及照官网核对价格的日期。没列的模型不估费用
+# （以前百炼的 qwen-flash 已经不用，价也没重新核，不再列：万一又用上，日报写"费用未知"）
+# DeepSeek：官网价 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ ，取高峰时段、输入没命中
+# 缓存的价。台账不分缓存命中和时段，所以算出来是上限：命中缓存的输入只要 1/30 到 1/50，空闲时段
+# （工作日 9—12 点、14—18 点以外和节假日）再减半，实际可能低得多。官网调价后要重新核对、改日期
+DEEPSEEK_CHECKED = date(2026, 10, 22)
+PRICES = {
+    "deepseek-flash": (2, 8, DEEPSEEK_CHECKED),
+    "deepseek-v4-pro": (9.0, 27.0, DEEPSEEK_CHECKED),
+    # 旧模型名还能调用，由 Flash 模型应答、按 Flash 价计费（官网价格页注 1）
+    "deepseek-v4-flash": (2, 8, DEEPSEEK_CHECKED),
+    "deepseek-v4-flash-vision-exp": (2, 8, DEEPSEEK_CHECKED),
+}
 
 
 def record_usage(
@@ -62,6 +71,9 @@ class UsageSummary:
     completion_tokens: int = 0
     # 有没列价格的模型时为 None
     cost: float | None = 0.0
+    # 当天用到的、列了价格的模型各自的核价日期，去重后按先后排（日报写"价格核于…"）；
+    # 当天没用量时为空
+    priced_on: tuple[date, ...] = ()
     # 各模型从开始记账起的累计 tokens（输入加输出）
     cumulative: dict[str, int] = field(default_factory=dict)
 
@@ -86,6 +98,8 @@ def usage_summary(session: Session, day: date) -> UsageSummary:
         summary.completion_tokens += int(completion)
         cost = cost_yuan(model, int(prompt), int(completion))
         summary.cost = None if cost is None or summary.cost is None else summary.cost + cost
+        if cost is not None:
+            summary.priced_on = tuple(sorted({*summary.priced_on, PRICES[model][2]}))
     summary.cumulative = {
         model: int(tokens)
         for model, tokens in session.execute(
