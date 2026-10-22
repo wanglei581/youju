@@ -14,30 +14,37 @@ from youju.jobs import JOB_NAMES
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 # job.sh 开头那段 if 里的任务：每分钟或每 10 分钟一次，不记运行记录
 UNRECORDED = {"advisor-run", "pay-run", "ai-heartbeat", "ai-eligibility"}
-# 一行里分开前后两条命令的符号
-SEPARATORS = {";", "&&", "||", "|", "&"}
+# 分开前后两条命令的符号；括号是子 shell 或 $( ) 的边界
+SEPARATORS = {";", "&&", "||", "|", "&", "(", ")"}
 # 命令前面可能带的 shell 关键字
-KEYWORDS = {"if", "then", "else", "elif", "do", "!", "{"}
-# 任务名的样子：字母、数字开头，后面是字母、数字、连字符、下划线
-TASK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{"}
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _name_of(command: list[str]) -> set[str]:
-    while command and command[0] in KEYWORDS:
+    """命令位置上是 `…/job.sh` 或 round.sh 的 `run` 时，取后面那个参数，原样不改。"""
+    # 去掉前面的关键字和 X=1 这样的环境变量，剩下第一个就是实际执行的命令
+    while command and (command[0] in KEYWORDS or ASSIGNMENT.match(command[0])):
         command = command[1:]
-    for i, token in enumerate(command[:-1]):
-        # `…/job.sh <任务名>`（crontab、round.sh），或 round.sh 里的 `run <任务名>`
-        if token.endswith("/job.sh") or token == "job.sh" or (i == 0 and token == "run"):
-            name = command[i + 1]
-            # "$@" 这类变量、round.sh 定义函数那行 `run() {` 的 "()" 都不是任务名
-            return {name} if TASK_NAME.fullmatch(name) else set()
-    return set()
+    if len(command) < 2:
+        return set()
+    program, name = command[0], command[1]
+    if not (program == "job.sh" or program.endswith("/job.sh") or program == "run"):
+        return set()
+    # round.sh 定义函数那行 `run() {` 不是调用；"$@" 这类变量不是任务名
+    if name == "()" or name.startswith("$"):
+        return set()
+    return {name}
 
 
 def _job_names_in(text: str) -> set[str]:
-    """经 job.sh 跑的任务名。逐行按 shell 的规则拆参数：注释不算，引号去掉，; && || 前后是两条命令。"""
+    """经 job.sh 跑的任务名。
+
+    先把行尾 \\ 的续行接起来，再逐行按 shell 的规则拆参数：注释不算，引号去掉，
+    ; && || 和括号前后是不同的命令；只认命令位置上的 job.sh 和 run（见 _name_of）。
+    """
     names = set()
-    for line in text.splitlines():
+    for line in text.replace("\\\n", " ").splitlines():
         lex = shlex.shlex(line, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         lex.commenters = "#"
@@ -51,11 +58,22 @@ def _job_names_in(text: str) -> set[str]:
     return names
 
 
+def _cron_commands(text: str) -> str:
+    """crontab 每行去掉前 5 个时间字段，剩下的才是 shell 命令；注释、空行、环境变量行不算。"""
+    commands = []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split(None, 5)
+        if len(fields) == 6:
+            commands.append(fields[5])
+    return "\n".join(commands)
+
+
 def _scheduled() -> set[str]:
-    names = set()
-    for name in ("crontab", "round.sh"):
-        names |= _job_names_in((DEPLOY / name).read_text(encoding="utf-8"))
-    return names
+    cron = _cron_commands((DEPLOY / "crontab").read_text(encoding="utf-8"))
+    round_sh = (DEPLOY / "round.sh").read_text(encoding="utf-8")
+    return _job_names_in(cron) | _job_names_in(round_sh)
 
 
 def _unrecorded_in_job_sh() -> set[str]:
@@ -65,13 +83,28 @@ def _unrecorded_in_job_sh() -> set[str]:
     return set(re.findall(r'"\$name" = "([^"]+)"', block.group(1)))
 
 
-def test_job_name_reader_reads_commands_not_comments():
-    sample = (
+def test_cron_reader_skips_schedule_fields_and_comments():
+    crontab = (
+        "SHELL=/bin/sh\n"
         "# 30 2 * * * /app/backend/deploy/job.sh phantom-job（整行注释不算）\n"
         '* * * * *  /app/backend/deploy/job.sh   "quoted-job2" --x; /app/x/job.sh second-job\n'
+        "*/5 * * * * date +\\%s > /tmp/youju-cron-heartbeat\n"
+    )
+    assert _job_names_in(_cron_commands(crontab)) == {"quoted-job2", "second-job"}
+
+
+def test_job_name_reader_reads_commands_not_comments():
+    sample = (
+        "# /app/backend/deploy/job.sh phantom-job（整行注释不算）\n"
+        '/app/backend/deploy/job.sh   "quoted-job2" --x; /app/x/job.sh second-job\n'
         "run first && run check-sources --streaks  # run commented-job（行尾注释也不算）\n"
         '[ "$1" = "--notify" ] && run notify\n'
         "if ! flock -n 9; then run inside-if; fi\n"
+        "LIMIT=1 run with-env\n"
+        "(run in-subshell)\n"
+        "run continued \\\n  --limit 600\n"
+        "job.sh typo.name\n"
+        "echo /app/backend/deploy/job.sh not-a-job\n"
         '"$D/job.sh" "$@"\n'
         'run_id=$(timeout 20s youju job-start round 2>> /proc/1/fd/1) || run_id=""\n'
         "run() {\n"
@@ -83,6 +116,10 @@ def test_job_name_reader_reads_commands_not_comments():
         "check-sources",
         "notify",
         "inside-if",
+        "with-env",
+        "in-subshell",
+        "continued",
+        "typo.name",
     }
 
 
