@@ -494,7 +494,8 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert f"已到 --limit 1 份，后面可能还有：加 --after-id {docs['swallowed'].id}" in out
 
     # 只重试没打开的那份
-    assert cli.main(["refetch-redacted", "--ids", str(docs["gone"].id)]) == 0
+    gone = docs["gone"].id
+    assert cli.main(["refetch-redacted", "--ids", f"{gone},{gone}"]) == 0
     out = capsys.readouterr().out
     assert "refetch_redacted mode=preview checked=1 " in out and "--after-id" not in out
     with pytest.raises(SystemExit):

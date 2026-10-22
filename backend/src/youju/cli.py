@@ -236,9 +236,9 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
 
 
 def _id_list(value: str) -> list[int]:
-    """逗号隔开的文件编号（"12,34,56"）。"""
+    """逗号隔开的文件编号（"12,34,56"），重复的只留一个。"""
     try:
-        ids = [int(part) for part in value.split(",") if part.strip()]
+        ids = list(dict.fromkeys(int(part) for part in value.split(",") if part.strip()))
     except ValueError:
         raise argparse.ArgumentTypeError("编号要用逗号隔开的数字，例如 12,34,56") from None
     if not ids:
@@ -1535,7 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
     batch.add_argument(
         "--ids",
         type=_id_list,
-        help="只处理这几份（逗号隔开的编号）：重试没打开的，编号见输出最后一行 retry",
+        help="只处理这几份（逗号隔开的编号，不看 --limit）：重试没打开的，编号见输出最后一行",
     )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)
