@@ -608,6 +608,8 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         "subscriptions": {"newDocs": 0, "deadline": 0},
         # 注销后：不在售，也没有订单（小程序不显示购买入口和「我的订单」）
         "pay": {"enabled": False, "hasOrders": False},
+        # 注销后没有使用期：我的页头没有"批量工具"标识
+        "pass": None,
         # 纠错送天数开关默认关：纠错页不提送天数
         "correctionReward": None,
     }

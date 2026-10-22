@@ -3,7 +3,8 @@
 <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
 <view wx:elif="{{!product}}" class="card advisor-card muted">{{closedNote || '正在加载…'}}</view>
 <block wx:else>
-  <view wx:if="{{sandbox}}" class="card pass-sandbox">沙箱测试：只对测试人员开放，付款不扣真钱，开通的使用期仅供测试。正式收费前《付费服务协议》会定稿。</view>
+  <!-- 沙箱真机付款会真实扣钱（10/20 创始人实测：付了款、账单里扣了），不能写"不扣真钱" -->
+  <view wx:if="{{sandbox}}" class="card pass-sandbox">沙箱测试：只对测试人员开放。真机付款会真实扣款，开通的使用期仅供测试；不需要的可以在“我的 → 我的订单”按下面的退款规则申请退款。正式收费前《付费服务协议》会定稿。</view>
   <!-- 最上面一眼看到：给谁用、两档多少钱、会不会再扣钱；续买的规则和价格在同一屏（D-070） -->
   <view class="pass-hero">
     <view class="pass-name">批量工具</view>
@@ -52,9 +53,9 @@
     <view class="pass-note">只限本人的微信使用，不能转让，也不能几个人共用。</view>
     <view class="pass-note">使用期从开通时起算（一般付款后几秒内就开通）；已有使用期的，接着往后顺延。在加量体验期间买的，开通时体验结束，没用完的体验时间折成天数加在后面（不足一天按一天）。</view>
     <view class="pass-note">只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看、导出（结果保存 30 天）。</view>
-    <view class="pass-note">退款：用安卓、鸿蒙手机或电脑版微信付款的，付款 7 天内没用过付费的量（没超出每月免费次数、没有一次超过 50 家）、也没开过发票，可在“我的 → 我的订单”自助申请，全额原路退回。</view>
+    <view class="pass-note">退款：用安卓、鸿蒙手机或电脑版微信付款的，付款后 24 小时内没用过付费的量（没超出每月免费次数、没有一次超过 50 家）、也没开过发票，可在“我的 → 我的订单”申请无理由退款，全额原路退回；每个账号每月只能申请 1 次无理由退款（每月 1 日起重新计算）；超过 24 小时或者已经用过的，不能无理由退款。</view>
     <view class="pass-note">因系统故障不能用、或我们停止服务（会提前至少 30 天公告）的，按剩余天数退款。退哪一笔只退那一笔，续买多送的天数随那一笔一起收回。</view>
-    <view class="pass-note">苹果手机付款的，只能向 App Store 申请退款，是否退款由苹果公司决定。苹果手机要 iOS 15 以上、微信 8.0.68 以上，并且用中国大陆的 App Store 账户才能付款。</view>
+    <view class="pass-note">苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理。苹果手机要 iOS 15 以上、微信 8.0.68 以上，并且用中国大陆的 App Store 账户才能付款。</view>
     <view class="pass-note">发票：{{invoiceText || '能开哪种发票还没确定，确定后写在这里（正式收费前）'}}。在“我的 → 我的订单”申请，申请当月开出电子发票，发到你填的邮箱。</view>
     <view class="pass-help">支付或订单有问题？<text class="link" bindtap="feedback" aria-role="button">遇到问题</text></view>
   </view>
@@ -62,10 +63,10 @@
 
   <!-- 付款栏固定在底部：不用翻到最后才找到按钮；协议不默认勾选。现网要协议定稿、写明了发票才能付款 -->
   <view class="pass-bar">
-    <view wx:if="{{message}}" class="pass-msg {{payError ? 'pass-msg--error' : ''}}">{{message}}</view>
+    <view wx:if="{{message}}" class="pass-msg {{payError ? 'pass-msg--error' : ''}}">{{message}}<text wx:if="{{ordersLink}}" class="link pass-orders" bindtap="orders" aria-role="button">查看我的订单</text></view>
     <block wx:if="{{((termsFinal && invoiceText) || sandbox) && loginOpen && !confirmed}}">
       <checkbox-group bindchange="check"><label class="pass-check"><checkbox value="agree" checked="{{checked}}" disabled="{{busy}}" /><text>我已阅读并同意</text><text class="advisor-link" catchtap="terms">《付费服务协议》</text></label></checkbox-group>
-      <button class="pass-pay btn-primary" bindtap="buy" loading="{{busy}}" disabled="{{busy}}">{{sandbox ? '沙箱支付' : '支付'}} {{price}} 元（{{product.days}} 天{{sandbox ? '，不扣真钱' : ''}}）</button>
+      <button class="pass-pay btn-primary" bindtap="buy" loading="{{busy}}" disabled="{{busy}}">{{sandbox ? '沙箱支付' : '支付'}} {{price}} 元（{{product.days}} 天）</button>
     </block>
     <view wx:elif="{{!confirmed}}" class="pass-closed">付费服务暂未开放</view>
     <button wx:if="{{confirmed}}" class="pass-pay btn-primary" bindtap="tools">去用工具</button>

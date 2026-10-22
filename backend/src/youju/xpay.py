@@ -8,11 +8,24 @@ import hashlib
 import hmac
 import json
 import logging
+import ssl
 from datetime import date
 
 import httpx
 
 from youju.config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+def wx_http() -> httpx.Client:
+    """调用微信接口用的 HTTP 客户端，用系统证书库校验 https。
+
+    云托管的开放接口服务接管了容器里到 api.weixin.qq.com 的连接，https 用的是平台自己签发、
+    装在系统证书库里的证书；httpx 默认只认 certifi 自带的那份，会报 self-signed certificate，
+    配了 AppSecret 的换会话密钥（方式 B）因此一直失败（10/19 沙箱下单 503）。仍然校验证书和域名，
+    只是信任的根证书改从系统证书库取。"""
+    return httpx.Client(trust_env=False, verify=ssl.create_default_context())
 
 
 class _PaymentLogFilter(logging.Filter):
@@ -71,16 +84,23 @@ class XPayClient:
             response = self.http.get(url, params=params, timeout=5)
             response.raise_for_status()
             result = response.json()
-            if (
-                result.get("errcode", 0) != 0
-                or result.get("openid") != openid
-                or not isinstance(result.get("session_key"), str)
-                or not result["session_key"]
-            ):
-                raise XPayError
-            return result["session_key"]
-        except Exception:
+        except Exception as exc:
+            # 只记异常类型：异常文字里可能带 URL，URL 里有 AppSecret 和登录凭证
+            logger.warning("换会话密钥失败：%s", type(exc).__name__)
             raise XPayError from None
+        # 失败原因只记错误码这类不敏感的信息，不记登录凭证、会话密钥和返回内容
+        if not isinstance(result, dict):
+            reason = "返回格式不对"
+        elif result.get("errcode", 0) != 0:
+            reason = f"errcode={result.get('errcode')}"
+        elif result.get("openid") != openid:
+            reason = "openid 对不上"
+        elif not isinstance(result.get("session_key"), str) or not result["session_key"]:
+            reason = "没有会话密钥"
+        else:
+            return result["session_key"]
+        logger.warning("换会话密钥失败：%s", reason)
+        raise XPayError
 
     def call(self, uri: str, data: dict, *, env: int) -> dict:
         raw = encode(data)

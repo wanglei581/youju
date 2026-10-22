@@ -664,6 +664,9 @@ function advisorCapabilities(options = {}) {
       features: Array.isArray(ai.features) ? ai.features : [],
       remaining: ai.remaining || {},
       disclosure: ai.disclosure == null ? null : ai.disclosure,
+      // D-075：后台现在能不能处理（admin 的心跳；旧后台不带时当作能）、全站今天的用量满了没有
+      available: ai.available !== false,
+      siteFull: ai.siteFull === true,
     }, reason: '' };
   }).catch((err) => {
     const status = err && err.status;
@@ -684,6 +687,12 @@ function advisorCapabilities(options = {}) {
   return result;
 }
 
+// 注销以后：在途的和缓存的能力答复都不再用（是注销以前的权限），下次重新问
+function forgetCapabilities() {
+  capabilitiesPromise = null;
+  capabilitiesPending = null;
+}
+
 // 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
 function createAdvisorTask(data, key) {
   if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
@@ -695,12 +704,23 @@ function createAdvisorTask(data, key) {
     ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
     : { kind: 'interpret', doc_id: Number(data.doc_id) };
   return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
-    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string') {
+    // 带代码的拒绝（D-075：AI_NOT_ELIGIBLE 带原因代码、AI_UNAVAILABLE）保留后台写的说明，另记原因代码；
+    // 其余 422（输入校验）把逐项说明拼起来
+    const coded = err.detail && typeof err.detail === 'object' && !Array.isArray(err.detail) && typeof err.detail.message === 'string';
+    if (coded && typeof err.detail.reason === 'string') err.reason = err.detail.reason;
+    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string' && !coded) {
       err.message = Array.isArray(err.detail)
         ? err.detail.map((item) => (item && item.msg) || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
     }
     throw err;
   });
+}
+
+// AI 对不对所有人开放（D-075，不需要身份）：底栏第 5 格、列表上的"AI 解读"据此决定给不给所有人看。
+// 只问接口服务（不走 admin，两个服务设置不一样时以 api 为准）；在后台问，不显示"正在连接"
+function advisorMode() {
+  if (!isLive()) return Promise.resolve({ open: false, available: false });
+  return withRetry(() => requestOnce('/api/v1/advisor/mode', 'GET', undefined, {}), 'GET', null, { quiet: true });
 }
 
 function advisorStatus() {
@@ -820,6 +840,14 @@ function payOrder(id) {
 function payOrders() {
   return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
 }
+// 核对一张待确认的订单（付款后、打开订单页时）：服务端当场向微信查单，付了款就开通，不等推送和每分钟的补单。
+// 返回订单，加上 check（这次核对的结果：paid / unpaid / closed / refunded / manual / unavailable；没查时为 null）。
+// 服务端还没有这个接口（404）时退回只读订单，不把订单当成查不到
+function checkPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/check`, null, { method: 'POST' })
+    .catch((err) => (err && err.status === 404 ? payOrder(id).then((order) => Object.assign({}, order, { check: null })) : Promise.reject(err)));
+}
 function refundPayOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
   return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
@@ -836,6 +864,6 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
-  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice, payHeader,
+  advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
 };

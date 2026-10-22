@@ -157,8 +157,9 @@ def test_platform_refund_completion_voids_pending_invoice(pay, session):
     ask(pay, row)
     session.expire_all()
     row = session.get(type(row), row.id)
-    # 苹果手机等由平台完成的退款：查单结果显示已退款
-    assert payments.mark_refunded(session, row, {"status": 5, "left_fee": 0}, NOW)
+    # 苹果手机等由平台完成的退款：查单结果显示已退款（8 用户侧收款完成；5 只是商户侧扣款完成，不算）
+    assert not payments.mark_refunded(session, row, {"status": 5, "left_fee": 0}, NOW)
+    assert payments.mark_refunded(session, row, {"status": 8, "left_fee": 0}, NOW)
     session.commit()
     invoice = session.scalar(select(InvoiceRequest))
     assert invoice.status == "rejected" and invoice.note == payments.INVOICE_VOID_NOTE
@@ -274,7 +275,7 @@ def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
     # 正式版里不出现白名单购买（D-074，运营规范 5.19）：同一个测试人员换到正式版就看不到
     assert payments.selling_to(settings, "pay-user", payments.Client(terms="pay-test")) is False
     settings.pay_audience = "all"
-    # 沙箱付款不扣真钱：配成 all 也只给测试名单（D-074）
+    # 沙箱只给测试名单：配成 all 也一样（D-074；沙箱真机付款也会真实扣钱，10/20 创始人实测）
     assert payments.selling_to(settings, "anyone", trial) is False
     assert payments.selling_to(settings, "pay-user", trial) is True
     settings.pay_enabled = False

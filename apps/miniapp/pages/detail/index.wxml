@@ -24,6 +24,8 @@
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
+    <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
+    <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</view>
   </view>
 
@@ -101,7 +103,7 @@
   </view>
 
   <!-- 解读入口卡片（10/17 取代右下角浮动按钮）：只有白名单（capabilities.ai_advisor.enabled）或正式开放后才渲染，其余用户不渲染任何内容；做不了的文件写明原因 -->
-  <ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" />
+  <view id="ai-entry"><ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" doc-url="{{doc.url}}" has-attachments="{{atts.length > 0}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" bind:attachments="toAttachments" /></view>
 
   <view wx:if="{{doc.excerpt}}" class="card">
     <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>
@@ -145,7 +147,7 @@
     <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
   </view>
 
-  <view wx:if="{{atts.length}}" class="card">
+  <view wx:if="{{atts.length}}" id="attachments" class="card">
     <view class="section-title">附件 {{atts.length}}</view>
     <view wx:for="{{atts}}" wx:key="index" class="att" hover-class="att--pressed" data-index="{{index}}" bindtap="openAttachment" aria-role="button">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
