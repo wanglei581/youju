@@ -225,8 +225,10 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   assert.equal(calls.at(-1).levels, undefined);
   assert.equal(page.data.emptyHint, '');
   page.onLoad({ open: '1' }); await flush();
-  assert.match(page.data.emptyHint, /“只看未截止”不含没写明截止日期、或截止日期还没理清的通知/);
-  assert.doesNotMatch(page.data.emptyHint, DIGITS);
+  // 10/22 走查起：只看未截止的口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍
+  assert.equal(page.data.emptyHint, '');
+  assert.match(page.data.openNote, /没写明截止日期、或截止日期还没理清的不在里面/);
+  assert.match(read('pages/search/index.wxml'), /wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”：{{openNote}}<\/view>/);
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');
   assert.match(read('pages/search/index.wxml'), /wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}/);

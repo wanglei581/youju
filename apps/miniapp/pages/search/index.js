@@ -33,8 +33,9 @@ const KIND_TABS = [
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
-// 以及 7 天内有候选、还没核对的。选的时候就写明不含哪些，不只在没有结果时才说（10/22 走查）
-const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面';
+// 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。选的时候就写明含哪些、不含哪些，
+// 有结果、没结果时结果上面写同一句（10/22 走查，Grok、agy 审阅）
+const OPEN_GROUP_NOTE = '只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
@@ -60,7 +61,6 @@ const DEFAULT_PICKED = { region: ['不限地区'], city: [], district: [], level
 const FOLLOW_NOTE = '关注当前搜索条件，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
-const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';
 const PAGE = 20;
 
 // 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算
@@ -329,7 +329,7 @@ Page({
           let emptyHint = '';
           if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
           else if (supportConflict(params.kind, params.types, params.supports)) emptyHint = SUPPORT_CONFLICT;
-          else if (params.open) emptyHint = OPEN_NOTE;
+          // 只看未截止：口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍（10/22 走查）
           this.setData({ emptyHint });
           const regions = params.regions.split(',');
           loadCoverage().then((c) => {

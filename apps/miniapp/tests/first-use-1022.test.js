@@ -114,7 +114,7 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
   let kids = elements(card);
   let at = kids.findIndex(tapsTo('submit'));
   assert.equal(kids[at].attrs.disabled, true);
-  assert.equal(flat(kids[at - 1]), '先点上面的“预览并核对行数”，核对通过后才能提交');
+  assert.equal(flat(kids[at - 1]), '先点上面的“预览并核对行数”，通过后才能提交');
   // 提示里说的按钮确实在上面
   assert.equal(findAll(render('pages/advisor-form/index.wxml', FORM), (n) => n.attrs.bindtap === 'preview' && /预览并核对行数/.test(flat(n))).length, 1);
   // 正在预览（按钮在转圈）时不催"先点预览"
@@ -130,7 +130,9 @@ test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"�
   const gated = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'gated', loading: false, follows: [], changes: [] }));
   assert.match(gated, /在搜索结果页点"关注"，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
   const empty = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'live', loading: false, error: '', follows: [], changes: [] }));
-  assert.match(empty, /还没有关注。在搜索结果页点"关注"就能加上。/);
+  assert.match(empty, /还没有关注。在搜索结果页点"关注"，就能把当前的关键词和筛选条件存下来。/);
+  // 底部入口不再写"地区 × 主题 × 类型"（像三项都得选）
+  assert.match(empty, /去搜索，选好地区、关键词等条件后点"关注"/); assert.doesNotMatch(empty, /×/);
   for (const text of [gated, empty]) assert.doesNotMatch(text, /关注这个搜索/);
   // 搜索页按钮上就是"关注"
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
@@ -149,9 +151,9 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
   const picker = kids.findIndex((n) => n.tag === 'picker');
   assert.equal(flat(kids[0]), '城市区县省市区联动·可多选');
   assert.deepEqual(kids.slice(1, picker).map(flat), [
-    '城市一栏选“全部”：查全省（只查全省，也可以直接在“地区”里选省份）。',
+    '城市一栏选“全部”：查全省各级来源（省、市、区县都在内），和在“地区”里选这个省一样。',
     '区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。',
-    '直辖市例外：区县一栏选“全部”时，按省级范围查询。',
+    '直辖市例外：区县一栏选“全部”时按省级范围查询，也就是整个直辖市（各级来源都在内）。',
   ]);
   assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
   assert.ok(notes(root).includes('选择器打不开时，请升级微信。'));
@@ -165,7 +167,7 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
   assert.ok(notes(root).includes('已选的城市、区县，点一下移除。'));
 });
 
-test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"一样按全省（规则里说的另一条路确实走得通）', async () => {
+test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"一样按全省；直辖市区县一栏选"全部"也是按整个直辖市，请求里不带城市（规则里写的都走得通）', async () => {
   const conditions = require('../utils/conditions.js');
   const regions = require('../utils/regions.js');
   // 城市一栏选"全部"得到的条件：只有省份
@@ -175,6 +177,11 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaPicker), { regions: ['山东'], cities: [], districts: [] });
   // 在"地区"里点山东得到的地区条件也是 ['山东']，请求一样
   assert.deepEqual(plain(conditions.requestScope(['山东'], [], [], [])), plain(conditions.requestScope(viaPicker.regions, [], viaPicker.cities, viaPicker.districts)));
+  // 直辖市：区县一栏选"全部"得到的也只是省份（整个直辖市），不是只查市级来源
+  const bj = regions.regionSelection(['北京市', '北京市', '全部'], { cities: [], districts: [] });
+  assert.equal(bj.province, '北京'); assert.equal(bj.city, ''); assert.equal(bj.district, '');
+  const viaBj = regions.applyAreaChoice({ regions: ['不限地区'], cities: [], districts: [] }, bj);
+  assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
 test('第 1 条（只改顺序，主按钮不动）：工具中心里上传名单的两个工具排在"我的记录"前面；在售时"批量工具"卡片仍在最上面（D-076）', () => {
@@ -190,15 +197,17 @@ test('第 1 条（只改顺序，主按钮不动）：工具中心里上传名�
   assert.doesNotMatch(findAll(root, (n) => n.attrs['data-kind'] === 'track')[0].attrs.class, /btn-primary/);
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：核对过或机器摘录的截止日期还没到的，加上可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
   assert.ok(lines(results({ picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
   assert.ok(!lines(results({})).includes(OPEN_LINE));
-  // 没有结果时由空状态里的"去掉只看未截止"和说明来讲，不重复
-  assert.ok(!lines(results({ total: 0, picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
+  // 没有结果时由空状态里的"去掉只看未截止"和下面同一句来讲：结果上面不写，空状态里只写一遍
+  const empty = results({ total: 0, totalAll: 0, picked: { open: ['只看未截止'] }, activeChips: [{ key: 'open:只看未截止', group: 'open', option: '只看未截止', label: '只看未截止' }] });
+  assert.ok(!lines(empty).includes(OPEN_LINE));
+  assert.deepEqual(findAll(empty, hasClass('empty-note')).map(flat).filter((t) => /只看未截止/.test(t)), [OPEN_LINE]);
 });
 
 test('第 7 条：转发合并的通知，截止卡片里写明上面的日期是本页这一版的，别的地方看"各版本的截止"；不是转发组的不写', async () => {
@@ -221,4 +230,16 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   page.refreshing = false; page.load(); await flush();
   root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(root, hasClass('ver-hint')).length, 0);
+});
+
+test('第 3 条附带（Grok 复走）：首页"工具中心"入口的小字写明是上传名单批量查，不再只写"批量处理"', () => {
+  const root = render('pages/home/index.wxml', { loginOpen: true, scopes: [{ key: 'apply', label: '查申报', placeholder: '' }], scope: 0, hot: [], items: [], soon: [], guideSteps: [] });
+  const entry = findAll(root, (n) => n.attrs['data-url'] === '/pages/advisor/index' && hasClass('entry')(n))[0];
+  assert.equal(flat(entry), '工具中心上传名单批量查');
+});
+
+test('第 2 条附带（Grok 复走）：选文件那里写明旧版 .xls 要先另存为 .xlsx（选择器里本来就选不到 .xls）', () => {
+  const text = textOf(render('pages/advisor-form/index.wxml', { ...FORM, mode: 'file' }));
+  assert.match(text, /只支持 XLSX \/ CSV（旧版 \.xls 请先另存为 \.xlsx），文件不超过 60 KB。/);
+  assert.match(read('pages/advisor-form/index.js'), /extension: \['xlsx', 'csv'\]/);
 });
