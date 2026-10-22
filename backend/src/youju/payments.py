@@ -21,7 +21,7 @@ from io import StringIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import case, delete, func, or_, select, true, update
+from sqlalchemy import case, delete, exists, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -219,7 +219,7 @@ def selling_to(settings, openid: str | None, client: Client) -> bool:
     - 总开关开着；
     - 测试阶段（沙箱，或 YOUJU_PAY_AUDIENCE 还是 whitelist）：只给测试名单里的人，
       并且只在开发版、体验版——正式版不出现沙箱和白名单购买（运营规范 5.19 人群对抗）；
-      沙箱付款不扣真钱，所以沙箱即使配成 all 也只给测试名单；
+      沙箱真机付款也会真实扣钱（10/20 创始人实测），所以沙箱即使配成 all 也只给测试名单；
     - 现网（真扣钱）：只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
       开卖要单独提审一版，老版本永远看不到价格。
     补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
@@ -244,8 +244,9 @@ def invoice_type(settings) -> str:
 def orderable(settings) -> bool:
     """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了定稿的协议版本
     （YOUJU_PAY_TERMS_VERSION）和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
-    沙箱不扣真钱，协议定稿前也能联调。商品列表、下单、购买入口都按这一条判断，
-    不出现看得到价格却付不了款的入口，也不能绕过购买页直接下单。"""
+    沙箱只给测试名单（真机付款也会真实扣钱，10/20 创始人实测），协议定稿前也能联调。
+    商品列表、下单、购买入口都按这一条判断，不出现看得到价格却付不了款的入口，
+    也不能绕过购买页直接下单。"""
     if not getattr(settings, "xpay_offer_id", "") or not products(settings):
         return False
     return settings.xpay_env == 1 or bool(
@@ -373,7 +374,8 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
     创始人 10/19："24 小时内没用过付费的量才能退，用过就不能退"）：安卓、鸿蒙、电脑版微信付款
     （微信的普通支付），付款 24 小时内（含恰好 24 小时），这一笔的使用期没用过付费的量（没超出
     每月免费次数、没有一次超过 50 家），也没开过发票。只看这一笔自己：提前续买、一次买了几笔的，
-    每笔分开算。付了款却没开通的人工单另走 undelivered_refund_reason，不受这个时限。"""
+    每笔分开算；每个账号每个自然月只能申请 1 次（D-083，见 monthly_self_refunds）。
+    付了款却没开通的人工单另走 undelivered_refund_reason，不受这个时限和次数。"""
     if order.platform == "ios":
         return "苹果手机付款的订单请在 App Store 申请退款"
     if order.platform != "android":
@@ -395,7 +397,59 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
     if paid_usage(session, ticket):
         return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
+    refunds = monthly_self_refunds(session, order.user_id, stamp, exclude=order.id)
+    if refunds >= SELF_REFUNDS_PER_MONTH:
+        # 这笔的 24 小时到下月 1 日还没过，才说"下月 1 日起可以再申请"；
+        # 多数订单 24 小时在月内就过了，直接说这笔不能再无理由退款，不让用户白等（审阅意见，10/20）
+        if order.paid_time + SELF_REFUND_WINDOW >= next_month_start(stamp):
+            return MONTHLY_REFUND_REASON
+        return MONTHLY_REFUND_FINAL
     return None
+
+
+# 无理由退款每个账号每月 1 次（D-083，创始人 10/20："加一个限制，每个号一个月只能退款一次"）：
+# 按北京时间自然月算（每月 1 日 0 点起，和每月免费次数同一口径）。只限无理由退款；
+# 付了款没开通的自助退款、系统故障或停止服务的人工退款、苹果退款不受限，也不占次数。
+# 注销后订单只留由微信标识算出的编号，只用于对账和争议、不用来认人；重新同意协议后按新账号算
+# （D-083 ④）
+SELF_REFUNDS_PER_MONTH = 1
+MONTHLY_REFUND_REASON = "每个账号每月只能申请 1 次无理由退款，本月已经申请过；下月 1 日起可以再申请"
+MONTHLY_REFUND_FINAL = (
+    "每个账号每月只能申请 1 次无理由退款，本月已经申请过，这笔不能再无理由退款；"
+    "有问题可点“遇到问题”告诉我们"
+)
+
+
+def month_start(stamp: datetime) -> datetime:
+    """stamp 所在北京时间自然月的 1 日 0 点（UTC）。"""
+    first = advisor_tasks.usage_day(stamp).replace(day=1)
+    local = datetime.combine(first, datetime.min.time(), tzinfo=advisor_tasks.BEIJING)
+    return local.astimezone(UTC)
+
+
+def next_month_start(stamp: datetime) -> datetime:
+    """stamp 所在北京时间自然月的下个月 1 日 0 点（UTC）。"""
+    return month_start(month_start(stamp) + timedelta(days=32))
+
+
+def monthly_self_refunds(
+    session: Session, user_id: int | None, stamp: datetime, *, exclude: int | None = None
+) -> int:
+    """这个用户本月（北京时间自然月）发起过几次无理由退款：自助退款（refund_source=self）、
+    这笔开通过使用期（付了款没开通的自助退款是我们的原因，不算），不论退成没退成；
+    exclude 是正在看的这一笔（同一笔重复点不算第二次）。调用方退款时已锁用户行，
+    连接是 READ COMMITTED，读得到先申请的那一笔。"""
+    if user_id is None:
+        return 0
+    stmt = select(func.count(PayOrder.id)).where(
+        PayOrder.user_id == user_id,
+        PayOrder.refund_source == SELF_REFUND,
+        PayOrder.refund_started_at >= month_start(stamp),
+        exists().where(WorkbenchPass.order_id == PayOrder.id),
+    )
+    if exclude is not None:
+        stmt = stmt.where(PayOrder.id != exclude)
+    return session.scalar(stmt) or 0
 
 
 def undelivered_refund_reason(session: Session, order: PayOrder, *, lock=False) -> str | None:
