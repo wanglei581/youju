@@ -314,7 +314,7 @@ def ai_home(nextv):
                   + f'<div style="padding-top: 8px; font-size: 12px; color: {T3}">点标题看通知全文，点“AI 解读”直接开始</div>{rows}')
     if nextv:
         recs = (record(f"问一问 · {DOC['title']}", "[日期] · 2 问")
-                + record("问一问 · 最近一问：找近 30 天的 5G 工厂申报", "[日期] · 3 问")
+                + record("问一问 · 最近一问：中国电信股份有限公司新疆分公司", "[日期] · 3 问")
                 + record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成", last=True))
     else:
         recs = (record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成")
@@ -486,8 +486,10 @@ SECTIONS = [
 MISSING = "支持方式"
 
 
-def missing_card():
-    return adv_card(f'<div style="color: {T2}">正文里没找到：{MISSING}。可能写在附件里，也可能原文没写，请查看原文。</div>')
+def missing_card(nextv=False):
+    """当前版本照线上写"可能写在附件里"；下一版读了附件，这份没有附件就照实写（Grok 第 4 轮）。"""
+    tail = "这份通知没有附件，可能原文没写，请查看原文。" if nextv else "可能写在附件里，也可能原文没写，请查看原文。"
+    return adv_card(f'<div style="color: {T2}">正文里没找到：{MISSING}。{tail}</div>')
 
 
 def clause_card():
@@ -517,7 +519,7 @@ def result_page():
 def result_bottom():
     """下一版：结果页滑到最下面（顶部的"AI 生成"一直吸顶）。"""
     last = result_section(*SECTIONS[-1])
-    return phone(nav("AI 解读") + result_strip() + last + missing_card() + result_tail(True))
+    return phone(nav("AI 解读") + result_strip() + last + missing_card(True) + result_tail(True))
 
 
 # ---------- 问一问对话页（下一版，#328 第十二节） ----------
@@ -544,7 +546,8 @@ SKILLS = ("找通知", "问这份通知", "查名单")
 EXAMPLES = {
     # #328 的两句（广东今年专精特新、四川近 30 天科技项目）10/22 线上都是 0 份，换成查得到的（见设计说明第四节）
     "找通知": (["找近 30 天的 5G 工厂申报", "找宁夏近 7 天的申报"], "手上有通知的，直接输入它的标题或文号"),
-    "问这份通知": (["企业申报截止是哪天？", "要交哪些材料？", "对成立时间有什么要求？"], ""),
+    # 例子是所有通知共用的固定文字：换成每份申报通知都答得上的（agy 第 4 轮：#328 的"对成立时间有什么要求？"很多通知没写，点了只会答"没找到"）
+    "问这份通知": (["企业申报截止是哪天？", "要交哪些材料？", "要满足哪些条件？"], ""),
     "查名单": ([], "输入企业全称或统一社会信用代码，列出它在收录名单里出现过的每一次（带年份和发布机关）"),
 }
 HINT = {
@@ -679,7 +682,8 @@ def chat_find():
 # 开头写明可能没摘全；"看清是谁的时间"只在摘到的原句里有两个以上日期，或有审核、报送、推荐、送达这类环节时才加；
 # 一个日期都没摘到时说一句；没有附件的写"这份通知没有附件"
 READ_BODY = "读了：正文（这份通知没有附件）。"
-TIME_NOTE = "企业申报、区县或市里审核报送、纸质材料送达可能不是同一天，请看清每句写的是谁的时间。"
+# Grok 第 4 轮：#328 原来的写法举了"区县、纸质材料"，原句里没有这些环节时会看岔，改成不举具体环节
+TIME_NOTE = "这几句里的时间不一定是同一件事的，请看清每句写的是谁、做什么的时间。"
 NO_DATE = "摘到的原句里没有写具体日期，请看原文。"
 
 
@@ -741,6 +745,8 @@ def chat_states():
            + off("这份不能做：这份文件已下架，问这份通知用不了；可以点上面的“换一份通知”，或用“找通知”找别的。")
            + state_label("发送被拦下（不保存、不算次数，字留在输入框里）")
            + off("你输入的内容里像有手机号。这一项会把你打的字发给 AI 模型，请删掉后再发。这次不算次数。")
+           + state_label("发出以后没做成（不算次数）")
+           + answer("ai", para("这次没做成：AI 暂时不可用，请稍后再试。这次不算次数。", 14) + f'<div style="margin-top: 6px; font-size: 13px; color: {BLUE}">重试</div>', foot=False)
            + state_label("正在找")
            + answer("ai", para("正在原文里找相关的原句…一般 10–30 秒。可以先离开，之后在 AI 首页“我的 AI 记录”里打开这条对话接着看。", 14, T2), foot=False)
            + state_label("问时间，摘到的原句里没有日期", "问：什么时候公布结果？")
