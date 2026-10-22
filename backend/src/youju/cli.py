@@ -235,6 +235,17 @@ def _cmd_rescan_list_details(args: argparse.Namespace) -> int:
     return 0
 
 
+def _id_list(value: str) -> list[int]:
+    """逗号隔开的文件编号（"12,34,56"）。"""
+    try:
+        ids = [int(part) for part in value.split(",") if part.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("编号要用逗号隔开的数字，例如 12,34,56") from None
+    if not ids:
+        raise argparse.ArgumentTypeError("至少写一个编号")
+    return ids
+
+
 def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     """一次性：重抓被旧的正文脱敏规则吞了字的文件详情；默认只预览，加 --apply 才写入。"""
     from youju.refetch_redacted import count_affected, refetch_redacted
@@ -259,8 +270,9 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
         report = refetch_redacted(
             session,
             apply=args.apply,
-            limit=args.limit,
+            limit=len(args.ids) if args.ids else args.limit,
             after_id=args.after_id,
+            ids=args.ids,
             max_workers=args.workers,
         )
     results = report.results
@@ -287,7 +299,7 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     print(
         f"{verb}：检查 {len(results)} 份，{names['fixed']} {by_result['fixed']} 份，"
         f"不用改 {by_result['same']} 份，原网页变了 {by_result['changed']} 份，"
-        f"没打开 {by_result['unavailable']} 份"
+        f"没打开 {by_result['unavailable']} 份，已删除 {by_result['missing']} 份"
     )
     if by_result["fixed"]:
         print(
@@ -300,7 +312,7 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
         refreshed = "已重算" if report.eligibility_refreshed else "没拿到写锁，夜里全量重算会补上"
         print(f"新增待核对截止候选 {report.new_candidates} 条；能不能 AI 解读：{refreshed}")
     last = results[-1].document_id if results else (args.after_id or 0)
-    if len(results) == args.limit:
+    if not args.ids and len(results) == args.limit:
         print(f"已到 --limit {args.limit} 份，后面可能还有：加 --after-id {last} 接着处理")
     if not args.apply and by_result["fixed"]:
         print("确认无误后加 --apply 写入；写入时会再打开一次页面、按当时库里的正文再核对一次")
@@ -321,6 +333,9 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
         + " ".join(f"{k}={v}" for k, v in counts.items())
         + f" last_id={last}"
     )
+    # 没打开的分批时会被 --after-id 跳过：全部批次跑完后用 --ids 单独重试
+    if retry := [str(r.document_id) for r in results if r.result == "unavailable"]:
+        print(f"refetch_redacted_retry ids={','.join(retry)}")
     return 0
 
 
@@ -1515,7 +1530,13 @@ def main(argv: list[str] | None = None) -> int:
         help="只统计有多少份要重新打开看（只读，不打开网页；要把正文全过一遍，2 万份约 1 分钟）",
     )
     p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
-    p.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
+    batch = p.add_mutually_exclusive_group()
+    batch.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
+    batch.add_argument(
+        "--ids",
+        type=_id_list,
+        help="只处理这几份（逗号隔开的编号）：重试没打开的，编号见输出最后一行 retry",
+    )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)
 

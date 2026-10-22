@@ -22,6 +22,9 @@
   标签的不清（AI 找截止不看这些，省用量）；
 - 重算"能不能 AI 解读"（ai.eligibility，拿不到写锁就跳过，admin 每 10 分钟的增量和夜里的全量
   会补上——增量只看抓取时间，这里没改抓取时间，所以要等夜里全量或手工跑 ai-eligibility-rebuild）。
+这一批里"不用改"的也一起重算候选和"能不能 AI 解读"：写到一半中断（正文已换、还没重算）再重跑时，
+这几份已经是"不用改"，这样也能补上。没打开的（unavailable）分批时会被 after_id 跳过，用 ids 单独
+重试。
 正文变了，已核对的字段（document_fields 的 approved）会在下一轮 extract-fields 变成待重新核对，
 确认过的申报条件清单不再对外显示、等重新抽取和核对，AI 解读的旧结果作废（D-073）：预览里列出份数。
 """
@@ -168,9 +171,9 @@ def count_affected(session: Session) -> dict[str, int | None]:
 
 
 def _candidates(
-    session: Session, limit: int, after_id: int | None
+    session: Session, limit: int, after_id: int | None, ids: list[int] | None = None
 ) -> list[tuple[int, str, str, str]]:
-    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。"""
+    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。ids：只看这几份（重试没打开的）。"""
     stmt = (
         _scope(select(Document.id, Document.url, Document.title, DocumentDetail.body_text))
         .where(or_(*(_has(m) for m in MARKERS)))
@@ -179,6 +182,8 @@ def _candidates(
     )
     if after_id is not None:
         stmt = stmt.where(Document.id > after_id)
+    if ids is not None:
+        stmt = stmt.where(Document.id.in_(ids))
     return [(int(i), url, title, body) for i, url, title, body in session.execute(stmt).all()]
 
 
@@ -195,15 +200,14 @@ def _restored(old: str, new: str) -> list[str]:
     ]
 
 
-def _impact(
-    session: Session, fixed: dict[int, str], recheck: set[int], report: RefetchReport
-) -> None:
-    """正文换了以后要重新核对的：已核对的字段、确认过的申报条件清单；会重查的 AI 截止检查。"""
-    if not fixed:
-        return
-    ids = list(fixed)
-    hashes = {doc_id: sha256(body.encode()).hexdigest() for doc_id, body in fixed.items()}
-    report.approved_fields = len(
+def _reviewed(session: Session, bodies: dict[int, str]) -> tuple[int, int]:
+    """这些文件（正文还是 bodies 里那版）有已核对字段的、有确认过的申报条件清单的各几份：正文一换，
+    这些要重新核对。"""
+    if not bodies:
+        return 0, 0
+    ids = list(bodies)
+    hashes = {doc_id: sha256(body.encode()).hexdigest() for doc_id, body in bodies.items()}
+    fields = len(
         {
             doc_id
             for doc_id, body_hash in session.execute(
@@ -214,7 +218,7 @@ def _impact(
             if hashes.get(doc_id) == body_hash
         }
     )
-    report.confirmed_conditions = len(
+    conditions = len(
         {
             doc_id
             for doc_id, body_hash in session.execute(
@@ -225,14 +229,17 @@ def _impact(
             if hashes.get(doc_id) == body_hash
         }
     )
-    report.ai_checks = (
-        session.scalar(
-            select(func.count(AICheck.id)).where(
-                AICheck.document_id.in_(recheck), AICheck.task == "deadlines"
-            )
+    return fields, conditions
+
+
+def _ai_checks(session: Session, ids: set[int]) -> int:
+    """这些文件的 AI 截止检查有几条（找回了日期、时刻的，写入时清掉、下一轮重查）。"""
+    if not ids:
+        return 0
+    return session.scalar(
+        select(func.count(AICheck.id)).where(
+            AICheck.document_id.in_(ids), AICheck.task == "deadlines"
         )
-        if recheck
-        else 0
     )
 
 
@@ -261,28 +268,29 @@ def _write(
     return bool(changed), cleared
 
 
-def _recompute(session: Session, written: list[int], report: RefetchReport) -> None:
-    """换完以后：重算这些文件的规则截止候选（AI 截止检查已经先清掉，新候选不会按旧结果标成
-    "AI 没找到"），重算"能不能 AI 解读"。这一步中途出错也不要紧：每轮的 extract-deadlines、
-    夜里的 ai-eligibility-rebuild 都会按库里的正文再算一遍。"""
+def _recompute(session: Session, doc_ids: list[int], report: RefetchReport) -> None:
+    """换完以后（这一批换了正文的和"不用改"的）：重算这些文件的规则截止候选（AI 截止检查已经先
+    清掉，新候选不会按旧结果标成"AI 没找到"），重算"能不能 AI 解读"。这一步中途出错也不要紧：
+    重跑这一批会补算，每轮的 extract-deadlines、夜里的 ai-eligibility-rebuild 也会按库里的正文
+    再算。"""
     from youju.ai import eligibility
     from youju.extract.service import extract_existing
 
-    if not written:
+    if not doc_ids:
         return
-    _, report.new_candidates = extract_existing(session, document_ids=written)
+    _, report.new_candidates = extract_existing(session, document_ids=doc_ids)
     # 合并转载的主条目没有自己的正文时用组里最长的那份（同 eligibility.changed_since），一起重算
     masters = set(
         session.scalars(
             select(DocumentMerge.canonical_id).where(
-                DocumentMerge.duplicate_id.in_(written), DocumentMerge.active.is_(True)
+                DocumentMerge.duplicate_id.in_(doc_ids), DocumentMerge.active.is_(True)
             )
         )
     )
     # 和 admin 每 10 分钟的增量重算错开：拿不到写锁就跳过，夜里的全量重算会补上
     with eligibility.writer_lock(session, 60) as got:
         if got:
-            eligibility.refresh(session, set(written) | masters, datetime.now(UTC))
+            eligibility.refresh(session, set(doc_ids) | masters, datetime.now(UTC))
             report.eligibility_refreshed = True
 
 
@@ -292,14 +300,15 @@ def refetch_redacted(
     apply: bool = False,
     limit: int = 200,
     after_id: int | None = None,
+    ids: list[int] | None = None,
     fetcher: detail_service.DetailFetcher | None = None,
     max_workers: int | None = None,
 ) -> RefetchReport:
-    """预览或写入（见模块说明）。按编号从小到大最多 limit 份，分批时用 after_id 接着上一批。
-    预览和写入走同一套抓取和解析（detail_service._fetch_outcomes）。"""
+    """预览或写入（见模块说明）。按编号从小到大最多 limit 份，分批时用 after_id 接着上一批；
+    ids：只看这几份（重试没打开的）。预览和写入走同一套抓取和解析（detail_service._fetch_outcomes）。"""
     if limit < 1:
         raise ValueError("limit 必须大于 0")
-    targets = _candidates(session, limit, after_id)
+    targets = _candidates(session, limit, after_id, ids)
     report = RefetchReport()
     if not targets:
         return report
@@ -312,9 +321,21 @@ def refetch_redacted(
     else:
         with detail_service._polite_fetcher() as polite:
             outcomes = detail_service._fetch_outcomes(selected, polite, workers)
+    # 抓取期间详情被删了的，预览、写入都标成已删除
+    present = set(
+        session.scalars(
+            select(DocumentDetail.document_id).where(
+                DocumentDetail.document_id.in_([doc_id for doc_id, _ in selected])
+            )
+        )
+    )
     fixed: dict[int, str] = {}
+    same: set[int] = set()
     pending: list[tuple[RefetchResult, str, str]] = []
     for doc_id, _, title, stored in targets:
+        if doc_id not in present:
+            report.results.append(RefetchResult(doc_id, title, "missing", "详情已删除"))
+            continue
         outcome = outcomes[doc_id]
         parsed = outcome.parsed
         if outcome.status != "ok" or parsed is None or not parsed.raw_body:
@@ -325,6 +346,7 @@ def refetch_redacted(
         if after == stored:
             # 以前就遮得对，或者已经换过了（重跑这个命令时）
             report.results.append(RefetchResult(doc_id, title, "same"))
+            same.add(doc_id)
             continue
         before = old_redact(parsed.raw_body)[:BODY_TEXT_MAX_CHARS]
         if before != stored:
@@ -343,7 +365,8 @@ def refetch_redacted(
         fixed[doc_id] = stored
         pending.append((result, stored, after))
     recheck = {r.document_id for r, _, _ in pending if r.recheck_ai}
-    _impact(session, fixed, recheck, report)
+    report.approved_fields, report.confirmed_conditions = _reviewed(session, fixed)
+    report.ai_checks = _ai_checks(session, recheck)
     if not apply:
         return report
     written = []
@@ -359,5 +382,10 @@ def refetch_redacted(
         else:
             # 期间被别的任务重抓过（名单补抓附件等），按那次的结果为准，这里不再改
             result.result, result.reason = "changed", "期间正文已被别的任务更新，没改"
-    _recompute(session, written, report)
+    # 按实际换了正文的报（期间被别的任务重抓过、没换的那几份不算）
+    report.approved_fields, report.confirmed_conditions = _reviewed(
+        session, {doc_id: fixed[doc_id] for doc_id in written}
+    )
+    # 这一批"不用改"的一起重算：中途中断后重跑，已换过的几份是"不用改"，也要补算
+    _recompute(session, sorted(set(written) | same), report)
     return report

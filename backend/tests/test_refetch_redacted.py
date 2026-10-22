@@ -210,8 +210,10 @@ def test_apply_recomputes_eligibility_of_merge_master(world, session) -> None:
     report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
     assert report.eligibility_refreshed
     assert session.get(AIEligibility, master.id) is not None
-    # 别的没换正文的文件不在这次重算里
-    assert session.get(AIEligibility, docs["right"].id) is None
+    # 这一批"不用改"的也重算（中断后重跑能补上）；原网页变了、没打开的不在这次重算里
+    assert session.get(AIEligibility, docs["right"].id) is not None
+    assert session.get(AIEligibility, docs["changed"].id) is None
+    assert session.get(AIEligibility, docs["gone"].id) is None
 
 
 def test_ai_check_kept_when_only_unit_names_come_back(session) -> None:
@@ -249,6 +251,8 @@ def test_ai_check_kept_when_only_unit_names_come_back(session) -> None:
 def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
     docs, fake = world
     swallowed = docs["swallowed"]
+    _add_reviewed(session, swallowed.id)
+    session.commit()
     original = fake.fetch
 
     def fetch(url):
@@ -263,6 +267,63 @@ def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
     result = {r.document_id: r for r in report.results}[swallowed.id]
     assert result.result == "changed" and "别的任务" in result.reason
     assert body_of(session, swallowed.id) == "别的任务刚写入的正文"
+    # 份数按实际换了正文的报：这份没换，它的已核对字段、申报条件、AI 截止检查都不算
+    assert (report.approved_fields, report.confirmed_conditions, report.ai_checks) == (0, 0, 0)
+    assert session.scalar(select(func.count(AICheck.id))) == 1
+
+
+def test_rerun_after_interruption_recomputes(world, session, monkeypatch) -> None:
+    """正文换了、还没重算就中断：重跑时这份是"不用改"，也要补算截止候选和"能不能 AI 解读"。"""
+    import youju.extract.service as extract_service
+
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    real = extract_service.extract_existing
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("中断")
+
+    monkeypatch.setattr(extract_service, "extract_existing", interrupted)
+    with pytest.raises(RuntimeError):
+        refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert "11月20日前" in body_of(session, swallowed.id)
+    due = select(DocumentDeadline.candidate_date).where(
+        DocumentDeadline.document_id == swallowed.id
+    )
+    assert session.scalars(due).all() == []
+    monkeypatch.setattr(extract_service, "extract_existing", real)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in report.results}[swallowed.id] == "same"
+    assert date(2026, 11, 20) in session.scalars(due).all()
+    assert report.eligibility_refreshed
+    assert session.get(AIEligibility, swallowed.id) is not None
+
+
+def test_details_deleted_while_fetching(world, session, monkeypatch) -> None:
+    """抓取期间详情被删了的：预览也标成已删除，不说"可以换成新正文"。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    real = detail_service._fetch_outcomes
+
+    def fetch_then_delete(selected, fetcher, workers):
+        outcomes = real(selected, fetcher, workers)
+        session.delete(session.get(DocumentDetail, swallowed.id))
+        session.commit()
+        return outcomes
+
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", fetch_then_delete)
+    report = refetch_redacted(session, limit=50, fetcher=fake)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "missing" and result.reason == "详情已删除"
+
+
+def test_only_given_ids(world, session) -> None:
+    docs, fake = world
+    report = refetch_redacted(
+        session, ids=[docs["gone"].id, docs["swallowed"].id], limit=2, fetcher=fake
+    )
+    assert [r.document_id for r in report.results] == [docs["swallowed"].id, docs["gone"].id]
+    assert sorted(fake.calls) == sorted([docs["swallowed"].url, docs["gone"].url])
 
 
 def test_limit_and_after_id(world, session) -> None:
@@ -406,12 +467,17 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert "11月20日前" in out
     assert f"#{docs['changed'].id} 原网页变了，没改（相似度" in out
     assert f"#{docs['gone'].id} 没打开，没改（HTTP 404）" in out
-    assert "预览（未写入）：检查 4 份，可以换成新正文 1 份，不用改 1 份，原网页变了 1 份" in out
+    assert (
+        "预览（未写入）：检查 4 份，可以换成新正文 1 份，不用改 1 份，原网页变了 1 份，"
+        "没打开 1 份，已删除 0 份"
+    ) in out
     assert "确认无误后加 --apply 写入" in out
     assert (
         "refetch_redacted mode=preview checked=4 fixed=1 same=1 changed=1 unavailable=1 "
         f"missing=0 fields=1 conditions=1 ai_checks=1 last_id={docs['gone'].id}"
     ) in out
+    # 没打开的分批时会被 --after-id 跳过，最后一行给出重试用的编号
+    assert out.rstrip().endswith(f"refetch_redacted_retry ids={docs['gone'].id}")
 
     assert cli.main(["refetch-redacted", "--apply"]) == 0
     out = capsys.readouterr().out
@@ -426,6 +492,15 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert cli.main(["refetch-redacted", "--limit", "1"]) == 0
     out = capsys.readouterr().out
     assert f"已到 --limit 1 份，后面可能还有：加 --after-id {docs['swallowed'].id}" in out
+
+    # 只重试没打开的那份
+    assert cli.main(["refetch-redacted", "--ids", str(docs["gone"].id)]) == 0
+    out = capsys.readouterr().out
+    assert "refetch_redacted mode=preview checked=1 " in out and "--after-id" not in out
+    with pytest.raises(SystemExit):
+        cli.main(["refetch-redacted", "--ids", "1", "--after-id", "1"])
+    with pytest.raises(SystemExit):
+        cli.main(["refetch-redacted", "--ids", "a,b"])
 
 
 def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
