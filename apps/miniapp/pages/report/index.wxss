@@ -32,6 +32,7 @@
 .quote { margin-top: 8rpx; color: var(--t2); font-size: 24rpx; line-height: 1.6; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .footline { margin-top: 10rpx; display: flex; justify-content: space-between; align-items: center; color: var(--t3); font-size: 24rpx; }
 .export { padding: 8rpx 0 8rpx 24rpx; color: var(--brand); }
+.foot-ops { flex-shrink: 0; display: flex; align-items: center; gap: 20rpx; }
 .more { padding: 28rpx 0; text-align: center; color: var(--brand); font-size: 26rpx; }
 .empty { padding: 48rpx 32rpx; text-align: center; color: var(--t2); font-size: 26rpx; }
 .empty-title { font-size: 28rpx; color: var(--t1); }
@@ -70,7 +71,7 @@
 .soon-title { font-size: 28rpx; font-weight: 600; }
 .soon-item { padding: 20rpx 0; border-top: 2rpx solid var(--line); }
 .soon-item-title { font-size: 28rpx; line-height: 1.5; }
-.soon-due { margin-top: 8rpx; font-size: 24rpx; color: var(--o-txt); }
+.soon-due { margin-top: 8rpx; display: flex; align-items: center; justify-content: space-between; gap: 16rpx; font-size: 24rpx; color: var(--o-txt); }
 .soon-more { padding: 16rpx 0 20rpx; font-size: 24rpx; text-align: center; }
 .note { margin: 24rpx 32rpx 60rpx; color: var(--t3); font-size: 24rpx; line-height: 1.7; }
 .cached-note { margin: 16rpx 32rpx 0; font-size: 24rpx; }

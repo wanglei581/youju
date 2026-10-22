@@ -6,6 +6,7 @@
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">{{statusLine}}</view>
+    <view wx:if="{{countRule}}" class="advisor-text muted">{{countRule}}</view>
     <view wx:if="{{trialEnded}}" class="advisor-text muted">{{trialEnded}}</view>
     <view wx:if="{{seasonLine}}" class="advisor-text">{{seasonLine}}</view>
     <!-- 体验中当天次数用完：和免费次数用完一样在上面说清楚，不只写"还能提交 0 次" -->

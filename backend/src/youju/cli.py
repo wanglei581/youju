@@ -46,10 +46,35 @@ def _finish_ai(client, task: str) -> bool:
 
 
 def _cmd_db_upgrade(_: argparse.Namespace) -> int:
+    from youju.alerts import send_alert
     from youju.migrations import upgrade
 
-    upgrade()
-    print("数据库已迁移到最新结构")
+    ahead = upgrade()
+    if ahead is None:
+        print("数据库已迁移到最新结构")
+        return 0
+    # 库比代码新：不迁移、照常启动（回退的 admin 不能因此起不来），提醒一声；提醒本身出任何错
+    # 都不能让这条命令失败（启动脚本 set -e，失败就起不来了）
+    message = (
+        f"启动时发现库里的迁移版本 {'、'.join(ahead.unknown)} 比这版代码新"
+        f"（这版代码最新是 {'、'.join(ahead.code_heads) or '无'}），没有迁移，照常启动。"
+        "刚回退过就不用管；当时不是在回退，就是发错了版本，要立即停下来查。"
+        + (
+            f"库里另有这版代码认识的迁移版本 {'、'.join(ahead.known)}，也没有补迁移。"
+            if ahead.known
+            else ""
+        )
+        + "删表删列的迁移回退前要先降库，见《发版与回退》"
+    )
+    log.warning("%s", message)
+    try:
+        sent = send_alert(message)
+    except Exception as exc:  # noqa: BLE001 - 提醒发不出去不能拦住启动；只记类型
+        log.warning("库比代码新的提醒没发出去：%s", type(exc).__name__)
+    else:
+        if sent is False:
+            log.warning("库比代码新的提醒没发出去")
+    print(f"数据库比代码新（{'、'.join(ahead.unknown)}），没有迁移")
     return 0
 
 
@@ -949,9 +974,49 @@ def _cmd_advisor_orphans(args: argparse.Namespace) -> int:
     return 1 if report.failed or report.blocked else 0
 
 
+def _cmd_ai_eligibility(args: argparse.Namespace) -> int:
+    """每份文件能不能做 AI 解读（D-075），存进 ai_eligibility 给列表行用。默认只重算最近 30 分钟
+    有变化的和还没算过的（admin 每 10 分钟跑）；--all（命令 ai-eligibility-rebuild）全部重算
+    （每天夜里跑；手动改过来源级别后也跑一次）。和 AI 开没开无关，开关关着也照算。"""
+    from youju.ai import eligibility
+
+    full = getattr(args, "all", False)
+    wait = eligibility.FULL_WAIT if full else 0
+    # 同一时间只让一个重算写：增量碰上就跳过这次；全量等不到算失败，job.sh 会提醒
+    with session_factory()() as session, eligibility.writer_lock(session, wait) as got:
+        if not got:
+            if full:
+                print("AI 解读可用性：另一个重算一直没跑完，这次全量没算")
+                return 1
+            print("AI 解读可用性：另一个重算还在跑，这次跳过")
+            return 0
+        stamp = datetime.now(UTC)
+        if full:
+            report = eligibility.refresh_all(session, stamp)
+        else:
+            report = eligibility.refresh_changed(session, stamp)
+    print(f"AI 解读可用性：重算 {report['checked']} 份，结果变了 {report['changed']} 份")
+    return 0
+
+
+def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
+    """AI 设置心跳（D-075）：admin 每分钟写一行，api 只在这里说能处理、两边设置一致时才收 AI 任务；
+    两边设置对不上、api 心跳没来时提醒。单独一条定时任务，不和 advisor-run 抢锁。"""
+    from youju.ai import heartbeat
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        row = heartbeat.beat(session, settings, "admin", stamp)
+        heartbeat.check_and_alert(session, settings, stamp)
+        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+    return 0
+
+
 def _cmd_advisor_run(_: argparse.Namespace) -> int:
     from youju.advisor_tasks import run_advisor_tasks
 
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
     with session_factory()() as session:
         report = run_advisor_tasks(session)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
@@ -1024,7 +1089,7 @@ def _refund_one(session, order_id: int, args, stamp, client) -> str:
         session.rollback()
         print(f"订单 #{order_id}：没有找到")
         return "missing"
-    problem = payments.staff_refund_problem(session, order, invoice_reversed=args.invoice_reversed)
+    problem = payments.staff_refund_problem(session, order)
     ticket = payments.order_pass(session, order, lock=True)
     extra = args.extra_days or 0
     fee = order.price if args.full else payments.remaining_fee(order, ticket, stamp, extra)
@@ -1056,6 +1121,10 @@ def _refund_one(session, order_id: int, args, stamp, client) -> str:
         + "；"
         f"收回这一笔的使用期{'和随它送的续买 ' + '、'.join(gifts) if gifts else ''}"
     )
+    # 退款不等冲红（D-074）：已开过发票的照常退，退完再按退款金额开红字发票
+    reverse = payments.invoice_issued(session, order)
+    if reverse:
+        print("  这笔已开过发票：退款后请按退款金额开红字发票（管理台开票页选“要冲红”能看到）")
     if args.dry_run:
         session.rollback()
         return "refunded"
@@ -1082,9 +1151,10 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     from youju.models import PayOrder, WorkbenchPass
     from youju.xpay import XPayClient
 
-    if args.all_active and (args.full or args.invoice_reversed or args.extra_days):
-        # 停止服务按剩余天数退；已开发票的要一笔一笔先冲红，再用 --order-id 单独退
-        print("--all-active 只能和 --remaining 一起用，不能加 --invoice-reversed、--extra-days")
+    if args.all_active and (args.full or args.extra_days):
+        # 停止服务按剩余天数退（已开过发票的照样退，退完再冲红）；
+        # 另算天数的要一笔一笔用 --order-id 退
+        print("--all-active 只能和 --remaining 一起用，不能加 --extra-days")
         return 2
     if args.full and args.extra_days:
         print("--extra-days 只能和 --remaining 一起用（全额退不用另算天数）")
@@ -1177,19 +1247,57 @@ def _cmd_alert_probe(args: argparse.Namespace) -> int:
 
 
 def _cmd_check_sources(args: argparse.Namespace) -> int:
-    from youju.alerts import send_alert
-    from youju.source_health import check_sources
+    from youju.alerts import MAX_ALERT_BYTES, send_alert
+    from youju.source_health import check_sources, failing_sources, is_streak_milestone
 
     with session_factory()() as session:
         health = check_sources(session)
+        # 成功率按比例算，75 个栏目坏 3 个也达标：单个栏目一直坏着从来不提醒（湖南工信厅两个栏目
+        # 10/10 起天天识别不到条目，没人发现）。早上那一轮（--streaks）另外看哪些栏目今天正好
+        # 连续没抓到第 3、7、14、30 天（之后每满 30 天），各提醒一次；日报每天写"上次成功几号"。
+        streaks = (
+            [item for item in failing_sources(session) if is_streak_milestone(item.days)]
+            if args.streaks
+            else []
+        )
+    # 连续天数单独发：和成功率提醒拼在一起时，失败栏目多了会被群消息的字节上限截掉；
+    # 一条放不下就分几条，每个到节点的栏目都列出来（不写"另有几个"，免得后面的永远轮不到）
+    streak_sent = None
+    if streaks:
+        for text in _streak_messages(streaks, MAX_ALERT_BYTES - len("【有据】".encode())):
+            log.warning("%s", text)
+            result = send_alert(text)
+            # 有一条没发出去就算没发出去；都没配告警地址时是 None
+            streak_sent = False if result is False or streak_sent is False else result
     if health.passed:
         log.info("今天栏目检查达标：%s/%s（%.1f%%）", health.successful, health.total, health.rate)
-        return 0
+        # 发送失败（没配告警地址不算）记为任务失败：每个节点只提醒这一次，
+        # 没发出去要在任务记录里看得到
+        return 1 if streak_sent is False else 0
     message = health.alert_text()
     log.warning("%s", message)
     sent = send_alert(message)
-    # cron 包装器用专用码识别“详细提醒已发”，避免再发一条泛化的任务失败提醒。
-    return 20 if args.job and sent is True else 1
+    # cron 包装器用专用码识别“详细提醒已发”，避免再发一条泛化的任务失败提醒；
+    # 连续天数那条没发出去就不算"都发了"
+    return 20 if args.job and sent is True and streak_sent is not False else 1
+
+
+def _streak_messages(streaks: list, budget: int) -> list[str]:
+    """按群消息的字节上限把到节点的栏目分成几条，每条都带开头那句；单个栏目太长时截断它自己。"""
+    head = "这些栏目连续好几天没抓到，请到管理台“来源管理”看看网站是不是改版了："
+    messages: list[str] = []
+    lines = [head]
+    for item in streaks:
+        line = f"第 {item.days} 天：{item.text()}"
+        room = budget - len(head.encode()) - 1
+        if len(line.encode()) > room:
+            line = line.encode()[: room - len("…".encode())].decode("utf-8", "ignore") + "…"
+        if len("\n".join([*lines, line]).encode()) > budget:
+            messages.append("\n".join(lines))
+            lines = [head]
+        lines.append(line)
+    messages.append("\n".join(lines))
+    return messages
 
 
 def _cmd_job_start(args: argparse.Namespace) -> int:
@@ -1507,16 +1615,22 @@ def main(argv: list[str] | None = None) -> int:
         help="此前因系统故障不能用、又没有延长补上的天数，核实后加进去一起退"
         "（只对 --order-id --remaining 有用）",
     )
-    p.add_argument(
-        "--invoice-reversed",
-        action="store_true",
-        help="这笔已开的发票已按退款金额开了红字发票（只对 --order-id 有用）",
-    )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
     sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
         func=_cmd_advisor_run
     )
+    sub.add_parser(
+        "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
+    ).set_defaults(func=_cmd_ai_heartbeat)
+    sub.add_parser(
+        "ai-eligibility",
+        help="重算最近 30 分钟有变化的文件能不能做 AI 解读（D-075，列表行的按钮用）",
+    ).set_defaults(func=_cmd_ai_eligibility, all=False)
+    sub.add_parser(
+        "ai-eligibility-rebuild",
+        help="全部文件重算能不能做 AI 解读（每天夜里；手动改过来源级别后也跑一次）",
+    ).set_defaults(func=_cmd_ai_eligibility, all=True)
     p = sub.add_parser(
         "cache-attachments",
         help="下载申报通知近 180 天、政策近 90 天的附件存到对象存储，供小程序直接打开；"
@@ -1564,6 +1678,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("check-sources", help="检查今天（北京时间零点起）全部启用栏目的成功率")
     p.add_argument("--job", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument(
+        "--streaks",
+        action="store_true",
+        help="另外提醒今天正好连续没抓到第 3、7、14、30 天（之后每满 30 天）的栏目（只给早轮用）",
+    )
     p.set_defaults(func=_cmd_check_sources)
 
     p = sub.add_parser("serve", help="启动 API 服务")

@@ -3,8 +3,10 @@
 # 前提：创始人已在控制台生成 CLI 密钥，并在这台电脑上运行过 wxcloud login。
 #
 # 用法（在仓库里任意目录）：
-#   backend/deploy/cloud_deploy.sh <环境ID> <admin|api> [git 版本，默认 HEAD] [--dry-run]
-#   --dry-run  只准备要上传的目录，列出文件和大小，不发布
+#   backend/deploy/cloud_deploy.sh <环境ID> <admin|api> [git 版本，默认 HEAD] [--dry-run] [--skip-main-check]
+#   --dry-run          只准备要上传的目录，列出文件和大小，不发布
+#   --skip-main-check  不核对是不是 main 上的版本、缺不缺迁移（只在回退到旧版本、GitHub 连不上又必须发、
+#                      或创始人同意发没合并的版本时用）
 #
 # 只上传镜像需要的文件：清单直接取 .dockerignore 的白名单（以 ! 开头的行，和云端构建用的是同一份），
 # 用 git archive 取出这个版本里已提交的这些文件（本机的 .env、虚拟环境、数据库目录不会带上），
@@ -17,7 +19,7 @@
 set -eu
 
 usage() {
-  echo "用法：$0 <环境ID> <admin|api> [git 版本] [--dry-run]" >&2
+  echo "用法：$0 <环境ID> <admin|api> [git 版本] [--dry-run] [--skip-main-check]" >&2
   exit 1
 }
 
@@ -28,9 +30,11 @@ shift 2
 REV=HEAD
 REV_GIVEN=0
 DRY_RUN=0
+SKIP_MAIN_CHECK=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --skip-main-check) SKIP_MAIN_CHECK=1 ;;
     -*) echo "不认识的参数：$arg" >&2; usage ;;
     *)
       if [ "$REV_GIVEN" = 1 ]; then
@@ -52,6 +56,36 @@ esac
 
 ROOT=$(git rev-parse --show-toplevel)
 SHA=$(git -C "$ROOT" rev-parse --verify --end-of-options "$REV^{commit}")
+
+# 发布前核对（差距清单 R4）：admin 启动时库里的迁移号比代码新只提醒、照常启动（这样回退时
+# 起得来），所以发错版本要在这里拦下。先取最新的 main（取不到就停），要发的版本必须已经合进 main，
+# 而且 main 上的迁移文件一个都不缺、内容也一样（--no-renames：改了编号的也算缺；文件名没变、
+# 里面的版本号或上一个版本号改过的算不一样）。
+# 已知的多拦：发的不是最新的 main、main 上又新合并了还没发布过的迁移时也会停，这时发最新的 main，
+# 或确认后加 --skip-main-check。
+if [ "$SKIP_MAIN_CHECK" = 1 ]; then
+  echo "注意：没有核对是不是 main 上的版本、缺不缺迁移（--skip-main-check）" >&2
+else
+  if ! git -C "$ROOT" fetch -q origin main; then
+    echo "取不到最新的 main（GitHub 连不上？），没有发布" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" merge-base --is-ancestor "$SHA" origin/main; then
+    echo "版本 $SHA 还没合并进 main，没有发布（只发 main 上的版本）" >&2
+    exit 1
+  fi
+  MIGRATIONS=backend/alembic/versions
+  MISSING=$(git -C "$ROOT" diff --no-renames --name-only --diff-filter=D origin/main "$SHA" -- "$MIGRATIONS")
+  CHANGED=$(git -C "$ROOT" diff --no-renames --name-only --diff-filter=M origin/main "$SHA" -- "$MIGRATIONS")
+  if [ -n "$MISSING$CHANGED" ]; then
+    echo "这个版本的迁移和 main 上的对不上，没有发布（多半是发错了版本）：" >&2
+    [ -z "$MISSING" ] || { echo "缺：" >&2; echo "$MISSING" >&2; }
+    [ -z "$CHANGED" ] || { echo "内容和 main 上的不一样：" >&2; echo "$CHANGED" >&2; }
+    echo "确实要发这个旧版本（例如回退）时加 --skip-main-check；删表删列的迁移回退前要先降库，见《发版与回退》" >&2
+    exit 1
+  fi
+fi
+
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 

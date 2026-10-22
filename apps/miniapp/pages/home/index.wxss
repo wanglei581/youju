@@ -57,6 +57,7 @@
 .soon-title { font-size: 28rpx; line-height: 1.5; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .soon-line { margin-top: 10rpx; display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
 .soon-when { font-size: 24rpx; color: var(--t2); }
+.soon-right { flex-shrink: 0; display: flex; align-items: center; gap: 16rpx; }
 .pill { flex-shrink: 0; min-height: 44rpx; padding: 4rpx 16rpx; box-sizing: border-box; display: flex; align-items: center; border-radius: 22rpx; font-size: 24rpx; font-weight: 600; }
 .pill--normal { background: var(--brand-tint); color: var(--brand); }
 .pill--soon { background: var(--brand-tint); color: var(--red); }

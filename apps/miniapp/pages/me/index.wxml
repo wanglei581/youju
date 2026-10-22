@@ -10,7 +10,7 @@
   <view class="profile">
     <view class="avatar"><t-icon name="user" size="56rpx" color="#FFFFFF" /></view>
     <view class="profile-main">
-      <view class="profile-name">{{profileLoading ? '正在加载登录状态' : (profileError ? '登录状态未确认' : (signedIn ? '微信用户' : '未登录'))}}</view>
+      <view class="profile-name">{{profileLoading ? '正在加载登录状态' : (profileError ? '登录状态未确认' : (signedIn ? '微信用户' : '未登录'))}}<text wx:if="{{passBadge && signedIn && !profileLoading && !profileError}}" class="pass-badge" bindtap="openPass" aria-role="button">{{passBadge}}</text></view>
       <view wx:if="{{profileLoading || profileError}}" class="profile-sub">{{profileLoading ? (serviceStarting ? '正在连接，比平时慢一点，请稍等…' : '请稍候') : '请重试以确认登录状态'}}</view>
       <view wx:elif="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件<text wx:if="{{remindOpen}}"> · 还能提醒 {{reminderCount}} 次</text></view>
       <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
@@ -53,9 +53,12 @@
 
 <view class="card">
   <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <view wx:if="{{loginOpen && renewEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text class="row-hint">到期日、续买</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{loginOpen && passEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text wx:if="{{passHint}}" class="row-hint">{{passHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <!-- 使用帮助和联系客服（D-075 第七节）：首发版也在，客服每天有人看、周末也看 -->
+  <view class="row" data-url="/pages/help/index" bindtap="go" aria-role="button"><t-icon name="book" size="40rpx" color="#4E5969" /><text class="row-text">使用帮助</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <contact-button variant="row" from="me" />
   <!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->
   <view wx:if="{{loginOpen}}" class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:else class="row" bindtap="openPrivacy" aria-role="button"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>

@@ -1,3 +1,5 @@
+const { reasonView, failedText, revokedCode, FAILED } = require('./ai-reasons.js');
+
 const SECTIONS = [
   ['对象', '申报对象'], ['支持', '支持方式'], ['条件', '申报条件'],
   ['时间', '申报时间'], ['方式', '申报方式'], ['材料', '材料清单'],
@@ -13,6 +15,14 @@ const TERMS = [
 
 function disclosureLine(value = {}) {
   return value && value.modelLabel && value.filingNo ? `模型：${value.modelLabel}｜备案号：${value.filingNo}` : '';
+}
+
+// 结果顶部的吸顶条由页面固定写"AI 生成："（标识办法第四条），不靠后端提示里有没有这几个字；
+// 后端提示本身以"AI 生成"开头时去掉开头这几个字，免得一行里写两遍（Codex 小程序第 7 轮）。
+// 没有提示、只有空白或只有"AI 生成"时给空串，页面换成自己的说明（第 8 轮）
+const LABEL_HEAD = /^AI\s*生成\s*[，,：:、·]?\s*/;
+function noticeText(notice) {
+  return String(notice || '').trim().replace(LABEL_HEAD, '');
 }
 
 // 结果页（10/17 创始人试用后精简）：同一句原文只出现一次，标出它同时属于哪几类；
@@ -49,7 +59,7 @@ function resultView(result = {}) {
   });
   sections.forEach((section) => section.items.forEach((item) => { item.alsoInText = item.alsoIn.join('、'); }));
   return {
-    notice: result.notice || '', refusal: result.refusal || '', warning: result.warning || '',
+    notice: result.notice || '', noticeText: noticeText(result.notice), refusal: result.refusal || '', warning: result.warning || '',
     attachmentNotice: result.attachment_notice || '', disclosure: disclosureLine(result.disclosure),
     verified: (result.verified || []).map((item, index) => Object.assign({}, item, {
       key: index, displayValue: [item.kind, item.value, item.time].filter(Boolean).join(' '),
@@ -85,8 +95,21 @@ function taskContext(storage, id, value) {
     return value || saved[id] || {};
   } catch (e) { return value || {}; }
 }
+// 任务失败的说法见 utils/ai-reasons.js（按错误代码写，都写明没扣次数）
+const FAILED_TEXT = Object.keys(FAILED).reduce((texts, code) => Object.assign(texts, { [code]: failedText({ errorCode: code }) }), {});
+const UNAVAILABLE_TEXT = 'AI 暂时不可用，请稍后再试。';
+const NO_RETRY_CODES = ['AI_DAILY_CAP', 'AI_UNAVAILABLE', 'AI_OFF'];
+// 提交被拒：这份不能解读（422 带原因代码）写原因；后台处理不了（429 AI_UNAVAILABLE）、接口说没开（404）写暂时不可用；
+// 提交时撞上全站上限写总用量满了
 function errorText(error) {
-  return error.status === 404 ? '暂时没有可用工具' : error.message || '处理失败，请稍后重试';
+  if (error.code === 'AI_NOT_ELIGIBLE') return reasonView(error.reason, false).text;
+  if (error.code === 'AI_UNAVAILABLE' || error.status === 404) return UNAVAILABLE_TEXT;
+  if (error.code === 'AI_DAILY_CAP') return '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。';
+  return error.message || '处理失败，请稍后重试';
+}
+// 这几种重试也没用：这份不能解读、暂时不可用、次数满了。别的 422（条款对照填的情况不合要求）照旧能回去改
+function retryable(error) {
+  return error.status !== 404 && error.status !== 429 && error.code !== 'AI_NOT_ELIGIBLE';
 }
 function idempotencyKey() {
   return `interpret-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
@@ -167,7 +190,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
         // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
         failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
       } else {
-        failure = 'task'; emit({ phase: 'failed', outdated: false, error: task.error || '结果已失效，请重新提交', canRetry: !!docId, resumable: false, progress: '' });
+        // 全站满了、暂时不可用、被移出白名单：重新提交今天也做不成，不给"重试"
+        failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId && !NO_RETRY_CODES.includes(task.errorCode), resumable: false, progress: '', errorCode: task.errorCode || '',
+          unavailable: revokedCode(task.errorCode) });
       }
       return;
     }
@@ -186,7 +211,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
     failure = transient(error) ? 'request' : 'task';
     emit({ phase: 'failed', outdated: false, error: errorText(error), progress: '', resumable: failure === 'request',
-      canRetry: error.status !== 404 && error.status !== 429 && !!docId });
+      canRetry: retryable(error) && !!docId, errorCode: error.code || '',
+      // 后台说处理不了、或接口说没开：让页面重新问一次 AI 开没开（入口随即收起或变灰）
+      unavailable: error.code === 'AI_UNAVAILABLE' || error.status === 404 });
   }
   function poll(version) {
     if (!active(version)) return;
@@ -219,6 +246,13 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     creation.then((task) => accept(task, version)).catch((err) => fail(err, version));
   }
   return {
+    // 这一页已经有任务了：再回来时接着显示进度和结果，不再按"新任务"看次数拦下（第 27 轮）。
+    // 已建好、建任务的请求还在途、或没连上（服务端可能已经收下，重试用同一个请求编号）都算；明确被拒不算（第 28 轮）
+    hasTask() {
+      if (taskId) return true;
+      if (!creation) return false;
+      return !creationError || transient(creationError);
+    },
     show() {
       visible = true; emit({ terms: TERMS, checked, needsConsent: !agreed });
       if (!agreed) { emit({ phase: 'consent' }); return; }
@@ -246,4 +280,4 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };

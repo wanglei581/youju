@@ -1,0 +1,1 @@
+<view wx:if="{{shown}}" class="ai-hint" bindtap="jump" aria-role="link">这份通知可以 AI 解读 ↓</view>

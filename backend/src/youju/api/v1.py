@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, aliased
 
 from youju import deadline_excerpts
 from youju import fields as field_rules
+from youju.ai import eligibility
 from youju.attachments import attachment_items, is_recent
 from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
 from youju.classify import (
@@ -499,6 +500,23 @@ def _item(
     return payload
 
 
+def _with_ai(session: Session, *groups: list[dict], key: str = "id") -> None:
+    """列表行加上 ai（D-075）：这份能不能做 AI 解读、不能的原因代码，从 ai_eligibility 一次查出。
+
+    还没算过的给 None，小程序就不显示按钮。能不能解读是文件本身的属性，和 AI 开没开无关；
+    这个人能不能用 AI 由小程序另问 api。"""
+    rows = [item for group in groups for item in group]
+    flags = eligibility.flags(session, [int(item[key]) for item in rows if item.get(key)])
+    for item in rows:
+        item["ai"] = flags.get(int(item[key])) if item.get(key) else None
+
+
+def _shown_with_ai(session: Session, items: list[dict], key: str = "id") -> list[dict]:
+    """截止报表、日历这一页要返回的行加上 ai，返回同一个列表。"""
+    _with_ai(session, items, key=key)
+    return items
+
+
 def _items(
     session: Session,
     rows: list[tuple[Document, Source]],
@@ -540,6 +558,7 @@ def _items(
                         for o in others
                     ],
                 }
+    _with_ai(session, items)
     return items
 
 
@@ -1098,6 +1117,15 @@ def search(
             "不传和以前一样",
         ),
     ] = None,
+    ai: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 只看能做 AI 解读的（D-075，按 ai_eligibility 预先算好的结果）；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
 
@@ -1128,6 +1156,9 @@ def search(
         active_ids = _open_excerpt_ids(session)
         stmt = stmt.where(Document.id.in_(active_ids))
         all_time = all_time.where(Document.id.in_(active_ids))
+    if ai == 1:
+        stmt = stmt.where(Document.id.in_(eligibility.eligible_ids()))
+        all_time = all_time.where(Document.id.in_(eligibility.eligible_ids()))
     grouped = group == 1
     stmt, guides, folded = fold_guides(session, stmt, kind, types, fold, grouped)
     if fold == 1 and _folds_guides(kind, types):
@@ -1550,7 +1581,7 @@ def _report_payload(
         "total": len(entries),
         "page": page,
         "size": size,
-        "items": entries[start : start + size],
+        "items": _shown_with_ai(session, entries[start : start + size]),
     }
 
 
@@ -1664,7 +1695,10 @@ def _report_payload_excerpts(
         "days": days,
         "summary": summary,
         "summaryVerified": summary_verified,
-        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
+        "unverifiedSoon": {
+            "total": len(unverified),
+            "items": _shown_with_ai(session, unverified[:50]),
+        },
         "by_province": by_province,
         "by_dept": by_dept,
         "province_counts": by_province,
@@ -1672,7 +1706,7 @@ def _report_payload_excerpts(
         "total": len(shown),
         "page": page,
         "size": size,
-        "items": shown[start : start + size],
+        "items": _shown_with_ai(session, shown[start : start + size]),
     }
 
 
@@ -2008,19 +2042,16 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, src = row
-    # AI 入口用（不需要身份）：open 是对所有用户开放（D-066）；interpret、clause 是这份
-    # 文件能不能做。白名单内测时 open 为假，但文件能不能做照样给，内测成员的入口靠它判断。
-    # 总开关关着时都不算。
-    settings = get_settings()
-    ai_enabled = bool(getattr(settings, "ai_advisor_enabled", False))
-    ai_open = ai_enabled and getattr(settings, "ai_advisor_audience", None) == "all"
-    ai_eligible = False
-    if ai_enabled:
-        try:
-            interpret.eligible_body(session, doc.id)
-            ai_eligible = True
-        except interpret.InterpretRefusal:
-            pass
+    # AI 入口用（不需要身份）：interpret、clause 是这份文件能不能做，reason 是不能做的原因代码
+    # （D-075）。只说文件本身的属性、按原文实时判断，和 AI 开没开无关，admin、api 两个服务算出来
+    # 一样。AI 开没开、这个人能不能用只问 api（/advisor/mode、能力接口）：详情多半由 admin 回，
+    # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
+    ai_reason: str | None = None
+    try:
+        interpret.eligible_body(session, doc.id)
+    except interpret.InterpretRefusal as exc:
+        ai_reason = exc.code or "unavailable"
+    ai_eligible = ai_reason is None
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
@@ -2107,7 +2138,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
         and clues.pending_count(session) < 50
     )
     payload = {
-        "ai": {"open": ai_open, "interpret": ai_eligible, "clause": ai_eligible},
+        "ai": {
+            "interpret": ai_eligible,
+            "clause": ai_eligible,
+            "reason": ai_reason,
+        },
         "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
@@ -2321,9 +2356,9 @@ def calendar(
     return {
         "today": d.isoformat(),
         "total": len(upcoming),
-        "items": items(upcoming)[offset : offset + limit],
+        "items": _shown_with_ai(session, items(upcoming)[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        "past": items(past)[offset : offset + limit],
+        "past": _shown_with_ai(session, items(past)[offset : offset + limit], key="docId"),
         # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
         "verifiedTotal": verified_total(session),
     }
@@ -2439,11 +2474,15 @@ def _calendar_payload_excerpts(
     return {
         "today": today.isoformat(),
         "total": len(upcoming),
-        "items": upcoming[offset : offset + limit],
+        "items": _shown_with_ai(session, upcoming[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        "past": past[offset : offset + limit],
+        # 已截止的也带 ai（能不能解读不随截止变）；按钮放不放由小程序定（D-075：已截止的不放）
+        "past": _shown_with_ai(session, past[offset : offset + limit], key="docId"),
         "verifiedTotal": verified_total(session),
-        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
+        "unverifiedSoon": {
+            "total": len(unverified),
+            "items": _shown_with_ai(session, unverified[:50]),
+        },
     }
 
 
