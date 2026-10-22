@@ -176,7 +176,9 @@ class CloudLogsTests(unittest.TestCase):
         (self.tmp / 'out').mkdir()
         # 假的 wxcloud 接口代理：按顺序返回 pages.json 里的回应，最后一页一直重复；每次调用记一行。
         # {"throw": …} 表示抛异常，{"asyncThrow": …} 表示在 await 接不住的地方抛；
-        # FAKE_NOISY 时像真库一样把回应原文打出来（NODE_ENV=DEBUG 时直接写终端，另外还走 console）
+        # {"lateThrow": …} 表示回应给完以后过一会儿再抛（连接后来才出错）。
+        # FAKE_NOISY 时像真库一样把东西打出来，每条保护各有一个只有它能拦住的出口：NODE_ENV=DEBUG 时直接写终端，
+        # DEBUG 有值时把假密钥直接写进 2 号文件描述符，另外还走 console 和 process.stderr.write
         (self.tmp / 'lib/api/base.js').write_text(
             "const fs = require('fs');\n"
             "const pages = JSON.parse(fs.readFileSync(process.env.FAKE_PAGES, 'utf8'));\n"
@@ -186,13 +188,16 @@ class CloudLogsTests(unittest.TestCase):
             "  const page = pages[Math.min(i++, pages.length - 1)];\n"
             "  if (process.env.FAKE_NOISY) {\n"
             "    if (process.env.NODE_ENV === 'DEBUG') process.stdout.write(JSON.stringify(page) + '\\n');\n"
+            "    if (process.env.DEBUG) fs.writeSync(2, 'X-CloudRunCli-Key: fake-secret-debug\\n');\n"
             "    for (const k of ['log', 'info', 'warn', 'error', 'debug']) console[k](JSON.stringify(page));\n"
+            "    process.stderr.write('fake-secret-stderr ' + JSON.stringify(page) + '\\n');\n"
             "  }\n"
             "  if (page.throw) throw Object.assign(new Error(page.throw.message), { code: page.throw.code });\n"
             "  if (page.asyncThrow) {\n"
             "    setTimeout(() => { throw Object.assign(new Error(page.asyncThrow.message), { code: page.asyncThrow.code }); }, 0);\n"
             "    return new Promise(() => {});\n"
             "  }\n"
+            "  if (page.lateThrow) setTimeout(() => { throw Object.assign(new Error(page.lateThrow.message), { code: page.lateThrow.code }); }, 20);\n"
             "  return page;\n"
             "};\n")
         self.out = self.tmp / 'out/logs.json'
@@ -296,9 +301,11 @@ class CloudLogsTests(unittest.TestCase):
     def test_library_output_never_reaches_terminal(self):
         # 真库在 NODE_ENV=DEBUG 时把请求和回应原文 console.log 出来；假库还另外直接写终端、走 console 的各个出口
         pages = [self.page([result(access_line()), result(f"Duplicate entry '{OPENID}'")], None, True)]
-        run = self.run_logs(pages, '--out', str(self.out), *self.WINDOW, NODE_ENV='DEBUG', FAKE_NOISY='1')
+        run = self.run_logs(pages, '--out', str(self.out), *self.WINDOW, NODE_ENV='DEBUG', DEBUG='*', FAKE_NOISY='1')
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assert_nothing_personal(run.stdout + run.stderr)
+        self.assertNotIn('fake-secret', run.stdout + run.stderr)
+        self.assertEqual(run.stderr, '')
         self.assertEqual(json.loads(run.stdout.splitlines()[0])['count'], 2)
         self.assertEqual(len(run.stdout.splitlines()), 2)
 
@@ -316,6 +323,16 @@ class CloudLogsTests(unittest.TestCase):
             saved = json.loads(self.out.read_text())
             self.assertEqual((saved.get('count'), saved.get('error')), (1, None))
             self.assert_saved_privately()
+
+    def test_late_error_after_saving_keeps_results(self):
+        # 回应给完、结果存好以后连接才出错（异步抛出）：只退出，不能用出错信息盖掉存好的结果
+        page = {**self.page([result(access_line())], None, True), 'lateThrow': {'message': f'read ECONNRESET {IP4}', 'code': 'ECONNRESET'}}
+        run = self.run_logs([page], '--out', str(self.out), *self.WINDOW)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assert_nothing_personal(run.stdout + run.stderr)
+        saved = json.loads(self.out.read_text())
+        self.assertEqual((saved.get('count'), saved.get('error')), (1, None))
+        self.assert_saved_privately()
 
     def test_uncaught_exception_in_library(self):
         pages = [{'asyncThrow': {'message': f'socket {IP4} uid {UID}', 'code': UID}}]
