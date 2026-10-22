@@ -514,7 +514,7 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert "新增待核对截止候选" in out
     assert (
         "refetch_redacted mode=apply checked=4 fixed=1 same=1 changed=1 unavailable=1 missing=0 "
-        f"fields=1 conditions=1 ai_checks=1 candidates=1 eligibility=1 last_id={docs['gone'].id}"
+        f"fields=1 conditions=1 ai_checks=1 new_deadlines=1 eligibility=1 last_id={docs['gone'].id}"
     ) in out
     assert "11月20日前" in body_of(session, docs["swallowed"].id)
 

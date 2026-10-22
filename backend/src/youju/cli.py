@@ -321,7 +321,8 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     if retry := [str(r.document_id) for r in results if r.result == "unavailable"]:
         print(f"refetch_redacted_retry ids={','.join(retry)}")
     # 只用 ASCII 的一行，贴回来乱码也能看清（容器终端粘贴中文会掉字）：各种结果的份数，fixed 里
-    # 要重新核对的字段、申报条件和要清掉的 AI 截止检查份数；写入时还有新增候选条数、重算了没有
+    # 要重新核对的字段、申报条件和要清掉的 AI 截止检查份数；写入时还有新增的截止候选条数
+    # （new_deadlines，和 --count 的 candidates 不是一回事）、重算了没有
     counts = {k: by_result[k] for k in names} | {
         "fields": report.approved_fields,
         "conditions": report.confirmed_conditions,
@@ -329,7 +330,7 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     }
     if args.apply:
         counts |= {
-            "candidates": report.new_candidates,
+            "new_deadlines": report.new_candidates,
             "eligibility": int(report.eligibility_refreshed),
         }
     print(
