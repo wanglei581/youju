@@ -171,6 +171,7 @@ class ParkBookTests(unittest.TestCase):
         self.assertIn("园区给的企业 5 家，其中 2 家", intro)
         self.assertIn(MODULE.STATEMENT, intro)
         self.assertIn("交付当天删除本机上的名单和生成的文件", intro)
+        self.assertIn("我们这边微信里收发的副本", intro)
         lists = list(book["按名单看"].iter_rows(min_row=2, values_only=True))
         self.assertEqual([r[0] for r in lists], [LIST_A["title"], LIST_B["title"]])  # 新的在前
         self.assertEqual(lists[0][4], 2)
@@ -398,7 +399,7 @@ class D086Tests(unittest.TestCase):
         self.assertEqual(master, [r[0] for r in rows if r[4] == "通知"])
         books = MODULE.client_books(clients, lookups, notices, "2026-10-19 09:00", NOW)
         a_lists = list(books[0][1]["上榜情况"].iter_rows(min_row=2, values_only=True))
-        self.assertEqual([r[0] for r in a_lists], ["名单里有同名的企业，顾问核对后再告诉您"])
+        self.assertEqual([r[0] for r in a_lists], ["名单里有同名但统一社会信用代码不同的企业，请对照信用代码核实，或问顾问"])
         self.assertNotIn(LIST_A["title"], "\n".join(cells(books[0][1])))
         b_text = "\n".join(cells(books[1][1]))
         self.assertIn("本次没查出通知，请联系顾问再查", b_text)
@@ -414,6 +415,34 @@ class D086Tests(unittest.TestCase):
             (folder / "B_乙制药有限公司.xlsx").write_bytes(b"old")
             MODULE.save_client_files(folder, books)
             self.assertEqual(sorted(f.name for f in folder.iterdir()), ["A_甲科技有限公司.xlsx"])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_repost_group_row_says_which_version_its_deadline_belongs_to(self):
+        grouped = dict(notice("关于申报2026年度省级科技计划项目的通知", "https://example.gov.cn/1", "2026-10-12"),
+                       group={"label": "山东版", "versions": 4, "regions": ["江苏", "浙江", "安徽", "河南"]})
+        self.assertEqual(MODULE.version_note(grouped),
+                         "这一行是山东版；另有 4 个转发版本（江苏、浙江、安徽等），截止以各自原文为准")
+        self.assertEqual(MODULE.version_note(notice("x", "u")), "")
+        clients = self.clients()[:1]
+        notices = {MODULE.notice_key(clients[0]): {"status": 200, "total": 1, "items": [grouped]}}
+        book, *_ = MODULE.advisor_book(clients, {}, notices, "2026-10-19 09:00", NOW)
+        header = [c.value for c in book["相关通知"][1]]
+        row = next(book["相关通知"].iter_rows(min_row=2, values_only=True))
+        self.assertTrue(row[header.index("截止日期")].startswith("2026-11-05"))  # 只写这一版自己的截止
+        self.assertIn("山东版", row[header.index("转发版本")])
+        books = MODULE.client_books(clients, {}, notices, "2026-10-19 09:00", NOW)
+        sheet = books[0][1]["申报线索"]
+        header = [c.value for c in sheet[1]]
+        self.assertIn("另有 4 个转发版本", next(sheet.iter_rows(min_row=2, values_only=True))[header.index("转发版本")])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_client_file_has_no_project_column_when_none_given(self):
+        books = MODULE.client_books(self.clients(), TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW)
+        with_projects = [c.value for c in books[0][1]["申报线索"][1]]
+        without = [c.value for c in books[1][1]["申报线索"][1]]
+        self.assertIn("标题里有在办项目的字", with_projects)
+        self.assertNotIn("标题里有在办项目的字", without)
+        self.assertNotIn("在办项目", "\n".join(cells(books[1][1])))
 
     def test_safe_file_name(self):
         self.assertEqual(MODULE.safe_file_name('甲/乙:丙 "丁"'), "甲_乙_丙_丁")

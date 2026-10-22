@@ -84,7 +84,7 @@ STATEMENT = (
 # 名单怎么处理（和外联包 v2 第二节的保密说明一致：名称发去比对，但服务器不保存、不记录）
 HANDLING = (
     "查的时候企业名称逐个发到查询接口比对，服务器不保存名单，也不记录查了哪些企业；"
-    "我们在交付当天删除本机上的名单和生成的文件（含微信里收发的副本）。"
+    "我们在交付当天删除本机上的名单和生成的文件（含我们这边微信里收发的副本）。"
 )
 # 10/18 试跑发现：名单解析目前不收"某某公司（某某工厂）"这类按工厂写的条目（后端 valid_org_name 不认），
 # 查不到要提醒对方看原文；后端改好以后删掉这句
@@ -129,8 +129,10 @@ _INSTALL_JS = (
     "'district','level','label','date','time','remaining_days','source','quote']); });"
     " out.soon=(soon.items||[]).map(function(x){ return pick(x,['id','title','issuer','province','city',"
     "'district','level','kind']); }); out.soonTotal=soon.total; return out; }"
-    " out.total=d.total; out.items=(d.items||[]).map(function(x){ return pick(x,['title','issuer','date',"
-    "'url','status','region','category','deadline','deadline_state','due','matched']); });"
+    " out.total=d.total; out.items=(d.items||[]).map(function(x){ const y=pick(x,['title','issuer','date',"
+    "'url','status','region','category','deadline','deadline_state','due','matched']);"
+    " if(x.group){ y.group={label:x.group.label,versions:x.group.versions,regions:x.group.regions}; }"
+    " return y; });"
     " out.candidates=(d.candidates||[]).slice(0,5); out.similar=(d.similar||[]).slice(0,5);"
     " out.ambiguous=d.ambiguous; out.truncated=d.truncated; out.coverage=d.coverage; return out; };"
     ' return "ok"; }'
@@ -388,6 +390,18 @@ def deadline_text(item: dict, now: datetime | None = None) -> str:
     if item.get("deadline_state") == "none":
         return "截止时间见原文"
     return "截止未核对，请以原文为准"
+
+
+def version_note(item: dict) -> str:
+    """转发组（D-055）：确认过的组折成一行时，写明这一行是哪一版、另有几个转发版本。
+    截止一格只写这一版自己的截止（接口就是这样给的），不合成一个日期。"""
+    group = item.get("group") or {}
+    if not group.get("versions"):
+        return ""
+    regions = list(group.get("regions") or [])
+    where = "、".join(regions[:3]) + ("等" if len(regions) > 3 else "")
+    label = group.get("label") or "其中一版"
+    return f"这一行是{label}；另有 {group['versions']} 个转发版本（{where}），截止以各自原文为准"
 
 
 def lookup_rows(
@@ -692,7 +706,7 @@ def advisor_book(
         client, item = entry["client"], entry.get("item")
         head = [client["name"], client["code"], region_of(client), industry_of(client)]
         if item is None:
-            notice_rows.append(["", *head, entry["note"], "", "", "", "", "", ""])
+            notice_rows.append(["", *head, entry["note"], "", "", "", "", "", "", ""])
             continue
         notice_rows.append(
             [
@@ -704,6 +718,7 @@ def advisor_book(
                 item.get("category") or "",
                 "、".join(entry["hits"]),
                 deadline_text(item, now),
+                version_note(item),
                 item.get("url"),
             ]
         )
@@ -794,10 +809,11 @@ def advisor_book(
             "项目类别",
             "标题里有在办项目的字",
             "截止日期",
+            "转发版本",
             "原文链接",
         ],
         notice_rows,
-        [7, 30, 6, 20, 22, 56, 22, 12, 16, 14, 40, 40],
+        [7, 30, 6, 20, 22, 56, 22, 12, 16, 14, 40, 30, 40],
     )
     write_sheet(
         book,
@@ -940,19 +956,26 @@ def client_books(
     books = []
     for client in clients:
         mine = [e for e in entries if e["client"] is client]
+        # 没收这家的在办项目，就不出这一列和那句说明：整列空着，客户会以为是"判定无关"
+        projects = bool(client["projects"])
         rows = [
             [
                 e["item"].get("title"),
                 e["item"].get("issuer"),
                 e["item"].get("date"),
                 deadline_text(e["item"], now),
-                "、".join(e["hits"]),
+                version_note(e["item"]),
+                *(["、".join(e["hits"])] if projects else []),
                 e["item"].get("url"),
             ]
             for e in mine
             if e.get("item")
         ]
-        rows += [[CLIENT_NOTES.get(e["note"], e["note"]), "", "", "", "", ""] for e in mine if not e.get("item")]
+        rows += [
+            [CLIENT_NOTES.get(e["note"], e["note"]), *[""] * (6 if projects else 5)]
+            for e in mine
+            if not e.get("item")
+        ]
         book = Workbook()
         write_intro(
             book,
@@ -967,7 +990,11 @@ def client_books(
                     "【覆盖范围】只含我们目前已收录的国家部委和省级部门栏目里近 90 天发布的申报通知；"
                     "市、区县发的大多没有收录，没列出的不代表没有。"
                 ),
-                "【标题里有在办项目的字】只按通知标题里的字找，不是资格判断；没标的不代表无关。",
+                *(
+                    ["【标题里有在办项目的字】只按通知标题里的字找，不是资格判断；没标的不代表无关。"]
+                    if projects
+                    else []
+                ),
                 DEADLINE_NOTE,
                 "【上榜情况】企业全称和名单原文完全相同才算查到；没查到不等于没上榜："
                 + coverage_text(lookups)
@@ -977,9 +1004,17 @@ def client_books(
         write_sheet(
             book,
             "申报线索",
-            ["通知标题", "发文机关", "发布日期", "截止日期", "标题里有在办项目的字", "原文链接"],
+            [
+                "通知标题",
+                "发文机关",
+                "发布日期",
+                "截止日期",
+                "转发版本",
+                *(["标题里有在办项目的字"] if projects else []),
+                "原文链接",
+            ],
             rows,
-            [56, 22, 12, 40, 14, 40],
+            [56, 22, 12, 40, 30, *([14] if projects else []), 40],
         )
         write_sheet(
             book,
@@ -1004,7 +1039,7 @@ def client_list_rows(rows: list[list]) -> list[list]:
     for row in rows:
         result, note = str(row[3]), str(row[11] or "")
         if AMBIGUOUS in note:
-            row = ["名单里有同名的企业，顾问核对后再告诉您", *[""] * 8]
+            row = ["名单里有同名但统一社会信用代码不同的企业，请对照信用代码核实，或问顾问", *[""] * 8]
         elif result.startswith("没查成"):
             row = ["本次没查出，请联系顾问再查", *[""] * 8]
         else:
