@@ -187,7 +187,8 @@ def _candidates(
     return [(int(i), url, title, body) for i, url, title, body in session.execute(stmt).all()]
 
 
-_TIME_CHARS = set("年月日时")
+# 日期、时刻用的字：找回的字里有这些（或数字）才清掉 AI 截止检查重查（"本周五前""下午三点前"也算）
+_TIME_CHARS = set("年月日时周星点午")
 
 
 def _restored(old: str, new: str) -> list[str]:

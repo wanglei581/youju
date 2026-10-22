@@ -141,6 +141,8 @@ _MONTH_AFTER = re.compile(rf"{_SPACES}月(?:\d|[底初中末前后起止至内�
 _DAY_AFTER = re.compile(rf"日(?:[前后起止至内之]|(?![{_HAN}]))")
 # 金额：可以带千分位、小数（"20,000元""300.00 元"）
 _AMOUNT_AFTER = re.compile(rf"(?:,\d{{3}})*+(?:\.\d++)?+{_SPACES}[元万亿]")
+# 号码串后面紧接着还是数字写法（"2025 10.10""20，000元""2025－10－10"，隔着全角空格、换行的数字）
+_NUMBER_GOES_ON = re.compile(r"[.,，/:：\-－]\d|\s+\d")
 
 
 def _date_from(values: list[str], i: int) -> bool:
@@ -167,8 +169,9 @@ def _account(match: re.Match) -> str:
       "10月底前""1 月 申报""1月起"）——"日期""日均""月均""月份"是词，不算；
     - 后面（可以隔空白）跟"元、万、亿"（可以带千分位、小数："20,000元""300.00元"）而接上就超过
       19 位的（旧规则最多遮 19 位，本来就接不到这一组）；
-    - 第一组已经 12 位以上而接上就超过 19 位的（和旧规则一样最多遮 19 位："1202…568 1500"
-      "6222…890 2025 10月10日"）。
+    - 接上就超过 19 位（旧规则接不到）的，除非整串是四位一组（最后一组 1–4 位："3305 0161 6135
+      0000 0123"）、号码串后面又没有紧接着别的数字写法（"2025 10.10""20，000元""2025－10－10"）——
+      别的写法和旧规则一样最多遮 19 位（"1202…568 1500""6222 0212 3456 789012 10/31前"）。
     后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。第一组不看后面跟的字。
     接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
     红线上的号码不能比以前漏得多。"""
@@ -176,6 +179,11 @@ def _account(match: re.Match) -> str:
     whole, text, base = match.group(), match.string, match.start(2)
     groups = list(_DIGITS.finditer(run))
     values = [group.group() for group in groups]
+    long_ok = (
+        all(len(value) == 4 for value in values[:-1])
+        and len(values[-1]) <= 4
+        and not _NUMBER_GOES_ON.match(text, match.end())
+    )
     total = taken = 0
     for i, group in enumerate(groups):
         size = len(values[i])
@@ -208,7 +216,7 @@ def _account(match: re.Match) -> str:
                 or (size <= 2 and 1 <= int(values[i]) <= 31 and _DAY_AFTER.match(text, end))
                 or (size <= 2 and 1 <= int(values[i]) <= 12 and _MONTH_AFTER.match(text, end))
                 or (_AMOUNT_AFTER.match(text, end) and total + size > 19)
-                or (len(values[0]) >= 12 and total + size > 19)
+                or (not long_ok and total + size > 19)
             ):
                 break
         if total + size > 30:

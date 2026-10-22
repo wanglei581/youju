@@ -316,6 +316,10 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
         print(f"已到 --limit {args.limit} 份，后面可能还有：加 --after-id {last} 接着处理")
     if not args.apply and by_result["fixed"]:
         print("确认无误后加 --apply 写入；写入时会再打开一次页面、按当时库里的正文再核对一次")
+    # 没打开的分批时会被 --after-id 跳过：全部批次跑完后用 --ids 单独重试。打在汇总行前面，最后一行
+    # 总是带 last_id 的汇总行
+    if retry := [str(r.document_id) for r in results if r.result == "unavailable"]:
+        print(f"refetch_redacted_retry ids={','.join(retry)}")
     # 只用 ASCII 的一行，贴回来乱码也能看清（容器终端粘贴中文会掉字）：各种结果的份数，fixed 里
     # 要重新核对的字段、申报条件和要清掉的 AI 截止检查份数；写入时还有新增候选条数、重算了没有
     counts = {k: by_result[k] for k in names} | {
@@ -333,9 +337,6 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
         + " ".join(f"{k}={v}" for k, v in counts.items())
         + f" last_id={last}"
     )
-    # 没打开的分批时会被 --after-id 跳过：全部批次跑完后用 --ids 单独重试
-    if retry := [str(r.document_id) for r in results if r.result == "unavailable"]:
-        print(f"refetch_redacted_retry ids={','.join(retry)}")
     return 0
 
 

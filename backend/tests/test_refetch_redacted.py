@@ -248,6 +248,33 @@ def test_ai_check_kept_when_only_unit_names_come_back(session) -> None:
     ]
 
 
+def test_ai_check_cleared_when_relative_deadline_comes_back(session) -> None:
+    """找回的是"本周五前""下午三点前"这样不带数字的截止：AI 截止检查也要清掉重查。"""
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>请于本周五下午三点前将材料发送至sbc_test@163.com邮箱。</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 12, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert [(r.result, r.recheck_ai) for r in report.results] == [("fixed", True)]
+    assert "本周五下午三点前" in body_of(session, doc.id)
+    assert session.scalars(select(AICheck.task).where(AICheck.document_id == doc.id)).all() == []
+
+
 def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
     docs, fake = world
     swallowed = docs["swallowed"]
@@ -476,8 +503,10 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
         "refetch_redacted mode=preview checked=4 fixed=1 same=1 changed=1 unavailable=1 "
         f"missing=0 fields=1 conditions=1 ai_checks=1 last_id={docs['gone'].id}"
     ) in out
-    # 没打开的分批时会被 --after-id 跳过，最后一行给出重试用的编号
-    assert out.rstrip().endswith(f"refetch_redacted_retry ids={docs['gone'].id}")
+    # 没打开的分批时会被 --after-id 跳过：给出重试用的编号，打在汇总行前面（最后一行总带 last_id）
+    lines = out.rstrip().splitlines()
+    assert lines[-2] == f"refetch_redacted_retry ids={docs['gone'].id}"
+    assert lines[-1].startswith("refetch_redacted mode=preview ")
 
     assert cli.main(["refetch-redacted", "--apply"]) == 0
     out = capsys.readouterr().out
