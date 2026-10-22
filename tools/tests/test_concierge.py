@@ -170,8 +170,8 @@ class ParkBookTests(unittest.TestCase):
         intro = "\n".join(str(c.value) for c in book["说明"]["A"] if c.value)
         self.assertIn("园区给的企业 5 家，其中 2 家", intro)
         self.assertIn(MODULE.STATEMENT, intro)
-        self.assertIn("交付当天删除本机上的名单和生成的文件", intro)
-        self.assertIn("我们这边微信里收发的副本", intro)
+        self.assertIn("交付当天删除自己电脑上的名单和生成的文件", intro)
+        self.assertIn("您微信里的文件请您自己删", intro)
         lists = list(book["按名单看"].iter_rows(min_row=2, values_only=True))
         self.assertEqual([r[0] for r in lists], [LIST_A["title"], LIST_B["title"]])  # 新的在前
         self.assertEqual(lists[0][4], 2)
@@ -324,6 +324,8 @@ class D086Tests(unittest.TestCase):
         rows = list(book["反馈记录"].iter_rows(min_row=2, values_only=True))
         self.assertEqual([r[0] for r in rows], ["N1", "N2", "N3", "L1", "L2"])
         self.assertEqual(rows[0][5:7], ("关于开展2026年高新技术企业认定工作的通知", "是"))
+        header = [c.value for c in book["反馈记录"][1]]
+        self.assertEqual(header[6], "标题是否带在办用词")
         self.assertNotIn("高企", text)  # 在办项目只记"是"，不记是哪一项
         self.assertIn("机器摘录", rows[0][7])
         self.assertEqual(rows[3][4:6], ("名单", "上榜 1 份（公示）"))
@@ -367,11 +369,17 @@ class D086Tests(unittest.TestCase):
         intro = "\n".join(str(c.value) for c in book["说明"]["A"] if c.value)
         self.assertIn("请不要整张转给客户", intro)
         self.assertIn("【在办项目】", intro)
+        self.assertIn("“高新技术企业”也算", intro)
+        self.assertIn("只留一份不带企业名称的反馈记录", intro)
 
     def test_no_header_row_with_a_zaiban_cell_is_still_a_company(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "x.csv"
             path.write_text("甲集团控股公司华东区域运营中心,在办高企\n乙公司,\n", encoding="utf-8")
+            clients = MODULE.read_clients(path)
+            self.assertEqual([c["name"] for c in clients], ["甲集团控股公司华东区域运营中心", "乙公司"])
+            # 第二格是"高新技术企业"（带表头词"企业"）也不当表头：第一格超过 12 个字
+            path.write_text("甲集团控股公司华东区域运营中心,高新技术企业\n乙公司,\n", encoding="utf-8")
             clients = MODULE.read_clients(path)
         self.assertEqual([c["name"] for c in clients], ["甲集团控股公司华东区域运营中心", "乙公司"])
 
