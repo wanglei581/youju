@@ -25,6 +25,9 @@ delete process.env.NODE_ENV;
 for (const name of ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'dirxml', 'table']) console[name] = () => {};
 
 const USAGE = '用法：node tools/team/cloud-logs.cjs --out <结果文件> <envId> "<开始 YYYY-MM-DD HH:MM:SS>" "<结束>" "<查询串>" [条数]';
+const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+// 提示里写查看脚本的绝对路径：在仓库根目录以外照抄也能跑
+const SHOW_PY = `python3 ${quote(path.join(__dirname, 'cloud_logs_show.py'))}`;
 const args = [];
 let out;
 for (let i = 2; i < process.argv.length; i++) {
@@ -36,7 +39,7 @@ for (let i = 2; i < process.argv.length; i++) {
 const [envId, start, end, query, limit = '100'] = args;
 if (!out || !envId || !start || !end || !query || args.length > 5) {
   say(USAGE);
-  say('结果只写进 --out 指定的文件（放在自己的临时目录），终端不打印日志原文；看结果用 python3 tools/team/cloud_logs_show.py <结果文件>');
+  say(`结果只写进 --out 指定的文件（放在自己的临时目录），终端不打印日志原文；看结果用 ${SHOW_PY} <结果文件>`);
   process.exit(2);
 }
 let dir;
@@ -55,9 +58,7 @@ for (let p = dir; ; p = path.dirname(p)) {
   if (path.dirname(p) === p) break;
 }
 out = path.join(dir, path.basename(out));
-const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
-// 提示里写绝对路径：在仓库根目录以外照抄也能跑
-const show = `python3 ${quote(path.join(__dirname, 'cloud_logs_show.py'))} ${quote(out)}`;
+const show = `${SHOW_PY} ${quote(out)}`;
 
 // 在同一目录先建一个权限 600 的新文件，写完再改名换上去：已有的宽权限文件不会在写入时被别人读到，
 // 目标是符号链接时换掉的是链接本身，不会写到它指向的地方
@@ -115,7 +116,7 @@ process.on('unhandledRejection', exception);
     if (lr.ListOver || !lr.Context) {
       save({ count: all.length, listOver: !!lr.ListOver, pages: page + 1, results: all });
       saved = true;
-      say(JSON.stringify({ count: all.length, pages: page + 1, listOver: !!lr.ListOver, out }));
+      say(JSON.stringify({ count: all.length, pages: page + 1, out }));
       say(`用 ${show} [关键词…] 看（遮掉了 IP、用户编号和文件编号）；结果文件不要直接打开或贴出来`);
       return;
     }
@@ -123,6 +124,7 @@ process.on('unhandledRejection', exception);
   }
   save({ count: all.length, listOver: false, pages: 20, truncated: true, results: all });
   saved = true;
-  say(JSON.stringify({ count: all.length, pages: 20, listOver: false, truncated: true, out }));
+  // 终端只给条数、页数、路径；没取完由下面这行提示说，listOver、truncated 留在结果文件里（查看时显示）
+  say(JSON.stringify({ count: all.length, pages: 20, out }));
   say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看`);
 })().catch(exception);

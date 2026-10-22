@@ -119,9 +119,11 @@ class MaskTests(unittest.TestCase):
         data = {'results': [result(access_line()), result('x' * 290 + f' {IP4} tail'), result(f'删除 advisor/out/{UID}/1.xlsx 失败'),
                             {'Timestamp': 't', 'Content': f'not json {IP4}'},
                             {'Timestamp': f'{IP4} uid={UID}', 'Content': json.dumps({'__CONTENT__': 'hello', '__TAG__': {'container_name': IP6}})},
-                            result('第一行\r\n第二行')]}
+                            result('第一行\r\n第二行'),
+                            # 内容、时间不是字符串时转成文字会把换行写成 \n：要先遮再转
+                            {'Timestamp': [f'x\n{UID}'], 'Content': json.dumps({'__CONTENT__': {'note': f'rows\n{UID}\t{OPENID}'}})}]}
         shown = list(SHOW.lines(data))
-        self.assertEqual(len(shown), 6)
+        self.assertEqual(len(shown), 7)
         for line in shown:
             for value in [*PERSONAL, '113', '\r', '\n']:
                 self.assertNotIn(value, line)
@@ -138,7 +140,10 @@ class MaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'logs.json'
             for data, code in [({'count': IP4, 'listOver': UID, 'pages': 1, 'results': [result(access_line())]}, 0),
+                               ({'count': {'a': f'x\n{UID}'}, 'listOver': [f'y\t{OPENID}'], 'pages': f'{IP4}', 'results': []}, 0),
                                ({'error': 'api', 'code': IP4, 'message': f'bad request from {IP6} uid {UID}'}, 1),
+                               # 转成 JSON 后换行、制表符成了 \n、\t，紧跟的编号前面就是字母：要先遮再转
+                               ({'error': 'api', 'message': f'rows\n{UID}\t{OPENID}', 'ret': [f'x\n{IP4}']}, 1),
                                ({'error': 'exception', 'message': f'{IP4} {UID} ' * 500}, 1)]:
                 with self.subTest(data=str(data)[:80]):
                     path.write_text(json.dumps(data))
@@ -233,7 +238,8 @@ class CloudLogsTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assert_nothing_personal(run.stdout + run.stderr)
         summary = json.loads(run.stdout.splitlines()[0])
-        self.assertEqual(summary, {'count': 3, 'pages': 2, 'listOver': True, 'out': str(self.out.resolve())})
+        # 终端只有条数、页数、路径（listOver、truncated 只在结果文件里）
+        self.assertEqual(summary, {'count': 3, 'pages': 2, 'out': str(self.out.resolve())})
         self.assertEqual(len(self.calls()), 2)
         self.assertEqual(json.loads(json.loads(self.calls()[1])['postdata'])['Context'], 'c1')
         saved = json.loads(self.out.read_text())
@@ -281,6 +287,9 @@ class CloudLogsTests(unittest.TestCase):
                 self.assert_nothing_personal(run.stdout + run.stderr)
         for p in inside:
             self.assertFalse(p.exists(), p)
+        # 用法错误的提示里也是查看脚本的绝对路径
+        run = self.run_logs([self.page([], None, True)], *window)
+        self.assertIn(f"python3 '{TEAM / 'cloud_logs_show.py'}' <结果文件>", run.stdout)
         self.assertEqual(sorted(p.name for p in (self.tmp / 'repo/sub').iterdir()), [])
         self.assertEqual(sorted(p.name for p in (self.tmp / 'wt').iterdir()), ['.git'])
 
@@ -365,7 +374,8 @@ class CloudLogsTests(unittest.TestCase):
         run = self.run_logs([self.page([result(access_line())], 'more')], '--out', str(self.out), *self.WINDOW, '10')
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout.splitlines()[0]),
-                         {'count': 20, 'pages': 20, 'listOver': False, 'truncated': True, 'out': str(self.out.resolve())})
+                         {'count': 20, 'pages': 20, 'out': str(self.out.resolve())})
+        self.assertIn('到了 20 页上限没取完', run.stdout.splitlines()[1])
         self.assertEqual(len(self.calls()), 20)
         self.assertEqual(json.loads(json.loads(self.calls()[0])['postdata'])['Limit'], 10)
         self.assertIn('到了 20 页上限没取完', self.run_show().stdout)

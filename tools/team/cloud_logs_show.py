@@ -13,7 +13,7 @@
   （::ffff:203.0.*.*）。
 - 单独出现的 16 位十六进制串（用户编号的格式，如批量工具结果文件路径 advisor/out/<编号>/）留前 4 位。
 - 以 o 开头的 28 位微信用户标识（openid、unionid 的格式，比如数据库报错里带出来的）留前 4 位。
-时间、容器名、开头的统计行也一样过一遍。留下的几位够判断是不是同一来源。
+时间、容器名、开头的统计行、出错文件也一样过一遍（先逐个字符串遮，再转成文字）。留下的几位够判断是不是同一来源。
 关键词在遮蔽后的内容里找：拿完整的 IP 或编号当关键词逐个试，试不出来。
 没有不遮蔽的显示方式。要看完整的 IP、按某个用户查，由创始人在云托管控制台的日志页自己查。
 """
@@ -110,9 +110,27 @@ def mask(text):
     return _IPV4.sub(r"\1.\2.*.*", text)
 
 
+def _mask_values(value):
+    """把值里的字符串逐个遮掉。要先遮再转成文字：json.dumps、str() 会把换行、制表符写成 \\n、\\t，
+    紧跟在后面的编号前面就成了字母 n、t，认不出来。"""
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, dict):
+        return {k: _mask_values(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mask_values(v) for v in value]
+    return value
+
+
+def _shown(value):
+    return mask(str(_mask_values(value)))
+
+
 def lines(data, keys=()):
     """结果文件里的每一行日志，遮蔽后整理成"时间 容器 内容"；给了关键词就只要含关键词的。"""
     for r in data.get("results") or []:
+        if not isinstance(r, dict):
+            r = {"Content": r}
         content = r.get("Content", "")
         try:
             j = json.loads(content)
@@ -122,11 +140,11 @@ def lines(data, keys=()):
             j = {"__CONTENT__": content}
         tag = j.get("__TAG__")
         container = tag.get("container_name", "?") if isinstance(tag, dict) else "?"
-        msg = mask(str(j.get("__CONTENT__", "")).replace("\r", " ").replace("\n", " "))
+        msg = mask(str(_mask_values(j.get("__CONTENT__", ""))).replace("\r", " ").replace("\n", " "))
         if keys and not any(k in msg for k in keys):
             continue
         # 先遮再截：截断处正好落在 IP 中间时，残缺的 IP 认不出来
-        yield f"{mask(str(r.get('Timestamp')))} {mask(str(container))} {msg[:300]}"
+        yield f"{_shown(r.get('Timestamp'))} {_shown(container)} {msg[:300]}"
 
 
 def main(argv):
@@ -140,11 +158,12 @@ def main(argv):
         return 1
     if "error" in data:
         # 出错原文由 cloud-logs.cjs 整段存下（截在 IP 中间就认不出了），这里先遮蔽再限长
-        print(mask(json.dumps(data, ensure_ascii=False))[:2000])
+        print(mask(json.dumps(_mask_values(data), ensure_ascii=False))[:2000])
         return 1
+    count, over, pages = (_mask_values(data.get(k)) for k in ("count", "listOver", "pages"))
     print(
         mask(
-            f"# 共 {data.get('count')} 行，listOver={data.get('listOver')}，pages={data.get('pages')}"
+            f"# 共 {count} 行，listOver={over}，pages={pages}"
             f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、文件编号已遮蔽"
         )
     )
