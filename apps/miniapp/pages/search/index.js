@@ -33,8 +33,8 @@ const KIND_TABS = [
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
-// 以及 7 天内有候选、还没核对的
-const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的';
+// 以及 7 天内有候选、还没核对的。选的时候就写明不含哪些，不只在没有结果时才说（10/22 走查）
+const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的通知不在里面';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
@@ -56,8 +56,8 @@ const GROUPS = [
 const ALL_PROVINCES = PROVINCES;
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], city: [], district: [], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-// 关注确认框的标题：写关注之后会怎样
-const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
+// 关注确认框的标题：写存的是什么（当前的关键词和筛选条件）、关注之后会怎样；输入框里是按条件拼的名称，可以改（10/22 走查）
+const FOLLOW_NOTE = '关注当前搜索条件，有新文件时在关注页标出';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
 const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';

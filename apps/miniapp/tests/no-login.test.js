@@ -275,7 +275,8 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     const root = shown('pages/about/index.wxml', page.data);
     const all = textOf(root);
     assert.equal(findAll(root, tapsTo('feedback')).length, final ? 1 : 0);
-    assert.equal(all.includes('关注这个搜索'), final);
+    // 10/22 走查：按钮上写的是"关注"，说明里也写点"关注"、存的是当前搜索条件
+    assert.equal(all.includes('在搜索结果页点"关注"，按当前搜索条件关注'), final);
     // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
     assert.equal(all.includes('订阅一次微信提醒'), false);
     assert.equal(all.includes('申请覆盖'), final);

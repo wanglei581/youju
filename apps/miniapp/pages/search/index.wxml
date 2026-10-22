@@ -114,12 +114,16 @@
         <scroll-view wx:if="{{activeGroup === g.key}}" class="pane" scroll-y enhanced show-scrollbar="{{false}}">
           <view class="pane-inner">
             <view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}</text></view>
-            <!-- 省市区三级（mode="region" 默认三级），每列顶部的“全部”：城市一栏选它是全省，区县一栏选它是全市 -->
+            <!-- 省市区三级（mode="region" 默认三级），每列顶部的“全部”：城市一栏选它是全省，区县一栏选它只查这个市的市级来源。
+                 10/22 走查：原来挤在一段里，拆成短句紧跟在选择器下面；"点一下移除"放到已选的城市、区县下面 -->
             <block wx:if="{{g.key === 'city'}}">
               <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
+              <view class="group-note">城市一栏选“全部”：查全省。</view>
+              <view class="group-note">区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。</view>
+              <view class="group-note">直辖市不选区县：按省级范围查询。</view>
               <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
-              <view class="group-note">已选城市、区县点一下移除。城市一栏选“全部”按全省，区县一栏选“全部”仅查询已收录市级来源；区县来源请单独选择；直辖市未选区县时按省级范围查询。选择器无法使用时请升级微信。</view>
+              <view class="group-note">选择器打不开时，请升级微信。</view>
             </block>
             <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">
@@ -130,6 +134,7 @@
               <view wx:for="{{districtOptions}}" wx:key="key" class="option option--on" data-group="district" data-option="{{item.key}}" bindtap="removePicked"
                     aria-role="button" aria-label="移除区县：{{item.label}}">{{item.label}}</view>
             </view>
+            <view wx:if="{{g.key === 'city' && (g.options.length || districtOptions.length)}}" class="group-note">已选的城市、区县，点一下移除。</view>
             <view wx:if="{{g.note}}" class="group-note">{{g.note}}</view>
             <view wx:if="{{g.extra}}" class="group-note">{{g.extra}}</view>
           </view>

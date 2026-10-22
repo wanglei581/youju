@@ -233,10 +233,10 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
   assert.match(textOf(root), /最新申报通知/);
 });
 
-test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）', () => {
+test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）；10/22 起也不再指向"上面的截止时间"（政策文件上面没有截止）', () => {
   const wxml = read('pages/detail/index.wxml');
   assert.doesNotMatch(wxml, /核对过的日期/);
-  assert.match(wxml, /截止日期看上面的"截止时间"，并以原文为准/);
+  assert.doesNotMatch(wxml, /截止日期看上面的/);
 });
 
 test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {

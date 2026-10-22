@@ -134,9 +134,11 @@
     <view class="weak cond-note">条件以原文为准，不作为能否申报的判断</view>
   </view>
 
+  <!-- 10/22 走查："正文"两个字最像原文，提取的说明只在小字里：标题里直接写明是自动提取、没逐字核对；
+       说明只在显示了提取的正文时出现（没提取到正文时下面只写去哪看原文） -->
   <view wx:if="{{doc.body}}" class="card">
-    <view class="section-title">正文</view>
-    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期看上面的"截止时间"，并以原文为准。</view>
+    <view class="section-title">正文<text wx:if="{{doc.body.status === 'ok'}}">（自动提取，未经人工逐字核对）</text></view>
+    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取，仅供阅读参考，以原文为准。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
