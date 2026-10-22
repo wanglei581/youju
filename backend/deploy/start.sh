@@ -3,7 +3,8 @@
 #   YOUJU_ROLE=admin  核对台和定时任务服务（实例数固定为 1）：先迁移数据库，再启动 cron 和接口
 #   YOUJU_ROLE=api    小程序接口服务（按量伸缩）：只启动接口；不做迁移
 # 迁移用 MySQL 命名锁（GET_LOCK），滚动发布时即使新旧两个 admin 实例同时启动，也只有一个在迁移。
-# 发布顺序：先发 admin（完成迁移），再发 api。
+# 发布顺序：先发 admin（完成迁移），再发 api。删表、删列的迁移（如 0035）反过来：先发 api，
+# 旧版 api 归零后再发 admin，见 docs/部署/微信云托管.md 第二节。
 set -e
 cd /app/backend
 case "${YOUJU_ROLE:-}" in
