@@ -58,6 +58,7 @@ TEXT_CASES = {
     'IPv6 2001:db8:85a3:8d3:1319:8a2e:370:7348 end': 'IPv6 2001:db8:* end',
     # IPv4 映射成的 IPv6 按 IPv4 遮；其他嵌着 IPv4 的 IPv6 按 IPv6 遮
     'via ::ffff:203.0.113.9 ok': 'via ::ffff:203.0.*.* ok',
+    'ip::ffff:203.0.113.9': 'ip::ffff:203.0.*.*',
     'nat64 64:ff9b::203.0.113.9 ok': 'nat64 64:ff9b:* ok',
     'embedded 2001:db8::203.0.113.9': 'embedded 2001:db8:*',
     'time=10:20:203.0.113.77': 'time=10:20:203.0.*.*',
@@ -117,11 +118,12 @@ class MaskTests(unittest.TestCase):
     def test_lines_mask_before_truncating_and_filter_on_masked_text(self):
         data = {'results': [result(access_line()), result('x' * 290 + f' {IP4} tail'), result(f'删除 advisor/out/{UID}/1.xlsx 失败'),
                             {'Timestamp': 't', 'Content': f'not json {IP4}'},
-                            {'Timestamp': f'{IP4} uid={UID}', 'Content': json.dumps({'__CONTENT__': 'hello', '__TAG__': {'container_name': IP6}})}]}
+                            {'Timestamp': f'{IP4} uid={UID}', 'Content': json.dumps({'__CONTENT__': 'hello', '__TAG__': {'container_name': IP6}})},
+                            result('第一行\r\n第二行')]}
         shown = list(SHOW.lines(data))
-        self.assertEqual(len(shown), 5)
+        self.assertEqual(len(shown), 6)
         for line in shown:
-            for value in [*PERSONAL, '113']:
+            for value in [*PERSONAL, '113', '\r', '\n']:
                 self.assertNotIn(value, line)
         self.assertTrue(shown[0].startswith('2026-10-19 11:00:00.000 youju-api-054 {"event": "access"'))
         self.assertTrue(shown[1].endswith(' 203.0.*.*'))
@@ -136,14 +138,25 @@ class MaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'logs.json'
             for data, code in [({'count': IP4, 'listOver': UID, 'pages': 1, 'results': [result(access_line())]}, 0),
-                               ({'error': 'api', 'code': IP4, 'message': f'bad request from {IP6} uid {UID}'}, 1)]:
-                with self.subTest(data=data):
+                               ({'error': 'api', 'code': IP4, 'message': f'bad request from {IP6} uid {UID}'}, 1),
+                               ({'error': 'exception', 'message': f'{IP4} {UID} ' * 500}, 1)]:
+                with self.subTest(data=str(data)[:80]):
                     path.write_text(json.dumps(data))
                     run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), str(path)], capture_output=True, text=True)
                     self.assertEqual(run.returncode, code, run.stderr)
                     for value in PERSONAL:
                         self.assertNotIn(value, run.stdout)
                     self.assertIn('203.0.*.*', run.stdout)
+                    # 很长的出错原文：遮蔽之后再限长
+                    self.assertLessEqual(len(run.stdout), 2001 if code else 10000)
+            # 原样截到 2000 字正好停在 IP 的第三段后面：必须先遮再截
+            prefix = json.dumps({'error': 'exception', 'message': ''}, ensure_ascii=False)[:-2]
+            path.write_text(json.dumps({'error': 'exception', 'message': 'y' * (2000 - len(prefix) - 9) + f'{IP4} tail'}))
+            run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), str(path)], capture_output=True, text=True)
+            self.assertNotIn('203.0.113', run.stdout)
+            path.write_text('[1, 2]')
+            run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), str(path)], capture_output=True, text=True)
+            self.assertEqual((run.returncode, run.stderr), (1, ''))
 
 
 @unittest.skipUnless(shutil.which('node'), '需要 node')
@@ -156,7 +169,9 @@ class CloudLogsTests(unittest.TestCase):
         self.tmp = Path(tmp.name)
         (self.tmp / 'lib/api').mkdir(parents=True)
         (self.tmp / 'out').mkdir()
-        # 假的 wxcloud 接口代理：按顺序返回 pages.json 里的回应，最后一页一直重复；{"throw": …} 表示抛异常；每次调用记一行
+        # 假的 wxcloud 接口代理：按顺序返回 pages.json 里的回应，最后一页一直重复；每次调用记一行。
+        # {"throw": …} 表示抛异常，{"asyncThrow": …} 表示在 await 接不住的地方抛；
+        # FAKE_NOISY 时像真库一样把回应原文打出来（NODE_ENV=DEBUG 时直接写终端，另外还走 console）
         (self.tmp / 'lib/api/base.js').write_text(
             "const fs = require('fs');\n"
             "const pages = JSON.parse(fs.readFileSync(process.env.FAKE_PAGES, 'utf8'));\n"
@@ -164,15 +179,23 @@ class CloudLogsTests(unittest.TestCase):
             "exports.fetchApi = async (url, body) => {\n"
             "  fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify(body) + '\\n');\n"
             "  const page = pages[Math.min(i++, pages.length - 1)];\n"
+            "  if (process.env.FAKE_NOISY) {\n"
+            "    if (process.env.NODE_ENV === 'DEBUG') process.stdout.write(JSON.stringify(page) + '\\n');\n"
+            "    for (const k of ['log', 'info', 'warn', 'error', 'debug']) console[k](JSON.stringify(page));\n"
+            "  }\n"
             "  if (page.throw) throw Object.assign(new Error(page.throw.message), { code: page.throw.code });\n"
+            "  if (page.asyncThrow) {\n"
+            "    setTimeout(() => { throw Object.assign(new Error(page.asyncThrow.message), { code: page.asyncThrow.code }); }, 0);\n"
+            "    return new Promise(() => {});\n"
+            "  }\n"
             "  return page;\n"
             "};\n")
         self.out = self.tmp / 'out/logs.json'
 
-    def run_logs(self, pages, *args):
+    def run_logs(self, pages, *args, **extra_env):
         (self.tmp / 'pages.json').write_text(json.dumps(pages))
         env = {**os.environ, 'WXCLOUD_CLI_LIB': str(self.tmp / 'lib'), 'FAKE_PAGES': str(self.tmp / 'pages.json'),
-               'FAKE_CALLS': str(self.tmp / 'calls.txt')}
+               'FAKE_CALLS': str(self.tmp / 'calls.txt'), **extra_env}
         return subprocess.run(['node', str(TEAM / 'cloud-logs.cjs'), *args], capture_output=True, text=True, env=env)
 
     def calls(self):
@@ -234,17 +257,56 @@ class CloudLogsTests(unittest.TestCase):
 
     def test_usage_errors_do_not_query(self):
         window = self.WINDOW
+        # 任何 git 仓库里都不让放：主仓库（.git 是目录）、worktree（.git 是文件）、上级目录是仓库、大小写不同的写法
+        (self.tmp / 'repo/.git').mkdir(parents=True)
+        (self.tmp / 'repo/sub').mkdir()
+        (self.tmp / 'wt').mkdir()
+        (self.tmp / 'wt/.git').write_text('gitdir: /somewhere/else\n')
+        inside = [REPO / 'tools/tests/cloud-logs-should-not-exist.json', REPO / 'cloud-logs-should-not-exist.json',
+                  self.tmp / 'repo/sub/logs.json', self.tmp / 'wt/logs.json',
+                  Path(str(REPO).upper()) / 'cloud-logs-should-not-exist.json']
         for args in [window, [*window, '100'], ['--out', str(self.out), *window[:3]],
                      ['--out', str(self.tmp / 'missing/logs.json'), *window],
-                     ['--out', str(REPO / 'tools/tests/cloud-logs-should-not-exist.json'), *window],
-                     [f'--out={REPO}/cloud-logs-should-not-exist.json', *window]]:
+                     *(['--out', str(p), *window] for p in inside[:-2]),
+                     [f'--out={inside[-2]}', *window], ['--out', str(inside[-1]), *window]]:
             with self.subTest(args=args):
                 run = self.run_logs([self.page([result(access_line())], None, True)], *args)
                 self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
                 self.assertEqual(self.calls(), [])
                 self.assert_nothing_personal(run.stdout + run.stderr)
-        self.assertFalse((REPO / 'tools/tests/cloud-logs-should-not-exist.json').exists())
-        self.assertFalse((REPO / 'cloud-logs-should-not-exist.json').exists())
+        for p in inside:
+            self.assertFalse(p.exists(), p)
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'repo/sub').iterdir()), [])
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'wt').iterdir()), ['.git'])
+
+    def test_library_output_never_reaches_terminal(self):
+        # 真库在 NODE_ENV=DEBUG 时把请求和回应原文 console.log 出来；假库还另外直接写终端、走 console 的各个出口
+        pages = [self.page([result(access_line()), result(f"Duplicate entry '{OPENID}'")], None, True)]
+        run = self.run_logs(pages, '--out', str(self.out), *self.WINDOW, NODE_ENV='DEBUG', FAKE_NOISY='1')
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assert_nothing_personal(run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout.splitlines()[0])['count'], 2)
+        self.assertEqual(len(run.stdout.splitlines()), 2)
+
+    def test_uncaught_exception_in_library(self):
+        pages = [{'asyncThrow': {'message': f'socket {IP4} uid {UID}', 'code': UID}}]
+        run = self.run_logs(pages, '--out', str(self.out), *self.WINDOW)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assert_nothing_personal(run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout.splitlines()[0]), {'error': 'exception', 'out': str(self.out.resolve())})
+        self.assertIn(IP4, json.loads(self.out.read_text())['message'])
+
+    def test_long_error_message_is_kept_whole(self):
+        # 原文截在 IP 或编号中间时，残缺的部分遮蔽时认不出来：结果文件里整段存下，显示时先遮再截
+        for message, leaked in [('x' * 140 + f' uid {UID} tail', UID[:5]), ('x' * 145 + f' from {IP4} tail', '203.0.113')]:
+            with self.subTest(leaked=leaked):
+                error = {'base_resp': {'ret': 0}, 'content': json.dumps({'Response': {'Error': {'Code': 'X', 'Message': message}}})}
+                run = self.run_logs([error], '--out', str(self.out), *self.WINDOW)
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertEqual(json.loads(self.out.read_text())['message'], message)
+                show = self.run_show()
+                self.assertNotIn(leaked, show.stdout)
+                self.assertIn('9f3a*' if leaked == UID[:5] else '203.0.*.*', show.stdout)
 
     def test_errors_go_to_the_file_and_replace_old_results(self):
         def api_error(code):

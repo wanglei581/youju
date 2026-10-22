@@ -94,7 +94,8 @@ def _v6(m):
         for body in (run[k + 1 :], run[k:]):
             masked = _v6_addr(body)
             if masked is not None:
-                return run[: k + 1] + masked
+                # 共用冒号、遮过后自己就以冒号开头的（"ip::ffff:…"），标签那边不再补冒号
+                return run[: k if masked.startswith(":") else k + 1] + masked
     masked = _v6_addr(run)
     return run if masked is None else masked
 
@@ -121,7 +122,7 @@ def lines(data, keys=()):
             j = {"__CONTENT__": content}
         tag = j.get("__TAG__")
         container = tag.get("container_name", "?") if isinstance(tag, dict) else "?"
-        msg = mask(str(j.get("__CONTENT__", "")).replace("\n", " "))
+        msg = mask(str(j.get("__CONTENT__", "")).replace("\r", " ").replace("\n", " "))
         if keys and not any(k in msg for k in keys):
             continue
         # 先遮再截：截断处正好落在 IP 中间时，残缺的 IP 认不出来
@@ -134,8 +135,12 @@ def main(argv):
         return 2
     with open(argv[1], encoding="utf-8") as f:
         data = json.load(f)
+    if not isinstance(data, dict):
+        print("# 这不是 cloud-logs.cjs 写下的结果文件")
+        return 1
     if "error" in data:
-        print(mask(json.dumps(data, ensure_ascii=False)))
+        # 出错原文由 cloud-logs.cjs 整段存下（截在 IP 中间就认不出了），这里先遮蔽再限长
+        print(mask(json.dumps(data, ensure_ascii=False))[:2000])
         return 1
     print(
         mask(
