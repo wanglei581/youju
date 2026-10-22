@@ -119,7 +119,7 @@
               <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
               <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
-              <view class="group-note">已选城市、区县点一下移除；区县一栏选“全部”只查市级来源。</view>
+              <view class="group-note">已选城市、区县点一下移除；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
             </block>
             <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">

@@ -1,6 +1,6 @@
 <notice-bar />
 <view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
-<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
+<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">
@@ -63,11 +63,11 @@
   <view class="label">名称（可不填）</view>
   <input class="field" value="{{form.name}}" placeholder="{{placeholder}}" maxlength="40" bindinput="nameInput" aria-label="客户名称" />
   <view class="label">地区（可多选）</view>
-  <view class="weak help">不选为不限地区；检索始终包含国家部委。</view>
+  <view class="weak help">不选为不限地区；选省包含该省已收录的城市、区县；检索始终包含国家部委。</view>
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
   <view class="label">城市与区县（省市区联动，可多选）</view>
   <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
-  <view class="weak help">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源。</view>
+  <view class="weak help">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
   <view class="weak help">{{cityCoverageNote}}</view>
   <view wx:if="{{cityError}}" class="help">{{cityError}}</view>
   <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
