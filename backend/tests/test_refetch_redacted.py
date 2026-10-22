@@ -321,14 +321,13 @@ def test_page_with_only_a_pdf(session, monkeypatch) -> None:
     assert body_of(session, doc.id) == redact_sensitive(raw)
 
 
-def test_preview_counts_what_needs_review_again(world, session) -> None:
-    docs, fake = world
-    swallowed = docs["swallowed"]
-    digest = sha256(body_of(session, swallowed.id).encode()).hexdigest()
+def _add_reviewed(session, doc_id: int) -> None:
+    """给这份文件加上已核对的字段、确认过的申报条件清单（都按现在库里的正文）和一条 AI 截止检查。"""
+    digest = sha256(body_of(session, doc_id).encode()).hexdigest()
     now = datetime(2026, 10, 3, tzinfo=UTC)
     session.add(
         DocumentField(
-            document_id=swallowed.id,
+            document_id=doc_id,
             field="support",
             value="资金补助",
             evidence="资金补助",
@@ -341,7 +340,7 @@ def test_preview_counts_what_needs_review_again(world, session) -> None:
     )
     session.add(
         ConditionList(
-            document_id=swallowed.id,
+            document_id=doc_id,
             body_hash=digest,
             status="confirmed",
             model="m",
@@ -351,9 +350,13 @@ def test_preview_counts_what_needs_review_again(world, session) -> None:
             confirmed_at=now,
         )
     )
-    session.add(
-        AICheck(document_id=swallowed.id, task="deadlines", model="m", result=[], checked_at=now)
-    )
+    session.add(AICheck(document_id=doc_id, task="deadlines", model="m", result=[], checked_at=now))
+
+
+def test_preview_counts_what_needs_review_again(world, session) -> None:
+    docs, fake = world
+    _add_reviewed(session, docs["swallowed"].id)
+    now = datetime(2026, 10, 3, tzinfo=UTC)
     # 旧正文的清单、别的文件的不算
     session.add(
         ConditionList(
@@ -395,6 +398,8 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     ) in out
     assert fake.calls == []
 
+    _add_reviewed(session, docs["swallowed"].id)
+    session.commit()
     assert cli.main(["refetch-redacted"]) == 0
     out = capsys.readouterr().out
     assert f"#{docs['swallowed'].id} 可以换成新正文" in out
@@ -405,14 +410,17 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
     assert "确认无误后加 --apply 写入" in out
     assert (
         "refetch_redacted mode=preview checked=4 fixed=1 same=1 changed=1 unavailable=1 "
-        f"missing=0 last_id={docs['gone'].id}"
+        f"missing=0 fields=1 conditions=1 ai_checks=1 last_id={docs['gone'].id}"
     ) in out
 
     assert cli.main(["refetch-redacted", "--apply"]) == 0
     out = capsys.readouterr().out
     assert "已写入：检查 4 份，已换成新正文 1 份" in out
     assert "新增待核对截止候选" in out
-    assert "refetch_redacted mode=apply checked=4 fixed=1" in out
+    assert (
+        "refetch_redacted mode=apply checked=4 fixed=1 same=1 changed=1 unavailable=1 missing=0 "
+        f"fields=1 conditions=1 ai_checks=1 candidates=1 eligibility=1 last_id={docs['gone'].id}"
+    ) in out
     assert "11月20日前" in body_of(session, docs["swallowed"].id)
 
     assert cli.main(["refetch-redacted", "--limit", "1"]) == 0
