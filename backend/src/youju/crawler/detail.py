@@ -128,11 +128,11 @@ _DIGITS = re.compile(r"\d+")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 _YMD = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 # 号码串里某一组后面跟着的字，从这一组的末尾往后匹配（空白用占有量词，一长串空格也不卡）
-_SPACES = rf"[ \t{chr(0x3000)}]*+"  # 空格、制表符、全角空格
+_SPACES = r"\s*+"  # 空格、制表符、全角空格、换行（PDF 里"2025"和"年"常被换行隔开）
 _YEAR_AFTER = re.compile(rf"{_SPACES}年|[./]\d")
-# 一两位数后面的"月""日"，后面接着的是日期才算（"10月20日""10月底前""20日前""20日，"）；
+# 一两位数后面的"月""日"，后面接着的是日期才算（"10月20日""10月底前""1 月，""20日前""20日，"）；
 # "月均""月份""日期""日均"是词，这一组照样并进账号
-_MONTH_AFTER = re.compile(rf"{_SPACES}月{_SPACES}(?:\d|[底初中末前]|[上下]旬)")
+_MONTH_AFTER = re.compile(rf"{_SPACES}月{_SPACES}(?:\d|[底初中末前]|[上下]旬|(?![{_HAN}]))")
 _DAY_AFTER = re.compile(rf"日(?:[前起止至内后]|(?![{_HAN}]))")
 _AMOUNT_AFTER = re.compile(rf"{_SPACES}[元万亿]")
 
@@ -149,13 +149,17 @@ def _date_from(values: list[str], i: int) -> bool:
 
 def _account(match: re.Match) -> str:
     """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位。第二组起
-    碰到这几种就不接：日期（"20251010""2025 10 10"）；年份（19xx、20xx）后面跟着"年"（中间可以
-    隔空格，"账号：1234567890 2025 年11月"），或跟着"."、"/"再跟数字（"2025.10.10"），或前面隔空格、
-    后面是横线和最后一组月份（"… 2025-10前"；整串都用横线分组的照样接）；一两位数后面跟着日期：
-    紧跟"日"（1–31，"20日前""20日，"），或（可以隔空格）跟"月"（1–12，"月"后面是数字、"底初中末前"
-    或"上旬""下旬"："10月20日""10月底前"）——"日期""日均""月均""月份"是词，不算；后面（可以隔空格）
-    跟"元、万、亿"而接上就超过 19 位的（旧规则最多遮 19 位，本来就接不到这一组）；第一组已经 12 位
-    以上而接上就超过 22 位的（"1202…568 1500"）。
+    碰到这几种就不接（"隔空白"指空格、制表符、全角空格、换行）：
+    - 日期（"20251010""2025 10 10"）；
+    - 年份（19xx、20xx）后面（可以隔空白）跟着"年"（"账号：1234567890 2025 年11月"），或跟着"."、
+      "/"再跟数字（"2025.10.10"），或前面隔空格、后面是横线和最后一组月份（"… 2025-10前"；整串都用
+      横线分组的照样接）；
+    - 一两位数后面跟着日期：紧跟"日"（1–31，"20日前""20日，"），或（可以隔空白）跟"月"（1–12，"月"
+      后面是数字、"底初中末前"、"上旬""下旬"或不是汉字："10月20日""10月底前""1 月，"）——"日期"
+      "日均""月均""月份"是词，不算；
+    - 后面（可以隔空白）跟"元、万、亿"而接上就超过 19 位的（旧规则最多遮 19 位，本来就接不到
+      这一组）；
+    - 第一组已经 12 位以上而接上就超过 22 位的（"1202…568 1500"）。
     后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。第一组不看后面跟的字。
     接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
     红线上的号码不能比以前漏得多。"""
@@ -292,7 +296,7 @@ def _name_like(word: str, *, after_label: bool = False, last: bool = False) -> b
     """word 像不像姓名（"张 蕾"传进来时去掉了中间的空格）。after_label：紧跟"联系人："的第一个
     像姓名的词，不看姓氏，2–4 个字，带"·"的 3–12 个字；其他的要以常见姓氏开头，2–3 个字（复姓
     4 个）。以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。
-    last：这个词是"联系人："这一行（到标点、数字、换行为止）的最后一个词。"""
+    last：这个词是"联系人："后面同一行（冒号后没换行）的最后一个词（到标点、数字、换行为止）。"""
     if (
         word in _TITLES
         or word in _COMMON_WORDS
@@ -305,7 +309,7 @@ def _name_like(word: str, *, after_label: bool = False, last: bool = False) -> b
         # "联系人："这一行的最后一个词、两个字、以常见姓氏开头的，以"路、镇、科"这类字结尾也是姓名
         # （"联系人：王镇""联系人：省科技厅高新处 张路"）；别处以单位、地名的字结尾的不当姓名
         # （"高新处""沙县"，"联系人：省科技厅 高校 张三"的"高校"）
-        return after_label and last and len(word) == 2 and surname
+        return last and len(word) == 2 and surname
     if after_label:
         return 2 <= len(word) <= 4 or ("·" in word and 3 <= len(word) <= 12)
     if "·" in word or not surname:
@@ -365,16 +369,15 @@ def _contact_names(text: str) -> list[tuple[int, int]]:
                 # 紧贴着"[姓名已脱敏]"的是旧规则吞剩的半截（"联系人及电话：中小企[姓名已脱敏]"），
                 # 不是姓名：库里按旧规则遮过的正文再过一遍不能再吞
                 break
+            # 冒号后同一行写的、这一行的最后一个词：两个字的"王镇"也算姓名（见 _name_like）
+            last = not next_line and k == len(words) - 1 and not continued
             if named:
                 # 第一个姓名后面只隔空格、顿号的，以常见姓氏开头的也遮（几个联系人）
-                if not (_NAME_GAP.fullmatch(text[spans[-1][1] : a]) and _name_like(word)):
+                gap = text[spans[-1][1] : a]
+                if not (_NAME_GAP.fullmatch(gap) and _name_like(word, last=last)):
                     break
                 spans.append((a, b))
-            elif _name_like(
-                word,
-                after_label=not next_line,
-                last=k == len(words) - 1 and not continued,
-            ):
+            elif _name_like(word, after_label=not next_line, last=last):
                 spans.append((a, b))
                 named = True
             elif word == text[a:b] and (cut := _glued_name(word)) is not None:
