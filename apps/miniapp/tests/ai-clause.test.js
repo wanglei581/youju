@@ -235,7 +235,7 @@ test('结果页渲染两节卡片、原句、企业自述、核对和底部信�
   page.onLoad({ taskId: 7 }); page.onShow(); await flush();
   const output = render(read('pages/advisor-clause/index.wxml'), page.data);
   for (const value of ['固定原文提示', '通知标题', '已核对', '核对原句', '申报对象', '申报条件', '通知要求', '企业自述',
-    '请自行对照原文', '营业收入：企业自述已过期清除', '请你自己对照判断', '这句摘错了', '看原文', '警示原文', '附件原文', '模型：模型名称｜备案号：备案编号', '第三方整理 · 非政府平台']) assert.ok(output.includes(value), value);
+    '请自行对照原文', '营业收入：企业自述已过期清除', '请你自己对照判断', '这句摘错了', '看原文', '警示原文', '附件原文', '模型：模型名称｜备案号：备案编号', '投诉举报']) assert.ok(output.includes(value), value);
   // 10/17：原文页没有段落编号，结果里不再显示"段落 P001"；附件提醒放在两节前面
   assert.doesNotMatch(output, /段落 P0/);
   assert.ok(output.indexOf('附件原文') < output.indexOf('申报对象'));

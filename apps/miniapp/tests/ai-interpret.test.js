@@ -371,7 +371,7 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   page.onLoad({ docId: '42', title: encodeURIComponent('通知 & 标题'), taskId: 7 }); page.onShow(); await flush();
   page.setData({ result: logic.resultView({ notice: '固定原文提示', items: [{ type: '对象', text: '很长的原句，完整显示。', refs: [{ pid: 'P002', quote: '很长的原句，完整显示。' }] }], missing: ['材料'], verified: [{ value: '人工核对值', quote: '核对原句' }], warning: '警示原文', attachment_notice: '附件原文' }) });
   const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
-  for (const expected of ['固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '正文里没找到：支持方式、申报条件、申报时间、申报方式、材料清单。可能写在附件里，也可能原文没写，请查看原文。', '这句摘错了', '看原文', '警示原文', '附件原文', '第三方整理 · 非政府平台']) assert.ok(output.includes(expected), expected);
+  for (const expected of ['固定原文提示', '通知 & 标题', '人工核对值', '核对原句', '很长的原句，完整显示。', '正文里没找到：支持方式、申报条件、申报时间、申报方式、材料清单。可能写在附件里，也可能原文没写，请查看原文。', '这句摘错了', '看原文', '警示原文', '附件原文', '投诉举报']) assert.ok(output.includes(expected), expected);
   assert.doesNotMatch(output, /模型：/);
   // 10/17：免责只说一次（出结果后只留吸顶的"AI 生成"提示）；不显示段落编号；附件提醒放在分类前面
   assert.doesNotMatch(output, /内部测试：摘录通知原文原句/); assert.doesNotMatch(output, /段落 P0/);
