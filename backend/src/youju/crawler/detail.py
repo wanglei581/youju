@@ -127,6 +127,14 @@ _ACCOUNT = re.compile(
 _DIGITS = re.compile(r"\d+")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 _YMD = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+# 号码串里某一组后面跟着的字，从这一组的末尾往后匹配（空白用占有量词，一长串空格也不卡）
+_SPACES = rf"[ \t{chr(0x3000)}]*+"  # 空格、制表符、全角空格
+_YEAR_AFTER = re.compile(rf"{_SPACES}年|[./]\d")
+# 一两位数后面的"月""日"，后面接着的是日期才算（"10月20日""10月底前""20日前""20日，"）；
+# "月均""月份""日期""日均"是词，这一组照样并进账号
+_MONTH_AFTER = re.compile(rf"{_SPACES}月{_SPACES}(?:\d|[底初中末前]|[上下]旬)")
+_DAY_AFTER = re.compile(rf"日(?:[前起止至内后]|(?![{_HAN}]))")
+_AMOUNT_AFTER = re.compile(rf"{_SPACES}[元万亿]")
 
 
 def _date_from(values: list[str], i: int) -> bool:
@@ -143,44 +151,42 @@ def _account(match: re.Match) -> str:
     """标签后面的一串数字（组和组之间隔一个空格或横线），从第一组起往后接，最多接到 30 位。第二组起
     碰到这几种就不接：日期（"20251010""2025 10 10"）；年份（19xx、20xx）后面跟着"年"（中间可以
     隔空格，"账号：1234567890 2025 年11月"），或跟着"."、"/"再跟数字（"2025.10.10"），或前面隔空格、
-    后面是横线和最后一组月份（"… 2025-10前"；整串都用横线分组的照样接）；一两位数后面
-    紧跟"日"、或（可以隔空格）跟"月"；后面（可以隔空格）跟"元、万、亿"而接上就超过 19 位的（旧规则
-    最多遮 19 位，本来就接不到这一组）；第一组已经 12 位以上而接上就超过 22 位的
-    （"1202…568 1500"）。
+    后面是横线和最后一组月份（"… 2025-10前"；整串都用横线分组的照样接）；一两位数后面跟着日期：
+    紧跟"日"（1–31，"20日前""20日，"），或（可以隔空格）跟"月"（1–12，"月"后面是数字、"底初中末前"
+    或"上旬""下旬"："10月20日""10月底前"）——"日期""日均""月均""月份"是词，不算；后面（可以隔空格）
+    跟"元、万、亿"而接上就超过 19 位的（旧规则最多遮 19 位，本来就接不到这一组）；第一组已经 12 位
+    以上而接上就超过 22 位的（"1202…568 1500"）。
     后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。第一组不看后面跟的字。
     接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
     红线上的号码不能比以前漏得多。"""
     label, run = match.group(1), match.group(2)
-    whole = match.group()
+    whole, text, base = match.group(), match.string, match.start(2)
     groups = list(_DIGITS.finditer(run))
     values = [group.group() for group in groups]
-    tail = match.string[match.end() : match.end() + 4]
     total = taken = 0
     for i, group in enumerate(groups):
         size = len(values[i])
         if i:
-            rest = run[group.end() : group.end() + 4] if group.end() < len(run) else tail
-            following = rest[:1]
-            spaced = rest.lstrip(" \t\u3000")[:2]
-            year = bool(_YEAR.fullmatch(values[i]))
+            # 这一组在原文里的结尾：后面是分隔符和下一组，或者（最后一组）号码串后面的正文
+            end = base + group.end()
             if (
                 _date_from(values, i)
                 or (
-                    year
+                    _YEAR.fullmatch(values[i])
                     and (
-                        spaced[:1] == "年"
-                        or (following in (".", "/") and rest[1:2].isdigit())
+                        _YEAR_AFTER.match(text, end)
                         or (
                             run[group.start() - 1] == " "
-                            and following == "-"
+                            and text[end : end + 1] == "-"
                             and i + 2 == len(groups)
                             and len(values[i + 1]) <= 2
                             and 1 <= int(values[i + 1]) <= 12
                         )
                     )
                 )
-                or (size <= 2 and (following == "日" or spaced[:1] == "月"))
-                or (spaced[:1] in ("元", "万", "亿") and total + size > 19)
+                or (size <= 2 and 1 <= int(values[i]) <= 31 and _DAY_AFTER.match(text, end))
+                or (size <= 2 and 1 <= int(values[i]) <= 12 and _MONTH_AFTER.match(text, end))
+                or (_AMOUNT_AFTER.match(text, end) and total + size > 19)
                 or (len(values[0]) >= 12 and total + size > 22)
             ):
                 break
@@ -244,7 +250,9 @@ _COMMON_WORDS = frozenset(
     )
 )  # fmt: skip
 # 以常见姓氏开头、不带"省、市"的省份和地级市名（"石家庄 0311-…"这样按城市列的联系电话）：
-# 不当姓名。别的省市名不以这些姓氏开头，本来就不会被当成姓名；县、区名太多，不列
+# 不当姓名。别的省市名不以这些姓氏开头，本来就不会被当成姓名；县、区名太多，不列。以"州"结尾的
+# 地级市（"杭州"）一般按单位字结尾排除，"联系人："后面最后一个词的两字例外（见 _name_like）不看
+# 单位字，所以也列上
 _PLACE_NAMES = frozenset(
     (
         "江苏", "江西", "安徽", "甘肃", "宁夏", "吉林",
@@ -254,6 +262,8 @@ _PLACE_NAMES = frozenset(
         "岳阳", "常德", "张家界", "娄底", "江门", "湛江", "揭阳", "桂林", "成都", "巴中",
         "安顺", "毕节", "曲靖", "林芝", "安康", "商洛", "金昌", "白银", "武威", "张掖",
         "石嘴山", "吴忠", "伊犁", "甘孜", "楚雄", "文山", "甘南", "黄南",
+        "徐州", "常州", "苏州", "杭州", "温州", "宿州", "池州", "郑州", "荆州", "惠州", "梅州",
+        "柳州", "贺州", "兰州",
     )
 )  # fmt: skip
 # "联系人张三 0571-…"这样标签后面没写冒号、紧贴着姓名的：标签后面那截当姓名看（同单位名）
@@ -278,10 +288,11 @@ def _inline_space(char: str) -> bool:
     return char.isspace() and char not in "\r\n"
 
 
-def _name_like(word: str, *, after_label: bool = False) -> bool:
+def _name_like(word: str, *, after_label: bool = False, last: bool = False) -> bool:
     """word 像不像姓名（"张 蕾"传进来时去掉了中间的空格）。after_label：紧跟"联系人："的第一个
     像姓名的词，不看姓氏，2–4 个字，带"·"的 3–12 个字；其他的要以常见姓氏开头，2–3 个字（复姓
-    4 个）。以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。"""
+    4 个）。以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。
+    last：这个词是"联系人："这一行（到标点、数字、换行为止）的最后一个词。"""
     if (
         word in _TITLES
         or word in _COMMON_WORDS
@@ -291,9 +302,10 @@ def _name_like(word: str, *, after_label: bool = False) -> bool:
         return False
     surname = word[0] in _SURNAMES or word.startswith(_COMPOUND_SURNAMES)
     if word.endswith(_UNIT_ENDS):
-        # "联系人："后面两个字、以常见姓氏开头的，以"路、镇、科"这类字结尾也是姓名
-        # （"联系人：王镇"）；别处以单位、地名的字结尾的不当姓名（"高新处""沙县"）
-        return after_label and len(word) == 2 and surname
+        # "联系人："这一行的最后一个词、两个字、以常见姓氏开头的，以"路、镇、科"这类字结尾也是姓名
+        # （"联系人：王镇""联系人：省科技厅高新处 张路"）；别处以单位、地名的字结尾的不当姓名
+        # （"高新处""沙县"，"联系人：省科技厅 高校 张三"的"高校"）
+        return after_label and last and len(word) == 2 and surname
     if after_label:
         return 2 <= len(word) <= 4 or ("·" in word and 3 <= len(word) <= 12)
     if "·" in word or not surname:
@@ -344,8 +356,11 @@ def _contact_names(text: str) -> list[tuple[int, int]]:
         # 冒号后面换了行才写的（表格的"联系人"一格，下一格才是内容，也可能是表头）：第一个词就要像
         # 姓名、以常见姓氏开头，不跳过前面的词
         next_line = "\n" in label.group()
+        # 这一行到"[姓名已脱敏]"为止的（第一遍遮的时候后面还有姓名）：哪个词都不是这一行的最后一个词
+        continued = text.startswith("[姓名已脱敏]", end)
         named = False
-        for a, b, word in _words(text, label.end(), end):
+        words = _words(text, label.end(), end)
+        for k, (a, b, word) in enumerate(words):
             if text.startswith("[姓名已脱敏]", b):
                 # 紧贴着"[姓名已脱敏]"的是旧规则吞剩的半截（"联系人及电话：中小企[姓名已脱敏]"），
                 # 不是姓名：库里按旧规则遮过的正文再过一遍不能再吞
@@ -355,7 +370,11 @@ def _contact_names(text: str) -> list[tuple[int, int]]:
                 if not (_NAME_GAP.fullmatch(text[spans[-1][1] : a]) and _name_like(word)):
                     break
                 spans.append((a, b))
-            elif _name_like(word, after_label=not next_line):
+            elif _name_like(
+                word,
+                after_label=not next_line,
+                last=k == len(words) - 1 and not continued,
+            ):
                 spans.append((a, b))
                 named = True
             elif word == text[a:b] and (cut := _glued_name(word)) is not None:
