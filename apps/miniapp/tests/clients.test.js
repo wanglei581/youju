@@ -86,7 +86,7 @@ test('最多 20 个客户；旧版本存的关键词不再保存', () => {
   utils.saveClients(Array.from({ length: 20 }, (_, i) => ({ ...CLIENT, id: `c${i}`, keywords: ['高新技术企业'] })));
   assert.ok(local.stored.youjuLocalClientsV1.every((c) => !('keywords' in c)));
   const page = clientsPage(local); page.onShow(); page.edit(tap({})); assert.equal(page.data.editing, false);
-  assert.equal(local.calls.at(-1), '最多 20 家，更多请用工具中心批量处理');
+  assert.equal(local.calls.at(-1), '最多 20 家，更多请用批量工具处理');
   assert.throws(() => utils.saveClients(Array.from({ length: 21 }, (_, i) => ({ ...CLIENT, id: `c${i}` }))), /20/);
 });
 

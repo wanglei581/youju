@@ -279,7 +279,7 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
   }
   // 列表行：按钮放在"复制原文链接"后面；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
   const rowWxml = read('components/doc-row/index.wxml');
-  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
+  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" action="\{\{aiAction\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
   assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('复制原文链接'));
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': { copyLink() {} }, '../../utils/repost.js': require('../utils/repost.js') });
   row.data.doc = { id: '42', title: '通知', kind: '申报通知', issuer: '山东省科学技术厅', date: '2026-10-16', ai: { interpret: true } };
@@ -369,8 +369,9 @@ test('搜索"只看能 AI 解读的"：从 AI 首页带 ai=1 进来只管这一�
   assert.equal(closed.page.data.aiOnly, false); assert.equal(closed.calls.at(-1).ai, undefined);
   root = render('pages/search/index.wxml', closed.page.data);
   assert.equal(findAll(root, (n) => n.tag === 'ai-only').length, 0);
-  // 文字都在组件里
-  assert.match(read('components/ai-only/index.wxml'), /只看能 AI 解读的通知/);
+  // 文字都在组件里（10/22 起按从哪来写，默认这一句）
+  assert.match(read('components/ai-only/index.js'), /const DEFAULT_ONLY = '只看能 AI 解读的';/);
+  assert.match(read('components/ai-only/index.wxml'), /\{\{only\}\}通知/);
   assert.doesNotMatch(read('pages/search/index.wxml').replace(/<!--[\s\S]*?-->/g, ''), /\bAI\b/);
 });
 
@@ -477,13 +478,16 @@ test('AI 首页：两项能力各写今天还剩几次，下面是刚才看的�
   h.page.findDoc(); h.page.allRecent(); h.page.clauseLast(); h.page.allRecords();
   h.page.openRecord({ currentTarget: { dataset: { id: '3', kind: 'clause' } } }); h.page.openRecord({ currentTarget: { dataset: { id: '1', kind: 'interpret' } } });
   h.page.openDoc({ currentTarget: { dataset: { id: '42' } } }); h.page.help(); h.page.report();
+  // 两项能力那一行（10/22）：AI 解读今天还有次数，点了去选一份通知；条款对照今天用完了，点了不动
+  h.page.pick({ currentTarget: { dataset: { kind: 'interpret' } } }); h.page.pick({ currentTarget: { dataset: { kind: 'clause' } } });
   // 条款对照今天的次数用完了（remaining.clause 为 0）：刚才看的那份不给"条款对照"
   assert.deepEqual(h.navigations, [
     '/pages/search/index?ai=1',
     `/pages/search/index?kind=${encodeURIComponent('申报通知')}&time=${encodeURIComponent('近 7 天')}&ai=1`,
-    '/pages/advisor-tasks/index',
+    '/pages/advisor-tasks/index?type=ai',
     '/pages/advisor-clause/index?taskId=3', '/pages/advisor-interpret/index?taskId=1',
     '/pages/detail/index?id=42', '/pages/help/index', '/pages/complaint/index',
+    '/pages/search/index?ai=1&for=interpret',
   ]);
   // 说明展开：适用人群、场合、用途、不适用、保存多久
   h.page.toggleScope();
@@ -706,22 +710,17 @@ test('Codex 第 1 轮：AI 首页确认开着之前页头没有 AI 字样；刚�
   h.page.clauseLast(); assert.deepEqual(h.navigations, []);
 });
 
-test('Codex 第 1 轮：工具中心在后台处理不了、全站满了时不给开始的按钮、写明原因；"和我的企业对一下"统一叫"条款对照"', async () => {
-  for (const [extra, text] of [[{ available: false }, 'AI 暂时不可用，请稍后再试。'], [{ siteFull: true }, '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'], [{}, '']]) {
+test('Codex 第 1 轮（10/22 改）：批量工具页（原工具中心）不再放 AI——AI 能用、后台处理不了、全站满了都没有 AI 的卡片和提示；"和我的企业对一下"统一叫"条款对照"', async () => {
+  for (const extra of [{ available: false }, { siteFull: true }, {}]) {
     const page = load('pages/advisor/index.js', {
       '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), advisorTasks: () => Promise.resolve({ items: [] }) },
-      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+      '../../utils/advisor.js': advisor, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
     }, { wx: { setNavigationBarTitle() {} } });
-    page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await settle();
+    page.onShow(); await settle();
     const root = render('pages/advisor/index.wxml', page.data);
     const out = textOf(root);
-    if (text) {
-      assert.ok(out.includes(text), text);
-      assert.equal(findAll(root, (n) => n.tag === 'button' && /开始解读|开始对照|去找通知/.test(textOf(n))).length, 0);
-      assert.doesNotMatch(out, /今天还能用/);
-    } else {
-      assert.match(out, /开始解读/); assert.match(out, /今天还能用 5 次/);
-    }
+    assert.doesNotMatch(out, /AI|总用量|今天还能用|条款对照/, JSON.stringify(extra));
+    assert.equal(findAll(root, (n) => n.tag === 'button' && /开始解读|开始对照|去找通知/.test(textOf(n))).length, 0);
     page.onHide();
   }
   for (const file of ['pages/advisor/index.wxml', 'pages/advisor-interpret/index.wxml', 'pages/advisor-clause/index.wxml', 'components/ai-entry/index.wxml']) {
@@ -742,7 +741,7 @@ test('Codex 第 1 轮：任务列表按错误代码写失败原因（不重复"�
     '今天 AI 的总用量满了，明天 0 点恢复。', 'AI 暂时不可用，请稍后再试。', 'AI 暂时不可用，请稍后再试。', '通知正文已变化，请重新解读', '名单文件读不出来', '',
   ]);
   assert.deepEqual(views.map((v) => v.refundNote), ['这次不算次数', '这次不算次数', '这次不算次数', '这次不算次数', '这次不算次数', '']);
-  const list = textOf(render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, aiEnabled: true, items: plain(views), busyId: null }));
+  const list = textOf(render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, aiEnabled: true, items: plain(views), busyId: null, current: 'all', counts: { all: views.length, ai: 5, tools: 1 }, filters: [] }));
   assert.doesNotMatch(list, /功能未开放|今天的 AI 使用次数已满/);
   assert.match(list, /今天 AI 的总用量满了，明天 0 点恢复。 这次不算次数/);
   // 解读页看到排队后被移出白名单（AI_OFF）的结果：让 AI 板块重新问一次
@@ -838,7 +837,7 @@ test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身
       assert.equal(p.data.gate, 'used'); assert.equal(created, 0);
       const out = textOf(render(`pages/${page}/index.wxml`, p.data));
       assert.ok(out.includes(`今天的${name} 5 次用完了，明天 0 点恢复。`), out); assert.doesNotMatch(out, /以前的结果/);
-      p.records(); assert.deepEqual(urls, ['/pages/advisor-tasks/index']);
+      p.records(); assert.deepEqual(urls, ['/pages/advisor-tasks/index?type=ai'], '去我的记录，先筛好 AI 的');
       p.onHide();
     }
   }
@@ -1117,7 +1116,7 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
   assert.match(textOf(card), /我的 AI 记录没有加载出来/);
   assert.equal(findAll(card, tapsTo('retry')).length, 1, '有重试');
   assert.equal(findAll(card, tapsTo('allRecords')).length, 1, '有"全部"');
-  h.page.allRecords(); assert.equal(h.navigations.at(-1), '/pages/advisor-tasks/index');
+  h.page.allRecords(); assert.equal(h.navigations.at(-1), '/pages/advisor-tasks/index?type=ai');
   // 点重试、这次加载出来了：错误去掉、列出记录
   tasksOk = true; h.page.retry(); await settle();
   assert.equal(h.page.data.recordsError, '');
@@ -1578,10 +1577,10 @@ test('Codex 第 15 轮：AI 对这个人开着时，工具中心、我的记录�
       if (page.onUnload) page.onUnload();
     }
   }
-  // 真的 consent.js：tools 写"使用工具（含 AI 解读和条款对照）前"，只能去读全文
+  // 真的 consent.js：tools 写"使用批量工具和 AI 解读、条款对照前"（10/22 工具中心改名批量工具），只能去读全文
   const c = consentWith(control(OPEN), { me: () => Promise.resolve({ agreed: null }) });
   c.mod.ensureConsent({ purpose: 'tools' }); await settle();
-  assert.match(c.modals[0].content, /^使用工具（含 AI 解读和条款对照）前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。$/);
+  assert.match(c.modals[0].content, /^使用批量工具和 AI 解读、条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。$/);
   assert.equal(c.modals[0].confirmText, '阅读全文');
   c.modals[0].success({ confirm: true }); assert.deepEqual(c.navigations, ['/pages/agreement/index?consent=1&for=ai']);
   // 不认的用途：照旧通用弹窗
@@ -2062,53 +2061,41 @@ test('Codex 第 24 轮：AI 首页每次显示都作废在途的开放状态答�
   assert.deepEqual(real.access.current(), OPEN);
 });
 
-test('Codex 第 24 轮：工具中心停在页面上跨过零点重新问；某一项今天用完了写明天恢复、不给开始的按钮，另一项照常；后台没给次数时不写"0 次"', async () => {
+test('Codex 第 24 轮（10/22 改）：批量工具页停在页面上跨过零点重新问（额度、加量体验的每天次数）；AI 用完了、满了都不在这一页写', async () => {
   const page = (caps, day = null) => {
+    let asked = 0;
     const p = load('pages/advisor/index.js', {
-      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(typeof caps === 'function' ? caps() : caps), advisorTasks: () => Promise.resolve({ items: [] }), forgetCapabilities: () => { p.forgot = (p.forgot || 0) + 1; } },
-      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
+      '../../utils/api.js': {
+        advisorCapabilities: () => { asked += 1; p.asked = asked; return Promise.resolve(typeof caps === 'function' ? caps() : caps); },
+        advisorTasks: () => Promise.resolve({ items: [] }), forgetCapabilities: () => { p.forgot = (p.forgot || 0) + 1; },
+        advisorStatus: () => Promise.resolve({ enabled: true, quota: { compare: { limit: 3, used: 1, maxRows: 50 }, track: { limit: 3, used: 0, maxRows: 50 } } }),
+      },
+      '../../utils/advisor.js': advisor, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
       ...(day ? { '../../utils/daywatch.js': day } : {}),
     }, { wx: { setNavigationBarTitle() {}, navigateTo: (o) => { p.urls = (p.urls || []).concat(o.url); } } });
     return p;
   };
-  // 解读用完了、对照还有 3 次（从通知进来，带着通知编号）
-  const p = page(ON({ remaining: { interpret: 0, clause: 3 } }));
-  p.onLoad({ docId: '42', title: '通知' }); p.setData({ context: { docId: '42', title: '通知', label: '通知' } });
-  p.onShow(); await settle();
-  let root = render('pages/advisor/index.wxml', p.data);
-  let out = textOf(root);
-  const buttons = (r) => findAll(r, (n) => n.tag === 'button').map((n) => textOf(n).trim());
-  assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复/); assert.doesNotMatch(out, /今天还能用 0 次/);
-  assert.ok(!buttons(root).includes('开始解读') && !buttons(root).includes('去找通知'), '用完了不给开始的按钮');
-  assert.match(out, /今天还能用 3 次/); assert.ok(buttons(root).includes('开始对照'));
-  p.interpret(); assert.equal(p.urls, undefined, '用完了点不进去');
-  p.clause(); assert.equal(p.urls.length, 1);
-  // 反过来：对照用完了、解读还有 2 次
-  const q = page(ON({ remaining: { interpret: 2, clause: 0 } }));
-  q.onLoad({ docId: '42', title: '通知' }); q.setData({ context: { docId: '42', title: '通知', label: '通知' } });
-  q.onShow(); await settle();
-  root = render('pages/advisor/index.wxml', q.data); out = textOf(root);
-  assert.match(out, /今天的条款对照 5 次用完了，明天 0 点恢复/); assert.ok(!buttons(root).includes('开始对照'), '对照用完了不给开始对照');
-  assert.match(out, /今天还能用 2 次/); assert.ok(buttons(root).includes('开始解读'));
-  q.clause(); assert.equal(q.urls, undefined, '用完了点不进去');
-  // 后台没给次数：不写"今天还能用 0 次"，按钮照常
-  const u = page(ON({ remaining: {} }));
-  u.onLoad({}); u.onShow(); await settle();
-  root = render('pages/advisor/index.wxml', u.data); out = textOf(root);
-  assert.doesNotMatch(out, /今天还能用|用完了/); assert.ok(buttons(root).includes('去找通知'));
-  // 停在页面上跨过零点：丢掉旧答复、重新问，满了的提示跟着变
-  let full = true; const day = dayStub();
-  const z = page(() => (full ? ON({ siteFull: true }) : ON()), day);
-  z.onLoad({}); z.onShow(); await settle();
-  assert.match(textOf(render('pages/advisor/index.wxml', z.data)), /今天 AI 的总用量满了/);
-  const forgotBefore = z.forgot;
-  full = false; day.turn(); await settle();
-  assert.equal(z.forgot, forgotBefore + 1);
-  assert.doesNotMatch(textOf(render('pages/advisor/index.wxml', z.data)), /总用量满了/);
+  const withData = (extra) => Object.assign(ON(extra), { data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} } });
+  // AI 解读用完了、全站满了：这一页都不写（在 AI 首页、解读页、对照页写）
+  for (const extra of [{ remaining: { interpret: 0, clause: 3 } }, { siteFull: true }]) {
+    const p = page(withData(extra));
+    p.onShow(); await settle();
+    const out = textOf(render('pages/advisor/index.wxml', p.data));
+    assert.doesNotMatch(out, /用完了|今天还能用|总用量|AI/, JSON.stringify(extra));
+    assert.match(out, /本月比对剩余 2\/3 次/);
+    p.onHide();
+  }
+  // 停在页面上跨过零点：丢掉旧答复、重新问
+  const day = dayStub();
+  const z = page(withData({}), day);
+  z.onShow(); await settle();
+  const forgotBefore = z.forgot; const askedBefore = z.asked;
+  day.turn(); await settle();
+  assert.equal(z.forgot, forgotBefore + 1); assert.equal(z.asked, askedBefore + 1);
   z.onHide(); assert.ok(day.stopped() >= 1, '离开时停掉');
 });
 
-test('Codex 第 25 轮：后台给的次数是 null、空串、true/false、字符串时当"不知道"，不当 0——四个页面都不写"用完了"、不拦下', async () => {
+test('Codex 第 25 轮：后台给的次数是 null、空串、true/false、字符串时当"不知道"，不当 0——AI 首页、解读页、对照页都不写"用完了"、不拦下', async () => {
   assert.equal(advisor.remainingOf({ remaining: { interpret: 3.7 } }, 'interpret'), 3);
   assert.equal(advisor.remainingOf({ remaining: { interpret: -1 } }, 'interpret'), 0);
   for (const odd of [null, '', false, true, '3', undefined, NaN]) {
@@ -2119,14 +2106,6 @@ test('Codex 第 25 轮：后台给的次数是 null、空串、true/false、字�
     h.page.onShow(); await settle();
     assert.equal(h.page.data.kinds.some((k) => k.out), false, `首页 ${String(odd)}`); assert.equal(h.page.data.interpretOpen, true);
     assert.doesNotMatch(h.text(), /用完了|今天还剩/);
-    // 工具中心
-    const t = load('pages/advisor/index.js', {
-      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps), advisorTasks: () => Promise.resolve({ items: [] }) },
-      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
-    }, { wx: { setNavigationBarTitle() {} } });
-    t.onLoad({}); t.onShow(); await settle();
-    assert.equal(t.data.interpretOut, false, `工具中心 ${String(odd)}`); assert.doesNotMatch(textOf(render('pages/advisor/index.wxml', t.data)), /用完了|今天还能用/);
-    t.onHide();
     // 解读页、对照页：不拦下
     for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
       const deps = {
@@ -2151,14 +2130,6 @@ test('Codex 第 25、26 轮：次数用完的提示只写明天恢复，不管�
     const h = hubPage({ caps: usedUp, tasks: () => Promise.resolve({ items }) });
     h.page.onShow(); await settle();
     assert.match(h.text(), /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(h.text(), /以前的结果/);
-    const t = load('pages/advisor/index.js', {
-      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(usedUp), advisorTasks: () => Promise.resolve({ items }) },
-      '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': control(OPEN),
-    }, { wx: { setNavigationBarTitle() {} } });
-    t.onLoad({}); t.onShow(); await settle();
-    const out = textOf(render('pages/advisor/index.wxml', t.data));
-    assert.match(out, /今天的AI 解读 5 次用完了，明天 0 点恢复。/); assert.doesNotMatch(out, /以前的结果/);
-    t.onHide();
   }
 });
 

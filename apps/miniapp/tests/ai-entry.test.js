@@ -14,7 +14,10 @@ const { render, assertAiGuarded } = require('./helpers/wxml.js');
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks'];
+// 有 AI 内容的工具页。批量工具页（pages/advisor，原工具中心）10/22 起不放 AI（AI 只留一个家，在底栏「AI」），
+// 按普通页面查"没有 AI 字样"；没同意协议、连不上、关着时的提示照样和这几页一起测（TOOL_PAGES）
+const AI_PAGES = ['advisor-interpret', 'advisor-clause', 'advisor-tasks'];
+const TOOL_PAGES = ['advisor'].concat(AI_PAGES);
 // 每个用例独立加载 API；失败重试/缓存定时器必须随用例一起结束。
 const liveTimers = new Set();
 test.afterEach(() => { liveTimers.forEach(clearTimeout); liveTimers.clear(); });
@@ -128,7 +131,7 @@ test('入口带当前通知进入；通知没加载完（blocked）时不显示�
   query.title = encodeURIComponent(query.title); // 小程序 onLoad 里再解码一次
   assert.deepEqual(context.read(query), { docId: '42', title: '通知：科技 & 申报（50%）', label: '当前通知：通知：科技 & 申报（50%）' });
   button.navigations[0].complete(); assert.equal(button.view.data.navigating, false);
-  assert.equal(context.url({}), '/pages/advisor/index'); assert.equal(context.read({}), null);
+  assert.equal(context.url, undefined, '不再带着通知打开工具中心（10/22 改成批量工具，只放批量工具）'); assert.equal(context.read({}), null);
   // 这份文件只能做条款对照（详情接口 ai.interpret 为假）时直接进条款对照
   const onlyClause = fab(api, { docId: '43', docTitle: '只能对照', ai: { interpret: false, clause: true, reason: null } }); await flush();
   // 同一件事只用一个名字（D-075）：条款对照，按钮写"开始对照"
@@ -207,7 +210,7 @@ test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部�
   }
 });
 
-test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，开放后顶部醒目标注内部测试和 AI 生成', async () => {
+test('AI 页面（解读、对照、我的记录）：没开放时只显示“暂时没有可用工具”，开放后顶部醒目标注内部测试和 AI 生成；批量工具页开不开都没有 AI 字样', async () => {
   const interpret = require('../utils/ai-interpret.js');
   const clause = require('../utils/ai-clause.js');
   const format = require('../utils/format.js');
@@ -222,17 +225,20 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
     const wx = { setNavigationBarTitle: ({ title }) => titles.push(title), getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) };
     const dependencies = { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context,
       '../../utils/ai-interpret.js': interpret, '../../utils/ai-clause.js': clause, '../../utils/format.js': format };
-    for (const name of AI_PAGES) {
+    for (const name of TOOL_PAGES) {
       const page = load(`pages/${name}/index.js`, dependencies, { wx });
       if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
       page.onShow(); await flush(); await flush();
       const output = render(read(`pages/${name}/index.wxml`), page.data);
-      if (enabled) {
+      if (name === 'advisor') {
+        // 批量工具页：标题和首页入口同名；这里批量工具关着，AI 开着也只写"暂时没有可用工具"
+        assert.equal(titles.at(-1), '批量工具');
+        assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/);
+        assert.match(output, /暂时没有可用工具/);
+      } else if (enabled) {
         // 标注在页面最上方（notice-bar 之后、其他内容之前）
         assert.ok(output.startsWith(NOTICE), name);
-        // 工具中心只有 AI 时标题也叫"工具中心"（10/18 Codex 审阅：和入口同名）；页面最上方仍有内部测试标注
         if (name === 'advisor-tasks') assert.equal(titles.at(-1), '我的记录');
-        else if (name === 'advisor') assert.equal(titles.at(-1), '工具中心');
         else assert.match(titles.at(-1), /内部测试/, name);
       } else {
         assert.doesNotMatch(output, /AI|内部测试|政策解读|条款对照/, name);
@@ -252,7 +258,7 @@ test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI �
   const internal = load('utils/advisor.js', { './config.js': { aiInternal: true }, './ai-reasons.js': reasons });
   assert.equal(internal.AI_LABEL, 'AI 生成 · 内部测试：');
   assert.equal(internal.aiTitle('政策解读'), '政策解读 · 内部测试');
-  // 正式版的四个页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
+  // 正式版的 AI 页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
   for (const name of AI_PAGES) {
     const titles = [];
     const api = { advisorCapabilities: () => Promise.resolve(caps(true)), advisorTasks: () => Promise.resolve({ items: [] }), advisorTask: (id) => Promise.resolve({ id, status: 'running' }) };
@@ -280,7 +286,7 @@ test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI �
   assert.equal(consentWith(true, false).consentOpen(), true);
 });
 
-test('内部测试标注：后端 disclosure 带说明文字时优先显示后端的，否则用固定文字', async () => {
+test('内部测试标注：后端 disclosure 带说明文字时优先显示后端的，否则用固定文字（我的记录页顶部）', async () => {
   assert.equal(`AI 生成 · ${helpers.INTERNAL_PREFIX}${helpers.internalNotice(undefined)}`, NOTICE);
   for (const value of [null, {}, { modelLabel: '模型', filingNo: '编号' }, { text: '  ' }, '', 3]) {
     assert.equal(`AI 生成 · ${helpers.INTERNAL_PREFIX}${helpers.internalNotice(value)}`, NOTICE);
@@ -289,11 +295,10 @@ test('内部测试标注：后端 disclosure 带说明文字时优先显示后�
   assert.equal(helpers.internalNotice({ text: '后端说明', modelLabel: '模型' }), '后端说明');
   assert.equal(helpers.internalNotice({ text: '内部测试：后端说明' }), '后端说明');
   const api = { advisorCapabilities: () => Promise.resolve(caps(true, { disclosure: { text: '后端给出的 AI 生成说明', modelLabel: '模型甲', filingNo: '编号乙' } })), advisorTasks: () => Promise.resolve({ items: [] }) };
-  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context }, { wx: { setNavigationBarTitle() {} } });
+  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { setNavigationBarTitle() {} } });
   page.onLoad({}); page.onShow(); await flush(); await flush();
-  const output = render(read('pages/advisor/index.wxml'), page.data);
+  const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
   assert.match(output, /内部测试：后端给出的 AI 生成说明/); assert.doesNotMatch(output, /摘录通知原文原句，可能不全/);
-  assert.match(output, /模型：模型甲｜备案号：编号乙/);
 });
 
 test('任务页取消、删除走线上接口并刷新；进行中的任务轮询直到结束', async () => {
@@ -431,9 +436,9 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
   }
 });
 
-test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试；关着时工具中心、我的记录只写"暂时没有可用工具"，解读页、对照页回首页（D-075：不写 AI、不留"不可用"页）', async () => {
+test('正式版批量工具页和 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试；关着时批量工具页、我的记录只写"暂时没有可用工具"，解读页、对照页回首页（D-075：不写 AI、不留"不可用"页）', async () => {
   for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', '暂时没有可用工具', '']]) {
-    for (const name of AI_PAGES) {
+    for (const name of TOOL_PAGES) {
       const switched = [];
       let consentCalls = 0; let capabilityCalls = 0;
       const api = { advisorCapabilities: () => { capabilityCalls += 1; return Promise.resolve({ ai_advisor: { enabled: false, features: [], remaining: {} }, reason }); }, advisorTasks: () => Promise.resolve({ items: [] }) };
@@ -468,8 +473,11 @@ test('投诉举报页：写明可以投诉什么、怎么提交、处理流程�
   const output = read('pages/complaint/index.wxml');
   for (const text of ['可以投诉举报什么', '怎么提交', '处理流程和时限', '15 个工作日内答复处理结果', '联系邮箱']) assert.ok(output.includes(text), text);
   assert.ok(JSON.parse(read('app.json')).pages.includes('pages/complaint/index'));
-  for (const name of ['advisor', 'advisor-interpret', 'advisor-clause']) {
+  for (const name of ['advisor-interpret', 'advisor-clause']) {
     assert.match(read(`pages/${name}/index.wxml`), /bindtap="report">投诉举报</, name);
     assert.match(read(`pages/${name}/index.js`), /\/pages\/complaint\/index/, name);
   }
+  // AI 首页底部也有；批量工具页（原工具中心）10/22 起不放 AI，投诉举报跟着 AI 走
+  assert.match(read('pages/ai/index.wxml'), /bindtap="report"[^>]*>投诉举报/);
+  assert.doesNotMatch(read('pages/advisor/index.wxml'), /投诉举报/);
 });

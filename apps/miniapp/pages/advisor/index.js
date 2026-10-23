@@ -1,66 +1,49 @@
-// 统一工具中心：数据工具与 AI 分别按能力授权，免费额度不依赖付费开关。
+// 批量工具（原"工具中心"，10/22 第 0 步改名）：批量名单比对、客户相关通知表和它们的记录。
+// AI 只留一个家：AI 解读、条款对照和它们的提示、说明都在底栏「AI」里，这一页不出现（AI 开着时底栏已经有「AI」）。
+// 免费额度不依赖付费开关。
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
-const { taskView, internalNotice, allowedKinds, dataKinds, allKinds, gateState, remainingOf, AI_LABEL, FAB_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, gateText } = require('../../utils/advisor.js');
-const context = require('../../utils/tool-context.js');
+const { taskView, dataKinds, gateState, recordsUrl, OFF_TEXT, GATE_TEXT, gateText } = require('../../utils/advisor.js');
 const boost = require('../../utils/boost.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
+// "我的记录"卡片列最近几条批量工具的记录
+const RECENT = 3;
+
 Page({
-  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: null, clauseRemaining: null, interpretOut: false, clauseOut: false,
-    aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false,
+  data: { toolsEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', gate: 'off', gateText: OFF_TEXT, loading: true,
+    recent: [], recentLoading: true, recentError: '',
     // 批量工具卡片（D-076）：在售时放在最上面——本月免费还剩几次、两档价格、"了解批量工具"；买过的写使用期到哪天。
     // 没在售时为 null，不显示，正式版开卖前看不到
     payCard: null },
-  onLoad(query) { this.setData({ context: context.read(query) }); },
-  // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，AI 暂时不可用、满了跟着变，第 23 轮）
+  // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，第 23 轮）
   onShow() {
     this.visible = true;
     if (api.forgetCapabilities) api.forgetCapabilities();
-    // 停在这一页跨过零点：今天还剩几次、全站满没满重新问（工具中心不会自己开始任务，第 24 轮）
+    // 停在这一页跨过零点：额度、加量体验的每天次数重新问（这一页不会自己开始任务，第 24 轮）
     watchDay(this, () => { if (this.visible) { if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); } });
     this.load();
   },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); },
   onUnload() { this.onHide(); },
-  clearContext() { this.setData({ context: null }); },
-  toggleScope() { this.setData({ showScope: !this.data.showScope }); },
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
-    wx.setNavigationBarTitle({ title: '工具中心' });
-    this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '', payCard: null });
+    wx.setNavigationBarTitle({ title: '批量工具' });
+    this.setData({ loading: true, toolsEnabled: false, recent: [], dataStatus: '', dataError: '', payCard: null });
     this.payOn = false; this.offer = null; this.quota = null; this.quotaDone = false;
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
-      const ai = res.ai_advisor || {};
-      const kinds = allowedKinds(ai);
-      const aiEnabled = ai.enabled === true && kinds.length > 0;
       const data = dataKinds(res.data_tools);
-      const toolsEnabled = aiEnabled || data.length > 0;
-      const disclosure = ai.disclosure || {};
-      const aiGate = aiEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
+      const toolsEnabled = data.length > 0;
       const gate = toolsEnabled ? '' : (res.reason === 'consent' || res.reason === 'offline' ? res.reason : gateState(res));
-      this.setData({ loading: false, aiGate, aiGateText: gateText(aiGate, res), toolsEnabled, dataEnabled: data.length > 0, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), aiEnabled, gate, gateText: gateText(gate, res),
-        interpretEnabled: aiEnabled && kinds.includes('interpret'),
-        clauseEnabled: aiEnabled && kinds.includes('clause'),
-        // D-075：后台处理不了、全站今天满了时不给开始的按钮，写明原因
-        aiPaused: aiEnabled && ai.available === false,
-        aiFull: aiEnabled && ai.siteFull === true,
-        // 今天还剩几次：后台没给就不写；用完了写明天恢复、不给开始的按钮（第 24 轮）
-        remaining: remainingOf(ai, 'interpret'),
-        clauseRemaining: remainingOf(ai, 'clause'),
-        interpretOut: remainingOf(ai, 'interpret') === 0,
-        clauseOut: remainingOf(ai, 'clause') === 0,
-        aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
-        disclosure: aiEnabled && disclosure.modelLabel && disclosure.filingNo ? `模型：${disclosure.modelLabel}｜备案号：${disclosure.filingNo}` : '' });
-      this.kinds = allKinds(res);
+      this.setData({ loading: false, toolsEnabled, compareEnabled: data.includes('compare'), trackEnabled: data.includes('track'), gate, gateText: gateText(gate, res) });
+      this.kinds = data;
       // 在售（服务端说对这个人、这个小程序包在卖）才取价格；批量工具本身没开时不提购买
-      this.payOn = data.length > 0 && !!(res.pay && res.pay.enabled === true);
-      if (toolsEnabled) this.loadRecent(epoch);
-      if (data.length) this.loadQuota(epoch);
+      this.payOn = toolsEnabled && !!(res.pay && res.pay.enabled === true);
+      if (toolsEnabled) { this.loadRecent(epoch); this.loadQuota(epoch); }
       if (this.payOn) this.loadOffer(epoch);
     }).catch(() => {
-      if (this.visible && epoch === this.epoch) this.setData({ loading: false, toolsEnabled: false, dataEnabled: false, aiEnabled: false, gate: 'offline', gateText: GATE_TEXT.offline, disclosure: '', aiNotice: '' });
+      if (this.visible && epoch === this.epoch) this.setData({ loading: false, toolsEnabled: false, gate: 'offline', gateText: GATE_TEXT.offline });
     });
   },
   loadQuota(epoch = this.epoch) {
@@ -135,7 +118,7 @@ Page({
   },
   // 正式版：没同意协议的先去同意，回来自动刷新；连不上的重试
   consent() {
-    if (this.data.gate !== 'consent' && this.data.aiGate !== 'consent') return;
+    if (this.data.gate !== 'consent') return;
     if (this.consenting) return;
     this.consenting = true;
     // 先确认 AI 对这个人开没开（直接打开这一页时可能还没问过）：开着就写明同意以后 AI 也能用、只能读完两份全文再同意；
@@ -149,39 +132,24 @@ Page({
     });
   },
   reload() { if (this.data.gate === 'offline') this.load(); },
-  search() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/search/index' }); },
-  report() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/complaint/index' }); },
+  // 只列批量工具的记录（AI 的记录在 AI 首页"我的 AI 记录"，D-075 是同一份记录、按入口筛）
   loadRecent(epoch = this.epoch) {
     const kinds = this.kinds || [];
     this.setData({ recentLoading: true, recentError: '' });
     api.advisorTasks().then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
       const recent = (res.items || []).filter((task) => kinds.includes(task.kind)).slice()
-        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id).slice(0, 3).map(taskView);
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id).slice(0, RECENT).map(taskView);
       this.setData({ recentLoading: false, recent });
     }).catch((err) => { if (this.visible && epoch === this.epoch) this.setData({ recentLoading: false, recentError: err.message }); });
   },
   retryRecent() { this.loadRecent(); },
-  interpret() {
-    if (!this.data.interpretEnabled || this.data.interpretOut || !this.data.context || !this.data.context.docId) return;
-    const { docId, title } = this.data.context;
-    wx.navigateTo({ url: `/pages/advisor-interpret/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
-  },
-  clause() {
-    if (!this.data.clauseEnabled || this.data.clauseOut || !this.data.context || !this.data.context.docId) return;
-    const { docId, title } = this.data.context;
-    wx.navigateTo({ url: `/pages/advisor-clause/index?docId=${encodeURIComponent(docId)}&title=${encodeURIComponent(title)}` });
-  },
+  // 点一条记录、"查看全部"：去"我的记录"，先筛好批量工具的（可以切回全部）；下载、取消、删除都在那一页。
+  // 点的是哪一条，带上编号，那一页把它标出来
   tasks(e) {
     if (!this.data.toolsEnabled) return;
     const id = e && e.currentTarget && e.currentTarget.dataset.id;
     const task = id != null && this.data.recent.find((item) => String(item.id) === String(id));
-    if (task && task.kind === 'clause' && this.data.clauseEnabled) {
-      wx.navigateTo({ url: `/pages/advisor-clause/index?taskId=${encodeURIComponent(id)}` }); return;
-    }
-    if (task && task.kind === 'interpret' && this.data.interpretEnabled) {
-      wx.navigateTo({ url: `/pages/advisor-interpret/index?taskId=${encodeURIComponent(id)}` }); return;
-    }
-    wx.navigateTo({ url: '/pages/advisor-tasks/index' });
+    wx.navigateTo({ url: task ? `${recordsUrl('tools')}&taskId=${encodeURIComponent(task.id)}` : recordsUrl('tools') });
   },
 });

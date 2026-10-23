@@ -207,12 +207,11 @@ test('直达页面和工具入口须 enabled 严格为 true 且 features 含 cla
     const output = render(read('pages/advisor-clause/index.wxml'), page.data);
     assert.equal(output.includes('使用须知'), allowed); if (!allowed) assert.doesNotMatch(output, /AI|企业情况|条款对照/);
     assert.equal(created, 0); page.onUnload();
+    // 批量工具页（原工具中心）10/22 起不放条款对照（AI 只留一个家，在底栏「AI」）：开着、关着都没有 AI 的字样
     const tools = load('pages/advisor/index.js', api, { navigateTo: ({ url }) => urls.push(url) });
-    tools.onLoad({ docId: 42 }); tools.onShow(); await flush(); tools.clause();
+    tools.onShow(); await flush();
     const text = render(read('pages/advisor/index.wxml'), tools.data);
-    assert.equal(text.includes('条款对照'), allowed); assert.equal(urls.length, allowed ? 1 : 0);
-    if (allowed) { assert.match(text, /今天还能用 2 次（失败、拒答不扣次数）/); tools.clearContext(); assert.doesNotMatch(render(read('pages/advisor/index.wxml'), tools.data), /开始对照/); }
-    if (enabled !== true) assert.doesNotMatch(text, /AI|内部测试/); tools.onUnload();
+    assert.doesNotMatch(text, /AI|条款对照|内部测试|开始对照/); assert.equal(urls.length, 0); tools.onUnload();
   }
 });
 
@@ -248,17 +247,21 @@ test('任务页、最近任务均过滤未授权 clause；授权后类型名正�
     const allowed = enabled === true && features.includes('clause'); const urls = [];
     const tasks = [{ id: 7, kind: 'clause', status: 'done', hasResult: true }, { id: 8, kind: 'compare', status: 'done', rowCount: 2, hasFile: true }];
     const api = { advisorCapabilities: () => Promise.resolve(caps(enabled, features)), advisorTasks: () => Promise.resolve({ items: tasks }) };
-    for (const [file, handler] of [['advisor-tasks', 'openTask'], ['advisor', 'tasks']]) {
-      const page = load(`pages/${file}/index.js`, api, { navigateTo: ({ url }) => urls.push(url) });
-      if (page.onLoad) page.onLoad({}); page.onShow(); await flush();
-      const output = render(read(`pages/${file}/index.wxml`), page.data); assert.equal(output.includes('条款对照'), allowed);
-      if (enabled !== true) assert.doesNotMatch(output, /AI|内部测试/);
-      assert.doesNotMatch(output, /名单比对/);
-      const before = urls.length; page[handler]({ currentTarget: { dataset: { id: 7 } } });
-      if (allowed) assert.equal(urls.at(-1), '/pages/advisor-clause/index?taskId=7');
-      else assert.equal(urls.length, before);
-      if (page.onHide) page.onHide();
-    }
+    const page = load('pages/advisor-tasks/index.js', api, { navigateTo: ({ url }) => urls.push(url) });
+    page.onLoad({}); page.onShow(); await flush();
+    const output = render(read('pages/advisor-tasks/index.wxml'), page.data); assert.equal(output.includes('条款对照'), allowed);
+    if (enabled !== true) assert.doesNotMatch(output, /AI|内部测试/);
+    assert.doesNotMatch(output, /名单比对/);
+    const before = urls.length; page.openTask({ currentTarget: { dataset: { id: 7 } } });
+    if (allowed) assert.equal(urls.at(-1), '/pages/advisor-clause/index?taskId=7');
+    else assert.equal(urls.length, before);
+    page.onHide();
+    // 批量工具页的"我的记录"只列批量工具的（10/22），对照记录不在那里，点了也不进对照页
+    const tools = load('pages/advisor/index.js', api, { navigateTo: ({ url }) => urls.push(url) });
+    tools.onShow(); await flush();
+    assert.doesNotMatch(render(read('pages/advisor/index.wxml'), tools.data), /条款对照|AI/);
+    assert.deepEqual(plain(tools.data.recent), []);
+    tools.onHide();
   }
 });
 

@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const idempotency = require('../../utils/data-idempotency.js');
-const { DATA_KINDS, dataKinds } = require('../../utils/advisor.js');
+const { DATA_KINDS, dataKinds, recordsUrl } = require('../../utils/advisor.js');
 const { pasteRows, personalInfoLines, toolConsent, quotaView, quotaStale } = require('../../utils/data-tools.js');
 const pay = require('../../utils/pay.js');
 
@@ -115,7 +115,8 @@ Page({
   consent() { require('../../utils/consent.js').ensureConsent().then((ok) => { if (ok && !this.dead) this.load(); }); },
   terms() { wx.navigateTo({ url: '/pages/advisor-terms/index' }); },
   toggleFillHelp() { this.setData({ showFillHelp: !this.data.showFillHelp }); },
-  tasks() { wx.redirectTo({ url: '/pages/advisor-tasks/index' }); },
+  // "我的记录"从这里进去先筛好批量工具的（D-075 同一份记录，可以切回全部）
+  tasks() { wx.redirectTo({ url: recordsUrl('tools') }); },
   refreshKey() {
     this.key = `data-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   },
@@ -228,7 +229,7 @@ Page({
       if (this.dead || this.taskOwner !== request.owner) return;
       this.file = null;
       this.setData({ submitting: false, accepted: true, text: '', fileName: '', rowCount: 0 });
-      if (this.visible) wx.redirectTo({ url: `/pages/advisor-tasks/index?taskId=${encodeURIComponent(task.id)}`, fail: () => wx.showToast({ title: '已提交，请到“我的记录”查看', icon: 'none' }) });
+      if (this.visible) wx.redirectTo({ url: `${recordsUrl('tools')}&taskId=${encodeURIComponent(task.id)}`, fail: () => wx.showToast({ title: '已提交，请到“我的记录”查看', icon: 'none' }) });
     }).catch((err) => {
       if (!request.existing && err.status >= 400 && err.status < 500 && err.status !== 408) {
         try { idempotency.confirm(wx, request); } catch (ignored) { /* 存储失败保留旧键 */ }

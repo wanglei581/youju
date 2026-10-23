@@ -40,8 +40,9 @@
       <view class="connect-note">{{serviceStarting ? '正在连接，比平时慢一点，请稍等…' : '正在连接…'}}</view>
     </view>
     <block wx:else>
-      <!-- 两项能力一直各占一行（D-075 第四节）：全站满了、后台处理不了时置灰，右边写状态，下面统一写原因 -->
-      <view wx:for="{{kinds}}" wx:key="kind" class="ability {{item.out || gate ? 'ability--out' : ''}}">
+      <!-- 两项能力一直各占一行（D-075 第四节）：全站满了、后台处理不了时置灰，右边写状态，下面统一写原因。
+           能用时整行能点（10/22 第 0 步）：去选一份能解读的通知，行上的按钮就是这一项 -->
+      <view wx:for="{{kinds}}" wx:key="kind" class="ability {{item.out || gate ? 'ability--out' : ''}}" data-kind="{{item.kind}}" bindtap="pick" aria-role="{{item.open ? 'button' : 'text'}}" aria-label="{{item.open ? item.name + '：选一份通知' : item.name}}">
         <view class="ability-main">
           <text class="ability-name">{{item.name}}</text>
           <text class="ability-desc">{{item.desc}}</text>
@@ -49,6 +50,7 @@
         <text wx:if="{{gate === 'full'}}" class="ability-left">今天满了</text>
         <text wx:elif="{{gate === 'paused'}}" class="ability-left">暂时不可用</text>
         <text wx:elif="{{!item.out && item.remaining !== null}}" class="ability-left">今天还剩 <text class="ability-num">{{item.remaining}}</text> 次</text>
+        <t-icon wx:if="{{item.open}}" name="chevron-right" size="32rpx" color="#86909C" />
         <view wx:if="{{!gate && item.out}}" class="ability-out">{{item.outText}}。</view>
       </view>
       <view wx:if="{{gate}}" class="gate">

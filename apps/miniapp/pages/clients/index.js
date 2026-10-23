@@ -149,7 +149,7 @@ Page({
     const id = e && e.currentTarget.dataset.id;
     const current = this.data.clients.find((c) => c.id === id);
     if (!current && this.data.clients.length >= MAX_CLIENTS) {
-      wx.showToast({ title: '最多 20 家，更多请用工具中心批量处理', icon: 'none' }); return;
+      wx.showToast({ title: '最多 20 家，更多请用批量工具处理', icon: 'none' }); return;
     }
     const form = normalize(current || {});
     this.setData({ editing: true, form, error: '', placeholder: `客户 ${current ? this.data.clients.indexOf(current) + 1 : this.data.clients.length + 1}` });

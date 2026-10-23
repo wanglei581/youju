@@ -8,45 +8,8 @@
     <view wx:if="{{payCard.offerLine}}" class="advisor-text">{{payCard.offerLine}}</view>
     <button wx:if="{{payCard.button}}" class="advisor-button btn-primary" bindtap="buyPass">{{payCard.button}}</button>
   </view>
-  <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
-  <view wx:if="{{!aiEnabled && aiGate === 'consent'}}" class="card advisor-card">
-    <view>{{aiGateText}}</view><button class="advisor-button" bindtap="consent">阅读并同意后查看其他工具</button>
-  </view>
-  <!-- 10/17：AI 放最前面，同一件事只用一个名字（AI 解读）；给机构用的批量名单工具放后面 -->
-  <view wx:if="{{aiEnabled && context}}" class="card advisor-card advisor-context">
-    <view class="context-row"><text class="context-label">{{context.label}}</text><button class="context-clear" bindtap="clearContext">清除</button></view>
-  </view>
-  <view wx:if="{{aiEnabled && (aiPaused || aiFull)}}" class="card advisor-card">
-    <view>{{aiPaused ? 'AI 暂时不可用，请稍后再试。' : '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。'}}</view>
-  </view>
-  <view wx:if="{{aiEnabled && interpretEnabled && !aiPaused && !aiFull}}" class="card advisor-card">
-    <view class="advisor-title">AI 解读</view>
-    <view class="advisor-text">打开一份申报通知，在“要点”下面的“{{fabText}}”卡片里点“开始解读”：约半分钟把申报对象、条件、时间、材料等原文原句分好类，每条都能回原文核对。</view>
-    <view wx:if="{{interpretOut}}" class="advisor-text muted">今天的AI 解读 5 次用完了，明天 0 点恢复。</view>
-    <view wx:elif="{{remaining !== null}}" class="advisor-text muted">今天还能用 {{remaining}} 次（失败、拒答不扣次数）</view>
-    <block wx:if="{{!interpretOut}}">
-      <button wx:if="{{context && context.docId}}" class="advisor-button btn-primary" bindtap="interpret">开始解读</button>
-      <button wx:else class="advisor-button btn-primary" bindtap="search">去找通知</button>
-    </block>
-  </view>
-  <view wx:if="{{aiEnabled && clauseEnabled && !aiPaused && !aiFull}}" class="card advisor-card">
-    <view class="advisor-title">条款对照</view>
-    <view class="advisor-text">解读出结果以后，在下面的“条款对照”里填上企业情况：把通知的申报条件和你填的企业情况并排列出，方便逐条自查，不判断能否申报。</view>
-    <view wx:if="{{clauseOut}}" class="advisor-text muted">今天的条款对照 5 次用完了，明天 0 点恢复。</view>
-    <view wx:elif="{{clauseRemaining !== null}}" class="advisor-text muted">今天还能用 {{clauseRemaining}} 次（失败、拒答不扣次数）</view>
-    <button wx:if="{{!clauseOut && context && context.docId}}" class="advisor-button" bindtap="clause">开始对照</button>
-  </view>
+  <!-- 10/22（第 0 步）：AI 只留一个家。AI 解读、条款对照和它们的说明都在底栏「AI」里，这一页只放批量工具 -->
   <view class="card advisor-card">
-    <view class="advisor-title">我的记录</view>
-    <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
-    <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
-    <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有记录。</view>
-    <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
-    </button>
-    <button class="advisor-button" bindtap="tasks">全部记录</button>
-  </view>
-  <view wx:if="{{dataEnabled}}" class="card advisor-card">
     <view class="advisor-title">批量处理客户名单（机构用）</view>
     <view class="advisor-text muted">{{dataStatus || '正在读取额度…'}}</view>
     <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
@@ -54,15 +17,19 @@
     <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能追溯官方原文。未查到不等于没有入选。</view><button class="advisor-button btn-primary" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
     <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按省份和可选的关键词、支持方式、城市、区县整理近 90 天申报通知，不判断能否申报，可下载 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
   </view>
-  <!-- 适用范围（暂行办法第十条要求公开）收进"说明"，点开可见 -->
-  <view wx:if="{{aiEnabled}}" class="card advisor-card">
-    <view class="advisor-text link" bindtap="toggleScope" aria-role="button">{{showScope ? '收起说明' : '说明：适用人群、场合和用途'}}</view>
-    <block wx:if="{{showScope}}">
-      <view wx:for="{{scope}}" wx:key="*this" class="advisor-text">{{item}}</view>
-    </block>
+  <!-- 只列批量工具的记录（D-075：记录是同一份，按入口筛；AI 的在 AI 首页"我的 AI 记录"），标题写明，和"我的 AI 记录"对称 -->
+  <view class="card advisor-card">
+    <view class="advisor-title">我的批量工具记录</view>
+    <view wx:if="{{recentLoading}}" class="advisor-text muted">正在加载…</view>
+    <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
+    <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有记录，提交名单后结果会保存在这里。</view>
+    <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks" aria-label="{{item.kindLabel}} · {{item.stateLabel}}：去我的记录看这一条">
+      <view class="recent-main"><view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.time}}<text wx:if="{{item.rowCount}}"> · 提交 {{item.rowCount}} 家</text></view></view>
+      <t-icon name="chevron-right" size="32rpx" color="#86909C" />
+    </button>
+    <!-- 没有记录时不放：点进去也是空的。进去先筛好批量工具的（标题已经写明是批量工具的记录） -->
+    <button wx:if="{{!recentLoading && (recent.length || recentError)}}" class="advisor-button" bindtap="tasks">查看全部</button>
   </view>
-  <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
-  <view wx:if="{{aiEnabled}}" class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>
 <block wx:else>
   <view class="card advisor-card muted">
@@ -72,7 +39,7 @@
   </view>
   <!-- 10/18 验收：没同意协议前也先说明这里有什么、免费怎么算，第一次来的人知道为什么要同意 -->
   <view wx:if="{{gate === 'consent'}}" class="card advisor-card">
-    <view class="advisor-title">工具中心有什么</view>
+    <view class="advisor-title">批量工具能做什么</view>
     <view class="advisor-text">批量名单比对：一次粘贴或上传多家企业的名称或统一社会信用代码，查上过哪些已收录的名单。</view>
     <view class="advisor-text">客户相关通知表：按客户的省份、城市等整理近 90 天的申报通知，可以下载 Excel。</view>
     <view class="advisor-text muted">每月有免费次数，不需要购买。登录只用微信身份，不要手机号。</view>

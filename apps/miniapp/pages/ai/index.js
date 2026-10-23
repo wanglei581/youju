@@ -1,11 +1,12 @@
 // AI 首页（D-075 第四节）：底栏第 5 格。第一屏不放空白提问框：两项能力各一行写清做什么、今天还剩几次，
-// 下面直接是通知（刚才看的、近 7 天能解读的申报通知），再是我的 AI 记录和联系客服。
+// 能用时点那一行去选一份通知（搜索"只看能 AI 解读的"）；下面直接是通知（刚才看的、近 7 天能解读的申报通知），
+// 再是我的 AI 记录和联系客服。
 // 看得到板块和能提交任务分开：没同意协议的人照样能看通知列表，两项能力换成同意入口。
 // AI 对这个人没开着（关闭、不在白名单，utils/ai-access.js 说了算）：直接回首页，不写"暂未开放"（创始人 10/19）。
 // 不自动替用户解读任何一份，都由用户自己点（每天次数有限）。
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
-const { taskView, allowedKinds, remainingOf, AI_LABEL, SCOPE } = require('../../utils/advisor.js');
+const { taskView, allowedKinds, remainingOf, recordsUrl, AI_LABEL, SCOPE } = require('../../utils/advisor.js');
 const { disclosureLine } = require('../../utils/ai-interpret.js');
 const context = require('../../utils/tool-context.js');
 const { ensureConsent } = require('../../utils/consent.js');
@@ -279,17 +280,21 @@ Page({
   },
 
   // 按钮和拦下原因 = 这次能力接口的结果 + utils/ai-access.js 现在说后台能不能处理，两样谁后变都按最新的算：
-  // 后台处理不了时"AI 解读""条款对照"都收起，能用、全站满了的情况都改写"暂时不可用"；恢复了照能力接口的结果放出来
+  // 后台处理不了时"AI 解读""条款对照"都收起，能用、全站满了的情况都改写"暂时不可用"；恢复了照能力接口的结果放出来。
+  // 两项能力那两行跟着变：能开始新的那一项才能点（open）
   applyCaps() {
     const caps = this.capsResult;
     if (!caps) return;
     const can = access.canOpen();
     const paused = !can && (caps.gate === '' || caps.gate === 'full');
+    const interpretOpen = can && caps.interpret;
+    const clauseOpen = can && caps.clause;
     this.setData({
       gate: paused ? 'paused' : caps.gate,
       gateText: paused ? GATE_TEXT.paused : caps.gateText,
-      interpretOpen: can && caps.interpret,
-      clauseOpen: can && caps.clause,
+      interpretOpen,
+      clauseOpen,
+      kinds: (this.data.kinds || []).map((row) => Object.assign({}, row, { open: !caps.gate && !row.out && (row.kind === 'interpret' ? interpretOpen : clauseOpen) })),
     });
     this.showRecent();
   },
@@ -326,6 +331,15 @@ Page({
     wx.navigateTo({ url: '/pages/search/index?ai=1' });
   },
 
+  // 两项能力那一行点了：先去选一份通知（10/22 第 0 步：原来这两行点不了，条款对照也没有清楚的选通知的路）。
+  // 搜索"只看能 AI 解读的"，行上的按钮按这一项写（AI 解读、条款对照），点了直接进解读页、对照页
+  pick(e) {
+    const kind = e.currentTarget.dataset.kind;
+    const row = (this.data.kinds || []).find((item) => item.kind === kind);
+    if (!row || !row.open || !access.canOpen()) return;
+    wx.navigateTo({ url: `/pages/search/index?ai=1&for=${kind}` });
+  },
+
   allRecent() {
     wx.navigateTo({ url: RECENT_ALL });
   },
@@ -345,8 +359,9 @@ Page({
     wx.navigateTo({ url: `/pages/${page}/index?taskId=${encodeURIComponent(id)}` });
   },
 
+  // "我的记录"是同一份（D-075），从这里进去先筛好 AI 的，可以切回全部
   allRecords() {
-    wx.navigateTo({ url: '/pages/advisor-tasks/index' });
+    wx.navigateTo({ url: recordsUrl('ai') });
   },
 
   help() {

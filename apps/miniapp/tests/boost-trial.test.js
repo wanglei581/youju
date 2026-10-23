@@ -9,7 +9,6 @@ const boost = require('../utils/boost.js');
 const helpers = require('../utils/advisor.js');
 const idempotency = require('../utils/data-idempotency.js');
 const terms = require('../content/advisor-terms.js');
-const context = require('../utils/tool-context.js');
 const { render, textOf, findAll, tapsTo } = require('./wxml-render.js');
 
 const root = path.join(__dirname, '..');
@@ -364,12 +363,12 @@ test('确认页：用过了、使用期内时说明原因，不给开始；没�
   assert.deepEqual(lone.nav, ['back', '/pages/advisor-form/index']); lone.page.onUnload();
 });
 
-test('工具中心：体验中写体验的次数，申报季写起止日期', async () => {
+test('批量工具页（原工具中心）：体验中写体验的次数，申报季写起止日期', async () => {
   const api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off' }),
     advisorStatus: () => Promise.resolve(status({ used: 3, limit: 5, maxRows: 500, trial: trialActive(4), seasonInfo: season() })), advisorTasks: () => Promise.resolve({ items: [] }) };
-  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context, '../../utils/boost.js': boost },
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/boost.js': boost },
     { wx: { setNavigationBarTitle() {} } });
-  page.onLoad({}); page.onShow(); await flush(); await flush();
+  page.onShow(); await flush(); await flush();
   const text = textOf(render('pages/advisor/index.wxml', page.data));
   assert.match(text, /加量体验中，到 (2026年)?10月23日 10:00 结束：每次最多 500 家，今天还能提交 6 次/);
   assert.match(text, /申报季加量：10月20日至10月25日/);

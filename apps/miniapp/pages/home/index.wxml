@@ -36,13 +36,13 @@
   </view>
   <view wx:if="{{loginOpen}}" class="entry" data-url="/pages/advisor/index" bindtap="goEntry">
     <view class="tile tile--blue"><t-icon name="app" size="44rpx" color="#FFFFFF" /></view>
-    <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
+    <text class="entry-name">批量工具</text><text class="entry-sub">一次处理多家</text>
   </view>
 </view>
 
-<!-- 申报季加量（D-070 ⑤）：提前一周公布起止日期，文字和工具中心、批量工具页同一句（utils/boost.js 的 seasonLine）。
-     没有这项活动、批量工具没开、取不到时不显示；不提购买、不加红点、不弹窗；点了去工具中心 -->
-<view wx:if="{{seasonText}}" class="season" data-url="/pages/advisor/index" bindtap="goEntry" aria-role="button" aria-label="批量处理客户名单（机构用）：{{seasonText}}。去工具中心">
+<!-- 申报季加量（D-070 ⑤）：提前一周公布起止日期，文字和批量工具页、提交名单页同一句（utils/boost.js 的 seasonLine）。
+     没有这项活动、批量工具没开、取不到时不显示；不提购买、不加红点、不弹窗；点了去批量工具页 -->
+<view wx:if="{{seasonText}}" class="season" data-url="/pages/advisor/index" bindtap="goEntry" aria-role="button" aria-label="批量处理客户名单（机构用）：{{seasonText}}。去批量工具">
   <t-icon name="calendar" size="36rpx" color="#2A5CE0" />
   <view class="season-body">
     <view class="season-title">批量处理客户名单（机构用）</view>

@@ -15,10 +15,20 @@ const INTERNAL_PREFIX = '内部测试：';
 const FAB_TEXT = 'AI 解读';
 // 任务列表（原"任务中心""我的任务""全部任务""最近任务"）统一叫这个，入口在"我的"页
 const RECORDS_TEXT = '我的记录';
+// 记录是同一份（D-075），每条标明是哪一种：ai 是 AI 解读、条款对照，tools 是批量工具（批量名单比对、客户相关通知表）
+const RECORD_TYPES = { ai: 'AI', tools: '批量工具' };
+function recordType(kind) {
+  if (Object.prototype.hasOwnProperty.call(KINDS, kind)) return 'ai';
+  return Object.prototype.hasOwnProperty.call(DATA_KINDS, kind) ? 'tools' : '';
+}
+// "我的记录"从哪进来先筛好哪一种（可以切回全部）：AI 的页面带 ai，批量工具的页面带 tools，"我的"不带（全部）
+function recordsUrl(type) {
+  return Object.prototype.hasOwnProperty.call(RECORD_TYPES, type) ? `/pages/advisor-tasks/index?type=${type}` : '/pages/advisor-tasks/index';
+}
 // 用不了时的提示。分三种：没同意协议（引导同意）、连不上服务器（给重试）、功能关着。
 // 功能关着时内测包、正式版都只写"暂时没有可用工具"，不提 AI（D-075：AI 关着时任何页面没有 AI 字样；
 // 从旧链接打开解读页、对照页时直接回首页）。
-// 没同意通用协议时数据工具和 AI 一起不可用（capabilities 403），工具中心、任务中心共用这句，不写 AI。
+// 没同意通用协议时数据工具和 AI 一起不可用（capabilities 403），批量工具页、我的记录共用这句，不写 AI。
 const OFF_TEXT = '暂时没有可用工具';
 const GATE_TEXT = {
   consent: '使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》。',
@@ -97,8 +107,11 @@ function taskView(task) {
   const stamp = task.createdAt && Date.parse(task.createdAt);
   const dataTask = Object.prototype.hasOwnProperty.call(DATA_KINDS, task.kind);
   const expired = Boolean(task.expiresAt && Date.parse(task.expiresAt) <= Date.now());
+  const type = recordType(task.kind);
   return Object.assign({}, task, {
     kindLabel: KINDS[task.kind] || DATA_KINDS[task.kind] || task.kind,
+    recordType: type,
+    recordTypeLabel: RECORD_TYPES[type] || '',
     stateLabel: STATES[task.status] || task.status,
     time: Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ') : '',
     terminal: ['done', 'failed', 'cancelled'].includes(task.status),
@@ -113,11 +126,11 @@ function taskView(task) {
   });
 }
 
-// 今天还剩几次（AI 首页、工具中心、解读页、对照页共用）：后台给的是数才算（取整、不小于 0）；
+// 今天还剩几次（AI 首页、解读页、对照页共用）：后台给的是数才算（取整、不小于 0）；
 // 没给、给的是 null、空串、true/false 都当不知道（null），不当 0，免得误写"用完了"、拦下还能用的（第 25 轮）
 function remainingOf(ai, kind) {
   const value = ai && ai.remaining ? ai.remaining[kind] : undefined;
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload, remainingOf };
+module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, RECORD_TYPES, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, recordType, recordsUrl, taskView, taskViews, blockDownload, remainingOf };

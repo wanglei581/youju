@@ -299,23 +299,19 @@ test('入口与入口页实际渲染：关闭无 AI、开放才显示，数据�
     Object.assign(fab, fab.methods); fab.lifetimes.attached.call(fab); await flush();
     const text = render(read('components/ai-entry/index.wxml'), { ...fab.data, blocked: false });
     assert.equal(text.startsWith('AI 解读') && text.includes('开始解读'), aiEnabled); if (!aiEnabled) assert.equal(text, '');
-    const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': advisor, '../../utils/advisor.js': helpers, '../../utils/boost.js': require('../utils/boost.js') },
+    // 批量工具页（原工具中心，10/22 第 0 步）：只放批量工具和它们的记录；AI 开不开都没有 AI 的卡片、说明和记录
+    const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/boost.js': require('../utils/boost.js') },
       { wx: { setNavigationBarTitle: ({ title }) => { navigationTitle = title; } } });
-    page.onLoad({ docId: '42', title: '通知' }); page.onShow(); await flush();
+    page.onShow(); await flush();
     const rendered = render(read('pages/advisor/index.wxml'), page.data);
-    if (aiEnabled) {
-      assert.match(rendered, /内部测试：摘录通知原文原句/); assert.match(rendered, /今天还能用 3 次（失败、拒答不扣次数）/); assert.match(rendered, /开始解读/);
-      assert.match(rendered, /模型：模型名称｜备案号：登记编号/);
-      assert.deepEqual(page.data.recent.map((task) => task.kind).sort(), dataEnabled ? ['compare', 'interpret'] : ['interpret']);
-    } else {
-      assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试/); assert.equal(page.data.recent.length, dataEnabled ? 1 : 0);
-    }
+    assert.doesNotMatch(rendered, /AI|政策解读|模型：|内部测试|条款对照|开始解读/);
+    assert.deepEqual(plain(page.data.recent.map((task) => task.kind)), dataEnabled ? ['compare'] : []);
     assert.equal(rendered.includes('批量名单比对'), dataEnabled);
-    assert.equal(navigationTitle, '工具中心');
-    if (aiEnabled) { page.clearContext(); const noContext = render(read('pages/advisor/index.wxml'), page.data); assert.match(noContext, /打开一份申报通知，在“要点”下面的“AI 解读”卡片里点“开始解读”/); assert.match(noContext, /去找通知/); }
+    assert.equal(navigationTitle, '批量工具');
     page.onHide();
   }
-  for (const file of ['components/ai-entry/index.wxml', 'pages/advisor/index.wxml']) assertAiGuarded(read(file));
+  assertAiGuarded(read('components/ai-entry/index.wxml'));
+  assert.doesNotMatch(read('pages/advisor/index.wxml').replace(/<!--[\s\S]*?-->/g, ''), /\bAI\b/);
 });
 
 test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知也不创建任务', async () => {

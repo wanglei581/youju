@@ -1,12 +1,6 @@
-// AI 内测入口带上当前通知（编号、标题）；没有通知时打开入口页，只能看任务。
+// 解读页、对照页带上当前通知（编号、标题）。原来还能带着通知打开工具中心（url），10/22 工具中心改成只放批量工具，去掉了
 function decode(value) {
   try { return decodeURIComponent(value); } catch (e) { return value; }
-}
-
-function url(properties = {}) {
-  const base = '/pages/advisor/index';
-  if (properties.docId) return `${base}?docId=${encodeURIComponent(properties.docId)}&title=${encodeURIComponent(properties.docTitle || '')}`;
-  return base;
 }
 
 // 详情页的"AI 解读"直接进解读页（10/17：不再先进工具页）；解读结果下面"和我的企业对一下"进条款对照
@@ -25,4 +19,4 @@ function read(query = {}) {
   return { docId: decode(String(query.docId)), title, label: `当前通知：${title}` };
 }
 
-module.exports = { url, interpretUrl, clauseUrl, read };
+module.exports = { interpretUrl, clauseUrl, read };

@@ -1,1 +1,1 @@
-<view wx:if="{{shown}}" class="ai-chip" catchtap="open" aria-role="button" aria-label="AI 解读：{{docTitle}}">AI 解读</view>
+<view wx:if="{{shown}}" class="ai-chip" catchtap="open" aria-role="button" aria-label="{{label}}：{{docTitle}}">{{label}}</view>

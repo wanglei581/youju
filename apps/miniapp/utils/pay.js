@@ -58,7 +58,7 @@ function invoiceType(res) {
   const value = res && typeof res.invoiceType === 'string' ? res.invoiceType.trim() : '';
   return value && !/【|待/.test(value) ? value : '';
 }
-// 到期前 3 天的提示（D-070 第二节"在哪里买"③）：不发消息，只在批量工具页、购买页写一句
+// 到期前 3 天的提示（D-070 第二节"在哪里买"③）：不发消息，只在提交名单页、购买页写一句
 function expiryNotice(pass, now = Date.now()) {
   if (!pass || pass.active !== true) return '';
   const end = Date.parse(pass.expiresAt);
