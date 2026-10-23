@@ -8,6 +8,7 @@ import tempfile
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 
@@ -341,6 +342,116 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     return 0
 
 
+def _short_lines(lines: list[str]) -> str:
+    return " | ".join(line[:30] for line in lines[:3]) + (" …" if len(lines) > 3 else "")
+
+
+def _impact_text(impact) -> str:
+    parts = [
+        (impact.approved_fields, "已核对的支持方式 {} 条（转待重新核对）"),
+        (impact.confirmed_conditions, "已确认的申报条件 {} 份（不再对外，重抽后重新确认）"),
+        (impact.confirmed_reposts, "确认过的转发组成员 {} 个（组转待复核）"),
+        (impact.ai_results, "用户的 AI 解读结果 {} 份（显示“通知正文已变化，请重新解读”）"),
+        (impact.lost_quotes, "已核对截止的原句在新正文里没有了 {} 条（要人看）"),
+        (impact.ai_checks, "按旧正文做的后台 AI 复查 {} 项（删掉，下一轮重查）"),
+    ]
+    return "，".join(text.format(n) for n, text in parts if n) or "没有"
+
+
+def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
+    """一次性：重新打开原网页，按现在的规则重取正文（10/22 正文混进网页上的字）；默认只预览。"""
+    from youju.crawler.body_refresh import Impact, refresh_bodies, survey
+
+    if args.survey:
+        # 只读、不联网：按来源数正文带网页字样的份数，挑要重抓的网站
+        with session_factory()() as session:
+            rows = survey(session)
+        for row in rows:
+            if not row.hits:
+                continue
+            s = row.source
+            host = (urlsplit(s.url).hostname or "").lower()
+            print(
+                f"  #{s.id} {s.province} {s.dept_full_name} {s.column_name}（{host}）："
+                f"抓成功 {row.ok} 份，正文带网页字样 {row.hits} 份"
+            )
+            print(f"refetch_bodies survey source={s.id} host={host} ok={row.ok} hits={row.hits}")
+        print(
+            f"共 {len(rows)} 个来源，{sum(1 for r in rows if r.hits)} 个有带网页字样的正文，"
+            f"合计 {sum(r.hits for r in rows)} 份；逐个网站先预览：youju refetch-bodies --host 网站"
+        )
+        return 0
+    if not args.host and not args.source_id:
+        print("要用 --host 或 --source-id 指定网站或来源（不整库重抓）", file=sys.stderr)
+        return 2
+    with session_factory()() as session:
+        results = refresh_bodies(
+            session,
+            hosts=args.host or [],
+            source_ids=args.source_id or [],
+            apply=args.apply,
+            include_changed=args.include_changed,
+            limit=args.limit,
+            after_id=args.after_id,
+            max_workers=args.workers,
+        )
+    totals = {"trimmed": Impact(), "changed": Impact()}
+    for r in results:
+        if r.result == "trimmed":
+            print(f"  #{r.document_id} {r.title}")
+            if r.head:
+                print(f"      去掉开头 {len(r.head)} 行：{_short_lines(r.head)}")
+            if r.tail:
+                print(f"      去掉结尾 {len(r.tail)} 行：{_short_lines(r.tail)}")
+        elif r.result == "changed":
+            print(f"  #{r.document_id} {r.title}")
+            print(f"      其他变化：原来「{r.old_start}」→ 现在「{r.new_start}」")
+            if r.not_on_page:
+                missing = _short_lines(r.not_on_page)
+                print(f"      去掉的行原网页上找不到 {len(r.not_on_page)} 行：{missing}")
+        elif r.result in ("empty", "failed"):
+            print(f"  #{r.document_id} 没换（{r.reason}）：{r.title}")
+        if r.result in totals:
+            totals[r.result].add(r.impact)
+            if any(vars(r.impact).values()):
+                print(f"      受影响：{_impact_text(r.impact)}")
+        if r.written:
+            print("      已写入")
+        elif r.reason and r.result in totals:
+            print(f"      ！{r.reason}")
+    by_result = Counter(r.result for r in results)
+    written = sum(r.written for r in results)
+    print(
+        f"{'已写入' if args.apply else '预览（未写入）'}：检查 {len(results)} 份，"
+        f"只去掉网页上的字 {by_result['trimmed']} 份，其他变化 {by_result['changed']} 份，"
+        f"没变 {by_result['unchanged']} 份，新正文为空 {by_result['empty']} 份，"
+        f"没抓成功 {by_result['failed']} 份；写入 {written} 份"
+    )
+    print(f"只去掉网页上的字的，写入后受影响：{_impact_text(totals['trimmed'])}")
+    print(
+        f"其他变化的（加 --include-changed 才换），写入后受影响：{_impact_text(totals['changed'])}"
+    )
+    if not args.apply and (by_result["trimmed"] or by_result["changed"]):
+        print(
+            "加 --apply 写入（换正文和抓取时间，后台 AI 复查下一轮重查）；"
+            "其他变化的要再加 --include-changed"
+        )
+    last_id = results[-1].document_id if results else args.after_id or 0
+    if len(results) == args.limit:
+        print(f"已到 --limit {args.limit} 上限，可能还有没检查的，用 --after-id {last_id} 接着跑")
+    # 容器终端里复制出来的中文可能有乱码，以这一行为准（只有英文和数字）
+    total = Impact()
+    for impact in totals.values():
+        total.add(impact)
+    print(
+        f"refetch_bodies mode={'apply' if args.apply else 'preview'} checked={len(results)} "
+        + " ".join(f"{k}={by_result[k]}" for k in ("trimmed", "changed", "unchanged", "empty"))
+        + f" failed={by_result['failed']} written={written} last_id={last_id} "
+        + " ".join(f"{k}={v}" for k, v in vars(total).items())
+    )
+    return 0
+
+
 def _cmd_backfill_titles(args: argparse.Namespace) -> int:
     """一次性补全列表页截断的历史标题；默认只预览，加 --apply 才写入。"""
     from youju.classify import doc_kind
@@ -510,6 +621,8 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     )
     for doc_id, title, rule, ai_kind in report.kind_disagree[:20]:
         print(f"  类型不一致 #{doc_id} 规则={rule} AI={ai_kind}：{title[:60]}")
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下一轮按新正文重查）")
     if report.stopped_early:
         print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
         return 1
@@ -1605,6 +1718,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)
+
+    p = sub.add_parser(
+        "refetch-bodies",
+        help="一次性：重新打开原网页，按现在的规则重取正文，换掉混进网页导航等字样的正文"
+        "（默认只预览，加 --apply 才写入）",
+    )
+    p.add_argument(
+        "--host", action="append", help="只查这个网站（主机名，如 kjt.hubei.gov.cn，可重复）"
+    )
+    p.add_argument("--source-id", type=int, action="append", help="只查这个来源（可重复）")
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="写入（换正文和抓取时间，删掉按旧正文做的后台 AI 复查、下一轮重查）；不加只预览",
+    )
+    p.add_argument(
+        "--include-changed",
+        action="store_true",
+        help="不只是去掉开头结尾网页字样的（原网页改过、以前没取到正文）也换；先看预览再加",
+    )
+    p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
+    p.add_argument("--after-id", type=int, help="只查编号大于此值的（分批时接着上一批）")
+    p.add_argument("--workers", type=int, help="同时抓取的网站数")
+    p.add_argument(
+        "--survey",
+        action="store_true",
+        help="只读、不联网：按来源数正文带网页字样（当前位置、扫一扫、打印等）的份数，挑要重抓的网站",
+    )
+    p.set_defaults(func=_cmd_refetch_bodies)
 
     p = sub.add_parser("extract-deadlines", help="从已抓取正文生成待核对截止候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")

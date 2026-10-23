@@ -48,9 +48,21 @@ _AGENCY_END = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]+）)?$"
 )
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
+# qr_container：常见的"扫一扫在手机打开当前页"二维码块（四川科技厅、江苏工信厅放在正文区里）
 _JUNK_CLASS = re.compile(
-    r"(?:share|related|footer|breadcrumb|toolbar|copyright|qrcode|qr-code|print|pagination)", re.I
+    r"(?:share|related|footer|breadcrumb|toolbar|copyright|qrcode|qr-code|qr_container|print"
+    r"|pagination)",
+    re.I,
 )
+# TRS 编辑器写出的正文区，比下面的通用规则准：#zoom、.content 等常把文章头的"当前位置"、发布信息、
+# 工具栏和页尾的二维码、"相关文档"一起框进来（10/22 湖北科技厅等，见测试样例）。只在没有歧义时用
+# （_editor_node）
+_EDITOR = '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_UEDITOR ")]'
+# 页面自己标的正文区：有它的页面，编辑器块要在它里面才用
+_MARKED_BODY = '//*[@id="zoom" or @id="UCAP-CONTENT" or @id="contentText"]'
+# 正文标记里、编辑器块外面，整行只有这些字的是网页上的栏目标题（10/23 抽样：海南科技厅 #zoom 里
+# 编辑器块后面的"相关文档"），不妨碍用编辑器块
+_EDITOR_SIDE_LABELS = frozenset({"相关文档", "相关链接", "关联链接"})
 _BODY_SELECTORS = (
     '//*[@id="zoom"]',
     '//*[@id="UCAP-CONTENT" or @id="contentText"]',
@@ -63,8 +75,58 @@ _BODY_SELECTORS = (
     "//article",
     '//*[contains(concat(" ", normalize-space(@class), " "), " pages_content ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " article_area ")]',
+    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent）：
+    # 排在最后的 .content 前面，只在前面的规则都没匹配上时才用（.content 常是整页外框）
+    '//*[@id="ivs_content"]',
+    '//*[@id="zoomcon"]',
+    '//*[contains(concat(" ", normalize-space(@class), " "), " j-fontContent ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " content ")]',
 )
+# 个别网站的正文区用的是自家类名（别的网站同名元素未必是正文），只对这个网站用（主机名精确匹配），
+# 排在通用规则前面。通用规则在这些网站上会把整页外框、文章头的发布信息和工具栏、页尾的按钮当成正文
+# （10/22 抽样，见测试样例）。网站改版、页面上找不到这里写的元素时，照旧走通用规则。
+_SITE_BODY_SELECTORS = {
+    # 四川科技厅：通用规则选到整页外框（"当前位置"、发布机构、分享）
+    "kjt.sc.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " newsCon ")]',
+    # 江苏工信厅：文章头的"【字体：大 中 小】""打印"
+    "gxt.jiangsu.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " nscont ")]',
+    # 山东工信厅：文章头的浏览次数，页尾的"字体""分享""打印"
+    "gxt.shandong.gov.cn": (
+        '//*[contains(concat(" ", normalize-space(@class), " "), " news-body ")]'
+    ),
+    # 河南科技厅：文章头的阅读次数、"分享："
+    "kjt.henan.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " articl_u2 ")]',
+    # 上海经信委：文章头的"字号：小 中 大"
+    "sheitc.sh.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " text-main ")]',
+}
+# 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
+_SITE_JUNK = {
+    # 上海经信委：正文区末尾"[返回]"（history.back）和"【市民留言】"两个链接所在的块
+    "sheitc.sh.gov.cn": './/*[a[contains(@href, "history.back")]]',
+}
+# 正文不在页面结构里、写在页面自带脚本的 Vue 数据里（content: `<p>…</p>`），浏览器运行脚本后才显示到
+# <div v-html="content"> 的网站。10/22 青海工信厅（铭飞 MCMS 模板）收录的"正文"只有导航、标题和
+# "上一篇""下一篇"。只对列出的网站从脚本里取这段 HTML，不执行脚本。
+_SCRIPT_BODY_HOSTS = {"gxt.qinghai.gov.cn"}
+_VUE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+# 没转义的 ${（前面没有反斜杠，或是成对的反斜杠）：要运行脚本才知道的内容
+_TEMPLATE_INTERPOLATION = re.compile(r"(?<!\\)(?:\\\\)*\$\{")
+# 模板字符串里的转义（按 JS 的规则还原）：\n、\t 等，\uXXXX、\u{…}、\xHH，行尾的反斜杠接下一行；
+# 别的"\字符"就是这个字符（\`、\$、\\、\/ 等）
+_TEMPLATE_ESCAPE = re.compile(r"\\(u\{[0-9A-Fa-f]+\}|u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|\r\n|[\s\S])")
+_TEMPLATE_SIMPLE = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "\n": "",
+    "\r": "",
+    "\r\n": "",
+    "\u2028": "",
+    "\u2029": "",
+}
 _BLOCK_TAGS = {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3", "h4", "br"}
 
 
@@ -530,11 +592,11 @@ def has_personal_numbers(text: str) -> bool:
     return any(_luhn(re.sub(r"\D", "", m.group())) for m in cards)
 
 
-def _plain_lines(node: etree._Element) -> list[str]:
+def _plain_lines(node: etree._Element, skip: frozenset = frozenset()) -> list[str]:
     parts: list[str] = []
 
     def visit(element: etree._Element) -> None:
-        if not isinstance(element.tag, str):
+        if not isinstance(element.tag, str) or element in skip:
             return
         if element.tag.lower() in {"script", "style", "noscript", "nav", "footer"}:
             return
@@ -556,13 +618,84 @@ def _plain_lines(node: etree._Element) -> list[str]:
     return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
-def _body_node(root: etree._Element) -> etree._Element | None:
+def _body_node(root: etree._Element, host: str | None = None) -> etree._Element | None:
+    if host in _SCRIPT_BODY_HOSTS and (node := _script_body_node(root)) is not None:
+        return node
+    site = _SITE_BODY_SELECTORS.get(host or "")
+    if site and (node := _longest(root.xpath(site))) is not None:
+        return node
+    if (node := _editor_node(root)) is not None:
+        return node
     for selector in _BODY_SELECTORS:
-        nodes = root.xpath(selector)
-        candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
-        if candidates:
-            return max(candidates, key=lambda n: len(" ".join(_plain_lines(n))))
+        if (node := _longest(root.xpath(selector))) is not None:
+            return node
     return _density_body_node(root)
+
+
+def _longest(nodes: list[etree._Element]) -> etree._Element | None:
+    """够长（20 字以上）的里面最长的一个。"""
+    candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
+    return max(candidates, key=lambda n: len(" ".join(_plain_lines(n)))) if candidates else None
+
+
+def _editor_node(root: etree._Element) -> etree._Element | None:
+    """TRS 编辑器正文区（_EDITOR），只在没有歧义时用：够长的编辑器块只有一份，或几份一模一样
+    （电脑版、手机版，取第一份）；页面有 #zoom 等正文标记的，要有一份在它里面（在外面的可能是
+    侧栏里的另一段），而且正文标记里编辑器块之外只有 _EDITOR_SIDE_LABELS 里的字（别的字哪怕一句
+    也可能是正文的一部分，如"本通知自公布之日起施行。"）。不满足的不用，照旧走通用规则。"""
+    blocks = [n for n in root.xpath(_EDITOR) if len(" ".join(_plain_lines(n))) >= 20]
+    if not blocks or len({"\n".join(_plain_lines(n)) for n in blocks}) > 1:
+        return None
+    marked = [m for m in root.xpath(_MARKED_BODY) if len(" ".join(_plain_lines(m))) >= 20]
+    if not marked:
+        return blocks[0]
+    for block in blocks:
+        for container in marked:
+            if block is container or container in block.iterancestors():
+                rest = _plain_lines(container, frozenset(blocks))
+                return block if set(rest) <= _EDITOR_SIDE_LABELS else None
+    return None
+
+
+def _script_body_node(root: etree._Element) -> etree._Element | None:
+    """<div v-html="名字"> 显示的 HTML：页面自带脚本里"名字: `…`"这段模板字符串
+    （见 _SCRIPT_BODY_HOSTS）。字符串里有没转义的 ${…}（要运行脚本才知道的内容）、或转义还原不了的，
+    不取。"""
+    names = {name.strip() for name in root.xpath("//@v-html")}
+    for script in root.xpath("//script[not(@src)]"):
+        source = script.text or ""
+        for name in sorted(n for n in names if _VUE_NAME.fullmatch(n)):
+            match = re.search(
+                rf"(?<![\w$]){re.escape(name)}\s*:\s*`((?:[^`\\]|\\[\s\S])*)`", source
+            )
+            if not match or _TEMPLATE_INTERPOLATION.search(match.group(1)):
+                continue
+            fragment = _template_text(match.group(1))
+            if fragment is None:
+                continue
+            try:
+                node = html.fragment_fromstring(fragment, create_parent="div")
+            except (etree.ParserError, ValueError):
+                continue
+            if len(" ".join(_plain_lines(node))) >= 20:
+                return node
+    return None
+
+
+def _template_text(source: str) -> str | None:
+    """按 JS 的规则还原模板字符串里的转义（_TEMPLATE_ESCAPE）；码位超出范围等还原不了的
+    返回 None。"""
+
+    def unescape(match: re.Match) -> str:
+        escape = match.group(1)
+        if escape[0] in "ux" and len(escape) > 1:
+            return chr(int(escape[1:].strip("{}"), 16))
+        return _TEMPLATE_SIMPLE.get(escape, escape)
+
+    try:
+        return _TEMPLATE_ESCAPE.sub(unescape, source)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _density_body_node(root: etree._Element) -> etree._Element | None:
@@ -753,6 +886,83 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
     return result
 
 
+# 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
+_NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)", re.I)
+
+
+def _hidden_source_header(element: etree._Element, node: etree._Element, host: str) -> bool:
+    """只认已核实的山东页头来源字；不能把以“来源”开头的隐藏旧条款也当成网页噪声。"""
+    if (
+        host != "gxt.shandong.gov.cn"
+        or "news-body" not in (node.get("class") or "").split()
+        or element.tag != "span"
+        or len(element)
+        or re.sub(r"\s+", "", element.text or "") != "信息来源：山东省工业和信息化厅"
+        or element.get("hidden") is not None
+        or re.sub(r"\s+", "", element.get("style") or "").lower() != "display:none;"
+    ):
+        return False
+    parent = element.getparent()
+    header = parent.getparent() if parent is not None else None
+    return (
+        parent is not None
+        and parent.tag == "p"
+        and header is not None
+        and "headline" in (header.get("class") or "").split()
+        and header.getnext() is node
+    )
+
+
+def outside_body_text(html_text: str, url: str) -> str | None:
+    """网页上不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines 同样规则
+    不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
+    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、hidden 或行内样式隐藏的
+    元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字（限定网站、位置和全文）。
+    不执行 CSS/脚本。解析不了、没有正文区的返回 None。"""
+    if not html_text.strip():
+        return None
+    try:
+        root = html.fromstring(html_text)
+    except (etree.ParserError, ValueError):
+        return None
+    body = root.xpath("//body")
+    host = (urlsplit(url).hostname or "").lower()
+    node = _body_node(root, host)
+    if not body or node is None:
+        return None
+    junk = _SITE_JUNK.get(host)
+    skipped = frozenset(node.xpath(junk)) if junk else frozenset()
+    parts: list[str] = []
+
+    def visit(element: etree._Element, inside: bool) -> None:
+        if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
+            return
+        if element.get("hidden") is not None or _HIDDEN_STYLE.search(element.get("style") or ""):
+            if not inside and _hidden_source_header(element, node, host):
+                parts.append(element.text or "")
+                parts.append("\n")
+            return
+        if element is node:
+            inside = True
+        elif inside and (
+            element in skipped
+            or element.tag.lower() in {"nav", "footer"}
+            or _JUNK_CLASS.search(f"{element.get('class', '')} {element.get('id', '')}")
+        ):
+            inside = False
+        if not inside:
+            parts.append(element.text or "")
+        for child in element:
+            visit(child, inside)
+            if not inside:
+                parts.append(child.tail or "")
+        parts.append("\n")
+
+    visit(body[0], False)
+    return "".join(parts)
+
+
 def parse_detail(html_text: str, url: str) -> DetailResult:
     """解析公开 HTML；防护页返回失败原因，字段不猜测。"""
     if not html_text.strip():
@@ -770,7 +980,8 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         re.I,
     ):
         return DetailResult(failure_reason="防护页或验证码")
-    node = _body_node(root)
+    host = (urlsplit(url).hostname or "").lower()
+    node = _body_node(root, host)
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
@@ -781,7 +992,8 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
             failure_reason=None if attachments else "未识别到正文容器",
             page_titles=_page_titles(root),
         )
-    lines = _plain_lines(node)
+    junk = _SITE_JUNK.get(host)
+    lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
     raw_body = "\n".join(lines)
     prefix = (
         visible.split(lines[0], 1)[0][-700:] if lines and lines[0] in visible else visible[:700]
