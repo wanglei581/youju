@@ -424,7 +424,7 @@ test('批量工具页：AI 开着也只放批量工具；"我的记录"只列批
   // 标题写明只列批量工具的，和 AI 首页的"我的 AI 记录"对称（Grok、agy 10/22）
   assert.match(text, /我的批量工具记录 批量名单比对 · 已完成\s?2026-10-21 13:00 · 提交 7 家/);
   // 顾问靠卡片上那句选工具：通知表写明近 90 天、已确认截止的不列、截止没核对的照列（和上传页、backend track.py 同一口径）
-  assert.match(text, /客户相关通知表：按客户的省份和可选的关键词、支持方式、城市、区县，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列），不判断能不能报，可下载 Excel。/);
+  assert.match(text, /客户相关通知表：按客户的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准），不判断能不能报，可下载 Excel。/);
   // D-087（#341）：两个工具按钮、在售时的"了解批量工具"都用白底次按钮
   const wxml = read('pages/advisor/index.wxml');
   assert.match(wxml, /<button class="advisor-button" data-kind="compare" bindtap="dataTool">批量名单比对<\/button>/);
