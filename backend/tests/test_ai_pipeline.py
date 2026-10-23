@@ -452,9 +452,9 @@ def test_result_not_recorded_when_body_changes_during_the_call(
     client, _ = fake_ai()
 
     report = run_ai_checks(session, client)
-    assert (report.documents, report.body_changed) == (1, 1)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 1, 0)
     assert session.scalars(select(AICheck)).all() == []
     report = run_ai_checks(session, client)
-    assert (report.documents, report.body_changed) == (1, 0)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 0, 1)
     assert seen[-1] == BODY + "（重新取的正文）"
     assert sorted(c.task for c in session.scalars(select(AICheck))) == ["deadlines", "kind"]

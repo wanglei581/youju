@@ -269,6 +269,7 @@ def run_ai_checks(
         # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）
         body = detail.body_text
         records: list[tuple[str, dict]] = []
+        ai_kind: str | None = None
         items: list[DeadlineCandidate] | None = None
         failed = 0
         if "kind" in tasks:
@@ -287,12 +288,7 @@ def run_ai_checks(
                         "reason": kind.reason,
                     }
                     records.append(("kind", {"result": result, "usage": client.last_usage}))
-                    rule = doc_kind(doc.title)
-                    # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
-                    if comparable_kind(rule) == kind.kind:
-                        report.kind_agree += 1
-                    else:
-                        report.kind_disagree.append((doc.id, doc.title, rule, kind.kind))
+                    ai_kind = kind.kind
             except AIError as exc:
                 records.append(("kind", {"error": str(exc), "usage": client.last_usage}))
                 failed += 1
@@ -320,12 +316,20 @@ def run_ai_checks(
         if current != body:
             session.rollback()
             report.body_changed += 1
-            continue
-        for task, values in records:
-            _record(session, doc.id, task, client.model, now, **values)
-        if items is not None:
-            _apply_deadlines(session, doc, items, report)
-        session.commit()
+        else:
+            for task, values in records:
+                _record(session, doc.id, task, client.model, now, **values)
+            if ai_kind is not None:
+                rule = doc_kind(doc.title)
+                # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
+                if comparable_kind(rule) == ai_kind:
+                    report.kind_agree += 1
+                else:
+                    report.kind_disagree.append((doc.id, doc.title, rule, ai_kind))
+            if items is not None:
+                _apply_deadlines(session, doc, items, report)
+            session.commit()
+        # 出错照样计数（模型出错和正文换没换无关），连续出错照样停下
         if failed:
             report.errors += 1
             consecutive_errors += 1
