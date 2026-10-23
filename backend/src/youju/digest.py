@@ -18,7 +18,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
-from youju.ai.usage import BEIJING, FREE_QUOTA, UsageSummary, usage_summary
+from youju.ai.usage import BEIJING, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
 from youju.dedup import canonical_ids, groups_for, visible_documents
@@ -421,6 +421,14 @@ def pick_for_review(
     return picks
 
 
+def _cost_cap(cost: float) -> str:
+    """费用上限往上取到分：0.004 元写成 0.01（四舍五入会写成 0.00）。
+
+    先去掉浮点误差，1.8 不会因为存成 1.8000000001 多算一分。
+    """
+    return f"{math.ceil(round(cost * 100, 6)) / 100:.2f}"
+
+
 def _tokens(value: int) -> str:
     if value < 10000:
         return str(value)
@@ -518,11 +526,19 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
     ]
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
-        cost = (
-            "，费用未知（有未列价格的模型）" if usage.cost is None else f"，约 {usage.cost:.2f} 元"
-        )
+        if usage.cost is None:
+            cost = "，费用未知（有未列价格的模型）"
+        elif not usage.priced_on:
+            cost = ""  # 当天没有用量，只报累计
+        else:
+            # 几个模型核价日期不同时并列写出（不用"—"，免得被看成一段时间）
+            checked = "、".join(_md(day) for day in usage.priced_on)
+            cost = (
+                f"，当日模型调用费最多 {_cost_cap(usage.cost)} 元"
+                f"（按官网最高价估，价格核于 {checked}，实际可能更低）"
+            )
         quota = "；".join(
-            f"{model} 累计 {_tokens(tokens)} tokens（免费额度 {_tokens(FREE_QUOTA)}）"
+            f"{model} 累计 {_tokens(tokens)} tokens"
             for model, tokens in list(usage.cumulative.items())[:3]
         )
         lines.append(

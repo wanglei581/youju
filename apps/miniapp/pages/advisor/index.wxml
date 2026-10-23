@@ -62,7 +62,7 @@
     </block>
   </view>
   <view wx:if="{{disclosure}}" class="advisor-footer">{{disclosure}}</view>
-  <view class="advisor-footer">第三方整理 · 非政府平台<text wx:if="{{aiEnabled}}"> · </text><text wx:if="{{aiEnabled}}" class="link" bindtap="report">投诉举报</text></view>
+  <view wx:if="{{aiEnabled}}" class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>
 <block wx:else>
   <view class="card advisor-card muted">
@@ -77,5 +77,4 @@
     <view class="advisor-text">客户相关通知表：按客户的省份、城市等整理近 90 天的申报通知，可以下载 Excel。</view>
     <view class="advisor-text muted">每月有免费次数，不需要购买。登录只用微信身份，不要手机号。</view>
   </view>
-  <view class="advisor-footer">第三方整理 · 非政府平台</view>
 </block>

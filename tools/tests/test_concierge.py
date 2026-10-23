@@ -170,7 +170,8 @@ class ParkBookTests(unittest.TestCase):
         intro = "\n".join(str(c.value) for c in book["说明"]["A"] if c.value)
         self.assertIn("园区给的企业 5 家，其中 2 家", intro)
         self.assertIn(MODULE.STATEMENT, intro)
-        self.assertIn("交付当天删除本机文件", intro)
+        self.assertIn("交付当天删除自己电脑上的名单和生成的文件", intro)
+        self.assertIn("您微信里的文件请您自己删", intro)
         lists = list(book["按名单看"].iter_rows(min_row=2, values_only=True))
         self.assertEqual([r[0] for r in lists], [LIST_A["title"], LIST_B["title"]])  # 新的在前
         self.assertEqual(lists[0][4], 2)
@@ -190,7 +191,270 @@ class ParkBookTests(unittest.TestCase):
         self.assertEqual(book.sheetnames, ["说明", "上榜情况", "相关通知", "按通知看"])
         self.assertEqual((hit, count, failed), (1, 1, 0))
         row = next(book["相关通知"].iter_rows(min_row=2, values_only=True))
-        self.assertIn("“汽车”不在可筛选的 8 项里", row[2])
+        self.assertEqual(row[:3], ("N1", "甲公司", "A"))
+        self.assertIn("“汽车”不在可筛选的 8 项里", row[4])
+
+
+def notice(title, url, date="2026-10-10"):
+    return {
+        "title": title,
+        "issuer": "某厅",
+        "date": date,
+        "url": url,
+        "category": "",
+        "due": {
+            "kind": "企业申报截止",
+            "source": "excerpt",
+            "date": "2026-11-05",
+            "quote": "2026年11月5日前",
+        },
+    }
+
+
+TWO = [
+    {
+        "name": "甲科技有限公司",
+        "provinces": ["山东"],
+        "industries": ["数字经济"],
+        "ignored": [],
+        "projects": ["高企"],
+        "region_text": "山东",
+    },
+    {
+        "name": "乙制药有限公司",
+        "provinces": ["江苏"],
+        "industries": [],
+        "ignored": [],
+        "projects": [],
+        "region_text": "江苏",
+    },
+]
+TWO_NOTICES = {
+    MODULE.notice_key(TWO[0]): {
+        "status": 200,
+        "total": 2,
+        "items": [
+            notice("关于申报省级科技计划的通知", "https://example.gov.cn/1", "2026-10-12"),
+            notice(
+                "关于开展2026年高新技术企业认定工作的通知", "https://example.gov.cn/2", "2026-10-01"
+            ),
+        ],
+    },
+    MODULE.notice_key(TWO[1]): {
+        "status": 200,
+        "total": 1,
+        "items": [
+            notice("关于申报省级科技计划的通知", "https://example.gov.cn/1", "2026-10-12"),
+        ],
+    },
+}
+TWO_LOOKUPS = {
+    "l0": found(LIST_A, written="甲科技有限公司"),
+    "l1": {
+        "status": 200,
+        "items": [],
+        "similar": [],
+        "candidates": [],
+        "coverage": {"lists": 1200, "since": "2025-01-02"},
+    },
+}
+
+
+def cells(book):
+    return [
+        str(c) for ws in book.worksheets for row in ws.iter_rows(values_only=True) for c in row if c
+    ]
+
+
+class D086Tests(unittest.TestCase):
+    """D-086 第 1 阶段：行号和代号、在办项目、反馈记录不含企业名称、给客户的短表只有这一家。"""
+
+    def clients(self):
+        return [dict(c, provinces=list(c["provinces"]), projects=list(c["projects"])) for c in TWO]
+
+    def test_client_codes(self):
+        self.assertEqual(
+            [MODULE.client_code(i) for i in (0, 25, 26, 27, 51, 52)],
+            ["A", "Z", "AA", "AB", "AZ", "BA"],
+        )
+
+    def test_project_hits_show_the_words_found_in_the_title(self):
+        self.assertEqual(MODULE.project_hits("关于开展高新技术企业认定的通知", ["高企"]), ["高新技术企业"])
+        self.assertEqual(MODULE.project_hits("关于高企培育入库的通知", ["高企"]), ["高企"])
+        self.assertEqual(MODULE.project_hits("第八批专精特新“小巨人”企业", ["专精特新"]), ["专精特新"])
+        # 不收"小巨人"别名：各地的"科技小巨人"是别的项目
+        self.assertEqual(MODULE.project_hits("关于开展科技小巨人企业认定的通知", ["专精特新"]), [])
+        self.assertEqual(MODULE.project_hits("关于申报科技计划的通知", ["高企", "科技计划"]), ["科技计划"])
+        self.assertEqual(MODULE.project_hits(None, ["高企"]), [])
+
+    def test_read_clients_reads_projects_and_assigns_codes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.csv"
+            path.write_text(
+                "企业名称,省,在办项目\n甲科技有限公司,山东,高企、专精特新\n乙公司,江苏,\n",
+                encoding="utf-8",
+            )
+            clients = MODULE.read_clients(path)
+        self.assertEqual(
+            [(c["code"], c["projects"]) for c in clients], [("A", ["高企", "专精特新"]), ("B", [])]
+        )
+
+    def test_entries_put_project_hits_first_and_number_rows(self):
+        entries, failed, cut = MODULE.notice_entries(self.clients(), TWO_NOTICES)
+        self.assertEqual((failed, cut), (0, 0))
+        numbered = [(e["no"], e["client"]["code"], e["item"]["url"], e["hits"]) for e in entries]
+        self.assertEqual(
+            numbered,
+            [
+                ("N1", "A", "https://example.gov.cn/2", ["高新技术企业"]),  # 标题里有在办项目的字的排前面
+                ("N2", "A", "https://example.gov.cn/1", []),
+                ("N3", "B", "https://example.gov.cn/1", []),
+            ],
+        )
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_feedback_book_has_no_company_names_or_list_titles(self):
+        book = MODULE.feedback_book(
+            self.clients(), TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW
+        )
+        self.assertEqual(book.sheetnames, ["说明", "反馈记录"])
+        text = "\n".join(cells(book))
+        for secret in ("甲科技有限公司", "乙制药有限公司", LIST_A["title"], LIST_A["url"]):
+            self.assertNotIn(secret, text)
+        rows = list(book["反馈记录"].iter_rows(min_row=2, values_only=True))
+        self.assertEqual([r[0] for r in rows], ["N1", "N2", "N3", "L1", "L2"])
+        self.assertEqual(rows[0][5:7], ("关于开展2026年高新技术企业认定工作的通知", "是"))
+        header = [c.value for c in book["反馈记录"][1]]
+        self.assertEqual(header[6], "标题是否带在办用词")
+        self.assertNotIn("高企", text)  # 在办项目只记"是"，不记是哪一项
+        self.assertIn("机器摘录", rows[0][7])
+        self.assertEqual(rows[3][4:6], ("名单", "上榜 1 份（公示）"))
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_client_books_only_carry_their_own_client(self):
+        books = MODULE.client_books(
+            self.clients(), TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW
+        )
+        self.assertEqual([c["code"] for c, _ in books], ["A", "B"])
+        first = "\n".join(cells(books[0][1]))
+        self.assertIn("甲科技有限公司", first)
+        self.assertNotIn("乙制药有限公司", first)
+        self.assertIn(MODULE.DISCLAIMER, first)
+        second = books[1][1]
+        self.assertNotIn("甲科技有限公司", "\n".join(cells(second)))
+        self.assertEqual(
+            list(second["上榜情况"].iter_rows(min_row=2, values_only=True))[0][0],
+            "已收录的名单里没查到",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            books[0][1].save(Path(tmp) / "a.xlsx")
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_every_client_gets_a_file_however_many(self):
+        many = [dict(TWO[1], name=f"客户{i}有限公司") for i in range(31)]
+        books = MODULE.client_books(many, {}, {}, "2026-10-19 09:00", NOW)
+        self.assertEqual(len(books), 31)
+        self.assertNotIn("客户1有限公司", "\n".join(cells(books[0][1])))
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_advisor_book_numbers_lists_and_says_not_to_forward_whole_table(self):
+        book, hit, count, failed = MODULE.advisor_book(
+            self.clients(), TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW
+        )
+        self.assertEqual((hit, count, failed), (1, 2, 0))
+        lists = list(book["上榜情况"].iter_rows(min_row=2, values_only=True))
+        self.assertEqual(
+            [r[:3] for r in lists], [("L1", "甲科技有限公司", "A"), ("L2", "乙制药有限公司", "B")]
+        )
+        intro = "\n".join(str(c.value) for c in book["说明"]["A"] if c.value)
+        self.assertIn("请不要整张转给客户", intro)
+        self.assertIn("【在办项目】", intro)
+        self.assertIn("“高新技术企业”也算", intro)
+        self.assertIn("只留一份不带企业名称的反馈记录", intro)
+
+    def test_no_header_row_with_a_zaiban_cell_is_still_a_company(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.csv"
+            path.write_text("甲集团控股公司华东区域运营中心,在办高企\n乙公司,\n", encoding="utf-8")
+            clients = MODULE.read_clients(path)
+            self.assertEqual([c["name"] for c in clients], ["甲集团控股公司华东区域运营中心", "乙公司"])
+            # 第二格是"高新技术企业"（带表头词"企业"）也不当表头：第一格超过 12 个字
+            path.write_text("甲集团控股公司华东区域运营中心,高新技术企业\n乙公司,\n", encoding="utf-8")
+            clients = MODULE.read_clients(path)
+        self.assertEqual([c["name"] for c in clients], ["甲集团控股公司华东区域运营中心", "乙公司"])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_failures_cuts_and_same_names_in_feedback_and_client_files(self):
+        clients = self.clients()
+        notices = {
+            MODULE.notice_key(clients[0]): {"status": 200, "total": 60, "items": TWO_NOTICES[
+                MODULE.notice_key(TWO[0])]["items"]},
+            MODULE.notice_key(clients[1]): {"status": 0, "error": "timeout"},
+        }
+        ambiguous = {**found(LIST_A, LIST_B, written="甲科技有限公司"), "ambiguous": True}
+        lookups = {"l0": ambiguous, "l1": {"status": 0, "error": "timeout"}}
+        fb = MODULE.feedback_book(clients, lookups, notices, "2026-10-19 09:00", NOW)
+        rows = list(fb["反馈记录"].iter_rows(min_row=2, values_only=True))
+        notes = [(r[0], r[1], r[4], r[5]) for r in rows if r[4] == "说明"]
+        self.assertEqual(notes, [("", "A", "说明", "（共 60 条，这里只列最新的 2 条）"),
+                                 ("", "B", "说明", "没查成，请重跑")])
+        text = "\n".join(cells(fb))
+        for secret in ("甲科技有限公司", "乙制药有限公司", LIST_A["title"], LIST_B["title"]):
+            self.assertNotIn(secret, text)
+        # 行号和总表是同一套
+        book, *_ = MODULE.advisor_book(clients, lookups, notices, "2026-10-19 09:00", NOW)
+        master = [r[0] for r in book["相关通知"].iter_rows(min_row=2, values_only=True) if r[0]]
+        self.assertEqual(master, [r[0] for r in rows if r[4] == "通知"])
+        books = MODULE.client_books(clients, lookups, notices, "2026-10-19 09:00", NOW)
+        a_lists = list(books[0][1]["上榜情况"].iter_rows(min_row=2, values_only=True))
+        self.assertEqual([r[0] for r in a_lists], ["名单里有同名但统一社会信用代码不同的企业，请对照信用代码核实，或问顾问"])
+        self.assertNotIn(LIST_A["title"], "\n".join(cells(books[0][1])))
+        b_text = "\n".join(cells(books[1][1]))
+        self.assertIn("本次没查出通知，请联系顾问再查", b_text)
+        self.assertIn("本次没查出，请联系顾问再查", b_text)
+        self.assertNotIn("请重跑", b_text)
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_client_files_folder_keeps_no_old_files(self):
+        books = MODULE.client_books(self.clients()[:1], TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "x_给客户的短表"
+            folder.mkdir()
+            (folder / "B_乙制药有限公司.xlsx").write_bytes(b"old")
+            MODULE.save_client_files(folder, books)
+            self.assertEqual(sorted(f.name for f in folder.iterdir()), ["A_甲科技有限公司.xlsx"])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_repost_group_row_says_which_version_its_deadline_belongs_to(self):
+        grouped = dict(notice("关于申报2026年度省级科技计划项目的通知", "https://example.gov.cn/1", "2026-10-12"),
+                       group={"label": "山东版", "versions": 4, "regions": ["江苏", "浙江", "安徽", "河南"]})
+        self.assertEqual(MODULE.version_note(grouped),
+                         "这一行是山东版；另有 4 个转发版本（江苏、浙江、安徽等），截止以各自原文为准")
+        self.assertEqual(MODULE.version_note(notice("x", "u")), "")
+        clients = self.clients()[:1]
+        notices = {MODULE.notice_key(clients[0]): {"status": 200, "total": 1, "items": [grouped]}}
+        book, *_ = MODULE.advisor_book(clients, {}, notices, "2026-10-19 09:00", NOW)
+        header = [c.value for c in book["相关通知"][1]]
+        row = next(book["相关通知"].iter_rows(min_row=2, values_only=True))
+        self.assertTrue(row[header.index("截止日期")].startswith("2026-11-05"))  # 只写这一版自己的截止
+        self.assertIn("山东版", row[header.index("转发版本")])
+        books = MODULE.client_books(clients, {}, notices, "2026-10-19 09:00", NOW)
+        sheet = books[0][1]["申报线索"]
+        header = [c.value for c in sheet[1]]
+        self.assertIn("另有 4 个转发版本", next(sheet.iter_rows(min_row=2, values_only=True))[header.index("转发版本")])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "没有 openpyxl（CI 的工具测试环境），只在本机跑")
+    def test_client_file_has_no_project_column_when_none_given(self):
+        books = MODULE.client_books(self.clients(), TWO_LOOKUPS, TWO_NOTICES, "2026-10-19 09:00", NOW)
+        with_projects = [c.value for c in books[0][1]["申报线索"][1]]
+        without = [c.value for c in books[1][1]["申报线索"][1]]
+        self.assertIn("标题里有在办项目的字", with_projects)
+        self.assertNotIn("标题里有在办项目的字", without)
+        self.assertNotIn("在办项目", "\n".join(cells(books[1][1])))
+
+    def test_safe_file_name(self):
+        self.assertEqual(MODULE.safe_file_name('甲/乙:丙 "丁"'), "甲_乙_丙_丁")
+
 
 
 if __name__ == "__main__":

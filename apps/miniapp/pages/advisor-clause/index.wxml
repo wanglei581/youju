@@ -129,5 +129,5 @@
     <view class="advisor-title">用的时候遇到问题？</view>
     <view class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{errorCode}}" /></view>
   </view>
-  <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
+  <view class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>

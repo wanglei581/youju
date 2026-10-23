@@ -87,7 +87,7 @@
         <view>· 账号、同意记录、关注：保存到你注销</view>
         <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
         <!-- 10/18 验收：和隐私保护指引（2026-11）第三节第 2 条"保存期限"一致，补上批量工具、AI、加量体验和按天次数 -->
-        <view wx:if="{{retention.toolTasks}}">· 批量工具：解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件 {{retention.toolTasks}} 天后删除；在“我的记录”里可以提前删除</view>
+        <view wx:if="{{retention.toolTasks}}">· 批量工具：任务里解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件（含提交的名单内容）{{retention.toolTasks}} 天后删除；在“我的记录”里可以提前删除</view>
         <view wx:if="{{aiRetention}}">{{aiRetention}}</view>
         <view>· 加量体验记录：开始和结束时间保存到你注销，注销时一并删除</view>
         <view>· 按天的使用次数：保留本月和上个月的</view>

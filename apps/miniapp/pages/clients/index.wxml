@@ -1,6 +1,6 @@
 <notice-bar />
 <view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
-<view wx:if="{{!editing}}" class="card"><view class="message">需要批量处理或生成 Excel？工具中心支持名单比对和客户相关通知表。须另行确认上传，不会自动发送这里的客户卡片。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
+<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">
@@ -12,7 +12,7 @@
   <block wx:if="{{tab === 'docs'}}">
     <view wx:if="{{!clients.length}}" class="card empty">
       <view class="empty-title">还没有客户</view>
-      <view class="muted empty-sub">添加客户的地区和产业方向，这里会按地区和产业方向把相关的申报通知一条一行列出来，写明和哪几家客户有关、什么时候截止。不判断客户能不能申报。</view>
+      <view class="muted empty-sub">添加客户的地区和产业方向，这里会列出相关的申报通知、涉及哪几家客户和截止时间。不判断客户能不能申报。</view>
       <view class="btn-primary empty-btn" bindtap="edit" aria-role="button">新增客户</view>
     </view>
     <block wx:else>
@@ -22,7 +22,7 @@
           <view wx:for="{{clients}}" wx:key="id" class="chip {{only === item.id ? 'chip--on' : ''}}" data-id="{{item.id}}" bindtap="pickOnly" aria-role="button">{{item.displayName}}</view>
         </view>
       </scroll-view>
-      <view class="weak scope-note">按你填的地区和产业方向列出近 90 天发布的申报通知，不判断客户能不能申报；快截止的排在前面，已核对、确认已截止的不列。</view>
+      <view class="weak scope-note">近 90 天的相关申报通知，快截止的在前，已确认截止的不列；不判断客户能不能申报。</view>
       <view wx:if="{{loadError}}" class="card load-error"><text>{{loadError}}</text><text class="link retry" bindtap="reload">重试</text></view>
       <view class="card list">
         <view wx:if="{{loading}}" class="message weak">正在加载…</view>
@@ -63,11 +63,11 @@
   <view class="label">名称（可不填）</view>
   <input class="field" value="{{form.name}}" placeholder="{{placeholder}}" maxlength="40" bindinput="nameInput" aria-label="客户名称" />
   <view class="label">地区（可多选）</view>
-  <view class="weak help">不选为不限地区；选省包含该省已收录城市、区县；选择具体城市会替换同省的全省条件，选择具体区县会替换所属城市和全省的条件。检索始终包含国家部委。</view>
+  <view class="weak help">不选为不限地区；选省包含该省已收录的城市、区县；检索始终包含国家部委。</view>
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
   <view class="label">城市与区县（省市区联动，可多选）</view>
   <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
-  <view class="weak help">省市区清单由微信提供，选项不代表数据已覆盖。城市一栏选“全部”按全省，区县一栏选“全部”仅查询已收录市级来源；区县来源请单独选择；直辖市未选区县时按省级范围查询；选择器无法使用时请升级微信。</view>
+  <view class="weak help">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
   <view class="weak help">{{cityCoverageNote}}</view>
   <view wx:if="{{cityError}}" class="help">{{cityError}}</view>
   <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
