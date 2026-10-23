@@ -333,18 +333,11 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
     ]
     assert applied[0].tail[-2:] == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
-    # 删掉的条款还留在脚本或隐藏的元素里，也不算还在网页上
-    page = read_fixture_html("detail_hubei_kjt_70955")
-    for leftover in (
-        "<script>var old = '八、其他 本通知自印发之日起施行。';</script>",
-        "<div style='display: none'><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
-    ):
-        fake = FakeFetcher(
-            {HUBEI_URL: _page(HUBEI_URL, page.replace("</body>", f"{leftover}</body>"))}
-        )
-        assert [r.result for r in refresh_bodies(session, hosts=[HUBEI], fetcher=fake)] == [
-            "changed"
-        ]
+    # 删掉的条款还留在页面的脚本里，也不算还在网页上
+    leftover = "<script>var old = '八、其他 本通知自印发之日起施行。';</script>"
+    page = read_fixture_html("detail_hubei_kjt_70955").replace("</body>", f"{leftover}</body>")
+    fake = FakeFetcher({HUBEI_URL: _page(HUBEI_URL, page)})
+    assert [r.result for r in refresh_bodies(session, hosts=[HUBEI], fetcher=fake)] == ["changed"]
 
 
 @pytest.mark.parametrize(
@@ -362,10 +355,17 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
             "https://sheitc.sh.gov.cn/gg/20260914/b3cb3b63a51b423c8d303b1725299e78.html",
             ["[返回]", "【市民留言】"],
         ),
+        # 山东工信厅：文章头里行内样式隐藏的"信息来源"（正文提取不分隐藏不隐藏，以前收进了正文）
+        (
+            "detail_shandong_gxt",
+            "http://gxt.shandong.gov.cn/art/2026/9/28/art_15201_10366576.html",
+            ["信息来源：山东省工业和信息化厅"],
+        ),
     ],
 )
-def test_page_chrome_inside_body_area_counts_as_page_text(session, fixture, url, extra) -> None:
-    """正文区里按同样规则不算正文的块（二维码、按钮），以前收进了正文的，也算"网页上的字"，照常换。"""
+def test_page_chrome_counts_as_page_text(session, fixture, url, extra) -> None:
+    """以前收进了正文的网页上的字照常换：正文区里按同样规则不算正文的块（二维码、按钮），
+    正文区外隐藏的页头字。"""
     page = read_fixture_html(fixture)
     clean = parse_detail(page, url).body_text
     host = url.split("/")[2]
