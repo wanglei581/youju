@@ -1743,13 +1743,17 @@ def test_text_tables_are_not_backed_up() -> None:
 
 def test_migration_0040_downgrade_upgrade(db_engine) -> None:
     from alembic import command
+    from alembic.script import ScriptDirectory
 
     from youju.migrations import alembic_config
 
     from .conftest import TEST_DB_URL
 
     config = alembic_config(TEST_DB_URL)
-    command.downgrade(config, "0039")
+    # 0040 接在哪个版本后面（合并时随 main 改 down_revision，测试不用跟着改）
+    command.downgrade(
+        config, ScriptDirectory.from_config(config).get_revision("0040").down_revision
+    )
     with db_engine.connect() as conn:
         tables = set(conn.scalars(sql("SHOW TABLES LIKE 'attachment_text%'")))
     assert tables == set()

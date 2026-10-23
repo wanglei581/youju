@@ -7,11 +7,11 @@
 admin 的附件副本定时任务（youju cache-attachments）下载时顺带取文字写这三张表。这一步 AI 还不读，
 api 不读也不写它们，不用另加授权。
 
-编号：0033–0035 被还没合并的 PR 预约（0033 #290、0034 #297、0035 #296）；main 上最新的是 0039，
-down_revision 接 0039（10/20 开工前查过，在共享笔记登记了 0040）。
+编号：10/20 开工前查过、在共享笔记登记了 0040。10/23 同步 main：#296 的 0035 已合并、接在 0039
+后面，main 上最新的是 0035，所以 down_revision 改接 0035。#290 的 0033 也打算接 0035，谁后合并谁改接。
 
 Revision ID: 0040
-Revises: 0039
+Revises: 0035
 """
 
 import sqlalchemy as sa
@@ -19,7 +19,7 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision = "0040"
-down_revision = "0039"
+down_revision = "0035"
 branch_labels = None
 depends_on = None
 OPTIONS = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_bin"}
