@@ -423,6 +423,11 @@ test('批量工具页：AI 开着也只放批量工具；"我的记录"只列批
   assert.doesNotMatch(text, /AI|条款对照|今天还能用|说明：适用人群|模型：/);
   // 标题写明只列批量工具的，和 AI 首页的"我的 AI 记录"对称（Grok、agy 10/22）
   assert.match(text, /我的批量工具记录 批量名单比对 · 已完成\s?2026-10-21 13:00 · 提交 7 家/);
+  // D-087（#341）：两个工具按钮、在售时的"了解批量工具"都用白底次按钮
+  const wxml = read('pages/advisor/index.wxml');
+  assert.match(wxml, /<button class="advisor-button" data-kind="compare" bindtap="dataTool">批量名单比对<\/button>/);
+  assert.match(wxml, /<button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表<\/button>/);
+  assert.match(wxml, /<button wx:if="\{\{payCard.button\}\}" class="advisor-button" bindtap="buyPass">/);
   // 先是批量工具，再是记录；记录一行占满卡片宽（微信 style v2 的 button 不认 class 里的宽度，要 !important）
   assert.ok(text.indexOf('批量处理客户名单') < text.indexOf('我的批量工具记录'));
   assert.match(read('pages/advisor/index.wxss'), /\.recent-task \{ width: 100% !important; margin: 20rpx 0 0 !important;/);
