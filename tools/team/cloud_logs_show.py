@@ -1,10 +1,12 @@
-"""把 cloud-logs.cjs 写下的结果文件整理成"时间 容器 内容"，可按关键词过滤；显示前一律遮蔽。
+r"""把 cloud-logs.cjs 写下的结果文件整理成"时间 容器 内容"，可按关键词过滤；显示前一律遮蔽。
 
 用法：python3 tools/team/cloud_logs_show.py <结果文件> [关键词…]
 （关键词之间是"或"：一行里有任何一个就显示；每行内容最多显示前 300 字。）
 
 为什么遮蔽：读日志的是 AI 成员，显示出来的内容会发到境外的模型服务，而隐私保护指引写的是不向境外
 传输（个人信息保护影响评估第六节（二）第 6 条、（三）第 7 条）。遮蔽规则就是下面这几条：
+- 先把反斜杠转义还原再认（日志内容本身常是 JSON 文字）：\n、\r、\t、\b、\f 和控制字符显示成空格，其他 \uXXXX
+  还原成原字符（反斜杠除外；前面有几个反斜杠都算）。不然转义里的字母、数字紧贴在编号或 IP 前面，认不出边界。
 - 文件编号：cloud://… 整段遮掉。
 - 访问日志的 ip、uid 字段（JSON、转义成字符串的 JSON、Python 字典写法都认）：ip 是 IP 的按下一条遮，
   不是 IP 的整个换成 *；uid 留前 4 位（ab12*）。
@@ -13,7 +15,7 @@
   （::ffff:203.0.*.*）。
 - 单独出现的 16 位十六进制串（用户编号的格式，如批量工具结果文件路径 advisor/out/<编号>/）留前 4 位。
 - 以 o 开头的 28 位微信用户标识（openid、unionid 的格式，比如数据库报错里带出来的）留前 4 位。
-时间、容器名、开头的统计行、出错文件也一样过一遍（先逐个字符串遮，再转成文字）。留下的几位够判断是不是同一来源。
+时间、容器名、开头的统计行、出错文件也一样过一遍（先逐个字符串遮，再转成 JSON 文字）。留下的几位够判断是不是同一来源。
 关键词在遮蔽后的内容里找：拿完整的 IP 或编号当关键词逐个试，试不出来。
 没有不遮蔽的显示方式。要看完整的 IP、按某个用户查，由创始人在云托管控制台的日志页自己查。
 """
@@ -23,6 +25,8 @@ import json
 import re
 import sys
 
+# 反斜杠转义：\n 这类单字母的、\uXXXX；前面连着几个反斜杠都算进去
+_ESCAPE = re.compile(r"\\+(?:u([0-9A-Fa-f]{4})|[nrtbf])")
 _FILE_ID = re.compile(r"cloud://\S+")
 _FIELD = re.compile(
     r"""(?P<kq>\\?["'])(?P<key>ip|uid)(?P=kq)(?P<sep>\s*:\s*)(?P<vq>\\?["'])(?P<val>.*?)(?P=vq)""",
@@ -100,7 +104,19 @@ def _v6(m):
     return run if masked is None else masked
 
 
+def _unescape(m):
+    code = m.group(1)
+    if code is None:
+        return " "
+    c = int(code, 16)
+    # 控制字符、单独的代理项显示成空格；反斜杠也不还原：还原了会和后面的字母拼出新的转义
+    if c < 0x20 or c in (0x5C, 0x7F) or 0xD800 <= c <= 0xDFFF:
+        return " "
+    return chr(c)
+
+
 def mask(text):
+    text = _ESCAPE.sub(_unescape, text)
     text = _FILE_ID.sub("cloud://…", text)
     text = _FIELD.sub(_field, text)
     text = _OPENID.sub(lambda m: _keep4(m.group(0)), text)
@@ -122,8 +138,19 @@ def _mask_values(value):
     return value
 
 
+def _as_text(value):
+    """里面的字符串先逐个遮掉；字典、列表再转成 JSON 文字（不用 str()：它写出的 \\x07 这类转义，
+    后面的规则认不出边界），其他值用 str()。"""
+    value = _mask_values(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
 def _shown(value):
-    return mask(str(_mask_values(value)))
+    return mask(_as_text(value))
 
 
 def lines(data, keys=()):
@@ -140,7 +167,7 @@ def lines(data, keys=()):
             j = {"__CONTENT__": content}
         tag = j.get("__TAG__")
         container = tag.get("container_name", "?") if isinstance(tag, dict) else "?"
-        msg = mask(str(_mask_values(j.get("__CONTENT__", ""))).replace("\r", " ").replace("\n", " "))
+        msg = mask(_as_text(j.get("__CONTENT__", "")).replace("\r", " ").replace("\n", " "))
         if keys and not any(k in msg for k in keys):
             continue
         # 先遮再截：截断处正好落在 IP 中间时，残缺的 IP 认不出来
@@ -160,11 +187,11 @@ def main(argv):
         # 出错原文由 cloud-logs.cjs 整段存下（截在 IP 中间就认不出了），这里先遮蔽再限长
         print(mask(json.dumps(_mask_values(data), ensure_ascii=False))[:2000])
         return 1
-    count, over, pages = (_mask_values(data.get(k)) for k in ("count", "listOver", "pages"))
+    count, over, pages = (_shown(data.get(k)) for k in ("count", "listOver", "pages"))
     print(
         mask(
             f"# 共 {count} 行，listOver={over}，pages={pages}"
-            f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、文件编号已遮蔽"
+            f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、openid、文件编号已遮蔽"
         )
     )
     for line in lines(data, argv[2:]):

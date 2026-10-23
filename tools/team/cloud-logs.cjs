@@ -130,5 +130,5 @@ process.on('unhandledRejection', exception);
   saved = true;
   // 终端只给条数、页数、路径；没取完由下面这行提示说，listOver、truncated 留在结果文件里（查看时显示）
   say(JSON.stringify({ count: all.length, pages: 20, out }));
-  say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看`);
+  say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看（遮掉了 IP、用户编号、openid 和文件编号）`);
 })().catch(exception);

@@ -72,8 +72,16 @@ TEXT_CASES = {
     f'youju log-uid -> {UID}': 'youju log-uid -> 9f3a*',
     f'cloud://prod-env.7072-prod-env-1300000000/advisor/out/{UID}/12.xlsx done': 'cloud://… done',
     f"Duplicate entry '{OPENID}' for key 'users.openid'": "Duplicate entry 'oTES*' for key 'users.openid'",
+    # 日志内容本身是 JSON 文字时的反斜杠转义：先还原再认（转义里的字母、数字会紧贴在编号、IP 前面）
+    '{"message":"rows\\n' + UID + '\\t' + OPENID + '"}': '{"message":"rows 9f3a* oTES*"}',
+    'addr \\u5740203.0.113.77': 'addr 址203.0.*.*',
+    '\\u53f7' + UID: '号9f3a*',
+    '\\u57402001:db8::1': '址2001:db8:*',
+    '\\u003e' + UID: '>9f3a*',
+    'path\\\\n' + UID: 'path 9f3a*',
+    '\\u0007' + UID + ' \\u005cn': ' 9f3a*  n',
 }
-UNTOUCHED = [f'rid {RID}', 'sha256 ' + 'ab' * 32, 'Python 3.12.4', '2026-10-19T03:00:00.123456+00:00',
+UNTOUCHED = ['C:\\Program Files\\x', '\\"quoted\\"', f'rid {RID}', 'sha256 ' + 'ab' * 32, 'Python 3.12.4', '2026-10-19T03:00:00.123456+00:00',
              'elapsed 12:34:56', 'GET /api/v1/notices/123 200 35ms', '工具任务：processed 3',
              'Uvicorn running on http://[::]:80', 'mac aa:bb:cc:dd:ee:ff']
 ACCESS_IPS = [(IP4, '203.0.*.*'), (IP6, '2001:db8:*'), ('::ffff:203.0.113.9', '::ffff:203.0.*.*'),
@@ -121,9 +129,12 @@ class MaskTests(unittest.TestCase):
                             {'Timestamp': f'{IP4} uid={UID}', 'Content': json.dumps({'__CONTENT__': 'hello', '__TAG__': {'container_name': IP6}})},
                             result('第一行\r\n第二行'),
                             # 内容、时间不是字符串时转成文字会把换行写成 \n：要先遮再转
-                            {'Timestamp': [f'x\n{UID}'], 'Content': json.dumps({'__CONTENT__': {'note': f'rows\n{UID}\t{OPENID}'}})}]}
+                            {'Timestamp': [f'x\n{UID}', '\x07' + UID], 'Content': json.dumps({'__CONTENT__': {'note': f'rows\n{UID}\t{OPENID}'}})},
+                            # 内容是 JSON 文字、换行写成 \n；字典的键里有换行；str() 会写成 \x07 的控制字符
+                            result('{"message":"rows\\n' + UID + '"}'),
+                            {'Timestamp': 't', 'Content': json.dumps({'__CONTENT__': {f'x\n{UID}': 1, 'bell': '\x07' + UID, '\x07' + UID: 2}})}]}
         shown = list(SHOW.lines(data))
-        self.assertEqual(len(shown), 7)
+        self.assertEqual(len(shown), 9)
         for line in shown:
             for value in [*PERSONAL, '113', '\r', '\n']:
                 self.assertNotIn(value, line)
@@ -140,7 +151,7 @@ class MaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'logs.json'
             for data, code in [({'count': IP4, 'listOver': UID, 'pages': 1, 'results': [result(access_line())]}, 0),
-                               ({'count': {'a': f'x\n{UID}'}, 'listOver': [f'y\t{OPENID}'], 'pages': f'{IP4}', 'results': []}, 0),
+                               ({'count': {'a': f'x\n{UID}', '\x07' + UID: 1}, 'listOver': [f'y\t{OPENID}', '\x07' + OPENID], 'pages': f'{IP4}', 'results': []}, 0),
                                ({'error': 'api', 'code': IP4, 'message': f'bad request from {IP6} uid {UID}'}, 1),
                                # 转成 JSON 后换行、制表符成了 \n、\t，紧跟的编号前面就是字母：要先遮再转
                                ({'error': 'api', 'message': f'rows\n{UID}\t{OPENID}', 'ret': [f'x\n{IP4}']}, 1),
