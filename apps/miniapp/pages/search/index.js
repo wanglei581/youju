@@ -57,8 +57,9 @@ const GROUPS = [
 const ALL_PROVINCES = PROVINCES;
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], city: [], district: [], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-// 关注确认框的标题：写存的是什么（当前的关键词和筛选条件）、关注之后会怎样；输入框里是按条件拼的名称，可以改（10/22 走查）
-const FOLLOW_NOTE = '关注当前搜索条件，有新文件时在关注页标出';
+// 关注确认框的标题：写存的是什么（当前的关键词和筛选条件），输入框里只是按条件拼的名称——改名称不会改条件
+// （10/22 走查：只看到一行可改的字，会以为改的是条件）。"有新文件时在关注页标出"写在保存成功的提示里
+const FOLLOW_NOTE = '按当前搜索条件关注（下面是名称，改名不改条件）';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
 const PAGE = 20;

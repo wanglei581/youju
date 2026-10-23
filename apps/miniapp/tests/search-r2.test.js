@@ -284,8 +284,8 @@ test('结果信息栏：第一行写明当前发布时间和份数、淡色"共 
   assert.doesNotMatch(read('pages/search/index.wxss'), /\.follow-bar/);
 });
 
-test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureConsent 只提示暂未开放、不弹"协议定稿后开放"；定稿后确认框写"关注当前搜索条件，有新文件时在关注页标出"（10/22 走查）', async () => {
-  const NOTE = '关注当前搜索条件，有新文件时在关注页标出';
+test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureConsent 只提示暂未开放、不弹"协议定稿后开放"；定稿后确认框写"按当前搜索条件关注（下面是名称，改名不改条件）"（10/22 走查）', async () => {
+  const NOTE = '按当前搜索条件关注（下面是名称，改名不改条件）';
   const off = searchPage({ final: false });
   assert.equal(off.page.data.loginOpen, false);
   // 兜底：协议定稿前万一走到 ensureConsent，只轻提示，不弹对话框

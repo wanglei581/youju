@@ -279,3 +279,27 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
     assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
   }
 });
+
+test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不改条件；通知表的上传页写明按省份和条件列通知、客户名称只作标识；正文的按钮写"展开全部正文"', async () => {
+  let confirm;
+  const page = load('pages/search/index.js', {
+    '../../utils/api.js': { search: () => Promise.resolve({ total: 0, total_all: 0, items: [] }) },
+    '../../utils/regions.js': require('../utils/regions.js'), '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/exporter.js': { exportDocs() {}, MAX: 200 }, '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
+    '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) }, '../../utils/conditions.js': require('../utils/conditions.js'),
+    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({ cities: [], districts: [] }), notCoveredNames: () => '', allUncovered: () => [] },
+  }, { wx: { showModal: (o) => { confirm = o; } } });
+  page.onLoad({ q: '专精特新', regions: '山东', open: '1' }); await flush();
+  page.follow(); await flush();
+  assert.equal(confirm.title, '按当前搜索条件关注（下面是名称，改名不改条件）');
+  assert.equal(confirm.editable, true);
+  assert.match(confirm.content, /“专精特新” · 山东 · 全部 · 近 30 天 · 只看未截止/);
+  const line = '按每行的省份和填了的条件，列出近 90 天发布、还没核对为已截止的申报通知；关键词不填就不限主题；客户名称只用来标出是哪家。';
+  assert.ok(textOf(render('pages/advisor-form/index.wxml', { ...FORM, kind: 'track', title: '客户相关通知表' })).includes(line));
+  assert.ok(!textOf(render('pages/advisor-form/index.wxml', FORM)).includes(line));
+  const body = { status: 'ok', text: '一'.repeat(800), total: 800, truncated: false };
+  const detail = detailPage(() => ({ ...DOC, kind: '政策', body }));
+  detail.onLoad({ id: '5' }); await flush();
+  const more = findAll(render('pages/detail/index.wxml', { ...detail.data, loading: false }), hasClass('body-more'))[0];
+  assert.equal(flat(more), '展开全部正文');
+});
