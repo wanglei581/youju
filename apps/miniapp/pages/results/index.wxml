@@ -6,7 +6,7 @@
   <view wx:if="{{loading}}" class="muted">正在读取结果…</view>
   <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
   <block wx:if="{{result}}">
-    <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAt}}</view>
+    <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAtText}}</view>
     <view class="muted">{{result.notice}}</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
       <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>

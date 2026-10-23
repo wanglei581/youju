@@ -11,7 +11,7 @@ function segmentsOf(items) {
   return items.map((s) => {
     if (!s || typeof s.text !== 'string' && !Array.isArray(s.cells)) throw new Error('阅读内容格式有误，请重试');
     const cells = Array.isArray(s.cells) ? s.cells : [];
-    if (cells.length > 100 || cells.some((cell) => !cell || typeof cell.t !== 'string')) throw new Error('表格内容格式有误');
+    if (cells.some((cell) => !cell || typeof cell.t !== 'string')) throw new Error('表格内容格式有误');
     const labels = { page: '第', sheet: '工作表', row: '行', table: '表', slide: '幻灯片' };
     const loc = s.loc && typeof s.loc === 'object' ? Object.keys(labels).filter((key) => s.loc[key] != null)
       .map((key) => `${labels[key]} ${s.loc[key]}${key === 'page' ? ' 页' : ''}`).join(' · ') : '';

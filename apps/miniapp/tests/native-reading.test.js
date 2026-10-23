@@ -143,3 +143,23 @@ test('名单查询离页丢弃迟回，返回保留输入并重新比对，不�
   resolves[1]({ items: [], coverage: { lists: 20 } }); await new Promise(r => setImmediate(r));
   assert.equal(p.data.name, '合成科技有限公司'); assert.equal(p.data.result.items.length, 0); p.onUnload();
 });
+
+
+test('101列附件完整显示且保留字段名，不按客户端假上限丢弃', async () => {
+  const cells = Array.from({ length: 101 }, (_, c) => ({ c, h: `列${c + 1}`, t: c === 100 ? '2026-10-30' : `值${c}` }));
+  const p = load('reader', { reading: async () => reading({ segments: [{ n: 0, kind: 'row', cells, loc: { row: 2 } }] }) });
+  p.onLoad({ id: '7', attachment: '8' }); await p.onShow();
+  assert.equal(p.data.error, ''); assert.equal(p.data.segments[0].cells.length, 101);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /列101：2026-10-30/);
+});
+
+test('批量结果保存使用原提交企业数而非展开命中行数，生成时间按北京时间显示', async () => {
+  const calls = [];
+  const p = load('results', { advisorReading: async () => result({ kind: 'compare', rowCount: 1, total: 10, generatedAt: '2026-10-23T03:04:05+00:00' }) }, {
+    tools: { openResult: async (id, options) => { calls.push([id, plain(options.task)]); } },
+  });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow(); await p.save();
+  assert.deepEqual(calls, [['8', { kind: 'compare', rowCount: 1 }]]);
+  const text = textOf(render('pages/results/index.wxml', p.data));
+  assert.match(text, /2026年10月23日 11:04（北京时间）/); assert.doesNotMatch(text, /T03:04|\+00:00/);
+});

@@ -1,5 +1,16 @@
 const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
+// 统一按北京时间显示生成时间，不随设备时区改变，也不把原始 ISO 时区串呈现给用户。
+function generatedTime(value) {
+  if (!value) return '生成时间未提供';
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnly) return `${dateOnly[1]}年${Number(dateOnly[2])}月${Number(dateOnly[3])}日`;
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return '生成时间未提供';
+  const date = new Date(stamp + 8 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
+}
 Page({
   data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },
   onLoad(q) {
@@ -29,7 +40,7 @@ Page({
       const next = res.nextCursor == null ? null : String(res.nextCursor);
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('结果分页信息有误，请重试');
       this.revision = res.revision;
-      this.setData({ result: res, page: this.cursorIndex + 1, nextCursor: next });
+      this.setData({ result: { ...res, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
     }).catch((err) => {
       if (!current()) return;
       if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }
@@ -51,7 +62,7 @@ Page({
     this.setData({ saving: true });
     const stale = () => { if (this.visible && seq === this.seq) this.setData({ result: null, error: '内容已更新，请重新查看结果后保存。', changed: true }); };
     const job = this.data.advisor ? require('../../utils/data-tools.js').openResult(this.taskId, {
-      task: { kind: result.kind, rowCount: result.total }, current: () => this.visible && seq === this.seq,
+      task: { kind: result.kind, rowCount: result.rowCount }, current: () => this.visible && seq === this.seq,
     }) : exportDocs(this.ids, { revision: result.revision, label: result.title, onStale: stale, current: () => this.visible && seq === this.seq });
     return job.catch((err) => { if (this.visible && seq === this.seq && !err.cancelled) this.setData({ error: err.message }); })
       .then(() => { if (this.visible && seq === this.seq) this.setData({ saving: false }); });
