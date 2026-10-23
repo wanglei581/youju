@@ -284,23 +284,29 @@ def _authorize(kind: str, user: User) -> None:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
-def _document_titles(session: Session, doc_ids: list[int]) -> dict[int, str]:
+def _document_titles(session: Session, doc_ids: list[int]) -> dict[int, tuple[str, str | None]]:
+    """{编号: (标题, 原网页确认撤下的日期)}，只给公开的。"""
     if not doc_ids:
         return {}
-    return dict(
-        session.execute(
-            select(Document.id, Document.title)
+    return {
+        doc_id: (title, v1.link_gone_date(link_gone_at))
+        for doc_id, title, link_gone_at in session.execute(
+            select(Document.id, Document.title, Document.link_gone_at)
             .join(Source, Source.id == Document.source_id)
             .where(Document.id.in_(doc_ids), v1.public_condition())
-        ).all()
-    )
+        )
+    }
 
 
-def _document_out(doc_id: int | None, titles: dict[int, str]) -> dict:
+def _document_out(doc_id: int | None, titles: dict[int, tuple[str, str | None]]) -> dict:
     # 编号与标题同时隐藏，不能暴露已下架或非公开通知的元数据。
+    # linkGone：原网页确认撤下的日期（youju/link_check.py）；结果页、我的记录据此写明结果是撤下前
+    # 按收录的正文做的，不再给条款对照（新提交会被拒，原因 link_gone）
+    title, link_gone = titles.get(doc_id, (None, None)) if doc_id is not None else (None, None)
     return {
         "docId": doc_id if doc_id in titles else None,
-        "docTitle": titles.get(doc_id),
+        "docTitle": title,
+        "linkGone": link_gone,
     }
 
 

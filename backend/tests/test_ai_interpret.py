@@ -192,6 +192,39 @@ def run(session, task, settings, fake=None, stamp=NOW):
     return fake
 
 
+def test_link_gone_refuses_new_tasks_but_keeps_results(client, session, settings, doc):
+    """原网页撤下了（youju/link_check.py 隔天两次确认）：不能再提交新的解读，不扣次数、写明原因；
+    已有的结果照常显示，带上撤下日期（结果页、我的记录写明是撤下前做的）；提交时还没撤下、
+    排着队的照常做完。"""
+    done = direct_task(session, doc)
+    run(session, done, settings)
+    queued = direct_task(session, doc, key="queued")
+    doc.link_gone_at = NOW
+    session.commit()
+    run(session, queued, settings)
+    assert queued.status == "done" and queued.result_json["items"]
+    body = client.get(f"/api/v1/advisor/tasks/{done.id}").json()
+    assert body["result"]["items"] == done.result_json["items"] and not body.get("error")
+    assert body["linkGone"] == "2026-10-03"
+    listed = {item["id"]: item for item in client.get("/api/v1/advisor/tasks").json()["items"]}
+    assert listed[done.id]["linkGone"] == "2026-10-03" and listed[queued.id]["docId"] == doc.id
+    session.expire_all()
+    used = session.scalar(select(AdvisorUsage.used_count))
+    refused = create(client, doc.id, key="after")
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "AI_NOT_ELIGIBLE"
+    assert refused.json()["detail"]["reason"] == "link_gone"
+    session.expire_all()
+    assert session.scalar(select(AdvisorUsage.used_count)) == used
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert detail["ai"]["reason"] == "link_gone" and detail["link_gone"] == "2026-10-03"
+    # 网页恢复了：又能提交，结果里不再带撤下日期
+    doc.link_gone_at = None
+    session.commit()
+    assert create(client, doc.id, key="restored").status_code == 202
+    assert client.get(f"/api/v1/advisor/tasks/{done.id}").json()["linkGone"] is None
+
+
 @pytest.mark.parametrize("change", ["takedown", "field_revoked", "deadline_revoked", "body"])
 def test_refusal_with_verified_values_is_revalidated(client, session, settings, doc, change):
     field = DocumentField(

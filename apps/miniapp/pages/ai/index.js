@@ -73,6 +73,8 @@ function recordRow(task) {
     title: view.docTitle || '',
     time: view.time ? view.time.slice(0, 10) : '',
     stateLabel: view.stateLabel,
+    // 原网页确认撤下了（后台 linkGone）：记录上写一句，点开的结果页写明是撤下前做的
+    linkGone: view.linkGone || '',
   };
 }
 

@@ -26,6 +26,8 @@
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
     <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
+    <!-- 原网页已撤下或改了地址（youju/link_check.py）：放在标题下面先说（撤下了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是撤下前收录的 -->
+    <view wx:if="{{doc.link_gone}}" class="gone-note">原网页已撤下或改了地址（{{doc.link_gone}} 检查时打不开）。下面是撤下前收录的内容，通知可能已撤回或更正，请以发文机关现在公布的为准。</view>
     <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</view>
   </view>
 

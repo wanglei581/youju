@@ -8,6 +8,9 @@ const REASONS = {
   no_body: { text: '还没有拿到完整正文，正文可能在附件里。', next: 'attachments' },
   too_long: { text: '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', next: '' },
   unavailable: { text: '这份文件已下架。', next: 'back' },
+  // 原网页已撤下或改了地址（后台隔天两次确认，backend/src/youju/link_check.py）：不再开始新的解读；
+  // 复制链接也打不开，不给下一步
+  link_gone: { text: '原网页已撤下，不再提供 AI 解读。通知可能已撤回或更正，请以发文机关现在公布的为准。', next: '' },
 };
 const FALLBACK = '这份文件暂不能解读，请查看原文。';
 // 下一步按钮上的字

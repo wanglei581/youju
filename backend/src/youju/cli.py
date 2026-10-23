@@ -653,8 +653,9 @@ def _cmd_check_links(args: argparse.Namespace) -> int:
         counts = check_links(session, limit=args.limit)
     print(
         f"检查原网页 {counts['checked']} 份：能打开 {counts['ok']}，"
-        f"第一次打不开待确认 {counts['suspect']}，确认失效 {counts['gone']}，"
-        f"暂时判断不了 {counts['unknown']}"
+        f"第一次像是撤下了待确认 {counts['suspect']}，确认失效 {counts['gone']}"
+        f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
+        f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份"
     )
     return 0
 
@@ -1472,9 +1473,12 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_backup)
 
     p = sub.add_parser(
-        "check-links", help="检查近 90 天文件的原网页还能不能打开（失效的在小程序里提示）"
+        "check-links",
+        help="检查近 90 天文件的原网页还能不能打开（近 30 天的每天查；撤下的在小程序里提示）",
     )
-    p.add_argument("--limit", type=int, default=400, help="这次最多检查几份")
+    p.add_argument(
+        "--limit", type=int, default=3000, help="这次最多检查几份（输出里还没轮到的不是 0 就调大）"
+    )
     p.set_defaults(func=_cmd_check_links)
 
     p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
