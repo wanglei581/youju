@@ -888,7 +888,72 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
 
 # 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
 _NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)", re.I)
+_LAYOUT_NUMBER = re.compile(r"([0-9]{1,4}(?:\.[0-9]{1,3})?)(px|pt|em|%)?", re.ASCII)
+_BOX_SPACING = re.compile(r"(?:margin|padding)(?:-(?:top|right|bottom|left))?", re.ASCII)
+
+
+def _plain_layout_style(style: str) -> bool:
+    """只接受能静态读懂的有限排版声明，不把它当作浏览器的可见性判断。
+
+    不解 CSS 转义、注释、变量、函数或 !important；未知声明整块拒绝。字号和间距设上下界，
+    避免接近零的字、超大间距把旧条款藏起来。定位、裁剪、透明度、颜色等也留给人工。
+    """
+    for declaration in style.lower().split(";"):
+        if not declaration.strip():
+            continue
+        name, colon, value = declaration.partition(":")
+        name, value = name.strip(), value.strip()
+        if not colon:
+            return False
+        if name == "text-align" and value in {"left", "right", "center", "justify"}:
+            continue
+        spacing = _BOX_SPACING.fullmatch(name)
+        values = value.split()
+        if not values or len(values) > (4 if name in {"margin", "padding"} else 1):
+            return False
+        for token in values:
+            if name.startswith("margin") and spacing and token == "auto":
+                continue
+            number = _LAYOUT_NUMBER.fullmatch(token)
+            if number is None:
+                return False
+            amount, unit = float(number[1]), number[2] or ""
+            if spacing:
+                valid = (amount == 0 and unit == "") or (
+                    unit in {"px", "pt", "em"} and 0 <= amount <= (6 if unit == "em" else 100)
+                )
+            elif name == "font-size":
+                valid = (unit == "px" and 8 <= amount <= 72) or (unit == "pt" and 6 <= amount <= 54)
+            elif name == "line-height":
+                valid = (unit in {"", "em"} and 1 <= amount <= 3) or (
+                    unit in {"px", "pt"} and 8 <= amount <= 100
+                )
+            elif name in {"width", "height", "max-width", "max-height"}:
+                valid = (unit == "px" and 1 <= amount <= 2000) or (
+                    unit == "%" and 1 <= amount <= 100
+                )
+            else:
+                valid = False
+            if not valid:
+                return False
+    return True
+
+
+def _known_qr_caption(element: etree._Element, node: etree._Element, host: str) -> bool:
+    """四川已核实的二维码提示：只放行这句文字，不放行整块定位样式和里面的任意内容。"""
+    parent = element.getparent()
+    return (
+        host == "kjt.sc.gov.cn"
+        and element.tag == "div"
+        and element.get("id") == "qr_container"
+        and element.get("hidden") is None
+        and (element.text or "").strip() == "扫一扫在手机打开当前页"
+        and re.sub(r"\s+", "", element.get("style") or "").lower()
+        == "margin:auto;position:relative;margin-bottom:5px;color:#898989;"
+        and parent is not None
+        and parent.get("id") == "div_div"
+        and parent.getparent() is node
+    )
 
 
 def _hidden_source_header(element: etree._Element, node: etree._Element, host: str) -> bool:
@@ -919,7 +984,9 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
     "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、hidden 或行内样式隐藏的
     元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字（限定网站、位置和全文）。
-    不执行 CSS/脚本。解析不了、没有正文区的返回 None。"""
+    不执行 CSS/脚本；行内样式只接受 _plain_layout_style 的有限普通排版，未知写法保守留给人工。
+    四川二维码只放行已核实的固定提示句，不把整个定位块当作证据。外部样式表不在此解析。
+    解析不了、没有正文区的返回 None。"""
     if not html_text.strip():
         return None
     try:
@@ -931,6 +998,12 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     node = _body_node(root, host)
     if not body or node is None:
         return None
+    # 从 body 开始遍历前，也检查 html 等祖先；隐藏祖先不能被可见子元素“覆盖”。
+    if any(
+        parent.get("hidden") is not None or not _plain_layout_style(parent.get("style") or "")
+        for parent in body[0].iterancestors()
+    ):
+        return ""
     junk = _SITE_JUNK.get(host)
     skipped = frozenset(node.xpath(junk)) if junk else frozenset()
     parts: list[str] = []
@@ -938,10 +1011,22 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     def visit(element: etree._Element, inside: bool) -> None:
         if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
             return
-        if element.get("hidden") is not None or _HIDDEN_STYLE.search(element.get("style") or ""):
+        # 四川真实页面的浅色外框：只认这个已核实的容器和唯一声明，不一般性放行背景/前景颜色。
+        known_background = (
+            host == "kjt.sc.gov.cn"
+            and element.tag == "div"
+            and element.get("class") == "box"
+            and re.sub(r"\s+", "", element.get("style") or "").lower()
+            == "background-color:#e9f3fd;"
+        )
+        if element.get("hidden") is not None or (
+            not known_background and not _plain_layout_style(element.get("style") or "")
+        ):
             if not inside and _hidden_source_header(element, node, host):
                 parts.append(element.text or "")
                 parts.append("\n")
+            elif inside and _known_qr_caption(element, node, host):
+                parts.append("扫一扫在手机打开当前页\n")
             return
         if element is node:
             inside = True

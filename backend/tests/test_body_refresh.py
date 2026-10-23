@@ -10,7 +10,7 @@ from youju import cli
 from youju.ai import interpret
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, _not_on_page, refresh_bodies, survey, trimmed_lines
-from youju.crawler.detail import parse_detail, redact_sensitive
+from youju.crawler.detail import outside_body_text, parse_detail, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.fields import body_fingerprint
 from youju.models import (
@@ -339,6 +339,13 @@ def test_other_changes_are_written_only_when_asked(session) -> None:
         "<div hidden><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
         '<div style="display: none"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
         '<div style="VISIBILITY: HIDDEN !important"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="opacity:0"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="font-size:0;line-height:0"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="position:absolute;left:-10000px;top:-10000px"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="text-indent:-9999px;height:0;overflow:hidden"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="display:/**/none"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="--state:none;display:var(--state)"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="font-&#115;ize:0"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
     ],
 )
 def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover) -> None:
@@ -373,6 +380,20 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover
         '<div style="VISIBILITY: HIDDEN !important">{}</div>',
         '<div style="visibility: collapse"><p>{}</p></div>',
         '<div hidden><span style="display: block">{}</span></div>',
+        '<div style="opacity:0"><span style="font-size:14px">{}</span></div>',
+        '<div style="font-size:0.001px">{}</div>',
+        '<div style="line-height:0">{}</div>',
+        '<div style="margin-left:9999px">{}</div>',
+        '<div style="width:0;height:0;overflow:hidden">{}</div>',
+        '<div style="background-color:#000">{}</div>',
+        '<div style="color:transparent">{}</div>',
+        '<div style="font-size:14px;filter:opacity(0)">{}</div>',
+        '<div style="transform:scale(0)">{}</div>',
+        '<div style="clip-path:inset(50%)">{}</div>',
+        '<div style="margin:0;opacity:/**/0">{}</div>',
+        r'<div style="d\69 splay:none">{}</div>',
+        '<div style="font-size:var(--text-size)">{}</div>',
+        '<div style="all:initial;font-size:0">{}</div>',
     ],
 )
 def test_hidden_old_clause_is_not_page_chrome(wrapper) -> None:
@@ -383,6 +404,48 @@ def test_hidden_old_clause_is_not_page_chrome(wrapper) -> None:
     )
     assert parse_detail(page, HUBEI_URL).body_text == CLEAN
     assert _not_on_page([clause], _page(HUBEI_URL, page)) == [clause]
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "margin:0;",
+        "margin-top:60px; padding: 0px 2em;",
+        "font-size:14px;line-height:2em;",
+        "width:100%;height:165px;",
+        "text-align:center;",
+    ],
+)
+def test_plain_inline_layout_does_not_hide_page_chrome(style) -> None:
+    caption = "普通导航提示"
+    page = read_fixture_html("detail_hubei_kjt_70955").replace(
+        "</body>", f'<div style="{style}">{caption}</div></body>'
+    )
+    assert _not_on_page([caption, *HEAD, *TAIL], _page(HUBEI_URL, page)) == []
+
+
+@pytest.mark.parametrize("attribute", ["hidden", 'style="opacity:0"'])
+def test_hidden_html_ancestor_does_not_prove_page_chrome(attribute) -> None:
+    page = read_fixture_html("detail_hubei_kjt_70955").replace("<html", f"<html {attribute}", 1)
+    assert _not_on_page(HEAD + TAIL, _page(HUBEI_URL, page)) == HEAD + TAIL
+
+
+@pytest.mark.parametrize("change", ["none", "host", "clause", "style", "ancestor"])
+def test_sichuan_qr_exception_only_proves_the_known_caption(change) -> None:
+    url = "https://kjt.sc.gov.cn/kjt/gstz/example.shtml"
+    page = read_fixture_html("detail_sichuan_kjt")
+    caption = "扫一扫在手机打开当前页"
+    if change == "host":
+        url = "https://example.gov.cn/a.shtml"
+    elif change == "clause":
+        caption += "，本通知自印发之日起施行。"
+        page = page.replace("扫一扫在手机打开当前页", caption)
+    elif change == "style":
+        page = page.replace("position:relative;margin-bottom:5px", "opacity:0;margin-bottom:5px")
+    elif change == "ancestor":
+        page = page.replace('id="div_div"', 'id="div_div" hidden')
+    outside = outside_body_text(page, url) or ""
+    assert (caption in outside) is (change == "none")
 
 
 @pytest.mark.parametrize("change", ["none", "host", "location", "prefix", "child", "ancestor"])
