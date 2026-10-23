@@ -8,11 +8,34 @@ function input() { return {
   legal:{final:true, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
 }
+test('所有版本必须包含站内阅读和结果页，等数量替换或重复也不能绕过范围检查',()=>{
+ for(const profile of ['first-release','ai-internal','ai-release','complete-candidate','complete-release']) {
+  const x=input();
+  if(profile!=='first-release') x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint'].map(p=>`pages/${p}/index`));
+  if(profile.startsWith('complete-')) x.app.pages.push(...['advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`));
+  const state=y=>inspect({...y,profile,mode:'prepare'}).checks.find(c=>c.id==='pages').state;
+  assert.equal(state(x),'pass',profile);
+  for(const page of ['reader','results']) {
+   for(const replacement of [null,'pages/unreviewed/index','pages/home/index']) {
+    const y=JSON.parse(JSON.stringify(x));
+    const i=y.app.pages.indexOf(`pages/${page}/index`);
+    y.app.pages.splice(i,1,...(replacement?[replacement]:[]));
+    assert.equal(state(y),'fail',`${profile}: ${page}: ${replacement}`);
+   }
+  }
+ }
+});
+test('真实注册页面通过完整候选范围校验，不能只验证测试fixture',()=>{
+ const app=JSON.parse(fs.readFileSync(path.join(__dirname,'../../apps/miniapp/app.json'),'utf8'));
+ const r=inspect({...input(),app,profile:'complete-release',mode:'prepare'});
+ assert.equal(r.checks.find(c=>c.id==='pages').state,'pass');
+ assert.equal(r.readyToSubmit,false);
+});
 test('备案办理中只允许准备检查，默认提审保持失败',()=>{
  const x=input(); x.legal.operator.icp='';
  assert.equal(inspect(x).ok,false);
@@ -47,7 +70,7 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.equal(JSON.stringify(inspect(x)).includes('private@example.test'),false);
 });
 
-test('完整候选严格限定 26 页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助），不能借此放宽旧版本或提交审核',()=>{
+test('完整候选严格限定 28 页（含站内阅读与结果页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
  x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
