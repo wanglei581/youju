@@ -114,7 +114,7 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
     root = render('pages/detail/index.wxml', { ...page.data, loading: false });
     assert.equal(flat(elements(card(root))[0]), '正文');
     assert.equal(findAll(card(root), hasClass('body-note')).length, 0);
-    assert.match(flat(card(root)), /复制原文链接/);
+    // 去哪看原文那句由站内阅读的改动（#349，10/23 定的全程小程序内）来定，这里不锁字
   }
 });
 
@@ -304,7 +304,7 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   detail.onLoad({ id: '5' }); await flush();
   const more = findAll(render('pages/detail/index.wxml', { ...detail.data, loading: false }), hasClass('body-more'))[0];
   assert.equal(flat(more), '展开正文');
-  // 正文被截断（只存了一部分）：按钮也不写"全部"；展开后接着写还有多少字、去浏览器看原文
+  // 正文被截断（只存了一部分）：按钮也不写"全部"；展开后接着写还有多少字（后半句去哪看由 #349 定，这里不锁字）
   const cut = detailPage(() => ({ ...DOC, kind: '政策', body: { status: 'ok', text: '一'.repeat(800), total: 3000, truncated: true } }));
   cut.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
@@ -314,7 +314,7 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   cut.toggleBody();
   root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
   assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '收起');
-  assert.equal(flat(findAll(root, hasClass('body-rest'))[0]), '后面还有约2200字，请复制原文链接在浏览器查看。');
+  assert.match(flat(findAll(root, hasClass('body-rest'))[0]), /^后面还有约2200字/);
 });
 
 test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具按钮、在售时购买卡片的按钮都是白底次按钮；底栏"文件"改名"导出"，页面标题"导出记录"', () => {
