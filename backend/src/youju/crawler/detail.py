@@ -499,9 +499,45 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
 
 
 # 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
-_NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
+_NOT_PAGE_TEXT_TAGS = {
+    "script",
+    "style",
+    "noscript",
+    "template",
+    "canvas",
+    "iframe",
+    "video",
+    "audio",
+    "object",
+    "embed",
+    "datalist",
+    "select",
+    "font",
+}
+# 旧式 HTML 配色也能形成同色字；popover 是否弹出要靠脚本，静态文本都不作证。
+_UNCERTAIN_DISPLAY_ATTRIBUTES = {
+    "color",
+    "bgcolor",
+    "text",
+    "background",
+    "link",
+    "vlink",
+    "alink",
+    "popover",
+}
 _LAYOUT_NUMBER = re.compile(r"([0-9]{1,4}(?:\.[0-9]{1,3})?)(px|pt|em|%)?", re.ASCII)
 _BOX_SPACING = re.compile(r"(?:margin|padding)(?:-(?:top|right|bottom|left))?", re.ASCII)
+
+
+def _unproven_page_element(element: etree._Element) -> bool:
+    """不画出的后备文字、动态容器和可能隐藏文字的 HTML 属性，不能作自动去噪证明。"""
+    return (
+        not isinstance(element.tag, str)
+        or element.tag.lower() in _NOT_PAGE_TEXT_TAGS
+        or element.get("hidden") is not None
+        or any(name in element.attrib for name in _UNCERTAIN_DISPLAY_ATTRIBUTES)
+        or (element.tag.lower() == "dialog" and element.get("open") is None)
+    )
 
 
 def _plain_layout_style(style: str) -> bool:
@@ -597,6 +633,7 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、hidden 或行内样式隐藏的
     元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字（限定网站、位置和全文）。
     不执行 CSS/脚本；行内样式只接受 _plain_layout_style 的有限普通排版，未知写法保守留给人工。
+    旧式 HTML 配色、媒体后备文字和未展开的动态内容不作证；折叠 details 只读首个 summary。
     四川二维码只放行已核实的固定提示句，不把整个定位块当作证据。外部样式表不在此解析。
     解析不了、没有正文区的返回 None。"""
     if not html_text.strip():
@@ -612,7 +649,7 @@ def outside_body_text(html_text: str, url: str) -> str | None:
         return None
     # 从 body 开始遍历前，也检查 html 等祖先；隐藏祖先不能被可见子元素“覆盖”。
     if any(
-        parent.get("hidden") is not None or not _plain_layout_style(parent.get("style") or "")
+        _unproven_page_element(parent) or not _plain_layout_style(parent.get("style") or "")
         for parent in body[0].iterancestors()
     ):
         return ""
@@ -621,7 +658,7 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     parts: list[str] = []
 
     def visit(element: etree._Element, inside: bool) -> None:
-        if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
+        if _unproven_page_element(element):
             return
         # 四川真实页面的浅色外框：只认这个已核实的容器和唯一声明，不一般性放行背景/前景颜色。
         known_background = (
@@ -631,9 +668,7 @@ def outside_body_text(html_text: str, url: str) -> str | None:
             and re.sub(r"\s+", "", element.get("style") or "").lower()
             == "background-color:#e9f3fd;"
         )
-        if element.get("hidden") is not None or (
-            not known_background and not _plain_layout_style(element.get("style") or "")
-        ):
+        if not known_background and not _plain_layout_style(element.get("style") or ""):
             if not inside and _hidden_source_header(element, node, host):
                 parts.append(element.text or "")
                 parts.append("\n")
@@ -648,6 +683,12 @@ def outside_body_text(html_text: str, url: str) -> str | None:
             or _JUNK_CLASS.search(f"{element.get('class', '')} {element.get('id', '')}")
         ):
             inside = False
+        if element.tag.lower() == "details" and element.get("open") is None:
+            # 折叠时只有首个直接 summary 子元素可见，details.text 和 summary.tail 也藏在里面。
+            summary = next((child for child in element if child.tag == "summary"), None)
+            if summary is not None:
+                visit(summary, inside)
+            return
         if not inside:
             parts.append(element.text or "")
         for child in element:
