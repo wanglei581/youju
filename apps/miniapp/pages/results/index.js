@@ -47,19 +47,19 @@ Page({
       this.setData({ result: null, nextCursor: null, changed: err.status === 409, error: err.message || '结果未加载，请重试' });
     }).then(() => { if (current()) this.setData({ loading: false }); });
   },
-  retry() { return this.data.changed ? this.restart() : this.load(); },
+  retry() { if (this.data.saving) return; return this.data.changed ? this.restart() : this.load(); },
   next() {
-    if (this.data.loading || this.data.nextCursor === null) return;
+    if (this.data.loading || this.data.saving || this.data.nextCursor === null) return;
     this.cursors = this.cursors.slice(0, this.cursorIndex + 1); this.cursors.push(this.data.nextCursor); this.cursorIndex += 1;
     return this.load();
   },
-  previous() { if (this.data.loading || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
+  previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
   detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   save() {
     if (!this.data.result || this.data.saving) return;
     const seq = this.seq; const result = this.data.result;
-    this.setData({ saving: true });
+    this.setData({ saving: true, error: '' });
     const stale = () => { if (this.visible && seq === this.seq) this.setData({ result: null, error: '内容已更新，请重新查看结果后保存。', changed: true }); };
     const job = this.data.advisor ? require('../../utils/data-tools.js').openResult(this.taskId, {
       task: { kind: result.kind, rowCount: result.rowCount }, current: () => this.visible && seq === this.seq,

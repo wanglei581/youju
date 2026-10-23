@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { render, textOf } = require('./wxml-render.js');
+const { render, textOf, findAll } = require('./wxml-render.js');
 const root = path.join(__dirname, '..');
 const plain = x => JSON.parse(JSON.stringify(x));
 function load(name, api, extra = {}) {
@@ -162,4 +162,66 @@ test('批量结果保存使用原提交企业数而非展开命中行数，生�
   assert.deepEqual(calls, [['8', { kind: 'compare', rowCount: 1 }]]);
   const text = textOf(render('pages/results/index.wxml', p.data));
   assert.match(text, /2026年10月23日 11:04（北京时间）/); assert.doesNotMatch(text, /T03:04|\+00:00/);
+});
+
+test('保存未完成时不能翻结果页，完成后保存按钮必须恢复', async () => {
+  let resolveSave;
+  const p = load('results', { advisorReading: async (_id, args) => result({ kind: 'compare', rowCount: 1, nextCursor: args.cursor ? null : '20' }) }, {
+    tools: { openResult: () => new Promise(resolve => { resolveSave = resolve; }) },
+  });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  p.setData({ error: '上一次保存失败' });
+  const saving = p.save(); assert.equal(p.data.saving, true); assert.equal(p.data.error, '');
+  const seq = p.seq; await p.retry(); assert.equal(p.seq, seq, '旧错误的重试事件也不能使保存回调失效');
+  await p.next(); resolveSave(); await saving;
+  assert.equal(p.data.saving, false, '翻页不能使保存的结束回调失效，按钮应恢复');
+  assert.equal(p.data.page, 1, '保存期间停留在当前结果');
+  await p.next(); assert.equal(p.data.page, 2);
+});
+
+
+test('保存期间上一页也被拦截，失败或取消后按钮恢复且可以继续翻页', async () => {
+  for (const cancelled of [true, false]) {
+    let rejectSave;
+    const p = load('results', { advisorReading: async (_id, args) => result({ kind: 'compare', rowCount: 1, nextCursor: args.cursor ? null : '20' }) }, {
+      tools: { openResult: () => new Promise((_resolve, reject) => { rejectSave = reject; }) },
+    });
+    p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow(); await p.next();
+    const saving = p.save();
+    const controls = findAll(render('pages/results/index.wxml', p.data), n => n.attrs && n.attrs.bindtap === 'previous');
+    assert.equal(controls.length, 1); assert.equal(controls[0].attrs.disabled, true);
+    await p.previous(); assert.equal(p.data.page, 2);
+    rejectSave(Object.assign(new Error('保存失败'), { cancelled })); await saving;
+    assert.equal(p.data.saving, false); assert.equal(p.data.error, cancelled ? '' : '保存失败');
+    await p.previous(); assert.equal(p.data.page, 1);
+  }
+});
+
+test('离页取消保存，旧保存迟回不能复位新一轮保存状态', async () => {
+  const jobs = [];
+  const p = load('results', { advisorReading: async () => result({ kind: 'compare', rowCount: 1 }) }, {
+    tools: { openResult: (_id, options) => new Promise(resolve => jobs.push({ resolve, current: options.current })) },
+  });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  const old = p.save(); assert.equal(jobs[0].current(), true); p.onHide();
+  assert.equal(jobs[0].current(), false); assert.equal(p.data.saving, false);
+  await p.onShow(); const fresh = p.save(); jobs[0].resolve(); await old;
+  assert.equal(p.data.saving, true); assert.equal(jobs[1].current(), true);
+  jobs[1].resolve(); await fresh; assert.equal(p.data.saving, false);
+});
+
+test('正文翻页错误时实际隐藏全部分页按钮，重试仍请求失败页而非跳过', async () => {
+  let fail = true; const calls = [];
+  const p = load('reader', { reading: async (_id, _att, args) => {
+    calls.push(plain(args));
+    if (args.cursor && fail) throw Object.assign(new Error('网络出错'), { status: 503 });
+    return reading({ nextCursor: args.cursor ? null : '2', segments: [segment(args.cursor ? 2 : 1, '正文')] });
+  } });
+  p.onLoad({ id: '7' }); await p.onShow(); await p.next();
+  assert.equal(p.data.error, '网络出错'); assert.deepEqual(p.data.segments, []);
+  const tree = render('pages/reader/index.wxml', p.data);
+  assert.equal(findAll(tree, n => n.attrs && ['next', 'previous'].includes(n.attrs.bindtap)).length, 0);
+  assert.equal(findAll(tree, n => n.attrs && n.attrs.bindtap === 'retry').length, 1);
+  fail = false; await p.retry();
+  assert.deepEqual(calls[1], calls[2]); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].n, 2);
 });

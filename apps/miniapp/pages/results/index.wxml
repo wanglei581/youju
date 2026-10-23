@@ -26,7 +26,7 @@
       <view wx:for="{{item.fields}}" wx:for-item="field" wx:key="index"><text>{{field.label}}：</text><text user-select>{{field.value}}</text></view>
       <button wx:if="{{item.documentId}}" data-id="{{item.documentId}}" bindtap="detail">查看文件和依据</button>
     </view>
-    <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
+    <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous" disabled="{{saving}}">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next" disabled="{{saving}}">下一页</button></view>
     <button bindtap="save" loading="{{saving}}" disabled="{{saving}}">{{advisor ? '另存 Excel（可选）' : '另存 Excel / Word（可选）'}}</button>
   </block>
 </view>
