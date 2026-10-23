@@ -500,14 +500,18 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
 
 # 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
 _NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
+# 隐藏的元素：带 hidden 属性，或行内样式隐藏
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+# 隐藏的页头信息，整块是这几种开头的（山东工信厅文章头隐藏的"信息来源：山东省工业和信息化厅"）：
+# 正文提取一直不分隐藏不隐藏，以前收进了正文，算网页上的字；别的隐藏内容不算
+_HIDDEN_HEADER = re.compile(r"^(?:信息来源|来源|发布机构|发文机关|发布日期|发布时间)\s*[:：]")
 
 
 def outside_body_text(html_text: str, url: str) -> str | None:
     """网页上不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines 同样规则
     不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
-    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本里，这里也找不到。
-    隐藏的元素照样算：正文提取一直不分隐藏不隐藏，以前收进正文的有不少就是隐藏的页头字（山东工信厅
-    文章头隐藏的"信息来源：山东省工业和信息化厅"）。解析不了、没有正文区的返回 None。"""
+    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本或隐藏的元素里，这里也找不到。
+    隐藏的元素只认隐藏的页头信息（_HIDDEN_HEADER）。解析不了、没有正文区的返回 None。"""
     if not html_text.strip():
         return None
     try:
@@ -525,6 +529,11 @@ def outside_body_text(html_text: str, url: str) -> str | None:
 
     def visit(element: etree._Element, inside: bool) -> None:
         if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
+            return
+        hidden = element.get("hidden") is not None or _HIDDEN_STYLE.search(
+            element.get("style") or ""
+        )
+        if hidden and not _HIDDEN_HEADER.match(" ".join(element.text_content().split())):
             return
         if element is node:
             inside = True
