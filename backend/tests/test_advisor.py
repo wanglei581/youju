@@ -1337,6 +1337,38 @@ def test_native_legacy_result_does_not_recalculate(client, session):
     assert "重新生成" in response.json()["detail"]
 
 
+def test_native_summary_pagination_keeps_input_row_count(client, session):
+    from youju.native_results import build
+    from youju.track import CustomerProfile, CustomerTrack, TrackReport
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    task = session.get(AdvisorTask, task_id)
+    task.kind, task.status, task.row_count = "track", "done", 22
+    task.result_document_ids = []
+    task.result_json = build(
+        "track",
+        TrackReport(
+            [CustomerTrack(CustomerProfile(f"合成企业{i}", "山东")) for i in range(22)], NOW
+        ),
+    )
+    session.commit()
+    params, items = {}, []
+    while True:
+        response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading", params=params)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 44 and data["rowCount"] == 22
+        assert response.headers["cache-control"] == "no-store"
+        items.extend(data["items"])
+        if data["nextCursor"] is None:
+            break
+        params = {"cursor": data["nextCursor"], "revision": data["revision"]}
+    assert [item["n"] for item in items] == list(range(44))
+    assert all(item["title"] == "汇总" and item["documentId"] is None for item in items[:22])
+    assert all(item["title"] == "本次收录范围内未找到相关通知" for item in items[22:])
+
+
 def test_native_result_requires_all_dependencies(client, session):
     from youju.compare import CompareReport, CompareRow
     from youju.native_results import build
@@ -1367,8 +1399,9 @@ def test_generated_native_result_uses_same_engine_report(client, session, tmp_pa
     response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
     assert response.status_code == 200
     assert output.exists()
-    assert response.json()["total"] == count
-    assert response.json()["items"][0]["title"] == "未命中"
+    details = [item for item in response.json()["items"] if item["title"] != "汇总"]
+    assert len(details) == count
+    assert next(item for item in details if item["documentId"] is None)["title"] == "未命中"
     source_time = NOW - timedelta(days=10)
     snapshot = build("compare", CompareReport([], [], source_time), generated_at=NOW)
     assert snapshot["dataVersion"] == source_time.isoformat()

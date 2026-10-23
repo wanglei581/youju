@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
 from datetime import UTC, datetime
 
-from youju.compare import CompareInputError
+from youju.compare import (
+    COMPARE_SUMMARY_HEADERS,
+    CompareInputError,
+    compare_summary_rows,
+    removed_input_counts,
+)
 
 MAX_BYTES = 8 * 1024 * 1024
 LABELS = {
@@ -50,6 +54,20 @@ def _fields(data: dict, labels: dict | None = None) -> list[dict]:
     ]
 
 
+def _summary_items(headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> list[dict]:
+    return [
+        {
+            "documentId": None,
+            "title": "汇总",
+            "fields": [
+                {"label": label, "value": str(value) if value is not None and value != "" else "—"}
+                for label, value in zip(headers, row, strict=True)
+            ],
+        }
+        for row in rows
+    ]
+
+
 def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
     """仅保留结果里本来就有的字段；不复制上传文件或整份原始输入。"""
     data = report.as_dict()
@@ -59,11 +77,12 @@ def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
         title = "企业名单比对结果"
         generated = data.get("data_version")
         notice += "名单状态按标题用词标注；名单序号不是附件页码。"
-        removed = Counter(row["reason"] for row in data.get("removed", []))
+        removed = removed_input_counts(report)
         if removed:
             notice += "已去掉：" + "、".join(
                 f"{reason}{count}行" for reason, count in removed.items()
             )
+        items.extend(_summary_items(COMPARE_SUMMARY_HEADERS, compare_summary_rows(report)))
         for row in data["rows"]:
             for match in row["matches"] or [None]:
                 fields = _fields(
@@ -80,12 +99,14 @@ def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
                     }
                 )
     elif kind == "track":
+        from youju.track import TRACK_SUMMARY_HEADERS, _scope_note, track_summary_rows
+
         title = "客户相关通知表"
         generated = data.get("generated_at")
         notice += "仅查近90天申报通知，已确认超过截止时间的通知不列；机器摘录未经人工核对。"
+        notice += "7天内只计人工核对的日期，14/30天另含机器摘录；截止未核对的也可能快截止。"
+        items.extend(_summary_items(TRACK_SUMMARY_HEADERS, track_summary_rows(report)))
         for client in report.clients:
-            from youju.track import _scope_note
-
             for match in client.items or [None]:
                 fields = [
                     {"label": "客户名称", "value": client.customer_name},
