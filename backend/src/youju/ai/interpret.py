@@ -202,10 +202,13 @@ def eligible_body(
         )
     if doc.source.rights_level != 1:
         raise InterpretRefusal("文件不是一级公开来源，无法解读", "source")
-    # 原网页已撤下或改了地址（youju/link_check.py 隔天两次确认）：通知可能已撤回或更正，不再开始
-    # 新的解读、对照。排在"这类文件不解读"之后、正文的原因之前（eligibility.effective_reason 同序）
+    # 原文链接已失效（youju/link_check.py 隔天两次确认；原网页可能撤下了，也可能改了地址，分不清）：
+    # 通知可能已撤回或更正，为免误导不再开始新的解读、对照。排在"这类文件不解读"之后、正文的原因
+    # 之前（eligibility.effective_reason 同序）
     if link and doc.link_gone_at is not None:
-        raise InterpretRefusal("原网页已撤下或改了地址，不再提供 AI 解读", "link_gone")
+        raise InterpretRefusal(
+            "原文链接已失效，原网页可能已撤下或改了地址，暂不提供 AI 解读和条款对照", "link_gone"
+        )
     raw = v1._reading_body(session, doc.id)
     # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
     body = v1.redact_sensitive(raw or "")

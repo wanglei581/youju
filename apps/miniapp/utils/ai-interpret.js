@@ -188,7 +188,7 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
       clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
       if (task.status === 'done' && task.result) {
         // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明；
-        // linkGone：原网页确认撤下的日期，结果页写明结果是撤下前做的、不再给条款对照
+        // linkGone：原文链接确认失效的日期，结果页写明结果基于此前收录的正文、不再给条款对照
         failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, linkGone: task.linkGone || '', error: '', progress: '' });
       } else {
         // 全站满了、暂时不可用、被移出白名单：重新提交今天也做不成，不给"重试"

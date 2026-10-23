@@ -16,5 +16,5 @@
 .ai-internal-tag { font-weight: 600; }
 /* 联系客服块（D-075）：和上面的说明隔开一点 */
 .advisor-contact { margin-top: 24rpx; }
-/* 原网页已撤下（后台 linkGone）：结果照常显示，上面这条提醒用橙色底 */
+/* 原文链接已失效（后台 linkGone）：结果照常显示，上面这条提醒用橙色底 */
 .advisor-gone { background: var(--o-tint); color: var(--o-txt); }

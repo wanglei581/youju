@@ -646,16 +646,33 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_check_links(args: argparse.Namespace) -> int:
-    from youju.link_check import check_links
+def _hhmm(value: str) -> str:
+    """命令行参数：HH:MM（北京时间）。"""
+    try:
+        hour, minute = (int(part) for part in value.split(":"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("要写成 HH:MM，比如 06:10") from None
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        raise argparse.ArgumentTypeError("要写成 HH:MM，比如 06:10")
+    return f"{hour:02d}:{minute:02d}"
 
+
+def _cmd_check_links(args: argparse.Namespace) -> int:
+    from youju.link_check import BEIJING, check_links
+
+    until = None
+    if args.until:
+        hour, minute = (int(part) for part in args.until.split(":"))
+        today = datetime.now(BEIJING)
+        until = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
     with session_factory()() as session:
-        counts = check_links(session, limit=args.limit)
+        counts = check_links(session, limit=args.limit, until=until)
     print(
         f"检查原网页 {counts['checked']} 份：能打开 {counts['ok']}，"
         f"第一次像是撤下了待确认 {counts['suspect']}，确认失效 {counts['gone']}"
         f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
-        f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份"
+        f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份，"
+        f"第一次像是撤下了、3 天还没确认的 {counts['stale_suspect']} 份"
     )
     return 0
 
@@ -1478,6 +1495,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--limit", type=int, default=3000, help="这次最多检查几份（输出里还没轮到的不是 0 就调大）"
+    )
+    p.add_argument(
+        "--until",
+        type=_hhmm,
+        help="北京时间 HH:MM 起不再开始新的检查（今天的这个时刻，已经过了就一份也不查）；"
+        "不带就是开始后 60 分钟",
     )
     p.set_defaults(func=_cmd_check_links)
 

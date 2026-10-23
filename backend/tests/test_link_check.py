@@ -27,6 +27,8 @@ NINGXIA = (
     "</div></body></html>"
 )
 TEMPLATES = [
+    "您访问的页面已撤稿或删除",  # 宁夏
+    "该文章已不存在",
     "很抱歉，您所访问的页面不存在！ 系统将在 5 秒内为您跳转",  # 内蒙古
     "抱歉，您访问的网页不存在或已删除！ 5 秒后将自动返回首页",  # 海南
     "温馨提示：您访问的页面不存在或已删除",  # 财政部
@@ -50,11 +52,13 @@ class FakeFetcher:
     def fetch(self, url):
         self.seen.append(url)
         answer = self.answers.get(url, ("ok", 200))
-        if isinstance(answer, Exception):
+        if isinstance(answer, BaseException):
             raise answer
         if isinstance(answer, FetchResult):
             return answer
         status, code = answer
+        if status == "ok":  # 能打开：一个正常的页面
+            return html_result(url, page("<h1>关于开展申报工作的通知</h1><p>各有关单位：</p>"))
         return FetchResult(url=url, status=status, http_status=code, final_url=url)
 
 
@@ -168,9 +172,15 @@ def test_real_notice_that_mentions_the_words_is_ok():
     long = page("<p>页面不存在</p>" + "<p>申报说明。</p>" * (TEMPLATE_MAX // 5))
     assert len(visible_text(long)) > TEMPLATE_MAX
     assert _classify(html_result(url, long), url, TITLE) == "ok"
-    # 只有"不存在""删除"不算（通知里常有"不存在弄虚作假""予以删除"）
-    plain = page("<p>经核查不存在弄虚作假情形，相关内容予以删除。</p>")
-    assert _classify(html_result(url, plain), url, TITLE) == "ok"
+    # 只有"不存在""删除""撤稿"不算（通知里常有"不存在弄虚作假""予以删除""论文撤稿"），
+    # 我们存的标题和页面上的对不上也一样
+    for words in (
+        "经核查不存在弄虚作假情形，相关内容予以删除。",
+        "对存在学术不端的论文，按程序办理撤稿，撤稿后三年内不得申报。",
+        "申报内容不存在知识产权纠纷，相关内容已删除个人信息。",
+    ):
+        plain = page(f"<h1>关于做好科研诚信工作的说明</h1><p>{words}</p>")
+        assert _classify(html_result(url, plain), url, TITLE) == "ok", words
 
 
 def test_blank_or_unknown_cannot_tell():
@@ -179,6 +189,9 @@ def test_blank_or_unknown_cannot_tell():
     challenge = "<script>document.cookie='__tst_status=1';location.href=location.href;</script>"
     assert _classify(html_result(url, challenge), url, TITLE) == "unknown"
     assert _classify(html_result(url, ""), url, TITLE) == "unknown"
+    # 回了 200 却什么都没有（没有内容类型、没有内容）
+    empty = FetchResult(url=url, status="ok", http_status=200, final_url=url)
+    assert _classify(empty, url, TITLE) == "unknown"
     for status, code in (
         ("http_error", 403),
         ("http_error", 412),
@@ -232,6 +245,10 @@ def test_title_on_page_tolerates_stored_title_differences():
     assert title_on_page(
         "《紧急采购管理暂行办法》印发", page("<h1>关于印发《紧急采购管理暂行办法》的通知</h1>")
     )
+    # 标题被 <br>、<span> 切开（源码里夹着标签名）也认得
+    assert title_on_page(TITLE, page(f"<h1>{TITLE[:10]}<br/><span>{TITLE[10:]}</span></h1>"))
+    # 正文靠脚本加载、标题只在脚本里的
+    assert title_on_page(TITLE, f"<html><body><script>var t = '{TITLE}';</script></body></html>")
     # 撤稿页里只有站名，和标题开头的机关名重了几个字也不算
     assert not title_on_page(TITLE, NINGXIA)
     assert not title_on_page("", NINGXIA)
@@ -379,18 +396,93 @@ def test_other_sources_rights_level_not_checked(session):
     assert check_links(session, fetcher=FakeFetcher({}), now=NOW)["checked"] == 0
 
 
-def test_each_site_is_written_as_soon_as_it_is_done(session):
-    """查完一个网站就写进数据库：后面的网站出了意外，前面查过的不丢。"""
+def test_one_unexpected_error_does_not_stop_the_batch(session, caplog):
+    """一份出了意外（不是网络错误，是程序没想到的）：算判断不了、记日志，别的照常查完写进去。"""
     source = make_source(session)
     first = make_doc(session, source, 1, host="a.example.gov.cn")
     second = make_doc(session, source, 2, host="b.example.gov.cn")
-    fake = FakeFetcher({second.url: RuntimeError("意外")})
-    with pytest.raises(RuntimeError):
+    third = make_doc(session, source, 3, host="b.example.gov.cn")
+    fake = FakeFetcher({second.url: RuntimeError("意外"), third.url: ("http_error", 404)})
+    counts = check_links(session, fetcher=fake, now=NOW, max_workers=2)
+    assert counts["checked"] == 3 and counts["unknown"] == 1 and counts["suspect"] == 1
+    assert counts["left"] == 0
+    assert "原网页检查出错" in caplog.text and "RuntimeError" in caplog.text
+    session.expire_all()
+    for doc in (first, second, third):
+        assert session.get(Document, doc.id).link_checked_at is not None
+    assert session.get(Document, second.id).link_suspect_at is None
+
+
+def test_each_site_is_written_as_soon_as_it_is_done(session):
+    """查完一个网站就写进数据库：后面被打断（部署重启、超时），前面查过的不丢。"""
+    source = make_source(session)
+    first = make_doc(session, source, 1, host="a.example.gov.cn")
+    second = make_doc(session, source, 2, host="b.example.gov.cn")
+    fake = FakeFetcher({second.url: KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
         check_links(session, fetcher=fake, now=NOW, max_workers=1)
     session.rollback()
     session.expire_all()
     assert session.get(Document, first.id).link_checked_at is not None
     assert session.get(Document, second.id).link_checked_at is None
+
+
+def test_suspect_and_gone_older_than_90_days_are_still_checked(session):
+    """第 90 天第一次像是撤下了的，过了 90 天也要等到确认；已确认失效的过了 90 天照常一周查一次，
+    网页恢复了能清掉（不然一直不能 AI 解读）。没出过问题的过了 90 天就不查了。"""
+    source = make_source(session)
+    suspect = make_doc(session, source, 1, published=date(2026, 7, 1))
+    suspect.link_checked_at = suspect.link_suspect_at = NOW - timedelta(hours=21)
+    gone = make_doc(session, source, 2, published=date(2026, 5, 1))
+    gone.link_suspect_at = NOW - timedelta(days=30)
+    gone.link_gone_at = NOW - timedelta(days=29)
+    gone.link_checked_at = NOW - timedelta(days=7)
+    gone_fresh = make_doc(session, source, 3, published=date(2026, 5, 2))
+    gone_fresh.link_suspect_at = gone_fresh.link_gone_at = NOW - timedelta(days=30)
+    gone_fresh.link_checked_at = NOW - timedelta(days=2)  # 一周内查过
+    fine = make_doc(session, source, 4, published=date(2026, 7, 1))
+    fine.link_checked_at = NOW - timedelta(days=7)
+    session.commit()
+    fake = FakeFetcher({suspect.url: ("http_error", 404)})
+    counts = check_links(session, fetcher=fake, now=NOW, max_workers=1)
+    assert fake.seen == [suspect.url, gone.url]
+    session.refresh(suspect)
+    session.refresh(gone)
+    assert counts["gone"] == 1 and suspect.link_gone_at is not None
+    assert counts["ok"] == 1 and gone.link_gone_at is None and gone.link_suspect_at is None
+
+
+def test_counts_suspects_waiting_more_than_three_days(session):
+    """第一次像是撤下了以后一直判断不了（网站一直超时）：3 天还没确认的单独数出来。"""
+    source = make_source(session)
+    waiting = make_doc(session, source, 1)
+    waiting.link_suspect_at = NOW - timedelta(days=4)
+    waiting.link_checked_at = NOW - timedelta(hours=21)
+    recent = make_doc(session, source, 2)
+    recent.link_suspect_at = recent.link_checked_at = NOW - timedelta(hours=21)
+    session.commit()
+    # 不再查的（来源后来改成不是一级公开的）不算
+    level2 = Source(
+        level="省级",
+        province="北京",
+        dept="工信",
+        dept_full_name="北京市经济和信息化局",
+        column_name="转载",
+        url="https://jxj.beijing.gov.cn/zz/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=2,
+    )
+    session.add(level2)
+    session.commit()
+    other = make_doc(session, level2, 3, host="jxj.beijing.gov.cn")
+    other.link_suspect_at = NOW - timedelta(days=4)
+    session.commit()
+    fake = FakeFetcher({waiting.url: ("network_error", None), recent.url: ("network_error", None)})
+    counts = check_links(session, fetcher=fake, now=NOW, max_workers=1)
+    assert counts["unknown"] == 2 and counts["stale_suspect"] == 1
+    assert check_links(session, fetcher=fake, now=NOW, max_workers=1)["stale_suspect"] == 1
 
 
 def test_cli_prints_counts(session, session_factory, monkeypatch, capsys):
@@ -402,16 +494,20 @@ def test_cli_prints_counts(session, session_factory, monkeypatch, capsys):
     real = link_check.check_links
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
     monkeypatch.setattr(
-        link_check, "check_links", lambda s, limit: real(s, limit=limit, fetcher=fake, now=NOW)
+        link_check,
+        "check_links",
+        lambda s, limit, until: real(s, limit=limit, until=until, fetcher=fake, now=NOW),
     )
     assert cli.main(["check-links", "--limit", "5"]) == 0
     out = capsys.readouterr().out
     assert "检查原网页 1 份" in out and "第一次像是撤下了待确认 1" in out
     assert "网站回 200 的撤稿页、404 页 1 次" in out and "该查还没轮到 0 份" in out
+    assert "3 天还没确认的 0 份" in out
 
 
 def test_stops_when_time_is_up_and_counts_the_rest_as_left(session):
-    """一次最多跑 budget 秒（5:10 开始，6:30 第一轮抓取前停下）：没查完的算还没轮到，第二天接着查。"""
+    """开始后 budget 秒就不再开始新的检查（5:10 开始，6:10 起不开新的，6:30 抓取前停下）：
+    没查完的算还没轮到，第二天接着查。"""
     source = make_source(session)
     docs = [make_doc(session, source, n) for n in range(1, 4)]
     ticks = iter(range(0, 1000, 6))  # 每问一次时间过 6 秒
@@ -424,3 +520,62 @@ def test_stops_when_time_is_up_and_counts_the_rest_as_left(session):
     assert fake.seen == [docs[0].url]
     counts = check_links(session, fetcher=fake, now=NOW + timedelta(minutes=5), max_workers=1)
     assert counts["checked"] == 2 and counts["left"] == 0
+
+
+def test_until_in_the_past_checks_nothing(session):
+    """定时任务带 --until 06:10：晚开始、已经过了 6:10，就一份也不查，都算还没轮到。"""
+    source = make_source(session)
+    for n in range(1, 4):
+        make_doc(session, source, n)
+    fake = FakeFetcher({})
+    counts = check_links(session, fetcher=fake, now=NOW, until=NOW - timedelta(minutes=1))
+    assert counts["checked"] == 0 and counts["left"] == 3 and fake.seen == []
+    # 还没到：照常查
+    counts = check_links(session, fetcher=fake, now=NOW, until=NOW + timedelta(minutes=50))
+    assert counts["checked"] == 3 and counts["left"] == 0
+
+
+def test_fetch_stopped_by_deadline_is_not_counted_as_checked(session):
+    """抓取器到了期限放下的（deadline）：不是网站的问题，不记检查时间，算还没轮到。"""
+    source = make_source(session)
+    first = make_doc(session, source, 1)
+    second = make_doc(session, source, 2)
+    fake = FakeFetcher({first.url: FetchResult(url=first.url, status="deadline")})
+    counts = check_links(session, fetcher=fake, now=NOW, max_workers=1)
+    assert counts["checked"] == 0 and counts["left"] == 2
+    assert fake.seen == [first.url]  # 同一网站剩下的也不再查
+    session.expire_all()
+    assert session.get(Document, first.id).link_checked_at is None
+    assert session.get(Document, second.id).link_checked_at is None
+
+
+def test_cli_until_option(session, session_factory, monkeypatch, capsys):
+    import youju.link_check as link_check
+
+    seen = {}
+
+    def fake_check(s, limit, until):
+        seen.update(limit=limit, until=until)
+        return {
+            k: 0 for k in ("checked", "ok", "suspect", "gone", "unknown", "withdrawn_page", "left")
+        } | {"stale_suspect": 0}
+
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(link_check, "check_links", fake_check)
+    assert cli.main(["check-links", "--limit", "3000", "--until", "6:10"]) == 0
+    until = seen["until"]
+    assert seen["limit"] == 3000 and (until.hour, until.minute, until.second) == (6, 10, 0)
+    assert until.utcoffset() == timedelta(hours=8)
+    assert cli.main(["check-links"]) == 0 and seen["until"] is None
+    for bad in ("6", "25:00", "06:61", "六点"):
+        with pytest.raises(SystemExit):
+            cli.main(["check-links", "--until", bad])
+
+
+def test_redirect_to_empty_404_page_is_withdrawn():
+    """跳到 404 页面、那页是空的 200：照样算撤下了（不当成判断不了）。"""
+    url = "https://site.example.gov.cn/art/1.html"
+    empty = FetchResult(
+        url=url, status="ok", http_status=200, final_url="https://site.example.gov.cn/404.html"
+    )
+    assert _classify(empty, url, TITLE) == "withdrawn_page"
