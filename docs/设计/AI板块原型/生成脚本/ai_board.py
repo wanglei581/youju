@@ -164,6 +164,13 @@ def copy_link(size=12.5):
             f'font-size: {size}px; white-space: nowrap">{icon("copy", 14, BLUE)}复制原文链接</span>')
 
 
+def detail_link(size=12.5):
+    """下一版的列表行（10/23 创始人定：查询、正文、附件、结果都在小程序里完成，不让用户复制网址去浏览器）：
+    照 #349 把"复制原文链接"换成"查看详情"，图标不再用复制的。"""
+    return (f'<span style="margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 1px; color: {BLUE}; '
+            f'font-size: {size}px; white-space: nowrap">查看详情{icon("chev", 14, BLUE)}</span>')
+
+
 def month_day(iso):
     return f"{int(iso[5:7])}月{int(iso[8:10])}日"
 
@@ -182,7 +189,7 @@ def due_view(d, role=False):
     return ("截止未核对，请以原文为准" if d.get("dueSoonUnverified") else "截止时间见原文"), ""
 
 
-def doc_row(d, button=None, last=False, role=False):
+def doc_row(d, button=None, last=False, role=False, inapp=False):
     """列表行（doc-row 组件）：类型、地区、截止 → 标题 → 机器摘录的原句 → 发文机关 → 日期、复制原文链接、按钮。
     行上有按钮时发文机关单独一行（真机上就是这样，给日期、复制链接和按钮腾地方）。"""
     right, excerpt = due_view(d, role)
@@ -198,7 +205,7 @@ def doc_row(d, button=None, last=False, role=False):
     issuer = f'<div style="margin-top: 7px; font-size: 12.5px; line-height: 1.6; color: {T2}">{d["issuer"]}</div>' if own_line else ""
     who = d["date"] if own_line else f'{d["issuer"]} · {d["date"]}'
     meta = (f'<div style="margin-top: {2 if own_line else 7}px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12.5px; color: {T2}">'
-            f'<span style="white-space: nowrap">{who}</span>{copy_link()}{chip(button) if button else ""}</div>')
+            f'<span style="white-space: nowrap">{who}</span>{detail_link() if inapp else copy_link()}{chip(button) if button else ""}</div>')
     border = "" if last else f"border-bottom: 1px solid {LINE};"
     return (f'<div style="padding: 14px 0 13px; {border}">{head}'
             f'<div style="margin-top: 7px; font-size: 16px; font-weight: 600; line-height: 24px">{d["title"]}</div>{ex}{issuer}{meta}</div>')
@@ -309,7 +316,7 @@ def ai_home(nextv):
                     + f'<div style="padding: 12px 0 4px"><div style="font-size: 15px; font-weight: 600; line-height: 1.6">{DOC["title"]}</div>'
                     f'<div style="margin-top: 4px; font-size: 12.5px; color: {T2}">{DOC["issuer"]} · {DOC["date"]}</div></div>'
                     f'<div style="padding: 8px 0 14px; display: flex; align-items: center; gap: 16px">{ops}</div>')
-    rows = "".join(doc_row(d, "AI 解读", last=i == len(RECENT) - 1) for i, d in enumerate(RECENT))
+    rows = "".join(doc_row(d, "AI 解读", last=i == len(RECENT) - 1, inapp=nextv) for i, d in enumerate(RECENT))
     recent = card(card_head("近 7 天能解读的申报通知", "全部")
                   + f'<div style="padding-top: 8px; font-size: 12px; color: {T3}">点标题看通知全文，点“AI 解读”直接开始</div>{rows}')
     if nextv:
@@ -324,9 +331,8 @@ def ai_home(nextv):
                  + f'<div style="margin-top: 12px; padding-bottom: 14px; display: flex; justify-content: center; gap: 32px; font-size: 13px; color: {BLUE}">'
                  f'<span>使用帮助 ›</span><span>投诉举报 ›</span></div>')
     # 模型名称和备案号：现在没配，页面上不显示这一行；上线时必须有（上线清单），下一版画上占位
-    disc = f"<div>{DISCLOSURE}</div>" if nextv else ""
-    foot = (f'<div style="padding: 18px 12px 0; text-align: center; font-size: 12px; line-height: 1.8; color: {T3}">{disc}'
-            f'<div>有据 · 第三方整理 · 每条都有出处</div></div>')
+    # 页脚原来那行「有据 · 第三方整理 · 每条都有出处」#339（10/22 合并）去掉了：出处说明只在顶部写一次
+    foot = (f'<div style="padding: 18px 12px 0; text-align: center; font-size: 12px; line-height: 1.8; color: {T3}">{DISCLOSURE}</div>' if nextv else "")
     return phone(ai_top() + ai_strip() + abilities + last_doc + recent + records + helpc + foot + '<div style="height: 20px"></div>', tabbar())
 
 
@@ -339,7 +345,7 @@ def detail_head():
                 f'<div style="margin-top: 10px; font-size: 20px; line-height: 30px; font-weight: 700">{DOC["title"]}</div>'
                 f'<div style="margin-top: 10px; font-size: 13px; color: {T2}">{DOC["issuer"]} · {DOC["date"]} 发布</div>'
                 f'<div style="margin-top: 8px; padding: 2px 0; font-size: 13px; color: {BLUE}">这份通知可以 AI 解读 ↓</div>'
-                f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类，以原文为准</div></div>')
+                f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</div></div>')
 
 
 WEEK = "一二三四五六日"
@@ -398,32 +404,51 @@ def ai_card(nextv):
                 + btn_primary("开始解读") + links + '<div style="height: 16px"></div>')
 
 
-def body_preview():
+PAGE_HEAD = ("当前位置：", DOC["title"], "湖北省科学技术厅")   # 网页导航、标题、发文机关（发布时间那一行按格式认）
+PAGE_TAIL = ("附件:", "欢迎关注", "相关文档", "关联链接", "×", "您访问的链接即将离开")
+
+
+def clean_body(text):
+    """照 #345 去掉正文开头的网页导航、标题、发布时间、发文机关，和末尾的公众号、相关文档、离站弹窗这些网页上的字。"""
+    import re
+    lines = text.split("\n")
+    while lines and (lines[0].startswith(PAGE_HEAD) or re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} \|", lines[0])):
+        lines.pop(0)
+    while lines and lines[-1].startswith(PAGE_TAIL):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def body_preview(nextv=False):
     """正文先显示 600 字左右，在换行处断开（同 pages/detail/index.js 的 bodyPreview）。"""
-    cut = BODY.rfind("\n", 0, 600)
-    return BODY[:cut if cut > 400 else 600] + "……"
+    body = clean_body(BODY) if nextv else BODY
+    cut = body.rfind("\n", 0, 600)
+    return body[:cut if cut > 400 else 600] + "……"
 
 
-def detail_body():
-    text = body_preview().replace("\n", "<br>")
+def detail_body(nextv=False):
+    text = body_preview(nextv).replace("\n", "<br>")
     return card(section_title("正文")
-                + f'<div style="margin: -2px 0 8px; font-size: 11px; line-height: 1.6; color: {T3}">从原网页或 PDF 自动提取，未经人工逐字核对，仅供阅读参考，以原文为准；截止日期看上面的"截止时间"，并以原文为准。</div>'
+                + f'<div style="margin: -2px 0 8px; font-size: 11px; line-height: 1.6; color: {T3}">从原网页或 PDF 自动提取，未经人工逐字核对；截止日期可先看上面的“截止时间”，一切以原文为准。</div>'
                 + f'<div style="font-size: 14px; line-height: 1.8">{text}</div>'
                 + f'<div style="margin-top: 8px; padding-bottom: 16px; font-size: 13px; color: {BLUE}">展开全文</div>')
 
 
-def detail_bar():
+def detail_bar(nextv=False):
+    # 下一版照 #349：主按钮「站内阅读」；「导出」改叫「结果」（结果先在小程序里看，另存 Excel/Word 是可选的）
+    main = f'{icon("doc", 16, "#FFFFFF")}站内阅读' if nextv else f'{icon("copy", 16, "#FFFFFF")}复制原文链接'
+    first = "结果" if nextv else "导出"
     items = "".join(f'<span style="width: 50px; height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; '
-                    f'font-size: 11px; color: {T2}">{icon(i, 22, T2)}<span>{t}</span></span>' for t, i in (("导出", "download"), ("纠错", "flag"), ("转发", "share")))
+                    f'font-size: 11px; color: {T2}">{icon(i, 22, T2)}<span>{t}</span></span>' for t, i in ((first, "download"), ("纠错", "flag"), ("转发", "share")))
     return (f'<div style="flex-shrink: 0; box-sizing: border-box; padding: 8px 16px 28px; background: {CARD}; border-top: 1px solid {LINE}; display: flex; align-items: center; gap: 4px">'
             f'{items}<span style="margin-left: auto; height: 44px; padding: 0 22px; display: inline-flex; align-items: center; gap: 6px; background: {BLUE}; '
-            f'color: #FFFFFF; border-radius: 22px; font-size: 15px; font-weight: 500">{icon("copy", 16, "#FFFFFF")}复制原文链接</span></div>')
+            f'color: #FFFFFF; border-radius: 22px; font-size: 15px; font-weight: 500">{main}</span></div>')
 
 
 def detail(nextv):
-    top = nav("文件详情") + notice_bar() + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body()
+    top = nav("文件详情") + notice_bar() + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body(nextv)
     # 画到 AI 卡片下面一点：这份通知有截止时间，手机第一屏只到截止时间那一块，卡片要往下滑才看到
-    return first_screen(top, detail_bar(), h=1160)
+    return first_screen(top, detail_bar(nextv), h=1160)
 
 
 # ---------- 卡片在不能解读时（当前版本） ----------
@@ -448,7 +473,7 @@ def card_states():
            + off_card("还没有拿到完整正文，正文可能在附件里。", "看附件")
            + state_label("不是申报通知或政策文件", f"{KIND_DOC['title']}（{KIND_DOC['issuer']} · {KIND_DOC['date']}）")
            + off_card("这类文件不做 AI 解读。", "复制原文链接")
-           + state_label("正文超过 2.4 万字", "这一种现在没有按钮（推进计划第四节第 1 部分最后一段：开放前走查时补「看原文」）")
+           + state_label("正文超过 2.4 万字", "这一种现在没有按钮（推进计划第四节第 1 部分最后一段：开放前走查时补一个按钮）。#349 这一种也还没给；建议和其他几种一样给「站内阅读正文」")
            + off_card("正文超过 2.4 万字，暂不能解读，请先看要点和原文。")
            + state_label("后台暂时处理不了（任何一份通知）")
            + off_card("AI 暂时不可用，请稍后再试。"))
@@ -506,7 +531,7 @@ def result_tail(nextv):
     disc = (f'<div style="padding: 20px 12px 0; text-align: center; font-size: 14px; line-height: 1.7; color: {T2}">{DISCLOSURE}</div>' if nextv else "")
     helpc = adv_card(f'<div style="font-size: 17px; font-weight: 600">用的时候遇到问题？</div>{contact_block()}')
     foot = (f'<div style="padding: 20px 12px 24px; text-align: center; font-size: 14px; line-height: 1.7; color: {T2}">'
-            f'第三方整理 · 非政府平台 · <span style="color: {BLUE}">投诉举报</span></div>')
+            f'<span style="color: {BLUE}">投诉举报</span></div>')
     return clause_card() + (ask_more_card() if nextv else "") + disc + helpc + foot
 
 
@@ -548,7 +573,7 @@ EXAMPLES = {
     "找通知": (["找近 30 天的 5G 工厂申报", "找宁夏近 7 天的申报"], "手上有通知的，直接输入它的标题或文号"),
     # 例子是所有通知共用的固定文字：换成每份申报通知都答得上的（agy 第 4 轮：#328 的"对成立时间有什么要求？"很多通知没写，点了只会答"没找到"）
     "问这份通知": (["企业申报截止是哪天？", "要交哪些材料？", "要满足哪些条件？"], ""),
-    "查名单": ([], "输入企业全称或统一社会信用代码，列出它在收录名单里出现过的每一次（带年份和发布机关）"),
+    "查名单": ([], "只在收录的政府公开名单（认定、公示、获奖等）里查这家企业出现过的记录（年份、发布机关）；不查信贷、逾期或失信记录"),
 }
 HINT = {
     "找通知": ("说说要找什么通知，或输入标题、文号",
@@ -638,7 +663,7 @@ def chat_tail():
     return (f'<div style="padding: 18px 16px 0; display: flex; justify-content: center; gap: 28px; font-size: 13px">'
             f'<span style="display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("delete", 14, T2)}删除这条对话</span>'
             f'<span style="color: {BLUE}">联系客服</span></div>'
-            f'<div style="padding: 8px 16px 0; text-align: center; font-size: 12px; color: {T2}">第三方整理 · 非政府平台 · <span style="color: {BLUE}">投诉举报</span></div>')
+            f'<div style="padding: 8px 16px 0; text-align: center; font-size: 12px; color: {T2}"><span style="color: {BLUE}">投诉举报</span></div>')
 
 
 def chat_top():
@@ -663,7 +688,7 @@ def chat_consent():
 
 
 def find_answer():
-    rows = "".join(doc_row(d, "问这份通知" if d["ai"]["interpret"] else None, last=i == len(FIND) - 1, role=True) for i, d in enumerate(FIND))
+    rows = "".join(doc_row(d, "问这份通知" if d["ai"]["interpret"] else None, last=i == len(FIND) - 1, role=True, inapp=True) for i, d in enumerate(FIND))
     # agy 第 2 轮：重庆那行没有按钮也没说为什么。行上照旧不写原因（D-075），列出的有不能问的才在最后加一句
     cant = any(not d["ai"]["interpret"] for d in FIND)
     note = para("没有“问这份通知”按钮的，是现在不能问的通知（比如还没有拿到完整正文），点标题能看到原因。", 12.5, T2, 8) if cant else ""
@@ -709,7 +734,7 @@ def list_row(d):
             f'<div style="margin-top: 7px; font-size: 15px; font-weight: 600; line-height: 1.55">{d["title"]}</div>'
             f'<div style="margin-top: 6px; font-size: 12.5px; line-height: 1.6; color: {T2}">{d["issuer"]}</div>'
             f'<div style="margin-top: 2px; display: flex; align-items: center; font-size: 12.5px; color: {T2}">'
-            f'<span style="white-space: nowrap">{d["date"]} 发布</span><span style="margin-left: auto; color: {BLUE}; white-space: nowrap">看原文 ›</span></div>'
+            f'<span style="white-space: nowrap">{d["date"]} 发布</span><span style="margin-left: auto; color: {BLUE}; white-space: nowrap">查看详情 ›</span></div>'
             f'<div style="margin-top: 4px; font-size: 12px; color: {T3}">按名称对上：{m.get("name", "")}</div></div>')
 
 
@@ -787,10 +812,10 @@ NOW = [
 NEXT = [
     ("下一版1_AI首页", "下一版 1", "AI 首页：三项", lambda: ai_home(True),
      "加第三行「问一问」：找通知、查名单，或就一份通知提问（AI 只摘原句）；次数只算「问这份通知」，找通知、查名单不限次。三行都能点（第 0 步第 1 处，另一会话在做）。"
-     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问）；页底公示模型和备案号。",
+     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问）；页底公示模型和备案号。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。",
      ["问一问", "三行能点", "记录里有对话", "公示占位"]),
     ("下一版2_通知详情", "下一版 2", "通知详情：卡片加「问这份通知」", lambda: detail(True),
-     "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变。",
+     "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变。底部照 #349：主按钮「站内阅读」，「导出」改叫「结果」（结果先在小程序里看）；正文照 #345 去掉了网页上的导航和页脚。",
      ["卡片位置不动", "问这份通知"]),
     ("下一版3_问一问第一次用", "下一版 3", "问一问：第一次用", chat_consent,
      "从 AI 首页「问一问」进来，没带通知，技能默认「找通知」。不管从哪进来，第一次用都先看四句说明、点「同意并开始」才能发（服务端记下同意的版本）。"
@@ -805,9 +830,9 @@ NEXT = [
      "写明读了哪些；每句能看原文、纠错；末尾不判断能不能申报、模型和备案号、投诉举报。",
      ["只摘原句", "可能没摘全", "读了：正文", "摘哪几句是示意"]),
     ("下一版6_查名单", "下一版 6", "问一问：查名单", chat_lists,
-     "不用 AI，按企业全称或信用代码精确比对。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。"
+     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明里写明不查信贷、逾期或失信（10/23 查名单被认成企业征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。"
      "线上 10/22 真实查得到的一家。",
-     ["只查收录", "精确比对", "可以输企业名称"]),
+     ["只查收录", "只查公开名单、不查信用", "可以输企业名称"]),
     ("下一版7_结果页接着问", "下一版 7", "AI 解读结果：滑到最下面", result_bottom,
      "结果下面、「用的时候遇到问题？」上面加一张「接着问这份通知」，进对话页并带上这份通知。条款对照的结果页也加同一张。页底公示模型和备案号。",
      ["接着问这份通知", "公示占位"]),
