@@ -72,10 +72,13 @@ function deadlineRows(deadlines) {
   });
 }
 
+// 上面的截止卡片有没有写日期：有逐条截止时看其中有没有日期，没有时看旧接口的那一条核对过的截止
+const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
+
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '' },
+    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -118,11 +121,12 @@ Page({
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
         // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
         const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+        const versions = versionRows(doc.repost);
         this.setData({
           doc,
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: regionText(doc),
-          // 正文默认只显示开头一段；比这长的才给"展开全文"
+          // 正文默认只显示开头一段；比这长的才给"展开正文"（截断的正文展开后也不是全部，所以不写"全部"）
           bodyOpen: false,
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,
           bodyPreview: body ? previewOf(body.text) : '',
@@ -131,10 +135,15 @@ Page({
           supportEvidence: '',
           conds: conditionRows(doc),
           // 转发版本（D-055）：同一份部里通知的各地版本，各自的截止按版本列出
-          versions: versionRows(doc.repost),
+          versions,
+          // 本页是哪一版（如"江西版"）：截止卡片里写明上面的日期只是这一版的（10/22 走查）
+          versionLabel: (versions.find((v) => v.current) || {}).label || '',
           upstream: upstreamLine(doc.repost),
           due,
           dls,
+          // 上面的截止卡片写了日期（逐条截止里至少一行有日期；旧接口只有一条核对过的截止）：
+          // 正文说明才写"截止日期可先看上面的'截止时间'"
+          dueDated: dueDated(dls, due),
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
@@ -153,7 +162,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -225,7 +234,10 @@ Page({
 
   recompute() {
     const doc = this.data.doc;
-    if (doc) this.setData({ due: dueInfo(doc.deadline), dls: Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null });
+    if (!doc) return;
+    const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+    const due = dueInfo(doc.deadline);
+    this.setData({ due, dls, dueDated: dueDated(dls, due) });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功

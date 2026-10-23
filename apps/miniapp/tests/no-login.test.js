@@ -88,10 +88,10 @@ test('底部导航：未定稿时只有首页、文件、我的三项，三等�
     const files = tabs.indexOf('pages/files/index');
     const root = shown('custom-tab-bar/index.wxml', { ...bar.data, selected: files });
     const items = texts(root, hasClass('item'));
-    assert.deepEqual(items, final ? ['首页', '关注', '文件', '我的'] : ['首页', '文件', '我的']);
+    assert.deepEqual(items, final ? ['首页', '关注', '导出', '我的'] : ['首页', '导出', '我的']);
     const [barNode] = findAll(root, hasClass('bar'));
     assert.equal(barNode.attrs.style, `grid-template-columns: repeat(${items.length}, 1fr)`);
-    assert.deepEqual(texts(root, hasClass('item--on')), ['文件']);
+    assert.deepEqual(texts(root, hasClass('item--on')), ['导出']);
     // 每一项都能点，点了按自己的路径切换
     for (const node of findAll(root, hasClass('item'))) {
       bar.switchTab({ currentTarget: { dataset: { path: node.attrs['data-path'] } } });
@@ -275,7 +275,8 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     const root = shown('pages/about/index.wxml', page.data);
     const all = textOf(root);
     assert.equal(findAll(root, tapsTo('feedback')).length, final ? 1 : 0);
-    assert.equal(all.includes('关注这个搜索'), final);
+    // 10/22 走查：按钮上写的是"关注"，说明里也写点"关注"、存的是当前搜索条件
+    assert.equal(all.includes('在搜索结果页点"关注"，把当前的关键词和筛选条件存下来'), final);
     // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
     assert.equal(all.includes('订阅一次微信提醒'), false);
     assert.equal(all.includes('申请覆盖'), final);

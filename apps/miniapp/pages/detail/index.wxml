@@ -39,11 +39,13 @@
           <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
           <view wx:else class="due-unverified">截止未核对，请以原文为准</view>
         </view>
-        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : '剩 ' + item.days + ' 天'}}</text>
+        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
       </view>
       <text wx:if="{{item.label}}" class="src src--{{item.source}}">{{item.label}}</text>
       <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
     </view>
+    <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{due && loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -55,9 +57,11 @@
         <view class="due-label">{{doc.deadline.label}}</view>
         <view class="due-date-row"><text class="due-date">{{dueDate}}</text><text class="due-week">{{dueWeek}}</text></view>
       </view>
-      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
+      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : due.days === 0 ? '今天截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
+    <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -134,12 +138,14 @@
     <view class="weak cond-note">条件以原文为准，不作为能否申报的判断</view>
   </view>
 
+  <!-- 10/22 走查："正文"两个字最像原文，提取的说明只在小字里：标题里直接写明是自动提取、没逐字核对；
+       说明只在显示了提取的正文时出现（没提取到正文时下面只写去哪看原文） -->
   <view wx:if="{{doc.body}}" class="card">
-    <view class="section-title">正文</view>
-    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对；截止日期可先看上面的“截止时间”，一切以原文为准。</view>
+    <view class="section-title">正文<text wx:if="{{doc.body.status === 'ok'}}">（自动提取，未经人工逐字核对）</text></view>
+    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dueDated}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
-      <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
+      <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开正文'}}</view>
       <view wx:if="{{doc.body.truncated && (bodyOpen || !bodyFolded)}}" class="weak body-rest">后面还有约 {{bodyRest}} 字，请复制原文链接在浏览器查看。</view>
     </block>
     <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用"查名单"。</view>

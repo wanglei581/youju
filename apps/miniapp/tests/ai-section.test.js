@@ -219,7 +219,7 @@ test('底栏：AI 对这个人开着时第 5 格"AI"画在中间（app.json 序�
     const { bar, access, switched, items } = tabBar({ visible: true, confirmed: false, available: true }, final);
     assert.ok(access.asks.ensure >= 1, '底栏出现时问一次后台');
     const names = items(4).map((n) => textOf(n).trim());
-    assert.deepEqual(names, final ? ['首页', '关注', 'AI', '文件', '我的'] : ['首页', 'AI', '文件', '我的']);
+    assert.deepEqual(names, final ? ['首页', '关注', 'AI', '导出', '我的'] : ['首页', 'AI', '导出', '我的']);
     const root = render('custom-tab-bar/index.wxml', { ...bar.data, selected: 4 });
     assert.equal(findAll(root, hasClass('bar'))[0].attrs.style, `grid-template-columns: repeat(${names.length}, 1fr)`);
     assert.deepEqual(findAll(root, hasClass('item--on')).map((n) => textOf(n).trim()), ['AI']);
@@ -231,11 +231,11 @@ test('底栏：AI 对这个人开着时第 5 格"AI"画在中间（app.json 序�
     assert.deepEqual(switched, ['/pages/ai/index']);
     // 后台说关了（或不在白名单）：立刻收起
     access.set(CLOSED);
-    assert.deepEqual(items(0).map((n) => textOf(n).trim()), final ? ['首页', '关注', '文件', '我的'] : ['首页', '文件', '我的']);
+    assert.deepEqual(items(0).map((n) => textOf(n).trim()), final ? ['首页', '关注', '导出', '我的'] : ['首页', '导出', '我的']);
     bar.lifetimes.detached.call(bar); assert.equal(access.listeners.size, 0);
   }
   const { bar } = tabBar(CLOSED);
-  assert.deepEqual(bar.data.list.map((t) => t.text), ['首页', '关注', '文件', '我的']);
+  assert.deepEqual(bar.data.list.map((t) => t.text), ['首页', '关注', '导出', '我的']);
   // 样式画的四角星：线宽和字体图标接近；微信 WebView 要带 -webkit- 前缀
   const css = read('custom-tab-bar/index.wxss');
   assert.match(css, /-webkit-clip-path: polygon/); assert.match(css, /\.spark--on \.spark-in \{ display: none; \}/);
