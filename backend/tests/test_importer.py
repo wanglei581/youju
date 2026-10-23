@@ -121,15 +121,16 @@ def test_import_optional_city_column(session, tmp_path, level, city, valid):
 
 
 def test_city_candidate_manifest_stays_disabled(session):
-    """补城市字段不能让历史候选的“已验证”标签悄悄开启抓取。"""
+    """补城市字段不能让历史候选的“已验证”标签悄悄开启抓取。
+    10/23 起进了第一批的 34 行移到第一批清单（test_city_first_batch.py），这里只剩 21 行。"""
     path = DEFAULT_SOURCES_CSV.parent / "地市来源候选_R1.5_v1.csv"
     with path.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    assert len(rows) == 55
+    assert len(rows) == 21
     assert all(row["层级"] == "市级" and row["城市"] for row in rows)
     assert sum(not row["栏目URL"] for row in rows) == 2
     summary = import_sources(session, path)
-    assert (summary.created, summary.enabled, summary.disabled) == (53, 0, 53)
+    assert (summary.created, summary.enabled, summary.disabled) == (19, 0, 19)
     assert not session.scalars(select(Source).where(Source.enabled.is_(True))).all()
     by_url = {source.url: source for source in session.scalars(select(Source))}
     for row in rows:
@@ -141,4 +142,4 @@ def test_city_candidate_manifest_stays_disabled(session):
                 row["城市"],
             )
     second = import_sources(session, path)
-    assert (second.created, second.updated, second.enabled) == (0, 53, 0)
+    assert (second.created, second.updated, second.enabled) == (0, 19, 0)

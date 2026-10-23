@@ -32,7 +32,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 # 统计窗口：截至试抓前一天的 8 整周（56 天）
 WINDOW_WEEKS = 8
@@ -92,9 +92,22 @@ def read_manifest(path: Path) -> list[dict]:
     return rows
 
 
-def next_page_url(html: str, page_url: str) -> str | None:
-    """页面上写着"下一页"（或 >、»，或 aria-label/title 写"下一页"）的链接；只认同一网站的普通链接。"""
-    host = urlsplit(page_url).hostname
+def in_column(target: str, first_url: str) -> bool:
+    """翻页地址必须还在这个栏目里：同一网站、同一目录，栏目首页网址里的查询参数原样都在
+    （常州那种 tzgg.php?catname=…，"下一页"写成 ?page=2 会丢掉栏目参数，跟过去就串到别的栏目）。"""
+    first, other = urlsplit(first_url), urlsplit(target)
+    if other.hostname != first.hostname or not target.startswith(
+        urljoin(first_url, ".")
+    ):
+        return False
+    need = set(parse_qsl(first.query, keep_blank_values=True))
+    return need <= set(parse_qsl(other.query, keep_blank_values=True))
+
+
+def next_page_url(html: str, page_url: str, first_url: str | None = None) -> str | None:
+    """页面上写着"下一页"（或 >、»，或 aria-label/title 写"下一页"）的链接；只认同一栏目
+    （见 in_column，first_url 默认就是这一页）的普通链接。"""
+    first_url = first_url or page_url
     for attrs, inner in _ANCHOR.findall(html or ""):
         text = _TAGS.sub("", inner).replace("&nbsp;", " ")
         label = _LABEL.search(attrs)
@@ -109,7 +122,7 @@ def next_page_url(html: str, page_url: str) -> str | None:
         if not href or href.startswith(("#", "javascript:", "JavaScript:")):
             continue
         target = urljoin(page_url, href)
-        if urlsplit(target).hostname == host and target != page_url:
+        if target != page_url and in_column(target, first_url):
             return target
     return None
 
@@ -136,17 +149,27 @@ def script_pages(html: str, first_url: str) -> list[str]:
 
 
 def tail_date(items: list[dict], tail: int = 3) -> date | None:
-    """页面末尾几条里最早的日期。置顶的旧文件在页首，不能拿全页最早的日期判断翻没翻够。"""
+    """页面末尾几条日期的中间那个。置顶的旧文件一般在页首，不能拿全页最早的日期判断翻没翻够；
+    末尾偶尔也夹一条旧文，取中间那个，一条特别旧或特别新的都不左右结果。"""
     days = [
         date.fromisoformat(i["publish_date"]) for i in items if i.get("publish_date")
     ]
-    return min(days[-tail:]) if days else None
+    if not days:
+        return None
+    last = sorted(days[-tail:])
+    return last[len(last) // 2]
 
 
 def covered(items: list[dict], start: date) -> bool:
     """这一页末尾的条目已经早于窗口开始，后面的页不用再翻。"""
     last = tail_date(items)
     return last is not None and last < start
+
+
+def same_day(old: dict, today: date) -> bool:
+    """--only 补抓的结果只能并进同一天抓的 lists.json：统计窗口跟着试抓日期走，
+    不同日期抓的列表合在一起会被同一个窗口统计。"""
+    return not old or old.get("today") == today.isoformat()
 
 
 # ---- lists ----------------------------------------------------------------------------------
@@ -196,7 +219,8 @@ def _fetch_row(row: dict, fetcher, out: Path, start: date, max_pages: int) -> di
             break
         if len(pages) == 1:
             scripted = script_pages(fetched.text, fetched.final_url or url)
-        url = next_page_url(fetched.text, fetched.final_url or url) or (
+        first_url = pages[0]["final_url"] or pages[0]["url"]
+        url = next_page_url(fetched.text, fetched.final_url or url, first_url) or (
             scripted[len(pages) - 1] if len(pages) - 1 < len(scripted) else None
         )
     return {
@@ -217,17 +241,21 @@ def cmd_lists(args: argparse.Namespace) -> int:
         rows = [row for row in rows if row_key(row) in set(args.only)]
     out: Path = args.out
     (out / "html").mkdir(parents=True, exist_ok=True)
-    start, end = window(args.today)
-    with trial_fetcher() as fetcher, ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(
-            pool.map(lambda row: _fetch_row(row, fetcher, out, start, args.pages), rows)
-        )
     path = out / "lists.json"
     old = (
         json.loads(path.read_text(encoding="utf-8"))
         if path.exists() and args.only
         else {}
     )
+    if not same_day(old, args.today):
+        raise SystemExit(
+            f"{path} 是 {old.get('today')} 抓的，--only 只能补同一天的；整批重抓"
+        )
+    start, end = window(args.today)
+    with trial_fetcher() as fetcher, ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(lambda row: _fetch_row(row, fetcher, out, start, args.pages), rows)
+        )
     merged = {r["key"]: r for r in old.get("rows", [])}
     merged.update({r["key"]: r for r in results})
     path.write_text(
@@ -531,14 +559,29 @@ def per_week(count: int, days: int) -> float:
     return round(count * 7 / days, 1) if days else 0.0
 
 
+def shared_weekly(parts: list[tuple[set[int], int]]) -> float:
+    """几个栏目合起来每周触到多少个不同的转发组。parts 是每个栏目（触到的组, 盖住的天数）：
+    各栏目按自己盖住的天数折算后相加，再按组在栏目之间重复的比例折掉（同一份部里通知被几个
+    栏目转发只算一组）。盖住天数不同的栏目不能直接合在一起除以同一个天数。"""
+    total = sum(len(ids) for ids, _ in parts)
+    if not total:
+        return 0.0
+    distinct = len(set().union(*(ids for ids, _ in parts)))
+    rate = sum(len(ids) * 7 / days for ids, days in parts if days)
+    return round(rate * distinct / total, 1)
+
+
 def _deadline_facts(body: str, published: date | None) -> tuple[list[date], bool]:
-    """规则抽出的截止候选日期，以及有没有一条的原句里写着这个日期（D-061 机器摘录的前提）。"""
-    from youju.deadline_excerpts import date_in_quote
+    """规则抽出的截止候选日期，以及有没有一条能当机器摘录给出（D-061）：原句里写着这个日期，
+    原句也确实在正文里——和线上 deadline_excerpts.batch 用同一套判断（去空白、全角半角统一）。"""
+    from youju.deadline_excerpts import _normal, date_in_quote
     from youju.extract.deadlines import extract_deadlines
 
     found = extract_deadlines(body, published)
+    text = _normal(body)
     return [c.due_date for c in found], any(
-        date_in_quote(c.due_date, c.evidence) for c in found
+        date_in_quote(c.due_date, c.evidence) and _normal(c.evidence) in text
+        for c in found
     )
 
 
@@ -546,16 +589,17 @@ _FOOTER = re.compile("ICP备|网站标识码|公网安备")
 
 
 def boilerplate_ids(bodies: dict[int, str]) -> set[int]:
-    """读成了网页的公共部分（页脚、版权）而不是正文的：同一栏目 3 份以上一字不差，
-    或者不到 400 字、里面是备案号和网站标识码。"""
+    """读成了网页的公共部分（页脚、版权）而不是正文的：同一栏目 3 份以上一字不差；
+    或者备案号、网站标识码前面不到 100 字（正文还没开始就到了页脚）。"""
     counts: dict[str, int] = {}
     for body in bodies.values():
         counts[body] = counts.get(body, 0) + 1
-    return {
-        doc_id
-        for doc_id, body in bodies.items()
-        if counts[body] >= 3 or (len(body) < 400 and _FOOTER.search(body))
-    }
+    junk = set()
+    for doc_id, body in bodies.items():
+        footer = _FOOTER.search(body)
+        if counts[body] >= 3 or (footer and len(body[: footer.start()].strip()) < 100):
+            junk.add(doc_id)
+    return junk
 
 
 def cmd_measure(args: argparse.Namespace) -> int:
@@ -605,8 +649,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
     }
 
     rows_out = []
-    city_touched: dict[str, set[int]] = defaultdict(set)
-    city_span: dict[str, int] = defaultdict(int)
+    parts: dict[str, list[tuple[set[int], int]]] = defaultdict(list)
     all_touched: set[int] = set()
     for row in data["rows"]:
         source = by_url[row["url"]]
@@ -645,8 +688,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         notices_readable = sum(doc.id in readable for doc, _ in notices)
         reposted = [doc for doc, _ in mine if doc.id in group_of]
         touched = {group_of[doc.id] for doc in reposted}
-        city_touched[row["city"]] |= touched
-        city_span[row["city"]] = max(city_span[row["city"]], days)
+        parts[row["city"]].append((touched, days))
         all_touched |= touched
         local = [
             doc for doc, _ in notices if doc.id not in group_of and doc.id not in merged
@@ -693,18 +735,20 @@ def cmd_measure(args: argparse.Namespace) -> int:
                 "weekly_local_notices": per_week(len(local), days),
             }
         )
-    weeks = (end - start).days + 1
     out = {
         "window": data["window"],
         "today": data["today"],
         "rows": rows_out,
         "city_groups": {
-            city: {"groups": len(ids), "weekly": per_week(len(ids), city_span[city])}
-            for city, ids in city_touched.items()
+            city: {
+                "groups": len(set().union(*(ids for ids, _ in mine))),
+                "weekly": shared_weekly(mine),
+            }
+            for city, mine in parts.items()
         },
         "all_groups": {
             "groups": len(all_touched),
-            "weekly": per_week(len(all_touched), weeks),
+            "weekly": shared_weekly([part for mine in parts.values() for part in mine]),
         },
         "groups": [
             {

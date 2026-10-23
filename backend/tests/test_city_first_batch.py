@@ -43,13 +43,10 @@ def test_batch_rows_come_from_verified_candidates():
     urls = [row["栏目URL"] for row in batch]
     assert len(set(urls)) == len(urls)
     assert not REFUSED & set(urls)
-    # 每一行都出自已核实的候选清单：网址、省、市、部门全称都对得上，不是新猜的地址
-    candidates = {row["栏目URL"]: row for row in read(CANDIDATES)}
-    for row in batch:
-        known = candidates[row["栏目URL"]]
-        assert [known[k] for k in ("省份", "城市", "部门", "部门全称")] == [
-            row[k] for k in ("省份", "城市", "部门", "部门全称")
-        ]
+    assert all(row["部门全称"].startswith(row["城市"] + "市") for row in batch)
+    # 每个网址只在一份清单里：两份清单都管同一个网址时，先后导入会互相改回启用状态
+    others = {row["栏目URL"] for path in (CANDIDATES, DEFAULT_SOURCES_CSV) for row in read(path)}
+    assert not others & set(urls)
 
 
 def test_batch_imports_switched_off(session):
@@ -60,10 +57,10 @@ def test_batch_imports_switched_off(session):
         ("市级", False, "static", 1)
     }
     assert all(s.city and s.parser_config == {} for s in sources)
-    # 和候选清单先后、反复导入都不会打开
+    # 和候选清单先后、反复导入都不会打开，也不会多出或改动第一批的来源
     import_sources(session, CANDIDATES)
     again = import_sources(session, BATCH)
-    assert (again.created, again.enabled) == (0, 0)
+    assert (again.created, again.updated, again.enabled) == (0, 34, 0)
     assert not session.scalars(select(Source).where(Source.enabled.is_(True))).all()
 
 
