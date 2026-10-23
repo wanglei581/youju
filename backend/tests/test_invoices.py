@@ -275,7 +275,7 @@ def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
     # 正式版里不出现白名单购买（D-074，运营规范 5.19）：同一个测试人员换到正式版就看不到
     assert payments.selling_to(settings, "pay-user", payments.Client(terms="pay-test")) is False
     settings.pay_audience = "all"
-    # 沙箱付款不扣真钱：配成 all 也只给测试名单（D-074）
+    # 沙箱只给测试名单：配成 all 也一样（D-074；沙箱真机付款也会真实扣钱，10/20 创始人实测）
     assert payments.selling_to(settings, "anyone", trial) is False
     assert payments.selling_to(settings, "pay-user", trial) is True
     settings.pay_enabled = False

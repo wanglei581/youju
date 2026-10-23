@@ -391,14 +391,14 @@ test('购买页协议未定稿时没有付款按钮，调用 buy 也不下单，
   assert.equal(h.calls.length, 0);
 });
 
-test('购买页在沙箱下协议没定稿也能联调付款，顶部写明是沙箱测试、扣不扣款以微信账单为准（不写"不扣真钱"）；现网没定稿仍不能付款，防止沙箱联调被协议卡住或现网误收款', async () => {
+test('购买页在沙箱下协议没定稿也能联调付款，顶部写明是沙箱测试、真机付款会真实扣款（不写"不扣真钱"）；现网没定稿仍不能付款，防止沙箱联调被协议卡住或现网误收款', async () => {
   const sandbox = passPage({ terms: payTerms, payProducts: () => Promise.resolve({ items: [PRODUCT], sandbox: true }), onPay: (payload) => payload.fail({ errCode: -2 }) });
   await flush();
   assert.equal(sandbox.page.data.termsFinal, false);
   assert.equal(sandbox.page.data.sandbox, true);
   const page = shown('pages/pass/index.wxml', sandbox.page.data);
-  assert.match(page, /沙箱测试：只对测试人员开放，开通的使用期仅供测试；是否实际扣款以微信支付账单为准/);
-  // 沙箱真机付款会不会真扣钱官方没写，10/19 创始人实测"钱扣了"：页面上不能写"不扣真钱"
+  // 沙箱真机付款会真实扣钱（10/20 创始人实测）：直说，不能写"不扣真钱"
+  assert.match(page, /沙箱测试：只对测试人员开放。真机付款会真实扣款，开通的使用期仅供测试/);
   assert.doesNotMatch(page, /不扣真钱/);
   assert.equal(payButtons(sandbox.page.data).length, 1);
   assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（30 天）');
@@ -765,6 +765,13 @@ test('反馈页支付问题带上纯数字订单号，订单号不纯时不加�
   assert.equal(plainId.page.data.max, 500 - '支付问题：'.length);
   assert.equal(plainId.sent[0], '支付问题：还没开通');
   assert.equal(plainId.sent[0].includes('订单'), false);
+  // 提示只在真的带上了订单号时说"已自动带上"，并写出是哪一笔（订单页记的可能是之前操作过的那一笔）；
+  // 没带上时请用户自己写（隐私保护指引一·6 的说法，Codex 10/19）
+  assert.match(shown('pages/feedback/index.wxml', numbered.page.data), /已自动带上订单号 41，问的不是这一笔的，请在内容里写明/);
+  const untagged = shown('pages/feedback/index.wxml', plainId.page.data);
+  assert.doesNotMatch(untagged, /已自动带上/);
+  assert.match(untagged, /请写上订单号（在“我的订单”里能看到）/);
+  assert.doesNotMatch(shown('pages/feedback/index.wxml', (await send(undefined)).page.data), /已自动带上/);
 });
 
 test('协议页 type=pay 只显示一份文件，标题用付费协议的 title，防止打开成用户协议或隐私保护指引', () => {
@@ -828,7 +835,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理/);
   assert.doesNotMatch(text, /只能向 App Store 申请退款/);
   // 无理由退款：付款后 24 小时内、没用过付费的量（D-081，原为 7 天）
-  assert.match(text, /付款后 24 小时内没用过付费的量（没超出每月免费次数、没有一次超过 50 家）、也没开过发票，可在“我的 → 我的订单”申请无理由退款，全额原路退回；超过 24 小时或者已经用过的，不能无理由退款/);
+  assert.match(text, /付款后 24 小时内没用过付费的量（没超出每月免费次数、没有一次超过 50 家）、也没开过发票，可在“我的 → 我的订单”申请无理由退款，全额原路退回；每个账号每月只能申请 1 次无理由退款（每月 1 日起重新计算）；超过 24 小时或者已经用过的，不能无理由退款/);
   assert.doesNotMatch(text, /付款 7 天内/);
   assert.match(text, /发票：可开电子普通发票（测试文字）/);
   assert.match(text, /到期后，已经生成的结果仍可查看、导出/);

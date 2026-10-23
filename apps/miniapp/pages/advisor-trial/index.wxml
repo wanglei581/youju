@@ -22,4 +22,3 @@
     <view class="trial-actions"><button class="advisor-button" bindtap="back">返回批量工具</button></view>
   </block>
 </view>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>

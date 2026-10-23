@@ -131,7 +131,7 @@ def setup_pay(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices。
-        # 沙箱不扣真钱，配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
+        # 沙箱配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,

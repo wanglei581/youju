@@ -3,16 +3,21 @@
 import copy
 from datetime import date, datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
+from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
 from youju.models import Document, DocumentDeadline, Source
 
 HEADERS = {"X-Admin-Token": "secret"}
+
+
+NOW = datetime(2026, 10, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 @pytest.fixture
@@ -23,6 +28,9 @@ def client(session_factory, monkeypatch):
 
     app.dependency_overrides[get_session] = override
     monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    # 日历的 items 只放还没截止的（截止过的在 past 里）；数据写的是 2026 年 9—11 月，
+    # 业务时间固定在 10/1，免得日子一过就挪进 past（10/21 起 10/20 那条就不在 items 里了）
+    monkeypatch.setattr(v1, "now", lambda: NOW)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
