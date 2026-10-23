@@ -160,7 +160,11 @@ _LABELS = {
         r"(?:[为是][\s:：]*)?$",
         re.I,
     ),
-    "id": re.compile(r"(?:身\s*份\s*证(?:\s*号\s*码?)?|证\s*件\s*号\s*码?)" + _LABEL_END + "$"),
+    "id": re.compile(
+        r"(?:身\s*份\s*证(?:\s*件)?(?:\s*号\s*码?)?|身\s*份\s*号\s*码|证\s*件\s*号\s*码?)"
+        + _LABEL_END
+        + "$"
+    ),
 }
 _BEFORE = 48  # 往前看多少个字找标签、金额词（标签后面隔着开户行时要看得远一点）
 # 表格里当"账号"标签的格：整格是"……账号""……卡号""……账户号（码）""……账户"（前面最多 8 个字，
@@ -169,7 +173,7 @@ _BEFORE = 48  # 往前看多少个字找标签、金额词（标签后面隔着�
 # 别的字的不算，"基本账户""基本存款账户""零余额账户（人民币）"这类账户类型的值也不算
 _ACCOUNT_CORE = r"(?:[账帐]\s*(?:户\s*)?号(?:\s*码)?|卡\s*号(?:\s*码)?|[账帐]\s*户)"
 _ACCOUNT_CELL = re.compile(
-    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,8}"
+    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*|[(（][^()（）]{1,12}[)）]\s*){0,8}"
     + _ACCOUNT_CORE
     + r"(?:\s*[/／、]\s*"
     + _ACCOUNT_CORE
@@ -178,19 +182,23 @@ _ACCOUNT_CELL = re.compile(
 _ACCOUNT_TYPE = re.compile(
     "(?:"
     + "|".join(r"\s*".join(w) for w in ("基本", "一般", "专用", "临时", "零余额"))
-    + r")\s*(?:存\s*款\s*)?[账帐]\s*户(?:\s*[(（][^()（）]{1,12}[)）])?[\s*＊:：]*$"
+    + r")\s*(?:存\s*款\s*|[(（]\s*存\s*款\s*[)）]\s*)?"
+    + r"[账帐]\s*户(?:\s*[(（][^()（）]{1,12}[)）])?[\s*＊:：]*$"
 )
-# 表格里当"身份证号""手机"标签的格（前面最多 6 个字，如"法人身份证号""联系人电话"；后面可以带
+# 表格里当"身份证号""手机"标签的格（前面最多 6 个字，如"法人身份证号""公民身份号码""联系人电话"，
+# 手机可以写成"联系电话/手机"；后面可以带
 # 括号说明、星号、冒号）：这一列往下、同一行右边那格按身份证号、手机号的标签认（PDF 窄列折行写成
 # "1101011990030 71234"也能认）
 _ID_CELL = re.compile(
     r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
-    r"(?:身\s*份\s*证(?:\s*号(?:\s*码)?)?|证\s*件\s*号(?:\s*码)?)"
+    r"(?:身\s*份\s*证(?:\s*件)?(?:\s*号(?:\s*码)?)?|身\s*份\s*号\s*码"
+    r"|证\s*件\s*号(?:\s*码)?)"
     r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
 _PHONE_CELL = re.compile(
     r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
     r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号(?:\s*码)?)?|联\s*系\s*方\s*式)"
+    r"(?:\s*[/／、]\s*(?:手\s*机|电\s*话)(?:\s*号(?:\s*码)?)?)?"
     r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
@@ -396,7 +404,8 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
     - 前面写了"账号""手机""身份证"这类标签（_LABELS），或 column 给了（表格里这一列上面、左边那格
       写着"账号""身份证号""手机"）：按标签认，怎么分组都行（_labeled）；
     - 没写标签的：整串能分成号码和序号、日期、座机（_split）才遮号码那几段；前面紧挨着"合计、
-      预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号；
+      预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号，没遮的整串记成 None（原样
+      留着，正文函数也不碰）；
     - 整串是日期（"2018-05-20—2026-10-09""20180520-20261009"）的，哪一段都不当号码。"""
     spans = []
     for run in _RUN.finditer(plain):
@@ -411,19 +420,26 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         label = next((k for k, p in _LABELS.items() if p.search(before)), None) or column
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
         amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
-        spans += [
-            (groups[i][0], groups[j - 1][1], found)
-            for i, j, found in _split(plain, groups, values, label, amount)
+        found = [
+            (groups[i][0], groups[j - 1][1], name)
+            for i, j, name in _split(plain, groups, values, label, amount)
         ]
+        if amount and not found:
+            found = [(run.start(), run.end(), None)]  # 金额：原样留着，正文函数也不碰
+        spans += found
     return spans
 
 
-def _replace(text: str, spans: list[tuple[int, int, str]]) -> str:
+# 原样留着、不交给正文函数的一段（金额）：用这两个控制字符包起来，交给正文函数前切开
+_KEEP = re.compile("\x01([^\x01\x02]*)\x02")
+
+
+def _replace(text: str, spans: list[tuple[int, int, str | None]]) -> str:
     out, at = [], 0
-    for start, end, label in sorted(spans):
+    for start, end, label in sorted(spans, key=lambda s: (s[0], s[1])):
         if start < at:  # 和前一个重叠：前一个已经遮了
             continue
-        out += [text[at:start], label]
+        out += [text[at:start], f"\x01{text[start:end]}\x02" if label is None else label]
         at = end
     out.append(text[at:])
     return "".join(out)
@@ -436,15 +452,21 @@ def mask(text: str, *, column: str | None = None) -> str:
     2. 再遮分开写的号码（_number_spans）：写了"账号""手机""身份证"这类标签的（column：表格里
        这一列上面、左边那格写着的标签，"account""id""phone"）怎么分组都认；没写的整串能分成常见分法的号码和
        序号、日期、座机才遮（免得把一串金额、编号拼成号码）；
-    3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；小数原样
-       留着，不交给它（"13812345678.50 元"小数点前面的 11 位会被它当成手机号）；
+    3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；金额那一串、
+       小数原样留着，不交给它（它会把"投资15000000000元""13812345678.50 元"里的 11 位当成手机号）；
     4. 再遮标签字隔开写的"联 系 人："。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
-    text = _EMAIL.sub("[邮箱已脱敏]", text)
+    text = _EMAIL.sub("[邮箱已脱敏]", text).replace("\x01", "").replace("\x02", "")
     text = _replace(text, _number_spans(text.translate(_HALF), column))
-    parts = _DECIMAL.split(text)  # 单数位是小数
-    text = "".join(p if i % 2 else body_rules.redact_sensitive(p) for i, p in enumerate(parts))
+    pieces = _KEEP.split(text)  # 单数位是金额
+    text = "".join(p if i % 2 else _body(p) for i, p in enumerate(pieces))
     return _SPACED_CONTACT.sub(r"\1[姓名已脱敏]", text)
+
+
+def _body(text: str) -> str:
+    """正文的规则，小数原样留着。"""
+    parts = _DECIMAL.split(text)  # 单数位是小数
+    return "".join(p if i % 2 else body_rules.redact_sensitive(p) for i, p in enumerate(parts))
 
 
 # ---- 认格式（wps、et 要按文件头认出实际格式） ----

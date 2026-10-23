@@ -1294,6 +1294,34 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
     ]
 
 
+def test_mask_amounts_skip_body_rules_and_more_column_labels() -> None:
+    # 金额那一串（只遮身份证号）也不交给正文函数：它会把连写的 11 位当成手机号
+    for keep in ("合计13812345678", "投资15000000000元"):
+        assert at.mask(keep) == keep, keep
+    assert at.mask("联系电话13812345678") == "联系电话[手机号已脱敏]"
+    assert at.mask("合计 110101199003071234") == "合计 [身份证号已脱敏]"
+    # 身份证号、手机号的列名、行内标签：公民身份号码、身份号码、身份证件号，"联系电话/手机"
+    for label, kind in (
+        ("公民身份号码", "id"),
+        ("身份号码", "id"),
+        ("身份证件号", "id"),
+        ("联系电话/手机", "phone"),
+    ):
+        assert at._cell_label(label) == kind, label
+    assert at.mask("公民身份号码：110101 1990 03 07 1234") == "公民身份号码：[身份证号已脱敏]"
+    # "基本（存款）账户"：做列名时当账号标签，有列表头的数据格里是账户类型的值
+    assert at._cell_label("基本（存款）账户", types=True) == "account"
+    assert at._cell_label("基本（存款）账户") is None
+    builder = at._Builder()
+    builder.table(
+        [
+            _row("单位", "基本（存款）账户", "公民身份号码", "联系电话/手机"),
+            _row("甲", "1202021309001234568", "1101011990030 71234", "1381234 5678"),
+        ]
+    )
+    assert builder.segments[1].text == ("甲 | [银行账号已脱敏] | [身份证号已脱敏] | [手机号已脱敏]")
+
+
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
     import time
 
