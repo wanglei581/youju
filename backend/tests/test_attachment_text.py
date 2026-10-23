@@ -828,6 +828,41 @@ def test_xlsx_long_numbers_stay_exact() -> None:
     )
 
 
+@pytest.mark.parametrize("value", ["1e300001", "-1e300001"])
+def test_xlsx_short_exponent_cannot_expand_past_text_limit(value) -> None:
+    book = openpyxl.Workbook()
+    book.active.append([111111])
+    out = io.BytesIO()
+    book.save(out)
+    rebuilt = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(out.getvalue())) as source,
+        zipfile.ZipFile(rebuilt, "w") as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = data.replace(b"<v>111111</v>", f"<v>{value}</v>".encode())
+            target.writestr(item, data)
+    result = at.extract(rebuilt.getvalue())
+    assert (result.reason, result.segments) == ("too_large", [])
+    # 必须在数字格式化时挡下，不能靠展开以后 Builder 的总字数检查。
+    assert result.detail == "单元格数字展开后超过文字上限"
+
+
+def test_sheet_number_expansion_boundary_and_zero(monkeypatch) -> None:
+    monkeypatch.setattr(at, "MAX_CHARS", 18)
+    epoch = datetime(1899, 12, 30)
+    assert at._sheet_number("1e17", False, False, epoch) == "100000000000000000"
+    assert at._sheet_number("-1e16", False, False, epoch) == "-10000000000000000"
+    for value in ("1e18", "-1e17"):
+        with pytest.raises(at.Unreadable) as error:
+            at._sheet_number(value, False, False, epoch)
+        assert error.value.reason == "too_large"
+    assert at._sheet_number("0e300001", False, False, epoch) == "0"
+    assert at._sheet_number("-0e300001", False, False, epoch) == "-0"
+
+
 def test_xlsx_escapes_time_limit_and_part_size_limit(monkeypatch) -> None:
     book = openpyxl.Workbook()
     book.active.append(["材料清单", "备注", "份数"])

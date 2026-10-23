@@ -1080,6 +1080,10 @@ def _sheet_number(value: str, date_style: bool, percent: bool, epoch: datetime) 
         return f"{number * 100:.10g}%"
     if exact == exact.to_integral_value():
         # 整数一律原样写出：存成数字的卡号、身份证号写成科学计数法，遮号码就认不出了
+        # 指数写法可能只有几个字却展开成巨量零；必须在格式化分配内存前检查长度。
+        digits = 1 if exact.is_zero() else max(1, exact.adjusted() + 1)
+        if digits + int(exact.is_signed()) > MAX_CHARS:
+            raise Unreadable("too_large", "单元格数字展开后超过文字上限")
         return f"{exact.to_integral_value():f}"
     return f"{number:.10g}"
 
