@@ -579,6 +579,23 @@ def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
         cli.main(["refetch-redacted", "--ids", "a,b"])
 
 
+def test_long_repetitive_bodies_are_compared_quickly() -> None:
+    """大段重复的字（几千个"—"分隔线）逐字比是平方级的：先去掉两头相同的部分，中间太长就按行、
+    按整段算，一份正文比完不能卡住。"""
+    import time
+
+    from youju.refetch_redacted import _restored, _similarity
+
+    raw = "—" * 20000 + "\n材料请于11月20日前寄至0571-87654321\n" + "甲" * 20000
+    old, new = old_redact(raw), redact_sensitive(raw)
+    started = time.perf_counter()
+    pieces = _restored(old, new)
+    similarity = _similarity(old, old[:-3] + "乙乙乙")
+    assert time.perf_counter() - started < 2
+    assert any("日前寄至" in piece for piece in pieces)
+    assert 0.99 < similarity <= 1
+
+
 def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
     import time
 

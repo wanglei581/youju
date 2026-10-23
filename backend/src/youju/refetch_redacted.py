@@ -192,14 +192,61 @@ def _candidates(
 _TIME_CHARS = set("年月日时周星点午")
 
 
+# 两头去掉相同的部分以后，中间超过这么多字就不逐字比：逐字比（difflib）遇到大段重复的字（几千个
+# "—"分隔线）是平方级的，6000 个字就要几秒，一份正文最多 400 万字
+_DIFF_LIMIT = 4000
+
+
+def _trim(old: str, new: str) -> tuple[int, int]:
+    """两份正文开头、结尾相同的字数（不重叠）。"""
+    head = 0
+    limit = min(len(old), len(new))
+    while head < limit and old[head] == new[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and old[-1 - tail] == new[-1 - tail]:
+        tail += 1
+    return head, tail
+
+
+def _added(old: str, new: str, *, by_lines: bool = True) -> list[str]:
+    """new 比 old 多出来（换掉）的片段。先去掉两头相同的部分；中间不长就逐字比；太长（改动分散在长
+    正文里）先按行比、改了的几行再这样比，还太长就整段算一处。"""
+    head, tail = _trim(old, new)
+    a, b = old[head : len(old) - tail], new[head : len(new) - tail]
+    if not b:
+        return []
+    if len(a) + len(b) <= _DIFF_LIMIT:
+        matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        return [
+            b[j1:j2] for tag, _, _, j1, j2 in matcher.get_opcodes() if tag in ("replace", "insert")
+        ]
+    a_lines, b_lines = a.splitlines(keepends=True), b.splitlines(keepends=True)
+    if not by_lines or len(a_lines) <= 1 or len(b_lines) <= 1:
+        return [b]
+    pieces: list[str] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a_lines, b_lines).get_opcodes():
+        if tag in ("replace", "insert"):
+            pieces += _added("".join(a_lines[i1:i2]), "".join(b_lines[j1:j2]), by_lines=False)
+    return pieces
+
+
 def _restored(old: str, new: str) -> list[str]:
     """新正文比旧正文多出来的字（按新规则找回的，也包括新遮的"[姓名已脱敏]"），每处去掉多余空白。"""
-    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
-    return [
-        " ".join(piece.split())
-        for tag, _, _, j1, j2 in matcher.get_opcodes()
-        if tag in ("replace", "insert") and (piece := new[j1:j2].strip())
-    ]
+    return [" ".join(piece.split()) for piece in _added(old, new) if piece.strip()]
+
+
+def _similarity(a: str, b: str) -> float:
+    """两份正文有多像（0–1）：两头相同的部分加上中间逐字比对上的；中间太长就只算两头。"""
+    if not a and not b:
+        return 1.0
+    head, tail = _trim(a, b)
+    same = head + tail
+    middle_a, middle_b = a[head : len(a) - tail], b[head : len(b) - tail]
+    if len(middle_a) + len(middle_b) <= _DIFF_LIMIT:
+        blocks = difflib.SequenceMatcher(None, middle_a, middle_b, autojunk=False)
+        same += sum(block.size for block in blocks.get_matching_blocks())
+    return round(2 * same / (len(a) + len(b)), 3)
 
 
 def _reviewed(session: Session, bodies: dict[int, str]) -> tuple[int, int]:
@@ -357,7 +404,7 @@ def refetch_redacted(
             continue
         before = old_redact(parsed.raw_body)[:BODY_TEXT_MAX_CHARS]
         if before != stored:
-            similarity = round(difflib.SequenceMatcher(None, stored, before).ratio(), 3)
+            similarity = _similarity(stored, before)
             report.results.append(RefetchResult(doc_id, title, "changed", similarity=similarity))
             continue
         if len(parsed.body_text) > BODY_TEXT_MAX_CHARS:
