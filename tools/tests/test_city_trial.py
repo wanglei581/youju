@@ -130,6 +130,26 @@ class PagingTests(unittest.TestCase):
             }
         ]
         self.assertFalse(MODULE.same_list(first, other))
+        # 按月份分目录的网站：不同月份的文件仍是同一个栏目
+        october = [
+            {
+                "title": "x",
+                "url": "https://x.gov.cn/tztg/202610/t1.html",
+                "publish_date": None,
+            }
+        ]
+        september = [
+            {
+                "title": "y",
+                "url": "https://x.gov.cn/tztg/202609/t2.html",
+                "publish_date": None,
+            }
+        ]
+        self.assertTrue(MODULE.same_list(october, september))
+        self.assertEqual(
+            MODULE.column_dir("https://x.gov.cn/art/2026/9/11/art_4901_1.html"),
+            "x.gov.cn/art/",
+        )
 
     def test_next_link_must_stay_in_the_column(self):
         first = "https://www.example.gov.cn/gova/tzgg.php?catname=kjj_02_04"

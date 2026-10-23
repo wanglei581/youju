@@ -607,3 +607,19 @@ def test_redirect_into_interactive_platform_is_not_requested() -> None:
     )
     assert "/hdjlpt/yjzj/1" not in requested
     assert detail_service._polite_fetcher()._url_allowed is detail_service._detail_url_allowed
+
+
+def test_single_pdf_attachment_on_interactive_platform_is_not_requested(session) -> None:
+    """正文为空、只有一个 PDF 附件，而附件在互动交流平台上：不请求，记为防护页。"""
+    doc = add_document(session, 32)
+    page = (
+        "<html><body><div id='zoom'><a href='/hdjlpt/files/a.pdf'>附件1.pdf</a></div></body></html>"
+    )
+    fake = FakeFetcher(
+        {doc.url: FetchResult(doc.url, "ok", final_url=doc.url, http_status=200, text=page)}
+    )
+    results = fetch_details(session, limit=1, fetcher=fake)
+    assert [(r.status, r.failure_reason) for r in results] == [
+        ("protected", "互动交流平台页面带验证码，不抓")
+    ]
+    assert fake.calls == [doc.url]

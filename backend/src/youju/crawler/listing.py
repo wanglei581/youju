@@ -126,20 +126,22 @@ def _inner_title(a: etree._Element, text: str) -> str | None:
         inner = value.replace(" ", "")
         if not inner or len(inner) >= len(compact) or inner not in compact:
             continue
-        if _looks_like_title(value) and _has_date_node(a, el):
+        if _looks_like_title(value) and _has_date_node(a):
             return value
     return None
 
 
-def _has_date_node(a: etree._Element, title_el: etree._Element) -> bool:
-    """链接里除标题那块以外，有没有一个元素只写着完整日期。"""
-    inside = set(title_el.iter())
-    return any(
-        isinstance(el.tag, str)
-        and el not in inside
-        and _DATE_ONLY.fullmatch(_clean(el.text_content()))
-        for el in a.iterdescendants()
-    )
+def _has_date_node(a: etree._Element) -> bool:
+    """链接里有没有一个单独成块的完整日期：元素里只写着日期，前后也不挨着别的文字
+    （"（<em>2026年10月15日</em>补充）"这种夹在一句话里的不算）。"""
+    for el in a.iterdescendants():
+        if not isinstance(el.tag, str) or not _DATE_ONLY.fullmatch(_clean(el.text_content())):
+            continue
+        before = el.getprevious()
+        lead = before.tail if before is not None else el.getparent().text
+        if not (lead or "").strip() and not (el.tail or "").strip():
+            return True
+    return False
 
 
 def _leading_ordinal(a: etree._Element, prefix: str, rest: str) -> bool:

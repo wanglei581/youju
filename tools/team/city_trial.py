@@ -15,6 +15,9 @@
   details  补正文：第一批栏目窗口内的全部条目；国家和省级只补标题和地市条目相近的
   measure  抽截止候选、按 D-055 的规则归转发组，出每个栏目的四项数字（measure.json、measure.csv）
 
+已知局限（规则是尽力而为，结果要人看过再用）：同一目录里的侧栏翻页可能被当成下一页；每页
+略有变化的长页脚可能被算作正文；页面末尾恰好是一条按日期排着的旧文时，会当成已经翻过窗口开始。
+
 用法（用后端虚拟环境里的 Python）：
   backend/.venv/bin/python tools/team/city_trial.py lists --manifest <清单.csv> --out <目录>
   backend/.venv/bin/python tools/team/city_trial.py load --manifest <清单.csv> --out <目录> --db <库名>
@@ -47,6 +50,8 @@ _LABEL = re.compile(
 )
 _TAGS = re.compile(r"<[^>]+>")
 _DB_NAME = re.compile(r"youju_citytrial[A-Za-z0-9_]*")
+# 按年月日分的目录（202610、2026、10、20261023、2026-10）：判断"同一个栏目"时不算
+_DATE_DIR = re.compile(r"(?:19|20)\d{2}(?:[-_]?\d{2}){0,2}|\d{1,2}")
 # 翻页用的查询参数：判断"还在不在同一个栏目"时不算栏目参数
 _PAGE_PARAMS = {
     "page",
@@ -122,13 +127,21 @@ def in_column(target: str, first_url: str) -> bool:
     return need <= set(parse_qsl(other.query, keep_blank_values=True))
 
 
+def column_dir(url: str) -> str:
+    """条目网址所在的栏目目录：去掉按年月日分的目录（/202610/、/2026/10/、/20261023/），
+    同一栏目不同月份的文件才算在同一个目录里。"""
+    path = urlsplit(url).path
+    parts = [seg for seg in path.split("/")[:-1] if not _DATE_DIR.fullmatch(seg)]
+    return f"{urlsplit(url).hostname}{'/'.join(parts)}/"
+
+
 def same_list(first: list[dict], page: list[dict], share: float = 0.5) -> bool:
-    """翻到的这一页还是不是同一个栏目的列表：至少一半条目的网址目录在第 1 页条目的目录里
-    （脚本里写的翻页规则可能属于页面上的另一个列表）。"""
+    """翻到的这一页还是不是同一个栏目的列表：至少一半条目的栏目目录（见 column_dir）在
+    第 1 页条目的目录里（脚本里写的翻页规则可能属于页面上的另一个列表）。"""
     if not page:
         return True
-    dirs = {urljoin(i["url"], ".") for i in first}
-    return sum(urljoin(i["url"], ".") in dirs for i in page) >= share * len(page)
+    dirs = {column_dir(i["url"]) for i in first}
+    return sum(column_dir(i["url"]) in dirs for i in page) >= share * len(page)
 
 
 def next_page_url(html: str, page_url: str, first_url: str | None = None) -> str | None:

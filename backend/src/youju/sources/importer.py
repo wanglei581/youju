@@ -110,15 +110,19 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
     # "待开"的来源对外不可见只靠"从没抓过、没有文件"：停用不会让已有文件下架。导入以后还有
     # 待开的来源带着文件（例如以前被开过、抓过，又改回待开），整次导入作废，要先走下架
     session.flush()
-    leaking = session.scalar(
-        select(func.count(Document.id))
-        .join(Source, Source.id == Document.source_id)
+    leaking = session.execute(
+        select(Source.url, func.count(Document.id))
+        .join(Document, Document.source_id == Source.id)
         .where(Source.verification_status.startswith(PENDING))
-    )
+        .group_by(Source.url)
+        .order_by(Source.url)
+    ).all()
     if leaking:
         session.rollback()
+        listed = "；".join(f"{url}（{count} 份）" for url, count in leaking[:5])
+        more = f"等 {len(leaking)} 个栏目" if len(leaking) > 5 else ""
         raise ValueError(
-            f"有 {leaking} 份文件属于“{PENDING}”的来源：这些来源已经对外过，不能改回待开；"
+            f"“{PENDING}”的来源带着文件：{listed}{more}。这些来源已经对外过，不能改回待开；"
             "先下架这些文件，或把来源改成别的状态"
         )
     session.commit()

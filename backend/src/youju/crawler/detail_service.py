@@ -205,7 +205,15 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, fetched, parsed, "unsupported_host", "PDF 非政府网站"
             )
+        if _interactive(pdf_url):
+            return _FetchOutcome(
+                document_id, now, fetched, parsed, "protected", _INTERACTIVE_REASON
+            )
         pdf_fetch = fetcher.fetch(pdf_url)
+        if pdf_fetch.status == "unsupported_host" and _interactive(pdf_fetch.final_url or ""):
+            return _FetchOutcome(
+                document_id, now, pdf_fetch, parsed, "protected", _INTERACTIVE_REASON
+            )
         if pdf_fetch.status != "ok":
             return _FetchOutcome(
                 document_id,

@@ -178,7 +178,8 @@ def test_pending_source_with_documents_aborts_import(session, tmp_path: Path) ->
         header + f"市级,广东,广州,科技,广州市科学技术局,通知公告,{url},待开（测试）\n",
         encoding="utf-8-sig",
     )
-    with pytest.raises(ValueError, match="不能改回待开"):
+    with pytest.raises(ValueError, match="不能改回待开") as raised:
         import_sources(session, path)
+    assert f"{url}（1 份）" in str(raised.value)
     session.expire_all()
     assert session.scalar(select(Source)).enabled is True
