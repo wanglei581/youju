@@ -799,6 +799,35 @@ def test_few_characters_with_big_pictures_count_as_scans(monkeypatch) -> None:
     assert at.extract(out.getvalue()).ok
 
 
+def test_xlsx_long_numbers_stay_exact() -> None:
+    """存成数字的长号码按十进制读：转成浮点会改掉末几位（18 位卡号就过不了 Luhn、遮不到），
+    写成科学计数法的也展开。"""
+    book = openpyxl.Workbook()
+    book.active.append(["项目编号", "备注", "说明"])
+    book.active.append([111111, 222222, 333333])
+    out = io.BytesIO()
+    book.save(out)
+    exact = {
+        "<v>111111</v>": "<v>202611010000000123</v>",
+        "<v>222222</v>": "<v>622202120200123456</v>",  # 过得了 Luhn 的卡号
+        "<v>333333</v>": "<v>6.22202120200123E+17</v>",
+    }
+    source = zipfile.ZipFile(io.BytesIO(out.getvalue()))
+    rebuilt = io.BytesIO()
+    with zipfile.ZipFile(rebuilt, "w") as target:
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                for old, new in exact.items():
+                    text = text.replace(old, new)
+                data = text.encode()
+            target.writestr(item, data)
+    assert texts(at.extract(rebuilt.getvalue()))[1] == (
+        "202611010000000123 | [银行账号已脱敏] | 622202120200123000"
+    )
+
+
 def test_xlsx_escapes_time_limit_and_part_size_limit(monkeypatch) -> None:
     book = openpyxl.Workbook()
     book.active.append(["材料清单", "备注", "份数"])
@@ -1322,13 +1351,16 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
     row = _url_rows(session)[url]
     assert (row.status, row.reason, row.version_id) == ("failed", "gone", None)
     assert report.retracted == 2 and report.failed["gone"] == 1
-    # 下载到的是网页：也撤下（这里本来就没有文字了），原因是网页
+    # 下载到的是网页（错误页、登录页）：和下载失败一样撤下旧文字，不为网页存内容版本
     page = b"<html><body>not found</body></html>"
-    at.record(session, url, "pdf", later + timedelta(days=2), report, content=page)
-    row = _url_rows(session)[url]
-    assert (row.status, row.reason) == ("failed", "webpage")
-    version = session.get(AttachmentTextVersion, row.version_id)
-    assert (version.status, version.reason, version.file_type) == ("failed", "webpage", None)
+    moved = BASE + "moved.pdf"
+    at.record(session, moved, "pdf", NOW, report, content=make_docx("搬走以前"))
+    at.record(session, moved, "pdf", later + timedelta(days=2), report, content=page)
+    row = _url_rows(session)[moved]
+    assert (row.status, row.reason, row.version_id) == ("failed", "webpage", None)
+    assert report.retracted == 3 and report.failed["webpage"] == 1
+    webpages = select(func.count()).where(AttachmentTextVersion.reason == "webpage")
+    assert session.scalar(webpages) == 0
     # 第一次就遇到临时问题：还没有文字，仍是待取；隔一天（或者手动不等）再算到期
     at.record(session, BASE + "slow.pdf", "pdf", NOW, report, failure=temporary)
     slow = _url_rows(session)[BASE + "slow.pdf"]
@@ -1411,6 +1443,27 @@ def test_interrupted_extraction_is_not_retried_and_shared_links_follow(
     assert rows[BASE + "d.docx"].changed_at == later
     # 共用的内容已按新规则取过：另一个链接不用再为它重新下载
     assert at.due(session, {at.url_key(BASE + "d.docx")}, later) == set()
+
+
+def test_changed_content_interrupted_is_due_again_next_run(session, monkeypatch) -> None:
+    """按现在的规则取过文字的链接，内容变了、取到一半进程没了：下一轮马上再取，不用等副本的
+    例行复查。"""
+    report = at.TextReport()
+    url = BASE + "guide.docx"
+    key = {at.url_key(url)}
+    at.record(session, url, "docx", NOW, report, content=make_docx("第一版"))
+    assert at.due(session, key, NOW) == set()
+
+    def crash(_data):
+        raise RuntimeError("进程被杀")
+
+    monkeypatch.setattr(at, "extract", crash)
+    with pytest.raises(RuntimeError):
+        at.record(session, url, "docx", NOW, report, content=make_docx("第二版"))
+    session.rollback()
+    row = _url_rows(session)[url]
+    assert (row.status, row.extractor) == ("pending", 0)
+    assert at.due(session, key, NOW) == key
 
 
 def test_cleanup_drops_out_of_scope_links_and_orphan_texts(session) -> None:

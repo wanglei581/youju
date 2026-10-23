@@ -31,6 +31,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 
 from lxml import etree
@@ -1058,10 +1059,15 @@ def _date_format(code: str) -> bool:
 
 
 def _sheet_number(value: str, date_style: bool, percent: bool, epoch: datetime) -> str:
+    """单元格里存的数：日期、时间、百分比按格式写；整数照原样写出——按十进制精确读，不经过浮点数
+    （存成数字的 18 位卡号、身份证号转成浮点会改掉末几位），写成科学计数法的也展开。"""
     try:
-        number = float(value)
-    except ValueError:
+        exact = Decimal(value.strip())
+    except InvalidOperation:
         return value
+    if not exact.is_finite():
+        return value
+    number = float(exact)
     if date_style and 0 <= number < 2958466:
         # 按秒取整：17:30 存成 0.72916666… 天，直接换算会变成 17:29:59.999
         moment = epoch + timedelta(seconds=round(number * 86400))
@@ -1072,9 +1078,9 @@ def _sheet_number(value: str, date_style: bool, percent: bool, epoch: datetime) 
         return moment.strftime("%Y-%m-%d")
     if percent:
         return f"{number * 100:.10g}%"
-    if number.is_integer():
+    if exact == exact.to_integral_value():
         # 整数一律原样写出：存成数字的卡号、身份证号写成科学计数法，遮号码就认不出了
-        return f"{number:.0f}"
+        return f"{exact.to_integral_value():f}"
     return f"{number:.10g}"
 
 
@@ -2124,6 +2130,14 @@ _FETCH_REASONS = {
 TEXT_RETRY = timedelta(hours=24)
 
 
+def _is_webpage(data: bytes) -> bool:
+    try:
+        sniff(data)
+    except Unreadable as exc:
+        return exc.reason == "webpage"
+    return False
+
+
 def due(
     session: Session, keys: Iterable[str], now: datetime, *, retry_now: bool = False
 ) -> set[str]:
@@ -2157,9 +2171,9 @@ def record(
     content: bytes | None = None,
     failure=None,
 ) -> None:
-    """记下这次下载的结果并提交。content：下载到的文件（取文字，内容相同的共用一份）；
-    failure：下载失败（attachments.Failure）：临时问题保留原有文字、隔 TEXT_RETRY 再试，
-    其他的撤下旧文字。"""
+    """记下这次下载的结果并提交。content：下载到的文件（取文字，内容相同的共用一份；下载到的是
+    网页按下载失败算）；failure：下载失败（attachments.Failure）：临时问题保留原有文字、隔
+    TEXT_RETRY 再试，其他的撤下旧文字。"""
     key = url_key(url)
     row = session.scalar(select(AttachmentTextUrl).where(AttachmentTextUrl.url_hash == key))
     if row is None:
@@ -2168,8 +2182,9 @@ def record(
     row.declared_type = declared
     before = (row.version_id, row.status, row.reason)
     fresh = False
-    if content is None:
-        if failure is None or failure.transient:
+    webpage = content is not None and _is_webpage(content)
+    if content is None or webpage:
+        if not webpage and (failure is None or failure.transient):
             # 临时问题：有文字的保留，规则版本也不改（没取过的仍是待取，按旧规则取的仍要重取），
             # 隔 TEXT_RETRY 再试
             report.kept += 1
@@ -2177,8 +2192,13 @@ def record(
             session.commit()
             return
         row.version_id = None
-        row.status, row.reason = "failed", _FETCH_REASONS.get(failure.code, "unavailable")
-        row.detail = (failure.detail or "")[:300] or None
+        if webpage:
+            # 服务器返回的错误页、登录页等：和下载失败一样撤下旧文字，不为它存内容版本
+            # （每次的网页可能都不一样，存了会越积越多）
+            row.status, row.reason, row.detail = "failed", "webpage", REASONS["webpage"]
+        else:
+            row.status, row.reason = "failed", _FETCH_REASONS.get(failure.code, "unavailable")
+            row.detail = (failure.detail or "")[:300] or None
     else:
         version, fresh = _version(session, content, now, row)
         if fresh:
@@ -2235,8 +2255,10 @@ def _version(
             session.add(version)
         version.detail = _IN_PROGRESS_AGAIN if version.detail == _IN_PROGRESS else _IN_PROGRESS
         session.flush()
-        # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉
+        # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉；规则版本也清掉，
+        # 下一轮马上再取（内容变了的链接原来按现在的规则取过，不清就要等到副本的例行复查）
         row.version_id, row.status, row.reason = version.id, "pending", None
+        row.extractor, row.retry_at = 0, None
         session.commit()
         result = extract(content)
     session.execute(

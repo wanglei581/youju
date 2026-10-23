@@ -677,6 +677,23 @@ def test_cache_run_stores_only_allowed_attachments(session) -> None:
     assert retried.checked == 7 and len(fetcher.calls) == 7
 
 
+def test_text_only_row_becomes_a_copy_when_a_notice_lists_an_openable_type(session) -> None:
+    """同一个链接先只按 wps 记下（只取文字），后来另一份通知写成 docx：这一轮就按能打开的
+    重新处理、存副本，不会一直打不开。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    url = base + "download?id=7"  # 链接本身没有扩展名
+    add_doc(session, 1, APPLY, RECENT, [("汇总表", url, "wps")])
+    fetcher, cloud = FakeFetcher({url: DOCX}), FakeCloud()
+    first = run(session, fetcher, cloud)
+    assert first.text_only == 1 and rows_by_url(session)[url].declared_type == "wps"
+    add_doc(session, 2, APPLY, RECENT, [("申报书", url, "docx")])
+    fetcher.calls.clear()
+    second = run(session, fetcher, cloud)
+    row = rows_by_url(session)[url]
+    assert fetcher.calls == [url] and second.stored == 1
+    assert (row.declared_type, row.status, row.file_type) == ("docx", "ready", "docx")
+
+
 def test_limit_takes_new_files_first(session) -> None:
     base = "https://kjt.ln.gov.cn/files/"
     add_doc(session, 1, APPLY, date(2026, 9, 1), [("早", base + "early.pdf", "pdf")])

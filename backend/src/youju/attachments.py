@@ -1200,6 +1200,11 @@ def _cache_run(
             rows[key] = AttachmentCopy(url_hash=key, url=url, declared_type=ext, status="pending")
             session.add(rows[key])
             report.added += 1
+        elif rows[key].declared_type not in PREVIEW_TYPES and ext in PREVIEW_TYPES:
+            # 先按 wps、et 记下（只取文字）的链接，后来有通知写成能打开的格式：改过来、这一轮
+            # 就按能打开的重新处理（存副本），不然一直打不开
+            rows[key].declared_type = ext
+            rows[key].next_check_at = None
     session.commit()
     # 还没取过给 AI 用的文字（或按旧规则取的）的也要下载：上线后第一轮把已有副本的文字补上。
     # 只为补文字的排在副本本身到期的后面，例行复查不会被挤后
