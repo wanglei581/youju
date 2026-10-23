@@ -59,6 +59,8 @@ function setup(options = {}) {
   const copied = [];
   const opened = [];
   const loading = [];
+  const navigated = [];
+  const toasts = [];
   let hidden = 0;
   const sizes = options.sizes || [1000, 1000, 500];
   const api = {
@@ -69,6 +71,8 @@ function setup(options = {}) {
     },
   };
   const wx = {
+    navigateTo: (o) => { navigated.push(o.url); if (options.navigateFails) o.fail(); else o.success(); },
+    showToast: (o) => toasts.push(o.title),
     env: { USER_DATA_PATH: '/user' },
     getFileSystemManager: () => memory,
     showLoading: ({ title }) => loading.push(title),
@@ -79,83 +83,44 @@ function setup(options = {}) {
     './api.js': api,
     './copy.js': { copyLink: (url, message) => copied.push([url, message]) },
   }, { wx });
-  return { mod, memory, calls, copied, opened, loading, hidden: () => hidden };
+  return { mod, memory, calls, copied, opened, loading, navigated, toasts, hidden: () => hidden };
 }
 
-test('附件列表：能打开的显示大小，不能打开的写明原因；有副本时注明以原网站为准', () => {
+test('附件入口统一站内阅读，副本状态仅显示说明', () => {
   const { mod } = setup();
-  const list = mod.decorate([
-    Object.assign({}, ATT, { size: 1572864 }),
-    { id: '8', ext: 'WPS', name: '汇总表', preview: false, reason: 'format' },
-    { id: '9', ext: 'PDF', name: '演示附件' },
-  ]);
-  assert.deepEqual(list.map((a) => [a.canOpen, a.meta, a.action]), [
-    [true, '1.5 MB', '打开'],
-    [false, '该格式不能在小程序内打开', '复制链接'],
-    [false, '附件在原文页面下载', '复制链接'],
-  ]);
+  const list = mod.decorate([ATT, { id: '8', preview: false, reason: 'personal' }]);
+  assert.deepEqual(list.map(a => a.action), ['站内阅读', '站内阅读']);
+  assert.equal(list[1].meta, '查看内容及处理状态');
   assert.equal(mod.sizeText(2048), '2 KB');
   assert.equal(mod.note([ATT]), '附件副本来自原网站，以原网站为准');
-  assert.equal(mod.note([{ preview: false }]), '附件在原文页面下载');
-  // 提示最多两行：原因加"，已复制原文链接"不超过 24 个字
-  for (const text of Object.values(mod.REASONS)) assert.ok(`${text}，已复制原文链接`.length <= 24, text);
 });
 
-test('能打开的附件：分段下载、按附件名存到本机、用微信打开并显示右上角菜单，再次打开不重复下载', async () => {
+test('附件有无二进制副本均进入原生阅读页，不下载、不复制、不打开外部文件', async () => {
   const s = setup();
-  assert.equal(await s.mod.open(ATT, DOC_URL), true);
-  assert.deepEqual(s.calls, [['7', ATT.version, 0], ['7', ATT.version, 1], ['7', ATT.version, 2]]);
-  const filePath = `/user/attachments/7-${ATT.version}/附件1：申报指南.pdf`;
-  assert.deepEqual(s.opened.map((o) => [o.filePath, o.fileType, o.showMenu]), [[filePath, 'pdf', true]]);
-  const saved = s.memory.files.get(filePath);
-  assert.equal(saved.length, 2500);
-  assert.deepEqual([saved[0], saved[1000], saved[2499]], [1, 2, 3]);
-  assert.deepEqual(s.loading, ['正在打开附件…', '正在下载 1/3', '正在下载 2/3', '正在下载 3/3']);
-  assert.ok(s.hidden() >= 1);
-  assert.deepEqual(s.copied, []);
-
-  assert.equal(await s.mod.open(ATT, DOC_URL), true);
-  assert.equal(s.calls.length, 3);
-  assert.equal(s.opened.length, 2);
+  for (const att of [ATT, { id: '8', preview: false, reason: 'scan' }]) assert.equal(await s.mod.open(att, '1'), true);
+  assert.deepEqual(s.navigated, ['/pages/reader/index?id=1&attachment=7', '/pages/reader/index?id=1&attachment=8']);
+  assert.deepEqual(s.calls, []); assert.deepEqual(s.copied, []); assert.deepEqual(s.opened, []);
 });
 
-test('本机只留最近打开的 3 份附件', async () => {
-  const s = setup({ sizes: [10] });
-  for (let i = 1; i <= 5; i += 1) {
-    const att = Object.assign({}, ATT, { id: String(i), size: 10, parts: 1, partSize: 1000 });
-    assert.equal(await s.mod.open(att, DOC_URL), true);
-  }
-  assert.deepEqual([...s.memory.dirs.keys()].map((d) => d.split('/').pop().split('-')[0]).sort(), ['3', '4', '5']);
+test('原生导航失败和无效文档编号不会转复制链接', async () => {
+  const s = setup({ navigateFails: true });
+  assert.equal(await s.mod.open(ATT, '1'), false);
+  assert.equal(await s.mod.open(ATT, DOC_URL), false);
+  assert.deepEqual(s.copied, []); assert.deepEqual(s.opened, []);
+  assert.deepEqual(s.toasts, ['阅读页未打开，请重试', '附件信息不完整，请刷新详情']);
 });
 
-test('不能打开的附件：不下载，复制原文链接并说明原因', async () => {
+test('可选下载保留逐段校验和同版本缓存，残缺文件删除', async () => {
   const s = setup();
-  const att = { id: '8', ext: 'WPS', name: '汇总表', preview: false, reason: 'format' };
-  assert.equal(await s.mod.open(att, DOC_URL), false);
-  assert.deepEqual(s.copied, [[DOC_URL, '该格式不能在小程序内打开，已复制原文链接']]);
-  for (const [reason, text] of [['pending', '附件暂未缓存副本，请看原文'], ['personal', '附件含个人信息，请看原文'], ['failed', '附件副本没能从原网站取到']]) {
-    await s.mod.open({ preview: false, reason }, DOC_URL);
-    assert.deepEqual(s.copied.at(-1), [DOC_URL, `${text}，已复制原文链接`]);
+  const path = await s.mod.download(ATT, () => {});
+  assert.equal(s.memory.files.get(path).length, 2500);
+  assert.equal(await s.mod.download(ATT, () => {}), path); assert.equal(s.calls.length, 3);
+  for (const options of [{ failPart: 1 }, { sizes: [1000, 999, 500] }]) {
+    const bad = setup(options);
+    await assert.rejects(bad.mod.download(ATT, () => {}));
+    assert.equal(bad.memory.files.size, 0); assert.deepEqual(bad.copied, []);
   }
-  assert.deepEqual(s.calls, []);
-  assert.deepEqual(s.opened, []);
-});
-
-test('下载失败、内容不完整、打不开时：删掉半截文件，改为复制原文链接', async () => {
-  for (const options of [{ failPart: 1 }, { sizes: [1000, 999, 500] }, { openFails: true }]) {
-    const s = setup(options);
-    assert.equal(await s.mod.open(ATT, DOC_URL), false);
-    assert.deepEqual(s.copied, [[DOC_URL, '附件没能打开，已复制原文链接']]);
-    assert.ok(s.hidden() >= 1);
-    if (!options.openFails) {
-      assert.equal(s.opened.length, 0);
-      assert.equal(s.memory.files.size, 0);
-    }
-  }
-  // 附件信息对不上（分段数和大小不符）不下载
-  const s = setup();
-  assert.equal(await s.mod.open(Object.assign({}, ATT, { parts: 2 }), DOC_URL), false);
-  assert.deepEqual(s.calls, []);
+  await assert.rejects(s.mod.download({ ...ATT, parts: 2 }, () => {}));
 });
 
 test('详情页：点附件交给附件模块打开，打开过程中重复点击不重复下载', async () => {
@@ -176,14 +141,14 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
     },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
-  assert.deepEqual(page.data.atts.map((a) => a.meta), ['2 KB', '该格式不能在小程序内打开']);
+  assert.deepEqual(page.data.atts.map((a) => a.meta), ['2 KB', '查看内容及处理状态']);
   assert.equal(page.data.attNote, '附件副本来自原网站，以原网站为准');
   page.openAttachment({ currentTarget: { dataset: { index: 0 } } });
   page.openAttachment({ currentTarget: { dataset: { index: 1 } } });
-  assert.deepEqual(opens, [['7', DOC_URL]]);
+  assert.deepEqual(opens, [['7', '1']]);
   release(true); await flush();
   page.openAttachment({ currentTarget: { dataset: { index: 1 } } });
-  assert.deepEqual(opens, [['7', DOC_URL], ['8', DOC_URL]]);
+  assert.deepEqual(opens, [['7', '1'], ['8', '1']]);
 
   const wxml = read('pages/detail/index.wxml');
   assert.match(wxml, /wx:for="{{atts}}"[^>]*bindtap="openAttachment"/);
@@ -223,7 +188,7 @@ test('复制原文链接可以带上原因', () => {
   });
   copyLink(DOC_URL, '该格式不能在小程序内打开，已复制原文链接');
   copyLink(DOC_URL);
-  assert.deepEqual(toasts, ['该格式不能在小程序内打开，已复制原文链接', '已复制，请粘贴到浏览器打开']);
+  assert.deepEqual(toasts, ['该格式不能在小程序内打开，已复制原文链接', '来源网址已复制']);
 });
 
 test('取附件分段：二进制要设 dataType other；冷启动 503 自动重试', async () => {

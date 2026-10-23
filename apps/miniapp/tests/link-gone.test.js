@@ -22,7 +22,7 @@ test('详情页：标题下先写明链接失效了、正文是之前收录的�
   assert.match(top, /下面是之前收录的内容，通知可能已撤回或更正/);
   const note = findAll(tree, hasClass('source-gone')).map((n) => textOf(n).trim()).join('');
   assert.match(note, /原文链接已失效（2026-10-16 检查时打不开），复制后可能打不开/);
-  assert.match(note, /可以到发文机关网站按标题查找/);
+  assert.match(note, /当前留存内容的状态见站内阅读页/);
   const fine = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn' }, loaded: true });
   assert.equal(findAll(fine, hasClass('source-gone')).length, 0);
   assert.equal(findAll(fine, hasClass('gone-note')).length, 0);

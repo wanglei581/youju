@@ -38,7 +38,7 @@
       <!-- 结果很少时给出路（10/15 走查：江苏 + 一个产业方向，近 90 天只有 1 份） -->
       <view wx:if="{{loaded && !loading && !loadError && shown.length && shown.length < 3}}" class="weak scope-note">结果较少：可以在客户卡片里多选几个产业方向，或不选产业方向、只按地区看。</view>
       <view wx:if="{{shown.length && !loading}}" class="export-bar">
-        <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">导出这 {{shown.length}} 份</view>
+        <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">查看这 {{shown.length}} 份结果</view>
         <view class="weak export-note">客户名称只存在本机，导出的表里不含客户名称。</view>
       </view>
     </block>

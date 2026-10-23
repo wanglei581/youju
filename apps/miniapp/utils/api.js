@@ -434,6 +434,14 @@ function detail(id) {
   return mockDetail(id);
 }
 
+// 阅读内容只走真实接口，游标必须绑定同一来源版本，不能拼接新旧正文。
+function reading(id, attachmentId, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可阅读内容'));
+  const base = `/api/v1/documents/${encodeURIComponent(id)}`;
+  const path = attachmentId ? `${base}/attachments/${encodeURIComponent(attachmentId)}/reading` : `${base}/reading`;
+  return request(path, params);
+}
+
 // 日历每条的 id 是截止记录编号，打开详情用 docId（演示数据里两者相同）
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar(params = {}) {
@@ -472,14 +480,25 @@ function lookup(q) {
   return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
 }
 
+function advisorReading(id, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/reading`, params);
+}
+
+function exportPreview(ids) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request('/api/v1/exports/preview', null, { method: 'POST', data: { ids: ids.map(String), excerpts: 1 } });
+}
+
 // 导出 Excel / Word：返回文件内容（ArrayBuffer）。文件由服务端生成，小于 1000 KiB（云托管返回上限）
 const EXPORT_ERRORS = {
   413: '文件太大，请少选几份再导出',
   422: '有的文件已不存在或超过 200 份，请刷新后再试',
 };
-function exportFile(ids, format) {
+function exportFile(ids, format, revision) {
   // excerpts=1（D-061）：导出的截止列也按首发版规则写，机器摘录的另附原句
   const body = { ids: ids.map(String), format, excerpts: 1 };
+  if (revision) body.revision = revision;
   // 先叫醒接口服务（等的时候仍显示导出自己的"正在生成…"）
   return afterWake(() => exportOnce(body), false);
 }
@@ -497,7 +516,7 @@ function exportOnce(body) {
       if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
-      else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
+      else finish(reject, Object.assign(new Error(res.statusCode === 409 ? '内容已更新，请重新查看结果后保存' : EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`), { status: res.statusCode }));
     };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -860,7 +879,7 @@ function requestInvoice(id, data) {
 
 module.exports = {
   watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
-  attachmentPart,
+  attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

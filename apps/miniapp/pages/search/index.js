@@ -4,7 +4,7 @@ const {
 } = require('../../utils/regions.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
-const { exportDocs, MAX } = require('../../utils/exporter.js');
+const { previewDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
@@ -602,7 +602,7 @@ Page({
   exportChosen() {
     // 按列表里的顺序导出
     const ids = this.data.items.filter((item) => this.data.chosen[item.id]).map((item) => item.id);
-    exportDocs(ids, { label: this.followName() });
+    previewDocs(ids, { label: this.followName() });
   },
 
   feedback() {

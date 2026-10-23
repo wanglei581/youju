@@ -1,25 +1,23 @@
-// 附件：服务端存有副本的（doc、docx、xls、xlsx、ppt、pptx、pdf）在小程序里打开，打开后右上角菜单可转发、保存；
-// 其他的（wps、压缩包、还没存好的、下载失败的等）复制原文链接并说明原因。
-// 副本经云托管分段取（每段不超过返回上限 1000 KiB），写成本机文件后用 wx.openDocument 打开。
-// 本机只留最近打开的几份（本地用户文件和缓存共计上限 200MB）。
+// 附件主入口进入原生阅读页；二进制下载仅保留给显式保存操作。
+// 阅读状态由实时阅读接口决定，不用旧副本可下载标记推断是否可读。
 const api = require('./api.js');
-const { copyLink } = require('./copy.js');
+
 
 const DIR = 'attachments';
 const KEEP = 3;
 const NOTE_COPIES = '附件副本来自原网站，以原网站为准';
-const NOTE_ORIGINAL = '附件在原文页面下载';
-// 不能在小程序里打开的原因（服务端给代码）；提示时后面接"，已复制原文链接"
+const NOTE_ORIGINAL = '阅读页会显示附件内容及处理状态';
+// 旧副本下载限制的原因（不作为原生阅读结论）。
 const REASONS = {
   format: '该格式不能在小程序内打开',
   host: '附件不在政府网站，不提供副本',
-  kind: '名单等文件的附件请看原文',
-  pending: '附件暂未缓存副本，请看原文',
-  old: '较早文件的附件请看原文',
-  too_large: '附件超过 20MB，请看原文',
-  personal: '附件含个人信息，请看原文',
-  scan: '扫描件附件请看原文',
-  image: '附件含图片，请看原文',
+  kind: '名单等文件的附件尚不可读',
+  pending: '附件暂未缓存副本，内容尚不可读',
+  old: '较早文件的附件尚不可读',
+  too_large: '附件超过 20MB，内容尚不可读',
+  personal: '附件含个人信息，内容尚不可读',
+  scan: '扫描件附件尚不可读',
+  image: '附件含图片，内容尚不可读',
   failed: '附件副本没能从原网站取到',
 };
 
@@ -33,12 +31,12 @@ function sizeText(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// 详情页附件列表：能打开的显示大小，不能打开的显示原因
+// 详情页只显示副本大小，完整阅读状态进入原生页实时核对。
 function decorate(list) {
   return (list || []).map((att) => Object.assign({}, att, {
     canOpen: !!att.preview,
-    meta: att.preview ? sizeText(att.size) : reasonText(att.reason),
-    action: att.preview ? '打开' : '复制链接',
+    meta: att.preview ? sizeText(att.size) : '查看内容及处理状态',
+    action: '站内阅读',
   }));
 }
 
@@ -130,6 +128,7 @@ function download(att, progress) {
   return chain
     .then(() => {
       if (sizeOf(fs, filePath) !== att.size) throw new Error('附件下载不完整');
+      prune(fs, dir);
       return filePath;
     })
     .catch((err) => {
@@ -138,41 +137,17 @@ function download(att, progress) {
     });
 }
 
-function openFile(filePath, fileType) {
-  return new Promise((resolve, reject) => {
-    wx.openDocument({
-      filePath,
-      fileType,
-      // 右上角菜单：用户自己选择转发、保存或用其他应用打开
-      showMenu: true,
-      success: () => resolve(),
-      fail: () => reject(new Error('打开附件失败')),
-    });
-  });
-}
-
-// 点附件：能打开的下载后打开；不能打开或打开失败的，复制原文链接并说明原因。返回是否打开了
-function open(att, docUrl) {
-  if (!att || !att.preview) {
-    copyLink(docUrl, `${reasonText(att && att.reason)}，已复制原文链接`);
+// 正文阅读与文件下载分离：主入口始终在小程序内，由阅读接口说明内容状态。
+function open(att, docId) {
+  if (!att || !att.id || !/^\d+$/.test(String(docId || ''))) {
+    wx.showToast({ title: '附件信息不完整，请刷新详情', icon: 'none' });
     return Promise.resolve(false);
   }
-  wx.showLoading({ title: '正在打开附件…', mask: true });
-  const fs = wx.getFileSystemManager();
-  return download(att, (n, total) => wx.showLoading({ title: `正在下载 ${n}/${total}`, mask: true }))
-    .then((filePath) => {
-      wx.hideLoading();
-      return openFile(filePath, att.fileType);
-    })
-    .then(() => {
-      prune(fs, dirOf(att));
-      return true;
-    })
-    .catch(() => {
-      wx.hideLoading();
-      copyLink(docUrl, '附件没能打开，已复制原文链接');
-      return false;
-    });
+  return new Promise((resolve) => wx.navigateTo({
+    url: `/pages/reader/index?id=${encodeURIComponent(docId)}&attachment=${encodeURIComponent(att.id)}`,
+    success: () => resolve(true),
+    fail: () => { wx.showToast({ title: '阅读页未打开，请重试', icon: 'none' }); resolve(false); },
+  }));
 }
 
 module.exports = { decorate, note, open, download, fileName, sizeText, reasonText, REASONS, NOTE_COPIES, NOTE_ORIGINAL };
