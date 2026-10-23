@@ -394,3 +394,52 @@ def test_report_and_calendar_rows_carry_ai(client, session, source):
     assert calendar["past"] and all(item["ai"]["interpret"] for item in calendar["past"])
     home = client.get("/api/v1/home", params={"excerpts": 1}).json()
     assert all(item["ai"]["interpret"] for item in home["dueSoon"])
+
+
+def test_link_gone_is_read_at_list_time_not_stored(client, session, source):
+    """原网页撤下了（documents.link_gone_at，youju/link_check.py）：表里存的不变，列表行和"只看能解读的"
+    当场换成 link_gone，详情页实时判断也一样；恢复了马上回来，不用等重算。本来就不解读的（名单）
+    照旧写原来的原因，没有正文的写撤下了（和 interpret.eligible_body 的先后一致）。"""
+    ok = make(session, source, 1)
+    listing = make(session, source, 2, kind="名单")
+    empty = make(session, source, 3, body=None)
+    ids = [ok.id, listing.id, empty.id]
+    eligibility.refresh(session, ids, NOW)
+    for doc in (ok, listing, empty):
+        doc.link_gone_at = NOW
+    session.commit()
+    # 重算也不把 link_gone 写进表（表的约束只认存的那几种）
+    assert eligibility.refresh(session, ids, NOW) == 0
+    assert reasons(session) == {ok.id: None, listing.id: "list", empty.id: "no_body"}
+    flags = eligibility.flags(session, ids)
+    assert flags[ok.id] == {"interpret": False, "clause": False, "reason": "link_gone"}
+    assert flags[listing.id]["reason"] == "list"
+    assert flags[empty.id]["reason"] == "link_gone"
+    items = {
+        item["id"]: item
+        for item in client.get("/api/v1/search", params={"time": "不限"}).json()["items"]
+    }
+    assert items[str(ok.id)]["ai"]["reason"] == "link_gone"
+    assert items[str(ok.id)]["link_gone"] == "2026-10-19"
+    recent = {"kind": "申报通知", "time": "近 7 天", "ai": 1, "limit": 5}
+    body = client.get("/api/v1/search", params=recent).json()
+    assert body["items"] == [] and body["total"] == 0
+    for doc, reason in ((ok, "link_gone"), (listing, "list"), (empty, "link_gone")):
+        detail = client.get(f"/api/v1/documents/{doc.id}").json()
+        assert detail["ai"] == {"interpret": False, "clause": False, "reason": reason}
+    # 网页恢复（检查时能打开就清空）：马上回来
+    ok.link_gone_at = None
+    session.commit()
+    assert eligibility.flags(session, [ok.id])[ok.id]["interpret"] is True
+    body = client.get("/api/v1/search", params=recent).json()
+    assert [item["id"] for item in body["items"]] == [str(ok.id)]
+    assert client.get(f"/api/v1/documents/{ok.id}").json()["ai"]["interpret"] is True
+
+
+def test_effective_reason_follows_eligible_body_order():
+    gone = NOW
+    for stored in ("unavailable", "list", "kind", "source"):
+        assert eligibility.effective_reason(stored, gone) == stored
+    for stored in (None, "no_body", "too_long"):
+        assert eligibility.effective_reason(stored, gone) == "link_gone"
+        assert eligibility.effective_reason(stored, None) == stored

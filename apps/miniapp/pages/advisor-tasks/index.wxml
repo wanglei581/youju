@@ -9,6 +9,7 @@
     <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
       <view class="advisor-title">{{item.kindLabel}}</view>
       <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
+      <view wx:if="{{item.linkGone}}" class="advisor-text muted">原文链接已失效，结果基于此前收录的正文，仅供参考</view>
       <view class="advisor-text">{{item.stateLabel}}</view>
       <view class="advisor-text muted">{{item.time}}</view>
       <view wx:if="{{item.dataTask}}" class="advisor-text">提交 {{item.rowCount}} 家<text wx:if="{{item.status === 'done'}}"> · 结果 {{item.resultRows || 0}} 行</text></view>

@@ -454,14 +454,17 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
     return {"date": d.approved_date.isoformat(), "time": _hhmm(d.approved_time), "verified": True}
 
 
-def _link_gone(doc: Document) -> str | None:
+def link_gone_date(gone: datetime | None) -> str | None:
     """原网页确认失效的日期（北京时间）；能打开或还没确认的为 None（youju/link_check.py）。"""
-    gone = doc.link_gone_at
     if gone is None:
         return None
     if gone.tzinfo is None:
         gone = gone.replace(tzinfo=UTC)
     return gone.astimezone(_TZ).date().isoformat()
+
+
+def _link_gone(doc: Document) -> str | None:
+    return link_gone_date(doc.link_gone_at)
 
 
 def _item(

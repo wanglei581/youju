@@ -26,8 +26,10 @@
 0 4 * * *  /app/backend/deploy/job.sh backup
 # 每天校验最近一份备份的完整性和迁移版本；失败由 job.sh 发提醒
 40 4 * * *  /app/backend/deploy/job.sh backup-verify
-# 原网页还在不在：每天查一批近 90 天的文件（每份约一周一次），撤下的在小程序里提示
-10 5 * * *  /app/backend/deploy/job.sh check-links --limit 400
+# 原网页还在不在：每天查一批近 90 天的文件（近 30 天的每天查，其余约一周一次），撤下的在小程序里提示、
+# 不能再开始 AI 解读。上限 3000 份；6:10 起不再开新的（晚开始也一样），已开始的最多再等 15 分钟，
+# 6:30 抓取前停下；输出里"还没轮到"不是 0 就调大（youju/link_check.py）
+10 5 * * *  /app/backend/deploy/job.sh check-links --limit 3000 --until 06:10
 # 附件副本：每天 2 次，在两轮抓取之后（补详情要先跑完才有新附件），每次最多下载 100 个；
 # 存到对象存储 attachments/（和 backups/ 分开），供小程序直接打开。对象存储出错时 job.sh 提醒
 15 10 * * *  /app/backend/deploy/job.sh cache-attachments

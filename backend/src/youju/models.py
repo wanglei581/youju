@@ -708,21 +708,25 @@ class AIUsage(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
 
-# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py
-AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long")
+# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py。
+# link_gone（原网页已撤下，youju/link_check.py）不存进 ai_eligibility：读表时按
+# documents.link_gone_at 当场换上，标上、恢复都不用等重算（表的约束只认前面几种）
+AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long", "link_gone")
+AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gone")
 
 
 class AIEligibility(Base):
     """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
 
-    reason 为空表示能解读，否则是 AI_REASONS 之一。admin 的定时任务按 interpret.eligible_body
-    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
+    读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
     能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
 
     __tablename__ = "ai_eligibility"
     __table_args__ = (
         CheckConstraint(
-            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_REASONS) + ")",
+            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_STORED_REASONS) + ")",
             name="ck_ai_eligibility_reason",
         ),
         # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）

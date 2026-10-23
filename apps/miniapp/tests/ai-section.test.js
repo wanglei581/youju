@@ -606,7 +606,7 @@ test('使用帮助：固定文字；AI 那几条只在 AI 对这个人开着时�
 });
 
 test('不能解读的原因：每种代码一种说法和下一步；没有附件时不给"看附件"；不认的代码写通用的话', () => {
-  assert.deepEqual(Object.keys(reasons.REASONS).sort(), ['kind', 'list', 'no_body', 'source', 'too_long', 'unavailable']);
+  assert.deepEqual(Object.keys(reasons.REASONS).sort(), ['kind', 'link_gone', 'list', 'no_body', 'source', 'too_long', 'unavailable']);
   assert.deepEqual(reasons.reasonView('no_body', true), { text: '还没有拿到完整正文，正文可能在附件里。', next: 'attachments', nextText: '看附件' });
   assert.deepEqual(reasons.reasonView('no_body', false), { text: '还没有拿到完整正文，正文可能在附件里。', next: 'copy', nextText: '复制原文链接' });
   assert.deepEqual(reasons.reasonView('whatever', false), { text: '这份文件暂不能解读，请查看原文。', next: 'copy', nextText: '复制原文链接' });
