@@ -26,7 +26,6 @@ from youju.models import (
     AttachmentTextVersion,
     Document,
     DocumentAttachment,
-    DocumentDetail,
     Source,
 )
 from youju.takedown import available_condition, is_taken_down
@@ -150,33 +149,14 @@ def document_reading(
     if doc.link_gone_at:
         payload.update(status="unavailable", notice="来源已失效，内容暂不可阅读。")
         return payload
-    rows = session.execute(
-        select(Document, Source, DocumentDetail)
-        .join(Source, Source.id == Document.source_id)
-        .join(DocumentDetail, DocumentDetail.document_id == Document.id)
-        .where(
-            Document.id.in_(group_ids(session, doc.id)),
-            Source.rights_level == 1,
-            available_condition(),
-            Document.link_gone_at.is_(None),
-            DocumentDetail.status == "ok",
-        )
-    ).all()
-    rows = [
-        r
-        for r in rows
-        if r[2].body_text and effective_kind(r[0].title, r[0].kind_override) in v1.BODY_KINDS
-    ]
-    chosen = max(rows, key=lambda r: (r[0].id == doc.id, len(r[2].body_text)), default=None)
+    chosen = v1._reading_body_selection(session, doc.id, redact=texts.mask, live_only=True)
     if chosen is None:
         payload.update(status="empty", notice="正文暂未收录，请稍后重试或反馈问题。")
         return payload
-    owner, source, detail = chosen
     # 对完整正文脱敏后再分段，号码跨分页边界也不能漏出。
-    cleaned = texts.mask(detail.body_text.replace("\r\n", "\n").replace("\r", "\n"))
-    for old, new in v1._BODY_REPLACE:
-        cleaned = cleaned.replace(old, new)
-    cleaned = v1._BLANK_LINES.sub("\n\n", cleaned).strip()
+    owner_id, _, cleaned = chosen
+    owner = session.get(Document, owner_id)
+    source = session.get(Source, owner.source_id)
     payload["source"] = _source(owner, source)
     if len(cleaned) < v1.BODY_MIN_CHARS:
         payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
@@ -187,7 +167,9 @@ def document_reading(
         if line
         for i in range(0, len(line), 1000)
     ]
-    current = _revision(doc.id, payload["source"], cleaned, texts.EXTRACTOR_VERSION)
+    current = _revision(
+        doc.id, payload["title"], payload["source"], cleaned, texts.EXTRACTOR_VERSION
+    )
     after = _check_revision(cursor, revision, current)
     payload.update(
         revision=current,

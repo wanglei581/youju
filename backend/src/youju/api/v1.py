@@ -1994,6 +1994,13 @@ _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
 
 
+def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
+    cleaned = redact((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+    for old, new in _BODY_REPLACE:
+        cleaned = cleaned.replace(old, new)
+    return _BLANK_LINES.sub("\n\n", cleaned).strip()
+
+
 def body_for_reading(text: str | None, kind: str) -> dict:
     """详情页正文：ok 给文字；名单类给 list，其他类给 original（都可能有个人姓名），
     没抓到完整正文给 none——这三种页面上提示复制原文链接查看。"""
@@ -2001,10 +2008,7 @@ def body_for_reading(text: str | None, kind: str) -> dict:
         return {"status": "list"}
     if kind not in BODY_KINDS:
         return {"status": "original"}
-    cleaned = redact_sensitive((text or "").replace("\r\n", "\n").replace("\r", "\n"))
-    for old, new in _BODY_REPLACE:
-        cleaned = cleaned.replace(old, new)
-    cleaned = _BLANK_LINES.sub("\n\n", cleaned).strip()
+    cleaned = _clean_reading_body(text)
     if len(cleaned) < BODY_MIN_CHARS:
         return {"status": "none"}
     return {
@@ -2015,22 +2019,55 @@ def body_for_reading(text: str | None, kind: str) -> dict:
     }
 
 
-def _reading_body(session: Session, doc_id: int) -> str | None:
-    """详情页用哪份正文：只从一级来源的文件里取；这份文件自己有就用自己的，没有再用同一通知
-    其他网址里最长的那份。"""
-    rows = session.execute(
-        select(DocumentDetail.document_id, DocumentDetail.body_text)
-        .join(Document, Document.id == DocumentDetail.document_id)
+def _reading_body_selection(
+    session: Session, doc_id: int, *, redact=redact_sensitive, live_only: bool = False
+) -> tuple[int, str, str] | None:
+    """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
+
+    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续显示收录不足；
+    live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
+    """
+    stmt = (
+        select(Document.id, Document.title, Document.kind_override)
+        .join(DocumentDetail, Document.id == DocumentDetail.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(
             DocumentDetail.document_id.in_(group_ids(session, doc_id)),
             DocumentDetail.status == "ok",
+            DocumentDetail.body_text.is_not(None),
+            DocumentDetail.body_text != "",
             Source.rights_level == 1,
             available_condition(),
         )
-    ).all()
-    bodies = {row.document_id: row.body_text for row in rows if row.body_text}
-    return bodies.get(doc_id) or max(bodies.values(), key=len, default=None)
+        .order_by(
+            (Document.id == doc_id).desc(),
+            func.char_length(DocumentDetail.body_text).desc(),
+            Document.id,
+        )
+    )
+    if live_only:
+        stmt = stmt.where(Document.link_gone_at.is_(None))
+    fallback = None
+    for candidate_id, title, kind in session.execute(stmt).all():
+        if effective_kind(title, kind) not in BODY_KINDS:
+            continue
+        raw = session.scalar(
+            select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
+        )
+        if not raw:
+            continue
+        cleaned = _clean_reading_body(raw, redact=redact)
+        candidate = candidate_id, raw, cleaned
+        if len(cleaned) >= BODY_MIN_CHARS:
+            return candidate
+        if fallback is None:
+            fallback = candidate
+    return fallback
+
+
+def _reading_body(session: Session, doc_id: int) -> str | None:
+    selected = _reading_body_selection(session, doc_id)
+    return selected[1] if selected else None
 
 
 @router.get("/documents/{doc_id}")

@@ -235,6 +235,98 @@ def test_body_uses_actual_public_source(client, session):
     assert data["source"]["title"] == other.title
 
 
+@pytest.mark.parametrize("main_body", ["详见附件", "【打印本页】" * 100])
+def test_short_or_cleaned_empty_main_uses_readable_repost(client, session, main_body):
+    doc, _, _, _ = seed(session, body=main_body)
+    repost_body = "转载申报正文。" * 400
+    other, _, _, _ = seed(session, 2, body=repost_body)
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
+    )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["status"] == "ok"
+    assert data["source"]["id"] == str(other.id)
+    assert "".join(s["text"] for s in data["segments"]) == repost_body
+    assert v1._reading_body(session, doc.id) == repost_body
+
+
+def test_readable_main_still_preferred_to_longer_repost(client, session):
+    main_body = "主文申报说明。" * 50
+    doc, _, _, _ = seed(session, body=main_body)
+    other, _, _, _ = seed(session, 2, body="更长转载申报说明。" * 500)
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
+    )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["source"]["id"] == str(doc.id)
+    assert "".join(s["text"] for s in data["segments"]) == main_body
+    assert v1._reading_body(session, doc.id) == main_body
+
+
+def test_equal_length_reposts_choose_lowest_id_and_keep_revision(client, session):
+    doc, _, _, _ = seed(session, body="详见附件")
+    first, _, _, _ = seed(session, 2, body="甲" * 25000)
+    second, _, _, _ = seed(session, 3, body="乙" * 25000)
+    # 归并记录故意反序插入；选择应按 document.id，而不是归并顺序或数据库返回顺序。
+    for other in (second, first):
+        session.add(
+            DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
+        )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["source"]["id"] == str(first.id)
+    repeated = client.get(path(doc)).json()
+    assert repeated["revision"] == data["revision"]
+    response = client.get(
+        path(doc), params={"cursor": data["nextCursor"], "revision": data["revision"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["nextCursor"] is None
+    assert (
+        "".join(s["text"] for s in data["segments"] + response.json()["segments"]) == "甲" * 25000
+    )
+    assert v1._reading_body(session, doc.id) == "甲" * 25000
+
+
+def test_repost_reading_revision_includes_main_title(client, session):
+    doc, _, _, _ = seed(session, body="详见附件")
+    other, _, _, _ = seed(session, 2, body="正文" * 12500)
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
+    )
+    session.commit()
+    first = client.get(path(doc)).json()
+    assert first["source"]["id"] == str(other.id) and first["nextCursor"]
+    doc.title = "关于开展另一批科技计划项目申报的通知"
+    session.commit()
+    response = client.get(
+        path(doc), params={"cursor": first["nextCursor"], "revision": first["revision"]}
+    )
+    assert response.status_code == 409
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_fallback_rejects_private_and_list_bodies_and_preserves_link_policy(client, session):
+    doc, _, _, _ = seed(session, body="详见附件")
+    private, _, _, _ = seed(session, 2, rights=2, body="非一级来源" * 1000)
+    roster, _, _, _ = seed(session, 3, kind="名单", body="个人名单" * 1000)
+    gone, _, _, _ = seed(session, 4, body="原站撤下前正文" * 400)
+    public, _, _, _ = seed(session, 5, body="可用转载正文" * 200)
+    gone.link_gone_at = NOW
+    for other in (private, roster, gone, public):
+        session.add(
+            DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
+        )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["source"]["id"] == str(public.id)
+    assert "".join(s["text"] for s in data["segments"]) == "可用转载正文" * 200
+    # 旧详情/AI 的来源撤下规则不因原生阅读改动而改变。
+    assert v1._reading_body(session, doc.id) == "原站撤下前正文" * 400
+
+
 @pytest.mark.parametrize("kind", ["名单", "其他"])
 def test_nonpublic_body_kinds_stay_protected(client, session, kind):
     doc, att, _, _ = seed(session, kind=kind)
