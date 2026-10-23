@@ -1644,7 +1644,7 @@ def test_migration_0033_list_flash_upgrade_downgrade(db_engine, session, profile
         return columns, uniques
 
     try:
-        command.downgrade(cfg, "0039")
+        command.downgrade(cfg, "0035")
         columns, uniques = shape()
         assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}

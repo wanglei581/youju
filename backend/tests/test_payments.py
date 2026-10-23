@@ -64,6 +64,8 @@ class FakeWechat:
         self.fail_provide = False
         self.bill_broken = None
         self.env_type = None
+        # 查单返回的商户单号、交易单号（沙箱可能是空的）
+        self.channel_ids = ("mch-test", "tx-test")
         self.http = httpx.Client(transport=httpx.MockTransport(self.handle))
         self.client = XPayClient(settings, self.http)
 
@@ -101,8 +103,8 @@ class FakeWechat:
                         "paid_time": self.paid_time,
                         "wx_order_id": "wx-" + body["order_id"],
                         "order_type": self.order_type,
-                        "channel_order_id": "mch-test",
-                        "wxpay_order_id": "tx-test",
+                        "channel_order_id": self.channel_ids[0],
+                        "wxpay_order_id": self.channel_ids[1],
                     },
                 },
             )
@@ -129,7 +131,7 @@ def setup_pay(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices。
-        # 沙箱不扣真钱，配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
+        # 沙箱配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
@@ -476,9 +478,7 @@ def test_push_15_times_one_pass_no_task_or_quota(setup_pay, session):
     assert row.status == "completed" and row.goods_notified
 
 
-@pytest.mark.parametrize(
-    "mismatch", ["price", "product", "owner", "env", "trade", "wx", "quantity", "unpaid"]
-)
+@pytest.mark.parametrize("mismatch", ["price", "owner", "env", "trade", "unpaid"])
 def test_push_requires_matching_query(setup_pay, session, mismatch):
     row = order(session, create(setup_pay))
     fake = setup_pay[2]
@@ -486,22 +486,95 @@ def test_push_requires_matching_query(setup_pay, session, mismatch):
     data = payload(row)
     if mismatch == "price":
         fake.fee = 101
-    elif mismatch == "product":
-        data["GoodsInfo"]["ProductId"] = "wrong"
     elif mismatch == "owner":
         data["OpenId"] = "wrong"
     elif mismatch == "env":
         data["Env"] = 0
     elif mismatch == "trade":
         fake.bad_order = True
-    elif mismatch == "wx":
-        data["WeChatPayInfo"]["TransactionId"] = "wrong"
-    elif mismatch == "quantity":
-        data["GoodsInfo"]["Quantity"] = 2
     elif mismatch == "unpaid":
         fake.status = 1
     assert push(setup_pay, data).json()["ErrCode"] != 0
     assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+
+
+def pay_logs(caplog):
+    return "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("youju"))
+
+
+@pytest.mark.parametrize(
+    "change,field",
+    [
+        ("product", "GoodsInfo.ProductId（值不同）"),
+        ("quantity", "GoodsInfo.Quantity（值不同）"),
+        ("attach", "GoodsInfo.Attach（推送里是空的）"),
+        ("no_goods", "GoodsInfo（推送里没有）"),
+        ("wx", "WeChatPayInfo.TransactionId（值不同）"),
+        ("sandbox", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
+    ],
+)
+def test_push_fields_unlike_query_still_open_what_was_paid(
+    setup_pay, session, caplog, change, field
+):
+    """开不开通以查单为准：推送里的道具、单号字段和查单对不上也不拒收——拒收只让微信重推，
+    2 分钟后补单照样开通（10/19 沙箱实测）。照订单开通，只把对不上的字段名记进日志。"""
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    fake.status = 2
+    data = payload(row)
+    if change == "product":
+        data["GoodsInfo"]["ProductId"] = "workbench_90d"
+    elif change == "quantity":
+        data["GoodsInfo"]["Quantity"] = 2
+    elif change == "attach":
+        data["GoodsInfo"]["Attach"] = ""
+    elif change == "no_goods":
+        del data["GoodsInfo"]
+    elif change == "wx":
+        data["WeChatPayInfo"]["TransactionId"] = "wrong"
+    elif change == "sandbox":
+        fake.channel_ids = ("", "")
+    caplog.set_level(logging.WARNING, logger="youju")
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    ticket = payments.order_pass(session, row)
+    assert row.status == "completed" and row.goods_notified and row.error is None
+    assert ticket.ends_at - ticket.starts_at == timedelta(days=30)
+    text = pay_logs(caplog)
+    assert f"订单 #{row.id} 推送和查单对不上（以查单为准）" in text and field in text
+    for value in (row.out_trade_no, "workbench_90d", "wrong", "mch-test", "tx-test", "pay-user"):
+        assert value not in text
+    # 同一笔重推：照样应答成功，不重复开通
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    assert session.scalar(select(func.count(WorkbenchPass.id))) == 1
+
+
+def test_push_matching_query_logs_nothing(setup_pay, session, caplog):
+    caplog.set_level(logging.WARNING, logger="youju")
+    delivered(setup_pay, session)
+    assert pay_logs(caplog) == ""
+
+
+def test_push_not_handled_logs_reason_without_ids(setup_pay, session, caplog):
+    """推送没处理成，原因记进日志：事件名、订单号、状态码，不记 openid、单号和金额。"""
+    row = order(session, create(setup_pay))
+    fake = setup_pay[2]
+    data = payload(row)
+    caplog.set_level(logging.WARNING, logger="youju")
+    assert push(setup_pay, data).json()["ErrCode"] == 1  # 还没付款
+    fake.status, fake.bad_order = 2, True
+    assert push(setup_pay, data).json()["ErrCode"] == 1  # 查单返回的单号对不上
+    fake.bad_order = False
+    assert push(setup_pay, {**data, "OpenId": "someone-else"}).json()["ErrCode"] == 1
+    text = pay_logs(caplog)
+    tag = f"xpay_goods_deliver_notify 订单 #{row.id}"
+    assert f"{tag} 这次没处理：查单状态 1" in text
+    assert f"{tag} 核验失败：XPayError" in text
+    assert f"{tag} 推送的用户、环境或微信单号和订单对不上，没处理" in text
+    for value in (row.out_trade_no, "pay-user", "someone-else", "mch-test", "tx-test"):
+        assert value not in text
 
 
 def test_push_source_xml_and_role_gate(setup_pay, session):
@@ -561,7 +634,11 @@ def test_refund_failure_retry_same_id_and_completion(setup_pay, session):
     fake.status = 2
     run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.refund_order_id == refund_id
+    # 查单状态 5（商户侧扣款完成）：钱还没到用户那边，订单仍是退款中；8（用户侧收款完成）才算退完
     fake.status, fake.left_fee = 5, 0
+    run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
+    assert row.status == "refunding" and row.refund_status == "pending"
+    fake.status = 8
     run(session, setup_pay, advisor_tasks._utc(row.refund_retry_at))
     assert row.status == "refunded"
 
@@ -1347,7 +1424,8 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     if case == "old":
-        monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=7, microseconds=1))
+        # 付款后 24 小时多一点：已超过无理由退款时限（D-081，原为 7 天）
+        monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, microseconds=1))
     if case == "used":
         assert submit(setup_pay, count=51).status_code == 202
     result = self_refund(setup_pay, row)
@@ -1368,7 +1446,7 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     else:
         assert ticket.revoked_at is None
         reason = result.json()["detail"]
-        assert {"old": "超过 7 天", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
+        assert {"old": "超过 24 小时", "used": "已用过付费的量", "ios": "App Store"}[case] in reason
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
@@ -1393,10 +1471,25 @@ def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session
     setup_pay[2].calls.clear()
     result = inquiry(setup_pay, row)
     assert result["result_code"] == 1 and result["result_info"] == "已使用"
-    assert str(task_id) in result["evidence"]
-    if state not in ("queued", "deleted"):
-        assert (NOW + timedelta(minutes=1)).isoformat() in result["evidence"]
+    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-081）
+    assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    assert str(task_id) not in result["evidence"]
     assert not setup_pay[2].calls
+
+
+def test_ios_inquiry_after_24_hours_declines_without_payment_time(setup_pay, session, monkeypatch):
+    """苹果退款问询（D-081）：没用过、付款 24 小时内建议退款（含恰好 24 小时）；超过 24 小时拒绝，
+    凭据只说超过 24 小时、没用过，不写付款时间。"""
+    setup_pay[2].order_type = 7
+    row = delivered(setup_pay, session)
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24))
+    within = inquiry(setup_pay, row)
+    assert within["result_code"] == 0 and within["result_info"] == "未使用"
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, seconds=1))
+    result = inquiry(setup_pay, row)
+    assert result["result_code"] == 1 and result["result_info"] == "付款已超过 24 小时"
+    assert result["evidence"] == "付款后已超过 24 小时；没有用过付费的量"
+    assert within["evidence"] == "付款后 24 小时内；没有用过付费的量"
 
 
 def test_ios_refund_notification_revokes_only_its_pass(setup_pay, session):
@@ -1477,7 +1570,9 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "days",
         "status",
         "amount",
+        "createdAt",
         "paidAt",
+        "paidAmount",
         "passStartsAt",
         "passEndsAt",
         "passRevokedAt",
@@ -1504,7 +1599,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
 def test_refund_partial_success_is_manual(setup_pay, session):
     row = delivered(setup_pay, session)
     assert self_refund(setup_pay, row).status_code == 200
-    setup_pay[2].status, setup_pay[2].left_fee = 5, 50
+    setup_pay[2].status, setup_pay[2].left_fee = 8, 50
     run(session, setup_pay, NOW + timedelta(minutes=10))
     session.expire_all()
     assert row.status == "manual" and row.refund_status == "partial"
@@ -1613,6 +1708,7 @@ def test_refund_notification_before_network_response_keeps_terminal_status(
         nonlocal notified
         notified = True
         fake.status, fake.left_fee = 5, 0
+        # 推送说退款成功（RetCode 0）：查单停在 5 也算退完
         result = push(
             setup_pay,
             {
@@ -1620,6 +1716,7 @@ def test_refund_notification_before_network_response_keeps_terminal_status(
                 "OpenId": "pay-user",
                 "MchOrderId": row.out_trade_no,
                 "WxOrderId": row.wx_order_id,
+                "RetCode": 0,
             },
         )
         assert result.json()["ErrCode"] == 0
@@ -1696,6 +1793,7 @@ def test_provide_response_does_not_overwrite_refund_notification(setup_pay, sess
                     "OpenId": "pay-user",
                     "MchOrderId": row.out_trade_no,
                     "WxOrderId": row.wx_order_id,
+                    "RetCode": 0,
                 },
             ).json()["ErrCode"]
             == 0

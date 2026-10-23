@@ -149,7 +149,7 @@
   <t-icon name="secured" size="36rpx" color="#4E5969" />
   <view class="footer-text">
     <!-- 栏目数和省份数到了才写那半句，不出现空着的数字 -->
-    <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text>，</text>每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。</text>
+    <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text>，</text>每条都附原文链接。有据不代办申报。</text>
     <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
   </view>
 </view>

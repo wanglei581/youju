@@ -8,19 +8,19 @@
   和 weekly.scope 一样），升级前发布的全国版周报也找得到。旧期刊没记当时的范围，方案发布后
   又改过范围的只能按现在的算（这次升级前公众号还没开，没有真正发布过的周报）。
 
-编号 0033 是并行开发时预留的（0034 #297、0035 #296 也还没合并）；main 上现在是
-0032 → 0037 → 0038 → 0036 → 0039（10/19），本迁移接在 0039 后面，避免出现两个 head。
+编号 0033 是并行开发时预留的（0034 #297 也还没合并）；main 上现在是
+0032 → 0037 → 0038 → 0036 → 0039 → 0035（10/23），本迁移接在 0035 后面，避免出现两个 head。
 谁后合并谁把 down_revision 接到当时 main 最新的那个。
 
 Revision ID: 0033
-Revises: 0039
+Revises: 0035
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0033"
-down_revision = "0039"
+down_revision = "0035"
 branch_labels = None
 depends_on = None
 

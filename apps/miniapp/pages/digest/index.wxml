@@ -21,7 +21,8 @@
   <view class="card digest-head">
     <view class="digest-week">{{weekText}} 申报周报<text wx:if="{{digest.demo}}" class="demo">演示数据</text></view>
     <view class="digest-sum">共 {{digest.total}} 条，按省份分好；点一条看详情和原文出处。</view>
-    <view class="weak digest-note">第三方整理，非政府平台，以原文为准<text wx:if="{{dataText}}"> · 数据截至 {{dataText}}</text></view>
+    <!-- 出处说明只在顶部 notice-bar 写一次（#339，创始人 10/17）；这里只写和数据挂钩的"数据截至" -->
+    <view wx:if="{{dataText}}" class="weak digest-note">数据截至 {{dataText}}</view>
   </view>
   <view wx:if="{{labels.length > 2}}" class="filters">
     <picker mode="selector" range="{{labels}}" value="{{index}}" bindchange="pickProvince"><view class="filter">{{labels[index]}} <t-icon name="chevron-down" size="26rpx" /></view></picker>

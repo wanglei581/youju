@@ -232,7 +232,10 @@ test('本期清单：带期号打开，按省份分组（顺序照接口），�
   const text = textOf(root);
   assert.match(text, /9月28日—10月4日 申报周报/);
   assert.match(text, /共 6 条，按省份分好；点一条看详情和原文出处。/);
-  assert.match(text, /第三方整理，非政府平台，以原文为准 · 数据截至 10月5日 07:30/);
+  assert.match(text, /数据截至 10月5日 07:30/);
+  // 出处说明只在顶部 notice-bar 写一次（#339）：页面里不再重复
+  assert.doesNotMatch(text, /第三方整理/);
+  assert.equal(findAll(root, (n) => n.tag === 'notice-bar').length, 1);
   assert.match(text, /另有 1 条现已不再提供，这里不列出。/);
   assert.match(text, /地市、区县组织初审或推荐的，报送时间可能更早。/);
   assert.doesNotMatch(text, /显示更多/);

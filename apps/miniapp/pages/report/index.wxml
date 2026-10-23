@@ -22,7 +22,7 @@
   <view wx:if="{{city || district}}" class="filter" bindtap="clearCity">改看全省</view>
   <picker wx:if="{{tab}}" mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
-<view class="weak cached-note">省市区选项来自微信，不代表已收录；区县一栏选“全部”仅查询已收录市级来源，区县来源请单独选择；未收录的城市、区县会明确提示，不改为全市或全省，不推断当地没有通知。{{cityError}}</view>
+<view class="weak cached-note">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。没收录的地方查不到，不代表当地没有通知。{{cityError}}</view>
 <view class="switch-row">
   <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看不筛部门）</text></text>
   <switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对" />
@@ -97,6 +97,6 @@
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
 </view>
 
-<view class="note">7 天内到期的只写人工核对过的日期；8–30 天到期的，可能写机器从原文摘出的日期，并附原文那句话。只统计已收录网站的文件；申报请在主管部门的系统办理，最终以原文为准。</view>
+<view class="note">7 天内到期的只写人工核对过的日期；8–30 天到期的可能是机器摘录，附原文那句话。只统计已收录网站的文件；申报请在主管部门的系统办理，以原文为准。</view>
 <!-- 关注公众号（PR #287）：在最需要它的地方出现；没配公众号原始 ID、基础库低于 3.7.10 时不显示（组件里判断） -->
 <follow-account text="每周四推送 7 天内已核对的截止，关注公众号" />

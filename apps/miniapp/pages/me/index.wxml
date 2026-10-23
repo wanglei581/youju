@@ -10,7 +10,7 @@
   <view class="profile">
     <view class="avatar"><t-icon name="user" size="56rpx" color="#FFFFFF" /></view>
     <view class="profile-main">
-      <view class="profile-name">{{profileLoading ? '正在加载登录状态' : (profileError ? '登录状态未确认' : (signedIn ? '微信用户' : '未登录'))}}</view>
+      <view class="profile-name">{{profileLoading ? '正在加载登录状态' : (profileError ? '登录状态未确认' : (signedIn ? '微信用户' : '未登录'))}}<text wx:if="{{passBadge && signedIn && !profileLoading && !profileError}}" class="pass-badge" bindtap="openPass" aria-role="button">{{passBadge}}</text></view>
       <view wx:if="{{profileLoading || profileError}}" class="profile-sub">{{profileLoading ? (serviceStarting ? '正在连接，比平时慢一点，请稍等…' : '请稍候') : '请重试以确认登录状态'}}</view>
       <view wx:elif="{{signedIn}}" class="profile-sub">关注 {{followCount}} 个条件<text wx:if="{{remindOpen}}"> · 还能提醒 {{reminderCount}} 次</text></view>
       <view wx:elif="{{outdated}}" class="profile-sub">用户协议或隐私保护指引已更新，请重新阅读并同意</view>
@@ -48,7 +48,7 @@
   </view>
   <view wx:if="{{stats.cities}}" class="data-note">其中已收录 {{stats.cities}} 个城市的栏目。地市目前只收录部分城市，<text class="link" data-url="/pages/about/index" bindtap="go">查看城市和栏目</text>。</view>
   <view wx:if="{{stats.districts}}" class="data-note">其中已收录 {{stats.districts}} 个区县的栏目。区县目前只收录少数地方，<text class="link" data-url="/pages/about/index" bindtap="go">查看区县和栏目</text>。</view>
-  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
+  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>
 
 <view class="card">
@@ -56,7 +56,7 @@
   <view wx:if="{{digestEntry}}" class="row" bindtap="openDigest" aria-role="button" aria-label="本周周报：{{digestEntry.week}}"><t-icon name="calendar" size="40rpx" color="#4E5969" /><text class="row-text">本周周报</text><text class="row-sub">{{digestEntry.week}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <follow-account variant="row" />
   <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <view wx:if="{{loginOpen && renewEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text class="row-hint">到期日、续买</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{loginOpen && passEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text wx:if="{{passHint}}" class="row-hint">{{passHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <!-- 使用帮助和联系客服（D-075 第七节）：首发版也在，客服每天有人看、周末也看 -->
@@ -69,5 +69,4 @@
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
-<view class="foot">有据 · 第三方整理 · 每条都有出处</view>
 <view class="tab-page-bottom"></view>

@@ -881,6 +881,14 @@ function payOrder(id) {
 function payOrders() {
   return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
 }
+// 核对一张待确认的订单（付款后、打开订单页时）：服务端当场向微信查单，付了款就开通，不等推送和每分钟的补单。
+// 返回订单，加上 check（这次核对的结果：paid / unpaid / closed / refunded / manual / unavailable；没查时为 null）。
+// 服务端还没有这个接口（404）时退回只读订单，不把订单当成查不到
+function checkPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/check`, null, { method: 'POST' })
+    .catch((err) => (err && err.status === 404 ? payOrder(id).then((order) => Object.assign({}, order, { check: null })) : Promise.reject(err)));
+}
 function refundPayOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
   return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
@@ -899,5 +907,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
-  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice, payHeader,
+  payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
 };

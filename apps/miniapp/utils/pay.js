@@ -5,9 +5,10 @@ const PAY_MODE = 'short_series_goods';
 const TEXT = {
   ordering: '正在创建订单…', confirming: '正在确认支付结果…', cancelled: '已取消支付',
   closed: '这笔订单已关闭，可以重新支付',
-  unsettled: '上一笔付款还在确认，先不要再付。如果已经扣款会自动开通；超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到"我的 → 我的订单"查看。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
   login: '微信登录没有完成，请重试', unsupported: '当前微信版本不支持这项支付，请升级微信后重试',
-  timeout: '暂未确认到支付结果，请稍后到"我的 → 订单"查看；如已扣款会自动开通。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到"我的 → 我的订单"查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  refunded: '这笔付款已经退回，按原支付方式到账，到账时间以微信支付为准',
   orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',
   termsRequired: '请先阅读并同意《付费服务协议》',
   refund: '已申请退款，按原支付方式退回，到账时间以微信支付为准',
@@ -64,6 +65,13 @@ function expiryNotice(pass, now = Date.now()) {
   if (!Number.isFinite(end) || end - now > 3 * 86400000) return '';
   return `${NAME} ${monthDay(pass.expiresAt)}到期，到期不再扣钱；需要可以再买一次`;
 }
+// 我的页头的"批量工具"标识：使用期内才有；3 天内到期写"某日到期"，平时写"到某日"
+function passBadge(pass, now = Date.now()) {
+  if (!pass || pass.active !== true) return '';
+  const day = monthDay(pass.expiresAt);
+  if (!day) return '';
+  return Date.parse(pass.expiresAt) - now <= 3 * 86400000 ? `${NAME} · ${day}到期` : `${NAME} · 到 ${day}`;
+}
 function toolStatus(res, kind, now = Date.now()) {
   const quota = res.quota[kind];
   const active = !!(res.pass && res.pass.active);
@@ -99,11 +107,43 @@ function giftLines(gifts) {
       return `${gift.name} ${gift.days} 天${gift.revoked ? '（已收回）' : start && end ? `：${start} 至 ${end}` : ''}`;
     });
 }
+// 北京时间"10-19 22:57"：待确认的订单写几点下的单，用户好对上是哪一次付的
+function clock(value) {
+  const stamp = value && Date.parse(value);
+  return Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' ') : '';
+}
+// 订单页显示的状态名：服务端"需人工处理"对用户写"人工核对中"（不是要用户做什么）；
+// 老的服务端写"待支付"，统一写"待确认"（付了款、推送还没到的那一会儿，"待支付"会让人以为钱白扣了）
+const STATUS_TEXT = { 待支付: '待确认', 需人工处理: '人工核对中' };
+// 待确认的订单说明：按这次核对的结果（服务端核对接口的 check）写，没核对过时写一般的说法
+const PENDING_NOTE = {
+  unpaid: '还没查到这笔付款：刚付过款的一般几秒内自动开通；没付款不会扣钱，订单稍后自动关闭。',
+  unavailable: '暂时没能向微信核对，系统每分钟会再核对一次：已扣款的会自动开通；没付款不会扣钱。',
+};
+const PENDING_DEFAULT = '正在确认付款结果：已扣款的会自动开通；没付款不会扣钱，订单稍后自动关闭。';
+// 订单的说明一句：待确认的写核对结果，人工核对中的写多久处理、能不能退，已关闭的写没确认到付款
+function stateNote(order) {
+  if (order.status === '待确认' || order.status === '待支付') return PENDING_NOTE[order.check] || PENDING_DEFAULT;
+  if (order.status === '需人工处理') {
+    // 退款办到一半转了人工：按剩余天数退的那一行（refundText）已经写了"正在人工核对"，全额退的写在这里
+    if (Number.isInteger(order.refundAmount)) {
+      return order.refundAmount > 0 && order.refundAmount !== order.amount ? ''
+        : '已申请退款，退款需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
+    }
+    if (order.passStartsAt) return '这笔订单需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
+    // 微信没确认收到付款的（查单状态少见、投诉、对账发现的）：不写"付款已收到"（Codex 复核）
+    if (!Number.isInteger(order.paidAmount)) return '这笔订单的付款情况需要人工核对，我们 1 个工作日内处理，结果会显示在这里。';
+    return order.canRefund ? '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。'
+      : '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。';
+  }
+  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们。';
+  return '';
+}
 function orderView(order) {
   const start = date(order.passStartsAt, true); const end = date(order.passEndsAt, true);
   const days = Number.isInteger(order.days) && order.days > 0 ? order.days
     : Math.round((Date.parse(order.passEndsAt) - Date.parse(order.passStartsAt)) / 86400000);
-  const status = order.status === '已完成' && !order.passRevokedAt ? '已开通' : order.status;
+  const status = order.status === '已完成' && !order.passRevokedAt ? '已开通' : (STATUS_TEXT[order.status] || order.status);
   const name = typeof order.name === 'string' && order.name ? order.name : `${NAME} ${days} 天`;
   // 随这笔送的续买天数退款时一起收回；体验折算的是自己的体验时间，不收回（服务端 payments.revoke_pass）
   const bonus = (Array.isArray(order.gifts) ? order.gifts : []).filter((gift) => gift && gift.kind === 'renewal' && !gift.revoked && Number.isInteger(gift.days))
@@ -115,7 +155,14 @@ function orderView(order) {
     summary: `${name} · ${yuan(order.amount, true)} 元${order.paidAt ? ` · ${date(order.paidAt)} 付款` : ''} · ${status}${start && end ? ` · 使用期 ${start} 至 ${end}` : ''}`,
     // 订单页分行显示用：状态、金额、付款日期、使用期、送的天数
     statusText: status,
-    statusTone: status === '已开通' ? 'on' : /退款/.test(status) ? 'refund' : 'plain',
+    statusTone: status === '已开通' ? 'on' : /退款/.test(status) ? 'refund' : status === '待确认' ? 'wait' : status === '人工核对中' ? 'warn' : 'plain',
+    // 待确认、人工核对中、已关闭的订单说明一句；待确认的可以"重新核对"
+    note: stateNote(order),
+    canCheck: status === '待确认',
+    // 待确认、人工核对中、已关闭的订单上放"遇到问题"（带上这张订单号）：付了款却没开通、被关单的，反馈对得上订单
+    canReport: ['待确认', '人工核对中', '已关闭'].includes(status),
+    // 没有付款时间的（待确认、已关闭）写几点下的单
+    orderedText: !order.paidAt && ['待确认', '已关闭'].includes(status) ? clock(order.createdAt) : '',
     amountText: yuan(order.amount, true),
     paidText: order.paidAt ? date(order.paidAt) : '',
     period: start && end ? `${start} 至 ${end}` : '',
@@ -123,9 +170,12 @@ function orderView(order) {
     refundText: !partial ? '' : order.status === '已退款' ? `已退回 ${yuan(order.refundAmount, true)} 元（按剩余天数）`
       : order.status === '退款中' ? `按剩余天数退 ${yuan(order.refundAmount, true)} 元，处理中`
         : order.status === '需人工处理' ? `按剩余天数退 ${yuan(order.refundAmount, true)} 元，正在人工核对` : '',
-    // 已经退款或正在退款的不再写"不能自助退款"
-    reason: order.canRefund || /退款/.test(order.status || '') ? '' : refundReason(order.refundUnavailableReason),
-    refundConfirm: `退款后，这张订单对应的 ${days} 天使用期${bonus ? `和续买多送的 ${bonus} 天` : ''}取消，${yuan(order.amount, true)} 元原路退回。确定吗？`,
+    // "不能自助退款"的原因只对已完成的订单写：待确认、已关闭的谈不上退款，人工核对中的由上面的说明讲清楚，
+    // 已经退款或正在退款的也不写
+    reason: order.status !== '已完成' || order.canRefund ? '' : refundReason(order.refundUnavailableReason),
+    // 付了款没开通的（人工核对中、没有使用期）：没有使用期可取消，直接写全额原路退回
+    refundConfirm: !order.passStartsAt ? `这笔付款还没开通使用期，申请后 ${yuan(order.amount, true)} 元全额原路退回。确定吗？`
+      : `退款后，这张订单对应的 ${days} 天使用期${bonus ? `和续买多送的 ${bonus} 天` : ''}取消，${yuan(order.amount, true)} 元原路退回。确定吗？`,
     // 发票：已完成、没退款的订单可以申请；待开时可以改
     invoiceAction: !order.canInvoice ? '' : !order.invoice ? '申请发票' : order.invoice.canEdit ? '修改发票信息' : '',
     invoiceText: invoiceText(order.invoice),
@@ -193,4 +243,4 @@ function createPoller(options) {
     stop, isActive: () => active,
   };
 }
-module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
+module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, clock, stateNote, passBadge, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
