@@ -17,7 +17,7 @@ from youju.api import advisor, me, pay, v1
 from youju.api import app as app_module
 from youju.config import Settings
 from youju.db import get_session
-from youju.models import AdvisorTask, AdvisorUsage, BoostTrial, RewardClaim, User
+from youju.models import AdvisorTask, AdvisorUsage, BoostTrial, User
 
 # 当前的用户协议版本：取后台默认值，升版本时不用改测试
 AGREEMENT = Settings.model_fields["agreement_version"].default
@@ -460,7 +460,6 @@ def test_account_deletion_deletes_the_trial_and_keeps_no_credential(ctx, session
     assert client.delete("/api/v1/me", headers=identity).status_code == 204
     session.expire_all()
     assert session.scalar(select(func.count(BoostTrial.id))) == 0
-    assert session.scalar(select(func.count()).select_from(RewardClaim)) == 0
 
     identity = join(client)
     assert status(client, identity)["trial"]["available"] is True
@@ -564,7 +563,7 @@ def test_restricted_api_account_runs_the_trial(ctx, restricted_api_factory, monk
         assert status(client, identity)["trial"]["usedToday"] == 0
         assert client.get("/api/v1/me/data", headers=identity).status_code == 200
         assert client.delete("/api/v1/me", headers=identity).status_code == 204
-        # 注销即删：重新同意算新账号，受限账号也能再开始（不需要 reward_claims 权限）
+        # 注销即删：重新同意算新账号，受限账号也能再开始
         identity = join(client, "limited-trial")
         assert start(client, identity).status_code == 200
 

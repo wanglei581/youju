@@ -34,13 +34,15 @@ function goHome() {
 const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在"我的 → 我的订单"查看。';
 
 Page({
-  // sandbox：服务端在沙箱（不扣真钱，只有测试名单看得到商品），协议定稿前也可以付款联调
+  // sandbox：服务端在沙箱（只有测试名单看得到商品；真机付款也会真实扣钱，10/20 创始人实测），协议定稿前也可以付款联调
   // tiers：在售的档位（30 天、90 天，D-070），selected 是选中的那一档；product 是选中的那一档（下单用）
   // renew：续买多送的规则一句（和价格同一屏）；expires：现有使用期到哪天；soon：3 天内到期的提示
   // invoiceText：能开哪种发票（服务端商品接口带回）；没有时现网不能付款，服务端也不卖
   data: { loginOpen: loginOpen(), loading: true, error: '', tiers: [], selected: 0, product: null, price: '', renew: null, expires: '', soon: '',
     termsFinal: pay.termsFinal(payTerms), invoiceText: '',
-    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '' },
+    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '',
+    // 付款结果没确认到、或转了人工：消息下面放"查看我的订单"
+    ordersLink: false },
   onShow() {
     this.visible = true;
     if (this.payResume && this.poller) {
@@ -107,7 +109,7 @@ Page({
     // 上一笔还没确认完：不下新单，接着查它
     const unsettled = this.unsettledId || readUnsettled();
     if (unsettled) { this.recheck(unsettled); return; }
-    this.setData({ busy: true, message: pay.TEXT.ordering, payError: false });
+    this.setData({ busy: true, message: pay.TEXT.ordering, payError: false, ordersLink: false });
     // 和工具一样：先同意《工具使用说明》（服务端下单也会检查）
     toolConsent().then((agreed) => {
       if (this.unloaded) return;
@@ -123,14 +125,16 @@ Page({
   watch(orderId) {
     this.orderId = orderId;
     this.poller = pay.createPoller({
+      // 每次都请服务端当场向微信核对（付了款就开通），不只是读订单：推送晚到、没处理成时也不用等每分钟的补单
+      // （10/19 沙箱实测：付了款，页面等了一分钟还是"待支付"）。
       // 查不到这张订单（比如换了账号）：当作已关闭，不让它一直挡着
-      fetch: () => api.payOrder(orderId).catch((err) => { if (err && err.status === 404) return { status: '已关闭' }; throw err; }),
+      fetch: () => api.checkPayOrder(orderId).catch((err) => { if (err && err.status === 404) return { status: '已关闭' }; throw err; }),
       onDone: (result) => this.payDone(result), timers: { set: setTimeout, clear: clearTimeout }, now: () => Date.now(),
     });
   },
   recheck(orderId) {
     this.rechecking = true; this.cancelledPay = false;
-    this.setData({ busy: true, message: pay.TEXT.confirming, payError: false });
+    this.setData({ busy: true, message: pay.TEXT.confirming, payError: false, ordersLink: false });
     this.watch(orderId);
     this.payDeadline = Date.now() + pay.POLL_TIMEOUT;
     this.poller.start(this.payDeadline);
@@ -180,12 +184,17 @@ Page({
       }).catch(() => {});
     } else if (result.state === 'timeout') {
       const message = this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout;
-      this.setData({ busy: false, message, payError: false });
+      // 没确认到结果（不是自己取消的）：给一个去订单页的入口，订单页可以"重新核对"
+      this.setData({ busy: false, message, payError: false, ordersLink: !this.cancelledPay });
     } else {
-      const closed = result.order.status === '已关闭';
-      this.setData({ busy: false, message: closed ? pay.TEXT.closed : `订单状态：${result.order.status}`, payError: !closed });
+      const status = result.order.status;
+      const closed = status === '已关闭';
+      // 转了人工：和订单页同一句说明（钱收到了没有、多久处理、能不能直接申请退款，按这张订单的实际情况写）
+      const message = closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
+      this.setData({ busy: false, message, payError: !closed, ordersLink: !closed });
     }
   },
+  orders() { wx.navigateTo({ url: '/pages/orders/index' }); },
   tools() { wx.navigateTo({ url: '/pages/advisor/index' }); },
   // 付款前要看得到：已收录哪些省、哪些城市（D-070）
   coverage() { wx.navigateTo({ url: '/pages/about/index' }); },

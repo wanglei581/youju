@@ -773,10 +773,17 @@ def test_health_reports_db_error_type_and_code_only(monkeypatch):
 
 def test_snapshot_matches_endpoints_without_user_data(client, seeded, monkeypatch) -> None:
     """首屏快照（10/12 冷启动）：内容和各接口一样；调首页时不带请求头，认不出用户，不混进个人数据。"""
+    from zoneinfo import ZoneInfo
+
     from youju.api import me, v1
 
     v1._SNAPSHOT_CACHE.clear()
     v1._REPORT_CACHE.clear()
+    # 业务时间固定、缓存时长放大：跑的时候正好跨过北京时间零点，或者整个测试超过 60 秒
+    # （缓存按真实的单调时钟过期），结果都不变
+    fixed = datetime(2026, 10, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(v1, "now", lambda: fixed)
+    monkeypatch.setattr(v1, "SNAPSHOT_TTL", 3600)
     seen = []
     real = me.known_user
 
@@ -789,8 +796,11 @@ def test_snapshot_matches_endpoints_without_user_data(client, seeded, monkeypatc
     snap = client.get("/api/v1/snapshot", headers=wx).json()
     assert seen == [{}]
     home = client.get("/api/v1/home", params={"group": 1, "excerpts": 1}).json()
+    # 和小程序首页的请求一样带 time=不限（utils/api.js）；不带就是默认"近 30 天"，
+    # 测试数据 9/20 发布，10/21 起就掉出 30 天、和快照对不上
     latest = client.get(
-        "/api/v1/search", params={"kind": "申报通知", "limit": 8, "offset": 0, "group": 1}
+        "/api/v1/search",
+        params={"kind": "申报通知", "time": "不限", "limit": 8, "offset": 0, "group": 1},
     ).json()
     assert snap["home"]["stats"] == home["stats"]
     assert snap["home"]["dueSoon"] == home["dueSoon"]

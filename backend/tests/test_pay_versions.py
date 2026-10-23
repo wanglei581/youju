@@ -47,7 +47,7 @@ RELEASE_OLD = payments.Client(terms="pay-2026-10-draft", env="release")
 @pytest.mark.parametrize(
     ("env", "audience", "openid", "client", "expected"),
     [
-        # 沙箱：只给测试名单、只在开发版和体验版；配成 all 也一样（沙箱付款不扣真钱）
+        # 沙箱：只给测试名单、只在开发版和体验版；配成 all 也一样（沙箱真机付款也会真实扣钱）
         (1, "whitelist", "tester", TRIAL_FINAL, True),
         (1, "whitelist", "tester", payments.Client(env="develop"), True),
         (1, "whitelist", "tester", RELEASE_FINAL, False),
