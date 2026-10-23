@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete, event, text, update
 
 from youju import attachment_text as texts
 from youju.api import attachments as download_api
@@ -408,8 +409,112 @@ def test_restricted_deployed_account_can_read(session, restricted_api_factory):
 
     request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1234)})
     with restricted_api_factory() as factory, factory() as restricted:
+        readers._reading_session(restricted)
         data = readers.attachment_reading(doc.id, att.id, restricted, request)
         assert data["status"] == "ok" and data["segments"]
+
+
+def test_attachment_read_is_one_snapshot_during_reextraction(
+    client, session, session_factory, monkeypatch
+):
+    doc, att, _, version = seed(session)
+    first = client.get(path(doc, att)).json()
+    original = readers._check_revision
+    changed = False
+
+    def replace_after_revision(cursor, expected, current):
+        nonlocal changed
+        after = original(cursor, expected, current)
+        if not changed:
+            changed = True
+            with session_factory() as writer:
+                writer.execute(
+                    delete(AttachmentTextSegment).where(
+                        AttachmentTextSegment.version_id == version.id
+                    )
+                )
+                writer.add_all(
+                    [
+                        AttachmentTextSegment(
+                            version_id=version.id, n=i, kind="p", text=f"新版第{i}段"
+                        )
+                        for i in range(1, 24)
+                    ]
+                )
+                writer.execute(
+                    update(AttachmentTextVersion)
+                    .where(AttachmentTextVersion.id == version.id)
+                    .values(extracted_at=NOW + timedelta(seconds=1))
+                )
+                writer.commit()
+        return after
+
+    monkeypatch.setattr(readers, "_check_revision", replace_after_revision)
+    during = client.get(path(doc, att)).json()
+    assert changed and during["revision"] == first["revision"]
+    assert during["totalSegments"] == 45
+    assert during["segments"] == first["segments"]
+    latest = client.get(path(doc, att)).json()
+    assert latest["totalSegments"] == 23
+    assert latest["segments"][0]["text"] == "新版第1段"
+    assert latest["revision"] != first["revision"]
+    assert (
+        client.get(
+            path(doc, att), params={"cursor": "20", "revision": first["revision"]}
+        ).status_code
+        == 409
+    )
+
+
+def test_body_read_keeps_candidate_and_content_in_one_snapshot(client, session, session_factory):
+    doc, _, _, _ = seed(session, body="旧版申报说明。" * 100)
+    first = client.get(path(doc)).json()
+    changed = False
+    engine = session_factory.kw["bind"]
+
+    def replace_before_body(conn, cursor, statement, parameters, context, executemany):
+        nonlocal changed
+        if changed or not statement.startswith("SELECT document_details.body_text "):
+            return
+        changed = True
+        reader_connection = conn.scalar(text("SELECT CONNECTION_ID()"))
+        with session_factory() as writer:
+            assert writer.scalar(text("SELECT CONNECTION_ID()")) != reader_connection
+            writer.execute(
+                update(DocumentDetail)
+                .where(DocumentDetail.document_id == doc.id)
+                .values(body_text="新版申报说明。" * 100)
+            )
+            writer.execute(
+                update(Document)
+                .where(Document.id == doc.id)
+                .values(title="关于新一轮科技计划申报的通知")
+            )
+            writer.commit()
+
+    event.listen(engine, "before_cursor_execute", replace_before_body)
+    try:
+        during = client.get(path(doc)).json()
+    finally:
+        event.remove(engine, "before_cursor_execute", replace_before_body)
+    assert changed
+    assert during == first
+    latest = client.get(path(doc)).json()
+    assert latest["title"] == "关于新一轮科技计划申报的通知"
+    assert latest["segments"][0]["text"].startswith("新版申报说明")
+    assert latest["revision"] != first["revision"]
+
+
+def test_reading_snapshot_isolation_restores_pooled_connection(session_factory):
+    engine = session_factory.kw["bind"]
+    engine.dispose()
+    with session_factory() as reader:
+        readers._reading_session(reader)
+        reader_id = reader.scalar(text("SELECT CONNECTION_ID()"))
+        assert reader.scalar(text("SELECT @@transaction_isolation")) == "REPEATABLE-READ"
+    with session_factory() as ordinary:
+        assert ordinary.scalar(text("SELECT CONNECTION_ID()")) == reader_id
+        assert ordinary.scalar(text("SELECT @@transaction_isolation")) == "READ-COMMITTED"
 
 
 def test_real_docx_extraction_to_native_response(client, session):

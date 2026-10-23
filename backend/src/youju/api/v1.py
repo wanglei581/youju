@@ -2020,12 +2020,18 @@ def body_for_reading(text: str | None, kind: str) -> dict:
 
 
 def _reading_body_selection(
-    session: Session, doc_id: int, *, redact=redact_sensitive, live_only: bool = False
+    session: Session,
+    doc_id: int,
+    *,
+    redact=redact_sensitive,
+    live_only: bool = False,
+    allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
 ) -> tuple[int, str, str] | None:
     """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
 
     返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续显示收录不足；
     live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
+    allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
     """
     stmt = (
         select(Document.id, Document.title, Document.kind_override)
@@ -2049,7 +2055,7 @@ def _reading_body_selection(
         stmt = stmt.where(Document.link_gone_at.is_(None))
     fallback = None
     for candidate_id, title, kind in session.execute(stmt).all():
-        if effective_kind(title, kind) not in BODY_KINDS:
+        if allowed_kinds is not None and effective_kind(title, kind) not in allowed_kinds:
             continue
         raw = session.scalar(
             select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
@@ -2065,8 +2071,10 @@ def _reading_body_selection(
     return fallback
 
 
-def _reading_body(session: Session, doc_id: int) -> str | None:
-    selected = _reading_body_selection(session, doc_id)
+def _reading_body(
+    session: Session, doc_id: int, *, allowed_kinds: tuple[str, ...] | None = BODY_KINDS
+) -> str | None:
+    selected = _reading_body_selection(session, doc_id, allowed_kinds=allowed_kinds)
     return selected[1] if selected else None
 
 

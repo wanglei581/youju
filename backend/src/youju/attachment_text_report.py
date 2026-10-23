@@ -202,7 +202,9 @@ def build(session: Session, now: datetime, *, sample: int = 30, seed: int = 2026
         report.notices += 1
         current = effective_kind(title, override)
         report.stale_kind += current != kind
-        body = redact_sensitive(v1._reading_body(session, doc_id) or "")
+        # 管理统计按历史采集范围盘点正文是否存在，包含类型规则已变的旧条目。
+        # 公开阅读和 AI 仍使用 _reading_body 默认的类型限制，不能随统计放宽。
+        body = redact_sensitive(v1._reading_body(session, doc_id, allowed_kinds=None) or "")
         has_body = bool(body.strip())
         report.with_body += has_body
         if len(body) > interpret.MAX_BODY:

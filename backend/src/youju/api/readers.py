@@ -8,17 +8,19 @@ import time
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from youju import attachment_text as texts
 from youju import attachments
 from youju.api import attachments as download_api
 from youju.api import v1
 from youju.classify import effective_kind
+from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids
 from youju.models import (
     AttachmentTextSegment,
@@ -57,6 +59,19 @@ class NoStoreRoute(APIRoute):
 router = APIRouter(prefix="/api/v1", tags=["小程序"], route_class=NoStoreRoute)
 Cursor = Annotated[str, Query(pattern=r"^(0|[1-9][0-9]{0,8})$")]
 Revision = Annotated[str | None, Query(pattern=r"^[0-9a-f]{64}$")]
+
+
+def _reading_session(session: Annotated[Session, Depends(get_session)]) -> Session:
+    # 默认连接是 RC；重提取会原地替换同 version.id 的段落。必须在规则准备的
+    # 第一次 SELECT 前建立快照，避免旧 revision 配上新段落或混用来源资格。
+    if session.in_transaction():
+        raise RuntimeError("阅读快照必须在首次数据库访问前初始化")
+    session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+    # execution_options 随连接关闭恢复池的默认隔离，不改变其他写入接口。
+    return v1._request_session(session)
+
+
+ReadingSessionDep = Annotated[Session, Depends(_reading_session)]
 
 
 def _revision(*parts) -> str:
@@ -132,7 +147,7 @@ def _page(payload: dict, candidates: list[dict], after: int, last: int) -> dict:
 @router.get("/documents/{doc_id}/reading")
 def document_reading(
     doc_id: int,
-    session: v1.SessionDep,
+    session: ReadingSessionDep,
     request: Request,
     cursor: Cursor = "0",
     revision: Revision = None,
@@ -218,7 +233,7 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
 def attachment_reading(
     doc_id: int,
     attachment_id: int,
-    session: v1.SessionDep,
+    session: ReadingSessionDep,
     request: Request,
     cursor: Cursor = "0",
     revision: Revision = None,
