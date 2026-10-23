@@ -46,3 +46,11 @@
 .table-row { min-height: 54rpx; padding: 12rpx 0; border-top: 2rpx solid var(--line); color: var(--t2); font-size: 25rpx; line-height: 1.45; }
 .table-row text:nth-child(2), .table-row text:nth-child(3), .table-head text:nth-child(2), .table-head text:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
 .cached-note { padding-bottom: 12rpx; font-size: 24rpx; }
+
+.identity-intro { margin-top: 12rpx; font-size: 28rpx; font-weight: 600; }
+.identity-option { margin-top: 16rpx; padding: 18rpx 20rpx; white-space: normal; text-align: left; font-size: 27rpx; line-height: 1.65; }
+.identity-code { display: block; font-size: 24rpx; line-height: 1.7; overflow-wrap: anywhere; }
+.selected-identity { margin: 12rpx 0 24rpx; padding: 20rpx; border-radius: 16rpx; background: var(--fill); font-size: 27rpx; }
+.selected-identity button { margin-top: 14rpx; font-size: 24rpx; }
+.lookup-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; margin: 24rpx 0 12rpx; font-size: 24rpx; }
+.lookup-pagination button { margin: 0; padding: 0 18rpx; font-size: 24rpx; }

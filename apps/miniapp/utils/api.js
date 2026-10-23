@@ -480,6 +480,27 @@ function lookup(q) {
   return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
 }
 
+// 身份选择与名单分页分开，游标和版本由服务端签发；不降级为旧的截断查询。
+function lookupIdentities(q, params = {}) {
+  if (isLive()) return request('/api/v1/lists/lookup/identities', Object.assign({ q, size: 20 }, params));
+  const hit = q.replace(/\s+/g, '') === DEMO_COMPANY;
+  return copy({ query: q, revision: 'demo-lookup-v1', identityState: hit ? 'single' : 'none',
+    identities: hit ? [{ key: `unverified:${DEMO_COMPANY}`, kind: 'unverified', name: DEMO_COMPANY, creditCode: null, verified: false }] : [],
+    candidates: [], nextCursor: null, coverage: { lists: mock.lists.week_total, since: '2026-07-01', note: '仅为虚构的演示数据。' } });
+}
+function lookupPage(q, identity, params = {}) {
+  if (isLive()) return request('/api/v1/lists/lookup/page', Object.assign({ q, identity, size: 20 }, params));
+  if (identity !== `unverified:${DEMO_COMPANY}` || q.replace(/\s+/g, '') !== DEMO_COMPANY) return Promise.reject(new Error('请选择对应的查询身份'));
+  return lookup(q).then(res => Object.assign({}, res, { revision: 'demo-lookup-v1', identityState: 'selected',
+    identity: { key: identity, kind: 'unverified', name: DEMO_COMPANY, creditCode: null, verified: false }, nextCursor: null }));
+}
+
+// 命中依据只读取服务端当前证据，不从原表序号拼造页码或原站地址。
+function entryLocation(id, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看命中依据'));
+  return request(`/api/v1/lists/entries/${encodeURIComponent(id)}/location`, params);
+}
+
 function advisorReading(id, params = {}) {
   if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
   return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/reading`, params);
@@ -878,8 +899,8 @@ function requestInvoice(id, data) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
-  attachmentPart, reading, exportPreview, advisorReading,
+  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, lookupIdentities, lookupPage, exportFile, feedback,
+  attachmentPart, reading, entryLocation, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
