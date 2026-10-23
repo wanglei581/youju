@@ -300,6 +300,9 @@ def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
         elif r.result == "changed":
             print(f"  #{r.document_id} {r.title}")
             print(f"      其他变化：原来「{r.old_start}」→ 现在「{r.new_start}」")
+            if r.not_on_page:
+                missing = _short_lines(r.not_on_page)
+                print(f"      去掉的行原网页上找不到 {len(r.not_on_page)} 行：{missing}")
         elif r.result in ("empty", "failed"):
             print(f"  #{r.document_id} 没换（{r.reason}）：{r.title}")
         if r.result in totals:

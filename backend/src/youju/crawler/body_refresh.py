@@ -107,9 +107,10 @@ class BodyRefresh:
     tail: list[str] = field(default_factory=list)
     old_chars: int = 0
     new_chars: int = 0
-    # changed：前后开头对照
+    # changed：前后开头对照；去掉的行里原网页上找不到的（看是不是真删了内容）
     old_start: str = ""
     new_start: str = ""
+    not_on_page: list[str] = field(default_factory=list)
     impact: Impact = field(default_factory=Impact)
     written: bool = False
 
@@ -148,21 +149,33 @@ def trimmed_lines(old: str, new: str) -> tuple[list[str], list[str]] | None:
     return None
 
 
+# 上一篇、下一篇这类导航的标签（后面是链到的标题）
+_NAV_LABEL = re.compile(r"^(?:上一篇|下一篇|上一条|下一条)\s*[:：]")
+
+
 def _squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
-def _still_on_page(lines: list[str], fetch: FetchResult | None) -> bool:
-    """去掉的每一行现在都还在原网页上、看得见、不算正文的地方（detail.outside_body_text：导航、按钮、
-    页尾这些）。原网页改过、删掉了开头结尾的条款的，这几行找不到（留在脚本或隐藏元素里的也不算）。
-    比的时候去掉空白；入库的正文脱敏过，网页文字脱敏前后各比一次。"""
+def _not_on_page(lines: list[str], fetch: FetchResult | None) -> list[str] | None:
+    """去掉的行里，现在原网页上不算正文的地方（detail.outside_body_text：导航、按钮、页尾这些，不算
+    脚本里的）找不到的那几行；全找得到返回 []，页面解析不了返回 None。原网页改过、删掉了开头结尾的
+    条款的，这几行找不到。比的时候去掉空白；入库的正文脱敏过，网页文字脱敏前后各比一次。
+    "上一篇：……"这类导航链到的标题会随新发的通知变，网页上还有同样的标签就算找得到（_NAV_LABEL）。"""
     if fetch is None or not fetch.text:
-        return False
+        return None
     text = outside_body_text(fetch.text, fetch.final_url or fetch.url)
     if text is None:
-        return False
+        return None
     pages = (_squash(text), _squash(redact_sensitive(text)))
-    return all(any(_squash(line) in page for page in pages) for line in lines)
+
+    def found(line: str) -> bool:
+        if any(_squash(line) in page for page in pages):
+            return True
+        label = _NAV_LABEL.match(line)
+        return bool(label) and any(_squash(label.group(0)) in page for page in pages)
+
+    return [line for line in lines if not found(line)]
 
 
 def _candidates(
@@ -389,13 +402,16 @@ def refresh_bodies(
             results.append(item)
             continue
         cut = trimmed_lines(old, new) if old else None
+        missing = None
         if cut is not None:
             item.head, item.tail = cut
-        if cut is not None and _still_on_page(item.head + item.tail, outcome.fetch):
+            missing = _not_on_page(item.head + item.tail, outcome.fetch)
+        if missing == []:
             item.result = "trimmed"
         else:
             item.result, item.old_start, item.new_start = "changed", old[:60], new[:60]
-            if cut is not None:
+            if missing:
+                item.not_on_page = missing
                 item.reason = "去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看"
         item.impact = _impact(session, document_id, old, new, ai_snapshots)
         if apply and (item.result == "trimmed" or include_changed):

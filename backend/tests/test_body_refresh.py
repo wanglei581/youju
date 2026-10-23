@@ -344,7 +344,7 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
     assert [(r.result, r.written, r.reason) for r in applied] == [
         ("changed", False, "去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看")
     ]
-    assert applied[0].tail[-2:] == ["八、其他", "本通知自印发之日起施行。"]
+    assert applied[0].not_on_page == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
     # 删掉的条款还留在页面的脚本里，也不算还在网页上
     leftover = "<script>var old = '八、其他 本通知自印发之日起施行。';</script>"
@@ -390,6 +390,47 @@ def test_page_chrome_counts_as_page_text(session, fixture, url, extra) -> None:
     applied = refresh_bodies(session, hosts=[host], apply=True, fetcher=fake)
     assert [(r.result, r.tail, r.written) for r in applied] == [("trimmed", extra, True)]
     assert _stored(session, doc.id).body_text == clean
+
+
+def test_navigation_titles_change_but_labels_stay(session, monkeypatch, capsys) -> None:
+    """ "上一条：……"这类导航链到的标题会随新发的通知变：以前收进正文的那行现在网页上对不上，只要网页上
+    还有同样的标签就算网页上的字；网页上连标签都没有了，才算找不到（预览里列出来）。"""
+    url = "https://gxt.example.gov.cn/tzgg/1.html"
+    notice = "各市工业和信息化局：现将有关事项通知如下，请于11月10日前按要求报送申报材料。"
+    nav = "<p>上一条：关于征集新一批重点项目的通知</p><p>下一条：没有了</p>"
+    page = (
+        "<html><body><div class='content'><div class='TRS_UEDITOR'><p>{notice}</p></div>{nav}"
+        "</div></body></html>"
+    )
+    old = "\n".join([notice, "上一条：关于企业证照办理优化措施的公示", "下一条：没有了"])
+    doc = _document(session, _source(session, url="https://gxt.example.gov.cn/tzgg/"), url, old)
+    session.commit()
+    host = "gxt.example.gov.cn"
+    fake = FakeFetcher({url: _page(url, page.format(notice=notice, nav=nav))})
+    assert [
+        (r.result, r.not_on_page) for r in refresh_bodies(session, hosts=[host], fetcher=fake)
+    ] == [("trimmed", [])]
+    fake = FakeFetcher({url: _page(url, page.format(notice=notice, nav=""))})
+    assert [
+        (r.result, r.not_on_page) for r in refresh_bodies(session, hosts=[host], fetcher=fake)
+    ] == [("changed", ["上一条：关于企业证照办理优化措施的公示", "下一条：没有了"])]
+
+    class Polite:
+        def __enter__(self):
+            return fake
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(detail_service, "_polite_fetcher", Polite)
+    assert cli.main(["refetch-bodies", "--host", host]) == 0
+    out = capsys.readouterr().out
+    assert f"  #{doc.id} {HUBEI_TITLE}" in out
+    assert (
+        "      去掉的行原网页上找不到 2 行：上一条：关于企业证照办理优化措施的公示 | 下一条：没有了"
+        in out
+    )
+    assert "      ！去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看" in out
 
 
 def test_failed_or_empty_refetch_keeps_the_body(session) -> None:
