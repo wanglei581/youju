@@ -513,6 +513,14 @@ _NOT_PAGE_TEXT_TAGS = {
     "datalist",
     "select",
     "font",
+    "noembed",
+    "noframes",
+    "progress",
+    "meter",
+    "rp",
+    # 矢量/公式的绘制及 defs、symbol 等是否被使用，不能靠 HTML 文本遍历证明。
+    "svg",
+    "math",
 }
 # 旧式 HTML 配色也能形成同色字；popover 是否弹出要靠脚本，静态文本都不作证。
 _UNCERTAIN_DISPLAY_ATTRIBUTES = {

@@ -408,6 +408,15 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover
         "<details>{}<summary>查看详情</summary></details>",
         "<details><summary>查看详情</summary>{}</details>",
         "<details><summary>查看详情</summary><summary>{}</summary></details>",
+        "<noembed>{}</noembed>",
+        "<noframes>{}</noframes>",
+        '<progress value="1" max="10">{}</progress>',
+        '<meter value="1" min="0" max="10">{}</meter>',
+        "<ruby>正文<rp>{}</rp><rt>zhengwen</rt></ruby>",
+        "<svg><defs><text>{}</text></defs></svg>",
+        "<svg><symbol><text>{}</text></symbol></svg>",
+        "<svg><text>{}</text></svg>",
+        "<math><mtext>{}</mtext></math>",
     ],
 )
 def test_hidden_old_clause_is_not_page_chrome(wrapper) -> None:
@@ -497,7 +506,10 @@ def test_sichuan_qr_exception_only_proves_the_known_caption(change) -> None:
     assert (caption in outside) is (change == "none")
 
 
-@pytest.mark.parametrize("change", ["none", "host", "location", "prefix", "child", "ancestor"])
+@pytest.mark.parametrize(
+    "change",
+    ["none", "host", "location", "prefix", "child", "ancestor", "hidden", "popover", "color"],
+)
 def test_hidden_source_exception_requires_exact_header(change) -> None:
     """保留山东真实来源字去噪；同字异位、前缀伪装、隐藏祖先都不能扩大例外。"""
     url = "http://gxt.shandong.gov.cn/art/2026/9/28/art_15201_10366576.html"
@@ -516,6 +528,10 @@ def test_hidden_source_exception_requires_exact_header(change) -> None:
         page = page.replace(metadata, metadata.replace(source, f"<b>{source}</b>"))
     elif change == "ancestor":
         page = page.replace('<div class="headline">', '<div class="headline" hidden>')
+    elif change in {"hidden", "popover", "color"}:
+        # 原例外只认 display:none；hidden 属性从未允许，动态/配色属性也不得借例外放行。
+        attribute = 'color="#ffffff"' if change == "color" else change
+        page = page.replace(metadata, metadata.replace("<span ", f"<span {attribute} "))
     assert _not_on_page([line], _page(url, page)) == ([] if change == "none" else [line])
 
 
