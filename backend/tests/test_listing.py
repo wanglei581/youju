@@ -667,3 +667,53 @@ def test_clean_title_drops_body_text_stuck_after_the_title():
     ]
     for title in untouched:
         assert clean_title(title) == title
+
+
+def test_ordinal_inside_link_uses_title_attribute() -> None:
+    # 深圳市工信局：<a title="完整标题"><em>8</em>完整标题</a>，序号曾粘在标题前（"8市工业……"）
+    rows = "".join(
+        f'<div class="ListconC"><span>2026-09-{20 + n}</span>'
+        f'<a href="/tzgg/content/post_{n}.html" title="市工业和信息化局关于开展第{n}批申报工作的通知">'
+        f"<em>{n + 8}</em>市工业和信息化局关于开展第{n}批申报工作的通知</a></div>"
+        for n in range(1, 5)
+    )
+    items = extract_items(f"<html><body>{rows}</body></html>", "https://gxj.example.gov.cn/tzgg/")
+    assert [i.title for i in items] == [
+        f"市工业和信息化局关于开展第{n}批申报工作的通知" for n in range(1, 5)
+    ]
+    assert [i.publish_date for i in items] == [date(2026, 9, 20 + n) for n in range(1, 5)]
+
+
+def test_whole_row_link_uses_inner_title_attribute() -> None:
+    # 武汉市经信局：整条是一个链接，标题在里面 span 的 title 属性里，链接文字还有日期和正文摘要
+    rows = "".join(
+        f'<a class="art_item" href="./202610/t202610{10 + n}_{n}.html">'
+        f'<div><span class="art_day">{10 + n}</span><span class="art_month">2026-10</span></div>'
+        f'<div><span class="art_list_ttl" title="市经信局关于开展第{n}批平台申报工作的通知">'
+        f"市经信局关于开展第{n}批平台申报工作的通知</span><label>2026-10-{10 + n}</label>"
+        f'<span class="art_list_content">各区经信部门：现组织开展申报工作，有关事项通知如下……</span>'
+        f"</div></a>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><div>{rows}</div></body></html>", "https://jxj.example.gov.cn/tztg/"
+    )
+    assert [i.title for i in items] == [
+        f"市经信局关于开展第{n}批平台申报工作的通知" for n in range(1, 5)
+    ]
+    assert [i.publish_date for i in items] == [date(2026, 10, 10 + n) for n in range(1, 5)]
+
+
+def test_inner_title_must_be_written_in_the_link_text() -> None:
+    # 里面元素的 title 属性不是链接文字的一部分（如图标提示）时不用
+    html = (
+        "<html><body><ul>"
+        + "".join(
+            f'<li><a href="/a/{n}.html"><img title="点击查看这条通知的详细内容" src="x.png">'
+            f"关于组织申报第{n}批项目的通知</a><span>2026-09-0{n}</span></li>"
+            for n in range(1, 5)
+        )
+        + "</ul></body></html>"
+    )
+    items = extract_items(html, "https://kjj.example.gov.cn/a/")
+    assert [i.title for i in items] == [f"关于组织申报第{n}批项目的通知" for n in range(1, 5)]

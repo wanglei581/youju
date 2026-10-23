@@ -92,6 +92,8 @@ _EDGE_DATE = re.compile(
 
 
 _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
+# 链接文字开头的列表序号（"8""10."）
+_ORDINAL = re.compile(r"\s*\d{1,3}\s*[.、]?\s*")
 
 
 def _clean(text: str | None) -> str:
@@ -102,14 +104,37 @@ def _link_text(a: etree._Element) -> str:
     return clean_title(_clean(a.text_content()))
 
 
+def _inner_title(a: etree._Element, text: str) -> str | None:
+    """整条做成一个链接、标题写在里面某个元素的 title 属性里的（武汉市经信局：
+    <a><span>23</span><span>2026-10</span><span title="完整标题">完整标题</span>摘要……</a>），
+    链接文字里混着日期和正文摘要：用那个 title 属性。只认像标题、链接文字里原样写着的。"""
+    compact = text.replace(" ", "")
+    for el in a.iterdescendants():
+        if not isinstance(el.tag, str):
+            continue
+        value = clean_title(_clean(el.get("title")))
+        inner = value.replace(" ", "")
+        if inner and len(inner) < len(compact) and inner in compact and _looks_like_title(value):
+            return value
+    return None
+
+
 def _title_of(a: etree._Element) -> str:
     text = _link_text(a)
     attr = clean_title(_clean(a.get("title")))
+    if not attr:
+        inner = _inner_title(a, text)
+        if inner:
+            return inner
     # 个别网站把索引号、发布时间等元数据写成 HTML 放在 title 属性里（如山西省科技厅）：
     # 链接文字像标题就用链接文字；不像标题（如"详情"）才用去掉标签后的 title 属性
     if _MARKUP.search(attr):
         stripped = clean_title(_clean(_MARKUP.sub(" ", attr)))
         return text if _looks_like_title(text) or not stripped else stripped
+    # 序号写在链接里（深圳市工信局：<a title="完整标题"><em>8</em>完整标题</a>）：链接文字是
+    # 序号加 title 属性，用 title 属性
+    if attr and text.endswith(attr) and _ORDINAL.fullmatch(text[: -len(attr)]):
+        return attr
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):
         return attr
