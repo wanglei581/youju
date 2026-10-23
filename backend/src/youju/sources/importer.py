@@ -20,6 +20,9 @@ from youju.sources.onboard import checked_city, checked_district
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
     ("已验证", "static", True),
+    # 试跑通过、登记好了，但先不抓取、不对外（地市第一批，D-086 ④）：创始人同意开哪几个以后，
+    # 把那几行改成"已验证（……）"再导入一次才启用
+    ("待开", "static", False),
     ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
     ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
     ("本机无法访问", "manual", False),

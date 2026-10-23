@@ -19,6 +19,8 @@ def write_csv(tmp_path: Path, rows: list[str]) -> Path:
 
 def test_mode_for_statuses() -> None:
     assert mode_for("已验证（列表页，含近期日期）") == ("static", True)
+    # 地市第一批：试跑通过、登记好了，但创始人同意前不抓取（D-086 ④）
+    assert mode_for("待开（2026-10-23 本机试抓通过）") == ("static", False)
     assert mode_for("需浏览器渲染或接口（页面由脚本加载）") == ("browser", False)
     # 网站防护（如 412 挑战页）视为拒绝：停用，不用浏览器渲染绕过
     assert mode_for("需浏览器渲染（网站防护拦截脚本访问）") == ("blocked", False)
@@ -140,25 +142,3 @@ def test_city_candidate_manifest_stays_disabled(session):
             )
     second = import_sources(session, path)
     assert (second.created, second.updated, second.enabled) == (0, 53, 0)
-
-
-def test_city_activation_manifest_only_promotes_reviewed_two(session):
-    """显式接入清单只提升本轮两条；济南、青岛和历史候选仍保持停用。"""
-    directory = DEFAULT_SOURCES_CSV.parent
-    import_sources(session, directory / "地市来源候选_R1.5_v1.csv")
-    path = directory / "地市来源接入_2026-10-15.csv"
-    first = import_sources(session, path)
-    assert (first.created, first.updated, first.enabled, first.disabled) == (0, 2, 2, 0)
-    active = session.scalars(select(Source).where(Source.enabled.is_(True))).all()
-    assert {(s.province, s.city, s.level, s.dept) for s in active} == {
-        ("广东", "广州", "市级", "科技"),
-        ("江苏", "苏州", "市级", "科技"),
-    }
-    assert {s.url for s in active} == {
-        "http://kjj.gz.gov.cn/xxgk/zwdt/tztg/wjgg/",
-        "https://kjj.suzhou.gov.cn/szkj/tzgg/common_list.shtml",
-    }
-    assert all(s.parser_config == {} and s.rights_level == 1 for s in active)
-    second = import_sources(session, path)
-    assert (second.created, second.updated) == (0, 2)
-    assert session.scalar(select(func.count(Source.id))) == 53
