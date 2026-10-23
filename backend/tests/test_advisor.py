@@ -851,6 +851,7 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
         status="done",
         expires_at=NOW.astimezone(UTC),
         result_file_id="cloud://trash",
+        result_json={"schema": 1, "items": [{"title": "synthetic"}]},
     )
     row_id = row.id
     attempts = iter([RuntimeError("暂时失败"), ["cloud://trash"]])
@@ -861,6 +862,7 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
     assert first["advisor_files"] == 0
     session.refresh(row)
     assert row.result_file_id == "cloud://trash"
+    assert row.result_json is None
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://trash"
 
     second = service.cleanup_advisor(
@@ -1272,3 +1274,122 @@ def test_track_file_city_validation_reports_physical_row(client, xlsx):
     assert response.status_code == 422
     assert response.json()["detail"].startswith("第 3 行：城市")
     assert "不得回显客户" not in response.text
+
+
+def test_native_task_result_pagination_owner_expiry(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status = "done"
+    row.result_document_ids = []
+    row.result_json = build(
+        "compare",
+        CompareReport(
+            [CompareRow(f"合成企业{i}", f"合成企业{i}", "name", "未查到") for i in range(23)],
+            [],
+            NOW,
+        ),
+    )
+    session.commit()
+    path = f"/api/v1/advisor/tasks/{task_id}/reading"
+    first = client.get(path)
+    assert first.status_code == 200
+    data = first.json()
+    assert first.headers["cache-control"] == "no-store"
+    assert len(data["items"]) == 20 and data["nextCursor"] == "20"
+    assert data["total"] == 23
+    assert data["rowCount"] == 1
+    missing_version = client.get(path, params={"cursor": 20})
+    assert missing_version.status_code == 409
+    assert missing_version.headers["cache-control"] == "no-store"
+    last = client.get(path, params={"cursor": 20, "revision": data["revision"]}).json()
+    assert [item["n"] for item in last["items"]] == [20, 21, 22]
+    assert last["nextCursor"] is None
+    assert client.get(path, params={"revision": "0" * 64}).status_code == 409
+    other = User(openid="different-synthetic-owner", agreement_version="2026-11", agreement_at=NOW)
+    session.add(other)
+    session.flush()
+    row.user_id = other.id
+    session.commit()
+    denied = client.get(path)
+    assert denied.status_code == 404
+    assert denied.headers["cache-control"] == "no-store"
+    row.user_id = session.scalar(select(User.id).where(User.openid == "advisor-user"))
+    row.expires_at = NOW.astimezone(UTC)
+    session.commit()
+    expired = client.get(path)
+    assert expired.status_code == 410
+    assert expired.headers["cache-control"] == "no-store"
+
+
+def test_native_legacy_result_does_not_recalculate(client, session):
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status, row.result_file_id = "done", "cloud://test-env.example/old"
+    row.result_document_ids = []
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 409
+    assert "重新生成" in response.json()["detail"]
+
+
+def test_native_result_requires_all_dependencies(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status = "done"
+    row.result_json = build(
+        "compare", CompareReport([CompareRow("甲公司", "甲公司", "name", "未查到")], [], NOW)
+    )
+    row.result_document_ids = [9999999]
+    session.commit()
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}/reading").status_code == 410
+
+
+def test_generated_native_result_uses_same_engine_report(client, session, tmp_path):
+    from youju.compare import CompareReport
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    output = tmp_path / "result.xlsx"
+    count = service._run_engine(session, row, output)
+    row.status = "done"
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 200
+    assert output.exists()
+    assert response.json()["total"] == count
+    assert response.json()["items"][0]["title"] == "未命中"
+    source_time = NOW - timedelta(days=10)
+    snapshot = build("compare", CompareReport([], [], source_time), generated_at=NOW)
+    assert snapshot["dataVersion"] == source_time.isoformat()
+    assert snapshot["generatedAt"] == NOW.isoformat()
+
+
+def test_native_reading_validation_no_store(client):
+    agree_advisor(client)
+    response = client.get("/api/v1/advisor/tasks/1/reading?cursor=-1")
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_native_result_rejects_large_item_before_done():
+    from youju.compare import CompareInputError, CompareReport, CompareRow
+    from youju.native_results import build
+
+    with pytest.raises(CompareInputError, match="单项结果"):
+        build(
+            "compare",
+            CompareReport(
+                [CompareRow("甲公司", "甲公司", "name", "未查到", note="甲" * 80_000)], [], NOW
+            ),
+        )

@@ -195,6 +195,8 @@ _TIME_CHARS = set("年月日时周星点午")
 # 两头去掉相同的部分以后，中间超过这么多字就不逐字比：逐字比（difflib）遇到大段重复的字（几千个
 # "—"分隔线）是平方级的，6000 个字就要几秒，一份正文最多 400 万字
 _DIFF_LIMIT = 4000
+_LINE_DIFF_CHAR_LIMIT = 100_000
+_LINE_DIFF_PAIR_LIMIT = 1_000_000
 
 
 def _trim(old: str, new: str) -> tuple[int, int]:
@@ -221,8 +223,15 @@ def _added(old: str, new: str, *, by_lines: bool = True) -> list[str]:
         return [
             b[j1:j2] for tag, _, _, j1, j2 in matcher.get_opcodes() if tag in ("replace", "insert")
         ]
+    # 行比对也有平方级上界；超预算保守地把中间整段标为变化。
+    if not by_lines or len(a) + len(b) > _LINE_DIFF_CHAR_LIMIT:
+        return [b]
     a_lines, b_lines = a.splitlines(keepends=True), b.splitlines(keepends=True)
-    if not by_lines or len(a_lines) <= 1 or len(b_lines) <= 1:
+    if (
+        len(a_lines) <= 1
+        or len(b_lines) <= 1
+        or len(a_lines) * len(b_lines) > _LINE_DIFF_PAIR_LIMIT
+    ):
         return [b]
     pieces: list[str] = []
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a_lines, b_lines).get_opcodes():

@@ -668,3 +668,70 @@ def test_excerpt_export_only_falls_back_when_no_verified_deadline(
     assert records[unchecked.title]["截止日期（以原文为准）"] == "截止未核对，以原文为准"
     assert "截止日期（以原文为准）" in records[unchecked.title]["未核项"]
     assert "其他截止日期" not in records[unchecked.title]["未核项"]
+
+
+def test_native_catalogue_preview_binds_export_version(client, docs, session):
+    ids = [str(docs[0]), str(docs[2])]
+    preview = client.post("/api/v1/exports/preview", json={"ids": ids, "excerpts": 1})
+    assert preview.status_code == 200
+    body = preview.json()
+    assert preview.headers["cache-control"] == "no-store"
+    assert body["kind"] == "catalogue" and body["total"] == 2
+    assert [str(row["doc_id"]) for row in body["items"]] == ids
+    assert (
+        client.post(
+            "/api/v1/exports",
+            json={
+                "ids": ids,
+                "format": "xlsx",
+                "excerpts": 1,
+                "revision": body["revision"],
+            },
+        ).status_code
+        == 200
+    )
+    doc = session.get(Document, docs[0])
+    doc.title += "（更正）"
+    session.commit()
+    changed = client.post(
+        "/api/v1/exports",
+        json={
+            "ids": ids,
+            "format": "xlsx",
+            "excerpts": 1,
+            "revision": body["revision"],
+        },
+    )
+    assert changed.status_code == 409
+    assert client.post("/api/v1/exports/preview", json={"ids": ["-1"]}).status_code == 422
+
+
+def test_native_catalogue_never_truncates_large_result(client, docs, monkeypatch):
+    items = exports._items
+
+    def huge(session, ids, excerpts=False):
+        rows = items(session, ids, excerpts)
+        rows[0].title = "甲" * 300_000
+        return rows
+
+    monkeypatch.setattr(exports, "_items", huge)
+    assert client.post("/api/v1/exports/preview", json={"ids": [str(docs[0])]}).status_code == 413
+
+
+def test_preview_query_compatibility_and_separate_user_limit(client, docs, monkeypatch):
+    monkeypatch.setattr(exports, "get_settings", lambda: SimpleNamespace(exports_per_10min=1))
+    ids = [str(docs[0])]
+    preview = client.post("/api/v1/exports/preview?excerpts=1", json={"ids": ids})
+    assert preview.status_code == 200
+    export = client.post(
+        "/api/v1/exports?excerpts=1",
+        json={
+            "ids": ids,
+            "format": "xlsx",
+            "revision": preview.json()["revision"],
+        },
+    )
+    assert export.status_code == 200
+    limited = client.post("/api/v1/exports/preview", json={"ids": ids})
+    assert limited.status_code == 429
+    assert limited.headers["cache-control"] == "no-store"

@@ -603,3 +603,40 @@ def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
     for label in ("账号", "联系人"):
         old_redact(label + " " * 100_000 + "x")
     assert time.perf_counter() - started < 2
+
+
+@pytest.mark.parametrize("repetitions", [20, 1000])
+def test_repeated_line_diff_has_a_work_budget(monkeypatch, repetitions):
+    from youju import refetch_redacted as module
+
+    middle = "".join(f"政策条款{i:03d}\n" for i in range(100)) * repetitions
+    old = "旧起\n" + middle + "原末"
+    new = "新起\n" + middle + "新尾"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("超预算输入不应进入 SequenceMatcher")
+
+    monkeypatch.setattr(module.difflib, "SequenceMatcher", forbidden)
+    assert module._restored(old, new) == [" ".join(new.split())]
+
+
+def test_line_diff_inside_work_budget_keeps_precise_changes(monkeypatch):
+    from youju import refetch_redacted as module
+
+    middle = "".join(f"政策条款{i:03d}\n" for i in range(100)) * 5
+    old = "旧起\n" + middle + "原末"
+    new = "新起\n" + middle + "新尾"
+    original = module.difflib.SequenceMatcher
+    line_calls = []
+
+    def bounded(junk, a, b, *args, **kwargs):
+        if isinstance(a, list):
+            assert len(a) * len(b) <= module._LINE_DIFF_PAIR_LIMIT
+            line_calls.append((len(a), len(b)))
+        else:
+            assert len(a) + len(b) <= module._DIFF_LIMIT
+        return original(junk, a, b, *args, **kwargs)
+
+    monkeypatch.setattr(module.difflib, "SequenceMatcher", bounded)
+    assert module._restored(old, new) == ["新", "新尾"]
+    assert line_calls

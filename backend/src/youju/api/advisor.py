@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import JSON, func, select
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +26,7 @@ from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
 from youju.api.me import OUTDATED, KnownUserDep, UserDep, request_openid
+from youju.api.readers import NoStoreRoute
 from youju.backup import BackupError
 from youju.compare import CompareInputError, read_customer_file, validate_xlsx
 from youju.config import get_settings
@@ -33,6 +36,7 @@ from youju.takedown import available_condition
 from youju.track import read_customer_profiles, validate_customer_rows
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
+native_router = APIRouter(route_class=NoStoreRoute)
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
@@ -744,6 +748,73 @@ def _result_link(session: Session, user: User, task_id: int) -> tuple[httpx.Clie
     return client, url
 
 
+@native_router.get("/tasks/{task_id}/reading", dependencies=[Depends(_enabled)])
+def read_result(
+    task_id: int,
+    session: SessionDep,
+    user: UserDep,
+    cursor: Annotated[int, Query(ge=0)] = 0,
+    revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
+) -> Response:
+    task = _owned(session, user, task_id)
+    if task.kind not in ("compare", "track"):
+        raise HTTPException(status_code=404, detail="没有找到站内结果")
+    if task.status != "done" or task.expires_at is None or task.expires_at <= _stamp():
+        raise HTTPException(status_code=410, detail="结果尚未完成、已过期或已删除")
+    content = task.result_json
+    if not isinstance(content, dict) or content.get("schema") != 1:
+        raise HTTPException(status_code=409, detail="旧结果未生成站内阅读内容，请重新生成")
+    ids = task.result_document_ids
+    if ids is None:
+        raise HTTPException(status_code=410, detail="结果依据暂时无法核验，请重新生成")
+    # 每一页都复核公开范围和撤回状态，不把旧结果作为绕过下架的副本。
+    visible = (
+        set(
+            session.scalars(
+                select(Document.id)
+                .join(Source, Document.source_id == Source.id)
+                .where(
+                    Document.id.in_(ids),
+                    v1.public_condition(),
+                    Document.link_gone_at.is_(None),
+                )
+            )
+        )
+        if ids
+        else set()
+    )
+    if visible != set(ids):
+        raise HTTPException(status_code=410, detail="结果依据已不可用，请重新生成")
+    if (cursor and not revision) or (revision and revision != content["revision"]):
+        raise HTTPException(status_code=409, detail="结果版本已变化，请重新加载")
+    all_items = content["items"]
+    if cursor > len(all_items):
+        raise HTTPException(status_code=422, detail="结果页码无效")
+    items, used = [], 0
+    for item in all_items[cursor : cursor + 20]:
+        size = len(json.dumps(item, ensure_ascii=False).encode())
+        if used + size > 200 * 1024:
+            if not items:
+                raise HTTPException(status_code=413, detail="单项结果过长，请减少条件后重新生成")
+            break
+        items.append(item)
+        used += size
+    end = cursor + len(items)
+    return JSONResponse(
+        content={
+            **{
+                key: content[key]
+                for key in ("kind", "title", "notice", "revision", "generatedAt", "dataVersion")
+            },
+            "items": items,
+            "total": len(all_items),
+            "rowCount": task.row_count,
+            "nextCursor": str(end) if end < len(all_items) else None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
 def download_task(task_id: int, session: SessionDep, user: UserDep) -> dict:
     """结果文件有多大、分几段。小程序随后逐段取 /tasks/{id}/file?part=N，拼起来就是 Excel。"""
@@ -825,3 +896,6 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: UserD
     session.delete(task)
     session.commit()
     request.state.audit = {"action": "advisor_task_delete", "task_id": task_id}
+
+
+router.include_router(native_router)

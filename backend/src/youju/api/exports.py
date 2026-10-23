@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 import time as clock
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import BytesIO
 from typing import Annotated, Literal
@@ -15,13 +17,14 @@ from zoneinfo import ZoneInfo
 
 from docx import Document as WordDocument
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from youju.api.readers import NoStoreRoute
 from youju.classify import applicable_region, effective_kind, list_status, region_label
 from youju.config import get_settings
 from youju.crawler.urls import public_url
@@ -33,6 +36,7 @@ from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentFie
 from youju.takedown import available_condition
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
+native_router = APIRouter(route_class=NoStoreRoute)
 SessionDep = Annotated[Session, Depends(get_session)]
 TZ = ZoneInfo("Asia/Shanghai")
 MAX_BYTES = 1000 * 1024
@@ -85,6 +89,12 @@ class ExportIn(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=200)
     format: Literal["xlsx", "docx"]
     # 首发版小程序（D-061）在请求体里带 excerpts=1；网址参数 ?excerpts=1 也认
+    excerpts: Literal[1] | None = None
+    revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class PreviewIn(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=200)
     excerpts: Literal[1] | None = None
 
 
@@ -577,6 +587,50 @@ def _allow_export(caller: str, now: float) -> str | None:
         return None
 
 
+def _preview_content(items: list[ExportItem], excerpts: bool) -> dict:
+    # 哈希只绑定本次目录字段和说明，不冒充正文/附件的不可变存档。
+    return {"items": [asdict(item) for item in items], "notice": _notice(excerpts)}
+
+
+def _revision(items: list[ExportItem], excerpts: bool) -> str:
+    data = json.dumps(_preview_content(items, excerpts), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+@native_router.post("/exports/preview")
+def preview_documents(
+    payload: PreviewIn,
+    session: SessionDep,
+    request: Request,
+    excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
+) -> Response:
+    # 查看目录不消耗用户保存文件的次数；实例总量仍有上限。
+    refused = _allow_export("preview:" + _caller(request), clock.monotonic())
+    if refused:
+        raise HTTPException(status_code=429, detail="查看结果太频繁，请稍后重试")
+    if not _export_slots.acquire(timeout=_EXPORT_SLOTS_WAIT):
+        raise HTTPException(status_code=503, detail="正在整理结果，请稍后重试")
+    try:
+        excerpts = excerpts == 1 or payload.excerpts == 1
+        items = _items(session, payload.ids, excerpts)
+        response = JSONResponse(
+            content={
+                "kind": "catalogue",
+                "title": "本次所选文件目录",
+                **_preview_content(items, excerpts),
+                "revision": _revision(items, excerpts),
+                "total": len(items),
+                "generatedAt": datetime.now(TZ).isoformat(),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+        if len(response.body) > 800 * 1024:
+            raise HTTPException(status_code=413, detail="结果较多，请减少所选文件后重新查看")
+        return response
+    finally:
+        _export_slots.release()
+
+
 @router.post("/exports")
 def export_documents(
     payload: ExportIn,
@@ -599,6 +653,8 @@ def export_documents(
 
 def _export(payload: ExportIn, session: Session, excerpts: bool = False) -> Response:
     items = _items(session, payload.ids, True) if excerpts else _items(session, payload.ids)
+    if payload.revision and payload.revision != _revision(items, excerpts):
+        raise HTTPException(status_code=409, detail="目录数据已更新，请重新查看结果后再保存")
     stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
     if payload.format == "xlsx":
         data = _xlsx(items, stamp, True) if excerpts else _xlsx(items, stamp)
@@ -622,3 +678,6 @@ def _export(payload: ExportIn, session: Session, excerpts: bool = False) -> Resp
             )
         },
     )
+
+
+router.include_router(native_router)
