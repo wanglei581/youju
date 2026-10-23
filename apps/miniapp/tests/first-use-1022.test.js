@@ -90,11 +90,17 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
   // 政策文件上面没有截止卡片：说明里不指向"上面的截止时间"
   assert.equal(flat(findAll(card(root), hasClass('body-note'))[0]), '从原网页或PDF提取，一切以原文为准。');
   assert.doesNotMatch(textOf(card(root)), /截止/);
-  // 申报通知上面有"截止时间"卡片时才写"截止日期可先看上面的'截止时间'"（#339 的措辞）
-  const notice = detailPage(() => ({ ...DOC, deadlines: [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }], body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
+  // 申报通知上面的"截止时间"卡片里写了日期，才写"截止日期可先看上面的'截止时间'"（#339 的措辞）；
+  // 卡片里只有"截止未核对"时不写——上面没有日期可看
+  let rows = [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }];
+  const notice = detailPage(() => ({ ...DOC, deadlines: rows, body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
   notice.onLoad({ id: '5' }); await flush();
-  const withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
+  let withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
   assert.equal(findAll(withDue, hasClass('dls-head')).length, 1);
+  assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取，一切以原文为准。');
+  rows = [{ kind: '企业申报截止', source: 'verified', date: plus(9), time: null, remainingDays: 9, quote: null }];
+  notice.refreshing = false; notice.load(); await flush();
+  withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
   assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
   for (const status of ['list', 'original', 'failed']) {
     body = { status, total: 0 };
@@ -120,7 +126,7 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
   let kids = elements(card);
   let at = kids.findIndex(tapsTo('submit'));
   assert.equal(kids[at].attrs.disabled, true);
-  assert.equal(flat(kids[at - 1]), '先点上面的“预览并核对行数”，通过后才能提交');
+  assert.equal(flat(kids[at - 1]), '填好名单后，先点上面的“预览并核对行数”，通过后才能提交');
   // 提示里说的按钮确实在上面
   assert.equal(findAll(render('pages/advisor-form/index.wxml', FORM), (n) => n.attrs.bindtap === 'preview' && /预览并核对行数/.test(flat(n))).length, 1);
   // 正在预览（按钮在转圈）时不催"先点预览"
@@ -146,7 +152,7 @@ test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"�
 
 const CITY = { key: 'city', title: '城市区县', hint: '省市区联动 · 可多选', multi: true, options: [], note: '省市区选项由微信提供，选项齐全不代表已收录数据；选择具体城市会替换同省的全省条件，选择具体区县会替换所属城市和全省的条件。' };
 const sheet = (extra = {}) => render('pages/search/index.wxml', {
-  filterOpen: true, activeGroup: 'city', groups: [CITY], districtOptions: [], cityCoverageNote: '当前仅有 3 个城市的部分来源，不代表全市数据完整。', pickedMap: {}, counts: {}, entries: {}, activeChips: [], picked: { open: [] }, ...extra,
+  filterOpen: true, activeGroup: 'city', groups: [CITY], districtOptions: [], cityCoverageNote: '当前仅有 3 个城市的部分来源，不代表全市数据完整。', pickedMap: {}, counts: {}, entries: {}, activeChips: [], picked: { open: [], city: [], district: [] }, ...extra,
 });
 const notes = (root) => findAll(root, hasClass('group-note')).map(flat);
 
@@ -166,9 +172,9 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
   // 原来挤在一段里的那句不在了
   assert.doesNotMatch(read('pages/search/index.wxml'), /已选城市、区县点一下移除。城市一栏选/);
   // 有已选的城市或区县时，在它们下面写"点一下移除"
-  root = sheet({ groups: [{ ...CITY, options: ['山东/青岛'] }], pickedMap: { 'city:山东/青岛': true } });
+  root = sheet({ groups: [{ ...CITY, options: ['山东/青岛'] }], pickedMap: { 'city:山东/青岛': true }, picked: { open: [], city: ['山东/青岛'], district: [] } });
   assert.ok(notes(root).includes('已选的城市、区县，点一下移除。'));
-  root = sheet({ districtOptions: [{ key: '山东/青岛/市南区', label: '山东·青岛·市南区' }] });
+  root = sheet({ districtOptions: [{ key: '山东/青岛/市南区', label: '山东·青岛·市南区' }], picked: { open: [], city: [], district: ['山东/青岛/市南区'] } });
   assert.ok(notes(root).includes('已选的城市、区县，点一下移除。'));
 });
 
@@ -189,8 +195,8 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：只列申报通知，含核对过或机器摘录、截止日期还没到的，加上可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含已核对或机器摘录且还没截止的，以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：只列申报通知，含已核对或机器摘录且还没截止的，以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -213,7 +219,7 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const due = findAll(root, hasClass('due-card'))[0];
-  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '上面的截止信息只对应本页这一版（江西版）；同一通知其他地方的版本，截止看下面“各版本的截止”');
+  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '上面这一栏只对应本页这一版（江西版）；同一通知其他地方的版本，截止看下面“各版本的截止”');
   // 提示说的那一块就在截止卡片后面
   const cards = elements(root).filter((n) => /card/.test(n.attrs.class || ''));
   const at = cards.indexOf(due);
@@ -228,4 +234,26 @@ test('第 2 条附带：选文件那里写明旧版 .xls 要先另存为 .xlsx�
   const text = textOf(render('pages/advisor-form/index.wxml', { ...FORM, mode: 'file' }));
   assert.match(text, /只支持 XLSX \/ CSV（旧版 \.xls 请先另存为 \.xlsx），文件不超过 60 KB。/);
   assert.match(read('pages/advisor-form/index.js'), /extension: \['xlsx', 'csv'\]/);
+});
+
+test('第 5 条附带：截止页、我的客户页和搜索页同一说法——直辖市区县一栏选"全部"时请求里只带省份、不带城市（后端按省份查、不限层级，区县的通知也在内），不再写"直辖市不选区县时也是（只查市级）"', async () => {
+  const calls = [];
+  const page = load('pages/report/index.js', {
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+    '../../utils/api.js': { deadlineReport: (params) => { calls.push(plain(params)); return Promise.resolve({ summary: {}, by_province: {}, items: [], total: 0, verified_total: 0 }); }, calendar: () => Promise.resolve({ items: [], past: [] }) },
+    '../../utils/exporter.js': { exportDocs() {} }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/regions.js': require('../utils/regions.js'), '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null) },
+  }, { getApp: () => ({ globalData: {} }), getCurrentPages: () => [{}, {}], wx: { navigateTo() {}, setNavigationBarTitle() {} } });
+  page.onLoad({}); await flush();
+  page.chooseCity({ detail: { value: ['北京市', '北京市', '全部'] } }); await flush();
+  const last = calls.at(-1);
+  assert.equal(last.province, '北京'); assert.equal(last.city, ''); assert.equal(last.district, undefined);
+  const clients = require('../utils/clients.js');
+  const params = clients.clientParams({ id: 'c1', name: '甲', regions: ['北京'], cities: [], districts: [] });
+  assert.match(params.regions, /(^|,)北京(,|$)/); assert.equal(params.cities, undefined); assert.equal(params.districts, undefined);
+  for (const pageName of ['report', 'clients', 'search']) {
+    const text = read(`pages/${pageName}/index.wxml`).replace(/<!--[\s\S]*?-->/g, '');
+    assert.doesNotMatch(text, /直辖市不选区县时也是/, pageName);
+    assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
+  }
 });

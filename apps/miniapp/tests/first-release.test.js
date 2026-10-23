@@ -237,7 +237,7 @@ test('详情：正文说明不再说"上面核对过的日期"（上面可能只
   const wxml = read('pages/detail/index.wxml');
   assert.doesNotMatch(wxml, /核对过的日期/);
   // 正文说明用 #339 的措辞；"截止日期可先看上面的'截止时间'"只在上面真有"截止时间"卡片时出现（政策文件上面没有截止，10/22 走查）
-  assert.match(wxml, /<view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dls && dls.length}}">；截止日期可先看上面的“截止时间”<\/text>，一切以原文为准。<\/view>/);
+  assert.match(wxml, /<view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dlsDated}}">；截止日期可先看上面的“截止时间”<\/text>，一切以原文为准。<\/view>/);
 });
 
 test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {

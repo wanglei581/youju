@@ -135,7 +135,7 @@
               <view wx:for="{{districtOptions}}" wx:key="key" class="option option--on" data-group="district" data-option="{{item.key}}" bindtap="removePicked"
                     aria-role="button" aria-label="移除区县：{{item.label}}">{{item.label}}</view>
             </view>
-            <view wx:if="{{g.key === 'city' && (g.options.length || districtOptions.length)}}" class="group-note">已选的城市、区县，点一下移除。</view>
+            <view wx:if="{{g.key === 'city' && (picked.city.length || picked.district.length)}}" class="group-note">已选的城市、区县，点一下移除。</view>
             <view wx:if="{{g.note}}" class="group-note">{{g.note}}</view>
             <view wx:if="{{g.extra}}" class="group-note">{{g.extra}}</view>
           </view>
