@@ -114,7 +114,8 @@ _BODY_SIZE = {
     "detail_stats_pc_mobile": (3, 85),
     "detail_shanghai_stcsm": (9, 292),
     "detail_guangzhou_kjj": (44, 2442),
-    "detail_anhui_kjt": (9, 338),
+    # 新脱敏规则保留完整机构名，不再把“发展中心”“厅企业处”误遮为姓名。
+    "detail_anhui_kjt": (9, 334),
     "detail_sichuan_kjt": (19, 1041),
     "detail_jiangsu_gxt": (4, 160),
     "detail_shandong_gxt": (7, 363),
@@ -255,6 +256,9 @@ def test_body_has_no_page_chrome(fixture, url, first, last, issuer, published, a
     result = parse_detail(read_fixture_html(fixture), url)
     lines = result.body_text.splitlines()
     assert (len(lines), len(result.body_text)) == _BODY_SIZE[fixture]
+    if fixture == "detail_anhui_kjt":
+        assert "省高新技术发展中心 [电话已脱敏]" in result.body_text
+        assert "省科技厅企业处 [电话已脱敏]" in result.body_text
     assert lines[0].startswith(first)
     assert lines[-1] == last
     assert result.body_text.count(lines[0]) == 1
