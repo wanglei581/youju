@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from tests.conftest import read_fixture_html
 from youju import cli
+from youju.ai import interpret
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, refresh_bodies, survey, trimmed_lines
 from youju.crawler.detail import parse_detail
@@ -227,11 +228,14 @@ def _reviewed_results(session, doc: Document) -> None:
                 idempotency_key=f"{kind}-{status}-{days}-{body}",
                 expires_at=stamp + timedelta(days=days),
             )
-            # 只数还能看的（完成的、没过期的），按解读读的那份正文（body_id）；旧任务没记 body_id 的
-            # 按它的文件和归并组算。读的是同组另一份的正文、过期的、没完成的不算
+            # 只数还在显示的：完成的、没过期的，读的是这份正文（body_id；旧任务没记的按它自己的文件），
+            # 正文指纹还对得上（没记指纹的旧任务也算）。读的是同组另一份的正文、正文早就变过（结果已显示
+            # "通知正文已变化"）、过期的、没完成的不算
             for kind, status, days, body in (
                 ("interpret", "done", 30, {}),
                 ("clause", "done", 30, {"body_id": doc.id}),
+                ("interpret", "done", 30, {"body_id": doc.id, "body_hash": interpret.digest(OLD)}),
+                ("clause", "done", 30, {"body_id": doc.id, "body_hash": interpret.digest("早先")}),
                 ("interpret", "done", 30, {"body_id": doc.id + 1}),
                 ("interpret", "done", -1, {}),
                 ("clause", "failed", 30, {}),
@@ -260,7 +264,7 @@ def test_refresh_previews_then_replaces_only_the_body(session) -> None:
         (doc.id, "trimmed", HEAD, TAIL, False)
     ]
     assert preview[0].impact == Impact(
-        approved_fields=1, confirmed_conditions=1, confirmed_reposts=1, ai_results=2, lost_quotes=1
+        approved_fields=1, confirmed_conditions=1, confirmed_reposts=1, ai_results=3, lost_quotes=1
     )
     detail = _stored(session, doc.id)
     assert (detail.body_text, detail.fetched_at) == (OLD, FETCHED_AT)  # 预览不写库
@@ -329,6 +333,50 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
     ]
     assert applied[0].tail[-2:] == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
+    # 删掉的条款还留在脚本或隐藏的元素里，也不算还在网页上
+    page = read_fixture_html("detail_hubei_kjt_70955")
+    for leftover in (
+        "<script>var old = '八、其他 本通知自印发之日起施行。';</script>",
+        "<div style='display: none'><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
+    ):
+        fake = FakeFetcher(
+            {HUBEI_URL: _page(HUBEI_URL, page.replace("</body>", f"{leftover}</body>"))}
+        )
+        assert [r.result for r in refresh_bodies(session, hosts=[HUBEI], fetcher=fake)] == [
+            "changed"
+        ]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "url", "extra"),
+    [
+        # 四川科技厅：正文区里的二维码块（qr_container）
+        (
+            "detail_sichuan_kjt",
+            "https://kjt.sc.gov.cn/kjt/gstz/2026/9/18/ae78e2444766482e91538646341f90c9.shtml",
+            ["扫一扫在手机打开当前页"],
+        ),
+        # 上海经信委：正文区末尾的按钮块（_SITE_JUNK）
+        (
+            "detail_shanghai_sheitc",
+            "https://sheitc.sh.gov.cn/gg/20260914/b3cb3b63a51b423c8d303b1725299e78.html",
+            ["[返回]", "【市民留言】"],
+        ),
+    ],
+)
+def test_page_chrome_inside_body_area_counts_as_page_text(session, fixture, url, extra) -> None:
+    """正文区里按同样规则不算正文的块（二维码、按钮），以前收进了正文的，也算"网页上的字"，照常换。"""
+    page = read_fixture_html(fixture)
+    clean = parse_detail(page, url).body_text
+    host = url.split("/")[2]
+    doc = _document(
+        session, _source(session, url=f"https://{host}/list/"), url, "\n".join([clean, *extra])
+    )
+    session.commit()
+    fake = FakeFetcher({url: _page(url, page)})
+    applied = refresh_bodies(session, hosts=[host], apply=True, fetcher=fake)
+    assert [(r.result, r.tail, r.written) for r in applied] == [("trimmed", extra, True)]
+    assert _stored(session, doc.id).body_text == clean
 
 
 def test_failed_or_empty_refetch_keeps_the_body(session) -> None:

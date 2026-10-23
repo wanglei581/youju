@@ -28,14 +28,13 @@ from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
-from lxml import etree, html
 from sqlalchemy import JSON, case, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.ai.pipeline import TASKS as AI_CHECK_TASKS
 from youju.config import get_settings
 from youju.crawler import detail_service
-from youju.crawler.detail import redact_sensitive
+from youju.crawler.detail import outside_body_text, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.deadline_excerpts import _normal
@@ -154,13 +153,13 @@ def _squash(text: str) -> str:
 
 
 def _still_on_page(lines: list[str], fetch: FetchResult | None) -> bool:
-    """去掉的每一行现在都还在原网页上（只是不在正文区里了）。原网页改过、删掉了开头结尾的内容的，
-    这几行在网页上已经找不到。比的时候去掉空白；入库的正文脱敏过，网页文字脱敏前后各比一次。"""
+    """去掉的每一行现在都还在原网页上、看得见、不算正文的地方（detail.outside_body_text：导航、按钮、
+    页尾这些）。原网页改过、删掉了开头结尾的条款的，这几行找不到（留在脚本或隐藏元素里的也不算）。
+    比的时候去掉空白；入库的正文脱敏过，网页文字脱敏前后各比一次。"""
     if fetch is None or not fetch.text:
         return False
-    try:
-        text = "".join(html.fromstring(fetch.text).itertext())
-    except (etree.ParserError, ValueError):
+    text = outside_body_text(fetch.text, fetch.final_url or fetch.url)
+    if text is None:
         return False
     pages = (_squash(text), _squash(redact_sensitive(text)))
     return all(any(_squash(line) in page for page in pages) for line in lines)
@@ -218,11 +217,12 @@ def _candidates(
     return picked
 
 
-def _ai_results(session: Session, now: datetime) -> dict[int, int]:
-    """按正文出处数用户还能看的 AI 解读、条款对照结果：解读读的是哪份文件的正文（快照里的 body_id，
-    同一通知自己没正文时用归并组里的另一份），那份正文变了结果才作废（interpret.body_changed）。
-    旧任务没记 body_id 的，算在它自己的文件上（读的一般就是它自己的正文）。"""
-    counts: dict[int, int] = {}
+def _ai_results(session: Session, now: datetime) -> dict[int, list[str | None]]:
+    """用户还没过期的 AI 解读、条款对照结果，按读的是哪份文件的正文分（快照里的 body_id，同一通知
+    自己没正文时用归并组里的另一份；旧任务没记的按它自己的文件），每个记下当时的正文指纹
+    （body_hash）。那份正文变了结果才作废（interpret.body_changed），统计时只数指纹还对得上
+    （还在显示）的。"""
+    hashes: dict[int, list[str | None]] = {}
     rows = session.execute(
         select(AdvisorTask.snapshot, AdvisorTask.input_json).where(
             AdvisorTask.kind.in_(AI_TASK_KINDS),
@@ -238,16 +238,21 @@ def _ai_results(session: Session, now: datetime) -> dict[int, int]:
             snapshot.get("body_id") or snapshot.get("doc_id") or (input_json or {}).get("doc_id")
         )
         if document_id:
-            counts[document_id] = counts.get(document_id, 0) + 1
-    return counts
+            hashes.setdefault(document_id, []).append(snapshot.get("body_hash"))
+    return hashes
 
 
 def _impact(
-    session: Session, document_id: int, old: str, new: str, ai_results: dict[int, int]
+    session: Session,
+    document_id: int,
+    old: str,
+    new: str,
+    ai_results: dict[int, list[str | None]],
 ) -> Impact:
     """写入后要重新处理的已有结果。支持方式、申报条件直接用对外读取的条件数（预览时库里还是旧正文，
     对外条件里的"当前正文"就是旧正文；换了以后它们都对不上新正文的指纹）。"""
     # 延迟引入：v1 装载时会引入一大批模块，和这里互相引用
+    from youju.ai import interpret
     from youju.api import v1
     from youju.conditions import _public_lists
 
@@ -289,14 +294,11 @@ def _impact(
         .select_from(AICheck)
         .where(AICheck.document_id == document_id, AICheck.task.in_(AI_CHECK_TASKS))
     )
-    return Impact(
-        approved or 0,
-        conditions or 0,
-        reposts or 0,
-        ai_results.get(document_id, 0),
-        lost,
-        checks or 0,
-    )
+    # 还在显示的：快照里的正文指纹（interpret.digest，和 prepare 一样算）还对得上现在这份；
+    # 没记指纹的旧任务算上（宁可多数）
+    shown = interpret.digest(old)
+    ai = sum(1 for digest in ai_results.get(document_id, []) if digest in (None, shown))
+    return Impact(approved or 0, conditions or 0, reposts or 0, ai, lost, checks or 0)
 
 
 def _write(session: Session, document_id: int, old: str, new: str) -> str:

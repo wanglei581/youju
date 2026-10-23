@@ -250,16 +250,20 @@ def _longest(nodes: list[etree._Element]) -> etree._Element | None:
 def _editor_node(root: etree._Element) -> etree._Element | None:
     """TRS 编辑器正文区（_EDITOR），只在没有歧义时用：够长的编辑器块只有一份，或几份一模一样
     （电脑版、手机版，取第一份）；页面有 #zoom 等正文标记的，要有一份在它里面（在外面的可能是
-    侧栏里的另一段）。几份内容不一样（正文可能分成了几段）、或都不在正文标记里的，不用，
-    照旧走通用规则。"""
+    侧栏里的另一段），而且正文标记里编辑器块之外不到 20 字（10/23 抽样只见过"相关文档"四个字；
+    更多的可能是正文的后半段）。不满足的不用，照旧走通用规则。"""
     blocks = [n for n in root.xpath(_EDITOR) if len(" ".join(_plain_lines(n))) >= 20]
     if not blocks or len({"\n".join(_plain_lines(n)) for n in blocks}) > 1:
         return None
     marked = [m for m in root.xpath(_MARKED_BODY) if len(" ".join(_plain_lines(m))) >= 20]
     if not marked:
         return blocks[0]
-    inside = [n for n in blocks if any(n is m or m in n.iterancestors() for m in marked)]
-    return inside[0] if inside else None
+    for block in blocks:
+        for container in marked:
+            if block is container or container in block.iterancestors():
+                rest = " ".join(_plain_lines(container, frozenset(blocks)))
+                return block if len(rest) < 20 else None
+    return None
 
 
 def _script_body_node(root: etree._Element) -> etree._Element | None:
@@ -489,6 +493,58 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
         if len(result) >= MAX_ATTACHMENTS:
             break
     return result
+
+
+# 看不见的：脚本、样式里的字，标了 hidden 或行内样式隐藏的元素
+_INVISIBLE_TAGS = {"script", "style", "noscript", "template"}
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+
+
+def outside_body_text(html_text: str, url: str) -> str | None:
+    """网页上看得见、但不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines
+    同样规则不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju
+    refetch-bodies 核对"去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本或隐藏的
+    元素里，这里也找不到。解析不了、没有正文区的返回 None。"""
+    if not html_text.strip():
+        return None
+    try:
+        root = html.fromstring(html_text)
+    except (etree.ParserError, ValueError):
+        return None
+    body = root.xpath("//body")
+    host = (urlsplit(url).hostname or "").lower()
+    node = _body_node(root, host)
+    if not body or node is None:
+        return None
+    junk = _SITE_JUNK.get(host)
+    skipped = frozenset(node.xpath(junk)) if junk else frozenset()
+    parts: list[str] = []
+
+    def visit(element: etree._Element, inside: bool) -> None:
+        if not isinstance(element.tag, str):
+            return
+        if element.tag.lower() in _INVISIBLE_TAGS or element.get("hidden") is not None:
+            return
+        if _HIDDEN_STYLE.search(element.get("style") or ""):
+            return
+        if element is node:
+            inside = True
+        elif inside and (
+            element in skipped
+            or element.tag.lower() in {"nav", "footer"}
+            or _JUNK_CLASS.search(f"{element.get('class', '')} {element.get('id', '')}")
+        ):
+            inside = False
+        if not inside:
+            parts.append(element.text or "")
+        for child in element:
+            visit(child, inside)
+            if not inside:
+                parts.append(child.tail or "")
+        parts.append("\n")
+
+    visit(body[0], False)
+    return "".join(parts)
 
 
 def parse_detail(html_text: str, url: str) -> DetailResult:
