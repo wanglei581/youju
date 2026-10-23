@@ -273,6 +273,7 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
             limit=len(args.ids) if args.ids else args.limit,
             after_id=args.after_id,
             ids=args.ids,
+            upto_id=args.upto_id,
             max_workers=args.workers,
         )
     results = report.results
@@ -1538,6 +1539,11 @@ def main(argv: list[str] | None = None) -> int:
         "--ids",
         type=_id_list,
         help="只处理这几份（逗号隔开，不看 --limit）：重试没打开的，编号见输出的 retry 那一行",
+    )
+    p.add_argument(
+        "--upto-id",
+        type=int,
+        help="只处理编号不大于此值的文件（写入时填预览那一批的 last_id，写的就是预览过的那一批）",
     )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)

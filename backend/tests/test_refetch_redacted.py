@@ -299,12 +299,24 @@ def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
     assert session.scalar(select(func.count(AICheck.id))) == 1
 
 
-def test_rerun_after_interruption_recomputes(world, session, monkeypatch) -> None:
-    """正文换了、还没重算就中断：重跑时这份是"不用改"，也要补算截止候选和"能不能 AI 解读"。"""
+def test_interrupted_write_rolls_back_the_whole_document(world, session, monkeypatch) -> None:
+    """换正文、清 AI 截止检查、重算候选在同一个事务里：重算时出错，这一份整个回滚（还是旧正文、带着
+    标记，AI 检查还在），重跑照常换。"""
     import youju.extract.service as extract_service
 
     docs, fake = world
     swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    session.add(
+        AICheck(
+            document_id=swallowed.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
     real = extract_service.extract_existing
 
     def interrupted(*args, **kwargs):
@@ -313,17 +325,47 @@ def test_rerun_after_interruption_recomputes(world, session, monkeypatch) -> Non
     monkeypatch.setattr(extract_service, "extract_existing", interrupted)
     with pytest.raises(RuntimeError):
         refetch_redacted(session, apply=True, limit=50, fetcher=fake)
-    assert "11月20日前" in body_of(session, swallowed.id)
+    session.rollback()  # 命令行退出时关掉会话，没提交的都回滚
+    assert body_of(session, swallowed.id) == stored
+    checks = select(func.count(AICheck.id)).where(AICheck.document_id == swallowed.id)
+    assert session.scalar(checks) == 1
+    monkeypatch.setattr(extract_service, "extract_existing", real)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in report.results}[swallowed.id] == "fixed"
     due = select(DocumentDeadline.candidate_date).where(
         DocumentDeadline.document_id == swallowed.id
     )
-    assert session.scalars(due).all() == []
-    monkeypatch.setattr(extract_service, "extract_existing", real)
+    assert date(2026, 11, 20) in session.scalars(due).all()
+    assert session.scalar(checks) == 0
+
+
+def test_same_bodies_get_recomputed(world, session) -> None:
+    """已经换过、还带标记的（"不用改"）也重算截止候选和"能不能 AI 解读"：以前没算完的能补上。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    detail = session.get(DocumentDetail, swallowed.id)
+    detail.body_text = redact_sensitive(parse_detail(SWALLOWED, swallowed.url).raw_body)
+    session.commit()
     report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
     assert {r.document_id: r.result for r in report.results}[swallowed.id] == "same"
+    due = select(DocumentDeadline.candidate_date).where(
+        DocumentDeadline.document_id == swallowed.id
+    )
     assert date(2026, 11, 20) in session.scalars(due).all()
     assert report.eligibility_refreshed
     assert session.get(AIEligibility, swallowed.id) is not None
+
+
+def test_upto_id_keeps_the_previewed_batch(world, session) -> None:
+    """写入时用 upto_id 钉住预览那一批：预览和写入之间有一份被别的任务换了正文、没了标记，名额不会
+    由后面没预览过的补上。"""
+    docs, fake = world
+    preview = refetch_redacted(session, limit=2, fetcher=fake)
+    previewed = [r.document_id for r in preview.results]
+    session.get(DocumentDetail, previewed[0]).body_text = "别的任务刚写入的正文，电话[电话已脱敏]"
+    session.commit()
+    report = refetch_redacted(session, apply=True, limit=2, upto_id=previewed[-1], fetcher=fake)
+    assert [r.document_id for r in report.results] == previewed[1:]
 
 
 def test_body_over_length_limit_is_not_replaced(world, session, monkeypatch) -> None:
@@ -364,6 +406,7 @@ def test_written_bodies_get_candidates_even_if_interrupted(session, monkeypatch)
     monkeypatch.setattr(eligibility, "refresh", interrupted)
     with pytest.raises(RuntimeError):
         refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    session.rollback()  # 只看已经提交的
     body = body_of(session, doc.id)
     assert "联系电话[电话已脱敏]" in body and "[姓名已脱敏]" not in body
     due = session.scalars(

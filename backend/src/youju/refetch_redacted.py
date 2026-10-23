@@ -172,9 +172,15 @@ def count_affected(session: Session) -> dict[str, int | None]:
 
 
 def _candidates(
-    session: Session, limit: int, after_id: int | None, ids: list[int] | None = None
+    session: Session,
+    limit: int,
+    after_id: int | None,
+    ids: list[int] | None = None,
+    upto_id: int | None = None,
 ) -> list[tuple[int, str, str, str]]:
-    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。ids：只看这几份（重试没打开的）。"""
+    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。ids：只看这几份（重试没打开的）；upto_id：
+    只看编号不大于它的（写入时用预览那一批的 last_id：预览和写入之间有的正文被别的任务换过、没了
+    标记，名额也不会由后面没预览过的补上）。"""
     stmt = (
         _scope(select(Document.id, Document.url, Document.title, DocumentDetail.body_text))
         .where(or_(*(_has(m) for m in MARKERS)))
@@ -185,6 +191,8 @@ def _candidates(
         stmt = stmt.where(Document.id > after_id)
     if ids is not None:
         stmt = stmt.where(Document.id.in_(ids))
+    if upto_id is not None:
+        stmt = stmt.where(Document.id <= upto_id)
     return [(int(i), url, title, body) for i, url, title, body in session.execute(stmt).all()]
 
 
@@ -296,8 +304,8 @@ def _write(
     session: Session, doc_id: int, stored: str, after: str, recheck_ai: bool
 ) -> tuple[bool, int]:
     """换一份正文：库里还是选中时那版（按指纹比，期间被别的任务重抓过的不改）才换；找回了日期、时刻的
-    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。
-    返回 (换了没有, 清掉几条)。"""
+    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。不提交：调用的地方接着在
+    同一个事务里重算这一份的截止候选、一起提交。返回 (换了没有, 清掉几条)。"""
     changed = session.execute(
         update(DocumentDetail)
         .where(
@@ -313,7 +321,6 @@ def _write(
         cleared = session.execute(
             delete(AICheck).where(AICheck.document_id == doc_id, AICheck.task == "deadlines")
         ).rowcount
-    session.commit()
     return bool(changed), cleared
 
 
@@ -355,14 +362,16 @@ def refetch_redacted(
     limit: int = 200,
     after_id: int | None = None,
     ids: list[int] | None = None,
+    upto_id: int | None = None,
     fetcher: detail_service.DetailFetcher | None = None,
     max_workers: int | None = None,
 ) -> RefetchReport:
     """预览或写入（见模块说明）。按编号从小到大最多 limit 份，分批时用 after_id 接着上一批；
-    ids：只看这几份（重试没打开的）。预览和写入走同一套抓取和解析（detail_service._fetch_outcomes）。"""
+    ids：只看这几份（重试没打开的）；upto_id：只看编号不大于它的（写入时钉住预览那一批）。预览和写入
+    走同一套抓取和解析（detail_service._fetch_outcomes）。"""
     if limit < 1:
         raise ValueError("limit 必须大于 0")
-    targets = _candidates(session, limit, after_id, ids)
+    targets = _candidates(session, limit, after_id, ids, upto_id)
     report = RefetchReport()
     if not targets:
         return report
@@ -435,14 +444,17 @@ def refetch_redacted(
     report.ai_checks = 0
     for result, stored, after in pending:
         changed, cleared = _write(session, result.document_id, stored, after, result.recheck_ai)
-        report.ai_checks += cleared
         if changed:
-            written.append(result.document_id)
-            # 换了正文当场重算它的规则截止候选：中途中断时（正文已换，正文里也可能没了标记、重跑
-            # 选不到）不会留下没重算的
+            # 同一个事务里重算这一份的规则截止候选，extract_existing 最后一起提交：换的正文、清掉的
+            # AI 截止检查、新候选要么都落库、要么都不落（中途出错、进程被杀，这一份还是旧正文、带着
+            # 标记，重跑能再选到）
             _, added = extract_existing(session, document_ids=[result.document_id])
             report.new_candidates += added
-        elif session.get(DocumentDetail, result.document_id) is None:
+            report.ai_checks += cleared
+            written.append(result.document_id)
+            continue
+        session.commit()
+        if session.get(DocumentDetail, result.document_id) is None:
             result.result, result.reason = "missing", "详情已删除"
         else:
             # 期间被别的任务重抓过（名单补抓附件等），按那次的结果为准，这里不再改
