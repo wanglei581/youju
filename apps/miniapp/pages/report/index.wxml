@@ -22,7 +22,7 @@
   <view wx:if="{{city || district}}" class="filter" bindtap="clearCity">改看全省</view>
   <picker wx:if="{{tab}}" mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
-<view class="weak cached-note">省市区选项来自微信，不代表已收录；城市一栏选“全部”查全省各级来源；区县一栏选“全部”只查这个市已收录的市级来源，不含区县；直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。没收录的地方查不到，不代表当地没有通知。{{cityError}}</view>
+<view class="weak cached-note">省市区选项来自微信，不代表已收录；城市一栏选“全部”查全省各级来源（省、市、区县都在内）；区县一栏选“全部”只查这个市已收录的市级来源，不含区县；直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。没收录的地方查不到，不代表当地没有通知。{{cityError}}</view>
 <view class="switch-row">
   <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看不筛部门）</text></text>
   <switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对" />

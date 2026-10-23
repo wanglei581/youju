@@ -277,8 +277,8 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
     assert.doesNotMatch(text, /直辖市不选区县时也是|按省级范围查询/, pageName);
     assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
     assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
-    // 城市一栏选"全部"＝全省各级：搜索页在规则第一句，截止页、我的客户页在同一行里
-    assert.match(text, /城市一栏选“全部”(：)?查全省各级来源/, pageName);
+    // 城市一栏选"全部"＝全省各级：搜索页在规则第一句，截止页、我的客户页在同一行里，三页都写"（省、市、区县都在内）"
+    assert.match(text, /城市一栏选“全部”(：)?查全省各级来源（省、市、区县都在内）/, pageName);
   }
 });
 
@@ -304,6 +304,16 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   detail.onLoad({ id: '5' }); await flush();
   const more = findAll(render('pages/detail/index.wxml', { ...detail.data, loading: false }), hasClass('body-more'))[0];
   assert.equal(flat(more), '展开正文');
+  // 正文被截断（只存了一部分）：按钮也不写"全部"；展开后接着写还有多少字、去浏览器看原文
+  const cut = detailPage(() => ({ ...DOC, kind: '政策', body: { status: 'ok', text: '一'.repeat(800), total: 3000, truncated: true } }));
+  cut.onLoad({ id: '5' }); await flush();
+  let root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
+  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '展开正文');
+  assert.doesNotMatch(textOf(root), /展开全部|展开全文/);
+  cut.toggleBody();
+  root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
+  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '收起');
+  assert.equal(flat(findAll(root, hasClass('body-rest'))[0]), '后面还有约2200字，请复制原文链接在浏览器查看。');
 });
 
 test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具按钮、在售时购买卡片的按钮都是白底次按钮；底栏"文件"改名"导出"，页面标题"导出记录"', () => {
