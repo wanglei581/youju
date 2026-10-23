@@ -203,8 +203,8 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含还没截止的（日期已人工核对，或机器摘录·未经人工核对），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：只列申报通知，含还没截止的（日期已人工核对，或机器摘录·未经人工核对），以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 7 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在7天以后，未经人工核对）；可能7天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -278,7 +278,7 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
     assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
     assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
     // 城市一栏选"全部"＝全省各级：搜索页在规则第一句，截止页、我的客户页在同一行里，三页都写"（省、市、区县都在内）"
-    assert.match(text, /城市一栏选“全部”(：)?查全省各级来源（省、市、区县都在内）/, pageName);
+    assert.ok(text.includes(pageName === 'search' ? '城市一栏选“全部”：查全省各级来源（省、市、区县都在内）' : '城市一栏选“全部”查全省各级来源（省、市、区县都在内）；'), pageName);
   }
 });
 
@@ -310,6 +310,7 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   let root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
   assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '展开正文');
   assert.doesNotMatch(textOf(root), /展开全部|展开全文/);
+  assert.equal(findAll(root, hasClass('body-rest')).length, 0, '折叠时不写后面还有多少字');
   cut.toggleBody();
   root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
   assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '收起');
