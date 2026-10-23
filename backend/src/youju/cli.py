@@ -91,6 +91,7 @@ def _cmd_import_sources(args: argparse.Namespace) -> int:
 def _cmd_crawl(args: argparse.Namespace) -> int:
     from youju.crawler.fetcher import PoliteFetcher
     from youju.crawler.service import crawl_sources
+    from youju.sources.importer import PENDING
 
     settings = get_settings()
     factory = session_factory()
@@ -102,7 +103,8 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         # 也不抓它们，抓了就有文件，停用也不会让文件下架
         stmt = stmt.where(
             or_(
-                Source.verification_status.is_(None), ~Source.verification_status.startswith("待开")
+                Source.verification_status.is_(None),
+                ~Source.verification_status.startswith(PENDING),
             )
         )
         if args.source_id:

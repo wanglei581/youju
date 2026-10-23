@@ -733,6 +733,19 @@ def test_narrow_title_rules_leave_other_links_alone() -> None:
     assert [i.title for i in items] == [
         f"关于组织申报第{n}批项目的通知（2026年10月修订）" for n in range(1, 5)
     ]
+    # 整条做成链接、分块写，但日期写在补充说明里（不是单独一块），也照旧用整段链接文字
+    rows = "".join(
+        f'<li><a href="/d/{n}.html"><div><span title="关于组织申报第{n}批项目的通知">'
+        f"关于组织申报第{n}批项目的通知</span><span>（2026年10月1{n}日补充）</span></div></a>"
+        f"<span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/d/"
+    )
+    assert [i.title for i in items] == [
+        f"关于组织申报第{n}批项目的通知（2026年10月1{n}日补充）" for n in range(1, 5)
+    ]
     # 数字后面紧跟"号"，是标题自己的开头（"12号文件……"），不删
     rows = "".join(
         f'<li><a href="/m/{n}.html" title="号文件关于第{n}批申报的补充通知">'

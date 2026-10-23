@@ -96,8 +96,8 @@ _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 _ORDINAL = re.compile(r"\s*\d{1,3}\s*[.、]?\s*")
 # 紧跟在数字后面、说明数字是标题一部分的字（"12号文件""2026年""第3批"的"批"）
 _NUMBER_UNITS = tuple("号年月日批项届期条家个万亿次份类点%")
-# 链接里除了标题还写着完整日期（"2026-10-23""2026年10月23日"）：整条做成链接的列表行
-_ROW_DATE = re.compile(r"20\d{2}\s*[-./年]\s*\d{1,2}\s*[-./月]\s*\d{1,2}")
+# 只写着一个完整日期的元素（<label>2026-10-23</label>）：整条做成链接的列表行里，日期单独成块
+_DATE_ONLY = re.compile(r"\s*20\d{2}\s*[-./年]\s*\d{1,2}\s*[-./月]\s*\d{1,2}\s*日?\s*")
 # 列表行的块级元素：普通标题链接里不会有，整条做成链接的列表行（标题、日期、摘要分块）才有
 _BLOCK_TAGS = {"div", "p", "ul", "ol", "li", "dl", "dt", "dd", "table", "section", "article"}
 
@@ -114,8 +114,8 @@ def _inner_title(a: etree._Element, text: str) -> str | None:
     """整条做成一个链接、标题写在里面某个元素的 title 属性里的（武汉市经信局：
     <a><span>23</span><span>2026-10</span><span title="完整标题">完整标题</span>摘要……</a>），
     链接文字里混着日期和正文摘要：用那个 title 属性。只认链接里分块写（有 div 这类块级元素）、
-    title 属性像标题、链接文字里原样写着它，而且标题以外的文字写着完整日期的——普通链接里标题
-    后面多一段补充说明的不算，照旧用整段文字。"""
+    title 属性像标题、链接文字里原样写着它，而且另有一个元素只写着完整日期的——标题后面多一段
+    补充说明（哪怕说明里带日期）的不算，照旧用整段文字。"""
     if not any(isinstance(el.tag, str) and el.tag in _BLOCK_TAGS for el in a.iterdescendants()):
         return None
     compact = text.replace(" ", "")
@@ -126,9 +126,20 @@ def _inner_title(a: etree._Element, text: str) -> str | None:
         inner = value.replace(" ", "")
         if not inner or len(inner) >= len(compact) or inner not in compact:
             continue
-        if _looks_like_title(value) and _ROW_DATE.search(compact.replace(inner, " ", 1)):
+        if _looks_like_title(value) and _has_date_node(a, el):
             return value
     return None
+
+
+def _has_date_node(a: etree._Element, title_el: etree._Element) -> bool:
+    """链接里除标题那块以外，有没有一个元素只写着完整日期。"""
+    inside = set(title_el.iter())
+    return any(
+        isinstance(el.tag, str)
+        and el not in inside
+        and _DATE_ONLY.fullmatch(_clean(el.text_content()))
+        for el in a.iterdescendants()
+    )
 
 
 def _leading_ordinal(a: etree._Element, prefix: str, rest: str) -> bool:

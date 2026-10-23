@@ -10,19 +10,22 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from youju.models import URL_KEY_MAX, Source
+from youju.models import URL_KEY_MAX, Document, Source
 from youju.regions import district_parent_city
 from youju.sources.onboard import checked_city, checked_district
+
+# 试跑通过、登记好了，但先不抓取、不对外的来源（地市第一批，D-086 ④）的验证状态开头
+PENDING = "待开"
 
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
     ("已验证", "static", True),
     # 试跑通过、登记好了，但先不抓取、不对外（地市第一批，D-086 ④）：创始人同意开哪几个以后，
     # 把那几行改成"已验证（……）"再导入一次才启用
-    ("待开", "static", False),
+    (PENDING, "static", False),
     ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
     ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
     ("本机无法访问", "manual", False),
@@ -104,5 +107,19 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
             summary.enabled += 1
         else:
             summary.disabled += 1
+    # "待开"的来源对外不可见只靠"从没抓过、没有文件"：停用不会让已有文件下架。导入以后还有
+    # 待开的来源带着文件（例如以前被开过、抓过，又改回待开），整次导入作废，要先走下架
+    session.flush()
+    leaking = session.scalar(
+        select(func.count(Document.id))
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.verification_status.startswith(PENDING))
+    )
+    if leaking:
+        session.rollback()
+        raise ValueError(
+            f"有 {leaking} 份文件属于“{PENDING}”的来源：这些来源已经对外过，不能改回待开；"
+            "先下架这些文件，或把来源改成别的状态"
+        )
     session.commit()
     return summary

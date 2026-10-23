@@ -143,3 +143,42 @@ def test_city_candidate_manifest_stays_disabled(session):
             )
     second = import_sources(session, path)
     assert (second.created, second.updated, second.enabled) == (0, 22, 0)
+
+
+def test_pending_source_with_documents_aborts_import(session, tmp_path: Path) -> None:
+    """“待开”的来源对外不可见只靠没有文件：导入后还有待开的来源带着文件，整次导入作废。"""
+    from datetime import UTC, datetime
+
+    from youju.models import Document
+
+    header = "层级,省份,城市,部门,部门全称,栏目名称,栏目URL,验证状态\n"
+    path = tmp_path / "city.csv"
+    url = "https://kjj.example.gov.cn/tzgg/"
+    path.write_text(
+        header + f"市级,广东,广州,科技,广州市科学技术局,通知公告,{url},已验证（测试）\n",
+        encoding="utf-8-sig",
+    )
+    import_sources(session, path)
+    source = session.scalar(select(Source))
+    now = datetime.now(UTC)
+    session.add(
+        Document(
+            source_id=source.id,
+            url=url + "1.html",
+            url_key="kjj.example.gov.cn/tzgg/1.html",
+            title="关于组织申报测试项目的通知",
+            first_seen_at=now,
+            last_seen_at=now,
+            is_baseline=True,
+            status="discovered",
+        )
+    )
+    session.commit()
+    path.write_text(
+        header + f"市级,广东,广州,科技,广州市科学技术局,通知公告,{url},待开（测试）\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(ValueError, match="不能改回待开"):
+        import_sources(session, path)
+    session.expire_all()
+    assert session.scalar(select(Source)).enabled is True
