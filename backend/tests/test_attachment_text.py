@@ -964,8 +964,11 @@ def test_mask_uses_body_rules_then_spaced_forms() -> None:
     }
     for raw, masked in cases.items():
         assert at.mask(raw) == masked, raw
-    # 正文规则本身会吞字（见 attachment_text._EMAIL）：附件不能照搬
-    assert body_rules.redact_sensitive("于7月2日前发送至a@b.com") == "[邮箱已脱敏]"
+    # 正文规则 10/20 起也只遮邮箱地址本身（以前会把"于7月2日前发送至"一起遮掉）
+    # "联系人："后面先是单位名的：只遮姓名（以前附件这里另遮前 2–8 个汉字，单位名被当成姓名）
+    assert at.mask("联 系 人：省科技厅高新处 张三") == "联 系 人：省科技厅高新处 [姓名已脱敏]"
+    assert at.mask("联系人：省科技厅高新处 张三") == "联系人：省科技厅高新处 [姓名已脱敏]"
+    assert body_rules.redact_sensitive("于7月2日前发送至a@b.com") == "于7月2日前发送至[邮箱已脱敏]"
     # 写了"账号"的：对公账号过不了 Luhn、可能超过 19 位，也不留尾巴；后面跟着的年份不算进去
     assert at.mask("开户账号：33050161613500000123") == "开户账号：[银行账号已脱敏]"
     assert at.mask("账号：3305 0161 6135 0000 0123") == "账号：[银行账号已脱敏]"
@@ -1148,7 +1151,7 @@ def test_mask_label_wording_bank_names_decimals_and_account_cells() -> None:
     }.items():
         assert at.mask(raw) == masked, raw
     for keep in (
-        "项目产值 13812345678.50元",  # 正文规则会把小数点前面的 11 位当手机号：小数不交给它
+        "项目产值 13812345678.50元",  # 小数点前面的 11 位不当手机号
         "1350 820 4500.5",
         "账户名称：某某科技有限公司 1350 820",
     ):
