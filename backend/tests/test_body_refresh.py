@@ -394,6 +394,20 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover
         r'<div style="d\69 splay:none">{}</div>',
         '<div style="font-size:var(--text-size)">{}</div>',
         '<div style="all:initial;font-size:0">{}</div>',
+        '<font color="#ffffff">{}</font>',
+        '<table bgcolor="#ffffff"><tr><td><font color="#ffffff">{}</font></td></tr></table>',
+        '<table><tr><td bgcolor="#ffffff">{}</td></tr></table>',
+        "<canvas>{}</canvas>",
+        "<iframe>{}</iframe>",
+        "<video>{}</video>",
+        "<audio>{}</audio>",
+        "<object>{}</object>",
+        "<datalist><option>{}</option></datalist>",
+        "<dialog>{}</dialog>",
+        "<div popover>{}</div>",
+        "<details>{}<summary>查看详情</summary></details>",
+        "<details><summary>查看详情</summary>{}</details>",
+        "<details><summary>查看详情</summary><summary>{}</summary></details>",
     ],
 )
 def test_hidden_old_clause_is_not_page_chrome(wrapper) -> None:
@@ -428,6 +442,41 @@ def test_plain_inline_layout_does_not_hide_page_chrome(style) -> None:
 def test_hidden_html_ancestor_does_not_prove_page_chrome(attribute) -> None:
     page = read_fixture_html("detail_hubei_kjt_70955").replace("<html", f"<html {attribute}", 1)
     assert _not_on_page(HEAD + TAIL, _page(HUBEI_URL, page)) == HEAD + TAIL
+
+
+@pytest.mark.parametrize("tag", ["html", "body"])
+@pytest.mark.parametrize("attribute", ['text="#fff" bgcolor="#fff"', 'background="white.png"'])
+def test_legacy_ancestor_colors_do_not_prove_page_chrome(tag, attribute) -> None:
+    page = read_fixture_html("detail_hubei_kjt_70955").replace(f"<{tag}", f"<{tag} {attribute}", 1)
+    assert _not_on_page(HEAD + TAIL, _page(HUBEI_URL, page)) == HEAD + TAIL
+
+
+def test_known_sichuan_background_does_not_allow_same_colored_font() -> None:
+    url = "https://kjt.sc.gov.cn/kjt/gstz/example.shtml"
+    clause = "本通知自印发之日起施行。"
+    page = read_fixture_html("detail_sichuan_kjt").replace(
+        "</body>",
+        '<div class="box" style="background-color:#E9F3FD;">'
+        f'<font color="#e9f3fd">{clause}</font></div></body>',
+    )
+    assert _not_on_page([clause], _page(url, page)) == [clause]
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "<dialog open>{}</dialog>",
+        "<details open><summary>查看详情</summary>{}</details>",
+        "<details><summary>{}</summary>折叠后不可见</details>",
+    ],
+)
+def test_explicitly_visible_dynamic_content_and_outer_tail_are_preserved(wrapper) -> None:
+    caption = "普通导航提示"
+    page = read_fixture_html("detail_hubei_kjt_70955").replace(
+        "</body>", wrapper.format(caption) + "容器外尾字</body>"
+    )
+    assert _not_on_page([caption, "容器外尾字", *HEAD, *TAIL], _page(HUBEI_URL, page)) == []
+    assert _not_on_page(["折叠后不可见"], _page(HUBEI_URL, page)) == ["折叠后不可见"]
 
 
 @pytest.mark.parametrize("change", ["none", "host", "clause", "style", "ancestor"])
