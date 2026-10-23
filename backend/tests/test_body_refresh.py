@@ -10,7 +10,7 @@ from youju import cli
 from youju.ai import interpret
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, refresh_bodies, survey, trimmed_lines
-from youju.crawler.detail import parse_detail
+from youju.crawler.detail import parse_detail, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.fields import body_fingerprint
 from youju.models import (
@@ -206,6 +206,15 @@ def _reviewed_results(session, doc: Document) -> None:
             ),
         ]
     )
+    shown = {
+        "body_hash": interpret.digest(OLD),
+        "paragraphs": interpret.split_paragraphs(redact_sensitive(OLD)),
+    }
+    earlier = {
+        "body_hash": interpret.digest("早先"),
+        "paragraphs": interpret.split_paragraphs("早先"),
+    }
+    redacted_before = {**shown, "paragraphs": interpret.split_paragraphs("脱敏规则改过以前的段落")}
     group = RepostGroup(strength="strong", topic="企业自主研发项目纳入省级科技计划")
     user = User(openid="o-refetch")
     session.add_all([group, user])
@@ -225,20 +234,24 @@ def _reviewed_results(session, doc: Document) -> None:
                 snapshot={"doc_id": doc.id, "document_ids": [doc.id, doc.id + 1], **body},
                 result_json={"items": []} if status == "done" else None,
                 row_count=0,
-                idempotency_key=f"{kind}-{status}-{days}-{body}",
+                idempotency_key=f"task-{number}",
                 expires_at=stamp + timedelta(days=days),
             )
             # 只数还在显示的：完成的、没过期的，读的是这份正文（body_id；旧任务没记的按它自己的文件），
-            # 正文指纹还对得上（没记指纹的旧任务也算）。读的是同组另一份的正文、正文早就变过（结果已显示
-            # "通知正文已变化"）、过期的、没完成的不算
-            for kind, status, days, body in (
-                ("interpret", "done", 30, {}),
-                ("clause", "done", 30, {"body_id": doc.id}),
-                ("interpret", "done", 30, {"body_id": doc.id, "body_hash": interpret.digest(OLD)}),
-                ("clause", "done", 30, {"body_id": doc.id, "body_hash": interpret.digest("早先")}),
-                ("interpret", "done", 30, {"body_id": doc.id + 1}),
-                ("interpret", "done", -1, {}),
-                ("clause", "failed", 30, {}),
+            # 读取端判断正文没变（原文指纹、脱敏后的段落都对得上；没记这两项的旧任务也算）。读的是同组
+            # 另一份的正文、正文早就变过、脱敏规则改过段落对不上（这两种已显示"通知正文已变化"）、
+            # 过期的、没完成的不算
+            for number, (kind, status, days, body) in enumerate(
+                (
+                    ("interpret", "done", 30, {}),
+                    ("clause", "done", 30, {"body_id": doc.id}),
+                    ("interpret", "done", 30, {"body_id": doc.id, **shown}),
+                    ("clause", "done", 30, {"body_id": doc.id, **earlier}),
+                    ("interpret", "done", 30, {"body_id": doc.id, **redacted_before}),
+                    ("interpret", "done", 30, {"body_id": doc.id + 1}),
+                    ("interpret", "done", -1, {}),
+                    ("clause", "failed", 30, {}),
+                )
             )
         ]
     )

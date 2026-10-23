@@ -217,29 +217,38 @@ def _candidates(
     return picked
 
 
-def _ai_results(session: Session, now: datetime) -> dict[int, list[str | None]]:
-    """用户还没过期的 AI 解读、条款对照结果，按读的是哪份文件的正文分（快照里的 body_id，同一通知
-    自己没正文时用归并组里的另一份；旧任务没记的按它自己的文件），每个记下当时的正文指纹
-    （body_hash）。那份正文变了结果才作废（interpret.body_changed），统计时只数指纹还对得上
-    （还在显示）的。"""
-    hashes: dict[int, list[str | None]] = {}
-    rows = session.execute(
-        select(AdvisorTask.snapshot, AdvisorTask.input_json).where(
-            AdvisorTask.kind.in_(AI_TASK_KINDS),
-            AdvisorTask.status == "done",
-            AdvisorTask.result_json.is_not(None),
-            AdvisorTask.result_json != JSON.NULL,
-            or_(AdvisorTask.expires_at.is_(None), AdvisorTask.expires_at > now),
-        )
+def _ai_snapshots(session: Session, now: datetime, document_ids: set[int]) -> dict[int, list[dict]]:
+    """用户还没过期的 AI 解读、条款对照结果的快照，按读的是哪份文件的正文分（快照里的 body_id，同一
+    通知自己没正文时用归并组里的另一份；旧任务没记的按它自己的文件），只取这一批文件的。先只取编号
+    和这几个字段，再取要的快照（快照里有整份正文的段落，不全读进内存）。"""
+    alive = (
+        AdvisorTask.kind.in_(AI_TASK_KINDS),
+        AdvisorTask.status == "done",
+        AdvisorTask.result_json.is_not(None),
+        AdvisorTask.result_json != JSON.NULL,
+        or_(AdvisorTask.expires_at.is_(None), AdvisorTask.expires_at > now),
     )
-    for snapshot, input_json in rows:
-        snapshot = snapshot or {}
-        document_id = (
-            snapshot.get("body_id") or snapshot.get("doc_id") or (input_json or {}).get("doc_id")
-        )
-        if document_id:
-            hashes.setdefault(document_id, []).append(snapshot.get("body_hash"))
-    return hashes
+    owner: dict[int, int] = {}
+    for task_id, body_id, doc_id, input_doc_id in session.execute(
+        select(
+            AdvisorTask.id,
+            AdvisorTask.snapshot["body_id"].as_integer(),
+            AdvisorTask.snapshot["doc_id"].as_integer(),
+            AdvisorTask.input_json["doc_id"].as_integer(),
+        ).where(*alive)
+    ):
+        document_id = body_id or doc_id or input_doc_id
+        if document_id in document_ids:
+            owner[task_id] = document_id
+    snapshots: dict[int, list[dict]] = {}
+    ids = sorted(owner)
+    for start in range(0, len(ids), _BATCH):
+        chunk = ids[start : start + _BATCH]
+        for task_id, snapshot in session.execute(
+            select(AdvisorTask.id, AdvisorTask.snapshot).where(AdvisorTask.id.in_(chunk))
+        ):
+            snapshots.setdefault(owner[task_id], []).append(snapshot or {})
+    return snapshots
 
 
 def _impact(
@@ -247,7 +256,7 @@ def _impact(
     document_id: int,
     old: str,
     new: str,
-    ai_results: dict[int, list[str | None]],
+    ai_snapshots: dict[int, list[dict]],
 ) -> Impact:
     """写入后要重新处理的已有结果。支持方式、申报条件直接用对外读取的条件数（预览时库里还是旧正文，
     对外条件里的"当前正文"就是旧正文；换了以后它们都对不上新正文的指纹）。"""
@@ -294,10 +303,18 @@ def _impact(
         .select_from(AICheck)
         .where(AICheck.document_id == document_id, AICheck.task.in_(AI_CHECK_TASKS))
     )
-    # 还在显示的：快照里的正文指纹（interpret.digest，和 prepare 一样算）还对得上现在这份；
-    # 没记指纹的旧任务算上（宁可多数）
-    shown = interpret.digest(old)
-    ai = sum(1 for digest in ai_results.get(document_id, []) if digest in (None, shown))
+    # 还在显示的：用读取端同一个判断（interpret.body_changed，比原文指纹和脱敏后的段落），现在这份
+    # 正文的指纹和段落照 interpret.prepare 的算法算；快照里没记这两项的旧任务算上（宁可多数）
+    current = {
+        "body_hash": interpret.digest(old),
+        "paragraphs": interpret.split_paragraphs(redact_sensitive(old)),
+    }
+    ai = sum(
+        1
+        for snapshot in ai_snapshots.get(document_id, [])
+        if not (snapshot.get("body_hash") and snapshot.get("paragraphs") is not None)
+        or not interpret.body_changed(snapshot, current)
+    )
     return Impact(approved or 0, conditions or 0, reposts or 0, ai, lost, checks or 0)
 
 
@@ -344,7 +361,7 @@ def refresh_bodies(
     targets = _candidates(session, hosts or [], source_ids or [], limit, after_id)
     if not targets:
         return []
-    ai_results = _ai_results(session, datetime.now(UTC))
+    ai_snapshots = _ai_snapshots(session, datetime.now(UTC), {t[0] for t in targets})
     selected = [(document_id, url) for document_id, url, _, _ in targets]
     # 同补详情：网络请求期间不占用数据库连接和行锁
     session.commit()
@@ -380,7 +397,7 @@ def refresh_bodies(
             item.result, item.old_start, item.new_start = "changed", old[:60], new[:60]
             if cut is not None:
                 item.reason = "去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看"
-        item.impact = _impact(session, document_id, old, new, ai_results)
+        item.impact = _impact(session, document_id, old, new, ai_snapshots)
         if apply and (item.result == "trimmed" or include_changed):
             item.reason = _write(session, document_id, old, new) or None
             item.written = item.reason is None

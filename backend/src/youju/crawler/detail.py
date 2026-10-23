@@ -54,6 +54,9 @@ _JUNK_CLASS = re.compile(
 _EDITOR = '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_UEDITOR ")]'
 # 页面自己标的正文区：有它的页面，编辑器块要在它里面才用
 _MARKED_BODY = '//*[@id="zoom" or @id="UCAP-CONTENT" or @id="contentText"]'
+# 正文标记里、编辑器块外面，整行只有这些字的是网页上的栏目标题（10/23 抽样：海南科技厅 #zoom 里
+# 编辑器块后面的"相关文档"），不妨碍用编辑器块
+_EDITOR_SIDE_LABELS = frozenset({"相关文档", "相关链接", "关联链接"})
 _BODY_SELECTORS = (
     '//*[@id="zoom"]',
     '//*[@id="UCAP-CONTENT" or @id="contentText"]',
@@ -250,8 +253,8 @@ def _longest(nodes: list[etree._Element]) -> etree._Element | None:
 def _editor_node(root: etree._Element) -> etree._Element | None:
     """TRS 编辑器正文区（_EDITOR），只在没有歧义时用：够长的编辑器块只有一份，或几份一模一样
     （电脑版、手机版，取第一份）；页面有 #zoom 等正文标记的，要有一份在它里面（在外面的可能是
-    侧栏里的另一段），而且正文标记里编辑器块之外不到 20 字（10/23 抽样只见过"相关文档"四个字；
-    更多的可能是正文的后半段）。不满足的不用，照旧走通用规则。"""
+    侧栏里的另一段），而且正文标记里编辑器块之外只有 _EDITOR_SIDE_LABELS 里的字（别的字哪怕一句
+    也可能是正文的一部分，如"本通知自公布之日起施行。"）。不满足的不用，照旧走通用规则。"""
     blocks = [n for n in root.xpath(_EDITOR) if len(" ".join(_plain_lines(n))) >= 20]
     if not blocks or len({"\n".join(_plain_lines(n)) for n in blocks}) > 1:
         return None
@@ -261,8 +264,8 @@ def _editor_node(root: etree._Element) -> etree._Element | None:
     for block in blocks:
         for container in marked:
             if block is container or container in block.iterancestors():
-                rest = " ".join(_plain_lines(container, frozenset(blocks)))
-                return block if len(rest) < 20 else None
+                rest = _plain_lines(container, frozenset(blocks))
+                return block if set(rest) <= _EDITOR_SIDE_LABELS else None
     return None
 
 

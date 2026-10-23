@@ -331,7 +331,15 @@ def test_editor_block_only_when_unambiguous() -> None:
         f"<div class='mobile'><div class='TRS_UEDITOR'>{notice}</div></div></body></html>"
     )
     assert parse_detail(copies, url).body_text.count("各有关单位") == 1
-    # #zoom 里编辑器块后面还有 20 字以上（可能是正文的后半段）：用 #zoom 整块
+    # #zoom 里编辑器块后面除了"相关文档"这类栏目标题，还有别的字（哪怕一句）：用 #zoom 整块
+    for tail, kept in (("<div>相关文档</div>", False), ("<p>本通知自公布之日起施行。</p>", True)):
+        page = beside.replace(
+            f"<div id='zoom'>{notice}</div>{aside}",
+            f"<div id='zoom'><div class='TRS_UEDITOR'>{notice}</div>{tail}</div>",
+        )
+        assert ("本通知自公布之日起施行" in parse_detail(page, url).body_text) is kept
+        assert "相关文档" not in parse_detail(page, url).body_text
+    # #zoom 里编辑器块后面还有一段：用 #zoom 整块
     split = beside.replace(
         f"<div id='zoom'>{notice}</div>{aside}",
         f"<div id='zoom'><div class='TRS_UEDITOR'>{notice}</div><p>二、申报材料：申请书、"
