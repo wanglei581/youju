@@ -134,6 +134,42 @@ class MaskTests(unittest.TestCase):
         self.assertEqual(SHOW.mask(raw), '[转义嵌套过深，内容已隐藏]')
         self.assertLess(time.monotonic() - started, 2)
 
+    def test_windows_path_ids_are_masked_before_control_escape_decoding(self):
+        # 路径分隔符后的 b/f 也是 UID 的首字母，不能被当成控制字符吞掉后漏出余下15位。
+        for first in 'bf':
+            uid = first + '1a2c3d4e5f60718'
+            for raw in (
+                'C:\\work\\' + uid + '\\1.xlsx',
+                r'C:\work\u005c' + f'\\u{ord(first):04x}' + uid[1:] + r'\1.xlsx',
+            ):
+                with self.subTest(raw=raw):
+                    shown = SHOW.mask(raw)
+                    self.assertEqual(shown, 'C:\\work\\' + uid[:4] + '*\\1.xlsx')
+                    self.assertNotIn(uid[1:], shown)
+                    self.assertEqual(SHOW.mask(shown), shown)
+        # 真正的控制字符后跟编号、IP，依然要解开边界后遮蔽。
+        for escape in (r'\b', r'\f'):
+            self.assertEqual(SHOW.mask(escape + UID), ' 9f3a*')
+            self.assertEqual(SHOW.mask(escape + IP4), ' 203.0.*.*')
+
+    def test_backslash_runs_without_escape_suffix_have_bounded_work(self):
+        # 解码会制造长反斜杠串，下一轮不能从每个位置重新试整个后缀。
+        # 独立进程有硬超时，旧规则退化时不会把测试本身无限卡住。
+        code = (
+            'import importlib.util, sys; '
+            'spec = importlib.util.spec_from_file_location("show", sys.argv[1]); '
+            'show = importlib.util.module_from_spec(spec); spec.loader.exec_module(show); '
+            'slash = chr(92); '
+            'assert show.mask((slash + "u005c") * 100000) == slash * 100000; '
+            'assert show.mask(slash * 100000 + "q") == slash * 100000 + "q"; '
+            'print("ok")'
+        )
+        run = subprocess.run(
+            [sys.executable, '-B', '-c', code, str(TEAM / 'cloud_logs_show.py')],
+            capture_output=True, text=True, timeout=3,
+        )
+        self.assertEqual((run.returncode, run.stdout, run.stderr), (0, 'ok\n', ''))
+
     def test_lines_mask_before_truncating_and_filter_on_masked_text(self):
         data = {'results': [result(access_line()), result('x' * 290 + f' {IP4} tail'), result(f'删除 advisor/out/{UID}/1.xlsx 失败'),
                             {'Timestamp': 't', 'Content': f'not json {IP4}'},

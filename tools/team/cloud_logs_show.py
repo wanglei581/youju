@@ -5,7 +5,8 @@ r"""把 cloud-logs.cjs 写下的结果文件整理成"时间 容器 内容"，�
 
 为什么遮蔽：读日志的是 AI 成员，显示出来的内容会发到境外的模型服务，而隐私保护指引写的是不向境外
 传输（个人信息保护影响评估第六节（二）第 6 条、（三）第 7 条）。遮蔽规则就是下面这几条：
-- 先把反斜杠转义还原再认（日志内容本身常是 JSON 文字或 Python repr）：\n、\r、\t、\b、\f 和控制字符显示成空格，
+- 每轮先遮可直接辨认的标识，再把反斜杠转义还原继续认（日志内容本身常是 JSON 文字或 Python repr）：
+  \n、\r、\t、\b、\f 和控制字符显示成空格；Windows 路径里已遮过的 b/f 开头编号保留前缀。
   \uXXXX、\xXX 还原成原字符（前面有几个反斜杠都算）。编码过的反斜杠可能构成下一层转义，最多还原 8 轮；
   超限整段隐藏。不然转义里的字母、数字紧贴在编号或 IP 前面，认不出边界。
 - 文件编号：cloud://… 整段遮掉。
@@ -26,8 +27,11 @@ import json
 import re
 import sys
 
-# 兼顾 JSON 和 Python repr；前面连着几个反斜杠都算进去。
-_ESCAPE = re.compile(r"\\+(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2})|[nrtbf])")
+# 只从一串反斜杠的开头尝试：没有可解码后缀时即使回退，也不会从每个反斜杠重扫整串。
+# 已遮过的 b/f 开头 UID（如 Windows 路径里的 \b1a2*）不是 \b/\f 控制字符。
+_ESCAPE = re.compile(
+    r"(?<!\\)\\+(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2})|[nrt]|[bf](?![0-9A-Fa-f]{3}\*))"
+)
 _FILE_ID = re.compile(r"cloud://\S+")
 _FIELD = re.compile(
     r"""(?P<kq>\\?["'])(?P<key>ip|uid)(?P=kq)(?P<sep>\s*:\s*)(?P<vq>\\?["'])(?P<val>.*?)(?P=vq)""",
@@ -116,10 +120,20 @@ def _unescape(m):
     return chr(c)
 
 
+def _mask_tokens(text):
+    """先遮已经可辨认的标识，防止解码把路径中 b/f 开头的 UID 吞掉首字母。"""
+    text = _OPENID.sub(lambda m: _keep4(m.group(0)), text)
+    text = _HEX16.sub(lambda m: _keep4(m.group(0)), text)
+    # 先 IPv6 后 IPv4：嵌在 IPv6 里的 IPv4（2001:db8::203.0.113.9）随 IPv6 一起遮
+    text = _V6_RUN.sub(_v6, text)
+    return _IPV4.sub(r"\1.\2.*.*", text)
+
+
 def mask(text):
     # 例如 \u005cn 会先变成 \n，再变成空格。限制轮数避免恶意深层编码造成平方级耗时；
     # 达到上限仍有可解码转义就隐藏整段，不把尚未规范化的编号交给边界正则。
     for _ in range(8):
+        text = _mask_tokens(text)
         text, count = _ESCAPE.subn(_unescape, text)
         if not count:
             break
@@ -127,11 +141,7 @@ def mask(text):
         return "[转义嵌套过深，内容已隐藏]"
     text = _FILE_ID.sub("cloud://…", text)
     text = _FIELD.sub(_field, text)
-    text = _OPENID.sub(lambda m: _keep4(m.group(0)), text)
-    text = _HEX16.sub(lambda m: _keep4(m.group(0)), text)
-    # 先 IPv6 后 IPv4：嵌在 IPv6 里的 IPv4（2001:db8::203.0.113.9）随 IPv6 一起遮
-    text = _V6_RUN.sub(_v6, text)
-    return _IPV4.sub(r"\1.\2.*.*", text)
+    return _mask_tokens(text)
 
 
 def _mask_values(value):
