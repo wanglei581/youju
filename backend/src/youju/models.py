@@ -53,6 +53,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class LookupRevision(Base):
+    """名单语义写入由数据库触发器同事务升版；API 只读。"""
+
+    __tablename__ = "lookup_revision"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_lookup_revision_singleton"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    revision: Mapped[int] = mapped_column(BigInteger)
+    cursor_key: Mapped[str] = mapped_column(String(64))
+
+
 class JobRun(Base):
     """定时任务运行台账；摘要只记任务结果，不复制命令输出或异常正文。"""
 

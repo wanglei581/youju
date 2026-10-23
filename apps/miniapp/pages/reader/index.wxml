@@ -8,6 +8,7 @@
     <view wx:if="{{notice}}" class="notice">{{notice}}</view>
     <view wx:if="{{scannedPages}}" class="notice">含 {{scannedPages}} 个扫描页，未读取的内容不计作已完成。</view>
     <view wx:for="{{segments}}" wx:key="n" class="segment">
+      <view wx:if="{{item.ocr}}" class="notice">以下为机器识别文字，可能有误，未保留原版式；请结合来源和上下文核对。</view>
       <text wx:if="{{item.loc}}" class="muted loc">{{item.loc}}</text>
       <text wx:if="{{item.text && !item.cells.length}}" class="reading-text" user-select>{{item.text}}</text>
       <scroll-view wx:if="{{item.cells.length}}" scroll-x class="table-scroll">

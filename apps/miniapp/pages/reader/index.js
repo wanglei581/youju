@@ -3,6 +3,7 @@ const api = require('../../utils/api.js');
 const STATUS = {
   partial: '内容尚不完整，请勿据此认定已读到全部原文。', scan: '扫描页尚未形成可阅读内容。',
   empty: '暂未取得可阅读内容。', unavailable: '这份内容暂不可用。',
+  ambiguous: '这条记录对应多个位置，暂不能确定唯一命中依据。',
   list: '名单仅提供已提取的企业查询结果，暂不提供完整名单。', unsupported: '该格式暂不能在站内阅读。',
 };
 // 不把服务端字符串解释成 HTML；表格按实际单元格排列，不推测页码或字段。
@@ -15,7 +16,7 @@ function segmentsOf(items) {
     const labels = { page: '第', sheet: '工作表', row: '行', table: '表', slide: '幻灯片' };
     const loc = s.loc && typeof s.loc === 'object' ? Object.keys(labels).filter((key) => s.loc[key] != null)
       .map((key) => `${labels[key]} ${s.loc[key]}${key === 'page' ? ' 页' : ''}`).join(' · ') : '';
-    return { n: s.n, kind: s.kind, text: s.text || '', loc,
+    return { n: s.n, kind: s.kind, text: s.text || '', loc, ocr: !!(s.loc && s.loc.ocr === true),
       cells: cells.map((cell) => ({ c: cell.c, t: cell.t, h: typeof cell.h === 'string' ? cell.h : '' })) };
   });
 }
@@ -23,7 +24,7 @@ Page({
   data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '',
     segments: [], nextCursor: null, page: 1, totalSegments: 0, scannedPages: 0, complete: false },
   onLoad(q) {
-    this.docId = String(q.id || ''); this.attachmentId = q.attachment || '';
+    this.docId = String(q.id || ''); this.attachmentId = q.attachment || ''; this.entryId = q.entry || '';
     this.cursors = ['']; this.cursorIndex = 0;
   },
   onShow() {
@@ -50,10 +51,11 @@ Page({
     const cursor = this.cursors[this.cursorIndex];
     const revision = this.data.revision;
     this.setData({ loading: true, error: '', changed: false, segments: [], complete: false });
-    if (!/^\d+$/.test(this.docId) || this.attachmentId && !/^\d+$/.test(this.attachmentId)) {
+    if (!/^\d+$/.test(this.docId) || this.attachmentId && !/^\d+$/.test(this.attachmentId) || this.entryId && !/^\d+$/.test(this.entryId)) {
       this.setData({ loading: false, error: '阅读地址无效，请返回文件详情重新打开。' }); return Promise.resolve();
     }
-    return api.reading(this.docId, this.attachmentId, { cursor, revision }).then((res) => {
+    const request = this.entryId ? api.entryLocation(this.entryId, { cursor: cursor || '0', revision }) : api.reading(this.docId, this.attachmentId, { cursor, revision });
+    return request.then((res) => {
       if (!current()) return;
       if (!res) throw new Error('阅读内容格式有误，请重试');
       if (!['ok', 'partial'].includes(res.status)) {
@@ -67,6 +69,7 @@ Page({
       }
       const segments = segmentsOf(res.segments || []);
       const next = res.nextCursor == null ? null : String(res.nextCursor);
+      if (this.entryId && next !== null) throw new Error('命中依据分页信息有误，请返回重新查询');
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('阅读分页信息有误，请重试');
       this.setData({ title: res.title || '站内阅读', source: res.source || {}, revision: res.revision,
         status: res.status, notice: res.notice || STATUS[res.status] || (res.status === 'ok' ? '' : '内容尚未完成处理。'),
