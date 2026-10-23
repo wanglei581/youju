@@ -9,7 +9,7 @@ from tests.conftest import read_fixture_html
 from youju import cli
 from youju.ai import interpret
 from youju.crawler import detail_service
-from youju.crawler.body_refresh import Impact, refresh_bodies, survey, trimmed_lines
+from youju.crawler.body_refresh import Impact, _not_on_page, refresh_bodies, survey, trimmed_lines
 from youju.crawler.detail import parse_detail, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.fields import body_fingerprint
@@ -332,7 +332,16 @@ def test_other_changes_are_written_only_when_asked(session) -> None:
     ]
 
 
-def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        "<script>var old = '八、其他 本通知自印发之日起施行。';</script>",
+        "<div hidden><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
+        '<div style="display: none"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        '<div style="VISIBILITY: HIDDEN !important"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+    ],
+)
+def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover) -> None:
     """只是少了开头结尾几行、但少的那几行原网页上已经没有了（原网页改过、删了内容）：不算"只去掉网页
     上的字"，归其他变化，要人看过加 include_changed 才换。"""
     edited = OLD + "\n八、其他\n本通知自印发之日起施行。"
@@ -346,11 +355,56 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
     ]
     assert applied[0].not_on_page == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
-    # 删掉的条款还留在页面的脚本里，也不算还在网页上
-    leftover = "<script>var old = '八、其他 本通知自印发之日起施行。';</script>"
+    # 删掉的条款还留在页面的脚本或隐藏副本里，也不能按“去噪”自动覆盖旧正文。
     page = read_fixture_html("detail_hubei_kjt_70955").replace("</body>", f"{leftover}</body>")
     fake = FakeFetcher({HUBEI_URL: _page(HUBEI_URL, page)})
-    assert [r.result for r in refresh_bodies(session, hosts=[HUBEI], fetcher=fake)] == ["changed"]
+    applied = refresh_bodies(session, hosts=[HUBEI], apply=True, fetcher=fake)
+    assert [(r.result, r.written, r.not_on_page) for r in applied] == [
+        ("changed", False, ["八、其他", "本通知自印发之日起施行。"])
+    ]
+    assert _stored(session, doc.id).body_text == edited
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "<div hidden>{}</div>",
+        '<div style="display: none">{}</div>',
+        '<div style="VISIBILITY: HIDDEN !important">{}</div>',
+        '<div style="visibility: collapse"><p>{}</p></div>',
+        '<div hidden><span style="display: block">{}</span></div>',
+    ],
+)
+def test_hidden_old_clause_is_not_page_chrome(wrapper) -> None:
+    """真实湖北页面里，正文区外的隐藏旧条款不能为自动去噪作证（不需要数据库）。"""
+    clause = "本通知自印发之日起施行。"
+    page = read_fixture_html("detail_hubei_kjt_70955").replace(
+        "</body>", wrapper.format(clause) + "</body>"
+    )
+    assert parse_detail(page, HUBEI_URL).body_text == CLEAN
+    assert _not_on_page([clause], _page(HUBEI_URL, page)) == [clause]
+
+
+@pytest.mark.parametrize("change", ["none", "host", "location", "prefix", "child", "ancestor"])
+def test_hidden_source_exception_requires_exact_header(change) -> None:
+    """保留山东真实来源字去噪；同字异位、前缀伪装、隐藏祖先都不能扩大例外。"""
+    url = "http://gxt.shandong.gov.cn/art/2026/9/28/art_15201_10366576.html"
+    page = read_fixture_html("detail_shandong_gxt")
+    source = "信息来源：山东省工业和信息化厅"
+    metadata = f'<span style="display: none;">{source}</span>'
+    line = source
+    if change == "host":
+        url = url.replace("gxt.shandong.gov.cn", "gxt.example.gov.cn")
+    elif change == "location":
+        page = page.replace(metadata, "").replace("</body>", metadata + "</body>")
+    elif change == "prefix":
+        line += "，申报企业必须满足全部条件。"
+        page = page.replace(metadata, metadata.replace(source, line))
+    elif change == "child":
+        page = page.replace(metadata, metadata.replace(source, f"<b>{source}</b>"))
+    elif change == "ancestor":
+        page = page.replace('<div class="headline">', '<div class="headline" hidden>')
+    assert _not_on_page([line], _page(url, page)) == ([] if change == "none" else [line])
 
 
 @pytest.mark.parametrize(

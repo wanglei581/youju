@@ -500,14 +500,38 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
 
 # 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
 _NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)", re.I)
+
+
+def _hidden_source_header(element: etree._Element, node: etree._Element, host: str) -> bool:
+    """只认已核实的山东页头来源字；不能把以“来源”开头的隐藏旧条款也当成网页噪声。"""
+    if (
+        host != "gxt.shandong.gov.cn"
+        or "news-body" not in (node.get("class") or "").split()
+        or element.tag != "span"
+        or len(element)
+        or re.sub(r"\s+", "", element.text or "") != "信息来源：山东省工业和信息化厅"
+        or element.get("hidden") is not None
+        or re.sub(r"\s+", "", element.get("style") or "").lower() != "display:none;"
+    ):
+        return False
+    parent = element.getparent()
+    header = parent.getparent() if parent is not None else None
+    return (
+        parent is not None
+        and parent.tag == "p"
+        and header is not None
+        and "headline" in (header.get("class") or "").split()
+        and header.getnext() is node
+    )
 
 
 def outside_body_text(html_text: str, url: str) -> str | None:
     """网页上不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines 同样规则
     不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
-    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本里，这里也找不到。
-    隐藏的元素照样算：正文提取一直不分隐藏不隐藏，以前收进正文的有不少就是隐藏的页头字（山东工信厅
-    文章头隐藏的"信息来源：山东省工业和信息化厅"）。解析不了、没有正文区的返回 None。"""
+    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、hidden 或行内样式隐藏的
+    元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字（限定网站、位置和全文）。
+    不执行 CSS/脚本。解析不了、没有正文区的返回 None。"""
     if not html_text.strip():
         return None
     try:
@@ -525,6 +549,11 @@ def outside_body_text(html_text: str, url: str) -> str | None:
 
     def visit(element: etree._Element, inside: bool) -> None:
         if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
+            return
+        if element.get("hidden") is not None or _HIDDEN_STYLE.search(element.get("style") or ""):
+            if not inside and _hidden_source_header(element, node, host):
+                parts.append(element.text or "")
+                parts.append("\n")
             return
         if element is node:
             inside = True
