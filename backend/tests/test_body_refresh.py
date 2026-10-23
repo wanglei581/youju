@@ -449,7 +449,10 @@ def test_refetch_bodies_command(session, monkeypatch, capsys) -> None:
         "预览（未写入）：检查 1 份，只去掉网页上的字 1 份，其他变化 0 份，没变 0 份，"
         "新正文为空 0 份，没抓成功 0 份；写入 0 份"
     ) in out
-    assert "加 --apply 写入（只换正文和抓取时间）；其他变化的要再加 --include-changed" in out
+    assert (
+        "加 --apply 写入（换正文和抓取时间，后台 AI 复查下一轮重查）；其他变化的要再加 --include-changed"
+        in out
+    )
     assert (
         f"refetch_bodies mode=preview checked=1 trimmed=1 changed=0 unchanged=0 empty=0 "
         f"failed=0 written=0 last_id={doc.id} approved_fields=0 confirmed_conditions=0 "

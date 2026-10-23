@@ -323,7 +323,10 @@ def _cmd_refetch_bodies(args: argparse.Namespace) -> int:
         f"其他变化的（加 --include-changed 才换），写入后受影响：{_impact_text(totals['changed'])}"
     )
     if not args.apply and (by_result["trimmed"] or by_result["changed"]):
-        print("加 --apply 写入（只换正文和抓取时间）；其他变化的要再加 --include-changed")
+        print(
+            "加 --apply 写入（换正文和抓取时间，后台 AI 复查下一轮重查）；"
+            "其他变化的要再加 --include-changed"
+        )
     last_id = results[-1].document_id if results else args.after_id or 0
     if len(results) == args.limit:
         print(f"已到 --limit {args.limit} 上限，可能还有没检查的，用 --after-id {last_id} 接着跑")
@@ -1530,7 +1533,11 @@ def main(argv: list[str] | None = None) -> int:
         "--host", action="append", help="只查这个网站（主机名，如 kjt.hubei.gov.cn，可重复）"
     )
     p.add_argument("--source-id", type=int, action="append", help="只查这个来源（可重复）")
-    p.add_argument("--apply", action="store_true", help="写入（只换正文和抓取时间）；不加只预览")
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="写入（换正文和抓取时间，删掉按旧正文做的后台 AI 复查、下一轮重查）；不加只预览",
+    )
     p.add_argument(
         "--include-changed",
         action="store_true",
