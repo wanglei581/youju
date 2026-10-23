@@ -560,3 +560,19 @@ def test_completed_title_joins_the_copy_that_already_had_the_full_title(session)
     fetch_details(session, limit=1, document_ids=[truncated.id], fetcher=fake)
     merge = session.get(DocumentMerge, truncated.id)
     assert merge is not None and merge.active and merge.canonical_id == copy.id
+
+
+def test_interactive_platform_pages_are_never_requested(session) -> None:
+    """互动交流平台（意见征集、留言）页面带验证码：不发请求，直接记为防护页，不再重试。"""
+    doc = add_document(session, 31)
+    doc.url = "http://kjj.gz.gov.cn/hdjlpt/yjzj/answer/53084"
+    session.commit()
+    fake = FakeFetcher({})
+    results = fetch_details(session, limit=1, fetcher=fake)
+    assert [(r.status, r.failure_reason) for r in results] == [
+        ("protected", "互动交流平台页面带验证码，不抓")
+    ]
+    assert fake.calls == []
+    detail = session.get(DocumentDetail, doc.id)
+    assert (detail.status, detail.next_retry_at) == ("protected", None)
+    assert fetch_details(session, limit=1, fetcher=fake) == []

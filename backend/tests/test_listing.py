@@ -720,10 +720,10 @@ def test_inner_title_must_be_written_in_the_link_text() -> None:
 
 
 def test_narrow_title_rules_leave_other_links_alone() -> None:
-    # 标题后面只是多一段补充说明（没有日期），照旧用整段链接文字
+    # 普通链接里标题后面多一段补充说明（哪怕写着年月），照旧用整段链接文字
     rows = "".join(
         f'<li><a href="/n/{n}.html"><span title="关于组织申报第{n}批项目的通知">'
-        f"关于组织申报第{n}批项目的通知</span><span>（补充说明及附件）</span></a>"
+        f"关于组织申报第{n}批项目的通知</span><span>（2026年10月修订）</span></a>"
         f"<span>2026-09-0{n}</span></li>"
         for n in range(1, 5)
     )
@@ -731,15 +731,25 @@ def test_narrow_title_rules_leave_other_links_alone() -> None:
         f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/n/"
     )
     assert [i.title for i in items] == [
-        f"关于组织申报第{n}批项目的通知（补充说明及附件）" for n in range(1, 5)
+        f"关于组织申报第{n}批项目的通知（2026年10月修订）" for n in range(1, 5)
     ]
-    # 数字不是单独的序号元素、而是标题自己的开头，不删
+    # 数字后面紧跟"号"，是标题自己的开头（"12号文件……"），不删
     rows = "".join(
         f'<li><a href="/m/{n}.html" title="号文件关于第{n}批申报的补充通知">'
-        f"1{n}号文件关于第{n}批申报的补充通知</a><span>2026-09-0{n}</span></li>"
+        f"<em>1{n}</em>号文件关于第{n}批申报的补充通知</a><span>2026-09-0{n}</span></li>"
         for n in range(1, 5)
     )
     items = extract_items(
         f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/m/"
     )
     assert [i.title for i in items] == [f"1{n}号文件关于第{n}批申报的补充通知" for n in range(1, 5)]
+    # 序号带句点（<em>8.</em>）照样认得出是序号
+    rows = "".join(
+        f'<li><a href="/k/{n}.html" title="关于开展第{n}批申报工作的通知">'
+        f"<em>{n}.</em>关于开展第{n}批申报工作的通知</a><span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/k/"
+    )
+    assert [i.title for i in items] == [f"关于开展第{n}批申报工作的通知" for n in range(1, 5)]

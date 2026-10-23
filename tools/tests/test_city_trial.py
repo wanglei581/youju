@@ -26,9 +26,14 @@ class WindowTests(unittest.TestCase):
 
     def test_one_odd_date_at_the_tail_does_not_decide(self):
         # 末尾夹一条置底的旧文，不能当成已经翻过窗口开始
-        page = items("2026-10-20", "2026-10-15", "2026-10-09", "2022-01-12")
+        page = items("2026-10-20", "2026-10-15", "2022-01-12", "2026-10-09")
         self.assertEqual(MODULE.tail_date(page), date(2026, 10, 9))
         self.assertFalse(MODULE.covered(page, date(2026, 8, 28)))
+        # 按日期从新到旧排着的，就取最后一条（不少算盖住的天数）
+        self.assertEqual(
+            MODULE.tail_date(items("2026-10-20", "2026-10-15", "2026-10-09")),
+            date(2026, 10, 9),
+        )
 
     def test_only_merges_runs_from_the_same_day(self):
         self.assertTrue(MODULE.same_day({}, date(2026, 10, 23)))
@@ -38,9 +43,11 @@ class WindowTests(unittest.TestCase):
     def test_shared_weekly_scales_each_column_by_its_own_days(self):
         # 一个栏目盖住 7 天触到 1 组，另一个盖住 56 天触到 8 组，其中 1 组两边都有
         parts = [({1}, 7), ({1, 2, 3, 4, 5, 6, 7, 8}, 56)]
-        self.assertEqual(MODULE.shared_weekly(parts), round((1 + 1) * 8 / 9, 1))
-        self.assertEqual(MODULE.shared_weekly([]), 0.0)
-        self.assertEqual(MODULE.shared_weekly([(set(), 56)]), 0.0)
+        self.assertEqual(MODULE.shared_weekly(parts, 56), 1.0)
+        # 只盖住 7 天的栏目自己触到的组，按 7 天折算
+        self.assertEqual(MODULE.shared_weekly([({9}, 7), ({1, 2}, 56)], 56), 1.2)
+        self.assertEqual(MODULE.shared_weekly([], 56), 0.0)
+        self.assertEqual(MODULE.shared_weekly([(set(), 56)], 56), 0.0)
 
     def test_boilerplate_is_footer_first_or_repeated(self):
         footer = "主办单位：某市科学技术局 网站标识码：2101000018 辽ICP备：15010522号"
@@ -52,6 +59,11 @@ class WindowTests(unittest.TestCase):
             5: "同样的公共部分",
         }
         self.assertEqual(MODULE.boilerplate_ids(bodies), {1, 3, 4, 5})
+        # 每页略有不同的导航和页脚夹着很短的“正文”：去掉共同的开头结尾后不到 50 字
+        nav = "首页 机构概况 政务公开 政务服务 互动交流 " * 5
+        pages = {n: f"{nav}第{n}页 {footer}" for n in range(1, 4)}
+        pages[4] = f"{nav}一、申报条件" + "具体要求" * 30 + footer
+        self.assertEqual(MODULE.boilerplate_ids(pages), {1, 2, 3})
 
     def test_pinned_old_items_do_not_count_as_covered(self):
         # 置顶的旧年报在页首，末尾几条还在窗口里：还要翻页
@@ -65,8 +77,7 @@ class WindowTests(unittest.TestCase):
     def test_span_counts_only_days_the_pages_reach(self):
         start, end = date(2026, 8, 28), date(2026, 10, 22)
         pages = [{"items": items("2026-10-20", "2026-10-01", "2026-09-30")}]
-        # 末尾三条取中间那个（10-01）
-        self.assertEqual(MODULE.span_days(pages, start, end), 22)
+        self.assertEqual(MODULE.span_days(pages, start, end), 23)
         pages[0]["items"] += items("2026-08-01", "2026-07-30")
         self.assertEqual(MODULE.span_days(pages, start, end), 56)
         self.assertEqual(MODULE.span_days([{"items": []}], start, end), 0)
@@ -96,6 +107,29 @@ class PagingTests(unittest.TestCase):
                 '<a href="https://other.gov.cn/2.html">下一页</a>', self.URL
             )
         )
+
+    def test_page_params_are_not_column_params(self):
+        first = "https://www.example.gov.cn/gova/tzgg.php?catname=kjj&page=1"
+        self.assertTrue(
+            MODULE.in_column(
+                "https://www.example.gov.cn/gova/tzgg.php?catname=kjj&page=2", first
+            )
+        )
+        self.assertFalse(
+            MODULE.in_column("https://www.example.gov.cn/gova/tzgg.php?page=2", first)
+        )
+
+    def test_next_page_must_list_the_same_column(self):
+        first = items("2026-10-20", "2026-10-15")
+        self.assertTrue(MODULE.same_list(first, items("2026-10-01")))
+        other = [
+            {
+                "title": "x",
+                "url": "https://x.gov.cn/other/1.html",
+                "publish_date": "2026-10-01",
+            }
+        ]
+        self.assertFalse(MODULE.same_list(first, other))
 
     def test_next_link_must_stay_in_the_column(self):
         first = "https://www.example.gov.cn/gova/tzgg.php?catname=kjj_02_04"

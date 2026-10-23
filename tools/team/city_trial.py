@@ -8,8 +8,8 @@
 网站拒绝（403、防护页、robots 禁止或取不到）就记下来停在那里，不换标识、不用浏览器绕过。
 
 步骤（按顺序跑，每步的结果写在 --out 目录，可以单独重跑）：
-  lists    每个栏目抓列表第 1 页；第 1 页盖不住统计窗口时，只跟页面上写着的"下一页"链接，
-           最多 3 页
+  lists    每个栏目抓列表第 1 页；第 1 页盖不住统计窗口时，只跟页面上写着的翻页地址（"下一页"
+           链接或页面脚本里写的翻页规则，还要在同一栏目里），最多 4 页
   load     重建 --db 库，导入国家和省级来源、第一批清单（只在这个库里启用），写入列表条目；
            --history 从本机的旧副本库补国家和省级的历史题录和正文（只读那个库）
   details  补正文：第一批栏目窗口内的全部条目；国家和省级只补标题和地市条目相近的
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +37,8 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 
 # 统计窗口：截至试抓前一天的 8 整周（56 天）
 WINDOW_WEEKS = 8
-MAX_PAGES = 3
+# 每个栏目最多抓几页列表（10/23 实测用的就是 4 页）
+MAX_PAGES = 4
 _NEXT_TEXT = re.compile(r"^\s*(?:下一页|下页|后一页|[>›»＞]|&gt;)\s*$")
 _ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a\s*>", re.IGNORECASE | re.DOTALL)
 _HREF = re.compile(r"""href\s*=\s*(["'])(.*?)\1""", re.IGNORECASE | re.DOTALL)
@@ -45,6 +47,17 @@ _LABEL = re.compile(
 )
 _TAGS = re.compile(r"<[^>]+>")
 _DB_NAME = re.compile(r"youju_citytrial[A-Za-z0-9_]*")
+# 翻页用的查询参数：判断"还在不在同一个栏目"时不算栏目参数
+_PAGE_PARAMS = {
+    "page",
+    "pageno",
+    "pageindex",
+    "pagenum",
+    "currentpage",
+    "curpage",
+    "pn",
+    "p",
+}
 # 页面脚本里写着的翻页（拓尔思等政府网站常用）：第 i 页（从 0 起）是 名字_i.后缀，第 0 页是栏目首页。
 # createPageHTML(总页数, 当前页, "index", "html") 和 _nPageCount / _sPageName 两种写法从 0 起；
 # createPageHTML('page_div', 总页数, 当前页, 'common_list', 'shtml', 总条数) 从 1 起
@@ -93,15 +106,29 @@ def read_manifest(path: Path) -> list[dict]:
 
 
 def in_column(target: str, first_url: str) -> bool:
-    """翻页地址必须还在这个栏目里：同一网站、同一目录，栏目首页网址里的查询参数原样都在
-    （常州那种 tzgg.php?catname=…，"下一页"写成 ?page=2 会丢掉栏目参数，跟过去就串到别的栏目）。"""
+    """翻页地址必须还在这个栏目里：同一网站、同一目录，栏目首页网址里的查询参数（翻页参数除外）
+    原样都在（常州那种 tzgg.php?catname=…，"下一页"写成 ?page=2 会丢掉栏目参数，跟过去就串到
+    别的栏目）。"""
     first, other = urlsplit(first_url), urlsplit(target)
     if other.hostname != first.hostname or not target.startswith(
         urljoin(first_url, ".")
     ):
         return False
-    need = set(parse_qsl(first.query, keep_blank_values=True))
+    need = {
+        (key, value)
+        for key, value in parse_qsl(first.query, keep_blank_values=True)
+        if key.lower() not in _PAGE_PARAMS
+    }
     return need <= set(parse_qsl(other.query, keep_blank_values=True))
+
+
+def same_list(first: list[dict], page: list[dict], share: float = 0.5) -> bool:
+    """翻到的这一页还是不是同一个栏目的列表：至少一半条目的网址目录在第 1 页条目的目录里
+    （脚本里写的翻页规则可能属于页面上的另一个列表）。"""
+    if not page:
+        return True
+    dirs = {urljoin(i["url"], ".") for i in first}
+    return sum(urljoin(i["url"], ".") in dirs for i in page) >= share * len(page)
 
 
 def next_page_url(html: str, page_url: str, first_url: str | None = None) -> str | None:
@@ -149,15 +176,17 @@ def script_pages(html: str, first_url: str) -> list[str]:
 
 
 def tail_date(items: list[dict], tail: int = 3) -> date | None:
-    """页面末尾几条日期的中间那个。置顶的旧文件一般在页首，不能拿全页最早的日期判断翻没翻够；
-    末尾偶尔也夹一条旧文，取中间那个，一条特别旧或特别新的都不左右结果。"""
+    """页面末尾几条的日期：按日期从新到旧排着的，取最后一条；末尾夹着一条特别旧或特别新的
+    （置底、置顶的旧文），取中间那个，免得一条怪日期左右"翻没翻够""盖住几天"。"""
     days = [
         date.fromisoformat(i["publish_date"]) for i in items if i.get("publish_date")
     ]
     if not days:
         return None
-    last = sorted(days[-tail:])
-    return last[len(last) // 2]
+    last = days[-tail:]
+    if last == sorted(last, reverse=True):
+        return last[-1]
+    return sorted(last)[len(last) // 2]
 
 
 def covered(items: list[dict], start: date) -> bool:
@@ -215,10 +244,20 @@ def _fetch_row(row: dict, fetcher, out: Path, start: date, max_pages: int) -> di
             page["duplicate"] = True
             page["items"] = []
             break
+        if len(pages) > 1 and not same_list(pages[0]["items"], page["items"]):
+            # 翻到了别的列表（侧栏或页面上另一个栏目的翻页）：这一页不算，停在这里
+            page["other_list"] = True
+            page["items"] = []
+            break
         if not items or covered(page["items"], start):
             break
         if len(pages) == 1:
-            scripted = script_pages(fetched.text, fetched.final_url or url)
+            # 脚本拼出来的翻页地址也要还在这个栏目里（见 in_column）
+            scripted = [
+                u
+                for u in script_pages(fetched.text, fetched.final_url or url)
+                if in_column(u, fetched.final_url or url)
+            ]
         first_url = pages[0]["final_url"] or pages[0]["url"]
         url = next_page_url(fetched.text, fetched.final_url or url, first_url) or (
             scripted[len(pages) - 1] if len(pages) - 1 < len(scripted) else None
@@ -559,16 +598,21 @@ def per_week(count: int, days: int) -> float:
     return round(count * 7 / days, 1) if days else 0.0
 
 
-def shared_weekly(parts: list[tuple[set[int], int]]) -> float:
-    """几个栏目合起来每周触到多少个不同的转发组。parts 是每个栏目（触到的组, 盖住的天数）：
-    各栏目按自己盖住的天数折算后相加，再按组在栏目之间重复的比例折掉（同一份部里通知被几个
-    栏目转发只算一组）。盖住天数不同的栏目不能直接合在一起除以同一个天数。"""
-    total = sum(len(ids) for ids, _ in parts)
-    if not total:
-        return 0.0
-    distinct = len(set().union(*(ids for ids, _ in parts)))
-    rate = sum(len(ids) * 7 / days for ids, days in parts if days)
-    return round(rate * distinct / total, 1)
+def shared_weekly(parts: list[tuple[set[int], int]], window_days: int) -> float:
+    """几个栏目合起来每周触到多少个不同的转发组。parts 是每个栏目（触到的组, 盖住的天数）。
+    盖满整个窗口的栏目合在一起数不同的组、除以窗口周数；没盖满的栏目，只把前面没数到的组
+    按它自己盖住的天数折算加上去（同一份部里通知被几个栏目转发只算一组）。"""
+    seen: set[int] = set()
+    for ids, days in parts:
+        if days == window_days:
+            seen |= ids
+    rate = len(seen) * 7 / window_days if window_days else 0.0
+    for ids, days in sorted(parts, key=lambda part: -part[1]):
+        if days and days != window_days:
+            new = ids - seen
+            rate += len(new) * 7 / days
+            seen |= new
+    return round(rate, 1)
 
 
 def _deadline_facts(body: str, published: date | None) -> tuple[list[date], bool]:
@@ -589,15 +633,27 @@ _FOOTER = re.compile("ICP备|网站标识码|公网安备")
 
 
 def boilerplate_ids(bodies: dict[int, str]) -> set[int]:
-    """读成了网页的公共部分（页脚、版权）而不是正文的：同一栏目 3 份以上一字不差；
-    或者备案号、网站标识码前面不到 100 字（正文还没开始就到了页脚）。"""
+    """读成了网页的公共部分（页脚、版权、导航）而不是正文的：
+    - 同一栏目 3 份以上一字不差；
+    - 备案号、网站标识码前面不到 100 字（正文还没开始就到了页脚）；
+    - 同一栏目 3 份以上时，去掉各份共同的开头和结尾（模板），剩下不到 50 字。"""
     counts: dict[str, int] = {}
     for body in bodies.values():
         counts[body] = counts.get(body, 0) + 1
+    texts = list(bodies.values())
+    head = tail = 0
+    if len(texts) >= 3:
+        head = len(os.path.commonprefix(texts))
+        tail = len(os.path.commonprefix([text[::-1] for text in texts]))
     junk = set()
     for doc_id, body in bodies.items():
         footer = _FOOTER.search(body)
-        if counts[body] >= 3 or (footer and len(body[: footer.start()].strip()) < 100):
+        core = body[head : len(body) - tail] if head + tail < len(body) else ""
+        if (
+            counts[body] >= 3
+            or (footer and len(body[: footer.start()].strip()) < 100)
+            or (len(texts) >= 3 and len(core.strip()) < 50)
+        ):
             junk.add(doc_id)
     return junk
 
@@ -613,6 +669,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
     data = json.loads((args.out / "lists.json").read_text(encoding="utf-8"))
     start, end = (date.fromisoformat(d) for d in data["window"])
     trial_day = date.fromisoformat(data["today"])
+    window_days = (end - start).days + 1
     factory = _open(args.db)
     with factory() as session:
         sources = {s.id: s for s in session.scalars(select(Source))}
@@ -730,6 +787,8 @@ def cmd_measure(args: argparse.Namespace) -> int:
                 "repost_docs": len(reposted),
                 "repost_upstream_docs": sum(upstream[group_of[d.id]] for d in reposted),
                 "repost_groups": len(touched),
+                # 触到的转发组编号（对应 measure.json 的 groups 里的 n）：只开其中几个城市时按这个重算
+                "group_ids": sorted(touched),
                 "weekly_repost_groups": per_week(len(touched), days),
                 "local_notices": len(local),
                 "weekly_local_notices": per_week(len(local), days),
@@ -742,16 +801,19 @@ def cmd_measure(args: argparse.Namespace) -> int:
         "city_groups": {
             city: {
                 "groups": len(set().union(*(ids for ids, _ in mine))),
-                "weekly": shared_weekly(mine),
+                "weekly": shared_weekly(mine, window_days),
             }
             for city, mine in parts.items()
         },
         "all_groups": {
             "groups": len(all_touched),
-            "weekly": shared_weekly([part for mine in parts.values() for part in mine]),
+            "weekly": shared_weekly(
+                [part for mine in parts.values() for part in mine], window_days
+            ),
         },
         "groups": [
             {
+                "n": n,
                 "strength": p.strength,
                 "upstream": upstream[n],
                 "topic": p.topic,
@@ -778,7 +840,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         json.dumps(out, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
     )
     fields = (
-        [k for k in rows_out[0] if k not in ("kinds", "detail_status")]
+        [k for k in rows_out[0] if k not in ("kinds", "detail_status", "group_ids")]
         if rows_out
         else []
     )

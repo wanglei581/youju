@@ -94,8 +94,12 @@ _EDGE_DATE = re.compile(
 _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 # 链接文字开头的列表序号（"8""10."）
 _ORDINAL = re.compile(r"\s*\d{1,3}\s*[.、]?\s*")
-# 链接里除了标题还写着日期（"2026-10""2026年10月"）：整条做成链接的列表行
-_ROW_DATE = re.compile(r"20\d{2}\s*[-./年]\s*\d{1,2}")
+# 紧跟在数字后面、说明数字是标题一部分的字（"12号文件""2026年""第3批"的"批"）
+_NUMBER_UNITS = tuple("号年月日批项届期条家个万亿次份类点%")
+# 链接里除了标题还写着完整日期（"2026-10-23""2026年10月23日"）：整条做成链接的列表行
+_ROW_DATE = re.compile(r"20\d{2}\s*[-./年]\s*\d{1,2}\s*[-./月]\s*\d{1,2}")
+# 列表行的块级元素：普通标题链接里不会有，整条做成链接的列表行（标题、日期、摘要分块）才有
+_BLOCK_TAGS = {"div", "p", "ul", "ol", "li", "dl", "dt", "dd", "table", "section", "article"}
 
 
 def _clean(text: str | None) -> str:
@@ -109,8 +113,11 @@ def _link_text(a: etree._Element) -> str:
 def _inner_title(a: etree._Element, text: str) -> str | None:
     """整条做成一个链接、标题写在里面某个元素的 title 属性里的（武汉市经信局：
     <a><span>23</span><span>2026-10</span><span title="完整标题">完整标题</span>摘要……</a>），
-    链接文字里混着日期和正文摘要：用那个 title 属性。只认像标题、链接文字里原样写着的，
-    而且链接里标题以外的文字写着日期——只是标题后面多一段补充说明的不算，照旧用整段文字。"""
+    链接文字里混着日期和正文摘要：用那个 title 属性。只认链接里分块写（有 div 这类块级元素）、
+    title 属性像标题、链接文字里原样写着它，而且标题以外的文字写着完整日期的——普通链接里标题
+    后面多一段补充说明的不算，照旧用整段文字。"""
+    if not any(isinstance(el.tag, str) and el.tag in _BLOCK_TAGS for el in a.iterdescendants()):
+        return None
     compact = text.replace(" ", "")
     for el in a.iterdescendants():
         if not isinstance(el.tag, str):
@@ -124,13 +131,15 @@ def _inner_title(a: etree._Element, text: str) -> str | None:
     return None
 
 
-def _leading_ordinal(a: etree._Element, prefix: str) -> bool:
-    """链接文字开头那段数字是不是单独写在第一个子元素里的序号（<a><em>8</em>标题</a>）。"""
+def _leading_ordinal(a: etree._Element, prefix: str, rest: str) -> bool:
+    """链接文字开头那段数字是不是单独写在第一个子元素里的序号（<a><em>8</em>标题</a>）：
+    数字后面紧跟"号""年""批"这类字的，数字是标题自己的一部分，不算。"""
     children = [el for el in a if isinstance(el.tag, str)]
     return (
         bool(children)
         and not (a.text or "").strip()
-        and _clean(children[0].text_content()) == _clean(prefix).rstrip(".、")
+        and _clean(children[0].text_content()).rstrip(".、") == _clean(prefix).rstrip(".、")
+        and not rest.startswith(_NUMBER_UNITS)
     )
 
 
@@ -149,7 +158,7 @@ def _title_of(a: etree._Element) -> str:
     # 序号写在链接里（深圳市工信局：<a title="完整标题"><em>8</em>完整标题</a>）：链接文字是
     # 单独一个元素里的序号加 title 属性，用 title 属性
     prefix = text[: -len(attr)] if attr and text.endswith(attr) else ""
-    if prefix and _ORDINAL.fullmatch(prefix) and _leading_ordinal(a, prefix):
+    if prefix and _ORDINAL.fullmatch(prefix) and _leading_ordinal(a, prefix, attr):
         return attr
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):

@@ -40,6 +40,9 @@ class DetailFetcher:
 _RETRY_DELAYS = (timedelta(hours=6), timedelta(hours=24))
 REFETCH_FAILURE_PREFIX = "详情重抓未完成："
 _FILE_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".wps", ".et", ".zip", ".rar", ".ofd")
+# 政府网站的互动交流平台（意见征集、留言回复）：页面带验证码，按合规红线不抓，连请求都不发。
+# 广东各级政府网站（广州、深圳科技局、广东省工信厅等）列表里的"公开征求意见"会链到这里
+_INTERACTIVE_PATHS = ("/hdjlpt/",)
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,10 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     now = datetime.now(UTC)
     if not _government_url(url):
         return _FetchOutcome(document_id, now, None, None, "unsupported_host", "非政府网站")
+    if any(part in urlsplit(url).path.lower() for part in _INTERACTIVE_PATHS):
+        return _FetchOutcome(
+            document_id, now, None, None, "protected", "互动交流平台页面带验证码，不抓"
+        )
     if urlsplit(url).path.lower().endswith(_FILE_SUFFIXES) and not urlsplit(
         url
     ).path.lower().endswith(".pdf"):
