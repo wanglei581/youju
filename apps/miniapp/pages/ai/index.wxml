@@ -120,7 +120,6 @@
 
   <view class="foot">
     <view wx:if="{{disclosure}}">{{disclosure}}</view>
-    <view>有据 · 第三方整理 · 每条都有出处</view>
   </view>
 </block>
 <view class="tab-page-bottom"></view>
