@@ -17,7 +17,7 @@
     <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
     <view wx:if="{{dataError}}" class="advisor-error">{{dataError}}<button class="advisor-button" bindtap="refreshQuota">刷新额度</button></view>
     <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能追溯官方原文。未查到不等于没有入选。</view><button class="advisor-button" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
-    <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按省份和可选的关键词、支持方式、城市、区县整理近 90 天申报通知，不判断能否申报，可下载 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
+    <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按客户的省份和可选的关键词、支持方式、城市、区县，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列），不判断能不能报，可下载 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
   </view>
   <!-- 只列批量工具的记录（D-075：记录是同一份，按入口筛；AI 的在 AI 首页"我的 AI 记录"），标题写明，和"我的 AI 记录"对称 -->
   <view class="card advisor-card">
