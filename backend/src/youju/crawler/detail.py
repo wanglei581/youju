@@ -500,18 +500,32 @@ def _attachments(root: etree._Element, url: str) -> list[Attachment]:
 
 # 不是网页上的字：脚本、样式等里的（正文提取 _plain_lines 也不收）
 _NOT_PAGE_TEXT_TAGS = {"script", "style", "noscript", "template"}
-# 隐藏的元素：带 hidden 属性，或行内样式隐藏
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
-# 隐藏的页头信息，整块是这几种开头的（山东工信厅文章头隐藏的"信息来源：山东省工业和信息化厅"）：
-# 正文提取一直不分隐藏不隐藏，以前收进了正文，算网页上的字；别的隐藏内容不算
-_HIDDEN_HEADER = re.compile(r"^(?:信息来源|来源|发布机构|发文机关|发布日期|发布时间)\s*[:：]")
+# 行内样式让整块和里面的都看不见的：display:none、opacity:0、font-size:0（按一条条样式声明认，
+# 不会把 backface-visibility 之类当成别的）。visibility:hidden 里面的元素可以再设 visible，单独处理
+_GONE_STYLE = re.compile(
+    r"(?:^|;)\s*(?:display\s*:\s*none|opacity\s*:\s*(?:0+(?:\.0*)?|\.0+)"
+    r"|font-size\s*:\s*0+(?:\.0*)?(?:px|pt|em|rem|%)?)\s*(?:!important\s*)?(?=;|$)",
+    re.I,
+)
+_VISIBILITY = re.compile(
+    r"(?:^|;)\s*visibility\s*:\s*(hidden|collapse|visible)\s*(?:!important\s*)?(?=;|$)", re.I
+)
+# 隐藏的页头信息：整块就是一行"信息来源：……"这样的短字（山东工信厅文章头隐藏的"信息来源：山东省
+# 工业和信息化厅"，正文提取一直不分隐藏不隐藏，以前收进了正文），算网页上的一行；别的隐藏内容不算
+_HIDDEN_HEADER = re.compile(
+    r"(?:信息来源|来源|发布机构|发文机关|发布日期|发布时间)\s*[:：]\s*\S.{0,40}"
+)
 
 
-def outside_body_text(html_text: str, url: str) -> str | None:
-    """网页上不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines 同样规则
-    不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
-    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本或隐藏的元素里，这里也找不到。
-    隐藏的元素只认隐藏的页头信息（_HIDDEN_HEADER）。解析不了、没有正文区的返回 None。"""
+def outside_body_lines(html_text: str, url: str) -> list[str] | None:
+    """网页上不算正文的字，按行：导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines
+    同样规则不算正文的二维码块、按钮块等。正文区按 parse_detail 同一套规则选；分行和去空白也和
+    _plain_lines 一样，所以以前收进正文的网页上的字，和这里的某一行完全相同。
+    给 youju refetch-bodies 核对"去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本
+    或行内样式隐藏的元素里，这里也找不到（隐藏的只认页头信息 _HIDDEN_HEADER）。
+    靠样式表、class 隐藏的看不出来，照样算：湖北科技厅的离站提示弹窗、国家统计局的手机版正文
+    就是这样藏的，以前收进了正文。
+    解析不了、没有正文区的返回 None。"""
     if not html_text.strip():
         return None
     try:
@@ -527,14 +541,17 @@ def outside_body_text(html_text: str, url: str) -> str | None:
     skipped = frozenset(node.xpath(junk)) if junk else frozenset()
     parts: list[str] = []
 
-    def visit(element: etree._Element, inside: bool) -> None:
+    def visit(element: etree._Element, inside: bool, concealed: bool) -> None:
         if not isinstance(element.tag, str) or element.tag.lower() in _NOT_PAGE_TEXT_TAGS:
             return
-        hidden = element.get("hidden") is not None or _HIDDEN_STYLE.search(
-            element.get("style") or ""
-        )
-        if hidden and not _HIDDEN_HEADER.match(" ".join(element.text_content().split())):
+        style = element.get("style") or ""
+        if element.get("hidden") is not None or _GONE_STYLE.search(style):
+            text = " ".join(element.text_content().split())
+            if not inside and not concealed and _HIDDEN_HEADER.fullmatch(text):
+                parts.append(f"\n{text}\n")
             return
+        if visibility := _VISIBILITY.search(style):
+            concealed = visibility.group(1).lower() != "visible"
         if element is node:
             inside = True
         elif inside and (
@@ -543,16 +560,21 @@ def outside_body_text(html_text: str, url: str) -> str | None:
             or _JUNK_CLASS.search(f"{element.get('class', '')} {element.get('id', '')}")
         ):
             inside = False
-        if not inside:
-            parts.append(element.text or "")
+        collect = not inside and not concealed
+        # 分行和 _plain_lines 一样：br 前、块级元素后换行
+        if element.tag.lower() == "br":
+            parts.append("\n")
+        if collect and element.text:
+            parts.append(element.text)
         for child in element:
-            visit(child, inside)
-            if not inside:
-                parts.append(child.tail or "")
-        parts.append("\n")
+            visit(child, inside, concealed)
+            if collect and child.tail:
+                parts.append(child.tail)
+        if element.tag.lower() in _BLOCK_TAGS:
+            parts.append("\n")
 
-    visit(body[0], False)
-    return "".join(parts)
+    visit(body[0], False, False)
+    return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
 def parse_detail(html_text: str, url: str) -> DetailResult:

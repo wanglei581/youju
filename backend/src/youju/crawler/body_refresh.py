@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 from youju.ai.pipeline import TASKS as AI_CHECK_TASKS
 from youju.config import get_settings
 from youju.crawler import detail_service
-from youju.crawler.detail import outside_body_text, redact_sensitive
+from youju.crawler.detail import outside_body_lines, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.deadline_excerpts import _normal
@@ -153,27 +153,26 @@ def trimmed_lines(old: str, new: str) -> tuple[list[str], list[str]] | None:
 _NAV_LABEL = re.compile(r"^(?:上一篇|下一篇|上一条|下一条)\s*[:：]")
 
 
-def _squash(text: str) -> str:
-    return re.sub(r"\s+", "", text)
-
-
 def _not_on_page(lines: list[str], fetch: FetchResult | None) -> list[str] | None:
-    """去掉的行里，现在原网页上不算正文的地方（detail.outside_body_text：导航、按钮、页尾这些，不算
-    脚本里的）找不到的那几行；全找得到返回 []，页面解析不了返回 None。原网页改过、删掉了开头结尾的
-    条款的，这几行找不到。比的时候去掉空白；入库的正文脱敏过，网页文字脱敏前后各比一次。
-    "上一篇：……"这类导航链到的标题会随新发的通知变，网页上还有同样的标签就算找得到（_NAV_LABEL）。"""
+    """去掉的行里，原网页上不算正文的地方（detail.outside_body_lines：导航、按钮、页尾这些，不算脚本里、
+    行内样式隐藏的）没有完全相同的一行的；全找得到返回 []，页面解析不了返回 None。原网页改过、删掉了
+    开头结尾条款的，这几行找不到。要整行相同（分行规则和正文提取一样），不是在网页文字里找片段，免得
+    碰巧被页尾的长句子"包含"。入库的正文脱敏过，网页上的行脱敏前后各比一次。
+    "上一篇：……"这类导航链到的标题会随新发的通知变，网页上有同样标签开头的一行就算（_NAV_LABEL）。"""
     if fetch is None or not fetch.text:
         return None
-    text = outside_body_text(fetch.text, fetch.final_url or fetch.url)
-    if text is None:
+    page_lines = outside_body_lines(fetch.text, fetch.final_url or fetch.url)
+    if page_lines is None:
         return None
-    pages = (_squash(text), _squash(redact_sensitive(text)))
+    redacted = redact_sensitive("\n".join(page_lines)).splitlines()
+    page = {" ".join(line.split()) for line in [*page_lines, *redacted]} - {""}
 
     def found(line: str) -> bool:
-        if any(_squash(line) in page for page in pages):
+        text = " ".join(line.split())
+        if text in page:
             return True
-        label = _NAV_LABEL.match(line)
-        return bool(label) and any(_squash(label.group(0)) in page for page in pages)
+        label = _NAV_LABEL.match(text)
+        return bool(label) and any(other.startswith(label.group(0)) for other in page)
 
     return [line for line in lines if not found(line)]
 

@@ -346,11 +346,14 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
     ]
     assert applied[0].not_on_page == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
-    # 删掉的条款还留在页面的脚本里、正文区外隐藏的元素里，也不算还在网页上
+    # 删掉的条款还留在页面的脚本里、正文区外隐藏的元素里（哪怕隐藏块以"来源："开头），或只是
+    # 页尾某一行的一部分，都不算还在网页上（要整行相同）
     for leftover in (
         "<script>var old = '八、其他 本通知自印发之日起施行。';</script>",
         "<div style='display: none'><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
         "<div hidden><p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
+        "<div style='display:none'>来源：本厅<p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
+        "<p>八、其他事项见网站声明：本通知自印发之日起施行。转载请注明出处</p>",
     ):
         page = read_fixture_html("detail_hubei_kjt_70955").replace("</body>", f"{leftover}</body>")
         fake = FakeFetcher({HUBEI_URL: _page(HUBEI_URL, page)})
@@ -436,6 +439,44 @@ def test_navigation_titles_change_but_labels_stay(session, monkeypatch, capsys) 
         in out
     )
     assert "      ！去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看" in out
+
+
+@pytest.mark.parametrize(
+    ("chrome", "result"),
+    [
+        # 看得见的：样式里只有 backface-visibility；父元素 visibility:hidden、自己又设了 visible
+        ("<p style='backface-visibility: hidden'>扫码关注本厅公众号</p>", "trimmed"),
+        (
+            "<div style='visibility:hidden'><p style='visibility: visible'>扫码关注本厅公众号</p></div>",
+            "trimmed",
+        ),
+        # 看不见的：opacity:0、font-size:0、visibility:hidden（子元素没再设 visible）
+        ("<p style='opacity:0'>扫码关注本厅公众号</p>", "changed"),
+        ("<p style='font-size: 0px'>扫码关注本厅公众号</p>", "changed"),
+        ("<div style='visibility: hidden'><p>扫码关注本厅公众号</p></div>", "changed"),
+        # 只是别的一行的一部分：不算
+        ("<p>欢迎扫码关注本厅公众号获取更多资讯</p>", "changed"),
+    ],
+)
+def test_page_text_follows_inline_styles_and_whole_lines(session, chrome, result) -> None:
+    """去掉的行要在网页上看得见、不算正文的地方有完全相同的一行：按行内样式认看不看得见
+    （按一条条样式声明认，visibility 可以被子元素改回 visible），不在别的行里找片段。"""
+    url = "https://gxt.example.gov.cn/tzgg/2.html"
+    notice = "各市工业和信息化局：现将有关事项通知如下，请于11月10日前按要求报送申报材料。"
+    page = (
+        f"<html><body><div class='content'><div class='TRS_UEDITOR'><p>{notice}</p></div>{chrome}"
+        "</div></body></html>"
+    )
+    _document(
+        session,
+        _source(session, url="https://gxt.example.gov.cn/tzgg/"),
+        url,
+        f"{notice}\n扫码关注本厅公众号",
+    )
+    session.commit()
+    fake = FakeFetcher({url: _page(url, page)})
+    results = refresh_bodies(session, hosts=["gxt.example.gov.cn"], fetcher=fake)
+    assert [r.result for r in results] == [result]
 
 
 def test_failed_or_empty_refetch_keeps_the_body(session) -> None:
