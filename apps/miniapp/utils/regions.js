@@ -53,7 +53,7 @@ function regionSelection(values, coverage) {
   if (!wholeDistrict && PLACEHOLDER_DISTRICTS.includes(rawDistrict)) throw new Error('该选项没有给出具体区县，请选择具体区县，或在区县一栏选“全部”查询市级来源');
   if (!wholeDistrict && !singleName(rawDistrict)) throw new Error('区县名称无效，请重新选择');
   if (MUNICIPALITIES.includes(province) && (wholeCity || provinceName(rawCity) === province || ['市辖区', '县'].includes(rawCity))) {
-    if (wholeDistrict) return { province, city: '', district: '', note: '直辖市未选区县时按省级范围查询' };
+    if (wholeDistrict) return { province, city: '', district: '', note: '直辖市没选具体区县：查整个直辖市（各级来源都在内）' };
     return { province, city: province, district: rawDistrict, note: '' };
   }
   if (wholeCity) {

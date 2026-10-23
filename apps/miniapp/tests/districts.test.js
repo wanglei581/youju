@@ -702,7 +702,7 @@ test('未收录吉林朝阳区后再选北京全部：两条提示同时可见�
   assert.deepEqual(plain(page.data.form.districts), ['吉林/长春/朝阳区']);
   assert.ok(plain(page.data.form.regions).includes('北京'));
   const uncovered = '暂未收录区县来源';
-  const note = '直辖市未选区县时按省级范围查询';
+  const note = '直辖市没选具体区县：查整个直辖市（各级来源都在内）';
   assert.ok(page.data.cityError.includes(uncovered));
   assert.ok(page.data.cityError.includes(note));
   const editing = textOf(render('pages/clients/index.wxml', page.data));

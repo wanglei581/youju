@@ -102,6 +102,12 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
   notice.refreshing = false; notice.load(); await flush();
   withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
   assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
+  // 旧接口（没有逐条截止，只有一条核对过的截止）：上面的卡片写了日期，同样写这半句
+  const legacy = detailPage(() => ({ ...DOC, deadline: { label: '申报截止', date: plus(9), time: null, verified: true, notes: [] }, deadline_state: 'verified', body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
+  legacy.onLoad({ id: '5' }); await flush();
+  const old = render('pages/detail/index.wxml', { ...legacy.data, loading: false });
+  assert.equal(findAll(old, hasClass('dls-head')).length, 0);
+  assert.equal(flat(findAll(card(old), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
   for (const status of ['list', 'original', 'failed']) {
     body = { status, total: 0 };
     page.refreshing = false; page.load(); await flush();
@@ -143,8 +149,10 @@ test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"�
   assert.match(gated, /在搜索结果页点"关注"，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
   const empty = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'live', loading: false, error: '', follows: [], changes: [] }));
   assert.match(empty, /还没有关注。在搜索结果页点"关注"，就能把当前的关键词和筛选条件存下来。/);
-  // 底部入口不再写"地区 × 主题 × 类型"（像三项都得选）
-  assert.match(empty, /去搜索，选好地区、关键词等条件后点"关注"/); assert.doesNotMatch(empty, /×/);
+  // 底部入口不再写"地区 × 主题 × 类型"（像三项都得选），也不点名哪几项
+  // 读屏标签和看得见的字对得上：按钮写"关注"，读屏读"关注当前搜索条件"
+  assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow" aria-role="button" aria-label="关注当前搜索条件">/);
+  assert.match(empty, /去搜索，设好条件后点"关注"/); assert.doesNotMatch(empty, /×/);
   for (const text of [gated, empty]) assert.doesNotMatch(text, /关注这个搜索/);
   // 搜索页按钮上就是"关注"
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
@@ -165,7 +173,7 @@ test('第 5 条：城市区县的规则拆成短句，放在选择器上面（�
   assert.deepEqual(kids.slice(1, picker).map(flat), [
     '城市一栏选“全部”：查全省各级来源（省、市、区县都在内），和在“地区”里选这个省一样。',
     '区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。',
-    '直辖市例外：区县一栏选“全部”时按省级范围查询，也就是整个直辖市（各级来源都在内）。',
+    '直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。',
   ]);
   assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
   assert.ok(notes(root).every((n) => !/点一下移除/.test(n)));
@@ -195,8 +203,8 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含已核对或机器摘录且还没截止的，以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：只列申报通知，含已核对或机器摘录且还没截止的，以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含还没截止的（日期已核对或机器摘录），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：只列申报通知，含还没截止的（日期已核对或机器摘录），以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -251,9 +259,23 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
   const clients = require('../utils/clients.js');
   const params = clients.clientParams({ id: 'c1', name: '甲', regions: ['北京'], cities: [], districts: [] });
   assert.match(params.regions, /(^|,)北京(,|$)/); assert.equal(params.cities, undefined); assert.equal(params.districts, undefined);
+  // 搜索页：选"北京市/北京市/全部"后发出的请求只带省份，选完的提示和三页的规则同一句
+  const searches = [];
+  const search = load('pages/search/index.js', {
+    '../../utils/api.js': { search: (p) => { searches.push(plain(p)); return Promise.resolve({ total: 0, total_all: 0, items: [] }); } },
+    '../../utils/regions.js': require('../utils/regions.js'), '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+    '../../utils/exporter.js': { exportDocs() {}, MAX: 200 }, '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
+    '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) }, '../../utils/conditions.js': require('../utils/conditions.js'),
+    '../../utils/coverage.js': { loadCoverage: () => Promise.resolve({ cities: [], districts: [] }), notCoveredNames: () => '', allUncovered: () => [] },
+  }, { wx: {} });
+  search.onLoad({}); await flush();
+  search.chooseCity({ detail: { value: ['北京市', '北京市', '全部'] } }); await flush();
+  assert.equal(searches.at(-1).regions, '北京'); assert.equal(searches.at(-1).cities, undefined); assert.equal(searches.at(-1).districts, undefined);
+  assert.equal(search.data.cityError, '直辖市没选具体区县：查整个直辖市（各级来源都在内）');
   for (const pageName of ['report', 'clients', 'search']) {
     const text = read(`pages/${pageName}/index.wxml`).replace(/<!--[\s\S]*?-->/g, '');
-    assert.doesNotMatch(text, /直辖市不选区县时也是/, pageName);
+    assert.doesNotMatch(text, /直辖市不选区县时也是|按省级范围查询/, pageName);
     assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
+    assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
   }
 });

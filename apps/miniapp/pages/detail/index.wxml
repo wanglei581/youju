@@ -142,7 +142,7 @@
        说明只在显示了提取的正文时出现（没提取到正文时下面只写去哪看原文） -->
   <view wx:if="{{doc.body}}" class="card">
     <view class="section-title">正文<text wx:if="{{doc.body.status === 'ok'}}">（自动提取，未经人工逐字核对）</text></view>
-    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dlsDated}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
+    <view wx:if="{{doc.body.status === 'ok'}}" class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dueDated}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
     <block wx:if="{{doc.body.status === 'ok'}}">
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>

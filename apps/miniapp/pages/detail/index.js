@@ -72,10 +72,13 @@ function deadlineRows(deadlines) {
   });
 }
 
+// 上面的截止卡片有没有写日期：有逐条截止时看其中有没有日期，没有时看旧接口的那一条核对过的截止
+const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
+
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dlsDated: false },
+    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -138,8 +141,9 @@ Page({
           upstream: upstreamLine(doc.repost),
           due,
           dls,
-          // 截止卡片里至少有一行写了日期（核对过的或机器摘录）：正文说明才写"截止日期可先看上面的'截止时间'"
-          dlsDated: !!(dls && dls.some((d) => d.dateText)),
+          // 上面的截止卡片写了日期（逐条截止里至少一行有日期；旧接口只有一条核对过的截止）：
+          // 正文说明才写"截止日期可先看上面的'截止时间'"
+          dueDated: dueDated(dls, due),
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
@@ -232,7 +236,8 @@ Page({
     const doc = this.data.doc;
     if (!doc) return;
     const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
-    this.setData({ due: dueInfo(doc.deadline), dls, dlsDated: !!(dls && dls.some((d) => d.dateText)) });
+    const due = dueInfo(doc.deadline);
+    this.setData({ due, dls, dueDated: dueDated(dls, due) });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
