@@ -88,10 +88,10 @@ test('底部导航：未定稿时只有首页、文件、我的三项，三等�
     const files = tabs.indexOf('pages/files/index');
     const root = shown('custom-tab-bar/index.wxml', { ...bar.data, selected: files });
     const items = texts(root, hasClass('item'));
-    assert.deepEqual(items, final ? ['首页', '关注', '文件', '我的'] : ['首页', '文件', '我的']);
+    assert.deepEqual(items, final ? ['首页', '关注', '导出', '我的'] : ['首页', '导出', '我的']);
     const [barNode] = findAll(root, hasClass('bar'));
     assert.equal(barNode.attrs.style, `grid-template-columns: repeat(${items.length}, 1fr)`);
-    assert.deepEqual(texts(root, hasClass('item--on')), ['文件']);
+    assert.deepEqual(texts(root, hasClass('item--on')), ['导出']);
     // 每一项都能点，点了按自己的路径切换
     for (const node of findAll(root, hasClass('item'))) {
       bar.switchTab({ currentTarget: { dataset: { path: node.attrs['data-path'] } } });

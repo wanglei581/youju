@@ -389,7 +389,7 @@ test('未截止选项写明口径（D-061：含机器摘录和可能 7 天内截
   const { page, calls } = searchPage({ respond: (p) => ({ items: p.open || p.time !== '不限' ? [] : [{ id: '1' }], total: p.open || p.time !== '不限' ? 0 : 6, total_all: p.open ? 0 : 6, verified_open_total: 0 }) });
   page.onLoad({ open: '1' }); await flush();
   // 10/22 走查：选的时候就写明不含哪些，不只在没有结果时才说
-  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知，含还没截止的（日期已核对或机器摘录），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面');
+  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知，含还没截止的（日期已人工核对，或机器摘录·未经人工核对），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面');
   assert.ok(read('pages/search/index.wxml').indexOf('bindtap="removeOpen"') < read('pages/search/index.wxml').indexOf('bindtap="allTime"'));
   page.removeOpen(); await flush(); assert.equal(calls.at(-1).open, undefined); assert.equal(page.data.totalAll, 6);
   assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);

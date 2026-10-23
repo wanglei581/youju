@@ -29,7 +29,7 @@
       <button class="advisor-button" bindtap="buyPass">续买批量工具</button>
     </view>
     <!-- 10/22 走查：通知表不是按企业名称对通知，常显一句说清按什么列 -->
-    <view wx:if="{{kind === 'track'}}" class="advisor-text">按每行的省份和填了的条件，列出近 90 天发布、还没核对为已截止的申报通知；关键词不填就不限主题；客户名称只用来标出是哪家。</view>
+    <view wx:if="{{kind === 'track'}}" class="advisor-text">按每行的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准）；关键词不填就不限主题；客户名称只用来标出是哪家，不判断能不能报。</view>
     <view class="advisor-actions"><button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{previewing || submitting}}">粘贴文本</button><button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{previewing || submitting}}">选择文件</button></view>
     <block wx:if="{{mode === 'paste'}}">
       <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或统一社会信用代码' : '一行一家：客户名称,省份,关键词,支持方式,城市,区县；后四项可留空；关键词、支持方式多项用分号分隔，城市只填一个，区县也只填一个，写在第 6 列；旧四列、五列格式仍有效'}}</view>

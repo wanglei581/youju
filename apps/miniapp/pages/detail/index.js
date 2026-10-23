@@ -126,7 +126,7 @@ Page({
           doc,
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: regionText(doc),
-          // 正文默认只显示开头一段；比这长的才给"展开全部正文"
+          // 正文默认只显示开头一段；比这长的才给"展开正文"（截断的正文展开后也不是全部，所以不写"全部"）
           bodyOpen: false,
           bodyFolded: !!body && body.text.length > BODY_PREVIEW,
           bodyPreview: body ? previewOf(body.text) : '',

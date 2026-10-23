@@ -203,8 +203,8 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含还没截止的（日期已核对或机器摘录），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：只列申报通知，含还没截止的（日期已核对或机器摘录），以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含还没截止的（日期已人工核对，或机器摘录·未经人工核对），以及可能 7 天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面', ...extra });
+const OPEN_LINE = '“只看未截止”：只列申报通知，含还没截止的（日期已人工核对，或机器摘录·未经人工核对），以及可能7天内截止、日期还没核对的；没写明截止日期、或截止日期还没理清的不在里面';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -277,10 +277,12 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
     assert.doesNotMatch(text, /直辖市不选区县时也是|按省级范围查询/, pageName);
     assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
     assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
+    // 城市一栏选"全部"＝全省各级：搜索页在规则第一句，截止页、我的客户页在同一行里
+    assert.match(text, /城市一栏选“全部”(：)?查全省各级来源/, pageName);
   }
 });
 
-test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不改条件；通知表的上传页写明按省份和条件列通知、客户名称只作标识；正文的按钮写"展开全部正文"', async () => {
+test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不改条件；通知表的上传页写明按省份和条件列通知、客户名称只作标识、不判断能不能报；正文的按钮写"展开正文"（截断的正文展开后也不是全部）', async () => {
   let confirm;
   const page = load('pages/search/index.js', {
     '../../utils/api.js': { search: () => Promise.resolve({ total: 0, total_all: 0, items: [] }) },
@@ -294,12 +296,28 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   assert.equal(confirm.title, '按当前搜索条件关注（下面是名称，改名不改条件）');
   assert.equal(confirm.editable, true);
   assert.match(confirm.content, /“专精特新” · 山东 · 全部 · 近 30 天 · 只看未截止/);
-  const line = '按每行的省份和填了的条件，列出近 90 天发布、还没核对为已截止的申报通知；关键词不填就不限主题；客户名称只用来标出是哪家。';
+  const line = '按每行的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准）；关键词不填就不限主题；客户名称只用来标出是哪家，不判断能不能报。';
   assert.ok(textOf(render('pages/advisor-form/index.wxml', { ...FORM, kind: 'track', title: '客户相关通知表' })).includes(line));
   assert.ok(!textOf(render('pages/advisor-form/index.wxml', FORM)).includes(line));
   const body = { status: 'ok', text: '一'.repeat(800), total: 800, truncated: false };
   const detail = detailPage(() => ({ ...DOC, kind: '政策', body }));
   detail.onLoad({ id: '5' }); await flush();
   const more = findAll(render('pages/detail/index.wxml', { ...detail.data, loading: false }), hasClass('body-more'))[0];
-  assert.equal(flat(more), '展开全部正文');
+  assert.equal(flat(more), '展开正文');
+});
+
+test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具按钮、在售时购买卡片的按钮都是白底次按钮；底栏"文件"改名"导出"，页面标题"导出记录"', () => {
+  const base = { loading: false, toolsEnabled: true, dataEnabled: true, compareEnabled: true, trackEnabled: true, aiEnabled: false, aiGate: '', recent: [], recentLoading: false, dataStatus: '本月比对剩余 3/3 次',
+    payCard: { usedUp: false, quotaLine: '本月免费：比对还剩 3 次', offerLine: '要一次处理更多家', button: '了解批量工具' } };
+  const root = render('pages/advisor/index.wxml', base);
+  for (const node of [...findAll(root, (n) => n.attrs['data-kind'] === 'compare' || n.attrs['data-kind'] === 'track'), ...findAll(root, tapsTo('buyPass'))]) {
+    assert.doesNotMatch(node.attrs.class, /btn-primary/, flat(node));
+  }
+  assert.equal(findAll(root, tapsTo('buyPass')).length, 1);
+  assert.equal(flat(findAll(root, hasClass('advisor-title'))[0]), '批量工具', '购买卡片仍在最上面（D-076）');
+  const app = JSON.parse(read('app.json'));
+  assert.deepEqual(app.tabBar.list.map((t) => t.text), ['首页', '关注', '导出', '我的', 'AI']);
+  assert.equal(JSON.parse(read('pages/files/index.json')).navigationBarTitleText, '导出记录');
+  assert.match(read('custom-tab-bar/index.js'), /pagePath: '\/pages\/files\/index', text: '导出'/);
+  assert.doesNotMatch(read('utils/data-tools.js'), /文件页/);
 });
