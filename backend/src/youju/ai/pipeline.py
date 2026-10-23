@@ -53,6 +53,8 @@ class AIRunReport:
     stopped_early: bool = False
     # 用了 due_first 时：排在最前、先补跑的文件份数（有快到期的待核对候选、AI 还没抽过截止）
     due_soon_documents: int = 0
+    # 调模型期间正文被换掉、这次的结果没记的份数（下一轮按新正文重查）
+    body_changed: int = 0
 
 
 TASKS = ("kind", "deadlines")
@@ -264,36 +266,27 @@ def run_ai_checks(
     for doc, detail in _documents_to_check(session, limit, now, first):
         report.documents += 1
         tasks = _pending_tasks(session, doc.id, now)
+        # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）
+        body = detail.body_text
+        records: list[tuple[str, dict]] = []
+        items: list[DeadlineCandidate] | None = None
         failed = 0
         if "kind" in tasks:
             try:
-                kind = classify_with_ai(client, doc.title, detail.body_text)
+                kind = classify_with_ai(client, doc.title, body)
                 if kind is None:
                     # 类别不在四类之内或字段不对：按出错记，隔 24 小时再试
-                    _record(
-                        session,
-                        doc.id,
-                        "kind",
-                        client.model,
-                        now,
-                        error="AI 返回的类型无效",
-                        usage=client.last_usage,
+                    records.append(
+                        ("kind", {"error": "AI 返回的类型无效", "usage": client.last_usage})
                     )
                     failed += 1
                 else:
-                    _record(
-                        session,
-                        doc.id,
-                        "kind",
-                        client.model,
-                        now,
-                        result={
-                            "kind": kind.kind,
-                            "confidence": kind.confidence,
-                            "reason": kind.reason,
-                        },
-                        usage=client.last_usage,
-                    )
+                    result = {
+                        "kind": kind.kind,
+                        "confidence": kind.confidence,
+                        "reason": kind.reason,
+                    }
+                    records.append(("kind", {"result": result, "usage": client.last_usage}))
                     rule = doc_kind(doc.title)
                     # AI 只分四类："资讯与指南"和 AI 的"其他"算一致
                     if comparable_kind(rule) == kind.kind:
@@ -301,44 +294,37 @@ def run_ai_checks(
                     else:
                         report.kind_disagree.append((doc.id, doc.title, rule, kind.kind))
             except AIError as exc:
-                _record(
-                    session,
-                    doc.id,
-                    "kind",
-                    client.model,
-                    now,
-                    error=str(exc),
-                    usage=client.last_usage,
-                )
+                records.append(("kind", {"error": str(exc), "usage": client.last_usage}))
                 failed += 1
             _count_usage(report, client.last_usage)
         if "deadlines" in tasks:
             try:
                 items = extract_deadlines_with_ai(
-                    client, doc.title, detail.body_text, detail.publish_date or doc.publish_date
+                    client, doc.title, body, detail.publish_date or doc.publish_date
                 )
-                _record(
-                    session,
-                    doc.id,
-                    "deadlines",
-                    client.model,
-                    now,
-                    result=_serialize(items),
-                    usage=client.last_usage,
+                records.append(
+                    ("deadlines", {"result": _serialize(items), "usage": client.last_usage})
                 )
-                _apply_deadlines(session, doc, items, report)
             except AIError as exc:
-                _record(
-                    session,
-                    doc.id,
-                    "deadlines",
-                    client.model,
-                    now,
-                    error=str(exc),
-                    usage=client.last_usage,
-                )
+                records.append(("deadlines", {"error": str(exc), "usage": client.last_usage}))
                 failed += 1
             _count_usage(report, client.last_usage)
+        # 调模型期间正文可能被换掉（youju refetch-bodies 重取正文时删掉这份的检查记录、要求重查）：
+        # 先锁住这份详情再核对正文（重取正文写入时也先锁它），变了就不记这次的结果，下一轮按新正文
+        # 重查，免得旧正文的结果把"要重查"盖掉
+        current = session.scalar(
+            select(DocumentDetail.body_text)
+            .where(DocumentDetail.document_id == doc.id)
+            .with_for_update()
+        )
+        if current != body:
+            session.rollback()
+            report.body_changed += 1
+            continue
+        for task, values in records:
+            _record(session, doc.id, task, client.model, now, **values)
+        if items is not None:
+            _apply_deadlines(session, doc, items, report)
         session.commit()
         if failed:
             report.errors += 1

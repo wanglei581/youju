@@ -48,11 +48,13 @@ _JUNK_CLASS = re.compile(
     r"|pagination)",
     re.I,
 )
+# TRS 编辑器写出的正文区，比下面的通用规则准：#zoom、.content 等常把文章头的"当前位置"、发布信息、
+# 工具栏和页尾的二维码、"相关文档"一起框进来（10/22 湖北科技厅等，见测试样例）。只在没有歧义时用
+# （_editor_node）
+_EDITOR = '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_UEDITOR ")]'
+# 页面自己标的正文区：有它的页面，编辑器块要在它里面才用
+_MARKED_BODY = '//*[@id="zoom" or @id="UCAP-CONTENT" or @id="contentText"]'
 _BODY_SELECTORS = (
-    # TRS 编辑器写出的正文区，放在最前：#zoom、.content 等常把文章头的"当前位置"、发布信息、
-    # 工具栏和页尾的二维码、"相关文档"一起框进来（10/22 湖北科技厅等，见测试样例）。
-    # 同一份正文另有手机版的（国家统计局），两份一样，取一份
-    '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_UEDITOR ")]',
     '//*[@id="zoom"]',
     '//*[@id="UCAP-CONTENT" or @id="contentText"]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_Editor ")]',
@@ -98,6 +100,24 @@ _SITE_JUNK = {
 # "上一篇""下一篇"。只对列出的网站从脚本里取这段 HTML，不执行脚本。
 _SCRIPT_BODY_HOSTS = {"gxt.qinghai.gov.cn"}
 _VUE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+# 没转义的 ${（前面没有反斜杠，或是成对的反斜杠）：要运行脚本才知道的内容
+_TEMPLATE_INTERPOLATION = re.compile(r"(?<!\\)(?:\\\\)*\$\{")
+# 模板字符串里的转义（按 JS 的规则还原）：\n、\t 等，\uXXXX、\u{…}、\xHH，行尾的反斜杠接下一行；
+# 别的"\字符"就是这个字符（\`、\$、\\、\/ 等）
+_TEMPLATE_ESCAPE = re.compile(r"\\(u\{[0-9A-Fa-f]+\}|u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|\r\n|[\s\S])")
+_TEMPLATE_SIMPLE = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "\n": "",
+    "\r": "",
+    "\r\n": "",
+    "\u2028": "",
+    "\u2029": "",
+}
 _BLOCK_TAGS = {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3", "h4", "br"}
 
 
@@ -211,26 +231,53 @@ def _body_node(root: etree._Element, host: str | None = None) -> etree._Element 
     if host in _SCRIPT_BODY_HOSTS and (node := _script_body_node(root)) is not None:
         return node
     site = _SITE_BODY_SELECTORS.get(host or "")
-    for selector in (site, *_BODY_SELECTORS) if site else _BODY_SELECTORS:
-        nodes = root.xpath(selector)
-        candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
-        if candidates:
-            return max(candidates, key=lambda n: len(" ".join(_plain_lines(n))))
+    if site and (node := _longest(root.xpath(site))) is not None:
+        return node
+    if (node := _editor_node(root)) is not None:
+        return node
+    for selector in _BODY_SELECTORS:
+        if (node := _longest(root.xpath(selector))) is not None:
+            return node
     return _density_body_node(root)
+
+
+def _longest(nodes: list[etree._Element]) -> etree._Element | None:
+    """够长（20 字以上）的里面最长的一个。"""
+    candidates = [n for n in nodes if len(" ".join(_plain_lines(n))) >= 20]
+    return max(candidates, key=lambda n: len(" ".join(_plain_lines(n)))) if candidates else None
+
+
+def _editor_node(root: etree._Element) -> etree._Element | None:
+    """TRS 编辑器正文区（_EDITOR），只在没有歧义时用：够长的编辑器块只有一份，或几份一模一样
+    （电脑版、手机版，取第一份）；页面有 #zoom 等正文标记的，要有一份在它里面（在外面的可能是
+    侧栏里的另一段）。几份内容不一样（正文可能分成了几段）、或都不在正文标记里的，不用，
+    照旧走通用规则。"""
+    blocks = [n for n in root.xpath(_EDITOR) if len(" ".join(_plain_lines(n))) >= 20]
+    if not blocks or len({"\n".join(_plain_lines(n)) for n in blocks}) > 1:
+        return None
+    marked = [m for m in root.xpath(_MARKED_BODY) if len(" ".join(_plain_lines(m))) >= 20]
+    if not marked:
+        return blocks[0]
+    inside = [n for n in blocks if any(n is m or m in n.iterancestors() for m in marked)]
+    return inside[0] if inside else None
 
 
 def _script_body_node(root: etree._Element) -> etree._Element | None:
     """<div v-html="名字"> 显示的 HTML：页面自带脚本里"名字: `…`"这段模板字符串
-    （见 _SCRIPT_BODY_HOSTS）。字符串里有 ${…}（要运行脚本才知道的内容）的不取；
-    转义只还原反斜杠、反引号和 $ 三种。"""
+    （见 _SCRIPT_BODY_HOSTS）。字符串里有没转义的 ${…}（要运行脚本才知道的内容）、或转义还原不了的，
+    不取。"""
     names = {name.strip() for name in root.xpath("//@v-html")}
     for script in root.xpath("//script[not(@src)]"):
         source = script.text or ""
         for name in sorted(n for n in names if _VUE_NAME.fullmatch(n)):
-            match = re.search(rf"(?<![\w$]){re.escape(name)}\s*:\s*`((?:[^`\\]|\\.)*)`", source)
-            if not match or "${" in match.group(1):
+            match = re.search(
+                rf"(?<![\w$]){re.escape(name)}\s*:\s*`((?:[^`\\]|\\[\s\S])*)`", source
+            )
+            if not match or _TEMPLATE_INTERPOLATION.search(match.group(1)):
                 continue
-            fragment = re.sub(r"\\([\\`$])", r"\1", match.group(1))
+            fragment = _template_text(match.group(1))
+            if fragment is None:
+                continue
             try:
                 node = html.fragment_fromstring(fragment, create_parent="div")
             except (etree.ParserError, ValueError):
@@ -238,6 +285,22 @@ def _script_body_node(root: etree._Element) -> etree._Element | None:
             if len(" ".join(_plain_lines(node))) >= 20:
                 return node
     return None
+
+
+def _template_text(source: str) -> str | None:
+    """按 JS 的规则还原模板字符串里的转义（_TEMPLATE_ESCAPE）；码位超出范围等还原不了的
+    返回 None。"""
+
+    def unescape(match: re.Match) -> str:
+        escape = match.group(1)
+        if escape[0] in "ux" and len(escape) > 1:
+            return chr(int(escape[1:].strip("{}"), 16))
+        return _TEMPLATE_SIMPLE.get(escape, escape)
+
+    try:
+        return _TEMPLATE_ESCAPE.sub(unescape, source)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _density_body_node(root: etree._Element) -> etree._Element | None:

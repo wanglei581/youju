@@ -177,7 +177,7 @@ def _reviewed_results(session, doc: Document) -> None:
                 reviewed_by="核对员",
                 reviewed_at=stamp,
             ),
-            # 原句在去掉的网页字样里（不会有这样的核对，用来数"找不到"）
+            # 原句在去掉的网页字样里（不会有这样的核对，用来数"没有了"）
             DocumentDeadline(
                 document_id=doc.id,
                 fingerprint="b" * 64,
@@ -187,6 +187,19 @@ def _reviewed_results(session, doc: Document) -> None:
                 confidence="low",
                 status="approved",
                 approved_date=date(2026, 10, 20),
+                reviewed_by="核对员",
+                reviewed_at=stamp,
+            ),
+            # 原句本来就不在旧正文里（如截断过）：和这次换正文无关，不算
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint="c" * 64,
+                kind="推荐或审核截止",
+                candidate_date=date(2026, 11, 23),
+                evidence="推荐单位网上审核推荐截止时间为2026年11月23日17时…",
+                confidence="high",
+                status="approved",
+                approved_date=date(2026, 11, 23),
                 reviewed_by="核对员",
                 reviewed_at=stamp,
             ),
@@ -208,17 +221,20 @@ def _reviewed_results(session, doc: Document) -> None:
                 kind=kind,
                 status=status,
                 input_json={"doc_id": doc.id},
-                snapshot={"doc_id": doc.id, "document_ids": [doc.id]},
+                snapshot={"doc_id": doc.id, "document_ids": [doc.id, doc.id + 1], **body},
                 result_json={"items": []} if status == "done" else None,
                 row_count=0,
-                idempotency_key=f"{kind}-{status}-{days}",
+                idempotency_key=f"{kind}-{status}-{days}-{body}",
                 expires_at=stamp + timedelta(days=days),
             )
-            # 只数还能看的：完成的、没过期的；过期的、没完成的不算
-            for kind, status, days in (
-                ("interpret", "done", 30),
-                ("interpret", "done", -1),
-                ("clause", "failed", 30),
+            # 只数还能看的（完成的、没过期的），按解读读的那份正文（body_id）；旧任务没记 body_id 的
+            # 按它的文件和归并组算。读的是同组另一份的正文、过期的、没完成的不算
+            for kind, status, days, body in (
+                ("interpret", "done", 30, {}),
+                ("clause", "done", 30, {"body_id": doc.id}),
+                ("interpret", "done", 30, {"body_id": doc.id + 1}),
+                ("interpret", "done", -1, {}),
+                ("clause", "failed", 30, {}),
             )
         ]
     )
@@ -244,16 +260,18 @@ def test_refresh_previews_then_replaces_only_the_body(session) -> None:
         (doc.id, "trimmed", HEAD, TAIL, False)
     ]
     assert preview[0].impact == Impact(
-        approved_fields=1, confirmed_conditions=1, confirmed_reposts=1, ai_results=1, lost_quotes=1
+        approved_fields=1, confirmed_conditions=1, confirmed_reposts=1, ai_results=2, lost_quotes=1
     )
     detail = _stored(session, doc.id)
     assert (detail.body_text, detail.fetched_at) == (OLD, FETCHED_AT)  # 预览不写库
 
+    before = datetime.now(UTC)
     applied = refresh_bodies(session, hosts=[HUBEI], apply=True, fetcher=fake)
     assert [(r.result, r.written, r.reason) for r in applied] == [("trimmed", True, None)]
     detail = _stored(session, doc.id)
     assert detail.body_text == CLEAN
-    assert detail.fetched_at > FETCHED_AT  # AI 解读可用性按它重算
+    # 抓取时间记写入那一刻（"能不能 AI 解读"每 10 分钟按它重算最近 30 分钟的）
+    assert detail.fetched_at.replace(tzinfo=UTC) >= before - timedelta(seconds=1)
     # 只换正文和抓取时间：发文机关、日期、附件、抓取状态都不动
     assert (detail.issuer, detail.publish_date, detail.status) == (
         "旧发文机关",
@@ -295,6 +313,22 @@ def test_other_changes_are_written_only_when_asked(session) -> None:
     assert session.scalars(select(AICheck.task).where(AICheck.document_id == doc.id)).all() == [
         "conditions"
     ]
+
+
+def test_trimmed_only_when_removed_lines_are_still_on_the_page(session) -> None:
+    """只是少了开头结尾几行、但少的那几行原网页上已经没有了（原网页改过、删了内容）：不算"只去掉网页
+    上的字"，归其他变化，要人看过加 include_changed 才换。"""
+    edited = OLD + "\n八、其他\n本通知自印发之日起施行。"
+    doc = _document(session, _source(session), HUBEI_URL, edited)
+    session.commit()
+    fake = FakeFetcher({HUBEI_URL: _page(HUBEI_URL, read_fixture_html("detail_hubei_kjt_70955"))})
+
+    applied = refresh_bodies(session, hosts=[HUBEI], apply=True, fetcher=fake)
+    assert [(r.result, r.written, r.reason) for r in applied] == [
+        ("changed", False, "去掉的开头结尾有的已不在原网页上（原网页可能改过），要人看")
+    ]
+    assert applied[0].tail[-2:] == ["八、其他", "本通知自印发之日起施行。"]
+    assert _stored(session, doc.id).body_text == edited
 
 
 def test_failed_or_empty_refetch_keeps_the_body(session) -> None:

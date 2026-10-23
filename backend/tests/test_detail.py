@@ -106,6 +106,22 @@ _PAGE_CHROME = (
 )
 # 整行就是这几个字的（按钮、弹窗的关闭叉号）
 _CHROME_LINES = {"×", "打印", "关闭", "分享", "字体", "顶部", "返回顶部", "附件:"}
+# 每个样例正文的（行数，字数）：10/22 对照原网页逐页核过，正文区的段落一段不少
+_BODY_SIZE = {
+    "detail_hubei_kjt_70955": (59, 2878),
+    "detail_hubei_kjt_67683": (53, 2462),
+    "detail_hubei_jxt": (74, 4426),
+    "detail_stats_pc_mobile": (3, 85),
+    "detail_shanghai_stcsm": (9, 292),
+    "detail_guangzhou_kjj": (44, 2442),
+    "detail_anhui_kjt": (9, 338),
+    "detail_sichuan_kjt": (19, 1041),
+    "detail_jiangsu_gxt": (4, 160),
+    "detail_shandong_gxt": (7, 363),
+    "detail_henan_kjt": (7, 501),
+    "detail_shanghai_sheitc": (3, 318),
+    "detail_qinghai_gxt": (14, 473),
+}
 
 
 @pytest.mark.parametrize(
@@ -235,9 +251,10 @@ _CHROME_LINES = {"×", "打印", "关闭", "分享", "字体", "顶部", "返回
 def test_body_has_no_page_chrome(fixture, url, first, last, issuer, published, attachments) -> None:
     """正文只取正文区：网页上的"当前位置"、标题和发布信息、字号和打印按钮、二维码、"相关文档"、
     离站提示弹窗等都不算正文（10/22 湖北科技厅 70955、67683 正文开头是导航、结尾是公众号和弹窗；
-    同样问题的来源 10/22 抽样找出，见 PR 说明）。附件照旧从整页收。"""
+    同样问题的来源 10/22 抽样找出，见 PR 说明）。附件照旧从整页收。行数、字数也核对（中间漏段会变）。"""
     result = parse_detail(read_fixture_html(fixture), url)
     lines = result.body_text.splitlines()
+    assert (len(lines), len(result.body_text)) == _BODY_SIZE[fixture]
     assert lines[0].startswith(first)
     assert lines[-1] == last
     assert result.body_text.count(lines[0]) == 1
@@ -263,27 +280,62 @@ def test_site_body_rules_only_for_listed_hosts() -> None:
 
 
 def test_body_written_in_page_script() -> None:
-    """正文写在页面自带脚本的 Vue 数据里（青海工信厅）：只对列出的网站取，不执行脚本；
-    要运行脚本才知道的内容（${…}）不取，照旧走通用规则。"""
+    """正文写在页面自带脚本的 Vue 数据里（青海工信厅）：只对列出的网站取，不执行脚本；转义按 JS 的
+    规则还原；要运行脚本才知道的内容（没转义的 ${…}）、还原不了的转义不取，照旧走通用规则。"""
     page = (
         "<html><body><div class='content'><div class='article'><p>当前位置：首页 - 新闻资讯 - 通知公告</p>"
         "<div id='news-details'><div v-html='content'></div></div><p>上一篇：没有更多了</p></div>"
         "</div><script>var app = new Vue({el: '#news-details', data: {form: {}, content: `"
         "<p>各有关单位：现将有关事项通知如下，材料命名为“单位名\\`项目名”，请按要求报送。</p>"
-        "<p>青海省工业和信息化厅</p><p>2026年9月18日</p>`, other: {add: ''}}});</script>"
-        "</body></html>"
+        "<p>申报网址：https:\\/\\/gxt.example.gov.cn\\/apply，第\\u4e00批\\x41类\\u{4e8c}期，"
+        "费用\\${单价}元。</p>\\n<p>青海省工业和信息化厅</p><p>2026年9月18日</p>`, other: {add: ''}}});"
+        "</script></body></html>"
     )
     qinghai = "https://gxt.qinghai.gov.cn/2100879587404161025.html"
     result = parse_detail(page, qinghai)
     assert result.body_text.splitlines() == [
         "各有关单位：现将有关事项通知如下，材料命名为“单位名`项目名”，请按要求报送。",
+        "申报网址：https://gxt.example.gov.cn/apply，第一批A类二期，费用${单价}元。",
         "青海省工业和信息化厅",
         "2026年9月18日",
     ]
     assert result.issuer == "青海省工业和信息化厅"
     assert "各有关单位" not in parse_detail(page, "https://gxt.example.gov.cn/1.html").body_text
-    dynamic = page.replace("请按要求报送", "${deadline}前报送")
-    assert "各有关单位" not in parse_detail(dynamic, qinghai).body_text
+    for broken in (
+        page.replace("请按要求报送", "${deadline}前报送"),
+        page.replace("\\u{4e8c}", "\\u{110000}"),
+    ):
+        assert "各有关单位" not in parse_detail(broken, qinghai).body_text
+
+
+def test_editor_block_only_when_unambiguous() -> None:
+    """TRS 编辑器正文区只在没有歧义时用：页面有 #zoom、编辑器块却在它外面（侧栏）的不用；几块内容
+    不一样的不用（正文可能分成了几段），照旧走通用规则；几块一模一样（电脑版、手机版）的取一块。"""
+    url = "https://kjt.example.gov.cn/a.html"
+    notice = "<p>各有关单位：现将有关事项通知如下，请于11月10日前按要求报送申报材料。</p>"
+    aside = (
+        "<div class='side'><div class='TRS_UEDITOR'><p>相关解读：一图读懂本年度科技计划项目"
+        "申报要点、申报条件和办理流程说明。</p></div></div>"
+    )
+    beside = f"<html><body><div id='zoom'>{notice}</div>{aside}</body></html>"
+    assert parse_detail(beside, url).body_text.startswith("各有关单位")
+    parts = (
+        f"<html><body><div class='content'><div class='TRS_UEDITOR'>{notice}</div>"
+        "<div class='TRS_UEDITOR'><p>第二部分：申报材料清单详见附件，请各单位认真准备并按时提交。</p>"
+        "</div></div></body></html>"
+    )
+    body = parse_detail(parts, url).body_text
+    assert "各有关单位" in body and "第二部分" in body
+    copies = (
+        f"<html><body><div class='pc'><div class='TRS_UEDITOR'>{notice}</div></div>"
+        f"<div class='mobile'><div class='TRS_UEDITOR'>{notice}</div></div></body></html>"
+    )
+    assert parse_detail(copies, url).body_text.count("各有关单位") == 1
+    # 编辑器块在 #zoom 里面的照常用
+    inside = beside.replace(
+        f"<div id='zoom'>{notice}</div>{aside}", f"<div id='zoom'>{aside}</div>"
+    )
+    assert parse_detail(inside, url).body_text.startswith("相关解读")
 
 
 def test_attachment_names_and_urls_are_absolute() -> None:

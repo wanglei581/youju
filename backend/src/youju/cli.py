@@ -246,7 +246,7 @@ def _impact_text(impact) -> str:
         (impact.confirmed_conditions, "已确认的申报条件 {} 份（不再对外，重抽后重新确认）"),
         (impact.confirmed_reposts, "确认过的转发组成员 {} 个（组转待复核）"),
         (impact.ai_results, "用户的 AI 解读结果 {} 份（显示“通知正文已变化，请重新解读”）"),
-        (impact.lost_quotes, "已核对截止的原句在新正文里找不到 {} 条（要人看）"),
+        (impact.lost_quotes, "已核对截止的原句在新正文里没有了 {} 条（要人看）"),
         (impact.ai_checks, "按旧正文做的后台 AI 复查 {} 项（删掉，下一轮重查）"),
     ]
     return "，".join(text.format(n) for n, text in parts if n) or "没有"
@@ -509,6 +509,8 @@ def _cmd_ai_check(args: argparse.Namespace) -> int:
     )
     for doc_id, title, rule, ai_kind in report.kind_disagree[:20]:
         print(f"  类型不一致 #{doc_id} 规则={rule} AI={ai_kind}：{title[:60]}")
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下一轮按新正文重查）")
     if report.stopped_early:
         print("连续多份文件调用 AI 出错，本轮提前停止（可能是服务不可用或额度用完）")
         return 1
