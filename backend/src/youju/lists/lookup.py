@@ -47,7 +47,7 @@ class ListLookupResult:
         return [match.master_id for match in self.matches]
 
 
-def public_condition():
+def public_condition(document=Document, source=Source):
     """可以公开给小程序的文件口径。
 
     调用方的查询必须已经连接 ``Source``；人工定为“不是名单”的文件在各自查询中另外排除。
@@ -60,13 +60,13 @@ def public_condition():
         .join(twin, twin.id == DocumentMerge.duplicate_id)
         .join(twin_source, twin_source.id == twin.source_id)
         .where(
-            DocumentMerge.canonical_id == Document.id,
+            DocumentMerge.canonical_id == document.id,
             DocumentMerge.active.is_(True),
             twin_source.rights_level == 1,
         )
         .exists()
     )
-    return and_(available_condition(), or_(Source.rights_level == 1, level1_twin))
+    return and_(available_condition(document), or_(source.rights_level == 1, level1_twin))
 
 
 def _public_entries(stmt: Select) -> Select:
