@@ -6,6 +6,12 @@
 # 发布顺序：先发 admin（完成迁移），再发 api。删表、删列的迁移（如 0035）反过来：先发 api，
 # 旧版 api 归零后再发 admin，见 docs/部署/微信云托管.md 第二节。
 set -e
+# 命名锁的锁名前缀只给本机测试用（youju/db.py 的 lock_name）：线上设了，新旧版本的锁名对不上，
+# 发布时两边互相拦不住（重复下载附件、AI 用量超上限、两边同时迁移），所以设了就不启动
+if [ -n "${YOUJU_LOCK_PREFIX:-}" ]; then
+  echo "YOUJU_LOCK_PREFIX 只用于本机测试，线上不能设置：请在云托管控制台删掉后重新发布" >&2
+  exit 1
+fi
 cd /app/backend
 case "${YOUJU_ROLE:-}" in
   api|admin) ;;

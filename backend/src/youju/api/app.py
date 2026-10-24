@@ -54,7 +54,7 @@ from youju.classify import (
     list_status,
 )
 from youju.config import get_settings
-from youju.db import get_session
+from youju.db import get_session, lock_name
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
@@ -2129,7 +2129,8 @@ _trial_hosts: dict[str, float] = {}
 _trial_guard = threading.Lock()
 # 试跑凭证有效期（秒）：接入时必须带上试跑给出的凭证，证明这个网址和规则确实试跑通过
 _TRIAL_TTL = 1800
-# 接入来源时等别人接入完成最多等多久（秒）
+# 接入来源时查重和写入串行做的 MySQL 命名锁，以及等别人接入完成最多等多久（秒）
+_CREATE_LOCK = "youju_source_create"
 _CREATE_LOCK_WAIT = 10
 
 
@@ -2237,16 +2238,17 @@ def _existing_source(session: Session, url: str) -> int | None:
 def _source_create_lock(session: Session):
     """接入来源时查重和写入串行做（MySQL 命名锁，另开一个连接持有）：同一栏目的两种写法
     （index.html 和目录）同时接入时，后一个等前一个提交后再查重。"""
+    name = lock_name(_CREATE_LOCK)
     with session.get_bind().connect() as conn:
         got = conn.execute(
-            text("SELECT GET_LOCK('youju_source_create', :wait)"), {"wait": _CREATE_LOCK_WAIT}
+            text("SELECT GET_LOCK(:name, :wait)"), {"name": name, "wait": _CREATE_LOCK_WAIT}
         ).scalar()
         if got != 1:
             raise HTTPException(status_code=503, detail="有人正在接入来源，请稍后再试")
         try:
             yield
         finally:
-            conn.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+            conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": name})
 
 
 def _trial_mac(url: str, config: dict[str, str], issued: int) -> str:

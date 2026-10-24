@@ -39,6 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju.ai import interpret
+from youju.db import lock_name
 from youju.models import AIEligibility, Document, DocumentDetail, DocumentMerge
 
 RECENT = timedelta(minutes=30)
@@ -63,9 +64,10 @@ def compute(session: Session, doc_id: int) -> str | None:
 @contextmanager
 def writer_lock(session: Session, wait: int) -> Iterator[bool]:
     """拿"重算 AI 解读可用性"的锁：拿到给 True，wait 秒内没拿到给 False。MySQL 命名锁（按库名区分，
-    同一台数据库上的测试库互不影响），用单独的连接拿，进程退出、连接断开时自动放开。"""
+    同一台数据库上的测试库互不影响；和别的命名锁一样也经过 lock_name，线上锁名不变），用单独的
+    连接拿，进程退出、连接断开时自动放开。"""
     with session.get_bind().connect() as conn:
-        name = f"youju_ai_eligibility:{conn.scalar(text('SELECT DATABASE()'))}"[:64]
+        name = lock_name(f"youju_ai_eligibility:{conn.scalar(text('SELECT DATABASE()'))}"[:64])
         got = conn.scalar(text("SELECT GET_LOCK(:name, :wait)"), {"name": name, "wait": wait}) == 1
         conn.commit()  # 锁跟着连接、不跟事务：不留一个长事务挂着
         try:
