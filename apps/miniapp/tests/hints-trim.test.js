@@ -35,8 +35,8 @@ test('AI 页面底部只留投诉举报链接', () => {
   for (const page of ['advisor-clause', 'advisor-interpret']) {
     assert.match(wxml(page), /<view class="advisor-footer"><text class="link" bindtap="report">投诉举报<\/text><\/view>/, page);
   }
-  assert.match(wxml('advisor'), /<view wx:if="{{aiEnabled}}" class="advisor-footer"><text class="link" bindtap="report">投诉举报<\/text><\/view>/);
-  for (const page of ['advisor-form', 'advisor-tasks', 'advisor-terms', 'advisor-trial']) assert.ok(!wxml(page).includes('advisor-footer"'), page);
+  // 批量工具页（原工具中心，10/22 第 0 步）不放 AI 了，投诉举报跟着 AI 走（AI 首页底部有），这一页和下面几页一样没有页脚
+  for (const page of ['advisor', 'advisor-form', 'advisor-tasks', 'advisor-terms', 'advisor-trial']) assert.ok(!wxml(page).includes('advisor-footer"'), page);
 });
 
 test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () => {

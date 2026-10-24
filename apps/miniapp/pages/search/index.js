@@ -20,6 +20,11 @@ const {
 // 这里解码一次；坏的编码（如被截断的 %E4）不报错，原样当作文字
 const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 
+// 从板块首页的两项能力来选通知（for=interpret / clause，10/22 第 0 步）：行上的按钮按这一项写（components/ai-button
+// 的 action），标题写"选一份通知"，"只看能解读的"那一条下面写怎么选（components/ai-only 的 pick）。
+// 只在板块对这个人开着（后台确认过）时写这些，不进关注和转发
+const PICKS = ['interpret', 'clause'];
+
 const KIND_TABS = [
   { key: 'all', label: '全部' },
   { key: '申报通知', label: '申报通知' },
@@ -132,6 +137,9 @@ Page({
     // 只看能解读的（D-075，板块首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
     // 不算筛选条件，不进关注、不进转发路径；板块对这个人没开着时不生效、也不显示
     aiOnly: false,
+    // 从板块首页的两项能力来选通知时：行上的按钮做哪一项（aiAction）；pickShown 是选哪一项、写不写"怎么选"那一行
+    aiAction: 'interpret',
+    pickShown: '',
   },
 
   onLoad(query) {
@@ -159,13 +167,17 @@ Page({
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
     if (String(query.ai) === '1') {
+      this.pickFor = PICKS.includes(query.for) ? query.for : '';
+      if (this.pickFor) this.setData({ aiAction: this.pickFor });
       // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
       const now = access.current();
       this.setData({ aiOnly: now.confirmed === true && now.visible === true });
+      this.showPick(this.data.aiOnly);
       // 跟着后台的确认走：确认开着就加上这一项；没开着、注销后被擦掉（还没重新问到）就去掉，都重新查；页面上不留相关字样
       this.unsubscribeAi = access.subscribe((state) => {
         const on = state.confirmed === true && state.visible === true;
-        if (on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
+        this.showPick(on);
+        if (!this.onlyRemoved && on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
       });
       access.ensure();
     }
@@ -174,8 +186,19 @@ Page({
     this.loadCities();
   },
 
+  // 选通知的标题和"怎么选"那一行：板块对这个人开着才写，没开着（关了、注销后被擦掉）就回到"搜索"、不写
+  showPick(on) {
+    const shown = on ? this.pickFor : '';
+    if (!this.pickFor || shown === this.data.pickShown) return;
+    this.setData({ pickShown: shown });
+    wx.setNavigationBarTitle({ title: on ? '选一份通知' : '搜索' });
+  },
+
+  // 去掉"只看能解读的"：只放宽这一次的列表。从两项能力来选通知的还在选（行上的按钮、标题、"怎么选"那一行照旧），
+  // 继续跟着板块开不开；普通进来的不再跟着变
   removeAi() {
-    if (this.unsubscribeAi) { this.unsubscribeAi(); this.unsubscribeAi = null; }
+    this.onlyRemoved = true;
+    if (this.unsubscribeAi && !this.pickFor) { this.unsubscribeAi(); this.unsubscribeAi = null; }
     this.setData({ aiOnly: false });
     this.apply(true);
   },

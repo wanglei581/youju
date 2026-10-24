@@ -15,15 +15,15 @@ const SCOPES = [
 const HOME_CACHE = 'youjuHomeCacheV1';
 
 // 新手引导（D-070 ④）："三步上手"卡片。点"不再显示"后在本机记一个标记，以后不再出现；没关之前每次打开都显示。
-// 不判断是不是老用户；没有奖励、打勾和红点。第三步去工具中心（批量名单比对、客户相关通知表，要先同意协议）；
-// 协议没定稿的版本没有工具中心入口，改去不用登录的"我的客户"
+// 不判断是不是老用户；没有奖励、打勾和红点。第三步去批量工具（批量名单比对、客户相关通知表，要先同意协议）；
+// 协议没定稿的版本没有批量工具入口，改去不用登录的"我的客户"
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
   // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明查企业上过哪些名单要先点"查名单"
   { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业上过哪些名单，先点搜索框上面的“查名单”' },
   { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以复制政府网站的原文链接，以原文为准', url: '/pages/report/index' },
 ];
-const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，查上过哪些名单、整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
+const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“批量工具”一次粘贴多家企业，查上过哪些名单、整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
 const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
 const guideSteps = (open) => GUIDE_FIRST.concat(open ? GUIDE_TOOLS : GUIDE_CLIENTS);
 
@@ -78,7 +78,7 @@ Page({
     // 新手引导"三步上手"：没点过"不再显示"时显示
     guide: false,
     guideSteps: [],
-    // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页同一句；没有这项活动或取不到时为空，不显示
+    // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页、提交名单页同一句；没有这项活动或取不到时为空，不显示
     seasonText: '',
   },
 
@@ -148,7 +148,7 @@ Page({
   },
 
   // 申报季加量一行：和首页数据分开取，首页不等它；取不到、批量工具没开就不显示，不报错。
-  // 协议没定稿的版本没有工具中心入口（批量工具要先同意协议），不取也不显示。refresh：停在首页跨过 0 点时重新取
+  // 协议没定稿的版本没有批量工具入口（批量工具要先同意协议），不取也不显示。refresh：停在首页跨过 0 点时重新取
   // （"将于…开始"变成进行中，过了结束日不再显示）
   loadSeason(refresh) {
     if (!this.data.loginOpen || !api.advisorSeason) return;

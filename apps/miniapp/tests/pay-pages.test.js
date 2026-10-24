@@ -943,18 +943,20 @@ test('订单页按档位写名称，逐笔列出续买多送和体验折算，�
   assert.doesNotMatch(shown('pages/orders/index.wxml', h.page.data), /客户工作台/);
 });
 
-test('我的页在售时所有人都显示"批量工具"一行：没买过写最便宜一档，买过写到期日；不在售时不显示，点了进购买页（D-076）', async () => {
+test('我的页在售时所有人都有去购买页的一行（D-076 ②）：写明是买——没买过"买批量工具"写最便宜一档，使用期内"续买批量工具"写到期日（10/22：九宫格的"批量工具"是用工具的那一页，不能同名）；不在售时不显示，点了进购买页', async () => {
   const urls = []; const pay = { enabled: false, hasOrders: false };
   let status = () => Promise.reject(new Error('读不到'));
+  let mePass;
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
     '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
-    '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }),
+    '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {}, ...(mePass ? { pass: mePass } : {}) }),
       payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => status() },
   }, { wx: { navigateTo: ({ url }) => urls.push(url), switchTab() {}, showToast() {} } });
   const row = () => findAll(render('pages/me/index.wxml', page.data), (node) => node.attrs['data-url'] === '/pages/pass/index');
+  const grid = () => findAll(render('pages/me/index.wxml', page.data), (node) => node.attrs['data-url'] === '/pages/advisor/index');
   const show = async (enabled, hasOrders) => { Object.assign(pay, { enabled, hasOrders }); page.refresh(); await flush(); await flush(); };
   for (const [enabled, hasOrders, shownRow] of [[false, false, false], [false, true, false], [true, false, true], [true, true, true]]) {
     await show(enabled, hasOrders);
@@ -962,17 +964,28 @@ test('我的页在售时所有人都显示"批量工具"一行：没买过写最
   }
   await show(true, false);
   assert.equal(page.data.passHint, '30 天 29 元起');
-  assert.match(textOf(row()[0]), /批量工具/);
-  assert.match(textOf(row()[0]), /30 天 29 元起/);
+  assert.equal(textOf(row()[0]).trim(), '买批量工具30 天 29 元起');
+  // 九宫格的"批量工具"去用工具的那一页，名字和这一行不一样
+  assert.equal(textOf(grid()[0]).trim(), '批量工具');
+  // /me 带了使用期（现在的服务端）：使用期内一来就写"续买批量工具"和到期日；过期了写"买批量工具"、"使用期已到期"
+  mePass = { active: true, expiresAt: '2026-11-18T04:00:00Z' };
+  await show(true, true);
+  assert.equal(page.data.passLabel, '续买批量工具'); assert.equal(page.data.passHint, '使用期到 11月18日');
+  assert.equal(textOf(row()[0]).trim(), '续买批量工具使用期到 11月18日');
+  mePass = { active: false, expired: true, expiresAt: '2026-10-18T04:00:00Z' };
+  await show(true, true);
+  assert.equal(page.data.passLabel, '买批量工具'); assert.equal(page.data.passHint, '使用期已到期');
+  mePass = undefined;
+  // 老的服务端 /me 不带使用期：读 /advisor/status，名字跟着它写
   status = () => Promise.resolve({ pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } });
   await show(true, true);
-  assert.equal(page.data.passHint, '到 11月18日');
+  assert.equal(page.data.passHint, '使用期到 11月18日'); assert.equal(page.data.passLabel, '续买批量工具');
   status = () => Promise.resolve({ pass: { active: false, expiresAt: null } });
   await show(true, true);
-  assert.equal(page.data.passHint, '已到期，可再买一次');
+  assert.equal(page.data.passHint, '使用期已到期'); assert.equal(page.data.passLabel, '买批量工具');
   status = () => Promise.reject(new Error('读不到'));
   await show(true, true);
-  assert.equal(page.data.passHint, '');
+  assert.equal(page.data.passHint, ''); assert.equal(page.data.passLabel, '买批量工具');
   assert.equal(row().length, 1);
   await show(false, true);
   assert.equal(row().length, 0);
@@ -998,7 +1011,8 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
   page.refresh(); await flush(); await flush();
   assert.equal(page.data.passEntry, false);
   assert.equal(page.data.passHint, '');
-  assert.doesNotMatch(shown('pages/me/index.wxml', page.data), /批量工具|元起/);
+  // 去购买页那一行收起（九宫格的"批量工具"是用工具的入口，照旧在）
+  assert.doesNotMatch(shown('pages/me/index.wxml', page.data), /买批量工具|元起/);
 });
 
 const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
@@ -1008,24 +1022,23 @@ function toolCenter(api) {
   const page = load('pages/advisor/index.js', {
     '../../utils/api.js': { advisorTasks: () => Promise.resolve({ items: [] }), ...api, payProducts: () => { products += 1; return api.payProducts ? api.payProducts() : Promise.resolve({ items: TIERS }); } },
     '../../utils/advisor.js': require('../utils/advisor.js'),
-    '../../utils/tool-context.js': require('../utils/tool-context.js'),
     '../../utils/boost.js': require('../utils/boost.js'),
     // AI 板块（#317）加的两个依赖：这里只测批量工具卡片，AI 当作关着、不盯跨零点
     '../../utils/ai-access.js': require('./helpers/ai-off.js'),
     '../../utils/daywatch.js': require('./helpers/day-off.js'),
   }, { wx: { setNavigationBarTitle() {}, navigateTo: ({ url }) => urls.push(url) } });
-  page.onLoad({}); page.onShow();
+  page.onShow();
   return { page, urls, products: () => products };
 }
 
-test('工具中心在售时最上面放"批量工具"卡片：免费用完写"已用完"、两档价格、"了解批量工具"进购买页，不再写"不需要购买"（D-076）', async () => {
+test('批量工具页（原工具中心）在售时最上面放"批量工具"卡片：免费用完写"已用完"、两档价格、"了解批量工具"进购买页，不再写"不需要购买"（D-076）', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 3 }) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
   assert.match(text, /本月免费次数已用完，下月 1 日恢复/);
   assert.match(text, /要一次处理更多家：30 天 29 元、90 天 79 元，不限次数，每次 500 家以内；一次付清，到期不再扣钱/);
   assert.doesNotMatch(text, /不需要购买/);
-  assert.ok(text.indexOf('批量工具') < text.indexOf('我的记录'), '卡片要在最上面');
+  assert.ok(text.indexOf('批量工具') < text.indexOf('批量处理客户名单'), '卡片要在最上面');
   const buy = findAll(render('pages/advisor/index.wxml', h.page.data), tapsTo('buyPass'));
   assert.equal(buy.length, 1);
   assert.equal(textOf(buy[0]), '了解批量工具');
@@ -1038,7 +1051,7 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   assert.match(shown('pages/advisor/index.wxml', some.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
 });
 
-test('工具中心不在售时没有批量工具卡片、不取价格，照旧写"免费额度不需要购买"；取不到价格时也不显示卡片', async () => {
+test('批量工具页不在售时没有批量工具卡片、不取价格，照旧写"免费额度不需要购买"；取不到价格时也不显示卡片', async () => {
   const off = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: false, hasOrders: false }), advisorStatus: () => centerStatus({ used: 3 }) });
   await flush(); await flush();
   assert.equal(off.page.data.payCard, null);
@@ -1052,7 +1065,7 @@ test('工具中心不在售时没有批量工具卡片、不取价格，照旧�
   assert.doesNotMatch(shown('pages/advisor/index.wxml', broken.page.data), /暂未开放|了解批量工具/);
 });
 
-test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 次"', async () => {
+test('批量工具页只用完一项时那一项写"已用完"，不写"还剩 0 次"', async () => {
   const quota = { enabled: true, quota: { compare: { used: 3, limit: 3, maxRows: 50 }, track: { used: 1, limit: 3, maxRows: 50 } }, pass: null, trial: null, season: null };
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.resolve(quota) });
   await flush(); await flush();
@@ -1062,7 +1075,7 @@ test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 �
   assert.equal(h.page.data.payCard.usedUp, false);
 });
 
-test('工具中心额度有了结果才画批量工具卡片；"刷新额度"后旧请求晚到不覆盖新额度；读不到额度时卡片只写价格（Codex 审阅）', async () => {
+test('批量工具页额度有了结果才画批量工具卡片；"刷新额度"后旧请求晚到不覆盖新额度；读不到额度时卡片只写价格（Codex 审阅）', async () => {
   const pending = [];
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }),
     advisorStatus: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
@@ -1085,7 +1098,7 @@ test('工具中心额度有了结果才画批量工具卡片；"刷新额度"后
   assert.match(shown('pages/advisor/index.wxml', broken.page.data), /额度未能更新/);
 });
 
-test('工具中心刷新额度失败时丢掉上一次的免费次数；有使用期但取不到价格时不放"续买"按钮（Codex 第二轮）', async () => {
+test('批量工具页刷新额度失败时丢掉上一次的免费次数；有使用期但取不到价格时不放"续买"按钮（Codex 第二轮）', async () => {
   let fail = false;
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }),
     advisorStatus: () => (fail ? Promise.reject(new Error('网络不稳定')) : centerStatus({ used: 1 })) });
@@ -1106,13 +1119,13 @@ test('工具中心刷新额度失败时丢掉上一次的免费次数；有使�
   assert.deepEqual(pass.urls, []);
 });
 
-test('工具中心两项每次上限不同时分别写，按额度接口的数字，不写死（Codex 第三轮）', async () => {
+test('批量工具页两项每次上限不同时分别写，按额度接口的数字，不写死（Codex 第三轮）', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1, rows: 50, trackRows: 30 }) });
   await flush(); await flush();
   assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，比对每次最多 50 家、通知表每次最多 30 家/);
 });
 
-test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
+test('批量工具页使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: true }), advisorStatus: () => centerStatus({ used: 0, pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } }) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
@@ -1191,7 +1204,18 @@ test('小程序的页面和工具代码里不再有"客户工作台"，改叫"�
   files.push('content/pay-terms.js', 'app.json');
   const hits = files.filter((file) => /客户工作台|工作台使用期/.test(fs.readFileSync(path.join(root, file), 'utf8')));
   assert.deepEqual(hits, []);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'pages/pass/index.json'), 'utf8')).navigationBarTitleText, '批量工具');
+  // 10/22 "工具中心"也改叫"批量工具"：用户看得到的文字（模板、页面标题、代码里的字符串）不再有"工具中心"（注释里说"原工具中心"不算）
+  const shownText = (file) => {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    if (file.endsWith('.wxml')) return source.replace(/<!--[\s\S]*?-->/g, '');
+    if (file.endsWith('.js')) return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    return source;
+  };
+  assert.deepEqual(files.filter((file) => !file.endsWith('.wxss') && /工具中心/.test(shownText(file))), []);
+  // 用工具的那一页叫"批量工具"（首页入口、"我的"九宫格同名）；购买页写明是买，不和它同名
+  const title = (page) => JSON.parse(fs.readFileSync(path.join(root, `pages/${page}/index.json`), 'utf8')).navigationBarTitleText;
+  assert.equal(title('advisor'), '批量工具');
+  assert.equal(title('pass'), '购买批量工具');
 });
 
 test('付费协议的草稿版本号不能标定稿：服务端也拒绝用草稿版本号收费，防止带着草稿协议上线', () => {
@@ -1433,8 +1457,8 @@ test('我的页头：批量工具使用期内名字后面有"批量工具 · 到
   assert.equal(badge().length, 1);
   assert.equal(textOf(badge()[0]), require('../utils/pay.js').passBadge(me.pass));
   assert.match(textOf(badge()[0]), /^批量工具 · 到 \d+月\d+日$/);
-  // "批量工具"一行的小字用 /me 带的使用期，不再另读额度接口
-  assert.match(h.page.data.passHint, /^到 \d+月\d+日$/);
+  // 去购买页那一行（"续买批量工具"）的小字用 /me 带的使用期，不再另读额度接口
+  assert.match(h.page.data.passHint, /^使用期到 \d+月\d+日$/); assert.equal(h.page.data.passLabel, '续买批量工具');
   h.page.openPass();
   assert.deepEqual(h.urls, ['/pages/pass/index']);
   me = { pay: { enabled: false, hasOrders: true }, pass: { active: true, expiresAt: soon, expired: false } };
@@ -1442,7 +1466,7 @@ test('我的页头：批量工具使用期内名字后面有"批量工具 · 到
   assert.match(textOf(badge()[0]), /^批量工具 · \d+月\d+日到期$/);
   h.page.openPass();
   assert.deepEqual(h.urls, ['/pages/pass/index', '/pages/orders/index']);
-  // 只有送的使用期、没有订单、又没在卖：去工具中心，不会点了没反应（Codex 复核）
+  // 只有送的使用期、没有订单、又没在卖：去批量工具页，不会点了没反应（Codex 复核）
   me = { pay: { enabled: false, hasOrders: false }, pass: { active: true, expiresAt: far, expired: false } };
   h.page.refresh(); await flush(); await flush();
   assert.equal(badge().length, 1);
@@ -1451,7 +1475,7 @@ test('我的页头：批量工具使用期内名字后面有"批量工具 · 到
   me = { pay: { enabled: true, hasOrders: true }, pass: { active: false, expiresAt: null, expired: true } };
   h.page.refresh(); await flush(); await flush();
   assert.equal(badge().length, 0);
-  assert.equal(h.page.data.passHint, '已到期，可再买一次');
+  assert.equal(h.page.data.passHint, '使用期已到期'); assert.equal(h.page.data.passLabel, '买批量工具');
   // 只有待确认、已关闭的订单（从没开通过）：不写"已到期"，写价格
   me = { pay: { enabled: true, hasOrders: true }, pass: { active: false, expiresAt: null, expired: false } };
   h.page.refresh(); await flush(); await flush();

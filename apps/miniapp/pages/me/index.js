@@ -5,6 +5,9 @@ const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
 // 支付的工具函数用到时才取（和原来"批量工具"一行的小字一样）：没买过、没在卖的人不加载
 function payUtils() { return require('../../utils/pay.js'); }
+// 去购买页那一行的名字（D-076 ②，10/22 写明是买）
+const BUY = '买批量工具';
+const RENEW = '续买批量工具';
 
 Page({
   data: {
@@ -29,9 +32,11 @@ Page({
     reminderCount: 0,
     // "我的订单"：有过订单才显示（服务端 /me 的 pay；停卖后已付款的人照样能看订单、退款、开票）
     ordersEntry: false,
-    // "批量工具"：在售时所有人都显示（D-076，原来只给买过的人续买）；没在售时不显示，正式版开卖前看不到
-    // passHint：没买过写最便宜一档的价格（"30 天 29 元起"），买过写到期日；取不到就不写
+    // 去购买页的一行：在售时所有人都显示（D-076，原来只给买过的人续买）；没在售时不显示，正式版开卖前看不到。
+    // 10/22 起写明是买（九宫格的"批量工具"是用工具的那一页）：使用期内写"续买批量工具"，其余写"买批量工具"。
+    // passHint：没买过写最便宜一档的价格（"30 天 29 元起"），使用期内写到期日，过期了写"使用期已到期"；取不到就不写
     passEntry: false,
+    passLabel: BUY,
     passHint: '',
     // 页头"批量工具"标识：使用期内才有（买的、送的都算，不看在不在卖），写到哪天；点了去购买页（在售时）或订单页
     passBadge: '',
@@ -70,7 +75,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passHint: '', passBadge: '' });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passLabel: BUY, passHint: '', passBadge: '' });
       return;
     }
     const started = consentEpoch();
@@ -93,6 +98,7 @@ Page({
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
           ordersEntry: !!(res.pay && res.pay.hasOrders === true),
           passEntry: !!(res.pay && res.pay.enabled === true),
+          passLabel: res.pass && res.pass.active === true ? RENEW : BUY,
           passHint: '',
           passBadge: current && res.pass && res.pass.active === true ? payUtils().passBadge(res.pass) : '',
         });
@@ -101,22 +107,23 @@ Page({
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
         // 确认不了还在不在卖：先收起"批量工具"，不在可能已停卖时留着购买入口（D-074，Codex 审阅）
-        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}`, passEntry: false, passHint: '', passBadge: '' });
+        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}`, passEntry: false, passLabel: BUY, passHint: '', passBadge: '' });
       });
   },
 
-  // "批量工具"那一行的小字：使用期内写到期日，用完了写"已到期，可再买一次"（/me 带的使用期；老的服务端
-  // 没带时读 /advisor/status）；没买过、或者只有没开通的订单（待确认、已关闭）写最便宜一档（读商品接口）。
+  // 去购买页那一行的小字：使用期内写到期日，用完了写"使用期已到期"（/me 带的使用期；老的服务端
+  // 没带时读 /advisor/status，名字也跟着它写"续买"或"买"）；没买过、或者只有没开通的订单（待确认、已关闭）写最便宜一档（读商品接口）。
   // 都是在售时才调用，取不到就不写，不影响点进去
   loadPassHint(seq, bought, pass) {
     const pay = payUtils();
-    const done = (hint) => { if (seq === this.profileSeq && this.data.passEntry) this.setData({ passHint: hint }); };
-    if (pass && pass.active === true && pay.monthDay(pass.expiresAt)) { done(`到 ${pay.monthDay(pass.expiresAt)}`); return; }
-    if (pass && pass.expired === true) { done('已到期，可再买一次'); return; }
+    const done = (hint, label) => { if (seq === this.profileSeq && this.data.passEntry) this.setData(label ? { passHint: hint, passLabel: label } : { passHint: hint }); };
+    if (pass && pass.active === true && pay.monthDay(pass.expiresAt)) { done(`使用期到 ${pay.monthDay(pass.expiresAt)}`); return; }
+    if (pass && pass.expired === true) { done('使用期已到期'); return; }
     if (bought && !pass) {
       Promise.resolve().then(() => api.advisorStatus()).then((status) => {
         const pass = status && status.pass;
-        done(pass && pass.active && pay.monthDay(pass.expiresAt) ? `到 ${pay.monthDay(pass.expiresAt)}` : '已到期，可再买一次');
+        const active = !!(pass && pass.active && pay.monthDay(pass.expiresAt));
+        done(active ? `使用期到 ${pay.monthDay(pass.expiresAt)}` : '使用期已到期', active ? RENEW : BUY);
       }).catch(() => done(''));
       return;
     }
@@ -176,7 +183,7 @@ Page({
   },
 
   // 页头"批量工具"标识：在售时去购买页（看到期日、续买），不在售时去订单页；
-  // 只有送的使用期、又没在卖的（没有订单）去工具中心用工具（Codex 复核：不能点了没反应）
+  // 只有送的使用期、又没在卖的（没有订单）去批量工具页用工具（Codex 复核：不能点了没反应）
   openPass() {
     if (this.data.passEntry) wx.navigateTo({ url: '/pages/pass/index' });
     else if (this.data.ordersEntry) wx.navigateTo({ url: '/pages/orders/index' });

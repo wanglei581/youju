@@ -14,6 +14,8 @@ Component({
     today: { type: String, value: '' },
     // 选择模式（如搜索页勾选导出）：点行不打开详情，由外层处理勾选
     selecting: { type: Boolean, value: false },
+    // 行上 AI 按钮做哪一项（components/ai-button 的 action）：默认 AI 解读；从 AI 首页"条款对照"来选通知时是条款对照
+    aiAction: { type: String, value: 'interpret' },
   },
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
     groupText: '', groupOpen: false, regionText: '', aiShown: false },

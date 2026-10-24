@@ -116,12 +116,12 @@ test('还在用的 TDesign 弹层不开自带的关闭按钮：它内部的 t-ic
   }
 });
 
-test('首页四个入口（D-068）：保留既有图标并新增完整工具中心', () => {
+test('首页四个入口（D-068）：保留既有图标并新增批量工具（10/22 由"工具中心"改名）', () => {
   const home = read('pages/home/index.wxml');
   const iconOf = (label) => new RegExp(`<t-icon name="([a-z0-9-]+)"[^>]*\\/><\\/view>\\s*<text class="entry-name">${label}<\\/text>`).exec(home)[1];
   assert.equal(iconOf('截止'), 'hourglass');
   assert.equal(iconOf('我的客户'), 'user');
   assert.equal(iconOf('查名单'), 'bulletpoint');
-  assert.equal(iconOf('工具中心'), 'app');
+  assert.equal(iconOf('批量工具'), 'app');
   assert.equal((home.match(/class="entry"/g) || []).length, 4);
 });

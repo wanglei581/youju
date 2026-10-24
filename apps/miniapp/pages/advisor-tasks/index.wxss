@@ -1,1 +1,11 @@
 @import "../../utils/advisor.wxss";
+/* 筛选（全部 / AI / 批量工具）：和"我的客户"的"相关通知 / 客户卡片"同一个样子 */
+.seg { margin: 24rpx 24rpx 0; padding: 6rpx; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6rpx; background: var(--card); border-radius: 38rpx; }
+.seg-item { min-height: 68rpx; display: flex; align-items: center; justify-content: center; border-radius: 32rpx; font-size: 28rpx; color: var(--t2); }
+.seg-item--on { background: var(--brand); color: #FFFFFF; font-weight: 500; }
+/* 每条记录标明是哪一种，放在标题行右边：AI 用品牌浅蓝，批量工具用灰 */
+.record-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16rpx; }
+.record-type { flex-shrink: 0; margin-top: 6rpx; padding: 0 12rpx; border-radius: 8rpx; background: var(--fill); color: var(--t2); font-size: 24rpx; font-weight: 500; line-height: 40rpx; white-space: nowrap; }
+.record-type--ai { background: var(--brand-tint); color: var(--brand); }
+/* 从批量工具页点的那一条、刚提交的那一条：品牌色描边标出来 */
+.record--focus { box-shadow: 0 0 0 4rpx var(--brand); }

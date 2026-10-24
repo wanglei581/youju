@@ -34,7 +34,9 @@
 </scroll-view>
 
 <!-- 只看能解读的（D-075，从板块首页进来时带上）：只管这一次，可以去掉；不进关注和转发 -->
-<ai-only wx:if="{{aiOnly}}" bind:remove="removeAi" />
+<ai-only wx:if="{{aiOnly}}" pick="{{pickShown}}" bind:remove="removeAi" />
+<!-- 去掉了"只看能解读的"、还在选通知：只留"怎么选"那一行 -->
+<ai-only wx:elif="{{pickShown}}" variant="hint" pick="{{pickShown}}" />
 <!-- 结果信息：第一行是份数，写明当前看的发布时间（默认近 30 天，10/15 走查：只写"3 份 不限时间共 12 份"看不懂；改为"近 30 天 3 份 · 共 12 份"，字数和原来差不多、不挤换行；选了不限时只写份数）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
 <view wx:if="{{!loading && !error}}" class="summary">
   <view class="summary-left"><text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} </text><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 共 {{totalAll}} 份</text></view>
@@ -54,7 +56,7 @@
   <block wx:if="{{!error}}">
   <view wx:for="{{items}}" wx:key="id" class="pick-row" data-id="{{item.id}}" bindtap="togglePick">
     <view wx:if="{{selecting}}" class="pick-box {{chosen[item.id] ? 'pick-box--on' : ''}}" aria-role="checkbox" aria-checked="{{chosen[item.id] ? 'true' : 'false'}}" aria-label="选择这份文件"><t-icon wx:if="{{chosen[item.id]}}" name="check" size="28rpx" color="#FFFFFF" /></view>
-    <view class="pick-main"><doc-row doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" selecting="{{selecting}}" /></view>
+    <view class="pick-main"><doc-row doc="{{item}}" q="{{q}}" last="{{index === items.length - 1}}" today="{{today}}" selecting="{{selecting}}" ai-action="{{aiAction}}" /></view>
   </view>
   </block>
   <view wx:if="{{error}}" class="empty">{{error}}<text class="link" bindtap="retry">　重试</text></view>
@@ -62,7 +64,7 @@
   <view wx:elif="{{!items.length && !loading}}" class="empty">
     <view class="empty-title">没有符合条件的文件</view>
     <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它不含没写明截止日期、或截止日期还没理清的通知）；别的时间段有结果时直接去看 -->
-    <view wx:if="{{aiOnly}}" class="exits"><ai-only variant="exit" bind:remove="removeAi" /></view>
+    <view wx:if="{{aiOnly}}" class="exits"><ai-only variant="exit" pick="{{pickShown}}" bind:remove="removeAi" /></view>
     <view wx:if="{{picked.open.length || (totalAll > 0 && chipTime !== '不限')}}" class="exits">
       <view wx:if="{{picked.open.length}}" class="exit-btn exit-btn--main" bindtap="removeOpen" aria-role="button">去掉“只看未截止”</view>
       <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”含两类：写明了截止日期、还没到的；可能 7 天内截止、日期还没核对的</view>

@@ -41,7 +41,7 @@ function trialView(trial, now) {
   };
 }
 
-// 体验中的额度一行（批量工具页、工具中心共用）
+// 体验中的额度一行（提交名单页、批量工具页共用）
 function trialLine(view) {
   return `加量体验中，到 ${view.trialEnd} 结束：每次最多 ${view.trialRows} 家，今天还能提交 ${view.trialLeft} 次（名单比对和通知表合计）；不占本月免费次数`;
 }
@@ -61,7 +61,7 @@ function trialCapText(view, now) {
   return `今天的 ${view.trialDaily} 次加量体验已用完，明天 0 点恢复；体验期间每月免费次数不扣、也不能改用`;
 }
 
-// 体验结束后 7 天内，批量工具页额度一行下面说一句已结束（回来的人知道每次 500 家为什么没了）
+// 体验结束后 7 天内，提交名单页额度一行下面说一句已结束（回来的人知道每次 500 家为什么没了）
 const ENDED_NOTE_MS = 7 * 24 * 3600 * 1000;
 function trialEndedText(trial, now) {
   if (!trial || typeof trial !== 'object' || trial.active === true || trial.reason !== 'used') return '';
@@ -71,7 +71,7 @@ function trialEndedText(trial, now) {
   return `加量体验已于 ${format.clockText(trial.endsAt, now)} 结束，已回到免费版`;
 }
 
-// 批量工具页上一直在的入口（有资格时）：写清楚是什么、多久、一次性。页面上只有一项工具，"两项"要写出是哪两项
+// 提交名单页上一直在的入口（有资格时）：写清楚是什么、多久、一次性。页面上只有一项工具，"两项"要写出是哪两项
 function trialPitch(view) {
   return `加量体验（免费，每个账号一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，名单比对和通知表合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
 }
@@ -83,7 +83,7 @@ function nextDay(iso) {
   return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
 }
 
-// 申报季加量的起止日期（批量工具页显示；还没开始的提前显示）
+// 申报季加量的起止日期（批量工具页、提交名单页、首页显示；还没开始的提前显示）
 function seasonLine(season) {
   if (!season || typeof season !== 'object' || !DATE.test(season.start) || !DATE.test(season.end)) return '';
   const limit = count(season.limit);

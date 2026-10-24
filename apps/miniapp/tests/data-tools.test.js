@@ -126,7 +126,8 @@ test('免费粘贴任务：预览成功才提交；超时重试保留幂等键�
   h.page.submit(); h.page.submit(); await flush(); assert.equal(sent, 1);
   h.page.submit(); await flush(); assert.equal(sent, 2); assert.equal(keys[0], keys[1]);
   assert.equal(h.page.data.text, ''); assert.equal(h.page.data.accepted, true);
-  assert.equal(h.urls.at(-1), '/pages/advisor-tasks/index?taskId=9');
+  // 提交后去我的记录，先筛好批量工具的（10/22：记录是同一份，按入口筛）
+  assert.equal(h.urls.at(-1), '/pages/advisor-tasks/index?type=tools&taskId=9');
   h.page.submit(); assert.equal(sent, 2); h.page.onUnload();
 });
 
@@ -256,7 +257,11 @@ test('新增表单和独立说明均注册，模板完整；工具入口覆盖�
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }
-  for (const page of ['home', 'me', 'clients']) assert.match(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'), /工具中心/);
+  // 10/22 "工具中心"改叫"批量工具"：三处入口都是这个名字，不再出现"工具中心"
+  for (const page of ['home', 'me', 'clients']) {
+    const wxml = fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8');
+    assert.match(wxml, /批量工具/, page); assert.doesNotMatch(wxml, /工具中心/, page);
+  }
   assert.match(fs.readFileSync(path.join(root, 'pages/clients/index.wxml'), 'utf8'), /不会自动发送/);
 });
 
@@ -388,15 +393,17 @@ test('502、503、504提交结果不确定都明确提示，保持同一内容�
   }
 });
 
-test('数据工具已开时保留其他工具同意入口，不因整体enabled清掉AI gate', async () => {
+test('数据工具已开、AI 那边说要先同意：批量工具页照常能用，不放 AI 的同意卡片（10/22：AI 的同意在 AI 首页）', async () => {
   let agreed = 0;
   const page = load('pages/advisor/index.js', {
     '../../utils/api.js': { advisorCapabilities: () => Promise.resolve({ ...caps(true, false), reason: 'consent' }), advisorStatus: () => Promise.resolve(status()), advisorTasks: () => Promise.resolve({ items: [] }) },
-    '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context,
+    '../../utils/advisor.js': helpers,
     '../../utils/consent.js': { ensureConsent: () => { agreed += 1; return Promise.resolve(false); } },
   }, { wx: { setNavigationBarTitle() {} } });
-  page.onLoad({}); page.onShow(); await flush(); assert.equal(page.data.toolsEnabled, true); assert.equal(page.data.aiGate, 'consent');
-  assert.match(textOf(render('pages/advisor/index.wxml', page.data)), /阅读并同意后查看其他工具/); page.consent(); await flush(); assert.equal(agreed, 1); page.onUnload();
+  page.onShow(); await flush(); assert.equal(page.data.toolsEnabled, true); assert.equal(page.data.gate, '');
+  const shown = textOf(render('pages/advisor/index.wxml', page.data));
+  assert.doesNotMatch(shown, /阅读并同意|AI/); assert.match(shown, /批量名单比对/);
+  page.consent(); await flush(); assert.equal(agreed, 0, '没有要同意的'); page.onUnload();
 });
 
 test('文件重下错误先关闭loading再显示提示，不被hideLoading吞掉', async () => {
@@ -513,7 +520,7 @@ test('真实表单A未知提交→切到B→回A：同一内容沿用A的键只�
   assert.equal(saved.owner, OWNER); assert.equal(saved.entries.length, 0); assert.deepEqual(Object.keys(saved.others), [B]); assert.deepEqual(saved.others[B].map(e => e.key), [keys[1]]);
   assert.doesNotMatch(JSON.stringify([...storage]), /合成跨账号企业/); h.page.onUnload();
 });
-test('未同意通用协议：工具中心与任务中心写通用工具文案、不提AI，按钮仍走通用同意', async () => {
+test('未同意通用协议：批量工具页与我的记录写通用工具文案、不提AI，按钮仍走通用同意', async () => {
   const gated = () => Promise.resolve({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent' });
   for (const name of ['advisor', 'advisor-tasks']) {
     let asked = 0;
@@ -524,11 +531,11 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
     assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
     // 403 时不知道服务端开没开批量工具：介绍卡只说"有什么"，不承诺同意后一定能用（Codex 审阅）
-    if (name === 'advisor') { assert.match(shown, /工具中心有什么/); assert.doesNotMatch(shown, /同意后可以用/); }
+    if (name === 'advisor') { assert.match(shown, /批量工具能做什么/); assert.doesNotMatch(shown, /同意后可以用/); }
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });
-test('老用户协议更新后：工具中心和我的记录直接写"协议已更新"，按钮照旧走同意', async () => {
+test('老用户协议更新后：批量工具页和我的记录直接写"协议已更新"，按钮照旧走同意', async () => {
   const gated = () => Promise.resolve({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent', consentUpdated: true });
   for (const name of ['advisor', 'advisor-tasks']) {
     let asked = 0;

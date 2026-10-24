@@ -5,6 +5,14 @@
 const access = require('../../utils/ai-access.js');
 const context = require('../../utils/tool-context.js');
 
+// action：默认 interpret（"AI 解读"，进解读页）；clause 是从 AI 首页"条款对照"那一行来选通知时（"条款对照"，进对照页，
+// 看这一行能不能做条款对照）。不认的当 interpret
+const ACTIONS = {
+  interpret: { label: 'AI 解读', flag: 'interpret', url: (props) => context.interpretUrl(props) },
+  clause: { label: '条款对照', flag: 'clause', url: (props) => context.clauseUrl(props) },
+};
+const actionOf = (name) => (Object.prototype.hasOwnProperty.call(ACTIONS, name) ? ACTIONS[name] : ACTIONS.interpret);
+
 Component({
   options: { styleIsolation: 'apply-shared' },
   properties: {
@@ -13,10 +21,11 @@ Component({
     ai: { type: null, value: null },
     // 勾选导出时不显示，免得勾选时误点进去用掉次数（不叫 hidden：那是所有组件都有的通用属性）
     selecting: { type: Boolean, value: false },
+    action: { type: String, value: 'interpret' },
   },
-  data: { shown: false },
+  data: { shown: false, label: ACTIONS.interpret.label },
   observers: {
-    'ai, selecting, docId': function () { this.sync(); },
+    'ai, selecting, docId, action': function () { this.sync(); },
   },
   lifetimes: {
     attached() {
@@ -38,17 +47,19 @@ Component({
   methods: {
     sync() {
       if (!this.alive) return;
-      const { ai, selecting, docId } = this.properties;
-      const shown = !selecting && !!docId && !!ai && ai.interpret === true && access.canOpen();
-      if (shown === this.data.shown) return;
-      this.setData({ shown });
-      this.triggerEvent('toggle', { shown });
+      const { ai, selecting, docId, action } = this.properties;
+      const act = actionOf(action);
+      const shown = !selecting && !!docId && !!ai && ai[act.flag] === true && access.canOpen();
+      if (shown === this.data.shown && act.label === this.data.label) return;
+      const toggled = shown !== this.data.shown;
+      this.setData({ shown, label: act.label });
+      if (toggled) this.triggerEvent('toggle', { shown });
     },
     open() {
       if (!this.data.shown || this.navigating) return;
       this.navigating = true;
       wx.navigateTo({
-        url: context.interpretUrl({ docId: this.properties.docId, docTitle: this.properties.docTitle }),
+        url: actionOf(this.properties.action).url({ docId: this.properties.docId, docTitle: this.properties.docTitle }),
         complete: () => { this.navigating = false; },
       });
     },

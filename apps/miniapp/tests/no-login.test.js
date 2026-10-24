@@ -141,7 +141,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   assert.ok(hasClass('row--last')(rows[2]));
 });
 
-test('"我的"：保留登录与同意，完整候选增加工具中心和共同任务入口', async () => {
+test('"我的"：保留登录与同意，完整候选增加批量工具（原工具中心）和共同任务入口', async () => {
   const { api, root } = await mePage(true);
   assert.deepEqual(api.calls, ['me']);
   const all = textOf(root);
@@ -152,7 +152,7 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, hasClass('brand')).length, 0);
   const [grid] = findAll(root, hasClass('grid'));
   assert.ok(!hasClass('grid--2')(grid));
-  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户', '工具中心', '纠错']);
+  assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户', '批量工具', '纠错']);
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));

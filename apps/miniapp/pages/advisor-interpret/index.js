@@ -1,7 +1,7 @@
 // AI 解读（政策解读与材料清单）。直达也要 capabilities 开放才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
 const { createSession } = require('../../utils/ai-interpret.js');
-const { internalNotice, allowedKinds, aiTitle, gateState, remainingOf, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
+const { internalNotice, allowedKinds, aiTitle, gateState, remainingOf, recordsUrl, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const access = require('../../utils/ai-access.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
@@ -98,7 +98,8 @@ Page({
     this.onShow();
   },
   // 今天的次数用完了：去看以前的结果
-  records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
+  // "我的记录"是同一份（D-075），从这里进去先筛好 AI 的，可以切回全部
+  records() { if (this.data.gate === 'used') wx.navigateTo({ url: recordsUrl('ai') }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); this.session.hide(); },
   onUnload() { this.onHide(); },
   check(e) { this.session.check((e.detail.value || []).includes('agree')); },
@@ -123,6 +124,6 @@ Page({
   feedback() {
     if (this.data.aiEnabled && this.data.docId) wx.navigateTo({ url: `/pages/feedback/index?id=${encodeURIComponent(this.data.docId)}&title=${encodeURIComponent(this.data.title)}` });
   },
-  tasks() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
+  tasks() { if (this.data.aiEnabled) wx.navigateTo({ url: recordsUrl('ai') }); },
   report() { if (this.data.aiEnabled) wx.navigateTo({ url: '/pages/complaint/index' }); },
 });

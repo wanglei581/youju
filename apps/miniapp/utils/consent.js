@@ -137,10 +137,11 @@ function ensureConsent(options) {
 
 // 读全文并同意的页面：依次显示两份文件全文，同意按钮在最后
 const CONSENT_PAGE = '/pages/agreement/index?consent=1';
-// 从 AI 板块、工具中心来的：同意以后的提示不写"关注和纠错"
+// 从 AI 板块、批量工具页、我的记录来的（用途 ai、tools）：同意以后的提示不写"关注和纠错"
 const AI_CONSENT_PAGE = `${CONSENT_PAGE}&for=ai`;
-// 同意以后能用上 AI 的入口写明用途：ai 是 AI 首页、解读页、对照页；tools 是 AI 对这个人开着时的工具中心、我的记录
-const PURPOSES = { ai: 'AI 解读和条款对照', tools: '工具（含 AI 解读和条款对照）' };
+// 同意以后能用上 AI 的入口写明用途：ai 是 AI 首页、解读页、对照页；tools 是 AI 对这个人开着时的批量工具页、我的记录
+// （同一份协议，同意以后批量工具和 AI 都能用；10/22 工具中心改名批量工具，这一句跟着写出两样）
+const PURPOSES = { ai: 'AI 解读和条款对照', tools: '批量工具和 AI 解读、条款对照' };
 
 function askConsent(purpose) {
   const ai = Object.prototype.hasOwnProperty.call(PURPOSES, purpose);
