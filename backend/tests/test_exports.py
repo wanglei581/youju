@@ -152,7 +152,7 @@ def test_xlsx_export(client, docs):
         "序号",
         "标题",
         "类型",
-        "名单状态",
+        "发布阶段",
         "发文机关",
         "文号",
         "发布日期",
@@ -165,7 +165,7 @@ def test_xlsx_export(client, docs):
     assert sheet["M1"].value == "截止原文句子"
     assert sheet["N1"].value == "原文链接" and sheet["O1"].value == "原文链接 2"
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
-    assert sheet["D2"].value is None  # 申报通知没有名单状态，status 契约保持不变
+    assert sheet["D2"].value is None  # 申报通知没有发布阶段（原叫名单状态），status 契约保持不变
     assert sheet["D3"].value == "公示"
     assert "2026-10-20" in sheet["I2"].value
     assert "原定 企业申报截止 2026-10-18 已延期" in sheet["I2"].value
@@ -176,7 +176,7 @@ def test_xlsx_export(client, docs):
     assert sheet["K2"].value == "见原文"  # 申报通知还没有核对通过的支持方式
     assert sheet["K3"].value == "—"  # 名单没有支持方式
     assert sheet["L2"].value == "支持方式"
-    assert sheet["L3"].value == "截止日期（以原文为准）、名单状态"
+    assert sheet["L3"].value == "截止日期（以原文为准）、发布阶段"
     assert sheet["N2"].hyperlink.target.endswith("/1.html")
     assert sheet["O2"].hyperlink.target.endswith("/2.html")
     note = book["数据说明"]
@@ -213,7 +213,7 @@ def test_docx_export(client, docs):
     assert listed_fields["截止日期（以原文为准）"] == "见原文"
     assert listed_fields["日期角色"] == "截止时间见原文"
     assert listed_fields["支持方式"] == "—"
-    assert listed_fields["未核项"] == "截止日期（以原文为准）、名单状态"
+    assert listed_fields["未核项"] == "截止日期（以原文为准）、发布阶段"
 
 
 @pytest.fixture

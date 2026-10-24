@@ -87,6 +87,10 @@ def test_compare_summary_matches_excel_unique_customers_year_and_removed(tmp_pat
     assert len(details) == report.detail_row_count == 6
     assert [item["documentId"] for item in details] == ["1", "2", "3", "1", "2", None]
     assert any(f == {"label": "客户输入", "value": "丁公司"} for f in details[-1]["fields"])
+    # 用词 D-090：命中名单的公示/公布叫"发布阶段"，不再叫"名单状态"
+    assert {"label": "发布阶段", "value": "公示"} in details[0]["fields"]
+    assert "发布阶段按标题用词标注" in native["notice"]
+    assert "名单状态" not in str(native)
 
 
 def test_compare_no_matches_keeps_no_hit_detail_without_inventing_groups(tmp_path):

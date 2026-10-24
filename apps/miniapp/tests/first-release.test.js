@@ -581,7 +581,7 @@ test('协议页（民法典第 496 条，10/14）：每份文件顶部列出重�
 test('名单详情显示实际公示或公布状态；缺失状态不编造', () => {
   for (const status of ['公示', '公布']) {
     const tree = render('pages/detail/index.wxml', { doc: { title: '合成名单', status }, loading: false });
-    assert.match(textOf(tree), new RegExp(`名单状态：${status}`));
+    assert.match(textOf(tree), new RegExp(`发布阶段：${status}`));
   }
-  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { doc: { title: '合成通知' }, loading: false })), /名单状态：/);
+  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { doc: { title: '合成通知' }, loading: false })), /发布阶段：/);
 });

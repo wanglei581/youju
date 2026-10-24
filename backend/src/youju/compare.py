@@ -524,7 +524,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
     detail = book.active
     detail.title = "明细"
     version = _beijing_minute(report.data_version) if report.data_version else "暂无"
-    note = f"第三方整理 · 非政府平台；名单状态照录标题用词，以原文为准；数据截至 {version}"
+    note = f"第三方整理 · 非政府平台；发布阶段照录标题用词，以原文为准；数据截至 {version}"
     if report.removed:
         note += "；已去掉" + "、".join(
             f"{reason}{count}行" for reason, count in removed_input_counts(report).items()
@@ -536,7 +536,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         "结果",
         "名单标题",
         "发布日期",
-        "名单状态",
+        "发布阶段",
         "发文机关",
         "省份",
         "文件编号",

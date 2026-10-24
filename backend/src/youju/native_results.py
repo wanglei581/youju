@@ -76,7 +76,7 @@ def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
     if kind == "compare":
         title = "企业名单比对结果"
         generated = data.get("data_version")
-        notice += "名单状态按标题用词标注；名单序号不是附件页码。"
+        notice += "发布阶段按标题用词标注；名单序号不是附件页码。"
         removed = removed_input_counts(report)
         if removed:
             notice += "已去掉：" + "、".join(
@@ -89,7 +89,7 @@ def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
                     row, {k: LABELS[k] for k in ("input", "normalized", "status", "note")}
                 )
                 if match:
-                    labels = dict(LABELS, status="名单状态")
+                    labels = dict(LABELS, status="发布阶段")
                     fields += _fields(match, labels)
                 items.append(
                     {

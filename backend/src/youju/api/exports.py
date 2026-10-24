@@ -44,7 +44,7 @@ HEADERS = (
     "序号",
     "标题",
     "类型",
-    "名单状态",
+    "发布阶段",
     "发文机关",
     "文号",
     "发布日期",
@@ -56,7 +56,7 @@ HEADERS = (
 )
 NOTICE = (
     f"本文件由第三方整理，非政府平台；“{DEADLINE_HEADER}”列只列人工核对通过的记录，"
-    "请以发文机关原文为准；名单状态仅按标题用词标注。"
+    "请以发文机关原文为准；发布阶段仅按标题用词标注。"
     "“日期角色”是人工核对时确认的截止类型；“支持方式”只写申报通知里人工核对通过的；"
     "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
@@ -144,7 +144,7 @@ def _unchecked(
     - 截止日期（以原文为准）：没有核对过的截止；已有核对过的、
       但还有待核对的候选时写"其他截止日期（以原文为准）"（可能还有别的截止没核对）
     - 支持方式：只有申报通知有；没有核对通过的，或还有待核对（含正文变了要重核）的候选
-    - 名单状态：只有名单有；只照录标题用词（D-018），没有人工核对这一步
+    - 发布阶段（原叫名单状态，D-090）：只有名单有；只照录标题用词（D-018），没有人工核对这一步
     """
     items: list[str] = []
     if not has_deadline:
@@ -154,7 +154,7 @@ def _unchecked(
     if kind == "申报通知" and (not support_approved or support_pending):
         items.append("支持方式")
     if kind == "名单":
-        items.append("名单状态")
+        items.append("发布阶段")
     return items
 
 
@@ -512,7 +512,7 @@ def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             ("序号", str(item.number)),
             ("标题", item.title),
             ("类型", item.kind),
-            ("名单状态", item.status),
+            ("发布阶段", item.status),
             ("发文机关", item.issuer),
             ("文号", item.doc_number),
             ("发布日期", item.published),

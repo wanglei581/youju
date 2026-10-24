@@ -214,6 +214,11 @@ def test_multiple_same_name_and_export_formula_escape(session, tmp_path):
     exported = load_workbook(output, data_only=False)
     assert exported["明细"]["A5"].value == "'=客户"
     assert exported["明细"]["A1"].value.startswith("第三方整理")
+    # 用词 D-090：表头和说明写"发布阶段"，不再写"名单状态"
+    rows = [[cell.value for cell in row] for row in exported["明细"].iter_rows(max_row=4)]
+    header = next(row for row in rows if "客户输入" in row)
+    assert "发布阶段" in header and "名单状态" not in header
+    assert "发布阶段照录标题用词" in exported["明细"]["A1"].value
 
 
 def test_compare_and_export_allow_missing_year_and_publish_date(session, tmp_path):

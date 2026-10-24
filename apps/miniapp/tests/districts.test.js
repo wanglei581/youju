@@ -267,7 +267,7 @@ test('关注摘要和暂不可查询的区县关注：条件卡写出区县、ne
   // 空的 regions 不写进网址（searchUrl 一直如此），其余原样
   assert.deepEqual(Object.fromEntries(new URL(targets.at(-1), URL_BASE).searchParams), { kind: '申报通知', districts: c.districts, time: '不限' });
   assert.match(conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '江苏/苏州', districts: '北京/北京/朝阳区' }),
-    /江苏·苏州、北京·朝阳区 · 名单与公示 · 名单状态：公示 · 发文部门：科技部门/);
+    /江苏·苏州、北京·朝阳区 · 名单与公示 · 发布阶段：公示 · 发文部门：科技部门/);
 });
 
 function localWx(initial) {

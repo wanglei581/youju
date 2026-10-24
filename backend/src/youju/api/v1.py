@@ -1242,7 +1242,7 @@ def search_statement(
         raise HTTPException(status_code=422, detail=f"发布时间不支持：{time}")
     picked_types = [TYPES[t] for t in _pick(types, TYPES, "类型")]
     picked_regions = [r for r in _pick(regions, PROVINCES, "地区") if r != "不限地区"]
-    picked_status = _pick(status, STATUSES, "名单状态")
+    picked_status = _pick(status, STATUSES, "发布阶段")
     picked_depts = _pick(depts, DEPTS, "发文部门")
     picked_levels = _pick(levels, LEVELS, "层级")
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")

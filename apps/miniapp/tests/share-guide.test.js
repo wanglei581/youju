@@ -344,7 +344,7 @@ function listsPage({ lookup = () => new Promise(() => {}), pages, wx = { showToa
 }
 const COMPANY = '演示科技有限公司';
 const FOUND = { query: COMPANY, items: [{ id: '9', kind: '名单', title: '拟认定高新技术企业名单', matched: { name: COMPANY } }], similar: [], candidates: [], coverage: { lists: 10 } };
-const GENERIC = { title: '查企业上过哪些名单', path: '/pages/lists/index' };
+const GENERIC = { title: '在政府公开名单里查企业', path: '/pages/lists/index' };
 
 test('查名单：查到了名单才带企业名称转发，接收人打开自动按这个名称查一次', async () => {
   const sender = listsPage({ lookup: () => Promise.resolve(plain(FOUND)) });

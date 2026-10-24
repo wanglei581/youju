@@ -94,7 +94,7 @@ Page({
     const { queried, result, looking, lookupError } = this.data;
     const found = !looking && !lookupError && result && result.items && result.items.length > 0;
     const name = shareName(queried);
-    if (!found || !name || name.length > NAME_MAX) return { title: '查企业上过哪些名单', path: '/pages/lists/index' };
+    if (!found || !name || name.length > NAME_MAX) return { title: '在政府公开名单里查企业', path: '/pages/lists/index' };
     return { title: `查名单：${name}`, path: `/pages/lists/index?q=${encodeURIComponent(name)}` };
   },
 

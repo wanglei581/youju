@@ -8,7 +8,7 @@ const format = require('../utils/format.js');
 const boost = require('../utils/boost.js');
 const conditions = require('../utils/conditions.js');
 
-// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签。
+// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签（10/24 起叫发布阶段，D-090）。
 // 依赖都用替身，不读取 legal.js 或本机配置。
 function load(file, deps = {}, globals = {}) {
   let def;

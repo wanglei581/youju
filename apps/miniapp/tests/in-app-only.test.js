@@ -76,3 +76,27 @@ test('不再有复制原文链接的代码：utils/copy.js 已删，所有页面
   assert.match(detail, /bindtap="readBody">站内阅读全文</);
   assert.match(detail, /正文和附件可在本小程序阅读，链接仅供记录来源/);
 });
+
+// D-090（创始人 10/24 "查名单这组用词按你推荐的改"）：首页小字"政府公开名单"，名单页和转发标题"在政府公开名单里查企业"，
+// "名单状态"改叫"发布阶段"，不写"上过哪些名单""当前效力"这类像资格或信用结论的说法（10/23 审核以"企业征信"退回过）
+const LIST_WORDING = ['上过哪些名单', '上了哪些名单', '名单状态', '当前效力'];
+
+test('查名单用词（D-090）：首发包页面、组件和工具函数不再写"上过哪些名单""名单状态""当前效力"', () => {
+  const pages = firstPages();
+  const files = [
+    ...pages.flatMap((page) => ['wxml', 'js'].map((ext) => `pages/${page}/index.${ext}`)).filter((file) => fs.existsSync(path.join(ROOT, file))),
+    ...listFiles('components', (dir) => ['wxml', 'js'].map((ext) => `components/${dir}/index.${ext}`)),
+    ...listFiles('utils', (name) => (name.endsWith('.js') && !/^mock/i.test(name) ? [`utils/${name}`] : [])),
+  ];
+  const hits = files.flatMap((file) => {
+    const shown = visible(read(file));
+    return LIST_WORDING.filter((word) => shown.includes(word)).map((word) => `${file}：${word}`);
+  });
+  assert.deepEqual(hits, []);
+  assert.match(visible(read('pages/home/index.wxml')), /<text class="entry-name">查名单<\/text><text class="entry-sub">政府公开名单<\/text>/);
+  assert.match(visible(read('pages/lists/index.wxml')), /<view class="h1">在政府公开名单里查企业<\/view>/);
+  assert.match(visible(read('pages/lists/index.js')), /title: '在政府公开名单里查企业'/);
+  assert.match(visible(read('pages/detail/index.wxml')), /class="tag">发布阶段：{{doc.status}}</);
+  // 输入框仍写统一社会信用代码：按代码才能把同名企业分开
+  assert.match(visible(read('pages/lists/index.wxml')), /placeholder="输入企业全称或统一社会信用代码"/);
+});

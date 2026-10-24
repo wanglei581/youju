@@ -6,7 +6,7 @@
   <view class="about-title">{{title}}</view>
 </view>
 <view class="card box">
-  <textarea class="input" value="{{content}}" maxlength="{{max}}" placeholder="{{coverage ? '想增加哪个地区、哪个部门的栏目？写下名称，有网址更好' : pay ? '遇到了什么问题？比如已经付款还没开通、退款没到账、发票没收到' : '哪里不对？比如截止日期、发文机关、名单状态和原文不一致，或者希望增加的地区和栏目'}}" placeholder-class="ph" bindinput="onInput" auto-height aria-label="{{coverage ? '申请覆盖内容' : pay ? '支付和订单问题' : '纠错与建议内容'}}" />
+  <textarea class="input" value="{{content}}" maxlength="{{max}}" placeholder="{{coverage ? '想增加哪个地区、哪个部门的栏目？写下名称，有网址更好' : pay ? '遇到了什么问题？比如已经付款还没开通、退款没到账、发票没收到' : '哪里不对？比如截止日期、发文机关、发布阶段和原文不一致，或者希望增加的地区和栏目'}}" placeholder-class="ph" bindinput="onInput" auto-height aria-label="{{coverage ? '申请覆盖内容' : pay ? '支付和订单问题' : '纠错与建议内容'}}" />
   <view wx:if="{{coverage}}" class="note weak">最多 {{max}} 字，提交时会自动加上“申请覆盖：”</view>
   <view class="count weak">{{count}}/{{max}}</view>
 </view>
