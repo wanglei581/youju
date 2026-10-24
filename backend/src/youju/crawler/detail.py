@@ -144,8 +144,6 @@ _MONTH_AFTER = re.compile(
     rf"{_SPACES}月(?:\d|[底初中末前后起止至内之以]|[上下][旬半]|(?![{_HAN}]))"
 )
 _DAY_AFTER = re.compile(rf"日(?:[前后起止至内之以]|(?![{_HAN}]))")
-# 金额（"3000多万元"）：只在接上也不到 12 位（旧规则本来就不遮）时断开；12–19 位和旧规则一样接上
-_AMOUNT_AFTER = re.compile(r"[多余]?[万亿元]")
 
 
 def _date_from(values: list[str], i: int) -> bool:
@@ -163,7 +161,8 @@ def _account(match: re.Match) -> str:
     和日期连写、中间没空格的分不开，整串算）；第二组起和旧规则一样最多接到 19 位为止（分组写的
     20 位以上账号和以前一样露出最后一组——再往后接，后面的日期、金额写法太多，认不全就会吞字），
     19 位以内碰到这几种也不接（"隔空白"指空格、制表符、全角空格、换行）：
-    - 日期（"20251010""2025 10 10"）；
+    - 日期（"20251010""2025 10 10"；前面隔的是空格才算，整串用横线连写的"1202021309-2025-10-10"
+      照样接）；
     - 年份（19xx、20xx）后面（可以隔空白）跟着"年"（"账号：1234567890 2025 年11月"
       "2025年专项资金"；"年费""年均""年检""年报"除外，"年费用"不除外），或跟着"."、"/"（全角
       也算）再跟数字（"2025.10.10"），或直接跟"上半年""下半年"，或下一组是跟着"月"的月份
@@ -175,10 +174,10 @@ def _account(match: re.Match) -> str:
       "20日以前""20日，"），或（可以隔空白）跟"月"（1–12，"月"后面紧跟的不是汉字，或者是"底初中
       末前后起止至内之以"、"上旬""下旬""上半""下半"："10月20日""10月底前""1 月 申报""1月起"）——
       "日期""日均""月均""月份"是词，不算；
-    - 接上也不到 12 位（旧规则本来就不遮）、后面直接跟金额单位的（"622202 3000多万元"）。
     后面跟着别的字不管（"日期：""号码""时间""分行"开头的词常紧挨着账号写）。第一组不看后面跟的字。
-    接上的有 10–30 位才遮，没接上的原样留着；一位都没遮、旧规则（_BANK）却会遮的，照旧规则遮——
-    红线上的号码不能比以前漏得多。"""
+    只有第一组的 10–30 位就遮；接了几组的要满 12 位（和旧规则一样：不到 12 位的旧规则本来就不遮，
+    后面那几组多半是日期、金额，"622202 3000多万元"），不满就只看第一组。没接上的原样留着；一位都
+    没遮、旧规则（_BANK）却会遮的，照旧规则遮——红线上的号码不能比以前漏得多。"""
     label, run = match.group(1), match.group(2)
     whole, text, base = match.group(), match.string, match.start(2)
     groups = list(_DIGITS.finditer(run))
@@ -190,7 +189,7 @@ def _account(match: re.Match) -> str:
             # 这一组在原文里的结尾：后面是分隔符和下一组，或者（最后一组）号码串后面的正文
             end = base + group.end()
             if (
-                _date_from(values, i)
+                (_date_from(values, i) and run[group.start() - 1] == " ")
                 or (
                     _YEAR.fullmatch(values[i])
                     and (
@@ -212,7 +211,6 @@ def _account(match: re.Match) -> str:
                     )
                 )
                 or (size <= 2 and _SHORT_YEAR_AFTER.match(text, end))
-                or (total + size < 12 and _AMOUNT_AFTER.match(text, end))
                 or (size <= 2 and 1 <= int(values[i]) <= 31 and _DAY_AFTER.match(text, end))
                 or (size <= 2 and 1 <= int(values[i]) <= 12 and _MONTH_AFTER.match(text, end))
                 or total + size > 19
@@ -222,6 +220,9 @@ def _account(match: re.Match) -> str:
             break
         total += size
         taken = i + 1
+    if taken > 1 and total < 12:
+        # 接了几组还不到 12 位（旧规则本来就不遮）：后面那几组多半是日期、金额，只看第一组
+        taken, total = 1, len(values[0])
     if 10 <= total <= 30:
         cut = groups[taken - 1].end()
         return f"{label}[银行账号已脱敏]{run[cut:]}"
@@ -278,7 +279,7 @@ _COMMON_WORDS = frozenset(
         "白天", "周末", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
         "项目", "申报", "金融", "高新", "安全", "文化", "成果", "管理", "服务", "常年",
         "纪检", "商务", "卫健", "卫生", "文旅", "司法", "应急", "安监", "林业", "林草", "武装",
-        "董事长",
+        "董事长", "文件", "方案", "方面", "安排", "申请", "费用", "程序",
     )
 )  # fmt: skip
 # 以常见姓氏开头、不带"省、市"的省份和地级市名（"石家庄 0311-…"这样按城市列的联系电话）：
@@ -402,9 +403,12 @@ def _contact_names(text: str) -> list[tuple[int, int]]:
         # 连写的"联系人："（旧规则认的写法）后面第一个词照旧不看姓氏；新认的写法要以常见姓氏开头
         old_label = _CLASSIC_LABEL.match(label.group()) is not None
         classic = not next_line and old_label
-        if continued and not old_label:
-            # 库里旧正文：新认的写法旧规则不认，这一行到旧规则遮过的姓名（后面那个真姓名）为止，
-            # 前面的词多半不是姓名（"联系人及电话：申请、[姓名已脱敏]"）——这一行不再认
+        line_end = text.find("\n", label.end())
+        rest_of_line = text[label.end() : line_end if line_end >= 0 else None]
+        if not old_label and "[姓名已脱敏]" in rest_of_line:
+            # 库里旧正文：新认的写法旧规则不认，这一行后面有旧规则遮过的姓名（那是真姓名），前面的
+            # 词多半不是姓名（"联系人及电话：申请、[姓名已脱敏]""文件，[姓名已脱敏]"）——这一行
+            # 不再认；第一遍遮过的再过一遍也走这里，不会多遮
             continue
         named = False
         words = _words(text, label.end(), end)

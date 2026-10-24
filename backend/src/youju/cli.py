@@ -248,7 +248,7 @@ def _id_list(value: str) -> list[int]:
 
 def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     """一次性：重抓被旧的正文脱敏规则吞了字的文件详情；默认只预览，加 --apply 才写入。"""
-    from youju.refetch_redacted import count_affected, refetch_redacted
+    from youju.refetch_redacted import BatchChanged, count_affected, refetch_redacted
 
     if args.count:
         with session_factory()() as session:
@@ -266,16 +266,30 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
             + " ".join(f"{k}={v if v is not None else 0}" for k, v in n.items())
         )
         return 0
+    if args.apply and args.batch is None:
+        print("写入要先预览：同一条命令加 --apply --batch（照抄这一批预览那一行的 batch=…）")
+        return 2
+    # --ids、--batch 已经定了是哪几份，不看 --limit
+    limit = None if args.ids or args.batch else (200 if args.limit is None else args.limit)
     with session_factory()() as session:
-        report = refetch_redacted(
-            session,
-            apply=args.apply,
-            limit=len(args.ids) if args.ids else args.limit,
-            after_id=args.after_id,
-            ids=args.ids,
-            upto_id=args.upto_id,
-            max_workers=args.workers,
-        )
+        try:
+            report = refetch_redacted(
+                session,
+                apply=args.apply,
+                limit=limit,
+                after_id=args.after_id,
+                ids=args.ids,
+                batch=args.batch,
+                max_workers=args.workers,
+            )
+        except BatchChanged:
+            print(
+                "这一批和预览时不一样了：预览以后有文件的正文被别的任务换过（或者多了、少了），"
+                "或者命令里的 --after-id、--ids 和预览那条不一样。什么都没做；请重新预览这一批，"
+                "按新的 batch 写入"
+            )
+            print("refetch_redacted_refused reason=batch_changed")
+            return 3
     results = report.results
     by_result = Counter(r.result for r in results)
     names = {
@@ -312,13 +326,20 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     if args.apply and by_result["fixed"]:
         refreshed = "已重算" if report.eligibility_refreshed else "没拿到写锁，夜里全量重算会补上"
         print(f"新增待核对截止候选 {report.new_candidates} 条；能不能 AI 解读：{refreshed}")
-    last = results[-1].document_id if results else (args.after_id or 0)
-    if not args.ids and len(results) == args.limit:
-        print(f"已到 --limit {args.limit} 份，后面可能还有：加 --after-id {last} 接着处理")
+    # 重试（--ids）的编号不是分批的进度，last_id 打成"-"，免得拿去接下一批
+    last = "-" if args.ids else results[-1].document_id if results else (args.after_id or 0)
+    if limit is not None and len(results) == limit:
+        print(f"已到 --limit {limit} 份，后面可能还有：加 --after-id {last} 接着处理")
     if not args.apply and by_result["fixed"]:
-        print("确认无误后加 --apply 写入；写入时会再打开一次页面、按当时库里的正文再核对一次")
-    # 没打开的分批时会被 --after-id 跳过：全部批次跑完后用 --ids 单独重试。打在汇总行前面，最后一行
-    # 总是带 last_id 的汇总行
+        print(
+            f"确认无误后，同一条命令加 --apply --batch {report.batch} 写入（只写这一批，这一批的"
+            "文件或正文和预览时不一样就什么都不做）；写入时会再打开一次页面、按当时库里的正文再核对"
+            "一次"
+        )
+    # 写入时换过正文的编号（回退时按这一行找）；没打开的分批时会被 --after-id 跳过，全部批次跑完后用
+    # --ids 单独重试。都打在汇总行前面，最后一行总是汇总行
+    if args.apply and (written := [str(r.document_id) for r in results if r.result == "fixed"]):
+        print(f"refetch_redacted_written ids={','.join(written)}")
     if retry := [str(r.document_id) for r in results if r.result == "unavailable"]:
         print(f"refetch_redacted_retry ids={','.join(retry)}")
     # 只用 ASCII 的一行，贴回来乱码也能看清（容器终端粘贴中文会掉字）：各种结果的份数，fixed 里
@@ -337,7 +358,7 @@ def _cmd_refetch_redacted(args: argparse.Namespace) -> int:
     print(
         f"refetch_redacted mode={'apply' if args.apply else 'preview'} checked={len(results)} "
         + " ".join(f"{k}={v}" for k, v in counts.items())
-        + f" last_id={last}"
+        + f" last_id={last} batch={report.batch}"
     )
     return 0
 
@@ -1532,18 +1553,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只统计有多少份要重新打开看（只读，不打开网页；要把正文全过一遍，2 万份约 1 分钟）",
     )
-    p.add_argument("--limit", type=int, default=200, help="最多检查多少份，默认 200")
-    batch = p.add_mutually_exclusive_group()
-    batch.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
-    batch.add_argument(
+    p.add_argument("--limit", type=int, help="最多检查多少份，默认 200（带 --ids、--batch 时不看）")
+    which = p.add_mutually_exclusive_group()
+    which.add_argument("--after-id", type=int, help="只处理编号大于此值的文件（分批时接着上一批）")
+    which.add_argument(
         "--ids",
         type=_id_list,
         help="只处理这几份（逗号隔开，不看 --limit）：重试没打开的，编号见输出的 retry 那一行",
     )
     p.add_argument(
-        "--upto-id",
-        type=int,
-        help="只处理编号不大于此值的文件（写入时填预览那一批的 last_id，写的就是预览过的那一批）",
+        "--batch",
+        help="写入时必带：照抄这一批预览那一行的 batch=…（写入命令就是预览那条加"
+        " --apply --batch …）；只写预览过的那一批，这一批的文件或正文和预览时不一样就什么都不做",
     )
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.set_defaults(func=_cmd_refetch_redacted)
