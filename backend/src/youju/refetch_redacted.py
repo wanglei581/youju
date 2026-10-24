@@ -245,7 +245,8 @@ def _restored(old: str, new: str) -> list[str]:
 
 
 def _similarity(a: str, b: str) -> float:
-    """两份正文有多像（0–1）：两头相同的部分加上中间逐字比对上的；中间太长就只算两头。"""
+    """两份正文有多像（0–1）：两头相同的部分，加上中间比对上的字数——中间不长就逐字比，太长就按行比、
+    对上的行按字数算（原网页常常只改了开头的发布日期和结尾的附件名，只算两头会算成 0）。"""
     if not a and not b:
         return 1.0
     head, tail = _trim(a, b)
@@ -254,6 +255,10 @@ def _similarity(a: str, b: str) -> float:
     if len(middle_a) + len(middle_b) <= _DIFF_LIMIT:
         blocks = difflib.SequenceMatcher(None, middle_a, middle_b, autojunk=False)
         same += sum(block.size for block in blocks.get_matching_blocks())
+    else:
+        lines_a, lines_b = middle_a.splitlines(keepends=True), middle_b.splitlines(keepends=True)
+        for block in difflib.SequenceMatcher(None, lines_a, lines_b).get_matching_blocks():
+            same += sum(len(line) for line in lines_a[block.a : block.a + block.size])
     return round(2 * same / (len(a) + len(b)), 3)
 
 

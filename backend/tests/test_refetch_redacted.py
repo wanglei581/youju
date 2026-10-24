@@ -639,6 +639,19 @@ def test_long_repetitive_bodies_are_compared_quickly() -> None:
     assert 0.99 < similarity <= 1
 
 
+def test_similarity_of_long_bodies_changed_at_both_ends() -> None:
+    """原网页只改了开头的发布日期、结尾的附件名：中间很长也要按行比，相似度接近 1、不是 0。"""
+    from youju.refetch_redacted import _similarity
+
+    middle = "".join(
+        f"第{i}条 各有关单位按要求组织申报，材料报送至省工信厅中小企业处。\n" for i in range(400)
+    )
+    before = "发布时间：2025-10-01\n" + middle + "附件：申报表.docx"
+    after = "发布时间：2025-10-02\n" + middle + "附件：申报表（修订）.docx"
+    assert len(middle) > 4000
+    assert _similarity(before, after) > 0.95
+
+
 def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
     import time
 
