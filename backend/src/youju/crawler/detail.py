@@ -635,10 +635,6 @@ def _hidden_source_header(element: etree._Element, node: etree._Element, host: s
     )
 
 
-# 浏览器按块显示、但正文提取不换行的可见容器（只用于 outside_body_lines 的分行）
-_VISIBLE_CONTAINERS = {"dialog", "details", "summary"}
-
-
 def outside_body_lines(html_text: str, url: str) -> list[str] | None:
     """网页上不算正文的字，按行：导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines
     同样规则不算正文的二维码块、按钮块等。正文区按 parse_detail 同一套规则选；分行和去空白也和
@@ -709,11 +705,10 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
                 visit(summary, inside)
             return
         # 换行只看标签，不看在不在正文区：正文区里的字不收集，但这块本身要把前后的导航、页尾断开。
-        # br 同时属于 _BLOCK_TAGS，多出来的空行下面会丢掉。与 _plain_lines 一致。
-        # 打开的 dialog、details 和 summary 浏览器按块显示，但不在 _BLOCK_TAGS 里：只在这里
-        # 前后换行，不改正文提取的分行。分得比旧正文细，最多是对不上、交给人看，
-        # 不会多认出网页上的字。
-        if tag == "br" or tag in _VISIBLE_CONTAINERS:
+        # br 同时属于 _BLOCK_TAGS，多出来的空行下面会丢掉。分行必须和 _plain_lines 完全一致：
+        # 只在这里多切一刀（比如给 dialog、summary 前后换行），就可能切出旧正文里没有的短行，
+        # 正好等于被删的条款标题而被当成网页上的字（agy 10/24 复核举的例子）。
+        if tag == "br":
             parts.append("\n")
         if not inside and element.text:
             parts.append(element.text)
@@ -721,7 +716,7 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
             visit(child, inside)
             if not inside and child.tail:
                 parts.append(child.tail)
-        if tag in _BLOCK_TAGS or tag in _VISIBLE_CONTAINERS:
+        if tag in _BLOCK_TAGS:
             parts.append("\n")
 
     visit(body[0], False)

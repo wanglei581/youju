@@ -508,20 +508,31 @@ def test_known_sichuan_background_does_not_allow_same_colored_font() -> None:
 
 
 @pytest.mark.parametrize(
-    "wrapper",
+    ("wrapper", "line"),
     [
-        "<dialog open>{}</dialog>",
-        "<details open><summary>查看详情</summary>{}</details>",
-        "<details><summary>{}</summary>折叠后不可见</details>",
+        ("<dialog open>{}</dialog>", "普通导航提示容器外尾字"),
+        ("<details open><summary>查看详情</summary>{}</details>", "查看详情普通导航提示容器外尾字"),
+        ("<details><summary>{}</summary>折叠后不可见</details>", "普通导航提示容器外尾字"),
     ],
 )
-def test_explicitly_visible_dynamic_content_and_outer_tail_are_preserved(wrapper) -> None:
+def test_explicitly_visible_dynamic_content_and_outer_tail_are_preserved(wrapper, line) -> None:
+    """打开的 dialog、details 里的字和容器外的尾字照常算网页上的字；分行和正文提取一致（这三个
+    不是块级标签，和后面的字连成一行），折叠起来的内容不算。"""
     caption = "普通导航提示"
     page = read_fixture_html("detail_hubei_kjt_70955").replace(
         "</body>", wrapper.format(caption) + "容器外尾字</body>"
     )
-    assert _not_on_page([caption, "容器外尾字", *HEAD, *TAIL], _page(HUBEI_URL, page)) == []
+    assert _not_on_page([line, *HEAD, *TAIL], _page(HUBEI_URL, page)) == []
     assert _not_on_page(["折叠后不可见"], _page(HUBEI_URL, page)) == ["折叠后不可见"]
+
+
+def test_inline_summary_does_not_cut_out_a_removed_heading() -> None:
+    """正文区外的 <div>返回<summary>八、其他</summary>退出</div> 按正文提取的分行是一整行，
+    不能单独切出"八、其他"，否则被删的条款标题会被当成网页上的字（agy 10/24 复核）。"""
+    page = read_fixture_html("detail_hubei_kjt_70955").replace(
+        "</body>", "<div>返回<summary>八、其他</summary>退出</div></body>"
+    )
+    assert _not_on_page(["八、其他"], _page(HUBEI_URL, page)) == ["八、其他"]
 
 
 @pytest.mark.parametrize("change", ["none", "host", "clause", "style", "ancestor"])
