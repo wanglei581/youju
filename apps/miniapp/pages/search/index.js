@@ -48,7 +48,7 @@ const GROUPS = [
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
   { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
   { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
-  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
+  { key: 'status', title: '发布阶段', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级', '市级', '区县级'],
     note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的，市级和区县级也按所选地区筛选；市区目前仅收录部分来源，见“我的 → 数据从哪里来”' },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },

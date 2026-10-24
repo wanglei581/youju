@@ -19,7 +19,7 @@
     <view class="tags">
       <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>
       <text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}</text>
-      <text wx:if="{{doc.status}}" class="tag">名单状态：{{doc.status}}</text>
+      <text wx:if="{{doc.status}}" class="tag">发布阶段：{{doc.status}}</text>
       <text class="region">{{regionText || doc.region}}</text>
     </view>
     <view class="title">{{doc.title}}</view>
@@ -28,7 +28,7 @@
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
     <view wx:if="{{doc.link_gone}}" class="gone-note">原文链接已失效（{{doc.link_gone}} 检查时打不开，原网页可能已撤下或改了地址）。下面是之前收录的内容，通知可能已撤回或更正，请以发文机关现在公布的为准。</view>
-    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</view>
+    <view class="weak status-note">类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类</view>
   </view>
 
   <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->

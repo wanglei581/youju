@@ -23,8 +23,9 @@ const wxml = (page) => read(`pages/${page}/index.wxml`).replace(/<!--[\s\S]*?-->
 const FORBIDDEN = ['AI', '智能', '大模型'];
 const daywatch = { watchDay() {}, stopDay() {} };
 
-// 改版前搜索框下面的规则说明（原文），收起后的四条要一字不少
-const OLD_RULES = '按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。名单状态按标题用词标注，公示期和当前效力以原文为准。';
+// 改版前搜索框下面的规则说明（原文），收起后的四条要一字不少。
+// 第 4 条 10/24 按 D-090 改过："名单状态"改叫"发布阶段"，去掉像信用结论的"当前效力"
+const OLD_RULES = '按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准。';
 const bare = (text) => text.replace(/[，。；、\s]/g, '');
 
 function listsPage(lookup = () => new Promise(() => {})) {
@@ -37,7 +38,7 @@ function listsPage(lookup = () => new Promise(() => {})) {
 test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 非政府平台"和其他页一样放在蓝色顶部下面', () => {
   const template = wxml('lists');
   const top = template.slice(0, template.indexOf('<notice-bar />'));
-  assert.match(top, /<view class="h1">查企业上过哪些名单<\/view>/);
+  assert.match(top, /<view class="h1">在政府公开名单里查企业<\/view>/);
   assert.match(top, /<view class="sub">在已收录的高企、专精特新等公示和公布名单里查<\/view>/);
   assert.match(top, /<view class="search">/);
   // 顶部的说明文字只有标题和副标题两行
@@ -71,7 +72,7 @@ test('查询说明默认收起成一行（info 图标、向下箭头），点开
     '按企业全称逐行比对名单原文',
     '名称相近的企业分开列出，请核对统一社会信用代码',
     '只查企业和机构，不查个人',
-    '名单状态按标题用词标注，公示期和当前效力以原文为准',
+    '发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准',
   ]);
   assert.equal(bare(rules.join('')), bare(OLD_RULES));
   // 原来那段灰字不再默认铺在搜索框下面

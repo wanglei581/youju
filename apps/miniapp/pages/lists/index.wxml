@@ -4,7 +4,7 @@
     <view class="nav-back" bindtap="back" aria-role="button" aria-label="{{firstPage ? '回首页' : '返回'}}"><t-icon name="{{firstPage ? 'home' : 'chevron-left'}}" size="{{firstPage ? '40rpx' : '48rpx'}}" color="#FFFFFF" /></view>
     <text class="nav-title">查名单</text>
   </view>
-  <view class="h1">查企业上过哪些名单</view>
+  <view class="h1">在政府公开名单里查企业</view>
   <view class="sub">在已收录的高企、专精特新等公示和公布名单里查</view>
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
@@ -24,7 +24,7 @@
     <view class="rule">按企业全称逐行比对名单原文</view>
     <view class="rule">名称相近的企业分开列出，请核对统一社会信用代码</view>
     <view class="rule">只查企业和机构，不查个人</view>
-    <view class="rule">名单状态按标题用词标注，公示期和当前效力以原文为准</view>
+    <view class="rule">发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准</view>
   </view>
 </view>
 

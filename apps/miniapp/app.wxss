@@ -70,7 +70,7 @@ page {
 .tag--policy { background: var(--g-tint); color: var(--g-txt); }
 .tag--plain { background: var(--fill); color: var(--t2); }
 
-/* 名单状态（只照录标题用词，D-018）：公示=橙色虚线框，公布=灰色实线框 */
+/* 发布阶段（原叫"名单状态"，D-090；只照录标题用词，D-018）：公示=橙色虚线框，公布=灰色实线框 */
 .status {
   padding: 0 12rpx;
   line-height: 36rpx;

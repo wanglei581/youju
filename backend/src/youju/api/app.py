@@ -674,7 +674,9 @@ class ListMatchOut(BaseModel):
     category: str
     batch: str | None
     status: str | None = Field(
-        description="名单状态，按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+        description=(
+            "发布阶段（原叫名单状态，D-090），按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+        )
     )
     publish_date: date | None
     issuer: str | None
