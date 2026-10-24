@@ -29,7 +29,7 @@
     <view class="step"><text class="step-no">2</text><text class="step-text">在小程序内查看结果，需要保存时再选 Excel 或 Word</text></view>
     <view class="step"><text class="step-no">3</text><text class="step-text">导出后可转发给同事或客户</text></view>
   </view>
-  <view class="pc-tip">导出不是必须的：结果在小程序内就能看完。需要在电脑上留存时，可把文件转发到电脑版微信。</view>
+  <view class="pc-tip">导出不是必须的：结果在小程序内就能看完。需要在电脑上留存时，可把文件发给“文件传输助手”，再在电脑版微信里打开。</view>
 </view>
 <view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可按当前数据重新查看并保存。</view>
 <view class="tab-page-bottom"></view>
