@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import subprocess
 from contextlib import contextmanager
 from hashlib import sha256
@@ -15,18 +16,18 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import Engine, event, make_url, text
 
-import youju
 from youju import advisor_tasks, migrations
 from youju import attachments as copies
 from youju.ai import eligibility
 from youju.api import app as app_module
 from youju.db import lock_name
 
-from .conftest import TEST_DB_URL
+from .conftest import TEST_DB_URL, other_lock_name
 
 DB = make_url(TEST_DB_URL).database
-# 另一个会话的测试库，锁名前缀按 tests/conftest.py 的规矩是"库名:"
-OTHER_PREFIX = "youju_test_other_session:"
+BACKEND = Path(__file__).parents[1]
+# SQL 里拿锁、放锁的调用（括号前可以有空格，大小写都算；不算 Python 的 x.get_lock( 一类方法）
+LOCK_CALL = re.compile(r"(?<![\w.])(GET_LOCK|RELEASE_LOCK)\s*\(", re.IGNORECASE)
 
 
 def _attachments(session) -> bool:
@@ -80,10 +81,10 @@ def _sent_lock_names():
     sent: list[tuple[str, ...]] = []
 
     def swap(conn, cursor, statement, parameters, context, executemany):
-        call = next((f for f in ("GET_LOCK", "RELEASE_LOCK") if f + "(" in statement), None)
+        call = LOCK_CALL.search(statement)
         if call is None:
             return statement, parameters
-        sent.append((call, *(v for v in parameters.values() if isinstance(v, str))))
+        sent.append((call[1].upper(), *(v for v in parameters.values() if isinstance(v, str))))
         private = {
             key: sha256(f"{DB}:{value}".encode()).hexdigest() if isinstance(value, str) else value
             for key, value in parameters.items()
@@ -119,26 +120,23 @@ def test_tests_prefix_lock_names_with_their_database(site, session) -> None:
 
 @pytest.mark.parametrize("site", SITES)
 def test_same_lock_in_another_test_database_does_not_block(
-    site, session, db_engine, monkeypatch
+    site, session, db_engine, other_session_conn, monkeypatch
 ) -> None:
     """另一个会话在它的测试库里拿着同名的锁（前缀是它的库名）：这个库照样拿得到；
     同一个库里照样互相拦着（等锁时间改成 0，不用干等；AI 每日上限固定等 2 秒）。"""
     acquire, original = SITES[site]
     monkeypatch.setattr(app_module, "_CREATE_LOCK_WAIT", 0)
     monkeypatch.setattr(migrations, "_LOCK_WAIT_SECONDS", 0)
-    own = lock_name(original)
-    with monkeypatch.context() as other_session:
-        other_session.setenv("YOUJU_LOCK_PREFIX", OTHER_PREFIX)
-        theirs = lock_name(original)
+    theirs, own = other_lock_name(original), lock_name(original)
     assert theirs != own
-    with db_engine.connect() as other:
+    assert other_session_conn.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": theirs}) == 1
+    assert acquire(session)
+    with db_engine.connect() as same_db:
         try:
-            assert other.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": theirs}) == 1
-            assert acquire(session)
-            assert other.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": own}) == 1
+            assert same_db.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": own}) == 1
             assert not acquire(session)
         finally:
-            other.execute(text("SELECT RELEASE_ALL_LOCKS()"))
+            same_db.execute(text("SELECT RELEASE_ALL_LOCKS()"))
     assert acquire(session)
 
 
@@ -161,30 +159,40 @@ def test_lock_name(db_engine, monkeypatch) -> None:
 
 def test_every_named_lock_goes_through_lock_name() -> None:
     """新加的命名锁也要用 youju.db.lock_name 取名（不然几个测试库同时跑又会互相抢），
-    并加进上面的 SITES，让线上锁名也有人看着。"""
-    src = Path(youju.__file__).parent
+    并加进上面的 SITES，让线上锁名也有人看着。迁移脚本一起查。"""
     found = {}
-    for path in sorted(src.rglob("*.py")):
-        count = path.read_text(encoding="utf-8").count("GET_LOCK(")
+    for path in sorted([*(BACKEND / "src").rglob("*.py"), *(BACKEND / "alembic").rglob("*.py")]):
+        calls = LOCK_CALL.findall(path.read_text(encoding="utf-8"))
+        count = sum(call.upper() == "GET_LOCK" for call in calls)
         if count:
-            found[path.relative_to(src).as_posix()] = count
+            found[path.relative_to(BACKEND).as_posix()] = count
     assert found == {
-        "advisor_tasks.py": 1,
-        "ai/eligibility.py": 1,
-        "api/app.py": 1,
-        "attachments.py": 1,
-        "migrations.py": 1,
+        "src/youju/advisor_tasks.py": 1,
+        "src/youju/ai/eligibility.py": 1,
+        "src/youju/api/app.py": 1,
+        "src/youju/attachments.py": 1,
+        "src/youju/migrations.py": 1,
     }
 
 
-def test_start_script_refuses_lock_prefix() -> None:
-    """线上（deploy/start.sh）设了 YOUJU_LOCK_PREFIX 不启动：锁名一变，发布时新旧版本互相拦不住。"""
-    start = Path(__file__).parents[1] / "deploy" / "start.sh"
-    done = subprocess.run(
-        ["sh", str(start)],
-        env={"PATH": os.environ["PATH"], "YOUJU_LOCK_PREFIX": "youju_test:"},
+def _start(env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["sh", str(BACKEND / "deploy" / "start.sh")],
+        env={"PATH": os.environ["PATH"], **env},
         capture_output=True,
         text=True,
         timeout=30,
     )
+
+
+def test_start_script_refuses_lock_prefix() -> None:
+    """线上（deploy/start.sh）设了 YOUJU_LOCK_PREFIX 不启动：锁名一变，发布时新旧版本互相拦不住。"""
+    done = _start({"YOUJU_LOCK_PREFIX": "youju_test:"})
     assert done.returncode == 1 and "YOUJU_LOCK_PREFIX" in done.stderr
+
+
+@pytest.mark.parametrize("env", [{}, {"YOUJU_LOCK_PREFIX": ""}], ids=["unset", "empty"])
+def test_start_script_lets_normal_config_through(env) -> None:
+    """没设或设成空串（lock_name 也当没设，锁名不变）：这项检查放行。往下没有 YOUJU_ROLE、
+    本机也没有 /app/backend，脚本停在后面的检查上，不会真的启动服务。"""
+    assert "YOUJU_LOCK_PREFIX" not in _start(env).stderr
