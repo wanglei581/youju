@@ -1,3 +1,5 @@
+import hashlib
+import os
 import time
 from collections.abc import Iterator
 from functools import lru_cache
@@ -56,6 +58,22 @@ def create_mysql_engine(url: str, **kwargs) -> Engine:
                 time.sleep(delay)
 
     return engine
+
+
+def lock_name(name: str) -> str:
+    """MySQL 命名锁（GET_LOCK）的锁名，所有命名锁都从这里取名。
+
+    命名锁在整台 MySQL 服务器上生效、不分库：本机几个会话各用自己的测试库同时跑测试，锁名一样就会
+    互相抢（10/23 两条附件测试拿不到锁、任务跳过，偶发失败）。所以测试按测试库名设
+    YOUJU_LOCK_PREFIX（tests/conftest.py），锁名前加上它。线上不设，锁名和原来一字不差：发布时
+    新旧版本同时跑约 15 分钟，靠同一个锁名互相拦着，锁名一变就可能重复下载附件、AI 用量超上限、
+    两边同时迁移（所以 deploy/start.sh 见到它就不启动）。"""
+    prefix = os.environ.get("YOUJU_LOCK_PREFIX", "")
+    if not prefix:
+        return name
+    full = prefix + name
+    # MySQL 锁名最长 64 个字符，超出 GET_LOCK 直接报错：太长时换成摘要（正好 64 个字符）
+    return full if len(full) <= 64 else hashlib.sha256(full.encode()).hexdigest()
 
 
 @lru_cache

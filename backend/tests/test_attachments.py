@@ -28,7 +28,7 @@ from youju.api import attachments as attachment_api
 from youju.api import v1
 from youju.api.app import app
 from youju.crawler.fetcher import FetchResult
-from youju.db import get_session
+from youju.db import get_session, lock_name
 from youju.migrations import alembic_config
 from youju.models import AttachmentCopy, Document, DocumentAttachment, DocumentDetail, Source
 
@@ -1191,15 +1191,16 @@ def test_cache_run_and_manual_recheck_share_one_lock(session, monkeypatch, capsy
     cloud = FakeCloud()
     cloud.objects[obj(PDF, "pdf")] = PDF
     fetcher = FakeFetcher({base + "a.pdf": PDF})
+    lock = {"k": lock_name("youju_attachment_copies")}
     with session.get_bind().connect() as other:
-        assert other.execute(sql("SELECT GET_LOCK('youju_attachment_copies', 0)")).scalar() == 1
+        assert other.execute(sql("SELECT GET_LOCK(:k, 0)"), lock).scalar() == 1
         report = run(session, fetcher, cloud)
         assert report.skipped and report.recheck is None
         manual = copies.recheck_copies(session, ENV, client=cloud.client, now=NOW)
         assert manual.skipped and manual.checked == 0
         assert fetcher.calls == [] and cloud.links == [] and cloud.deleted == []
         assert not copies.servable(rows_by_url(session)[base + "a.pdf"])
-        other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+        other.execute(sql("SELECT RELEASE_LOCK(:k)"), lock)
     report = run(session, fetcher, cloud)
     assert not report.skipped and report.recheck.kept == 1
     # 跑完会释放：手动重查接着能拿到锁
@@ -1218,6 +1219,25 @@ def test_cache_run_and_manual_recheck_share_one_lock(session, monkeypatch, capsy
     assert cli.main(["recheck-attachments"]) == 1
     out = capsys.readouterr().out
     assert "本轮跳过" in out and "这次没有重查" in out
+
+
+def test_attachment_run_in_another_test_database_does_not_skip_this_one(session) -> None:
+    """另一个会话在它的测试库里正跑着附件任务（拿着它那个库的附件锁）：这个库的附件任务照常跑。
+    命名锁不分库，原来各库锁名一样：10/23 test_expired_copies_are_deleted_but_backups_never 和
+    test_storage_failure_stops_the_run 就因为别的会话正跑着、拿不到锁跳过了任务而失败。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    add_doc(session, 1, APPLY, RECENT, [("a", base + "a.pdf", "pdf")])
+    cloud = FakeCloud()
+    theirs = {"k": "youju_test_other_session:youju_attachment_copies"}
+    assert lock_name("youju_attachment_copies") != theirs["k"]
+    with session.get_bind().connect() as other:
+        assert other.execute(sql("SELECT GET_LOCK(:k, 0)"), theirs).scalar() == 1
+        try:
+            report = run(session, FakeFetcher({base + "a.pdf": PDF}), cloud)
+            assert not report.skipped and report.stored == 1
+            assert not copies.recheck_copies(session, ENV, client=cloud.client, now=NOW).skipped
+        finally:
+            other.execute(sql("SELECT RELEASE_LOCK(:k)"), theirs)
 
 
 def test_objects_still_referenced_are_never_deleted(session) -> None:

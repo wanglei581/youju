@@ -2,6 +2,7 @@
 
 需要数据库的测试连接 YOUJU_TEST_DATABASE_URL（默认本机 scripts/dev_db.sh 启动的实例）。
 数据库不可用时这些测试会跳过；CI 设置 YOUJU_REQUIRE_DB=1，数据库不可用直接失败。
+几个会话同时跑测试时各用自己的库名；命名锁也按库名分开（YOUJU_LOCK_PREFIX，下面自动设）。
 """
 
 import os
@@ -24,6 +25,9 @@ TEST_DB_URL = os.environ.get(
 )
 # 程序里用默认连接的地方（如每次请求写访问日志）也连测试库，测试不会写到开发库
 os.environ["YOUJU_DATABASE_URL"] = TEST_DB_URL
+# MySQL 命名锁不分库（见 youju.db.lock_name）：锁名前加上测试库名，几个会话各用自己的测试库
+# 同时跑测试，同名的锁不再互相抢
+os.environ["YOUJU_LOCK_PREFIX"] = f"{make_url(TEST_DB_URL).database}:"
 # 测试只使用显式环境配置，避免读取开发环境的密钥或连接信息。
 Settings.model_config["env_file"] = None
 get_settings.cache_clear()

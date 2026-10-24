@@ -8,7 +8,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 from youju.config import get_settings
-from youju.db import create_mysql_engine
+from youju.db import create_mysql_engine, lock_name
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -45,12 +45,13 @@ def upgrade(database_url: str | None = None) -> AheadOfCode | None:
     提醒里写明两边的迁移号，发版后的检查看到它而当时不是在回退，就是发错了版本。
     加表加列的迁移，旧代码在新结构上照常能跑；删表删列的迁移回退前要先降库（见发版与回退）。"""
     url = database_url or get_settings().database_url
+    name = lock_name(_MIGRATION_LOCK)
     engine = create_mysql_engine(url)
     try:
         with engine.connect() as conn:
             # 等前一个实例迁移完再往下走；已是最新结构时 alembic 什么也不做
             got = conn.execute(
-                text("SELECT GET_LOCK(:k, :t)"), {"k": _MIGRATION_LOCK, "t": _LOCK_WAIT_SECONDS}
+                text("SELECT GET_LOCK(:k, :t)"), {"k": name, "t": _LOCK_WAIT_SECONDS}
             ).scalar()
             if got != 1:
                 raise RuntimeError(
@@ -76,7 +77,7 @@ def upgrade(database_url: str | None = None) -> AheadOfCode | None:
                     ahead = None
                     command.upgrade(cfg, "head")
             finally:
-                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": _MIGRATION_LOCK})
+                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": name})
                 conn.commit()
     finally:
         engine.dispose()
