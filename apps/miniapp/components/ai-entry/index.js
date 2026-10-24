@@ -83,7 +83,7 @@ Component({
     openClause() {
       if (this.data.clauseAvailable) this.go(context.clauseUrl(this.properties));
     },
-    // 不能解读时的下一步：去查名单、复制原文链接、看附件（让详情页滚过去）、返回
+    // 不能解读时的下一步：去查名单、站内阅读、看附件（让详情页滚过去）、返回
     nextStep() {
       const { next } = this.data;
       if (next === 'lists') wx.navigateTo({ url: '/pages/lists/index' });

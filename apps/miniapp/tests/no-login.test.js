@@ -293,7 +293,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.equal(notes.length, final ? 0 : 1);
     if (!final) {
       const note = textOf(notes[0]);
-      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把链接或邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
+      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把邮箱或你选的内容写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
         `服务器按法律要求保存访问日志（如 IP 地址）${KEEP_DAYS} 天`]) assert.ok(note.includes(line), `数据说明缺少：${line}`);
       assert.doesNotMatch(note, /【|】|关注|提醒|纠错|注销|我的数据/);
     }

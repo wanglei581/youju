@@ -92,7 +92,7 @@ test('附件入口统一站内阅读，副本状态仅显示说明', () => {
   assert.deepEqual(list.map(a => a.action), ['站内阅读', '站内阅读']);
   assert.equal(list[1].meta, '查看内容及处理状态');
   assert.equal(mod.sizeText(2048), '2 KB');
-  assert.equal(mod.note([ATT]), '附件副本来自原网站，以原网站为准');
+  assert.equal(mod.note([ATT]), '附件在本小程序阅读，以发文机关公布的文本为准');
 });
 
 test('附件有无二进制副本均进入原生阅读页，不下载、不复制、不打开外部文件', async () => {
@@ -142,7 +142,7 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
   assert.deepEqual(page.data.atts.map((a) => a.meta), ['2 KB', '查看内容及处理状态']);
-  assert.equal(page.data.attNote, '附件副本来自原网站，以原网站为准');
+  assert.equal(page.data.attNote, '附件在本小程序阅读，以发文机关公布的文本为准');
   page.openAttachment({ currentTarget: { dataset: { index: 0 } } });
   page.openAttachment({ currentTarget: { dataset: { index: 1 } } });
   assert.deepEqual(opens, [['7', '1']]);
@@ -179,16 +179,6 @@ test('取附件分段：经云托管 GET，按二进制返回；出错时带上�
   assert.equal(seen[0].header['X-WX-SERVICE'], 'api');
   status = 409;
   await assert.rejects(api.attachmentPart('7', 'abcdef0123456789', 0), (err) => err.status === 409);
-});
-
-test('复制原文链接可以带上原因', () => {
-  const toasts = [];
-  const { copyLink } = load('utils/copy.js', {}, {
-    wx: { setClipboardData: (o) => o.success(), showToast: (o) => toasts.push(o.title) },
-  });
-  copyLink(DOC_URL, '该格式不能在小程序内打开，已复制原文链接');
-  copyLink(DOC_URL);
-  assert.deepEqual(toasts, ['该格式不能在小程序内打开，已复制原文链接', '来源网址已复制']);
 });
 
 test('取附件分段：二进制要设 dataType other；冷启动 503 自动重试', async () => {

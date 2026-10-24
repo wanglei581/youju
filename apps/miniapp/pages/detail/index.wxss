@@ -59,8 +59,6 @@
 .att-action { flex-shrink: 0; font-size: 26rpx; color: var(--t3); }
 .att-action--open { color: var(--brand); font-weight: 500; }
 .att-foot { display: flex; align-items: center; padding: 22rpx 0 24rpx; font-size: 25rpx; color: var(--t2); }
-.copy { margin-left: auto; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
-.copy--big { font-size: 28rpx; }
 
 .source { padding-top: 28rpx; padding-bottom: 28rpx; }
 .source-top { display: flex; align-items: center; justify-content: space-between; }
@@ -99,7 +97,6 @@
 .ver-due--none { color: var(--t3); }
 .ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .ver-meta-text { flex: 1; min-width: 0; }
-.ver-copy { flex-shrink: 0; color: var(--brand); white-space: nowrap; }
 .ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }
 .standard-link { display: flex; align-items: center; justify-content: space-between; padding: 24rpx 0 0; font-size: 26rpx; }
 /* 按类型逐条的截止（D-061） */

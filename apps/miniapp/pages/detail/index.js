@@ -1,6 +1,5 @@
 const api = require('../../utils/api.js');
 const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText } = require('../../utils/format.js');
-const { copyLink } = require('../../utils/copy.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -214,10 +213,6 @@ Page({
     if (id && !current) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
   },
 
-  copyVersion(e) {
-    copyLink(e.currentTarget.dataset.url);
-  },
-
   openNew(e) {
     const id = e.currentTarget.dataset.id;
     if (id) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
@@ -250,10 +245,6 @@ Page({
 
   readBody() {
     if (this.data.doc) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(this.data.doc.id)}` });
-  },
-
-  copy() {
-    copyLink(this.data.doc && this.data.doc.url);
   },
 
   // 点附件：进入原生阅读页，不把失败变成复制外链。
