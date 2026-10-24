@@ -10,7 +10,7 @@ from youju import cli
 from youju.ai import interpret
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, _not_on_page, refresh_bodies, survey, trimmed_lines
-from youju.crawler.detail import outside_body_text, parse_detail, redact_sensitive
+from youju.crawler.detail import outside_body_lines, parse_detail, redact_sensitive
 from youju.crawler.fetcher import FetchResult
 from youju.fields import body_fingerprint
 from youju.models import (
@@ -346,6 +346,10 @@ def test_other_changes_are_written_only_when_asked(session) -> None:
         '<div style="display:/**/none"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
         '<div style="--state:none;display:var(--state)"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
         '<div style="font-&#115;ize:0"><p>八、其他</p><p>本通知自印发之日起施行。</p></div>',
+        # 隐藏块就算以“来源：”开头，里面的旧条款也不是页上看得见的整行。
+        "<div style='display:none'>来源：本厅<p>八、其他</p><p>本通知自印发之日起施行。</p></div>",
+        # 页尾长句只是包含旧条款，整行不同，不能算还在网页上。
+        "<p>八、其他事项见网站声明：本通知自印发之日起施行。转载请注明出处</p>",
     ],
 )
 def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover) -> None:
@@ -362,7 +366,7 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover
     ]
     assert applied[0].not_on_page == ["八、其他", "本通知自印发之日起施行。"]
     assert _stored(session, doc.id).body_text == edited
-    # 删掉的条款还留在页面的脚本或隐藏副本里，也不能按“去噪”自动覆盖旧正文。
+    # 删掉的条款还留在页面的脚本或隐藏副本里，或只是页尾某一行的一部分，也不能按“去噪”自动覆盖旧正文。
     page = read_fixture_html("detail_hubei_kjt_70955").replace("</body>", f"{leftover}</body>")
     fake = FakeFetcher({HUBEI_URL: _page(HUBEI_URL, page)})
     applied = refresh_bodies(session, hosts=[HUBEI], apply=True, fetcher=fake)
@@ -370,6 +374,38 @@ def test_trimmed_only_when_removed_lines_are_still_on_the_page(session, leftover
         ("changed", False, ["八、其他", "本通知自印发之日起施行。"])
     ]
     assert _stored(session, doc.id).body_text == edited
+
+
+@pytest.mark.parametrize(
+    ("chrome", "result"),
+    [
+        # 只是别的一行的一部分：不算还在网页上。
+        ("<p>欢迎扫码关注本厅公众号获取更多资讯</p>", "changed"),
+        # 正文区外有完全相同的一行：可以按去噪覆盖。
+        ("<p>扫码关注本厅公众号</p>", "trimmed"),
+        # 行内链接不切行，拼回来仍是同一整行。
+        ("<p>扫码关注<a href='#'>本厅公众号</a></p>", "trimmed"),
+    ],
+)
+def test_page_text_matches_whole_lines_and_keeps_inline_text(session, chrome, result) -> None:
+    """去掉的行要在网页上不算正文的地方有完全相同的一行，不在别的行里找片段。
+    a 这类行内元素不换行，所以链接两边的字仍是一行。"""
+    url = "https://gxt.example.gov.cn/tzgg/2.html"
+    notice = "各市工业和信息化局：现将有关事项通知如下，请于11月10日前按要求报送申报材料。"
+    page = (
+        f"<html><body><div class='content'><div class='TRS_UEDITOR'><p>{notice}</p></div>{chrome}"
+        "</div></body></html>"
+    )
+    _document(
+        session,
+        _source(session, url="https://gxt.example.gov.cn/tzgg/"),
+        url,
+        f"{notice}\n扫码关注本厅公众号",
+    )
+    session.commit()
+    fake = FakeFetcher({url: _page(url, page)})
+    results = refresh_bodies(session, hosts=["gxt.example.gov.cn"], fetcher=fake)
+    assert [r.result for r in results] == [result]
 
 
 @pytest.mark.parametrize(
@@ -502,7 +538,8 @@ def test_sichuan_qr_exception_only_proves_the_known_caption(change) -> None:
         page = page.replace("position:relative;margin-bottom:5px", "opacity:0;margin-bottom:5px")
     elif change == "ancestor":
         page = page.replace('id="div_div"', 'id="div_div" hidden')
-    outside = outside_body_text(page, url) or ""
+    outside = outside_body_lines(page, url) or []
+    # 按整行判断：固定提示句单独成行才算还在网页上，不再做子串包含。
     assert (caption in outside) is (change == "none")
 
 
