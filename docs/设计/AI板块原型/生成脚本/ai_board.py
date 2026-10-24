@@ -42,6 +42,8 @@ BTN_GREY = "#F2F2F2"   # 微信 style v2 默认按钮的底色（结果页"开�
 # ---------- 真实数据（data_1022.json） ----------
 DATA = json.loads((HERE / "data_1022.json").read_text(encoding="utf-8"))
 RECENT = DATA["recent"]["items"]              # AI 首页"近 7 天能解读的申报通知"，共 DATA["recent"]["total"] 份
+# 下一版：宁夏那份（74619）原网站 10/22 撤稿，照 #347 原文链接失效的不再给 AI 解读，也就不在这个列表里（Codex 10/24）
+RECENT_NEXT = [d for d in RECENT if d["id"] != DATA["withdrawn"]["id"]]
 FIND = DATA["find"]["items"]                  # 找通知例子：近 30 天、申报通知、标题里有 5G工厂
 # 主例子：湖北省科学技术厅《……企业自主研发和委托研发项目纳入省级科技计划项目的通知》（能解读、没有附件，企业申报截止 11/20）。
 # 原来选的宁夏《技术交易补助》那份 10/22 下午原网站撤稿了（data_1022.json 的 withdrawn），换成这份
@@ -318,7 +320,8 @@ def ai_home(nextv):
                     + f'<div style="padding: 12px 0 4px"><div style="font-size: 15px; font-weight: 600; line-height: 1.6">{DOC["title"]}</div>'
                     f'<div style="margin-top: 4px; font-size: 12.5px; color: {T2}">{DOC["issuer"]} · {DOC["date"]}</div></div>'
                     f'<div style="padding: 8px 0 14px; display: flex; align-items: center; gap: 16px">{ops}</div>')
-    rows = "".join(doc_row(d, "AI 解读", last=i == len(RECENT) - 1, inapp=nextv) for i, d in enumerate(RECENT))
+    recent_docs = RECENT_NEXT if nextv else RECENT
+    rows = "".join(doc_row(d, "AI 解读", last=i == len(recent_docs) - 1, inapp=nextv) for i, d in enumerate(recent_docs))
     recent = card(card_head("近 7 天能解读的申报通知", "全部")
                   + f'<div style="padding-top: 8px; font-size: 12px; color: {T3}">点标题看通知全文，点“AI 解读”直接开始</div>{rows}')
     if nextv:
@@ -675,16 +678,40 @@ def chat_top():
     return nav("问一问") + notice_bar(nextv=True) + chat_strip()
 
 
+# #328 第十二节「问一问使用说明」五条（cd036bfc 的候选文字，按 D-065 在 PR-2 合并前定稿）。
+# 卡片里放全文，不是摘要（#328：第一次用先看全文、点"同意并开始"才能发；Codex 10/24 指出原型原来只画了四句摘要）
+CHAT_TERMS = [
+    ("三个技能做什么",
+     "找通知、查名单在我们收录的政府文件和名单里查，不用 AI 模型。问这份通知由 AI 从这份通知的原文（正文和能读到的附件）里，"
+     "把和你的问题有关的句子原样摘出来，每句都能点开原文核对；它不替你判断能不能申报。"),
+    ("你打的字交给谁",
+     "三个技能里你打的字，先在我们的服务器上查有没有第 3 条说的号码，没被拦下的再交给微信做内容安全检查，同时提供你的微信用户标识"
+     "（openid：微信分给这个小程序的一串编号，不是你的微信号或手机号；微信的检查接口要求带上）。用“问这份通知”时，这一问还会和这份通知里的相关段落一起，"
+     "经腾讯云开发交给已备案的大模型处理；接着问时，这条对话里前两次“问这份通知”的问题和上一答摘的原句也一起交过去，好让它明白你指的是哪句。"
+     "交给模型的都不带你的微信用户标识。找通知、查名单里打的字不交给模型。"),
+    ("请不要写的",
+     "找通知、问这份通知里有统一社会信用代码、手机号、身份证号、银行卡号这类号码的，我们直接拦下，不发出、不保存。企业名称我们认不全、拦不住，"
+     "写进“问这份通知”就会交给模型，所以请不要写；问这份通知也用不着写企业名称，直接问“要满足哪些条件”就行。查名单本来就要输入企业全称或统一社会信用代码，"
+     "照常查询、保存，不交给模型；手机号、身份证号、银行卡号照样拦下。"),
+    ("保存多久、怎么删",
+     "你打的字和回答作为对话保存 30 天，到期删除；你可以随时在对话页或“我的记录”里删除，也可以按《隐私保护指引》第五节请我们删除；注销账号时一起删除；"
+     "删除或到期以后，数据库备份里的副本也会在最长 30 天内随备份清除。被拦下的字不保存。我们还记下你同意本说明的版本和时间，以及你每天用“问这份通知”的次数"
+     "（保留本月和上个月的）。你问过的问题和同意记录，可以在“我的 → 我的数据”里查看。"),
+    ("和《隐私保护指引》的关系",
+     "2026-12 版以前的《隐私保护指引》写的时候还没有问一问。它开头的重点提示、一·14（AI 功能）和四·2（微信内容安全检查、AI 模型调用）里的这几句，"
+     "说的是解读、对照和纠错，不适用于问一问：“AI 功能只把政府公开通知的段落发给模型”“发给模型的只有政府公开通知正文的相关段落”“输入保存 7 天”"
+     "“内容安全检查涉及微信用户标识和纠错内容”。问一问处理哪些信息、交给谁、存多久、怎么删，以本说明第 2–4 条为准。本说明没写的（你有哪些权利、怎么联系我们等），"
+     "照《隐私保护指引》。"),
+]
+
+
 def consent_card():
-    lines = ["找通知、查名单：在我们收录的政府文件里查，不用 AI。",
-             "问这份通知：AI 从这份通知的原文里，把和你的问题有关的句子原样摘出来，每句都能点开原文核对；它不替你判断能不能申报。",
-             "用“问这份通知”时，你打的字会交给 AI 处理，请不要写企业名称、信用代码、手机号。",
-             "你打的字发出前会先经微信内容安全检查；对话保存 30 天，可以随时删除。"]
-    items = "".join(f'<div style="margin-top: 8px; display: flex; gap: 6px; font-size: 14px; line-height: 1.7"><span style="flex-shrink: 0; color: {T3}">{i + 1}.</span>'
-                    f'<span>{t}</span></div>' for i, t in enumerate(lines))
+    items = "".join(f'<div style="margin-top: 10px; display: flex; gap: 6px; font-size: 13.5px; line-height: 1.75"><span style="flex-shrink: 0; color: {T3}">{i + 1}.</span>'
+                    f'<span><b style="font-weight: 600">{h}：</b>{t}</span></div>' for i, (h, t) in enumerate(CHAT_TERMS))
     return (f'<div style="margin: 10px 12px 0; padding: 16px; background: {CARD}; border-radius: 12px; box-shadow: inset 0 0 0 1px {BLUE_TINT}">'
-            f'<div style="font-size: 16px; font-weight: 600">第一次用问一问，先看这几句：</div>{items}'
-            f'<div style="margin-top: 10px; font-size: 13px; color: {BLUE}">详见《隐私保护指引》 ›</div>{btn_primary("同意并开始", 14)}</div>')
+            f'<div style="font-size: 16px; font-weight: 600; line-height: 1.5">问一问使用说明</div>'
+            f'<div style="margin-top: 2px; font-size: 12.5px; color: {T2}">《隐私保护指引》的补充，只管“问一问”；第一次用，看完点“同意并开始”才能发</div>{items}'
+            f'<div style="margin-top: 12px; font-size: 13px; color: {BLUE}">查看《隐私保护指引》 ›</div>{btn_primary("同意并开始", 14)}</div>')
 
 
 def chat_consent():
@@ -731,7 +758,24 @@ def chat_ask():
     return phone(top, input_bar("问这份通知", n=3))
 
 
-def list_row(d):
+# 名单原文里企业所在的那一行：10/24 从新疆工信厅原网页的附件（.doc）核对（收录接口现在只给"按名称对上"，没有这一行，
+# 站内闭环第 4 项「名单站内可读、命中定位到页和行」做好以后由接口给）。团队成员一列是个人姓名，不显示
+LOOKUP_ROW = {"file": "附件《2026年第五届“天山杯”新疆APP暨人工智能创新应用大赛获奖名单》", "section": "智慧民生服务赛道",
+              "cells": [("序号", "6"), ("项目名称", "丝路智服"), ("参赛单位", "中国电信股份有限公司新疆分公司"), ("奖项", "三等奖")],
+              "hidden": "团队成员一列是个人姓名，不显示。"}
+
+
+def evidence_block(ev):
+    cells = "".join(f'<div style="display: flex; gap: 8px; margin-top: 3px"><span style="flex-shrink: 0; width: 56px; color: {T3}">{h}</span><span>{v}</span></div>'
+                    for h, v in ev["cells"])
+    return (f'<div style="margin-top: 8px; padding: 10px 12px; background: {FILL}; border-radius: 8px; font-size: 12.5px; line-height: 1.6">'
+            f'<div style="color: {T2}">名单原文里的这一行（{ev["file"]} · {ev["section"]}）</div>'
+            f'<div style="margin-top: 4px; color: {T1}">{cells}</div>'
+            f'<div style="margin-top: 6px; font-size: 11.5px; color: {T3}">{ev["hidden"]}</div>'
+            f'<div style="margin-top: 6px; color: {BLUE}">在名单原文里看这一行 ›</div></div>')
+
+
+def list_row(d, evidence=None):
     m = d.get("matched") or {}
     return (f'<div style="margin-top: 8px; padding: 12px; border: 1px solid {LINE2}; border-radius: 10px">'
             f'<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px">{tag("名单")}'
@@ -740,7 +784,8 @@ def list_row(d):
             f'<div style="margin-top: 6px; font-size: 12.5px; line-height: 1.6; color: {T2}">{d["issuer"]}</div>'
             f'<div style="margin-top: 2px; display: flex; align-items: center; font-size: 12.5px; color: {T2}">'
             f'<span style="white-space: nowrap">{d["date"]} 发布</span><span style="margin-left: auto; color: {BLUE}; white-space: nowrap">查看详情 ›</span></div>'
-            f'<div style="margin-top: 4px; font-size: 12px; color: {T3}">按名称对上：{m.get("name", "")}</div></div>')
+            f'<div style="margin-top: 4px; font-size: 12px; color: {T3}">按名称对上：{m.get("name", "")}</div>'
+            f'{evidence_block(evidence) if evidence else ""}</div>')
 
 
 def coverage_line():
@@ -751,7 +796,7 @@ def coverage_line():
 
 def chat_lists():
     a1 = para("要查哪家企业？请输入企业全称或统一社会信用代码。")
-    a2 = (para(f"按“{LOOKUP['query']}”查的。在收录的名单里查到 {len(LOOKUP['items'])} 份：") + "".join(list_row(d) for d in LOOKUP["items"])
+    a2 = (para(f"按“{LOOKUP['query']}”查的。在收录的名单里查到 {len(LOOKUP['items'])} 份：") + "".join(list_row(d, LOOKUP_ROW) for d in LOOKUP["items"])
           + para("不按年份筛，收录里对上的名单都列出来。名单性质按标题判断，以主管部门公布为准。", 12.5, T2, 10)
           + para(coverage_line(), 12.5, T2, 2))
     top = (chat_top() + skills("查名单", ask_off=True, ask_note=NO_DOC)
@@ -817,13 +862,13 @@ NOW = [
 NEXT = [
     ("下一版1_AI首页", "下一版 1", "AI 首页：三项", lambda: ai_home(True),
      "加第三行「问一问」：找通知、查名单，或就一份通知提问（AI 只摘原句）；次数只算「问这份通知」，找通知、查名单不限次。三行都能点（第 0 步第 1 处，另一会话在做）。"
-     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问，是查名单的写明「查名单」）；页底公示模型和备案号；顶部出处说明条画成「每条都有出处」（全站组件，跟 #349 定）。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。",
+     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问，是查名单的写明「查名单」）；页底公示模型和备案号；顶部出处说明条画成「每条都有出处」（全站组件，跟 #349 定）。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。宁夏那份原网站撤稿了，照 #347 不再列在能解读的通知里。",
      ["问一问", "三行能点", "记录里有对话", "公示占位"]),
     ("下一版2_通知详情", "下一版 2", "通知详情：卡片加「问这份通知」", lambda: detail(True),
      "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变。底部照 #349：主按钮「站内阅读」，「导出」改叫「结果」（结果先在小程序里看）；正文照 #345 去掉了网页上的导航和页脚。",
      ["卡片位置不动", "问这份通知"]),
     ("下一版3_问一问第一次用", "下一版 3", "问一问：第一次用", chat_consent,
-     "从 AI 首页「问一问」进来，没带通知，技能默认「找通知」。不管从哪进来，第一次用都先看四句说明、点「同意并开始」才能发（服务端记下同意的版本）。"
+     "从 AI 首页「问一问」进来，没带通知，技能默认「找通知」。不管从哪进来，第一次用都先看「问一问使用说明」五条全文（#328 第十二节，《隐私保护指引》的正式补充，候选文字按 D-065 定稿）、点「同意并开始」才能发（服务端记下同意的版本）。"
      "页顶写明只有「问这份通知」的回答是 AI 生成的。没有相机、没有拍照入口。",
      ["使用说明", "同意并开始", "没有相机"]),
     ("下一版4_找通知", "下一版 4", "问一问：找通知", chat_find,
@@ -835,9 +880,9 @@ NEXT = [
      "写明读了哪些；每句能看原文、纠错；末尾不判断能不能申报、模型和备案号、投诉举报。",
      ["只摘原句", "可能没摘全", "读了：正文", "摘哪几句是示意"]),
     ("下一版6_查名单", "下一版 6", "问一问：查名单", chat_lists,
-     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明只写查什么、列什么，不出现信用一类的字（10/23 查名单被认成企业征信；agy、Grok 都提否定句也会被读成征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。"
-     "线上 10/22 真实查得到的一家。",
-     ["只查收录", "只查公开名单、不查信用", "可以输企业名称"]),
+     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明只写查什么、列什么，不出现信用一类的字（10/23 查名单被认成企业征信；agy、Grok 都提否定句也会被读成征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。查到以后直接给出名单原文里企业所在的那一行（所在附件、赛道、表头），还能在名单原文里接着看（站内闭环第 4 项「名单站内可读、命中定位」，还没做；Codex 10/24 提）。"
+     "线上 10/22 真实查得到的一家；那一行是 10/24 从新疆工信厅原网页的附件核对的，团队成员是个人姓名，不显示。",
+     ["只查收录", "只查政府公开名单", "名单里那一行", "可以输企业名称"]),
     ("下一版7_结果页接着问", "下一版 7", "AI 解读结果：滑到最下面", result_bottom,
      "结果下面、「用的时候遇到问题？」上面加一张「接着问这份通知」，进对话页并带上这份通知。条款对照的结果页也加同一张。页底公示模型和备案号。",
      ["接着问这份通知", "公示占位"]),
