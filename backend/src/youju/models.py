@@ -902,6 +902,62 @@ class ListEntry(Base):
     document: Mapped[Document] = relationship(back_populates="list_entries")
 
 
+class ListEvidenceSource(Base):
+    """查名单站内闭环：名单附件取文字的状态（每个原站链接一行）。
+
+    名单附件只为定位条目取文字，不存进给 AI 用的附件文字表，也不存副本；整份文字不落库，
+    只把每条条目命中的那几行存进 list_entry_locations。"""
+
+    __tablename__ = "list_evidence_sources"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_list_evidence_sources_url"),
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_list_evidence_sources_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16))
+    # 取不出、下载不了的原因（attachment_text.REASONS 的代码）
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    # 取文字规则版本（attachment_text.EXTRACTOR_VERSION）和定位规则版本，任何一个升级就重取
+    extractor: Mapped[int] = mapped_column(Integer)
+    locator: Mapped[int] = mapped_column(Integer)
+    entries: Mapped[int] = mapped_column(Integer, default=0)
+    located: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    # 网络等临时问题：到这个时间再试
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class ListEntryLocation(Base):
+    """名单条目在原文附件里的那一行：rows 是命中的行（最多 5 行，每行记段号、出处和各格，
+    号码已遮）；state：ok 一处、multiple 两到五处、ambiguous 超过五处（只存前五处）、notfound
+    原文里没找到、no_name_column 认不出名称列。不按序号推算位置。"""
+
+    __tablename__ = "list_entry_locations"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('ok', 'multiple', 'ambiguous', 'notfound', 'no_name_column')",
+            name="ck_list_entry_locations_state",
+        ),
+        Index("ix_list_entry_locations_source", "source_id"),
+    )
+
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("list_entries.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("list_evidence_sources.id", ondelete="CASCADE")
+    )
+    state: Mapped[str] = mapped_column(String(16))
+    rows: Mapped[list] = mapped_column(JSONType)
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class User(Base):
     __tablename__ = "users"
 
