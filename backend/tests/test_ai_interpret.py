@@ -93,7 +93,7 @@ def settings(monkeypatch):
         retain_unused_subscriptions_days=365,
         cloud_env=None,
     )
-    for module in (api, me, service, app_module, v1):
+    for module in (api, me, service, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     # 所有 worker 路径均被替换，配置错误也不会真的连模型。

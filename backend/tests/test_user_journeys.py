@@ -589,9 +589,10 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         and feedback["docTitle"] == doc.title
         and feedback["content"] == row["content"]
     )
-    assert _json(
-        j.client.post("/api/v1/events", json={"name": "feedback", "props": {"count": 1}}), 202
-    )["accepted"]
+    # 写使用记录的接口已删：直接写库模拟以前留下的一条，照常导出、注销时随用户删除
+    owner_id = j.session.scalar(select(User.id).where(User.openid == IDENTITY["X-WX-OPENID"]))
+    j.session.add(Event(user_id=owner_id, name="feedback", props={"count": 1}))
+    j.session.commit()
     assert j.client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 204
     assert _json(j.client.get("/api/v1/me/data"))["feedbackTotal"] == 0
     # 留另一条纠错供注销级联检查，避免只验证空表。
@@ -1000,7 +1001,8 @@ def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, 
     follow = _follow(j, "本人关注", {})
     _subscribe(j, "newDocs", followId=follow["id"])
     _json(j.client.post("/api/v1/feedback", json={"content": "本人纠错"}), 201)
-    _json(j.client.post("/api/v1/events", json={"name": "follow", "props": {"count": 1}}), 202)
+    j.session.add(Event(user_id=owner_id, name="follow", props={"count": 1}))  # 以前留下的使用记录
+    j.session.commit()
     for kind, rows in (("compare", [COMPANY]), ("track", [{"name": COMPANY, "province": "北京"}])):
         created = _json(
             j.client.post(
