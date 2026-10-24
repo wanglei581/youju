@@ -424,20 +424,47 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         after_unit = unit in ("元", "万", "亿")
         amount = after_word or after_unit
         parts = _split(plain, groups, values, label, amount)
+        parts += _ids_left(values, {k for i, j, _ in parts for k in range(i, j)})
         spans += [(groups[i][0], groups[j - 1][1], name) for i, j, name in parts]
         if amount:
-            # 紧挨着金额词的第一组、紧挨着"元、万、亿"的最后一组，是连写 11 位、像手机号的：原样
-            # 留着，正文函数也不碰（它会把"投资15000000000元"当成手机号）。别的组照常交给正文函数：
-            # 这一串没分完时第一遍什么都没遮，"资金 330106198807162345 1280元"里的身份证号要靠它遮
+            # 金额：连写 11 位、像手机号的组，紧挨着金额词（第一组）、紧挨着"元、万、亿"（最后一组）
+            # 或者末尾至少 4 个零（"合计 1000 15000000000 2000"）的，原样留着，正文函数也不碰（它会
+            # 当成手机号）。别的组照常交给正文函数（"合计 1000 13812345678"的手机号照样遮）
             taken = {k for i, j, _ in parts for k in range(i, j)}
             edges = {0} if after_word else set()
             edges |= {len(groups) - 1} if after_unit else set()
             spans += [
                 (*groups[k], None)
-                for k in sorted(edges)
-                if k not in taken and _MOBILE_GROUP.fullmatch(values[k])
+                for k, value in enumerate(values)
+                if k not in taken
+                and _MOBILE_GROUP.fullmatch(value)
+                and (k in edges or value.endswith("0000"))
             ]
     return spans
+
+
+def _ids_left(values: list[str], taken: set[int]) -> list[tuple[int, int, str]]:
+    """这一串没分完、没遮到的组里，常见分法的身份证号照样遮（出生日期要对，金额、编号拼不出来）：
+    "金额：1000 110101 19900307 1234""1350 110101199003071234"。手机号、卡号不这样找（一串金额
+    容易拼出手机号的样子）。"""
+    out, k = [], 0
+    while k < len(values):
+        size = next(
+            (
+                n
+                for n in range(min(_PARTS, len(values) - k), 0, -1)
+                if not taken & set(range(k, k + n))
+                and tuple(len(v) for v in values[k : k + n]) in _PLAIN_ID
+                and body_rules._ID_CARD.fullmatch("".join(values[k : k + n]).upper())
+            ),
+            0,
+        )
+        if size:
+            out.append((k, k + size, "[身份证号已脱敏]"))
+            k += size
+        else:
+            k += 1
+    return out
 
 
 # 原样留着、不交给正文函数的一段（金额）：用这两个控制字符包起来，交给正文函数前切开
