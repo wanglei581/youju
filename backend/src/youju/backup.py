@@ -56,8 +56,12 @@ OPEN_API = "http://api.weixin.qq.com"
 _BUSY_CODES = {-1, -1000, -501002}
 
 
-# 不备份、不恢复的表：访问日志暂存表每天归档到对象存储，归档自己保存（见 youju/access_log.py）
-NOT_BACKED_UP = frozenset({"access_logs"})
+# 不备份、不恢复的表：访问日志暂存表每天归档到对象存储，归档自己保存（见 youju/access_log.py）；
+# 给 AI 用的附件文字（youju/attachment_text.py）随时能从原网站重新下载取出，原网站删了的本来就要
+# 撤下，恢复旧文字反而不对：恢复后由附件定时任务重新取
+NOT_BACKED_UP = frozenset(
+    {"access_logs", "attachment_text_segments", "attachment_text_urls", "attachment_text_versions"}
+)
 
 
 def backed_up_tables() -> list[Table]:

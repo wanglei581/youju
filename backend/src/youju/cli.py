@@ -883,6 +883,9 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
         f"新存或更新 {report.stored}，未变 {report.unchanged}，删掉 {report.removed}，"
         f"到期待下轮 {report.deferred}；没存成的原因：{failed}"
     )
+    if report.text_only:
+        print(f"只取文字、不存副本的 wps、et：{report.text_only} 个")
+    print(_texts_line(report.texts))
     recheck = report.recheck
     if recheck and (recheck.checked or recheck.unreadable):
         dropped = "，".join(f"{code} {n}" for code, n in recheck.dropped.most_common()) or "无"
@@ -894,6 +897,67 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
     if report.storage_error:
         print(report.storage_error)
         return 1
+    return 0
+
+
+def _texts_line(texts) -> str:
+    from youju.attachment_text import REASONS
+
+    failed = "，".join(f"{REASONS.get(c, c)} {n}" for c, n in texts.failed.most_common()) or "无"
+    line = (
+        f"附件文字（给 AI 用，AI 还没读）：新取 {texts.extracted}，同内容共用 {texts.reused}，"
+        f"内容没变 {texts.unchanged}；取不出或下载不了：{failed}；网络等暂时问题保留 {texts.kept}；"
+        f"撤下旧文字 {texts.retracted}；超出范围删掉 {texts.removed}；还没取 {texts.due}"
+    )
+    if texts.errors:
+        line += f"；取文字这步出错 {texts.errors} 次（副本不受影响，见日志）"
+    return line
+
+
+def _beijing_noon(day: date | None) -> datetime | None:
+    from youju.backup import BEIJING
+
+    return (
+        datetime.combine(day, datetime.min.time().replace(hour=12), tzinfo=BEIJING) if day else None
+    )
+
+
+def _cmd_attachment_texts(args: argparse.Namespace) -> int:
+    """只取附件文字（不存副本、不访问对象存储）：本机拿数据副本实测；上线后想比定时任务更快补齐
+    时手动跑。和附件定时任务共用一把锁。"""
+    from youju.attachments import extract_texts
+
+    with session_factory()() as session:
+        report = extract_texts(
+            session,
+            limit=args.limit,
+            now=_beijing_noon(args.now),
+            retry_pending=args.retry_pending,
+        )
+    if report.skipped:
+        print("附件的定时任务正在运行，这次没有取，请稍后再跑")
+        return 1
+    print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
+    print(_texts_line(report.texts))
+    return 1 if report.texts.errors else 0
+
+
+def _cmd_attachment_text_report(args: argparse.Namespace) -> int:
+    """附件读入第一步的实测统计（只读，见 youju/attachment_text_report.py）。"""
+    from youju import attachment_text_report as atr
+
+    now = _beijing_noon(args.now) or datetime.now(UTC)
+    with session_factory()() as session:
+        report = atr.build(session, now, sample=args.sample, seed=args.seed)
+    if args.json:
+        # 容器终端粘贴中文会出乱码：--json 全部转成 \uXXXX，复制回来再解开
+        print(json.dumps(atr.as_dict(report), ensure_ascii=True))
+    else:
+        print(atr.render(report))
+    if args.worksheet:
+        args.worksheet.write_text(atr.worksheet(report), encoding="utf-8")
+        # 写到标准错误：--json 时标准输出只有一份 JSON
+        print(f"抽样核对表写到 {args.worksheet}", file=sys.stderr)
     return 0
 
 
@@ -1639,6 +1703,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
     p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
     p.set_defaults(func=_cmd_cache_attachments)
+    p = sub.add_parser(
+        "attachment-texts",
+        help="只取给 AI 用的附件文字（不存副本、不访问对象存储）：还没取过的补取，清理超出范围的",
+    )
+    p.add_argument("--limit", type=int, default=200, help="本轮最多下载几个（1–2000，默认 200）")
+    p.add_argument(
+        "--now",
+        type=date.fromisoformat,
+        help="按这一天算候选范围（本机用旧数据副本实测时用，默认今天）",
+    )
+    p.add_argument("--retry-pending", action="store_true", help="上次网络等暂时问题没取到的也重试")
+    p.set_defaults(func=_cmd_attachment_texts)
+    p = sub.add_parser(
+        "attachment-text-report",
+        help="附件读入第一步的实测统计（只读）：各格式能读的比例、原因、超过 2.4 万字的份数、抽样",
+    )
+    p.add_argument("--now", type=date.fromisoformat, help="按这一天算候选范围（默认今天）")
+    p.add_argument("--sample", type=int, default=30, help="抽几份申报通知（默认 30）")
+    p.add_argument("--seed", type=int, default=20261020, help="抽样的随机种子（固定才能复现）")
+    p.add_argument(
+        "--json", action="store_true", help="输出 JSON（中文转成 \\uXXXX，容器终端里用）"
+    )
+    p.add_argument("--worksheet", type=Path, help="把抽样核对表（Markdown）写到这个文件")
+    p.set_defaults(func=_cmd_attachment_text_report)
     p = sub.add_parser(
         "recheck-attachments",
         help="按现在的规则重新检查已存的附件副本，不合格的不再提供并从对象存储删掉（规则收紧后跑一次）",
