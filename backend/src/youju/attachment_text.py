@@ -215,7 +215,7 @@ _DATE = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 # "元、万、亿"的一整串数字，没写标签时只遮身份证号（"补助对象：张三 138 1234 5678"不算金额）
 _AMOUNT_BEFORE = re.compile(
     r"(?:金额|合计|预算|经费|资金|标准|补助|奖励|数量|共计|小计|总计|投资|收入)"
-    r"\s*(?:[(（][^()（）\d]{0,6}[)）])?\s*(?:为|是|约|达|共)?[\s:：]*$"
+    r"\s*[*＊]?\s*(?:[(（][^()（）\d]{0,6}[)）])?\s*(?:为|是|约|达|共)?[\s:：]*$"
 )
 # 邮箱只认英文字母、数字和 ._%+- 组成的地址，先遮掉：正文规则（redact_sensitive）的写法会把
 # 邮箱前面连着的中文一起遮掉（\w 也算汉字，"于7月2日前发送至abc@163.com"整段变成"[邮箱已脱敏]"，
@@ -428,17 +428,16 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         spans += [(groups[i][0], groups[j - 1][1], name) for i, j, name in parts]
         if amount:
             # 金额：连写 11 位、像手机号的组，紧挨着金额词（第一组）、紧挨着"元、万、亿"（最后一组）
-            # 或者末尾至少 4 个零（"合计 1000 15000000000 2000"）的，原样留着，正文函数也不碰（它会
-            # 当成手机号）。别的组照常交给正文函数（"合计 1000 13812345678"的手机号照样遮）
+            # 的原样留着，正文函数也不碰（它会当成手机号："投资15000000000元"）。中间的照常交给
+            # 正文函数，宁可多遮："合计 1000 13812345678"的手机号照样遮，"合计 1000 15000000000
+            # 2000"中间的金额也会被当成手机号遮掉（分不清，设计分歧写进 PR 请创始人定）
             taken = {k for i, j, _ in parts for k in range(i, j)}
             edges = {0} if after_word else set()
             edges |= {len(groups) - 1} if after_unit else set()
             spans += [
                 (*groups[k], None)
                 for k, value in enumerate(values)
-                if k not in taken
-                and _MOBILE_GROUP.fullmatch(value)
-                and (k in edges or value.endswith("0000"))
+                if k in edges and k not in taken and _MOBILE_GROUP.fullmatch(value)
             ]
     return spans
 
