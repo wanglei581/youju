@@ -109,11 +109,13 @@ def nav(title):
             f'<span style="font-size: 17px; font-weight: 500">{title}</span>{capsule()}</header>')
 
 
-def notice_bar(on_blue=False):
-    """全站统一的出处说明（notice-bar 组件）。"""
+def notice_bar(on_blue=False, nextv=False):
+    """全站统一的出处说明（notice-bar 组件）。下一版：站内阅读以后「每条附原文链接」容易被看成要去外链
+    （agy、Grok 10/23 都提了），画成产品原来页脚的说法「每条都有出处」；全站组件，最后跟 #349 定。"""
     color = "rgba(255,255,255,0.82)" if on_blue else T3
+    tail = "每条都有出处" if nextv else "每条附原文链接"
     return (f'<div style="height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11.5px; color: {color}">'
-            f'{icon("shield", 12, color)}第三方整理 · 非政府平台 · 每条附原文链接</div>')
+            f'{icon("shield", 12, color)}第三方整理 · 非政府平台 · {tail}</div>')
 
 
 def card(inner, extra=""):
@@ -247,12 +249,12 @@ def contact_block():
 AI_HERO = "在通知原文里找出申报对象、条件、时间和材料，每句都能回原文核对；不判断能不能申报。"
 
 
-def ai_top():
+def ai_top(nextv=False):
     """AI 首页是自定义导航：品牌蓝页头里写"AI"，出处说明条和一句话说明也在蓝底上。"""
     return (f'<div style="flex-shrink: 0; background: linear-gradient(180deg, {BLUE_G1} 0%, {BLUE_G2} 100%); color: #FFFFFF; padding: 0 16px 36px">'
             f'<div style="height: 48px; position: relative; display: flex; align-items: center; justify-content: center">'
             f'<span style="font-size: 17px; font-weight: 600">AI</span>{capsule().replace("right: 10px", "right: -6px")}</div>'
-            f'{notice_bar(on_blue=True)}'
+            f'{notice_bar(on_blue=True, nextv=nextv)}'
             f'<div style="margin-top: 8px; font-size: 14px; line-height: 1.7; color: rgba(255,255,255,0.92)">{AI_HERO}</div></div>')
 
 
@@ -321,7 +323,7 @@ def ai_home(nextv):
                   + f'<div style="padding-top: 8px; font-size: 12px; color: {T3}">点标题看通知全文，点“AI 解读”直接开始</div>{rows}')
     if nextv:
         recs = (record(f"问一问 · {DOC['title']}", "[日期] · 2 问")
-                + record("问一问 · 最近一问：中国电信股份有限公司新疆分公司", "[日期] · 3 问")
+                + record("问一问 · 最近一问（查名单）：中国电信股份有限公司新疆分公司", "[日期] · 3 问")
                 + record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成", last=True))
     else:
         recs = (record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成")
@@ -333,7 +335,7 @@ def ai_home(nextv):
     # 模型名称和备案号：现在没配，页面上不显示这一行；上线时必须有（上线清单），下一版画上占位
     # 页脚原来那行「有据 · 第三方整理 · 每条都有出处」#339（10/22 合并）去掉了：出处说明只在顶部写一次
     foot = (f'<div style="padding: 18px 12px 0; text-align: center; font-size: 12px; line-height: 1.8; color: {T3}">{DISCLOSURE}</div>' if nextv else "")
-    return phone(ai_top() + ai_strip() + abilities + last_doc + recent + records + helpc + foot + '<div style="height: 20px"></div>', tabbar())
+    return phone(ai_top(nextv) + ai_strip() + abilities + last_doc + recent + records + helpc + foot + '<div style="height: 20px"></div>', tabbar())
 
 
 # ---------- 通知详情 ----------
@@ -446,7 +448,7 @@ def detail_bar(nextv=False):
 
 
 def detail(nextv):
-    top = nav("文件详情") + notice_bar() + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body(nextv)
+    top = nav("文件详情") + notice_bar(nextv=nextv) + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body(nextv)
     # 画到 AI 卡片下面一点：这份通知有截止时间，手机第一屏只到截止时间那一块，卡片要往下滑才看到
     return first_screen(top, detail_bar(nextv), h=1160)
 
@@ -573,7 +575,7 @@ EXAMPLES = {
     "找通知": (["找近 30 天的 5G 工厂申报", "找宁夏近 7 天的申报"], "手上有通知的，直接输入它的标题或文号"),
     # 例子是所有通知共用的固定文字：换成每份申报通知都答得上的（agy 第 4 轮：#328 的"对成立时间有什么要求？"很多通知没写，点了只会答"没找到"）
     "问这份通知": (["企业申报截止是哪天？", "要交哪些材料？", "要满足哪些条件？"], ""),
-    "查名单": ([], "只在收录的政府公开名单（认定、公示、获奖等）里查这家企业出现过的记录（年份、发布机关）；不查信贷、逾期或失信记录"),
+    "查名单": ([], "只在收录的政府公开名单（认定、公示、获奖等）里，按企业全称或统一社会信用代码核对，列出对上的名单名称、发布机关和日期"),
 }
 HINT = {
     "找通知": ("说说要找什么通知，或输入标题、文号",
@@ -628,7 +630,10 @@ def user_msg(skill, text):
 
 
 def answer(kind, body, foot=True):
-    """回答卡片：问这份通知开头标"AI 生成"；找通知、查名单不是 AI 生成的，标"只查收录"。"""
+    """回答卡片：问这份通知开头标"AI 生成"；找通知、查名单不是 AI 生成的，标"只查收录"；
+    正在找、没做成是系统提示，不是 AI 生成的，不标（agy 10/23）。"""
+    if kind == "sys":
+        return (f'<div style="margin: 12px 12px 0; padding: 12px 14px 12px; background: {CARD}; border-radius: 12px">{body}</div>')
     if kind == "ai":
         t = (f'<span style="padding: 0 6px; line-height: 20px; border-radius: 4px; background: {BLUE}; color: #FFFFFF; font-size: 12px; '
              f'font-weight: 600">AI 生成</span>')
@@ -667,7 +672,7 @@ def chat_tail():
 
 
 def chat_top():
-    return nav("问一问") + notice_bar() + chat_strip()
+    return nav("问一问") + notice_bar(nextv=True) + chat_strip()
 
 
 def consent_card():
@@ -771,9 +776,9 @@ def chat_states():
            + state_label("发送被拦下（不保存、不算次数，字留在输入框里）")
            + off("你输入的内容里像有手机号。这一项会把你打的字发给 AI 模型，请删掉后再发。这次不算次数。")
            + state_label("发出以后没做成（不算次数）")
-           + answer("ai", para("这次没做成：AI 暂时不可用，请稍后再试。这次不算次数。", 14) + f'<div style="margin-top: 6px; font-size: 13px; color: {BLUE}">重试</div>', foot=False)
+           + answer("sys", para("这次没做成：AI 暂时不可用，请稍后再试。这次不算次数。", 14) + f'<div style="margin-top: 6px; font-size: 13px; color: {BLUE}">重试</div>')
            + state_label("正在找")
-           + answer("ai", para("正在原文里找相关的原句…一般 10–30 秒。可以先离开，之后在 AI 首页“我的 AI 记录”里打开这条对话接着看。", 14, T2), foot=False)
+           + answer("sys", para("正在原文里找相关的原句…一般 10–30 秒。可以先离开，之后在 AI 首页“我的 AI 记录”里打开这条对话接着看。", 14, T2))
            + state_label("问时间，摘到的原句里没有日期", "问：什么时候公布结果？")
            + answer("ai", para("摘出了原文里和你问的有关的 1 句（可能没摘全，以原文为准）：", 14) + quote(1, Q_PUB)
                     + para(NO_DATE, 13, T2, 10) + para(READ_BODY, 13, T2, 4))
@@ -785,9 +790,9 @@ def chat_states():
                     + para(coverage_line(), 12.5, T2, 6))
            + state_label("范围外", "问：帮我写一份申报书")
            + answer("ai", para("这个问题不在“问这份通知”能答的范围里：这里只从这份通知的原文里找相关原句，不代写材料、不判断能不能申报，"
-                               "也不答和这份通知无关的问题。想找别的通知，点“找通知”。这次不算次数。"), foot=False)
+                               "也不答和这份通知无关的问题。想找别的通知，点“找通知”。这次不算次数。"))
            + state_label("要问清楚", "问：第 3 句是什么意思？（上一个回答只列了 2 句）")
-           + answer("ai", para("上一个回答里没有第 3 句（只列了 2 句）。你指的是哪一句？可以把那句的几个字打出来再问。这次不算次数。"), foot=False))
+           + answer("ai", para("上一个回答里没有第 3 句（只列了 2 句）。你指的是哪一句？可以把那句的几个字打出来再问。这次不算次数。")))
     return sheet(top)
 
 
@@ -812,7 +817,7 @@ NOW = [
 NEXT = [
     ("下一版1_AI首页", "下一版 1", "AI 首页：三项", lambda: ai_home(True),
      "加第三行「问一问」：找通知、查名单，或就一份通知提问（AI 只摘原句）；次数只算「问这份通知」，找通知、查名单不限次。三行都能点（第 0 步第 1 处，另一会话在做）。"
-     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问）；页底公示模型和备案号。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。",
+     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问，是查名单的写明「查名单」）；页底公示模型和备案号；顶部出处说明条画成「每条都有出处」（全站组件，跟 #349 定）。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。",
      ["问一问", "三行能点", "记录里有对话", "公示占位"]),
     ("下一版2_通知详情", "下一版 2", "通知详情：卡片加「问这份通知」", lambda: detail(True),
      "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变。底部照 #349：主按钮「站内阅读」，「导出」改叫「结果」（结果先在小程序里看）；正文照 #345 去掉了网页上的导航和页脚。",
@@ -830,14 +835,14 @@ NEXT = [
      "写明读了哪些；每句能看原文、纠错；末尾不判断能不能申报、模型和备案号、投诉举报。",
      ["只摘原句", "可能没摘全", "读了：正文", "摘哪几句是示意"]),
     ("下一版6_查名单", "下一版 6", "问一问：查名单", chat_lists,
-     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明里写明不查信贷、逾期或失信（10/23 查名单被认成企业征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。"
+     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明只写查什么、列什么，不出现信用一类的字（10/23 查名单被认成企业征信；agy、Grok 都提否定句也会被读成征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。"
      "线上 10/22 真实查得到的一家。",
      ["只查收录", "只查公开名单、不查信用", "可以输企业名称"]),
     ("下一版7_结果页接着问", "下一版 7", "AI 解读结果：滑到最下面", result_bottom,
      "结果下面、「用的时候遇到问题？」上面加一张「接着问这份通知」，进对话页并带上这份通知。条款对照的结果页也加同一张。页底公示模型和备案号。",
      ["接着问这份通知", "公示占位"]),
     ("下一版8_各种情况", "下一版 8", "问一问：用不了、没答上的时候", chat_states,
-     "每种都写原因、扣没扣次数、下一步；「问这份通知」用不了时原因直接写出来，不用先点一下；没找到写「这份通知已读的内容里没有写」，不说「政策没有规定」。",
+     "每种都写原因、扣没扣次数、下一步；「问这份通知」用不了时原因直接写出来，不用先点一下；没找到写「这份通知已读的内容里没有写」，不说「政策没有规定」。「正在找」「没做成」是系统提示，不标「AI 生成」；模型答的（没找到、范围外、要问清楚）标「AI 生成」，末尾写模型和备案号。",
      ["不扣次数", "没读到不等于没规定", "查名单没查到"]),
 ]
 
