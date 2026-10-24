@@ -176,8 +176,9 @@ def test_every_named_lock_goes_through_lock_name() -> None:
 
 
 def _start(env: dict[str, str]) -> subprocess.CompletedProcess:
+    """跑一遍启动脚本，sh -x 把执行到的每条命令记进 stderr，看它走没走到这项检查后面的 cd。"""
     return subprocess.run(
-        ["sh", str(BACKEND / "deploy" / "start.sh")],
+        ["sh", "-x", str(BACKEND / "deploy" / "start.sh")],
         env={"PATH": os.environ["PATH"], **env},
         capture_output=True,
         text=True,
@@ -186,13 +187,16 @@ def _start(env: dict[str, str]) -> subprocess.CompletedProcess:
 
 
 def test_start_script_refuses_lock_prefix() -> None:
-    """线上（deploy/start.sh）设了 YOUJU_LOCK_PREFIX 不启动：锁名一变，发布时新旧版本互相拦不住。"""
+    """线上（deploy/start.sh）设了 YOUJU_LOCK_PREFIX 不启动：锁名一变，发布时新旧版本互相拦不住。
+    报错后当场退出，走不到后面的 cd。"""
     done = _start({"YOUJU_LOCK_PREFIX": "youju_test:"})
-    assert done.returncode == 1 and "YOUJU_LOCK_PREFIX" in done.stderr
+    assert done.returncode == 1 and "只用于本机测试" in done.stderr
+    assert "cd /app/backend" not in done.stderr
 
 
 @pytest.mark.parametrize("env", [{}, {"YOUJU_LOCK_PREFIX": ""}], ids=["unset", "empty"])
 def test_start_script_lets_normal_config_through(env) -> None:
-    """没设或设成空串（lock_name 也当没设，锁名不变）：这项检查放行。往下没有 YOUJU_ROLE、
-    本机也没有 /app/backend，脚本停在后面的检查上，不会真的启动服务。"""
-    assert "YOUJU_LOCK_PREFIX" not in _start(env).stderr
+    """没设或设成空串（lock_name 也当没设，锁名不变）：这项检查放行，走到后面的 cd。
+    本机没有 /app/backend、也没设 YOUJU_ROLE，脚本停在后面，不会真的启动服务。"""
+    done = _start(env)
+    assert "cd /app/backend" in done.stderr and "只用于本机测试" not in done.stderr
