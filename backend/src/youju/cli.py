@@ -745,6 +745,87 @@ def _cmd_try_source(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_source_list_api(args: argparse.Namespace) -> int:
+    """给已有来源配上（或去掉）列表接口：线上来源以库里为准（D-025），改库里的抓取配置。
+    先按新配置请求一次接口（遵守 robots、限速），试跑结果过了 list_api 的复核和 trial_problem 的
+    检查、并且加了 --apply 才写入；写入时锁住这一行，试跑期间来源被改过就不写。
+    最后一行是不含中文的结果摘要，方便在容器里核对。"""
+    from youju.crawler.list_api import trial_api, trial_problem, valid_api_config
+    from youju.sources.onboard import MIN_ITEMS, trial_fetcher
+
+    def result(items: int, dated: int, written: bool) -> None:
+        print(
+            f"result: source={args.source_id} items={items} dated={dated} "
+            f"written={'yes' if written else 'no'}"
+        )
+
+    with session_factory()() as session:
+        source = session.get(Source, args.source_id)
+        if source is None:
+            print(f"没有编号为 {args.source_id} 的来源")
+            return 1
+        print(f"来源 #{source.id} {source.province} {source.dept_full_name} {source.column_name}")
+        print(f"栏目页：{source.url}")
+        before = dict(source.parser_config or {})
+        print("现在的抓取配置：" + json.dumps(before, ensure_ascii=False))
+        if args.clear:
+            # 只去掉列表接口；没配接口的来源可能有人工写的抓取规则，这个命令不动它
+            if "list_api" not in before:
+                print("这个来源没有配列表接口，不用去掉")
+                return 2
+            config: dict[str, str] = {}
+        else:
+            checked = valid_api_config({"list_api": args.kind, "channel_id": args.channel})
+            if checked is None:
+                print("栏目编号只能是字母和数字（栏目页脚本里 var channelId = '…' 的值）")
+                return 2
+            config = checked
+        print("改成：" + json.dumps(config, ensure_ascii=False))
+        page_url, column_name = source.url, source.column_name
+        session.commit()  # 试跑要访问网络，期间不占着数据库事务
+        items = dated = 0
+        if config:
+            with trial_fetcher() as fetcher:
+                trial = trial_api(page_url, config, fetcher)
+            items, dated = len(trial.items), sum(1 for i in trial.items if i.publish_date)
+            print(
+                f"试跑接口：{trial.status}{f'（{trial.error}）' if trial.error else ''}，"
+                f"识别出 {items} 条，带日期 {dated} 条；接口返回的栏目名："
+                + ("、".join(trial.channel_names) or "无")
+            )
+            for item in trial.items[:5]:
+                print(f"  {item.publish_date} {item.title[:50]}  {item.url}")
+            problem = trial_problem(trial, column_name, MIN_ITEMS)
+            if problem:
+                print(f"{problem}；没有写入配置")
+                result(items, dated, False)
+                return 1
+        if not args.apply:
+            print("没有写数据库；核对无误后加 --apply 写入")
+            result(items, dated, False)
+            return 0
+        locked = session.scalars(
+            select(Source)
+            .where(Source.id == args.source_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+        if locked is None or (locked.url, locked.column_name, locked.parser_config or {}) != (
+            page_url,
+            column_name,
+            before,
+        ):
+            session.rollback()
+            print("试跑期间来源被改过或删除了，没有写入；请重新试跑")
+            result(items, dated, False)
+            return 1
+        locked.parser_config = config
+        session.commit()
+    print("已写入：下一轮定时抓取起按新配置检查")
+    result(items, dated, True)
+    return 0
+
+
 def _cmd_parse_lists(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.lists.service import parse_lists
@@ -1512,6 +1593,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("url", help="政府网站栏目列表页网址（域名以 .gov.cn 结尾）")
     p.add_argument("--ai-rule", action="store_true", help="通用规则识别出来了也让 AI 写抓取规则")
     p.set_defaults(func=_cmd_try_source)
+
+    p = sub.add_parser(
+        "source-list-api",
+        help="给已有来源配上或去掉列表接口（列表由页面脚本从公开接口取数时用）；"
+        "先试跑一次接口，加 --apply 才写入",
+    )
+    p.add_argument("source_id", type=int, help="来源编号")
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--channel", help="栏目编号：栏目页脚本里 var channelId = '…' 的值")
+    which.add_argument("--clear", action="store_true", help="去掉列表接口，改回抓栏目页")
+    p.add_argument(
+        "--kind",
+        default="hunan_search",
+        choices=["hunan_search"],
+        help="接口种类，默认 hunan_search",
+    )
+    p.add_argument("--apply", action="store_true", help="写入；不加只试跑")
+    p.set_defaults(func=_cmd_source_list_api)
 
     p = sub.add_parser("parse-lists", help="补详情并解析政府名单表格和附件（单次最多200个附件）")
     p.add_argument(

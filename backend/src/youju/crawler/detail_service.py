@@ -38,6 +38,10 @@ class DetailFetcher:
 
 
 _RETRY_DELAYS = (timedelta(hours=6), timedelta(hours=24))
+# 临时性失败（网络中断、robots.txt 暂时取不到、5xx）首次失败后 6 小时、24 小时各重试一次，
+# 一共试这么多次；都失败就停止自动重试，在管理台"补详情失败"页列出来（D8）
+MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
+_RETRYABLE_STATUSES = ("network_error", "robots_error")
 REFETCH_FAILURE_PREFIX = "详情重抓未完成："
 _FILE_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".wps", ".et", ".zip", ".rar", ".ofd")
 
@@ -54,8 +58,24 @@ class _FetchOutcome:
 
 def _retryable(status: str, http_status: int | None) -> bool:
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。
-    return status in {"network_error", "robots_error"} or (
+    return status in _RETRYABLE_STATUSES or (
         status == "http_error" and http_status is not None and http_status >= 500
+    )
+
+
+def stopped_retrying():
+    """补详情已停止自动重试的条件：临时性失败（同 _retryable）试满 MAX_ATTEMPTS 次、没有再排重试时间
+    （fetch_details 只重试排了时间、且试了不到 MAX_ATTEMPTS 次的）。
+
+    永久性失败（404、403、robots 禁止、不是 HTML 等）第一次就不重试，是预期的，不算在内；
+    详情已成功、只是补附件重抓失败的（REFETCH_FAILURE_PREFIX）状态仍是 ok，也不算。"""
+    return and_(
+        DocumentDetail.next_retry_at.is_(None),
+        DocumentDetail.attempt_count >= MAX_ATTEMPTS,
+        or_(
+            DocumentDetail.status.in_(_RETRYABLE_STATUSES),
+            and_(DocumentDetail.status == "http_error", DocumentDetail.http_status >= 500),
+        ),
     )
 
 
@@ -300,7 +320,7 @@ def fetch_details(
                 and_(
                     DocumentDetail.next_retry_at.is_not(None),
                     DocumentDetail.next_retry_at <= now,
-                    DocumentDetail.attempt_count < 3,
+                    DocumentDetail.attempt_count < MAX_ATTEMPTS,
                 ),
             )
         )
