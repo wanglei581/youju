@@ -53,16 +53,24 @@ Page({
   },
 
   onHide() {
+    this.visible = false;
+    this.lookupSeq = (this.lookupSeq || 0) + 1;
+    this.needsLookupRefresh = !!this.data.queried;
+    this.setData({ result: null, looking: false });
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    this.visible = false;
+    this.lookupSeq = (this.lookupSeq || 0) + 1;
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onShow() {
+    this.visible = true;
+    if (this.needsLookupRefresh) { this.needsLookupRefresh = false; this.query(); }
     if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
@@ -155,14 +163,19 @@ Page({
     this.setData({ queried: name, looking: true, result: null, lookupError: '', demo: !api.isLive() });
     api.lookup(name)
       .then((result) => {
-        if (seq !== this.lookupSeq) return;
+        if (seq !== this.lookupSeq || this.visible === false) return;
         const since = result.coverage && result.coverage.since;
         this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '' });
       })
       .catch((err) => {
-        if (seq !== this.lookupSeq) return;
+        if (seq !== this.lookupSeq || this.visible === false) return;
         this.setData({ looking: false, lookupError: err.message });
       });
+  },
+
+  evidence(e) {
+    const id = e.currentTarget.dataset.id;
+    if (id) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(id)}` });
   },
 
   toggleRules() {

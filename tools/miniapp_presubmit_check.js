@@ -22,7 +22,7 @@ const SERVER_TOOL_TERMS_VERSION = (() => {
   return m[1];
 })();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
-  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
+  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
 // 加量体验确认页（D-070 ③，10/17 创始人批准）属于批量工具，从批量工具页进入
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
@@ -62,7 +62,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整版26页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助）；奖励及子包不属于本次范围');
+  '核对首发16页、AI版21页或完整版28页（均含站内阅读与结果页；完整版另含批量工具、购买、订单、AI板块和帮助）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
   const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
   add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',

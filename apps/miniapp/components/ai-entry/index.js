@@ -8,7 +8,6 @@
 const access = require('../../utils/ai-access.js');
 const context = require('../../utils/tool-context.js');
 const { reasonView } = require('../../utils/ai-reasons.js');
-const { copyLink } = require('../../utils/copy.js');
 
 // 和后端 interpret.eligible_body 的正文上限一致
 const MAX_BODY = 24000;
@@ -88,7 +87,7 @@ Component({
     nextStep() {
       const { next } = this.data;
       if (next === 'lists') wx.navigateTo({ url: '/pages/lists/index' });
-      else if (next === 'copy') copyLink(this.properties.docUrl);
+      else if (next === 'read' && this.properties.docId) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(this.properties.docId)}` });
       else if (next === 'attachments') this.triggerEvent('attachments');
       else if (next === 'back') wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
     },

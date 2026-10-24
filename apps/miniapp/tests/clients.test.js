@@ -56,7 +56,7 @@ function clientsPage(local, { search, coverage = { cities: [{ province: '山东'
     '../../utils/api.js': { search: search || (() => Promise.resolve({ items: [], total: 0 })) },
     '../../utils/clients.js': clientUtils(local.wx),
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(coverage) },
-    '../../utils/exporter.js': { exportDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
+    '../../utils/exporter.js': { previewDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { wx: local.wx });
 }
@@ -148,7 +148,7 @@ test('相关通知：每组条件取 50 份，合并后一条一行；分客户�
   assert.equal(page.data.truncated, true);
   const root = render('pages/clients/index.wxml', page.data);
   assert.deepEqual(findAll(root, hasClass('involved')).map(textOf), ['相关客户：本机客户名称、乙公司、丙公司', '相关客户：丙公司', '相关客户：本机客户名称、乙公司']);
-  assert.match(textOf(findAll(root, hasClass('export-btn'))[0]), /导出这 3 份/);
+  assert.match(textOf(findAll(root, hasClass('export-btn'))[0]), /查看这 3 份结果/);
   page.pickOnly(tap({ id: 'c3' })); assert.deepEqual(plain(page.data.shown.map((r) => r.id)), ['2', '1']);
   // 卡片上的"看相关通知"总是只看这一家；上面的筛选条再点一次才回到全部
   page.setData({ tab: 'cards' }); page.showClient(tap({ id: 'c3' }));

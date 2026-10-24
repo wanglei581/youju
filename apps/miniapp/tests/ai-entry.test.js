@@ -364,19 +364,19 @@ test('卡片在做不了的文件上按后台给的原因代码写原因和下�
   const none = (reason) => ({ interpret: false, clause: false, reason });
   const cases = [
     [{ ai: none('list') }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', '去查名单'],
-    [{ ai: none('kind') }, '这类文件不做 AI 解读。', '复制原文链接'],
-    [{ ai: none('source') }, '这个来源暂不用于 AI 解读。', '复制原文链接'],
-    // 没有完整正文：有附件给"看附件"，没有附件给"复制原文链接"
-    [{ ai: none('no_body') }, '还没有拿到完整正文，正文可能在附件里。', '复制原文链接'],
+    [{ ai: none('kind') }, '这类文件不做 AI 解读。', '站内阅读正文'],
+    [{ ai: none('source') }, '这个来源暂不用于 AI 解读。', '站内阅读正文'],
+    // 没有完整正文：有附件给"看附件"，没有附件给"站内阅读正文"
+    [{ ai: none('no_body') }, '还没有拿到完整正文，正文可能在附件里。', '站内阅读正文'],
     [{ ai: none('no_body'), hasAttachments: true }, '还没有拿到完整正文，正文可能在附件里。', '看附件'],
     [{ ai: none('too_long') }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', ''],
     [{ ai: none('unavailable') }, '这份文件已下架。', '返回'],
     // 旧后台：有 ai、没有原因代码时按页面已有的正文信息判断
     [{ ai: none(null), bodyStatus: 'list' }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', '去查名单'],
-    [{ ai: none(null), bodyStatus: 'original' }, '这类文件不做 AI 解读。', '复制原文链接'],
+    [{ ai: none(null), bodyStatus: 'original' }, '这类文件不做 AI 解读。', '站内阅读正文'],
     [{ ai: none(null), bodyStatus: 'ok', bodyTotal: 24001 }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', ''],
-    [{ ai: none(null), bodyStatus: '' }, '还没有拿到完整正文，正文可能在附件里。', '复制原文链接'],
-    [{ ai: none(null), bodyStatus: 'ok', bodyTotal: 800 }, '这份文件暂不能解读，请查看原文。', '复制原文链接'],
+    [{ ai: none(null), bodyStatus: '' }, '还没有拿到完整正文，正文可能在附件里。', '站内阅读正文'],
+    [{ ai: none(null), bodyStatus: 'ok', bodyTotal: 800 }, '这份文件暂不能解读，请查看原文。', '站内阅读正文'],
   ];
   for (const [props, reason, next] of cases) {
     const card = fab(api, { docId: '42', docTitle: '通知', docUrl: 'https://gov.example/1.html', ...props }); await flush(); await flush();
@@ -384,7 +384,7 @@ test('卡片在做不了的文件上按后台给的原因代码写原因和下�
     card.view.open(); card.view.openClause(); assert.equal(card.navigations.length, 0);
     card.view.nextStep();
     if (next === '去查名单') assert.equal(card.navigations[0].url, '/pages/lists/index');
-    if (next === '复制原文链接') assert.deepEqual(card.copied, ['https://gov.example/1.html']);
+    if (next === '站内阅读正文') { assert.equal(card.navigations[0].url, '/pages/reader/index?id=42'); assert.deepEqual(card.copied, []); }
     if (next === '看附件') assert.deepEqual(card.events.map(([name]) => name), ['attachments']);
     if (next === '返回') assert.equal(card.back.length, 1);
     if (!next) assert.equal(card.navigations.length + card.copied.length + card.events.length + card.back.length, 0);

@@ -61,7 +61,7 @@ function searchPage({ coverage = COVERAGE, search, createFollow, exported = [], 
       createFollow: createFollow || (() => Promise.resolve({ id: 9 })),
     },
     '../../utils/regions.js': regions, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/exporter.js': { exportDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); }, MAX: 200 },
+    '../../utils/exporter.js': { previewDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); }, MAX: 200 },
     '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) },
     '../../utils/conditions.js': conditions,
@@ -293,7 +293,7 @@ function clientsPage(local, { search, coverage = COVERAGE, exported = [] } = {})
     '../../utils/api.js': { search: (p) => { calls.push(plain(p)); return search ? search(p) : Promise.resolve({ items: [], total: 0 }); } },
     '../../utils/clients.js': clientUtils(local.wx),
     '../../utils/coverage.js': { loadCoverage: typeof coverage === 'function' ? coverage : () => Promise.resolve(coverage) },
-    '../../utils/exporter.js': { exportDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
+    '../../utils/exporter.js': { previewDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { wx: local.wx });
   return { page, calls, exported };

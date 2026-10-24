@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { PROVINCES, ALL, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
-const { exportDocs } = require('../../utils/exporter.js');
+const { previewDocs } = require('../../utils/exporter.js');
 const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
@@ -447,5 +447,5 @@ Page({
     if (this.data.dept) params.push(`depts=${encodeURIComponent(this.data.dept)}`);
     wx.navigateTo({ url: `/pages/search/index?${params.join('&')}` });
   },
-  exportOne(e) { exportDocs([e.currentTarget.dataset.id], { label: '截止' }); },
+  exportOne(e) { previewDocs([e.currentTarget.dataset.id], { label: '截止' }); },
 });

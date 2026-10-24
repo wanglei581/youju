@@ -9,15 +9,16 @@
     <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
       <view class="advisor-title">{{item.kindLabel}}</view>
       <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
+      <view wx:if="{{item.linkGone}}" class="advisor-text muted">原文链接已失效，结果基于此前收录的正文，仅供参考</view>
       <view class="advisor-text">{{item.stateLabel}}</view>
       <view class="advisor-text muted">{{item.time}}</view>
       <view wx:if="{{item.dataTask}}" class="advisor-text">提交 {{item.rowCount}} 家<text wx:if="{{item.status === 'done'}}"> · 结果 {{item.resultRows || 0}} 行</text></view>
-      <view wx:if="{{item.downloadable && item.expiresText}}" class="advisor-text muted">结果保存至 {{item.expiresText}}，请及时下载</view>
+      <view wx:if="{{item.downloadable && item.expiresText}}" class="advisor-text muted">结果保存至 {{item.expiresText}}，请及时查看和保存</view>
       <view wx:if="{{item.resultNote}}" class="advisor-text muted">{{item.resultNote}}</view>
       <view wx:if="{{item.errorText}}" class="advisor-text muted">{{item.errorText}}</view>
       <view wx:if="{{item.refundNote}}" class="advisor-text muted">{{item.refundNote}}</view>
       <view class="advisor-actions">
-        <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="download" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">下载 Excel</button>
+        <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="readResult" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">站内查看结果</button>
         <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写</button>
         <button wx:if="{{item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看解读</button>
         <button wx:if="{{item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看对照</button>

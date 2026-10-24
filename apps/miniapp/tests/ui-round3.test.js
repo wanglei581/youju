@@ -114,8 +114,8 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
   assert.match(card[1], /<view class="empty-title">还没有导出过<\/view>/);
   const steps = [...card[1].matchAll(/<text class="step-no">(\d)<\/text><text class="step-text">([^<]+)<\/text>/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(steps, [
-    ['1', '在搜索结果点“选择”，或在文件详情点“导出”'],
-    ['2', '选 Excel 或 Word'],
+    ['1', '在搜索结果点“选择”，或在文件详情点“结果”'],
+    ['2', '在小程序内查看结果，需要保存时再选 Excel 或 Word'],
     ['3', '导出后可转发给同事或客户'],
   ]);
   assert.match(card[1], /<view class="pc-tip">在电脑上保存：转发到“文件传输助手”，在电脑版微信打开<\/view>/);
@@ -129,7 +129,7 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
 
 test('文件页：只存在这台手机上的那句在列表下方、页面最后；"导出带数据说明"那句已去掉（10/17 创始人：去掉没用的提示）', () => {
   const template = wxml('files');
-  const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可以重新导出。</view>';
+  const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可按当前数据重新查看并保存。</view>';
   const afterCards = template.slice(template.indexOf('<view wx:else class="card empty">'));
   assert.ok(afterCards.indexOf(storage) > 0);
   assert.ok(!template.includes('数据说明（来源网站'));

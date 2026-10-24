@@ -128,7 +128,7 @@ test('列表行：组的主条目写“另有 N 个转发版本”，点开逐�
   assert.match(template, /wx:if="{{groupText}}" class="group" catchtap="toggleGroup"/);
   assert.match(template, /<t-icon name="{{groupOpen \? 'chevron-up' : 'chevron-down'}}"/);
   assert.match(template, /wx:for="{{doc.group.items}}"[^>]*catchtap="openVersion"/);
-  assert.match(template, /data-url="{{item.url}}" catchtap="copyVersion"/);
+  assert.match(template, /data-id="{{item.id}}" catchtap="openVersion"/);
 });
 
 test('详情页：各版本的截止按版本列出，点别的版本打开它的详情，本页不跳转', async () => {

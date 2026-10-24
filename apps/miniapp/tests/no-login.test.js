@@ -235,7 +235,7 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
     assert.equal(findAll(root, tapsTo('toggleRemind')).length, final ? 1 : 0);
     assert.equal(textOf(root).includes('订阅截止提醒（一次）'), final);
     const [bar] = findAll(root, hasClass('bar'));
-    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'copy'] : ['exportDoc', 'copy']);
+    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'readBody'] : ['exportDoc', 'readBody']);
     assert.equal(textOf(bar).includes('纠错'), final);
     // 截止日期照常显示
     assert.match(textOf(root), /申报截止 10月17日 ?周六/);

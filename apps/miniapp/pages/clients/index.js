@@ -1,7 +1,7 @@
 const api = require('../../utils/api.js');
 const { regionSelection, areaParts, areaLabel, uncoveredCities, uncoveredDistricts, applyAreaChoice } = require('../../utils/regions.js');
 const { loadCoverage } = require('../../utils/coverage.js');
-const { exportDocs } = require('../../utils/exporter.js');
+const { previewDocs } = require('../../utils/exporter.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const {
@@ -132,7 +132,7 @@ Page({
     const { shown, only, clients } = this.data;
     const client = clients.find((c) => c.id === only);
     // 名称只用在本机的导出记录里，不发给服务端
-    exportDocs(shown.map((r) => r.id), { label: client ? `我的客户 · ${client.displayName}` : '我的客户 · 全部' });
+    previewDocs(shown.map((r) => r.id), { label: client ? `我的客户 · ${client.displayName}` : '我的客户 · 全部' });
   },
 
   loadCities() {

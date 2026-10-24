@@ -1,0 +1,14 @@
+.h1 { font-size: 36rpx; line-height: 1.5; font-weight: 600; }
+.provenance { margin-top: 20rpx; font-size: 24rpx; line-height: 1.8; word-break: break-all; }
+.notice, .error { margin: 24rpx 0; padding: 20rpx; background: var(--o-tint); color: var(--o-txt); font-size: 26rpx; line-height: 1.7; }
+.segment { min-width: 0; max-width: 100%; padding: 20rpx 0; border-bottom: 1rpx solid var(--line); }
+.reading-text { display: block; white-space: pre-wrap; word-break: break-all; font-size: 30rpx; line-height: 1.9; }
+.loc { display: block; margin-bottom: 12rpx; font-size: 24rpx; }
+.table-scroll { width: 100%; max-width: 100%; overflow: hidden; }
+.table { min-width: 100%; }
+.table-row { display: inline-flex; }
+.cell { flex: 0 0 260rpx; min-width: 260rpx; box-sizing: border-box; padding: 16rpx; border: 1rpx solid var(--line); font-size: 26rpx; white-space: pre-wrap; word-break: break-all; }
+.pagination, .actions { display: flex; align-items: center; gap: 20rpx; margin-top: 28rpx; }
+.pagination button, .actions button { flex: 1; font-size: 26rpx; }
+
+.cell-head { font-weight: 600; background: var(--fill); }

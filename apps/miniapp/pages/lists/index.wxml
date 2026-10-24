@@ -39,7 +39,8 @@
       <view wx:if="{{result.ambiguous}}" class="warn">名单里有同名但统一社会信用代码不同的企业，下面不一定都是同一家，请逐条核对信用代码</view>
       <view wx:for="{{result.items}}" wx:key="id" class="hit">
         <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
-        <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
+        <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
+        <button data-id="{{item.id}}" bindtap="evidence">查看名单文件和依据</button>
       </view>
     </block>
     <!-- 输入的是简称：没有叫这个名字的企业，但有名称里带这几个字的——先列候选，点一个按全称查 -->
