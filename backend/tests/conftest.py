@@ -4,6 +4,7 @@
 数据库不可用时这些测试会跳过；CI 设置 YOUJU_REQUIRE_DB=1，数据库不可用直接失败。
 """
 
+import hashlib
 import os
 import re
 from collections.abc import Iterator
@@ -117,6 +118,19 @@ def _reset_admin_throttle():
     exports._instance_times.clear()
 
 
+def restricted_account_name(database: str) -> str:
+    """受限账号名按测试库名区分（MySQL 用户名最长 32 个字符）。
+
+    CREATE USER、DROP USER 作用于整台服务器、不分库：名字固定时，几个会话各用自己的测试库同时跑，
+    后到的建账号失败（1396），或自己的账号被对方删掉。库名太长时换成摘要；摘要那种写法带"-"，
+    库名只有字母、数字和下划线，两种写法不会撞名。
+    """
+    name = "youju_api_test" + database.removeprefix("youju_test")
+    if len(name) > 32:
+        name = "youju_api_test-" + hashlib.sha256(database.encode()).hexdigest()[:16]
+    return name
+
+
 @pytest.fixture
 def restricted_api_factory(db_engine):
     """按部署文件授权；with factory(new_grants=False) 模拟迁移后尚未追加授权。"""
@@ -130,7 +144,7 @@ def restricted_api_factory(db_engine):
         url = db_engine.url
         assert url.database.startswith("youju_test")
         password = secrets.token_urlsafe(24)
-        account = {"test_user": "youju_api_test"}
+        account = {"test_user": restricted_account_name(url.database)}
         created = False
         engine = None
         try:
@@ -140,6 +154,8 @@ def restricted_api_factory(db_engine):
                     account["test_host"] = conn.scalar(
                         text("SELECT SUBSTRING_INDEX(USER(), '@', -1)")
                     )
+                    # 上次在本库跑到一半被停掉会留下账号；账号只属于本库，先删掉再建
+                    conn.execute(text("DROP USER IF EXISTS :test_user@:test_host"), account)
                     conn.execute(
                         text("CREATE USER :test_user@:test_host IDENTIFIED BY :password"),
                         {**account, "password": password},
@@ -170,7 +186,7 @@ def restricted_api_factory(db_engine):
                     )
                     stmt = stmt.replace("'youju_api'@'%'", ":test_user@:test_host")
                     conn.execute(text(stmt), account)
-            engine = create_mysql_engine(url.set(username="youju_api_test", password=password))
+            engine = create_mysql_engine(url.set(username=account["test_user"], password=password))
             yield sessionmaker(bind=engine, expire_on_commit=False)
         finally:
             if engine is not None:
