@@ -2,7 +2,8 @@
 // "已复制，请粘贴到浏览器打开"。创始人定：查询、正文、附件、结果都在小程序内完成。
 // 这里守住首发包（和 tools/miniapp_presubmit_check.js 的 FIRST_PAGES 同一份）以及公共组件、工具函数：
 // 不再出现把人送去浏览器或别的应用才能看完的说法，不再写"复制原文链接"。
-// content/legal.js（隐私保护指引第 9 条剪切板）是有版本的正式文本，改动要和平台上的隐私设置一起改，不在这里查。
+// content/legal.js（用户协议和隐私保护指引）也查：10/24 一·9 剪切板已改成只写联系邮箱和"我的数据"复制
+// （创始人"隐私指引第 9 条按你的建议稿改"；同一版 2026-11、不升版本，平台后台的剪切板用途照填写单一起改）。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -51,6 +52,7 @@ test('首发包页面、组件和工具函数：不出现复制链接去浏览�
     ...pages.flatMap((page) => ['wxml', 'js'].map((ext) => `pages/${page}/index.${ext}`)).filter((file) => fs.existsSync(path.join(ROOT, file))),
     ...listFiles('components', (dir) => ['wxml', 'js'].map((ext) => `components/${dir}/index.${ext}`)),
     ...listFiles('utils', (name) => (name.endsWith('.js') && !/^mock/i.test(name) ? [`utils/${name}`] : [])),
+    'content/legal.js',
   ];
   assert.ok(files.includes('pages/detail/index.wxml') && files.includes('pages/reader/index.wxml'), '详情页、阅读页没有读到');
   const hits = files.flatMap((file) => hitsIn(read(file)).map((word) => `${file}：${word}`));
@@ -99,4 +101,27 @@ test('查名单用词（D-090）：首发包页面、组件和工具函数不再
   assert.match(visible(read('pages/detail/index.wxml')), /class="tag">发布阶段：{{doc.status}}</);
   // 输入框仍写统一社会信用代码：按代码才能把同名企业分开
   assert.match(visible(read('pages/lists/index.wxml')), /placeholder="输入企业全称或统一社会信用代码"/);
+});
+
+// 隐私保护指引一·9（剪切板）和代码一致：哪个页面写剪切板，一·9 就要写到它；一·9 不再提复制原文链接、浏览器
+const CLIPBOARD_PAGES = { about: '关于页的联系邮箱', complaint: '投诉举报页的联系邮箱', 'my-data': '“我的数据”里的全部数据、单条数据和完整微信用户标识' };
+
+test('隐私保护指引一·9 剪切板：写剪切板的页面都写进去了，不再提复制原文链接和浏览器（10/24）', () => {
+  const legal = require('../content/legal.js');
+  const item = JSON.stringify(legal).match(/9\. 剪切板：[^"]*/);
+  assert.ok(item, '读不到隐私保护指引一·9');
+  const text = item[0];
+  assert.equal(text, '9. 剪切板：我们不读取剪切板，只在您主动点联系邮箱或“复制”时写入对应文字：关于页的联系邮箱；投诉举报页的联系邮箱（开放 AI 功能后才有）；“我的数据”里的全部数据、单条数据和完整微信用户标识（登录后才有）。');
+  // 页面、组件、工具函数都查（按原文查，不去注释），组件和工具函数里不许写剪切板：写剪切板只能在页面里，好对上一·9
+  const code = [
+    ...listFiles('pages', (dir) => [`pages/${dir}/index.js`]),
+    ...listFiles('components', (dir) => [`components/${dir}/index.js`]),
+    ...listFiles('utils', (name) => (name.endsWith('.js') ? [`utils/${name}`] : [])),
+  ];
+  const writers = code.filter((file) => /setClipboardData/.test(read(file)));
+  assert.deepEqual(writers.filter((file) => !file.startsWith('pages/')), [], '组件或工具函数写剪切板：改到页面里，并写进一·9');
+  const pages = writers.map((file) => file.split('/')[1]).sort();
+  assert.deepEqual(pages, Object.keys(CLIPBOARD_PAGES).sort(), '有新的页面写剪切板：先改隐私保护指引一·9 和后台填写单');
+  for (const page of pages) assert.ok(text.includes(CLIPBOARD_PAGES[page]), `一·9 没写到 ${page}`);
+  assert.deepEqual(code.filter((file) => /getClipboardData/.test(read(file))), [], '代码里不能读取剪切板');
 });
