@@ -30,6 +30,7 @@ import zipfile
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -600,8 +601,8 @@ class _Builder:
 
     def _add(self, kind: str, text: str, loc: dict | None, cells: list[dict] | None) -> None:
         self.chars += len(text)
-        if self.chars > MAX_CHARS:
-            raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
+        if self.chars > (limit := _limits().chars):
+            raise Unreadable("too_large", f"取出的文字超过 {limit // 10000} 万字")
         self.segments.append(Segment(len(self.segments) + 1, kind, text, loc or None, cells))
 
     def para(self, text: str, loc: dict | None = None) -> None:
@@ -1155,8 +1156,8 @@ def _shared_strings(zf: _Zip, rels: dict[str, str]) -> list[str]:
             text = _si_text(el)
             out.append(text)
             chars += len(text)
-            if chars > 2 * MAX_CHARS:
-                raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
+            if chars > 2 * (limit := _limits().chars):
+                raise Unreadable("too_large", f"取出的文字超过 {limit // 10000} 万字")
             el.clear()
     return out
 
@@ -1209,8 +1210,8 @@ def _xlsx_sheet(zf, target, shared, styles, epoch) -> list[_Row]:
                         chars += len(text)
                 if cells:
                     rows.append(_Row(cells, {"row": number}))
-                if chars > MAX_CHARS:
-                    raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
+                if chars > (limit := _limits().chars):
+                    raise Unreadable("too_large", f"取出的文字超过 {limit // 10000} 万字")
             el.clear()
         elif name == "mergeCell":
             ref = el.get("ref") or ""
@@ -1352,9 +1353,10 @@ def _pdf(data: bytes) -> list:
     scanned = 0
     with pdf:
         pages = len(pdf.pages)
-        if pages > _PDF_PAGES:
-            raise Unreadable("too_large", f"PDF 超过 {_PDF_PAGES} 页")
-        for number, page in enumerate(pdf.pages, 1):
+        limits = _limits()
+        if pages > limits.pdf_pages and not limits.pdf_first_pages:
+            raise Unreadable("too_large", f"PDF 超过 {limits.pdf_pages} 页")
+        for number, page in enumerate(pdf.pages[: limits.pdf_pages], 1):
             try:
                 found = _pdf_page(page)
             finally:
@@ -1914,8 +1916,8 @@ def _xls(data: bytes) -> list:
                     chars += len(text)
             if cells:
                 rows.append(_Row(cells, {"sheet": sheet.name, "row": r + 1}))
-            if chars > MAX_CHARS:
-                raise Unreadable("too_large", f"取出的文字超过 {MAX_CHARS // 10000} 万字")
+            if chars > (limit := _limits().chars):
+                raise Unreadable("too_large", f"取出的文字超过 {limit // 10000} 万字")
         builder.table(rows)
         book.unload_sheet(index)
     return _Found(builder)
@@ -2047,14 +2049,44 @@ _FEW_CHARS = 20
 _BIG_PICTURES = 150 * 1024
 
 
-def extract(data: bytes) -> Extraction:
+@dataclass(frozen=True)
+class Limits:
+    """取文字的上限。默认是给 AI 用的；查名单定位名单附件时用 LIST_LIMITS（只在内存里用，
+    整份文字不落库）。"""
+
+    chars: int = MAX_CHARS
+    pdf_pages: int = _PDF_PAGES
+    # 超过页数时只取前面这些页，不整份按"太大"拒收（名单解析本来也只读前 300 页）
+    pdf_first_pages: bool = False
+    seconds: int = EXTRACT_SECONDS
+
+
+DEFAULT_LIMITS = Limits()
+LIST_LIMITS = Limits(chars=3_000_000, pdf_first_pages=True, seconds=600)
+_LIMITS: ContextVar[Limits | None] = ContextVar("attachment_text_limits", default=None)
+
+
+def _limits() -> Limits:
+    return _LIMITS.get() or DEFAULT_LIMITS
+
+
+def extract(data: bytes, *, limits: Limits | None = None) -> Extraction:
     """取出给 AI 用的文字。取不出时 Extraction.reason 写原因（不抛异常）。"""
+    token = _LIMITS.set(limits) if limits is not None else None
+    try:
+        return _extract(data)
+    finally:
+        if token is not None:
+            _LIMITS.reset(token)
+
+
+def _extract(data: bytes) -> Extraction:
     try:
         file_type = sniff(data)
     except Unreadable as exc:
         return Extraction(None, reason=exc.reason, detail=exc.detail)
     try:
-        with _time_limit(EXTRACT_SECONDS):
+        with _time_limit(_limits().seconds):
             found = _EXTRACTORS[file_type](data)
     except Unreadable as exc:
         return Extraction(file_type, reason=exc.reason, detail=exc.detail)
