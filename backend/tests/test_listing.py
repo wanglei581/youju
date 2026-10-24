@@ -667,3 +667,132 @@ def test_clean_title_drops_body_text_stuck_after_the_title():
     ]
     for title in untouched:
         assert clean_title(title) == title
+
+
+def test_ordinal_inside_link_uses_title_attribute() -> None:
+    # 深圳市工信局：<a title="完整标题"><em>8</em>完整标题</a>，序号曾粘在标题前（"8市工业……"）
+    rows = "".join(
+        f'<div class="ListconC"><span>2026-09-{20 + n}</span>'
+        f'<a href="/tzgg/content/post_{n}.html" title="市工业和信息化局关于开展第{n}批申报工作的通知">'
+        f"<em>{n + 8}</em>市工业和信息化局关于开展第{n}批申报工作的通知</a></div>"
+        for n in range(1, 5)
+    )
+    items = extract_items(f"<html><body>{rows}</body></html>", "https://gxj.example.gov.cn/tzgg/")
+    assert [i.title for i in items] == [
+        f"市工业和信息化局关于开展第{n}批申报工作的通知" for n in range(1, 5)
+    ]
+    assert [i.publish_date for i in items] == [date(2026, 9, 20 + n) for n in range(1, 5)]
+
+
+def test_whole_row_link_uses_inner_title_attribute() -> None:
+    # 武汉市经信局：整条是一个链接，标题在里面 span 的 title 属性里，链接文字还有日期和正文摘要
+    rows = "".join(
+        f'<a class="art_item" href="./202610/t202610{10 + n}_{n}.html">'
+        f'<div><span class="art_day">{10 + n}</span><span class="art_month">2026-10</span></div>'
+        f'<div><span class="art_list_ttl" title="市经信局关于开展第{n}批平台申报工作的通知">'
+        f"市经信局关于开展第{n}批平台申报工作的通知</span><label>2026-10-{10 + n}</label>"
+        f'<span class="art_list_content">各区经信部门：现组织开展申报工作，有关事项通知如下……</span>'
+        f"</div></a>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><div>{rows}</div></body></html>", "https://jxj.example.gov.cn/tztg/"
+    )
+    assert [i.title for i in items] == [
+        f"市经信局关于开展第{n}批平台申报工作的通知" for n in range(1, 5)
+    ]
+    assert [i.publish_date for i in items] == [date(2026, 10, 10 + n) for n in range(1, 5)]
+
+
+def test_inner_title_must_be_written_in_the_link_text() -> None:
+    # 里面元素的 title 属性不是链接文字的一部分（如图标提示）时不用
+    html = (
+        "<html><body><ul>"
+        + "".join(
+            f'<li><a href="/a/{n}.html"><img title="点击查看这条通知的详细内容" src="x.png">'
+            f"关于组织申报第{n}批项目的通知</a><span>2026-09-0{n}</span></li>"
+            for n in range(1, 5)
+        )
+        + "</ul></body></html>"
+    )
+    items = extract_items(html, "https://kjj.example.gov.cn/a/")
+    assert [i.title for i in items] == [f"关于组织申报第{n}批项目的通知" for n in range(1, 5)]
+
+
+def test_narrow_title_rules_leave_other_links_alone() -> None:
+    # 普通链接里标题后面多一段补充说明（哪怕写着年月），照旧用整段链接文字
+    rows = "".join(
+        f'<li><a href="/n/{n}.html"><span title="关于组织申报第{n}批项目的通知">'
+        f"关于组织申报第{n}批项目的通知</span><span>（2026年10月修订）</span></a>"
+        f"<span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/n/"
+    )
+    assert [i.title for i in items] == [
+        f"关于组织申报第{n}批项目的通知（2026年10月修订）" for n in range(1, 5)
+    ]
+    # 整条做成链接、分块写，但日期写在补充说明里（不是单独一块），也照旧用整段链接文字
+    rows = "".join(
+        f'<li><a href="/d/{n}.html"><div><span title="关于组织申报第{n}批项目的通知">'
+        f"关于组织申报第{n}批项目的通知</span><span>（2026年10月1{n}日补充）</span></div></a>"
+        f"<span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/d/"
+    )
+    assert [i.title for i in items] == [
+        f"关于组织申报第{n}批项目的通知（2026年10月1{n}日补充）" for n in range(1, 5)
+    ]
+    # 补充说明里的日期再包一层标签（"（<em>2026年10月1n日</em>补充）"），也不算单独成块的日期
+    rows = "".join(
+        f'<li><a href="/e/{n}.html"><div><span title="关于组织申报第{n}批项目的通知">'
+        f"关于组织申报第{n}批项目的通知</span><span>（<em>2026年10月1{n}日</em>补充）</span></div></a>"
+        f"<span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/e/"
+    )
+    assert [i.title for i in items] == [
+        f"关于组织申报第{n}批项目的通知（2026年10月1{n}日补充）" for n in range(1, 5)
+    ]
+    # 数字后面紧跟"号"，是标题自己的开头（"12号文件……"），不删
+    rows = "".join(
+        f'<li><a href="/m/{n}.html" title="号文件关于第{n}批申报的补充通知">'
+        f"<em>1{n}</em>号文件关于第{n}批申报的补充通知</a><span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/m/"
+    )
+    assert [i.title for i in items] == [f"1{n}号文件关于第{n}批申报的补充通知" for n in range(1, 5)]
+    # 序号带句点（<em>8.</em>）照样认得出是序号
+    rows = "".join(
+        f'<li><a href="/k/{n}.html" title="关于开展第{n}批申报工作的通知">'
+        f"<em>{n}.</em>关于开展第{n}批申报工作的通知</a><span>2026-09-0{n}</span></li>"
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><ul>{rows}</ul></body></html>", "https://kjj.example.gov.cn/k/"
+    )
+    assert [i.title for i in items] == [f"关于开展第{n}批申报工作的通知" for n in range(1, 5)]
+
+
+def test_inner_title_on_an_outer_block_with_its_own_date_block() -> None:
+    # title 属性写在外层块上，日期是这个块里并列的另一块：仍然认得出标题
+    rows = "".join(
+        f'<a class="item" href="./202610/t2026101{n}_{n}.html">'
+        f'<div class="box" title="市经信局关于开展第{n}批平台申报工作的通知">'
+        f'<p class="ttl">市经信局关于开展第{n}批平台申报工作的通知</p>'
+        f'<p class="time">2026-10-1{n}</p><p class="sum">各区经信部门：现组织开展申报……</p></div></a>'
+        for n in range(1, 5)
+    )
+    items = extract_items(
+        f"<html><body><div>{rows}</div></body></html>", "https://jxj.example.gov.cn/tztg/"
+    )
+    assert [i.title for i in items] == [
+        f"市经信局关于开展第{n}批平台申报工作的通知" for n in range(1, 5)
+    ]

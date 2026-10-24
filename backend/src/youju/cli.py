@@ -9,7 +9,7 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from youju.config import get_settings
 from youju.db import session_factory
@@ -91,6 +91,7 @@ def _cmd_import_sources(args: argparse.Namespace) -> int:
 def _cmd_crawl(args: argparse.Namespace) -> int:
     from youju.crawler.fetcher import PoliteFetcher
     from youju.crawler.service import crawl_sources
+    from youju.sources.importer import PENDING
 
     settings = get_settings()
     factory = session_factory()
@@ -98,6 +99,14 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         stmt = select(Source.id).order_by(Source.id)
         if not args.include_disabled:
             stmt = stmt.where(Source.enabled.is_(True))
+        # "待开"的来源（地市第一批，D-086 ④）创始人同意前不对外：调试用的 --include-disabled
+        # 也不抓它们，抓了就有文件，停用也不会让文件下架
+        stmt = stmt.where(
+            or_(
+                Source.verification_status.is_(None),
+                ~Source.verification_status.startswith(PENDING),
+            )
+        )
         if args.source_id:
             stmt = stmt.where(Source.id.in_(args.source_id))
         if args.province:
