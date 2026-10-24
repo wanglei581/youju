@@ -139,7 +139,7 @@ _ACCOUNT_WORDS = (
     "帐户号", "账号码", "帐号码", "卡号码", "银行卡", "账户", "帐户", "账号", "帐号", "卡号",
 )  # fmt: skip
 _ACCOUNT_LABEL = "(?:" + "|".join(r"\s*".join(w) for w in _ACCOUNT_WORDS) + ")"
-_LABEL_END = r"[\s:：]*(?:[为是][\s:：]*)?"
+_LABEL_END = r"[\s*＊:：]*(?:[为是][\s:：]*)?"  # 必填项的星号也算（"账号*："）
 # 开户行的名字：以银行、支行、农商行、信用联社……结尾（前面最多 30 个字，可以有英文字母，如
 # "ICBC杭州分行"），或者是"工行、建行"这样的简称；后面可以带括号（"（营业部）"）、冒号、"为/是"
 # （"……杭州分行：1202…"）
@@ -156,7 +156,7 @@ _LABELS = {
         f"(?:{_ACCOUNT_LABEL}{_NOTE}{_LABEL_END}(?:{_BANK})?|{_OPEN_BANK}{_LABEL_END}{_BANK})$"
     ),
     "phone": re.compile(
-        r"(?:手\s*机(?:\s*号\s*码?)?|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[\s:：.]*"
+        r"(?:手\s*机(?:\s*号\s*码?)?|电\s*话|联\s*系\s*方\s*式|tel|mobile|phone)[\s*＊:：.]*"
         r"(?:[为是][\s:：]*)?$",
         re.I,
     ),
@@ -209,6 +209,7 @@ _PLAIN_ID = {(18,), (6, 8, 4), (6, 4, 4, 4), (4, 4, 4, 4, 2), (15,), (6, 6, 3)}
 _PLAIN_MOBILE = {(11,), (3, 4, 4), (13,), (2, 11), (2, 3, 4, 4)}
 _PARTS = 5  # 一段最多几组（4-4-4-4-2 的身份证号、带尾巴的卡号）
 _MOBILE = re.compile(r"(?:86)?1[3-9]\d{9}")
+_MOBILE_GROUP = re.compile(r"1[3-9]\d{9}")  # 正文函数当手机号遮的那种连写 11 位
 _DATE = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 # 金额：前面紧挨着这些词（中间只能有"（万元）"这样的括号、"为""约"、冒号、空格）、或后面跟着
 # "元、万、亿"的一整串数字，没写标签时只遮身份证号（"补助对象：张三 138 1234 5678"不算金额）
@@ -404,8 +405,8 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
     - 前面写了"账号""手机""身份证"这类标签（_LABELS），或 column 给了（表格里这一列上面、左边那格
       写着"账号""身份证号""手机"）：按标签认，怎么分组都行（_labeled）；
     - 没写标签的：整串能分成号码和序号、日期、座机（_split）才遮号码那几段；前面紧挨着"合计、
-      预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号，没遮的整串记成 None（原样
-      留着，正文函数也不碰）；
+      预算、金额"之类、后面跟着"元、万、亿"的是金额，只遮身份证号；挨着金额词、"元、万、亿"的那
+      一组要是连写 11 位，记成 None（原样留着，正文函数也不碰）；
     - 整串是日期（"2018-05-20—2026-10-09""20180520-20261009"）的，哪一段都不当号码。"""
     spans = []
     for run in _RUN.finditer(plain):
@@ -419,14 +420,23 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         # 格子里自己写了标签的按格子里的认（手机号那一列里写着"开户行：…… 1202…"），没写的用列标签
         label = next((k for k, p in _LABELS.items() if p.search(before)), None) or column
         unit = plain[run.end() : run.end() + 3].lstrip(" ")[:1]
-        amount = bool(_AMOUNT_BEFORE.search(before)) or unit in ("元", "万", "亿")
-        found = [
-            (groups[i][0], groups[j - 1][1], name)
-            for i, j, name in _split(plain, groups, values, label, amount)
-        ]
-        if amount and not found:
-            found = [(run.start(), run.end(), None)]  # 金额：原样留着，正文函数也不碰
-        spans += found
+        after_word = bool(_AMOUNT_BEFORE.search(before))
+        after_unit = unit in ("元", "万", "亿")
+        amount = after_word or after_unit
+        parts = _split(plain, groups, values, label, amount)
+        spans += [(groups[i][0], groups[j - 1][1], name) for i, j, name in parts]
+        if amount:
+            # 紧挨着金额词的第一组、紧挨着"元、万、亿"的最后一组，是连写 11 位、像手机号的：原样
+            # 留着，正文函数也不碰（它会把"投资15000000000元"当成手机号）。别的组照常交给正文函数：
+            # 这一串没分完时第一遍什么都没遮，"资金 330106198807162345 1280元"里的身份证号要靠它遮
+            taken = {k for i, j, _ in parts for k in range(i, j)}
+            edges = {0} if after_word else set()
+            edges |= {len(groups) - 1} if after_unit else set()
+            spans += [
+                (*groups[k], None)
+                for k in sorted(edges)
+                if k not in taken and _MOBILE_GROUP.fullmatch(values[k])
+            ]
     return spans
 
 
@@ -453,7 +463,8 @@ def mask(text: str, *, column: str | None = None) -> str:
        这一列上面、左边那格写着的标签，"account""id""phone"）怎么分组都认；没写的整串能分成常见分法的号码和
        序号、日期、座机才遮（免得把一串金额、编号拼成号码）；
     3. 用正文的规则（redact_sensitive，连写的号码、"账号："后的号码、联系人、座机）；金额那一串、
-       小数原样留着，不交给它（它会把"投资15000000000元""13812345678.50 元"里的 11 位当成手机号）；
+       小数、挨着金额词或"元、万、亿"的连写 11 位原样留着，不交给它（它会把"投资15000000000元"
+       "13812345678.50 元"里的 11 位当成手机号）；
     4. 再遮标签字隔开写的"联 系 人："。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
     text = _EMAIL.sub("[邮箱已脱敏]", text).replace("\x01", "").replace("\x02", "")
