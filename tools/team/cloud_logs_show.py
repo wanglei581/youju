@@ -1,23 +1,21 @@
-r"""把 cloud-logs.cjs 写下的结果文件整理成"时间 容器 内容"，可按关键词过滤；显示前一律遮蔽。
+"""把 cloud-logs.cjs 写下的结果文件整理成一行一条的摘要；可以按关键词查有没有、有几条。日志正文不显示。
 
 用法：python3 tools/team/cloud_logs_show.py <结果文件> [关键词…]
-（关键词之间是"或"：一行里有任何一个就显示；每行内容最多显示前 300 字。）
+（关键词之间是"或"：日志正文里有任何一个就算命中；只显示命中那几行的摘要和条数，正文照样不显示。）
 
-为什么遮蔽：读日志的是 AI 成员，显示出来的内容会发到境外的模型服务，而隐私保护指引写的是不向境外
-传输（个人信息保护影响评估第六节（二）第 6 条、（三）第 7 条）。遮蔽规则就是下面这几条：
-- 先把反斜杠转义还原再认（日志内容本身常是 JSON 文字）：\n、\r、\t、\b、\f 和控制字符显示成空格，其他 \uXXXX
-  还原成原字符（反斜杠除外；前面有几个反斜杠都算）。不然转义里的字母、数字紧贴在编号或 IP 前面，认不出边界。
-- 文件编号：cloud://… 整段遮掉。
-- 访问日志的 ip、uid 字段（JSON、转义成字符串的 JSON、Python 字典写法都认）：ip 是 IP 的按下一条遮，
-  不是 IP 的整个换成 *；uid 留前 4 位（ab12*）。
-- 来源 IP，出现在任何文字里的都遮：IPv4 留前两段（203.0.*.*），IPv6 留前两组（2408:8207:*；紧贴在
-  IPv6:、ip6: 这类英文标签后面的也认）；IPv4 映射成的 IPv6（::ffff:203.0.113.9）按 IPv4 留前两段
-  （::ffff:203.0.*.*）。
-- 单独出现的 16 位十六进制串（用户编号的格式，如批量工具结果文件路径 advisor/out/<编号>/）留前 4 位。
-- 以 o 开头的 28 位微信用户标识（openid、unionid 的格式，比如数据库报错里带出来的）留前 4 位。
-时间、容器名、开头的统计行、出错文件也一样过一遍（先逐个字符串遮，再转成 JSON 文字）。留下的几位够判断是不是同一来源。
-关键词在遮蔽后的内容里找：拿完整的 IP 或编号当关键词逐个试，试不出来。
-没有不遮蔽的显示方式。要看完整的 IP、按某个用户查，由创始人在云托管控制台的日志页自己查。
+为什么只显示摘要：读日志的是 AI 成员，显示出来的东西会发到境外的模型服务，而隐私保护指引写的是不向境外
+传输（个人信息保护影响评估第六节（二）第 6 条、（三）第 7 条）。"认出 IP、编号再遮掉"总有漏的写法（转义换行
+夹在中间、%2e 编码、紧贴下划线、前导数字……），所以只显示下面这些格式固定、带不出个人信息的字段，别的一律不显示：
+- 时间：形如 2026-10-19 11:00:00(.000) 的才显示，否则显示 ?
+- 容器：小写字母、数字、减号组成、又不带 16 位十六进制串的容器名才显示，否则 ?
+- 访问日志（JSON，event 是 access）：方法（GET、POST 等七种之一）、路径（去掉 ? 和 # 后面；每一段只留小写英文
+  单词、v1 这种版本号、不超过 10 位的纯数字，别的段换成 *）、状态码（100–599 的整数）、耗时（毫秒）
+- 其他日志的类别：日志级别和记录器名（只认 youju、uvicorn、sqlalchemy 等几个已知的记录器，如 WARNING
+  youju.access_log；uvicorn 的 INFO: 记成 INFO uvicorn）、JSON 日志里 event、action 的名字（只认小写英文单词）、
+  异常类名（以 Error、Exception、Warning 结尾的英文类名）、Traceback
+- 出错文件：出错类别（api / agent / exception）、错误码和异常名（英文标识符才显示）、ret（整数才显示）
+日志正文、出错原文只在本机结果文件里，要看由创始人在本机或云托管控制台的日志页看。
+关键词在正文里找；完整的 IP、16 位用户编号、28 位 openid 不能当关键词（按人查由创始人在控制台自己查）。
 """
 
 import ipaddress
@@ -25,177 +23,185 @@ import json
 import re
 import sys
 
-# 反斜杠转义：\n 这类单字母的、\uXXXX；前面连着几个反斜杠都算进去
-_ESCAPE = re.compile(r"\\+(?:u([0-9A-Fa-f]{4})|[nrtbf])")
-_FILE_ID = re.compile(r"cloud://\S+")
-_FIELD = re.compile(
-    r"""(?P<kq>\\?["'])(?P<key>ip|uid)(?P=kq)(?P<sep>\s*:\s*)(?P<vq>\\?["'])(?P<val>.*?)(?P=vq)""",
-    re.IGNORECASE,
-)
-_OPENID = re.compile(r"(?<![0-9A-Za-z_-])o[0-9A-Za-z_-]{27}(?![0-9A-Za-z_-])")
-_HEX16 = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{16}(?![0-9A-Za-z])")
-# 只看前后是不是数字：句末的点、端口的冒号挨着也照样认
-_IPV4 = re.compile(r"(?<!\d)(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}(?!\d)")
-# 一整串十六进制、冒号和点（整串一次匹配，长串也不回溯）；是不是 IPv6 由 ipaddress 判断
-_V6_RUN = re.compile(r"[0-9A-Fa-f:.]+")
-# 已经遮过的 ip 值：再遮一遍保持原样
-_MASKED_IP = re.compile(r"(?:::ffff:)?\d{1,3}\.\d{1,3}\.\*\.\*|[0-9a-f]{1,4}:[0-9a-f]{1,4}:\*|\*")
+_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?")
+_CONTAINER = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+# 纯数字最多 10 位：11 位的手机号这类不会当成编号显示出来
+_SEGMENT = re.compile(r"[a-z]+(?:[-_][a-z]+)*|v\d{1,2}|\d{1,10}")
+# event、action 只认小写英文单词（不带数字：小写的用户编号也混不进来）
+_NAME = re.compile(r"[a-z]+(?:[-_][a-z]+){0,5}")
+_LOGGER = re.compile(r"(?:youju|uvicorn|sqlalchemy|httpx|httpcore|alembic|apscheduler|asyncio|fastapi|starlette)(?:\.[a-z_]+){0,4}")
+_IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
+# 行首的日志前缀：程序自己的（时间 级别 记录器[:]）和 uvicorn 的（级别:）
+_PY_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+?):? ")
+_UVICORN = re.compile(r"(DEBUG|INFO|WARNING|ERROR|CRITICAL):\s")
+# \b 开头：长串大写字母里不会每个位置都重新试一遍；类名最长 70 个字母，再长的不算（也免得整行被当成类名）
+_EXCEPTION = re.compile(r"\b[A-Z][A-Za-z]{0,60}(?:Error|Exception|Warning)\b")
+# 完整的 IP、用户编号、openid 不能当关键词
+_HEX16 = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{16}(?![0-9A-Fa-f])")
+_OPENID = re.compile(r"o[0-9A-Za-z_-]{27}")
+_ADDR_RUN = re.compile(r"[0-9A-Fa-f:.]+")
 
 
-def _ip_prefix(addr):
-    if addr.version == 6 and addr.ipv4_mapped:
-        return "::ffff:" + _ip_prefix(addr.ipv4_mapped)
-    if addr.version == 4:
-        a, b = str(addr).split(".")[:2]
-        return f"{a}.{b}.*.*"
-    a, b = addr.exploded.split(":")[:2]
-    return f"{int(a, 16):x}:{int(b, 16):x}:*"
-
-
-def _keep4(value):
-    return value[:4] + "*" if len(value) > 4 else "*"
-
-
-def _field(m):
-    val = m.group("val")
-    if m.group("key").lower() == "uid":
-        val = _keep4(val) if val else val
-    elif val and not _MASKED_IP.fullmatch(val):
-        try:
-            val = _ip_prefix(ipaddress.ip_address(val))
-        except ValueError:
-            val = "*"
-    return f"{m.group('kq')}{m.group('key')}{m.group('kq')}{m.group('sep')}{m.group('vq')}{val}{m.group('vq')}"
-
-
-def _v6_addr(text):
-    """text 是 IPv6 地址（前后可以粘着句末的点、单个冒号）就返回遮蔽后的写法，不是就返回 None。"""
-    body = text.rstrip(".")
-    head, tail = "", text[len(body) :]
-    # 粘在地址前后的单个冒号（"…::1:"）不算地址；"::" 是地址的一部分
-    if body.startswith(":") and not body.startswith("::"):
-        head, body = ":", body[1:]
-    if body.endswith(":") and not body.endswith("::"):
-        body, tail = body[:-1], ":" + tail
-    if not body.strip(":"):
-        return None  # 光是 "::"（未指定地址，如 http://[::]:80）不是谁的地址
+def _parse(text):
+    """text 是 JSON 就返回解析结果，不是（或嵌套太深）返回 None。"""
     try:
-        return head + _ip_prefix(ipaddress.IPv6Address(body)) + tail
-    except ValueError:
+        return json.loads(text)
+    except (TypeError, ValueError, RecursionError):
         return None
 
 
-def _v6(m):
-    run = m.group(0)
-    if run.count(":") < 2:
-        return run
-    k = run.index(":")
-    before = m.string[m.start() - 1 : m.start()]
-    # 紧贴在英文字母、数字或下划线后面、第一个冒号前不到 4 位的（"IPv6:2001:…"、"ip6:…"、"addr:…"），
-    # 算前面那个标签的一部分，地址从这个冒号后面开始（"IPv6::1" 这样共用冒号的也认）。
-    # 用户的公网 IPv6 第一组都是 4 位，不会被这样切掉而多露一组；4 位的按整串算
-    if before.isascii() and (before.isalnum() or before == "_") and k < 4:
-        for body in (run[k + 1 :], run[k:]):
-            masked = _v6_addr(body)
-            if masked is not None:
-                # 共用冒号、遮过后自己就以冒号开头的（"ip::ffff:…"），标签那边不再补冒号
-                return run[: k if masked.startswith(":") else k + 1] + masked
-    masked = _v6_addr(run)
-    return run if masked is None else masked
+def _path(value):
+    if not isinstance(value, str):
+        return "?"
+    value = value.split("?", 1)[0].split("#", 1)[0]
+    if not value.startswith("/"):
+        return "?"
+    parts = value[1:].split("/")[:12]
+    return "/" + "/".join(p if _SEGMENT.fullmatch(p) else "*" for p in parts)
 
 
-def _unescape(m):
-    code = m.group(1)
-    if code is None:
-        return " "
-    c = int(code, 16)
-    # 控制字符、单独的代理项显示成空格；反斜杠也不还原：还原了会和后面的字母拼出新的转义
-    if c < 0x20 or c in (0x5C, 0x7F) or 0xD800 <= c <= 0xDFFF:
-        return " "
-    return chr(c)
+def _number(value, low, high):
+    # bool 是 int 的子类，True 不能当成状态码 1
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        return "?"
+    return str(int(value))
 
 
-def mask(text):
-    text = _ESCAPE.sub(_unescape, text)
-    text = _FILE_ID.sub("cloud://…", text)
-    text = _FIELD.sub(_field, text)
-    text = _OPENID.sub(lambda m: _keep4(m.group(0)), text)
-    text = _HEX16.sub(lambda m: _keep4(m.group(0)), text)
-    # 先 IPv6 后 IPv4：嵌在 IPv6 里的 IPv4（2001:db8::203.0.113.9）随 IPv6 一起遮
-    text = _V6_RUN.sub(_v6, text)
-    return _IPV4.sub(r"\1.\2.*.*", text)
+def _event(obj):
+    names = [obj.get(k) for k in ("event", "action")]
+    return "/".join(n for n in names if isinstance(n, str) and _NAME.fullmatch(n))
 
 
-def _mask_values(value):
-    """把值里的字符串逐个遮掉。要先遮再转成文字：json.dumps、str() 会把换行、制表符写成 \\n、\\t，
-    紧跟在后面的编号前面就成了字母 n、t，认不出来。"""
-    if isinstance(value, str):
-        return mask(value)
-    if isinstance(value, dict):
-        return {k: _mask_values(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_mask_values(v) for v in value]
-    return value
+def _category(content, obj):
+    """不是访问日志的那几行：级别、记录器、event/action、异常类名、Traceback。"""
+    words = []
+    m = _PY_PREFIX.match(content)
+    if m:
+        words.append(m.group(1))
+        if _LOGGER.fullmatch(m.group(2)):
+            words.append(m.group(2))
+        body = content[m.end():]
+        if obj is None and body.startswith("{"):
+            obj = _parse(body)
+    else:
+        m = _UVICORN.match(content)
+        if m:
+            words += [m.group(1), "uvicorn"]
+    if isinstance(obj, dict):
+        event = _event(obj)
+        if event:
+            words.append(event)
+    if "Traceback (most recent call last)" in content:
+        words.append("Traceback")
+    seen = []
+    for name in _EXCEPTION.findall(content):
+        if name not in seen:
+            seen.append(name)
+        if len(seen) == 3:
+            break
+    return " ".join(words + seen) or "-"
 
 
-def _as_text(value):
-    """里面的字符串先逐个遮掉；字典、列表再转成 JSON 文字（不用 str()：它写出的 \\x07 这类转义，
-    后面的规则认不出边界），其他值用 str()。"""
-    value = _mask_values(value)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    return str(value)
+def summary(record):
+    """一条结果的摘要："时间 容器 方法 路径 状态码 耗时ms"，不是访问日志的换成类别。"""
+    if not isinstance(record, dict):
+        return "? ? -"
+    ts = record.get("Timestamp")
+    ts = ts if isinstance(ts, str) and _TIME.fullmatch(ts) else "?"
+    raw = record.get("Content")
+    outer = _parse(raw) if isinstance(raw, str) else raw
+    content, container = raw if isinstance(raw, str) else "", "?"
+    if isinstance(outer, dict):
+        tag = outer.get("__TAG__")
+        name = tag.get("container_name") if isinstance(tag, dict) else None
+        container = name if isinstance(name, str) and _CONTAINER.fullmatch(name) and not _HEX16.search(name) else "?"
+        inner = outer.get("__CONTENT__")
+        content = inner if isinstance(inner, str) else ""
+        obj = _parse(inner) if isinstance(inner, str) else inner
+    else:
+        obj = None
+    if isinstance(obj, dict) and obj.get("event") == "access":
+        method = obj.get("method") if obj.get("method") in _METHODS else "?"
+        fields = f"{method} {_path(obj.get('path'))} {_number(obj.get('status'), 100, 599)} {_number(obj.get('ms'), 0, 10**7)}ms"
+        return f"{ts} {container} {fields}"
+    return f"{ts} {container} {_category(content, obj)}"
 
 
-def _shown(value):
-    return mask(_as_text(value))
+def _text(record):
+    """关键词在这里找：结果原文，以及解析出来的正文。"""
+    if not isinstance(record, dict):
+        return ""
+    raw = record.get("Content")
+    raw = raw if isinstance(raw, str) else ""
+    outer = _parse(raw)
+    inner = outer.get("__CONTENT__") if isinstance(outer, dict) else None
+    return raw + "\n" + (inner if isinstance(inner, str) else "")
+
+
+def bad_keyword(key):
+    """完整的 IP、16 位十六进制串（用户编号的格式）、o 开头的 28 位标识（openid）不能当关键词。"""
+    if _HEX16.search(key) or _OPENID.search(key):
+        return True
+    for run in _ADDR_RUN.findall(key):
+        for cand in (run, run.strip(".:")):
+            try:
+                ipaddress.ip_address(cand)
+                return True
+            except ValueError:
+                pass
+    return False
 
 
 def lines(data, keys=()):
-    """结果文件里的每一行日志，遮蔽后整理成"时间 容器 内容"；给了关键词就只要含关键词的。"""
-    for r in data.get("results") or []:
-        if not isinstance(r, dict):
-            r = {"Content": r}
-        content = r.get("Content", "")
-        try:
-            j = json.loads(content)
-        except (TypeError, ValueError):
-            j = None
-        if not isinstance(j, dict):
-            j = {"__CONTENT__": content}
-        tag = j.get("__TAG__")
-        container = tag.get("container_name", "?") if isinstance(tag, dict) else "?"
-        msg = mask(_as_text(j.get("__CONTENT__", "")).replace("\r", " ").replace("\n", " "))
-        if keys and not any(k in msg for k in keys):
+    for record in data.get("results") or []:
+        if keys and not any(k in _text(record) for k in keys):
             continue
-        # 先遮再截：截断处正好落在 IP 中间时，残缺的 IP 认不出来
-        yield f"{_shown(r.get('Timestamp'))} {_shown(container)} {msg[:300]}"
+        yield summary(record)
 
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__.strip())
         return 2
-    with open(argv[1], encoding="utf-8") as f:
-        data = json.load(f)
+    keys = argv[2:]
+    if any(bad_keyword(k) for k in keys):
+        print("# 完整的 IP、用户编号、openid 不能当关键词：按人查由创始人在云托管控制台的日志页自己查")
+        return 2
+    try:
+        with open(argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, RecursionError) as e:
+        print(f"# 结果文件读不了（{type(e).__name__}）")
+        return 1
     if not isinstance(data, dict):
         print("# 这不是 cloud-logs.cjs 写下的结果文件")
         return 1
     if "error" in data:
-        # 出错原文由 cloud-logs.cjs 整段存下（截在 IP 中间就认不出了），这里先遮蔽再限长
-        print(mask(json.dumps(_mask_values(data), ensure_ascii=False))[:2000])
+        kind = data.get("error") if data.get("error") in ("api", "agent", "exception") else "?"
+        parts = [f"# 出错：{kind}"]
+        for key in ("code", "name"):
+            value = data.get(key)
+            if isinstance(value, str) and _IDENT.fullmatch(value) and not bad_keyword(value):
+                parts.append(f"{key}={value}")
+        if isinstance(data.get("ret"), int) and not isinstance(data.get("ret"), bool):
+            parts.append(f"ret={data['ret']}")
+        print("，".join(parts) + "；出错原文在结果文件里，这里不显示")
         return 1
-    count, over, pages = (_shown(data.get(k)) for k in ("count", "listOver", "pages"))
+    count = _number(data.get("count"), 0, 10**9)
+    pages = _number(data.get("pages"), 0, 1000)
+    over = data.get("listOver") if isinstance(data.get("listOver"), bool) else "?"
     print(
-        mask(
-            f"# 共 {count} 行，listOver={over}，pages={pages}"
-            f"{'，到了 20 页上限没取完' if data.get('truncated') else ''}；IP、用户编号、openid、文件编号已遮蔽"
-        )
+        f"# 共 {count} 行，listOver={over}，pages={pages}"
+        f"{'，到了 20 页上限没取完' if data.get('truncated') is True else ''}"
+        "；只显示时间、容器、接口和类别，日志正文不显示（原文在结果文件里）"
     )
-    for line in lines(data, argv[2:]):
+    shown = 0
+    for line in lines(data, keys):
         print(line)
+        shown += 1
+    if keys:
+        print(f"# 含关键词的有 {shown} 行")
     return 0
 
 

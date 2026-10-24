@@ -5,7 +5,7 @@
 // 读日志的是 AI 成员，打印出来的内容会发到境外的模型服务（个人信息保护影响评估第六节（二）第 6 条、
 // （三）第 7 条）。所以：结果文件放在调用方自己的临时目录（放进任何 git 仓库都会被拒绝，免得提交上去），
 // 文件只有本人可读（先建权限 600 的新文件再换上去：原来是符号链接的，不会写到它指向的地方）；
-// 不要直接打开、cat 或贴出来，一律用 cloud_logs_show.py 看（它显示前遮掉 IP、用户编号、openid 和文件编号）。
+// 不要直接打开、cat 或贴出来，一律用 cloud_logs_show.py 看（它只显示时间、容器、接口字段和出错类别，日志正文不显示）。
 // 要看完整的 IP、按某个用户查，由创始人在云托管控制台的日志页自己查；也不要拿 IP 或用户编号当查询串。
 // 出错时，出错信息（错误码、原文）整段写进结果文件，终端只打印出错类别（api 接口报错、agent 代理报错、
 // exception 异常）、文件路径和一行查看提示，同样用 cloud_logs_show.py 看；连结果文件都写不进时，终端只打印
@@ -121,7 +121,7 @@ process.on('unhandledRejection', exception);
       save({ count: all.length, listOver: !!lr.ListOver, pages: page + 1, results: all });
       saved = true;
       say(JSON.stringify({ count: all.length, pages: page + 1, out }));
-      say(`用 ${show} [关键词…] 看（遮掉了 IP、用户编号、openid 和文件编号）；结果文件不要直接打开或贴出来`);
+      say(`用 ${show} [关键词…] 看摘要（日志正文不显示）；结果文件不要直接打开或贴出来`);
       return;
     }
     context = lr.Context;
@@ -130,5 +130,5 @@ process.on('unhandledRejection', exception);
   saved = true;
   // 终端只给条数、页数、路径；没取完由下面这行提示说，listOver、truncated 留在结果文件里（查看时显示）
   say(JSON.stringify({ count: all.length, pages: 20, out }));
-  say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看（遮掉了 IP、用户编号、openid 和文件编号）`);
+  say(`到了 20 页上限没取完，缩小时间窗再查；已取到的用 ${show} [关键词…] 看摘要（日志正文不显示）`);
 })().catch(exception);
