@@ -106,8 +106,13 @@ class SummaryTests(unittest.TestCase):
 
     def test_access_fields_are_checked(self):
         cases = [
-            ({'path': f'/api/v1/notices/123/attachments?q={IP4}#x'}, 'GET /api/v1/notices/123/attachments 200 35ms'),
-            ({'path': f'/api/v1/x/{UID}/{IP4}/核对/a%2eb/12345678901/v1'}, 'GET /api/v1/x/*/*/*/*/*/v1 200 35ms'),
+            ({'path': f'/api/v1/documents/123/attachments?q={IP4}#x'}, 'GET /api/v1/documents/*/attachments 200 35ms'),
+            ({'path': f'/api/v1/x/{UID}/{IP4}/核对/a%2eb/12345678901/v1'}, 'GET /api/v1/*/*/*/*/*/*/v1 200 35ms'),
+            # 路径参数（编号）不显示；接口里没有的单词（人名这类）也不显示
+            ({'path': '/api/admin/deadlines/1234567890/approve'}, 'GET /api/admin/deadlines/*/approve 200 35ms'),
+            ({'path': '/api/v1/zhangsan'}, 'GET /api/v1/* 200 35ms'),
+            ({'path': '/'}, 'GET / 200 35ms'),
+            ({'method': [], 'path': []}, '? ? 200 35ms'),
             ({'path': 'no-slash'}, 'GET ? 200 35ms'),
             ({'method': 'BREW', 'status': True, 'ms': -1}, '? /api/v1/search ? ?ms'),
             ({'status': '200', 'ms': '35'}, 'GET /api/v1/search ? ?ms'),
@@ -122,12 +127,18 @@ class SummaryTests(unittest.TestCase):
     def test_other_lines_show_only_their_category(self):
         audit = json.dumps({'event': 'admin', 'action': 'approve', 'ip': IP4, 'reviewer': REVIEWER, 'deadline_id': 1}, ensure_ascii=False)
         cases = [
-            (f'2026-10-21 10:38:02,317 INFO youju.audit {audit}', 'INFO youju.audit admin/approve'),
+            (f'2026-10-21 10:38:02,317 INFO youju.audit {audit}', 'INFO youju.audit admin'),
+            ('2026-10-21 10:38:02,317 WARNING youju.api {"event": "admin_auth_failed", "ip": "' + IP4 + '"}', 'WARNING youju.api admin_auth_failed'),
+            # 格式对、却不在固定名单里的名字（可能是人名）一律不显示
+            ('{"event": "alice", "action": "approve"}', '-'),
+            ('2026-10-21 10:38:02,317 INFO youju.alice x', 'INFO'),
+            ('BobError: x OperationalError y', 'OperationalError'),
+            ('{"event": [], "action": {}}', '-'),
             (f'2026-10-21 04:00:00,001 WARNING youju.backup: 备份失败 {UID}', 'WARNING youju.backup'),
             (f'2026-10-21 04:00:00,001 ERROR {UID}: x', 'ERROR'),
             ('INFO:     Application startup complete.', 'INFO uvicorn'),
             (f'Traceback (most recent call last):\n  File "a.py"\nsqlalchemy.exc.OperationalError: (2003, "on {IP4}")', 'Traceback OperationalError'),
-            ('{"event": "alert-probe", "configured": true}', 'alert-probe'),
+            ('{"role": "api", "configured": true, "state": "not_tested"}', '-'),
             (f'{{"event": "{UID}", "action": "b{UID}"}}', '-'),
             (f'工具任务：processed 3 {IP4}', '-'),
         ]
@@ -136,8 +147,11 @@ class SummaryTests(unittest.TestCase):
                 self.assertEqual(SHOW.summary(result(content)), f'{TS} youju-api-054 {want}')
 
     def test_time_and_container_must_look_right(self):
-        self.assertEqual(SHOW.summary(result('x', container=UID)), f'{TS} ? -')
-        self.assertEqual(SHOW.summary(result('x', container='youju-api-054-6d8f7c9b5-x2k4q')), f'{TS} youju-api-054-6d8f7c9b5-x2k4q -')
+        # 容器名按减号分段，只留 youju、api、admin 和 4 位以内的版本号
+        for name, shown in [(UID, '*'), ('youju-api-054-6d8f7c9b5-x2k4q', 'youju-api-054-*-*'), ('prod-env-1300000000', '*-*-*'),
+                            ('api-067-abcde', 'api-067-*'), ('alice-admin', '*-admin'), ('Api-067', '?'), (['api'], '?')]:
+            with self.subTest(name=name):
+                self.assertEqual(SHOW.summary(result('x', container=name)), f'{TS} {shown} -')
         self.assertEqual(SHOW.summary(result('x', ts=f'{IP4} {UID}')), '? youju-api-054 -')
         self.assertEqual(SHOW.summary(result('x', ts='2026-10-19T11:00:00')), '2026-10-19T11:00:00 youju-api-054 -')
         self.assertEqual(SHOW.summary(f'not a record {IP4}'), '? ? -')
@@ -171,7 +185,15 @@ class SummaryTests(unittest.TestCase):
                 run = run_show_file(self, {'error': sample, 'code': sample, 'name': sample, 'ret': sample, 'message': sample})
                 self.assertEqual(run.returncode, 1)
                 assert_clean(self, run.stdout + run.stderr)
+        # 错误码、异常名只认固定名单：格式对、却不在名单里的（可能是人名）不显示；腾讯云错误码只显示第一段
+        for code, name, want in [('Alice', 'BobError', '# 出错：api'), ('InvalidParameter.Alice', 'alice', '# 出错：api，code=InvalidParameter'),
+                                 ('ABC', 'Exception', '# 出错：api，name=Exception'), ('ERR_INVALID_ARG_TYPE', 'TypeError', '# 出错：api，code=ERR_INVALID_ARG_TYPE，name=TypeError')]:
+            with self.subTest(code=code):
+                run = run_show_file(self, {'error': 'api', 'code': code, 'name': name})
+                self.assertEqual(run.stdout.strip(), want + '；出错原文在结果文件里，这里不显示')
         run = run_show_file(self, {'error': 'agent', 'ret': True, 'code': UID, 'name': OPENID})
+        self.assertEqual(run.stdout.strip(), '# 出错：agent；出错原文在结果文件里，这里不显示')
+        run = run_show_file(self, {'error': 'agent', 'ret': 13812345678})
         self.assertEqual(run.stdout.strip(), '# 出错：agent；出错原文在结果文件里，这里不显示')
 
     def test_summary_line_values_are_checked(self):
@@ -187,19 +209,20 @@ class SummaryTests(unittest.TestCase):
     def test_keywords_find_lines_without_showing_them(self):
         data = {'count': 3, 'listOver': True, 'pages': 1, 'results': [
             result(f'工具任务：processed 3 {IP4}'), result('INFO:     Application startup complete.'),
-            result(access_line(path='/api/v1/search')), result('{"event": "alert-probe", "configured": true}')]}
+            result(access_line(path='/api/v1/search')), result('{"role": "api", "configured": true, "state": "not_tested"}')]}
         run = run_show_file(self, data, '工具任务')
         self.assertEqual(run.stdout.splitlines()[1:], [f'{TS} youju-api-054 -', '# 含关键词的有 1 行'])
         run = run_show_file(self, data, 'Application startup complete', '"configured": true')
-        self.assertEqual(run.stdout.splitlines()[1:], [f'{TS} youju-api-054 INFO uvicorn', f'{TS} youju-api-054 alert-probe', '# 含关键词的有 2 行'])
+        self.assertEqual(run.stdout.splitlines()[1:], [f'{TS} youju-api-054 INFO uvicorn', f'{TS} youju-api-054 -', '# 含关键词的有 2 行'])
         self.assertEqual(run_show_file(self, data, 'not_configured').stdout.splitlines()[-1], '# 含关键词的有 0 行')
-        # 完整的 IP、用户编号、openid 不能当关键词：按人查由创始人在控制台自己查
-        for key in (IP4, IP6, '::ffff:203.0.113.9', UID, OPENID, f'from {IP4}.', 'x' + UID):
+        # 关键词里不能有数字（IP、用户编号都带数字：拿重叠的片段按条数一段段试，试不出来），完整的标识更不行
+        for key in (IP4, IP6, '::ffff:203.0.113.9', UID, OPENID, f'from {IP4}.', 'x' + UID, f'{IP4}:80', f'[{IP6}]:443',
+                    UID[:15], UID[1:], '203.0.', '9f3a', 'api-067', '\uff11', 'abcd:ef::', 'abcdefabcdefabcd'):
             with self.subTest(key=key):
                 run = run_show_file(self, data, '工具任务', key)
                 self.assertEqual(run.returncode, 2)
-                self.assertEqual(run.stdout.strip(), '# 完整的 IP、用户编号、openid 不能当关键词：按人查由创始人在云托管控制台的日志页自己查')
-        for key in ('203.0.', '9f3a', 'oTES', 'v1/search'):
+                self.assertEqual(run.stdout.strip(), '# 关键词里不能有数字，也不能是 IP、用户编号、openid：按人查由创始人在云托管控制台的日志页自己查')
+        for key in ('Application startup complete', '工具任务', '"configured": true', 'not_configured', 'oTES', 'advisor'):
             with self.subTest(key=key):
                 self.assertEqual(run_show_file(self, data, key).returncode, 0)
 
@@ -225,8 +248,55 @@ class SummaryTests(unittest.TestCase):
         run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py')], capture_output=True, text=True)
         self.assertEqual(run.returncode, 2)
         self.assertEqual(run_show_file(self, [1, 2]).stdout.strip(), '# 这不是 cloud-logs.cjs 写下的结果文件')
+        for results in (1, 'abc', {'a': 1}, None):
+            with self.subTest(results=results):
+                run = run_show_file(self, {'count': 0, 'listOver': True, 'pages': 1, 'results': results})
+                self.assertEqual((run.returncode, run.stderr, len(run.stdout.splitlines())), (0, '', 1))
         run = subprocess.run([sys.executable, str(TEAM / 'cloud_logs_show.py'), '/nonexistent/x.json'], capture_output=True, text=True)
         self.assertEqual((run.returncode, run.stdout.strip()), (1, '# 结果文件读不了（FileNotFoundError）'))
+
+
+class AllowlistTests(unittest.TestCase):
+    """固定名单要跟得上后端代码：后端新加了接口单词、记录器、event、异常类，这里会失败，提醒把名单补上。"""
+    SRC = REPO / 'backend/src/youju'
+
+    def sources(self):
+        import re
+        for path in self.SRC.rglob('*.py'):
+            yield path, path.read_text(encoding='utf-8'), re
+
+    def test_route_words(self):
+        words = set()
+        for _, text, re in self.sources():
+            for rx in (r'@\w+\.(?:get|post|put|delete|patch|api_route|websocket)\(\s*"([^"]*)"',
+                       r'(?:APIRouter|include_router)\([^)]*prefix\s*=\s*"([^"]*)"', r'\.mount\(\s*"([^"]*)"'):
+                for route in re.findall(rx, text, re.S):
+                    words |= {seg for seg in route.split('/') if seg and not seg.startswith('{')}
+        self.assertTrue(words)
+        self.assertEqual(words - SHOW._ROUTE_WORDS, set())
+
+    def test_logger_names(self):
+        names = set()
+        for path, text, re in self.sources():
+            names |= set(re.findall(r'getLogger\("([^"]+)"\)', text))
+            if 'getLogger(__name__)' in text:
+                names.add('.'.join(path.relative_to(self.SRC.parent).with_suffix('').parts))
+        self.assertTrue(names)
+        self.assertEqual(names - SHOW._LOGGERS, set())
+
+    def test_event_names(self):
+        events = set()
+        for _, text, re in self.sources():
+            events |= set(re.findall(r'"event":\s*"([^"]+)"', text))
+        self.assertTrue(events)
+        self.assertEqual(events - SHOW._EVENTS, set())
+
+    def test_exception_names(self):
+        names = set()
+        for _, text, re in self.sources():
+            names |= set(re.findall(r'^class ([A-Z][A-Za-z]*(?:Error|Exception|Warning))\(', text, re.M))
+        self.assertTrue(names)
+        self.assertEqual(names - SHOW._EXCEPTIONS, set())
 
 
 @unittest.skipUnless(shutil.which('node'), '需要 node')
@@ -355,6 +425,16 @@ class CloudLogsTests(unittest.TestCase):
                 self.assert_nothing_personal(run.stdout + run.stderr)
         for p in inside:
             self.assertFalse(p.exists(), p)
+        # 查询串里不能有数字，也不能像 IP、用户编号、openid：免得按人取回日志再看摘要
+        for query in (IP4, UID, OPENID, 'abcd::ef', 'deadbeefdeadbeef', 'api-067', f'ip:{IP4}'):
+            with self.subTest(query=query):
+                run = self.run_logs([self.page([result(access_line())], None, True)], '--out', str(self.out), *window[:3], query)
+                self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertIn('查询串里不能有数字', run.stdout)
+        run = self.run_logs([self.page([result(access_line())], None, True)], '--out', str(self.out), *window[:3], 'cache-attachments')
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        (self.tmp / 'calls.txt').unlink()
         # 用法错误的提示里也是查看脚本的绝对路径
         run = self.run_logs([self.page([], None, True)], *window)
         self.assertIn(f"python3 '{TEAM / 'cloud_logs_show.py'}' <结果文件>", run.stdout)

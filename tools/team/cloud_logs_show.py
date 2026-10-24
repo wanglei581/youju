@@ -7,17 +7,20 @@
 传输（个人信息保护影响评估第六节（二）第 6 条、（三）第 7 条）。"认出 IP、编号再遮掉"总有漏的写法（转义换行
 夹在中间、%2e 编码、紧贴下划线、前导数字……），所以只显示下面这些格式固定、带不出个人信息的字段，别的一律不显示：
 - 时间：形如 2026-10-19 11:00:00(.000) 的才显示，否则显示 ?
-- 容器：小写字母、数字、减号组成、又不带 16 位十六进制串的容器名才显示，否则 ?
-- 访问日志（JSON，event 是 access）：方法（GET、POST 等七种之一）、路径（去掉 ? 和 # 后面；每一段只留小写英文
-  单词、v1 这种版本号、不超过 10 位的纯数字，别的段换成 *）、状态码（100–599 的整数）、耗时（毫秒）
-- 其他日志的类别：日志级别和记录器名（只认 youju、uvicorn、sqlalchemy 等几个已知的记录器，如 WARNING
-  youju.access_log；uvicorn 的 INFO: 记成 INFO uvicorn）、JSON 日志里 event、action 的名字（只认小写英文单词）、
-  异常类名（以 Error、Exception、Warning 结尾的英文类名）、Traceback
-- 出错文件：出错类别（api / agent / exception）、错误码和异常名（英文标识符才显示）、ret（整数才显示）
+- 容器：小写字母、数字、减号组成的才看，按减号分段，只留 youju、api、admin 和不超过 4 位的数字（版本号），
+  别的段换成 *（环境号这类不显示）；不是这种格式的显示 ?
+- 访问日志（JSON，event 是 access）：方法（GET、POST 等七种之一）、路径（去掉 ? 和 # 后面；每一段只留后端接口里
+  出现过的固定单词，编号和别的段都换成 *）、状态码（100–599 的整数）、耗时（毫秒）
+- 其他日志的类别：日志级别；记录器名、JSON 日志里的 event、异常类名都只认下面列出的固定名字（后端代码里有的；
+  后端新加了，自测会提醒补上），不认识的不显示；uvicorn 的 INFO: 记成 INFO uvicorn；Traceback
+- 出错文件：出错类别（api / agent / exception）、错误码（Node 的系统错误码，或腾讯云的公共错误码——只显示第一段）、
+  异常名（上面那张异常名单和 JavaScript 自带的几种）、ret（绝对值不超过 99999 的整数才显示）
 日志正文、出错原文只在本机结果文件里，要看由创始人在本机或云托管控制台的日志页看。
-关键词在正文里找；完整的 IP、16 位用户编号、28 位 openid 不能当关键词（按人查由创始人在控制台自己查）。
+关键词在正文里找，只告诉你哪几行命中、几条。关键词里不能有数字：IP、用户编号都带数字，这样就没法拿关键词一段段
+试出来；完整的 IP、用户编号、openid 更不行。按人查由创始人在云托管控制台的日志页自己查。
 """
 
+import builtins
 import ipaddress
 import json
 import re
@@ -26,12 +29,44 @@ import sys
 _TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?")
 _CONTAINER = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-# 纯数字最多 10 位：11 位的手机号这类不会当成编号显示出来
-_SEGMENT = re.compile(r"[a-z]+(?:[-_][a-z]+)*|v\d{1,2}|\d{1,10}")
-# event、action 只认小写英文单词（不带数字：小写的用户编号也混不进来）
-_NAME = re.compile(r"[a-z]+(?:[-_][a-z]+){0,5}")
-_LOGGER = re.compile(r"(?:youju|uvicorn|sqlalchemy|httpx|httpcore|alembic|apscheduler|asyncio|fastapi|starlette)(?:\.[a-z_]+){0,4}")
-_IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
+# 下面几组固定名字都是后端代码里有的（自测会对照后端代码，新加了没补上就失败）。格式检查拦不住人名这类，所以只认列出的
+# 接口路径里的固定单词（编号这类参数不在里面）
+_ROUTE_WORDS = frozenset("""
+admin advisor agreement api approve approved attachments audit audit-ok batch calendar cancel candidate capabilities change
+check conditions confirm content count coverage data deadline-clues deadlines delete documents download drop edit embed.js
+events export exports feedback fields file follows generate handle health history home import invoice invoices issue issues
+items job-runs kind kind-suggest kind-suggestions kinds lists lookup me members mode new orders overview pay preview products
+profiles quality-sample recent refund regenerate reject remove reopen reports repost-groups reset restore reversed review
+reviews reward rewards search seen snapshot sources split stats status subscriptions takedown tasks trial unchange undo
+unhandle v1 version weekly withdraw
+""".split())
+_CONTAINER_WORDS = frozenset({"youju", "api", "admin"})
+_LOGGERS = frozenset("""
+youju youju.access youju.access_log youju.advisor youju.ai.heartbeat youju.alerts youju.api youju.api.attachments
+youju.api.contact youju.api.pay youju.attachments youju.audit youju.backup youju.conditions youju.crawler.detail_service
+youju.crawler.service youju.deadline_clues youju.digest youju.jobs youju.link_check youju.lists.service youju.notify
+youju.payments youju.weekly youju.xpay httpx uvicorn uvicorn.error uvicorn.access sqlalchemy.engine.Engine
+alembic.runtime.migration
+""".split())
+_EVENTS = frozenset({"access", "admin", "admin_auth_failed"})
+# Python 自带的异常、项目自己定义的、后端用到的库里的
+_EXCEPTIONS = frozenset(n for n, v in vars(builtins).items() if isinstance(v, type) and issubclass(v, BaseException)) | frozenset("""
+AIError BackupError CompareInputError DeleteCopiesError TrialError XPayError HTTPException RequestValidationError
+ValidationError TransportError TimeoutException ConnectError HTTPError HTTPStatusError RequestError RemoteProtocolError
+DecodingError JSONDecodeError SQLAlchemyError OperationalError IntegrityError ProgrammingError DataError InterfaceError
+InternalError DatabaseError NotSupportedError PendingRollbackError StatementError ArgumentTypeError
+""".split())
+# 出错文件里的错误码只认两种：Node 的系统错误码，和腾讯云接口的错误码（第一段是公共错误码里的那几种）
+_NODE_CODE = re.compile(r"E[A-Z]{2,15}|ERR_[A-Z_]{2,40}|MODULE_NOT_FOUND")
+_CLOUD_CODE_HEADS = frozenset("""
+ActionOffline AuthFailure DryRunOperation FailedOperation InternalError InvalidAction InvalidParameter
+InvalidParameterValue InvalidRequest IpInBlacklist IpNotInWhitelist LimitExceeded MissingParameter NoSuchProduct
+NoSuchVersion OperationDenied RequestLimitExceeded RequestSizeLimitExceeded ResourceInUse ResourceInsufficient
+ResourceNotFound ResourceUnavailable ResponseSizeLimitExceeded ServiceUnavailable UnauthorizedOperation
+UnknownParameter UnsupportedOperation UnsupportedProtocol UnsupportedRegion
+""".split())
+_CLOUD_CODE = re.compile(r"[A-Z][A-Za-z]{1,40}(?:\.[A-Z][A-Za-z]{1,40}){0,3}")
+_JS_ERRORS = frozenset({"Error", "TypeError", "SyntaxError", "RangeError", "ReferenceError", "EvalError", "URIError", "AggregateError"})
 # 行首的日志前缀：程序自己的（时间 级别 记录器[:]）和 uvicorn 的（级别:）
 _PY_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+?):? ")
 _UVICORN = re.compile(r"(DEBUG|INFO|WARNING|ERROR|CRITICAL):\s")
@@ -58,7 +93,13 @@ def _path(value):
     if not value.startswith("/"):
         return "?"
     parts = value[1:].split("/")[:12]
-    return "/" + "/".join(p if _SEGMENT.fullmatch(p) else "*" for p in parts)
+    return "/" + "/".join(p if p == "" or p in _ROUTE_WORDS else "*" for p in parts)
+
+
+def _container(name):
+    if not isinstance(name, str) or not _CONTAINER.fullmatch(name):
+        return "?"
+    return "-".join(t if t in _CONTAINER_WORDS or re.fullmatch(r"\d{1,4}", t) else "*" for t in name.split("-"))
 
 
 def _number(value, low, high):
@@ -69,8 +110,8 @@ def _number(value, low, high):
 
 
 def _event(obj):
-    names = [obj.get(k) for k in ("event", "action")]
-    return "/".join(n for n in names if isinstance(n, str) and _NAME.fullmatch(n))
+    event = obj.get("event")
+    return event if isinstance(event, str) and event in _EVENTS else ""
 
 
 def _category(content, obj):
@@ -79,7 +120,7 @@ def _category(content, obj):
     m = _PY_PREFIX.match(content)
     if m:
         words.append(m.group(1))
-        if _LOGGER.fullmatch(m.group(2)):
+        if m.group(2) in _LOGGERS:
             words.append(m.group(2))
         body = content[m.end():]
         if obj is None and body.startswith("{"):
@@ -96,7 +137,7 @@ def _category(content, obj):
         words.append("Traceback")
     seen = []
     for name in _EXCEPTION.findall(content):
-        if name not in seen:
+        if name in _EXCEPTIONS and name not in seen:
             seen.append(name)
         if len(seen) == 3:
             break
@@ -115,14 +156,15 @@ def summary(record):
     if isinstance(outer, dict):
         tag = outer.get("__TAG__")
         name = tag.get("container_name") if isinstance(tag, dict) else None
-        container = name if isinstance(name, str) and _CONTAINER.fullmatch(name) and not _HEX16.search(name) else "?"
+        container = _container(name)
         inner = outer.get("__CONTENT__")
         content = inner if isinstance(inner, str) else ""
         obj = _parse(inner) if isinstance(inner, str) else inner
     else:
         obj = None
     if isinstance(obj, dict) and obj.get("event") == "access":
-        method = obj.get("method") if obj.get("method") in _METHODS else "?"
+        method = obj.get("method")
+        method = method if isinstance(method, str) and method in _METHODS else "?"
         fields = f"{method} {_path(obj.get('path'))} {_number(obj.get('status'), 100, 599)} {_number(obj.get('ms'), 0, 10**7)}ms"
         return f"{ts} {container} {fields}"
     return f"{ts} {container} {_category(content, obj)}"
@@ -140,8 +182,9 @@ def _text(record):
 
 
 def bad_keyword(key):
-    """完整的 IP、16 位十六进制串（用户编号的格式）、o 开头的 28 位标识（openid）不能当关键词。"""
-    if _HEX16.search(key) or _OPENID.search(key):
+    """关键词里不能有数字（IP、用户编号都带数字，没法一段段试出来）；不带数字的完整 IPv6、16 位十六进制串、
+    o 开头的 28 位标识（openid）也不行。"""
+    if any(ch.isdigit() for ch in key) or _HEX16.search(key) or _OPENID.search(key):
         return True
     for run in _ADDR_RUN.findall(key):
         for cand in (run, run.strip(".:")):
@@ -154,7 +197,8 @@ def bad_keyword(key):
 
 
 def lines(data, keys=()):
-    for record in data.get("results") or []:
+    results = data.get("results")
+    for record in results if isinstance(results, list) else []:
         if keys and not any(k in _text(record) for k in keys):
             continue
         yield summary(record)
@@ -166,7 +210,7 @@ def main(argv):
         return 2
     keys = argv[2:]
     if any(bad_keyword(k) for k in keys):
-        print("# 完整的 IP、用户编号、openid 不能当关键词：按人查由创始人在云托管控制台的日志页自己查")
+        print("# 关键词里不能有数字，也不能是 IP、用户编号、openid：按人查由创始人在云托管控制台的日志页自己查")
         return 2
     try:
         with open(argv[1], encoding="utf-8") as f:
@@ -180,11 +224,16 @@ def main(argv):
     if "error" in data:
         kind = data.get("error") if data.get("error") in ("api", "agent", "exception") else "?"
         parts = [f"# 出错：{kind}"]
-        for key in ("code", "name"):
-            value = data.get(key)
-            if isinstance(value, str) and _IDENT.fullmatch(value) and not bad_keyword(value):
-                parts.append(f"{key}={value}")
-        if isinstance(data.get("ret"), int) and not isinstance(data.get("ret"), bool):
+        code, name = data.get("code"), data.get("name")
+        if isinstance(code, str) and _NODE_CODE.fullmatch(code):
+            parts.append(f"code={code}")
+        elif isinstance(code, str) and _CLOUD_CODE.fullmatch(code) and code.split(".")[0] in _CLOUD_CODE_HEADS:
+            # 只显示第一段（公共错误码）；后面那段是各接口自己的细分，完整的在结果文件里
+            parts.append(f"code={code.split('.')[0]}")
+        if isinstance(name, str) and (name in _EXCEPTIONS or name in _JS_ERRORS):
+            parts.append(f"name={name}")
+        # ret 是接口代理的小整数；太大的（手机号这类）不显示
+        if isinstance(data.get("ret"), int) and not isinstance(data.get("ret"), bool) and -99999 <= data["ret"] <= 99999:
             parts.append(f"ret={data['ret']}")
         print("，".join(parts) + "；出错原文在结果文件里，这里不显示")
         return 1
