@@ -47,9 +47,9 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.equal(JSON.stringify(inspect(x)).includes('private@example.test'),false);
 });
 
-test('完整候选严格限定 26 页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助），不能借此放宽旧版本或提交审核',()=>{
+test('完整候选严格限定 27 页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助、本期清单页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-candidate',mode:'prepare'});
  assert.equal(r.ok,true);assert.equal(r.readyToSubmit,false);
@@ -62,7 +62,7 @@ test('完整候选严格限定 26 页（含加量体验确认页、购买页、�
  assert.equal(inspect({...x,profile:'complete-candidate',mode:'submit'}).ok,false);
  // 奖励等不在范围的页面、缺了购买页或订单页、子包都不行
  for(const change of [y=>y.app.pages.push('pages/rewards/index'),y=>y.app.pages.pop(),y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/pass/index');},
-   y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/advisor-trial/index');},y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/help/index');},
+   y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/advisor-trial/index');},y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/help/index');},y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/digest/index');},
    // AI 板块（D-075）：底栏第 5 项必须是板块首页、放在最后；没有也不行
    y=>{y.app.tabBar.list.pop();},y=>{y.app.tabBar.list.unshift(y.app.tabBar.list.pop());},y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
@@ -70,7 +70,7 @@ test('完整候选严格限定 26 页（含加量体验确认页、购买页、�
 });
 test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
  const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-release',mode:'submit'});
  // 备案号、邮箱、协议都齐：静态提审检查可以通过（工具说明复核、付费协议、模板只提示）；静态结果仍不授予提交权限

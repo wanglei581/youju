@@ -31,6 +31,8 @@ const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
 // AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
 // 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
 const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
+// 公众号"本期清单"页（公众号方案 PR #287 第 3 件事，10/18 创始人同意）：从公众号周报和"我的 → 本周周报"进入
+const GZH_PAGES = ['digest'].map(p => `pages/${p}/index`);
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -58,11 +60,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES, GZH_PAGES) : []);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整版26页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助）；奖励及子包不属于本次范围');
+  '核对历史首发14页、AI版19页或完整版27页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助、本期清单页）；奖励及子包不属于本次范围');
   const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
   const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
   add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',

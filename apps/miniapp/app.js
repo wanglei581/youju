@@ -4,6 +4,8 @@ App({
     statusBarHeight: 20,
     navHeight: 44,
     menuWidth: 96,
+    // 首页扫码关注公众号条（PR #287）：配了公众号原始 ID 才放（utils/official-account.js）
+    followBar: false,
   },
 
   onLaunch() {
@@ -14,6 +16,11 @@ App({
       Object.assign(this.globalData, require('./utils/nav.js').navMetrics(wx.getWindowInfo(), wx.getMenuButtonBoundingClientRect()));
     } catch (e) {
       // 取不到时用默认值，页面照常显示
+    }
+    try {
+      this.globalData.followBar = require('./utils/official-account.js').showBar();
+    } catch (e) {
+      // 读不到配置就不放关注条
     }
     this.watchUpdate();
   },
