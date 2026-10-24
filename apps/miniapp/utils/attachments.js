@@ -5,7 +5,8 @@ const api = require('./api.js');
 
 const DIR = 'attachments';
 const KEEP = 3;
-const NOTE_COPIES = '附件副本来自原网站，以原网站为准';
+// 不写"以原网站为准"：像是要用户出去看（10/23 审核退回"复制链接去浏览器"）
+const NOTE_COPIES = '附件在本小程序阅读，以发文机关公布的文本为准';
 const NOTE_ORIGINAL = '阅读页会显示附件内容及处理状态';
 // 旧副本下载限制的原因（不作为原生阅读结论）。
 const REASONS = {

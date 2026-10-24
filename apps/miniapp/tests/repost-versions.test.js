@@ -97,11 +97,10 @@ test('首页、搜索、名单页的请求都带 group=1（按组折叠、按组
   assert.equal(urls[2].searchParams.get('q'), '视听');
 });
 
-test('列表行：组的主条目写“另有 N 个转发版本”，点开逐个列出，各版本打开自己的详情、复制自己的原文链接', () => {
+test('列表行：组的主条目写“另有 N 个转发版本”，点开逐个列出，各版本打开自己的详情（不复制链接，10/23 审核退回）', () => {
   const opened = [];
-  const copied = [];
   const row = load('components/doc-row/index.js', {
-    '../../utils/format.js': format, '../../utils/copy.js': { copyLink: (url) => copied.push(url) }, '../../utils/repost.js': repost,
+    '../../utils/format.js': format, '../../utils/repost.js': repost,
   }, { wx: { navigateTo: ({ url }) => opened.push(url) } });
   const call = (name, ...args) => row.methods[name].call(row, ...args);
   row.data.doc = { id: '11', kind: '申报通知', title: '关于组织开展2026年度视听系统典型案例征集工作的通知', group: GROUP };
@@ -112,8 +111,8 @@ test('列表行：组的主条目写“另有 N 个转发版本”，点开逐�
   assert.equal(row.data.groupOpen, true);
   call('openVersion', event({ id: '12' }));
   assert.deepEqual(opened, ['/pages/detail/index?id=12']);
-  call('copyVersion', event({ url: 'https://gxt.fujian.gov.cn/2.html' }));
-  assert.deepEqual(copied, ['https://gxt.fujian.gov.cn/2.html']);
+  assert.equal(row.methods.copyVersion, undefined);
+  assert.equal(row.methods.copy, undefined);
   // 勾选导出时点行不打开
   row.data.selecting = true;
   call('openVersion', event({ id: '13' }));
@@ -129,18 +128,19 @@ test('列表行：组的主条目写“另有 N 个转发版本”，点开逐�
   assert.match(template, /<t-icon name="{{groupOpen \? 'chevron-up' : 'chevron-down'}}"/);
   assert.match(template, /wx:for="{{doc.group.items}}"[^>]*catchtap="openVersion"/);
   assert.match(template, /data-id="{{item.id}}" catchtap="openVersion"/);
+  assert.doesNotMatch(template, /tap="copy(Version)?"|name="copy"|复制/);
+  assert.doesNotMatch(read('components/doc-row/index.js'), /copyLink|setClipboardData/);
 });
 
 test('详情页：各版本的截止按版本列出，点别的版本打开它的详情，本页不跳转', async () => {
   const opened = [];
-  const copied = [];
   const doc = {
     id: '13', kind: '申报通知', tags: ['申报通知'], title: '福建省工业和信息化厅等六部门关于开展2026年度视听系统典型案例征集工作的通知',
     deadline: null, deadline_state: 'unverified', points: [], attachments: [], repost: REPOST,
   };
   const page = load('pages/detail/index.js', {
     '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
-    '../../utils/format.js': format, '../../utils/copy.js': { copyLink: (url) => copied.push(url) }, '../../utils/subscribe.js': { remindOpen: () => true },
+    '../../utils/format.js': format, '../../utils/subscribe.js': { remindOpen: () => true },
     '../../utils/repost.js': repost, '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
@@ -156,14 +156,13 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   assert.deepEqual(opened, []);
   page.openVersion(event({ id: '12', current: false }));
   assert.deepEqual(opened, ['/pages/detail/index?id=12']);
-  page.copyVersion(event({ url: 'https://gyxxh.tj.gov.cn/1.html' }));
-  assert.deepEqual(copied, ['https://gyxxh.tj.gov.cn/1.html']);
+  assert.equal(page.copyVersion, undefined);
 
   const template = read('pages/detail/index.wxml');
   assert.match(template, /wx:if="{{versions.length}}" class="card ver-card"/);
   assert.match(template, /各版本的截止/);
   assert.match(template, /data-current="{{item.current}}" bindtap="openVersion"/);
-  assert.match(template, /data-url="{{item.url}}" catchtap="copyVersion"/);
+  assert.doesNotMatch(template, /copyVersion|复制原文链接/);
 });
 
 test('首页、搜索：按组计数时写明另有几个转发版本未重复计', () => {

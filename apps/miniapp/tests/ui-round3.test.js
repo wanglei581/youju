@@ -118,7 +118,7 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
     ['2', '在小程序内查看结果，需要保存时再选 Excel 或 Word'],
     ['3', '导出后可转发给同事或客户'],
   ]);
-  assert.match(card[1], /<view class="pc-tip">在电脑上保存：转发到“文件传输助手”，在电脑版微信打开<\/view>/);
+  assert.match(card[1], /<view class="pc-tip">导出不是必须的：结果在小程序内就能看完。需要在电脑上留存时，可把文件转发到电脑版微信。<\/view>/);
 
   // 有记录时照常显示列表
   const filled = filesPage([{ id: 'a', format: 'xlsx', label: '高企名单', count: 3, size: 2048, at: '2026-10-06T08:00:00+08:00', path: '/x' }]);
