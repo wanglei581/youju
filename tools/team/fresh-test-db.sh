@@ -4,7 +4,7 @@
 # 用法：tools/team/fresh-test-db.sh <库名> [--replace] [--file 快照文件] [--snapshot-code]
 #   库名          youju_ 开头，只用小写字母、数字、下划线，例如 youju_pr301。不能是 youju（本机核对台的库），
 #                 也不能 youju_test 开头（pytest 会把它整个删掉重建）。
-#   --replace     库已存在时删掉重建（只动这一个库）。
+#   --replace     库已存在时先删掉再重建（只动这一个库；中途失败的话原来的库也没了）。
 #   --file        不下载，直接用这个快照文件（离线或复现时用）。
 #   --snapshot-code  总是用快照说明行里的线上代码版本建表、导入（默认只在迁移版本不同时才这样做）。
 #
@@ -15,11 +15,14 @@
 #   3. 当前代码的最新迁移版本和快照相同，就用当前代码建表、导入；不同，就临时检出快照对应的线上代码
 #      （说明行的 code_revision）来建表、导入，用完删掉。
 #   4. 再用当前代码把库迁移到最新。当前代码比线上旧（没有线上的迁移版本）就在建库前停下，提示先合最新 origin/main。
-# 最后一行输出库的连接地址。测试窗口名写上脚本打印的"数据MM/DD"，给创始人看时说明数据日期（AGENTS.md 第 9 条）。
+#   中途失败会删掉建了一半的库，修好原因后直接重跑。
+# 前提：本机已运行过 wxcloud login；本机 MySQL 在跑（没在跑就在 youju-worktrees/mysql 里启动）。
+# 最后一行输出库的连接地址：把本机后台的 YOUJU_DATABASE_URL 设成它再启动后台。测试窗口名写上脚本打印的
+# "数据MM/DD"，给创始人看时说明数据日期（AGENTS.md 第 9 条）。
 set -euo pipefail
 
 usage() {
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -69,9 +72,23 @@ SERVER=${YOUJU_LOCAL_MYSQL:-mysql+pymysql://root@127.0.0.1:33306}
 URL="$SERVER/$NAME?charset=utf8mb4"
 DIR=${YOUJU_PUBLIC_DIR:-$HOME/youju-worktrees/public-data}
 TMP=""
+CREATED=0
 LOG=$(mktemp "${TMPDIR:-/tmp}/youju-fresh-db.XXXXXX")
 cleanup() {
+  local code=$?
   rm -f "$LOG"
+  if [ "$code" != 0 ] && [ "$CREATED" = 1 ]; then
+    # 建了一半的库删掉，下次直接重跑（只删这个脚本刚建的库）
+    py "$BACKEND" - "$SERVER" "$NAME" << 'PY' > /dev/null 2>&1 || true
+import sys
+from sqlalchemy import create_engine, text
+engine = create_engine(sys.argv[1] + "/?charset=utf8mb4")
+with engine.begin() as conn:
+    conn.execute(text(f"DROP DATABASE IF EXISTS `{sys.argv[2]}`"))
+engine.dispose()
+PY
+    echo "没建成，已删掉建了一半的库 $NAME" >&2
+  fi
   if [ -n "$TMP" ]; then
     git -C "$REPO" worktree remove --force "$TMP/code" > /dev/null 2>&1 || true
     rm -rf "$TMP"
@@ -139,12 +156,17 @@ with engine.begin() as conn:
     conn.execute(text(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"))
 engine.dispose()
 PY
+CREATED=1
 
 # 4. 选建表、导入用的代码：迁移版本相同就用当前代码，否则临时检出线上那一版
 CODE_DIR="$BACKEND"
 if [ "$FORCE_CODE" = 1 ] || [ "$HEADS" != "$REV" ]; then
   if [ "$CODE" = "-" ]; then
-    echo "快照没写线上代码版本，当前代码的迁移版本（$HEADS）又和快照（$REV）不同，没法导入" >&2
+    if [ "$FORCE_CODE" = 1 ]; then
+      echo "快照没写线上代码版本，没法按 --snapshot-code 用线上代码导入；去掉这个参数再试" >&2
+    else
+      echo "快照没写线上代码版本，当前代码的迁移版本（$HEADS）又和快照（$REV）不同，没法导入" >&2
+    fi
     exit 1
   fi
   git -C "$REPO" cat-file -e "$CODE^{commit}" 2> /dev/null || git -C "$REPO" fetch -q origin
@@ -197,4 +219,5 @@ fi
 
 echo "本机测试库 $NAME 已建好：线上公开内容 ${STAMP/_/ }（北京时间），不含用户数据。" >&2
 echo "测试窗口名请带上\"数据$DAY\"，例如\"有据-测试（Claude·#PR号 提交号·数据$DAY）\"。" >&2
+CREATED=0
 echo "$URL"

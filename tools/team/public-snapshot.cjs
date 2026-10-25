@@ -2,7 +2,8 @@
 // （public-snapshots/youju-public-日期.jsonl.gz：只有通知、正文、附件文字、名单等公开内容，不含用户数据、
 // 密钥和日志，见 backend/src/youju/public_snapshot.py）。只认这个目录、这种文件名；整库备份
 // （backups/，含用户数据）和其他目录一概不读。
-// 用法：node tools/team/public-snapshot.cjs <保存目录> [环境 ID]
+// 用法：node tools/team/public-snapshot.cjs <保存目录> [环境 ID]（不给就用 YOUJU_CLOUD_ENV，再不行用线上环境）
+// 前提：本机已运行过 wxcloud login（创始人开通的 CLI 密钥）。
 // 最后一行输出本机文件路径；同名、同大小的已下载过就不再下载；保存目录里只留最近 3 份。
 // wxcloud CLI 的安装位置可用 WXCLOUD_CLI_DIR 覆盖（默认 npm 全局包 ~/.local/lib/node_modules/@wxcloud/cli）。
 const fs = require('fs');
@@ -16,7 +17,8 @@ const LOCAL = /^youju-public-\d{8}\.jsonl\.gz$/;
 const KEEP_LOCAL = 3;
 
 async function main() {
-  const [dir, envId = 'prod-d5getqftefb61fc92'] = process.argv.slice(2);
+  const [dir, given] = process.argv.slice(2);
+  const envId = given || process.env.YOUJU_CLOUD_ENV || 'prod-d5getqftefb61fc92';
   if (!dir) {
     console.error('用法：node tools/team/public-snapshot.cjs <保存目录> [环境 ID]');
     process.exit(2);
@@ -32,12 +34,20 @@ async function main() {
   const envs = await CloudAPI.tcbDescribeWxCloudBaseRunEnvs({ allRegions: true });
   const env = (envs.envList || []).find((e) => e.envId === envId);
   const storage = env && env.storages && env.storages[0];
-  if (!storage) throw new Error(`环境 ${envId} 没有对象存储，或本机 wxcloud 没登录`);
+  if (!storage) throw new Error(`没找到环境 ${envId} 的对象存储：本机 wxcloud 登录了吗（wxcloud login）？`);
   const cos = new COS({ getAuthorization: await getAuthorizationThunk(storage) });
   const where = { Bucket: storage.bucket, Region: storage.region };
 
-  const listed = await cos.getBucket({ ...where, Prefix: PREFIX, MaxKeys: 100 });
-  const items = (listed.Contents || []).filter((item) => NAME.test(item.Key));
+  // 按页列完（一页最多 1000 个，平时只有七八个）
+  const items = [];
+  let marker;
+  for (;;) {
+    const page = await cos.getBucket({ ...where, Prefix: PREFIX, MaxKeys: 1000, Marker: marker });
+    const contents = page.Contents || [];
+    items.push(...contents.filter((item) => NAME.test(item.Key)));
+    if (String(page.IsTruncated) !== 'true' || !contents.length) break;
+    marker = page.NextMarker || contents[contents.length - 1].Key;
+  }
   items.sort((a, b) => (a.Key < b.Key ? 1 : -1));
   const latest = items[0];
   if (!latest) throw new Error('线上还没有公开快照（admin 每天 4:50 生成）');

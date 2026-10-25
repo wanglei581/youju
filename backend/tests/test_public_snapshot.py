@@ -1,6 +1,7 @@
 """公开内容快照：只导出公开内容表，用户数据、密钥、日志不出线上；本机导入后条数、外键、内容都对得上。"""
 
 import gzip
+import hashlib
 import io
 import json
 from datetime import UTC, date, datetime, time
@@ -82,12 +83,14 @@ def populate_private(session, doc: Document) -> None:
             deadline_id=clue_deadline.id,
         )
     )
-    doc.taken_down_at = NOW
+    # 这份文件下架过、又恢复了（恢复后不算下架）：备注还留在库里
+    doc.taken_down_at = None
     doc.takedown_reason = "rights"
     doc.takedown_note = SECRETS["takedown"]
     doc.taken_down_by = "创始人"
     doc.restored_at = NOW
     doc.restore_note = SECRETS["restore"]
+    doc.restored_by = "创始人"
     session.add(
         DocumentTakedownEvent(
             document_id=doc.id,
@@ -169,11 +172,228 @@ def test_snapshot_leaves_out_user_data(session, db_engine) -> None:
     docs = [json.loads(ln)["r"] for ln in lines[1:-1] if '"t": "documents"' in ln]
     assert docs[0]["takedown_note"] is None and docs[0]["restore_note"] is None
     assert docs[0]["takedown_reason"] == "rights" and docs[0]["taken_down_by"] == "创始人"
-    events = [json.loads(ln)["r"] for ln in lines[1:-1] if '"t": "document_takedown_events"' in ln]
-    assert events[0]["note"] == "" and events[0]["reason"] == "rights"
+    # 下架、恢复的操作记录整张表不导出
+    assert not [ln for ln in lines[1:-1] if '"t": "document_takedown_events"' in ln]
     # 线上库本身没被改动
     session.expire_all()
     assert session.scalar(select(Document.takedown_note)) == SECRETS["takedown"]
+
+
+def _insert(session, table_name: str, /, **values) -> int:
+    table = Base.metadata.tables[table_name]
+    return session.execute(table.insert().values(**values)).inserted_primary_key[0]
+
+
+def test_taken_down_documents_are_left_out(session, db_engine) -> None:
+    """下架的文件（归并组里有一份下架，整组都算）和挂在它们下面的行不导出；
+    只被它们用到的附件、附件文字、名单文件、转发组也不导出，和公开文件共用的照常导出。"""
+    public = populate(session)
+
+    def new_document(slug: str) -> int:
+        return _insert(
+            session,
+            "documents",
+            source_id=public.source_id,
+            url=f"https://kjt.shandong.gov.cn/tzgg/{slug}.html",
+            url_key=f"kjt.shandong.gov.cn/tzgg/{slug}.html",
+            title=f"下架测试 {slug}",
+            publish_date=date(2026, 9, 21),
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+
+    hidden, twin = new_document("hidden"), new_document("twin")
+    documents = Base.metadata.tables["documents"]
+    session.execute(
+        documents.update()
+        .where(documents.c.id == hidden)
+        .values(taken_down_at=NOW, takedown_reason="rights", taken_down_by="创始人")
+    )
+    # twin 是 hidden 的副本（归并组），hidden 下架后它也不对外
+    _insert(
+        session,
+        "document_merges",
+        duplicate_id=twin,
+        canonical_id=hidden,
+        active=True,
+        match_key="k",
+    )
+    shared = "https://kjt.shandong.gov.cn/files/shared.pdf"
+    own = "https://kjt.shandong.gov.cn/files/own.pdf"
+    list_url = "https://kjt.shandong.gov.cn/files/list.xlsx"
+    for doc_id in (hidden, twin):
+        _insert(
+            session,
+            "document_details",
+            document_id=doc_id,
+            body_text="下架文件正文，项目负责人赵六",
+            fetched_at=NOW,
+            status="ok",
+        )
+    for doc_id, position, url in ((hidden, 1, shared), (hidden, 2, own), (public.id, 1, shared)):
+        _insert(
+            session,
+            "document_attachments",
+            document_id=doc_id,
+            position=position,
+            name="附件",
+            url=url,
+            extension="pdf",
+        )
+    versions = {}
+    for n, url in enumerate((shared, own), start=1):
+        key = hashlib.sha256(url.encode()).hexdigest()
+        _insert(
+            session, "attachment_copies", url_hash=key, url=url, declared_type="pdf", status="ready"
+        )
+        versions[url] = _insert(
+            session,
+            "attachment_text_versions",
+            sha256=str(n) * 64,
+            size=10,
+            status="ok",
+            extractor=1,
+            extracted_at=NOW,
+        )
+        _insert(
+            session,
+            "attachment_text_segments",
+            version_id=versions[url],
+            n=1,
+            kind="p",
+            text="附件文字，赵六" if url == own else "共用附件文字",
+        )
+        _insert(
+            session,
+            "attachment_text_urls",
+            url_hash=key,
+            url=url,
+            declared_type="pdf",
+            status="ok",
+            version_id=versions[url],
+        )
+    _insert(session, "ai_checks", document_id=hidden, task="audit", model="m", checked_at=NOW)
+    _insert(session, "ai_eligibility", document_id=hidden, computed_at=NOW)
+    condition_list = _insert(
+        session,
+        "condition_lists",
+        document_id=hidden,
+        body_hash="h" * 64,
+        model="m",
+        prompt_version="1",
+        extracted_at=NOW,
+    )
+    _insert(
+        session,
+        "condition_items",
+        list_id=condition_list,
+        position=1,
+        category="其他",
+        text="条件",
+        original_text="条件",
+        quote="原文",
+        quote_offset=0,
+    )
+    _insert(
+        session,
+        "document_fields",
+        document_id=hidden,
+        field="support",
+        value="资金",
+        evidence="原文",
+        evidence_offset=0,
+        body_hash="h" * 64,
+    )
+    _insert(
+        session,
+        "document_deadlines",
+        document_id=hidden,
+        fingerprint="d" * 64,
+        kind="企业申报截止",
+        candidate_date=date(2026, 11, 1),
+        evidence="原文",
+        confidence="高",
+        status="pending",
+    )
+    _insert(
+        session,
+        "list_parses",
+        document_id=hidden,
+        source_url=list_url,
+        source_kind="attachment",
+        status="ok",
+        attempted_at=NOW,
+    )
+    entry = _insert(
+        session,
+        "list_entries",
+        document_id=hidden,
+        source_url=list_url,
+        name="某某公司",
+        normalized_name="某某公司",
+        category="企业",
+    )
+    evidence = _insert(
+        session,
+        "list_evidence_sources",
+        url_hash=hashlib.sha256(list_url.encode()).hexdigest(),
+        url=list_url,
+        status="ok",
+        extractor=1,
+        locator=1,
+        checked_at=NOW,
+    )
+    _insert(
+        session,
+        "list_entry_locations",
+        entry_id=entry,
+        source_id=evidence,
+        state="ok",
+        rows=[],
+        computed_at=NOW,
+    )
+    only_hidden = _insert(session, "repost_groups", strength="strong", topic="只有下架文件")
+    mixed = _insert(session, "repost_groups", strength="strong", topic="也有公开文件")
+    _insert(session, "repost_group_members", document_id=twin, group_id=only_hidden)
+    _insert(session, "repost_group_members", document_id=hidden, group_id=mixed)
+    _insert(session, "repost_group_members", document_id=public.id, group_id=mixed)
+    session.commit()
+
+    raw = _snapshot(db_engine)
+    lines = gzip.decompress(raw).decode().splitlines()
+    header = json.loads(lines[0])
+    rows = [json.loads(line) for line in lines[1:-1]]
+    gone = {hidden, twin}
+    # 逐个检查所有指向通知的外键列：没有一行指向下架的文件
+    pointers = {
+        (t.name, fk.parent.name)
+        for t in public_tables()
+        for fk in t.foreign_keys
+        if fk.column.table.name == "documents"
+    }
+    for item in rows:
+        for table, column in pointers:
+            if item["t"] == table:
+                assert item["r"][column] not in gone, (table, column)
+
+    def of(table: str) -> list[dict]:
+        return [item["r"] for item in rows if item["t"] == table]
+
+    assert [r["id"] for r in of("documents")] == [public.id]
+    assert [r["url"] for r in of("attachment_copies")] == [shared]
+    assert [r["url"] for r in of("attachment_text_urls")] == [shared]
+    assert [r["id"] for r in of("attachment_text_versions")] == [versions[shared]]
+    assert [r["version_id"] for r in of("attachment_text_segments")] == [versions[shared]]
+    for table in ("list_evidence_sources", "list_entry_locations", "condition_items"):
+        assert of(table) == [], table
+    assert [r["id"] for r in of("repost_groups")] == [mixed]
+    assert [r["document_id"] for r in of("repost_group_members")] == [public.id]
+    assert "赵六" not in "\n".join(lines)
+    assert header["rows_left_out"]["documents"].startswith("下架的文件 2 份")
+    # 导入后条数、外键、内容都对得上
+    clear_restore_target(session, db_engine)
+    counts = public_snapshot.restore(db_engine, io.BytesIO(raw))
+    assert counts["documents"] == 1 and counts["repost_group_members"] == 1
 
 
 def test_restore_into_an_empty_database(session, db_engine) -> None:
