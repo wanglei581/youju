@@ -174,7 +174,7 @@ class _LeftOut:
             if not hidden:
                 return frozenset()
             public = conn.scalars(
-                select(url).where(url.in_(hidden), document_id.not_in(docs)).distinct()
+                select(url).where(url.in_(hidden), _not_in(document_id, docs)).distinct()
             )
             return frozenset(hidden - set(public))
 
@@ -195,7 +195,7 @@ class _LeftOut:
                 versions -= set(
                     conn.scalars(
                         select(atu.c.version_id)
-                        .where(atu.c.version_id.in_(versions), atu.c.url.not_in(attachment_urls))
+                        .where(atu.c.version_id.in_(versions), _not_in(atu.c.url, attachment_urls))
                         .distinct()
                     )
                 )
@@ -207,7 +207,7 @@ class _LeftOut:
             touched -= set(
                 conn.scalars(
                     select(rgm.c.group_id)
-                    .where(rgm.c.group_id.in_(touched), rgm.c.document_id.not_in(docs))
+                    .where(rgm.c.group_id.in_(touched), _not_in(rgm.c.document_id, docs))
                     .distinct()
                 )
             )
@@ -233,7 +233,12 @@ def _row_filter(table: Table, left: _LeftOut):
         elif name == "document_merges":
             keep += [_not_in(c.canonical_id, docs), _not_in(c.duplicate_id, docs)]
         elif name == "document_deadlines":
-            keep += [_not_in(c.document_id, docs), _not_in(c.changed_to_document_id, docs)]
+            # "已变更"的必须指向发布变更的通知（库里的检查规则），指向下架文件的只能整行不导出；
+            # 其他状态的照常导出，导出时把指向清空（见 _rows）
+            keep += [
+                _not_in(c.document_id, docs),
+                or_(c.status != "changed", _not_in(c.changed_to_document_id, docs)),
+            ]
         elif name in _DOCUMENT_CHILDREN:
             keep.append(_not_in(c.document_id, docs))
         elif name == "condition_items":
@@ -303,6 +308,8 @@ def _rows(conn: Connection, table: Table, left: _LeftOut) -> Iterator[dict]:
         for name, blank in blanks.items():
             if item[name]:
                 item[name] = blank
+        if table.name == "document_deadlines" and item["changed_to_document_id"] in left.documents:
+            item["changed_to_document_id"] = None
         yield item
 
 

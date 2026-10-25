@@ -315,6 +315,35 @@ def test_taken_down_documents_are_left_out(session, db_engine) -> None:
         confidence="高",
         status="pending",
     )
+    # 公开文件的截止日期指向下架文件："已变更"的必须带指向（库里的检查规则），整行不导出；
+    # 其他状态的照常导出、指向清空
+    changed = _insert(
+        session,
+        "document_deadlines",
+        document_id=public.id,
+        fingerprint="c" * 64,
+        kind="企业申报截止",
+        candidate_date=date(2026, 10, 20),
+        evidence="原文",
+        confidence="高",
+        status="changed",
+        approved_date=date(2026, 10, 20),
+        change_reason="延期",
+        changed_to_document_id=hidden,
+    )
+    pointer = _insert(
+        session,
+        "document_deadlines",
+        document_id=public.id,
+        fingerprint="p" * 64,
+        kind="材料报送截止",
+        candidate_date=date(2026, 10, 22),
+        evidence="原文",
+        confidence="高",
+        status="approved",
+        approved_date=date(2026, 10, 22),
+        changed_to_document_id=hidden,
+    )
     _insert(
         session,
         "list_parses",
@@ -387,6 +416,9 @@ def test_taken_down_documents_are_left_out(session, db_engine) -> None:
     for table in ("list_evidence_sources", "list_entry_locations", "condition_items"):
         assert of(table) == [], table
     assert [r["id"] for r in of("repost_groups")] == [mixed]
+    deadlines = {r["id"]: r for r in of("document_deadlines")}
+    assert changed not in deadlines and deadlines[pointer]["changed_to_document_id"] is None
+    assert len(deadlines) == 2  # populate 的那条和 pointer
     assert [r["document_id"] for r in of("repost_group_members")] == [public.id]
     assert "赵六" not in "\n".join(lines)
     assert header["rows_left_out"]["documents"].startswith("下架的文件 2 份")
