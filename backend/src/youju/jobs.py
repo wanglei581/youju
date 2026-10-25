@@ -40,7 +40,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "parse-lists",
     "cache-attachments",
     "list-evidence",
-    # 每天 04:50 导出公开内容快照，给本机测试用（youju/public_snapshot.py）
+    # 每天 03:00 导出公开内容快照，给本机测试用（youju/public_snapshot.py）
     "public-snapshot",
     "notify",
     "alert",

@@ -50,7 +50,7 @@ async function main() {
   }
   items.sort((a, b) => (a.Key < b.Key ? 1 : -1));
   const latest = items[0];
-  if (!latest) throw new Error('线上还没有公开快照（admin 每天 4:50 生成）');
+  if (!latest) throw new Error('线上还没有公开快照（admin 每天 3:00 生成）');
 
   fs.mkdirSync(dir, { recursive: true });
   const dest = path.join(dir, path.basename(latest.Key));

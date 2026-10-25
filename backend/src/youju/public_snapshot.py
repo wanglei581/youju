@@ -13,7 +13,7 @@
   整库恢复和公开快照导入互相认不出对方的文件。说明行另记线上代码版本（code_revision），本机用同一
   版本的代码建表导入，表结构才对得上。
 - 存放：对象存储 public-snapshots/youju-public-日期.jsonl.gz（北京时间的日期，同一天重跑就覆盖），
-  保留 7 天，和 backups/ 分开。admin 每天 4:50 生成；本机用 tools/team/fresh-test-db.sh 下载最新
+  保留 7 天，和 backups/ 分开。admin 每天 3:00 生成；本机用 tools/team/fresh-test-db.sh 下载最新
   一份、建一个新测试库导入。
 """
 
