@@ -77,15 +77,22 @@ function dueTone(days) {
   return '';
 }
 
+// 列表一行的截止文字。当天截止写"今天截止"，和首页"7 天内截止"、截止页的标签一致，不写"剩0天"（10/22 走查）
+function dueText(iso, time, days) {
+  const at = `${monthDay(iso)}${time ? ` ${time}` : ''}`;
+  if (days < 0) return `${at}已截止`;
+  if (days === 0) return `今天${time ? ` ${time}` : ''}截止`;
+  return `${at}截止 · 剩${days}天`;
+}
+
 // 截止信息：只有人工核对过的才显示（合规红线），否则返回 null
 function dueInfo(deadline, now) {
   if (!deadline || !deadline.verified || !deadline.date) return null;
   const days = daysUntil(deadline.date, now, deadline.time);
-  const at = `${monthDay(deadline.date)}${deadline.time ? ` ${deadline.time}` : ''}`;
   return {
     days,
     tone: dueTone(days),
-    text: days < 0 ? `${at}已截止` : `${at}截止 · 剩${days}天`,
+    text: dueText(deadline.date, deadline.time, days),
   };
 }
 
@@ -110,13 +117,12 @@ function dueView(due, now) {
   if (due.date && (due.source === 'verified' || (excerpt && due.quote))) {
     const days = daysUntil(due.date, now, due.time);
     if (!excerpt || (days >= EXCERPT_MIN_DAYS && days <= EXCERPT_MAX_DAYS)) {
-      const at = `${monthDay(due.date)}${due.time ? ` ${due.time}` : ''}`;
       return {
         source: due.source,
         kind: due.kind || '',
         days,
         tone: excerpt ? 'excerpt' : dueTone(days),
-        text: days < 0 ? `${at}已截止` : `${at}截止 · 剩${days}天`,
+        text: dueText(due.date, due.time, days),
         label: excerpt ? EXCERPT_LABEL : VERIFIED_LABEL,
         quote: due.quote || '',
       };

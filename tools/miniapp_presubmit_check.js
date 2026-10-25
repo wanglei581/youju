@@ -23,6 +23,8 @@ const SERVER_TOOL_TERMS_VERSION = (() => {
 })();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
   'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
+// 底栏四格的名字，和 FIRST_PAGES 前四页一一对应（app.json 的 tabBar 和 custom-tab-bar 都是这四个字）
+const TAB_NAMES = ['首页', '关注', '导出', '我的'];
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
 // 加量体验确认页（D-070 ③，10/17 创始人批准）属于批量工具，从批量工具页进入
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
@@ -80,10 +82,15 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
   '核对首发16页、AI版21页或完整版28页（均含站内阅读与结果页；完整版另含批量工具、购买、订单、AI板块和帮助）；奖励及子包不属于本次范围');
-  const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
+  // 底栏的页面和名字：D-067 四栏；第三格打开的是导出记录，叫"导出"（D-087，原"文件"）；完整版最后加 AI 一格（D-075）
+  const tabList = (app.tabBar && app.tabBar.list) || [];
+  const tabs = tabList.map(t => t.pagePath);
+  const tabNames = tabList.map(t => t.text);
   const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
-  add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',
-    JSON.stringify(tabs) === JSON.stringify(expectedTabs), complete ? '按 D-067 使用四栏，D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏');
+  const expectedNames = TAB_NAMES.concat(complete ? ['AI'] : []);
+  add('tabs', complete ? '底栏为首页、关注、导出、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、导出、我的',
+    JSON.stringify(tabs) === JSON.stringify(expectedTabs) && JSON.stringify(tabNames) === JSON.stringify(expectedNames),
+    complete ? '按 D-067 使用四栏、第三格叫"导出"（D-087），D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏，第三格叫"导出"（D-087）');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
   if (profile === 'first-release') {
     const text = JSON.stringify([legal.user, legal.privacy, legal.disclaimer]);
@@ -138,4 +145,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, pagesFor, PROFILES, FIRST_PAGES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED };
+module.exports = { inspect, pagesFor, PROFILES, FIRST_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED };
