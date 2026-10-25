@@ -18,7 +18,7 @@ function fakeNpm() {
   return dir;
 }
 
-test('首发包：16 页、底栏四格、包外页面的目录删掉、页面清单按包重写；仓库里的文件不变', () => {
+test('首发包：16 页、底栏四格（首页、关注、导出、我的）、包外页面的目录删掉、页面清单按包重写；仓库里的文件不变', () => {
   const before = fs.readFileSync(path.join(SOURCE, 'utils', 'package-pages.js'), 'utf8');
   const appBefore = fs.readFileSync(path.join(SOURCE, 'app.json'), 'utf8');
   const out = fresh();
@@ -29,6 +29,8 @@ test('首发包：16 页、底栏四格、包外页面的目录删掉、页面�
   const app = JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8'));
   assert.deepEqual(app.pages, pages);
   assert.deepEqual(app.tabBar.list.map((t) => t.pagePath), ['pages/home/index', 'pages/follow/index', 'pages/files/index', 'pages/me/index']);
+  // 第三格打开的是导出记录，叫"导出"（D-087，原"文件"）
+  assert.deepEqual(app.tabBar.list.map((t) => t.text), ['首页', '关注', '导出', '我的']);
   for (const page of removed) assert.equal(fs.existsSync(path.join(out, path.dirname(page))), false, page);
   for (const page of pages) assert.ok(fs.existsSync(path.join(out, `${page}.js`)), page);
   // 页面清单：包里的 16 页；utils/pages.js 照常判断

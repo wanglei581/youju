@@ -33,8 +33,9 @@ const KIND_TABS = [
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
-// 以及 7 天内有候选、还没核对的
-const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的';
+// 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。选的时候就写明含哪些、不含哪些，
+// 有结果时写在结果上面、没结果时写在空状态里，都是这一句（10/22 走查）
+const OPEN_GROUP_NOTE = '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
@@ -56,11 +57,11 @@ const GROUPS = [
 const ALL_PROVINCES = PROVINCES;
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], city: [], district: [], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-// 关注确认框的标题：写关注之后会怎样
-const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
+// 关注确认框的标题：写存的是什么（当前的关键词和筛选条件），输入框里只是按条件拼的名称——改名称不会改条件
+// （10/22 走查：只看到一行可改的字，会以为改的是条件）。"有新文件时在关注页标出"写在保存成功的提示里
+const FOLLOW_NOTE = '按当前搜索条件关注（下面是名称，改名不改条件）';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
-const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';
 const PAGE = 20;
 
 // 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算
@@ -107,6 +108,9 @@ Page({
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
     tagNote: TAG_NOTE,
+    // 选了"只看未截止"时的口径：有结果时写在结果上面，没结果时写在"去掉'只看未截止'"下面，和筛选面板里同一句。
+    // 只写"含没核对的"会读成只含没核对的，所以三处都写全（10/22 走查）
+    openNote: OPEN_GROUP_NOTE,
     // 协议定稿前（D-056）不显示"关注"和"没找到想要的？告诉我们"（纠错要先同意协议），定稿后照旧
     loginOpen: loginOpen(),
     picked: DEFAULT_PICKED,
@@ -327,7 +331,7 @@ Page({
           let emptyHint = '';
           if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
           else if (supportConflict(params.kind, params.types, params.supports)) emptyHint = SUPPORT_CONFLICT;
-          else if (params.open) emptyHint = OPEN_NOTE;
+          // 只看未截止：口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍（10/22 走查）
           this.setData({ emptyHint });
           const regions = params.regions.split(',');
           loadCoverage().then((c) => {

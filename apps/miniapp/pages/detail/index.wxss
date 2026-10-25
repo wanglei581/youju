@@ -75,7 +75,7 @@
 .bar-share { width: 100rpx !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; background: transparent !important; border-radius: 0 !important; line-height: normal !important; font-size: 22rpx !important; font-weight: normal !important; color: var(--t2) !important; }
 .bar-share::after { border: none; }
 .status-note { margin-top: 12rpx; font-size: 24rpx; }
-/* 正文（D-030）：默认显示开头一段，点"展开全文"看全部 */
+/* 正文（D-030）：默认显示开头一段，点"展开全文"看全部（只收了一部分时写"展开摘录"，全文去站内阅读看） */
 .body-note { margin: -4rpx 0 16rpx; font-size: 22rpx; line-height: 1.6; }
 .body-text { display: block; font-size: 28rpx; line-height: 1.8; color: var(--t1); white-space: pre-wrap; word-break: break-all; }
 .body-more { margin-top: 16rpx; font-size: 26rpx; }
@@ -99,6 +99,7 @@
 .ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .ver-meta-text { flex: 1; min-width: 0; }
 .ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }
+.ver-hint { margin-top: 16rpx; font-size: 24rpx; line-height: 1.6; }
 .standard-link { display: flex; align-items: center; justify-content: space-between; padding: 24rpx 0 0; font-size: 26rpx; }
 /* 按类型逐条的截止（D-061） */
 .dls-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8rpx; }
