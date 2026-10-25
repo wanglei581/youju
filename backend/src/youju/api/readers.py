@@ -156,14 +156,14 @@ def document_reading(
     payload = _payload(doc.title, _source(doc, src))
     kind = effective_kind(doc.title, doc.kind_override)
     # 名单类通知：正文挡掉名单内容后给读（D-092）；失信、个人类名单不给（list_filter 为 None）
-    list_filter = v1.list_body_filter(session, doc, src) if kind == "名单" else None
+    list_filter = v1.list_body_filter(session, doc) if kind == "名单" else None
     if kind == "名单" and list_filter is None:
         payload.update(status="unsupported", notice="这类名单可能包含个人信息，站内不展示全文。")
         return payload
     if kind not in v1.BODY_KINDS and list_filter is None:
         payload.update(
             status="unsupported",
-            notice="此类原文可能包含个人信息，暂不展示全文；可在小程序查看已收录的企业查询结果。",
+            notice="这类文件可能包含个人信息，站内不展示全文。",
         )
         return payload
     if doc.link_gone_at:
@@ -185,20 +185,31 @@ def document_reading(
     source = session.get(Source, owner.source_id)
     payload["source"] = _source(owner, source)
     notice = "以下为收录的原文文字，未经逐字人工核对；图片、版式与未收录附件不包含在内。"
+    hidden = False
     if list_filter is not None:
-        filtered = list_filter(cleaned)
-        if filtered is None:
-            # 正文几乎全是名单：只给查名单里的企业查询结果（D-088）
+        result = list_filter(cleaned)
+        if result.text is None and result.reason == "short":
+            # 没认出名单、正文本来就太短：和别的类一样按没抓全说
+            payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
+            return payload
+        if result.text is None:
+            # 正文几乎全是名单，或名单没能和通知文字分开：只给查名单里的企业查询结果（D-088）
+            what = (
+                "这份通知的正文主要是名单"
+                if result.reason == "list"
+                else "这份通知的正文里有名单没能和通知文字分开，暂不展示正文"
+            )
             payload.update(
                 status="list",
-                notice="这份通知的正文主要是名单，站内只提供企业查询结果（查到后可以看原名单里的那一行）。",
+                notice=f"{what}，站内只提供企业查询结果（查到后可以看原名单里的那一行）。",
             )
             return payload
-        cleaned = filtered
-        notice = (
-            "以下为收录的通知文字，未经逐字人工核对；正文里的名单内容站内不展开，可以在查名单里"
-            "查企业。图片、版式与未收录附件不包含在内。"
-        )
+        cleaned, hidden = result.text, result.hidden
+        if hidden:
+            notice = (
+                "以下为收录的通知文字，未经逐字人工核对；正文里的名单内容站内不展开，可以在查名单里"
+                "查企业。图片、版式与未收录附件不包含在内。"
+            )
     elif len(cleaned) < v1.BODY_MIN_CHARS:
         payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
         return payload
@@ -213,7 +224,7 @@ def document_reading(
     )
     after = _check_revision(cursor, revision, current)
     payload.update(revision=current, totalSegments=len(parts), notice=notice)
-    if list_filter is not None:
+    if hidden:
         # 正文里有名单内容没展开：页面给"在已收录名单中查询企业"按钮
         payload["listHidden"] = True
     return _page(

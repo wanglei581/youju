@@ -2011,82 +2011,224 @@ def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
     return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
 
 
-# 联系方式所在的行（"联系人""联系电话"，没写"联系人"的"刘老师，电话……"）和网站页脚的编审署名
-# （"一审：张三""责任编辑：李四"）
-_CONTACT_LINE = re.compile(r"联系人|联络人|经办人|联系方式|电话|手机|（电话见原文）")
-_EDITOR_LINE = re.compile(
-    r"^\s*(?:[一二三]审|初审|复审|终审|责任编辑|编辑|校对|审核|审稿|签发|撰稿|供稿)\s*[:：]"
+# 联系人所在的行（"联系人""联 系 人""联系方式"），和这类标签写在上一行末尾时的下一行：像姓名的都遮
+_CONTACT_LABEL = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式")
+_LABEL_AT_END = re.compile(
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式)(?:及电话)?\s*[:：]\s*$"
 )
-_CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】]+")
+# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：（电话见原文）"
+# "刘老师，（电话见原文）""联系电话：88888888（李四）"）；只有"电话""手机"字样、没有号码的（表头
+# "联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+_PHONE_LINE = re.compile(r"电话|手机|（电话见原文）")
+_PHONE = (
+    r"(?:（电话见原文）|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
+    r"|(?<!\d)\d{7,8}(?!\d))"
+)
+_PHONE_ANY = re.compile(_PHONE)
+_PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
+# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
+_CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+_TITLE_END = (
+    "老师",
+    "先生",
+    "女士",
+    "同志",
+    "处长",
+    "科长",
+    "主任",
+    "部长",
+    "局长",
+    "所长",
+    "站长",
+    "经理",
+    "专员",
+    "工程师",
+)
+# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（署名已隐去）"，不冒充联系人
+_EDITOR = re.compile(
+    r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
+)
+_CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】/／]+")
 _HAN_CHAR = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+_UNIT_END_CHARS = "处科室局厅部办站所院会队组股区"
+_UNIT_THEN_NAME = re.compile(rf"[{_UNIT_END_CHARS}]([{_HAN_CHAR}]{{2,3}})$")
+# 字间带空格的姓名（"联系人：张 三""孟 双、王 璐 联系电话"）：前后不能再接着一个单字（"张 三 李 四"
+# 分不清，不遮）
+_SPACED_NAME = re.compile(
+    rf"(?<![{_HAN_CHAR}])(?<!(?<![{_HAN_CHAR}])[{_HAN_CHAR}] )"
+    rf"[{_HAN_CHAR}](?: [{_HAN_CHAR}]){{1,2}}"
+    rf"(?![{_HAN_CHAR}])(?! [{_HAN_CHAR}](?![{_HAN_CHAR}]))"
+)
+# 表格模板里以冒号结尾的栏目（"推荐单位（盖章）："）：不当"标签的下一行"
+_FORM_FIELD = re.compile(r"[:：]\s*$")
 # 常见姓氏开头、但这些行里常见的普通词
-_NOT_NAMES = frozenset({"关于", "关闭", "查询", "时间", "方式"})
+_NOT_NAMES = frozenset(
+    {
+        "关于",
+        "关闭",
+        "查询",
+        "时间",
+        "方式",
+        "周一",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+        "周六",
+        "周日",
+        "周末",
+        "工作日",
+        "上午",
+        "下午",
+        "中午",
+        "白天",
+        "晚上",
+        "全天",
+        "节假日",
+        # 单位名后面常跟的词（"指挥部成立""××室通过"）
+        "成立",
+        "通过",
+        "通知",
+        "工作",
+        "专项",
+        "会议",
+        "负责",
+        "办理",
+        "受理",
+        "咨询",
+        # 表格模板里的词（"推荐单位（盖章）："）
+        "盖章",
+        "签字",
+        "签章",
+        "公章",
+    }
+)
+_CONTACT_MARK = "（联系人见原文）"
+_EDITOR_MARK = "（署名已隐去）"
+
+
+def _person(word: str) -> bool:
+    return word not in _NOT_NAMES and _name_like(word)
+
+
+def _masked(token: str, mark: str) -> str | None:
+    """一段里有像姓名的就给遮好的这一段，没有给 None。整段像（"张三""刘老师"）；去掉称呼后像
+    （"张三处长""王五主任"）；"张三和李四"拆开都像；"高新处张三"单位用字后面的 2–3 个字像。"""
+    if _person(token):
+        return mark
+    title = next((t for t in _TITLE_END if token.endswith(t) and len(token) > len(t)), None)
+    if title is not None:
+        rest = token[: -len(title)]
+        if _person(rest):
+            return mark
+        inner = _masked(rest, mark)
+        if inner is not None:
+            # "高新区张三处长"：单位留着，姓名连称呼一起遮
+            return inner
+    parts = [p for p in re.split(r"[和与及]", token) if p]
+    if len(parts) >= 2 and all(_person(p) for p in parts):
+        return re.sub(r"[^和与及]+", mark, token)
+    match = _UNIT_THEN_NAME.search(token)
+    if match and _person(match.group(1)):
+        return token[: match.start(1)] + mark
+    return None
+
+
+def _mask_line(line: str, tokens: list[str], mark: str) -> str:
+    line = _SPACED_NAME.sub(
+        lambda m: mark if _person(m.group(0).replace(" ", "")) else m.group(0), line
+    )
+    for token in sorted(set(tokens), key=len, reverse=True):
+        new = _masked(token, mark)
+        if new is None:
+            continue
+        if new == mark:
+            # 带括号的（"（王老师）"）连括号一起换，不出现两层括号
+            line = line.replace(f"（{token}）", mark).replace(f"({token})", mark)
+        line = re.sub(rf"(?<![{_HAN_CHAR}]){re.escape(token)}(?![{_HAN_CHAR}])", new, line)
+    return line
 
 
 def _mask_contact_names(text: str) -> str:
-    """联系方式所在的行、网站编审署名行里，像姓名的词（常见姓氏开头的 2–3 个字，和入库脱敏认姓名
-    同一套）再遮一遍：以前入库时只遮了"联系人："后面的第一个词，"联系人：（联系人见原文）某某处
-    张三"里的张三还在；"刘老师，电话……""一审：张三"也没遮（D-092 让名单类通知的正文也能读，10/25
-    用本机数据副本实测发现）。"""
+    """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
+    2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
+    "联系人：（联系人见原文）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
+    （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
+    拆行、空格隔开的写法）。"""
     out = []
+    after_label = False
     for line in text.split("\n"):
-        if _CONTACT_LINE.search(line) or _EDITOR_LINE.match(line):
-            for word in sorted({w for w in _CONTACT_SPLIT.split(line) if w}, key=len, reverse=True):
-                if word not in _NOT_NAMES and _name_like(word):
-                    # 带括号的（"（王老师）"）连括号一起换，不出现两层括号
-                    line = line.replace(f"（{word}）", "（联系人见原文）").replace(
-                        f"({word})", "（联系人见原文）"
-                    )
-                    line = re.sub(
-                        rf"(?<![{_HAN_CHAR}]){re.escape(word)}(?![{_HAN_CHAR}])",
-                        "（联系人见原文）",
-                        line,
-                    )
+        if not line.strip():
+            # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
+            out.append(line)
+            continue
+        raw = line
+        contact = (after_label and not _FORM_FIELD.search(line)) or (
+            _CONTACT_LABEL.search(line) is not None
+        )
+        editor = _EDITOR.search(line) is not None
+        tokens = [w for w in _CONTACT_SPLIT.split(line) if w]
+        if contact:
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif editor:
+            line = _mask_line(line, tokens, _EDITOR_MARK)
+        elif _PHONE_LINE.search(line) and _PHONE_ANY.search(line):
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif _PHONE_LINE.search(line):
+            label = _PHONE_LABEL.search(line)
+            near_label = [
+                t
+                for t in tokens
+                if t.endswith(_TITLE_END) or (label is not None and line.find(t) >= label.end())
+            ]
+            line = _mask_line(line, near_label, _CONTACT_MARK)
+        # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
+        row = after_label and _CONTACT_ROW.match(raw) is not None
+        after_label = _LABEL_AT_END.search(line) is not None or row
         out.append(line)
     return "\n".join(out)
 
 
 def body_for_reading(
-    text: str | None, kind: str, *, list_filter: Callable[[str], str | None] | None = None
+    text: str | None,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
 ) -> dict:
     """详情页正文：ok 给文字；其他类给 original（可能有个人姓名），没抓到完整正文给 none。
-    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单内容后给文字，挡完剩得太少的、
-    不能读的（失信、个人类）给 list。"""
+    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单后给文字（真挡掉了名单的带
+    listHidden，页面给去查名单的入口），挡完剩得太少或没挡住的给 list；没认出名单、正文本来就
+    太短的（没抓到正文、多半没抓全）和别的类一样给 none。"""
     if kind == "名单" and list_filter is None:
         return {"status": "list"}
     if kind not in BODY_KINDS and kind != "名单":
         return {"status": "original"}
     cleaned = _clean_reading_body(text)
+    hidden = False
     if list_filter is not None:
-        filtered = list_filter(cleaned)
-        if filtered is None:
-            return {"status": "list"}
-        cleaned = filtered
+        result = list_filter(cleaned)
+        if result.text is None:
+            return {"status": "none" if result.reason == "short" else "list"}
+        cleaned, hidden = result.text, result.hidden
     elif len(cleaned) < BODY_MIN_CHARS:
         return {"status": "none"}
-    return {
+    body = {
         "status": "ok",
         "text": cleaned[:BODY_MAX_CHARS],
         "total": len(cleaned),
         "truncated": len(cleaned) > BODY_MAX_CHARS,
     }
+    if hidden:
+        body["listHidden"] = True
+    return body
 
 
-def list_body_filter(
-    session: Session, doc: Document, source: Source | None, detail: DocumentDetail | None = None
-) -> Callable[[str], str | None] | None:
+def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
     """名单类通知正文的过滤函数（D-092）：这份通知能读（不是失信、个人类）时给，不能读给 None。
-    用这份通知归并组解析出的条目名称认名单行，发文机关署名照常显示。"""
+    用这份通知归并组解析出的条目名称认名单行，组里各版本的发文机关署名照常显示。"""
     if not list_body.readable(doc.title):
         return None
-    if detail is None:
-        detail = session.get(DocumentDetail, doc.id)
-    return list_body.filter_for(
-        session,
-        group_ids(session, doc.id),
-        [source.dept_full_name if source else None, detail.issuer if detail else None],
-        min_chars=list_body.MIN_CHARS,
-    )
+    return list_body.filter_for(session, group_ids(session, doc.id), min_chars=list_body.MIN_CHARS)
 
 
 def _reading_body_selection(
@@ -2306,7 +2448,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
         ),
         "checked": checked,
-        "body": _detail_body(session, doc, src, detail, kind),
+        "body": _detail_body(session, doc, kind),
     }
     if fields:
         payload["fields"] = fields
@@ -2321,10 +2463,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
     return payload
 
 
-def _detail_body(
-    session: Session, doc: Document, src: Source, detail: DocumentDetail | None, kind: str
-) -> dict:
-    list_filter = list_body_filter(session, doc, src, detail) if kind == "名单" else None
+def _detail_body(session: Session, doc: Document, kind: str) -> dict:
+    list_filter = list_body_filter(session, doc) if kind == "名单" else None
+    if kind == "名单" and list_filter is None:
+        # 失信、处罚类和个人类名单：和站内阅读页一样按"不展示"说，不引导去查名单
+        return {"status": "original"}
     allowed = LIST_BODY_KINDS if list_filter is not None else BODY_KINDS
     return body_for_reading(
         _reading_body(session, doc.id, allowed_kinds=allowed), kind, list_filter=list_filter
