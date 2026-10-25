@@ -5,6 +5,7 @@
 // 在某份通知的页面上点：打开消息卡片，标题是通知标题、路径是这份通知的详情页（默认卡片不一定指向详情页），
 // 进了会话发不发由用户自己定。variant="row" 是"我的"页列表里的一行
 const legal = require('../../content/legal.js');
+const pages = require('../../utils/pages.js');
 
 const MAX_FROM = 1024;
 const SAFE = /^[A-Za-z0-9_-]{1,40}$/;
@@ -35,7 +36,8 @@ Component({
     reason: { type: String, value: '' },
     variant: { type: String, value: 'block' },
   },
-  data: { supported: true, sessionFrom: 'youju', showCard: false, cardTitle: '', cardPath: '', email: '' },
+  // help：包里有使用帮助页才给"看使用帮助"（过审版首发 16 页没有，D-091），没有时只给邮箱
+  data: { supported: true, help: pages.has('help'), sessionFrom: 'youju', showCard: false, cardTitle: '', cardPath: '', email: '' },
   observers: {
     'from, docId, docTitle, reason': function () { this.sync(); },
   },
@@ -57,7 +59,7 @@ Component({
       });
     },
     help() {
-      wx.navigateTo({ url: '/pages/help/index' });
+      if (this.data.help) wx.navigateTo({ url: '/pages/help/index' });
     },
   },
 });

@@ -202,6 +202,14 @@ class Settings(BaseSettings):
                 "对外 AI 单独设置时，YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、"
                 "YOUJU_AI_ADVISOR_MODEL 三项要一起填"
             )
+        # 对所有人开放时只能走对外线路（云开发，D-093 上线门槛第 3 条）：类目协议、实际调用、
+        # 页面公示的模型要一致，不能退回后台核对用的线路。白名单内部试用不受这条限制
+        if self.ai_advisor_enabled and self.ai_advisor_audience == "all" and not all(parts):
+            raise ValueError(
+                "对所有人开放 AI（YOUJU_AI_ADVISOR_AUDIENCE=all）时，要配好对外线路："
+                "YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、YOUJU_AI_ADVISOR_MODEL，"
+                "不能用后台核对的线路"
+            )
         return self
 
     @model_validator(mode="after")

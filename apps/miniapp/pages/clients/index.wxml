@@ -1,6 +1,6 @@
 <notice-bar />
 <view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
-<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
+<view wx:if="{{!editing && tools}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">

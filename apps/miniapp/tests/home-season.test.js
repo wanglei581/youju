@@ -23,7 +23,7 @@ function load(file, deps, globals = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; assert.ok(Object.hasOwn(deps, key), `${file}: 缺少依赖 ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /(^|\/)pages\.js$/.test(key)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, key) && /utils\/advisor\.js$/.test(key)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, key), `${file}: 缺少依赖 ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

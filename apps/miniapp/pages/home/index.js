@@ -4,6 +4,7 @@ const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
 const boost = require('../../utils/boost.js');
+const pages = require('../../utils/pages.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -75,6 +76,8 @@ Page({
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
     loginOpen: loginOpen(),
+    // 工具中心入口、申报季加量一行、引导里的"工具中心"：登录开着、包里有工具中心才有（过审版首发 16 页没有，D-091）
+    tools: loginOpen() && pages.has('advisor'),
     // 新手引导"三步上手"：没点过"不再显示"时显示
     guide: false,
     guideSteps: [],
@@ -85,7 +88,7 @@ Page({
   onLoad() {
     if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
-    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.loginOpen) });
+    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.tools) });
     this.lastShow = Date.now();
     this.reload();
   },
@@ -151,7 +154,7 @@ Page({
   // 协议没定稿的版本没有工具中心入口（批量工具要先同意协议），不取也不显示。refresh：停在首页跨过 0 点时重新取
   // （"将于…开始"变成进行中，过了结束日不再显示）
   loadSeason(refresh) {
-    if (!this.data.loginOpen || !api.advisorSeason) return;
+    if (!this.data.tools || !api.advisorSeason) return;
     const seq = this.seasonSeq = (this.seasonSeq || 0) + 1;
     const show = (season) => { if (seq === this.seasonSeq) this.setData({ seasonText: boost.seasonLine(season) }); };
     api.advisorSeason({ refresh: Boolean(refresh) }).then(show, () => show(null));

@@ -42,6 +42,10 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 async def _enabled(request: Request) -> None:
     settings = get_settings()
+    if request.method == "DELETE" and "task_id" in request.path_params:
+        # 删除自己的记录不看开关：AI、批量工具关掉以后也能删（D-093 上线门槛第 8 条），
+        # 和关注、纠错的删除一样；别人的记录照样是"没有找到"
+        return
     if not settings.advisor_enabled and not getattr(settings, "ai_advisor_enabled", False):
         raise HTTPException(status_code=404, detail="没有找到接口")
     # 任务接口先由各自的归属检查确认身份，再按任务类型授权，避免泄露他人任务。
@@ -369,14 +373,18 @@ def _submission_lock(session: Session, kind: str):
         raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
 
 
-def _owned(session: Session, user: User, task_id: int, *, lock: bool = False) -> AdvisorTask:
+def _owned(
+    session: Session, user: User, task_id: int, *, lock: bool = False, deleting: bool = False
+) -> AdvisorTask:
     stmt = select(AdvisorTask).where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
     if lock:
         stmt = stmt.with_for_update()
     task = session.scalar(stmt)
     if task is None:
         raise HTTPException(status_code=404, detail="没有找到顾问任务")
-    _authorize(task.kind, user)
+    if not deleting:
+        # 删除自己的记录不看开关和协议版本（D-093 上线门槛第 8 条）
+        _authorize(task.kind, user)
     return task
 
 
@@ -881,8 +889,12 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
 
 
 @router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
-def delete_task(task_id: int, request: Request, session: SessionDep, user: UserDep) -> None:
-    task = _owned(session, user, task_id, lock=True)
+def delete_task(task_id: int, request: Request, session: SessionDep, user: KnownUserDep) -> None:
+    """删除自己的一条工具或 AI 记录及结果文件。和关注、纠错的删除一样只认本人，不看功能开关，
+    也不要求先同意新版协议（D-093 上线门槛第 8 条）。"""
+    if user is None:
+        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+    task = _owned(session, user, task_id, lock=True, deleting=True)
     if task.status == "running":
         raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")
     if task.status == "queued":

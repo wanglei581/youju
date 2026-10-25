@@ -31,6 +31,13 @@ const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
 // AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
 // 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
 const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
+const PROFILES = ['first-release', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'];
+// 每种版本该有哪些页面；tools/miniapp_pack.js 打过审版（首发 16 页）时也用这一份
+function pagesFor(profile) {
+  if (!PROFILES.includes(profile)) throw new Error('参数不支持');
+  const complete = profile === 'complete-candidate' || profile === 'complete-release';
+  return profile === 'first-release' ? FIRST_PAGES.slice() : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+}
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -39,7 +46,7 @@ function hasPlaceholder(value) {
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
 function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release' }) {
-  if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'].includes(profile)) {
+  if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
   const checks = [];
@@ -58,7 +65,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+  const expected = pagesFor(profile);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
@@ -89,13 +96,15 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
 }
 function main(args) {
   let mode = 'submit', profile = 'first-release', json = false;
+  // --root：检查打好的包（tools/miniapp_pack.js 的输出目录），默认检查仓库里的 apps/miniapp
+  let root = path.join(__dirname, '..', 'apps', 'miniapp');
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--mode' && args[i + 1]) mode = args[++i];
     else if (args[i] === '--profile' && args[i + 1]) profile = args[++i];
+    else if (args[i] === '--root' && args[i + 1]) root = path.resolve(args[++i]);
     else if (args[i] === '--json') json = true;
-    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|ai-internal|ai-release|complete-candidate|complete-release] [--json]');
+    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|ai-internal|ai-release|complete-candidate|complete-release] [--root 包目录] [--json]');
   }
-  const root = path.join(__dirname, '..', 'apps', 'miniapp');
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
@@ -113,4 +122,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, SERVER_TOOL_TERMS_VERSION };
+module.exports = { inspect, pagesFor, PROFILES, FIRST_PAGES, SERVER_TOOL_TERMS_VERSION };

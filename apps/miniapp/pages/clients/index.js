@@ -4,6 +4,7 @@ const { loadCoverage } = require('../../utils/coverage.js');
 const { previewDocs } = require('../../utils/exporter.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const pages = require('../../utils/pages.js');
 const {
   PROVINCES, INDUSTRIES, MAX_CLIENTS, PER_QUERY, MAX_DOCS, normalize, loadClients, saveClients, displayName, cardSummary,
   queryGroups, mergeRelated,
@@ -28,8 +29,10 @@ function runLimited(tasks, limit) {
 }
 
 Page({
-  tools() { wx.navigateTo({ url: '/pages/advisor/index' }); },
+  tools() { if (this.data.tools) wx.navigateTo({ url: '/pages/advisor/index' }); },
   data: {
+    // 顶部"打开工具中心"：包里有工具中心才显示（过审版首发 16 页没有，D-091）
+    tools: pages.has('advisor'),
     tab: 'docs', clients: [], editing: false, form: {}, provinces: PROVINCES, industries: INDUSTRIES,
     cityOptions: [], cityRegion: [], cityError: '', cityCoverageNote: '', districtLabels: [], picked: {}, error: '', coverageError: '', placeholder: '客户 1',
     // 相关通知

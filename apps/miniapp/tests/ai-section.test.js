@@ -31,7 +31,7 @@ function load(file, deps = {}, globals = {}) {
     require(name) {
       if (name === '../../utils/regions.js') return regions;
       if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js');
-      assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`);
+      if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`);
       return deps[name];
     },
     Page(d) { def = d; }, Component(d) { def = d; },

@@ -32,7 +32,7 @@ function load(file, deps, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
@@ -283,7 +283,7 @@ function localWx(initial) {
 function clientUtils(wx) {
   const module = { exports: {} };
   const deps = { './format.js': format, './regions.js': regions, './conditions.js': conditions };
-  vm.runInNewContext(read('utils/clients.js'), { module, wx, require: (name) => { assert.ok(Object.hasOwn(deps, name), name); return deps[name]; } });
+  vm.runInNewContext(read('utils/clients.js'), { module, wx, require: (name) => { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), name); return deps[name]; } });
   return module.exports;
 }
 function clientsPage(local, { search, coverage = COVERAGE, exported = [] } = {}) {

@@ -1093,30 +1093,35 @@ def test_pk_prefix_csv_is_not_zip(client, content):
 
 
 @pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
-def test_delete_requires_authorization_but_logout_ignores_switch_and_agreement(
+def test_owner_deletes_own_record_whatever_the_switch_and_agreement(
     client, advisor_settings, session, disabled, outdated
 ):
+    """删除自己的工具或 AI 记录：功能关了、协议版本过期了也能删（D-093 上线门槛第 8 条，
+    和关注、纠错的删除一样只认本人）；别人的记录照样"没有找到"。注销照旧不看开关和协议。"""
     agree_advisor(client)
     created = create(client).json()
+    second = create(client, key="second").json()
     advisor_settings.advisor_enabled = not disabled
     if outdated:
         advisor_settings.agreement_version = "new-general-version"
         user = session.scalar(select(User))
         user.advisor_agreement_version = "old-advisor-version"
         session.commit()
-    # 我的数据中的删除与我的任务使用同一个删除接口。
+    # 我的数据里能看到，也用同一个删除接口
     data = client.get("/api/v1/me/data")
     assert data.status_code == 200
-    assert data.json()["advisorTasks"][0]["id"] == created["id"]
+    assert {t["id"] for t in data.json()["advisorTasks"]} == {created["id"], second["id"]}
     advisor_settings.dev_openid = "somebody-else"
-    expected = 404 if disabled else 403
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
     advisor_settings.dev_openid = "advisor-user"
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
-    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["id"] == created["id"]
-    assert client.delete("/api/v1/me").status_code == 204
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
     session.expire_all()
     assert session.get(AdvisorTask, created["id"]) is None
+    assert [t["id"] for t in client.get("/api/v1/me/data").json()["advisorTasks"]] == [second["id"]]
+    assert client.delete("/api/v1/me").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, second["id"]) is None
     assert client.get("/api/v1/me").json()["agreed"] is None
 
 

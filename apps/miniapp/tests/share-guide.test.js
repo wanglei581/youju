@@ -30,7 +30,7 @@ function load(file, deps = {}, globals = {}) {
     module: { exports: {} }, setTimeout, clearTimeout, console,
     require(name) {
       if (name === '../../utils/regions.js') return regions;
-      if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`);
+      if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`);
       return deps[name];
     },
     Page(d) { def = d; },
