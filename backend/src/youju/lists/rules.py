@@ -97,6 +97,9 @@ PERSON_TITLE = (
     *(f"{word}{suffix}" for word in _PERSON_WORDS for suffix in ("名单", "名录")),
     "人选",
 )
+# 获奖、表彰类名单也不进企业查询：不在 D-091 ③ 的五类（认定、立项、公示、入库、备案）里，
+# 还常带获奖人、完成人的名字。标题带"奖励""补贴"的资金通知本来就不当名单（见上面 _NEGATIVE_TITLE）
+HONOR_TITLE = ("获奖", "表彰")
 _SELECTION = ("拟认定", "拟入库", "认定", "入库", "备案", "通过", "入选")
 _ENTITY = ("企业", "机构", "单位", "中心", "研究院", "合作社", "平台", "实验室", "基地")
 _BATCH = re.compile(
@@ -216,12 +219,12 @@ def classify_title(title: str, kind_override: str | None = None) -> ListClassifi
 
 
 def excluded_list_title(title: str) -> bool:
-    """不进企业查询的名单：失信、处罚等惩戒类，和以个人为主的（人才、专家等）。
+    """不进企业查询的名单：失信、处罚等惩戒类，以个人为主的（人才、专家等），获奖、表彰类。
     和 lookup.list_title_allowed 同一口径（那边是数据库查询条件）。"""
     value = normalize_name(title or "")
     if any(term in value for term in PUNITIVE_TITLE):
         return True
-    return any(term in value for term in PERSON_TITLE)
+    return any(term in value for term in PERSON_TITLE + HONOR_TITLE)
 
 
 def candidate_key(value: str) -> str:

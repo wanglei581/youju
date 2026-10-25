@@ -620,6 +620,9 @@ def test_record_api_failed_reason(client, session) -> None:
         ("拟入选省级领军人才计划人选公示", False),
         ("院士专家工作站建站单位名单公示", True),
         ("经专家评审拟认定的高新技术企业名单公示", True),
+        # 获奖、表彰类不在五类里（D-091 ③）
+        ("2026年度省科学技术奖获奖项目名单公示", False),
+        ("关于表彰2026年度优秀企业的决定", False),
     ],
 )
 def test_lookup_scope_excludes_punitive_and_person_lists(client, session, title, shown) -> None:

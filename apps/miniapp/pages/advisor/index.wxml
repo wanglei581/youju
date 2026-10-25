@@ -73,7 +73,7 @@
   <!-- 10/18 验收：没同意协议前也先说明这里有什么、免费怎么算，第一次来的人知道为什么要同意 -->
   <view wx:if="{{gate === 'consent'}}" class="card advisor-card">
     <view class="advisor-title">工具中心有什么</view>
-    <view class="advisor-text">批量名单比对：一次粘贴或上传多家企业的名称或统一社会信用代码，查上过哪些已收录的名单。</view>
+    <view class="advisor-text">批量名单比对：一次粘贴或上传多家企业的名称或统一社会信用代码，在已收录的政府公开名单里查找。</view>
     <view class="advisor-text">客户相关通知表：按客户的省份、城市等整理近 90 天的申报通知。已确认截止的不列，截止没核对的照列，以原文为准，不判断能否申报。站内查看结果，可选保存 Excel。</view>
     <view class="advisor-text muted">每月有免费次数，不需要购买。登录只用微信身份，不要手机号。</view>
   </view>

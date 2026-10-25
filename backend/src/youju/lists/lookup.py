@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids
 from youju.lists.rules import (
+    HONOR_TITLE,
     PERSON_TITLE,
     PUNITIVE_TITLE,
     normalize_name,
@@ -82,7 +83,7 @@ def list_title_allowed(document=Document):
     def has(words):
         return or_(*[document.title.contains(word, autoescape=True) for word in words])
 
-    return and_(not_(has(PUNITIVE_TITLE)), not_(has(PERSON_TITLE)))
+    return and_(not_(has(PUNITIVE_TITLE)), not_(has(PERSON_TITLE)), not_(has(HONOR_TITLE)))
 
 
 def _public_entries(stmt: Select) -> Select:
