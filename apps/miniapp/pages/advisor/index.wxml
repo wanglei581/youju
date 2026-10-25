@@ -6,7 +6,8 @@
     <view class="advisor-title">批量工具</view>
     <view wx:if="{{payCard.quotaLine}}" class="{{payCard.usedUp ? 'advisor-error' : 'advisor-text'}}">{{payCard.quotaLine}}</view>
     <view wx:if="{{payCard.offerLine}}" class="advisor-text">{{payCard.offerLine}}</view>
-    <button wx:if="{{payCard.button}}" class="advisor-button btn-primary" bindtap="buyPass">{{payCard.button}}</button>
+    <!-- D-087：位置和文字不动（D-076），按钮用白底次按钮——蓝色只留给真正去用的按钮，免得在售时一个买、一个用两个一样的蓝色大按钮 -->
+    <button wx:if="{{payCard.button}}" class="advisor-button" bindtap="buyPass">{{payCard.button}}</button>
   </view>
   <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
   <view wx:if="{{!aiEnabled && aiGate === 'consent'}}" class="card advisor-card">
@@ -47,11 +48,12 @@
     <button class="advisor-button" bindtap="tasks">全部记录</button>
   </view>
   <view wx:if="{{dataEnabled}}" class="card advisor-card">
+    <!-- D-087：两个工具是并列的，按钮都用白底次按钮，靠各自上面那句用途说明区分 -->
     <view class="advisor-title">批量处理客户名单（机构用）</view>
     <view class="advisor-text muted">{{dataStatus || '正在读取额度…'}}</view>
     <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
     <view wx:if="{{dataError}}" class="advisor-error">{{dataError}}<button class="advisor-button" bindtap="refreshQuota">刷新额度</button></view>
-    <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能追溯官方原文。未查到不等于没有入选。</view><button class="advisor-button btn-primary" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
+    <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能在小程序里对照官方原文。未查到不等于没有入选。</view><button class="advisor-button" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
     <block wx:if="{{trackEnabled}}"><view class="advisor-text">客户相关通知表：按省份和可选的关键词、支持方式、城市、区县整理近 90 天申报通知。已确认截止的不列，截止没核对的照列，以原文为准，不判断能否申报。站内查看结果，可选保存 Excel。</view><button class="advisor-button" data-kind="track" bindtap="dataTool">制作客户相关通知表</button></block>
   </view>
   <!-- 适用范围（暂行办法第十条要求公开）收进"说明"，点开可见 -->

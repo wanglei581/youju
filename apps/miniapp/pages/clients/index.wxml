@@ -67,12 +67,12 @@
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
   <view class="label">城市与区县（省市区联动，可多选）</view>
   <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
-  <view class="weak help">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
+  <view class="weak help">省市区选项来自微信，不代表已收录；城市一栏选“全部”查全省各级来源（省、市、区县都在内）；区县一栏选“全部”只查这个市已收录的市级来源，不含区县；直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。</view>
   <view class="weak help">{{cityCoverageNote}}</view>
   <view wx:if="{{cityError}}" class="help">{{cityError}}</view>
-  <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
+  <view wx:if="{{form.cities.length}}" class="weak help">已选的城市，点一下移除：</view>
   <view class="options"><view wx:for="{{form.cities}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeCity" aria-role="button" aria-label="移除城市{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
-  <view wx:if="{{districtLabels.length}}" class="weak help">已选区县，点此移除：</view>
+  <view wx:if="{{districtLabels.length}}" class="weak help">已选的区县，点一下移除：</view>
   <view class="options"><view wx:for="{{districtLabels}}" wx:key="key" class="option option--on" data-value="{{item.key}}" bindtap="removeDistrict" aria-role="button" aria-label="移除区县{{item.label}}">{{item.label}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
   <view class="label">产业方向（可多选）</view>
