@@ -104,6 +104,8 @@ test('查名单用词（D-090）：首发包页面、组件和工具函数不再
   // D-091 ③（改 D-090 第⑤点）：输入框只留企业全称，不再写统一社会信用代码
   assert.match(visible(read('pages/lists/index.wxml')), /placeholder="输入企业全称"/);
   assert.ok(!visible(read('pages/lists/index.wxml')).includes('输入企业全称或统一社会信用代码'));
+  // 首页“查名单”页签的提示也只写企业全称（点它直接进查名单页，提示本身不显示）
+  assert.ok(!/信用代码/.test(read('pages/home/index.js')));
 });
 
 // 隐私保护指引一·9（剪切板）和代码一致：哪个页面写剪切板，一·9 就要写到它；一·9 不再提复制原文链接、浏览器
