@@ -14,7 +14,10 @@ DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
+    # hide_input_in_errors：配置错了起不来时，报错（会进部署日志）里不带填进去的值——密钥、数据库地址
+    model_config = SettingsConfigDict(
+        env_prefix="YOUJU_", env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     # 本机开发用 scripts/dev_mysql.sh 启动的 MySQL；线上填云托管 MySQL 的内网地址
     database_url: str = "mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4"

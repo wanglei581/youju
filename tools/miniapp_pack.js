@@ -7,7 +7,9 @@
 //      购买、订单、使用帮助、AI）靠它判断后不显示（utils/pages.js）；
 //   4. 用发布检查（tools/miniapp_presubmit_check.js）检查打好的包，没过就不算打好。
 // 不上传、不提交审核。上传前在开发者工具里打开输出目录，实际点一遍审核员会走的路。
-// 用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit]
+// 用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit] [--npm-from <小程序目录>]
+// 搜索页用到组件库（tdesign-miniprogram），要有构建好的 miniprogram_npm：仓库里不带（.gitignore），
+// 在开发者工具里对 apps/miniapp 点"构建 npm"，或用 --npm-from 指定一个已经构建好的小程序目录（例如 miniapp-release 的）
 const fs = require('node:fs');
 const path = require('node:path');
 const { inspect, pagesFor, PROFILES } = require('./miniapp_presubmit_check.js');
@@ -39,8 +41,27 @@ function pageListSource(pages) {
   ].join('\n');
 }
 
+// 页面、组件、app.json 里引用的组件库组件（不是 / 或 . 开头的路径）
+function npmComponents(dir) {
+  const found = [];
+  const walk = (folder) => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== 'miniprogram_npm') walk(full); continue; }
+      if (!entry.name.endsWith('.json')) continue;
+      let json;
+      try { json = JSON.parse(fs.readFileSync(full, 'utf8')); } catch (e) { continue; }
+      for (const value of Object.values((json && json.usingComponents) || {})) {
+        if (typeof value === 'string' && !/^[/.]/.test(value)) found.push(`${path.relative(dir, full)}：${value}`);
+      }
+    }
+  };
+  walk(dir);
+  return found;
+}
+
 // 打包：返回 { out, pages, removed, result }；result 是发布检查的结果
-function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURCE }) {
+function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURCE, npmFrom }) {
   if (!PROFILES.includes(profile) || !['prepare', 'submit'].includes(mode)) throw new Error('参数不支持');
   if (!out) throw new Error('要用 --out 指定输出目录');
   const target = path.resolve(out);
@@ -52,6 +73,15 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
   const wanted = pagesFor(profile);
   const missing = wanted.filter((p) => !app.pages.includes(p));
   if (missing.length) throw new Error(`仓库的 app.json 里没有这些页面：${missing.join('、')}`);
+  if (app.subpackages || app.subPackages || app.preloadRule) throw new Error('app.json 有分包或预加载设置，打包工具还不支持，先核对');
+
+  // 组件库：打包前先确认有构建好的（没有就不动输出目录）
+  const built = path.join(npmFrom ? path.resolve(npmFrom) : source, 'miniprogram_npm');
+  if (npmFrom && !fs.existsSync(built)) throw new Error(`${npmFrom} 里没有 miniprogram_npm`);
+  const npm = npmComponents(source);
+  if (npm.length && !fs.existsSync(built)) {
+    throw new Error(`包里用到组件库（${npm[0]}），但没有构建好的 miniprogram_npm：先在开发者工具里对 apps/miniapp 点"构建 npm"，或加 --npm-from <已构建的小程序目录>`);
+  }
 
   copyTree(source, target);
   // 保持 app.json 里原来的顺序（第一页是首页）
@@ -61,12 +91,15 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
   if (app.tabBar && Array.isArray(app.tabBar.list)) {
     next.tabBar = { ...app.tabBar, list: app.tabBar.list.filter((item) => pages.includes(item.pagePath)) };
   }
-  if (app.subpackages || app.subPackages || app.preloadRule) throw new Error('app.json 有分包或预加载设置，打包工具还不支持，先核对');
   fs.writeFileSync(path.join(target, 'app.json'), `${JSON.stringify(next, null, 2)}\n`);
   for (const page of removed) {
     fs.rmSync(path.join(target, path.dirname(page)), { recursive: true, force: true });
   }
   fs.writeFileSync(path.join(target, 'utils', 'package-pages.js'), pageListSource(pages));
+  if (npmFrom) {
+    fs.rmSync(path.join(target, 'miniprogram_npm'), { recursive: true, force: true });
+    copyTree(built, path.join(target, 'miniprogram_npm'));
+  }
 
   const load = (file) => {
     const full = path.join(target, file);
@@ -93,7 +126,8 @@ function main(args) {
     if (args[i] === '--out' && args[i + 1]) options.out = args[++i];
     else if (args[i] === '--profile' && args[i + 1]) options.profile = args[++i];
     else if (args[i] === '--mode' && args[i + 1]) options.mode = args[++i];
-    else throw new Error('用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit]');
+    else if (args[i] === '--npm-from' && args[i + 1]) options.npmFrom = args[++i];
+    else throw new Error('用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit] [--npm-from <小程序目录>]');
   }
   const { out, pages, removed, result } = pack(options);
   console.log(`已打包到 ${out}：${pages.length} 页（去掉 ${removed.length} 页）`);
