@@ -125,7 +125,7 @@ const FORM = {
   remaining: 3, maxRows: 50, mode: 'paste', text: '', rowCount: 0, previewed: false, previewing: false, submitting: false, agreed: true, passActive: false,
 };
 
-test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写明先点"预览并核对行数"；预览通过后这句不出现', () => {
+test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写明为什么；先做什么写在"预览并核对行数"正下方；预览通过后都不出现', () => {
   const submitCard = (data) => {
     const root = render('pages/advisor-form/index.wxml', data);
     return findAll(root, (n) => elements(n).some(tapsTo('submit')))[0];
@@ -134,16 +134,20 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
   let kids = elements(card);
   let at = kids.findIndex(tapsTo('submit'));
   assert.equal(kids[at].attrs.disabled, true);
-  assert.equal(flat(kids[at - 1]), '填好名单后，先点上面的“预览并核对行数”，通过后才能提交');
-  // 提示里说的按钮确实在上面
-  assert.equal(findAll(render('pages/advisor-form/index.wxml', FORM), (n) => n.attrs.bindtap === 'preview' && /预览并核对行数/.test(flat(n))).length, 1);
+  assert.equal(flat(kids[at - 1]), '预览通过后才能提交');
+  // 先做什么：紧跟在"预览并核对行数"按钮下面（10/25 Grok：原来隔着工具说明和保存期限）
+  const previewCard = findAll(render('pages/advisor-form/index.wxml', FORM), (n) => elements(n).some(tapsTo('preview')))[0];
+  const pk = elements(previewCard);
+  const pat = pk.findIndex(tapsTo('preview'));
+  assert.match(flat(pk[pat]), /预览并核对行数/);
+  assert.equal(flat(pk[pat + 1]), '填好名单后，先点上面的“预览并核对行数”，通过后才能提交');
   // 正在预览（按钮在转圈）时不催"先点预览"
-  assert.doesNotMatch(textOf(submitCard({ ...FORM, previewing: true })), /先点上面的/);
+  assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', { ...FORM, previewing: true })), /先点上面的|预览通过后才能提交/);
   card = submitCard({ ...FORM, previewed: true, rowCount: 3 });
   kids = elements(card);
   at = kids.findIndex(tapsTo('submit'));
   assert.equal(kids[at].attrs.disabled, false);
-  assert.doesNotMatch(textOf(card), /先点上面的/);
+  assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', { ...FORM, previewed: true, rowCount: 3 })), /先点上面的|预览通过后才能提交/);
 });
 
 test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"关注"），不再写"关注这个搜索"', () => {
@@ -242,7 +246,7 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
 
 test('第 2 条附带：选文件那里写明旧版 .xls 要先另存为 .xlsx（选择器里本来就选不到 .xls）', () => {
   const text = textOf(render('pages/advisor-form/index.wxml', { ...FORM, mode: 'file' }));
-  assert.match(text, /只支持 XLSX \/ CSV（旧版 \.xls 请先另存为 \.xlsx），文件不超过 60 KB。/);
+  assert.match(text, /只支持 XLSX \/ CSV（旧版 \.xls 请先在电脑上用 Excel 或 WPS 另存为 \.xlsx），文件不超过 60 KB。/);
   assert.match(read('pages/advisor-form/index.js'), /extension: \['xlsx', 'csv'\]/);
 });
 
@@ -350,4 +354,16 @@ test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具�
   assert.ok(about.includes('在文件详情点"结果"')); assert.doesNotMatch(about, /点"导出"/);
   assert.match(read('pages/detail/index.wxml'), /bindtap="exportDoc"><t-icon name="download" size="44rpx" \/><text>结果<\/text>/);
   assert.match(read('pages/files/index.wxml'), /在文件详情点“结果”/);
+});
+
+test('10/25 Grok 复审：工具中心不写"追溯官方原文"（像外链）；关于有据写明导出的文件在底栏"导出"；我的客户的移除提示和搜索页同一说法', () => {
+  const tools = read('pages/advisor/index.wxml');
+  assert.doesNotMatch(tools, /追溯官方原文/);
+  assert.match(tools, /每条结果都能在小程序里对照官方原文/);
+  const about = read('pages/about/index.wxml');
+  assert.equal((about.match(/导出的文件在底栏"导出"里/g) || []).length, 2);
+  const clients = read('pages/clients/index.wxml');
+  assert.doesNotMatch(clients, /点此移除/);
+  assert.match(clients, /已选的城市，点一下移除：/);
+  assert.match(clients, /已选的区县，点一下移除：/);
 });
