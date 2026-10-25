@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids
 from youju.lists.rules import (
+    NEGATED_PUNITIVE,
     ORG_TITLE,
     PERSON_TITLE,
     PUNITIVE_TITLE,
@@ -76,13 +77,16 @@ def public_condition(document=Document, source=Source):
 
 
 def list_title_allowed(document=Document):
-    """进企业查询的名单（D-091）：标题不带失信、处罚等惩戒类的字；以个人为主的（人才、专家等，
-    标题里又没有企业、单位这类字）不进。和 rules.excluded_list_title 同一口径，后者管解析。"""
+    """进企业查询的名单（D-091 ③）：标题不带失信、处罚等惩戒类的字（"无失信""无违法违规"这类正面
+    说法除外）；以个人为主的（人才、专家等，又不是"企业名单""单位名单"这类）不进。和
+    rules.excluded_list_title 同一口径，后者管解析。"""
 
     def has(words):
         return or_(*[document.title.contains(word, autoescape=True) for word in words])
 
-    return and_(not_(has(PUNITIVE_TITLE)), not_(and_(has(PERSON_TITLE), not_(has(ORG_TITLE)))))
+    punitive = and_(has(PUNITIVE_TITLE), not_(has(NEGATED_PUNITIVE)))
+    personal = and_(has(PERSON_TITLE), not_(has(ORG_TITLE)))
+    return and_(not_(punitive), not_(personal))
 
 
 def _public_entries(stmt: Select) -> Select:

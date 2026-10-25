@@ -89,6 +89,7 @@ PERSONAL_HEADERS = (
     "电话",
     "手机",
     "联系方式",
+    "经营者",
     "通讯",
     "通信",
     "传真",
@@ -585,33 +586,49 @@ def _read_one(
     report: EvidenceReport,
     reason: str = "new",
 ) -> None:
+    """读一份名单文件。下载、取文字可能要几分钟：先只读出上次的文件指纹，结束这个只读事务再下载、
+    取文字（数据库连接不在事务里空等），最后在一个短事务里写结果（调用方提交）。"""
     from youju.attachments import MAX_BYTES, fetch_failure
 
-    row = _source_row(session, url, now)
+    known = session.scalar(
+        select(ListEvidenceSource).where(ListEvidenceSource.url_hash == url_key(url))
+    )
+    # 到了复查时间的：原网站的文件没变就不重新取文字、定位
+    same_as = (
+        known.content_sha256
+        if reason == "recheck" and known is not None and known.status in ("ok", "partial")
+        else None
+    )
+    session.rollback()
+
+    failure: tuple[str, str, bool] | None = None
+    extraction = None
+    digest = None
     result = fetcher.fetch(url)
     if result.status != "ok":
-        failure = fetch_failure(result)
-        code = {"gone": "gone", "too_large": "too_large"}.get(failure.code, "unavailable")
-        _record_failure(row, code, failure.detail, now, transient=failure.transient)
+        problem = fetch_failure(result)
+        code = {"gone": "gone", "too_large": "too_large"}.get(problem.code, "unavailable")
+        failure = (code, problem.detail, problem.transient)
+    elif not _government_url(result.final_url or url):
+        failure = ("unavailable", "跳转到了非政府网站", False)
+    elif len(content := result.content or b"") > MAX_BYTES:
+        failure = ("too_large", "附件超过 20MB", False)
+    else:
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != same_as:
+            extraction = texts.extract(content, limits=texts.LIST_LIMITS)
+
+    row = _source_row(session, url, now)
+    if failure is not None:
+        code, detail, transient = failure
+        _record_failure(row, code, detail, now, transient=transient)
         report.failed[code] += 1
         return
-    if not _government_url(result.final_url or url):
-        _record_failure(row, "unavailable", "跳转到了非政府网站", now, transient=False)
-        report.failed["unavailable"] += 1
-        return
-    content = result.content or b""
-    if len(content) > MAX_BYTES:
-        _record_failure(row, "too_large", "附件超过 20MB", now, transient=False)
-        report.failed["too_large"] += 1
-        return
-    digest = hashlib.sha256(content).hexdigest()
-    if reason == "recheck" and row.status in ("ok", "partial") and row.content_sha256 == digest:
-        # 到了复查时间、原网站的文件没变：不用重新取文字、定位
+    if extraction is None:
         row.checked_at = now
         row.retry_at = None
         report.unchanged += 1
         return
-    extraction = texts.extract(content, limits=texts.LIST_LIMITS)
     row.content_sha256 = digest
     row.file_type = extraction.file_type
     if not extraction.ok:

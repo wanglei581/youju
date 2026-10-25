@@ -612,6 +612,12 @@ def test_record_api_failed_reason(client, session) -> None:
         ("2026年经营异常名录企业公示", False),
         ("2026年度高层次人才名单公示", False),
         ("人才引进优秀企业名单公示", True),
+        # 正面名单里的"无失信""无重大违法违规"不按惩戒类排除
+        ("2026年度无失信记录守信企业名单公示", True),
+        ("无重大违法违规记录企业名录公布", True),
+        # 单位名下的专家名单仍是个人类
+        ("某研究院专家名单公示", False),
+        ("院士专家工作站建站单位名单公示", True),
     ],
 )
 def test_lookup_scope_excludes_punitive_and_person_lists(client, session, title, shown) -> None:
@@ -637,3 +643,22 @@ def test_cli_previews_and_reports(session, monkeypatch, capsys) -> None:
     assert "本轮读了 1 份" in out and "文件没变的 1 份" in out and "时间上限" in out
     monkeypatch.setattr(evidence, "refresh", lambda s, limit: evidence.EvidenceReport(errors=2))
     assert cli.main(["list-evidence", "--apply"]) == 1
+
+
+def test_record_api_says_when_the_name_column_was_not_found(client, session) -> None:
+    # 原文表格里认不出名称列：不说"原文里没有这一行"
+    _list(session, names=[("山东不在表里科技有限公司", None)])
+    token = client.get("/api/v1/lists/lookup", params={"q": "山东不在表里科技有限公司"}).json()[
+        "items"
+    ][0]["matched"]["entryToken"]
+    evidence.refresh(session, fetcher=FakeFetcher(_xlsx(ROWS)), now=NOW)
+    body = client.get("/api/v1/lists/record", params={"entry": token}).json()["evidence"]
+    assert body["state"] == "no_column" and body["rows"] == []
+
+
+def test_manual_list_override_does_not_parse_excluded_titles() -> None:
+    from youju.lists.rules import classify_title
+
+    assert classify_title("2026年严重失信主体名单", "名单").is_list is False
+    assert classify_title("2026年度高层次人才名单", "名单").is_list is False
+    assert classify_title("2026年无失信记录企业名单", "名单").is_list is True

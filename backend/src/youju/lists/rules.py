@@ -54,7 +54,7 @@ _NEGATIVE_TITLE = (
     "征集",
 )
 # 查名单只查认定、立项、公示、入库、备案这类名单（D-091 ③）：失信、处罚、经营异常、黑名单、
-# 惩戒、警示类不解析、不进查询（标题里有这些字就不算）
+# 惩戒、警示类不解析、不进查询（标题里有这些字就不算，除非是下面"无失信""无违法违规"这类说法）
 PUNITIVE_TITLE = (
     "失信",
     "处罚",
@@ -67,7 +67,24 @@ PUNITIVE_TITLE = (
     "违法",
     "不良",
 )
-# 以个人为主的名单（人才、专家等）不进企业查询（D-091 ①）：标题有这些字、又没有企业、单位这类字的
+# 正面名单标题里的否定说法（"无失信记录企业""无重大违法违规"）：有这些说法的不按惩戒类排除
+NEGATED_PUNITIVE = (
+    "无失信",
+    "无严重失信",
+    "无重大失信",
+    "无违法",
+    "无违规",
+    "无重大违法",
+    "无重大违规",
+    "无不良",
+    "无处罚",
+    "无行政处罚",
+    "未受处罚",
+    "未受过处罚",
+    "未受行政处罚",
+)
+# 以个人为主的名单（人才、专家等）不进企业查询（D-091 ③）：标题有这些字、又不是"企业名单"
+# "单位名单"这类以单位为名的名单的（"某单位专家名单"仍算个人类）
 PERSON_TITLE = (
     "人才",
     "专家",
@@ -85,10 +102,18 @@ PERSON_TITLE = (
     "导师",
     "劳模",
     "劳动模范",
+    "特派员",
+    "带头人",
+    "首席",
 )
 _SELECTION = ("拟认定", "拟入库", "认定", "入库", "备案", "通过", "入选")
 _ENTITY = ("企业", "机构", "单位", "中心", "研究院", "合作社", "平台", "实验室", "基地")
-ORG_TITLE = _ENTITY + ("公司", "园区", "集团", "学校", "医院")
+# 以单位为名的名单：机构用词紧挨着"名单""名录"（"人才引进优秀企业名单""专家工作站建站单位名单"）
+ORG_TITLE = tuple(
+    f"{word}{suffix}"
+    for word in (*_ENTITY, "公司", "园区", "集团", "学校", "医院")
+    for suffix in ("名单", "名录")
+)
 _BATCH = re.compile(
     r"第\s*([0-9一二三四五六七八九十百]+)\s*批|[（(]\s*第?([0-9一二三四五六七八九十百]+)\s*批\s*[）)]"
 )
@@ -178,11 +203,14 @@ def classify_title(title: str, kind_override: str | None = None) -> ListClassifi
     kind = kind_override or doc_kind(title)
     if kind != "名单":
         return ListClassification(False)
+    if excluded_list_title(title):
+        # 失信、处罚类和个人类名单人工定成名单也不解析（D-091 ③）
+        return ListClassification(False)
     if kind_override == "名单":
         # 人工确认是名单：不再用标题关键词二次筛，直接解析
         return ListClassification(True, *_category_batch(normalize_name(title)))
     value = normalize_name(title)
-    if any(term in value for term in _NEGATIVE_TITLE) or excluded_list_title(value):
+    if any(term in value for term in _NEGATIVE_TITLE):
         return ListClassification(False)
     has_list_word = "名单" in value or "名录" in value
     has_release = any(term in value for term in ("公示", "公告", "公布"))
@@ -203,9 +231,12 @@ def classify_title(title: str, kind_override: str | None = None) -> ListClassifi
 
 
 def excluded_list_title(title: str) -> bool:
-    """不进企业查询的名单：失信、处罚等惩戒类，和以个人为主的（人才、专家等）。"""
+    """不进企业查询的名单：失信、处罚等惩戒类，和以个人为主的（人才、专家等）。
+    和 lookup.list_title_allowed 同一口径（那边是数据库查询条件）。"""
     value = normalize_name(title or "")
-    if any(term in value for term in PUNITIVE_TITLE):
+    if any(term in value for term in PUNITIVE_TITLE) and not any(
+        term in value for term in NEGATED_PUNITIVE
+    ):
         return True
     return any(term in value for term in PERSON_TITLE) and not any(
         term in value for term in ORG_TITLE

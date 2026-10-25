@@ -2841,6 +2841,9 @@ def list_record(
                     "hidden": int(stored.get("hidden") or 0),
                 }
             )
+    elif location.state == "no_name_column":
+        # 原文表格里没认出哪一列是企业名称：不说"原文里没有这一行"
+        state = "no_column"
     else:
         state = "notfound"
     partial = evidence_source is not None and evidence_source.status == "partial"

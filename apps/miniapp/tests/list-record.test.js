@@ -130,9 +130,9 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
   assert.equal(view.docTitle, '名单文件标题');
   assert.equal(view.issuerLine, '发文机关 2026-09-02');
   assert.equal(view.statusLine, '发布阶段：公示');
-  assert.equal(view.publicityNote, '公示不等于正式认定，以正式公布的名单为准');
+  assert.equal(view.publicityNote, '发布阶段按名单标题用词标注，是否还在公示期以原文为准');
   assert.equal(view.regionLine, '地区：山东省');
-  assert.equal(view.disclaimer, '这是政府公开名单里的一行记录，不代表资格结论。');
+  assert.equal(view.disclaimer, '这一行摘自政府公开发布的名单，有据只做整理，不作判断。');
   // 只写来源网站的域名，不给原文链接
   assert.equal(view.sourceLine, '来源 example.gov.cn');
   assert.equal('urlLine' in view, false);
@@ -150,7 +150,7 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
   assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系人、电话、备注等）');
   assert.equal(view.moreLine, '原文里这个名称出现超过 5 处，只列出前 5 处');
   assert.equal(view.partialLine, '这份名单很长，只读了前 4 页');
-  assert.equal(view.parsedTitle, '我们从原文解析出的记录');
+  assert.equal(view.parsedTitle, '我们从原文解析出的记录（以上面原文那一行为准）');
   assert.deepEqual(view.parsed.map((item) => [item.label, item.value]), [
     ['名称', '企业名称'], ['类别', '科技型中小企业'], ['批次', '第一批'], ['地区', '济南市'],
   ]);
@@ -191,6 +191,11 @@ test('pending、failed、notfound、in_body 显示说明和解析记录', async 
       statusLine: '',
     },
     {
+      patch: { evidence: { state: 'no_column' } },
+      note: '没认出原文表格里哪一列是企业名称，暂时对不上原文那一行。下面是从原文解析出的记录。',
+      statusLine: '发布阶段：公示',
+    },
+    {
       patch: { evidence: { state: 'in_body', reason: '附件已移除' } },
       note: '这份名单在通知网页正文的表格里，暂时显示不了原文那一行。下面是从原文解析出的记录。',
       statusLine: '发布阶段：公示',
@@ -205,11 +210,11 @@ test('pending、failed、notfound、in_body 显示说明和解析记录', async 
     assert.deepEqual(view.rows, []);
     assert.equal(view.moreLine, '');
     assert.equal(view.partialLine, '');
-    // 公示提醒只看发布阶段，原文那一行显示不出来时照样提醒
-    const note = item.statusLine === '发布阶段：公示' ? '公示不等于正式认定，以正式公布的名单为准' : '';
+    // 有发布阶段就提醒以原文为准，原文那一行显示不出来时照样提醒
+    const note = item.statusLine ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '';
     assert.equal(view.publicityNote, note);
     assert.equal(view.statusLine, item.statusLine);
-    assert.equal(view.disclaimer, '这是政府公开名单里的一行记录，不代表资格结论。');
+    assert.equal(view.disclaimer, '这一行摘自政府公开发布的名单，有据只做整理，不作判断。');
     assert.equal(view.sourceLine, '来源 example.gov.cn');
     if (item.issuerLine) assert.equal(view.issuerLine, item.issuerLine);
     if (item.parsed) assert.deepEqual(view.parsed.map((field) => [field.label, field.value]), item.parsed);
@@ -274,14 +279,14 @@ test('离页后晚到响应不写入，回到页面重新请求', async () => {
 test('页面文字里没有禁用词', async () => {
   const banned = [
     '复制原文链接', '浏览器', '以原网站为准', '复制后可能打不开', '其他应用打开', '用其他应用', '换个应用', '用 WPS',
-    '信用', '失信', '征信', '评分', '风险', '命中', '符合条件', '可以申报', '原文网址', '原文链接', 'http',
+    '信用', '失信', '征信', '评分', '风险', '命中', '符合条件', '可以申报', '原文网址', '原文链接', 'http', '资格', '结论', '正式认定',
   ];
   const files = ['pages/reader/index.js', 'pages/reader/index.wxml', 'pages/reader/index.wxss']
     .map((name) => fs.readFileSync(path.join(root, name), 'utf8')).join('\n');
   const required = [
     '原名单里的这一行',
-    '公示不等于正式认定，以正式公布的名单为准',
-    '这是政府公开名单里的一行记录，不代表资格结论。',
+    '发布阶段按名单标题用词标注，是否还在公示期以原文为准',
+    '这一行摘自政府公开发布的名单，有据只做整理，不作判断。',
     '正在加载…',
     '这条记录的地址无效，请回查名单页重新查询。',
     '这条记录已更新或不存在，请回查名单页重新查询。',

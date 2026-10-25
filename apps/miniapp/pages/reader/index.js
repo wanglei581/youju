@@ -40,6 +40,7 @@ function stateNoteOf(evidence) {
   }
   if (state === 'notfound') return '在原文里没有找到这一行（名称在原文里可能换了行或写法不同）。下面是从原文解析出的记录。';
   if (state === 'in_body') return '这份名单在通知网页正文的表格里，暂时显示不了原文那一行。下面是从原文解析出的记录。';
+  if (state === 'no_column') return '没认出原文表格里哪一列是企业名称，暂时对不上原文那一行。下面是从原文解析出的记录。';
   return '';
 }
 // 单元格只读取 h、t、name；不是字符串则当空串。其他服务端字段不进入页面数据。
@@ -78,9 +79,10 @@ function listRowView(res) {
     docTitle: textOf(doc.title),
     issuerLine: [textOf(doc.issuer), textOf(doc.date)].filter(Boolean).join(' '),
     statusLine: status ? `发布阶段：${status}` : '',
-    publicityNote: status === '公示' ? '公示不等于正式认定，以正式公布的名单为准' : '',
+    // 发布阶段只照录标题用词（D-090），是否还在公示期由原文说了算
+    publicityNote: status ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '',
     regionLine: region ? `地区：${region}` : '',
-    disclaimer: '这是政府公开名单里的一行记录，不代表资格结论。',
+    disclaimer: '这一行摘自政府公开发布的名单，有据只做整理，不作判断。',
     sourceLine: host ? `来源 ${host}` : '',
     linkGoneLine: gone ? `原网页 ${gone} 起已打不开，下面是此前收录的内容` : '',
     state: textOf(evidence.state),
@@ -89,7 +91,7 @@ function listRowView(res) {
     rows: found ? evidenceRows(evidence) : [],
     moreLine: found && evidence.more === true ? '原文里这个名称出现超过 5 处，只列出前 5 处' : '',
     partialLine: found && evidence.partial === true ? `这份名单很长，只读了前 ${pages} 页` : '',
-    parsedTitle: found ? '我们从原文解析出的记录' : '解析出的记录',
+    parsedTitle: found ? '我们从原文解析出的记录（以上面原文那一行为准）' : '解析出的记录',
     parsed: entryItems(entry),
   };
 }

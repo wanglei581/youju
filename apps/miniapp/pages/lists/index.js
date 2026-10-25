@@ -24,10 +24,11 @@ const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 function missNote(coverage) {
   const unread = Number((coverage && coverage.unreadLists) || 0);
   const partial = Number((coverage && coverage.partialLists) || 0);
+  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，用"其中"
   const parts = [];
-  if (unread > 0) parts.push(`${unread} 份名单没能读出企业名称（扫描件、旧格式或表格没认出来）`);
-  if (partial > 0) parts.push(`${partial} 份名单很长、只读了前面一部分`);
-  const extra = parts.length ? `另有${parts.join('，')}，` : '';
+  if (unread > 0) parts.push(`另有 ${unread} 份名单没能读出企业名称（扫描件、旧格式或表格没认出来）`);
+  if (partial > 0) parts.push(`已收录的名单中有 ${partial} 份很长、只读了前面一部分`);
+  const extra = parts.length ? `${parts.join('；')}。` : '';
   return `${extra}不能据此判断这家企业不在名单里；地市发布的名单也还没收录。`;
 }
 
