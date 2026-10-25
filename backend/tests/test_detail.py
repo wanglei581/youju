@@ -122,6 +122,10 @@ _BODY_SIZE = {
     "detail_henan_kjt": (7, 501),
     "detail_shanghai_sheitc": (3, 318),
     "detail_qinghai_gxt": (14, 473),
+    # 10/25 对照原网页核过：div.zw 里 42 段一段不少。样例留着原页面上 3 个省科技厅的公开办公座机
+    # （政府办公电话，不是个人信息）；2912 是 parse_detail 输出的字数，输出时已按入库的脱敏规则
+    # 把这 3 个座机换成"[电话已脱敏]"
+    "detail_guangdong_kjt": (42, 2912),
 }
 
 
@@ -247,6 +251,16 @@ _BODY_SIZE = {
             date(2026, 9, 18),
             0,
         ),
+        (
+            # 通用规则取到的是网页导航（"首页 政务公开 科技资讯……"），正文在 div.zw
+            "detail_guangdong_kjt",
+            "https://gdstc.gd.gov.cn/zwgk_n/tzgg/content/post_4970293.html",
+            "粤科函资字〔2026〕1726号",
+            "2026年10月23日",
+            "广东省科学技术厅",
+            date(2026, 10, 23),
+            0,
+        ),
     ],
 )
 def test_body_has_no_page_chrome(fixture, url, first, last, issuer, published, attachments) -> None:
@@ -281,6 +295,48 @@ def test_site_body_rules_only_for_listed_hosts() -> None:
     assert parse_detail(page, "https://kjt.example.gov.cn/a.html").body_text.startswith("栏目导航")
     changed = page.replace("newsCon", "newsMain")
     assert parse_detail(changed, sichuan).body_text.startswith("栏目导航")
+
+
+def test_guangdong_kjt_body_in_div_zw() -> None:
+    """广东科技厅（10/25 线上抽样）：通用规则只取到网页导航（"首页 政务公开 科技资讯……"共 31 字），
+    这个来源的通知全都"没有正文"。正文就在页面静态 HTML 的 div.zw 里，按网站规则取。"""
+    page = read_fixture_html("detail_guangdong_kjt")
+    result = parse_detail(page, "https://gdstc.gd.gov.cn/zwgk_n/tzgg/content/post_4970293.html")
+    assert result.body_text.startswith(
+        "粤科函资字〔2026〕1726号\n省有关部门，各地级以上市科技（创）局"
+    )
+    assert len(result.body_text) > 500
+    chrome = ("当前位置", "首页", "【打印】", "分享到", "字体")
+    assert all(word in page for word in chrome)  # 网页上都有，只是不算正文
+    assert [word for word in chrome if word in result.body_text] == []
+    assert "关于组织申报" not in result.body_text  # 标题（zw-title）不收进正文
+    assert result.doc_number == "粤科函资字〔2026〕1726号"
+
+
+def test_gdstc_rule_whole_class_only_for_this_host() -> None:
+    """广东科技厅的 div.zw 只对 gdstc.gd.gov.cn 用；类名按完整词匹配：发布信息和按钮所在的 zw-info、
+    标题 zw-title 不算正文区（这里故意让 zw-info 的字比正文多）。页面上没有 div.zw（网站改版）时照旧
+    走通用规则。"""
+    page = (
+        "<html><body><h3 class='zw-title'>关于组织申报某专项项目的通知</h3><div class='zw-info'>"
+        "<span>时间 : 2026-10-23 17:45:03</span><span>来源 : 广东省科学技术厅</span>"
+        "<span>【字体:大 中 小】</span><span>【打印】</span><div>分享到：微信 微博 QQ空间</div></div>"
+        "<div class='zw'><p>各有关单位：现将有关事项通知如下，请于11月10日前按要求报送申报材料。</p>"
+        "</div><div id='zoom'><p>栏目导航：首页 通知公告 政策文件 办事服务 互动交流 专题专栏 网站地图"
+        "</p></div></body></html>"
+    )
+    gdstc = "https://gdstc.gd.gov.cn/zwgk_n/tzgg/content/post_1.html"
+    assert parse_detail(page, gdstc).body_text.startswith("各有关单位")
+    assert parse_detail(page, "https://kjt.example.gov.cn/a.html").body_text.startswith("栏目导航")
+    # 换成别的类名：只说明会退回通用规则（真网站上通用规则取到的是页头导航）
+    changed = page.replace("class='zw'", "class='zw-content'")
+    assert parse_detail(changed, gdstc).body_text.startswith("栏目导航")
+    # 页面上有几块 div.zw 时取字最多的一块（抽查的 4 个真页面都只有一块）
+    two = page.replace(
+        "<div class='zw'>",
+        "<div class='zw'><p>附件：申报指南和申报书模板请在下方附件中查看。</p></div><div class='zw'>",
+    )
+    assert parse_detail(two, gdstc).body_text.startswith("各有关单位")
 
 
 def test_body_written_in_page_script() -> None:

@@ -98,6 +98,9 @@ _SITE_BODY_SELECTORS = {
     "kjt.henan.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " articl_u2 ")]',
     # 上海经信委：文章头的"字号：小 中 大"
     "sheitc.sh.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " text-main ")]',
+    # 广东科技厅：通用规则取到网页导航（"首页 政务公开 科技资讯……"），正文在 div.zw（10/25 抽样）。
+    # 按完整类名匹配：标题 zw-title、发布信息和"【打印】""分享到"所在的 zw-info 是别的元素
+    "gdstc.gd.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " zw ")]',
 }
 # 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
 _SITE_JUNK = {
