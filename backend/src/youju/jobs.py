@@ -39,6 +39,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "triage-feedback",
     "parse-lists",
     "cache-attachments",
+    "list-evidence",
     "notify",
     "alert",
 )

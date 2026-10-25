@@ -53,8 +53,42 @@ _NEGATIVE_TITLE = (
     "补贴",
     "征集",
 )
+# 查名单只查认定、立项、公示、入库、备案这类名单（D-091 ③）：失信、处罚、经营异常、黑名单、
+# 惩戒、警示类不解析、不进查询（标题里有这些字就不算）
+PUNITIVE_TITLE = (
+    "失信",
+    "处罚",
+    "经营异常",
+    "异常名录",
+    "黑名单",
+    "惩戒",
+    "警示",
+    "违规",
+    "违法",
+    "不良",
+)
+# 以个人为主的名单（人才、专家等）不进企业查询（D-091 ①）：标题有这些字、又没有企业、单位这类字的
+PERSON_TITLE = (
+    "人才",
+    "专家",
+    "个人",
+    "教师",
+    "医师",
+    "医生",
+    "律师",
+    "技师",
+    "工匠",
+    "学者",
+    "院士",
+    "人选",
+    "人员",
+    "导师",
+    "劳模",
+    "劳动模范",
+)
 _SELECTION = ("拟认定", "拟入库", "认定", "入库", "备案", "通过", "入选")
 _ENTITY = ("企业", "机构", "单位", "中心", "研究院", "合作社", "平台", "实验室", "基地")
+ORG_TITLE = _ENTITY + ("公司", "园区", "集团", "学校", "医院")
 _BATCH = re.compile(
     r"第\s*([0-9一二三四五六七八九十百]+)\s*批|[（(]\s*第?([0-9一二三四五六七八九十百]+)\s*批\s*[）)]"
 )
@@ -148,7 +182,7 @@ def classify_title(title: str, kind_override: str | None = None) -> ListClassifi
         # 人工确认是名单：不再用标题关键词二次筛，直接解析
         return ListClassification(True, *_category_batch(normalize_name(title)))
     value = normalize_name(title)
-    if any(term in value for term in _NEGATIVE_TITLE):
+    if any(term in value for term in _NEGATIVE_TITLE) or excluded_list_title(value):
         return ListClassification(False)
     has_list_word = "名单" in value or "名录" in value
     has_release = any(term in value for term in ("公示", "公告", "公布"))
@@ -166,6 +200,16 @@ def classify_title(title: str, kind_override: str | None = None) -> ListClassifi
     ):
         return ListClassification(False)
     return ListClassification(True, *_category_batch(value))
+
+
+def excluded_list_title(title: str) -> bool:
+    """不进企业查询的名单：失信、处罚等惩戒类，和以个人为主的（人才、专家等）。"""
+    value = normalize_name(title or "")
+    if any(term in value for term in PUNITIVE_TITLE):
+        return True
+    return any(term in value for term in PERSON_TITLE) and not any(
+        term in value for term in ORG_TITLE
+    )
 
 
 def candidate_key(value: str) -> str:

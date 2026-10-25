@@ -1120,6 +1120,36 @@ def _cmd_cleanup(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_list_evidence(args: argparse.Namespace) -> int:
+    """查名单站内闭环（D-088）：读名单附件、找到每条条目在原文里的那一行，只存命中行。
+
+    不加 --apply 只看：一共多少份名单附件、这一轮该读多少份、各状态多少份，不下载。
+    原网站下载不了、读不出来的记在表里按时重试，不算任务失败。"""
+    from youju.lists import evidence
+
+    with session_factory()() as session:
+        if not args.apply:
+            info = evidence.preview(session)
+            status = "，".join(f"{k} {v}" for k, v in sorted(info["status"].items())) or "无"
+            print(
+                f"名单附件：一共 {info['candidates']} 份，这一轮该读 {info['due']} 份；"
+                f"已读的各状态：{status}（预览，没有下载；加 --apply 才读）"
+            )
+            return 0
+        report = evidence.refresh(session, limit=args.limit)
+    if report.skipped_lock:
+        print("名单附件：另一个同样的任务正在运行，本轮跳过")
+        return 0
+    failed = "，".join(f"{k} {v}" for k, v in sorted(report.failed.items())) or "无"
+    states = "，".join(f"{k} {v}" for k, v in sorted(report.states.items())) or "无"
+    print(
+        f"名单附件：该读 {report.due} 份，本轮读了 {report.read} 份（其中只读了一部分的 "
+        f"{report.partial} 份），读不出来的原因：{failed}；条目定位：{states}；"
+        f"出错 {report.errors} 份"
+    )
+    return 1 if report.errors and not report.read else 0
+
+
 def _cmd_cache_attachments(args: argparse.Namespace) -> int:
     """附件副本（youju/attachments.py）：申报通知近 180 天、政策近 90 天的附件
     存到对象存储 attachments/，
@@ -2027,6 +2057,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=100, help="本轮最多下载几个（1–500，默认 100）")
     p.add_argument("--retry-failed", action="store_true", help="没存成的不等重试时间，本轮就重试")
     p.set_defaults(func=_cmd_cache_attachments)
+    p = sub.add_parser(
+        "list-evidence",
+        help="查名单站内闭环：读名单附件，找到每条条目在原文里的那一行（只存命中行）；"
+        "不加 --apply 只看份数",
+    )
+    p.add_argument("--limit", type=int, default=30, help="本轮最多读几份（默认 30）")
+    p.add_argument("--apply", action="store_true", help="真正下载、读取、写入（不加只看份数）")
+    p.set_defaults(func=_cmd_list_evidence)
     p = sub.add_parser(
         "attachment-texts",
         help="只取给 AI 用的附件文字（不存副本、不访问对象存储）：还没取过的补取，清理超出范围的",

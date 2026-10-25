@@ -2123,7 +2123,9 @@ class Limits:
 
 
 DEFAULT_LIMITS = Limits()
-LIST_LIMITS = Limits(chars=3_000_000, pdf_first_pages=True, seconds=600)
+# 名单模式：PDF 读到第 1000 页（和 lists.parser.MAX_PDF_PAGES 一致，名单条目最多来自这么多页），
+# 超过的只读前 1000 页、记"没读全"；字数上限 300 万；单份最多 10 分钟
+LIST_LIMITS = Limits(chars=3_000_000, pdf_pages=1000, pdf_first_pages=True, seconds=600)
 _LIMITS: ContextVar[Limits | None] = ContextVar("attachment_text_limits", default=None)
 
 

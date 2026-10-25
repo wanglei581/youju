@@ -67,6 +67,11 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
         for table in Base.metadata.sorted_tables:
             conn.execute(text(f"TRUNCATE TABLE `{table.name}`"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+        # signing_keys 的一行由迁移写入，TRUNCATE 后补回，模拟正常迁移后的数据库
+        conn.execute(
+            text("INSERT INTO signing_keys (name, key_hex) VALUES ('list_entry', :key)"),
+            {"key": "11" * 32},
+        )
     # 换了一批数据：清掉截止摘录的整批缓存（按日期和截止数据版本做键，清空后自增编号会重复）
     from youju.api import v1
 

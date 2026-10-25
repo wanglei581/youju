@@ -43,8 +43,10 @@ from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.issuer import normalize_issuer
+from youju.lists import evidence as list_evidence
 from youju.lists.lookup import (
     ListLookupResult,
+    list_title_allowed,
     lookup_list_matches,
     lookup_name_candidates,
     public_condition,
@@ -58,6 +60,9 @@ from youju.models import (
     DocumentMerge,
     JobRun,
     ListEntry,
+    ListEntryLocation,
+    ListEvidenceSource,
+    ListParse,
     RepostGroup,
     RepostGroupMember,
     Source,
@@ -2628,6 +2633,7 @@ def lookup_lists(
         )
     masters = lookup.master_ids
     best = {match.master_id: match for match in lookup.matches}
+    tokens = list_evidence.entry_tokens(session, [m.entry_id for m in lookup.matches])
     rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
     items: list[dict] = []
     for item in _items(session, [tuple(r) for r in rows]):
@@ -2640,6 +2646,8 @@ def lookup_lists(
             "creditCode": entry.credit_code,
             "region": entry.region,
             "via": "name" if entry.normalized_name == query else "creditCode",
+            # 查"原名单里的那一行"用（D-088）：带签名，只有查到这家企业的人拿得到
+            "entryToken": tokens.get(entry.entry_id),
         }
         items.append(item)
     shown_names = {entry.normalized_name for entry in best.values()}
@@ -2676,8 +2684,9 @@ def lookup_lists(
         select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
         .join(Document, Document.id == ListEntry.document_id)
         .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1, available_condition())
+        .where(Source.rights_level == 1, available_condition(), list_title_allowed())
     ).one()
+    unread, partial = _unread_lists(session)
     return {
         "query": q.strip(),
         "items": items,
@@ -2685,7 +2694,159 @@ def lookup_lists(
         "candidates": candidates,
         "ambiguous": lookup.ambiguous,
         "truncated": lookup.truncated,
-        "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
+        "coverage": {
+            "lists": lists_total,
+            "since": since.isoformat() if since else None,
+            # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
+            "unreadLists": unread,
+            "partialLists": partial,
+        },
+    }
+
+
+def _unread_lists(session: Session) -> tuple[int, int]:
+    """公开的名单文件里，没读出企业名称的份数（扫描件、旧格式、表格没认出来、详情取不到）、
+    只读了前面一部分的份数（PDF 超过页数上限）。"""
+    has_entries = (
+        select(ListEntry.id).where(ListEntry.document_id == ListParse.document_id).exists()
+    )
+    base = (
+        select(func.count(func.distinct(ListParse.document_id)))
+        .join(Document, Document.id == ListParse.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            Source.rights_level == 1,
+            available_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            list_title_allowed(),
+        )
+    )
+    unread = session.scalar(base.where(~has_entries)) or 0
+    partial = (
+        session.scalar(base.where(has_entries, ListParse.failure_reason.like("%仅解析前%"))) or 0
+    )
+    return unread, partial
+
+
+_EVIDENCE_REASONS = {
+    "scan": "原文附件是扫描图片，读不出文字",
+    "empty": "原文附件里没有文字",
+    "broken": "原文附件损坏或加了密",
+    "format": "原文附件的格式暂不支持",
+    "too_large": "原文附件太大",
+    "webpage": "原网站给的不是文件",
+    "gone": "原网站已经没有这个附件",
+    "unavailable": "原网站暂时下载不了这个附件",
+}
+
+
+def _where_text(where: dict) -> str:
+    """原文位置的说法：第 3 页第 1 个表第 12 行；工作表"Sheet1"第 120 行；第 2 个表第 5 行。"""
+    parts = []
+    if where.get("sheet"):
+        parts.append(f"工作表“{where['sheet']}”")
+    if where.get("page"):
+        parts.append(f"第 {where['page']} 页")
+    if where.get("table"):
+        parts.append(f"第 {where['table']} 个表")
+    if where.get("row"):
+        parts.append(f"第 {where['row']} 行")
+    return "".join(parts)
+
+
+@router.get("/lists/record")
+def list_record(
+    request: Request,
+    session: SessionDep,
+    entry: Annotated[
+        str, Query(min_length=3, max_length=40, description="查名单结果里的 entryToken")
+    ],
+) -> dict:
+    """查名单结果里一条记录在原名单里的那一行（D-088）：只给这一行和列名、在原文的位置，个人信息
+    列不显示，不提供整份名单。条目编号要带查名单时给的签名。"""
+    _limit_lookup(request)
+    entry_id = list_evidence.parse_entry_token(session, entry)
+    row = session.get(ListEntry, entry_id) if entry_id is not None else None
+    doc = None
+    if row is not None:
+        doc = session.execute(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Document.id == row.document_id,
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                list_title_allowed(),
+            )
+        ).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="没有找到这条记录，请重新查询")
+    document, source = doc
+    kind = effective_kind(document.title, document.kind_override)
+    location = session.get(ListEntryLocation, row.id)
+    evidence_source = session.scalar(
+        select(ListEvidenceSource).where(
+            ListEvidenceSource.url_hash == list_evidence.url_key(row.source_url)
+        )
+    )
+    parsed_from = session.scalar(
+        select(ListParse.source_kind).where(
+            ListParse.document_id == row.document_id, ListParse.source_url == row.source_url
+        )
+    )
+    rows: list[dict] = []
+    if parsed_from == "detail":
+        # 名单在通知网页正文的表格里：原文那一行暂时只能给解析出的记录
+        state = "in_body"
+    elif evidence_source is None or (location is None and evidence_source.status != "failed"):
+        state = "pending"
+    elif evidence_source.status == "failed":
+        state = "failed"
+    elif location.state in ("ok", "multiple", "ambiguous"):
+        state = "found"
+        for stored in location.rows:
+            cells = [
+                {"h": cell.get("h") or "", "t": redact_sensitive(str(cell.get("t", "")))}
+                for cell in stored.get("cells", [])
+                if not list_evidence.personal_header(cell.get("h"))
+            ]
+            rows.append(
+                {
+                    "where": _where_text(stored.get("where") or {}),
+                    "cells": cells,
+                    "hidden": int(stored.get("hidden") or 0),
+                }
+            )
+    else:
+        state = "notfound"
+    partial = evidence_source is not None and evidence_source.status == "partial"
+    return {
+        "entry": {
+            "name": redact_sensitive(row.name),
+            "category": row.category,
+            "batch": row.batch,
+            "region": row.region,
+        },
+        "document": {
+            "id": str(document.id),
+            "title": redact_sensitive(document.title),
+            "status": list_status(document.title, kind),
+            "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
+            "date": document.publish_date.isoformat() if document.publish_date else None,
+            "region": region_label(source.province, source.level, source.city, source.district),
+            "url": public_url(document.url),
+            "link_gone": link_gone_date(document.link_gone_at),
+        },
+        "evidence": {
+            "state": state,
+            "rows": rows,
+            "more": location is not None and location.state == "ambiguous",
+            "partial": partial,
+            "pagesRead": evidence_source.pages_read if partial else None,
+            "reason": _EVIDENCE_REASONS.get(evidence_source.reason or "")
+            if state == "failed" and evidence_source is not None
+            else None,
+        },
     }
 
 

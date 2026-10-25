@@ -892,29 +892,36 @@ class ListEntry(Base):
 
 
 class ListEvidenceSource(Base):
-    """查名单站内闭环：名单附件取文字的状态（每个原站链接一行）。
+    """查名单站内闭环（D-088）：一份名单附件（原站链接）读取的结果。
 
-    名单附件只为定位条目取文字，不存进给 AI 用的附件文字表，也不存副本；整份文字不落库，
-    只把每条条目命中的那几行存进 list_entry_locations。"""
+    名单附件只为找到"企业在原名单里的那一行"读一遍，整份文字不落库、不存副本，也不进给 AI 用的
+    附件文字表；每条条目命中的那几行存进 list_entry_locations。"""
 
     __tablename__ = "list_evidence_sources"
     __table_args__ = (
         UniqueConstraint("url_hash", name="uq_list_evidence_sources_url"),
-        CheckConstraint("status IN ('ok', 'failed')", name="ck_list_evidence_sources_status"),
+        CheckConstraint(
+            "status IN ('ok', 'partial', 'failed')", name="ck_list_evidence_sources_status"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     url_hash: Mapped[str] = mapped_column(String(64))
     url: Mapped[str] = mapped_column(Text)
+    # ok 读全了；partial 只读了前面一部分（PDF 超过页数上限）；failed 没读出来
     status: Mapped[str] = mapped_column(String(16))
-    # 取不出、下载不了的原因（attachment_text.REASONS 的代码）
+    # 没读出来的原因（attachment_text.REASONS 的代码，或下载失败的原因）
     reason: Mapped[str | None] = mapped_column(String(16))
     detail: Mapped[str | None] = mapped_column(String(300))
     content_sha256: Mapped[str | None] = mapped_column(String(64))
     file_type: Mapped[str | None] = mapped_column(String(8))
-    # 取文字规则版本（attachment_text.EXTRACTOR_VERSION）和定位规则版本，任何一个升级就重取
+    pages_total: Mapped[int | None] = mapped_column(Integer)
+    pages_read: Mapped[int | None] = mapped_column(Integer)
+    # 取文字规则（attachment_text.EXTRACTOR_VERSION）和定位规则（evidence.LOCATOR_VERSION）的版本，
+    # 任何一个升级就重读
     extractor: Mapped[int] = mapped_column(Integer)
     locator: Mapped[int] = mapped_column(Integer)
+    # 读的时候这份附件有几条条目、几条找到了原文那一行；条目数变了（名单重新解析过）就重读
     entries: Mapped[int] = mapped_column(Integer, default=0)
     located: Mapped[int] = mapped_column(Integer, default=0)
     checked_at: Mapped[datetime] = mapped_column(UTCDateTime)
@@ -923,9 +930,10 @@ class ListEvidenceSource(Base):
 
 
 class ListEntryLocation(Base):
-    """名单条目在原文附件里的那一行：rows 是命中的行（最多 5 行，每行记段号、出处和各格，
-    号码已遮）；state：ok 一处、multiple 两到五处、ambiguous 超过五处（只存前五处）、notfound
-    原文里没找到、no_name_column 认不出名称列。不按序号推算位置。"""
+    """名单条目在原文附件里的那一行（D-088）：rows 是命中的行，最多 5 行；每行记在原文的位置和各格
+    （列名、文字），个人信息列已去掉，号码已遮。state：ok 一处、multiple 两到五处、ambiguous 超过
+    五处（只存前五处）、notfound 原文里没找到、no_name_column 认不出名称列。不按序号推算位置。
+    条目重新解析（删了重写）时随外键删除，下一轮重读。"""
 
     __tablename__ = "list_entry_locations"
     __table_args__ = (
@@ -945,6 +953,16 @@ class ListEntryLocation(Base):
     state: Mapped[str] = mapped_column(String(16))
     rows: Mapped[list] = mapped_column(JSONType)
     computed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class SigningKey(Base):
+    """服务端签名用的随机密钥（迁移时生成，两个服务都只读）。list_entry：查名单结果里条目编号的
+    签名，只有查到这家企业的人拿得到某条条目的编号，不能按顺序把整份名单一条条翻出来（D-088）。"""
+
+    __tablename__ = "signing_keys"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key_hex: Mapped[str] = mapped_column(String(64))
 
 
 class User(Base):

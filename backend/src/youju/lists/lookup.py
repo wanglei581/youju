@@ -9,11 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids
-from youju.lists.rules import normalize_name, valid_org_name
+from youju.lists.rules import (
+    ORG_TITLE,
+    PERSON_TITLE,
+    PUNITIVE_TITLE,
+    normalize_name,
+    valid_org_name,
+)
 from youju.models import Document, DocumentMerge, ListEntry, Source
 from youju.takedown import available_condition
 
@@ -69,8 +75,18 @@ def public_condition(document=Document, source=Source):
     return and_(available_condition(document), or_(source.rights_level == 1, level1_twin))
 
 
+def list_title_allowed(document=Document):
+    """进企业查询的名单（D-091）：标题不带失信、处罚等惩戒类的字；以个人为主的（人才、专家等，
+    标题里又没有企业、单位这类字）不进。和 rules.excluded_list_title 同一口径，后者管解析。"""
+
+    def has(words):
+        return or_(*[document.title.contains(word, autoescape=True) for word in words])
+
+    return and_(not_(has(PUNITIVE_TITLE)), not_(and_(has(PERSON_TITLE), not_(has(ORG_TITLE)))))
+
+
 def _public_entries(stmt: Select) -> Select:
-    """给名单条目查询加公开来源和人工类型口径。"""
+    """给名单条目查询加公开来源、人工类型和名单范围的口径。"""
 
     return (
         stmt.join(Document, Document.id == ListEntry.document_id)
@@ -78,6 +94,7 @@ def _public_entries(stmt: Select) -> Select:
         .where(
             public_condition(),
             or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            list_title_allowed(),
         )
     )
 

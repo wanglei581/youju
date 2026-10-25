@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -704,6 +705,8 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     assert [i["id"] for i in body["items"]] == [str(list_doc.id)]
     item = body["items"][0]
     assert item["kind"] == "名单" and item["status"] == "公示"
+    # 查"原名单里的那一行"用的编号带签名（D-088）
+    assert re.fullmatch(r"\d+\.[A-Za-z0-9_-]{16}", item["matched"].pop("entryToken"))
     assert item["matched"] == {
         "name": "山东星河科技有限公司",
         "category": "科技型中小企业",
@@ -715,7 +718,12 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     }
     # 名称相近的另列，不当作同一家
     assert body["similar"] == [{"name": "山东星河科技（青岛）有限公司", "lists": 1}]
-    assert body["coverage"] == {"lists": 1, "since": "2026-09-24"}
+    assert body["coverage"] == {
+        "lists": 1,
+        "since": "2026-09-24",
+        "unreadLists": 0,
+        "partialLists": 0,
+    }
     # 全角括号、空格不同也能查到；信用代码不分大小写
     assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
     assert len(client.get(url, params={"q": "91310117588657256c"}).json()["items"]) == 1
