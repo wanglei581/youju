@@ -12,7 +12,8 @@
   换成按新规则遮的正文；
 - changed：原网页变了，不改（这里只补旧规则吞掉的字，不顺带更新内容），列出来另行处理；按新规则
   正文超过长度上限的（换了会截掉文末）、写入时正文已被别的任务换过的也算这里；
-- unavailable：没打开、没取到正文，不改，写明原因；missing：题录或详情已删除。
+- unavailable：没打开、没取到正文（写入时详情状态不再是抓成功的也算），不改，写明原因；
+  missing：题录或详情已删除。
 
 默认只预览，不写库；apply=True 才写，只改正文（body_text）：抓取时间、附件、状态都不动（抓取时间
 一改，名单补抓附件那一步会以为这份已经重抓过）。每换一份：
@@ -24,7 +25,8 @@
 一批写完：这一批"不用改"的也重算候选（中断后重跑，已换过、还带标记的是"不用改"）；换了正文的和
 "不用改"的重算"能不能 AI 解读"（ai.eligibility，拿不到写锁就跳过，夜里的全量会补上——每 10 分钟
 的增量只看抓取时间，这里没改抓取时间）。没打开的（unavailable）分批时会被 after_id 跳过，用 ids
-单独重试。
+单独重试。写入只写预览过的那一批：预览给出这一批的标记（最后一份的编号和各份编号、正文指纹的摘要），
+写入时带上，按它重新选出的这一批和预览时不一样就什么都不做。
 正文一换，已核对的字段、确认过的申报条件清单读取时按正文指纹核对，马上不再对外显示（下一轮
 extract-fields 把字段标成待重新核对，条件清单等重新抽取和核对），AI 解读的旧结果作废（D-073）：
 预览里列出份数。
@@ -34,6 +36,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -114,6 +117,12 @@ class RefetchReport:
     # 写入以后重算：新增的规则截止候选条数、"能不能 AI 解读"重算了没有
     new_candidates: int = 0
     eligibility_refreshed: bool = False
+    # 这一批的标记（batch_token）：预览打出来，写入时带上
+    batch: str = ""
+
+
+class BatchChanged(Exception):
+    """写入时按标记重新选出的这一批和预览时不一样（多了、少了，或者有正文变了）：什么都没做。"""
 
 
 def _has(marker: str):
@@ -172,20 +181,40 @@ def count_affected(session: Session) -> dict[str, int | None]:
 
 
 def _candidates(
-    session: Session, limit: int, after_id: int | None, ids: list[int] | None = None
+    session: Session,
+    limit: int | None,
+    after_id: int | None,
+    ids: list[int] | None = None,
+    upto_id: int | None = None,
 ) -> list[tuple[int, str, str, str]]:
-    """(编号, 网址, 标题, 库里的正文)，按编号从小到大。ids：只看这几份（重试没打开的）。"""
+    """(编号, 网址, 标题, 库里的正文)，按编号从小到大，最多 limit 份（None 不限）。ids：只看这几份
+    （重试没打开的）；upto_id：只看编号不大于它的（写入时按预览那一批的标记重新选出这一批）。"""
     stmt = (
         _scope(select(Document.id, Document.url, Document.title, DocumentDetail.body_text))
         .where(or_(*(_has(m) for m in MARKERS)))
         .order_by(Document.id)
-        .limit(limit)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     if after_id is not None:
         stmt = stmt.where(Document.id > after_id)
     if ids is not None:
         stmt = stmt.where(Document.id.in_(ids))
+    if upto_id is not None:
+        stmt = stmt.where(Document.id <= upto_id)
     return [(int(i), url, title, body) for i, url, title, body in session.execute(stmt).all()]
+
+
+_BATCH = re.compile(r"(\d+)-[0-9a-f]{12}")
+
+
+def batch_token(targets: list[tuple[int, str, str, str]]) -> str:
+    """一批的标记："这一批最后一份的编号-各份编号和正文指纹的摘要（12 位）"。预览打在汇总行里，
+    写入时照抄：写入按标记里的编号重新选出这一批，和预览时一份不差、正文也没变才做。"""
+    digest = sha256()
+    for doc_id, _, _, body in targets:
+        digest.update(f"{doc_id}:{sha256(body.encode()).hexdigest()}\n".encode())
+    return f"{targets[-1][0] if targets else 0}-{digest.hexdigest()[:12]}"
 
 
 # 日期、时刻用的字：找回的字里有这些（或数字）才清掉 AI 截止检查重查（"本周五前""下午三点前"也算）
@@ -195,8 +224,34 @@ _TIME_CHARS = set("年月日时周星点午")
 # 两头去掉相同的部分以后，中间超过这么多字就不逐字比：逐字比（difflib）遇到大段重复的字（几千个
 # "—"分隔线）是平方级的，6000 个字就要几秒，一份正文最多 400 万字
 _DIFF_LIMIT = 4000
+# 比对的工作量上界（#349 的预算，按句比以后改成按工作量算）：字数超过这个，或者估出的比对工作量
+# （_unit_work）超过 _UNIT_WORK_LIMIT，就保守地把中间整段标为变化
 _LINE_DIFF_CHAR_LIMIT = 100_000
-_LINE_DIFF_PAIR_LIMIT = 1_000_000
+_UNIT_WORK_LIMIT = 20_000
+
+# 中间太长时按"句"比（以换行和句号、分号、逗号这些标点断开）：一整行很长、两处改动隔得很远时，按行比
+# 只能整段算一处，会把中间原有的"2026年"也算成找回的字、白清一次 AI 截止检查。句子数超过这个就不再
+# 比（几十万句的比对本身也慢），整段算一处。按句比用 difflib 默认的忽略高频句（不忽略的话，同一句
+# 重复几千遍要比十几秒），代价是这样的正文对不齐、整段算一处
+_UNIT_END = re.compile(r"(?<=[\n。；;！!？?，,])")
+_MAX_UNITS = 20000
+
+
+def _units(text: str) -> list[str]:
+    return [unit for unit in _UNIT_END.split(text) if unit]
+
+
+def _unit_work(a_units: list[str], b_units: list[str]) -> int:
+    """按句比（difflib 默认忽略高频句）的大致工作量：a 里每一句在 b 里出现几次的总和，
+    不算 difflib 当成高频句忽略掉的（b 不少于 200 句时，出现次数超过 1% 的）。同一批句子
+    重复很多遍时这个数很大，比对会很慢；一句只出现一两次、或者整篇都是同一句的，这个数很小。"""
+    counts = Counter(b_units)
+    ntest = len(b_units) // 100 + 1 if len(b_units) >= 200 else None
+    return sum(
+        count
+        for unit in a_units
+        if (count := counts.get(unit, 0)) and (ntest is None or count <= ntest)
+    )
 
 
 def _trim(old: str, new: str) -> tuple[int, int]:
@@ -211,9 +266,10 @@ def _trim(old: str, new: str) -> tuple[int, int]:
     return head, tail
 
 
-def _added(old: str, new: str, *, by_lines: bool = True) -> list[str]:
+def _added(old: str, new: str, *, by_units: bool = True) -> list[str]:
     """new 比 old 多出来（换掉）的片段。先去掉两头相同的部分；中间不长就逐字比；太长（改动分散在长
-    正文里）先按行比、改了的几行再这样比，还太长就整段算一处。"""
+    正文里）先按句比、改了的几句再这样比，还太长（或句子太多，或同一句重复很多遍、对不齐）就整段
+    算一处。"""
     head, tail = _trim(old, new)
     a, b = old[head : len(old) - tail], new[head : len(new) - tail]
     if not b:
@@ -223,20 +279,21 @@ def _added(old: str, new: str, *, by_lines: bool = True) -> list[str]:
         return [
             b[j1:j2] for tag, _, _, j1, j2 in matcher.get_opcodes() if tag in ("replace", "insert")
         ]
-    # 行比对也有平方级上界；超预算保守地把中间整段标为变化。
-    if not by_lines or len(a) + len(b) > _LINE_DIFF_CHAR_LIMIT:
+    # 按句比也有平方级上界；超预算保守地把中间整段标为变化。
+    if not by_units or len(a) + len(b) > _LINE_DIFF_CHAR_LIMIT:
         return [b]
-    a_lines, b_lines = a.splitlines(keepends=True), b.splitlines(keepends=True)
+    a_units, b_units = _units(a), _units(b)
     if (
-        len(a_lines) <= 1
-        or len(b_lines) <= 1
-        or len(a_lines) * len(b_lines) > _LINE_DIFF_PAIR_LIMIT
+        len(a_units) <= 1
+        or len(b_units) <= 1
+        or len(a_units) + len(b_units) > _MAX_UNITS
+        or _unit_work(a_units, b_units) > _UNIT_WORK_LIMIT
     ):
         return [b]
     pieces: list[str] = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a_lines, b_lines).get_opcodes():
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a_units, b_units).get_opcodes():
         if tag in ("replace", "insert"):
-            pieces += _added("".join(a_lines[i1:i2]), "".join(b_lines[j1:j2]), by_lines=False)
+            pieces += _added("".join(a_units[i1:i2]), "".join(b_units[j1:j2]), by_units=False)
     return pieces
 
 
@@ -246,7 +303,9 @@ def _restored(old: str, new: str) -> list[str]:
 
 
 def _similarity(a: str, b: str) -> float:
-    """两份正文有多像（0–1）：两头相同的部分加上中间逐字比对上的；中间太长就只算两头。"""
+    """两份正文有多像（0–1，只是给人看的参考）：两头相同的部分，加上中间比对上的字数——中间不长就逐字
+    比，太长就按句比、对上的句按字数算（原网页常常只改了开头的发布日期和结尾的附件名，只算两头会算成
+    0）；句子太多就只算两头。"""
     if not a and not b:
         return 1.0
     head, tail = _trim(a, b)
@@ -255,6 +314,14 @@ def _similarity(a: str, b: str) -> float:
     if len(middle_a) + len(middle_b) <= _DIFF_LIMIT:
         blocks = difflib.SequenceMatcher(None, middle_a, middle_b, autojunk=False)
         same += sum(block.size for block in blocks.get_matching_blocks())
+    else:
+        units_a, units_b = _units(middle_a), _units(middle_b)
+        if (
+            len(units_a) + len(units_b) <= _MAX_UNITS
+            and _unit_work(units_a, units_b) <= _UNIT_WORK_LIMIT
+        ):
+            for block in difflib.SequenceMatcher(None, units_a, units_b).get_matching_blocks():
+                same += sum(len(unit) for unit in units_a[block.a : block.a + block.size])
     return round(2 * same / (len(a) + len(b)), 3)
 
 
@@ -305,8 +372,8 @@ def _write(
     session: Session, doc_id: int, stored: str, after: str, recheck_ai: bool
 ) -> tuple[bool, int]:
     """换一份正文：库里还是选中时那版（按指纹比，期间被别的任务重抓过的不改）才换；找回了日期、时刻的
-    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。
-    返回 (换了没有, 清掉几条)。"""
+    同一个事务里清掉它的 AI 截止检查结果（下一轮 ai-check 按新正文重查）。不提交：调用的地方接着在
+    同一个事务里重算这一份的截止候选、一起提交。返回 (换了没有, 清掉几条)。"""
     changed = session.execute(
         update(DocumentDetail)
         .where(
@@ -322,7 +389,6 @@ def _write(
         cleared = session.execute(
             delete(AICheck).where(AICheck.document_id == doc_id, AICheck.task == "deadlines")
         ).rowcount
-    session.commit()
     return bool(changed), cleared
 
 
@@ -361,18 +427,29 @@ def refetch_redacted(
     session: Session,
     *,
     apply: bool = False,
-    limit: int = 200,
+    limit: int | None = 200,
     after_id: int | None = None,
     ids: list[int] | None = None,
+    batch: str | None = None,
     fetcher: detail_service.DetailFetcher | None = None,
     max_workers: int | None = None,
 ) -> RefetchReport:
-    """预览或写入（见模块说明）。按编号从小到大最多 limit 份，分批时用 after_id 接着上一批；
-    ids：只看这几份（重试没打开的）。预览和写入走同一套抓取和解析（detail_service._fetch_outcomes）。"""
-    if limit < 1:
+    """预览或写入（见模块说明）。按编号从小到大最多 limit 份（None 不限），分批时用 after_id 接着
+    上一批；ids：只看这几份（重试没打开的）。batch：预览那一批的标记（report.batch），命令行写入时
+    必带：按标记里的编号重新选出这一批（不看 limit），和预览时不一样（预览以后有正文被别的任务换过、
+    多了少了，或者 after_id、ids 和预览时不同）就抛 BatchChanged，不打开网页、不写——没预览过的
+    不会写进去。预览和写入走同一套抓取和解析（detail_service._fetch_outcomes）。"""
+    if limit is not None and limit < 1:
         raise ValueError("limit 必须大于 0")
-    targets = _candidates(session, limit, after_id, ids)
-    report = RefetchReport()
+    upto_id = None
+    if batch is not None:
+        if not (matched := _BATCH.fullmatch(batch)):
+            raise ValueError("batch 要照抄预览那一行的 batch=…（编号-12 位摘要）")
+        upto_id, limit = int(matched[1]), None
+    targets = _candidates(session, limit, after_id, ids, upto_id)
+    report = RefetchReport(batch=batch_token(targets))
+    if batch is not None and report.batch != batch:
+        raise BatchChanged(report.batch)
     if not targets:
         return report
     selected = [(doc_id, url) for doc_id, url, _, _ in targets]
@@ -444,15 +521,22 @@ def refetch_redacted(
     report.ai_checks = 0
     for result, stored, after in pending:
         changed, cleared = _write(session, result.document_id, stored, after, result.recheck_ai)
-        report.ai_checks += cleared
         if changed:
-            written.append(result.document_id)
-            # 换了正文当场重算它的规则截止候选：中途中断时（正文已换，正文里也可能没了标记、重跑
-            # 选不到）不会留下没重算的
+            # 同一个事务里重算这一份的规则截止候选，extract_existing 最后一起提交：换的正文、清掉的
+            # AI 截止检查、新候选要么都落库、要么都不落（中途出错、进程被杀，这一份还是旧正文、带着
+            # 标记，重跑能再选到）
             _, added = extract_existing(session, document_ids=[result.document_id])
             report.new_candidates += added
-        elif session.get(DocumentDetail, result.document_id) is None:
+            report.ai_checks += cleared
+            written.append(result.document_id)
+            continue
+        session.commit()
+        detail = session.get(DocumentDetail, result.document_id)
+        if detail is None:
             result.result, result.reason = "missing", "详情已删除"
+        elif detail.body_text == stored:
+            # 正文还是选中时那版，只是详情状态不再是抓成功：这次没换，和没打开的一样记下来重试
+            result.result, result.reason = "unavailable", f"写入时详情状态是 {detail.status}，没改"
         else:
             # 期间被别的任务重抓过（名单补抓附件等），按那次的结果为准，这里不再改
             result.result, result.reason = "changed", "期间正文已被别的任务更新，没改"
