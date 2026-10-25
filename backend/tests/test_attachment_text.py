@@ -861,6 +861,13 @@ def test_sheet_number_expansion_boundary_and_zero(monkeypatch) -> None:
         assert error.value.reason == "too_large"
     assert at._sheet_number("0e300001", False, False, epoch) == "0"
     assert at._sheet_number("-0e300001", False, False, epoch) == "-0"
+    # 负指数的整数、负指数的零、小数（Grok 10/24）：整数照样短，零照样是 0，小数不展开
+    assert at._sheet_number("2500e-1", False, False, epoch) == "250"
+    assert at._sheet_number("100e-2", False, False, epoch) == "1"
+    assert at._sheet_number("0e-300001", False, False, epoch) == "0"
+    assert at._sheet_number("-0e-300001", False, False, epoch) == "-0"
+    assert at._sheet_number("1.25", False, False, epoch) == "1.25"
+    assert at._sheet_number("1e-5", False, False, epoch) == "1e-05"
 
 
 def test_xlsx_escapes_time_limit_and_part_size_limit(monkeypatch) -> None:
@@ -1295,6 +1302,51 @@ def test_mask_wrapped_numbers_in_labeled_columns_and_bank_short_names() -> None:
         "项目 | 联系电话 | 备注",
         "身份证号 | [身份证号已脱敏] | 无",
     ]
+
+
+def test_mask_amounts_skip_body_rules_and_more_column_labels() -> None:
+    # 挨着金额词、"元"的那一组连写 11 位不交给正文函数：它会当成手机号
+    for keep in ("合计13812345678", "投资15000000000元"):
+        assert at.mask(keep) == keep, keep
+    assert at.mask("联系电话13812345678") == "联系电话[手机号已脱敏]"
+    assert at.mask("合计 110101199003071234") == "合计 [身份证号已脱敏]"
+    # 只留挨着金额词、"元"的那一组；串里别的组照常交给正文函数
+    assert at.mask("金额：1000 110101199003071234") == "金额：1000 [身份证号已脱敏]"
+    assert at.mask("合计 1000 13812345678") == "合计 1000 [手机号已脱敏]"
+    # 这一串没分完（第一遍什么都没遮）：挨着"资金"的身份证号照样交给正文函数遮（Grok 10/24 样例）
+    assert at.mask("资金 330106198807162345 1280元") == "资金 [身份证号已脱敏] 1280元"
+    # 没分完的串里，常见分法的身份证号照样遮（Codex 10/24）；手机号不这样找，金额前后文里本来就不遮
+    assert at.mask("金额：1000 110101 19900307 1234") == "金额：1000 [身份证号已脱敏]"
+    assert at.mask("1350 110101 19900307 1234") == "1350 [身份证号已脱敏]"
+    assert at.mask("合计 1000 138 1234 5678") == "合计 1000 138 1234 5678"
+    # 金额串中间的 11 位分不清是金额还是手机号：宁可多遮（设计分歧，PR 里请创始人定）
+    assert at.mask("合计 1000 15000000000 2000") == "合计 1000 [手机号已脱敏] 2000"
+    # 金额词后面的必填星号（Grok 10/24）
+    assert at.mask("金额*：15000000000") == "金额*：15000000000"
+    assert at.mask("金额（万元）*：15000000000") == "金额（万元）*：15000000000"
+    # 表单里必填项的星号（Grok 10/24 样例）
+    assert at.mask("账号*：330104016000-1234567") == "账号*：[银行账号已脱敏]"
+    assert at.mask("手机号码＊：1381 234 5678") == "手机号码＊：[手机号已脱敏]"
+    # 身份证号、手机号的列名、行内标签：公民身份号码、身份号码、身份证件号，"联系电话/手机"
+    for label, kind in (
+        ("公民身份号码", "id"),
+        ("身份号码", "id"),
+        ("身份证件号", "id"),
+        ("联系电话/手机", "phone"),
+    ):
+        assert at._cell_label(label) == kind, label
+    assert at.mask("公民身份号码：110101 1990 03 07 1234") == "公民身份号码：[身份证号已脱敏]"
+    # "基本（存款）账户"：做列名时当账号标签，有列表头的数据格里是账户类型的值
+    assert at._cell_label("基本（存款）账户", types=True) == "account"
+    assert at._cell_label("基本（存款）账户") is None
+    builder = at._Builder()
+    builder.table(
+        [
+            _row("单位", "基本（存款）账户", "公民身份号码", "联系电话/手机"),
+            _row("甲", "1202021309001234568", "1101011990030 71234", "1381234 5678"),
+        ]
+    )
+    assert builder.segments[1].text == ("甲 | [银行账号已脱敏] | [身份证号已脱敏] | [手机号已脱敏]")
 
 
 def test_clean_is_linear_on_long_runs_of_spaces() -> None:
