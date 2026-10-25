@@ -39,15 +39,30 @@ test('首发包：16 页、底栏四格、包外页面的目录删掉、页面�
   // 测试、本机依赖不进包
   for (const skipped of ['tests', 'node_modules', 'README.md', 'package-lock.json']) assert.equal(fs.existsSync(path.join(out, skipped)), false, skipped);
   assert.ok(fs.existsSync(path.join(out, 'miniprogram_npm', 'tdesign-miniprogram', 'popup', 'popup.js')));
+  // 协议换成过审版那一份（不含 AI 条款，D-093 ⑤），包里不留两份
+  delete require.cache[require.resolve(path.join(out, 'content', 'legal.js'))];
+  const legal = require(path.join(out, 'content', 'legal.js'));
+  assert.equal(legal.version, require(path.join(SOURCE, 'content', 'legal-first-release.js')).version);
+  assert.doesNotMatch(JSON.stringify([legal.user, legal.privacy, legal.disclaimer]), /AI|模型|投诉举报|原文链接/);
+  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
   // 发布检查按首发版：页面范围、底栏都过；备案号这类外部条件只提示
   const byId = Object.fromEntries(result.checks.map((c) => [c.id, c.state]));
   assert.equal(byId.pages, 'pass'); assert.equal(byId.tabs, 'pass'); assert.equal(byId['ai-off'], 'pass');
+  assert.equal(byId['first-terms'], 'pass');
+  // 草稿没定稿前发布检查不过（协议已定稿那一项），定稿要创始人过目
+  if (require(path.join(SOURCE, 'content', 'legal-first-release.js')).final !== true) {
+    assert.equal(byId.agreement, 'fail'); assert.equal(result.ok, false);
+  }
   assert.equal(fs.readFileSync(path.join(SOURCE, 'utils', 'package-pages.js'), 'utf8'), before);
   assert.equal(fs.readFileSync(path.join(SOURCE, 'app.json'), 'utf8'), appBefore);
 });
 
 test('完整版也能打：页面和仓库一样多', () => {
-  const { pages, removed } = pack({ out: fresh(), profile: 'complete-release', mode: 'prepare', npmFrom: fakeNpm() });
+  const out = fresh();
+  const { pages, removed } = pack({ out, profile: 'complete-release', mode: 'prepare', npmFrom: fakeNpm() });
+  // 完整版用 content/legal.js，不带过审版那一份
+  assert.equal(fs.readFileSync(path.join(out, 'content', 'legal.js'), 'utf8'), fs.readFileSync(path.join(SOURCE, 'content', 'legal.js'), 'utf8'));
+  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
   assert.deepEqual([...pages].sort(), [...pagesFor('complete-release')].sort());
   assert.deepEqual(removed, []);
 });

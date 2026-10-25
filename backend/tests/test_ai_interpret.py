@@ -485,16 +485,23 @@ def test_task_routes_check_ownership_before_feature_authorization(
         ("DELETE", "", 204),
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
+    # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
+    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
     hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
+        deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": hidden}
+            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
-        assert response.status_code == (own_status if allowed else 404)
-        if not allowed:
+        assert response.status_code == (own_status if allowed or deleting else 404)
+        if not allowed and not deleting:
             assert response.json() == {"detail": "没有找到接口"}
+    own_id, foreign_id = own.id, foreign.id
+    session.expire_all()
+    assert session.get(AdvisorTask, own_id) is None
+    assert session.get(AdvisorTask, foreign_id) is not None
 
 
 @pytest.mark.parametrize(
@@ -607,7 +614,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
         == 404
     )
     settings.ai_advisor_openids = "second"
-    for method, suffix in [("get", ""), ("delete", ""), ("post", "/cancel"), ("get", "/download")]:
+    for method, suffix in [("get", ""), ("post", "/cancel"), ("get", "/download")]:
         assert (
             getattr(client, method)(f"/api/v1/advisor/tasks/{task_id}{suffix}").status_code == 404
         )
@@ -615,6 +622,10 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["processed"] == 0
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
+    # 移出白名单以后，本人照样能删自己的记录（D-093 上线门槛第 8 条）
+    assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, task_id) is None
     settings.advisor_enabled = True
     tools_ready(session)
     assert (
@@ -636,8 +647,16 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
 
 
 def test_all_audience_submission_worker_and_consent(client, settings, doc, session):
+    from youju.ai import heartbeat
+
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    # 对所有人开放只能走对外线路（云开发，D-093 上线门槛第 3 条）：没配时后台不算能处理，不退回后台线路
+    assert not heartbeat.worker_capable(settings)
+    settings.ai_advisor_base_url = "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase"
+    settings.ai_advisor_api_key = SecretStr("advisor-test-value")
+    settings.ai_advisor_model = "advisor-model"
+    assert heartbeat.worker_capable(settings)
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
@@ -1314,6 +1333,16 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     monkeypatch.setenv("YOUJU_AI_ADVISOR_OPENIDS", " user-a, user-b, user-a, ")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_AUDIENCE", "all")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_DAILY_CAP", "12")
+    # 对所有人开放要配好对外线路（D-093 上线门槛第 3 条），没配不启动
+    for name in ("YOUJU_AI_ADVISOR_BASE_URL", "YOUJU_AI_ADVISOR_API_KEY", "YOUJU_AI_ADVISOR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="对所有人开放 AI"):
+        Settings(_env_file=None)
+    monkeypatch.setenv(
+        "YOUJU_AI_ADVISOR_BASE_URL", "https://cloud1-test.api.tcloudbasegateway.com/v1"
+    )
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_API_KEY", "advisor-test-value")
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_MODEL", "advisor-model")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12

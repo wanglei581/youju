@@ -134,6 +134,10 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
     assert.equal(page.data.tools, shown);
     const root = render('pages/clients/index.wxml', { ...page.data, editing: false });
     assert.equal(textOf(root).includes('打开工具中心'), shown);
+    // "客户卡片"那一栏顶上的说明：没有工具中心就不提它
+    const cards = render('pages/clients/index.wxml', { ...page.data, editing: false, tab: 'cards', clients: [] });
+    assert.match(textOf(cards), /保存客户的地区和产业方向，最多 20 家。/);
+    assert.equal(textOf(cards).includes('工具中心'), shown);
     page.tools();
     assert.deepEqual(nav, shown ? ['/pages/advisor/index'] : []);
   }

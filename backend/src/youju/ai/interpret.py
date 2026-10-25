@@ -104,7 +104,8 @@ def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
     )
 
 
-# 首发 2026-10 不含 AI 条款。正式 AI 包必须升版；回退环境配置不能降低这道门槛。
+# 首发 2026-10 和过审版 2026-10.2（D-093 ⑤）都不含 AI 条款，按字符串比较都排在这一版前面。
+# 正式 AI 包必须升版；回退环境配置不能降低这道门槛。
 AI_AGREEMENT_VERSION = "2026-11"
 
 

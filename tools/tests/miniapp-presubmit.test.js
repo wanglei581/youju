@@ -5,7 +5,8 @@ const path = require('node:path');
 const { inspect, SERVER_TOOL_TERMS_VERSION } = require('../miniapp_presubmit_check');
 const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
-  legal:{final:true, operator:{icp:'测试备案号',email:'contact@example.test'}},
+  // 首发（过审版）协议：不含 AI 条款，版本排在后台 AI 条款版本之前（D-093 ⑤）
+  legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
   app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
@@ -183,4 +184,27 @@ test('小程序里的工具使用说明和后台是同一版本：后台改了�
  const terms=require('../../apps/miniapp/content/advisor-terms.js');
  assert.match(SERVER_TOOL_TERMS_VERSION,/^advisor-\d{4}-\d{2}-v\d+$/);
  assert.equal(terms.version,SERVER_TOOL_TERMS_VERSION);
+});
+
+test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉举报页、原文链接，版本要排在后台 AI 条款版本之前', () => {
+  const { SERVER_AI_TERMS_VERSION } = require('../miniapp_presubmit_check');
+  const check = (x) => inspect({ ...x, mode: 'prepare' }).checks.find((c) => c.id === 'first-terms');
+  assert.equal(check(input()).state, 'pass');
+  for (const change of [
+    (y) => { y.legal.version = SERVER_AI_TERMS_VERSION; },
+    (y) => { y.legal.version = '2026-12'; },
+    (y) => { delete y.legal.version; },
+    (y) => { y.legal.user.sections[0].p.push('AI 功能的范围见第八条。'); },
+    (y) => { y.legal.privacy.sections.push({ h: '四、', p: ['· AI 模型调用：我们调用已备案的大模型'] }); },
+    (y) => { y.legal.user.sections[0].p.push('我们在条目中均附有官方原文链接。'); },
+    (y) => { y.legal.disclaimer = '在“投诉举报”页提交'; },
+  ]) {
+    const x = input(); change(x);
+    assert.equal(check(x).state, 'fail');
+    assert.equal(inspect({ ...x, mode: 'prepare' }).ok, false);
+  }
+  // 别的版本不做这项检查
+  const x = input(); x.config.aiInternal = false; x.legal.version = '2026-11';
+  x.app.pages.push(...['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map((p) => `pages/${p}/index`));
+  assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
 });
