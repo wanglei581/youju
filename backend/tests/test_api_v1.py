@@ -453,10 +453,10 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
     assert client.get("/api/v1/documents/999999").status_code == 404
-    # 正文太短（多半没抓全）不给；名单类没有正文时给 list（有正文的挡掉名单内容后给，D-092，
-    # 见 test_list_body.py）
+    # 正文太短（多半没抓全）不给；名单类没有正文时也一样给 none（有正文的挡掉名单内容后给，
+    # D-092，见 test_list_body.py）
     assert d["body"] == {"status": "none"}
-    assert listed["body"] == {"status": "list"}
+    assert listed["body"] == {"status": "none"}
 
 
 def test_body_for_reading_cleans_only_known_strings():

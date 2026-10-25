@@ -142,6 +142,8 @@
       <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
       <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : (doc.body.truncated ? '展开摘录' : '展开全文')}}</view>
       <view wx:if="{{doc.body.truncated && (bodyOpen || !bodyFolded)}}" class="weak body-rest">本页仅展示正文摘录，请点“站内阅读全文”继续阅读。</view>
+      <!-- 名单类通知：正文里的名单没展开（D-092），给去查名单的入口 -->
+      <view wx:if="{{doc.body.listHidden}}" class="link body-lookup" bindtap="toLists" aria-role="button">在已收录名单中查询企业 ›</view>
     </block>
     <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">可在“查名单”中查看已提取的企业记录；完整内容的读取状态见站内阅读页。</view>
     <view wx:elif="{{doc.body.status === 'original'}}" class="muted body-none">这类文件的内容及处理状态见站内阅读页。</view>

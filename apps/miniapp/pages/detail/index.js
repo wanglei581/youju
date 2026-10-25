@@ -243,6 +243,11 @@ Page({
     });
   },
 
+  // 名单类通知的正文里名单没展开（D-092）：去查名单查企业
+  toLists() {
+    wx.navigateTo({ url: '/pages/lists/index' });
+  },
+
   readBody() {
     if (this.data.doc) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(this.data.doc.id)}` });
   },
