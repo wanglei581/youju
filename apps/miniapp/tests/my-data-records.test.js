@@ -35,7 +35,8 @@ const RETENTION = { feedback: 180, events: 90, usedSubscriptions: 30, unusedSubs
 const TASKS = [
   { id: 41, kind: 'compare', status: 'done', rowCount: 12, createdAt: '2026-10-20T09:05:00+08:00', startedAt: '2026-10-20T09:05:10+08:00', finishedAt: '2026-10-20T09:06:00+08:00' },
   { id: 42, kind: 'interpret', status: 'done', rowCount: 0, createdAt: '2026-10-21T10:00:00+08:00', finishedAt: '2026-10-21T10:01:00+08:00', result: { summary: '合成' } },
-  { id: 43, kind: 'track', status: 'running', rowCount: 3, createdAt: '2026-10-22T11:00:00+08:00', startedAt: '2026-10-22T11:00:05+08:00' },
+  // 正在处理：两小时前开始（按真实时钟算，处理中不满一天的要等结束）
+  { id: 43, kind: 'track', status: 'running', rowCount: 3, createdAt: '2026-10-22T11:00:00+08:00', startedAt: new Date(Date.now() - 2 * 3600e3).toISOString() },
   { id: 44, kind: 'compare', status: 'queued', rowCount: 5, createdAt: '2026-10-22T11:30:00+08:00' },
 ];
 
@@ -162,4 +163,16 @@ test('加量体验、送的批量工具天数：有的时候写一行，说明�
   none.page.load(); await flush();
   assert.equal(none.page.data.extras, '');
   assert.ok(!findAll(none.view(), hasClass('card')).some((c) => /其他记录/.test(textOf(c))));
+});
+
+test('处理中超过一天的（没人在跑了、功能关掉后也不会有人接着处理）：给删除，确认框写次数退回', async () => {
+  const stuckTask = { id: 45, kind: 'compare', status: 'running', rowCount: 4, createdAt: '2026-10-20T09:00:00+08:00', startedAt: new Date(Date.now() - 2 * 86400e3).toISOString() };
+  const h = myData({ tasks: [stuckTask, TASKS[2]] });
+  h.page.load(); await flush();
+  const items = findAll(recordsCard(h.view()), hasClass('item'));
+  assert.equal(findAll(items[0], tapsTo('remove')).length, 1, '超过一天的应能删');
+  assert.equal(findAll(items[1], tapsTo('remove')).length, 0, '两小时前开始的要等结束');
+  h.page.remove(event({ kind: 'task', id: 45 })); await flush();
+  assert.deepEqual(h.calls.deleted, [45]);
+  assert.match(h.modal().content, /这条没有处理完的记录（用掉的次数退回）/);
 });

@@ -61,5 +61,9 @@ Component({
     help() {
       if (this.data.help) wx.navigateTo({ url: '/pages/help/index' });
     },
+    // 过审版没有使用帮助页：去"关于有据"看联系邮箱（那里点一下能复制）
+    about() {
+      wx.navigateTo({ url: '/pages/about/index' });
+    },
   },
 });

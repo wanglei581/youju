@@ -42,10 +42,6 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 async def _enabled(request: Request) -> None:
     settings = get_settings()
-    if request.method == "DELETE" and "task_id" in request.path_params:
-        # 删除自己的记录不看开关：AI、批量工具关掉以后也能删（D-093 上线门槛第 8 条），
-        # 和关注、纠错的删除一样；别人的记录照样是"没有找到"
-        return
     if not settings.advisor_enabled and not getattr(settings, "ai_advisor_enabled", False):
         raise HTTPException(status_code=404, detail="没有找到接口")
     # 任务接口先由各自的归属检查确认身份，再按任务类型授权，避免泄露他人任务。
@@ -888,17 +884,24 @@ def cancel_task(task_id: int, request: Request, session: SessionDep, user: UserD
     return _out(task, session, include_result=False)
 
 
-@router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(_enabled)])
+# 不挂 _enabled：删除自己的记录不看功能开关（D-093 上线门槛第 8 条），AI、批量工具关掉以后也能删
+@router.delete("/tasks/{task_id}", status_code=204)
 def delete_task(task_id: int, request: Request, session: SessionDep, user: KnownUserDep) -> None:
     """删除自己的一条工具或 AI 记录及结果文件。和关注、纠错的删除一样只认本人，不看功能开关，
-    也不要求先同意新版协议（D-093 上线门槛第 8 条）。"""
+    也不要求先同意新版协议（D-093 上线门槛第 8 条）；别人的、不存在的都是"没有找到"。"""
     if user is None:
         raise HTTPException(status_code=404, detail="没有找到顾问任务")
     task = _owned(session, user, task_id, lock=True, deleting=True)
-    if task.status == "running":
+    # 正在处理的等处理结束（结果文件可能正在上传）；开始超过一天的一定没人在跑了
+    # （和过期清理同一条线），功能关掉以后不会再有人接着处理，也要能删
+    abandoned = (
+        task.started_at is not None
+        and service._utc(task.started_at) <= _stamp() - service.ABANDONED
+    )
+    if task.status == "running" and not abandoned:
         raise HTTPException(status_code=409, detail="任务正在处理，暂时不能删除")
-    if task.status == "queued":
-        # 排队中的任务先取消（退回额度）再删除；行已锁住，后台取不到它，也不会有结果文件
+    if task.status in ("queued", "running"):
+        # 排队中的、没人在跑的先退回额度再删除；行已锁住，后台取不到它，也不会再有结果文件
         service.release_usage(session, task)
     file_ids = [task.result_file_id] if task.result_file_id else []
     settings = get_settings()

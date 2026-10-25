@@ -1092,6 +1092,44 @@ def test_pk_prefix_csv_is_not_zip(client, content):
     assert response.json()["rowCount"] == len(content.splitlines())
 
 
+def test_owner_deletes_abandoned_running_task_even_when_tools_are_off(
+    client, advisor_settings, session, monkeypatch
+):
+    """正在处理的要等处理结束（结果文件可能正在上传）；开始超过一天的一定没人在跑了，功能关掉以后也不会有人
+    接着处理，本人可以删（D-093 上线门槛第 8 条），占用的次数只退一次；别人的照样"没有找到"。"""
+    agree_advisor(client)
+    user = session.scalar(select(User))
+    stamp = NOW.astimezone(UTC)
+    fresh = task(session, user.id, status="running", started_at=stamp - timedelta(hours=2))
+    stale = task(
+        session,
+        user.id,
+        status="running",
+        started_at=stamp - timedelta(days=2),
+        idempotency_key="stale",
+    )
+    fresh_id, stale_id = fresh.id, stale.id
+    released = []
+    real_release = service.release_usage
+
+    def counting_release(session_, row):
+        released.append(row.id)
+        return real_release(session_, row)
+
+    advisor_settings.advisor_enabled = False
+    monkeypatch.setattr(service, "release_usage", counting_release)
+    response = client.delete(f"/api/v1/advisor/tasks/{fresh_id}")
+    assert response.status_code == 409 and "正在处理" in response.json()["detail"]
+    advisor_settings.dev_openid = "somebody-else"
+    assert client.delete(f"/api/v1/advisor/tasks/{stale_id}").status_code == 404
+    advisor_settings.dev_openid = "advisor-user"
+    assert client.delete(f"/api/v1/advisor/tasks/{stale_id}").status_code == 204
+    assert released == [stale_id]
+    session.expire_all()
+    assert session.get(AdvisorTask, stale_id) is None
+    assert session.get(AdvisorTask, fresh_id).status == "running"
+
+
 @pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
 def test_owner_deletes_own_record_whatever_the_switch_and_agreement(
     client, advisor_settings, session, disabled, outdated

@@ -11,7 +11,7 @@ const ROOT = path.join(__dirname, '..', 'apps', 'miniapp', 'content');
 const TARGET = path.join(ROOT, 'legal-first-release.js');
 const VERSION = '2026-10.2';
 // 过审版协议里不能出现的说法（发布检查 tools/miniapp_presubmit_check.js 用同一份）
-const BANNED = /AI|人工智能|生成内容|大模型|模型|投诉举报|原文链接|使用帮助|我的记录|批量工具|加量体验|工具使用说明|订单|购买页|统一社会信用代码|核对企业主体/;
+const BANNED = /AI|LLM|GPT|人工智能|生成内容|生成式|智能问答|智能生成|大模型|大语言|模型|算法推荐|投诉举报|原文链接|使用帮助|我的记录|批量工具|加量体验|工具使用说明|订单|购买页|统一社会信用代码|核对企业主体/i;
 
 function build() {
   delete require.cache[require.resolve(path.join(ROOT, 'legal.js'))];

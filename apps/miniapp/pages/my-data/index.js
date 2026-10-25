@@ -18,6 +18,13 @@ function maskId(id) {
   return id && id.length > 10 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id || '';
 }
 
+// 处理中超过一天的一定没人在跑了（和后台的删除、过期清理同一条线）：功能关掉以后也不会有人接着处理，可以删
+const ABANDONED = 24 * 3600 * 1000;
+function stuck(t) {
+  const started = t.startedAt && Date.parse(t.startedAt);
+  return t.status === 'running' && Number.isFinite(started) && Date.now() - started > ABANDONED;
+}
+
 // 工具记录（批量工具和 AI 的任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
 // 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提
 function taskData(d) {
@@ -31,8 +38,9 @@ function taskData(d) {
       kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
       rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
       state: STATES[t.status] || t.status,
-      running: t.status === 'running',
+      running: t.status === 'running' && !stuck(t),
       queued: t.status === 'queued',
+      stuck: stuck(t),
       created: when(t.createdAt),
       finished: when(t.finishedAt),
     })),
@@ -176,7 +184,8 @@ Page({
       follow: this.data.remindOpen ? '这个关注（它的微信提醒也会一起取消）' : '这个关注',
       sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录',
       feedback: '这条纠错',
-      task: task && task.queued ? '这条排队中的记录（会先取消，用掉的次数退回）' : '这条记录和它的结果',
+      task: task && task.queued ? '这条排队中的记录（会先取消，用掉的次数退回）'
+        : task && task.stuck ? '这条没有处理完的记录（用掉的次数退回）' : '这条记录和它的结果',
     }[kind];
     const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask }[kind];
     wx.showModal({

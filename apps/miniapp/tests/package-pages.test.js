@@ -143,7 +143,7 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
   }
 });
 
-test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，只写邮箱；完整版照旧给使用帮助', () => {
+test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助', () => {
   for (const [pages, help] of [[FIRST, false], [FULL, true]]) {
     for (const variant of ['row', 'block']) {
       const urls = [];
@@ -155,8 +155,16 @@ test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使�
       const text = textOf(root);
       assert.equal(findAll(root, tapsTo('help')).length > 0, help, variant);
       assert.equal(text.includes('使用帮助'), help, variant);
-      // 没有使用帮助时一定给邮箱；有使用帮助时"我的"页那一行指向使用帮助，通知页上的一块另外写邮箱
-      if (!help || variant === 'block') assert.ok(text.includes('help@example.invalid'), variant);
+      if (variant === 'block') assert.ok(text.includes('help@example.invalid'));
+      // "我的"页那一行：没有使用帮助时点进"关于有据"（那里有联系邮箱，点一下能复制）
+      if (variant === 'row' && !help) {
+        assert.match(text, /这台手机打不开微信客服，看联系邮箱/);
+        assert.equal(findAll(root, tapsTo('about')).length, 1);
+        view.about();
+        assert.deepEqual(urls, ['/pages/about/index']);
+        assert.ok(FIRST_PAGES.includes('pages/about/index'));
+        continue;
+      }
       view.help();
       assert.deepEqual(urls, help ? ['/pages/help/index'] : []);
     }

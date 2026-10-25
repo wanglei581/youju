@@ -5,8 +5,8 @@
   <view wx:elif="{{help}}" class="contact-row" bindtap="help" aria-role="button">
     <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">这台手机暂不能打开，看使用帮助</text><t-icon name="chevron-right" size="32rpx" color="#86909C" />
   </view>
-  <view wx:else class="contact-row">
-    <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">{{email ? '这台手机暂不能打开，可发邮件到 ' + email : '这台手机暂不能打开'}}</text>
+  <view wx:else class="contact-row" bindtap="about" aria-role="button">
+    <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">这台手机打不开微信客服，看联系邮箱</text><t-icon name="chevron-right" size="32rpx" color="#86909C" />
   </view>
 </block>
 <view wx:else class="contact">
