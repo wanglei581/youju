@@ -431,6 +431,8 @@ def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetim
 
 
 def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
+    from youju.native_results import build
+
     if not isinstance(task.input_rows, list):
         raise CompareInputError("任务输入已过期，请重新提交")
     if task.kind == "compare":
@@ -438,10 +440,12 @@ def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
         task.result_document_ids = sorted(
             {m.document_id for row in report.rows for m in row.matches}
         )
+        task.result_json = build(task.kind, report)
         return export_compare_excel(report, output)
     if task.kind == "track":
         report = track_clients(session, task.input_rows)
         task.result_document_ids = sorted({item.document_id for item in report.items})
+        task.result_json = build(task.kind, report)
         return export_track_excel(report, output)
     raise CompareInputError("不支持的工具任务类型")
 
@@ -1007,6 +1011,11 @@ def cleanup_advisor(
             .values(input_rows=None)
         ).rowcount
         or 0
+    )
+    session.execute(
+        update(AdvisorTask)
+        .where(AdvisorTask.kind.in_(("compare", "track")), AdvisorTask.expires_at <= stamp)
+        .values(result_json=None)
     )
     session.execute(
         update(AdvisorTask)

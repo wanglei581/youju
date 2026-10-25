@@ -231,7 +231,7 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
     )
     assert lines[1] == (
         "本期全国新通知 4 条、30 天内截止 3 项（已核对）、名单 2 份、政策文件 1 份。"
-        "正文每省列 5 条，全部条目在小程序「本期清单」里，可以按省份看，点进详情复制原文链接。"
+        "正文每省列 5 条，全部条目在小程序「本期清单」里，可以按省份看，点进详情可以站内阅读全文。"
     )
     # 块标题不写条数（免得和标题的"新通知4条"被看成对不上）；国家部委在前
     assert lines.index("国家部委") < lines.index("浙江")
@@ -1439,8 +1439,16 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
         "名单条数：4 家（按名称去重，以原文为准）",
         "",
     ]
-    assert lines[7] == "怎么查一家企业在不在名单上"
-    assert "「查名单」" in lines[8] and "统一社会信用代码" in lines[8]
+    # 查名单用中性说法（D-090）；看原文在小程序里（10/23 审核退回后一律站内阅读，D-089、D-092）
+    assert lines[7] == "在政府公开名单里查企业"
+    assert lines[8] == (
+        "打开小程序「查名单」，输入企业全称，在已收录的政府公开名单里查；查到时显示原名单里的那一行。"
+    )
+    assert lines[9] == (
+        "看详情：在小程序里打开这份名单的详情，点「站内阅读全文」；名单里的企业在「查名单」里查。"
+    )
+    for word in ("浏览器", "复制原文链接", "上过哪些", "在不在名单", "信用代码"):
+        assert word not in issue.body_text + issue.body_html
     assert lines[-1] == weekly.FOOT
     assert "不可输出" not in issue.body_text + issue.body_html + issue.body_text_with_links
     assert "http" not in issue.body_text + issue.body_html
@@ -1528,6 +1536,23 @@ def test_list_flash_rejects_unlisted_documents_and_cleans_period(session, profil
         with pytest.raises(ValueError, match="列的是个人"):
             flash(session, profile, other)
     assert person.id not in [item["id"] for item in weekly.flash_candidates(session, profile, NOW)]
+    # 不进查名单的名单（失信、处罚等惩戒类，获奖、表彰类，D-091 ③）也不写速报、不进候选：
+    # 速报教读者去查名单里查，这些查不到；惩戒、信用类写速报也像在做企业征信
+    for title in (
+        "2026年度失信被执行企业名单",
+        "2026年无失信记录企业名单公示",
+        "2026年度科学技术奖获奖名单",
+        "2026年先进集体表彰名单",
+    ):
+        other = document(
+            session, session.get(Source, lists_world["big"].source_id), title, START, "名单"
+        )
+        session.commit()
+        with pytest.raises(ValueError, match="不进查名单"):
+            flash(session, profile, other)
+        assert other.id not in [
+            item["id"] for item in weekly.flash_candidates(session, profile, NOW)
+        ]
     profile.provinces = ["北京"]
     session.commit()
     with pytest.raises(ValueError, match="地区和关键词"):
@@ -1644,7 +1669,7 @@ def test_migration_0033_list_flash_upgrade_downgrade(db_engine, session, profile
         return columns, uniques
 
     try:
-        command.downgrade(cfg, "0035")
+        command.downgrade(cfg, "0041")
         columns, uniques = shape()
         assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}

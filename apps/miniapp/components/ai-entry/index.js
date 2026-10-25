@@ -8,7 +8,6 @@
 const access = require('../../utils/ai-access.js');
 const context = require('../../utils/tool-context.js');
 const { reasonView } = require('../../utils/ai-reasons.js');
-const { copyLink } = require('../../utils/copy.js');
 
 // 和后端 interpret.eligible_body 的正文上限一致
 const MAX_BODY = 24000;
@@ -84,11 +83,11 @@ Component({
     openClause() {
       if (this.data.clauseAvailable) this.go(context.clauseUrl(this.properties));
     },
-    // 不能解读时的下一步：去查名单、复制原文链接、看附件（让详情页滚过去）、返回
+    // 不能解读时的下一步：去查名单、站内阅读、看附件（让详情页滚过去）、返回
     nextStep() {
       const { next } = this.data;
       if (next === 'lists') wx.navigateTo({ url: '/pages/lists/index' });
-      else if (next === 'copy') copyLink(this.properties.docUrl);
+      else if (next === 'read' && this.properties.docId) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(this.properties.docId)}` });
       else if (next === 'attachments') this.triggerEvent('attachments');
       else if (next === 'back') wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
     },

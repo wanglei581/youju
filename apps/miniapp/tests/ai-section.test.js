@@ -31,7 +31,7 @@ function load(file, deps = {}, globals = {}) {
     require(name) {
       if (name === '../../utils/regions.js') return regions;
       if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js');
-      assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`);
+      if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`);
       return deps[name];
     },
     Page(d) { def = d; }, Component(d) { def = d; },
@@ -280,7 +280,7 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
   // 列表行：按钮放在"复制原文链接"后面；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
   const rowWxml = read('components/doc-row/index.wxml');
   assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
-  assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('复制原文链接'));
+  assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('查看详情'));
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': { copyLink() {} }, '../../utils/repost.js': require('../utils/repost.js') });
   row.data.doc = { id: '42', title: '通知', kind: '申报通知', issuer: '山东省科学技术厅', date: '2026-10-16', ai: { interpret: true } };
   row.observers['doc, q, today'].call(row, row.data.doc, '');
@@ -606,10 +606,10 @@ test('使用帮助：固定文字；AI 那几条只在 AI 对这个人开着时�
 });
 
 test('不能解读的原因：每种代码一种说法和下一步；没有附件时不给"看附件"；不认的代码写通用的话', () => {
-  assert.deepEqual(Object.keys(reasons.REASONS).sort(), ['kind', 'list', 'no_body', 'source', 'too_long', 'unavailable']);
+  assert.deepEqual(Object.keys(reasons.REASONS).sort(), ['kind', 'link_gone', 'list', 'no_body', 'source', 'too_long', 'unavailable']);
   assert.deepEqual(reasons.reasonView('no_body', true), { text: '还没有拿到完整正文，正文可能在附件里。', next: 'attachments', nextText: '看附件' });
-  assert.deepEqual(reasons.reasonView('no_body', false), { text: '还没有拿到完整正文，正文可能在附件里。', next: 'copy', nextText: '复制原文链接' });
-  assert.deepEqual(reasons.reasonView('whatever', false), { text: '这份文件暂不能解读，请查看原文。', next: 'copy', nextText: '复制原文链接' });
+  assert.deepEqual(reasons.reasonView('no_body', false), { text: '还没有拿到完整正文，正文可能在附件里。', next: 'read', nextText: '站内阅读正文' });
+  assert.deepEqual(reasons.reasonView('whatever', false), { text: '这份文件暂不能解读，请查看原文。', next: 'read', nextText: '站内阅读正文' });
   assert.equal(reasons.reasonView('too_long').nextText, '');
   // 后台的原因代码和这里一一对应（backend/src/youju/ai/interpret.py 的 InterpretRefusal）
   const backend = fs.readFileSync(path.join(ROOT, '..', '..', 'backend', 'src', 'youju', 'models.py'), 'utf8');

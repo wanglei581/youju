@@ -14,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -131,7 +131,8 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   raw.subscriptions[0].status = 'unused'; page.load(); await flush();
   page.remove(event({ kind: 'sub', id: 2 })); assert.equal(modal.title, '取消提醒');
   const template = wxml('my-data');
-  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 3);
+  // 关注、提醒授权、纠错、工具记录（D-093 上线门槛第 8 条，见 my-data-records.test.js）各一个
+  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 4);
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 

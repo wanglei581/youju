@@ -386,6 +386,8 @@ function mePage(latest) {
     '../../utils/consent.js': { applyServer() {}, consentEpoch: () => 0, withdraw() {}, markAgreed() {}, loginOpen: () => false, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
+    // 完整版的页面清单（仓库里的 app.json，含本期清单页）；过审版不显示这一行见 package-pages.test.js
+    '../../utils/pages.js': require('../utils/pages.js'),
   }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: (o) => urls.push(o.url) } });
   return { page, urls };
 }

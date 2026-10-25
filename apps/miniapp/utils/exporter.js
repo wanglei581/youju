@@ -82,6 +82,8 @@ function open(filePath, format) {
 // options.replaces：重新导出时被替代的旧记录编号（新文件和记录存好就删掉旧记录，不管打开是否成功）
 function exportDocs(ids, options) {
   const opts = options || {};
+  const current = opts.current || (() => true);
+  const check = () => { if (!current()) throw Object.assign(new Error('保存已取消'), { cancelled: true }); };
   if (!ids.length) {
     wx.showToast({ title: '请先选择文件', icon: 'none' });
     return Promise.resolve(false);
@@ -96,12 +98,13 @@ function exportDocs(ids, options) {
   }
   const pick = opts.format ? Promise.resolve(opts.format) : chooseFormat();
   return pick.then((format) => {
-    if (!format) return false;
+    if (!format || !current()) return false;
     wx.showLoading({ title: '正在生成…', mask: true });
     let size = 0;
-    return api.exportFile(ids, format)
-      .then((buffer) => { size = buffer.byteLength || 0; return save(buffer, format); })
+    return api.exportFile(ids, format, opts.revision)
+      .then((buffer) => { check(); size = buffer.byteLength || 0; return save(buffer, format); })
       .then((filePath) => {
+        if (!current()) { remove(filePath); check(); }
         const recorded = exportsLog.add({
           id: Date.now(),
           label: opts.label || `${ids.length} 份文件`,
@@ -119,10 +122,24 @@ function exportDocs(ids, options) {
       })
       .catch((err) => {
         wx.hideLoading();
+        if (err.cancelled) return false;
+        if (err.status === 409 && opts.onStale) opts.onStale();
         wx.showToast({ title: err.message || '导出失败', icon: 'none' });
         return false;
       });
   });
 }
 
-module.exports = { exportDocs, MAX, open, exists, removeFiles, save, clearOld, remove };
+// 目录结果先在小程序内查看；文件保存由结果页另行选择。
+function previewDocs(ids, options = {}) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > MAX) {
+    wx.showToast({ title: `请选择 1 至 ${MAX} 份文件`, icon: 'none' }); return Promise.resolve(false);
+  }
+  return new Promise((resolve) => wx.navigateTo({
+    url: `/pages/results/index?ids=${encodeURIComponent(ids.map(String).join(','))}&current=${options.current ? '1' : '0'}`,
+    success: () => resolve(true), fail: () => { wx.showToast({ title: '结果页未打开，请重试', icon: 'none' }); resolve(false); },
+  }));
+
+}
+
+module.exports = { exportDocs, previewDocs, MAX, open, exists, removeFiles, save, clearOld, remove };

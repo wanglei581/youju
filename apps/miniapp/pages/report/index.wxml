@@ -64,7 +64,7 @@
     </view>
     <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
     <view wx:if="{{item.quote}}" class="quote">原文：{{item.quote}}</view>
-    <view class="footline"><text>{{item.fileNumber}}</text><view class="foot-ops"><text class="export" data-id="{{item.docId}}" catchtap="exportOne">导出</text><ai-button wx:if="{{item.days === null || item.days >= 0}}" doc-id="{{item.docId}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
+    <view class="footline"><text>{{item.fileNumber}}</text><view class="foot-ops"><text class="export" data-id="{{item.docId}}" catchtap="exportOne">查看结果</text><ai-button wx:if="{{item.days === null || item.days >= 0}}" doc-id="{{item.docId}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
   </view>
   <view wx:if="{{tab && rows.length < total}}" class="more" bindtap="more">{{loading ? '加载中…' : '加载更多'}}</view>
 </view>

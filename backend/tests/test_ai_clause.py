@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import pytest
 from alembic import command
+from pydantic import SecretStr
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import OperationalError
 
@@ -99,6 +100,10 @@ def usage(session, task):
 def test_all_audience_clause_worker(client, session, settings, notice):
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    # 对所有人开放只能走对外线路（云开发，D-093 上线门槛第 3 条）
+    settings.ai_advisor_base_url = "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase"
+    settings.ai_advisor_api_key = SecretStr("advisor-test-value")
+    settings.ai_advisor_model = "advisor-model"
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()

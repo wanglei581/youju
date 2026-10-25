@@ -192,6 +192,39 @@ def run(session, task, settings, fake=None, stamp=NOW):
     return fake
 
 
+def test_link_gone_refuses_new_tasks_but_keeps_results(client, session, settings, doc):
+    """原网页撤下了（youju/link_check.py 隔天两次确认）：不能再提交新的解读，不扣次数、写明原因；
+    已有的结果照常显示，带上撤下日期（结果页、我的记录写明是撤下前做的）；提交时还没撤下、
+    排着队的照常做完。"""
+    done = direct_task(session, doc)
+    run(session, done, settings)
+    queued = direct_task(session, doc, key="queued")
+    doc.link_gone_at = NOW
+    session.commit()
+    run(session, queued, settings)
+    assert queued.status == "done" and queued.result_json["items"]
+    body = client.get(f"/api/v1/advisor/tasks/{done.id}").json()
+    assert body["result"]["items"] == done.result_json["items"] and not body.get("error")
+    assert body["linkGone"] == "2026-10-03"
+    listed = {item["id"]: item for item in client.get("/api/v1/advisor/tasks").json()["items"]}
+    assert listed[done.id]["linkGone"] == "2026-10-03" and listed[queued.id]["docId"] == doc.id
+    session.expire_all()
+    used = session.scalar(select(AdvisorUsage.used_count))
+    refused = create(client, doc.id, key="after")
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "AI_NOT_ELIGIBLE"
+    assert refused.json()["detail"]["reason"] == "link_gone"
+    session.expire_all()
+    assert session.scalar(select(AdvisorUsage.used_count)) == used
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert detail["ai"]["reason"] == "link_gone" and detail["link_gone"] == "2026-10-03"
+    # 网页恢复了：又能提交，结果里不再带撤下日期
+    doc.link_gone_at = None
+    session.commit()
+    assert create(client, doc.id, key="restored").status_code == 202
+    assert client.get(f"/api/v1/advisor/tasks/{done.id}").json()["linkGone"] is None
+
+
 @pytest.mark.parametrize("change", ["takedown", "field_revoked", "deadline_revoked", "body"])
 def test_refusal_with_verified_values_is_revalidated(client, session, settings, doc, change):
     field = DocumentField(
@@ -452,16 +485,23 @@ def test_task_routes_check_ownership_before_feature_authorization(
         ("DELETE", "", 204),
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
+    # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
+    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
     hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
+        deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": hidden}
+            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
-        assert response.status_code == (own_status if allowed else 404)
-        if not allowed:
+        assert response.status_code == (own_status if allowed or deleting else 404)
+        if not allowed and not deleting:
             assert response.json() == {"detail": "没有找到接口"}
+    own_id, foreign_id = own.id, foreign.id
+    session.expire_all()
+    assert session.get(AdvisorTask, own_id) is None
+    assert session.get(AdvisorTask, foreign_id) is not None
 
 
 @pytest.mark.parametrize(
@@ -574,7 +614,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
         == 404
     )
     settings.ai_advisor_openids = "second"
-    for method, suffix in [("get", ""), ("delete", ""), ("post", "/cancel"), ("get", "/download")]:
+    for method, suffix in [("get", ""), ("post", "/cancel"), ("get", "/download")]:
         assert (
             getattr(client, method)(f"/api/v1/advisor/tasks/{task_id}{suffix}").status_code == 404
         )
@@ -582,6 +622,10 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["processed"] == 0
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
+    # 移出白名单以后，本人照样能删自己的记录（D-093 上线门槛第 8 条）
+    assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, task_id) is None
     settings.advisor_enabled = True
     tools_ready(session)
     assert (
@@ -603,8 +647,16 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
 
 
 def test_all_audience_submission_worker_and_consent(client, settings, doc, session):
+    from youju.ai import heartbeat
+
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    # 对所有人开放只能走对外线路（云开发，D-093 上线门槛第 3 条）：没配时后台不算能处理，不退回后台线路
+    assert not heartbeat.worker_capable(settings)
+    settings.ai_advisor_base_url = "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase"
+    settings.ai_advisor_api_key = SecretStr("advisor-test-value")
+    settings.ai_advisor_model = "advisor-model"
+    assert heartbeat.worker_capable(settings)
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
@@ -1281,6 +1333,16 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     monkeypatch.setenv("YOUJU_AI_ADVISOR_OPENIDS", " user-a, user-b, user-a, ")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_AUDIENCE", "all")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_DAILY_CAP", "12")
+    # 对所有人开放要配好对外线路（D-093 上线门槛第 3 条），没配不启动
+    for name in ("YOUJU_AI_ADVISOR_BASE_URL", "YOUJU_AI_ADVISOR_API_KEY", "YOUJU_AI_ADVISOR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="对所有人开放 AI"):
+        Settings(_env_file=None)
+    monkeypatch.setenv(
+        "YOUJU_AI_ADVISOR_BASE_URL", "https://cloud1-test.api.tcloudbasegateway.com/v1"
+    )
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_API_KEY", "advisor-test-value")
+    monkeypatch.setenv("YOUJU_AI_ADVISOR_MODEL", "advisor-model")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12

@@ -27,7 +27,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; return Object.hasOwn(deps, name) ? deps[name] : {}; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; return Object.hasOwn(deps, name) ? deps[name] : {}; },
     Page(d) { def = d; },
     Component(d) { def = d; },
     ...globals,
@@ -236,7 +236,7 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
     assert.equal(findAll(root, tapsTo('toggleRemind')).length, final ? 1 : 0);
     assert.equal(textOf(root).includes('订阅截止提醒（一次）'), final);
     const [bar] = findAll(root, hasClass('bar'));
-    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'copy'] : ['exportDoc', 'copy']);
+    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'readBody'] : ['exportDoc', 'readBody']);
     assert.equal(textOf(bar).includes('纠错'), final);
     // 截止日期照常显示
     assert.match(textOf(root), /申报截止 10月17日 ?周六/);
@@ -294,7 +294,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.equal(notes.length, final ? 0 : 1);
     if (!final) {
       const note = textOf(notes[0]);
-      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把链接或邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
+      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '点联系邮箱时，只把邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
         `服务器按法律要求保存访问日志（如 IP 地址）${KEEP_DAYS} 天`]) assert.ok(note.includes(line), `数据说明缺少：${line}`);
       assert.doesNotMatch(note, /【|】|关注|提醒|纠错|注销|我的数据/);
     }

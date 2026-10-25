@@ -43,6 +43,7 @@ from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.pay import push_router
 from youju.api.pay import router as pay_router
+from youju.api.readers import router as readers_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import (
@@ -94,6 +95,7 @@ app.include_router(exports_router)
 app.include_router(me_router)
 app.include_router(attachments_router)
 app.include_router(digest_router)
+app.include_router(readers_router)
 
 app.include_router(pay_router)
 app.include_router(push_router)
@@ -243,6 +245,7 @@ ADMIN_READ_PATHS = frozenset(
         "/api/v1/lists/lookup",
         # 本期清单：公众号文章点进来的第一屏（PR #287）
         "/api/v1/digests/latest",
+        "/api/v1/lists/record",
     }
 )
 ADMIN_READ_DOCUMENT = re.compile(r"/api/v1/(?:documents|digests)/\d+")
@@ -676,7 +679,9 @@ class ListMatchOut(BaseModel):
     category: str
     batch: str | None
     status: str | None = Field(
-        description="名单状态，按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+        description=(
+            "发布阶段（原叫名单状态，D-090），按标题用词照录：公示 / 公布；标题没写的为空（D-018）"
+        )
     )
     publish_date: date | None
     issuer: str | None

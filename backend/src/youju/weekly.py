@@ -30,6 +30,7 @@ from youju.classify import (
 from youju.crawler.detail import redact_sensitive
 from youju.dedup import canonical_ids, visible_documents
 from youju.fields import SUPPORT_LABELS
+from youju.lists.rules import excluded_list_title
 from youju.models import (
     DigestIssue,
     DigestProfile,
@@ -688,7 +689,7 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
     page.paragraph(
         f"本期{'全国' if area == '全国' else ''}{numbers}。"
         f"正文每省列 {PER_BLOCK} 条，全部条目在小程序「本期清单」里，可以按省份看，"
-        "点进详情复制原文链接。"
+        "点进详情可以站内阅读全文。"
     )
     blocks, policies = _blocks(entries)
     shown = set()
@@ -908,6 +909,11 @@ _FLASH_OFF = (
 )
 
 
+def _flash_off(title: str) -> bool:
+    """不写速报的名单：列个人的、和企业申报无关的（_FLASH_OFF），和不进查名单的（D-091 ③）。"""
+    return any(word in title for word in _FLASH_OFF) or excluded_list_title(title)
+
+
 def flash_target(session: Session, profile: DigestProfile, document_id: int) -> Item:
     """名单速报写的那份名单（副本按归并主文件算）；不公开、不是名单或不在方案范围内的不写。"""
     master = canonical_ids(session, [document_id]).get(document_id, document_id)
@@ -920,6 +926,11 @@ def flash_target(session: Session, profile: DigestProfile, document_id: int) -> 
     if any(word in items[0].title for word in _FLASH_OFF):
         raise ValueError(
             "这份名单列的是个人，或和企业申报无关（招聘、职称、考试、专家等），不写速报"
+        )
+    if excluded_list_title(items[0].title):
+        raise ValueError(
+            "这份名单不进查名单（失信、处罚等惩戒类，以个人为主的，获奖、表彰类，D-091 ③），"
+            "不写速报"
         )
     return items[0]
 
@@ -935,7 +946,7 @@ def flash_candidates(
             published.desc(), Document.id.desc()
         )
     ).all()
-    rows = [row for row in rows if not any(word in row.title for word in _FLASH_OFF)]
+    rows = [row for row in rows if not _flash_off(row.title)]
     items = sorted(
         _flash_items(session, profile, rows),
         key=lambda item: (-item.entries, -(item.published or date.min).toordinal(), item.id),
@@ -1003,12 +1014,14 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
     if item.versions:
         page.paragraph(f"另有 {item.versions} 个转发版本，内容以各自原文为准。")
     page.blank()
-    page.heading("怎么查一家企业在不在名单上")
+    page.heading("在政府公开名单里查企业")
     page.paragraph(
-        "打开小程序「查名单」，输入企业全称或统一社会信用代码，能看到它上过哪些公示、公布名单。"
+        # 文章里不写"统一社会信用代码"：只写全称就能查，少一分征信感（agy 10/25）；
+        # 小程序输入框照旧写（D-090 ④）
+        "打开小程序「查名单」，输入企业全称，在已收录的政府公开名单里查；查到时显示原名单里的那一行。"
     )
     page.paragraph(
-        f"看原文：到{item.issuer}网站查看，或在小程序里打开这份名单，点「复制原文链接」后用浏览器打开。"
+        "看详情：在小程序里打开这份名单的详情，点「站内阅读全文」；名单里的企业在「查名单」里查。"
     )
     page.footer(stamp, [], deadlines=False)
     body_html, body_text, linked = page.done()

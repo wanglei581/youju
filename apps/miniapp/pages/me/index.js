@@ -3,6 +3,7 @@ const api = require('../../utils/api.js');
 const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE, agreeFailed, featureNames } = require('../../utils/consent.js');
 const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
+const pages = require('../../utils/pages.js');
 // 支付的工具函数用到时才取（和原来"批量工具"一行的小字一样）：没买过、没在卖的人不加载
 function payUtils() { return require('../../utils/pay.js'); }
 
@@ -18,6 +19,10 @@ Page({
   data: {
     // 协议定稿前（D-056）不显示登录卡片、纠错和申请覆盖，也不查询登录状态；定稿后照旧
     loginOpen: loginOpen(),
+    // 包里有哪些页面：过审版（首发 16 页，D-091）没有工具中心、我的记录、购买、订单和使用帮助，这些入口不显示
+    has: pages.flags(),
+    // 宫格几列：导出记录、我的客户，登录开着时加纠错，包里有工具中心时再加工具中心
+    gridCols: 2 + (loginOpen() ? 1 : 0) + (loginOpen() && pages.has('advisor') ? 1 : 0),
     // 订阅消息模板申请下来之前，不写"提醒"相关的字样
     remindOpen: remindOpen('newDocs') || remindOpen('deadline'),
     statusBarHeight: 20,
@@ -77,9 +82,10 @@ Page({
     });
   },
 
-  // 本周周报：有已发布的一期才显示这一行（取不到就不显示，不报错）
+  // 本周周报：有已发布的一期才显示这一行（取不到就不显示，不报错）。
+  // 本期清单页不在这个包里（过审版首发 16 页，D-091）时不显示，也不去问
   loadDigest() {
-    if (!api.latestDigest) return;
+    if (!api.latestDigest || !pages.has('digest')) return;
     api.latestDigest()
       .then((d) => this.setData({ digestEntry: d && d.id !== undefined ? { id: String(d.id), week: weekText(d.weekStart, d.weekEnd) } : null }))
       .catch(() => this.setData({ digestEntry: null }));
@@ -87,7 +93,7 @@ Page({
 
   openDigest() {
     const entry = this.data.digestEntry;
-    if (entry) wx.navigateTo({ url: `/pages/digest/index?id=${encodeURIComponent(entry.id)}` });
+    if (entry && pages.has('digest')) wx.navigateTo({ url: `/pages/digest/index?id=${encodeURIComponent(entry.id)}` });
   },
 
   // 以服务端记录为准：换了设备也能恢复登录状态；服务端没有记录（如在别处注销过）或协议更新了，清掉本机记录。
@@ -115,12 +121,14 @@ Page({
           outdated: !!res.agreed && !current,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
-          ordersEntry: !!(res.pay && res.pay.hasOrders === true),
-          passEntry: !!(res.pay && res.pay.enabled === true),
+          ordersEntry: pages.has('orders') && !!(res.pay && res.pay.hasOrders === true),
+          passEntry: pages.has('pass') && !!(res.pay && res.pay.enabled === true),
           passHint: '',
-          passBadge: current && res.pass && res.pass.active === true ? payUtils().passBadge(res.pass) : '',
+          // 标识点了去购买页、订单页或工具中心，包里一个都没有时不显示
+          passBadge: current && res.pass && res.pass.active === true && (pages.has('pass') || pages.has('orders') || pages.has('advisor'))
+            ? payUtils().passBadge(res.pass) : '',
         });
-        if (res.pay && res.pay.enabled === true) this.loadPassHint(seq, res.pay.hasOrders === true, res.pass);
+        if (pages.has('pass') && res.pay && res.pay.enabled === true) this.loadPassHint(seq, res.pay.hasOrders === true, res.pass);
       })
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
@@ -204,7 +212,7 @@ Page({
   openPass() {
     if (this.data.passEntry) wx.navigateTo({ url: '/pages/pass/index' });
     else if (this.data.ordersEntry) wx.navigateTo({ url: '/pages/orders/index' });
-    else wx.navigateTo({ url: '/pages/advisor/index' });
+    else if (pages.has('advisor')) wx.navigateTo({ url: '/pages/advisor/index' });
   },
 
   go(e) {

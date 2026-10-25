@@ -21,6 +21,7 @@
 
 .grid { position: relative; margin: -32rpx 24rpx 0; padding: 32rpx 8rpx 28rpx; background: var(--card); border-radius: 24rpx; box-shadow: 0 4rpx 20rpx rgba(29, 33, 41, 0.05); display: grid; grid-template-columns: repeat(4, 1fr); }
 .grid--2 { grid-template-columns: repeat(2, 1fr); }
+.grid--3 { grid-template-columns: repeat(3, 1fr); }
 .grid-item { display: flex; flex-direction: column; align-items: center; gap: 12rpx; font-size: 25rpx; }
 .gi { width: 80rpx; height: 80rpx; border-radius: 24rpx; display: flex; align-items: center; justify-content: center; }
 .gi--green { background: var(--g-tint); }

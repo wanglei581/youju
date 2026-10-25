@@ -26,7 +26,9 @@
     "pages/pass/index",
     "pages/orders/index",
     "pages/ai/index",
-    "pages/help/index"
+    "pages/help/index",
+    "pages/reader/index",
+    "pages/results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

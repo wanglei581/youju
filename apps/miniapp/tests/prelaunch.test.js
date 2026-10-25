@@ -13,7 +13,7 @@ function load(file, dependencies, globals = {}) {
   const context = {
     module, setTimeout, clearTimeout,
     require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js');
-      if (!Object.hasOwn(dependencies, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(dependencies, name), `缺少测试依赖：${name}`);
+      if (!Object.hasOwn(dependencies, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(dependencies, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(dependencies, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(dependencies, name), `缺少测试依赖：${name}`);
       return dependencies[name];
     },
     Page(definition) { page = definition; },

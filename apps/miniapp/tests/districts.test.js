@@ -32,7 +32,7 @@ function load(file, deps, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Uint8Array, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && name === '../../utils/pay.js') return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `${file} 缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
@@ -61,7 +61,7 @@ function searchPage({ coverage = COVERAGE, search, createFollow, exported = [], 
       createFollow: createFollow || (() => Promise.resolve({ id: 9 })),
     },
     '../../utils/regions.js': regions, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/exporter.js': { exportDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); }, MAX: 200 },
+    '../../utils/exporter.js': { previewDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); }, MAX: 200 },
     '../../utils/consent.js': { loginOpen: () => true, ensureConsent: () => Promise.resolve(true) },
     '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) },
     '../../utils/conditions.js': conditions,
@@ -267,7 +267,7 @@ test('关注摘要和暂不可查询的区县关注：条件卡写出区县、ne
   // 空的 regions 不写进网址（searchUrl 一直如此），其余原样
   assert.deepEqual(Object.fromEntries(new URL(targets.at(-1), URL_BASE).searchParams), { kind: '申报通知', districts: c.districts, time: '不限' });
   assert.match(conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '江苏/苏州', districts: '北京/北京/朝阳区' }),
-    /江苏·苏州、北京·朝阳区 · 名单与公示 · 名单状态：公示 · 发文部门：科技部门/);
+    /江苏·苏州、北京·朝阳区 · 名单与公示 · 发布阶段：公示 · 发文部门：科技部门/);
 });
 
 function localWx(initial) {
@@ -283,7 +283,7 @@ function localWx(initial) {
 function clientUtils(wx) {
   const module = { exports: {} };
   const deps = { './format.js': format, './regions.js': regions, './conditions.js': conditions };
-  vm.runInNewContext(read('utils/clients.js'), { module, wx, require: (name) => { assert.ok(Object.hasOwn(deps, name), name); return deps[name]; } });
+  vm.runInNewContext(read('utils/clients.js'), { module, wx, require: (name) => { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), name); return deps[name]; } });
   return module.exports;
 }
 function clientsPage(local, { search, coverage = COVERAGE, exported = [] } = {}) {
@@ -293,7 +293,7 @@ function clientsPage(local, { search, coverage = COVERAGE, exported = [] } = {})
     '../../utils/api.js': { search: (p) => { calls.push(plain(p)); return search ? search(p) : Promise.resolve({ items: [], total: 0 }); } },
     '../../utils/clients.js': clientUtils(local.wx),
     '../../utils/coverage.js': { loadCoverage: typeof coverage === 'function' ? coverage : () => Promise.resolve(coverage) },
-    '../../utils/exporter.js': { exportDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
+    '../../utils/exporter.js': { previewDocs: (ids, opts) => { exported.push({ ids, opts }); return Promise.resolve(true); } },
     '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { wx: local.wx });
   return { page, calls, exported };

@@ -12,11 +12,12 @@
   <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>
   <view class="meta">
     <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}" class="meta-date">{{doc.date}}</text></text>
-    <!-- 原网页已撤下或改了地址（后台每周检查，连续两次打不开才算，youju/link_check.py） -->
-    <text wx:if="{{doc.link_gone}}" class="gone">原网页已失效</text>
-    <view class="copy" catchtap="copy" aria-role="button" aria-label="复制原文链接">
-      <t-icon name="copy" size="28rpx" />
-      <text>复制原文链接</text>
+    <!-- 原文链接已失效（后台检查，近 30 天的每天查，隔天两次都打不开或是撤稿页才算，youju/link_check.py）。
+         分不清是撤稿还是改了地址，只说链接失效，不说"已撤下"（agy 合规审阅 10/23） -->
+    <text wx:if="{{doc.link_gone}}" class="gone">原文链接已失效</text>
+    <view class="copy" catchtap="open" aria-role="button" aria-label="查看文件详情">
+      <text>查看详情</text>
+      <t-icon name="chevron-right" size="28rpx" />
     </view>
     <!-- 解读按钮（D-075，组件里判断）：只在能解读、对这个人开着时出现；勾选导出时不出现 -->
     <ai-button doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" selecting="{{selecting}}" bind:toggle="aiToggle" />
@@ -32,7 +33,7 @@
         <text class="version-label">{{item.label}}</text>
         <text class="version-meta">{{item.issuer}}<text wx:if="{{item.date}}"> · {{item.date}}</text></text>
       </view>
-      <view class="version-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</view>
+      <view class="version-copy" data-id="{{item.id}}" catchtap="openVersion" aria-role="button" aria-label="查看{{item.label}}详情">查看详情</view>
     </view>
     <view class="versions-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
   </view>

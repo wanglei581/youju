@@ -1144,7 +1144,7 @@ def test_migration_0035_gives_up_on_a_held_metadata_lock_and_resumes(session, db
         with db_engine.connect() as conn:
             rebuilt = {name: _show_create(conn, name) for name in ("users", "reward_claims")}
 
-        # 升级都只升到 0035：后面合并的迁移会接在 0035 之后，"head" 不一定是 0035
+        # 只升到 0035：后面还会有别的迁移（如 0040），"head"不一定是 0035
         blocked("0035", command.upgrade)
         assert revision() == before
         assert "reward_claims" not in inspect(db_engine).get_table_names()

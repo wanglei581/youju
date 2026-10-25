@@ -16,7 +16,7 @@ const WITH_NOTICE_BAR = ['about', 'advisor', 'advisor-clause', 'advisor-form', '
   'my-data', 'orders', 'pass', 'report', 'search', 'digest'];
 
 test('出处说明只在顶部 notice-bar 写一次：各页都有 notice-bar，页面里不再另写"第三方整理"', () => {
-  assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台 · 每条附原文链接/);
+  assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台 · 每条注明出处/);
   for (const page of WITH_NOTICE_BAR) {
     const template = wxml(page);
     assert.equal((template.match(/<notice-bar\b/g) || []).length, 1, page);
@@ -47,7 +47,8 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
     report: ['机器摘录仅供参考，以原文为准', '申报请在主管部门的系统办理，以原文为准。', '截止未核对，请以原文为准', '省市区选项来自微信，不代表已收录', '只查市级来源',
       '7 天内到期的只写人工核对过的日期', '不代表当地没有通知', '直辖市不选区县时也是'],
     search: ['已合并 {{reposts}} 个各地转发版本，不重复计数', '直辖市不选区县时也是', '只查市级来源', '“只看未截止”含两类：写明了截止日期、还没到的；可能 7 天内截止、日期还没核对的'],
-    lists: ['没找到不代表没上过名单', '请核对统一社会信用代码'],
+    // D-091：没查到的说明按份数写在 missNote 里（不能据此判断不在名单里）；同名提示改成"不一定是同一家"
+    lists: ['{{missNote}}', '名称相近的企业分开列出，不一定是同一家'],
     clients: ['已确认截止的不列', '这里的客户卡片不会自动发送', '要另外确认上传', '选省包含该省已收录的城市、区县', '直辖市不选区县时也是', '不判断客户能不能申报', '省市区选项来自微信，不代表已收录', '客户名称只存在本机，导出的表里不含客户名称。',
       '这里的客户卡片只保存在本机，不上传'],
     files: ['导出记录只保存在这台手机上'],
