@@ -610,18 +610,6 @@
   "similar": [],
   "candidates": []
  },
- "lookup_none": {
-  "query": "华为技术有限公司",
-  "fetchedAt": "2026-10-22 10:35",
-  "items": [],
-  "similar": [],
-  "candidates": [],
-  "ambiguous": false,
-  "coverage": {
-   "lists": 197,
-   "since": "2026-07-09"
-  }
- },
  "doc70955": {
   "id": "70955",
   "kind": "申报通知",

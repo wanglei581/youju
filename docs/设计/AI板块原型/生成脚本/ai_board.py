@@ -2,6 +2,7 @@
 
 - 当前版本：手上的体验版（main），照小程序现在的代码画，样子在开发者工具里对过（10/22）。
 - 下一版：问一问第一期（D-078），界面文字照开发设计 #328 第十二节；AI 首页两行能点是推进计划第 0 步第 1 处。
+  10/25 按 D-091③、D-093 改了查名单：问一问里不另做查企业，问到某企业在不在名单里，只带去查名单页（过审版 #356 的页面）。
 沿用原型 v2 的规范（../../原型v2/生成脚本/ds.py）和 #278 的做法：每屏一段 HTML，看板里直接放画面，
 单屏页面交给 render.sh 用无界面 Chrome 出效果图。图标只用小程序本地图标集里有的（tools/icons/icons.txt），
 用了表外的图标直接报错。
@@ -50,9 +51,9 @@ FIND = DATA["find"]["items"]                  # 找通知例子：近 30 天、�
 DOC = DATA["doc70955"]
 NO_BODY = DATA["doc71229"]                    # 不能解读：没有完整正文（重庆 5G 工厂）
 KIND_DOC = DATA["kind_example"]["items"][0]   # 不能解读：资讯与指南（广东研修班通知）
-LOOKUP = DATA["lookup"]                       # 查名单例子
-LIST_DOC = LOOKUP["items"][0]                 # 名单（新疆天山杯获奖名单）
-NONE_LOOKUP = DATA["lookup_none"]             # 查名单没查到的例子
+# 名单（新疆天山杯获奖名单，10/22 查名单查到的那一份）：只在当前 3 当"名单不做 AI 解读"的例子（当前版本照线上原样画）。
+# 下一版不再画查名单的结果：10/25 起问一问里不另做查企业，问到时只带去查名单页（D-093）
+LIST_DOC = DATA["lookup"]["items"][0]
 BODY = DOC["body"]["text"]
 
 
@@ -149,12 +150,6 @@ def tag(kind):
     c = {"申报通知": (BLUE_TINT, BLUE), "名单": (O_TINT, O_TXT), "资讯与指南": (FILL, T2)}[kind]
     return (f'<span style="padding: 0 6px; line-height: 20px; border-radius: 4px; background: {c[0]}; color: {c[1]}; font-size: 12px; '
             f'font-weight: 500; white-space: nowrap">{kind}</span>')
-
-
-def status_tag(text):
-    """名单状态（只照录标题用词）：公示 = 橙色虚线框，公布 = 灰色实线框。"""
-    st = f"border: 1px dashed {O_TXT}; color: {O_TXT}" if text == "公示" else f"border: 1px solid {T2}; color: {T1}"
-    return f'<span style="padding: 0 6px; line-height: 18px; border-radius: 4px; {st}; font-size: 12px; white-space: nowrap">{text}</span>'
 
 
 def chip(text):
@@ -302,12 +297,14 @@ def record(title, meta, last=False):
 
 def ai_home(nextv):
     if nextv:
-        # 下一版：第三行"问一问"（#328 第十二节第 4 条）；三行能点（第 0 步第 1 处）；对照那一行的说明按 D-078 第五节改
+        # 下一版：第三行"问一问"（#328 第十二节第 4 条）；三行能点（第 0 步第 1 处）；对照那一行的说明按 D-078 第五节改。
+        # 10/25 起问一问里不另做查企业（D-093），这一行和下面那句不再写查名单；
+        # 去掉查名单以后一行放不下、末尾只剩一个"句"字，"AI 只摘原句"挪到第二行
         rows = (ability("AI 解读", "把一份通知的原句分好类，约半分钟", left(5), arrow=True)
                 + ability("条款对照", "把条件和企业情况摆在一起看", left(5), arrow=True)
-                + ability("问一问", "找通知、查名单；或就一份通知提问，AI 只摘原句", left(5, "问这份通知"), arrow=True, last=True)
+                + ability("问一问", "找通知；或就一份通知提问", left(5, "问这份通知"), sub="AI 只摘原句", arrow=True, last=True)
                 # agy 第 2 轮：三行都写"还剩 5 次"，看不出各算各的
-                + f'<div style="margin-top: 2px; font-size: 12px; line-height: 1.6; color: {T3}">三项的次数各算各的，每天 0 点恢复；找通知、查名单不限次。</div>')
+                + f'<div style="margin-top: 2px; font-size: 12px; line-height: 1.6; color: {T3}">三项的次数各算各的，每天 0 点恢复；找通知不限次。</div>')
     else:
         rows = (ability("AI 解读", "把一份通知的原句分好类，约半分钟", left(5))
                 + ability("条款对照", "申报条件和一家企业的情况并排列出", left(5), last=True))
@@ -325,8 +322,9 @@ def ai_home(nextv):
     recent = card(card_head("近 7 天能解读的申报通知", "全部")
                   + f'<div style="padding-top: 8px; font-size: 12px; color: {T3}">点标题看通知全文，点“AI 解读”直接开始</div>{rows}')
     if nextv:
+        # 没带通知的那条写最近一问（agy 10/23）；原来画的是查名单那一问，10/25 起问一问不查企业，换成下一版 4 找通知那一问
         recs = (record(f"问一问 · {DOC['title']}", "[日期] · 2 问")
-                + record("问一问 · 最近一问（查名单）：中国电信股份有限公司新疆分公司", "[日期] · 3 问")
+                + record(f"问一问 · 最近一问：{FIND_Q}", "[日期] · 1 问")
                 + record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成", last=True))
     else:
         recs = (record(f"AI 解读 · {DOC['title']}", "[日期] · 已完成")
@@ -342,7 +340,9 @@ def ai_home(nextv):
 
 
 # ---------- 通知详情 ----------
-def detail_head():
+def detail_head(nextv=False):
+    # 标题下的说明：下一版照 D-090 把「名单状态」改叫「发布阶段」（过审版 #356 详情页同一句）；当前版本照线上原样
+    note = "类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类" if nextv else "类型、类别和名单状态按标题归类，仅供检索参考，非官方分类"
     tags = (tag("申报通知") + f'<span style="padding: 0 6px; line-height: 18px; border-radius: 4px; border: 1px solid {LINE2}; color: {T2}; font-size: 12px; '
             f'white-space: nowrap">{DOC["category"]}</span><span style="font-size: 12px; color: {T2}; line-height: 20px">{DOC["region"]}</span>')
     return card(f'<div style="padding: 16px 0">'
@@ -350,7 +350,7 @@ def detail_head():
                 f'<div style="margin-top: 10px; font-size: 20px; line-height: 30px; font-weight: 700">{DOC["title"]}</div>'
                 f'<div style="margin-top: 10px; font-size: 13px; color: {T2}">{DOC["issuer"]} · {DOC["date"]} 发布</div>'
                 f'<div style="margin-top: 8px; padding: 2px 0; font-size: 13px; color: {BLUE}">这份通知可以 AI 解读 ↓</div>'
-                f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: {T3}">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</div></div>')
+                f'<div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: {T3}">{note}</div></div>')
 
 
 WEEK = "一二三四五六日"
@@ -451,7 +451,7 @@ def detail_bar(nextv=False):
 
 
 def detail(nextv):
-    top = nav("文件详情") + notice_bar(nextv=nextv) + detail_head() + detail_due() + detail_points() + ai_card(nextv) + detail_body(nextv)
+    top = nav("文件详情") + notice_bar(nextv=nextv) + detail_head(nextv) + detail_due() + detail_points() + ai_card(nextv) + detail_body(nextv)
     # 画到 AI 卡片下面一点：这份通知有截止时间，手机第一屏只到截止时间那一块，卡片要往下滑才看到
     return first_screen(top, detail_bar(nextv), h=1160)
 
@@ -572,21 +572,23 @@ def doc_card():
 NO_DOC = "想问某份通知里的具体内容（比如截止、条件）：先用“找通知”找到它，再点那一行的“问这份通知”。"
 
 
-SKILLS = ("找通知", "问这份通知", "查名单")
+# 10/25 起（D-093）问一问里不另做查企业：可选的只有找通知、问这份通知两项；第三个按钮「查名单 ›」直接进查名单页
+# （过审版 #356 的页面），不在对话里查，所以没有查名单的示例、输入框提示和回答
+SKILLS = ("找通知", "问这份通知")
+FIND_Q = "找近 30 天的 5G 工厂申报"   # 下一版 4 的那一问；AI 首页"我的 AI 记录"里没带通知的那条也写它
 EXAMPLES = {
     # #328 的两句（广东今年专精特新、四川近 30 天科技项目）10/22 线上都是 0 份，换成查得到的（见设计说明第四节）
-    "找通知": (["找近 30 天的 5G 工厂申报", "找宁夏近 7 天的申报"], "手上有通知的，直接输入它的标题或文号"),
+    "找通知": ([FIND_Q, "找宁夏近 7 天的申报"], "手上有通知的，直接输入它的标题或文号"),
     # 例子是所有通知共用的固定文字：换成每份申报通知都答得上的（agy 第 4 轮：#328 的"对成立时间有什么要求？"很多通知没写，点了只会答"没找到"）
     "问这份通知": (["企业申报截止是哪天？", "要交哪些材料？", "要满足哪些条件？"], ""),
-    "查名单": ([], "只在收录的政府公开名单（认定、公示、获奖等）里，按企业全称或统一社会信用代码核对，列出对上的名单名称、发布机关和日期"),
 }
 HINT = {
     "找通知": ("说说要找什么通知，或输入标题、文号",
              "这一项只帮你找到通知，不用 AI，不算次数；想知道某份通知里怎么写的，找到后点那一行的“问这份通知”"),
+    # D-090：不写"上过哪些名单"，用"在政府公开名单里查企业"（查名单页的标题）
     "问这份通知": ("问这份通知里的事",
-              "你打的字会交给 AI 处理，请不要写企业名称、信用代码、手机号（要查企业上过哪些名单，点“查名单”）。"
+              "你打的字会交给 AI 处理，请不要写企业名称、信用代码、手机号（要在政府公开名单里查企业，点“查名单”）。"
               "今天还剩 {n} 次（找到原句才算，没找到不算）"),
-    "查名单": ("企业全称或统一社会信用代码", "这一项只在收录的名单里比对，不交给 AI，所以可以输入企业名称；不算次数"),
 }
 
 
@@ -600,6 +602,9 @@ def skills(selected, ask_off=False, examples=True, ask_note=""):
         else:
             st = f"background: {CARD}; color: {T1}; border: 1px solid {LINE2}"
         segs.append(f'<span style="height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 19px; font-size: 14px; {st}">{s}</span>')
+    # 第三个按钮进查名单页（D-093），不是对话里的一项，带 › 和前两个区分开
+    segs.append(f'<span style="height: 38px; display: flex; align-items: center; justify-content: center; gap: 1px; border-radius: 19px; font-size: 14px; '
+                f'background: {CARD}; color: {T1}; border: 1px solid {LINE2}">查名单{icon("chev", 14, T3)}</span>')
     ex = (f'<div style="margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: {FILL}; font-size: 12.5px; line-height: 1.6; color: {T2}">{ask_note}</div>'
           if ask_note else "")
     if examples:
@@ -633,8 +638,8 @@ def user_msg(skill, text):
 
 
 def answer(kind, body, foot=True):
-    """回答卡片：问这份通知开头标"AI 生成"；找通知、查名单不是 AI 生成的，标"只查收录"；
-    正在找、没做成是系统提示，不是 AI 生成的，不标（agy 10/23）。"""
+    """回答卡片：问这份通知开头标"AI 生成"；找通知不是 AI 生成的，标"只查收录"；
+    正在找、没做成、带去查名单页是系统提示，不是 AI 生成的，不标（agy 10/23）。"""
     if kind == "sys":
         return (f'<div style="margin: 12px 12px 0; padding: 12px 14px 12px; background: {CARD}; border-radius: 12px">{body}</div>')
     if kind == "ai":
@@ -679,20 +684,21 @@ def chat_top():
 
 
 # #328 第十二节「问一问使用说明」五条（cd036bfc 的候选文字，按 D-065 在 PR-2 合并前定稿）。
-# 卡片里放全文，不是摘要（#328：第一次用先看全文、点"同意并开始"才能发；Codex 10/24 指出原型原来只画了四句摘要）
+# 卡片里放全文，不是摘要（#328：第一次用先看全文、点"同意并开始"才能发；Codex 10/24 指出原型原来只画了四句摘要）。
+# 10/25 按 D-093 删了第 1–3 条里查名单的几句（问一问里不查企业），"三个技能"跟着改（D-093 设计稿：不写"技能"这类内部词）；
+# 其余照 #328 原文，#328 定稿时跟着改
 CHAT_TERMS = [
-    ("三个技能做什么",
-     "找通知、查名单在我们收录的政府文件和名单里查，不用 AI 模型。问这份通知由 AI 从这份通知的原文（正文和能读到的附件）里，"
+    ("找通知、问这份通知做什么",
+     "找通知在我们收录的政府文件里查，不用 AI 模型。问这份通知由 AI 从这份通知的原文（正文和能读到的附件）里，"
      "把和你的问题有关的句子原样摘出来，每句都能点开原文核对；它不替你判断能不能申报。"),
     ("你打的字交给谁",
-     "三个技能里你打的字，先在我们的服务器上查有没有第 3 条说的号码，没被拦下的再交给微信做内容安全检查，同时提供你的微信用户标识"
+     "问一问里你打的字，先在我们的服务器上查有没有第 3 条说的号码，没被拦下的再交给微信做内容安全检查，同时提供你的微信用户标识"
      "（openid：微信分给这个小程序的一串编号，不是你的微信号或手机号；微信的检查接口要求带上）。用“问这份通知”时，这一问还会和这份通知里的相关段落一起，"
      "经腾讯云开发交给已备案的大模型处理；接着问时，这条对话里前两次“问这份通知”的问题和上一答摘的原句也一起交过去，好让它明白你指的是哪句。"
-     "交给模型的都不带你的微信用户标识。找通知、查名单里打的字不交给模型。"),
+     "交给模型的都不带你的微信用户标识。找通知里打的字不交给模型。"),
     ("请不要写的",
      "找通知、问这份通知里有统一社会信用代码、手机号、身份证号、银行卡号这类号码的，我们直接拦下，不发出、不保存。企业名称我们认不全、拦不住，"
-     "写进“问这份通知”就会交给模型，所以请不要写；问这份通知也用不着写企业名称，直接问“要满足哪些条件”就行。查名单本来就要输入企业全称或统一社会信用代码，"
-     "照常查询、保存，不交给模型；手机号、身份证号、银行卡号照样拦下。"),
+     "写进“问这份通知”就会交给模型，所以请不要写；问这份通知也用不着写企业名称，直接问“要满足哪些条件”就行。"),
     ("保存多久、怎么删",
      "你打的字和回答作为对话保存 30 天，到期删除；你可以随时在对话页或“我的记录”里删除，也可以按《隐私保护指引》第五节请我们删除；注销账号时一起删除；"
      "删除或到期以后，数据库备份里的副本也会在最长 30 天内随备份清除。被拦下的字不保存。我们还记下你同意本说明的版本和时间，以及你每天用“问这份通知”的次数"
@@ -731,7 +737,7 @@ def find_answer():
 
 
 def chat_find():
-    top = chat_top() + skills("找通知", ask_off=True, ask_note=NO_DOC) + user_msg("找通知", "找近 30 天的 5G 工厂申报") + find_answer() + chat_tail()
+    top = chat_top() + skills("找通知", ask_off=True, ask_note=NO_DOC) + user_msg("找通知", FIND_Q) + find_answer() + chat_tail()
     return phone(top, input_bar("找通知"))
 
 
@@ -758,51 +764,24 @@ def chat_ask():
     return phone(top, input_bar("问这份通知", n=3))
 
 
-# 名单原文里企业所在的那一行：10/24 从新疆工信厅原网页的附件（.doc）核对（收录接口现在只给"按名称对上"，没有这一行，
-# 站内闭环第 4 项「名单站内可读、命中定位到页和行」做好以后由接口给）。团队成员一列是个人姓名，不显示
-LOOKUP_ROW = {"file": "附件《2026年第五届“天山杯”新疆APP暨人工智能创新应用大赛获奖名单》", "section": "智慧民生服务赛道",
-              "cells": [("序号", "6"), ("项目名称", "丝路智服"), ("参赛单位", "中国电信股份有限公司新疆分公司"), ("奖项", "三等奖")],
-              "hidden": "团队成员一列是个人姓名，不显示。"}
+# 问到某企业在不在名单里：问一问里不另做查企业，只带去查名单页（D-093）。查名单页是过审版 #356 的页面：
+# 只按企业全称查（D-091③，输入框去掉统一社会信用代码），只查认定、立项、公示、入库、备案五类名单（D-091③），
+# 查到的给出这家企业在原名单里的那一行和列名，整份名单不在站内读（D-088）。原型只画对话里这一步，查名单页不另画
+LOOKUP_Q = "我们公司在不在名单里？"
 
 
-def evidence_block(ev):
-    cells = "".join(f'<div style="display: flex; gap: 8px; margin-top: 3px"><span style="flex-shrink: 0; width: 56px; color: {T3}">{h}</span><span>{v}</span></div>'
-                    for h, v in ev["cells"])
-    return (f'<div style="margin-top: 8px; padding: 10px 12px; background: {FILL}; border-radius: 8px; font-size: 12.5px; line-height: 1.6">'
-            f'<div style="color: {T2}">名单原文里的这一行（{ev["file"]} · {ev["section"]}）</div>'
-            f'<div style="margin-top: 4px; color: {T1}">{cells}</div>'
-            f'<div style="margin-top: 6px; font-size: 11.5px; color: {T3}">{ev["hidden"]}</div>'
-            f'<div style="margin-top: 6px; color: {BLUE}">在名单原文里看这一行 ›</div></div>')
-
-
-def list_row(d, evidence=None):
-    m = d.get("matched") or {}
-    return (f'<div style="margin-top: 8px; padding: 12px; border: 1px solid {LINE2}; border-radius: 10px">'
-            f'<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px">{tag("名单")}'
-            f'<span style="font-size: 12px; color: {T2}">{d["region"]}</span>{status_tag(d["status"])}</div>'
-            f'<div style="margin-top: 7px; font-size: 15px; font-weight: 600; line-height: 1.55">{d["title"]}</div>'
-            f'<div style="margin-top: 6px; font-size: 12.5px; line-height: 1.6; color: {T2}">{d["issuer"]}</div>'
-            f'<div style="margin-top: 2px; display: flex; align-items: center; font-size: 12.5px; color: {T2}">'
-            f'<span style="white-space: nowrap">{d["date"]} 发布</span><span style="margin-left: auto; color: {BLUE}; white-space: nowrap">查看详情 ›</span></div>'
-            f'<div style="margin-top: 4px; font-size: 12px; color: {T3}">按名称对上：{m.get("name", "")}</div>'
-            f'{evidence_block(evidence) if evidence else ""}</div>')
-
-
-def coverage_line():
-    """收录范围：Grok 走查时"最早的发布于 2026 年"看不懂，改成写明从几月起、更早的没收录。"""
-    cov = LOOKUP["coverage"]
-    return f"收录的名单共 {cov['lists']} 份，最早的是 {cov['since'][:4]} 年 {int(cov['since'][5:7])} 月发布的，更早的没有收录。"
+def lookup_route_card():
+    """固定的系统提示，不是 AI 生成的，不标；不交给模型、不算次数。"""
+    body = (para("查企业在不在政府公开名单里，请到“查名单”页，输入企业全称查。")
+            + para("只查收录的认定、立项、公示、入库、备案名单；查到的能看这家企业在原名单里的那一行。", 12.5, T2, 6)
+            + btn_primary("去查名单", 12))
+    return answer("sys", body)
 
 
 def chat_lists():
-    a1 = para("要查哪家企业？请输入企业全称或统一社会信用代码。")
-    a2 = (para(f"按“{LOOKUP['query']}”查的。在收录的名单里查到 {len(LOOKUP['items'])} 份：") + "".join(list_row(d, LOOKUP_ROW) for d in LOOKUP["items"])
-          + para("不按年份筛，收录里对上的名单都列出来。名单性质按标题判断，以主管部门公布为准。", 12.5, T2, 10)
-          + para(coverage_line(), 12.5, T2, 2))
-    top = (chat_top() + skills("查名单", ask_off=True, ask_note=NO_DOC)
-           + user_msg("查名单", "我们公司去年上过什么名单？") + answer("lists", a1)
-           + user_msg("查名单", LOOKUP["query"]) + answer("lists", a2) + chat_tail())
-    return phone(top, input_bar("查名单"))
+    top = (chat_top() + skills("找通知", ask_off=True, ask_note=NO_DOC)
+           + user_msg("找通知", LOOKUP_Q) + lookup_route_card() + chat_tail())
+    return phone(top, input_bar("找通知"))
 
 
 def chat_states():
@@ -814,15 +793,16 @@ def chat_states():
            f'<div style="padding: 4px 16px 0; font-size: 12.5px; line-height: 1.65; color: {T2}">放在一起看，实际一次只出现一种。所有情况都不写"暂未开放""以后会有"。</div>'
            + state_label('"问这份通知"用不了：按钮变灰，原因直接写在三个按钮下面（不用先点一下）')
            + off("没选通知：要先选一份通知：用“找通知”找到后，点那一行的“问这份通知”。")
-           + off("5 次用完：问这份通知今天的 5 次用完了，明天 0 点恢复；找通知、查名单照常能用。")
-           + off("问满 20 句：今天已经问了 20 句（每天最多问 20 句，找没找到都算，和“还剩几次”分开算），问这份通知明天 0 点恢复；找通知、查名单照常能用。")
+           # 10/25 起问一问里不另做查企业（D-093），"照常能用"、拦号码这几句不再写查名单
+           + off("5 次用完：问这份通知今天的 5 次用完了，明天 0 点恢复；找通知照常能用。")
+           + off("问满 20 句：今天已经问了 20 句（每天最多问 20 句，找没找到都算，和“还剩几次”分开算），问这份通知明天 0 点恢复；找通知照常能用。")
            # #328 第十二节原话：按钮变灰时的重试只是再问一次后台能不能处理，不重发问题（和发出以后"没做成"的重试不同，agy、Grok 10/24 都看岔过）
-           + off("后台处理不了：AI 暂时不可用，请稍后再试；找通知、查名单照常能用。（点“重试”只是再问一次后台能不能处理，不算次数）", retry=True)
+           + off("后台处理不了：AI 暂时不可用，请稍后再试；找通知照常能用。（点“重试”只是再问一次后台能不能处理，不算次数）", retry=True)
            + off("这份不能做：这份文件已下架，问这份通知用不了；可以点上面的“换一份通知”，或用“找通知”找别的。")
            + state_label("发送被拦下（不保存、不算次数，字留在输入框里）")
-           # #328 第十二节分两种说法：找通知、查名单不交给模型，不能说"会发给 AI 模型"（agy 10/24）
+           # #328 第十二节分两种说法：找通知不交给模型，不能说"会发给 AI 模型"（agy 10/24）
            + off("问这份通知里：你输入的内容里像有手机号。这一项会把你打的字发给 AI 模型，请删掉后再发。这次不算次数。")
-           + off("找通知、查名单里：你输入的内容里像有手机号，请删掉后再发。")
+           + off("找通知里：你输入的内容里像有手机号，请删掉后再发。")
            + state_label("发出以后没做成（不算次数）")
            # #328 第十二节：全站满了、AI 暂时不可用时不给"重试"（同解读页 NO_RETRY_CODES），画能重试的"处理超时了"（Codex 10/24）
            + answer("sys", para("这次没做成：处理超时了。这次不算次数。", 14) + f'<div style="margin-top: 6px; font-size: 13px; color: {BLUE}">重试</div>')
@@ -834,9 +814,7 @@ def chat_states():
            + state_label("没找到", "问：能给多少补贴？")
            + answer("ai", para("这份通知已读的内容里没有写。") + para(f"{READ_BODY}可以换个说法再问，或点“看原文”自己找。这次不算次数。", 13, T2, 4)
                     + f'<div style="margin-top: 8px; font-size: 12.5px; color: {BLUE}">看原文 ›</div>')
-           + state_label("查名单没查到", f"问：{NONE_LOOKUP['query']}（10/22 线上真实结果）")
-           + answer("lists", para(f"按“{NONE_LOOKUP['query']}”查的。按这个名称，收录的名单里没查到。只代表我们没收录到，不代表没上过；改过名、分公司请分别查；以主管部门公布为准。")
-                    + para(coverage_line(), 12.5, T2, 6))
+           # 原来这里画"查名单没查到"：10/25 起问一问不查企业（D-093），没查到怎么说是查名单页的事（D-091①，过审版 #356）
            + state_label("范围外", "问：帮我写一份申报书")
            + answer("ai", para("这个问题不在“问这份通知”能答的范围里：这里只从这份通知的原文里找相关原句，不代写材料、不判断能不能申报，"
                                "也不答和这份通知无关的问题。想找别的通知，点“找通知”。这次不算次数。"))
@@ -865,14 +843,14 @@ NOW = [
 
 NEXT = [
     ("下一版1_AI首页", "下一版 1", "AI 首页：三项", lambda: ai_home(True),
-     "加第三行「问一问」：找通知、查名单，或就一份通知提问（AI 只摘原句）；次数只算「问这份通知」，找通知、查名单不限次。三行都能点（第 0 步第 1 处，另一会话在做）。"
-     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问，是查名单的写明「查名单」）；页底公示模型和备案号；顶部出处说明条画成「每条都有出处」（全站组件，跟 #349 定）。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。宁夏那份原网站撤稿了，照 #347 不再列在能解读的通知里。",
+     "加第三行「问一问」：找通知，或就一份通知提问（AI 只摘原句）；次数只算「问这份通知」，找通知不限次。问一问里不另做查企业（D-093），这一行不写查名单。三行都能点（第 0 步第 1 处，另一会话在做）。"
+     "刚才看的通知加「问这份通知 ›」；我的 AI 记录里也列对话（没选通知的那条写最近一问）；页底公示模型和备案号；顶部出处说明条画成「每条都有出处」（全站组件，跟 #349 定）。列表行的「复制原文链接」照 #349 换成「查看详情」（10/23 起不让用户复制网址去浏览器）。宁夏那份原网站撤稿了，照 #347 不再列在能解读的通知里。",
      ["问一问", "三行能点", "记录里有对话", "公示占位"]),
     ("下一版2_通知详情", "下一版 2", "通知详情：卡片加「问这份通知」", lambda: detail(True),
-     "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变。底部照 #349：主按钮「站内阅读」，「导出」改叫「结果」（结果先在小程序里看）；正文照 #345 去掉了网页上的导航和页脚。",
-     ["卡片位置不动", "问这份通知"]),
+     "卡片还在「要点」下面，「开始解读」下面多一个「问这份通知」，和「也可以做条款对照」并排。标题卡那一行提示不变；标题下的说明照 D-090 把「名单状态」改叫「发布阶段」（同过审版 #356）。底部照 #349：主按钮「站内阅读」，「导出」改叫「结果」（结果先在小程序里看）；正文照 #345 去掉了网页上的导航和页脚。",
+     ["卡片位置不动", "问这份通知", "发布阶段"]),
     ("下一版3_问一问第一次用", "下一版 3", "问一问：第一次用", chat_consent,
-     "从 AI 首页「问一问」进来，没带通知，技能默认「找通知」。不管从哪进来，第一次用都先看「问一问使用说明」五条全文（#328 第十二节，《隐私保护指引》的正式补充，候选文字按 D-065 定稿）、点「同意并开始」才能发（服务端记下同意的版本）。"
+     "从 AI 首页「问一问」进来，没带通知，技能默认「找通知」。不管从哪进来，第一次用都先看「问一问使用说明」五条全文（#328 第十二节，《隐私保护指引》的正式补充，候选文字按 D-065 定稿；10/25 按 D-093 删了里面查名单的几句）、点「同意并开始」才能发（服务端记下同意的版本）。"
      "页顶写明只有「问这份通知」的回答是 AI 生成的。没有相机、没有拍照入口。",
      ["使用说明", "同意并开始", "没有相机"]),
     ("下一版4_找通知", "下一版 4", "问一问：找通知", chat_find,
@@ -883,16 +861,18 @@ NEXT = [
      "从详情卡片「问这份通知」进来，通知卡片固定在顶部。回答只摘原句、不写结论：开头写「摘出了……N 句（可能没摘全）」；问能不能报时先说不替你判断；"
      "写明读了哪些；每句能看原文、纠错；末尾不判断能不能申报、模型和备案号、投诉举报。",
      ["只摘原句", "可能没摘全", "读了：正文", "摘哪几句是示意"]),
-    ("下一版6_查名单", "下一版 6", "问一问：查名单", chat_lists,
-     "不用 AI，按企业全称或信用代码精确比对，只在收录的政府公开名单里查，说明只写查什么、列什么，不写信贷、逾期、失信这类字（10/23 查名单被认成企业征信；agy、Grok 都提否定句也会被读成征信）。没写企业（「我们公司」）先问是哪家；查到的列名单名称、发布机关、日期和名单性质，写明不按年份筛、收录从哪个月开始。查到以后直接给出名单原文里企业所在的那一行（所在附件、赛道、表头），还能在名单原文里接着看（站内闭环第 4 项「名单站内可读、命中定位」，还没做；Codex 10/24 提）。"
-     "线上 10/22 真实查得到的一家；那一行是 10/24 从新疆工信厅原网页的附件核对的，团队成员是个人姓名，不显示。",
-     ["只查收录", "只查政府公开名单", "名单里那一行", "可以输企业名称"]),
+    ("下一版6_查名单", "下一版 6", "问一问：问到查企业，带去查名单页", chat_lists,
+     "问一问里不另做查企业（D-093）。问到某企业在不在名单里，只回一句、带去查名单页，不在对话里查、不列结果；上面的「查名单 ›」也是直接进查名单页。"
+     "查名单页是过审版 #356 的页面：只按企业全称查（D-091③，不收统一社会信用代码），只查认定、立项、公示、入库、备案五类政府公开名单（D-091③），查到的看这家企业在原名单里的那一行（D-088）。"
+     "这句是固定的系统提示，不标「AI 生成」，不交给 AI，不算次数。",
+     ["不另做查企业", "带去查名单页", "只按企业全称", "只查五类名单"]),
     ("下一版7_结果页接着问", "下一版 7", "AI 解读结果：滑到最下面", result_bottom,
      "结果下面、「用的时候遇到问题？」上面加一张「接着问这份通知」，进对话页并带上这份通知。条款对照的结果页也加同一张。页底公示模型和备案号。",
      ["接着问这份通知", "公示占位"]),
     ("下一版8_各种情况", "下一版 8", "问一问：用不了、没答上的时候", chat_states,
-     "每种都写原因、扣没扣次数、下一步；「问这份通知」用不了时原因直接写出来，不用先点一下；没找到写「这份通知已读的内容里没有写」，不说「政策没有规定」。「正在找」「没做成」是系统提示，不标「AI 生成」；模型答的（没找到、范围外、要问清楚）标「AI 生成」，末尾写模型和备案号。",
-     ["不扣次数", "没读到不等于没规定", "查名单没查到"]),
+     "每种都写原因、扣没扣次数、下一步；「问这份通知」用不了时原因直接写出来，不用先点一下；没找到写「这份通知已读的内容里没有写」，不说「政策没有规定」。「正在找」「没做成」是系统提示，不标「AI 生成」；模型答的（没找到、范围外、要问清楚）标「AI 生成」，末尾写模型和备案号。"
+     "原来画的「查名单没查到」去掉了：问一问不查企业（D-093），没查到怎么说是查名单页的事（D-091①）。",
+     ["不扣次数", "没读到不等于没规定"]),
 ]
 
 
