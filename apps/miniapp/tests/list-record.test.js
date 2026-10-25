@@ -334,9 +334,13 @@ test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给在
   assert.deepEqual(p.navigations, ['/pages/lists/index']);
 });
 
-test('名单类通知详情页（D-092）：正文里的名单没展开时给去查名单的入口', () => {
+test('名单类通知详情页（D-092）：正文里的名单没展开、正文主要是名单时都给去查名单的入口', () => {
   const wxml = fs.readFileSync(path.join(root, 'pages/detail/index.wxml'), 'utf8');
   const js = fs.readFileSync(path.join(root, 'pages/detail/index.js'), 'utf8');
   assert.match(wxml, /wx:if="\{\{doc\.body\.listHidden\}\}"[^>]*bindtap="toLists"[^>]*>在已收录名单中查询企业 ›</);
+  assert.match(
+    wxml,
+    /wx:elif="\{\{doc\.body\.status === 'list'\}\}">\s*<view class="muted body-none">[^<]*<\/view>\s*<view class="link body-lookup" bindtap="toLists"[^>]*>在已收录名单中查询企业 ›</,
+  );
   assert.match(js, /toLists\(\) \{\s*wx\.navigateTo\(\{ url: '\/pages\/lists\/index' \}\);/);
 });

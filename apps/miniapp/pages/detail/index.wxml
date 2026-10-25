@@ -145,7 +145,10 @@
       <!-- 名单类通知：正文里的名单没展开（D-092），给去查名单的入口 -->
       <view wx:if="{{doc.body.listHidden}}" class="link body-lookup" bindtap="toLists" aria-role="button">在已收录名单中查询企业 ›</view>
     </block>
-    <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">可在“查名单”中查看已提取的企业记录；完整内容的读取状态见站内阅读页。</view>
+    <block wx:elif="{{doc.body.status === 'list'}}">
+      <view class="muted body-none">可在“查名单”中查看已提取的企业记录；完整内容的读取状态见站内阅读页。</view>
+      <view class="link body-lookup" bindtap="toLists" aria-role="button">在已收录名单中查询企业 ›</view>
+    </block>
     <view wx:elif="{{doc.body.status === 'original'}}" class="muted body-none">这类文件的内容及处理状态见站内阅读页。</view>
     <view wx:else class="muted body-none">暂未提取到完整正文，可在站内阅读页查看处理状态或反馈问题。</view>
   </view>
