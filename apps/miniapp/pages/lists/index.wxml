@@ -5,10 +5,10 @@
     <text class="nav-title">查名单</text>
   </view>
   <view class="h1">在政府公开名单里查企业</view>
-  <view class="sub">在已收录的高企、专精特新等公示和公布名单里查</view>
+  <view class="sub">只查科技、工信等部门公开发布的认定、立项名单</view>
   <view class="search">
     <t-icon name="search" size="36rpx" color="#86909C" />
-    <input class="search-input" value="{{name}}" placeholder="输入企业全称或统一社会信用代码" confirm-type="search" bindinput="onInput" bindconfirm="query" aria-label="企业全称或统一社会信用代码" />
+    <input class="search-input" value="{{name}}" placeholder="输入企业全称" confirm-type="search" bindinput="onInput" bindconfirm="query" aria-label="企业全称" />
     <view class="search-btn" bindtap="query">查询</view>
   </view>
 </view>
@@ -22,7 +22,8 @@
   </view>
   <view wx:if="{{rulesOpen}}" class="rules-body">
     <view class="rule">按企业全称逐行比对名单原文</view>
-    <view class="rule">名称相近的企业分开列出，请核对统一社会信用代码</view>
+    <view class="rule">名称相近的企业分开列出，不一定是同一家</view>
+    <view class="rule">查到后可以看这家企业在原名单里的那一行</view>
     <view class="rule">只查企业和机构，不查个人</view>
     <view class="rule">发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准</view>
   </view>
@@ -36,11 +37,14 @@
   <block wx:elif="{{result}}">
     <block wx:if="{{result.items.length}}">
       <view class="weak result-sum">在已收录的 {{result.coverage.lists}} 份名单中找到 {{result.items.length}} 份<text wx:if="{{result.truncated}}">（只列出最近的 {{result.items.length}} 份）</text></view>
-      <view wx:if="{{result.ambiguous}}" class="warn">名单里有同名但统一社会信用代码不同的企业，下面不一定都是同一家，请逐条核对信用代码</view>
+      <view wx:if="{{result.ambiguous}}" class="warn">名单里有名称相同、统一社会信用代码不同的企业，不能确定下面哪一份是你要查的这一家，请点"看原名单里的这一行"核对</view>
       <view wx:for="{{result.items}}" wx:key="id" class="hit">
         <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
         <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
-        <button data-id="{{item.id}}" bindtap="evidence">查看名单文件和依据</button>
+        <view class="hit-actions">
+          <button wx:if="{{item.matched.entryToken}}" class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行</button>
+          <button class="hit-btn" data-id="{{item.id}}" bindtap="evidence">看这份名单文件</button>
+        </view>
       </view>
     </block>
     <!-- 输入的是简称：没有叫这个名字的企业，但有名称里带这几个字的——先列候选，点一个按全称查 -->
@@ -52,12 +56,12 @@
           <text class="similar-name">{{item}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
         </view>
       </view>
-      <view class="weak empty-text">最多列 20 个，没有你要找的，请输入企业全称或统一社会信用代码再查。</view>
+      <view class="weak empty-text">最多列 20 个，没有你要找的，请输入企业全称再查。</view>
     </view>
     <view wx:else class="empty-lookup">
       <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
-      <view class="warn">没找到不代表没上过名单：扫描件、图片等读不出文字的名单查不到，地市发布的名单也还没收录。</view>
-      <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称，或换统一社会信用代码再查；最终以发文机关原文为准。</view>
+      <view class="warn">{{missNote}}</view>
+      <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称再查。</view>
     </view>
     <view wx:if="{{result.similar.length}}" class="similar">
       <view class="similar-title">名称相近的企业（不一定是同一家，请核对统一社会信用代码）</view>

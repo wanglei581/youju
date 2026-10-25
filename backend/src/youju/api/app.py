@@ -241,6 +241,7 @@ ADMIN_READ_PATHS = frozenset(
         "/api/v1/reports/lists",
         "/api/v1/lists/recent",
         "/api/v1/lists/lookup",
+        "/api/v1/lists/record",
     }
 )
 ADMIN_READ_DOCUMENT = re.compile(r"/api/v1/documents/\d+")

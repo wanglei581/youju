@@ -730,7 +730,10 @@ class _Builder:
                 # （"账户类型"列里的"基本账户"），右边那格（项目编号）不按账号认；"名目 | 内容"的
                 # 表（没有列表头）里是标签
                 left_kind = _cell_label(left, types=left_col not in headers)
-                masked = mask(text, column=left_kind or (kind if i > since else None))
+                if _limits().keep_credit_codes and _credit_code_cell(text, header):
+                    masked = text
+                else:
+                    masked = mask(text, column=left_kind or (kind if i > since else None))
                 changed |= masked != text
                 item = {"c": cell.col, "t": masked}
                 if header:
@@ -2120,17 +2123,43 @@ class Limits:
     # 超过页数时只取前面这些页，不整份按"太大"拒收（名单解析本来也只读前 300 页）
     pdf_first_pages: bool = False
     seconds: int = EXTRACT_SECONDS
+    # 名单模式：整格是统一社会信用代码的不遮（全数字的信用代码会被当成银行卡号遮掉），规则见
+    # _credit_code_cell；个人银行账号、身份证号、手机号照样遮
+    keep_credit_codes: bool = False
 
 
-DEFAULT_LIMITS = Limits()
 # 名单模式：PDF 读到第 1000 页（和 lists.parser.MAX_PDF_PAGES 一致，名单条目最多来自这么多页），
 # 超过的只读前 1000 页、记"没读全"；字数上限 300 万；单份最多 10 分钟
-LIST_LIMITS = Limits(chars=3_000_000, pdf_pages=1000, pdf_first_pages=True, seconds=600)
+LIST_LIMITS = Limits(
+    chars=3_000_000, pdf_pages=1000, pdf_first_pages=True, seconds=600, keep_credit_codes=True
+)
 _LIMITS: ContextVar[Limits | None] = ContextVar("attachment_text_limits", default=None)
 
 
 def _limits() -> Limits:
-    return _LIMITS.get() or DEFAULT_LIMITS
+    # 没指定时每次按模块里的常量现算（测试会临时改 MAX_CHARS、EXTRACT_SECONDS）
+    return _LIMITS.get() or Limits(chars=MAX_CHARS, pdf_pages=_PDF_PAGES, seconds=EXTRACT_SECONDS)
+
+
+# 常见的单位信用代码开头（登记管理部门 + 机构类别）：企业 91、农民专业合作社 93、事业单位 12、
+# 机关 11、13，社会组织 51–55。个体工商户（92）没有列名时不放行
+_CODE_PREFIXES = ("91", "93", "12", "11", "13", "51", "52", "53", "54", "55")
+
+
+def _credit_code_cell(text: str, header: str | None) -> bool:
+    """这一格整格是统一社会信用代码（名单模式不遮）：校验位对；有列名的，列名里要有"代码"（统一
+    社会信用代码、组织机构代码）；没有列名的，开头要是常见的单位代码。"""
+    from youju.lists.rules import normalize_credit_code
+
+    code = normalize_credit_code(text)
+    if code is None:
+        return False
+    return "代码" in header if header else code.startswith(_CODE_PREFIXES)
+
+
+def mask_cell(text: str, header: str | None = None) -> str:
+    """名单命中行存库前再遮一遍号码：整格是统一社会信用代码的不遮（规则同取文字时）。"""
+    return text if _credit_code_cell(text, header) else mask(text)
 
 
 def extract(data: bytes, *, limits: Limits | None = None) -> Extraction:

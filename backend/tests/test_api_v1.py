@@ -706,7 +706,7 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     item = body["items"][0]
     assert item["kind"] == "名单" and item["status"] == "公示"
     # 查"原名单里的那一行"用的编号带签名（D-088）
-    assert re.fullmatch(r"\d+\.[A-Za-z0-9_-]{16}", item["matched"].pop("entryToken"))
+    assert re.fullmatch(r"[A-Za-z0-9_-]{32}", item["matched"].pop("entryToken"))
     assert item["matched"] == {
         "name": "山东星河科技有限公司",
         "category": "科技型中小企业",

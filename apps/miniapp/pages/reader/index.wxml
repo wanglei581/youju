@@ -1,23 +1,68 @@
 <notice-bar />
-<view class="card">
-  <view class="h1">{{title || '站内阅读'}}</view>
-  <view wx:if="{{source}}" class="muted provenance">{{source.issuer}} {{source.date}}<view>{{source.title}}</view><view>来源 {{source.host}}</view></view>
-  <view wx:if="{{loading}}" class="muted">正在加载阅读内容…</view>
-  <view wx:if="{{error}}" class="error"><text>{{error}}</text><button bindtap="retry" class="btn-primary">{{changed ? '重新加载' : '重试'}}</button></view>
-  <block wx:if="{{!loading && !error}}">
-    <view wx:if="{{notice}}" class="notice">{{notice}}</view>
-    <view wx:if="{{scannedPages}}" class="notice">含 {{scannedPages}} 个扫描页，未读取的内容不计作已完成。</view>
-    <view wx:for="{{segments}}" wx:key="n" class="segment">
-      <text wx:if="{{item.loc}}" class="muted loc">{{item.loc}}</text>
-      <text wx:if="{{item.text && !item.cells.length}}" class="reading-text" user-select>{{item.text}}</text>
-      <scroll-view wx:if="{{item.cells.length}}" scroll-x class="table-scroll">
-        <view class="table table-row"><text wx:for="{{item.cells}}" wx:for-item="cell" wx:key="c" class="cell" user-select><text wx:if="{{cell.h}}" class="cell-head">{{cell.h}}：</text>{{cell.t}}</text></view>
-      </scroll-view>
+<block wx:if="{{listMode}}">
+  <view class="card">
+    <view class="h1">{{listTitle}}</view>
+    <view wx:if="{{loading}}" class="muted">正在加载…</view>
+    <view wx:if="{{error}}" class="error">
+      <text>{{error}}</text>
+      <button wx:if="{{listErrorKind === 'missing'}}" bindtap="backToLists" class="btn-primary">回查名单</button>
+      <button wx:if="{{listErrorKind === 'retry'}}" bindtap="retry" class="btn-primary">重试</button>
     </view>
-    <view wx:if="{{!segments.length && !notice}}" class="muted">暂未取得可阅读内容。</view>
-    <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
-    <view wx:if="{{complete}}" class="muted">已到本版本内容末尾。</view>
-    <button wx:if="{{status === 'list'}}" bindtap="lookup">在已收录名单中查询企业</button>
-  </block>
-</view>
-<view class="card actions"><button bindtap="feedback">反馈内容问题</button><button bindtap="detail">返回文件详情</button></view>
+    <block wx:if="{{!loading && !error && record}}">
+      <view class="doc-title">{{record.docTitle}}</view>
+      <view wx:if="{{record.issuerLine}}" class="record-meta">{{record.issuerLine}}</view>
+      <view wx:if="{{record.statusLine}}" class="record-meta">{{record.statusLine}}</view>
+      <view wx:if="{{record.publicityNote}}" class="notice">{{record.publicityNote}}</view>
+      <view wx:if="{{record.regionLine}}" class="record-meta">{{record.regionLine}}</view>
+      <view class="notice">{{record.disclaimer}}</view>
+      <view wx:if="{{record.sourceLine}}" class="record-meta">{{record.sourceLine}}</view>
+      <view wx:if="{{record.linkGoneLine}}" class="notice">{{record.linkGoneLine}}</view>
+      <block wx:if="{{record.found}}">
+        <view wx:for="{{record.rows}}" wx:key="i" class="segment">
+          <text class="muted loc">{{item.whereText}}</text>
+          <scroll-view wx:if="{{item.cells.length}}" scroll-x class="table-scroll">
+            <view class="table table-row">
+              <text wx:for="{{item.cells}}" wx:for-item="cell" wx:key="i" class="cell {{cell.name ? 'cell--name' : ''}}" user-select><text wx:if="{{cell.h}}" class="cell-head">{{cell.h}}：</text>{{cell.t}}</text>
+            </view>
+          </scroll-view>
+          <view wx:if="{{item.hiddenText}}" class="muted">{{item.hiddenText}}</view>
+        </view>
+        <view wx:if="{{record.moreLine}}" class="muted">{{record.moreLine}}</view>
+        <view wx:if="{{record.partialLine}}" class="muted">{{record.partialLine}}</view>
+      </block>
+      <view wx:if="{{record.stateNote}}" class="notice">{{record.stateNote}}</view>
+      <view class="parsed">
+        <view class="parsed-title">{{record.parsedTitle}}</view>
+        <view wx:for="{{record.parsed}}" wx:key="label" class="parsed-line">{{item.label}}：{{item.value}}</view>
+      </view>
+    </block>
+  </view>
+  <view wx:if="{{!loading && !error && record}}" class="card actions">
+    <button bindtap="openDetail">看这份名单文件</button>
+    <button bindtap="feedback">反馈内容问题</button>
+  </view>
+</block>
+<block wx:else>
+  <view class="card">
+    <view class="h1">{{title || '站内阅读'}}</view>
+    <view wx:if="{{source}}" class="muted provenance">{{source.issuer}} {{source.date}}<view>{{source.title}}</view><view>来源 {{source.host}}</view></view>
+    <view wx:if="{{loading}}" class="muted">正在加载阅读内容…</view>
+    <view wx:if="{{error}}" class="error"><text>{{error}}</text><button bindtap="retry" class="btn-primary">{{changed ? '重新加载' : '重试'}}</button></view>
+    <block wx:if="{{!loading && !error}}">
+      <view wx:if="{{notice}}" class="notice">{{notice}}</view>
+      <view wx:if="{{scannedPages}}" class="notice">含 {{scannedPages}} 个扫描页，未读取的内容不计作已完成。</view>
+      <view wx:for="{{segments}}" wx:key="n" class="segment">
+        <text wx:if="{{item.loc}}" class="muted loc">{{item.loc}}</text>
+        <text wx:if="{{item.text && !item.cells.length}}" class="reading-text" user-select>{{item.text}}</text>
+        <scroll-view wx:if="{{item.cells.length}}" scroll-x class="table-scroll">
+          <view class="table table-row"><text wx:for="{{item.cells}}" wx:for-item="cell" wx:key="c" class="cell" user-select><text wx:if="{{cell.h}}" class="cell-head">{{cell.h}}：</text>{{cell.t}}</text></view>
+        </scroll-view>
+      </view>
+      <view wx:if="{{!segments.length && !notice}}" class="muted">暂未取得可阅读内容。</view>
+      <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
+      <view wx:if="{{complete}}" class="muted">已到本版本内容末尾。</view>
+      <button wx:if="{{status === 'list'}}" bindtap="lookup">在已收录名单中查询企业</button>
+    </block>
+  </view>
+  <view class="card actions"><button bindtap="feedback">反馈内容问题</button><button bindtap="detail">返回文件详情</button></view>
+</block>

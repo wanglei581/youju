@@ -76,6 +76,7 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
     from youju.api import v1
 
     v1._EXCERPT_CACHE.clear()
+    v1._LOOKUP_COVERAGE.clear()
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 

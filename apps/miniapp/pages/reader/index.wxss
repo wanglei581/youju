@@ -12,3 +12,9 @@
 .pagination button, .actions button { flex: 1; font-size: 26rpx; }
 
 .cell-head { font-weight: 600; background: var(--fill); }
+.doc-title { margin-top: 20rpx; font-size: 32rpx; line-height: 1.5; font-weight: 600; word-break: break-all; }
+.record-meta { display: block; margin-top: 8rpx; font-size: 26rpx; line-height: 1.7; word-break: break-all; }
+.cell--name { font-weight: 600; }
+.parsed { margin-top: 28rpx; }
+.parsed-title { font-size: 30rpx; line-height: 1.5; font-weight: 600; }
+.parsed-line { display: block; margin-top: 8rpx; font-size: 28rpx; line-height: 1.7; word-break: break-all; }

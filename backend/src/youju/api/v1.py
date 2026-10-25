@@ -2603,7 +2603,8 @@ def lookup_lists(
     request: Request,
     session: SessionDep,
     q: Annotated[
-        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+        str,
+        Query(min_length=2, max_length=100, description="企业全称（也认统一社会信用代码）"),
     ],
 ) -> dict:
     """查名单：这家企业上过哪些名单。
@@ -2628,9 +2629,7 @@ def lookup_lists(
         )
     candidates = lookup_name_candidates(session, query) if query and not lookup.matches else []
     if not query or (person and not candidates):
-        raise HTTPException(
-            status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
-        )
+        raise HTTPException(status_code=422, detail="只查企业和机构，请输入企业全称")
     masters = lookup.master_ids
     best = {match.master_id: match for match in lookup.matches}
     tokens = list_evidence.entry_tokens(session, [m.entry_id for m in lookup.matches])
@@ -2680,13 +2679,6 @@ def lookup_lists(
             ),
             key=lambda x: -x["lists"],
         )[:10]
-    lists_total, since = session.execute(
-        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1, available_condition(), list_title_allowed())
-    ).one()
-    unread, partial = _unread_lists(session)
     return {
         "query": q.strip(),
         "items": items,
@@ -2694,14 +2686,40 @@ def lookup_lists(
         "candidates": candidates,
         "ambiguous": lookup.ambiguous,
         "truncated": lookup.truncated,
-        "coverage": {
-            "lists": lists_total,
-            "since": since.isoformat() if since else None,
-            # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
-            "unreadLists": unread,
-            "partialLists": partial,
-        },
+        "coverage": _lookup_coverage(session),
     }
+
+
+# 查名单的比对范围（收录份数、最早日期、没读出和没读全的份数）是整库统计，不在每次查询时都重算：
+# 名单数据版本（解析记录、人工定的类型、下架和归并，见 report_revision）没变时 60 秒内复用。
+# 下架、重新解析后马上失效（管理服务和接口服务是不同进程，靠数据库里的版本）；来源权限这类少见的
+# 改动最多晚 60 秒
+LOOKUP_COVERAGE_TTL = 60
+_LOOKUP_COVERAGE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
+
+
+def _lookup_coverage(session: Session) -> dict[str, Any]:
+    revision = publication_revision(session, "lists")
+    cached = _LOOKUP_COVERAGE.get("all")
+    current = _time.monotonic()
+    if cached and cached[0] == revision and current - cached[1] < LOOKUP_COVERAGE_TTL:
+        return dict(cached[2])
+    lists_total, since = session.execute(
+        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1, available_condition(), list_title_allowed())
+    ).one()
+    unread, partial = _unread_lists(session)
+    coverage = {
+        "lists": lists_total,
+        "since": since.isoformat() if since else None,
+        # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
+        "unreadLists": unread,
+        "partialLists": partial,
+    }
+    _LOOKUP_COVERAGE["all"] = (revision, current, coverage)
+    return dict(coverage)
 
 
 def _unread_lists(session: Session) -> tuple[int, int]:
@@ -2763,7 +2781,7 @@ def list_record(
     ],
 ) -> dict:
     """查名单结果里一条记录在原名单里的那一行（D-088）：只给这一行和列名、在原文的位置，个人信息
-    列不显示，不提供整份名单。条目编号要带查名单时给的签名。"""
+    列不显示，不提供整份名单，也不给原文链接。条目编号要用查名单时给的加密编号。"""
     _limit_lookup(request)
     entry_id = list_evidence.parse_entry_token(session, entry)
     row = session.get(ListEntry, entry_id) if entry_id is not None else None
@@ -2805,10 +2823,16 @@ def list_record(
     elif location.state in ("ok", "multiple", "ambiguous"):
         state = "found"
         for stored in location.rows:
+            # 存的时候已只留公开的列（list_evidence.shown_cell）；这里按列名再挡一次个人信息列
+            # （名称列除外），文字再脱敏一遍。name：这一格是名称列（查到的那家单位）
             cells = [
-                {"h": cell.get("h") or "", "t": redact_sensitive(str(cell.get("t", "")))}
+                {
+                    "h": cell.get("h") or "",
+                    "t": redact_sensitive(str(cell.get("t", ""))),
+                    "name": bool(cell.get("n")),
+                }
                 for cell in stored.get("cells", [])
-                if not list_evidence.personal_header(cell.get("h"))
+                if cell.get("n") or not list_evidence.personal_header(cell.get("h"))
             ]
             rows.append(
                 {
@@ -2834,7 +2858,9 @@ def list_record(
             "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
             "date": document.publish_date.isoformat() if document.publish_date else None,
             "region": region_label(source.province, source.level, source.city, source.district),
-            "url": public_url(document.url),
+            # 只给网站名称和域名（和站内阅读的出处一样），不给原文链接
+            "site": f"{source.dept_full_name}网站",
+            "host": urlsplit(document.url).hostname or "",
             "link_gone": link_gone_date(document.link_gone_at),
         },
         "evidence": {

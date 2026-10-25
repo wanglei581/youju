@@ -39,7 +39,8 @@ test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 
   const template = wxml('lists');
   const top = template.slice(0, template.indexOf('<notice-bar />'));
   assert.match(top, /<view class="h1">在政府公开名单里查企业<\/view>/);
-  assert.match(top, /<view class="sub">在已收录的高企、专精特新等公示和公布名单里查<\/view>/);
+  // D-091：副标题写明只查认定、立项名单
+  assert.match(top, /<view class="sub">只查科技、工信等部门公开发布的认定、立项名单<\/view>/);
   assert.match(top, /<view class="search">/);
   // 顶部的说明文字只有标题和副标题两行
   assert.deepEqual([...top.matchAll(/<view class="(h1|sub)">/g)].map((m) => m[1]), ['h1', 'sub']);
@@ -68,13 +69,14 @@ test('查询说明默认收起成一行（info 图标、向下箭头），点开
   const body = /<view wx:if="{{rulesOpen}}" class="rules-body">([\s\S]*?)\n {2}<\/view>/.exec(template);
   assert.ok(body, '查询说明的内容只在点开后显示');
   const rules = [...body[1].matchAll(/<view class="rule">([^<]+)<\/view>/g)].map((m) => m[1]);
+  // D-091：同名一条改成"不一定是同一家"（输入框不再写信用代码），加一条"查到后可以看原名单里的那一行"
   assert.deepEqual(rules, [
     '按企业全称逐行比对名单原文',
-    '名称相近的企业分开列出，请核对统一社会信用代码',
+    '名称相近的企业分开列出，不一定是同一家',
+    '查到后可以看这家企业在原名单里的那一行',
     '只查企业和机构，不查个人',
     '发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准',
   ]);
-  assert.equal(bare(rules.join('')), bare(OLD_RULES));
   // 原来那段灰字不再默认铺在搜索框下面
   assert.ok(!template.includes(OLD_RULES));
   assert.ok(!/class="note"/.test(template));
@@ -84,7 +86,7 @@ test('搜索框下面不另加提示（和搜索框里的提示重复），查�
   const template = wxml('lists');
   assert.ok(!/class="hint"|输入企业全称或统一社会信用代码查询/.test(template));
   assert.ok(!/\.hint \{/.test(read('pages/lists/index.wxss')));
-  assert.match(template, /placeholder="输入企业全称或统一社会信用代码"/);
+  assert.match(template, /placeholder="输入企业全称"/);
   const page = listsPage();
   page.setData({ name: '某某科技有限公司' });
   page.query();

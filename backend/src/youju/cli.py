@@ -1142,12 +1142,19 @@ def _cmd_list_evidence(args: argparse.Namespace) -> int:
         return 0
     failed = "，".join(f"{k} {v}" for k, v in sorted(report.failed.items())) or "无"
     states = "，".join(f"{k} {v}" for k, v in sorted(report.states.items())) or "无"
+    stopped = (
+        "；到了本轮时间上限，剩下的下一轮接着读"
+        if report.out_of_time
+        else "；任务锁丢了（数据库连接断开），本轮停下"
+        if report.lost_lock
+        else ""
+    )
     print(
         f"名单附件：该读 {report.due} 份，本轮读了 {report.read} 份（其中只读了一部分的 "
-        f"{report.partial} 份），读不出来的原因：{failed}；条目定位：{states}；"
-        f"出错 {report.errors} 份"
+        f"{report.partial} 份），复查时文件没变的 {report.unchanged} 份，读不出来的原因："
+        f"{failed}；条目定位：{states}；出错 {report.errors} 份{stopped}"
     )
-    return 1 if report.errors and not report.read else 0
+    return 1 if report.errors and not report.read and not report.unchanged else 0
 
 
 def _cmd_cache_attachments(args: argparse.Namespace) -> int:

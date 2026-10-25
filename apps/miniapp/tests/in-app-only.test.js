@@ -99,8 +99,9 @@ test('查名单用词（D-090）：首发包页面、组件和工具函数不再
   assert.match(visible(read('pages/lists/index.wxml')), /<view class="h1">在政府公开名单里查企业<\/view>/);
   assert.match(visible(read('pages/lists/index.js')), /title: '在政府公开名单里查企业'/);
   assert.match(visible(read('pages/detail/index.wxml')), /class="tag">发布阶段：{{doc.status}}</);
-  // 输入框仍写统一社会信用代码：按代码才能把同名企业分开
-  assert.match(visible(read('pages/lists/index.wxml')), /placeholder="输入企业全称或统一社会信用代码"/);
+  // D-091 ③（改 D-090 第⑤点）：输入框只留企业全称，不再写统一社会信用代码
+  assert.match(visible(read('pages/lists/index.wxml')), /placeholder="输入企业全称"/);
+  assert.ok(!visible(read('pages/lists/index.wxml')).includes('输入企业全称或统一社会信用代码'));
 });
 
 // 隐私保护指引一·9（剪切板）和代码一致：哪个页面写剪切板，一·9 就要写到它；一·9 不再提复制原文链接、浏览器
