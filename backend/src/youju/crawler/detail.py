@@ -1023,15 +1023,18 @@ def _hidden_source_header(element: etree._Element, node: etree._Element, host: s
     )
 
 
-def outside_body_text(html_text: str, url: str) -> str | None:
-    """网页上不算正文的字（导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines 同样规则
-    不算正文的二维码块、按钮块等）；正文区按 parse_detail 同一套规则选。给 youju refetch-bodies 核对
-    "去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、hidden 或行内样式隐藏的
-    元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字（限定网站、位置和全文）。
+def outside_body_lines(html_text: str, url: str) -> list[str] | None:
+    """网页上不算正文的字，按行：导航、发布信息、按钮、页尾、弹窗，以及正文区里按 _plain_lines
+    同样规则不算正文的二维码块、按钮块等。正文区按 parse_detail 同一套规则选；分行和去空白也和
+    _plain_lines 一样（只在 br 前、块级元素后换行，行内的 a、span、font 不切行），所以以前收进正文的
+    网页上的字，和这里的某一行完全相同。
+    给 youju refetch-bodies 核对"去掉的行是不是网页上的字"用：原网页删掉的正文条款，就算还留在脚本、
+    hidden 或行内样式隐藏的元素里，也不能证明只是网页噪声。唯一例外是已核实的山东工信厅页头来源字
+    （限定网站、位置和全文）。
     不执行 CSS/脚本；行内样式只接受 _plain_layout_style 的有限普通排版，未知写法保守留给人工。
     旧式 HTML 配色、媒体后备文字和未展开的动态内容不作证；折叠 details 只读首个 summary。
     四川二维码只放行已核实的固定提示句，不把整个定位块当作证据。外部样式表不在此解析。
-    解析不了、没有正文区的返回 None。"""
+    解析不了、没有正文区的返回 None；整页没有能作证的字返回 []。"""
     if not html_text.strip():
         return None
     try:
@@ -1048,12 +1051,15 @@ def outside_body_text(html_text: str, url: str) -> str | None:
         _unproven_page_element(parent) or not _plain_layout_style(parent.get("style") or "")
         for parent in body[0].iterancestors()
     ):
-        return ""
+        return []
     junk = _SITE_JUNK.get(host)
     skipped = frozenset(node.xpath(junk)) if junk else frozenset()
     parts: list[str] = []
 
     def visit(element: etree._Element, inside: bool) -> None:
+        # 注释、处理指令没有标签名。后面的可见文字在 tail 上，由父元素收集。
+        if not isinstance(element.tag, str):
+            return
         if _unproven_page_element(element):
             return
         # 四川真实页面的浅色外框：只认这个已核实的容器和唯一声明，不一般性放行背景/前景颜色。
@@ -1065,11 +1071,11 @@ def outside_body_text(html_text: str, url: str) -> str | None:
             == "background-color:#e9f3fd;"
         )
         if not known_background and not _plain_layout_style(element.get("style") or ""):
+            # 两个已核实例外的固定文字各自单独成行，避免和前后的网页字粘成一行。
             if not inside and _hidden_source_header(element, node, host):
-                parts.append(element.text or "")
-                parts.append("\n")
+                parts.append(f"\n{element.text or ''}\n")
             elif inside and _known_qr_caption(element, node, host):
-                parts.append("扫一扫在手机打开当前页\n")
+                parts.append("\n扫一扫在手机打开当前页\n")
             return
         if element is node:
             inside = True
@@ -1079,22 +1085,30 @@ def outside_body_text(html_text: str, url: str) -> str | None:
             or _JUNK_CLASS.search(f"{element.get('class', '')} {element.get('id', '')}")
         ):
             inside = False
-        if element.tag.lower() == "details" and element.get("open") is None:
+        tag = element.tag.lower()
+        if tag == "details" and element.get("open") is None:
             # 折叠时只有首个直接 summary 子元素可见，details.text 和 summary.tail 也藏在里面。
             summary = next((child for child in element if child.tag == "summary"), None)
             if summary is not None:
                 visit(summary, inside)
             return
-        if not inside:
-            parts.append(element.text or "")
+        # 换行只看标签，不看在不在正文区：正文区里的字不收集，但这块本身要把前后的导航、页尾断开。
+        # br 同时属于 _BLOCK_TAGS，多出来的空行下面会丢掉。分行必须和 _plain_lines 完全一致：
+        # 只在这里多切一刀（比如给 dialog、summary 前后换行），就可能切出旧正文里没有的短行，
+        # 正好等于被删的条款标题而被当成网页上的字（agy 10/24 复核举的例子）。
+        if tag == "br":
+            parts.append("\n")
+        if not inside and element.text:
+            parts.append(element.text)
         for child in element:
             visit(child, inside)
-            if not inside:
-                parts.append(child.tail or "")
-        parts.append("\n")
+            if not inside and child.tail:
+                parts.append(child.tail)
+        if tag in _BLOCK_TAGS:
+            parts.append("\n")
 
     visit(body[0], False)
-    return "".join(parts)
+    return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
 def parse_detail(html_text: str, url: str) -> DetailResult:
