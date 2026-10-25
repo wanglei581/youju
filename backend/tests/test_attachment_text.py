@@ -1873,6 +1873,33 @@ def test_cli_commands(session, monkeypatch, capsys, tmp_path) -> None:
     assert data["kinds"][0]["attachments"] == {"docx": {"ok": 1}}
 
 
+def test_cli_skips_without_failing_while_another_attachment_job_runs(
+    session, monkeypatch, capsys
+) -> None:
+    """每轮抓取里也跑 attachment-texts：附件副本任务或手动补齐拿着锁时这次不取、返回 0（和
+    cache-attachments 一样），job.sh 不误发失败提醒；取文字这步出错才返回 1。"""
+    add_doc(session, 1, APPLY, RECENT, [("附件1", BASE + "a.docx", "docx")])
+    fetcher = FakeFetcher({BASE + "a.docx": make_docx("申报指南")})
+    real = copies.extract_texts
+    monkeypatch.setattr(
+        copies, "extract_texts", lambda s, **kw: real(s, **{**kw, "fetcher": fetcher, "now": NOW})
+    )
+    with session.get_bind().connect() as other:
+        assert other.execute(sql("SELECT GET_LOCK('youju_attachment_copies', 0)")).scalar() == 1
+        try:
+            assert cli.main(["attachment-texts"]) == 0
+        finally:
+            other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+    assert "这次没有取" in capsys.readouterr().out
+    assert fetcher.calls == []
+    assert session.scalar(select(func.count()).select_from(AttachmentTextUrl)) == 0
+    monkeypatch.setattr(
+        copies, "extract_texts", lambda s, **kw: copies.CacheReport(texts=at.TextReport(errors=1))
+    )
+    assert cli.main(["attachment-texts"]) == 1
+    assert "取文字这步出错 1 次" in capsys.readouterr().out
+
+
 def test_text_tables_are_not_backed_up() -> None:
     from youju.backup import backed_up_tables
 

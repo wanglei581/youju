@@ -849,7 +849,7 @@ class CacheReport:
     storage_error: str | None = None
     # 本轮先重查的旧规则版本副本
     recheck: RecheckReport | None = None
-    # 另一个附件任务（上一轮还没跑完，或有人在手动重查）正在跑，本轮跳过
+    # 另一个附件任务（上一轮还没跑完、有人在手动重查，或正在只取文字）正在跑，本轮跳过
     skipped: bool = False
     # 只取文字、不存副本的 wps、et 下载了几个
     text_only: int = 0
@@ -1029,7 +1029,8 @@ def _store_one(
     session.commit()
 
 
-# 附件定时任务（缓存 + 重查）和手动重查共用的 MySQL 命名锁：同一时间只有一个在改副本、删文件
+# 附件定时任务（缓存 + 重查）、手动重查和只取文字（attachment-texts，每轮抓取里也跑）共用的
+# MySQL 命名锁：同一时间只有一个在改副本、删文件、写附件文字
 _LOCK_NAME = "youju_attachment_copies"
 
 
@@ -1156,7 +1157,7 @@ def cache_attachments(
     """先按新规则重查旧规则版本的副本（从对象存储读，最多 recheck_limit 个），再登记新附件、
     下载到期的（新的优先，再是失败重试、到期复查），最后清理不再需要的副本（含重查不合格的）。
     对象存储出错时停下这一轮，原因写在 report.storage_error（命令按失败退出、由 job.sh 提醒）。
-    和手动重查共用一把锁：另一个附件任务正在跑就跳过本轮（report.skipped）。"""
+    和手动重查、只取文字共用一把锁：另一个附件任务正在跑就跳过本轮（report.skipped）。"""
     if not 1 <= limit <= 500:
         raise ValueError("每轮下载个数要在 1 到 500 之间")
     with _exclusive(session) as got:
@@ -1285,7 +1286,7 @@ def _text_cleanup(
         log.exception("清理附件文字出错")
 
 
-# ---- 只取文字（不存副本）：本机实测、上线后补齐用（youju attachment-texts） ----
+# ---- 只取文字（不存副本，youju attachment-texts）：每轮抓取补完详情后跑、本机实测、手动补齐用 ----
 
 
 def extract_texts(
@@ -1299,7 +1300,7 @@ def extract_texts(
 ) -> CacheReport:
     """给还没取过文字（或按旧规则取的）的附件下载、取文字，不碰副本和对象存储；最后清理超出范围的。
     retry_pending：上次网络等临时问题没取到的不等 retry_at，这次就重试。
-    和附件定时任务共用一把锁。"""
+    和附件定时任务共用一把锁：另一个附件任务正在跑就什么都不做（report.skipped）。"""
     if not 1 <= limit <= 2000:
         raise ValueError("每轮下载个数要在 1 到 2000 之间")
     now = now or datetime.now(UTC)
