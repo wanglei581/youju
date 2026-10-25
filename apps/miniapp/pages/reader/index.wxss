@@ -14,7 +14,14 @@
 
 .cell-head { font-weight: 600; background: var(--fill); }
 .record-meta { display: block; margin-top: 8rpx; font-size: 26rpx; line-height: 1.7; word-break: break-all; }
-.cell--name { font-weight: 600; }
+.nowrap { white-space: nowrap; }
+.kv { margin-top: 4rpx; border: 1rpx solid var(--line); border-radius: 12rpx; overflow: hidden; }
+.kv-row { display: flex; gap: 20rpx; padding: 16rpx 20rpx; border-top: 1rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
+.kv-row:first-child { border-top: 0; }
+.kv-h { flex: 0 0 200rpx; color: var(--t2); word-break: break-all; white-space: pre-wrap; }
+.kv-t { flex: 1; min-width: 0; word-break: break-all; white-space: pre-wrap; }
+.kv-row--name { background: var(--brand-tint); }
+.kv-row--name .kv-t { font-weight: 600; }
 .parsed { margin-top: 28rpx; }
 .parsed-title { font-size: 30rpx; line-height: 1.5; font-weight: 600; }
 .parsed-line { display: block; margin-top: 8rpx; font-size: 28rpx; line-height: 1.7; word-break: break-all; }

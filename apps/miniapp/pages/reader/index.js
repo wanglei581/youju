@@ -78,6 +78,8 @@ function listRowView(res) {
     docId: doc.id == null ? '' : String(doc.id),
     docTitle: textOf(doc.title),
     issuerLine: [textOf(doc.issuer), textOf(doc.date)].filter(Boolean).join(' '),
+    issuer: textOf(doc.issuer),
+    date: textOf(doc.date),
     statusLine: status ? `发布阶段：${status}` : '',
     // 发布阶段只照录标题用词（D-090）；公示的提醒是否还在公示期由原文说了算，公布的不写
     publicityNote: status === '公示' ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '',

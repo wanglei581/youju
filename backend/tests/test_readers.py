@@ -332,7 +332,13 @@ def test_fallback_rejects_private_and_list_bodies_and_preserves_link_policy(clie
 def test_nonpublic_body_kinds_stay_protected(client, session, kind):
     doc, att, _, _ = seed(session, kind=kind)
     assert client.get(path(doc)).json()["status"] in ("list", "unsupported")
-    assert client.get(path(doc, att)).json()["segments"] == []
+    data = client.get(path(doc, att)).json()
+    assert data["segments"] == []
+    # 名单附件：说明只提供查询结果（页面给"在已收录名单中查询企业"按钮，D-088）
+    if kind == "名单":
+        assert data["status"] == "list" and "企业查询结果" in data["notice"]
+    else:
+        assert data["status"] == "unsupported"
 
 
 def test_pii_masked_across_body_boundaries_and_metadata(client, session):

@@ -252,6 +252,13 @@ def attachment_reading(
     source_doc, src = owner
     payload = _payload(att.name, _source(source_doc, src))
     kind = effective_kind(source_doc.title, source_doc.kind_override)
+    if "名单" in (kind, effective_kind(doc.title, doc.kind_override)):
+        # 名单附件只给查名单里的那一行，不整份展示（D-088）；页面给"在已收录名单中查询企业"按钮
+        payload.update(
+            status="list",
+            notice="名单在站内只提供企业查询结果（查到后可以看原名单里的那一行），暂不整份展示。",
+        )
+        return payload
     if (
         kind not in attachments.COPY_KINDS
         or effective_kind(doc.title, doc.kind_override) not in attachments.COPY_KINDS

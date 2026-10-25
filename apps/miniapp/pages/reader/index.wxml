@@ -9,7 +9,8 @@
     </view>
     <block wx:if="{{!loading && !error && record}}">
       <view class="h1">{{record.docTitle}}</view>
-      <view wx:if="{{record.issuerLine}}" class="record-meta">{{record.issuerLine}}</view>
+      <!-- 发文机关很长时日期不拆成两行 -->
+      <view wx:if="{{record.issuerLine}}" class="record-meta">{{record.issuer}}<text wx:if="{{record.date}}" class="nowrap">{{record.issuer ? ' · ' : ''}}{{record.date}}</text></view>
       <view wx:if="{{record.statusLine}}" class="record-meta">{{record.statusLine}}</view>
       <view wx:if="{{record.publicityNote}}" class="notice">{{record.publicityNote}}</view>
       <view wx:if="{{record.regionLine}}" class="record-meta">{{record.regionLine}}</view>
@@ -19,11 +20,13 @@
       <block wx:if="{{record.found}}">
         <view wx:for="{{record.rows}}" wx:key="i" class="segment">
           <text class="muted loc">{{item.whereText}}</text>
-          <scroll-view wx:if="{{item.cells.length}}" scroll-x class="table-scroll">
-            <view class="table table-row">
-              <text wx:for="{{item.cells}}" wx:for-item="cell" wx:key="i" class="cell {{cell.name ? 'cell--name' : ''}}" user-select><text wx:if="{{cell.h}}" class="cell-head">{{cell.h}}：</text>{{cell.t}}</text>
+          <!-- 一行竖着排：一格一行"列名 | 内容"，按原文的列序；手机上横排时企业名称常在屏幕外 -->
+          <view wx:if="{{item.cells.length}}" class="kv">
+            <view wx:for="{{item.cells}}" wx:for-item="cell" wx:key="i" class="kv-row {{cell.name ? 'kv-row--name' : ''}}">
+              <text wx:if="{{cell.h}}" class="kv-h">{{cell.h}}</text>
+              <text class="kv-t" user-select>{{cell.t}}</text>
             </view>
-          </scroll-view>
+          </view>
           <view wx:if="{{item.hiddenText}}" class="muted">{{item.hiddenText}}</view>
         </view>
         <view wx:if="{{record.moreLine}}" class="muted">{{record.moreLine}}</view>
