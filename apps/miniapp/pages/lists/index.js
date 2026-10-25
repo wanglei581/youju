@@ -34,15 +34,6 @@ Page({
     looking: false,
     result: null,
     lookupError: '',
-    lookupChanged: false,
-    lookupMode: 'identities',
-    identityResult: null,
-    selectedIdentity: null,
-    lookupRevision: '',
-    identityPage: 1,
-    matchPage: 1,
-    nextIdentityCursor: null,
-    nextMatchCursor: null,
     coverageSince: '',
     demo: false,
     chips: CHIPS,
@@ -65,7 +56,7 @@ Page({
     this.visible = false;
     this.lookupSeq = (this.lookupSeq || 0) + 1;
     this.needsLookupRefresh = !!this.data.queried;
-    this.clearLookup();
+    this.setData({ result: null, looking: false });
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
@@ -157,129 +148,29 @@ Page({
   },
 
   onInput(e) {
-    this.lookupSeq = (this.lookupSeq || 0) + 1;
-    this.clearLookup();
-    this.setData({ name: e.detail.value, queried: '', lookupError: '', lookupChanged: false });
+    this.setData({ name: e.detail.value });
   },
 
-  clearLookup() {
-    this.identityCursors = ['']; this.identityIndex = 0;
-    this.matchCursors = ['']; this.matchIndex = 0;
-    this.setData({ result: null, identityResult: null, selectedIdentity: null, looking: false,
-      lookupRevision: '', nextIdentityCursor: null, nextMatchCursor: null, identityPage: 1, matchPage: 1 });
-  },
-
+  // 只查企业和机构，不查个人（像个人姓名的，服务端返回说明）
   query() {
     const name = this.data.name.trim();
     if (name.replace(/\s+/g, '').length < 2) {
       wx.showToast({ title: '请输入企业全称或统一社会信用代码', icon: 'none' });
-      return Promise.resolve();
+      return;
     }
-    this.lookupSeq = (this.lookupSeq || 0) + 1;
-    this.clearLookup();
-    this.setData({ queried: name, lookupError: '', lookupChanged: false, demo: !api.isLive() });
-    return this.loadIdentities();
-  },
-
-  // 游标视作不透明值，只沿当前版本前进，页面不拼接不同请求的名单。
-  checkLookupPage(res, revision, cursors, index) {
-    if (!res || typeof res.revision !== 'string' || !res.revision) throw new Error('查询结果格式有误，请重新查询');
-    if (revision && res.revision !== revision) throw Object.assign(new Error('查询数据已更新'), { status: 409 });
-    const next = res.nextCursor == null ? null : res.nextCursor;
-    if (next !== null && (typeof next !== 'string' || !next || cursors.slice(0, index + 1).includes(next))) throw new Error('查询分页信息有误，请重新查询');
-    return next;
-  },
-
-  lookupFailed(err) {
-    const changed = err.status === 409;
-    if (changed || [403, 404, 410].includes(err.status)) this.clearLookup();
-    this.setData({ looking: false, lookupChanged: changed,
-      lookupError: changed ? '名单数据已更新，旧结果已清空。请重新查询并选择身份。' : err.message || '查询未完成，请重试' });
-  },
-
-  loadIdentities() {
-    const seq = this.lookupSeq = (this.lookupSeq || 0) + 1;
-    const current = () => seq === this.lookupSeq && this.visible !== false;
-    const revision = this.data.lookupRevision;
-    const cursor = this.identityCursors[this.identityIndex];
-    this.setData({ lookupMode: 'identities', looking: true, lookupError: '', lookupChanged: false,
-      result: null, identityResult: null, selectedIdentity: null, nextIdentityCursor: null, nextMatchCursor: null });
-    return api.lookupIdentities(this.data.queried, { cursor, revision }).then((res) => {
-      if (!current()) return;
-      const next = this.checkLookupPage(res, revision, this.identityCursors, this.identityIndex);
-      if (!Array.isArray(res.identities) || res.identities.some(i => !i || !['code', 'unverified'].includes(i.kind) || typeof i.key !== 'string' || !i.key || typeof i.name !== 'string' || i.kind === 'code' && typeof i.creditCode !== 'string')) throw new Error('查询身份格式有误，请重新查询');
-      const since = res.coverage && res.coverage.since;
-      this.setData({ looking: false, identityResult: res, lookupRevision: res.revision,
-        nextIdentityCursor: next, identityPage: this.identityIndex + 1, coverageSince: since ? cnDate(since) : '' });
-      if (res.identityState === 'single' && res.identities.length === 1 && next === null) return this.selectIdentity(res.identities[0]);
-    }).catch((err) => { if (current()) this.lookupFailed(err); });
-  },
-
-  pickIdentity(e) {
-    if (this.data.looking || !this.data.identityResult) return;
-    const identity = this.data.identityResult.identities[Number(e.currentTarget.dataset.index)];
-    if (identity) return this.selectIdentity(identity);
-  },
-
-  selectIdentity(identity) {
-    this.matchCursors = ['']; this.matchIndex = 0;
-    this.setData({ selectedIdentity: identity, result: null, matchPage: 1, nextMatchCursor: null });
-    return this.loadMatches();
-  },
-
-  loadMatches() {
-    const identity = this.data.selectedIdentity;
-    if (!identity) return Promise.resolve();
-    const seq = this.lookupSeq = (this.lookupSeq || 0) + 1;
-    const current = () => seq === this.lookupSeq && this.visible !== false;
-    const revision = this.data.lookupRevision;
-    const cursor = this.matchCursors[this.matchIndex];
-    this.setData({ lookupMode: 'matches', looking: true, lookupError: '', lookupChanged: false, result: null, nextMatchCursor: null });
-    return api.lookupPage(this.data.queried, identity.key, { cursor, revision }).then((res) => {
-      if (!current()) return;
-      const next = this.checkLookupPage(res, revision, this.matchCursors, this.matchIndex);
-      if (!res.identity || res.identity.key !== identity.key || !Array.isArray(res.items)) throw new Error('查询身份不一致，请重新查询');
-      const since = res.coverage && res.coverage.since;
-      this.setData({ looking: false, result: res, selectedIdentity: res.identity, lookupRevision: res.revision,
-        nextMatchCursor: next, matchPage: this.matchIndex + 1, coverageSince: since ? cnDate(since) : '' });
-    }).catch((err) => { if (current()) this.lookupFailed(err); });
-  },
-
-  nextIdentity() {
-    if (this.data.looking || this.data.lookupError || this.data.nextIdentityCursor === null) return;
-    this.identityCursors = this.identityCursors.slice(0, this.identityIndex + 1);
-    this.identityCursors.push(this.data.nextIdentityCursor); this.identityIndex += 1;
-    return this.loadIdentities();
-  },
-  previousIdentity() {
-    if (this.data.looking || this.data.lookupError || this.identityIndex < 1) return;
-    this.identityIndex -= 1; return this.loadIdentities();
-  },
-  nextMatch() {
-    if (this.data.looking || this.data.lookupError || this.data.nextMatchCursor === null) return;
-    this.matchCursors = this.matchCursors.slice(0, this.matchIndex + 1);
-    this.matchCursors.push(this.data.nextMatchCursor); this.matchIndex += 1;
-    return this.loadMatches();
-  },
-  previousMatch() {
-    if (this.data.looking || this.data.lookupError || this.matchIndex < 1) return;
-    this.matchIndex -= 1; return this.loadMatches();
-  },
-  changeIdentity() {
-    if (this.data.looking) return;
-    return this.loadIdentities();
-  },
-  retryLookup() {
-    if (this.data.looking) return;
-    if (this.data.lookupChanged || !this.data.lookupRevision) return this.query();
-    return this.data.lookupMode === 'matches' ? this.loadMatches() : this.loadIdentities();
-  },
-
-  locate(e) {
-    if (this.data.looking || this.data.lookupError || !this.data.result) return;
-    const item = this.data.result.items[Number(e.currentTarget.dataset.index)];
-    const entry = item && item.matched && item.matched.entryId;
-    if (entry && /^\d+$/.test(String(entry))) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(item.id)}&entry=${encodeURIComponent(entry)}` });
+    const seq = (this.lookupSeq || 0) + 1;
+    this.lookupSeq = seq; // 只用最后一次查询的结果
+    this.setData({ queried: name, looking: true, result: null, lookupError: '', demo: !api.isLive() });
+    api.lookup(name)
+      .then((result) => {
+        if (seq !== this.lookupSeq || this.visible === false) return;
+        const since = result.coverage && result.coverage.since;
+        this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '' });
+      })
+      .catch((err) => {
+        if (seq !== this.lookupSeq || this.visible === false) return;
+        this.setData({ looking: false, lookupError: err.message });
+      });
   },
 
   evidence(e) {

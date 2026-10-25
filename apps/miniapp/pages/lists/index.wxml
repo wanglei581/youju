@@ -32,46 +32,39 @@
 <view wx:if="{{queried}}" class="card result">
   <view class="section-title">"{{queried}}" 的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
   <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
-  <view wx:elif="{{lookupError}}" class="muted result-text"><text>{{lookupError}}</text><button bindtap="retryLookup">{{lookupChanged ? '重新查询' : '重试本页'}}</button></view>
-  <block wx:elif="{{lookupMode === 'identities' && identityResult}}">
-    <block wx:if="{{identityResult.identities.length}}">
-      <view class="identity-intro">请选择本次要查的记录</view>
-      <view class="weak empty-text">同名但信用代码不同的记录分开查询。代码仅用于区分名单中的记录，不代表资质或信用已经核验。</view>
-      <button wx:for="{{identityResult.identities}}" wx:key="key" class="identity-option" data-index="{{index}}" bindtap="pickIdentity">
-        <text>{{item.name}}</text>
-        <text wx:if="{{item.kind === 'code'}}" class="identity-code">统一社会信用代码 {{item.creditCode}}</text>
-        <text wx:else class="identity-code">未核实：原文未提供有效信用代码</text>
-      </button>
-      <view class="lookup-pagination"><button disabled="{{identityPage <= 1}}" bindtap="previousIdentity">上一页身份</button><text>第 {{identityPage}} 页</text><button disabled="{{nextIdentityCursor === null}}" bindtap="nextIdentity">下一页身份</button></view>
-      <view wx:if="{{nextIdentityCursor !== null}}" class="weak empty-text">还有其他身份记录，请继续翻页查看。</view>
-    </block>
-    <view wx:elif="{{identityResult.candidates.length}}" class="empty-lookup">
-      <view class="empty-title">你要查的是不是：</view>
-      <view class="weak empty-text">以下仅为名称建议，请选择企业或机构全称重新查询，不代表已找到同一家。</view>
-      <view class="candidates"><view wx:for="{{identityResult.candidates}}" wx:key="*this" class="similar-item candidate" data-name="{{item}}" bindtap="pickSimilar" aria-role="button"><text class="similar-name">{{item}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" /></view></view>
-      <view class="weak empty-text">最多列 20 个建议，没有你要找的，请输入企业全称或统一社会信用代码再查。</view>
-    </view>
-    <view wx:else class="empty-lookup"><view class="empty-title">已收录范围内未找到对应记录</view><view class="warn">没找到不代表没上过名单。尚未读出企业名称的扫描件等，不在可查询范围内。</view></view>
-    <view wx:if="{{identityResult.coverage}}" class="weak empty-text">查询范围：{{identityResult.coverage.lists}} 份已收录名单{{coverageSince ? '，' + coverageSince + '以来' : ''}}。{{identityResult.coverage.note}}</view>
-  </block>
+  <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}<text class="link" bindtap="query">　重试</text></view>
   <block wx:elif="{{result}}">
-    <view class="selected-identity">
-      <text>{{selectedIdentity.name}}</text>
-      <text wx:if="{{selectedIdentity.kind === 'code'}}" class="identity-code">统一社会信用代码 {{selectedIdentity.creditCode}}</text>
-      <view wx:else class="warn">未核实：这些记录没有有效信用代码，仅名称相同，不能认定是同一家。请逐条核对名单中的名称、地区和批次。</view>
-      <button bindtap="changeIdentity">重新选择查询身份</button>
+    <block wx:if="{{result.items.length}}">
+      <view class="weak result-sum">在已收录的 {{result.coverage.lists}} 份名单中找到 {{result.items.length}} 份<text wx:if="{{result.truncated}}">（只列出最近的 {{result.items.length}} 份）</text></view>
+      <view wx:if="{{result.ambiguous}}" class="warn">名单里有同名但统一社会信用代码不同的企业，下面不一定都是同一家，请逐条核对信用代码</view>
+      <view wx:for="{{result.items}}" wx:key="id" class="hit">
+        <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
+        <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
+        <button data-id="{{item.id}}" bindtap="evidence">查看名单文件和依据</button>
+      </view>
+    </block>
+    <!-- 输入的是简称：没有叫这个名字的企业，但有名称里带这几个字的——先列候选，点一个按全称查 -->
+    <view wx:elif="{{result.candidates.length}}" class="empty-lookup">
+      <view class="empty-title">你要查的是不是：</view>
+      <view class="weak empty-text">名单里没有全称是"{{queried}}"的企业。下面是名称里带这几个字的，点一个按全称查。</view>
+      <view class="candidates">
+        <view wx:for="{{result.candidates}}" wx:key="*this" class="similar-item candidate" data-name="{{item}}" bindtap="pickSimilar" aria-role="button">
+          <text class="similar-name">{{item}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
+        </view>
+      </view>
+      <view class="weak empty-text">最多列 20 个，没有你要找的，请输入企业全称或统一社会信用代码再查。</view>
     </view>
-    <view class="weak result-sum">第 {{matchPage}} 页，本页 {{result.items.length}} 份名单<text wx:if="{{nextMatchCursor !== null}}">，还有下一页</text></view>
-    <view wx:for="{{result.items}}" wx:key="id" class="hit">
-      <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
-      <view class="hit-line">名单中写作“{{item.matched.name}}”<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 原表序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
-      <button wx:if="{{item.matched.entryId}}" data-index="{{index}}" bindtap="locate">在小程序内查看命中依据</button>
-      <button data-id="{{item.id}}" bindtap="evidence">查看名单文件和依据</button>
+    <view wx:else class="empty-lookup">
+      <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
+      <view class="warn">没找到不代表没上过名单：扫描件、图片等读不出文字的名单查不到，地市发布的名单也还没收录。</view>
+      <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称，或换统一社会信用代码再查；最终以发文机关原文为准。</view>
     </view>
-    <view wx:if="{{!result.items.length}}" class="empty-lookup"><view class="empty-title">本页没有对应名单记录</view><view class="weak empty-text">未找到不代表未上过名单，结果以已收录且可读取的范围为限。</view></view>
-    <view class="lookup-pagination"><button disabled="{{matchPage <= 1}}" bindtap="previousMatch">上一页结果</button><text>第 {{matchPage}} 页</text><button disabled="{{nextMatchCursor === null}}" bindtap="nextMatch">下一页结果</button></view>
-    <view wx:if="{{nextMatchCursor === null && result.items.length}}" class="weak empty-text">已到当前身份、本版本查询结果末尾。</view>
-    <view wx:if="{{result.coverage}}" class="weak empty-text">查询范围：{{result.coverage.lists}} 份已收录名单。{{result.coverage.note}}</view>
+    <view wx:if="{{result.similar.length}}" class="similar">
+      <view class="similar-title">名称相近的企业（不一定是同一家，请核对统一社会信用代码）</view>
+      <view wx:for="{{result.similar}}" wx:key="name" class="similar-item" data-name="{{item.name}}" bindtap="pickSimilar" aria-role="button">
+        <text class="similar-name">{{item.name}}</text><text class="weak">{{item.lists}} 份名单 ›</text>
+      </view>
+    </view>
   </block>
 </view>
 

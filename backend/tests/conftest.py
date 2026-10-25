@@ -6,7 +6,6 @@
 
 import os
 import re
-import secrets
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -68,11 +67,6 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
         for table in Base.metadata.sorted_tables:
             conn.execute(text(f"TRUNCATE TABLE `{table.name}`"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
-        # TRUNCATE 绕过触发器；恢复迁移创建的单行状态，模拟正常迁移后的数据库。
-        conn.execute(
-            text("INSERT INTO lookup_revision (id, revision, cursor_key) VALUES (1, 1, :key)"),
-            {"key": secrets.token_hex(32)},
-        )
     # 换了一批数据：清掉截止摘录的整批缓存（按日期和截止数据版本做键，清空后自增编号会重复）
     from youju.api import v1
 

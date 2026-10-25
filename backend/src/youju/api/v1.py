@@ -2733,9 +2733,3 @@ def snapshot(session: SessionDep) -> dict[str, Any]:
     }
     _SNAPSHOT_CACHE["first"] = (key, stamp, payload)
     return payload
-
-
-# 新分页入口使用独立 RR 依赖，不经过旧 SessionDep 的首条规则查询。
-from youju.api.lookup import router as lookup_router  # noqa: E402
-
-router.include_router(lookup_router)
