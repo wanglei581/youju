@@ -101,7 +101,7 @@ function listRowView(res) {
 Page({
   data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '',
     segments: [], nextCursor: null, page: 1, totalSegments: 0, scannedPages: 0, complete: false,
-    listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null },
+    listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false },
   onLoad(q) {
     this.docId = String(q.id || ''); this.attachmentId = q.attachment || '';
     this.cursors = ['']; this.cursorIndex = 0;
@@ -146,7 +146,7 @@ Page({
       if (!res) throw new Error('阅读内容格式有误，请重试');
       if (!['ok', 'partial'].includes(res.status)) {
         this.cursors = ['']; this.cursorIndex = 0;
-        this.setData({ segments: [], source: res.source || null, title: res.title || '站内阅读', revision: '', nextCursor: null, page: 1,
+        this.setData({ segments: [], source: res.source || null, title: res.title || '站内阅读', revision: '', nextCursor: null, page: 1, listHidden: false,
           status: res.status, notice: res.notice || STATUS[res.status] || '内容尚未完成处理。', scannedPages: res.scannedPages || 0, complete: false });
         return;
       }
@@ -157,7 +157,7 @@ Page({
       const next = res.nextCursor == null ? null : String(res.nextCursor);
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('阅读分页信息有误，请重试');
       this.setData({ title: res.title || '站内阅读', source: res.source || {}, revision: res.revision,
-        status: res.status, notice: res.notice || STATUS[res.status] || (res.status === 'ok' ? '' : '内容尚未完成处理。'),
+        status: res.status, listHidden: res.listHidden === true, notice: res.notice || STATUS[res.status] || (res.status === 'ok' ? '' : '内容尚未完成处理。'),
         segments, nextCursor: next, page: this.cursorIndex + 1, totalSegments: res.totalSegments || 0,
         scannedPages: res.scannedPages || 0, complete: res.status === 'ok' && next === null && segments.length > 0 });
     }).catch((err) => {

@@ -316,3 +316,20 @@ test('页面文字里没有禁用词', async () => {
   const text = stringsIn(p.data).join('\n');
   for (const word of banned) assert.equal(text.includes(word), false, word);
 });
+
+test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给在已收录名单中查询企业', async () => {
+  const p = load('reader', {
+    reading: async () => ({
+      status: 'ok', title: '名单通知', revision: 'rev1', nextCursor: null, totalSegments: 1, listHidden: true,
+      source: { issuer: '发文机关', date: '2026-10-20', title: '名单通知', host: 'example.gov.cn' },
+      segments: [{ n: 1, kind: 'p', text: '公示时间：10月20日至26日。\n〔这里是名单内容（4 行），站内不展开，可以在查名单里查企业〕' }],
+    }),
+  });
+  p.onLoad({ id: '7' });
+  await p.onShow();
+  assert.equal(p.data.listHidden, true);
+  const wxml = fs.readFileSync(path.join(root, 'pages/reader/index.wxml'), 'utf8');
+  assert.match(wxml, /wx:if="\{\{status === 'list' \|\| listHidden\}\}"[^>]*bindtap="lookup"/);
+  p.lookup();
+  assert.deepEqual(p.navigations, ['/pages/lists/index']);
+});

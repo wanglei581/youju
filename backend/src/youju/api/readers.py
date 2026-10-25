@@ -155,16 +155,27 @@ def document_reading(
     doc, src = _document(session, doc_id, request)
     payload = _payload(doc.title, _source(doc, src))
     kind = effective_kind(doc.title, doc.kind_override)
-    if kind not in v1.BODY_KINDS:
+    # 名单类通知：正文挡掉名单内容后给读（D-092）；失信、个人类名单不给（list_filter 为 None）
+    list_filter = v1.list_body_filter(session, doc, src) if kind == "名单" else None
+    if kind == "名单" and list_filter is None:
+        payload.update(status="unsupported", notice="这类名单可能包含个人信息，站内不展示全文。")
+        return payload
+    if kind not in v1.BODY_KINDS and list_filter is None:
         payload.update(
-            status="list" if kind == "名单" else "unsupported",
+            status="unsupported",
             notice="此类原文可能包含个人信息，暂不展示全文；可在小程序查看已收录的企业查询结果。",
         )
         return payload
     if doc.link_gone_at:
         payload.update(status="unavailable", notice="来源已失效，内容暂不可阅读。")
         return payload
-    chosen = v1._reading_body_selection(session, doc.id, redact=texts.mask, live_only=True)
+    chosen = v1._reading_body_selection(
+        session,
+        doc.id,
+        redact=texts.mask,
+        live_only=True,
+        allowed_kinds=v1.LIST_BODY_KINDS if list_filter is not None else v1.BODY_KINDS,
+    )
     if chosen is None:
         payload.update(status="empty", notice="正文暂未收录，请稍后重试或反馈问题。")
         return payload
@@ -173,7 +184,22 @@ def document_reading(
     owner = session.get(Document, owner_id)
     source = session.get(Source, owner.source_id)
     payload["source"] = _source(owner, source)
-    if len(cleaned) < v1.BODY_MIN_CHARS:
+    notice = "以下为收录的原文文字，未经逐字人工核对；图片、版式与未收录附件不包含在内。"
+    if list_filter is not None:
+        filtered = list_filter(cleaned)
+        if filtered is None:
+            # 正文几乎全是名单：只给查名单里的企业查询结果（D-088）
+            payload.update(
+                status="list",
+                notice="这份通知的正文主要是名单，站内只提供企业查询结果（查到后可以看原名单里的那一行）。",
+            )
+            return payload
+        cleaned = filtered
+        notice = (
+            "以下为收录的通知文字，未经逐字人工核对；正文里的名单内容站内不展开，可以在查名单里"
+            "查企业。图片、版式与未收录附件不包含在内。"
+        )
+    elif len(cleaned) < v1.BODY_MIN_CHARS:
         payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
         return payload
     parts = [
@@ -186,11 +212,10 @@ def document_reading(
         doc.id, payload["title"], payload["source"], cleaned, texts.EXTRACTOR_VERSION
     )
     after = _check_revision(cursor, revision, current)
-    payload.update(
-        revision=current,
-        totalSegments=len(parts),
-        notice="以下为收录的原文文字，未经逐字人工核对；图片、版式与未收录附件不包含在内。",
-    )
+    payload.update(revision=current, totalSegments=len(parts), notice=notice)
+    if list_filter is not None:
+        # 正文里有名单内容没展开：页面给"在已收录名单中查询企业"按钮
+        payload["listHidden"] = True
     return _page(
         payload,
         [

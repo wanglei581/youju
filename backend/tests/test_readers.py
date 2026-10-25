@@ -331,7 +331,11 @@ def test_fallback_rejects_private_and_list_bodies_and_preserves_link_policy(clie
 @pytest.mark.parametrize("kind", ["名单", "其他"])
 def test_nonpublic_body_kinds_stay_protected(client, session, kind):
     doc, att, _, _ = seed(session, kind=kind)
-    assert client.get(path(doc)).json()["status"] in ("list", "unsupported")
+    # 名单类通知的正文挡掉名单内容后可读（D-092，见 test_list_body.py）；其他类照旧不给
+    if kind == "名单":
+        assert client.get(path(doc)).json()["status"] == "ok"
+    else:
+        assert client.get(path(doc)).json()["status"] == "unsupported"
     data = client.get(path(doc, att)).json()
     assert data["segments"] == []
     # 名单附件：说明只提供查询结果（页面给"在已收录名单中查询企业"按钮，D-088）

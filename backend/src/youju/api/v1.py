@@ -2,7 +2,8 @@
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；待核对的候选
 只给"有没有"（deadline_state），不给日期；
-截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
+截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类挡掉
+名单内容后给（D-092）。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import re
 import time as _time
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
@@ -37,12 +39,13 @@ from youju.classify import (
 )
 from youju.conditions import public_conditions
 from youju.config import get_settings
-from youju.crawler.detail import redact_sensitive
+from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.issuer import normalize_issuer
+from youju.lists import body as list_body
 from youju.lists import evidence as list_evidence
 from youju.lists.lookup import (
     ListLookupResult,
@@ -1997,24 +2000,69 @@ _BODY_REPLACE = (
 )
 _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
+# 名单类通知的正文挡掉名单内容后也给读（D-092，youju/lists/body.py）
+LIST_BODY_KINDS = (*BODY_KINDS, "名单")
 
 
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
     cleaned = redact((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     for old, new in _BODY_REPLACE:
         cleaned = cleaned.replace(old, new)
-    return _BLANK_LINES.sub("\n\n", cleaned).strip()
+    return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
 
 
-def body_for_reading(text: str | None, kind: str) -> dict:
-    """详情页正文：ok 给文字；名单类给 list，其他类给 original（都可能有个人姓名），
-    没抓到完整正文给 none——这三种页面上提示复制原文链接查看。"""
-    if kind == "名单":
+# 联系方式所在的行（"联系人""联系电话"，没写"联系人"的"刘老师，电话……"）和网站页脚的编审署名
+# （"一审：张三""责任编辑：李四"）
+_CONTACT_LINE = re.compile(r"联系人|联络人|经办人|联系方式|电话|手机|（电话见原文）")
+_EDITOR_LINE = re.compile(
+    r"^\s*(?:[一二三]审|初审|复审|终审|责任编辑|编辑|校对|审核|审稿|签发|撰稿|供稿)\s*[:：]"
+)
+_CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】]+")
+_HAN_CHAR = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+# 常见姓氏开头、但这些行里常见的普通词
+_NOT_NAMES = frozenset({"关于", "关闭", "查询", "时间", "方式"})
+
+
+def _mask_contact_names(text: str) -> str:
+    """联系方式所在的行、网站编审署名行里，像姓名的词（常见姓氏开头的 2–3 个字，和入库脱敏认姓名
+    同一套）再遮一遍：以前入库时只遮了"联系人："后面的第一个词，"联系人：（联系人见原文）某某处
+    张三"里的张三还在；"刘老师，电话……""一审：张三"也没遮（D-092 让名单类通知的正文也能读，10/25
+    用本机数据副本实测发现）。"""
+    out = []
+    for line in text.split("\n"):
+        if _CONTACT_LINE.search(line) or _EDITOR_LINE.match(line):
+            for word in sorted({w for w in _CONTACT_SPLIT.split(line) if w}, key=len, reverse=True):
+                if word not in _NOT_NAMES and _name_like(word):
+                    # 带括号的（"（王老师）"）连括号一起换，不出现两层括号
+                    line = line.replace(f"（{word}）", "（联系人见原文）").replace(
+                        f"({word})", "（联系人见原文）"
+                    )
+                    line = re.sub(
+                        rf"(?<![{_HAN_CHAR}]){re.escape(word)}(?![{_HAN_CHAR}])",
+                        "（联系人见原文）",
+                        line,
+                    )
+        out.append(line)
+    return "\n".join(out)
+
+
+def body_for_reading(
+    text: str | None, kind: str, *, list_filter: Callable[[str], str | None] | None = None
+) -> dict:
+    """详情页正文：ok 给文字；其他类给 original（可能有个人姓名），没抓到完整正文给 none。
+    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单内容后给文字，挡完剩得太少的、
+    不能读的（失信、个人类）给 list。"""
+    if kind == "名单" and list_filter is None:
         return {"status": "list"}
-    if kind not in BODY_KINDS:
+    if kind not in BODY_KINDS and kind != "名单":
         return {"status": "original"}
     cleaned = _clean_reading_body(text)
-    if len(cleaned) < BODY_MIN_CHARS:
+    if list_filter is not None:
+        filtered = list_filter(cleaned)
+        if filtered is None:
+            return {"status": "list"}
+        cleaned = filtered
+    elif len(cleaned) < BODY_MIN_CHARS:
         return {"status": "none"}
     return {
         "status": "ok",
@@ -2022,6 +2070,23 @@ def body_for_reading(text: str | None, kind: str) -> dict:
         "total": len(cleaned),
         "truncated": len(cleaned) > BODY_MAX_CHARS,
     }
+
+
+def list_body_filter(
+    session: Session, doc: Document, source: Source | None, detail: DocumentDetail | None = None
+) -> Callable[[str], str | None] | None:
+    """名单类通知正文的过滤函数（D-092）：这份通知能读（不是失信、个人类）时给，不能读给 None。
+    用这份通知归并组解析出的条目名称认名单行，发文机关署名照常显示。"""
+    if not list_body.readable(doc.title):
+        return None
+    if detail is None:
+        detail = session.get(DocumentDetail, doc.id)
+    return list_body.filter_for(
+        session,
+        group_ids(session, doc.id),
+        [source.dept_full_name if source else None, detail.issuer if detail else None],
+        min_chars=list_body.MIN_CHARS,
+    )
 
 
 def _reading_body_selection(
@@ -2241,7 +2306,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
         ),
         "checked": checked,
-        "body": body_for_reading(_reading_body(session, doc.id), kind),
+        "body": _detail_body(session, doc, src, detail, kind),
     }
     if fields:
         payload["fields"] = fields
@@ -2254,6 +2319,16 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if repost and repost["others"]:
         payload["repost"] = _repost_detail(session, doc.id, repost)
     return payload
+
+
+def _detail_body(
+    session: Session, doc: Document, src: Source, detail: DocumentDetail | None, kind: str
+) -> dict:
+    list_filter = list_body_filter(session, doc, src, detail) if kind == "名单" else None
+    allowed = LIST_BODY_KINDS if list_filter is not None else BODY_KINDS
+    return body_for_reading(
+        _reading_body(session, doc.id, allowed_kinds=allowed), kind, list_filter=list_filter
+    )
 
 
 def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:

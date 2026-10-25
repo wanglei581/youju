@@ -63,7 +63,8 @@
       <view wx:if="{{!segments.length && !notice}}" class="muted">暂未取得可阅读内容。</view>
       <view wx:if="{{segments.length || page > 1}}" class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
       <view wx:if="{{complete}}" class="muted">已到本版本内容末尾。</view>
-      <button wx:if="{{status === 'list'}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
+      <!-- 名单附件、几乎全是名单的正文（status=list），和挡掉了名单行的名单类通知正文（listHidden，D-092） -->
+      <button wx:if="{{status === 'list' || listHidden}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
     </block>
   </view>
   <view class="card actions"><button bindtap="feedback">反馈内容问题</button><button bindtap="detail">返回文件详情</button></view>
