@@ -1073,64 +1073,42 @@ def _keyword_ids(session: Session, kw: str) -> Select:
     return by_title.union(by_number)
 
 
-# 搜索频率上限（S3，10/19）：每个用户每分钟最多 60 次，同一来源地址每分钟合计最多 300 次，
-# 超了返回 429。用户按 openid 算：admin 不认身份请求头（config 不许它信任），
-# 但经小程序云调用来的请求带平台写的 X-WX-OPENID，这里只拿来分开计数、不当身份用——
-# 就算被伪造，也只是给自己多分几份计数，来源地址的合计上限照样拦着；没有 openid 的
-# 按来源地址算一个用户。依据：线上 10/12–10/18 同一来源一分钟最多搜了 24 次，平常 1–5 次；
-# "我的客户"打开一次最多查 20 组（每家客户一组），30 次就会让连开两次时有几组加载失败。
-# 脚本刷接口每秒能发几十次，一个用户限到每秒 1 次；300 次够一个办公室五个人共用一个公网出口
-# 同时满速用。计数在进程内存里，键数有上限（淘汰最久没搜的）。快照里取最新 8 份不经过这里。
-SEARCH_PER_MINUTE = 60
-SEARCH_PER_ADDRESS = 300
+# 搜索频率上限（S3）：同一来源地址每分钟最多 120 次，超了返回 429。只按来源地址算、不用 openid：
+# 隐私保护指引一·2 写明 openid 在服务器内存里只统计导出和打开附件的次数，搜索不在里面；
+# 来源地址是一·8 写明为保障运行安全处理的信息，查名单的限流也是按它算的。来源地址取平台写的
+# X-Original-Forwarded-For（9/30 实测不能伪造），和访问日志一样截到 64 个字符。
+# 依据：线上 10/12–10/18 同一来源一分钟最多搜了 24 次，平常 1–5 次；"我的客户"打开一次最多查
+# 20 组（每家客户一组）。120 次够一个办公室几个人共用一个公网出口、各自连开几次"我的客户"；
+# 脚本刷接口每秒能发几十次，限到每秒 2 次。计数只在进程内存里（不写库、不进日志），键数有上限
+# （淘汰最久没搜的）。快照里取最新 8 份不经过这里。
+SEARCH_PER_MINUTE = 120
 _SEARCH_KEYS_MAX = 10000
 _SEARCH_TIMES: OrderedDict[str, deque[float]] = OrderedDict()
 _SEARCH_LOCK = Lock()
 
 
-def _search_keys(request: Request) -> tuple[str, str]:
-    """(按用户计数的键, 按来源地址合计的键)。"""
-    from youju.api.app import client_ip
-    from youju.api.me import request_openid
-
-    address = client_ip(request)[:64]  # 和访问日志一样截断，计数键不会过长
-    try:
-        return "u:" + request_openid(request), "ip:" + address
-    except HTTPException:
-        pass
-    openid = (
-        (request.headers.get("X-WX-OPENID") or request.headers.get("X-WX-FROM-OPENID"))
-        if "X-WX-SOURCE" in request.headers
-        else None
-    )
-    if openid and openid.strip() and len(openid) <= 128:
-        return "u:" + openid, "ip:" + address
-    return "a:" + address, "ip:" + address
-
-
-def _allow_search(user: str, address: str, now: float) -> bool:
-    """这次搜索没超上限就记一次、返回 True；超了返回 False，不记，也不更新先后顺序
+def _allow_search(address: str, now: float) -> bool:
+    """这个来源地址这次搜索没超上限就记一次、返回 True；超了返回 False，不记，也不更新先后顺序
     （免得借此把别人的记录挤出去）。"""
+    key = "ip:" + address
     with _SEARCH_LOCK:
-        counted = []
-        for key, limit in ((user, SEARCH_PER_MINUTE), (address, SEARCH_PER_ADDRESS)):
-            times = _SEARCH_TIMES.get(key) or deque()
-            while times and times[0] <= now - 60:
-                times.popleft()
-            if len(times) >= limit:
-                return False
-            counted.append((key, times))
-        for key, times in counted:
-            times.append(now)
-            _SEARCH_TIMES[key] = times
-            _SEARCH_TIMES.move_to_end(key)
+        times = _SEARCH_TIMES.get(key) or deque()
+        while times and times[0] <= now - 60:
+            times.popleft()
+        if len(times) >= SEARCH_PER_MINUTE:
+            return False
+        times.append(now)
+        _SEARCH_TIMES[key] = times
+        _SEARCH_TIMES.move_to_end(key)
         while len(_SEARCH_TIMES) > _SEARCH_KEYS_MAX:
             _SEARCH_TIMES.popitem(last=False)
         return True
 
 
 def _limit_search(request: Request) -> None:
-    if not _allow_search(*_search_keys(request), _time.monotonic()):
+    from youju.api.app import client_ip
+
+    if not _allow_search(client_ip(request)[:64], _time.monotonic()):
         raise HTTPException(status_code=429, detail="搜索太频繁，请稍后再试")
 
 

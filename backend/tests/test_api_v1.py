@@ -2012,26 +2012,19 @@ def test_lists_lookup_rate_limited_and_recovers(client, monkeypatch):
     assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 200
 
 
-def test_search_window_counts_user_and_address_and_recovers():
-    """S3 计数：一分钟滑动窗口；用户和来源地址各自的上限，任一满了就拒，被拒的不记次。"""
+def test_search_window_per_address_and_recovers():
+    """S3 计数：每个来源地址一分钟滑动窗口；超了拒绝，被拒的不记次；不同地址互不影响。"""
     for _ in range(v1.SEARCH_PER_MINUTE):
-        assert v1._allow_search("u:a", "ip:1", 1000.0)
-    assert not v1._allow_search("u:a", "ip:1", 1059.9)
-    assert len(v1._SEARCH_TIMES["u:a"]) == v1.SEARCH_PER_MINUTE  # 被拒的不记
-    assert len(v1._SEARCH_TIMES["ip:1"]) == v1.SEARCH_PER_MINUTE
-    assert v1._allow_search("u:a", "ip:1", 1060.0)  # 最早那批满 60 秒，恢复
-    # 同一地址：别的用户照常，直到地址合计满
-    v1._SEARCH_TIMES.clear()
-    for n in range(v1.SEARCH_PER_ADDRESS):
-        assert v1._allow_search(f"u:{n}", "ip:1", 2000.0)
-    assert not v1._allow_search("u:new", "ip:1", 2000.0)
-    assert "u:new" not in v1._SEARCH_TIMES
-    assert v1._allow_search("u:new", "ip:2", 2000.0)
+        assert v1._allow_search("203.0.113.1", 1000.0)
+    assert not v1._allow_search("203.0.113.1", 1059.9)
+    assert len(v1._SEARCH_TIMES["ip:203.0.113.1"]) == v1.SEARCH_PER_MINUTE  # 被拒的不记
+    assert v1._allow_search("203.0.113.2", 1059.9)
+    assert v1._allow_search("203.0.113.1", 1060.0)  # 最早那批满 60 秒，恢复
 
 
-def test_search_rate_limited_per_user(client, monkeypatch):
-    """S3：每个用户每分钟搜索有上限，超了返回 429"搜索太频繁，请稍后再试"；按用户算，
-    别的用户照常；快照里取最新 8 份不计次。"""
+def test_search_rate_limited_per_address(client, monkeypatch):
+    """S3：同一来源地址每分钟搜索有上限，超了返回 429"搜索太频繁，请稍后再试"；别的地址照常；
+    快照里取最新 8 份不计次；计数只按来源地址，不保存 openid（隐私保护指引一·2 没写搜索计次）。"""
     from types import SimpleNamespace
 
     from youju.api import me
@@ -2040,23 +2033,30 @@ def test_search_rate_limited_per_user(client, monkeypatch):
         me, "get_settings", lambda: SimpleNamespace(trust_wx_headers=True, dev_openid=None)
     )
     monkeypatch.setattr(v1, "SEARCH_PER_MINUTE", 5)
-    user = {"X-WX-SOURCE": "wx_client", "X-WX-OPENID": "o-search-a"}
+    user = {
+        "X-WX-SOURCE": "wx_client",
+        "X-WX-OPENID": "o-search-a",
+        "X-Original-Forwarded-For": "203.0.113.7",
+    }
     for _ in range(5):
         assert client.get("/api/v1/search", headers=user).status_code == 200
     refused = client.get("/api/v1/search", headers=user, params={"q": "申报"})
     assert refused.status_code == 429
     assert refused.json() == {"detail": "搜索太频繁，请稍后再试"}
-    other = {**user, "X-WX-OPENID": "o-search-b"}
-    assert client.get("/api/v1/search", headers=other).status_code == 200
+    # 换个 openid、同一出口：照样被拦（不按 openid 算）
+    other_user = {**user, "X-WX-OPENID": "o-search-b"}
+    assert client.get("/api/v1/search", headers=other_user).status_code == 429
+    elsewhere = {**user, "X-Original-Forwarded-For": "203.0.113.8"}
+    assert client.get("/api/v1/search", headers=elsewhere).status_code == 200
     v1._SNAPSHOT_CACHE.clear()
-    assert client.get("/api/v1/snapshot", headers=user).status_code == 200
-    assert len(v1._SEARCH_TIMES["u:o-search-a"]) == 5
+    assert client.get("/api/v1/snapshot", headers=elsewhere).status_code == 200
+    assert len(v1._SEARCH_TIMES["ip:203.0.113.8"]) == 1
+    assert set(v1._SEARCH_TIMES) == {"ip:203.0.113.7", "ip:203.0.113.8"}
+    assert not any("o-search" in key for key in v1._SEARCH_TIMES)
 
 
-def test_search_limit_on_admin_counts_by_openid_and_address(session_factory, monkeypatch):
-    """admin 不认身份请求头：云调用带的 openid 只拿来分开计数（同一办公室的几个人不合并），
-    同一来源地址另有合计上限，换着 openid 刷也绕不过去；没有 openid 的按来源地址算一个用户；
-    超限的请求在取数据库会话之前就拒绝。"""
+def test_search_limit_on_admin_by_address_before_db(session_factory, monkeypatch):
+    """admin 上同样按来源地址计次（换着 openid 刷绕不过去）；超限的请求在取数据库会话之前就拒绝。"""
     from types import SimpleNamespace
 
     from youju.api import app as app_module
@@ -2072,41 +2072,19 @@ def test_search_limit_on_admin_counts_by_openid_and_address(session_factory, mon
     monkeypatch.setattr(
         app_module, "get_settings", lambda: SimpleNamespace(role="admin", admin_token="t" * 32)
     )
-    monkeypatch.setattr(v1, "SEARCH_PER_MINUTE", 2)
-    monkeypatch.setattr(v1, "SEARCH_PER_ADDRESS", 5)
+    monkeypatch.setattr(v1, "SEARCH_PER_MINUTE", 3)
     app.dependency_overrides[get_session] = override
     try:
         client = TestClient(app)
         office = {"X-WX-SOURCE": "wx_client", "X-Original-Forwarded-For": "203.0.113.7"}
-        # 同一出口的两个人各搜 2 次：互不影响
-        for openid in ("o-a", "o-b"):
-            for _ in range(2):
-                headers = {**office, "X-WX-OPENID": openid}
-                assert client.get("/api/v1/search", headers=headers).status_code == 200
-        assert (
-            client.get("/api/v1/search", headers={**office, "X-WX-OPENID": "o-a"}).status_code
-            == 429
-        )
-        # 第三个人搜 1 次，地址合计到 5 次；再换 openid 也被地址合计拦下
-        assert (
-            client.get("/api/v1/search", headers={**office, "X-WX-OPENID": "o-c"}).status_code
-            == 200
-        )
-        assert opened == 5
+        for n in range(3):
+            headers = {**office, "X-WX-OPENID": f"o-{n}"}
+            assert client.get("/api/v1/search", headers=headers).status_code == 200
+        assert opened == 3
         refused = client.get("/api/v1/search", headers={**office, "X-WX-OPENID": "o-new"})
-        assert refused.status_code == 429 and opened == 5
-        # 别的地址、没有 openid：按来源地址算一个用户
-        elsewhere = {"X-WX-SOURCE": "wx_client", "X-Original-Forwarded-For": "203.0.113.8"}
-        for _ in range(2):
-            assert client.get("/api/v1/search", headers=elsewhere).status_code == 200
-        assert client.get("/api/v1/search", headers=elsewhere).status_code == 429
-        assert set(v1._SEARCH_TIMES) == {
-            "u:o-a",
-            "u:o-b",
-            "u:o-c",
-            "ip:203.0.113.7",
-            "a:203.0.113.8",
-            "ip:203.0.113.8",
-        }
+        assert refused.status_code == 429 and opened == 3
+        elsewhere = {**office, "X-Original-Forwarded-For": "203.0.113.8"}
+        assert client.get("/api/v1/search", headers=elsewhere).status_code == 200
+        assert set(v1._SEARCH_TIMES) == {"ip:203.0.113.7", "ip:203.0.113.8"}
     finally:
         app.dependency_overrides.clear()
