@@ -5,14 +5,38 @@ const path = require('node:path');
 const { inspect, SERVER_TOOL_TERMS_VERSION } = require('../miniapp_presubmit_check');
 const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
-  legal:{final:true, operator:{icp:'测试备案号',email:'contact@example.test'}},
+  // 首发（过审版）协议：不含 AI 条款，版本排在后台 AI 条款版本之前（D-093 ⑤）
+  legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
 }
+test('所有版本必须包含站内阅读和结果页，等数量替换或重复也不能绕过范围检查',()=>{
+ for(const profile of ['first-release','ai-internal','ai-release','complete-candidate','complete-release']) {
+  const x=input();
+  if(profile!=='first-release') x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint'].map(p=>`pages/${p}/index`));
+  if(profile.startsWith('complete-')) x.app.pages.push(...['advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`));
+  const state=y=>inspect({...y,profile,mode:'prepare'}).checks.find(c=>c.id==='pages').state;
+  assert.equal(state(x),'pass',profile);
+  for(const page of ['reader','results']) {
+   for(const replacement of [null,'pages/unreviewed/index','pages/home/index']) {
+    const y=JSON.parse(JSON.stringify(x));
+    const i=y.app.pages.indexOf(`pages/${page}/index`);
+    y.app.pages.splice(i,1,...(replacement?[replacement]:[]));
+    assert.equal(state(y),'fail',`${profile}: ${page}: ${replacement}`);
+   }
+  }
+ }
+});
+test('真实注册页面通过完整候选范围校验，不能只验证测试fixture',()=>{
+ const app=JSON.parse(fs.readFileSync(path.join(__dirname,'../../apps/miniapp/app.json'),'utf8'));
+ const r=inspect({...input(),app,profile:'complete-release',mode:'prepare'});
+ assert.equal(r.checks.find(c=>c.id==='pages').state,'pass');
+ assert.equal(r.readyToSubmit,false);
+});
 test('备案办理中只允许准备检查，默认提审保持失败',()=>{
  const x=input(); x.legal.operator.icp='';
  assert.equal(inspect(x).ok,false);
@@ -47,9 +71,9 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.equal(JSON.stringify(inspect(x)).includes('private@example.test'),false);
 });
 
-test('完整候选严格限定 24 页（含加量体验确认页、购买页、订单页），不能借此放宽旧版本或提交审核',()=>{
+test('完整候选严格限定 28 页（含站内阅读与结果页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders'].map(p=>`pages/${p}/index`));
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-candidate',mode:'prepare'});
  assert.equal(r.ok,true);assert.equal(r.readyToSubmit,false);
@@ -62,13 +86,15 @@ test('完整候选严格限定 24 页（含加量体验确认页、购买页、�
  assert.equal(inspect({...x,profile:'complete-candidate',mode:'submit'}).ok,false);
  // 奖励等不在范围的页面、缺了购买页或订单页、子包都不行
  for(const change of [y=>y.app.pages.push('pages/rewards/index'),y=>y.app.pages.pop(),y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/pass/index');},
-   y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/advisor-trial/index');},y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
+   y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/advisor-trial/index');},y=>{y.app.pages=y.app.pages.filter(p=>p!=='pages/help/index');},
+   // AI 板块（D-075）：底栏第 5 项必须是板块首页、放在最后；没有也不行
+   y=>{y.app.tabBar.list.pop();},y=>{y.app.tabBar.list.unshift(y.app.tabBar.list.pop());},y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.config.aiInternal=false,y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
 });
 test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
  const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders'].map(p=>`pages/${p}/index`));
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-release',mode:'submit'});
  // 备案号、邮箱、协议都齐：静态提审检查可以通过（工具说明复核、付费协议、模板只提示）；静态结果仍不授予提交权限
@@ -158,4 +184,27 @@ test('小程序里的工具使用说明和后台是同一版本：后台改了�
  const terms=require('../../apps/miniapp/content/advisor-terms.js');
  assert.match(SERVER_TOOL_TERMS_VERSION,/^advisor-\d{4}-\d{2}-v\d+$/);
  assert.equal(terms.version,SERVER_TOOL_TERMS_VERSION);
+});
+
+test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉举报页、原文链接，版本要排在后台 AI 条款版本之前', () => {
+  const { SERVER_AI_TERMS_VERSION } = require('../miniapp_presubmit_check');
+  const check = (x) => inspect({ ...x, mode: 'prepare' }).checks.find((c) => c.id === 'first-terms');
+  assert.equal(check(input()).state, 'pass');
+  for (const change of [
+    (y) => { y.legal.version = SERVER_AI_TERMS_VERSION; },
+    (y) => { y.legal.version = '2026-12'; },
+    (y) => { delete y.legal.version; },
+    (y) => { y.legal.user.sections[0].p.push('AI 功能的范围见第八条。'); },
+    (y) => { y.legal.privacy.sections.push({ h: '四、', p: ['· AI 模型调用：我们调用已备案的大模型'] }); },
+    (y) => { y.legal.user.sections[0].p.push('我们在条目中均附有官方原文链接。'); },
+    (y) => { y.legal.disclaimer = '在“投诉举报”页提交'; },
+  ]) {
+    const x = input(); change(x);
+    assert.equal(check(x).state, 'fail');
+    assert.equal(inspect({ ...x, mode: 'prepare' }).ok, false);
+  }
+  // 别的版本不做这项检查
+  const x = input(); x.config.aiInternal = false; x.legal.version = '2026-11';
+  x.app.pages.push(...['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map((p) => `pages/${p}/index`));
+  assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
 });

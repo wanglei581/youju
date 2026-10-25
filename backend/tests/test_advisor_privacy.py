@@ -36,6 +36,8 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
             "features": ["interpret", "clause"],
             "remaining": {"interpret": 5, "clause": 5},
             "disclosure": {"modelLabel": "", "filingNo": ""},
+            "available": True,
+            "siteFull": False,
         }
     else:
         assert ai == {"enabled": False, "features": [], "remaining": {}}

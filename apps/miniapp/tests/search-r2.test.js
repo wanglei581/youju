@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,7 +16,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -45,7 +46,7 @@ test('两栏筛选：左栏按约定顺序列出 11 组，组名旁边是已选�
   page.onLoad({}); await flush();
   // 区县并在城市这一组里（同一个省市区选择器），不另加入口
   assert.deepEqual(page.data.groups.map((g) => g.title),
-    ['地区', '城市区县', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
+    ['地区', '城市区县', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '发布阶段', '层级', '发文部门']);
   assert.ok(Object.values(page.data.counts).every((n) => n === 0));
   page.pickOption(event({ group: 'region', option: '江苏' })); await flush();
   page.pickOption(event({ group: 'region', option: '山东' })); await flush();
@@ -422,9 +423,9 @@ test('城市清单用原生完整省市选择器，零覆盖可选择但明确�
   assert.equal(page.conditions().regions, '北京');
 });
 
-test('关注与我的数据共用摘要保留类型、名单状态和发文部门，不写成全部类型', () => {
+test('关注与我的数据共用摘要保留类型、发布阶段和发文部门，不写成全部类型', () => {
   const description = conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '山东/青岛' });
-  assert.match(description, /名单与公示/); assert.match(description, /名单状态：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
+  assert.match(description, /名单与公示/); assert.match(description, /发布阶段：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
 });
 
 test('移除最后一个城市恢复不限地区高亮，但保留其他省份条件', async () => {

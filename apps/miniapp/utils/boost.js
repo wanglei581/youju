@@ -142,7 +142,8 @@ function unavailableText(view) {
   if (view.trialActive) return '';
   if (view.trialReason === 'used') return '加量体验已经用过，每个账号只能体验一次。';
   if (view.trialReason === 'pass') return '使用期内不限次数，不需要加量体验；体验留到以后再用。';
-  return '加量体验暂未开放。';
+  // 其余（开关关着、读不到）不给用户看"暂未开放"，确认页直接回首页（D-074 ⑧）
+  return '';
 }
 
 module.exports = { trialView, trialLine, trialCapText, trialEndedText, trialPitch, seasonLine, confirmItems, unavailableText, timeMs, beijingDay };

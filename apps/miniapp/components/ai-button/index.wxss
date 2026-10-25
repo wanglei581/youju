@@ -1,0 +1,12 @@
+/* 浅品牌色小胶囊，和"查看详情"并排；不抢标题 */
+.ai-chip {
+  flex-shrink: 0;
+  padding: 6rpx 20rpx;
+  border-radius: 999rpx;
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-size: 24rpx;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: nowrap;
+}

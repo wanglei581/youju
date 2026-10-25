@@ -233,6 +233,116 @@ def test_per_host_interval() -> None:
     assert sleeps == [3.0, 3.0, 3.0]
 
 
+def deadline_fetcher(handler, now: dict, deadline: float) -> PoliteFetcher:
+    return PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        clock=lambda: now["t"],
+        sleep=lambda seconds: None,
+        deadline=deadline,
+    )
+
+
+def test_deadline_already_passed_sends_nothing_and_does_not_cache_robots() -> None:
+    """设了期限（原网页检查用）、已经到期：一个请求也不发，给 deadline；robots.txt 不当成读不到记下来。"""
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(404)
+
+    now = {"t": 20.0}
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == []
+        assert f._robots == {}
+
+
+def test_deadline_reached_between_robots_and_page() -> None:
+    requested = []
+    now = {"t": 0.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            now["t"] = 100.0  # 读 robots.txt 的时候到了期限
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == ["/robots.txt"]
+        assert f._robots["https://a.gov.cn"].state == "allow_all"  # 读到了的照常记下
+
+
+def test_deadline_reached_during_dns_lookup_sends_no_request() -> None:
+    requested = []
+    now = {"t": 0.0}
+
+    def slow_dns(host: str) -> list[str]:
+        now["t"] = 100.0  # 解析的时候到了期限
+        return ["1.2.3.4"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(404)
+
+    f = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        transport=httpx.MockTransport(handler),
+        resolver=slow_dns,
+        clock=lambda: now["t"],
+        sleep=lambda seconds: None,
+        deadline=10.0,
+    )
+    with f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "deadline"
+        assert requested == [] and f._robots == {}
+
+
+def test_deadline_cuts_off_a_slow_trickling_page() -> None:
+    """一点一点慢慢回数据的页面（每块都在超时以内）：到期就放下，不拖过期限。"""
+    now = {"t": 0.0}
+    sent = []
+
+    def trickle():
+        for _ in range(100):
+            now["t"] += 6.0
+            sent.append(1)
+            yield b"<p>" + b"x" * 100 + b"</p>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, content=trickle(), headers={"content-type": "text/html"})
+
+    with deadline_fetcher(handler, now, deadline=30.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+    assert result.status == "deadline" and len(sent) < 10
+
+
+def test_deadline_shortens_request_timeout_and_no_deadline_keeps_it() -> None:
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    now = {"t": 0.0}
+    with deadline_fetcher(handler, now, deadline=5.0) as f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "ok"
+    assert timeouts == [5.0, 5.0]
+    timeouts.clear()
+    with make_fetcher(handler) as f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "ok"
+    assert timeouts == [20.0, 20.0]
+
+
 def test_decode_html_charsets() -> None:
     text = "关于开展申报工作的通知"
     gbk = f"<meta charset='gb2312'><p>{text}</p>".encode("gbk")

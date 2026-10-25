@@ -1,9 +1,10 @@
 const api = require('../../utils/api.js');
 const { regionSelection, areaParts, areaLabel, uncoveredCities, uncoveredDistricts, applyAreaChoice } = require('../../utils/regions.js');
 const { loadCoverage } = require('../../utils/coverage.js');
-const { exportDocs } = require('../../utils/exporter.js');
+const { previewDocs } = require('../../utils/exporter.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
+const pages = require('../../utils/pages.js');
 const {
   PROVINCES, INDUSTRIES, MAX_CLIENTS, PER_QUERY, MAX_DOCS, normalize, loadClients, saveClients, displayName, cardSummary,
   queryGroups, mergeRelated,
@@ -28,8 +29,10 @@ function runLimited(tasks, limit) {
 }
 
 Page({
-  tools() { wx.navigateTo({ url: '/pages/advisor/index' }); },
+  tools() { if (this.data.tools) wx.navigateTo({ url: '/pages/advisor/index' }); },
   data: {
+    // 顶部"打开工具中心"：包里有工具中心才显示（过审版首发 16 页没有，D-091）
+    tools: pages.has('advisor'),
     tab: 'docs', clients: [], editing: false, form: {}, provinces: PROVINCES, industries: INDUSTRIES,
     cityOptions: [], cityRegion: [], cityError: '', cityCoverageNote: '', districtLabels: [], picked: {}, error: '', coverageError: '', placeholder: '客户 1',
     // 相关通知
@@ -132,7 +135,7 @@ Page({
     const { shown, only, clients } = this.data;
     const client = clients.find((c) => c.id === only);
     // 名称只用在本机的导出记录里，不发给服务端
-    exportDocs(shown.map((r) => r.id), { label: client ? `我的客户 · ${client.displayName}` : '我的客户 · 全部' });
+    previewDocs(shown.map((r) => r.id), { label: client ? `我的客户 · ${client.displayName}` : '我的客户 · 全部' });
   },
 
   loadCities() {

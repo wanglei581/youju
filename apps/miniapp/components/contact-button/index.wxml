@@ -1,0 +1,20 @@
+<block wx:if="{{variant === 'row'}}">
+  <button wx:if="{{supported}}" class="contact-row" open-type="contact" session-from="{{sessionFrom}}" aria-label="联系客服">
+    <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">一般当天或第二天回复</text><t-icon name="chevron-right" size="32rpx" color="#86909C" />
+  </button>
+  <view wx:elif="{{help}}" class="contact-row" bindtap="help" aria-role="button">
+    <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">这台手机暂不能打开，看使用帮助</text><t-icon name="chevron-right" size="32rpx" color="#86909C" />
+  </view>
+  <view wx:else class="contact-row" bindtap="about" aria-role="button">
+    <t-icon name="user" size="40rpx" color="#4E5969" /><text class="contact-row-text">联系客服</text><text class="contact-row-hint">这台手机打不开微信客服，看联系邮箱</text><t-icon name="chevron-right" size="32rpx" color="#86909C" />
+  </view>
+</block>
+<view wx:else class="contact">
+  <block wx:if="{{supported}}">
+    <button class="contact-btn" open-type="contact" session-from="{{sessionFrom}}" show-message-card="{{showCard}}" send-message-title="{{cardTitle}}" send-message-path="{{cardPath}}">联系客服</button>
+    <view class="contact-note">一般当天或第二天回复</view>
+  </block>
+  <view wx:elif="{{help}}" class="contact-note contact-note--alt">这台手机暂不能打开微信客服。可以先看<text class="link" bindtap="help">使用帮助</text><text wx:if="{{email}}">，或发邮件到 {{email}}</text>。</view>
+  <view wx:else class="contact-note contact-note--alt">这台手机暂不能打开微信客服<text wx:if="{{email}}">，可以发邮件到 {{email}}</text>。</view>
+  <view class="contact-note">客服只解答小程序怎么用，不代办申报、不判断能不能报</view>
+</view>

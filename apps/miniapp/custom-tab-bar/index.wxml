@@ -1,7 +1,8 @@
 <view class="bar" style="grid-template-columns: repeat({{list.length}}, 1fr)" aria-role="tablist">
   <view wx:for="{{list}}" wx:key="pagePath" class="item {{selected === item.tab ? 'item--on' : ''}}"
         data-path="{{item.pagePath}}" bindtap="switchTab" aria-role="tab" aria-selected="{{selected === item.tab}}">
-    <t-icon name="{{selected === item.tab ? item.iconOn : item.icon}}" size="48rpx" />
+    <view wx:if="{{item.spark}}" class="spark {{selected === item.tab ? 'spark--on' : ''}}" aria-hidden="true"><view class="spark-in"></view></view>
+    <t-icon wx:else name="{{selected === item.tab ? item.iconOn : item.icon}}" size="48rpx" />
     <text class="label">{{item.text}}</text>
   </view>
 </view>

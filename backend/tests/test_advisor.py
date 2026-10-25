@@ -595,7 +595,7 @@ def test_data_tool_worker_stays_serial(session, advisor_settings, monkeypatch):
     monkeypatch.setattr(service, "process_task", process)
     report = service.run_advisor_tasks(session, settings=advisor_settings, stamp=NOW)
     assert seen == [row.id for row in tasks]
-    assert report == {"processed": 2, "done": 2, "failed": 0, "requeued": 0}
+    assert report == {"processed": 2, "done": 2, "failed": 0, "requeued": 0, "revoked": 0}
 
 
 def test_fake_object_store_upload_download_and_expiry(session, advisor_settings, monkeypatch):
@@ -851,6 +851,7 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
         status="done",
         expires_at=NOW.astimezone(UTC),
         result_file_id="cloud://trash",
+        result_json={"schema": 1, "items": [{"title": "synthetic"}]},
     )
     row_id = row.id
     attempts = iter([RuntimeError("暂时失败"), ["cloud://trash"]])
@@ -861,6 +862,7 @@ def test_storage_failure_is_queued_and_retried(session, advisor_settings, monkey
     assert first["advisor_files"] == 0
     session.refresh(row)
     assert row.result_file_id == "cloud://trash"
+    assert row.result_json is None
     assert session.scalar(select(AdvisorFileTrash.file_id)) == "cloud://trash"
 
     second = service.cleanup_advisor(
@@ -1090,31 +1092,74 @@ def test_pk_prefix_csv_is_not_zip(client, content):
     assert response.json()["rowCount"] == len(content.splitlines())
 
 
+def test_owner_deletes_abandoned_running_task_even_when_tools_are_off(
+    client, advisor_settings, session, monkeypatch
+):
+    """正在处理的要等处理结束（结果文件可能正在上传）；开始超过一天的一定没人在跑了，功能关掉以后也不会有人
+    接着处理，本人可以删（D-093 上线门槛第 8 条），占用的次数只退一次；别人的照样"没有找到"。"""
+    agree_advisor(client)
+    user = session.scalar(select(User))
+    stamp = NOW.astimezone(UTC)
+    fresh = task(session, user.id, status="running", started_at=stamp - timedelta(hours=2))
+    stale = task(
+        session,
+        user.id,
+        status="running",
+        started_at=stamp - timedelta(days=2),
+        idempotency_key="stale",
+    )
+    fresh_id, stale_id = fresh.id, stale.id
+    released = []
+    real_release = service.release_usage
+
+    def counting_release(session_, row):
+        released.append(row.id)
+        return real_release(session_, row)
+
+    advisor_settings.advisor_enabled = False
+    monkeypatch.setattr(service, "release_usage", counting_release)
+    response = client.delete(f"/api/v1/advisor/tasks/{fresh_id}")
+    assert response.status_code == 409 and "正在处理" in response.json()["detail"]
+    advisor_settings.dev_openid = "somebody-else"
+    assert client.delete(f"/api/v1/advisor/tasks/{stale_id}").status_code == 404
+    advisor_settings.dev_openid = "advisor-user"
+    assert client.delete(f"/api/v1/advisor/tasks/{stale_id}").status_code == 204
+    assert released == [stale_id]
+    session.expire_all()
+    assert session.get(AdvisorTask, stale_id) is None
+    assert session.get(AdvisorTask, fresh_id).status == "running"
+
+
 @pytest.mark.parametrize("disabled,outdated", [(True, False), (False, True), (True, True)])
-def test_delete_requires_authorization_but_logout_ignores_switch_and_agreement(
+def test_owner_deletes_own_record_whatever_the_switch_and_agreement(
     client, advisor_settings, session, disabled, outdated
 ):
+    """删除自己的工具或 AI 记录：功能关了、协议版本过期了也能删（D-093 上线门槛第 8 条，
+    和关注、纠错的删除一样只认本人）；别人的记录照样"没有找到"。注销照旧不看开关和协议。"""
     agree_advisor(client)
     created = create(client).json()
+    second = create(client, key="second").json()
     advisor_settings.advisor_enabled = not disabled
     if outdated:
         advisor_settings.agreement_version = "new-general-version"
         user = session.scalar(select(User))
         user.advisor_agreement_version = "old-advisor-version"
         session.commit()
-    # 我的数据中的删除与我的任务使用同一个删除接口。
+    # 我的数据里能看到，也用同一个删除接口
     data = client.get("/api/v1/me/data")
     assert data.status_code == 200
-    assert data.json()["advisorTasks"][0]["id"] == created["id"]
+    assert {t["id"] for t in data.json()["advisorTasks"]} == {created["id"], second["id"]}
     advisor_settings.dev_openid = "somebody-else"
-    expected = 404 if disabled else 403
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
     advisor_settings.dev_openid = "advisor-user"
-    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == expected
-    assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["id"] == created["id"]
-    assert client.delete("/api/v1/me").status_code == 204
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 204
+    assert client.delete(f"/api/v1/advisor/tasks/{created['id']}").status_code == 404
     session.expire_all()
     assert session.get(AdvisorTask, created["id"]) is None
+    assert [t["id"] for t in client.get("/api/v1/me/data").json()["advisorTasks"]] == [second["id"]]
+    assert client.delete("/api/v1/me").status_code == 204
+    session.expire_all()
+    assert session.get(AdvisorTask, second["id"]) is None
     assert client.get("/api/v1/me").json()["agreed"] is None
 
 
@@ -1272,3 +1317,155 @@ def test_track_file_city_validation_reports_physical_row(client, xlsx):
     assert response.status_code == 422
     assert response.json()["detail"].startswith("第 3 行：城市")
     assert "不得回显客户" not in response.text
+
+
+def test_native_task_result_pagination_owner_expiry(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status = "done"
+    row.result_document_ids = []
+    row.result_json = build(
+        "compare",
+        CompareReport(
+            [CompareRow(f"合成企业{i}", f"合成企业{i}", "name", "未查到") for i in range(23)],
+            [],
+            NOW,
+        ),
+    )
+    session.commit()
+    path = f"/api/v1/advisor/tasks/{task_id}/reading"
+    first = client.get(path)
+    assert first.status_code == 200
+    data = first.json()
+    assert first.headers["cache-control"] == "no-store"
+    assert len(data["items"]) == 20 and data["nextCursor"] == "20"
+    assert data["total"] == 23
+    assert data["rowCount"] == 1
+    missing_version = client.get(path, params={"cursor": 20})
+    assert missing_version.status_code == 409
+    assert missing_version.headers["cache-control"] == "no-store"
+    last = client.get(path, params={"cursor": 20, "revision": data["revision"]}).json()
+    assert [item["n"] for item in last["items"]] == [20, 21, 22]
+    assert last["nextCursor"] is None
+    assert client.get(path, params={"revision": "0" * 64}).status_code == 409
+    other = User(openid="different-synthetic-owner", agreement_version="2026-11", agreement_at=NOW)
+    session.add(other)
+    session.flush()
+    row.user_id = other.id
+    session.commit()
+    denied = client.get(path)
+    assert denied.status_code == 404
+    assert denied.headers["cache-control"] == "no-store"
+    row.user_id = session.scalar(select(User.id).where(User.openid == "advisor-user"))
+    row.expires_at = NOW.astimezone(UTC)
+    session.commit()
+    expired = client.get(path)
+    assert expired.status_code == 410
+    assert expired.headers["cache-control"] == "no-store"
+
+
+def test_native_legacy_result_does_not_recalculate(client, session):
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status, row.result_file_id = "done", "cloud://test-env.example/old"
+    row.result_document_ids = []
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 409
+    assert "重新生成" in response.json()["detail"]
+
+
+def test_native_summary_pagination_keeps_input_row_count(client, session):
+    from youju.native_results import build
+    from youju.track import CustomerProfile, CustomerTrack, TrackReport
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    task = session.get(AdvisorTask, task_id)
+    task.kind, task.status, task.row_count = "track", "done", 22
+    task.result_document_ids = []
+    task.result_json = build(
+        "track",
+        TrackReport(
+            [CustomerTrack(CustomerProfile(f"合成企业{i}", "山东")) for i in range(22)], NOW
+        ),
+    )
+    session.commit()
+    params, items = {}, []
+    while True:
+        response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading", params=params)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 44 and data["rowCount"] == 22
+        assert response.headers["cache-control"] == "no-store"
+        items.extend(data["items"])
+        if data["nextCursor"] is None:
+            break
+        params = {"cursor": data["nextCursor"], "revision": data["revision"]}
+    assert [item["n"] for item in items] == list(range(44))
+    assert all(item["title"] == "汇总" and item["documentId"] is None for item in items[:22])
+    assert all(item["title"] == "本次收录范围内未找到相关通知" for item in items[22:])
+
+
+def test_native_result_requires_all_dependencies(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    row.status = "done"
+    row.result_json = build(
+        "compare", CompareReport([CompareRow("甲公司", "甲公司", "name", "未查到")], [], NOW)
+    )
+    row.result_document_ids = [9999999]
+    session.commit()
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}/reading").status_code == 410
+
+
+def test_generated_native_result_uses_same_engine_report(client, session, tmp_path):
+    from youju.compare import CompareReport
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    output = tmp_path / "result.xlsx"
+    count = service._run_engine(session, row, output)
+    row.status = "done"
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 200
+    assert output.exists()
+    details = [item for item in response.json()["items"] if item["title"] != "汇总"]
+    assert len(details) == count
+    assert next(item for item in details if item["documentId"] is None)["title"] == "未命中"
+    source_time = NOW - timedelta(days=10)
+    snapshot = build("compare", CompareReport([], [], source_time), generated_at=NOW)
+    assert snapshot["dataVersion"] == source_time.isoformat()
+    assert snapshot["generatedAt"] == NOW.isoformat()
+
+
+def test_native_reading_validation_no_store(client):
+    agree_advisor(client)
+    response = client.get("/api/v1/advisor/tasks/1/reading?cursor=-1")
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_native_result_rejects_large_item_before_done():
+    from youju.compare import CompareInputError, CompareReport, CompareRow
+    from youju.native_results import build
+
+    with pytest.raises(CompareInputError, match="单项结果"):
+        build(
+            "compare",
+            CompareReport(
+                [CompareRow("甲公司", "甲公司", "name", "未查到", note="甲" * 80_000)], [], NOW
+            ),
+        )

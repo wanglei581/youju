@@ -1,0 +1,907 @@
+"""一次性重抓被旧的正文脱敏规则吞了字的详情（youju refetch-redacted，2026-10-20）。
+
+库里的正文是按旧规则遮的（原文不存），这里用同一页面按旧规则遮出"库里的正文"，再看重抓能不能
+找回被吞的字、原网页变了的不改、打不开的不改，写入后截止候选、AI 截止检查、"能不能 AI 解读"
+跟着重算。"""
+
+from datetime import UTC, date, datetime
+from hashlib import sha256
+
+import pytest
+from sqlalchemy import func, select
+
+from tests.test_detail_service import FakeFetcher, add_document
+from youju import cli
+from youju.crawler import detail_service
+from youju.crawler.detail import parse_detail, redact_sensitive
+from youju.crawler.fetcher import FetchResult
+from youju.models import (
+    AICheck,
+    AIEligibility,
+    ConditionList,
+    DocumentDeadline,
+    DocumentDetail,
+    DocumentField,
+    DocumentMerge,
+)
+from youju.refetch_redacted import BatchChanged, count_affected, old_redact, refetch_redacted
+
+# 截止日期写在邮箱前面：旧规则整句遮掉；联系人这一行旧规则遮掉的是单位名
+SWALLOWED = (
+    "<html><body><div id='zoom'>"
+    "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下。</p>"
+    "<p>请于2026年11月20日前将申报材料电子版发送至sbc_test@163.com邮箱，逾期不予受理。</p>"
+    "<p>联系人：省工信厅中小企业处 张三 0571-87654321</p>"
+    "<p>辽宁省工业和信息化厅</p><p>2026年10月9日</p>"
+    "</div></body></html>"
+)
+# 旧规则本来就遮得对的
+ALREADY_RIGHT = (
+    "<html><body><div id='zoom'>"
+    "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+    "<p>联系人：张三，联系电话：0571-87654321。</p>"
+    "</div></body></html>"
+)
+TITLE = "关于组织开展2026年度专项资金项目申报工作的通知"
+
+
+def page(url: str, html: str) -> FetchResult:
+    return FetchResult(url, "ok", final_url=url, http_status=200, text=html)
+
+
+def stored_from(html: str, url: str) -> str:
+    """当时入库的正文：同一页面按旧规则遮。"""
+    return old_redact(parse_detail(html, url).raw_body)
+
+
+def add_detail(session, doc, body: str, *, status: str = "ok") -> DocumentDetail:
+    detail = DocumentDetail(
+        document_id=doc.id,
+        body_text=body,
+        fetched_at=datetime(2026, 10, 1, tzinfo=UTC),
+        http_status=200,
+        status=status,
+        attempt_count=1,
+    )
+    session.add(detail)
+    session.commit()
+    return detail
+
+
+def body_of(session, doc_id: int) -> str:
+    session.expire_all()
+    return session.get(DocumentDetail, doc_id).body_text
+
+
+@pytest.fixture
+def world(session):
+    swallowed = add_document(session, 1, title=TITLE)
+    right = add_document(session, 2, source_id=swallowed.source_id, title=TITLE)
+    changed = add_document(session, 3, source_id=swallowed.source_id, title=TITLE)
+    gone = add_document(session, 4, source_id=swallowed.source_id, title=TITLE)
+    add_detail(session, swallowed, stored_from(SWALLOWED, swallowed.url))
+    add_detail(session, right, stored_from(ALREADY_RIGHT, right.url))
+    # 原网页后来改过：库里是旧版
+    add_detail(session, changed, stored_from(SWALLOWED, changed.url))
+    add_detail(session, gone, stored_from(SWALLOWED, gone.url))
+    # 不该选中的：正文里没有姓名、邮箱标记的；不是一级来源的；详情没抓成功的
+    plain = add_document(session, 5, source_id=swallowed.source_id, title=TITLE)
+    add_detail(session, plain, "各有关单位：请按要求组织申报。联系电话：[电话已脱敏]")
+    other = add_document(session, 6, rights_level=2, title=TITLE)
+    add_detail(session, other, stored_from(SWALLOWED, other.url))
+    failed = add_document(session, 7, source_id=swallowed.source_id, title=TITLE)
+    add_detail(session, failed, stored_from(SWALLOWED, failed.url), status="http_error")
+    edited = SWALLOWED.replace("逾期不予受理", "逾期不再受理")
+    fake = FakeFetcher(
+        {
+            swallowed.url: page(swallowed.url, SWALLOWED),
+            right.url: page(right.url, ALREADY_RIGHT),
+            changed.url: page(changed.url, edited),
+            gone.url: FetchResult(gone.url, "http_error", http_status=404, error="HTTP 404"),
+        }
+    )
+    docs = {"swallowed": swallowed, "right": right, "changed": changed, "gone": gone}
+    return docs, fake
+
+
+def test_old_rules_swallowed_the_deadline(world, session) -> None:
+    docs, _ = world
+    stored = body_of(session, docs["swallowed"].id)
+    assert "11月20日" not in stored and "[邮箱已脱敏]邮箱" in stored
+    assert "中小企业处" not in stored
+    fresh = redact_sensitive(parse_detail(SWALLOWED, docs["swallowed"].url).raw_body)
+    assert "请于2026年11月20日前将申报材料电子版发送至[邮箱已脱敏]邮箱" in fresh
+    assert "联系人：省工信厅中小企业处 [姓名已脱敏] [电话已脱敏]" in fresh
+
+
+def test_old_rules_copy_matches_what_was_stored() -> None:
+    """模块里照抄的旧规则：和 9/27–10/20 入库时一样会吞字（拿它核对原网页变没变）。"""
+    assert (
+        old_redact("加盖公章，PDF电子版于7月2日前发送至abc@163.com邮箱")
+        == "加盖公章，[邮箱已脱敏]邮箱"
+    )
+    assert old_redact("材料请于11月20日前寄至0571-87654321") == (
+        "材料请于11月20[姓名已脱敏][电话已脱敏]"
+    )
+    assert old_redact("联系人：省工信厅汽车工业处 张三") == "联系人：[姓名已脱敏]处 张三"
+    assert old_redact("账号：33050161613500000123") == "账号：33050161613500000123"
+
+
+def test_preview_does_not_write(world, session) -> None:
+    docs, fake = world
+    before = {name: body_of(session, doc.id) for name, doc in docs.items()}
+    report = refetch_redacted(session, limit=50, fetcher=fake)
+    results = {r.document_id: r for r in report.results}
+    assert [r.document_id for r in report.results] == [doc.id for doc in docs.values()]
+    assert results[docs["swallowed"].id].result == "fixed"
+    assert any("11月20日前" in piece for piece in results[docs["swallowed"].id].restored)
+    assert results[docs["swallowed"].id].recheck_ai
+    assert results[docs["right"].id].result == "same"
+    changed = results[docs["changed"].id]
+    assert changed.result == "changed" and 0.9 < changed.similarity < 1
+    gone = results[docs["gone"].id]
+    assert gone.result == "unavailable" and gone.reason == "HTTP 404"
+    assert {name: body_of(session, doc.id) for name, doc in docs.items()} == before
+    # 没选中的文件没去打开
+    assert sorted(fake.calls) == sorted(doc.url for doc in docs.values())
+
+
+def test_apply_replaces_body_and_recomputes(world, session) -> None:
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    session.add_all(
+        [
+            AICheck(
+                document_id=swallowed.id,
+                task=task,
+                model="m",
+                result=[],
+                checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+            )
+            for task in ("deadlines", "kind")
+        ]
+    )
+    session.commit()
+    stored = {name: body_of(session, doc.id) for name, doc in docs.items()}
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert body_of(session, swallowed.id) == redact_sensitive(
+        parse_detail(SWALLOWED, swallowed.url).raw_body
+    )
+    # 只改了能改的那份；抓取时间、状态没动
+    for name in ("right", "changed", "gone"):
+        assert body_of(session, docs[name].id) == stored[name]
+    detail = session.get(DocumentDetail, swallowed.id)
+    assert detail.fetched_at == datetime(2026, 10, 1, tzinfo=UTC) and detail.status == "ok"
+    # 找回的截止日期当场成了待核对候选
+    due = session.scalars(
+        select(DocumentDeadline.candidate_date).where(DocumentDeadline.document_id == swallowed.id)
+    ).all()
+    assert date(2026, 11, 20) in due and report.new_candidates >= 1
+    # AI 截止检查先清掉再算候选：新候选是"AI 还没查"，不是"AI 没找到"
+    agrees = session.scalars(
+        select(DocumentDeadline.ai_agrees).where(
+            DocumentDeadline.document_id == swallowed.id,
+            DocumentDeadline.candidate_date == date(2026, 11, 20),
+        )
+    ).all()
+    assert agrees and all(a is None for a in agrees)
+    # AI 截止检查清掉、下一轮重查（报的是实际清掉的条数）；类型检查留着
+    assert report.ai_checks == 1
+    tasks = session.scalars(select(AICheck.task).where(AICheck.document_id == swallowed.id)).all()
+    assert tasks == ["kind"]
+    # "能不能 AI 解读"当场重算
+    assert report.eligibility_refreshed
+    assert session.get(AIEligibility, swallowed.id) is not None
+    # 再跑一遍：换过的这份已经是新规则遮的，不用改
+    again = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in again.results}[swallowed.id] == "same"
+
+
+def test_apply_recomputes_eligibility_of_merge_master(world, session) -> None:
+    """合并转载：主条目没有自己的正文时用组里的正文，副本换了正文，主条目的"能不能 AI 解读"也重算。"""
+    docs, fake = world
+    master = add_document(session, 10, source_id=docs["swallowed"].source_id, title=TITLE)
+    session.add(
+        DocumentMerge(
+            duplicate_id=docs["swallowed"].id, canonical_id=master.id, match_key="k", active=True
+        )
+    )
+    session.commit()
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert report.eligibility_refreshed
+    assert session.get(AIEligibility, master.id) is not None
+    # 这一批"不用改"的也重算（中断后重跑能补上）；原网页变了、没打开的不在这次重算里
+    assert session.get(AIEligibility, docs["right"].id) is not None
+    assert session.get(AIEligibility, docs["changed"].id) is None
+    assert session.get(AIEligibility, docs["gone"].id) is None
+
+
+def test_ai_check_kept_when_only_unit_names_come_back(session) -> None:
+    """只找回单位名、标签（没有日期、时刻）的：AI 截止检查不用重查，留着。"""
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>业务咨询：省工信厅中小企业处 张三 0571-87654321</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 11, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+    preview = refetch_redacted(session, limit=50, fetcher=fake)
+    assert [(r.result, r.recheck_ai) for r in preview.results] == [("fixed", False)]
+    assert preview.ai_checks == 0
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert [r.result for r in report.results] == ["fixed"]
+    assert "中小企业处" in body_of(session, doc.id)
+    assert session.scalars(select(AICheck.task).where(AICheck.document_id == doc.id)).all() == [
+        "deadlines"
+    ]
+
+
+def test_ai_check_cleared_when_relative_deadline_comes_back(session) -> None:
+    """找回的是"本周五前""下午三点前"这样不带数字的截止：AI 截止检查也要清掉重查。"""
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>请于本周五下午三点前将材料发送至sbc_test@163.com邮箱。</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 12, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert [(r.result, r.recheck_ai) for r in report.results] == [("fixed", True)]
+    assert "本周五下午三点前" in body_of(session, doc.id)
+    assert session.scalars(select(AICheck.task).where(AICheck.document_id == doc.id)).all() == []
+
+
+def test_apply_skips_bodies_updated_meanwhile(world, session) -> None:
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    _add_reviewed(session, swallowed.id)
+    session.commit()
+    original = fake.fetch
+
+    def fetch(url):
+        # 抓取期间别的任务（名单补抓附件等）已经把这份正文换了
+        if url == swallowed.url:
+            session.get(DocumentDetail, swallowed.id).body_text = "别的任务刚写入的正文"
+            session.commit()
+        return original(url)
+
+    fake.fetch = fetch
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake, max_workers=1)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "changed" and "别的任务" in result.reason
+    assert body_of(session, swallowed.id) == "别的任务刚写入的正文"
+    # 份数按实际换了正文的报：这份没换，它的已核对字段、申报条件、AI 截止检查都不算
+    assert (report.approved_fields, report.confirmed_conditions, report.ai_checks) == (0, 0, 0)
+    assert session.scalar(select(func.count(AICheck.id))) == 1
+
+
+def test_interrupted_write_rolls_back_the_whole_document(world, session, monkeypatch) -> None:
+    """换正文、清 AI 截止检查、重算候选在同一个事务里：重算时出错，这一份整个回滚（还是旧正文、带着
+    标记，AI 检查还在），重跑照常换。"""
+    import youju.extract.service as extract_service
+
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    session.add(
+        AICheck(
+            document_id=swallowed.id,
+            task="deadlines",
+            model="m",
+            result=[],
+            checked_at=datetime(2026, 10, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    real = extract_service.extract_existing
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("中断")
+
+    monkeypatch.setattr(extract_service, "extract_existing", interrupted)
+    with pytest.raises(RuntimeError):
+        refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    session.rollback()  # 命令行退出时关掉会话，没提交的都回滚
+    assert body_of(session, swallowed.id) == stored
+    checks = select(func.count(AICheck.id)).where(AICheck.document_id == swallowed.id)
+    assert session.scalar(checks) == 1
+    monkeypatch.setattr(extract_service, "extract_existing", real)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in report.results}[swallowed.id] == "fixed"
+    due = select(DocumentDeadline.candidate_date).where(
+        DocumentDeadline.document_id == swallowed.id
+    )
+    assert date(2026, 11, 20) in session.scalars(due).all()
+    assert session.scalar(checks) == 0
+
+
+def test_same_bodies_get_recomputed(world, session) -> None:
+    """已经换过、还带标记的（"不用改"）也重算截止候选和"能不能 AI 解读"：以前没算完的能补上。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    detail = session.get(DocumentDetail, swallowed.id)
+    detail.body_text = redact_sensitive(parse_detail(SWALLOWED, swallowed.url).raw_body)
+    session.commit()
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in report.results}[swallowed.id] == "same"
+    due = select(DocumentDeadline.candidate_date).where(
+        DocumentDeadline.document_id == swallowed.id
+    )
+    assert date(2026, 11, 20) in session.scalars(due).all()
+    assert report.eligibility_refreshed
+    assert session.get(AIEligibility, swallowed.id) is not None
+
+
+def test_batch_writes_only_the_previewed_batch(world, session) -> None:
+    """写入带预览那一批的标记：按标记重新选出的就是预览过的那几份（不看 limit，后面没预览过的不会
+    进来）。"""
+    docs, fake = world
+    preview = refetch_redacted(session, limit=2, fetcher=fake)
+    previewed = [r.document_id for r in preview.results]
+    assert previewed == [docs["swallowed"].id, docs["right"].id]
+    assert preview.batch.startswith(f"{docs['right'].id}-")
+    # 带了标记就不看 limit
+    report = refetch_redacted(session, apply=True, limit=1, batch=preview.batch, fetcher=fake)
+    assert [r.document_id for r in report.results] == previewed
+    assert report.batch == preview.batch
+    assert "11月20日前" in body_of(session, docs["swallowed"].id)
+    assert sorted(fake.calls) == sorted([docs["swallowed"].url, docs["right"].url] * 2)
+
+
+def _refused(session, fake, batch: str, **kwargs) -> None:
+    """按标记重新选出的和预览时不一样：抛 BatchChanged，不打开网页、什么都不写。"""
+    bodies = {d.document_id: d.body_text for d in session.scalars(select(DocumentDetail))}
+    calls = len(fake.calls)
+    with pytest.raises(BatchChanged):
+        refetch_redacted(session, apply=True, batch=batch, fetcher=fake, **kwargs)
+    session.expire_all()
+    assert {d.document_id: d.body_text for d in session.scalars(select(DocumentDetail))} == bodies
+    assert len(fake.calls) == calls
+
+
+def test_batch_refused_when_a_previewed_body_changed(world, session) -> None:
+    """预览以后这一批里有一份被别的任务换了正文（没了标记、或者还带着标记）：整批不写。"""
+    docs, fake = world
+    preview = refetch_redacted(session, limit=2, fetcher=fake)
+    detail = session.get(DocumentDetail, docs["swallowed"].id)
+    detail.body_text = "别的任务刚写入的正文，电话[电话已脱敏]"
+    session.commit()
+    _refused(session, fake, preview.batch)
+    detail.body_text = "别的任务刚写入的正文，联系人：[姓名已脱敏]"
+    session.commit()
+    _refused(session, fake, preview.batch)
+
+
+def test_batch_refused_when_an_unpreviewed_document_joins(world, session) -> None:
+    """预览以后这一批的编号范围里多出一份带标记的（比如详情状态改回抓成功）：没预览过，整批不写。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    session.get(DocumentDetail, swallowed.id).status = "http_error"
+    session.commit()
+    preview = refetch_redacted(session, limit=1, fetcher=fake)
+    assert [r.document_id for r in preview.results] == [docs["right"].id]
+    session.get(DocumentDetail, swallowed.id).status = "ok"
+    session.commit()
+    _refused(session, fake, preview.batch)
+
+
+def test_batch_must_match_after_id_and_ids(world, session) -> None:
+    """标记要和预览时的 after_id、ids 一起用：写入命令漏了、写错了，整批不写；格式不对直接报错。"""
+    docs, fake = world
+    preview = refetch_redacted(session, limit=50, after_id=docs["right"].id, fetcher=fake)
+    assert [r.document_id for r in preview.results] == [docs["changed"].id, docs["gone"].id]
+    _refused(session, fake, preview.batch)
+    retry = refetch_redacted(session, ids=[docs["gone"].id], fetcher=fake)
+    _refused(session, fake, retry.batch, ids=[docs["gone"].id, docs["changed"].id])
+    report = refetch_redacted(
+        session, apply=True, ids=[docs["gone"].id], batch=retry.batch, fetcher=fake
+    )
+    assert [r.document_id for r in report.results] == [docs["gone"].id]
+    with pytest.raises(ValueError, match="batch"):
+        refetch_redacted(session, apply=True, batch="12345", fetcher=fake)
+    # 一份也没选中的一批：标记照样对得上，什么都不做
+    empty = refetch_redacted(session, limit=50, after_id=docs["gone"].id, fetcher=fake)
+    assert empty.results == [] and empty.batch.startswith("0-")
+    again = refetch_redacted(
+        session, apply=True, after_id=docs["gone"].id, batch=empty.batch, fetcher=fake
+    )
+    assert again.results == []
+
+
+def test_write_skipped_when_status_changed_meanwhile(world, session) -> None:
+    """抓取期间详情状态不再是抓成功、正文还是选中时那版：这次没换，记成没打开、列进重试。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    original = fake.fetch
+
+    def fetch(url):
+        if url == swallowed.url:
+            session.get(DocumentDetail, swallowed.id).status = "http_error"
+            session.commit()
+        return original(url)
+
+    fake.fetch = fetch
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake, max_workers=1)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "unavailable" and "http_error" in result.reason
+    assert body_of(session, swallowed.id) == stored
+
+
+def test_body_over_length_limit_is_not_replaced(world, session, monkeypatch) -> None:
+    """按新规则正文变长、超过长度上限的不换：换了会截掉库里原有的文末。"""
+    import youju.refetch_redacted as module
+
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    new = redact_sensitive(parse_detail(SWALLOWED, swallowed.url).raw_body)
+    assert len(stored) < len(new)
+    monkeypatch.setattr(module, "BODY_TEXT_MAX_CHARS", len(new) - 1)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "changed" and "长度上限" in result.reason
+    assert body_of(session, swallowed.id) == stored
+
+
+def test_written_bodies_get_candidates_even_if_interrupted(session, monkeypatch) -> None:
+    """换了正文当场逐份重算截止候选：最后一步出错中断，换过的那份（新正文里已经没有标记，重跑选不到）
+    候选也已经有了。"""
+    from youju.ai import eligibility
+
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>请于2026年11月20日前报送。联系电话0571-87654321</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 13, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    assert "[姓名已脱敏]" in body_of(session, doc.id)
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("中断")
+
+    monkeypatch.setattr(eligibility, "refresh", interrupted)
+    with pytest.raises(RuntimeError):
+        refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    session.rollback()  # 只看已经提交的
+    body = body_of(session, doc.id)
+    assert "联系电话[电话已脱敏]" in body and "[姓名已脱敏]" not in body
+    due = session.scalars(
+        select(DocumentDeadline.candidate_date).where(DocumentDeadline.document_id == doc.id)
+    ).all()
+    assert date(2026, 11, 20) in due
+
+
+def test_details_deleted_while_fetching(world, session, monkeypatch) -> None:
+    """抓取期间详情被删了的：预览也标成已删除，不说"可以换成新正文"。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    real = detail_service._fetch_outcomes
+
+    def fetch_then_delete(selected, fetcher, workers):
+        outcomes = real(selected, fetcher, workers)
+        session.delete(session.get(DocumentDetail, swallowed.id))
+        session.commit()
+        return outcomes
+
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", fetch_then_delete)
+    report = refetch_redacted(session, limit=50, fetcher=fake)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "missing" and result.reason == "详情已删除"
+
+
+def test_details_deleted_while_writing(world, session, monkeypatch) -> None:
+    """写入时也一样：抓取期间详情被删了的记成已删除，命令照常跑完，不另写一份。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    real = detail_service._fetch_outcomes
+
+    def fetch_then_delete(selected, fetcher, workers):
+        outcomes = real(selected, fetcher, workers)
+        session.delete(session.get(DocumentDetail, swallowed.id))
+        session.commit()
+        return outcomes
+
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", fetch_then_delete)
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    result = {r.document_id: r for r in report.results}[swallowed.id]
+    assert result.result == "missing"
+    session.expire_all()
+    assert session.get(DocumentDetail, swallowed.id) is None
+
+
+def test_page_without_body_is_unavailable(world, session) -> None:
+    """页面打开了、没取到正文：记成没打开，库里的正文不动。"""
+    docs, fake = world
+    swallowed = docs["swallowed"]
+    stored = body_of(session, swallowed.id)
+    fake.responses[swallowed.url] = page(swallowed.url, "<html><body></body></html>")
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert {r.document_id: r.result for r in report.results}[swallowed.id] == "unavailable"
+    assert body_of(session, swallowed.id) == stored
+
+
+def test_email_marker_alone_is_selected(session) -> None:
+    """正文里只有"[邮箱已脱敏]"（没有姓名标记）的也要重新打开看。"""
+    html = (
+        "<html><body><div id='zoom'>"
+        "<p>各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下，请认真组织。</p>"
+        "<p>请于2026年11月20日前将申报材料电子版发送至sbc_test@163.com邮箱。</p>"
+        "</div></body></html>"
+    )
+    doc = add_document(session, 14, title=TITLE)
+    add_detail(session, doc, stored_from(html, doc.url))
+    stored = body_of(session, doc.id)
+    assert "[邮箱已脱敏]" in stored and "[姓名已脱敏]" not in stored
+    counts = count_affected(session)
+    assert (counts["email"], counts["name"], counts["candidates"]) == (1, 0, 1)
+    fake = FakeFetcher({doc.url: page(doc.url, html)})
+    report = refetch_redacted(session, limit=50, fetcher=fake)
+    assert [(r.document_id, r.result) for r in report.results] == [(doc.id, "fixed")]
+
+
+def test_only_given_ids(world, session) -> None:
+    docs, fake = world
+    report = refetch_redacted(
+        session, ids=[docs["gone"].id, docs["swallowed"].id], limit=None, fetcher=fake
+    )
+    assert [r.document_id for r in report.results] == [docs["swallowed"].id, docs["gone"].id]
+    assert sorted(fake.calls) == sorted([docs["swallowed"].url, docs["gone"].url])
+
+
+def test_limit_and_after_id(world, session) -> None:
+    docs, fake = world
+    with pytest.raises(ValueError, match="limit"):
+        refetch_redacted(session, limit=0, fetcher=fake)
+    first = refetch_redacted(session, limit=2, fetcher=fake)
+    assert [r.document_id for r in first.results] == [docs["swallowed"].id, docs["right"].id]
+    rest = refetch_redacted(session, limit=50, after_id=docs["right"].id, fetcher=fake)
+    assert [r.document_id for r in rest.results] == [docs["changed"].id, docs["gone"].id]
+
+
+def test_pdf_bodies_are_checked_the_same_way(session, monkeypatch) -> None:
+    """正文取自 PDF 的（详情链接就是 PDF）：同样拿 PDF 原文按旧规则核对。"""
+    raw = (
+        "各有关单位：为做好2026年度专项资金项目申报工作，现将有关事项通知如下。\n"
+        "请于2026年11月20日前将申报材料电子版发送至sbc_test@163.com邮箱。"
+    )
+    monkeypatch.setattr(detail_service, "extract_pdf_text", lambda content: (raw, None))
+    doc = add_document(session, 8, title=TITLE)
+    doc.url = doc.url.replace(".html", ".pdf")
+    session.commit()
+    add_detail(session, doc, old_redact(raw))
+    pdf = FetchResult(
+        doc.url,
+        "ok",
+        final_url=doc.url,
+        http_status=200,
+        content=b"%PDF-1.4",
+        content_type="application/pdf",
+    )
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=FakeFetcher({doc.url: pdf}))
+    assert [r.result for r in report.results] == ["fixed"]
+    assert body_of(session, doc.id) == redact_sensitive(raw)
+
+
+def test_page_with_only_a_pdf(session, monkeypatch) -> None:
+    """页面没有正文、只有一个 PDF 附件的（补详情另抓这个 PDF 当正文）：同样拿 PDF 原文核对。"""
+    raw = "各有关单位：请于2026年11月20日前将申报材料电子版发送至sbc_test@163.com邮箱。"
+    monkeypatch.setattr(detail_service, "extract_pdf_text", lambda content: (raw, None))
+    doc = add_document(session, 9, title=TITLE)
+    add_detail(session, doc, old_redact(raw))
+    pdf_url = "https://gxt.ln.gov.cn/files/notice.pdf"
+    html = f"<html><body><div id='zoom'><p><a href='{pdf_url}'>通知全文.pdf</a></p></div></body></html>"
+    pdf = FetchResult(
+        pdf_url,
+        "ok",
+        final_url=pdf_url,
+        http_status=200,
+        content=b"%PDF-1.4",
+        content_type="application/pdf",
+    )
+    fake = FakeFetcher({doc.url: page(doc.url, html), pdf_url: pdf})
+    report = refetch_redacted(session, apply=True, limit=50, fetcher=fake)
+    assert [r.result for r in report.results] == ["fixed"]
+    assert body_of(session, doc.id) == redact_sensitive(raw)
+
+
+def _add_reviewed(session, doc_id: int) -> None:
+    """给这份文件加上已核对的字段、确认过的申报条件清单（都按现在库里的正文）和一条 AI 截止检查。"""
+    digest = sha256(body_of(session, doc_id).encode()).hexdigest()
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    session.add(
+        DocumentField(
+            document_id=doc_id,
+            field="support",
+            value="资金补助",
+            evidence="资金补助",
+            evidence_offset=0,
+            body_hash=digest,
+            status="approved",
+            reviewed_by="核对员",
+            reviewed_at=now,
+        )
+    )
+    session.add(
+        ConditionList(
+            document_id=doc_id,
+            body_hash=digest,
+            status="confirmed",
+            model="m",
+            prompt_version="v1",
+            extracted_at=now,
+            confirmed_by="核对员",
+            confirmed_at=now,
+        )
+    )
+    session.add(AICheck(document_id=doc_id, task="deadlines", model="m", result=[], checked_at=now))
+
+
+def test_preview_counts_what_needs_review_again(world, session) -> None:
+    docs, fake = world
+    _add_reviewed(session, docs["swallowed"].id)
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    # 旧正文的清单、别的文件的不算
+    session.add(
+        ConditionList(
+            document_id=docs["right"].id,
+            body_hash=sha256(body_of(session, docs["right"].id).encode()).hexdigest(),
+            status="confirmed",
+            model="m",
+            prompt_version="v1",
+            extracted_at=now,
+            confirmed_by="核对员",
+            confirmed_at=now,
+        )
+    )
+    session.commit()
+    report = refetch_redacted(session, limit=50, fetcher=fake)
+    assert (report.approved_fields, report.confirmed_conditions, report.ai_checks) == (1, 1, 1)
+    # 预览不清 AI 检查
+    assert session.scalar(select(func.count(AICheck.id))) == 1
+
+
+def test_refetch_redacted_command(world, session, monkeypatch, capsys) -> None:
+    docs, fake = world
+
+    class Polite:
+        def __enter__(self):
+            return fake
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(detail_service, "_polite_fetcher", Polite)
+    # 只统计，不打开网页
+    assert cli.main(["refetch-redacted", "--count"]) == 0
+    out = capsys.readouterr().out
+    assert "要重新打开看的（含[邮箱已脱敏]或[姓名已脱敏]）4 份" in out
+    assert (
+        "refetch_redacted_count bodies=5 email=3 name_phone=3 name=4 candidates=4 "
+        f"first_id={docs['swallowed'].id} last_id={docs['gone'].id}"
+    ) in out
+    assert fake.calls == []
+
+    _add_reviewed(session, docs["swallowed"].id)
+    session.commit()
+    assert cli.main(["refetch-redacted"]) == 0
+    out = capsys.readouterr().out
+    assert f"#{docs['swallowed'].id} 可以换成新正文" in out
+    assert "11月20日前" in out
+    assert f"#{docs['changed'].id} 原网页变了，没改（相似度" in out
+    assert f"#{docs['gone'].id} 没打开，没改（HTTP 404）" in out
+    assert (
+        "预览（未写入）：检查 4 份，可以换成新正文 1 份，不用改 1 份，原网页变了 1 份，"
+        "没打开 1 份，已删除 0 份"
+    ) in out
+    lines = out.rstrip().splitlines()
+    summary = (
+        "refetch_redacted mode=preview checked=4 fixed=1 same=1 changed=1 unavailable=1 "
+        f"missing=0 fields=1 conditions=1 ai_checks=1 last_id={docs['gone'].id} batch="
+    )
+    assert lines[-1].startswith(summary)
+    batch = lines[-1].removeprefix(summary)
+    assert batch.startswith(f"{docs['gone'].id}-") and len(batch.split("-")[1]) == 12
+    assert f"确认无误后，同一条命令加 --apply --batch {batch} 写入" in out
+    # 没打开的分批时会被 --after-id 跳过：给出重试用的编号，打在汇总行前面（最后一行总是汇总行）
+    assert lines[-2] == f"refetch_redacted_retry ids={docs['gone'].id}"
+
+    # 写入要带预览那一批的标记
+    assert cli.main(["refetch-redacted", "--apply"]) == 2
+    assert "写入要先预览" in capsys.readouterr().out
+    assert "11月20日前" not in body_of(session, docs["swallowed"].id)
+    assert cli.main(["refetch-redacted", "--apply", "--batch", batch]) == 0
+    out = capsys.readouterr().out
+    assert "已写入：检查 4 份，已换成新正文 1 份" in out
+    assert "新增待核对截止候选" in out
+    lines = out.rstrip().splitlines()
+    assert lines[-1] == (
+        "refetch_redacted mode=apply checked=4 fixed=1 same=1 changed=1 unavailable=1 missing=0 "
+        "fields=1 conditions=1 ai_checks=1 new_deadlines=1 eligibility=1 "
+        f"last_id={docs['gone'].id} batch={batch}"
+    )
+    # 换过正文的编号（回退时按这一行找）、重试的编号都在汇总行前面
+    assert lines[-3] == f"refetch_redacted_written ids={docs['swallowed'].id}"
+    assert lines[-2] == f"refetch_redacted_retry ids={docs['gone'].id}"
+    assert "11月20日前" in body_of(session, docs["swallowed"].id)
+    # 同一个标记再写一次：这一批的正文已经变了，什么都不做
+    assert cli.main(["refetch-redacted", "--apply", "--batch", batch]) == 3
+    out = capsys.readouterr().out
+    assert "这一批和预览时不一样了" in out
+    assert out.rstrip().splitlines()[-1] == "refetch_redacted_refused reason=batch_changed"
+
+    assert cli.main(["refetch-redacted", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert f"已到 --limit 1 份，后面可能还有：加 --after-id {docs['swallowed'].id}" in out
+
+    # 只重试没打开的那份
+    gone = docs["gone"].id
+    assert cli.main(["refetch-redacted", "--ids", f"{gone},{gone}"]) == 0
+    out = capsys.readouterr().out
+    assert "refetch_redacted mode=preview checked=1 " in out and "--after-id" not in out
+    # 重试的编号不是分批的进度：last_id 打成"-"
+    assert f" last_id=- batch={gone}-" in out.rstrip().splitlines()[-1]
+    with pytest.raises(SystemExit):
+        cli.main(["refetch-redacted", "--ids", "1", "--after-id", "1"])
+    with pytest.raises(SystemExit):
+        cli.main(["refetch-redacted", "--ids", "a,b"])
+
+
+def test_long_repetitive_bodies_are_compared_quickly() -> None:
+    """大段重复的字（几千个"—"分隔线）逐字比是平方级的：先去掉两头相同的部分，中间太长就按行、
+    按整段算，一份正文比完不能卡住。"""
+    import time
+
+    from youju.refetch_redacted import _restored, _similarity
+
+    raw = "—" * 20000 + "\n材料请于11月20日前寄至0571-87654321\n" + "甲" * 20000
+    old, new = old_redact(raw), redact_sensitive(raw)
+    started = time.perf_counter()
+    pieces = _restored(old, new)
+    similarity = _similarity(old, old[:-3] + "乙乙乙")
+    assert time.perf_counter() - started < 2
+    assert any("日前寄至" in piece for piece in pieces)
+    assert 0.99 < similarity <= 1
+
+
+def test_two_changes_far_apart_are_compared_quickly() -> None:
+    """两处改动中间隔着一大段重复的字：两头去掉以后中间还很长，不能逐字比（平方级），按句比只比改了的
+    两句。"""
+    import time
+
+    from youju.refetch_redacted import _restored, _similarity
+
+    raw = (
+        "材料请于11月20日前寄至0571-87654321\n"
+        + "—" * 5000
+        + "\n"
+        + "甲" * 5000
+        + "\n请于12月1日前发送至a_b@163.com邮箱\n"
+    )
+    old, new = old_redact(raw), redact_sensitive(raw)
+    started = time.perf_counter()
+    pieces = _restored(old, new)
+    similarity = _similarity(old, new)
+    assert time.perf_counter() - started < 2
+    assert pieces == ["日前寄至", "请于12月1日前发送至"]
+    assert 0.99 < similarity <= 1
+
+
+def test_far_apart_fixes_in_one_line_leave_old_dates_out() -> None:
+    """同一行（没有换行）里两处只找回单位名、中间隔着几千字和原有的"2026年"：按句比，原有的日期不算
+    找回的字（不然会白清一次 AI 截止检查）。"""
+    from youju.refetch_redacted import _restored
+
+    raw = (
+        "联系人：省工信厅中小企业处 张三 0571-87654321，"
+        + "其他内容，" * 1000
+        + "2026年度工作安排，"
+        + "其他内容，" * 1000
+        + "咨询：省科技厅高新处 李四 0571-87654322。"
+    )
+    pieces = _restored(old_redact(raw), redact_sensitive(raw))
+    assert pieces == ["省工信厅中小企业处", "新处"]
+
+
+def test_too_many_sentences_count_as_one_piece(monkeypatch) -> None:
+    """句子太多不再按句比（几十万句的比对本身也慢）：中间整段算一处，相似度只算两头。同一句重复几百遍、
+    没有能对齐的句子的，也是整段算一处。"""
+    import youju.refetch_redacted as module
+
+    repeated = "各有关单位按要求组织申报。" * 400
+    assert module._restored("甲" + repeated + "乙", "丙" + repeated + "丁") == [
+        "丙" + repeated + "丁"
+    ]
+    middle = "".join(f"第{i}条 各有关单位按要求组织申报。" for i in range(400))
+    old, new = "甲" + middle + "乙", "丙" + middle + "丁"
+    assert module._restored(old, new) == ["丙", "丁"]
+    assert module._similarity(old, new) > 0.99
+    monkeypatch.setattr(module, "_MAX_UNITS", 10)
+    assert module._restored(old, new) == [new]
+    assert module._similarity(old, new) == 0
+
+
+def test_similarity_of_long_bodies_changed_at_both_ends() -> None:
+    """原网页只改了开头的发布日期、结尾的附件名：中间很长也要按行比，相似度接近 1、不是 0。"""
+    from youju.refetch_redacted import _similarity
+
+    middle = "".join(
+        f"第{i}条 各有关单位按要求组织申报，材料报送至省工信厅中小企业处。\n" for i in range(400)
+    )
+    before = "发布时间：2025-10-01\n" + middle + "附件：申报表.docx"
+    after = "发布时间：2025-10-02\n" + middle + "附件：申报表（修订）.docx"
+    assert len(middle) > 4000
+    assert _similarity(before, after) > 0.95
+
+
+def test_old_rules_copy_does_not_hang_on_long_whitespace() -> None:
+    import time
+
+    started = time.perf_counter()
+    for label in ("账号", "联系人"):
+        old_redact(label + " " * 100_000 + "x")
+    assert time.perf_counter() - started < 2
+
+
+@pytest.mark.parametrize("repetitions", [20, 1000])
+def test_repeated_line_diff_has_a_work_budget(monkeypatch, repetitions):
+    from youju import refetch_redacted as module
+
+    middle = "".join(f"政策条款{i:03d}\n" for i in range(100)) * repetitions
+    old = "旧起\n" + middle + "原末"
+    new = "新起\n" + middle + "新尾"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("超预算输入不应进入 SequenceMatcher")
+
+    monkeypatch.setattr(module.difflib, "SequenceMatcher", forbidden)
+    assert module._restored(old, new) == [" ".join(new.split())]
+
+
+def test_line_diff_inside_work_budget_keeps_precise_changes(monkeypatch):
+    from youju import refetch_redacted as module
+
+    middle = "".join(f"政策条款{i:03d}\n" for i in range(100)) * 5
+    old = "旧起\n" + middle + "原末"
+    new = "新起\n" + middle + "新尾"
+    original = module.difflib.SequenceMatcher
+    line_calls = []
+
+    def bounded(junk, a, b, *args, **kwargs):
+        if isinstance(a, list):
+            assert module._unit_work(a, b) <= module._UNIT_WORK_LIMIT
+            line_calls.append((len(a), len(b)))
+        else:
+            assert len(a) + len(b) <= module._DIFF_LIMIT
+        return original(junk, a, b, *args, **kwargs)
+
+    monkeypatch.setattr(module.difflib, "SequenceMatcher", bounded)
+    assert module._restored(old, new) == ["新", "新尾"]
+    assert line_calls

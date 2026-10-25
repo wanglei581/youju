@@ -107,7 +107,7 @@ function callFailure(res) {
 const ADMIN_READS = [
   /^\/api\/v1\/(home|coverage|search|calendar|snapshot)(\?|$)/,
   /^\/api\/v1\/reports\/(deadlines|lists)(\?|$)/,
-  /^\/api\/v1\/lists\/(recent|lookup)(\?|$)/,
+  /^\/api\/v1\/lists\/(recent|lookup|record)(\?|$)/,
   /^\/api\/v1\/documents\/\d+(\?|$)/,
 ];
 const ADMIN_SERVICE = 'admin';
@@ -434,6 +434,14 @@ function detail(id) {
   return mockDetail(id);
 }
 
+// 阅读内容只走真实接口，游标必须绑定同一来源版本，不能拼接新旧正文。
+function reading(id, attachmentId, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可阅读内容'));
+  const base = `/api/v1/documents/${encodeURIComponent(id)}`;
+  const path = attachmentId ? `${base}/attachments/${encodeURIComponent(attachmentId)}/reading` : `${base}/reading`;
+  return request(path, params);
+}
+
 // 日历每条的 id 是截止记录编号，打开详情用 docId（演示数据里两者相同）
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar(params = {}) {
@@ -458,18 +466,43 @@ function lists() {
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
-// 查名单：按企业全称或统一社会信用代码与名单原文比对；名称相近的另列（similar），不当作同一家。
+// 查名单：按企业全称与名单原文比对；名称相近的另列（similar），不当作同一家。
 // 演示数据只对虚构的"演示科技有限公司"给出结果，页面会标明"演示数据"
 const DEMO_COMPANY = '演示科技有限公司';
+const DEMO_ENTRY = 'DemoDemoDemoDemoDemoDemoDemoDemo';
 function lookup(q) {
   if (isLive()) return request('/api/v1/lists/lookup', { q });
   const hit = q.replace(/\s+/g, '') === DEMO_COMPANY;
   const items = hit
     ? mock.lists.items.slice(0, 2).map((d, i) => Object.assign({}, d, {
-      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name' },
+      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name', entryToken: DEMO_ENTRY },
     }))
     : [];
-  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
+  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false,
+    coverage: { lists: mock.lists.week_total, since: '2026-07-01', unreadLists: 0, partialLists: 0 } });
+}
+
+// 原名单里的那一行（D-088）：查名单结果里的 entryToken 换这条记录在原文里的那一行和列名。
+// 演示数据只认演示企业的编号
+function listRecord(token) {
+  if (isLive()) return request('/api/v1/lists/record', { entry: token });
+  if (token !== DEMO_ENTRY) return Promise.reject(Object.assign(new Error('这条记录已更新或不存在'), { status: 404 }));
+  return copy({
+    entry: { name: DEMO_COMPANY, category: '科技型中小企业', batch: '第4批', region: null },
+    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: mock.lists.items[0].status, issuer: mock.lists.items[0].issuer, date: mock.lists.items[0].date, region: mock.lists.items[0].region, site: `${mock.lists.items[0].issuer}网站`, host: 'jxj.example.gov.cn', link_gone: null },
+    evidence: { state: 'found', more: false, partial: false, pagesRead: null, reason: null,
+      rows: [{ where: '工作表\u201c名单\u201d第 12 行', hidden: 2, cells: [{ h: '序号', t: '12', name: false }, { h: '企业名称', t: DEMO_COMPANY, name: true }, { h: '所在地区', t: '演示市', name: false }] }] },
+  });
+}
+
+function advisorReading(id, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/reading`, params);
+}
+
+function exportPreview(ids) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request('/api/v1/exports/preview', null, { method: 'POST', data: { ids: ids.map(String), excerpts: 1 } });
 }
 
 // 导出 Excel / Word：返回文件内容（ArrayBuffer）。文件由服务端生成，小于 1000 KiB（云托管返回上限）
@@ -477,9 +510,10 @@ const EXPORT_ERRORS = {
   413: '文件太大，请少选几份再导出',
   422: '有的文件已不存在或超过 200 份，请刷新后再试',
 };
-function exportFile(ids, format) {
+function exportFile(ids, format, revision) {
   // excerpts=1（D-061）：导出的截止列也按首发版规则写，机器摘录的另附原句
   const body = { ids: ids.map(String), format, excerpts: 1 };
+  if (revision) body.revision = revision;
   // 先叫醒接口服务（等的时候仍显示导出自己的"正在生成…"）
   return afterWake(() => exportOnce(body), false);
 }
@@ -497,7 +531,7 @@ function exportOnce(body) {
       if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
-      else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
+      else finish(reject, Object.assign(new Error(res.statusCode === 409 ? '内容已更新，请重新查看结果后保存' : EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`), { status: res.statusCode }));
     };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -586,7 +620,7 @@ function feedback(docId, content) {
 // ---- 用户（#30）：同意用户协议和隐私保护指引后，服务端才保存用户和其关注、订阅、纠错 ----
 
 function me() {
-  return request('/api/v1/me');
+  return request('/api/v1/me', null, { header: payHeader() });
 }
 
 function agree(version, scope) {
@@ -619,6 +653,22 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
+// 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
+// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
+// 现网只对带定稿协议版本号的包——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+function payHeader() {
+  const header = {};
+  try {
+    const terms = require('../content/pay-terms.js');
+    if (terms && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
+  } catch (e) { /* 读不到就不带 */ }
+  try {
+    const env = wx.getAccountInfoSync().miniProgram.envVersion;
+    if (typeof env === 'string' && env) header['X-Youju-Env'] = env;
+  } catch (e) { /* 读不到就不带，按正式版算 */ }
+  return header;
+}
+
 // 工具能力分别授权：数据工具不依赖 AI 或支付开关，AI 仍按其独立准入条件开放。
 
 const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
@@ -634,7 +684,7 @@ function advisorCapabilities(options = {}) {
   // 本次启动内共用一个请求；开启的结果一直缓存，关闭或失败的结果只缓存 15 秒；AI 页面进入时 refresh 重新取额度。
   if (capabilitiesPending) return capabilitiesPending;
   if (capabilitiesPromise && !options.refresh) return capabilitiesPromise;
-  const source = isLive() ? request('/api/v1/advisor/capabilities') : Promise.resolve({});
+  const source = isLive() ? request('/api/v1/advisor/capabilities', null, { header: payHeader() }) : Promise.resolve({});
   // reason 说明为什么用不了：consent 没同意协议（403）、offline 没连上或服务端出错、off 功能关着
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
@@ -648,6 +698,9 @@ function advisorCapabilities(options = {}) {
       features: Array.isArray(ai.features) ? ai.features : [],
       remaining: ai.remaining || {},
       disclosure: ai.disclosure == null ? null : ai.disclosure,
+      // D-075：后台现在能不能处理（admin 的心跳；旧后台不带时当作能）、全站今天的用量满了没有
+      available: ai.available !== false,
+      siteFull: ai.siteFull === true,
     }, reason: '' };
   }).catch((err) => {
     const status = err && err.status;
@@ -668,6 +721,12 @@ function advisorCapabilities(options = {}) {
   return result;
 }
 
+// 注销以后：在途的和缓存的能力答复都不再用（是注销以前的权限），下次重新问
+function forgetCapabilities() {
+  capabilitiesPromise = null;
+  capabilitiesPending = null;
+}
+
 // 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
 function createAdvisorTask(data, key) {
   if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
@@ -678,13 +737,24 @@ function createAdvisorTask(data, key) {
     : data.kind === 'clause'
     ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
     : { kind: 'interpret', doc_id: Number(data.doc_id) };
-  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: { 'Idempotency-Key': key } }).catch((err) => {
-    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string') {
+  return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
+    // 带代码的拒绝（D-075：AI_NOT_ELIGIBLE 带原因代码、AI_UNAVAILABLE）保留后台写的说明，另记原因代码；
+    // 其余 422（输入校验）把逐项说明拼起来
+    const coded = err.detail && typeof err.detail === 'object' && !Array.isArray(err.detail) && typeof err.detail.message === 'string';
+    if (coded && typeof err.detail.reason === 'string') err.reason = err.detail.reason;
+    if (err.status === 422 && err.detail != null && typeof err.detail !== 'string' && !coded) {
       err.message = Array.isArray(err.detail)
         ? err.detail.map((item) => (item && item.msg) || JSON.stringify(item)).join('\n') : JSON.stringify(err.detail);
     }
     throw err;
   });
+}
+
+// AI 对不对所有人开放（D-075，不需要身份）：底栏第 5 格、列表上的"AI 解读"据此决定给不给所有人看。
+// 只问接口服务（不走 admin，两个服务设置不一样时以 api 为准）；在后台问，不显示"正在连接"
+function advisorMode() {
+  if (!isLive()) return Promise.resolve({ open: false, available: false });
+  return withRetry(() => requestOnce('/api/v1/advisor/mode', 'GET', undefined, {}), 'GET', null, { quiet: true });
 }
 
 function advisorStatus() {
@@ -790,12 +860,12 @@ function saveSubscription(kind, target) {
 
 // ---- 批量工具 30 天、90 天（D-058、D-070；服务端开关关着时商品接口返回 404，小程序不显示购买入口） ----
 function payProducts() {
-  return isLive() ? request('/api/v1/pay/products') : Promise.resolve({ items: [] });
+  return isLive() ? request('/api/v1/pay/products', null, { header: payHeader() }) : Promise.resolve({ items: [] });
 }
 // 下单是写操作：不自动重试（重复下单由服务端"10 分钟内待支付最多 3 单"兜住，页面也会先查上一笔）
 function createPayOrder(data) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
-  return request('/api/v1/pay/orders', null, { method: 'POST', data });
+  return request('/api/v1/pay/orders', null, { method: 'POST', data, header: payHeader() });
 }
 function payOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
@@ -803,6 +873,14 @@ function payOrder(id) {
 }
 function payOrders() {
   return isLive() ? request('/api/v1/pay/orders') : Promise.resolve({ items: [] });
+}
+// 核对一张待确认的订单（付款后、打开订单页时）：服务端当场向微信查单，付了款就开通，不等推送和每分钟的补单。
+// 返回订单，加上 check（这次核对的结果：paid / unpaid / closed / refunded / manual / unavailable；没查时为 null）。
+// 服务端还没有这个接口（404）时退回只读订单，不把订单当成查不到
+function checkPayOrder(id) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/check`, null, { method: 'POST' })
+    .catch((err) => (err && err.status === 404 ? payOrder(id).then((order) => Object.assign({}, order, { check: null })) : Promise.reject(err)));
 }
 function refundPayOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
@@ -815,11 +893,11 @@ function requestInvoice(id, data) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
-  attachmentPart,
+  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
+  attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
-  payProducts, createPayOrder, payOrder, payOrders, refundPayOrder, requestInvoice,
+  advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
 };

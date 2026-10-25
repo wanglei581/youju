@@ -33,6 +33,8 @@
   </view>
 </scroll-view>
 
+<!-- 只看能解读的（D-075，从板块首页进来时带上）：只管这一次，可以去掉；不进关注和转发 -->
+<ai-only wx:if="{{aiOnly}}" bind:remove="removeAi" />
 <!-- 结果信息：第一行是份数，写明当前看的发布时间（默认近 30 天，10/15 走查：只写"3 份 不限时间共 12 份"看不懂；改为"近 30 天 3 份 · 共 12 份"，字数和原来差不多、不挤换行；选了不限时只写份数）、排序、选择、关注；有折叠时第二行写折叠了几篇 -->
 <view wx:if="{{!loading && !error}}" class="summary">
   <view class="summary-left"><text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} </text><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 共 {{totalAll}} 份</text></view>
@@ -45,7 +47,7 @@
 </view>
 <view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
 <!-- 同一份部里通知的各地转发版本合为一条（D-055），份数按合并后的算 -->
-<view wx:if="{{!loading && !error && reposts}}" class="fold-note">同一通知的各地转发版本合为一条，另有 {{reposts}} 个转发版本未重复计算</view>
+<view wx:if="{{!loading && !error && reposts}}" class="fold-note">已合并 {{reposts}} 个各地转发版本，不重复计数</view>
 
 <view class="card">
   <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -60,9 +62,10 @@
   <view wx:elif="{{!items.length && !loading}}" class="empty">
     <view class="empty-title">没有符合条件的文件</view>
     <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它不含没写明截止日期、或截止日期还没理清的通知）；别的时间段有结果时直接去看 -->
+    <view wx:if="{{aiOnly}}" class="exits"><ai-only variant="exit" bind:remove="removeAi" /></view>
     <view wx:if="{{picked.open.length || (totalAll > 0 && chipTime !== '不限')}}" class="exits">
       <view wx:if="{{picked.open.length}}" class="exit-btn exit-btn--main" bindtap="removeOpen" aria-role="button">去掉“只看未截止”</view>
-      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”只含能看到截止日期、还没截止的通知，加上可能 7 天内截止、日期还没核对的</view>
+      <view wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”含两类：写明了截止日期、还没到的；可能 7 天内截止、日期还没核对的</view>
       <view wx:if="{{totalAll > 0 && chipTime !== '不限'}}" class="exit-btn exit-btn--main" bindtap="allTime" aria-role="button">查看不限发布时间的 {{totalAll}} 份</view>
     </view>
     <view wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}</view>
@@ -88,7 +91,7 @@
 <view wx:if="{{selecting}}" class="pick-bar">
   <text class="pick-count">已选 {{chosenCount}} 份</text>
   <text class="link pick-all" bindtap="pickAll">全选已加载</text>
-  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />导出</view>
+  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />查看结果</view>
 </view>
 
 <!-- 原生省市区选择器在独立层渲染，筛选弹层和遮罩都必须在它下方。 -->
@@ -116,7 +119,7 @@
               <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
               <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
-              <view class="group-note">已选城市、区县点一下移除。城市一栏选“全部”按全省，区县一栏选“全部”仅查询已收录市级来源；区县来源请单独选择；直辖市未选区县时按省级范围查询。选择器无法使用时请升级微信。</view>
+              <view class="group-note">已选城市、区县点一下移除；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
             </block>
             <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">

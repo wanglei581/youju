@@ -1,0 +1,6 @@
+.help-card { padding-top: 32rpx; padding-bottom: 32rpx; }
+.help-q { font-size: 32rpx; font-weight: 600; line-height: 1.5; color: var(--t1); }
+.help-a { margin-top: 16rpx; font-size: 28rpx; line-height: 1.75; color: var(--t1); word-break: break-word; }
+.help-contact { margin-top: 24rpx; }
+.help-report { margin-top: 28rpx; padding: 8rpx 0; text-align: center; font-size: 28rpx; color: var(--brand); }
+.help-bottom { height: calc(40rpx + env(safe-area-inset-bottom)); }

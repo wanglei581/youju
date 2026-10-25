@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 from sqlalchemy import text as sql
 
+from youju import attachment_text
 from youju import attachments as copies
 from youju.api import attachments as attachment_api
 from youju.api import v1
@@ -30,7 +31,14 @@ from youju.api.app import app
 from youju.crawler.fetcher import FetchResult
 from youju.db import get_session
 from youju.migrations import alembic_config
-from youju.models import AttachmentCopy, Document, DocumentAttachment, DocumentDetail, Source
+from youju.models import (
+    AttachmentCopy,
+    AttachmentTextUrl,
+    Document,
+    DocumentAttachment,
+    DocumentDetail,
+    Source,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NOW = datetime(2026, 10, 6, 2, 0, tzinfo=UTC)
@@ -628,13 +636,16 @@ def test_cache_run_stores_only_allowed_attachments(session) -> None:
         base + "gone.pdf": FetchResult(base + "gone.pdf", "http_error", http_status=404),
         base + "slow.xlsx": FetchResult(base + "slow.xlsx", "network_error", error="超时"),
         base + "scan.pdf": make_pdf(),
+        # wps 只取给 AI 用的文字，不存副本（附件读入第一步）
+        base + "sheet.wps": make_ole("WordDocument"),
     }
     fetcher, cloud = FakeFetcher(files), FakeCloud()
     report = run(session, fetcher, cloud)
 
-    # 只下载该下载的：wps、外站、名单类、超过 90 天、下架、二级来源的都不碰
+    # 只下载该下载的：外站、名单类、超过 90 天、下架、二级来源的都不碰
     assert sorted(fetcher.calls) == sorted(files)
     assert report.added == len(files) and report.checked == len(files)
+    assert report.text_only == 1
     # 只往 attachments/ 存，内容相同的只存一次
     assert cloud.uploads == [obj(PDF, "pdf"), obj(DOCX, "docx")]
     assert report.stored == 3 and report.removed == 0 and report.storage_error is None
@@ -651,6 +662,7 @@ def test_cache_run_stores_only_allowed_attachments(session) -> None:
     assert failures["gone.pdf"] == ("failed", "gone")
     assert failures["slow.xlsx"] == ("failed", "network")
     assert failures["scan.pdf"] == ("failed", "unchecked")
+    assert failures["sheet.wps"] == ("failed", "format")
     # 临时问题 6 小时后重试，其他的 7 天后再看
     assert rows[base + "slow.xlsx"].next_check_at == NOW + timedelta(hours=6)
     assert rows[base + "gone.pdf"].next_check_at == NOW + copies.RECHECK
@@ -662,7 +674,24 @@ def test_cache_run_stores_only_allowed_attachments(session) -> None:
     assert fetcher.calls == [] and again.added == 0 and again.checked == 0
     # 立即重试没存成的
     retried = run(session, fetcher, cloud, retry_failed=True)
-    assert retried.checked == 6 and len(fetcher.calls) == 6
+    assert retried.checked == 7 and len(fetcher.calls) == 7
+
+
+def test_text_only_row_becomes_a_copy_when_a_notice_lists_an_openable_type(session) -> None:
+    """同一个链接先只按 wps 记下（只取文字），后来另一份通知写成 docx：这一轮就按能打开的
+    重新处理、存副本，不会一直打不开。"""
+    base = "https://kjt.ln.gov.cn/files/"
+    url = base + "download?id=7"  # 链接本身没有扩展名
+    add_doc(session, 1, APPLY, RECENT, [("汇总表", url, "wps")])
+    fetcher, cloud = FakeFetcher({url: DOCX}), FakeCloud()
+    first = run(session, fetcher, cloud)
+    assert first.text_only == 1 and rows_by_url(session)[url].declared_type == "wps"
+    add_doc(session, 2, APPLY, RECENT, [("申报书", url, "docx")])
+    fetcher.calls.clear()
+    second = run(session, fetcher, cloud)
+    row = rows_by_url(session)[url]
+    assert fetcher.calls == [url] and second.stored == 1
+    assert (row.declared_type, row.status, row.file_type) == ("docx", "ready", "docx")
 
 
 def test_limit_takes_new_files_first(session) -> None:
@@ -955,6 +984,20 @@ def add_copy(
     return row
 
 
+def texts_done(session, *urls):
+    """这些链接已按现在的规则取过给 AI 用的文字：测副本重查的用例里，不让补取文字的下载混进来。"""
+    for url in urls:
+        session.add(
+            AttachmentTextUrl(
+                url_hash=copies.url_hash(url),
+                url=url,
+                declared_type=url.rsplit(".", 1)[1],
+                extractor=attachment_text.EXTRACTOR_VERSION,
+            )
+        )
+    session.commit()
+
+
 def test_detail_lists_preview_info_and_reasons(client, session) -> None:
     base = "https://kjt.ln.gov.cn/files/"
     doc = add_doc(
@@ -1129,6 +1172,7 @@ def test_cache_run_rechecks_old_rule_copies_first(session) -> None:
     for row in rows_by_url(session).values():
         row.next_check_at = NOW + timedelta(days=3)  # 都还没到重新下载的时候
     session.commit()
+    texts_done(session, *(base + n for n in names))
     fetcher = FakeFetcher({})
 
     # 每轮有上限：这一轮只查第一个文件
@@ -1173,6 +1217,7 @@ def test_old_rule_recheck_failures_do_not_block_the_queue(session) -> None:
     for row in rows_by_url(session).values():
         row.next_check_at = NOW + timedelta(days=3)
     session.commit()
+    texts_done(session, base + "a.pdf", base + "b.pdf")
     fetcher = FakeFetcher({})
     report = run(session, fetcher, cloud, recheck_limit=1)
     assert report.recheck.unreadable == 1 and report.recheck.checked == 0

@@ -25,6 +25,7 @@ Page({
   onLoad(query) {
     if (!this.data.loginOpen) return;
     const consent = query.consent === '1' && consentOpen();
+    this.forAi = consent && query.for === 'ai';
     let docs;
     if (consent) docs = [legal.user, legal.privacy];
     // type=pay：购买页的《付费服务协议》（只在协议定稿后由购买页打开，见 utils/pay.js termsFinal）
@@ -40,7 +41,8 @@ Page({
     api.agree(legal.version)
       .then(() => {
         markAgreed();
-        wx.showToast({ title: `已同意，${featureNames()}可以用了`, icon: 'none' });
+        // 从 AI 板块来的（for=ai）不写"关注和纠错可以用了"，免得以为同意的是别的
+        wx.showToast({ title: this.forAi ? '已同意，可以继续使用了' : `已同意，${featureNames()}可以用了`, icon: 'none' });
         setTimeout(() => wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/me/index' }) }), 1000);
       })
       .catch((err) => {

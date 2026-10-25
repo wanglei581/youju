@@ -14,7 +14,10 @@ DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
+    # hide_input_in_errors：配置错了起不来时，报错（会进部署日志）里不带填进去的值——密钥、数据库地址
+    model_config = SettingsConfigDict(
+        env_prefix="YOUJU_", env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     # 本机开发用 scripts/dev_mysql.sh 启动的 MySQL；线上填云托管 MySQL 的内网地址
     database_url: str = "mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4"
@@ -159,6 +162,15 @@ class Settings(BaseSettings):
     def _empty_pass_price(cls, value):
         return None if value == "" else value
 
+    @field_validator("xpay_env", mode="before")
+    @classmethod
+    def _xpay_env_from_text(cls, value):
+        # 环境变量读进来是文字 "0"/"1"，Literal[0, 1] 不会把文字转成数字：
+        # 不转的话填了 YOUJU_XPAY_ENV 服务就起不来（10/19 api-059 启动失败）
+        if isinstance(value, str) and value.strip() in ("0", "1"):
+            return int(value.strip())
+        return value
+
     @field_validator("season_boost_start", "season_boost_end", mode="before")
     @classmethod
     def _empty_season_date(cls, value):
@@ -192,6 +204,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "对外 AI 单独设置时，YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、"
                 "YOUJU_AI_ADVISOR_MODEL 三项要一起填"
+            )
+        # 对所有人开放时只能走对外线路（云开发，D-093 上线门槛第 3 条）：类目协议、实际调用、
+        # 页面公示的模型要一致，不能退回后台核对用的线路。白名单内部试用不受这条限制
+        if self.ai_advisor_enabled and self.ai_advisor_audience == "all" and not all(parts):
+            raise ValueError(
+                "对所有人开放 AI（YOUJU_AI_ADVISOR_AUDIENCE=all）时，要配好对外线路："
+                "YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、YOUJU_AI_ADVISOR_MODEL，"
+                "不能用后台核对的线路"
             )
         return self
 

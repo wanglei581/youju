@@ -3,6 +3,13 @@
 */5 * * * * date +\%s > /tmp/youju-cron-heartbeat
 # 顾问持久队列（YOUJU_ADVISOR_ENABLED=false 时命令直接跳过）
 * * * * *  /app/backend/deploy/job.sh advisor-run
+# AI 设置心跳（D-075）：api 只在 admin 能处理、两边设置一致时才收 AI 任务。单独一条，一批任务处理得久也不断
+* * * * *  /app/backend/deploy/job.sh ai-heartbeat
+# 每份文件能不能做 AI 解读（D-075，列表行的"AI 解读"按钮用）：每 10 分钟重算最近 30 分钟有变化的、
+# 还没算过的，外加最早算的 1000 份轮转；每天夜里全部重算一次兜底（来源级别等没有时间戳的变化靠它），
+# 放在 02:25 和增量错开。和 AI 开没开无关，开关关着也照算
+*/10 * * * *  /app/backend/deploy/job.sh ai-eligibility
+25 2 * * *  /app/backend/deploy/job.sh ai-eligibility-rebuild
 # 每天 2 轮（D-039）：抓取 → 核对栏目 → 补详情 → 抽截止 → 抽字段 → 解析名单（按顺序，见 round.sh）。
 # 早上 6:30 抓前一天白天到夜里新发布的，做完发微信提醒（每天一次）；晚上 20:30 抓当天发布的。
 # 每个栏目每天只访问 2 次列表页，每站间隔 3 秒
@@ -19,12 +26,18 @@
 0 4 * * *  /app/backend/deploy/job.sh backup
 # 每天校验最近一份备份的完整性和迁移版本；失败由 job.sh 发提醒
 40 4 * * *  /app/backend/deploy/job.sh backup-verify
-# 原网页还在不在：每天查一批近 90 天的文件（每份约一周一次），撤下的在小程序里提示
-10 5 * * *  /app/backend/deploy/job.sh check-links --limit 400
+# 原网页还在不在：每天查一批近 90 天的文件（近 30 天的每天查，其余约一周一次），撤下的在小程序里提示、
+# 不能再开始 AI 解读。上限 3000 份；6:10 起不再开新的（晚开始也一样），已开始的最多再等 15 分钟，
+# 6:30 抓取前停下；输出里"还没轮到"不是 0 就调大（youju/link_check.py）
+10 5 * * *  /app/backend/deploy/job.sh check-links --limit 3000 --until 06:10
 # 附件副本：每天 2 次，在两轮抓取之后（补详情要先跑完才有新附件），每次最多下载 100 个；
 # 存到对象存储 attachments/（和 backups/ 分开），供小程序直接打开。对象存储出错时 job.sh 提醒
 15 10 * * *  /app/backend/deploy/job.sh cache-attachments
 30 23 * * *  /app/backend/deploy/job.sh cache-attachments
+# 查名单站内闭环（D-088）：读名单附件、找到每条条目在原文里的那一行，只存命中行（不存整份、不存副本）。
+# 每天 2 次，在附件副本之后，每次最多读 30 份；新解析的名单、规则升级的先读，读过的 30 天复查一次
+45 10 * * *  /app/backend/deploy/job.sh list-evidence --apply
+50 23 * * *  /app/backend/deploy/job.sh list-evidence --apply
 # 把前一天的访问日志归档到对象存储，保留 190 天（网络日志留存不少于六个月）
 30 0 * * *  /app/backend/deploy/job.sh archive-logs
 # 早上那一轮之后质检已发布的截止日期（规则回查全部，配了 AI 时抽查 20 份），存疑的提醒到群里；

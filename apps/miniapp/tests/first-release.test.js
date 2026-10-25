@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,7 +25,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../content/pay-terms.js' && !Object.hasOwn(deps, name)) return require('../content/pay-terms.js'); if (name === '../../utils/pay.js' && !Object.hasOwn(deps, name)) return require('../utils/pay.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../content/pay-terms.js' && !Object.hasOwn(deps, name)) return require('../content/pay-terms.js'); if (name === '../../utils/pay.js' && !Object.hasOwn(deps, name)) return require('../utils/pay.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -235,7 +236,7 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
 test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）', () => {
   const wxml = read('pages/detail/index.wxml');
   assert.doesNotMatch(wxml, /核对过的日期/);
-  assert.match(wxml, /截止日期看上面的"截止时间"，并以原文为准/);
+  assert.match(wxml, /<view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对；截止日期可先看上面的“截止时间”，一切以原文为准。<\/view>/);
 });
 
 test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {
@@ -580,7 +581,7 @@ test('协议页（民法典第 496 条，10/14）：每份文件顶部列出重�
 test('名单详情显示实际公示或公布状态；缺失状态不编造', () => {
   for (const status of ['公示', '公布']) {
     const tree = render('pages/detail/index.wxml', { doc: { title: '合成名单', status }, loading: false });
-    assert.match(textOf(tree), new RegExp(`名单状态：${status}`));
+    assert.match(textOf(tree), new RegExp(`发布阶段：${status}`));
   }
-  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { doc: { title: '合成通知' }, loading: false })), /名单状态：/);
+  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { doc: { title: '合成通知' }, loading: false })), /发布阶段：/);
 });

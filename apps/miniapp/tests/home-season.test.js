@@ -2,6 +2,7 @@
 // （和工具中心、批量工具页同一句）。开关关着、过了结束日、批量工具没开、取不到时首页和原来一样；首页其余内容不等它。
 // 页面依赖用替身；boost.js、format.js 用真的。
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,7 +23,7 @@ function load(file, deps, globals = {}) {
   let page; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(key) { assert.ok(Object.hasOwn(deps, key), `${file}: 缺少依赖 ${key}`); return deps[key]; },
+    require(key) { if (!Object.hasOwn(deps, key) && /ai-access\.js$/.test(key)) return AI_OFF; if (!Object.hasOwn(deps, key) && /(^|\/)pages\.js$/.test(key)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, key) && /utils\/advisor\.js$/.test(key)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, key), `${file}: 缺少依赖 ${key}`); return deps[key]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;

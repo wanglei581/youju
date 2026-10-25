@@ -1,5 +1,4 @@
 <notice-bar />
-<view wx:if="{{loginOpen}}" class="card"><view class="message">工具任务记录、加量体验记录（开始、结束时间）和送的批量工具天数（每次一笔）可通过下方“复制全部数据”查阅（数据工具只包含任务元数据，结果请在“我的记录”下载；订单在“我的订单”）。删除单条记录及其结果，请打开“我的记录”；处理中的需要等待结束后删除。</view><button bindtap="tasks">管理工具任务</button></view>
 <feature-closed wx:if="{{!loginOpen}}" />
 <view wx:elif="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load">重试</text></view>
 <view wx:elif="{{loading}}" class="card muted loading-tip">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -64,7 +63,9 @@
         <view class="item-sub">{{item.title}}</view>
         <view class="item-main">{{item.content}}</view>
         <view class="item-sub">提交于 {{item.created}} · 内容安全：{{item.check}}</view>
-        <view class="item-sub">处理状态：{{item.handling}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:if="{{item.outcome}}" class="item-sub">处理结果：{{item.outcome}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:else class="item-sub">处理状态：{{item.handling}}<text wx:if="{{item.handledAt}}"> · 处理于 {{item.handledAt}}</text></view>
+        <view wx:if="{{item.reply}}" class="item-sub">处理说明：{{item.reply}}</view>
         <view class="item-ops">
           <text class="op" data-kind="feedback" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
           <text class="op op--danger" data-kind="feedback" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
@@ -72,6 +73,28 @@
       </view>
       <view wx:if="{{!feedback.length}}" class="empty weak">没有</view>
       <view wx:if="{{totals.feedback > feedback.length}}" class="more weak">只显示最近 {{feedback.length}} 条，复制全部数据里也是这些</view>
+    </view>
+
+    <!-- 工具记录：本人随时能看（复制单条是这条的完整记录）、能删，功能关着、协议升了版本也一样（D-093 上线门槛第 8 条）；
+         没有记录时整栏不显示。类型名、栏目名从 JS 来（AI 以外页面的模板里不写 AI，见 ai-entry.test.js） -->
+    <view wx:if="{{tasks.length}}" class="card">
+      <view class="section-title">{{tasksTitle}} {{totals.tasks}}</view>
+      <view wx:for="{{tasks}}" wx:key="id" class="item">
+        <view class="item-main">{{item.kind}}<text wx:if="{{item.rows}}">（{{item.rows}} 家）</text></view>
+        <view class="item-sub">{{item.state}} · 提交于 {{item.created}}<text wx:if="{{item.finished}}"> · 结束于 {{item.finished}}</text></view>
+        <view class="item-ops">
+          <text class="op" data-kind="task" data-id="{{item.id}}" bindtap="copyOne" aria-role="button">复制单条</text>
+          <text wx:if="{{!item.running}}" class="op op--danger" data-kind="task" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</text>
+          <text wx:else class="op-wait">正在处理，结束后可以删除</text>
+        </view>
+      </view>
+      <view wx:if="{{totals.tasks > tasks.length}}" class="more weak">只显示最近 {{tasks.length}} 条，复制全部数据里也是这些</view>
+      <view wx:if="{{fileNote}}" class="more weak">{{fileNote}}</view>
+    </view>
+
+    <view wx:if="{{extras}}" class="card">
+      <view class="section-title">其他记录</view>
+      <view class="muted plain">{{extras}}</view>
     </view>
 
     <view wx:if="{{totals.events}}" class="card">
@@ -85,10 +108,11 @@
         <view>· 账号、同意记录、关注：保存到你注销</view>
         <view>· 纠错：提交 {{retention.feedback}} 天后删除</view>
         <!-- 10/18 验收：和隐私保护指引（2026-11）第三节第 2 条"保存期限"一致，补上批量工具、AI、加量体验和按天次数 -->
-        <view wx:if="{{retention.toolTasks}}">· 批量工具：解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件 {{retention.toolTasks}} 天后删除；在“我的记录”里可以提前删除</view>
+        <!-- 批量工具、加量体验、按天次数：包里有工具中心或这个账号有过工具记录时才写（过审版没有这些功能，D-091） -->
+        <view wx:if="{{retention.toolTasks && toolsShown}}">· 批量工具：任务里解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件（含提交的名单内容）{{retention.toolTasks}} 天后删除；可以在本页提前删除</view>
         <view wx:if="{{aiRetention}}">{{aiRetention}}</view>
-        <view>· 加量体验记录：开始和结束时间保存到你注销，注销时一并删除</view>
-        <view>· 按天的使用次数：保留本月和上个月的</view>
+        <view wx:if="{{boostShown}}">· 加量体验记录：开始和结束时间保存到你注销，注销时一并删除</view>
+        <view wx:if="{{toolsShown}}">· 按天的使用次数：保留本月和上个月的</view>
         <view wx:if="{{remindOpen || subs.length}}">· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>
         <view wx:if="{{totals.events}}">· 使用记录：{{retention.events}} 天后删除</view>
         <view>· 访问日志：保存 190 天（法律要求不少于 6 个月），不在这里显示</view>

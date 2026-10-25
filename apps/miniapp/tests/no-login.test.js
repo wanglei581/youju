@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -26,7 +27,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); return Object.hasOwn(deps, name) ? deps[name] : {}; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; return Object.hasOwn(deps, name) ? deps[name] : {}; },
     Page(d) { def = d; },
     Component(d) { def = d; },
     ...globals,
@@ -78,8 +79,9 @@ test('开关只看代码包里的 legal.final：loginOpen 和它一致，不看�
 
 test('底部导航：未定稿时只有首页、文件、我的三项，三等分；定稿后四项含"关注"；选中项按 app.json 的序号', () => {
   const tabs = JSON.parse(read('app.json')).tabBar.list.map((t) => t.pagePath);
-  // app.json 仍保留关注页：定稿后不用改 app.json，分享进来的关注页链接也能打开
-  assert.deepEqual(tabs, ['pages/home/index', 'pages/follow/index', 'pages/files/index', 'pages/me/index']);
+  // app.json 仍保留关注页：定稿后不用改 app.json，分享进来的关注页链接也能打开。
+  // 第 5 项是 AI 板块（D-075，序号 4）：AI 关着时底栏不画它，和原来一样（画出来的样子见 ai-section.test.js）
+  assert.deepEqual(tabs, ['pages/home/index', 'pages/follow/index', 'pages/files/index', 'pages/me/index', 'pages/ai/index']);
   for (const final of STATES) {
     let url = '';
     const bar = load('custom-tab-bar/index.js', { '../utils/consent.js': consentFor(final) }, { wx: { switchTab: (o) => { url = o.url; } } });
@@ -130,11 +132,13 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   assert.deepEqual(texts(grid, hasClass('grid-item')), ['导出记录', '我的客户']);
   assert.match(read('pages/me/index.wxss'), /\.grid--2 \{ grid-template-columns: repeat\(2, 1fr\); \}/);
   // 不打开草案协议：那一行改为"隐私保护指引"，打开小程序后台填写的官方指引；关于有据照旧，最后一行没有下划线
+  // 使用帮助和联系客服（D-075）不用登录，未定稿时也在
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['隐私保护指引', '关于有据']);
-  assert.equal(rows[0].attrs.bindtap, 'openPrivacy');
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['使用帮助', '隐私保护指引', '关于有据']);
+  assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
+  assert.equal(rows[1].attrs.bindtap, 'openPrivacy');
   assert.equal(findAll(root, tapsTo('openAgreement')).length, 0);
-  assert.ok(hasClass('row--last')(rows[1]));
+  assert.ok(hasClass('row--last')(rows[2]));
 });
 
 test('"我的"：保留登录与同意，完整候选增加工具中心和共同任务入口', async () => {
@@ -152,8 +156,9 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '用户协议与隐私保护指引', '关于有据']);
-  assert.equal(rows[2].attrs.bindtap, 'openAgreement');
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议与隐私保护指引', '关于有据']);
+  assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
+  assert.equal(rows[3].attrs.bindtap, 'openAgreement');
   assert.equal(findAll(root, tapsTo('openPrivacy')).length, 0);
 });
 
@@ -230,7 +235,7 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
     assert.equal(findAll(root, tapsTo('toggleRemind')).length, final ? 1 : 0);
     assert.equal(textOf(root).includes('订阅截止提醒（一次）'), final);
     const [bar] = findAll(root, hasClass('bar'));
-    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'copy'] : ['exportDoc', 'copy']);
+    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'readBody'] : ['exportDoc', 'readBody']);
     assert.equal(textOf(bar).includes('纠错'), final);
     // 截止日期照常显示
     assert.match(textOf(root), /申报截止 10月17日 ?周六/);
@@ -288,7 +293,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.equal(notes.length, final ? 0 : 1);
     if (!final) {
       const note = textOf(notes[0]);
-      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把链接或邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
+      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '点联系邮箱时，只把邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
         `服务器按法律要求保存访问日志（如 IP 地址）${KEEP_DAYS} 天`]) assert.ok(note.includes(line), `数据说明缺少：${line}`);
       assert.doesNotMatch(note, /【|】|关注|提醒|纠错|注销|我的数据/);
     }

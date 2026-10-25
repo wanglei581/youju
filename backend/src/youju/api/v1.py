@@ -2,7 +2,8 @@
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；待核对的候选
 只给"有没有"（deadline_state），不给日期；
-截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
+截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类挡掉
+名单内容后给（D-092）。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import re
 import time as _time
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
@@ -23,6 +25,7 @@ from sqlalchemy.orm import Session, aliased
 
 from youju import deadline_excerpts
 from youju import fields as field_rules
+from youju.ai import eligibility
 from youju.attachments import attachment_items, is_recent
 from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_category
 from youju.classify import (
@@ -37,14 +40,17 @@ from youju.classify import (
 )
 from youju.conditions import public_conditions
 from youju.config import get_settings
-from youju.crawler.detail import redact_sensitive
+from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.issuer import normalize_issuer
+from youju.lists import body as list_body
+from youju.lists import evidence as list_evidence
 from youju.lists.lookup import (
     ListLookupResult,
+    list_title_allowed,
     lookup_list_matches,
     lookup_name_candidates,
     public_condition,
@@ -58,6 +64,9 @@ from youju.models import (
     DocumentMerge,
     JobRun,
     ListEntry,
+    ListEntryLocation,
+    ListEvidenceSource,
+    ListParse,
     RepostGroup,
     RepostGroupMember,
     Source,
@@ -455,14 +464,17 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
     return {"date": d.approved_date.isoformat(), "time": _hhmm(d.approved_time), "verified": True}
 
 
-def _link_gone(doc: Document) -> str | None:
+def link_gone_date(gone: datetime | None) -> str | None:
     """原网页确认失效的日期（北京时间）；能打开或还没确认的为 None（youju/link_check.py）。"""
-    gone = doc.link_gone_at
     if gone is None:
         return None
     if gone.tzinfo is None:
         gone = gone.replace(tzinfo=UTC)
     return gone.astimezone(_TZ).date().isoformat()
+
+
+def _link_gone(doc: Document) -> str | None:
+    return link_gone_date(doc.link_gone_at)
 
 
 def _item(
@@ -499,6 +511,23 @@ def _item(
         "deadline_state": deadline_state(deadlines, pending),
     }
     return payload
+
+
+def _with_ai(session: Session, *groups: list[dict], key: str = "id") -> None:
+    """列表行加上 ai（D-075）：这份能不能做 AI 解读、不能的原因代码，从 ai_eligibility 一次查出。
+
+    还没算过的给 None，小程序就不显示按钮。能不能解读是文件本身的属性，和 AI 开没开无关；
+    这个人能不能用 AI 由小程序另问 api。"""
+    rows = [item for group in groups for item in group]
+    flags = eligibility.flags(session, [int(item[key]) for item in rows if item.get(key)])
+    for item in rows:
+        item["ai"] = flags.get(int(item[key])) if item.get(key) else None
+
+
+def _shown_with_ai(session: Session, items: list[dict], key: str = "id") -> list[dict]:
+    """截止报表、日历这一页要返回的行加上 ai，返回同一个列表。"""
+    _with_ai(session, items, key=key)
+    return items
 
 
 def _items(
@@ -542,6 +571,7 @@ def _items(
                         for o in others
                     ],
                 }
+    _with_ai(session, items)
     return items
 
 
@@ -1162,6 +1192,15 @@ def search(
             "不传和以前一样",
         ),
     ] = None,
+    ai: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=1,
+            description="1 只看能做 AI 解读的（D-075，按 ai_eligibility 预先算好的结果）；"
+            "不传和以前一样",
+        ),
+    ] = None,
 ) -> dict:
     """搜索与筛选。total 是符合全部条件的份数，total_all 是不限发布时间的份数（都按当前页签）。
 
@@ -1192,6 +1231,9 @@ def search(
         active_ids = _open_excerpt_ids(session)
         stmt = stmt.where(Document.id.in_(active_ids))
         all_time = all_time.where(Document.id.in_(active_ids))
+    if ai == 1:
+        stmt = stmt.where(Document.id.in_(eligibility.eligible_ids()))
+        all_time = all_time.where(Document.id.in_(eligibility.eligible_ids()))
     grouped = group == 1
     stmt, guides, folded = fold_guides(session, stmt, kind, types, fold, grouped)
     if fold == 1 and _folds_guides(kind, types):
@@ -1272,7 +1314,7 @@ def search_statement(
         raise HTTPException(status_code=422, detail=f"发布时间不支持：{time}")
     picked_types = [TYPES[t] for t in _pick(types, TYPES, "类型")]
     picked_regions = [r for r in _pick(regions, PROVINCES, "地区") if r != "不限地区"]
-    picked_status = _pick(status, STATUSES, "名单状态")
+    picked_status = _pick(status, STATUSES, "发布阶段")
     picked_depts = _pick(depts, DEPTS, "发文部门")
     picked_levels = _pick(levels, LEVELS, "层级")
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
@@ -1614,7 +1656,7 @@ def _report_payload(
         "total": len(entries),
         "page": page,
         "size": size,
-        "items": entries[start : start + size],
+        "items": _shown_with_ai(session, entries[start : start + size]),
     }
 
 
@@ -1728,7 +1770,10 @@ def _report_payload_excerpts(
         "days": days,
         "summary": summary,
         "summaryVerified": summary_verified,
-        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
+        "unverifiedSoon": {
+            "total": len(unverified),
+            "items": _shown_with_ai(session, unverified[:50]),
+        },
         "by_province": by_province,
         "by_dept": by_dept,
         "province_counts": by_province,
@@ -1736,7 +1781,7 @@ def _report_payload_excerpts(
         "total": len(shown),
         "page": page,
         "size": size,
-        "items": shown[start : start + size],
+        "items": _shown_with_ai(session, shown[start : start + size]),
     }
 
 
@@ -2052,45 +2097,294 @@ _BODY_REPLACE = (
 )
 _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
+# 名单类通知的正文挡掉名单内容后也给读（D-092，youju/lists/body.py）
+LIST_BODY_KINDS = (*BODY_KINDS, "名单")
 
 
-def body_for_reading(text: str | None, kind: str) -> dict:
-    """详情页正文：ok 给文字；名单类给 list，其他类给 original（都可能有个人姓名），
-    没抓到完整正文给 none——这三种页面上提示复制原文链接查看。"""
-    if kind == "名单":
-        return {"status": "list"}
-    if kind not in BODY_KINDS:
-        return {"status": "original"}
-    cleaned = redact_sensitive((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
+    cleaned = redact((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     for old, new in _BODY_REPLACE:
         cleaned = cleaned.replace(old, new)
-    cleaned = _BLANK_LINES.sub("\n\n", cleaned).strip()
-    if len(cleaned) < BODY_MIN_CHARS:
+    return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
+
+
+# 联系人所在的行（"联系人""联 系 人""联系方式"），和这类标签写在上一行末尾时的下一行：像姓名的都遮
+_CONTACT_LABEL = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式")
+_LABEL_AT_END = re.compile(
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式)(?:及电话)?\s*[:：]\s*$"
+)
+# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：（电话见原文）"
+# "刘老师，（电话见原文）""联系电话：88888888（李四）"）；只有"电话""手机"字样、没有号码的（表头
+# "联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+_PHONE_LINE = re.compile(r"电话|手机|（电话见原文）")
+_PHONE = (
+    r"(?:（电话见原文）|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
+    r"|(?<!\d)\d{7,8}(?!\d))"
+)
+_PHONE_ANY = re.compile(_PHONE)
+_PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
+# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
+_CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+_TITLE_END = (
+    "老师",
+    "先生",
+    "女士",
+    "同志",
+    "处长",
+    "科长",
+    "主任",
+    "部长",
+    "局长",
+    "所长",
+    "站长",
+    "经理",
+    "专员",
+    "工程师",
+)
+# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（署名已隐去）"，不冒充联系人
+_EDITOR = re.compile(
+    r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
+)
+_CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】/／]+")
+_HAN_CHAR = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+_UNIT_END_CHARS = "处科室局厅部办站所院会队组股区"
+_UNIT_THEN_NAME = re.compile(rf"[{_UNIT_END_CHARS}]([{_HAN_CHAR}]{{2,3}})$")
+# 字间带空格的姓名（"联系人：张 三""孟 双、王 璐 联系电话"）：前后不能再接着一个单字（"张 三 李 四"
+# 分不清，不遮）
+_SPACED_NAME = re.compile(
+    rf"(?<![{_HAN_CHAR}])(?<!(?<![{_HAN_CHAR}])[{_HAN_CHAR}] )"
+    rf"[{_HAN_CHAR}](?: [{_HAN_CHAR}]){{1,2}}"
+    rf"(?![{_HAN_CHAR}])(?! [{_HAN_CHAR}](?![{_HAN_CHAR}]))"
+)
+# 表格模板里以冒号结尾的栏目（"推荐单位（盖章）："）：不当"标签的下一行"
+_FORM_FIELD = re.compile(r"[:：]\s*$")
+# 常见姓氏开头、但这些行里常见的普通词
+_NOT_NAMES = frozenset(
+    {
+        "关于",
+        "关闭",
+        "查询",
+        "时间",
+        "方式",
+        "周一",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+        "周六",
+        "周日",
+        "周末",
+        "工作日",
+        "上午",
+        "下午",
+        "中午",
+        "白天",
+        "晚上",
+        "全天",
+        "节假日",
+        # 单位名后面常跟的词（"指挥部成立""××室通过"）
+        "成立",
+        "通过",
+        "通知",
+        "工作",
+        "专项",
+        "会议",
+        "负责",
+        "办理",
+        "受理",
+        "咨询",
+        # 表格模板里的词（"推荐单位（盖章）："）
+        "盖章",
+        "签字",
+        "签章",
+        "公章",
+    }
+)
+_CONTACT_MARK = "（联系人见原文）"
+_EDITOR_MARK = "（署名已隐去）"
+
+
+def _person(word: str) -> bool:
+    return word not in _NOT_NAMES and _name_like(word)
+
+
+def _masked(token: str, mark: str) -> str | None:
+    """一段里有像姓名的就给遮好的这一段，没有给 None。整段像（"张三""刘老师"）；去掉称呼后像
+    （"张三处长""王五主任"）；"张三和李四"拆开都像；"高新处张三"单位用字后面的 2–3 个字像。"""
+    if _person(token):
+        return mark
+    title = next((t for t in _TITLE_END if token.endswith(t) and len(token) > len(t)), None)
+    if title is not None:
+        rest = token[: -len(title)]
+        if _person(rest):
+            return mark
+        inner = _masked(rest, mark)
+        if inner is not None:
+            # "高新区张三处长"：单位留着，姓名连称呼一起遮
+            return inner
+    parts = [p for p in re.split(r"[和与及]", token) if p]
+    if len(parts) >= 2 and all(_person(p) for p in parts):
+        return re.sub(r"[^和与及]+", mark, token)
+    match = _UNIT_THEN_NAME.search(token)
+    if match and _person(match.group(1)):
+        return token[: match.start(1)] + mark
+    return None
+
+
+def _mask_line(line: str, tokens: list[str], mark: str) -> str:
+    line = _SPACED_NAME.sub(
+        lambda m: mark if _person(m.group(0).replace(" ", "")) else m.group(0), line
+    )
+    for token in sorted(set(tokens), key=len, reverse=True):
+        new = _masked(token, mark)
+        if new is None:
+            continue
+        if new == mark:
+            # 带括号的（"（王老师）"）连括号一起换，不出现两层括号
+            line = line.replace(f"（{token}）", mark).replace(f"({token})", mark)
+        line = re.sub(rf"(?<![{_HAN_CHAR}]){re.escape(token)}(?![{_HAN_CHAR}])", new, line)
+    return line
+
+
+def _mask_contact_names(text: str) -> str:
+    """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
+    2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
+    "联系人：（联系人见原文）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
+    （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
+    拆行、空格隔开的写法）。"""
+    out = []
+    after_label = False
+    for line in text.split("\n"):
+        if not line.strip():
+            # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
+            out.append(line)
+            continue
+        raw = line
+        contact = (after_label and not _FORM_FIELD.search(line)) or (
+            _CONTACT_LABEL.search(line) is not None
+        )
+        editor = _EDITOR.search(line) is not None
+        tokens = [w for w in _CONTACT_SPLIT.split(line) if w]
+        if contact:
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif editor:
+            line = _mask_line(line, tokens, _EDITOR_MARK)
+        elif _PHONE_LINE.search(line) and _PHONE_ANY.search(line):
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif _PHONE_LINE.search(line):
+            label = _PHONE_LABEL.search(line)
+            near_label = [
+                t
+                for t in tokens
+                if t.endswith(_TITLE_END) or (label is not None and line.find(t) >= label.end())
+            ]
+            line = _mask_line(line, near_label, _CONTACT_MARK)
+        # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
+        row = after_label and _CONTACT_ROW.match(raw) is not None
+        after_label = _LABEL_AT_END.search(line) is not None or row
+        out.append(line)
+    return "\n".join(out)
+
+
+def body_for_reading(
+    text: str | None,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
+) -> dict:
+    """详情页正文：ok 给文字；其他类给 original（可能有个人姓名），没抓到完整正文给 none。
+    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单后给文字（真挡掉了名单的带
+    listHidden，页面给去查名单的入口），挡完剩得太少或没挡住的给 list；没认出名单、正文本来就
+    太短的（没抓到正文、多半没抓全）和别的类一样给 none。"""
+    if kind == "名单" and list_filter is None:
+        return {"status": "list"}
+    if kind not in BODY_KINDS and kind != "名单":
+        return {"status": "original"}
+    cleaned = _clean_reading_body(text)
+    hidden = False
+    if list_filter is not None:
+        result = list_filter(cleaned)
+        if result.text is None:
+            return {"status": "none" if result.reason == "short" else "list"}
+        cleaned, hidden = result.text, result.hidden
+    elif len(cleaned) < BODY_MIN_CHARS:
         return {"status": "none"}
-    return {
+    body = {
         "status": "ok",
         "text": cleaned[:BODY_MAX_CHARS],
         "total": len(cleaned),
         "truncated": len(cleaned) > BODY_MAX_CHARS,
     }
+    if hidden:
+        body["listHidden"] = True
+    return body
 
 
-def _reading_body(session: Session, doc_id: int) -> str | None:
-    """详情页用哪份正文：只从一级来源的文件里取；这份文件自己有就用自己的，没有再用同一通知
-    其他网址里最长的那份。"""
-    rows = session.execute(
-        select(DocumentDetail.document_id, DocumentDetail.body_text)
-        .join(Document, Document.id == DocumentDetail.document_id)
+def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
+    """名单类通知正文的过滤函数（D-092）：这份通知能读（不是失信、个人类）时给，不能读给 None。
+    用这份通知归并组解析出的条目名称认名单行，组里各版本的发文机关署名照常显示。"""
+    if not list_body.readable(doc.title):
+        return None
+    return list_body.filter_for(session, group_ids(session, doc.id), min_chars=list_body.MIN_CHARS)
+
+
+def _reading_body_selection(
+    session: Session,
+    doc_id: int,
+    *,
+    redact=redact_sensitive,
+    live_only: bool = False,
+    allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
+) -> tuple[int, str, str] | None:
+    """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
+
+    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续显示收录不足；
+    live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
+    allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
+    """
+    stmt = (
+        select(Document.id, Document.title, Document.kind_override)
+        .join(DocumentDetail, Document.id == DocumentDetail.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(
             DocumentDetail.document_id.in_(group_ids(session, doc_id)),
             DocumentDetail.status == "ok",
+            DocumentDetail.body_text.is_not(None),
+            DocumentDetail.body_text != "",
             Source.rights_level == 1,
             available_condition(),
         )
-    ).all()
-    bodies = {row.document_id: row.body_text for row in rows if row.body_text}
-    return bodies.get(doc_id) or max(bodies.values(), key=len, default=None)
+        .order_by(
+            (Document.id == doc_id).desc(),
+            func.char_length(DocumentDetail.body_text).desc(),
+            Document.id,
+        )
+    )
+    if live_only:
+        stmt = stmt.where(Document.link_gone_at.is_(None))
+    fallback = None
+    for candidate_id, title, kind in session.execute(stmt).all():
+        if allowed_kinds is not None and effective_kind(title, kind) not in allowed_kinds:
+            continue
+        raw = session.scalar(
+            select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
+        )
+        if not raw:
+            continue
+        cleaned = _clean_reading_body(raw, redact=redact)
+        candidate = candidate_id, raw, cleaned
+        if len(cleaned) >= BODY_MIN_CHARS:
+            return candidate
+        if fallback is None:
+            fallback = candidate
+    return fallback
+
+
+def _reading_body(
+    session: Session, doc_id: int, *, allowed_kinds: tuple[str, ...] | None = BODY_KINDS
+) -> str | None:
+    selected = _reading_body_selection(session, doc_id, allowed_kinds=allowed_kinds)
+    return selected[1] if selected else None
 
 
 @router.get("/documents/{doc_id}")
@@ -2105,19 +2399,16 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="没有找到这份文件")
     doc, src = row
-    # AI 入口用（不需要身份）：open 是对所有用户开放（D-066）；interpret、clause 是这份
-    # 文件能不能做。白名单内测时 open 为假，但文件能不能做照样给，内测成员的入口靠它判断。
-    # 总开关关着时都不算。
-    settings = get_settings()
-    ai_enabled = bool(getattr(settings, "ai_advisor_enabled", False))
-    ai_open = ai_enabled and getattr(settings, "ai_advisor_audience", None) == "all"
-    ai_eligible = False
-    if ai_enabled:
-        try:
-            interpret.eligible_body(session, doc.id)
-            ai_eligible = True
-        except interpret.InterpretRefusal:
-            pass
+    # AI 入口用（不需要身份）：interpret、clause 是这份文件能不能做，reason 是不能做的原因代码
+    # （D-075）。只说文件本身的属性、按原文实时判断，和 AI 开没开无关，admin、api 两个服务算出来
+    # 一样。AI 开没开、这个人能不能用只问 api（/advisor/mode、能力接口）：详情多半由 admin 回，
+    # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
+    ai_reason: str | None = None
+    try:
+        interpret.eligible_body(session, doc.id)
+    except interpret.InterpretRefusal as exc:
+        ai_reason = exc.code or "unavailable"
+    ai_eligible = ai_reason is None
     detail = _details(session, [doc.id]).get(doc.id)
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
@@ -2204,7 +2495,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
         and clues.pending_count(session) < 50
     )
     payload = {
-        "ai": {"open": ai_open, "interpret": ai_eligible, "clause": ai_eligible},
+        "ai": {
+            "interpret": ai_eligible,
+            "clause": ai_eligible,
+            "reason": ai_reason,
+        },
         "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
@@ -2250,7 +2545,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
             recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
         ),
         "checked": checked,
-        "body": body_for_reading(_reading_body(session, doc.id), kind),
+        "body": _detail_body(session, doc, kind),
     }
     if fields:
         payload["fields"] = fields
@@ -2263,6 +2558,17 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if repost and repost["others"]:
         payload["repost"] = _repost_detail(session, doc.id, repost)
     return payload
+
+
+def _detail_body(session: Session, doc: Document, kind: str) -> dict:
+    list_filter = list_body_filter(session, doc) if kind == "名单" else None
+    if kind == "名单" and list_filter is None:
+        # 失信、处罚类和个人类名单：和站内阅读页一样按"不展示"说，不引导去查名单
+        return {"status": "original"}
+    allowed = LIST_BODY_KINDS if list_filter is not None else BODY_KINDS
+    return body_for_reading(
+        _reading_body(session, doc.id, allowed_kinds=allowed), kind, list_filter=list_filter
+    )
 
 
 def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
@@ -2418,9 +2724,9 @@ def calendar(
     return {
         "today": d.isoformat(),
         "total": len(upcoming),
-        "items": items(upcoming)[offset : offset + limit],
+        "items": _shown_with_ai(session, items(upcoming)[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        "past": items(past)[offset : offset + limit],
+        "past": _shown_with_ai(session, items(past)[offset : offset + limit], key="docId"),
         # 空状态说明用：已核对截止的文件份数（与截止雷达的 verified_total 同一口径，只给数字）
         "verifiedTotal": verified_total(session),
     }
@@ -2536,11 +2842,15 @@ def _calendar_payload_excerpts(
     return {
         "today": today.isoformat(),
         "total": len(upcoming),
-        "items": upcoming[offset : offset + limit],
+        "items": _shown_with_ai(session, upcoming[offset : offset + limit], key="docId"),
         "pastTotal": len(past),
-        "past": past[offset : offset + limit],
+        # 已截止的也带 ai（能不能解读不随截止变）；按钮放不放由小程序定（D-075：已截止的不放）
+        "past": _shown_with_ai(session, past[offset : offset + limit], key="docId"),
         "verifiedTotal": verified_total(session),
-        "unverifiedSoon": {"total": len(unverified), "items": unverified[:50]},
+        "unverifiedSoon": {
+            "total": len(unverified),
+            "items": _shown_with_ai(session, unverified[:50]),
+        },
     }
 
 
@@ -2608,7 +2918,8 @@ def lookup_lists(
     request: Request,
     session: SessionDep,
     q: Annotated[
-        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+        str,
+        Query(min_length=2, max_length=100, description="企业全称（也认统一社会信用代码）"),
     ],
 ) -> dict:
     """查名单：这家企业上过哪些名单。
@@ -2633,11 +2944,10 @@ def lookup_lists(
         )
     candidates = lookup_name_candidates(session, query) if query and not lookup.matches else []
     if not query or (person and not candidates):
-        raise HTTPException(
-            status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
-        )
+        raise HTTPException(status_code=422, detail="只查企业和机构，请输入企业全称")
     masters = lookup.master_ids
     best = {match.master_id: match for match in lookup.matches}
+    tokens = list_evidence.entry_tokens(session, [m.entry_id for m in lookup.matches])
     rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
     items: list[dict] = []
     for item in _items(session, [tuple(r) for r in rows]):
@@ -2650,6 +2960,8 @@ def lookup_lists(
             "creditCode": entry.credit_code,
             "region": entry.region,
             "via": "name" if entry.normalized_name == query else "creditCode",
+            # 查"原名单里的那一行"用（D-088）：带签名，只有查到这家企业的人拿得到
+            "entryToken": tokens.get(entry.entry_id),
         }
         items.append(item)
     shown_names = {entry.normalized_name for entry in best.values()}
@@ -2682,12 +2994,6 @@ def lookup_lists(
             ),
             key=lambda x: -x["lists"],
         )[:10]
-    lists_total, since = session.execute(
-        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1, available_condition())
-    ).one()
     return {
         "query": q.strip(),
         "items": items,
@@ -2695,7 +3001,196 @@ def lookup_lists(
         "candidates": candidates,
         "ambiguous": lookup.ambiguous,
         "truncated": lookup.truncated,
-        "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
+        "coverage": _lookup_coverage(session),
+    }
+
+
+# 查名单的比对范围（收录份数、最早日期、没读出和没读全的份数）是整库统计，不在每次查询时都重算：
+# 名单数据版本（解析记录、人工定的类型、下架和归并，见 report_revision）没变时 60 秒内复用。
+# 下架、重新解析后马上失效（管理服务和接口服务是不同进程，靠数据库里的版本）；来源权限这类少见的
+# 改动最多晚 60 秒
+LOOKUP_COVERAGE_TTL = 60
+_LOOKUP_COVERAGE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
+
+
+def _lookup_coverage(session: Session) -> dict[str, Any]:
+    revision = publication_revision(session, "lists")
+    cached = _LOOKUP_COVERAGE.get("all")
+    current = _time.monotonic()
+    if cached and cached[0] == revision and current - cached[1] < LOOKUP_COVERAGE_TTL:
+        return dict(cached[2])
+    lists_total, since = session.execute(
+        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1, available_condition(), list_title_allowed())
+    ).one()
+    unread, partial = _unread_lists(session)
+    coverage = {
+        "lists": lists_total,
+        "since": since.isoformat() if since else None,
+        # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
+        "unreadLists": unread,
+        "partialLists": partial,
+    }
+    _LOOKUP_COVERAGE["all"] = (revision, current, coverage)
+    return dict(coverage)
+
+
+def _unread_lists(session: Session) -> tuple[int, int]:
+    """公开的名单文件里，没读出企业名称的份数（扫描件、旧格式、表格没认出来、详情取不到）、
+    只读了前面一部分的份数（PDF 超过页数上限）。"""
+    has_entries = (
+        select(ListEntry.id).where(ListEntry.document_id == ListParse.document_id).exists()
+    )
+    base = (
+        select(func.count(func.distinct(ListParse.document_id)))
+        .join(Document, Document.id == ListParse.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            Source.rights_level == 1,
+            available_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            list_title_allowed(),
+        )
+    )
+    unread = session.scalar(base.where(~has_entries)) or 0
+    partial = (
+        session.scalar(base.where(has_entries, ListParse.failure_reason.like("%仅解析前%"))) or 0
+    )
+    return unread, partial
+
+
+_EVIDENCE_REASONS = {
+    "scan": "原文附件是扫描图片，读不出文字",
+    "empty": "原文附件里没有文字",
+    "broken": "原文附件损坏或加了密",
+    "format": "原文附件的格式暂不支持",
+    "too_large": "原文附件太大",
+    "webpage": "原网站给的不是文件",
+    "gone": "原网站已经没有这个附件",
+    "unavailable": "原网站暂时下载不了这个附件",
+}
+
+
+def _where_text(where: dict) -> str:
+    """原文位置的说法：第 3 页第 1 个表第 12 行；工作表"Sheet1"第 120 行；第 2 个表第 5 行。"""
+    parts = []
+    if where.get("sheet"):
+        parts.append(f"工作表“{where['sheet']}”")
+    if where.get("page"):
+        parts.append(f"第 {where['page']} 页")
+    if where.get("table"):
+        parts.append(f"第 {where['table']} 个表")
+    if where.get("row"):
+        parts.append(f"第 {where['row']} 行")
+    return "".join(parts)
+
+
+@router.get("/lists/record")
+def list_record(
+    request: Request,
+    session: SessionDep,
+    entry: Annotated[
+        str, Query(min_length=3, max_length=40, description="查名单结果里的 entryToken")
+    ],
+) -> dict:
+    """查名单结果里一条记录在原名单里的那一行（D-088）：只给这一行和列名、在原文的位置，个人信息
+    列不显示，不提供整份名单，也不给原文链接。条目编号要用查名单时给的加密编号。"""
+    _limit_lookup(request)
+    entry_id = list_evidence.parse_entry_token(session, entry)
+    row = session.get(ListEntry, entry_id) if entry_id is not None else None
+    doc = None
+    if row is not None:
+        doc = session.execute(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Document.id == row.document_id,
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                list_title_allowed(),
+            )
+        ).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="没有找到这条记录，请重新查询")
+    document, source = doc
+    kind = effective_kind(document.title, document.kind_override)
+    location = session.get(ListEntryLocation, row.id)
+    evidence_source = session.scalar(
+        select(ListEvidenceSource).where(
+            ListEvidenceSource.url_hash == list_evidence.url_key(row.source_url)
+        )
+    )
+    parsed_from = session.scalar(
+        select(ListParse.source_kind).where(
+            ListParse.document_id == row.document_id, ListParse.source_url == row.source_url
+        )
+    )
+    rows: list[dict] = []
+    if parsed_from == "detail":
+        # 名单在通知网页正文的表格里：原文那一行暂时只能给解析出的记录
+        state = "in_body"
+    elif evidence_source is None or (location is None and evidence_source.status != "failed"):
+        state = "pending"
+    elif evidence_source.status == "failed":
+        state = "failed"
+    elif location.state in ("ok", "multiple", "ambiguous"):
+        state = "found"
+        for stored in location.rows:
+            # 存的时候已只留公开的列（list_evidence.shown_cell）；这里按列名再挡一次个人信息列
+            # （名称列除外），文字再脱敏一遍。name：这一格是名称列（查到的那家单位）
+            cells = [
+                {
+                    "h": cell.get("h") or "",
+                    "t": redact_sensitive(str(cell.get("t", ""))),
+                    "name": bool(cell.get("n")),
+                }
+                for cell in stored.get("cells", [])
+                if cell.get("n") or not list_evidence.personal_header(cell.get("h"))
+            ]
+            rows.append(
+                {
+                    "where": _where_text(stored.get("where") or {}),
+                    "cells": cells,
+                    "hidden": int(stored.get("hidden") or 0),
+                }
+            )
+    elif location.state == "no_name_column":
+        # 原文表格里没认出哪一列是企业名称：不说"原文里没有这一行"
+        state = "no_column"
+    else:
+        state = "notfound"
+    partial = evidence_source is not None and evidence_source.status == "partial"
+    return {
+        "entry": {
+            "name": redact_sensitive(row.name),
+            "category": row.category,
+            "batch": row.batch,
+            "region": row.region,
+        },
+        "document": {
+            "id": str(document.id),
+            "title": redact_sensitive(document.title),
+            "status": list_status(document.title, kind),
+            "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
+            "date": document.publish_date.isoformat() if document.publish_date else None,
+            "region": region_label(source.province, source.level, source.city, source.district),
+            # 只给网站名称和域名（和站内阅读的出处一样），不给原文链接
+            "site": f"{source.dept_full_name}网站",
+            "host": urlsplit(document.url).hostname or "",
+            "link_gone": link_gone_date(document.link_gone_at),
+        },
+        "evidence": {
+            "state": state,
+            "rows": rows,
+            "more": location is not None and location.state == "ambiguous",
+            "partial": partial,
+            "pagesRead": evidence_source.pages_read if partial else None,
+            "reason": _EVIDENCE_REASONS.get(evidence_source.reason or "")
+            if state == "failed" and evidence_source is not None
+            else None,
+        },
     }
 
 

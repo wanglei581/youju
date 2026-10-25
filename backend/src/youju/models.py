@@ -362,6 +362,8 @@ class DocumentDetail(Base):
     """详情抓取结果；失败也留一行，仅临时错误按退避时间重试。"""
 
     __tablename__ = "document_details"
+    # AI 解读可用性每 10 分钟按抓取时间找最近有变化的正文（D-075，youju/ai/eligibility.py）
+    __table_args__ = (Index("ix_document_details_fetched_at", "fetched_at"),)
 
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
@@ -448,6 +450,121 @@ class AttachmentCopy(Base):
     # 下次检查时间：空值表示尽快
     next_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+# 附件文字取不出、下载不了的原因（youju/attachment_text.py 的 REASONS 写了每个的意思）
+ATTACHMENT_TEXT_REASONS = (
+    "scan",
+    "empty",
+    "broken",
+    "format",
+    "too_large",
+    "webpage",
+    "gone",
+    "unavailable",
+)
+_TEXT_REASON_SQL = ", ".join(f"'{r}'" for r in ATTACHMENT_TEXT_REASONS)
+
+
+class AttachmentTextUrl(Base):
+    """给 AI 用的附件文字，第一层"附件（原网站链接）"（youju/attachment_text.py）：按原站链接一条，
+    指向这个链接现在的内容版本。附件副本的定时任务下载时顺带取文字、更新这一行；原网站删了、
+    内容变了，这一行改指新版本或清空（撤下旧文字）。超出范围（申报通知 180 天、政策 90 天、
+    下架、名单类）的整行删掉。"""
+
+    __tablename__ = "attachment_text_urls"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_attachment_text_urls_url"),
+        Index("ix_attachment_text_urls_changed_at", "changed_at"),
+        CheckConstraint(
+            "status IN ('pending', 'ok', 'failed')", name="ck_attachment_text_urls_status"
+        ),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_urls_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # 附件题录里的扩展名（统计"每种格式能读多少"按它分）
+    declared_type: Mapped[str] = mapped_column(String(8))
+    # pending：还没取；ok：有文字（version_id）；failed：取不出或下载不了（reason）
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    # 现在的内容版本：下载到了文件就有（取不出文字的版本也记，原因在版本上）；原网站删了、
+    # 下载到的是网页、超过 20MB 等就清空
+    version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="SET NULL")
+    )
+    # 按哪一版取文字规则处理过（attachment_text.EXTRACTOR_VERSION）：0 是还没处理过；不是当前
+    # 版本的要重新下载、重取。网络等临时问题不改它，到 retry_at 再试
+    extractor: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 指向的版本、状态或原因变了的时间（第 2 步按它找要重算"能不能解读"的通知）
+    changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class AttachmentTextVersion(Base):
+    """附件文字第二层"内容版本"：按文件内容的 SHA-256 一条，内容相同的几个链接共用。记下这份内容
+    能不能取出文字、取了多少；文字本身在 AttachmentTextSegment。没有链接指向的版本连同文字删掉。"""
+
+    __tablename__ = "attachment_text_versions"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_attachment_text_versions_sha256"),
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_attachment_text_versions_status"),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_versions_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    # 按文件头判断的实际格式（wps 多半是 doc、et 多半是 xls）；认不出时为空
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    size: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    extractor: Mapped[int] = mapped_column(Integer)
+    # 取出的段数、字数（遮过号码以后的；表格行按"格 | 格"连起来算）
+    segments: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    chars: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # PDF 的页数，以及其中像扫描件（几乎没有文字、只有图片）的页数：这些页的字没取到
+    pages: Mapped[int | None] = mapped_column(Integer)
+    scanned_pages: Mapped[int | None] = mapped_column(Integer)
+    # 遮过号码的段数
+    masked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    extracted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AttachmentTextSegment(Base):
+    """附件文字第三层：按阅读顺序一段一行（段落一行、表格一行一行），身份证号、手机号、银行账号
+    入库前已遮掉。loc 记出处：PDF 第几页、工作表名和行号、第几个表格的第几行、第几张幻灯片；
+    表格行的 cells 记每一格的列号、所在列的表头和文字。"""
+
+    __tablename__ = "attachment_text_segments"
+    __table_args__ = (
+        UniqueConstraint("version_id", "n", name="uq_attachment_text_segments_n"),
+        CheckConstraint("kind IN ('p', 'head', 'row')", name="ck_attachment_text_segments_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="CASCADE")
+    )
+    # 第几段（从 1 起，段落和表格行一起按阅读顺序编）
+    n: Mapped[int] = mapped_column(Integer)
+    # p：段落；head：表头行；row：表格的其他行
+    kind: Mapped[str] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(LongText)
+    loc: Mapped[dict | None] = mapped_column(JSONType)
+    cells: Mapped[list | None] = mapped_column(JSONType)
 
 
 class DocumentField(Base):
@@ -591,6 +708,64 @@ class AIUsage(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
 
+# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py。
+# link_gone（原网页已撤下，youju/link_check.py）不存进 ai_eligibility：读表时按
+# documents.link_gone_at 当场换上，标上、恢复都不用等重算（表的约束只认前面几种）
+AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long", "link_gone")
+AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gone")
+
+
+class AIEligibility(Base):
+    """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
+
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
+    读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
+    能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
+
+    __tablename__ = "ai_eligibility"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_STORED_REASONS) + ")",
+            name="ck_ai_eligibility_reason",
+        ),
+        # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）
+        Index("ix_ai_eligibility_computed_at", "computed_at"),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(16))
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIHeartbeat(Base):
+    """AI 设置心跳（D-075）：两个服务各一行。
+
+    - service=admin：admin 的后台任务每分钟写一次，写明它这边能不能处理 AI 任务；
+    - service=api：api 服务最多每 5 分钟写一次自己的设置指纹，给 admin 比对、发提醒。
+
+    fingerprint 是总开关、开放范围、白名单、全站每天上限的哈希，不存白名单明文
+    （youju/ai/heartbeat.py）。admin 那一行另记：alerted_at 上次为设置不一致、admin 处理不了、
+    退回任务发提醒的时间（每小时最多一次）；notice_at 上次提醒"api 心跳没来"的时间（每天最多
+    一次）；refunds_pending 因为 admin 处理不了（没开 AI 或缺密钥）退回、还没报出去的任务个数
+    （advisor-run 加，提醒发出去后减）。"""
+
+    __tablename__ = "ai_heartbeat"
+    __table_args__ = (
+        CheckConstraint("service IN ('admin', 'api')", name="ck_ai_heartbeat_service"),
+    )
+
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    beat_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
 CONDITION_CATEGORIES = ("主体资格", "财务指标", "知识产权", "人员", "其他")
 
@@ -716,6 +891,80 @@ class ListEntry(Base):
     document: Mapped[Document] = relationship(back_populates="list_entries")
 
 
+class ListEvidenceSource(Base):
+    """查名单站内闭环（D-088）：一份名单附件（原站链接）读取的结果。
+
+    名单附件只为找到"企业在原名单里的那一行"读一遍，整份文字不落库、不存副本，也不进给 AI 用的
+    附件文字表；每条条目命中的那几行存进 list_entry_locations。"""
+
+    __tablename__ = "list_evidence_sources"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_list_evidence_sources_url"),
+        CheckConstraint(
+            "status IN ('ok', 'partial', 'failed')", name="ck_list_evidence_sources_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # ok 读全了；partial 只读了前面一部分（PDF 超过页数上限）；failed 没读出来
+    status: Mapped[str] = mapped_column(String(16))
+    # 没读出来的原因（attachment_text.REASONS 的代码，或下载失败的原因）
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    pages_total: Mapped[int | None] = mapped_column(Integer)
+    pages_read: Mapped[int | None] = mapped_column(Integer)
+    # 取文字规则（attachment_text.EXTRACTOR_VERSION）和定位规则（evidence.LOCATOR_VERSION）的版本，
+    # 任何一个升级就重读
+    extractor: Mapped[int] = mapped_column(Integer)
+    locator: Mapped[int] = mapped_column(Integer)
+    # 读的时候这份附件有几条条目、几条找到了原文那一行；条目数变了（名单重新解析过）就重读
+    entries: Mapped[int] = mapped_column(Integer, default=0)
+    located: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    # 网络等临时问题：到这个时间再试
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class ListEntryLocation(Base):
+    """名单条目在原文附件里的那一行（D-088）：rows 是命中的行，最多 5 行；每行记在原文的位置和各格
+    （列名、文字），个人信息列已去掉，号码已遮。state：ok 一处、multiple 两到五处、ambiguous 超过
+    五处（只存前五处）、notfound 原文里没找到、no_name_column 认不出名称列。不按序号推算位置。
+    条目重新解析（删了重写）时随外键删除，下一轮重读。"""
+
+    __tablename__ = "list_entry_locations"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('ok', 'multiple', 'ambiguous', 'notfound', 'no_name_column')",
+            name="ck_list_entry_locations_state",
+        ),
+        Index("ix_list_entry_locations_source", "source_id"),
+    )
+
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("list_entries.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("list_evidence_sources.id", ondelete="CASCADE")
+    )
+    state: Mapped[str] = mapped_column(String(16))
+    rows: Mapped[list] = mapped_column(JSONType)
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class SigningKey(Base):
+    """服务端签名用的随机密钥（迁移时生成，两个服务都只读）。list_entry：查名单结果里条目编号的
+    签名，只有查到这家企业的人拿得到某条条目的编号，不能按顺序把整份名单一条条翻出来（D-088）。"""
+
+    __tablename__ = "signing_keys"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key_hex: Mapped[str] = mapped_column(String(64))
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -727,14 +976,6 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    # 下面四列是同行引荐、首次批量奖励用的（迁移 0027）：两项已删（D-061、D-070），程序不再写入；
-    # 注销时仍断开以前留下的引荐关系（rewards.anonymize）。删列另提迁移
-    invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
-    invited_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
-    )
-    invited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    batch_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -867,9 +1108,31 @@ class Subscription(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+# 纠错处理结果（差距清单 C1，《网络信息内容生态治理规定》第十六条"反馈处理结果"）：
+# 管理台标记已处理时选一项，用户在"我的数据"里看到这句话和处理人写的说明
+# 纠错、申请覆盖、支付问题的处理结果（差距清单 C1）：代码 → 用户在"我的数据"里看到的文字。
+# 每类反馈能选哪几个见 api/app.py 的 FEEDBACK_OUTCOME_CHOICES
+FEEDBACK_OUTCOMES = {
+    "fixed": "已更正",
+    "unchanged": "已核对，和原文一致，没有改",
+    "removed": "已下架这份文件",
+    "noted": "已收到，作为建议记下",
+    "added": "已接入这个栏目",
+    "declined": "暂不接入",
+    "resolved": "已处理",
+}
+
+
 class Feedback(Base):
     __tablename__ = "feedback"
-    __table_args__ = (Index("ix_feedback_user", "user_id"),)
+    __table_args__ = (
+        Index("ix_feedback_user", "user_id"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('fixed', 'unchanged', 'removed', 'noted', 'added', 'declined', 'resolved')",
+            name="ck_feedback_outcome",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
@@ -878,6 +1141,10 @@ class Feedback(Base):
     check_result: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     handled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 处理结果（见 FEEDBACK_OUTCOMES）和处理人写给用户的一句说明，标记处理时填、撤回时一起清掉。
+    # 0038 之前标记处理的旧记录这两列是空的，小程序照旧只写"已处理"
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    reply: Mapped[str | None] = mapped_column(String(200))
     # 纠错分诊（D-023）：规则和 AI 复查对应文件已发布的截止日期的结果，给处理的人看；
     # 用户写的内容不发给 AI
     triage_note: Mapped[str | None] = mapped_column(String(300))
@@ -928,6 +1195,23 @@ class AccessLog(Base):
     uid: Mapped[str | None] = mapped_column(String(16))
     # 核对台操作：做了什么、对哪条记录（操作人、编号、条数），见 api/app.py 的 _audit
     detail: Mapped[dict | None] = mapped_column(JSONType)
+
+
+class AccessDaily(Base):
+    """每天（北京时间）每个服务的小程序接口请求汇总，访问日志归档前算好（差距清单 M3）：
+    运维日报据此报"接口 99% 在 3 秒内成功"（D-061 第七节）这个数。暂存表每天归档后就删，
+    到早上 8 点的日报已经算不到前一天，所以要先存下来。只有计数：不含 IP、用户编号和路径。
+    只算 /api/v1/ 下的接口（小程序用的）；管理台、平台探测不算。"""
+
+    __tablename__ = "access_daily"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer)
+    # 返回 5xx 的
+    errors: Mapped[int] = mapped_column(Integer)
+    # 没返回 5xx、但超过 3 秒才答复的
+    slow: Mapped[int] = mapped_column(Integer)
 
 
 class AppKey(Base):
@@ -993,7 +1277,7 @@ class PayOrder(Base):
 
 
 class InvoiceRequest(Base):
-    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人每月统一开具后在管理台标记。
+    """开票申请：每笔已完成的订单一份，用户填抬头和接收邮箱，创始人当月开出后在管理台标记。
     属于订单的会计凭证：注销时只断开用户，不删除；订单按保存期清理时一并删除。"""
 
     __tablename__ = "invoice_requests"
@@ -1017,6 +1301,8 @@ class InvoiceRequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     note: Mapped[str | None] = mapped_column(String(300))
     issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 已开的发票、订单退款后，负责人按退款金额开了红字发票的时间（迁移 0036；退款不等冲红，D-074）
+    reversed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
@@ -1052,26 +1338,6 @@ class DeadlineClue(Base):
     )
 
 
-class RewardClaim(Base):
-    """以前跨注销防重复领取用的凭据（openid 的 HMAC，能重算，属于去标识化而不是匿名化）。
-
-    10/18 起程序不再写入：加量体验注销即删（D-071 第②条），首次批量、引荐两类奖励已删
-    （D-061、D-070）。表和约束先留着（旧数据和回退用），旧行由 youju cleanup 全部删掉；
-    删表另提迁移。"""
-
-    __tablename__ = "reward_claims"
-    __table_args__ = (
-        CheckConstraint(
-            "kind IN ('first_batch', 'referred', 'referral', 'boost_trial')",
-            name="ck_reward_claim_kind",
-        ),
-        Index("ix_reward_claims_claimed", "claimed_at"),
-    )
-    pseudonym: Mapped[str] = mapped_column(String(64), primary_key=True)
-    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
-    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True)
-
-
 class PassReward(Base):
     """赠送天数的流水，每次赠送一笔（D-070 逐笔记账）；包括发放零天的奖励审计；
     注销保留流水并断开用户关联。
@@ -1083,6 +1349,7 @@ class PassReward(Base):
     __table_args__ = (
         UniqueConstraint("ref_type", "ref_id", name="uq_pass_rewards_ref"),
         Index("ix_pass_rewards_user_granted", "user_id", "granted_at"),
+        # first_batch、referral 两项奖励已删（D-061、D-070），旧流水还要照常显示，所以约束保留
         CheckConstraint(
             "kind IN ('first_batch', 'correction', 'source', 'referral', 'deadline_clue',"
             " 'renewal', 'trial')",

@@ -1,10 +1,9 @@
 const api = require('../../utils/api.js');
 const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText } = require('../../utils/format.js');
-const { copyLink } = require('../../utils/copy.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
-const { exportDocs } = require('../../utils/exporter.js');
+const { previewDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
@@ -86,6 +85,16 @@ Page({
     this.load();
   },
 
+  // 标题卡里那行提示（D-075）：滚到"要点"下面的卡片
+  toAi() {
+    wx.pageScrollTo({ selector: '#ai-entry', duration: 300 });
+  },
+
+  // 卡片上"看附件"：滚到附件那一块
+  toAttachments() {
+    wx.pageScrollTo({ selector: '#attachments', duration: 300 });
+  },
+
   // 转发给好友和群（D-070）：接收人不用登录也能打开同一份文件；不带任何奖励
   onShareAppMessage() {
     const { doc } = this.data;
@@ -130,7 +139,7 @@ Page({
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
-          // 附件：存有副本的点了在小程序里打开，其他的复制原文链接并说明原因
+          // 附件：在独立原生阅读页查看内容及实时处理状态
           atts: attachments.decorate(doc.attachments),
           attNote: attachments.note(doc.attachments),
           // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
@@ -204,10 +213,6 @@ Page({
     if (id && !current) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
   },
 
-  copyVersion(e) {
-    copyLink(e.currentTarget.dataset.url);
-  },
-
   openNew(e) {
     const id = e.currentTarget.dataset.id;
     if (id) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
@@ -238,24 +243,29 @@ Page({
     });
   },
 
-  copy() {
-    copyLink(this.data.doc && this.data.doc.url);
+  // 名单类通知的正文里名单没展开（D-092）：去查名单查企业
+  toLists() {
+    wx.navigateTo({ url: '/pages/lists/index' });
   },
 
-  // 点附件：能打开的下载后用微信打开（右上角菜单可转发、保存）；不能打开的复制原文链接并说明原因
+  readBody() {
+    if (this.data.doc) wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(this.data.doc.id)}` });
+  },
+
+  // 点附件：进入原生阅读页，不把失败变成复制外链。
   openAttachment(e) {
     const att = this.data.atts[e.currentTarget.dataset.index];
     const { doc } = this.data;
     if (!att || !doc || this.openingAttachment) return;
     this.openingAttachment = true;
     const done = () => { this.openingAttachment = false; };
-    attachments.open(att, doc.url).then(done, done);
+    attachments.open(att, doc.id).then(done, done);
   },
 
-  // 导出本份：Excel 或 Word，含原文链接和数据说明
+  // 先在小程序内查看本份文件目录，再按需保存。
   exportDoc() {
     const { doc } = this.data;
-    if (doc) exportDocs([doc.id], { label: doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title });
+    if (doc) previewDocs([doc.id], { label: doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title });
   },
 
   feedback() {

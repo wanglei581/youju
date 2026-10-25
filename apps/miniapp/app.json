@@ -23,7 +23,11 @@
     "pages/advisor-terms/index",
     "pages/advisor-trial/index",
     "pages/pass/index",
-    "pages/orders/index"
+    "pages/orders/index",
+    "pages/ai/index",
+    "pages/help/index",
+    "pages/reader/index",
+    "pages/results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -53,6 +57,10 @@
       {
         "pagePath": "pages/me/index",
         "text": "我的"
+      },
+      {
+        "pagePath": "pages/ai/index",
+        "text": "AI"
       }
     ]
   },
