@@ -10,11 +10,14 @@
 .cell { flex: 0 0 260rpx; min-width: 260rpx; box-sizing: border-box; padding: 16rpx; border: 1rpx solid var(--line); font-size: 26rpx; white-space: pre-wrap; word-break: break-all; }
 .pagination, .actions { display: flex; align-items: center; gap: 20rpx; margin-top: 28rpx; }
 /* 新版按钮样式会盖掉内边距，要加 !important；按钮字不折行 */
-.pagination button, .actions button { flex: 1; font-size: 26rpx; padding: 0 8rpx !important; white-space: nowrap; }
+.pagination button, .actions button { flex: 1; min-height: 72rpx; display: flex; align-items: center; justify-content: center; font-size: 26rpx !important; font-weight: 400; padding: 0 8rpx !important; white-space: nowrap; border: 2rpx solid var(--line2); border-radius: 36rpx; background: #FFFFFF; color: var(--t1); }
+.pagination button::after, .actions button::after { border: none; }
 
 .cell-head { font-weight: 600; background: var(--fill); }
 .record-meta { display: block; margin-top: 8rpx; font-size: 26rpx; line-height: 1.7; word-break: break-all; }
 .nowrap { white-space: nowrap; }
+/* 名单附件、名单类正文：去查名单的主按钮占满一行（新版按钮样式要 !important） */
+.lookup-btn { width: 100% !important; margin: 24rpx 0 0 !important; }
 .kv { margin-top: 4rpx; border: 1rpx solid var(--line); border-radius: 12rpx; overflow: hidden; }
 .kv-row { display: flex; gap: 20rpx; padding: 16rpx 20rpx; border-top: 1rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
 .kv-row:first-child { border-top: 0; }

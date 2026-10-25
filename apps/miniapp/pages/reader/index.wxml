@@ -47,7 +47,7 @@
 <block wx:else>
   <view class="card">
     <view class="h1">{{title || '站内阅读'}}</view>
-    <view wx:if="{{source}}" class="muted provenance">{{source.issuer}} {{source.date}}<view>{{source.title}}</view><view>来源 {{source.host}}</view></view>
+    <view wx:if="{{source}}" class="muted provenance">{{source.issuer}} <text class="nowrap">{{source.date}}</text><view>{{source.title}}</view><view>来源 {{source.host}}</view></view>
     <view wx:if="{{loading}}" class="muted">正在加载阅读内容…</view>
     <view wx:if="{{error}}" class="error"><text>{{error}}</text><button bindtap="retry" class="btn-primary">{{changed ? '重新加载' : '重试'}}</button></view>
     <block wx:if="{{!loading && !error}}">
@@ -61,9 +61,9 @@
         </scroll-view>
       </view>
       <view wx:if="{{!segments.length && !notice}}" class="muted">暂未取得可阅读内容。</view>
-      <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
+      <view wx:if="{{segments.length || page > 1}}" class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
       <view wx:if="{{complete}}" class="muted">已到本版本内容末尾。</view>
-      <button wx:if="{{status === 'list'}}" bindtap="lookup">在已收录名单中查询企业</button>
+      <button wx:if="{{status === 'list'}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
     </block>
   </view>
   <view class="card actions"><button bindtap="feedback">反馈内容问题</button><button bindtap="detail">返回文件详情</button></view>
