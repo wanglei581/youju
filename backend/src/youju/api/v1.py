@@ -2018,17 +2018,32 @@ _LABEL_AT_END = re.compile(
 )
 # 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：（电话见原文）"
 # "刘老师，（电话见原文）""联系电话：88888888（李四）"）；只有"电话""手机"字样、没有号码的（表头
-# "联系电话"、"联系电话：张三"），只遮带称呼的和紧跟在电话标签后面的
+# "联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
 _PHONE_LINE = re.compile(r"电话|手机|（电话见原文）")
 _PHONE = (
     r"(?:（电话见原文）|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
     r"|(?<!\d)\d{7,8}(?!\d))"
 )
 _PHONE_ANY = re.compile(_PHONE)
-_PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]\s*$")
+_PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
 # "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
 _CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
-_TITLE_END = ("老师", "先生", "女士", "同志", "处长", "科长", "主任", "部长", "经理")
+_TITLE_END = (
+    "老师",
+    "先生",
+    "女士",
+    "同志",
+    "处长",
+    "科长",
+    "主任",
+    "部长",
+    "局长",
+    "所长",
+    "站长",
+    "经理",
+    "专员",
+    "工程师",
+)
 # 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（署名已隐去）"，不冒充联系人
 _EDITOR = re.compile(
     r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
@@ -2097,10 +2112,19 @@ def _person(word: str) -> bool:
 
 
 def _masked(token: str, mark: str) -> str | None:
-    """一段里有像姓名的就给遮好的这一段，没有给 None。整段像（"张三""刘老师"）；"张三和李四"
-    拆开都像；"高新处张三"单位用字后面的 2–3 个字像。"""
+    """一段里有像姓名的就给遮好的这一段，没有给 None。整段像（"张三""刘老师"）；去掉称呼后像
+    （"张三处长""王五主任"）；"张三和李四"拆开都像；"高新处张三"单位用字后面的 2–3 个字像。"""
     if _person(token):
         return mark
+    title = next((t for t in _TITLE_END if token.endswith(t) and len(token) > len(t)), None)
+    if title is not None:
+        rest = token[: -len(title)]
+        if _person(rest):
+            return mark
+        inner = _masked(rest, mark)
+        if inner is not None:
+            # "高新区张三处长"：单位留着，姓名连称呼一起遮
+            return inner
     parts = [p for p in re.split(r"[和与及]", token) if p]
     if len(parts) >= 2 and all(_person(p) for p in parts):
         return re.sub(r"[^和与及]+", mark, token)
@@ -2151,11 +2175,11 @@ def _mask_contact_names(text: str) -> str:
         elif _PHONE_LINE.search(line) and _PHONE_ANY.search(line):
             line = _mask_line(line, tokens, _CONTACT_MARK)
         elif _PHONE_LINE.search(line):
+            label = _PHONE_LABEL.search(line)
             near_label = [
                 t
                 for t in tokens
-                if t.endswith(_TITLE_END)
-                or ((i := line.find(t)) >= 0 and _PHONE_LABEL.search(line[:i]) is not None)
+                if t.endswith(_TITLE_END) or (label is not None and line.find(t) >= label.end())
             ]
             line = _mask_line(line, near_label, _CONTACT_MARK)
         # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止

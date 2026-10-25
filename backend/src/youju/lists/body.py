@@ -9,8 +9,8 @@
      序号开头的行，带标点也算）；一个格子一行的表格里只有序号的行（1、2、3……逐个递增）；
      逐行编号的条目连着 5 行以上、编号逐个递增（"1、北京市朝阳区""2、天津市武清区"……，每行
      不超过 40 个字、没有句子标点，"1、申报条件"这类小标题不算）；多列对齐的表格行连着 4 行以上
-     （每行按空格分成的段数一样、至少 3 段）。有条目名称、但带"请、如有、异议、反映、特此"的
-     句子不算。
+     （每行按空格分成的段数一样、3–12 段，带日期也算）。有条目名称、但带"请、如有、异议、反映、
+     特此"的句子不算。
    - 较弱的（行里没有句子标点 ，。；：？！，也不是日期；序号开头、三段以上的表格行带日期也算）：
      只有表头用词（序号、企业名称、姓名……，字间带空格的也算）；
      三段以上空格分开的短词、其中有单位名或人名；第一段只是序号、后面还有别的段；整行只是一个单位名
@@ -18,9 +18,10 @@
      （前后 6 行内还有一行）才算数：正文里偶尔一行被认错不会把前后的通知文字一起挡掉。
    发文机关的署名行（归并组里各版本的来源部门全称、发文机关）和称呼（"各有关企业"）都不算。
 2. 从第一行到最后一行算数的行，连同中间的序号、类别、被折开的半个名称，整块换成一行说明
-   （PLACEHOLDER）；起点前面紧挨着的表头格子（每行不超过 8 个字，不算空格）、终点后面紧跟的几行
-   最后一家的格子（不超过 12 个字的短词，或 30 字以内的半个名称）也算进去，含"请、如有、异议、
-   公示、特此"这类通知用语的不算。这一块前后的通知文字（公示期、异议方式、署名、日期）照常显示。
+   （PLACEHOLDER）；中间隔着通知句子（带句子标点、含公示期、如有异议、请于这类话）的，分成几块各换一行。
+   起点前面紧挨着的表头格子（每行不超过 8 个字，不算空格）、终点后面紧跟的几行最后一家的格子
+   （不超过 12 个字的短词，或 30 字以内的半个名称）也算进去，含"请、如有、异议、公示、特此"这类
+   通知用语的不算。这一块前后的通知文字（公示期、异议方式、署名、日期）照常显示。
 3. 不放行的情况（整篇不展示正文，Filtered.reason 说为什么）：挡了名单、剩下的通知文字不到
    MIN_CHARS 字（list，正文主要是名单）；挡完以后留下的文字里还有 LEAK_NAMES 家以上名单里的单位
    名称（按名称开头几个字找，mixed：有名单没认出来，宁可不给）。没认出名单、正文本来就不到
@@ -97,8 +98,29 @@ _NOTICE_WORDS = (
 _OBJECTION_WORDS = ("请", "如有", "异议", "反映", "特此")
 # 逐行编号的通知小标题常用词（"1、申报条件""2、材料要求"）：带这些词、又不是单位名的不算名单条目
 _OUTLINE_WORDS = ("条件", "要求", "材料", "事项", "程序", "办法", "流程", "安排")
-# 多列对齐的表格行（格子之间只剩空格）：连着这么多行、每行段数一样（至少 3 段）就算名单
-_ALIGNED_MIN, _ALIGNED_COLUMNS = 4, 3
+# 多列对齐的表格行（格子之间只剩空格）：连着这么多行、每行段数一样（3–12 段）就算名单
+_ALIGNED_MIN, _ALIGNED_COLUMNS, _ALIGNED_MAX_COLUMNS = 4, 3, 12
+# 名单那一块不能跨过的通知句子：带句子标点、含这些通知用语、至少这么多字（"公示期为……如有异议，
+# 请向市科技局反映。"）；两边各自成块，各换一行说明。用词要具体：表格格子里也会有"请柬"这类字
+_BARRIER_MIN = 10
+_BARRIER_WORDS = (
+    "公示期",
+    "公示时间",
+    "公示日期",
+    "如有异议",
+    "异议",
+    "反映",
+    "举报",
+    "特此",
+    "联系人",
+    "联系电话",
+    "咨询电话",
+    "请于",
+    "请在",
+    "请向",
+    "请各",
+    "请以",
+)
 # 被折开的半个名称（"某某（天津）网络安全科技有限责任公"）
 _NAME_PIECE = re.compile(r"有限|股份|公司|集团|科技|研究|技术|中心")
 # 名单表头常用词：整行只有这些词的是表头
@@ -175,12 +197,14 @@ def _org_or_person(value: str) -> bool:
 
 
 _HEADER_WORD_MAX = max(len(word) for word in HEADER_WORDS)
+_HEADER_CHARS = frozenset("".join(HEADER_WORDS))
 
 
 def _header_only(value: str) -> bool:
     """去掉空格后整行能拆成表头用词（"序号 企业名称""序 号 姓 名 工 作 单 位 职 务"）。"""
     compact = re.sub(r"\s+", "", value)
-    if not compact or len(compact) > 60:
+    # 先看字：有表头用词里没有的字就不是（大多数行到这里就结束，长正文不慢）
+    if not compact or len(compact) > 60 or not _HEADER_CHARS.issuperset(compact):
         return False
     ok = [True] + [False] * len(compact)
     for end in range(1, len(compact) + 1):
@@ -279,7 +303,8 @@ def _numbered_runs(lines: list[str]) -> set[int]:
             match is not None
             and len(stripped) <= _ITEM_MAX
             and not _SENTENCE.search(stripped)
-            and not _DATE.search(stripped)
+            # 带日期的只认表格行（三段以上："1、某某团队 2024年5月 创业组"）
+            and (not _DATE.search(stripped) or len(stripped.split()) >= 3)
             and (
                 not any(word in stripped for word in _OUTLINE_WORDS)
                 or valid_org_name(_bare(stripped))
@@ -303,10 +328,10 @@ def _numbered_runs(lines: list[str]) -> set[int]:
 
 
 def _aligned_runs(lines: list[str]) -> set[int]:
-    """多列对齐的表格行：连着 _ALIGNED_MIN 行以上（中间可以有空行），每行按空格分成的段数一样、
-    至少 _ALIGNED_COLUMNS 段，每段不超过 _CELL_MAX 字，没有句子标点和日期。没解析出条目名称、
-    名称也不像单位名的表格（"柔化科技团队 创业组 芜湖市"）靠这个认出来；通知里的话不会连着
-    几行段数一样。"""
+    """多列对齐的表格行：连着 _ALIGNED_MIN 行以上（中间可以有空行），每行按空格分成的段数一样
+    （_ALIGNED_COLUMNS 到 _ALIGNED_MAX_COLUMNS 段，至少两段不是单字），每段不超过 _CELL_MAX 字，
+    没有句子标点（日期可以有："2024年5月 某某团队 创业组 芜湖市"）。没解析出条目名称、名称也不像
+    单位名的表格靠这个认出来；通知里的话不会连着几行段数一样。"""
     marked: set[int] = set()
     run: list[int] = []
     width = 0
@@ -321,10 +346,11 @@ def _aligned_runs(lines: list[str]) -> set[int]:
             continue
         tokens = stripped.split()
         row = (
-            len(tokens) >= _ALIGNED_COLUMNS
+            _ALIGNED_COLUMNS <= len(tokens) <= _ALIGNED_MAX_COLUMNS
             and all(len(token) <= _CELL_MAX for token in tokens)
+            # 至少两段不是单字：PDF 转出的字字之间带空格的段落不算
+            and sum(1 for token in tokens if len(token) >= 2) >= 2
             and not _SENTENCE.search(stripped)
-            and not _DATE.search(stripped)
         )
         if row and run and len(tokens) == width:
             run.append(i)
@@ -369,6 +395,16 @@ class Filtered:
     reason: str | None = None
 
 
+def _barrier(line: str) -> bool:
+    """名单那一块不能跨过的通知句子（见 _BARRIER_MIN）。"""
+    stripped = line.strip()
+    return (
+        len(stripped) >= _BARRIER_MIN
+        and _SENTENCE.search(stripped) is not None
+        and any(word in stripped for word in _BARRIER_WORDS)
+    )
+
+
 def filter_text(text: str, *, names: set[str], keep: set[str], min_chars: int) -> Filtered:
     """把名单那一块换成一行说明（规则见模块说明）。"""
     lines = (text or "").split("\n")
@@ -384,13 +420,22 @@ def filter_text(text: str, *, names: set[str], keep: set[str], min_chars: int) -
         or (k + 1 < len(found) and found[k + 1] - i <= _NEAR)
     ]
     hidden = bool(marks)
-    if not marks:
-        kept = lines
-    else:
-        first, last = marks[0], marks[-1]
+    # 中间隔着通知句子（公示期、异议方式）的分成几块，各换一行说明
+    groups: list[list[int]] = []
+    for i in marks:
+        if groups and not any(
+            _barrier(lines[j]) for j in range(groups[-1][-1] + 1, i) if j not in kinds
+        ):
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    spans: list[tuple[int, int]] = []
+    for group in groups:
+        first, last = group[0], group[-1]
+        floor = spans[-1][1] + 1 if spans else 0
         head = 0
         while (
-            first > 0
+            first > floor
             and head < _HEAD_LINES
             and (_short(lines[first - 1], keep, _HEAD_MAX) or _header_only(lines[first - 1]))
         ):
@@ -400,7 +445,13 @@ def filter_text(text: str, *, names: set[str], keep: set[str], min_chars: int) -
         while last + 1 < len(lines) and tail < _TAIL_LINES and _tail(lines[last + 1], keep):
             last += 1
             tail += 1
-        kept = [*lines[:first], PLACEHOLDER, *lines[last + 1 :]]
+        spans.append((first, last))
+    kept: list[str] = []
+    pos = 0
+    for first, last in spans:
+        kept += [*lines[pos:first], PLACEHOLDER]
+        pos = last + 1
+    kept += lines[pos:]
     visible_text = "\n".join(line for line in kept if line != PLACEHOLDER)
     if _compact_len(visible_text) < min_chars:
         return Filtered(None, hidden, "list" if hidden else "short")

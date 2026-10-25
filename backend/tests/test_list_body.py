@@ -284,6 +284,44 @@ def test_names_on_contact_and_editor_lines_are_masked_when_shown() -> None:
         assert _mask_contact_names(line) == line, line
 
 
+def test_round3_blocks_split_at_notice_sentences_and_dated_rows() -> None:
+    # 名单和后面另一处像名单的行之间夹着公示期、异议方式：分成两块，中间的通知句子照常显示
+    firms = [f"{i}、山东第{i}精密机械有限公司" for i in range(1, 6)]
+    middle = "公示期为2024年10月1日至7日。如有异议，请向市科技局反映。"
+    out = run([*NOTICE, *firms, middle, "联系人", "张三"], names=set())
+    assert out.text is not None and middle in out.text.split("\n")
+    assert out.text.count(body.PLACEHOLDER) == 2
+    # 表格格子里带"请柬"这类字的不算通知句子，不把名单切开
+    cell = "国产工器具6件，售电契约2份，上海市劳模大会请柬。"
+    out = run([*NOTICE, *firms[:3], cell, *firms[3:], *SIGNATURE], names=set())
+    assert out.text is not None and cell not in out.text and out.text.count(body.PLACEHOLDER) == 1
+    # 带日期的表格行：序号粘着名称、日期在第一列的也认得出
+    glued = [f"{i}、第{i}创客团队 2024年5月 创业组 芜湖市" for i in range(1, 6)]
+    assert run([*NOTICE, *glued, *SIGNATURE], names=set()).hidden is True
+    dated = [f"2024年{i}月 第{i}创客团队 创业组 芜湖市" for i in range(1, 5)]
+    assert run([*NOTICE, *dated, *SIGNATURE], names=set()).hidden is True
+    # PDF 转出的字字之间带空格的段落（每行字数一样）不算表格
+    spaced = ["按 照 有 关 要 求 现 将 名 单 予 以 公 布"] * 4
+    assert run([*NOTICE, *spaced], names=set()).hidden is False
+
+
+def test_round3_titled_names_and_names_after_phone_labels_are_masked() -> None:
+    for line, expected in {
+        "联系人：张三处长": "联系人：（联系人见原文）",
+        "咨询电话：0531-12345678（王五主任）": "咨询电话：0531-12345678（联系人见原文）",
+        "一审：李四同志": "一审：（署名已隐去）",
+        "咨询电话：0531-12345678 高新区张三处长": "咨询电话：0531-12345678 高新区（联系人见原文）",
+        "联系电话：张三、李四": "联系电话：（联系人见原文）、（联系人见原文）",
+    }.items():
+        assert _mask_contact_names(line) == expected, line
+    for line in (
+        "联系人：科技处处长",
+        "电话：0531-12345678（办公室主任）",
+        "联系电话：见各市联系人",
+    ):
+        assert _mask_contact_names(line) == line, line
+
+
 @pytest.mark.parametrize(
     "title, readable",
     [
