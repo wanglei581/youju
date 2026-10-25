@@ -926,9 +926,11 @@ def test_e_advisor_disabled_blocks_all_endpoints_and_worker(journey, monkeypatch
         ("get", "/api/v1/advisor/tasks/1/download", {}),
         ("get", "/api/v1/advisor/tasks/1/file?part=0", {}),
         ("post", "/api/v1/advisor/tasks/1/cancel", {}),
-        ("delete", "/api/v1/advisor/tasks/1", {}),
     ):
         assert _json(getattr(j.client, method)(path, **kwargs), 404)["detail"] == "没有找到接口"
+    # 删除自己的记录不看开关（D-093 上线门槛第 8 条）：删除接口一直在，没有这条记录照样"没有找到"
+    response = j.client.delete("/api/v1/advisor/tasks/1")
+    assert _json(response, 404)["detail"] == "没有找到顾问任务"
     assert advisor_tasks.run_advisor_tasks(j.session, settings=j.settings)["processed"] == 0
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasksTotal"] == 0
 

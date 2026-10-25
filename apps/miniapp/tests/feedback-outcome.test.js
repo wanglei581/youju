@@ -15,7 +15,7 @@ function load(file, deps = {}, globals = {}) {
   let page;
   vm.runInNewContext(read(file), {
     module: { exports: {} }, setTimeout, clearTimeout,
-    require(name) { assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } };

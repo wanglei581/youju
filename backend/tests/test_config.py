@@ -36,3 +36,17 @@ def test_xpay_env_reads_text_from_environment(monkeypatch: pytest.MonkeyPatch) -
         Settings(_env_file=None)
     monkeypatch.delenv("YOUJU_XPAY_ENV")
     assert Settings(_env_file=None).xpay_env == 1
+
+
+def test_startup_errors_do_not_print_secrets() -> None:
+    # 配置错了起不来时报错会进部署日志：不带填进去的值（密钥、数据库地址）
+    with pytest.raises(ValidationError) as exc:
+        settings(
+            ai_advisor_enabled=True,
+            ai_advisor_audience="all",
+            ai_api_key="sk-very-secret-value",
+            database_url="mysql+pymysql://root:db-password@127.0.0.1/x",
+        )
+    text = str(exc.value)
+    assert "对所有人开放 AI" in text
+    assert "sk-very" not in text and "db-password" not in text

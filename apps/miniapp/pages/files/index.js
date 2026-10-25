@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const exportsLog = require('../../utils/exports.js');
-const { exportDocs, open, exists, removeFiles } = require('../../utils/exporter.js');
+const { previewDocs, exists, removeFiles } = require('../../utils/exporter.js');
 const { shortTime } = require('../../utils/format.js');
 
 const FORMAT_NAME = { xlsx: 'Excel', docx: 'Word' };
@@ -51,7 +51,9 @@ Page({
   open(e) {
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据，导出后可以打开', icon: 'none' }); return; }
-    open(r.path, r.format).catch((err) => wx.showToast({ title: err.message, icon: 'none' }));
+    if (r.source === 'advisor') { wx.navigateTo({ url: `/pages/results/index?mode=advisor&taskId=${encodeURIComponent(r.taskId)}` }); return; }
+    if (Array.isArray(r.ids)) { previewDocs(r.ids, { current: true }); return; }
+    wx.showToast({ title: '旧记录缺少来源编号，请重新查询', icon: 'none' });
   },
 
   // 转发到聊天；要在电脑上保存，发给"文件传输助手"
@@ -59,7 +61,7 @@ Page({
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据，导出后可以转发', icon: 'none' }); return; }
     if (!wx.shareFileMessage) {
-      wx.showToast({ title: '请点"打开"，再用右上角菜单转发', icon: 'none' });
+      wx.showToast({ title: '当前微信暂不支持文件转发，请升级后再试', icon: 'none' });
       return;
     }
     wx.shareFileMessage({
@@ -67,7 +69,7 @@ Page({
       fileName: fileName(r),
       fail: (err) => {
         if (err && /cancel/.test(err.errMsg || '')) return;
-        wx.showToast({ title: '没能转发，请点"打开"后用右上角菜单转发', icon: 'none' });
+        wx.showToast({ title: '没能转发，请稍后再试', icon: 'none' });
       },
     });
   },
@@ -77,22 +79,11 @@ Page({
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据不能导出', icon: 'none' }); return; }
     if (r.source === 'advisor') {
-      if (this.downloading) return;
-      this.downloading = true;
-      const epoch = this.epoch;
-      wx.showLoading({ title: '正在下载…', mask: true });
-      let downloadError = null;
-      require('../../utils/data-tools.js').openResult(r.taskId, { task: { kind: r.kind, rowCount: r.count }, current: () => this.visible && epoch === this.epoch })
-        .catch((err) => { downloadError = err; })
-        .then(() => {
-          this.downloading = false; wx.hideLoading();
-          if (!this.dead) this.load();
-          if (downloadError && !downloadError.cancelled && this.visible) wx.showToast({ title: downloadError.message, icon: 'none' });
-        });
+      wx.navigateTo({ url: `/pages/results/index?mode=advisor&taskId=${encodeURIComponent(r.taskId)}` });
       return;
     }
     // 新文件和记录存好后，新记录替代这一条（打开失败也替代）
-    exportDocs(r.ids, { label: r.label, format: r.format, replaces: r.id }).then(() => this.load());
+    previewDocs(r.ids, { current: true }).then(() => this.load());
   },
 
   clearAll() {

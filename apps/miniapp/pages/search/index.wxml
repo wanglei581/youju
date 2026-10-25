@@ -91,7 +91,7 @@
 <view wx:if="{{selecting}}" class="pick-bar">
   <text class="pick-count">已选 {{chosenCount}} 份</text>
   <text class="link pick-all" bindtap="pickAll">全选已加载</text>
-  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />导出</view>
+  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />查看结果</view>
 </view>
 
 <!-- 原生省市区选择器在独立层渲染，筛选弹层和遮罩都必须在它下方。 -->

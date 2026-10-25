@@ -4,6 +4,7 @@ const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
 const boost = require('../../utils/boost.js');
+const pages = require('../../utils/pages.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
@@ -19,11 +20,11 @@ const HOME_CACHE = 'youjuHomeCacheV1';
 // 协议没定稿的版本没有工具中心入口，改去不用登录的"我的客户"
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
-  // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明查企业上过哪些名单要先点"查名单"
-  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业上过哪些名单，先点搜索框上面的“查名单”' },
-  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以复制政府网站的原文链接，以原文为准', url: '/pages/report/index' },
+  // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明在政府公开名单里查企业要先点"查名单"（用词 D-090）
+  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；要在政府公开名单里查企业，先点搜索框上面的“查名单”' },
+  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以站内阅读正文和附件，查看内容来源与处理状态', url: '/pages/report/index' },
 ];
-const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，查上过哪些名单、整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
+const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，在政府公开名单里查这些企业，并整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
 const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
 const guideSteps = (open) => GUIDE_FIRST.concat(open ? GUIDE_TOOLS : GUIDE_CLIENTS);
 
@@ -75,6 +76,8 @@ Page({
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
     loginOpen: loginOpen(),
+    // 工具中心入口、申报季加量一行、引导里的"工具中心"：登录开着、包里有工具中心才有（过审版首发 16 页没有，D-091）
+    tools: loginOpen() && pages.has('advisor'),
     // 新手引导"三步上手"：没点过"不再显示"时显示
     guide: false,
     guideSteps: [],
@@ -85,7 +88,7 @@ Page({
   onLoad() {
     if (api.watchStartup) api.watchStartup(this);
     const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
-    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.loginOpen) });
+    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.tools) });
     this.lastShow = Date.now();
     this.reload();
   },
@@ -151,7 +154,7 @@ Page({
   // 协议没定稿的版本没有工具中心入口（批量工具要先同意协议），不取也不显示。refresh：停在首页跨过 0 点时重新取
   // （"将于…开始"变成进行中，过了结束日不再显示）
   loadSeason(refresh) {
-    if (!this.data.loginOpen || !api.advisorSeason) return;
+    if (!this.data.tools || !api.advisorSeason) return;
     const seq = this.seasonSeq = (this.seasonSeq || 0) + 1;
     const show = (season) => { if (seq === this.seasonSeq) this.setData({ seasonText: boost.seasonLine(season) }); };
     api.advisorSeason({ refresh: Boolean(refresh) }).then(show, () => show(null));

@@ -7,6 +7,11 @@
 // 后台确认之前（confirmed 为假）板块里的按钮、列表上的"AI 解读"都不能点。
 // 后台一说关了或不在白名单，立刻擦掉本机记录、通知各页面收起；注销时 clear() 一并清掉。
 const api = require('./api.js');
+const pages = require('./pages.js');
+
+// 包里没有 AI 页面（过审版首发 16 页，D-091）：AI 对谁都不显示，白名单里的人（创始人）用这个包也一样，
+// 免得列表、详情、底栏上出现点了打不开的入口
+const PACKAGED = pages.has('advisor-interpret');
 
 const CACHE_KEY = 'youjuAiVisibleV1';
 const CACHE_FOR = 24 * 3600 * 1000;
@@ -34,7 +39,7 @@ function storage() {
 
 function cached() {
   const store = storage();
-  if (!store) return false;
+  if (!store || !PACKAGED) return false;
   try {
     const saved = store.getStorageSync(CACHE_KEY);
     const at = saved && Number(saved.at);
@@ -82,7 +87,7 @@ function fromCapabilities(caps) {
 }
 
 function check() {
-  if (!api.isLive()) return Promise.resolve({ visible: false, available: false });
+  if (!PACKAGED || !api.isLive()) return Promise.resolve({ visible: false, available: false });
   return api.advisorMode()
     // 旧后台没有这个接口（404）等：当作没对所有人开放，往下看白名单；连不上、服务出错时不下结论
     .catch((err) => (err && err.status >= 400 && err.status < 500 && err.status !== 429 ? null : Promise.reject(err)))

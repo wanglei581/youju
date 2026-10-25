@@ -421,7 +421,7 @@ test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问�
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
     assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
-    assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*下载 Excel/);
+    assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*站内查看结果/);
     assert.equal(listed, 1);
     if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);
     page.openTask({ currentTarget: { dataset: { id: 7 } } }); assert.equal(urls.length, enabled ? 1 : 0);

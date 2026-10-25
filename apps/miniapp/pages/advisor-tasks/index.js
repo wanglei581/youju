@@ -74,6 +74,13 @@ Page({
     const kind = e.currentTarget.dataset.kind;
     if (this.data.kinds.includes(kind) && ['compare', 'track'].includes(kind)) wx.navigateTo({ url: `/pages/advisor-form/index?kind=${kind}` });
   },
+  readResult(e) {
+    const id = e.currentTarget.dataset.id;
+    const task = this.data.items.find((item) => String(item.id) === String(id));
+    if (!this.data.toolsEnabled || !task || !task.downloadable) return;
+    wx.navigateTo({ url: `/pages/results/index?mode=advisor&taskId=${encodeURIComponent(id)}` });
+  },
+
   download(e) {
     const id = e.currentTarget.dataset.id;
     const task = this.data.items.find((item) => String(item.id) === String(id));

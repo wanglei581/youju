@@ -15,6 +15,7 @@
 .item-ops { margin-top: 12rpx; display: flex; gap: 40rpx; font-size: 26rpx; }
 .op { color: var(--brand); }
 .op--danger { color: var(--red); }
+.op-wait { color: var(--t3); }
 
 .empty { padding: 16rpx 0 28rpx; font-size: 26rpx; }
 .more { padding: 0 0 28rpx; font-size: 24rpx; }

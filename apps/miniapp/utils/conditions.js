@@ -100,7 +100,7 @@ function describe(c) {
   const types = split(c.types);
   parts.push(types.length ? types.join('、') : KIND_LABEL[c.kind] || '全部类型');
   const statuses = split(c.status);
-  if (statuses.length) parts.push(`名单状态：${statuses.join('、')}`);
+  if (statuses.length) parts.push(`发布阶段：${statuses.join('、')}`);
   const depts = split(c.depts);
   if (depts.length) parts.push(`发文部门：${depts.join('、')}`);
   const categories = split(c.categories);
