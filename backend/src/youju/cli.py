@@ -1234,7 +1234,9 @@ def _cmd_attachment_texts(args: argparse.Namespace) -> int:
             retry_pending=args.retry_pending,
         )
     if report.skipped:
-        print("附件的定时任务正在运行，这次没有取，请稍后再跑")
+        print(
+            "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
+        )
         return 0
     print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
     print(_texts_line(report.texts))

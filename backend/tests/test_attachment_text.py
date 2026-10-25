@@ -1890,7 +1890,10 @@ def test_cli_skips_without_failing_while_another_attachment_job_runs(
             assert cli.main(["attachment-texts"]) == 0
         finally:
             other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
-    assert "这次没有取" in capsys.readouterr().out
+    assert (
+        "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
+        in capsys.readouterr().out
+    )
     assert fetcher.calls == []
     assert session.scalar(select(func.count()).select_from(AttachmentTextUrl)) == 0
     monkeypatch.setattr(
