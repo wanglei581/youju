@@ -43,7 +43,7 @@
         <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
         <view class="hit-actions">
           <button wx:if="{{item.matched.entryToken}}" class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行</button>
-          <button class="hit-btn" data-id="{{item.id}}" bindtap="evidence">看这份名单文件</button>
+          <button class="hit-btn" data-id="{{item.id}}" bindtap="evidence">看发布这份名单的通知</button>
         </view>
       </view>
     </block>
@@ -64,7 +64,7 @@
       <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称再查。</view>
     </view>
     <view wx:if="{{result.similar.length}}" class="similar">
-      <view class="similar-title">名称相近的企业（不一定是同一家，请核对统一社会信用代码）</view>
+      <view class="similar-title">名称相近的企业（不一定是同一家，点名称按全称查）</view>
       <view wx:for="{{result.similar}}" wx:key="name" class="similar-item" data-name="{{item.name}}" bindtap="pickSimilar" aria-role="button">
         <text class="similar-name">{{item.name}}</text><text class="weak">{{item.lists}} 份名单 ›</text>
       </view>

@@ -1,15 +1,14 @@
 <notice-bar />
 <block wx:if="{{listMode}}">
   <view class="card">
-    <view class="h1">{{listTitle}}</view>
     <view wx:if="{{loading}}" class="muted">正在加载…</view>
     <view wx:if="{{error}}" class="error">
       <text>{{error}}</text>
-      <button wx:if="{{listErrorKind === 'missing'}}" bindtap="backToLists" class="btn-primary">回查名单</button>
+      <button wx:if="{{listErrorKind === 'missing' || listErrorKind === 'invalid'}}" bindtap="backToLists" class="btn-primary">回查名单</button>
       <button wx:if="{{listErrorKind === 'retry'}}" bindtap="retry" class="btn-primary">重试</button>
     </view>
     <block wx:if="{{!loading && !error && record}}">
-      <view class="doc-title">{{record.docTitle}}</view>
+      <view class="h1">{{record.docTitle}}</view>
       <view wx:if="{{record.issuerLine}}" class="record-meta">{{record.issuerLine}}</view>
       <view wx:if="{{record.statusLine}}" class="record-meta">{{record.statusLine}}</view>
       <view wx:if="{{record.publicityNote}}" class="notice">{{record.publicityNote}}</view>
@@ -38,7 +37,7 @@
     </block>
   </view>
   <view wx:if="{{!loading && !error && record}}" class="card actions">
-    <button bindtap="openDetail">看这份名单文件</button>
+    <button bindtap="openDetail">看发布这份名单的通知</button>
     <button bindtap="feedback">反馈内容问题</button>
   </view>
 </block>

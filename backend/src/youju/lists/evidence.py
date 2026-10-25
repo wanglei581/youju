@@ -41,7 +41,7 @@ from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju import attachment_text as texts
-from youju.lists.lookup import public_condition
+from youju.lists.lookup import list_title_allowed, public_condition
 from youju.lists.rules import normalize_credit_code, normalize_name
 from youju.models import (
     Document,
@@ -89,6 +89,11 @@ PERSONAL_HEADERS = (
     "电话",
     "手机",
     "联系方式",
+    "通讯",
+    "通信",
+    "传真",
+    "个人",
+    "人才",
     "身份证",
     "证件",
     "邮箱",
@@ -272,6 +277,8 @@ def candidates(session: Session) -> dict[str, str]:
             ListParse.entry_count > 0,
             public_condition(),
             or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            # 失信、处罚类和以个人为主的名单不进查询（D-091 ③），也不下载
+            list_title_allowed(),
         )
         .order_by(Document.publish_date.desc(), Document.id.desc())
     ).all()

@@ -76,6 +76,9 @@ test('token 不合法不请求', async () => {
     assert.equal(p.data.listErrorKind, 'invalid');
     assert.equal(p.data.error, '这条记录的地址无效，请回查名单页重新查询。');
   }
+  // 编号无效时也给"回查名单"按钮，不让人卡在这一页
+  const wxml = fs.readFileSync(path.join(root, 'pages/reader/index.wxml'), 'utf8');
+  assert.match(wxml, /listErrorKind === 'missing' \|\| listErrorKind === 'invalid'\}\}" bindtap="backToLists"/);
 });
 
 test('没有 entry 时仍走站内阅读', async () => {
@@ -144,7 +147,7 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
     { i: 2, h: '', t: '', name: false },
   ]);
   assert.equal(view.rows[0].hidden, 2);
-  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（个人信息、备注和认不出列名的列都不显示）');
+  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系人、电话、备注等）');
   assert.equal(view.moreLine, '原文里这个名称出现超过 5 处，只列出前 5 处');
   assert.equal(view.partialLine, '这份名单很长，只读了前 4 页');
   assert.equal(view.parsedTitle, '我们从原文解析出的记录');
@@ -283,7 +286,7 @@ test('页面文字里没有禁用词', async () => {
     '这条记录的地址无效，请回查名单页重新查询。',
     '这条记录已更新或不存在，请回查名单页重新查询。',
     '没有加载出来，请重试',
-    '列没有显示（个人信息、备注和认不出列名的列都不显示）',
+    '列没有显示（联系人、电话、备注等）',
     '原文里这个名称出现超过 5 处，只列出前 5 处',
     '这份名单很长，只读了前 ',
     '这份名单的原文还在整理，暂时显示不了原文那一行。下面是从原文解析出的记录。',
@@ -296,7 +299,7 @@ test('页面文字里没有禁用词', async () => {
     '来源 ',
     '起已打不开，下面是此前收录的内容',
     '在原文的位置：',
-    '看这份名单文件',
+    '看发布这份名单的通知',
     '回查名单',
   ];
   for (const word of banned) assert.equal(files.includes(word), false, word);

@@ -1,4 +1,4 @@
 <view class="nb {{onBlue ? 'nb--blue' : ''}}" style="justify-content: {{align === 'left' ? 'flex-start' : 'center'}}">
   <t-icon name="secured" size="24rpx" />
-  <text>第三方整理 · 非政府平台 · 每条附原文链接</text>
+  <text>第三方整理 · 非政府平台 · 每条注明出处</text>
 </view>

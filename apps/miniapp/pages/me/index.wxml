@@ -48,7 +48,7 @@
   </view>
   <view wx:if="{{stats.cities}}" class="data-note">其中已收录 {{stats.cities}} 个城市的栏目。地市目前只收录部分城市，<text class="link" data-url="/pages/about/index" bindtap="go">查看城市和栏目</text>。</view>
   <view wx:if="{{stats.districts}}" class="data-note">其中已收录 {{stats.districts}} 个区县的栏目。区县目前只收录少数地方，<text class="link" data-url="/pages/about/index" bindtap="go">查看区县和栏目</text>。</view>
-  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
+  <view class="data-note">只收录政府网站公开发布的文件，每条都注明出处<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>
 
 <view class="card">

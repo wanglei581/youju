@@ -19,7 +19,8 @@ const visible = (text) => text
   .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, '')
   .replace(/^[ \t]*\/\/.*$/gm, '');
 
-const FORBIDDEN = ['复制原文链接', '浏览器', '以原网站为准', '复制后可能打不开', '其他应用打开', '用其他应用', '换个应用', '用 WPS', '用WPS'];
+// 10/25：站内不再给原文链接，"每条附原文链接"（D-014 角标）改成"每条注明出处"
+const FORBIDDEN = ['复制原文链接', '浏览器', '以原网站为准', '复制后可能打不开', '其他应用打开', '用其他应用', '换个应用', '用 WPS', '用WPS', '附原文链接'];
 
 function hitsIn(text) {
   const shown = visible(text);

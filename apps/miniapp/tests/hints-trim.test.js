@@ -16,7 +16,7 @@ const WITH_NOTICE_BAR = ['about', 'advisor', 'advisor-clause', 'advisor-form', '
   'my-data', 'orders', 'pass', 'report', 'search'];
 
 test('出处说明只在顶部 notice-bar 写一次：各页都有 notice-bar，页面里不再另写"第三方整理"', () => {
-  assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台 · 每条附原文链接/);
+  assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台 · 每条注明出处/);
   for (const page of WITH_NOTICE_BAR) {
     const template = wxml(page);
     assert.equal((template.match(/<notice-bar\b/g) || []).length, 1, page);

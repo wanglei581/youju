@@ -226,6 +226,12 @@ def test_list_mode_keeps_credit_codes_but_masks_other_numbers() -> None:
     )
     assert attachment_text.mask_cell("913701020001000284", None) == "913701020001000284"
     assert attachment_text.mask_cell("923701020000010135", None) != "923701020000010135"
+    # 列名写着"信用代码"的按校验位放行（个体工商户 92 开头也放行）；别的"代码"列还要看开头
+    assert (
+        attachment_text.mask_cell("923701020000010135", "统一社会信用代码") == "923701020000010135"
+    )
+    assert attachment_text.mask_cell("923701020000010135", "组织机构代码") != "923701020000010135"
+    assert attachment_text.mask_cell("913701020001000284", "组织机构代码") == "913701020001000284"
 
 
 def _seg(n, cells, kind="row", loc=None):
@@ -346,6 +352,7 @@ def test_only_public_columns_are_stored() -> None:
             {"c": 3, "t": "乙大学", "h": "推荐单位"},
             {"c": 4, "t": "历下区", "h": "所属区"},
             {"c": 5, "t": "请联系王五", "h": "备注"},
+            {"c": 10, "t": "历下区经十路 1 号", "h": "申报单位通讯方式"},
             {"c": 6, "t": "李四"},
             {"c": 7, "t": "历城区"},
             {"c": 8, "t": "913701020001000284"},
@@ -362,7 +369,7 @@ def test_only_public_columns_are_stored() -> None:
         ("所属区", "历下区"),
         ("", "913701020001000284"),
     ]
-    assert stored["cells"][1]["n"] == 1 and stored["hidden"] == 4
+    assert stored["cells"][1]["n"] == 1 and stored["hidden"] == 5
 
 
 def test_locate_many_hits_and_no_name_column() -> None:
@@ -411,6 +418,12 @@ def test_list_published_as_a_file_itself_is_read(session) -> None:
     assert evidence.candidates(session) == {URL: "xlsx"}
     report = evidence.refresh(session, fetcher=FakeFetcher(_xlsx(ROWS)), now=NOW)
     assert report.states == {"ok": 3}
+
+
+def test_excluded_lists_are_not_read(session) -> None:
+    # 失信、处罚类和以个人为主的名单不进查询（D-091 ③），后台也不下载
+    _list(session, title="2026年严重失信企业名单")
+    assert evidence.candidates(session) == {}
 
 
 def test_gone_attachment_is_retried_a_week_later(session) -> None:

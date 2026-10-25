@@ -55,7 +55,7 @@ function evidenceRows(evidence) {
     const where = textOf(item.where);
     return {
       i, where, whereText: `在原文的位置：${where}`, cells, hidden,
-      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（个人信息、备注和认不出列名的列都不显示）` : '',
+      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系人、电话、备注等）` : '',
     };
   });
 }

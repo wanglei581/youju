@@ -2147,14 +2147,17 @@ _CODE_PREFIXES = ("91", "93", "12", "11", "13", "51", "52", "53", "54", "55")
 
 
 def _credit_code_cell(text: str, header: str | None) -> bool:
-    """这一格整格是统一社会信用代码（名单模式不遮）：校验位对；有列名的，列名里要有"代码"（统一
-    社会信用代码、组织机构代码）；没有列名的，开头要是常见的单位代码。"""
+    """这一格整格是统一社会信用代码（名单模式不遮）：校验位对（像身份证号的不算），并且列名写着
+    "信用代码"，或者列名写着别的"代码"（组织机构代码等）、没有列名，开头又是常见的单位代码。
+    列名是别的（备注、账号……）的不放行。"""
     from youju.lists.rules import normalize_credit_code
 
     code = normalize_credit_code(text)
     if code is None:
         return False
-    return "代码" in header if header else code.startswith(_CODE_PREFIXES)
+    if header and "信用代码" in header:
+        return True
+    return (not header or "代码" in header) and code.startswith(_CODE_PREFIXES)
 
 
 def mask_cell(text: str, header: str | None = None) -> str:

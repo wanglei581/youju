@@ -489,7 +489,7 @@ function listRecord(token) {
   if (token !== DEMO_ENTRY) return Promise.reject(Object.assign(new Error('这条记录已更新或不存在'), { status: 404 }));
   return copy({
     entry: { name: DEMO_COMPANY, category: '科技型中小企业', batch: '第4批', region: null },
-    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: '公示', issuer: '演示科学技术厅', date: '2026-07-01', region: '演示省', site: '演示科学技术厅网站', host: 'kjt.example.gov.cn', link_gone: null },
+    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: mock.lists.items[0].status, issuer: mock.lists.items[0].issuer, date: mock.lists.items[0].date, region: mock.lists.items[0].region, site: `${mock.lists.items[0].issuer}网站`, host: 'jxj.example.gov.cn', link_gone: null },
     evidence: { state: 'found', more: false, partial: false, pagesRead: null, reason: null,
       rows: [{ where: '工作表\u201c名单\u201d第 12 行', hidden: 2, cells: [{ h: '序号', t: '12', name: false }, { h: '企业名称', t: DEMO_COMPANY, name: true }, { h: '所在地区', t: '演示市', name: false }] }] },
   });
