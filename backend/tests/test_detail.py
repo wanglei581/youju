@@ -122,7 +122,9 @@ _BODY_SIZE = {
     "detail_henan_kjt": (7, 501),
     "detail_shanghai_sheitc": (3, 318),
     "detail_qinghai_gxt": (14, 473),
-    # 10/25 对照原网页核过：div.zw 里 42 段一段不少（字数是脱敏后的，3 个座机换成了"[电话已脱敏]"）
+    # 10/25 对照原网页核过：div.zw 里 42 段一段不少。样例留着原页面上 3 个省科技厅的公开办公座机
+    # （政府办公电话，不是个人信息）；2912 是 parse_detail 输出的字数，输出时已按入库的脱敏规则
+    # 把这 3 个座机换成"[电话已脱敏]"
     "detail_guangdong_kjt": (42, 2912),
 }
 
@@ -326,8 +328,15 @@ def test_gdstc_rule_whole_class_only_for_this_host() -> None:
     gdstc = "https://gdstc.gd.gov.cn/zwgk_n/tzgg/content/post_1.html"
     assert parse_detail(page, gdstc).body_text.startswith("各有关单位")
     assert parse_detail(page, "https://kjt.example.gov.cn/a.html").body_text.startswith("栏目导航")
+    # 换成别的类名：只说明会退回通用规则（真网站上通用规则取到的是页头导航）
     changed = page.replace("class='zw'", "class='zw-content'")
     assert parse_detail(changed, gdstc).body_text.startswith("栏目导航")
+    # 页面上有几块 div.zw 时取字最多的一块（抽查的 4 个真页面都只有一块）
+    two = page.replace(
+        "<div class='zw'>",
+        "<div class='zw'><p>附件：申报指南和申报书模板请在下方附件中查看。</p></div><div class='zw'>",
+    )
+    assert parse_detail(two, gdstc).body_text.startswith("各有关单位")
 
 
 def test_body_written_in_page_script() -> None:
