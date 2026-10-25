@@ -54,7 +54,8 @@ _NEGATIVE_TITLE = (
     "征集",
 )
 # 查名单只查认定、立项、公示、入库、备案这类名单（D-091 ③）：失信、处罚、经营异常、黑名单、
-# 惩戒、警示类不解析、不进查询（标题里有这些字就不算，除非是下面"无失信""无违法违规"这类说法）
+# 惩戒、警示类不解析、不进查询，标题里有这些字就不算。"无失信记录企业""无重大违法违规"这类名单
+# 也不收：本身就是信用、合规状况的名单，收进来像在做企业征信（agy 10/25 合规审阅）
 PUNITIVE_TITLE = (
     "失信",
     "处罚",
@@ -67,25 +68,11 @@ PUNITIVE_TITLE = (
     "违法",
     "不良",
 )
-# 正面名单标题里的否定说法（"无失信记录企业""无重大违法违规"）：有这些说法的不按惩戒类排除
-NEGATED_PUNITIVE = (
-    "无失信",
-    "无严重失信",
-    "无重大失信",
-    "无违法",
-    "无违规",
-    "无重大违法",
-    "无重大违规",
-    "无不良",
-    "无处罚",
-    "无行政处罚",
-    "未受处罚",
-    "未受过处罚",
-    "未受行政处罚",
-)
-# 以个人为主的名单（人才、专家等）不进企业查询（D-091 ③）：标题有这些字、又不是"企业名单"
-# "单位名单"这类以单位为名的名单的（"某单位专家名单"仍算个人类）
-PERSON_TITLE = (
+# 以个人为主的名单（人才、专家等）不进企业查询（D-091 ③）：标题里人和"名单""名录"紧挨着的
+# （"高层次人才名单""某研究院专家名单""科技特派员名录"），和写"人选"的（"拟入选人才计划人选公示"）。
+# 只看紧挨着的：企业名单的标题里也常有"专家评审""人才引进"这类字（"经专家评审拟认定的高新技术
+# 企业名单""人才引进优秀企业名单"），不能按出现了这些字就排除
+_PERSON_WORDS = (
     "人才",
     "专家",
     "个人",
@@ -97,23 +84,21 @@ PERSON_TITLE = (
     "工匠",
     "学者",
     "院士",
-    "人选",
     "人员",
     "导师",
     "劳模",
     "劳动模范",
     "特派员",
     "带头人",
-    "首席",
+    "入选者",
+    "获得者",
+)
+PERSON_TITLE = (
+    *(f"{word}{suffix}" for word in _PERSON_WORDS for suffix in ("名单", "名录")),
+    "人选",
 )
 _SELECTION = ("拟认定", "拟入库", "认定", "入库", "备案", "通过", "入选")
 _ENTITY = ("企业", "机构", "单位", "中心", "研究院", "合作社", "平台", "实验室", "基地")
-# 以单位为名的名单：机构用词紧挨着"名单""名录"（"人才引进优秀企业名单""专家工作站建站单位名单"）
-ORG_TITLE = tuple(
-    f"{word}{suffix}"
-    for word in (*_ENTITY, "公司", "园区", "集团", "学校", "医院")
-    for suffix in ("名单", "名录")
-)
 _BATCH = re.compile(
     r"第\s*([0-9一二三四五六七八九十百]+)\s*批|[（(]\s*第?([0-9一二三四五六七八九十百]+)\s*批\s*[）)]"
 )
@@ -234,13 +219,9 @@ def excluded_list_title(title: str) -> bool:
     """不进企业查询的名单：失信、处罚等惩戒类，和以个人为主的（人才、专家等）。
     和 lookup.list_title_allowed 同一口径（那边是数据库查询条件）。"""
     value = normalize_name(title or "")
-    if any(term in value for term in PUNITIVE_TITLE) and not any(
-        term in value for term in NEGATED_PUNITIVE
-    ):
+    if any(term in value for term in PUNITIVE_TITLE):
         return True
-    return any(term in value for term in PERSON_TITLE) and not any(
-        term in value for term in ORG_TITLE
-    )
+    return any(term in value for term in PERSON_TITLE)
 
 
 def candidate_key(value: str) -> str:

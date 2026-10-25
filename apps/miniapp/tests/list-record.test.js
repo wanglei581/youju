@@ -147,10 +147,10 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
     { i: 2, h: '', t: '', name: false },
   ]);
   assert.equal(view.rows[0].hidden, 2);
-  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系人、电话、备注等）');
+  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系方式、证件、备注和认不出列名的列）');
   assert.equal(view.moreLine, '原文里这个名称出现超过 5 处，只列出前 5 处');
   assert.equal(view.partialLine, '这份名单很长，只读了前 4 页');
-  assert.equal(view.parsedTitle, '我们从原文解析出的记录（以上面原文那一行为准）');
+  assert.equal(view.parsedTitle, '我们从原文解析出的记录（以上面的原文为准）');
   assert.deepEqual(view.parsed.map((item) => [item.label, item.value]), [
     ['名称', '企业名称'], ['类别', '科技型中小企业'], ['批次', '第一批'], ['地区', '济南市'],
   ]);
@@ -210,8 +210,8 @@ test('pending、failed、notfound、in_body 显示说明和解析记录', async 
     assert.deepEqual(view.rows, []);
     assert.equal(view.moreLine, '');
     assert.equal(view.partialLine, '');
-    // 有发布阶段就提醒以原文为准，原文那一行显示不出来时照样提醒
-    const note = item.statusLine ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '';
+    // 公示的提醒是否还在公示期以原文为准（原文那一行显示不出来时照样提醒），公布的不写
+    const note = item.statusLine === '发布阶段：公示' ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '';
     assert.equal(view.publicityNote, note);
     assert.equal(view.statusLine, item.statusLine);
     assert.equal(view.disclaimer, '这一行摘自政府公开发布的名单，有据只做整理，不作判断。');
@@ -291,7 +291,7 @@ test('页面文字里没有禁用词', async () => {
     '这条记录的地址无效，请回查名单页重新查询。',
     '这条记录已更新或不存在，请回查名单页重新查询。',
     '没有加载出来，请重试',
-    '列没有显示（联系人、电话、备注等）',
+    '列没有显示（联系方式、证件、备注和认不出列名的列）',
     '原文里这个名称出现超过 5 处，只列出前 5 处',
     '这份名单很长，只读了前 ',
     '这份名单的原文还在整理，暂时显示不了原文那一行。下面是从原文解析出的记录。',

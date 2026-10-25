@@ -56,7 +56,7 @@ function evidenceRows(evidence) {
     const where = textOf(item.where);
     return {
       i, where, whereText: `在原文的位置：${where}`, cells, hidden,
-      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系人、电话、备注等）` : '',
+      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系方式、证件、备注和认不出列名的列）` : '',
     };
   });
 }
@@ -79,8 +79,8 @@ function listRowView(res) {
     docTitle: textOf(doc.title),
     issuerLine: [textOf(doc.issuer), textOf(doc.date)].filter(Boolean).join(' '),
     statusLine: status ? `发布阶段：${status}` : '',
-    // 发布阶段只照录标题用词（D-090），是否还在公示期由原文说了算
-    publicityNote: status ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '',
+    // 发布阶段只照录标题用词（D-090）；公示的提醒是否还在公示期由原文说了算，公布的不写
+    publicityNote: status === '公示' ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '',
     regionLine: region ? `地区：${region}` : '',
     disclaimer: '这一行摘自政府公开发布的名单，有据只做整理，不作判断。',
     sourceLine: host ? `来源 ${host}` : '',
@@ -91,7 +91,7 @@ function listRowView(res) {
     rows: found ? evidenceRows(evidence) : [],
     moreLine: found && evidence.more === true ? '原文里这个名称出现超过 5 处，只列出前 5 处' : '',
     partialLine: found && evidence.partial === true ? `这份名单很长，只读了前 ${pages} 页` : '',
-    parsedTitle: found ? '我们从原文解析出的记录（以上面原文那一行为准）' : '解析出的记录',
+    parsedTitle: found ? '我们从原文解析出的记录（以上面的原文为准）' : '解析出的记录',
     parsed: entryItems(entry),
   };
 }

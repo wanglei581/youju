@@ -612,12 +612,14 @@ def test_record_api_failed_reason(client, session) -> None:
         ("2026年经营异常名录企业公示", False),
         ("2026年度高层次人才名单公示", False),
         ("人才引进优秀企业名单公示", True),
-        # 正面名单里的"无失信""无重大违法违规"不按惩戒类排除
-        ("2026年度无失信记录守信企业名单公示", True),
-        ("无重大违法违规记录企业名录公布", True),
-        # 单位名下的专家名单仍是个人类
+        # "无失信""无重大违法违规"这类信用、合规状况的名单也不收（像征信，agy 10/25）
+        ("2026年度无失信记录守信企业名单公示", False),
+        ("无重大违法违规记录企业名录公布", False),
+        # 人和"名单"紧挨着的、写"人选"的是个人类；企业名单标题里的"专家评审"不算
         ("某研究院专家名单公示", False),
+        ("拟入选省级领军人才计划人选公示", False),
         ("院士专家工作站建站单位名单公示", True),
+        ("经专家评审拟认定的高新技术企业名单公示", True),
     ],
 )
 def test_lookup_scope_excludes_punitive_and_person_lists(client, session, title, shown) -> None:
@@ -661,4 +663,5 @@ def test_manual_list_override_does_not_parse_excluded_titles() -> None:
 
     assert classify_title("2026年严重失信主体名单", "名单").is_list is False
     assert classify_title("2026年度高层次人才名单", "名单").is_list is False
-    assert classify_title("2026年无失信记录企业名单", "名单").is_list is True
+    assert classify_title("2026年无失信记录企业名单", "名单").is_list is False
+    assert classify_title("2026年高新技术企业名单", "名单").is_list is True
