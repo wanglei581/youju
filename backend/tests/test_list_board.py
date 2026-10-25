@@ -1,13 +1,18 @@
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import or_, select
 
 from youju.api import v1
 from youju.api.app import app
 from youju.db import get_session
+from youju.dedup import groups_for
+from youju.lists.lookup import public_condition
 from youju.models import Document, DocumentMerge, ListEntry, Source
+from youju.report_revision import publication_revision
 
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -168,3 +173,136 @@ def test_board_cache_keeps_full_result_for_other_pages(board_client, board_data,
     assert calls == 1
     assert first["recent"]["items"][0]["id"] != second["recent"]["items"][0]["id"]
     assert set(second["stats"]) == {"by_year", "by_province", "by_type"}
+
+
+def _doc_id(session, number: int) -> int:
+    return session.scalar(select(Document.id).where(Document.url == _doc_url(number)))
+
+
+def _doc_url(number: int) -> str:
+    return f"https://example.gov.cn/{number}.html"
+
+
+def _board_counts(client) -> dict[int, int | None]:
+    body = client.get("/api/v1/reports/lists", params={"days": 90, "size": 100}).json()
+    return {int(item["id"]): item["count"] for item in body["recent"]["items"]}
+
+
+def _python_counts(session) -> dict[int, int | None]:
+    """改前的算法（把全部条目读进程序、按归并组逐条去重），作对照。"""
+    v1.note_rules_complete(session)
+    rows = session.execute(v1._base().where(v1._kind_is(["名单"]))).all()
+    owner = {
+        member: master
+        for master, members in groups_for(session, [doc.id for doc, _ in rows]).items()
+        for member in members
+    }
+    names: dict[int, set[str]] = defaultdict(set)
+    for document_id, name in session.execute(
+        select(ListEntry.document_id, ListEntry.normalized_name)
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            ListEntry.document_id.in_(list(owner) or [-1]),
+            public_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+        )
+    ):
+        if name:
+            names[owner[document_id]].add(name)
+    return {doc.id: len(names[doc.id]) if doc.id in names else None for doc, _ in rows}
+
+
+def _db_counts(session) -> dict[int, int | None]:
+    v1.note_rules_complete(session)
+    rows = session.execute(v1._base().where(v1._kind_is(["名单"]))).all()
+    counts = v1._list_entry_counts(session, publication_revision(session, "lists"))
+    return {doc.id: counts.get(doc.id) for doc, _ in rows}
+
+
+def test_board_counts_in_database_match_python_dedup(board_client, board_data, session):
+    """S2：条数改在数据库里汇总，口径和改前在程序里逐条去重一样：空名称不算，大小写或尾部空格
+    不同的另算，副本人工改成别的类型就不算它的条目，二级来源与一级来源归并后整组公开，下架整组不公开。"""
+    high, duplicate, special, hidden = (_doc_id(session, n) for n in (1, 2, 3, 5))
+    public = session.get(Document, high).source_id
+    url = "https://example.gov.cn/special.pdf"
+    session.add_all(
+        [
+            _entry(special, url, "", "2"),
+            _entry(special, url, "丁公司 ", "3"),
+            _entry(special, url, "ABC公司", "4"),
+            _entry(special, url, "abc公司", "5"),
+            _entry(special, url + "#2", "ABC公司", "4"),
+        ]
+    )
+    twin = Document(
+        source_id=public,
+        url=_doc_url(7),
+        url_key=_doc_url(7).removeprefix("https://"),
+        title="江苏省2026年高新技术企业名单公布",
+        publish_date=date(2026, 9, 26),
+        first_seen_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+    )
+    session.add(twin)
+    session.flush()
+    session.add_all(
+        [
+            DocumentMerge(duplicate_id=twin.id, canonical_id=hidden, active=True, match_key="t"),
+            _entry(twin.id, "https://example.gov.cn/twin.pdf", "戊公司", "1"),
+        ]
+    )
+    session.commit()
+    expected = {high: 3, special: 4, hidden: 2, _doc_id(session, 6): None}
+    assert _board_counts(board_client) == expected
+    assert _db_counts(session) == _python_counts(session)
+
+    session.get(Document, duplicate).kind_override = "政策"
+    session.commit()
+    assert _board_counts(board_client) == expected | {high: 2}
+    assert _db_counts(session) == _python_counts(session)
+
+    session.get(Document, twin.id).taken_down_at = datetime.now(UTC)
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    assert hidden not in _board_counts(board_client)
+    assert _db_counts(session) == _python_counts(session)
+
+
+def test_board_counts_reused_until_their_data_changes(board_client, board_data, session):
+    """名单条数按它用到的数据的版本缓存：看板自己的 300 秒缓存到期后，数据没变就不重算；
+    条目、归并、来源公开级别变了就重算；另有 1 小时兜底。"""
+    high, duplicate, special, hidden = (_doc_id(session, n) for n in (1, 2, 3, 5))
+    first = _board_counts(board_client)
+    cached = v1._LIST_COUNTS["all"]
+    v1._REPORT_CACHE.clear()  # 看板缓存到期
+    assert _board_counts(board_client) == first
+    assert v1._LIST_COUNTS["all"] is cached
+
+    # 直接写入的新条目（没经过名单解析记录）
+    session.add(_entry(special, "https://example.gov.cn/special.pdf", "己公司", "9"))
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    assert _board_counts(board_client)[special] == 2
+
+    # 归并停用：副本成了单独的一份，主文件只剩自己的甲、乙
+    session.get(DocumentMerge, duplicate).active = False
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    counts = _board_counts(board_client)
+    assert (counts[high], counts[duplicate]) == (2, 2)
+
+    # 来源公开级别：江苏那份的来源改成一级，它就公开了，条数也算出来
+    hidden_source = session.get(Document, hidden).source_id
+    session.get(Source, hidden_source).rights_level = 1
+    session.commit()
+    v1._REPORT_CACHE.clear()
+    assert _board_counts(board_client)[hidden] == 1
+
+    # 1 小时兜底：版本没变也重算一次
+    revision, stamp, counts = v1._LIST_COUNTS["all"]
+    v1._LIST_COUNTS["all"] = (revision, stamp - v1.LIST_COUNTS_TTL, counts)
+    v1._REPORT_CACHE.clear()
+    _board_counts(board_client)
+    assert v1._LIST_COUNTS["all"][2] is not counts
+    assert _db_counts(session) == _python_counts(session)
