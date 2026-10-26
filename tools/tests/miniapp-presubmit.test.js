@@ -2,7 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { inspect, SERVER_TOOL_TERMS_VERSION } = require('../miniapp_presubmit_check');
+const presubmit = require('../miniapp_presubmit_check');
+const { SERVER_TOOL_TERMS_VERSION, agreementFingerprint } = presubmit;
+// 下面多数用例只测别的检查项：协议指纹默认按这份样本自己的算（指纹这一项另有用例，D-098）
+const inspect = (args) => presubmit.inspect({ fingerprints: { [args.legal && args.legal.version]: args.legal ? agreementFingerprint(args.legal) : '' }, ...args });
 const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
   // 首发（过审版）协议：不含 AI 条款，版本排在后台 AI 条款版本之前（D-093 ⑤）
@@ -233,4 +236,17 @@ test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉�
   const x = input(); x.config.aiInternal = false; x.legal.version = '2026-11';
   x.app.pages.push(...['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map((p) => `pages/${p}/index`));
   assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
+});
+
+test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里两份定稿协议都已登记',()=>{
+ const x=input(); const fingerprints={[x.legal.version]:agreementFingerprint(x.legal)};
+ const state=(y,f)=>presubmit.inspect({...y,profile:'first-release',mode:'prepare',fingerprints:f}).checks.find(c=>c.id==='terms-fingerprint').state;
+ assert.equal(state(x,fingerprints),'pass');
+ const changed=JSON.parse(JSON.stringify(x)); changed.legal.user.sections[0].p[0]+='（改了一个字）';
+ assert.equal(state(changed,fingerprints),'fail','改了正文没升版本号');
+ assert.equal(state(x,{}),'fail','这一版没登记');
+ for(const file of ['legal.js','legal-first-release.js']){
+  const legal=require(path.join(__dirname,'..','..','apps','miniapp','content',file));
+  assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
+ }
 });

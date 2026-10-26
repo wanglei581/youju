@@ -5,6 +5,7 @@
 // 发布身份只对照本产品的 tools/release/release-identity.json。不读环境变量，也不核验微信或云托管的线上授权。
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const RELEASE_IDENTITY = (() => {
   const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'release-identity.json'), 'utf8'));
   const identity = { appid: raw.appid, cloudEnv: raw.cloudEnv, cloudService: raw.cloudService };
@@ -46,6 +47,15 @@ const SERVER_AI_TERMS_VERSION = (() => {
 })();
 // 过审版协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）：和生成脚本用同一份
 const FIRST_RELEASE_TERMS_BANNED = require('./make_legal_first_release.js').BANNED;
+// 定稿协议的指纹（D-098，Codex 10/26）：版本号和用户协议、隐私保护指引、免责声明三份正文一起算 SHA-256。
+// 包里协议的指纹对不上登记的那一版就不过：改了正文没升版本号、或新版本还没登记，都拦下。
+// 新版定稿时用 node tools/miniapp_presubmit_check.js --fingerprint [--root 包目录] 打印，写进 tools/release/agreement-fingerprints.json
+const FINGERPRINTS = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'agreement-fingerprints.json'), 'utf8'));
+function agreementFingerprint(legal) {
+  const text = JSON.stringify({ version: legal.version, user: legal.user, privacy: legal.privacy, disclaimer: legal.disclaimer });
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+const FINGERPRINT_PROFILES = ['first-release', 'first-release-ai', 'ai-release', 'complete-release'];
 const PROFILES = ['first-release', 'first-release-ai', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'];
 // 每种版本该有哪些页面；tools/miniapp_pack.js 打过审版（首发 16 页）时也用这一份
 function pagesFor(profile) {
@@ -61,7 +71,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release' }) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS }) {
   if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -71,6 +81,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   const filed = nonempty(op.icp) && !hasPlaceholder(op.icp);
   add('agreement', '协议已定稿', legal.final === true, '按已确认版本定稿协议，不能以备案办理中跳过协议检查');
   add('placeholders', '协议没有未填占位', !hasPlaceholder(legal), '补齐协议占位内容');
+  if (FINGERPRINT_PROFILES.includes(profile)) {
+    add('terms-fingerprint', '协议正文和登记的定稿一致（指纹对得上版本号）',
+      typeof legal.version === 'string' && Object.hasOwn(fingerprints, legal.version) && fingerprints[legal.version] === agreementFingerprint(legal),
+      '协议正文改过却没升版本号，或这一版还没登记指纹：改正文要升版本号；定稿后用 --fingerprint 打印指纹，写进 tools/release/agreement-fingerprints.json');
+  }
   add('filing', '关于页有备案号', filed, '备案办理中；号下来后填 operator.icp。体验准备通过不等于可提审', mode === 'prepare');
   add('email', '关于页有联系邮箱', nonempty(op.email) && !hasPlaceholder(op.email), '填写真实联系邮箱');
   const releaseIdentityOk = !!project && project.appid === RELEASE_IDENTITY.appid
@@ -128,7 +143,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     notice: mode === 'prepare' ? '仅体验准备检查；未核验平台后台、生产部署、真机或AI准入，不能据此提交审核' : '仅静态提审检查；还须核对备案后台、同包CI/生产/真机证据及创始人批准，本工具不授予提交权限', checks };
 }
 function main(args) {
-  let mode = 'submit', profile = 'first-release', json = false;
+  let mode = 'submit', profile = 'first-release', json = false, printFingerprint = false;
   // --root：检查打好的包（tools/miniapp_pack.js 的输出目录），默认检查仓库里的 apps/miniapp
   let root = path.join(__dirname, '..', 'apps', 'miniapp');
   for (let i = 0; i < args.length; i++) {
@@ -136,7 +151,13 @@ function main(args) {
     else if (args[i] === '--profile' && args[i + 1]) profile = args[++i];
     else if (args[i] === '--root' && args[i + 1]) root = path.resolve(args[++i]);
     else if (args[i] === '--json') json = true;
+    else if (args[i] === '--fingerprint') printFingerprint = true;
     else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|first-release-ai|ai-internal|ai-release|complete-candidate|complete-release] [--root 包目录] [--json]');
+  }
+  if (printFingerprint) {
+    const legal = require(path.join(root, 'content/legal.js'));
+    console.log(`${legal.version} ${agreementFingerprint(legal)}`);
+    return 0;
   }
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
@@ -155,4 +176,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, pagesFor, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED };
+module.exports = { inspect, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED };

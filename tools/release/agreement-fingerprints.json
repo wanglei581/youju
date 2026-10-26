@@ -1,0 +1,5 @@
+{
+  "_说明": "定稿协议的指纹（tools/miniapp_presubmit_check.js 的 agreementFingerprint）：每一版定稿时登记一次，以后不改；改正文要升版本号再登记",
+  "2026-10.2": "eaffbf90571dcf83c2a661760ac89b53506430c5c744c80a1a44f783d2146ff1",
+  "2026-11": "b4a9b00d611f0f630aa6078ac932d02ac0314a32e4c67a78fc74398baa8d2c57"
+}
