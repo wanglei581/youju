@@ -34,7 +34,13 @@ AGREEMENT = Settings.model_fields["agreement_version"].default
 # 北京时间 11 月 2 日 10:00
 NOW = datetime(2026, 11, 2, 2, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
-HEADERS = {"X-WX-SOURCE": "test-cloud", "X-WX-OPENID": "pay-user"}
+# 测试人员在体验版里（D-074），代码包里的付费协议版本号是 pay-test
+HEADERS = {
+    "X-WX-SOURCE": "test-cloud",
+    "X-WX-OPENID": "pay-user",
+    "X-Youju-Env": "trial",
+    "X-Youju-Pay-Terms": "pay-test",
+}
 ADMIN = {"X-Admin-Token": "test-admin"}
 PRICES = {"workbench_30d": 2900, "workbench_90d": 7900}
 
@@ -53,6 +59,8 @@ def shop(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         pay_audience="all",
+        # 沙箱只给测试名单（D-074）
+        pay_openids="pay-user",
         advisor_enabled=True,
         boost_trial_enabled=True,
         renew_bonus_enabled=True,
@@ -213,7 +221,8 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     assert out["name"] == "批量工具 90 天" and out["days"] == 90 and out["gifts"] == []
     # 配置改了也不影响已下的单：天数按订单快照
     shop.settings.xpay_price_pass_90 = None
-    assert [i["days"] for i in shop.client.get("/api/v1/pay/products").json()["items"]] == [30]
+    listed = shop.client.get("/api/v1/pay/products", headers=HEADERS).json()["items"]
+    assert [i["days"] for i in listed] == [30]
     assert create(shop, "workbench_90d").status_code == 404
 
 
@@ -259,8 +268,8 @@ def test_tier_without_price_is_not_sold_and_same_product_id_refuses_to_start():
     assert not defaults.renew_bonus_enabled and not defaults.correction_reward_enabled
 
 
-def test_push_for_the_other_tier_is_rejected(shop, session):
-    """推送里的商品和订单不一致（买的是 30 天，推送说 90 天）：不发货。"""
+def test_push_naming_the_other_tier_opens_what_was_paid(shop, session):
+    """推送里的商品和订单不一致（买的是 30 天，推送说 90 天）：以订单和查单为准，开通 30 天。"""
     response = create(shop, "workbench_30d")
     row = session.get(PayOrder, response.json()["orderId"])
     shop.fake.status, shop.fake.fee = 2, 2900
@@ -277,8 +286,9 @@ def test_push_for_the_other_tier_is_rejected(shop, session):
             "Attach": row.out_trade_no,
         },
     }
-    assert shop.client.post("/api/wx/push", headers=HEADERS, json=data).json()["ErrCode"] == 1
-    assert session.scalar(select(func.count(WorkbenchPass.id))) == 0
+    assert shop.client.post("/api/wx/push", headers=HEADERS, json=data).json()["ErrCode"] == 0
+    ticket = session.scalar(select(WorkbenchPass))
+    assert ticket.ends_at - ticket.starts_at == timedelta(days=30)
 
 
 # ---- 续买多送 ---------------------------------------------------------------------------
@@ -308,8 +318,8 @@ def test_renewal_window_is_seven_days_either_side_of_expiry(shop, session, paid_
 def test_first_purchase_and_refunded_purchase_are_not_renewals(shop, session):
     first = buy(shop, session)
     assert gifts(session, first) == []
-    # 第一笔 7 天内退了：再买不算续买（以前买过的那笔已经收回）
-    shop.clock.at = NOW + 2 * DAY
+    # 第一笔 24 小时内退了：再买不算续买（以前买过的那笔已经收回）
+    shop.clock.at = NOW + timedelta(hours=12)
     assert refund(shop, first).status_code == 200
     again = buy(shop, session, at=NOW + 3 * DAY)
     assert gifts(session, again) == []
@@ -339,13 +349,14 @@ def test_eligibility_uses_payment_time_not_confirmation_time(shop, session):
 
 
 def test_late_confirmation_of_a_first_purchase_starts_when_it_is_confirmed(shop, session):
-    """推送晚到两小时：使用期从确认开通时起算，30 天一天不少；7 天自助退款仍从付款时间算。"""
+    """推送晚到两小时：使用期从确认开通时起算，30 天一天不少；24 小时无理由退款仍从付款时间算
+    （付款后 25 小时、开通后 23 小时：已超过 24 小时）。"""
     row = buy(shop, session, at=NOW, confirmed=NOW + timedelta(hours=2))
     assert segments(session) == [
         (True, NOW + timedelta(hours=2), NOW + timedelta(hours=2) + 30 * DAY, False)
     ]
-    shop.clock.at = NOW + 7 * DAY + timedelta(hours=1)
-    assert refund(shop, row).json()["detail"] == "已超过 7 天"
+    shop.clock.at = NOW + timedelta(hours=25)
+    assert refund(shop, row).json()["detail"] == "已超过 24 小时"
 
 
 def test_bonus_follows_the_switch_at_order_time(shop, session):
@@ -374,9 +385,13 @@ def test_products_say_whether_renewing_now_gets_the_bonus(shop, session):
         shop.clock.at = at
         offer = shop.client.get("/api/v1/pay/products", headers=HEADERS).json()["renewBonus"]
         assert offer["eligibleNow"] is eligible
-    # 看价格不要求登录：认不出是谁就是 False
+    # 现网对所有人开卖后，看价格不要求登录：认不出是谁就是 False（沙箱只给测试名单，所以这里切到现网）
     shop.clock.at = NOW + 24 * DAY
-    assert shop.client.get("/api/v1/pay/products").json()["renewBonus"]["eligibleNow"] is False
+    shop.settings.xpay_env, shop.settings.pay_terms_version = 0, "pay-test"
+    shop.settings.pay_invoice_type = "电子普通发票（测试）"
+    anonymous = {"X-Youju-Env": "release", "X-Youju-Pay-Terms": "pay-test"}
+    offer = shop.client.get("/api/v1/pay/products", headers=anonymous).json()["renewBonus"]
+    assert offer["eligibleNow"] is False
 
 
 def test_renewal_bonus_does_not_count_toward_reward_limits(shop, session):
@@ -392,14 +407,14 @@ def test_renewal_bonus_does_not_count_toward_reward_limits(shop, session):
 
 
 def test_early_renewal_refund_takes_back_only_that_order_and_its_bonus(shop, session):
-    """提前续买的那笔（还没开始）7 天内没用过：可以自助全额退，只收回它自己和随它送的 3 天。"""
+    """提前续买的那笔（还没开始）付款 24 小时内没用过：可以自助全额退，只收回它自己和随它送的 3 天。"""
     first = buy(shop, session)
     renewal = buy(shop, session, at=NOW + 25 * DAY)
     shop.clock.at = NOW + 26 * DAY
     # 这期间用的是第一笔（一次 51 家，记在第一笔的使用期上）；第二笔还没开始，没用过
     assert submit(shop, 51, "big").json()["usageSource"] == "pass"
     session.expire_all()
-    assert refund(shop, first).json()["detail"] == "已超过 7 天"
+    assert refund(shop, first).json()["detail"] == "已超过 24 小时"
     response = refund(shop, renewal)
     assert response.status_code == 200 and response.json()["status"] == "退款中"
     assert [(b["refund_fee"], b["refund_reason"], b["req_from"]) for b in refunds(shop)] == [
@@ -425,17 +440,18 @@ def test_early_renewal_refund_takes_back_only_that_order_and_its_bonus(shop, ses
 def test_refunding_the_current_order_moves_the_later_order_and_its_bonus_forward(shop, session):
     """一笔正在用（没用过付费的量）、一笔排在后面：退掉正在用的那笔，后面那笔整段往前挪到现在。"""
     first = buy(shop, session, at=NOW)
-    # 7 天内续买：到期是第 30 天，第 5 天付款不在窗口里，不送
-    second = buy(shop, session, at=NOW + 5 * DAY)
+    # 付款后 1 小时又买一笔：到期是第 30 天，不在"到期前后 7 天"的续买窗口里，不送
+    second = buy(shop, session, at=NOW + timedelta(hours=1))
     assert gifts(session, second) == []
-    shop.clock.at = NOW + 6 * DAY
+    # 第一笔付款后 20 小时（24 小时内、没用过）退掉
+    shop.clock.at = NOW + timedelta(hours=20)
     assert refund(shop, first).status_code == 200
     session.expire_all()
     assert segments(session) == [
         (True, NOW, NOW + 30 * DAY, True),
-        (True, NOW + 6 * DAY, NOW + 36 * DAY, False),
+        (True, NOW + timedelta(hours=20), NOW + timedelta(hours=20) + 30 * DAY, False),
     ]
-    assert expiry(shop) == NOW + 36 * DAY
+    assert expiry(shop) == NOW + timedelta(hours=20) + 30 * DAY
 
 
 def test_ios_refund_notification_also_takes_back_the_bonus(shop, session):
@@ -566,8 +582,8 @@ def run_cli(shop, session_factory, monkeypatch):
 
 
 def complete_refund(shop, session, row, left):
-    """微信那边退款完成：状态 5，剩余 left 分；下一轮补单查单后写成已退款。"""
-    shop.fake.status, shop.fake.left_fee = 5, left
+    """微信那边退款完成：状态 8（用户侧收款完成），剩余 left 分；下一轮补单查单后写成已退款。"""
+    shop.fake.status, shop.fake.left_fee = 8, left
     payments.run_payments(
         session,
         settings=shop.settings,
@@ -679,10 +695,38 @@ def test_full_refund_and_cases_that_are_not_refunded(shop, session, run_cli, cap
     )
     session.commit()
     full = ["--order-id", str(row.id), "--full", "--reason", "重复扣款，全额退回"]
+    # 退款不等冲红（D-074）：已开过发票的照常退，只提醒退完按退款金额开红字发票
     assert run_cli(*full) == 0
-    assert "先按退款金额开红字发票" in capsys.readouterr().out and not refunds(shop)
-    assert run_cli(*full, "--invoice-reversed") == 0
+    assert "退款后请按退款金额开红字发票" in capsys.readouterr().out
     assert refunds(shop)[0]["refund_fee"] == 2900
+    # 管理台开票页"要冲红"列出它（带退款金额和进度）；"待开"里没有
+    reverse = shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json()
+    assert [(i["orderId"], i["needsReversal"], i["refundFee"]) for i in reverse] == [
+        (row.id, True, 2900)
+    ]
+    assert reverse[0]["refundState"] == "退款处理中，确认退款后再冲红"
+    assert reverse[0]["canMarkReversed"] is False
+    assert shop.client.get("/api/admin/invoices", headers=ADMIN).json() == []
+    invoice_id = reverse[0]["id"]
+    # 退款还没确认：不能标已冲红
+    early = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert early.status_code == 409
+    assert complete_refund(shop, session, row, 0).status == "refunded"
+    reverse = shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json()
+    assert reverse[0]["refundState"] == "已退款，按退款金额开红字发票"
+    assert reverse[0]["canMarkReversed"] is True
+    done = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert done.status_code == 200
+    again = shop.client.post(f"/api/admin/invoices/{invoice_id}/reversed", headers=ADMIN)
+    assert again.status_code == 409
+    # 标过以后"要冲红"里不再列出；"全部"里写已冲红；用户订单页的发票写"已冲红"
+    assert shop.client.get("/api/admin/invoices?status=reverse", headers=ADMIN).json() == []
+    everything = shop.client.get("/api/admin/invoices?status=all", headers=ADMIN).json()
+    assert everything[0]["reversedAt"] and everything[0]["needsReversal"] is False
+    mine = shop.client.get(f"/api/v1/pay/orders/{row.id}", headers=HEADERS).json()
+    assert mine["invoice"]["status"] == "已冲红"
+    with pytest.raises(SystemExit):
+        run_cli(*full, "--invoice-reversed")
     # 苹果手机付款的不主动退
     shop.fake.order_type = 7
     apple = buy(shop, session, at=NOW + DAY)
@@ -862,11 +906,13 @@ def test_free_limit_message_only_mentions_buying_while_on_sale(shop, session):
     detail = submit(shop, 1, "fourth").json()["detail"]
     assert detail == {
         "code": "FREE_MONTHLY_LIMIT",
+        "canBuy": True,
         "message": "本月免费次数已用完，下月 1 日恢复；也可以买批量工具，不限次数、每次 500 家以内，到期不扣钱",
     }
     shop.settings.pay_enabled = False
     detail = submit(shop, 1, "fifth").json()["detail"]
     assert detail["message"] == "本月免费次数已用完，下月 1 日恢复"
+    assert detail["canBuy"] is False
     assert "客户工作台" not in json.dumps(detail, ensure_ascii=False)
 
 

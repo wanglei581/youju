@@ -1,4 +1,4 @@
 {
   "navigationBarTitleText": "搜索",
-  "usingComponents": { "t-popup": "tdesign-miniprogram/popup/popup" }
+  "usingComponents": { "t-popup": "tdesign-miniprogram/popup/popup", "ai-only": "/components/ai-only/index" }
 }

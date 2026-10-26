@@ -26,7 +26,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from youju import access_log
-from youju.ai import advisor_endpoint, clause, interpret
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -60,6 +60,14 @@ REFUSAL_CACHE = timedelta(days=1)
 AI_CAP_LOCK = "youju_ai_advisor_daily_cap"
 AI_CAP_LOCAL_LOCK = Lock()
 AI_CAP_MESSAGE = "今天的 AI 使用次数已满，请明天再试"
+# 任务排队时失去授权（AI 关了、移出白名单）退回次数时记的原因；接口据此给错误代码 AI_OFF
+AI_OFF_MESSAGE = "功能未开放"
+# 任务结果里的错误代码（D-075）：小程序按代码写原因，不靠比对文字
+ERROR_CODES = {
+    AI_CAP_MESSAGE: "AI_DAILY_CAP",
+    AI_OFF_MESSAGE: "AI_OFF",
+    heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+}
 
 
 class AdvisorBusy(Exception):
@@ -192,6 +200,8 @@ def task_dict(
         "finishedAt": task.finished_at,
         "expiresAt": task.expires_at,
         "error": task.error,
+        # D-075：AI 任务失败原因的代码（全站上限、AI 关了），小程序按代码写原因，不靠比对文字
+        "errorCode": ERROR_CODES.get(task.error) if task.kind in AI_KINDS and task.error else None,
         "usageSource": task.usage_source,
     }
     if include_result:
@@ -386,30 +396,43 @@ def recover_stale(session: Session, stamp: datetime | None = None, condition=Non
     return count or 0
 
 
-def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> None:
-    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。"""
+def _fail_revoked_interpret(session: Session, settings: Settings, stamp: datetime) -> int:
+    """退回失去授权的任务额度；未超时的运行任务仍由领取它的进程负责。返回退回了几个。
+
+    admin 这边处理不了 AI 任务（开关关着、白名单是空的，或对外 AI 的密钥没配；和心跳用同一个
+    判断 heartbeat.worker_capable）时，排队的 AI 任务全部退回，用户看到"AI 暂时不可用"，个数和
+    退回在同一个事务里记进心跳，给运维提醒（D-075）；只是这个人不在白名单里了（被移出），
+    写"功能未开放"，不提醒。"""
+    paused = not heartbeat.worker_capable(settings)
+    condition = AdvisorTask.kind.in_(AI_KINDS) & (
+        (AdvisorTask.status == "queued")
+        | (
+            (AdvisorTask.status == "running")
+            & AdvisorTask.started_at.is_not(None)
+            & (AdvisorTask.started_at < stamp - STALE_RUNNING)
+        )
+    )
+    if not paused:
+        condition = condition & AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings))
     tasks = session.scalars(
         select(AdvisorTask)
-        .where(
-            AdvisorTask.kind.in_(AI_KINDS),
-            AdvisorTask.user_id.not_in(interpret.worker_user_ids(settings)),
-            (AdvisorTask.status == "queued")
-            | (
-                (AdvisorTask.status == "running")
-                & AdvisorTask.started_at.is_not(None)
-                & (AdvisorTask.started_at < stamp - STALE_RUNNING)
-            ),
-        )
+        .where(condition)
         .order_by(AdvisorTask.id)
         .with_for_update(skip_locked=True)
     ).all()
     for task in tasks:
-        task.status, task.error, task.finished_at = "failed", "功能未开放", stamp
+        task.status, task.finished_at = "failed", stamp
+        task.error = heartbeat.UNAVAILABLE if paused else AI_OFF_MESSAGE
         release_usage(session, task)
+    if paused:
+        heartbeat.add_refunds(session, len(tasks), stamp)
     session.commit()
+    return len(tasks)
 
 
 def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
+    from youju.native_results import build
+
     if not isinstance(task.input_rows, list):
         raise CompareInputError("任务输入已过期，请重新提交")
     if task.kind == "compare":
@@ -417,10 +440,12 @@ def _run_engine(session: Session, task: AdvisorTask, output: Path) -> int:
         task.result_document_ids = sorted(
             {m.document_id for row in report.rows for m in row.matches}
         )
+        task.result_json = build(task.kind, report)
         return export_compare_excel(report, output)
     if task.kind == "track":
         report = track_clients(session, task.input_rows)
         task.result_document_ids = sorted({item.document_id for item in report.items})
+        task.result_json = build(task.kind, report)
         return export_track_excel(report, output)
     raise CompareInputError("不支持的工具任务类型")
 
@@ -786,20 +811,21 @@ def run_advisor_tasks(
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
-    _fail_revoked_interpret(session, settings, stamp)
+    revoked = _fail_revoked_interpret(session, settings, stamp)
     data_enabled = getattr(settings, "advisor_enabled", False)
-    ai_enabled = interpret.worker_enabled(settings)
+    # 和心跳、上面的退回同一个判断：缺对外 AI 密钥时也不领 AI 任务（排队的已经退回）
+    ai_enabled = heartbeat.worker_capable(settings)
     data_allowed = AdvisorTask.kind.in_(("compare", "track"))
     ai_allowed = AdvisorTask.kind.in_(AI_KINDS) & AdvisorTask.user_id.in_(
         interpret.worker_user_ids(settings)
     )
     if not data_enabled and not ai_enabled:
-        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0}
+        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "revoked": revoked}
     allowed = data_allowed if data_enabled else ai_allowed
     if data_enabled and ai_enabled:
         allowed = data_allowed | ai_allowed
     requeued = recover_stale(session, stamp, allowed)
-    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued}
+    result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued, "revoked": revoked}
     claimed: set[int] = set()
     claim_lock = Lock()
 
@@ -985,6 +1011,11 @@ def cleanup_advisor(
             .values(input_rows=None)
         ).rowcount
         or 0
+    )
+    session.execute(
+        update(AdvisorTask)
+        .where(AdvisorTask.kind.in_(("compare", "track")), AdvisorTask.expires_at <= stamp)
+        .values(result_json=None)
     )
     session.execute(
         update(AdvisorTask)

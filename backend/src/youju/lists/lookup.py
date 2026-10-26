@@ -9,11 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids
-from youju.lists.rules import normalize_name, valid_org_name
+from youju.lists.rules import (
+    HONOR_TITLE,
+    PERSON_TITLE,
+    PUNITIVE_TITLE,
+    normalize_name,
+    valid_org_name,
+)
 from youju.models import Document, DocumentMerge, ListEntry, Source
 from youju.takedown import available_condition
 
@@ -47,7 +53,7 @@ class ListLookupResult:
         return [match.master_id for match in self.matches]
 
 
-def public_condition():
+def public_condition(document=Document, source=Source):
     """可以公开给小程序的文件口径。
 
     调用方的查询必须已经连接 ``Source``；人工定为“不是名单”的文件在各自查询中另外排除。
@@ -60,17 +66,28 @@ def public_condition():
         .join(twin, twin.id == DocumentMerge.duplicate_id)
         .join(twin_source, twin_source.id == twin.source_id)
         .where(
-            DocumentMerge.canonical_id == Document.id,
+            DocumentMerge.canonical_id == document.id,
             DocumentMerge.active.is_(True),
             twin_source.rights_level == 1,
         )
         .exists()
     )
-    return and_(available_condition(), or_(Source.rights_level == 1, level1_twin))
+    return and_(available_condition(document), or_(source.rights_level == 1, level1_twin))
+
+
+def list_title_allowed(document=Document):
+    """进企业查询的名单（D-091 ③）：标题不带失信、处罚等惩戒类的字（"无失信""无违法违规"这类
+    信用、合规状况的名单也不进）；以个人为主的（"人才名单""专家名单""人选"这类）不进。和
+    rules.excluded_list_title 同一口径，后者管解析。"""
+
+    def has(words):
+        return or_(*[document.title.contains(word, autoescape=True) for word in words])
+
+    return and_(not_(has(PUNITIVE_TITLE)), not_(has(PERSON_TITLE)), not_(has(HONOR_TITLE)))
 
 
 def _public_entries(stmt: Select) -> Select:
-    """给名单条目查询加公开来源和人工类型口径。"""
+    """给名单条目查询加公开来源、人工类型和名单范围的口径。"""
 
     return (
         stmt.join(Document, Document.id == ListEntry.document_id)
@@ -78,6 +95,7 @@ def _public_entries(stmt: Select) -> Select:
         .where(
             public_condition(),
             or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            list_title_allowed(),
         )
     )
 

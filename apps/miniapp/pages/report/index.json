@@ -1,5 +1,5 @@
 {
   "navigationStyle": "custom",
   "navigationBarTitleText": "截止",
-  "usingComponents": { "t-icon": "/components/icon/index" }
+  "usingComponents": { "t-icon": "/components/icon/index", "ai-button": "/components/ai-button/index" }
 }

@@ -1,6 +1,7 @@
 // AI 内测入口的显示和隐藏（只上传体验版、不合并）：只有 capabilities.ai_advisor.enabled 严格为 true 才出现，
 // 其余情况（关闭、不在白名单、未同意协议 403、接口 404/503、网络失败、演示数据）什么都不渲染、不能进入。
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -31,7 +32,7 @@ function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} }; let definition;
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, Set, setTimeout: trackedTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../utils/boost.js') return require('../utils/boost.js'); assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (name === '../../utils/boost.js') return require('../utils/boost.js'); if (!Object.hasOwn(dependencies, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(dependencies, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); if (!Object.hasOwn(dependencies, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(dependencies, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(dependencies, name), `未提供依赖 ${name}`); return dependencies[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; },
     ...globals,
   }, { filename: file });
@@ -48,20 +49,40 @@ function apiHarness(config = { devBaseUrl: 'https://test.invalid' }) {
   return { api, pending, calls: () => calls };
 }
 
+// 卡片显不显示只听 AI 板块状态（D-075）：用真的 utils/ai-access.js，同一个 api 共用一份（同一次启动里各页面共用）。
+// 没给 isLive、advisorMode 的替身补上：连着真实服务、旧后台没有开放状态接口（404），往下看白名单
+const accessFor = new Map();
+function accessOf(api) {
+  if (!accessFor.has(api)) {
+    const full = Object.assign({ isLive: () => true, advisorMode: () => Promise.reject(Object.assign(new Error('Not Found'), { status: 404 })), forgetCapabilities() {} }, api);
+    const saved = new Map();
+    accessFor.set(api, load('utils/ai-access.js', { './api.js': full },
+      { wx: { getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value), removeStorageSync: (key) => saved.delete(key) } }));
+  }
+  return accessFor.get(api);
+}
+const reasons = require('../utils/ai-reasons.js');
+
+// 详情接口带的 ai：没写就当这份能做（详情接口总带 ai；要测"没有 ai"时显式传 ai: null）
+const ELIGIBLE = { interpret: true, clause: true, reason: null };
 function fab(api, properties = {}) {
-  const navigations = [];
-  const view = load('components/ai-entry/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context, '../../utils/advisor.js': helpers },
-    { wx: { navigateTo(options) { navigations.push(options); } } });
+  properties = Object.assign({ ai: ELIGIBLE }, properties);
+  const navigations = []; const copied = []; const events = []; const back = [];
+  const view = load('components/ai-entry/index.js', {
+    '../../utils/ai-access.js': accessOf(api), '../../utils/tool-context.js': context, '../../utils/ai-reasons.js': reasons,
+    '../../utils/copy.js': { copyLink: (url) => copied.push(url) },
+  }, { wx: { navigateTo(options) { navigations.push(options); }, navigateBack(options) { back.push(options); } } });
   view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
   Object.assign(view.properties, properties); Object.assign(view, view.methods);
+  view.triggerEvent = (name, detail) => events.push([name, detail]);
   view.lifetimes.attached.call(view);
   return {
-    view, navigations,
+    view, navigations, copied, events, back,
     text: () => render(read('components/ai-entry/index.wxml'), { ...view.data, ...view.properties }),
   };
 }
 
-test('入口只在 ai_advisor.enabled 严格为 true 时显示“AI 解读”（内测包也叫这个，10/17），其余返回一律不渲染也不能进入', async () => {
+test('白名单阶段：入口只在能力接口 ai_advisor.enabled 严格为 true 时显示“AI 解读”（先问开放状态，没对所有人开放才看白名单），其余返回一律不渲染也不能进入', async () => {
   const cases = [
     [{ statusCode: 200, data: caps(true) }, true],
     [{ statusCode: 200, data: caps(false) }, false],
@@ -77,7 +98,12 @@ test('入口只在 ai_advisor.enabled 严格为 true 时显示“AI 解读”（
   for (const [response, shown] of cases) {
     const harness = apiHarness(); const button = fab(harness.api, { docId: '42', docTitle: '通知标题' });
     assert.equal(button.text(), '', '请求返回前不显示');
-    const request = harness.pending[0];
+    // D-075：先问 AI 对不对所有人开放（只问接口服务）；白名单阶段说没有，再看能力接口
+    const mode = harness.pending[0];
+    assert.equal(mode.url, 'https://test.invalid/api/v1/advisor/mode');
+    mode.success({ statusCode: 200, data: { open: false, available: false } }); await flush(); await flush();
+    assert.equal(button.text(), '', '能力接口回来前不显示');
+    const request = harness.pending[1];
     assert.equal(request.url, 'https://test.invalid/api/v1/advisor/capabilities');
     if (response === 'fail') request.fail(); else request.success(response);
     await flush(); await flush();
@@ -104,24 +130,34 @@ test('入口带当前通知进入；通知没加载完（blocked）时不显示�
   button.navigations[0].complete(); assert.equal(button.view.data.navigating, false);
   assert.equal(context.url({}), '/pages/advisor/index'); assert.equal(context.read({}), null);
   // 这份文件只能做条款对照（详情接口 ai.interpret 为假）时直接进条款对照
-  const onlyClause = fab(api, { docId: '43', docTitle: '只能对照', ai: { open: false, interpret: false, clause: true } }); await flush();
-  assert.match(onlyClause.text(), /^AI 解读.*和我的企业对一下/); assert.doesNotMatch(onlyClause.text(), /开始解读/); onlyClause.view.open();
+  const onlyClause = fab(api, { docId: '43', docTitle: '只能对照', ai: { interpret: false, clause: true, reason: null } }); await flush();
+  // 同一件事只用一个名字（D-075）：条款对照，按钮写"开始对照"
+  assert.match(onlyClause.text(), /^AI 解读 条款对照：.*开始对照$/); assert.doesNotMatch(onlyClause.text(), /开始解读|和我的企业对一下/); onlyClause.view.open();
   assert.equal(onlyClause.navigations[0].url, `/pages/advisor-clause/index?docId=43&title=${encodeURIComponent('只能对照')}`);
 });
 
-test('同一次启动多个页面共用一个请求，失败也缓存；AI 页面 refresh 才重新请求；关掉后入口随之消失', async () => {
+test('同一次启动各页面共用一次查询；10 分钟内页面显示不再问；重新问后关掉的入口随之消失；连不上时 15 秒内不重复问', async () => {
   const harness = apiHarness();
   const one = fab(harness.api); const two = fab(harness.api);
   assert.equal(harness.calls(), 1);
-  harness.pending[0].success({ statusCode: 200, data: caps(true) }); await flush(); await flush();
+  harness.pending[0].success({ statusCode: 200, data: { open: false, available: false } }); await flush(); await flush();
+  assert.equal(harness.calls(), 2);
+  harness.pending[1].success({ statusCode: 200, data: caps(true) }); await flush(); await flush();
   assert.ok(ENTRY_OPEN(one.text())); assert.ok(ENTRY_OPEN(two.text()));
-  one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(harness.calls(), 1);
-  const refreshed = harness.api.advisorCapabilities({ refresh: true });
-  assert.equal(harness.api.advisorCapabilities({ refresh: true }), refreshed); assert.equal(harness.calls(), 2);
-  harness.pending[1].success({ statusCode: 200, data: caps(false) }); await refreshed;
-  one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(one.text(), '');
-  const failing = apiHarness(); fab(failing.api); failing.pending[0].fail(); await flush();
-  fab(failing.api); await flush(); assert.equal(failing.calls(), 1);
+  one.view.pageLifetimes.show.call(one.view); await flush(); assert.equal(harness.calls(), 2);
+  // 重新问一次（AI 首页、提交被拒时会这样）：同时只有一个在途；后台说不在白名单了，两张卡片都收起
+  const access = accessOf(harness.api);
+  const refreshed = access.refresh(); assert.equal(access.refresh(), refreshed);
+  harness.pending[2].success({ statusCode: 200, data: { open: false, available: false } }); await flush(); await flush();
+  harness.pending[3].success({ statusCode: 200, data: caps(false) }); await refreshed; await flush();
+  assert.equal(one.text(), ''); assert.equal(two.text(), '');
+  // 连不上：不下结论（不显示），15 秒内别的页面再显示不重复问
+  let asked = 0;
+  const offline = { advisorCapabilities: () => { asked += 1; return Promise.resolve({ ai_advisor: { enabled: false }, reason: 'offline' }); } };
+  const first = fab(offline); await flush(); await flush(); await flush();
+  assert.equal(asked, 1); assert.equal(first.text(), '');
+  const second = fab(offline); await flush(); await flush();
+  assert.equal(asked, 1); assert.equal(second.text(), '');
 });
 
 test('演示数据（没配云托管和本机后端）不请求、不显示', async () => {
@@ -135,7 +171,8 @@ test('演示数据（没配云托管和本机后端）不请求、不显示', as
 test('组件卸载后晚到的结果不再写入', async () => {
   let resolve;
   const late = fab({ advisorCapabilities: () => new Promise((done) => { resolve = done; }) });
-  late.view.lifetimes.detached.call(late.view); resolve(caps(true)); await flush();
+  await flush(); await flush(); // 开放状态问完（旧后台 404），能力接口还在途
+  late.view.lifetimes.detached.call(late.view); resolve(caps(true)); await flush(); await flush();
   assert.equal(late.view.data.aiEnabled, false);
 });
 
@@ -144,7 +181,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
     const name = route.split('/')[1]; const template = read(`${route}.wxml`);
     const usesFab = !!(JSON.parse(read(`${route}.json`)).usingComponents || {})['ai-entry'];
     if (name === 'detail') {
-      assert.match(template, /<ai-entry blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" ai="\{\{doc.ai\}\}" body-status="\{\{doc.body \? doc.body.status : ''\}\}" body-total="\{\{doc.body && doc.body.total \? doc.body.total : 0\}\}" \/>/);
+      assert.match(template, /<view id="ai-entry"><ai-entry blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" doc-url="\{\{doc.url\}\}" has-attachments="\{\{atts.length > 0\}\}" ai="\{\{doc.ai\}\}" body-status="\{\{doc.body \? doc.body.status : ''\}\}" body-total="\{\{doc.body && doc.body.total \? doc.body.total : 0\}\}" bind:attachments="toAttachments" \/><\/view>/);
       // 卡片紧跟在"要点"后面，不再浮在正文上
       assert.ok(template.indexOf('<ai-entry') > template.indexOf('要点') && template.indexOf('<ai-entry') < template.indexOf('原文摘录'));
       assert.equal(usesFab, true);
@@ -162,7 +199,8 @@ test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部�
     assertAiGuarded(read(file));
     assert.doesNotMatch(read(file), /智能|即将推出/);
   }
-  const aiRoutes = AI_PAGES.map((name) => `pages/${name}/index`);
+  // AI 板块首页（D-075）本身就是 AI 页面：AI 关着时底栏不画、直接打开也回首页（ai-section.test.js）
+  const aiRoutes = AI_PAGES.concat('ai').map((name) => `pages/${name}/index`);
   for (const route of JSON.parse(read('app.json')).pages.filter((item) => !aiRoutes.includes(item))) {
     const visible = read(`${route}.wxml`).replace(/<!--[^]*?-->/g, '');
     assert.doesNotMatch(visible, /\bAI\b|内部测试/, route);
@@ -207,11 +245,11 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
 });
 
 test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI 生成"，标题不带"内部测试"；登录和同意只看协议是否定稿', async () => {
-  const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+  const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
   assert.equal(release.AI_LABEL, 'AI 生成：');
   assert.equal(release.aiTitle('政策解读'), '政策解读');
   assert.equal(release.AI_INTERNAL, false);
-  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true } });
+  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true }, './ai-reasons.js': reasons });
   assert.equal(internal.AI_LABEL, 'AI 生成 · 内部测试：');
   assert.equal(internal.aiTitle('政策解读'), '政策解读 · 内部测试');
   // 正式版的四个页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
@@ -283,63 +321,80 @@ test('任务页取消、删除走线上接口并刷新；进行中的任务轮�
 });
 
 // ---------- AI 正式版（config.aiInternal 为 false，D-066）：上线即对所有用户开放 ----------
-const release = load('utils/advisor.js', { './config.js': { aiInternal: false } });
+const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
 
-function releaseFab(api, properties = {}) {
-  const navigations = [];
-  const view = load('components/ai-entry/index.js', { '../../utils/api.js': api, '../../utils/tool-context.js': context, '../../utils/advisor.js': release },
-    { wx: { navigateTo(options) { navigations.push(options); } } });
-  view.properties = Object.fromEntries(Object.entries(view.properties).map(([key, value]) => [key, value.value]));
-  Object.assign(view.properties, properties); Object.assign(view, view.methods);
-  view.lifetimes.attached.call(view);
-  return { view, navigations, text: () => render(read('components/ai-entry/index.wxml'), { ...view.data, ...view.properties }) };
-}
 
-test('正式版入口：详情说对所有人开放、这份文件能做就显示"AI 解读"，不用先同意协议；名单等做不了的不显示；没开放时只看白名单', async () => {
-  const notAgreed = { advisorCapabilities: () => Promise.resolve({ ai_advisor: { enabled: false }, reason: 'consent' }) };
-  const open = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: { open: true, interpret: true, clause: true } }); await flush();
+test('对所有人开放（开放状态 open）：没同意协议的人也看得到卡片，点了进解读页（解读页先走同意）；没对所有人开放时只看白名单；后台处理不了时写暂时不可用', async () => {
+  const forAll = (available = true) => ({
+    advisorMode: () => Promise.resolve({ open: true, available }),
+    advisorCapabilities: () => Promise.resolve({ ai_advisor: { enabled: false }, reason: 'consent' }),
+  });
+  const api = forAll();
+  const open = fab(api, { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } }); await flush(); await flush();
   assert.ok(ENTRY_OPEN(open.text())); open.view.open(); assert.equal(open.navigations.length, 1);
-  // 10/17：做不了的文件也显示卡片，写明原因，不给按钮
-  const list = releaseFab(notAgreed, { docId: '43', docTitle: '名单', ai: { open: true, interpret: false, clause: false }, bodyStatus: 'list' }); await flush();
-  assert.match(list.text(), /^AI 解读 名单类文件不提供 AI 解读/); assert.doesNotMatch(list.text(), /开始解读/);
+  assert.equal(open.navigations[0].url, `/pages/advisor-interpret/index?docId=42&title=${encodeURIComponent('通知')}`);
+  // 做不了的文件也显示卡片，写明原因和下一步，不给"开始解读"
+  const list = fab(api, { docId: '43', docTitle: '名单', ai: { interpret: false, clause: false, reason: 'list' } }); await flush();
+  assert.equal(list.text(), 'AI 解读 名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。 去查名单');
   list.view.open(); assert.equal(list.navigations.length, 0);
-  const closed = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: { open: false, interpret: true, clause: true } }); await flush();
+  list.view.nextStep(); assert.equal(list.navigations[0].url, '/pages/lists/index');
+  // 没对所有人开放、这个人也不在白名单：什么都不渲染
+  const closed = fab({ advisorMode: () => Promise.resolve({ open: false, available: false }), advisorCapabilities: () => Promise.resolve({ ai_advisor: { enabled: false }, reason: 'off' }) },
+    { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } }); await flush(); await flush();
   assert.equal(closed.text(), '');
-  const whitelisted = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '42', docTitle: '通知', ai: { open: false, interpret: true, clause: false } }); await flush();
-  assert.ok(ENTRY_OPEN(whitelisted.text()));
-  const whitelistedList = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '43', docTitle: '名单', ai: { open: false, interpret: false, clause: false }, bodyStatus: 'list' }); await flush();
-  assert.match(whitelistedList.text(), /名单类文件不提供 AI 解读/); assert.doesNotMatch(whitelistedList.text(), /开始解读/);
-  // 旧后台没有 ai 字段：只看白名单
-  const legacy = releaseFab({ advisorCapabilities: () => Promise.resolve(caps(true)) }, { docId: '42', docTitle: '通知' }); await flush();
-  assert.ok(ENTRY_OPEN(legacy.text()));
-  // 详情晚到：ai 字段变化后重新判断
-  const late = releaseFab(notAgreed, { docId: '42', docTitle: '通知', ai: null }); await flush();
+  const whitelisted = fab({ advisorMode: () => Promise.resolve({ open: false, available: false }), advisorCapabilities: () => Promise.resolve(caps(true)) },
+    { docId: '42', docTitle: '通知', ai: { interpret: true, clause: false, reason: null } }); await flush(); await flush();
+  assert.ok(ENTRY_OPEN(whitelisted.text())); assert.doesNotMatch(whitelisted.text(), /条款对照/);
+  // 详情没有 ai 字段（还不知道能不能做）：不渲染，不把不知道当成能做
+  const unknown = fab(api, { docId: '42', docTitle: '通知', ai: null }); await flush();
+  assert.equal(unknown.text(), '');
+  // 详情还没加载完（blocked）时不显示；加载完重新判断
+  const late = fab(api, { blocked: true, docId: '42', docTitle: '通知', ai: null }); await flush();
   assert.equal(late.text(), '');
-  late.view.properties.ai = { open: true, interpret: true, clause: false }; late.view.observers.ai.call(late.view); await flush();
-  assert.ok(ENTRY_OPEN(late.text())); assert.doesNotMatch(late.text(), /和我的企业对一下/);
+  Object.assign(late.view.properties, { blocked: false, ai: { interpret: true, clause: false, reason: null } }); late.view.observers.ai.call(late.view); await flush();
+  assert.ok(ENTRY_OPEN(late.text()));
+  // 后台暂时处理不了（admin 心跳没来、两边设置对不上）：卡片写暂时不可用，不给按钮
+  const paused = fab(forAll(false), { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null } }); await flush(); await flush();
+  assert.equal(paused.text(), 'AI 解读 AI 暂时不可用，请稍后再试。');
+  paused.view.open(); assert.equal(paused.navigations.length, 0);
 });
 
-test('卡片在做不了的文件上写明原因、不给按钮（10/17 创始人：按钮时有时无看不懂）', async () => {
+test('卡片在做不了的文件上按后台给的原因代码写原因和下一步、不给按钮（D-075 第六节第 3 条）', async () => {
   const api = { advisorCapabilities: () => Promise.resolve(caps(true)) };
-  const none = { open: false, interpret: false, clause: false };
+  const none = (reason) => ({ interpret: false, clause: false, reason });
   const cases = [
-    [{ bodyStatus: 'list' }, '名单类文件不提供 AI 解读。要查企业在不在名单上，可以用“查名单”。'],
-    [{ bodyStatus: 'original' }, '这类文件不提供 AI 解读，请复制原文链接查看原文。'],
-    [{ bodyStatus: 'ok', bodyTotal: 24001 }, '正文超过 2.4 万字，暂不能解读，请查看原文。'],
-    [{ bodyStatus: '' }, '这份文件没有可公开的完整正文，暂不能解读，请查看原文。'],
-    [{ bodyStatus: 'ok', bodyTotal: 800 }, '这份文件暂不能解读，请查看原文。'],
+    [{ ai: none('list') }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', '去查名单'],
+    [{ ai: none('kind') }, '这类文件不做 AI 解读。', '站内阅读正文'],
+    [{ ai: none('source') }, '这个来源暂不用于 AI 解读。', '站内阅读正文'],
+    // 没有完整正文：有附件给"看附件"，没有附件给"站内阅读正文"
+    [{ ai: none('no_body') }, '还没有拿到完整正文，正文可能在附件里。', '站内阅读正文'],
+    [{ ai: none('no_body'), hasAttachments: true }, '还没有拿到完整正文，正文可能在附件里。', '看附件'],
+    [{ ai: none('too_long') }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', ''],
+    [{ ai: none('unavailable') }, '这份文件已下架。', '返回'],
+    // 旧后台：有 ai、没有原因代码时按页面已有的正文信息判断
+    [{ ai: none(null), bodyStatus: 'list' }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', '去查名单'],
+    [{ ai: none(null), bodyStatus: 'original' }, '这类文件不做 AI 解读。', '站内阅读正文'],
+    [{ ai: none(null), bodyStatus: 'ok', bodyTotal: 24001 }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', ''],
+    [{ ai: none(null), bodyStatus: '' }, '还没有拿到完整正文，正文可能在附件里。', '站内阅读正文'],
+    [{ ai: none(null), bodyStatus: 'ok', bodyTotal: 800 }, '这份文件暂不能解读，请查看原文。', '站内阅读正文'],
   ];
-  for (const [body, reason] of cases) {
-    const card = fab(api, { docId: '42', docTitle: '通知', ai: none, ...body }); await flush();
-    assert.equal(card.text(), `AI 解读 ${reason}`, JSON.stringify(body));
+  for (const [props, reason, next] of cases) {
+    const card = fab(api, { docId: '42', docTitle: '通知', docUrl: 'https://gov.example/1.html', ...props }); await flush(); await flush();
+    assert.equal(card.text(), `AI 解读 ${reason}${next ? ` ${next}` : ''}`, JSON.stringify(props));
     card.view.open(); card.view.openClause(); assert.equal(card.navigations.length, 0);
+    card.view.nextStep();
+    if (next === '去查名单') assert.equal(card.navigations[0].url, '/pages/lists/index');
+    if (next === '站内阅读正文') { assert.equal(card.navigations[0].url, '/pages/reader/index?id=42'); assert.deepEqual(card.copied, []); }
+    if (next === '看附件') assert.deepEqual(card.events.map(([name]) => name), ['attachments']);
+    if (next === '返回') assert.equal(card.back.length, 1);
+    if (!next) assert.equal(card.navigations.length + card.copied.length + card.events.length + card.back.length, 0);
   }
   // 能做的文件：正文长短不影响（以后端判断为准）
-  const ok = fab(api, { docId: '42', docTitle: '通知', ai: { open: false, interpret: true, clause: true }, bodyStatus: 'ok', bodyTotal: 30000 }); await flush();
-  assert.ok(ENTRY_OPEN(ok.text())); ok.view.openClause();
+  const ok = fab(api, { docId: '42', docTitle: '通知', ai: { interpret: true, clause: true, reason: null }, bodyStatus: 'ok', bodyTotal: 30000 }); await flush(); await flush();
+  assert.ok(ENTRY_OPEN(ok.text())); assert.match(ok.text(), /也可以做条款对照$/); ok.view.openClause();
   assert.equal(ok.navigations[0].url, `/pages/advisor-clause/index?docId=42&title=${encodeURIComponent('通知')}`);
-  // 非白名单用户：做不了的文件也什么都不渲染
-  const outsider = fab({ advisorCapabilities: () => Promise.resolve(caps(false)) }, { docId: '42', ai: none, bodyStatus: 'list' }); await flush();
+  // 不在白名单的人：做不了的文件也什么都不渲染
+  const outsider = fab({ advisorCapabilities: () => Promise.resolve(caps(false)) }, { docId: '42', ai: none('list') }); await flush(); await flush();
   assert.equal(outsider.text(), '');
 });
 
@@ -376,19 +431,28 @@ test('capabilities 用不了的原因：403 没同意协议、503 和网络失�
   }
 });
 
-test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试，关着时写"AI 功能暂时不可用"', async () => {
-  for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', 'AI 功能暂时不可用，请稍后再试', '']]) {
+test('正式版四个 AI 页面：没同意协议时引导同意（点按钮走同意流程，回来自动刷新），连不上时给重试；关着时工具中心、我的记录只写"暂时没有可用工具"，解读页、对照页回首页（D-075：不写 AI、不留"不可用"页）', async () => {
+  for (const [reason, text, button] of [['consent', '请先阅读并同意《用户协议》和《隐私保护指引》', '阅读并同意'], ['offline', '暂时连不上服务器', '重试'], ['off', '暂时没有可用工具', '']]) {
     for (const name of AI_PAGES) {
+      const switched = [];
       let consentCalls = 0; let capabilityCalls = 0;
       const api = { advisorCapabilities: () => { capabilityCalls += 1; return Promise.resolve({ ai_advisor: { enabled: false, features: [], remaining: {} }, reason }); }, advisorTasks: () => Promise.resolve({ items: [] }) };
       const storage = new Map();
-      const wx = { setNavigationBarTitle() {}, getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value) };
+      const wx = { setNavigationBarTitle() {}, getStorageSync: (key) => storage.get(key), setStorageSync: (key, value) => storage.set(key, value), switchTab: (o) => switched.push(o.url) };
       const page = load(`pages/${name}/index.js`, { '../../utils/api.js': api, '../../utils/advisor.js': release, '../../utils/tool-context.js': context,
         '../../utils/ai-interpret.js': require('../utils/ai-interpret.js'), '../../utils/ai-clause.js': require('../utils/ai-clause.js'), '../../utils/format.js': require('../utils/format.js'),
         '../../utils/consent.js': { ensureConsent: () => { consentCalls += 1; return Promise.resolve(true); } } }, { wx });
       if (page.onLoad) page.onLoad({ docId: '42', title: '通知' });
       page.onShow(); await flush(); await flush();
       const output = render(read(`pages/${name}/index.wxml`), page.data);
+      if (reason === 'off' && ['advisor-interpret', 'advisor-clause'].includes(name)) {
+        assert.deepEqual(switched, ['/pages/home/index'], name);
+        assert.doesNotMatch(output, /AI|不可用|暂未开放/, name);
+        page.onUnload ? page.onUnload() : page.onHide();
+        continue;
+      }
+      assert.deepEqual(switched, [], name);
+      if (reason === 'off') assert.doesNotMatch(output, /AI/, name);
       assert.match(output, new RegExp(text), `${name} ${reason}`);
       if (button) assert.match(output, new RegExp(button), `${name} ${reason}`);
       else assert.doesNotMatch(output, /阅读并同意|重试/, `${name} ${reason}`);

@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.config import get_settings
-from youju.crawler.detail import DetailResult, parse_detail
+from youju.crawler.detail import DetailResult, parse_detail, redact_sensitive
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
-from youju.crawler.pdf import extract_pdf_body
+from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
 from youju.dedup import reconcile_documents
@@ -165,6 +165,12 @@ def _save_result(
     return DetailFetchSummary(document_id, outcome.status, outcome.failure_reason)
 
 
+def _pdf_detail(content: bytes) -> DetailResult:
+    """PDF 当正文：入库的遮过号码，没遮的只留在内存里（raw_body）。"""
+    raw, error = extract_pdf_text(content)
+    return DetailResult(body_text=redact_sensitive(raw), failure_reason=error, raw_body=raw)
+
+
 def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutcome:
     now = datetime.now(UTC)
     if not _government_url(url):
@@ -190,10 +196,14 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         or fetched.text.lstrip().startswith("%PDF-")
     )
     if is_pdf:
-        body, error = extract_pdf_body(fetched.content)
-        parsed = DetailResult(body_text=body, failure_reason=error)
+        parsed = _pdf_detail(fetched.content)
         return _FetchOutcome(
-            document_id, now, fetched, parsed, "ok" if body else "pdf_error", error
+            document_id,
+            now,
+            fetched,
+            parsed,
+            "ok" if parsed.body_text else "pdf_error",
+            parsed.failure_reason,
         )
     if content_type and content_type not in {"text/html", "application/xhtml+xml"}:
         return _FetchOutcome(
@@ -221,10 +231,12 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
             )
-        body, error = extract_pdf_body(pdf_fetch.content)
-        if error:
-            return _FetchOutcome(document_id, now, pdf_fetch, parsed, "pdf_error", error)
-        parsed.body_text = body
+        pdf = _pdf_detail(pdf_fetch.content)
+        if pdf.failure_reason:
+            return _FetchOutcome(
+                document_id, now, pdf_fetch, parsed, "pdf_error", pdf.failure_reason
+            )
+        parsed.body_text, parsed.raw_body = pdf.body_text, pdf.raw_body
     status = (
         "protected"
         if parsed.failure_reason == "防护页或验证码"

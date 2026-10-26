@@ -47,6 +47,8 @@
 .pass-pay::after { border: 0; }
 .pass-msg { padding: 8rpx 0 4rpx; font-size: 26rpx; line-height: 1.6; color: var(--t2); }
 .pass-msg--error { color: var(--red); }
+/* 消息后面的"查看我的订单"：和消息同一行接着写，品牌蓝，点得到（行高够、左右留空） */
+.pass-orders { margin-left: 12rpx; padding: 8rpx 0; font-size: 26rpx; white-space: nowrap; }
 .pass-closed { padding: 24rpx 0; text-align: center; font-size: 28rpx; color: var(--t2); }
 
 /* 沙箱联调提示：醒目，避免测试人员以为是真付款 */

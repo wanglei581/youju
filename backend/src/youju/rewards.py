@@ -1,7 +1,8 @@
 """奖励与购买共用使用期；grant 由调用方提交，自动发放与补发独立提交并隔离失败。
 
-首次批量奖励和同行引荐已删（D-061、D-070 不再做），防重复领取的凭据（reward_claims）随之不再写入：
-注销即删，和加量体验一个口径（D-071 第②条）。"""
+首次批量奖励和同行引荐已删（D-061、D-070 不再做），防重复领取的凭据随之不再保留：
+注销即删，和加量体验一个口径（D-071 第②条）。凭据表和 users 里引荐、首次批量用的四列
+由迁移 0035 删掉，pass_rewards 里这两种旧流水照常保留。"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -226,17 +227,8 @@ def reconcile(session: Session, *, settings=None, stamp: datetime | None = None)
 def anonymize(session: Session, user: User, stamp: datetime) -> None:
     """注销：待核对的线索删掉，奖励流水去掉和这个账号的关联，没用完的奖励天数作废；
     不留防重复领取的凭据（注销即删）。"""
-    # 引荐已删，库里可能还有以前留下的引荐关系：按编号锁关系中的用户，再断开关系。
-    related = set(session.scalars(select(User.id).where(User.invited_by_user_id == user.id))) | {
-        user.id
-    }
-    if user.invited_by_user_id is not None:
-        related.add(user.invited_by_user_id)
-    list(
-        session.scalars(
-            select(User.id).where(User.id.in_(sorted(related))).order_by(User.id).with_for_update()
-        )
-    )
+    # 先锁用户再动别的表：和提交任务、任务完成的加锁顺序一样，免得互相等待死锁
+    session.scalar(select(User.id).where(User.id == user.id).with_for_update())
     if (
         session.scalar(
             select(DeadlineClue.id)
@@ -257,13 +249,8 @@ def anonymize(session: Session, user: User, stamp: datetime) -> None:
         session.execute(
             update(DeadlineClue).where(DeadlineClue.user_id == user.id).values(user_id=None)
         )
-    # 引荐关系断开，不收回另一方已经拿到的使用天数。
-    session.execute(
-        update(User)
-        .where(User.invited_by_user_id == user.id)
-        .values(invited_by_user_id=None, invited_at=None)
-    )
-    # 以前的首次批量、引荐流水的 ref_id 记的是首次完成者的编号，一并清掉
+    # 以前的首次批量、引荐流水的 ref_id 记的是首次完成者的编号，一并清掉；
+    # 另一方已经拿到的使用天数不收回
     linked = (PassReward.ref_type.in_(("user_first_batch", "user_referral"))) & (
         PassReward.ref_id == user.id
     )

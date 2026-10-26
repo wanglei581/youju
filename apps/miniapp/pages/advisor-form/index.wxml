@@ -6,6 +6,7 @@
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">{{statusLine}}</view>
+    <view wx:if="{{countRule}}" class="advisor-text muted">{{countRule}}</view>
     <view wx:if="{{trialEnded}}" class="advisor-text muted">{{trialEnded}}</view>
     <view wx:if="{{seasonLine}}" class="advisor-text">{{seasonLine}}</view>
     <!-- 体验中当天次数用完：和免费次数用完一样在上面说清楚，不只写"还能提交 0 次" -->
@@ -27,6 +28,8 @@
       <view wx:if="{{offer.renew}}" class="advisor-text">{{offer.renew.text}}</view>
       <button class="advisor-button" bindtap="buyPass">续买批量工具</button>
     </view>
+    <!-- 10/22 走查：通知表不是按企业名称对通知，常显一句说清按什么列 -->
+    <view wx:if="{{kind === 'track'}}" class="advisor-text">按每行的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准）；关键词不填就不限主题；客户名称只用来标出是哪家，不判断能不能报。</view>
     <view class="advisor-actions"><button class="advisor-button {{mode === 'paste' ? 'selected' : ''}}" data-mode="paste" bindtap="mode" disabled="{{previewing || submitting}}">粘贴文本</button><button class="advisor-button {{mode === 'file' ? 'selected' : ''}}" data-mode="file" bindtap="mode" disabled="{{previewing || submitting}}">选择文件</button></view>
     <block wx:if="{{mode === 'paste'}}">
       <view class="advisor-text">{{kind === 'compare' ? '一行一家，填写企业名称或统一社会信用代码' : '一行一家：客户名称,省份,关键词,支持方式,城市,区县；后四项可留空；关键词、支持方式多项用分号分隔，城市只填一个，区县也只填一个，写在第 6 列；旧四列、五列格式仍有效'}}</view>
@@ -34,7 +37,7 @@
       <textarea class="advisor-input advisor-paste" value="{{text}}" maxlength="30000" placeholder="{{kind === 'compare' ? '示例科技有限公司' : '示例科技有限公司,山东,高新技术,资金支持,青岛,市南区'}}" bindinput="input" disabled="{{previewing || submitting}}" />
     </block>
     <block wx:else>
-      <view class="advisor-text">只支持 XLSX / CSV，文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}其他列（如联系人、电话）不使用、不保存，建议上传前删掉。</view>
+      <view class="advisor-text">只支持 XLSX / CSV（旧版 .xls 请先在电脑上用 Excel 或 WPS 另存为 .xlsx），文件不超过 60 KB。{{kind === 'compare' ? '使用企业名称或统一社会信用代码表头，无表头时读取第一列。' : '表头须有客户名称、省份；可选关键词、支持方式、城市、区县（第 6 列，表头写“区县”）。'}}其他列（如联系人、电话）不使用、不保存，建议上传前删掉。</view>
       <!-- 10/18 验收：第一次用的人不知道表格要先放进微信聊天才能选 -->
       <view class="advisor-text muted">电脑或手机里的表格，请先发到微信聊天里（例如发给“文件传输助手”），再点“从聊天中选文件”。</view>
       <button class="advisor-button" bindtap="choose" disabled="{{previewing || submitting}}">{{fileName ? '重新选择文件' : '从聊天中选文件'}}</button>
@@ -48,14 +51,17 @@
     <!-- 提示里推荐了加量体验（超过 50 家、本月免费次数用完）：按钮紧跟在提示下面，不用翻回页面上方找；别的提示下面不出现 -->
     <button wx:if="{{inputError && inputError === trialHint && trialAvailable && !passActive}}" class="advisor-button" bindtap="openTrial">了解加量体验</button>
     <button class="advisor-button" bindtap="preview" loading="{{previewing}}" disabled="{{previewing || submitting}}">预览并核对行数</button>
+    <!-- 10/22 走查 + 10/25 Grok：先做什么写在预览按钮正下方（原来隔着工具说明和保存期限写在提交按钮上面） -->
+    <view wx:if="{{!previewed && !previewing}}" class="advisor-text">填好名单后，先点上面的“预览并核对行数”，通过后才能提交</view>
   </view>
   <view class="card advisor-card">
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '提交前请单独阅读并同意《工具使用说明》'}}</view>
     <button class="advisor-button" bindtap="terms">阅读工具使用说明</button>
     <view wx:if="{{!passActive}}" class="advisor-text muted">每提交一次算 1 次，不论几家；排队中取消、或处理失败没出结果的，不算次数。</view>
-    <view class="advisor-text muted">原文件不保存；提交的名单 7 天后清空，结果 30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
+    <view class="advisor-text muted">原文件不保存；任务里的名单 7 天后清空，结果文件（含提交的名单内容）30 天后删除。在“我的记录”里可取消排队中的、删除记录及结果。</view>
+    <!-- 10/22 走查：没预览时提交按钮是灰的，紧挨着写明为什么（先做什么写在预览按钮下面） -->
+    <view wx:if="{{!previewed && !previewing}}" class="advisor-text">预览通过后才能提交</view>
     <button class="advisor-button btn-primary" bindtap="submit" loading="{{submitting}}" disabled="{{previewing || submitting || !previewed}}">提交任务</button>
     <button class="advisor-button" bindtap="tasks" disabled="{{submitting}}">查看已有任务</button>
   </view>
 </block>
-<view class="advisor-footer">第三方整理 · 非政府平台</view>

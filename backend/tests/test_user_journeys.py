@@ -555,9 +555,16 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
     )
     assert row["docId"] == doc.id and row["checkResult"] == "pass"
     assert "13812345678" not in row["content"] and "［已隐去］" in row["content"]
-    assert _json(j.client.post(f"/api/admin/feedback/{feedback_id}/handle", headers=ADMIN)) == {
+    assert _json(
+        j.client.post(
+            f"/api/admin/feedback/{feedback_id}/handle", headers=ADMIN, json={"outcome": "fixed"}
+        )
+    ) == {
         "handled": True,
         "changed": True,
+        "outcome": "fixed",
+        "outcomeLabel": "已更正",
+        "reply": None,
     }
     handled = next(
         row
@@ -600,6 +607,8 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         "subscriptions": {"newDocs": 0, "deadline": 0},
         # 注销后：不在售，也没有订单（小程序不显示购买入口和「我的订单」）
         "pay": {"enabled": False, "hasOrders": False},
+        # 注销后没有使用期：我的页头没有"批量工具"标识
+        "pass": None,
         # 纠错送天数开关默认关：纠错页不提送天数
         "correctionReward": None,
     }
@@ -917,9 +926,11 @@ def test_e_advisor_disabled_blocks_all_endpoints_and_worker(journey, monkeypatch
         ("get", "/api/v1/advisor/tasks/1/download", {}),
         ("get", "/api/v1/advisor/tasks/1/file?part=0", {}),
         ("post", "/api/v1/advisor/tasks/1/cancel", {}),
-        ("delete", "/api/v1/advisor/tasks/1", {}),
     ):
         assert _json(getattr(j.client, method)(path, **kwargs), 404)["detail"] == "没有找到接口"
+    # 删除自己的记录不看开关（D-093 上线门槛第 8 条）：删除接口一直在，没有这条记录照样"没有找到"
+    response = j.client.delete("/api/v1/advisor/tasks/1")
+    assert _json(response, 404)["detail"] == "没有找到顾问任务"
     assert advisor_tasks.run_advisor_tasks(j.session, settings=j.settings)["processed"] == 0
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasksTotal"] == 0
 
@@ -1114,12 +1125,24 @@ def test_fixed_feedback_handling_visible_in_personal_data(journey, record_proper
     _agree(j)
     saved = _json(j.client.post("/api/v1/feedback", json={"content": "请修正日期"}), 201)
     before = _json(j.client.get("/api/v1/me/data"))["feedback"]
-    _json(j.client.post(f"/api/admin/feedback/{saved['id']}/handle", headers=ADMIN))
+    _json(
+        j.client.post(
+            f"/api/admin/feedback/{saved['id']}/handle",
+            headers=ADMIN,
+            json={"outcome": "fixed", "reply": "已改正"},
+        )
+    )
     after = _json(j.client.get("/api/v1/me/data"))["feedback"]
     j.session.expire_all()
     assert j.session.get(Feedback, saved["id"]).handled_at is not None
     assert before[0]["handled"] is False and before[0]["handledAt"] is None
     assert after[0]["handled"] is True and after[0]["handledAt"] is not None
+    assert (after[0]["outcome"], after[0]["outcomeLabel"], after[0]["reply"]) == (
+        "fixed",
+        "已更正",
+        "已改正",
+    )
+    assert (before[0]["outcome"], before[0]["outcomeLabel"], before[0]["reply"]) == (None,) * 3
     assert after[0]["checkResult"] == before[0]["checkResult"]
     _json(j.client.post(f"/api/admin/feedback/{saved['id']}/unhandle", headers=ADMIN))
     assert _json(j.client.get("/api/v1/me/data"))["feedback"] == before

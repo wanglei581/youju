@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -7,14 +8,14 @@ const format = require('../utils/format.js');
 const boost = require('../utils/boost.js');
 const conditions = require('../utils/conditions.js');
 
-// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签。
+// UI 第一轮打磨（D-053）：骨架屏、本周 0 份的说明、截止雷达单标题、名单状态标签（10/24 起叫发布阶段，D-090）。
 // 依赖都用替身，不读取 legal.js 或本机配置。
 function load(file, deps = {}, globals = {}) {
   let def;
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, ...globals,
   }, { filename: file });
   return { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } };
@@ -70,7 +71,7 @@ test('首页加载时用占位块：本周新增和最新列表都不写"正在�
   assert.match(template, /<view wx:if="{{!items.length && loaded && !error}}" class="list-tip">暂时没有新的申报通知<\/view>/);
   // {{stats.sources}}、{{stats.provinces}} 只出现在 stats 到了以后才显示的地方
   const footer = template.slice(template.indexOf('<view class="footer">'));
-  assert.match(footer, /<text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市<\/text>，<\/text>每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。/);
+  assert.match(footer, /<text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市<\/text>，<\/text>每条都注明出处。有据不代办申报。<\/text>/);
   assert.match(read('app.wxss'), /\.sk \{[^}]*background: var\(--fill\)/);
 });
 

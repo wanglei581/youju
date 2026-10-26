@@ -1,6 +1,8 @@
 const api = require('../../utils/api.js');
 const { describe } = require('../../utils/conditions.js');
 const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
+const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
+const pages = require('../../utils/pages.js');
 
 const SUB_KIND = { newDocs: '关注有新文件', deadline: '截止前提醒' };
 const SUB_STATUS = { unused: '还没发出', sent: '已发出', failed: '发送失败', refused: '被拒收', expired: '已失效' };
@@ -16,11 +18,45 @@ function maskId(id) {
   return id && id.length > 10 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id || '';
 }
 
+// 处理中超过一天的一定没人在跑了（和后台的删除、过期清理同一条线）：功能关掉以后也不会有人接着处理，可以删
+const ABANDONED = 24 * 3600 * 1000;
+function stuck(t) {
+  const started = t.startedAt && Date.parse(t.startedAt);
+  return t.status === 'running' && Number.isFinite(started) && Date.now() - started > ABANDONED;
+}
+
+// 工具记录（批量工具和 AI 的任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
+// 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提
+function taskData(d) {
+  const rows = d.advisorTasks || [];
+  const ai = rows.some((t) => Object.prototype.hasOwnProperty.call(KINDS, t.kind));
+  const files = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.status === 'done');
+  const extras = [d.boostTrial ? '加量体验的开始和结束时间' : '', d.passGiftsTotal ? `送的批量工具天数（${d.passGiftsTotal} 笔）` : ''].filter(Boolean);
+  return {
+    tasks: rows.map((t) => ({
+      id: t.id,
+      kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
+      rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
+      state: STATES[t.status] || t.status,
+      running: t.status === 'running' && !stuck(t),
+      queued: t.status === 'queued',
+      stuck: stuck(t),
+      created: when(t.createdAt),
+      finished: when(t.finishedAt),
+    })),
+    tasksTitle: ai ? '工具和 AI 记录' : '工具记录',
+    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
+    extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
+    toolsShown: pages.has('advisor') || rows.length > 0,
+    boostShown: pages.has('advisor') || rows.length > 0 || Boolean(d.boostTrial),
+  };
+}
+
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -70,10 +106,14 @@ Page({
             content: f.content,
             check: CHECK[f.checkResult] || f.checkResult,
             handling: f.handled ? '已处理' : '待处理',
+            // 处理结果和处理人写的说明（差距清单 C1）；以前处理的没有结果，照旧只写"已处理"
+            outcome: f.handled && f.outcomeLabel ? f.outcomeLabel : '',
+            reply: f.handled && f.reply ? f.reply : '',
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
-          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal },
+          ...taskData(d),
+          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length },
           retention: d.retention,
           // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
           // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
@@ -92,8 +132,6 @@ Page({
     wx.setClipboardData({ data: openid, success: () => wx.showToast({ title: '已复制完整标识', icon: 'none' }) });
   },
 
-  tasks() { wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
-
   copyAll() {
     if (!this.raw) return;
     wx.setClipboardData({
@@ -106,7 +144,7 @@ Page({
   // 单条复制完整原始记录，包含条件、状态和时间。
   copyOne(e) {
     const { kind, id } = e.currentTarget.dataset;
-    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback' }[kind];
+    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback', task: 'advisorTasks' }[kind];
     const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
     if (!row) return;
     wx.setClipboardData({
@@ -136,13 +174,20 @@ Page({
     });
   },
 
-  // 删除一条记录：关注、还没发出的提醒授权、纠错
+  // 删除一条记录：关注、还没发出的提醒授权、纠错、工具记录（结果文件一起删；排队中的先取消、次数退回）
   remove(e) {
     const { kind, id } = e.currentTarget.dataset;
     const sub = kind === 'sub' && this.data.subs.find((item) => String(item.id) === String(id));
     const cancelling = sub && sub.unused;
-    const what = { follow: this.data.remindOpen ? '这个关注（它的微信提醒也会一起取消）' : '这个关注', sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录', feedback: '这条纠错' }[kind];
-    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback }[kind];
+    const task = kind === 'task' && this.data.tasks.find((item) => String(item.id) === String(id));
+    const what = {
+      follow: this.data.remindOpen ? '这个关注（它的微信提醒也会一起取消）' : '这个关注',
+      sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录',
+      feedback: '这条纠错',
+      task: task && task.queued ? '这条排队中的记录（会先取消，用掉的次数退回）'
+        : task && task.stuck ? '这条没有处理完的记录（用掉的次数退回）' : '这条记录和它的结果',
+    }[kind];
+    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask }[kind];
     wx.showModal({
       title: cancelling ? '取消提醒' : '删除记录',
       content: `删除${what}？删除后不能恢复。`,

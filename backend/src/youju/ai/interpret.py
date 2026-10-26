@@ -55,6 +55,8 @@ SYSTEM_PROMPT = (
 NOTICE = "AI 生成，仅供参考，以原文和主管部门解释为准"
 # 正文变了，旧结果的原文摘录可能对不上，作废（D-073：只在正文变了时作废）
 BODY_CHANGED = "通知正文已变化，请重新解读"
+# 正文超过这么多字不解读（一次整理不完、容易漏句）；小程序 components/ai-entry 的 MAX_BODY 与此一致
+MAX_BODY = 24000
 TYPES = ("对象", "支持", "条件", "时间", "方式", "材料")
 
 
@@ -77,7 +79,14 @@ SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*
 
 
 class InterpretRefusal(ValueError):
-    """无法公开完整原文时，不调用模型。"""
+    """无法公开完整原文时，不调用模型。
+
+    code 是给小程序的原因代码（D-075，models.AI_REASONS），只有 eligible_body 的几种拒绝带；
+    其他拒绝（正文刚变、结果已过期等）为 None，小程序照常显示文字。"""
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 def openids(settings: Settings) -> set[str]:
@@ -95,7 +104,8 @@ def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
     )
 
 
-# 首发 2026-10 不含 AI 条款。正式 AI 包必须升版；回退环境配置不能降低这道门槛。
+# 首发 2026-10 和过审版 2026-10.2（D-093 ⑤）都不含 AI 条款，按字符串比较都排在这一版前面。
+# 正式 AI 包必须升版；回退环境配置不能降低这道门槛。
 AI_AGREEMENT_VERSION = "2026-11"
 
 
@@ -173,26 +183,40 @@ def split_paragraphs(body: str) -> list[dict]:
     ]
 
 
-def eligible_body(session: Session, doc_id: int) -> tuple[Document, str, str, str]:
-    """解读和详情共用的轻量前置检查；不读取核对记录。"""
+def eligible_body(
+    session: Session, doc_id: int, *, link: bool = True
+) -> tuple[Document, str, str, str]:
+    """解读和详情共用的轻量前置检查；不读取核对记录。
+
+    link=False 不看原网页撤下了没有：打开已有的结果、处理提交时还没撤下的排队任务（prepare），
+    以及存进 ai_eligibility 的预先计算（撤下的读表时另看，见 eligibility.effective_reason）。"""
     # 延迟引入 v1，避免 API 路由装载时形成循环依赖。
     from youju.api import v1
 
     doc = session.scalar(select(Document).where(Document.id == doc_id, available_condition()))
     if doc is None:
-        raise InterpretRefusal("文件不存在或已下架，无法解读")
+        raise InterpretRefusal("文件不存在或已下架，无法解读", "unavailable")
     kind = effective_kind(doc.title, doc.kind_override)
     if kind not in v1.BODY_KINDS:
-        raise InterpretRefusal("名单类及其他非政策、非申报通知文件不提供解读")
+        raise InterpretRefusal(
+            "名单类及其他非政策、非申报通知文件不提供解读", "list" if kind == "名单" else "kind"
+        )
     if doc.source.rights_level != 1:
-        raise InterpretRefusal("文件不是一级公开来源，无法解读")
+        raise InterpretRefusal("文件不是一级公开来源，无法解读", "source")
+    # 原文链接已失效（youju/link_check.py 隔天两次确认；原网页可能撤下了，也可能改了地址，分不清）：
+    # 通知可能已撤回或更正，为免误导不再开始新的解读、对照。排在"这类文件不解读"之后、正文的原因
+    # 之前（eligibility.effective_reason 同序）
+    if link and doc.link_gone_at is not None:
+        raise InterpretRefusal(
+            "原文链接已失效，原网页可能已撤下或改了地址，暂不提供 AI 解读和条款对照", "link_gone"
+        )
     raw = v1._reading_body(session, doc.id)
     # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
     body = v1.redact_sensitive(raw or "")
     if not body.strip():
-        raise InterpretRefusal("没有可公开的完整正文，请查看官方原文")
-    if len(body) > 24000:
-        raise InterpretRefusal("正文超过 24000 字，请查看官方原文")
+        raise InterpretRefusal("没有可公开的完整正文，请查看官方原文", "no_body")
+    if len(body) > MAX_BODY:
+        raise InterpretRefusal("正文超过 24000 字，请查看官方原文", "too_long")
     return doc, kind, raw, body
 
 
@@ -201,7 +225,9 @@ def prepare(
 ) -> tuple[dict, list, str]:
     from youju.api import v1
 
-    doc, kind, raw, body = eligible_body(session, doc_id)
+    # 不看原网页撤下了没有：能不能开始新的解读在提交时判断（advisor.create_task），已有的结果和
+    # 提交时还没撤下的排队任务照常（页面另写明原网页已撤下）
+    doc, kind, raw, body = eligible_body(session, doc_id, link=False)
     ids = group_ids(session, doc.id)
     body_id = session.scalar(
         select(DocumentDetail.document_id)

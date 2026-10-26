@@ -1,5 +1,6 @@
 """奖励使用期和后台发奖；首次批量、同行引荐已删，注销不留防重复领取的凭据；只连接指定测试库。"""
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -16,11 +17,12 @@ from youju.backup import dump, restore
 from youju.config import Settings
 from youju.db import get_session
 from youju.models import (
+    FEEDBACK_OUTCOMES,
     AdvisorTask,
+    Base,
     Feedback,
     PassReward,
     PayOrder,
-    RewardClaim,
     User,
     WorkbenchPass,
 )
@@ -120,10 +122,8 @@ def ticket(session, reward):
 
 
 def legacy_referral(session, inviter, newcomer):
-    """以前（D-059 时期）留下的引荐关系和两笔奖励：首次批量给新用户、引荐给引荐人。
+    """以前（D-059 时期）留下的两笔奖励流水：首次批量给新用户、引荐给引荐人，ref_id 都是新用户的编号。
     两项已删，程序不再写这些数据，这里直接写库，模拟库里的旧数据。"""
-    newcomer.invited_by_user_id, newcomer.invited_at = inviter.id, NOW
-    newcomer.batch_completed_at = NOW
     rows = {}
     for owner, kind, days, ref_type in (
         (newcomer, "first_batch", 3, "user_first_batch"),
@@ -594,7 +594,7 @@ def test_concurrent_grants_same_user_cap_and_reference(session_factory):
 def test_referral_is_gone(context, session):
     """同行引荐已删（D-061、D-070）：引荐接口没有了，同意协议不再收引荐码，开关也删了。"""
     client, _ = context
-    owner = user(session, "owner", invite_code="fixed-code")
+    owner = user(session, "owner")
     assert client.get("/api/v1/me/invite", headers=headers(owner.openid)).status_code == 404
     with_code = {"version": AGREEMENT, "invite_code": "fixed-code"}
     response = client.post("/api/v1/me/agreement", headers=headers("new"), json=with_code)
@@ -604,19 +604,16 @@ def test_referral_is_gone(context, session):
         "/api/v1/me/agreement", headers=headers("new"), json={"version": AGREEMENT}
     )
     assert response.status_code == 200
-    new = session.scalar(select(User).where(User.openid == "new"))
-    assert (new.invited_by_user_id, new.invited_at, new.invite_code) == (None, None, None)
+    assert session.scalar(select(User).where(User.openid == "new")) is not None
     assert "referral_enabled" not in Settings.model_fields
     assert not hasattr(rewards, "invite_code") and not hasattr(rewards, "referral_enabled")
 
 
 @pytest.mark.parametrize("kind", ["compare", "track"])
-def test_first_success_grants_nothing_and_writes_no_claim(context, session, kind):
-    """首次批量奖励已删：奖励开关开着，第一次完成批量任务也不发天数、不写首次完成标记，
-    补发也不补；以前留下的引荐关系不会再给引荐人发奖。"""
+def test_first_success_grants_nothing(context, session, kind):
+    """首次批量奖励已删：奖励开关开着，第一次完成批量任务也不发天数，补发也不补。"""
     _, settings = context
-    inviter = user(session, "inviter")
-    newcomer = user(session, "newcomer", invited_by_user_id=inviter.id, invited_at=NOW)
+    newcomer = user(session, "newcomer")
     done = task(session, newcomer, kind=kind)
     assert (
         advisor_tasks.run_advisor_tasks(session, settings=settings, stamp=NOW, max_tasks=1)["done"]
@@ -626,10 +623,7 @@ def test_first_success_grants_nothing_and_writes_no_claim(context, session, kind
     assert done.status == "done" and done.error is None and done.result_file_id
     assert rewards.reconcile(session, settings=settings, stamp=NOW) == {"granted": 0, "failed": 0}
     assert cli.main(["rewards-reconcile"]) == 0
-    session.refresh(newcomer)
-    assert newcomer.batch_completed_at is None
     assert session.scalar(select(func.count(PassReward.id))) == 0
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
     assert not hasattr(rewards, "first_completion")
 
 
@@ -725,13 +719,9 @@ def test_reward_usage_does_not_block_order_refund_and_reward_moves(context, sess
 
 @pytest.mark.parametrize("rewards_on", [False, True])
 @pytest.mark.parametrize("who", ["inviter", "newcomer"])
-def test_delete_account_clears_relations_preserves_others_rewards(
-    context, session, db_engine, who, rewards_on
-):
-    """以前留下的引荐关系和首次批量、引荐流水：注销时断开关系、流水去关联、没用完的天数作废
-    （奖励开关关着也一样），另一方已经拿到的天数不收回；不碰防重复领取的凭据表（注销即删）。"""
-    from sqlalchemy import event
-
+def test_delete_account_unlinks_legacy_rewards_preserves_others(context, session, who, rewards_on):
+    """以前留下的首次批量、引荐流水：注销时本人的流水去关联、没用完的天数作废，别人流水里指向本人的
+    ref_id 清掉（奖励开关关着也一样），另一方已经拿到的天数不收回。"""
     client, settings = context
     inviter = user(session, "inviter")
     newcomer = user(session, "newcomer")
@@ -742,17 +732,7 @@ def test_delete_account_clears_relations_preserves_others_rewards(
         select(WorkbenchPass.id).where(WorkbenchPass.user_id == survivor_id)
     )
     settings.rewards_enabled = rewards_on
-    statements = []
-
-    def capture(conn, cursor, statement, params, ctx, many):
-        statements.append(statement.lower())
-
-    event.listen(db_engine, "before_cursor_execute", capture)
-    try:
-        assert client.delete("/api/v1/me", headers=headers(deleted.openid)).status_code == 204
-    finally:
-        event.remove(db_engine, "before_cursor_execute", capture)
-    assert statements and not any("reward_claims" in sql for sql in statements)
+    assert client.delete("/api/v1/me", headers=headers(deleted.openid)).status_code == 204
     session.expire_all()
     assert session.get(User, deleted_id) is None
     surviving_pass = session.get(WorkbenchPass, survivor_pass_id)
@@ -769,10 +749,6 @@ def test_delete_account_clears_relations_preserves_others_rewards(
         )
         is None
     )
-    if who == "inviter":
-        assert session.get(User, survivor_id).invited_by_user_id is None
-        assert session.get(User, survivor_id).invited_at is None
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
 
 
 @pytest.mark.parametrize(
@@ -793,7 +769,17 @@ def test_admin_buttons_authorization_repeat_state_and_audit(
         response = client.post(url, headers=ADMIN)
         assert response.status_code == 200 and response.json()["days"] == days
         duplicate = client.post(url, headers=ADMIN).json()
-        assert duplicate == {"alreadyGranted": True, "days": days, "message": "已经发过"}
+        outcome = {"correction": "fixed", "source": "added"}[kind]
+        assert duplicate == {
+            "alreadyGranted": True,
+            "days": days,
+            "message": "已经发过",
+            "note": None,
+            # 发奖同时记下处理结果（差距清单 C1）：采纳纠错 = 已更正，接入栏目 = 已接入
+            "outcome": outcome,
+            "outcomeLabel": FEEDBACK_OUTCOMES[outcome],
+            "reply": None,
+        }
     finally:
         app_module.audit_log.removeHandler(caplog.handler)
     assert "feedback_reward" in caplog.text
@@ -928,10 +914,10 @@ def test_admin_award_zero_and_repeat(context, session):
     assert session.scalar(select(func.count(WorkbenchPass.id))) == 30
 
 
-def test_backup_restore_invitations_rewards_and_passes(session, db_engine):
+def test_backup_restore_legacy_rewards_and_passes(session, db_engine):
     from .test_backup import clear_restore_target
 
-    inviter = user(session, "inviter", invite_code="fixed-code")
+    inviter = user(session, "inviter")
     newcomer = user(session, "new")
     reward = legacy_referral(session, inviter, newcomer)["referral"]
     reward_id, inviter_id, newcomer_id = reward.id, inviter.id, newcomer.id
@@ -940,8 +926,6 @@ def test_backup_restore_invitations_rewards_and_passes(session, db_engine):
     clear_restore_target(session, db_engine)
     assert restore(db_engine, BytesIO(output.getvalue())) == counts
     session.expire_all()
-    assert session.get(User, newcomer_id).invited_by_user_id == inviter_id
-    assert session.get(User, inviter_id).invite_code == "fixed-code"
     restored = session.get(PassReward, reward_id)
     assert restored.user_id == inviter_id and restored.ref_id == newcomer_id
     assert ticket(session, restored).ends_at == NOW + timedelta(days=7)
@@ -981,9 +965,232 @@ def test_migration_down_up_preserves_order_segment_and_unlinks_reward_task(sessi
     assert session.get(WorkbenchPass, bought_id).order_id == order_id
 
 
-def test_reregister_after_deletion_is_a_new_account_and_keeps_no_claim(context, session):
-    """注销即删：有过奖励的账号注销后什么凭据也不留（不写 reward_claims），
-    同一个微信重新同意建的是新账号。"""
+LEGACY_USER_COLUMNS = ("invite_code", "invited_by_user_id", "invited_at", "batch_completed_at")
+
+
+def _before_0035(config):
+    """0035 接在哪个版本后面（合并时随 main 改 down_revision，测试不用跟着改）。"""
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(config).get_revision("0035").down_revision
+
+
+def _show_create(conn, table):
+    """建表语句，去掉随数据变的自增起点。"""
+    from sqlalchemy import text
+
+    return re.sub(
+        r" AUTO_INCREMENT=\d+", "", conn.execute(text(f"SHOW CREATE TABLE `{table}`")).one()[1]
+    )
+
+
+def test_migration_0035_drops_legacy_structures_and_downgrade_rebuilds_them(
+    context, session, db_engine
+):
+    """0035 删凭据表、users 的四列和排队行，别的数据不动；回退重建的结构和 0027、0031 建的一模一样，
+    数据不恢复，再往下回退也走得通。新代码在迁移前的表上照样能注册、读取、注销（先发 api 靠这一点）。"""
+    from alembic import command
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy import inspect, text
+
+    from youju.migrations import alembic_config
+
+    client, _ = context
+    session.close()
+    config = alembic_config(db_engine.url.render_as_string(hide_password=False))
+    before = _before_0035(config)
+
+    def register(openid):
+        response = client.post(
+            "/api/v1/me/agreement", headers=headers(openid), json={"version": AGREEMENT}
+        )
+        assert response.status_code == 200
+        with db_engine.connect() as conn:
+            return conn.scalar(text("SELECT id FROM users WHERE openid = :o"), {"o": openid})
+
+    try:
+        # 先降到 0027 之前（0027、0031 的回退要按名字删 0035 重建的约束和索引），再升回 0035 的上一版，
+        # 拿到 0027、0031 原样建出来的结构
+        command.downgrade(config, "0026")
+        command.upgrade(config, before)
+        with db_engine.connect() as conn:
+            original = {name: _show_create(conn, name) for name in ("users", "reward_claims")}
+        command.upgrade(config, "head")
+        assert "reward_claims" not in inspect(db_engine).get_table_names()
+        command.downgrade(config, before)
+        with db_engine.connect() as conn:
+            assert {
+                name: _show_create(conn, name) for name in ("users", "reward_claims")
+            } == original
+
+        # 在迁移前的表上跑新代码：注册不写这四列；注销被引用的用户时，外键把引用置空
+        inviter_id, newcomer_id = register("old-inviter"), register("old-newcomer")
+        with db_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE users SET invite_code = 'legacy-code', invited_by_user_id = :inviter,"
+                    " invited_at = :at, batch_completed_at = :at WHERE id = :id"
+                ),
+                {"inviter": inviter_id, "at": NOW.replace(tzinfo=None), "id": newcomer_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO reward_claims (pseudonym, kind, claimed_at)"
+                    " VALUES (:a, 'referred', :at), (:b, 'boost_trial', :at)"
+                ),
+                {"a": "a" * 64, "b": "b" * 64, "at": NOW.replace(tzinfo=None)},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO app_keys (name, value) VALUES ('reward_claim_queue', '1'),"
+                    " ('deadline_clue_queue', '1')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO pass_rewards (user_id, kind, requested_days, granted_days, ref_type,"
+                    " ref_id, granted_at) VALUES (:id, 'first_batch', 3, 3, 'user_first_batch', :id, :at)"
+                ),
+                {"id": newcomer_id, "at": NOW.replace(tzinfo=None)},
+            )
+        assert client.delete("/api/v1/me", headers=headers("old-inviter")).status_code == 204
+        assert client.get("/api/v1/me", headers=headers("old-newcomer")).status_code == 200
+        with db_engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT invite_code, invited_by_user_id, batch_completed_at IS NOT NULL"
+                    " FROM users WHERE id = :id"
+                ),
+                {"id": newcomer_id},
+            ).one() == ("legacy-code", None, 1)
+
+        command.upgrade(config, "head")
+        assert "reward_claims" not in inspect(db_engine).get_table_names()
+        assert not set(LEGACY_USER_COLUMNS) & {
+            c["name"] for c in inspect(db_engine).get_columns("users")
+        }
+        assert not inspect(db_engine).get_foreign_keys("users")
+        assert {i["name"] for i in inspect(db_engine).get_indexes("users")}.isdisjoint(
+            {"ix_users_invited_by_user_id", "uq_users_invite_code"}
+        )
+        with db_engine.connect() as conn:
+            names = {r[0] for r in conn.execute(text("SELECT name FROM app_keys"))}
+            assert "reward_claim_queue" not in names and "deadline_clue_queue" in names
+            assert conn.execute(text("SELECT id, openid FROM users")).all() == [
+                (newcomer_id, "old-newcomer")
+            ]
+            assert conn.execute(text("SELECT kind, ref_id FROM pass_rewards")).all() == [
+                ("first_batch", newcomer_id)
+            ]
+
+        # 回退只重建空表、空列
+        command.downgrade(config, before)
+        with db_engine.connect() as conn:
+            assert conn.scalar(text("SELECT COUNT(*) FROM reward_claims")) == 0
+            counts = ", ".join(f"COUNT({name})" for name in LEGACY_USER_COLUMNS)
+            assert conn.execute(text(f"SELECT {counts} FROM users")).one() == (0, 0, 0, 0)
+    finally:
+        command.upgrade(config, "head")
+    with db_engine.connect() as conn:
+        assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
+
+
+def test_migration_0035_gives_up_on_a_held_metadata_lock_and_resumes(session, db_engine):
+    """有事务读过 users 还没结束（如批量任务正在处理）：迁移最多等 5 秒就失败，不让后面读 users 的
+    接口一直排队；已经做完的步骤不再做，事务结束后重跑接着做完。升级、回退都一样。
+    改完 users、只差写版本号时失败（版本还是上一版），重跑也能做完。"""
+    import threading
+    import time
+
+    from alembic import command
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy import inspect, text
+
+    from youju.migrations import alembic_config
+
+    session.close()
+    config = alembic_config(db_engine.url.render_as_string(hide_password=False))
+    before = _before_0035(config)
+
+    def blocked(target, step):
+        with db_engine.connect() as holder:
+            holder_id = holder.scalar(text("SELECT CONNECTION_ID()"))
+            holder.execute(text("SELECT id FROM users LIMIT 1"))
+
+            def release():
+                with db_engine.connect() as killer:
+                    killer.execute(text(f"KILL {holder_id}"))
+
+            # 迁移要是没设短超时会一直等：30 秒后断开占锁的连接，让测试失败而不是卡住
+            guard = threading.Timer(30, release)
+            guard.start()
+            started = time.monotonic()
+            try:
+                with pytest.raises(DBAPIError, match="1205"):
+                    step(config, target)
+            finally:
+                guard.cancel()
+            assert time.monotonic() - started < 20
+            holder.rollback()
+
+    def revision():
+        with db_engine.connect() as conn:
+            return conn.scalar(text("SELECT version_num FROM alembic_version"))
+
+    try:
+        command.downgrade(config, before)
+        with db_engine.connect() as conn:
+            rebuilt = {name: _show_create(conn, name) for name in ("users", "reward_claims")}
+
+        # 只升到 0035：后面还会有别的迁移（如 0040），"head"不一定是 0035
+        blocked("0035", command.upgrade)
+        assert revision() == before
+        assert "reward_claims" not in inspect(db_engine).get_table_names()
+        assert set(LEGACY_USER_COLUMNS) <= {
+            c["name"] for c in inspect(db_engine).get_columns("users")
+        }
+        command.upgrade(config, "0035")
+        assert revision() == "0035"
+
+        blocked(before, command.downgrade)
+        assert revision() == "0035"
+        assert "reward_claims" in inspect(db_engine).get_table_names()
+        command.downgrade(config, before)
+        with db_engine.connect() as conn:
+            assert {
+                name: _show_create(conn, name) for name in ("users", "reward_claims")
+            } == rebuilt
+
+        # 迁移的活都做完了、写版本号时失败：库里是新结构，版本还是上一版
+        with db_engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO app_keys (name, value) VALUES ('reward_claim_queue', '1')")
+            )
+            conn.execute(text("DROP TABLE reward_claims"))
+            conn.execute(
+                text(
+                    "ALTER TABLE users DROP FOREIGN KEY fk_users_invited_by,"
+                    " DROP INDEX ix_users_invited_by_user_id, DROP INDEX uq_users_invite_code, "
+                    + ", ".join(f"DROP COLUMN {name}" for name in LEGACY_USER_COLUMNS)
+                )
+            )
+        assert revision() == before
+        command.upgrade(config, "0035")
+        assert revision() == "0035"
+        with db_engine.connect() as conn:
+            assert not conn.scalar(
+                text("SELECT COUNT(*) FROM app_keys WHERE name = 'reward_claim_queue'")
+            )
+    finally:
+        command.upgrade(config, "head")
+    with db_engine.connect() as conn:
+        assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
+
+
+def test_reregister_after_deletion_is_a_new_account(context, session):
+    """注销即删：有过奖励的账号注销后，同一个微信重新同意建的是新账号，以前的奖励不跟过来。"""
     client, _ = context
 
     def register():
@@ -1001,33 +1208,11 @@ def test_reregister_after_deletion_is_a_new_account_and_keeps_no_claim(context, 
     assert client.delete("/api/v1/me", headers=headers("repeat")).status_code == 204
     session.expire_all()
     assert session.get(User, first_id) is None
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
     again = register()
-    assert again.id != first_id and again.invited_by_user_id is None
+    assert again.id != first_id
     assert (
         session.scalar(select(func.count(PassReward.id)).where(PassReward.user_id == again.id)) == 0
     )
-
-
-def test_cleanup_deletes_leftover_claims_of_any_age(context, session):
-    """凭据不再写入；库里如果还有以前留下的（引荐开关开着时注销留下的、从旧备份恢复回来的），
-    注销本身不碰这张表（API 没有它的删除权限），下一次 youju cleanup 不论多久都删掉。"""
-    from youju.notify import run_cleanup
-
-    client, settings = context
-    for i, age in enumerate((0, 1, 179, 180, 181)):
-        session.add(
-            RewardClaim(
-                pseudonym=f"{i:064x}", kind="referred", claimed_at=NOW - timedelta(days=age)
-            )
-        )
-    owner = user(session, "had-a-claim")
-    session.commit()
-    assert client.delete("/api/v1/me", headers=headers(owner.openid)).status_code == 204
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 5
-    assert run_cleanup(session, settings=settings, stamp=NOW)["reward_claims"] == 5
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
-    assert run_cleanup(session, settings=settings, stamp=NOW)["reward_claims"] == 0
 
 
 @pytest.mark.parametrize("switch", ["rewards_enabled", "advisor_enabled"])
@@ -1053,8 +1238,6 @@ def test_delete_empty_account_without_new_table_writes(context, session, db_engi
         )
     finally:
         event.remove(db_engine, "before_cursor_execute", capture)
-    # 凭据表连查都不查（注销即删，不再判断要不要留）
-    assert not any("reward_claims" in sql for sql in statements)
     for sql in statements:
         if any(
             table in sql
@@ -1067,7 +1250,6 @@ def test_delete_empty_account_without_new_table_writes(context, session, db_engi
             )
         ):
             assert sql.lstrip().startswith("select") and "for update" not in sql
-    assert session.scalar(select(func.count(RewardClaim.kind))) == 0
 
 
 @pytest.mark.parametrize("enabled", [False, True])

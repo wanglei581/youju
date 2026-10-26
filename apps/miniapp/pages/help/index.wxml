@@ -1,0 +1,11 @@
+<notice-bar />
+<view wx:for="{{items}}" wx:key="key" class="card help-card">
+  <view class="help-q">{{item.q}}</view>
+  <view wx:for="{{item.a}}" wx:for-item="line" wx:key="*this" class="help-a">{{line}}</view>
+</view>
+<view class="card help-card">
+  <view class="help-q">还没解决？</view>
+  <view class="help-contact"><contact-button from="help" /></view>
+  <view class="help-report" bindtap="report" aria-role="link">内容有问题：投诉举报 ›</view>
+</view>
+<view class="help-bottom"></view>

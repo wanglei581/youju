@@ -4,10 +4,11 @@ const {
 } = require('../../utils/regions.js');
 const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
-const { exportDocs, MAX } = require('../../utils/exporter.js');
+const { previewDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+const access = require('../../utils/ai-access.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
@@ -32,8 +33,9 @@ const KIND_TABS = [
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
-// 以及 7 天内有候选、还没核对的
-const OPEN_GROUP_NOTE = '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的';
+// 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。选的时候就写明含哪些、不含哪些，
+// 有结果时写在结果上面、没结果时写在空状态里，都是这一句（10/22 走查）
+const OPEN_GROUP_NOTE = '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
@@ -47,7 +49,7 @@ const GROUPS = [
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
   { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
   { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
-  { key: 'status', title: '名单状态', hint: '可多选', multi: true, options: ['公示', '公布'] },
+  { key: 'status', title: '发布阶段', hint: '可多选', multi: true, options: ['公示', '公布'] },
   { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级', '市级', '区县级'],
     note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的，市级和区县级也按所选地区筛选；市区目前仅收录部分来源，见“我的 → 数据从哪里来”' },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
@@ -55,11 +57,11 @@ const GROUPS = [
 const ALL_PROVINCES = PROVINCES;
 const DEFAULT_TIME = '近 30 天';
 const DEFAULT_PICKED = { region: ['不限地区'], city: [], district: [], level: [], type: [], category: [], support: [], industry: [], status: [], time: [DEFAULT_TIME], dept: [], open: [] };
-// 关注确认框的标题：写关注之后会怎样
-const FOLLOW_NOTE = '关注后，有新文件时在关注页标出';
+// 关注确认框的标题：写存的是什么（当前的关键词和筛选条件），输入框里只是按条件拼的名称——改名称不会改条件
+// （10/22 走查：只看到一行可改的字，会以为改的是条件）。"有新文件时在关注页标出"写在保存成功的提示里
+const FOLLOW_NOTE = '按当前搜索条件关注（下面是名称，改名不改条件）';
 const CATEGORY_CONFLICT = '项目类别只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或项目类别';
 const SUPPORT_CONFLICT = '支持方式只用于申报通知和名单，所选页签或类型里没有这两类文件，请调整类型或支持方式';
-const OPEN_NOTE = '“只看未截止”不含没写明截止日期、或截止日期还没理清的通知，可以去掉这个条件再看';
 const PAGE = 20;
 
 // 一组里算作"已选"的值：地区不算"不限地区"，发布时间只有改了默认的近 30 天才算
@@ -106,6 +108,9 @@ Page({
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
     tagNote: TAG_NOTE,
+    // 选了"只看未截止"时的口径：有结果时写在结果上面，没结果时写在"去掉'只看未截止'"下面，和筛选面板里同一句。
+    // 只写"含没核对的"会读成只含没核对的，所以三处都写全（10/22 走查）
+    openNote: OPEN_GROUP_NOTE,
     // 协议定稿前（D-056）不显示"关注"和"没找到想要的？告诉我们"（纠错要先同意协议），定稿后照旧
     loginOpen: loginOpen(),
     picked: DEFAULT_PICKED,
@@ -128,6 +133,9 @@ Page({
     folded: 0,
     guides: 0,
     fold: { text: '', link: '' },
+    // 只看能解读的（D-075，板块首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
+    // 不算筛选条件，不进关注、不进转发路径；板块对这个人没开着时不生效、也不显示
+    aiOnly: false,
   },
 
   onLoad(query) {
@@ -154,9 +162,26 @@ Page({
       q: decode(query.q),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
+    if (String(query.ai) === '1') {
+      // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
+      const now = access.current();
+      this.setData({ aiOnly: now.confirmed === true && now.visible === true });
+      // 跟着后台的确认走：确认开着就加上这一项；没开着、注销后被擦掉（还没重新问到）就去掉，都重新查；页面上不留相关字样
+      this.unsubscribeAi = access.subscribe((state) => {
+        const on = state.confirmed === true && state.visible === true;
+        if (on !== this.data.aiOnly) { this.setData({ aiOnly: on }); this.apply(true); }
+      });
+      access.ensure();
+    }
     this.refreshChips();
     this.apply(true);
     this.loadCities();
+  },
+
+  removeAi() {
+    if (this.unsubscribeAi) { this.unsubscribeAi(); this.unsubscribeAi = null; }
+    this.setData({ aiOnly: false });
+    this.apply(true);
   },
 
   // 收录范围：this.coverage 为 undefined 是还在取，null 是没取到（loadCoverage 失败时返回 null）
@@ -193,10 +218,13 @@ Page({
   onUnload() {
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
+    if (this.unsubscribeAi) this.unsubscribeAi();
   },
 
   onShow() {
     if (api.watchStartup) api.watchStartup(this);
+    // 带 ai=1 进来的：回到前台时再问一次板块状态（多久真问一次由 ensure 管，第 11 轮）
+    if (this.unsubscribeAi) access.ensure();
     this.setData({ today: todayISO() });
     // 页面在后台跨过零点后再显示，时间筛选要按今天重新查
     if (this.loaded) this.apply(true);
@@ -259,6 +287,7 @@ Page({
     const { items } = this.data;
     // fold 不是筛选条件，不进关注：1 折叠资讯与指南（只给篇数），0 列出来
     const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length, fold: this.data.showGuides ? 0 : 1 });
+    if (this.data.aiOnly) params.ai = 1;
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空
@@ -302,7 +331,7 @@ Page({
           let emptyHint = '';
           if (categoryConflict(params.kind, params.types, params.categories)) emptyHint = CATEGORY_CONFLICT;
           else if (supportConflict(params.kind, params.types, params.supports)) emptyHint = SUPPORT_CONFLICT;
-          else if (params.open) emptyHint = OPEN_NOTE;
+          // 只看未截止：口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍（10/22 走查）
           this.setData({ emptyHint });
           const regions = params.regions.split(',');
           loadCoverage().then((c) => {
@@ -577,7 +606,7 @@ Page({
   exportChosen() {
     // 按列表里的顺序导出
     const ids = this.data.items.filter((item) => this.data.chosen[item.id]).map((item) => item.id);
-    exportDocs(ids, { label: this.followName() });
+    previewDocs(ids, { label: this.followName() });
   },
 
   feedback() {

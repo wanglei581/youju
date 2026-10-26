@@ -3,11 +3,18 @@ const api = require('../../utils/api.js');
 const { applyServer, consentEpoch, withdraw, markAgreed, loginOpen, openPrivacy, CONSENT_PAGE, agreeFailed, featureNames } = require('../../utils/consent.js');
 const { remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames } = require('../../utils/coverage.js');
+const pages = require('../../utils/pages.js');
+// 支付的工具函数用到时才取（和原来"批量工具"一行的小字一样）：没买过、没在卖的人不加载
+function payUtils() { return require('../../utils/pay.js'); }
 
 Page({
   data: {
     // 协议定稿前（D-056）不显示登录卡片、纠错和申请覆盖，也不查询登录状态；定稿后照旧
     loginOpen: loginOpen(),
+    // 包里有哪些页面：过审版（首发 16 页，D-091）没有工具中心、我的记录、购买、订单和使用帮助，这些入口不显示
+    has: pages.flags(),
+    // 宫格几列：导出记录、我的客户，登录开着时加纠错，包里有工具中心时再加工具中心
+    gridCols: 2 + (loginOpen() ? 1 : 0) + (loginOpen() && pages.has('advisor') ? 1 : 0),
     // 订阅消息模板申请下来之前，不写"提醒"相关的字样
     remindOpen: remindOpen('newDocs') || remindOpen('deadline'),
     statusBarHeight: 20,
@@ -25,10 +32,14 @@ Page({
     profileError: '',
     followCount: 0,
     reminderCount: 0,
-    // "我的订单"：支付在售、或有过订单时才显示（服务端 /me 的 pay；没开放支付时不放空入口，D-068）
+    // "我的订单"：有过订单才显示（服务端 /me 的 pay；停卖后已付款的人照样能看订单、退款、开票）
     ordersEntry: false,
-    // "批量工具"：给买过的人续买（D-070），在售并且有过订单才显示；停卖后只剩"我的订单"
-    renewEntry: false,
+    // "批量工具"：在售时所有人都显示（D-076，原来只给买过的人续买）；没在售时不显示，正式版开卖前看不到
+    // passHint：没买过写最便宜一档的价格（"30 天 29 元起"），买过写到期日；取不到就不写
+    passEntry: false,
+    passHint: '',
+    // 页头"批量工具"标识：使用期内才有（买的、送的都算，不看在不在卖），写到哪天；点了去购买页（在售时）或订单页
+    passBadge: '',
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
     stats: null,
     notCovered: '',
@@ -64,7 +75,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, renewEntry: false });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passHint: '', passBadge: '' });
       return;
     }
     const started = consentEpoch();
@@ -85,14 +96,41 @@ Page({
           outdated: !!res.agreed && !current,
           followCount: res.follows,
           reminderCount: (subs.newDocs || 0) + (subs.deadline || 0),
-          ordersEntry: !!(res.pay && (res.pay.enabled || res.pay.hasOrders)),
-          renewEntry: !!(res.pay && res.pay.enabled === true && res.pay.hasOrders === true),
+          ordersEntry: pages.has('orders') && !!(res.pay && res.pay.hasOrders === true),
+          passEntry: pages.has('pass') && !!(res.pay && res.pay.enabled === true),
+          passHint: '',
+          // 标识点了去购买页、订单页或工具中心，包里一个都没有时不显示
+          passBadge: current && res.pass && res.pass.active === true && (pages.has('pass') || pages.has('orders') || pages.has('advisor'))
+            ? payUtils().passBadge(res.pass) : '',
         });
+        if (pages.has('pass') && res.pay && res.pay.enabled === true) this.loadPassHint(seq, res.pay.hasOrders === true, res.pass);
       })
       .catch((err) => {
         if (started !== consentEpoch() || seq !== this.profileSeq) return;
-        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}` });
+        // 确认不了还在不在卖：先收起"批量工具"，不在可能已停卖时留着购买入口（D-074，Codex 审阅）
+        this.setData({ profileLoading: false, profileError: `登录状态加载失败：${err.message || '请稍后再试'}`, passEntry: false, passHint: '', passBadge: '' });
       });
+  },
+
+  // "批量工具"那一行的小字：使用期内写到期日，用完了写"已到期，可再买一次"（/me 带的使用期；老的服务端
+  // 没带时读 /advisor/status）；没买过、或者只有没开通的订单（待确认、已关闭）写最便宜一档（读商品接口）。
+  // 都是在售时才调用，取不到就不写，不影响点进去
+  loadPassHint(seq, bought, pass) {
+    const pay = payUtils();
+    const done = (hint) => { if (seq === this.profileSeq && this.data.passEntry) this.setData({ passHint: hint }); };
+    if (pass && pass.active === true && pay.monthDay(pass.expiresAt)) { done(`到 ${pay.monthDay(pass.expiresAt)}`); return; }
+    if (pass && pass.expired === true) { done('已到期，可再买一次'); return; }
+    if (bought && !pass) {
+      Promise.resolve().then(() => api.advisorStatus()).then((status) => {
+        const pass = status && status.pass;
+        done(pass && pass.active && pay.monthDay(pass.expiresAt) ? `到 ${pay.monthDay(pass.expiresAt)}` : '已到期，可再买一次');
+      }).catch(() => done(''));
+      return;
+    }
+    Promise.resolve().then(() => api.payProducts()).then((res) => {
+      const cheapest = pay.normalizeProducts(res)[0];
+      done(cheapest ? `${cheapest.days} 天 ${pay.yuan(cheapest.price)} 元起` : '');
+    }).catch(() => done(''));
   },
 
   // 登录前必须主动勾选同意协议（agy 合规意见；微信隐私协议开发指南要求用户明确同意）
@@ -142,6 +180,14 @@ Page({
   // 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案
   openPrivacy() {
     openPrivacy();
+  },
+
+  // 页头"批量工具"标识：在售时去购买页（看到期日、续买），不在售时去订单页；
+  // 只有送的使用期、又没在卖的（没有订单）去工具中心用工具（Codex 复核：不能点了没反应）
+  openPass() {
+    if (this.data.passEntry) wx.navigateTo({ url: '/pages/pass/index' });
+    else if (this.data.ordersEntry) wx.navigateTo({ url: '/pages/orders/index' });
+    else if (pages.has('advisor')) wx.navigateTo({ url: '/pages/advisor/index' });
   },
 
   go(e) {

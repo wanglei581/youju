@@ -1,0 +1,7 @@
+{
+  "navigationStyle": "custom",
+  "usingComponents": {
+    "ai-button": "/components/ai-button/index",
+    "contact-button": "/components/contact-button/index"
+  }
+}

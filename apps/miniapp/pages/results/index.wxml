@@ -1,0 +1,32 @@
+<notice-bar />
+<view class="card">
+  <view class="section-title">{{advisor ? '任务结果' : '本次所选文件目录'}}</view>
+  <view wx:if="{{!advisor}}" class="muted">这里展示文件目录，不是企业入选结论或信用报告。</view>
+  <view wx:if="{{current}}" class="muted">按当前数据重新查看，内容可能与之前保存的文件不同。</view>
+  <view wx:if="{{loading}}" class="muted">正在读取结果…</view>
+  <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
+  <block wx:if="{{result}}">
+    <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAtText}}</view>
+    <view class="muted">{{result.notice}}</view>
+    <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
+      <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>
+      <view>{{item.kind}} · {{item.status}} · {{item.region}}</view>
+      <view>发文机关：{{item.issuer || '未提供'}}</view>
+      <view>文号：{{item.doc_number || '未提供'}} · 发布日期：{{item.published || '未提供'}}</view>
+      <view>截止：{{item.deadline || '未核对'}} {{item.date_role}}</view>
+      <view wx:if="{{item.deadline_quote}}">原句：{{item.deadline_quote}}</view>
+      <view wx:if="{{item.support}}">{{item.support}}</view>
+      <view wx:if="{{item.unchecked}}" class="warn">{{item.unchecked}}</view>
+      <view>来源核对：{{item.source_checked || '未核对'}} · 截止核对：{{item.deadline_checked || '未核对'}} · 变更核对：{{item.change_checked || '未核对'}}</view>
+      <view class="muted source">出处：{{item.sites}}<text user-select>{{item.urls}}</text></view>
+      <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
+    </view>
+    <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">
+      <view class="title">{{item.n + 1}}. {{item.title}}</view>
+      <view wx:for="{{item.fields}}" wx:for-item="field" wx:key="index"><text>{{field.label}}：</text><text user-select>{{field.value}}</text></view>
+      <button wx:if="{{item.documentId}}" data-id="{{item.documentId}}" bindtap="detail">查看文件和依据</button>
+    </view>
+    <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous" disabled="{{saving}}">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next" disabled="{{saving}}">下一页</button></view>
+    <button bindtap="save" loading="{{saving}}" disabled="{{saving}}">{{advisor ? '另存 Excel（可选）' : '另存 Excel / Word（可选）'}}</button>
+  </block>
+</view>

@@ -92,6 +92,8 @@ function toolConsent(options = {}) {
   });
 }
 
+// 怎么算次数（D-074：顾问算不清扣几次）：免费和加量体验都按"交一份名单算一次"，系统出错没出结果的不算（会退回）
+const COUNT_RULE = '交一份名单算一次，系统出错、没出结果的不算';
 // 额度一行和加量体验、申报季加量的状态（D-070）；体验期间不占每月免费次数，remaining 仍是本月免费剩余
 function quotaView(status, kind, now) {
   const quota = status && status.quota && status.quota[kind];
@@ -102,7 +104,7 @@ function quotaView(status, kind, now) {
   const statusLine = active ? `批量工具使用期内，每次最多 ${quota.maxRows} 家，不限提交次数`
     : trial.trialActive ? boost.trialLine(trial)
       : `每月免费 ${quota.limit} 次，本月剩余 ${remaining} 次；每次最多 ${quota.maxRows} 家`;
-  return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, seasonLine: boost.seasonLine(status.season), ...trial,
+  return { maxRows: quota.maxRows, remaining, passActive: active, statusLine, countRule: active ? '' : COUNT_RULE, seasonLine: boost.seasonLine(status.season), ...trial,
     trialPitch: trial.trialAvailable ? boost.trialPitch(trial) : '', trialCap: trial.trialActive ? boost.trialCapText(trial, now) : '',
     trialEnded: active ? '' : boost.trialEndedText(status.trial, now), quotaDay: boost.beijingDay(now) };
 }
@@ -142,7 +144,7 @@ function openResult(id, options = {}) {
     check();
     return exporter.save(buffer, 'xlsx').then((filePath) => {
       if (!current()) {
-        if (!exporter.remove(filePath)) throw new Error('下载已暂停，但临时文件没能删除，请到文件页清空导出文件');
+        if (!exporter.remove(filePath)) throw new Error('下载已暂停，但临时文件没能删除，请到底栏“导出”清空导出记录');
         check();
       }
       const task = options.task || {};

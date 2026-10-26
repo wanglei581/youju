@@ -1,4 +1,5 @@
 const test = require('node:test');
+const AI_OFF = require('./helpers/ai-off.js'); // 没给 AI 板块状态的页面当作 AI 关着
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,7 +16,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -45,7 +46,7 @@ test('两栏筛选：左栏按约定顺序列出 11 组，组名旁边是已选�
   page.onLoad({}); await flush();
   // 区县并在城市这一组里（同一个省市区选择器），不另加入口
   assert.deepEqual(page.data.groups.map((g) => g.title),
-    ['地区', '城市区县', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '名单状态', '层级', '发文部门']);
+    ['地区', '城市区县', '类型', '申报状态', '发布时间', '项目类别', '支持方式', '产业方向', '发布阶段', '层级', '发文部门']);
   assert.ok(Object.values(page.data.counts).every((n) => n === 0));
   page.pickOption(event({ group: 'region', option: '江苏' })); await flush();
   page.pickOption(event({ group: 'region', option: '山东' })); await flush();
@@ -283,8 +284,8 @@ test('结果信息栏：第一行写明当前发布时间和份数、淡色"共 
   assert.doesNotMatch(read('pages/search/index.wxss'), /\.follow-bar/);
 });
 
-test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureConsent 只提示暂未开放、不弹"协议定稿后开放"；定稿后确认框写"关注后，有新文件时在关注页标出"', async () => {
-  const NOTE = '关注后，有新文件时在关注页标出';
+test('关注小按钮：协议定稿前不显示（D-056），兜底的 ensureConsent 只提示暂未开放、不弹"协议定稿后开放"；定稿后确认框写"按当前搜索条件关注（下面是名称，改名不改条件）"（10/22 走查）', async () => {
+  const NOTE = '按当前搜索条件关注（下面是名称，改名不改条件）';
   const off = searchPage({ final: false });
   assert.equal(off.page.data.loginOpen, false);
   // 兜底：协议定稿前万一走到 ensureConsent，只轻提示，不弹对话框
@@ -387,7 +388,8 @@ test('市级演示数据用省份筛选，国家部委拼法包含所选市级�
 test('未截止选项写明口径（D-061：含机器摘录和可能 7 天内截止、还没核对的），空状态首先去掉未截止；不限时间按钮改变时间并刷新', async () => {
   const { page, calls } = searchPage({ respond: (p) => ({ items: p.open || p.time !== '不限' ? [] : [{ id: '1' }], total: p.open || p.time !== '不限' ? 0 : 6, total_all: p.open ? 0 : 6, verified_open_total: 0 }) });
   page.onLoad({ open: '1' }); await flush();
-  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '核对过或机器摘录的截止日期还没到的，加上可能 7 天内截止、日期还没核对的');
+  // 10/22 走查：选的时候就写明不含哪些，不只在没有结果时才说
+  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面');
   assert.ok(read('pages/search/index.wxml').indexOf('bindtap="removeOpen"') < read('pages/search/index.wxml').indexOf('bindtap="allTime"'));
   page.removeOpen(); await flush(); assert.equal(calls.at(-1).open, undefined); assert.equal(page.data.totalAll, 6);
   assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);
@@ -422,9 +424,9 @@ test('城市清单用原生完整省市选择器，零覆盖可选择但明确�
   assert.equal(page.conditions().regions, '北京');
 });
 
-test('关注与我的数据共用摘要保留类型、名单状态和发文部门，不写成全部类型', () => {
+test('关注与我的数据共用摘要保留类型、发布阶段和发文部门，不写成全部类型', () => {
   const description = conditions.describe({ kind: 'all', types: '名单与公示', status: '公示', depts: '科技部门', cities: '山东/青岛' });
-  assert.match(description, /名单与公示/); assert.match(description, /名单状态：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
+  assert.match(description, /名单与公示/); assert.match(description, /发布阶段：公示/); assert.match(description, /发文部门：科技部门/); assert.match(description, /山东·青岛/); assert.doesNotMatch(description, /全部类型/);
 });
 
 test('移除最后一个城市恢复不限地区高亮，但保留其他省份条件', async () => {

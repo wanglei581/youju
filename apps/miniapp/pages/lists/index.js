@@ -18,6 +18,19 @@ const shareName = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 const decode = (value) => { try { return decodeURIComponent(value || ''); } catch (e) { return String(value || ''); } };
 // 从转发卡片打开时页面栈里只有这一页：左上角显示"首页"（点了回首页），不显示返回箭头
 const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
+// 查名单结果里条目编号的样子（服务端加密的 32 位编号，见 youju/lists/evidence.py）
+const TOKEN = /^[A-Za-z0-9_-]{32}$/;
+// 没查到时如实说：已读出企业名称的名单里没有；另有几份没读出、几份只读了一部分，不能据此判断不在名单里
+function missNote(coverage) {
+  const unread = Number((coverage && coverage.unreadLists) || 0);
+  const partial = Number((coverage && coverage.partialLists) || 0);
+  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，用"其中"
+  const parts = [];
+  if (unread > 0) parts.push(`另有 ${unread} 份名单没能读出企业名称（扫描件、旧格式、原网页打不开或表格没认出来）`);
+  if (partial > 0) parts.push(`已收录的名单中有 ${partial} 份很长、只读了前面一部分`);
+  const extra = parts.length ? `${parts.join('；')}。` : '';
+  return `${extra}不能据此判断这家企业不在名单里；地市发布的名单也还没收录。`;
+}
 
 Page({
   data: {
@@ -35,6 +48,8 @@ Page({
     result: null,
     lookupError: '',
     coverageSince: '',
+    // 没查到时的说明：还有多少份名单没读出企业名称、只读了一部分（D-091，不写成"没上榜"）
+    missNote: '',
     demo: false,
     chips: CHIPS,
     chip: '全部',
@@ -53,16 +68,24 @@ Page({
   },
 
   onHide() {
+    this.visible = false;
+    this.lookupSeq = (this.lookupSeq || 0) + 1;
+    this.needsLookupRefresh = !!this.data.queried;
+    this.setData({ result: null, looking: false });
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onUnload() {
+    this.visible = false;
+    this.lookupSeq = (this.lookupSeq || 0) + 1;
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
   },
 
   onShow() {
+    this.visible = true;
+    if (this.needsLookupRefresh) { this.needsLookupRefresh = false; this.query(); }
     if (api.watchStartup) api.watchStartup(this);
     this.setData({ today: todayISO() });
     watchDay(this, (day) => this.setData({ today: day }));
@@ -86,7 +109,7 @@ Page({
     const { queried, result, looking, lookupError } = this.data;
     const found = !looking && !lookupError && result && result.items && result.items.length > 0;
     const name = shareName(queried);
-    if (!found || !name || name.length > NAME_MAX) return { title: '查企业上过哪些名单', path: '/pages/lists/index' };
+    if (!found || !name || name.length > NAME_MAX) return { title: '在政府公开名单里查企业', path: '/pages/lists/index' };
     return { title: `查名单：${name}`, path: `/pages/lists/index?q=${encodeURIComponent(name)}` };
   },
 
@@ -147,7 +170,7 @@ Page({
   query() {
     const name = this.data.name.trim();
     if (name.replace(/\s+/g, '').length < 2) {
-      wx.showToast({ title: '请输入企业全称或统一社会信用代码', icon: 'none' });
+      wx.showToast({ title: '请输入企业全称', icon: 'none' });
       return;
     }
     const seq = (this.lookupSeq || 0) + 1;
@@ -155,14 +178,25 @@ Page({
     this.setData({ queried: name, looking: true, result: null, lookupError: '', demo: !api.isLive() });
     api.lookup(name)
       .then((result) => {
-        if (seq !== this.lookupSeq) return;
+        if (seq !== this.lookupSeq || this.visible === false) return;
         const since = result.coverage && result.coverage.since;
-        this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '' });
+        this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '', missNote: missNote(result.coverage) });
       })
       .catch((err) => {
-        if (seq !== this.lookupSeq) return;
+        if (seq !== this.lookupSeq || this.visible === false) return;
         this.setData({ looking: false, lookupError: err.message });
       });
+  },
+
+  // 看原名单里的那一行（D-088）：在站内阅读页按条目编号打开，不出小程序
+  record(e) {
+    const token = String(e.currentTarget.dataset.token || '');
+    if (TOKEN.test(token)) wx.navigateTo({ url: `/pages/reader/index?entry=${encodeURIComponent(token)}` });
+  },
+
+  evidence(e) {
+    const id = e.currentTarget.dataset.id;
+    if (id) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(id)}` });
   },
 
   toggleRules() {
