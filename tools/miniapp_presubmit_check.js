@@ -105,7 +105,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     '用 tools/miniapp_pack.js 打包（换上 content/legal-first-release.js，D-093 ⑤）；协议只写包里有的功能（不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接），版本号要早于后台的 AI 条款版本');
   }
   else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
-  if (profile === 'ai-release' || profile === 'complete-release' || profile === 'first-release-ai') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
+  // 正式 AI 包：版本号之外，协议里要真有 AI 那一节（八、AI 功能与生成内容标识，至少 3 段），隐私保护指引要写到模型（Codex 10/26：只看版本号，删了条款也能过）
+  const aiSection = ((legal.user && legal.user.sections) || []).find(s => /AI 功能/.test((s && s.h) || ''));
+  const aiTermsText = !!aiSection && Array.isArray(aiSection.p) && aiSection.p.filter(nonempty).length >= 3
+    && /模型/.test(JSON.stringify((legal.privacy && legal.privacy.sections) || []));
+  if (profile === 'ai-release' || profile === 'complete-release' || profile === 'first-release-ai') add('ai-terms', '正式AI包使用独立新版协议，含 AI 条款', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11' && aiTermsText, '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，协议里要有"AI 功能与生成内容标识"那一节（至少 3 段），隐私保护指引要写明模型；服务端同意范围也须同步');
   add('internal-submit', '不把内测或完整候选包提交审核', !(mode === 'submit' && ['ai-internal', 'complete-candidate'].includes(profile)), '候选只能 prepare；完整交付须另行核对准入、实际业务验收及创始人批准');
   if (complete) {
     add('tool-terms', '完整版包含独立工具使用说明', !!toolTerms && toolTerms.version === SERVER_TOOL_TERMS_VERSION

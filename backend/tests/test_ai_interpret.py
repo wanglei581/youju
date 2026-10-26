@@ -1871,3 +1871,18 @@ def test_public_ai_user_and_worker_consent_agree(session, settings, version, sta
     session.commit()
     assert interpret.enabled(settings, user) is expected
     assert (user.id in session.scalars(interpret.worker_user_ids(settings)).all()) is expected
+
+
+def test_notice_does_not_break_idempotent_retry(client, settings, session, doc):
+    """旧任务没有须知版本（notice）；新小程序用同一个请求编号重试时带上了，仍是同一个任务：
+    不 409、不多建任务、不重复扣次数（D-098，Codex 10/26）。别的输入不一样照旧 409。"""
+    first = create(client, doc.id, key="same-key")
+    assert first.status_code == 202
+    assert session.get(AdvisorTask, first.json()["id"]).input_json == {"doc_id": doc.id}
+    again = create(client, doc.id, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert again.status_code in (200, 202)
+    assert again.json()["id"] == first.json()["id"]
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 1
+    # 换了通知还用同一个请求编号：照旧 409（比对在查通知之前，编号不存在也一样）
+    clash = create(client, doc.id + 99, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert clash.status_code == 409

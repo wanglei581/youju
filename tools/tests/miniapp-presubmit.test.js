@@ -82,7 +82,12 @@ test('AI内测永远不能通过提审，正式包必须明确关内测',()=>{
  assert.equal(inspect({...x,profile:'ai-internal'}).ok,false);
  assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
  x.config.aiInternal=false; assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
- x.legal.version='2026-11'; const formal=inspect({...x,profile:'ai-release'}); assert.equal(formal.ok,true); assert.equal(formal.readyToSubmit,false);
+ x.legal.version='2026-11';
+ // 只升版本号、协议里没有 AI 那一节：不过（Codex 10/26）
+ assert.equal(inspect({...x,profile:'ai-release'}).checks.find(c=>c.id==='ai-terms').state,'fail');
+ x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});
+ const formal=inspect({...x,profile:'ai-release'}); assert.equal(formal.ok,true); assert.equal(formal.readyToSubmit,false);
+ x.legal.user.sections.at(-1).p=['一','二']; assert.equal(inspect({...x,profile:'ai-release'}).checks.find(c=>c.id==='ai-terms').state,'fail');
 });
 test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.throws(()=>inspect({...input(),mode:'bypass'}));
@@ -113,6 +118,8 @@ test('完整候选严格限定 28 页（含站内阅读与结果页），不能�
 });
 test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
  const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
+ // 正式 AI 包的协议里要有 AI 那一节、隐私保护指引写到模型（Codex 10/26）
+ x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});
  x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index',text:'AI'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-release',mode:'submit'});

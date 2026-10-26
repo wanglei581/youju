@@ -89,15 +89,29 @@ function hasConsent(storage) {
     return !!saved && typeof saved === 'object' && saved.version === NOTICE_VERSION;
   } catch (e) { return false; }
 }
+// 记不下（存储出错）就不算同意、不开始：手机上要有这一条记录（Codex 10/26）
 function saveConsent(storage, checked) {
   if (!checked) return false;
-  try { storage.setStorageSync(CONSENT_KEY, consentRecord()); } catch (e) { /* 本次仍可使用，下次重新确认 */ }
-  return true;
+  try { storage.setStorageSync(CONSENT_KEY, consentRecord()); return true; } catch (e) { return false; }
 }
-// 须知里写明交给哪个模型处理：公示的模型名称（YOUJU_AI_MODEL_LABEL）；没配时（只有白名单内部试用）写已备案的大模型
+// AI 首页底部"已同意使用须知（日期）· 撤回同意"用；没同意过或记录读不出来时给 null
+function consentInfo(storage) {
+  if (!hasConsent(storage)) return null;
+  try {
+    const at = new Date(storage.getStorageSync(CONSENT_KEY).at);
+    return Number.isFinite(at.getTime()) ? { at } : null;
+  } catch (e) { return null; }
+}
+// 撤回：删掉手机上的同意记录，下次用解读、对照前再请用户同意；已经出来的结果不受影响
+function withdrawConsent(storage) {
+  try { storage.removeStorageSync(CONSENT_KEY); return true; } catch (e) { return false; }
+}
+const CONSENT_SAVE_FAILED = '没能记下你的同意，请再点一次；还不行请重新打开小程序。';
+// 须知里写明交给哪个模型处理：公示的模型名称（YOUJU_AI_MODEL_LABEL）。没配时（只有白名单内部试用；对所有人开放时后台不配就不启动）
+// 只写"大模型"，不写"已备案"（agy 10/26）
 function modelText(disclosure) {
   const label = disclosure && typeof disclosure.modelLabel === 'string' ? disclosure.modelLabel.trim() : '';
-  return `通知原文会交给${label ? ` ${label} ` : '已备案的大模型'}处理。`;
+  return `通知原文会交给${label ? ` ${label} ` : '大模型'}处理。`;
 }
 function taskContext(storage, id, value) {
   try {
@@ -281,8 +295,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     // 使用须知只有一个"同意并开始"按钮（10/17 起一个按钮；D-098 改成同意）：点了就是同意，接着开始
     start() { checked = true; emit({ checked }); this.agree(); },
     agree() {
-      if (!visible || !saveConsent(storage, checked)) return;
-      agreed = true; emit({ needsConsent: false }); run();
+      if (!visible || !checked) return;
+      if (!saveConsent(storage, checked)) { emit({ consentError: CONSENT_SAVE_FAILED }); return; }
+      agreed = true; emit({ needsConsent: false, consentError: '' }); run();
     },
     // 上次是没连上（不是任务本身失败）：重试时接着用原来的任务或请求编号
     resumable() { return failure === 'request'; },
@@ -298,4 +313,4 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, NOTICE_VERSION, consentRecord, modelText, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, NOTICE_VERSION, CONSENT_SAVE_FAILED, consentRecord, consentInfo, withdrawConsent, modelText, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };

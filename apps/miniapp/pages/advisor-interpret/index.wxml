@@ -18,7 +18,8 @@
   <view wx:if="{{needsConsent}}" class="card advisor-card">
     <view class="advisor-title">使用须知</view>
     <view class="advisor-text">AI 会把这份通知里的申报对象、条件、时间、材料等原文原句摘出来分好类，约半分钟。只摘原文、不改写，仅供参考；不判断能否申报，以原文和主管部门解释为准。</view>
-    <view class="advisor-text">{{modelText}}点"同意"才开始。</view>
+    <view class="advisor-text">{{modelText}}{{viewing ? '点"同意"后查看结果。' : '点"同意"才开始。'}}</view>
+    <view wx:if="{{consentError}}" class="advisor-text error">{{consentError}}</view>
     <button class="advisor-button btn-primary" bindtap="start">{{viewing ? '同意并查看结果' : '同意并开始解读'}}</button>
     <view class="advisor-text link" bindtap="toggleTerms" aria-role="button">{{showTerms ? '收起完整说明' : '查看完整说明'}}</view>
     <block wx:if="{{showTerms}}">

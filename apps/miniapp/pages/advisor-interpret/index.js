@@ -16,7 +16,7 @@ const NEW_GATE_TEXT = {
 };
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
+  data: { aiLabel: AI_LABEL, loading: true, consentError: '', outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建。

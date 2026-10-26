@@ -454,6 +454,18 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     }
 
 
+def _same_ai_input(old: dict | None, new: dict | None) -> bool:
+    """同一个请求编号是不是同一份输入。须知版本（notice，D-098）不算输入本身：旧任务没有这一项，
+    新小程序用同一个请求编号重试时仍认作同一个任务，不会 409，也不会重复扣次数。"""
+
+    def strip(value):
+        return (
+            {k: v for k, v in value.items() if k != "notice"} if isinstance(value, dict) else value
+        )
+
+    return strip(old) == strip(new)
+
+
 @router.post(
     "/tasks",
     status_code=202,
@@ -493,7 +505,7 @@ def create_task(
     if existing is not None:
         _authorize(existing.kind, user)
         if (body.kind in AI_KINDS or existing.kind in AI_KINDS) and (
-            existing.kind != body.kind or existing.input_json != input_json
+            existing.kind != body.kind or not _same_ai_input(existing.input_json, input_json)
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, session, include_result=False)
