@@ -461,6 +461,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -479,6 +480,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -497,6 +499,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -513,6 +516,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -545,7 +549,7 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     youju.chmod(0o755)
     job = tmp_path / "job.sh"
     job.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CALLS"\n'
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
         '[ "$1" = crawl ] && exit "$CRAWL_CODE"\n'
         '[ "$1" = fetch-details ] && exit 1\n'
         "exit 0\n"
@@ -563,7 +567,11 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     }
     result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
-    assert (tmp_path / "calls").read_text().split() == expected
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert [line.split()[0] for line in calls] == expected
+    if "attachment-texts" in expected:
+        # 补完详情（这里补详情失败也照跑）紧接着取附件文字，每轮最多 200 个（取舍写在 round.sh 里）
+        assert "attachment-texts --limit 200" in calls
 
 
 @pytest.mark.parametrize(
