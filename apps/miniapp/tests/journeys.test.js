@@ -14,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /utils\/advisor\.js$/.test(name)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(def) { page = def; }, ...globals,
   }, { filename: file });
   return page ? { ...page, data: JSON.parse(JSON.stringify(page.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -131,7 +131,8 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   raw.subscriptions[0].status = 'unused'; page.load(); await flush();
   page.remove(event({ kind: 'sub', id: 2 })); assert.equal(modal.title, '取消提醒');
   const template = wxml('my-data');
-  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 3);
+  // 关注、提醒授权、纠错、工具记录（D-093 上线门槛第 8 条，见 my-data-records.test.js）各一个
+  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 4);
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 
@@ -146,7 +147,7 @@ test('我的数据·保存多久和隐私保护指引一致；AI 一行只给用
     }, { wx: { setClipboardData() {}, showToast() {}, showModal() {} } });
     page.load(); await flush();
     const text = render(wxml('my-data'), page.data);
-    assert.match(text, /批量工具：解析出的名单 7 天后清空，任务记录和结果文件 30 天后删除/);
+    assert.match(text, /批量工具：任务里解析出的名单 7 天后清空，任务记录和结果文件（含提交的名单内容）30 天后删除/);
     assert.match(text, /加量体验记录：开始和结束时间保存到你注销/); assert.match(text, /按天的使用次数：保留本月和上个月的/);
     assert.match(text, /数据库备份：每天备份一次，保留 30 天/);
     assert.equal(/AI 解读和条款对照：任务输入 7 天后删除，任务和结果 30 天后删除/.test(text), tasks[0].kind === 'interpret');

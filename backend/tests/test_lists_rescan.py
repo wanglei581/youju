@@ -280,7 +280,7 @@ def test_rescan_list_details_command(session, monkeypatch, capsys) -> None:
 def test_rescan_judges_by_page_url_when_body_comes_from_pdf(session, monkeypatch) -> None:
     """页面没有正文、只有一个 PDF 附件时，补详情会另抓这个 PDF 取正文；判断页面在哪个省仍按页面网址：
     PDF 跳到别的政府网站也照补；页面这次跳到了外省，标作附件的文件服务器 PDF 也不补。"""
-    monkeypatch.setattr(detail_service, "extract_pdf_body", lambda content: ("名单正文", None))
+    monkeypatch.setattr(detail_service, "extract_pdf_text", lambda content: ("名单正文", None))
     source = _source(session)
     henan = _document(session, source, LIST_URL, "河南省2026年第一批入库科技型中小企业名单公告")
     other_url = "http://kjt.henan.gov.cn/2026/09-02/2.html"

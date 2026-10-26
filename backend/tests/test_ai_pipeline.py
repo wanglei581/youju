@@ -425,3 +425,36 @@ def test_merged_twin_urls_are_not_checked_again(session) -> None:
     assert report.documents == 1
     checked = {c.document_id for c in session.scalars(select(AICheck))}
     assert checked == {master.id}
+
+
+def test_result_not_recorded_when_body_changes_during_the_call(
+    session, session_factory, monkeypatch
+) -> None:
+    """调模型期间正文被换掉（youju refetch-bodies 重取正文时删掉检查记录、要求重查）：这次的结果不记，
+    下一轮按新正文重查，免得旧正文的结果把"要重查"盖掉。"""
+    from types import SimpleNamespace
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    seen = []
+
+    def classify(client, title, body):
+        seen.append(body)
+        if len(seen) == 1:
+            with session_factory() as other:
+                other.get(DocumentDetail, doc.id).body_text = BODY + "（重新取的正文）"
+                other.commit()
+        return SimpleNamespace(kind="申报通知", confidence=0.9, reason="组织企业申报")
+
+    monkeypatch.setattr(pipeline, "classify_with_ai", classify)
+    monkeypatch.setattr(pipeline, "extract_deadlines_with_ai", lambda *args: [])
+    client, _ = fake_ai()
+
+    report = run_ai_checks(session, client)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 1, 0)
+    assert session.scalars(select(AICheck)).all() == []
+    report = run_ai_checks(session, client)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 0, 1)
+    assert seen[-1] == BODY + "（重新取的正文）"
+    assert sorted(c.task for c in session.scalars(select(AICheck))) == ["deadlines", "kind"]

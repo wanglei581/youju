@@ -103,3 +103,34 @@ def test_advisor_endpoint_settings_must_be_filled_together(monkeypatch, partial)
     """只改了地址、没改密钥或模型：每次调用都会失败，配错就不启动。"""
     with pytest.raises(ValueError, match="三项要一起填"):
         _settings(monkeypatch, **partial)
+
+
+def test_open_to_all_requires_the_external_line(monkeypatch):
+    """对所有人开放 AI 时只能走对外线路（云开发），没配就不启动（D-093 上线门槛第 3 条）；
+    白名单内部试用还能沿用后台线路。"""
+    from types import SimpleNamespace
+
+    from youju.ai import advisor_endpoint
+
+    for name in ("YOUJU_AI_ADVISOR_ENABLED", "YOUJU_AI_ADVISOR_AUDIENCE"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="对所有人开放 AI"):
+        _settings(monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="all")
+    whitelist = _settings(
+        monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="whitelist"
+    )
+    assert advisor_endpoint(whitelist)[1] == "sk-background-secret"
+    opened = _settings(
+        monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="all", **ADVISOR_ENV
+    )
+    assert advisor_endpoint(opened)[:3] == tuple(ADVISOR_ENV.values())
+    # 万一配置绕过了启动检查（例如直接改了对象），对所有人开放时也不退回后台线路
+    bypassed = SimpleNamespace(
+        ai_advisor_api_key=None,
+        ai_advisor_base_url="",
+        ai_advisor_audience="all",
+        ai_base_url="https://api.deepseek.com",
+        ai_api_key=whitelist.ai_api_key,
+        ai_model="deepseek-v4-pro",
+    )
+    assert advisor_endpoint(bypassed) == ("", "", "", None)

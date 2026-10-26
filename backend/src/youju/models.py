@@ -452,6 +452,121 @@ class AttachmentCopy(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+# 附件文字取不出、下载不了的原因（youju/attachment_text.py 的 REASONS 写了每个的意思）
+ATTACHMENT_TEXT_REASONS = (
+    "scan",
+    "empty",
+    "broken",
+    "format",
+    "too_large",
+    "webpage",
+    "gone",
+    "unavailable",
+)
+_TEXT_REASON_SQL = ", ".join(f"'{r}'" for r in ATTACHMENT_TEXT_REASONS)
+
+
+class AttachmentTextUrl(Base):
+    """给 AI 用的附件文字，第一层"附件（原网站链接）"（youju/attachment_text.py）：按原站链接一条，
+    指向这个链接现在的内容版本。附件副本的定时任务下载时顺带取文字、更新这一行；原网站删了、
+    内容变了，这一行改指新版本或清空（撤下旧文字）。超出范围（申报通知 180 天、政策 90 天、
+    下架、名单类）的整行删掉。"""
+
+    __tablename__ = "attachment_text_urls"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_attachment_text_urls_url"),
+        Index("ix_attachment_text_urls_changed_at", "changed_at"),
+        CheckConstraint(
+            "status IN ('pending', 'ok', 'failed')", name="ck_attachment_text_urls_status"
+        ),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_urls_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # 附件题录里的扩展名（统计"每种格式能读多少"按它分）
+    declared_type: Mapped[str] = mapped_column(String(8))
+    # pending：还没取；ok：有文字（version_id）；failed：取不出或下载不了（reason）
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    # 现在的内容版本：下载到了文件就有（取不出文字的版本也记，原因在版本上）；原网站删了、
+    # 下载到的是网页、超过 20MB 等就清空
+    version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="SET NULL")
+    )
+    # 按哪一版取文字规则处理过（attachment_text.EXTRACTOR_VERSION）：0 是还没处理过；不是当前
+    # 版本的要重新下载、重取。网络等临时问题不改它，到 retry_at 再试
+    extractor: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 指向的版本、状态或原因变了的时间（第 2 步按它找要重算"能不能解读"的通知）
+    changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+class AttachmentTextVersion(Base):
+    """附件文字第二层"内容版本"：按文件内容的 SHA-256 一条，内容相同的几个链接共用。记下这份内容
+    能不能取出文字、取了多少；文字本身在 AttachmentTextSegment。没有链接指向的版本连同文字删掉。"""
+
+    __tablename__ = "attachment_text_versions"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_attachment_text_versions_sha256"),
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_attachment_text_versions_status"),
+        CheckConstraint(
+            f"reason IS NULL OR reason IN ({_TEXT_REASON_SQL})",
+            name="ck_attachment_text_versions_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    # 按文件头判断的实际格式（wps 多半是 doc、et 多半是 xls）；认不出时为空
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    size: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    extractor: Mapped[int] = mapped_column(Integer)
+    # 取出的段数、字数（遮过号码以后的；表格行按"格 | 格"连起来算）
+    segments: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    chars: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # PDF 的页数，以及其中像扫描件（几乎没有文字、只有图片）的页数：这些页的字没取到
+    pages: Mapped[int | None] = mapped_column(Integer)
+    scanned_pages: Mapped[int | None] = mapped_column(Integer)
+    # 遮过号码的段数
+    masked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    extracted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AttachmentTextSegment(Base):
+    """附件文字第三层：按阅读顺序一段一行（段落一行、表格一行一行），身份证号、手机号、银行账号
+    入库前已遮掉。loc 记出处：PDF 第几页、工作表名和行号、第几个表格的第几行、第几张幻灯片；
+    表格行的 cells 记每一格的列号、所在列的表头和文字。"""
+
+    __tablename__ = "attachment_text_segments"
+    __table_args__ = (
+        UniqueConstraint("version_id", "n", name="uq_attachment_text_segments_n"),
+        CheckConstraint("kind IN ('p', 'head', 'row')", name="ck_attachment_text_segments_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("attachment_text_versions.id", ondelete="CASCADE")
+    )
+    # 第几段（从 1 起，段落和表格行一起按阅读顺序编）
+    n: Mapped[int] = mapped_column(Integer)
+    # p：段落；head：表头行；row：表格的其他行
+    kind: Mapped[str] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(LongText)
+    loc: Mapped[dict | None] = mapped_column(JSONType)
+    cells: Mapped[list | None] = mapped_column(JSONType)
+
+
 class DocumentField(Base):
     """申报通知的结构化字段候选；公开端只读取人工通过的记录。"""
 
@@ -593,21 +708,25 @@ class AIUsage(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
 
 
-# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py
-AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long")
+# 不能做 AI 解读的原因代码（D-075）：小程序按代码写原因和下一步，见 youju/ai/eligibility.py。
+# link_gone（原网页已撤下，youju/link_check.py）不存进 ai_eligibility：读表时按
+# documents.link_gone_at 当场换上，标上、恢复都不用等重算（表的约束只认前面几种）
+AI_REASONS = ("unavailable", "list", "kind", "source", "no_body", "too_long", "link_gone")
+AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gone")
 
 
 class AIEligibility(Base):
     """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
 
-    reason 为空表示能解读，否则是 AI_REASONS 之一。admin 的定时任务按 interpret.eligible_body
-    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
+    读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
     能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
 
     __tablename__ = "ai_eligibility"
     __table_args__ = (
         CheckConstraint(
-            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_REASONS) + ")",
+            "reason IS NULL OR reason IN (" + ", ".join(f"'{r}'" for r in AI_STORED_REASONS) + ")",
             name="ck_ai_eligibility_reason",
         ),
         # 轮转重算按计算时间从早到晚取（youju/ai/eligibility.py）
@@ -770,6 +889,80 @@ class ListEntry(Base):
     region: Mapped[str | None] = mapped_column(String(64))
 
     document: Mapped[Document] = relationship(back_populates="list_entries")
+
+
+class ListEvidenceSource(Base):
+    """查名单站内闭环（D-088）：一份名单附件（原站链接）读取的结果。
+
+    名单附件只为找到"企业在原名单里的那一行"读一遍，整份文字不落库、不存副本，也不进给 AI 用的
+    附件文字表；每条条目命中的那几行存进 list_entry_locations。"""
+
+    __tablename__ = "list_evidence_sources"
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_list_evidence_sources_url"),
+        CheckConstraint(
+            "status IN ('ok', 'partial', 'failed')", name="ck_list_evidence_sources_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    # ok 读全了；partial 只读了前面一部分（PDF 超过页数上限）；failed 没读出来
+    status: Mapped[str] = mapped_column(String(16))
+    # 没读出来的原因（attachment_text.REASONS 的代码，或下载失败的原因）
+    reason: Mapped[str | None] = mapped_column(String(16))
+    detail: Mapped[str | None] = mapped_column(String(300))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    file_type: Mapped[str | None] = mapped_column(String(8))
+    pages_total: Mapped[int | None] = mapped_column(Integer)
+    pages_read: Mapped[int | None] = mapped_column(Integer)
+    # 取文字规则（attachment_text.EXTRACTOR_VERSION）和定位规则（evidence.LOCATOR_VERSION）的版本，
+    # 任何一个升级就重读
+    extractor: Mapped[int] = mapped_column(Integer)
+    locator: Mapped[int] = mapped_column(Integer)
+    # 读的时候这份附件有几条条目、几条找到了原文那一行；条目数变了（名单重新解析过）就重读
+    entries: Mapped[int] = mapped_column(Integer, default=0)
+    located: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    # 网络等临时问题：到这个时间再试
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class ListEntryLocation(Base):
+    """名单条目在原文附件里的那一行（D-088）：rows 是命中的行，最多 5 行；每行记在原文的位置和各格
+    （列名、文字），个人信息列已去掉，号码已遮。state：ok 一处、multiple 两到五处、ambiguous 超过
+    五处（只存前五处）、notfound 原文里没找到、no_name_column 认不出名称列。不按序号推算位置。
+    条目重新解析（删了重写）时随外键删除，下一轮重读。"""
+
+    __tablename__ = "list_entry_locations"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('ok', 'multiple', 'ambiguous', 'notfound', 'no_name_column')",
+            name="ck_list_entry_locations_state",
+        ),
+        Index("ix_list_entry_locations_source", "source_id"),
+    )
+
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("list_entries.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("list_evidence_sources.id", ondelete="CASCADE")
+    )
+    state: Mapped[str] = mapped_column(String(16))
+    rows: Mapped[list] = mapped_column(JSONType)
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class SigningKey(Base):
+    """服务端签名用的随机密钥（迁移时生成，两个服务都只读）。list_entry：查名单结果里条目编号的
+    签名，只有查到这家企业的人拿得到某条条目的编号，不能按顺序把整份名单一条条翻出来（D-088）。"""
+
+    __tablename__ = "signing_keys"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key_hex: Mapped[str] = mapped_column(String(64))
 
 
 class User(Base):

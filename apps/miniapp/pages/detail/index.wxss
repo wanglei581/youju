@@ -59,8 +59,6 @@
 .att-action { flex-shrink: 0; font-size: 26rpx; color: var(--t3); }
 .att-action--open { color: var(--brand); font-weight: 500; }
 .att-foot { display: flex; align-items: center; padding: 22rpx 0 24rpx; font-size: 25rpx; color: var(--t2); }
-.copy { margin-left: auto; display: flex; align-items: center; gap: 6rpx; color: var(--brand); white-space: nowrap; }
-.copy--big { font-size: 28rpx; }
 
 .source { padding-top: 28rpx; padding-bottom: 28rpx; }
 .source-top { display: flex; align-items: center; justify-content: space-between; }
@@ -68,6 +66,7 @@
 .source-site { margin-top: 4rpx; font-size: 28rpx; }
 .source-note { margin-top: 20rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
 .source-gone { margin-top: 20rpx; font-size: 26rpx; line-height: 1.7; color: var(--orange); }
+.gone-note { margin-top: 20rpx; padding: 16rpx 24rpx; background: var(--o-tint); color: var(--o-txt); border-radius: 12rpx; font-size: 26rpx; line-height: 1.7; }
 
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }
@@ -76,12 +75,13 @@
 .bar-share { width: 100rpx !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; background: transparent !important; border-radius: 0 !important; line-height: normal !important; font-size: 22rpx !important; font-weight: normal !important; color: var(--t2) !important; }
 .bar-share::after { border: none; }
 .status-note { margin-top: 12rpx; font-size: 24rpx; }
-/* 正文（D-030）：默认显示开头一段，点"展开全文"看全部 */
+/* 正文（D-030）：默认显示开头一段，点"展开全文"看全部（只收了一部分时写"展开摘录"，全文去站内阅读看） */
 .body-note { margin: -4rpx 0 16rpx; font-size: 22rpx; line-height: 1.6; }
 .body-text { display: block; font-size: 28rpx; line-height: 1.8; color: var(--t1); white-space: pre-wrap; word-break: break-all; }
 .body-more { margin-top: 16rpx; font-size: 26rpx; }
 .body-rest { margin-top: 12rpx; font-size: 24rpx; }
 .body-none { font-size: 26rpx; line-height: 1.6; }
+.body-lookup { margin-top: 20rpx; font-size: 28rpx; font-weight: 500; }
 /* 加载中的占位块 */
 .sk-title { height: 40rpx; margin-top: 22rpx; }
 .sk-card { padding-top: 28rpx; padding-bottom: 28rpx; }
@@ -98,8 +98,8 @@
 .ver-due--none { color: var(--t3); }
 .ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .ver-meta-text { flex: 1; min-width: 0; }
-.ver-copy { flex-shrink: 0; color: var(--brand); white-space: nowrap; }
 .ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }
+.ver-hint { margin-top: 16rpx; font-size: 24rpx; line-height: 1.6; }
 .standard-link { display: flex; align-items: center; justify-content: space-between; padding: 24rpx 0 0; font-size: 26rpx; }
 /* 按类型逐条的截止（D-061） */
 .dls-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8rpx; }

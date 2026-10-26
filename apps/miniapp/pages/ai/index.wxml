@@ -103,7 +103,7 @@
     <view wx:for="{{records}}" wx:key="id" class="record {{index === records.length - 1 ? 'record--last' : ''}}" data-id="{{item.id}}" data-kind="{{item.kind}}" bindtap="openRecord" aria-role="link">
       <view class="record-main">
         <view class="record-title">{{item.kindLabel}}<text wx:if="{{item.title}}"> · {{item.title}}</text></view>
-        <view class="record-meta">{{item.time}}<text wx:if="{{item.time}}"> · </text>{{item.stateLabel}}</view>
+        <view class="record-meta">{{item.time}}<text wx:if="{{item.time}}"> · </text>{{item.stateLabel}}<text wx:if="{{item.linkGone}}"> · 原文链接已失效</text></view>
       </view>
       <t-icon name="chevron-right" size="32rpx" color="#86909C" />
     </view>
@@ -120,7 +120,6 @@
 
   <view class="foot">
     <view wx:if="{{disclosure}}">{{disclosure}}</view>
-    <view>有据 · 第三方整理 · 每条都有出处</view>
   </view>
 </block>
 <view class="tab-page-bottom"></view>

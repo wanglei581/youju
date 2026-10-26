@@ -23,8 +23,9 @@ const wxml = (page) => read(`pages/${page}/index.wxml`).replace(/<!--[\s\S]*?-->
 const FORBIDDEN = ['AI', '智能', '大模型'];
 const daywatch = { watchDay() {}, stopDay() {} };
 
-// 改版前搜索框下面的规则说明（原文），收起后的四条要一字不少
-const OLD_RULES = '按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。名单状态按标题用词标注，公示期和当前效力以原文为准。';
+// 改版前搜索框下面的规则说明（原文），收起后的四条要一字不少。
+// 第 4 条 10/24 按 D-090 改过："名单状态"改叫"发布阶段"，去掉像信用结论的"当前效力"
+const OLD_RULES = '按企业全称逐行比对名单原文；名称相近的企业分开列出，请核对统一社会信用代码。只查企业和机构，不查个人。发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准。';
 const bare = (text) => text.replace(/[，。；、\s]/g, '');
 
 function listsPage(lookup = () => new Promise(() => {})) {
@@ -37,8 +38,9 @@ function listsPage(lookup = () => new Promise(() => {})) {
 test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 非政府平台"和其他页一样放在蓝色顶部下面', () => {
   const template = wxml('lists');
   const top = template.slice(0, template.indexOf('<notice-bar />'));
-  assert.match(top, /<view class="h1">查企业上过哪些名单<\/view>/);
-  assert.match(top, /<view class="sub">在已收录的高企、专精特新等公示和公布名单里查<\/view>/);
+  assert.match(top, /<view class="h1">在政府公开名单里查企业<\/view>/);
+  // D-091：副标题写明只查认定、立项名单
+  assert.match(top, /<view class="sub">只查科技、工信等部门公开发布的认定、立项名单<\/view>/);
   assert.match(top, /<view class="search">/);
   // 顶部的说明文字只有标题和副标题两行
   assert.deepEqual([...top.matchAll(/<view class="(h1|sub)">/g)].map((m) => m[1]), ['h1', 'sub']);
@@ -67,13 +69,14 @@ test('查询说明默认收起成一行（info 图标、向下箭头），点开
   const body = /<view wx:if="{{rulesOpen}}" class="rules-body">([\s\S]*?)\n {2}<\/view>/.exec(template);
   assert.ok(body, '查询说明的内容只在点开后显示');
   const rules = [...body[1].matchAll(/<view class="rule">([^<]+)<\/view>/g)].map((m) => m[1]);
+  // D-091：同名一条改成"不一定是同一家"（输入框不再写信用代码），加一条"查到后可以看原名单里的那一行"
   assert.deepEqual(rules, [
     '按企业全称逐行比对名单原文',
-    '名称相近的企业分开列出，请核对统一社会信用代码',
+    '名称相近的企业分开列出，不一定是同一家',
+    '查到后可以看这家企业在原名单里的那一行',
     '只查企业和机构，不查个人',
-    '名单状态按标题用词标注，公示期和当前效力以原文为准',
+    '发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准',
   ]);
-  assert.equal(bare(rules.join('')), bare(OLD_RULES));
   // 原来那段灰字不再默认铺在搜索框下面
   assert.ok(!template.includes(OLD_RULES));
   assert.ok(!/class="note"/.test(template));
@@ -83,7 +86,7 @@ test('搜索框下面不另加提示（和搜索框里的提示重复），查�
   const template = wxml('lists');
   assert.ok(!/class="hint"|输入企业全称或统一社会信用代码查询/.test(template));
   assert.ok(!/\.hint \{/.test(read('pages/lists/index.wxss')));
-  assert.match(template, /placeholder="输入企业全称或统一社会信用代码"/);
+  assert.match(template, /placeholder="输入企业全称"/);
   const page = listsPage();
   page.setData({ name: '某某科技有限公司' });
   page.query();
@@ -114,11 +117,11 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
   assert.match(card[1], /<view class="empty-title">还没有导出过<\/view>/);
   const steps = [...card[1].matchAll(/<text class="step-no">(\d)<\/text><text class="step-text">([^<]+)<\/text>/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(steps, [
-    ['1', '在搜索结果点“选择”，或在文件详情点“导出”'],
-    ['2', '选 Excel 或 Word'],
+    ['1', '在搜索结果点“选择”，或在文件详情点“结果”'],
+    ['2', '在小程序内查看结果，需要保存时再选 Excel 或 Word'],
     ['3', '导出后可转发给同事或客户'],
   ]);
-  assert.match(card[1], /<view class="pc-tip">在电脑上保存：转发到“文件传输助手”，在电脑版微信打开<\/view>/);
+  assert.match(card[1], /<view class="pc-tip">导出不是必须的：结果在小程序内就能看完。需要在电脑上留存时，可把文件发给“文件传输助手”，再在电脑版微信里打开。<\/view>/);
 
   // 有记录时照常显示列表
   const filled = filesPage([{ id: 'a', format: 'xlsx', label: '高企名单', count: 3, size: 2048, at: '2026-10-06T08:00:00+08:00', path: '/x' }]);
@@ -127,17 +130,13 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
   assert.equal(filled.data.files[0].badge, 'XLSX');
 });
 
-test('文件页原有的说明保留：只存在这台手机上的那句在列表下方，带原文链接和数据说明的那句在页面底部', () => {
+test('文件页：只存在这台手机上的那句在列表下方、页面最后；"导出带数据说明"那句已去掉（10/17 创始人：去掉没用的提示）', () => {
   const template = wxml('files');
-  const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可以重新导出。</view>';
-  const source = '<view class="tip">导出的表格和文档每份都带原文链接和数据说明（来源网站、核对日期、以原文为准）。</view>';
+  const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可按当前数据重新查看并保存。</view>';
   const afterCards = template.slice(template.indexOf('<view wx:else class="card empty">'));
-  // 两句都在列表和空状态卡片之后，有没有记录都显示
   assert.ok(afterCards.indexOf(storage) > 0);
-  assert.ok(afterCards.indexOf(source) > afterCards.indexOf(storage));
+  assert.ok(!template.includes('数据说明（来源网站'));
   assert.match(template, /<\/view>\s*<view class="tip">导出记录只保存/);
-  assert.match(template, /以原文为准）。<\/view>\s*<view class="tab-page-bottom"><\/view>\s*$/);
-  // 顶部不再有一段说明，"第三方整理"照旧
   assert.ok(!/class="intro"/.test(template));
   assert.match(template, /^<notice-bar \/>/);
 });

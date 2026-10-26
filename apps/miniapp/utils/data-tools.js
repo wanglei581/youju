@@ -144,7 +144,7 @@ function openResult(id, options = {}) {
     check();
     return exporter.save(buffer, 'xlsx').then((filePath) => {
       if (!current()) {
-        if (!exporter.remove(filePath)) throw new Error('下载已暂停，但临时文件没能删除，请到文件页清空导出文件');
+        if (!exporter.remove(filePath)) throw new Error('下载已暂停，但临时文件没能删除，请到底栏“导出”清空导出记录');
         check();
       }
       const task = options.task || {};

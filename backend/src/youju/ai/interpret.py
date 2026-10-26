@@ -104,7 +104,8 @@ def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
     )
 
 
-# 首发 2026-10 不含 AI 条款。正式 AI 包必须升版；回退环境配置不能降低这道门槛。
+# 首发 2026-10 和过审版 2026-10.2（D-093 ⑤）都不含 AI 条款，按字符串比较都排在这一版前面。
+# 正式 AI 包必须升版；回退环境配置不能降低这道门槛。
 AI_AGREEMENT_VERSION = "2026-11"
 
 
@@ -182,8 +183,13 @@ def split_paragraphs(body: str) -> list[dict]:
     ]
 
 
-def eligible_body(session: Session, doc_id: int) -> tuple[Document, str, str, str]:
-    """解读和详情共用的轻量前置检查；不读取核对记录。"""
+def eligible_body(
+    session: Session, doc_id: int, *, link: bool = True
+) -> tuple[Document, str, str, str]:
+    """解读和详情共用的轻量前置检查；不读取核对记录。
+
+    link=False 不看原网页撤下了没有：打开已有的结果、处理提交时还没撤下的排队任务（prepare），
+    以及存进 ai_eligibility 的预先计算（撤下的读表时另看，见 eligibility.effective_reason）。"""
     # 延迟引入 v1，避免 API 路由装载时形成循环依赖。
     from youju.api import v1
 
@@ -197,6 +203,13 @@ def eligible_body(session: Session, doc_id: int) -> tuple[Document, str, str, st
         )
     if doc.source.rights_level != 1:
         raise InterpretRefusal("文件不是一级公开来源，无法解读", "source")
+    # 原文链接已失效（youju/link_check.py 隔天两次确认；原网页可能撤下了，也可能改了地址，分不清）：
+    # 通知可能已撤回或更正，为免误导不再开始新的解读、对照。排在"这类文件不解读"之后、正文的原因
+    # 之前（eligibility.effective_reason 同序）
+    if link and doc.link_gone_at is not None:
+        raise InterpretRefusal(
+            "原文链接已失效，原网页可能已撤下或改了地址，暂不提供 AI 解读和条款对照", "link_gone"
+        )
     raw = v1._reading_body(session, doc.id)
     # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
     body = v1.redact_sensitive(raw or "")
@@ -212,7 +225,9 @@ def prepare(
 ) -> tuple[dict, list, str]:
     from youju.api import v1
 
-    doc, kind, raw, body = eligible_body(session, doc_id)
+    # 不看原网页撤下了没有：能不能开始新的解读在提交时判断（advisor.create_task），已有的结果和
+    # 提交时还没撤下的排队任务照常（页面另写明原网页已撤下）
+    doc, kind, raw, body = eligible_body(session, doc_id, link=False)
     ids = group_ids(session, doc.id)
     body_id = session.scalar(
         select(DocumentDetail.document_id)

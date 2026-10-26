@@ -1142,6 +1142,30 @@ def test_agreement_version_must_look_like_year_month(client, session, monkeypatc
     assert client.get("/api/v1/me/follows").status_code == 200
 
 
+def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
+    """D-093 ⑤：过审版（首发 16 页）带不含 AI 条款的协议 2026-10.2，完整版带 2026-11。后台当前版本仍是
+    2026-11、最早认 2026-10.2：两种包都能同意、都能用关注；只同意过 2026-10.2 的人没同意过 AI 和批量工具的
+    条款，AI（对所有人开放时）和批量工具都要先重新同意 2026-11；10/15 首发的旧 2026-10 正文不再认。"""
+    from youju.ai import interpret
+
+    settings(monkeypatch, version="2026-11", oldest="2026-10.2")
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-10.2"})
+    assert response.status_code == 200 and response.json()["valid"] is True
+    assert client.get("/api/v1/me/follows").status_code == 200
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert not me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    open_to_all = SimpleNamespace(ai_advisor_audience="all")
+    assert not interpret.ai_agreed(open_to_all, user)
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-10"})
+    assert response.status_code == 422
+    # AI 上线后，完整版请用户读完 2026-11 再同意：AI 和批量工具的条款都覆盖到了
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-11"}).status_code == 200
+    session.expire_all()
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    assert interpret.ai_agreed(open_to_all, user)
+
+
 def test_agreement_min_version_raised_requires_update(client, monkeypatch):
     """调高仍认的最早版本（旧条款不再覆盖旧功能）后：停在旧版本的用户要更新小程序、重新同意。"""
     settings(monkeypatch, version="2026-12", oldest="2026-09")

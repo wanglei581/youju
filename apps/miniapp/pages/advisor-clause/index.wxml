@@ -94,6 +94,8 @@
       <view wx:if="{{!docId}}" class="interpret-meta">这条记录没有关联到通知原文，请从通知详情页重新打开。</view>
       <view wx:else class="interpret-ops"><button class="interpret-link" bindtap="original">看原文</button></view>
     </view>
+    <!-- 原文链接已失效（后台 linkGone）：结果照常能看，写明是按之前收录的正文做的（排队的任务可能在失效以后才做完，不说"撤下前做的"） -->
+    <view wx:if="{{linkGone}}" class="card advisor-card advisor-gone">原文链接 {{linkGone}} 检查时已失效，原网页可能已撤下或改了地址。这份结果基于此前收录的正文，通知可能已撤回或更正，仅供参考，请以发文机关现在公布的为准。</view>
     <view wx:if="{{outdated}}" class="card advisor-card">对照之后，这份通知的核对信息或附件有更新；正文没变，下面的条件原文仍然有效，“已核对”一栏已换成现在的核对结果。</view>
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
@@ -129,5 +131,5 @@
     <view class="advisor-title">用的时候遇到问题？</view>
     <view class="advisor-contact"><contact-button from="clause_result" doc-id="{{docId}}" doc-title="{{title}}" reason="{{errorCode}}" /></view>
   </view>
-  <view class="advisor-footer">第三方整理 · 非政府平台 · <text class="link" bindtap="report">投诉举报</text></view>
+  <view class="advisor-footer"><text class="link" bindtap="report">投诉举报</text></view>
 </block>

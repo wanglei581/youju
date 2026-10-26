@@ -107,7 +107,7 @@ function callFailure(res) {
 const ADMIN_READS = [
   /^\/api\/v1\/(home|coverage|search|calendar|snapshot)(\?|$)/,
   /^\/api\/v1\/reports\/(deadlines|lists)(\?|$)/,
-  /^\/api\/v1\/lists\/(recent|lookup)(\?|$)/,
+  /^\/api\/v1\/lists\/(recent|lookup|record)(\?|$)/,
   /^\/api\/v1\/documents\/\d+(\?|$)/,
 ];
 const ADMIN_SERVICE = 'admin';
@@ -434,6 +434,14 @@ function detail(id) {
   return mockDetail(id);
 }
 
+// 阅读内容只走真实接口，游标必须绑定同一来源版本，不能拼接新旧正文。
+function reading(id, attachmentId, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可阅读内容'));
+  const base = `/api/v1/documents/${encodeURIComponent(id)}`;
+  const path = attachmentId ? `${base}/attachments/${encodeURIComponent(attachmentId)}/reading` : `${base}/reading`;
+  return request(path, params);
+}
+
 // 日历每条的 id 是截止记录编号，打开详情用 docId（演示数据里两者相同）
 // 日历要按全部事项计算"全部"份数：按 total 翻页取完（最多 1000 条）
 function calendar(params = {}) {
@@ -458,18 +466,43 @@ function lists() {
   return copy(Object.assign({ total: mock.lists.week_total }, mock.lists));
 }
 
-// 查名单：按企业全称或统一社会信用代码与名单原文比对；名称相近的另列（similar），不当作同一家。
+// 查名单：按企业全称与名单原文比对；名称相近的另列（similar），不当作同一家。
 // 演示数据只对虚构的"演示科技有限公司"给出结果，页面会标明"演示数据"
 const DEMO_COMPANY = '演示科技有限公司';
+const DEMO_ENTRY = 'DemoDemoDemoDemoDemoDemoDemoDemo';
 function lookup(q) {
   if (isLive()) return request('/api/v1/lists/lookup', { q });
   const hit = q.replace(/\s+/g, '') === DEMO_COMPANY;
   const items = hit
     ? mock.lists.items.slice(0, 2).map((d, i) => Object.assign({}, d, {
-      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name' },
+      matched: { name: DEMO_COMPANY, category: '科技型中小企业', batch: `第${i + 4}批`, sequence: String(12 + i), creditCode: null, region: null, via: 'name', entryToken: DEMO_ENTRY },
     }))
     : [];
-  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false, coverage: { lists: mock.lists.week_total, since: '2026-07-01' } });
+  return copy({ query: q, items, similar: [], ambiguous: false, truncated: false,
+    coverage: { lists: mock.lists.week_total, since: '2026-07-01', unreadLists: 0, partialLists: 0 } });
+}
+
+// 原名单里的那一行（D-088）：查名单结果里的 entryToken 换这条记录在原文里的那一行和列名。
+// 演示数据只认演示企业的编号
+function listRecord(token) {
+  if (isLive()) return request('/api/v1/lists/record', { entry: token });
+  if (token !== DEMO_ENTRY) return Promise.reject(Object.assign(new Error('这条记录已更新或不存在'), { status: 404 }));
+  return copy({
+    entry: { name: DEMO_COMPANY, category: '科技型中小企业', batch: '第4批', region: null },
+    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: mock.lists.items[0].status, issuer: mock.lists.items[0].issuer, date: mock.lists.items[0].date, region: mock.lists.items[0].region, site: `${mock.lists.items[0].issuer}网站`, host: 'jxj.example.gov.cn', link_gone: null },
+    evidence: { state: 'found', more: false, partial: false, pagesRead: null, reason: null,
+      rows: [{ where: '工作表\u201c名单\u201d第 12 行', hidden: 2, cells: [{ h: '序号', t: '12', name: false }, { h: '企业名称', t: DEMO_COMPANY, name: true }, { h: '所在地区', t: '演示市', name: false }] }] },
+  });
+}
+
+function advisorReading(id, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request(`/api/v1/advisor/tasks/${encodeURIComponent(id)}/reading`, params);
+}
+
+function exportPreview(ids) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可查看结果'));
+  return request('/api/v1/exports/preview', null, { method: 'POST', data: { ids: ids.map(String), excerpts: 1 } });
 }
 
 // 导出 Excel / Word：返回文件内容（ArrayBuffer）。文件由服务端生成，小于 1000 KiB（云托管返回上限）
@@ -477,9 +510,10 @@ const EXPORT_ERRORS = {
   413: '文件太大，请少选几份再导出',
   422: '有的文件已不存在或超过 200 份，请刷新后再试',
 };
-function exportFile(ids, format) {
+function exportFile(ids, format, revision) {
   // excerpts=1（D-061）：导出的截止列也按首发版规则写，机器摘录的另附原句
   const body = { ids: ids.map(String), format, excerpts: 1 };
+  if (revision) body.revision = revision;
   // 先叫醒接口服务（等的时候仍显示导出自己的"正在生成…"）
   return afterWake(() => exportOnce(body), false);
 }
@@ -497,7 +531,7 @@ function exportOnce(body) {
       if (settled) return; // 忽略超时后的旧回调，不能改写新的暖态或同意记录
       state.answered(res.statusCode);
       if (res.statusCode === 200) finish(resolve, res.data);
-      else finish(reject, new Error(EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`));
+      else finish(reject, Object.assign(new Error(res.statusCode === 409 ? '内容已更新，请重新查看结果后保存' : EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`), { status: res.statusCode }));
     };
     if (config.cloudEnv) {
       wx.cloud.callContainer({
@@ -859,8 +893,8 @@ function requestInvoice(id, data) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, exportFile, feedback,
-  attachmentPart,
+  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
+  attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,

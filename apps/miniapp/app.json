@@ -25,7 +25,9 @@
     "pages/pass/index",
     "pages/orders/index",
     "pages/ai/index",
-    "pages/help/index"
+    "pages/help/index",
+    "pages/reader/index",
+    "pages/results/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -50,7 +52,7 @@
       },
       {
         "pagePath": "pages/files/index",
-        "text": "文件"
+        "text": "导出"
       },
       {
         "pagePath": "pages/me/index",
