@@ -14,7 +14,7 @@ from alembic import command
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import func, inspect, select, text, update
 
 from youju import advisor_tasks as service
 from youju.agreements import TOOLS_AGREEMENT_VERSION
@@ -153,12 +153,11 @@ def tools_ready(session, openid="internal"):
     session.commit()
 
 
-def create(client, doc_id, key="first"):
-    return client.post(
-        "/api/v1/advisor/tasks",
-        json={"kind": "interpret", "doc_id": doc_id},
-        headers={"Idempotency-Key": key},
-    )
+def create(client, doc_id, key="first", notice=None):
+    body = {"kind": "interpret", "doc_id": doc_id}
+    if notice is not None:
+        body["notice"] = notice
+    return client.post("/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": key})
 
 
 def direct_task(session, doc, openid="internal", key="direct", stamp=NOW):
@@ -661,15 +660,26 @@ def test_all_audience_submission_worker_and_consent(client, settings, doc, sessi
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
     assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["enabled"]
-    created = create(client, doc.id)
+    # 对所有人开放时要带上同意过的使用须知版本（D-098）：没带、带旧版本都不建任务
+    for stale in (None, "2026-01-01"):
+        refused = create(client, doc.id, key=f"no-notice-{stale}", notice=stale)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "AI_NOTICE_REQUIRED"
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 0
+    created = create(client, doc.id, notice=interpret.AI_NOTICE_VERSION)
     assert created.status_code == 202
+    task = session.get(AdvisorTask, created.json()["id"])
+    assert task.input_json == {"doc_id": doc.id, "notice": interpret.AI_NOTICE_VERSION}
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
     assert session.get(AdvisorTask, created.json()["id"]).status == "done"
 
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = "old"
     session.commit()
-    assert create(client, doc.id, key="no-consent").status_code == 403
+    assert (
+        create(client, doc.id, key="no-consent", notice=interpret.AI_NOTICE_VERSION).status_code
+        == 403
+    )
     settings.ai_advisor_enabled = False
     assert create(client, doc.id, key="disabled").status_code == 404
 
@@ -793,7 +803,7 @@ def test_concurrent_submission_uses_one_global_slot(session_factory, session, se
             barrier.wait(timeout=5)
             try:
                 api.create_task(
-                    api.TaskIn(kind="interpret", doc_id=doc.id),
+                    api.TaskIn(kind="interpret", doc_id=doc.id, notice=interpret.AI_NOTICE_VERSION),
                     SimpleNamespace(state=SimpleNamespace()),
                     work,
                     user,

@@ -621,7 +621,7 @@ test('解读页、对照页：新提交前后台处理不了或全站满了先�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [extra, gate, text] of [[{ available: false }, 'paused', 'AI 暂时不可用，请稍后再试。'], [{ siteFull: true }, 'full', '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。']]) {
       for (const taskId of ['', '7']) {
-        let created = 0; const saved = new Map([[interpret.CONSENT_KEY, true]]);
+        let created = 0; const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
         const access = control(OPEN);
         const deps = {
           '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 1, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
@@ -643,7 +643,7 @@ test('解读页、对照页：新提交前后台处理不了或全站满了先�
     }
   }
   // 提交时后台说处理不了（429 AI_UNAVAILABLE）：页面写暂时不可用，并让 AI 板块重新问一次
-  const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   const p = load('pages/advisor-interpret/index.js', {
     '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), createAdvisorTask: () => Promise.reject(Object.assign(new Error('AI 暂时不可用，请稍后再试'), { status: 429, code: 'AI_UNAVAILABLE' })) },
     '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
@@ -747,7 +747,7 @@ test('Codex 第 1 轮：任务列表按错误代码写失败原因（不重复"�
   assert.match(list, /今天 AI 的总用量满了，明天 0 点恢复。 这次不算次数/);
   // 解读页看到排队后被移出白名单（AI_OFF）的结果：让 AI 板块重新问一次
   for (const errorCode of ['AI_OFF', 'AI_UNAVAILABLE', 'AI_DAILY_CAP']) {
-    const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const p = load('pages/advisor-interpret/index.js', {
       '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: 'x', errorCode }) },
       '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
@@ -826,7 +826,7 @@ test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身
   }
   for (const [page, kind, name] of [['advisor-interpret', 'interpret', 'AI 解读'], ['advisor-clause', 'clause', '条款对照']]) {
     for (const taskId of ['', '7']) {
-      let created = 0; const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      let created = 0; const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]); const urls = [];
       const deps = {
         '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: 5, clause: 5, [kind]: 0 } })), createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 1, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
         '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
@@ -873,7 +873,7 @@ test('Codex 第 3 轮：第二次进 AI 首页、详情比能力接口先回来�
 test('Codex 第 3 轮：解读页、对照页被拦下时（满了、用完了、暂时不可用）给"看原文"，联系客服带上这份通知的编号和标题', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [extra, gate] of [[{ siteFull: true }, 'full'], [{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ available: false }, 'paused']]) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]); const urls = [];
       const deps = {
         '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
         '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
@@ -983,7 +983,7 @@ test('Codex 第 5 轮：AI 首页再次进来先清掉"我的 AI 记录"，离�
 test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表提示只在有按钮时说"点 AI 解读"', async () => {
   for (const [errorCode, canRetry] of [['AI_DAILY_CAP', false], ['AI_UNAVAILABLE', false], ['AI_OFF', false], [null, true]]) {
     const states = [];
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const session = interpret.createSession({
       api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '后台的话', errorCode, docId: '42', docTitle: '通知' }) },
       storage: { getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) },
@@ -1029,7 +1029,7 @@ test('Codex 第 7 轮：结果页吸顶条开头固定写"AI 生成："（后端
   const backendNotice = 'AI 生成，仅供参考，以原文和主管部门解释为准';
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [notice, expected] of [['固定原文提示', 'AI 生成：固定原文提示'], [backendNotice, 'AI 生成：仅供参考，以原文和主管部门解释为准']]) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const result = kind === 'clause'
         ? { notice, rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
         : { notice, items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -1135,7 +1135,7 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
 test('Codex 第 8 轮：出了结果吸顶条就一直有——后端没给提示、只有空白或只有"AI 生成"时，用页面自己的说明；上面那条普通提示不再重复', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const notice of [undefined, '', '   ', 'AI 生成', ' AI 生成： ']) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const result = kind === 'clause'
         ? { rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
         : { items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -1745,7 +1745,7 @@ test('Codex 第 18 轮：停在 AI 首页跨过零点，今天还剩几次重新
     for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full']]) {
       let blocked = true; let capsCalls = 0; let created = 0;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
@@ -1793,7 +1793,7 @@ test('Codex 第 19、21 轮：解读页、对照页次数用完或全站满了�
     for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full'], [{ available: false }, 'paused']]) {
       let blocked = true; let capsCalls = 0; let created = 0;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
@@ -1859,7 +1859,7 @@ test('Codex 第 20、21 轮：被拦下以后，过了 0 点才回话、当天�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0; let created = 0; let hold = null;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => {
@@ -1894,7 +1894,7 @@ test('Codex 第 20、21 轮：被拦下以后，过了 0 点才回话、当天�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON({ remaining: { interpret: 0, clause: 0 } }) : ON()); },
@@ -1926,7 +1926,7 @@ test('Codex 第 21 轮：0 点以前的"用完了""满了"答复 0 点以后才�
     for (const extra of [{ remaining: { interpret: 0, clause: 0 } }, { siteFull: true }]) {
       let blocked = true; let created = 0; let forgot = 0; let hold = null;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => {
@@ -1975,7 +1975,7 @@ test('Codex 第 22 轮：跨零点时还在等能力接口回话就丢掉旧的�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let answers = []; let forgot = 0; let created = 0; const holds = [];
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => new Promise((done) => holds.push(done)),
@@ -2165,7 +2165,7 @@ test('Codex 第 25、26 轮：次数用完的提示只写明天恢复，不管�
 test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0），解读页、对照页接着显示这次任务的进度和结果，不写"用完了"', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let left = 1; let created = 0; let status = 'queued';
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const result = kind === 'clause'
       ? { notice: 'AI 生成，仅供参考', rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
       : { notice: 'AI 生成，仅供参考', items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -2205,7 +2205,7 @@ test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0�
 test('Codex 第 28 轮：建任务被明确拒绝不算"这一页有任务"，回来照最新的次数拦下；任务失败后次数变 0，不给会建新任务的"重试""重新填写"，写明原因；没连上的照常能接着试', async () => {
   const make = (page, kind, { create, poll, left }) => {
     const state = { left, created: 0 };
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: state.left, clause: state.left } })),
@@ -2267,7 +2267,7 @@ test('Codex 第 29 轮：失败卡片上的重试因为次数用完收起后，�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let left = 1; let created = 0;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const failedTask = { id: 9, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' };
     const deps = {
       '../../utils/api.js': {
@@ -2294,7 +2294,7 @@ test('Codex 第 29 轮：失败卡片上的重试因为次数用完收起后，�
   }
   // 对照页：从"我的记录"打开失败任务，点"重新填写"回到表单以后，离开再回来照现在的次数拦下
   let left = 5; let created = 0;
-  const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   const deps = {
     '../../utils/api.js': {
       advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: left, clause: left } })),

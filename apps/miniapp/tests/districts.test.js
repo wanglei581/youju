@@ -579,7 +579,7 @@ test('真实接口层：搜索、关注、截止、日历、批量和条款对�
 
 const clauseCaps = () => ({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: true, features: ['interpret', 'clause'], remaining: { interpret: 3, clause: 2 } } });
 function clauseStorage() {
-  const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   return { saved, getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value) };
 }
 function clausePage(api, local) {

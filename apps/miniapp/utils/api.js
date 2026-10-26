@@ -732,11 +732,13 @@ function createAdvisorTask(data, key) {
   if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
     return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
   }
+  // 解读、对照带上同意过的使用须知版本（D-098）；数据工具不带
+  const notice = typeof data.notice === 'string' && data.notice ? { notice: data.notice } : {};
   const body = ['compare', 'track'].includes(data.kind)
     ? { kind: data.kind, ...(data.file ? { file: data.file } : { rows: data.rows }) }
     : data.kind === 'clause'
-    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
-    : { kind: 'interpret', doc_id: Number(data.doc_id) };
+    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {}, ...notice }
+    : { kind: 'interpret', doc_id: Number(data.doc_id), ...notice };
   return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
     // 带代码的拒绝（D-075：AI_NOT_ELIGIBLE 带原因代码、AI_UNAVAILABLE）保留后台写的说明，另记原因代码；
     // 其余 422（输入校验）把逐项说明拼起来

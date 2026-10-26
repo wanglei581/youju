@@ -106,6 +106,8 @@ class TaskIn(BaseModel):
     doc_id: int | None = Field(default=None, gt=0, strict=True)
 
     company: Company | None = None
+    # 解读、对照：用户同意过的使用须知版本（interpret.AI_NOTICE_VERSION，D-098）
+    notice: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def validate_input(self) -> TaskIn:
@@ -118,8 +120,8 @@ class TaskIn(BaseModel):
                 )
             if self.kind == "interpret" and "company" in self.model_fields_set:
                 raise ValueError("解读仅接受 doc_id")
-        elif {"doc_id", "company"} & self.model_fields_set:
-            raise ValueError("数据工具不接受 doc_id 或 company")
+        elif {"doc_id", "company", "notice"} & self.model_fields_set:
+            raise ValueError("数据工具不接受 doc_id、company 或 notice")
         elif (self.rows is None) == (self.file is None):
             raise ValueError("请只提供 rows 或 file 中的一项")
         return self
@@ -480,6 +482,9 @@ def create_task(
             input_json["company"].pop("city", None)
         if not input_json["company"].get("district"):
             input_json["company"].pop("district", None)
+    # 同意过的使用须知版本记在任务输入里（D-098）；没带时不写这一项，旧任务的幂等比对不变
+    if body.kind in AI_KINDS and body.notice:
+        input_json["notice"] = body.notice
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -496,6 +501,17 @@ def create_task(
         _upload_consent(user)
     stamp = _stamp()
     settings = get_settings()
+    if (
+        body.kind in AI_KINDS
+        and getattr(settings, "ai_advisor_audience", "whitelist") == "all"
+        and body.notice != interpret.AI_NOTICE_VERSION
+    ):
+        # 对所有人开放时，第一次用要点过"同意并开始"（D-098，上线门槛第 7 条）：
+        # 没带、或带的是旧须知的版本，不建任务、不扣次数。白名单内部试用不核对
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AI_NOTICE_REQUIRED", "message": "请先阅读并同意使用须知"},
+        )
     if body.kind in AI_KINDS:
         # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
         try:

@@ -83,4 +83,7 @@ function createSession(options) {
   return interpret.createSession(Object.assign({}, options, { kind: 'clause', viewResult: resultView, useTaskMetadata: true }));
 }
 
-module.exports = { PROVINCES, QUALIFICATIONS, SECTIONS, EMPTY_COMPANY, emptyForm, validDate, validateForm, toCompany, resultView, createSession };
+// 须知里那句"交给哪个模型处理"和解读页同一份（D-098）
+const { modelText } = interpret;
+
+module.exports = { PROVINCES, QUALIFICATIONS, SECTIONS, EMPTY_COMPANY, emptyForm, validDate, validateForm, toCompany, resultView, createSession, modelText };

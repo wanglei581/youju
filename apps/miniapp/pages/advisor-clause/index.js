@@ -84,7 +84,7 @@ Page({
         access.refresh();
         this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return;
       }
-      this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '' });
+      this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', modelText: clause.modelText(ai.disclosure) });
       if (aiEnabled && this.session) this.session.show();
     }).catch(() => {
       if (this.visible && epoch === this.epoch) this.setData({ loading: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT });
@@ -154,7 +154,7 @@ Page({
   },
   check(e) { if (this.session) this.session.check((e.detail.value || []).includes('agree')); },
   agree() { if (this.data.aiEnabled && this.session) this.session.agree(); },
-  // 使用须知只有一个"我知道了，开始对照"按钮（10/17）；打开已有任务时写"我知道了，查看结果"
+  // 使用须知只有一个"同意并开始对照"按钮（D-098）；打开已有任务时写"同意并查看结果"
   start() { if (this.data.aiEnabled && this.session) this.session.start(); },
   toggleTerms() { this.setData({ showTerms: !this.data.showTerms }); },
   // 研发费用、已有资质默认收起；已经填了的不收起，免得看不到

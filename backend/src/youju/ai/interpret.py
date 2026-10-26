@@ -108,6 +108,11 @@ def enabled_for_openid(settings: Settings, openid: str | None) -> bool:
 # 正式 AI 包必须升版；回退环境配置不能降低这道门槛。
 AI_AGREEMENT_VERSION = "2026-11"
 
+# 解读、对照第一次用前的"使用须知"版本（D-098，上线门槛第 7 条）：
+# 小程序点了"同意并开始"才在创建任务时带上它；对所有人开放时服务端核对、记在任务输入里。
+# 须知改了就升这个版本，小程序 utils/ai-interpret.js 的 NOTICE_VERSION 同步改
+AI_NOTICE_VERSION = "2026-10-26"
+
 
 def ai_agreed(settings: Settings, user: User | None) -> bool:
     # 白名单体验包已含 AI 条款，继续使用内测协议；公开版本必须重新同意。
