@@ -9,7 +9,7 @@ function input() { return {
   legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:['home','follow','files','me'].map(p=>({pagePath:`pages/${p}/index`}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
@@ -36,6 +36,25 @@ test('真实注册页面通过完整候选范围校验，不能只验证测试fi
  const r=inspect({...input(),app,profile:'complete-release',mode:'prepare'});
  assert.equal(r.checks.find(c=>c.id==='pages').state,'pass');
  assert.equal(r.readyToSubmit,false);
+});
+test('底栏名字（D-087）：四格叫首页、关注、导出、我的（完整版最后另有 AI）；第三格还叫"文件"、少了名字或换了顺序都不过；仓库的 app.json 也过',()=>{
+ const { TAB_NAMES } = require('../miniapp_presubmit_check');
+ assert.deepEqual(TAB_NAMES,['首页','关注','导出','我的']);
+ const tabs=(x,profile='first-release')=>inspect({...x,profile,mode:'prepare'}).checks.find(c=>c.id==='tabs');
+ assert.equal(tabs(input()).state,'pass');
+ assert.equal(tabs(input()).name,'底栏为首页、关注、导出、我的');
+ for(const change of [y=>{y.app.tabBar.list[2].text='文件';},y=>{delete y.app.tabBar.list[1].text;},y=>{y.app.tabBar.list[0].text='我的';y.app.tabBar.list[3].text='首页';}]) {
+  const x=input();change(x);
+  assert.equal(tabs(x).state,'fail');
+  assert.equal(inspect({...x,mode:'prepare'}).ok,false);
+ }
+ // 仓库里真实的 app.json 是完整版的五格（最后一格 AI）
+ const app=JSON.parse(fs.readFileSync(path.join(__dirname,'../../apps/miniapp/app.json'),'utf8'));
+ const full=tabs({...input(),app},'complete-release');
+ assert.equal(full.state,'pass');
+ assert.equal(full.name,'底栏为首页、关注、导出、我的，另有 AI 一格（AI 开着时才显示）');
+ const renamed=JSON.parse(JSON.stringify(app)); renamed.tabBar.list[4].text='助手';
+ assert.equal(tabs({...input(),app:renamed},'complete-release').state,'fail');
 });
 test('备案办理中只允许准备检查，默认提审保持失败',()=>{
  const x=input(); x.legal.operator.icp='';
@@ -73,7 +92,7 @@ test('未知参数失败；结构化输出不含运营者数据',()=>{
 
 test('完整候选严格限定 29 页（含站内阅读与结果页、本期清单页），不能借此放宽旧版本或提交审核',()=>{
  const x=input(); x.config.aiInternal=true;
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index',text:'AI'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-candidate',mode:'prepare'});
  assert.equal(r.ok,true);assert.equal(r.readyToSubmit,false);
@@ -94,7 +113,7 @@ test('完整候选严格限定 29 页（含站内阅读与结果页、本期清�
 });
 test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
  const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
- x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index'});
+ x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help','digest'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index',text:'AI'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-release',mode:'submit'});
  // 备案号、邮箱、协议都齐：静态提审检查可以通过（工具说明复核、付费协议、模板只提示）；静态结果仍不授予提交权限

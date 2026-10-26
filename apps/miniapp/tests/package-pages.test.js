@@ -208,7 +208,7 @@ test('AI（过审版）：包里没有 AI 页面时对谁都不显示，白名�
   assert.ok(full.asked() > 0);
 
   const visible = { current: () => ({ visible: true, confirmed: true, available: true }), subscribe: () => () => {}, ensure: () => Promise.resolve() };
-  for (const [pages, tabs] of [[FIRST, ['首页', '关注', '文件', '我的']], [FULL, ['首页', '关注', 'AI', '文件', '我的']]]) {
+  for (const [pages, tabs] of [[FIRST, ['首页', '关注', '导出', '我的']], [FULL, ['首页', '关注', 'AI', '导出', '我的']]]) {
     const bar = load('custom-tab-bar/index.js', { '../utils/consent.js': { loginOpen: () => true }, '../utils/ai-access.js': visible, '../utils/pages.js': pages }, { wx: {} });
     bar.lifetimes.attached.call(bar);
     assert.deepEqual(bar.data.list.map((t) => t.text), tabs);

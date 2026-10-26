@@ -854,6 +854,59 @@ def _cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_public_snapshot(args: argparse.Namespace) -> int:
+    from youju import public_snapshot
+    from youju.backup import BackupError
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        if args.output:
+            with args.output.open("wb") as out:
+                counts = public_snapshot.dump(engine, out)
+            size = args.output.stat().st_size
+            total = sum(counts.values())
+            print(f"已导出公开内容到 {args.output}（{size} 字节）：共 {total} 条记录")
+            return 0
+        env = get_settings().cloud_env
+        if not env:
+            print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传公开快照")
+            return 1
+        report = public_snapshot.run(engine, env)
+    except BackupError as exc:
+        print(f"公开快照失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(
+        f"已导出公开内容 {sum(report.counts.values())} 条记录（{report.bytes} 字节）到 "
+        f"{report.path}；删掉 {report.pruned} 份 7 天前的"
+    )
+    return 0
+
+
+def _cmd_restore_public(args: argparse.Namespace) -> int:
+    from youju import public_snapshot
+    from youju.backup import BackupError
+    from youju.db import create_mysql_engine
+
+    engine = create_mysql_engine(get_settings().database_url)
+    try:
+        with args.file.open("rb") as src:
+            header = public_snapshot.read_header(src)
+        with args.file.open("rb") as src:
+            counts = public_snapshot.restore(engine, src)
+    except (BackupError, OSError) as exc:
+        print(f"导入失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"已导入：{public_snapshot.describe(header)}；各表条数、外键和内容都和快照一致")
+    for name, count in counts.items():
+        print(f"  {name}: {count}")
+    return 0
+
+
 def _cmd_backup_verify(args: argparse.Namespace) -> int:
     from youju.backup import BackupError, download_latest, verify
     from youju.db import create_mysql_engine
@@ -1911,6 +1964,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
     p.set_defaults(func=_cmd_restore)
+
+    p = sub.add_parser(
+        "public-snapshot",
+        help="公开内容快照：只导出通知、正文、附件文字、名单等公开内容（不含用户数据、密钥、日志），"
+        "上传到对象存储 public-snapshots/，保留 7 天；给本机测试用",
+    )
+    p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
+    p.set_defaults(func=_cmd_public_snapshot)
+
+    p = sub.add_parser(
+        "restore-public",
+        help="把公开内容快照导入当前数据库（本机测试用；要已迁移到快照的版本、公开内容表是空的）",
+    )
+    p.add_argument("file", type=Path, help="公开快照文件（youju-public-日期.jsonl.gz）")
+    p.set_defaults(func=_cmd_restore_public)
 
     p = sub.add_parser(
         "archive-logs", help="把之前每天的访问日志归档到云托管对象存储，保留 190 天，删掉过期的"

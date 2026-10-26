@@ -8,7 +8,8 @@ const pages = require('../../utils/pages.js');
 
 const SCOPES = [
   { key: 'apply', label: '查申报', placeholder: '搜申报通知，如"高新技术企业"' },
-  { key: 'list', label: '查名单', placeholder: '输入企业全称或信用代码查名单' },
+  // 点“查名单”直接进查名单页，这句不会显示；仍和查名单页同一说法：只收企业全称（D-091 ③）
+  { key: 'list', label: '查名单', placeholder: '输入企业全称查名单' },
   { key: 'policy', label: '查政策', placeholder: '搜政策文件，如"数字经济"' },
 ];
 

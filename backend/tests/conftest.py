@@ -72,11 +72,13 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
             text("INSERT INTO signing_keys (name, key_hex) VALUES ('list_entry', :key)"),
             {"key": "11" * 32},
         )
-    # 换了一批数据：清掉截止摘录的整批缓存（按日期和截止数据版本做键，清空后自增编号会重复）
+    # 换了一批数据：清掉截止摘录的整批缓存（按日期和截止数据版本做键，清空后自增编号会重复）、
+    # 查名单的收录范围缓存和名单条数缓存（同样按数据版本做键）
     from youju.api import v1
 
     v1._EXCERPT_CACHE.clear()
     v1._LOOKUP_COVERAGE.clear()
+    v1._LIST_COUNTS.clear()
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 
@@ -102,6 +104,7 @@ def _reset_admin_throttle():
     pay._recent.clear()
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
+    v1._SEARCH_TIMES.clear()
     # 规则列算完没有：测试里每次都重新查，中途把列改成 NULL（模拟刚升级）马上生效
     v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 0.0
     app_module._admin_fails.clear()
@@ -117,6 +120,7 @@ def _reset_admin_throttle():
     yield
     v1._LOOKUP_TIMES.clear()
     v1._LOOKUP_INSTANCE.clear()
+    v1._SEARCH_TIMES.clear()
     v1._rules_complete, v1._rules_checked_at, v1._RULES_RECHECK = False, 0.0, 60.0
     app_module._admin_fails.clear()
     exports._export_times.clear()

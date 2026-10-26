@@ -1016,8 +1016,7 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
     page.blank()
     page.heading("在政府公开名单里查企业")
     page.paragraph(
-        # 文章里不写"统一社会信用代码"：只写全称就能查，少一分征信感（agy 10/25）；
-        # 小程序输入框照旧写（D-090 ④）
+        # 只写企业全称：和小程序查名单页的输入框一致（D-091 ③ 去征信感，#362），agy 10/25 也提过
         "打开小程序「查名单」，输入企业全称，在已收录的政府公开名单里查；查到时显示原名单里的那一行。"
     )
     page.paragraph(
