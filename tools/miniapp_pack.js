@@ -9,6 +9,7 @@
 //   5. 用发布检查（tools/miniapp_presubmit_check.js）检查打好的包，没过就不算打好。
 // 不上传、不提交审核。上传前在开发者工具里打开输出目录，实际点一遍审核员会走的路。
 // 用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit] [--npm-from <小程序目录>]
+//   --profile first-release-ai：过审版加 AI（D-098）：首发 16 页加 AI 那 6 页，协议用 content/legal.js（含 AI 条款），不剪 AI
 // 搜索页用到组件库（tdesign-miniprogram），要有构建好的 miniprogram_npm：仓库里不带（.gitignore），
 // 在开发者工具里对 apps/miniapp 点"构建 npm"，或用 --npm-from 指定一个已经构建好的小程序目录（例如 miniapp-release 的）
 const fs = require('node:fs');
