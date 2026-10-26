@@ -37,7 +37,13 @@ ADVISOR_ENV = {
 def _settings(monkeypatch, **env):
     from youju.config import Settings
 
-    for name in (*ADVISOR_ENV, "YOUJU_AI_ADVISOR_REQUEST_EXTRA", "YOUJU_AI_REQUEST_EXTRA"):
+    for name in (
+        *ADVISOR_ENV,
+        "YOUJU_AI_ADVISOR_REQUEST_EXTRA",
+        "YOUJU_AI_REQUEST_EXTRA",
+        "YOUJU_AI_MODEL_LABEL",
+        "YOUJU_AI_MODEL_FILING",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("YOUJU_AI_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("YOUJU_AI_API_KEY", "sk-background-secret")
@@ -120,8 +126,21 @@ def test_open_to_all_requires_the_external_line(monkeypatch):
         monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="whitelist"
     )
     assert advisor_endpoint(whitelist)[1] == "sk-background-secret"
+    # 对所有人开放还要填公示用的模型名称和备案编号（D-098）
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        _settings(
+            monkeypatch,
+            YOUJU_AI_ADVISOR_ENABLED="true",
+            YOUJU_AI_ADVISOR_AUDIENCE="all",
+            **ADVISOR_ENV,
+        )
     opened = _settings(
-        monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="all", **ADVISOR_ENV
+        monkeypatch,
+        YOUJU_AI_ADVISOR_ENABLED="true",
+        YOUJU_AI_ADVISOR_AUDIENCE="all",
+        YOUJU_AI_MODEL_LABEL="测试模型",
+        YOUJU_AI_MODEL_FILING="测试备案编号-0001",
+        **ADVISOR_ENV,
     )
     assert advisor_endpoint(opened)[:3] == tuple(ADVISOR_ENV.values())
     # 万一配置绕过了启动检查（例如直接改了对象），对所有人开放时也不退回后台线路

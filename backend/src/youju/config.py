@@ -213,6 +213,17 @@ class Settings(BaseSettings):
                 "YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、YOUJU_AI_ADVISOR_MODEL，"
                 "不能用后台核对的线路"
             )
+        # 对所有人开放时要能公示所用模型的名称和备案（登记）编号（D-098；上线门槛第 1、5 条）：
+        # 没填时 AI 首页和结果页底部那一行不显示，所以不能开放
+        if (
+            self.ai_advisor_enabled
+            and self.ai_advisor_audience == "all"
+            and not (self.ai_model_label.strip() and self.ai_model_filing.strip())
+        ):
+            raise ValueError(
+                "对所有人开放 AI（YOUJU_AI_ADVISOR_AUDIENCE=all）时，"
+                "要填公示用的模型名称和备案编号：YOUJU_AI_MODEL_LABEL、YOUJU_AI_MODEL_FILING"
+            )
         return self
 
     @model_validator(mode="after")

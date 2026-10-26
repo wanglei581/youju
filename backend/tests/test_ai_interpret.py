@@ -1343,6 +1343,18 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     )
     monkeypatch.setenv("YOUJU_AI_ADVISOR_API_KEY", "advisor-test-value")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_MODEL", "advisor-model")
+    # 还要能公示模型名称和备案编号（D-098），缺一项不启动
+    monkeypatch.delenv("YOUJU_AI_MODEL_LABEL", raising=False)
+    monkeypatch.delenv("YOUJU_AI_MODEL_FILING", raising=False)
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_LABEL", "测试模型")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", " ")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", "测试备案编号-0001")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12
