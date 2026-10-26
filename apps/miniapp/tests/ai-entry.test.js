@@ -245,11 +245,11 @@ test('四个 AI 页面：没开放时只显示“暂时没有可用工具”，�
 });
 
 test('AI 正式版（config.aiInternal 为 false，D-066）：顶部只写"AI 生成"，标题不带"内部测试"；登录和同意只看协议是否定稿', async () => {
-  const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
+  const release = load('utils/advisor.js', { './task-kinds.js': require('../utils/task-kinds.js'), './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
   assert.equal(release.AI_LABEL, 'AI 生成：');
   assert.equal(release.aiTitle('政策解读'), '政策解读');
   assert.equal(release.AI_INTERNAL, false);
-  const internal = load('utils/advisor.js', { './config.js': { aiInternal: true }, './ai-reasons.js': reasons });
+  const internal = load('utils/advisor.js', { './task-kinds.js': require('../utils/task-kinds.js'), './config.js': { aiInternal: true }, './ai-reasons.js': reasons });
   assert.equal(internal.AI_LABEL, 'AI 生成 · 内部测试：');
   assert.equal(internal.aiTitle('政策解读'), '政策解读 · 内部测试');
   // 正式版的四个页面：顶部是"AI 生成：" + 说明，标题不带"内部测试"
@@ -321,7 +321,7 @@ test('任务页取消、删除走线上接口并刷新；进行中的任务轮�
 });
 
 // ---------- AI 正式版（config.aiInternal 为 false，D-066）：上线即对所有用户开放 ----------
-const release = load('utils/advisor.js', { './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
+const release = load('utils/advisor.js', { './task-kinds.js': require('../utils/task-kinds.js'), './config.js': { aiInternal: false }, './ai-reasons.js': reasons });
 
 
 test('对所有人开放（开放状态 open）：没同意协议的人也看得到卡片，点了进解读页（解读页先走同意）；没对所有人开放时只看白名单；后台处理不了时写暂时不可用', async () => {

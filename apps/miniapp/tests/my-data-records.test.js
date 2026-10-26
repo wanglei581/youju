@@ -48,7 +48,7 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove } = {}) {
     myData: () => { calls.load += 1; return Promise.resolve(plain(raw)); },
     deleteAdvisorTask: (id) => { calls.deleted.push(id); return remove ? remove(id) : Promise.resolve(); },
   };
-  const page = load('pages/my-data/index.js', {
+  const page = load('pages/my-data/index.js', { '../../utils/task-kinds.js': require('../utils/task-kinds.js'),
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdraw: () => Promise.resolve(false) },
     '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages),

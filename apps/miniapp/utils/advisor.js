@@ -3,8 +3,7 @@ const config = require('./config.js');
 const { failedText } = require('./ai-reasons.js');
 
 const KINDS = { interpret: 'AI 解读', clause: '条款对照' };
-const DATA_KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
-const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
+const { DATA_KINDS, STATES } = require('./task-kinds.js');
 // 《人工智能生成合成内容标识办法》第四条要求显式标识：页面顶部固定写"AI 生成"，如实说明由 AI 模型生成。
 // AI 内测包（config.aiInternal）再加"内部测试"；AI 正式版（D-066）只写"AI 生成"。
 const AI_INTERNAL = config.aiInternal === true;

@@ -110,7 +110,7 @@ test('申报季加量：进行中写起止日期和回到 3 次的日子；没�
 });
 
 function dataLogic(api) {
-  return load('utils/data-tools.js', { './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers,
+  return load('utils/data-tools.js', { './task-kinds.js': require('../utils/task-kinds.js'), './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers,
     '../content/advisor-terms.js': terms, './boost.js': boost }, { wx: {} });
 }
 

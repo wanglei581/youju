@@ -5,6 +5,7 @@ const config = require('./config.js');
 const api = require('./api.js');
 const exportsLog = require('./exports.js');
 const { removeFiles } = require('./exporter.js');
+// first-release-cut:start
 const aiAccess = require('./ai-access.js');
 
 // AI 内测包（config.aiInternal 为 true，只上传体验版、给白名单内测，D-062）：协议还是草案也开放同意和登录，
@@ -12,16 +13,23 @@ const aiAccess = require('./ai-access.js');
 function aiInternal() {
   return config.aiInternal === true;
 }
+// first-release-cut:end
 
-// 协议已定稿（或 AI 内测包）、连着真实接口时，才开放同意和需要同意的功能
+// 协议已定稿、连着真实接口时，才开放同意和需要同意的功能（内测包例外，见上）
 function consentOpen() {
-  return Boolean(legal.final || aiInternal()) && api.isLive();
+  // first-release-cut:start
+  if (aiInternal()) return api.isLive();
+  // first-release-cut:end
+  return Boolean(legal.final) && api.isLive();
 }
 
 // 需要同意协议的功能（登录、关注、订阅提醒、纠错、申请覆盖）这个版本显不显示入口（D-056）：
-// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final（AI 内测包例外），不是服务端开关
+// 协议定稿前不显示，定稿后照旧（没连接口时仍显示演示数据）。只看代码包里的 legal.final（内测包例外），不是服务端开关
 function loginOpen() {
-  return legal.final === true || aiInternal();
+  // first-release-cut:start
+  if (aiInternal()) return true;
+  // first-release-cut:end
+  return legal.final === true;
 }
 
 // 服务端记的版本不早于本机代码包里的协议版本，就算已同意：版本号按时间可排序（2026-10 < 2026-11）。
@@ -92,8 +100,10 @@ function applyServer(agreed, startedAt) {
   else forget();
   outdated = !!agreed && !ok;
   notAgreed = !ok;
+  // first-release-cut:start
   // 和本机记的不一样了（在别的手机同意过、同意已失效、在别处注销）：AI 板块马上重新问（D-075，第 11 轮）
   if (ok !== before) aiAccess.recheck();
+  // first-release-cut:end
   return ok;
 }
 
@@ -120,7 +130,7 @@ function openPrivacy() {
 }
 
 // 返回 true 表示已同意，可以继续。协议定稿前这些功能的入口都不显示（D-056），走到这里只是兜底。
-// purpose 为 'ai' 或 'tools'：同意以后能用上 AI 的入口，见 askConsent
+// purpose：从哪类入口来（见 askConsent），决定同意前的提示怎么写
 function ensureConsent(options) {
   const purpose = options && options.purpose;
   if (!loginOpen()) {
@@ -137,28 +147,37 @@ function ensureConsent(options) {
 
 // 读全文并同意的页面：依次显示两份文件全文，同意按钮在最后
 const CONSENT_PAGE = '/pages/agreement/index?consent=1';
+// first-release-cut:start
 // 从 AI 板块、工具中心来的：同意以后的提示不写"关注和纠错"
 const AI_CONSENT_PAGE = `${CONSENT_PAGE}&for=ai`;
 // 同意以后能用上 AI 的入口写明用途：ai 是 AI 首页、解读页、对照页；tools 是 AI 对这个人开着时的工具中心、我的记录
 const PURPOSES = { ai: 'AI 解读和条款对照', tools: '工具（含 AI 解读和条款对照）' };
+// first-release-cut:end
+
+// 只能先读全文、在全文最后同意的弹窗，写明是为了用什么（Codex 小程序第 13、15 轮）；fresh 是协议没更新时的说法
+function readFirst(what, page, fresh) {
+  wx.showModal({
+    title: outdated ? '协议已更新' : '请先阅读并同意',
+    content: outdated
+      ? `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${what}。`
+      : fresh,
+    confirmText: '阅读全文',
+    cancelText: '暂不',
+    success: (res) => { if (res.confirm) wx.navigateTo({ url: page }); },
+  });
+  return Promise.resolve(false);
+}
 
 function askConsent(purpose) {
-  const ai = Object.prototype.hasOwnProperty.call(PURPOSES, purpose);
-  // 协议更新后、或同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
-  // 弹窗写明是为了用什么（Codex 小程序第 13、15 轮）
-  if (outdated || ai) {
-    const what = ai ? PURPOSES[purpose] : featureNames();
-    wx.showModal({
-      title: outdated ? '协议已更新' : '请先阅读并同意',
-      content: outdated
-        ? `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${what}。`
-        : `使用${what}前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。`,
-      confirmText: '阅读全文',
-      cancelText: '暂不',
-      success: (res) => { if (res.confirm) wx.navigateTo({ url: ai ? AI_CONSENT_PAGE : CONSENT_PAGE }); },
-    });
-    return Promise.resolve(false);
+  // first-release-cut:start
+  // 同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意
+  if (Object.prototype.hasOwnProperty.call(PURPOSES, purpose)) {
+    const what = PURPOSES[purpose];
+    return readFirst(what, AI_CONSENT_PAGE, `使用${what}前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。`);
   }
+  // first-release-cut:end
+  // 协议更新后：只能先读全文，在全文最后同意
+  if (outdated) return readFirst(featureNames(), CONSENT_PAGE, '');
   return new Promise((resolve) => {
     wx.showModal({
       title: '请先阅读并同意',
@@ -186,8 +205,10 @@ function markAgreed() {
   outdated = false;
   notAgreed = false;
   epoch += 1;
+  // first-release-cut:start
   // 白名单阶段同意以后才看得到 AI 板块：马上重新问，不等下一次（D-075，第 11 轮）
   aiAccess.recheck();
+  // first-release-cut:end
 }
 
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
@@ -207,10 +228,12 @@ function withdraw() {
             try { removeFiles(); } catch (e) { /* 忽略文件清理失败 */ }
             try { wx.removeStorageSync('youjuDataTaskKeysV1'); } catch (e) { /* 下方清空存储再次清理 */ }
             try { wx.clearStorageSync(); } catch (e) { forget(); }
+            // first-release-cut:start
             // AI 板块记的结果（本机和这次打开里的）一并擦掉，底栏第 5 格随即收起（D-075）；
             // 再马上问一次：对所有人开放时，没同意的人也看得到板块（第 11 轮）
             aiAccess.clear();
             aiAccess.refresh();
+            // first-release-cut:end
             outdated = false;
             notAgreed = true;
             epoch += 1;
@@ -228,6 +251,9 @@ function withdraw() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE,
+  // first-release-cut:start
+  AI_CONSENT_PAGE,
+  // first-release-cut:end
   covers, agreeFailed, remindAny, featureNames,
 };

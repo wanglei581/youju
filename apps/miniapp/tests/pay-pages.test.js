@@ -168,7 +168,7 @@ function ordersPage(items, options = {}) {
 }
 
 function dataLogic(api) {
-  return load('utils/data-tools.js', {
+  return load('utils/data-tools.js', { './task-kinds.js': require('../utils/task-kinds.js'),
     './api.js': api,
     './regions.js': require('../utils/regions.js'),
     './advisor.js': helpers,

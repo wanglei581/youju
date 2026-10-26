@@ -24,8 +24,10 @@
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
+    <!-- first-release-cut:start -->
     <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
+    <!-- first-release-cut:end -->
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
     <view wx:if="{{doc.link_gone}}" class="gone-note">原文链接已失效（{{doc.link_gone}} 检查时打不开，原网页可能已撤下或改了地址）。下面是之前收录的内容，通知可能已撤回或更正，请以发文机关现在公布的为准。</view>
     <view class="weak status-note">类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类</view>
@@ -107,8 +109,10 @@
     </view>
   </view>
 
+  <!-- first-release-cut:start -->
   <!-- 解读入口卡片（10/17 取代右下角浮动按钮）：只有白名单（capabilities.ai_advisor.enabled）或正式开放后才渲染，其余用户不渲染任何内容；做不了的文件写明原因 -->
   <view id="ai-entry"><ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" doc-url="{{doc.url}}" has-attachments="{{atts.length > 0}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" bind:attachments="toAttachments" /></view>
+  <!-- first-release-cut:end -->
 
   <view wx:if="{{doc.excerpt}}" class="card">
     <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>

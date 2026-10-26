@@ -22,6 +22,7 @@
 }
 .item--on { color: #2A5CE0; font-weight: 600; }
 .label { font-size: 22rpx; line-height: 1.2; }
+/* first-release-cut:start */
 /* AI 那一格的四角星：外层是当前文字颜色的星，里层挖空（未选中）；选中时不挖空 */
 /* 外框 44rpx（和 48rpx 的字体图标看起来一样大），里层 22rpx：线宽约 3rpx，和线性图标接近 */
 .spark {
@@ -44,3 +45,4 @@
   background: #FFFFFF;
 }
 .spark--on .spark-in { display: none; }
+/* first-release-cut:end */

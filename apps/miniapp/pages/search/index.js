@@ -8,7 +8,9 @@ const { previewDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+// first-release-cut:start
 const access = require('../../utils/ai-access.js');
+// first-release-cut:end
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
@@ -133,9 +135,11 @@ Page({
     folded: 0,
     guides: 0,
     fold: { text: '', link: '' },
+    // first-release-cut:start
     // 只看能解读的（D-075，板块首页"近 7 天能解读的申报通知 · 全部"打开时带 ai=1）：只管这一次查询，
     // 不算筛选条件，不进关注、不进转发路径；板块对这个人没开着时不生效、也不显示
     aiOnly: false,
+    // first-release-cut:end
   },
 
   onLoad(query) {
@@ -162,6 +166,7 @@ Page({
       q: decode(query.q),
       tab: ['申报通知', '名单', '政策'].includes(kind) ? kind : 'all',
     });
+    // first-release-cut:start
     if (String(query.ai) === '1') {
       // 只在后台确认开着时才加上（本机记的"上次是显示的"不算，可能已经关了）
       const now = access.current();
@@ -173,16 +178,19 @@ Page({
       });
       access.ensure();
     }
+    // first-release-cut:end
     this.refreshChips();
     this.apply(true);
     this.loadCities();
   },
 
+  // first-release-cut:start
   removeAi() {
     if (this.unsubscribeAi) { this.unsubscribeAi(); this.unsubscribeAi = null; }
     this.setData({ aiOnly: false });
     this.apply(true);
   },
+  // first-release-cut:end
 
   // 收录范围：this.coverage 为 undefined 是还在取，null 是没取到（loadCoverage 失败时返回 null）
   loadCities() {
@@ -218,13 +226,17 @@ Page({
   onUnload() {
     if (api.stopStartup) api.stopStartup(this);
     stopDay(this);
+    // first-release-cut:start
     if (this.unsubscribeAi) this.unsubscribeAi();
+    // first-release-cut:end
   },
 
   onShow() {
     if (api.watchStartup) api.watchStartup(this);
+    // first-release-cut:start
     // 带 ai=1 进来的：回到前台时再问一次板块状态（多久真问一次由 ensure 管，第 11 轮）
     if (this.unsubscribeAi) access.ensure();
+    // first-release-cut:end
     this.setData({ today: todayISO() });
     // 页面在后台跨过零点后再显示，时间筛选要按今天重新查
     if (this.loaded) this.apply(true);
@@ -287,7 +299,9 @@ Page({
     const { items } = this.data;
     // fold 不是筛选条件，不进关注：1 折叠资讯与指南（只给篇数），0 列出来
     const params = Object.assign(this.conditions(), { limit: PAGE, offset: reset ? 0 : items.length, fold: this.data.showGuides ? 0 : 1 });
+    // first-release-cut:start
     if (this.data.aiOnly) params.ai = 1;
+    // first-release-cut:end
     const seq = (this.seq || 0) + 1;
     this.seq = seq;
     // 换了关键词或筛选条件，之前勾选的不再对应当前结果，清空

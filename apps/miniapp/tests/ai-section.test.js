@@ -396,7 +396,8 @@ test('详情标题卡里的"这份通知可以 AI 解读 ↓"：能解读、AI �
     other.view.jump(); assert.deepEqual(other.events, []);
   }
   const wxml = read('pages/detail/index.wxml');
-  assert.match(wxml, /<view class="pub">[^\n]*<\/view>\n[^\n]*\n\s*<ai-hint doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" issuer="\{\{doc\.issuer\}\}" date="\{\{doc\.date\}\}" ai="\{\{doc\.ai\}\}" bind:jump="toAi" \/>/);
+  // 过审版打包时剪掉的那一段用 first-release-cut 标记包着（tools/miniapp_first_release.js）
+  assert.match(wxml, /<view class="pub">[^\n]*<\/view>\n\s*<!-- first-release-cut:start -->\n[^\n]*\n\s*<ai-hint doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" issuer="\{\{doc\.issuer\}\}" date="\{\{doc\.date\}\}" ai="\{\{doc\.ai\}\}" bind:jump="toAi" \/>/);
   assert.match(wxml, /<view id="ai-entry"><ai-entry /); assert.match(wxml, /id="attachments" class="card"/);
   assert.ok(wxml.indexOf('<view id="ai-entry">') > wxml.indexOf('要点'), '卡片仍在"要点"下面');
   const scrolls = [];

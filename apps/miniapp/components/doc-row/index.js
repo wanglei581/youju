@@ -1,6 +1,15 @@
 const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText } = require('../../utils/format.js');
 const { groupLine } = require('../../utils/repost.js');
 
+// 发文机关超过多少字另起一行
+function issuerWrap(data) {
+  // first-release-cut:start
+  // 行上有"AI 解读"按钮时，发文机关另起一行，给日期、复制链接和按钮腾地方
+  if (data.aiShown) return 0;
+  // first-release-cut:end
+  return ISSUER_WRAP;
+}
+
 // 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 查看详情
 Component({
   options: { styleIsolation: 'apply-shared' },
@@ -15,7 +24,11 @@ Component({
     selecting: { type: Boolean, value: false },
   },
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
-    groupText: '', groupOpen: false, regionText: '', aiShown: false },
+    groupText: '', groupOpen: false, regionText: '',
+    // first-release-cut:start
+    aiShown: false,
+    // first-release-cut:end
+  },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
@@ -42,20 +55,21 @@ Component({
         kindCls: kindClass(doc.kind),
         statusCls,
         statusText,
-        // 行上有"AI 解读"按钮时，发文机关另起一行，给日期、复制链接和按钮腾地方
-        issuerLong: (doc.issuer || '').length > (this.data.aiShown ? 0 : ISSUER_WRAP),
+        issuerLong: (doc.issuer || '').length > issuerWrap(this.data),
         // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
         regionText: regionText(doc),
         // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
         groupText: groupLine(doc.group),
       });
     },
+    // first-release-cut:start
     // 行上的"AI 解读"按钮出现或收起时，重排发文机关那一行
-    aiShown(aiShown) {
+    aiShown() {
       const doc = this.data.doc;
       if (!doc || !doc.title) return;
-      this.setData({ issuerLong: (doc.issuer || '').length > (aiShown ? 0 : ISSUER_WRAP) });
+      this.setData({ issuerLong: (doc.issuer || '').length > issuerWrap(this.data) });
     },
+    // first-release-cut:end
     // 换了一条（翻页、重新搜索）时收起
     'doc.id': function () {
       if (this.data.groupOpen) this.setData({ groupOpen: false });
@@ -66,9 +80,11 @@ Component({
       if (this.data.selecting) return;
       wx.navigateTo({ url: `/pages/detail/index?id=${this.data.doc.id}` });
     },
+    // first-release-cut:start
     aiToggle(e) {
       this.setData({ aiShown: !!(e.detail && e.detail.shown) });
     },
+    // first-release-cut:end
     toggleGroup() {
       if (this.data.selecting) return;
       this.setData({ groupOpen: !this.data.groupOpen });

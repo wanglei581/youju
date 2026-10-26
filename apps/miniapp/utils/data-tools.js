@@ -2,7 +2,7 @@
 const api = require('./api.js');
 const regions = require('./regions.js');
 const terms = require('../content/advisor-terms.js');
-const { DATA_KINDS } = require('./advisor.js');
+const { DATA_KINDS } = require('./task-kinds.js');
 const boost = require('./boost.js');
 
 // 和文件解析一样保留 CSV 引号里的逗号，避免把客户名称拆成两列。

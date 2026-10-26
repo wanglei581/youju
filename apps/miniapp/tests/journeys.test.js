@@ -114,7 +114,7 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
     subscriptions: [{ id: 2, kind: 'deadline', status: 'sent', attemptedAt: '2026-10-03T10:00:00+08:00' }],
     feedback: [{ id: 3, content: '合成反馈', checkResult: 'pass', handled: true, handledAt: '2026-10-03T11:00:00+08:00' }], retention: {} };
   const copied = []; let deleted; let modal;
-  const page = load('pages/my-data/index.js', {
+  const page = load('pages/my-data/index.js', { '../../utils/task-kinds.js': require('../utils/task-kinds.js'),
     '../../utils/api.js': { myData: () => Promise.resolve(raw), deleteSubscription: (id) => { deleted = id; return Promise.resolve(); } },
     '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => true },
   }, { wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {},
@@ -141,7 +141,7 @@ test('我的数据·保存多久和隐私保护指引一致；AI 一行只给用
   for (const tasks of [[{ id: 8, kind: 'compare', status: 'done' }], [{ id: 9, kind: 'interpret', status: 'done' }]]) {
     const raw = { user: { openid: 'synthetic', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: tasks,
       retention: { feedback: 180, events: 90, usedSubscriptions: 30, unusedSubscriptions: 365, toolInput: 7, toolTasks: 30 } };
-    const page = load('pages/my-data/index.js', {
+    const page = load('pages/my-data/index.js', { '../../utils/task-kinds.js': require('../utils/task-kinds.js'),
       '../../utils/api.js': { myData: () => Promise.resolve(raw) },
       '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false },
     }, { wx: { setClipboardData() {}, showToast() {}, showModal() {} } });

@@ -669,6 +669,8 @@ function payHeader() {
   return header;
 }
 
+// 批量工具和解读的能力答复（完整版才有，过审版没有这两类页面）
+// first-release-cut:start
 // 工具能力分别授权：数据工具不依赖 AI 或支付开关，AI 仍按其独立准入条件开放。
 
 const AI_DISABLED = { enabled: false, features: [], remaining: {}, disclosure: null };
@@ -726,6 +728,7 @@ function forgetCapabilities() {
   capabilitiesPromise = null;
   capabilitiesPending = null;
 }
+// first-release-cut:end
 
 // 只发送后端要求的字段：interpret 只有 doc_id；clause 再加结构化的 company。
 function createAdvisorTask(data, key) {
@@ -738,7 +741,7 @@ function createAdvisorTask(data, key) {
     ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
     : { kind: 'interpret', doc_id: Number(data.doc_id) };
   return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
-    // 带代码的拒绝（D-075：AI_NOT_ELIGIBLE 带原因代码、AI_UNAVAILABLE）保留后台写的说明，另记原因代码；
+    // 带代码的拒绝（D-075：这份不能处理的带原因代码、后台暂时处理不了的）保留后台写的说明，另记原因代码；
     // 其余 422（输入校验）把逐项说明拼起来
     const coded = err.detail && typeof err.detail === 'object' && !Array.isArray(err.detail) && typeof err.detail.message === 'string';
     if (coded && typeof err.detail.reason === 'string') err.reason = err.detail.reason;
@@ -750,12 +753,14 @@ function createAdvisorTask(data, key) {
   });
 }
 
+// first-release-cut:start
 // AI 对不对所有人开放（D-075，不需要身份）：底栏第 5 格、列表上的"AI 解读"据此决定给不给所有人看。
 // 只问接口服务（不走 admin，两个服务设置不一样时以 api 为准）；在后台问，不显示"正在连接"
 function advisorMode() {
   if (!isLive()) return Promise.resolve({ open: false, available: false });
   return withRetry(() => requestOnce('/api/v1/advisor/mode', 'GET', undefined, {}), 'GET', null, { quiet: true });
 }
+// first-release-cut:end
 
 function advisorStatus() {
   return isLive() ? request('/api/v1/advisor/status') : Promise.reject(new Error('连接真实服务后才能使用工具'));
@@ -898,6 +903,9 @@ module.exports = {
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
-  advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
+  // first-release-cut:start
+  advisorCapabilities, forgetCapabilities, advisorMode,
+  // first-release-cut:end
+  advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
 };

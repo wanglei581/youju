@@ -43,6 +43,8 @@ const SERVER_AI_TERMS_VERSION = (() => {
 })();
 // 过审版协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）：和生成脚本用同一份
 const FIRST_RELEASE_TERMS_BANNED = require('./make_legal_first_release.js').BANNED;
+// 过审版包里不能有的 AI 字样（《AI 板块完整设计》第十节第 4 条），和打包工具用同一份
+const { aiHits } = require('./miniapp_first_release.js');
 const PROFILES = ['first-release', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'];
 // 每种版本该有哪些页面；tools/miniapp_pack.js 打过审版（首发 16 页）时也用这一份
 function pagesFor(profile) {
@@ -57,7 +59,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release' }) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release', root }) {
   if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -97,6 +99,13 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     add('first-terms', '过审版协议只写包里有的功能（不含 AI 条款），版本排在 AI 条款版本之前', !FIRST_RELEASE_TERMS_BANNED.test(text)
       && /^\d{4}-\d{2}/.test(legal.version || '') && legal.version < SERVER_AI_TERMS_VERSION,
     '用 tools/miniapp_pack.js 打包（换上 content/legal-first-release.js，D-093 ⑤）；协议只写包里有的功能（不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接），版本号要早于后台的 AI 条款版本');
+    // 包里一点 AI 都不带（第十节第 4 条；过审版总装窗口 10/25 定）：扫给定的包目录（打包工具和 --root 都会给）。
+    // 只列文件和行号、命中的是哪一类，不输出那一行的内容
+    if (root) {
+      const hits = aiHits(root, 8);
+      add('no-ai', '包里没有 AI 组件、模块和 AI 字样', hits.length === 0,
+        `用 tools/miniapp_pack.js 打包（剔掉 AI 组件、模块和 first-release-cut 段落）；首发页面里的 AI 代码要放进 first-release-cut 标记里。查到：${hits.map(h => `${h.file}${h.line ? `:${h.line}` : ''}（${h.what}）`).join('、')}`);
+    }
   }
   else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
   if (profile === 'ai-release' || profile === 'complete-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
@@ -132,7 +141,7 @@ function main(args) {
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
     toolTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/advisor-terms.js')) : undefined,
-    payTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/pay-terms.js')) : undefined, mode, profile});
+    payTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/pay-terms.js')) : undefined, mode, profile, root});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(result.notice + '\n');

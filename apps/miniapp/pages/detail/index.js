@@ -88,10 +88,12 @@ Page({
     this.load();
   },
 
+  // first-release-cut:start
   // 标题卡里那行提示（D-075）：滚到"要点"下面的卡片
   toAi() {
     wx.pageScrollTo({ selector: '#ai-entry', duration: 300 });
   },
+  // first-release-cut:end
 
   // 卡片上"看附件"：滚到附件那一块
   toAttachments() {

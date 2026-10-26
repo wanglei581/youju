@@ -30,7 +30,7 @@ test('纠错处理结果（C1）：我的数据写出处理结果和说明；以
       { id: 3, content: '还没处理的', checkResult: 'pass', handled: false, handledAt: null, outcome: null, outcomeLabel: null, reply: null },
     ],
   };
-  const page = load('pages/my-data/index.js', {
+  const page = load('pages/my-data/index.js', { '../../utils/task-kinds.js': require('../utils/task-kinds.js'),
     '../../utils/api.js': { myData: () => Promise.resolve(raw) },
     '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => true },
   }, { wx: { showToast() {} } });
@@ -54,7 +54,7 @@ test('纠错处理结果（C1）：没处理的不显示结果，哪怕接口带
     user: { openid: 'synthetic', agreed: null }, follows: [], subscriptions: [], retention: {},
     feedback: [{ id: 4, content: '撤回过的', checkResult: 'pass', handled: false, handledAt: null, outcome: 'fixed', outcomeLabel: '已更正', reply: '旧说明' }],
   };
-  const page = load('pages/my-data/index.js', {
+  const page = load('pages/my-data/index.js', { '../../utils/task-kinds.js': require('../utils/task-kinds.js'),
     '../../utils/api.js': { myData: () => Promise.resolve(raw) },
     '../../utils/conditions.js': conditions, '../../utils/consent.js': { loginOpen: () => true, remindAny: () => true },
   }, { wx: { showToast() {} } });

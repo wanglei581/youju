@@ -5,8 +5,10 @@
 //   2. 删掉不在包里的页面目录；
 //   3. 按包里实际的页面重写 utils/package-pages.js——页面上指向包外页面的入口（工具中心、我的记录、
 //      购买、订单、使用帮助、AI）靠它判断后不显示（utils/pages.js）；
-//   4. 过审版换上不含 AI 条款的协议（content/legal-first-release.js，D-093 ⑤）；
-//   5. 用发布检查（tools/miniapp_presubmit_check.js）检查打好的包，没过就不算打好。
+//   4. 过审版换上不含 AI 条款的协议（content/legal-first-release.js，D-093 ⑤），开头的说明注释不进包；
+//   5. 过审版剔掉 AI 组件、模块和源码里标了 first-release-cut 的段落（tools/miniapp_first_release.js，
+//      《AI 板块完整设计》第十节第 4 条：过审版和下一版的包里一点 AI 都不带）；
+//   6. 用发布检查（tools/miniapp_presubmit_check.js）检查打好的包，没过就不算打好；过审版另查包里有没有 AI 字样。
 // 不上传、不提交审核。上传前在开发者工具里打开输出目录，实际点一遍审核员会走的路。
 // 用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit] [--npm-from <小程序目录>]
 // 搜索页用到组件库（tdesign-miniprogram），要有构建好的 miniprogram_npm：仓库里不带（.gitignore），
@@ -14,6 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { inspect, pagesFor, PROFILES } = require('./miniapp_presubmit_check.js');
+const { stripFirstRelease } = require('./miniapp_first_release.js');
 
 const SOURCE = path.join(__dirname, '..', 'apps', 'miniapp');
 // 不进代码包的（和 project.config.json 的 packOptions.ignore 一致，另加本机的开发者工具设置）
@@ -102,7 +105,12 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
   const firstTerms = path.join(target, 'content', 'legal-first-release.js');
   if (profile === 'first-release') {
     if (!fs.existsSync(firstTerms)) throw new Error('没有 content/legal-first-release.js（过审版协议）');
-    fs.renameSync(firstTerms, path.join(target, 'content', 'legal.js'));
+    // 开头的说明注释（写给开发看的，提到包里没有的功能）不进包；正文、版本号一字不动
+    const text = fs.readFileSync(firstTerms, 'utf8');
+    const body = text.replace(/^(?:[ \t]*\/\/[^\n]*\n|[ \t]*\n)*/, '');
+    if (!body.startsWith('module.exports')) throw new Error('content/legal-first-release.js 开头的注释后面应当直接是 module.exports');
+    fs.writeFileSync(path.join(target, 'content', 'legal.js'), body);
+    fs.rmSync(firstTerms);
   } else {
     fs.rmSync(firstTerms, { force: true });
   }
@@ -110,6 +118,9 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
     fs.rmSync(path.join(target, 'miniprogram_npm'), { recursive: true, force: true });
     copyTree(built, path.join(target, 'miniprogram_npm'));
   }
+
+  // 过审版：剔掉 AI（完整版不动）
+  const stripped = profile === 'first-release' ? stripFirstRelease(target) : null;
 
   const load = (file) => {
     const full = path.join(target, file);
@@ -120,14 +131,15 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
   const result = inspect({
     legal: load('content/legal.js'),
     config: load('utils/config.js'),
-    app: next,
+    app: JSON.parse(fs.readFileSync(path.join(target, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(target, 'project.config.json'), 'utf8')),
     toolTerms: complete ? load('content/advisor-terms.js') : undefined,
     payTerms: complete ? load('content/pay-terms.js') : undefined,
     mode,
     profile,
+    root: target,
   });
-  return { out: target, pages, removed, result };
+  return { out: target, pages, removed, stripped, result };
 }
 
 function main(args) {

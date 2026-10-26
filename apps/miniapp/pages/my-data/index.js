@@ -1,8 +1,16 @@
 const api = require('../../utils/api.js');
 const { describe } = require('../../utils/conditions.js');
 const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
-const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
+const { DATA_KINDS, STATES } = require('../../utils/task-kinds.js');
 const pages = require('../../utils/pages.js');
+
+// 批量工具以外的任务（解读、对照，只在完整版里有）：类型名和栏目名从这里来，模板里不写
+let OTHER_KINDS = {};
+let OTHER_TITLE = '';
+// first-release-cut:start
+OTHER_KINDS = require('../../utils/advisor.js').KINDS;
+OTHER_TITLE = '工具和 AI 记录';
+// first-release-cut:end
 
 const SUB_KIND = { newDocs: '关注有新文件', deadline: '截止前提醒' };
 const SUB_STATUS = { unused: '还没发出', sent: '已发出', failed: '发送失败', refused: '被拒收', expired: '已失效' };
@@ -25,17 +33,17 @@ function stuck(t) {
   return t.status === 'running' && Number.isFinite(started) && Date.now() - started > ABANDONED;
 }
 
-// 工具记录（批量工具和 AI 的任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
+// 工具记录（批量工具和其他任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
 // 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提
 function taskData(d) {
   const rows = d.advisorTasks || [];
-  const ai = rows.some((t) => Object.prototype.hasOwnProperty.call(KINDS, t.kind));
+  const other = rows.some((t) => Object.prototype.hasOwnProperty.call(OTHER_KINDS, t.kind));
   const files = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.status === 'done');
   const extras = [d.boostTrial ? '加量体验的开始和结束时间' : '', d.passGiftsTotal ? `送的批量工具天数（${d.passGiftsTotal} 笔）` : ''].filter(Boolean);
   return {
     tasks: rows.map((t) => ({
       id: t.id,
-      kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
+      kind: OTHER_KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
       rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
       state: STATES[t.status] || t.status,
       running: t.status === 'running' && !stuck(t),
@@ -44,7 +52,7 @@ function taskData(d) {
       created: when(t.createdAt),
       finished: when(t.finishedAt),
     })),
-    tasksTitle: ai ? '工具和 AI 记录' : '工具记录',
+    tasksTitle: other && OTHER_TITLE ? OTHER_TITLE : '工具记录',
     fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
     extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
     toolsShown: pages.has('advisor') || rows.length > 0,
@@ -56,7 +64,12 @@ function taskData(d) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: {
+    loading: true, error: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny(),
+    // first-release-cut:start
+    aiRetention: '',
+    // first-release-cut:end
+  },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -115,17 +128,19 @@ Page({
           ...taskData(d),
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length },
           retention: d.retention,
+          // first-release-cut:start
           // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
           // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
           aiRetention: (d.advisorTasks || []).some((t) => t.kind === 'interpret' || t.kind === 'clause') && d.retention && d.retention.toolTasks
             ? `· AI 解读和条款对照：任务输入 ${d.retention.toolInput} 天后删除，任务和结果 ${d.retention.toolTasks} 天后删除` : '',
+          // first-release-cut:end
         });
       })
       .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
   },
 
   // 复制全部：完整的 JSON，可以粘贴保存（剪贴板只写不读）
-  // 复制完整的微信用户标识：联系客服排查问题时用；给自己开 AI 白名单时填到云托管的 YOUJU_AI_ADVISOR_OPENIDS
+  // 复制完整的微信用户标识：联系客服排查问题时用；给自己开白名单时填到云托管的白名单环境变量
   copyOpenid() {
     const openid = this.raw && this.raw.user && this.raw.user.openid;
     if (!openid) return;
