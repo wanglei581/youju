@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -443,10 +443,12 @@ def _agree_chat(body: AgreementIn, request: Request, session: Session) -> dict:
     from youju.ai import interpret
 
     settings = get_settings()
-    # 先于协议校验隐藏：问一问没开放（本地高危词库定稿以前）、AI 对这个人没开，都是 404
-    if not chat_store.chat_ready() or not interpret.enabled_for_openid(
-        settings, request_openid(request)
-    ):
+    # 先于协议校验隐藏：问一问没开放（本地高危词库定稿以前）、AI 对这个人没开、没有身份，都是 404
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="没有找到接口") from None
+    if not chat_store.chat_ready() or not interpret.enabled_for_openid(settings, openid):
         raise HTTPException(status_code=404, detail="没有找到接口")
     user = current_user(known_user(request, session))
     if not interpret.ai_agreed(settings, user):
@@ -568,7 +570,7 @@ def _chat_data(session: Session, user: User) -> dict:
     另给对话数和问数。AI 关着、没同意新版协议的本人也照样列（D-093 门槛第 8 条）。"""
     from youju.models import AdvisorTask, AIChat, AIChatTurn
 
-    live = (AIChat.user_id == user.id, chat_store.live_turns(v1.now()))
+    live = (AIChat.user_id == user.id, chat_store.live_turns(v1.now().astimezone(UTC)))
     joined = select(AIChatTurn, AIChat).join(AIChat, AIChat.id == AIChatTurn.chat_id)
     rows = session.execute(
         joined.where(*live).order_by(AIChatTurn.created_at.desc(), AIChatTurn.id.desc()).limit(200)

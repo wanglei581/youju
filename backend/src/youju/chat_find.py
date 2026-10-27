@@ -42,6 +42,7 @@
 - content：找通知只帮你找到通知。想知道某份通知里的截止、材料、条件怎么写的，点那一行的
   "问这份通知"，AI 从原文里摘出相关的句子。
 - photo：请输入通知标题或文号，帮你找原文。
+- vague：没认出要找什么（一个条件都没有）：不去搜，请用户写上标题里的词或地区、类型、时间。
 """
 
 from __future__ import annotations
@@ -104,6 +105,11 @@ NOTES = {
         "点那一行的“问这份通知”，AI 从原文里摘出相关的句子。"
     ),
     "photo": "请输入通知标题或文号，帮你找原文。",
+    # 一个条件都没认出来（只有停用词、标点、表情）：不去搜，免得把全部通知都列出来
+    "vague": (
+        "没认出要找什么。可以输入通知标题里的几个词，或者写上地区、类型、时间，"
+        "比如“找湖北近 30 天的申报通知”。"
+    ),
 }
 
 _HAN = f"{chr(0x3400)}-{chr(0x4DBF)}{chr(0x4E00)}-{chr(0x9FFF)}"
@@ -401,6 +407,39 @@ def _take(marks: list[str], start: int, end: int) -> None:
     marks[start:end] = "|" * (end - start)
 
 
+def _pieces(run: str) -> list[tuple[int, str, bool]]:
+    """把一串连着的字按类型词、停用词、问内容的词切开：（位置, 字, 是不是要去掉的词）。
+    切完剩一个字、又紧挨着两个字以上的停用词的，和它并成一个词，不去掉（"新材料"不拆成
+    "新"和停用词"材料"；"大企业"不拆成"大"和"企业"）。单字的"的、了、找"这类不并。"""
+    raw: list[tuple[int, str, bool]] = []
+    pos = 0
+    for m in _DROP.finditer(run):
+        if m.start() > pos:
+            raw.append((pos, run[pos : m.start()], False))
+        raw.append((m.start(), m.group(), True))
+        pos = m.end()
+    if pos < len(run):
+        raw.append((pos, run[pos:], False))
+    out: list[tuple[int, str, bool]] = []
+    i = 0
+    while i < len(raw):
+        at, text, drop = raw[i]
+        if not drop and len(text) == 1:
+            nxt = raw[i + 1] if i + 1 < len(raw) else None
+            if nxt and nxt[2] and len(nxt[1]) >= 2:
+                out.append((at, text + nxt[1], False))
+                i += 2
+                continue
+            if out and out[-1][2] and len(out[-1][1]) >= 2:
+                prev = out.pop()
+                out.append((prev[0], prev[1] + text, False))
+                i += 1
+                continue
+        out.append((at, text, drop))
+        i += 1
+    return out
+
+
 def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str]]:
     """第 2–4 条。几个地区取并集；同名的市、区县按句子里写到的省、市缩小，缩小不了就都算。
     具体城市、区县替换同省的全省条件，具体区县替换所属城市（同搜索页 withoutCityProvinces、
@@ -486,8 +525,14 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         tokens.append((m.start(), m.group()))
         _take(marks, m.start(), m.end())
     conditions["kind"] = next((kind for kind, words in _KIND_RULES if _has(text, words)), "all")
-    rest = _DROP.sub(lambda m: "|" * len(m.group()), "".join(marks))
-    tokens += [(m.start(), m.group()) for m in _WORD.finditer(rest)]
+    # 问内容的提示只在那几个词单独出现时才加（"新材料"里的"材料"不算）
+    content = False
+    for run in _WORD.finditer("".join(marks)):
+        for at, piece, drop in _pieces(run.group()):
+            if not drop:
+                tokens.append((run.start() + at, piece))
+            elif piece in _CONTENT:
+                content = True
     words = list(dict.fromkeys(t[:KEYWORD_CHARS] for _, t in sorted(tokens) if len(t) >= 2))
     conditions["keywords"] = words[:KEYWORDS_MAX]
     return Parsed(conditions, None, content, len(words) > KEYWORDS_MAX)
@@ -587,9 +632,10 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
     """取条件、搜，返回要存的回答（格式见模块说明）。today 是北京时间的今天，认"今年""去年"、
     往年用；近 N 天、今年的范围和搜索页一样按 v1.now() 算。"""
     norm = normalize(text)
-    content = _has(norm, _CONTENT)
     if _has(norm, _PHOTO):
         return _answer(empty_conditions(), 0, [], ["photo"])
+    parsed = parse(norm, today=today, covered=coverage(session))
+    content = parsed.content
 
     def tail(total: int, link: bool = False) -> list[str]:
         return _more(total, link) + (["content"] if content and total else [])
@@ -602,7 +648,6 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
             conditions = empty_conditions() | {"title": True}
             return _answer(conditions, total, shown, ["title", *tail(total)])
 
-    parsed = parse(norm, today=today, covered=coverage(session))
     conditions = parsed.conditions
     if parsed.number:
         ids = _number_ids(session, *parsed.number)
@@ -610,6 +655,9 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
         return _answer(conditions, total, shown, tail(total) if total else ["doc_number_none"])
     if conditions["uncovered"] and not _has_area(conditions):
         return _answer(conditions, 0, [], ["uncovered"])  # 不去搜
+    if _nothing(conditions):
+        # 一个条件都没认出来：不去搜（不然就把全部通知都列出来了），请用户换个说法
+        return _answer(conditions, 0, [], ["vague"])
 
     total, shown = _listed(session, statement(session, conditions))
     link = bool(total) and _expressible(conditions)
@@ -623,6 +671,18 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
     if not total:
         notes.append("title_none" if title_like else "empty")
     return _answer(conditions, total, shown, notes + tail(total, link), link)
+
+
+def _nothing(conditions: dict[str, Any]) -> bool:
+    """没有关键词、地区、往年，时间不限，类型不限：等于什么条件都没有。"""
+    return (
+        not conditions["keywords"]
+        and not _has_area(conditions)
+        and not conditions["uncovered"]
+        and conditions["year"] is None
+        and conditions["time"] == "不限"
+        and conditions["kind"] == "all"
+    )
 
 
 def _has_area(conditions: dict[str, Any]) -> bool:

@@ -78,6 +78,7 @@ def library(monkeypatch):
         }
     )
     monkeypatch.setattr(safety_words, "LIBRARY", value)
+    monkeypatch.setattr(chat_store, "CHAT_TERMS_FINAL", True)  # 使用说明也当作定稿了
     chat._TIMES.clear()
     yield value
     chat._TIMES.clear()
@@ -374,7 +375,8 @@ def test_examples(client):
 def test_doc_chat_needs_public_doc(client, session):
     """带通知新建对话时这份要是公开的；没有、不存在的回 404，不建对话。"""
     response = send(client, doc_id=999)
-    assert response.status_code == 404
+    # 带代码的 422：小程序把不带代码的 404 当成"AI 没开"
+    assert response.status_code == 422 and code(response) == "CHAT_DOC_UNAVAILABLE"
     assert counts(session) == (0, 0, 0)
     doc = make_doc(session)
     response = send(client, doc_id=doc)
@@ -1101,3 +1103,41 @@ def test_question_text_only_read_where_allowed():
     for path in tools.rglob("*"):
         if path.is_file() and path.suffix in (".py", ".js", ".cjs", ".sh"):
             assert not pattern.search(path.read_text(encoding="utf-8", errors="ignore")), path
+
+
+def test_chat_consent_hidden_without_identity(session_factory, settings, find, wechat):
+    """同意"问一问使用说明"的接口：没有身份时也是 404，不暴露问一问（D-075）。"""
+
+    def override():
+        with session_factory() as s:
+            yield s
+
+    app_module.app.dependency_overrides[get_session] = override
+    try:
+        with TestClient(app_module.app) as c:
+            settings.dev_openid = ""
+            response = c.post(
+                "/api/v1/me/agreement", json={"version": CHAT_AGREEMENT_VERSION, "scope": "chat"}
+            )
+            assert response.status_code == 404
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_hidden_until_chat_terms_final(client, monkeypatch, session):
+    """词库定稿了、《问一问使用说明》还没定稿：问一问照样关着（两样各管各的）。"""
+    monkeypatch.setattr(chat_store, "CHAT_TERMS_FINAL", False)
+    assert send(client).status_code == 404
+    assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["chat"] is False
+    assert counts(session) == (0, 0, 0)
+
+
+def test_daily_report_counts_question_blocks(client, session, settings):
+    """运维日报：问一问的提问被拦单独报次数（没有原文可看），不混进 AI 结果被拦的那一句。"""
+    from youju.digest import build_digest, digest_text
+
+    assert code(send(client, f"找{TEST_WORD}的通知")) == "CHAT_UNSAFE"
+    lines = digest_text(build_digest(session, now=NOW + timedelta(hours=1)), []).splitlines()
+    [line] = [line for line in lines if line.startswith("内容安全")]
+    assert "问一问拦下提问 1 次" in line and "看一眼原文" not in line
+    assert TEST_WORD not in line

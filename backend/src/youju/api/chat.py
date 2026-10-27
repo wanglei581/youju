@@ -319,6 +319,8 @@ def _check_wechat(session: Session, user: User, skill: str, text: str, stamp: da
         raise _refuse(503, "CHAT_CHECK_DOWN", CHECK_DOWN) from None
     if not verdict.passed:
         reason = {"suggest": verdict.suggest, "label": verdict.label}
+        if verdict.trace_id:
+            reason["traceId"] = verdict.trace_id  # 事后向微信核查用
         _record_hit(
             session, user, skill=skill, layer="wechat", reason=reason, text=text, stamp=stamp
         )
@@ -339,7 +341,7 @@ def _public_document(session: Session, doc_id: int) -> bool:
 def _replay(session: Session, turn: AIChatTurn, chat: AIChat, body: TurnIn, response, stamp):
     """同一个请求编号再发：一样就返回原来那一问，不一样回 409（同 create_task）。"""
     if not _same_request(session, turn, chat, body):
-        raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
+        raise _refuse(409, "CHAT_KEY_REUSED", "同一个请求编号不能用于不同的问题，请重新发送")
     response.status_code = 202 if turn.skill == "ask" else 200
     task = _tasks_of(session, [turn]).get(turn.task_id)
     return {"chatId": chat.id, "turn": _turn_out(session, turn, task, stamp=stamp)}
@@ -359,9 +361,7 @@ def create_turn(
     if not chat_store.consented(user):
         raise _refuse(403, "CHAT_CONSENT", "请先阅读并同意问一问使用说明")
     if not idempotency_key or not idempotency_key.strip() or len(idempotency_key) > 128:
-        raise HTTPException(
-            status_code=422, detail="请提供 Idempotency-Key 请求头（不超过 128 字符）"
-        )
+        raise _refuse(422, "CHAT_KEY", "请提供 Idempotency-Key 请求头（不超过 128 字符）")
     key = idempotency_key.strip()
     stamp = _stamp()
     # 先查请求编号，再做检查：断线重发不会撞上限频或内容安全出错，也不会把同一句话再发给微信
@@ -385,7 +385,10 @@ def create_turn(
         and _chat_for(session, user.id, body.docId) is None
         and not _public_document(session, body.docId)
     ):
-        raise HTTPException(status_code=404, detail="没有找到这份通知")
+        # 带代码的 422：小程序把不带代码的 404 当成"AI 没开"，会整页回首页
+        raise _refuse(
+            422, "CHAT_DOC_UNAVAILABLE", "这份通知现在看不了，换一份通知，或用“找通知”找别的。"
+        )
     _check_wechat(session, user, body.skill, text, stamp)
     try:
         answer = chat_find.run(session, text, today=service.usage_day(stamp))
@@ -426,7 +429,7 @@ def create_turn(
         session.rollback()
         found = _turn_by_key(session, user.id, key, stamp)
         if found is None:
-            raise HTTPException(status_code=409, detail="请求编号冲突，请重新发送") from None
+            raise _refuse(409, "CHAT_KEY_REUSED", "请求编号冲突，请重新发送") from None
         return _replay(session, *found, body, response, stamp)
     request.state.audit = {"action": "chat_turn_create", "turn_id": turn.id, "skill": turn.skill}
     return {"chatId": chat.id, "turn": _turn_out(session, turn, None, stamp=stamp)}

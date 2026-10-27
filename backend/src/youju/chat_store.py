@@ -27,9 +27,14 @@ ASK_TRY_LIMIT = 20
 IN_FLIGHT = ("queued", "running")
 
 
+# 《问一问使用说明》按 D-065 定稿以后改成 True（草稿 docs/合规/隐私指引补充_问一问_v1.md）
+CHAT_TERMS_FINAL = False
+
+
 def chat_ready() -> bool:
-    """问一问能不能开：本地高危词库定稿（final）以前不开放（第九节第 3 条）。"""
-    return bool(safety_words.LIBRARY.final)
+    """问一问能不能开：本地高危词库为问一问定稿（final）、《问一问使用说明》定稿以前都不开放
+    （第九节第 3 条、第十三节第 1 条）。两样各管各的：词库定稿不会顺带把问一问打开。"""
+    return bool(safety_words.LIBRARY.final) and CHAT_TERMS_FINAL
 
 
 def consented(user: User | None) -> bool:
@@ -104,7 +109,12 @@ def delete_user_chats(session: Session, user_id: int) -> int:
     # 先锁用户、再锁对话（同发一问、删对话的锁顺序）
     session.execute(select(User.id).where(User.id == user_id).with_for_update()).one_or_none()
     chat_ids = list(
-        session.scalars(select(AIChat.id).where(AIChat.user_id == user_id).with_for_update())
+        session.scalars(
+            select(AIChat.id)
+            .where(AIChat.user_id == user_id)
+            .order_by(AIChat.id)  # 和每天的清理同一个加锁顺序
+            .with_for_update()
+        )
     )
     delete_chats(session, chat_ids)
     return len(chat_ids)
@@ -124,6 +134,8 @@ def cleanup(session: Session, stamp: datetime) -> dict[str, int]:
             select(AIChat.id).where(AIChat.id.in_(chat_ids)).order_by(AIChat.id).with_for_update()
         )
     )
+    if not locked:
+        return {"ai_chat_turns": 0, "ai_chats": 0}  # 这期间对话被用户删了
     turns = (
         session.execute(
             delete(AIChatTurn).where(AIChatTurn.chat_id.in_(locked), AIChatTurn.expires_at <= stamp)

@@ -967,7 +967,34 @@ def test_提示代码都有对应的话():
         "title_none",
         "content",
         "photo",
+        "vague",
     }
     for code in NOTES:
         assert f"- {code}：" in chat_find.__doc__, code
     assert NOTES["uncovered"].format(uncovered="西藏") == "收录里没有西藏的来源，查不到那里的通知。"
+
+
+@pytest.mark.parametrize("text", ["《》", "😀", "帮我找一下", "有没有什么", "新"])
+def test_一个条件都没有不去搜(session, world, text):
+    """只有停用词、标点、表情或一个字：不去搜（不然就把全部通知都列出来了），请用户换个说法。"""
+    stored = _find(session, text)
+    assert stored["total"] == 0 and stored["ids"] == [] and stored["notes"] == ["vague"]
+    assert stored["link"] is False
+    assert "没认出要找什么" in NOTES["vague"]
+
+
+def test_停用词粘在词里不拆开():
+    """切完只剩一个字、又紧挨着两个字以上的停用词的，并成一个词（"新材料"不拆成"新"和"材料"）。"""
+    assert _parse("新材料")["keywords"] == ["新材料"]
+    conditions = _parse("找新材料方面的政策")
+    assert conditions["keywords"] == ["新材料"] and conditions["kind"] == "政策"
+    assert _parse("大企业的申报通知")["keywords"] == ["大企业"]
+    # 两个字以上的照旧拆：停用词"企业"去掉，"高新技术"留下
+    assert _parse("请问有没有高新技术企业认定的材料要求")["keywords"] == ["高新技术"]
+
+
+def test_问内容的提示只在那几个词单独出现时才加():
+    parse_text = lambda text: chat_find.parse(text, today=TODAY, covered=ALL_COVERED)  # noqa: E731
+    assert parse_text("新材料").content is False
+    assert parse_text("专精特新什么时候截止").content is True
+    assert parse_text("要交哪些材料").content is True
