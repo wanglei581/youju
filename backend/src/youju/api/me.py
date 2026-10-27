@@ -17,7 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
+from youju.agreements import agreement_at_least, tools_agreed
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -434,7 +434,7 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         # 批量工具的任务记录和次数从 2026-11 版隐私保护指引起才写明（一·13）：过渡期（填了最早版本）
         # 只同意过旧版的照旧能用关注、纠错，但要先重新同意新版指引才能同意工具使用说明。
         # 固定版本，回退配置也不放宽（Codex 第三轮）；提交名单时 advisor._upload_consent 再查一次
-        if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+        if not tools_agreed(user.agreement_version):
             raise HTTPException(status_code=403, detail=OUTDATED)
         user.advisor_agreement_version = body.version
         user.advisor_agreement_at = v1.now()

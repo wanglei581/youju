@@ -129,6 +129,38 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
     )
 
 
+def test_first_release_ai_agreement_does_not_cover_tools(client, session, advisor_settings):
+    """D-098：过审版加 AI 的协议 2026-11.1 排在 2026-11 后面、含 AI 条款，但去掉了批量工具和加量体验。
+    只同意过它的人同意不了工具使用说明，已经同意过工具使用说明的也提交不了名单；
+    之后同意含工具条款的新版（如 2026-12）才行。"""
+    from youju.agreements import WITHOUT_TOOLS_TERMS, tools_agreed
+
+    assert "2026-11.1" in WITHOUT_TOOLS_TERMS
+    assert tools_agreed("2026-11") and tools_agreed("2026-12") and tools_agreed("2026-11.2")
+    assert (
+        not tools_agreed("2026-11.1") and not tools_agreed("2026-10.2") and not tools_agreed(None)
+    )
+    advisor_settings.agreement_version = "2026-12"
+    advisor_settings.agreement_min_version = "2026-10.2"
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-11.1"}).status_code == 200
+    response = client.post(
+        "/api/v1/me/agreement",
+        json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+    )
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    # 先在完整版里同意过工具使用说明，后来同意的是 2026-11.1：提交名单也拦下，不扣次数
+    user = session.scalar(select(User).where(User.openid == "advisor-user"))
+    user.advisor_agreement_version = service.ADVISOR_AGREEMENT_VERSION
+    user.advisor_agreement_at = NOW
+    session.commit()
+    response = create(client)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+    # 同意含工具条款的新版以后照常
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-12"}).status_code == 200
+    assert create(client, key="k2").status_code == 202
+
+
 def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
     client, session, monkeypatch
 ):

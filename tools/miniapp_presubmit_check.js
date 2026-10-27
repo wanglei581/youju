@@ -47,6 +47,16 @@ const SERVER_AI_TERMS_VERSION = (() => {
 })();
 // 过审版协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）：和生成脚本用同一份
 const FIRST_RELEASE_TERMS_BANNED = require('./make_legal_first_release.js').BANNED;
+// 过审版加 AI 协议（D-098）的版本号和不能出现的说法（包里没有的批量工具、加量体验、付费，原文链接）：和生成脚本用同一份
+const FIRST_AI_TERMS = require('./make_legal_first_release_ai.js');
+// 后台认作"不含批量工具和加量体验条款"的协议版本（backend/src/youju/agreements.py 的 WITHOUT_TOOLS_TERMS）：
+// 过审版加 AI 的版本号排在 2026-11 后面，后台这里没有它，就会把只同意过它的人当成同意过工具条款
+const SERVER_WITHOUT_TOOLS_TERMS = (() => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'backend', 'src', 'youju', 'agreements.py'), 'utf8');
+  const m = /^WITHOUT_TOOLS_TERMS = frozenset\(\{([^}]*)\}\)$/m.exec(source);
+  if (!m) throw new Error('读不到后台不含工具条款的协议版本');
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+})();
 // 定稿协议的指纹（D-098，Codex 10/26）：版本号和用户协议、隐私保护指引、免责声明三份正文一起算 SHA-256。
 // 包里协议的指纹对不上登记的那一版就不过：改了正文没升版本号、或新版本还没登记，都拦下。
 // 新版定稿时用 node tools/miniapp_presubmit_check.js --fingerprint [--root 包目录] 打印，写进 tools/release/agreement-fingerprints.json
@@ -119,7 +129,13 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
       && /^\d{4}-\d{2}/.test(legal.version || '') && legal.version < SERVER_AI_TERMS_VERSION,
     '用 tools/miniapp_pack.js 打包（换上 content/legal-first-release.js，D-093 ⑤）；协议只写包里有的功能（不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接），版本号要早于后台的 AI 条款版本');
   }
-  else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
+  if (profile === 'first-release-ai') {
+    const text = JSON.stringify([legal.user, legal.privacy, legal.disclaimer]);
+    add('first-ai-terms', '过审版加 AI 协议只写包里有的功能（不写批量工具、加量体验、付费、原文链接），版本是这一版的，后台不把它当成同意过工具条款',
+      !FIRST_AI_TERMS.BANNED.test(text) && legal.version === FIRST_AI_TERMS.VERSION && SERVER_WITHOUT_TOOLS_TERMS.includes(legal.version),
+      `用 tools/miniapp_pack.js --profile first-release-ai 打包（换上 content/legal-first-release-ai.js，D-098）；协议只写包里有的功能；版本号要等于 ${FIRST_AI_TERMS.VERSION}，并写进后台 agreements.WITHOUT_TOOLS_TERMS`);
+  }
+  if (profile !== 'first-release') add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
   // 正式 AI 包：版本号之外，协议里要真有 AI 那一节（八、AI 功能与生成内容标识，至少 3 段），隐私保护指引要写到模型（Codex 10/26：只看版本号，删了条款也能过）
   const aiSection = ((legal.user && legal.user.sections) || []).find(s => /AI 功能/.test((s && s.h) || ''));
   const aiTermsText = !!aiSection && Array.isArray(aiSection.p) && aiSection.p.filter(nonempty).length >= 3
@@ -176,4 +192,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED };
+module.exports = { inspect, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, SERVER_WITHOUT_TOOLS_TERMS, FIRST_AI_TERMS, FIRST_RELEASE_TERMS_BANNED };

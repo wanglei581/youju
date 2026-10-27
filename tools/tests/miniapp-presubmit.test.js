@@ -250,3 +250,26 @@ test('协议指纹（D-098）：正文改了没升版本号、这一版没登记
   assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
  }
 });
+
+test('过审版加 AI（D-098）：协议要是那一版、只写包里有的功能，后台也认它不含工具条款', () => {
+  const real = JSON.parse(JSON.stringify(require('../../apps/miniapp/content/legal-first-release-ai.js')));
+  const x = input();
+  x.legal = { ...real, final: true, operator: x.legal.operator };
+  const state = (y) => inspect({ ...y, profile: 'first-release-ai', mode: 'prepare' }).checks.find((c) => c.id === 'first-ai-terms').state;
+  assert.equal(state(x), 'pass');
+  assert.equal(x.legal.version, presubmit.FIRST_AI_TERMS.VERSION);
+  assert.ok(presubmit.SERVER_WITHOUT_TOOLS_TERMS.includes(presubmit.FIRST_AI_TERMS.VERSION), '后台 agreements.WITHOUT_TOOLS_TERMS 里要有这一版');
+  // 完整版协议（写着批量工具、加量体验、付费）不过
+  const full = JSON.parse(JSON.stringify(require('../../apps/miniapp/content/legal.js')));
+  assert.equal(state({ ...x, legal: { ...full, operator: x.legal.operator } }), 'fail');
+  // 版本号不对不过
+  assert.equal(state({ ...x, legal: { ...x.legal, version: '2026-11' } }), 'fail');
+  // 加回一句包里没有的功能也不过
+  for (const word of ['批量工具', '加量体验', '订单', '原文链接', '统一社会信用代码']) {
+    const y = JSON.parse(JSON.stringify(x));
+    y.legal.privacy.sections[1].p.push(`测试：${word}`);
+    assert.equal(state(y), 'fail', word);
+  }
+  // 别的版本没有这一项
+  assert.equal(inspect({ ...x, profile: 'first-release', mode: 'prepare' }).checks.find((c) => c.id === 'first-ai-terms'), undefined);
+});

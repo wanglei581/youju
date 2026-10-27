@@ -5,11 +5,13 @@
 //   2. 删掉不在包里的页面目录；
 //   3. 按包里实际的页面重写 utils/package-pages.js——页面上指向包外页面的入口（工具中心、我的记录、
 //      购买、订单、使用帮助、AI）靠它判断后不显示（utils/pages.js）；
-//   4. 过审版换上不含 AI 条款的协议（content/legal-first-release.js，D-093 ⑤）；
+//   4. 过审版换上不含 AI 条款的协议（content/legal-first-release.js，D-093 ⑤），过审版加 AI 换上
+//      content/legal-first-release-ai.js（D-098）；
 //   5. 用发布检查（tools/miniapp_presubmit_check.js）检查打好的包，没过就不算打好。
 // 不上传、不提交审核。上传前在开发者工具里打开输出目录，实际点一遍审核员会走的路。
 // 用法：node tools/miniapp_pack.js --out <新目录> [--profile first-release] [--mode prepare|submit] [--npm-from <小程序目录>]
-//   --profile first-release-ai：过审版加 AI（D-098）：首发 16 页加 AI 那 6 页，协议用 content/legal.js（含 AI 条款），不剪 AI
+//   --profile first-release-ai：过审版加 AI（D-098）：首发 16 页加 AI 那 6 页，不剪 AI；协议换上
+//   content/legal-first-release-ai.js（含 AI 条款，不含批量工具、加量体验和付费）
 // 搜索页用到组件库（tdesign-miniprogram），要有构建好的 miniprogram_npm：仓库里不带（.gitignore），
 // 在开发者工具里对 apps/miniapp 点"构建 npm"，或用 --npm-from 指定一个已经构建好的小程序目录（例如 miniapp-release 的）
 const fs = require('node:fs');
@@ -98,15 +100,16 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
     fs.rmSync(path.join(target, path.dirname(page)), { recursive: true, force: true });
   }
   fs.writeFileSync(path.join(target, 'utils', 'package-pages.js'), pageListSource(pages));
-  // 协议：过审版用不含 AI 条款的那一份（content/legal-first-release.js，D-093 ⑤），替换掉 content/legal.js；
-  // 别的版本用 content/legal.js，包里不留过审版那一份
-  const firstTerms = path.join(target, 'content', 'legal-first-release.js');
-  if (profile === 'first-release') {
-    if (!fs.existsSync(firstTerms)) throw new Error('没有 content/legal-first-release.js（过审版协议）');
-    fs.renameSync(firstTerms, path.join(target, 'content', 'legal.js'));
-  } else {
-    fs.rmSync(firstTerms, { force: true });
+  // 协议：过审版用不含 AI 条款的那一份（content/legal-first-release.js，D-093 ⑤）；过审版加 AI 用
+  // content/legal-first-release-ai.js（含 AI 条款，不含批量工具、加量体验和付费，D-098）；替换掉 content/legal.js。
+  // 别的版本用 content/legal.js。包里只留用上的那一份
+  const variants = { 'first-release': 'legal-first-release.js', 'first-release-ai': 'legal-first-release-ai.js' };
+  if (variants[profile]) {
+    const chosen = path.join(target, 'content', variants[profile]);
+    if (!fs.existsSync(chosen)) throw new Error(`没有 content/${variants[profile]}（这个版本用的协议）`);
+    fs.renameSync(chosen, path.join(target, 'content', 'legal.js'));
   }
+  for (const name of Object.values(variants)) fs.rmSync(path.join(target, 'content', name), { force: true });
   if (npmFrom) {
     fs.rmSync(path.join(target, 'miniprogram_npm'), { recursive: true, force: true });
     copyTree(built, path.join(target, 'miniprogram_npm'));

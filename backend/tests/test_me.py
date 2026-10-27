@@ -1153,7 +1153,7 @@ def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     assert response.status_code == 200 and response.json()["valid"] is True
     assert client.get("/api/v1/me/follows").status_code == 200
     user = session.scalar(select(User).where(User.openid == "dev-user"))
-    assert not me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    assert not me.tools_agreed(user.agreement_version)
     open_to_all = SimpleNamespace(ai_advisor_audience="all")
     assert not interpret.ai_agreed(open_to_all, user)
     response = client.post("/api/v1/me/agreement", json={"version": "2026-10"})
@@ -1162,7 +1162,7 @@ def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     assert client.post("/api/v1/me/agreement", json={"version": "2026-11"}).status_code == 200
     session.expire_all()
     user = session.scalar(select(User).where(User.openid == "dev-user"))
-    assert me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    assert me.tools_agreed(user.agreement_version)
     assert interpret.ai_agreed(open_to_all, user)
 
 
