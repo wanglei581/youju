@@ -38,7 +38,9 @@ Page({
   onShow() {
     this.visible = true;
     const epoch = this.epoch = (this.epoch || 0) + 1;
-    wx.setNavigationBarTitle({ title: '工具' });
+    // 标题跟着入口叫"条款对照"：AI 板块对这个人显示着（AI 开着）就直接写，没同意协议、连不上时也一样；
+    // 板块没显示（AI 关着、从旧链接进来）时留空，等能力接口回话，关着就回首页，页面上不出现 AI 字样（D-075）
+    wx.setNavigationBarTitle({ title: access.current().visible === true ? aiTitle('条款对照') : '' });
     // 今天的次数用完、全站满了时停在这一页跨过零点：不自己重新开始（会直接提交、用掉次数），
     // 改写"可以重新开始了"，点了再问（第 18 轮）。跨零点时还在等能力接口回话：丢掉旧的、重新问（第 22 轮）
     watchDay(this, () => {

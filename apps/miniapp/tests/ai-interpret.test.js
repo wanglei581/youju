@@ -330,7 +330,8 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
     assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
-    assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '工具');
+    // AI 板块没显示（这里当作 AI 关着）时标题留空，不写"工具"也不写 AI；能力接口说开着才写
+    assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
   }
 });
