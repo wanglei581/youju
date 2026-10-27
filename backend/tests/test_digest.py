@@ -785,7 +785,12 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
     # 附件等待按秒比：14 小时整算达到，多 1 秒就不算（Grok 第 1 轮）
     rb.pending, rb.oldest_pending_seconds, rb.oldest_pending_doc = 1, 14 * 3600, (7, "某通知")
     assert digest_module.gates(rb) == (True, True, True)
-    rb.oldest_pending_seconds += 1
+    assert "最久的等了 14 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
+    rb.oldest_pending_seconds = 13 * 3600 + 1
+    assert "等取文字最久的附件 13 小时（要不超过 14 小时）" in digest_text(d, [])
+    rb.oldest_pending_seconds = 14 * 3600 + 1
     assert digest_module.gates(rb) == (True, True, False)
     # 显示的小时向上取整，和按秒判断一致：多 1 秒写 15 小时（Grok 第 2 轮）
     assert "等取文字最久的附件 15 小时（要不超过 14 小时）" in digest_text(d, [])

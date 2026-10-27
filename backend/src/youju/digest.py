@@ -117,9 +117,14 @@ class Readability:
 
     @property
     def oldest_pending_hours(self) -> int | None:
-        """写给人看的小时数：向上取整（14 小时多 1 秒写 15 小时），和按秒判断门槛一致，只会多报。"""
+        """写给人看的小时数，和按秒判断门槛一致：没超过一轮的按整小时往下写（13 小时 1 秒写 13），
+        超过的往上进位（14 小时多 1 秒写 15，不会写成压线的 14）。"""
         seconds = self.oldest_pending_seconds
-        return None if seconds is None else math.ceil(seconds / 3600)
+        if seconds is None:
+            return None
+        if seconds <= ROUND_HOURS * 3600:
+            return seconds // 3600
+        return math.ceil(seconds / 3600)
 
 
 @dataclass
