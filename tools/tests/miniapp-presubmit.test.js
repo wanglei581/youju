@@ -138,6 +138,8 @@ test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测�
  // 开着 AI 内测、协议还是旧版本、页面不对、工具说明版本不对：都不过
  // 协议还是 2026-11 或过审版加 AI 那一版：只同意过 2026-11.1 的人在完整版里不会被请去重新同意（D-098）
  for(const version of ['2026-11','2026-11.1']) { const y=JSON.parse(JSON.stringify(x)); y.legal.version=version; assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).checks.find(c=>c.id==='tools-terms-order').state,'fail',version); }
+ // 体验准备（prepare）只提示，不挡体验包：完整版协议下次改时再升版本（要创始人点头）
+ { const y=JSON.parse(JSON.stringify(x)); y.legal.version='2026-11'; assert.equal(inspect({...y,profile:'complete-release',mode:'prepare'}).checks.find(c=>c.id==='tools-terms-order').state,'warning'); }
  assert.equal(r.checks.find(c=>c.id==='tools-terms-order').state,'pass');
  for(const change of [y=>y.config.aiInternal=true,y=>y.legal.version='2026-10',y=>y.app.pages.pop(),y=>y.app.pages.push('pages/rewards/index'),
    y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
