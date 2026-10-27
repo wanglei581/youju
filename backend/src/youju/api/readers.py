@@ -208,17 +208,15 @@ def _page(payload: dict, segments: list[dict], ends: list[int], index: int) -> d
         payload.update(
             status="unavailable",
             segments=[],
-            notice="这一页内容太大，暂时显示不了，请反馈问题。",
+            notice="这一页有一段特别长，暂时显示不了；可以翻页接着读，或反馈问题。",
         )
     return payload
 
 
-def _toc(body: v1.ReadingBody | None, readings: list[texts.Reading]) -> dict:
+def _toc(body: v1.ReadingBody, readings: list[texts.Reading]) -> dict:
     """阅读页的目录：正文和每个附件能不能读（和详情页同一个判断）。"""
     return {
-        "body": None
-        if body is None
-        else {"readable": body.status == "ok", "note": _BODY_NOTES.get(_body_key(body), "")},
+        "body": {"readable": body.status == "ok", "note": _BODY_NOTES.get(_body_key(body), "")},
         "attachments": [
             {
                 "id": str(r.attachment_id),
@@ -236,13 +234,23 @@ def _toc(body: v1.ReadingBody | None, readings: list[texts.Reading]) -> dict:
 # 正文读不了时页面上写的话（D-097 设计稿第三节）
 _BODY_NOTES = {
     "personal": "含个人信息，不在小程序内展示全文。",
-    "list:list": "这份通知的正文主要是名单，名单请按企业名称查询。",
-    "list:mixed": "这份通知的正文里名单没能和通知文字分开，不展示正文；名单请按企业名称查询。",
+    "list:list": "这份通知的正文主要是名单，名单请在“查名单”里按企业名称查询。",
+    "list:mixed": (
+        "这份通知的正文里名单没能和通知文字分开，不展示正文；名单请在“查名单”里按企业名称查询。"
+    ),
     "none:attachments": "这份通知的内容在附件里。",
     "none:site": "这个网站的正文还取不到。",
-    "link_gone": "原网页已打不开，正文暂不提供。",
+    "none:link_gone": "原网页已打不开，正文暂不提供。",
 }
-_BODY_STATUS = {"personal": "unsupported", "list": "list", "none": "empty"}
+# 正文读不了时阅读接口的 status（旧版小程序按它显示）
+_BODY_STATUS = {
+    "personal": "unsupported",
+    "list:list": "list",
+    "list:mixed": "list",
+    "none:attachments": "empty",
+    "none:site": "empty",
+    "none:link_gone": "unavailable",
+}
 
 
 def _body_key(body: v1.ReadingBody) -> str:
@@ -261,20 +269,12 @@ def document_reading(
     payload = _payload(doc.title, _source(doc, src))
     kind = effective_kind(doc.title, doc.kind_override)
     readings = texts.readings(session, doc.id, v1.now())
-    if doc.link_gone_at:
-        payload["toc"] = _toc(None, readings)
-        if v1.body_withheld(doc, kind):
-            payload.update(status="unsupported", state="personal", notice=_BODY_NOTES["personal"])
-        else:
-            # 原网页已失效：维持现状，阅读页不给正文（D-097 不在 4 件里、未定）
-            payload.update(status="unavailable", state="link_gone", notice=_BODY_NOTES["link_gone"])
-        return payload
     # 对完整正文脱敏后再分段，号码跨分页边界也不能漏出。
     body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
     payload["toc"] = _toc(body, readings)
     if body.status != "ok":
         payload.update(
-            status=_BODY_STATUS[body.status],
+            status=_BODY_STATUS.get(_body_key(body), "unavailable"),
             state=body.status if body.status != "none" else body.reason,
             notice=_BODY_NOTES.get(_body_key(body), ""),
         )
@@ -298,7 +298,7 @@ def document_reading(
         totalSegments=len(parts),
         state="ok",
         notice=(
-            "正文如下，名单请按企业名称查询。文字自动提取，未经人工逐字核对。"
+            "正文如下，名单请在“查名单”里按企业名称查询。文字自动提取，未经人工逐字核对。"
             if body.hidden
             else "以下是从原网页自动提取的文字，未经人工逐字核对；图片和表格样式不在内。"
         ),
@@ -339,6 +339,7 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
 
 # 附件读不了时阅读接口的 status（旧版小程序按它显示）；页面上的话见 attachment_text.NOTES
 _ATTACHMENT_STATUS = {
+    "personal": "unsupported",
     "list": "list",
     "kind": "unsupported",
     "format": "unsupported",
@@ -376,11 +377,7 @@ def attachment_reading(
         iter(texts.judge(session, doc, [att], now))
     )
     kind = effective_kind(doc.title, doc.kind_override)
-    body = (
-        None
-        if doc.link_gone_at
-        else v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
-    )
+    body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
     payload["toc"] = _toc(body, readings)
     payload["state"] = state.state
     if not state.readable:

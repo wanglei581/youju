@@ -420,7 +420,7 @@ def test_reading_and_detail_show_the_notice_but_not_the_list(client, session) ->
     text = "\n".join(s["text"] for s in reading["segments"])
     assert "公示时间：2026年10月20日至10月26日。" in text and body.PLACEHOLDER in text
     assert not any(name in text for name in NAMES)
-    assert "名单请按企业名称查询" in reading["notice"] and reading["listHidden"] is True
+    assert "按企业名称查询" in reading["notice"] and reading["listHidden"] is True
     detail = client.get(f"/api/v1/documents/{doc.id}").json()["body"]
     assert (
         detail["status"] == "ok" and "公示时间" in detail["text"] and detail["listHidden"] is True
@@ -430,7 +430,7 @@ def test_reading_and_detail_show_the_notice_but_not_the_list(client, session) ->
     plain = _notice(session, "关于2026年第三批专精特新中小企业名单的公示", NOTICE + SIGNATURE)
     reading = client.get(f"/api/v1/documents/{plain.id}/reading").json()
     assert reading["status"] == "ok" and "listHidden" not in reading
-    assert "名单请按企业名称查询" not in reading["notice"]
+    assert "按企业名称查询" not in reading["notice"]
     assert "listHidden" not in client.get(f"/api/v1/documents/{plain.id}").json()["body"]
 
 

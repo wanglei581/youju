@@ -2482,6 +2482,7 @@ STATES = {
     "pending": "还没取",
     "old": "这份通知较早，附件没读",
     "kind": "这类文件不读附件",
+    "personal": "个人事项、失信和个人类名单，不读",
     "list": "名单附件只给查询结果",
     "source": "附件所在的那份转载不是一级公开来源或已下架，没读",
     "link_gone": "原网页已失效",
@@ -2495,7 +2496,8 @@ NOTES = {
     "scan": "扫描件，暂不能识别文字",
     "format": "此格式暂不能在小程序内阅读",
     "kind": "这类通知的附件暂不能在小程序内阅读",
-    "list": "名单请按企业名称查询",
+    "personal": "含个人信息，不在小程序内展示",
+    "list": "名单请在“查名单”里按企业名称查询",
     "old": "这份通知较早，附件暂不能在小程序内阅读",
     "link_gone": "原网页已打不开，附件暂不提供",
     "host": "附件不在政府网站上，暂不能在小程序内阅读",
@@ -2559,12 +2561,15 @@ def readings(session: Session, doc_id: int, now: datetime) -> list[Reading]:
 
 def judge(session: Session, master, items: list, now: datetime) -> list[Reading]:
     """附件（DocumentAttachment）读得了没有。master 是这份通知的主条目（Document）。依次看：
-    名单类（主条目或附件所在那份是名单）→ list；不是申报通知、政策 → kind；附件所在那份不是一级
-    公开来源或已下架 → source；原网页已失效（主条目或附件所在那份）→ link_gone；不是政府网站的链接
-    → host；超出范围（按附件所在那份：申报通知近 180 天、政策近 2 年，attachments.text_recent）
+    个人事项、失信和个人类名单（正文也不给，v1.body_withheld）→ personal；名单类（主条目或附件所在
+    那份是名单）→ list；不是申报通知、政策 → kind；附件所在那份不是一级公开来源或已下架 → source；
+    原网页已失效（主条目或附件所在那份）→ link_gone；不是政府网站的链接 → host；超出范围（按附件
+    所在那份库里存的类型：申报通知近 180 天、政策近 2 年，attachments.text_recent；和下载、清理
+    附件文字的 attachments.candidates 同一个类型，免得一边删了文字、一边还说"一般半天内可读"）
     → old；格式不读 → format；还没按现在的规则取过 → pending；取不出、下载不了 → 原因；能读 → ok
-    （有扫描页的另给 scanned_pages）。范围和附件定时任务下载的（attachments.candidates）一样。"""
+    （有扫描页的另给 scanned_pages）。"""
     from youju import attachments
+    from youju.api import v1
     from youju.classify import effective_kind
     from youju.models import Document, Source
     from youju.takedown import available_condition
@@ -2581,6 +2586,7 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
                 Document.publish_date,
                 Document.first_seen_at,
                 Document.link_gone_at,
+                Document.rule_kind,
                 Source.rights_level,
             )
             .join(Source, Source.id == Document.source_id)
@@ -2588,6 +2594,7 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
         )
     }
     master_kind = effective_kind(master.title, master.kind_override)
+    withheld = v1.body_withheld(master, master_kind)
     rows = {
         r.url_hash: r
         for r in session.scalars(
@@ -2619,7 +2626,9 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
         owner_kind = effective_kind(owner.title, owner.kind_override) if owner else None
         row = rows.get(url_key(a.url))
         version = versions.get(row.version_id) if row and row.version_id else None
-        if "名单" in (master_kind, owner_kind):
+        if withheld:
+            reading.state = "personal"
+        elif "名单" in (master_kind, owner_kind):
             reading.state = "list"
         elif master_kind not in attachments.COPY_KINDS or (
             owner is not None and owner_kind not in attachments.COPY_KINDS
@@ -2632,7 +2641,10 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
         elif not attachments._government_url(a.url):
             reading.state, reading.detail = "host", "不是政府网站的链接"
         elif not attachments.text_recent(
-            owner.publish_date, owner.first_seen_at, now, kind=owner_kind
+            owner.publish_date,
+            owner.first_seen_at,
+            now,
+            kind=owner.kind_override or owner.rule_kind,
         ):
             reading.state = "old"
         elif reading.ext not in attachments.DOWNLOAD_TYPES:
@@ -2655,7 +2667,13 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
             reading.state, reading.checked_at = "empty", row.checked_at
         else:
             reading.state, reading.detail, reading.checked_at = "ok", row.detail, row.checked_at
-        if version is not None and reading.state not in ("old", "kind", "source", "list"):
+        if version is not None and reading.state not in (
+            "old",
+            "kind",
+            "source",
+            "list",
+            "personal",
+        ):
             reading.version_id, reading.sha256 = version.id, version.sha256
             reading.file_type, reading.chars = version.file_type, version.chars
             reading.segments, reading.pages = version.segments, version.pages

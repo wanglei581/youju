@@ -2092,8 +2092,12 @@ OPEN_BODY_KINDS = (GUIDE, "其他")
 # 宁可多挡（"评审专家培训的通知"也挡），不漏；会误挡普通政府文件的词（"先进"挡了"先进制造业"、
 # "个人"挡了"个人所得税"政策、"体检"挡了"政务新媒体检查"）不用，换成更具体的写法。
 PERSONAL_MATTER_WORDS = (
-    # 招聘、录用、考试
+    # 招聘、招募、录用、考试
     "招聘",
+    "招募",
+    "引才",
+    "人才引进",
+    "引进人才",
     "拟聘",
     "聘用",
     "录用",
@@ -2184,8 +2188,10 @@ PERSONAL_MATTER_WORDS = (
 
 
 def personal_matter(title: str | None) -> bool:
-    """资讯与指南、其他类的标题写着个人事项（D-097 ②）：正文、附件都不给。"""
-    return any(word in (title or "") for word in PERSONAL_MATTER_WORDS)
+    """资讯与指南、其他类的标题写着个人事项（D-097 ②）：正文、附件都不给。
+    字中间隔着空格的（"招 聘"）也算。"""
+    plain = re.sub(r"\s+", "", title or "")
+    return any(word in plain for word in PERSONAL_MATTER_WORDS)
 
 
 def body_open(title: str | None, kind: str) -> bool:
@@ -2408,9 +2414,10 @@ class ReadingBody:
     正文几乎全是名单（reason=list），或名单没能和通知文字分开（reason=mixed），只给查名单；
     personal 个人事项（资讯与指南、其他类的标题写着招聘、职称等）和失信、个人类名单，不给；
     none 没有能显示的正文，reason 写页面上怎么说：attachments 这份通知列着附件（"这份通知的内容在
-    附件里"），site 没有附件（"这个网站的正文还取不到"）。
+    附件里"），site 没有附件（"这个网站的正文还取不到"），link_gone 原网页已失效（"原网页已打不开，
+    正文暂不提供"）。
     problem：none 的具体原因（运维日报按网站统计）：empty 没取到正文；chrome 取到的像网页导航；
-    short_list 名单类通知挡完名单剩的字太少（D-092 的下限）。"""
+    short_list 名单类通知挡完名单剩的字太少（D-092 的下限）；link_gone 原网页已失效。"""
 
     status: str
     text: str = ""
@@ -2510,15 +2517,17 @@ def reading_body(
     kind: str,
     *,
     attachments: bool,
-    live_only: bool = True,
     redact=redact_sensitive,
 ) -> ReadingBody:
     """详情页和阅读页给的正文（D-097：两处同一个判断）。attachments：这份通知列着附件（没有能显示
-    的正文时，页面说"内容在附件里"还是"正文还取不到"）。live_only：不用原网页已失效的网址的正文
-    （阅读页；详情页对原网页还在的通知也这样，和阅读页一致）。"""
+    的正文时，页面说"内容在附件里"还是"正文还取不到"）。原网页已失效的不给（D-097"维持现状不给，
+    统计失效原因后另议"；以前详情页还显示之前收录的正文、阅读页不给，两处不一致），组里原网页已失效
+    的其他网址的正文也不用。"""
     if body_withheld(doc, kind):
         # 失信、处罚类和个人类名单：和别的个人事项一样不展示，不引导去查名单
         return ReadingBody("personal")
+    if doc.link_gone_at is not None:
+        return ReadingBody("none", reason="link_gone", problem="link_gone")
     list_filter = list_body_filter(session, doc) if kind == "名单" else None
     if list_filter is not None:
         allowed: tuple[str, ...] = LIST_BODY_KINDS
@@ -2530,9 +2539,10 @@ def reading_body(
         session,
         doc.id,
         redact=redact,
-        live_only=live_only,
+        live_only=True,
         allowed_kinds=allowed,
         for_reading=True,
+        list_filter=list_filter,
     )
     if chosen is None:
         return _no_body("empty", attachments=attachments)
@@ -2550,6 +2560,7 @@ def _reading_body_selection(
     live_only: bool = False,
     allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
     for_reading: bool = False,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
 ) -> tuple[int, str, str] | None:
     """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
 
@@ -2558,6 +2569,8 @@ def _reading_body_selection(
     allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
     for_reading（详情页、阅读页，D-097）：像网页导航的、空的不算可读，跳过去看别的网址；资讯与指南、
     其他类标题写着个人事项的网址不用；都不可读时给第一个候选（调用方据此说"像网页导航"）。
+    名单类（给了 list_filter）先挡掉名单再看：几乎全是名单、名单分不开的就用这一份（页面说去
+    查名单）；挡完剩的字太少、剩下的像网页导航，才看别的网址。
     AI 解读不加 for_reading，挑法和以前一样。
     """
     stmt = (
@@ -2594,7 +2607,7 @@ def _reading_body_selection(
             continue
         cleaned = _clean_reading_body(raw, redact=redact)
         candidate = candidate_id, raw, cleaned
-        usable = not for_reading or (bool(cleaned) and not page_chrome_only(cleaned))
+        usable = not for_reading or _usable_for_reading(cleaned, list_filter)
         if usable and len(cleaned) >= BODY_MIN_CHARS:
             return candidate
         if usable and fallback is None:
@@ -2602,6 +2615,18 @@ def _reading_body_selection(
         if first is None:
             first = candidate
     return fallback or first
+
+
+def _usable_for_reading(
+    cleaned: str, list_filter: Callable[[str], list_body.Filtered] | None
+) -> bool:
+    """这一份正文在详情页、阅读页算不算可读（挑合并转载里用哪一份时用）。"""
+    if list_filter is None:
+        return bool(cleaned) and not page_chrome_only(cleaned)
+    result = list_filter(cleaned)
+    if result.text is None:
+        return result.reason in ("list", "mixed")
+    return not page_chrome_only(result.text)
 
 
 def _reading_body(
@@ -2754,15 +2779,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "excerpt": excerpt,
         "attachments": _detail_attachments(session, doc, kind, attachment_rows),
         "checked": checked,
-        # 正文（D-097）：和阅读页同一个判断；原网页已失效的照旧给之前收录的正文（阅读页不给）
+        # 正文（D-097）：和阅读页同一个判断（原网页已失效的不给）
         "body": body_payload(
             reading_body(
-                session,
-                doc,
-                kind,
-                attachments=bool(attachment_rows),
-                live_only=doc.link_gone_at is None,
-                redact=attachment_text.mask,
+                session, doc, kind, attachments=bool(attachment_rows), redact=attachment_text.mask
             )
         ),
     }

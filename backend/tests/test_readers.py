@@ -338,7 +338,8 @@ def test_nonpublic_body_kinds_stay_protected(client, session, kind):
     assert data["segments"] == []
     # 名单附件：说明只提供查询结果（页面给"在已收录名单中查询企业"按钮，D-088）
     if kind == "名单":
-        assert data["status"] == "list" and data["notice"] == "名单请按企业名称查询。"
+        assert data["status"] == "list"
+        assert data["notice"] == "名单请在“查名单”里按企业名称查询。"
     else:
         assert data["status"] == "unsupported" and data["state"] == "kind"
         assert data["notice"] == "这类通知的附件暂不能在小程序内阅读。"
@@ -736,18 +737,21 @@ def test_page_chrome_main_falls_back_to_repost(client, session):
     assert detail["text"] == "转载的正文，内容完整。"
 
 
-def test_link_gone_keeps_detail_body_but_reader_and_attachments_say_why(client, session):
-    """原网页已失效：维持现状（详情页照旧给之前收录的正文，阅读页不给）；附件写明原因。"""
+def test_link_gone_body_and_attachments_not_given_in_either_page(client, session):
+    """原网页已失效：D-097"维持现状不给"——详情页、阅读页都不给正文，附件写明原因；组里原网页
+    已失效的其他网址的正文也不用。"""
     doc, att, _, _ = seed(session)
     doc.link_gone_at = NOW
     session.commit()
     detail = client.get(f"/api/v1/documents/{doc.id}").json()
-    assert detail["body"]["status"] == "ok"
+    assert detail["body"] == {"status": "none", "reason": "link_gone"}
     [item] = detail["attachments"]
     assert (item["state"], item["readable"]) == ("link_gone", False)
+    assert item["stateText"] == "原网页已打不开，附件暂不提供"
     data = client.get(path(doc)).json()
     assert (data["status"], data["state"]) == ("unavailable", "link_gone")
-    assert data["notice"] == "原网页已打不开，正文暂不提供。" and data["toc"]["body"] is None
+    assert data["notice"] == "原网页已打不开，正文暂不提供。"
+    assert data["toc"]["body"] == {"readable": False, "note": "原网页已打不开，正文暂不提供。"}
     data = client.get(path(doc, att)).json()
     assert (data["status"], data["state"]) == ("unavailable", "link_gone")
 
@@ -791,3 +795,52 @@ def test_personal_link_gone_says_personal_first(client, session):
         "status": "original",
         "reason": "personal",
     }
+
+
+def test_list_bodies_are_judged_after_the_list_is_hidden():
+    """名单类挑正文时先挡名单再看像不像导航（Grok 第 1 轮）。"""
+    from youju.lists.body import Filtered
+
+    def only(result):
+        return lambda _text: result
+
+    assert v1._usable_for_reading("甲公司、乙公司", only(Filtered(None, True, "list"))) is True
+    assert v1._usable_for_reading("甲公司、乙公司", only(Filtered(None, True, "mixed"))) is True
+    assert v1._usable_for_reading("首页", only(Filtered(None, False, "short"))) is False
+    assert v1._usable_for_reading("x", only(Filtered("首页\n政务公开", False))) is False
+    assert v1._usable_for_reading("x", only(Filtered("公示期五天。", True))) is True
+    assert v1._usable_for_reading("首页\n政务公开", None) is False
+    assert v1._usable_for_reading("", None) is False
+
+
+def test_personal_words_ignore_spaces():
+    assert v1.personal_matter("关于公开招 聘工作人员的公告")
+    assert v1.personal_matter("关于2026年度“银龄工程师”招募通告")
+    assert not v1.personal_matter("关于开展2026年先进制造业领域职业技能提升培训的通知")
+
+
+def test_personal_notices_and_lists_do_not_send_people_to_the_list_lookup(client, session):
+    doc, att, _, _ = seed(session, kind="名单")
+    doc.title = "2026年度高层次人才名单公示"
+    session.commit()
+    [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert (item["state"], item["stateText"]) == ("personal", "含个人信息，不在小程序内展示")
+    data = client.get(path(doc, att)).json()
+    assert (data["status"], data["state"]) == ("unsupported", "personal")
+    assert "查名单" not in data["notice"]
+
+
+def test_attachment_window_follows_the_stored_kind_like_the_download_job(client, session):
+    """附件文字的范围按库里存的类型算，和下载、清理附件文字的任务一致（Grok 第 1 轮）：库里是申报通知、
+    标题规则是政策的，过了 180 天就是较早（任务已经不留它的文字），不说"一般半天内可读"。"""
+    doc, att, _, _ = seed(session, kind=None)
+    doc.title = "山东省科学技术厅关于印发《科技计划项目管理办法》的通知"
+    doc.rule_kind = "申报通知"
+    doc.publish_date = date(2026, 1, 5)
+    session.commit()
+    [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert item["state"] == "old"
+    doc.rule_kind = "政策"
+    session.commit()
+    [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
+    assert item["state"] == "ok"
