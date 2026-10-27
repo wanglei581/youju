@@ -525,34 +525,43 @@ def test_stream_error_event_drops_partial_content():
     assert client.last_usage["prompt_tokens"] == 4
 
 
-def test_stream_read_gap_is_capped():
-    """两段之间最多等 45 秒：对方停发又不断开连接时，不会再等满整个时限。"""
-    seen = {}
+def test_stream_hang_is_cut_at_the_overall_deadline():
+    """对方发了一段就停住、也不断开：到总时限由定时器关掉连接，按网络失败处理，不再多等一个读超时。"""
+    import threading
+    import time as real_time
 
-    def handler(request):
-        seen.update(request.extensions["timeout"])
-        return sse(delta('{"ok": 1}', finish="stop"))
+    class Hanging(httpx.SyncByteStream):
+        def __init__(self):
+            self.closed = threading.Event()
+
+        def __iter__(self):
+            yield f"data: {json.dumps(delta('{"a": '))}\n\n".encode()
+            # 停住，直到被关掉（最多 5 秒，免得测试卡死）
+            if not self.closed.wait(5):
+                raise AssertionError("没有到点关掉连接")
+            raise httpx.ReadError("连接已关闭")
+
+        def close(self):
+            self.closed.set()
 
     client = ChatClient(
         "https://example.test",
         "key",
         "hy3",
-        timeout=180,
-        transport=httpx.MockTransport(handler),
+        timeout=0.3,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, stream=Hanging(), headers={"content-type": "text/event-stream"}
+            )
+        ),
         stream=True,
+        max_retries=0,
     )
-    assert client.complete_json("s", "u") == {"ok": 1}
-    assert seen["read"] == 45 and seen["connect"] == 180
-    short = ChatClient(
-        "https://example.test",
-        "key",
-        "hy3",
-        timeout=20,
-        transport=httpx.MockTransport(handler),
-        stream=True,
-    )
-    short.complete_json("s", "u")
-    assert seen["read"] == 20
+    began = real_time.monotonic()
+    with pytest.raises(AIError) as exc:
+        client.complete_json("s", "u")
+    assert real_time.monotonic() - began < 3
+    assert exc.value.retryable is True and str(exc.value) == "AI 网络请求失败"
 
 
 def test_stream_length_finish_is_truncated_and_not_retried():
