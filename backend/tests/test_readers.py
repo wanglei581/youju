@@ -863,3 +863,42 @@ def test_long_body_is_split_into_several_pages(client, session):
         assert len(json.dumps(page, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES
         cursor = page["nextCursor"]
     assert seen == list(range(1, data["totalSegments"] + 1))
+
+
+def test_table_rows_page_by_size_and_keep_row_order(client, session):
+    """表格附件一行一段：行长时按每页预算封页（不是固定 20 行），翻完行序不乱、不重不漏。"""
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    for i in range(1, 31):
+        cells = [
+            {"c": 1, "t": f"企业{i}", "h": "企业名称"},
+            {"c": 2, "t": "项目建设内容和资金使用说明。" * 22, "h": "说明"},
+        ]
+        session.add(
+            AttachmentTextSegment(
+                version_id=version.id,
+                n=i,
+                kind="row",
+                text=" | ".join(c["t"] for c in cells),
+                cells=cells,
+            )
+        )
+    version.segments = 30
+    session.commit()
+    first = client.get(path(doc, att)).json()
+    assert first["status"] == "ok" and first["totalSegments"] == 30 and first["pages"] >= 3
+    names, page, pages = [], first, 0
+    while True:
+        pages += 1
+        assert page["page"] == pages and len(page["segments"]) < readers.PAGE_SEGMENTS
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES
+        names.extend(s["cells"][0]["t"] for s in page["segments"])
+        if page["nextCursor"] is None:
+            break
+        page = client.get(
+            path(doc, att), params={"cursor": page["nextCursor"], "revision": first["revision"]}
+        ).json()
+    assert pages == first["pages"]
+    assert names == [f"企业{i}" for i in range(1, 31)]
