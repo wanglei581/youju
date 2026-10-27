@@ -1267,7 +1267,8 @@ def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
     assert "pay-reconcile" in jobs.OVERVIEW_JOBS
     for name, content in {
         "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
-        "flock": '#!/bin/sh\nshift 4\nexec "$@"\n',
+        # advisor-run 等锁写成 -w 55 -E 75 <锁>，其他任务是 -n -E 75 <锁>
+        "flock": '#!/bin/sh\ncase "$1" in -w) shift 5 ;; *) shift 4 ;; esac\nexec "$@"\n',
         "youju": '#!/bin/sh\necho "$*" >> "$CALLS"\n[ "$1" = job-start ] && echo 42\nexit 0\n',
     }.items():
         (tmp_path / name).write_text(content)
@@ -1275,6 +1276,7 @@ def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
     script = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
     script = script.replace(". /app/backend/deploy/env.sh", ":").replace("cd /app/backend", ":")
     script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
+    script = script.replace("/tmp/youju-", f"{tmp_path}/youju-")
     (tmp_path / "job.sh").write_text(script)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(tmp_path / "c")}
     result = subprocess.run(["sh", str(tmp_path / "job.sh"), job], env=env, timeout=30)
