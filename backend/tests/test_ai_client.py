@@ -684,3 +684,71 @@ def test_non_stream_is_unchanged_by_default():
     )
     assert client.complete_json("s", "u") == {"ok": True}
     assert "stream" not in seen and "stream_options" not in seen
+
+
+# ---- 收到的文字先交给 on_text 查一遍（问这份通知的本地高危词库，问一问开发设计第九节第 6 条） ----
+
+
+class Stop(Exception):
+    pass
+
+
+def test_stream_gives_on_text_everything_received_so_far():
+    """流式：每收到一段就把已经收到的全部文字交给 on_text（跨段的词也查得到）；思考内容不算。"""
+    seen = []
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(
+            lambda request: sse(
+                delta(reasoning="先想一想"), delta('{"a": '), delta(""), delta('"甲乙"}', "stop")
+            )
+        ),
+        stream=True,
+    )
+    assert client.complete_json("s", "u", on_text=seen.append) == {"a": "甲乙"}
+    assert seen == ['{"a": ', '{"a": "甲乙"}']
+
+
+def test_stream_stops_as_soon_as_on_text_raises():
+    """on_text 抛出异常：立刻断开、不再往下收，异常原样往外抛，不当作模型出错、不重试。"""
+    seen = []
+    calls = []
+
+    def check(text):
+        seen.append(text)
+        if "乙" in text:
+            raise Stop
+
+    def handler(request):
+        calls.append(1)
+        return sse(delta('{"a": "甲'), delta("乙"), delta('丙"}', "stop"))
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(handler),
+        stream=True,
+        max_retries=2,
+        sleep=lambda _: None,
+    )
+    with pytest.raises(Stop):
+        client.complete_json("s", "u", on_text=check)
+    assert seen == ['{"a": "甲', '{"a": "甲乙']  # 丙那一段没收
+    assert calls == [1] and client.totals["errors"] == 0
+
+
+def test_non_stream_gives_on_text_the_whole_reply_once():
+    seen = []
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen",
+        transport=httpx.MockTransport(lambda request: response('{"ok": true}')),
+    )
+    assert client.complete_json("s", "u", on_text=seen.append) == {"ok": True}
+    assert seen == ['{"ok": true}']
+    with pytest.raises(Stop):
+        client.complete_json("s", "u", on_text=lambda text: (_ for _ in ()).throw(Stop()))

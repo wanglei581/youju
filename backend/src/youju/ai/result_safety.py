@@ -20,6 +20,10 @@ admin 处理任务时（advisor_tasks.process_ai），结果存进去之前先�
 - 接口出错、超时：暂时性的（网络、超时、5xx、返回看不懂、errcode -1 系统繁忙、44991 频率限制）
   原地重试，最多查 3 次；还不行，或者是重试也没用的错误（权限、用户两小时内没访问过、当天次数
   用完等），抛 wx_security.CheckDown：任务直接失败、退回次数，不重排（重排要重新调模型）。
+
+问这份通知（ai/ask.py，问一问开发设计第九节第 6 条）的回答也用 check：查的是逐字核对、扩成整句
+以后要显示的原句（条目的 text）；处置记录另记这一问的编号（turn_id）。模型的输出在流式接收时
+已经边收边过了一遍本地词库（ask._guard），这里查的是扩成整句以后的原句。
 """
 
 from __future__ import annotations
@@ -28,12 +32,12 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import BigInteger, cast, update
+from sqlalchemy import BigInteger, cast, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from youju import safety_words, wx_security
-from youju.models import AdvisorTask, AISafetyHit, AppKey, User
+from youju.models import AdvisorTask, AIChatTurn, AISafetyHit, AppKey, User
 
 log = logging.getLogger(__name__)
 
@@ -102,13 +106,14 @@ class RecentlyBlocked(ResultBlocked):
 
 
 def quotes(result: dict | None, field: str) -> list[tuple[str | None, str]]:
-    """结果里显示给用户的原句（段号, 原句），去重后按出现的先后。"""
+    """结果里显示给用户的原句（段号, 原句），去重后按出现的先后。问这份通知的原句没有 refs，
+    段号就是条目自己的 sid（ai/ask.py）。"""
     seen: dict[str, str | None] = {}
     for item in (result or {}).get(field) or []:
         if not isinstance(item, dict):
             continue
         refs = [ref for ref in item.get("refs") or [] if isinstance(ref, dict)]
-        first = refs[0].get("pid") if refs else None
+        first = refs[0].get("pid") if refs else item.get("sid")
         for sid, value in (
             (first, item.get("text")),
             *((r.get("pid"), r.get("quote")) for r in refs),
@@ -181,9 +186,21 @@ def _record(
             text=None,
             document_id=doc_id,
             task_id=task.id,
+            turn_id=_turn_id(session, task),
             expires_at=stamp + HIT_RETENTION,
         )
     )
+
+
+def _turn_id(session: Session, task: AdvisorTask) -> int | None:
+    """问这份通知的回答被拦时记是哪一问（只记编号）：任务输入里有（7 天后清空），
+    没有就按任务编号找。"""
+    if task.kind != "ask":
+        return None
+    turn_id = (task.input_json or {}).get("turn_id")
+    if isinstance(turn_id, int):
+        return turn_id
+    return session.scalar(select(AIChatTurn.id).where(AIChatTurn.task_id == task.id))
 
 
 def record_local(

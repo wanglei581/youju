@@ -1517,7 +1517,10 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
     with session_factory()() as session:
         row = heartbeat.beat(session, settings, "admin", stamp)
         heartbeat.check_and_alert(session, settings, stamp)
-        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+        print(
+            f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务，"
+            f"问这份通知{'能' if row.ask_ready else '不能'}用"
+        )
     return 0
 
 

@@ -553,7 +553,7 @@ def test_hit_record_failure_still_blocks(client, session, find, wechat, monkeypa
         ("find", "字" * 101, "CHAT_TEXT"),
         ("find", "字" * 100, None),
         ("ask", "字" * 201, "CHAT_TEXT"),
-        ("ask", "字" * 200, "AI_UNAVAILABLE"),
+        ("ask", "字" * 200, "CHAT_DOC_REQUIRED"),  # 长度过了；问这份通知要带通知（PR-3）
     ],
 )
 def test_length(client, session, skill, text, expected):
@@ -562,7 +562,7 @@ def test_length(client, session, skill, text, expected):
         assert response.status_code == 200
     else:
         assert code(response) == expected
-        assert response.status_code == (422 if expected == "CHAT_TEXT" else 429)
+        assert response.status_code == 422
 
 
 def test_rate_limit_counts_blocked(client, session, monkeypatch, find):
@@ -574,7 +574,7 @@ def test_rate_limit_counts_blocked(client, session, monkeypatch, find):
     for _ in range(5):
         assert code(send(client, "13812345678")) == "CHAT_SENSITIVE"
     for _ in range(5):
-        assert code(send(client, "问", skill="ask")) == "AI_UNAVAILABLE"
+        assert code(send(client, "问", skill="ask")) == "CHAT_DOC_REQUIRED"
     response = send(client, "第二十一问")
     assert response.status_code == 429 and code(response) == "CHAT_TOO_FAST"
     clock[0] += 61
@@ -808,7 +808,7 @@ def test_old_task_endpoints_ignore_ask(client, settings, session):
 def test_capabilities(client, session):
     caps = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
     assert caps["chat"] is True and caps["chatConsent"] is True and caps["askTriesFull"] is False
-    assert "ask" not in caps["features"]  # PR-3 才注册
+    assert "ask" not in caps["features"]  # 单独线路（YOUJU_AI_ADVISOR_*）没配齐时不给
     uid = user_id(session)
     session.add(
         AdvisorUsage(
@@ -1090,6 +1090,7 @@ def test_question_text_only_read_where_allowed():
         "public_snapshot.py",  # 写明不导出
         # 下面几处只碰违规记录的层、原因、编号和到期时间，不读那句话（text）
         "ai/result_safety.py",  # AI 结果被拦时写记录（不存文字）
+        "ai/ask.py",  # 处理问这份通知：读这一问和前两问的问题交给模型，按编号核对这一问还在
         "advisor_tasks.py",  # 到期删除、1 天内不再查
         "digest.py",  # 运维日报只报次数和通知编号
     }

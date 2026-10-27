@@ -8,9 +8,13 @@
 - 发一问先按请求编号找原来那一问，找到就原样返回，不再做下面的检查；没有才按顺序查：
   限频 → 长度 → 号码 → 本地高危词库 → 问某家企业在不在名单里 → 微信内容安全（第九节）。
   被拦下的都不建行、不扣次数；内容安全拦下的另记违规记录。
+- 问这份通知（skill=ask，第六节第 3 条）：本机的检查过了，再看带没带通知、这份能不能问（含原文链接
+  失效）、后台能不能处理（单独线路）、这条对话上一问出没出结果，然后才交微信；锁用户行、锁里再按
+  请求编号找一次、锁对话行，规则先挡（指代对不上、要代写，当场回答、不建任务），最后在全站上限的锁
+  里查全站用量、占 5 次那本和 20 问那本，建这一问和任务（202）。回答由 ai/ask.py 出，三个返回一问的
+  地方（发一问、取对话、轮询）都经它，读的时候再核一次。
 - 用户打的字只存在 ai_chat_turns.question（和找通知回答里的 keywords、docNumber）；
   日志、审计里只记编号、技能和错误代码，不记问题文字（第十节第 6 条）。
-- 问这份通知（skill=ask）由 PR-3 接上；现在提交回 AI_UNAVAILABLE，能力接口也不给 ask。
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from youju import access_log, chat_find, chat_guard, chat_store, dedup, safety_words, wx_security
 from youju import advisor_tasks as service
-from youju.ai import heartbeat, interpret, result_safety
+from youju.ai import ask, content, heartbeat, interpret, result_safety
 from youju.api import advisor as advisor_api
 from youju.api import v1
 from youju.api.me import KnownUserDep, UserDep, request_openid
@@ -182,8 +186,15 @@ def _tasks_of(session: Session, turns: list[AIChatTurn]) -> dict[int, AdvisorTas
 
 
 def _turn_out(
-    session: Session, turn: AIChatTurn, task: AdvisorTask | None, *, stamp: datetime
+    session: Session,
+    turn: AIChatTurn,
+    task: AdvisorTask | None,
+    *,
+    stamp: datetime,
+    cache: dict | None = None,
 ) -> dict:
+    """一问（第五节"一问的格式"）。问这份通知的回答经 ask.render 出（读的时候再核一次）；
+    cache：同一次请求里同一份通知的内容只取一次。"""
     status = chat_store.turn_status(turn, task)
     out = {
         "id": turn.id,
@@ -203,10 +214,9 @@ def _turn_out(
         out["answer"] = chat_find.render(
             session, turn.answer_json or {}, today=service.usage_day(stamp)
         )
-    elif turn.answer_json is not None:
-        # 规则当场答的（要问清楚、范围外、不能代写），PR-3 接上
-        out["answer"] = turn.answer_json
-    elif task is not None and task.status == "queued":
+        return out
+    out.update(ask.render(session, turn, task, stamp=stamp, cache=cache))
+    if turn.answer_json is None and task is not None and task.status == "queued":
         out.update(
             service.queue_info(session, task, getattr(get_settings(), "ai_advisor_concurrency", 3))
         )
@@ -234,12 +244,16 @@ def _chat_out(
     more = len(turns) > PAGE_SIZE
     turns = sorted(turns[:PAGE_SIZE], key=lambda turn: turn.seq)
     tasks = _tasks_of(session, turns)
+    cache: dict = {}  # 同一份通知的内容这次只取一次（第五节 GET /chat）
     return {
         "id": chat.id,
         **_doc_out(session, chat),
         "createdAt": _iso(chat.created_at),
         "updatedAt": _iso(chat.updated_at),
-        "turns": [_turn_out(session, turn, tasks.get(turn.task_id), stamp=stamp) for turn in turns],
+        "turns": [
+            _turn_out(session, turn, tasks.get(turn.task_id), stamp=stamp, cache=cache)
+            for turn in turns
+        ],
         "hasMore": more,
     }
 
@@ -347,6 +361,157 @@ def _replay(session: Session, turn: AIChatTurn, chat: AIChat, body: TurnIn, resp
     return {"chatId": chat.id, "turn": _turn_out(session, turn, task, stamp=stamp)}
 
 
+def _ask_busy(session: Session, chat_id: int) -> bool:
+    """这条对话里有"问这份通知"还没出结果（任务排队中或处理中）。"""
+    return (
+        session.scalar(
+            select(AIChatTurn.id)
+            .join(AdvisorTask, AdvisorTask.id == AIChatTurn.task_id)
+            .where(AIChatTurn.chat_id == chat_id, AdvisorTask.status.in_(chat_store.IN_FLIGHT))
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _ask_precheck(session: Session, user: User, body: TurnIn, stamp: datetime) -> content.Content:
+    """问这份通知交微信之前的检查（第六节第 3 条第 1、2 步）：带了通知，这份能问（同列表、详情、
+    提交解读的判断，原文链接确认失效的是 link_gone），后台能处理（admin 的单独线路配齐了）；
+    这条对话里上一问还没出结果的先挡一次（锁里还会再查）。取到的内容留给规则先挡用。"""
+    if body.docId is None:
+        raise _refuse(422, "CHAT_DOC_REQUIRED", ask.NO_DOC)
+    try:
+        loaded = content.load(session, body.docId)
+    except interpret.InterpretRefusal as exc:
+        reason = exc.code or "unavailable"
+        message = str(exc)
+        if reason == "link_gone":
+            gone = v1.link_gone_date(
+                session.scalar(select(Document.link_gone_at).where(Document.id == body.docId))
+            )
+            if gone:
+                message = ask.LINK_GONE_REFUSED.format(date=ask.date_text(gone))
+        raise _refuse(422, "AI_NOT_ELIGIBLE", message, reason=reason) from None
+    if not heartbeat.ask_ready(session, get_settings(), stamp):
+        raise _refuse(429, "AI_UNAVAILABLE", ask.UNAVAILABLE)
+    chat = _chat_for(session, user.id, body.docId)
+    if chat is not None and _ask_busy(session, chat.id):
+        raise _refuse(409, "ASK_IN_PROGRESS", ask.IN_PROGRESS)
+    return loaded
+
+
+def _create_ask(
+    session: Session,
+    request: Request,
+    response: Response,
+    user: User,
+    body: TurnIn,
+    text: str,
+    key: str,
+    stamp: datetime,
+    loaded: content.Content,
+) -> dict:
+    """问这份通知（第六节第 3 条第 3–7 步）：锁用户行 → 锁里再按请求编号找 → 找到或建好对话并锁住
+    → 上一问还没出结果 → 规则先挡 → 全站上限的锁里查全站用量、占 5 次那本和 20 问那本 → 先建这一问、
+    再建任务。任一样占不上就整笔回滚，不建任务、不扣次数。"""
+    settings = get_settings()
+    session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
+    found = _turn_by_key(session, user.id, key, stamp)
+    if found is not None:
+        session.rollback()  # 放开用户锁再拼回答
+        return _replay(session, *found, body, response, stamp)
+    chat = _chat_for(session, user.id, body.docId, lock=True)
+    if chat is None:
+        chat = AIChat(user_id=user.id, doc_key=body.docId, created_at=stamp, updated_at=stamp)
+        session.add(chat)
+        session.flush()
+    elif _ask_busy(session, chat.id):
+        # 不同时排两问，追问的上下文才不会错位
+        session.rollback()
+        raise _refuse(409, "ASK_IN_PROGRESS", ask.IN_PROGRESS)
+    seq = (
+        session.scalar(select(func.max(AIChatTurn.seq)).where(AIChatTurn.chat_id == chat.id)) or 0
+    ) + 1
+    versions = loaded.versions()
+    rule, _ = ask.rules(text, ask.previous(session, chat.id, seq, stamp), versions)
+    turn = AIChatTurn(
+        chat_id=chat.id,
+        seq=seq,
+        skill="ask",
+        question=text,
+        doc_id=body.docId,
+        idempotency_key=key,
+        created_at=stamp,
+        expires_at=stamp + chat_store.TURN_RETENTION,
+    )
+    chat.updated_at = stamp
+    task = None
+    try:
+        if rule is not None:
+            # 规则先挡下的（指代对不上、要代写）：当场回答，回答和这时的内容版本存在这一问里；
+            # 不建任务、不扣次数
+            turn.answer_json = {
+                "type": "ask",
+                **rule,
+                "versions": versions,
+                "generated_at": stamp.isoformat(),
+            }
+            if turn.answer_json.get("basis") is None:
+                turn.answer_json.pop("basis", None)
+            session.add(turn)
+            session.commit()
+        else:
+            day = service.usage_day(stamp)
+            with service.ai_cap_lock(session):
+                used = max(
+                    service.global_ai_usage(session, day), service.global_ai_calls(session, day)
+                )
+                if used >= settings.ai_advisor_daily_cap:
+                    raise _refuse(429, "AI_DAILY_CAP", ask.SITE_FULL)
+                if not service.reserve_usage(session, user.id, ask.ASK.kind, day):
+                    raise _refuse(429, "ASK_DAILY_LIMIT", ask.DAILY_LIMIT)
+                if not service.reserve_usage(
+                    session, user.id, chat_store.ASK_TRY, day, limit=chat_store.ASK_TRY_LIMIT
+                ):
+                    raise _refuse(429, "ASK_DAILY_TRIES", ask.DAILY_TRIES)
+                session.add(turn)
+                session.flush()
+                task = AdvisorTask(
+                    user_id=user.id,
+                    usage_source="free",
+                    kind=ask.ASK.kind,
+                    status="queued",
+                    input_json={"doc_id": body.docId, "turn_id": turn.id},
+                    row_count=0,
+                    # 用问次编号生成（advisor_tasks 要求非空、按人唯一）
+                    idempotency_key=f"chat-turn:{turn.id}",
+                    created_at=stamp,
+                    expires_at=stamp + service.FILE_RETENTION,
+                )
+                session.add(task)
+                session.flush()
+                turn.task_id = task.id
+                session.commit()
+    except service.AdvisorBusy:
+        session.rollback()
+        raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
+    except HTTPException:
+        session.rollback()
+        raise
+    except IntegrityError:
+        # 整个回滚（占的次数随之撤销）：是这一问自己的请求编号重复（两个一样的请求同时到），返回
+        # 先建成的那一问；是任务的编号撞了（这个人自己用解读接口发过 chat-turn: 开头的请求编号），
+        # 回 409，请小程序换个请求编号重发
+        session.rollback()
+        found = _turn_by_key(session, user.id, key, stamp)
+        if found is None:
+            raise _refuse(409, "CHAT_KEY_REUSED", "请求编号冲突，请重新发送") from None
+        return _replay(session, *found, body, response, stamp)
+    request.state.audit = {"action": "chat_turn_create", "turn_id": turn.id, "skill": turn.skill}
+    response.status_code = 202
+    return {"chatId": chat.id, "turn": _turn_out(session, turn, task, stamp=stamp)}
+
+
 @router.post("/chat/turns", dependencies=[Depends(_visible)])
 def create_turn(
     body: TurnIn,
@@ -356,7 +521,7 @@ def create_turn(
     user: UserDep,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict:
-    """发一问。找通知当场答完（200）；问这份通知建任务（202，PR-3）。"""
+    """发一问。找通知当场答完（200）；问这份通知建任务（202，规则先挡下的当场回答）。"""
     _authorize(user)
     if not chat_store.consented(user):
         raise _refuse(403, "CHAT_CONSENT", "请先阅读并同意问一问使用说明")
@@ -374,13 +539,14 @@ def create_turn(
         raise _refuse(422, "CHAT_TEXT", "请先输入要问的内容。")
     if len(text) > MAX_TEXT[body.skill]:
         raise _refuse(422, "CHAT_TEXT", "最多 200 字（找通知最多 100 字）。")
-    # 本机的检查两个技能都做（号码、高危词、问名单）；问这份通知的后台由 PR-3 接上，
-    # 在这之前查完本机的就不收，也不把字发给微信或模型
+    # 本机的检查两个技能都做（号码、高危词、问名单）
     _check_local(session, user, body.skill, text, stamp)
+    loaded = None
     if body.skill == "ask":
-        raise _refuse(429, "AI_UNAVAILABLE", heartbeat.UNAVAILABLE)
+        # 问这份通知不收的（没带通知、这份不能问、后台处理不了、上一问没完）先挡下，不把字交给微信
+        loaded = _ask_precheck(session, user, body, stamp)
     # 带通知新建对话时这份要是公开的；已有对话的照常能发（通知下架了，找通知照常）
-    if (
+    elif (
         body.docId is not None
         and _chat_for(session, user.id, body.docId) is None
         and not _public_document(session, body.docId)
@@ -390,6 +556,8 @@ def create_turn(
             422, "CHAT_DOC_UNAVAILABLE", "这份通知现在看不了，换一份通知，或用“找通知”找别的。"
         )
     _check_wechat(session, user, body.skill, text, stamp)
+    if body.skill == "ask":
+        return _create_ask(session, request, response, user, body, text, key, stamp, loaded)
     try:
         answer = chat_find.run(session, text, today=service.usage_day(stamp))
     except Exception as exc:  # noqa: BLE001 - 出错只记类型，异常信息里可能带用户打的字
