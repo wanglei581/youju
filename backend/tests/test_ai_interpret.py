@@ -5,7 +5,7 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import httpx
@@ -883,6 +883,301 @@ def test_live_worker_records_duration_and_call_day(session, settings, doc):
     session.refresh(row)
     assert row.finished_at > row.started_at
     assert service.global_ai_calls(session, service.usage_day(datetime.now(UTC))) == 1
+
+
+def _finish(work, task, **kwargs):
+    task.status, task.finished_at = "done", NOW
+    work.commit()
+    return True
+
+
+def _no_sleep(_seconds):
+    raise AssertionError("不该等")
+
+
+def test_worker_polls_for_new_ai_tasks_within_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 每分钟的 advisor-run：队里空了不马上退出，隔几秒再领，刚提交的几秒内就开始（10/27 实测排队 48.6 秒）
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="poll-first")
+    second = direct_task(session, doc, key="poll-second")
+    first.status, second.status = "queued", "failed"  # 第二个先停着，第一次空等时才排上
+    session.commit()
+    first_id, second_id = first.id, second.id
+    seen = []
+
+    def process(work, task, **kwargs):
+        seen.append(task.id)
+        return _finish(work, task)
+
+    clock = [100.0]
+    naps = []
+
+    def sleep(seconds):
+        naps.append(seconds)
+        clock[0] += seconds
+        if len(naps) == 1:
+            with session_factory() as other:
+                other.get(AdvisorTask, second_id).status = "queued"
+                other.commit()
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        poll_interval=3,
+        clock=lambda: clock[0],
+        sleep=sleep,
+    )
+    assert seen == [first_id, second_id]
+    assert (result["processed"], result["done"]) == (2, 2)
+    # 不睡过头：最后一次只睡到点（2 秒），正好在 50 秒时再看一次，没有就结束
+    assert naps[-1] == 2 and set(naps[:-1]) == {3}
+    assert clock[0] == 150
+
+
+def _park_then_queue(session_factory, task_id):
+    with session_factory() as other:
+        other.get(AdvisorTask, task_id).status = "queued"
+        other.commit()
+
+
+def test_worker_keeps_draining_after_poll_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 50 秒只管空等：过了 50 秒队里还有任务照常领（和原来一样领到空），不留给下一轮
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="drain-first")
+    late = direct_task(session, doc, key="drain-late")
+    first.status, late.status = "queued", "failed"
+    session.commit()
+    first_id, late_id = first.id, late.id
+    clock = [100.0]
+
+    def process(work, task, **kwargs):
+        clock[0] += 60  # 做得久，跨过了 50 秒
+        if task.id == first_id:
+            _park_then_queue(session_factory, late_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        clock=lambda: clock[0],
+        sleep=_no_sleep,
+    )
+    assert result["processed"] == 2
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "done"
+
+
+def test_worker_stops_claiming_after_claim_limit(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 开始满 claim_limit 秒不再领新的，手上的做完就结束：一轮不会一直跑下去，
+    # 不到 job.sh 当作"卡住了"的 10 分钟；剩下的留给下一轮
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="limit-first")
+    late = direct_task(session, doc, key="limit-late")
+    first.status, late.status = "queued", "failed"
+    session.commit()
+    late_id = late.id
+    clock = [100.0]
+
+    def process(work, task, **kwargs):
+        clock[0] += 250  # 超过 240 秒
+        _park_then_queue(session_factory, late_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        claim_limit=240,
+        clock=lambda: clock[0],
+        sleep=_no_sleep,
+    )
+    assert result["processed"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "queued"
+
+
+def test_idle_worker_keeps_polling_while_another_is_busy(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 一个线程在做长任务时，这一轮反正结束不了：过了 50 秒，空闲的线程也接着隔几秒看，
+    # 新提交的马上领走，不用等长任务做完、再等下一轮（Grok 10/27 审阅）
+    settings.ai_advisor_concurrency = 2
+    long = direct_task(session, doc, key="busy-long")
+    late = direct_task(session, doc, key="busy-late")
+    long.status, late.status = "queued", "failed"
+    session.commit()
+    long_id, late_id = long.id, late.id
+    late_done = Event()
+    clock = [100.0]
+    clock_lock = Lock()
+    queued = []
+
+    def process(work, task, **kwargs):
+        if task.id == long_id:
+            # 长任务一直做到新任务被另一个线程做完
+            assert late_done.wait(timeout=10), "空闲线程没有领到新任务"
+        done = _finish(work, task)
+        if task.id == late_id:
+            late_done.set()
+        return done
+
+    def sleep(seconds):
+        with clock_lock:
+            clock[0] += seconds
+            if clock[0] >= 160 and not queued:  # 过了 50 秒才有人提交
+                queued.append(True)
+                _park_then_queue(session_factory, late_id)
+
+    def now():
+        with clock_lock:
+            return clock[0]
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        poll_interval=3,
+        clock=now,
+        sleep=sleep,
+    )
+    assert (result["processed"], result["done"]) == (2, 2)
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "done"
+    assert now() >= 160
+
+
+def _data_task(session, doc, key):
+    task = direct_task(session, doc, key=key)
+    task.kind = "compare"
+    session.commit()
+    return task
+
+
+def test_data_tools_keep_ai_polling_and_respect_claim_limit(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 数据工具（批量工具）由入口会话处理：它在跑的整段时间都算"有人在忙"，过了 50 秒空闲的
+    # AI 线程也接着看，新提交的 AI 任务不用等批量任务做完（Grok 10/27 第二轮）
+    settings.advisor_enabled = True
+    settings.ai_advisor_concurrency = 1
+    data = _data_task(session, doc, "data-long")
+    late = direct_task(session, doc, key="data-late-ai")
+    data.status, late.status = "queued", "failed"
+    session.commit()
+    late_id = late.id
+    clock = [100.0]
+    clock_lock = Lock()
+    late_queued, late_done = Event(), Event()
+
+    def advance(seconds):
+        with clock_lock:
+            clock[0] += seconds
+
+    def now():
+        with clock_lock:
+            return clock[0]
+
+    def process(work, task, **kwargs):
+        if task.kind == "compare":
+            advance(70)  # 批量任务做得久，跨过了 50 秒
+            _park_then_queue(session_factory, late_id)
+            late_queued.set()
+            assert late_done.wait(timeout=10), "批量任务在跑时，空闲的 AI 线程没有领到新任务"
+        done = _finish(work, task)
+        if task.id == late_id:
+            late_done.set()
+        return done
+
+    def sleep(seconds):
+        advance(seconds)
+        late_queued.wait(timeout=5)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, poll_window=50, clock=now, sleep=sleep
+    )
+    assert (result["processed"], result["done"]) == (2, 2)
+
+    # 批量任务同样开始满 claim_limit 秒不再领新的：剩下的留给下一轮
+    settings.ai_advisor_enabled = False
+    first = _data_task(session, doc, "data-limit-1")
+    second = _data_task(session, doc, "data-limit-2")
+    first.status, second.status = "queued", "failed"
+    session.commit()
+    second_id = second.id
+    clock[0] = 100.0
+
+    def slow(work, task, **kwargs):
+        advance(250)
+        _park_then_queue(session_factory, second_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", slow)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, poll_window=50, clock=now, sleep=_no_sleep
+    )
+    assert result["processed"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, second_id).status == "queued"
+
+
+def test_worker_without_poll_window_or_after_cap_does_not_wait(session, settings, doc, monkeypatch):
+    # 不开轮询（测试、手动 --once）和原来一样，排空就结束；领满 max_tasks 也不再空等
+    settings.ai_advisor_concurrency = 1
+    for key in ("once-1", "once-2"):
+        direct_task(session, doc, key=key).status = "queued"
+    session.commit()
+    monkeypatch.setattr(service, "process_task", _finish)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, max_tasks=1, poll_window=50, sleep=_no_sleep
+    )
+    assert result["processed"] == 1
+    assert (
+        service.run_advisor_tasks(session, settings=settings, stamp=NOW, sleep=_no_sleep)[
+            "processed"
+        ]
+        == 1
+    )
+    # AI 没开时也不轮询（数据工具也关着：直接返回）
+    settings.ai_advisor_enabled = False
+    assert (
+        service.run_advisor_tasks(
+            session, settings=settings, stamp=NOW, poll_window=50, sleep=_no_sleep
+        )["processed"]
+        == 0
+    )
+
+
+def test_advisor_run_command_polls_unless_once(session_factory, monkeypatch):
+    from youju import cli
+
+    seen = []
+
+    def fake_run(session, **kwargs):
+        seen.append(kwargs)
+        return {"processed": 0}
+
+    monkeypatch.setattr(service, "run_advisor_tasks", fake_run)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    assert cli.main(["advisor-run"]) == 0
+    assert cli.main(["advisor-run", "--once"]) == 0
+    assert [kwargs["poll_window"] for kwargs in seen] == [service.POLL_WINDOW, 0.0]
 
 
 def test_public_document_ai_flags_share_prepare_checks(client, session, settings, doc):
