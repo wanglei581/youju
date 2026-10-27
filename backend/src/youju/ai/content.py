@@ -148,7 +148,8 @@ class Content:
         ]
 
     def scope_text(self) -> str:
-        """读的范围，给用户看。"""
+        """读的范围，给用户看。读附件时（CONFIG_ATTACH）的说法由附件读入第二步定（要加附件取于
+        哪天、没读的原因），在那之前不给用户看。附件数按详情页列出的（本份通知自己的附件）。"""
         if self.config == CONFIG_BODY:
             if not self.attachments_total:
                 return "读了：正文（这份通知没有附件）"
@@ -290,7 +291,13 @@ def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None
         if whole.find(wanted, at + 1) >= 0:
             return None, "ambiguous"
         first, last = whole_offsets[at][0], whole_offsets[at + len(wanted) - 1][1]
-        segment = next(s for s in index["by_source"][key] if s.start <= first < s.end)
+        # 命中的开头落在段外（以后附件段与段之间若有别的字）时当作对不上，不抛异常；
+        # 正文段与段之间只有换行，命中的开头一定在段里，和原来一样
+        segment = next(
+            (s for s in index["by_source"].get(key, ()) if s.start <= first < s.end), None
+        )
+        if segment is None:
+            return None, "not_found"
     source, _, _, sentences = index["sources"][key]
     # 句界在整个来源上算，超长句即使被硬切分段仍按同一句回填。
     covered = [(a, b) for a, b in sentences if a < last and b > first]

@@ -1,7 +1,8 @@
 """取内容（youju/ai/content.py，问一问开发设计第十一节）：这一步只取正文，行为和原来一模一样。
 
 - 逐字核对：新的 interpret.validate 改用 content.locate，和改之前的写法（下面原样抄的
-  _legacy_validate）在固定用例和几千组随机用例上逐项相同；
+  _legacy_validate）在固定用例和随机用例（解读、对照各 400 份随机正文，每份最多 16 条引用）上
+  逐项相同；
 - 取内容：段落、正文指纹、用的哪一份正文和原来 prepare 里的算法相同，附件一律记"没读"；
 - 两个来源（正文、附件）的句子不会互相算错。
 """
@@ -169,7 +170,8 @@ def test_validate_same_as_before_on_fixed_cases(skill):
     )
 
 
-def test_validate_same_as_before_on_random_cases():
+@pytest.mark.parametrize("skill", [interpret.INTERPRET, CLAUSE])
+def test_validate_same_as_before_on_random_cases(skill):
     rng = random.Random(20261027)
     clauses = [
         "申报单位应在规定时间内提交材料",
@@ -206,11 +208,21 @@ def test_validate_same_as_before_on_random_cases():
             refs = [_ref(pid, quote)]
             if rng.random() < 0.2:
                 refs.append(_ref(rng.choice(paragraphs)["pid"], rng.choice(clauses)))
-            items.append({"type": rng.choice(interpret.TYPES + ("别的",)), "refs": refs})
+            item = {"type": rng.choice(skill.types + ("别的",)), "refs": refs}
+            if skill.keys:
+                item["keys"] = rng.sample([*skill.keys, "不认识"], rng.randint(0, 3))
+            items.append(item)
         if rng.random() < 0.3:
             items.append(dict(rng.choice(items)))
         payload = {"items": items}
-        assert interpret.validate(payload, paragraphs) == _legacy_validate(payload, paragraphs)
+        assert interpret.validate(payload, paragraphs, skill=skill) == _legacy_validate(
+            payload, paragraphs, skill=skill
+        )
+
+
+def test_validate_same_as_before_without_paragraphs():
+    payload = {"items": [{"type": "对象", "refs": [_ref("P001", "具有独立法人资格的企业")]}]}
+    assert interpret.validate(payload, []) == _legacy_validate(payload, [])
 
 
 def _attachment(text):
@@ -366,6 +378,7 @@ def test_load_takes_body_like_before_and_marks_attachments_unread(session, doc):
     [
         ("missing", "unavailable"),
         ("list", "list"),
+        ("other", "kind"),
         ("source", "source"),
         ("gone", "link_gone"),
         ("empty", "no_body"),
@@ -379,6 +392,8 @@ def test_check_gives_the_same_reasons(session, doc, change, code):
         doc_id = doc.id
         if change == "list":
             doc.kind_override = "名单"
+        elif change == "other":
+            doc.kind_override = "其他"
         elif change == "source":
             doc.source.rights_level = 2
         elif change == "gone":
@@ -394,3 +409,37 @@ def test_check_gives_the_same_reasons(session, doc, change, code):
         # 不看原网页撤下了没有的场合（已有的结果、排队的任务、列表预算）照常能做
         content.check(session, doc_id, link=False)
         assert content.load(session, doc_id, link=False).doc_id == doc.id
+
+
+def test_old_eligible_body_still_gives_the_four_values(session, doc):
+    # 旧的调用（interpret.eligible_body）转调 content，照样给（通知、类型、原文、遮过号码的正文）
+    found, kind, raw, body = interpret.eligible_body(session, doc.id)
+    assert (found.id, kind, raw) == (doc.id, "申报通知", FIXED_BODY)
+    assert body == v1.redact_sensitive(FIXED_BODY)
+
+
+def test_load_prefers_its_own_body_in_a_merged_group(session, doc):
+    from youju.models import DocumentMerge
+
+    other = Document(
+        source_id=doc.source_id,
+        title=doc.title,
+        kind_override="申报通知",
+        url="https://official.test/content-2",
+        url_key="official.test/content-2",
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(other)
+    session.flush()
+    session.add(
+        DocumentDetail(document_id=other.id, body_text=FIXED_BODY, fetched_at=NOW, status="ok")
+    )
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="test")
+    )
+    session.commit()
+    loaded = content.load(session, doc.id)
+    # 组里两份正文一样：用本份的（原来 prepare 的排法：本份在前，再按编号）
+    assert loaded.body_id == doc.id
+    assert sorted(loaded.document_ids) == sorted([doc.id, other.id])
