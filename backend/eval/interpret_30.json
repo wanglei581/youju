@@ -1,0 +1,729 @@
+{
+  "name": "interpret_30",
+  "version": 1,
+  "skill": "interpret",
+  "created_at": "2026-10-28",
+  "snapshot": "线上公开内容快照 youju-public-20261027（2026-10-27 17:05 北京时间，迁移 0041），本机库 youju_eval30",
+  "questions_by": "Grok 额度用完，由 Claude 起草；agy 复核一轮（10/28）：Q17 改问法、只要答到一句；Q15、Q18、Q20、Q21 两可的类别另外也算对（also）",
+  "gold_by": "Claude 逐篇读 interpret.prepare 的段落，答案句按 content.locate 扩成整句",
+  "notes": [
+    "题目用企业申报经办人、申报服务顾问的口吻；类别和数量：时间 7、条件 6、材料 6、对象 4、支持 4、方式 3。",
+    "每题对应一篇真实的申报通知，答案在正文里；gold 是能回答这道题的原句（sid 是这句开头所在的段）。",
+    "need=any：答到其中一句就算；need=all：每一句都要答到（清单类问题）。",
+    "金句都是原样的公开政府文字（已按入库规则脱敏），不含个人信息；库刷新后按 url_key 重新对上通知。"
+  ],
+  "documents": [
+    {
+      "doc_id": 34980,
+      "url_key": "kxjs.tj.gov.cn/ZWGK4143/TZGG2079/202610/t20261009_7397376.html",
+      "title": "市科技局关于开展2026年天津市科技型企业孵化器申报工作的通知",
+      "province": "天津",
+      "dept": "天津市科学技术局",
+      "publish_date": "2026-10-09",
+      "body_length": 1165,
+      "band": "短文",
+      "paragraph_count": 24,
+      "attachments": 2,
+      "body_hash": "f6fc307b0063b34750bad98f96913a34ebd44c61f2a17e02b463bb9fc562acae"
+    },
+    {
+      "doc_id": 311,
+      "url_key": "kjt.nmg.gov.cn/kjdt/tzgg/202609/t20260908_2950926.html",
+      "title": "关于组织申报2026年度第二批自治区企业研发准备金项目备案工作的通知",
+      "province": "内蒙古",
+      "dept": "内蒙古自治区科学技术厅",
+      "publish_date": "2026-09-08",
+      "body_length": 2629,
+      "band": "中篇",
+      "paragraph_count": 59,
+      "attachments": 0,
+      "body_hash": "90cc31b803c5b569a11960139f94c7e677a6e368123c988cc9f0997ffdc05afa"
+    },
+    {
+      "doc_id": 89,
+      "url_key": "kjt.shanxi.gov.cn/xxgk/zfxxgkml/acs_11737/kjxmtctjc/202608/t20260831_10211048.shtml",
+      "title": "关于发布“基于多能互补的新能源关键技术与装备”等2个山西省科技重大专项2026年度项目申报指南的通知",
+      "province": "山西",
+      "dept": "山西省科学技术厅",
+      "publish_date": "2026-08-31",
+      "body_length": 2354,
+      "band": "中篇",
+      "paragraph_count": 59,
+      "attachments": 2,
+      "body_hash": "ed83951009f77f54fa7b17feb1b2d070bbafd8ada891cd7848f7f07f3ec09ebc"
+    },
+    {
+      "doc_id": 362,
+      "url_key": "kxjst.jiangsu.gov.cn/art/2026/4/28/art_82540_11763470.html",
+      "title": "关于印发《2026年度省基础研究计划项目指南》及组织申报项目的通知",
+      "province": "江苏",
+      "dept": "江苏省科学技术厅",
+      "publish_date": "2026-04-28",
+      "body_length": 23097,
+      "band": "长文",
+      "paragraph_count": 1023,
+      "attachments": 1,
+      "body_hash": "a4346f69bd6d403a3cb7e970a5a3474279aa263aede1d49047ab8bd76b328f56"
+    },
+    {
+      "doc_id": 502,
+      "url_key": "kjt.ah.gov.cn/kjzx/tzgg/123502531.html",
+      "title": "关于开展2026年度安徽省自然科学基金项目申报工作的通知",
+      "province": "安徽",
+      "dept": "安徽省科学技术厅",
+      "publish_date": "2026-09-15",
+      "body_length": 8504,
+      "band": "长文",
+      "paragraph_count": 105,
+      "attachments": 0,
+      "body_hash": "54785580837eca701a4c571020e93a23f2f2a5d2a8aabcbc037a1fb253555445"
+    },
+    {
+      "doc_id": 521,
+      "url_key": "kjt.jiangxi.gov.cn/jxskxjst/col/col27029/content/content_2103050611282489344.html",
+      "title": "关于组织申报2026年度江西省技术创新中心的通知",
+      "province": "江西",
+      "dept": "江西省科学技术厅",
+      "publish_date": "2026-09-24",
+      "body_length": 2964,
+      "band": "中篇",
+      "paragraph_count": 65,
+      "attachments": 1,
+      "body_hash": "0bc3b833b18d03b7ba1dee05bab10a44de0d860705ac62cf7622ec7316e1602e"
+    },
+    {
+      "doc_id": 1241,
+      "url_key": "kjt.shaanxi.gov.cn/kjdt/tzgg/202609/t20260924_3698782.html",
+      "title": "关于开展2026年度陕西省重点培育雏鹰企业征集工作的通知",
+      "province": "陕西",
+      "dept": "陕西省科学技术厅",
+      "publish_date": "2026-09-24",
+      "body_length": 1298,
+      "band": "短文",
+      "paragraph_count": 37,
+      "attachments": 0,
+      "body_hash": "1b2f5cd223d7e5b14a5ee86700cbeaf6e7041e11d49554b203f1d16cf8c21ba4"
+    },
+    {
+      "doc_id": 45607,
+      "url_key": "kjt.qinghai.gov.cn/content/applyshow/id/3712",
+      "title": "青海省科学技术厅关于印发青海省2027年度省级重点科技计划项目申报指南的通知",
+      "province": "青海",
+      "dept": "青海省科学技术厅",
+      "publish_date": "2026-09-10",
+      "body_length": 12197,
+      "band": "长文",
+      "paragraph_count": 157,
+      "attachments": 0,
+      "body_hash": "e3138d4e2eccaa92c20dc063845b7de5502076adb62035091da1be18cfb29472"
+    },
+    {
+      "doc_id": 4780,
+      "url_key": "gxt.hebei.gov.cn/hbgyhxxht/xwzx32/tzgg83/2026093014070879347/",
+      "title": "关于征集2026年度“小快轻准”数字化产品和服务的通知",
+      "province": "河北",
+      "dept": "河北省工业和信息化厅",
+      "publish_date": "2026-09-30",
+      "body_length": 1215,
+      "band": "短文",
+      "paragraph_count": 26,
+      "attachments": 2,
+      "body_hash": "105d5b1c6c62683902428605a1e2d5d78e4fe6dea28dda5016eb454e0b6b73c6"
+    },
+    {
+      "doc_id": 1004,
+      "url_key": "gdii.gd.gov.cn/zwgk/tzgg1011/content/post_4959704.html",
+      "title": "广东省工业和信息化厅关于开展2026年数字化转型典型案例（“数字三品”方向）征集工作的通知",
+      "province": "广东",
+      "dept": "广东省工业和信息化厅",
+      "publish_date": "2026-09-22",
+      "body_length": 1405,
+      "band": "短文",
+      "paragraph_count": 23,
+      "attachments": 2,
+      "body_hash": "105160bb75aaa89ba5115afdeb0e144ab0310a4cd8081dd7ff1b70b22a9601ad"
+    },
+    {
+      "doc_id": 6375,
+      "url_key": "kjt.hebei.gov.cn/hebkjt/xwzx15/tzgg35/sttz15/2026093016491346751/",
+      "title": "关于开展2026年科技保险保费补贴申报的通知",
+      "province": "河北",
+      "dept": "河北省科学技术厅",
+      "publish_date": "2026-09-30",
+      "body_length": 1320,
+      "band": "短文",
+      "paragraph_count": 33,
+      "attachments": 3,
+      "body_hash": "e17b26ee8b7bd50c79efd2f5969ef44adccf03fc41f1a45019285d1874075990"
+    },
+    {
+      "doc_id": 712,
+      "url_key": "kjt.fujian.gov.cn/xxgk/tzgg/202609/t20260907_7210060.htm",
+      "title": "福建省科学技术厅关于组织申报2026年度省科技重大专项定向项目高矿化度矿山水绿色低碳短流程处理与资源化关键技术研究的通知",
+      "province": "福建",
+      "dept": "福建省科学技术厅",
+      "publish_date": "2026-09-07",
+      "body_length": 1129,
+      "band": "短文",
+      "paragraph_count": 22,
+      "attachments": 1,
+      "body_hash": "00665864b6a2c429dc35f8e38662f68399f7b3534913e851eaff355a7e1bffab"
+    },
+    {
+      "doc_id": 67683,
+      "url_key": "kjt.hubei.gov.cn/kjdt/tzgg/202610/t20261019_6035490.shtml",
+      "title": "关于组织申报2026年湖北省支持高新技术企业发展专项资金的通知",
+      "province": "湖北",
+      "dept": "湖北省科学技术厅",
+      "publish_date": "2026-10-19",
+      "body_length": 2462,
+      "band": "中篇",
+      "paragraph_count": 53,
+      "attachments": 1,
+      "body_hash": "f9c3ccd8a1f8e7f2d831874a224035869a10b6058459c6148c47938d13ddf57d"
+    },
+    {
+      "doc_id": 38084,
+      "url_key": "kw.beijing.gov.cn/zwgk/zcwj/202610/t20261009_4895109.html",
+      "title": "北京市科学技术委员会、中关村科技园区管理委员会关于开展北京市新技术新产品新服务（总第二十二批）认定工作的通知",
+      "province": "北京",
+      "dept": "北京市科学技术委员会、中关村科技园区管理委员会",
+      "publish_date": "2026-10-10",
+      "body_length": 2208,
+      "band": "中篇",
+      "paragraph_count": 56,
+      "attachments": 0,
+      "body_hash": "5fbe29f43189cacfe2893800d3ada04b3e345ad46158f24a52cccb7381055d39"
+    },
+    {
+      "doc_id": 1097,
+      "url_key": "jxt.sc.gov.cn/scjxt/wjfb/2026/9/29/7998780dc0af432d81643bacfdf706c8.shtml",
+      "title": "关于组织申报2026年高端医疗装备推广应用项目的通知",
+      "province": "四川",
+      "dept": "四川省经济和信息化厅",
+      "publish_date": "2026-09-29",
+      "body_length": 1151,
+      "band": "短文",
+      "paragraph_count": 22,
+      "attachments": 1,
+      "body_hash": "79623ad17d941f39cda0b503744e3414d0f0d1481e9b57bc98997e50249d3aee"
+    },
+    {
+      "doc_id": 788,
+      "url_key": "kjt.shandong.gov.cn/art/2026/9/24/art_13360_10330230.html",
+      "title": "关于组织开展2026年山东省概念验证中心申报工作的通知",
+      "province": "山东",
+      "dept": "山东省科学技术厅",
+      "publish_date": "2026-09-24",
+      "body_length": 1245,
+      "band": "短文",
+      "paragraph_count": 34,
+      "attachments": 2,
+      "body_hash": "93f9fda010abf553e0291c266a33fade7642e3d4b0c186ed0ba54cae547f8969"
+    },
+    {
+      "doc_id": 1149,
+      "url_key": "kjt.yn.gov.cn/xwdt/tzgg/202609/t20260908_4202382.html",
+      "title": "云南省科技厅关于铝合金、磷资源高值高效利用基础研究计划项目申报的通知",
+      "province": "云南",
+      "dept": "云南省科学技术厅",
+      "publish_date": "2026-09-08",
+      "body_length": 6170,
+      "band": "长文",
+      "paragraph_count": 63,
+      "attachments": 0,
+      "body_hash": "2bb20d18ab3912b33fb0023aaab58553991da40b1a6054e057fac455b0575b69"
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q01",
+      "role": "经办人",
+      "type": "时间",
+      "question": "这次网上申报从哪天开始、哪天截止？",
+      "doc_id": 34980,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P008",
+          "quote": "运营主体申报时间为2026年10月9日9:00至2026年11月9日17:00。"
+        }
+      ]
+    },
+    {
+      "id": "Q02",
+      "role": "经办人",
+      "type": "时间",
+      "question": "我们企业自己在系统里填报，最晚到哪天几点？",
+      "doc_id": 311,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P029",
+          "quote": "项目备案网上填报的受理截止时间为2026年10月23日16:00，备案截止后系统将自动关闭。"
+        }
+      ]
+    },
+    {
+      "id": "Q03",
+      "role": "顾问",
+      "type": "时间",
+      "question": "盟市科技局审核报送的截止时间是哪天？",
+      "doc_id": 311,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P038",
+          "quote": "2.请各盟市科技局于2026年10月30日16:00前通过信息系统完成审核报送，并将正式推荐文件（加盖公章）扫描件和系统生成的推荐项目清单（盖章）以电子扫描件形式上传至系统。"
+        }
+      ]
+    },
+    {
+      "id": "Q04",
+      "role": "经办人",
+      "type": "时间",
+      "question": "纸质材料几号到几号受理？",
+      "doc_id": 89,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P039",
+          "quote": "纸质材料受理时间：2026年10月19日8：30至2026年10月23日17：30。"
+        }
+      ]
+    },
+    {
+      "id": "Q05",
+      "role": "顾问",
+      "type": "时间",
+      "question": "主管部门网上审核推荐的截止时间是哪天？",
+      "doc_id": 362,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P256",
+          "quote": "3．项目申报材料网上填报截止时间为2026年5月29日17:30，\n主管部门网上审核推荐截止时间为2026年5月30日17:30，推荐项\n目汇总表及项目主管部门科研诚信承诺书报送截止时间为2026\n年6月2日17:30，逾期不予受理。"
+        }
+      ]
+    },
+    {
+      "id": "Q06",
+      "role": "顾问",
+      "type": "时间",
+      "question": "依托单位在系统里审核推荐最晚到哪天？",
+      "doc_id": 502,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P100",
+          "quote": "请各依托单位于2026年10月16日17:30前完成系统审核推荐，10月19日11：00前将项目推荐函（一式两份）送（寄）至省政务中心科技厅窗口（合肥市马鞍山路509号，邮编230001）。"
+        }
+      ]
+    },
+    {
+      "id": "Q07",
+      "role": "经办人",
+      "type": "时间",
+      "question": "答辩用的PPT视频汇报材料最晚哪天交？",
+      "doc_id": 521,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P039",
+          "quote": "（3）PPT视频汇报材料及PPT文件请于2026年11月6日前通过电子邮箱报送。"
+        }
+      ]
+    },
+    {
+      "id": "Q08",
+      "role": "经办人",
+      "type": "条件",
+      "question": "我们公司成立时间有没有要求？",
+      "doc_id": 1241,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P005",
+          "quote": "1.省内2021年1月1日（含）以后注册成立的科技型企业；"
+        }
+      ]
+    },
+    {
+      "id": "Q09",
+      "role": "顾问",
+      "type": "条件",
+      "question": "企业牵头的话，对上年营收和研发投入有门槛吗？",
+      "doc_id": 521,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P013",
+          "quote": "4．牵头申报单位为企业的，应建有相对独立的研发机构，上一年度主营业务收入不低于5000万元且上一年度研发经费不低于主营业务收入的3％（研发经费超过3000万元的，不受该比例限制）。"
+        }
+      ]
+    },
+    {
+      "id": "Q10",
+      "role": "经办人",
+      "type": "条件",
+      "question": "项目负责人有年龄限制吗？",
+      "doc_id": 45607,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P126",
+          "quote": "4.项目负责人在项目执行期内原则上年龄不超过60周岁（两院院士、帅才科学家、青海学者、省高端创新创业人才计划杰出人才不受此项限制），受聘于我省法人单位、在职在岗，并签订与项目执行期相适应的聘用合同或服务协议。"
+        }
+      ]
+    },
+    {
+      "id": "Q11",
+      "role": "顾问",
+      "type": "条件",
+      "question": "哪些情况是不能申报的？",
+      "doc_id": 4780,
+      "need": "all",
+      "gold": [
+        {
+          "sid": "P008",
+          "quote": "1.违反国家相关法律和政策规定，在经营管理、企业诚信等方面有不良记录的；"
+        },
+        {
+          "sid": "P009",
+          "quote": "2.发生安全生产责任事故的。"
+        }
+      ]
+    },
+    {
+      "id": "Q12",
+      "role": "经办人",
+      "type": "条件",
+      "question": "一家单位最多能报几个案例？",
+      "doc_id": 1004,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P007",
+          "quote": "每个申报主体只能申报1个“数字三品”方向典型案例。"
+        }
+      ]
+    },
+    {
+      "id": "Q13",
+      "role": "顾问",
+      "type": "条件",
+      "question": "同一个项目负责人今年能报几个省科技计划项目？",
+      "doc_id": 362,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P191",
+          "quote": "同一项目负责人同一年度只能申报一项省科技计划项目。"
+        }
+      ]
+    },
+    {
+      "id": "Q14",
+      "role": "经办人",
+      "type": "材料",
+      "question": "申报要准备哪些材料？",
+      "doc_id": 6375,
+      "need": "all",
+      "gold": [
+        {
+          "sid": "P014",
+          "quote": "1.申报单位营业执照、保险许可证复印件；"
+        },
+        {
+          "sid": "P015",
+          "quote": "2.河北省科技保险保费补贴申报汇总表；"
+        },
+        {
+          "sid": "P016",
+          "quote": "3.河北省科技保险保费补贴资金申报表；"
+        },
+        {
+          "sid": "P017",
+          "quote": "4.保险合同或保单复印件；"
+        },
+        {
+          "sid": "P018",
+          "quote": "5.保费发票、银行收款凭证复印件。"
+        }
+      ]
+    },
+    {
+      "id": "Q15",
+      "role": "经办人",
+      "type": "材料",
+      "question": "纸质的立项建议书要打印几份？",
+      "doc_id": 712,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P012",
+          "quote": "推荐单位通过省级项目推荐流程进行内部审核，并负责对申报材料进行网上推荐后，由申报单位通过项目管理系统打印纸质《福建省科技重大专项专题立项建议书》及相关附件材料一式8份，逐级签章后由推荐单位汇总，寄送省科技厅社发处。"
+        }
+      ],
+      "also": [
+        "方式"
+      ]
+    },
+    {
+      "id": "Q16",
+      "role": "顾问",
+      "type": "材料",
+      "question": "需要提供审计报告吗？",
+      "doc_id": 67683,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P030",
+          "quote": "2．企业上年度（2025年度）研发费用专项审计报告或鉴证报告；"
+        },
+        {
+          "sid": "P032",
+          "quote": "4．企业上年度（2025年度）财务审计报告；"
+        },
+        {
+          "sid": "P037",
+          "quote": "2．企业上两个会计年度（2024年度、2025年度）研发费用专项审计报告或鉴证报告；"
+        },
+        {
+          "sid": "P039",
+          "quote": "4．企业上两个会计年度（2024年度、2025年度）财务审计报告；"
+        }
+      ]
+    },
+    {
+      "id": "Q17",
+      "role": "经办人",
+      "type": "材料",
+      "question": "申报要填写、提交哪些表格？",
+      "doc_id": 311,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P054",
+          "quote": "附件：1.内蒙古自治区企业研发准备金项目备案表（2026年度）"
+        },
+        {
+          "sid": "P055",
+          "quote": "2.内蒙古自治区企业研发准备金备案承诺书"
+        },
+        {
+          "sid": "P056",
+          "quote": "3.内蒙古自治区企业研发准备金备案科研诚信承诺书"
+        },
+        {
+          "sid": "P057",
+          "quote": "4.企业研发准备金内部制度建议提纲（参考模板）"
+        }
+      ]
+    },
+    {
+      "id": "Q18",
+      "role": "顾问",
+      "type": "材料",
+      "question": "上传的附件材料有页数限制吗？",
+      "doc_id": 502,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P097",
+          "quote": "附件全部材料合计总页数不超过40页，其中包括不超过5个代表性成果，主要指：论文/论著、专利、科技成果、科技奖励、第三方评价等附件材料按规定扫描成PDF上传。"
+        }
+      ],
+      "also": [
+        "方式",
+        "条件"
+      ]
+    },
+    {
+      "id": "Q19",
+      "role": "顾问",
+      "type": "材料",
+      "question": "要不要附科技查新报告？",
+      "doc_id": 89,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P029",
+          "quote": "（9）科技查新报告（半年内有效）；"
+        }
+      ]
+    },
+    {
+      "id": "Q20",
+      "role": "经办人",
+      "type": "对象",
+      "question": "这次哪些单位可以报？",
+      "doc_id": 1004,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P007",
+          "quote": "（一）申报主体应依法设立的主体，包括但不限于消费品工业企业、互联网平台企业、科研院所等。"
+        }
+      ],
+      "also": [
+        "条件"
+      ]
+    },
+    {
+      "id": "Q21",
+      "role": "顾问",
+      "type": "对象",
+      "question": "高校和科研机构能不能报？",
+      "doc_id": 38084,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P015",
+          "quote": "1.申请单位应为本市行政区域内依法注册并具有独立法人资格的科技企业、高等学校、科研机构、医疗机构、科技型社会组织等创新主体。"
+        }
+      ],
+      "also": [
+        "条件"
+      ]
+    },
+    {
+      "id": "Q22",
+      "role": "经办人",
+      "type": "对象",
+      "question": "是单个企业自己报，还是要组成联合体报？",
+      "doc_id": 1097,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P007",
+          "quote": "原则上申报主体为牵头医疗装备生产企业、牵头医疗机构和参与生产企业或医疗机构等组成的医工联合体，联合体内单位数量原则上不超过15个。"
+        }
+      ]
+    },
+    {
+      "id": "Q23",
+      "role": "顾问",
+      "type": "对象",
+      "question": "这个项目指定由哪家单位牵头申报？",
+      "doc_id": 712,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P005",
+          "quote": "（二）项目牵头申报单位：福州大学未来技术学院，推荐单位：福州大学。"
+        }
+      ]
+    },
+    {
+      "id": "Q24",
+      "role": "经办人",
+      "type": "支持",
+      "question": "单个企业最多能拿多少奖励？",
+      "doc_id": 67683,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P014",
+          "quote": "单个企业奖励金额兑付起点为3万元，最高不超过100万元。"
+        },
+        {
+          "sid": "P018",
+          "quote": "单个企业激励性奖励金额最高不超过100万元。"
+        }
+      ]
+    },
+    {
+      "id": "Q25",
+      "role": "顾问",
+      "type": "支持",
+      "question": "各类保险产品的保费补贴比例分别是多少？",
+      "doc_id": 6375,
+      "need": "all",
+      "gold": [
+        {
+          "sid": "P012",
+          "quote": "对A类科技保险产品，补贴比例不超过50%；"
+        },
+        {
+          "sid": "P012",
+          "quote": "对B类科技保险产品，补贴比例不超过30%；"
+        },
+        {
+          "sid": "P012",
+          "quote": "对C类科技保险产品，补贴比例不超过20%。"
+        }
+      ]
+    },
+    {
+      "id": "Q26",
+      "role": "经办人",
+      "type": "支持",
+      "question": "纳入资源库以后能得到什么支持？",
+      "doc_id": 4780,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P014",
+          "quote": "纳入资源库的产品和服务在我省制造业数字化转型公共服务平台上推广应用，并通过供需对接会、现场观摩、平台展示等多种形式，开展对入库产品和服务的宣传推广，推动优质产品在制造业企业的广泛应用。"
+        }
+      ]
+    },
+    {
+      "id": "Q27",
+      "role": "顾问",
+      "type": "支持",
+      "question": "企业牵头的项目，资金是先拨还是事后补助？",
+      "doc_id": 45607,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P156",
+          "quote": "2.企业牵头项目常规实行后补助，项目环评、安评验收前完成即可。"
+        }
+      ]
+    },
+    {
+      "id": "Q28",
+      "role": "经办人",
+      "type": "方式",
+      "question": "在哪个系统填报？",
+      "doc_id": 1241,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P022",
+          "quote": "登录“陕西省科技业务综合服务信息系统”（ywgl.sstrc.com）“技术创新引导计划（基金）—陕西省雏鹰企业培育”专区，按要求在线填写并上传证明材料，经申报单位审核通过后，自动生成电子申报材料（带有受理编号、条形码和水印），提交后不予退回和修改。"
+        }
+      ]
+    },
+    {
+      "id": "Q29",
+      "role": "顾问",
+      "type": "方式",
+      "question": "申报书是直接交省厅，还是先报主管部门？",
+      "doc_id": 788,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P015",
+          "quote": "1.申报单位填报《山东省概念验证中心申报书》，并附相关支撑材料，加盖公章，报送主管部门。"
+        }
+      ]
+    },
+    {
+      "id": "Q30",
+      "role": "经办人",
+      "type": "方式",
+      "question": "申报的时候要不要交纸质材料？",
+      "doc_id": 1149,
+      "need": "any",
+      "gold": [
+        {
+          "sid": "P052",
+          "quote": "（一）项目申报采取网上申报方式，无需递交纸质材料。"
+        }
+      ]
+    }
+  ]
+}

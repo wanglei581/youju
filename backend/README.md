@@ -113,6 +113,11 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 各原因合计、各类覆盖篇数和平均耗时。成功表示模型调用与校验完成，零保留也算成功；
 平均耗时包含调用失败、不含 dry-run；错误仅记录类别，不输出原始响应、请求头或密钥。
 
+30 题评测（AI 对所有人开放前的第 6 道门槛）：题目和金标准在 `eval/interpret_30.json`，
+打分脚本 `scripts/eval_questions.py`（`--check` 只核对题目集和库，`--fake-model` 假模型自检）。
+在 hy3 上跑用 `tools/team/run-eval-hy3.sh <云开发 AI 地址>`：运行时输入密钥（不显示、不落盘），
+用本机库 `youju_eval30`，写出 `report.md`、`records.jsonl`、`summary.json`，按候选门槛给 PASS/FAIL。
+
 ## 配置
 
 后台 AI 的模型方可配置，使用 OpenAI 兼容接口；连接地址和模型默认值保持兼容。

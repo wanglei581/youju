@@ -18,3 +18,6 @@ backend/.mysql/
 
 # 构建时写入来源版本，不把生成物提交成过时的SHA。
 backend/src/youju/_build.json
+
+# 评测结果（tools/team/run-eval-hy3.sh 写出）：要留档时把 report.md 挑出来提交
+tools/eval-results/

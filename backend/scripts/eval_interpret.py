@@ -8,24 +8,63 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from collections import defaultdict, deque
 from pathlib import Path
 
+import httpx
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from youju.ai import advisor_endpoint, clause, interpret
-from youju.ai.client import ChatClient
+from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import get_skill
 from youju.config import get_settings
 from youju.db import create_mysql_engine
 from youju.models import Document, Source
 from youju.takedown import available_condition
 
+DROPPED_LABELS = dict(
+    not_found="未找到",
+    ambiguous="多处命中",
+    too_short="引用过短",
+    redacted="涉及脱敏",
+    bad_shape="条目格式错误",
+    duplicate="重复条目",
+)
+# 模型回了内容、但不是能用的 JSON 对象（client._parse_json_object 的分类）
+JSON_ERROR_CODES = frozenset(
+    {
+        "invalid_envelope",
+        "truncated",
+        "non_stop_finish",
+        "empty_content",
+        "invalid_json",
+        "not_object",
+    }
+)
+
 
 def length_band(length: int) -> int:
     return 0 if length <= 1500 else 1 if length <= 6000 else 2
+
+
+def error_code(exc: Exception) -> str:
+    """失败的稳定分类，只用分类码和状态码，不带异常原文（原文可能夹带响应或配置）。"""
+    if isinstance(exc, AIError):
+        if exc.code:
+            return exc.code
+        if isinstance(exc.__cause__, httpx.TimeoutException):
+            return "timeout"
+        if isinstance(exc.__cause__, httpx.TransportError):
+            return "network"
+        # AIError 的文字是固定写法（如"AI 服务暂时不可用（HTTP 502）"），只取状态码
+        status = re.search(r"HTTP (\d{3})", str(exc))
+        return f"http_{status.group(1)}" if status else "ai_error"
+    if isinstance(exc, ValueError):
+        return "bad_structure"
+    return "other"
 
 
 def select_documents(
@@ -66,73 +105,86 @@ def select_documents(
     return selected
 
 
-def evaluate(selected: list, client: ChatClient | None, skill: str = "interpret") -> list[dict]:
+def evaluate_one(candidate: dict, client: ChatClient | None, skill: str = "interpret") -> dict:
+    """一篇通知调一次模型（和线上同样的提示词、段落和 max_tokens），逐字核对后记下指标。
+
+    json_valid：模型回的是带 items 列表的 JSON 对象为 True，回了内容但用不了为 False，
+    没拿到回复（网络、HTTP 出错）或 dry-run 为 None。model_refusal：模型自己在 refusal 里写了话。"""
     spec = get_skill(skill)
-    records = []
-    for candidate in selected:
-        snapshot = candidate["snapshot"]
-        paragraphs = snapshot["paragraphs"]
-        record = {
-            "doc_id": candidate["doc_id"],
-            "source_id": candidate["source_id"],
-            "body_length": snapshot["body_length"],
-            "paragraph_count": len(paragraphs),
-            "attachments": snapshot["attachments"],
-            "status": "dry_run" if client is None else "error",
-            "returned_count": 0,
-            "kept_count": 0,
-            "dropped_reasons": dict.fromkeys(interpret.DROPPED_REASONS, 0),
-            "type_counts": dict.fromkeys(spec.types, 0),
-            "missing": list(spec.types),
-            "items": [],
-            "elapsed_seconds": 0.0,
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-            "error_category": None,
-        }
-        if client is not None:
-            started = time.monotonic()
-            try:
-                payload = client.complete_json(
-                    spec.system_prompt,
-                    json.dumps({"paragraphs": paragraphs}, ensure_ascii=False),
-                    max_tokens=12000,
-                )
-                if isinstance(payload, dict) and isinstance(payload.get("items"), list):
-                    record["returned_count"] = len(payload["items"])
-                result = interpret.validate(payload, paragraphs, skill=spec)
-                record.update(
-                    status="success",
-                    kept_count=len(result[spec.result_field]),
-                    items=result[spec.result_field],
-                    dropped_reasons=result["dropped_reasons"],
-                    missing=result.get(
-                        "missing",
-                        [
-                            t
-                            for t in spec.types
-                            if not any(i["type"] == t for i in result[spec.result_field])
-                        ],
-                    ),
-                    refusal=result["refusal"],
-                )
-                for item in result[spec.result_field]:
-                    record["type_counts"][item["type"]] += 1
-            except Exception as exc:  # noqa: BLE001 - 单篇失败继续；只记录类别，不泄露响应或配置
-                record["error_category"] = type(exc).__name__
-            finally:
-                record["elapsed_seconds"] = time.monotonic() - started
-                record["usage"] = {
-                    key: client.last_usage.get(key, 0)
-                    for key in ("prompt_tokens", "completion_tokens")
-                }
-        if skill == "clause":
-            record["rows"] = record.pop("items")
-            record["key_counts"] = {
-                key: sum(key in row["keys"] for row in record["rows"]) for key in clause.KEYS
+    snapshot = candidate["snapshot"]
+    paragraphs = snapshot["paragraphs"]
+    record = {
+        "doc_id": candidate["doc_id"],
+        "source_id": candidate["source_id"],
+        "body_length": snapshot["body_length"],
+        "paragraph_count": len(paragraphs),
+        "attachments": snapshot["attachments"],
+        "status": "dry_run" if client is None else "error",
+        "returned_count": 0,
+        "kept_count": 0,
+        "dropped_reasons": dict.fromkeys(interpret.DROPPED_REASONS, 0),
+        "type_counts": dict.fromkeys(spec.types, 0),
+        "missing": list(spec.types),
+        "items": [],
+        "elapsed_seconds": 0.0,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        "error_category": None,
+        "error_code": None,
+        "json_valid": None,
+        "model_refusal": None,
+    }
+    if client is not None:
+        started = time.monotonic()
+        try:
+            payload = client.complete_json(
+                spec.system_prompt,
+                json.dumps({"paragraphs": paragraphs}, ensure_ascii=False),
+                max_tokens=12000,
+            )
+            usable = isinstance(payload, dict) and isinstance(payload.get("items"), list)
+            record["json_valid"] = usable
+            if usable:
+                record["returned_count"] = len(payload["items"])
+                record["model_refusal"] = bool(payload.get("refusal"))
+            result = interpret.validate(payload, paragraphs, skill=spec)
+            record.update(
+                status="success",
+                kept_count=len(result[spec.result_field]),
+                items=result[spec.result_field],
+                dropped_reasons=result["dropped_reasons"],
+                missing=result.get(
+                    "missing",
+                    [
+                        t
+                        for t in spec.types
+                        if not any(i["type"] == t for i in result[spec.result_field])
+                    ],
+                ),
+                refusal=result["refusal"],
+            )
+            for item in result[spec.result_field]:
+                record["type_counts"][item["type"]] += 1
+        except Exception as exc:  # noqa: BLE001 - 单篇失败继续；只记录类别，不泄露响应或配置
+            record["error_category"] = type(exc).__name__
+            record["error_code"] = error_code(exc)
+            if record["error_code"] in JSON_ERROR_CODES:
+                record["json_valid"] = False
+        finally:
+            record["elapsed_seconds"] = time.monotonic() - started
+            record["usage"] = {
+                key: client.last_usage.get(key, 0) for key in ("prompt_tokens", "completion_tokens")
             }
-            record["empty_keys_count"] = sum(not row["keys"] for row in record["rows"])
-        records.append(record)
-    return records
+    if skill == "clause":
+        record["rows"] = record.pop("items")
+        record["key_counts"] = {
+            key: sum(key in row["keys"] for row in record["rows"]) for key in clause.KEYS
+        }
+        record["empty_keys_count"] = sum(not row["keys"] for row in record["rows"])
+    return record
+
+
+def evaluate(selected: list, client: ChatClient | None, skill: str = "interpret") -> list[dict]:
+    return [evaluate_one(candidate, client, skill) for candidate in selected]
 
 
 def summarize(records: list[dict], skill: str = "interpret") -> dict:
@@ -212,15 +264,9 @@ def write_outputs(out: Path, records: list[dict], skill: str = "interpret") -> N
             "|---|---:|",
         ]
     )
-    labels = dict(
-        not_found="未找到",
-        ambiguous="多处命中",
-        too_short="引用过短",
-        redacted="涉及脱敏",
-        bad_shape="条目格式错误",
-        duplicate="重复条目",
+    lines.extend(
+        f"| {DROPPED_LABELS[k]}（{k}） | {v} |" for k, v in summary["dropped_reasons"].items()
     )
-    lines.extend(f"| {labels[k]}（{k}） | {v} |" for k, v in summary["dropped_reasons"].items())
     lines.extend(["", "| 类别 | 覆盖篇数 |", "|---|---:|"])
     lines.extend(f"| {k} | {v} |" for k, v in summary["type_coverage"].items())
     if skill == "clause":
