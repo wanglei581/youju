@@ -26,15 +26,16 @@ if [ "$name" = "check-sources" ]; then
 fi
 # advisor-run 由 admin 服务的 crontab 每分钟调用；开关关闭时 CLI 会直接跳过。它每轮在开始后 50 秒里
 # 隔几秒领一次新的 AI 任务，领到的做完才退出，常会跨过下一分钟（advisor_tasks.POLL_WINDOW）：
-# - 下一分钟这一次不马上放弃，最多等 50 秒，上一轮一结束就接着跑，中间没有没人领任务的空档；
-# - 拿到锁以后先记下这一轮的开始时间（先写临时文件再改名，读的一方不会读到半截）。等满 50 秒还没
+# - 下一分钟这一次不马上放弃，最多等 55 秒，上一轮一结束就接着跑，中间最多空几秒；等的时间短于
+#   cron 的一分钟，同一时刻最多一个在跑、一个在等，不会堆积；
+# - 拿到锁以后先记下这一轮的开始时间（先写临时文件再改名，读的一方不会读到半截）。等满 55 秒还没
 #   拿到锁时，上一轮开始不到 10 分钟就安静跳过（不算失败、不提醒）；超过 10 分钟、读不到开始时间、
 #   或时钟往回调过（差值是负数），都当作卡住了，照常按"上一次还没跑完"提醒。
 # sh -c 里 $0 是开始时间文件，"$@" 才是传给 youju 的参数
 started="/tmp/youju-${name}.started"
 log "开始：youju $*"
 if [ "$name" = "advisor-run" ]; then
-  flock -w 50 -E 75 "/tmp/youju-${name}.lock" \
+  flock -w 55 -E 75 "/tmp/youju-${name}.lock" \
     sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
     "$started" "$@" >> /proc/1/fd/1 2>&1
 else

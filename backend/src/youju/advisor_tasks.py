@@ -917,12 +917,21 @@ def run_advisor_tasks(
                 busy["in_flight"] -= 1
 
     def run_data() -> None:
-        # 数据工具始终由入口会话逐个处理。
-        while data_enabled:
-            task = claim(session, data_allowed)
-            if task is None:
-                break
-            run_one(session, task)
+        # 数据工具始终由入口会话逐个处理，同样开始满 claim_limit 秒不再领新的。处理数据工具的
+        # 整段时间都算"有人在忙"：两条数据任务之间计数不掉到 0，空闲的 AI 线程不会这时一起退出
+        if not data_enabled:
+            return
+        with claim_lock:
+            busy["in_flight"] += 1
+        try:
+            while claim_deadline is None or clock() < claim_deadline:
+                task = claim(session, data_allowed)
+                if task is None:
+                    break
+                run_one(session, task)
+        finally:
+            with claim_lock:
+                busy["in_flight"] -= 1
 
     if ai_enabled:
         factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)

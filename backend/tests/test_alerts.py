@@ -492,7 +492,7 @@ SHELLS = ["sh"] + (["dash"] if shutil.which("dash") else [])
 def test_advisor_run_overlap_is_quiet_unless_stuck(
     tmp_path, shell, started, flock_code, expected_code, alert
 ):
-    # advisor-run 领到的任务做完才退出，常跨过下一分钟。下一分钟这一次等满 50 秒还没拿到锁：
+    # advisor-run 领到的任务做完才退出，常跨过下一分钟。下一分钟这一次等满 55 秒还没拿到锁：
     # 上一轮开始不到 10 分钟就安静跳过；超过 10 分钟、读不到开始时间、时钟往回调过都照常提醒
     job = _job_script(tmp_path)
     if started == "garbage":
@@ -511,8 +511,8 @@ def test_advisor_run_overlap_is_quiet_unless_stuck(
     }
     result = subprocess.run([shell, str(job), "advisor-run"], env=env, check=False)
     assert result.returncode == expected_code
-    # 下一分钟这一次最多等 50 秒，上一轮一结束就接着跑
-    assert (tmp_path / "flock.args").read_text().startswith("-w 50 -E 75 ")
+    # 下一分钟这一次最多等 55 秒（短于一分钟，不会堆积），上一轮一结束就接着跑
+    assert (tmp_path / "flock.args").read_text().startswith("-w 55 -E 75 ")
     calls = (tmp_path / "alert.calls").read_text() if (tmp_path / "alert.calls").exists() else ""
     log = (tmp_path / "job.log").read_text()
     if alert:
@@ -551,7 +551,7 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
     assert subprocess.run([shell, str(job), "crawl"], env=env, check=False).returncode == 0
     assert not (tmp_path / "youju-crawl.started").exists()
     flock_args = (tmp_path / "flock.args").read_text().splitlines()
-    assert flock_args[0].startswith("-w 50 -E 75 ") and flock_args[1].startswith("-n -E 75 ")
+    assert flock_args[0].startswith("-w 55 -E 75 ") and flock_args[1].startswith("-n -E 75 ")
 
 
 @pytest.mark.parametrize(
