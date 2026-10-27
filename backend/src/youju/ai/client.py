@@ -26,6 +26,8 @@ def _add_usage(total: dict[str, int], usage: object) -> None:
 
 
 _JSON_PREFIX = "AI 返回内容不是合法 JSON 对象"
+# 流式返回时两段之间最多等多久（秒）：对方停发又不断开连接时，不至于再等满整个时限
+STREAM_READ_GAP_SECONDS = 45.0
 
 
 def _json_error(code: str) -> str:
@@ -88,7 +90,8 @@ class ChatClient:
         self.base_url = base_url.rstrip("/")
         # 流式返回（SSE，D-098）：云开发 AI 网关对不走流式、1 分钟内没生成完的请求不返回结果。
         # 打开后边生成边收，收完拼成和非流式一样的信封，后面的检查和重试规则都不变；
-        # 整次请求最多等 timeout 秒（流式时每段都在到，单靠读超时拦不住一直不结束的流）
+        # 收到 timeout 秒就不再收（流式时每段都在到，单靠读超时拦不住一直不结束的流），
+        # 两段之间最多等 STREAM_READ_GAP_SECONDS 秒
         self.stream = stream
         self.clock = clock
         # 按模型方附加的请求参数，来自配置；
@@ -133,8 +136,9 @@ class ChatClient:
     def _send_stream(self, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, object]:
         """流式返回（SSE）：逐段收 data 行，把 delta.content 拼起来，
         记下最后的 finish_reason 和 usage，拼成和一次性返回一样的信封。
-        出错的状态码照一次性返回处理；某一段不是 JSON 时信封里不放 choices
-        （按 invalid_envelope 处理），用量照样计入。"""
+        出错的状态码照一次性返回处理；流里来了错误事件按 502 处理（AI 服务暂时不可用），
+        已收到的内容不用。某一段不是 JSON、或流没有正常结束（既没有 [DONE] 也没有
+        finish_reason）时信封里不放 choices（按 invalid_envelope 处理）。用量都照样计入。"""
         body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
         deadline = self.clock() + self.timeout
         with self._client.stream(
@@ -142,6 +146,7 @@ class ChatClient:
             f"{self.base_url}/chat/completions",
             headers={**headers, "Accept": "text/event-stream"},
             json=body,
+            timeout=httpx.Timeout(self.timeout, read=min(self.timeout, STREAM_READ_GAP_SECONDS)),
         ) as response:
             if response.status_code >= 400:
                 response.read()
@@ -152,6 +157,7 @@ class ChatClient:
             parts: list[str] = []
             finish = None
             usage = None
+            done = False
             for raw in response.iter_lines():
                 if self.clock() > deadline:
                     raise httpx.ReadTimeout("AI 流式返回超时")
@@ -161,6 +167,7 @@ class ChatClient:
                     continue
                 data = line[len("data:") :].strip()
                 if data == "[DONE]":
+                    done = True
                     break
                 try:
                     chunk = json.loads(data)
@@ -170,6 +177,9 @@ class ChatClient:
                     return response.status_code, {"usage": usage}
                 if isinstance(chunk.get("usage"), dict):
                     usage = chunk["usage"]
+                # 流里的错误事件：不用已收到的内容
+                if chunk.get("error") is not None:
+                    return 502, {"usage": usage}
                 choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
                     continue
@@ -179,6 +189,9 @@ class ChatClient:
                     parts.append(delta["content"])
                 if choices[0].get("finish_reason") is not None:
                     finish = choices[0]["finish_reason"]
+        # 没有正常结束（中途断了）：半截内容就算碰巧是合法 JSON 也不用
+        if not done and finish is None:
+            return response.status_code, {"usage": usage}
         envelope: dict[str, Any] = {
             "choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}]
         }

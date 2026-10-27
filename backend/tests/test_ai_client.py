@@ -481,15 +481,78 @@ def test_stream_joins_deltas_and_reads_usage():
     assert client.last_usage == {"prompt_tokens": 7, "completion_tokens": 3}
 
 
-def test_stream_without_done_or_finish_still_accepts_object():
+def test_stream_must_end_properly():
+    """流要正常结束：有 [DONE] 或 finish_reason。中途断了的半截内容，就算碰巧是合法 JSON 也不用。"""
+
+    def run(reply):
+        return ChatClient(
+            "https://example.test",
+            "key",
+            "hy3",
+            transport=httpx.MockTransport(lambda request: reply),
+            stream=True,
+            max_retries=0,
+        )
+
+    with pytest.raises(AIError) as exc:
+        run(sse(delta('{"a": 1}'), done=False)).complete_json("s", "u")
+    assert exc.value.code == "invalid_envelope"
+    assert run(sse(delta('{"a": 1}'))).complete_json("s", "u") == {"a": 1}
+    assert run(sse(delta('{"a": 2}', finish="stop"), done=False)).complete_json("s", "u") == {
+        "a": 2
+    }
+
+
+def test_stream_error_event_drops_partial_content():
+    """流里中途来了错误事件：已收到的内容不用，按 AI 服务暂时不可用处理，用量照样计入。"""
     client = ChatClient(
         "https://example.test",
         "key",
         "hy3",
-        transport=httpx.MockTransport(lambda request: sse(delta('{"a": 1}'), done=False)),
+        transport=httpx.MockTransport(
+            lambda request: sse(
+                delta('{"a": 1}'),
+                {"error": {"message": "upstream"}, "usage": {"prompt_tokens": 4}},
+                delta(finish="stop"),
+            )
+        ),
+        stream=True,
+        max_retries=0,
+    )
+    with pytest.raises(AIError) as exc:
+        client.complete_json("s", "u")
+    assert exc.value.retryable is True and "502" in str(exc.value)
+    assert client.last_usage["prompt_tokens"] == 4
+
+
+def test_stream_read_gap_is_capped():
+    """两段之间最多等 45 秒：对方停发又不断开连接时，不会再等满整个时限。"""
+    seen = {}
+
+    def handler(request):
+        seen.update(request.extensions["timeout"])
+        return sse(delta('{"ok": 1}', finish="stop"))
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        timeout=180,
+        transport=httpx.MockTransport(handler),
         stream=True,
     )
-    assert client.complete_json("s", "u") == {"a": 1}
+    assert client.complete_json("s", "u") == {"ok": 1}
+    assert seen["read"] == 45 and seen["connect"] == 180
+    short = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        timeout=20,
+        transport=httpx.MockTransport(handler),
+        stream=True,
+    )
+    short.complete_json("s", "u")
+    assert seen["read"] == 20
 
 
 def test_stream_length_finish_is_truncated_and_not_retried():
