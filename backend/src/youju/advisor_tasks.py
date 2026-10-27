@@ -52,13 +52,16 @@ MAX_UPLOAD_BYTES = 60 * 1024
 ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
-# advisor-run 每分钟一轮（crontab）：一轮在 POLL_WINDOW 秒里
-# 每隔 POLL_INTERVAL 秒领一次新的 AI 任务，用户点了几秒内就开始，
-# 不用等下一分钟（10/27 实测排队 48.6 秒）。过了领取时间不再领新的，
-# 手上的做完就退出，剩下的下一轮接着领。50 秒给启动、退出留余量，
-# 空闲时不和下一分钟那一轮撞上
+# advisor-run 每分钟一轮（crontab）。队里有 AI 任务就一直领（和原来一样领到空）；
+# 队里空了，在开始后的 POLL_WINDOW 秒里每隔 POLL_INTERVAL 秒再看一次，用户点了
+# 几秒内就开始，不用等下一分钟（10/27 实测排队 48.6 秒）。过了这 50 秒、别的线程
+# 还在做任务时也接着看（反正要等它做完这一轮才结束）；全都空闲就退出。50 秒给
+# 启动、退出留余量，空闲时不和下一分钟那一轮撞上。开始满 CLAIM_LIMIT 秒不再领
+# 新的，手上的做完就退出，一轮最长约 4 分钟加一个任务（任务最长 5 分钟），
+# 不到 job.sh 当作"卡住了"的 10 分钟
 POLL_WINDOW = 50.0
 POLL_INTERVAL = 3.0
+CLAIM_LIMIT = 240.0
 # 处理中超过这么久的一定已经没人在跑（清理过期任务时才用，见 cleanup_advisor）
 ABANDONED = timedelta(days=1)
 INPUT_RETENTION = timedelta(days=7)
@@ -816,15 +819,19 @@ def run_advisor_tasks(
     max_tasks: int | None = None,
     poll_window: float = 0.0,
     poll_interval: float = POLL_INTERVAL,
+    claim_limit: float = CLAIM_LIMIT,
     clock=monotonic_clock.monotonic,
     sleep=monotonic_clock.sleep,
 ) -> dict[str, int]:
     """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。
 
-    poll_window 大于 0 时（每分钟的 advisor-run 用 POLL_WINDOW），AI 任务排空了不马上结束：
-    这么多秒里每隔 poll_interval 秒再领一次；过了这个时间不再领新任务，手上的做完就返回。
-    默认 0：把现在排着的处理完就返回（测试、手动跑）。数据工具不轮询，每轮只领一次。"""
-    deadline = clock() + poll_window if poll_window > 0 else None
+    默认（poll_window 0）把现在排着的处理完就返回（测试、手动 --once）。poll_window 大于 0 时
+    （每分钟的 advisor-run 用 POLL_WINDOW），AI 任务排空了不马上结束：开始后 poll_window 秒以内、
+    或别的线程还在做任务时，每隔 poll_interval 秒再领一次；开始满 claim_limit 秒不再领新的，
+    手上的做完就返回。数据工具不轮询，每轮只领一次。"""
+    start = clock()
+    deadline = start + poll_window if poll_window > 0 else None
+    claim_deadline = start + claim_limit if poll_window > 0 else None
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
@@ -845,6 +852,8 @@ def run_advisor_tasks(
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued, "revoked": revoked}
     claimed: set[int] = set()
     claim_lock = Lock()
+    # 正在处理的任务数（领到加 1，处理完减 1；数据工具也算）：空闲的 AI 线程据此判断这一轮还结束不了
+    busy = {"in_flight": 0}
 
     def claim(work_session: Session, condition) -> AdvisorTask | None:
         # 临界区只负责领取；耗时的模型请求在锁外并行运行。
@@ -871,36 +880,41 @@ def run_advisor_tasks(
             work_session.commit()
             claimed.add(task.id)
             result["processed"] += 1
+            busy["in_flight"] += 1
             return task
 
     def run_one(work_session: Session, task: AdvisorTask) -> None:
         # 任务行可能在处理途中被删（注销、过期清理）：之后只按编号重新取，不读 task 的属性
         task_id = task.id
         try:
-            done = process_task(
-                work_session,
-                task,
-                settings=settings,
-                stamp=datetime.now(UTC) if live_timing else stamp,
-                timeout=timeout,
-                live_time=live_timing,
-            )
-        except Exception:
-            work_session.rollback()
-            log.exception("顾问任务 #%s 处理异常", task_id)
-            failed_task = work_session.get(AdvisorTask, task_id)
-            if failed_task is not None:
-                failed_task.status, failed_task.finished_at = "failed", stamp
-                failed_task.error = "系统繁忙，请稍后重试"
-                release_usage(work_session, failed_task)
+            try:
+                done = process_task(
+                    work_session,
+                    task,
+                    settings=settings,
+                    stamp=datetime.now(UTC) if live_timing else stamp,
+                    timeout=timeout,
+                    live_time=live_timing,
+                )
+            except Exception:
+                work_session.rollback()
+                log.exception("顾问任务 #%s 处理异常", task_id)
+                failed_task = work_session.get(AdvisorTask, task_id)
+                if failed_task is not None:
+                    failed_task.status, failed_task.finished_at = "failed", stamp
+                    failed_task.error = "系统繁忙，请稍后重试"
+                    release_usage(work_session, failed_task)
+                    work_session.commit()
+                done = False
+            current = work_session.get(AdvisorTask, task_id) if live_timing else None
+            if current is not None and current.status in ("done", "failed"):
+                current.finished_at = datetime.now(UTC)
                 work_session.commit()
-            done = False
-        current = work_session.get(AdvisorTask, task_id) if live_timing else None
-        if current is not None and current.status in ("done", "failed"):
-            current.finished_at = datetime.now(UTC)
-            work_session.commit()
-        with claim_lock:
-            result["done" if done else "failed"] += 1
+            with claim_lock:
+                result["done" if done else "failed"] += 1
+        finally:
+            with claim_lock:
+                busy["in_flight"] -= 1
 
     def run_data() -> None:
         # 数据工具始终由入口会话逐个处理。
@@ -915,17 +929,29 @@ def run_advisor_tasks(
 
         def ai_worker() -> None:
             with factory() as work_session:
-                # 过了领取时间不再领新的（手上的已经做完）：剩下的留给下一分钟那一轮
-                while deadline is None or clock() < deadline:
+                # 开始满 claim_limit 秒不再领新的（手上的已经做完）：剩下的留给下一轮
+                while claim_deadline is None or clock() < claim_deadline:
                     task = claim(work_session, ai_allowed)
                     if task is not None:
                         run_one(work_session, task)
                         continue
-                    # 队里暂时空了：不轮询就结束；轮询时隔一会儿再看，下一次看之前就到点的不再等
-                    capped = max_tasks is not None and result["processed"] >= max_tasks
-                    if deadline is None or capped or clock() + poll_interval >= deadline:
+                    # 队里空了：不轮询（测试、--once）或领满 max_tasks 就结束
+                    if deadline is None or (
+                        max_tasks is not None and result["processed"] >= max_tasks
+                    ):
                         break
-                    sleep(poll_interval)
+                    now = clock()
+                    with claim_lock:
+                        others_busy = busy["in_flight"] > 0
+                    # 过了 poll_window、别的线程也都空着：这一轮结束
+                    if now >= deadline and not others_busy:
+                        break
+                    # poll_window 以内睡到下一次看（最后一次正好在到点时看）；过了 poll_window
+                    # 但别的线程还在做任务（这一轮反正结束不了），照常隔几秒看
+                    wait = poll_interval if now >= deadline else min(poll_interval, deadline - now)
+                    if now + wait >= claim_deadline:
+                        break
+                    sleep(wait)
 
         concurrency = getattr(settings, "ai_advisor_concurrency", 3)
         with ThreadPoolExecutor(max_workers=concurrency) as pool:

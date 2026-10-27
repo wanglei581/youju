@@ -24,15 +24,19 @@ if [ "$name" = "check-sources" ]; then
   # 仅 cron 包装器使用：详细提醒已发送时返回 20，避免重复提醒。
   set -- "$@" --job
 fi
-# advisor-run 由 admin 服务的 crontab 每分钟调用；开关关闭时 CLI 会直接跳过。它每轮在 50 秒里隔几秒
-# 领一次新的 AI 任务，领到的做完才退出，偶尔会跨过下一分钟（advisor_tasks.POLL_WINDOW）。所以拿到锁
-# 以后先记下这一轮的开始时间：下一分钟碰到锁时，上一轮开始不到 10 分钟就安静跳过（不算失败、不提醒），
-# 超过 10 分钟当作卡住了，照常按"上一次还没跑完"提醒
+# advisor-run 由 admin 服务的 crontab 每分钟调用；开关关闭时 CLI 会直接跳过。它每轮在开始后 50 秒里
+# 隔几秒领一次新的 AI 任务，领到的做完才退出，常会跨过下一分钟（advisor_tasks.POLL_WINDOW）：
+# - 下一分钟这一次不马上放弃，最多等 50 秒，上一轮一结束就接着跑，中间没有没人领任务的空档；
+# - 拿到锁以后先记下这一轮的开始时间（先写临时文件再改名，读的一方不会读到半截）。等满 50 秒还没
+#   拿到锁时，上一轮开始不到 10 分钟就安静跳过（不算失败、不提醒）；超过 10 分钟、读不到开始时间、
+#   或时钟往回调过（差值是负数），都当作卡住了，照常按"上一次还没跑完"提醒。
+# sh -c 里 $0 是开始时间文件，"$@" 才是传给 youju 的参数
 started="/tmp/youju-${name}.started"
 log "开始：youju $*"
 if [ "$name" = "advisor-run" ]; then
-  flock -n -E 75 "/tmp/youju-${name}.lock" \
-    sh -c 'date +%s > "$0"; exec timeout 3h youju "$@"' "$started" "$@" >> /proc/1/fd/1 2>&1
+  flock -w 50 -E 75 "/tmp/youju-${name}.lock" \
+    sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
+    "$started" "$@" >> /proc/1/fd/1 2>&1
 else
   flock -n -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1
 fi
@@ -45,7 +49,8 @@ fi
 if [ "$name" = "advisor-run" ] && [ "$code" -eq 75 ]; then
   since=$(cat "$started" 2>/dev/null) || since=0
   case "$since" in '' | *[!0-9]*) since=0 ;; esac
-  if [ $(($(date +%s) - since)) -lt 600 ]; then
+  age=$(($(date +%s) - since))
+  if [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
     log "跳过：youju advisor-run（上一轮还在处理任务，不算失败）"
     exit 0
   fi

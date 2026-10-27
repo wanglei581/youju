@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from contextlib import nullcontext
@@ -471,48 +472,86 @@ def _stub(tmp_path: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
+# 容器里的 /bin/sh 是 dash：本机有 dash 时两种都跑
+SHELLS = ["sh"] + (["dash"] if shutil.which("dash") else [])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize(
-    ("started_ago", "expected_code", "alerted"),
-    [(30, 0, False), (590, 0, False), (610, 75, True), (None, 75, True)],
+    ("started", "flock_code", "expected_code", "alert"),
+    [
+        ("ago:30", 75, 0, None),
+        ("ago:590", 75, 0, None),
+        ("ago:610", 75, 75, "上一次还没跑完"),
+        ("ago:-120", 75, 75, "上一次还没跑完"),  # 时钟往回调过：当作卡住
+        ("garbage", 75, 75, "上一次还没跑完"),
+        (None, 75, 75, "上一次还没跑完"),
+        ("ago:30", 1, 1, "任务执行失败"),  # 不是等锁超时：照常提醒
+    ],
 )
-def test_advisor_run_overlap_is_quiet_unless_stuck(tmp_path, started_ago, expected_code, alerted):
-    # advisor-run 每轮在 50 秒里隔几秒领新任务，领到的做完才退出，偶尔跨过下一分钟：上一轮开始不到
-    # 10 分钟就安静跳过；超过 10 分钟（卡住了）或没有开始时间时照常提醒"上一次还没跑完"
+def test_advisor_run_overlap_is_quiet_unless_stuck(
+    tmp_path, shell, started, flock_code, expected_code, alert
+):
+    # advisor-run 领到的任务做完才退出，常跨过下一分钟。下一分钟这一次等满 50 秒还没拿到锁：
+    # 上一轮开始不到 10 分钟就安静跳过；超过 10 分钟、读不到开始时间、时钟往回调过都照常提醒
     job = _job_script(tmp_path)
-    if started_ago is not None:
-        (tmp_path / "youju-advisor-run.started").write_text(f"{int(time.time()) - started_ago}\n")
-    _stub(tmp_path, "flock", "exit 75\n")  # 锁被上一轮占着
+    if started == "garbage":
+        (tmp_path / "youju-advisor-run.started").write_text("abc\n")
+    elif started is not None:
+        ago = int(started.split(":")[1])
+        (tmp_path / "youju-advisor-run.started").write_text(f"{int(time.time()) - ago}\n")
+    _stub(tmp_path, "flock", 'printf "%s\\n" "$*" > "$FLOCK_ARGS"\nexit "$FLOCK_CODE"\n')
     _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$ALERT_CALLS"\nexit 0\n')
     env = {
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "FLOCK_ARGS": str(tmp_path / "flock.args"),
+        "FLOCK_CODE": str(flock_code),
         "ALERT_CALLS": str(tmp_path / "alert.calls"),
     }
-    result = subprocess.run(["sh", str(job), "advisor-run"], env=env, check=False)
+    result = subprocess.run([shell, str(job), "advisor-run"], env=env, check=False)
     assert result.returncode == expected_code
+    # 下一分钟这一次最多等 50 秒，上一轮一结束就接着跑
+    assert (tmp_path / "flock.args").read_text().startswith("-w 50 -E 75 ")
     calls = (tmp_path / "alert.calls").read_text() if (tmp_path / "alert.calls").exists() else ""
-    assert ("上一次还没跑完" in calls) is alerted
-    assert ("跳过：youju advisor-run" in (tmp_path / "job.log").read_text()) is (not alerted)
+    log = (tmp_path / "job.log").read_text()
+    if alert:
+        assert alert in calls and f"退出码 {flock_code}" in calls
+        assert "跳过：youju advisor-run" not in log
+    else:
+        assert not calls
+        assert "跳过：youju advisor-run" in log
 
 
-def test_advisor_run_records_start_time_inside_lock(tmp_path):
-    # 拿到锁以后才写开始时间（锁外写会把正在跑的那一轮的时间改掉）；别的任务不写
+@pytest.mark.parametrize("shell", SHELLS)
+def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
+    # 拿到锁以后才写开始时间（锁外写会把正在跑的那一轮的时间改掉）；youju 只收到 advisor-run，
+    # 开始时间文件不会混进参数；别的任务不写开始时间、还是不等锁
     job = _job_script(tmp_path)
-    _stub(tmp_path, "flock", 'shift 4\nexec "$@"\n')
+    _stub(
+        tmp_path,
+        "flock",
+        'printf "%s\\n" "$*" >> "$FLOCK_ARGS"\n'
+        'case "$1" in -w) shift 5 ;; *) shift 4 ;; esac\nexec "$@"\n',
+    )
     _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
     _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
     env = {
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "CALLS": str(tmp_path / "calls"),
+        "FLOCK_ARGS": str(tmp_path / "flock.args"),
     }
     before = int(time.time())
-    assert subprocess.run(["sh", str(job), "advisor-run"], env=env, check=False).returncode == 0
+    assert subprocess.run([shell, str(job), "advisor-run"], env=env, check=False).returncode == 0
     started = int((tmp_path / "youju-advisor-run.started").read_text())
     assert before <= started <= int(time.time())
-    assert "advisor-run" in (tmp_path / "calls").read_text().splitlines()
-    assert subprocess.run(["sh", str(job), "crawl"], env=env, check=False).returncode == 0
+    assert not (tmp_path / "youju-advisor-run.started.tmp").exists()
+    assert (tmp_path / "calls").read_text().splitlines() == ["advisor-run"]
+    assert subprocess.run([shell, str(job), "crawl"], env=env, check=False).returncode == 0
     assert not (tmp_path / "youju-crawl.started").exists()
+    flock_args = (tmp_path / "flock.args").read_text().splitlines()
+    assert flock_args[0].startswith("-w 50 -E 75 ") and flock_args[1].startswith("-n -E 75 ")
 
 
 @pytest.mark.parametrize(
