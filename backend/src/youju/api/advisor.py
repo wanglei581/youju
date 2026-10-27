@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
 from youju import boost, payments
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
+from youju.agreements import tools_agreed
 from youju.ai import heartbeat, interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
@@ -194,7 +194,7 @@ def _upload_consent(user: User) -> None:
     ):
         raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
     # 同意工具使用说明时已核对过；同意记录只会往新版本走，这里再查一次，不靠那一处
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
 
 
@@ -234,12 +234,12 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
     """开始加量体验：用户在确认页看完规则点"开始体验"。重复点返回同一段体验，不会重新起算。
 
     开始体验不提交客户信息，不要求先同意工具使用说明；要求同意过写进体验记录的那一版用户协议和
-    隐私保护指引（TOOLS_AGREEMENT_VERSION）：过渡期里只同意过旧版的返回 403，小程序清掉本机的
-    同意记录，下次用需要登录的功能时请他重新同意。"""
+    隐私保护指引（agreements.tools_agreed）：过渡期里只同意过旧版、或只同意过不含体验条款的版本的，
+    返回 403，小程序清掉本机的同意记录，下次用需要登录的功能时请他重新同意。"""
     settings = get_settings()
     if not boost.trial_enabled(settings):
         raise HTTPException(status_code=404, detail="没有找到接口")
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
     # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
     # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
