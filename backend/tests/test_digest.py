@@ -788,8 +788,18 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
     assert "最久的等了 14 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
         digest_module.readability_text(d)
     )
+    # 写出来的小时：没超过一轮往下取整、超过才进位，0–14 小时只会和"达到"一起出现（Grok、agy 第 4 轮）
     rb.oldest_pending_seconds = 13 * 3600 + 1
+    assert digest_module.gates(rb) == (True, True, True)
     assert "等取文字最久的附件 13 小时（要不超过 14 小时）" in digest_text(d, [])
+    assert "最久的等了 13 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
+    rb.oldest_pending_seconds = 0
+    assert digest_module.gates(rb) == (True, True, True)
+    assert "最久的等了 0 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
     rb.oldest_pending_seconds = 14 * 3600 + 1
     assert digest_module.gates(rb) == (True, True, False)
     # 显示的小时向上取整，和按秒判断一致：多 1 秒写 15 小时（Grok 第 2 轮）
