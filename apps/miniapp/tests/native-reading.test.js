@@ -14,39 +14,94 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/api.js') return api;
       if (dep === '../../utils/exporter.js') return extra.exporter || {};
       if (dep === '../../utils/data-tools.js') return extra.tools || {};
+      if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
       throw new Error(dep);
-    }, wx: { navigateTo: o => navigations.push(o.url) },
+    }, wx: { navigateTo: o => navigations.push(o.url), ...(extra.wx || {}) },
   });
   return { ...page, data: plain(page.data), navigations, setData(values) { Object.assign(this.data, plain(values)); } };
 }
 const segment = (n, text) => ({ n, kind: 'p', text });
-const reading = (patch = {}) => ({ status: 'ok', title: '合成政策', source: { id: '7', title: '合成政策', issuer: '合成部门', host: 'example.gov.cn', date: '2026-10-23' }, revision: 'rev1', segments: [segment(1, '首段')], nextCursor: null, totalSegments: 1, ...patch });
+const REV1 = 'a'.repeat(64); const REV2 = 'b'.repeat(64);
+const TOC = { body: { readable: true, note: '' }, attachments: [
+  { id: '8', name: '申报指南.pdf', ext: 'PDF', readable: true, state: 'ok', stateText: '' },
+  { id: '9', name: '扫描件.pdf', ext: 'PDF', readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' },
+] };
+const reading = (patch = {}) => ({ status: 'ok', state: 'ok', title: '合成政策', source: { id: '7', title: '合成政策', issuer: '合成部门', host: 'example.gov.cn', date: '2026-10-23' }, revision: REV1, segments: [segment(1, '首段')], nextCursor: null, prevCursor: null, page: 1, pages: 1, totalSegments: 1, toc: TOC, ...patch });
+// 续读记录的替身：记在内存里
+function memoryProgress(initial = {}) {
+  const map = { ...initial };
+  return { map, get: (doc, part) => map[`${doc}:${part || 'body'}`] || null,
+    save: (doc, part, revision, cursor, page) => { const k = `${doc}:${part || 'body'}`; if (page > 1 && cursor !== '0') map[k] = { revision, cursor, page }; else delete map[k]; },
+    clear: (doc, part) => { delete map[`${doc}:${part || 'body'}`]; } };
+}
 const result = (patch = {}) => ({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r1', notice: '合成样例', generatedAt: '2026-10-23', total: 1, items: [{ number: 1, doc_id: '7', title: '合成政策' }], ...patch });
 
-test('正文多页绑定同一版本，前后翻页不漏段或把两版合并', async () => {
+test('正文多页：写"正文 第 N 页 / 共 M 页"，前后翻页绑定同一版本，不漏段或把两版合并', async () => {
   const calls = [];
   const p = load('reader', { reading: async (id, aid, args) => {
     calls.push([id, aid, plain(args)]);
-    return args.cursor === 'c2' ? reading({ segments: [segment(2, '末段')] }) : reading({ nextCursor: 'c2' });
-  } });
-  p.onLoad({ id: '7' }); await p.onShow(); // onShow starts asynchronously
-  await new Promise(r => setImmediate(r));
+    return args.cursor === '20' ? reading({ segments: [segment(21, '末段')], page: 2, pages: 2, prevCursor: '0' }) : reading({ nextCursor: '20', pages: 2 });
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
   assert.equal(p.data.segments[0].text, '首段'); assert.equal(p.data.complete, false);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /正文 第 1 页 \/ 共 2 页/);
   await p.next(); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].text, '末段'); assert.equal(p.data.complete, true);
-  assert.deepEqual(calls[1], ['7', '', { cursor: 'c2', revision: 'rev1' }]);
-  await p.previous(); assert.equal(p.data.segments.length, 1); assert.equal(p.data.segments[0].text, '首段');
+  assert.deepEqual(calls[1], ['7', '', { cursor: '20', revision: REV1 }]);
+  await p.previous(); assert.deepEqual(calls[2], ['7', '', { cursor: '0', revision: REV1 }]);
+  assert.equal(p.data.segments.length, 1); assert.equal(p.data.segments[0].text, '首段'); assert.equal(p.data.page, 1);
 });
 
-test('内容更新409清空旧版本，重新读不会沿用旧游标', async () => {
-  let updated = false;
+test('内容更新（409）：记着的位置作废，写"正文已更新"，从第 1 页读新版本', async () => {
+  let updated = false; const progress = memoryProgress();
   const p = load('reader', { reading: async (_id, _att, args) => {
-    if (args.cursor) throw Object.assign(new Error('changed'), { status: 409 });
-    return reading({ revision: updated ? 'rev2' : 'rev1', nextCursor: 'c2' });
-  } });
-  p.onLoad({ id: '7' }); p.visible = true; await p.restart(); await p.next();
-  assert.equal(p.data.changed, true); assert.deepEqual(p.data.segments, []); assert.equal(p.data.revision, '');
-  updated = true; await p.retry(); assert.equal(p.data.revision, 'rev2'); assert.equal(p.data.page, 1);
+    if (args.cursor !== '0') throw Object.assign(new Error('changed'), { status: 409 });
+    return reading({ revision: updated ? REV2 : REV1, nextCursor: '20', pages: 2 });
+  } }, { progress });
+  p.onLoad({ id: '7' }); p.visible = true; await p.openPart(''); updated = true; await p.next();
+  assert.equal(p.data.changed, false); assert.equal(p.data.revision, REV2); assert.equal(p.data.page, 1);
+  assert.equal(p.data.updatedNote, '正文已更新，从第 1 页开始读'); assert.deepEqual(progress.map, {});
+});
+
+test('续读：再进来从上次读到的那一页接着读，写明第几页，可以从开头看', async () => {
+  const calls = []; const progress = memoryProgress({ '7:body': { revision: REV1, cursor: '20', page: 2 } });
+  const p = load('reader', { reading: async (_id, _att, args) => {
+    calls.push(plain(args));
+    return args.cursor === '20' ? reading({ segments: [segment(21, '第二页')], page: 2, pages: 3, prevCursor: '0', nextCursor: '40' }) : reading({ nextCursor: '20', pages: 3 });
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  assert.deepEqual(calls[0], { cursor: '20', revision: REV1 }); assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 2);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /从你上次读到的第 2 页继续/);
+  await p.fromStart(); assert.equal(p.data.page, 1); assert.equal(p.data.resumePage, 0); assert.deepEqual(progress.map, {});
+  // 翻到第 2 页就记下来；离开再回来（如去反馈页）回到这一页，不再显示"从上次……继续"
+  await p.next(); assert.deepEqual(progress.map['7:body'], { revision: REV1, cursor: '20', page: 2 });
+  p.onHide(); await p.onShow(); assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 0);
+});
+
+test('目录：正文和每个附件都列出来，读不了的写状态、不能点；正文读完接着读附件 1', async () => {
+  const calls = [];
+  const p = load('reader', { reading: async (_id, att, args) => {
+    calls.push([att, plain(args)]);
+    return att === '8' ? reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] }) : reading();
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const text = textOf(render('pages/reader/index.wxml', p.data));
+  assert.match(text, /正文/); assert.match(text, /附件 1\s*申报指南\.pdf/); assert.match(text, /附件 2\s*扫描件\.pdf\s*扫描件，暂不能识别文字/);
+  assert.match(text, /正文完/); assert.match(text, /接着读附件 1：申报指南\.pdf/);
+  assert.doesNotMatch(text, /example\.gov\.cn|来源 /);
+  await p.openToc({ currentTarget: { dataset: { id: '9' } } }); assert.equal(calls.length, 1);
+  await p.continueNext(); assert.deepEqual(calls[1], ['8', { cursor: '0' }]);
+  assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf'); assert.equal(p.data.docTitle, '合成政策');
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /附件 1 完/);
+  await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.deepEqual(calls[2], ['', { cursor: '0' }]);
+});
+
+test('正文读不了（内容在附件里）：写服务端的说明，给"去读附件 1"', async () => {
+  const p = load('reader', { reading: async () => reading({ status: 'empty', state: 'attachments', revision: null, segments: [], notice: '这份通知的内容在附件里。',
+    toc: { body: { readable: false, note: '这份通知的内容在附件里。' }, attachments: TOC.attachments } }) }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const text = textOf(render('pages/reader/index.wxml', p.data));
+  assert.match(text, /这份通知的内容在附件里。/); assert.match(text, /去读附件 1：申报指南\.pdf/); assert.doesNotMatch(text, /正文完|第 1 页/);
 });
 
 test('离页后晚到响应不能显示，返回重新验证，撤回/不可读200清旧正文', async () => {
@@ -59,13 +114,14 @@ test('离页后晚到响应不能显示，返回重新验证，撤回/不可读2
   assert.equal(p.data.status, 'unavailable'); assert.deepEqual(p.data.segments, []); assert.equal(p.data.complete, false);
 });
 
-test('部分扫描附件在站内标明缺失，真实位置和表头保留，不把序号推断为页码', async () => {
-  const p = load('reader', { reading: async () => reading({ status: 'partial', scannedPages: 1, segments: [{ n: 9, kind: 'row', cells: [{ c: 0, t: '12', h: '序号' }, { c: 1, t: '合成企业', h: '单位名称' }], loc: { sheet: '名单', row: 3 } }] }) });
-  p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.restart();
-  assert.equal(p.data.complete, false); assert.equal(p.data.segments[0].cells[0].h, '序号');
+test('部分扫描附件：末尾写还缺几页扫描件、不说读完，真实位置和表头保留，不把序号推断为页码', async () => {
+  const p = load('reader', { reading: async () => reading({ status: 'partial', scannedPages: 1, notice: '其中 1 页是扫描件，暂不能识别文字，下面的文字不含这些页。', segments: [{ n: 9, kind: 'row', cells: [{ c: 0, t: '12', h: '序号' }, { c: 1, t: '合成企业', h: '单位名称' }], loc: { sheet: '名单', row: 3 } }] }) }, { progress: memoryProgress() });
+  p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.openPart('8');
+  assert.equal(p.data.complete, true); assert.equal(p.data.segments[0].cells[0].h, '序号');
   assert.equal(p.data.segments[0].loc, '工作表 名单 · 行 3');
   const text = textOf(render('pages/reader/index.wxml', p.data));
-  assert.match(text, /单位名称：合成企业/); assert.doesNotMatch(text, /rev1/); assert.match(text, /扫描页/); assert.doesNotMatch(text, /已到本版本内容末尾|浏览器|复制/);
+  assert.match(text, /单位名称：合成企业/); assert.doesNotMatch(text, /aaaa/); assert.match(text, /能显示的文字到这里。另有 1 页扫描件，暂不能识别文字/);
+  assert.doesNotMatch(text, /附件 1 ?完|读完|已到本版本内容末尾|浏览器|复制/);
 });
 
 test('目录在站内显示，保存绑定预览revision；409后不能保存旧结果', async () => {
@@ -214,14 +270,112 @@ test('正文翻页错误时实际隐藏全部分页按钮，重试仍请求失�
   let fail = true; const calls = [];
   const p = load('reader', { reading: async (_id, _att, args) => {
     calls.push(plain(args));
-    if (args.cursor && fail) throw Object.assign(new Error('网络出错'), { status: 503 });
-    return reading({ nextCursor: args.cursor ? null : '2', segments: [segment(args.cursor ? 2 : 1, '正文')] });
-  } });
+    if (args.cursor !== '0' && fail) throw Object.assign(new Error('网络出错'), { status: 503 });
+    return args.cursor === '0' ? reading({ nextCursor: '20', pages: 2 }) : reading({ page: 2, pages: 2, prevCursor: '0', segments: [segment(21, '正文')] });
+  } }, { progress: memoryProgress() });
   p.onLoad({ id: '7' }); await p.onShow(); await p.next();
   assert.equal(p.data.error, '网络出错'); assert.deepEqual(p.data.segments, []);
   const tree = render('pages/reader/index.wxml', p.data);
   assert.equal(findAll(tree, n => n.attrs && ['next', 'previous'].includes(n.attrs.bindtap)).length, 0);
   assert.equal(findAll(tree, n => n.attrs && n.attrs.bindtap === 'retry').length, 1);
   fail = false; await p.retry();
-  assert.deepEqual(calls[1], calls[2]); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].n, 2);
+  assert.deepEqual(calls[1], calls[2]); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].n, 21);
+});
+
+test('换页、从开头看、接着读、目录、重试都回到页面顶上（一页约 4000 字，不回去新页开头在屏幕外面）', async () => {
+  const scrolls = []; let fail = false;
+  const p = load('reader', { reading: async (_id, att, args) => {
+    if (fail) throw new Error('网络不通');
+    if (att === '8') return reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] });
+    return args.cursor === '20' ? reading({ segments: [segment(21, '第二页')], page: 2, pages: 2, prevCursor: '0' }) : reading({ nextCursor: '20', pages: 2 });
+  } }, { progress: memoryProgress(), wx: { pageScrollTo: (o) => scrolls.push(o.scrollTop) } });
+  p.onLoad({ id: '7' }); await p.onShow();
+  assert.deepEqual(scrolls, []);
+  await p.next(); assert.equal(p.data.page, 2); assert.deepEqual(scrolls, [0]);
+  await p.previous(); assert.equal(p.data.page, 1); assert.equal(scrolls.length, 2);
+  await p.fromStart(); assert.equal(scrolls.length, 3);
+  await p.next(); assert.equal(p.data.nextPart.id, '8');
+  await p.continueNext(); assert.equal(p.data.partLabel, '附件 1'); assert.equal(scrolls.length, 5);
+  await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.equal(scrolls.length, 6);
+  fail = true; await p.previous(); assert.equal(p.data.error, '网络不通');
+  fail = false; await p.retry(); assert.equal(p.data.page, 1); assert.equal(scrolls.length, 8);
+});
+
+test('目录里点、"接着读"读过的部分：接着上次那页，写明"从你上次读到的第 N 页继续"、给"从开头看"', async () => {
+  const calls = []; const progress = memoryProgress({ '7:8': { revision: REV1, cursor: '20', page: 2 } });
+  const p = load('reader', { reading: async (_id, att, args) => {
+    calls.push([att, plain(args)]);
+    if (att === '8') return args.cursor === '20' ? reading({ title: '申报指南.pdf', segments: [segment(21, '附件第二页')], page: 2, pages: 2, prevCursor: '0' }) : reading({ title: '申报指南.pdf', nextCursor: '20', pages: 2 });
+    return reading();
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  await p.continueNext();
+  assert.deepEqual(calls[1], ['8', { cursor: '20', revision: REV1 }]);
+  assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 2);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /从你上次读到的第 2 页继续\s*从开头看/);
+  await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.equal(p.data.resumePage, 0);
+  await p.openToc({ currentTarget: { dataset: { id: '8' } } }); assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 2);
+});
+
+test('有扫描页的附件末页：服务端写 ok 也按扫描页说，不写"完"', async () => {
+  const p = load('reader', { reading: async () => reading({ status: 'ok', scannedPages: 2 }) }, { progress: memoryProgress() });
+  p.onLoad({ id: '7', attachment: '8' }); await p.onShow();
+  assert.equal(p.data.endText, '能显示的文字到这里。另有 2 页扫描件，暂不能识别文字');
+});
+
+test('记着的位置已不是一页的开头（422）：从第 1 页读，写明上次的位置失效了', async () => {
+  const progress = memoryProgress({ '7:body': { revision: REV1, cursor: '30', page: 2 } });
+  const p = load('reader', { reading: async (_id, _att, args) => {
+    if (args.cursor === '30') throw Object.assign(new Error('阅读位置超出范围，请重新打开'), { status: 422 });
+    return reading({ nextCursor: '20', pages: 2 });
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  assert.equal(p.data.page, 1); assert.equal(p.data.resumePage, 0);
+  assert.equal(p.data.updatedNote, '上次读到的位置已失效，从第 1 页开始读'); assert.deepEqual(progress.map, {});
+});
+
+test('目录里切到另一部分：加载期间页头和目录当前项就是要打开的那一部分，不留上一部分的名字（agy 第 1 轮）', async () => {
+  let release; const held = new Promise((resolve) => { release = resolve; });
+  const p = load('reader', { reading: async (_id, att) => {
+    if (att === '8') { await held; return reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] }); }
+    return reading();
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const opening = p.openToc({ currentTarget: { dataset: { id: '8' } } });
+  assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf');
+  assert.deepEqual(p.data.toc.map((t) => t.current), [false, true, false]);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /附件 1：申报指南\.pdf/);
+  release(); await opening;
+  assert.equal(p.data.partLabel, '附件 1');
+  // 回正文：页头不再写附件名
+  const back = p.openToc({ currentTarget: { dataset: { id: '' } } });
+  assert.equal(p.data.partLabel, '正文'); assert.equal(p.data.partName, '');
+  await back;
+});
+
+test('"接着读"按钮：附件名为空时不留冒号；加载中点"从开头看"不重复请求', async () => {
+  const toc = { body: { readable: true, note: '' }, attachments: [{ id: '8', name: '', ext: 'PDF', readable: true, state: 'ok', stateText: '' }] };
+  let calls = 0;
+  const p = load('reader', { reading: async () => { calls += 1; return reading({ toc }); } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const text = textOf(render('pages/reader/index.wxml', p.data));
+  assert.match(text, /接着读附件 1/); assert.doesNotMatch(text, /接着读附件 1：/);
+  p.data.loading = true; const before = calls;
+  assert.equal(p.fromStart(), undefined); assert.equal(calls, before);
+});
+
+test('目录切到另一部分时接口报错：页头和目录当前项仍是要打开的那一部分，点重试接着打开它（Grok 第 3 轮建议）', async () => {
+  let fail = false;
+  const p = load('reader', { reading: async (_id, att) => {
+    if (att === '8' && fail) throw new Error('网络不通');
+    return att === '8' ? reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] }) : reading();
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  fail = true;
+  await p.openToc({ currentTarget: { dataset: { id: '8' } } });
+  assert.equal(p.data.error, '网络不通');
+  assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf');
+  assert.deepEqual(p.data.toc.map((t) => t.current), [false, true, false]);
+  fail = false; await p.retry();
+  assert.equal(p.data.error, ''); assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.segments[0].text, '附件正文');
 });
