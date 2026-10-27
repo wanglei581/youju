@@ -178,6 +178,7 @@ class Digest:
     # 只有次数，不含任何文字和用户编号
     safety_local: int = 0
     safety_wechat: int = 0
+    safety_documents: tuple[int, ...] = ()  # 被拦的通知编号（公开数据），最多列 5 个
     safety_check_down: int = 0
     # 近 24 小时新抓的正文、附件文字命中本地词库的份数（误拦，或者网站被挂了违规内容）
     safety_new_bodies: int = 0
@@ -353,6 +354,15 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
         ).all()
     )
     digest.safety_local, digest.safety_wechat = layers.get("local", 0), layers.get("wechat", 0)
+    digest.safety_documents = tuple(
+        session.scalars(
+            select(AISafetyHit.document_id)
+            .where(AISafetyHit.created_at >= since, AISafetyHit.document_id.is_not(None))
+            .group_by(AISafetyHit.document_id)
+            .order_by(func.max(AISafetyHit.created_at).desc())
+            .limit(5)
+        )
+    )
     digest.safety_check_down = (
         session.scalar(
             select(func.count(AdvisorTask.id)).where(
@@ -390,9 +400,11 @@ def _safety_line(digest: Digest) -> str | None:
         return None
     parts = []
     if blocked:
+        docs = "、".join(str(doc_id) for doc_id in digest.safety_documents)
         parts.append(
-            f"拦下 {blocked} 次（本地词库 {digest.safety_local}、微信 {digest.safety_wechat}），"
-            "按处置记录里的通知编号看一眼是不是误拦了正常原文"
+            f"拦下 {blocked} 次（本地词库 {digest.safety_local}、微信 {digest.safety_wechat}"
+            + (f"；通知 {docs}" if docs else "")
+            + "），看一眼原文是不是误拦"
         )
     if digest.safety_check_down:
         parts.append(

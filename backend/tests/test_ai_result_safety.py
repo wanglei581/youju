@@ -167,7 +167,6 @@ def test_wechat_down_retries_in_place_then_fails(  # noqa: F811
     不重排整个任务（重排要重新调模型），不记处置记录，往群里提醒一次。"""
     sent = []
     monkeypatch.setattr("youju.alerts.send_alert", lambda message: sent.append(message) or True)
-    monkeypatch.setattr(result_safety, "_alerted_at", [])
     wechat.down = True
     fake = FakeChat()
     task = direct_task(session, doc)
@@ -325,7 +324,7 @@ def test_daily_report_counts_blocks(session, settings, doc, wechat, monkeypatch)
     run(session, down, settings)
     assert down.error == result_safety.CHECK_DOWN_MESSAGE
     [line] = safety_line(NOW + timedelta(hours=1))
-    assert "拦下 1 次（本地词库 1、微信 0）" in line
+    assert f"拦下 1 次（本地词库 1、微信 0；通知 {doc.id}）" in line
     assert "检测接口出错、AI 任务没做成 1 个" in line
     assert "申请书" not in line
 
@@ -345,10 +344,28 @@ def test_blocked_content_not_rechecked_within_a_day(  # noqa: F811
     assert again.status == "failed" and again.error == result_safety.UNSAFE_MESSAGE
     assert fake.calls == [] and wechat.calls == [] and len(hits(session)) == 1
     assert used(session) == 0
-    later = direct_task(session, doc, key="later", stamp=NOW + timedelta(days=1, minutes=1))
+    # 直接判失败的不算新起点：20 小时后再交照样直接失败，过了第一次真查的 1 天就重新查
+    soon = NOW + timedelta(hours=20)
     fake = FakeChat()
-    run(session, later, settings, fake=fake, stamp=NOW + timedelta(days=1, minutes=1))
-    assert len(fake.calls) == 1 and later.status == "failed" and len(hits(session)) == 2
+    run(session, direct_task(session, doc, key="soon", stamp=soon), settings, fake=fake, stamp=soon)
+    assert fake.calls == []
+    later = NOW + timedelta(days=1, minutes=1)
+    fake = FakeChat()
+    task = direct_task(session, doc, key="later", stamp=later)
+    run(session, task, settings, fake=fake, stamp=later)
+    assert len(fake.calls) == 1 and task.status == "failed" and len(hits(session)) == 2
+
+
+def test_word_list_update_lifts_block(session, settings, doc, wechat, monkeypatch):  # noqa: F811
+    """本地词库拦下的：词库换了版本（比如删了误拦的词），不用等 1 天，下次提交就重新查。"""
+    word_list(monkeypatch, "申请书")
+    first = direct_task(session, doc, key="first")
+    run(session, first, settings)
+    assert first.status == "failed"
+    monkeypatch.setattr(safety_words, "LIBRARY", safety_words.load())  # 新版本，没有这个词
+    again = direct_task(session, doc, key="again", stamp=NOW + timedelta(hours=1))
+    run(session, again, settings, stamp=NOW + timedelta(hours=1))
+    assert again.status == "done" and again.result_json["items"]
 
 
 def test_local_check_is_per_sentence():
@@ -434,16 +451,24 @@ def test_clause_result_keeps_mark():
     assert copied["safety"] == {"words": "v", "wechat": True}
 
 
-def test_alert_throttled(monkeypatch):
+def test_alert_throttled(session, monkeypatch):
+    """群提醒的节流记在库里：所有进程合起来每小时最多一条；61010（单个用户）不提醒。"""
     sent = []
     monkeypatch.setattr("youju.alerts.send_alert", lambda message: sent.append(message) or True)
-    monkeypatch.setattr(result_safety, "_alerted_at", [])
-    clock = [100.0]
     for _ in range(3):
-        result_safety.alert_check_down(wx_security.CheckDown("x", 45009), clock=lambda: clock[0])
+        result_safety.alert_check_down(session, wx_security.CheckDown("x", 45009), NOW)
     assert len(sent) == 1 and "45009" in sent[0] and "100 次" in sent[0]
-    clock[0] += 3601
-    result_safety.alert_check_down(wx_security.CheckDown("x", -1), clock=lambda: clock[0])
+    result_safety.alert_check_down(
+        session, wx_security.CheckDown("x", -1), NOW + timedelta(minutes=59)
+    )
+    assert len(sent) == 1
+    result_safety.alert_check_down(
+        session, wx_security.CheckDown("x", -1), NOW + timedelta(hours=1)
+    )
+    assert len(sent) == 2
+    result_safety.alert_check_down(
+        session, wx_security.CheckDown("x", 61010), NOW + timedelta(hours=3)
+    )
     assert len(sent) == 2
 
 
@@ -483,7 +508,7 @@ def test_safety_probe_counts_only(session, session_factory, settings, doc, monke
     assert cli.main(["safety-probe", "--openid", "someone", "--notices", "2"]) == 0
     out = capsys.readouterr().out
     assert "查了 2 份" in out and "review（label 20001） 1 份" in out and "出错 0 次" in out
-    assert f"没通过的通知：{other.id}（review（label 20001））" in out
+    assert f"没通过的：通知 {other.id}（review（label 20001））" in out
     assert "申请书" not in out and len(seen) == 2
 
 
@@ -496,3 +521,41 @@ def test_expired_results_say_expired(client, session, settings, doc, wechat):  #
     session.commit()
     body = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
     assert body["result"] is None and body["error"] == "结果已过期，请重新提交"
+
+
+def test_safety_probe_uses_shown_quotes_first(  # noqa: F811
+    session, session_factory, settings, doc, wechat, monkeypatch, capsys
+):
+    """量测先拿最近做完的 AI 结果里的原句（真正送检的文字），不够才从通知里补。"""
+    from youju import cli
+
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(wx_security, "in_cloud", lambda settings: True)
+    wechat.calls.clear()
+    assert cli.main(["safety-probe", "--openid", "someone", "--notices", "1"]) == 0
+    assert wechat.calls == [("someone", "请提交申请书及附件。")]
+    assert "查了 1 份：pass 1 份" in capsys.readouterr().out
+
+
+def test_sweep_error_keeps_retention_cleanup(session, settings, monkeypatch):  # noqa: F811
+    """复查出错不影响前面的保存期清理：到期的处置记录照样删掉。"""
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("测试：复查出错")
+
+    session.add(
+        AISafetyHit(
+            created_at=NOW - timedelta(days=191),
+            kind="interpret",
+            stage="answer",
+            layer="local",
+            expires_at=NOW - timedelta(days=1),
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(service, "sweep_results", broken)
+    result = service.cleanup_advisor(session, settings=settings, stamp=NOW)
+    assert result["ai_results_removed"] == 0 and result["ai_safety_hits"] == 1
+    assert hits(session) == []

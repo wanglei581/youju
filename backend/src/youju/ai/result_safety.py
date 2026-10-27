@@ -27,12 +27,13 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta
-from threading import Lock
 
+from sqlalchemy import BigInteger, cast, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from youju import safety_words, wx_security
-from youju.models import AdvisorTask, AISafetyHit, User
+from youju.models import AdvisorTask, AISafetyHit, AppKey, User
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ UNSAFE_MESSAGE = "这次的结果没有通过内容安全检查，不显示；�
 REMOVED_MESSAGE = "这条结果没有通过内容安全检查，已撤下，不再显示。"
 CHECK_DOWN_MESSAGE = "内容安全检测暂时不可用，请稍后重试；这次没有扣你的次数。"
 # 内容安全检查上线以前生成的结果：没查过，不显示
-UNCHECKED_MESSAGE = "这条结果生成时还没有内容安全检查，不再显示；请重新提交，这次不扣次数。"
+UNCHECKED_MESSAGE = "这条结果生成时还没有内容安全检查，不再显示；请重新提交。"
 HIT_RETENTION = timedelta(days=190)
 # 微信接口暂时性的错误码：系统繁忙（-1）、频率限制（44991）。其余错误码重试也没用
 TRANSIENT_ERRCODES = frozenset({-1, 44991})
@@ -49,25 +50,39 @@ CHECK_ATTEMPTS = 3
 CHECK_PAUSE = 1.5  # 两次之间等几秒
 
 
-_ALERT_EVERY = 3600.0  # 检测接口出错的群提醒，同一进程每小时最多一条
-_alerted_at: list[float] = []
-_alert_lock = Lock()
+_ALERT_EVERY = timedelta(hours=1)  # 检测接口出错的群提醒，所有进程合起来每小时最多一条
+_ALERT_KEY = "ai_check_down_alert"  # app_keys 里记上次提醒的时间（秒）
 
 
-def alert_check_down(exc: wx_security.CheckDown, *, clock=time.monotonic) -> None:
-    """AI 任务因为内容安全检测出错没做成：往运维群提醒（每小时最多一条），只写错误码。
-    admin 调不通微信接口时每个 AI 任务都会失败，要尽早知道。"""
-    now = clock()
-    with _alert_lock:
-        if _alerted_at and now - _alerted_at[0] < _ALERT_EVERY:
-            return
-        _alerted_at[:] = [now]
+def alert_check_down(session: Session, exc: wx_security.CheckDown, stamp: datetime) -> None:
+    """AI 任务因为内容安全检测出错没做成：往运维群提醒，只写错误码。admin 调不通微信接口时每个
+    AI 任务都会失败，要尽早知道。advisor-run 每分钟起一个新进程，节流记在库里（app_keys 一行），
+    抢到这一小时的才发。61010（这个用户两小时内没访问过小程序）是单个用户的事，不提醒。"""
+    if exc.errcode == 61010:
+        return
+    now = int(stamp.timestamp())
+    try:
+        session.execute(
+            mysql_insert(AppKey).prefix_with("IGNORE").values(name=_ALERT_KEY, value="0")
+        )
+        claimed = session.execute(
+            update(AppKey)
+            .where(
+                AppKey.name == _ALERT_KEY,
+                cast(AppKey.value, BigInteger) <= now - int(_ALERT_EVERY.total_seconds()),
+            )
+            .values(value=str(now))
+        ).rowcount
+        session.commit()
+    except Exception as error:  # noqa: BLE001 - 节流记不上就不发，免得一分钟一条；只记类型
+        session.rollback()
+        log.warning("内容安全检测出错的提醒没记上：%s", type(error).__name__)
+        return
+    if not claimed:
+        return
     from youju.alerts import send_alert
 
-    hint = {
-        45009: "当天的调用次数用完了（没上架的小程序每天 100 次）",
-        61010: "用户两小时内没访问过小程序",
-    }.get(
+    hint = {45009: "当天的调用次数用完了（没上架的小程序每天 100 次）"}.get(
         exc.errcode,
         "可能是 admin 调不通微信接口：看云托管的开放接口服务、"
         "令牌权限里有没有登记 wxa/msg_sec_check",
@@ -80,6 +95,10 @@ def alert_check_down(exc: wx_security.CheckDown, *, clock=time.monotonic) -> Non
 
 class ResultBlocked(Exception):
     """结果没通过内容安全：不显示、不存。处置记录已经加进会话，随任务失败一起提交。"""
+
+
+class RecentlyBlocked(ResultBlocked):
+    """同一份内容 1 天内真查过、没通过：这次不再调模型和微信，直接按没通过处理，也不另写记录。"""
 
 
 def quotes(result: dict | None, field: str) -> list[tuple[str | None, str]]:

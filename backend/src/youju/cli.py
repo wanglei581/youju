@@ -1015,56 +1015,81 @@ def _cmd_log_uid(args: argparse.Namespace) -> int:
 def _cmd_safety_probe(args: argparse.Namespace) -> int:
     """开放前量一量微信内容安全会不会误拦政府原文（门槛第 4 道）。只读，不写数据库。
 
-    取最近收录、能做 AI 解读的通知，把正文开头 2500 字交微信检查（带 --openid：这个人两小时内
-    要访问过小程序），只打印各种结果的份数和没通过的通知编号，不打印正文。每份占一次当天的调用
-    次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。只能在云托管的 admin 容器里跑。"""
+    送检的是 AI 真正会显示的原句：先取最近做完的 AI 结果里的原句；不够数，再从最近收录、能做解读
+    的通知里取像申报要点的段落（对象、条件、材料、时间、支持、方式）补上。交微信检查时带 --openid
+    （这个人两小时内要访问过小程序），只打印各种结果的份数和没通过的编号，不打印文字。每份占一次
+    当天的调用次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。
+    只能在云托管 admin 容器里跑。"""
+    import re
+
     from sqlalchemy import select
+    from sqlalchemy.orm import defer
 
     from youju import wx_security
-    from youju.ai import content, interpret
+    from youju.ai import content, interpret, result_safety
+    from youju.ai.skills import AI_KINDS, get_skill
+    from youju.models import AdvisorTask
 
     if not wx_security.in_cloud(get_settings()):
         print("只能在云托管里跑：本机不调微信接口")
         return 1
-    counts: dict[str, int] = {}
-    blocked: list[str] = []
-    errors = 0
+    points = re.compile(r"申报|对象|条件|材料|截止|时间|支持|补助|奖励|方式|系统|报送")
+    samples: list[tuple[str, str]] = []
     with session_factory()() as session:
+        tasks = session.scalars(
+            select(AdvisorTask)
+            .options(defer(AdvisorTask.snapshot), defer(AdvisorTask.input_json))
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+            )
+            .order_by(AdvisorTask.finished_at.desc(), AdvisorTask.id.desc())
+            .limit(args.notices)
+        ).all()
+        for task in tasks:
+            text = result_safety.result_text(task.result_json, get_skill(task.kind).result_field)
+            if text.strip():
+                samples.append((f"任务 {task.id}", text[: wx_security.LIMIT]))
         candidates = session.scalars(
             select(Document.id)
             .where(Document.taken_down_at.is_(None))
             .order_by(Document.first_seen_at.desc(), Document.id.desc())
             .limit(args.notices * 5)
         ).all()
-        picked = 0
         for doc_id in candidates:
-            if picked >= args.notices:
+            if len(samples) >= args.notices:
                 break
             try:
                 content.check(session, doc_id)
                 loaded = content.load(session, doc_id)
             except interpret.InterpretRefusal:
                 continue
-            text = "\n".join(p["text"] for p in loaded.paragraphs())[: wx_security.LIMIT]
-            if not text.strip():
-                continue
-            picked += 1
-            try:
-                verdict = wx_security.check_text(args.openid, text)
-            except wx_security.CheckDown as exc:
-                errors += 1
-                print(f"通知 {doc_id}：检测出错（errcode {exc.errcode}）")
-                if exc.errcode in (45009, 61010):
-                    break  # 次数用完、openid 两小时内没访问过：后面的也查不了
-                continue
-            key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
-            counts[key] = counts.get(key, 0) + 1
-            if not verdict.passed:
-                blocked.append(f"{doc_id}（{key}）")
+            picked = [p["text"] for p in loaded.paragraphs() if points.search(p["text"])]
+            text = "\n".join(picked)[: wx_security.LIMIT]
+            if text.strip():
+                samples.append((f"通知 {doc_id}", text))
+    counts: dict[str, int] = {}
+    blocked: list[str] = []
+    errors = 0
+    for label, text in samples[: args.notices]:
+        try:
+            verdict = wx_security.check_text(args.openid, text)
+        except wx_security.CheckDown as exc:
+            errors += 1
+            print(f"{label}：检测出错（errcode {exc.errcode}）")
+            if exc.errcode in (45009, 61010):
+                break  # 次数用完、openid 两小时内没访问过：后面的也查不了
+            continue
+        key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
+        counts[key] = counts.get(key, 0) + 1
+        if not verdict.passed:
+            blocked.append(f"{label}（{key}）")
+    checked = sum(counts.values())
     summary = "、".join(f"{key} {n} 份" for key, n in sorted(counts.items())) or "没有查成的"
-    print(f"查了 {picked} 份：{summary}；出错 {errors} 次")
+    print(f"查了 {checked} 份：{summary}；出错 {errors} 次")
     if blocked:
-        print("没通过的通知：" + "，".join(blocked))
+        print("没通过的：" + "，".join(blocked))
     return 0
 
 
