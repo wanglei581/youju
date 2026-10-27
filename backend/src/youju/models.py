@@ -718,7 +718,7 @@ AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gon
 class AIEligibility(Base):
     """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
 
-    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 content.check
     算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
     读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
     能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""

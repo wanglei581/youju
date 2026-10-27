@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, defer
 from youju import advisor_tasks as service
 from youju import boost, payments
 from youju.agreements import tools_agreed
-from youju.ai import heartbeat, interpret
+from youju.ai import content, heartbeat, interpret
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
@@ -527,7 +527,7 @@ def create_task(
     if body.kind in AI_KINDS:
         # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
         try:
-            interpret.eligible_body(session, body.doc_id)
+            content.check(session, body.doc_id)
         except interpret.InterpretRefusal as exc:
             raise HTTPException(
                 status_code=422,
