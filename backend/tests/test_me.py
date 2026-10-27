@@ -85,7 +85,7 @@ def settings(
 
 
 def agree(client, headers=None):
-    """同意用户协议和隐私保护指引（之后才能关注、订阅、纠错、埋点）。"""
+    """同意用户协议和隐私保护指引（之后才能关注、订阅、纠错）。"""
     response = client.post("/api/v1/me/agreement", json={"version": "2026-09"}, headers=headers)
     assert response.status_code == 200
 
@@ -163,13 +163,11 @@ def test_mask_feedback_boundaries_without_database():
 def test_identity_modes_and_agreement(client, session, monkeypatch):
     assert client.get("/api/v1/me").status_code == 401
     assert client.post("/api/v1/feedback", json={"content": "纠错"}).status_code == 401
-    assert client.post("/api/v1/events", json={"name": "search"}).status_code == 401
     settings(monkeypatch)
     assert client.get("/api/v1/me").json()["agreed"] is None
-    # 同意之前：只查看不建用户记录；关注、纠错、埋点都不收
+    # 同意之前：只查看不建用户记录；关注、纠错都不收
     assert session.scalar(select(func.count(User.id))) == 0
     assert client.post("/api/v1/feedback", json={"content": "纠错"}).status_code == 403
-    assert client.post("/api/v1/events", json={"name": "search"}).status_code == 403
     assert client.get("/api/v1/me/follows").status_code == 403
     assert session.scalar(select(func.count(User.id))) == 0
     assert client.post("/api/v1/me/agreement", json={"version": "v" * 21}).status_code == 422
@@ -362,7 +360,7 @@ def test_deadline_subscription_rejects_passed_time_today(client, session, monkey
     assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
 
 
-def test_feedback_security_and_events(client, session, monkeypatch):
+def test_feedback_security(client, session, monkeypatch):
     settings(monkeypatch)
     agree(client)
     assert client.post("/api/v1/feedback", json={"content": ""}).status_code == 422
@@ -372,21 +370,6 @@ def test_feedback_security_and_events(client, session, monkeypatch):
     )
     assert client.post("/api/v1/feedback", json={"content": "请核对"}).status_code == 201
     assert session.scalar(select(Feedback.check_result)) == "unchecked"
-    assert client.post("/api/v1/events", json={"name": "wrong"}).status_code == 422
-    assert (
-        client.post("/api/v1/events", json={"name": "search", "props": {"q": "敏感词"}}).status_code
-        == 422
-    )
-    assert (
-        client.post("/api/v1/events", json={"name": "search", "props": {"count": True}}).status_code
-        == 422
-    )
-    for _ in range(60):
-        assert client.post(
-            "/api/v1/events", json={"name": "search", "props": {"count": 1}}
-        ).json() == {"accepted": True}
-    assert client.post("/api/v1/events", json={"name": "search"}).json() == {"accepted": False}
-    assert session.scalar(select(func.count(Event.id))) == 60
     settings(monkeypatch, trust=True)
     headers = {"X-WX-SOURCE": "mini", "X-WX-OPENID": "wx"}
     agree(client, headers)
@@ -431,6 +414,16 @@ def test_feedback_security_and_events(client, session, monkeypatch):
     assert session.scalar(select(func.count(Feedback.id))) == 2
 
 
+def test_event_endpoint_is_gone(client, session, monkeypatch):
+    """写使用记录（埋点）的接口已删（个人信息保护影响评估第六节（二）第 13 条）：已同意的用户
+    自己构造请求也写不进去。以前留下的照常导出、到期清理、注销时删除（见下面几个测试）。"""
+    settings(monkeypatch)
+    agree(client)
+    for body in ({"name": "search"}, {"name": "search", "props": {"count": 1}}):
+        assert client.post("/api/v1/events", json=body).status_code == 404
+    assert session.scalar(select(func.count(Event.id))) == 0
+
+
 def test_account_deletion_cascades(client, session, monkeypatch):
     settings(monkeypatch)
     agree(client)
@@ -443,7 +436,9 @@ def test_account_deletion_cascades(client, session, monkeypatch):
         == 201
     )
     client.post("/api/v1/feedback", json={"content": "请核对"})
-    client.post("/api/v1/events", json={"name": "feedback"})
+    # 写使用记录的接口已删：直接写库模拟以前留下的一条，注销时随用户删除
+    session.add(Event(user_id=session.scalar(select(User.id)), name="feedback", props={}))
+    session.commit()
     assert client.delete("/api/v1/me").status_code == 204
     for model in (User, Follow, Subscription, Feedback, Event):
         assert session.scalar(select(func.count()).select_from(model)) == 0

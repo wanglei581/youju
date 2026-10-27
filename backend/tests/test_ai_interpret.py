@@ -14,7 +14,7 @@ from alembic import command
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import func, inspect, select, text, update
 
 from youju import advisor_tasks as service
 from youju.agreements import TOOLS_AGREEMENT_VERSION
@@ -93,7 +93,7 @@ def settings(monkeypatch):
         retain_unused_subscriptions_days=365,
         cloud_env=None,
     )
-    for module in (api, me, service, app_module, v1):
+    for module in (api, me, service, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     # 所有 worker 路径均被替换，配置错误也不会真的连模型。
@@ -153,12 +153,11 @@ def tools_ready(session, openid="internal"):
     session.commit()
 
 
-def create(client, doc_id, key="first"):
-    return client.post(
-        "/api/v1/advisor/tasks",
-        json={"kind": "interpret", "doc_id": doc_id},
-        headers={"Idempotency-Key": key},
-    )
+def create(client, doc_id, key="first", notice=None):
+    body = {"kind": "interpret", "doc_id": doc_id}
+    if notice is not None:
+        body["notice"] = notice
+    return client.post("/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": key})
 
 
 def direct_task(session, doc, openid="internal", key="direct", stamp=NOW):
@@ -661,15 +660,26 @@ def test_all_audience_submission_worker_and_consent(client, settings, doc, sessi
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
     assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["enabled"]
-    created = create(client, doc.id)
+    # 对所有人开放时要带上同意过的使用须知版本（D-098）：没带、带旧版本都不建任务
+    for stale in (None, "2026-01-01"):
+        refused = create(client, doc.id, key=f"no-notice-{stale}", notice=stale)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "AI_NOTICE_REQUIRED"
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 0
+    created = create(client, doc.id, notice=interpret.AI_NOTICE_VERSION)
     assert created.status_code == 202
+    task = session.get(AdvisorTask, created.json()["id"])
+    assert task.input_json == {"doc_id": doc.id, "notice": interpret.AI_NOTICE_VERSION}
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
     assert session.get(AdvisorTask, created.json()["id"]).status == "done"
 
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = "old"
     session.commit()
-    assert create(client, doc.id, key="no-consent").status_code == 403
+    assert (
+        create(client, doc.id, key="no-consent", notice=interpret.AI_NOTICE_VERSION).status_code
+        == 403
+    )
     settings.ai_advisor_enabled = False
     assert create(client, doc.id, key="disabled").status_code == 404
 
@@ -793,7 +803,7 @@ def test_concurrent_submission_uses_one_global_slot(session_factory, session, se
             barrier.wait(timeout=5)
             try:
                 api.create_task(
-                    api.TaskIn(kind="interpret", doc_id=doc.id),
+                    api.TaskIn(kind="interpret", doc_id=doc.id, notice=interpret.AI_NOTICE_VERSION),
                     SimpleNamespace(state=SimpleNamespace()),
                     work,
                     user,
@@ -1343,6 +1353,18 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     )
     monkeypatch.setenv("YOUJU_AI_ADVISOR_API_KEY", "advisor-test-value")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_MODEL", "advisor-model")
+    # 还要能公示模型名称和备案编号（D-098），缺一项不启动
+    monkeypatch.delenv("YOUJU_AI_MODEL_LABEL", raising=False)
+    monkeypatch.delenv("YOUJU_AI_MODEL_FILING", raising=False)
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_LABEL", "测试模型")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", " ")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", "测试备案编号-0001")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12
@@ -1849,3 +1871,18 @@ def test_public_ai_user_and_worker_consent_agree(session, settings, version, sta
     session.commit()
     assert interpret.enabled(settings, user) is expected
     assert (user.id in session.scalars(interpret.worker_user_ids(settings)).all()) is expected
+
+
+def test_notice_does_not_break_idempotent_retry(client, settings, session, doc):
+    """旧任务没有须知版本（notice）；新小程序用同一个请求编号重试时带上了，仍是同一个任务：
+    不 409、不多建任务、不重复扣次数（D-098，Codex 10/26）。别的输入不一样照旧 409。"""
+    first = create(client, doc.id, key="same-key")
+    assert first.status_code == 202
+    assert session.get(AdvisorTask, first.json()["id"]).input_json == {"doc_id": doc.id}
+    again = create(client, doc.id, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert again.status_code in (200, 202)
+    assert again.json()["id"] == first.json()["id"]
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 1
+    # 换了通知还用同一个请求编号：照旧 409（比对在查通知之前，编号不存在也一样）
+    clash = create(client, doc.id + 99, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert clash.status_code == 409

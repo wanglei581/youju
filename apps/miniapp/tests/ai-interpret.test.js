@@ -28,14 +28,14 @@ function load(file, deps, globals = {}) {
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;
 }
 function storage(agreed = false) {
-  const values = new Map(agreed ? [[logic.CONSENT_KEY, true]] : []);
+  const values = new Map(agreed ? [[logic.CONSENT_KEY, logic.consentRecord()]] : []);
   return { getStorageSync: (key) => values.get(key), setStorageSync: (key, value) => values.set(key, value), values };
 }
 function sessionHarness(options = {}) {
   let now = 0; let next = 0; let created = 0; let polled = 0;
   const timers = new Map(); const state = {}; const keys = []; const local = options.storage || storage(true);
   const api = {
-    createAdvisorTask(body, key) { created += 1; keys.push(key); assert.deepEqual(body, { kind: 'interpret', doc_id: 42 }); return Promise.resolve({ id: created, status: 'queued' }); },
+    createAdvisorTask(body, key) { created += 1; keys.push(key); assert.deepEqual(body, { kind: 'interpret', doc_id: 42, notice: logic.NOTICE_VERSION }); return Promise.resolve({ id: created, status: 'queued' }); },
     advisorTask(id) { polled += 1; return Promise.resolve({ id, status: 'running' }); },
     ...options.api,
   };
@@ -344,7 +344,7 @@ test('换了手机打开已有解读：须知按钮写"查看结果"；从通知
     }, { wx: { ...local, setNavigationBarTitle() {} } });
     page.onLoad(taskId ? { taskId } : { docId: '42', title: '通知' }); page.onShow(); await flush();
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
-    assert.match(output, /使用须知/); assert.match(output, taskId ? /我知道了，查看结果/ : /我知道了，开始解读/);
+    assert.match(output, /使用须知/); assert.match(output, taskId ? /同意并查看结果/ : /同意并开始解读/);
     assert.doesNotMatch(output, taskId ? /开始解读/ : /查看结果/); page.onUnload();
   }
 });

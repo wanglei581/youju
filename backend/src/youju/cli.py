@@ -1224,7 +1224,7 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
     with session_factory()() as session:
         report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
     if report.skipped:
-        print("附件副本：另一个附件任务（上一轮或手动重查）正在运行，本轮跳过")
+        print("附件副本：另一个附件任务（上一轮、手动重查或取附件文字）正在运行，本轮跳过")
         return 0
     failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
     print(
@@ -1272,8 +1272,11 @@ def _beijing_noon(day: date | None) -> datetime | None:
 
 
 def _cmd_attachment_texts(args: argparse.Namespace) -> int:
-    """只取附件文字（不存副本、不访问对象存储）：本机拿数据副本实测；上线后想比定时任务更快补齐
-    时手动跑。和附件定时任务共用一把锁。"""
+    """只取附件文字（不存副本、不访问对象存储）：每轮抓取补完详情后跑一次（deploy/round.sh），
+    新附件当轮就能在小程序里站内阅读；也用来本机拿数据副本实测、手动补齐存量。
+    和附件副本任务（cache-attachments）、手动重查共用一把锁：另一个正在跑时这次不取、返回 0，
+    和 cache-attachments 一样（免得 job.sh 误发失败提醒；没取的下一轮或副本任务接着取）。
+    取文字这步出错才返回 1。"""
     from youju.attachments import extract_texts
 
     with session_factory()() as session:
@@ -1284,8 +1287,10 @@ def _cmd_attachment_texts(args: argparse.Namespace) -> int:
             retry_pending=args.retry_pending,
         )
     if report.skipped:
-        print("附件的定时任务正在运行，这次没有取，请稍后再跑")
-        return 1
+        print(
+            "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
+        )
+        return 0
     print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
     print(_texts_line(report.texts))
     return 1 if report.texts.errors else 0
@@ -2142,7 +2147,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_list_evidence)
     p = sub.add_parser(
         "attachment-texts",
-        help="只取给 AI 用的附件文字（不存副本、不访问对象存储）：还没取过的补取，清理超出范围的",
+        help="只取附件文字（站内阅读用，不存副本、不访问对象存储）：还没取过的补取（新的先取），"
+        "清理超出范围的；每轮抓取补完详情后跑一次，另一个附件任务正在跑时这次跳过（不算失败）",
     )
     p.add_argument("--limit", type=int, default=200, help="本轮最多下载几个（1–2000，默认 200）")
     p.add_argument(

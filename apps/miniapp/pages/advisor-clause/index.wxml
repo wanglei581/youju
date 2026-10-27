@@ -69,7 +69,9 @@
   <view wx:elif="{{needsConsent}}" class="card advisor-card">
     <view class="advisor-title">使用须知</view>
     <view class="advisor-text">AI 会摘出通知里申报对象、申报条件的原文原句，和你填的情况并排列出，约半分钟。只摘原文、不改写，仅供参考；不判断能否申报，以原文和主管部门解释为准。</view>
-    <button class="advisor-button btn-primary" bindtap="start">{{taskId ? '我知道了，查看结果' : '我知道了，开始对照'}}</button>
+    <view class="advisor-text">{{modelText}}你填的企业情况不交给模型。{{taskId ? '点"同意"后查看结果。' : '点"同意"才开始。'}}</view>
+    <view wx:if="{{consentError}}" class="advisor-text error">{{consentError}}</view>
+    <button class="advisor-button btn-primary" bindtap="start">{{taskId ? '同意并查看结果' : '同意并开始对照'}}</button>
     <view class="advisor-text link" bindtap="toggleTerms" aria-role="button">{{showTerms ? '收起完整说明' : '查看完整说明'}}</view>
     <block wx:if="{{showTerms}}">
       <view wx:for="{{terms}}" wx:key="*this" class="advisor-text muted">{{index + 1}}. {{item}}</view>

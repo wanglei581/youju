@@ -1,6 +1,6 @@
 // AI 解读（政策解读与材料清单）。直达也要 capabilities 开放才显示；正式版没同意协议时引导同意，连不上时给重试。
 const api = require('../../utils/api.js');
-const { createSession } = require('../../utils/ai-interpret.js');
+const { createSession, modelText } = require('../../utils/ai-interpret.js');
 const { internalNotice, allowedKinds, aiTitle, gateState, remainingOf, AI_LABEL, AI_INTERNAL, OFF_TEXT, gateText } = require('../../utils/advisor.js');
 const context = require('../../utils/tool-context.js');
 const access = require('../../utils/ai-access.js');
@@ -16,7 +16,7 @@ const NEW_GATE_TEXT = {
 };
 
 Page({
-  data: { aiLabel: AI_LABEL, loading: true, outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
+  data: { aiLabel: AI_LABEL, loading: true, consentError: '', outdated: false, aiEnabled: false, gate: 'off', gateText: OFF_TEXT, aiNotice: '', phase: '', progress: '', error: '', title: '', docId: '', taskId: '', checked: false, needsConsent: true, terms: [], result: null, canRetry: false, showTerms: false, clauseEnabled: false, resumable: false, errorCode: '' },
   onLoad(query = {}) {
     const doc = context.read(query) || {};
     // 从"我的记录"打开已有任务（例如换了手机）：须知按钮写"查看结果"，不像要新建。
@@ -79,6 +79,7 @@ Page({
         this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return;
       }
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
+        modelText: modelText(ai.disclosure),
         clauseEnabled: aiEnabled && allowedKinds(ai).includes('clause') });
       if (aiEnabled) this.session.show();
     }).catch(() => {
@@ -103,7 +104,7 @@ Page({
   onUnload() { this.onHide(); },
   check(e) { this.session.check((e.detail.value || []).includes('agree')); },
   agree() { if (this.data.aiEnabled) this.session.agree(); },
-  // 使用须知只有一个"我知道了，开始解读"按钮（10/17）；打开已有任务时写"我知道了，查看结果"
+  // 使用须知只有一个"同意并开始解读"按钮（D-098）；打开已有任务时写"同意并查看结果"
   start() { if (this.data.aiEnabled) this.session.start(); },
   toggleTerms() { this.setData({ showTerms: !this.data.showTerms }); },
   // 解读结果下面的可选下一步：和我的企业对一下
