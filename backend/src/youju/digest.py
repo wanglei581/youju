@@ -50,6 +50,64 @@ _SYSTEM = """你是政策申报助手的值班编辑。必须只返回 JSON 对�
 每项字段：id（清单里的编号）、reason（不超过 20 字）。"""
 
 
+# ---- 能读情况（D-097 ④）----
+# 近 30 天发布、能公开的申报通知和政策（合并转载只算主条目）在小程序里能不能读全，用详情页、
+# 阅读页同一个判断（v1.reading_body、attachment_text.readings），分母都含失败、处理中和不支持的。
+# 达到下面的门槛再提审：正文能读率 ≥90%（争取 95%）、附件没有等了超过一轮的、整条能读率 ≥75%。
+READ_KINDS = ("申报通知", "政策")
+BODY_GATE = 90
+BODY_GOAL = 95
+WHOLE_GATE = 75
+# 每天 6:30、20:30 两轮抓取（deploy/crontab），每轮当轮取新附件的文字；两轮最长隔 14 小时，
+# 等得比这久就是漏了一轮
+ROUND_HOURS = 14
+SITES_SHOWN = 10
+# 读不了的原因（页面上的说法见 api/readers.py、attachment_text.NOTES）→ 日报里的短说法
+BODY_PROBLEMS = {
+    "empty": "没取到正文",
+    "chrome": "正文像网页导航",
+    "link_gone": "原网页已打不开",
+}
+ATTACHMENT_PROBLEMS = {
+    "pending": "附件等取文字",
+    "scan": "附件是扫描件",
+    "partial": "附件有扫描页",
+    "format": "附件格式不支持",
+    "too_large": "附件太大",
+    "broken": "附件损坏或加密",
+    "empty": "附件没有文字",
+    "gone": "附件在原网站已删",
+    "webpage": "附件下载不了",
+    "unavailable": "附件下载不了",
+    "host": "附件不在政府网站",
+    "link_gone": "原网页已打不开",
+    "old": "附件超出范围",
+    "kind": "附件不读",
+    "list": "名单附件",
+    "source": "附件来源不公开",
+}
+
+
+@dataclass
+class Readability:
+    notices: int = 0
+    body_ok: int = 0
+    # 正文读不了的原因 → 份数（BODY_PROBLEMS 的说法）
+    no_body: Counter = field(default_factory=Counter)
+    attachments: int = 0
+    attachments_ok: int = 0
+    # 附件读不了的原因 → 个数（ATTACHMENT_PROBLEMS 的说法）
+    attachment_problems: Counter = field(default_factory=Counter)
+    pending: int = 0
+    # 等取文字的附件里最老的一个等了多少小时（从通知第一次收录算起）
+    oldest_pending_hours: int | None = None
+    whole_ok: int = 0
+    # 正文、附件都能读，但附件里有扫描页（不算整条能读，单列）
+    scanned_only: int = 0
+    # 读不全的通知最多的网站：（来源部门全称，份数，[(原因, 份数)…]，原因只列最多的两个）
+    sites: list = field(default_factory=list)
+
+
 @dataclass
 class Digest:
     day: date
@@ -86,7 +144,6 @@ class Digest:
     access_ok: bool = True
     # 数据质量（D6）：近 30 天发布、能公开的申报通知和名单
     notices_30: int = 0
-    notices_with_body: int = 0
     notices_with_candidates: int = 0
     lists_30: int = 0
     lists_parsed: int = 0
@@ -97,6 +154,9 @@ class Digest:
     attachment_bytes: int = 0
     result_files: int = 0
     usage_ok: bool = True
+    # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
+    readability: Readability | None = None
+    readability_ok: bool = True
 
 
 @dataclass
@@ -224,6 +284,12 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
 
     digest.usage = usage_summary(session, today - timedelta(days=1))
     _quality_and_usage(session, digest, today)
+    try:
+        with session.begin_nested():
+            digest.readability = readability(session, now)
+    except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
+        log.warning("日报的能读情况统计出错：%s", type(exc).__name__)
+        digest.readability_ok = False
     return digest
 
 
@@ -252,7 +318,6 @@ def _access(session: Session, digest: Digest, today: date) -> None:
 
 def _quality(session: Session, digest: Digest, today: date) -> None:
     from youju.api import v1
-    from youju.takedown import available_condition
 
     since = today - timedelta(days=29)
 
@@ -282,40 +347,7 @@ def _quality(session: Session, digest: Digest, today: date) -> None:
     notices = recent("申报通知")
     owner = owners(notices)
     digest.notices_30 = len(notices)
-    # 有正文：和详情页取正文同一规则（v1._reading_body）——只取一级来源、抓取成功的；这份文件
-    # 自己有就用自己的，没有再用同组最长的；够 200 字才算
-    lengths: dict[int, dict[int, int]] = {master: {} for master in notices}
-    for doc_id, length in session.execute(
-        select(DocumentDetail.document_id, func.char_length(DocumentDetail.body_text))
-        .join(Document, Document.id == DocumentDetail.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(
-            DocumentDetail.document_id.in_(list(owner)),
-            DocumentDetail.status == "ok",
-            Source.rights_level == 1,
-            available_condition(),
-        )
-    ):
-        if length:
-            lengths[owner[doc_id]][doc_id] = length
-    # 选出详情页会用的那一份（自己的，或同组最长的），再用详情页同一个函数清理后判断够不够字数：
-    # 详情页先脱敏、去掉网页固定文字和多余空行，不到 200 字就不显示正文
-    chosen: dict[int, int] = {}
-    for master, by_doc in lengths.items():
-        if master in by_doc:
-            chosen[master] = master
-        elif by_doc:
-            chosen[master] = max(by_doc, key=lambda doc_id: (by_doc[doc_id], -doc_id))
-    shown = 0
-    picked = list(chosen.values())
-    for start in range(0, len(picked), 100):
-        for (body,) in session.execute(
-            select(DocumentDetail.body_text).where(
-                DocumentDetail.document_id.in_(picked[start : start + 100])
-            )
-        ):
-            shown += v1.body_for_reading(body, "申报通知")["status"] == "ok"
-    digest.notices_with_body = shown
+    # 正文能不能读：见能读情况（readability，申报通知和政策，和详情页、阅读页同一个判断）
     candidates = session.scalars(
         select(DocumentDeadline.document_id)
         .where(DocumentDeadline.document_id.in_(list(owner)))
@@ -369,6 +401,171 @@ def _usage(session: Session, digest: Digest, today: date) -> None:
         )
         or 0
     )
+
+
+def _hours(now: datetime, then: datetime | None) -> int | None:
+    if then is None:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return max(0, int((now - then).total_seconds() // 3600))
+
+
+def readability(session: Session, now: datetime) -> Readability:
+    """近 30 天申报通知、政策的能读情况（D-097 ④），口径见上。"""
+    from youju import attachment_text
+    from youju.api import v1
+
+    today = now.astimezone(BEIJING).date()
+    since = today - timedelta(days=29)
+    rows = session.execute(
+        visible_documents(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                v1.public_condition(),
+                v1._kind_is(list(READ_KINDS)),
+                Document.publish_date >= since,
+                Document.publish_date <= today,
+            )
+        ).order_by(Document.id)
+    ).all()
+    result = Readability()
+    sites: Counter = Counter()
+    reasons: dict[str, Counter] = {}
+    for doc, src in rows:
+        kind = effective_kind(doc.title, doc.kind_override)
+        items = attachment_text.readings(session, doc.id, now)
+        # 和详情页、阅读页同一个判断（原网页已失效的也在里面：problem 是 link_gone）
+        body = v1.reading_body(
+            session, doc, kind, attachments=bool(items), redact=attachment_text.mask
+        )
+        body_ok, problem = body.status == "ok", body.problem
+        result.notices += 1
+        # 这份通知读不全的原因（网站排行按份数算，一份里几个附件同一原因只算一次）
+        found: set[str] = set()
+        if body_ok:
+            result.body_ok += 1
+        else:
+            label = BODY_PROBLEMS.get(problem or "empty", "没取到正文")
+            result.no_body[label] += 1
+            found.add(label)
+        scanned = False
+        for item in items:
+            result.attachments += 1
+            if item.readable:
+                result.attachments_ok += 1
+                if item.scanned_pages:
+                    scanned = True
+                    found.add(ATTACHMENT_PROBLEMS["partial"])
+                continue
+            label = ATTACHMENT_PROBLEMS.get(item.state, "附件读不了")
+            result.attachment_problems[label] += 1
+            found.add(label)
+            if item.state == "pending":
+                result.pending += 1
+                hours = _hours(now, doc.first_seen_at)
+                if hours is not None and (
+                    result.oldest_pending_hours is None or hours > result.oldest_pending_hours
+                ):
+                    result.oldest_pending_hours = hours
+        complete = body_ok and all(item.readable for item in items)
+        if complete and not scanned:
+            result.whole_ok += 1
+            continue
+        if complete:
+            result.scanned_only += 1
+        site = src.dept_full_name
+        sites[site] += 1
+        reasons.setdefault(site, Counter()).update(found)
+    result.sites = [
+        (site, count, reasons[site].most_common(2))
+        for site, count in sorted(sites.items(), key=lambda kv: (-kv[1], kv[0]))[:SITES_SHOWN]
+    ]
+    return result
+
+
+def _gate(value: int, whole: int, gate: int) -> str:
+    """ "门槛 90%，达到"：按向下取整的百分比比（有一份读不了就不会写成达到 100%）。"""
+    if not whole:
+        return f"门槛 {gate}%"
+    reached = math.floor(100 * value / whole) >= gate
+    return f"门槛 {gate}%，{'达到' if reached else '没达到'}"
+
+
+def _counts(counter: Counter) -> str:
+    return "、".join(f"{label} {n}" for label, n in counter.most_common())
+
+
+def readability_summary(digest: Digest) -> str:
+    """主日报里的一行：能读率三个数（细的另发一条）。"""
+    rb = digest.readability
+    if not digest.readability_ok or rb is None:
+        return "能读（近 30 天申报通知、政策）：取不到（统计出错，看容器日志）"
+    return (
+        f"能读（近 30 天申报通知、政策 {rb.notices} 份，详见下一条）："
+        f"正文 {_pct(rb.body_ok, rb.notices)}、附件 {_pct(rb.attachments_ok, rb.attachments)}、"
+        f"整条 {_pct(rb.whole_ok, rb.notices)}"
+    )
+
+
+def readability_text(digest: Digest) -> str | None:
+    """能读情况（另发一条）：三个能读率和提审门槛、读不了的原因、读不全最多的网站。放不下时从
+    最后一个网站开始去掉。统计出错时不发（主日报里已写取不到）。"""
+    rb = digest.readability
+    if not digest.readability_ok or rb is None:
+        return None
+    head = (
+        f"运维日报·能读情况 {_md(digest.day)}"
+        f"（近 30 天申报通知、政策 {rb.notices} 份；提审门槛见 D-097）"
+    )
+    body = (
+        f"正文能读 {rb.body_ok} 份（{_pct(rb.body_ok, rb.notices)}，"
+        f"{_gate(rb.body_ok, rb.notices, BODY_GATE)}，争取 {BODY_GOAL}%）"
+    )
+    if rb.no_body:
+        body += f"；读不了的：{_counts(rb.no_body)}"
+    if rb.pending:
+        wait = (
+            f"最久的等了 {rb.oldest_pending_hours} 小时"
+            if rb.oldest_pending_hours is not None
+            else "等了多久不知道"
+        )
+        late = rb.oldest_pending_hours is not None and rb.oldest_pending_hours > ROUND_HOURS
+        pending = (
+            f"等取文字的 {rb.pending} 个，{wait}"
+            f"（门槛不超过一轮 {ROUND_HOURS} 小时，{'没达到' if late else '达到'}）"
+        )
+    else:
+        pending = f"没有等取文字的（门槛不超过一轮 {ROUND_HOURS} 小时，达到）"
+    attachments = (
+        f"附件 {rb.attachments} 个，能读 {rb.attachments_ok} 个"
+        f"（{_pct(rb.attachments_ok, rb.attachments)}）；{pending}"
+    )
+    others = Counter(
+        {k: v for k, v in rb.attachment_problems.items() if k != ATTACHMENT_PROBLEMS["pending"]}
+    )
+    if others:
+        attachments += f"；其他读不了的：{_counts(others)}"
+    whole = (
+        f"整条能读 {rb.whole_ok} 份（{_pct(rb.whole_ok, rb.notices)}，"
+        f"{_gate(rb.whole_ok, rb.notices, WHOLE_GATE)}）：正文和附件都能读、附件没有扫描页"
+    )
+    if rb.scanned_only:
+        whole += f"；正文和附件都能读、但附件有扫描页的 {rb.scanned_only} 份不算"
+    sites = [
+        f"{site} {count}（{'、'.join(f'{label} {n}' for label, n in top)}）"
+        for site, count, top in rb.sites
+    ]
+    budget = MAX_ALERT_BYTES - len("【有据】".encode())
+    while True:
+        lines = [head, body, attachments, whole]
+        if sites:
+            lines.append("读不全最多的网站：" + "；".join(sites))
+        text = "\n".join(lines)
+        if len(text.encode()) <= budget or not sites:
+            return text
+        sites.pop()
 
 
 def pick_for_review(
@@ -453,7 +650,6 @@ def _quality_line(digest: Digest) -> str:
         return "数据（近 30 天发布）：取不到（统计出错，看容器日志）"
     return (
         f"数据（近 30 天发布）：申报通知 {digest.notices_30} 份，"
-        f"有正文 {_pct(digest.notices_with_body, digest.notices_30)}、"
         f"有截止候选 {_pct(digest.notices_with_candidates, digest.notices_30)}；"
         f"名单 {digest.lists_30} 份，解析出企业名单 {_pct(digest.lists_parsed, digest.lists_30)}"
     )
@@ -522,6 +718,7 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         f"提醒发出 {digest.reminders_sent}、失败 {digest.reminders_failed}",
         _access_line(digest),
         _quality_line(digest),
+        readability_summary(digest),
         _usage_line(digest),
     ]
     usage = digest.usage
