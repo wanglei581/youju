@@ -1,6 +1,7 @@
 """OpenAI 兼容聊天接口客户端。"""
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -82,8 +83,16 @@ class ChatClient:
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         extra_body: dict[str, Any] | None = None,
+        stream: bool = False,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        # 流式返回（SSE，D-098）：云开发 AI 网关对不走流式、1 分钟内没生成完的请求不返回结果。
+        # 打开后边生成边收，收完拼成和非流式一样的信封，后面的检查和重试规则都不变；
+        # 整次请求最多 timeout 秒：到点由定时器关掉连接（流式时每段都在到、或者对方停发又不断开，
+        # 单靠读超时都拦不住），按网络失败处理
+        self.stream = stream
+        self.clock = clock
         # 按模型方附加的请求参数，来自配置；
         # 例如 DeepSeek 关闭思考：{"thinking": {"type": "disabled"}}
         self.extra_body = dict(extra_body or {})
@@ -111,6 +120,108 @@ class ChatClient:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    def _send(self, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, object]:
+        """一次性返回：(状态码, 解析出的 JSON；不是 JSON 时为 None)。"""
+        response = self._client.post(
+            f"{self.base_url}/chat/completions", headers=headers, json=payload
+        )
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        return response.status_code, body
+
+    def _send_stream(self, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, object]:
+        """流式返回（SSE）：逐段收 data 行，把 delta.content 拼起来，
+        记下最后的 finish_reason 和 usage，拼成和一次性返回一样的信封。
+        出错的状态码照一次性返回处理；流里来了错误事件按 502 处理（AI 服务暂时不可用），
+        已收到的内容不用。某一段不是 JSON、或流没有正常结束（既没有 [DONE] 也没有
+        finish_reason）时信封里不放 choices（按 invalid_envelope 处理）。用量都照样计入。
+        错误事件的原文不带出去（和一次性返回一样，报错里不放响应原文）。"""
+        body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        deadline = self.clock() + self.timeout
+        with self._client.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers={**headers, "Accept": "text/event-stream"},
+            json=body,
+        ) as response:
+            if response.status_code >= 400:
+                response.read()
+                try:
+                    return response.status_code, response.json()
+                except ValueError:
+                    return response.status_code, None
+            fired = threading.Event()
+
+            def stop() -> None:
+                fired.set()
+                response.close()
+
+            timer = threading.Timer(max(0.0, deadline - self.clock()), stop)
+            timer.daemon = True
+            timer.start()
+            try:
+                return self._read_stream(response, deadline, fired)
+            except Exception as exc:
+                # 定时器到点关了连接：不管读到哪一步抛了什么，都按超时处理
+                if fired.is_set():
+                    raise httpx.ReadTimeout("AI 流式返回超时") from exc
+                raise
+            finally:
+                timer.cancel()
+
+    def _read_stream(
+        self, response: httpx.Response, deadline: float, fired: threading.Event
+    ) -> tuple[int, object]:
+        """读 SSE 的每一行，拼成信封（见 _send_stream）。"""
+        parts: list[str] = []
+        finish = None
+        usage = None
+        done = False
+        for raw in response.iter_lines():
+            if self.clock() > deadline:
+                raise httpx.ReadTimeout("AI 流式返回超时")
+            line = raw.strip()
+            # 空行、注释行（": ..."）、event: 行都跳过
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if data == "[DONE]":
+                done = True
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                return response.status_code, {"usage": usage}
+            if not isinstance(chunk, dict):
+                return response.status_code, {"usage": usage}
+            if isinstance(chunk.get("usage"), dict):
+                usage = chunk["usage"]
+            # 流里的错误事件：不用已收到的内容
+            if chunk.get("error") is not None:
+                return 502, {"usage": usage}
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                continue
+            delta = choices[0].get("delta")
+            # 思考内容（reasoning_content）不拼进结果
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                parts.append(delta["content"])
+            if choices[0].get("finish_reason") is not None:
+                finish = choices[0]["finish_reason"]
+        if fired.is_set():
+            raise httpx.ReadTimeout("AI 流式返回超时")
+        # 没有正常结束（中途断了）：半截内容就算碰巧是合法 JSON 也不用
+        if not done and finish is None:
+            return response.status_code, {"usage": usage}
+        envelope: dict[str, Any] = {
+            "choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}]
+        }
+        if usage is not None:
+            envelope["usage"] = usage
+        return response.status_code, envelope
 
     def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
         """请求 JSON 对象。暂时性错误和非法 JSON 会重试；截断和非正常结束不重试。用量都累计。"""
@@ -147,9 +258,8 @@ class ChatClient:
         last_code = None
         for attempt in range(self.max_retries + 1):
             try:
-                response = self._client.post(
-                    f"{self.base_url}/chat/completions", headers=headers, json=payload
-                )
+                send = self._send_stream if self.stream else self._send
+                status, envelope = send(payload, headers)
             # 超时、连不上、对方中途断开（RemoteProtocolError）、代理出错等传输层错误都算网络失败
             except httpx.TransportError as exc:
                 last_error = "AI 网络请求失败"
@@ -157,28 +267,17 @@ class ChatClient:
                     self.sleep(2**attempt)
                     continue
                 raise AIError(last_error, retryable=True) from exc
-            if response.status_code >= 400:
-                # 出错的响应如果也带了用量，同样计入
-                try:
-                    body = response.json()
-                except ValueError:
-                    body = None
-                if isinstance(body, dict):
-                    _add_usage(usage_total, body.get("usage"))
-            if response.status_code == 429 or response.status_code >= 500:
-                last_error = f"AI 服务暂时不可用（HTTP {response.status_code}）"
+            # 响应（含出错的响应）如果带了用量，都计入
+            if isinstance(envelope, dict):
+                _add_usage(usage_total, envelope.get("usage"))
+            if status == 429 or status >= 500:
+                last_error = f"AI 服务暂时不可用（HTTP {status}）"
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
                 raise AIError(last_error, retryable=True)
-            if response.status_code >= 400:
-                raise AIError(f"AI 请求被拒绝（HTTP {response.status_code}）")
-            try:
-                envelope = response.json()
-            except ValueError:
-                envelope = None
-            if isinstance(envelope, dict):
-                _add_usage(usage_total, envelope.get("usage"))
+            if status >= 400:
+                raise AIError(f"AI 请求被拒绝（HTTP {status}）")
             parsed, code = _parse_json_object(envelope)
             if code is not None:
                 # 分类错误不链出解码异常，避免 JSONDecodeError 夹带响应正文。
