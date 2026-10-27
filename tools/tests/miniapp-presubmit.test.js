@@ -85,7 +85,7 @@ test('AI内测永远不能通过提审，正式包必须明确关内测',()=>{
  assert.equal(inspect({...x,profile:'ai-internal'}).ok,false);
  assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
  x.config.aiInternal=false; assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
- x.legal.version='2026-11';
+ x.legal.version='2026-12';
  // 只升版本号、协议里没有 AI 那一节：不过（Codex 10/26）
  assert.equal(inspect({...x,profile:'ai-release'}).checks.find(c=>c.id==='ai-terms').state,'fail');
  x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});

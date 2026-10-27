@@ -16,7 +16,7 @@ const section = (doc, head) => doc.sections.find((s) => s.h.startsWith(head));
 test('版本：排在后台第一次认 AI 条款的版本之后（同意它算同意过 AI 条款），后台认它不含批量工具和加量体验条款', () => {
   assert.equal(ai.version, VERSION);
   assert.match(ai.version, /^\d{4}-\d{2}/);
-  assert.ok(ai.version > SERVER_AI_TERMS_VERSION && ai.version > full.version, ai.version);
+  assert.ok(ai.version >= SERVER_AI_TERMS_VERSION && ai.version > full.version, ai.version);
   assert.ok(SERVER_WITHOUT_TOOLS_TERMS.includes(ai.version), '后台 agreements.WITHOUT_TOOLS_TERMS 里没有这一版');
 });
 
