@@ -119,8 +119,8 @@ test('完整候选严格限定 28 页（含站内阅读与结果页），不能�
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
 });
-test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
- const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
+test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议排在 2026-11.1 以后（D-098），备案号齐了才能通过提审检查',()=>{
+ const x=input(); x.config.aiInternal=false; x.legal.version='2026-12';
  // 正式 AI 包的协议里要有 AI 那一节、隐私保护指引写到模型（Codex 10/26）
  x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});
  x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index',text:'AI'});
@@ -136,6 +136,9 @@ test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测�
  assert.equal(inspect({...noIcp,profile:'complete-release',mode:'submit'}).ok,false);
  assert.equal(inspect({...noIcp,profile:'complete-release',mode:'prepare'}).ok,true);
  // 开着 AI 内测、协议还是旧版本、页面不对、工具说明版本不对：都不过
+ // 协议还是 2026-11 或过审版加 AI 那一版：只同意过 2026-11.1 的人在完整版里不会被请去重新同意（D-098）
+ for(const version of ['2026-11','2026-11.1']) { const y=JSON.parse(JSON.stringify(x)); y.legal.version=version; assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).checks.find(c=>c.id==='tools-terms-order').state,'fail',version); }
+ assert.equal(r.checks.find(c=>c.id==='tools-terms-order').state,'pass');
  for(const change of [y=>y.config.aiInternal=true,y=>y.legal.version='2026-10',y=>y.app.pages.pop(),y=>y.app.pages.push('pages/rewards/index'),
    y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).ok,false);
