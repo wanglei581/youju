@@ -141,8 +141,13 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   const aiSection = ((legal.user && legal.user.sections) || []).find(s => /AI 功能/.test((s && s.h) || ''));
   const aiTermsText = !!aiSection && Array.isArray(aiSection.p) && aiSection.p.filter(nonempty).length >= 3
     && /模型/.test(JSON.stringify((legal.privacy && legal.privacy.sections) || []));
-  // 版本门槛跟后台走（SERVER_AI_TERMS_VERSION，10/28 起是 2026-11.1）：低于它的协议同意了也用不了 AI
-  if (profile === 'ai-release' || profile === 'complete-release' || profile === 'first-release-ai') add('ai-terms', '正式AI包使用独立新版协议，含 AI 条款', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= SERVER_AI_TERMS_VERSION && aiTermsText, `首发协议不含AI条款；正式AI包的协议版本不能低于后台认 AI 条款的版本（${SERVER_AI_TERMS_VERSION}），协议里要有"AI 功能与生成内容标识"那一节（至少 3 段），隐私保护指引要写明模型；服务端同意范围也须同步`);
+  if (profile === 'ai-release' || profile === 'complete-release' || profile === 'first-release-ai') {
+    add('ai-terms', '正式AI包使用独立新版协议，含 AI 条款', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11' && aiTermsText, '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，协议里要有"AI 功能与生成内容标识"那一节（至少 3 段），隐私保护指引要写明模型；服务端同意范围也须同步');
+    // 后台认 AI 条款的版本（SERVER_AI_TERMS_VERSION，10/28 起是 2026-11.1）：低于它的协议，同意了也用不了 AI
+    // （对所有人开放时）。完整版现在是 2026-11，只做内部包：体验准备只提示，提审照旧判不过（同 tools-terms-order）
+    add('ai-terms-current', '正式AI包的协议版本不低于后台认 AI 条款的版本', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= SERVER_AI_TERMS_VERSION,
+      `协议版本要不低于 ${SERVER_AI_TERMS_VERSION}（后台 ai/interpret.py 的 AI_AGREEMENT_VERSION）：完整版要升到 2026-12，补上"AI 结果送微信内容安全检查"；改协议版本要创始人点头`, mode === 'prepare');
+  }
   // 完整版带批量工具和加量体验：协议版本要排在那几个"不含工具条款"的版本后面（D-098）。不然只同意过
   // 过审版加 AI（2026-11.1）的人，在完整版里不会被请去重新同意，后台又不认他同意过工具条款，工具用不了。
   // 体验准备（prepare）只提示：完整版协议还是 2026-11，下次改它时升版本（要创始人点头）；提审（submit）不过
