@@ -363,3 +363,19 @@ test('"接着读"按钮：附件名为空时不留冒号；加载中点"从开�
   p.data.loading = true; const before = calls;
   assert.equal(p.fromStart(), undefined); assert.equal(calls, before);
 });
+
+test('目录切到另一部分时接口报错：页头和目录当前项仍是要打开的那一部分，点重试接着打开它（Grok 第 3 轮建议）', async () => {
+  let fail = false;
+  const p = load('reader', { reading: async (_id, att) => {
+    if (att === '8' && fail) throw new Error('网络不通');
+    return att === '8' ? reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] }) : reading();
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  fail = true;
+  await p.openToc({ currentTarget: { dataset: { id: '8' } } });
+  assert.equal(p.data.error, '网络不通');
+  assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf');
+  assert.deepEqual(p.data.toc.map((t) => t.current), [false, true, false]);
+  fail = false; await p.retry();
+  assert.equal(p.data.error, ''); assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.segments[0].text, '附件正文');
+});
