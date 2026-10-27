@@ -10,9 +10,9 @@ from datetime import date, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from youju.ai.deadlines import _date_span
+from youju.ai.deadlines import _date_span, stored_items
 from youju.dedup import groups_for
-from youju.extract.deadlines import same_moment
+from youju.extract.deadlines import may_be_same, same_moment
 from youju.models import AICheck, DocumentDeadline
 
 # 核对台优先核的范围：今天起这么多天内截止（含今天和第 30 天，和筛选"30 天内截止"一致）
@@ -36,9 +36,7 @@ Found = tuple[date, time | None, str]
 def _parse_found(result: object) -> list[Found]:
     """AICheck.result 里的截止；格式不对的项跳过（只读，宁可少认，不报错）。"""
     found: list[Found] = []
-    if not isinstance(result, list):
-        return found
-    for item in result:
+    for item in stored_items(result):
         if not isinstance(item, dict):
             continue
         try:
@@ -71,8 +69,10 @@ def ai_found_by_group(session: Session, masters: list[int]) -> dict[int, list[Fo
 
 
 def deadline_hint(row: DocumentDeadline, found: list[Found] | None) -> Hint:
-    """一条待核对候选的 AI 预审提示。"建议通过"要同时满足：规则找到的，AI 也找到同一天（写了时刻的
-    时刻也相同）、AI 给的类型和规则相同，而且证据原句里写着这个日期（写了年份的年份也对）。"""
+    """一条待核对候选的 AI 预审提示。"建议通过"要同时满足：规则找到的，AI 也找到同一天、时刻也一样
+    （两边都没写，或都写了且相同）、AI 给的类型和规则相同，而且证据原句里写着这个日期（写了年份的
+    年份也对）。日期一样、时刻只有一边写了的，提示"时刻只有一边写了"，不建议直接通过
+    （D-099 期 0）。"""
     if row.origin == "ai":
         return Hint("ai_only", "仅 AI 找到")
     if found is None:
@@ -83,6 +83,11 @@ def deadline_hint(row: DocumentDeadline, found: list[Found] | None) -> Hint:
         if same_moment(due, clock, row.candidate_date, row.candidate_time)
     ]
     if not kinds:
+        if any(
+            may_be_same(due, clock, row.candidate_date, row.candidate_time)
+            for due, clock, _ in found
+        ):
+            return Hint("agree", "日期一致，但时刻只有一边写了")
         return Hint("mismatch", "规则与 AI 不一致")
     if row.kind not in kinds:
         return Hint("kind_mismatch", f"类型不一致：AI 认为是{kinds[0] or '其他'}")

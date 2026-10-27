@@ -458,3 +458,152 @@ def test_result_not_recorded_when_body_changes_during_the_call(
     assert (report.documents, report.body_changed, report.kind_agree) == (1, 0, 1)
     assert seen[-1] == BODY + "（重新取的正文）"
     assert sorted(c.task for c in session.scalars(select(AICheck))) == ["deadlines", "kind"]
+
+
+def _deadline_check(session, doc):
+    return session.scalar(
+        select(AICheck).where(AICheck.document_id == doc.id, AICheck.task == "deadlines")
+    )
+
+
+def test_deadline_result_is_stored_with_version(session) -> None:
+    from youju.ai.deadlines import RESULT_VERSION
+
+    doc = add_doc(session)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    run_ai_checks(session, client)
+    result = _deadline_check(session, doc).result
+    assert result["version"] == RESULT_VERSION
+    assert [(item["date"], item["kind"]) for item in result["items"]] == [
+        ("2026-10-15", "企业申报截止")
+    ]
+
+
+def test_old_list_results_still_count(session) -> None:
+    """第 1 版的记录直接存列表：规则候选照样认得 AI 结果。"""
+    doc = add_doc(session)
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[{"kind": "企业申报截止", "date": "2026-10-15", "time": None}],
+            checked_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+    extract_existing(session)
+    row = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.candidate_date == date(2026, 10, 15))
+    )
+    assert row.ai_agrees is True
+
+
+def test_one_sided_clock_is_not_agreement_and_not_resubmitted(session) -> None:
+    """D-099 期 0：规则没写时刻、AI 写了 17:00，不算一致；但也不当成新的一天另送一条 AI 候选。"""
+    doc = add_doc(session)
+    extract_existing(session, document_ids=[doc.id])
+    item = ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")
+    item["time"] = "17:00"
+    client, _ = fake_ai(deadlines=[item])
+    report = run_ai_checks(session, client)
+    rows = session.scalars(select(DocumentDeadline).where(DocumentDeadline.document_id == doc.id))
+    assert sorted((r.origin, r.candidate_date, r.ai_agrees) for r in rows) == [
+        ("rule", date(2026, 10, 15), False),
+        ("rule", date(2026, 10, 20), False),
+    ]
+    assert (report.deadlines_agree, report.deadlines_rule_only, report.deadlines_ai_only) == (
+        0,
+        2,
+        0,
+    )
+
+
+def _old_check(session, doc, result=None):
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="deepseek-flash",
+            result=[] if result is None else result,
+            prompt_tokens=1000,
+            completion_tokens=100,
+            checked_at=datetime(2026, 10, 1, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+
+def test_rerun_only_old_versions_within_the_days(session) -> None:
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines
+
+    now = datetime(2026, 10, 28, 1, tzinfo=UTC)
+    recent = add_doc(session, 1)
+    old = add_doc(session, 2)
+    done = add_doc(session, 3)
+    for doc in (old,):
+        doc.publish_date = date(2026, 7, 1)
+        session.get(DocumentDetail, doc.id).publish_date = date(2026, 7, 1)
+    session.commit()
+    _old_check(session, recent)
+    _old_check(session, old)
+    _old_check(session, done, {"version": RESULT_VERSION, "items": []})
+    assert [doc.id for doc, _, _ in old_deadline_checks(session, now, 90)] == [recent.id]
+    client, calls = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    report = rerun_old_deadlines(session, client, days=90, limit=10, now=now)
+    assert report.documents == 1 and len(calls) == 1
+    assert _deadline_check(session, recent).result["version"] == RESULT_VERSION
+    assert _deadline_check(session, old).result == []
+    assert _deadline_check(session, done).result == {"version": RESULT_VERSION, "items": []}
+    # AI 新找到、规则没有的这一天作为 AI 候选送审；再跑一次没有旧版本可跑
+    assert session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == recent.id, DocumentDeadline.origin == "ai"
+        )
+    )
+    assert old_deadline_checks(session, now, 90) == []
+
+
+def test_rerun_keeps_the_old_result_when_the_call_fails(session) -> None:
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    doc = add_doc(session)
+    old = [{"kind": "企业申报截止", "date": "2026-10-15", "time": None}]
+    _old_check(session, doc, old)
+    client, _ = fake_ai(status=500)
+    report = rerun_old_deadlines(
+        session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC)
+    )
+    assert report.errors == 1
+    assert _deadline_check(session, doc).result == old
+
+
+def test_recheck_command_only_counts_without_apply(session, session_factory, monkeypatch, capsys):
+    """不加 --apply：只清点份数、按上次用量估费用，不调模型、不改数据。"""
+    import argparse
+
+    from youju import cli
+
+    doc = add_doc(session)
+    today = datetime.now(UTC).date()
+    doc.publish_date = today - timedelta(days=10)
+    session.get(DocumentDetail, doc.id).publish_date = today - timedelta(days=10)
+    session.commit()
+    _old_check(session, doc)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+
+    def no_client(*args, **kwargs):
+        raise AssertionError("不加 --apply 不该调模型")
+
+    monkeypatch.setattr("youju.ai.get_chat_client", no_client)
+    code = cli._cmd_ai_recheck_deadlines(argparse.Namespace(days=90, limit=300, apply=False))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "主文件 1 份" in out and "这次约 0.00 元" in out and "没调模型" in out
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []

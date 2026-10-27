@@ -152,3 +152,52 @@ def test_web_text_one_paragraph_per_line_is_unchanged():
     body = "各单位：\n请于2026年10月20日前提交申报材料。\n联系人：张某\n电话：0531-1234567"
     [candidate] = extract_deadlines(body, PUBLISHED)
     assert candidate.evidence == "请于2026年10月20日前提交申报材料"
+
+
+@pytest.mark.parametrize(
+    ("sentence", "expected_time"),
+    [
+        # D-099 期 0：以前把"下午 5 时"读成 05:00（10/28 线上 3 条）
+        ("申报截止于10月20日下午5时。", time(17)),
+        ("申报截止于10月20日下午5:00。", time(17)),
+        ("申报截止于10月20日下午 5:30。", time(17, 30)),
+        ("申报截止于10月20日（周二）下午6:00。", time(18)),
+        ("申报截止于10月20日下午17:00。", time(17)),
+        ("申报截止于10月20日下午12:00。", time(12)),
+        ("申报截止于10月20日晚上8时。", time(20)),
+        ("申报截止于10月20日上午9:30。", time(9, 30)),
+        ("申报截止于10月20日中午12时。", time(12)),
+        # "24 时""晚上 12 时"是当天结束：只记日期
+        ("申报截止于10月20日24时。", None),
+        ("申报截止于10月20日晚上12时。", None),
+    ],
+)
+def test_clock_with_day_period(sentence, expected_time):
+    candidates = extract_deadlines(sentence, PUBLISHED)
+    assert [(c.due_date, c.due_time) for c in candidates] == [(date(2026, 10, 20), expected_time)]
+
+
+def test_range_end_in_the_afternoon():
+    """线上那条：起止时间里的结束日写"下午5:00"。"""
+    text = "网上材料申报起止时间：2026年10月12日至2026年10月31日下午5:00。"
+    assert [(c.due_date, c.due_time) for c in extract_deadlines(text, PUBLISHED)] == [
+        (date(2026, 10, 31), time(17))
+    ]
+
+
+def test_same_moment_needs_the_same_clock():
+    """一致：同一天、时刻也一样（两边都没写或都写了且相同）；一边没写时刻不算一致，但去重时算可能同一个。"""
+    from youju.extract.deadlines import may_be_same, same_moment
+
+    day = date(2026, 10, 20)
+    assert same_moment(day, None, day, None)
+    assert same_moment(day, time(17), day, time(17))
+    assert not same_moment(day, time(17), day, None)
+    assert not same_moment(day, None, day, time(17))
+    assert not same_moment(day, time(17), day, time(9))
+    assert not same_moment(day, None, date(2026, 10, 21), None)
+    assert may_be_same(day, time(17), day, None)
+    assert may_be_same(day, None, day, time(17))
+    assert may_be_same(day, time(17), day, time(17))
+    assert not may_be_same(day, time(17), day, time(9))
+    assert not may_be_same(day, None, date(2026, 10, 21), None)

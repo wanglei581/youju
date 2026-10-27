@@ -612,6 +612,78 @@ def _cmd_extract_fields(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
+    """旧版本的 AI 截止检查重跑一遍（D-099 期 0）。
+    不加 --apply 只清点、估费用，不调模型、不改数据。"""
+    from youju.ai import get_chat_client
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines
+    from youju.ai.usage import cost_yuan
+
+    now = datetime.now(UTC)
+    with session_factory()() as session:
+        # （上次用的模型, 输入 tokens, 输出 tokens），新的排前面
+        checks = [
+            (check.model, check.prompt_tokens, check.completion_tokens)
+            for _, _, check in old_deadline_checks(session, now, args.days)
+        ]
+        session.rollback()
+
+    def estimate(rows) -> tuple[float, bool]:
+        """按这些文件上次截止检查的用量、上次用的模型的列表价估（上限）；有没列价的模型时第二项为假。"""
+        total, priced = 0.0, True
+        for model, prompt_tokens, completion_tokens in rows:
+            cost = cost_yuan(model, prompt_tokens, completion_tokens)
+            if cost is None:
+                priced = False
+            else:
+                total += cost
+        return total, priced
+
+    batch = checks[: args.limit]
+    everything, priced_all = estimate(checks)
+    this_run, priced_run = estimate(batch)
+    print(
+        f"近 {args.days} 天发布、截止检查是旧版本（低于第 {RESULT_VERSION} 版）的主文件 "
+        f"{len(checks)} 份；这次最多重跑 {len(batch)} 份"
+    )
+    models = Counter(model for model, _, _ in checks)
+    print(f"  上次用的模型：{dict(models)}")
+    print(
+        f"  按上次用量和列表价估（上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
+        f"全部约 {everything:.2f} 元"
+        + ("" if priced_all and priced_run else "；有没列价的模型，没算进去")
+    )
+    if not args.apply:
+        print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
+        return 0
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），不能重跑")
+        return 1
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = rerun_old_deadlines(session, client, days=args.days, limit=args.limit, now=now)
+    finally:
+        usage_ok = _finish_ai(client, "recheck")
+    print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(
+        f"  出错 {report.errors} 份（保留旧结果，下次再跑）；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下次重跑）")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_ai_check(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.pipeline import run_ai_checks
@@ -1925,6 +1997,18 @@ def main(argv: list[str] | None = None) -> int:
         "合计不超过 --limit。只写 AI 记录，不改候选的核对状态",
     )
     p.set_defaults(func=_cmd_ai_check)
+
+    p = sub.add_parser(
+        "ai-recheck-deadlines",
+        help="旧版本的 AI 截止检查重跑一遍（新结果覆盖旧结果、不删数据）；"
+        "不加 --apply 只清点、估费用",
+    )
+    p.add_argument("--days", type=_positive, default=90, help="只重跑近多少天发布的文件（默认 90）")
+    p.add_argument("--limit", type=_positive, default=300, help="这次最多重跑多少份（默认 300）")
+    p.add_argument(
+        "--apply", action="store_true", help="真的调模型重跑；会覆盖线上已有的 AI 截止检查结果"
+    )
+    p.set_defaults(func=_cmd_ai_recheck_deadlines)
 
     p = sub.add_parser(
         "extract-conditions",

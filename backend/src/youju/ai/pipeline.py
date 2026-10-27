@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
-from youju.ai.deadlines import extract_deadlines_with_ai
+from youju.ai.deadlines import RESULT_VERSION, extract_deadlines_with_ai, stored_version
 from youju.classify import comparable_kind, doc_kind
 from youju.dedup import (
     canonical_ids,
@@ -26,7 +26,7 @@ from youju.dedup import (
     sync_reviewed_twins,
     visible_documents,
 )
-from youju.extract.deadlines import DeadlineCandidate, same_moment
+from youju.extract.deadlines import DeadlineCandidate, may_be_same, same_moment
 from youju.extract.service import ai_found_in_group
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
 
@@ -167,17 +167,22 @@ def _count_usage(report: AIRunReport, usage: dict | None) -> None:
     report.completion_tokens += int((usage or {}).get("completion_tokens") or 0)
 
 
-def _serialize(items: list[DeadlineCandidate]) -> list[dict]:
-    return [
-        {
-            "kind": c.kind,
-            "date": c.due_date.isoformat(),
-            "time": c.due_time.strftime("%H:%M") if c.due_time else None,
-            "evidence": c.evidence,
-            "confidence": c.confidence,
-        }
-        for c in items
-    ]
+def _serialize(items: list[DeadlineCandidate]) -> dict:
+    """存进 AI 检查记录的截止结果，带版本号。
+    读的时候用 ai.deadlines.stored_items，新旧格式都认。"""
+    return {
+        "version": RESULT_VERSION,
+        "items": [
+            {
+                "kind": c.kind,
+                "date": c.due_date.isoformat(),
+                "time": c.due_time.strftime("%H:%M") if c.due_time else None,
+                "evidence": c.evidence,
+                "confidence": c.confidence,
+            }
+            for c in items
+        ],
+    }
 
 
 def _apply_deadlines(
@@ -205,11 +210,11 @@ def _apply_deadlines(
             else:
                 report.deadlines_rule_only += 1
     # AI 找到、规则没找到的：作为 AI 候选送审。同一通知（整个归并组）里已有同一天的候选
-    # （不论是否核对过、是规则还是 AI 找到的），不再送
+    # （不论是否核对过、是规则还是 AI 找到的；一边没写时刻也算），不再送
     reviewed = {reviewed_key(row, row.status) for row in group_rows if row.status != "pending"}
     for c in items:
         if any(
-            same_moment(c.due_date, c.due_time, row.candidate_date, row.candidate_time)
+            may_be_same(c.due_date, c.due_time, row.candidate_date, row.candidate_time)
             for row in group_rows
         ):
             continue
@@ -338,4 +343,83 @@ def run_ai_checks(
                 break
         else:
             consecutive_errors = 0
+    return report
+
+
+def old_deadline_checks(
+    session: Session, now: datetime, days: int
+) -> list[tuple[Document, DocumentDetail, AICheck]]:
+    """发布日期在近 days 天内（北京时间今天往前数）的主文件里，截止检查成功过、但是旧版本做的，
+    新的排前面。只读。"""
+    since = now.astimezone(BEIJING).date() - timedelta(days=days)
+    rows = session.execute(
+        _checkable(func.coalesce(DocumentDetail.publish_date, Document.publish_date) >= since)
+        .add_columns(AICheck)
+        .join(AICheck, (AICheck.document_id == Document.id) & (AICheck.task == "deadlines"))
+        .where(AICheck.error.is_(None))
+        .order_by(Document.id.desc())
+    ).all()
+    return [
+        (doc, detail, check)
+        for doc, detail, check in rows
+        if stored_version(check.result) < RESULT_VERSION
+    ]
+
+
+def rerun_old_deadlines(
+    session: Session,
+    client: ChatClient,
+    *,
+    days: int,
+    limit: int,
+    now: datetime | None = None,
+) -> AIRunReport:
+    """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
+    不删数据（D-099 期 0）：已有的候选和核对状态都不动，规则候选的"AI 是否一致"按新结果重算，
+    新找到的照常作为 AI 候选送审。调用出错的保留旧结果，下次再跑。
+
+    会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
+    定时任务（run_ai_checks）不会因为版本旧就重跑。"""
+    now = now or datetime.now(UTC)
+    report = AIRunReport()
+    consecutive_errors = 0
+    for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
+        report.documents += 1
+        body = detail.body_text
+        try:
+            items = extract_deadlines_with_ai(
+                client, doc.title, body, detail.publish_date or doc.publish_date
+            )
+        except AIError:
+            _count_usage(report, client.last_usage)
+            session.rollback()
+            report.errors += 1
+            consecutive_errors += 1
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                report.stopped_early = True
+                break
+            continue
+        _count_usage(report, client.last_usage)
+        consecutive_errors = 0
+        # 和定时任务一样：调模型期间正文被换掉的，这次的结果不记
+        current = session.scalar(
+            select(DocumentDetail.body_text)
+            .where(DocumentDetail.document_id == doc.id)
+            .with_for_update()
+        )
+        if current != body:
+            session.rollback()
+            report.body_changed += 1
+            continue
+        _record(
+            session,
+            doc.id,
+            "deadlines",
+            client.model,
+            now,
+            result=_serialize(items),
+            usage=client.last_usage,
+        )
+        _apply_deadlines(session, doc, items, report)
+        session.commit()
     return report
