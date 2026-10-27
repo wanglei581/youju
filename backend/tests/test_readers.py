@@ -1,5 +1,6 @@
 """原生阅读的真实 MySQL 授权、脱敏、分页和版本变化测试。"""
 
+import json
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -118,6 +119,18 @@ def path(doc, att=None):
     return f"/api/v1/documents/{doc.id}" + (f"/attachments/{att.id}" if att else "") + "/reading"
 
 
+def read_all(client, url):
+    """从第 1 页一直翻到最后一页，返回 (第 1 页, 全部段落)。"""
+    first = client.get(url).json()
+    segments, page = list(first["segments"]), first
+    while page["nextCursor"] is not None:
+        page = client.get(
+            url, params={"cursor": page["nextCursor"], "revision": first["revision"]}
+        ).json()
+        segments.extend(page["segments"])
+    return first, segments
+
+
 def test_attachment_pages_real_db_no_duplicates(client, session):
     doc, att, _, _ = seed(session)
     seen = []
@@ -138,14 +151,9 @@ def test_attachment_pages_real_db_no_duplicates(client, session):
 def test_body_longer_than_old_limit_and_version_change(client, session):
     body = "正文示例。" * 5000 + "\n\n最后一段。"
     doc, _, _, _ = seed(session, body=body)
-    first = client.get(path(doc)).json()
+    first, segments = read_all(client, path(doc))
     assert first["nextCursor"] is not None
-    second = client.get(
-        path(doc), params={"cursor": first["nextCursor"], "revision": first["revision"]}
-    ).json()
-    assert "".join(s["text"] for s in first["segments"] + second["segments"]) == body.replace(
-        "\n\n", ""
-    )
+    assert "".join(s["text"] for s in segments) == body.replace("\n\n", "")
     session.get(DocumentDetail, doc.id).body_text += "修订内容"
     session.commit()
     changed = client.get(
@@ -276,18 +284,11 @@ def test_equal_length_reposts_choose_lowest_id_and_keep_revision(client, session
             DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="body")
         )
     session.commit()
-    data = client.get(path(doc)).json()
+    data, segments = read_all(client, path(doc))
     assert data["source"]["id"] == str(first.id)
     repeated = client.get(path(doc)).json()
     assert repeated["revision"] == data["revision"]
-    response = client.get(
-        path(doc), params={"cursor": data["nextCursor"], "revision": data["revision"]}
-    )
-    assert response.status_code == 200
-    assert response.json()["nextCursor"] is None
-    assert (
-        "".join(s["text"] for s in data["segments"] + response.json()["segments"]) == "甲" * 25000
-    )
+    assert "".join(s["text"] for s in segments) == "甲" * 25000
     assert v1._reading_body(session, doc.id) == "甲" * 25000
 
 
@@ -617,6 +618,9 @@ def test_body_pages_follow_paragraphs(client, session):
 def test_page_ends_respect_size_budget():
     small = [(n, 100) for n in range(1, 46)]
     assert readers.page_ends(small) == [20, 40, 45]
+    # 一页约 4000 字：1000 字一段（约 3KB）的长文每页 4 段
+    long = [(n, 3000) for n in range(1, 21)]
+    assert readers.page_ends(long) == [4, 8, 12, 16, 20]
     # 一段特别大：自己一页，前后各成一页
     sizes = [(1, 100), (2, readers.PAGE_BUDGET + 1), (3, 100), (4, 100)]
     assert readers.page_ends(sizes) == [1, 2, 4]
@@ -844,3 +848,18 @@ def test_attachment_window_follows_the_stored_kind_like_the_download_job(client,
     session.commit()
     [item] = client.get(f"/api/v1/documents/{doc.id}").json()["attachments"]
     assert item["state"] == "ok"
+
+
+def test_long_body_is_split_into_several_pages(client, session):
+    body = "\n".join(f"第{i}条 " + "申报单位应当按照要求如实填报材料。" * 30 for i in range(1, 41))
+    doc, _, _, _ = seed(session, body=body)
+    data = client.get(path(doc)).json()
+    assert data["status"] == "ok" and data["pages"] >= 4
+    seen = [s["n"] for s in data["segments"]]
+    cursor = data["nextCursor"]
+    while cursor:
+        page = client.get(path(doc), params={"cursor": cursor, "revision": data["revision"]}).json()
+        seen.extend(s["n"] for s in page["segments"])
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES
+        cursor = page["nextCursor"]
+    assert seen == list(range(1, data["totalSegments"] + 1))
