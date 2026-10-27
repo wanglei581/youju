@@ -60,6 +60,7 @@ from youju.config import get_settings
 from youju.crawler.detail import has_personal_numbers
 from youju.crawler.detail_service import _government_url
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, FetchResult, PoliteFetcher
+from youju.db import lock_name
 from youju.dedup import canonical_ids
 from youju.models import AttachmentCopy, Document, DocumentAttachment, Source
 from youju.takedown import available_condition
@@ -1049,13 +1050,14 @@ def _exclusive(session: Session) -> Iterator[bool]:
     if engine.dialect.name != "mysql":
         yield True
         return
+    name = lock_name(_LOCK_NAME)
     with engine.connect() as conn:
-        got = conn.execute(text("SELECT GET_LOCK(:k, 0)"), {"k": _LOCK_NAME}).scalar() == 1
+        got = conn.execute(text("SELECT GET_LOCK(:k, 0)"), {"k": name}).scalar() == 1
         try:
             yield got
         finally:
             if got:
-                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": _LOCK_NAME})
+                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": name})
 
 
 def _referenced(session: Session, file_ids: set[str], live: set[str] | None) -> set[str]:

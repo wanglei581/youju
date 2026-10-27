@@ -33,6 +33,7 @@ from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
 from youju.compare import CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
+from youju.db import lock_name
 from youju.models import (
     AdvisorFileTrash,
     AdvisorTask,
@@ -91,13 +92,14 @@ class AICapReached(Exception):
 @contextmanager
 def ai_cap_lock(session: Session):
     """锁在独立连接上；额度事务提交后才释放命名锁。"""
+    name = lock_name(AI_CAP_LOCK)
     with AI_CAP_LOCAL_LOCK, session.get_bind().connect() as conn:
-        if conn.scalar(text("SELECT GET_LOCK(:name, 2)"), {"name": AI_CAP_LOCK}) != 1:
+        if conn.scalar(text("SELECT GET_LOCK(:name, 2)"), {"name": name}) != 1:
             raise AdvisorBusy
         try:
             yield
         finally:
-            conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": AI_CAP_LOCK})
+            conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": name})
 
 
 def global_ai_calls(session: Session, day: date) -> int:

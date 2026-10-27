@@ -2,6 +2,7 @@
 
 需要数据库的测试连接 YOUJU_TEST_DATABASE_URL（默认本机 scripts/dev_db.sh 启动的实例）。
 数据库不可用时这些测试会跳过；CI 设置 YOUJU_REQUIRE_DB=1，数据库不可用直接失败。
+几个会话同时跑测试时各用自己的库名；命名锁也按库名分开（YOUJU_LOCK_PREFIX，下面自动设）。
 """
 
 import os
@@ -10,11 +11,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Engine, make_url, text
+from sqlalchemy import Connection, Engine, make_url, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from youju.config import Settings, get_settings
-from youju.db import create_mysql_engine, get_engine
+from youju.db import create_mysql_engine, get_engine, lock_name
 from youju.migrations import upgrade
 from youju.models import Base
 
@@ -24,6 +25,12 @@ TEST_DB_URL = os.environ.get(
 )
 # 程序里用默认连接的地方（如每次请求写访问日志）也连测试库，测试不会写到开发库
 os.environ["YOUJU_DATABASE_URL"] = TEST_DB_URL
+# MySQL 命名锁不分库（见 youju.db.lock_name）：锁名前加上测试库名，几个会话各用自己的测试库
+# 同时跑测试，同名的锁不再互相抢
+os.environ["YOUJU_LOCK_PREFIX"] = f"{make_url(TEST_DB_URL).database}:"
+# 测试里扮演"另一个会话的测试库"用的前缀：也按本库名取，几个会话同时跑同一条测试也不互相抢；
+# 带 #，真的测试库名只有字母、数字和下划线，撞不上
+OTHER_LOCK_PREFIX = f"{make_url(TEST_DB_URL).database}#other:"
 # 测试只使用显式环境配置，避免读取开发环境的密钥或连接信息。
 Settings.model_config["env_file"] = None
 get_settings.cache_clear()
@@ -57,6 +64,27 @@ def db_engine() -> Iterator[Engine]:
     engine = create_mysql_engine(TEST_DB_URL)
     yield engine
     engine.dispose()
+
+
+def other_lock_name(name: str) -> str:
+    """另一个会话（别的测试库，前缀 OTHER_LOCK_PREFIX）拿同一把命名锁时用的锁名。"""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("YOUJU_LOCK_PREFIX", OTHER_LOCK_PREFIX)
+        return lock_name(name)
+
+
+@pytest.fixture
+def other_session_conn(db_engine: Engine) -> Iterator[Connection]:
+    """扮演另一个会话的数据库连接：不连本测试库（命名锁不分库，只看锁名），用完放掉它拿的命名锁。"""
+    engine = create_mysql_engine(db_engine.url.set(database=""))
+    try:
+        with engine.connect() as conn:
+            try:
+                yield conn
+            finally:
+                conn.execute(text("SELECT RELEASE_ALL_LOCKS()"))
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

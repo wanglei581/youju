@@ -14,7 +14,7 @@ from youju.api import app as app_module
 from youju.api import v1
 from youju.api.app import app
 from youju.crawler.fetcher import FetchResult
-from youju.db import get_session
+from youju.db import get_session, lock_name
 from youju.models import AIUsage, Source
 from youju.sources import onboard
 from youju.sources.onboard import page_facts, trial, valid_config
@@ -315,10 +315,11 @@ def test_create_waits_for_another_onboarding(api, session, db_engine, monkeypatc
     client, _ = api
     monkeypatch.setattr(app_module, "_CREATE_LOCK_WAIT", 0)
     body = {**BASE, "trial_token": app_module._trial_token(URL, RULE)}
+    lock = {"name": lock_name("youju_source_create")}
     with db_engine.connect() as other:
-        assert other.execute(text("SELECT GET_LOCK('youju_source_create', 0)")).scalar() == 1
+        assert other.execute(text("SELECT GET_LOCK(:name, 0)"), lock).scalar() == 1
         assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 503
-        other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+        other.execute(text("SELECT RELEASE_LOCK(:name)"), lock)
     assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 201
 
 
@@ -330,9 +331,10 @@ def test_lock_is_released_when_create_fails(api, session, db_engine) -> None:
     body = {**BASE, "trial_token": app_module._trial_token(URL, RULE)}
     assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 201
     assert client.post("/api/admin/sources", headers=HEADERS, json=body).status_code == 409
+    lock = {"name": lock_name("youju_source_create")}
     with db_engine.connect() as other:
-        assert other.execute(text("SELECT GET_LOCK('youju_source_create', 0)")).scalar() == 1
-        other.execute(text("SELECT RELEASE_LOCK('youju_source_create')"))
+        assert other.execute(text("SELECT GET_LOCK(:name, 0)"), lock).scalar() == 1
+        other.execute(text("SELECT RELEASE_LOCK(:name)"), lock)
 
 
 @pytest.mark.parametrize(
