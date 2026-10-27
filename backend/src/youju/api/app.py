@@ -38,6 +38,7 @@ from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.attachments import router as attachments_router
+from youju.api.chat import router as chat_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.pay import push_router
@@ -90,6 +91,7 @@ app = FastAPI(
 )
 app.include_router(v1_router)
 app.include_router(advisor_router)
+app.include_router(chat_router)
 app.include_router(exports_router)
 app.include_router(me_router)
 app.include_router(attachments_router)

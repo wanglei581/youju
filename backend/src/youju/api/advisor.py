@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, payments
+from youju import boost, chat_store, payments
 from youju.agreements import tools_agreed
 from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
@@ -387,7 +387,10 @@ def _submission_lock(session: Session, kind: str):
 def _owned(
     session: Session, user: User, task_id: int, *, lock: bool = False, deleting: bool = False
 ) -> AdvisorTask:
-    stmt = select(AdvisorTask).where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+    # 问这份通知的任务只从对话接口看、删（api/chat.py），这里当作没有（#328 第五节）
+    stmt = select(AdvisorTask).where(
+        AdvisorTask.id == task_id, AdvisorTask.user_id == user.id, AdvisorTask.kind != "ask"
+    )
     if lock:
         stmt = stmt.with_for_update()
     task = session.scalar(stmt)
@@ -449,6 +452,12 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
             # 两项为假时小程序把按钮变灰、写原因，不收任务
             "available": heartbeat.worker_ready(session, settings, stamp),
             "siteFull": _site_full(session, settings, day),
+            # 问一问（#328 第五节）：chat 是显示不显示问一问（本地高危词库定稿以前为假）；
+            # chatConsent 是同意过当前版本的"问一问使用说明"没有；askTriesFull 是今天交给模型的
+            # 问这份通知满 20 问了没有
+            "chat": chat_store.chat_ready(),
+            "chatConsent": chat_store.consented(user),
+            "askTriesFull": counts.get(chat_store.ASK_TRY, 0) >= chat_store.ASK_TRY_LIMIT,
         }
         if ai_enabled
         else {
@@ -717,6 +726,8 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
             AdvisorTask.kind.in_(kinds),
+            # 问这份通知的任务只在对话里（PR-3 把 ask 加进 AI_KINDS 以后也不列在这里）
+            AdvisorTask.kind != "ask",
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()

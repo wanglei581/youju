@@ -1340,6 +1340,16 @@ def cleanup_advisor(
         session.rollback()
         log.warning("AI 结果按新词库复查出错：%s", type(exc).__name__)
         swept = 0
+    # 问一问：到期的问、一问都不剩的对话（#328 第十节第 1 条）。单独提交，出错不影响上面的清理
+    from youju import chat_store
+
+    try:
+        chat_counts = chat_store.cleanup(session, stamp)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - 清理出错只记类型，下一天再清
+        session.rollback()
+        log.warning("问一问的到期清理出错：%s", type(exc).__name__)
+        chat_counts = {"ai_chat_turns": 0, "ai_chats": 0}
     return {
         "advisor_input_rows": input_count,
         "advisor_files": deleted_count,
@@ -1348,6 +1358,7 @@ def cleanup_advisor(
         "advisor_usage_rows": usage_rows,
         "ai_safety_hits": safety_hits,
         "ai_results_removed": swept,
+        **chat_counts,
     }
 
 
