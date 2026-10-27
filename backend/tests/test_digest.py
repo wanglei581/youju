@@ -740,7 +740,10 @@ def test_readability_rates_waits_and_sites(session, monkeypatch) -> None:
         "（正文、整条、附件等待三项都达到才算，D-097）"
     )
     assert "正文能读 3 份（60%，门槛 90%，没达到，争取 95%）；读不了的：" in text_
-    assert "等取文字的 1 个，最久的等了 30 小时（门槛不超过一轮 14 小时，没达到）" in text_
+    assert (
+        f"等取文字的 1 个，最久的等了 30 小时（通知 {waiting.id}《{waiting.title[:20]}》）"
+        "（门槛不超过一轮 14 小时，没达到）"
+    ) in text_
     assert "整条能读 1 份（20%，门槛 75%，没达到）" in text_
     assert "正文和附件都能读、但附件有扫描页的 1 份单列、不算" in text_
     assert (
@@ -775,11 +778,21 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
         digest_text(d, [])
     )
     assert digest_module.gates(rb) == (True, True, True)
-    rb.pending, rb.oldest_pending_hours = 1, 15
-    assert digest_module.gates(rb) == (True, True, False)
-    rb.oldest_pending_hours = 14
+    # 附件等待按秒比：14 小时整算达到，多 1 秒就不算（Grok 第 1 轮）
+    rb.pending, rb.oldest_pending_seconds, rb.oldest_pending_doc = 1, 14 * 3600, (7, "某通知")
     assert digest_module.gates(rb) == (True, True, True)
-    rb.oldest_pending_hours = None
+    rb.oldest_pending_seconds += 1
+    assert digest_module.gates(rb) == (True, True, False)
+    # 有一个等了多久算不出来（通知没有收录时间），另一个才等了 1 小时：也不算达到
+    rb.oldest_pending_seconds, rb.pending, rb.pending_unknown = 3600, 2, 1
+    assert digest_module.gates(rb) == (True, True, False)
+    text_ = digest_module.readability_text(d)
+    assert (
+        "等取文字的 2 个，最久的等了 1 小时（通知 7《某通知》），1 个所在通知没有收录时间" in text_
+    )
+    assert "没达到）" in text_.split("\n")[2]
+    assert "等取文字最久的附件 1 小时，另有 1 个等了多久不知道" in digest_text(d, [])
+    rb.oldest_pending_seconds = rb.oldest_pending_doc = None
     assert digest_module.gates(rb) == (True, True, False)
     assert digest_module.gates(digest_module.Readability()) == (False, False, True)
     shown = text_.split("一份可能有几个原因）：")[1].split("；")

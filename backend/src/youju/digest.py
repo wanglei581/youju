@@ -67,6 +67,10 @@ BODY_PROBLEMS = {
     "empty": "没取到正文",
     "chrome": "正文像网页导航",
     "link_gone": "原网页已打不开",
+    # 下面几种申报通知、政策一般不会有（名单类、个人事项才有），写全免得落到"没取到正文"
+    "short_list": "名单挡完剩字太少",
+    "list": "正文主要是名单",
+    "personal": "个人事项不给",
 }
 ATTACHMENT_PROBLEMS = {
     "pending": "附件等取文字",
@@ -84,6 +88,7 @@ ATTACHMENT_PROBLEMS = {
     "old": "附件超出范围",
     "kind": "附件不读",
     "list": "名单附件",
+    "personal": "附件含个人信息",
     "source": "附件来源不公开",
 }
 
@@ -99,13 +104,21 @@ class Readability:
     # 附件读不了的原因 → 个数（ATTACHMENT_PROBLEMS 的说法）
     attachment_problems: Counter = field(default_factory=Counter)
     pending: int = 0
-    # 等取文字的附件里最老的一个等了多少小时（从通知第一次收录算起）
-    oldest_pending_hours: int | None = None
+    # 等取文字的附件里最老的一个等了多少秒（从通知第一次收录算起）、是哪一份通知（编号、标题开头）
+    oldest_pending_seconds: int | None = None
+    oldest_pending_doc: tuple[int, str] | None = None
+    # 等取文字、但通知没有收录时间（等了多久算不出来）的附件个数：有这种的，附件等待门槛不算达到
+    pending_unknown: int = 0
     whole_ok: int = 0
     # 正文、附件都能读，但附件里有扫描页（不算整条能读，单列）
     scanned_only: int = 0
     # 读不全的通知最多的网站：（来源部门全称，份数，[(原因, 份数)…]，原因只列最多的两个）
     sites: list = field(default_factory=list)
+
+    @property
+    def oldest_pending_hours(self) -> int | None:
+        seconds = self.oldest_pending_seconds
+        return None if seconds is None else seconds // 3600
 
 
 @dataclass
@@ -403,12 +416,15 @@ def _usage(session: Session, digest: Digest, today: date) -> None:
     )
 
 
-def _hours(now: datetime, then: datetime | None) -> int | None:
+def _seconds(now: datetime, then: datetime | None) -> int | None:
+    """从 then 到 now 多少秒；库里没有时区的时间按 UTC（和日报别处一样）。"""
     if then is None:
         return None
     if then.tzinfo is None:
         then = then.replace(tzinfo=UTC)
-    return max(0, int((now - then).total_seconds() // 3600))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return max(0, int((now - then).total_seconds()))
 
 
 def readability(session: Session, now: datetime) -> Readability:
@@ -447,7 +463,7 @@ def readability(session: Session, now: datetime) -> Readability:
         if body_ok:
             result.body_ok += 1
         else:
-            label = BODY_PROBLEMS.get(problem or "empty", "没取到正文")
+            label = BODY_PROBLEMS.get(problem or body.status, "没取到正文")
             result.no_body[label] += 1
             found.add(label)
         scanned = False
@@ -464,18 +480,21 @@ def readability(session: Session, now: datetime) -> Readability:
             found.add(label)
             if item.state == "pending":
                 result.pending += 1
-                hours = _hours(now, doc.first_seen_at)
-                if hours is not None and (
-                    result.oldest_pending_hours is None or hours > result.oldest_pending_hours
+                waited = _seconds(now, doc.first_seen_at)
+                if waited is None:
+                    result.pending_unknown += 1
+                elif (
+                    result.oldest_pending_seconds is None or waited > result.oldest_pending_seconds
                 ):
-                    result.oldest_pending_hours = hours
+                    result.oldest_pending_seconds = waited
+                    result.oldest_pending_doc = (doc.id, doc.title[:20])
         complete = body_ok and all(item.readable for item in items)
         if complete and not scanned:
             result.whole_ok += 1
             continue
         if complete:
             result.scanned_only += 1
-        site = src.dept_full_name
+        site = src.dept_full_name or "（来源没写部门）"
         sites[site] += 1
         reasons.setdefault(site, Counter()).update(found)
     result.sites = [
@@ -499,11 +518,13 @@ def _counts(counter: Counter) -> str:
 
 def gates(rb: Readability) -> tuple[bool, bool, bool]:
     """三项提审门槛各达到没有：正文能读率、整条能读率（按向下取整的百分比比），附件没有等了超过
-    一轮的（等了多久不知道的按没达到算）。没有通知时都算没达到（算不出来）。"""
+    一轮的（按秒比；有一个等了多久算不出来的就按没达到算）。没有通知时都算没达到（算不出来）。"""
     body = bool(rb.notices) and math.floor(100 * rb.body_ok / rb.notices) >= BODY_GATE
     whole = bool(rb.notices) and math.floor(100 * rb.whole_ok / rb.notices) >= WHOLE_GATE
     wait = not rb.pending or (
-        rb.oldest_pending_hours is not None and rb.oldest_pending_hours <= ROUND_HOURS
+        not rb.pending_unknown
+        and rb.oldest_pending_seconds is not None
+        and rb.oldest_pending_seconds <= ROUND_HOURS * 3600
     )
     return body, whole, wait
 
@@ -516,9 +537,11 @@ def _waiting(rb: Readability) -> str:
     if not rb.pending:
         return "没有等取文字的附件"
     hours = rb.oldest_pending_hours
-    return (
-        f"等取文字最久的附件 {hours} 小时" if hours is not None else "等取文字的附件等了多久不知道"
-    )
+    known = f"等取文字最久的附件 {hours} 小时" if hours is not None else ""
+    unknown = f"{rb.pending_unknown} 个等了多久不知道" if rb.pending_unknown else ""
+    if known and unknown:
+        return f"{known}，另有 {unknown}"
+    return known or f"等取文字的附件 {unknown}"
 
 
 def readability_summary(digest: Digest) -> str:
@@ -553,10 +576,13 @@ def readability_text(digest: Digest) -> str | None:
     hours = rb.oldest_pending_hours
     if not rb.pending:
         wait = "没有等取文字的"
-    elif hours is not None:
-        wait = f"等取文字的 {rb.pending} 个，最久的等了 {hours} 小时"
     else:
-        wait = f"等取文字的 {rb.pending} 个，等了多久不知道"
+        wait = f"等取文字的 {rb.pending} 个"
+        if hours is not None and rb.oldest_pending_doc:
+            doc_id, title = rb.oldest_pending_doc
+            wait += f"，最久的等了 {hours} 小时（通知 {doc_id}《{title}》）"
+        if rb.pending_unknown:
+            wait += f"，{rb.pending_unknown} 个所在通知没有收录时间、等了多久不知道"
     reached = "达到" if gates(rb)[2] else "没达到"
     pending = f"{wait}（门槛不超过一轮 {ROUND_HOURS} 小时，{reached}）"
     attachments = (
