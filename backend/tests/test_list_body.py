@@ -226,51 +226,53 @@ def test_list_not_found_but_names_remain_is_not_shown() -> None:
 def test_names_on_contact_and_editor_lines_are_masked_when_shown() -> None:
     text = (
         "\n".join(NOTICE[:3])
-        + "\n（联系人：（联系人见原文）产业政策与法规处 柯于灿；\n联系电话：83607736）"
+        + "\n（联系人：（这里隐去了联系人）产业政策与法规处 柯于灿；\n联系电话：83607736）"
     )
     shown = body_for_reading(text * 3, "申报通知")
     assert shown["status"] == "ok" and "柯于灿" not in shown["text"]
-    assert "产业政策与法规处 （联系人见原文）" in shown["text"]
+    assert "产业政策与法规处 （这里隐去了联系人）" in shown["text"]
     cases = {
-        "刘老师，（电话见原文）": "（联系人见原文），（电话见原文）",
-        "联系人：高新处张三，电话：（电话见原文）": "联系人：高新处（联系人见原文），电话：（电话见原文）",
-        "联系人：张三和李四": "联系人：（联系人见原文）和（联系人见原文）",
-        "联系人：张三/李四": "联系人：（联系人见原文）/（联系人见原文）",
-        "联 系 人：王五": "联 系 人：（联系人见原文）",
-        # 网站编审署名：换成"（署名已隐去）"，不冒充联系人
-        "二审:程婷婷、韩波": "二审:（署名已隐去）、（署名已隐去）",
-        "来源：某网 责编：张三": "来源：某网 责编：（署名已隐去）",
+        "刘老师，（这里隐去了电话）": "（这里隐去了联系人），（这里隐去了电话）",
+        "联系人：高新处张三，电话：（这里隐去了电话）": "联系人：高新处（这里隐去了联系人），电话：（这里隐去了电话）",
+        "联系人：张三和李四": "联系人：（这里隐去了联系人）和（这里隐去了联系人）",
+        "联系人：张三/李四": "联系人：（这里隐去了联系人）/（这里隐去了联系人）",
+        "联 系 人：王五": "联 系 人：（这里隐去了联系人）",
+        # 网站编审署名：换成"（这里隐去了署名）"，不冒充联系人
+        "二审:程婷婷、韩波": "二审:（这里隐去了署名）、（这里隐去了署名）",
+        "来源：某网 责编：张三": "来源：某网 责编：（这里隐去了署名）",
     }
     for line, expected in cases.items():
         assert _mask_contact_names(line) == expected, line
-    assert _mask_contact_names("咨询电话：0531-12345678（王老师）").endswith("（联系人见原文）")
+    assert _mask_contact_names("咨询电话：0531-12345678（王老师）").endswith("（这里隐去了联系人）")
     # 写着电话号码的行像姓名的都遮（电话前后、括号里）；"联系电话：张三"；"高新区张三"；字间带空格的
     for line, expected in {
-        "吾慧星、张竞博，电话：（电话见原文）": "（联系人见原文）、（联系人见原文），电话：（电话见原文）",
-        "联系电话：88888888（李四）": "联系电话：88888888（联系人见原文）",
-        "咨询电话：（电话见原文）（张伟）": "咨询电话：（电话见原文）（联系人见原文）",
-        "电话：张三（0531-12345678）": "电话：（联系人见原文）（0531-12345678）",
-        "联系电话：张三": "联系电话：（联系人见原文）",
-        "联系人：高新区张三": "联系人：高新区（联系人见原文）",
-        "孟 双、王 璐 联系电话：（电话见原文）": "（联系人见原文）、（联系人见原文） 联系电话：（电话见原文）",
-        "联系人：张 三": "联系人：（联系人见原文）",
+        "吾慧星、张竞博，电话：（这里隐去了电话）": "（这里隐去了联系人）、（这里隐去了联系人），电话：（这里隐去了电话）",
+        "联系电话：88888888（李四）": "联系电话：88888888（这里隐去了联系人）",
+        "咨询电话：（这里隐去了电话）（张伟）": "咨询电话：（这里隐去了电话）（这里隐去了联系人）",
+        "电话：张三（0531-12345678）": "电话：（这里隐去了联系人）（0531-12345678）",
+        "联系电话：张三": "联系电话：（这里隐去了联系人）",
+        "联系人：高新区张三": "联系人：高新区（这里隐去了联系人）",
+        "孟 双、王 璐 联系电话：（这里隐去了电话）": "（这里隐去了联系人）、（这里隐去了联系人） 联系电话：（这里隐去了电话）",
+        "联系人：张 三": "联系人：（这里隐去了联系人）",
     }.items():
         assert _mask_contact_names(line) == expected, line
     # 标签写在上一行末尾：下一行的姓名也遮（隔着空行也遮）；下面接着一行一个"姓名 电话"的，一直遮到
     # 不是为止；下一行是表格模板的栏目（"推荐单位（盖章）："）的不遮
-    assert _mask_contact_names("联系人：\n张三") == "联系人：\n（联系人见原文）"
-    assert _mask_contact_names("联系人：\n\n张三") == "联系人：\n\n（联系人见原文）"
+    assert _mask_contact_names("联系人：\n张三") == "联系人：\n（这里隐去了联系人）"
+    assert _mask_contact_names("联系人：\n\n张三") == "联系人：\n\n（这里隐去了联系人）"
     form = "联系人及电话：\n推荐单位（盖章）：\n填报日期："
     assert _mask_contact_names(form) == form
-    rows = _mask_contact_names("联系人：\n张三 88881111\n李四 （电话见原文）\n王五同志负责解释。")
+    rows = _mask_contact_names(
+        "联系人：\n张三 88881111\n李四 （这里隐去了电话）\n王五同志负责解释。"
+    )
     assert rows == (
-        "联系人：\n（联系人见原文） 88881111\n（联系人见原文） （电话见原文）\n王五同志负责解释。"
+        "联系人：\n（这里隐去了联系人） 88881111\n（这里隐去了联系人） （这里隐去了电话）\n王五同志负责解释。"
     )
     # 普通的话、时间、单位名不动
     for line in (
         "如对公示内容有异议，请于公示期内以书面或电话形式向我厅（中小企业处）反映。",
         "【打印】 【关闭】",
-        "服务时间：周一 至 周五 （电话见原文）",
+        "服务时间：周一 至 周五 （这里隐去了电话）",
         "联系电话：88888888（周一至周五）",
         "电话：0531-12345678（办公室）",
         "联系电话：88888888（高新处）",
@@ -307,11 +309,11 @@ def test_round3_blocks_split_at_notice_sentences_and_dated_rows() -> None:
 
 def test_round3_titled_names_and_names_after_phone_labels_are_masked() -> None:
     for line, expected in {
-        "联系人：张三处长": "联系人：（联系人见原文）",
-        "咨询电话：0531-12345678（王五主任）": "咨询电话：0531-12345678（联系人见原文）",
-        "一审：李四同志": "一审：（署名已隐去）",
-        "咨询电话：0531-12345678 高新区张三处长": "咨询电话：0531-12345678 高新区（联系人见原文）",
-        "联系电话：张三、李四": "联系电话：（联系人见原文）、（联系人见原文）",
+        "联系人：张三处长": "联系人：（这里隐去了联系人）",
+        "咨询电话：0531-12345678（王五主任）": "咨询电话：0531-12345678（这里隐去了联系人）",
+        "一审：李四同志": "一审：（这里隐去了署名）",
+        "咨询电话：0531-12345678 高新区张三处长": "咨询电话：0531-12345678 高新区（这里隐去了联系人）",
+        "联系电话：张三、李四": "联系电话：（这里隐去了联系人）、（这里隐去了联系人）",
     }.items():
         assert _mask_contact_names(line) == expected, line
     for line in (
@@ -418,7 +420,7 @@ def test_reading_and_detail_show_the_notice_but_not_the_list(client, session) ->
     text = "\n".join(s["text"] for s in reading["segments"])
     assert "公示时间：2026年10月20日至10月26日。" in text and body.PLACEHOLDER in text
     assert not any(name in text for name in NAMES)
-    assert "名单内容站内不展开" in reading["notice"] and reading["listHidden"] is True
+    assert "名单请按企业名称查询" in reading["notice"] and reading["listHidden"] is True
     detail = client.get(f"/api/v1/documents/{doc.id}").json()["body"]
     assert (
         detail["status"] == "ok" and "公示时间" in detail["text"] and detail["listHidden"] is True
@@ -428,7 +430,7 @@ def test_reading_and_detail_show_the_notice_but_not_the_list(client, session) ->
     plain = _notice(session, "关于2026年第三批专精特新中小企业名单的公示", NOTICE + SIGNATURE)
     reading = client.get(f"/api/v1/documents/{plain.id}/reading").json()
     assert reading["status"] == "ok" and "listHidden" not in reading
-    assert "名单内容站内不展开" not in reading["notice"]
+    assert "名单请按企业名称查询" not in reading["notice"]
     assert "listHidden" not in client.get(f"/api/v1/documents/{plain.id}").json()["body"]
 
 
@@ -449,11 +451,17 @@ def test_list_dominated_and_person_list_bodies_are_not_shown(client, session) ->
     short = _notice(session, "关于2026年度创新型中小企业名单的公示", ["首页 政务公开 搜索"])
     reading = client.get(f"/api/v1/documents/{short.id}/reading").json()
     assert reading["status"] == "empty" and "名单" not in reading["notice"]
-    assert client.get(f"/api/v1/documents/{short.id}").json()["body"] == {"status": "none"}
+    assert client.get(f"/api/v1/documents/{short.id}").json()["body"] == {
+        "status": "none",
+        "reason": "site",
+    }
     # 人才、专家这类个人名单不进查名单：两处都按"不展示"说，不引导去查名单
     people = _notice(
         session, "2026年度高层次人才名单公示", NOTICE + ["张三 山东大学 教授"] + SIGNATURE
     )
     reading = client.get(f"/api/v1/documents/{people.id}/reading").json()
     assert reading["status"] == "unsupported" and reading["segments"] == []
-    assert client.get(f"/api/v1/documents/{people.id}").json()["body"] == {"status": "original"}
+    assert client.get(f"/api/v1/documents/{people.id}").json()["body"] == {
+        "status": "original",
+        "reason": "personal",
+    }

@@ -488,11 +488,11 @@ def test_access_quality_and_usage_lines(session, world) -> None:
             AccessDaily(day=date(2026, 9, 27), service="api", requests=5, errors=5, slow=0),
         ]
     )
-    # 申报通知有了足够长的正文（200 字）；名单解析出企业
+    # 申报通知有了能显示的正文（有一句话，D-097 不再要求 200 字）；名单解析出企业
     detail = session.scalars(
         select(DocumentDetail).where(DocumentDetail.document_id == world["apply"].id)
     ).one()
-    detail.body_text = "正" * 200
+    detail.body_text = "请于10月10日前报送申报材料。"
     session.add(
         ListEntry(
             document_id=world["list"].id,
@@ -602,19 +602,21 @@ def test_quality_counts_content_on_other_urls_of_the_same_notice(session, world)
     ).one()
     detail.body_text = ""
     session.add(
-        DocumentDetail(document_id=twin.id, body_text="正" * 300, fetched_at=NOW, status="ok")
+        DocumentDetail(
+            document_id=twin.id, body_text="申报说明。" * 60, fetched_at=NOW, status="ok"
+        )
     )
     session.commit()
     after = build_digest(session, now=NOW)
     assert after.notices_with_body == before.notices_with_body + 1
-    # 主文件自己有正文（哪怕短）就用自己的：和详情页一致，不够 200 字不算
-    detail.body_text = "正" * 50
+    # 主文件自己有正文就用自己的：像网页导航的（没有一句话、不长）不算（D-097）
+    detail.body_text = "首页\n政务公开\n通知公告"
     session.commit()
     assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
-    # 和详情页同一个清理：原文 205 字，去掉网页上的"【关闭窗口】"后只剩 199 字，不算
-    detail.body_text = "正" * 199 + "【关闭窗口】"
+    # 和详情页同一个清理：去掉网页上的"【关闭窗口】"后什么都不剩，不算；真短的通知算
+    detail.body_text = "【关闭窗口】"
     session.commit()
     assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
-    detail.body_text = "正" * 200 + "【关闭窗口】"
+    detail.body_text = "请按时报送。【关闭窗口】"
     session.commit()
     assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body + 1

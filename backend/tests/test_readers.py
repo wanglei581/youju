@@ -328,21 +328,32 @@ def test_fallback_rejects_private_and_list_bodies_and_preserves_link_policy(clie
     assert v1._reading_body(session, doc.id) == "原站撤下前正文" * 400
 
 
-@pytest.mark.parametrize("kind", ["名单", "其他"])
+@pytest.mark.parametrize("kind", ["名单", "其他", "资讯与指南"])
 def test_nonpublic_body_kinds_stay_protected(client, session, kind):
     doc, att, _, _ = seed(session, kind=kind)
-    # 名单类通知的正文挡掉名单内容后可读（D-092，见 test_list_body.py）；其他类照旧不给
-    if kind == "名单":
-        assert client.get(path(doc)).json()["status"] == "ok"
-    else:
-        assert client.get(path(doc)).json()["status"] == "unsupported"
+    # 名单类通知的正文挡掉名单内容后可读（D-092，见 test_list_body.py）；资讯与指南、其他类
+    # 标题不是个人事项的给全文（D-097 ②），附件放第二步
+    assert client.get(path(doc)).json()["status"] == "ok"
     data = client.get(path(doc, att)).json()
     assert data["segments"] == []
     # 名单附件：说明只提供查询结果（页面给"在已收录名单中查询企业"按钮，D-088）
     if kind == "名单":
-        assert data["status"] == "list" and "企业查询结果" in data["notice"]
+        assert data["status"] == "list" and data["notice"] == "名单请按企业名称查询。"
     else:
-        assert data["status"] == "unsupported"
+        assert data["status"] == "unsupported" and data["state"] == "kind"
+        assert data["notice"] == "这类通知的附件暂不能在小程序内阅读。"
+    # 标题写着个人事项的（名单类按 D-092：人才、专家这类个人名单）：正文也不给，写明原因
+    doc.title = (
+        "2026年度高层次人才名单公示"
+        if kind == "名单"
+        else "关于2026年度公开招聘工作人员拟聘用人员的公示"
+    )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["status"] == "unsupported" and data["segments"] == []
+    if kind == "名单":
+        assert data["state"] == "personal"
+    assert data["notice"] == "含个人信息，不在小程序内展示全文。"
 
 
 def test_pii_masked_across_body_boundaries_and_metadata(client, session):
@@ -537,7 +548,7 @@ def test_real_docx_extraction_to_native_response(client, session):
     assert data["status"] == "ok"
     text = "\n".join(row["text"] for row in data["segments"])
     assert "申报指南" in text and "2026年10月31日" in text
-    assert "138" not in text and "脱敏" in text
+    assert "138" not in text and "（这里隐去了电话）" in text and "脱敏" not in text
 
 
 def test_url_withdrawal_cannot_read_previous_version(client, session):
@@ -564,3 +575,219 @@ def test_out_of_range_cursor_and_rate_limit(client, session, monkeypatch):
     monkeypatch.setattr(download_api, "PARTS_PER_10MIN", 1)
     response = client.get(path(doc, att))
     assert response.status_code == 429 and response.headers["cache-control"] == "no-store"
+
+
+# ---- D-097：页数、目录、和详情页同一个判断、页面上的说法 ----
+
+BANNED = ("已脱敏", "见原文", "摘录", "收录不足", "请稍后重试", "正在准备")
+
+
+def test_attachment_pages_are_numbered_and_resumable(client, session):
+    doc, att, _, _ = seed(session)
+    first = client.get(path(doc, att)).json()
+    assert (first["page"], first["pages"], first["prevCursor"], first["nextCursor"]) == (
+        1,
+        3,
+        None,
+        "20",
+    )
+    revision = first["revision"]
+    # 续读：直接从第 3 页开始（记下的是上一页最后一段的段号），能回到第 2 页
+    third = client.get(path(doc, att), params={"cursor": "40", "revision": revision}).json()
+    assert (third["page"], third["prevCursor"], third["nextCursor"]) == (3, "20", None)
+    assert [s["n"] for s in third["segments"]] == [41, 42, 43, 44, 45]
+    second = client.get(path(doc, att), params={"cursor": "20", "revision": revision}).json()
+    assert (second["page"], second["prevCursor"], second["nextCursor"]) == (2, "0", "40")
+    # 不是页的开头：不猜，重新打开
+    bad = client.get(path(doc, att), params={"cursor": "10", "revision": revision})
+    assert bad.status_code == 422
+
+
+def test_body_pages_follow_paragraphs(client, session):
+    body = "\n\n".join(f"第{i}条 申报单位应当按时报送材料。" for i in range(1, 46))
+    doc, _, _, _ = seed(session, body=body)
+    data = client.get(path(doc)).json()
+    assert (data["status"], data["page"], data["pages"], data["totalSegments"]) == ("ok", 1, 3, 45)
+    last = client.get(path(doc), params={"cursor": "40", "revision": data["revision"]}).json()
+    assert last["segments"][-1]["text"] == "第45条 申报单位应当按时报送材料。"
+    assert last["nextCursor"] is None and last["page"] == 3
+
+
+def test_page_ends_respect_size_budget():
+    small = [(n, 100) for n in range(1, 46)]
+    assert readers.page_ends(small) == [20, 40, 45]
+    # 一段特别大：自己一页，前后各成一页
+    sizes = [(1, 100), (2, readers.PAGE_BUDGET + 1), (3, 100), (4, 100)]
+    assert readers.page_ends(sizes) == [1, 2, 4]
+    assert readers.page_ends([]) == []
+
+
+def _add_attachment(session, doc, position, name, url, ext):
+    att = DocumentAttachment(
+        document_id=doc.id, position=position, name=name, url=url, extension=ext
+    )
+    session.add(att)
+    session.flush()
+    return att
+
+
+def test_detail_toc_and_reading_agree_on_every_attachment(client, session):
+    """详情页的附件状态、阅读页目录、点进附件的结果是同一个判断（D-097）。"""
+    doc, ok_att, _, _ = seed(session)
+    scan = _add_attachment(
+        session, doc, 1, "扫描件.pdf", "https://kjt.shandong.gov.cn/s.pdf", "pdf"
+    )
+    session.add(
+        AttachmentTextUrl(
+            url_hash=texts.url_key(scan.url),
+            url=scan.url,
+            declared_type="pdf",
+            status="failed",
+            reason="scan",
+            extractor=texts.EXTRACTOR_VERSION,
+            checked_at=NOW,
+            changed_at=NOW,
+        )
+    )
+    _add_attachment(session, doc, 2, "新附件.docx", "https://kjt.shandong.gov.cn/new.docx", "docx")
+    _add_attachment(session, doc, 3, "打包.zip", "https://kjt.shandong.gov.cn/a.zip", "zip")
+    _add_attachment(session, doc, 4, "外站.docx", "https://example.com/x.docx", "docx")
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    states = [(a["state"], a["readable"], a["stateText"]) for a in detail["attachments"]]
+    assert states == [
+        ("ok", True, ""),
+        ("scan", False, "扫描件，暂不能识别文字"),
+        ("pending", False, "新附件，一般半天内可读"),
+        ("format", False, "此格式暂不能在小程序内阅读"),
+        ("host", False, "附件不在政府网站上，暂不能在小程序内阅读"),
+    ]
+    toc = client.get(path(doc)).json()["toc"]
+    assert toc["body"] == {"readable": True, "note": ""}
+    assert [(a["state"], a["readable"], a["stateText"]) for a in toc["attachments"]] == states
+    for item, (state, readable, note) in zip(detail["attachments"], states, strict=True):
+        download_api._times.clear()
+        data = client.get(f"/api/v1/documents/{doc.id}/attachments/{item['id']}/reading").json()
+        assert data["state"] == state
+        assert (data["status"] in ("ok", "partial")) is readable
+        if not readable:
+            assert data["notice"] == f"{note}。" and data["segments"] == []
+
+
+def test_reading_notices_never_use_retired_phrases(client, session):
+    for note in [*texts.NOTES.values(), *readers._BODY_NOTES.values()]:
+        assert not any(word in note for word in BANNED), note
+    doc, att, url, version = seed(session, body="联系电话：13812345678。" + "申报说明。" * 50)
+    row = session.query(AttachmentTextSegment).filter_by(version_id=version.id, n=1).one()
+    row.text = "联系人：[姓名已脱敏]，电话：[手机号已脱敏]"
+    row.cells = [{"c": 1, "t": "[身份证号已脱敏]", "h": "证件号"}]
+    session.commit()
+    for url_ in (path(doc), path(doc, att)):
+        download_api._times.clear()
+        response = client.get(url_)
+        assert not any(word in response.text for word in BANNED), response.text[:300]
+    data = client.get(path(doc, att)).json()
+    assert data["segments"][0]["text"] == "联系人：（这里隐去了联系人），电话：（这里隐去了电话）"
+    assert data["segments"][0]["cells"][0]["t"] == "（这里隐去了证件号）"
+
+
+@pytest.mark.parametrize(
+    ("body", "with_attachment", "status", "notice"),
+    [
+        ("首页\n政务公开\n科技资讯\n搜 索", True, "empty", "这份通知的内容在附件里。"),
+        (
+            "当前位置：首页 > 通知公告\n上一篇：\n下一篇：",
+            False,
+            "empty",
+            "这个网站的正文还取不到。",
+        ),
+        ("现将《管理办法》印发给你们，请遵照执行。", False, "ok", None),
+    ],
+)
+def test_page_chrome_hidden_and_short_notices_shown(
+    client, session, body, with_attachment, status, notice
+):
+    doc, att, _, _ = seed(session, body=body)
+    if not with_attachment:
+        session.delete(att)
+        session.commit()
+    data = client.get(path(doc)).json()
+    assert data["status"] == status
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()["body"]
+    if status == "ok":
+        assert detail["status"] == "ok" and detail["text"] == body
+        assert "".join(s["text"] for s in data["segments"]) == body
+    else:
+        assert data["notice"] == notice and data["segments"] == []
+        reason = "attachments" if with_attachment else "site"
+        assert detail == {"status": "none", "reason": reason}
+
+
+def test_page_chrome_main_falls_back_to_repost(client, session):
+    doc, _, _, _ = seed(session, body="首页\n政务公开\n科技资讯\n" * 10)
+    other, _, _, _ = seed(session, 2, body="转载的正文，内容完整。")
+    session.add(
+        DocumentMerge(duplicate_id=other.id, canonical_id=doc.id, active=True, match_key="chrome")
+    )
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert data["status"] == "ok" and data["source"]["id"] == str(other.id)
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()["body"]
+    assert detail["text"] == "转载的正文，内容完整。"
+
+
+def test_link_gone_keeps_detail_body_but_reader_and_attachments_say_why(client, session):
+    """原网页已失效：维持现状（详情页照旧给之前收录的正文，阅读页不给）；附件写明原因。"""
+    doc, att, _, _ = seed(session)
+    doc.link_gone_at = NOW
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert detail["body"]["status"] == "ok"
+    [item] = detail["attachments"]
+    assert (item["state"], item["readable"]) == ("link_gone", False)
+    data = client.get(path(doc)).json()
+    assert (data["status"], data["state"]) == ("unavailable", "link_gone")
+    assert data["notice"] == "原网页已打不开，正文暂不提供。" and data["toc"]["body"] is None
+    data = client.get(path(doc, att)).json()
+    assert (data["status"], data["state"]) == ("unavailable", "link_gone")
+
+
+def test_partial_scan_reports_pages_for_the_end_note(client, session):
+    doc, att, _, version = seed(session)
+    version.scanned_pages = 3
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    [item] = detail["attachments"]
+    assert (item["readable"], item["scannedPages"]) == (True, 3)
+    assert item["stateText"] == "能读，另有 3 页扫描件暂不能识别文字"
+    data = client.get(path(doc, att)).json()
+    assert (data["status"], data["scannedPages"]) == ("partial", 3)
+    assert data["notice"] == "其中 3 页是扫描件，暂不能识别文字，下面的文字不含这些页。"
+
+
+def test_body_parts_cut_at_line_and_sentence_ends():
+    lines = [f"第{i}行，内容说明。" + "甲" * 90 for i in range(1, 31)]
+    parts = readers.body_parts("\n".join(lines))
+    assert all(len(part) <= readers.SEGMENT_MAX for part in parts)
+    # 按行拼：每段都以一整行结尾，拼回去和原文一样
+    assert "\n".join(parts) == "\n".join(lines)
+    assert all(part.split("\n")[-1] in lines for part in parts)
+    # 一行本身超长：在句号后面切
+    long = "说明。" * 400
+    pieces = readers.body_parts(long)
+    assert "".join(pieces) == long and all(p.endswith("。") for p in pieces)
+    assert readers.body_parts("甲" * 2500) == ["甲" * 1000, "甲" * 1000, "甲" * 500]
+    assert readers.body_parts("一段。\n\n\n二段。") == ["一段。", "二段。"]
+
+
+def test_personal_link_gone_says_personal_first(client, session):
+    doc, _, _, _ = seed(session, kind="其他")
+    doc.title = "关于2026年度公开招聘工作人员拟聘用人员的公示"
+    doc.link_gone_at = NOW
+    session.commit()
+    data = client.get(path(doc)).json()
+    assert (data["status"], data["state"]) == ("unsupported", "personal")
+    assert client.get(f"/api/v1/documents/{doc.id}").json()["body"] == {
+        "status": "original",
+        "reason": "personal",
+    }
