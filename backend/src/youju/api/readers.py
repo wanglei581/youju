@@ -34,9 +34,10 @@ from youju.takedown import available_condition, is_taken_down
 PAGE_SEGMENTS = 20
 MAX_PAGE_BYTES = 128 * 1024
 # 分页按存下的文字大小算（每页最多 PAGE_SEGMENTS 段、合计不超过 PAGE_BUDGET 字节），整份内容的
-# 页数、每页从哪一段开始是定的：页面能写"第 N 页 / 共 M 页"、记住读到哪一页（D-097）。返回前
-# 还要再脱敏、换说法（会变长一点），所以预算只用返回上限的一半
-PAGE_BUDGET = 64 * 1024
+# 页数、每页从哪一段开始是定的：页面能写"第 N 页 / 共 M 页"、记住读到哪一页（D-097）。一页约
+# 4000 字（手机上十来屏）：2 万字的指南分成 5 页左右，续读才有意义；返回前还要再脱敏、换说法
+# （会变长一点），离返回上限 MAX_PAGE_BYTES 还很远
+PAGE_BUDGET = 12 * 1024
 # 2：D-097 分页定下来、遮挡处说法改了，旧版本号的续读位置作废
 READER_VERSION = 2
 
