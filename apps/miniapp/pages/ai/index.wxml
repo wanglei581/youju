@@ -120,6 +120,7 @@
 
   <view class="foot">
     <view wx:if="{{disclosure}}">{{disclosure}}</view>
+    <view wx:if="{{noticeAgreedText}}">{{noticeAgreedText}} · <text class="link" bindtap="withdrawNotice" aria-role="button">撤回同意</text></view>
   </view>
 </block>
 <view class="tab-page-bottom"></view>

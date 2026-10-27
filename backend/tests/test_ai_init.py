@@ -37,7 +37,13 @@ ADVISOR_ENV = {
 def _settings(monkeypatch, **env):
     from youju.config import Settings
 
-    for name in (*ADVISOR_ENV, "YOUJU_AI_ADVISOR_REQUEST_EXTRA", "YOUJU_AI_REQUEST_EXTRA"):
+    for name in (
+        *ADVISOR_ENV,
+        "YOUJU_AI_ADVISOR_REQUEST_EXTRA",
+        "YOUJU_AI_REQUEST_EXTRA",
+        "YOUJU_AI_MODEL_LABEL",
+        "YOUJU_AI_MODEL_FILING",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("YOUJU_AI_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("YOUJU_AI_API_KEY", "sk-background-secret")
@@ -120,10 +126,53 @@ def test_open_to_all_requires_the_external_line(monkeypatch):
         monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="whitelist"
     )
     assert advisor_endpoint(whitelist)[1] == "sk-background-secret"
+    # 对所有人开放还要填公示用的模型名称和备案编号（D-098）
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        _settings(
+            monkeypatch,
+            YOUJU_AI_ADVISOR_ENABLED="true",
+            YOUJU_AI_ADVISOR_AUDIENCE="all",
+            **ADVISOR_ENV,
+        )
     opened = _settings(
-        monkeypatch, YOUJU_AI_ADVISOR_ENABLED="true", YOUJU_AI_ADVISOR_AUDIENCE="all", **ADVISOR_ENV
+        monkeypatch,
+        YOUJU_AI_ADVISOR_ENABLED="true",
+        YOUJU_AI_ADVISOR_AUDIENCE="all",
+        YOUJU_AI_MODEL_LABEL="测试模型",
+        YOUJU_AI_MODEL_FILING="测试备案编号-0001",
+        **ADVISOR_ENV,
     )
     assert advisor_endpoint(opened)[:3] == tuple(ADVISOR_ENV.values())
+    # api 服务不调模型：对所有人开放时不要求对外线路和密钥，公示的模型名称和编号照样要填（D-098）
+    api_open = _settings(
+        monkeypatch,
+        YOUJU_ROLE="api",
+        YOUJU_TRUST_WX_HEADERS="true",
+        YOUJU_AI_ADVISOR_ENABLED="true",
+        YOUJU_AI_ADVISOR_AUDIENCE="all",
+        YOUJU_AI_MODEL_LABEL="测试模型",
+        YOUJU_AI_MODEL_FILING="测试备案编号-0001",
+    )
+    assert api_open.role == "api" and advisor_endpoint(api_open)[1] == ""
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        _settings(
+            monkeypatch,
+            YOUJU_ROLE="api",
+            YOUJU_TRUST_WX_HEADERS="true",
+            YOUJU_AI_ADVISOR_ENABLED="true",
+            YOUJU_AI_ADVISOR_AUDIENCE="all",
+        )
+    # admin 处理任务：没配对外线路照旧不启动
+    with pytest.raises(ValueError, match="对所有人开放 AI"):
+        _settings(
+            monkeypatch,
+            YOUJU_ROLE="admin",
+            YOUJU_TRUST_WX_HEADERS="false",
+            YOUJU_AI_ADVISOR_ENABLED="true",
+            YOUJU_AI_ADVISOR_AUDIENCE="all",
+            YOUJU_AI_MODEL_LABEL="测试模型",
+            YOUJU_AI_MODEL_FILING="测试备案编号-0001",
+        )
     # 万一配置绕过了启动检查（例如直接改了对象），对所有人开放时也不退回后台线路
     bypassed = SimpleNamespace(
         ai_advisor_api_key=None,

@@ -88,3 +88,27 @@ test('不往非空目录、apps/miniapp 里面打；参数不对不打', () => {
     assert.equal(fs.existsSync(out), false, '出错时不留半个包');
   }
 });
+
+test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格；协议用含 AI 条款的那一份，不剪 AI；不带工具中心、批量工具和付费页面', () => {
+  const out = fresh();
+  const { pages, removed, result } = pack({ out, profile: 'first-release-ai', mode: 'prepare', npmFrom: fakeNpm() });
+  const { FIRST_AI_PAGES } = require('../miniapp_presubmit_check.js');
+  assert.deepEqual([...pages].sort(), [...FIRST_PAGES, ...FIRST_AI_PAGES].sort());
+  assert.equal(pages.length, 22);
+  for (const page of ['pages/advisor/index', 'pages/advisor-form/index', 'pages/advisor-terms/index', 'pages/advisor-trial/index', 'pages/pass/index', 'pages/orders/index']) {
+    assert.ok(removed.includes(page), page);
+    assert.equal(fs.existsSync(path.join(out, path.dirname(page))), false, page);
+  }
+  const app = JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8'));
+  assert.deepEqual(app.tabBar.list.map((t) => t.text), ['首页', '关注', '导出', '我的', 'AI']);
+  // 不剪 AI：组件、模块都在
+  for (const kept of ['components/ai-button/index.js', 'utils/ai-access.js', 'utils/advisor.js']) assert.ok(fs.existsSync(path.join(out, kept)), kept);
+  // 协议：完整版那一份（含 AI 条款），包里不留过审版那一份
+  delete require.cache[require.resolve(path.join(out, 'content', 'legal.js'))];
+  assert.equal(require(path.join(out, 'content', 'legal.js')).version, require(path.join(SOURCE, 'content', 'legal.js')).version);
+  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
+  const byId = Object.fromEntries(result.checks.map((c) => [c.id, c.state]));
+  for (const id of ['pages', 'tabs', 'ai-mode', 'ai-terms']) assert.equal(byId[id], 'pass', id);
+  assert.equal(byId['first-terms'], undefined);
+  assert.equal(byId['no-ai'], undefined);
+});

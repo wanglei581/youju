@@ -21,7 +21,7 @@ const caps = (enabled = true, features = ['interpret', 'clause']) => ({
   ai_advisor: { enabled, features, remaining: { interpret: 3, clause: 2 } },
 });
 function storage(agreed = true) {
-  const saved = new Map(agreed ? [[interpret.CONSENT_KEY, true]] : []);
+  const saved = new Map(agreed ? [[interpret.CONSENT_KEY, interpret.consentRecord()]] : []);
   return { saved, getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value) };
 }
 function load(file, api, wx = {}, extra = {}) {
@@ -125,7 +125,7 @@ test('共享同一须知文字与本机标记，不勾选不创建；同意后�
   h.session.show(); assert.equal(h.state.terms, interpret.TERMS);
   h.session.agree(); await flush(); assert.equal(h.calls.length, 0);
   h.session.check(true); h.session.agree(); h.session.agree(); await flush();
-  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0].body, { kind: 'clause', doc_id: 42, company: { employees: 15 } });
+  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0].body, { kind: 'clause', doc_id: 42, company: { employees: 15 }, notice: interpret.NOTICE_VERSION });
   assert.ok(h.calls[0].key); assert.equal(interpret.hasConsent(local), true);
   assert.doesNotMatch(JSON.stringify([...local.saved]), /employees/); h.session.hide();
   const next = harness({ storage: local }); next.session.show(); await flush(); assert.equal(next.state.needsConsent, false); next.session.hide();
@@ -176,7 +176,7 @@ test('换了手机打开已有对照：须知按钮写"查看结果"，不像要
     advisorTask: () => Promise.resolve({ id: 7, docId: 55, docTitle: '通知', status: 'done', result: {} }) }, storage(false));
   page.onLoad({ taskId: 7 }); page.onShow(); await flush();
   const output = render(read('pages/advisor-clause/index.wxml'), page.data);
-  assert.match(output, /使用须知/); assert.match(output, /我知道了，查看结果/); assert.doesNotMatch(output, /开始对照/); page.onUnload();
+  assert.match(output, /使用须知/); assert.match(output, /同意并查看结果/); assert.doesNotMatch(output, /开始对照/); page.onUnload();
 });
 
 test('表单先显示且不自动提交；错误就近显示，全空提交，422 可回表单修改', async () => {
