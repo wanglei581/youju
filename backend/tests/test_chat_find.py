@@ -311,7 +311,9 @@ LAST_MONTH = {"from": "2026-05-01", "to": "2026-05-31"}
         *[(p, LAST_MONTH) for p in ("上个月", "上月", "上一个月")],
         # 上上周、上上个月再往前一个，不认成上周、上个月
         *[(p, {"from": "2026-06-01", "to": "2026-06-07"}) for p in ("上上周", "上上个星期")],
+        *[(p, {"from": "2026-06-01", "to": "2026-06-07"}) for p in ("上上一周", "上上一个星期")],
         *[(p, {"from": "2026-04-01", "to": "2026-04-30"}) for p in ("上上个月", "上上月")],
+        ("上上一个月", {"from": "2026-04-01", "to": "2026-04-30"}),
         # 和别的时间词一起时先算这两种；两种都有取先写的
         ("今年上个月", LAST_MONTH),
         ("上周最新", LAST_WEEK),
@@ -324,6 +326,16 @@ def test_上周和上个月按发布日期筛(phrase, period):
     conditions = _parse(f"广东{phrase}的专精特新申报通知")
     assert (conditions["period"], conditions["time"], conditions["year"]) == (period, "不限", None)
     assert conditions["keywords"] == ["专精特新"]
+
+
+@pytest.mark.parametrize(
+    "text", ["这个周期的申报通知", "上个周期的申报通知", "本周期的申报通知", "17天内的申报通知"]
+)
+def test_像时间词又不是的不认(text):
+    """以"周"结尾的后面是"期"、以数字开头的前面紧挨着数字：不当时间。"""
+    conditions = _parse(text)
+    assert (conditions["time"], conditions["period"]) == ("不限", None), text
+    assert _parse("十一个月内的申报通知")["time"] == "不限"
 
 
 def test_上周是上一个星期一到星期日_上个月是上一个自然月():
@@ -540,19 +552,47 @@ def test_国家单独说的是国家部委(text):
         ("国家工业和信息化部的通知", ["工业和信息化部"]),  # 名称里的"和"不断开
         ("国家税务总局公告", ["税务总局"]),
         ("国家各部委的通知", []),
+        ("国家民委的通知", ["民委"]),
+        ("国家发展改革委办公厅的通知", ["发展改革委办公厅"]),  # 按最短的机关名算
+        ("国家能源局综合司的通知", ["能源局综合司"]),
+        ("国家数据局发的通知", ["数据局"]),
+        ("国家数据局和广东的申报通知", ["数据局"]),
     ],
 )
 def test_国家后面紧跟着国家机关名照旧算国家部委(text, keywords):
     conditions = _parse(text)
-    assert (conditions["regions"], conditions["keywords"]) == (["国家部委"], keywords)
+    assert conditions["regions"][0] == "国家部委"
+    assert conditions["keywords"] == keywords
+    assert _parse("国家发改委专精特新通知")["regions"] == ["国家部委"]
 
 
-def test_紧跟在地区后面的和与及或去掉():
-    conditions = _parse("国家级和省级专精特新")
-    assert (conditions["regions"], conditions["keywords"]) == (["国家部委"], ["省级专精特新"])
-    conditions = _parse("国家及各省的专精特新政策")
-    assert (conditions["regions"], conditions["keywords"]) == (["国家部委"], ["各省", "专精特新"])
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("国家产业布局", ["产业布局"]),
+        ("国家西部大开发", ["西部大开发"]),
+        ("国家战略部署", ["战略部署"]),
+        ("国家级经济技术开发区管委会", ["经济技术开发区管委会"]),  # "国家级"后面不看机关名
+    ],
+)
+def test_以局委部署办结尾又不是机关名的不算(text, keywords):
+    conditions = _parse(text)
+    assert (conditions["regions"], conditions["keywords"]) == ([], keywords)
+
+
+def test_地区前面的和与及或去掉_后面的不去():
+    conditions = _parse("人工智能和广东的政策")
+    assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["人工智能"])
     assert _parse("广东或四川的专精特新")["regions"] == ["广东", "四川"]
+    # 地区后面的"和"可能是名称的一部分
+    for text, keyword in (
+        ("四川和邦生物", "和邦生物"),
+        ("天津和平区的申报通知", "和平区"),  # 和平区没收录：照第 3 条当关键词
+        ("广东和平县", "和平县"),
+        ("安徽和县", "和县"),
+        ("新疆和田", "和田"),
+    ):
+        assert _parse(text)["keywords"] == [keyword], text
 
 
 def test_国家后面跟着地名或标点也是国家部委():
@@ -1178,6 +1218,11 @@ def test_停用词粘在词里不拆开():
     # 两个字以上的照旧拆：停用词"企业"去掉，"高新技术"留下
     assert _parse("请问有没有高新技术企业认定的材料要求")["keywords"] == ["高新技术"]
     assert _parse("企业家的申报通知")["keywords"] == ["企业家"]
+    assert _parse("白名单")["keywords"] == ["白名单"]
+    assert _parse("黑名单")["keywords"] == ["黑名单"]
+    assert _parse("企业白名单")["keywords"] == ["白名单"]
+    assert _parse("工业企业白名单")["keywords"] == ["工业", "白名单"]
+    assert _parse("有企业补贴吗")["keywords"] == ["补贴"]  # "有、为、给"这类单字不往后并
     # 只和"材料、企业、公司"并：问句里的停用词不并成关键词
     for text, keywords in (
         ("广东有什么政策", []),
@@ -1192,6 +1237,14 @@ def test_停用词粘在词里不拆开():
 def test_说发文的词也去掉(word):
     conditions = _parse(f"广东上周{word}的专精特新申报通知")
     assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["专精特新"])
+
+
+def test_机关名后面的发的去掉_开发的研发的不去():
+    assert _parse("工信部发的通知")["keywords"] == ["工信部"]
+    conditions = _parse("广东省科技厅发的申报通知")
+    assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["科技厅"])
+    assert _parse("开发的软件")["keywords"] == ["开发", "软件"]
+    assert _parse("研发的项目")["keywords"] == ["研发"]
 
 
 def test_问内容的提示只在那几个词单独出现时才加():
