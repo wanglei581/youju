@@ -1,5 +1,5 @@
 {
-  "version": "starter-draft-1",
+  "version": "starter-draft-2",
   "final": false,
   "note": "起步稿（10/28 Claude 起草，待 agy 合规审、创始人定）：只收不会出现在政府通知里的违法招揽短语（毒品、枪支、假证、黑灰产、赌博网站、色情服务），按短语不按单字；不收领导人名、政策用语和涉政词（交给微信内容安全那一层）。用 backend/scripts/scan_safety_words.py 在全部收录通知的正文和附件文字上跑过，误拦 0 份才用。",
   "basis": "《网络信息内容生态治理规定》（国家互联网信息办公室令第 5 号，2020 年 3 月 1 日起施行）第六条、第七条",
@@ -289,132 +289,142 @@
     {
       "id": "s037",
       "category": "illegal_other",
-      "word": "信用卡套现"
+      "word": "洗钱服务"
     },
     {
       "id": "s038",
       "category": "illegal_other",
-      "word": "套现服务"
+      "word": "跑分平台"
     },
     {
       "id": "s039",
       "category": "illegal_other",
-      "word": "洗钱服务"
+      "word": "出售银行卡"
     },
     {
       "id": "s040",
       "category": "illegal_other",
-      "word": "跑分平台"
+      "word": "银行卡出售"
     },
     {
       "id": "s041",
       "category": "illegal_other",
-      "word": "出售银行卡"
+      "word": "收购银行卡"
     },
     {
       "id": "s042",
       "category": "illegal_other",
-      "word": "银行卡出售"
+      "word": "出租银行卡"
     },
     {
       "id": "s043",
       "category": "illegal_other",
-      "word": "收购银行卡"
+      "word": "出售电话卡"
     },
     {
       "id": "s044",
       "category": "illegal_other",
-      "word": "出租银行卡"
-    },
-    {
-      "id": "s045",
-      "category": "illegal_other",
-      "word": "出售电话卡"
-    },
-    {
-      "id": "s046",
-      "category": "illegal_other",
       "word": "收购电话卡"
     },
     {
-      "id": "s047",
-      "category": "illegal_other",
-      "word": "出售个人信息"
-    },
-    {
-      "id": "s048",
-      "category": "illegal_other",
-      "word": "出售公民个人信息"
-    },
-    {
-      "id": "s049",
+      "id": "s045",
       "category": "illegal_obscene_violent",
       "word": "网上赌场"
     },
     {
-      "id": "s050",
+      "id": "s046",
       "category": "illegal_obscene_violent",
       "word": "在线赌场"
     },
     {
-      "id": "s051",
+      "id": "s047",
       "category": "illegal_obscene_violent",
       "word": "网络赌场"
     },
     {
-      "id": "s052",
+      "id": "s048",
       "category": "illegal_obscene_violent",
       "word": "赌博网站"
     },
     {
-      "id": "s053",
+      "id": "s049",
       "category": "illegal_obscene_violent",
       "word": "博彩网站"
     },
     {
-      "id": "s054",
+      "id": "s050",
       "category": "illegal_obscene_violent",
       "word": "百家乐平台"
     },
     {
-      "id": "s055",
+      "id": "s051",
       "category": "illegal_obscene_violent",
       "word": "时时彩平台"
     },
     {
-      "id": "s056",
+      "id": "s052",
       "category": "illegal_obscene_violent",
       "word": "六合彩平台"
     },
     {
-      "id": "s057",
+      "id": "s053",
       "category": "illegal_obscene_violent",
       "word": "真人荷官"
     },
     {
-      "id": "s058",
+      "id": "s054",
       "category": "illegal_obscene_violent",
       "word": "裸聊服务"
     },
     {
-      "id": "s059",
+      "id": "s055",
       "category": "illegal_obscene_violent",
       "word": "援交服务"
     },
     {
-      "id": "s060",
+      "id": "s056",
       "category": "illegal_obscene_violent",
       "word": "色情直播"
     },
     {
-      "id": "s061",
+      "id": "s057",
       "category": "illegal_obscene_violent",
       "word": "上门服务小姐"
     },
     {
-      "id": "s062",
+      "id": "s058",
       "category": "illegal_obscene_violent",
       "word": "包夜服务"
+    },
+    {
+      "id": "s059",
+      "category": "illegal_other",
+      "word": "代做虚假流水"
+    },
+    {
+      "id": "s060",
+      "category": "illegal_other",
+      "word": "代办虚假发票"
+    },
+    {
+      "id": "s061",
+      "category": "illegal_other",
+      "word": "买卖高企资质"
+    },
+    {
+      "id": "s062",
+      "category": "illegal_other",
+      "word": "申报包过服务"
+    },
+    {
+      "id": "s063",
+      "category": "illegal_other",
+      "word": "代办骗取补贴"
+    },
+    {
+      "id": "s064",
+      "category": "illegal_other",
+      "word": "黑客盗取数据"
     }
   ]
 }
