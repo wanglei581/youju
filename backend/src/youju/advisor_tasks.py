@@ -565,6 +565,7 @@ def process_ai(
                     ),
                     max_retries=0,
                     extra_body=advisor_extra,
+                    stream=bool(getattr(settings, "ai_advisor_stream", False)),
                 )
             call_stamp = datetime.now(UTC) if live_time else stamp
             reserve_ai_call(session, skill.kind, model, call_stamp, settings.ai_advisor_daily_cap)

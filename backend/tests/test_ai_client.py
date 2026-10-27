@@ -431,3 +431,184 @@ def test_terminal_finish_is_not_retried_and_keeps_usage(finish_reason, content, 
     assert error.value.__cause__ is None
     assert client.last_usage == {"prompt_tokens": 6, "completion_tokens": 4}
     assert client.totals == {"calls": 1, "errors": 1, "prompt_tokens": 6, "completion_tokens": 4}
+
+
+# ---- 流式返回（SSE，D-098）：云开发 AI 网关对不走流式、1 分钟内没生成完的请求不返回结果 ----
+
+
+def sse(*events, done=True):
+    lines = [f"data: {json.dumps(e, ensure_ascii=False)}" for e in events]
+    if done:
+        lines.append("data: [DONE]")
+    return httpx.Response(
+        200,
+        content=("\n\n".join(lines) + "\n\n").encode(),
+        headers={"content-type": "text/event-stream"},
+    )
+
+
+def delta(text=None, finish=None, reasoning=None):
+    d = {}
+    if text is not None:
+        d["content"] = text
+    if reasoning is not None:
+        d["reasoning_content"] = reasoning
+    return {"choices": [{"index": 0, "delta": d, "finish_reason": finish}]}
+
+
+def test_stream_joins_deltas_and_reads_usage():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        seen["accept"] = request.headers.get("accept")
+        return sse(
+            delta(reasoning="先想一想"),
+            delta('{"ok": '),
+            delta("true}"),
+            delta(finish="stop"),
+            {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+        )
+
+    client = ChatClient(
+        "https://example.test/v1", "key", "hy3", transport=httpx.MockTransport(handler), stream=True
+    )
+    assert client.complete_json("输出 JSON", "请输出 JSON") == {"ok": True}
+    assert seen["body"]["stream"] is True
+    assert seen["body"]["stream_options"] == {"include_usage": True}
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+    assert seen["accept"] == "text/event-stream"
+    assert client.last_usage == {"prompt_tokens": 7, "completion_tokens": 3}
+
+
+def test_stream_without_done_or_finish_still_accepts_object():
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(lambda request: sse(delta('{"a": 1}'), done=False)),
+        stream=True,
+    )
+    assert client.complete_json("s", "u") == {"a": 1}
+
+
+def test_stream_length_finish_is_truncated_and_not_retried():
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return sse(delta('{"a": '), delta(finish="length"))
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(handler),
+        stream=True,
+        sleep=lambda _: None,
+    )
+    with pytest.raises(AIError) as exc:
+        client.complete_json("s", "u")
+    assert exc.value.code == "truncated" and calls == 1
+
+
+def test_stream_429_then_success_and_error_usage_counted():
+    replies = iter(
+        [
+            httpx.Response(429, json={"error": "busy", "usage": {"prompt_tokens": 2}}),
+            sse(delta('{"ok": 1}', finish="stop")),
+        ]
+    )
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(lambda request: next(replies)),
+        stream=True,
+        sleep=lambda _: None,
+    )
+    assert client.complete_json("s", "u") == {"ok": 1}
+    assert client.last_usage["prompt_tokens"] == 2
+
+
+def test_stream_bad_chunk_is_invalid_envelope_and_keeps_usage():
+    def handler(request):
+        body = (
+            'data: {"choices": [], "usage": {"prompt_tokens": 5}}\n\n'
+            "data: 不是 JSON\n\n"
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, content=body.encode(), headers={"content-type": "text/event-stream"}
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(handler),
+        stream=True,
+        max_retries=0,
+    )
+    with pytest.raises(AIError) as exc:
+        client.complete_json("s", "u")
+    assert exc.value.code == "invalid_envelope"
+    assert client.last_usage["prompt_tokens"] == 5
+    assert "不是 JSON" not in str(exc.value)
+
+
+def test_stream_overall_deadline_is_a_retryable_network_error():
+    ticks = iter([0.0, 5.0, 31.0, 62.0, 93.0])
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        timeout=30,
+        transport=httpx.MockTransport(
+            lambda request: sse(delta('{"a"'), delta(": 1"), delta("}"), delta(finish="stop"))
+        ),
+        stream=True,
+        max_retries=0,
+        clock=lambda: next(ticks),
+    )
+    with pytest.raises(AIError) as exc:
+        client.complete_json("s", "u")
+    assert exc.value.retryable is True
+    assert str(exc.value) == "AI 网络请求失败"
+
+
+def test_stream_skips_comments_and_event_lines():
+    body = (
+        ": keep-alive\n\n"
+        "event: message\n"
+        f"data: {json.dumps(delta('{"x": 2}'))}\n\n"
+        f"data: {json.dumps(delta(finish='stop'))}\n\n"
+        "data: [DONE]\n\n"
+    )
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, content=body.encode(), headers={"content-type": "text/event-stream"}
+            )
+        ),
+        stream=True,
+    )
+    assert client.complete_json("s", "u") == {"x": 2}
+
+
+def test_non_stream_is_unchanged_by_default():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return response('{"ok": true}')
+
+    client = ChatClient(
+        "https://example.test", "key", "qwen", transport=httpx.MockTransport(handler)
+    )
+    assert client.complete_json("s", "u") == {"ok": True}
+    assert "stream" not in seen and "stream_options" not in seen

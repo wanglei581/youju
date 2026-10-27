@@ -1146,7 +1146,26 @@ def test_worker_enabled_independently(session, settings, doc, monkeypatch):
     monkeypatch.setattr(service, "ChatClient", factory)
     result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
     assert result["done"] == 1 and fake.closed
-    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None}]
+    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None, "stream": False}]
+
+
+def test_worker_passes_stream_switch(session, settings, doc, monkeypatch):
+    """对外 AI 打开流式（经云开发调混元时网关 1 分钟限制，D-098）：建客户端时多传 stream=True，别的不变。"""
+    settings.ai_advisor_stream = True
+    task = direct_task(session, doc)
+    task.status = "queued"
+    session.commit()
+    fake = FakeChat()
+    options = []
+
+    def factory(*args, **kwargs):
+        options.append(kwargs)
+        return fake
+
+    monkeypatch.setattr(service, "ChatClient", factory)
+    result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
+    assert result["done"] == 1 and fake.closed
+    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None, "stream": True}]
 
 
 def test_worker_uses_separate_advisor_endpoint(session, settings, doc, monkeypatch):
@@ -1175,7 +1194,7 @@ def test_worker_uses_separate_advisor_endpoint(session, settings, doc, monkeypat
     assert calls == [
         (
             (settings.ai_advisor_base_url, "advisor-test-value", "advisor-model"),
-            {"timeout": 180, "max_retries": 0, "extra_body": {}},
+            {"timeout": 180, "max_retries": 0, "extra_body": {}, "stream": False},
         )
     ]
     session.expire_all()
