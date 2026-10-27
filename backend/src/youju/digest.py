@@ -497,27 +497,52 @@ def _counts(counter: Counter) -> str:
     return "、".join(f"{label} {n}" for label, n in counter.most_common())
 
 
+def gates(rb: Readability) -> tuple[bool, bool, bool]:
+    """三项提审门槛各达到没有：正文能读率、整条能读率（按向下取整的百分比比），附件没有等了超过
+    一轮的（等了多久不知道的按没达到算）。没有通知时都算没达到（算不出来）。"""
+    body = bool(rb.notices) and math.floor(100 * rb.body_ok / rb.notices) >= BODY_GATE
+    whole = bool(rb.notices) and math.floor(100 * rb.whole_ok / rb.notices) >= WHOLE_GATE
+    wait = not rb.pending or (
+        rb.oldest_pending_hours is not None and rb.oldest_pending_hours <= ROUND_HOURS
+    )
+    return body, whole, wait
+
+
+def _verdict(rb: Readability) -> str:
+    return "提审门槛达到了" if all(gates(rb)) else "提审门槛还没达到"
+
+
+def _waiting(rb: Readability) -> str:
+    if not rb.pending:
+        return "没有等取文字的附件"
+    hours = rb.oldest_pending_hours
+    return (
+        f"等取文字最久的附件 {hours} 小时" if hours is not None else "等取文字的附件等了多久不知道"
+    )
+
+
 def readability_summary(digest: Digest) -> str:
-    """主日报里的一行：能读率三个数（细的另发一条）。"""
+    """主日报里的一行：三项提审门槛（D-097 ④）各是多少、达到没有；细的另发一条。"""
     rb = digest.readability
     if not digest.readability_ok or rb is None:
         return "能读（近 30 天申报通知、政策）：取不到（统计出错，看容器日志）"
     return (
-        f"能读（近 30 天申报通知、政策 {rb.notices} 份，详见下一条）："
-        f"正文 {_pct(rb.body_ok, rb.notices)}、附件 {_pct(rb.attachments_ok, rb.attachments)}、"
-        f"整条 {_pct(rb.whole_ok, rb.notices)}"
+        f"能读（近 30 天申报通知、政策 {rb.notices} 份）：{_verdict(rb)}——"
+        f"正文 {_pct(rb.body_ok, rb.notices)}（要 {BODY_GATE}%）、"
+        f"整条 {_pct(rb.whole_ok, rb.notices)}（要 {WHOLE_GATE}%）、"
+        f"{_waiting(rb)}（要不超过 {ROUND_HOURS} 小时）；详见下一条"
     )
 
 
 def readability_text(digest: Digest) -> str | None:
-    """能读情况（另发一条）：三个能读率和提审门槛、读不了的原因、读不全最多的网站。放不下时从
+    """能读情况（另发一条）：三项提审门槛达到没有、读不了的原因、读不全最多的网站。放不下时从
     最后一个网站开始去掉。统计出错时不发（主日报里已写取不到）。"""
     rb = digest.readability
     if not digest.readability_ok or rb is None:
         return None
     head = (
-        f"运维日报·能读情况 {_md(digest.day)}"
-        f"（近 30 天申报通知、政策 {rb.notices} 份；提审门槛见 D-097）"
+        f"运维日报·能读情况 {_md(digest.day)}（近 30 天申报通知、政策 {rb.notices} 份）："
+        f"{_verdict(rb)}（正文、整条、附件等待三项都达到才算，D-097）"
     )
     body = (
         f"正文能读 {rb.body_ok} 份（{_pct(rb.body_ok, rb.notices)}，"
@@ -525,19 +550,15 @@ def readability_text(digest: Digest) -> str | None:
     )
     if rb.no_body:
         body += f"；读不了的：{_counts(rb.no_body)}"
-    if rb.pending:
-        wait = (
-            f"最久的等了 {rb.oldest_pending_hours} 小时"
-            if rb.oldest_pending_hours is not None
-            else "等了多久不知道"
-        )
-        late = rb.oldest_pending_hours is not None and rb.oldest_pending_hours > ROUND_HOURS
-        pending = (
-            f"等取文字的 {rb.pending} 个，{wait}"
-            f"（门槛不超过一轮 {ROUND_HOURS} 小时，{'没达到' if late else '达到'}）"
-        )
+    hours = rb.oldest_pending_hours
+    if not rb.pending:
+        wait = "没有等取文字的"
+    elif hours is not None:
+        wait = f"等取文字的 {rb.pending} 个，最久的等了 {hours} 小时"
     else:
-        pending = f"没有等取文字的（门槛不超过一轮 {ROUND_HOURS} 小时，达到）"
+        wait = f"等取文字的 {rb.pending} 个，等了多久不知道"
+    reached = "达到" if gates(rb)[2] else "没达到"
+    pending = f"{wait}（门槛不超过一轮 {ROUND_HOURS} 小时，{reached}）"
     attachments = (
         f"附件 {rb.attachments} 个，能读 {rb.attachments_ok} 个"
         f"（{_pct(rb.attachments_ok, rb.attachments)}）；{pending}"
@@ -549,10 +570,9 @@ def readability_text(digest: Digest) -> str | None:
         attachments += f"；其他读不了的：{_counts(others)}"
     whole = (
         f"整条能读 {rb.whole_ok} 份（{_pct(rb.whole_ok, rb.notices)}，"
-        f"{_gate(rb.whole_ok, rb.notices, WHOLE_GATE)}）：正文和附件都能读、附件没有扫描页"
+        f"{_gate(rb.whole_ok, rb.notices, WHOLE_GATE)}）：正文和附件都能读、附件没有扫描页；"
+        f"正文和附件都能读、但附件有扫描页的 {rb.scanned_only} 份单列、不算"
     )
-    if rb.scanned_only:
-        whole += f"；正文和附件都能读、但附件有扫描页的 {rb.scanned_only} 份不算"
     sites = [
         f"{site} {count}（{'、'.join(f'{label} {n}' for label, n in top)}）"
         for site, count, top in rb.sites
@@ -561,7 +581,10 @@ def readability_text(digest: Digest) -> str | None:
     while True:
         lines = [head, body, attachments, whole]
         if sites:
-            lines.append("读不全最多的网站：" + "；".join(sites))
+            lines.append(
+                "读不全最多的网站（份数；括号里是原因和份数，一份可能有几个原因）："
+                + "；".join(sites)
+            )
         text = "\n".join(lines)
         if len(text.encode()) <= budget or not sites:
             return text

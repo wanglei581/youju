@@ -729,16 +729,24 @@ def test_readability_rates_waits_and_sites(session, monkeypatch) -> None:
     assert rb.oldest_pending_hours == 30
     assert [site for site, _, _ in rb.sites] == [f"山东省测试厅{n}" for n in (2, 3, 4, 5)]
     d = digest_module.Digest(day=date(2026, 9, 29), readability=rb)
-    assert "能读（近 30 天申报通知、政策 5 份，详见下一条）：正文 60%、附件 66%、整条 20%" in (
-        digest_text(d, [])
-    )
+    # 主日报那一行直接对着三项提审门槛写（agy 第 1 轮）
+    assert (
+        "能读（近 30 天申报通知、政策 5 份）：提审门槛还没达到——正文 60%（要 90%）、整条 20%（要 75%）、"
+        "等取文字最久的附件 30 小时（要不超过 14 小时）；详见下一条"
+    ) in digest_text(d, [])
     text_ = digest_module.readability_text(d)
-    assert text_.startswith("运维日报·能读情况 9月29日（近 30 天申报通知、政策 5 份")
+    assert text_.startswith(
+        "运维日报·能读情况 9月29日（近 30 天申报通知、政策 5 份）：提审门槛还没达到"
+        "（正文、整条、附件等待三项都达到才算，D-097）"
+    )
     assert "正文能读 3 份（60%，门槛 90%，没达到，争取 95%）；读不了的：" in text_
     assert "等取文字的 1 个，最久的等了 30 小时（门槛不超过一轮 14 小时，没达到）" in text_
     assert "整条能读 1 份（20%，门槛 75%，没达到）" in text_
-    assert "正文和附件都能读、但附件有扫描页的 1 份不算" in text_
-    assert "读不全最多的网站：山东省测试厅2 1（附件等取文字 1）" in text_
+    assert "正文和附件都能读、但附件有扫描页的 1 份单列、不算" in text_
+    assert (
+        "读不全最多的网站（份数；括号里是原因和份数，一份可能有几个原因）："
+        "山东省测试厅2 1（附件等取文字 1）"
+    ) in text_
 
 
 LONG_SITE = "某某省某某某某某某委员会某某某某某某中心" * 3
@@ -760,6 +768,20 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
     assert "正文能读 95 份（95%，门槛 90%，达到，争取 95%）" in text_
     assert "没有等取文字的（门槛不超过一轮 14 小时，达到）" in text_
     assert "整条能读 80 份（80%，门槛 75%，达到）" in text_
-    shown = text_.split("读不全最多的网站：")[1].split("；")
+    # 三项都达到才写"达到了"；扫描页单列的份数是 0 也写（agy 第 1 轮）
+    assert "：提审门槛达到了（正文、整条、附件等待三项都达到才算，D-097）" in text_
+    assert "附件有扫描页的 0 份单列、不算" in text_
+    assert "提审门槛达到了——正文 95%（要 90%）、整条 80%（要 75%）、没有等取文字的附件" in (
+        digest_text(d, [])
+    )
+    assert digest_module.gates(rb) == (True, True, True)
+    rb.pending, rb.oldest_pending_hours = 1, 15
+    assert digest_module.gates(rb) == (True, True, False)
+    rb.oldest_pending_hours = 14
+    assert digest_module.gates(rb) == (True, True, True)
+    rb.oldest_pending_hours = None
+    assert digest_module.gates(rb) == (True, True, False)
+    assert digest_module.gates(digest_module.Readability()) == (False, False, True)
+    shown = text_.split("一份可能有几个原因）：")[1].split("；")
     assert 0 < len(shown) < 10 and shown[0].startswith(f"{LONG_SITE}0 9")
     assert digest_module.readability_text(digest_module.Digest(day=date(2026, 9, 29))) is None
