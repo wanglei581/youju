@@ -2639,7 +2639,7 @@ def _reading_body(
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
-    from youju.ai import interpret
+    from youju.ai import content, interpret
 
     if is_taken_down(session, doc_id):
         raise HTTPException(status_code=404, detail="该文件已下架")
@@ -2654,7 +2654,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
     ai_reason: str | None = None
     try:
-        interpret.eligible_body(session, doc.id)
+        content.check(session, doc.id)
     except interpret.InterpretRefusal as exc:
         ai_reason = exc.code or "unavailable"
     ai_eligible = ai_reason is None

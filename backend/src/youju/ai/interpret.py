@@ -13,19 +13,14 @@ from sqlalchemy import false, func, select
 from sqlalchemy.orm import Session
 
 from youju.agreements import agreement_at_least
-from youju.classify import effective_kind
 from youju.config import Settings
-from youju.dedup import group_ids
 from youju.models import (
     Document,
     DocumentAttachment,
     DocumentDeadline,
-    DocumentDetail,
     DocumentField,
-    Source,
     User,
 )
-from youju.takedown import available_condition
 from youju.text_lines import (  # noqa: F401 - 测试和其他模块经 interpret 引用
     FULL_LINE,
     ITEM_START,
@@ -81,7 +76,7 @@ SENTENCES = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?[\"'”’）)]*
 class InterpretRefusal(ValueError):
     """无法公开完整原文时，不调用模型。
 
-    code 是给小程序的原因代码（D-075，models.AI_REASONS），只有 eligible_body 的几种拒绝带；
+    code 是给小程序的原因代码（D-075，models.AI_REASONS），只有 content.check 的几种拒绝带；
     其他拒绝（正文刚变、结果已过期等）为 None，小程序照常显示文字。"""
 
     def __init__(self, message: str, code: str | None = None):
@@ -191,63 +186,26 @@ def split_paragraphs(body: str) -> list[dict]:
 def eligible_body(
     session: Session, doc_id: int, *, link: bool = True
 ) -> tuple[Document, str, str, str]:
-    """解读和详情共用的轻量前置检查；不读取核对记录。
+    """能不能做，能做时给（通知、类型、库里的原文、遮过号码的正文）。
 
-    link=False 不看原网页撤下了没有：打开已有的结果、处理提交时还没撤下的排队任务（prepare），
-    以及存进 ai_eligibility 的预先计算（撤下的读表时另看，见 eligibility.effective_reason）。"""
-    # 延迟引入 v1，避免 API 路由装载时形成循环依赖。
-    from youju.api import v1
+    判断已搬到 content（问一问开发设计第十一节），新代码用 content.check；这里留着给旧的调用。"""
+    from youju.ai import content
 
-    doc = session.scalar(select(Document).where(Document.id == doc_id, available_condition()))
-    if doc is None:
-        raise InterpretRefusal("文件不存在或已下架，无法解读", "unavailable")
-    kind = effective_kind(doc.title, doc.kind_override)
-    if kind not in v1.BODY_KINDS:
-        raise InterpretRefusal(
-            "名单类及其他非政策、非申报通知文件不提供解读", "list" if kind == "名单" else "kind"
-        )
-    if doc.source.rights_level != 1:
-        raise InterpretRefusal("文件不是一级公开来源，无法解读", "source")
-    # 原文链接已失效（youju/link_check.py 隔天两次确认；原网页可能撤下了，也可能改了地址，分不清）：
-    # 通知可能已撤回或更正，为免误导不再开始新的解读、对照。排在"这类文件不解读"之后、正文的原因
-    # 之前（eligibility.effective_reason 同序）
-    if link and doc.link_gone_at is not None:
-        raise InterpretRefusal(
-            "原文链接已失效，原网页可能已撤下或改了地址，暂不提供 AI 解读和条款对照", "link_gone"
-        )
-    raw = v1._reading_body(session, doc.id)
-    # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
-    body = v1.redact_sensitive(raw or "")
-    if not body.strip():
-        raise InterpretRefusal("没有可公开的完整正文，请查看官方原文", "no_body")
-    if len(body) > MAX_BODY:
-        raise InterpretRefusal("正文超过 24000 字，请查看官方原文", "too_long")
-    return doc, kind, raw, body
+    return content._check(session, doc_id, link=link)
 
 
 def prepare(
     session: Session, doc_id: int, model: str, *, skill: Skill = INTERPRET
 ) -> tuple[dict, list, str]:
+    from youju.ai import content
     from youju.api import v1
 
     # 不看原网页撤下了没有：能不能开始新的解读在提交时判断（advisor.create_task），已有的结果和
-    # 提交时还没撤下的排队任务照常（页面另写明原网页已撤下）
-    doc, kind, raw, body = eligible_body(session, doc_id, link=False)
-    ids = group_ids(session, doc.id)
-    body_id = session.scalar(
-        select(DocumentDetail.document_id)
-        .join(Document, Document.id == DocumentDetail.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(
-            DocumentDetail.document_id.in_(ids),
-            DocumentDetail.body_text == raw,
-            DocumentDetail.status == "ok",
-            Source.rights_level == 1,
-            available_condition(),
-        )
-        .order_by((DocumentDetail.document_id == doc.id).desc(), DocumentDetail.document_id)
-        .limit(1)
-    )
+    # 提交时还没撤下的排队任务照常（页面另写明原网页已撤下）。段落、正文指纹从 content 取，
+    # 和原来逐项相同（content 模块说明）
+    loaded = content.load(session, doc_id, link=False)
+    body = loaded.source(content.BODY)
+    ids = loaded.document_ids
     deadlines = list(
         session.scalars(
             select(DocumentDeadline)
@@ -306,9 +264,9 @@ def prepare(
             "quote": d.evidence,
             "doc_id": d.document_id,
         }
-        for d in v1._approved(session, [doc.id]).get(doc.id, [])
+        for d in v1._approved(session, [loaded.doc_id]).get(loaded.doc_id, [])
     ]
-    public = v1._approved_fields(session, [doc.id]).get(doc.id, {})
+    public = v1._approved_fields(session, [loaded.doc_id]).get(loaded.doc_id, {})
     verified.extend(
         {
             "type": "支持",
@@ -320,15 +278,15 @@ def prepare(
     )
     # 原始正文指纹也入键，空白或脱敏前字符变更同样使缓存失效。
     snapshot = {
-        "doc_id": doc.id,
-        "body_hash": digest(raw),
-        "body_length": len(body),
-        "body_id": body_id,
-        "paragraphs": split_paragraphs(body),
+        "doc_id": loaded.doc_id,
+        "body_hash": body.version,
+        "body_length": len(body.text),
+        "body_id": loaded.body_id,
+        "paragraphs": loaded.paragraphs(),
         "document_ids": ids,
         "verification_version": digest([revision, verified, attachments]),
         "attachments": attachments,
-        "kind": kind,
+        "kind": loaded.kind,
     }
     key = digest(
         [
@@ -380,14 +338,13 @@ def _continues(body: str, prev_end: int, start: int, width: int) -> bool:
 
 
 def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET) -> dict:
+    from youju.ai import content
+
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise ValueError("模型结果结构无效")
-    by_pid = {p["pid"]: p for p in paragraphs}
-    body = paragraph_body(paragraphs)
-    normalized_body, body_offsets = normalize(body)
-    normalized_paragraphs = {p["pid"]: normalize(p["text"]) for p in paragraphs}
-    # 句界在完整正文上算，超长句即使被硬切分段仍按同一句回填。
-    sentences = sentence_spans(body)
+    # 逐字核对只用任务快照里存的段落（content.locate：先在模型给的段里找，找不到在同一来源里
+    # 找唯一一处，扩成整句，挡脱敏）
+    texts = content.Texts.from_paragraphs(paragraphs)
     kept = []
     reasons = dict.fromkeys(DROPPED_REASONS, 0)
     seen = set()
@@ -408,41 +365,14 @@ def validate(payload: dict, paragraphs: list[dict], *, skill: Skill = INTERPRET)
             if not isinstance(ref, dict) or not isinstance(ref.get("quote"), str):
                 reason = "bad_shape"
                 break
-            quote = normalize(ref["quote"].strip())[0]
-            if len(quote) < 6:
+            if len(normalize(ref["quote"].strip())[0]) < 6:
                 reason = "too_short"
                 break
-            pid = ref.get("pid")
-            paragraph = by_pid.get(pid) if isinstance(pid, str) else None
-            at = -1
-            if paragraph is not None:
-                normalized, offsets = normalized_paragraphs[pid]
-                at = normalized.find(quote)
-            if at >= 0:
-                first = paragraph["start"] + offsets[at][0]
-                last = paragraph["start"] + offsets[at + len(quote) - 1][1]
-            else:
-                at = normalized_body.find(quote)
-                if at < 0:
-                    reason = "not_found"
-                    break
-                # 从下一字符继续查，重叠的命中也计为多次。
-                if normalized_body.find(quote, at + 1) >= 0:
-                    reason = "ambiguous"
-                    break
-                first, last = body_offsets[at][0], body_offsets[at + len(quote) - 1][1]
-                paragraph = next(p for p in paragraphs if p["start"] <= first < p["end"])
-            covered = [(a, b) for a, b in sentences if a < last and b > first]
-            if not covered:
-                reason = "not_found"
+            located, reason = content.locate(texts, ref.get("pid"), ref["quote"])
+            if located is None:
                 break
-            start, end = covered[0][0], covered[-1][1]
-            original = body[start:end]
-            if "已脱敏]" in original:
-                reason = "redacted"
-                break
-            originals.append({"pid": paragraph["pid"], "quote": original})
-            ranges.append((start, end))
+            originals.append({"pid": located.sid, "quote": located.quote})
+            ranges.append((located.source, located.start, located.end))
         if reason:
             reasons[reason] += 1
             continue

@@ -1,6 +1,6 @@
 """每份文件能不能做 AI 解读（D-075）：预先算好存进 ai_eligibility，列表行上的"AI 解读"按钮读它。
 
-判断用的就是详情页和提交任务用的 interpret.eligible_body，这里只是把结果存起来，列表请求就不用
+判断用的就是详情页和提交任务用的 content.check，这里只是把结果存起来，列表请求就不用
 逐份读正文。存的结果可能比实际慢一点；提交任务时 api 仍按原文实时判断，以实时为准，不能做时
 不扣次数、写明原因。
 
@@ -42,10 +42,10 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
-from youju.ai import interpret
+from youju.ai import content, interpret
 from youju.models import AIEligibility, Document, DocumentDetail, DocumentMerge
 
-# eligible_body 里排在"原网页撤下"前面的原因：这类文件本来就不解读，撤没撤下都照这几种说
+# content.check 里排在"原网页撤下"前面的原因：这类文件本来就不解读，撤没撤下都照这几种说
 BEFORE_LINK = ("unavailable", "list", "kind", "source")
 
 RECENT = timedelta(minutes=30)
@@ -62,14 +62,14 @@ def compute(session: Session, doc_id: int) -> str | None:
     """None 表示能解读；否则是原因代码（models.AI_STORED_REASONS）。不看原网页撤下了没有，
     读表时另看（effective_reason）。"""
     try:
-        interpret.eligible_body(session, doc_id, link=False)
+        content.check(session, doc_id, link=False)
     except interpret.InterpretRefusal as exc:
         return exc.code or "unavailable"
     return None
 
 
 def effective_reason(reason: str | None, link_gone_at: datetime | None) -> str | None:
-    """存的结果加上原网页撤下了没有，和 interpret.eligible_body 实时判断的一致。"""
+    """存的结果加上原网页撤下了没有，和 content.check 实时判断的一致。"""
     if link_gone_at is not None and reason not in BEFORE_LINK:
         return "link_gone"
     return reason
