@@ -52,6 +52,13 @@ MAX_UPLOAD_BYTES = 60 * 1024
 ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
+# advisor-run 每分钟一轮（crontab）：一轮在 POLL_WINDOW 秒里
+# 每隔 POLL_INTERVAL 秒领一次新的 AI 任务，用户点了几秒内就开始，
+# 不用等下一分钟（10/27 实测排队 48.6 秒）。过了领取时间不再领新的，
+# 手上的做完就退出，剩下的下一轮接着领。50 秒给启动、退出留余量，
+# 空闲时不和下一分钟那一轮撞上
+POLL_WINDOW = 50.0
+POLL_INTERVAL = 3.0
 # 处理中超过这么久的一定已经没人在跑（清理过期任务时才用，见 cleanup_advisor）
 ABANDONED = timedelta(days=1)
 INPUT_RETENTION = timedelta(days=7)
@@ -807,8 +814,17 @@ def run_advisor_tasks(
     stamp: datetime | None = None,
     timeout: timedelta = TASK_TIMEOUT,
     max_tasks: int | None = None,
+    poll_window: float = 0.0,
+    poll_interval: float = POLL_INTERVAL,
+    clock=monotonic_clock.monotonic,
+    sleep=monotonic_clock.sleep,
 ) -> dict[str, int]:
-    """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。"""
+    """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。
+
+    poll_window 大于 0 时（每分钟的 advisor-run 用 POLL_WINDOW），AI 任务排空了不马上结束：
+    这么多秒里每隔 poll_interval 秒再领一次；过了这个时间不再领新任务，手上的做完就返回。
+    默认 0：把现在排着的处理完就返回（测试、手动跑）。数据工具不轮询，每轮只领一次。"""
+    deadline = clock() + poll_window if poll_window > 0 else None
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
@@ -899,8 +915,17 @@ def run_advisor_tasks(
 
         def ai_worker() -> None:
             with factory() as work_session:
-                while (task := claim(work_session, ai_allowed)) is not None:
-                    run_one(work_session, task)
+                # 过了领取时间不再领新的（手上的已经做完）：剩下的留给下一分钟那一轮
+                while deadline is None or clock() < deadline:
+                    task = claim(work_session, ai_allowed)
+                    if task is not None:
+                        run_one(work_session, task)
+                        continue
+                    # 队里暂时空了：不轮询就结束；轮询时隔一会儿再看，下一次看之前就到点的不再等
+                    capped = max_tasks is not None and result["processed"] >= max_tasks
+                    if deadline is None or capped or clock() + poll_interval >= deadline:
+                        break
+                    sleep(poll_interval)
 
         concurrency = getattr(settings, "ai_advisor_concurrency", 3)
         with ThreadPoolExecutor(max_workers=concurrency) as pool:

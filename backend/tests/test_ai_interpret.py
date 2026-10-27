@@ -885,6 +885,136 @@ def test_live_worker_records_duration_and_call_day(session, settings, doc):
     assert service.global_ai_calls(session, service.usage_day(datetime.now(UTC))) == 1
 
 
+def _finish(work, task, **kwargs):
+    task.status, task.finished_at = "done", NOW
+    work.commit()
+    return True
+
+
+def _no_sleep(_seconds):
+    raise AssertionError("不该等")
+
+
+def test_worker_polls_for_new_ai_tasks_within_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 每分钟的 advisor-run：队里空了不马上退出，隔几秒再领，刚提交的几秒内就开始（10/27 实测排队 48.6 秒）
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="poll-first")
+    second = direct_task(session, doc, key="poll-second")
+    first.status, second.status = "queued", "failed"  # 第二个先停着，第一次空等时才排上
+    session.commit()
+    first_id, second_id = first.id, second.id
+    seen = []
+
+    def process(work, task, **kwargs):
+        seen.append(task.id)
+        return _finish(work, task)
+
+    clock = [100.0]
+    naps = []
+
+    def sleep(seconds):
+        naps.append(seconds)
+        clock[0] += seconds
+        if len(naps) == 1:
+            with session_factory() as other:
+                other.get(AdvisorTask, second_id).status = "queued"
+                other.commit()
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        poll_interval=3,
+        clock=lambda: clock[0],
+        sleep=sleep,
+    )
+    assert seen == [first_id, second_id]
+    assert (result["processed"], result["done"]) == (2, 2)
+    assert set(naps) == {3}
+    # 不睡过头：下一次看之前就到点的不再等，在领取时间以内结束
+    assert 147 <= clock[0] < 150
+
+
+def test_worker_stops_claiming_after_poll_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 过了领取时间不再领新的：手上的做完就结束，这期间新排的留给下一分钟那一轮
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="window-first")
+    late = direct_task(session, doc, key="window-late")
+    first.status, late.status = "queued", "failed"
+    session.commit()
+    late_id = late.id
+    clock = [100.0]
+
+    def process(work, task, **kwargs):
+        clock[0] += 60  # 做得久，跨过了领取时间
+        with session_factory() as other:
+            other.get(AdvisorTask, late_id).status = "queued"
+            other.commit()
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        clock=lambda: clock[0],
+        sleep=_no_sleep,
+    )
+    assert result["processed"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "queued"
+
+
+def test_worker_without_poll_window_or_after_cap_does_not_wait(session, settings, doc, monkeypatch):
+    # 不开轮询（测试、手动 --once）和原来一样，排空就结束；领满 max_tasks 也不再空等
+    settings.ai_advisor_concurrency = 1
+    for key in ("once-1", "once-2"):
+        direct_task(session, doc, key=key).status = "queued"
+    session.commit()
+    monkeypatch.setattr(service, "process_task", _finish)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, max_tasks=1, poll_window=50, sleep=_no_sleep
+    )
+    assert result["processed"] == 1
+    assert (
+        service.run_advisor_tasks(session, settings=settings, stamp=NOW, sleep=_no_sleep)[
+            "processed"
+        ]
+        == 1
+    )
+    # AI 没开时也不轮询（数据工具也关着：直接返回）
+    settings.ai_advisor_enabled = False
+    assert (
+        service.run_advisor_tasks(
+            session, settings=settings, stamp=NOW, poll_window=50, sleep=_no_sleep
+        )["processed"]
+        == 0
+    )
+
+
+def test_advisor_run_command_polls_unless_once(session_factory, monkeypatch):
+    from youju import cli
+
+    seen = []
+
+    def fake_run(session, **kwargs):
+        seen.append(kwargs)
+        return {"processed": 0}
+
+    monkeypatch.setattr(service, "run_advisor_tasks", fake_run)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    assert cli.main(["advisor-run"]) == 0
+    assert cli.main(["advisor-run", "--once"]) == 0
+    assert [kwargs["poll_window"] for kwargs in seen] == [service.POLL_WINDOW, 0.0]
+
+
 def test_public_document_ai_flags_share_prepare_checks(client, session, settings, doc):
     url = f"/api/v1/documents/{doc.id}"
     ok = {"interpret": True, "clause": True, "reason": None}

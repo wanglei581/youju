@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import time
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -448,6 +449,70 @@ def test_job_alerts_without_changing_failure_code(
         assert f"退出码 {task_code}" in calls
     else:
         assert not calls
+
+
+def _job_script(tmp_path: Path) -> Path:
+    """真实的 job.sh，环境、日志和 /tmp 下的锁、开始时间都换到测试目录。"""
+    original = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
+    script = (
+        original.replace("/app/backend/deploy/env.sh", str(tmp_path / "env.sh"))
+        .replace("cd /app/backend", f"cd {tmp_path}")
+        .replace("/proc/1/fd/1", str(tmp_path / "job.log"))
+        .replace("/tmp/youju-", f"{tmp_path}/youju-")
+    )
+    (tmp_path / "job.sh").write_text(script)
+    (tmp_path / "env.sh").write_text("")
+    return tmp_path / "job.sh"
+
+
+def _stub(tmp_path: Path, name: str, body: str) -> None:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    ("started_ago", "expected_code", "alerted"),
+    [(30, 0, False), (590, 0, False), (610, 75, True), (None, 75, True)],
+)
+def test_advisor_run_overlap_is_quiet_unless_stuck(tmp_path, started_ago, expected_code, alerted):
+    # advisor-run 每轮在 50 秒里隔几秒领新任务，领到的做完才退出，偶尔跨过下一分钟：上一轮开始不到
+    # 10 分钟就安静跳过；超过 10 分钟（卡住了）或没有开始时间时照常提醒"上一次还没跑完"
+    job = _job_script(tmp_path)
+    if started_ago is not None:
+        (tmp_path / "youju-advisor-run.started").write_text(f"{int(time.time()) - started_ago}\n")
+    _stub(tmp_path, "flock", "exit 75\n")  # 锁被上一轮占着
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$ALERT_CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "ALERT_CALLS": str(tmp_path / "alert.calls"),
+    }
+    result = subprocess.run(["sh", str(job), "advisor-run"], env=env, check=False)
+    assert result.returncode == expected_code
+    calls = (tmp_path / "alert.calls").read_text() if (tmp_path / "alert.calls").exists() else ""
+    assert ("上一次还没跑完" in calls) is alerted
+    assert ("跳过：youju advisor-run" in (tmp_path / "job.log").read_text()) is (not alerted)
+
+
+def test_advisor_run_records_start_time_inside_lock(tmp_path):
+    # 拿到锁以后才写开始时间（锁外写会把正在跑的那一轮的时间改掉）；别的任务不写
+    job = _job_script(tmp_path)
+    _stub(tmp_path, "flock", 'shift 4\nexec "$@"\n')
+    _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+    }
+    before = int(time.time())
+    assert subprocess.run(["sh", str(job), "advisor-run"], env=env, check=False).returncode == 0
+    started = int((tmp_path / "youju-advisor-run.started").read_text())
+    assert before <= started <= int(time.time())
+    assert "advisor-run" in (tmp_path / "calls").read_text().splitlines()
+    assert subprocess.run(["sh", str(job), "crawl"], env=env, check=False).returncode == 0
+    assert not (tmp_path / "youju-crawl.started").exists()
 
 
 @pytest.mark.parametrize(
