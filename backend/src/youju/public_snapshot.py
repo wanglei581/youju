@@ -105,6 +105,8 @@ EXCLUDED_TABLES = frozenset(
         "advisor_tasks",
         "advisor_usage",
         "advisor_file_trash",
+        # 内容安全的处置记录（问一问的提问被拦时有用户打的字）
+        "ai_safety_hits",
         "boost_trials",
         "pass_rewards",
         "workbench_passes",

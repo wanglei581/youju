@@ -25,8 +25,8 @@ from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from youju import access_log
-from youju.ai import advisor_endpoint, clause, heartbeat, interpret
+from youju import access_log, wx_security
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -37,6 +37,7 @@ from youju.models import (
     AdvisorFileTrash,
     AdvisorTask,
     AdvisorUsage,
+    AISafetyHit,
     AIUsage,
     Document,
     User,
@@ -77,6 +78,10 @@ ERROR_CODES = {
     AI_CAP_MESSAGE: "AI_DAILY_CAP",
     AI_OFF_MESSAGE: "AI_OFF",
     heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+    # 内容安全（门槛第 4 道）：结果没通过、检测接口出错。小程序没有这两个代码的固定说法时照写 error
+    result_safety.UNSAFE_MESSAGE: "AI_UNSAFE",
+    result_safety.REMOVED_MESSAGE: "AI_UNSAFE",
+    result_safety.CHECK_DOWN_MESSAGE: "AI_CHECK_DOWN",
 }
 
 
@@ -487,6 +492,29 @@ def legacy_result_document_ids(session: Session, client: httpx.Client, url: str)
         book.close()
 
 
+def _remove_copies(session: Session, task: AdvisorTask, source_id: int) -> None:
+    """撤下没通过内容安全的那份缓存结果和它的复制件：复制结果不刷新生成时间，同类型、同缓存键、
+    生成时间相同的就是同一份。"""
+    source = session.get(AdvisorTask, source_id)
+    generated = ((source.result_json or {}).get("generated_at")) if source else None
+    if source is None or not source.cache_key or not generated:
+        return
+    for row in session.scalars(
+        select(AdvisorTask)
+        .where(
+            AdvisorTask.kind == source.kind,
+            AdvisorTask.cache_key == source.cache_key,
+            AdvisorTask.status == "done",
+            AdvisorTask.id != task.id,
+        )
+        .with_for_update()
+    ):
+        if (row.result_json or {}).get("generated_at") != generated:
+            continue
+        row.status, row.error = "failed", result_safety.REMOVED_MESSAGE
+        row.result_json, row.result_rows, row.cache_key = None, 0, None
+
+
 def process_ai(
     session: Session,
     task: AdvisorTask,
@@ -535,6 +563,7 @@ def process_ai(
             .limit(1)
         )
         reusable = False
+        cached_from = None
         if cached is not None and cached.result_json:
             generated = _utc(datetime.fromisoformat(cached.result_json["generated_at"]))
             # 复制结果不会刷新模型生成时间，避免连续命中把 30 天期限无限延长。
@@ -556,6 +585,7 @@ def process_ai(
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
+            cached_from = cached.id
             result = (
                 clause.notification_result(cached.result_json)
                 if skill.kind == "clause"
@@ -610,6 +640,10 @@ def process_ai(
                     result, current_verified, current["attachments"]
                 )
                 task.snapshot, task.cache_key = current, current_key
+        # 结果存进去之前过两层内容安全（D-093 门槛第 4 条）：复用缓存的也查
+        result_safety.check(
+            session, task, result, field=skill.result_field, stamp=stamp, cached_from=cached_from
+        )
         task.result_json = result
         task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
@@ -617,6 +651,19 @@ def process_ai(
             release_usage(session, task)
         session.commit()
         return True
+    except result_safety.ResultBlocked:
+        # 没通过内容安全：不显示、不存、退回次数；处置记录已经加进会话，和任务一起提交
+        if cached_from:
+            # 复用的缓存没通过：这份结果以前给别人显示过，撤下它和它的复制件（生成时间相同的），
+            # 也不再拿来复用（暂行办法第十四条：发现违法内容要消除）
+            _remove_copies(session, task, cached_from)
+        task.status, task.finished_at, task.error = "failed", stamp, result_safety.UNSAFE_MESSAGE
+        task.result_json = None
+        task.result_rows = 0
+        task.cache_key = None
+        release_usage(session, task)
+        session.commit()
+        return False
     except AICapReached:
         task.status, task.finished_at, task.error = "failed", stamp, AI_CAP_MESSAGE
         task.result_json = None
@@ -653,8 +700,11 @@ def process_ai(
         task.model, task.prompt_version = model, skill.prompt_version
         task.result_json = None
         task.cache_key = None
-        retryable = (isinstance(exc, AIError) and exc.retryable) or isinstance(
-            exc, (httpx.TransportError, TimeoutError)
+        # 内容安全接口出错不放行，和网络出错一样最多重排两次（重试也没用的错误码直接失败）
+        retryable = (
+            (isinstance(exc, AIError) and exc.retryable)
+            or isinstance(exc, (httpx.TransportError, TimeoutError))
+            or (isinstance(exc, wx_security.CheckDown) and result_safety.retryable(exc))
         )
         task.error = (
             "AI 返回内容格式无效"
@@ -667,6 +717,8 @@ def process_ai(
         )
         if isinstance(exc, AIError) and not exc.retryable:
             task.error = "AI 返回内容无效或请求被拒绝，请稍后重试"
+        if isinstance(exc, wx_security.CheckDown):
+            task.error = result_safety.CHECK_DOWN_MESSAGE
         if retryable and task.attempts <= 2:
             task.status, task.started_at, task.finished_at = "queued", None, None
         else:
@@ -1187,6 +1239,10 @@ def cleanup_advisor(
     usage_rows = (
         session.execute(delete(AdvisorUsage).where(AdvisorUsage.day < keep_from)).rowcount or 0
     )
+    # 内容安全的处置记录 190 天到期删除（门槛第 4 道）；删任务、注销都不提前删
+    safety_hits = (
+        session.execute(delete(AISafetyHit).where(AISafetyHit.expires_at <= stamp)).rowcount or 0
+    )
     session.commit()
     return {
         "advisor_input_rows": input_count,
@@ -1194,6 +1250,7 @@ def cleanup_advisor(
         "advisor_ai_tasks": ai_tasks,
         "advisor_data_tasks": data_tasks,
         "advisor_usage_rows": usage_rows,
+        "ai_safety_hits": safety_hits,
     }
 
 

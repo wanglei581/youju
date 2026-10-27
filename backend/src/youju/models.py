@@ -766,6 +766,44 @@ class AIHeartbeat(Base):
     refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
+class AISafetyHit(Base):
+    """内容安全的处置记录（迁移 0042）：本地高危词库或微信内容安全接口拦下的 AI 结果和用户提问。
+
+    D-093 门槛第 4 条、《生成式人工智能服务管理暂行办法》第十四条（发现违法内容要停止生成、
+    停止传输、消除，保存有关记录）。kind 是哪个功能（解读、对照、问一问的两个技能）；stage 是
+    拦在用户提问（question）还是 AI 结果（answer）；layer 是哪一层；reason_json 是原因（本地词库的
+    类别、词条编号、词库版本，或微信返回的 suggest、label），不写词本身。
+
+    - AI 结果被拦的：只记通知编号和任务编号，不存结果文字（结果全是政府原文的原句，按编号能找回）；
+      也不记用户编号（uid 为空）：结果不是用户写的。
+    - 问一问的提问被拦的（PR-2 起）：记那句话（最多 200 字）和去标识化的用户编号（同访问日志）。
+    不建外键：删任务、删对话、注销都不动它；190 天到期由每天的清理删除。只在处置违法违规内容、
+    依法向主管部门报告时由创始人在生产库里查；管理台、日报只给次数和类别。"""
+
+    __tablename__ = "ai_safety_hits"
+    __table_args__ = (
+        Index("ix_ai_safety_hits_expires", "expires_at"),
+        CheckConstraint(
+            "kind IN ('interpret', 'clause', 'find', 'ask')", name="ck_ai_safety_hits_kind"
+        ),
+        CheckConstraint("stage IN ('question', 'answer')", name="ck_ai_safety_hits_stage"),
+        CheckConstraint("layer IN ('local', 'wechat')", name="ck_ai_safety_hits_layer"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    uid: Mapped[str | None] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    stage: Mapped[str] = mapped_column(String(8))
+    layer: Mapped[str] = mapped_column(String(8))
+    reason_json: Mapped[dict | None] = mapped_column(JSONType)
+    text: Mapped[str | None] = mapped_column(String(200))
+    document_id: Mapped[int | None] = mapped_column(Integer)
+    task_id: Mapped[int | None] = mapped_column(Integer)
+    turn_id: Mapped[int | None] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
 CONDITION_CATEGORIES = ("主体资格", "财务指标", "知识产权", "人员", "其他")
 

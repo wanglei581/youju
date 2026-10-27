@@ -36,6 +36,7 @@ from youju.models import (
 )
 from youju.repost import confirmed_members
 from youju.takedown import available_condition
+from youju.wx_security import check_feedback  # 纠错的内容安全检测，和 AI 结果共用一个模块
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -980,19 +981,6 @@ def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUs
         raise HTTPException(status_code=404, detail="没有找到提醒授权记录")
     session.delete(row)
     session.commit()
-
-
-def check_feedback(openid: str, content: str) -> bool:
-    response = httpx.post(
-        "http://api.weixin.qq.com/wxa/msg_sec_check",
-        json={"openid": openid, "version": 2, "scene": 2, "content": content},
-        timeout=5,
-    )
-    response.raise_for_status()
-    result = response.json()
-    if result.get("errcode") != 0:
-        raise ValueError("微信内容安全接口未成功")
-    return result.get("result", {}).get("suggest") == "pass"
 
 
 @router.post("/feedback", status_code=201)
