@@ -485,3 +485,14 @@ def test_safety_probe_counts_only(session, session_factory, settings, doc, monke
     assert "查了 2 份" in out and "review（label 20001） 1 份" in out and "出错 0 次" in out
     assert f"没通过的通知：{other.id}（review（label 20001））" in out
     assert "申请书" not in out and len(seen) == 2
+
+
+def test_expired_results_say_expired(client, session, settings, doc, wechat):  # noqa: F811
+    """过期的旧结果照旧写"已过期"，不写"没查过"。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.result_json = {k: v for k, v in task.result_json.items() if k != "safety"}
+    task.expires_at = NOW - timedelta(seconds=1)
+    session.commit()
+    body = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert body["result"] is None and body["error"] == "结果已过期，请重新提交"

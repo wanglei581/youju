@@ -530,6 +530,8 @@ def sweep_results(session: Session, stamp: datetime) -> int:
             AdvisorTask.kind.in_(AI_KINDS),
             AdvisorTask.status == "done",
             AdvisorTask.result_json.is_not(None),
+            # 只扫还在保存期内的（过期的在前面已经整行删了）
+            or_(AdvisorTask.expires_at.is_(None), AdvisorTask.expires_at > stamp),
         )
         .with_for_update(skip_locked=True)
     ).all()
