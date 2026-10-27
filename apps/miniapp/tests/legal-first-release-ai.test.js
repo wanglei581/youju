@@ -82,16 +82,20 @@ test('改的几处：适用人群、查名单、注明出处、AI 结果送内�
   assert.match(user, /每条注明发文机关、发布日期和来源网站/);
   assert.match(privacy, /按企业名称查名单时输入的企业全称：只用于在政府公开名单中查找/);
   assert.match(privacy, /和 AI 生成的解读、对照结果/);
+  assert.match(privacy, /提醒入口在提醒模板开通以后才显示/);
+  assert.match(user, /政策解读（含从通知原文整理出的申报材料清单）和条款对照/);
   // AI 那几段（用户协议第八条、指引里 AI 功能、AI 任务的保存期限、AI 模型调用）除编号外和 2026-11 一字不差
   const same = (doc, head, pick) => assert.deepEqual(pick(section(ai[doc], head)), pick(section(full[doc], head)), `${doc} ${head}`);
-  same('user', '八、', (s) => s.p.map((p) => p.replace('经办人员和为企业提供申报服务的人员', '经办人员')));
-  const aiItem = (s) => s.p.find((p) => /^\d+\. AI 功能/.test(p)).replace(/^\d+\. /, '');
+  same('user', '八、', (s) => s.p.map((p) => p.replace('经办人员和为企业提供申报服务的人员', '经办人员')
+    .replace('政策解读（含从通知原文整理出的申报材料清单）和条款对照', '政策解读、材料清单和条款对照')));
+  const aiItem = (s) => s.p.find((p) => /^\d+\. AI 功能/.test(p)).replace(/^\d+\. /, '').replace('政策解读（含申报材料清单）', '政策解读和材料清单');
   same('privacy', '一、', aiItem);
   same('privacy', '三、', (s) => s.p.find((p) => p.startsWith('· AI 任务：')));
   same('privacy', '四、', (s) => s.p.find((p) => p.startsWith('· AI 模型调用：')));
   // 段落数：用户协议第四条少 1 款（上传名单）；指引第一部分少 2 项（批量工具、加量体验），第三部分少 2 条保存期限
   const count = (doc) => doc.sections.map((s) => s.p.length);
-  assert.deepEqual(count(ai.privacy).map((n, i) => count(full.privacy)[i] - n), [0, 2, 0, 2, 0, 0, 0, 0, 0]);
+  // 第二部分多 1 条：提醒入口开通后才显示
+  assert.deepEqual(count(ai.privacy).map((n, i) => count(full.privacy)[i] - n), [0, 2, -1, 2, 0, 0, 0, 0, 0]);
   assert.deepEqual(count(ai.user).map((n, i) => count(full.user)[i] - n), [0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
 });
 
