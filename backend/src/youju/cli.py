@@ -1431,12 +1431,14 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_advisor_run(_: argparse.Namespace) -> int:
-    from youju.advisor_tasks import run_advisor_tasks
+def _cmd_advisor_run(args: argparse.Namespace) -> int:
+    from youju.advisor_tasks import POLL_WINDOW, run_advisor_tasks
 
-    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发。
+    # 每分钟那一轮在 POLL_WINDOW 秒里隔几秒领一次新的 AI 任务；
+    # --once 只把现在排着的处理完（手动跑用）
     with session_factory()() as session:
-        report = run_advisor_tasks(session)
+        report = run_advisor_tasks(session, poll_window=0.0 if args.once else POLL_WINDOW)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 
@@ -2115,9 +2117,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
-    sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
-        func=_cmd_advisor_run
+    p = sub.add_parser(
+        "advisor-run",
+        help="处理顾问技能包任务（开关关闭时跳过）；AI 任务在 50 秒里每隔 3 秒领一次新的",
     )
+    p.add_argument("--once", action="store_true", help="只把现在排着的处理完就退出，不等新任务")
+    p.set_defaults(func=_cmd_advisor_run)
     sub.add_parser(
         "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
     ).set_defaults(func=_cmd_ai_heartbeat)
