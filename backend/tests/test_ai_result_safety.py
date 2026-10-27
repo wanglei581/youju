@@ -243,3 +243,28 @@ def test_migration_0042_downgrade_upgrade(db_engine) -> None:
     assert "ai_safety_hits" not in inspect(db_engine).get_table_names()
     command.upgrade(config, "head")
     assert "ai_safety_hits" in inspect(db_engine).get_table_names()
+
+
+def test_daily_report_counts_blocks(session, settings, doc, wechat, monkeypatch):  # noqa: F811
+    """运维日报只报次数：拦下几次（按层）、检测接口出错几个；都是 0 不写这一行；不含任何文字。"""
+    from youju.digest import build_digest, digest_text
+
+    def safety_line(now):
+        lines = digest_text(build_digest(session, now=now), []).splitlines()
+        return [line for line in lines if line.startswith("内容安全")]
+
+    assert safety_line(NOW) == []
+    word_list(monkeypatch, "申请书")
+    blocked = direct_task(session, doc, key="blocked")
+    run(session, blocked, settings)
+    monkeypatch.setattr(safety_words, "LIBRARY", safety_words.load())
+    wechat.down = True
+    down = direct_task(session, doc, key="down")
+    down.attempts = 3
+    session.commit()
+    run(session, down, settings)
+    assert down.error == result_safety.CHECK_DOWN_MESSAGE
+    [line] = safety_line(NOW + timedelta(hours=1))
+    assert "拦下 1 次（本地词库 1、微信 0）" in line
+    assert "检测接口出错、AI 任务没做成 1 个" in line
+    assert "申请书" not in line

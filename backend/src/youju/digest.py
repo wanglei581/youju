@@ -25,6 +25,7 @@ from youju.dedup import canonical_ids, groups_for, visible_documents
 from youju.models import (
     AccessDaily,
     AdvisorTask,
+    AISafetyHit,
     AttachmentCopy,
     Document,
     DocumentDeadline,
@@ -173,6 +174,12 @@ class Digest:
     attachment_bytes: int = 0
     result_files: int = 0
     usage_ok: bool = True
+    # 内容安全（门槛第 4 道）：近 24 小时拦下的 AI 结果（按层），检测接口出错失败的 AI 任务。
+    # 只有次数，不含任何文字和用户编号
+    safety_local: int = 0
+    safety_wechat: int = 0
+    safety_check_down: int = 0
+    safety_ok: bool = True
     # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
     readability: Readability | None = None
     readability_ok: bool = True
@@ -305,6 +312,12 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
     _quality_and_usage(session, digest, today)
     try:
         with session.begin_nested():
+            _safety(session, digest, since)
+    except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
+        log.warning("日报的内容安全统计出错：%s", type(exc).__name__)
+        digest.safety_ok = False
+    try:
+        with session.begin_nested():
             digest.readability = readability(session, now)
     except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
         log.warning("日报的能读情况统计出错：%s", type(exc).__name__)
@@ -322,6 +335,48 @@ def _quality_and_usage(session: Session, digest: Digest, today: date) -> None:
         except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
             log.warning("日报的%s统计出错：%s", flag, type(exc).__name__)
             setattr(digest, flag, False)
+
+
+def _safety(session: Session, digest: Digest, since: datetime) -> None:
+    from youju.ai import result_safety
+
+    layers = dict(
+        session.execute(
+            select(AISafetyHit.layer, func.count(AISafetyHit.id))
+            .where(AISafetyHit.created_at >= since)
+            .group_by(AISafetyHit.layer)
+        ).all()
+    )
+    digest.safety_local, digest.safety_wechat = layers.get("local", 0), layers.get("wechat", 0)
+    digest.safety_check_down = (
+        session.scalar(
+            select(func.count(AdvisorTask.id)).where(
+                AdvisorTask.error == result_safety.CHECK_DOWN_MESSAGE,
+                AdvisorTask.finished_at >= since,
+            )
+        )
+        or 0
+    )
+
+
+def _safety_line(digest: Digest) -> str | None:
+    """有拦下的、有检测出错的，或者统计出错时才写一行；都是 0 就不写。"""
+    if not digest.safety_ok:
+        return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
+    blocked = digest.safety_local + digest.safety_wechat
+    if not blocked and not digest.safety_check_down:
+        return None
+    parts = []
+    if blocked:
+        parts.append(
+            f"拦下 {blocked} 次（本地词库 {digest.safety_local}、微信 {digest.safety_wechat}），"
+            "按处置记录里的通知编号看一眼是不是误拦了正常原文"
+        )
+    if digest.safety_check_down:
+        parts.append(
+            f"检测接口出错、AI 任务没做成 {digest.safety_check_down} 个（admin 可能调不通微信接口）"
+        )
+    return "内容安全（24 小时）：" + "；".join(parts)
 
 
 def _access(session: Session, digest: Digest, today: date) -> None:
@@ -781,6 +836,9 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         readability_summary(digest),
         _usage_line(digest),
     ]
+    safety = _safety_line(digest)
+    if safety:
+        lines.append(safety)
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
         if usage.cost is None:
