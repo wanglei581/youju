@@ -107,7 +107,7 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
             # 以前带"上午/下午"的认不出，"10月12日上午9:00至10月31日"会把开始日当截止）
             after_date = re.sub(r"^\s*[（(][^）)]{1,6}[）)]", "", after)
             if re.match(
-                r"\s*(?:(?:上午|下午|中午|晚上)\s*)?(?:\d{1,2}\s*[:：时]\s*\d{0,2}\s*分?)?\s*[至到—–~-]",
+                r"\s*(?:(?:上午|下午|中午|晚上)\s*)?(?:\d{1,2}\s*[:：时点]\s*\d{0,2}\s*分?)?\s*[至到—–~-]",
                 after_date,
             ):
                 continue
