@@ -74,7 +74,7 @@
       <view wx:if="{{pages > 1}}" class="pagination"><button wx:if="{{prevCursor !== null}}" id="page-prev" bindtap="previous">上一页</button><text class="page-count">第 {{page}} 页 / 共 {{pages}} 页</text><button wx:if="{{nextCursor !== null}}" id="page-next" bindtap="next">下一页</button></view>
       <!-- 这一部分读到头：正文完 / 附件 N 完；有扫描页的写还缺几页，不说读完 -->
       <view wx:if="{{complete}}" class="end">{{endText}}</view>
-      <button wx:if="{{nextPart}}" id="next-part" class="btn-primary next-btn" bindtap="continueNext">{{complete ? '接着读' : '去读'}}{{nextPart.label}}：{{nextPart.name}}</button>
+      <button wx:if="{{nextPart}}" id="next-part" class="btn-primary next-btn" bindtap="continueNext">{{complete ? '接着读' : '去读'}}{{nextPart.label}}{{nextPart.name ? '：' + nextPart.name : ''}}</button>
       <!-- 名单附件、几乎全是名单的正文（status=list），和挡掉了名单行的名单类通知正文（listHidden，D-092） -->
       <button wx:if="{{status === 'list' || listHidden}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
     </block>

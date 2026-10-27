@@ -92,7 +92,7 @@ test('目录：正文和每个附件都列出来，读不了的写状态、不�
   await p.openToc({ currentTarget: { dataset: { id: '9' } } }); assert.equal(calls.length, 1);
   await p.continueNext(); assert.deepEqual(calls[1], ['8', { cursor: '0' }]);
   assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf'); assert.equal(p.data.docTitle, '合成政策');
-  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /附件 1完/);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /附件 1 完/);
   await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.deepEqual(calls[2], ['', { cursor: '0' }]);
 });
 
@@ -121,7 +121,7 @@ test('部分扫描附件：末尾写还缺几页扫描件、不说读完，真�
   assert.equal(p.data.segments[0].loc, '工作表 名单 · 行 3');
   const text = textOf(render('pages/reader/index.wxml', p.data));
   assert.match(text, /单位名称：合成企业/); assert.doesNotMatch(text, /aaaa/); assert.match(text, /能显示的文字到这里。另有 1 页扫描件，暂不能识别文字/);
-  assert.doesNotMatch(text, /附件 1完|读完|已到本版本内容末尾|浏览器|复制/);
+  assert.doesNotMatch(text, /附件 1 ?完|读完|已到本版本内容末尾|浏览器|复制/);
 });
 
 test('目录在站内显示，保存绑定预览revision；409后不能保存旧结果', async () => {
@@ -332,4 +332,34 @@ test('记着的位置已不是一页的开头（422）：从第 1 页读，写�
   p.onLoad({ id: '7' }); await p.onShow();
   assert.equal(p.data.page, 1); assert.equal(p.data.resumePage, 0);
   assert.equal(p.data.updatedNote, '上次读到的位置已失效，从第 1 页开始读'); assert.deepEqual(progress.map, {});
+});
+
+test('目录里切到另一部分：加载期间页头和目录当前项就是要打开的那一部分，不留上一部分的名字（agy 第 1 轮）', async () => {
+  let release; const held = new Promise((resolve) => { release = resolve; });
+  const p = load('reader', { reading: async (_id, att) => {
+    if (att === '8') { await held; return reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] }); }
+    return reading();
+  } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const opening = p.openToc({ currentTarget: { dataset: { id: '8' } } });
+  assert.equal(p.data.partLabel, '附件 1'); assert.equal(p.data.partName, '申报指南.pdf');
+  assert.deepEqual(p.data.toc.map((t) => t.current), [false, true, false]);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /附件 1：申报指南\.pdf/);
+  release(); await opening;
+  assert.equal(p.data.partLabel, '附件 1');
+  // 回正文：页头不再写附件名
+  const back = p.openToc({ currentTarget: { dataset: { id: '' } } });
+  assert.equal(p.data.partLabel, '正文'); assert.equal(p.data.partName, '');
+  await back;
+});
+
+test('"接着读"按钮：附件名为空时不留冒号；加载中点"从开头看"不重复请求', async () => {
+  const toc = { body: { readable: true, note: '' }, attachments: [{ id: '8', name: '', ext: 'PDF', readable: true, state: 'ok', stateText: '' }] };
+  let calls = 0;
+  const p = load('reader', { reading: async () => { calls += 1; return reading({ toc }); } }, { progress: memoryProgress() });
+  p.onLoad({ id: '7' }); await p.onShow();
+  const text = textOf(render('pages/reader/index.wxml', p.data));
+  assert.match(text, /接着读附件 1/); assert.doesNotMatch(text, /接着读附件 1：/);
+  p.data.loading = true; const before = calls;
+  assert.equal(p.fromStart(), undefined); assert.equal(calls, before);
 });

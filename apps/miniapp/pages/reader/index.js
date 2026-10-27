@@ -124,7 +124,8 @@ function nextPartOf(items, part) {
 // 读到这一部分的末尾写什么：有扫描页的写还缺几页，不写"读完"
 function endTextOf(label, status, scanned) {
   if (scanned > 0) return `能显示的文字到这里。另有 ${scanned} 页扫描件，暂不能识别文字`;
-  return `${label}完`;
+  // "正文完""附件 1 完"：数字后面空一格
+  return `${label}${/\d$/.test(label) ? ' ' : ''}完`;
 }
 
 // 换页、换部分时回到页面顶上（一页约 4000 字，不回去新页开头在屏幕外面）
@@ -165,8 +166,12 @@ Page({
   // 打开正文或某个附件：记着读到第几页（同一内容版本）就从那一页接着读，否则从第 1 页
   openPart(part, opts = {}) {
     this.part = part ? String(part) : ''; this.revision = '';
+    // 加载期间（或出错时）页头和目录就写要打开的这一部分，不留上一部分的名字
+    const toc = (this.data.toc || []).map((t) => Object.assign({}, t, { current: t.id === this.part }));
+    const here = toc.find((t) => t.current);
     this.setData({ segments: [], source: null, revision: '', nextCursor: null, prevCursor: null, page: 1, pages: 0,
-      complete: false, endText: '', nextPart: null, resumePage: 0, updatedNote: '' });
+      complete: false, endText: '', nextPart: null, resumePage: 0, updatedNote: '', toc,
+      partLabel: here ? here.label : (this.part ? '附件' : '正文'), partName: here && this.part ? here.name : '' });
     const saved = opts.resume && /^\d+$/.test(this.docId) ? progress.get(this.docId, this.part) : null;
     if (saved) return this.loadPage(saved.cursor, saved.revision, { resumed: saved.page, banner: opts.banner });
     return this.loadPage('0', '');
@@ -279,6 +284,7 @@ Page({
   },
   // "从开头看"：不用记着的位置，从第 1 页读
   fromStart() {
+    if (this.data.loading) return undefined;
     progress.clear(this.docId, this.part);
     this.setData({ resumePage: 0 });
     toTop();
