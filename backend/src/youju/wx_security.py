@@ -41,6 +41,7 @@ class Verdict:
     passed: bool  # 只有 suggest 是 pass 才为真
     suggest: str | None  # pass、risky、review；没调接口时是 pass
     label: int | None  # 命中的标签（100 正常、20001 时政、21000 其他……）；没调接口时为 None
+    trace_id: str | None = None  # 微信给这次检测的编号，写进处置记录，事后能向微信查
 
 
 def in_cloud(settings: Any) -> bool:
@@ -86,13 +87,19 @@ def _check_piece(openid: str, piece: str, scene: int, timeout: float) -> Verdict
         outcome = result.get("result")
         suggest = outcome.get("suggest") if isinstance(outcome, dict) else None
         label = outcome.get("label") if isinstance(outcome, dict) else None
+        trace_id = result.get("trace_id")
     except _FAILURES as exc:
         raise CheckDown("微信内容安全接口出错") from exc
     if errcode != 0:
         raise CheckDown(f"微信内容安全接口没有成功（errcode {errcode!r}）", errcode)
     if suggest not in _SUGGESTS:
         raise CheckDown("微信内容安全接口没有给出检测结果")
-    return Verdict(suggest == "pass", suggest, label if type(label) is int else None)
+    return Verdict(
+        suggest == "pass",
+        suggest,
+        label if type(label) is int else None,
+        trace_id if isinstance(trace_id, str) and trace_id else None,
+    )
 
 
 def check_text(openid: str, content: str, *, scene: int = 2, timeout: float = 5.0) -> Verdict:

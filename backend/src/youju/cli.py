@@ -1012,6 +1012,62 @@ def _cmd_log_uid(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_safety_probe(args: argparse.Namespace) -> int:
+    """开放前量一量微信内容安全会不会误拦政府原文（门槛第 4 道）。只读，不写数据库。
+
+    取最近收录、能做 AI 解读的通知，把正文开头 2500 字交微信检查（带 --openid：这个人两小时内
+    要访问过小程序），只打印各种结果的份数和没通过的通知编号，不打印正文。每份占一次当天的调用
+    次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。只能在云托管的 admin 容器里跑。"""
+    from sqlalchemy import select
+
+    from youju import wx_security
+    from youju.ai import content, interpret
+
+    if not wx_security.in_cloud(get_settings()):
+        print("只能在云托管里跑：本机不调微信接口")
+        return 1
+    counts: dict[str, int] = {}
+    blocked: list[str] = []
+    errors = 0
+    with session_factory()() as session:
+        candidates = session.scalars(
+            select(Document.id)
+            .where(Document.taken_down_at.is_(None))
+            .order_by(Document.first_seen_at.desc(), Document.id.desc())
+            .limit(args.notices * 5)
+        ).all()
+        picked = 0
+        for doc_id in candidates:
+            if picked >= args.notices:
+                break
+            try:
+                content.check(session, doc_id)
+                loaded = content.load(session, doc_id)
+            except interpret.InterpretRefusal:
+                continue
+            text = "\n".join(p["text"] for p in loaded.paragraphs())[: wx_security.LIMIT]
+            if not text.strip():
+                continue
+            picked += 1
+            try:
+                verdict = wx_security.check_text(args.openid, text)
+            except wx_security.CheckDown as exc:
+                errors += 1
+                print(f"通知 {doc_id}：检测出错（errcode {exc.errcode}）")
+                if exc.errcode in (45009, 61010):
+                    break  # 次数用完、openid 两小时内没访问过：后面的也查不了
+                continue
+            key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
+            counts[key] = counts.get(key, 0) + 1
+            if not verdict.passed:
+                blocked.append(f"{doc_id}（{key}）")
+    summary = "、".join(f"{key} {n} 份" for key, n in sorted(counts.items())) or "没有查成的"
+    print(f"查了 {picked} 份：{summary}；出错 {errors} 次")
+    if blocked:
+        print("没通过的通知：" + "，".join(blocked))
+    return 0
+
+
 def _cmd_triage_feedback(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.triage import triage_feedback
@@ -2007,6 +2063,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("openid")
     p.set_defaults(func=_cmd_log_uid)
+
+    p = sub.add_parser(
+        "safety-probe",
+        help="开放前量一量微信内容安全会不会误拦政府原文（只读，只能在云托管 admin 容器里跑）",
+    )
+    p.add_argument("--openid", required=True, help="两小时内访问过小程序的人（一般是创始人自己）")
+    p.add_argument("--notices", type=int, default=30, choices=range(1, 91), metavar="1-90")
+    p.set_defaults(func=_cmd_safety_probe)
 
     p = sub.add_parser(
         "triage-feedback",

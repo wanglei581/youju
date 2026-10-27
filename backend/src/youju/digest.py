@@ -179,6 +179,9 @@ class Digest:
     safety_local: int = 0
     safety_wechat: int = 0
     safety_check_down: int = 0
+    # 近 24 小时新抓的正文、附件文字命中本地词库的份数（误拦，或者网站被挂了违规内容）
+    safety_new_bodies: int = 0
+    safety_new_attachments: int = 0
     safety_ok: bool = True
     # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
     readability: Readability | None = None
@@ -338,7 +341,9 @@ def _quality_and_usage(session: Session, digest: Digest, today: date) -> None:
 
 
 def _safety(session: Session, digest: Digest, since: datetime) -> None:
+    from youju import safety_words
     from youju.ai import result_safety
+    from youju.models import AttachmentTextSegment, AttachmentTextVersion
 
     layers = dict(
         session.execute(
@@ -357,6 +362,22 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
         )
         or 0
     )
+    if not safety_words.LIBRARY.entries:
+        return  # 词库还没有词条
+    bodies = session.execute(
+        select(DocumentDetail.body_text)
+        .join(Document, Document.id == DocumentDetail.document_id)
+        .where(Document.first_seen_at >= since)
+    ).scalars()
+    digest.safety_new_bodies = sum(1 for body in bodies if safety_words.check(body or ""))
+    segments = session.execute(
+        select(AttachmentTextSegment.version_id, AttachmentTextSegment.text)
+        .join(AttachmentTextVersion, AttachmentTextVersion.id == AttachmentTextSegment.version_id)
+        .where(AttachmentTextVersion.extracted_at >= since)
+    )
+    digest.safety_new_attachments = len(
+        {version for version, text in segments if safety_words.check(text or "")}
+    )
 
 
 def _safety_line(digest: Digest) -> str | None:
@@ -364,7 +385,8 @@ def _safety_line(digest: Digest) -> str | None:
     if not digest.safety_ok:
         return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
     blocked = digest.safety_local + digest.safety_wechat
-    if not blocked and not digest.safety_check_down:
+    new_hits = digest.safety_new_bodies + digest.safety_new_attachments
+    if not blocked and not digest.safety_check_down and not new_hits:
         return None
     parts = []
     if blocked:
@@ -375,6 +397,11 @@ def _safety_line(digest: Digest) -> str | None:
     if digest.safety_check_down:
         parts.append(
             f"检测接口出错、AI 任务没做成 {digest.safety_check_down} 个（admin 可能调不通微信接口）"
+        )
+    if new_hits:
+        parts.append(
+            f"新抓的正文 {digest.safety_new_bodies} 份、附件 {digest.safety_new_attachments} 份"
+            "命中本地词库（看是误拦还是网站被挂了违规内容）"
         )
     return "内容安全（24 小时）：" + "；".join(parts)
 

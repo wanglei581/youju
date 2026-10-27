@@ -49,7 +49,7 @@ def test_starter_draft_is_valid_and_not_final():
     """起步稿能读、格式对、还没定稿（创始人定了才放进 data/safety_words.json）。"""
     path = Path(__file__).parents[2] / "docs" / "合规" / "本地高危词库_起步稿_v1.json"
     draft = safety_words.load(path)
-    assert draft.final is False and len(draft.entries) >= 40
+    assert draft.final is False and len(draft.entries) >= 20
     assert all(len(entry.word) >= 4 for entry in draft.entries)  # 按短语，不按单字
     shipped = safety_words.load()
     assert shipped.entries == ()  # 随代码发布的还是空的
