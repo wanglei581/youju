@@ -556,14 +556,13 @@ def test_国家单独说的是国家部委(text):
         ("国家发展改革委办公厅的通知", ["发展改革委办公厅"]),  # 按最短的机关名算
         ("国家能源局综合司的通知", ["能源局综合司"]),
         ("国家数据局发的通知", ["数据局"]),
-        ("国家数据局和广东的申报通知", ["数据局"]),
     ],
 )
 def test_国家后面紧跟着国家机关名照旧算国家部委(text, keywords):
     conditions = _parse(text)
-    assert conditions["regions"][0] == "国家部委"
-    assert conditions["keywords"] == keywords
-    assert _parse("国家发改委专精特新通知")["regions"] == ["国家部委"]
+    assert (conditions["regions"], conditions["keywords"]) == (["国家部委"], keywords)
+    # 机关名后面是"和＋地名"时到那里为止
+    assert _parse("国家数据局和广东的申报通知")["regions"] == ["国家部委", "广东"]
 
 
 @pytest.mark.parametrize(
@@ -573,6 +572,9 @@ def test_国家后面紧跟着国家机关名照旧算国家部委(text, keyword
         ("国家西部大开发", ["西部大开发"]),
         ("国家战略部署", ["战略部署"]),
         ("国家级经济技术开发区管委会", ["经济技术开发区管委会"]),  # "国家级"后面不看机关名
+        ("国家核心零部件项目", ["核心零部件"]),  # 整段名称以机关字结尾才算
+        ("国家高新技术企业认定怎么办理", ["高新技术"]),
+        ("国家专精特新怎么办", ["专精特新"]),
     ],
 )
 def test_以局委部署办结尾又不是机关名的不算(text, keywords):
@@ -580,12 +582,10 @@ def test_以局委部署办结尾又不是机关名的不算(text, keywords):
     assert (conditions["regions"], conditions["keywords"]) == ([], keywords)
 
 
-def test_地区前面的和与及或去掉_后面的不去():
-    conditions = _parse("人工智能和广东的政策")
-    assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["人工智能"])
+def test_地区前后的和与及或不去_可能是名称的一部分():
     assert _parse("广东或四川的专精特新")["regions"] == ["广东", "四川"]
-    # 地区后面的"和"可能是名称的一部分
     for text, keyword in (
+        ("碳中和广东的政策", "碳中和"),
         ("四川和邦生物", "和邦生物"),
         ("天津和平区的申报通知", "和平区"),  # 和平区没收录：照第 3 条当关键词
         ("广东和平县", "和平县"),
@@ -1222,7 +1222,30 @@ def test_停用词粘在词里不拆开():
     assert _parse("黑名单")["keywords"] == ["黑名单"]
     assert _parse("企业白名单")["keywords"] == ["白名单"]
     assert _parse("工业企业白名单")["keywords"] == ["工业", "白名单"]
-    assert _parse("有企业补贴吗")["keywords"] == ["补贴"]  # "有、为、给"这类单字不往后并
+    assert _parse("有企业补贴吗")["keywords"] == ["补贴"]  # "有、为、给"这类单字不并
+    assert _parse("小微企业有什么补贴")["keywords"] == ["小微", "补贴"]
+    assert _parse("企业能申请吗")["keywords"] == []
+    assert _parse("专精特新名单有吗")["keywords"] == ["专精特新"]
+
+
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("怎么申报专精特新", ["专精特新"]),
+        ("企业可以申请哪些补贴", ["补贴"]),
+        ("需要哪些材料", []),
+        ("高企申报流程是什么", ["高企"]),
+        ("专精特新怎么办理", ["专精特新"]),
+    ],
+)
+def test_问法的词也去掉(text, keywords):
+    assert _parse(text)["keywords"] == keywords
+
+
+def test_去掉的词后面的和不粘到下一个词上():
+    assert _parse("高新技术企业和专精特新企业的申报通知")["keywords"] == ["高新技术", "专精特新"]
+    assert _parse("高新技术企业和科技型中小企业")["keywords"] == ["高新技术", "科技型中小"]
+    assert _parse("工业和信息化部的通知")["keywords"] == ["工业和信息化部"]
     # 只和"材料、企业、公司"并：问句里的停用词不并成关键词
     for text, keywords in (
         ("广东有什么政策", []),

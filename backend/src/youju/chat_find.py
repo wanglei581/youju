@@ -24,14 +24,16 @@
   一样算近 7 天，"本季度"同"这个季度"（完整的见 _TIME_WORDS）；
 - 第 2 条的细化（设计的表写"国家""国家级"认成国家部委）：后面紧跟着别的名称时（国家高新技术
   企业、国家级专精特新、国家认定企业技术中心）是名称的开头，不当地区，也不当关键词（省里发的这类
-  通知，标题多半不写"国家"）；"国家"后面的名称开头一段以局、委、部、署、办结尾的是国家机关
-  （国家数据局、国家发改委专精特新通知；"布局、部署、西部"这类不算，见 _NOT_AGENCY），照旧算国家
-  部委，名称当关键词（"国家级"后面不看机关名）。单独说的也是国家部委：后面是句子结尾、
+  通知，标题多半不写"国家"）；"国家"后面的整段名称以局、委、部、署、办、厅、司结尾的是国家机关
+  （国家数据局、国家发展改革委办公厅、国家能源局综合司；"布局、部署、举办、怎么办"这类不算，见
+  _NOT_AGENCY），照旧算国家部委，名称当关键词（"国家级"后面不看机关名）。单独说的也是国家部委：后面是句子结尾、
   不是汉字的（标点、数字、字母；开头的引号、书名号先跳过）、地名、时间词、类型词（"认定"除外：
   国家认定企业技术中心）、问内容的词、说发文的词（发布、出台、发的……）、"和、与、及、或"，或者
   "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）；
-- 紧挨在认出的地区前面的"和、与、及、或"去掉（"人工智能和广东"不留"人工智能和"）；地区后面的
-  不去（"四川和邦生物""天津和平区"的"和"是名称的一部分）；
+- 去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"高新技术企业和专精特新企业"不留
+  "和专精特新"）；地区前后的不去（"四川和邦生物""天津和平区""碳中和广东"里的"和"是名称的一部分）；
+- 问法的词（怎么、如何、需要、可以、流程、办理、单字"是"……，_ASKS）也当停用词去掉（"怎么申报
+  专精特新"不留"怎么"）；
 - 机关名后面的"发的"（前一个字是部、厅、局、委、办、署、府、院）也去掉（"工信部发的通知"）；
 - 以数字开头的时间词前面紧挨着数字时不认（"17天内"不是"7天内"）；以"周"结尾的时间词后面是
   "期"时不认（"这个周期""上个周期"）；
@@ -171,11 +173,13 @@ _NATIONAL_WORDS = ("国家部委", "国家级", "国家", "部委", "部里")
 _NAME_STARTS = ("国家", "国家级")
 _JOINS = ("和", "与", "及", "或")
 _OPENERS = "“‘\"'《「『【〈〔([<"  # 引号、书名号、括号的前一半（NFKC 以后全角圆括号已是半角）
-_AGENCY_ENDS = ("局", "委", "部", "署", "办")  # 国家机关名的结尾（委员会、办公室按最短的算到）
+# 国家机关名的结尾（"国家"后面的整段名称以这些结尾）
+_AGENCY_ENDS = ("局", "委", "部", "署", "办", "厅", "司", "委员会", "办公室")
 # 以这几个字结尾、又不是机关名的词
 _NOT_AGENCY = (
-    "布局", "格局", "大局", "全局", "结局", "部署", "总部", "内部", "外部", "全部", "局部", "干部",
-    "东部", "西部", "南部", "北部", "中部", "本部", "俱乐部",
+    "布局", "格局", "大局", "全局", "结局", "开局", "部署", "签署", "总部", "内部", "外部", "全部",
+    "局部", "干部", "东部", "西部", "南部", "北部", "中部", "本部", "俱乐部", "怎么办", "举办",
+    "主办", "承办", "协办", "创办", "开办", "合办", "代办", "大厅", "展厅",
 )  # fmt: skip
 
 
@@ -275,6 +279,11 @@ STOPWORDS = (
 )  # fmt: skip
 # 说发文的词：也当停用词去掉（"上周发布的申报通知"）
 _ISSUE = ("发布", "出台", "印发", "下发", "公布", "颁布")
+# 问法的词：也当停用词去掉（"怎么申报专精特新""企业可以申请哪些补贴"）
+_ASKS = (
+    "怎么", "怎样", "如何", "哪里", "在哪里", "在哪", "需要", "可以", "开始", "结束", "流程",
+    "办理", "是",
+)  # fmt: skip
 # 切完剩一个字时只和这几个停用词并成一个词（"新材料""大企业"），见 _pieces
 _GLUE = ("材料", "企业", "公司", "名单")
 _NO_GLUE = "有为给对让帮在是要能会可把被向从和与及或"  # 这些单字不和后面的词并（"有企业补贴"）
@@ -307,7 +316,7 @@ _TIME = re.compile(
 )
 # 机关名后面的"发的"也去掉（"工信部发的通知"）；"开发的""研发的"不算
 _DROP = re.compile(
-    _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT, *_ISSUE]).pattern
+    _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT, *_ISSUE, *_ASKS]).pattern
     + "|(?<=[部厅局委办署府院])发的"
 )
 _LEAD = tuple(
@@ -322,6 +331,7 @@ _LEAD = tuple(
             *TYPE_WORDS,
             *_CONTENT,
             *_ISSUE,
+            *_ASKS,
         },
         key=len,
         reverse=True,
@@ -332,7 +342,18 @@ _LEAD = tuple(
 # "国家""国家级"单独说（是地区）时后面跟的词，地名另外看。"企业""公司""认定"不算（国家企业
 # 技术中心、国家认定企业技术中心）
 _ALONE_AFTER = tuple(
-    {*STOPWORDS, *TYPE_WORDS, *_CONTENT, *_ISSUE, "发的", *_TIME_OF, *_PAST, *_PERIOD_OF, *_JOINS}
+    {
+        *STOPWORDS,
+        *TYPE_WORDS,
+        *_CONTENT,
+        *_ISSUE,
+        *_ASKS,
+        "发的",
+        *_TIME_OF,
+        *_PAST,
+        *_PERIOD_OF,
+        *_JOINS,
+    }
     - {"企业", "公司", "认定"}
 )
 _NAME_END = tuple(set(_ALONE_AFTER) - set(_JOINS))  # 名称到这些词为止（"工业和信息化部"不断开）
@@ -523,7 +544,8 @@ def _pieces(run: str) -> list[tuple[int, str, bool]]:
     """把一串连着的字按类型词、停用词、问内容的词切开：（位置, 字, 是不是要去掉的词）。
     切完剩一个字、又紧挨着"材料、企业、公司"（_GLUE）的，和它并成一个词，不去掉（"新材料"不拆成
     "新"和停用词"材料"；"大企业"不拆成"大"和"企业"）。别的停用词不并（"有什么政策"不留
-    "有什么"），"有、为、给"这类单字也不往后并（_NO_GLUE："有企业补贴"不留"有企业"）。"""
+    "有什么"），"有、为、给"这类单字也不并（_NO_GLUE："有企业补贴"不留"有企业"，"企业有什么补贴"不留
+    "企业有"）。去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"企业和专精特新"）。"""
     raw: list[tuple[int, str, bool]] = []
     pos = 0
     for m in _DROP.finditer(run):
@@ -543,11 +565,13 @@ def _pieces(run: str) -> list[tuple[int, str, bool]]:
                 out.append((at, text + nxt[1], False))
                 i += 2
                 continue
-            if out and out[-1][2] and out[-1][1] in _GLUE:
+            if out and out[-1][2] and out[-1][1] in _GLUE and text not in _NO_GLUE:
                 prev = out.pop()
                 out.append((prev[0], prev[1] + text, False))
                 i += 1
                 continue
+        if not drop and out and out[-1][2] and text[0] in _JOINS and len(text) >= 3:
+            at, text = at + 1, text[1:]  # "企业和专精特新"：去掉的词后面的"和"不粘到下一个词上
         out.append((at, text, drop))
         i += 1
     return out
@@ -556,8 +580,9 @@ def _pieces(run: str) -> list[tuple[int, str, bool]]:
 def _national(rest: str, places: tuple[str, ...], *, agency: bool) -> bool:
     """看"国家""国家级"是不是说国家部委（rest 是它后面的字；开头的引号、书名号先跳过）：
     - 单独说的：后面是句子结尾、不是汉字的、地名（places），或 _ALONE_AFTER 里的词；
-    - 后面紧跟着国家机关名（agency，只看"国家"）：连着的汉字（到 _NAME_END 里的词为止）开头有一段
-      以 _AGENCY_ENDS 结尾、又不是 _NOT_AGENCY 里的词（国家数据局、国家发改委专精特新通知）。
+    - 后面紧跟着国家机关名（agency，只看"国家"）：连着的汉字（到 _NAME_END 里的词、地名或
+      "和＋地名"为止）整段以 _AGENCY_ENDS 结尾、又不以 _NOT_AGENCY 里的词结尾（国家数据局、
+      国家能源局综合司）。
     别的是名称的开头（国家高新技术企业、国家级专精特新）。"""
     rest = rest.lstrip(_OPENERS)
     if not rest or not _HAN_CHAR.match(rest[0]):
@@ -567,11 +592,14 @@ def _national(rest: str, places: tuple[str, ...], *, agency: bool) -> bool:
     if not agency:
         return False
     end = 0
-    while end < len(rest) and _HAN_CHAR.match(rest[end]) and not rest.startswith(_NAME_END, end):
+    while end < len(rest) and _HAN_CHAR.match(rest[end]):
+        if rest.startswith(_NAME_END, end) or rest.startswith(places, end):
+            break
+        if rest[end] in _JOINS and rest.startswith(places, end + 1):  # "国家数据局和广东"
+            break
         end += 1
     name = rest[:end]
-    inside = {i for w in _NOT_AGENCY for m in re.finditer(w, name) for i in range(*m.span())}
-    return any(name[i] in _AGENCY_ENDS and i not in inside for i in range(1, len(name)))
+    return len(name) >= 2 and name.endswith(_AGENCY_ENDS) and not name.endswith(_NOT_AGENCY)
 
 
 def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str]]:
@@ -588,8 +616,6 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str
         word = m.group()
         if word in _NAME_STARTS and not _national(text[m.end() :], places, agency=word == "国家"):
             continue  # 名称的开头（"国家高新技术企业"）：不当地区，也不当关键词
-        if m.start() and text[m.start() - 1] in _JOINS:  # "人工智能和广东"：前面的"和"不留成关键词
-            _take(marks, m.start() - 1, m.start())
         meanings = table[m.group()]
         kinds = {meaning[0] for meaning in meanings}
         if "province" in kinds:
