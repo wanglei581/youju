@@ -13,6 +13,7 @@ import re
 import time as _time
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
@@ -23,7 +24,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from youju import deadline_excerpts
+from youju import attachment_text, deadline_excerpts
 from youju import fields as field_rules
 from youju.ai import eligibility
 from youju.attachments import attachment_items, is_recent
@@ -31,6 +32,7 @@ from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_
 from youju.classify import (
     GUIDE,
     KINDS,
+    TITLE_EVALUATIONS,
     applicable_region,
     effective_kind,
     kind_filter,
@@ -57,6 +59,7 @@ from youju.lists.lookup import (
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
+    DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
@@ -2053,35 +2056,175 @@ def _fmt_deadline_note(d: DocumentDeadline) -> str:
     return f"{d.kind} {day.month}月{day.day}日 {_WEEK[day.weekday()]}{time}"
 
 
-# 详情页的正文（D-030）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；截止日期等
-# 关键字段仍只看"要点"里核对过的。只给申报通知和政策：名单、其他（招聘、职称评审等公示）里
-# 可能有个人姓名。入库时已隐去个人信息，给出前按现行规则再隐去一遍，再换成"见原文"的说法，
-# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。最多给前 2 万字（离
-# callContainer 单次返回 1000 KiB 的上限很远）；不到 200 字的多半没抓全，不给。
+# 详情页、阅读页的正文（D-030、D-097）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；
+# 截止日期等关键字段仍只看"要点"里核对过的。入库时已隐去个人信息，给出前按现行规则再隐去一遍，
+# 遮掉的地方写"（这里隐去了电话）"这类说法（D-097：以前写"（电话见原文）"，像在叫人去原网站），
+# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。
+# 给哪些：申报通知、政策给全文；名单类挡掉名单内容后给（D-092）；资讯与指南、其他两类，标题写着
+# 个人事项的（PERSONAL_MATTER_WORDS）不给，其余给全文（D-097 ②）。
+# 不显示的：像网页导航的（page_chrome_only）。以前不到 200 字的一律不显示（多半没抓全），真短的
+# 通知（"现将《××办法》印发给你们，请遵照执行。"）也被挡掉了，D-097 改成现在这样。
+# 详情最多给前 2 万字（离 callContainer 单次返回 1000 KiB 的上限很远），阅读页分页给全文。
+# BODY_MIN_CHARS 只用来挑合并转载里用哪一份：自己的正文够这么长就用自己的，不够再看组里别的网址
+# （AI 解读取正文也是这个挑法），不再用来挡显示。
 BODY_MIN_CHARS = 200
 BODY_MAX_CHARS = 20_000
-_BODY_REPLACE = (
-    ("[电话已脱敏]", "（电话见原文）"),
-    ("[手机号已脱敏]", "（电话见原文）"),
-    ("[姓名已脱敏]", "（联系人见原文）"),
-    ("[邮箱已脱敏]", "（邮箱见原文）"),
-    ("[身份证号已脱敏]", "（已隐去）"),
-    ("[银行账号已脱敏]", "（已隐去）"),
-    ("【关闭窗口】", ""),
-    ("【打印本页】", ""),
-    ("【字体：大 中 小】", ""),
-    ("扫一扫在手机打开当前页", ""),
+# 入库脱敏留下的标记（crawler.detail.redact_sensitive、attachment_text.mask）→ 页面上的说法
+MASK_MARKS = (
+    ("[电话已脱敏]", "（这里隐去了电话）"),
+    ("[手机号已脱敏]", "（这里隐去了电话）"),
+    ("[姓名已脱敏]", "（这里隐去了联系人）"),
+    ("[邮箱已脱敏]", "（这里隐去了邮箱）"),
+    ("[身份证号已脱敏]", "（这里隐去了证件号）"),
+    ("[银行账号已脱敏]", "（这里隐去了银行账号）"),
 )
+PHONE_MARK = "（这里隐去了电话）"
+_PAGE_BUTTONS = ("【关闭窗口】", "【打印本页】", "【字体：大 中 小】", "扫一扫在手机打开当前页")
 _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
 # 名单类通知的正文挡掉名单内容后也给读（D-092，youju/lists/body.py）
 LIST_BODY_KINDS = (*BODY_KINDS, "名单")
+# 资讯与指南、其他（D-097 ②）：标题不是个人事项的也给全文。
+# BODY_KINDS 不变：AI 解读只做申报通知和政策（ai/interpret.py 用它）
+OPEN_BODY_KINDS = (GUIDE, "其他")
+# 个人事项（D-097 ②）：招聘、考试、职称、任免、表彰个人、救助、处分等，标题里有这些词的不给正文
+# （正文多半列着个人姓名、成绩、职务）。按 10/27 线上公开快照里这两类全部 841 个标题逐条核过：
+# 宁可多挡（"评审专家培训的通知"也挡），不漏；会误挡普通政府文件的词（"先进"挡了"先进制造业"、
+# "个人"挡了"个人所得税"政策、"体检"挡了"政务新媒体检查"）不用，换成更具体的写法。
+PERSONAL_MATTER_WORDS = (
+    # 招聘、招募、录用、考试
+    "招聘",
+    "招募",
+    "引才",
+    "人才引进",
+    "引进人才",
+    "拟聘",
+    "聘用",
+    "录用",
+    "招录",
+    "选调",
+    "公务员",
+    "面试",
+    "笔试",
+    "考试",
+    "成绩",
+    "招生",
+    "毕业生",
+    "学生",
+    "学员",
+    "博士后",
+    # 职称、资格
+    "职称",
+    "专业技术资格",
+    "任职资格",
+    "专业技术职务",
+    "评审结果",
+    "答辩",
+    "资格证书",
+    "合格证书",
+    "业余无线电",
+    *TITLE_EVALUATIONS,
+    # 任免、人事
+    "任免",
+    "任职",
+    "拟任",
+    "任前",
+    "干部",
+    "人事",
+    "职务",
+    "考察对象",
+    "负责人",
+    "签字人",
+    "矿长",
+    "同志",
+    "人员",
+    "人选",
+    "入选",
+    "专家",
+    "特派员",
+    "外国人",
+    "薪酬",
+    # 表彰个人、奖励
+    "表彰",
+    "表扬",
+    "选树",
+    "劳模",
+    "劳动模范",
+    "奖章",
+    "红旗手",
+    "获奖",
+    "授奖",
+    "授予",
+    "奖金",
+    "初评通过",
+    "技能大赛",
+    "技能竞赛",
+    # 救助、生活
+    "救助",
+    "低保",
+    "抚恤",
+    "慰问",
+    "助学",
+    "奖学金",
+    "退休",
+    "社保",
+    "医保",
+    "工伤",
+    "户籍",
+    "婚姻",
+    # 处分、处罚、考核
+    "处分",
+    "处罚",
+    "违纪",
+    "问责",
+    "通报批评",
+    "免职",
+    "撤职",
+    "失信",
+    "巡察",
+    "考核结果",
+    "考核记分",
+)
+
+
+def personal_matter(title: str | None) -> bool:
+    """资讯与指南、其他类的标题写着个人事项（D-097 ②）：正文、附件都不给。
+    字中间隔着空格的（"招 聘"）也算。"""
+    plain = re.sub(r"\s+", "", title or "")
+    return any(word in plain for word in PERSONAL_MATTER_WORDS)
+
+
+def body_open(title: str | None, kind: str) -> bool:
+    """这类文件的正文给不给读（不含名单类：名单类看 list_body_filter）。"""
+    return kind in BODY_KINDS or (kind in OPEN_BODY_KINDS and not personal_matter(title))
+
+
+# 一句话的标点：中文的句号、逗号、分号、问号、叹号；英文的只算紧跟在汉字或右括号、右引号后面的
+# （"3,716.50""9:00"里的不算）。冒号不算：导航、发布信息里到处是"当前位置：""发布时间："
+_SENTENCE = re.compile(rf"[，。；！？]|(?<=[{chr(0x4E00)}-{chr(0x9FFF)}）」』”])[,.;!?]")
+# 像网页导航的正文最长多少字（10/27 线上公开快照：广东科技厅"首页 政务公开 科技资讯……"31 字、
+# 四川"首页 > 政民互动 > 意见征集……"60 字、青海"当前位置: 首页 - 新闻资讯……上一篇 下一篇"95–215 字、
+# 网站页脚 203–261 字；没有标点的长文多是表格（网站年度报表、名单），照常显示）
+PAGE_CHROME_MAX_CHARS = 300
+
+
+def page_chrome_only(text: str) -> bool:
+    """像网页导航：通篇没有一句话（没有句号、逗号这类标点），而且不长。这样的正文不显示（D-097）；
+    有一句话的短通知照常显示。"""
+    return len(text) <= PAGE_CHROME_MAX_CHARS and _SENTENCE.search(text) is None
+
+
+def display_marks(text: str) -> str:
+    """把入库脱敏留下的"[电话已脱敏]"这类标记换成页面上的说法（"（这里隐去了电话）"）。"""
+    for old, new in MASK_MARKS:
+        text = text.replace(old, new)
+    return text
 
 
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
-    cleaned = redact((text or "").replace("\r\n", "\n").replace("\r", "\n"))
-    for old, new in _BODY_REPLACE:
-        cleaned = cleaned.replace(old, new)
+    cleaned = display_marks(redact((text or "").replace("\r\n", "\n").replace("\r", "\n")))
+    for button in _PAGE_BUTTONS:
+        cleaned = cleaned.replace(button, "")
     return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
 
 
@@ -2090,12 +2233,12 @@ _CONTACT_LABEL = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|�
 _LABEL_AT_END = re.compile(
     r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式)(?:及电话)?\s*[:：]\s*$"
 )
-# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：（电话见原文）"
-# "刘老师，（电话见原文）""联系电话：88888888（李四）"）；只有"电话""手机"字样、没有号码的（表头
-# "联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
-_PHONE_LINE = re.compile(r"电话|手机|（电话见原文）")
+# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：
+# （这里隐去了电话）""刘老师，（这里隐去了电话）""联系电话：88888888（李四）"）；只有"电话""手机"
+# 字样、没有号码的（表头"联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+_PHONE_LINE = re.compile(rf"电话|手机|{PHONE_MARK}")
 _PHONE = (
-    r"(?:（电话见原文）|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
+    rf"(?:{PHONE_MARK}|(?<!\d)0\d{{2,3}}[-－]?\d{{7,8}}(?!\d)|(?<!\d)1[3-9]\d{{9}}(?!\d)"
     r"|(?<!\d)\d{7,8}(?!\d))"
 )
 _PHONE_ANY = re.compile(_PHONE)
@@ -2118,7 +2261,7 @@ _TITLE_END = (
     "专员",
     "工程师",
 )
-# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（署名已隐去）"，不冒充联系人
+# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（这里隐去了署名）"，不冒充联系人
 _EDITOR = re.compile(
     r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
 )
@@ -2177,8 +2320,8 @@ _NOT_NAMES = frozenset(
         "公章",
     }
 )
-_CONTACT_MARK = "（联系人见原文）"
-_EDITOR_MARK = "（署名已隐去）"
+_CONTACT_MARK = "（这里隐去了联系人）"
+_EDITOR_MARK = "（这里隐去了署名）"
 
 
 def _person(word: str) -> bool:
@@ -2226,7 +2369,7 @@ def _mask_line(line: str, tokens: list[str], mark: str) -> str:
 def _mask_contact_names(text: str) -> str:
     """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
     2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
-    "联系人：（联系人见原文）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
+    "联系人：（这里隐去了联系人）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
     （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
     拆行、空格隔开的写法）。"""
     out = []
@@ -2263,38 +2406,94 @@ def _mask_contact_names(text: str) -> str:
     return "\n".join(out)
 
 
+@dataclass
+class ReadingBody:
+    """一份通知的正文给不给、给哪一份（详情页和阅读页同一个判断，D-097）。
+
+    status：ok 给文字（text 是清理、脱敏后的全文；hidden：名单类挡掉了名单内容）；list 名单类通知的
+    正文几乎全是名单（reason=list），或名单没能和通知文字分开（reason=mixed），只给查名单；
+    personal 个人事项（资讯与指南、其他类的标题写着招聘、职称等）和失信、个人类名单，不给；
+    none 没有能显示的正文，reason 写页面上怎么说：attachments 这份通知列着附件（"这份通知的内容在
+    附件里"），site 没有附件（"这个网站的正文还取不到"），link_gone 原网页已失效（"原网页已打不开，
+    正文暂不提供"）。
+    problem：none 的具体原因（运维日报按网站统计）：empty 没取到正文；chrome 取到的像网页导航；
+    short_list 名单类通知挡完名单剩的字太少（D-092 的下限）；link_gone 原网页已失效。"""
+
+    status: str
+    text: str = ""
+    owner_id: int | None = None
+    hidden: bool = False
+    reason: str | None = None
+    problem: str | None = None
+
+
+def _no_body(problem: str, *, attachments: bool | None, owner_id: int | None = None) -> ReadingBody:
+    reason = None if attachments is None else ("attachments" if attachments else "site")
+    return ReadingBody("none", owner_id=owner_id, reason=reason, problem=problem)
+
+
+def _judge_text(
+    cleaned: str,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None,
+    attachments: bool | None,
+    owner_id: int | None = None,
+) -> ReadingBody:
+    """已清理、脱敏的正文能不能显示：名单类先挡掉名单内容（D-092），再看是不是像网页导航。"""
+    hidden = False
+    if list_filter is not None:
+        result = list_filter(cleaned)
+        if result.text is None and result.reason == "short":
+            # 没认出名单、挡完剩的字又太少（D-092 的下限，防止短名单漏出来）
+            return _no_body("short_list", attachments=attachments, owner_id=owner_id)
+        if result.text is None:
+            return ReadingBody("list", owner_id=owner_id, reason=result.reason)
+        cleaned, hidden = result.text, result.hidden
+    if not cleaned:
+        return _no_body("empty", attachments=attachments, owner_id=owner_id)
+    if page_chrome_only(cleaned):
+        return _no_body("chrome", attachments=attachments, owner_id=owner_id)
+    return ReadingBody("ok", text=cleaned, owner_id=owner_id, hidden=hidden)
+
+
+def body_payload(body: ReadingBody) -> dict:
+    """详情接口的 body：ok 给前 2 万字和全文字数；个人事项写 original（旧版小程序按"不展示"说）；
+    没有能显示的正文给 none 和原因。"""
+    if body.status == "ok":
+        payload = {
+            "status": "ok",
+            "text": body.text[:BODY_MAX_CHARS],
+            "total": len(body.text),
+            "truncated": len(body.text) > BODY_MAX_CHARS,
+        }
+        if body.hidden:
+            payload["listHidden"] = True
+        return payload
+    if body.status == "personal":
+        return {"status": "original", "reason": "personal"}
+    if body.status == "list":
+        return {"status": "list"}
+    return {"status": "none", "reason": body.reason} if body.reason else {"status": "none"}
+
+
 def body_for_reading(
     text: str | None,
     kind: str,
     *,
     list_filter: Callable[[str], list_body.Filtered] | None = None,
+    title: str | None = None,
 ) -> dict:
-    """详情页正文：ok 给文字；其他类给 original（可能有个人姓名），没抓到完整正文给 none。
-    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单后给文字（真挡掉了名单的带
-    listHidden，页面给去查名单的入口），挡完剩得太少或没挡住的给 list；没认出名单、正文本来就
-    太短的（没抓到正文、多半没抓全）和别的类一样给 none。"""
+    """一段正文按详情页的规则给不给（不查库、不看附件，没正文时不写原因）。资讯与指南、其他类要
+    给标题（title）才能判断是不是个人事项，没给按个人事项算。名单类：给了 list_filter
+    （list_body_filter，D-092）的挡掉名单后给文字，没给的按 list 说。"""
     if kind == "名单" and list_filter is None:
         return {"status": "list"}
-    if kind not in BODY_KINDS and kind != "名单":
-        return {"status": "original"}
-    cleaned = _clean_reading_body(text)
-    hidden = False
-    if list_filter is not None:
-        result = list_filter(cleaned)
-        if result.text is None:
-            return {"status": "none" if result.reason == "short" else "list"}
-        cleaned, hidden = result.text, result.hidden
-    elif len(cleaned) < BODY_MIN_CHARS:
-        return {"status": "none"}
-    body = {
-        "status": "ok",
-        "text": cleaned[:BODY_MAX_CHARS],
-        "total": len(cleaned),
-        "truncated": len(cleaned) > BODY_MAX_CHARS,
-    }
-    if hidden:
-        body["listHidden"] = True
-    return body
+    if kind != "名单" and not body_open(title if title is not None else "招聘", kind):
+        return body_payload(ReadingBody("personal"))
+    return body_payload(
+        _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
+    )
 
 
 def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
@@ -2305,6 +2504,54 @@ def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_bo
     return list_body.filter_for(session, group_ids(session, doc.id), min_chars=list_body.MIN_CHARS)
 
 
+def body_withheld(doc: Document, kind: str) -> bool:
+    """个人事项（资讯与指南、其他类）和失信、个人类名单：正文不给（详情页、阅读页都一样）。"""
+    if kind == "名单":
+        return not list_body.readable(doc.title)
+    return not body_open(doc.title, kind)
+
+
+def reading_body(
+    session: Session,
+    doc: Document,
+    kind: str,
+    *,
+    attachments: bool,
+    redact=redact_sensitive,
+) -> ReadingBody:
+    """详情页和阅读页给的正文（D-097：两处同一个判断）。attachments：这份通知列着附件（没有能显示
+    的正文时，页面说"内容在附件里"还是"正文还取不到"）。原网页已失效的不给（D-097"维持现状不给，
+    统计失效原因后另议"；以前详情页还显示之前收录的正文、阅读页不给，两处不一致），组里原网页已失效
+    的其他网址的正文也不用。"""
+    if body_withheld(doc, kind):
+        # 失信、处罚类和个人类名单：和别的个人事项一样不展示，不引导去查名单
+        return ReadingBody("personal")
+    if doc.link_gone_at is not None:
+        return ReadingBody("none", reason="link_gone", problem="link_gone")
+    list_filter = list_body_filter(session, doc) if kind == "名单" else None
+    if list_filter is not None:
+        allowed: tuple[str, ...] = LIST_BODY_KINDS
+    elif kind in BODY_KINDS:
+        allowed = BODY_KINDS
+    else:
+        allowed = (*BODY_KINDS, *OPEN_BODY_KINDS)
+    chosen = _reading_body_selection(
+        session,
+        doc.id,
+        redact=redact,
+        live_only=True,
+        allowed_kinds=allowed,
+        for_reading=True,
+        list_filter=list_filter,
+    )
+    if chosen is None:
+        return _no_body("empty", attachments=attachments)
+    owner_id, _, cleaned = chosen
+    return _judge_text(
+        cleaned, kind, list_filter=list_filter, attachments=attachments, owner_id=owner_id
+    )
+
+
 def _reading_body_selection(
     session: Session,
     doc_id: int,
@@ -2312,12 +2559,19 @@ def _reading_body_selection(
     redact=redact_sensitive,
     live_only: bool = False,
     allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
+    for_reading: bool = False,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
 ) -> tuple[int, str, str] | None:
     """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
 
-    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续显示收录不足；
+    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续说没有正文；
     live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
     allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
+    for_reading（详情页、阅读页，D-097）：像网页导航的、空的不算可读，跳过去看别的网址；资讯与指南、
+    其他类标题写着个人事项的网址不用；都不可读时给第一个候选（调用方据此说"像网页导航"）。
+    名单类（给了 list_filter）先挡掉名单再看：几乎全是名单、名单分不开的就用这一份（页面说去
+    查名单）；挡完剩的字太少、剩下的像网页导航，才看别的网址。
+    AI 解读不加 for_reading，挑法和以前一样。
     """
     stmt = (
         select(Document.id, Document.title, Document.kind_override)
@@ -2339,9 +2593,12 @@ def _reading_body_selection(
     )
     if live_only:
         stmt = stmt.where(Document.link_gone_at.is_(None))
-    fallback = None
-    for candidate_id, title, kind in session.execute(stmt).all():
-        if allowed_kinds is not None and effective_kind(title, kind) not in allowed_kinds:
+    first = fallback = None
+    for candidate_id, title, override in session.execute(stmt).all():
+        kind = effective_kind(title, override)
+        if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        if for_reading and kind in OPEN_BODY_KINDS and personal_matter(title):
             continue
         raw = session.scalar(
             select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
@@ -2350,11 +2607,26 @@ def _reading_body_selection(
             continue
         cleaned = _clean_reading_body(raw, redact=redact)
         candidate = candidate_id, raw, cleaned
-        if len(cleaned) >= BODY_MIN_CHARS:
+        usable = not for_reading or _usable_for_reading(cleaned, list_filter)
+        if usable and len(cleaned) >= BODY_MIN_CHARS:
             return candidate
-        if fallback is None:
+        if usable and fallback is None:
             fallback = candidate
-    return fallback
+        if first is None:
+            first = candidate
+    return fallback or first
+
+
+def _usable_for_reading(
+    cleaned: str, list_filter: Callable[[str], list_body.Filtered] | None
+) -> bool:
+    """这一份正文在详情页、阅读页算不算可读（挑合并转载里用哪一份时用）。"""
+    if list_filter is None:
+        return bool(cleaned) and not page_chrome_only(cleaned)
+    result = list_filter(cleaned)
+    if result.text is None:
+        return result.reason in ("list", "mixed")
+    return not page_chrome_only(result.text)
 
 
 def _reading_body(
@@ -2387,6 +2659,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
         ai_reason = exc.code or "unavailable"
     ai_eligible = ai_reason is None
     detail = _details(session, [doc.id]).get(doc.id)
+    attachment_rows = sorted(detail.attachments, key=lambda a: a.position) if detail else []
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
         session, [doc.id], {doc.id: approved}, now().date()
@@ -2504,15 +2777,14 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
-        # 附件：存有副本的可以在小程序里打开（preview），其他的给原因（youju/attachments.py）
-        "attachments": attachment_items(
-            session,
-            detail.attachments if detail else [],
-            kind=kind,
-            recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
-        ),
+        "attachments": _detail_attachments(session, doc, kind, attachment_rows),
         "checked": checked,
-        "body": _detail_body(session, doc, kind),
+        # 正文（D-097）：和阅读页同一个判断（原网页已失效的不给）
+        "body": body_payload(
+            reading_body(
+                session, doc, kind, attachments=bool(attachment_rows), redact=attachment_text.mask
+            )
+        ),
     }
     if fields:
         payload["fields"] = fields
@@ -2527,15 +2799,28 @@ def document(doc_id: int, session: SessionDep) -> dict:
     return payload
 
 
-def _detail_body(session: Session, doc: Document, kind: str) -> dict:
-    list_filter = list_body_filter(session, doc) if kind == "名单" else None
-    if kind == "名单" and list_filter is None:
-        # 失信、处罚类和个人类名单：和站内阅读页一样按"不展示"说，不引导去查名单
-        return {"status": "original"}
-    allowed = LIST_BODY_KINDS if list_filter is not None else BODY_KINDS
-    return body_for_reading(
-        _reading_body(session, doc.id, allowed_kinds=allowed), kind, list_filter=list_filter
+def _detail_attachments(
+    session: Session, doc: Document, kind: str, rows: list[DocumentAttachment]
+) -> list[dict]:
+    """详情页的附件：能不能在小程序里读（readable、state、stateText、scannedPages）和阅读页同一个
+    判断（attachment_text.judge，D-097）。preview、reason 是附件副本能不能下载，旧版小程序还在用，
+    照旧给，不能当成"能不能读"。"""
+    items = attachment_items(
+        session,
+        rows,
+        kind=kind,
+        recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
     )
+    states = {r.attachment_id: r for r in attachment_text.judge(session, doc, rows, now())}
+    for item in items:
+        state = states[int(item["id"])]
+        item.update(
+            readable=state.readable,
+            state=state.state,
+            stateText=state.note,
+            scannedPages=(state.scanned_pages or 0) if state.readable else 0,
+        )
+    return items
 
 
 def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
