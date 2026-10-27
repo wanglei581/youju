@@ -33,7 +33,14 @@ function load(file, deps, globals) {
 
 function access(visible) {
   const state = { visible, confirmed: true, available: visible };
-  return { current: () => ({ ...state }), reconcile() {}, refresh: () => Promise.resolve({ ...state }), canOpen: () => visible };
+  const listeners = new Set();
+  return {
+    current: () => ({ ...state }), reconcile() {}, refresh: () => Promise.resolve({ ...state }), canOpen: () => state.visible,
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    // 后台的回话改了板块状态（比如确认 AI 已经关了）
+    emit(next) { Object.assign(state, next); listeners.forEach((fn) => fn({ ...state })); },
+    listeners,
+  };
 }
 
 const CONSENT = { data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: false, features: [], remaining: {} }, reason: 'consent' };
@@ -46,9 +53,10 @@ async function open(page, visible, capabilities) {
   const titles = [];
   const switched = [];
   const values = new Map();
+  const board = access(visible);
   const view = load(`pages/${page}/index.js`, {
     '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(capabilities), forgetCapabilities() {}, advisorTask: () => Promise.resolve({}) },
-    '../../utils/ai-access.js': access(visible),
+    '../../utils/ai-access.js': board,
   }, {
     wx: {
       setNavigationBarTitle: ({ title }) => titles.push(title),
@@ -58,7 +66,7 @@ async function open(page, visible, capabilities) {
   });
   view.onLoad({ docId: '42', title: '关于开展申报的通知' });
   view.onShow(); await flush(); await flush();
-  return { view, titles, switched, text: render(read(`pages/${page}/index.wxml`), view.data) };
+  return { view, titles, switched, board, text: render(read(`pages/${page}/index.wxml`), view.data) };
 }
 
 test('两页的配置不写"工具"：打开的那一瞬间标题是空的，不会先闪一下"工具"', () => {
@@ -87,9 +95,9 @@ test('AI 关着、从旧链接进来：标题留空、页面没有 AI 字样，�
     assert.deepEqual(consent.titles, [''], page);
     assert.doesNotMatch(consent.text, /AI|工具/, page);
     consent.view.onUnload();
-    // 关着：回首页
+    // 关着：回首页，走之前标题也是空的
     const off = await open(page, false, { ...CONSENT, reason: undefined });
-    assert.deepEqual(off.titles, [''], page);
+    assert.ok(off.titles.every((title) => title === ''), page);
     assert.deepEqual(off.switched, ['/pages/home/index'], page);
     off.view.onUnload();
   }
@@ -104,5 +112,29 @@ test('AI 开着、能用：标题照入口写', async () => {
       assert.ok(titles.every((title) => title === '' || title === name), `${page} ${visible}`);
       view.onUnload();
     }
+  }
+});
+
+test('本机缓存说 AI 开着、其实已经关了：先按入口写了标题，后台确认关了就清掉标题回首页（Grok 审阅）', async () => {
+  for (const [page, name] of Object.entries(PAGES)) {
+    const { view, titles, switched, board } = await open(page, true, CONSENT);
+    assert.deepEqual(titles, [name], page);
+    board.emit({ visible: false, confirmed: true, available: false });
+    assert.equal(titles.at(-1), '', page);
+    assert.deepEqual(switched, ['/pages/home/index'], page);
+    // 页面关掉以后不再听板块的变化
+    view.onUnload();
+    assert.equal(board.listeners.size, 0, page);
+    board.emit({ visible: false, confirmed: true });
+    assert.deepEqual(switched, ['/pages/home/index'], page);
+  }
+});
+
+test('后台还没确认（连不上、还在问）时不走：只有确认关了才回首页', async () => {
+  for (const page of Object.keys(PAGES)) {
+    const { view, switched, board } = await open(page, true, CONSENT);
+    board.emit({ visible: false, confirmed: false });
+    assert.deepEqual(switched, [], page);
+    view.onUnload();
   }
 });

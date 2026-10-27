@@ -27,6 +27,17 @@ Page({
     this.setData({ docId: doc.docId || '', title: doc.title || '', taskId: query.taskId || '', viewing: !!query.taskId,
       today: todayISO(), qualificationOptions: clause.QUALIFICATIONS.map((name) => ({ name, checked: false })) });
     if (query.taskId) this.startSession({ taskId: query.taskId });
+    // AI 板块确认关了（后台说关着、不在白名单）：清掉标题回首页。本机缓存说开着、标题先写了入口名，
+    // 后来才确认关了时也一样，页面上不留 AI 字样（D-075；Grok 10/27 审阅）
+    this.unsubscribe = access.subscribe((state) => {
+      if (this.visible && state.confirmed && !state.visible) this.leave();
+    });
+  },
+  leave() {
+    if (this.leaving) return;
+    this.leaving = true;
+    wx.setNavigationBarTitle({ title: '' });
+    wx.switchTab({ url: '/pages/home/index', complete: () => { this.leaving = false; } });
   },
   startSession(options = {}) {
     this.session = clause.createSession({ api, storage: wx, docId: this.data.docId, title: this.data.title, ...options,
@@ -84,7 +95,7 @@ Page({
       if (gate === 'off' && !AI_INTERNAL) {
         // 底栏、列表上的入口也跟着重新问一次（关了或被移出白名单时随即收起）
         access.refresh();
-        this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return;
+        this.setData({ aiEnabled: false, gate }); this.leave(); return;
       }
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '', modelText: clause.modelText(ai.disclosure) });
       if (aiEnabled && this.session) this.session.show();
@@ -107,7 +118,7 @@ Page({
   // 今天的次数用完了：去看以前的结果
   records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); if (this.session) this.session.hide(); },
-  onUnload() { this.onHide(); },
+  onUnload() { this.onHide(); if (this.unsubscribe) this.unsubscribe(); },
   input(e) {
     const field = e.currentTarget.dataset.field;
     if (!Object.prototype.hasOwnProperty.call(this.data.form, field) || field === 'qualification') return;
