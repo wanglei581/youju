@@ -6,7 +6,10 @@
 - 只发政府公开文件的标题和正文，不发任何用户数据。
 """
 
+import fcntl
 import hashlib
+import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -55,9 +58,30 @@ class AIRunReport:
     due_soon_documents: int = 0
     # 调模型期间正文被换掉、这次的结果没记的份数（下一轮按新正文重查）
     body_changed: int = 0
+    # 重跑旧版本时碰上定时任务那一轮在跑，停下了（round_running）
+    round_busy: bool = False
 
 
 TASKS = ("kind", "deadlines")
+# 定时任务一轮的锁文件（deploy/round.sh、first-round.sh 用 flock 拿着）
+ROUND_LOCK = "/tmp/youju-round.lock"
+
+
+def round_running(path: str = ROUND_LOCK) -> bool:
+    """定时任务那一轮正在跑（锁被拿着）。只试一下、马上放开，不挡下一轮。"""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
 
 
 def _done(task: str, now: datetime):
@@ -373,10 +397,14 @@ def rerun_old_deadlines(
     days: int,
     limit: int,
     now: datetime | None = None,
+    busy: Callable[[], bool] = lambda: False,
 ) -> AIRunReport:
     """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
     不删数据（D-099 期 0）：已有的候选和核对状态都不动，规则候选的"AI 是否一致"按新结果重算，
     新找到的照常作为 AI 候选送审。调用出错的保留旧结果，下次再跑。
+
+    每份开始前问一下 busy（命令里是 round_running）：定时任务那一轮在跑就停下，免得和规则抽取
+    抢同一批候选的锁；已做完的照常保留，下次接着跑。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
@@ -384,6 +412,9 @@ def rerun_old_deadlines(
     report = AIRunReport()
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
+        if busy():
+            report.round_busy = True
+            break
         report.documents += 1
         body = detail.body_text
         try:

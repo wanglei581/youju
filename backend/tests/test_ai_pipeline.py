@@ -607,3 +607,41 @@ def test_recheck_command_only_counts_without_apply(session, session_factory, mon
     assert "主文件 1 份" in out and "这次约 0.00 元" in out and "没调模型" in out
     session.expire_all()
     assert _deadline_check(session, doc).result == []
+
+
+def test_rerun_stops_while_the_round_is_running(session) -> None:
+    """定时任务那一轮在跑：一份都不做，停下（做完的照常保留，下次接着跑）。"""
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    client, calls = fake_ai()
+    report = rerun_old_deadlines(
+        session,
+        client,
+        days=90,
+        limit=10,
+        now=datetime(2026, 10, 28, tzinfo=UTC),
+        busy=lambda: True,
+    )
+    assert report.round_busy and report.documents == 0 and calls == []
+    assert _deadline_check(session, doc).result == []
+
+
+def test_round_running_sees_a_held_lock(tmp_path) -> None:
+    import fcntl
+    import os
+
+    from youju.ai.pipeline import round_running
+
+    path = tmp_path / "round.lock"
+    assert not round_running(str(path))  # 没有锁文件
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT)
+    try:
+        assert not round_running(str(path))
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        assert round_running(str(path))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        assert not round_running(str(path))
+    finally:
+        os.close(fd)

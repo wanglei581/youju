@@ -45,10 +45,10 @@ def may_be_same(a_date: date, a_time: time | None, b_date: date, b_time: time | 
 
 
 def _clock(match: re.Match, period: str | None) -> time | None:
-    """原文的时刻。"下午 5 时""晚上 8 时"是 17 时、20 时；本来写成 17:00 的不再加。
-    "晚上 12 时"是当天结束，和"24 时"一样只记日期（D-099 期 0）。"""
+    """原文的时刻。"下午 5 时""晚上 8 时""中午 1 时"是 17 时、20 时、13 时；
+    本来写成 17:00 的不再加。"晚上 12 时"是当天结束，和"24 时"一样只记日期（D-099 期 0）。"""
     hour, minute = int(match.group("hour")), int(match.group("minute") or 0)
-    if period in ("下午", "晚上") and 1 <= hour <= 11:
+    if (period in ("下午", "晚上") and 1 <= hour <= 11) or (period == "中午" and 1 <= hour <= 2):
         hour += 12
     elif period == "晚上" and hour == 12:
         return None
@@ -103,9 +103,13 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
         for match in dates:
             before = sentence[max(0, match.start() - 45) : match.start()]
             after = sentence[match.end() : match.end() + 35]
-            # 区间起点后紧跟“至/到”，不作为截止。
+            # 区间起点后紧跟“至/到”，不作为截止；中间可以隔着"上午 9:00"这样的时刻（D-099 期 0：
+            # 以前带"上午/下午"的认不出，"10月12日上午9:00至10月31日"会把开始日当截止）
             after_date = re.sub(r"^\s*[（(][^）)]{1,6}[）)]", "", after)
-            if re.match(r"\s*(?:\d{1,2}\s*[:：时]\s*\d{0,2}\s*分?)?\s*[至到—–~-]", after_date):
+            if re.match(
+                r"\s*(?:(?:上午|下午|中午|晚上)\s*)?(?:\d{1,2}\s*[:：时]\s*\d{0,2}\s*分?)?\s*[至到—–~-]",
+                after_date,
+            ):
                 continue
             if re.match(r"\s*(?:以后|以来|之后|起)", after):
                 continue

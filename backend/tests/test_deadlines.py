@@ -167,6 +167,7 @@ def test_web_text_one_paragraph_per_line_is_unchanged():
         ("申报截止于10月20日晚上8时。", time(20)),
         ("申报截止于10月20日上午9:30。", time(9, 30)),
         ("申报截止于10月20日中午12时。", time(12)),
+        ("申报截止于10月20日中午1时。", time(13)),
         # "24 时""晚上 12 时"是当天结束：只记日期
         ("申报截止于10月20日24时。", None),
         ("申报截止于10月20日晚上12时。", None),
@@ -201,3 +202,20 @@ def test_same_moment_needs_the_same_clock():
     assert may_be_same(day, time(17), day, time(17))
     assert not may_be_same(day, time(17), day, time(9))
     assert not may_be_same(day, None, date(2026, 10, 21), None)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 区间开始日后面隔着"上午 9:00"再接"至"：以前认不出，把开始日当截止（D-099 期 0）
+        (
+            "申报时间：2026年10月12日上午9:00至10月31日下午5:00止。",
+            [(date(2026, 10, 31), time(17))],
+        ),
+        # 结束日只写了"31日"：读不出来，宁可漏掉，也不把开始日当截止
+        ("申报时间：2026年10月12日上午9:00至31日下午5:00止。", []),
+        ("请于10月12日上午9时至下午5时前报送材料。", []),
+    ],
+)
+def test_range_start_with_day_period_is_skipped(text, expected):
+    assert [(c.due_date, c.due_time) for c in extract_deadlines(text, PUBLISHED)] == expected

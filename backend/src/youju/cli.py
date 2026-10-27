@@ -617,7 +617,7 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     不加 --apply 只清点、估费用，不调模型、不改数据。"""
     from youju.ai import get_chat_client
     from youju.ai.deadlines import RESULT_VERSION
-    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines
+    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines, round_running
     from youju.ai.usage import cost_yuan
 
     now = datetime.now(UTC)
@@ -657,6 +657,9 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     if not args.apply:
         print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
         return 0
+    if round_running():
+        print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
+        return 1
     client = get_chat_client()
     if client is None:
         print("没有配置 AI 密钥（YOUJU_AI_API_KEY），不能重跑")
@@ -664,10 +667,14 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     usage_ok = False
     try:
         with session_factory()() as session:
-            report = rerun_old_deadlines(session, client, days=args.days, limit=args.limit, now=now)
+            report = rerun_old_deadlines(
+                session, client, days=args.days, limit=args.limit, now=now, busy=round_running
+            )
     finally:
         usage_ok = _finish_ai(client, "recheck")
     print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    if report.round_busy:
+        print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
         f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
