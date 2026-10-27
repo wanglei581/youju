@@ -304,6 +304,9 @@ def test_hint_edge_cases() -> None:
     # 一边没写时刻：日期一致，但不算同一刻，不建议直接通过（D-099 期 0）
     assert deadline_hint(_row(), found) == Hint("agree", "日期一致，但时刻只有一边写了")
     assert deadline_hint(_row(candidate_time=time(17, 0)), no_clock).code == "agree"
+    # 时刻只有一边写了、类型也不同：按类型不一致提示
+    other_kind = [(date(2026, 10, 15), time(17, 0), "材料报送截止")]
+    assert deadline_hint(_row(), other_kind).code == "kind_mismatch"
     assert deadline_hint(_row(), no_clock).code == "suggest"
     assert deadline_hint(_row(candidate_time=time(17, 0)), found).code == "suggest"
     # 两边都写了时刻但不同：不一致

@@ -83,12 +83,17 @@ def deadline_hint(row: DocumentDeadline, found: list[Found] | None) -> Hint:
         if same_moment(due, clock, row.candidate_date, row.candidate_time)
     ]
     if not kinds:
-        if any(
-            may_be_same(due, clock, row.candidate_date, row.candidate_time)
-            for due, clock, _ in found
-        ):
-            return Hint("agree", "日期一致，但时刻只有一边写了")
-        return Hint("mismatch", "规则与 AI 不一致")
+        # 同一天、时刻只有一边写了：先看类型，类型也不同的按类型不一致提示
+        loose = [
+            kind
+            for due, clock, kind in found
+            if may_be_same(due, clock, row.candidate_date, row.candidate_time)
+        ]
+        if not loose:
+            return Hint("mismatch", "规则与 AI 不一致")
+        if row.kind not in loose:
+            return Hint("kind_mismatch", f"类型不一致：AI 认为是{loose[0] or '其他'}")
+        return Hint("agree", "日期一致，但时刻只有一边写了")
     if row.kind not in kinds:
         return Hint("kind_mismatch", f"类型不一致：AI 认为是{kinds[0] or '其他'}")
     if row.candidate_date is None or _date_span(row.evidence or "", row.candidate_date) is None:
