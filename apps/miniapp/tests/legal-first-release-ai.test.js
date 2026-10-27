@@ -27,7 +27,7 @@ test('只写包里有的：保留 AI、投诉举报、我的记录、使用帮�
     assert.ok(BANNED.test(word), `发布检查没拦：${word}`);
   }
   assert.ok(section(ai.user, '八、AI 功能与生成内容标识'), '用户协议要有 AI 那一条');
-  for (const kept of ['AI 功能（登录后使用）', '投诉举报', '我的记录', '使用帮助', 'AI 模型调用', '已备案的大模型']) {
+  for (const kept of ['AI 功能（登录后使用）', '投诉举报', '我的记录', '使用帮助', 'AI 模型调用', '腾讯混元助手大模型']) {
     assert.ok(text.includes(kept), `少了：${kept}`);
   }
   // 运营者、免责声明和完整版一样
@@ -91,7 +91,10 @@ test('改的几处：适用人群、查名单、注明出处、AI 结果送内�
   const aiItem = (s) => s.p.find((p) => /^\d+\. AI 功能/.test(p)).replace(/^\d+\. /, '').replace('政策解读（含申报材料清单）', '政策解读和材料清单');
   same('privacy', '一、', aiItem);
   same('privacy', '三、', (s) => s.p.find((p) => p.startsWith('· AI 任务：')));
-  same('privacy', '四、', (s) => s.p.find((p) => p.startsWith('· AI 模型调用：')));
+  // AI 模型调用：写明经微信云开发调用腾讯的腾讯混元助手大模型（D-098），后面"发给模型的只有……"和 2026-11 一字不差
+  const modelCall = (s) => s.p.find((p) => p.startsWith('· AI 模型调用：')).split('按我们的委托处理。')[1];
+  same('privacy', '四、', modelCall);
+  assert.match(privacy, /调用深圳市腾讯计算机系统有限公司的腾讯混元助手大模型/);
   // 段落数：用户协议第四条少 1 款（上传名单）；指引第一部分少 2 项（批量工具、加量体验），第三部分少 2 条保存期限
   const count = (doc) => doc.sections.map((s) => s.p.length);
   // 第二部分多 1 条：提醒入口开通后才显示
