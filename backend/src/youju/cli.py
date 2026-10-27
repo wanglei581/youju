@@ -657,6 +657,10 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     if not args.apply:
         print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
         return 0
+    if get_settings().role == "api":
+        # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
+        print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
+        return 1
     if round_running():
         print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
         return 1

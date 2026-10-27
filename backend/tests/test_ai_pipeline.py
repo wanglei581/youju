@@ -645,3 +645,21 @@ def test_round_running_sees_a_held_lock(tmp_path) -> None:
         assert not round_running(str(path))
     finally:
         os.close(fd)
+
+
+def test_recheck_apply_refuses_in_the_api_container(session_factory, monkeypatch, capsys):
+    """重跑要在 admin 容器里跑：定时任务在那边，api 容器里看不到它那一轮的锁。"""
+    import argparse
+    from types import SimpleNamespace
+
+    from youju import cli
+
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(role="api"))
+
+    def no_client(*args, **kwargs):
+        raise AssertionError("不该调模型")
+
+    monkeypatch.setattr("youju.ai.get_chat_client", no_client)
+    code = cli._cmd_ai_recheck_deadlines(argparse.Namespace(days=90, limit=300, apply=True))
+    assert code == 1 and "admin 容器" in capsys.readouterr().out
