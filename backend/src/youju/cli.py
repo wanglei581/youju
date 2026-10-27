@@ -725,7 +725,7 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
 def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.alerts import send_alert
-    from youju.digest import build_digest, digest_text, pick_for_review
+    from youju.digest import build_digest, digest_text, pick_for_review, readability_text
 
     client = get_chat_client()
     usage_ok = False
@@ -738,11 +738,20 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     finally:
         usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
+    # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
+    # （主日报里已写"取不到"）
+    extra = readability_text(digest)
     print(text)
-    sent = None if args.dry_run else send_alert(text)
-    if not args.dry_run and sent is None:
+    if extra:
+        print(extra)
+    if args.dry_run:
+        return 0 if usage_ok else 1
+    sent = send_alert(text)
+    if sent is None:
         print("未配置告警，日报未发送")
-    return 0 if usage_ok and (args.dry_run or sent is True) else 1
+    elif sent is True and extra:
+        sent = send_alert(extra)
+    return 0 if usage_ok and sent is True else 1
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
