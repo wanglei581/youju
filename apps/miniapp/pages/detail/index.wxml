@@ -155,13 +155,13 @@
       <view class="body-none">{{noBody}}</view>
       <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">在“查名单”里按企业名称查询 ›</view>
     </block>
-    <view wx:if="{{entry}}" class="link body-more" bindtap="readBody" aria-role="button">{{entry.label}} ›</view>
+    <view wx:if="{{entry}}" id="read-entry" class="link body-more" bindtap="readBody" aria-role="button">{{entry.label}} ›</view>
   </view>
 
   <!-- 附件紧跟正文：每个直接写能不能读（和阅读页同一个判断）；能读的写"阅读"可点，读不了的灰色、不能点、写原因 -->
   <view wx:if="{{atts.length}}" id="attachments" class="card">
     <view class="section-title">附件 {{atts.length}}</view>
-    <view wx:for="{{atts}}" wx:key="index" class="att {{item.canOpen ? '' : 'att--off'}}" hover-class="{{item.canOpen ? 'att--pressed' : 'none'}}" data-index="{{index}}" bindtap="openAttachment" aria-role="{{item.canOpen ? 'button' : 'text'}}" aria-disabled="{{!item.canOpen}}">
+    <view wx:for="{{atts}}" wx:key="index" id="att-{{index}}" class="att {{item.canOpen ? '' : 'att--off'}}" hover-class="{{item.canOpen ? 'att--pressed' : 'none'}}" data-index="{{index}}" bindtap="openAttachment" aria-role="{{item.canOpen ? 'button' : 'text'}}" aria-disabled="{{!item.canOpen}}">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
       <view class="att-body">
         <text class="att-name">{{item.name}}</text>
@@ -189,6 +189,6 @@
     <view wx:if="{{loginOpen}}" class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
     <!-- 10/18 验收：只能从右上角"···"转发时，园区专员找不到；按钮和菜单走同一个 onShareAppMessage -->
     <button class="bar-item bar-share" open-type="share" disabled="{{!shareReady}}" hover-class="none" aria-label="转发给好友或群"><t-icon name="share" size="44rpx" /><text>转发</text></button>
-    <view wx:if="{{entry}}" class="btn-primary bar-main" bindtap="readBody"><t-icon name="file" size="32rpx" color="#FFFFFF" />{{entry.label}}</view>
+    <view wx:if="{{entry}}" id="bar-read" class="btn-primary bar-main" bindtap="readBody"><t-icon name="file" size="32rpx" color="#FFFFFF" />{{entry.label}}</view>
   </view>
 </block>
