@@ -1172,11 +1172,14 @@ def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     assert not interpret.ai_agreed(open_to_all, user)
     response = client.post("/api/v1/me/agreement", json={"version": "2026-10"})
     assert response.status_code == 422
-    # AI 上线后，完整版请用户读完 2026-11 再同意：AI 和批量工具的条款都覆盖到了
+    # 完整版请用户读完 2026-11 再同意：批量工具的条款覆盖到了；AI 10/28 起要 2026-11.1 或更新的版本
+    # （完整版 2026-11 没写"AI 结果送微信内容安全检查"，完整版升 2026-12 时补上）
     assert client.post("/api/v1/me/agreement", json={"version": "2026-11"}).status_code == 200
     session.expire_all()
     user = session.scalar(select(User).where(User.openid == "dev-user"))
     assert me.tools_agreed(user.agreement_version)
+    assert not interpret.ai_agreed(open_to_all, user)
+    user.agreement_version = "2026-11.1"
     assert interpret.ai_agreed(open_to_all, user)
 
 
