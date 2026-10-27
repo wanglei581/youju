@@ -11,7 +11,7 @@ from youju.api.app import app
 from youju.api.v1 import _mask_contact_names, body_for_reading
 from youju.db import get_session
 from youju.lists import body
-from youju.models import Document, DocumentDetail, ListEntry, ListParse, Source
+from youju.models import Document, DocumentDetail, DocumentMerge, ListEntry, ListParse, Source
 
 NOW = datetime(2026, 10, 25, 2, 0, tzinfo=UTC)
 NAMES = {"山东星河科技有限公司", "青岛海纳智能有限公司", "烟台远航机械有限公司"}
@@ -465,3 +465,30 @@ def test_list_dominated_and_person_list_bodies_are_not_shown(client, session) ->
         "status": "original",
         "reason": "personal",
     }
+
+
+def test_list_notice_selection_hides_the_list_first_and_keeps_the_200_char_rule(client, session):
+    """名单类通知挑合并转载里用哪一份（Grok 第 1、2 轮）：先挡名单再看像不像导航；"自己的够 200 字就用自己的"
+    仍按挡名单之前的字数算，和改之前一样。"""
+    master = _notice(
+        session, "关于2026年第四批专精特新中小企业名单的公示", NOTICE + TABLE + SIGNATURE
+    )
+    repost = _notice(
+        session, "转载：关于2026年第四批专精特新中小企业名单的公示", ["转载的说明。" * 80]
+    )
+    session.add(
+        DocumentMerge(duplicate_id=repost.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    session.commit()
+    body_text = session.get(DocumentDetail, master.id).body_text
+    assert len(body_text) >= v1.BODY_MIN_CHARS
+    reading = client.get(f"/api/v1/documents/{master.id}/reading").json()
+    # 自己的正文够 200 字（算上名单）：用自己的、挡掉名单，不换成组里更长的转载
+    assert reading["status"] == "ok" and reading["source"]["id"] == str(master.id)
+    assert reading["listHidden"] is True
+    # 自己的正文只剩网页导航（挡完也像导航）：换成组里的转载
+    detail = session.get(DocumentDetail, master.id)
+    detail.body_text = "首页\n政务公开\n通知公告"
+    session.commit()
+    reading = client.get(f"/api/v1/documents/{master.id}/reading").json()
+    assert reading["status"] == "ok" and reading["source"]["id"] == str(repost.id)
