@@ -75,9 +75,12 @@ test('不再有复制原文链接的代码：utils/copy.js 已删，所有页面
   for (const file of ['pages/detail/index.js', 'components/doc-row/index.js']) {
     assert.doesNotMatch(visible(read(file)), /setClipboardData|copyVersion/, file);
   }
+  // D-097：正文下面和底栏两处同名的阅读入口（阅读全文 / 阅读附件）都在小程序内；出处不写网址
   const detail = visible(read('pages/detail/index.wxml'));
-  assert.match(detail, /bindtap="readBody">站内阅读全文</);
-  assert.match(detail, /正文和附件可在本小程序阅读，链接仅供记录来源/);
+  assert.equal((detail.match(/bindtap="readBody"/g) || []).length, 2);
+  assert.match(detail, /bindtap="readBody"[^>]*>\{\{entry\.label\}\} ›</);
+  // 页面上不显示网址（AI 入口组件拿 doc.url 作内部参数，不显示）
+  assert.doesNotMatch(detail, /\{\{doc\.host|>[^<]*\{\{doc\.url\}\}|原文网址|链接仅供记录来源/);
 });
 
 // D-090（创始人 10/24 "查名单这组用词按你推荐的改"）：首页小字"政府公开名单"，名单页和转发标题"在政府公开名单里查企业"，

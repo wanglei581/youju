@@ -108,15 +108,19 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
   const old = render('pages/detail/index.wxml', { ...legacy.data, loading: false });
   assert.equal(findAll(old, hasClass('dls-head')).length, 0);
   assert.equal(flat(findAll(card(old), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
-  for (const status of ['list', 'original', 'none', 'failed']) {
-    body = { status, total: 0 };
+  // 没正文时分情况说（D-097）：名单去查名单，个人事项写含个人信息，内容在附件里的指向附件，网站取不到的直说
+  const said = {
+    list: /查名单/, original: /含个人信息，不在小程序内展示全文/, none: /这个网站的正文还取不到/, failed: /这个网站的正文还取不到/,
+    attachments: /这份通知的内容在附件里/, link_gone: /原网页已打不开，正文暂不提供/,
+  };
+  for (const status of Object.keys(said)) {
+    body = ['attachments', 'link_gone'].includes(status) ? { status: 'none', reason: status } : { status, total: 0 };
     page.refreshing = false; page.load(); await flush();
     root = render('pages/detail/index.wxml', { ...page.data, loading: false });
     assert.equal(flat(elements(card(root))[0]), '正文');
     assert.equal(findAll(card(root), hasClass('body-note')).length, 0);
-    // 去哪看按过审版（#356，全程小程序内，D-089）：名单去查名单，其余去站内阅读页；不叫人复制链接去浏览器
-    assert.match(textOf(card(root)), status === 'list' ? /查名单/ : /站内阅读页/);
-    assert.doesNotMatch(textOf(card(root)), /复制原文链接|浏览器/);
+    assert.match(textOf(card(root)), said[status]);
+    assert.doesNotMatch(textOf(card(root)), /复制原文链接|浏览器|站内阅读页|见原文|收录不足|请稍后重试|正在准备/);
   }
 });
 
@@ -305,26 +309,22 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   const line = '按每行的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准）；关键词不填就不限主题；客户名称只用来标出是哪家，不判断能不能报。';
   assert.ok(textOf(render('pages/advisor-form/index.wxml', { ...FORM, kind: 'track', title: '客户相关通知表' })).includes(line));
   assert.ok(!textOf(render('pages/advisor-form/index.wxml', FORM)).includes(line));
+  // D-097 起：详情页只给正文开头、在段末停，正文下面和底栏两处同名"阅读全文"去阅读页（全文在那里），
+  // 不再有"展开全文/展开摘录/收起"
   const body = { status: 'ok', text: '一'.repeat(800), total: 800, truncated: false };
   const detail = detailPage(() => ({ ...DOC, kind: '政策', body }));
   detail.onLoad({ id: '5' }); await flush();
-  // 过审版（#356，站内阅读 D-089）起：正文收全了的写"展开全文"，只收了一部分的写"展开摘录"——
-  // #341 原来为了不把截断的正文说成全部改成"展开正文"，过审版的写法已经做到，按过审版的字
-  const more = findAll(render('pages/detail/index.wxml', { ...detail.data, loading: false }), hasClass('body-more'))[0];
-  assert.equal(flat(more), '展开全文');
-  // 正文被截断（只存了一部分）：按钮不写"全部""全文"；展开后写明只是摘录、去"站内阅读全文"接着读
-  const cut = detailPage(() => ({ ...DOC, kind: '政策', body: { status: 'ok', text: '一'.repeat(800), total: 3000, truncated: true } }));
+  let root = render('pages/detail/index.wxml', { ...detail.data, loading: false });
+  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '阅读全文›');
+  assert.equal(flat(findAll(root, hasClass('body-label'))[0]), '下面是开头，全文约800字');
+  assert.doesNotMatch(textOf(root), /展开全文|展开摘录|收起|站内阅读全文/);
+  // 正文只存了前 2 万字（truncated）：开头照样在段末停，"阅读全文"去阅读页读完整的（阅读页不截断）
+  const cut = detailPage(() => ({ ...DOC, kind: '政策', body: { status: 'ok', text: '一'.repeat(800), total: 30000, truncated: true } }));
   cut.onLoad({ id: '5' }); await flush();
-  let root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
-  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '展开摘录');
-  assert.doesNotMatch(flat(findAll(root, hasClass('body-more'))[0]), /全部|全文/);
-  assert.equal(findAll(root, hasClass('body-rest')).length, 0, '折叠时不写后面还有');
-  cut.toggleBody();
   root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
-  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '收起');
-  assert.equal(flat(findAll(root, hasClass('body-rest'))[0]), '本页仅展示正文摘录，请点“站内阅读全文”继续阅读。');
-  // 说的那个按钮确实在页面上；不再叫人复制链接去浏览器（D-089、D-091）
-  assert.ok(findAll(root, (n) => tapsTo('readBody')(n) && flat(n) === '站内阅读全文').length >= 1);
+  assert.equal(flat(findAll(root, hasClass('body-label'))[0]), '下面是开头，全文约30000字');
+  // 说的那个入口确实在页面上（正文下面和底栏两处同名）；不再叫人复制链接去浏览器（D-089、D-091）
+  assert.equal(findAll(root, (n) => tapsTo('readBody')(n) && /阅读全文/.test(flat(n))).length, 2);
   assert.doesNotMatch(textOf(root), /复制原文链接|浏览器/);
 });
 

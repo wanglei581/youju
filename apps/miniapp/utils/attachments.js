@@ -1,30 +1,13 @@
 // 附件主入口进入原生阅读页；二进制下载仅保留给显式保存操作。
-// 阅读状态由实时阅读接口决定，不用旧副本可下载标记推断是否可读。
+// 能不能读以服务端为准（详情接口的 readable、state、stateText，和阅读页同一个判断，D-097），
+// 不用"有没有副本"（preview）推断能不能读。
 const api = require('./api.js');
 
 
 const DIR = 'attachments';
 const KEEP = 3;
 // 不写"以原网站为准"：像是要用户出去看（10/23 审核退回"复制链接去浏览器"）
-const NOTE_COPIES = '附件在本小程序阅读，以发文机关公布的文本为准';
-const NOTE_ORIGINAL = '阅读页会显示附件内容及处理状态';
-// 旧副本下载限制的原因（不作为原生阅读结论）。
-const REASONS = {
-  format: '该格式不能在小程序内打开',
-  host: '附件不在政府网站，不提供副本',
-  kind: '名单等文件的附件尚不可读',
-  pending: '附件暂未缓存副本，内容尚不可读',
-  old: '较早文件的附件尚不可读',
-  too_large: '附件超过 20MB，内容尚不可读',
-  personal: '附件含个人信息，内容尚不可读',
-  scan: '扫描件附件尚不可读',
-  image: '附件含图片，内容尚不可读',
-  failed: '附件副本没能从原网站取到',
-};
-
-function reasonText(reason) {
-  return REASONS[reason] || NOTE_ORIGINAL;
-}
+const NOTE_READ = '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准';
 
 function sizeText(bytes) {
   if (!(bytes > 0)) return '';
@@ -32,17 +15,23 @@ function sizeText(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// 详情页只显示副本大小，完整阅读状态进入原生页实时核对。
+// 详情页的附件：能读的写"阅读"、可点；读不了的灰色、不能点，后面直接写原因（stateText）。
+// 有扫描页的也能读，后面写还缺几页。旧接口没有 readable 时都能点，由阅读页说明
 function decorate(list) {
-  return (list || []).map((att) => Object.assign({}, att, {
-    canOpen: !!att.preview,
-    meta: att.preview ? sizeText(att.size) : '查看内容及处理状态',
-    action: '站内阅读',
-  }));
+  return (list || []).map((att) => {
+    const known = typeof att.readable === 'boolean';
+    const canOpen = known ? att.readable : true;
+    return Object.assign({}, att, {
+      canOpen,
+      meta: known && typeof att.stateText === 'string' ? att.stateText : '',
+      action: canOpen ? '阅读' : '',
+    });
+  });
 }
 
+// 附件列表底下的一句：有能读的附件才写
 function note(list) {
-  return (list || []).some((att) => att.preview) ? NOTE_COPIES : NOTE_ORIGINAL;
+  return (list || []).some((att) => att.canOpen) ? NOTE_READ : '';
 }
 
 // 本机文件名用附件名称：转发给朋友时对方看到的就是这个名字
@@ -151,4 +140,4 @@ function open(att, docId) {
   }));
 }
 
-module.exports = { decorate, note, open, download, fileName, sizeText, reasonText, REASONS, NOTE_COPIES, NOTE_ORIGINAL };
+module.exports = { decorate, note, open, download, fileName, sizeText, NOTE_READ };

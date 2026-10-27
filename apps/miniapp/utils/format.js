@@ -213,9 +213,107 @@ function reviewStaleNote(reviewedAt, now) {
   return `今日未更新：截止日期最近一次人工核对是 ${monthDay(day)}`;
 }
 
+// ---- 详情页"能读到什么"（D-097）：正文开头在段末停、两处同名的阅读入口、正文卡顶上那一行、没正文时说什么 ----
+// 能不能读以服务端为准（详情接口的 body 和 attachments[].readable、state、stateText，和阅读页同一个
+// 判断），这里只决定页面怎么写，不另做判断。
+
+// 不满一屏就全部显示（"全文如下"）：28rpx 字号一行约 18 个字、一屏约 16 行
+const ONE_SCREEN = 300;
+// 长的显示开头约 3 段，在段落末尾停；开头几段太短（"各有关单位："）就多带几段，第一段就很长的
+// 在句末停
+const OPENING_PARAS = 3;
+const OPENING_MIN = 80;
+const OPENING_MAX = 450;
+const OPENING_MAX_PARAS = 6;
+
+function aboutChars(total) {
+  const n = Number(total) || 0;
+  if (n < 1000) return String(Math.max(10, Math.round(n / 10) * 10));
+  return String(Math.round(n / 100) * 100);
+}
+
+// 第一段就很长：在 OPENING_MAX 以内最后一个句号、分号后面停；前一半里都没有就停在 OPENING_MAX
+function cutLong(text) {
+  let cut = -1;
+  for (let i = 0; i < Math.min(text.length, OPENING_MAX); i += 1) {
+    if ('。；！？'.includes(text[i])) cut = i + 1;
+  }
+  return text.slice(0, cut >= OPENING_MAX / 2 ? cut : OPENING_MAX);
+}
+
+// body：详情接口的 body（status 为 ok 时有 text、total、truncated）。返回 { text, full, label }：
+// full 为 true 时正文已在详情页全部显示
+function opening(body) {
+  const text = String((body && body.text) || '');
+  const total = Number(body && body.total) || text.length;
+  const truncated = !!(body && body.truncated);
+  if (!truncated && total <= ONE_SCREEN) return { text, full: true, label: '全文如下' };
+  const paras = text.split('\n').filter((p) => p.trim());
+  const picked = [];
+  let len = 0;
+  for (const p of paras) {
+    const enough = picked.length >= OPENING_PARAS && len >= OPENING_MIN;
+    if (enough || picked.length >= OPENING_MAX_PARAS || (picked.length && len + p.length > OPENING_MAX)) break;
+    picked.push(p);
+    len += p.length;
+  }
+  let shown = picked.join('\n');
+  if (shown.length > OPENING_MAX) shown = cutLong(shown);
+  if (!truncated && shown.length >= paras.join('\n').length) return { text, full: true, label: '全文如下' };
+  return { text: shown, full: false, label: `下面是开头，全文约 ${aboutChars(total)} 字` };
+}
+
+// 附件读不了时正文卡顶上那一行的短说法；别的原因看附件列表里每个附件后面写的
+const SHORT = {
+  scan: '扫描件暂不能识别文字',
+  pending: '新附件一般半天内可读',
+  format: '格式暂不支持',
+};
+
+// "附件 3 个，2 个能读，1 个扫描件暂不能识别文字"
+function attachmentLine(atts) {
+  const list = atts || [];
+  if (!list.length) return '';
+  const ok = list.filter((a) => a.readable).length;
+  if (ok === list.length) return `附件 ${list.length} 个，${list.length > 1 ? '都' : ''}能读`;
+  const rest = list.filter((a) => !a.readable);
+  const states = [...new Set(rest.map((a) => a.state))];
+  const why = states.length === 1 && SHORT[states[0]] ? SHORT[states[0]] : '暂不能读';
+  if (ok) return `附件 ${list.length} 个，${ok} 个能读，${rest.length} 个${why}`;
+  return `附件 ${list.length} 个，暂不能读（${why === '暂不能读' ? '原因见下面每个附件' : why}）`;
+}
+
+// 正文卡顶上那一行："正文约 3200 字 · 附件 3 个，2 个能读，1 个扫描件暂不能识别文字"
+function summaryLine(body, atts) {
+  const parts = [];
+  if (body && body.status === 'ok') parts.push(`正文约 ${aboutChars(body.total)} 字`);
+  const line = attachmentLine(atts);
+  if (line) parts.push(line);
+  return parts.join(' · ');
+}
+
+// 没正文时写的话（设计稿第三节）；名单类正文主要是名单的、个人事项的也在这里
+function noBodyText(body) {
+  if (!body) return '';
+  if (body.status === 'list') return '这份通知的正文里有名单，名单请在“查名单”里按企业名称查询';
+  if (body.status === 'original') return '含个人信息，不在小程序内展示全文';
+  if (body.reason === 'attachments') return '这份通知的内容在附件里';
+  if (body.reason === 'link_gone') return '原网页已打不开，正文暂不提供';
+  return '这个网站的正文还取不到';
+}
+
+// 正文下面和底栏两处同名的入口（D-097）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；正文已全部
+// 显示或没有正文、但有能读的附件 → "阅读附件"（去阅读页看第一个能读的附件）；都读不了 → 不显示
+function readEntry(body, view, atts) {
+  if (body && body.status === 'ok' && view && !view.full) return { label: '阅读全文', attachment: '' };
+  const first = (atts || []).find((a) => a.readable);
+  return first ? { label: '阅读附件', attachment: String(first.id) } : null;
+}
+
 module.exports = {
   reviewStaleNote,
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
+  ONE_SCREEN, OPENING_MAX, aboutChars, opening, attachmentLine, summaryLine, noBodyText, readEntry,
 };

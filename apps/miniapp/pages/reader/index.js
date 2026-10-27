@@ -1,9 +1,10 @@
 const api = require('../../utils/api.js');
+const progress = require('../../utils/reading-progress.js');
 
+// 服务端没给说明时的兜底（页面说法以服务端 notice 为准，D-097 设计稿第三节）
 const STATUS = {
-  partial: '内容尚不完整，请勿据此认定已读到全部原文。', scan: '扫描页尚未形成可阅读内容。',
-  empty: '暂未取得可阅读内容。', unavailable: '这份内容暂不可用。',
-  list: '名单仅提供已提取的企业查询结果，暂不提供完整名单。', unsupported: '该格式暂不能在站内阅读。',
+  scan: '扫描件，暂不能识别文字。', empty: '这部分没有能显示的文字。', unavailable: '这部分暂时读不了。',
+  list: '名单请在“查名单”里按企业名称查询。', unsupported: '这部分暂不能在小程序内阅读。',
 };
 const LIST_TITLE = '原名单里的这一行';
 // 查名单结果给的加密编号（D-088）：32 个字母、数字、-、_
@@ -98,13 +99,42 @@ function listRowView(res) {
   };
 }
 
+// 阅读页的目录（D-097）："正文 · 附件 1 · 附件 2"，读不了的也列出来、写状态（和详情页同一个判断）
+function tocItems(toc, part) {
+  const value = objectOf(toc);
+  const body = objectOf(value.body);
+  const items = [{ id: '', label: '正文', name: '', readable: body.readable === true, note: textOf(body.note), current: !part }];
+  const list = Array.isArray(value.attachments) ? value.attachments.slice(0, 50) : [];
+  list.forEach((raw, i) => {
+    const item = objectOf(raw);
+    const id = item.id == null ? '' : String(item.id);
+    if (!/^\d+$/.test(id)) return;
+    items.push({ id, label: `附件 ${i + 1}`, name: textOf(item.name), readable: item.readable === true,
+      note: item.readable === true ? '' : textOf(item.stateText), current: id === part });
+  });
+  return items;
+}
+
+// 这一部分后面第一个能读的附件：正文读完、附件读完（或这一部分读不了）时给"接着读附件 N：××"
+function nextPartOf(items, part) {
+  const at = items.findIndex((item) => item.current);
+  return items.slice(at + 1).find((item) => item.id && item.readable) || null;
+}
+
+// 读到这一部分的末尾写什么：有扫描页的写还缺几页，不写"读完"
+function endTextOf(label, status, scanned) {
+  if (status === 'partial' && scanned > 0) return `能显示的文字到这里。另有 ${scanned} 页扫描件，暂不能识别文字`;
+  return `${label}完`;
+}
+
 Page({
   data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '',
-    segments: [], nextCursor: null, page: 1, totalSegments: 0, scannedPages: 0, complete: false,
+    segments: [], nextCursor: null, prevCursor: null, page: 1, pages: 0, totalSegments: 0, scannedPages: 0, complete: false,
+    docTitle: '', partLabel: '正文', partName: '', toc: [], nextPart: null, endText: '', resumePage: 0, updatedNote: '',
     listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false },
   onLoad(q) {
-    this.docId = String(q.id || ''); this.attachmentId = q.attachment || '';
-    this.cursors = ['']; this.cursorIndex = 0;
+    this.docId = String(q.id || ''); this.part = q.attachment ? String(q.attachment) : '';
+    this.revision = ''; this.firstShow = true;
     this.listMode = q.entry != null;
     this.entryToken = this.listMode ? String(q.entry) : '';
     if (this.listMode) this.setData({ listMode: true });
@@ -112,9 +142,10 @@ Page({
   onShow() {
     this.visible = true;
     if (api.watchStartup) api.watchStartup(this);
-    // 从后台或其他页面回来重新验证，旧内容不能在撤回后继续当作有效内容展示。
+    // 从后台或其他页面回来重新验证，旧内容不能在撤回后继续当作有效内容展示。回到记着的那一页
     if (this.listMode) return this.loadRecord();
-    return this.restart();
+    const banner = this.firstShow; this.firstShow = false;
+    return this.openPart(this.part, { resume: true, banner });
   },
   onHide() {
     this.visible = false; this.seq = (this.seq || 0) + 1;
@@ -126,28 +157,41 @@ Page({
     this.setData(clear);
   },
   onUnload() { this.onHide(); },
-  restart() {
-    this.cursors = ['']; this.cursorIndex = 0;
-    this.setData({ segments: [], source: null, revision: '', nextCursor: null, page: 1, complete: false });
-    return this.loadPage();
+  // 打开正文或某个附件：记着读到第几页（同一内容版本）就从那一页接着读，否则从第 1 页
+  openPart(part, opts = {}) {
+    this.part = part ? String(part) : ''; this.revision = '';
+    this.setData({ segments: [], source: null, revision: '', nextCursor: null, prevCursor: null, page: 1, pages: 0,
+      complete: false, endText: '', nextPart: null, resumePage: 0, updatedNote: '' });
+    const saved = opts.resume && /^\d+$/.test(this.docId) ? progress.get(this.docId, this.part) : null;
+    if (saved) return this.loadPage(saved.cursor, saved.revision, { resumed: saved.page, banner: opts.banner });
+    return this.loadPage('0', '');
   },
-  loadPage() {
+  restart() { progress.clear(this.docId, this.part); return this.openPart(this.part); },
+  loadPage(cursor, revision, opts = {}) {
     if (!this.visible) return Promise.resolve();
     const seq = this.seq = (this.seq || 0) + 1;
     const current = () => this.visible && seq === this.seq;
-    const cursor = this.cursors[this.cursorIndex];
-    const revision = this.data.revision;
     this.setData({ loading: true, error: '', changed: false, segments: [], complete: false });
-    if (!/^\d+$/.test(this.docId) || this.attachmentId && !/^\d+$/.test(this.attachmentId)) {
+    if (!/^\d+$/.test(this.docId) || this.part && !/^\d+$/.test(this.part)) {
       this.setData({ loading: false, error: '阅读地址无效，请返回文件详情重新打开。' }); return Promise.resolve();
     }
-    return api.reading(this.docId, this.attachmentId, { cursor, revision }).then((res) => {
+    // 出错时"重试"重新请求这一页（不跳过、不回到第 1 页）
+    this.lastRequest = { cursor, revision, opts };
+    const params = revision ? { cursor, revision } : { cursor };
+    return api.reading(this.docId, this.part, params).then((res) => {
       if (!current()) return;
       if (!res) throw new Error('阅读内容格式有误，请重试');
+      const toc = tocItems(res.toc, this.part);
+      const here = toc.find((item) => item.current) || { label: this.part ? '附件' : '正文' };
+      const source = objectOf(res.source);
+      const docTitle = this.part ? (this.data.docTitle || textOf(source.title)) : textOf(res.title);
+      const head = { toc, docTitle, partLabel: here.label, partName: this.part ? textOf(res.title) : '', source,
+        title: docTitle || '站内阅读' };
       if (!['ok', 'partial'].includes(res.status)) {
-        this.cursors = ['']; this.cursorIndex = 0;
-        this.setData({ segments: [], source: res.source || null, title: res.title || '站内阅读', revision: '', nextCursor: null, page: 1, listHidden: false,
-          status: res.status, notice: res.notice || STATUS[res.status] || '内容尚未完成处理。', scannedPages: res.scannedPages || 0, complete: false });
+        progress.clear(this.docId, this.part); this.revision = '';
+        this.setData(Object.assign(head, { segments: [], revision: '', nextCursor: null, prevCursor: null, page: 1, pages: 0,
+          listHidden: false, status: res.status, notice: textOf(res.notice) || STATUS[res.status] || '这部分暂时读不了。',
+          scannedPages: 0, complete: false, endText: '', nextPart: nextPartOf(toc, this.part), resumePage: 0 }));
         return;
       }
       if (typeof res.revision !== 'string' || !res.revision || revision && revision !== res.revision) {
@@ -155,19 +199,40 @@ Page({
       }
       const segments = segmentsOf(res.segments || []);
       const next = res.nextCursor == null ? null : String(res.nextCursor);
-      if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('阅读分页信息有误，请重试');
-      this.setData({ title: res.title || '站内阅读', source: res.source || {}, revision: res.revision,
-        status: res.status, listHidden: res.listHidden === true, notice: res.notice || STATUS[res.status] || (res.status === 'ok' ? '' : '内容尚未完成处理。'),
-        segments, nextCursor: next, page: this.cursorIndex + 1, totalSegments: res.totalSegments || 0,
-        scannedPages: res.scannedPages || 0, complete: res.status === 'ok' && next === null && segments.length > 0 });
+      const prev = res.prevCursor == null ? null : String(res.prevCursor);
+      const page = Number.isInteger(res.page) && res.page > 0 ? res.page : 1;
+      const pages = Number.isInteger(res.pages) && res.pages >= page ? res.pages : page;
+      if (next !== null && (!/^\d+$/.test(next) || next === cursor)) throw new Error('阅读分页信息有误，请重试');
+      this.revision = res.revision;
+      // 记住读到第几页：内容版本、这一页的续读位置（第 1 页不记）
+      progress.save(this.docId, this.part, res.revision, cursor, page);
+      const last = next === null;
+      const scanned = Number(res.scannedPages) > 0 ? Number(res.scannedPages) : 0;
+      this.setData(Object.assign(head, { revision: res.revision, status: res.status, listHidden: res.listHidden === true,
+        notice: textOf(res.notice), segments, nextCursor: next, prevCursor: prev, page, pages,
+        totalSegments: res.totalSegments || 0, scannedPages: scanned,
+        complete: last && segments.length > 0, endText: last ? endTextOf(here.label, res.status, scanned) : '',
+        nextPart: last ? nextPartOf(toc, this.part) : null,
+        resumePage: opts.resumed && opts.banner && page > 1 ? page : 0, updatedNote: opts.updated || '' }));
     }).catch((err) => {
-      if (!current()) return;
-      const changed = err.status === 409;
-      if (changed || [403, 404, 410].includes(err.status)) {
-        this.cursors = ['']; this.cursorIndex = 0;
-        this.setData({ source: null, revision: '', nextCursor: null, segments: [], page: 1 });
+      if (!current()) return undefined;
+      // 内容更新了（409），或记着的位置已不是一页的开头（422）：作废记着的位置，回到第 1 页
+      if (err.status === 409 || (opts.resumed && err.status === 422)) {
+        progress.clear(this.docId, this.part); this.revision = '';
+        const what = this.part ? '附件' : '正文';
+        const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读` : '';
+        if (cursor === '0' && !revision) {
+          this.setData({ error: '内容版本已变化，请重新加载。', changed: true });
+          return undefined;
+        }
+        return this.loadPage('0', '', { updated });
       }
-      this.setData({ error: changed ? '内容已更新，本次阅读已停止，请重新加载，避免混用不同版本。' : err.message || '内容未加载，请重试', changed });
+      if ([403, 404, 410].includes(err.status)) {
+        progress.clear(this.docId, this.part); this.revision = '';
+        this.setData({ source: null, revision: '', nextCursor: null, prevCursor: null, segments: [], page: 1, pages: 0 });
+      }
+      this.setData({ error: err.message || '内容未加载，请重试', changed: false });
+      return undefined;
     }).then(() => { if (current()) this.setData({ loading: false }); });
   },
   loadRecord() {
@@ -198,22 +263,42 @@ Page({
     });
   },
   next() {
-    if (this.data.loading || this.data.nextCursor === null) return;
-    this.cursors = this.cursors.slice(0, this.cursorIndex + 1);
-    this.cursors.push(this.data.nextCursor); this.cursorIndex += 1;
-    return this.loadPage();
+    if (this.data.loading || this.data.nextCursor === null) return undefined;
+    return this.loadPage(this.data.nextCursor, this.revision);
   },
   previous() {
-    if (this.data.loading || this.cursorIndex < 1) return;
-    this.cursorIndex -= 1; return this.loadPage();
+    if (this.data.loading || this.data.prevCursor === null) return undefined;
+    return this.loadPage(this.data.prevCursor, this.revision);
+  },
+  // "从开头看"：不用记着的位置，从第 1 页读
+  fromStart() {
+    progress.clear(this.docId, this.part);
+    this.setData({ resumePage: 0 });
+    return this.loadPage('0', this.revision);
+  },
+  // 目录里点正文或某个附件：读不了的不能点（状态已写在目录里）
+  openToc(e) {
+    const id = String((e && e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.id) || '');
+    const item = this.data.toc.find((t) => t.id === id);
+    if (!item || item.current || !item.readable || this.data.loading) return undefined;
+    if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+    return this.openPart(id, { resume: true });
+  },
+  continueNext() {
+    const target = this.data.nextPart;
+    if (!target || this.data.loading) return undefined;
+    if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+    return this.openPart(target.id, { resume: true });
   },
   retry() {
     if (this.listMode) return this.loadRecord();
-    return this.data.changed ? this.restart() : this.loadPage();
+    if (this.data.changed || !this.lastRequest) return this.restart();
+    const { cursor, revision, opts } = this.lastRequest;
+    return this.loadPage(cursor, revision, opts);
   },
   feedback() {
     const id = this.listMode ? (this.data.record && this.data.record.docId || '') : this.docId;
-    const title = this.listMode ? (this.data.record && this.data.record.docTitle || '') : this.data.title;
+    const title = this.listMode ? (this.data.record && this.data.record.docTitle || '') : (this.data.docTitle || this.data.title);
     wx.navigateTo({ url: `/pages/feedback/index?id=${encodeURIComponent(id)}&title=${encodeURIComponent(title)}` });
   },
   lookup() { wx.navigateTo({ url: '/pages/lists/index' }); },
