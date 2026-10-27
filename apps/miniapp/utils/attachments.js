@@ -15,15 +15,16 @@ function sizeText(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// 详情页的附件：能读的写"阅读"、可点；读不了的灰色、不能点，后面直接写原因（stateText）。
-// 有扫描页的也能读，后面写还缺几页。旧接口没有 readable 时都能点，由阅读页说明
+// 详情页的附件：能读的写"阅读"、可点；读不了的灰色、不能点，后面直接写原因（stateText，没给时写
+// "暂不能读"）。有扫描页的也能读，后面写还缺几页。旧接口没有 readable 时都能点，由阅读页说明
 function decorate(list) {
   return (list || []).map((att) => {
     const known = typeof att.readable === 'boolean';
     const canOpen = known ? att.readable : true;
+    const said = known && typeof att.stateText === 'string' ? att.stateText : '';
     return Object.assign({}, att, {
       canOpen,
-      meta: known && typeof att.stateText === 'string' ? att.stateText : '',
+      meta: said || (canOpen ? '' : '暂不能读'),
       action: canOpen ? '阅读' : '',
     });
   });

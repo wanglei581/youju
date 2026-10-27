@@ -101,6 +101,29 @@ test('附件直接写能不能读（和阅读页同一个判断，D-097）：能
   assert.equal(mod.note(list), '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准');
   assert.equal(mod.note(list.slice(1, 2)), '', '没有能读的附件不写这句');
   assert.equal(mod.sizeText(2048), '2 KB');
+  // 读不了、服务端又没给原因：行上写"暂不能读"，不留空（Grok 第 1 轮）
+  assert.equal(mod.decorate([{ id: '11', readable: false, state: 'broken' }])[0].meta, '暂不能读');
+});
+
+test('正文卡顶上一行、两处入口和附件那一行能不能点，用同一个判断（canOpen）', () => {
+  const { mod } = setup();
+  // 旧接口没有 readable：附件那一行能点，顶上一行和入口也按能读算，不会一边写"阅读"一边说"暂不能读"
+  const legacy = mod.decorate([{ id: '10', preview: false, reason: 'pending' }]);
+  assert.equal(format.attachmentLine(legacy), '附件 1 个，能读');
+  assert.deepEqual(format.readEntry({ status: 'none' }, null, legacy), { label: '阅读附件', attachment: '10' });
+  const mixed = mod.decorate([
+    { id: '7', readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' },
+    { id: '8', readable: true, state: 'ok', stateText: '' },
+  ]);
+  assert.equal(format.summaryLine({ status: 'ok', total: 3210 }, mixed), '正文约 3200 字 · 附件 2 个，1 个能读，1 个扫描件暂不能识别文字');
+  assert.deepEqual(format.readEntry({ status: 'none' }, null, mixed), { label: '阅读附件', attachment: '8' });
+});
+
+test('名单类通知挡掉了名单行（listHidden）：不说"全文"，写"正文如下"或"下面是开头，正文约 N 字"', () => {
+  assert.equal(format.opening({ status: 'ok', text: '各有关单位：现将名单公布如下。', total: 15, truncated: false, listHidden: true }).label, '正文如下');
+  const long = Array.from({ length: 20 }, (_, i) => `第${i + 1}条 申报单位应当按照要求如实填报材料并按时报送。`).join('\n');
+  assert.equal(format.opening({ status: 'ok', text: long, total: long.length, truncated: false, listHidden: true }).label, `下面是开头，正文约 ${format.aboutChars(long.length)} 字`);
+  assert.equal(format.opening({ status: 'ok', text: long, total: long.length, truncated: false }).label, `下面是开头，全文约 ${format.aboutChars(long.length)} 字`);
 });
 
 test('附件有无二进制副本均进入原生阅读页，不下载、不复制、不打开外部文件', async () => {

@@ -27,7 +27,7 @@
     <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
-    <view wx:if="{{doc.link_gone}}" class="gone-note">原文链接已失效（{{doc.link_gone}} 检查时打不开，原网页可能已撤下或改了地址）。下面的要点和截止是之前收录的，通知可能已撤回或更正，请以发文机关现在公布的为准；正文和附件不再提供。</view>
+    <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}</view>
     <view class="weak status-note">类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类</view>
   </view>
 

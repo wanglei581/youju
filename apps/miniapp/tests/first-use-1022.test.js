@@ -59,7 +59,7 @@ function detailPage(getDoc) {
     '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/repost.js': require('../utils/repost.js'),
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': daywatch,
-    '../../utils/attachments.js': { decorate: () => [], note: () => '' },
+    '../../utils/attachments.js': { decorate: (list) => (list || []).map((a) => ({ ...a, canOpen: a.readable === true })), note: () => '' },
   }, { wx: {} });
 }
 const DOC = { id: '5', kind: '申报通知', title: '关于组织申报的通知', issuer: '某省科学技术厅', date: '2026-10-08', deadline: null, deadline_state: 'unverified', tags: [] };
@@ -82,7 +82,8 @@ test('第 7 条：详情页逐条截止和旧接口的截止卡片，当天截�
 
 test('第 8 条：显示提取的正文时，标题里写明"自动提取，未经人工逐字核对"；没提取到正文时只写去站内阅读页（名单去查名单）看，不出现提取的说明', async () => {
   let body = { status: 'ok', text: '一、申报对象……', total: 7, truncated: false };
-  const page = detailPage(() => ({ ...DOC, kind: '政策', body }));
+  let listed = [];
+  const page = detailPage(() => ({ ...DOC, kind: '政策', body, attachments: listed }));
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const card = (r) => findAll(r, (n) => elements(n).some((c) => hasClass('section-title')(c) && /^正文/.test(flat(c))))[0];
@@ -115,6 +116,8 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
   };
   for (const status of Object.keys(said)) {
     body = ['attachments', 'link_gone'].includes(status) ? { status: 'none', reason: status } : { status, total: 0 };
+    // "内容在附件里"要页面上真列着附件（附件就在这句下面）
+    listed = status === 'attachments' ? [{ id: 9, name: '申报指南.pdf', ext: 'pdf', readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' }] : [];
     page.refreshing = false; page.load(); await flush();
     root = render('pages/detail/index.wxml', { ...page.data, loading: false });
     assert.equal(flat(elements(card(root))[0]), '正文');
@@ -122,6 +125,13 @@ test('第 8 条：显示提取的正文时，标题里写明"自动提取，未�
     assert.match(textOf(card(root)), said[status]);
     assert.doesNotMatch(textOf(card(root)), /复制原文链接|浏览器|站内阅读页|见原文|收录不足|请稍后重试|正在准备/);
   }
+  // 服务端说内容在附件里、页面上却一个附件也没列：按实际说"这个网站的正文还取不到"；反过来也一样（Grok 第 1 轮）
+  body = { status: 'none', reason: 'attachments' }; listed = [];
+  page.refreshing = false; page.load(); await flush();
+  assert.equal(page.data.noBody, '这个网站的正文还取不到');
+  body = { status: 'none', reason: 'site' }; listed = [{ id: 9, name: '申报指南.pdf', ext: 'pdf', readable: true, state: 'ok', stateText: '' }];
+  page.refreshing = false; page.load(); await flush();
+  assert.equal(page.data.noBody, '这份通知的内容在附件里');
 });
 
 const FORM = {

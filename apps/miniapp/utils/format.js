@@ -247,7 +247,10 @@ function opening(body) {
   const text = String((body && body.text) || '');
   const total = Number(body && body.total) || text.length;
   const truncated = !!(body && body.truncated);
-  if (!truncated && total <= ONE_SCREEN) return { text, full: true, label: '全文如下' };
+  // 名单类通知挡掉了名单行（D-092）：不说"全文"，名单在查名单里查（入口就在正文下面）
+  const listHidden = !!(body && body.listHidden);
+  const fullLabel = listHidden ? '正文如下' : '全文如下';
+  if (!truncated && total <= ONE_SCREEN) return { text, full: true, label: fullLabel };
   const paras = text.split('\n').filter((p) => p.trim());
   const picked = [];
   let len = 0;
@@ -259,8 +262,8 @@ function opening(body) {
   }
   let shown = picked.join('\n');
   if (shown.length > OPENING_MAX) shown = cutLong(shown);
-  if (!truncated && shown.length >= paras.join('\n').length) return { text, full: true, label: '全文如下' };
-  return { text: shown, full: false, label: `下面是开头，全文约 ${aboutChars(total)} 字` };
+  if (!truncated && shown.length >= paras.join('\n').length) return { text, full: true, label: fullLabel };
+  return { text: shown, full: false, label: `下面是开头，${listHidden ? '正文' : '全文'}约 ${aboutChars(total)} 字` };
 }
 
 // 附件读不了时正文卡顶上那一行的短说法；别的原因看附件列表里每个附件后面写的
@@ -270,13 +273,18 @@ const SHORT = {
   format: '格式暂不支持',
 };
 
+// 能不能读：详情页传的是 attachments.decorate 过的（canOpen，和附件那一行能不能点一致），没有时看 readable
+function canRead(a) {
+  return typeof a.canOpen === 'boolean' ? a.canOpen : a.readable === true;
+}
+
 // "附件 3 个，2 个能读，1 个扫描件暂不能识别文字"
 function attachmentLine(atts) {
   const list = atts || [];
   if (!list.length) return '';
-  const ok = list.filter((a) => a.readable).length;
+  const ok = list.filter(canRead).length;
   if (ok === list.length) return `附件 ${list.length} 个，${list.length > 1 ? '都' : ''}能读`;
-  const rest = list.filter((a) => !a.readable);
+  const rest = list.filter((a) => !canRead(a));
   const states = [...new Set(rest.map((a) => a.state))];
   const why = states.length === 1 && SHORT[states[0]] ? SHORT[states[0]] : '暂不能读';
   if (ok) return `附件 ${list.length} 个，${ok} 个能读，${rest.length} 个${why}`;
@@ -292,21 +300,32 @@ function summaryLine(body, atts) {
   return parts.join(' · ');
 }
 
-// 没正文时写的话（设计稿第三节）；名单类正文主要是名单的、个人事项的也在这里
-function noBodyText(body) {
+// 没正文时写的话（设计稿第三节）；名单类正文主要是名单的、个人事项的也在这里。atts：页面上列出的附件，
+// 有没有附件按实际列出的说（"附件在这句下面"要对得上）；不传时按服务端给的原因
+function noBodyText(body, atts) {
   if (!body) return '';
   if (body.status === 'list') return '这份通知的正文里有名单，名单请在“查名单”里按企业名称查询';
   if (body.status === 'original') return '含个人信息，不在小程序内展示全文';
-  if (body.reason === 'attachments') return '这份通知的内容在附件里';
+  // 原网页已失效：正文、附件都不给（D-097 维持现状），不说"内容在附件里"
   if (body.reason === 'link_gone') return '原网页已打不开，正文暂不提供';
-  return '这个网站的正文还取不到';
+  const hasAtts = Array.isArray(atts) ? atts.length > 0 : body.reason === 'attachments';
+  return hasAtts ? '这份通知的内容在附件里' : '这个网站的正文还取不到';
+}
+
+// 原网页已失效时详情页标题下的提示（D-097：正文、附件都不再给）。服务端万一还给了能读的正文或附件
+// （readable 为真），不说"不再提供"，免得上面说没有、下面又能读
+function goneNote(linkGone, readable) {
+  if (!linkGone) return '';
+  const head = `原文链接已失效（${linkGone} 检查时打不开，原网页可能已撤下或改了地址）。`;
+  if (readable) return `${head}下面是之前收录的内容，通知可能已撤回或更正，请以发文机关现在公布的为准。`;
+  return `${head}下面的要点和截止是之前收录的，通知可能已撤回或更正，请以发文机关现在公布的为准；正文和附件不再提供。`;
 }
 
 // 正文下面和底栏两处同名的入口（D-097）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；正文已全部
 // 显示或没有正文、但有能读的附件 → "阅读附件"（去阅读页看第一个能读的附件）；都读不了 → 不显示
 function readEntry(body, view, atts) {
   if (body && body.status === 'ok' && view && !view.full) return { label: '阅读全文', attachment: '' };
-  const first = (atts || []).find((a) => a.readable);
+  const first = (atts || []).find(canRead);
   return first ? { label: '阅读附件', attachment: String(first.id) } : null;
 }
 
@@ -315,5 +334,5 @@ module.exports = {
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
-  ONE_SCREEN, OPENING_MAX, aboutChars, opening, attachmentLine, summaryLine, noBodyText, readEntry,
+  ONE_SCREEN, OPENING_MAX, aboutChars, opening, attachmentLine, summaryLine, noBodyText, goneNote, readEntry,
 };

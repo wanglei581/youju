@@ -17,7 +17,7 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
       throw new Error(dep);
-    }, wx: { navigateTo: o => navigations.push(o.url) },
+    }, wx: { navigateTo: o => navigations.push(o.url), ...(extra.wx || {}) },
   });
   return { ...page, data: plain(page.data), navigations, setData(values) { Object.assign(this.data, plain(values)); } };
 }
@@ -280,4 +280,56 @@ test('正文翻页错误时实际隐藏全部分页按钮，重试仍请求失�
   assert.equal(findAll(tree, n => n.attrs && n.attrs.bindtap === 'retry').length, 1);
   fail = false; await p.retry();
   assert.deepEqual(calls[1], calls[2]); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].n, 21);
+});
+
+test('换页、从开头看、接着读、目录、重试都回到页面顶上（一页约 4000 字，不回去新页开头在屏幕外面）', async () => {
+  const scrolls = []; let fail = false;
+  const p = load('reader', { reading: async (_id, att, args) => {
+    if (fail) throw new Error('网络不通');
+    if (att === '8') return reading({ title: '申报指南.pdf', segments: [segment(1, '附件正文')] });
+    return args.cursor === '20' ? reading({ segments: [segment(21, '第二页')], page: 2, pages: 2, prevCursor: '0' }) : reading({ nextCursor: '20', pages: 2 });
+  } }, { progress: memoryProgress(), wx: { pageScrollTo: (o) => scrolls.push(o.scrollTop) } });
+  p.onLoad({ id: '7' }); await p.onShow();
+  assert.deepEqual(scrolls, []);
+  await p.next(); assert.equal(p.data.page, 2); assert.deepEqual(scrolls, [0]);
+  await p.previous(); assert.equal(p.data.page, 1); assert.equal(scrolls.length, 2);
+  await p.fromStart(); assert.equal(scrolls.length, 3);
+  await p.next(); assert.equal(p.data.nextPart.id, '8');
+  await p.continueNext(); assert.equal(p.data.partLabel, '附件 1'); assert.equal(scrolls.length, 5);
+  await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.equal(scrolls.length, 6);
+  fail = true; await p.previous(); assert.equal(p.data.error, '网络不通');
+  fail = false; await p.retry(); assert.equal(p.data.page, 1); assert.equal(scrolls.length, 8);
+});
+
+test('目录里点、"接着读"读过的部分：接着上次那页，写明"从你上次读到的第 N 页继续"、给"从开头看"', async () => {
+  const calls = []; const progress = memoryProgress({ '7:8': { revision: REV1, cursor: '20', page: 2 } });
+  const p = load('reader', { reading: async (_id, att, args) => {
+    calls.push([att, plain(args)]);
+    if (att === '8') return args.cursor === '20' ? reading({ title: '申报指南.pdf', segments: [segment(21, '附件第二页')], page: 2, pages: 2, prevCursor: '0' }) : reading({ title: '申报指南.pdf', nextCursor: '20', pages: 2 });
+    return reading();
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  await p.continueNext();
+  assert.deepEqual(calls[1], ['8', { cursor: '20', revision: REV1 }]);
+  assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 2);
+  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /从你上次读到的第 2 页继续\s*从开头看/);
+  await p.openToc({ currentTarget: { dataset: { id: '' } } }); assert.equal(p.data.resumePage, 0);
+  await p.openToc({ currentTarget: { dataset: { id: '8' } } }); assert.equal(p.data.page, 2); assert.equal(p.data.resumePage, 2);
+});
+
+test('有扫描页的附件末页：服务端写 ok 也按扫描页说，不写"完"', async () => {
+  const p = load('reader', { reading: async () => reading({ status: 'ok', scannedPages: 2 }) }, { progress: memoryProgress() });
+  p.onLoad({ id: '7', attachment: '8' }); await p.onShow();
+  assert.equal(p.data.endText, '能显示的文字到这里。另有 2 页扫描件，暂不能识别文字');
+});
+
+test('记着的位置已不是一页的开头（422）：从第 1 页读，写明上次的位置失效了', async () => {
+  const progress = memoryProgress({ '7:body': { revision: REV1, cursor: '30', page: 2 } });
+  const p = load('reader', { reading: async (_id, _att, args) => {
+    if (args.cursor === '30') throw Object.assign(new Error('阅读位置超出范围，请重新打开'), { status: 422 });
+    return reading({ nextCursor: '20', pages: 2 });
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  assert.equal(p.data.page, 1); assert.equal(p.data.resumePage, 0);
+  assert.equal(p.data.updatedNote, '上次读到的位置已失效，从第 1 页开始读'); assert.deepEqual(progress.map, {});
 });

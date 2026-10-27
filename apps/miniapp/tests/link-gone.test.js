@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 const reasons = require('../utils/ai-reasons.js');
+const { goneNote } = require('../utils/format.js');
 
 test('卡片：原文链接失效的标出来，没失效的不标', () => {
   const base = { doc: { kind: '申报通知', title: '关于开展申报的通知', issuer: '某厅', date: '2026-10-01' }, segs: [{ t: '关于开展申报的通知' }], kindCls: 'apply' };
@@ -16,7 +17,7 @@ test('卡片：原文链接失效的标出来，没失效的不标', () => {
 });
 
 test('详情页：标题下先写明链接失效了、要点和截止是之前收录的、正文和附件不再提供（D-097）；底部只写哪天检查时打不开，不写网址', () => {
-  const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, loaded: true });
+  const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, goneNote: goneNote('2026-10-16', false), loaded: true });
   const top = findAll(tree, hasClass('gone-note')).map((n) => textOf(n).trim()).join('');
   assert.match(top, /原文链接已失效（2026-10-16 检查时打不开，原网页可能已撤下或改了地址）/);
   assert.match(top, /下面的要点和截止是之前收录的，通知可能已撤回或更正/);
@@ -25,9 +26,14 @@ test('详情页：标题下先写明链接失效了、要点和截止是之前�
   assert.match(note, /原网页 2026-10-16 检查时已打不开。/);
   assert.doesNotMatch(note, /复制|站内阅读页|kjt\.example\.gov\.cn/);
   assert.doesNotMatch(textOf(tree), /kjt\.example\.gov\.cn/);
-  const fine = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn' }, loaded: true });
+  const fine = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn' }, goneNote: goneNote('', false), loaded: true });
   assert.equal(findAll(fine, hasClass('source-gone')).length, 0);
   assert.equal(findAll(fine, hasClass('gone-note')).length, 0);
+  // 服务端万一还给了能读的正文或附件：不说"不再提供"（Grok 第 1 轮）
+  const still = goneNote('2026-10-16', true);
+  assert.match(still, /^原文链接已失效（2026-10-16 检查时打不开/);
+  assert.match(still, /下面是之前收录的内容/);
+  assert.doesNotMatch(still, /不再提供/);
 });
 
 test('不能解读的原因 link_gone：写明链接失效了、为什么不解读，不给下一步（复制的链接也打不开）', () => {

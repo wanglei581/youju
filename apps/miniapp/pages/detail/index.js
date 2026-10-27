@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, summaryLine, noBodyText, readEntry } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, summaryLine, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -67,7 +67,7 @@ const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) 
 
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyView: null, bodySummary: '', noBody: '', entry: null, supportExpanded: '', supportEvidence: '', conds: [],
+    bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
 
   onLoad(query) {
@@ -122,7 +122,9 @@ Page({
           // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
           bodyView,
           bodySummary: summaryLine(doc.body, atts),
-          noBody: body ? '' : noBodyText(doc.body),
+          noBody: body ? '' : noBodyText(doc.body, atts),
+          // 原网页已失效：标题下写明（正文、附件都不再给）
+          goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
           // 正文下面和底栏两处同名："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
@@ -157,7 +159,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, bodySummary: '', noBody: '', entry: null,
+        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))

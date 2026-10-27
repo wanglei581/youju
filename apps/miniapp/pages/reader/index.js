@@ -123,8 +123,13 @@ function nextPartOf(items, part) {
 
 // 读到这一部分的末尾写什么：有扫描页的写还缺几页，不写"读完"
 function endTextOf(label, status, scanned) {
-  if (status === 'partial' && scanned > 0) return `能显示的文字到这里。另有 ${scanned} 页扫描件，暂不能识别文字`;
+  if (scanned > 0) return `能显示的文字到这里。另有 ${scanned} 页扫描件，暂不能识别文字`;
   return `${label}完`;
+}
+
+// 换页、换部分时回到页面顶上（一页约 4000 字，不回去新页开头在屏幕外面）
+function toTop() {
+  if (typeof wx !== 'undefined' && wx && typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
 }
 
 Page({
@@ -220,7 +225,7 @@ Page({
       if (err.status === 409 || (opts.resumed && err.status === 422)) {
         progress.clear(this.docId, this.part); this.revision = '';
         const what = this.part ? '附件' : '正文';
-        const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读` : '';
+        const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读` : '上次读到的位置已失效，从第 1 页开始读';
         if (cursor === '0' && !revision) {
           this.setData({ error: '内容版本已变化，请重新加载。', changed: true });
           return undefined;
@@ -264,34 +269,40 @@ Page({
   },
   next() {
     if (this.data.loading || this.data.nextCursor === null) return undefined;
+    toTop();
     return this.loadPage(this.data.nextCursor, this.revision);
   },
   previous() {
     if (this.data.loading || this.data.prevCursor === null) return undefined;
+    toTop();
     return this.loadPage(this.data.prevCursor, this.revision);
   },
   // "从开头看"：不用记着的位置，从第 1 页读
   fromStart() {
     progress.clear(this.docId, this.part);
     this.setData({ resumePage: 0 });
+    toTop();
     return this.loadPage('0', this.revision);
   },
-  // 目录里点正文或某个附件：读不了的不能点（状态已写在目录里）
+  // 目录里点正文或某个附件：读不了的不能点（状态已写在目录里）。读过的接着上次那页，写明"从你上次
+  // 读到的第 N 页继续"、给"从开头看"
   openToc(e) {
     const id = String((e && e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.id) || '');
     const item = this.data.toc.find((t) => t.id === id);
     if (!item || item.current || !item.readable || this.data.loading) return undefined;
-    if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-    return this.openPart(id, { resume: true });
+    toTop();
+    return this.openPart(id, { resume: true, banner: true });
   },
+  // "接着读附件 N"：和目录里点一样，读过的接着上次那页并写明
   continueNext() {
     const target = this.data.nextPart;
     if (!target || this.data.loading) return undefined;
-    if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-    return this.openPart(target.id, { resume: true });
+    toTop();
+    return this.openPart(target.id, { resume: true, banner: true });
   },
   retry() {
     if (this.listMode) return this.loadRecord();
+    toTop();
     if (this.data.changed || !this.lastRequest) return this.restart();
     const { cursor, revision, opts } = this.lastRequest;
     return this.loadPage(cursor, revision, opts);
