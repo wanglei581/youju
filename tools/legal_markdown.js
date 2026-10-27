@@ -8,12 +8,19 @@ const path = require('node:path');
 
 const PLACEHOLDERS = { name: '【运营主体】', address: '【地址】', email: '【联系邮箱】', icp: '【备案号】' };
 
+// operator 里每个非空字段都换成占位（不认识的字段换成【运营信息】）：先换长的（名称是地址的一部分时，
+// 地址也能整段换掉），不分大小写；换完再查一遍，还有原值就报错，不给出半脱敏的结果
 function sanitize(text, operator) {
+  const values = Object.entries(operator || {})
+    .filter(([, v]) => typeof v === 'string' && v.trim())
+    .map(([k, v]) => [v.trim(), PLACEHOLDERS[k] || '【运营信息】'])
+    .sort((a, b) => b[0].length - a[0].length);
   let out = text;
-  for (const [key, mark] of Object.entries(PLACEHOLDERS)) {
-    const value = operator && operator[key];
-    if (typeof value === 'string' && value.trim()) out = out.split(value).join(mark);
+  for (const [value, mark] of values) {
+    out = out.replace(new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), mark);
   }
+  const left = values.filter(([value]) => out.toLowerCase().includes(value.toLowerCase()));
+  if (left.length) throw new Error('脱敏后还有运营主体信息，没有输出');
   return out;
 }
 

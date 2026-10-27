@@ -53,9 +53,10 @@ const FIRST_AI_TERMS = require('./make_legal_first_release_ai.js');
 // 过审版加 AI 的版本号排在 2026-11 后面，后台这里没有它，就会把只同意过它的人当成同意过工具条款
 const SERVER_WITHOUT_TOOLS_TERMS = (() => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'backend', 'src', 'youju', 'agreements.py'), 'utf8');
-  const m = /^WITHOUT_TOOLS_TERMS = frozenset\(\{([^}]*)\}\)$/m.exec(source);
+  // 允许换行和单双引号（ruff 格式化后集合可能折成多行）；读不到就报错，不当成空集合
+  const m = /^WITHOUT_TOOLS_TERMS\s*=\s*frozenset\(\s*\{([^}]*)\}\s*\)/m.exec(source);
   if (!m) throw new Error('读不到后台不含工具条款的协议版本');
-  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  return [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
 })();
 // 定稿协议的指纹（D-098，Codex 10/26）：版本号和用户协议、隐私保护指引、免责声明三份正文一起算 SHA-256。
 // 包里协议的指纹对不上登记的那一版就不过：改了正文没升版本号、或新版本还没登记，都拦下。

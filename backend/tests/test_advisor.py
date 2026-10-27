@@ -140,6 +140,12 @@ def test_first_release_ai_agreement_does_not_cover_tools(client, session, adviso
     assert (
         not tools_agreed("2026-11.1") and not tools_agreed("2026-10.2") and not tools_agreed(None)
     )
+    # 写法不完整、后面多字符的不算（不能用"2026-11.1x"绕过排除）
+    assert (
+        not tools_agreed("2026-11.1x")
+        and not tools_agreed("2026-11.1 ")
+        and not tools_agreed("2026-12a")
+    )
     advisor_settings.agreement_version = "2026-12"
     advisor_settings.agreement_min_version = "2026-10.2"
     assert client.post("/api/v1/me/agreement", json={"version": "2026-11.1"}).status_code == 200

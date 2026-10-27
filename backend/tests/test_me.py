@@ -1142,6 +1142,18 @@ def test_agreement_version_must_look_like_year_month(client, session, monkeypatc
     assert client.get("/api/v1/me/follows").status_code == 200
 
 
+def test_agreement_accepts_only_well_formed_versions(client, monkeypatch):
+    """同意接口只收完整写法的版本号（年-月，可带 .数字）：在仍认的范围里、写法不对的也不收（D-098）。"""
+    settings(monkeypatch, version="2026-12", oldest="2026-10.2")
+    for version in ("2026-11.0x", "2026-11.1 ", "2026-11-1", "2026-11.", "2026-11.1.2"):
+        response = client.post("/api/v1/me/agreement", json={"version": version})
+        assert response.status_code == 422, version
+    for version in ("2026-10.2", "2026-11", "2026-11.1", "2026-12"):
+        assert client.post("/api/v1/me/agreement", json={"version": version}).status_code == 200, (
+            version
+        )
+
+
 def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     """D-093 ⑤：过审版（首发 16 页）带不含 AI 条款的协议 2026-10.2，完整版带 2026-11。后台当前版本仍是
     2026-11、最早认 2026-10.2：两种包都能同意、都能用关注；只同意过 2026-10.2 的人没同意过 AI 和批量工具的

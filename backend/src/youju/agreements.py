@@ -3,6 +3,8 @@
 import re
 
 VERSION_PREFIX = re.compile(r"\d{4}-\d{2}")
+# 协议版本的完整写法：年-月，可带一段 .数字（如 2026-10.2、2026-11.1）
+VERSION_FULL = re.compile(r"\d{4}-\d{2}(\.\d+)?")
 
 # 批量工具的任务记录和次数（隐私保护指引一·13）、加量体验（一·15）写进指引的那一版。
 # 协议升版过渡期（YOUJU_AGREEMENT_MIN_VERSION 填旧版本）旧的同意照旧能用关注、纠错，
@@ -26,6 +28,9 @@ def agreement_at_least(version: str | None, needed: str) -> bool:
 def tools_agreed(version: str | None) -> bool:
     """同意过写进批量工具和加量体验条款的版本：不早于 TOOLS_AGREEMENT_VERSION，
     也不是去掉了这两项的版本。"""
+    # 只认完整写法：2026-11.1 后面多了字符（如"2026-11.1x"）的不算，免得绕过下面的排除
     return (
-        agreement_at_least(version, TOOLS_AGREEMENT_VERSION) and version not in WITHOUT_TOOLS_TERMS
+        agreement_at_least(version, TOOLS_AGREEMENT_VERSION)
+        and VERSION_FULL.fullmatch(version) is not None
+        and version not in WITHOUT_TOOLS_TERMS
     )

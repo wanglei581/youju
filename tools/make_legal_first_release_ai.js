@@ -16,7 +16,8 @@ const TARGET = path.join(ROOT, 'legal-first-release-ai.js');
 // 这一版去掉了批量工具和加量体验，后台 agreements.WITHOUT_TOOLS_TERMS 里要有它，不然会被当成同意过工具条款
 const VERSION = '2026-11.1';
 // "过审版加 AI"协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）。
-// 发布检查（tools/miniapp_presubmit_check.js）用同一份。"购买"只出现在一·4 以后收费的说明里（购买前单独展示），不拦
+// 发布检查（tools/miniapp_presubmit_check.js）用同一份。用户协议六·3"现阶段免费；如以后新增收费功能，购买前单独展示
+// 价格、期限和付费协议"说的是以后、不是现在有，和过审版 2026-10.2（D-094 定稿）一样保留，所以"购买""付费"不拦
 const BANNED = /批量工具|批量名单|名单比对|通知表|上传名单|客户名单|选中的文件|加量体验|申报季加量|工具使用说明|工具任务|订单|购买页|支付|发票|原文链接|统一社会信用代码|核对企业主体/;
 
 function build() {

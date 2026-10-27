@@ -17,7 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import agreement_at_least, tools_agreed
+from youju.agreements import VERSION_FULL, agreement_at_least, tools_agreed
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -441,7 +441,9 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         session.commit()
         return {"version": body.version, "at": user.advisor_agreement_at.isoformat()}
     oldest, current = agreement_range(get_settings())
-    if not oldest <= body.version <= current:
+    # 只收完整写法的版本号（年-月，可带 .数字）：范围内的怪值（如"2026-11.0x"）不存，
+    # 免得被当成不存在的一版、绕过按版本的判断
+    if VERSION_FULL.fullmatch(body.version) is None or not oldest <= body.version <= current:
         raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
     # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
