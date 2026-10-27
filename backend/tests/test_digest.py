@@ -724,6 +724,10 @@ def test_readability_rates_waits_and_sites(session, monkeypatch) -> None:
     _readable_doc(session, 7, APPLY, day=date(2026, 8, 1))
     rb = build_digest(session, now=NOW).readability
     assert (rb.notices, rb.body_ok, rb.whole_ok, rb.scanned_only) == (5, 3, 1, 1)
+    # 正文能读、没有附件的也算整条能读（没有要读的附件；agy 第 2 轮）
+    _readable_doc(session, 8, APPLY)
+    more = build_digest(session, now=NOW).readability
+    assert (more.notices, more.body_ok, more.whole_ok) == (6, 4, 2)
     assert dict(rb.no_body) == {"原网页已打不开": 1, "正文像网页导航": 1}
     assert (rb.attachments, rb.attachments_ok, rb.pending) == (3, 2, 1)
     assert rb.oldest_pending_hours == 30
@@ -783,15 +787,21 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
     assert digest_module.gates(rb) == (True, True, True)
     rb.oldest_pending_seconds += 1
     assert digest_module.gates(rb) == (True, True, False)
+    # 显示的小时向上取整，和按秒判断一致：多 1 秒写 15 小时（Grok 第 2 轮）
+    assert "等取文字最久的附件 15 小时（要不超过 14 小时）" in digest_text(d, [])
+    assert "最久的等了 15 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，没达到）" in (
+        digest_module.readability_text(d)
+    )
     # 有一个等了多久算不出来（通知没有收录时间），另一个才等了 1 小时：也不算达到
     rb.oldest_pending_seconds, rb.pending, rb.pending_unknown = 3600, 2, 1
     assert digest_module.gates(rb) == (True, True, False)
     text_ = digest_module.readability_text(d)
     assert (
-        "等取文字的 2 个，最久的等了 1 小时（通知 7《某通知》），1 个所在通知没有收录时间" in text_
+        "等取文字的 2 个，有收录时间的里最久的等了 1 小时（通知 7《某通知》），"
+        "1 个附件所在的通知没有收录时间、等了多久不知道" in text_
     )
     assert "没达到）" in text_.split("\n")[2]
-    assert "等取文字最久的附件 1 小时，另有 1 个等了多久不知道" in digest_text(d, [])
+    assert "有收录时间的里等取文字最久的附件 1 小时，另有 1 个等了多久不知道" in digest_text(d, [])
     rb.oldest_pending_seconds = rb.oldest_pending_doc = None
     assert digest_module.gates(rb) == (True, True, False)
     assert digest_module.gates(digest_module.Readability()) == (False, False, True)

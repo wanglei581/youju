@@ -117,8 +117,9 @@ class Readability:
 
     @property
     def oldest_pending_hours(self) -> int | None:
+        """写给人看的小时数：向上取整（14 小时多 1 秒写 15 小时），和按秒判断门槛一致，只会多报。"""
         seconds = self.oldest_pending_seconds
-        return None if seconds is None else seconds // 3600
+        return None if seconds is None else math.ceil(seconds / 3600)
 
 
 @dataclass
@@ -488,6 +489,7 @@ def readability(session: Session, now: datetime) -> Readability:
                 ):
                     result.oldest_pending_seconds = waited
                     result.oldest_pending_doc = (doc.id, doc.title[:20])
+        # 整条能读：正文能读、附件都能读（没有附件的也算：没有要读的附件）
         complete = body_ok and all(item.readable for item in items)
         if complete and not scanned:
             result.whole_ok += 1
@@ -517,8 +519,8 @@ def _counts(counter: Counter) -> str:
 
 
 def gates(rb: Readability) -> tuple[bool, bool, bool]:
-    """三项提审门槛各达到没有：正文能读率、整条能读率（按向下取整的百分比比），附件没有等了超过
-    一轮的（按秒比；有一个等了多久算不出来的就按没达到算）。没有通知时都算没达到（算不出来）。"""
+    """三项提审门槛各达到没有：正文能读率、整条能读率（按向下取整的百分比比，没有通知时算没达到），
+    附件没有等了超过一轮的（按秒比；有一个等了多久算不出来的就按没达到算；没有等取文字的算达到）。"""
     body = bool(rb.notices) and math.floor(100 * rb.body_ok / rb.notices) >= BODY_GATE
     whole = bool(rb.notices) and math.floor(100 * rb.whole_ok / rb.notices) >= WHOLE_GATE
     wait = not rb.pending or (
@@ -537,11 +539,14 @@ def _waiting(rb: Readability) -> str:
     if not rb.pending:
         return "没有等取文字的附件"
     hours = rb.oldest_pending_hours
-    known = f"等取文字最久的附件 {hours} 小时" if hours is not None else ""
-    unknown = f"{rb.pending_unknown} 个等了多久不知道" if rb.pending_unknown else ""
-    if known and unknown:
-        return f"{known}，另有 {unknown}"
-    return known or f"等取文字的附件 {unknown}"
+    if hours is None:
+        return f"等取文字的附件 {rb.pending_unknown} 个等了多久不知道"
+    if rb.pending_unknown:
+        return (
+            f"有收录时间的里等取文字最久的附件 {hours} 小时，"
+            f"另有 {rb.pending_unknown} 个等了多久不知道"
+        )
+    return f"等取文字最久的附件 {hours} 小时"
 
 
 def readability_summary(digest: Digest) -> str:
@@ -580,9 +585,10 @@ def readability_text(digest: Digest) -> str | None:
         wait = f"等取文字的 {rb.pending} 个"
         if hours is not None and rb.oldest_pending_doc:
             doc_id, title = rb.oldest_pending_doc
-            wait += f"，最久的等了 {hours} 小时（通知 {doc_id}《{title}》）"
+            which = "有收录时间的里最久的" if rb.pending_unknown else "最久的"
+            wait += f"，{which}等了 {hours} 小时（通知 {doc_id}《{title}》）"
         if rb.pending_unknown:
-            wait += f"，{rb.pending_unknown} 个所在通知没有收录时间、等了多久不知道"
+            wait += f"，{rb.pending_unknown} 个附件所在的通知没有收录时间、等了多久不知道"
     reached = "达到" if gates(rb)[2] else "没达到"
     pending = f"{wait}（门槛不超过一轮 {ROUND_HOURS} 小时，{reached}）"
     attachments = (
