@@ -502,3 +502,12 @@ def test_queue_lists_only_application_notices(client, session_factory) -> None:
     # 只读：候选本身一直是待核对
     with session_factory() as s:
         assert s.get(DocumentDeadline, other_id).status == "pending"
+
+
+def test_other_kind_is_never_suggested() -> None:
+    """ "其他"类不对外显示、核对台也不让通过：不给"建议通过"，提示只能驳回。"""
+    found = [(date(2026, 10, 15), None, "其他")]
+    hint = deadline_hint(_row(kind="其他"), found)
+    assert hint.code == "other_kind" and "只能驳回" in hint.text
+    assert deadline_hint(_row(kind="其他", origin="ai"), found).code == "other_kind"
+    assert review_rank(date(2026, 10, 15), hint, TODAY) == 1

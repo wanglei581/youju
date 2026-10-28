@@ -748,3 +748,57 @@ def test_rerun_leaves_review_states_of_twins_alone(session) -> None:
     session.commit()
     session.refresh(waiting)
     assert waiting.status == "approved"
+
+
+def test_rerun_holds_the_round_lock_while_calling_the_model(session, tmp_path) -> None:
+    """每一份调模型、写库的整个过程都拿着锁；锁被占了就停，已做完的留着；两份之间让一让。"""
+    from youju.ai.pipeline import rerun_old_deadlines, round_running, round_slot
+
+    path = str(tmp_path / "round.lock")
+    held = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        held.append(round_running(path))
+        content = {"deadlines": [ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "m",
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    for number in (1, 2, 3):
+        _old_check(session, add_doc(session, number))
+    slots = iter([True, True, False])
+
+    @contextmanager
+    def slot():
+        if next(slots):
+            with round_slot(path) as free:
+                yield free
+        else:
+            yield False
+
+    pauses = []
+    report = rerun_old_deadlines(
+        session,
+        client,
+        days=90,
+        limit=10,
+        now=datetime(2026, 10, 28, tzinfo=UTC),
+        slot=slot,
+        gap=0.5,
+        sleep=pauses.append,
+    )
+    assert held == [True, True]
+    assert (report.written, report.round_busy) == (2, True)
+    assert pauses == [0.5, 0.5]  # 第 2、3 份之前各让一次
+    assert not round_running(path)

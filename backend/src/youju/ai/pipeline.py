@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from time import sleep as _sleep
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -436,6 +437,8 @@ def rerun_old_deadlines(
     limit: int,
     now: datetime | None = None,
     slot: Callable[[], AbstractContextManager[bool]] = _always_free,
+    gap: float = 0.0,
+    sleep: Callable[[float], None] = _sleep,
 ) -> AIRunReport:
     """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
     不删数据（D-099 期 0）：已有的候选和核对状态都不动（同组副本也不顺带沿用核对结果），
@@ -443,14 +446,18 @@ def rerun_old_deadlines(
     下次再跑。
 
     每一份都在 slot 里做（命令里是 round_slot，拿着定时任务那一轮的锁）：拿不到就停下，免得和
-    规则抽取同时改同一批候选；已做完的照常保留，下次接着跑。
+    规则抽取同时改同一批候选；已做完的照常保留，下次接着跑。两份之间先停 gap 秒再拿锁：
+    flock 不排队，放了马上再拿，正在等锁的 round.sh 可能一直抢不到、等满 5 分钟跳过这一轮
+    （命令里 gap=0.5）。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
     now = now or datetime.now(UTC)
     report = AIRunReport()
     consecutive_errors = 0
-    for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
+    for index, (doc, detail, _) in enumerate(old_deadline_checks(session, now, days)[:limit]):
+        if index and gap:
+            sleep(gap)
         with slot() as free:
             if not free:
                 report.round_busy = True

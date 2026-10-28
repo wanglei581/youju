@@ -686,7 +686,14 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     try:
         with session_factory()() as session:
             report = rerun_old_deadlines(
-                session, client, days=args.days, limit=args.limit, now=now, slot=round_slot
+                session,
+                client,
+                days=args.days,
+                limit=args.limit,
+                now=now,
+                slot=round_slot,
+                # 两份之间让 0.5 秒：round.sh 在等锁的话，这段时间里它就拿到了
+                gap=0.5,
             )
     finally:
         usage_ok = _finish_ai(client, "recheck")
