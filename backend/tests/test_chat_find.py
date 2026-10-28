@@ -623,8 +623,10 @@ def test_以市开头的区县和城市名连着写_认成那个区县():
 
 
 CITIES_ONLY = Coverage(
-    provinces=frozenset({"山东", "广东"}),
-    cities=frozenset({("山东", "济南"), ("山东", "青岛"), ("广东", "深圳")}),
+    provinces=frozenset({"山东", "广东", "浙江"}),
+    cities=frozenset(
+        {("山东", "济南"), ("山东", "青岛"), ("广东", "深圳"), ("广东", "广州"), ("浙江", "温州")}
+    ),
     districts=frozenset(),
 )
 
@@ -639,6 +641,10 @@ CITIES_ONLY = Coverage(
         ("深圳宝安区的科技项目", "广东/深圳", "广东·深圳·宝安区", ["科技"]),
         ("深圳市宝安区的科技项目", "广东/深圳", "广东·深圳·宝安区", ["科技"]),
         ("深圳 光明新区的申报通知", "广东/深圳", "广东·深圳·光明新区", []),
+        ("广州的天河区申报通知", "广东/广州", "广东·广州·天河区", []),  # 中间隔着"的"也算
+        # 以"山区""湾区"结尾的区县名照样算（这两个只比整个词）
+        ("深圳南山区的申报通知", "广东/深圳", "广东·深圳·南山区", []),
+        ("温州龙湾区的申报通知", "浙江/温州", "浙江·温州·龙湾区", []),
     ],
 )
 def test_收录了的城市后面没收录的区县_按整个城市找(text, city, district, keywords):
@@ -651,14 +657,35 @@ def test_收录了的城市后面没收录的区县_按整个城市找(text, cit
     assert (conditions["uncovered"], conditions["keywords"]) == ([district], keywords)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "广州黄埔区和天河区的申报通知",
+        "广州黄埔区、天河区的申报通知",
+        "广州黄埔区，天河区的申报通知",
+        "广州黄埔区 天河区的申报通知",
+        "广州黄埔区 和天河区的申报通知",
+        "广州的黄埔区与天河区的申报通知",
+    ],
+)
+def test_连着写的几个没收录的区县都算(text):
+    conditions = _parse(text, CITIES_ONLY)
+    assert (conditions["cities"], conditions["keywords"]) == (["广东/广州"], [])
+    assert conditions["uncovered"] == ["广东·广州·黄埔区", "广东·广州·天河区"]
+
+
 def test_城市后面不像区县的照旧当关键词():
     for text, keywords in (
         ("深圳社区的申报通知", ["社区"]),
         ("深圳地区的申报通知", ["地区"]),
         ("深圳经济特区", ["经济特区"]),
-        ("深圳各区的申报通知", []),  # "各区"是层级
+        # 以园区、小区这类结尾的都不算
+        ("深圳科技园区的申报通知", ["科技园区"]),
+        ("深圳产业园区的申报通知", ["产业园区"]),
+        ("广州的工业园区", ["工业园区"]),
+        ("深圳我家小区", ["我家小区"]),
         ("深圳宝安区人工智能", ["宝安区人工智能"]),  # 超过 4 个字
-        ("深圳的宝安区", ["宝安区"]),  # 不是紧跟着城市
+        ("深圳的专项资金", ["专项"]),
     ):
         conditions = _parse(text, CITIES_ONLY)
         assert (conditions["uncovered"], conditions["keywords"]) == ([], keywords), text
@@ -681,6 +708,16 @@ def test_城市后面不像区县的照旧当关键词():
         ("找省级2026年的申报通知", ["省级"], []),
         ("省级、市级的专精特新", ["省级", "市级"], ["专精特新"]),
         ("省级和市级专精特新", ["省级", "市级"], ["专精特新"]),  # "市级"跟在"省级和"后面
+        # 顿号、逗号也算连着说
+        ("国家级、省级专精特新", ["国家部委", "省级"], ["专精特新"]),
+        ("国家级、省级、市级专精特新", ["国家部委", "省级", "市级"], ["专精特新"]),
+        ("省级、国家级专精特新", ["国家部委", "省级"], ["专精特新"]),
+        ("国家级，省级专精特新", ["国家部委", "省级"], ["专精特新"]),
+        # "以上"：省级以上 ＝ 国家部委、省级；市级以上再加市级；县级以上各层都要，不筛
+        *[(f"{w}的申报通知", ["国家部委", "省级"], []) for w in ("省级以上", "省级及以上")],
+        *[(f"{w}的申报通知", ["国家部委", "省级", "市级"], []) for w in ("市级以上", "市级及以上")],
+        *[(f"{w}的申报通知", [], []) for w in ("县级以上", "县级及以上", "区县级以上", "区级以上")],
+        ("省级以上专精特新企业", [], ["专精特新"]),  # 紧跟着名称的同样是名称的开头
         # 紧跟着名称的是名称的开头：去掉，不算层级，也不当关键词
         ("省级专精特新中小企业", [], ["专精特新", "中小"]),
         ("市级企业技术中心", [], ["技术中心"]),
@@ -702,6 +739,7 @@ def test_层级单独说或跟在别的层级后面才算(text, levels, keywords
         ("各市专精特新", ["市级"]),  # 一直算，紧跟着名称也算
         ("各地市的专精特新", ["市级"]),
         ("各市县的专精特新", ["市级", "区县级"]),
+        *[(f"{w}的专精特新", ["市级", "区县级"]) for w in ("各市区", "各县市区", "各市县区")],
         *[(f"{w}的专精特新", ["区县级"]) for w in ("各区县", "各县区", "各区", "各县")],
     ],
 )
@@ -762,6 +800,61 @@ def test_有层级时国家部委也算层级(text, regions, levels, keywords):
     conditions = _parse(text)
     assert (conditions["regions"], conditions["levels"]) == (regions, levels)
     assert conditions["keywords"] == keywords
+
+
+def test_省级地区后面的级以上():
+    conditions = _parse("广东省级以上的申报通知")
+    # (国家部委 ∪ 广东) ∩ (国家部委 ∪ 省级)
+    assert (conditions["regions"], conditions["levels"]) == (
+        ["国家部委", "广东"],
+        ["国家部委", "省级"],
+    )
+    assert conditions["keywords"] == []
+    assert _parse("广东省级及以上的申报通知")["levels"] == ["国家部委", "省级"]
+    conditions = _parse("广东县级以上的申报通知")  # 各层都要：不筛层级，国家部委的也要
+    assert (conditions["regions"], conditions["levels"]) == (["国家部委", "广东"], [])
+    conditions = _parse("广东省级以上专精特新企业")  # 紧跟着名称：只去掉
+    assert (conditions["regions"], conditions["levels"]) == (["广东"], [])
+    assert conditions["keywords"] == ["专精特新"]
+
+
+@pytest.mark.parametrize(
+    "text,regions,cities,districts,levels",
+    [
+        # 城市和区县级：换成这个城市收录了的区县
+        ("深圳各区的申报通知", [], [], ["广东/深圳/南山区"], ["区县级"]),
+        ("深圳的区县级申报通知", [], [], ["广东/深圳/南山区"], ["区县级"]),
+        # 城市和省级：换成所在的省
+        ("深圳的省级政策", ["广东"], [], [], ["省级"]),
+        ("国家和深圳的省级政策", ["国家部委", "广东"], [], [], ["国家部委", "省级"]),
+        ("深圳的市级政策", [], ["广东/深圳"], [], ["市级"]),  # 市级照旧
+        # 区县同样换：省级 → 所在的省，市级 → 所在的城市
+        ("南山区的省级政策", ["广东"], [], [], ["省级"]),
+        ("南山区的市级政策", [], ["广东/深圳"], [], ["市级"]),
+        # 市级和区县级一起：城市和它的区县都要
+        ("深圳的市级和区县级通知", [], ["广东/深圳"], ["广东/深圳/南山区"], ["市级", "区县级"]),
+        # 省级又和市级、区县级一起：按全省找
+        ("深圳的省级和市级政策", ["广东"], [], [], ["省级", "市级"]),
+    ],
+)
+def test_城市区县和层级一起说(text, regions, cities, districts, levels):
+    conditions = _parse(text)
+    assert (conditions["regions"], conditions["cities"]) == (regions, cities)
+    assert (conditions["districts"], conditions["levels"]) == (districts, levels)
+    assert conditions["uncovered"] == []
+
+
+def test_城市一个区县都没收录时说没收录():
+    conditions = _parse("广州的区县级申报通知", CITIES_ONLY)
+    assert (conditions["cities"], conditions["districts"]) == ([], [])
+    assert conditions["uncovered"] == ["广东·广州（区县级）"]
+    assert conditions_text({"conditions": conditions, "notes": ["uncovered"]}) == ""  # 不去搜
+    conditions = _parse("广州和深圳各区的申报通知", CITIES_ONLY)
+    assert conditions["uncovered"] == ["广东·广州（区县级）", "广东·深圳（区县级）"]
+    # 区县所在的城市没收录、又说了市级
+    covered = Coverage(frozenset({"广东"}), frozenset(), frozenset({("广东", "深圳", "南山区")}))
+    conditions = _parse("南山区的市级政策", covered)
+    assert (conditions["cities"], conditions["uncovered"]) == ([], ["广东·深圳（市级）"])
 
 
 def test_有层级时国家部委没收录也照样搜别的层级():
@@ -859,7 +952,7 @@ def test_机关简称的别的写法写在条件里_不给搜索页链接():
         assert conditions_text(stored).endswith(f"标题里有 {keyword}（或 {others}）"), keyword
         assert "q" not in search_params(conditions)
     conditions["keywords"] = ["科技厅", "专精特新"]  # 没有别的写法的照旧
-    assert conditions_text(stored).endswith("标题里有 科技厅、专精特新")
+    assert conditions_text(stored).endswith("标题里同时有 科技厅、专精特新")
     conditions["keywords"] = ["科技厅"]
     assert search_params(conditions)["q"] == "科技厅"
 
@@ -1287,6 +1380,12 @@ def test_搜索页表达不了的不给链接(session, world):
     assert stored["link"] is False
     assert "q" not in search_params(stored["conditions"])
     assert stored["ids"] == _ids(world, "gd_apply")
+    # 几个关键词要都有：条件那句写"同时有"
+    assert conditions_text(stored).endswith("标题里同时有 专精特新、中小")
+    stored = _find(session, "发改委或工信部的通知")
+    assert conditions_text(stored).endswith(
+        "标题里同时有 发改委（或 发展改革委、发展和改革委员会）、工信部（或 工业和信息化部）"
+    )
 
 
 # ---- 层级、机关简称、项目名称、空白、没收录的区县、几个时间（查库） ----
@@ -1334,6 +1433,60 @@ def test_层级按搜索页的层级筛(session, world, client, text, names):
     assert stored["ids"] == _ids(world, *names)
     assert stored["link"] is True
     _same_as_search_page(client, stored)
+
+
+@pytest.mark.parametrize(
+    "text,names,link",
+    [
+        ("深圳各区的申报通知", ("ns_apply",), True),
+        ("南山区的市级项目", ("sz_apply",), True),
+        ("深圳的省级政策", ("gd_policy",), True),
+        (
+            "广东省级以上的专精特新",
+            ("gd_apply", "gd_list", "gj_train", "gd_policy", "gd_list_old"),
+            True,
+        ),
+        # 城市和它的区县一起：搜索页打开时区县替换城市，表达不了，不给链接
+        ("深圳的市级和区县级申报通知", ("sz_apply", "ns_apply"), False),
+    ],
+)
+def test_城市区县和层级一起说_按搜索页的层级筛(session, world, client, text, names, link):
+    stored = _find(session, text)
+    assert stored["conditions"]["levels"]
+    assert stored["ids"] == _ids(world, *names)
+    assert stored["link"] is link
+    if link:
+        _same_as_search_page(client, stored)
+
+
+def test_城市一个区县都没收录时不去搜(session, world):
+    _source(session, "广东", "市级", "广州")
+    session.commit()
+    stored = _find(session, "广州的区县级申报通知")
+    assert (stored["total"], stored["ids"], stored["notes"]) == (0, [], ["uncovered"])
+    assert stored["conditions"]["uncovered"] == ["广东·广州（区县级）"]
+    assert conditions_text(stored) == ""
+    assert NOTES["uncovered"].format(uncovered="广东·广州（区县级）") == (
+        "收录里没有广东·广州（区县级）的来源，查不到那里的通知。"
+    )
+
+
+def test_读的时候_以前给了链接现在表达不了的不给(session, world):
+    """以前存的回答给了链接，关键词后来成了机关简称（有别的写法，搜索页一个 q 表达不了）：不给。"""
+    stored = {
+        "conditions": chat_find.empty_conditions() | {"keywords": ["发改委"]},
+        "total": 1,
+        "ids": [],
+        "link": True,
+        "notes": [],
+    }
+    assert render(session, stored, today=TODAY)["searchLink"] is None
+    stored["conditions"]["keywords"] = ["专精特新"]
+    assert render(session, stored, today=TODAY)["searchLink"] == {
+        "kind": "all",
+        "time": "不限",
+        "q": "专精特新",
+    }
 
 
 def test_机关简称按各种写法找_不给搜索页链接(session, world):
