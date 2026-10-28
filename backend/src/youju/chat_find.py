@@ -32,13 +32,16 @@
   （_DEGREE_OF）；
 - 别的"近 N 天"写法（Codex 10/28，_SPAN）："近、最近、过去、最近这、近这、过去这"（后面可以多一个
   "的"）＋数＋天、日、周、星期、礼拜、月、季度、年（后面可以跟"内、以来、至今"这类，"内、来"后面
-  是名称里常见的词的不算：近三个月内容、近两年来源、三年内河航运，_NEI_WORDS、_LAI_WORDS），或者数＋单位＋"内、以内、之内、来、以来、至今"
-  （不带"近"时月要写"个月"），数是 1–999 或汉字一到九十九，"半年"是 6 个月、"半个月"是 15 天，只带
-  "这"的只认"这半年""这半个月"：正好 7、30、90 天或 1、3 个月的同搜索页的近 7、30、90 天，别的按
+  是名称里常见的词的不算：近三个月内容、近两年来源、三年内河航运，_NEI_WORDS、_LAI_WORDS），或者
+  数＋单位＋"内、以内、之内、来、以来、至今"（不带"近"时月、季度要写"个月""个季度"：3 月是月份，
+  一季度是第一季度），数是 1–999 或汉字一到九十九，"半年"是 6 个月、"半个月"是 15 天，只带"这"的
+  只认"这半年""这半个月"：正好 7、30、90 天或 1、3 个月的同搜索页的近 7、30、90 天，别的按
   发布日期筛今天往前 N 天（N 个月）到今天（近半年、近一年、近 14 天、两周内、半年以来、最近这半年、
   最近的一个月；"最近半年"不再认成"最近"加关键词"半年"）。今天、今日、当天、昨天、前天（_DAY_OF）
   筛那一天。某一天、上周、上个月、去年、2025 年这类后面跟着"以来、至今"（"初以来、初至今"同样）
-  的，筛那时起到今天（上周以来、去年以来、去年初以来、2025 年至今）。这几种同上周不给"在搜索页
+  的，筛那时起到今天（上周以来、去年以来、去年初以来、2025 年至今）；中间隔着细分的（年底、10 月、
+  下半年、一季度，_SUB）同样从前面那段时间的开头算（去年底以来、去年 10 月以来 ＝ 去年 1 月 1 日
+  到今天：范围只宽不反），也加 time_word 那句。这几种同上周不给"在搜索页
   看全部"；
 - 认得出是在说时间、又换不成一段确定日期的（_VAGUE，完整的清单：近几年、前几天、一两周、两三天、
   这两天、这两年、近年来、前两年、半年前、两年以前、三天后、上半年、一季度、年底、10 月、10 月中旬、
@@ -46,10 +49,12 @@
   （不然会当成标题里的词，多半一份都找不到）；"最近这几年""过去这段时间"同样。时间后面跟着"以前、
   之前、以后、之后"的（今年以前、
   2025 年以后、昨天之前：开区间、算不算那一天都说不准；年份后面只写一个"前、后"的同样，2025 年前
-  三季度、2025 年后续工作不算；跟在"初、底、末"后面的都算：今年底前）、跟着"截止、到期"的（今天
+  三季度、2025 年后续工作、2025 年前海不算，完整的清单见 _EDGE_WORDS；跟在"初、底、末"后面的都算：
+  今年底前）、跟着"截止、到期"的（今天
   截止、近 7 天内截止、2026 年截止：说的是截止，不是发布）、前面是"截止、截至"的（截止今天、
-  截止日期是今天、申报截止在今天，_UNTIL），连那个时间一起这样算；跟着"初、底、末、上旬、中旬、
-  下旬"的（今年底、本月初、上月底、本月中旬、2025 年底，_PART）照前面的时间筛（范围只宽不反），
+  截止日期是今天、申报截止于今天，_UNTIL），连那个时间一起这样算，中间隔着细分的也一样（去年 10 月
+  以前、今年年底截止）；跟着细分的（今年底、本月初、上月底、本月中旬、2025 年底、今年下半年、今年
+  一季度，_SUB）照前面的时间筛（范围只宽不反），
   也加 time_word 那句，后面是名称里常见的词的不算（初审、初级、初创、底线……，完整的清单见
   _PART_RE）。"青年中心""未来产业""日前市场""历年""三月三""明日之星"这类不算，年份
   后面的"年中、年初、年内"是下一个词的开头（2025 年中央财政、2026 年中医药、2026 年初创企业、
@@ -261,7 +266,6 @@ _PHOTO = ("拍照", "照片", "图片", "截图", "扫一扫", "扫描")
 # 问题像在问内容：照样列通知，末尾加 content 那句
 _CONTENT = (
     "截止",
-    "日期",
     "什么时候",
     "哪天",
     "材料",
@@ -494,7 +498,8 @@ _PERIOD_OF = {
     **dict.fromkeys(("上个月", "上月", "上一个月"), ("month", 1)),
     **dict.fromkeys(("上上个月", "上上月", "上上一个月"), ("month", 2)),
 }
-_YEAR = re.compile(r"(?<!\d)(\d{4})(?!\d)(?!年度)年?")  # 后面跟"年度"的不是时间
+# 四位数：后面跟"年度"的不是时间；没写"年"、后面是万、元这类的是数（奖励 2000 万）
+_YEAR = re.compile(r"(?<!\d)(\d{4})(?!\d)(?!年度)(?:年|(?![万亿元千百个家人项台套吨亩米%]))")
 _YEAR_DEGREE = re.compile(r"(?<!\d)\d{4}年度")
 _FIRST_YEAR = 2000  # 往年只认 2000 年以后
 
@@ -503,7 +508,7 @@ STOPWORDS = (
     "公告", "通告", "文件", "找", "查", "搜", "帮我", "帮忙", "我想", "想要", "一下", "看看",
     "有没有", "有哪些", "哪些", "什么", "关于", "相关", "有关", "方面", "的", "了", "吗", "呢",
     "请问", "企业", "公司", "我们", "我司", "一份", "截止", "时间", "什么时候", "哪天", "材料",
-    "条件", "要求", "能不能报", "多少", "我在",
+    "条件", "要求", "能不能报", "多少", "我在", "日期",
 )  # fmt: skip
 # 说发文的词：也当停用词去掉（"上周发布的申报通知"）
 _ISSUE = ("发布", "出台", "印发", "下发", "公布", "颁布")
@@ -546,7 +551,7 @@ _NUMERALS = "0123456789零一二两三四五六七八九十百"
 def _time_word(word: str) -> str:
     """一个时间词的正则：以数字开头的前面不能紧挨着数字（"17天内"不认成"7天内"），以"年"开头的
     前面不能是汉字、数字（"青年内容""2025年初以来"），以"周"结尾的后面不能是"期"（"这个周期"
-    "上个周期"不是时间），"过去年度"里的"去年"不算。"""
+    "上个周期"不是时间），"过去年度"里的"去年"不算（"通过去年认定的"照常认）。"""
     pattern = re.escape(word)
     if word[0] in _NUMERALS:
         pattern = f"(?<![{_NUMERALS}]){pattern}"
@@ -554,8 +559,8 @@ def _time_word(word: str) -> str:
         pattern = f"(?<![{_HAN}0-9]){pattern}"
     if word.endswith("周"):
         pattern += "(?!期)"
-    if word == "去年":  # "过去年度"里的不算
-        pattern = "(?<!过)" + pattern
+    if word == "去年":  # "过去年度"里的不算（单独的"去年度"先换成了"2025年度"）
+        pattern += "(?!度)"
     return pattern
 
 
@@ -570,7 +575,10 @@ _TIME = re.compile(
 # 名称里常见的、以"内、来"开头的词（完整的清单）：时间后面的"内、来"后面是它们的，是那个词的
 # 开头（最新内需、本月内部审计、今年内河航运、近三个月内容、近两年来源），不当时间的尾巴；别的都
 # 当尾巴（今年内新出台、近一年内获得；独立审阅 10/28）
-_NEI_WORDS = "需|资|贸|容|部|控|河|陆|销|外|循环|江|涵|生|地|审|训|蒙|燃|网|科|港"
+_NEI_WORDS = (
+    "需|资(?!助|金)|贸|容|部|控|河|陆|销|外|循环|江|涵|生(?!效|产)|地|审(?!批|核|查)|训|蒙|燃|网"
+    "|科(?!技|研)|港"
+)  # "内生效""内审批""内科技""内资助"里的"内"照样是尾巴
 _LAI_WORDS = "源|华|访|料|电|函|信|稿|往"
 _INNER = f"(?:内(?!{_NEI_WORDS})|来(?!{_LAI_WORDS}))"
 _WINDOW_TAIL = re.compile(
@@ -582,9 +590,10 @@ _SINCE = re.compile("初以来|初至今|以来|至今")
 # 时间后面跟着这几个的（今年以前、2025 年以后、昨天之前）：开区间、算不算那一天都说不准，整段当
 # 换不成确定日期的（独立审阅 10/28：原来只去掉后半截，照前半截筛，范围正好反了）
 _BEFORE_AFTER = re.compile("以前|之前|以后|之后")
-# 只写一个"前、后"的同上（2025 年前的政策、今年前出台的、本月前的）；后面接着别的词的不算
-# （2025 年前三季度、2025 年后续工作）
-_EDGE = re.compile(rf"[前后](?:(?=的|{'|'.join(_ISSUE)})|(?![{_HAN}]))")
+# 只写一个"前、后"的同上（2025 年前的政策、今年前出台的、今年前申报的）；后面是数字或者名称里
+# 常见的词的（完整的清单：前三季度、后续、前期、前沿、前海、后台……）是那个词的开头，不算
+_EDGE_WORDS = "续|期|沿|备|列|景|端|台|置|补|方|面|勤|者|身|劲|提|瞻|进|卫|夕|驱|款|任|排|门|海"
+_EDGE = re.compile(rf"[前后](?![{_NUMERALS}几]|{_EDGE_WORDS})")
 # 时间后面跟着这几个的说的是截止，不是发布（今天截止、两周内截止、近 7 天内截止、本月内到期、
 # 2026 年截止）：整段当换不成确定日期的
 _DEADLINE = ("截止", "到期")
@@ -602,7 +611,7 @@ _PART = re.compile(_PART_RE)
 _ELIGIBLE = ("成立", "注册", "毕业", "设立", "创办", "入驻", "落户", "投产", "上市", "获批", "认定")
 # 时间前面紧挨着这几个的说的是截止或截至，不是发布（截止今天、截止到昨天、截止日期是今天、
 # 申报截止在今天）：整段当换不成确定日期的
-_UNTIL = re.compile("(?:截止|截至)(?:日期|时间)?(?:是|为|在|到)?$")
+_UNTIL = re.compile("(?:截止|截至)(?:日期|时间)?(?:是|为|在|到|至|于)?$")
 
 # 近 N 天这类（Codex 10/28）："近、最近、过去"（最近这、近这同样）＋数＋单位，或者数＋单位＋
 # "内、以内、之内、来、以来、至今"（不带"近"时"月"要写成"个月"："3月内"的 3 月是月份）。数是
@@ -624,7 +633,8 @@ def _units(words) -> str:
 
 
 _UNITS = _units({*_DAY_UNITS, *_MONTH_UNITS})
-_UNITS_NO_MONTH = _units({*_DAY_UNITS, *_MONTH_UNITS} - {"月"})  # 不带"近"时"月"要写"个月"
+# 不带"近"时"月""季度"要写"个月""个季度"（3 月是月份，一季度是第一季度）
+_UNITS_NO_MONTH = _units({*_DAY_UNITS, *_MONTH_UNITS} - {"月", "季度"})
 # "内、来"后面是名称里常见的词的不算（近三个月内容、近两年来源、三年内河航运）
 _SPAN_TAIL = f"以内|之内|以来|至今|{_INNER}"
 _LEAD_TAIL = _SPAN_TAIL
@@ -640,6 +650,16 @@ _SPAN_BARE = re.compile(
 _CN_DAY = "(?:[一二三]?十[一二三四五六七八九]?|[一二三四五六七八九])"
 _DAY_OF_MONTH = rf"(?:[12][0-9]|3[01]|0?[1-9]|{_CN_DAY})[日号]"
 _ANY_UNIT = "(?:天|日|周(?!期)|星期|礼拜|月|季度|年)"
+# 月份（10 月、10 月份、10 月底、10 月 15 日、九月、五月一日；"三月三"不算）、上下半年、第几季度
+_MONTH = (
+    rf"(?<![0-9])(?:1[0-2]|0?[1-9])月(?:份|{_PART_RE}|{_DAY_OF_MONTH})?"
+    rf"|(?:十[一二]?|[一二三四五六七八九])月(?:份|{_PART_RE}|{_DAY_OF_MONTH})?(?![一二三四五六七八九十])"
+)
+_HALF = f"(?:[上下前后]半(?:年|个?月)|第?[一二三四1-4]季度)(?:{_PART_RE})?"
+# 跟在去年、上个月、2025 年这类后面的细分（年底、10 月、下半年、一季度、中旬）：照前面的时间筛、
+# 加 time_word 那句；再跟着"以来、至今"的从前面那段时间的开头算到今天，跟着"以前、截止"这类的
+# 整段不按它筛（独立审阅 10/28：原来"去年底以来"只按去年筛，今年的都被排除）
+_SUB = re.compile(rf"年?(?:{_PART_RE})|{_MONTH}|{_HALF}")
 # 认得出是在说时间、又换不成一段确定日期的（完整的清单）：从关键词里去掉，回答加 time_word 那句，
 # 不当标题里的词去搜（Codex 10/28）。"日前"（电力的日前市场）、"历年"、"明日"（明日之星）常在
 # 名称里，不列（agy 10/28）；"年中""月中"不列（中央、中医药、中山、中级、中小企业，独立审阅 10/28）
@@ -658,20 +678,15 @@ _VAGUE = re.compile(
             rf"这{_COUNT}个?{_ANY_UNIT}(?:以内|之内|内|以来|来|至今)?",  # 这两天、这两年、这三个月
             "(?:最近|过去|近)?(?:这些天|这些日子|这段时间|一段时间|这些年)",
             "前些天|前些日子|近段时间|前段时间|近来|近年来|近些年|近年",
-            "[上下]半(?:年|个?月)|[上下](?:个|一)?季度|第?[一二三四1-4]季度|周末",
+            rf"{_HALF}|[上下](?:个|一)?季度|周末",
             # 年初、年底、月底：前面是"今、去、明、前、本、年"或者不是汉字、数字的（"青年初心"
-            # "2026年初创企业"不算：年份后面的"年初、年底"只按年份找）
+            # "2026年初创企业"不算；年份后面的见 _SUB）
             rf"(?:(?<=[今去明前本年])|(?<![{_HAN}0-9]))[年月](?:{_PART_RE})",
-            # 月份、日子：10 月、10 月份、10 月底、10 月 15 日、九月、五月一日（"三月三"不算）
-            rf"(?<![0-9])(?:1[0-2]|0?[1-9])月(?:份|{_PART_RE}|{_DAY_OF_MONTH})?",
-            rf"(?:十[一二]?|[一二三四五六七八九])月(?:份|{_PART_RE}|{_DAY_OF_MONTH})?"
-            "(?![一二三四五六七八九十])",
+            _MONTH,
             r"下下?(?:个|一)?(?:周(?!期)|星期|礼拜|月)|明年|后年|明天|后天",
             "以往|往年|过往|早些年|前些年|近日|刚刚|刚才",
-            # 前面是年份的另算（见 parse）：2025 年以来 ＝ 2025 年 1 月 1 日到今天；2025 年以前也当
-            # 换不成确定日期的，但要连年份一起去掉
-            "(?<![0-9]年)(?<![0-9]年初)(?<![0-9]年底)(?<![0-9]年末)(?<![0-9])"
-            "(?:以来|至今|以前|之前|以后|之后)",
+            # 单独的（跟在时间后面的由 _time_at 连着前面的时间一起认：2025 年以来、去年底以前）
+            "以来|至今|以前|之前|以后|之后",
         )
     )
 )
@@ -687,9 +702,10 @@ class _TimeHit:
 
 
 def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
-    """text 从 pos 起的时间说法。几种都对得上时取长的，一样长按 word、span、vague 的顺序。前面紧挨着
-    "成立、毕业"这类的不算（_ELIGIBLE）；后面跟着"初、底、末"的照前面的算、记 rough（_PART）；
-    后面跟着"以前、以后"（_BEFORE_AFTER）、"截止、到期"（_DEADLINE）的连那几个字一起算换不成
+    """text 从 pos 起的时间说法。几种都对得上时取长的，一样长按 year（四位的年份）、word、span、
+    vague 的顺序。前面紧挨着"成立、毕业"这类的不算（_ELIGIBLE）。年份、时间词后面跟着细分的（年底、
+    10 月、下半年，_SUB）照前面的算、记 rough，细分后面再跟着"以来、至今"的从前面那段时间的开头算
+    到今天；后面跟着"以前、以后"（_BEFORE_AFTER）、"截止、到期"（_DEADLINE）的连那几个字一起算换不成
     确定日期的。"""
     if text.endswith(_ELIGIBLE, 0, pos) and text[pos : pos + 1] in (*_NUMERALS, "半"):
         return None
@@ -697,8 +713,11 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         hit = _time_at(text[pos:])
         return None if hit is None else _TimeHit("vague", pos + hit.end, text[pos : pos + hit.end])
     best = None
+    if m := _YEAR.match(text, pos):
+        tail = _SINCE.match(text, m.end())
+        best = _TimeHit("year", tail.end() if tail else m.end(), m.group(), since=bool(tail))
     m = _TIME.match(text, pos)
-    if m:
+    if m and (best is None or m.end() > best.end):
         window = m.group() in _TIME_OF
         tail = (_WINDOW_TAIL if window else _SINCE).match(text, m.end())
         end = tail.end() if tail else m.end()
@@ -707,31 +726,32 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         m = pattern.match(text, pos)
         if m and (best is None or m.end() > best.end):
             best = _TimeHit(kind, m.end(), m.group())
-    if best is not None and best.kind != "vague":
-        if (part := _part_at(text, best.end)) is not None:
-            best = replace(best, end=part, rough=True)
-        if (stop := _stop_at(text, best.end, after_part=best.rough)) is not None:
-            return _TimeHit("vague", stop, text[pos:stop])
+    if best is None or best.kind == "vague":
+        return best
+    if best.kind in ("year", "word") and not best.since and (part := _SUB.match(text, best.end)):
+        best = replace(best, end=part.end(), rough=True)
+        if since := _SINCE.match(text, best.end):  # 去年底以来：从去年开头算；"年初以来"正好
+            exact = part.group() in ("初", "年初")
+            best = replace(best, end=since.end(), since=True, rough=not exact)
+    if not best.since and (stop := _stop_at(text, best.end, after_part=best.rough)) is not None:
+        return _TimeHit("vague", stop, text[pos:stop])
     return best
-
-
-def _part_at(text: str, i: int) -> int | None:
-    """i 处的"初、底、末、上中下旬"（_PART），返回它后面的位置。"""
-    m = _PART.match(text, i)
-    return m.end() if m else None
 
 
 def _stop_at(text: str, i: int, *, after_part: bool = False) -> int | None:
     """i 处跟着"以前、以后、前、后"（_BEFORE_AFTER、_EDGE；跟在"初、底、末"后面的"前、后"都算：
     今年底前完成）或"截止、到期"（_DEADLINE_AT，中间可以隔着"内"）：前面的时间整段当换不成确定
     日期的，返回到哪里为止（"截止"是停用词，留着由切词去掉、加 content 那句）。"""
+    end = None
     if m := _BEFORE_AFTER.match(text, i) or _EDGE.match(text, i):
-        return m.end()
-    if after_part and text.startswith(("前", "后"), i):
-        return i + 1
-    if m := _DEADLINE_AT.match(text, i):
+        end = m.end()
+    elif after_part and text.startswith(("前", "后"), i):
+        end = i + 1
+    elif m := _DEADLINE_AT.match(text, i):
         return m.end() if m.group(1) == "到期" else m.start(1)
-    return None
+    if end is not None and text.startswith("到期", end):  # 今年底前到期："到期"不是停用词，一起去掉
+        end += 2
+    return end
 
 
 def _times(text: str):
@@ -1480,9 +1500,25 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     tokens: list[tuple[int, str]] = []  # （位置, 关键词）
     until = today.isoformat()  # "以来、至今"：到今天
     for at, hit in _times("".join(marks)):
+        if hit.kind == "year" and not _FIRST_YEAR <= int(hit.word[:4]) <= today.year:
+            # 晚于今年、早于 2000 年的不当时间：写了"年"的同"××××年度"当标题词（后面跟着的细分
+            # 不按它筛，加提示），没写"年"的四位数留着当关键词
+            if hit.word.endswith("年"):
+                tokens.append((at, hit.word))
+                vague = vague or hit.end > at + len(hit.word)
+                _take(marks, at, hit.end)
+            continue
         vague = vague or hit.rough
         if hit.kind == "vague":
             vague = True
+        elif hit.kind == "year":
+            year = int(hit.word[:4])
+            if year == today.year:
+                windows.add("今年")
+            elif hit.since:  # 2025 年以来、2025 年底以来：2025 年 1 月 1 日到今天
+                ranges.append((at, {"from": date(year, 1, 1).isoformat(), "to": until}))
+            else:
+                past.append((at, year))
         elif hit.kind == "span":
             kind, value = _span_value(hit.word, today)
             if kind == "window":
@@ -1504,31 +1540,6 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         else:
             windows.add(_TIME_OF[hit.word])
         _take(marks, at, hit.end)
-    joined = "".join(marks)
-    for m in _YEAR.finditer(joined):
-        year = int(m.group(1))
-        since = _SINCE.match(joined, m.end())  # 2025 年以来、2025 年初至今
-        part = None if since else _part_at(joined, m.end())  # 2025 年底：照年份筛，加提示
-        end = since.end() if since else part or m.end()
-        stop = None if since else _stop_at(joined, end, after_part=part is not None)
-        if stop is not None or _UNTIL.search(joined, 0, m.start()):
-            # 2025 年以前、2025 年前的、2025 年底截止、截止 2025 年：连年份一起不按它筛
-            vague = True
-            _take(marks, m.start(), stop or end)
-            continue
-        if year == today.year:
-            windows.add("今年")
-        elif _FIRST_YEAR <= year < today.year and since:
-            ranges.append((m.start(), {"from": date(year, 1, 1).isoformat(), "to": until}))
-        elif _FIRST_YEAR <= year < today.year:
-            past.append((m.start(), year))
-        elif m.group().endswith("年"):  # 晚于今年、早于 2000 年的不当时间，同"××××年度"当标题词
-            tokens.append((m.start(), m.group()))
-            part, end = None, m.end()
-        else:
-            continue
-        vague = vague or part is not None
-        _take(marks, m.start(), end)
     # 意思不一样的时间（"这周"和"近 7 天"算一个）
     times = len({*(tuple(r.values()) for _, r in ranges), *(y for _, y in past), *windows}) > 1
     if ranges:
