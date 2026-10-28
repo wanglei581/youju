@@ -203,8 +203,8 @@ def _uid(session: Session, task: AdvisorTask) -> str | None:
     解读、对照的结果不是用户写的，不记。"""
     if task.kind != "ask":
         return None
-    user = session.get(User, task.user_id)
-    return access_log.log_uid(user.openid, session.get_bind()) if user is not None else None
+    openid = session.scalar(select(User.openid).where(User.id == task.user_id))
+    return access_log.log_uid(openid, session.get_bind()) if openid is not None else None
 
 
 def _turn_id(session: Session, task: AdvisorTask) -> int | None:
@@ -251,12 +251,13 @@ def check(
     if found is not None:
         record_local(session, task, found, stamp=stamp, extra=source)
         raise ResultBlocked
-    user = session.get(User, task.user_id)
-    if user is None:
-        # 处理途中注销了：不放行（任务随用户删除，调用方回滚）
+    # 现读一次：领任务的会话提交时不让对象过期，get 会拿到处理开始时读的那个人，注销了也看不出来
+    openid = session.scalar(select(User.openid).where(User.id == task.user_id))
+    if openid is None:
+        # 处理途中注销了：不放行，也不把他的 openid 交给微信（任务随用户删除，调用方回滚）
         raise UserGone("提交任务的人已经注销")
     in_cloud = wx_security.in_cloud(wx_security.get_settings())
-    verdict = _wechat(user.openid, "\n".join(value for _, value in pairs), task)
+    verdict = _wechat(openid, "\n".join(value for _, value in pairs), task)
     if not verdict.passed:
         reason = {"suggest": verdict.suggest, "label": verdict.label}
         if verdict.trace_id:

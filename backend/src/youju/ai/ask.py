@@ -186,8 +186,8 @@ _BACK_WORDS = (
 )
 _NUM = r"(?:\d+|[一二三四五六七八九十]+)"
 _NTH_SENTENCE = re.compile(rf"第({_NUM})句")
-# 没写"第 N 句"时只认"第 N 条""第 N 个"；"第一批""第二季度"这类不是在数上一答的句子
-_NTH_ITEM = re.compile(rf"第({_NUM})[条个]")
+# 没写"第 N 句"时只认"第 N 条、个、项、点"；"第一批""第二季度"这类不是在数上一答的句子
+_NTH_ITEM = re.compile(rf"第({_NUM})[条个项点]")
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 # 要代写：动作后面紧接着（中间最多隔一个"一份、一下、个、篇"）是材料（第六节第 3 条第 5 步）
 _DRAFT = re.compile(
@@ -242,7 +242,7 @@ def refers_back(question: str) -> bool:
 
 
 def nth(question: str) -> int | None:
-    """问题里指的上一答的第几句（数字或一到十）：先认"第 N 句"，没有再认"第 N 条""第 N 个"；
+    """问题里指的上一答的第几句（数字或一到十）：先认"第 N 句"，没有再认"第 N 条、个、项、点"；
     别的"第 N"（第一批、第二季度）不算。都没有为 None。"""
     text = plain(question)
     match = _NTH_SENTENCE.search(text) or _NTH_ITEM.search(text)
@@ -446,11 +446,13 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
 
 
 class StreamBlocked(Exception):
-    """模型的输出命中本地高危词库：立刻断开、丢掉收到的内容（第九节第 6 条）。"""
+    """模型的输出命中本地高危词库：立刻断开、丢掉收到的内容（第九节第 6 条）。streaming：是不是
+    流式接收途中查到的（处置记录里写 stream）；收完整段查到的、调用出错后查剩下那截查到的不是。"""
 
-    def __init__(self, hit: safety_words.Hit) -> None:
+    def __init__(self, hit: safety_words.Hit, *, streaming: bool = False) -> None:
         super().__init__("回答命中本地高危词库")
         self.hit = hit
+        self.streaming = streaming
 
 
 class _Fail(Exception):
@@ -460,23 +462,31 @@ class _Fail(Exception):
 class _Guard:
     """边收边过本地词库（第九节第 6 条）：每攒够 GUARD_STEP 个新字，就把已经收到的全部文字查一遍
     （跨段的词也查得到）。不是每收到一段都从头查：长回答一段两三个字，每段都查是平方级的慢
-    （独立审阅实测 8000 字、2000 个词条要 66 秒）。没攒够的尾巴由调用结束后的整段再查一次兜住
-    （final；不是流式的、回答已经解成对象的也靠它）。命中抛 StreamBlocked。"""
+    （独立审阅实测 8000 字、2000 个词条要 66 秒）。没攒够的尾巴由 final 兜住：调用正常结束时查
+    整段回答（不是流式的、回答已经解成对象的也靠它）；调用出错时（中途断了、返回看不懂、超时）
+    查最后收到的那些字（last）。命中抛 StreamBlocked。streaming：客户端是不是流式接收。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, streaming: bool = False) -> None:
+        self.streaming = streaming
         self.checked = 0  # 上次查到第几个字
+        self.last = ""  # 最后一次收到的全部文字
 
     def __call__(self, text: str) -> None:
+        self.last = text
         if len(text) - self.checked < GUARD_STEP:
             return
         self.checked = len(text)
-        self.final(text)
+        self._check(text, streaming=self.streaming)
 
     @staticmethod
     def final(text: str) -> None:
+        _Guard._check(text, streaming=False)
+
+    @staticmethod
+    def _check(text: str, *, streaming: bool) -> None:
         hit = safety_words.check(text)
         if hit is not None:
-            raise StreamBlocked(hit)
+            raise StreamBlocked(hit, streaming=streaming)
 
 
 def _finish(session: Session, task_id: int, user_id: int, turn_id: int | None, apply) -> bool:
@@ -530,6 +540,7 @@ def process(
     url, key, model, extra = advisor_endpoint(settings)
     call_reserved = False
     call_stamp = stamp
+    guard: _Guard | None = None
 
     def fail(message: str, *, retry: bool = False) -> bool:
         def apply(row: AdvisorTask) -> None:
@@ -554,6 +565,18 @@ def process(
                 service.release_usage(session, row)
 
         return _finish(session, task_id, user_id, turn_id, apply)
+
+    def tail_blocked() -> bool:
+        """调用出错时（中途断了、返回看不懂、超时、网络断开）最后收到的那些字也要查：边收边查是
+        攒够一步才查，没攒够的那截在这里查。命中的照流式命中处理：记处置记录，不存模型的输出。"""
+        if guard is None or not guard.last:
+            return False
+        try:
+            guard.final(guard.last)
+        except StreamBlocked as blocked:
+            result_safety.record_local(session, task, (blocked.hit, None), stamp=stamp)
+            return True
+        return False
 
     try:
         # 领任务的会话会接着处理好几个任务：先丢掉以前读过的行，下面读到的都是库里现在的
@@ -623,7 +646,7 @@ def process(
                 extra_body=extra,
                 stream=bool(getattr(settings, "ai_advisor_stream", False)),
             )
-        guard = _Guard()
+        guard = _Guard(streaming=bool(getattr(chat_client, "stream", False)))
         payload = chat_client.complete_json(
             SYSTEM_PROMPT,
             model_input(loaded, history(prev, reset, versions), question),
@@ -658,9 +681,8 @@ def process(
         # 没通过内容安全：不显示、不存模型的输出，退回 5 次那本，留处置记录（和任务一起提交；
         # 任务没了也照样留）
         if isinstance(blocked, StreamBlocked):
-            result_safety.record_local(
-                session, task, (blocked.hit, None), stamp=stamp, extra={"stream": True}
-            )
+            extra = {"stream": True} if blocked.streaming else None
+            result_safety.record_local(session, task, (blocked.hit, None), stamp=stamp, extra=extra)
         return fail(UNSAFE_ERROR)
     except result_safety.UserGone:
         # 处理途中注销了：什么都不写（任务、对话随用户删了），也不当作出错记日志
@@ -686,11 +708,15 @@ def process(
         session.rollback()
         return fail(BAD_OUTPUT)
     except AIError as exc:
+        if tail_blocked():
+            return fail(UNSAFE_ERROR)
         session.rollback()
         if exc.code:  # 返回的不是要的 JSON（截断、看不懂）
             return fail(BAD_OUTPUT)
         return fail(heartbeat.UNAVAILABLE, retry=exc.retryable)
     except (TimeoutError, httpx.TransportError) as exc:
+        if tail_blocked():
+            return fail(UNSAFE_ERROR)
         session.rollback()
         return fail(TIMEOUT if isinstance(exc, TimeoutError) else heartbeat.UNAVAILABLE, retry=True)
     except Exception as exc:  # noqa: BLE001 - 只记类型：异常信息里可能带用户打的字或模型的输出

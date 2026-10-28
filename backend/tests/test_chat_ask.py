@@ -128,6 +128,7 @@ class FakeAsk:
     """假的模型：记下收到的提示词和输入；按 chunk 个字一段把回复交给 on_text（模拟流式）。"""
 
     model = "advisor-model"
+    stream = True  # 按流式算（处置记录里写不写 stream 看它）
 
     def __init__(self):
         self.payload = answer(("P002", "企业申报截止时间为2026年11月20日"))
@@ -360,6 +361,7 @@ def test_nth_and_drafting():
     # 先认"第 N 句"，没有再认"第 N 条""第 N 个"；第一批、第二季度这类不算
     assert ask.nth("上面第2条第3句") == 3 and ask.nth("刚才第三条呢") == 3
     assert ask.nth("你列的第2个") == 2
+    assert ask.nth("刚才第3项呢") == 3 and ask.nth("你说的第二点要盖章吗") == 2
     assert ask.nth("刚才说的第一批申报截止哪天") is None and ask.nth("上面第二季度的呢") is None
     for text in ("帮我写一份申报书", "替我写申请书", "起草个方案", "润色一下自评报告", "代写材料"):
         assert ask.drafting(text), text
@@ -1369,7 +1371,7 @@ def test_hit_in_the_last_characters_is_caught(client, session, settings, doc, mo
     reply = json.dumps(model.payload, ensure_ascii=False)
     assert TEST_WORD in reply[-20:] and model.streamed[-1] == reply
     [hit] = hits(session)
-    assert hit.layer == "local" and hit.reason_json["stream"] is True
+    assert hit.layer == "local" and "stream" not in hit.reason_json  # 收完整段查到的
     assert session.scalar(select(AdvisorTask.result_json)) is None and len(wechat.calls) == 1
 
 
@@ -1412,14 +1414,17 @@ def test_requeue_then_success_counts_once(client, session, settings, doc, model)
     assert session.scalar(select(func.sum(AIUsage.calls)).where(AIUsage.task == "ask")) == 2
 
 
-def test_account_deleted_while_processing(client, session, settings, doc, model, caplog):
-    """处理途中注销了：admin 收尾时用户、任务、这一问都没了，什么都不写，也不当作出错。"""
+def test_account_deleted_while_processing(client, session, settings, doc, model, wechat, caplog):
+    """处理途中注销了：admin 收尾时用户、任务、这一问都没了，什么都不写，也不当作出错；
+    回答不再交给微信（不再用他的 openid）。"""
     send(client, "截止是哪天", doc)
+    assert len(wechat.calls) == 1  # 提问那一次
     deleted = []
     model.before_return = lambda: deleted.append(client.delete("/api/v1/me").status_code)
     with caplog.at_level(logging.WARNING):
         result = work(session, settings)
     assert deleted == [204] and result["failed"] == 1
+    assert len(wechat.calls) == 1
     assert user_id(session) is None and counts(session) == (0, 0, 0, 0)
     assert "问答任务" not in caplog.text
 
@@ -1444,12 +1449,13 @@ def test_link_gone_wording(client, session, settings, doc, model):
     ]
 
 
-def _sse_events(*texts, usage=None):
+def _sse_events(*texts, usage=None, finish="stop"):
     events = [
         {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
         for text in texts
     ]
-    events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+    if finish:
+        events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
     if usage:
         events.append({"choices": [], "usage": usage})
     return events
@@ -1463,13 +1469,14 @@ def real_stream(monkeypatch, settings):
 
     from youju.ai import client as client_module
 
-    state = SimpleNamespace(events=[], sent=[], requests=[])
+    state = SimpleNamespace(events=[], sent=[], requests=[], done=True)
 
     def body():
         for event in state.events:
             state.sent.append(event)
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
-        yield b"data: [DONE]\n\n"
+        if state.done:  # 为假时模拟中途断了：没有 [DONE]
+            yield b"data: [DONE]\n\n"
 
     def handler(request):
         state.requests.append(json.loads(request.content))
@@ -1521,3 +1528,28 @@ def test_real_stream_records_usage(client, session, settings, doc, real_stream):
     row = session.scalar(select(AIUsage).where(AIUsage.task == "ask"))
     assert (row.model, row.calls, row.errors) == ("advisor-model", 1, 0)
     assert (row.prompt_tokens, row.completion_tokens) == (120, 30)
+
+
+@pytest.mark.parametrize("ending", ["broken", "invalid_json"])
+def test_real_stream_tail_checked_when_the_call_fails(
+    client, session, settings, doc, real_stream, wechat, ending
+):
+    """调用出错（流中途断了、返回的不是 JSON）时，最后没攒够一步（不到 200 字）的那截也查：
+    词在那里的照样记 ASK_UNSAFE 和处置记录（不写 stream），退回 5 次那本。"""
+    head = '{"status": "answer", "quotes": [{"sid": "P001", "quote": "'
+    texts = [head, *(["本省注册的科技型中小企业"] * 20), TEST_WORD]
+    if ending == "broken":
+        real_stream.events = _sse_events(*texts, finish=None)
+        real_stream.done = False
+    else:
+        real_stream.events = _sse_events(*texts, "然后就不是 JSON 了")
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    got = turn_of(client, turn_id)
+    assert got["errorCode"] == "ASK_UNSAFE" and got["answer"] is None
+    assert session.scalar(select(AdvisorTask.result_json)) is None
+    [hit] = hits(session)
+    assert (hit.layer, hit.turn_id, hit.text) == ("local", turn_id, None)
+    assert "stream" not in hit.reason_json
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
+    assert len(wechat.calls) == 1
