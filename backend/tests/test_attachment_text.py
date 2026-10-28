@@ -1451,14 +1451,40 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
     assert report.retracted == 3 and report.failed["webpage"] == 1
     webpages = select(func.count()).where(AttachmentTextVersion.reason == "webpage")
     assert session.scalar(webpages) == 0
-    # 第一次就遇到临时问题：还没有文字，仍是待取；隔一天（或者手动不等）再算到期
+    # 第一次就遇到临时问题：还没有文字，记成"原网站下载不了"、写明这次的原因（D-097 ④：不算等取
+    # 文字）；规则版本不改，隔 TEXT_RETRY（或者手动不等）照样重试
     at.record(session, BASE + "slow.pdf", "pdf", NOW, report, failure=temporary)
     slow = _url_rows(session)[BASE + "slow.pdf"]
-    assert (slow.status, slow.extractor) == ("pending", 0)
+    assert (slow.status, slow.reason, slow.extractor) == ("failed", "unavailable", 0)
+    assert slow.detail == "暂时下载不了，下一轮再试：超时"
+    assert (slow.checked_at, slow.changed_at, slow.retry_at) == (NOW, NOW, NOW + at.TEXT_RETRY)
+    assert report.failed["unavailable"] == 0  # 临时问题记在"保留"里，不当成取不出
     key = {at.url_key(BASE + "slow.pdf")}
     assert at.due(session, key, NOW + timedelta(hours=1)) == set()
     assert at.due(session, key, NOW + timedelta(hours=1), retry_now=True) == key
     assert at.due(session, key, NOW + at.TEXT_RETRY) == key
+    # 下一轮又是临时问题：还是下载不了，换成这次的原因，不再改 changed_at
+    again = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "slow.pdf", "pdf", NOW + at.TEXT_RETRY, report, failure=again)
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert slow.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    assert (slow.changed_at, slow.retry_at) == (NOW, NOW + 2 * at.TEXT_RETRY)
+    # 再下一轮下载到了：取文字、能读，重试时间清掉
+    later_ok = NOW + 2 * at.TEXT_RETRY
+    at.record(session, BASE + "slow.pdf", "pdf", later_ok, report, content=make_docx("终于取到"))
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert (slow.status, slow.reason, slow.extractor) == ("ok", None, at.EXTRACTOR_VERSION)
+    assert slow.retry_at is None and slow.version_id is not None
+    assert at.due(session, key, later_ok + at.TEXT_RETRY) == set()
+
+
+def test_text_retry_comes_back_in_the_next_round() -> None:
+    # 每天两轮抓取（6:30、20:30，最长隔 14 小时）：一轮失败，下一轮就重试，不会总落在同一个时段
+    # （10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到，卡了两天）
+    evening = datetime(2026, 10, 27, 12, 40)  # 北京时间 20:40（那一轮附件任务晚的时候）
+    morning = datetime(2026, 10, 27, 22, 30)  # 北京时间第二天 6:30
+    assert evening + at.TEXT_RETRY <= morning
+    assert morning + timedelta(minutes=10) + at.TEXT_RETRY <= evening + timedelta(days=1)
 
 
 def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypatch) -> None:
@@ -1726,7 +1752,11 @@ def test_text_only_run_never_touches_copies_or_storage(session) -> None:
     report = copies.extract_texts(session, fetcher=fetcher, now=NOW)
     assert fetcher.calls[-1] == BASE + "slow.doc" and report.texts.kept == 1
     rows = _url_rows(session)
-    assert rows[BASE + "slow.doc"].status == "pending" and BASE + "old.pdf" not in rows
+    assert (rows[BASE + "slow.doc"].status, rows[BASE + "slow.doc"].reason) == (
+        "failed",
+        "unavailable",
+    )
+    assert BASE + "old.pdf" not in rows
     # 临时问题的不自动重试，加 --retry-pending 才重试
     fetcher.calls.clear()
     copies.extract_texts(session, fetcher=fetcher, now=NOW)
@@ -1784,6 +1814,22 @@ def test_readings_states(session) -> None:
     ]
     assert [x.readable for x in found] == [True, False, False, False, False, False]
     assert [x.state for x in at.readings(session, old.id, NOW)] == ["old"]
+    # 下载暂时失败、等下一轮再试的（从没取到过文字）：说原网站下载不了、给出原因，不算还没取；
+    # 下一轮取到了就能读
+    slow = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "later.docx", "docx", NOW, report, failure=slow)
+    waiting = at.readings(session, doc.id, NOW)[4]
+    assert (waiting.state, waiting.readable, waiting.note) == (
+        "unavailable",
+        False,
+        "原网站下载不了这个附件",
+    )
+    assert (
+        waiting.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    )
+    later = NOW + at.TEXT_RETRY
+    at.record(session, BASE + "later.docx", "docx", later, report, content=make_docx("后来取到"))
+    assert at.readings(session, doc.id, later)[4].state == "ok"
     # 合并转载：详情页列的是组里正文最长那份的附件；那份是二级来源，不在下载范围里
     master = add_doc(session, 3, APPLY, RECENT, [])
     session.get(DocumentDetail, master.id).body_text = ""

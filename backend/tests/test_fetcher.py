@@ -151,6 +151,44 @@ def test_robots_server_error_means_skip() -> None:
         assert f.fetch("https://a.gov.cn/list.html").status == "robots_error"
 
 
+def test_robots_server_error_once_is_retried_and_reason_recorded() -> None:
+    """robots.txt 服务器一时回 5xx：按限速间隔再取一次；两次都是 5xx 才跳过，原因写进失败说明。"""
+    robots_answers = {"a.gov.cn": [503, 200], "b.gov.cn": [503, 502]}
+    calls: list[str] = []
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if request.url.path == "/robots.txt":
+            calls.append(host)
+            code = robots_answers[host].pop(0)
+            return httpx.Response(code, text="User-agent: *\nAllow: /\n" if code == 200 else "")
+        return httpx.Response(200, text=LIST_HTML)
+
+    with make_fetcher(handler, interval=3.0, sleep=waits.append) as f:
+        # 第一次 503、隔一个限速间隔再取一次 200：照常抓
+        assert f.fetch("https://a.gov.cn/list.html").status == "ok"
+        assert calls == ["a.gov.cn", "a.gov.cn"] and waits and waits[0] > 0
+        # 两次都是 5xx：跳过，写明原因；这一轮里不再取（和原来一样）
+        result = f.fetch("https://b.gov.cn/list.html")
+        assert result.status == "robots_error"
+        assert result.error == "robots.txt 暂时无法获取（HTTP 502），本次跳过"
+        assert f.fetch("https://b.gov.cn/other.html").status == "robots_error"
+        assert calls.count("b.gov.cn") == 2
+
+
+def test_robots_network_error_reason_is_kept() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            raise httpx.ConnectTimeout("连接超时")
+        raise AssertionError("robots.txt 取不到时不应抓取页面")
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "robots_error"
+    assert result.error.startswith("robots.txt 暂时无法获取（") and "本次跳过" in result.error
+
+
 def test_robots_4xx_or_html_means_allowed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
