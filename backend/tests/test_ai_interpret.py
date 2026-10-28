@@ -2174,7 +2174,10 @@ def test_public_ai_worker_rejects_queued_old_consent(session, settings, doc):
         ("2026-10", NOW, False),
         ("old", NOW, False),
         ("2026-11", None, False),
-        ("2026-11", NOW, True),
+        # 10/28 起从 2026-11.1 起认：完整版 2026-11 没写"AI 结果送微信内容安全检查"
+        ("2026-11", NOW, False),
+        ("2026-11.1", None, False),
+        ("2026-11.1", NOW, True),
         ("2026-12", NOW, True),
     ],
 )

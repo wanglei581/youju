@@ -23,10 +23,10 @@ import httpx
 from openpyxl import load_workbook
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, defer, sessionmaker
 
-from youju import access_log
-from youju.ai import advisor_endpoint, clause, heartbeat, interpret
+from youju import access_log, safety_words, wx_security
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -37,6 +37,7 @@ from youju.models import (
     AdvisorFileTrash,
     AdvisorTask,
     AdvisorUsage,
+    AISafetyHit,
     AIUsage,
     Document,
     User,
@@ -77,6 +78,10 @@ ERROR_CODES = {
     AI_CAP_MESSAGE: "AI_DAILY_CAP",
     AI_OFF_MESSAGE: "AI_OFF",
     heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+    # 内容安全（门槛第 4 道）：结果没通过、检测接口出错。小程序没有这两个代码的固定说法时照写 error
+    result_safety.UNSAFE_MESSAGE: "AI_UNSAFE",
+    result_safety.REMOVED_MESSAGE: "AI_UNSAFE",
+    result_safety.CHECK_DOWN_MESSAGE: "AI_CHECK_DOWN",
 }
 
 
@@ -487,6 +492,109 @@ def legacy_result_document_ids(session: Session, client: httpx.Client, url: str)
         book.close()
 
 
+# 同一份内容没通过内容安全以后，多久内再提交直接按没通过处理
+BLOCK_CACHE = timedelta(days=1)
+SWEEP_BATCH = 200  # 词库更新以后复查已有结果，每批取几份
+
+
+def _recently_blocked(
+    session: Session, task: AdvisorTask, skill, model: str, key: str, stamp: datetime
+) -> bool:
+    """同一份内容 1 天内真查过、没通过。只认真查的那一次（写了处置记录的），不认后来直接判失败的，
+    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。"""
+    rows = session.execute(
+        select(AISafetyHit.layer, AISafetyHit.reason_json)
+        .join(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
+        .where(
+            AISafetyHit.stage == "answer",
+            AISafetyHit.created_at > stamp - BLOCK_CACHE,
+            AdvisorTask.kind == skill.kind,
+            AdvisorTask.id != task.id,
+            AdvisorTask.prompt_version == skill.prompt_version,
+            AdvisorTask.model == model,
+            AdvisorTask.cache_key == key,
+        )
+    ).all()
+    version = safety_words.LIBRARY.version
+    return any(
+        layer == "wechat" or (reason or {}).get("version") == version for layer, reason in rows
+    )
+
+
+def sweep_results(session: Session, stamp: datetime) -> int:
+    """词库更新以后，把还在保存期内、显示着的 AI 结果用现在的本地词库再查一遍（在本机比，
+    不调微信）。命中的撤下、写处置记录；没命中的把标记改成现在的版本。没有标记的（检查上线以前
+    生成的）读的时候本来就不显示，到期删除。先在库里按标记的版本筛，再分批取（不取快照里的整份
+    正文），每批单独提交。返回撤下了几份。"""
+    version = safety_words.LIBRARY.version
+    words = func.json_unquote(func.json_extract(AdvisorTask.result_json, "$.safety.words"))
+    ids = list(
+        session.scalars(
+            select(AdvisorTask.id)
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+                or_(AdvisorTask.expires_at.is_(None), AdvisorTask.expires_at > stamp),
+                words.is_not(None),
+                words != version,
+            )
+            .order_by(AdvisorTask.id)
+        )
+    )
+    removed = 0
+    for at in range(0, len(ids), SWEEP_BATCH):
+        batch = session.scalars(
+            select(AdvisorTask)
+            .options(
+                defer(AdvisorTask.snapshot),
+                defer(AdvisorTask.input_json),
+                defer(AdvisorTask.input_rows),
+            )
+            .where(AdvisorTask.id.in_(ids[at : at + SWEEP_BATCH]), AdvisorTask.status == "done")
+            .with_for_update(skip_locked=True)
+        ).all()
+        for task in batch:
+            result = task.result_json or {}
+            mark = result.get("safety")
+            if not isinstance(mark, dict) or mark.get("words") == version:
+                continue
+            field = get_skill(task.kind).result_field
+            found = result_safety.local_hit(result_safety.quotes(result, field))
+            if found is None:
+                task.result_json = {**result, "safety": {**mark, "words": version}}
+                continue
+            result_safety.record_local(session, task, found, stamp=stamp, extra={"sweep": True})
+            task.status, task.error = "failed", result_safety.REMOVED_MESSAGE
+            task.result_json, task.result_rows, task.cache_key = None, 0, None
+            removed += 1
+        session.commit()
+    return removed
+
+
+def _remove_copies(session: Session, task: AdvisorTask, source_id: int) -> None:
+    """撤下没通过内容安全的那份缓存结果和它的复制件：复制结果不刷新生成时间，同类型、同缓存键、
+    生成时间相同的就是同一份。"""
+    source = session.get(AdvisorTask, source_id)
+    generated = ((source.result_json or {}).get("generated_at")) if source else None
+    if source is None or not source.cache_key or not generated:
+        return
+    for row in session.scalars(
+        select(AdvisorTask)
+        .where(
+            AdvisorTask.kind == source.kind,
+            AdvisorTask.cache_key == source.cache_key,
+            AdvisorTask.status == "done",
+            AdvisorTask.id != task.id,
+        )
+        .with_for_update()
+    ):
+        if (row.result_json or {}).get("generated_at") != generated:
+            continue
+        row.status, row.error = "failed", result_safety.REMOVED_MESSAGE
+        row.result_json, row.result_rows, row.cache_key = None, 0, None
+
+
 def process_ai(
     session: Session,
     task: AdvisorTask,
@@ -509,6 +617,7 @@ def process_ai(
     advisor_url, advisor_key, model, advisor_extra = advisor_endpoint(settings)
     call_reserved = False
     call_stamp = stamp
+    cached_from = None  # 结果是从哪个任务的缓存复制来的（内容安全没通过时要撤下那份）
     task.model, task.prompt_version = model, skill.prompt_version
     try:
         if not task.input_json:
@@ -518,6 +627,9 @@ def process_ai(
         )
         task.snapshot, task.cache_key = snapshot, key
         task.result_document_ids = snapshot["document_ids"]
+        if _recently_blocked(session, task, skill, model, key, stamp):
+            # 同一份内容 1 天内没通过内容安全：直接按没通过处理，不再调模型和微信（不另写记录）
+            raise result_safety.RecentlyBlocked
         cached = session.scalar(
             select(AdvisorTask)
             .where(
@@ -556,6 +668,7 @@ def process_ai(
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
+            cached_from = cached.id
             result = (
                 clause.notification_result(cached.result_json)
                 if skill.kind == "clause"
@@ -610,6 +723,12 @@ def process_ai(
                     result, current_verified, current["attachments"]
                 )
                 task.snapshot, task.cache_key = current, current_key
+        # 结果存进去之前过两层内容安全（D-093 门槛第 4 条）：复用缓存的也查；通过的记上标记
+        safety = result_safety.check(
+            session, task, result, field=skill.result_field, stamp=stamp, cached_from=cached_from
+        )
+        if safety is not None:
+            result = {**result, "safety": safety}
         task.result_json = result
         task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
@@ -617,6 +736,21 @@ def process_ai(
             release_usage(session, task)
         session.commit()
         return True
+    except result_safety.ResultBlocked as blocked:
+        # 没通过内容安全：不显示、不存、退回次数；处置记录已经加进会话，和任务一起提交
+        if cached_from:
+            # 复用的缓存没通过：这份结果以前给别人显示过，撤下它和它的复制件（生成时间相同的），
+            # 也不再拿来复用（暂行办法第十四条：发现违法内容要消除）
+            _remove_copies(session, task, cached_from)
+        task.status, task.finished_at, task.error = "failed", stamp, result_safety.UNSAFE_MESSAGE
+        task.result_json = None
+        task.result_rows = 0
+        # 真查过没通过的留着缓存键（_recently_blocked 按它找处置记录）；直接判失败的不留
+        if isinstance(blocked, result_safety.RecentlyBlocked):
+            task.cache_key = None
+        release_usage(session, task)
+        session.commit()
+        return False
     except AICapReached:
         task.status, task.finished_at, task.error = "failed", stamp, AI_CAP_MESSAGE
         task.result_json = None
@@ -653,6 +787,8 @@ def process_ai(
         task.model, task.prompt_version = model, skill.prompt_version
         task.result_json = None
         task.cache_key = None
+        # 内容安全接口出错不放行，也不重排：暂时性的错误已经原地重试过（result_safety），
+        # 重排要重新调模型、占全站当天的次数
         retryable = (isinstance(exc, AIError) and exc.retryable) or isinstance(
             exc, (httpx.TransportError, TimeoutError)
         )
@@ -667,12 +803,17 @@ def process_ai(
         )
         if isinstance(exc, AIError) and not exc.retryable:
             task.error = "AI 返回内容无效或请求被拒绝，请稍后重试"
+        if isinstance(exc, wx_security.CheckDown):
+            task.error = result_safety.CHECK_DOWN_MESSAGE
         if retryable and task.attempts <= 2:
             task.status, task.started_at, task.finished_at = "queued", None, None
         else:
             task.status, task.started_at, task.finished_at = "failed", None, stamp
             release_usage(session, task)
         session.commit()
+        if isinstance(exc, wx_security.CheckDown):
+            # 往运维群提醒：按库里记的时间，所有进程合起来每小时最多一条
+            result_safety.alert_check_down(session, exc, stamp)
         return False
     finally:
         if chat_client is not None:
@@ -1187,13 +1328,26 @@ def cleanup_advisor(
     usage_rows = (
         session.execute(delete(AdvisorUsage).where(AdvisorUsage.day < keep_from)).rowcount or 0
     )
+    # 内容安全的处置记录 190 天到期删除（门槛第 4 道）；删任务、注销都不提前删
+    safety_hits = (
+        session.execute(delete(AISafetyHit).where(AISafetyHit.expires_at <= stamp)).rowcount or 0
+    )
     session.commit()
+    # 词库更新以后再查一遍还显示着的 AI 结果：上面的保存期清理先提交，复查出错不影响它们
+    try:
+        swept = sweep_results(session, stamp)
+    except Exception as exc:  # noqa: BLE001 - 复查出错只记类型，下一天再查
+        session.rollback()
+        log.warning("AI 结果按新词库复查出错：%s", type(exc).__name__)
+        swept = 0
     return {
         "advisor_input_rows": input_count,
         "advisor_files": deleted_count,
         "advisor_ai_tasks": ai_tasks,
         "advisor_data_tasks": data_tasks,
         "advisor_usage_rows": usage_rows,
+        "ai_safety_hits": safety_hits,
+        "ai_results_removed": swept,
     }
 
 

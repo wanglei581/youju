@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, defer
 from youju import advisor_tasks as service
 from youju import boost, payments
 from youju.agreements import tools_agreed
-from youju.ai import content, heartbeat, interpret
+from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
@@ -332,9 +332,22 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
     if task.kind in AI_KINDS and task.result_json:
-        if task.expires_at is not None and task.expires_at <= _stamp():
+        # 内容安全（门槛第 4 道）：检查上线以前生成的不显示；词库更新以后先用本地词库再查一遍。
+        # 过期的照旧写"已过期"（先判断）
+        expired = task.expires_at is not None and task.expires_at <= _stamp()
+        hidden = (
+            None
+            if expired
+            else result_safety.visible_after_update(
+                task.result_json, get_skill(task.kind).result_field
+            )
+        )
+        if expired:
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
+        elif hidden:
+            result["result"] = None
+            result["error"] = hidden
         elif task.cache_key:
             try:
                 if not doc_id:

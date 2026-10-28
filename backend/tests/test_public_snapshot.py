@@ -131,6 +131,7 @@ def test_user_tables_and_secrets_are_never_public() -> None:
         "subscriptions",
         "events",
         "advisor_tasks",
+        "ai_safety_hits",
         "pay_orders",
         "invoice_requests",
         "workbench_passes",

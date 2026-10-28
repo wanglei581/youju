@@ -256,6 +256,18 @@ test('429 保留后端 detail，404 使用固定提示；两者不重试消耗�
     h.session.show(); await flush();
     assert.equal(h.state.error, text); assert.equal(h.state.errorCode, errorCode || ''); h.session.hide();
   }
+  // 内容安全（门槛第 4 道，后台 10/28）：结果没通过、检测接口出错。小程序没有这两个代码的固定说法，
+  // 照写后台的原因（后台写明了没扣次数），可以重试
+  for (const [errorCode, error] of [
+    ['AI_UNSAFE', '这次的结果没有通过内容安全检查，不显示；这次没有扣你的次数。'],
+    ['AI_CHECK_DOWN', '内容安全检测暂时不可用，请稍后重试；这次没有扣你的次数。'],
+  ]) {
+    const h = sessionHarness({ session: { taskId: 6, docId: 9 }, api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error, errorCode }) } });
+    h.session.show(); await flush();
+    assert.equal(h.state.phase, 'failed'); assert.equal(h.state.error, error);
+    assert.equal(h.state.errorCode, errorCode); assert.equal(h.state.canRetry, true); assert.equal(h.state.unavailable, false);
+    h.session.hide();
+  }
 });
 
 test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文也能回看结果', async () => {
