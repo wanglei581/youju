@@ -1077,6 +1077,7 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "unused_subscriptions": 0,
         "advisor_input_rows": 0,
         "pay_events": 0,
+        "pass_rewards": 0,
         "advisor_files": 0,
         "advisor_ai_tasks": 0,
         "advisor_data_tasks": 0,
