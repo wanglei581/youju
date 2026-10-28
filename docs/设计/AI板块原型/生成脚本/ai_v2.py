@@ -312,14 +312,18 @@ def sec_title(name, n):
     return f'<div style="font-size: 17px; font-weight: 600">{name} <span style="font-size: 13px; font-weight: 400; color: {T2}">{n} 句</span></div>'
 
 
-def a_result():
+def result_sections():
     obj = adv_card(sec_title("申报对象", len(OBJ))
                    + src_label(line(8), line(9)) + q_item(OBJ[0], True)
                    + src_label(line(8), line(11)) + q_item(OBJ[1], True))
     cond = adv_card(sec_title("申报条件", COUNTS[1][1])
                     + src_label(line(13), line(14), line(15)) + "".join(q_item(t, i == 0) for i, t in enumerate(COND_SELF))
                     + src_label(line(13), line(14), line(20)) + "".join(q_item(t, i == 0) for i, t in enumerate(COND_ENTR[:2])))
-    top = nav("AI 解读") + result_strip() + a_summary() + a_jump() + obj + cond
+    return obj + cond
+
+
+def a_result():
+    top = nav("AI 解读") + result_strip() + a_summary() + a_jump() + result_sections()
     return first_screen(top, bar([("准备材料", "check"), ("加入整理", "download")], "接着问这份通知"), h=1880)
 
 
@@ -459,8 +463,8 @@ B_HINT = "说要找什么通知，或问一份通知里的事"
 B_NOTE = "找通知不用 AI、不算次数；问通知里的事由 AI 摘原句，今天还剩 5 次。<br>请不要写企业名称、手机号。"
 
 
-def b_input(ph=B_HINT, note=B_NOTE):
-    return (f'<div style="flex-shrink: 0; background: {CARD}; border-top: 1px solid {LINE}; padding: 8px 12px 10px">'
+def b_input(ph=B_HINT, note=B_NOTE, pb=10):
+    return (f'<div style="flex-shrink: 0; background: {CARD}; border-top: 1px solid {LINE}; padding: 8px 12px {pb}px">'
             f'<div style="display: flex; align-items: center; gap: 8px">'
             f'<div style="flex-grow: 1; min-width: 0; height: 40px; padding: 0 14px; box-sizing: border-box; border-radius: 20px; background: {FILL}; display: flex; '
             f'align-items: center; font-size: 14.5px; color: {T3}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{ph}</div>'
@@ -559,6 +563,164 @@ def b_compile():
                  + para("文件开头写着「AI 生成 · 句子摘自政府原文、未改写」。<br>文件里也带隐式标识，在「文件」里能再找到。", 12, T3, 8))
     top = b_top() + bubble(f"把能解读的 {len(COMPILE)} 份整理成 Excel 对比表") + confirm + bubble("开始整理") + answer("ai", file_card)
     return b_page(top)
+
+
+# ---------- C：A+B 结合（Claude、Codex、agy 一起设计，10/29） ----------
+# 对话当入口和线索（B），整页当交付物（A）：AI 首页照 A 先给结果，顶上加一条"问一问"入口（点了进对话页）；
+# 对话页是普通页面（能带着通知打开），回答都是摘要卡片，长结果点"看完整结果"打开整页；整页从对话打开的，底栏"回到对话"。
+C_HINT = "说要找什么通知，或问刚才那份通知"
+C_EXAMPLES = ("近 30 天的 5G 工厂申报", "刚才那份要准备哪些材料？")
+VIEWS_SEG = ["全部原句（30 句）", "材料清单（能勾选）"]
+
+
+def c_head():
+    """AI 首页页头：A 的品牌蓝页头，搜索框换成"问一问"入口条（B），点了进对话页、键盘弹起；下面两个例子。"""
+    ex = "".join(f'<span style="height: 28px; padding: 0 11px; display: inline-flex; align-items: center; border-radius: 14px; '
+                 f'background: rgba(255,255,255,0.16); color: #FFFFFF; font-size: 12.5px; white-space: nowrap">{t}</span>' for t in C_EXAMPLES)
+    entry = (f'<div style="margin-top: 12px; height: 46px; padding: 0 6px 0 14px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; '
+             f'border-radius: 23px; background: #FFFFFF">{icon("search", 18, T3)}'
+             f'<span style="flex: 1; min-width: 0; font-size: 14.5px; color: {T3}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{C_HINT}</span>'
+             f'<span style="flex-shrink: 0; height: 34px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 17px; background: {BLUE}; '
+             f'color: #FFFFFF; font-size: 14px; font-weight: 600">问一问</span></div>')
+    return (f'<div style="flex-shrink: 0; background: linear-gradient(180deg, {BLUE_G1} 0%, {BLUE_G2} 100%); color: #FFFFFF; padding: 0 16px 36px">'
+            f'<div style="height: 48px; position: relative; display: flex; align-items: center; justify-content: center">'
+            f'<span style="font-size: 17px; font-weight: 600">AI</span>{capsule().replace("right: 10px", "right: -6px")}</div>'
+            f'{notice_bar(on_blue=True, nextv=True)}'
+            f'<div style="margin-top: 8px; font-size: 13.5px; line-height: 1.7; color: rgba(255,255,255,0.92)">{A_HERO}</div>{entry}'
+            f'<div style="margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px">'
+            f'<span style="font-size: 12.5px; color: rgba(255,255,255,0.82)">试试</span>{ex}</div>'
+            f'<div style="margin-top: 8px; font-size: 12px; color: rgba(255,255,255,0.82)">找通知不用 AI、不算次数；问通知里的事由 AI 摘原句</div></div>')
+
+
+def c_records():
+    recs = (record(f"问一问 · {DOC['title']}", "[日期] · AI 解读、准备材料、问了 2 句")
+            + record(f"问一问 · {FIND_SHORT}", "[日期] · 找到 5 份，整理成 Excel 对比表")
+            + record(f"条款对照 · {DOC['title']}", "[日期] · 已完成", last=True))
+    return card(card_head("最近的对话和结果", "全部") + recs)
+
+
+def c_home():
+    top = c_head() + ab.ai_strip() + a_continue() + a_ready() + a_tasks() + c_records() + ai_foot() + '<div style="height: 20px"></div>'
+    return phone(top, tabbar())
+
+
+def c_card():
+    """详情卡片：A 的"开始解读"和直达按钮，加 B 的一行提问框（发出去进问一问对话页、带上这份通知）。"""
+    right = f'<span style="font-size: 12.5px; font-weight: 400; color: {T2}">今天还剩 <b style="font-weight: 700; color: {BLUE}">5</b> 次</span>'
+    two = (f'<div style="margin-top: 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">'
+           + outline_btn("准备材料", 13.5) + outline_btn("条款对照", 13.5) + "</div>")
+    ask = (f'<div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid {LINE}; display: flex; align-items: center; gap: 8px">'
+           f'<div style="flex: 1; min-width: 0; height: 40px; padding: 0 14px; box-sizing: border-box; border-radius: 20px; background: {FILL}; display: flex; '
+           f'align-items: center; font-size: 14px; color: {T3}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">问这份通知里的事，比如截止、条件</div>'
+           f'<span style="flex-shrink: 0; height: 36px; padding: 0 15px; display: inline-flex; align-items: center; border-radius: 18px; background: {BLUE}; '
+           f'color: #FFFFFF; font-size: 14.5px; font-weight: 500">问</span></div>')
+    return card(section_title("AI 解读", right)
+                + f'<div style="margin-top: 4px; font-size: 14px; line-height: 1.7">约半分钟把申报对象、条件、时间、材料的原文原句摘出来分好类，每句都能回原文核对。</div>'
+                + btn_primary("开始解读") + two + ask
+                + f'<div style="margin-top: 8px; padding-bottom: 16px; font-size: 12px; line-height: 1.6; color: {T3}">问这份通知今天还剩 5 次；AI 只摘原句，不判断能不能申报。</div>')
+
+
+def c_detail():
+    return detail_with(c_card(), h=1330)
+
+
+def c_top(pinned=True):
+    """问一问对话页：普通页面（左上返回），出处说明、固定的 AI 标识条；带着通知时通知固定在顶部。"""
+    strip = (f'<div style="flex-shrink: 0; height: 40px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px; '
+             f'background: {CARD}; border-bottom: 1px solid {LINE}"><span style="min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; '
+             f'text-overflow: ellipsis">标「AI 生成」的回答由 AI 生成 · 以原文为准</span><span style="flex-shrink: 0; font-size: 13px; color: {BLUE}">说明</span></div>')
+    return nav("问一问") + notice_bar(nextv=True) + strip + (b_pinned() if pinned else "")
+
+
+def open_full(text):
+    """摘要卡片里打开整页的整行按钮。"""
+    return (f'<div style="margin-top: 12px; height: 40px; display: flex; align-items: center; justify-content: center; gap: 2px; border-radius: 20px; '
+            f'background: {BLUE_TINT}; color: {BLUE}; font-size: 14px; font-weight: 600">{text}{icon("chev", 15, BLUE)}</div>')
+
+
+def c_page(top, ph, note):
+    return phone(top + '<div style="height: 18px"></div>', b_input(ph, note, pb=28))
+
+
+def c_interpret():
+    body = (para(f"摘出了 {TOTAL} 句，分在 5 类（可能没摘全）。先看截止和申报对象，其余在完整结果里：")
+            + f'<div style="margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid {LINE}">{due_block()}</div>'
+            + f'<div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px">{count_chips(0, 28, 12.5)}</div>'
+            + quote(1, OBJ[0]) + quote(2, OBJ[1])
+            + open_full(f"看完整结果（{TOTAL} 句）")
+            + para(f"没摘到：{MISSING}，可能原文没写。", 13, T2, 10) + para(ab.READ_BODY, 13, T2, 4))
+    top = c_top() + bubble("AI 解读这份通知") + answer("ai", body) + suggest("准备材料", "条款对照", "加入整理")
+    return c_page(top, "接着问这份通知里的事", "问这份通知今天还剩 5 次（AI 解读还剩 4 次）。<br>请不要写企业名称、手机号。")
+
+
+def c_result():
+    """从对话里点"看完整结果"打开的整页：同 A 的解读结果，顶上多一个看法切换（全部原句 / 材料清单），底栏"回到对话"。"""
+    view = f'<div style="margin: 10px 12px 0">{seg(VIEWS_SEG, VIEWS_SEG[0])}</div>'
+    top = nav("AI 解读") + result_strip() + a_summary() + view + a_jump() + result_sections()
+    return first_screen(top, bar([("条款对照", "copy"), ("加入整理", "download")], "回到对话"), h=1880)
+
+
+def c_find():
+    add = (f'<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 2px; border-radius: 15px; border: 1px dashed {LINE2}; '
+           f'color: {BLUE}; font-size: 13px; white-space: nowrap">{icon("plus", 14, BLUE)}地区</span>')
+    chips_row = (f'<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px">{cond_chip("类型：", "申报通知")}{cond_chip("发布：", "近 30 天")}'
+                 f'{cond_chip("标题里有：", "5G工厂", close=True)}{add}</div>')
+    shown = FIND[:3]
+    rows = "".join(doc_row(d, "AI 解读" if d["ai"]["interpret"] else None, last=i == len(shown) - 1, role=True, inapp=True) for i, d in enumerate(shown))
+    body = (f'<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px"><span style="font-size: 14px; font-weight: 600">按这些条件找的</span>'
+            f'<span style="font-size: 12px; color: {T3}">点条件就能改</span></div>{chips_row}'
+            + para(f"找到 {DATA['find']['total']} 份，按发布日期从新到旧，先列 {len(shown)} 份：", 14, T1, 10)
+            + f'<div style="margin-top: 2px">{rows}</div>' + open_full(f"看全部 {DATA['find']['total']} 份"))
+    top = c_top(pinned=False) + bubble(ab.FIND_Q) + answer("find", body) + suggest(f"把能解读的 {len(COMPILE)} 份整理成对比表")
+    return c_page(top, C_HINT, "找通知不用 AI、不算次数。<br>请不要写企业名称、手机号。")
+
+
+def utabs(options, selected):
+    """下划线分页（项目类型），和上面的看法切换区分开。"""
+    out = []
+    for o in options:
+        st = f"color: {T1}; font-weight: 600; border-bottom: 2px solid {BLUE}" if o == selected else f"color: {T2}; border-bottom: 2px solid transparent"
+        out.append(f'<span style="padding: 10px 0 8px; font-size: 14px; white-space: nowrap; {st}">{o}</span>')
+    return f'<div style="display: flex; gap: 24px; border-bottom: 1px solid {LINE}">{"".join(out)}</div>'
+
+
+def c_materials():
+    """"准备材料"就是解读结果页的"材料清单"看法：两类项目分开，能勾选，勾选只存在手机上，不另算次数。"""
+    done = 2
+    head = card(f'<div style="padding: 14px 0"><div style="font-size: 15px; font-weight: 600; line-height: 1.6">{DOC["title"]}</div>'
+                f'<div style="margin-top: 6px; font-size: 12.5px; line-height: 1.6; color: {T2}">用 AI 解读的结果，不另算次数。<br>勾选只存在这台手机上，不上传。</div></div>')
+    view = f'<div style="margin: 10px 12px 0">{seg(VIEWS_SEG, VIEWS_SEG[1])}</div>'
+    prog = (f'<div style="margin-top: 12px; display: flex; align-items: center; gap: 10px"><span style="font-size: 13px; font-weight: 600; white-space: nowrap">'
+            f'已备 {done} / {len(MAT_SELF)} 项</span><span style="flex: 1; height: 6px; border-radius: 3px; background: {FILL}; overflow: hidden">'
+            f'<span style="display: block; width: {done * 100 // len(MAT_SELF)}%; height: 100%; background: {BLUE}"></span></span></div>')
+    rows = "".join(check_row(t, i < done, i == 0) for i, t in enumerate(MAT_SELF))
+    lst = card(utabs([f"企业自主研发项目 {len(MAT_SELF)}", f"企业委托研发项目 {len(MAT_ENTR)}"], f"企业自主研发项目 {len(MAT_SELF)}")
+               + src_label(line(31), line(32)) + prog + rows + '<div style="height: 4px"></div>')
+    note = (f'<div style="padding: 10px 16px 0; font-size: 12.5px; line-height: 1.6; color: {T2}">这份通知没有附件，材料都写在正文里；以原文和主管部门的解释为准。</div>')
+    top = nav("AI 解读") + result_strip() + head + view + lst + note + '<div style="height: 16px"></div>'
+    return phone(top, bar([("条款对照", "copy"), ("加入整理", "download")], "回到对话"))
+
+
+def c_compile():
+    items = "".join(f'<div style="padding: 8px 0; display: flex; gap: 8px; border-top: 1px solid {LINE}; font-size: 13.5px; line-height: 1.6">'
+                    f'<span style="flex-shrink: 0; color: {T2}">{d["province"]}</span><span style="min-width: 0; white-space: nowrap; overflow: hidden; '
+                    f'text-overflow: ellipsis">{d["title"]}</span></div>' for d in COMPILE)
+    confirm = answer("sys", para(f"要整理这 {len(COMPILE)} 份，出 Excel 对比表：", 14)
+                     + f'<div style="margin-top: 8px">{items}</div>'
+                     + para("重庆那份还没有完整正文，不能整理。", 12.5, T2, 2)
+                     + para("放申报对象、条件、时间、材料清单；下面是前三列预览：", 13.5, T1, 10)
+                     + preview_table()
+                     + para("还没 AI 解读的先解读，每份约半分钟，不占每天 5 次。", 12.5, T2, 8)
+                     + f'<div style="margin-top: 12px; display: flex; gap: 8px">{small_btn("开始整理", True)}{small_btn("改内容或格式")}</div>')
+    file_card = (f'<div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; background: {FILL}">'
+                 f'<span style="flex-shrink: 0; width: 40px; height: 40px; border-radius: 8px; background: {CARD}; display: flex; align-items: center; '
+                 f'justify-content: center">{icon("doc", 22, BLUE)}</span><div style="flex: 1; min-width: 0">'
+                 f'<div style="font-size: 14.5px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere">{FILE_NAME}</div>'
+                 f'<div style="margin-top: 2px; font-size: 12px; color: {T2}">{len(COMPILE)} 份通知 · 4 类内容 · Excel</div></div></div>'
+                 f'<div style="margin-top: 10px; display: flex; gap: 8px">{small_btn("在小程序里看", True)}{small_btn("转发")}</div>'
+                 + para("文件开头写着「AI 生成 · 句子摘自政府原文、未改写」。<br>文件里也带隐式标识，在「文件」里能再找到。", 12, T3, 8))
+    top = c_top(pinned=False) + bubble(f"把能解读的 {len(COMPILE)} 份整理成 Excel 对比表") + confirm + bubble("开始整理") + answer("ai", file_card)
+    return c_page(top, C_HINT, "找通知不用 AI、不算次数；问通知里的事由 AI 摘原句。<br>请不要写企业名称、手机号。")
 
 
 # ---------- 六件事，A、B 各一屏 ----------
