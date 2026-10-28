@@ -296,3 +296,16 @@ def test_other_kind_cannot_be_restored_to_approved(client, session, reviewed):
     assert response.status_code == 422
     session.expire_all()
     assert session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one().status == "changed"
+
+
+def test_import_reports_other_kind_before_missing_change_target(client, session, reviewed):
+    """ "其他"类先按类型记冲突：哪怕导出的是"已变更"、这边还没有变更通知。"""
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    changed = next(i for i in body["items"] if i["status"] == "changed")
+    changed["change"]["toUrlKey"] = "kw.beijing.gov.cn/not-here.html"
+    _reset_to_pending(session)
+    row = session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one()
+    row.kind = "其他"
+    session.commit()
+    done = client.post("/api/admin/reviews/import?dry_run=false", headers=HEADERS, json=body)
+    assert done.json()["conflict"] == 1 and done.json()["missingTarget"] == 0

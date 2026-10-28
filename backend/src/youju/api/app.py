@@ -3874,6 +3874,10 @@ def import_reviews(
                 )
                 continue
             row = same[0]
+        # 和核对台一样："其他"类不对外显示，只认驳回（D-099 期 0 补审）。先看类型，再看变更目标
+        if item.status != "rejected" and row.kind not in DEADLINE_KINDS:
+            problem("conflict", item, "这条的类型是“其他”，不算申报截止，不按导入结果通过")
+            continue
         target_id = None
         if item.status == "changed":
             target_id = session.scalar(
@@ -3901,10 +3905,6 @@ def import_reviews(
             problem(
                 "conflict", item, "这边质检退回了这条截止，要在核对台重新核对，不按导入结果通过"
             )
-            continue
-        # 和核对台一样："其他"类不对外显示，只认驳回（D-099 期 0 补审）
-        if item.status != "rejected" and row.kind not in DEADLINE_KINDS:
-            problem("conflict", item, "这条的类型是“其他”，不算申报截止，不按导入结果通过")
             continue
         if item.status == "changed":
             try:
