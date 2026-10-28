@@ -2259,8 +2259,11 @@ _FETCH_REASONS = {
 }
 
 
-# 网络等临时问题没取到：隔这么久再为取文字下载一次（附件副本自己的重试照旧）
-TEXT_RETRY = timedelta(hours=24)
+# 网络等临时问题没取到：隔这么久再为取文字下载一次（附件副本自己的重试照旧）。比两轮抓取的间隔
+# （6:30、20:30，短的那段 10 小时）短，还给跑晚了留几小时余量：这一轮失败，下一轮就再试，不会
+# 总落在同一个时段（10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到 robots.txt，
+# 卡了两天）
+TEXT_RETRY = timedelta(hours=6)
 
 
 def _is_webpage(data: bytes) -> bool:
@@ -2318,10 +2321,21 @@ def record(
     webpage = content is not None and _is_webpage(content)
     if content is None or webpage:
         if not webpage and (failure is None or failure.transient):
-            # 临时问题：有文字的保留，规则版本也不改（没取过的仍是待取，按旧规则取的仍要重取），
-            # 隔 TEXT_RETRY 再试
+            # 临时问题：有文字的保留，规则版本也不改。按现在的规则已有结论的（有文字的、原网站
+            # 已删、太大……，副本任务复查时遇到临时问题也会走到这里）什么都不改。还没按现在的规则
+            # 取成过的隔 TEXT_RETRY 再试（due() 只挑这些）；其中从没取到过文字的记成"原网站下载
+            # 不了"、写明这次的原因：详情页、阅读页、日报不再把它当成"新附件，等取文字"（D-097 ④
+            # 等待只算真在排队的），到时照样重试，取到就能读
             report.kept += 1
-            row.retry_at = now + TEXT_RETRY
+            if row.extractor != EXTRACTOR_VERSION:
+                row.retry_at = now + TEXT_RETRY
+                if row.version_id is None:
+                    why = (failure.detail if failure is not None else "") or "网络等暂时问题"
+                    if (row.status, row.reason) != ("failed", "unavailable"):
+                        row.changed_at = now
+                    row.status, row.reason = "failed", "unavailable"
+                    row.detail = f"暂时下载不了，下一轮再试：{why}"[:300]
+                    row.checked_at = now
             session.commit()
             return
         row.version_id = None
@@ -2649,6 +2663,17 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
             reading.state = "old"
         elif reading.ext not in attachments.DOWNLOAD_TYPES:
             reading.state = "format"
+        elif (
+            row is not None
+            and row.version_id is None
+            and row.status == "failed"
+            and row.retry_at is not None
+            and row.extractor != EXTRACTOR_VERSION
+        ):
+            # 从没取到过文字、下载暂时失败等下一轮再试的：说原网站下载不了（原因在 detail），不算
+            # 等取文字；下一轮取到了就能读
+            reading.state = row.reason or "unavailable"
+            reading.detail, reading.checked_at = row.detail, row.checked_at
         elif (
             row is None
             or row.status == "pending"
