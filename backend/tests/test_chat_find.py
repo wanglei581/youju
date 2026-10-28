@@ -520,7 +520,9 @@ def test_换不成确定日期的时间说法去掉_加提示(phrase, time, year
     [
         *("即将截止", "马上截止", "还没截止", "快到期", "即将到期", "本月要截止", "这周快截止"),
         *("近期即将截止", "今天截止", "截止日期是今天", "两周内截止", "2026年截止", "截止2025年"),
-        *("今年年底截止", "今年底前到期", "申报截止于今天", "2025年截至", "今年底截至"),
+        *("今年年底截止", "今年底前到期", "申报截止于今天"),
+        # 换不成日期的时间后面跟着截止；写成"即将截至"的（agy 第 6 轮）
+        *("明天截止", "下周截止", "即将截至", "快截至", "今年底前截止", "马上截止"),
     ],
 )
 def test_说的是截止的不按发布时间筛_说一声(phrase):
@@ -671,6 +673,16 @@ def test_年份后面的城市名照样认():
         ("今年内科技项目", "今年", None, ["科技"]),
         ("近一年内资助的项目", "不限", ONE_YEAR, ["资助"]),
         ("近三个月内生活补贴", "近 90 天", None, ["生活补贴"]),
+        # 成立、毕业后面的整段留着（agy 第 6 轮）；马上办是政务服务的说法
+        ("成立一年半的企业", "不限", None, ["成立一年半"]),
+        ("毕业三年以前的申报", "不限", None, ["毕业三年以前"]),
+        ("马上办改革", "不限", None, ["马上办改革"]),
+        # "截至"是到某个时候为止（独立审阅第 6 轮）：截至目前、截至今天就是到现在
+        ("今年截至目前的申报通知", "今年", None, []),
+        ("今年以来截至目前", "今年", None, []),
+        ("2025年截至目前的政策", "不限", {"from": "2025-01-01", "to": "2026-06-15"}, []),
+        ("截至今天的申报通知", "不限", None, []),
+        ("2025年起实施的政策", "不限", {"from": "2025-01-01", "to": "2026-06-15"}, []),
         ("2025年前海的政策", "不限", None, ["前海"]),
     ],
 )
@@ -681,6 +693,15 @@ def test_成立认定后面的今年照常认_内来接着别的词(text, time, 
     conditions = parsed.conditions
     assert (conditions["time"], conditions["period"]) == (time, period), text
     assert conditions["keywords"] == keywords and not parsed.vague_time, text
+
+
+def test_截至到某个时候为止不是截止():
+    """截至上周、截至 2025 年底：到那时为止，开区间，不按它筛、加 time_word（不加 deadline）。"""
+    for text in ("截至上周的通知", "截至2025年底的政策", "今年截至10月的政策"):
+        parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+        assert parsed.vague_time and not parsed.deadline, text
+        assert parsed.conditions["period"] is None, text
+    assert _parse("2025年起征点")["keywords"] == ["起征点"]
 
 
 def test_初底末后面的前海后续不拆():
@@ -706,7 +727,7 @@ def test_四位数后面是万元这类的不是年份():
     conditions = _parse("奖励2000万的项目")
     assert (conditions["year"], conditions["keywords"]) == (None, ["奖励2000万"])
     assert _parse("2025专精特新")["year"] == 2025
-    for text in ("2025件", "2025号文", "补助2000户企业", "资助2000名学者"):
+    for text in ("2025件", "2025号文", "补助2000户企业", "资助2000名学者", "通报2025起案件"):
         assert _parse(text)["year"] is None, text
 
 

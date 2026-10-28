@@ -504,7 +504,7 @@ _PERIOD_OF = {
 }
 # 四位数：后面跟"年度"的不是时间；没写"年"、后面是万、元这类的是数（奖励 2000 万）
 _YEAR = re.compile(
-    r"(?<!\d)(\d{4})(?!\d)(?!年度)(?:年|(?![万亿元千百个家人项台套吨亩米件号户名块只批所辆次篇%]))"
+    r"(?<!\d)(\d{4})(?!\d)(?!年度)(?:年|(?![万亿元千百个家人项台套吨亩米件号户名块只批所辆次篇起%]))"
 )
 _YEAR_DEGREE = re.compile(r"(?<!\d)\d{4}年度")
 _FIRST_YEAR = 2000  # 往年只认 2000 年以后
@@ -518,7 +518,8 @@ STOPWORDS = (
 )  # fmt: skip
 # 说发文的词：也当停用词去掉（"上周发布的申报通知"）
 _ISSUE = ("发布", "出台", "印发", "下发", "公布", "颁布", "施行")
-# 说"现在"的词：也当停用词去掉（"现在有哪些申报通知"不留"现在"；"截至目前"）
+# 说"现在"的词：也当停用词去掉（"现在有哪些申报通知"不留"现在"；"截至目前"；"即将截止"）。
+# "马上"不在里面（马上办改革），"马上截止"里的由 _SOON_DEADLINE 去掉
 _NOW = (
     "现在",
     "目前",
@@ -526,7 +527,6 @@ _NOW = (
     "正在",
     "截至",
     "即将",
-    "马上",
     "快要",
     "就要",
     "还没",
@@ -600,13 +600,15 @@ _NEI_WORDS = (
 )  # "内生效""内审批""内科技""内资助"里的"内"照样是尾巴
 _LAI_WORDS = "源|华|访|料|电|函|信|稿|往"
 _INNER = f"(?:内(?!{_NEI_WORDS})|来(?!{_LAI_WORDS}))"
+_UP_TO_NOW = "截至目前|截至今天|截至现在|截至当前|截至今日"  # "截至"是到某个时候为止，不是截止
 _WINDOW_TAIL = re.compile(
-    f"年初以来|年初至今|初以来|初至今|年内|以来|以内|之内|至今|内(?!{_NEI_WORDS})"
+    f"年初以来|年初至今|初以来|初至今|年内|{_UP_TO_NOW}|以来|以内|之内|至今|内(?!{_NEI_WORDS})"
 )
 # 某一天、上周、上个月、去年、2025 年这类后面跟着这几个的：从那时起到今天（上周以来、去年以来、
 # 去年初以来、昨天至今；agy 10/28）
-_SINCE = re.compile(  # "起、开始"同"以来"（2025 年起、从上周开始；起草、起步这类不算）
-    "初以来|初至今|以来|至今|开始|起(?!草|止|步|诉|点|源|飞|跑|重|航|义|算|始|因|居|动|伏|色|来)"
+_SINCE = re.compile(  # "起、开始"同"以来"（2025 年起、从上周开始；起草、起步、起征点这类不算）
+    f"初以来|初至今|以来|至今|{_UP_TO_NOW}|开始"
+    "|起(?!草|止|步|诉|点|源|飞|跑|重|航|义|算|始|因|居|动|伏|色|来|征|付|码)(?:实施|执行)?"
 )
 # 时间后面跟着这几个的（今年以前、2025 年以后、昨天之前）：开区间、算不算那一天都说不准，整段当
 # 换不成确定日期的（独立审阅 10/28：原来只去掉后半截，照前半截筛，范围正好反了）
@@ -619,9 +621,11 @@ _EDGE = re.compile(rf"[前后](?![{_NUMERALS}几]|{_EDGE_WORDS})")
 # 2026 年截止）：整段当换不成确定日期的
 _DEADLINE = ("截止", "到期")
 _SOON = "即将|马上|快要|就要|还没|尚未|还未|快|要"  # 本月要截止、这周快截止、近期即将截止
-_DEADLINE_AT = re.compile(f"(?:以内|之内|内)?(?:{_SOON})?(截止|截至|到期)")
+_DEADLINE_AT = re.compile(
+    f"(?:以内|之内|内)?(?:{_SOON})?(截止|到期)|(?:以内|之内|内)?(?:{_SOON})(截至)"
+)  # "截至"是到某个时候为止，只有"即将截至、快截至"这种（写错了字）才当截止
 # 没写时间、只说"即将截止、快到期"的：同样说一声找通知不按截止筛（deadline 那句）
-_SOON_DEADLINE = re.compile(f"(?:{_SOON})(?:截止|到期)")
+_SOON_DEADLINE = re.compile(f"({_SOON})(?:截止|截至|到期)")
 # 时间后面跟着"初、底、末、上中下旬"的（今年底、本月初、上月底、2025 年底）：照前面的时间筛
 # （范围只宽不反），回答加 time_word 那句（agy 10/28：原来"底"字悄悄丢了）。后面是名称里常见的
 # 词的（完整的清单：初审、初级、初创、初选、底线、末端……）是那个词的开头，不算
@@ -633,9 +637,12 @@ _PART = re.compile(_PART_RE)
 # 前面紧挨着这几个、时间又是数字开头的，说的是申报条件，不是发布时间（成立一年内、毕业两年内、
 # 认定三年内）：不当时间，照旧当关键词。"认定今年的""落户今年的"照常认（独立审阅 10/28）
 _ELIGIBLE = ("成立", "注册", "毕业", "设立", "创办", "入驻", "落户", "投产", "上市", "获批", "认定")
-# 时间前面紧挨着这几个的说的是截止或截至，不是发布（截止今天、截止到昨天、截止日期是今天、
-# 申报截止在今天）：整段当换不成确定日期的
-_UNTIL = re.compile("(?:截止|截至)(?:日期|时间)?(?:是|为|在|到|至|于)?$")
+# 时间前面紧挨着这几个的说的是截止，不是发布（截止今天、截止到昨天、截止日期是今天、申报截止
+# 在今天）：整段当换不成确定日期的，加 deadline 那句
+_UNTIL = re.compile("截止(?:日期|时间)?(?:是|为|在|到|至|于)?$")
+# 前面是"截至"的说的是到那时为止（截至 2025 年底、截至上周）：开区间，整段当换不成确定日期的，
+# 加 time_word 那句；截至今天、截至今日就是到现在，不用筛，也不用说
+_AS_OF = re.compile("截至(?:到|至)?$")
 
 # 近 N 天这类（Codex 10/28）："近、最近、过去"（最近这、近这同样）＋数＋单位，或者数＋单位＋
 # "内、以内、之内、来、以来、至今"（不带"近"时"月"要写成"个月"："3月内"的 3 月是月份）。数是
@@ -710,7 +717,7 @@ _VAGUE = re.compile(
             r"下下?(?:个|一)?(?:周(?!期)|星期|礼拜|月)|明年|后年|明天|后天",
             "以往|往年|过往|早些年|前些年|近日|刚刚|刚才",
             # 单独的（跟在时间后面的由 _time_at 连着前面的时间一起认：2025 年以来、去年底以前）
-            "以来|至今|以前|之前|以后|之后",
+            "以来|(?<!截)至今|以前|之前|以后|之后",  # 截至今天里的"至今"不算
         )
     )
 )
@@ -718,7 +725,9 @@ _VAGUE = re.compile(
 
 @dataclass(frozen=True)
 class _TimeHit:
-    kind: str  # word（_TIME 里的词）、span（近 N 天这类）、vague（换不成确定日期的）
+    # year（四位的年份）、word（_TIME 里的词）、span（近 N 天这类）、vague（换不成确定日期的）、
+    # noop（截至今天：到现在，不用筛）、skip（成立一年内：申报条件，整段留着）
+    kind: str
     end: int
     word: str  # word 是查表用的那个词（不含后面的"以来"这类），别的是认出的整段
     since: bool = False  # 某一天、上周、去年这类后面跟着"以来、至今"：从那时起到今天
@@ -732,11 +741,14 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
     10 月、下半年，_SUB）照前面的算、记 rough，细分后面再跟着"以来、至今"的从前面那段时间的开头算
     到今天；后面跟着"以前、以后"（_BEFORE_AFTER）、"截止、到期"（_DEADLINE）的连那几个字一起算换不成
     确定日期的。"""
-    if _UNTIL.search(text, 0, pos):  # 截止今天、截至昨天：说的是截止，不是发布
+    until, as_of = _UNTIL.search(text, 0, pos), _AS_OF.search(text, 0, pos)
+    if until or as_of:  # 截止今天：说的是截止；截至上周：到那时为止
         hit = _time_at(text[pos:])
         if hit is None:
             return None
-        return _TimeHit("vague", pos + hit.end, text[pos : pos + hit.end], deadline=True)
+        now = as_of and hit.word in ("今天", "今日", "当天")  # 截至今天：不用筛
+        kind = "noop" if now else "vague"
+        return _TimeHit(kind, pos + hit.end, text[pos : pos + hit.end], deadline=bool(until))
     best = None
     if m := _YEAR.match(text, pos):
         tail = _SINCE.match(text, m.end())
@@ -751,11 +763,17 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         m = pattern.match(text, pos)
         if m and (best is None or m.end() > best.end):
             best = _TimeHit(kind, m.end(), m.group())
-    if best is None or best.kind == "vague":
-        return best
-    eligible = text.endswith(_ELIGIBLE, 0, pos) and text[pos : pos + 1] in (*_NUMERALS, "半")
-    if eligible and best.kind != "year":  # 成立一年内：申报条件（认定 2025 年的照常认）
+    if best is None:
         return None
+    eligible = text.endswith(_ELIGIBLE, 0, pos) and text[pos : pos + 1] in (*_NUMERALS, "半")
+    if eligible and best.kind != "year":  # 成立一年内、成立一年半：申报条件（认定 2025 年的照常认）
+        return _TimeHit("skip", best.end, best.word)  # 整段留着当关键词，不再从中间认
+    if best.kind == "vague":  # 明天截止、下周截止：说的是截止
+        if m := _DEADLINE_AT.match(text, best.end):
+            word = m.lastindex
+            end = m.end() if m.group(word) != "截止" else m.start(word)
+            return _TimeHit("vague", end, text[pos:end], deadline=True)
+        return best
     if best.kind in ("year", "word") and not best.since and (part := _SUB.match(text, best.end)):
         best = replace(best, end=part.end(), rough=True)
         if since := _SINCE.match(text, best.end):  # 去年底以来：从去年开头算；"年初以来"正好
@@ -776,23 +794,26 @@ def _stop_at(text: str, i: int) -> tuple[int, bool] | None:
     if m := _BEFORE_AFTER.match(text, i) or _EDGE.match(text, i):
         end = m.end()
     elif m := _DEADLINE_AT.match(text, i):
-        return (m.end() if m.group(1) == "到期" else m.start(1)), True
+        word = m.lastindex  # 1：截止、到期；2：即将截至这种
+        return (m.end() if m.group(word) != "截止" else m.start(word)), True
     if end is None:
         return None
-    if text.startswith("到期", end):  # 今年底前到期：一起去掉
-        return end + 2, True
+    if m := _DEADLINE_AT.match(text, end):  # 今年底前到期、今年底前截止
+        word = m.lastindex
+        return (m.end() if m.group(word) != "截止" else m.start(word)), True
     return end, False
 
 
 def _times(text: str):
-    """从左往右的时间说法：（开始, _TimeHit）。"""
+    """从左往右的时间说法：（开始, _TimeHit）。申报条件（成立一年内，kind=skip）整段跳过、不给。"""
     pos = 0
     while pos < len(text):
         hit = _time_at(text, pos)
         if hit is None:
             pos += 1
             continue
-        yield pos, hit
+        if hit.kind != "skip":
+            yield pos, hit
         pos = hit.end
 
 
@@ -1528,7 +1549,7 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     past: list[tuple[int, int]] = []  # （位置, 年份）
     ranges: list[tuple[int, dict[str, str]]] = []  # （位置, 按发布日期筛的一段：上周、近半年……）
     vague = False  # 认得出是时间、又换不成确定日期的（_VAGUE）：去掉，不当关键词
-    deadline = _SOON_DEADLINE.search(text) is not None  # 说的是截止（即将截止、今天截止）
+    deadline = False  # 说的是截止（即将截止、今天截止）
     tokens: list[tuple[int, str]] = []  # （位置, 关键词）
     until = today.isoformat()  # "以来、至今"：到今天
     for at, hit in _times("".join(marks)):
@@ -1545,6 +1566,8 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
             deadline = True
         elif hit.kind == "vague":
             vague = True
+        elif hit.kind == "noop":  # 截至今天：到现在，不用筛
+            pass
         elif hit.kind == "year":
             year = int(hit.word[:4])
             if year == today.year:
@@ -1574,6 +1597,10 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         else:
             windows.add(_TIME_OF[hit.word])
         _take(marks, at, hit.end)
+    # 即将截止、马上截止：去掉"即将、马上"（认完时间再去，"本月要截止"的"要"要先让时间那段看到）
+    for m in _SOON_DEADLINE.finditer(text):
+        deadline = True
+        _take(marks, m.start(1), m.end(1))
     # 意思不一样的时间（"这周"和"近 7 天"算一个）
     times = len({*(tuple(r.values()) for _, r in ranges), *(y for _, y in past), *windows}) > 1
     if ranges:
