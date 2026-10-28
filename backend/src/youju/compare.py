@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -496,19 +496,38 @@ def _date_text(value: date | None) -> str:
     return value.isoformat() if value else ""
 
 
+COMPARE_SUMMARY_HEADERS = ("名单类型", "年度", "命中家数")
+
+
+def removed_input_counts(report: CompareReport) -> Counter[str]:
+    return Counter(item.reason for item in report.removed)
+
+
+def compare_summary_rows(report: CompareReport) -> list[tuple[object, ...]]:
+    """同一个客户命中同类同年度的多份名单只计一家，供 Excel 和站内结果共用。"""
+    counts: dict[tuple[str, int | None], set[int]] = defaultdict(set)
+    for index, row in enumerate(report.rows):
+        if row.status in ("命中", "多个同名"):
+            for match in row.matches:
+                counts[(match.list_type, match.year)].add(index)
+    return [
+        (list_type, year if year is not None else "", len(customers))
+        for (list_type, year), customers in sorted(
+            counts.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or 0)
+        )
+    ]
+
+
 def export_compare_excel(report: CompareReport, output: str | Path) -> int:
     """导出明细和汇总，返回明细数据行数。"""
     book = Workbook()
     detail = book.active
     detail.title = "明细"
     version = _beijing_minute(report.data_version) if report.data_version else "暂无"
-    note = f"第三方整理 · 非政府平台；名单状态照录标题用词，以原文为准；数据截至 {version}"
+    note = f"第三方整理 · 非政府平台；发布阶段照录标题用词，以原文为准；数据截至 {version}"
     if report.removed:
-        removed_counts = defaultdict(int)
-        for item in report.removed:
-            removed_counts[item.reason] += 1
         note += "；已去掉" + "、".join(
-            f"{reason}{count}行" for reason, count in removed_counts.items()
+            f"{reason}{count}行" for reason, count in removed_input_counts(report).items()
         )
     detail.cell(1, 1, _safe_cell(note))
     headers = [
@@ -517,7 +536,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
         "结果",
         "名单标题",
         "发布日期",
-        "名单状态",
+        "发布阶段",
         "发文机关",
         "省份",
         "文件编号",
@@ -538,8 +557,7 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
     for col, header in enumerate(headers, 1):
         detail.cell(2, col, header)
     row_count = 0
-    summary_counts: dict[tuple[str, int | None], set[str]] = defaultdict(set)
-    for index, row in enumerate(report.rows):
+    for row in report.rows:
         matches = row.matches or [None]
         for match in matches:
             values = [
@@ -567,24 +585,15 @@ def export_compare_excel(report: CompareReport, output: str | Path) -> int:
             ]
             for col, value in enumerate(values, 1):
                 detail.cell(row_count + 3, col, _safe_cell(value))
-            if match and row.status in ("命中", "多个同名"):
-                summary_counts[(match.list_type, match.year)].add(str(index))
             row_count += 1
     summary = book.create_sheet("汇总")
     summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
     summary.cell(1, 1, _safe_cell(note))
-    for col, header in enumerate(("名单类型", "年度", "命中家数"), 1):
+    for col, header in enumerate(COMPARE_SUMMARY_HEADERS, 1):
         summary.cell(2, col, header)
-    for row_number, ((list_type, year), customers) in enumerate(
-        sorted(
-            summary_counts.items(),
-            key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or 0),
-        ),
-        3,
-    ):
-        summary.cell(row_number, 1, _safe_cell(list_type))
-        summary.cell(row_number, 2, year or "")
-        summary.cell(row_number, 3, len(customers))
+    for row_number, values in enumerate(compare_summary_rows(report), 3):
+        for col, value in enumerate(values, 1):
+            summary.cell(row_number, col, _safe_cell(value))
     add_excel_notes(book.create_sheet("数据说明"))
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

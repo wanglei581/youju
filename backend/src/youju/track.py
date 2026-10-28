@@ -488,6 +488,59 @@ def _scope_note(profile: CustomerProfile) -> str:
     )
 
 
+TRACK_SUMMARY_HEADERS = (
+    "客户名称",
+    "通知数",
+    "人工核对过截止日期的",
+    "7 天内截止",
+    "14 天内截止",
+    "30 天内截止",
+    "截止未核对的",
+    "客户省份",
+    "客户城市",
+    "查询说明",
+    "客户区县",
+)
+
+
+def track_summary_rows(report: TrackReport) -> list[tuple[object, ...]]:
+    """共用截止统计口径；不知道日期不能写成没有快截止的通知。"""
+    rows = []
+    for client in report.clients:
+        count = len(client.items)
+        verified = sum(item.deadline_source == "verified" for item in client.items)
+
+        def within(days: int, items=client.items) -> object:
+            if not items:
+                return ""
+            sources = ("verified",) if days <= 7 else ("verified", "excerpt")
+            dated = [
+                item
+                for item in items
+                if item.deadline_source in sources and item.remaining_days is not None
+            ]
+            if not dated:
+                return UNVERIFIED_SUMMARY
+            return sum(item.remaining_days <= days for item in dated)
+
+        rows.append(
+            (
+                client.customer_name,
+                count,
+                verified,
+                within(7),
+                within(14),
+                within(30),
+                count - verified,
+                client.profile.province,
+                client.profile.city,
+                _scope_note(client.profile),
+                client.profile.district,
+            )
+        )
+    return rows
+
+
 def export_track_excel(report: TrackReport, output: str | Path) -> int:
     """导出“客户相关通知”和“汇总”两页，返回通知页的数据行数。"""
 
@@ -529,42 +582,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     deadline_column = get_column_letter(headers.index(DEADLINE_HEADER) + 1)
     detail.column_dimensions[deadline_column].width = 28
     row_count = 0
-    summary_rows: list[tuple[object, ...]] = []
     for client in report.clients:
-        count = len(client.items)
-        verified = sum(item.deadline_source == "verified" for item in client.items)
-
-        dated = sum(item.deadline_source in ("verified", "excerpt") for item in client.items)
-
-        def within(days: int, items=client.items, verified=verified, dated=dated) -> object:
-            if not items:
-                return ""
-            # 能看到日期的一条都没有时不写 0：0 会被看成“没有快截止的”，其实是不知道。
-            # 7 天内只认人工核对过的（D-061），14、30 天另含机器摘录的
-            if not (verified if days <= 7 else dated):
-                return UNVERIFIED_SUMMARY
-            return sum(
-                item.remaining_days is not None
-                and item.remaining_days <= days
-                and (days > 7 or item.deadline_source == "verified")
-                for item in items
-            )
-
-        summary_rows.append(
-            (
-                client.customer_name,
-                count,
-                verified,
-                within(7),
-                within(14),
-                within(30),
-                count - verified,
-                client.profile.province,
-                client.profile.city,
-                _scope_note(client.profile),
-                client.profile.district,
-            )
-        )
         items = client.items or [None]
         for item in items:
             values = [
@@ -605,19 +623,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
             row_count += 1
 
     summary = book.create_sheet("汇总")
-    summary_headers = [
-        "客户名称",
-        "通知数",
-        "人工核对过截止日期的",
-        "7 天内截止",
-        "14 天内截止",
-        "30 天内截止",
-        "截止未核对的",
-        "客户省份",
-        "客户城市",
-        "查询说明",
-        "客户区县",
-    ]
+    summary_headers = TRACK_SUMMARY_HEADERS
     summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(summary_headers))
     summary.cell(
         1,
@@ -629,7 +635,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     )
     for column, header in enumerate(summary_headers, 1):
         summary.cell(2, column, header)
-    for row_number, values in enumerate(summary_rows, 3):
+    for row_number, values in enumerate(track_summary_rows(report), 3):
         for column, value in enumerate(values, 1):
             summary.cell(row_number, column, _safe_cell(value))
     add_excel_notes(book.create_sheet("数据说明"))

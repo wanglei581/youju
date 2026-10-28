@@ -21,7 +21,7 @@ const caps = (enabled = true, features = ['interpret', 'clause']) => ({
   ai_advisor: { enabled, features, remaining: { interpret: 3, clause: 2 } },
 });
 function storage(agreed = true) {
-  const saved = new Map(agreed ? [[interpret.CONSENT_KEY, true]] : []);
+  const saved = new Map(agreed ? [[interpret.CONSENT_KEY, interpret.consentRecord()]] : []);
   return { saved, getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value) };
 }
 function load(file, api, wx = {}, extra = {}) {
@@ -125,7 +125,7 @@ test('共享同一须知文字与本机标记，不勾选不创建；同意后�
   h.session.show(); assert.equal(h.state.terms, interpret.TERMS);
   h.session.agree(); await flush(); assert.equal(h.calls.length, 0);
   h.session.check(true); h.session.agree(); h.session.agree(); await flush();
-  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0].body, { kind: 'clause', doc_id: 42, company: { employees: 15 } });
+  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0].body, { kind: 'clause', doc_id: 42, company: { employees: 15 }, notice: interpret.NOTICE_VERSION });
   assert.ok(h.calls[0].key); assert.equal(interpret.hasConsent(local), true);
   assert.doesNotMatch(JSON.stringify([...local.saved]), /employees/); h.session.hide();
   const next = harness({ storage: local }); next.session.show(); await flush(); assert.equal(next.state.needsConsent, false); next.session.hide();
@@ -176,7 +176,7 @@ test('换了手机打开已有对照：须知按钮写"查看结果"，不像要
     advisorTask: () => Promise.resolve({ id: 7, docId: 55, docTitle: '通知', status: 'done', result: {} }) }, storage(false));
   page.onLoad({ taskId: 7 }); page.onShow(); await flush();
   const output = render(read('pages/advisor-clause/index.wxml'), page.data);
-  assert.match(output, /使用须知/); assert.match(output, /我知道了，查看结果/); assert.doesNotMatch(output, /开始对照/); page.onUnload();
+  assert.match(output, /使用须知/); assert.match(output, /同意并查看结果/); assert.doesNotMatch(output, /开始对照/); page.onUnload();
 });
 
 test('表单先显示且不自动提交；错误就近显示，全空提交，422 可回表单修改', async () => {
@@ -235,7 +235,7 @@ test('结果页渲染两节卡片、原句、企业自述、核对和底部信�
   page.onLoad({ taskId: 7 }); page.onShow(); await flush();
   const output = render(read('pages/advisor-clause/index.wxml'), page.data);
   for (const value of ['固定原文提示', '通知标题', '已核对', '核对原句', '申报对象', '申报条件', '通知要求', '企业自述',
-    '请自行对照原文', '营业收入：企业自述已过期清除', '请你自己对照判断', '这句摘错了', '看原文', '警示原文', '附件原文', '模型：模型名称｜备案号：备案编号', '第三方整理 · 非政府平台']) assert.ok(output.includes(value), value);
+    '请自行对照原文', '营业收入：企业自述已过期清除', '请你自己对照判断', '这句摘错了', '看原文', '警示原文', '附件原文', '模型：模型名称｜备案号：备案编号', '投诉举报']) assert.ok(output.includes(value), value);
   // 10/17：原文页没有段落编号，结果里不再显示"段落 P001"；附件提醒放在两节前面
   assert.doesNotMatch(output, /段落 P0/);
   assert.ok(output.indexOf('附件原文') < output.indexOf('申报对象'));

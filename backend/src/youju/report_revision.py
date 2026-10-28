@@ -1,9 +1,9 @@
 """公开报告的数据库聚合版本，兼容管理端和 API 分属不同进程。"""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
-from youju.models import Document, DocumentDeadline, ListParse
+from youju.models import Document, DocumentDeadline, DocumentMerge, ListEntry, ListParse, Source
 from youju.takedown import cache_revision
 
 
@@ -60,3 +60,38 @@ def publication_revision(session: Session, kind: str) -> tuple:
         ).one()
     )
     return published, overrides, cache_revision(session)
+
+
+def list_count_revision(session: Session) -> tuple:
+    """名单条数（每份名单去重后的企业数）另外依赖的数据的版本，一条 SQL、只返回一行。
+
+    名单解析、人工定类型和下架已在 publication_revision(session, "lists") 里；这里补上那边交给
+    300 秒兜底的两类——全部归并关系（含停用的）和来源的公开级别——再加名单条目的条数和最大编号：
+    程序里写条目的地方（重新解析、清掉无效条目、清掉不再算名单的文件）都同时改解析记录，
+    条数和编号是给直接改库加删条目时用的（直接改库改名字靠调用方的 1 小时兜底）。"""
+    merges = select(
+        func.count().label("count"),
+        _checksum(
+            DocumentMerge.duplicate_id, DocumentMerge.canonical_id, DocumentMerge.active
+        ).label("checksum"),
+    ).subquery()
+    sources = select(
+        func.count().label("count"), _checksum(Source.id, Source.rights_level).label("checksum")
+    ).subquery()
+    # 条目两项用标量子查询：再多连一张派生表 SQLAlchemy 会当成笛卡尔积告警
+    entry_count = select(func.count()).select_from(ListEntry).scalar_subquery()
+    latest_entry = select(func.max(ListEntry.id)).scalar_subquery()
+    return tuple(
+        session.execute(
+            select(
+                merges.c.count,
+                merges.c.checksum,
+                sources.c.count,
+                sources.c.checksum,
+                entry_count,
+                latest_entry,
+            )
+            .select_from(merges)
+            .join(sources, true())
+        ).one()
+    )

@@ -29,14 +29,21 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "crawl",
     "check-sources",
     "fetch-details",
+    # 每轮补完详情后取附件文字（round.sh）
+    "attachment-texts",
     "repost-groups",
     "extract-deadlines",
     "extract-fields",
     "ai-check",
+    # 每天 02:25 全部重算一次能不能 AI 解读（每 10 分钟的增量 ai-eligibility 不记，见 job.sh）
+    "ai-eligibility-rebuild",
     "extract-conditions",
     "triage-feedback",
     "parse-lists",
     "cache-attachments",
+    "list-evidence",
+    # 每天 03:00 导出公开内容快照，给本机测试用（youju/public_snapshot.py）
+    "public-snapshot",
     "notify",
     "alert",
 )

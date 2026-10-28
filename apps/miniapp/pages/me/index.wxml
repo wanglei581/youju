@@ -30,10 +30,10 @@
   </block>
 </view>
 
-<view class="grid {{loginOpen ? '' : 'grid--2'}}">
+<view class="grid grid--{{gridCols}}">
   <view class="grid-item" data-url="/pages/files/index" data-tab="1" bindtap="go"><view class="gi gi--green"><t-icon name="download" size="40rpx" color="#13A677" /></view><text>导出记录</text></view>
   <view class="grid-item" data-url="/pages/clients/index" bindtap="go"><view class="gi gi--blue"><t-icon name="user" size="40rpx" color="#2A5CE0" /></view><text>我的客户</text></view>
-  <view wx:if="{{loginOpen}}" class="grid-item" data-url="/pages/advisor/index" bindtap="go"><view class="gi gi--blue"><t-icon name="app" size="40rpx" color="#2A5CE0" /></view><text>工具中心</text></view>
+  <view wx:if="{{loginOpen && has.advisor}}" class="grid-item" data-url="/pages/advisor/index" bindtap="go"><view class="gi gi--blue"><t-icon name="app" size="40rpx" color="#2A5CE0" /></view><text>工具中心</text></view>
   <view wx:if="{{loginOpen}}" class="grid-item" bindtap="feedback" aria-role="button"><view class="gi gi--red"><t-icon name="flag" size="40rpx" color="#E5484D" /></view><text>纠错</text></view>
 </view>
 
@@ -48,16 +48,16 @@
   </view>
   <view wx:if="{{stats.cities}}" class="data-note">其中已收录 {{stats.cities}} 个城市的栏目。地市目前只收录部分城市，<text class="link" data-url="/pages/about/index" bindtap="go">查看城市和栏目</text>。</view>
   <view wx:if="{{stats.districts}}" class="data-note">其中已收录 {{stats.districts}} 个区县的栏目。区县目前只收录少数地方，<text class="link" data-url="/pages/about/index" bindtap="go">查看区县和栏目</text>。</view>
-  <view class="data-note">只收录政府网站公开发布的文件，每条都附原文链接。有据是第三方整理的信息工具，不是政府官方平台，也不代办申报。网站拒绝程序访问的，我们尊重、不绕过<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
+  <view class="data-note">只收录政府网站公开发布的文件，每条都注明出处<text wx:if="{{notCovered}}">；暂未收录：{{notCovered}}</text>。</view>
 </view>
 
 <view class="card">
-  <view wx:if="{{loginOpen}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <view wx:if="{{loginOpen && has.records}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && passEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text wx:if="{{passHint}}" class="row-hint">{{passHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请覆盖：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
-  <!-- 使用帮助和联系客服（D-075 第七节）：首发版也在，客服每天有人看、周末也看 -->
-  <view class="row" data-url="/pages/help/index" bindtap="go" aria-role="button"><t-icon name="book" size="40rpx" color="#4E5969" /><text class="row-text">使用帮助</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <!-- 使用帮助和联系客服（D-075 第七节）：客服每天有人看、周末也看；使用帮助页不在过审版（首发 16 页）里，没有时不显示 -->
+  <view wx:if="{{has.help}}" class="row" data-url="/pages/help/index" bindtap="go" aria-role="button"><t-icon name="book" size="40rpx" color="#4E5969" /><text class="row-text">使用帮助</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <contact-button variant="row" from="me" />
   <!-- 协议定稿前（D-056）：打开小程序后台填写的官方隐私保护指引，不显示草案 -->
   <view wx:if="{{loginOpen}}" class="row" data-type="user" bindtap="openAgreement"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">用户协议与隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
@@ -66,5 +66,4 @@
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
 </view>
-<view class="foot">有据 · 第三方整理 · 每条都有出处</view>
 <view class="tab-page-bottom"></view>

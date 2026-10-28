@@ -1,0 +1,50 @@
+.h1 { font-size: 36rpx; line-height: 1.5; font-weight: 600; }
+.provenance { margin-top: 20rpx; font-size: 24rpx; line-height: 1.8; word-break: break-all; }
+.notice, .error { margin: 24rpx 0; padding: 20rpx; background: var(--o-tint); color: var(--o-txt); font-size: 26rpx; line-height: 1.7; }
+.segment { min-width: 0; max-width: 100%; padding: 20rpx 0; border-bottom: 1rpx solid var(--line); }
+.reading-text { display: block; white-space: pre-wrap; word-break: break-all; font-size: 30rpx; line-height: 1.9; }
+.loc { display: block; margin-bottom: 12rpx; font-size: 24rpx; }
+.table-scroll { width: 100%; max-width: 100%; overflow: hidden; }
+.table { min-width: 100%; }
+.table-row { display: inline-flex; }
+.cell { flex: 0 0 260rpx; min-width: 260rpx; box-sizing: border-box; padding: 16rpx; border: 1rpx solid var(--line); font-size: 26rpx; white-space: pre-wrap; word-break: break-all; }
+.pagination, .actions { display: flex; align-items: center; gap: 20rpx; margin-top: 28rpx; }
+/* 新版按钮样式会盖掉内边距，要加 !important；按钮字不折行 */
+.pagination button, .actions button { flex: 1; min-height: 72rpx; display: flex; align-items: center; justify-content: center; font-size: 26rpx !important; font-weight: 400; padding: 0 8rpx !important; white-space: nowrap; border: 2rpx solid var(--line2); border-radius: 36rpx; background: #FFFFFF; color: var(--t1); }
+.pagination button::after, .actions button::after { border: none; }
+
+.cell-head { font-weight: 600; background: var(--fill); }
+.record-meta { display: block; margin-top: 8rpx; font-size: 26rpx; line-height: 1.7; word-break: break-all; }
+.nowrap { white-space: nowrap; }
+/* 名单附件、名单类正文：去查名单的主按钮占满一行（新版按钮样式要 !important） */
+.lookup-btn { width: 100% !important; margin: 24rpx 0 0 !important; }
+.kv { margin-top: 4rpx; border: 1rpx solid var(--line); border-radius: 12rpx; overflow: hidden; }
+.kv-row { display: flex; gap: 20rpx; padding: 16rpx 20rpx; border-top: 1rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
+.kv-row:first-child { border-top: 0; }
+.kv-h { flex: 0 0 200rpx; color: var(--t2); word-break: break-all; white-space: pre-wrap; }
+.kv-t { flex: 1; min-width: 0; word-break: break-all; white-space: pre-wrap; }
+.kv-row--name { background: var(--brand-tint); }
+.kv-row--name .kv-t { font-weight: 600; }
+.parsed { margin-top: 28rpx; }
+.parsed-title { font-size: 30rpx; line-height: 1.5; font-weight: 600; }
+.parsed-line { display: block; margin-top: 8rpx; font-size: 28rpx; line-height: 1.7; word-break: break-all; }
+
+/* 目录（D-097）：正文 · 附件 1 · 附件 2；当前这部分标出来，读不了的灰色、写状态 */
+.toc { margin-top: 24rpx; border: 1rpx solid var(--line); border-radius: 12rpx; overflow: hidden; }
+.toc-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12rpx; padding: 18rpx 20rpx; border-top: 1rpx solid var(--line); font-size: 26rpx; line-height: 1.6; }
+.toc-item:first-child { border-top: 0; }
+.toc-item--on { background: var(--brand-tint); }
+.toc-item--on .toc-label { color: var(--brand); font-weight: 600; }
+.toc-item--off .toc-label, .toc-item--off .toc-name { color: var(--t3); }
+.toc-label { flex-shrink: 0; font-weight: 500; }
+.toc-name { flex: 1; min-width: 0; word-break: break-all; color: var(--t1); }
+.toc-note { flex-basis: 100%; font-size: 24rpx; color: var(--t3); }
+.part-name { margin-top: 20rpx; font-size: 28rpx; line-height: 1.6; font-weight: 600; word-break: break-all; }
+.page-label { margin-top: 16rpx; font-size: 24rpx; color: var(--t2); }
+.page-count { flex-shrink: 0; font-size: 24rpx; color: var(--t2); }
+/* 续读：从上次那一页接着读，可以从开头看 */
+.resume { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; margin: 20rpx 0 0; padding: 16rpx 20rpx; background: var(--fill); border-radius: 12rpx; font-size: 26rpx; }
+.resume-start { flex-shrink: 0; }
+/* 读到这一部分的末尾 */
+.end { margin-top: 28rpx; text-align: center; font-size: 26rpx; color: var(--t2); }
+.next-btn { width: 100% !important; margin: 20rpx 0 0 !important; }

@@ -38,6 +38,10 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
             "disclosure": {"modelLabel": "", "filingNo": ""},
             "available": True,
             "siteFull": False,
+            # 问一问（#328 PR-2）：词库没定稿，问一问不显示
+            "chat": False,
+            "chatConsent": False,
+            "askTriesFull": False,
         }
     else:
         assert ai == {"enabled": False, "features": [], "remaining": {}}

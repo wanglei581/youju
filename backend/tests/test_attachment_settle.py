@@ -130,7 +130,7 @@ def copy_row(session, n: int, *, file_id=None, stale=None, status="ready", fetch
 def live(monkeypatch):
     """还要提供的附件链接（定时清理的 live 口径）。"""
     urls: dict[str, str] = {}
-    monkeypatch.setattr(copies, "candidates", lambda session, now: dict(urls))
+    monkeypatch.setattr(copies, "candidates", lambda session, now, **_kwargs: dict(urls))
     return urls
 
 

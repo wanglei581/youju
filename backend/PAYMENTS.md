@@ -95,7 +95,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 **2026-10-18 删除首次批量奖励和同行引荐**（D-061、D-070 不再做）：`first_completion`、引荐码、
 `GET /me/invite`、`YOUJU_REFERRAL_ENABLED` 都删了，同意协议不再接受 `invite_code`（未知字段 422）；
 `rewards.grant` 拒绝 first_batch、referral，名称留着给旧流水显示。防重复领取的凭据随之不再写入，
-见下文"注销"。
+见下文"注销"；凭据表和 `users` 里引荐、首次批量用的四列由迁移 0035 删掉，见下文"迁移 0035"。
 
 每个北京时间自然月，所有奖励实际发放天数合计最多 30 天；不足时只给剩余天数。
 零天也写流水、备注说明达到上限，但不创建使用期段。同一对象不会重复发奖，
@@ -120,12 +120,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 重复领首次奖励、重复建立引荐关系。我们能对同一个微信重算出这个假名，它是去标识化、不是匿名化，
 仍算个人信息，和《网络数据安全管理条例》第二十四条（注销账号后应当删除个人信息或者匿名化处理）冲突。**2026-10-18 起不再写入**：
 注销即删，和加量体验一个口径（D-071 第②条）；注销后用同一个微信重新同意算新账号。
-`youju cleanup`（admin 每天 03:30）把库里剩下的旧凭据不论多久一律删掉；注销本身不碰这张表
-（API 账号没有它的删除权限）。**上线必做**：部署 admin 之后、部署 api 之前，在 admin 里跑一次 `youju cleanup`，
-先把库里已有的旧凭据清掉（10/18 的备份校验显示线上有 1 行）；新版 api 全量发布、
-旧版实例归零后（约 15 分钟，旧版归零前仍可能在注销时写凭据）再跑两次，确认第二次 reward_claims 是 0 条。
-从旧备份恢复后，重新开放服务前同样先跑 `youju cleanup` 并确认是 0 条。表、约束和 `users` 的
-`invite_code,invited_by_user_id,invited_at,batch_completed_at` 四列暂时留着，程序不再写入；删表、删列另提迁移。
+那一版（#293）的 `youju cleanup` 把库里剩下的旧凭据不论多久一律删掉；**上线必做**：部署 admin 之后、
+部署 api 之前，在 admin 里跑一次 `youju cleanup`，先把库里已有的旧凭据清掉（10/18 的备份校验显示线上有 1 行）；
+新版 api 全量发布、旧版实例归零后（约 15 分钟，旧版归零前仍可能在注销时写凭据）再跑两次，
+确认第二次 reward_claims 是 0 条。这一步要在部署迁移 0035 之前、用那一版的代码做完（0035 以后的
+`youju cleanup` 不再有这一项）。
 
 新迁移 **0027**，0026 不变：
 
@@ -137,7 +136,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   唯一键保证同一通知同一性质只奖励一次，补发同时检查归并组内旧编号的流水，撤回核对不清除奖励流水。
   两种管理台操作共用反馈唯一键，不能对同一反馈各发一遍。
 - `reward_claims`：`pseudonym,kind,claimed_at`；三列为联合主键（直接修改未上线的 0027），类型为 first_batch/referred/referral。
-  无身份外键。2026-10-18 起不再写入（见上），API 不需要这张表的任何权限。
+  无身份外键。2026-10-18 起不再写入（见上），迁移 0035 删掉了这张表。
 - `deadline_clues`：`id,user_id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`。
   kind 沿用 DocumentDeadline，time 可空，quote 脱敏后最多 200 字，status 为 pending/accepted/rejected；
   用户、候选外键允许置空，文件删除级联删除。公开接口不输出线索或提交人。
@@ -146,9 +145,10 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
   CHECK 保证订单和奖励来源有且只有一个。奖励流水通过 reward_id 反查对应使用期，
   零天没有对应段，不增加循环外键。
 - `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
-  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。2026-10-18 起四列都不再写入。
-- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
-  pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）；reward_claims 10/18 起不用授权。
+  `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。2026-10-18 起四列都不再写入，
+  迁移 0035 删掉了这四列。
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 UPDATE/DELETE（#309 删掉提交接口后不再要 INSERT），
+  pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）；reward_claims 已删（迁移 0035）。
   workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
   注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
   本次只验证指定测试库，不执行正式库操作。
@@ -156,11 +156,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 | 接口 | 最终字段 / 行为 |
 |---|---|
 | `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note,revoked`，不返回关联人或对象编号 |
-| `POST /api/v1/me/deadline-clues` | `{document_id,kind,date,time?,quote}`；201 返回下述线索字段；关闭奖励时 404 |
+| `POST /api/v1/me/deadline-clues` | #309 删除（D-061 删了页面，小程序不调用；个人信息保护影响评估第六节（二）第 13 条）；以前留下的线索照常查看、删除、导出 |
 | `GET /api/v1/me/deadline-clues` | 本人最近 50 条 `items[]`，按提交时间、编号倒序；开关关闭仍可查看 |
 | `DELETE /api/v1/me/deadline-clues/{id}` | 仅本人待核对线索，204；已处理 409；开关关闭、协议更新后仍可删除 |
 | `GET /api/v1/me/data` | 加 `deadlineClues,deadlineCluesTotal`，最多 500 条线索元数据及总数 |
-| `GET /api/v1/documents/{id}` | 加 `can_submit_deadline_clue` 布尔值，不含他人线索 |
+| `GET /api/v1/documents/{id}` | #309 起不再返回 `can_submit_deadline_clue`（提交接口已删）；从不含他人线索 |
 | `GET /api/admin/deadlines` | 候选加 `deadline_clues[]`，只含待核对线索，不含提交人；关闭奖励时为空 |
 | `GET /api/admin/deadline-clues` | `enabled,items[]`；线索字段加 `title,url,can_build_candidate`；关闭时 false/空数组 |
 | `POST /api/admin/deadline-clues/{id}/candidate` | 无业务请求体，返回 `deadline_id,status=pending`；只在整份通知无任何候选时建候选 |
@@ -172,6 +172,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 
 线索返回字段：`id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`，
 status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，日期 YYYY-MM-DD，time 为 HH:MM 或 null。
+提交接口已由 #309 删除：下面讲提交的规则（到“超长返回中文 422”为止）留作记录；API 账号不再需要 app_keys 的 UPDATE 和 deadline_clues 的 INSERT。
 提交须登录并同意当前协议，文件须公开可见且属于申报通知；缺发布日期不接收。
 日期含发布当天至三周年当天（闰日三周年取二月末）；原句去首尾空白后 6–200 字，
 复用纠错的微信内容安全检查并脱敏，所有环境均检查，检查不通过或服务出错均不写库。
@@ -194,15 +195,16 @@ API 提交不锁 documents/sources，依靠 app_keys 队列锁与管理端建候
 关闭奖励时隐藏相关内容，核对通过不处理线索。注销删除待核对线索，已处理保留且断开用户关联，
 最早提交者已注销时不把奖励转给后来者。
 
-2026-10-18 起批量任务完成不再发首次批量、引荐奖励，也不再写首次完成标记。
+2026-10-18 起批量任务完成不再发首次批量、引荐奖励，也不再写首次完成标记（`batch_completed_at`，迁移 0035 已删）。
 admin 服务的定时任务每小时运行一次 `youju rewards-reconcile`（`deploy/crontab`；开关关闭时直接返回），
 只补发已采纳线索中最早提交者尚未收到的奖励，跳过已有流水（包括零天）。补发按补发当天所属月份计算限制，使用期从补发时起。
 所有发奖先锁用户再写流水和使用期。
-备份恢复的自关联外键核验与表锁已适配引荐关系（列还在），备份包含奖励流水和使用期。
+备份恢复的自关联外键核验与表锁原来是为引荐关系（`users` 自关联）加的；迁移 0035 删掉这一列以后库里没有
+自关联外键了，这段代码照旧通用。备份包含奖励流水和使用期。
 
 退款资格只检查订单自己的段；奖励段上的任务不计入该订单的 paid_usage。
 订单接口只查订单，不把奖励段伪装成订单。退款收回订单段时，后续奖励段也按未用时长往前挪。
-注销保留奖励流水并置空用户关联，奖励段收回并断开用户，清除以前留下的引荐关系两边的关联与时间，
+注销保留奖励流水并置空用户关联，奖励段收回并断开用户，
 清除流水中指向已注销用户的 ref_id；另一方已经拿到的天数不追回。不写任何防重复领取的凭据（注销即删）。
 批量任务收尾用 no_autoflush 先锁用户，再刷新任务，避免引擎已修改结果引用时提前写任务造成与注销互锁。
 受限账号测试按部署 SQL 的 GRANT 自动授权到测试库；可跳过“支付权限”之后的追加授权，
@@ -220,6 +222,28 @@ admin 服务的定时任务每小时运行一次 `youju rewards-reconcile`（`de
 ruff format --check、ruff check、核对台脚本语法、git diff --check 通过。
 仍在 feat/rewards，只改 backend，未 commit/push/部署。正式复核、隐私指引更新、
 迁移与授权、真实微信内容安全及浏览器验收待办；180 天清理后不再跨注销维持资格限制。
+
+### 迁移 0035：删掉凭据表和四列（2026-10-18）
+
+删 `reward_claims` 表；删 `users` 的 `invite_code`（连同唯一约束 `uq_users_invite_code`）、
+`invited_by_user_id`（连同外键 `fk_users_invited_by`、索引 `ix_users_invited_by_user_id`）、`invited_at`、
+`batch_completed_at`；删 `app_keys` 里旧代码写凭据时排队用的 `reward_claim_queue` 行（不是密钥）。
+`pass_rewards` 不动：kind 约束里的 first_batch、referral 和这两种旧流水照常保留，注销时仍清掉旧流水里
+指向本人的 `ref_id`。线上 `batch_completed_at` 有值（旧 worker 在每个用户第一次完成批量任务时都写，
+不看奖励开关），删列就是删掉这些时间；`invite_code` 在引荐开关开着时有人调过 `/me/invite` 才会有值；
+`invited_by_user_id`、`invited_at` 要带引荐码注册才写，小程序从来没发过，应该是空的。回退（downgrade）
+只重建空表、空列和约束，数据不恢复。
+
+**部署顺序和平时相反**：先发 api（新代码不再映射这些列，在迁移前的表上照样能用），旧版 api 归零后再发
+admin（启动时跑迁移）。反过来的话，迁移删列以后、新 api 上来之前，旧 api 每次读用户都会报列不存在。
+admin 发布后旧版 admin 还会跑约 14 分钟：发之前确认没有排队、正在处理的任务，`pay_orders` 里没有 pay-run 要处理的订单
+（待支付、退款中、还没告警的人工单、已开通还没发货通知的；支付开着也可以发，但这段时间里不下单、不申请退款），
+之后约 15 分钟里不提交批量任务和 AI 任务（旧版领到数据工具任务会重新排队，领到 AI 任务会直接失败、退回次数）。
+迁移等 `users` 的元数据锁最多 5 秒，等不到就失败（admin 起不来、旧版照常服务）；每一步先看还在不在，
+users 的改动合成一条 ALTER 放在最后，重新发布就能接着做完。迁移以后 api、admin 都不能直接回退到 0035 之前的版本
+（旧代码映射着这些列；旧 admin 也认不出 0035），要回退先在新版 admin 里把库降回 0035 的上一个版本。
+前提：#293 已上线并做完上面的"上线必做"。细节和 0035 之前的备份怎么恢复见 `docs/部署/微信云托管.md`
+第二节、第八节。
 
 ## 退款与苹果问询
 

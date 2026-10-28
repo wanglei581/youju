@@ -137,7 +137,7 @@ test('只选政策或别的类型再选项目类别：空结果里提示项目�
   assert.equal(page.data.emptyHint, '');
 });
 
-test('详情页：申报通知和名单显示项目类别；类型、类别和名单状态合成一行说明，写明仅供检索参考、非官方分类', async () => {
+test('详情页：申报通知和名单显示项目类别；类型、类别和发布阶段合成一行说明，写明仅供检索参考、非官方分类', async () => {
   let doc = { id: '1', kind: '申报通知', tags: ['申报通知'], category: '资质与梯度培育', title: '关于组织开展高新技术企业认定工作的通知', deadline_state: 'none' };
   const page = load('pages/detail/index.js', {
     '../../utils/consent.js': { loginOpen: () => true },
@@ -154,8 +154,8 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
   assert.equal(page.data.doc.category, null);
   const template = read('pages/detail/index.wxml');
   assert.match(template, /<text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}<\/text>/);
-  // 标题下只有一行说明（D-053 UI 第一轮）：不再分"名单状态""项目类别"两三行
-  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和名单状态按标题归类，${DISCLAIMER}，以原文为准</view>`));
+  // 标题下只有一行说明（D-053 UI 第一轮）：不再分"发布阶段"（原叫名单状态）"项目类别"两三行
+  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和发布阶段按标题归类，${DISCLAIMER}</view>`));
   assert.equal((template.match(/status-note/g) || []).length, 1);
 });
 

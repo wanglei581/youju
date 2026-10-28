@@ -300,15 +300,22 @@ def _row(**kw):
 
 def test_hint_edge_cases() -> None:
     found = [(date(2026, 10, 15), time(17, 0), "企业申报截止")]
-    assert deadline_hint(_row(), found).code == "suggest"  # 一边没写时刻，算同一刻
+    no_clock = [(date(2026, 10, 15), None, "企业申报截止")]
+    # 一边没写时刻：日期一致，但不算同一刻，不建议直接通过（D-099 期 0）
+    assert deadline_hint(_row(), found) == Hint("agree", "日期一致，但时刻只有一边写了")
+    assert deadline_hint(_row(candidate_time=time(17, 0)), no_clock).code == "agree"
+    # 时刻只有一边写了、类型也不同：按类型不一致提示
+    other_kind = [(date(2026, 10, 15), time(17, 0), "材料报送截止")]
+    assert deadline_hint(_row(), other_kind).code == "kind_mismatch"
+    assert deadline_hint(_row(), no_clock).code == "suggest"
     assert deadline_hint(_row(candidate_time=time(17, 0)), found).code == "suggest"
     # 两边都写了时刻但不同：不一致
     assert deadline_hint(_row(candidate_time=time(12, 0)), found).code == "mismatch"
     # 证据句里写的是别的年份：不建议通过
-    assert deadline_hint(_row(evidence="请于2025年10月15日前申报"), found).code == "agree"
+    assert deadline_hint(_row(evidence="请于2025年10月15日前申报"), no_clock).code == "agree"
     # 证据句没写年份：月日对得上就算写着这个日期
-    assert deadline_hint(_row(evidence="请于10月15日前申报"), found).code == "suggest"
-    assert deadline_hint(_row(evidence=""), found).code == "agree"
+    assert deadline_hint(_row(evidence="请于10月15日前申报"), no_clock).code == "suggest"
+    assert deadline_hint(_row(evidence=""), no_clock).code == "agree"
     assert deadline_hint(_row(), None).code == "unchecked"
     assert deadline_hint(_row(), []).code == "mismatch"
     assert deadline_hint(_row(origin="ai"), found).code == "ai_only"

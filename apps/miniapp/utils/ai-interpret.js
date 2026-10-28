@@ -4,7 +4,11 @@ const SECTIONS = [
   ['对象', '申报对象'], ['支持', '支持方式'], ['条件', '申报条件'],
   ['时间', '申报时间'], ['方式', '申报方式'], ['材料', '材料清单'],
 ];
-const CONSENT_KEY = 'youjuInterpretNoticeV1';
+// 第一次用 AI 解读、条款对照前的确认（D-098，上线门槛第 7 条）：点"同意并开始"才用，记下须知的版本和同意时间；
+// 须知改了（NOTICE_VERSION 变了）要重新同意。旧的"我知道了"（youjuInterpretNoticeV1）只算看过，不再算数。
+// 服务端另按协议版本核对：没同意过含 AI 条款的协议，创建、读取任务和后台处理都会拦下
+const CONSENT_KEY = 'youjuAiConsentV2';
+const NOTICE_VERSION = '2026-10-26';
 const CONTEXT_KEY = 'youjuInterpretTaskContextV1';
 const TERMS = [
   '本服务为第三方工具，不是政府平台，不代办，不判断能否申报。',
@@ -75,13 +79,39 @@ function oneLine(value) {
   return String(value || '').replace(/([A-Za-z0-9])\s*\n\s*(?=[A-Za-z0-9])/g, '$1 ').replace(/\s*\n\s*/g, '');
 }
 
-function hasConsent(storage) {
-  try { return storage.getStorageSync(CONSENT_KEY) === true; } catch (e) { return false; }
+// 存在手机上的那一条同意记录
+function consentRecord(at = new Date()) {
+  return { version: NOTICE_VERSION, at: at.toISOString() };
 }
+function hasConsent(storage) {
+  try {
+    const saved = storage.getStorageSync(CONSENT_KEY);
+    return !!saved && typeof saved === 'object' && saved.version === NOTICE_VERSION;
+  } catch (e) { return false; }
+}
+// 记不下（存储出错）就不算同意、不开始：手机上要有这一条记录（Codex 10/26）
 function saveConsent(storage, checked) {
   if (!checked) return false;
-  try { storage.setStorageSync(CONSENT_KEY, true); } catch (e) { /* 本次仍可使用，下次重新确认 */ }
-  return true;
+  try { storage.setStorageSync(CONSENT_KEY, consentRecord()); return true; } catch (e) { return false; }
+}
+// AI 首页底部"已同意使用须知（日期）· 撤回同意"用；没同意过或记录读不出来时给 null
+function consentInfo(storage) {
+  if (!hasConsent(storage)) return null;
+  try {
+    const at = new Date(storage.getStorageSync(CONSENT_KEY).at);
+    return Number.isFinite(at.getTime()) ? { at } : null;
+  } catch (e) { return null; }
+}
+// 撤回：删掉手机上的同意记录，下次用解读、对照前再请用户同意；已经出来的结果不受影响
+function withdrawConsent(storage) {
+  try { storage.removeStorageSync(CONSENT_KEY); return true; } catch (e) { return false; }
+}
+const CONSENT_SAVE_FAILED = '没能记下你的同意，请再点一次；还不行请重新打开小程序。';
+// 须知里写明交给哪个模型处理：公示的模型名称（YOUJU_AI_MODEL_LABEL）。没配时（只有白名单内部试用；对所有人开放时后台不配就不启动）
+// 只写"大模型"，不写"已备案"（agy 10/26）
+function modelText(disclosure) {
+  const label = disclosure && typeof disclosure.modelLabel === 'string' ? disclosure.modelLabel.trim() : '';
+  return `通知原文会交给${label ? ` ${label} ` : '大模型'}处理。`;
 }
 function taskContext(storage, id, value) {
   try {
@@ -187,8 +217,9 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
       clearTimer(pollTimer); clearTimer(deadlineTimer); busy = false;
       if (task.status === 'done' && task.result) {
-        // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明
-        failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, error: '', progress: '' });
+        // D-073：服务端标了 outdated（解读之后核对或附件有更新、正文没变）时，结果页加一句说明；
+        // linkGone：原文链接确认失效的日期，结果页写明结果基于此前收录的正文、不再给条款对照
+        failure = ''; emit({ phase: 'done', result: viewResult(task.result), outdated: task.outdated === true, linkGone: task.linkGone || '', error: '', progress: '' });
       } else {
         // 全站满了、暂时不可用、被移出白名单：重新提交今天也做不成，不给"重试"
         failure = 'task'; emit({ phase: 'failed', outdated: false, error: failedText(task), canRetry: !!docId && !NO_RETRY_CODES.includes(task.errorCode), resumable: false, progress: '', errorCode: task.errorCode || '',
@@ -236,7 +267,8 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     // 隐藏期间创建请求仍可能完成，保留任务编号；重新显示时复用同一在途请求。
     if (!creation) {
       creationKey = creationKey || makeKey(); creationError = null;
-      const body = { kind, doc_id: Number(docId) };
+      // 带上同意过的使用须知版本：对所有人开放时服务端核对、记在任务里（D-098）
+      const body = { kind, doc_id: Number(docId), notice: NOTICE_VERSION };
       if (kind === 'clause') body.company = company;
       creation = Promise.resolve().then(() => api.createAdvisorTask(body, creationKey)).then((task) => {
         taskId = task.id; taskContext(storage, taskId, { docId, title }); return task;
@@ -260,11 +292,12 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
     },
     hide: stop,
     check(value) { checked = value === true; emit({ checked }); },
-    // 使用须知只有一个"我知道了，开始"按钮（10/17）：等于确认后开始
+    // 使用须知只有一个"同意并开始"按钮（10/17 起一个按钮；D-098 改成同意）：点了就是同意，接着开始
     start() { checked = true; emit({ checked }); this.agree(); },
     agree() {
-      if (!visible || !saveConsent(storage, checked)) return;
-      agreed = true; emit({ needsConsent: false }); run();
+      if (!visible || !checked) return;
+      if (!saveConsent(storage, checked)) { emit({ consentError: CONSENT_SAVE_FAILED }); return; }
+      agreed = true; emit({ needsConsent: false, consentError: '' }); run();
     },
     // 上次是没连上（不是任务本身失败）：重试时接着用原来的任务或请求编号
     resumable() { return failure === 'request'; },
@@ -280,4 +313,4 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
   };
 }
 
-module.exports = { SECTIONS, TERMS, CONSENT_KEY, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };
+module.exports = { SECTIONS, TERMS, CONSENT_KEY, NOTICE_VERSION, CONSENT_SAVE_FAILED, consentRecord, consentInfo, withdrawConsent, modelText, CONTEXT_KEY, FAILED_TEXT, UNAVAILABLE_TEXT, disclosureLine, oneLine, resultView, hasConsent, saveConsent, taskContext, progressText, transient, failedText, errorText, createSession };

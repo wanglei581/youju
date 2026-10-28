@@ -59,7 +59,7 @@ def make_settings(**changes):
 @pytest.fixture
 def settings(monkeypatch):
     value = make_settings()
-    for module in (api, me, service, app_module, v1, cli):
+    for module in (api, me, service, app_module, cli):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     monkeypatch.setattr(heartbeat, "_api_written_at", None)
@@ -215,7 +215,17 @@ def test_mode_is_public_and_follows_audience(client, session, settings):
     assert client.get("/api/v1/advisor/mode").json() == {"open": True, "available": True}
     settings.role = "api"
     assert client.get("/api/v1/advisor/mode").json() == {"open": True, "available": False}
+    # admin 没配对外线路：对所有人开放时不算能处理，不退回后台线路（D-093 上线门槛第 3 条）
     heartbeat.beat(session, make_settings(role="admin", ai_advisor_audience="all"), "admin", NOW)
+    assert client.get("/api/v1/advisor/mode").json() == {"open": True, "available": False}
+    line = {
+        "ai_advisor_base_url": "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase",
+        "ai_advisor_api_key": SecretStr("advisor-test-value"),
+        "ai_advisor_model": "advisor-model",
+    }
+    heartbeat.beat(
+        session, make_settings(role="admin", ai_advisor_audience="all", **line), "admin", NOW
+    )
     assert client.get("/api/v1/advisor/mode").json() == {"open": True, "available": True}
     settings.ai_advisor_enabled = False
     assert client.get("/api/v1/advisor/mode").json() == {"open": False, "available": False}
