@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from threading import Barrier
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -1528,6 +1529,28 @@ def test_real_stream_records_usage(client, session, settings, doc, real_stream):
     row = session.scalar(select(AIUsage).where(AIUsage.task == "ask"))
     assert (row.model, row.calls, row.errors) == ("advisor-model", 1, 0)
     assert (row.prompt_tokens, row.completion_tokens) == (120, 30)
+
+
+def test_tail_checked_when_the_call_fails_unexpectedly(
+    client, session, settings, doc, model, wechat, monkeypatch
+):
+    """调用中途出了别的错（比如流的分块解码出错，不算网络错）：已经收到的那截也查，词在那里的
+    照样记 ASK_UNSAFE 和处置记录，退回 5 次那本。"""
+
+    def broken(system, user, max_tokens=800, *, on_text=None):
+        model.totals["calls"] += 1
+        on_text('{"status": "answer", "quotes": [{"sid": "P001", "quote": "' + TEST_WORD)
+        raise httpx.DecodingError("分块解码出错")
+
+    monkeypatch.setattr(model, "complete_json", broken)
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    got = turn_of(client, turn_id)
+    assert got["errorCode"] == "ASK_UNSAFE" and got["answer"] is None
+    [hit] = hits(session)
+    assert (hit.layer, hit.turn_id) == ("local", turn_id)
+    assert "stream" not in hit.reason_json
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
 
 
 @pytest.mark.parametrize("ending", ["broken", "invalid_json"])

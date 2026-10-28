@@ -720,6 +720,8 @@ def process(
         session.rollback()
         return fail(TIMEOUT if isinstance(exc, TimeoutError) else heartbeat.UNAVAILABLE, retry=True)
     except Exception as exc:  # noqa: BLE001 - 只记类型：异常信息里可能带用户打的字或模型的输出
+        if tail_blocked():  # 比如流的分块解码出错：已经收到的那截也要查
+            return fail(UNSAFE_ERROR)
         session.rollback()
         log.warning("问答任务 #%s 出错：%s", task_id, type(exc).__name__)
         return fail(heartbeat.UNAVAILABLE)
