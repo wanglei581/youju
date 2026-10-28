@@ -385,6 +385,13 @@ TWO_WEEKS = {"from": "2026-06-01", "to": "2026-06-15"}
         ],
         ("前年以来", {"from": "2024-01-01", "to": "2026-06-15"}),
         ("去年年初以来", {"from": "2025-01-01", "to": "2026-06-15"}),  # 从开头算，正好
+        # "起、开始"同"以来"（独立审阅第 5 轮）
+        *[
+            (p, {"from": "2025-01-01", "to": "2026-06-15"})
+            for p in ("2025年起", "从2025年开始", "去年起", "去年开始")
+        ],
+        ("上个月起", {"from": "2026-05-01", "to": "2026-06-15"}),
+        ("从上周开始", {"from": "2026-06-08", "to": "2026-06-15"}),
         ("发布日期是今天", {"from": "2026-06-15", "to": "2026-06-15"}),
         *[
             (p, {"from": "2025-01-01", "to": "2026-06-15"})
@@ -504,7 +511,26 @@ def test_换不成确定日期的时间说法去掉_加提示(phrase, time, year
     conditions = parsed.conditions
     assert (conditions["time"], conditions["year"], conditions["period"]) == (time, year, None)
     assert conditions["keywords"] == ["专精特新"], phrase
-    assert parsed.vague_time, phrase
+    # 说的是截止的（今天截止、截止日期是今天）记 deadline，回答写"没按截止时间筛"
+    assert parsed.vague_time or parsed.deadline, phrase
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        *("即将截止", "马上截止", "还没截止", "快到期", "即将到期", "本月要截止", "这周快截止"),
+        *("近期即将截止", "今天截止", "截止日期是今天", "两周内截止", "2026年截止", "截止2025年"),
+        *("今年年底截止", "今年底前到期", "申报截止于今天", "2025年截至", "今年底截至"),
+    ],
+)
+def test_说的是截止的不按发布时间筛_说一声(phrase):
+    """即将截止、今天截止、截止日期是今天：找通知只按发布时间找，不按它筛，回答加 deadline 那句；
+    "即将、马上、还没"这类当停用词，不留成关键词（独立审阅第 5 轮）。"""
+    parsed = parse(f"广东{phrase}的专精特新申报通知", today=TODAY, covered=ALL_COVERED)
+    conditions = parsed.conditions
+    assert (conditions["time"], conditions["year"], conditions["period"]) == ("不限", None, None)
+    assert conditions["keywords"] == ["专精特新"], phrase
+    assert parsed.deadline and not parsed.vague_time, phrase
 
 
 @pytest.mark.parametrize(
@@ -644,6 +670,7 @@ def test_年份后面的城市名照样认():
         ("近半年内审批的项目", "不限", HALF_YEAR, ["审批"]),
         ("今年内科技项目", "今年", None, ["科技"]),
         ("近一年内资助的项目", "不限", ONE_YEAR, ["资助"]),
+        ("近三个月内生活补贴", "近 90 天", None, ["生活补贴"]),
         ("2025年前海的政策", "不限", None, ["前海"]),
     ],
 )
@@ -656,14 +683,36 @@ def test_成立认定后面的今年照常认_内来接着别的词(text, time, 
     assert conditions["keywords"] == keywords and not parsed.vague_time, text
 
 
+def test_初底末后面的前海后续不拆():
+    """ "今年底前海的申报"：底后面的"前"是"前海"的头，不当"以前"（agy 第 5 轮）；年底照前面的筛、
+    加提示。"""
+    for text, time, year, keywords in (
+        ("今年底前海的申报", "今年", None, ["前海"]),
+        ("2025年底前海的项目", "不限", 2025, ["前海"]),
+        ("今年底前期工作", "今年", None, ["前期工作"]),
+        ("今年底后续政策", "今年", None, ["后续"]),
+    ):
+        parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+        conditions = parsed.conditions
+        assert (conditions["time"], conditions["year"], conditions["keywords"]) == (
+            time,
+            year,
+            keywords,
+        ), text
+        assert parsed.vague_time, text
+
+
 def test_四位数后面是万元这类的不是年份():
     conditions = _parse("奖励2000万的项目")
     assert (conditions["year"], conditions["keywords"]) == (None, ["奖励2000万"])
     assert _parse("2025专精特新")["year"] == 2025
+    for text in ("2025件", "2025号文", "补助2000户企业", "资助2000名学者"):
+        assert _parse(text)["year"] is None, text
 
 
 def test_上一年_大前年():
     assert _parse("通过去年认定的高新技术企业")["year"] == 2025
+    assert _parse("认定2025年的名单")["year"] == 2025  # 成立、认定只挡"一年内"这种
     assert _parse("上一年的专精特新")["year"] == 2025
     # 上年度、上一年度、去年度同本年度：换成"2025年度"当标题词，不拆成"上年"和"度"
     for text, rest in (
@@ -1781,6 +1830,13 @@ def test_换不成确定日期的时间加提示(session, world):
     assert (stored["total"], stored["notes"]) == (0, ["vague", "time_word"])
 
 
+def test_即将截止的说一声不按截止筛(session, world):
+    stored = _find(session, "广东即将截止的专精特新申报")
+    assert stored["conditions"]["keywords"] == ["专精特新"]
+    assert stored["ids"] == _ids(world, "gd_apply", "ns_apply")
+    assert "deadline" in stored["notes"] and "time_word" not in stored["notes"]
+
+
 def test_几个文号只按第一个找(session, world):
     stored = _find(session, "川经信办函〔2026〕356号和川经信办函〔2026〕357号")
     assert stored["ids"] == _ids(world, "sc_apply")
@@ -2373,6 +2429,7 @@ def test_提示代码都有对应的话():
         "year",
         "times",
         "time_word",
+        "deadline",
         "first_three",
         "more",
         "narrow",
