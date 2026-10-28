@@ -640,7 +640,7 @@ _DEADLINE_AT = re.compile(
 # 没写时间、只说"即将截止、快到期"的：同样说一声找通知不按截止筛（deadline 那句）
 _SOON_DEADLINE = re.compile(f"({_SOON})(?:截止|截至|到期)")
 # "还能申报、还在申报期、还可以报"问的也是截止前没前：同样加 deadline 那句
-_STILL_OPEN = re.compile("还(?:能|在|可以)(?:申报|申请|报)")
+_STILL_OPEN = re.compile("还(?:能|在|可以)(?:申报|申请|报|受理|征集)")
 # 时间后面跟着"初、底、末、上中下旬"的（今年底、本月初、上月底、2025 年底）：照前面的时间筛
 # （范围只宽不反），回答加 time_word 那句（agy 10/28：原来"底"字悄悄丢了）。后面是名称里常见的
 # 词的（完整的清单：初审、初级、初创、初选、底线、末端……）是那个词的开头，不算
@@ -667,6 +667,8 @@ _AS_OF = re.compile("截至(?:到|至)?$")
 _SPAN_LEADS = ("最近这", "最近", "近这", "近", "过去这", "过去", "这")
 _CN_DIGITS = "一二两三四五六七八九"
 _COUNT = rf"(?:[1-9][0-9]{{0,2}}|[{_CN_DIGITS}]?十[{_CN_DIGITS}]?|[{_CN_DIGITS}])"
+# 数量型的时间说法的开头（一年、近两年、半年、几年）：跟在"成立、毕业"这类后面的是申报条件
+_AMOUNT = re.compile(f"(?:最近|近|过去)?(?:{_COUNT}|半|几)")
 _DAY_UNITS = {"天": 1, "日": 1, "周": 7, "个周": 7, "星期": 7, "个星期": 7, "礼拜": 7, "个礼拜": 7}
 _MONTH_UNITS = {"月": 1, "个月": 1, "季度": 3, "个季度": 3, "年": 12}
 
@@ -780,21 +782,14 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
             best = _TimeHit(kind, m.end(), m.group())
     if best is None:
         return None
-    eligible = text.endswith(_ELIGIBLE, 0, pos) and (
-        text[pos : pos + 1] in (*_NUMERALS, "半") or best.kind == "span"
-    )
+    eligible = text.endswith(_ELIGIBLE, 0, pos) and _AMOUNT.match(text, pos) is not None
     if eligible and best.kind != "year":  # 成立一年内、成立近一年：申报条件（认定 2025 年的照常认）
         return _TimeHit("skip", best.end, best.word)  # 整段留着当关键词，不再从中间认
-    if best.kind == "vague":  # 明天截止、下月底截止、明天前截止：说的是截止
+    if best.kind == "vague":  # 下月底、明年前：后面的细分、前后一起算；明天截止、明天截至：截止
         part = _SUB.match(text, best.end)
         at = part.end() if part else best.end
-        if edge := _BEFORE_AFTER.match(text, at) or _EDGE.match(text, at):
-            at = edge.end()
-        if m := _DEADLINE_AT.match(text, at):
-            word = m.lastindex
-            end = m.end() if m.group(word) != "截止" else m.start(word)
-            return _TimeHit("vague", end, text[pos:end], deadline=True)
-        return best
+        end, deadline = _stop_at(text, at) or (at, False)
+        return _TimeHit("vague", end, text[pos:end], deadline=deadline)
     if best.kind in ("year", "word") and not best.since and (part := _SUB.match(text, best.end)):
         best = replace(best, end=part.end(), rough=True)
         if since := _SINCE.match(text, best.end):  # 去年底以来：从去年开头算；"年初以来"正好
@@ -811,21 +806,16 @@ def _stop_at(text: str, i: int) -> tuple[int, bool] | None:
     截至、到期"（_DEADLINE_AT，中间可以隔着"内、即将、快"这类）：前面的时间
     整段当换不成确定日期的，返回（到哪里为止, 是不是截止）（"截止"是停用词，留着由切词去掉、
     加 content 那句）。"""
-    end = None
+    end = i
     if m := _BEFORE_AFTER.match(text, i) or _EDGE.match(text, i):
         end = m.end()
-    elif m := _DEADLINE_AT.match(text, i):
-        word = m.lastindex  # 1：截止、到期；2：即将截至这种
-        return (m.end() if m.group(word) != "截止" else m.start(word)), True
-    as_of = text.startswith("截至", i) and not text.startswith(("目前", "现在", "当前"), i + 2)
-    if end is None and as_of and _time_at(text, i + 2) is None:
-        return i, True  # 2025 年截至的申报通知：后面没写到哪个时候，当"截止"写错了字
-    if end is None:
-        return None
-    if m := _DEADLINE_AT.match(text, end):  # 今年底前到期、今年底前截止
+    if m := _DEADLINE_AT.match(text, end):  # 今天截止、今年底前到期；1：截止、到期，2：即将截至这种
         word = m.lastindex
         return (m.end() if m.group(word) != "截止" else m.start(word)), True
-    return end, False
+    as_of = text.startswith("截至", end) and not text.startswith(("目前", "现在", "当前"), end + 2)
+    if as_of and _time_at(text, end + 2) is None:
+        return end, True  # 2025 年截至的申报通知：后面没写到哪个时候，当"截止"写错了字
+    return (end, False) if end > i else None
 
 
 def _times(text: str):

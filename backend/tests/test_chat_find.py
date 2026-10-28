@@ -530,6 +530,8 @@ def test_换不成确定日期的时间说法去掉_加提示(phrase, time, year
         *("还能申报", "还在申报期", "还可以报", "下月底截止"),
         # 时间后面的"截至"没写到哪个时候，当"截止"写错了字；明天前截止（agy 第 7 轮）
         *("2025年截至", "今年底截至", "明天前截止", "下周前截止"),
+        # 换不成日期的时间、"前"后面写成"截至"的同样（agy 第 8 轮）；还在征集中
+        *("明天截至", "下周截至", "明天前截至", "今年底前截至", "2025年前截至", "还在征集中"),
     ],
 )
 def test_说的是截止的不按发布时间筛_说一声(phrase):
@@ -684,6 +686,7 @@ def test_年份后面的城市名照样认():
         ("成立一年半的企业", "不限", None, ["成立一年半"]),
         ("毕业三年以前的申报", "不限", None, ["毕业三年以前"]),
         ("成立近一年的申报", "不限", None, ["成立近一年"]),
+        ("成立近一年半的企业", "不限", None, ["成立近一年半"]),
         ("马上办改革", "不限", None, ["马上办改革"]),
         # "截至"是到某个时候为止（独立审阅第 6 轮）：截至目前、截至今天就是到现在
         ("今年截至目前的申报通知", "今年", None, []),
@@ -711,6 +714,14 @@ def test_截至到某个时候为止不是截止():
         assert parsed.vague_time and not parsed.deadline, text
         assert parsed.conditions["period"] is None, text
     assert _parse("2025年起征点")["keywords"] == ["起征点"]
+
+
+def test_换不成日期的时间后面的细分一起去掉():
+    """下月底名单：下月是换不成日期的，"底"也一起去掉，不粘到"名单"上（agy 第 8 轮）。"""
+    for text in ("下月底名单", "明年底的通知", "明年前的专精特新"):
+        parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+        assert parsed.vague_time and parsed.conditions["period"] is None, text
+        assert all("底" not in k and "前" not in k for k in parsed.conditions["keywords"]), text
 
 
 def test_初底末后面的前海后续不拆():
