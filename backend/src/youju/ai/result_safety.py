@@ -150,12 +150,15 @@ def mark(*, wechat: bool) -> dict:
 
 
 def mark_ok(stamp) -> bool:
-    """标记算不算数：要有词库版本；在云托管里读的（线上的 api、admin），还要写着查过微信。
-    admin 配错、没认出自己在云托管里时，结果不交微信查，标记里 wechat 是 false：线上按没有标记
-    处理，不显示。本机开发和测试不调微信，wechat 是 false 也认。"""
+    """标记算不算数：要有词库版本，还要写着查过微信。只有本机开发和测试（YOUJU_ROLE=all、不在
+    云托管里）不调微信，wechat 是 false 也认；线上的 api、admin 一律要查过（Codex 10/28：不靠
+    配置推断在不在线上，admin 配错、没认出自己在云托管里时，没交微信查的结果照样不显示）。"""
     if not isinstance(stamp, dict) or not isinstance(stamp.get("words"), str):
         return False
-    return stamp.get("wechat") is True or not wx_security.in_cloud(wx_security.get_settings())
+    if stamp.get("wechat") is True:
+        return True
+    settings = wx_security.get_settings()
+    return getattr(settings, "role", "all") == "all" and not wx_security.in_cloud(settings)
 
 
 def _pause(seconds: float) -> None:

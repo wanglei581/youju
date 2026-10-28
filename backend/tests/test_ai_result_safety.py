@@ -23,7 +23,7 @@ from youju.models import AdvisorTask, AdvisorUsage, AISafetyHit
 MATCH_KEYS = ("cacheKey", "promptVersion", "model")
 ALL_CLEAR = "内容安全（24 小时）：没有拦下、没有出错"
 # 随代码发布的词库（draft-0）还没有词条：这一行另写没扫新正文、附件
-ALL_CLEAR_NO_WORDS = ALL_CLEAR + "；本地词库还没有词条（draft-0），新正文、附件没扫"
+ALL_CLEAR_NO_WORDS = ALL_CLEAR + "；本地词库还没有词条，新正文、附件没扫"
 
 
 @pytest.fixture(autouse=True)
@@ -515,6 +515,14 @@ def test_cloud_reader_needs_wechat_check(  # noqa: F811
     session.commit()
     url = f"/api/v1/advisor/tasks/{task.id}"
     assert client.get(url).json()["result"]["items"]  # 本机
+    # 线上的服务（YOUJU_ROLE=api、admin）就算没认出自己在云托管里，也只认查过微信的
+    real = wx_security.get_settings
+    for role in ("api", "admin"):
+        fake = SimpleNamespace(role=role, trust_wx_headers=False)
+        monkeypatch.setattr(wx_security, "get_settings", lambda fake=fake: fake)
+        monkeypatch.setattr(wx_security, "in_cloud", lambda settings: False)
+        assert client.get(url).json()["error"] == result_safety.UNCHECKED_MESSAGE, role
+    monkeypatch.setattr(wx_security, "get_settings", real)
     monkeypatch.setattr(wx_security, "in_cloud", lambda settings: True)
     body = client.get(url).json()
     assert body["result"] is None and body["error"] == result_safety.UNCHECKED_MESSAGE
