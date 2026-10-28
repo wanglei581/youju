@@ -190,6 +190,14 @@ function markAgreed() {
   aiAccess.recheck();
 }
 
+// 有没到期的使用期时注销前多说的一段（付费协议开卖必做第 3 项，不能写成注销前必须先办退款）。
+// 注销以后小程序里看不到订单了：写出邮箱，提醒先记下订单号（agy 10/28）
+function passNotice() {
+  const email = legal.operator && legal.operator.email;
+  return '注销后未到期的使用期和赠送天数作废、不能恢复；注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱；'
+    + `注销后发邮件${email ? `到 ${email} ` : ''}并附订单号，同样受理。订单号在“我的 → 我的订单”，注销前可以先记下。`;
+}
+
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
 function withdraw(activePass) {
   return new Promise((resolve) => {
@@ -223,7 +231,7 @@ function withdraw(activePass) {
           });
         if (!activePass) { remove(); return; }
         // 两段分别确认，避免原说明和使用期提示合在一起被弹窗截断。
-        wx.showModal({ title: '注销并删除数据', content: '注销后未到期的使用期和赠送天数作废、不能恢复；注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱；注销后发邮件并附订单号，同样受理。', confirmText: '注销', confirmColor: '#E5484D', success: (next) => { if (next.confirm) remove(); else resolve(false); }, fail: () => resolve(false) });
+        wx.showModal({ title: '注销并删除数据', content: passNotice(), confirmText: '注销', confirmColor: '#E5484D', success: (next) => { if (next.confirm) remove(); else resolve(false); }, fail: () => resolve(false) });
       },
       fail: () => resolve(false),
     });

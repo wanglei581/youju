@@ -1491,7 +1491,7 @@ test('开卖必做第 7 项：协议页版本对不上时只提示、可点遇�
 
 test('开卖必做第 4、5 项和收费方案第 9 项：购买页注销提示、续买赠品写品名、工具中心写怎么算次数', () => {
   const pass = fs.readFileSync(path.join(root, 'pages/pass/index.wxml'), 'utf8');
-  assert.match(pass, /注销账号后，未到期的使用期和赠送天数作废，注销本身不退剩余天数。/);
+  assert.match(pass, /注销账号后，未到期的使用期和赠送天数作废，注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱。/);
   assert.equal(pay.renewRule({ renewBonus: { days: 3, windowDays: 7 } }).text, '到期前后 7 天内续买，每次多送 3 天批量工具使用期');
   const advisor = fs.readFileSync(path.join(root, 'pages/advisor/index.wxml'), 'utf8');
   assert.match(advisor, /交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，加量体验和批量工具使用期内每次 500 家以内。/);
@@ -1506,7 +1506,7 @@ test('审核规范 3.3.1：登录没开放时订单页、购买页回首页，�
   }
 });
 
-test('开卖必做第 3 项：两个注销入口先读 /me 的使用期，读不到按没有处理', async () => {
+test('开卖必做第 3 项：两个注销入口先读 /me 的使用期，读不到时也提示使用期', async () => {
   for (const file of ['me', 'my-data']) {
     for (const value of [true, false, null]) {
       const seen = [];
@@ -1516,7 +1516,7 @@ test('开卖必做第 3 项：两个注销入口先读 /me 的使用期，读不
         '../../utils/coverage.js': {}, '../../utils/conditions.js': {}, '../../utils/subscribe.js': { remindOpen: () => false },
       }, { wx: {} });
       page[file === 'me' ? 'deleteAccount' : 'deleteAll'](); await flush();
-      assert.deepEqual(seen, [value === true]);
+      assert.deepEqual(seen, [value !== false]);
     }
   }
 });

@@ -1093,30 +1093,39 @@ def ios_decision(session: Session, order: PayOrder | None, stamp: datetime, sett
     """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径；付费服务协议第二条第 7 项）：
     - 已核实应当退款的建议退款：停止服务公示期间的全部订单，和负责人用 `youju pay-refund-due`
       标记过的订单（因我们的原因不能使用、未成年人未经监护人同意购买等），用没用过都一样；
-    - 其余的，用过付费的量拒绝；没用过的，付款 24 小时内（含恰好 24 小时）建议退款、超过拒绝；
+    - 其余的，用过付费的量（出了结果）拒绝；付款超过 24 小时拒绝；付费的名单还在排队、处理中、
+      没出结果的，建议退款并注明暂时无法核验（没出结果的不算用过，Codex 10/28）；都没有的建议退款；
     - 查不到订单的建议退款，注明暂时无法核验（IOS_UNVERIFIABLE，_ios_reply 出错、超时也是）。
-    凭据只写"付款后 24 小时内 / 付款后已超过 24 小时"、"用过付费的量 / 没有用过付费的量"和
-    "已核实应当退款"，不带任务编号、具体时间和应当退款的原因：答复经微信给到境外的 Apple，
-    只给必要的（开卖那一版必做第 8 项、隐私指引付费部分）。"""
+    凭据只写"付款后 24 小时内 / 付款后已超过 24 小时"和"用过付费的量 / 没有用过付费的量"，
+    已核实应当退款的只写"已核实应当退款"；不带任务编号、具体时间和应当退款的原因：答复经微信
+    给到境外的 Apple，只给必要的（开卖那一版必做第 8 项、隐私指引付费部分）。"""
     if order is None:
         return dict(IOS_UNVERIFIABLE)
     ticket = order_pass(session, order)
-    used = paid_usage(session, ticket)
+    states = paid_task_states(session, ticket.id if ticket else None)
+    # 自助退款把排队、处理中的也先算用过（等它出结果）；苹果问询只问一次，没出结果的不能答已使用
+    used = paid_usage(session, ticket, states - {"queued", "running"})
+    pending = not used and bool(states & {"queued", "running"})
     paid = order.paid_time
     late = paid is not None and stamp > paid + SELF_REFUND_WINDOW
     timing = "付款后已超过 24 小时" if late else "付款后 24 小时内" if paid is not None else ""
-    usage = "用过付费的量" if used else "没有用过付费的量"
+    usage = (
+        "用过付费的量"
+        if used
+        else "暂时无法核验是否用过付费的量"
+        if pending
+        else "没有用过付费的量"
+    )
     evidence = f"{timing}；{usage}" if timing else usage
     if shutdown_notice(settings or get_settings()) or order.refund_due_at is not None:
-        return {
-            "result_code": 0,
-            "result_info": "应当退款",
-            "evidence": f"{evidence}；已核实应当退款",
-        }
+        # 应当退的和用没用过、过没过 24 小时无关：凭据只写这一句，不再带前面两句（agy 10/28）
+        return {"result_code": 0, "result_info": "应当退款", "evidence": "已核实应当退款"}
     if used:
         return {"result_code": 1, "result_info": "已使用", "evidence": evidence}
     if late:
         return {"result_code": 1, "result_info": "付款已超过 24 小时", "evidence": evidence}
+    if pending:
+        return {"result_code": 0, "result_info": "无法核验", "evidence": evidence}
     return {"result_code": 0, "result_info": "未使用", "evidence": evidence}
 
 
@@ -1590,11 +1599,25 @@ def cleanup(session: Session, settings, stamp: datetime) -> dict:
     # 赠送天数的流水（续买多送、体验折算、奖励）自发放之日起保存 3650 天（隐私指引付费部分，
     # 开卖那一版必做第 9 项）：到期连同它那一段使用期一起删（使用期引用流水，先删使用期；
     # 任务上的引用会置空）
-    old = select(PassReward.id).where(PassReward.granted_at <= stamp - REWARD_RETENTION)
-    session.execute(delete(WorkbenchPass).where(WorkbenchPass.reward_id.in_(old)))
-    rewards = session.execute(
-        delete(PassReward).where(PassReward.granted_at <= stamp - REWARD_RETENTION)
-    ).rowcount
+    # 被顺延到很久以后、还没用完也没收回的那段（Codex 10/28）不删，等它用完再删
+    unused = (
+        select(WorkbenchPass.id)
+        .where(
+            WorkbenchPass.reward_id == PassReward.id,
+            WorkbenchPass.revoked_at.is_(None),
+            WorkbenchPass.ends_at > stamp,
+        )
+        .exists()
+    )
+    old = list(
+        session.scalars(
+            select(PassReward.id).where(PassReward.granted_at <= stamp - REWARD_RETENTION, ~unused)
+        )
+    )
+    rewards = 0
+    if old:
+        session.execute(delete(WorkbenchPass).where(WorkbenchPass.reward_id.in_(old)))
+        rewards = session.execute(delete(PassReward).where(PassReward.id.in_(old))).rowcount
     return {"pay_events": events, "pass_rewards": rewards or 0}
 
 

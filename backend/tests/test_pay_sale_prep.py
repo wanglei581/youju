@@ -130,7 +130,7 @@ def test_marked_ios_order_is_suggested_for_refund_even_if_used_and_late(
     answer = inquiry(setup_pay, row)
     assert answer["result_code"] == 0 and answer["result_info"] == "应当退款"
     # 凭据不写应当退款的原因（答复给到境外的 Apple，只给必要的）
-    assert answer["evidence"] == "付款后已超过 24 小时；用过付费的量；已核实应当退款"
+    assert answer["evidence"] == "已核实应当退款"
     assert "故障" not in answer["evidence"]
     session.expire_all()
     marks = session.scalars(select(PayEvent).where(PayEvent.kind == "refund_due_marked")).all()
@@ -282,6 +282,35 @@ def test_cleanup_deletes_gifts_after_3650_days_with_their_segments(setup_pay, se
     )
     # 订单自己的使用期不动
     assert payments.order_pass(session, row) is not None
+
+
+def test_cleanup_keeps_an_old_gift_whose_days_are_not_used_up(setup_pay, session):
+    """十年前发的赠送，被前面的使用期顺延到现在还没用完的，不删（Codex 10/28）；用完了再删。"""
+    row = delivered(setup_pay, session)
+    granted = NOW - timedelta(days=3651)
+    reward = PassReward(
+        user_id=row.user_id,
+        kind="renewal",
+        requested_days=3,
+        granted_days=3,
+        ref_type="order_renewal",
+        ref_id=row.id,
+        granted_at=granted,
+    )
+    session.add(reward)
+    session.flush()
+    session.add(
+        WorkbenchPass(
+            user_id=row.user_id,
+            reward_id=reward.id,
+            starts_at=NOW - timedelta(days=1),
+            ends_at=NOW + timedelta(days=2),
+        )
+    )
+    session.commit()
+    assert payments.cleanup(session, setup_pay[1], NOW)["pass_rewards"] == 0
+    session.commit()
+    assert payments.cleanup(session, setup_pay[1], NOW + timedelta(days=3))["pass_rewards"] == 1
 
 
 # ---- 对账告警（Codex 10/28 建议） -----------------------------------------------------------

@@ -1463,8 +1463,8 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
 @pytest.mark.parametrize(
     "state,used",
     [
-        ("queued", True),
-        ("running", True),
+        ("queued", None),
+        ("running", None),
         ("done", True),
         ("done_then_deleted", True),
         ("failed", False),
@@ -1473,8 +1473,9 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
     ],
 )
 def test_ios_inquiry_counts_only_paid_tasks_with_results(setup_pay, session, state, used):
-    """苹果问询（付费服务协议第二条第 2、7 项，开卖那一版必做第 13 项）：付费任务出了结果（之后删了也算）、
-    还在排队或处理中的算用过；系统出错、取消、处理前删掉的不算。凭据不带任务编号和时间（D-081）。"""
+    """苹果问询（付费服务协议第二条第 2、7 项，开卖那一版必做第 13 项）：付费任务出了结果（之后删了也算）
+    才算用过；还在排队、处理中的建议退款并注明暂时无法核验（问询只有一次，没出结果的不能答已使用）；
+    系统出错、取消、处理前删掉的不算用过。凭据不带任务编号和时间（D-081）。"""
     setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     assert inquiry(setup_pay, row)["result_info"] == "未使用"
@@ -1499,6 +1500,9 @@ def test_ios_inquiry_counts_only_paid_tasks_with_results(setup_pay, session, sta
     if used:
         assert result["result_code"] == 1 and result["result_info"] == "已使用"
         assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    elif used is None:
+        assert result["result_code"] == 0 and result["result_info"] == "无法核验"
+        assert result["evidence"] == "付款后 24 小时内；暂时无法核验是否用过付费的量"
     else:
         assert result["result_code"] == 0 and result["result_info"] == "未使用"
         assert result["evidence"] == "付款后 24 小时内；没有用过付费的量"

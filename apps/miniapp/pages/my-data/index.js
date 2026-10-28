@@ -203,7 +203,8 @@ Page({
   },
 
   deleteAll() {
-    Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => false)
+    // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项）；读不到使用期时也给，宁可多问一句（Codex 10/28）
+    Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => true)
       .then((active) => withdraw(active)).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });
