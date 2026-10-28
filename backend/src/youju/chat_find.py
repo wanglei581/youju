@@ -83,6 +83,8 @@
   几个都算（广州黄埔区和天河区）。"各"开头的、以 _NOT_DISTRICT_ENDS 里的词结尾的（科技园区、
   我家小区、经济特区……）和整个是 _NOT_DISTRICT 里的词的（地区、山区……：南山区、龙湾区这类
   区县名也以它们结尾，只比整个词）不算；
+- 认出的省级地区、城市后面紧跟着的"地区"去掉（广东地区的申报通知 ＝ 广东，不留关键词"地区"）；
+  别处的照旧当关键词（欠发达地区、西部地区、地区总部：去掉会改了意思）；
 - "××××年度"单独算一个关键词（"当标题词"），不和前后的字连成一个；晚于今年、早于 2000 年的
   "××××年"不当时间，也这样单独算一个；
 - "问题像在问内容"那几个词（能不能、补贴多少等）也当停用词去掉，不然会留成关键词、一份都找不到；
@@ -897,6 +899,13 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
             if level and _alone(text[end + len(tail) :], places):
                 levels.update(_LEVEL_WORDS[level])
             end += len(tail)
+        elif (
+            text.startswith("地区", end)
+            and kinds & {"province", "city"}
+            and meanings[0][1] != NATIONAL
+        ):
+            _take(marks, end, end + 2)  # "广东地区""深圳地区"就是广东、深圳
+            end += 2
         counted.add(end)
         if "province" in kinds:
             provinces.append(meanings[0][1])

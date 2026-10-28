@@ -677,7 +677,7 @@ def test_连着写的几个没收录的区县都算(text):
 def test_城市后面不像区县的照旧当关键词():
     for text, keywords in (
         ("深圳社区的申报通知", ["社区"]),
-        ("深圳地区的申报通知", ["地区"]),
+        ("深圳地区的申报通知", []),  # 城市后面的"地区"去掉
         ("深圳经济特区", ["经济特区"]),
         # 以园区、小区这类结尾的都不算
         ("深圳科技园区的申报通知", ["科技园区"]),
@@ -692,6 +692,27 @@ def test_城市后面不像区县的照旧当关键词():
     # 省、直辖市后面的不算（"天津和平区"照第 3 条当关键词）
     conditions = _parse("广东宝安区的申报通知", CITIES_ONLY)
     assert (conditions["uncovered"], conditions["keywords"]) == ([], ["宝安区"])
+
+
+def test_省市后面的地区去掉_别处的照旧():
+    for text, regions, cities in (
+        ("广东地区的申报通知", ["广东"], []),
+        ("广东省地区的申报通知", ["广东"], []),
+        ("深圳地区的申报通知", [], ["广东/深圳"]),
+        ("广东地区和四川地区的申报通知", ["广东", "四川"], []),
+    ):
+        conditions = _parse(text)
+        assert (conditions["regions"], conditions["cities"]) == (regions, cities), text
+        assert (conditions["keywords"], conditions["uncovered"]) == ([], []), text
+    assert _parse("广东地区省级的申报通知")["levels"] == ["省级"]
+    # 不跟在省、城市后面的照旧当关键词（去掉会改了意思）
+    for text, keywords in (
+        ("欠发达地区的政策", ["欠发达地区"]),
+        ("西部地区的申报通知", ["西部地区"]),
+        ("地区总部认定", ["地区总部"]),
+        ("新疆和田地区", ["和田地区"]),
+    ):
+        assert _parse(text)["keywords"] == keywords, text
 
 
 # ---- 层级 ----
@@ -1469,6 +1490,14 @@ def test_城市一个区县都没收录时不去搜(session, world):
     assert NOTES["uncovered"].format(uncovered="广东·广州（区县级）") == (
         "收录里没有广东·广州（区县级）的来源，查不到那里的通知。"
     )
+
+
+def test_广东地区和广东找到的一样(session, world, client):
+    stored = _find(session, "广东地区的申报通知")
+    assert stored["conditions"] == _find(session, "广东的申报通知")["conditions"]
+    assert stored["ids"] == _ids(world, "gd_apply", "sz_apply", "ns_apply", "gd_cash")
+    assert (stored["link"], stored["notes"]) == (True, [])
+    _same_as_search_page(client, stored)
 
 
 def test_读的时候_以前给了链接现在表达不了的不给(session, world):
